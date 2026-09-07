@@ -1,6 +1,7 @@
 defmodule Tackle.Lib.SnapshotTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Snapshot
   alias Tackle.Lib.State
   alias Tackle.Lib.Tool.Registry
@@ -42,12 +43,28 @@ defmodule Tackle.Lib.SnapshotTest do
       assert snapshot.tools_version_id == Snapshot.tools_version_id([SnapshotTestTool])
       assert snapshot.hooks == []
       assert snapshot.llm_opts == [temperature: 0.5]
-      refute is_nil(snapshot.captured_at)
+      assert %DateTime{} = snapshot.captured_at
 
       # Tool registry is frozen
       assert %Registry{} = snapshot.tool_registry
       [def] = Registry.definitions(snapshot.tool_registry)
       assert def.name == "snapshot_test"
+    end
+
+    test "freezes an explicit adapter and model selection" do
+      selection = %Selection{
+        adapter: ExplicitAdapter,
+        adapter_id: "explicit",
+        model: "model-a",
+        ref: "explicit/model-a"
+      }
+
+      snapshot = State.new(llm: selection) |> Snapshot.capture()
+
+      assert snapshot.llm == selection
+      assert snapshot.llm_adapter == ExplicitAdapter
+      assert snapshot.model == "model-a"
+      assert snapshot.model_ref == "explicit/model-a"
     end
 
     test "computes system_prompt_version_id" do

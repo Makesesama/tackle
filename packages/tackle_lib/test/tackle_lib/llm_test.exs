@@ -3,6 +3,8 @@ defmodule Tackle.Lib.LLMTest do
 
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM
+  alias Tackle.Lib.LLM.Selection
+  alias Tackle.Lib.State
   alias Tackle.Lib.Usage
 
   defmodule TestAdapter do
@@ -34,6 +36,65 @@ defmodule Tackle.Lib.LLMTest do
     end
   end
 
+  defmodule SelectableAdapterA do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "provider-a"
+
+    @impl true
+    def models, do: ["shared", "family/nested"]
+
+    @impl true
+    def generate(_schema, opts) do
+      model = Keyword.fetch!(opts, :model)
+
+      {:ok,
+       %{
+         data: %{"content" => "provider-a:#{model}"},
+         usage: nil,
+         model: model,
+         provider: adapter_id()
+       }}
+    end
+  end
+
+  defmodule SelectableAdapterB do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "provider-b"
+
+    @impl true
+    def models, do: ["shared"]
+
+    @impl true
+    def generate(_schema, opts) do
+      model = Keyword.fetch!(opts, :model)
+
+      {:ok,
+       %{
+         data: %{"content" => "provider-b:#{model}"},
+         usage: nil,
+         model: model,
+         provider: adapter_id()
+       }}
+    end
+  end
+
+  defmodule DuplicateAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "provider-a"
+
+    @impl true
+    def models, do: ["other"]
+
+    @impl true
+    def generate(_schema, _opts), do: {:error, :not_used}
+  end
+
   setup do
     previous = Application.get_env(:tackle_lib, :llm)
     Application.put_env(:tackle_lib, :llm, TestAdapter)
@@ -45,6 +106,59 @@ defmodule Tackle.Lib.LLMTest do
         Application.delete_env(:tackle_lib, :llm)
       end
     end)
+  end
+
+  describe "select/2" do
+    test "resolves a canonical model reference" do
+      assert {:ok,
+              %Selection{
+                adapter: SelectableAdapterA,
+                adapter_id: "provider-a",
+                model: "shared",
+                ref: "provider-a/shared"
+              }} = LLM.select([SelectableAdapterA, SelectableAdapterB], "provider-a/shared")
+    end
+
+    test "splits only the first slash in a model reference" do
+      assert {:ok, %Selection{model: "family/nested"}} =
+               LLM.select([SelectableAdapterA], "provider-a/family/nested")
+    end
+
+    test "rejects malformed and unknown model references" do
+      assert {:error, {:invalid_model_ref, "Provider A/shared"}} =
+               LLM.select([SelectableAdapterA], "Provider A/shared")
+
+      assert {:error, {:unknown_adapter, "missing"}} =
+               LLM.select([SelectableAdapterA], "missing/shared")
+
+      assert {:error, {:unknown_model, "provider-a/missing"}} =
+               LLM.select([SelectableAdapterA], "provider-a/missing")
+    end
+
+    test "rejects duplicate adapter ids" do
+      assert {:error, {:duplicate_adapter_id, "provider-a"}} =
+               LLM.select([SelectableAdapterA, DuplicateAdapter], "provider-a/shared")
+    end
+
+    test "requires selection metadata without breaking legacy default adapters" do
+      assert {:error, {:invalid_adapter, TestAdapter, {:missing_callback, {:adapter_id, 0}}}} =
+               LLM.select([TestAdapter], "test/model")
+
+      assert LLM.adapter() == TestAdapter
+    end
+
+    test "separate states can use different selected adapters concurrently" do
+      {:ok, selection_a} = LLM.select([SelectableAdapterA], "provider-a/shared")
+      {:ok, selection_b} = LLM.select([SelectableAdapterB], "provider-b/shared")
+
+      task_a = Task.async(fn -> Tackle.Lib.run(State.new(llm: selection_a), "hello") end)
+      task_b = Task.async(fn -> Tackle.Lib.run(State.new(llm: selection_b), "hello") end)
+
+      assert {:ok, state_a} = Task.await(task_a)
+      assert {:ok, state_b} = Task.await(task_b)
+      assert Tackle.Lib.last_answer(state_a) == "provider-a:shared"
+      assert Tackle.Lib.last_answer(state_b) == "provider-b:shared"
+    end
   end
 
   test "normalizes adapter usage maps" do

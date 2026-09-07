@@ -10,6 +10,7 @@ defmodule Tackle.Lib.State do
   models exist.
   """
 
+  alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry
@@ -27,6 +28,7 @@ defmodule Tackle.Lib.State do
           tool_registry: Registry.t(),
           tool_policy: Policy.t(),
           context: map(),
+          llm: Selection.t() | nil,
           model: String.t() | nil,
           system_prompt: String.t() | nil,
           prompt_renderer: module() | nil,
@@ -50,6 +52,7 @@ defmodule Tackle.Lib.State do
             tool_registry: Registry.new([]),
             tool_policy: Policy.default(),
             context: %{},
+            llm: nil,
             model: nil,
             system_prompt: nil,
             prompt_renderer: nil,
@@ -70,6 +73,7 @@ defmodule Tackle.Lib.State do
     * `:tools` - List of tool modules implementing `Tackle.Lib.Tool` (default: [])
     * `:tool_policy` - Tool execution policy (defaults to sequential Tackle.Lib policy)
     * `:context` - Additional context map (user info, permissions, etc.)
+    * `:llm` - A `Tackle.Lib.LLM.Selection` for per-state adapter selection
     * `:system_prompt` - Custom system prompt (overrides the built default)
     * `:prompt_renderer` - Prompt renderer used for response schema resolution
     * `:prompt_renderer_opts` - Options passed to the prompt renderer
@@ -82,6 +86,8 @@ defmodule Tackle.Lib.State do
     id_generator = Keyword.get(opts, :id_generator, &Tackle.Lib.ID.uuid4/0)
 
     tools = Keyword.get(opts, :tools, [])
+    llm = validate_llm_selection!(Keyword.get(opts, :llm))
+    model = if llm, do: llm.model, else: Keyword.get(opts, :model)
 
     %__MODULE__{
       session_id: id_generator.(),
@@ -93,7 +99,8 @@ defmodule Tackle.Lib.State do
       tool_registry: Registry.new(tools),
       tool_policy: Keyword.get(opts, :tool_policy, Policy.default()),
       context: Keyword.get(opts, :context, %{}),
-      model: Keyword.get(opts, :model),
+      llm: llm,
+      model: model,
       system_prompt: Keyword.get(opts, :system_prompt),
       prompt_renderer: Keyword.get(opts, :prompt_renderer),
       prompt_renderer_opts: Keyword.get(opts, :prompt_renderer_opts, []),
@@ -104,6 +111,14 @@ defmodule Tackle.Lib.State do
       error: nil,
       pending_assistant_id: nil
     }
+  end
+
+  defp validate_llm_selection!(nil), do: nil
+  defp validate_llm_selection!(%Selection{} = selection), do: selection
+
+  defp validate_llm_selection!(selection) do
+    raise ArgumentError,
+          "expected :llm to be a Tackle.Lib.LLM.Selection, got: #{inspect(selection)}"
   end
 
   @doc """

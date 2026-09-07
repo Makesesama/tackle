@@ -7,24 +7,32 @@ defmodule Tackle.Lib.LLM do
   host application supplies an adapter that fulfils this contract. This is what
   makes Tackle.Lib provider-agnostic: swap the adapter, keep the loop.
 
-  ## Configuring the adapter
+  ## Selecting an adapter and model
 
-  The adapter is resolved from application config. When Tackle.Lib ships as a
-  standalone library it reads its own `:tackle_lib` key; while it lives in-tree it
-  also accepts the host application's key so we don't have to register a
-  separate OTP app just for config:
+  Hosts that make multiple adapters available should give each adapter a stable
+  `adapter_id/0` and a `models/0` list, then resolve a canonical model reference:
 
-      # standalone
+      {:ok, selection} =
+        Tackle.Lib.LLM.select(
+          [MyApp.AI.CodexAdapter, MyApp.AI.AnthropicAdapter],
+          "openai-codex/gpt-5.5"
+        )
+
+      state = Tackle.Lib.new(llm: selection)
+
+  The selection is stored on agent state and frozen in the per-turn snapshot.
+  Its adapter-local model id is passed as `opts[:model]`, so separate states can
+  use different providers without changing application-global configuration.
+
+  For compatibility, callers may still configure one default adapter. Tackle.Lib
+  reads its own `:tackle_lib` key first and also accepts the historical host key:
+
       config :tackle_lib, llm: MyApp.AI.TackleAdapter
-
-      # in-tree host fallback
       config :my_app, Tackle.Lib, llm: MyApp.AI.TackleAdapter
 
-  `adapter/0` reads these (preferring `:tackle_lib`). `generate/2` is a convenience
-  that delegates to the configured adapter, so loop code can call
-  `Tackle.Lib.LLM.generate/2` directly. Adapters may also implement the optional
-  `stream/3` callback; Tackle.Lib normalizes adapter/provider stream events into
-  `%Tackle.Lib.Event{}` before hosts see them.
+  `adapter/0`, `generate/2`, and `stream/3` use that default. Adapters may
+  implement the optional `stream/3` callback; Tackle.Lib normalizes provider
+  stream events into `%Tackle.Lib.Event{}` before hosts see them.
 
   ## The contract
 
@@ -64,6 +72,7 @@ defmodule Tackle.Lib.LLM do
   """
 
   alias Tackle.Lib.Event
+  alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Usage
 
   @type usage :: Usage.t() | nil
@@ -84,6 +93,12 @@ defmodule Tackle.Lib.LLM do
           optional(:provider) => String.t() | atom() | nil
         }
 
+  @doc "A stable lowercase identifier used as the model-reference prefix."
+  @callback adapter_id() :: String.t()
+
+  @doc "The adapter-local model identifiers available for explicit selection."
+  @callback models() :: [String.t()]
+
   @callback generate(schema :: keyword() | nil, opts :: keyword()) ::
               {:ok, adapter_response()} | {:error, term()}
 
@@ -93,10 +108,25 @@ defmodule Tackle.Lib.LLM do
               event_callback :: (term() -> any())
             ) :: {:ok, adapter_response()} | {:error, term()}
 
-  @optional_callbacks stream: 3
+  @optional_callbacks adapter_id: 0, models: 0, stream: 3
 
   @doc """
-  Returns the configured LLM adapter module.
+  Selects an adapter and model from a canonical `adapter_id/model` reference.
+
+  Adapter ids must be lowercase strings containing letters, digits, and hyphens.
+  The model portion may itself contain `/`; only the first slash separates the
+  adapter id. Every supplied adapter must export `generate/2`, `adapter_id/0`,
+  and `models/0`, and adapter ids must be unique.
+  """
+  @spec select([module()], String.t()) :: {:ok, Selection.t()} | {:error, term()}
+  defdelegate select(adapters, model_ref), to: Selection, as: :resolve
+
+  @doc """
+  Returns the configured default LLM adapter module.
+
+  This compatibility API is used when state has no explicit selection. New
+  multi-provider hosts should prefer `select/2` and pass the resulting selection
+  to `Tackle.Lib.new/1`.
 
   Raises if no adapter is configured — Tackle.Lib is provider-agnostic by design and
   has no built-in default; the host app MUST supply one.

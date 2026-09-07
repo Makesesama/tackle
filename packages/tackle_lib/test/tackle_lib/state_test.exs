@@ -1,6 +1,7 @@
 defmodule Tackle.Lib.StateTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
   alias Tackle.Lib.Usage
@@ -15,6 +16,7 @@ defmodule Tackle.Lib.StateTest do
       assert state.max_iterations == 10
       assert state.status == :idle
       # Tackle.Lib has no baked-in default model — the host supplies it.
+      assert state.llm == nil
       assert state.model == nil
       assert state.tools == []
       assert is_function(state.id_generator, 0)
@@ -34,6 +36,26 @@ defmodule Tackle.Lib.StateTest do
       assert state.max_iterations == 5
       assert state.tools == [SomeTool]
       assert state.id_generator.() == "custom-id"
+    end
+
+    test "accepts an explicit LLM selection and uses its adapter-local model" do
+      selection = %Selection{
+        adapter: ExampleAdapter,
+        adapter_id: "example",
+        model: "selected-model",
+        ref: "example/selected-model"
+      }
+
+      state = State.new(llm: selection, model: "ignored-model")
+
+      assert state.llm == selection
+      assert state.model == "selected-model"
+    end
+
+    test "rejects an invalid LLM selection" do
+      assert_raise ArgumentError, ~r/expected :llm to be/, fn ->
+        State.new(llm: ExampleAdapter)
+      end
     end
   end
 

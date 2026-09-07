@@ -23,7 +23,8 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.SystemPrompt` — response-format contract + tool-doc assembly.
     * `Tackle.Lib.Usage` — normalized token/cost metadata for LLM steps.
     * `Tackle.Lib.Event` — provider-independent run/message/tool/usage events.
-    * `Tackle.Lib.LLM` — the provider-agnostic LLM behaviour (the keystone seam).
+    * `Tackle.Lib.LLM` — the provider-agnostic LLM behaviour and explicit
+      adapter/model selection (the keystone seam).
     * `Tackle.Lib.Tool.Adapters.*` — small adapters that make public runtime boundaries
       explicit, such as `Tackle.Lib.Tool.Adapters.Web.wrap/1` for agent tools.
     * `Tackle.Lib.Integrations.*` — optional glue for exposing tools through other
@@ -31,8 +32,8 @@ defmodule Tackle.Lib do
 
   ## What the host provides
 
-    * An LLM adapter implementing `Tackle.Lib.LLM` (configured via
-      `config :tackle_lib, llm: MyApp.Adapter`).
+    * One or more LLM adapters implementing `Tackle.Lib.LLM`, selected per state
+      or configured as one compatible application-wide default.
     * Optionally, a JSON adapter implementing `Tackle.Lib.JSON` (configured via
       `config :tackle_lib, json: MyApp.JSONAdapter`; defaults to `Tackle.Lib.JSON.Default`).
     * Concrete tools defined with `use Tackle.Lib.Tool` or manually implementing the
@@ -42,9 +43,12 @@ defmodule Tackle.Lib do
 
   ## Usage
 
+      {:ok, llm} =
+        Tackle.Lib.LLM.select([MyApp.AI.AnthropicAdapter], "anthropic/claude-sonnet-4")
+
       state =
         Tackle.Lib.new(
-          model: "anthropic/claude-sonnet-4",
+          llm: llm,
           tools: Tackle.Lib.Tool.Adapters.Web.wrap([MyApp.Tools.Search, MyApp.Tools.Fetch]),
           system_prompt: MyApp.build_system_prompt(),
           context: %{user_id: user.id}

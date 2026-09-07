@@ -21,6 +21,7 @@ defmodule Tackle.Lib.Snapshot do
   caching without leaking the full snapshot content.
   """
 
+  alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Registry
 
@@ -34,8 +35,10 @@ defmodule Tackle.Lib.Snapshot do
           tools: [module()],
           tool_registry: Registry.t(),
           hooks: [module()],
+          llm: Selection.t() | nil,
           llm_adapter: module() | nil,
           model: String.t() | nil,
+          model_ref: String.t() | nil,
           llm_opts: keyword(),
           captured_at: DateTime.t()
         }
@@ -50,8 +53,10 @@ defmodule Tackle.Lib.Snapshot do
     :tools,
     :tool_registry,
     :hooks,
+    :llm,
     :llm_adapter,
     :model,
+    :model_ref,
     :llm_opts,
     :captured_at
   ]
@@ -59,15 +64,17 @@ defmodule Tackle.Lib.Snapshot do
   @doc """
   Captures a snapshot from the current agent state and runtime configuration.
 
-  Resolves the configured LLM adapter at capture time so the turn is isolated
-  from adapter swaps. Computes version IDs for the system prompt and tool set.
+  Uses the state's explicit LLM selection when present, otherwise resolving the
+  configured default adapter for compatibility. The selected adapter is frozen
+  so the turn is isolated from adapter swaps. Computes version IDs for the
+  system prompt and tool set.
   """
   @spec capture(map(), keyword()) :: t()
   def capture(state, opts \\ []) when is_map(state) do
     turn_id = Keyword.get(opts, :turn_id) || generate_turn_id(state)
     hooks = Keyword.get(opts, :hooks) || Map.get(state, :hooks, []) || []
-    llm_adapter = resolve_llm_adapter()
-    model = Map.get(state, :model)
+    llm = Map.get(state, :llm)
+    {llm_adapter, model, model_ref} = resolve_llm(llm, state)
     system_prompt = Map.get(state, :system_prompt)
     prompt_renderer = Map.get(state, :prompt_renderer)
     prompt_renderer_opts = Map.get(state, :prompt_renderer_opts, [])
@@ -83,8 +90,10 @@ defmodule Tackle.Lib.Snapshot do
       tools: tools,
       tool_registry: Map.get(state, :tool_registry),
       hooks: hooks,
+      llm: llm,
       llm_adapter: llm_adapter,
       model: model,
+      model_ref: model_ref,
       llm_opts: Map.get(state, :llm_opts, []),
       captured_at: DateTime.utc_now()
     }
@@ -137,7 +146,16 @@ defmodule Tackle.Lib.Snapshot do
   @spec hooks(t()) :: [module()]
   def hooks(%__MODULE__{hooks: hooks}), do: hooks
 
-  defp resolve_llm_adapter do
+  defp resolve_llm(%Selection{} = selection, _state) do
+    {selection.adapter, selection.model, selection.ref}
+  end
+
+  defp resolve_llm(nil, state) do
+    model = Map.get(state, :model)
+    {resolve_default_adapter(), model, model}
+  end
+
+  defp resolve_default_adapter do
     Tackle.Lib.LLM.adapter()
   rescue
     _ -> nil

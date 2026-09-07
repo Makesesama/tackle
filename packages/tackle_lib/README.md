@@ -105,14 +105,34 @@ defmodule MyApp.AI.TackleAdapter do
 end
 ```
 
-Configure it under Tackle.Lib's own OTP application key:
+Configure it under Tackle.Lib's own OTP application key when the host uses one
+application-wide default:
 
 ```elixir
 # config/config.exs
 config :tackle_lib, llm: MyApp.AI.TackleAdapter
 ```
 
-There is deliberately no default adapter.
+There is deliberately no built-in default adapter. A host that makes multiple
+adapters available should instead implement adapter metadata and select one per
+state:
+
+```elixir
+def adapter_id, do: "openai-codex"
+def models, do: ["gpt-5.5", "gpt-5.5-mini"]
+
+{:ok, llm} =
+  Tackle.Lib.LLM.select(
+    [MyApp.AI.CodexAdapter, MyApp.AI.AnthropicAdapter],
+    "openai-codex/gpt-5.5"
+  )
+
+state = Tackle.Lib.new(llm: llm)
+```
+
+The canonical reference selects the adapter, while only the adapter-local model
+id (`"gpt-5.5"`) is passed as `opts[:model]`. Selection is explicit state, not
+application-global mutation, so concurrent sessions can use different adapters.
 
 ### 2. Define a tool
 
@@ -221,7 +241,8 @@ Tackle.Lib.continue(state, run_opts)
 
 | Option | Purpose | Default |
 |---|---|---|
-| `:model` | Host/provider model identifier | `nil` |
+| `:llm` | Selection returned by `Tackle.Lib.LLM.select/2` | configured adapter fallback |
+| `:model` | Model identifier for a legacy configured adapter | `nil` |
 | `:tools` | Modules implementing `Tackle.Lib.Tool` | `[]` |
 | `:system_prompt` | Complete host-composed system prompt | `nil` |
 | `:context` | Opaque host context passed to hooks and tools | `%{}` |
@@ -296,12 +317,20 @@ by modern chat-completion APIs and enables provider prompt caching.
 Implement `Tackle.Lib.LLM`:
 
 ```elixir
+@callback adapter_id() :: String.t()
+@callback models() :: [String.t()]
+
 @callback generate(schema :: keyword() | map() | nil, opts :: keyword()) ::
             {:ok, response} | {:error, term()}
 
 @callback stream(schema, opts, event_callback) ::
             {:ok, response} | {:error, term()}
 ```
+
+`adapter_id/0` and `models/0` are required for adapters passed to
+`Tackle.Lib.LLM.select/2`. They remain optional for compatibility with a single
+adapter configured through `config :tackle_lib, :llm`. Adapter ids are lowercase
+letters, digits, and hyphens and must be unique in the supplied adapter list.
 
 `stream/3` is optional. When absent, Tackle.Lib calls `generate/2` and still emits a
 normalized usage event when usage is returned.
@@ -587,9 +616,10 @@ config :tackle_lib,
 ## Snapshots and configuration stability
 
 At the start of a turn Tackle.Lib captures `%Tackle.Lib.Snapshot{}` containing the
-resolved adapter, model, tools/registry, hooks, prompt, prompt renderer, and LLM
-options. That turn continues against the frozen snapshot even if application
-configuration or code registration changes while it runs.
+explicit adapter/model selection (or the compatible configured default),
+tools/registry, hooks, prompt, prompt renderer, and LLM options. That turn
+continues against the frozen snapshot even if application configuration or code
+registration changes while it runs.
 
 Snapshots include deterministic `system_prompt_version_id` and
 `tools_version_id` values. Persist those IDs in host audit records when you need
