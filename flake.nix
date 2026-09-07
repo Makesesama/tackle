@@ -1,0 +1,135 @@
+{
+  description = "An Elixir development shell.";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    treefmt-nix.url = "github:numtide/treefmt-nix";
+    pre-commit-hooks.url = "github:cachix/git-hooks.nix";
+  };
+
+  outputs =
+    {
+      self,
+      nixpkgs,
+      treefmt-nix,
+      pre-commit-hooks,
+      ...
+    }@inputs:
+    let
+      supportedSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+
+      overlays = [
+        (
+          final: prev:
+          let
+            beamPkgs = prev.beam29Packages.overrideScope (_final: prevBeam: { elixir = prevBeam.elixir_1_20; });
+          in
+          {
+            beamPackages = beamPkgs;
+            elixir = beamPkgs.elixir;
+            hex = beamPkgs.hex;
+
+          }
+        )
+      ];
+
+      forAllSystems =
+        function:
+        nixpkgs.lib.genAttrs supportedSystems (
+          system:
+          function rec {
+            inherit system;
+            pkgs = import nixpkgs { inherit overlays system; };
+          }
+        );
+
+      treefmtEval = forAllSystems (
+        {
+          pkgs,
+          system,
+        }:
+        treefmt-nix.lib.evalModule pkgs ./nix/treefmt.nix
+      );
+    in
+    {
+      packages = forAllSystems (
+        {
+          pkgs,
+          system,
+        }:
+        let
+          package = pkgs.callPackage ./nix/packages { };
+        in
+        {
+          default = package;
+        }
+      );
+      checks = forAllSystems (
+        {
+          pkgs,
+          system,
+        }:
+        {
+          pre-commit-check = inputs.pre-commit-hooks.lib.${system}.run {
+            src = ./.;
+            hooks = {
+              credo.enable = true;
+              credo.package = pkgs.elixir;
+              # dialyzer.enable = true;
+              # dialyzer.package = pkgs.elixir;
+              treefmt = {
+                enable = true;
+                package = treefmtEval.${system}.config.build.wrapper;
+              };
+            };
+          };
+        }
+      );
+      devShells = forAllSystems (
+        {
+          pkgs,
+          system,
+        }:
+        let
+          preCommitCheck = self.checks.${system}.pre-commit-check;
+
+          # Common shell hook for both environments
+          commonShellHook = ''
+            ${preCommitCheck.shellHook}
+              # Set up `mix` to save dependencies to the local directory
+              mkdir -p .nix-mix
+              mkdir -p .nix-hex
+              export MIX_HOME=$PWD/.nix-mix
+              export HEX_HOME=$PWD/.nix-hex
+              export PATH=$MIX_HOME/bin:$PATH
+              export PATH=$HEX_HOME/bin:$PATH
+
+              # BEAM-specific
+              export LANG=en_US.UTF-8
+              export ERL_AFLAGS="-kernel shell_history enabled"
+          '';
+        in
+        {
+          # Development shell with all tools
+          default = pkgs.callPackage ./nix/shells/shell.nix {
+            package = self.packages.${system}.default;
+            inherit preCommitCheck commonShellHook;
+          };
+        }
+      );
+      formatter = forAllSystems (
+        {
+          pkgs,
+          system,
+        }:
+        treefmtEval.${system}.config.build.wrapper
+      );
+    };
+
+}
