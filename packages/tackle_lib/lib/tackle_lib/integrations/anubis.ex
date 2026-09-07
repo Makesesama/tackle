@@ -27,11 +27,11 @@ defmodule Tackle.Lib.Integrations.Anubis do
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.{Call, Error, Result}
 
-  @type dispatch_result :: {:reply, Response.t(), Frame.t()} | {:error, :unknown_tool}
+  @type dispatch_result :: {:reply, term(), term()} | {:error, :unknown_tool}
 
   @doc "Registers all tools on an Anubis frame."
-  @spec register_all(Frame.t(), [module()] | Registry.t(), keyword()) :: Frame.t()
-  def register_all(%Frame{} = frame, tools_or_registry, opts \\ []) do
+  @spec register_all(term(), [module()] | Registry.t(), keyword()) :: term()
+  def register_all(%{__struct__: Frame} = frame, tools_or_registry, opts \\ []) do
     tools_or_registry
     |> registry()
     |> Registry.entries()
@@ -39,8 +39,8 @@ defmodule Tackle.Lib.Integrations.Anubis do
   end
 
   @doc "Dispatches an Anubis tool call to a registered `Tackle.Lib.Tool` module."
-  @spec dispatch(String.t(), map() | nil, Frame.t(), keyword()) :: dispatch_result()
-  def dispatch(name, params, %Frame{} = frame, opts) when is_binary(name) do
+  @spec dispatch(String.t(), map() | nil, term(), keyword()) :: dispatch_result()
+  def dispatch(name, params, %{__struct__: Frame} = frame, opts) when is_binary(name) do
     registry = opts |> Keyword.fetch!(:tools) |> registry()
 
     case Registry.lookup(registry, name) do
@@ -61,8 +61,12 @@ defmodule Tackle.Lib.Integrations.Anubis do
     end
   end
 
-  defp register_tool(%Frame{} = frame, %{module: tool_module, definition: definition}, opts) do
-    Frame.register_tool(frame, definition.name,
+  defp register_tool(
+         %{__struct__: Frame} = frame,
+         %{module: tool_module, definition: definition},
+         opts
+       ) do
+    registration_opts = [
       description: tool_description(tool_module, definition, opts),
       input_schema: AnubisSchema.to_peri(tool_module.parameters_schema()),
       output_schema: tool_module |> Tool.output_schema() |> AnubisSchema.to_peri(),
@@ -70,19 +74,23 @@ defmodule Tackle.Lib.Integrations.Anubis do
       title: Keyword.get(opts, :title),
       task_support: Keyword.get(opts, :task_support, :forbidden),
       scopes: Keyword.get(opts, :scopes, [])
-    )
+    ]
+
+    apply(Frame, :register_tool, [frame, definition.name, registration_opts])
   end
 
   defp run_tool(tool_module, call, context) do
+    response_type = apply(Response, :tool, [])
+
     case Tool.settle(tool_module, call, context) do
       {:ok, %Result{output: output}} when is_map(output) ->
-        Response.structured(Response.tool(), output)
+        apply(Response, :structured, [response_type, output])
 
       {:ok, %Result{content: content}} ->
-        Response.text(Response.tool(), content)
+        apply(Response, :text, [response_type, content])
 
       {:error, %Error{message: message}} ->
-        Response.error(Response.tool(), message)
+        apply(Response, :error, [response_type, message])
     end
   end
 

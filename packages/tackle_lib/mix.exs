@@ -23,7 +23,8 @@ defmodule Tackle.Lib.MixProject do
 
   defp deps do
     [
-      {:anubis_mcp, "~> 2.0", optional: true}
+      {:anubis_mcp, "~> 2.0", optional: true},
+      {:telemetry, "~> 1.0"}
     ]
   end
 end

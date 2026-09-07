@@ -56,7 +56,8 @@ resolved and tested before promising a binary plugin workflow.
 
 This repository is a starting point, not a finished CLI:
 
-- The root Mix project is still a scaffold; it does not yet wire in the library.
+- The root Mix project now provides the first frontend-independent harness slice:
+  explicit adapter/model configuration and supervised in-memory sessions.
 - [`packages/tackle_lib`](packages/tackle_lib/README.md) contains the existing
   agent library and its API documentation (`Tackle.Lib.*`).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the
@@ -65,8 +66,8 @@ This repository is a starting point, not a finished CLI:
   inherited functionality and remains in `Tackle.Lib.Integrations.Anubis`; a
   future extraction needs a deliberate compatibility migration rather than
   silent removal.
-- The CLI, first-party Codex adapter, general plugin loading, and Burrito
-  packaging are planned work.
+- The CLI, first-party Codex adapter, extension project loading, and Burrito
+  packaging are still planned work.
 
 The root harness owns OTP application `:tackle` and namespace `Tackle`. The
 reusable library owns OTP application `:tackle_lib` and namespace `Tackle.Lib`;
@@ -75,6 +76,38 @@ migration: downstream users must change package paths, module references, and
 library configuration from `:tackle`/`Tackle.*` to
 `:tackle_lib`/`Tackle.Lib.*`. The Phoenix integration keeps its
 `:tackle_phoenix` and `Tackle.Phoenix.*` identities.
+
+## Basic harness API
+
+The initial API accepts already-loaded adapter and capability modules. It does
+not yet read configuration files or load extension projects.
+
+```elixir
+{:ok, session} =
+  Tackle.start_session(
+    adapters: [MyCodexAdapter],
+    model: "openai-codex/gpt-5.5"
+  )
+
+{:ok, snapshot} = Tackle.subscribe(session)
+{:ok, turn_id} = Tackle.submit(session, "Inspect this project")
+```
+
+Subscribers receive provider-neutral library events and terminal outcomes with
+session and turn correlation:
+
+```elixir
+{:tackle_event, session_id, turn_id, %Tackle.Lib.Event{}}
+{:tackle_turn_finished, session_id, turn_id, result}
+{:tackle_turn_failed, session_id, turn_id, reason}
+```
+
+Each session permits one active turn. `Tackle.continue/1` retries the settled
+conversation without adding another user message, `Tackle.cancel/1` requests
+cooperative cancellation, and `Tackle.close/1` cleans up the session. Subscribe
+before starting a turn; active-turn attachment is deferred until event replay or
+projection semantics are defined. `Tackle.Lib` provides the `:telemetry`
+runtime dependency used by tool execution.
 
 ## Initial milestones
 
@@ -95,7 +128,7 @@ The root project requires Elixir `~> 1.20`; the existing packages declare
 Enter it with `nix develop`, or use the repository's direnv setup.
 
 ```sh
-# Root scaffold
+# Root harness
 mix deps.get
 mix compile --warnings-as-errors
 mix test

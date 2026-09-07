@@ -1,5 +1,4 @@
 defmodule Tackle.Lib.Telemetry do
-  @compile {:no_warn_undefined, :telemetry}
   @moduledoc """
   Small, exporter-neutral lifecycle telemetry helpers.
 

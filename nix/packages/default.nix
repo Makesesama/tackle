@@ -6,7 +6,7 @@ let
   version = "0.1.0";
   src = ../..;
 
-  deps = pkgs.callPackage ../deps.nix {};
+  deps = pkgs.callPackage ../deps.nix { };
   mixNixDeps = lib.filterAttrs (_name: value: lib.isDerivation value) deps;
 in
 pkgs.beamPackages.mixRelease {

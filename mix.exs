@@ -8,7 +8,7 @@ defmodule Tackle.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases(),
+      aliases: aliases()
     ]
   end
 
@@ -23,15 +23,14 @@ defmodule Tackle.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:deps_nix, "~> 3.0", only: :dev}
-      # {:dep_from_hexpm, "~> 0.3.0"},
-      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
+      {:deps_nix, "~> 3.0", only: :dev},
+      {:tackle_lib, path: "packages/tackle_lib"}
     ]
   end
 
   defp aliases do
     [
-      "deps.nix": ["deps.nix --output nix/deps.nix"],
+      "deps.nix": ["deps.nix --output nix/deps.nix"]
     ]
   end
 end

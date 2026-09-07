@@ -34,10 +34,9 @@ defp deps do
 end
 ```
 
-Tackle.Lib requires Elixir `~> 1.18`. The Anubis MCP bridge requires the optional
-`:anubis_mcp` dependency to be available in the final application. Tackle.Lib emits
-`:telemetry` events; a Phoenix application already has `:telemetry`, while a
-non-Phoenix host must make sure it is present in the final dependency graph.
+Tackle.Lib requires Elixir `~> 1.18` and includes `:telemetry` for its bounded
+lifecycle events. The Anubis MCP bridge requires the optional `:anubis_mcp`
+dependency to be available in the final application.
 
 ## Which package do I need?
 
