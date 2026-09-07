@@ -13,9 +13,9 @@ defmodule Tackle.Phoenix.Chat do
 
     * mount → subscribe to the session topic via `Tackle.Phoenix.PubSub` and
       initialize the message stream via `Tackle.Phoenix.EventReducer`.
-    * `handle_info({:agent_event, %Tackle.Event{}}, socket)` → reduce into the
+    * `handle_info({:agent_event, %Tackle.Lib.Event{}}, socket)` → reduce into the
       stream.
-    * `handle_info({:agent_turn_done, {status, %Tackle.State{}}}, socket)` for
+    * `handle_info({:agent_turn_done, {status, %Tackle.Lib.State{}}}, socket)` for
       `:ok` / `:error` / `:cancelled` → settle UI state and clear streaming
       messages.
     * `handle_info({:agent_turn_failed, reason}, socket)` → surface the error.

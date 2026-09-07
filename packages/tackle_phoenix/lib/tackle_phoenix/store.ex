@@ -11,8 +11,8 @@ defmodule Tackle.Phoenix.Store do
   free-path default that bypasses billing.
 
   All callbacks receive and return an opaque host `state` term (the Runner
-  threads it through unchanged), plus the `Tackle.State` where relevant. The
-  Runner treats `Tackle.State.context` as opaque; only the host's `enrich_state`
+  threads it through unchanged), plus the `Tackle.Lib.State` where relevant. The
+  Runner treats `Tackle.Lib.State.context` as opaque; only the host's `enrich_state`
   populates persistence/org context into it.
 
   ## Hook ordering within a turn
@@ -20,7 +20,7 @@ defmodule Tackle.Phoenix.Store do
     1. `before_turn/2` — quota/permission gate. Returning `{:error, reason}`
        aborts the turn before any work; the Runner replies with that reason.
     2. `enrich_state/3` — inject host persistence/org context into
-       `Tackle.State.context` (session id, user id, org id, persisted ids).
+       `Tackle.Lib.State.context` (session id, user id, org id, persisted ids).
     3. `persist_user_message/3` — persist the user's input message (run turns).
     4. `persist_pending_message/3` — persist an in-flight assistant message on
        `:message_start` (best-effort), with the active turn correlation options.
@@ -29,8 +29,8 @@ defmodule Tackle.Phoenix.Store do
     6. `after_turn/3` — fire-and-forget host follow-ups (e.g. title generation).
   """
 
-  alias Tackle.State
-  alias Tackle.Usage
+  alias Tackle.Lib.State
+  alias Tackle.Lib.Usage
 
   @typedoc "Opaque host-managed state threaded through the Runner."
   @type host_state :: term()
@@ -82,14 +82,14 @@ defmodule Tackle.Phoenix.Store do
 
   @doc """
   Inject host persistence/org context into the agent state prior to the turn.
-  Must return the enriched `Tackle.State`.
+  Must return the enriched `Tackle.Lib.State`.
   """
   @callback enrich_state(host_state(), State.t(), turn_opts()) :: State.t()
 
   @doc """
   Persist the user's input message for a run turn. Returns updated host state.
   """
-  @callback persist_user_message(host_state(), State.t(), Tackle.Message.t()) :: host_state()
+  @callback persist_user_message(host_state(), State.t(), Tackle.Lib.Message.t()) :: host_state()
 
   @doc """
   Best-effort persist of an in-flight assistant message on `:message_start`.
@@ -104,7 +104,7 @@ defmodule Tackle.Phoenix.Store do
 
   @doc """
   Settle a finished turn: update the DB session, persist final messages, and
-  apply billing for the aggregated `Tackle.Usage`. Returns updated host state.
+  apply billing for the aggregated `Tackle.Lib.Usage`. Returns updated host state.
   """
   @callback settle_turn(host_state(), turn_result(), Usage.t(), turn_opts()) :: host_state()
 

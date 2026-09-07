@@ -1,6 +1,6 @@
 # Tackle.Phoenix
 
-`Tackle.Phoenix` runs the framework-free [`Tackle`](../tackle/README.md) agent
+`Tackle.Phoenix` runs the framework-free [`Tackle.Lib`](../tackle_lib/README.md) agent
 core inside an OTP/Phoenix application. It supplies a generic per-session
 Runner, cooperative cancellation ownership, PubSub fan-out, usage settlement,
 and a LiveView event reducer. The host still owns persistence, authorization,
@@ -27,7 +27,7 @@ extract both sibling packages while preserving this layout:
 
 ```text
 packages/
-  tackle/
+  tackle_lib/
   tackle_phoenix/
 ```
 
@@ -37,7 +37,7 @@ Then add:
 # mix.exs
 defp deps do
   [
-    {:tackle, path: "packages/tackle"},
+    {:tackle_lib, path: "packages/tackle_lib"},
     {:tackle_phoenix, path: "packages/tackle_phoenix"}
   ]
 end
@@ -50,7 +50,7 @@ Phoenix PubSub `~> 2.1`.
 
 | Concern | Owner |
 |---|---|
-| LLM loop, messages, tools, events | `Tackle` |
+| LLM loop, messages, tools, events | `Tackle.Lib` |
 | Turn process, supervised task, cancellation token | `Tackle.Phoenix.Runner` |
 | PubSub topic and event/terminal broadcast | `Tackle.Phoenix.PubSub` |
 | Usage collection and terminal settlement ordering | `Tackle.Phoenix.Runner` |
@@ -78,8 +78,8 @@ Tackle.Phoenix.Runner (temporary GenServer, one user/session key)
   ├── Store.persist_user_message     write-ahead user message
   ├── Task.Supervisor.async_nolink
   │     └── host agent.continue
-  │           └── Tackle loop + LLM + tools
-  ├── receive Tackle.Event
+  │           └── Tackle.Lib loop + LLM + tools
+  ├── receive Tackle.Lib.Event
   │     ├── optional pending assistant persistence
   │     ├── usage/stat aggregation
   │     └── Phoenix.PubSub broadcast
@@ -130,7 +130,7 @@ defmodule MyApp.Agent do
     tools = Keyword.get(opts, :tools, MyApp.Agent.Tools.default())
     context = Keyword.get(opts, :context, %{})
 
-    Tackle.new(
+    Tackle.Lib.new(
       model: Keyword.fetch!(opts, :model),
       tools: tools,
       context: context,
@@ -140,13 +140,13 @@ defmodule MyApp.Agent do
     )
   end
 
-  def continue(%Tackle.State{} = state, opts) do
-    Tackle.continue(state, Keyword.put_new(opts, :llm_stream, true))
+  def continue(%Tackle.Lib.State{} = state, opts) do
+    Tackle.Lib.continue(state, Keyword.put_new(opts, :llm_stream, true))
   end
 end
 ```
 
-`agent: Tackle` also satisfies `continue/2`, but a host facade is the right place
+`agent: Tackle.Lib` also satisfies `continue/2`, but a host facade is the right place
 to select tools, prompts, model defaults, and any fail-closed authorization
 checks.
 
@@ -202,11 +202,11 @@ appear in caller options. Resolve them from authenticated or persisted identity.
 
 ### `enrich_state(host_state, agent_state, turn_opts)`
 
-Return `%Tackle.State{}` with trusted host context. This is the right place for
+Return `%Tackle.Lib.State{}` with trusted host context. This is the right place for
 scope, permissions, persisted session identity, correlation metadata, telemetry
 configuration, and additional hooks.
 
-The Runner treats context as opaque and only Tackle/tools/hooks read it.
+The Runner treats context as opaque and only Tackle.Lib/tools/hooks read it.
 
 ### `persist_user_message(host_state, agent_state, message)`
 
@@ -226,7 +226,7 @@ also accepted.
 
 Called for `{:ok, state}`, `{:error, state}`, and `{:cancelled, state}` after the
 supervised task returns. Persist final messages/session status and apply billing
-using the already aggregated `%Tackle.Usage{}`.
+using the already aggregated `%Tackle.Lib.Usage{}`.
 
 Charge actual usage on error/cancel when the provider already consumed tokens.
 Keep settlement idempotent because process failure and recovery can revisit
@@ -240,7 +240,7 @@ recovery. Keep this bounded; it runs in the Runner process.
 ### `handle_turn_failed(host_state, reason, turn_opts)`
 
 Called when the supervised task crashes/exits rather than returning a normal
-Tackle result. `turn_opts[:turn_usage]` contains usage observed before the crash.
+Tackle.Lib result. `turn_opts[:turn_usage]` contains usage observed before the crash.
 Return `{updated_host_state, recovered_agent_state_or_nil}`.
 
 ### `init_host/1` and `handle_host_message/2` (optional)
@@ -326,7 +326,7 @@ otherwise needs enough state for the Store and agent to work.
 | Function | Purpose |
 |---|---|
 | `get_or_start/3` | Resolve/start runner for user + optional session |
-| `get_state/3` | Read in-memory Tackle state |
+| `get_state/3` | Read in-memory Tackle.Lib state |
 | `snapshot/3` or `snapshot/1` | Atomically read agent state, session ID, active turn, runner pid |
 | `replace_state/3` | Replace host and agent state when idle |
 | `update_state/4` | Replace only agent state |
@@ -367,8 +367,8 @@ Tackle.Phoenix.Runner.subscribe(config, user_id, session_id)
 The subscriber receives:
 
 ```elixir
-{:agent_event, %Tackle.Event{}}
-{:agent_turn_done, {:ok | :error | :cancelled, %Tackle.State{}}}
+{:agent_event, %Tackle.Lib.Event{}}
+{:agent_turn_done, {:ok | :error | :cancelled, %Tackle.Lib.State{}}}
 {:agent_turn_failed, reason}
 ```
 
@@ -456,7 +456,7 @@ container while events may arrive.
 
 ```elixir
 @impl true
-def handle_info({:agent_event, %Tackle.Event{} = event}, socket) do
+def handle_info({:agent_event, %Tackle.Lib.Event{} = event}, socket) do
   socket =
     socket
     |> handle_domain_event(event)
@@ -465,7 +465,7 @@ def handle_info({:agent_event, %Tackle.Event{} = event}, socket) do
   {:noreply, socket}
 end
 
-def handle_info({:agent_turn_done, {status, %Tackle.State{} = state}}, socket)
+def handle_info({:agent_turn_done, {status, %Tackle.Lib.State{} = state}}, socket)
     when status in [:ok, :error, :cancelled] do
   socket =
     socket
@@ -517,24 +517,24 @@ end
 ```
 
 Cancellation is cooperative. The Runner owns and deletes the signal, while the
-Tackle loop, provider adapter, and long-running tools must observe it.
+Tackle.Lib loop, provider adapter, and long-running tools must observe it.
 
 ## Persistence and recovery design
 
 A robust durable host normally uses this sequence:
 
-1. Load ordered persisted messages and rebuild a fresh `%Tackle.State{}` with
+1. Load ordered persisted messages and rebuild a fresh `%Tackle.Lib.State{}` with
    current trusted tools, prompt, model policy, and authorization.
 2. Before a turn, re-authorize persisted user/tenant identity and gate quota.
 3. Persist the user message before provider work.
 4. Optionally insert a pending assistant row at `:message_start`.
-5. Finalize messages idempotently by their stable Tackle IDs.
+5. Finalize messages idempotently by their stable Tackle.Lib IDs.
 6. On error/cancel/crash, mark pending rows interrupted rather than presenting
    them as completed.
 7. Settle usage/billing exactly once with an idempotency key tied to the turn.
 8. On Runner restart, reload state and recover any durable pending deliveries.
 
-Do not persist and later trust `%Tackle.State.context` wholesale. Authorization,
+Do not persist and later trust `%Tackle.Lib.State.context` wholesale. Authorization,
 organization membership, and tool availability may have changed. Rebuild them
 from current server-side state.
 
@@ -558,7 +558,7 @@ the supervised turn task and tool execution. ExampleHost uses this to preserve
 parent/child span relationships without placing prompts or payloads in
 telemetry metadata.
 
-Core Tackle separately emits tool-execution telemetry documented in the core
+Core Tackle.Lib separately emits tool-execution telemetry documented in the core
 README.
 
 ## ExampleHost host implementation
@@ -594,7 +594,7 @@ These are intentionally outside `tackle_phoenix`:
 - only an explicitly safe subset of tools is exposed through MCP.
 
 The reusable lesson is to keep these policies in the Store, agent factory, and
-tool implementations rather than adding tenant assumptions to Tackle itself.
+tool implementations rather than adding tenant assumptions to Tackle.Lib itself.
 
 ## Production checklist
 

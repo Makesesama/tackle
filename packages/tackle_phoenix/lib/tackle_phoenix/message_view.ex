@@ -1,6 +1,6 @@
 defmodule Tackle.Phoenix.MessageView do
   @moduledoc """
-  Host seam for turning `Tackle.Message`s into renderable units.
+  Host seam for turning `Tackle.Lib.Message`s into renderable units.
 
   `Tackle.Phoenix.EventReducer` is otherwise pure — it only knows how to drive
   a LiveView stream of messages and a map of transient in-flight streaming
@@ -27,7 +27,7 @@ defmodule Tackle.Phoenix.MessageView do
       end
   """
 
-  alias Tackle.Message
+  alias Tackle.Lib.Message
 
   @typedoc """
   A transient in-flight streaming message entry. Opaque to `Tackle.Phoenix`;

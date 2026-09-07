@@ -17,8 +17,8 @@ defmodule Tackle.Phoenix.PubSub do
 
   Messages broadcast during a turn:
 
-    * `{:agent_event, %Tackle.Event{}}`
-    * `{:agent_turn_done, {:ok | :error | :cancelled, %Tackle.State{}}}`
+    * `{:agent_event, %Tackle.Lib.Event{}}`
+    * `{:agent_turn_done, {:ok | :error | :cancelled, %Tackle.Lib.State{}}}`
     * `{:agent_turn_failed, reason}`
   """
 

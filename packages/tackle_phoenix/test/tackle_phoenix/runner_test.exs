@@ -1,11 +1,11 @@
 defmodule Tackle.Phoenix.RunnerTest do
   use ExUnit.Case, async: false
 
-  alias Tackle.Cancellation
-  alias Tackle.Event
+  alias Tackle.Lib.Cancellation
+  alias Tackle.Lib.Event
   alias Tackle.Phoenix.Runner
-  alias Tackle.State
-  alias Tackle.Usage
+  alias Tackle.Lib.State
+  alias Tackle.Lib.Usage
 
   @pubsub __MODULE__.PubSub
   @registry __MODULE__.Registry
@@ -15,9 +15,9 @@ defmodule Tackle.Phoenix.RunnerTest do
   defmodule CorrelationAgent do
     @moduledoc false
 
-    alias Tackle.Event
-    alias Tackle.Message
-    alias Tackle.State
+    alias Tackle.Lib.Event
+    alias Tackle.Lib.Message
+    alias Tackle.Lib.State
 
     def continue(%State{} = state, opts) do
       event_callback = Keyword.fetch!(opts, :event_callback)

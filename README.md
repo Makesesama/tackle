@@ -4,9 +4,9 @@ Tackle is an Elixir agent harness for developers, built around a small core and
 an extensible, plugin-first architecture.
 
 It starts with an in-house agent library already used in a SaaS application.
-The goal is to retain that library at [`packages/tackle`](packages/tackle) and
-build a developer-facing harness around it—not turn the SaaS application into
-a CLI.
+The reusable library now lives at [`packages/tackle_lib`](packages/tackle_lib)
+under the `Tackle.Lib` namespace, while the repository root remains the `Tackle`
+developer harness—not the SaaS application turned into a CLI.
 
 ## Goals
 
@@ -25,7 +25,7 @@ a CLI.
 
 | Layer | Responsibility |
 | --- | --- |
-| `packages/tackle` | Retained, reusable, provider- and frontend-independent agent library. |
+| `packages/tackle_lib` | Reusable, provider- and frontend-independent agent library (`Tackle.Lib`). |
 | Developer harness | Minimal composition and runtime glue for the library, configuration, and plugins. |
 | CLI frontend | Terminal input/output and interaction; no duplicate agent loop. |
 | Plugins | Provider adapters and optional capabilities, using explicit extension contracts. |
@@ -42,9 +42,11 @@ Provider adapters are user-provided plugins. **OpenAI Codex is the only adapter
 this project plans to implement and maintain**, and it should use the same
 extension contracts as third-party adapters, not a privileged core code path.
 
-MCP is a **future plugin**, not a built-in core feature. Other optional
-integrations should follow the same separation. Phoenix and SaaS-specific
-concerns are not requirements for the standalone harness.
+MCP is a **future plugin for the harness**, not a required root dependency.
+The reusable library retains its inherited optional Anubis MCP bridge during
+this identity migration; other optional integrations should follow the same
+separation. Phoenix and SaaS-specific concerns are not requirements for the
+standalone harness.
 
 Plugin discovery, loading, and distribution are not yet specified. In
 particular, how user-provided plugins work with a Burrito binary needs to be
@@ -55,19 +57,24 @@ resolved and tested before promising a binary plugin workflow.
 This repository is a starting point, not a finished CLI:
 
 - The root Mix project is still a scaffold; it does not yet wire in the library.
-- [`packages/tackle`](packages/tackle/README.md) contains the existing agent
-  library and its API documentation.
+- [`packages/tackle_lib`](packages/tackle_lib/README.md) contains the existing
+  agent library and its API documentation (`Tackle.Lib.*`).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the
   existing Phoenix integration; it is not the intended CLI foundation.
 - The library currently includes an optional Anubis MCP integration. That is
-  inherited functionality, not the target plugin boundary; extracting it needs
-  a deliberate migration rather than silent removal.
+  inherited functionality and remains in `Tackle.Lib.Integrations.Anubis`; a
+  future extraction needs a deliberate compatibility migration rather than
+  silent removal.
 - The CLI, first-party Codex adapter, general plugin loading, and Burrito
   packaging are planned work.
 
-The root project and the library currently share the `:tackle` application name
-and some module names. Resolve that identity conflict before composing them;
-keep the library at `packages/tackle`.
+The root harness owns OTP application `:tackle` and namespace `Tackle`. The
+reusable library owns OTP application `:tackle_lib` and namespace `Tackle.Lib`;
+these identities are intentionally separate. This is a breaking library
+migration: downstream users must change package paths, module references, and
+library configuration from `:tackle`/`Tackle.*` to
+`:tackle_lib`/`Tackle.Lib.*`. The Phoenix integration keeps its
+`:tackle_phoenix` and `Tackle.Phoenix.*` identities.
 
 ## Initial milestones
 
@@ -95,7 +102,7 @@ mix test
 mix format --check-formatted
 
 # Agent library (a separate Mix project)
-(cd packages/tackle && mix deps.get && mix test)
+(cd packages/tackle_lib && mix deps.get && mix test)
 
 # Existing Phoenix integration, when working on it
 (cd packages/tackle_phoenix && mix deps.get && mix test)

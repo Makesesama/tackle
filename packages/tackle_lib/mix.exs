@@ -1,9 +1,9 @@
-defmodule Tackle.Phoenix.MixProject do
+defmodule Tackle.Lib.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :tackle_phoenix,
+      app: :tackle_lib,
       version: "0.1.0",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -23,11 +23,7 @@ defmodule Tackle.Phoenix.MixProject do
 
   defp deps do
     [
-      # The framework-free agent core (Tackle.Lib.*) this layer drives.
-      {:tackle_lib, path: "../tackle_lib"},
-      # Phoenix runtime + LiveView UI glue (Runner/EventReducer/Chat/PubSub).
-      {:phoenix_live_view, "~> 1.1.33"},
-      {:phoenix_pubsub, "~> 2.1"}
+      {:anubis_mcp, "~> 2.0", optional: true}
     ]
   end
 end

@@ -13,13 +13,13 @@ defmodule Tackle.Phoenix.Runner do
   # intensity can be exhausted by otherwise healthy lifecycle events.
   use GenServer, restart: :temporary
 
-  alias Tackle.Cancellation
-  alias Tackle.Event
-  alias Tackle.Message
+  alias Tackle.Lib.Cancellation
+  alias Tackle.Lib.Event
+  alias Tackle.Lib.Message
   alias Tackle.Phoenix.PubSub
-  alias Tackle.State
-  alias Tackle.Telemetry
-  alias Tackle.Usage
+  alias Tackle.Lib.State
+  alias Tackle.Lib.Telemetry
+  alias Tackle.Lib.Usage
 
   @timeout :timer.minutes(30)
   @termination_grace_period 1_000

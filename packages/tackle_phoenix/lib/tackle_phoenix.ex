@@ -1,11 +1,11 @@
 defmodule Tackle.Phoenix do
   @moduledoc """
-  Tackle.Phoenix — the Phoenix runtime + UI glue for Tackle.
+  Tackle.Phoenix — the Phoenix runtime + UI glue for Tackle.Lib.
 
   `Tackle` is the stateless, framework-free agent core (loop, cancellation,
   events, state). `Tackle.Phoenix` is the thin layer that runs that core inside
   an OTP/Phoenix application: it owns the long-lived turn process, the
-  cancellation signal, PubSub fan-out of `Tackle.Event`s, turn settlement, and
+  cancellation signal, PubSub fan-out of `Tackle.Lib.Event`s, turn settlement, and
   the LiveView stream that renders the conversation.
 
   It deliberately owns *no* persistence, *no* billing/quota, *no* org scoping,
@@ -18,11 +18,11 @@ defmodule Tackle.Phoenix do
 
     * `Tackle.Phoenix.Runner` — a GenServer that supervises one agent turn
       (`Task.Supervisor.async_nolink`), owns the cancellation signal, fans
-      `Tackle.Event`s out over PubSub, and settles the turn
+      `Tackle.Lib.Event`s out over PubSub, and settles the turn
       (`:ok` / `:error` / `:cancelled` → `:agent_turn_done`, crash →
       `:agent_turn_failed`).
     * `Tackle.Phoenix.EventReducer` — a pure LiveView stream reducer that turns
-      streamed `Tackle.Event`s into incrementally rendered messages.
+      streamed `Tackle.Lib.Event`s into incrementally rendered messages.
     * `Tackle.Phoenix.Chat` — a `use`-able LiveView mixin that wires
       mount → subscribe, stream init, and the turn-settlement `handle_info`
       clauses, leaving render + domain events to the host.
@@ -37,6 +37,6 @@ defmodule Tackle.Phoenix do
     * Infrastructure modules (Registry, DynamicSupervisor, Task.Supervisor,
       `Phoenix.PubSub`) supplied via config to the Runner.
 
-  See `lib/tackle.ex` for the agent core this layer drives.
+  See `lib/tackle_lib.ex` for the agent core this layer drives.
   """
 end

@@ -18,12 +18,12 @@ mix test
 mix format --check-formatted
 
 # Library: run checks in its own Mix project
-(cd packages/tackle && mix deps.get)
-(cd packages/tackle && mix compile --warnings-as-errors && mix test)
-(cd packages/tackle && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+(cd packages/tackle_lib && mix deps.get)
+(cd packages/tackle_lib && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_lib && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
 # Focused library test
-(cd packages/tackle && mix test test/tackle/loop_test.exs)
+(cd packages/tackle_lib && mix test test/tackle_lib/loop_test.exs)
 
 # Phoenix integration: only when affected
 (cd packages/tackle_phoenix && mix deps.get)
@@ -46,23 +46,25 @@ Burrito, or lint commands for tooling that has not been wired up.
 
 - `lib/`, `test/`, `mix.exs`: root Elixir `~> 1.20` Mix application; currently
   a scaffold, not a working developer CLI.
-- `packages/tackle/`: existing framework-free library, Elixir `~> 1.18`.
-  Its `lib/` holds the engine and extension contracts; `test/` holds ExUnit
-  tests. Read its `README.md` and relevant source before changing its API.
+- `packages/tackle_lib/`: existing framework-free library, Elixir `~> 1.18`,
+  OTP application `:tackle_lib`, and namespace `Tackle.Lib.*`. Its `lib/` holds
+  the engine and extension contracts; `test/` holds ExUnit tests. Read its
+  `README.md` and relevant source before changing its API.
 - `packages/tackle_phoenix/`: existing Phoenix LiveView (`~> 1.1.33`) and
   PubSub (`~> 2.1`) integration, with its own Mix project and tests.
 - `flake.nix`, `nix/`: development environment, dependency, and build setup.
 - `deps/`, `_build/`, `.nix-mix/`, `.nix-hex/`: dependencies, build output,
   and local caches; not hand-maintained source.
 
-These are separate projects, not an umbrella. The root and library both use
-`:tackle` and overlapping module names; do not simply add a path dependency
-without first resolving their identities.
+These are separate projects, not an umbrella. The root harness uses
+`:tackle`/`Tackle`, while the reusable library uses `:tackle_lib`/`Tackle.Lib`;
+keep those identities distinct when composing them.
 
 ## Architecture rules
 
-- **Keep `packages/tackle`.** Build around the library instead of replacing,
-  relocating, or copying its agent loop into the CLI.
+- **Keep `packages/tackle_lib`.** Build around the library instead of replacing,
+  relocating, or copying its agent loop into the CLI. The identity migration to
+  `Tackle.Lib.*`/`:tackle_lib` is intentional and breaking.
 - Keep the engine independent of terminal rendering, provider protocols,
   Phoenix, and SaaS concerns such as tenancy or billing.
 - Prefer existing behaviours, tools, hooks, and events as extension seams.
@@ -70,9 +72,10 @@ without first resolving their identities.
   speculative registries or parallel plugin frameworks.
 - Provider adapters are user-provided plugins. OpenAI Codex is the only
   first-party adapter planned; it must use the same contracts as external ones.
-- MCP belongs in a later plugin. The current library has an optional
-  `:anubis_mcp` dependency and integration code: treat extraction as a
-  compatibility-sensitive migration, not permission to delete it now.
+- MCP belongs in a later harness plugin. The current `packages/tackle_lib`
+  library retains its optional `:anubis_mcp` dependency and integration code:
+  treat any later extraction as a compatibility-sensitive migration, not
+  permission to delete it now.
 - Keep optional dependencies with the plugins that need them. The minimal
   harness must not require Phoenix or MCP.
 - Start with a simple CLI; add Burrito packaging afterward. Validate how
@@ -82,7 +85,8 @@ without first resolving their identities.
 
 ## Code style
 
-Use idiomatic Elixir: `Tackle.ModuleName`, `snake_case` functions and files,
+Use idiomatic Elixir: `Tackle.Lib.ModuleName` for library contracts and
+`Tackle.ModuleName` for the root harness, `snake_case` functions and files,
 pattern matching, explicit result tuples for expected failures, and small
 modules with clear responsibilities. Document public contracts and add useful
 specs. Use behaviours and `@impl true` for extension implementations; keep
@@ -92,12 +96,12 @@ Always use Elixir's standard-library `JSON` module for JSON encoding and
 decoding. Never use Jason or another third-party JSON library, and do not add
 one as a dependency.
 
-Example of a deterministic test adapter using the existing `Tackle.LLM`
+Example of a deterministic test adapter using the existing `Tackle.Lib.LLM`
 contract (not a production provider implementation):
 
 ```elixir
 defmodule ExampleAdapter do
-  @behaviour Tackle.LLM
+  @behaviour Tackle.Lib.LLM
 
   @impl true
   def generate(_schema, _opts) do
@@ -126,7 +130,9 @@ rather than performing stylistic rewrites.
 - Test CLI interaction separately from the engine. Verify third-party adapters
   can use the same seam as the Codex adapter as that functionality is built.
 - Run focused tests while iterating, then checks for each affected Mix project.
-  Library API changes may also affect `packages/tackle_phoenix`.
+  Library API changes may also affect `packages/tackle_phoenix`; it consumes
+  `Tackle.Lib.*` while retaining its own `Tackle.Phoenix.*` namespace and
+  `:tackle_phoenix` application identity.
 - Report exact commands, results, and skipped checks. Do not suppress warnings
   or weaken assertions just to make checks pass.
 
@@ -141,15 +147,21 @@ Summarize changed files, validation, and unresolved risks.
 
 ### Always
 
-- Preserve the library at `packages/tackle` and keep core contracts provider-neutral.
+- Preserve the library at `packages/tackle_lib` and keep core contracts
+  provider-neutral. Its public modules are `Tackle.Lib.*`; the root harness
+  remains `Tackle.*` under `:tackle`.
 - Prefer plugins for optional features and keep the CLI a thin frontend.
 - Update relevant documentation when public behaviour changes; label plans as plans.
+  Document the breaking `packages/tackle` → `packages/tackle_lib` and
+  `Tackle.*` → `Tackle.Lib.*` migration, including `:tackle_lib` configuration.
 - Preserve user edits and report test/environment failures honestly.
 
 ### Ask first
 
 - Breaking public APIs, renaming OTP applications/modules, or moving/removing
   existing functionality (including extracting the inherited MCP integration).
+  The approved library identity migration is the exception currently in
+  progress; do not generalize that approval to later changes.
 - Adding dependencies, new first-party provider adapters, or core features that
   could live in plugins.
 - Committing to a plugin loading/distribution mechanism, changing release or
@@ -157,7 +169,7 @@ Summarize changed files, validation, and unresolved risks.
 
 ### Never
 
-- Delete or replace `packages/tackle`, duplicate its engine in the frontend,
+- Delete or replace `packages/tackle_lib`, duplicate its engine in the frontend,
   or hard-code Codex-specific behaviour into the provider-neutral core.
 - Commit credentials, tokens, private prompts, or sensitive conversation logs.
 - Hand-edit dependencies, generated build output, caches, or generated Nix store files.

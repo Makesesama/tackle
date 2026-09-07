@@ -1,6 +1,6 @@
 defmodule Tackle.Phoenix.EventReducer do
   @moduledoc """
-  Pure LiveView stream reducer for `Tackle.Event` streams.
+  Pure LiveView stream reducer for `Tackle.Lib.Event` streams.
 
   Centralizes the incremental assistant-message rendering flow:
 
@@ -16,7 +16,7 @@ defmodule Tackle.Phoenix.EventReducer do
 
   ## Required socket assigns
 
-    * `:agent_state` — a `Tackle.State`.
+    * `:agent_state` — a `Tackle.Lib.State`.
     * `:streaming_messages` — a map of in-flight streaming entries (initialized
       by `init_stream/2`).
     * `:tackle_message_view` — the `Tackle.Phoenix.MessageView` implementation.
@@ -29,9 +29,9 @@ defmodule Tackle.Phoenix.EventReducer do
   """
 
   alias Phoenix.Component
-  alias Tackle.Event
-  alias Tackle.Message
-  alias Tackle.State
+  alias Tackle.Lib.Event
+  alias Tackle.Lib.Message
+  alias Tackle.Lib.State
 
   @stream_name :agent_messages
 
@@ -67,7 +67,7 @@ defmodule Tackle.Phoenix.EventReducer do
   def messages_from_block(_), do: []
 
   @doc """
-  Consumes a stream-related `Tackle.Event`.
+  Consumes a stream-related `Tackle.Lib.Event`.
 
   Returns an updated socket for `:message_start`, `:message_delta`, and
   `:message_end`; all other events are returned unchanged.
