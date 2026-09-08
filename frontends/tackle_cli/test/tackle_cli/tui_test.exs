@@ -1,7 +1,7 @@
 defmodule Tackle.CLI.TUITest do
   use ExUnit.Case, async: true
 
-  alias ExRatatui.Event.{Key, Paste}
+  alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
   alias ExRatatui.Runtime
   alias ExRatatui.Widgets.{Paragraph, TextInput, WidgetList}
   alias Tackle.CLI.TUI
@@ -345,6 +345,10 @@ defmodule Tackle.CLI.TUITest do
   end
 
   test "renders settled tool calls and results from conversation history", %{tui: tui} do
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
+
     state = :sys.get_state(tui).user_state
 
     messages = [
@@ -358,7 +362,9 @@ defmodule Tackle.CLI.TUITest do
       Message.assistant(content: "Done")
     ]
 
-    state = %{state | agent_state: %{state.agent_state | messages: messages}}
+    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    state = :sys.get_state(tui).user_state
     conversation = conversation_text(state)
 
     assert conversation =~ "● read"
@@ -368,13 +374,19 @@ defmodule Tackle.CLI.TUITest do
   end
 
   test "auto-follows conversation output beyond the viewport", %{tui: tui} do
+    :ok = Runtime.inject_event(tui, %Resize{width: 50, height: 12})
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
     state = :sys.get_state(tui).user_state
 
     messages =
       Enum.map(1..20, fn index -> Message.user("older message #{index}") end) ++
         [Message.assistant(content: "LATEST-SENTINEL")]
 
-    state = %{state | agent_state: %{state.agent_state | messages: messages}}
+    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    state = :sys.get_state(tui).user_state
     terminal = ExRatatui.init_test_terminal(50, 12)
 
     :ok =
@@ -386,29 +398,152 @@ defmodule Tackle.CLI.TUITest do
     content = ExRatatui.get_buffer_content(terminal)
     assert content =~ "LATEST-SENTINEL"
     refute content =~ "older message 1"
+    assert state.conversation.follow?
+    assert length(state.conversation.visible_items) < length(state.conversation.items)
+
+    render_count = Runtime.snapshot(tui).render_count
+    inject_key(tui, "page_down")
+    assert Runtime.snapshot(tui).render_count == render_count
+  end
+
+  test "bounds widgets for one very long agent message", %{tui: tui} do
+    :ok = Runtime.inject_event(tui, %Resize{width: 30, height: 16})
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
+    state = :sys.get_state(tui).user_state
+
+    response = Enum.map_join(1..200, "\n", &"response line #{&1}")
+    messages = [Message.user("x"), Message.assistant(content: response)]
+    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    state = :sys.get_state(tui).user_state
+
+    assert Enum.all?(state.conversation.items, fn {_widget, height} -> height <= 64 end)
+    assert length(state.conversation.visible_items) < length(state.conversation.items)
+
+    terminal = ExRatatui.init_test_terminal(30, 16)
+    :ok = ExRatatui.draw(terminal, TUI.scene(state, %ExRatatui.Frame{width: 30, height: 16}))
+    content = ExRatatui.get_buffer_content(terminal)
+    assert content =~ "response line 200"
+    refute content =~ "response line 1\n"
+  end
+
+  test "scrolls agent messages and pauses automatic following", %{tui: tui} do
+    :ok = Runtime.inject_event(tui, %Resize{width: 50, height: 14})
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
+    state = :sys.get_state(tui).user_state
+
+    messages = Enum.map(1..20, fn index -> Message.user("message #{index}") end)
+    agent_state = %{state.agent_state | messages: messages, status: :running}
+
+    snapshot = %Snapshot{
+      session_id: state.session_id,
+      agent_state: agent_state,
+      active_turn: %{id: "turn-1"}
+    }
+
+    send(tui, {:tackle_session_reconfigured, state.session_id, snapshot})
+    bottom_state = :sys.get_state(tui).user_state
+    assert bottom_state.conversation.follow?
+
+    inject_key(tui, "page_up")
+    scrolled_state = :sys.get_state(tui).user_state
+    assert scrolled_state.conversation.scroll_offset < bottom_state.conversation.scroll_offset
+    refute scrolled_state.conversation.follow?
+
+    send(
+      tui,
+      {:tackle_event, state.session_id, "turn-1",
+       Event.new(:message_delta, %{delta: String.duplicate("new output ", 20)})}
+    )
+
+    updated_state = :sys.get_state(tui).user_state
+    assert updated_state.conversation.scroll_offset == scrolled_state.conversation.scroll_offset
+    refute updated_state.conversation.follow?
+
+    :ok = Runtime.inject_event(tui, %Resize{width: 60, height: 16})
+    resized_state = :sys.get_state(tui).user_state
+    assert resized_state.conversation.scroll_offset == updated_state.conversation.scroll_offset
+    refute resized_state.conversation.follow?
+
+    :ok =
+      Runtime.inject_event(tui, %Key{
+        code: "end",
+        modifiers: ["ctrl"],
+        kind: "press"
+      })
+
+    followed_state = :sys.get_state(tui).user_state
+    assert followed_state.conversation.follow?
+
+    :ok =
+      Runtime.inject_event(tui, %Mouse{kind: "scroll_up", button: "", x: 10, y: 5})
+
+    mouse_state = :sys.get_state(tui).user_state
+    assert mouse_state.conversation.scroll_offset == followed_state.conversation.scroll_offset - 3
+    refute mouse_state.conversation.follow?
+
+    :ok =
+      Runtime.inject_event(tui, %Key{
+        code: "home",
+        modifiers: ["ctrl"],
+        kind: "press"
+      })
+
+    assert :sys.get_state(tui).user_state.conversation.scroll_offset == 0
+    inject_key(tui, "page_down")
+    assert :sys.get_state(tui).user_state.conversation.scroll_offset > 0
+
+    render_count = Runtime.snapshot(tui).render_count
+    :ok = Runtime.inject_event(tui, %Mouse{kind: "scroll_up", button: "", x: 10, y: 1})
+    assert Runtime.snapshot(tui).render_count == render_count
   end
 
   test "measures wide graphemes when wrapping conversation items", %{tui: tui} do
+    :ok = Runtime.inject_event(tui, %Resize{width: 12, height: 20})
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
     state = :sys.get_state(tui).user_state
 
-    state = %{
-      state
-      | agent_state: %{
-          state.agent_state
-          | messages: [
-              Message.user(String.duplicate("界", 8)),
-              Message.assistant(content: "LATEST")
-            ]
-        }
-    }
+    messages = [
+      Message.user(String.duplicate("界", 8)),
+      Message.assistant(content: "LATEST")
+    ]
 
-    assert [{%WidgetList{items: [{_user, 3}, {_assistant, 3}]}, _area}] =
-             TUI.scene(state, %ExRatatui.Frame{width: 12, height: 10})
-             |> Enum.filter(fn {widget, _area} -> match?(%WidgetList{}, widget) end)
+    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    state = :sys.get_state(tui).user_state
 
-    terminal = ExRatatui.init_test_terminal(12, 10)
-    :ok = ExRatatui.draw(terminal, TUI.scene(state, %ExRatatui.Frame{width: 12, height: 10}))
+    assert [{_user, 3}, {_spacer, 1}, {_assistant, 2}] = state.conversation.items
+
+    terminal = ExRatatui.init_test_terminal(12, 20)
+    :ok = ExRatatui.draw(terminal, TUI.scene(state, %ExRatatui.Frame{width: 12, height: 20}))
     assert ExRatatui.get_buffer_content(terminal) =~ "LATEST"
+  end
+
+  test "measures emoji and combining graphemes when wrapping", %{tui: tui} do
+    :ok = Runtime.inject_event(tui, %Resize{width: 12, height: 30})
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
+    state = :sys.get_state(tui).user_state
+
+    messages = [
+      Message.user(String.duplicate("⌚", 8)),
+      Message.user(String.duplicate("❤️", 8)),
+      Message.user(String.duplicate("é", 12))
+    ]
+
+    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    state = :sys.get_state(tui).user_state
+
+    assert [{_watch, 3}, {_spacer_one, 1}, {_heart, 3}, {_spacer_two, 1}, {_accent, 3}] =
+             state.conversation.items
   end
 
   test "returns an error when the session terminates abnormally" do

@@ -8,7 +8,7 @@ defmodule Tackle.CLI.TUI do
 
   use ExRatatui.App
 
-  alias ExRatatui.Event.{Key, Paste}
+  alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
   alias ExRatatui.{Layout, Style}
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.{Block, Paragraph, Popup, TextInput, WidgetList}
@@ -20,8 +20,14 @@ defmodule Tackle.CLI.TUI do
   @tool_arguments_limit 240
   @tool_result_limit 500
   @tool_result_lines 6
+  @mouse_scroll_rows 3
+  @conversation_chunk_rows 64
+  @conversation_sections [:settled, :pending, :tools, :thinking, :response, :error]
+  @zero_width_grapheme ~r/^[\p{M}\p{Cf}]+$/u
+  @emoji_presentation ~r/\p{Emoji_Presentation}/u
   @wide_codepoint_ranges [
     {0x1100, 0x115F},
+    {0x231A, 0x231B},
     {0x2329, 0x232A},
     {0x2E80, 0xA4CF},
     {0xAC00, 0xD7A3},
@@ -36,6 +42,7 @@ defmodule Tackle.CLI.TUI do
 
   @spec start(keyword()) :: :ok | {:error, term()}
   def start(opts) when is_list(opts) do
+    opts = Keyword.put_new(opts, :mouse_capture, true)
     caller = self()
     result_ref = make_ref()
 
@@ -58,24 +65,28 @@ defmodule Tackle.CLI.TUI do
          {:ok, %Snapshot{} = snapshot} <- Tackle.subscribe(session) do
       models = available_models(opts, snapshot.agent_state)
 
-      {:ok,
-       %{
-         session: session,
-         session_id: snapshot.session_id,
-         agent_state: snapshot.agent_state,
-         active_turn: snapshot.active_turn,
-         session_monitor: Process.monitor(session),
-         input: ExRatatui.text_input_new(),
-         models: models,
-         settings: nil,
-         pending_prompt: nil,
-         streaming_thinking: "",
-         streaming_response: "",
-         latest_usage: latest_usage(snapshot.agent_state),
-         tool_activity: [],
-         activity: nil,
-         error: nil
-       }}
+      {width, height} = initial_terminal_size(opts)
+
+      state = %{
+        session: session,
+        session_id: snapshot.session_id,
+        agent_state: snapshot.agent_state,
+        active_turn: snapshot.active_turn,
+        session_monitor: Process.monitor(session),
+        input: ExRatatui.text_input_new(),
+        models: models,
+        settings: nil,
+        pending_prompt: nil,
+        streaming_thinking: "",
+        streaming_response: "",
+        latest_usage: latest_usage(snapshot.agent_state),
+        tool_activity: [],
+        activity: nil,
+        error: nil,
+        conversation: new_conversation(width, height)
+      }
+
+      {:ok, refresh_conversation(state)}
     else
       :error -> {:error, :missing_session}
       {:error, reason} -> {:error, reason}
@@ -90,13 +101,7 @@ defmodule Tackle.CLI.TUI do
   def scene(state, frame) do
     area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 
-    [header_area, conversation_area, input_area, footer_area] =
-      Layout.split(area, :vertical, [
-        {:length, 3},
-        {:min, 0},
-        {:length, 3},
-        {:length, 1}
-      ])
+    [header_area, conversation_area, input_area, footer_area] = layout_areas(area)
 
     widgets = [
       {header_widget(state), header_area},
@@ -139,6 +144,40 @@ defmodule Tackle.CLI.TUI do
     {:noreply, state, render?: false}
   end
 
+  def handle_event(%Mouse{}, %{settings: settings} = state) when not is_nil(settings) do
+    {:noreply, state, render?: false}
+  end
+
+  def handle_event(%Resize{width: width, height: height}, state) do
+    {:noreply, resize_conversation(state, width, height)}
+  end
+
+  def handle_event(%Key{code: "page_up", kind: "press"}, state) do
+    scroll_reply(state, scroll_conversation(state, -conversation_page_size(state)))
+  end
+
+  def handle_event(%Key{code: "page_down", kind: "press"}, state) do
+    scroll_reply(state, scroll_conversation(state, conversation_page_size(state)))
+  end
+
+  def handle_event(%Key{code: "home", modifiers: ["ctrl"], kind: "press"}, state) do
+    scroll_reply(state, scroll_conversation_to(state, :start))
+  end
+
+  def handle_event(%Key{code: "end", modifiers: ["ctrl"], kind: "press"}, state) do
+    scroll_reply(state, scroll_conversation_to(state, :end))
+  end
+
+  def handle_event(%Mouse{kind: kind} = mouse, state)
+      when kind in ["scroll_up", "scroll_down"] do
+    if conversation_contains?(state.conversation, mouse.x, mouse.y) do
+      delta = if kind == "scroll_up", do: -@mouse_scroll_rows, else: @mouse_scroll_rows
+      scroll_reply(state, scroll_conversation(state, delta))
+    else
+      {:noreply, state, render?: false}
+    end
+  end
+
   def handle_event(%Key{code: "f2", kind: "press"}, %{active_turn: nil} = state) do
     {:noreply, open_settings(state)}
   end
@@ -170,7 +209,7 @@ defmodule Tackle.CLI.TUI do
     {:noreply, state}
   end
 
-  def handle_event(_event, state), do: {:noreply, state}
+  def handle_event(_event, state), do: {:noreply, state, render?: false}
 
   @impl true
   def handle_info(
@@ -181,23 +220,25 @@ defmodule Tackle.CLI.TUI do
       when is_binary(delta) do
     case Map.get(data, :field) do
       :reasoning ->
-        {:noreply,
-         %{
-           state
-           | streaming_thinking: state.streaming_thinking <> delta,
-             activity: "thinking"
-         }}
+        state = %{
+          state
+          | streaming_thinking: state.streaming_thinking <> delta,
+            activity: "thinking"
+        }
+
+        {:noreply, refresh_conversation(state, [:thinking])}
 
       field when field in [nil, :content] ->
-        {:noreply,
-         %{
-           state
-           | streaming_response: state.streaming_response <> delta,
-             activity: "responding"
-         }}
+        state = %{
+          state
+          | streaming_response: state.streaming_response <> delta,
+            activity: "responding"
+        }
+
+        {:noreply, refresh_conversation(state, [:response])}
 
       _field ->
-        {:noreply, state}
+        {:noreply, state, render?: false}
     end
   end
 
@@ -214,7 +255,8 @@ defmodule Tackle.CLI.TUI do
         %{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
     state = put_tool_activity(state, data, :running)
-    {:noreply, %{state | activity: tool_activity_label(data, "running")}}
+    state = %{state | activity: tool_activity_label(data, "running")}
+    {:noreply, refresh_conversation(state, [:tools])}
   end
 
   def handle_info(
@@ -222,7 +264,8 @@ defmodule Tackle.CLI.TUI do
         %{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
     state = put_tool_activity(state, data, :completed)
-    {:noreply, %{state | activity: tool_activity_label(data, "completed")}}
+    state = %{state | activity: tool_activity_label(data, "completed")}
+    {:noreply, refresh_conversation(state, [:tools])}
   end
 
   def handle_info(
@@ -230,7 +273,8 @@ defmodule Tackle.CLI.TUI do
         %{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
     state = put_tool_activity(state, data, :failed)
-    {:noreply, %{state | activity: tool_activity_label(data, "failed")}}
+    state = %{state | activity: tool_activity_label(data, "failed")}
+    {:noreply, refresh_conversation(state, [:tools])}
   end
 
   def handle_info(
@@ -247,50 +291,53 @@ defmodule Tackle.CLI.TUI do
       when outcome in [:ok, :error, :cancelled] do
     error = if outcome == :error, do: agent_state.error || "turn failed", else: nil
 
-    {:noreply,
-     %{
-       state
-       | agent_state: agent_state,
-         active_turn: nil,
-         pending_prompt: nil,
-         streaming_thinking: "",
-         streaming_response: "",
-         latest_usage: latest_usage(agent_state) || state.latest_usage,
-         tool_activity: [],
-         activity: nil,
-         error: error
-     }}
+    state = %{
+      state
+      | agent_state: agent_state,
+        active_turn: nil,
+        pending_prompt: nil,
+        streaming_thinking: "",
+        streaming_response: "",
+        latest_usage: latest_usage(agent_state) || state.latest_usage,
+        tool_activity: [],
+        activity: nil,
+        error: error
+    }
+
+    {:noreply, refresh_conversation(state)}
   end
 
   def handle_info(
         {:tackle_turn_failed, session_id, turn_id, reason},
         %{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
-    {:noreply,
-     %{
-       state
-       | active_turn: nil,
-         pending_prompt: nil,
-         streaming_thinking: "",
-         streaming_response: "",
-         tool_activity: [],
-         activity: nil,
-         error: format_reason(reason)
-     }}
+    state = %{
+      state
+      | active_turn: nil,
+        pending_prompt: nil,
+        streaming_thinking: "",
+        streaming_response: "",
+        tool_activity: [],
+        activity: nil,
+        error: format_reason(reason)
+    }
+
+    {:noreply, refresh_conversation(state, [:pending, :tools, :thinking, :response, :error])}
   end
 
   def handle_info(
         {:tackle_session_reconfigured, session_id, %Snapshot{} = snapshot},
         %{session_id: session_id} = state
       ) do
-    {:noreply,
-     %{
-       state
-       | agent_state: snapshot.agent_state,
-         active_turn: snapshot.active_turn,
-         settings: nil,
-         error: nil
-     }}
+    state = %{
+      state
+      | agent_state: snapshot.agent_state,
+        active_turn: snapshot.active_turn,
+        settings: nil,
+        error: nil
+    }
+
+    {:noreply, refresh_conversation(state)}
   end
 
   def handle_info({:tackle_session_closed, session_id}, %{session_id: session_id} = state) do
@@ -304,7 +351,7 @@ defmodule Tackle.CLI.TUI do
     exit({:session_down, reason})
   end
 
-  def handle_info(_message, state), do: {:noreply, state}
+  def handle_info(_message, state), do: {:noreply, state, render?: false}
 
   @impl true
   def terminate(_reason, state) do
@@ -322,20 +369,25 @@ defmodule Tackle.CLI.TUI do
         {:ok, turn_id} ->
           :ok = ExRatatui.text_input_set_value(state.input, "")
 
+          state = %{
+            state
+            | active_turn: %{id: turn_id},
+              pending_prompt: prompt,
+              streaming_thinking: "",
+              streaming_response: "",
+              tool_activity: [],
+              activity: "starting",
+              error: nil
+          }
+
+          state = scroll_conversation_to(state, :end)
+
           {:noreply,
-           %{
-             state
-             | active_turn: %{id: turn_id},
-               pending_prompt: prompt,
-               streaming_thinking: "",
-               streaming_response: "",
-               tool_activity: [],
-               activity: "starting",
-               error: nil
-           }}
+           refresh_conversation(state, [:pending, :tools, :thinking, :response, :error])}
 
         {:error, reason} ->
-          {:noreply, %{state | error: format_reason(reason)}}
+          state = %{state | error: format_reason(reason)}
+          {:noreply, refresh_conversation(state, [:error])}
       end
     end
   end
@@ -351,27 +403,22 @@ defmodule Tackle.CLI.TUI do
     }
   end
 
-  defp conversation_widget(state, area) do
-    content_width = max(area.width - 2, 1)
-    viewport_height = max(area.height - 2, 0)
-
-    items =
-      state
-      |> conversation_entries()
-      |> Enum.with_index()
-      |> Enum.map(fn {entry, index} ->
-        text = wrap_text(if(index == 0, do: entry, else: "\n" <> entry), content_width)
-        height = text |> String.split("\n", trim: false) |> length()
-        {%Paragraph{text: text}, height}
-      end)
-
-    total_height = Enum.reduce(items, 0, fn {_widget, height}, total -> total + height end)
-
+  defp conversation_widget(state, _area) do
     %WidgetList{
-      items: items,
-      scroll_offset: max(total_height - viewport_height, 0),
-      block: panel_block(" Conversation ", :dark_gray)
+      items: state.conversation.visible_items,
+      scroll_offset: state.conversation.visible_offset,
+      block: panel_block(conversation_title(state.conversation), :dark_gray)
     }
+  end
+
+  defp conversation_title(conversation) do
+    max_offset = max(conversation.content_height - conversation.viewport_height, 0)
+
+    cond do
+      max_offset == 0 -> " Conversation "
+      conversation.follow? -> " Conversation · latest "
+      true -> " Conversation · #{round(conversation.scroll_offset / max_offset * 100)}% "
+    end
   end
 
   defp input_widget(state) do
@@ -392,7 +439,7 @@ defmodule Tackle.CLI.TUI do
       end
 
     text =
-      [cache_hit_indicator(state), controls]
+      [cache_hit_indicator(state), "PgUp/PgDn scroll · Ctrl+End follow", controls]
       |> Enum.reject(&is_nil/1)
       |> Enum.join(" · ")
 
@@ -408,29 +455,232 @@ defmodule Tackle.CLI.TUI do
     }
   end
 
-  defp conversation_entries(state) do
-    settled = Enum.flat_map(state.agent_state.messages, &format_message/1)
-    pending = if state.pending_prompt, do: ["You:\n#{state.pending_prompt}"], else: []
+  defp conversation_entries(state, :settled),
+    do: Enum.flat_map(state.agent_state.messages, &format_message/1)
 
-    tools = Enum.map(state.tool_activity, &format_tool_activity/1)
+  defp conversation_entries(state, :pending) do
+    if state.pending_prompt, do: ["You:\n#{state.pending_prompt}"], else: []
+  end
 
-    streaming_thinking =
-      if state.streaming_thinking == "",
-        do: [],
-        else: ["Thinking:\n#{state.streaming_thinking}"]
+  defp conversation_entries(state, :tools),
+    do: Enum.map(state.tool_activity, &format_tool_activity/1)
 
-    streaming_response =
-      if state.streaming_response == "",
-        do: [],
-        else: ["Tackle:\n#{state.streaming_response}"]
+  defp conversation_entries(state, :thinking) do
+    if state.streaming_thinking == "",
+      do: [],
+      else: ["Thinking:\n#{state.streaming_thinking}"]
+  end
 
-    error = if state.error, do: ["Error:\n#{state.error}"], else: []
+  defp conversation_entries(state, :response) do
+    if state.streaming_response == "",
+      do: [],
+      else: ["Tackle:\n#{state.streaming_response}"]
+  end
 
-    case settled ++ pending ++ tools ++ streaming_thinking ++ streaming_response ++ error do
-      [] -> ["Welcome to Tackle. Type a prompt below to start a session."]
-      entries -> entries
+  defp conversation_entries(state, :error) do
+    if state.error, do: ["Error:\n#{state.error}"], else: []
+  end
+
+  defp initial_terminal_size(opts) do
+    case Keyword.get(opts, :test_mode) do
+      {width, height} ->
+        {width, height}
+
+      nil ->
+        width = Keyword.get(opts, :width)
+        height = Keyword.get(opts, :height)
+
+        if is_integer(width) and is_integer(height) do
+          {width, height}
+        else
+          case ExRatatui.terminal_size() do
+            {width, height} when is_integer(width) and is_integer(height) -> {width, height}
+            {:error, _reason} -> {80, 24}
+          end
+        end
     end
   end
+
+  defp layout_areas(area) do
+    Layout.split(area, :vertical, [
+      {:length, 3},
+      {:min, 0},
+      {:length, 3},
+      {:length, 1}
+    ])
+  end
+
+  defp new_conversation(width, height) do
+    area = %Rect{x: 0, y: 0, width: width, height: height}
+    [_header, conversation_area, _input, _footer] = layout_areas(area)
+
+    %{
+      width: max(conversation_area.width - 2, 1),
+      viewport_height: max(conversation_area.height - 2, 0),
+      rect: conversation_area,
+      sections: Map.new(@conversation_sections, &{&1, []}),
+      items: [],
+      visible_items: [],
+      visible_offset: 0,
+      content_height: 0,
+      scroll_offset: 0,
+      follow?: true
+    }
+  end
+
+  # Cache wrapped sections in transition state so render/2 only hands the
+  # already-sliced viewport to ExRatatui. Streaming updates rebuild just their
+  # section instead of reformatting settled messages.
+  defp refresh_conversation(state, sections \\ @conversation_sections) do
+    conversation = state.conversation
+
+    section_items =
+      Enum.reduce(sections, conversation.sections, fn section, items ->
+        Map.put(items, section, build_conversation_section(state, section, conversation.width))
+      end)
+
+    entry_items = Enum.flat_map(@conversation_sections, &Map.fetch!(section_items, &1))
+
+    entry_items =
+      case entry_items do
+        [] ->
+          build_conversation_items(
+            ["Welcome to Tackle. Type a prompt below to start a session."],
+            conversation.width
+          )
+
+        entries ->
+          entries
+      end
+
+    items =
+      entry_items
+      |> Enum.intersperse([{%Paragraph{text: ""}, 1}])
+      |> List.flatten()
+
+    content_height =
+      Enum.reduce(items, 0, fn {_widget, item_height}, total -> total + item_height end)
+
+    max_offset = max(content_height - conversation.viewport_height, 0)
+
+    scroll_offset =
+      if conversation.follow?,
+        do: max_offset,
+        else: min(conversation.scroll_offset, max_offset)
+
+    conversation = %{
+      conversation
+      | sections: section_items,
+        items: items,
+        content_height: content_height,
+        scroll_offset: scroll_offset,
+        follow?: conversation.follow? or scroll_offset == max_offset
+    }
+
+    %{state | conversation: put_visible_conversation(conversation)}
+  end
+
+  defp build_conversation_section(state, section, width) do
+    state
+    |> conversation_entries(section)
+    |> build_conversation_items(width)
+  end
+
+  # Bound individual widgets as well as the visible item count. WidgetList must
+  # render a whole partially-visible item before clipping it, so one unbounded
+  # Paragraph would make a long agent response expensive even after slicing.
+  defp build_conversation_items(entries, width) do
+    Enum.map(entries, fn entry ->
+      entry
+      |> wrap_text(width)
+      |> String.split("\n", trim: false)
+      |> Enum.chunk_every(@conversation_chunk_rows)
+      |> Enum.map(fn lines ->
+        {%Paragraph{text: Enum.join(lines, "\n")}, length(lines)}
+      end)
+    end)
+  end
+
+  defp resize_conversation(state, width, height) do
+    old_conversation = state.conversation
+
+    conversation =
+      width
+      |> new_conversation(height)
+      |> Map.put(:scroll_offset, old_conversation.scroll_offset)
+      |> Map.put(:follow?, old_conversation.follow?)
+
+    state
+    |> Map.put(:conversation, conversation)
+    |> refresh_conversation()
+  end
+
+  defp scroll_conversation(state, delta) do
+    conversation = state.conversation
+    max_offset = max(conversation.content_height - conversation.viewport_height, 0)
+    scroll_offset = conversation.scroll_offset |> Kernel.+(delta) |> max(0) |> min(max_offset)
+
+    conversation = %{
+      conversation
+      | scroll_offset: scroll_offset,
+        follow?: scroll_offset == max_offset
+    }
+
+    %{state | conversation: put_visible_conversation(conversation)}
+  end
+
+  defp scroll_conversation_to(state, :start) do
+    conversation = %{state.conversation | scroll_offset: 0, follow?: false}
+    %{state | conversation: put_visible_conversation(conversation)}
+  end
+
+  defp scroll_conversation_to(state, :end) do
+    max_offset = max(state.conversation.content_height - state.conversation.viewport_height, 0)
+    conversation = %{state.conversation | scroll_offset: max_offset, follow?: true}
+    %{state | conversation: put_visible_conversation(conversation)}
+  end
+
+  defp conversation_page_size(state), do: max(state.conversation.viewport_height - 1, 1)
+
+  defp scroll_reply(state, scrolled_state) do
+    if scrolled_state.conversation.scroll_offset == state.conversation.scroll_offset,
+      do: {:noreply, state, render?: false},
+      else: {:noreply, scrolled_state}
+  end
+
+  defp conversation_contains?(%{rect: rect}, x, y) when is_integer(x) and is_integer(y) do
+    x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
+  end
+
+  defp conversation_contains?(_conversation, _x, _y), do: false
+
+  defp put_visible_conversation(conversation) do
+    {remaining_items, visible_offset} =
+      drop_scrolled_items(conversation.items, conversation.scroll_offset)
+
+    visible_items =
+      take_visible_items(
+        remaining_items,
+        conversation.viewport_height + visible_offset
+      )
+
+    %{
+      conversation
+      | visible_items: visible_items,
+        visible_offset: visible_offset
+    }
+  end
+
+  defp drop_scrolled_items([{_widget, height} | items], offset) when offset >= height,
+    do: drop_scrolled_items(items, offset - height)
+
+  defp drop_scrolled_items(items, offset), do: {items, offset}
+
+  defp take_visible_items(_items, rows) when rows <= 0, do: []
+  defp take_visible_items([], _rows), do: []
+
+  defp take_visible_items([{_widget, height} = item | items], rows),
+    do: [item | take_visible_items(items, rows - height)]
 
   defp settings_widget(state) do
     settings = state.settings
@@ -494,17 +744,19 @@ defmodule Tackle.CLI.TUI do
 
     case Tackle.reconfigure(state.session, model: model, thinking: thinking) do
       {:ok, %Snapshot{} = snapshot} ->
-        {:noreply,
-         %{
-           state
-           | agent_state: snapshot.agent_state,
-             active_turn: snapshot.active_turn,
-             settings: nil,
-             error: nil
-         }}
+        state = %{
+          state
+          | agent_state: snapshot.agent_state,
+            active_turn: snapshot.active_turn,
+            settings: nil,
+            error: nil
+        }
+
+        {:noreply, refresh_conversation(state)}
 
       {:error, reason} ->
-        {:noreply, %{state | settings: nil, error: format_reason(reason)}}
+        state = %{state | settings: nil, error: format_reason(reason)}
+        {:noreply, refresh_conversation(state, [:error])}
     end
   end
 
@@ -557,7 +809,15 @@ defmodule Tackle.CLI.TUI do
   end
 
   defp terminal_width(grapheme) do
-    if grapheme |> String.to_charlist() |> Enum.any?(&wide_codepoint?/1), do: 2, else: 1
+    codepoints = String.to_charlist(grapheme)
+
+    cond do
+      Regex.match?(@zero_width_grapheme, grapheme) -> 0
+      Regex.match?(@emoji_presentation, grapheme) -> 2
+      0xFE0F in codepoints -> 2
+      Enum.any?(codepoints, &wide_codepoint?/1) -> 2
+      true -> 1
+    end
   end
 
   defp wide_codepoint?(codepoint) do
