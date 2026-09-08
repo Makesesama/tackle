@@ -1,7 +1,9 @@
 defmodule Tackle.Config.File do
   @moduledoc false
 
-  @known_fields ["model"]
+  alias Tackle.Thinking
+
+  @known_fields ["model", "thinking"]
 
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
   def load(path) when is_binary(path) do
@@ -28,10 +30,30 @@ defmodule Tackle.Config.File do
   end
 
   defp to_options(path, config) do
+    with {:ok, model_opts} <- model_options(path, config),
+         {:ok, thinking_opts} <- thinking_options(path, config) do
+      {:ok, model_opts ++ thinking_opts}
+    end
+  end
+
+  defp model_options(path, config) do
     case Map.fetch(config, "model") do
       {:ok, model} when is_binary(model) and model != "" -> {:ok, [model: model]}
       {:ok, _model} -> {:error, {:invalid_config_field, path, "model"}}
       :error -> {:ok, []}
+    end
+  end
+
+  defp thinking_options(path, config) do
+    case Map.fetch(config, "thinking") do
+      {:ok, level} ->
+        case Thinking.validate(level) do
+          :ok -> {:ok, [thinking: level]}
+          {:error, _reason} -> {:error, {:invalid_config_field, path, "thinking"}}
+        end
+
+      :error ->
+        {:ok, []}
     end
   end
 end

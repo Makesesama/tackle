@@ -4,13 +4,20 @@ defmodule Tackle.CLI.ParserTest do
   alias Tackle.CLI.Parser
 
   test "parses the default run command with only a model override" do
-    assert {:ok, {:run, %{model: "openai-codex/gpt-5.6-sol", prompt: nil}}} =
+    assert {:ok, {:run, %{model: "openai-codex/gpt-5.6-sol", thinking: nil, prompt: nil}}} =
              Parser.parse(["--model", "openai-codex/gpt-5.6-sol"])
   end
 
   test "parses run prompt without exposing adapter module selection" do
-    assert {:ok, {:run, %{model: "openai-codex/gpt-5.6-sol", prompt: "hello"}}} =
-             Parser.parse(["run", "--model", "openai-codex/gpt-5.6-sol", "hello"])
+    assert {:ok, {:run, %{model: "openai-codex/gpt-5.6-sol", thinking: "high", prompt: "hello"}}} =
+             Parser.parse([
+               "run",
+               "--model",
+               "openai-codex/gpt-5.6-sol",
+               "--thinking",
+               "high",
+               "hello"
+             ])
   end
 
   test "parses model listing command" do
@@ -33,6 +40,7 @@ defmodule Tackle.CLI.ParserTest do
 
     assert {:help, help} = Parser.parse(["--help"])
     assert help =~ "--model"
+    assert help =~ "--thinking"
     refute help =~ "--adapter"
   end
 end

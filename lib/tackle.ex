@@ -55,6 +55,9 @@ defmodule Tackle do
   @doc "Requests cooperative cancellation of the active turn."
   defdelegate cancel(session), to: Session
 
+  @doc "Updates model and thinking settings while the session is idle."
+  defdelegate reconfigure(session, opts), to: Session
+
   @doc "Returns an atomic session snapshot."
   defdelegate snapshot(session), to: Session
 

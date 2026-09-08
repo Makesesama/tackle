@@ -9,9 +9,9 @@ bundles first-party plugins such as `plugins/tackle_codex`, configures them as
 available harness adapters, and then talks to the root `:tackle` application for
 configuration, credential storage, session ownership, and turn execution.
 
-The CLI may select a canonical model reference with `--model`, but it does not
-load or select adapter modules directly. Adapter availability is a harness and
-distribution concern.
+The CLI may select a canonical model reference with `--model` and a reasoning
+level with `--thinking`, but it does not load or select adapter modules directly.
+Adapter availability is a harness and distribution concern.
 
 ## Usage during development
 
@@ -21,14 +21,16 @@ mix tackle --help
 mix tackle models
 mix tackle auth status
 mix tackle auth login openai-codex
-mix tackle run "Inspect this project"
+mix tackle run --thinking high "Inspect this project"
 ```
 
 Run `mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.
-Type a prompt and press Enter to submit it; press Esc to cancel an active turn
-or exit while idle, and Ctrl+C to exit at any time. The conversation follows
-streaming responses and shows tool arguments, execution status, and concise
-result or error previews. When the provider reports prompt-cache usage, the
+Type a prompt and press Enter to submit it; press F2 while idle to select the
+model and thinking level, press Esc to cancel an active turn or exit while idle,
+and press Ctrl+C to exit at any time. The conversation follows streaming
+reasoning summaries and responses and shows tool arguments, execution status,
+and concise result or error previews. Model and thinking changes preserve the
+settled conversation. When the provider reports prompt-cache usage, the
 footer shows the latest token-weighted hit rate as `CH<n.n>%`, matching Pi's
 metric. This development task runs through Mix so ExRatatui's
 native library remains available as a real file.

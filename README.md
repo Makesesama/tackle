@@ -101,7 +101,7 @@ config :tackle, adapters: [MyCodexAdapter]
 
 {:ok, session} =
   Tackle.start_configured_session(
-    overrides: [model: "openai-codex/gpt-5.5"]
+    overrides: [model: "openai-codex/gpt-5.5", thinking: "high"]
   )
 
 {:ok, snapshot} = Tackle.subscribe(session)
@@ -115,13 +115,16 @@ session and turn correlation:
 {:tackle_event, session_id, turn_id, %Tackle.Lib.Event{}}
 {:tackle_turn_finished, session_id, turn_id, result}
 {:tackle_turn_failed, session_id, turn_id, reason}
+{:tackle_session_reconfigured, session_id, %Tackle.Session.Snapshot{}}
 ```
 
 Each session permits one active turn. `Tackle.continue/1` retries the settled
 conversation without adding another user message, `Tackle.cancel/1` requests
-cooperative cancellation, and `Tackle.close/1` cleans up the session. Subscribe
-before starting a turn; active-turn attachment is deferred until event replay or
-projection semantics are defined. Sessions use `Tackle.Tools.default/0` unless
+cooperative cancellation, and `Tackle.close/1` cleans up the session.
+`Tackle.reconfigure/2` can change the selected model and thinking level while a
+session is idle without discarding its conversation. Subscribe before starting
+a turn; active-turn attachment is deferred until event replay or projection
+semantics are defined. Sessions use `Tackle.Tools.default/0` unless
 an embedding host explicitly supplies `:tools`; a host can set `context: %{cwd:
 path}` to change the filesystem tools' working directory. `elixir_eval` runs
 stateless code inside the live Tackle BEAM with a five-second default timeout;
@@ -135,12 +138,22 @@ runtime dependency used by tool execution.
 `Tackle.Config.load/1` applies this precedence:
 
 ```text
-built-in defaults < ~/.tackle/config.json < TACKLE_MODEL < explicit overrides
+built-in defaults < ~/.tackle/config.json < TACKLE_MODEL/TACKLE_THINKING < explicit overrides
 ```
 
 `TACKLE_HOME` changes the directory containing `config.json` and `auth.json`.
-The initial configuration file accepts only a `model` field. Adapter modules are
-always supplied as executable code, never converted from JSON strings.
+The configuration file accepts `model` and `thinking` fields. Thinking may be
+`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`; supported levels can vary
+by model. `TACKLE_THINKING` overrides the file in the same way that
+`TACKLE_MODEL` overrides `model`. Adapter modules are always supplied as
+executable code, never converted from JSON strings.
+
+```json
+{
+  "model": "openai-codex/gpt-5.6-sol",
+  "thinking": "high"
+}
+```
 
 `Tackle.Auth` stores one opaque map per provider in `~/.tackle/auth.json` and
 injects only a non-secret `Tackle.Lib.CredentialStore` handle into adapter

@@ -93,6 +93,8 @@ defmodule Tackle.Plugins.CodexTest do
       Keyword.merge(base_opts(store, request),
         session_id: "session-123",
         system: "Be useful",
+        reasoning_effort: "high",
+        reasoning_summary: "auto",
         temperature: 0.3,
         messages: [
           %{role: :user, content: "search"},
@@ -140,6 +142,7 @@ defmodule Tackle.Plugins.CodexTest do
     assert body["model"] == "gpt-5.5"
     assert body["prompt_cache_key"] == "session-123"
     assert body["instructions"] == "Be useful"
+    assert body["reasoning"] == %{"effort" => "high", "summary" => "auto"}
     refute Map.has_key?(body, "temperature")
 
     assert Enum.any?(
@@ -160,6 +163,16 @@ defmodule Tackle.Plugins.CodexTest do
     store: store
   } do
     events = [
+      sse(%{
+        "type" => "response.reasoning_summary_text.delta",
+        "output_index" => 1,
+        "delta" => "considering tools"
+      }),
+      sse(%{
+        "type" => "response.reasoning_text.delta",
+        "output_index" => 1,
+        "delta" => "private chain of thought"
+      }),
       sse(%{
         "type" => "response.output_item.added",
         "output_index" => 0,
@@ -216,11 +229,14 @@ defmodule Tackle.Plugins.CodexTest do
              end)
 
     assert result.data == %{
+             "thinking" => "considering tools",
              "tool_calls" => [
                %{"id" => "call-1", "name" => "search", "arguments" => "{\"query\":\"cats\"}"}
              ]
            }
 
+    assert_receive {:event, %{type: :reasoning_delta, delta: "considering tools"}}
+    refute_receive {:event, %{delta: "private chain of thought"}}
     assert_receive {:event, %{type: :tool_input_delta, delta: "{\"query\":"}}
     assert_receive {:event, %{type: :tool_input_delta, delta: "\"cats\"}"}}
   end
@@ -307,6 +323,7 @@ defmodule Tackle.Plugins.CodexTest do
                     "type" => "reasoning",
                     "id" => "rs_1",
                     "summary" => [],
+                    "content" => [%{"type" => "reasoning_text", "text" => "private reasoning"}],
                     "encrypted_content" => "opaque-reasoning"
                   },
                   %{
@@ -363,7 +380,8 @@ defmodule Tackle.Plugins.CodexTest do
     assert Enum.any?(
              input,
              &(&1["type"] == "reasoning" and &1["id"] == "rs_1" and
-                 &1["encrypted_content"] == "opaque-reasoning")
+                 &1["encrypted_content"] == "opaque-reasoning" and
+                 not Map.has_key?(&1, "content"))
            )
 
     assert Enum.any?(

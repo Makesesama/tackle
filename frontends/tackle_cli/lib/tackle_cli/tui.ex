@@ -11,9 +11,11 @@ defmodule Tackle.CLI.TUI do
   alias ExRatatui.Event.{Key, Paste}
   alias ExRatatui.{Layout, Style}
   alias ExRatatui.Layout.Rect
-  alias ExRatatui.Widgets.{Block, Paragraph, TextInput, WidgetList}
+  alias ExRatatui.Widgets.{Block, Paragraph, Popup, TextInput, WidgetList}
+  alias ExRatatui.Widgets.List, as: SelectionList
   alias Tackle.Lib.{Event, Message, State, Usage}
   alias Tackle.Session.Snapshot
+  alias Tackle.Thinking
 
   @tool_arguments_limit 240
   @tool_result_limit 500
@@ -54,6 +56,8 @@ defmodule Tackle.CLI.TUI do
   def mount(opts) do
     with {:ok, session} <- Keyword.fetch(opts, :session),
          {:ok, %Snapshot{} = snapshot} <- Tackle.subscribe(session) do
+      models = available_models(opts, snapshot.agent_state)
+
       {:ok,
        %{
          session: session,
@@ -62,7 +66,10 @@ defmodule Tackle.CLI.TUI do
          active_turn: snapshot.active_turn,
          session_monitor: Process.monitor(session),
          input: ExRatatui.text_input_new(),
+         models: models,
+         settings: nil,
          pending_prompt: nil,
+         streaming_thinking: "",
          streaming_response: "",
          latest_usage: latest_usage(snapshot.agent_state),
          tool_activity: [],
@@ -91,17 +98,49 @@ defmodule Tackle.CLI.TUI do
         {:length, 1}
       ])
 
-    [
+    widgets = [
       {header_widget(state), header_area},
       {conversation_widget(state, conversation_area), conversation_area},
       {input_widget(state), input_area},
       {footer_widget(state), footer_area}
     ]
+
+    if state.settings, do: widgets ++ [{settings_widget(state), area}], else: widgets
   end
 
   @impl true
   def handle_event(%Key{code: "c", modifiers: ["ctrl"], kind: "press"}, state) do
     {:stop, state}
+  end
+
+  def handle_event(%Key{code: "esc", kind: "press"}, %{settings: settings} = state)
+      when not is_nil(settings) do
+    {:noreply, %{state | settings: nil}}
+  end
+
+  def handle_event(%Key{code: code, kind: "press"}, %{settings: settings} = state)
+      when not is_nil(settings) and code in ["up", "down"] do
+    field = if settings.field == :model, do: :thinking, else: :model
+    {:noreply, %{state | settings: %{settings | field: field}}}
+  end
+
+  def handle_event(%Key{code: code, kind: "press"}, %{settings: settings} = state)
+      when not is_nil(settings) and code in ["left", "right"] do
+    {:noreply, cycle_setting(state, code)}
+  end
+
+  def handle_event(%Key{code: "enter", kind: "press"}, %{settings: settings} = state)
+      when not is_nil(settings) do
+    apply_settings(state)
+  end
+
+  def handle_event(%Key{kind: "press"}, %{settings: settings} = state)
+      when not is_nil(settings) do
+    {:noreply, state, render?: false}
+  end
+
+  def handle_event(%Key{code: "f2", kind: "press"}, %{active_turn: nil} = state) do
+    {:noreply, open_settings(state)}
   end
 
   def handle_event(%Key{code: "esc", kind: "press"}, %{active_turn: nil} = state) do
@@ -122,6 +161,10 @@ defmodule Tackle.CLI.TUI do
     {:noreply, state}
   end
 
+  def handle_event(%Paste{}, %{settings: settings} = state) when not is_nil(settings) do
+    {:noreply, state, render?: false}
+  end
+
   def handle_event(%Paste{content: content}, state) do
     :ok = ExRatatui.text_input_insert_str(state.input, content)
     {:noreply, state}
@@ -136,14 +179,26 @@ defmodule Tackle.CLI.TUI do
         %{session_id: session_id, active_turn: %{id: turn_id}} = state
       )
       when is_binary(delta) do
-    streaming_response =
-      if Map.get(data, :field) in [nil, :content] do
-        state.streaming_response <> delta
-      else
-        state.streaming_response
-      end
+    case Map.get(data, :field) do
+      :reasoning ->
+        {:noreply,
+         %{
+           state
+           | streaming_thinking: state.streaming_thinking <> delta,
+             activity: "thinking"
+         }}
 
-    {:noreply, %{state | streaming_response: streaming_response, activity: "responding"}}
+      field when field in [nil, :content] ->
+        {:noreply,
+         %{
+           state
+           | streaming_response: state.streaming_response <> delta,
+             activity: "responding"
+         }}
+
+      _field ->
+        {:noreply, state}
+    end
   end
 
   def handle_info(
@@ -198,6 +253,7 @@ defmodule Tackle.CLI.TUI do
        | agent_state: agent_state,
          active_turn: nil,
          pending_prompt: nil,
+         streaming_thinking: "",
          streaming_response: "",
          latest_usage: latest_usage(agent_state) || state.latest_usage,
          tool_activity: [],
@@ -215,10 +271,25 @@ defmodule Tackle.CLI.TUI do
        state
        | active_turn: nil,
          pending_prompt: nil,
+         streaming_thinking: "",
          streaming_response: "",
          tool_activity: [],
          activity: nil,
          error: format_reason(reason)
+     }}
+  end
+
+  def handle_info(
+        {:tackle_session_reconfigured, session_id, %Snapshot{} = snapshot},
+        %{session_id: session_id} = state
+      ) do
+    {:noreply,
+     %{
+       state
+       | agent_state: snapshot.agent_state,
+         active_turn: snapshot.active_turn,
+         settings: nil,
+         error: nil
      }}
   end
 
@@ -256,6 +327,7 @@ defmodule Tackle.CLI.TUI do
              state
              | active_turn: %{id: turn_id},
                pending_prompt: prompt,
+               streaming_thinking: "",
                streaming_response: "",
                tool_activity: [],
                activity: "starting",
@@ -269,10 +341,11 @@ defmodule Tackle.CLI.TUI do
   end
 
   defp header_widget(state) do
-    model = state.agent_state.model || "configured default"
+    model = model_ref(state.agent_state) || "configured default"
+    thinking = Thinking.from_llm_opts(state.agent_state.llm_opts)
 
     %Paragraph{
-      text: " Tackle  ·  #{model}  ·  #{status(state)}",
+      text: " Tackle  ·  #{model}  ·  thinking #{thinking}  ·  #{status(state)}",
       style: %Style{fg: :cyan, modifiers: [:bold]},
       block: panel_block(" Session ", :cyan)
     }
@@ -315,7 +388,7 @@ defmodule Tackle.CLI.TUI do
       if state.active_turn do
         "Esc cancel · Ctrl+C quit"
       else
-        "Enter send · Esc quit · Ctrl+C quit"
+        "Enter send · F2 model/thinking · Esc quit · Ctrl+C quit"
       end
 
     text =
@@ -341,18 +414,119 @@ defmodule Tackle.CLI.TUI do
 
     tools = Enum.map(state.tool_activity, &format_tool_activity/1)
 
-    streaming =
+    streaming_thinking =
+      if state.streaming_thinking == "",
+        do: [],
+        else: ["Thinking:\n#{state.streaming_thinking}"]
+
+    streaming_response =
       if state.streaming_response == "",
         do: [],
         else: ["Tackle:\n#{state.streaming_response}"]
 
     error = if state.error, do: ["Error:\n#{state.error}"], else: []
 
-    case settled ++ pending ++ tools ++ streaming ++ error do
+    case settled ++ pending ++ tools ++ streaming_thinking ++ streaming_response ++ error do
       [] -> ["Welcome to Tackle. Type a prompt below to start a session."]
       entries -> entries
     end
   end
+
+  defp settings_widget(state) do
+    settings = state.settings
+    model = Enum.at(state.models, settings.model_index)
+    thinking = Enum.at(Thinking.levels(), settings.thinking_index)
+    selected = if settings.field == :model, do: 0, else: 1
+
+    %Popup{
+      content: %SelectionList{
+        items: ["Model      ‹ #{model} ›", "Thinking   ‹ #{thinking} ›"],
+        selected: selected,
+        highlight_symbol: "› ",
+        highlight_style: %Style{fg: :cyan, modifiers: [:bold]},
+        style: %Style{fg: :white}
+      },
+      block: panel_block(" Settings · ↑/↓ field · ←/→ select · Enter apply · Esc close ", :cyan),
+      percent_width: 80,
+      percent_height: 35
+    }
+  end
+
+  defp open_settings(state) do
+    model_index = Enum.find_index(state.models, &(&1 == model_ref(state.agent_state))) || 0
+    thinking = Thinking.from_llm_opts(state.agent_state.llm_opts)
+    thinking_index = Enum.find_index(Thinking.levels(), &(&1 == thinking)) || 0
+
+    %{
+      state
+      | settings: %{field: :model, model_index: model_index, thinking_index: thinking_index}
+    }
+  end
+
+  defp cycle_setting(state, direction) do
+    delta = if direction == "left", do: -1, else: 1
+    settings = state.settings
+
+    settings =
+      case settings.field do
+        :model ->
+          %{
+            settings
+            | model_index: cycle_index(settings.model_index, delta, length(state.models))
+          }
+
+        :thinking ->
+          %{
+            settings
+            | thinking_index:
+                cycle_index(settings.thinking_index, delta, length(Thinking.levels()))
+          }
+      end
+
+    %{state | settings: settings}
+  end
+
+  defp cycle_index(index, delta, count), do: Integer.mod(index + delta, count)
+
+  defp apply_settings(state) do
+    model = Enum.at(state.models, state.settings.model_index)
+    thinking = Enum.at(Thinking.levels(), state.settings.thinking_index)
+
+    case Tackle.reconfigure(state.session, model: model, thinking: thinking) do
+      {:ok, %Snapshot{} = snapshot} ->
+        {:noreply,
+         %{
+           state
+           | agent_state: snapshot.agent_state,
+             active_turn: snapshot.active_turn,
+             settings: nil,
+             error: nil
+         }}
+
+      {:error, reason} ->
+        {:noreply, %{state | settings: nil, error: format_reason(reason)}}
+    end
+  end
+
+  defp available_models(opts, agent_state) do
+    current = model_ref(agent_state)
+
+    models =
+      opts
+      |> Keyword.get(:models, [])
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.uniq()
+
+    cond do
+      is_binary(current) and current not in models -> [current | models]
+      models == [] -> [current || "configured default"]
+      true -> models
+    end
+  end
+
+  defp model_ref(%State{llm: %{ref: ref}}) when is_binary(ref), do: ref
+  defp model_ref(%State{model: model}) when is_binary(model), do: model
+  defp model_ref(_agent_state), do: nil
 
   defp wrap_text(text, width) do
     text
@@ -396,13 +570,18 @@ defmodule Tackle.CLI.TUI do
     do: ["You:\n#{content}"]
 
   defp format_message(%Message{role: :assistant} = message) do
+    thinking =
+      if is_binary(message.thinking) and message.thinking != "",
+        do: ["Thinking:\n#{message.thinking}"],
+        else: []
+
     content =
       if is_binary(message.content) and message.content != "",
         do: ["Tackle:\n#{message.content}"],
         else: []
 
     tool_calls = Enum.map(message.tool_calls || [], &format_tool_call/1)
-    content ++ tool_calls
+    thinking ++ content ++ tool_calls
   end
 
   defp format_message(%Message{role: :tool} = message) do

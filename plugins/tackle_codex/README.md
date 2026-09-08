@@ -65,12 +65,15 @@ When the plugin is available to the host distribution:
   Tackle.start_session(
     adapters: [Tackle.Plugins.Codex],
     model: "openai-codex/gpt-5.5",
-    llm_stream: true
+    llm_stream: true,
+    llm_opts: [reasoning_effort: "high", reasoning_summary: "auto"]
   )
 ```
 
-The adapter currently uses the SSE Responses transport. For stateless
-reasoning-model continuations it stores the provider's opaque response output on
+The adapter maps `:reasoning_effort` and `:reasoning_summary` options to the
+Responses API and emits provider-supplied reasoning summaries as normalized
+reasoning deltas. The adapter currently uses the SSE Responses transport. For
+stateless reasoning-model continuations it stores the provider's opaque response output on
 the assistant message and replays it only for the same provider and model. Hosts
 that persist conversations must preserve `Tackle.Lib.Message.provider_state`.
 

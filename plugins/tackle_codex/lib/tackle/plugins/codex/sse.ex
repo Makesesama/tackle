@@ -155,9 +155,12 @@ defmodule Tackle.Plugins.Codex.SSE do
     %{state | content_parts: append_part(state.content_parts, output_index(event), delta)}
   end
 
-  defp handle_event(state, %{"type" => type, "delta" => delta} = event, callback)
-       when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
-              is_binary(delta) do
+  defp handle_event(
+         state,
+         %{"type" => "response.reasoning_summary_text.delta", "delta" => delta} = event,
+         callback
+       )
+       when is_binary(delta) do
     emit(callback, %{type: :reasoning_delta, delta: delta})
     %{state | thinking_parts: append_part(state.thinking_parts, output_index(event), delta)}
   end
@@ -321,10 +324,7 @@ defmodule Tackle.Plugins.Codex.SSE do
 
   defp message_text(_item), do: ""
 
-  defp reasoning_text(item) do
-    summary = text_parts(item["summary"])
-    if summary == "", do: text_parts(item["content"]), else: summary
-  end
+  defp reasoning_text(item), do: text_parts(item["summary"])
 
   defp text_parts(parts) when is_list(parts) do
     parts
@@ -392,7 +392,13 @@ defmodule Tackle.Plugins.Codex.SSE do
     |> Enum.map_join(separator, fn {_index, text} -> text end)
   end
 
-  defp provider_output(output) when is_list(output), do: output
+  defp provider_output(output) when is_list(output) do
+    Enum.map(output, fn
+      %{"type" => "reasoning"} = item -> Map.delete(item, "content")
+      item -> item
+    end)
+  end
+
   defp provider_output(_output), do: []
 
   defp provider_state([], _model), do: nil

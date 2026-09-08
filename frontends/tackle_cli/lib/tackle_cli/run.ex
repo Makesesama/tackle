@@ -6,14 +6,24 @@ defmodule Tackle.CLI.Run do
   @codex_provider "openai-codex"
   @terminal_timeout 60_000
 
-  @spec run(%{model: String.t() | nil, prompt: String.t() | nil}) :: non_neg_integer()
-  def run(%{model: model, prompt: nil}) do
-    case start_session(model) do
+  @spec run(%{
+          model: String.t() | nil,
+          thinking: String.t() | nil,
+          prompt: String.t() | nil
+        }) :: non_neg_integer()
+  def run(%{model: model, thinking: thinking, prompt: nil}) do
+    case start_session(model, thinking, true) do
       {:ok, session} ->
         try do
-          case Tackle.CLI.TUI.start(session: session) do
-            :ok -> 0
-            {:error, reason} -> error(reason)
+          case Tackle.available_models() do
+            {:ok, models} ->
+              case Tackle.CLI.TUI.start(session: session, models: models) do
+                :ok -> 0
+                {:error, reason} -> error(reason)
+              end
+
+            {:error, reason} ->
+              error(reason)
           end
         after
           close_session(session)
@@ -24,8 +34,8 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  def run(%{model: model, prompt: prompt}) when is_binary(prompt) do
-    case start_session(model) do
+  def run(%{model: model, thinking: thinking, prompt: prompt}) when is_binary(prompt) do
+    case start_session(model, thinking, false) do
       {:ok, session} -> run_prompt(session, prompt)
       {:error, reason} -> error(reason)
     end
@@ -96,9 +106,10 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp start_session(model) do
+  defp start_session(model, thinking, llm_stream) do
     with {:ok, _apps} <- ensure_started(),
-         {:ok, session} <- Tackle.start_configured_session(overrides: overrides(model)) do
+         {:ok, overrides} <- overrides(model, thinking, llm_stream),
+         {:ok, session} <- Tackle.start_configured_session(overrides: overrides) do
       {:ok, session}
     else
       {:error, reason} -> {:error, reason}
@@ -157,8 +168,15 @@ defmodule Tackle.CLI.Run do
     :ok
   end
 
-  defp overrides(nil), do: []
-  defp overrides(model), do: [model: model]
+  defp overrides(model, thinking, llm_stream) do
+    overrides = if model, do: [model: model], else: []
+    overrides = if llm_stream, do: Keyword.put(overrides, :llm_stream, true), else: overrides
+
+    case thinking do
+      nil -> {:ok, overrides}
+      level -> {:ok, Keyword.put(overrides, :thinking, level)}
+    end
+  end
 
   defp close_session(session) do
     if Process.alive?(session) do

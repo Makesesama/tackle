@@ -2,7 +2,12 @@ defmodule Tackle.CLI.Parser do
   @moduledoc false
 
   @type command ::
-          {:run, %{model: String.t() | nil, prompt: String.t() | nil}}
+          {:run,
+           %{
+             model: String.t() | nil,
+             thinking: String.t() | nil,
+             prompt: String.t() | nil
+           }}
           | {:models, %{}}
           | {:auth_login, %{provider: String.t()}}
           | {:auth_status, %{provider: String.t() | nil}}
@@ -68,6 +73,13 @@ defmodule Tackle.CLI.Parser do
           help: "Canonical model reference selected from root harness adapters",
           parser: :string,
           global: true
+        ],
+        thinking: [
+          value_name: "LEVEL",
+          long: "--thinking",
+          help: "Thinking level: off, minimal, low, medium, high, or xhigh",
+          parser: :string,
+          global: true
         ]
       ],
       subcommands: [
@@ -125,6 +137,7 @@ defmodule Tackle.CLI.Parser do
     {:run,
      %{
        model: Map.get(result.options, :model),
+       thinking: Map.get(result.options, :thinking),
        prompt: Map.get(result.args, :prompt)
      }}
   end

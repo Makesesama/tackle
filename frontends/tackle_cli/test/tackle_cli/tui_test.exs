@@ -1,7 +1,7 @@
 defmodule Tackle.CLI.TUITest do
   use ExUnit.Case, async: true
 
-  alias ExRatatui.Event.Key
+  alias ExRatatui.Event.{Key, Paste}
   alias ExRatatui.Runtime
   alias ExRatatui.Widgets.{Paragraph, TextInput, WidgetList}
   alias Tackle.CLI.TUI
@@ -11,6 +11,19 @@ defmodule Tackle.CLI.TUITest do
   defmodule SessionStub do
     use GenServer
 
+    defmodule Adapter do
+      @behaviour Tackle.Lib.LLM
+
+      @impl true
+      def adapter_id, do: "openai-codex"
+
+      @impl true
+      def models, do: ["test-model", "other-model"]
+
+      @impl true
+      def generate(_schema, _opts), do: {:error, :not_used}
+    end
+
     def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
 
     def child_spec(test_pid) do
@@ -19,7 +32,8 @@ defmodule Tackle.CLI.TUITest do
 
     @impl true
     def init(test_pid) do
-      agent_state = State.new(model: "openai-codex/test-model")
+      {:ok, llm} = Tackle.Lib.LLM.select([Adapter], "openai-codex/test-model")
+      agent_state = State.new(llm: llm)
       {:ok, %{test_pid: test_pid, subscriber: nil, agent_state: agent_state}}
     end
 
@@ -46,6 +60,26 @@ defmodule Tackle.CLI.TUITest do
       {:reply, :ok, state}
     end
 
+    def handle_call({:reconfigure, opts}, _from, state) do
+      send(state.test_pid, {:reconfigured, opts})
+      model = Keyword.get(opts, :model, state.agent_state.llm.ref)
+      {:ok, llm} = Tackle.Lib.LLM.select([Adapter], model)
+      {:ok, llm_opts} = Tackle.Thinking.put_llm_opts(state.agent_state.llm_opts, opts[:thinking])
+      agent_state = %{state.agent_state | llm: llm, model: llm.model, llm_opts: llm_opts}
+
+      snapshot = %Snapshot{
+        session_id: agent_state.session_id,
+        agent_state: agent_state,
+        active_turn: nil
+      }
+
+      if state.subscriber do
+        send(state.subscriber, {:tackle_session_reconfigured, snapshot.session_id, snapshot})
+      end
+
+      {:reply, {:ok, snapshot}, %{state | agent_state: agent_state}}
+    end
+
     def handle_call(:unsubscribe, {subscriber, _tag}, %{subscriber: subscriber} = state) do
       {:reply, :ok, %{state | subscriber: nil}}
     end
@@ -57,7 +91,13 @@ defmodule Tackle.CLI.TUITest do
     session = start_supervised!({SessionStub, self()})
 
     tui =
-      start_supervised!({TUI, session: session, name: nil, test_mode: {80, 20}})
+      start_supervised!(
+        {TUI,
+         session: session,
+         models: ["openai-codex/test-model", "openai-codex/other-model"],
+         name: nil,
+         test_mode: {80, 20}}
+      )
 
     assert_receive {:subscribed, ^tui}
     %{session: session, tui: tui}
@@ -66,7 +106,8 @@ defmodule Tackle.CLI.TUITest do
   test "runs as an ExRatatui.App with session and input state", %{tui: tui} do
     server_state = :sys.get_state(tui)
 
-    assert server_state.user_state.agent_state.model == "openai-codex/test-model"
+    assert server_state.user_state.agent_state.model == "test-model"
+    assert server_state.user_state.agent_state.llm.ref == "openai-codex/test-model"
     assert is_reference(server_state.user_state.input)
     assert function_exported?(TUI, :start_link, 1)
   end
@@ -83,6 +124,7 @@ defmodule Tackle.CLI.TUITest do
            ] = scene
 
     assert header =~ "openai-codex/test-model"
+    assert header =~ "thinking off"
     assert header =~ "ready"
 
     assert Enum.any?(conversation, fn {%Paragraph{text: text}, _height} ->
@@ -90,7 +132,33 @@ defmodule Tackle.CLI.TUITest do
            end)
 
     assert footer =~ "Enter send"
+    assert footer =~ "F2 model/thinking"
     refute footer =~ "CH"
+  end
+
+  test "selects the model and thinking level from the settings popup", %{tui: tui} do
+    inject_key(tui, "f2")
+    state = :sys.get_state(tui).user_state
+    assert state.settings.field == :model
+
+    :ok = Runtime.inject_event(tui, %Paste{content: "hidden prompt"})
+    state = :sys.get_state(tui).user_state
+    assert ExRatatui.text_input_get_value(state.input) == ""
+    assert length(TUI.scene(state, %ExRatatui.Frame{width: 80, height: 20})) == 5
+
+    inject_key(tui, "right")
+    inject_key(tui, "down")
+    inject_key(tui, "right")
+    inject_key(tui, "enter")
+
+    assert_receive {:reconfigured, [model: "openai-codex/other-model", thinking: "minimal"]}
+
+    state = :sys.get_state(tui).user_state
+    assert state.settings == nil
+    assert state.agent_state.model == "other-model"
+    assert state.agent_state.llm.ref == "openai-codex/other-model"
+    assert Tackle.Thinking.from_llm_opts(state.agent_state.llm_opts) == "minimal"
+    assert header_text(state) =~ "thinking minimal"
   end
 
   test "shows the latest Pi-compatible cache hit rate in the footer", %{tui: tui} do
@@ -157,15 +225,23 @@ defmodule Tackle.CLI.TUITest do
     assert_receive {:submitted, "hi"}
 
     session_id = :sys.get_state(tui).user_state.session_id
+    thinking_event = Event.new(:message_delta, %{field: :reasoning, delta: "Checking"})
+    send(tui, {:tackle_event, session_id, "turn-1", thinking_event})
+
     event = Event.new(:message_delta, %{delta: "Hello"})
     send(tui, {:tackle_event, session_id, "turn-1", event})
 
     streaming_state = :sys.get_state(tui).user_state
+    assert streaming_state.streaming_thinking == "Checking"
     assert streaming_state.streaming_response == "Hello"
+    assert conversation_text(streaming_state) =~ "Thinking:\nChecking"
 
     agent_state = %{
       streaming_state.agent_state
-      | messages: [Message.user("hi"), Message.assistant(content: "Hello")],
+      | messages: [
+          Message.user("hi"),
+          Message.assistant(thinking: "Checked", content: "Hello")
+        ],
         status: :completed
     }
 
@@ -174,6 +250,7 @@ defmodule Tackle.CLI.TUITest do
 
     assert settled_state.active_turn == nil
     assert settled_state.pending_prompt == nil
+    assert settled_state.streaming_thinking == ""
     assert settled_state.streaming_response == ""
 
     assert [{%WidgetList{items: items}, _area}] =
@@ -186,6 +263,7 @@ defmodule Tackle.CLI.TUITest do
       Enum.map_join(items, "\n", fn {%Paragraph{text: text}, _height} -> text end)
 
     assert conversation =~ "You:\nhi"
+    assert conversation =~ "Thinking:\nChecked"
     assert conversation =~ "Tackle:\nHello"
   end
 
@@ -392,6 +470,13 @@ defmodule Tackle.CLI.TUITest do
     ref = Process.monitor(tui)
     inject_key(tui, "esc")
     assert_receive {:DOWN, ^ref, :process, ^tui, :normal}
+  end
+
+  defp header_text(state) do
+    TUI.scene(state, %ExRatatui.Frame{width: 120, height: 30})
+    |> hd()
+    |> elem(0)
+    |> Map.fetch!(:text)
   end
 
   defp footer_text(state) do

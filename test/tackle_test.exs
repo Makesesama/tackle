@@ -154,6 +154,60 @@ defmodule TackleTest do
     assert {:finished, {:ok, _state}, _events} = await_terminal(session_id, turn_id)
   end
 
+  test "reconfigures model and thinking while preserving settled history" do
+    {:ok, session} =
+      Tackle.start_session(
+        adapters: [AdapterA, AdapterB],
+        model: "provider-a/shared",
+        llm_opts: [request_tag: "preserved"]
+      )
+
+    on_exit(fn -> close_session(session) end)
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(session)
+
+    assert {:ok, first_turn_id} = Tackle.submit(session, "first")
+
+    assert {:finished, {:ok, first_state}, _events} =
+             await_terminal(session_id, first_turn_id)
+
+    assert Tackle.Lib.last_answer(first_state) == "a:shared"
+
+    assert {:ok, %Snapshot{agent_state: agent_state} = snapshot} =
+             Tackle.reconfigure(session, model: "provider-b/shared", thinking: "high")
+
+    assert_receive {:tackle_session_reconfigured, ^session_id, ^snapshot}
+    assert agent_state.messages == first_state.messages
+    assert agent_state.llm.ref == "provider-b/shared"
+    assert agent_state.model == "shared"
+    assert agent_state.llm_opts[:request_tag] == "preserved"
+    assert agent_state.llm_opts[:reasoning_effort] == "high"
+    assert agent_state.llm_opts[:reasoning_summary] == "auto"
+    assert agent_state.llm_opts[:credential_store] == Tackle.Auth.credential_store()
+
+    assert {:ok, second_turn_id} = Tackle.submit(session, "second")
+
+    assert {:finished, {:ok, final_state}, _events} =
+             await_terminal(session_id, second_turn_id)
+
+    assert Enum.map(final_state.messages, &{&1.role, &1.content}) == [
+             {:user, "first"},
+             {:assistant, "a:shared"},
+             {:user, "second"},
+             {:assistant, "b:shared"}
+           ]
+  end
+
+  test "rejects reconfiguration during an active turn" do
+    session = start_controlled_session()
+    assert {:ok, _turn_id} = Tackle.submit(session, "first")
+    assert_receive {:adapter_called, task_pid, "test", _signal}
+
+    assert {:error, :turn_in_progress} =
+             Tackle.reconfigure(session, thinking: "high")
+
+    send(task_pid, {:respond, "done"})
+  end
+
   test "continues a failed turn without duplicating the user message" do
     session = start_controlled_session()
     {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(session)

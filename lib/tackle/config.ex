@@ -14,8 +14,10 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Tool.Adapters.Web, as: ToolAdapter
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
+  alias Tackle.Thinking
 
   @loader_option_keys [:available_adapters, :env, :overrides]
+  @reconfigure_option_keys [:model, :thinking]
 
   @reserved_llm_option_names MapSet.new([
                                "credential_store",
@@ -39,6 +41,7 @@ defmodule Tackle.Config do
     :context,
     :max_iterations,
     :tool_policy,
+    :thinking,
     :llm_opts,
     :prompt_renderer,
     :prompt_renderer_opts,
@@ -112,12 +115,14 @@ defmodule Tackle.Config do
   Resolves and validates explicit session configuration.
 
   `:adapters` and a canonical `:model` reference such as
-  `"openai-codex/gpt-5.5"` are required.
+  `"openai-codex/gpt-5.5"` are required. Optional `:thinking` is normalized into
+  adapter reasoning options.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
     with :ok <- validate_keyword(opts),
          :ok <- validate_known_options(opts),
+         {:ok, opts} <- normalize_thinking_option(opts),
          {:ok, adapters} <- fetch_adapters(opts),
          {:ok, model_ref} <- fetch_model_ref(opts),
          {:ok, llm} <- LLM.select(adapters, model_ref),
@@ -159,6 +164,20 @@ defmodule Tackle.Config do
 
   def new(opts), do: {:error, {:invalid_config, opts}}
 
+  @doc "Updates model and thinking settings for an idle configured session."
+  @spec reconfigure(t(), keyword()) :: {:ok, t()} | {:error, term()}
+  def reconfigure(%__MODULE__{} = config, opts) when is_list(opts) do
+    with :ok <- validate_keyword(opts),
+         :ok <- validate_reconfigure_options(opts),
+         {:ok, model_ref} <- reconfigured_model_ref(config, opts),
+         {:ok, llm} <- LLM.select(config.adapters, model_ref),
+         {:ok, llm_opts} <- reconfigured_llm_opts(config.llm_opts, opts) do
+      {:ok, %{config | model_ref: model_ref, llm: llm, llm_opts: llm_opts}}
+    end
+  end
+
+  def reconfigure(%__MODULE__{}, opts), do: {:error, {:invalid_config, opts}}
+
   @doc "Builds the initial library state for a configured session."
   @spec to_agent_state(t(), keyword()) :: Tackle.Lib.State.t()
   def to_agent_state(%__MODULE__{} = config, harness_opts \\ []) do
@@ -187,6 +206,42 @@ defmodule Tackle.Config do
     case Keyword.keys(opts) -- @loader_option_keys do
       [] -> :ok
       unknown -> {:error, {:unknown_loader_options, Enum.uniq(unknown)}}
+    end
+  end
+
+  defp validate_reconfigure_options(opts) do
+    case Keyword.keys(opts) -- @reconfigure_option_keys do
+      [] -> :ok
+      unknown -> {:error, {:unknown_reconfigure_options, Enum.uniq(unknown)}}
+    end
+  end
+
+  defp reconfigured_model_ref(config, opts) do
+    fetch_model_ref(model: Keyword.get(opts, :model, config.model_ref))
+  end
+
+  defp normalize_thinking_option(opts) do
+    case Keyword.fetch(opts, :thinking) do
+      {:ok, level} ->
+        llm_opts = Keyword.get(opts, :llm_opts, [])
+
+        if Keyword.keyword?(llm_opts) do
+          with {:ok, llm_opts} <- Thinking.put_llm_opts(llm_opts, level) do
+            {:ok, opts |> Keyword.delete(:thinking) |> Keyword.put(:llm_opts, llm_opts)}
+          end
+        else
+          {:error, {:invalid_option, :llm_opts, llm_opts}}
+        end
+
+      :error ->
+        {:ok, opts}
+    end
+  end
+
+  defp reconfigured_llm_opts(llm_opts, opts) do
+    case Keyword.fetch(opts, :thinking) do
+      {:ok, level} -> Thinking.put_llm_opts(llm_opts, level)
+      :error -> {:ok, llm_opts}
     end
   end
 
@@ -236,11 +291,37 @@ defmodule Tackle.Config do
   end
 
   defp environment_options(env) do
+    with {:ok, model_opts} <- environment_model_options(env),
+         {:ok, thinking_opts} <- environment_thinking_options(env) do
+      {:ok, model_opts ++ thinking_opts}
+    end
+  end
+
+  defp environment_model_options(env) do
     case Map.get(env, "TACKLE_MODEL") do
       nil -> {:ok, []}
       "" -> {:ok, []}
       model when is_binary(model) -> {:ok, [model: model]}
       _model -> {:error, {:invalid_environment, "TACKLE_MODEL"}}
+    end
+  end
+
+  defp environment_thinking_options(env) do
+    case Map.get(env, "TACKLE_THINKING") do
+      nil ->
+        {:ok, []}
+
+      "" ->
+        {:ok, []}
+
+      level when is_binary(level) ->
+        case Thinking.validate(level) do
+          :ok -> {:ok, [thinking: level]}
+          {:error, _reason} -> {:error, {:invalid_environment, "TACKLE_THINKING"}}
+        end
+
+      _level ->
+        {:error, {:invalid_environment, "TACKLE_THINKING"}}
     end
   end
 

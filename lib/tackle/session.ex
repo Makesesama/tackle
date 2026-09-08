@@ -74,6 +74,13 @@ defmodule Tackle.Session do
   @spec cancel(GenServer.server()) :: :ok
   def cancel(session), do: GenServer.call(session, :cancel)
 
+  @doc "Updates model and thinking settings while the session is idle."
+  @spec reconfigure(GenServer.server(), keyword()) :: {:ok, Snapshot.t()} | {:error, term()}
+  def reconfigure(session, opts) when is_list(opts),
+    do: GenServer.call(session, {:reconfigure, opts})
+
+  def reconfigure(_session, opts), do: {:error, {:invalid_config, opts}}
+
   @doc "Returns an atomic session snapshot."
   @spec snapshot(GenServer.server()) :: Snapshot.t()
   def snapshot(session), do: GenServer.call(session, :snapshot)
@@ -128,6 +135,25 @@ defmodule Tackle.Session do
     Cancellation.cancel(state.active_turn.signal, :user_cancelled)
     active_turn = %{state.active_turn | cancellation_requested?: true}
     {:reply, :ok, %{state | active_turn: active_turn}}
+  end
+
+  def handle_call({:reconfigure, _opts}, _from, %{active_turn: active_turn} = state)
+      when not is_nil(active_turn) do
+    {:reply, {:error, :turn_in_progress}, state}
+  end
+
+  def handle_call({:reconfigure, opts}, _from, state) do
+    case Config.reconfigure(state.config, opts) do
+      {:ok, config} ->
+        agent_state = apply_configuration(state.agent_state, config)
+        state = %{state | config: config, agent_state: agent_state}
+        snapshot = build_snapshot(state)
+        broadcast(state, {:tackle_session_reconfigured, snapshot.session_id, snapshot})
+        {:reply, {:ok, snapshot}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:snapshot, _from, state) do
@@ -261,6 +287,12 @@ defmodule Tackle.Session do
       cancellation_signal: signal,
       llm_stream: config.llm_stream
     ]
+  end
+
+  defp apply_configuration(agent_state, config) do
+    llm_opts = Keyword.put(config.llm_opts, :credential_store, Auth.credential_store())
+
+    %{agent_state | llm: config.llm, model: config.llm.model, llm_opts: llm_opts}
   end
 
   defp build_snapshot(state) do

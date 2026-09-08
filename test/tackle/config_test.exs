@@ -70,6 +70,35 @@ defmodule Tackle.ConfigTest do
     assert state.model == "family/nested"
   end
 
+  test "reconfigures model and thinking without changing other session options" do
+    assert {:ok, config} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               tools: [Tool],
+               llm_opts: [request_tag: "keep"]
+             )
+
+    assert {:ok, updated} =
+             Config.reconfigure(config, model: "test/family/nested", thinking: "high")
+
+    assert updated.model_ref == "test/family/nested"
+    assert updated.llm.model == "family/nested"
+    assert updated.tools == [Tool]
+
+    assert updated.llm_opts == [
+             request_tag: "keep",
+             reasoning_effort: "high",
+             reasoning_summary: "auto"
+           ]
+
+    assert {:ok, disabled} = Config.reconfigure(updated, thinking: "off")
+    assert disabled.llm_opts == [request_tag: "keep"]
+
+    assert {:error, {:invalid_thinking_level, "extreme"}} =
+             Config.reconfigure(config, thinking: "extreme")
+  end
+
   test "uses the built-in developer tools by default and permits an explicit empty set" do
     assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small")
     assert config.tools == Tackle.Tools.default()
