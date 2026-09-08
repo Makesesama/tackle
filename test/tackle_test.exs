@@ -67,6 +67,8 @@ defmodule TackleTest do
   defmodule CredentialAdapter do
     @behaviour Tackle.Lib.LLM
 
+    alias Tackle.Lib.CredentialStore
+
     @impl true
     def adapter_id, do: "credential-refresh"
 
@@ -78,10 +80,10 @@ defmodule TackleTest do
       handle = Keyword.fetch!(opts, :credential_store)
 
       {:ok, %{"access_token" => "initial-integration-token"}} =
-        Tackle.Lib.CredentialStore.fetch(handle, adapter_id())
+        CredentialStore.fetch(handle, adapter_id())
 
       :ok =
-        Tackle.Lib.CredentialStore.put(handle, adapter_id(), %{
+        CredentialStore.put(handle, adapter_id(), %{
           "access_token" => "refreshed-integration-token"
         })
 

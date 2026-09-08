@@ -8,6 +8,7 @@ defmodule Tackle.Config do
   """
 
   alias Tackle.Config.File, as: ConfigFile
+  alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Tool.Adapters.Web, as: ToolAdapter
@@ -58,7 +59,7 @@ defmodule Tackle.Config do
             llm_opts: [],
             prompt_renderer: nil,
             prompt_renderer_opts: [],
-            id_generator: &Tackle.Lib.ID.uuid4/0,
+            id_generator: &ID.uuid4/0,
             llm_stream: false
 
   @type t :: %__MODULE__{
@@ -74,7 +75,7 @@ defmodule Tackle.Config do
           llm_opts: keyword(),
           prompt_renderer: module() | nil,
           prompt_renderer_opts: keyword(),
-          id_generator: Tackle.Lib.ID.generator(),
+          id_generator: ID.generator(),
           llm_stream: boolean()
         }
 
@@ -134,7 +135,7 @@ defmodule Tackle.Config do
              Keyword.get(opts, :prompt_renderer_opts, [])
            ),
          :ok <- validate_prompt_renderer(Keyword.get(opts, :prompt_renderer)),
-         :ok <- validate_id_generator(Keyword.get(opts, :id_generator, &Tackle.Lib.ID.uuid4/0)),
+         :ok <- validate_id_generator(Keyword.get(opts, :id_generator, &ID.uuid4/0)),
          :ok <- validate_boolean(:llm_stream, Keyword.get(opts, :llm_stream, false)) do
       {:ok,
        %__MODULE__{
@@ -150,7 +151,7 @@ defmodule Tackle.Config do
          llm_opts: Keyword.get(opts, :llm_opts, []),
          prompt_renderer: Keyword.get(opts, :prompt_renderer),
          prompt_renderer_opts: Keyword.get(opts, :prompt_renderer_opts, []),
-         id_generator: Keyword.get(opts, :id_generator, &Tackle.Lib.ID.uuid4/0),
+         id_generator: Keyword.get(opts, :id_generator, &ID.uuid4/0),
          llm_stream: Keyword.get(opts, :llm_stream, false)
        }}
     end

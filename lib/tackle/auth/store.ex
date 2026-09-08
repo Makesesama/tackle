@@ -82,21 +82,26 @@ defmodule Tackle.Auth.Store do
   end
 
   def handle_call({:delete, namespace}, _from, state) do
-    with :ok <- validate_namespace(namespace) do
-      if Map.has_key?(state.providers, namespace) do
-        providers = Map.delete(state.providers, namespace)
-
-        case persist(state.path, providers) do
-          :ok -> {:reply, :ok, %{state | providers: providers}}
-          {:error, reason} -> {:reply, {:error, reason}, state}
-        end
-      else
-        {:reply, :ok, state}
-      end
-    else
+    case validate_namespace(namespace) do
+      :ok -> delete_namespace(namespace, state)
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
+
+  defp delete_namespace(namespace, state) do
+    if Map.has_key?(state.providers, namespace) do
+      providers = Map.delete(state.providers, namespace)
+      delete_reply(persist(state.path, providers), providers, state)
+    else
+      {:reply, :ok, state}
+    end
+  end
+
+  defp delete_reply(:ok, providers, state),
+    do: {:reply, :ok, %{state | providers: providers}}
+
+  defp delete_reply({:error, reason}, _providers, state),
+    do: {:reply, {:error, reason}, state}
 
   defp fetch_path(opts) do
     case Keyword.fetch(opts, :path) do
@@ -187,16 +192,14 @@ defmodule Tackle.Auth.Store do
   defp validate_namespace(_namespace), do: {:error, :invalid_credential_namespace}
 
   defp normalize_credentials(credentials) when is_map(credentials) do
-    try do
-      encoded = JSON.encode!(credentials)
+    encoded = JSON.encode!(credentials)
 
-      case JSON.decode(encoded) do
-        {:ok, %{} = normalized} -> {:ok, normalized}
-        _ -> {:error, :invalid_credentials}
-      end
-    rescue
-      _error -> {:error, :invalid_credentials}
+    case JSON.decode(encoded) do
+      {:ok, %{} = normalized} -> {:ok, normalized}
+      _ -> {:error, :invalid_credentials}
     end
+  rescue
+    _error -> {:error, :invalid_credentials}
   end
 
   defp normalize_credentials(_credentials), do: {:error, :invalid_credentials}
@@ -207,18 +210,15 @@ defmodule Tackle.Auth.Store do
     with {:ok, encoded} <- encode_envelope(envelope),
          :ok <- ensure_private_directory(Path.dirname(path)),
          :ok <- safe_auth_target(path),
-         {:ok, temporary_path, io} <- open_temporary(path),
-         result <- write_replace(io, temporary_path, path, encoded) do
-      result
+         {:ok, temporary_path, io} <- open_temporary(path) do
+      write_replace(io, temporary_path, path, encoded)
     end
   end
 
   defp encode_envelope(envelope) do
-    try do
-      {:ok, JSON.encode!(envelope)}
-    rescue
-      _error -> {:error, :invalid_credentials}
-    end
+    {:ok, JSON.encode!(envelope)}
+  rescue
+    _error -> {:error, :invalid_credentials}
   end
 
   defp ensure_private_directory(directory) do
@@ -293,9 +293,8 @@ defmodule Tackle.Auth.Store do
     write_result =
       try do
         with :ok <- File.chmod(temporary_path, @file_mode),
-             :ok <- IO.binwrite(io, encoded),
-             :ok <- :file.sync(io) do
-          :ok
+             :ok <- IO.binwrite(io, encoded) do
+          :file.sync(io)
         end
       rescue
         _error -> {:error, :write_failed}
