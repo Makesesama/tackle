@@ -24,7 +24,9 @@ mix tackle auth login openai-codex
 mix tackle run "Inspect this project"
 ```
 
-Run `mix tackle` without a prompt to open the TUI. This development task runs
+Run `mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.
+Type a prompt and press Enter to submit it; press Esc to cancel an active turn
+or exit while idle, and Ctrl+C to exit at any time. This development task runs
 through Mix so ExRatatui's native library remains available as a real file.
 The escript archive is suitable for non-TUI commands only: native libraries
 cannot be loaded directly from its embedded ZIP.

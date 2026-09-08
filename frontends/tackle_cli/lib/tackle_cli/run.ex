@@ -9,14 +9,14 @@ defmodule Tackle.CLI.Run do
   @spec run(%{model: String.t() | nil, prompt: String.t() | nil}) :: non_neg_integer()
   def run(%{model: model, prompt: nil}) do
     case start_session(model) do
-      {:ok, session, snapshot} ->
+      {:ok, session} ->
         try do
-          case Tackle.CLI.TUI.start(model: snapshot.agent_state.model || model) do
+          case Tackle.CLI.TUI.start(session: session) do
             :ok -> 0
             {:error, reason} -> error(reason)
           end
         after
-          Tackle.close(session)
+          close_session(session)
         end
 
       {:error, reason} ->
@@ -26,7 +26,7 @@ defmodule Tackle.CLI.Run do
 
   def run(%{model: model, prompt: prompt}) when is_binary(prompt) do
     case start_session(model) do
-      {:ok, session, _snapshot} -> run_prompt(session, prompt)
+      {:ok, session} -> run_prompt(session, prompt)
       {:error, reason} -> error(reason)
     end
   end
@@ -98,9 +98,8 @@ defmodule Tackle.CLI.Run do
 
   defp start_session(model) do
     with {:ok, _apps} <- ensure_started(),
-         {:ok, session} <- Tackle.start_configured_session(overrides: overrides(model)),
-         {:ok, snapshot} <- Tackle.subscribe(session) do
-      {:ok, session, snapshot}
+         {:ok, session} <- Tackle.start_configured_session(overrides: overrides(model)) do
+      {:ok, session}
     else
       {:error, reason} -> {:error, reason}
       reason -> {:error, reason}
@@ -108,14 +107,15 @@ defmodule Tackle.CLI.Run do
   end
 
   defp run_prompt(session, prompt) do
-    with {:ok, turn_id} <- Tackle.submit(session, prompt),
-         {:ok, answer} <- await_answer(Tackle.snapshot(session).session_id, turn_id) do
-      Tackle.close(session)
+    with {:ok, snapshot} <- Tackle.subscribe(session),
+         {:ok, turn_id} <- Tackle.submit(session, prompt),
+         {:ok, answer} <- await_answer(snapshot.session_id, turn_id) do
+      close_session(session)
       IO.puts(answer)
       0
     else
       {:error, reason} ->
-        Tackle.close(session)
+        close_session(session)
         error(reason)
     end
   end
@@ -159,6 +159,18 @@ defmodule Tackle.CLI.Run do
 
   defp overrides(nil), do: []
   defp overrides(model), do: [model: model]
+
+  defp close_session(session) do
+    if Process.alive?(session) do
+      try do
+        Tackle.close(session)
+      catch
+        :exit, _reason -> :ok
+      end
+    else
+      :ok
+    end
+  end
 
   defp error(reason) do
     IO.puts(:stderr, "error: #{inspect(reason)}")
