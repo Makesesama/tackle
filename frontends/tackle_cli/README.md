@@ -17,19 +17,17 @@ distribution concern.
 
 ```sh
 mix deps.get
-mix run -e 'System.halt(Tackle.CLI.Main.main(System.argv()))' -- --help
-mix run -e 'System.halt(Tackle.CLI.Main.main(System.argv()))' -- models
-mix run -e 'System.halt(Tackle.CLI.Main.main(System.argv()))' -- auth status
-mix run -e 'System.halt(Tackle.CLI.Main.main(System.argv()))' -- auth login openai-codex
-mix run -e 'System.halt(Tackle.CLI.Main.main(System.argv()))' -- run "Inspect this project"
+mix tackle --help
+mix tackle models
+mix tackle auth status
+mix tackle auth login openai-codex
+mix tackle run "Inspect this project"
 ```
 
-Build the local escript entrypoint:
-
-```sh
-mix escript.build
-./tackle --help
-```
+Run `mix tackle` without a prompt to open the TUI. This development task runs
+through Mix so ExRatatui's native library remains available as a real file.
+The escript archive is suitable for non-TUI commands only: native libraries
+cannot be loaded directly from its embedded ZIP.
 
 ## Development checks
 
