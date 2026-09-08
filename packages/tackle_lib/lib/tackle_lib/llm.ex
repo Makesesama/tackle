@@ -45,9 +45,10 @@ defmodule Tackle.Lib.LLM do
     structured non-tool response (see `Tackle.Lib.SystemPrompt.response_schema/0`),
     or `nil` for a plain/native turn. Tool calls are delivered through
     provider-native `tool_calls`, not through this schema.
-  * `opts` — passthrough options. Tackle.Lib sets `:model`, `:system`,
-    `:messages`, `:temperature`, and `:strict_schema`, then appends any
-    host-supplied `llm_opts` from the agent state.
+  * `opts` — passthrough options. Tackle.Lib sets `:model`, `:session_id`,
+    `:system`, `:messages`, `:temperature`, and `:strict_schema`, then appends
+    any host-supplied `llm_opts` from the agent state. Adapters may use the stable
+    `:session_id` for provider prompt-cache affinity.
 
   ### `opts[:messages]` — the structured message array (the contract)
 

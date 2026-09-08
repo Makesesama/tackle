@@ -90,6 +90,50 @@ defmodule Tackle.CLI.TUITest do
            end)
 
     assert footer =~ "Enter send"
+    refute footer =~ "CH"
+  end
+
+  test "shows the latest Pi-compatible cache hit rate in the footer", %{tui: tui} do
+    inject_key(tui, "g")
+    inject_key(tui, "o")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "go"}
+
+    state = :sys.get_state(tui).user_state
+
+    send(
+      tui,
+      {:tackle_event, state.session_id, "turn-1",
+       Event.usage(%{
+         input_tokens: 100,
+         output_tokens: 10,
+         cache_read_tokens: 50,
+         cache_write_tokens: 50
+       })}
+    )
+
+    live_state = :sys.get_state(tui).user_state
+    assert footer_text(live_state) =~ "CH25.0%"
+
+    agent_state = %{
+      live_state.agent_state
+      | messages: [
+          Message.assistant(
+            content: "done",
+            token_usage: %{
+              input_tokens: 100,
+              output_tokens: 10,
+              cache_read_tokens: 50,
+              cache_write_tokens: 50
+            }
+          )
+        ],
+        status: :completed
+    }
+
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    settled_state = :sys.get_state(tui).user_state
+    assert footer_text(settled_state) =~ "CH25.0%"
   end
 
   test "submits the current prompt on Enter", %{tui: tui} do
@@ -348,6 +392,13 @@ defmodule Tackle.CLI.TUITest do
     ref = Process.monitor(tui)
     inject_key(tui, "esc")
     assert_receive {:DOWN, ^ref, :process, ^tui, :normal}
+  end
+
+  defp footer_text(state) do
+    TUI.scene(state, %ExRatatui.Frame{width: 120, height: 30})
+    |> List.last()
+    |> elem(0)
+    |> Map.fetch!(:text)
   end
 
   defp conversation_text(state) do

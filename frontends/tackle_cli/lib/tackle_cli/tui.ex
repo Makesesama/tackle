@@ -12,7 +12,7 @@ defmodule Tackle.CLI.TUI do
   alias ExRatatui.{Layout, Style}
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.{Block, Paragraph, TextInput, WidgetList}
-  alias Tackle.Lib.{Event, Message, State}
+  alias Tackle.Lib.{Event, Message, State, Usage}
   alias Tackle.Session.Snapshot
 
   @tool_arguments_limit 240
@@ -64,6 +64,7 @@ defmodule Tackle.CLI.TUI do
          input: ExRatatui.text_input_new(),
          pending_prompt: nil,
          streaming_response: "",
+         latest_usage: latest_usage(snapshot.agent_state),
          tool_activity: [],
          activity: nil,
          error: nil
@@ -146,6 +147,14 @@ defmodule Tackle.CLI.TUI do
   end
 
   def handle_info(
+        {:tackle_event, session_id, turn_id, %Event{type: :usage, data: %{usage: usage}}},
+        %{session_id: session_id, active_turn: %{id: turn_id}} = state
+      ) do
+    latest_usage = Usage.normalize(usage) || state.latest_usage
+    {:noreply, %{state | latest_usage: latest_usage, activity: "usage"}}
+  end
+
+  def handle_info(
         {:tackle_event, session_id, turn_id, %Event{type: :tool_start, data: data}},
         %{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
@@ -190,6 +199,7 @@ defmodule Tackle.CLI.TUI do
          active_turn: nil,
          pending_prompt: nil,
          streaming_response: "",
+         latest_usage: latest_usage(agent_state) || state.latest_usage,
          tool_activity: [],
          activity: nil,
          error: error
@@ -301,14 +311,19 @@ defmodule Tackle.CLI.TUI do
   end
 
   defp footer_widget(state) do
-    text =
+    controls =
       if state.active_turn do
-        " Esc cancel · Ctrl+C quit"
+        "Esc cancel · Ctrl+C quit"
       else
-        " Enter send · Esc quit · Ctrl+C quit"
+        "Enter send · Esc quit · Ctrl+C quit"
       end
 
-    %Paragraph{text: text, style: %Style{fg: :dark_gray}}
+    text =
+      [cache_hit_indicator(state), controls]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" · ")
+
+    %Paragraph{text: " " <> text, style: %Style{fg: :dark_gray}}
   end
 
   defp panel_block(title, color) do
@@ -507,6 +522,43 @@ defmodule Tackle.CLI.TUI do
 
   defp value(map, key) when is_map(map),
     do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  defp latest_usage(%State{messages: messages}) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %Message{role: :assistant, token_usage: usage} when not is_nil(usage) ->
+        Usage.normalize(usage)
+
+      _message ->
+        nil
+    end)
+  end
+
+  defp cache_hit_indicator(state) do
+    with %Usage{} = usage <- state.latest_usage,
+         rate when is_float(rate) <- Usage.cache_hit_rate(usage),
+         true <- cache_activity?(state.agent_state, usage) do
+      percentage = :erlang.float_to_binary(rate * 100, decimals: 1)
+      "CH#{percentage}%"
+    else
+      _unavailable -> nil
+    end
+  end
+
+  defp cache_activity?(%State{} = agent_state, %Usage{} = latest_usage) do
+    session_usage = State.usage(agent_state)
+
+    Enum.any?(
+      [
+        session_usage.cache_read_tokens,
+        session_usage.cache_write_tokens,
+        latest_usage.cache_read_tokens,
+        latest_usage.cache_write_tokens
+      ],
+      &(is_integer(&1) and &1 > 0)
+    )
+  end
 
   defp status(%{active_turn: nil, error: nil}), do: "ready"
   defp status(%{active_turn: nil}), do: "error"

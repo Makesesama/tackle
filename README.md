@@ -76,6 +76,7 @@ This repository is a starting point, not a finished CLI:
   Optimus/ex_ratatui CLI entrypoint. It ships with the first-party Codex plugin
   as a distribution dependency, configures it as an available harness adapter,
   and relies on the root harness for credentials, sessions, and turn execution.
+  Its footer reports the latest provider-reported prompt-cache hit rate (`CH`).
 - Extension project loading and Burrito packaging are still planned work.
 
 The root harness owns OTP application `:tackle` and namespace `Tackle`. The

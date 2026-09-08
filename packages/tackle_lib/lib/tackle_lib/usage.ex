@@ -8,6 +8,10 @@ defmodule Tackle.Lib.Usage do
   cost optional and preserving the original provider payload in `:raw` for host
   applications that need auditability or richer billing.
 
+  The normalized input buckets are disjoint: `:input_tokens` is uncached input,
+  `:cache_read_tokens` was served from cache, and `:cache_write_tokens` was written
+  to cache. Total prompt volume is the sum of those three buckets.
+
   Tackle.Lib deliberately does **not** depend on pricing libraries such as
   `llm_db`. Price cards, currency policy, credit conversion, and persistence are
   host-application concerns. Hosts can calculate cost in their adapter or
@@ -140,6 +144,50 @@ defmodule Tackle.Lib.Usage do
   end
 
   @doc """
+  Returns total prompt-token volume across uncached input, cache reads, and cache writes.
+  """
+  @spec prompt_tokens(t() | map() | nil) :: non_neg_integer() | nil
+  def prompt_tokens(usage) do
+    case normalize(usage) do
+      nil ->
+        nil
+
+      %__MODULE__{} = usage ->
+        sum_if_present([
+          usage.input_tokens,
+          usage.cache_read_tokens,
+          usage.cache_write_tokens
+        ])
+    end
+  end
+
+  @doc """
+  Returns the token-weighted prompt cache hit rate as a ratio from `0.0` to `1.0`.
+
+  The calculation matches Pi's cache-hit metric:
+  `cache_read_tokens / (input_tokens + cache_read_tokens + cache_write_tokens)`.
+  Returns `nil` when the provider did not report cache buckets or prompt usage is
+  empty, so unsupported cache reporting is not presented as a zero-percent hit.
+  """
+  @spec cache_hit_rate(t() | map() | nil) :: float() | nil
+  def cache_hit_rate(usage) do
+    case normalize(usage) do
+      %__MODULE__{cache_read_tokens: cache_read, cache_write_tokens: cache_write} = usage
+      when is_integer(cache_read) or is_integer(cache_write) ->
+        case prompt_tokens(usage) do
+          prompt_tokens when is_integer(prompt_tokens) and prompt_tokens > 0 ->
+            (cache_read || 0) / prompt_tokens
+
+          _empty ->
+            nil
+        end
+
+      _unreported ->
+        nil
+    end
+  end
+
+  @doc """
   Converts a usage struct to a plain map without nil values.
   """
   @spec to_map(t() | nil) :: map() | nil
@@ -155,10 +203,15 @@ defmodule Tackle.Lib.Usage do
   defp sum_token_field(usages, field) do
     usages
     |> Enum.map(&Map.get(&1, field))
+    |> sum_if_present()
+  end
+
+  defp sum_if_present(counts) do
+    counts
     |> Enum.reject(&is_nil/1)
     |> case do
       [] -> nil
-      counts -> Enum.sum(counts)
+      present -> Enum.sum(present)
     end
   end
 
@@ -197,12 +250,12 @@ defmodule Tackle.Lib.Usage do
 
   defp fill_total_tokens(%__MODULE__{} = usage) do
     total =
-      [usage.input_tokens, usage.output_tokens]
-      |> Enum.reject(&is_nil/1)
-      |> case do
-        [] -> nil
-        counts -> Enum.sum(counts)
-      end
+      sum_if_present([
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_tokens,
+        usage.cache_write_tokens
+      ])
 
     %{usage | total_tokens: total}
   end

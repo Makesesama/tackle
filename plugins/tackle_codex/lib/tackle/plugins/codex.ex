@@ -152,7 +152,7 @@ defmodule Tackle.Plugins.Codex do
         }
         |> maybe_put("tools", non_empty(tools))
         |> maybe_put("service_tier", Keyword.get(opts, :service_tier))
-        |> maybe_put("prompt_cache_key", Keyword.get(opts, :prompt_cache_key))
+        |> maybe_put("prompt_cache_key", prompt_cache_key(opts))
         |> maybe_put("reasoning", reasoning_options(opts))
 
       {:ok, body}
@@ -400,6 +400,16 @@ defmodule Tackle.Plugins.Codex do
         base
     end
   end
+
+  defp prompt_cache_key(opts) do
+    bounded_cache_key(Keyword.get(opts, :prompt_cache_key)) ||
+      bounded_cache_key(Keyword.get(opts, :session_id))
+  end
+
+  defp bounded_cache_key(value) when is_binary(value) and value != "",
+    do: String.slice(value, 0, 64)
+
+  defp bounded_cache_key(_value), do: nil
 
   defp responses_url(opts) do
     base_url = Keyword.get(opts, :base_url, @default_base_url) |> String.trim_trailing("/")

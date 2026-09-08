@@ -447,6 +447,7 @@ defmodule Tackle.Lib.LoopTest do
 
     assert_receive {:llm_opts, opts}
     assert Keyword.has_key?(opts, :tools)
+    assert Keyword.get(opts, :session_id) == state.session_id
     assert Keyword.get(opts, :receive_timeout) == 1_000
     refute Keyword.has_key?(opts, :tool_choice)
     refute Keyword.has_key?(opts, :parallel_tool_calls)

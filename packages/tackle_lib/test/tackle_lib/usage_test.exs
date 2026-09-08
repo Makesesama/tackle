@@ -51,6 +51,38 @@ defmodule Tackle.Lib.UsageTest do
     end
   end
 
+  describe "prompt cache metrics" do
+    test "calculates prompt volume and the Pi-compatible cache hit rate" do
+      usage = %Usage{
+        input_tokens: 100,
+        output_tokens: 10,
+        cache_read_tokens: 50,
+        cache_write_tokens: 50
+      }
+
+      assert Usage.prompt_tokens(usage) == 200
+      assert_in_delta Usage.cache_hit_rate(usage), 0.25, 0.000_001
+    end
+
+    test "distinguishes an uncached request from unsupported cache reporting" do
+      assert Usage.cache_hit_rate(%Usage{input_tokens: 100}) == nil
+      assert Usage.cache_hit_rate(%Usage{input_tokens: 100, cache_read_tokens: 0}) == 0.0
+      assert Usage.cache_hit_rate(%Usage{cache_read_tokens: 0, cache_write_tokens: 0}) == nil
+    end
+
+    test "includes cache buckets when deriving a missing total" do
+      usage =
+        Usage.normalize(%{
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_tokens: 20,
+          cache_write_tokens: 2
+        })
+
+      assert usage.total_tokens == 37
+    end
+  end
+
   describe "aggregate/1" do
     test "sums token fields across normalized usage entries" do
       usage =

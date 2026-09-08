@@ -344,6 +344,7 @@ normalized usage event when usage is returned.
 The loop supplies these adapter options:
 
 - `:model`
+- `:session_id` — stable across the conversation for provider cache affinity
 - `:system`
 - `:messages` — the sole conversation transport
 - `:temperature`
@@ -659,15 +660,24 @@ tools = Tackle.Lib.Cache.mark_last_tool(tools, control)
 ```
 
 This only marks cache breakpoints; it does not store or evict cached content.
-Providers that ignore the marker are unaffected. ExampleHost enables this by
-default for its web agent.
+Providers that ignore the marker are unaffected. The loop also sends the stable
+state `:session_id` to every adapter so providers with cache-affinity keys can
+reuse the same cache route across steps and turns. ExampleHost enables explicit
+cache markers by default for its web agent.
 
 ## Usage and billing
 
 Each assistant generation may carry `%Tackle.Lib.Usage{}` with input, output,
 reasoning, cache-read, cache-write, total tokens, optional cost/currency, model,
-provider, and raw provider metadata.
+provider, and raw provider metadata. The input/cache buckets are disjoint;
+`Tackle.Lib.Usage.prompt_tokens/1` sums them and
+`Tackle.Lib.Usage.cache_hit_rate/1` returns the Pi-compatible token-weighted rate:
 
+```text
+cache_read_tokens / (input_tokens + cache_read_tokens + cache_write_tokens)
+```
+
+The rate is `nil` when cache reporting is unavailable or prompt usage is empty.
 `Tackle.Lib.usage(state)` derives aggregate usage from assistant messages so a
 separate mutable total cannot drift. Cost aggregation is conservative: costs
 are summed only when every entry has numeric cost and currencies are compatible.

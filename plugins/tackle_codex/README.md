@@ -74,6 +74,11 @@ reasoning-model continuations it stores the provider's opaque response output on
 the assistant message and replays it only for the same provider and model. Hosts
 that persist conversations must preserve `Tackle.Lib.Message.provider_state`.
 
+For prompt caching, Tackle.Lib supplies its stable session ID on every model
+request. The adapter uses it as `prompt_cache_key` and sends matching
+`session-id`/`x-client-request-id` affinity headers. Codex cached-token usage is
+normalized into the library's separate cache-read and uncached-input buckets.
+
 WebSocket connection reuse, zstd request compression, and automatic model
 discovery are deliberately out of scope for the initial implementation.
 

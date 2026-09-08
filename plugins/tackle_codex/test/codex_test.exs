@@ -91,6 +91,7 @@ defmodule Tackle.Plugins.CodexTest do
 
     opts =
       Keyword.merge(base_opts(store, request),
+        session_id: "session-123",
         system: "Be useful",
         temperature: 0.3,
         messages: [
@@ -132,9 +133,12 @@ defmodule Tackle.Plugins.CodexTest do
     assert header(request_options, "authorization") == "Bearer access-token"
     assert header(request_options, "chatgpt-account-id") == "account-123"
     assert header(request_options, "originator") == "tackle"
+    assert header(request_options, "session-id") == "session-123"
+    assert header(request_options, "x-client-request-id") == "session-123"
 
     assert {:ok, body} = JSON.decode(request_options[:body])
     assert body["model"] == "gpt-5.5"
+    assert body["prompt_cache_key"] == "session-123"
     assert body["instructions"] == "Be useful"
     refute Map.has_key?(body, "temperature")
 

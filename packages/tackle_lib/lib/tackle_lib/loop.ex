@@ -232,6 +232,7 @@ defmodule Tackle.Lib.Loop do
     generate_opts =
       [
         model: snapshot.model,
+        session_id: state.session_id,
         system: system_prompt,
         messages: structured_messages,
         temperature: 0.3,

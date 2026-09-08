@@ -28,7 +28,9 @@ Run `mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.
 Type a prompt and press Enter to submit it; press Esc to cancel an active turn
 or exit while idle, and Ctrl+C to exit at any time. The conversation follows
 streaming responses and shows tool arguments, execution status, and concise
-result or error previews. This development task runs through Mix so ExRatatui's
+result or error previews. When the provider reports prompt-cache usage, the
+footer shows the latest token-weighted hit rate as `CH<n.n>%`, matching Pi's
+metric. This development task runs through Mix so ExRatatui's
 native library remains available as a real file.
 The escript archive is suitable for non-TUI commands only: native libraries
 cannot be loaded directly from its embedded ZIP.
