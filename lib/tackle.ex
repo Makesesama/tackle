@@ -29,6 +29,23 @@ defmodule Tackle do
 
   def start_session(opts), do: {:error, {:invalid_config, opts}}
 
+  @doc "Loads validated frontend-independent configuration through the harness plugin registry."
+  @spec load_config(keyword()) :: {:ok, Config.t()} | {:error, term()}
+  def load_config(opts \\ []) when is_list(opts), do: Config.load(opts)
+
+  @doc "Starts a supervised session using loaded harness configuration."
+  @spec start_configured_session(keyword()) ::
+          DynamicSupervisor.on_start_child() | {:error, term()}
+  def start_configured_session(opts \\ []) when is_list(opts) do
+    with {:ok, config} <- load_config(opts) do
+      start_session(config)
+    end
+  end
+
+  @doc "Returns canonical model references available through configured adapters."
+  @spec available_models() :: {:ok, [String.t()]} | {:error, term()}
+  def available_models, do: Tackle.Plugins.available_model_refs()
+
   @doc "Starts a turn and appends one user message."
   defdelegate submit(session, input), to: Session
 

@@ -71,28 +71,33 @@ This repository is a starting point, not a finished CLI:
 - [`plugins/tackle_codex`](plugins/tackle_codex/README.md) contains the
   first-party OpenAI Codex adapter, including ChatGPT OAuth protocol helpers,
   token refresh, Responses SSE transport, and provider-neutral translation.
-- The CLI, extension project loading, and Burrito packaging are still planned
-  work.
+- [`frontends/tackle_cli`](frontends/tackle_cli/README.md) contains the initial
+  Optimus/ex_ratatui CLI frontend skeleton. It can select a model reference but
+  relies on the root harness for adapter availability and session execution.
+- Extension project loading and Burrito packaging are still planned work.
 
 The root harness owns OTP application `:tackle` and namespace `Tackle`. The
 reusable library owns OTP application `:tackle_lib` and namespace `Tackle.Lib`;
-these identities are intentionally separate. This is a breaking library
-migration: downstream users must change package paths, module references, and
-library configuration from `:tackle`/`Tackle.*` to
+the CLI frontend owns OTP application `:tackle_cli` and namespace
+`Tackle.CLI`. These identities are intentionally separate. This is a breaking
+library migration: downstream users must change package paths, module
+references, and library configuration from `:tackle`/`Tackle.*` to
 `:tackle_lib`/`Tackle.Lib.*`. The Phoenix integration keeps its
 `:tackle_phoenix` and `Tackle.Phoenix.*` identities.
 
 ## Basic harness API
 
 The harness accepts already-loaded adapter and capability modules. General
-extension-project discovery remains out of scope; configuration data only
-selects models declared by modules supplied by the distribution.
+extension-project discovery remains out of scope; configuration data and
+frontend arguments only select models declared by modules supplied by the
+distribution.
 
 ```elixir
+config :tackle, adapters: [MyCodexAdapter]
+
 {:ok, session} =
-  Tackle.start_session(
-    adapters: [MyCodexAdapter],
-    model: "openai-codex/gpt-5.5"
+  Tackle.start_configured_session(
+    overrides: [model: "openai-codex/gpt-5.5"]
   )
 
 {:ok, snapshot} = Tackle.subscribe(session)
@@ -172,6 +177,11 @@ mix format --check-formatted
 (cd plugins/tackle_codex && mix deps.get)
 (cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
 (cd plugins/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+
+# CLI frontend
+(cd frontends/tackle_cli && mix deps.get)
+(cd frontends/tackle_cli && mix compile --warnings-as-errors && mix test)
+(cd frontends/tackle_cli && mix format --check-formatted)
 ```
 
 These are separate Mix projects, not an umbrella: root checks do not validate

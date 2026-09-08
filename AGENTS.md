@@ -35,6 +35,11 @@ mix format --check-formatted
 (cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
 (cd plugins/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
+# CLI frontend
+(cd frontends/tackle_cli && mix deps.get)
+(cd frontends/tackle_cli && mix compile --warnings-as-errors && mix test)
+(cd frontends/tackle_cli && mix format --check-formatted)
+
 # Inspect changes before handing off
 git status --short
 git diff --check
@@ -60,6 +65,9 @@ Burrito, or lint commands for tooling that has not been wired up.
 - `plugins/tackle_codex/`: first-party OpenAI Codex adapter, ChatGPT OAuth
   protocol helpers, and Responses SSE transport. It is a separate Mix project
   that depends on `:tackle_lib`, not the root harness.
+- `frontends/tackle_cli/`: initial Optimus/ex_ratatui terminal frontend. It is a
+  separate Mix project that depends on the root harness and selects models only;
+  adapter loading remains a root harness concern.
 - `flake.nix`, `nix/`: development environment, dependency, and build setup.
 - `deps/`, `_build/`, `.nix-mix/`, `.nix-hex/`: dependencies, build output,
   and local caches; not hand-maintained source.

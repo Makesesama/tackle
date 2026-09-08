@@ -194,7 +194,7 @@ defmodule Tackle.Config do
     case Keyword.fetch(opts, :available_adapters) do
       {:ok, adapters} when is_list(adapters) and adapters != [] -> {:ok, adapters}
       {:ok, adapters} -> {:error, {:invalid_option, :available_adapters, adapters}}
-      :error -> {:error, {:missing_option, :available_adapters}}
+      :error -> Tackle.Plugins.available_adapters()
     end
   end
 
