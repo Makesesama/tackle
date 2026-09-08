@@ -70,6 +70,14 @@ defmodule Tackle.ConfigTest do
     assert state.model == "family/nested"
   end
 
+  test "uses the built-in developer tools by default and permits an explicit empty set" do
+    assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small")
+    assert config.tools == Tackle.Tools.default()
+
+    assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small", tools: [])
+    assert config.tools == []
+  end
+
   test "returns explicit validation errors" do
     assert {:error, {:missing_option, :adapters}} = Config.new(model: "test/small")
 

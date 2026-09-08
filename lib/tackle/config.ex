@@ -121,7 +121,7 @@ defmodule Tackle.Config do
          {:ok, adapters} <- fetch_adapters(opts),
          {:ok, model_ref} <- fetch_model_ref(opts),
          {:ok, llm} <- LLM.select(adapters, model_ref),
-         {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, [])),
+         {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
          :ok <- validate_map(:context, Keyword.get(opts, :context, %{})),

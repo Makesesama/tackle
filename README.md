@@ -57,9 +57,10 @@ resolved and tested before promising a binary plugin workflow.
 This repository is a starting point, not a finished CLI:
 
 - The root Mix project provides frontend-independent adapter/model
-  configuration, supervised in-memory sessions, and a supervised credential
-  store. Configuration loads from `~/.tackle/config.json`, environment, and
-  explicit overrides without loading modules from data.
+  configuration, supervised in-memory sessions, a supervised credential store,
+  and built-in `read`, `bash`, `edit`, and `write` developer tools under
+  `Tackle.Tools.*`. Configuration loads from `~/.tackle/config.json`,
+  environment, and explicit overrides without loading modules from data.
 - [`packages/tackle_lib`](packages/tackle_lib/README.md) contains the existing
   agent library and its API documentation (`Tackle.Lib.*`).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the
@@ -119,8 +120,12 @@ Each session permits one active turn. `Tackle.continue/1` retries the settled
 conversation without adding another user message, `Tackle.cancel/1` requests
 cooperative cancellation, and `Tackle.close/1` cleans up the session. Subscribe
 before starting a turn; active-turn attachment is deferred until event replay or
-projection semantics are defined. `Tackle.Lib` provides the `:telemetry`
-runtime dependency used by tool execution.
+projection semantics are defined. Sessions use `Tackle.Tools.default/0` unless
+an embedding host explicitly supplies `:tools`; a host can set `context: %{cwd:
+path}` to change the tools' working directory. These tools inherit the Tackle
+process's filesystem and operating-system permissions and are not a sandbox.
+`Tackle.Lib` provides the `:telemetry` runtime dependency used by tool
+execution.
 
 ## Configuration and credentials
 
