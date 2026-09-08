@@ -63,6 +63,8 @@ defmodule Tackle.ConfigTest do
     assert config.model_ref == "test/family/nested"
     assert config.tools == [Tool]
     assert config.context == %{workspace: "/tmp/project"}
+    assert config.system_prompt =~ "You are an expert coding assistant operating inside Tackle"
+    assert config.system_prompt =~ "- test_tool: A test tool."
     assert config.llm_stream
 
     state = Config.to_agent_state(config)

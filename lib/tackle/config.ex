@@ -14,9 +14,10 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Tool.Adapters.Web, as: ToolAdapter
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
+  alias Tackle.SystemPrompt
   alias Tackle.Thinking
 
-  @loader_option_keys [:available_adapters, :env, :overrides]
+  @loader_option_keys [:available_adapters, :cwd, :env, :overrides]
   @reconfigure_option_keys [:model, :thinking]
 
   @reserved_llm_option_names MapSet.new([
@@ -89,7 +90,8 @@ defmodule Tackle.Config do
   The supplied `:available_adapters` are executable modules chosen by the
   harness distribution. Configuration data can select their declared model
   references but cannot name or load modules. Tests and embedding hosts may
-  supply an `:env` map; normal callers use the process environment.
+  supply an `:env` map; normal callers use the process environment. `:cwd`
+  selects the working directory used for prompt discovery and built-in tools.
   """
   @spec load(keyword()) :: {:ok, t()} | {:error, term()}
   def load(opts) when is_list(opts) do
@@ -100,12 +102,18 @@ defmodule Tackle.Config do
          {:ok, env} <- fetch_environment(opts),
          {:ok, config_path} <- Tackle.Paths.config_file(env: env),
          {:ok, file_opts} <- ConfigFile.load(config_path),
-         {:ok, env_opts} <- environment_options(env) do
-      with {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, adapters) do
-        session_opts
-        |> Keyword.put(:adapters, adapters)
-        |> new()
-      end
+         {:ok, env_opts} <- environment_options(env),
+         {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, adapters),
+         {:ok, config} <- session_opts |> Keyword.put(:adapters, adapters) |> new(),
+         {:ok, cwd} <- fetch_cwd(opts, config.context),
+         {:ok, config} <-
+           load_system_prompt(
+             config,
+             Keyword.get(session_opts, :system_prompt),
+             cwd,
+             Path.dirname(config_path)
+           ) do
+      {:ok, config}
     end
   end
 
@@ -149,7 +157,8 @@ defmodule Tackle.Config do
          llm: llm,
          tools: tools,
          hooks: hooks,
-         system_prompt: Keyword.get(opts, :system_prompt),
+         system_prompt:
+           Keyword.get_lazy(opts, :system_prompt, fn -> SystemPrompt.default(tools) end),
          context: Keyword.get(opts, :context, %{}),
          max_iterations: Keyword.get(opts, :max_iterations, :infinity),
          tool_policy: Keyword.get(opts, :tool_policy, Policy.default()),
@@ -287,6 +296,35 @@ defmodule Tackle.Config do
     case Keyword.get_lazy(opts, :env, &System.get_env/0) do
       %{} = env -> {:ok, env}
       _env -> {:error, {:invalid_option, :env}}
+    end
+  end
+
+  defp fetch_cwd(opts, context) do
+    case Keyword.fetch(opts, :cwd) do
+      {:ok, cwd} -> normalize_cwd(cwd)
+      :error -> context |> context_cwd() |> normalize_cwd()
+    end
+  end
+
+  defp context_cwd(context) do
+    Map.get(context, :cwd) || Map.get(context, "cwd") || File.cwd()
+  end
+
+  defp normalize_cwd({:ok, cwd}), do: normalize_cwd(cwd)
+  defp normalize_cwd({:error, reason}), do: {:error, {:cwd_unavailable, reason}}
+  defp normalize_cwd(cwd) when is_binary(cwd), do: validate_cwd(Path.expand(cwd))
+  defp normalize_cwd(cwd), do: {:error, {:invalid_option, :cwd, cwd}}
+
+  defp validate_cwd(cwd) do
+    if File.dir?(cwd), do: {:ok, cwd}, else: {:error, {:invalid_option, :cwd, cwd}}
+  end
+
+  defp load_system_prompt(config, base, cwd, home) do
+    context = Map.put(config.context, :cwd, cwd)
+
+    case SystemPrompt.build(base: base, cwd: cwd, home: home, tools: config.tools) do
+      {:ok, prompt} -> {:ok, %{config | context: context, system_prompt: prompt}}
+      {:error, reason} -> {:error, reason}
     end
   end
 

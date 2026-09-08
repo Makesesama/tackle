@@ -59,7 +59,8 @@ This repository is a starting point, not a finished CLI:
 - The root Mix project provides frontend-independent adapter/model
   configuration, supervised in-memory sessions, a supervised credential store,
   and built-in `read`, `bash`, `elixir_eval`, `edit`, and `write` developer tools
-  under `Tackle.Tools.*`. Configuration loads from `~/.tackle/config.json`,
+  under `Tackle.Tools.*`. It composes a coding system prompt with global and
+  project `AGENTS.md` guidance. Configuration loads from `~/.tackle/config.json`,
   environment, and explicit overrides without loading modules from data.
 - [`packages/tackle_lib`](packages/tackle_lib/README.md) contains the existing
   agent library and its API documentation (`Tackle.Lib.*`).
@@ -147,6 +148,23 @@ The configuration file accepts `model` and `thinking` fields. Thinking may be
 by model. `TACKLE_THINKING` overrides the file in the same way that
 `TACKLE_MODEL` overrides `model`. Adapter modules are always supplied as
 executable code, never converted from JSON strings.
+
+Configured sessions also build an effective coding prompt for their working
+directory. The built-in prompt lists the selected tools and core coding
+guidelines. The following optional UTF-8 files customize it:
+
+- `$TACKLE_HOME/SYSTEM.md` replaces the built-in base prompt;
+- `$TACKLE_HOME/APPEND_SYSTEM.md` appends global user guidance;
+- `$TACKLE_HOME/AGENTS.md` supplies global agent instructions; and
+- `AGENTS.md` files from the filesystem root through the working directory are
+  included from broadest to most specific.
+
+The append and `AGENTS.md` layers are retained when an embedding caller supplies
+an explicit `:system_prompt` override to `Tackle.Config.load/1`. Pass `:cwd` to
+`Tackle.Config.load/1` when the session should target a directory other than the
+process working directory; the same path is placed in session context for the
+built-in filesystem tools. `Tackle.Config.new/1` remains filesystem-independent:
+it supplies the built-in prompt but does not discover prompt files.
 
 ```json
 {

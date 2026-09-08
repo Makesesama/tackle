@@ -42,6 +42,72 @@ defmodule Tackle.Config.FileTest do
     assert config.llm_opts == [reasoning_effort: "high", reasoning_summary: "auto"]
   end
 
+  test "loads the effective system prompt for the configured cwd", %{home: home, env: env} do
+    cwd = Path.join(home, "workspace/nested")
+    File.mkdir_p!(cwd)
+    File.write!(Path.join(home, "APPEND_SYSTEM.md"), "Global addition.")
+    File.write!(Path.join(home, "AGENTS.md"), "Global instructions.")
+    File.write!(Path.join(Path.dirname(cwd), "AGENTS.md"), "Workspace instructions.")
+
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter],
+               cwd: cwd,
+               env: env,
+               overrides: [model: "test/default"]
+             )
+
+    assert config.context.cwd == cwd
+    assert config.system_prompt =~ "You are an expert coding assistant operating inside Tackle"
+    assert config.system_prompt =~ "Global addition."
+    assert config.system_prompt =~ "Global instructions."
+    assert config.system_prompt =~ "Workspace instructions."
+    assert config.system_prompt =~ "Current working directory: #{cwd}"
+
+    assert Config.to_agent_state(config).system_prompt == config.system_prompt
+  end
+
+  test "uses an explicit context cwd for prompt discovery and tool context", %{
+    home: home,
+    env: env
+  } do
+    cwd = Path.join(home, "context-workspace")
+    File.mkdir_p!(cwd)
+    File.write!(Path.join(cwd, "AGENTS.md"), "Context workspace instructions.")
+
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter],
+               env: env,
+               overrides: [model: "test/default", context: %{"cwd" => cwd}]
+             )
+
+    assert config.context.cwd == cwd
+    assert config.system_prompt =~ "Context workspace instructions."
+    assert config.system_prompt =~ "Current working directory: #{cwd}"
+  end
+
+  test "an explicit system prompt replaces the built-in base but keeps global additions", %{
+    home: home,
+    env: env
+  } do
+    cwd = Path.join(home, "workspace")
+    File.mkdir_p!(cwd)
+    File.write!(Path.join(home, "APPEND_SYSTEM.md"), "Global addition.")
+
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter],
+               cwd: cwd,
+               env: env,
+               overrides: [model: "test/default", system_prompt: "Explicit base."]
+             )
+
+    assert config.system_prompt =~ "Explicit base."
+    assert config.system_prompt =~ "Global addition."
+    refute config.system_prompt =~ "expert coding assistant"
+  end
+
   test "environment overrides the file", %{home: home, env: env} do
     write_config(home, ~s({"model":"test/file","thinking":"low"}))
 
