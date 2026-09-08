@@ -111,7 +111,8 @@ config :tackle_lib, llm: MyApp.AI.TackleAdapter
 ```
 
 - Required callback: `generate(schema, opts) :: {:ok, response} | {:error, term}`.
-- Optional callback: `stream(schema, opts, event_callback)` for streaming.
+- Optional callbacks: `stream(schema, opts, event_callback)` for streaming and
+  `model_info(model)` for adapter-owned context/output limits and price cards.
 - `opts[:messages]` is the **sole conversation transport**: a provider-neutral,
   role-tagged array (`Tackle.Lib.Messages.to_provider/1`) with `:user`, `:assistant`
   (carrying native `:tool_calls`), and `:tool` entries linked by `:tool_call_id`.
@@ -120,7 +121,9 @@ config :tackle_lib, llm: MyApp.AI.TackleAdapter
   `:native_tools`, `:tools`, and appends host `:llm_opts`.
 - Return `{:ok, %{data: map, usage: map | %Tackle.Lib.Usage{} | nil, model: binary | nil}}`.
   `:data` holds assistant `content` and/or native `tool_calls`. Tackle.Lib
-  normalizes `:usage` into `%Tackle.Lib.Usage{}`; pricing/cost stays host-owned.
+  normalizes `:usage` into `%Tackle.Lib.Usage{}` and applies the selected
+  adapter's price card when provider cost is absent. Derived cost is estimated;
+  host billing and quota policy remain host-owned.
 - `schema` is an optional structured-response schema for **non-tool** turns;
   tool calls always flow through provider-native `tool_calls`, not the schema.
 

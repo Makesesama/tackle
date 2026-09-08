@@ -277,8 +277,8 @@ Results are always one of:
 ```
 
 Convenience readers are `Tackle.Lib.last_answer/1`, `Tackle.Lib.messages/1`,
-`Tackle.Lib.usage/1`, `Tackle.Lib.completed?/1`, `Tackle.Lib.error?/1`, and
-`Tackle.Lib.error/1`.
+`Tackle.Lib.usage/1`, `Tackle.Lib.context_usage/1`, `Tackle.Lib.completed?/1`,
+`Tackle.Lib.error?/1`, and `Tackle.Lib.error/1`.
 
 ### Turn lifecycle
 
@@ -320,6 +320,7 @@ Implement `Tackle.Lib.LLM`:
 ```elixir
 @callback adapter_id() :: String.t()
 @callback models() :: [String.t()]
+@callback model_info(model :: String.t()) :: Tackle.Lib.ModelInfo.t() | map() | nil
 
 @callback generate(schema :: keyword() | map() | nil, opts :: keyword()) ::
             {:ok, response} | {:error, term()}
@@ -332,6 +333,13 @@ Implement `Tackle.Lib.LLM`:
 `Tackle.Lib.LLM.select/2`. They remain optional for compatibility with a single
 adapter configured through `config :tackle_lib, :llm`. Adapter ids are lowercase
 letters, digits, and hyphens and must be unique in the supplied adapter list.
+
+`model_info/1` is optional. It may return a context window, maximum output token
+count, and adapter-owned price card. `Tackle.Lib.LLM.select/2` validates and
+freezes this metadata in the selection. `Tackle.Lib.LLM.model_info/2` is the safe
+callback boundary for callers that need explicit callback/validation errors.
+Price-card cost is marked estimated; a numeric provider-reported total remains
+authoritative.
 
 Hosts may inject a `{module, reference}` credential-store handle in
 `opts[:credential_store]`. Adapters access their own namespace with
@@ -403,7 +411,9 @@ The adapter returns:
 ```
 
 `:usage` may already be `%Tackle.Lib.Usage{}`, a string- or atom-keyed provider map,
-or `nil`. Tackle.Lib normalizes it. Pricing remains host-owned.
+or `nil`. Tackle.Lib normalizes it. Adapter price cards may fill an itemized and
+total estimate when the provider omits cost; hosts still own billing, quota, and
+persistence policy.
 
 `:provider_state` is optional opaque, non-secret continuation metadata needed by
 some stateless provider APIs. Tackle.Lib stores it on the assistant message and
@@ -681,12 +691,21 @@ cache_read_tokens / (input_tokens + cache_read_tokens + cache_write_tokens)
 The rate is `nil` when cache reporting is unavailable or prompt usage is empty.
 `Tackle.Lib.usage(state)` derives aggregate usage from assistant messages so a
 separate mutable total cannot drift. Cost aggregation is conservative: costs
-are summed only when every entry has numeric cost and currencies are compatible.
+are summed only when every entry has numeric cost and currencies are compatible;
+an aggregate containing any estimate is itself estimated.
 
-Tackle.Lib does not know price cards, subscriptions, credits, or tenants. Compute
-cost in the adapter or host settlement layer and enforce quota **before** a turn
-starts. `Tackle.Phoenix.Store.before_turn/2` and `settle_turn/4` are designed for
-that split.
+`Tackle.Lib.context_usage(state)` uses the latest non-zero assistant usage as a
+checkpoint, preferring provider `total_tokens` and otherwise summing input,
+output, cache-read, and cache-write exactly once. Messages after that checkpoint
+are estimated at four UTF-8 characters per token. With no checkpoint, the
+system prompt, messages, and provider-neutral tool definitions are estimated.
+The result exposes raw remaining context and may exceed 100%; it does not reserve
+output tokens or trigger automatic compaction.
+
+Adapters own price cards because provider/model prices change independently of
+the core. Tackle.Lib does not interpret subscriptions, credits, or tenants;
+hosts must enforce quota **before** a turn starts. `Tackle.Phoenix.Store.before_turn/2`
+and `settle_turn/4` are designed for that split.
 
 ## Telemetry
 
@@ -874,6 +893,7 @@ Start with these files:
 - `lib/tackle.ex` — public facade
 - `lib/tackle_lib/loop.ex` — authoritative lifecycle
 - `lib/tackle_lib/state.ex` and `lib/tackle_lib/message.ex` — in-memory model
+- `lib/tackle_lib/usage.ex`, `model_info.ex`, and `context_usage.ex` — session statistics
 - `lib/tackle_lib/llm.ex` — provider contract
 - `lib/tackle_lib/tool.ex` and `lib/tackle_lib/tool/schema.ex` — tool contract
 - `lib/tackle_lib/hook.ex` and `lib/tackle_lib/event.ex` — extension/streaming seams

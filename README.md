@@ -77,7 +77,8 @@ This repository is a starting point, not a finished CLI:
   Optimus/ex_ratatui CLI entrypoint. It ships with the first-party Codex plugin
   as a distribution dependency, configures it as an available harness adapter,
   and relies on the root harness for credentials, sessions, and turn execution.
-  Its footer reports the latest provider-reported prompt-cache hit rate (`CH`).
+  Its footer reports current context pressure plus aggregate input/output,
+  prompt-cache hit rate, and cost when the selected adapter exposes them.
 - Extension project loading and Burrito packaging are still planned work.
 
 The root harness owns OTP application `:tackle` and namespace `Tackle`. The
@@ -118,6 +119,12 @@ session and turn correlation:
 {:tackle_turn_failed, session_id, turn_id, reason}
 {:tackle_session_reconfigured, session_id, %Tackle.Session.Snapshot{}}
 ```
+
+Each `%Tackle.Session.Snapshot{}` includes derived `%Tackle.Session.Stats{}`
+with aggregate assistant-message usage, latest generation usage, selected-model
+metadata, and current context pressure. No duplicate mutable totals are kept.
+Usage events also carry priced normalized usage and context pressure when model
+metadata is available.
 
 Each session permits one active turn. `Tackle.continue/1` retries the settled
 conversation without adding another user message, `Tackle.cancel/1` requests

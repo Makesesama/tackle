@@ -13,7 +13,7 @@ defmodule Tackle.CLI.TUI do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.{Block, Paragraph, Popup, TextInput, WidgetList}
   alias ExRatatui.Widgets.List, as: SelectionList
-  alias Tackle.Lib.{Event, Message, State, Usage}
+  alias Tackle.Lib.{ContextUsage, Event, Message, ModelInfo, State, Usage}
   alias Tackle.Session.Snapshot
   alias Tackle.Thinking
 
@@ -80,6 +80,8 @@ defmodule Tackle.CLI.TUI do
         streaming_thinking: "",
         streaming_response: "",
         latest_usage: latest_usage(snapshot.agent_state),
+        live_usage: nil,
+        live_context_usage: nil,
         tool_activity: [],
         activity: nil,
         error: nil,
@@ -107,7 +109,7 @@ defmodule Tackle.CLI.TUI do
       {header_widget(state), header_area},
       {conversation_widget(state, conversation_area), conversation_area},
       {input_widget(state), input_area},
-      {footer_widget(state), footer_area}
+      {footer_widget(state, footer_area), footer_area}
     ]
 
     if state.settings, do: widgets ++ [{settings_widget(state), area}], else: widgets
@@ -243,11 +245,23 @@ defmodule Tackle.CLI.TUI do
   end
 
   def handle_info(
-        {:tackle_event, session_id, turn_id, %Event{type: :usage, data: %{usage: usage}}},
+        {:tackle_event, session_id, turn_id, %Event{type: :usage, data: %{usage: usage} = data}},
         %{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
     latest_usage = Usage.normalize(usage) || state.latest_usage
-    {:noreply, %{state | latest_usage: latest_usage, activity: "usage"}}
+
+    live_context_usage =
+      Map.get(data, :context_usage) ||
+        ContextUsage.from_usage(latest_usage, model_info(state.agent_state))
+
+    {:noreply,
+     %{
+       state
+       | latest_usage: latest_usage,
+         live_usage: latest_usage,
+         live_context_usage: live_context_usage,
+         activity: "usage"
+     }}
   end
 
   def handle_info(
@@ -299,6 +313,8 @@ defmodule Tackle.CLI.TUI do
         streaming_thinking: "",
         streaming_response: "",
         latest_usage: latest_usage(agent_state) || state.latest_usage,
+        live_usage: nil,
+        live_context_usage: nil,
         tool_activity: [],
         activity: nil,
         error: error
@@ -317,6 +333,8 @@ defmodule Tackle.CLI.TUI do
         pending_prompt: nil,
         streaming_thinking: "",
         streaming_response: "",
+        live_usage: nil,
+        live_context_usage: nil,
         tool_activity: [],
         activity: nil,
         error: format_reason(reason)
@@ -333,6 +351,8 @@ defmodule Tackle.CLI.TUI do
       state
       | agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
+        live_usage: nil,
+        live_context_usage: nil,
         settings: nil,
         error: nil
     }
@@ -375,6 +395,8 @@ defmodule Tackle.CLI.TUI do
               pending_prompt: prompt,
               streaming_thinking: "",
               streaming_response: "",
+              live_usage: nil,
+              live_context_usage: nil,
               tool_activity: [],
               activity: "starting",
               error: nil
@@ -430,7 +452,7 @@ defmodule Tackle.CLI.TUI do
     }
   end
 
-  defp footer_widget(state) do
+  defp footer_widget(state, _area) do
     controls =
       if state.active_turn do
         "Esc cancel · Ctrl+C quit"
@@ -439,7 +461,7 @@ defmodule Tackle.CLI.TUI do
       end
 
     text =
-      [cache_hit_indicator(state), "PgUp/PgDn scroll · Ctrl+End follow", controls]
+      (session_stat_indicators(state) ++ ["PgUp/PgDn scroll · Ctrl+End follow", controls])
       |> Enum.reject(&is_nil/1)
       |> Enum.join(" · ")
 
@@ -974,10 +996,45 @@ defmodule Tackle.CLI.TUI do
     end)
   end
 
-  defp cache_hit_indicator(state) do
-    with %Usage{} = usage <- state.latest_usage,
-         rate when is_float(rate) <- Usage.cache_hit_rate(usage),
-         true <- cache_activity?(state.agent_state, usage) do
+  defp session_stat_indicators(state) do
+    usage = displayed_usage(state)
+
+    [
+      context_indicator(displayed_context_usage(state)),
+      token_indicator("in", usage.input_tokens),
+      token_indicator("out", usage.output_tokens),
+      cache_hit_indicator(usage),
+      cost_indicator(usage)
+    ]
+  end
+
+  defp displayed_usage(state) do
+    settled = State.usage(state.agent_state)
+
+    [settled, state.live_usage]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(not usage_activity?(&1)))
+    |> Usage.aggregate()
+  end
+
+  defp displayed_context_usage(%{live_context_usage: %ContextUsage{} = context}), do: context
+  defp displayed_context_usage(state), do: Tackle.Lib.context_usage(state.agent_state)
+
+  defp context_indicator(%ContextUsage{} = context) do
+    percentage = :erlang.float_to_binary(context.percent, decimals: 1)
+
+    "ctx #{format_token_count(context.tokens)}/#{format_token_count(context.context_window)} " <>
+      "(#{percentage}%)"
+  end
+
+  defp context_indicator(nil), do: nil
+
+  defp token_indicator(_label, nil), do: nil
+  defp token_indicator(label, tokens), do: "#{label} #{format_token_count(tokens)}"
+
+  defp cache_hit_indicator(%Usage{} = usage) do
+    with rate when is_float(rate) <- Usage.cache_hit_rate(usage),
+         true <- cache_activity?(usage) do
       percentage = :erlang.float_to_binary(rate * 100, decimals: 1)
       "CH#{percentage}%"
     else
@@ -985,19 +1042,55 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
-  defp cache_activity?(%State{} = agent_state, %Usage{} = latest_usage) do
-    session_usage = State.usage(agent_state)
-
+  defp cache_activity?(%Usage{} = usage) do
     Enum.any?(
-      [
-        session_usage.cache_read_tokens,
-        session_usage.cache_write_tokens,
-        latest_usage.cache_read_tokens,
-        latest_usage.cache_write_tokens
-      ],
+      [usage.cache_read_tokens, usage.cache_write_tokens],
       &(is_integer(&1) and &1 > 0)
     )
   end
+
+  defp cost_indicator(%Usage{cost: cost, currency: currency} = usage) when is_number(cost) do
+    marker = if usage.cost_estimated == true, do: "~", else: ""
+    decimals = if abs(cost) < 0.01, do: 4, else: 2
+    amount = :erlang.float_to_binary(cost / 1, decimals: decimals)
+
+    case currency do
+      "USD" -> "#{marker}$#{amount}"
+      currency when is_binary(currency) -> "#{marker}#{currency} #{amount}"
+      nil -> "cost #{marker}#{amount}"
+    end
+  end
+
+  defp cost_indicator(%Usage{}), do: nil
+
+  defp format_token_count(tokens) when tokens < 1_000, do: Integer.to_string(tokens)
+
+  defp format_token_count(tokens) when tokens < 1_000_000,
+    do: compact_decimal(tokens / 1_000, "k")
+
+  defp format_token_count(tokens), do: compact_decimal(tokens / 1_000_000, "m")
+
+  defp compact_decimal(value, suffix) do
+    decimals = if value < 10 and value != trunc(value), do: 1, else: 0
+    :erlang.float_to_binary(value / 1, decimals: decimals) <> suffix
+  end
+
+  defp usage_activity?(%Usage{} = usage) do
+    Enum.any?(
+      [
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.reasoning_tokens,
+        usage.cache_read_tokens,
+        usage.cache_write_tokens,
+        usage.total_tokens
+      ],
+      &is_integer/1
+    ) or is_number(usage.cost)
+  end
+
+  defp model_info(%State{llm: %{model_info: %ModelInfo{} = info}}), do: info
+  defp model_info(%State{}), do: nil
 
   defp status(%{active_turn: nil, error: nil}), do: "ready"
   defp status(%{active_turn: nil}), do: "error"

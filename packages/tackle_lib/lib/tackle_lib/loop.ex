@@ -247,7 +247,7 @@ defmodule Tackle.Lib.Loop do
       pending_id = state.pending_assistant_id
 
       LLM.stream_with(
-        snapshot.llm_adapter,
+        snapshot.llm || snapshot.llm_adapter,
         response_schema,
         generate_opts,
         fn event ->
@@ -258,7 +258,7 @@ defmodule Tackle.Lib.Loop do
       )
     else
       LLM.generate_with(
-        snapshot.llm_adapter,
+        snapshot.llm || snapshot.llm_adapter,
         response_schema,
         generate_opts
       )

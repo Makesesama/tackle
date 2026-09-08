@@ -72,11 +72,15 @@ defmodule Tackle.Lib.LLM do
   validate the originating provider and model before replaying it. `generate/3`
   normalizes provider-specific usage maps into `%Tackle.Lib.Usage{}` before returning so the
   loop and host persistence see one stable shape. Cost is optional because many
-  providers return token counts only; pricing remains host-owned.
+  providers return token counts only. Adapters may expose optional model limits
+  and price cards through `model_info/1`; Tackle.Lib marks derived cost estimates
+  while hosts retain billing and persistence policy.
   """
 
+  alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM.Selection
+  alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.Usage
 
   @type usage :: Usage.t() | nil
@@ -105,6 +109,9 @@ defmodule Tackle.Lib.LLM do
   @doc "The adapter-local model identifiers available for explicit selection."
   @callback models() :: [String.t()]
 
+  @doc "Optional adapter-owned limits and price card for one adapter-local model."
+  @callback model_info(model :: String.t()) :: ModelInfo.t() | map() | nil
+
   @callback generate(schema :: keyword() | nil, opts :: keyword()) ::
               {:ok, adapter_response()} | {:error, term()}
 
@@ -114,7 +121,7 @@ defmodule Tackle.Lib.LLM do
               event_callback :: (term() -> any())
             ) :: {:ok, adapter_response()} | {:error, term()}
 
-  @optional_callbacks adapter_id: 0, models: 0, stream: 3
+  @optional_callbacks adapter_id: 0, models: 0, model_info: 1, stream: 3
 
   @doc """
   Selects an adapter and model from a canonical `adapter_id/model` reference.
@@ -126,6 +133,24 @@ defmodule Tackle.Lib.LLM do
   """
   @spec select([module()], String.t()) :: {:ok, Selection.t()} | {:error, term()}
   defdelegate select(adapters, model_ref), to: Selection, as: :resolve
+
+  @doc """
+  Safely resolves and validates optional metadata for one adapter-local model.
+
+  Adapters without `model_info/1` return `{:ok, nil}`. Callback failures and
+  malformed metadata are returned explicitly so hosts never run with silently
+  invalid model limits or prices.
+  """
+  @spec model_info(module(), String.t()) :: {:ok, ModelInfo.t() | nil} | {:error, term()}
+  def model_info(adapter, model)
+      when is_atom(adapter) and not is_nil(adapter) and is_binary(model) and model != "" do
+    with :ok <- ensure_adapter_loaded(adapter),
+         {:ok, value} <- call_model_info(adapter, model) do
+      ModelInfo.normalize(model, value)
+    end
+  end
+
+  def model_info(adapter, model), do: {:error, {:invalid_model_info_request, adapter, model}}
 
   @doc """
   Returns the configured default LLM adapter module.
@@ -173,20 +198,28 @@ defmodule Tackle.Lib.LLM do
   that was resolved when the turn started, even if application config changes
   while the turn is running.
   """
-  @spec generate_with(module() | nil, keyword() | nil, keyword()) ::
+  @spec generate_with(module() | Selection.t() | nil, keyword() | nil, keyword()) ::
           {:ok, response()} | {:error, term()}
-  def generate_with(adapter, schema, opts \\ [])
+  def generate_with(adapter_or_selection, schema, opts \\ [])
+
+  def generate_with(%Selection{} = selection, schema, opts) do
+    generate_with_context(
+      selection.adapter,
+      selection.model_info,
+      selection.adapter_id,
+      schema,
+      Keyword.put(opts, :model, selection.model)
+    )
+  end
 
   def generate_with(adapter, schema, opts)
       when is_atom(adapter) and not is_nil(adapter) do
-    with {:ok, response} <- adapter.generate(schema, opts) do
-      {:ok, normalize_response(response)}
+    with {:ok, info} <- model_info_from_opts(adapter, opts) do
+      generate_with_context(adapter, info, Keyword.get(opts, :provider), schema, opts)
     end
   end
 
-  def generate_with(nil, _schema, _opts) do
-    {:error, :missing_llm_adapter}
-  end
+  def generate_with(nil, _schema, _opts), do: {:error, :missing_llm_adapter}
 
   @doc """
   Streams through the configured adapter when supported.
@@ -208,47 +241,134 @@ defmodule Tackle.Lib.LLM do
   Mirrors `stream/3`, but uses the adapter supplied by a per-turn snapshot
   instead of resolving current application config.
   """
-  @spec stream_with(module() | nil, keyword() | nil, keyword(), (Event.t() -> any())) ::
-          {:ok, response()} | {:error, term()}
+  @spec stream_with(
+          module() | Selection.t() | nil,
+          keyword() | nil,
+          keyword(),
+          (Event.t() -> any())
+        ) :: {:ok, response()} | {:error, term()}
+  def stream_with(adapter_or_selection, schema, opts, event_callback)
+
+  def stream_with(%Selection{} = selection, schema, opts, event_callback)
+      when is_function(event_callback, 1) do
+    stream_with_context(
+      selection.adapter,
+      selection.model_info,
+      selection.adapter_id,
+      schema,
+      Keyword.put(opts, :model, selection.model),
+      event_callback
+    )
+  end
+
   def stream_with(adapter, schema, opts, event_callback)
       when is_atom(adapter) and not is_nil(adapter) and is_function(event_callback, 1) do
-    if function_exported?(adapter, :stream, 3) do
-      provider = Keyword.get(opts, :provider)
+    with {:ok, info} <- model_info_from_opts(adapter, opts) do
+      stream_with_context(
+        adapter,
+        info,
+        Keyword.get(opts, :provider),
+        schema,
+        opts,
+        event_callback
+      )
+    end
+  end
 
+  def stream_with(nil, _schema, _opts, _event_callback), do: {:error, :missing_llm_adapter}
+
+  defp generate_with_context(adapter, info, provider, schema, opts) do
+    with {:ok, response} <- adapter.generate(schema, opts) do
+      {:ok, normalize_response(response, info, provider, Keyword.get(opts, :model))}
+    end
+  end
+
+  defp stream_with_context(adapter, info, provider, schema, opts, event_callback) do
+    if function_exported?(adapter, :stream, 3) do
       adapter_callback = fn provider_event ->
         provider_event
         |> Event.normalize(provider: provider)
+        |> price_usage_event(info, provider, Keyword.get(opts, :model))
         |> event_callback.()
       end
 
       with {:ok, response} <- adapter.stream(schema, opts, adapter_callback) do
-        {:ok, normalize_response(response)}
+        {:ok, normalize_response(response, info, provider, Keyword.get(opts, :model))}
       end
     else
-      with {:ok, response} <- generate_with(adapter, schema, opts) do
-        emit_usage_event(response, event_callback)
+      with {:ok, response} <- generate_with_context(adapter, info, provider, schema, opts) do
+        emit_usage_event(response, info, event_callback)
         {:ok, response}
       end
     end
   end
 
-  def stream_with(nil, _schema, _opts, _event_callback) do
-    {:error, :missing_llm_adapter}
-  end
+  defp normalize_response(%{} = response, info, fallback_provider, requested_model) do
+    response_model = Map.get(response, :model)
+    provider = Map.get(response, :provider) || fallback_provider
 
-  defp normalize_response(%{} = response) do
-    model = Map.get(response, :model)
-    provider = Map.get(response, :provider)
-    usage = Usage.normalize(Map.get(response, :usage), model: model, provider: provider)
+    usage =
+      response
+      |> Map.get(:usage)
+      |> Usage.normalize(model: response_model || requested_model, provider: provider)
+      |> then(&estimate_cost(info, &1))
 
     Map.put(response, :usage, usage)
   end
 
-  defp emit_usage_event(%{usage: nil}, _event_callback), do: :ok
+  defp price_usage_event(%Event{type: :usage, data: data} = event, info, provider, model) do
+    usage =
+      data
+      |> Map.get(:usage)
+      |> Usage.normalize(model: model, provider: provider)
+      |> then(&estimate_cost(info, &1))
 
-  defp emit_usage_event(%{usage: usage}, event_callback) do
-    usage
-    |> Event.usage()
-    |> event_callback.()
+    context_usage = ContextUsage.from_usage(usage, info)
+    data = data |> Map.put(:usage, usage) |> maybe_put(:context_usage, context_usage)
+    %{event | data: data}
   end
+
+  defp price_usage_event(%Event{} = event, _info, _provider, _model), do: event
+
+  defp estimate_cost(nil, usage), do: usage
+  defp estimate_cost(%ModelInfo{} = info, usage), do: ModelInfo.estimate_cost(info, usage)
+
+  defp emit_usage_event(%{usage: nil}, _info, _event_callback), do: :ok
+
+  defp emit_usage_event(%{usage: usage}, info, event_callback) do
+    event = Event.usage(usage)
+    event = price_usage_event(event, info, usage.provider, usage.model)
+    event_callback.(event)
+  end
+
+  defp model_info_from_opts(adapter, opts) do
+    case Keyword.get(opts, :model) do
+      model when is_binary(model) and model != "" -> model_info(adapter, model)
+      _missing -> {:ok, nil}
+    end
+  end
+
+  defp ensure_adapter_loaded(adapter) do
+    case Code.ensure_loaded(adapter) do
+      {:module, ^adapter} -> :ok
+      {:error, reason} -> {:error, {:invalid_adapter, adapter, {:not_loaded, reason}}}
+    end
+  end
+
+  defp call_model_info(adapter, model) do
+    if function_exported?(adapter, :model_info, 1) do
+      {:ok, apply(adapter, :model_info, [model])}
+    else
+      {:ok, nil}
+    end
+  rescue
+    exception ->
+      {:error, {:adapter_callback_failed, adapter, :model_info, Exception.message(exception)}}
+  catch
+    kind, reason ->
+      {:error, {:adapter_callback_failed, adapter, :model_info, {kind, reason}}}
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

@@ -80,7 +80,16 @@ that persist conversations must preserve `Tackle.Lib.Message.provider_state`.
 For prompt caching, Tackle.Lib supplies its stable session ID on every model
 request. The adapter uses it as `prompt_cache_key` and sends matching
 `session-id`/`x-client-request-id` affinity headers. Codex cached-token usage is
-normalized into the library's separate cache-read and uncached-input buckets.
+normalized into the library's separate cache-read, cache-write, and uncached-input
+buckets.
+
+`model_info/1` exposes the explicit Codex catalog's context windows, maximum
+output limits, and USD-per-million-token price cards. Tackle.Lib applies those
+cards consistently to streaming and settled usage when the provider omits cost.
+These totals are marked estimated. ChatGPT subscription usage does not necessarily
+represent an API charge or invoice, so hosts must not treat the estimate as
+provider-reported billing. Catalog values are maintained with the adapter and
+should be reviewed whenever its selectable model list changes.
 
 WebSocket connection reuse, zstd request compression, and automatic model
 discovery are deliberately out of scope for the initial implementation.

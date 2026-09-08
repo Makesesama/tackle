@@ -13,12 +13,20 @@ defmodule Tackle.Lib.Usage do
   to cache. Total prompt volume is the sum of those three buckets.
 
   Tackle.Lib deliberately does **not** depend on pricing libraries such as
-  `llm_db`. Price cards, currency policy, credit conversion, and persistence are
-  host-application concerns. Hosts can calculate cost in their adapter or
-  persistence layer and place it in `:cost` / `:currency` when available.
+  `llm_db`. Adapters may expose price cards through `Tackle.Lib.LLM.model_info/1`;
+  the library applies their deterministic arithmetic while leaving provider
+  facts and persistence adapter/host-owned.
   """
 
   @type token_count :: non_neg_integer() | nil
+  @type cost_breakdown :: %{
+          optional(:input) => number(),
+          optional(:output) => number(),
+          optional(:cache_read) => number(),
+          optional(:cache_write) => number(),
+          optional(:total) => number(),
+          optional(:estimated) => boolean()
+        }
 
   @type t :: %__MODULE__{
           input_tokens: token_count(),
@@ -28,6 +36,8 @@ defmodule Tackle.Lib.Usage do
           cache_write_tokens: token_count(),
           total_tokens: token_count(),
           cost: term() | nil,
+          cost_breakdown: cost_breakdown() | nil,
+          cost_estimated: boolean() | nil,
           currency: String.t() | nil,
           model: String.t() | nil,
           provider: String.t() | atom() | nil,
@@ -41,6 +51,8 @@ defmodule Tackle.Lib.Usage do
             cache_write_tokens: nil,
             total_tokens: nil,
             cost: nil,
+            cost_breakdown: nil,
+            cost_estimated: nil,
             currency: nil,
             model: nil,
             provider: nil,
@@ -108,6 +120,10 @@ defmodule Tackle.Lib.Usage do
         ]),
       total_tokens: first_integer(usage, [:total_tokens, :total, "total_tokens", "total"]),
       cost: first_present(usage, [:cost, :total_cost, "cost", "total_cost"]),
+      cost_breakdown:
+        normalize_cost_breakdown(first_present(usage, [:cost_breakdown, "cost_breakdown"])),
+      cost_estimated:
+        normalize_boolean(first_present(usage, [:cost_estimated, "cost_estimated"])),
       currency: first_present(usage, [:currency, "currency"]),
       model: first_present(usage, [:model, "model"]) || Keyword.get(opts, :model),
       provider: first_present(usage, [:provider, "provider"]) || Keyword.get(opts, :provider),
@@ -125,7 +141,8 @@ defmodule Tackle.Lib.Usage do
   Cost is intentionally conservative: it is summed only when every usage entry
   has a numeric cost and all non-nil currencies are the same. If any entry lacks
   cost, uses a non-numeric cost representation, or mixes currencies, aggregate
-  cost is returned as `nil`.
+  cost is returned as `nil`. An aggregate containing any estimated generation is
+  itself marked estimated.
   """
   @spec aggregate([t() | map() | nil]) :: t()
   def aggregate(usages) when is_list(usages) do
@@ -139,6 +156,8 @@ defmodule Tackle.Lib.Usage do
       cache_write_tokens: sum_token_field(normalized, :cache_write_tokens),
       total_tokens: sum_token_field(normalized, :total_tokens),
       cost: aggregate_cost(normalized),
+      cost_breakdown: aggregate_cost_breakdown(normalized),
+      cost_estimated: aggregate_cost_estimated(normalized),
       currency: aggregate_currency(normalized)
     }
   end
@@ -158,6 +177,21 @@ defmodule Tackle.Lib.Usage do
           usage.cache_read_tokens,
           usage.cache_write_tokens
         ])
+    end
+  end
+
+  @doc """
+  Returns the context tokens represented by one provider usage checkpoint.
+
+  A provider's `:total_tokens` is preferred. Otherwise the value is derived
+  from input, output, cache-read, and cache-write buckets, matching Pi's context
+  calculation.
+  """
+  @spec context_tokens(t() | map() | nil) :: non_neg_integer() | nil
+  def context_tokens(usage) do
+    case normalize(usage) do
+      %__MODULE__{total_tokens: total} when is_integer(total) -> total
+      _unavailable -> nil
     end
   end
 
@@ -225,6 +259,35 @@ defmodule Tackle.Lib.Usage do
     end
   end
 
+  defp aggregate_cost_breakdown([]), do: nil
+
+  defp aggregate_cost_breakdown(usages) do
+    breakdowns = Enum.map(usages, & &1.cost_breakdown)
+
+    if Enum.all?(breakdowns, &is_map/1) && compatible_currencies?(usages) do
+      amounts =
+        [:input, :output, :cache_read, :cache_write, :total]
+        |> Map.new(fn field ->
+          values = Enum.map(breakdowns, &Map.get(&1, field))
+          {field, if(Enum.all?(values, &is_number/1), do: Enum.sum(values), else: nil)}
+        end)
+        |> Enum.reject(fn {_field, value} -> is_nil(value) end)
+        |> Map.new()
+
+      if Enum.any?(breakdowns, &(&1[:estimated] == true)),
+        do: Map.put(amounts, :estimated, true),
+        else: amounts
+    end
+  end
+
+  defp aggregate_cost_estimated([]), do: nil
+
+  defp aggregate_cost_estimated(usages) do
+    if Enum.all?(usages, &is_number(&1.cost)) and compatible_currencies?(usages) do
+      Enum.any?(usages, &(&1.cost_estimated == true))
+    end
+  end
+
   defp aggregate_currency(usages) do
     usages
     |> Enum.map(& &1.currency)
@@ -277,6 +340,31 @@ defmodule Tackle.Lib.Usage do
       end
     end)
   end
+
+  defp normalize_cost_breakdown(%{} = breakdown) do
+    amounts =
+      [:input, :output, :cache_read, :cache_write, :total]
+      |> Enum.reduce(%{}, fn field, normalized ->
+        case first_present(breakdown, [field, Atom.to_string(field)]) do
+          amount when is_number(amount) -> Map.put(normalized, field, amount)
+          _unavailable -> normalized
+        end
+      end)
+
+    if map_size(amounts) == 0 do
+      nil
+    else
+      case first_present(breakdown, [:estimated, "estimated"]) do
+        estimated when is_boolean(estimated) -> Map.put(amounts, :estimated, estimated)
+        _unavailable -> amounts
+      end
+    end
+  end
+
+  defp normalize_cost_breakdown(_breakdown), do: nil
+
+  defp normalize_boolean(value) when is_boolean(value), do: value
+  defp normalize_boolean(_value), do: nil
 
   defp parse_non_negative_integer(value) do
     case Integer.parse(value) do

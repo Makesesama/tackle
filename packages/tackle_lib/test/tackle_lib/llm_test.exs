@@ -4,6 +4,7 @@ defmodule Tackle.Lib.LLMTest do
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
+  alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.State
   alias Tackle.Lib.Usage
 
@@ -95,6 +96,78 @@ defmodule Tackle.Lib.LLMTest do
     def generate(_schema, _opts), do: {:error, :not_used}
   end
 
+  defmodule MetadataAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "priced"
+
+    @impl true
+    def models, do: ["model"]
+
+    @impl true
+    def model_info("model") do
+      %{
+        context_window: 100_000,
+        max_output_tokens: 10_000,
+        pricing: %{input: 2, output: 8, cache_read: 0.2, cache_write: 2.5}
+      }
+    end
+
+    @impl true
+    def generate(_schema, _opts) do
+      {:ok,
+       %{
+         data: %{"content" => "priced"},
+         usage: %{input_tokens: 1_000, output_tokens: 100, cache_read_tokens: 500},
+         model: "model-versioned",
+         provider: adapter_id()
+       }}
+    end
+
+    @impl true
+    def stream(_schema, _opts, event_callback) do
+      event_callback.(%{
+        type: :usage,
+        usage: %{input_tokens: 1_000, output_tokens: 100, cache_read_tokens: 500}
+      })
+
+      generate(nil, [])
+    end
+  end
+
+  defmodule InvalidMetadataAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "invalid-metadata"
+
+    @impl true
+    def models, do: ["model"]
+
+    @impl true
+    def model_info(_model), do: %{context_window: 0}
+
+    @impl true
+    def generate(_schema, _opts), do: {:error, :not_used}
+  end
+
+  defmodule FailingMetadataAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "failing-metadata"
+
+    @impl true
+    def models, do: ["model"]
+
+    @impl true
+    def model_info(_model), do: raise("catalog unavailable")
+
+    @impl true
+    def generate(_schema, _opts), do: {:error, :not_used}
+  end
+
   setup do
     previous = Application.get_env(:tackle_lib, :llm)
     Application.put_env(:tackle_lib, :llm, TestAdapter)
@@ -147,6 +220,27 @@ defmodule Tackle.Lib.LLMTest do
       assert LLM.adapter() == TestAdapter
     end
 
+    test "resolves optional model metadata once and permits adapters without it" do
+      assert {:ok, %Selection{model_info: %ModelInfo{} = info}} =
+               LLM.select([MetadataAdapter], "priced/model")
+
+      assert info.context_window == 100_000
+      assert info.max_output_tokens == 10_000
+
+      assert {:ok, %Selection{model_info: nil}} =
+               LLM.select([SelectableAdapterA], "provider-a/shared")
+    end
+
+    test "returns malformed metadata and callback failures explicitly" do
+      assert {:error, {:invalid_model_info, "model", {:context_window, 0}}} =
+               LLM.select([InvalidMetadataAdapter], "invalid-metadata/model")
+
+      assert {:error,
+              {:adapter_callback_failed, FailingMetadataAdapter, :model_info,
+               "catalog unavailable"}} =
+               LLM.select([FailingMetadataAdapter], "failing-metadata/model")
+    end
+
     test "separate states can use different selected adapters concurrently" do
       {:ok, selection_a} = LLM.select([SelectableAdapterA], "provider-a/shared")
       {:ok, selection_b} = LLM.select([SelectableAdapterB], "provider-b/shared")
@@ -167,6 +261,32 @@ defmodule Tackle.Lib.LLMTest do
     assert %Usage{input_tokens: 4, output_tokens: 6, total_tokens: 10} = response.usage
     assert response.usage.model == "test/model"
     assert response.usage.provider == :test_provider
+  end
+
+  test "prices normalized responses and streaming usage from the requested model card" do
+    {:ok, selection} = LLM.select([MetadataAdapter], "priced/model")
+
+    assert {:ok, response} = LLM.generate_with(selection, nil, model: "model")
+    assert response.usage.model == "model-versioned"
+    assert response.usage.cost_estimated
+    assert_in_delta response.usage.cost, 0.0029, 0.000_001
+
+    test_pid = self()
+
+    assert {:ok, streamed} =
+             LLM.stream_with(selection, nil, [model: "model"], fn event ->
+               send(test_pid, {:priced_event, event})
+             end)
+
+    assert_receive {:priced_event,
+                    %Event{
+                      type: :usage,
+                      data: %{usage: %Usage{} = streamed_usage, context_usage: context_usage}
+                    }}
+
+    assert_in_delta streamed_usage.cost, streamed.usage.cost, 0.000_001
+    assert context_usage.tokens == streamed_usage.total_tokens
+    assert context_usage.context_window == 100_000
   end
 
   test "normalizes adapter stream events into Tackle.Lib events" do

@@ -32,10 +32,13 @@ Down or the mouse wheel; Ctrl+Home jumps to the oldest message and Ctrl+End
 returns to the newest message and resumes automatic following. The conversation
 follows streaming reasoning summaries and responses and shows tool arguments,
 execution status, and concise result or error previews. Model and thinking
-changes preserve the settled conversation. When the provider reports
-prompt-cache usage, the footer shows the latest token-weighted hit rate as
-`CH<n.n>%`, matching Pi's
-metric. This development task runs through Mix so ExRatatui's
+changes preserve the settled conversation. The footer shows current context
+pressure and aggregate session input/output when available, plus the
+Pi-compatible token-weighted prompt-cache hit rate and monetary cost. A `~`
+before cost (for example `~$0.84`) marks a price-card estimate rather than
+provider-reported billing. Missing metadata is omitted, and context pressure is
+informational only—automatic compaction is not implemented. This development
+task runs through Mix so ExRatatui's
 native library remains available as a real file.
 The escript archive is suitable for non-TUI commands only: native libraries
 cannot be loaded directly from its embedded ZIP.

@@ -16,6 +16,15 @@ defmodule TackleTest do
     def models, do: ["test"]
 
     @impl true
+    def model_info("test") do
+      %{
+        context_window: 1_000,
+        max_output_tokens: 200,
+        pricing: %{input: 2, output: 8, cache_read: 0.2, cache_write: 2.5}
+      }
+    end
+
+    @impl true
     def generate(_schema, opts) do
       test_pid = Keyword.fetch!(opts, :test_pid)
       signal = Keyword.fetch!(opts, :cancellation_signal)
@@ -32,7 +41,7 @@ defmodule TackleTest do
       {:ok,
        %{
          data: %{"content" => content, "tool_calls" => []},
-         usage: nil,
+         usage: %{input_tokens: 100, output_tokens: 10, cache_read_tokens: 50},
          model: "test",
          provider: adapter_id()
        }}
@@ -137,7 +146,26 @@ defmodule TackleTest do
     assert Enum.any?(events, &match?(%Event{type: :turn_start}, &1))
     assert Enum.any?(events, &match?(%Event{type: :turn_end}, &1))
 
-    assert %Snapshot{agent_state: ^final_state, active_turn: nil} = Tackle.snapshot(session)
+    assert %Snapshot{agent_state: ^final_state, active_turn: nil, stats: stats} =
+             Tackle.snapshot(session)
+
+    assert stats.usage.input_tokens == 100
+    assert stats.usage.output_tokens == 10
+    assert stats.usage.cache_read_tokens == 50
+    assert stats.usage.cost_estimated
+    assert stats.latest_usage == List.last(final_state.messages).token_usage
+    assert stats.model_info.context_window == 1_000
+    assert stats.context_usage.tokens == 160
+    assert stats.context_usage.percent == 16.0
+
+    assert Enum.any?(events, fn
+             %Event{type: :usage, data: %{usage: usage, context_usage: context_usage}} ->
+               usage.cost_estimated and context_usage.tokens == 160
+
+             _event ->
+               false
+           end)
+
     assert Cancellation.reason(signal) == nil
   end
 

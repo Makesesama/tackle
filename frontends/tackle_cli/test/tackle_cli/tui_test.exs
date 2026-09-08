@@ -21,6 +21,10 @@ defmodule Tackle.CLI.TUITest do
       def models, do: ["test-model", "other-model"]
 
       @impl true
+      def model_info("test-model"), do: %{context_window: 1_000, max_output_tokens: 200}
+      def model_info("other-model"), do: %{context_window: 2_000, max_output_tokens: 400}
+
+      @impl true
       def generate(_schema, _opts), do: {:error, :not_used}
     end
 
@@ -131,6 +135,7 @@ defmodule Tackle.CLI.TUITest do
              text =~ "Welcome to Tackle"
            end)
 
+    assert footer =~ "ctx 0/1k (0.0%)"
     assert footer =~ "Enter send"
     assert footer =~ "F2 model/thinking"
     refute footer =~ "CH"
@@ -159,6 +164,7 @@ defmodule Tackle.CLI.TUITest do
     assert state.agent_state.llm.ref == "openai-codex/other-model"
     assert Tackle.Thinking.from_llm_opts(state.agent_state.llm_opts) == "minimal"
     assert header_text(state) =~ "thinking minimal"
+    assert footer_text(state) =~ "ctx 0/2k (0.0%)"
   end
 
   test "shows the latest Pi-compatible cache hit rate in the footer", %{tui: tui} do
@@ -176,12 +182,20 @@ defmodule Tackle.CLI.TUITest do
          input_tokens: 100,
          output_tokens: 10,
          cache_read_tokens: 50,
-         cache_write_tokens: 50
+         cache_write_tokens: 50,
+         cost: 0.84,
+         cost_estimated: true,
+         currency: "USD"
        })}
     )
 
     live_state = :sys.get_state(tui).user_state
-    assert footer_text(live_state) =~ "CH25.0%"
+    live_footer = footer_text(live_state)
+    assert live_footer =~ "ctx 210/1k (21.0%)"
+    assert live_footer =~ "in 100"
+    assert live_footer =~ "out 10"
+    assert live_footer =~ "CH25.0%"
+    assert live_footer =~ "~$0.84"
 
     agent_state = %{
       live_state.agent_state
@@ -192,7 +206,10 @@ defmodule Tackle.CLI.TUITest do
               input_tokens: 100,
               output_tokens: 10,
               cache_read_tokens: 50,
-              cache_write_tokens: 50
+              cache_write_tokens: 50,
+              cost: 0.84,
+              cost_estimated: true,
+              currency: "USD"
             }
           )
         ],
@@ -201,7 +218,24 @@ defmodule Tackle.CLI.TUITest do
 
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     settled_state = :sys.get_state(tui).user_state
-    assert footer_text(settled_state) =~ "CH25.0%"
+    settled_footer = footer_text(settled_state)
+    assert settled_footer =~ "ctx 210/1k (21.0%)"
+    assert settled_footer =~ "in 100"
+    assert settled_footer =~ "out 10"
+    assert settled_footer =~ "CH25.0%"
+    assert settled_footer =~ "~$0.84"
+  end
+
+  test "omits context and token statistics when they are unavailable", %{tui: tui} do
+    state = :sys.get_state(tui).user_state
+    llm = %{state.agent_state.llm | model_info: nil}
+    state = %{state | agent_state: %{state.agent_state | llm: llm}, latest_usage: nil}
+    footer = footer_text(state)
+
+    refute footer =~ "ctx "
+    refute footer =~ "in "
+    refute footer =~ "out "
+    refute footer =~ "$"
   end
 
   test "submits the current prompt on Enter", %{tui: tui} do

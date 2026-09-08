@@ -2,7 +2,7 @@ defmodule Tackle.Plugins.CodexTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib
-  alias Tackle.Lib.{Cancellation, LLM, Loop}
+  alias Tackle.Lib.{Cancellation, LLM, Loop, ModelInfo, Usage}
   alias Tackle.Plugins.Codex
 
   defmodule CredentialStore do
@@ -40,6 +40,18 @@ defmodule Tackle.Plugins.CodexTest do
       id: {Agent, make_ref()}
     )
     |> then(&{:ok, store: {CredentialStore, &1}})
+  end
+
+  test "exposes limits and price cards for every selectable model" do
+    Enum.each(Codex.models(), fn model ->
+      assert {:ok, %ModelInfo{} = info} = LLM.model_info(Codex, model)
+      assert info.context_window in [128_000, 272_000]
+      assert info.max_output_tokens == 128_000
+      assert info.pricing.currency == "USD"
+      assert info.pricing.unit_tokens == 1_000_000
+    end)
+
+    assert {:ok, nil} = LLM.model_info(Codex, "unknown")
   end
 
   test "translates messages and tools and returns normalized content and usage", %{store: store} do
@@ -121,14 +133,27 @@ defmodule Tackle.Plugins.CodexTest do
         ]
       )
 
-    assert {:ok, result} = Codex.generate(nil, opts)
+    assert {:ok, selection} = LLM.select([Codex], "openai-codex/gpt-5.5")
+    assert {:ok, result} = LLM.generate_with(selection, nil, opts)
     assert result.data == %{"content" => "hello", "tool_calls" => []}
     assert result.model == "gpt-5.5"
     assert result.provider == "openai-codex"
-    assert result.usage["input_tokens"] == 7
-    assert result.usage["cached_input_tokens"] == 2
-    assert result.usage["cache_write_tokens"] == 3
-    assert result.usage["reasoning_tokens"] == 1
+
+    assert %Usage{
+             input_tokens: 7,
+             output_tokens: 4,
+             cache_read_tokens: 2,
+             cache_write_tokens: 3,
+             reasoning_tokens: 1,
+             cost_estimated: true,
+             currency: "USD"
+           } = result.usage
+
+    assert_in_delta result.usage.cost_breakdown.input, 0.000035, 0.0000001
+    assert_in_delta result.usage.cost_breakdown.output, 0.00012, 0.0000001
+    assert_in_delta result.usage.cost_breakdown.cache_read, 0.000001, 0.0000001
+    assert result.usage.cost_breakdown.cache_write == 0.0
+    assert_in_delta result.usage.cost, 0.000156, 0.0000001
 
     assert_receive {:request, request_options}
     assert request_options[:url] == "https://chatgpt.com/backend-api/codex/responses"

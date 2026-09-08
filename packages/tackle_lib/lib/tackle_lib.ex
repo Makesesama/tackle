@@ -23,6 +23,8 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.CredentialStore` — provider-neutral access through host-owned handles.
     * `Tackle.Lib.SystemPrompt` — response-format contract + tool-doc assembly.
     * `Tackle.Lib.Usage` — normalized token/cost metadata for LLM steps.
+    * `Tackle.Lib.ModelInfo` — adapter-owned model limits and price cards.
+    * `Tackle.Lib.ContextUsage` — current context-window pressure calculations.
     * `Tackle.Lib.Event` — provider-independent run/message/tool/usage events.
     * `Tackle.Lib.LLM` — the provider-agnostic LLM behaviour and explicit
       adapter/model selection (the keystone seam).
@@ -109,6 +111,14 @@ defmodule Tackle.Lib do
   """
   @spec usage(State.t()) :: Tackle.Lib.Usage.t()
   defdelegate usage(state), to: State
+
+  @doc """
+  Calculates current context-window usage for the selected model.
+
+  Returns `nil` when the adapter does not declare a context window.
+  """
+  @spec context_usage(State.t()) :: Tackle.Lib.ContextUsage.t() | nil
+  def context_usage(%State{} = state), do: Tackle.Lib.ContextUsage.estimate(state)
 
   @doc """
   Checks if the agent has completed its task.

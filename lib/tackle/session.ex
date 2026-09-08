@@ -16,16 +16,60 @@ defmodule Tackle.Session do
   alias Tackle.Auth
   alias Tackle.Config
   alias Tackle.Lib.Cancellation
+  alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.State, as: AgentState
 
   @task_shutdown_timeout 1_000
 
+  defmodule Stats do
+    @moduledoc "Derived, immutable token, cost, model, and context statistics."
+
+    alias Tackle.Lib.ContextUsage
+    alias Tackle.Lib.Message
+    alias Tackle.Lib.State
+    alias Tackle.Lib.Usage
+
+    @enforce_keys [:usage]
+    defstruct [:usage, :latest_usage, :model_info, :context_usage]
+
+    @type t :: %__MODULE__{
+            usage: Usage.t(),
+            latest_usage: Usage.t() | nil,
+            model_info: Tackle.Lib.ModelInfo.t() | nil,
+            context_usage: ContextUsage.t() | nil
+          }
+
+    @doc "Derives statistics from assistant-message usage and the selected model."
+    @spec from_agent_state(State.t()) :: t()
+    def from_agent_state(%State{} = state) do
+      %__MODULE__{
+        usage: State.usage(state),
+        latest_usage: latest_usage(state.messages),
+        model_info: model_info(state),
+        context_usage: ContextUsage.estimate(state)
+      }
+    end
+
+    defp model_info(%State{llm: %{model_info: model_info}}), do: model_info
+    defp model_info(%State{}), do: nil
+
+    defp latest_usage(messages) do
+      Enum.find_value(Enum.reverse(messages), fn
+        %Message{role: :assistant, token_usage: usage} when not is_nil(usage) ->
+          Usage.normalize(usage)
+
+        _message ->
+          nil
+      end)
+    end
+  end
+
   defmodule Snapshot do
     @moduledoc "An atomic view of a Tackle session and its active turn."
 
     @enforce_keys [:session_id, :agent_state]
-    defstruct [:session_id, :agent_state, :active_turn]
+    defstruct [:session_id, :agent_state, :active_turn, :stats]
 
     @type active_turn :: %{
             required(:id) => String.t(),
@@ -36,7 +80,8 @@ defmodule Tackle.Session do
     @type t :: %__MODULE__{
             session_id: String.t(),
             agent_state: Tackle.Lib.State.t(),
-            active_turn: active_turn() | nil
+            active_turn: active_turn() | nil,
+            stats: Tackle.Session.Stats.t() | nil
           }
   end
 
@@ -185,6 +230,8 @@ defmodule Tackle.Session do
         {:tackle_event, turn_id, %Event{} = event},
         %{active_turn: %{id: turn_id}} = state
       ) do
+    event = project_usage_event(event, state.agent_state)
+
     broadcast(
       state,
       {:tackle_event, state.agent_state.session_id, turn_id, event}
@@ -308,9 +355,26 @@ defmodule Tackle.Session do
     %Snapshot{
       session_id: state.agent_state.session_id,
       agent_state: state.agent_state,
-      active_turn: active_turn
+      active_turn: active_turn,
+      stats: Stats.from_agent_state(state.agent_state)
     }
   end
+
+  defp project_usage_event(
+         %Event{type: :usage, data: %{usage: usage} = data} = event,
+         %AgentState{} = state
+       ) do
+    model_info = if state.llm, do: state.llm.model_info
+
+    data =
+      data
+      |> Map.put_new(:model_info, model_info)
+      |> Map.put_new(:context_usage, ContextUsage.from_usage(usage, model_info))
+
+    %{event | data: data}
+  end
+
+  defp project_usage_event(%Event{} = event, _state), do: event
 
   defp put_subscriber(subscribers, subscriber) do
     case Map.fetch(subscribers, subscriber) do

@@ -80,6 +80,8 @@ defmodule Tackle.Lib.UsageTest do
         })
 
       assert usage.total_tokens == 37
+      assert Usage.context_tokens(usage) == 37
+      assert Usage.context_tokens(%Usage{}) == nil
     end
   end
 
@@ -107,6 +109,29 @@ defmodule Tackle.Lib.UsageTest do
 
       assert_in_delta usage.cost, 0.03, 0.000_001
       assert usage.currency == "USD"
+    end
+
+    test "marks a mixed authoritative and estimated aggregate as estimated" do
+      usage =
+        Usage.aggregate([
+          %Usage{
+            cost: 0.01,
+            cost_breakdown: %{input: 0.01, total: 0.01, estimated: false},
+            cost_estimated: false,
+            currency: "USD"
+          },
+          %Usage{
+            cost: 0.02,
+            cost_breakdown: %{output: 0.02, total: 0.02, estimated: true},
+            cost_estimated: true,
+            currency: "USD"
+          }
+        ])
+
+      assert_in_delta usage.cost, 0.03, 0.000_001
+      assert usage.cost_estimated
+      assert usage.cost_breakdown.estimated
+      assert_in_delta usage.cost_breakdown.total, 0.03, 0.000_001
     end
 
     test "does not return partial aggregate cost for missing cost or mixed currency" do

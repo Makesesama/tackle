@@ -10,13 +10,14 @@ defmodule Tackle.Lib.LLM.Selection do
   @adapter_id_pattern ~r/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/
 
   @enforce_keys [:adapter, :adapter_id, :model, :ref]
-  defstruct [:adapter, :adapter_id, :model, :ref]
+  defstruct [:adapter, :adapter_id, :model, :ref, :model_info]
 
   @type t :: %__MODULE__{
           adapter: module(),
           adapter_id: String.t(),
           model: String.t(),
-          ref: String.t()
+          ref: String.t(),
+          model_info: Tackle.Lib.ModelInfo.t() | nil
         }
 
   @doc false
@@ -26,13 +27,15 @@ defmodule Tackle.Lib.LLM.Selection do
          {:ok, adapter_index} <- index_adapters(adapters),
          {:ok, adapter} <- fetch_adapter(adapter_index, adapter_id),
          {:ok, models} <- adapter_models(adapter, adapter_id),
-         :ok <- ensure_model(models, adapter_id, model) do
+         :ok <- ensure_model(models, adapter_id, model),
+         {:ok, model_info} <- Tackle.Lib.LLM.model_info(adapter, model) do
       {:ok,
        %__MODULE__{
          adapter: adapter,
          adapter_id: adapter_id,
          model: model,
-         ref: model_ref
+         ref: model_ref,
+         model_info: model_info
        }}
     end
   end

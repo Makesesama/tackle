@@ -32,12 +32,44 @@ defmodule Tackle.Plugins.Codex do
     "gpt-5.6-terra",
     "gpt-6-astra"
   ]
+  @model_info %{
+    "gpt-5.3-codex-spark" => {128_000, {1.75, 14, 0.175, 0}},
+    "gpt-5.4" => {272_000, {2.5, 15, 0.25, 0}},
+    "gpt-5.4-mini" => {272_000, {0.75, 4.5, 0.075, 0}},
+    "gpt-5.5" => {272_000, {5, 30, 0.5, 0}},
+    "gpt-5.6-luna" => {272_000, {0.2, 1.2, 0.02, 0.25}},
+    "gpt-5.6-sol" => {272_000, {5, 30, 0.5, 6.25}},
+    "gpt-5.6-terra" => {272_000, {2, 12, 0.2, 2.5}},
+    "gpt-6-astra" => {272_000, {10, 50, 1, 12.5}}
+  }
 
   @impl true
   def adapter_id, do: @adapter_id
 
   @impl true
   def models, do: @models
+
+  @impl true
+  def model_info(model) do
+    case Map.get(@model_info, model) do
+      {context_window, {input, output, cache_read, cache_write}} ->
+        %{
+          context_window: context_window,
+          max_output_tokens: 128_000,
+          pricing: %{
+            input: input,
+            output: output,
+            cache_read: cache_read,
+            cache_write: cache_write,
+            currency: "USD",
+            unit_tokens: 1_000_000
+          }
+        }
+
+      nil ->
+        nil
+    end
+  end
 
   @impl true
   def generate(schema, opts) do
