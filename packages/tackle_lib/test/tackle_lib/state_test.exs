@@ -13,7 +13,7 @@ defmodule Tackle.Lib.StateTest do
       assert state.session_id != nil
       assert state.messages == []
       assert state.current_iteration == 0
-      assert state.max_iterations == 10
+      assert state.max_iterations == :infinity
       assert state.status == :idle
       # Tackle.Lib has no baked-in default model — the host supplies it.
       assert state.llm == nil
@@ -96,12 +96,21 @@ defmodule Tackle.Lib.StateTest do
   end
 
   describe "max_iterations_reached?/1" do
-    test "returns false when under max" do
+    test "returns false when the default limit is unlimited" do
+      state =
+        Enum.reduce(1..20, State.new(), fn _iteration, state ->
+          State.increment_iteration(state)
+        end)
+
+      refute State.max_iterations_reached?(state)
+    end
+
+    test "returns false when under an explicit max" do
       state = State.new(max_iterations: 3)
       refute State.max_iterations_reached?(state)
     end
 
-    test "returns true when at max" do
+    test "returns true when at an explicit max" do
       state =
         State.new(max_iterations: 2)
         |> State.increment_iteration()

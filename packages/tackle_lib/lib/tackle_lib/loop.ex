@@ -346,7 +346,7 @@ defmodule Tackle.Lib.Loop do
         handle_content_response(state, callbacks, content, message_opts)
 
       has_tool_results_in_recent_messages?(state.messages) &&
-          state.current_iteration < state.max_iterations ->
+          not State.max_iterations_reached?(state) ->
         Logger.warning("LLM failed to provide content after tool results, retrying...")
         loop(state, callbacks)
 

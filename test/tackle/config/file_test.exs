@@ -31,7 +31,7 @@ defmodule Tackle.Config.FileTest do
              )
 
     assert config.model_ref == "test/default"
-    assert config.max_iterations == 10
+    assert config.max_iterations == :infinity
   end
 
   test "loads model and thinking from config.json", %{home: home, env: env} do

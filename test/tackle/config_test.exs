@@ -107,6 +107,20 @@ defmodule Tackle.ConfigTest do
     assert config.tools == []
   end
 
+  test "uses unlimited iterations by default and accepts an explicit limit" do
+    assert {:ok, unlimited} = Config.new(adapters: [Adapter], model: "test/small")
+    assert unlimited.max_iterations == :infinity
+    assert Config.to_agent_state(unlimited).max_iterations == :infinity
+
+    assert {:ok, bounded} =
+             Config.new(adapters: [Adapter], model: "test/small", max_iterations: 25)
+
+    assert bounded.max_iterations == 25
+
+    assert {:error, {:invalid_option, :max_iterations, 0}} =
+             Config.new(adapters: [Adapter], model: "test/small", max_iterations: 0)
+  end
+
   test "returns explicit validation errors" do
     assert {:error, {:missing_option, :adapters}} = Config.new(model: "test/small")
 

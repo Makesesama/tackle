@@ -39,7 +39,7 @@ Tackle.Lib.last_answer(state)
 ```
 
 - `Tackle.Lib.new/1` builds `%Tackle.Lib.State{}`. Key opts: `:model`, `:tools`,
-  `:system_prompt`, `:context`, `:max_iterations` (default 10), `:hooks`,
+  `:system_prompt`, `:context`, `:max_iterations` (default `:infinity`), `:hooks`,
   `:tool_policy`, `:llm_opts`, `:prompt_renderer`, `:id_generator`.
 - `Tackle.Lib.run(state, user_input, opts)` runs one turn (think → act → repeat →
   answer). Returns `{:ok, state} | {:error, state} | {:cancelled, state}`.

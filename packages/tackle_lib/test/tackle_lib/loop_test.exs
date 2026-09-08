@@ -219,6 +219,32 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
+  defmodule TenToolCallsThenContentAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      call_count = Process.get(:call_count, 0)
+
+      if call_count < 10 do
+        Process.put(:call_count, call_count + 1)
+
+        {:ok,
+         %{
+           data: %{
+             "tool_calls" => [
+               %{"id" => "call_#{call_count}", "name" => "first", "arguments" => %{}}
+             ]
+           },
+           usage: nil,
+           model: "test/model"
+         }}
+      else
+        {:ok, %{data: %{"content" => "Done after ten tools."}, usage: nil, model: "test/model"}}
+      end
+    end
+  end
+
   # Captures opts[:messages] (the structured array) on every call, then drives a
   # tool-call turn followed by a content turn so the second call's array carries
   # the assistant tool-call turn and the linked tool result.
@@ -331,6 +357,19 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:tool_execute, :first}
     assert state.status == :completed
     assert List.last(state.messages).content == "Done after tool."
+  end
+
+  test "runs beyond ten iterations when no explicit limit is configured" do
+    Application.put_env(:tackle_lib, :llm, TenToolCallsThenContentAdapter)
+    Process.put(:call_count, 0)
+
+    state =
+      State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+
+    assert {:ok, state} = Loop.run(state, "keep using the tool")
+    assert state.max_iterations == :infinity
+    assert state.current_iteration == 11
+    assert List.last(state.messages).content == "Done after ten tools."
   end
 
   test "passes a structured message array (not a flat blob) with linked tool call/result" do

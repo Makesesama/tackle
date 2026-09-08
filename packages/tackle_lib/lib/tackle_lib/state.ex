@@ -17,12 +17,13 @@ defmodule Tackle.Lib.State do
   alias Tackle.Lib.Usage
 
   @type status :: :idle | :thinking | :acting | :completed | :error | :cancelled
+  @type iteration_limit :: pos_integer() | :infinity
 
   @type t :: %__MODULE__{
           session_id: String.t(),
           messages: [Message.t()],
           current_iteration: non_neg_integer(),
-          max_iterations: pos_integer(),
+          max_iterations: iteration_limit(),
           status: status(),
           tools: [module()],
           tool_registry: Registry.t(),
@@ -41,7 +42,7 @@ defmodule Tackle.Lib.State do
           pending_assistant_id: String.t() | nil
         }
 
-  @default_max_iterations 10
+  @default_max_iterations :infinity
 
   defstruct session_id: nil,
             messages: [],
@@ -69,7 +70,7 @@ defmodule Tackle.Lib.State do
 
   ## Options
     * `:model` - The LLM model spec to use (host-supplied; no default)
-    * `:max_iterations` - Maximum ReAct loop iterations (default: 10)
+    * `:max_iterations` - Maximum ReAct loop iterations (default: `:infinity`)
     * `:tools` - List of tool modules implementing `Tackle.Lib.Tool` (default: [])
     * `:tool_policy` - Tool execution policy (defaults to sequential Tackle.Lib policy)
     * `:context` - Additional context map (user info, permissions, etc.)
@@ -149,6 +150,8 @@ defmodule Tackle.Lib.State do
   Checks if the agent has exceeded max iterations.
   """
   @spec max_iterations_reached?(t()) :: boolean()
+  def max_iterations_reached?(%__MODULE__{max_iterations: :infinity}), do: false
+
   def max_iterations_reached?(%__MODULE__{} = state) do
     state.current_iteration >= state.max_iterations
   end

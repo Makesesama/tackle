@@ -57,7 +57,7 @@ defmodule Tackle.Config do
             hooks: [],
             system_prompt: nil,
             context: %{},
-            max_iterations: 10,
+            max_iterations: :infinity,
             tool_policy: nil,
             llm_opts: [],
             prompt_renderer: nil,
@@ -73,7 +73,7 @@ defmodule Tackle.Config do
           hooks: [module()],
           system_prompt: String.t() | nil,
           context: map(),
-          max_iterations: pos_integer(),
+          max_iterations: pos_integer() | :infinity,
           tool_policy: Policy.t(),
           llm_opts: keyword(),
           prompt_renderer: module() | nil,
@@ -130,7 +130,7 @@ defmodule Tackle.Config do
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
          :ok <- validate_map(:context, Keyword.get(opts, :context, %{})),
-         :ok <- validate_positive_integer(:max_iterations, Keyword.get(opts, :max_iterations, 10)),
+         :ok <- validate_iteration_limit(Keyword.get(opts, :max_iterations, :infinity)),
          :ok <- validate_tool_policy(Keyword.get(opts, :tool_policy, Policy.default())),
          :ok <- validate_keyword_option(:llm_opts, Keyword.get(opts, :llm_opts, [])),
          :ok <- validate_reserved_llm_options(Keyword.get(opts, :llm_opts, [])),
@@ -151,7 +151,7 @@ defmodule Tackle.Config do
          hooks: hooks,
          system_prompt: Keyword.get(opts, :system_prompt),
          context: Keyword.get(opts, :context, %{}),
-         max_iterations: Keyword.get(opts, :max_iterations, 10),
+         max_iterations: Keyword.get(opts, :max_iterations, :infinity),
          tool_policy: Keyword.get(opts, :tool_policy, Policy.default()),
          llm_opts: Keyword.get(opts, :llm_opts, []),
          prompt_renderer: Keyword.get(opts, :prompt_renderer),
@@ -413,8 +413,9 @@ defmodule Tackle.Config do
   defp validate_map(_name, value) when is_map(value), do: :ok
   defp validate_map(name, value), do: {:error, {:invalid_option, name, value}}
 
-  defp validate_positive_integer(_name, value) when is_integer(value) and value > 0, do: :ok
-  defp validate_positive_integer(name, value), do: {:error, {:invalid_option, name, value}}
+  defp validate_iteration_limit(:infinity), do: :ok
+  defp validate_iteration_limit(value) when is_integer(value) and value > 0, do: :ok
+  defp validate_iteration_limit(value), do: {:error, {:invalid_option, :max_iterations, value}}
 
   defp validate_keyword_option(name, value) when is_list(value) do
     if Keyword.keyword?(value), do: :ok, else: {:error, {:invalid_option, name, value}}

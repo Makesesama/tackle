@@ -183,8 +183,7 @@ state =
     model: "provider/model-name",
     tools: tools,
     system_prompt: authoring_prompt,
-    context: %{scope: current_scope},
-    max_iterations: 10
+    context: %{scope: current_scope}
   )
 
 case Tackle.Lib.run(state, "What changed this week?") do
@@ -246,13 +245,15 @@ Tackle.Lib.continue(state, run_opts)
 | `:tools` | Modules implementing `Tackle.Lib.Tool` | `[]` |
 | `:system_prompt` | Complete host-composed system prompt | `nil` |
 | `:context` | Opaque host context passed to hooks and tools | `%{}` |
-| `:max_iterations` | Maximum LLM/tool loop iterations | `10` |
+| `:max_iterations` | Optional maximum LLM/tool loop iterations | `:infinity` (unlimited) |
 | `:hooks` | Modules implementing `Tackle.Lib.Hook` | `[]` |
 | `:tool_policy` | Tool execution policy | sequential default |
 | `:llm_opts` | Additional adapter options | `[]` |
 | `:prompt_renderer` | Prompt renderer module | configured/default renderer |
 | `:prompt_renderer_opts` | Renderer options | `[]` |
 | `:id_generator` | Zero-arity session/message/tool-call ID function | UUID generator |
+
+Pass a positive integer as `:max_iterations` when a host needs a bounded run.
 
 `Tackle.Lib.run/3` appends one user message. `Tackle.Lib.continue/2` does **not** append a
 message; it clears the error/status, resets the iteration budget, and retries
@@ -287,7 +288,7 @@ A normal tool-using turn is:
 capture immutable snapshot
 emit turn_start
 append + finalize user message
-repeat until final answer or max_iterations:
+repeat until final answer (or a configured max_iterations):
   set thinking; emit message_start + step_start
   before_prompt hook
   call or stream LLM
