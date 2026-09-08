@@ -98,11 +98,11 @@ defmodule Tackle.Config do
          {:ok, config_path} <- Tackle.Paths.config_file(env: env),
          {:ok, file_opts} <- ConfigFile.load(config_path),
          {:ok, env_opts} <- environment_options(env) do
-      file_opts
-      |> Keyword.merge(env_opts)
-      |> Keyword.merge(overrides)
-      |> Keyword.put(:adapters, adapters)
-      |> new()
+      with {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, adapters) do
+        session_opts
+        |> Keyword.put(:adapters, adapters)
+        |> new()
+      end
     end
   end
 
@@ -187,6 +187,21 @@ defmodule Tackle.Config do
     case Keyword.keys(opts) -- @loader_option_keys do
       [] -> :ok
       unknown -> {:error, {:unknown_loader_options, Enum.uniq(unknown)}}
+    end
+  end
+
+  defp default_missing_model(file_opts, env_opts, overrides, adapters) do
+    session_opts =
+      file_opts
+      |> Keyword.merge(env_opts)
+      |> Keyword.merge(overrides)
+
+    if Keyword.has_key?(session_opts, :model) do
+      {:ok, session_opts}
+    else
+      with {:ok, model_ref} <- Tackle.Plugins.default_model_ref(adapters) do
+        {:ok, Keyword.put(session_opts, :model, model_ref)}
+      end
     end
   end
 

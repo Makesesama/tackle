@@ -3,5 +3,6 @@
 /cover/
 /doc/
 /tmp/
+/tackle
 erl_crash.dump
 *.ez

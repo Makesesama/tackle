@@ -33,6 +33,15 @@ defmodule Tackle.Plugins do
     end
   end
 
+  @doc "Returns the first canonical model reference for configured adapters."
+  @spec default_model_ref([module()]) :: {:ok, String.t()} | {:error, term()}
+  def default_model_ref(adapters) when is_list(adapters) and adapters != [] do
+    with {:ok, refs} <- model_refs(adapters), do: {:ok, hd(refs)}
+  end
+
+  def default_model_ref([]), do: {:error, :no_adapters_configured}
+  def default_model_ref(adapters), do: {:error, {:invalid_adapters_configuration, adapters}}
+
   defp validate_adapters(adapters) when is_list(adapters) and adapters != [] do
     case first_model_ref(adapters) do
       {:ok, model_ref} ->

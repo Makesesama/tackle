@@ -92,6 +92,7 @@ defmodule Tackle.Plugins.CodexTest do
     opts =
       Keyword.merge(base_opts(store, request),
         system: "Be useful",
+        temperature: 0.3,
         messages: [
           %{role: :user, content: "search"},
           %{
@@ -135,6 +136,7 @@ defmodule Tackle.Plugins.CodexTest do
     assert {:ok, body} = JSON.decode(request_options[:body])
     assert body["model"] == "gpt-5.5"
     assert body["instructions"] == "Be useful"
+    refute Map.has_key?(body, "temperature")
 
     assert Enum.any?(
              body["input"],

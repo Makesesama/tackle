@@ -1,29 +1,39 @@
 defmodule Tackle.CLI.Run do
   @moduledoc false
 
+  alias Tackle.Plugins.Codex.OAuth
+
+  @codex_provider "openai-codex"
   @terminal_timeout 60_000
 
   @spec run(%{model: String.t() | nil, prompt: String.t() | nil}) :: non_neg_integer()
   def run(%{model: model, prompt: nil}) do
-    case Tackle.CLI.TUI.start(model: model) do
-      :ok -> 0
-      {:error, reason} -> error(reason)
+    case start_session(model) do
+      {:ok, session, snapshot} ->
+        try do
+          case Tackle.CLI.TUI.start(model: snapshot.agent_state.model || model) do
+            :ok -> 0
+            {:error, reason} -> error(reason)
+          end
+        after
+          Tackle.close(session)
+        end
+
+      {:error, reason} ->
+        error(reason)
     end
   end
 
   def run(%{model: model, prompt: prompt}) when is_binary(prompt) do
-    with {:ok, _apps} <- Application.ensure_all_started(:tackle),
-         {:ok, session} <- Tackle.start_configured_session(overrides: overrides(model)) do
-      run_prompt(session, prompt)
-    else
+    case start_session(model) do
+      {:ok, session, _snapshot} -> run_prompt(session, prompt)
       {:error, reason} -> error(reason)
-      reason -> error(reason)
     end
   end
 
   @spec models() :: non_neg_integer()
   def models do
-    with {:ok, _apps} <- Application.ensure_all_started(:tackle),
+    with {:ok, _apps} <- ensure_started(),
          {:ok, models} <- Tackle.available_models() do
       Enum.each(models, &IO.puts/1)
       0
@@ -33,10 +43,73 @@ defmodule Tackle.CLI.Run do
     end
   end
 
+  @spec auth_login(%{provider: String.t()}) :: non_neg_integer()
+  def auth_login(%{provider: provider}) do
+    with {:ok, _apps} <- ensure_started(),
+         :ok <- supported_auth_provider(provider),
+         {:ok, device} <- OAuth.request_device_code(),
+         :ok <- print_device_instructions(device),
+         {:ok, credentials} <- OAuth.complete_device_code(device),
+         :ok <- Tackle.Auth.put(provider, credentials) do
+      IO.puts("Stored credentials for #{provider}.")
+      0
+    else
+      {:error, reason} -> error(reason)
+      reason -> error(reason)
+    end
+  end
+
+  @spec auth_status(%{provider: String.t() | nil}) :: non_neg_integer()
+  def auth_status(%{provider: provider}) do
+    provider = provider || @codex_provider
+
+    with {:ok, _apps} <- ensure_started(),
+         :ok <- supported_auth_provider(provider) do
+      case Tackle.Auth.status(provider) do
+        :stored ->
+          IO.puts("#{provider}: stored")
+          0
+
+        :missing ->
+          IO.puts("#{provider}: missing")
+          1
+
+        {:error, reason} ->
+          error(reason)
+      end
+    else
+      {:error, reason} -> error(reason)
+      reason -> error(reason)
+    end
+  end
+
+  @spec auth_logout(%{provider: String.t()}) :: non_neg_integer()
+  def auth_logout(%{provider: provider}) do
+    with {:ok, _apps} <- ensure_started(),
+         :ok <- supported_auth_provider(provider),
+         :ok <- Tackle.Auth.delete(provider) do
+      IO.puts("Deleted credentials for #{provider}.")
+      0
+    else
+      {:error, reason} -> error(reason)
+      reason -> error(reason)
+    end
+  end
+
+  defp start_session(model) do
+    with {:ok, _apps} <- ensure_started(),
+         {:ok, session} <- Tackle.start_configured_session(overrides: overrides(model)),
+         {:ok, snapshot} <- Tackle.subscribe(session) do
+      {:ok, session, snapshot}
+    else
+      {:error, reason} -> {:error, reason}
+      reason -> {:error, reason}
+    end
+  end
+
   defp run_prompt(session, prompt) do
-    with {:ok, snapshot} <- Tackle.subscribe(session),
-         {:ok, turn_id} <- Tackle.submit(session, prompt),
-         {:ok, answer} <- await_answer(snapshot.session_id, turn_id) do
+    with {:ok, turn_id} <- Tackle.submit(session, prompt),
+         {:ok, answer} <- await_answer(Tackle.snapshot(session).session_id, turn_id) do
       Tackle.close(session)
       IO.puts(answer)
       0
@@ -55,8 +128,8 @@ defmodule Tackle.CLI.Run do
       {:tackle_turn_finished, ^session_id, ^turn_id, {:cancelled, _agent_state}} ->
         {:error, :cancelled}
 
-      {:tackle_turn_finished, ^session_id, ^turn_id, {:error, _agent_state}} ->
-        {:error, :turn_failed}
+      {:tackle_turn_finished, ^session_id, ^turn_id, {:error, agent_state}} ->
+        {:error, agent_state.error || :turn_failed}
 
       {:tackle_turn_failed, ^session_id, ^turn_id, reason} ->
         {:error, reason}
@@ -66,6 +139,22 @@ defmodule Tackle.CLI.Run do
     after
       @terminal_timeout -> {:error, :timeout}
     end
+  end
+
+  defp ensure_started do
+    Tackle.CLI.Distribution.configure()
+    Application.ensure_all_started(:tackle_cli)
+  end
+
+  defp supported_auth_provider(@codex_provider), do: :ok
+
+  defp supported_auth_provider(provider),
+    do: {:error, {:unsupported_auth_provider, provider, supported: [@codex_provider]}}
+
+  defp print_device_instructions(device) do
+    IO.puts("Open #{device.verification_uri} and enter code #{device.user_code}.")
+    IO.puts("Waiting for authorization...")
+    :ok
   end
 
   defp overrides(nil), do: []

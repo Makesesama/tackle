@@ -71,9 +71,10 @@ This repository is a starting point, not a finished CLI:
 - [`plugins/tackle_codex`](plugins/tackle_codex/README.md) contains the
   first-party OpenAI Codex adapter, including ChatGPT OAuth protocol helpers,
   token refresh, Responses SSE transport, and provider-neutral translation.
-- [`frontends/tackle_cli`](frontends/tackle_cli/README.md) contains the initial
-  Optimus/ex_ratatui CLI frontend skeleton. It can select a model reference but
-  relies on the root harness for adapter availability and session execution.
+- [`frontends/tackle_cli`](frontends/tackle_cli/README.md) contains the default
+  Optimus/ex_ratatui CLI entrypoint. It ships with the first-party Codex plugin
+  as a distribution dependency, configures it as an available harness adapter,
+  and relies on the root harness for credentials, sessions, and turn execution.
 - Extension project loading and Burrito packaging are still planned work.
 
 The root harness owns OTP application `:tackle` and namespace `Tackle`. The
@@ -90,7 +91,8 @@ references, and library configuration from `:tackle`/`Tackle.*` to
 The harness accepts already-loaded adapter and capability modules. General
 extension-project discovery remains out of scope; configuration data and
 frontend arguments only select models declared by modules supplied by the
-distribution.
+distribution. If no model is configured, the harness picks the first model
+reference exposed by the configured adapters.
 
 ```elixir
 config :tackle, adapters: [MyCodexAdapter]
@@ -182,6 +184,7 @@ mix format --check-formatted
 (cd frontends/tackle_cli && mix deps.get)
 (cd frontends/tackle_cli && mix compile --warnings-as-errors && mix test)
 (cd frontends/tackle_cli && mix format --check-formatted)
+(cd frontends/tackle_cli && mix escript.build)
 ```
 
 These are separate Mix projects, not an umbrella: root checks do not validate

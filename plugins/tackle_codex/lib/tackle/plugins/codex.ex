@@ -92,14 +92,13 @@ defmodule Tackle.Plugins.Codex do
     signal = Keyword.get(opts, :cancellation_signal)
     initial_parser = SSE.new()
 
-    into = fn {:data, chunk}, {request, response} ->
-      parser = parser_state(response.body, initial_parser)
+    stream = fn chunk, _response, parser ->
+      parser = parser_state(parser, initial_parser)
 
       if Cancellation.cancelled?(signal) do
-        {:halt, {request, %{response | body: SSE.cancel(parser)}}}
+        {:halt, SSE.cancel(parser)}
       else
-        parser = SSE.push(parser, chunk, event_callback)
-        {:cont, {request, %{response | body: parser}}}
+        {:cont, SSE.push(parser, chunk, event_callback)}
       end
     end
 
@@ -108,13 +107,12 @@ defmodule Tackle.Plugins.Codex do
       url: responses_url(opts),
       headers: headers(opts, access_token, account_id),
       body: JSON.encode!(body),
-      into: into,
       raw: true,
       retry: false,
       receive_timeout: Keyword.get(opts, :receive_timeout, 120_000)
     ]
 
-    HTTP.request(request_options, opts)
+    HTTP.stream(request_options, initial_parser, stream, opts)
   end
 
   defp response_result(%{status: status, body: body}, model, schema, event_callback)
@@ -153,7 +151,6 @@ defmodule Tackle.Plugins.Codex do
           "parallel_tool_calls" => Keyword.get(opts, :parallel_tool_calls, true)
         }
         |> maybe_put("tools", non_empty(tools))
-        |> maybe_put("temperature", Keyword.get(opts, :temperature))
         |> maybe_put("service_tier", Keyword.get(opts, :service_tier))
         |> maybe_put("prompt_cache_key", Keyword.get(opts, :prompt_cache_key))
         |> maybe_put("reasoning", reasoning_options(opts))

@@ -17,6 +17,16 @@ defmodule Tackle.CLI.ParserTest do
     assert {:ok, {:models, %{}}} = Parser.parse(["models"])
   end
 
+  test "parses auth commands" do
+    assert {:ok, {:auth_login, %{provider: "openai-codex"}}} =
+             Parser.parse(["auth", "login", "openai-codex"])
+
+    assert {:ok, {:auth_status, %{provider: nil}}} = Parser.parse(["auth", "status"])
+
+    assert {:ok, {:auth_logout, %{provider: "openai-codex"}}} =
+             Parser.parse(["auth", "logout", "openai-codex"])
+  end
+
   test "does not expose adapter module selection" do
     assert {:error, error} = Parser.parse(["run", "--adapter", "Some.Module"])
     assert error =~ "unrecognized arguments"

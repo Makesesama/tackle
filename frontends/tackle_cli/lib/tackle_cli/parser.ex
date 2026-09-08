@@ -4,6 +4,9 @@ defmodule Tackle.CLI.Parser do
   @type command ::
           {:run, %{model: String.t() | nil, prompt: String.t() | nil}}
           | {:models, %{}}
+          | {:auth_login, %{provider: String.t()}}
+          | {:auth_status, %{provider: String.t() | nil}}
+          | {:auth_logout, %{provider: String.t()}}
 
   @type parse_result ::
           {:ok, command()}
@@ -25,6 +28,15 @@ defmodule Tackle.CLI.Parser do
 
       {:ok, [:models], _result} ->
         {:ok, {:models, %{}}}
+
+      {:ok, [:auth, :login], result} ->
+        {:ok, {:auth_login, %{provider: result.args.provider}}}
+
+      {:ok, [:auth, :status], result} ->
+        {:ok, {:auth_status, %{provider: Map.get(result.args, :provider)}}}
+
+      {:ok, [:auth, :logout], result} ->
+        {:ok, {:auth_logout, %{provider: result.args.provider}}}
 
       {:error, errors} ->
         {:error, format_errors(parser, errors)}
@@ -79,9 +91,39 @@ defmodule Tackle.CLI.Parser do
         models: [
           name: "models",
           about: "List models exposed by root harness adapter loading"
+        ],
+        auth: [
+          name: "auth",
+          about: "Manage provider credentials",
+          subcommands: [
+            login: [
+              name: "login",
+              about: "Authenticate with a provider",
+              args: [provider: provider_arg(required: true)]
+            ],
+            status: [
+              name: "status",
+              about: "Show provider credential status",
+              args: [provider: provider_arg(required: false)]
+            ],
+            logout: [
+              name: "logout",
+              about: "Delete stored provider credentials",
+              args: [provider: provider_arg(required: true)]
+            ]
+          ]
         ]
       ]
     )
+  end
+
+  defp provider_arg(opts) do
+    [
+      value_name: "PROVIDER",
+      help: "Provider id such as openai-codex",
+      required: Keyword.fetch!(opts, :required),
+      parser: :string
+    ]
   end
 
   defp run_command(result) do

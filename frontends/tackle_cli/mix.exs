@@ -14,19 +14,20 @@ defmodule Tackle.CLI.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :tackle]
+      extra_applications: [:logger, :tackle_codex, :tackle]
     ]
   end
 
   defp deps do
     [
       {:tackle, path: "../.."},
+      {:tackle_codex, path: "../../plugins/tackle_codex"},
       {:optimus, "~> 0.6"},
       {:ex_ratatui, "~> 0.13"}
     ]
   end
 
   defp escript do
-    [main_module: Tackle.CLI.Main]
+    [main_module: Tackle.CLI.Main, name: "tackle"]
   end
 end

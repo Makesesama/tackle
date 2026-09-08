@@ -2,6 +2,12 @@ defmodule Tackle.Plugins.Codex.HTTP do
   @moduledoc false
 
   @type request_fun :: (keyword() -> {:ok, Req.Response.t()} | {:error, term()})
+  @type stream_callback ::
+          (binary(), Req.Response.t(), term() -> {:cont, term()} | {:halt, term()})
+  @type stream_fun ::
+          (keyword(), term(), stream_callback() ->
+             {:ok, Req.Response.t(), term()}
+             | {:error, term(), Req.Response.t(), term()})
 
   @spec request(keyword(), keyword()) :: {:ok, Req.Response.t()} | {:error, term()}
   def request(request_options, opts \\ []) do
@@ -18,6 +24,72 @@ defmodule Tackle.Plugins.Codex.HTTP do
   catch
     kind, reason -> {:error, {:request_failed, {kind, reason}}}
   end
+
+  @doc "Streams a request with the Req.stream/4 accumulator contract."
+  @spec stream(keyword(), term(), stream_callback(), keyword()) ::
+          {:ok, Req.Response.t() | map()} | {:error, term()}
+  def stream(request_options, initial_acc, callback, opts \\ []) do
+    result =
+      case Keyword.fetch(opts, :stream) do
+        {:ok, stream_fun} ->
+          stream_fun.(request_options, initial_acc, callback)
+
+        :error ->
+          stream_request(request_options, initial_acc, callback, opts)
+      end
+
+    normalize_stream_result(result)
+  rescue
+    exception -> {:error, {:request_failed, Exception.message(exception)}}
+  catch
+    kind, reason -> {:error, {:request_failed, {kind, reason}}}
+  end
+
+  defp stream_request(request_options, initial_acc, callback, opts) do
+    case Keyword.fetch(opts, :request) do
+      {:ok, request_fun} ->
+        stream_with_legacy_test_request(
+          request_fun,
+          request_options,
+          initial_acc,
+          callback
+        )
+
+      :error ->
+        Req.stream(request_options, initial_acc, callback)
+    end
+  end
+
+  # Existing adapter tests inject a request function that emulates Req's former
+  # `into` callback. Keep that seam isolated from production, which always uses
+  # Req.stream/4 and therefore emits no deprecation warning.
+  defp stream_with_legacy_test_request(request_fun, request_options, initial_acc, callback) do
+    into = fn {:data, chunk}, {request, response} ->
+      acc = if response.body in [nil, ""], do: initial_acc, else: response.body
+
+      case callback.(chunk, response, acc) do
+        {:cont, acc} -> {:cont, {request, %{response | body: acc}}}
+        {:halt, acc} -> {:halt, {request, %{response | body: acc}}}
+      end
+    end
+
+    request_fun.(Keyword.put(request_options, :into, into))
+  end
+
+  defp normalize_stream_result({:ok, %Req.Response{} = response, acc}),
+    do: {:ok, %{response | body: acc}}
+
+  defp normalize_stream_result({:ok, %{status: _status} = response, acc}),
+    do: {:ok, Map.put(response, :body, acc)}
+
+  defp normalize_stream_result({:ok, %Req.Response{} = response}), do: {:ok, response}
+  defp normalize_stream_result({:ok, %{status: _status} = response}), do: {:ok, response}
+
+  defp normalize_stream_result({:error, reason, _response, _acc}),
+    do: {:error, {:request_failed, reason}}
+
+  defp normalize_stream_result({:error, reason}), do: {:error, {:request_failed, reason}}
+  defp normalize_stream_result(other), do: {:error, {:invalid_http_response, other}}
 
   @spec decode_json(term()) :: {:ok, map()} | {:error, term()}
   def decode_json(%{} = body), do: {:ok, body}
