@@ -19,43 +19,38 @@ defmodule Tackle.CLI.Parser do
   def parse(argv) when is_list(argv) do
     parser = parser()
 
-    case Optimus.parse(parser, argv) do
-      {:ok, result} ->
-        {:ok, run_command(result)}
-
-      {:ok, [:run], result} ->
-        {:ok, run_command(result)}
-
-      {:ok, [:models], _result} ->
-        {:ok, {:models, %{}}}
-
-      {:ok, [:auth, :login], result} ->
-        {:ok, {:auth_login, %{provider: result.args.provider}}}
-
-      {:ok, [:auth, :status], result} ->
-        {:ok, {:auth_status, %{provider: Map.get(result.args, :provider)}}}
-
-      {:ok, [:auth, :logout], result} ->
-        {:ok, {:auth_logout, %{provider: result.args.provider}}}
-
-      {:error, errors} ->
-        {:error, format_errors(parser, errors)}
-
-      {:error, subcommand_path, errors} ->
-        {:error, format_errors(parser, subcommand_path, errors)}
-
-      :help ->
-        {:help, format_help(parser, [])}
-
-      {:help, subcommand_path} ->
-        {:help, format_help(parser, subcommand_path)}
-
-      :version ->
-        {:version, format_version(parser)}
-    end
+    parser
+    |> Optimus.parse(argv)
+    |> parse_result(parser)
   end
 
   def parse(argv), do: {:error, "invalid argv: #{inspect(argv)}"}
+
+  defp parse_result({:ok, result}, _parser), do: {:ok, run_command(result)}
+  defp parse_result({:ok, [:run], result}, _parser), do: {:ok, run_command(result)}
+  defp parse_result({:ok, [:models], _result}, _parser), do: {:ok, {:models, %{}}}
+
+  defp parse_result({:ok, [:auth, :login], result}, _parser),
+    do: {:ok, {:auth_login, %{provider: result.args.provider}}}
+
+  defp parse_result({:ok, [:auth, :status], result}, _parser),
+    do: {:ok, {:auth_status, %{provider: Map.get(result.args, :provider)}}}
+
+  defp parse_result({:ok, [:auth, :logout], result}, _parser),
+    do: {:ok, {:auth_logout, %{provider: result.args.provider}}}
+
+  defp parse_result({:error, errors}, parser),
+    do: {:error, format_errors(parser, errors)}
+
+  defp parse_result({:error, subcommand_path, errors}, parser),
+    do: {:error, format_errors(parser, subcommand_path, errors)}
+
+  defp parse_result(:help, parser), do: {:help, format_help(parser, [])}
+
+  defp parse_result({:help, subcommand_path}, parser),
+    do: {:help, format_help(parser, subcommand_path)}
+
+  defp parse_result(:version, parser), do: {:version, format_version(parser)}
 
   defp parser do
     Optimus.new!(
@@ -158,11 +153,7 @@ defmodule Tackle.CLI.Parser do
     |> lines_to_string()
   end
 
-  defp lines_to_string(lines) do
-    lines
-    |> Enum.map(&IO.iodata_to_binary/1)
-    |> Enum.join("\n")
-  end
+  defp lines_to_string(lines), do: Enum.map_join(lines, "\n", &IO.iodata_to_binary/1)
 
   defp terminal_columns do
     case Optimus.Term.width() do

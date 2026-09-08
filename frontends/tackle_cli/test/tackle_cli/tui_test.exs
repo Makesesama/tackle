@@ -139,12 +139,110 @@ defmodule Tackle.CLI.TUITest do
              end)
 
     conversation =
-      items
-      |> Enum.map(fn {%Paragraph{text: text}, _height} -> text end)
-      |> Enum.join("\n")
+      Enum.map_join(items, "\n", fn {%Paragraph{text: text}, _height} -> text end)
 
     assert conversation =~ "You:\nhi"
     assert conversation =~ "Tackle:\nHello"
+  end
+
+  test "renders live tool calls with arguments, status, and truncated results", %{tui: tui} do
+    inject_key(tui, "g")
+    inject_key(tui, "o")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "go"}
+
+    session_id = :sys.get_state(tui).user_state.session_id
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:tool_start, %{
+         tool_call_id: "call-1",
+         name: "read",
+         arguments: %{"path" => "mix.exs"}
+       })}
+    )
+
+    running_state = :sys.get_state(tui).user_state
+    assert running_state.activity == "running read"
+
+    running_conversation = conversation_text(running_state)
+    assert running_conversation =~ "● read"
+    assert running_conversation =~ ~s("path":"mix.exs")
+    assert running_conversation =~ "running"
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:tool_end, %{
+         tool_call_id: "call-1",
+         name: "read",
+         result: String.duplicate("output ", 100)
+       })}
+    )
+
+    completed_state = :sys.get_state(tui).user_state
+    assert completed_state.activity == "completed read"
+    assert [%{id: "call-1", status: :completed}] = completed_state.tool_activity
+
+    completed_conversation = conversation_text(completed_state)
+    assert completed_conversation =~ "✓ read"
+    assert completed_conversation =~ ~s("path":"mix.exs")
+    assert completed_conversation =~ "completed"
+    assert completed_conversation =~ "result: output"
+    assert completed_conversation =~ "…"
+  end
+
+  test "renders failed live tool calls", %{tui: tui} do
+    inject_key(tui, "g")
+    inject_key(tui, "o")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "go"}
+
+    session_id = :sys.get_state(tui).user_state.session_id
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:tool_start, %{tool_call_id: "call-1", name: "bash", arguments: %{}})}
+    )
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:tool_error, %{
+         tool_call_id: "call-1",
+         name: "bash",
+         error: "command exited with status 1"
+       })}
+    )
+
+    failed_state = :sys.get_state(tui).user_state
+    assert failed_state.activity == "failed bash"
+    assert conversation_text(failed_state) =~ "✗ bash\n  failed\n  error: command exited"
+  end
+
+  test "renders settled tool calls and results from conversation history", %{tui: tui} do
+    state = :sys.get_state(tui).user_state
+
+    messages = [
+      Message.user("inspect it"),
+      Message.assistant(
+        tool_calls: [
+          %{id: "call-1", name: "read", arguments: %{"path" => "README.md"}}
+        ]
+      ),
+      Message.tool_result("call-1", "read", "project documentation"),
+      Message.assistant(content: "Done")
+    ]
+
+    state = %{state | agent_state: %{state.agent_state | messages: messages}}
+    conversation = conversation_text(state)
+
+    assert conversation =~ "● read"
+    assert conversation =~ ~s("path":"README.md")
+    assert conversation =~ "✓ read\n  completed\n  result: project documentation"
+    assert conversation =~ "Tackle:\nDone"
   end
 
   test "auto-follows conversation output beyond the viewport", %{tui: tui} do
@@ -250,6 +348,17 @@ defmodule Tackle.CLI.TUITest do
     ref = Process.monitor(tui)
     inject_key(tui, "esc")
     assert_receive {:DOWN, ^ref, :process, ^tui, :normal}
+  end
+
+  defp conversation_text(state) do
+    TUI.scene(state, %ExRatatui.Frame{width: 120, height: 30})
+    |> Enum.find_value(fn
+      {%WidgetList{items: items}, _area} ->
+        Enum.map_join(items, "\n", fn {%Paragraph{text: text}, _height} -> text end)
+
+      _widget ->
+        nil
+    end)
   end
 
   defp inject_key(tui, code) do
