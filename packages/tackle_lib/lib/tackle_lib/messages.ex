@@ -21,7 +21,8 @@ defmodule Tackle.Lib.Messages do
       %{role: :user, content: "..."}
       %{role: :assistant, content: "..."}
 
-      # assistant turn that called tools (content may be nil)
+      # assistant turn that called tools (content may be nil). Adapters may also
+      # receive opaque `provider_state` that they must validate before replay.
       %{
         role: :assistant,
         content: nil,
@@ -74,21 +75,31 @@ defmodule Tackle.Lib.Messages do
   def to_provider_message(%Message{role: :assistant} = message) do
     tool_calls = encode_tool_calls(message.tool_calls)
 
-    cond do
-      tool_calls != [] ->
-        %{role: :assistant, content: message.content, tool_calls: tool_calls}
+    provider_message =
+      cond do
+        tool_calls != [] ->
+          %{role: :assistant, content: message.content, tool_calls: tool_calls}
 
-      is_binary(message.content) and message.content != "" ->
-        %{role: :assistant, content: message.content}
+        is_binary(message.content) and message.content != "" ->
+          %{role: :assistant, content: message.content}
 
-      true ->
-        # An assistant turn with neither content nor tool calls carries nothing
-        # the provider can use; drop it rather than emit an empty turn.
-        nil
-    end
+        true ->
+          # An assistant turn with neither content nor tool calls carries nothing
+          # the provider can use; drop it rather than emit an empty turn.
+          nil
+      end
+
+    maybe_put_provider_state(provider_message, message.provider_state)
   end
 
   def to_provider_message(_), do: nil
+
+  defp maybe_put_provider_state(nil, _provider_state), do: nil
+
+  defp maybe_put_provider_state(message, %{} = provider_state),
+    do: Map.put(message, :provider_state, provider_state)
+
+  defp maybe_put_provider_state(message, _provider_state), do: message
 
   defp encode_tool_calls(nil), do: []
   defp encode_tool_calls([]), do: []

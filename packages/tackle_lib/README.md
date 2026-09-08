@@ -361,6 +361,8 @@ A provider-neutral message array looks like:
   %{
     role: :assistant,
     content: nil,
+    # Present only when the adapter returned opaque continuation metadata.
+    provider_state: %{"provider" => "example", "model" => "model-name", "opaque" => "..."},
     tool_calls: [
       %{
         id: "call-1",
@@ -393,12 +395,19 @@ The adapter returns:
      currency: "USD"
    },
    model: "provider/model-name",
-   provider: "provider"
+   provider: "provider",
+   provider_state: %{"provider" => "provider", "model" => "provider/model-name", "opaque" => "..."}
  }}
 ```
 
 `:usage` may already be `%Tackle.Lib.Usage{}`, a string- or atom-keyed provider map,
 or `nil`. Tackle.Lib normalizes it. Pricing remains host-owned.
+
+`:provider_state` is optional opaque, non-secret continuation metadata needed by
+some stateless provider APIs. Tackle.Lib stores it on the assistant message and
+returns it in subsequent `opts[:messages]`; an adapter must replay it only when
+its embedded provider and model match the current request. Hosts that persist
+conversations must preserve this field.
 
 Provider adapters are also responsible for translating Tackle.Lib's normalized
 tool definitions into the provider wire format. `opts[:tools]` contains

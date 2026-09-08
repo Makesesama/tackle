@@ -17,6 +17,13 @@ defmodule Tackle.Lib.MessagesTest do
       assert [%{role: :assistant, content: "the answer is 42"}] = Messages.to_provider([msg])
     end
 
+    test "preserves opaque provider continuation state on assistant entries" do
+      provider_state = %{"provider" => "example", "model" => "test", "opaque" => "value"}
+      msg = Message.assistant(content: "answer", provider_state: provider_state)
+
+      assert [%{provider_state: ^provider_state}] = Messages.to_provider([msg])
+    end
+
     test "maps an assistant tool-call turn to native tool_calls with JSON-string arguments" do
       msg =
         Message.assistant(

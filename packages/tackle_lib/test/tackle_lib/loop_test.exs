@@ -239,7 +239,12 @@ defmodule Tackle.Lib.LoopTest do
                "tool_calls" => [%{"id" => "c1", "name" => "first", "arguments" => %{}}]
              },
              usage: nil,
-             model: "test/model"
+             model: "test/model",
+             provider_state: %{
+               "provider" => "test",
+               "model" => "test/model",
+               "opaque" => "continuation"
+             }
            }}
 
         _ ->
@@ -360,6 +365,12 @@ defmodule Tackle.Lib.LoopTest do
 
     assert [%{id: call_id, type: "function", function: %{name: "first"}}] =
              assistant_call.tool_calls
+
+    assert assistant_call.provider_state == %{
+             "provider" => "test",
+             "model" => "test/model",
+             "opaque" => "continuation"
+           }
 
     tool_result = Enum.find(second_messages, &(&1.role == :tool))
     assert tool_result, "expected a structured tool-result message"

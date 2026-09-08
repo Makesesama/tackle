@@ -68,8 +68,11 @@ This repository is a starting point, not a finished CLI:
   inherited functionality and remains in `Tackle.Lib.Integrations.Anubis`; a
   future extraction needs a deliberate compatibility migration rather than
   silent removal.
-- The CLI, first-party Codex adapter, extension project loading, and Burrito
-  packaging are still planned work.
+- [`plugins/tackle_codex`](plugins/tackle_codex/README.md) contains the
+  first-party OpenAI Codex adapter, including ChatGPT OAuth protocol helpers,
+  token refresh, Responses SSE transport, and provider-neutral translation.
+- The CLI, extension project loading, and Burrito packaging are still planned
+  work.
 
 The root harness owns OTP application `:tackle` and namespace `Tackle`. The
 reusable library owns OTP application `:tackle_lib` and namespace `Tackle.Lib`;
@@ -164,6 +167,11 @@ mix format --check-formatted
 
 # Existing Phoenix integration, when working on it
 (cd packages/tackle_phoenix && mix deps.get && mix test)
+
+# First-party OpenAI Codex plugin
+(cd plugins/tackle_codex && mix deps.get)
+(cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
+(cd plugins/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 ```
 
 These are separate Mix projects, not an umbrella: root checks do not validate

@@ -27,7 +27,8 @@ defmodule Tackle.Lib.Message do
           tool_name: String.t() | nil,
           timestamp: DateTime.t(),
           token_usage: Usage.t() | nil,
-          model: String.t() | nil
+          model: String.t() | nil,
+          provider_state: map() | nil
         }
 
   defstruct id: nil,
@@ -39,7 +40,8 @@ defmodule Tackle.Lib.Message do
             tool_name: nil,
             timestamp: nil,
             token_usage: nil,
-            model: nil
+            model: nil,
+            provider_state: nil
 
   @doc """
   Creates a new user message.
@@ -63,6 +65,9 @@ defmodule Tackle.Lib.Message do
   ## Options
     * `:id` - explicit message id (overrides :id_generator)
     * `:id_generator` - zero-arity function returning a message id
+    * `:provider_state` - opaque, non-secret continuation metadata returned by
+      the selected adapter; adapters must ignore state from other providers or
+      models
   """
   @spec assistant(keyword()) :: t()
   def assistant(opts) do
@@ -75,6 +80,7 @@ defmodule Tackle.Lib.Message do
       token_usage:
         Usage.normalize(Keyword.get(opts, :token_usage), model: Keyword.get(opts, :model)),
       model: Keyword.get(opts, :model),
+      provider_state: Keyword.get(opts, :provider_state),
       timestamp: DateTime.utc_now()
     }
   end

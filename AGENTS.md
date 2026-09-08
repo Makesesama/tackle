@@ -30,6 +30,11 @@ mix format --check-formatted
 (cd packages/tackle_phoenix && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_phoenix && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
+# OpenAI Codex plugin
+(cd plugins/tackle_codex && mix deps.get)
+(cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
+(cd plugins/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+
 # Inspect changes before handing off
 git status --short
 git diff --check
@@ -52,6 +57,9 @@ Burrito, or lint commands for tooling that has not been wired up.
   `README.md` and relevant source before changing its API.
 - `packages/tackle_phoenix/`: existing Phoenix LiveView (`~> 1.1.33`) and
   PubSub (`~> 2.1`) integration, with its own Mix project and tests.
+- `plugins/tackle_codex/`: first-party OpenAI Codex adapter, ChatGPT OAuth
+  protocol helpers, and Responses SSE transport. It is a separate Mix project
+  that depends on `:tackle_lib`, not the root harness.
 - `flake.nix`, `nix/`: development environment, dependency, and build setup.
 - `deps/`, `_build/`, `.nix-mix/`, `.nix-hex/`: dependencies, build output,
   and local caches; not hand-maintained source.
@@ -71,7 +79,8 @@ keep those identities distinct when composing them.
   Add the smallest explicit contract needed by a real use case; do not build
   speculative registries or parallel plugin frameworks.
 - Provider adapters are user-provided plugins. OpenAI Codex is the only
-  first-party adapter planned; it must use the same contracts as external ones.
+  first-party adapter maintained here; it uses the same contracts as external
+  ones.
 - MCP belongs in a later harness plugin. The current `packages/tackle_lib`
   library retains its optional `:anubis_mcp` dependency and integration code:
   treat any later extraction as a compatibility-sensitive migration, not

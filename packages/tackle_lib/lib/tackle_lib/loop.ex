@@ -332,6 +332,7 @@ defmodule Tackle.Lib.Loop do
       thinking: thinking,
       token_usage: Map.get(result, :usage),
       model: Map.get(result, :model),
+      provider_state: Map.get(result, :provider_state),
       id: state.pending_assistant_id,
       id_generator: state.id_generator
     ]

@@ -65,8 +65,11 @@ defmodule Tackle.Lib.LLM do
 
   On success the adapter returns `{:ok, %{data: map, usage: map | Tackle.Lib.Usage.t() | nil, model: String.t() | nil}}`
   where `:data` contains assistant `content` and/or native `tool_calls`, or a
-  parsed structured response for non-tool calls. `generate/3` normalizes
-  provider-specific usage maps into `%Tackle.Lib.Usage{}` before returning so the
+  parsed structured response for non-tool calls. Adapters may return opaque,
+  non-secret `:provider_state` continuation metadata; Tackle.Lib stores it on
+  the assistant message and returns it only to subsequent adapters, which must
+  validate the originating provider and model before replaying it. `generate/3`
+  normalizes provider-specific usage maps into `%Tackle.Lib.Usage{}` before returning so the
   loop and host persistence see one stable shape. Cost is optional because many
   providers return token counts only; pricing remains host-owned.
   """
@@ -83,14 +86,16 @@ defmodule Tackle.Lib.LLM do
           required(:data) => map(),
           required(:usage) => adapter_usage(),
           required(:model) => String.t() | nil,
-          optional(:provider) => String.t() | atom() | nil
+          optional(:provider) => String.t() | atom() | nil,
+          optional(:provider_state) => map() | nil
         }
 
   @type response :: %{
           required(:data) => map(),
           required(:usage) => usage(),
           required(:model) => String.t() | nil,
-          optional(:provider) => String.t() | atom() | nil
+          optional(:provider) => String.t() | atom() | nil,
+          optional(:provider_state) => map() | nil
         }
 
   @doc "A stable lowercase identifier used as the model-reference prefix."
