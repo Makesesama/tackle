@@ -58,8 +58,8 @@ This repository is a starting point, not a finished CLI:
 
 - The root Mix project provides frontend-independent adapter/model
   configuration, supervised in-memory sessions, a supervised credential store,
-  and built-in `read`, `bash`, `edit`, and `write` developer tools under
-  `Tackle.Tools.*`. Configuration loads from `~/.tackle/config.json`,
+  and built-in `read`, `bash`, `elixir_eval`, `edit`, and `write` developer tools
+  under `Tackle.Tools.*`. Configuration loads from `~/.tackle/config.json`,
   environment, and explicit overrides without loading modules from data.
 - [`packages/tackle_lib`](packages/tackle_lib/README.md) contains the existing
   agent library and its API documentation (`Tackle.Lib.*`).
@@ -123,10 +123,12 @@ cooperative cancellation, and `Tackle.close/1` cleans up the session. Subscribe
 before starting a turn; active-turn attachment is deferred until event replay or
 projection semantics are defined. Sessions use `Tackle.Tools.default/0` unless
 an embedding host explicitly supplies `:tools`; a host can set `context: %{cwd:
-path}` to change the tools' working directory. These tools inherit the Tackle
-process's filesystem and operating-system permissions and are not a sandbox.
-`Tackle.Lib` provides the `:telemetry` runtime dependency used by tool
-execution.
+path}` to change the filesystem tools' working directory. `elixir_eval` runs
+stateless code inside the live Tackle BEAM with a five-second default timeout;
+VM side effects persist, but variable bindings do not carry between calls.
+These tools inherit the Tackle process's filesystem and operating-system
+permissions and are not a sandbox. `Tackle.Lib` provides the `:telemetry`
+runtime dependency used by tool execution.
 
 ## Configuration and credentials
 

@@ -11,9 +11,9 @@ defmodule Tackle.Tools do
   applications that execute untrusted work should isolate the whole process.
   """
 
-  alias Tackle.Tools.{Bash, Edit, Read, Write}
+  alias Tackle.Tools.{Bash, Edit, ElixirEval, Read, Write}
 
   @doc "Returns the built-in tools enabled for a session unless explicitly overridden."
   @spec default() :: [module()]
-  def default, do: [Read, Bash, Edit, Write]
+  def default, do: [Read, Bash, ElixirEval, Edit, Write]
 end
