@@ -56,6 +56,7 @@ host application
   ├── concrete domain tools ───────────── implements Tackle.Lib.Tool
   ├── prompt and prompt renderer ──────── implements Tackle.Lib.PromptRenderer (optional)
   ├── persistence/auth/billing/UI ─────── host-owned
+  ├── credential store implementation ── host-owned, accessed by opaque handle
   │
   └── Tackle.Lib
       ├── State + Message + Usage
@@ -330,6 +331,12 @@ Implement `Tackle.Lib.LLM`:
 `Tackle.Lib.LLM.select/2`. They remain optional for compatibility with a single
 adapter configured through `config :tackle_lib, :llm`. Adapter ids are lowercase
 letters, digits, and hyphens and must be unique in the supplied adapter list.
+
+Hosts may inject a `{module, reference}` credential-store handle in
+`opts[:credential_store]`. Adapters access their own namespace with
+`Tackle.Lib.CredentialStore.fetch/2`, `put/3`, and `delete/2`. Tackle.Lib treats
+credential maps as opaque JSON-compatible data; OAuth flows, token schemas,
+refresh logic, and persistence remain outside the library.
 
 `stream/3` is optional. When absent, Tackle.Lib calls `generate/2` and still emits a
 normalized usage event when usage is returned.

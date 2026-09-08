@@ -24,7 +24,8 @@ defmodule Tackle.MixProject do
   defp deps do
     [
       {:deps_nix, "~> 3.0", only: :dev},
-      {:tackle_lib, path: "packages/tackle_lib"}
+      {:tackle_lib, path: "packages/tackle_lib"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 

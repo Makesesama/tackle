@@ -13,6 +13,7 @@ defmodule Tackle.Session do
 
   use GenServer, restart: :temporary
 
+  alias Tackle.Auth
   alias Tackle.Config
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
@@ -97,7 +98,9 @@ defmodule Tackle.Session do
   @impl true
   def init(%Config{} = config) do
     Process.flag(:trap_exit, true)
-    agent_state = Config.to_agent_state(config)
+
+    agent_state =
+      Config.to_agent_state(config, credential_store: Auth.credential_store())
 
     {:ok,
      %{

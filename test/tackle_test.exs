@@ -64,6 +64,37 @@ defmodule TackleTest do
     end
   end
 
+  defmodule CredentialAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "credential-refresh"
+
+    @impl true
+    def models, do: ["test"]
+
+    @impl true
+    def generate(_schema, opts) do
+      handle = Keyword.fetch!(opts, :credential_store)
+
+      {:ok, %{"access_token" => "initial-integration-token"}} =
+        Tackle.Lib.CredentialStore.fetch(handle, adapter_id())
+
+      :ok =
+        Tackle.Lib.CredentialStore.put(handle, adapter_id(), %{
+          "access_token" => "refreshed-integration-token"
+        })
+
+      {:ok,
+       %{
+         data: %{"content" => "credentials refreshed", "tool_calls" => []},
+         usage: nil,
+         model: Keyword.fetch!(opts, :model),
+         provider: adapter_id()
+       }}
+    end
+  end
+
   defmodule AdapterB do
     @behaviour Tackle.Lib.LLM
 
@@ -178,6 +209,35 @@ defmodule TackleTest do
 
     assert %Snapshot{active_turn: nil, agent_state: agent_state} = Tackle.snapshot(session)
     assert agent_state.status == :idle
+  end
+
+  test "injects only a credential-store handle and never exposes credential values" do
+    namespace = CredentialAdapter.adapter_id()
+    :ok = Tackle.Auth.put(namespace, %{"access_token" => "initial-integration-token"})
+    on_exit(fn -> Tackle.Auth.delete(namespace) end)
+
+    {:ok, session} =
+      Tackle.start_session(adapters: [CredentialAdapter], model: "credential-refresh/test")
+
+    on_exit(fn -> close_session(session) end)
+
+    initial_snapshot = Tackle.snapshot(session)
+    handle = Tackle.Auth.credential_store()
+    assert initial_snapshot.agent_state.llm_opts == [credential_store: handle]
+    refute inspect(initial_snapshot) =~ "initial-integration-token"
+
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(session)
+    {:ok, turn_id} = Tackle.submit(session, "refresh")
+
+    assert {:finished, {:ok, final_state}, events} = await_terminal(session_id, turn_id)
+
+    assert {:ok, %{"access_token" => "refreshed-integration-token"}} =
+             Tackle.Auth.fetch(namespace)
+
+    refute inspect(final_state) =~ "initial-integration-token"
+    refute inspect(final_state) =~ "refreshed-integration-token"
+    refute inspect(events) =~ "initial-integration-token"
+    refute inspect(events) =~ "refreshed-integration-token"
   end
 
   test "different sessions select different adapters without global configuration" do

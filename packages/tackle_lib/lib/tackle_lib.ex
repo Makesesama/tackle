@@ -20,6 +20,7 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.Tool` — the tool behaviour the loop calls.
     * `Tackle.Lib.Tool.Schema` — provider-neutral tool argument validation/coercion.
     * `Tackle.Lib.JSON` — configurable JSON behaviour with a built-in default adapter.
+    * `Tackle.Lib.CredentialStore` — provider-neutral access through host-owned handles.
     * `Tackle.Lib.SystemPrompt` — response-format contract + tool-doc assembly.
     * `Tackle.Lib.Usage` — normalized token/cost metadata for LLM steps.
     * `Tackle.Lib.Event` — provider-independent run/message/tool/usage events.

@@ -56,8 +56,10 @@ resolved and tested before promising a binary plugin workflow.
 
 This repository is a starting point, not a finished CLI:
 
-- The root Mix project now provides the first frontend-independent harness slice:
-  explicit adapter/model configuration and supervised in-memory sessions.
+- The root Mix project provides frontend-independent adapter/model
+  configuration, supervised in-memory sessions, and a supervised credential
+  store. Configuration loads from `~/.tackle/config.json`, environment, and
+  explicit overrides without loading modules from data.
 - [`packages/tackle_lib`](packages/tackle_lib/README.md) contains the existing
   agent library and its API documentation (`Tackle.Lib.*`).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the
@@ -79,8 +81,9 @@ library configuration from `:tackle`/`Tackle.*` to
 
 ## Basic harness API
 
-The initial API accepts already-loaded adapter and capability modules. It does
-not yet read configuration files or load extension projects.
+The harness accepts already-loaded adapter and capability modules. General
+extension-project discovery remains out of scope; configuration data only
+selects models declared by modules supplied by the distribution.
 
 ```elixir
 {:ok, session} =
@@ -108,6 +111,28 @@ cooperative cancellation, and `Tackle.close/1` cleans up the session. Subscribe
 before starting a turn; active-turn attachment is deferred until event replay or
 projection semantics are defined. `Tackle.Lib` provides the `:telemetry`
 runtime dependency used by tool execution.
+
+## Configuration and credentials
+
+`Tackle.Config.load/1` applies this precedence:
+
+```text
+built-in defaults < ~/.tackle/config.json < TACKLE_MODEL < explicit overrides
+```
+
+`TACKLE_HOME` changes the directory containing `config.json` and `auth.json`.
+The initial configuration file accepts only a `model` field. Adapter modules are
+always supplied as executable code, never converted from JSON strings.
+
+`Tackle.Auth` stores one opaque map per provider in `~/.tackle/auth.json` and
+injects only a non-secret `Tackle.Lib.CredentialStore` handle into adapter
+options. Credential-shaped `llm_opts` keys (including nested token, API-key,
+password, and authorization fields) are rejected; provider secrets belong only
+in the credential store. The file is plaintext protected by filesystem
+permissions (`0700` for the directory and `0600` for the file), not encryption.
+Writes are atomic and
+serialized within one Tackle application; cross-VM locking and OS keyrings are
+deferred.
 
 ## Initial milestones
 

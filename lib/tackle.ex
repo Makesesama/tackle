@@ -4,6 +4,8 @@ defmodule Tackle do
 
   A session is configured with already-loaded adapter and capability modules,
   supervised by the Tackle application, and addressed by its session process.
+  `Tackle.Config.load/1` resolves file, environment, and explicit overrides
+  before a session is started.
   """
 
   alias Tackle.Config

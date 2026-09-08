@@ -88,5 +88,26 @@ defmodule Tackle.ConfigTest do
                model: "test/small",
                tools: [Tool, DuplicateTool]
              )
+
+    assert {:error, {:reserved_llm_option, :credential_store}} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               llm_opts: [credential_store: {:not, :allowed}]
+             )
+
+    assert {:error, {:reserved_llm_option, :access_token}} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               llm_opts: [access_token: "must-not-enter-config"]
+             )
+
+    assert {:error, {:reserved_llm_option, "api_key"}} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               llm_opts: [provider: %{"api_key" => "must-not-enter-config"}]
+             )
   end
 end
