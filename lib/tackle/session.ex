@@ -3,22 +3,42 @@ defmodule Tackle.Session do
   Frontend-independent ownership of one in-memory agent session.
 
   A session owns settled `Tackle.Lib.State`, permits one active turn, runs that
-  turn under `Tackle.TaskSupervisor`, forwards correlated library events to
+  turn under a supervised task, forwards correlated library events to
   subscribers, and owns cancellation-signal cleanup.
 
-  Subscription during an active turn is deliberately rejected in this initial
-  slice because events are not replayed. Subscribe before submitting a turn to
-  avoid a snapshot/event ordering gap.
+  ## Scoped sessions
+
+  A session started with a `Tackle.Runtime.ScopeRef` runs its turn tasks under
+  the scope's shared `Tackle.AgentScope.WorkSupervisor`, registers itself in the
+  runtime Registry, and accounts for its turn through the scope coordinator.
+  The legacy `start_child/1` path keeps the original global task supervisor for
+  compatibility while callers migrate to scoped references.
+
+  An `:ephemeral` session delivers one correlated terminal outcome to its
+  request helper and then stops. A session process is never reset for another
+  agent identity.
+
+  Subscription during an active turn is deliberately rejected because events
+  are not replayed. Subscribe before submitting a turn to avoid a
+  snapshot/event ordering gap.
   """
 
   use GenServer, restart: :temporary
 
+  alias Tackle.AgentScope.Coordinator
   alias Tackle.Auth
   alias Tackle.Config
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.State, as: AgentState
+  alias Tackle.Runtime.AgentRef
+  alias Tackle.Runtime.Handle
+  alias Tackle.Runtime.Limits
+  alias Tackle.Runtime.Outcome
+  alias Tackle.Runtime.Registry
+  alias Tackle.Runtime.ScopeRef
+  alias Tackle.Runtime.Task, as: TurnTask
 
   @task_shutdown_timeout 1_000
 
@@ -69,7 +89,7 @@ defmodule Tackle.Session do
     @moduledoc "An atomic view of a Tackle session and its active turn."
 
     @enforce_keys [:session_id, :agent_state]
-    defstruct [:session_id, :agent_state, :active_turn, :stats]
+    defstruct [:session_id, :agent_state, :active_turn, :stats, :agent_ref, :scope_ref]
 
     @type active_turn :: %{
             required(:id) => String.t(),
@@ -81,7 +101,9 @@ defmodule Tackle.Session do
             session_id: String.t(),
             agent_state: Tackle.Lib.State.t(),
             active_turn: active_turn() | nil,
-            stats: Tackle.Session.Stats.t() | nil
+            stats: Tackle.Session.Stats.t() | nil,
+            agent_ref: AgentRef.t() | nil,
+            scope_ref: ScopeRef.t() | nil
           }
   end
 
@@ -95,14 +117,22 @@ defmodule Tackle.Session do
   end
 
   @doc false
-  @spec start_link(Config.t()) :: GenServer.on_start()
-  def start_link(%Config{} = config), do: GenServer.start_link(__MODULE__, config)
+  @spec start_link(Config.t() | {Config.t(), keyword()}) :: GenServer.on_start()
+  def start_link(%Config{} = config), do: start_link(config, [])
+  def start_link({%Config{} = config, opts}), do: start_link(config, opts)
 
-  def child_spec(%Config{} = config) do
+  def start_link(%Config{} = config, opts) when is_list(opts) do
+    GenServer.start_link(__MODULE__, {config, opts}, session_name(opts))
+  end
+
+  @doc false
+  def child_spec(%Config{} = config), do: child_spec({config, []})
+
+  def child_spec({%Config{} = config, opts}) do
     %{
-      id: __MODULE__,
-      start: {__MODULE__, :start_link, [config]},
-      restart: :temporary
+      id: Keyword.get(opts, :id, __MODULE__),
+      start: {__MODULE__, :start_link, [config, opts]},
+      restart: Keyword.get(opts, :restart, :temporary)
     }
   end
 
@@ -148,19 +178,37 @@ defmodule Tackle.Session do
   def close(session), do: GenServer.call(session, :close, :infinity)
 
   @impl true
-  def init(%Config{} = config) do
+  def init({%Config{} = config, opts}) do
     Process.flag(:trap_exit, true)
 
-    agent_state =
-      Config.to_agent_state(config, credential_store: Auth.credential_store())
+    scope_ref = Keyword.get(opts, :scope_ref)
+    agent_ref = Keyword.get(opts, :agent_ref)
 
-    {:ok,
-     %{
-       config: config,
-       agent_state: agent_state,
-       active_turn: nil,
-       subscribers: %{}
-     }}
+    agent_state =
+      config
+      |> Config.to_agent_state(credential_store: Auth.credential_store())
+      |> put_runtime_context(scope_ref, agent_ref, opts)
+
+    with :ok <- register(scope_ref, agent_ref) do
+      state = %{
+        config: config,
+        agent_state: agent_state,
+        active_turn: nil,
+        subscribers: %{},
+        scope_ref: scope_ref,
+        agent_ref: agent_ref,
+        coordinator: Keyword.get(opts, :coordinator) || coordinator_pid(scope_ref),
+        lifetime: Keyword.get(opts, :lifetime, :explicit),
+        parent: Keyword.get(opts, :parent),
+        terminal: Keyword.get(opts, :terminal),
+        work_supervisor: Keyword.get(opts, :work_supervisor) || work_supervisor(scope_ref)
+      }
+
+      register_with_coordinator(state)
+      {:ok, state}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
   end
 
   @impl true
@@ -244,10 +292,11 @@ defmodule Tackle.Session do
 
   def handle_info(
         {ref, result},
-        %{active_turn: %{task: %Task{ref: ref}} = active_turn} = state
+        %{active_turn: %{task: %TurnTask{ref: ref}} = active_turn} = state
       ) do
-    Process.demonitor(ref, [:flush])
+    Process.demonitor(active_turn.task.monitor, [:flush])
     Cancellation.delete(active_turn.signal)
+    release_turn(state)
 
     case result do
       {outcome, %AgentState{} = agent_state}
@@ -259,24 +308,29 @@ defmodule Tackle.Session do
           {:tackle_turn_finished, agent_state.session_id, active_turn.id, result}
         )
 
-        {:noreply, state}
+        settle(state, result)
 
       invalid_result ->
         reason = {:invalid_turn_result, invalid_result}
         state = %{state | active_turn: nil}
         broadcast_turn_failure(state, active_turn.id, reason)
-        {:noreply, state}
+        settle(state, {:runtime_error, reason})
     end
   end
 
   def handle_info(
-        {:DOWN, ref, :process, _pid, reason},
-        %{active_turn: %{task: %Task{ref: ref}} = active_turn} = state
+        {:DOWN, monitor, :process, _pid, reason},
+        %{active_turn: %{task: %TurnTask{monitor: monitor}} = active_turn} = state
       ) do
     Cancellation.delete(active_turn.signal)
+    release_turn(state)
     state = %{state | active_turn: nil}
     broadcast_turn_failure(state, active_turn.id, reason)
-    {:noreply, state}
+    settle(state, {:runtime_error, reason})
+  end
+
+  def handle_info({:runtime_cancel, reason}, state) do
+    {:noreply, cancel_active_turn(state, reason)}
   end
 
   def handle_info({:DOWN, monitor_ref, :process, subscriber, _reason}, state) do
@@ -303,30 +357,52 @@ defmodule Tackle.Session do
   end
 
   defp start_turn(operation, input, state) do
+    case acquire_turn(state) do
+      :ok ->
+        do_start_turn(operation, input, state)
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp do_start_turn(operation, input, state) do
     signal = Cancellation.new_signal()
     turn_id = state.config.id_generator.()
     session_pid = self()
     agent_state = state.agent_state
     run_opts = turn_opts(state.config, session_pid, turn_id, signal)
 
-    task =
-      Task.Supervisor.async_nolink(Tackle.TaskSupervisor, fn ->
-        case operation do
-          :run -> Tackle.Lib.run(agent_state, input, run_opts)
-          :continue -> Tackle.Lib.continue(agent_state, run_opts)
-        end
-      end)
+    case start_turn_task(state.work_supervisor, fn ->
+           case operation do
+             :run -> Tackle.Lib.run(agent_state, input, run_opts)
+             :continue -> Tackle.Lib.continue(agent_state, run_opts)
+           end
+         end) do
+      {:ok, task} ->
+        active_turn = %{
+          id: turn_id,
+          operation: operation,
+          task: task,
+          signal: signal,
+          cancellation_requested?: false
+        }
 
-    active_turn = %{
-      id: turn_id,
-      operation: operation,
-      task: task,
-      signal: signal,
-      cancellation_requested?: false
-    }
+        {:reply, {:ok, turn_id}, %{state | active_turn: active_turn}}
 
-    {:reply, {:ok, turn_id}, %{state | active_turn: active_turn}}
+      {:error, reason} ->
+        Cancellation.delete(signal)
+        release_turn(state)
+        {:reply, {:error, {:turn_task_failed, reason}}, state}
+    end
   end
+
+  defp start_turn_task(nil, fun) do
+    task = Task.Supervisor.async_nolink(Tackle.TaskSupervisor, fun)
+    {:ok, %TurnTask{pid: task.pid, ref: task.ref, monitor: task.ref, supervisor: nil}}
+  end
+
+  defp start_turn_task(work_supervisor, fun), do: TurnTask.start(work_supervisor, fun)
 
   defp turn_opts(config, session_pid, turn_id, signal) do
     [
@@ -336,10 +412,132 @@ defmodule Tackle.Session do
     ]
   end
 
+  defp acquire_turn(%{coordinator: nil}), do: :ok
+
+  defp acquire_turn(%{coordinator: coordinator, agent_ref: %AgentRef{} = agent_ref}) do
+    Coordinator.acquire_turn(coordinator, agent_ref)
+  catch
+    :exit, _reason -> {:error, :runtime_unavailable}
+  end
+
+  defp acquire_turn(_state), do: :ok
+
+  defp release_turn(%{coordinator: nil}), do: :ok
+
+  defp release_turn(%{coordinator: coordinator, agent_ref: %AgentRef{} = agent_ref}) do
+    Coordinator.release_turn(coordinator, agent_ref)
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp release_turn(_state), do: :ok
+
+  defp settle(state, result) do
+    deliver_terminal(state, result)
+
+    if state.lifetime == :ephemeral do
+      {:stop, :normal, state}
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp deliver_terminal(%{terminal: nil}, _result), do: :ok
+
+  defp deliver_terminal(%{terminal: terminal} = state, result) do
+    outcome = outcome_from_result(result, state)
+    send(terminal.destination, {:tackle_runtime_terminal, terminal.run_id, outcome})
+    :ok
+  end
+
+  defp outcome_from_result({:ok, %AgentState{} = agent_state}, state),
+    do: Outcome.new(:ok, agent_state: agent_state, agent_ref: state.agent_ref)
+
+  defp outcome_from_result({:error, %AgentState{} = agent_state}, state),
+    do: Outcome.new(:error, agent_state: agent_state, agent_ref: state.agent_ref)
+
+  defp outcome_from_result({:cancelled, %AgentState{} = agent_state}, state),
+    do: Outcome.new(:cancelled, agent_state: agent_state, agent_ref: state.agent_ref)
+
+  defp outcome_from_result({:runtime_error, reason}, state),
+    do: Outcome.new(:runtime_error, reason: reason, agent_ref: state.agent_ref)
+
+  defp cancel_active_turn(%{active_turn: nil} = state, _reason), do: state
+
+  defp cancel_active_turn(%{active_turn: active_turn} = state, reason) do
+    Cancellation.cancel(active_turn.signal, reason)
+    %{state | active_turn: %{active_turn | cancellation_requested?: true}}
+  end
+
   defp apply_configuration(agent_state, config) do
     llm_opts = Keyword.put(config.llm_opts, :credential_store, Auth.credential_store())
 
     %{agent_state | llm: config.llm, model: config.llm.model, llm_opts: llm_opts}
+  end
+
+  defp put_runtime_context(agent_state, %ScopeRef{} = scope_ref, %AgentRef{} = agent_ref, opts) do
+    handle =
+      Handle.new(scope_ref, agent_ref,
+        allow_recursion: Keyword.get(opts, :allow_recursion, false),
+        limits: Keyword.get(opts, :limits, Limits.default())
+      )
+
+    context =
+      agent_state.context
+      |> Map.put(:runtime, handle)
+      |> Map.merge(Keyword.get(opts, :context_overrides, %{}))
+
+    %{agent_state | context: context}
+  end
+
+  defp put_runtime_context(agent_state, _scope_ref, _agent_ref, _opts), do: agent_state
+
+  defp register(nil, _agent_ref), do: :ok
+  defp register(_scope_ref, nil), do: :ok
+
+  defp register(%ScopeRef{} = scope_ref, %AgentRef{scope_id: scope_id} = agent_ref)
+       when scope_ref.scope_id == scope_id do
+    case Registry.register(agent_ref, :agent) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_registered, _pid}} -> {:error, :already_registered}
+    end
+  end
+
+  defp register(%ScopeRef{}, %AgentRef{}), do: {:error, :scope_mismatch}
+
+  defp register_with_coordinator(%{coordinator: nil}), do: :ok
+
+  defp register_with_coordinator(%{coordinator: coordinator, agent_ref: %AgentRef{} = agent_ref}) do
+    Coordinator.register_agent(coordinator, agent_ref, self())
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp register_with_coordinator(_state), do: :ok
+
+  defp coordinator_pid(%ScopeRef{} = scope_ref) do
+    case Registry.coordinator(scope_ref) do
+      {:ok, pid} -> pid
+      {:error, :not_found} -> nil
+    end
+  end
+
+  defp coordinator_pid(_scope_ref), do: nil
+
+  defp work_supervisor(%ScopeRef{} = scope_ref) do
+    case Registry.work_supervisor(scope_ref) do
+      {:ok, pid} -> pid
+      {:error, :not_found} -> nil
+    end
+  end
+
+  defp work_supervisor(_scope_ref), do: nil
+
+  defp session_name(opts) do
+    case Keyword.get(opts, :name) do
+      nil -> []
+      name -> [name: name]
+    end
   end
 
   defp build_snapshot(state) do
@@ -356,7 +554,9 @@ defmodule Tackle.Session do
       session_id: state.agent_state.session_id,
       agent_state: state.agent_state,
       active_turn: active_turn,
-      stats: Stats.from_agent_state(state.agent_state)
+      stats: Stats.from_agent_state(state.agent_state),
+      agent_ref: state.agent_ref,
+      scope_ref: state.scope_ref
     }
   end
 
@@ -408,9 +608,19 @@ defmodule Tackle.Session do
   defp cleanup_active_turn(nil), do: :ok
 
   defp cleanup_active_turn(active_turn) do
-    Cancellation.cancel(active_turn.signal, :session_closed)
-    Task.shutdown(active_turn.task, @task_shutdown_timeout)
-    Cancellation.delete(active_turn.signal)
+    safe_cancellation(fn -> Cancellation.cancel(active_turn.signal, :session_closed) end)
+    TurnTask.shutdown(active_turn.task, @task_shutdown_timeout)
+    safe_cancellation(fn -> Cancellation.delete(active_turn.signal) end)
     :ok
+  end
+
+  # The default ETS cancellation store can lose its lazily-created table when
+  # its owning process exits. Cleanup must not crash a terminating session.
+  defp safe_cancellation(fun) do
+    fun.()
+  rescue
+    _error -> :ok
+  catch
+    :exit, _reason -> :ok
   end
 end

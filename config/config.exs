@@ -1,5 +1,7 @@
 import Config
 
+config :tackle_lib, cancellation_store: Tackle.Runtime.CancellationStore
+
 if config_env() == :test do
   test_home =
     Path.join(

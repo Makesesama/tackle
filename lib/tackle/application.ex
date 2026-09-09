@@ -8,6 +8,9 @@ defmodule Tackle.Application do
     with {:ok, auth_file} <- auth_file() do
       children = [
         {Tackle.Auth.Store, path: auth_file, name: Tackle.Auth.Store},
+        {Tackle.Runtime.CancellationStore, []},
+        {Tackle.Runtime.Registry, []},
+        {Tackle.AgentSupervisor, name: Tackle.AgentSupervisor},
         {Task.Supervisor, name: Tackle.TaskSupervisor},
         {DynamicSupervisor, strategy: :one_for_one, name: Tackle.SessionSupervisor}
       ]
