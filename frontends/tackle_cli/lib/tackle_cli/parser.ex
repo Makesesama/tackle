@@ -35,6 +35,9 @@ defmodule Tackle.CLI.Parser do
   defp parse_result({:ok, [:run], result}, _parser), do: {:ok, run_command(result)}
   defp parse_result({:ok, [:models], _result}, _parser), do: {:ok, {:models, %{}}}
 
+  defp parse_result({:ok, [:auth], _result}, parser),
+    do: {:help, format_help(parser, [:auth])}
+
   defp parse_result({:ok, [:auth, :login], result}, _parser),
     do: {:ok, {:auth_login, %{provider: result.args.provider}}}
 

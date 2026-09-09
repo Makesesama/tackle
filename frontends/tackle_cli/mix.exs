@@ -23,7 +23,8 @@ defmodule Tackle.CLI.MixProject do
       {:tackle, path: "../.."},
       {:tackle_codex, path: "../../plugins/tackle_codex"},
       {:optimus, "~> 0.6"},
-      {:ex_ratatui, "~> 0.13"}
+      {:ex_ratatui, path: "../../repos/ex_ratatui"},
+      {:rustler, ">= 0.0.0"}
     ]
   end
 

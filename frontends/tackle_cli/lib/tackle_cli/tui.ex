@@ -13,32 +13,10 @@ defmodule Tackle.CLI.TUI do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.{Block, Paragraph, Popup, TextInput, WidgetList}
   alias ExRatatui.Widgets.List, as: SelectionList
+  alias Tackle.CLI.TUI.Conversation
   alias Tackle.Lib.{ContextUsage, Event, Message, ModelInfo, State, Usage}
   alias Tackle.Session.Snapshot
   alias Tackle.Thinking
-
-  @tool_arguments_limit 240
-  @tool_result_limit 500
-  @tool_result_lines 6
-  @mouse_scroll_rows 3
-  @conversation_chunk_rows 64
-  @conversation_sections [:settled, :pending, :tools, :thinking, :response, :error]
-  @zero_width_grapheme ~r/^[\p{M}\p{Cf}]+$/u
-  @emoji_presentation ~r/\p{Emoji_Presentation}/u
-  @wide_codepoint_ranges [
-    {0x1100, 0x115F},
-    {0x231A, 0x231B},
-    {0x2329, 0x232A},
-    {0x2E80, 0xA4CF},
-    {0xAC00, 0xD7A3},
-    {0xF900, 0xFAFF},
-    {0xFE10, 0xFE19},
-    {0xFE30, 0xFE6F},
-    {0xFF00, 0xFF60},
-    {0xFFE0, 0xFFE6},
-    {0x1F1E6, 0x1FAFF},
-    {0x20000, 0x3FFFD}
-  ]
 
   @spec start(keyword()) :: :ok | {:error, term()}
   def start(opts) when is_list(opts) do
@@ -172,8 +150,12 @@ defmodule Tackle.CLI.TUI do
 
   def handle_event(%Mouse{kind: kind} = mouse, state)
       when kind in ["scroll_up", "scroll_down"] do
-    if conversation_contains?(state.conversation, mouse.x, mouse.y) do
-      delta = if kind == "scroll_up", do: -@mouse_scroll_rows, else: @mouse_scroll_rows
+    if Conversation.contains?(state.conversation, mouse.x, mouse.y) do
+      delta =
+        if kind == "scroll_up",
+          do: -Conversation.mouse_scroll_rows(),
+          else: Conversation.mouse_scroll_rows()
+
       scroll_reply(state, scroll_conversation(state, delta))
     else
       {:noreply, state, render?: false}
@@ -433,15 +415,7 @@ defmodule Tackle.CLI.TUI do
     }
   end
 
-  defp conversation_title(conversation) do
-    max_offset = max(conversation.content_height - conversation.viewport_height, 0)
-
-    cond do
-      max_offset == 0 -> " Conversation "
-      conversation.follow? -> " Conversation · latest "
-      true -> " Conversation · #{round(conversation.scroll_offset / max_offset * 100)}% "
-    end
-  end
+  defp conversation_title(conversation), do: Conversation.title(conversation)
 
   defp input_widget(state) do
     %TextInput{
@@ -477,32 +451,6 @@ defmodule Tackle.CLI.TUI do
     }
   end
 
-  defp conversation_entries(state, :settled),
-    do: Enum.flat_map(state.agent_state.messages, &format_message/1)
-
-  defp conversation_entries(state, :pending) do
-    if state.pending_prompt, do: ["You:\n#{state.pending_prompt}"], else: []
-  end
-
-  defp conversation_entries(state, :tools),
-    do: Enum.map(state.tool_activity, &format_tool_activity/1)
-
-  defp conversation_entries(state, :thinking) do
-    if state.streaming_thinking == "",
-      do: [],
-      else: ["Thinking:\n#{state.streaming_thinking}"]
-  end
-
-  defp conversation_entries(state, :response) do
-    if state.streaming_response == "",
-      do: [],
-      else: ["Tackle:\n#{state.streaming_response}"]
-  end
-
-  defp conversation_entries(state, :error) do
-    if state.error, do: ["Error:\n#{state.error}"], else: []
-  end
-
   defp initial_terminal_size(opts) do
     case Keyword.get(opts, :test_mode) do
       {width, height} ->
@@ -535,102 +483,26 @@ defmodule Tackle.CLI.TUI do
   defp new_conversation(width, height) do
     area = %Rect{x: 0, y: 0, width: width, height: height}
     [_header, conversation_area, _input, _footer] = layout_areas(area)
-
-    %{
-      width: max(conversation_area.width - 2, 1),
-      viewport_height: max(conversation_area.height - 2, 0),
-      rect: conversation_area,
-      sections: Map.new(@conversation_sections, &{&1, []}),
-      items: [],
-      visible_items: [],
-      visible_offset: 0,
-      content_height: 0,
-      scroll_offset: 0,
-      follow?: true
-    }
+    Conversation.new(conversation_area)
   end
 
-  # Cache wrapped sections in transition state so render/2 only hands the
-  # already-sliced viewport to ExRatatui. Streaming updates rebuild just their
-  # section instead of reformatting settled messages.
-  defp refresh_conversation(state, sections \\ @conversation_sections) do
-    conversation = state.conversation
+  # Cache transition state so render/2 only hands the already-sliced viewport
+  # to ExRatatui. Streaming updates rebuild just their section instead of
+  # reformatting settled messages.
+  defp refresh_conversation(state, sections \\ nil)
 
-    section_items =
-      Enum.reduce(sections, conversation.sections, fn section, items ->
-        Map.put(items, section, build_conversation_section(state, section, conversation.width))
-      end)
-
-    entry_items = Enum.flat_map(@conversation_sections, &Map.fetch!(section_items, &1))
-
-    entry_items =
-      case entry_items do
-        [] ->
-          build_conversation_items(
-            ["Welcome to Tackle. Type a prompt below to start a session."],
-            conversation.width
-          )
-
-        entries ->
-          entries
-      end
-
-    items =
-      entry_items
-      |> Enum.intersperse([{%Paragraph{text: ""}, 1}])
-      |> List.flatten()
-
-    content_height =
-      Enum.reduce(items, 0, fn {_widget, item_height}, total -> total + item_height end)
-
-    max_offset = max(content_height - conversation.viewport_height, 0)
-
-    scroll_offset =
-      if conversation.follow?,
-        do: max_offset,
-        else: min(conversation.scroll_offset, max_offset)
-
-    conversation = %{
-      conversation
-      | sections: section_items,
-        items: items,
-        content_height: content_height,
-        scroll_offset: scroll_offset,
-        follow?: conversation.follow? or scroll_offset == max_offset
-    }
-
-    %{state | conversation: put_visible_conversation(conversation)}
+  defp refresh_conversation(state, nil) do
+    %{state | conversation: Conversation.refresh(state.conversation, state)}
   end
 
-  defp build_conversation_section(state, section, width) do
-    state
-    |> conversation_entries(section)
-    |> build_conversation_items(width)
-  end
-
-  # Bound individual widgets as well as the visible item count. WidgetList must
-  # render a whole partially-visible item before clipping it, so one unbounded
-  # Paragraph would make a long agent response expensive even after slicing.
-  defp build_conversation_items(entries, width) do
-    Enum.map(entries, fn entry ->
-      entry
-      |> wrap_text(width)
-      |> String.split("\n", trim: false)
-      |> Enum.chunk_every(@conversation_chunk_rows)
-      |> Enum.map(fn lines ->
-        {%Paragraph{text: Enum.join(lines, "\n")}, length(lines)}
-      end)
-    end)
+  defp refresh_conversation(state, sections) do
+    %{state | conversation: Conversation.refresh(state.conversation, state, sections)}
   end
 
   defp resize_conversation(state, width, height) do
-    old_conversation = state.conversation
-
-    conversation =
-      width
-      |> new_conversation(height)
-      |> Map.put(:scroll_offset, old_conversation.scroll_offset)
-      |> Map.put(:follow?, old_conversation.follow?)
+    area = %Rect{x: 0, y: 0, width: width, height: height}
+    [_header, conversation_area, _input, _footer] = layout_areas(area)
+    conversation = Conversation.resize(state.conversation, conversation_area)
 
     state
     |> Map.put(:conversation, conversation)
@@ -638,71 +510,20 @@ defmodule Tackle.CLI.TUI do
   end
 
   defp scroll_conversation(state, delta) do
-    conversation = state.conversation
-    max_offset = max(conversation.content_height - conversation.viewport_height, 0)
-    scroll_offset = conversation.scroll_offset |> Kernel.+(delta) |> max(0) |> min(max_offset)
-
-    conversation = %{
-      conversation
-      | scroll_offset: scroll_offset,
-        follow?: scroll_offset == max_offset
-    }
-
-    %{state | conversation: put_visible_conversation(conversation)}
+    %{state | conversation: Conversation.scroll(state.conversation, delta)}
   end
 
-  defp scroll_conversation_to(state, :start) do
-    conversation = %{state.conversation | scroll_offset: 0, follow?: false}
-    %{state | conversation: put_visible_conversation(conversation)}
+  defp scroll_conversation_to(state, location) do
+    %{state | conversation: Conversation.scroll_to(state.conversation, location)}
   end
 
-  defp scroll_conversation_to(state, :end) do
-    max_offset = max(state.conversation.content_height - state.conversation.viewport_height, 0)
-    conversation = %{state.conversation | scroll_offset: max_offset, follow?: true}
-    %{state | conversation: put_visible_conversation(conversation)}
-  end
-
-  defp conversation_page_size(state), do: max(state.conversation.viewport_height - 1, 1)
+  defp conversation_page_size(state), do: Conversation.page_size(state.conversation)
 
   defp scroll_reply(state, scrolled_state) do
     if scrolled_state.conversation.scroll_offset == state.conversation.scroll_offset,
       do: {:noreply, state, render?: false},
       else: {:noreply, scrolled_state}
   end
-
-  defp conversation_contains?(%{rect: rect}, x, y) when is_integer(x) and is_integer(y) do
-    x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
-  end
-
-  defp conversation_contains?(_conversation, _x, _y), do: false
-
-  defp put_visible_conversation(conversation) do
-    {remaining_items, visible_offset} =
-      drop_scrolled_items(conversation.items, conversation.scroll_offset)
-
-    visible_items =
-      take_visible_items(
-        remaining_items,
-        conversation.viewport_height + visible_offset
-      )
-
-    %{
-      conversation
-      | visible_items: visible_items,
-        visible_offset: visible_offset
-    }
-  end
-
-  defp drop_scrolled_items([{_widget, height} | items], offset) when offset >= height,
-    do: drop_scrolled_items(items, offset - height)
-
-  defp drop_scrolled_items(items, offset), do: {items, offset}
-
-  defp take_visible_items(_items, rows) when rows <= 0, do: []
-  defp take_visible_items([], _rows), do: []
-
-  defp take_visible_items([{_widget, height} = item | items], rows),
-    do: [item | take_visible_items(items, rows - height)]
 
   defp settings_widget(state) do
     settings = state.settings
@@ -801,145 +622,6 @@ defmodule Tackle.CLI.TUI do
   defp model_ref(%State{llm: %{ref: ref}}) when is_binary(ref), do: ref
   defp model_ref(%State{model: model}) when is_binary(model), do: model
   defp model_ref(_agent_state), do: nil
-
-  defp wrap_text(text, width) do
-    text
-    |> String.split("\n", trim: false)
-    |> Enum.flat_map(&wrap_line(&1, width))
-    |> Enum.join("\n")
-  end
-
-  defp wrap_line("", _width), do: [""]
-
-  defp wrap_line(line, width) do
-    {lines, current, _current_width} =
-      line
-      |> String.graphemes()
-      |> Enum.reduce({[], [], 0}, fn grapheme, {lines, current, current_width} ->
-        grapheme_width = terminal_width(grapheme)
-
-        if current != [] and current_width + grapheme_width > width do
-          {[Enum.reverse(current) | lines], [grapheme], grapheme_width}
-        else
-          {lines, [grapheme | current], current_width + grapheme_width}
-        end
-      end)
-
-    [Enum.reverse(current) | lines]
-    |> Enum.reverse()
-    |> Enum.map(&Enum.join/1)
-  end
-
-  defp terminal_width(grapheme) do
-    codepoints = String.to_charlist(grapheme)
-
-    cond do
-      Regex.match?(@zero_width_grapheme, grapheme) -> 0
-      Regex.match?(@emoji_presentation, grapheme) -> 2
-      0xFE0F in codepoints -> 2
-      Enum.any?(codepoints, &wide_codepoint?/1) -> 2
-      true -> 1
-    end
-  end
-
-  defp wide_codepoint?(codepoint) do
-    Enum.any?(@wide_codepoint_ranges, fn {first, last} ->
-      codepoint >= first and codepoint <= last
-    end)
-  end
-
-  defp format_message(%Message{role: :user, content: content}) when is_binary(content),
-    do: ["You:\n#{content}"]
-
-  defp format_message(%Message{role: :assistant} = message) do
-    thinking =
-      if is_binary(message.thinking) and message.thinking != "",
-        do: ["Thinking:\n#{message.thinking}"],
-        else: []
-
-    content =
-      if is_binary(message.content) and message.content != "",
-        do: ["Tackle:\n#{message.content}"],
-        else: []
-
-    tool_calls = Enum.map(message.tool_calls || [], &format_tool_call/1)
-    thinking ++ content ++ tool_calls
-  end
-
-  defp format_message(%Message{role: :tool} = message) do
-    failed? =
-      is_binary(message.content) and
-        String.starts_with?(String.trim_leading(message.content), "Error:")
-
-    status = if failed?, do: :failed, else: :completed
-
-    [
-      format_tool_activity(%{
-        name: message.tool_name || "unknown",
-        status: status,
-        result: if(failed?, do: nil, else: message.content),
-        error: if(failed?, do: message.content, else: nil)
-      })
-    ]
-  end
-
-  defp format_message(_message), do: []
-
-  defp format_tool_call(tool_call) do
-    name = value(tool_call, :name) || "unknown"
-    arguments = value(tool_call, :arguments)
-    "● #{name}" <> format_detail("args", arguments, @tool_arguments_limit)
-  end
-
-  defp format_tool_activity(%{status: :running} = tool) do
-    "● #{tool.name}" <>
-      format_detail("args", Map.get(tool, :arguments), @tool_arguments_limit) <>
-      "\n  running"
-  end
-
-  defp format_tool_activity(%{status: :completed} = tool) do
-    "✓ #{tool.name}" <>
-      format_detail("args", Map.get(tool, :arguments), @tool_arguments_limit) <>
-      "\n  completed" <>
-      format_detail("result", Map.get(tool, :result), @tool_result_limit)
-  end
-
-  defp format_tool_activity(%{status: :failed} = tool) do
-    "✗ #{tool.name}" <>
-      format_detail("args", Map.get(tool, :arguments), @tool_arguments_limit) <>
-      "\n  failed" <>
-      format_detail("error", Map.get(tool, :error), @tool_result_limit)
-  end
-
-  defp format_detail(_label, value, _limit) when value in [nil, "", %{}], do: ""
-
-  defp format_detail(label, value, limit) do
-    preview = value |> format_value() |> truncate_preview(limit) |> indent_lines()
-    "\n  #{label}: #{preview}"
-  end
-
-  defp format_value(value) when is_binary(value), do: value
-
-  defp format_value(value) when is_map(value) or is_list(value) do
-    case Tackle.Lib.JSON.encode(value) do
-      {:ok, encoded} -> encoded
-      {:error, _reason} -> inspect(value)
-    end
-  end
-
-  defp format_value(value), do: inspect(value)
-
-  defp truncate_preview(value, limit) do
-    lines = value |> String.trim() |> String.split("\n")
-    lines_truncated? = length(lines) > @tool_result_lines
-    preview = lines |> Enum.take(@tool_result_lines) |> Enum.join("\n")
-    chars_truncated? = String.length(preview) > limit
-    preview = if chars_truncated?, do: String.slice(preview, 0, limit), else: preview
-
-    if lines_truncated? or chars_truncated?, do: preview <> "…", else: preview
-  end
-
-  defp indent_lines(value), do: String.replace(value, "\n", "\n  ")
 
   defp put_tool_activity(state, data, status) do
     id = value(data, :tool_call_id)

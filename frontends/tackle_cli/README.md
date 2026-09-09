@@ -30,18 +30,44 @@ model and thinking level, press Esc to cancel an active turn or exit while idle,
 and press Ctrl+C to exit at any time. Scroll the conversation with Page Up/Page
 Down or the mouse wheel; Ctrl+Home jumps to the oldest message and Ctrl+End
 returns to the newest message and resumes automatic following. The conversation
-follows streaming reasoning summaries and responses and shows tool arguments,
-execution status, and concise result or error previews. Model and thinking
-changes preserve the settled conversation. The footer shows current context
-pressure and aggregate session input/output when available, plus the
+renders assistant responses as Markdown, including while a response is
+streaming, and shows tool arguments, execution status, and concise result or
+error previews. Markdown heights are measured at the current content width,
+then remeasured after terminal resize. Long histories are sliced to the visible
+row range; long Markdown responses retain their complete source and use bounded
+scroll windows rather than splitting Markdown syntax across widgets. Responses
+beyond the native 65,536-row scroll range fall back to bounded plain-text source
+instead of crashing. Model and thinking changes preserve the settled
+conversation. The footer shows current
+context pressure and aggregate session input/output when available, plus the
 Pi-compatible token-weighted prompt-cache hit rate and monetary cost. A `~`
 before cost (for example `~$0.84`) marks a price-card estimate rather than
 provider-reported billing. Missing metadata is omitted, and context pressure is
-informational only—automatic compaction is not implemented. This development
-task runs through Mix so ExRatatui's
-native library remains available as a real file.
+informational only—automatic compaction is not implemented.
+
+### Local ExRatatui fork
+
+Until the width-aware Markdown measurement API is released in Hex, this
+frontend intentionally uses the local `../../repos/ex_ratatui` fork at commit
+`410c2e7`. The fork still declares version `0.13.1`, so the CLI configuration
+forces an ExRatatui source build instead of loading the published precompiled
+NIF. The direct `:rustler` dependency in `mix.exs` is required by that source
+build.
+
+The fork must be present when developing the TUI, and a Rust/Cargo toolchain is
+required:
+
+```sh
+# from the repository root, place the approved checkout at repos/ex_ratatui
+cd frontends/tackle_cli
+mix deps.get
+mix compile --warnings-as-errors
+```
+
 The escript archive is suitable for non-TUI commands only: native libraries
-cannot be loaded directly from its embedded ZIP.
+cannot be loaded directly from its embedded ZIP. A portable checkout should
+switch back to the released ExRatatui package once the measurement API is
+available there.
 
 ## Development checks
 

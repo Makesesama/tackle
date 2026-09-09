@@ -3,8 +3,9 @@ defmodule Tackle.CLI.TUITest do
 
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
   alias ExRatatui.Runtime
-  alias ExRatatui.Widgets.{Paragraph, TextInput, WidgetList}
+  alias ExRatatui.Widgets.{Markdown, Paragraph, TextInput, WidgetList}
   alias Tackle.CLI.TUI
+  alias Tackle.CLI.TUI.MessageView
   alias Tackle.Lib.{Event, Message, State}
   alias Tackle.Session.Snapshot
 
@@ -293,12 +294,156 @@ defmodule Tackle.CLI.TUITest do
                match?(%WidgetList{block: %{title: " Conversation "}}, widget)
              end)
 
-    conversation =
-      Enum.map_join(items, "\n", fn {%Paragraph{text: text}, _height} -> text end)
+    conversation = conversation_text(settled_state)
 
     assert conversation =~ "You:\nhi"
     assert conversation =~ "Thinking:\nChecked"
-    assert conversation =~ "Tackle:\nHello"
+    assert conversation =~ "Hello"
+
+    assert Enum.any?(items, fn
+             {%Markdown{content: "Hello"}, height} ->
+               height == Markdown.measure_height("Hello", settled_state.conversation.width)
+
+             _item ->
+               false
+           end)
+  end
+
+  test "renders settled assistant responses as Markdown with measured height", %{tui: tui} do
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
+    state = :sys.get_state(tui).user_state
+
+    markdown = "# Done\n\nSome **bold** text with `code`.\n\n- first\n- second"
+    agent_state = %{state.agent_state | messages: [Message.assistant(content: markdown)]}
+
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    state = :sys.get_state(tui).user_state
+
+    assert Enum.any?(state.conversation.sections[:settled].entries, fn entry ->
+             match?(%Tackle.CLI.TUI.MessageView{kind: :assistant, content: ^markdown}, entry)
+           end)
+
+    assert Enum.any?(state.conversation.items, fn
+             {%Markdown{content: ^markdown, style: %{fg: :white}}, height} ->
+               height == Markdown.measure_height(markdown, state.conversation.width)
+
+             _item ->
+               false
+           end)
+
+    refute Enum.any?(state.conversation.items, fn
+             {%Paragraph{text: text}, _height} -> String.contains?(text, "**bold**")
+             _item -> false
+           end)
+
+    terminal = ExRatatui.init_test_terminal(80, 20)
+    :ok = ExRatatui.draw(terminal, TUI.scene(state, %ExRatatui.Frame{width: 80, height: 20}))
+    rendered = ExRatatui.get_buffer_content(terminal)
+    assert rendered =~ "Done"
+    assert rendered =~ "first"
+    assert rendered =~ "second"
+  end
+
+  test "renders streaming Markdown while a fenced code block is incomplete", %{tui: tui} do
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
+    state = :sys.get_state(tui).user_state
+
+    markdown = "```elixir\nIO.puts(\"still streaming\")"
+
+    send(
+      tui,
+      {:tackle_event, state.session_id, "turn-1", Event.new(:message_delta, %{delta: markdown})}
+    )
+
+    state = :sys.get_state(tui).user_state
+
+    assert Enum.any?(state.conversation.items, fn
+             {%Markdown{content: ^markdown}, height} ->
+               height == Markdown.measure_height(markdown, state.conversation.width)
+
+             _item ->
+               false
+           end)
+
+    terminal = ExRatatui.init_test_terminal(80, 20)
+    :ok = ExRatatui.draw(terminal, TUI.scene(state, %ExRatatui.Frame{width: 80, height: 20}))
+    assert ExRatatui.get_buffer_content(terminal) =~ "still streaming"
+  end
+
+  test "remeasures Markdown entries after terminal resize", %{tui: tui} do
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
+    state = :sys.get_state(tui).user_state
+
+    markdown = "A long response with enough words to wrap at a narrow width."
+    agent_state = %{state.agent_state | messages: [Message.assistant(content: markdown)]}
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    wide_state = :sys.get_state(tui).user_state
+
+    [{_wide_label, 1}, {%Markdown{content: ^markdown}, wide_height}] =
+      Enum.filter(wide_state.conversation.items, fn
+        {%Paragraph{text: "Tackle:"}, _height} -> true
+        {%Markdown{}, _height} -> true
+        _item -> false
+      end)
+      |> Enum.take(2)
+
+    :ok = Runtime.inject_event(tui, %Resize{width: 24, height: 20})
+    narrow_state = :sys.get_state(tui).user_state
+
+    assert Enum.any?(narrow_state.conversation.items, fn
+             {%Markdown{content: ^markdown}, narrow_height} ->
+               narrow_height == Markdown.measure_height(markdown, narrow_state.conversation.width)
+
+             _item ->
+               false
+           end)
+
+    refute wide_height == Markdown.measure_height(markdown, narrow_state.conversation.width)
+  end
+
+  test "keeps long Markdown source intact while bounding visible windows", %{tui: tui} do
+    :ok = Runtime.inject_event(tui, %Resize{width: 30, height: 16})
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
+    state = :sys.get_state(tui).user_state
+
+    markdown = Enum.map_join(1..200, "\n", &"**response line #{&1}**")
+    messages = [Message.user("x"), Message.assistant(content: markdown)]
+    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    state = :sys.get_state(tui).user_state
+
+    markdown_items =
+      Enum.filter(state.conversation.items, fn
+        {%Markdown{}, _height} -> true
+        _item -> false
+      end)
+
+    assert markdown_items != []
+
+    assert Enum.uniq(Enum.map(markdown_items, fn {%Markdown{content: content}, _} -> content end)) ==
+             [markdown]
+
+    assert Enum.all?(markdown_items, fn {_widget, height} -> height <= 64 end)
+    assert length(state.conversation.visible_items) < length(state.conversation.items)
+  end
+
+  test "falls back safely when Markdown exceeds the native scroll range" do
+    markdown = String.duplicate("x", 65_537)
+    entry = %MessageView{kind: :assistant, content: markdown}
+
+    items = MessageView.render_entry(entry, 1)
+
+    assert items != []
+    assert Enum.all?(items, fn {%Paragraph{}, height} -> height <= 64 end)
+    refute Enum.any?(items, fn {widget, _height} -> match?(%Markdown{}, widget) end)
   end
 
   test "renders live tool calls with arguments, status, and truncated results", %{tui: tui} do
@@ -459,7 +604,7 @@ defmodule Tackle.CLI.TUITest do
     terminal = ExRatatui.init_test_terminal(30, 16)
     :ok = ExRatatui.draw(terminal, TUI.scene(state, %ExRatatui.Frame{width: 30, height: 16}))
     content = ExRatatui.get_buffer_content(terminal)
-    assert content =~ "response line 200"
+    assert content =~ "line 200"
     refute content =~ "response line 1\n"
   end
 
@@ -552,7 +697,12 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = :sys.get_state(tui).user_state
 
-    assert [{_user, 3}, {_spacer, 1}, {_assistant, 2}] = state.conversation.items
+    assert [
+             {_user, 3},
+             {_spacer, 1},
+             {%Paragraph{text: "Tackle:"}, 1},
+             {%Markdown{content: "LATEST"}, 1}
+           ] = state.conversation.items
 
     terminal = ExRatatui.init_test_terminal(12, 20)
     :ok = ExRatatui.draw(terminal, TUI.scene(state, %ExRatatui.Frame{width: 12, height: 20}))
@@ -659,7 +809,10 @@ defmodule Tackle.CLI.TUITest do
     TUI.scene(state, %ExRatatui.Frame{width: 120, height: 30})
     |> Enum.find_value(fn
       {%WidgetList{items: items}, _area} ->
-        Enum.map_join(items, "\n", fn {%Paragraph{text: text}, _height} -> text end)
+        Enum.map_join(items, "\n", fn
+          {%Paragraph{text: text}, _height} -> text
+          {%Markdown{content: content}, _height} -> content
+        end)
 
       _widget ->
         nil

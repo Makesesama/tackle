@@ -24,6 +24,14 @@ defmodule Tackle.CLI.ParserTest do
     assert {:ok, {:models, %{}}} = Parser.parse(["models"])
   end
 
+  test "shows auth help when no auth subcommand is given" do
+    assert {:help, help} = Parser.parse(["auth"])
+    assert help =~ "Manage provider credentials"
+    assert help =~ "login"
+    assert help =~ "status"
+    assert help =~ "logout"
+  end
+
   test "parses auth commands" do
     assert {:ok, {:auth_login, %{provider: "openai-codex"}}} =
              Parser.parse(["auth", "login", "openai-codex"])
