@@ -3,7 +3,8 @@ defmodule Tackle.CLI.TUITest do
 
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
   alias ExRatatui.Runtime
-  alias ExRatatui.Widgets.{Markdown, Paragraph, TextInput, WidgetList}
+  alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, TextInput, WidgetList}
+  alias ExRatatui.Widgets.List, as: SelectionList
   alias Tackle.CLI.TUI
   alias Tackle.CLI.TUI.MessageView
   alias Tackle.Lib.{Event, Message, State}
@@ -93,13 +94,18 @@ defmodule Tackle.CLI.TUITest do
   end
 
   setup do
-    session = start_supervised!({SessionStub, self()})
+    test_pid = self()
+    session = start_supervised!({SessionStub, test_pid})
 
     tui =
       start_supervised!(
         {TUI,
          session: session,
          models: ["openai-codex/test-model", "openai-codex/other-model"],
+         clipboard_writer: fn content ->
+           send(test_pid, {:copied, content})
+           :ok
+         end,
          name: nil,
          test_mode: {80, 20}}
       )
@@ -139,7 +145,59 @@ defmodule Tackle.CLI.TUITest do
     assert footer =~ "ctx 0/1k (0.0%)"
     assert footer =~ "Enter send"
     assert footer =~ "F2 model/thinking"
+    assert footer =~ "mouse scroll"
+    assert footer =~ "F3 copy"
     refute footer =~ "CH"
+  end
+
+  test "copies a selected message or the full conversation", %{tui: tui} do
+    inject_key(tui, "x")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "x"}
+    state = :sys.get_state(tui).user_state
+
+    messages = [
+      Message.user("question"),
+      Message.assistant(content: "# Answer\n\nExact **Markdown** source")
+    ]
+
+    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    _state = :sys.get_state(tui).user_state
+
+    inject_key(tui, "f3")
+    copy_state = :sys.get_state(tui).user_state
+    assert copy_state.copy_menu == %{selected: 1, notice: nil}
+
+    assert [{%Popup{content: %SelectionList{selected: 1}}, _area}] =
+             TUI.scene(copy_state, %ExRatatui.Frame{width: 80, height: 20})
+             |> Enum.filter(fn {widget, _area} -> match?(%Popup{}, widget) end)
+
+    inject_key(tui, "y")
+    assert_receive {:copied, "Tackle:\n# Answer\n\nExact **Markdown** source"}
+    assert :sys.get_state(tui).user_state.copy_menu.notice == "Copied selected message"
+
+    inject_key(tui, "up")
+    inject_key(tui, "enter")
+    assert_receive {:copied, "You:\nquestion"}
+
+    inject_key(tui, "a")
+
+    assert_receive {:copied, "You:\nquestion\n\nTackle:\n# Answer\n\nExact **Markdown** source"}
+
+    inject_key(tui, "esc")
+    assert :sys.get_state(tui).user_state.copy_menu == nil
+  end
+
+  test "copy menu reports an empty conversation without writing to the clipboard", %{tui: tui} do
+    inject_key(tui, "f3")
+    state = :sys.get_state(tui).user_state
+    assert state.copy_menu == %{selected: nil, notice: nil}
+
+    inject_key(tui, "enter")
+    state = :sys.get_state(tui).user_state
+    assert state.copy_menu.notice == "Nothing to copy"
+    refute_receive {:copied, _content}
   end
 
   test "selects the model and thinking level from the settings popup", %{tui: tui} do

@@ -131,6 +131,11 @@ defmodule Tackle.CLI.TUI.MessageView do
     render_paragraph(entry, width)
   end
 
+  @doc "Returns the original, unwrapped text represented by an entry."
+  @spec text(t()) :: String.t()
+  def text(%__MODULE__{label: nil, content: content}), do: content
+  def text(%__MODULE__{label: label, content: content}), do: label <> "\n" <> content
+
   @doc false
   @spec style(kind()) :: Style.t()
   def style(:user), do: %Style{fg: :green}

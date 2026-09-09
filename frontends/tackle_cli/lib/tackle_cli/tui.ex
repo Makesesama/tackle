@@ -13,7 +13,8 @@ defmodule Tackle.CLI.TUI do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.{Block, Paragraph, Popup, TextInput, WidgetList}
   alias ExRatatui.Widgets.List, as: SelectionList
-  alias Tackle.CLI.TUI.Conversation
+  alias Tackle.CLI.Clipboard
+  alias Tackle.CLI.TUI.{Conversation, MessageView}
   alias Tackle.Lib.{ContextUsage, Event, Message, ModelInfo, State, Usage}
   alias Tackle.Session.Snapshot
   alias Tackle.Thinking
@@ -53,7 +54,9 @@ defmodule Tackle.CLI.TUI do
         session_monitor: Process.monitor(session),
         input: ExRatatui.text_input_new(),
         models: models,
+        clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
         settings: nil,
+        copy_menu: nil,
         pending_prompt: nil,
         streaming_thinking: "",
         streaming_response: "",
@@ -90,12 +93,45 @@ defmodule Tackle.CLI.TUI do
       {footer_widget(state, footer_area), footer_area}
     ]
 
-    if state.settings, do: widgets ++ [{settings_widget(state), area}], else: widgets
+    cond do
+      state.settings -> widgets ++ [{settings_widget(state), area}]
+      state.copy_menu -> widgets ++ [{copy_widget(state), area}]
+      true -> widgets
+    end
   end
 
   @impl true
   def handle_event(%Key{code: "c", modifiers: ["ctrl"], kind: "press"}, state) do
     {:stop, state}
+  end
+
+  def handle_event(%Key{code: "esc", kind: "press"}, %{copy_menu: copy_menu} = state)
+      when not is_nil(copy_menu) do
+    {:noreply, %{state | copy_menu: nil}}
+  end
+
+  def handle_event(%Key{code: code, kind: "press"}, %{copy_menu: copy_menu} = state)
+      when not is_nil(copy_menu) and code in ["up", "down"] do
+    {:noreply, move_copy_selection(state, code)}
+  end
+
+  def handle_event(%Key{code: code, kind: "press"}, %{copy_menu: copy_menu} = state)
+      when not is_nil(copy_menu) and code in ["enter", "y", "Y"] do
+    {:noreply, copy_selected_entry(state)}
+  end
+
+  def handle_event(%Key{code: code, kind: "press"}, %{copy_menu: copy_menu} = state)
+      when not is_nil(copy_menu) and code in ["a", "A"] do
+    {:noreply, copy_all_entries(state)}
+  end
+
+  def handle_event(%Key{kind: "press"}, %{copy_menu: copy_menu} = state)
+      when not is_nil(copy_menu) do
+    {:noreply, state, render?: false}
+  end
+
+  def handle_event(%Mouse{}, %{copy_menu: copy_menu} = state) when not is_nil(copy_menu) do
+    {:noreply, state, render?: false}
   end
 
   def handle_event(%Key{code: "esc", kind: "press"}, %{settings: settings} = state)
@@ -162,6 +198,10 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
+  def handle_event(%Key{code: "f3", kind: "press"}, state) do
+    {:noreply, open_copy_menu(state)}
+  end
+
   def handle_event(%Key{code: "f2", kind: "press"}, %{active_turn: nil} = state) do
     {:noreply, open_settings(state)}
   end
@@ -182,6 +222,10 @@ defmodule Tackle.CLI.TUI do
   def handle_event(%Key{kind: "press", code: code}, state) do
     :ok = ExRatatui.text_input_handle_key(state.input, code)
     {:noreply, state}
+  end
+
+  def handle_event(%Paste{}, %{copy_menu: copy_menu} = state) when not is_nil(copy_menu) do
+    {:noreply, state, render?: false}
   end
 
   def handle_event(%Paste{}, %{settings: settings} = state) when not is_nil(settings) do
@@ -435,7 +479,8 @@ defmodule Tackle.CLI.TUI do
       end
 
     text =
-      (session_stat_indicators(state) ++ ["PgUp/PgDn scroll · Ctrl+End follow", controls])
+      (session_stat_indicators(state) ++
+         ["PgUp/PgDn/mouse scroll · Ctrl+End follow · F3 copy", controls])
       |> Enum.reject(&is_nil/1)
       |> Enum.join(" · ")
 
@@ -524,6 +569,116 @@ defmodule Tackle.CLI.TUI do
       do: {:noreply, state, render?: false},
       else: {:noreply, scrolled_state}
   end
+
+  defp copy_widget(state) do
+    entries = Conversation.entries(state.conversation)
+    copy_menu = state.copy_menu
+
+    content =
+      case entries do
+        [] ->
+          %Paragraph{
+            text: "There are no conversation messages to copy.",
+            style: %Style{fg: :dark_gray}
+          }
+
+        entries ->
+          %SelectionList{
+            items: Enum.map(entries, &copy_preview/1),
+            selected: copy_selection(copy_menu, length(entries)),
+            highlight_symbol: "› ",
+            highlight_style: %Style{fg: :cyan, modifiers: [:bold]},
+            style: %Style{fg: :white},
+            scroll_padding: 2
+          }
+      end
+
+    title =
+      case copy_menu.notice do
+        nil -> " Copy · ↑/↓ select · Y/Enter copy · A copy all · Esc close "
+        notice -> " #{notice} · Esc close "
+      end
+
+    %Popup{
+      content: content,
+      block: panel_block(title, :cyan),
+      percent_width: 85,
+      percent_height: 60
+    }
+  end
+
+  defp copy_preview(entry) do
+    preview =
+      entry
+      |> MessageView.text()
+      |> String.split()
+      |> Enum.join(" ")
+
+    if String.length(preview) > 72, do: String.slice(preview, 0, 71) <> "…", else: preview
+  end
+
+  defp open_copy_menu(state) do
+    selected =
+      case Conversation.entries(state.conversation) do
+        [] -> nil
+        entries -> length(entries) - 1
+      end
+
+    %{state | copy_menu: %{selected: selected, notice: nil}}
+  end
+
+  defp move_copy_selection(state, direction) do
+    count = length(Conversation.entries(state.conversation))
+
+    if count == 0 do
+      state
+    else
+      delta = if direction == "up", do: -1, else: 1
+      selected = state.copy_menu |> copy_selection(count) |> Kernel.+(delta)
+      selected = selected |> max(0) |> min(count - 1)
+      %{state | copy_menu: %{state.copy_menu | selected: selected, notice: nil}}
+    end
+  end
+
+  defp copy_selected_entry(state) do
+    entries = Conversation.entries(state.conversation)
+
+    case entries do
+      [] ->
+        put_copy_notice(state, "Nothing to copy")
+
+      entries ->
+        entry = Enum.at(entries, copy_selection(state.copy_menu, length(entries)))
+        write_clipboard(state, MessageView.text(entry), "Copied selected message")
+    end
+  end
+
+  defp copy_all_entries(state) do
+    case Conversation.text(state.conversation) do
+      "" -> put_copy_notice(state, "Nothing to copy")
+      text -> write_clipboard(state, text, "Copied full conversation")
+    end
+  end
+
+  defp write_clipboard(state, text, success_notice) do
+    case state.clipboard_writer.(text) do
+      :ok -> put_copy_notice(state, success_notice)
+      {:error, reason} -> put_copy_notice(state, "Copy failed: #{format_reason(reason)}")
+      other -> put_copy_notice(state, "Copy failed: #{format_reason(other)}")
+    end
+  end
+
+  defp put_copy_notice(state, notice) do
+    %{state | copy_menu: %{state.copy_menu | notice: notice}}
+  end
+
+  defp copy_selection(_copy_menu, 0), do: nil
+
+  defp copy_selection(%{selected: selected}, count) when is_integer(selected) do
+    selected |> max(0) |> min(count - 1)
+  end
+
+  defp copy_selection(_copy_menu, count), do: count - 1
 
   defp settings_widget(state) do
     settings = state.settings

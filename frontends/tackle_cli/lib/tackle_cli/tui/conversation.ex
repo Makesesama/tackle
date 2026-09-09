@@ -151,6 +151,24 @@ defmodule Tackle.CLI.TUI.Conversation do
 
   def contains?(_conversation, _x, _y), do: false
 
+  @doc "Returns the cached conversation entries in display order."
+  @spec entries(t()) :: [MessageView.t()]
+  def entries(%__MODULE__{} = conversation) do
+    Enum.flat_map(@sections, fn section ->
+      conversation.sections
+      |> Map.get(section, %{entries: []})
+      |> Map.fetch!(:entries)
+    end)
+  end
+
+  @doc "Returns the complete, unwrapped text represented by the conversation."
+  @spec text(t()) :: String.t()
+  def text(%__MODULE__{} = conversation) do
+    conversation
+    |> entries()
+    |> Enum.map_join("\n\n", &MessageView.text/1)
+  end
+
   @doc "Returns the panel title for the current scroll position."
   @spec title(t()) :: String.t()
   def title(%__MODULE__{} = conversation) do

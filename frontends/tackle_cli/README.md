@@ -29,7 +29,11 @@ Type a prompt and press Enter to submit it; press F2 while idle to select the
 model and thinking level, press Esc to cancel an active turn or exit while idle,
 and press Ctrl+C to exit at any time. Scroll the conversation with Page Up/Page
 Down or the mouse wheel; Ctrl+Home jumps to the oldest message and Ctrl+End
-returns to the newest message and resumes automatic following. The conversation
+returns to the newest message and resumes automatic following. Press F3 to open
+the keyboard copy menu, use Up/Down to select a message, then press Y or Enter
+to copy it through OSC 52; press A to copy the full conversation. Mouse capture
+is enabled for wheel scrolling, so native terminal selection requires the
+terminal's mouse-override gesture (typically Shift-drag). The conversation
 renders assistant responses as Markdown, including while a response is
 streaming, and shows tool arguments, execution status, and concise result or
 error previews. Markdown heights are measured at the current content width,
