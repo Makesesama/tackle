@@ -2,19 +2,29 @@ defmodule Tackle.CLI.TUI.MessageView do
   @moduledoc """
   Converts conversation state into typed entries and native ExRatatui widgets.
 
-  The conversation keeps provider messages and transient turn state separate
-  from their terminal representation. Assistant content is passed to the
-  Markdown widget unchanged; the other entry kinds remain plain Paragraphs so
-  lifecycle and tool information is not interpreted as Markdown.
+  Every entry keeps its complete retained source separately from the bounded
+  widget preview painted on screen. Paint is a security boundary: `render_entry/2`
+  strips ANSI/OSC controls and other non-display bytes before text reaches a
+  widget. Copy and inspector actions use the raw retained source instead, so a
+  truncated or sanitized preview never destroys data the user explicitly asks
+  for.
+
+  Transcript rows are rich-text `%ExRatatui.Text.Line{}` values whose style
+  carries a semantic surface. `render_rows/2` wraps spans to the available
+  width, groups consecutive equal-style rows, and emits one `%Paragraph{}` per
+  group. A `Paragraph` paints its style background across its whole rect, so a
+  group becomes a full-width band even when its text is short.
+
+  Assistant content is rendered as Markdown with measured, source-preserving
+  row windows. Tool entries keep a bounded head/tail preview inline and the
+  complete result available through the output inspector.
   """
 
   alias ExRatatui.Style
+  alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Markdown, Paragraph}
   alias Tackle.Lib.Message
-
-  @tool_arguments_limit 240
-  @tool_result_limit 500
-  @tool_result_lines 6
+  alias Tackle.CLI.TUI.{Theme, ToolView}
   @conversation_chunk_rows 64
   @max_markdown_scroll 65_535
   @zero_width_grapheme ~r/^[\p{M}\p{Cf}]+$/u
@@ -34,56 +44,128 @@ defmodule Tackle.CLI.TUI.MessageView do
     {0x20000, 0x3FFFD}
   ]
 
-  @typedoc """
-  A terminal conversation entry before it is projected into widgets.
-
-  `:assistant` entries keep `content` as the provider's exact Markdown source.
-  Other kinds are intentionally rendered as plain Paragraphs.
-  """
+  @typedoc "A terminal conversation entry before it is projected into widgets."
   @type kind :: :user | :assistant | :thinking | :tool | :error | :welcome
   @type t :: %__MODULE__{
           kind: kind(),
           content: String.t(),
           label: String.t() | nil,
-          style: Style.t()
+          style: Style.t(),
+          id: String.t() | nil,
+          source: String.t() | nil,
+          tool_output: String.t() | nil,
+          tool_name: String.t() | nil,
+          tool_arguments: term(),
+          tool_status: atom() | nil,
+          collapsed?: boolean()
         }
 
   @enforce_keys [:kind, :content]
-  defstruct [:kind, :content, :label, style: %Style{}]
+  defstruct [
+    :kind,
+    :content,
+    :label,
+    :id,
+    :source,
+    :tool_output,
+    :tool_name,
+    :tool_arguments,
+    :tool_status,
+    style: %Style{},
+    collapsed?: false
+  ]
+
+  @typedoc "A styled transcript row before wrapping."
+  @type row :: Line.t()
 
   @typedoc "A primitive widget and its exact row height in the conversation list."
   @type widget_item :: {struct(), non_neg_integer()}
 
-  @doc """
-  Returns the typed entries for one conversation section.
-
-  The section projection is deliberately based on the TUI state rather than on
-  provider-specific events, which keeps settled and streaming messages on the
-  same rendering path.
-  """
+  @doc "Returns the typed entries for one conversation section."
   @spec section_entries(map(), atom()) :: [t()]
   def section_entries(state, :settled) do
     messages = state.agent_state.messages || []
-    Enum.flat_map(messages, &message_entries/1)
+
+    results =
+      Map.new(
+        for %Message{role: :tool, tool_call_id: id} = message <- messages,
+            is_binary(id),
+            do: {id, message}
+      )
+
+    call_ids =
+      messages
+      |> Enum.flat_map(fn message -> message.tool_calls || [] end)
+      |> Enum.map(&value(&1, :id))
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    messages
+    |> Enum.with_index()
+    |> Enum.flat_map(fn
+      {%Message{role: :tool, tool_call_id: id} = message, index} ->
+        if MapSet.member?(call_ids, id), do: [], else: message_entries(message, index, state)
+
+      {%Message{role: :assistant} = message, index} ->
+        prose = message_entries(%{message | tool_calls: []}, index, state)
+
+        calls =
+          (message.tool_calls || [])
+          |> Enum.with_index()
+          |> Enum.map(fn {call, call_index} ->
+            id = value(call, :id)
+            result = Map.get(results, id)
+
+            tool_entry(
+              %{
+                name: value(call, :name),
+                arguments: value(call, :arguments),
+                status: result_status(result),
+                result: if(result, do: result.content)
+              },
+              if(is_binary(id), do: "tool:#{id}", else: "message:#{index}:call:#{call_index}")
+            )
+          end)
+
+        prose ++ calls
+
+      {message, index} ->
+        message_entries(message, index, state)
+    end)
   end
 
   def section_entries(state, :pending) do
-    if state.pending_prompt do
-      [entry(:user, "You:\n#{state.pending_prompt}", style: style(:user))]
+    if is_binary(state.pending_prompt) do
+      [
+        entry(:user, state.pending_prompt,
+          id: "pending",
+          label: "You:",
+          source: state.pending_prompt,
+          style: style(:user)
+        )
+      ]
     else
       []
     end
   end
 
   def section_entries(state, :tools) do
-    Enum.map(state.tool_activity, &tool_entry/1)
+    Enum.map(state.tool_activity, &tool_entry(&1, "tool:#{tool_id(&1)}"))
   end
 
   def section_entries(state, :thinking) do
     if state.streaming_thinking == "" do
       []
     else
-      [entry(:thinking, "Thinking:\n#{state.streaming_thinking}", style: style(:thinking))]
+      [
+        entry(:thinking, state.streaming_thinking,
+          id: "streaming:thinking",
+          label: "Thinking:",
+          source: state.streaming_thinking,
+          collapsed?: not state.thinking_expanded?,
+          style: style(:thinking)
+        )
+      ]
     end
   end
 
@@ -91,13 +173,27 @@ defmodule Tackle.CLI.TUI.MessageView do
     if state.streaming_response == "" do
       []
     else
-      [entry(:assistant, state.streaming_response, label: "Tackle:", style: style(:assistant))]
+      [
+        entry(:assistant, state.streaming_response,
+          id: "streaming:response",
+          label: "Tackle:",
+          source: state.streaming_response,
+          style: style(:assistant)
+        )
+      ]
     end
   end
 
   def section_entries(state, :error) do
     if state.error do
-      [entry(:error, "Error:\n#{state.error}", style: style(:error))]
+      [
+        entry(:error, state.error,
+          id: "turn:error",
+          label: "Error:",
+          source: state.error,
+          style: style(:error)
+        )
+      ]
     else
       []
     end
@@ -109,44 +205,250 @@ defmodule Tackle.CLI.TUI.MessageView do
     entry(
       :welcome,
       "Welcome to Tackle. Type a prompt below to start a session.",
+      id: "welcome",
       style: style(:welcome)
     )
   end
 
-  @doc "Converts one typed entry to bounded primitive widgets."
-  @spec render_entry(t(), pos_integer()) :: [widget_item()]
-  def render_entry(%__MODULE__{kind: :assistant} = entry, width) do
-    label_items =
-      if entry.label do
-        [{%Paragraph{text: entry.label, style: entry.style}, 1}]
-      else
-        []
-      end
+  @doc "Returns the unwrapped retained source for a copy or search operation."
+  @spec source(t()) :: String.t()
+  def source(%__MODULE__{source: source}) when is_binary(source), do: source
+  def source(%__MODULE__{content: content}), do: content
 
-    label_items ++ render_markdown(entry, width)
-  end
+  @doc "Returns the full source with its role label, suitable for message copy."
+  @spec source_text(t()) :: String.t()
+  def source_text(%__MODULE__{label: nil} = entry), do: source(entry)
+  def source_text(%__MODULE__{label: label} = entry), do: label <> "\n" <> source(entry)
 
-  def render_entry(%__MODULE__{} = entry, width)
-      when entry.kind in [:user, :thinking, :tool, :error, :welcome] do
-    render_paragraph(entry, width)
-  end
-
-  @doc "Returns the original, unwrapped text represented by an entry."
+  @doc "Returns the display text represented by an entry without paint sanitizing it."
   @spec text(t()) :: String.t()
   def text(%__MODULE__{label: nil, content: content}), do: content
   def text(%__MODULE__{label: label, content: content}), do: label <> "\n" <> content
 
+  @doc "Returns the retained full tool result or error, if this is a tool entry."
+  @spec tool_output(t()) :: String.t() | nil
+  def tool_output(%__MODULE__{kind: :tool, tool_output: output}), do: output
+  def tool_output(_entry), do: nil
+
+  @doc """
+  Returns the complete retained text used by the output inspector and copy.
+
+  Tool entries expose their raw result without command chrome; other entries
+  expose their labeled message source.
+  """
+  @spec full_text(t()) :: String.t()
+  def full_text(%__MODULE__{kind: :tool} = entry), do: tool_output(entry) || source_text(entry)
+  def full_text(%__MODULE__{} = entry), do: source_text(entry)
+
+  @doc "Returns source text used by transcript search, excluding paint-only chrome."
+  @spec search_text(t()) :: String.t()
+  def search_text(%__MODULE__{kind: :tool} = entry) do
+    entry.content <>
+      "\n" <>
+      format_value(entry.tool_arguments || %{}) <>
+      "\n" <> (tool_output(entry) || "")
+  end
+
+  def search_text(%__MODULE__{} = entry), do: source(entry)
+
+  @doc """
+  Builds a styled span, stripping terminal controls at the paint boundary.
+
+  Span content cannot contain newlines; callers split multi-line source into
+  rows first. Any newline that still reaches this function is flattened to a
+  space so untrusted tool text cannot raise or inject layout.
+  """
+  @spec span(String.t(), Style.t()) :: Span.t()
+  def span(text, style \\ %Style{}) when is_binary(text) do
+    Span.new(text |> sanitize() |> String.replace("\n", " "), style: style)
+  end
+
+  @doc "Returns the terminal cell width of `text`, counting wide and zero-width graphemes."
+  @spec display_width(String.t()) :: non_neg_integer()
+  def display_width(text) when is_binary(text) do
+    text
+    |> String.graphemes()
+    |> Enum.reduce(0, fn grapheme, total -> total + terminal_width(grapheme) end)
+  end
+
+  @doc "Builds one styled transcript row from a string or a list of spans."
+  @spec row(String.t() | [Span.t()], Style.t()) :: row()
+  def row(text, style \\ %Style{})
+  def row(text, style) when is_binary(text), do: Line.new([span(text)], style: style)
+  def row(spans, style) when is_list(spans), do: Line.new(spans, style: style)
+
+  @doc """
+  Wraps rows to `width` display cells, preserving span styles and each row's
+  surface style on every wrapped continuation.
+  """
+  @spec wrap_rows([row()], pos_integer()) :: [row()]
+  def wrap_rows(rows, width) do
+    width = max(width, 1)
+    Enum.flat_map(rows, &wrap_row(&1, width))
+  end
+
+  @doc """
+  Groups consecutive equal-style rows into `%Paragraph{}` bands.
+
+  Because a paragraph fills its whole rect with its style background, each
+  group paints a full-width band; the group height is its wrapped row count.
+  """
+  @spec render_lines([row()]) :: [widget_item()]
+  def render_lines(lines) do
+    lines
+    |> Enum.chunk_by(& &1.style)
+    |> Enum.map(fn group ->
+      {%Paragraph{text: group, style: hd(group).style}, length(group)}
+    end)
+  end
+
+  @doc "Wraps and renders rows into primitive widgets."
+  @spec render_rows([row()], pos_integer()) :: [widget_item()]
+  def render_rows(rows, width), do: rows |> wrap_rows(width) |> render_lines()
+
+  @doc "Builds widgets for a typed entry while preserving full source separately."
+  @spec render_entry(t(), pos_integer()) :: [widget_item()]
+  def render_entry(%__MODULE__{kind: :assistant} = entry, width) do
+    render_markdown(entry, width)
+  end
+
+  def render_entry(%__MODULE__{kind: :thinking, collapsed?: true} = entry, width) do
+    render_rows(thinking_rows(entry, :collapsed), width)
+  end
+
+  def render_entry(%__MODULE__{kind: :thinking} = entry, width) do
+    render_rows(thinking_rows(entry, :expanded), width)
+  end
+
+  def render_entry(%__MODULE__{kind: :tool} = entry, width),
+    do: ToolView.render(entry, width)
+
+  def render_entry(%__MODULE__{kind: :user} = entry, width),
+    do: render_rows(user_rows(entry), width)
+
+  def render_entry(%__MODULE__{kind: :error} = entry, width),
+    do: render_rows(error_rows(entry), width)
+
+  def render_entry(%__MODULE__{} = entry, width) do
+    entry.content
+    |> sanitize()
+    |> String.split("\n", trim: false)
+    |> Enum.map(&row([span(&1, Theme.style(:muted))], %Style{}))
+    |> render_rows(width)
+  end
+
+  @doc "Builds widgets for the full retained text of an entry (output inspector)."
+  @spec inspect_items(t(), pos_integer()) :: [widget_item()]
+  def inspect_items(%__MODULE__{kind: :tool} = entry, width),
+    do: ToolView.render(entry, width, :details)
+
+  def inspect_items(%__MODULE__{} = entry, width) do
+    render_text(full_text(entry), width, Theme.style(:muted))
+  end
+
+  @doc "Wraps and chunks arbitrary text into primitive widgets."
+  @spec render_text(String.t(), pos_integer(), Style.t()) :: [widget_item()]
+  def render_text(text, width, style \\ %Style{}) do
+    text
+    |> sanitize()
+    |> wrap_text(max(width, 1))
+    |> String.split("\n", trim: false)
+    |> Enum.chunk_every(@conversation_chunk_rows)
+    |> Enum.map(fn lines ->
+      {%Paragraph{text: Enum.join(lines, "\n"), style: style}, length(lines)}
+    end)
+  end
+
+  @doc "Strips terminal control sequences before any model/tool text reaches paint."
+  @spec sanitize(String.t()) :: String.t()
+  def sanitize(text) when is_binary(text) do
+    text
+    |> String.to_charlist()
+    |> sanitize_chars(:normal, [])
+    |> Enum.reverse()
+    |> List.to_string()
+  end
+
   @doc false
   @spec style(kind()) :: Style.t()
-  def style(:user), do: %Style{fg: :green}
-  def style(:assistant), do: %Style{fg: :white}
-  def style(:thinking), do: %Style{fg: :yellow}
-  def style(:tool), do: %Style{fg: :cyan}
-  def style(:error), do: %Style{fg: :red}
-  def style(:welcome), do: %Style{fg: :dark_gray}
+  def style(:user), do: Theme.style(:text)
+  def style(:assistant), do: Theme.style(:text)
+  def style(:thinking), do: Theme.style(:muted)
+  def style(:tool), do: Theme.style(:muted)
+  def style(:error), do: Theme.style(:error)
+  def style(:welcome), do: Theme.style(:muted)
 
-  defp render_markdown(%__MODULE__{content: content, style: style} = entry, width) do
-    height = Markdown.measure_height(content, width)
+  defp user_rows(entry) do
+    surface = Theme.style(:user_surface)
+    text = Theme.merge(surface, Theme.style(:text))
+    accent = Theme.style(:accent)
+
+    entry.content
+    |> sanitize()
+    |> String.split("\n", trim: false)
+    |> Enum.with_index()
+    |> Enum.map(fn {line, index} ->
+      prefix = if index == 0, do: "› ", else: "  "
+      row([span(prefix, accent), span(line, text)], surface)
+    end)
+  end
+
+  defp thinking_rows(entry, mode) do
+    source = sanitize(source(entry))
+    lines = String.split(source, "\n", trim: false)
+    muted = Theme.style(:muted)
+
+    hint =
+      if mode == :collapsed, do: [span("  ·  Ctrl+T to reveal", Theme.style(:subtle))], else: []
+
+    header =
+      row(
+        [
+          span("✦ ", Theme.style(:accent)),
+          span("thought", Theme.bold(Theme.style(:accent_soft))),
+          span("  ·  #{length(lines)} lines", muted)
+        ] ++ hint,
+        %Style{}
+      )
+
+    case mode do
+      :collapsed ->
+        [header | collapsed_thinking_rows(lines, muted)]
+
+      :expanded ->
+        [header | Enum.map(lines, &row([span(&1, muted)], %Style{}))]
+    end
+  end
+
+  defp collapsed_thinking_rows(lines, muted) do
+    case Enum.find(lines, &(&1 != "")) do
+      nil ->
+        []
+
+      first ->
+        preview = truncate_line(first, 180)
+        [row([span("  ", %Style{}), span(preview, muted)], %Style{})]
+    end
+  end
+
+  defp error_rows(entry) do
+    surface = Theme.style(:error_surface)
+    text = Theme.merge(surface, %Style{fg: :white})
+    marker = Theme.style(:error)
+
+    entry.content
+    |> sanitize()
+    |> String.split("\n", trim: false)
+    |> Enum.with_index()
+    |> Enum.map(fn {line, index} ->
+      prefix = if index == 0, do: "✗ ", else: "  "
+      row([span(prefix, marker), span(line, text)], surface)
+    end)
+  end
+
+  defp render_markdown(%__MODULE__{content: content, style: style}, width) do
+    content = sanitize(content)
+    height = Markdown.measure_height(content, max(width, 1))
 
     cond do
       height <= @conversation_chunk_rows ->
@@ -168,101 +470,103 @@ defmodule Tackle.CLI.TUI.MessageView do
         end)
 
       true ->
-        # ExRatatui and Ratatui represent Paragraph scroll offsets as u16. A
-        # larger offset cannot be encoded, so keep rendering safe and bounded
-        # by showing the original source as plain text instead of crashing.
-        render_paragraph(entry, width)
+        # Ratatui encodes Paragraph scroll offsets as u16. Keep the complete
+        # source in the entry, but use bounded plain text if Markdown is too
+        # tall for that native field.
+        render_text(content, width, style)
     end
   end
 
-  defp render_paragraph(%__MODULE__{} = entry, width) do
-    entry.content
-    |> wrap_text(width)
-    |> String.split("\n", trim: false)
-    |> Enum.chunk_every(@conversation_chunk_rows)
-    |> Enum.map(fn lines ->
-      {%Paragraph{text: Enum.join(lines, "\n"), style: entry.style}, length(lines)}
-    end)
+  defp message_entries(%Message{role: :user, content: content}, index, _state)
+       when is_binary(content) do
+    [
+      entry(:user, content,
+        id: "message:#{index}:user",
+        label: "You:",
+        source: content,
+        style: style(:user)
+      )
+    ]
   end
 
-  defp message_entries(%Message{role: :user, content: content}) when is_binary(content),
-    do: [entry(:user, "You:\n#{content}", style: style(:user))]
-
-  defp message_entries(%Message{role: :assistant} = message) do
+  defp message_entries(%Message{role: :assistant} = message, index, state) do
     thinking =
       if is_binary(message.thinking) and message.thinking != "" do
-        [entry(:thinking, "Thinking:\n#{message.thinking}", style: style(:thinking))]
+        [
+          entry(:thinking, message.thinking,
+            id: "message:#{index}:thinking",
+            label: "Thinking:",
+            source: message.thinking,
+            collapsed?: not state.thinking_expanded?,
+            style: style(:thinking)
+          )
+        ]
       else
         []
       end
 
     content =
       if is_binary(message.content) and message.content != "" do
-        [entry(:assistant, message.content, label: "Tackle:", style: style(:assistant))]
+        [
+          entry(:assistant, message.content,
+            id: "message:#{index}:assistant",
+            label: "Tackle:",
+            source: message.content,
+            style: style(:assistant)
+          )
+        ]
       else
         []
       end
 
-    tool_calls = Enum.map(message.tool_calls || [], &tool_call_entry/1)
-    thinking ++ content ++ tool_calls
+    thinking ++ content
   end
 
-  defp message_entries(%Message{role: :tool} = message) do
+  defp message_entries(%Message{role: :tool} = message, index, _state) do
     failed? =
       is_binary(message.content) and
         String.starts_with?(String.trim_leading(message.content), "Error:")
 
     status = if failed?, do: :failed, else: :completed
 
+    id =
+      if is_binary(message.tool_call_id),
+        do: "tool:#{message.tool_call_id}",
+        else: "message:#{index}:tool"
+
     [
-      tool_entry(%{
-        name: message.tool_name || "unknown",
-        status: status,
-        result: if(failed?, do: nil, else: message.content),
-        error: if(failed?, do: message.content, else: nil)
-      })
+      tool_entry(
+        %{
+          name: message.tool_name || "unknown",
+          status: status,
+          result: if(failed?, do: nil, else: message.content),
+          error: if(failed?, do: message.content, else: nil)
+        },
+        id
+      )
     ]
   end
 
-  defp message_entries(_message), do: []
+  defp message_entries(_message, _index, _state), do: []
 
-  defp tool_call_entry(tool_call) do
-    name = value(tool_call, :name) || "unknown"
-    arguments = value(tool_call, :arguments)
+  defp result_status(nil), do: :requested
+  defp result_status(%Message{content: "Error:" <> _}), do: :failed
+  defp result_status(%Message{}), do: :completed
 
-    entry(:tool, "● #{name}" <> format_detail("args", arguments, @tool_arguments_limit),
-      style: style(:tool)
-    )
-  end
+  defp tool_entry(tool, id) when is_map(tool) do
+    name = value(tool, :name) || "unknown"
+    status = value(tool, :status) || :requested
+    arguments = value(tool, :arguments)
+    output = value(tool, :error) || value(tool, :result)
+    output = if is_nil(output), do: nil, else: format_value(output)
 
-  defp tool_entry(%{status: :running} = tool) do
-    entry(
-      :tool,
-      "● #{tool.name}" <>
-        format_detail("args", Map.get(tool, :arguments), @tool_arguments_limit) <>
-        "\n  running",
-      style: style(:tool)
-    )
-  end
-
-  defp tool_entry(%{status: :completed} = tool) do
-    entry(
-      :tool,
-      "✓ #{tool.name}" <>
-        format_detail("args", Map.get(tool, :arguments), @tool_arguments_limit) <>
-        "\n  completed" <>
-        format_detail("result", Map.get(tool, :result), @tool_result_limit),
-      style: style(:tool)
-    )
-  end
-
-  defp tool_entry(%{status: :failed} = tool) do
-    entry(
-      :tool,
-      "✗ #{tool.name}" <>
-        format_detail("args", Map.get(tool, :arguments), @tool_arguments_limit) <>
-        "\n  failed" <>
-        format_detail("error", Map.get(tool, :error), @tool_result_limit),
+    entry(:tool, ToolView.title(name, arguments, status),
+      id: id,
+      source: output || format_value(arguments || %{}),
+      tool_output: output,
+      tool_name: name,
+      tool_arguments: arguments,
+      tool_status: status,
       style: style(:tool)
     )
   end
@@ -272,15 +576,15 @@ defmodule Tackle.CLI.TUI.MessageView do
       kind: kind,
       content: content,
       label: Keyword.get(opts, :label),
-      style: Keyword.get(opts, :style, style(kind))
+      style: Keyword.get(opts, :style, style(kind)),
+      id: Keyword.get(opts, :id),
+      source: Keyword.get(opts, :source, content),
+      tool_output: Keyword.get(opts, :tool_output),
+      tool_name: Keyword.get(opts, :tool_name),
+      tool_arguments: Keyword.get(opts, :tool_arguments),
+      tool_status: Keyword.get(opts, :tool_status),
+      collapsed?: Keyword.get(opts, :collapsed?, false)
     }
-  end
-
-  defp format_detail(_label, value, _limit) when value in [nil, "", %{}], do: ""
-
-  defp format_detail(label, value, limit) do
-    preview = value |> format_value() |> truncate_preview(limit) |> indent_lines()
-    "\n  #{label}: #{preview}"
   end
 
   defp format_value(value) when is_binary(value), do: value
@@ -294,17 +598,46 @@ defmodule Tackle.CLI.TUI.MessageView do
 
   defp format_value(value), do: inspect(value)
 
-  defp truncate_preview(value, limit) do
-    lines = value |> String.trim() |> String.split("\n")
-    lines_truncated? = length(lines) > @tool_result_lines
-    preview = lines |> Enum.take(@tool_result_lines) |> Enum.join("\n")
-    chars_truncated? = String.length(preview) > limit
-    preview = if chars_truncated?, do: String.slice(preview, 0, limit), else: preview
+  defp wrap_row(%Line{spans: spans, style: style}, width) do
+    units =
+      Enum.flat_map(spans, fn %Span{content: content, style: span_style} ->
+        for grapheme <- String.graphemes(content), do: {grapheme, span_style}
+      end)
 
-    if lines_truncated? or chars_truncated?, do: preview <> "…", else: preview
+    {lines, current, _current_width} =
+      Enum.reduce(units, {[], [], 0}, fn {grapheme, span_style},
+                                         {lines, current, current_width} ->
+        grapheme_width = terminal_width(grapheme)
+
+        if current != [] and current_width + grapheme_width > width do
+          {[build_line(Enum.reverse(current), style) | lines], [{grapheme, span_style}],
+           grapheme_width}
+        else
+          {lines, [{grapheme, span_style} | current], current_width + grapheme_width}
+        end
+      end)
+
+    [build_line(Enum.reverse(current), style) | lines]
+    |> Enum.reverse()
   end
 
-  defp indent_lines(value), do: String.replace(value, "\n", "\n  ")
+  defp build_line([], style), do: Line.new([span("")], style: style)
+
+  defp build_line(units, style) do
+    spans =
+      units
+      |> Enum.chunk_by(fn {_grapheme, span_style} -> span_style end)
+      |> Enum.map(fn [{_grapheme, span_style} | _rest] = chunk ->
+        content = chunk |> Enum.map(&elem(&1, 0)) |> Enum.join()
+        span(content, span_style)
+      end)
+
+    Line.new(spans, style: style)
+  end
+
+  defp truncate_line(text, limit) do
+    if String.length(text) > limit, do: String.slice(text, 0, limit - 1) <> "…", else: text
+  end
 
   defp wrap_text(text, width) do
     text
@@ -352,6 +685,51 @@ defmodule Tackle.CLI.TUI.MessageView do
     end)
   end
 
+  defp tool_id(tool) do
+    value(tool, :tool_call_id) || value(tool, :id) || value(tool, :name) || "unknown"
+  end
+
   defp value(map, key) when is_map(map),
     do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  # Paint is a security boundary. Keep line breaks, turn tabs into spaces, and
+  # discard ANSI CSI/OSC/string controls plus other C0 bytes. The original
+  # source remains available through source/1 for explicit copy actions.
+  defp sanitize_chars([], _mode, acc), do: acc
+  defp sanitize_chars([27 | rest], :normal, acc), do: sanitize_chars(rest, :escape, acc)
+
+  defp sanitize_chars([char | rest], :normal, acc) when char == 10,
+    do: sanitize_chars(rest, :normal, [char | acc])
+
+  defp sanitize_chars([9 | rest], :normal, acc), do: sanitize_chars(rest, :normal, [32, 32 | acc])
+
+  defp sanitize_chars([char | rest], :normal, acc) when char < 32 or char == 127,
+    do: sanitize_chars(rest, :normal, acc)
+
+  defp sanitize_chars([char | rest], :normal, acc),
+    do: sanitize_chars(rest, :normal, [char | acc])
+
+  defp sanitize_chars([91 | rest], :escape, acc), do: sanitize_chars(rest, :csi, acc)
+  defp sanitize_chars([93 | rest], :escape, acc), do: sanitize_chars(rest, :osc, acc)
+
+  defp sanitize_chars([char | rest], :escape, acc) when char in [?P, ?^, ?_],
+    do: sanitize_chars(rest, :string, acc)
+
+  defp sanitize_chars(rest, :escape, acc), do: sanitize_chars(rest, :normal, acc)
+
+  defp sanitize_chars([char | rest], :csi, acc) when char >= 0x40 and char <= 0x7E,
+    do: sanitize_chars(rest, :normal, acc)
+
+  defp sanitize_chars([_char | rest], :csi, acc), do: sanitize_chars(rest, :csi, acc)
+
+  defp sanitize_chars([7 | rest], :osc, acc), do: sanitize_chars(rest, :normal, acc)
+  defp sanitize_chars([27 | rest], :osc, acc), do: sanitize_chars(rest, :osc_escape, acc)
+  defp sanitize_chars([_char | rest], :osc, acc), do: sanitize_chars(rest, :osc, acc)
+
+  defp sanitize_chars([92 | rest], :osc_escape, acc), do: sanitize_chars(rest, :normal, acc)
+  defp sanitize_chars([_char | rest], :osc_escape, acc), do: sanitize_chars(rest, :osc, acc)
+
+  defp sanitize_chars([7 | rest], :string, acc), do: sanitize_chars(rest, :normal, acc)
+  defp sanitize_chars([27 | rest], :string, acc), do: sanitize_chars(rest, :osc_escape, acc)
+  defp sanitize_chars([_char | rest], :string, acc), do: sanitize_chars(rest, :string, acc)
 end

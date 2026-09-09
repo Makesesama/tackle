@@ -28,29 +28,111 @@ mix tackle run --thinking high "Inspect this project"
 ```
 
 Run `mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.
-Type a prompt and press Enter to submit it; press F2 while idle to select the
-model and thinking level, press Esc to cancel an active turn or exit while idle,
-and press Ctrl+C to exit at any time. Scroll the conversation with Page Up/Page
-Down or the mouse wheel; Ctrl+Home jumps to the oldest message and Ctrl+End
-returns to the newest message and resumes automatic following. Press F3 to open
-the keyboard copy menu, use Up/Down to select a message, then press Y or Enter
-to copy it through OSC 52; press A to copy the full conversation. Mouse capture
-is enabled for wheel scrolling, so native terminal selection requires the
-terminal's mouse-override gesture (typically Shift-drag). The conversation
-renders assistant responses as Markdown, including while a response is
-streaming, and shows tool arguments, execution status, and concise result or
-error previews. Markdown heights are measured at the current content width,
-then remeasured after terminal resize. Long histories are sliced to the visible
-row range; long Markdown responses retain their complete source and use bounded
-scroll windows rather than splitting Markdown syntax across widgets. Responses
-beyond the native 65,536-row scroll range fall back to bounded plain-text source
-instead of crashing. Model and thinking changes preserve the settled
-conversation. The footer shows current
-context pressure and aggregate session input/output when available, plus the
-Pi-compatible token-weighted prompt-cache hit rate and monetary cost. A `~`
-before cost (for example `~$0.84`) marks a price-card estimate rather than
-provider-reported billing. Missing metadata is omitted, and context pressure is
-informational only—automatic compaction is not implemented.
+The shell is transcript-first and fullscreen: a compact header, a border-light
+transcript that owns the flexible middle of the screen, an optional reading row,
+an optional status/metrics row, a growing multiline composer, and a responsive
+hint row. Empty optional rows are not reserved when the terminal is short.
+
+## Keys (experimental)
+
+| Key | Action |
+| --- | --- |
+| Enter | Send the draft when idle. While a turn is active the draft is kept but **not queued**. |
+| Shift+Enter, Ctrl+Enter, Ctrl+J | Insert a newline. Ctrl+J is the reliable fallback because many terminals cannot distinguish Shift+Enter. |
+| Esc | Close the open overlay first, then request cancellation of the active turn. Esc never exits while idle. |
+| Ctrl+C | Quit. Confirms first when an unsent draft or an active turn would be lost; quits immediately when idle with an empty draft. |
+| F1 | Searchable command/help palette. Type to filter, ↑/↓ to select, Enter to run, Esc to close. |
+| F2 | Model and thinking selector (idle only). ↑/↓ switches field, ←/→ cycles, Enter applies, Esc cancels. A reconfigure failure preserves the conversation and the draft. |
+| F3 | Source copy overlay. ↑/↓ selects, Y/Enter copies the full retained source of the entry, O opens the output inspector, A copies the full transcript, Esc closes. |
+| F4 | Details for the latest tool call, including pending calls. ←/→ browses previous/next tools; ↑/↓, PgUp/PgDn, Home/End scroll. Y copies raw output (arguments when no output exists), A copies tool arguments, Esc closes. |
+| Ctrl+F | Transcript search over full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
+| Ctrl+T | Reveal or collapse supplied reasoning. |
+| Page Up/Page Down, mouse wheel | Scroll the transcript. Ctrl+Home jumps to the oldest row; Ctrl+End returns to the newest row and resumes following. |
+
+## Composer behavior
+
+The composer is the native multiline `Textarea`, not a prompt field. It grows
+with the draft's logical line count up to eight visible lines. The native
+widget scrolls horizontally instead of soft-wrapping, so one logical line is
+always one screen row and long lines are read by moving the caret rather than
+by wrapping.
+
+Bracketed paste lands as one edit and never submits. CRLF is normalized to `\n`;
+lone CR is dropped before the edit. Ctrl+U undoes and Ctrl+R redoes a full
+multiline paste. Unknown modified chords (for example Alt+G) are ignored by the
+native widget. Key releases are ignored; key repeats apply to text and
+navigation but not to submit, quit, or overlay shortcuts.
+
+While a turn is active the composer is labeled "Draft · next turn (not queued)"
+and Enter does not send. There is no queue, so the draft is explicitly reserved
+for the next turn instead of being delivered to the running one. A failed
+submit, failed reconfiguration, or rejected operation keeps the exact draft in
+the composer.
+
+## Transcript behavior
+
+The conversation renders assistant responses as Markdown, including while a
+response is streaming. Tool calls and matching results share one card, identified
+by call ID, with the command or path as its heading rather than a JSON argument
+dump. Successful tool output is subdued; failures remain explicit. Inline
+output keeps a bounded head/tail preview (including after wrapping), with hidden
+lines indicated. F3 copies the full retained source and F4 opens scrollable
+details with the full output and arguments; its ←/→ keys browse tool cards.
+
+Edits show red `-` and green `+` replacement previews, context, relative line
+numbers, and per-replacement change counts. These compare the submitted
+`oldText`/`newText` strings, **not files on disk**: even after completion they are
+labeled previews, not verified file diffs. Failed calls remain failed. Write
+cards show submitted content without pretending that an overwrite is a new
+file. No filesystem reads, new dependencies, or tool execution changes are
+involved. Large replacements skip expensive matching and show before/after
+lines instead; complete submitted replacements remain available in details.
+Ctrl+F searches the same retained source, including output hidden behind the
+preview, and returns at most 200 matching entries per keystroke.
+
+Paint is a security boundary: ANSI/OSC control sequences, other non-display
+bytes, and tabs are stripped or normalized before model or tool text reaches a
+widget, including inside the inspector. Explicit copy actions use the raw
+retained source, so copied output is what the tool or model produced.
+
+Reading position belongs to the user. Scrolling up pauses automatic following
+and shows a reading-back affordance; when new output arrives below the reading
+position the row changes to "New output · Ctrl+End latest". Streaming updates,
+reasoning collapse/expand, and terminal resize preserve a logical
+`{entry, offset}` anchor instead of a raw row offset. Only Ctrl+End (or
+scrolling back to the bottom) resumes following.
+
+Markdown heights are measured at the current content width and remeasured after
+terminal resize. Long histories are sliced to the visible row range; long
+Markdown responses retain their complete source and use bounded scroll windows
+rather than splitting Markdown syntax across widgets. Responses beyond the
+native 65,536-row scroll range fall back to bounded plain-text source instead
+of crashing.
+
+The status row shows honest turn state (`ready`, `starting`, `thinking`,
+`responding`, `running <tool>`, `cancelling`, `cancelled`, `failed`) plus
+available context/token/cache/cost metrics. Optional metrics are dropped before
+working state, cancellation, or the composer when the terminal is narrow, and
+the status row itself disappears on very short terminals. A `~` before cost
+(for example `~$0.84`) marks a price-card estimate rather than
+provider-reported billing. Missing metadata is omitted; context pressure is
+informational only and automatic compaction is not implemented.
+
+## Experimental limitations
+
+This shell is an experimentation build. It intentionally does not implement:
+
+- queued or steering prompts while a turn runs (the draft is kept, not queued);
+- approval or permission prompts;
+- conversation persistence, session browsing, branching, or reconnect;
+- inline terminal-scrollback rendering (the TUI owns the alternate screen);
+- a theme framework (colors are semantic but fixed), authoritative file diffs,
+  or a plugin presenter registry;
+- background search indexing (Ctrl+F is synchronous and capped).
+
+Mouse capture is enabled for wheel scrolling, so native terminal selection
+requires the terminal's mouse-override gesture (typically Shift-drag).
+The non-TUI command path remains available for automation.
 
 ### Local ExRatatui fork
 
