@@ -7,7 +7,10 @@ This is a separate Mix project so CLI dependencies and presentation concerns sta
 out of the root harness and `packages/tackle_lib`. The shipped CLI distribution
 bundles first-party plugins such as `plugins/tackle_codex`, configures them as
 available harness adapters, and then talks to the root `:tackle` application for
-configuration, credential storage, session ownership, and turn execution.
+configuration, credential storage, scoped runtime ownership, and turn execution.
+The CLI starts one root scope, addresses the root agent through a
+`Tackle.Runtime.AgentRef`, and stops the complete scope on exit; it never stores
+or checks a runtime PID.
 
 The CLI may select a canonical model reference with `--model` and a reasoning
 level with `--thinking`, but it does not load or select adapter modules directly.

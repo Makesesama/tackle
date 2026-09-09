@@ -14,12 +14,12 @@ defmodule Tackle.Runtime.Handle do
   alias Tackle.Runtime.ScopeRef
 
   @enforce_keys [:scope_ref, :agent_ref]
-  defstruct [:scope_ref, :agent_ref, allow_recursion: false, limits: nil]
+  defstruct [:scope_ref, :agent_ref, allow_delegation: false, limits: nil]
 
   @type t :: %__MODULE__{
           scope_ref: ScopeRef.t(),
           agent_ref: AgentRef.t(),
-          allow_recursion: boolean(),
+          allow_delegation: boolean(),
           limits: Limits.t() | nil
         }
 
@@ -29,7 +29,7 @@ defmodule Tackle.Runtime.Handle do
     %__MODULE__{
       scope_ref: scope_ref,
       agent_ref: agent_ref,
-      allow_recursion: fetch(opts, :allow_recursion, false),
+      allow_delegation: fetch(opts, :allow_delegation, false),
       limits: fetch(opts, :limits, nil)
     }
   end

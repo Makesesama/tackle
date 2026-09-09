@@ -2,6 +2,8 @@ defmodule Tackle.CLI.Run do
   @moduledoc false
 
   alias Tackle.Plugins.Codex.OAuth
+  alias Tackle.Runtime.AgentSpec
+  alias Tackle.Runtime.ScopeSpec
 
   @codex_provider "openai-codex"
   @terminal_timeout 60_000
@@ -12,12 +14,12 @@ defmodule Tackle.CLI.Run do
           prompt: String.t() | nil
         }) :: non_neg_integer()
   def run(%{model: model, thinking: thinking, prompt: nil}) do
-    case start_session(model, thinking, true) do
-      {:ok, session} ->
+    case start_scope(model, thinking, true) do
+      {:ok, scope} ->
         try do
           case Tackle.available_models() do
             {:ok, models} ->
-              case Tackle.CLI.TUI.start(session: session, models: models) do
+              case Tackle.CLI.TUI.start(agent_ref: scope.root_agent_ref, models: models) do
                 :ok -> 0
                 {:error, reason} -> error(reason)
               end
@@ -26,7 +28,7 @@ defmodule Tackle.CLI.Run do
               error(reason)
           end
         after
-          close_session(session)
+          stop_scope(scope.scope_ref)
         end
 
       {:error, reason} ->
@@ -35,9 +37,16 @@ defmodule Tackle.CLI.Run do
   end
 
   def run(%{model: model, thinking: thinking, prompt: prompt}) when is_binary(prompt) do
-    case start_session(model, thinking, false) do
-      {:ok, session} -> run_prompt(session, prompt)
-      {:error, reason} -> error(reason)
+    case start_scope(model, thinking, false) do
+      {:ok, scope} ->
+        try do
+          run_prompt(scope.root_agent_ref, prompt)
+        after
+          stop_scope(scope.scope_ref)
+        end
+
+      {:error, reason} ->
+        error(reason)
     end
   end
 
@@ -106,28 +115,28 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp start_session(model, thinking, llm_stream) do
+  defp start_scope(model, thinking, llm_stream) do
     with {:ok, _apps} <- ensure_started(),
          {:ok, overrides} <- overrides(model, thinking, llm_stream),
-         {:ok, session} <- Tackle.start_configured_session(overrides: overrides) do
-      {:ok, session}
+         {:ok, config} <- Tackle.load_config(overrides: overrides),
+         {:ok, root_spec} <- AgentSpec.new(name: "root", config: config),
+         {:ok, scope_spec} <- ScopeSpec.new(root_spec: root_spec, profiles: %{}),
+         {:ok, scope} <- Tackle.start_scope(scope_spec) do
+      {:ok, scope}
     else
       {:error, reason} -> {:error, reason}
       reason -> {:error, reason}
     end
   end
 
-  defp run_prompt(session, prompt) do
-    with {:ok, snapshot} <- Tackle.subscribe(session),
-         {:ok, turn_id} <- Tackle.submit(session, prompt),
+  defp run_prompt(agent_ref, prompt) do
+    with {:ok, snapshot} <- Tackle.subscribe(agent_ref),
+         {:ok, turn_id} <- Tackle.submit(agent_ref, prompt),
          {:ok, answer} <- await_answer(snapshot.session_id, turn_id) do
-      close_session(session)
       IO.puts(answer)
       0
     else
-      {:error, reason} ->
-        close_session(session)
-        error(reason)
+      {:error, reason} -> error(reason)
     end
   end
 
@@ -178,16 +187,11 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp close_session(session) do
-    if Process.alive?(session) do
-      try do
-        Tackle.close(session)
-      catch
-        :exit, _reason -> :ok
-      end
-    else
-      :ok
-    end
+  defp stop_scope(scope_ref) do
+    Tackle.stop_scope(scope_ref)
+    :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   defp error(reason) do

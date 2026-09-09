@@ -10,7 +10,7 @@ defmodule Tackle.Tools.Subagent do
   Delegation is opt-in and permissioned:
 
     * the host must add this module to a session's tool list;
-    * the running agent must carry a runtime handle with recursion granted;
+    * the running agent must carry a runtime handle with delegation granted;
     * the requested profile must be allowlisted in the scope spec.
 
   Model-visible arguments can only name an allowlisted profile; they can never
@@ -49,7 +49,7 @@ defmodule Tackle.Tools.Subagent do
   def run(%{"profile" => profile, "prompt" => prompt} = args, context)
       when is_binary(profile) and is_binary(prompt) do
     with {:ok, handle} <- fetch_handle(context),
-         :ok <- ensure_recursion(handle),
+         :ok <- ensure_delegation(handle),
          {:ok, opts} <- timeout_opts(args, handle),
          {:ok, run_ref} <- request(handle, profile, prompt, opts) do
       handle_outcome(Runtime.await(run_ref, :infinity))
@@ -65,9 +65,9 @@ defmodule Tackle.Tools.Subagent do
     end
   end
 
-  defp ensure_recursion(%Handle{allow_recursion: true}), do: :ok
+  defp ensure_delegation(%Handle{allow_delegation: true}), do: :ok
 
-  defp ensure_recursion(%Handle{}),
+  defp ensure_delegation(%Handle{}),
     do: {:error, "subagent delegation is not permitted for this agent"}
 
   defp timeout_opts(args, %Handle{limits: limits}) do

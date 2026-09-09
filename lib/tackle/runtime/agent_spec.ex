@@ -7,9 +7,9 @@ defmodule Tackle.Runtime.AgentSpec do
   data may only select a trusted profile name; it can never name arbitrary
   modules, supervisors, or executable code.
 
-  `:config` is a fully resolved `Tackle.Config`; `:allow_recursion` is the
-  explicit grant that lets this agent request further descendants; `:timeout`
-  bounds a single delegated run.
+  `:config` is a fully resolved `Tackle.Config`; `:allow_delegation` is the
+  explicit grant that lets this agent request descendants; `:timeout` bounds a
+  single delegated run.
   """
 
   alias Tackle.Config
@@ -18,12 +18,12 @@ defmodule Tackle.Runtime.AgentSpec do
   @default_timeout :timer.minutes(5)
 
   @enforce_keys [:name, :config]
-  defstruct [:name, :config, allow_recursion: false, timeout: @default_timeout]
+  defstruct [:name, :config, allow_delegation: false, timeout: @default_timeout]
 
   @type t :: %__MODULE__{
           name: String.t(),
           config: Config.t(),
-          allow_recursion: boolean(),
+          allow_delegation: boolean(),
           timeout: pos_integer()
         }
 
@@ -36,7 +36,7 @@ defmodule Tackle.Runtime.AgentSpec do
     spec = %__MODULE__{
       name: name,
       config: config,
-      allow_recursion: Map.get(opts, :allow_recursion, false),
+      allow_delegation: Map.get(opts, :allow_delegation, false),
       timeout: Map.get(opts, :timeout, @default_timeout)
     }
 
@@ -67,8 +67,8 @@ defmodule Tackle.Runtime.AgentSpec do
       not is_struct(spec.config, Config) ->
         {:error, {:invalid_agent_config, spec.config}}
 
-      not is_boolean(spec.allow_recursion) ->
-        {:error, {:invalid_allow_recursion, spec.allow_recursion}}
+      not is_boolean(spec.allow_delegation) ->
+        {:error, {:invalid_allow_delegation, spec.allow_delegation}}
 
       not (is_integer(spec.timeout) and spec.timeout > 0) ->
         {:error, {:invalid_agent_timeout, spec.timeout}}

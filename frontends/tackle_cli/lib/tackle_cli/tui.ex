@@ -1,9 +1,11 @@
 defmodule Tackle.CLI.TUI do
   @moduledoc """
-  Interactive terminal frontend for a configured Tackle session.
+  Interactive terminal frontend for a scoped Tackle agent.
 
   The TUI owns presentation and input state while the root harness continues to
-  own the session and agent loop.
+  own the scope and agent loop. It addresses the root agent through a
+  `Tackle.Runtime.AgentRef` and detects crashes through the PID-free
+  monitoring operation, so it never retains a runtime PID.
   """
 
   use ExRatatui.App
@@ -40,18 +42,19 @@ defmodule Tackle.CLI.TUI do
 
   @impl true
   def mount(opts) do
-    with {:ok, session} <- Keyword.fetch(opts, :session),
-         {:ok, %Snapshot{} = snapshot} <- Tackle.subscribe(session) do
+    with {:ok, agent_ref} <- Keyword.fetch(opts, :agent_ref),
+         {:ok, %Snapshot{} = snapshot} <- Tackle.subscribe(agent_ref),
+         {:ok, agent_monitor} <- Tackle.monitor_agent(agent_ref) do
       models = available_models(opts, snapshot.agent_state)
 
       {width, height} = initial_terminal_size(opts)
 
       state = %{
-        session: session,
+        agent_ref: agent_ref,
+        agent_monitor: agent_monitor,
         session_id: snapshot.session_id,
         agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
-        session_monitor: Process.monitor(session),
         input: ExRatatui.text_input_new(),
         models: models,
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
@@ -71,7 +74,7 @@ defmodule Tackle.CLI.TUI do
 
       {:ok, refresh_conversation(state)}
     else
-      :error -> {:error, :missing_session}
+      :error -> {:error, :missing_agent_ref}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -211,8 +214,10 @@ defmodule Tackle.CLI.TUI do
   end
 
   def handle_event(%Key{code: "esc", kind: "press"}, state) do
-    :ok = Tackle.cancel(state.session)
-    {:noreply, %{state | activity: "cancelling"}}
+    case Tackle.cancel(state.agent_ref) do
+      :ok -> {:noreply, %{state | activity: "cancelling"}}
+      {:error, reason} -> {:noreply, %{state | error: format_reason(reason)}}
+    end
   end
 
   def handle_event(%Key{code: "enter", kind: "press"}, %{active_turn: nil} = state) do
@@ -391,17 +396,17 @@ defmodule Tackle.CLI.TUI do
   end
 
   def handle_info(
-        {:DOWN, monitor_ref, :process, session, reason},
-        %{session: session, session_monitor: monitor_ref}
+        {:DOWN, monitor_ref, :process, _pid, reason},
+        %{agent_monitor: monitor_ref}
       ) do
-    exit({:session_down, reason})
+    exit({:agent_down, reason})
   end
 
   def handle_info(_message, state), do: {:noreply, state, render?: false}
 
   @impl true
   def terminate(_reason, state) do
-    if Process.alive?(state.session), do: Tackle.unsubscribe(state.session)
+    _ = Tackle.unsubscribe(state.agent_ref)
     :ok
   end
 
@@ -411,7 +416,7 @@ defmodule Tackle.CLI.TUI do
     if prompt == "" do
       {:noreply, state, render?: false}
     else
-      case Tackle.submit(state.session, prompt) do
+      case Tackle.submit(state.agent_ref, prompt) do
         {:ok, turn_id} ->
           :ok = ExRatatui.text_input_set_value(state.input, "")
 
@@ -740,7 +745,7 @@ defmodule Tackle.CLI.TUI do
     model = Enum.at(state.models, state.settings.model_index)
     thinking = Enum.at(Thinking.levels(), state.settings.thinking_index)
 
-    case Tackle.reconfigure(state.session, model: model, thinking: thinking) do
+    case Tackle.reconfigure(state.agent_ref, model: model, thinking: thinking) do
       {:ok, %Snapshot{} = snapshot} ->
         state = %{
           state

@@ -21,6 +21,7 @@ defmodule Tackle.Runtime do
   alias Tackle.Runtime.Registry
   alias Tackle.Runtime.Request
   alias Tackle.Runtime.RunRef
+  alias Tackle.Runtime.Scope
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
   alias Tackle.Runtime.Workflow
@@ -31,13 +32,20 @@ defmodule Tackle.Runtime do
   @doc """
   Starts one root-agent scope from a trusted `ScopeSpec`.
 
-  Returns the scope reference, the minted root agent reference, and the scope
-  supervisor PID (for diagnostics only; address the scope by reference).
+  Returns a PID-free `Tackle.Runtime.Scope` holding the scope reference for
+  lifecycle operations and the root agent reference for agent operations. The
+  scope supervisor PID is never part of the public result.
   """
-  @spec start_scope(ScopeSpec.t(), keyword()) ::
-          {:ok, %{scope_ref: ScopeRef.t(), root_agent_ref: AgentRef.t(), pid: pid()}}
-          | {:error, term()}
-  def start_scope(%ScopeSpec{} = spec, opts \\ []), do: AgentSupervisor.start_scope(spec, opts)
+  @spec start_scope(ScopeSpec.t(), keyword()) :: {:ok, Scope.t()} | {:error, term()}
+  def start_scope(%ScopeSpec{} = spec, opts \\ []) do
+    case AgentSupervisor.start_scope(spec, opts) do
+      {:ok, %{scope_ref: scope_ref, root_agent_ref: root_agent_ref}} ->
+        {:ok, %Scope{scope_ref: scope_ref, root_agent_ref: root_agent_ref}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
 
   @doc "Stops one root scope and every process beneath it."
   @spec stop_scope(ScopeRef.t()) :: :ok | {:error, term()}
@@ -72,22 +80,61 @@ defmodule Tackle.Runtime do
   @spec session_pid(AgentRef.t()) :: {:ok, pid()} | {:error, term()}
   def session_pid(%AgentRef{} = agent_ref), do: Registry.whereis(agent_ref)
 
+  @doc """
+  Monitors the process behind an agent reference without exposing its PID.
+
+  Returns a monitor reference for `{:DOWN, ref, :process, pid, reason}`
+  deliveries. Stale references return an explicit error instead of raising, so
+  frontends can centralize crash detection without retaining PIDs.
+  """
+  @spec monitor_agent(AgentRef.t()) :: {:ok, reference()} | {:error, term()}
+  def monitor_agent(%AgentRef{} = agent_ref) do
+    with {:ok, pid} <- session_pid(agent_ref), do: {:ok, Process.monitor(pid)}
+  end
+
   @doc "Submits one turn to an agent and appends a user message."
   @spec submit(AgentRef.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def submit(%AgentRef{} = agent_ref, input) do
-    with {:ok, pid} <- session_pid(agent_ref), do: Session.submit(pid, input)
+    with_session(agent_ref, &Session.submit(&1, input))
   end
 
   @doc "Continues an agent conversation without appending a user message."
   @spec continue(AgentRef.t()) :: {:ok, String.t()} | {:error, term()}
   def continue(%AgentRef{} = agent_ref) do
-    with {:ok, pid} <- session_pid(agent_ref), do: Session.continue(pid)
+    with_session(agent_ref, &Session.continue/1)
   end
 
   @doc "Requests cooperative cancellation of an agent's active turn."
   @spec cancel_turn(AgentRef.t()) :: :ok | {:error, term()}
   def cancel_turn(%AgentRef{} = agent_ref) do
-    with {:ok, pid} <- session_pid(agent_ref), do: Session.cancel(pid)
+    with_session(agent_ref, &Session.cancel/1)
+  end
+
+  @doc "Subscribes the caller to an agent's correlated events and terminal outcomes."
+  @spec subscribe(AgentRef.t()) :: {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
+  def subscribe(%AgentRef{} = agent_ref) do
+    with_session(agent_ref, &Session.subscribe/1)
+  end
+
+  @doc "Unsubscribes the caller from an agent's deliveries."
+  @spec unsubscribe(AgentRef.t()) :: :ok | {:error, term()}
+  def unsubscribe(%AgentRef{} = agent_ref) do
+    with_session(agent_ref, &Session.unsubscribe/1)
+  end
+
+  @doc "Updates an idle agent's model and thinking settings."
+  @spec reconfigure(AgentRef.t(), keyword()) ::
+          {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
+  def reconfigure(%AgentRef{} = agent_ref, opts) when is_list(opts) do
+    with_session(agent_ref, &Session.reconfigure(&1, opts))
+  end
+
+  def reconfigure(%AgentRef{}, opts), do: {:error, {:invalid_config, opts}}
+
+  @doc "Returns an agent's atomic conversation snapshot."
+  @spec session_snapshot(AgentRef.t()) :: {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
+  def session_snapshot(%AgentRef{} = agent_ref) do
+    with_session(agent_ref, fn pid -> {:ok, Session.snapshot(pid)} end)
   end
 
   @doc """
@@ -125,7 +172,7 @@ defmodule Tackle.Runtime do
         prompt: prompt,
         work_supervisor: work_supervisor,
         coordinator: coordinator,
-        allow_recursion: admission.allow_recursion,
+        allow_delegation: admission.allow_delegation,
         limits: admission.limits,
         parent: %{agent_ref: parent_ref},
         timeout: Keyword.get(opts, :timeout, AgentSpec.timeout(spec, admission.limits))
@@ -168,7 +215,7 @@ defmodule Tackle.Runtime do
 
       handle =
         Handle.new(scope_ref, parent_ref,
-          allow_recursion: parent_snapshot.allow_recursion,
+          allow_delegation: parent_snapshot.allow_delegation,
           limits: limits
         )
 
@@ -262,6 +309,20 @@ defmodule Tackle.Runtime do
 
   @doc "Projects an outcome into a `Tackle.Lib`-style result."
   defdelegate to_lib_result(outcome), to: Outcome
+
+  defp with_session(%AgentRef{} = agent_ref, fun) do
+    case Registry.whereis(agent_ref) do
+      {:ok, pid} ->
+        try do
+          fun.(pid)
+        catch
+          :exit, reason -> {:error, {:agent_unavailable, reason}}
+        end
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
 
   defp coordinator(ref) do
     case Registry.coordinator(ref) do

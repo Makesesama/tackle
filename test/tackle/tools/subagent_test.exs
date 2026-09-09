@@ -10,7 +10,7 @@ defmodule Tackle.Tools.SubagentTest do
   test "delegates to an allowlisted profile and returns its answer" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"worker" => agent_spec("worker", content: "worker answer")}
       )
 
@@ -24,11 +24,11 @@ defmodule Tackle.Tools.SubagentTest do
   test "rejects delegation when recursion is not granted" do
     scope =
       start_scope(
-        root: [allow_recursion: false],
+        root: [allow_delegation: false],
         profiles: %{"worker" => agent_spec("worker")}
       )
 
-    context = %{runtime: handle(scope, allow_recursion: false)}
+    context = %{runtime: handle(scope, allow_delegation: false)}
 
     assert {:error, message} =
              Tackle.Tools.Subagent.run(%{"profile" => "worker", "prompt" => "do work"}, context)
@@ -37,7 +37,7 @@ defmodule Tackle.Tools.SubagentTest do
   end
 
   test "rejects unknown profiles by name" do
-    scope = start_scope(root: [allow_recursion: true])
+    scope = start_scope(root: [allow_delegation: true])
     context = %{runtime: handle(scope)}
 
     assert {:error, message} =
@@ -63,7 +63,7 @@ defmodule Tackle.Tools.SubagentTest do
     scope =
       start_scope(
         root: [
-          allow_recursion: true,
+          allow_delegation: true,
           tools: [Tackle.Tools.Subagent],
           mode: :tool_then_answer,
           llm_opts: [tool_call: tool_call, content: "final answer"]
@@ -95,7 +95,7 @@ defmodule Tackle.Tools.SubagentTest do
     scope =
       start_scope(
         root: [
-          allow_recursion: true,
+          allow_delegation: true,
           tools: [Tackle.Tools.Subagent],
           mode: :tool_then_answer,
           llm_opts: [tool_call: tool_call, content: "recovered"]

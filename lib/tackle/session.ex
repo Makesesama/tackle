@@ -8,11 +8,11 @@ defmodule Tackle.Session do
 
   ## Scoped sessions
 
-  A session started with a `Tackle.Runtime.ScopeRef` runs its turn tasks under
-  the scope's shared `Tackle.AgentScope.WorkSupervisor`, registers itself in the
-  runtime Registry, and accounts for its turn through the scope coordinator.
-  The legacy `start_child/1` path keeps the original global task supervisor for
-  compatibility while callers migrate to scoped references.
+  Every session runs under a `Tackle.Runtime.ScopeRef` scope. It runs its turn
+  tasks under the scope's shared `Tackle.AgentScope.WorkSupervisor`, registers
+  itself in the runtime Registry, and accounts for its turn through the scope
+  coordinator. A session without scoped runtime ownership fails to initialize:
+  there is no unscoped fallback supervisor.
 
   An `:ephemeral` session delivers one correlated terminal outcome to its
   request helper and then stops. A session process is never reset for another
@@ -111,12 +111,6 @@ defmodule Tackle.Session do
           {:ok, AgentState.t()} | {:error, AgentState.t()} | {:cancelled, AgentState.t()}
 
   @doc false
-  @spec start_child(Config.t()) :: DynamicSupervisor.on_start_child()
-  def start_child(%Config{} = config) do
-    DynamicSupervisor.start_child(Tackle.SessionSupervisor, {__MODULE__, config})
-  end
-
-  @doc false
   @spec start_link(Config.t() | {Config.t(), keyword()}) :: GenServer.on_start()
   def start_link(%Config{} = config), do: start_link(config, [])
   def start_link({%Config{} = config, opts}), do: start_link(config, opts)
@@ -183,13 +177,16 @@ defmodule Tackle.Session do
 
     scope_ref = Keyword.get(opts, :scope_ref)
     agent_ref = Keyword.get(opts, :agent_ref)
+    coordinator = Keyword.get(opts, :coordinator) || coordinator_pid(scope_ref)
+    work_supervisor = Keyword.get(opts, :work_supervisor) || work_supervisor(scope_ref)
 
-    agent_state =
-      config
-      |> Config.to_agent_state(credential_store: Auth.credential_store())
-      |> put_runtime_context(scope_ref, agent_ref, opts)
+    with :ok <- validate_ownership(scope_ref, agent_ref, coordinator, work_supervisor),
+         :ok <- register(scope_ref, agent_ref) do
+      agent_state =
+        config
+        |> Config.to_agent_state(credential_store: Auth.credential_store())
+        |> put_runtime_context(scope_ref, agent_ref, opts)
 
-    with :ok <- register(scope_ref, agent_ref) do
       state = %{
         config: config,
         agent_state: agent_state,
@@ -197,11 +194,11 @@ defmodule Tackle.Session do
         subscribers: %{},
         scope_ref: scope_ref,
         agent_ref: agent_ref,
-        coordinator: Keyword.get(opts, :coordinator) || coordinator_pid(scope_ref),
+        coordinator: coordinator,
         lifetime: Keyword.get(opts, :lifetime, :explicit),
         parent: Keyword.get(opts, :parent),
         terminal: Keyword.get(opts, :terminal),
-        work_supervisor: Keyword.get(opts, :work_supervisor) || work_supervisor(scope_ref)
+        work_supervisor: work_supervisor
       }
 
       register_with_coordinator(state)
@@ -397,11 +394,6 @@ defmodule Tackle.Session do
     end
   end
 
-  defp start_turn_task(nil, fun) do
-    task = Task.Supervisor.async_nolink(Tackle.TaskSupervisor, fun)
-    {:ok, %TurnTask{pid: task.pid, ref: task.ref, monitor: task.ref, supervisor: nil}}
-  end
-
   defp start_turn_task(work_supervisor, fun), do: TurnTask.start(work_supervisor, fun)
 
   defp turn_opts(config, session_pid, turn_id, signal) do
@@ -412,25 +404,17 @@ defmodule Tackle.Session do
     ]
   end
 
-  defp acquire_turn(%{coordinator: nil}), do: :ok
-
   defp acquire_turn(%{coordinator: coordinator, agent_ref: %AgentRef{} = agent_ref}) do
     Coordinator.acquire_turn(coordinator, agent_ref)
   catch
     :exit, _reason -> {:error, :runtime_unavailable}
   end
 
-  defp acquire_turn(_state), do: :ok
-
-  defp release_turn(%{coordinator: nil}), do: :ok
-
   defp release_turn(%{coordinator: coordinator, agent_ref: %AgentRef{} = agent_ref}) do
     Coordinator.release_turn(coordinator, agent_ref)
   catch
     :exit, _reason -> :ok
   end
-
-  defp release_turn(_state), do: :ok
 
   defp settle(state, result) do
     deliver_terminal(state, result)
@@ -478,7 +462,7 @@ defmodule Tackle.Session do
   defp put_runtime_context(agent_state, %ScopeRef{} = scope_ref, %AgentRef{} = agent_ref, opts) do
     handle =
       Handle.new(scope_ref, agent_ref,
-        allow_recursion: Keyword.get(opts, :allow_recursion, false),
+        allow_delegation: Keyword.get(opts, :allow_delegation, false),
         limits: Keyword.get(opts, :limits, Limits.default())
       )
 
@@ -492,8 +476,20 @@ defmodule Tackle.Session do
 
   defp put_runtime_context(agent_state, _scope_ref, _agent_ref, _opts), do: agent_state
 
-  defp register(nil, _agent_ref), do: :ok
-  defp register(_scope_ref, nil), do: :ok
+  defp validate_ownership(%ScopeRef{}, %AgentRef{}, coordinator, work_supervisor)
+       when not is_nil(coordinator) and not is_nil(work_supervisor),
+       do: :ok
+
+  defp validate_ownership(scope_ref, _agent_ref, _coordinator, _work_supervisor)
+       when not is_struct(scope_ref, ScopeRef),
+       do: {:error, {:missing_scope_ownership, :scope_ref}}
+
+  defp validate_ownership(_scope_ref, agent_ref, _coordinator, _work_supervisor)
+       when not is_struct(agent_ref, AgentRef),
+       do: {:error, {:missing_scope_ownership, :agent_ref}}
+
+  defp validate_ownership(_scope_ref, _agent_ref, _coordinator, _work_supervisor),
+    do: {:error, :missing_scope_supervision}
 
   defp register(%ScopeRef{} = scope_ref, %AgentRef{scope_id: scope_id} = agent_ref)
        when scope_ref.scope_id == scope_id do
@@ -505,15 +501,11 @@ defmodule Tackle.Session do
 
   defp register(%ScopeRef{}, %AgentRef{}), do: {:error, :scope_mismatch}
 
-  defp register_with_coordinator(%{coordinator: nil}), do: :ok
-
   defp register_with_coordinator(%{coordinator: coordinator, agent_ref: %AgentRef{} = agent_ref}) do
     Coordinator.register_agent(coordinator, agent_ref, self())
   catch
     :exit, _reason -> :ok
   end
-
-  defp register_with_coordinator(_state), do: :ok
 
   defp coordinator_pid(%ScopeRef{} = scope_ref) do
     case Registry.coordinator(scope_ref) do

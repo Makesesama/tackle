@@ -31,7 +31,7 @@ defmodule Tackle.AgentScope.Coordinator do
           parent: AgentRef.t() | nil,
           depth: non_neg_integer(),
           lifetime: :explicit | :ephemeral,
-          allow_recursion: boolean(),
+          allow_delegation: boolean(),
           status: :pending | :live,
           children: MapSet.t(),
           cancelled: boolean()
@@ -74,7 +74,7 @@ defmodule Tackle.AgentScope.Coordinator do
              agent_ref: AgentRef.t(),
              limits: Limits.t(),
              depth: non_neg_integer(),
-             allow_recursion: boolean()
+             allow_delegation: boolean()
            }}
           | {:error, term()}
   def admit_agent(coordinator, parent_ref, %AgentSpec{} = spec, opts \\ []) do
@@ -148,7 +148,7 @@ defmodule Tackle.AgentScope.Coordinator do
       parent: nil,
       depth: 0,
       lifetime: :explicit,
-      allow_recursion: spec.root_spec.allow_recursion,
+      allow_delegation: spec.root_spec.allow_delegation,
       status: :pending,
       children: MapSet.new(),
       cancelled: false
@@ -253,7 +253,7 @@ defmodule Tackle.AgentScope.Coordinator do
          :ok <- ensure_child_capacity(state, parent),
          :ok <- ensure_agent_capacity(state) do
       agent_ref = AgentRef.new!(state.scope_ref.scope_id, ID.generate())
-      allow_recursion = spec.allow_recursion and parent.allow_recursion
+      allow_delegation = spec.allow_delegation and parent.allow_delegation
 
       entry = %{
         ref: agent_ref,
@@ -262,7 +262,7 @@ defmodule Tackle.AgentScope.Coordinator do
         parent: parent.ref,
         depth: parent.depth + 1,
         lifetime: Keyword.get(opts, :lifetime, :ephemeral),
-        allow_recursion: allow_recursion,
+        allow_delegation: allow_delegation,
         status: :pending,
         children: MapSet.new(),
         cancelled: false
@@ -276,7 +276,7 @@ defmodule Tackle.AgentScope.Coordinator do
            agent_ref: agent_ref,
            limits: state.limits,
            depth: entry.depth,
-           allow_recursion: allow_recursion
+           allow_delegation: allow_delegation
          }}
 
       {reply, state}
@@ -297,8 +297,8 @@ defmodule Tackle.AgentScope.Coordinator do
 
   defp fetch_parent(_state, _ref), do: {:error, :invalid_parent}
 
-  defp ensure_spawn_allowed(%{allow_recursion: true}), do: :ok
-  defp ensure_spawn_allowed(%{allow_recursion: false}), do: {:error, :recursion_not_allowed}
+  defp ensure_spawn_allowed(%{allow_delegation: true}), do: :ok
+  defp ensure_spawn_allowed(%{allow_delegation: false}), do: {:error, :delegation_not_allowed}
 
   defp ensure_depth(%{limits: %Limits{max_spawn_depth: max_depth}}, %{depth: parent_depth}) do
     if parent_depth + 1 <= max_depth, do: :ok, else: {:error, :max_spawn_depth}
@@ -405,7 +405,7 @@ defmodule Tackle.AgentScope.Coordinator do
       parent: entry.parent,
       depth: entry.depth,
       lifetime: entry.lifetime,
-      allow_recursion: entry.allow_recursion,
+      allow_delegation: entry.allow_delegation,
       cancelled: entry.cancelled,
       child_count: MapSet.size(entry.children),
       active_turn?: MapSet.member?(state.turns, entry.ref.agent_id)

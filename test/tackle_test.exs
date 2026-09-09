@@ -4,6 +4,11 @@ defmodule TackleTest do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.Message
+  alias Tackle.Runtime.AgentRef
+  alias Tackle.Runtime.AgentSpec
+  alias Tackle.Runtime.Scope
+  alias Tackle.Runtime.ScopeRef
+  alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Snapshot
 
   defmodule ControlledAdapter do
@@ -129,13 +134,49 @@ defmodule TackleTest do
     end
   end
 
+  describe "public scoped facade" do
+    test "starting a scope returns a PID-free handle" do
+      scope = start_scope(adapters: [AdapterA], model: "provider-a/shared")
+
+      assert %Scope{scope_ref: %ScopeRef{}, root_agent_ref: %AgentRef{}} = scope
+      refute inspect(scope) =~ "#PID"
+      assert {:ok, _snapshot} = Tackle.scope_snapshot(scope.scope_ref)
+    end
+
+    test "stale references return explicit errors instead of exiting callers" do
+      scope = start_scope(adapters: [AdapterA], model: "provider-a/shared")
+      agent_ref = scope.root_agent_ref
+
+      assert :ok = Tackle.stop_scope(scope.scope_ref)
+
+      assert :ok = eventually(fn -> Tackle.monitor_agent(agent_ref) == {:error, :not_found} end)
+
+      assert {:error, :not_found} = Tackle.submit(agent_ref, "hello")
+      assert {:error, :not_found} = Tackle.continue(agent_ref)
+      assert {:error, :not_found} = Tackle.cancel(agent_ref)
+      assert {:error, :not_found} = Tackle.subscribe(agent_ref)
+      assert {:error, :not_found} = Tackle.unsubscribe(agent_ref)
+      assert {:error, :not_found} = Tackle.snapshot(agent_ref)
+      assert {:error, :not_found} = Tackle.monitor_agent(agent_ref)
+      assert {:error, :not_found} = Tackle.stop_scope(scope.scope_ref)
+    end
+
+    test "rejects an invalid delegation grant explicitly" do
+      {:ok, config} = Tackle.Config.new(adapters: [AdapterA], model: "provider-a/shared")
+
+      assert {:error, {:invalid_allow_delegation, :yes}} =
+               AgentSpec.new(name: "root", config: config, allow_delegation: :yes)
+    end
+  end
+
   test "runs a supervised turn and delivers correlated events" do
-    session = start_controlled_session()
+    scope = start_controlled_scope()
+    agent_ref = scope.root_agent_ref
 
     assert {:ok, %Snapshot{active_turn: nil, session_id: session_id}} =
-             Tackle.subscribe(session)
+             Tackle.subscribe(agent_ref)
 
-    assert {:ok, turn_id} = Tackle.submit(session, "hello")
+    assert {:ok, turn_id} = Tackle.submit(agent_ref, "hello")
     assert_receive {:adapter_called, task_pid, "test", signal}
     send(task_pid, {:respond, "hello back"})
 
@@ -146,8 +187,8 @@ defmodule TackleTest do
     assert Enum.any?(events, &match?(%Event{type: :turn_start}, &1))
     assert Enum.any?(events, &match?(%Event{type: :turn_end}, &1))
 
-    assert %Snapshot{agent_state: ^final_state, active_turn: nil, stats: stats} =
-             Tackle.snapshot(session)
+    assert {:ok, %Snapshot{agent_state: ^final_state, active_turn: nil, stats: stats}} =
+             Tackle.snapshot(agent_ref)
 
     assert stats.usage.input_tokens == 100
     assert stats.usage.output_tokens == 10
@@ -170,30 +211,31 @@ defmodule TackleTest do
   end
 
   test "rejects overlapping turns" do
-    session = start_controlled_session()
-    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(session)
+    scope = start_controlled_scope()
+    agent_ref = scope.root_agent_ref
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
 
-    assert {:ok, turn_id} = Tackle.submit(session, "first")
+    assert {:ok, turn_id} = Tackle.submit(agent_ref, "first")
     assert_receive {:adapter_called, task_pid, "test", _signal}
-    assert {:error, :turn_in_progress} = Tackle.submit(session, "second")
-    assert {:error, :turn_in_progress} = Tackle.subscribe(session)
+    assert {:error, :turn_in_progress} = Tackle.submit(agent_ref, "second")
+    assert {:error, :turn_in_progress} = Tackle.subscribe(agent_ref)
 
     send(task_pid, {:respond, "done"})
     assert {:finished, {:ok, _state}, _events} = await_terminal(session_id, turn_id)
   end
 
   test "reconfigures model and thinking while preserving settled history" do
-    {:ok, session} =
-      Tackle.start_session(
+    scope =
+      start_scope(
         adapters: [AdapterA, AdapterB],
         model: "provider-a/shared",
         llm_opts: [request_tag: "preserved"]
       )
 
-    on_exit(fn -> close_session(session) end)
-    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(session)
+    agent_ref = scope.root_agent_ref
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
 
-    assert {:ok, first_turn_id} = Tackle.submit(session, "first")
+    assert {:ok, first_turn_id} = Tackle.submit(agent_ref, "first")
 
     assert {:finished, {:ok, first_state}, _events} =
              await_terminal(session_id, first_turn_id)
@@ -201,7 +243,7 @@ defmodule TackleTest do
     assert Tackle.Lib.last_answer(first_state) == "a:shared"
 
     assert {:ok, %Snapshot{agent_state: agent_state} = snapshot} =
-             Tackle.reconfigure(session, model: "provider-b/shared", thinking: "high")
+             Tackle.reconfigure(agent_ref, model: "provider-b/shared", thinking: "high")
 
     assert_receive {:tackle_session_reconfigured, ^session_id, ^snapshot}
     assert agent_state.messages == first_state.messages
@@ -212,7 +254,7 @@ defmodule TackleTest do
     assert agent_state.llm_opts[:reasoning_summary] == "auto"
     assert agent_state.llm_opts[:credential_store] == Tackle.Auth.credential_store()
 
-    assert {:ok, second_turn_id} = Tackle.submit(session, "second")
+    assert {:ok, second_turn_id} = Tackle.submit(agent_ref, "second")
 
     assert {:finished, {:ok, final_state}, _events} =
              await_terminal(session_id, second_turn_id)
@@ -226,21 +268,23 @@ defmodule TackleTest do
   end
 
   test "rejects reconfiguration during an active turn" do
-    session = start_controlled_session()
-    assert {:ok, _turn_id} = Tackle.submit(session, "first")
+    scope = start_controlled_scope()
+    agent_ref = scope.root_agent_ref
+    assert {:ok, _turn_id} = Tackle.submit(agent_ref, "first")
     assert_receive {:adapter_called, task_pid, "test", _signal}
 
     assert {:error, :turn_in_progress} =
-             Tackle.reconfigure(session, thinking: "high")
+             Tackle.reconfigure(agent_ref, thinking: "high")
 
     send(task_pid, {:respond, "done"})
   end
 
   test "continues a failed turn without duplicating the user message" do
-    session = start_controlled_session()
-    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(session)
+    scope = start_controlled_scope()
+    agent_ref = scope.root_agent_ref
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
 
-    assert {:ok, first_turn_id} = Tackle.submit(session, "try this")
+    assert {:ok, first_turn_id} = Tackle.submit(agent_ref, "try this")
     assert_receive {:adapter_called, first_task, "test", _first_signal}
     send(first_task, {:error, :temporary})
 
@@ -249,7 +293,7 @@ defmodule TackleTest do
 
     assert [%Message{role: :user, content: "try this"}] = failed_state.messages
 
-    assert {:ok, retry_turn_id} = Tackle.continue(session)
+    assert {:ok, retry_turn_id} = Tackle.continue(agent_ref)
     assert_receive {:adapter_called, retry_task, "test", _retry_signal}
     send(retry_task, {:respond, "recovered"})
 
@@ -261,14 +305,17 @@ defmodule TackleTest do
   end
 
   test "owns cooperative cancellation" do
-    session = start_controlled_session()
-    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(session)
+    scope = start_controlled_scope()
+    agent_ref = scope.root_agent_ref
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
 
-    assert {:ok, turn_id} = Tackle.submit(session, "wait")
+    assert {:ok, turn_id} = Tackle.submit(agent_ref, "wait")
     assert_receive {:adapter_called, task_pid, "test", signal}
 
-    assert :ok = Tackle.cancel(session)
-    assert %Snapshot{active_turn: %{cancellation_requested?: true}} = Tackle.snapshot(session)
+    assert :ok = Tackle.cancel(agent_ref)
+
+    assert {:ok, %Snapshot{active_turn: %{cancellation_requested?: true}}} =
+             Tackle.snapshot(agent_ref)
 
     send(task_pid, {:respond, "too late"})
 
@@ -281,17 +328,20 @@ defmodule TackleTest do
   end
 
   test "reports a task crash separately from an expected turn error" do
-    session = start_controlled_session()
-    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(session)
+    scope = start_controlled_scope()
+    agent_ref = scope.root_agent_ref
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
 
-    assert {:ok, turn_id} = Tackle.submit(session, "crash")
+    assert {:ok, turn_id} = Tackle.submit(agent_ref, "crash")
     assert_receive {:adapter_called, task_pid, "test", _signal}
     send(task_pid, :crash)
 
     assert {:failed, reason, _events} = await_terminal(session_id, turn_id)
     assert match?({%RuntimeError{message: "adapter crash"}, _stacktrace}, reason)
 
-    assert %Snapshot{active_turn: nil, agent_state: agent_state} = Tackle.snapshot(session)
+    assert {:ok, %Snapshot{active_turn: nil, agent_state: agent_state}} =
+             Tackle.snapshot(agent_ref)
+
     assert agent_state.status == :idle
   end
 
@@ -300,18 +350,16 @@ defmodule TackleTest do
     :ok = Tackle.Auth.put(namespace, %{"access_token" => "initial-integration-token"})
     on_exit(fn -> Tackle.Auth.delete(namespace) end)
 
-    {:ok, session} =
-      Tackle.start_session(adapters: [CredentialAdapter], model: "credential-refresh/test")
+    scope = start_scope(adapters: [CredentialAdapter], model: "credential-refresh/test")
+    agent_ref = scope.root_agent_ref
 
-    on_exit(fn -> close_session(session) end)
-
-    initial_snapshot = Tackle.snapshot(session)
+    initial_snapshot = snapshot!(agent_ref)
     handle = Tackle.Auth.credential_store()
     assert initial_snapshot.agent_state.llm_opts == [credential_store: handle]
     refute inspect(initial_snapshot) =~ "initial-integration-token"
 
-    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(session)
-    {:ok, turn_id} = Tackle.submit(session, "refresh")
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
+    {:ok, turn_id} = Tackle.submit(agent_ref, "refresh")
 
     assert {:finished, {:ok, final_state}, events} = await_terminal(session_id, turn_id)
 
@@ -324,38 +372,50 @@ defmodule TackleTest do
     refute inspect(events) =~ "refreshed-integration-token"
   end
 
-  test "different sessions select different adapters without global configuration" do
-    {:ok, session_a} =
-      Tackle.start_session(adapters: [AdapterA, AdapterB], model: "provider-a/shared")
+  test "different scopes select different adapters without global configuration" do
+    scope_a = start_scope(adapters: [AdapterA, AdapterB], model: "provider-a/shared")
+    scope_b = start_scope(adapters: [AdapterA, AdapterB], model: "provider-b/shared")
 
-    {:ok, session_b} =
-      Tackle.start_session(adapters: [AdapterA, AdapterB], model: "provider-b/shared")
-
-    on_exit(fn -> close_session(session_a) end)
-    on_exit(fn -> close_session(session_b) end)
-
-    assert {:ok, _turn_a} = Tackle.submit(session_a, "hello")
-    assert {:ok, _turn_b} = Tackle.submit(session_b, "hello")
+    assert {:ok, _turn_a} = Tackle.submit(scope_a.root_agent_ref, "hello")
+    assert {:ok, _turn_b} = Tackle.submit(scope_b.root_agent_ref, "hello")
 
     eventually(fn ->
-      Tackle.snapshot(session_a).agent_state.status == :completed and
-        Tackle.snapshot(session_b).agent_state.status == :completed
+      snapshot!(scope_a.root_agent_ref).agent_state.status == :completed and
+        snapshot!(scope_b.root_agent_ref).agent_state.status == :completed
     end)
 
-    assert Tackle.snapshot(session_a).agent_state |> Tackle.Lib.last_answer() == "a:shared"
-    assert Tackle.snapshot(session_b).agent_state |> Tackle.Lib.last_answer() == "b:shared"
+    assert snapshot!(scope_a.root_agent_ref).agent_state |> Tackle.Lib.last_answer() ==
+             "a:shared"
+
+    assert snapshot!(scope_b.root_agent_ref).agent_state |> Tackle.Lib.last_answer() ==
+             "b:shared"
   end
 
-  defp start_controlled_session do
-    {:ok, session} =
-      Tackle.start_session(
-        adapters: [ControlledAdapter],
-        model: "controlled/test",
-        llm_opts: [test_pid: self()]
-      )
+  defp start_controlled_scope do
+    start_scope(
+      adapters: [ControlledAdapter],
+      model: "controlled/test",
+      llm_opts: [test_pid: self()]
+    )
+  end
 
-    on_exit(fn -> close_session(session) end)
-    session
+  defp start_scope(config_opts) do
+    {:ok, config} = Tackle.Config.new(config_opts)
+    root_spec = AgentSpec.new!(name: "root", config: config)
+    {:ok, scope} = Tackle.start_scope(ScopeSpec.new!(root_spec: root_spec))
+    on_exit(fn -> stop_scope(scope.scope_ref) end)
+    scope
+  end
+
+  defp snapshot!(agent_ref) do
+    {:ok, snapshot} = Tackle.snapshot(agent_ref)
+    snapshot
+  end
+
+  defp stop_scope(scope_ref) do
+    Tackle.stop_scope(scope_ref)
+  catch
+    :exit, _reason -> :ok
   end
 
   defp await_terminal(session_id, turn_id, events \\ []) do
@@ -385,12 +445,4 @@ defmodule TackleTest do
   end
 
   defp eventually(_fun, 0), do: flunk("condition did not become true")
-
-  defp close_session(session) do
-    if Process.alive?(session) do
-      Tackle.close(session)
-    end
-  catch
-    :exit, _reason -> :ok
-  end
 end

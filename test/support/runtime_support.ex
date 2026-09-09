@@ -134,7 +134,7 @@ defmodule Tackle.Test.Runtime do
     AgentSpec.new!(
       name: name,
       config: config(opts),
-      allow_recursion: Keyword.get(opts, :allow_recursion, false),
+      allow_delegation: Keyword.get(opts, :allow_delegation, false),
       timeout: Keyword.get(opts, :timeout, 5_000)
     )
   end
@@ -189,7 +189,7 @@ defmodule Tackle.Test.Runtime do
   @doc "Builds an authorized runtime handle for a started scope."
   def handle(scope, opts \\ []) do
     Tackle.Runtime.Handle.new(scope.scope_ref, scope.root_agent_ref,
-      allow_recursion: Keyword.get(opts, :allow_recursion, true),
+      allow_delegation: Keyword.get(opts, :allow_delegation, true),
       limits: Keyword.get(opts, :limits)
     )
   end

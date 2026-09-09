@@ -49,7 +49,7 @@ defmodule Tackle.Runtime.SupervisionTest do
   test "stopping a scope terminates the root, descendants, and work supervisor" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"child" => agent_spec("child", mode: :manual)}
       )
 
@@ -78,8 +78,9 @@ defmodule Tackle.Runtime.SupervisionTest do
     scope = start_scope()
     {:ok, root_session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
     {:ok, work_supervisor} = Tackle.Runtime.Registry.work_supervisor(scope.scope_ref)
+    {:ok, scope_supervisor} = Tackle.Runtime.Registry.scope(scope.scope_ref)
 
-    scope_monitor = Process.monitor(scope.pid)
+    scope_monitor = Process.monitor(scope_supervisor)
     work_monitor = Process.monitor(work_supervisor)
 
     Process.exit(root_session, :kill)
@@ -95,7 +96,7 @@ defmodule Tackle.Runtime.SupervisionTest do
   test "a descendant crash does not terminate an unrelated sibling" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{
           "crash" => agent_spec("crash", model: "test/echo", mode: :manual),
           "healthy" => agent_spec("healthy", model: "test/child", mode: :manual)
@@ -132,7 +133,7 @@ defmodule Tackle.Runtime.SupervisionTest do
   test "registry entries disappear when their processes terminate" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"child" => agent_spec("child", mode: :manual)}
       )
 

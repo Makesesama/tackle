@@ -94,7 +94,7 @@ defmodule Tackle.Runtime.WorkflowTest do
   test "sequential workflows feed each outcome into the next request" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{
           "researcher" => agent_spec("researcher", mode: :echo_prompt),
           "reviewer" => agent_spec("reviewer", mode: :echo_prompt),
@@ -110,7 +110,7 @@ defmodule Tackle.Runtime.WorkflowTest do
   test "parallel workflows overlap and correlate results regardless of completion order" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{
           "researcher" => agent_spec("researcher", mode: :manual),
           "aggregator" => agent_spec("aggregator", mode: :echo_prompt)
@@ -135,7 +135,7 @@ defmodule Tackle.Runtime.WorkflowTest do
   test "child failure follows explicit workflow policy" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"worker" => agent_spec("worker", mode: :error)}
       )
 
@@ -147,7 +147,7 @@ defmodule Tackle.Runtime.WorkflowTest do
   test "workflow cancellation cancels every outstanding attached run" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"researcher" => agent_spec("researcher", mode: :block)}
       )
 
@@ -168,7 +168,7 @@ defmodule Tackle.Runtime.WorkflowTest do
   test "a completed workflow terminates and releases scope accounting" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"worker" => agent_spec("worker", content: "done")}
       )
 
@@ -184,7 +184,7 @@ defmodule Tackle.Runtime.WorkflowTest do
   end
 
   test "unknown workflow run profiles are rejected without starting the workflow" do
-    scope = start_scope(root: [allow_recursion: true])
+    scope = start_scope(root: [allow_delegation: true])
 
     {:ok, workflow_ref} =
       Runtime.start_workflow(handle(scope), FailingWorkflow, "topic")

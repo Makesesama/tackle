@@ -57,7 +57,7 @@ resolved and tested before promising a binary plugin workflow.
 This repository is a starting point, not a finished CLI:
 
 - The root Mix project provides frontend-independent adapter/model
-  configuration, supervised in-memory sessions, a supervised credential store,
+  configuration, a scoped agent runtime, a supervised credential store,
   and built-in `read`, `bash`, `elixir_eval`, `edit`, and `write` developer tools
   under `Tackle.Tools.*`. It composes a coding system prompt with global and
   project `AGENTS.md` guidance. Configuration loads from `~/.tackle/config.json`,
@@ -98,17 +98,32 @@ frontend arguments only select models declared by modules supplied by the
 distribution. If no model is configured, the harness picks the first model
 reference exposed by the configured adapters.
 
+Execution is scoped. `Tackle.start_scope/1` starts one root agent plus every
+descendant it may create and returns a PID-free `Tackle.Runtime.Scope`:
+
 ```elixir
 config :tackle, adapters: [MyCodexAdapter]
 
-{:ok, session} =
-  Tackle.start_configured_session(
+{:ok, config} =
+  Tackle.load_config(
     overrides: [model: "openai-codex/gpt-5.5", thinking: "high"]
   )
 
-{:ok, snapshot} = Tackle.subscribe(session)
-{:ok, turn_id} = Tackle.submit(session, "Inspect this project")
+root_spec = Tackle.Runtime.AgentSpec.new!(name: "root", config: config)
+scope_spec = Tackle.Runtime.ScopeSpec.new!(root_spec: root_spec, profiles: %{})
+
+{:ok, scope} = Tackle.start_scope(scope_spec)
+
+{:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+{:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "Inspect this project")
+
+:ok = Tackle.stop_scope(scope.scope_ref)
 ```
+
+`Tackle.load_config/1` loads exactly one agent's execution configuration.
+Trusted host or distribution code composes that value into an `AgentSpec` and
+`ScopeSpec` before starting the runtime; model-generated data may only select a
+trusted profile name.
 
 Subscribers receive provider-neutral library events and terminal outcomes with
 session and turn correlation:
@@ -126,20 +141,30 @@ metadata, and current context pressure. No duplicate mutable totals are kept.
 Usage events also carry priced normalized usage and context pressure when model
 metadata is available.
 
-Each session permits one active turn. `Tackle.continue/1` retries the settled
+Each agent permits one active turn. `Tackle.continue/1` retries the settled
 conversation without adding another user message, `Tackle.cancel/1` requests
-cooperative cancellation, and `Tackle.close/1` cleans up the session.
-`Tackle.reconfigure/2` can change the selected model and thinking level while a
-session is idle without discarding its conversation. Subscribe before starting
-a turn; active-turn attachment is deferred until event replay or projection
-semantics are defined. Sessions use `Tackle.Tools.default/0` unless
-an embedding host explicitly supplies `:tools`; a host can set `context: %{cwd:
-path}` to change the filesystem tools' working directory. `elixir_eval` runs
-stateless code inside the live Tackle BEAM with a five-second default timeout;
-VM side effects persist, but variable bindings do not carry between calls.
-These tools inherit the Tackle process's filesystem and operating-system
-permissions and are not a sandbox. `Tackle.Lib` provides the `:telemetry`
-runtime dependency used by tool execution.
+cooperative cancellation, and `Tackle.stop_scope/1` stops the whole scope.
+`Tackle.reconfigure/2` can change the selected model and thinking level while an
+agent is idle without discarding its conversation. `Tackle.monitor_agent/1`
+returns a monitor reference for crash detection without exposing a runtime PID.
+Subscribe before starting a turn; active-turn attachment is deferred until event
+replay or projection semantics are defined. Agents use `Tackle.Tools.default/0`
+unless an embedding host explicitly supplies `:tools`; a host can set
+`context: %{cwd: path}` to change the filesystem tools' working directory.
+`elixir_eval` runs stateless code inside the live Tackle BEAM with a five-second
+default timeout; VM side effects persist, but variable bindings do not carry
+between calls. These tools inherit the Tackle process's filesystem and
+operating-system permissions and are not a sandbox. `Tackle.Lib` provides the
+`:telemetry` runtime dependency used by tool execution.
+
+### Breaking migration to scoped runtime
+
+Session-PID startup is replaced by scope startup: `Tackle.start_session/1`,
+`Tackle.start_configured_session/1`, and PID-based `Tackle.close/1` are removed.
+Agent operations now take a `Tackle.Runtime.AgentRef` and shutdown takes a
+`Tackle.Runtime.ScopeRef`. The `allow_recursion` grant is renamed
+`allow_delegation`. There is no compatibility wrapper: a session PID is not the
+lifecycle or addressing unit of the runtime.
 
 ## Configuration and credentials
 

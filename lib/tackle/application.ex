@@ -10,9 +10,7 @@ defmodule Tackle.Application do
         {Tackle.Auth.Store, path: auth_file, name: Tackle.Auth.Store},
         {Tackle.Runtime.CancellationStore, []},
         {Tackle.Runtime.Registry, []},
-        {Tackle.AgentSupervisor, name: Tackle.AgentSupervisor},
-        {Task.Supervisor, name: Tackle.TaskSupervisor},
-        {DynamicSupervisor, strategy: :one_for_one, name: Tackle.SessionSupervisor}
+        {Tackle.AgentSupervisor, name: Tackle.AgentSupervisor}
       ]
 
       Supervisor.start_link(children, strategy: :one_for_one, name: Tackle.Supervisor)

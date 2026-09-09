@@ -1,6 +1,6 @@
 # Tackle runtime architecture for subagents, workflows, and fleets
 
-Status: accepted architecture and implementation plan. Concrete APIs and module names remain provisional until implemented, but the boundaries and defaults recorded here are decisions rather than alternatives.
+Status: accepted architecture. The scoped runtime and its public facade are implemented; the concrete APIs recorded in section 5.1 describe the shipped behaviour. Boundaries and defaults are decisions rather than alternatives.
 
 Scope: in-memory execution, supervision, subagents, workflows, fleets, inter-agent communication, cancellation, and resource limits. Session persistence, recovery after BEAM shutdown, and distributed execution are explicitly out of scope for this stage.
 
@@ -28,13 +28,13 @@ This document extends the package and harness boundaries in [`architecture-spec.
 
 The first implementation uses these defaults:
 
-- The CLI's primary agent is created in an implicit default root-agent scope.
+- The CLI's primary agent is created in an explicit root-agent scope with an empty trusted profile allowlist.
 - A global DynamicSupervisor owns root-agent scopes; each root-agent scope physically owns one root `Tackle.Session`, one scope coordinator, and one DynamicSupervisor for all descendant work.
 - The scope work supervisor owns subagent sessions, workflows, request helpers, and supervised turn Tasks. There is no separate supervisor per subagent or workflow.
 - The scope coordinator enforces fleet limits and records logical ownership. It is a control-plane process and does not relay streaming token events.
 - Subagent configuration is selected from trusted named profiles resolved by the harness.
 - The subagent tool is opt-in initially rather than part of every agent's default tool set.
-- Descendant agents cannot create further descendants unless their trusted profile explicitly grants that capability. Spawn-depth and fleet limits apply even when recursion is granted.
+- Descendant agents cannot create further descendants unless their trusted profile explicitly grants that capability. Spawn-depth and fleet limits apply even when delegation is granted.
 - The runtime preserves a child's full terminal outcome internally; the subagent tool projects the appropriate final answer or error into a parent tool result.
 - A busy ephemeral child rejects additional work. General-purpose agent inboxes and queues are deferred.
 - Fleet concurrency overflow is rejected explicitly in the initial implementation rather than queued.
@@ -66,7 +66,7 @@ Tackle.Session                         temporary GenServer
         └── emits events through a callback
 ```
 
-`Tackle.Lib.Loop` is synchronous code. It is not a GenServer and should remain independent of OTP runtime policy. The root harness runs each turn under `Tackle.TaskSupervisor`; `Tackle.Session` remains responsive while the task performs provider calls and tool execution.
+`Tackle.Lib.Loop` is synchronous code. It is not a GenServer and should remain independent of OTP runtime policy. The root harness runs each turn as a temporary Task child of the owning scope's `Tackle.AgentScope.WorkSupervisor`; `Tackle.Session` remains responsive while the task performs provider calls and tool execution.
 
 This “one stateful process per agent, one supervised Task per active turn” model is the foundation for subagents. A subagent is another dedicated session process configured for a delegated role.
 
@@ -189,7 +189,7 @@ Tackle.Supervisor
         └── ...
 ```
 
-`Tackle.AgentSupervisor` replaces the current role of a single global session supervisor for runtime-created agents. It owns root-agent scopes rather than every session directly. Existing compatibility entry points may be migrated incrementally, but all newly orchestrated agents must enter through a scope.
+`Tackle.AgentSupervisor` owns root-agent scopes rather than every session directly. All agents, including the CLI root, enter through a scope; there is no global session or turn supervisor and no unscoped session fallback.
 
 Each `AgentScope` is a small static Supervisor containing:
 
@@ -296,6 +296,58 @@ The exact struct and names are deferred. The architectural rules are:
 - stale references produce explicit `:not_found` or terminated outcomes;
 - `Tackle.Lib.State.session_id` remains the conversation/provider-cache identity and need not represent fleet, workflow, or parentage;
 - events and terminal outcomes carry enough IDs to reject stale or unrelated deliveries.
+
+### 5.1 Implemented public facade
+
+Starting the harness returns a PID-free `Tackle.Runtime.Scope`:
+
+```elixir
+%Tackle.Runtime.Scope{
+  scope_ref: %Tackle.Runtime.ScopeRef{scope_id: scope_id},
+  root_agent_ref: %Tackle.Runtime.AgentRef{scope_id: scope_id, agent_id: agent_id}
+}
+```
+
+The scope supervisor PID stays below the runtime boundary. `Tackle.AgentSupervisor.start_scope/2` still returns it internally, but `Tackle.Runtime.start_scope/2` and `Tackle.start_scope/1` never expose it.
+
+The root facade exposes only the scoped model:
+
+```elixir
+Tackle.start_scope(%ScopeSpec{})        :: {:ok, %Scope{}} | {:error, term()}
+Tackle.stop_scope(%ScopeRef{})          :: :ok | {:error, term()}
+Tackle.scope_snapshot(%ScopeRef{})      :: {:ok, map()} | {:error, term()}
+
+Tackle.submit(%AgentRef{}, input)       :: {:ok, turn_id} | {:error, term()}
+Tackle.continue(%AgentRef{})            :: {:ok, turn_id} | {:error, term()}
+Tackle.cancel(%AgentRef{})              :: :ok | {:error, term()}
+Tackle.reconfigure(%AgentRef{}, opts)   :: {:ok, %Snapshot{}} | {:error, term()}
+Tackle.snapshot(%AgentRef{})            :: {:ok, %Snapshot{}} | {:error, term()}
+Tackle.subscribe(%AgentRef{})           :: {:ok, %Snapshot{}} | {:error, term()}
+Tackle.unsubscribe(%AgentRef{})         :: :ok | {:error, term()}
+Tackle.monitor_agent(%AgentRef{})       :: {:ok, reference()} | {:error, term()}
+```
+
+`Tackle.load_config/1` remains the per-agent configuration loader. `Tackle.Runtime.agent_snapshot/1` remains the PID-free coordinator/lifecycle snapshot and is deliberately distinct from the conversation snapshot returned by `Tackle.snapshot/1`.
+
+Frontends hold only `ScopeRef` and `AgentRef` values. `Tackle.monitor_agent/1` centralizes the Registry lookup/monitor race so a frontend can detect crashes without retaining a session PID.
+
+### 5.2 Breaking changes from the PID-oriented facade
+
+This migration is intentionally breaking and retains no compatibility wrapper:
+
+- session-PID startup (`Tackle.start_session/1`, `Tackle.start_configured_session/1`) is replaced by scope startup;
+- agent operations address a `Tackle.Runtime.AgentRef`;
+- shutdown addresses a `Tackle.Runtime.ScopeRef` through `Tackle.stop_scope/1`;
+- `allow_recursion` is renamed `allow_delegation` throughout the root runtime;
+- `Tackle.Session.start_child/1`, the unscoped `start_turn_task(nil, fun)` fallback, and the global `Tackle.SessionSupervisor` and `Tackle.TaskSupervisor` are removed.
+
+A session without scoped runtime ownership is an initialization error rather than an implicit global-supervisor fallback. `Tackle.Phoenix.Runner` is unaffected: it does not use the root `Tackle.Session` runtime.
+
+### 5.3 Trusted profiles versus model-selected names
+
+`Tackle.Config` describes exactly one agent loop. `Tackle.Runtime.AgentSpec` is the trusted, resolved description of one runtime agent (name, `Tackle.Config`, per-run timeout, delegation grant). `Tackle.Runtime.ScopeSpec` is the trusted description of one root scope (root `AgentSpec`, trusted profile allowlist, fleet `Limits`).
+
+Model-visible or file-generated data may only select an allowlisted profile *name*. It can never name a module, construct a profile implementation, widen limits, or address a process. File/model configuration that selects a trusted profile name does not, by itself, inject the subagent tool: tool exposure, the `allow_delegation` grant, and a matching trusted profile are three independent controls.
 
 ## 6. Inter-agent communication
 
@@ -444,13 +496,13 @@ A subagent needs an explicit agent specification describing the configuration th
 - runtime limits and timeout;
 - parent/fleet metadata.
 
-The exact `AgentSpec` struct fields remain provisional. The accepted configuration policy is:
+The implemented `AgentSpec` carries a trusted `name`, a resolved `Tackle.Config`, an `allow_delegation` grant, and a per-run timeout. The configuration policy is:
 
 - the harness constructs executable configuration from trusted modules already present in the running distribution;
 - model-generated input may select only a trusted named profile exposed by the host;
 - profile resolution produces the actual adapter, model, prompt, tools, hooks, context, and limits;
 - the initial subagent tool is opt-in rather than added to every default tool set;
-- child profiles do not include the subagent tool unless recursive delegation is explicitly granted;
+- child profiles do not include the subagent tool unless delegation is explicitly granted;
 - a subagent receives a fresh `%Tackle.Lib.State{}` unless an explicit same-agent continuation is requested;
 - a child cannot widen its own tools, spawn budget, scope, or runtime permissions;
 - credentials remain opaque handles supplied at the adapter boundary.
@@ -596,13 +648,13 @@ Keep `Tackle.Session` as the only stateful agent GenServer. Extend its start opt
 - the scoped work-supervisor reference;
 - coordinator/owner monitoring.
 
-Move scoped turn execution from the current global `Tackle.TaskSupervisor` to temporary Task children under the root scope's `WorkSupervisor`. Preserve the existing event and Task-crash handling semantics.
+Scoped turn execution moved from the former global `Tackle.TaskSupervisor` to temporary Task children under the root scope's `WorkSupervisor`. The existing event and Task-crash handling semantics are preserved.
 
 An explicit root session remains alive until the root scope is closed. An ephemeral descendant delivers its correlated terminal outcome and is then terminated. Every descendant starts with a fresh `%Tackle.Lib.State{}` and is never reset for another identity.
 
 Acceptance criteria:
 
-- Existing `submit`, `subscribe`, `cancel`, `reconfigure`, and close behavior remains compatible while callers migrate to references.
+- Agent operations address an `AgentRef`; scope shutdown addresses a `ScopeRef`; no frontend operation requires a session PID.
 - Existing one-active-turn enforcement remains unchanged.
 - A terminal destination is installed before submission, eliminating subscription/result races.
 - Ephemeral agents terminate after delivering their result.
@@ -679,7 +731,7 @@ The internal outcome distinguishes at least:
 {:rejected, reason}
 ```
 
-The exact tuple or struct representation remains provisional.
+The implemented `Tackle.Runtime.Outcome` carries the status, the settled agent state for library settlements, a reason for runtime failures, and the owning agent reference.
 
 Acceptance criteria:
 
@@ -720,7 +772,7 @@ Acceptance criteria:
 
 ### Task 7: opt-in subagent tool
 
-Add a root-harness tool, provisionally `Tackle.Tools.Subagent`, with a narrow model-visible schema such as:
+Add a root-harness tool, `Tackle.Tools.Subagent`, with a narrow model-visible schema such as:
 
 ```text
 profile: trusted profile name
@@ -935,6 +987,6 @@ The following are intentionally deferred:
 - a workflow DSL;
 - detached background work beyond an explicit ownership policy;
 - token and monetary fleet budgets;
-- final public API signatures and module names where this document marks them provisional.
+- additional public API signatures and module names beyond the implemented scoped facade.
 
 These deferrals must not weaken the accepted in-memory boundaries: ordinary dedicated Tackle agents, one physical execution scope per root agent, host-owned workflows, scope-enforced limits, stable addressing, correlated request/reply, and structured cancellation.

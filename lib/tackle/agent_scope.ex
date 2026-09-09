@@ -71,7 +71,7 @@ defmodule Tackle.AgentScope do
       scope_ref: spec.scope_ref,
       agent_ref: root_agent_ref,
       lifetime: :explicit,
-      allow_recursion: spec.root_spec.allow_recursion,
+      allow_delegation: spec.root_spec.allow_delegation,
       limits: spec.limits,
       coordinator: Coordinator.via(spec.scope_ref),
       work_supervisor: WorkSupervisor.via(spec.scope_ref),

@@ -35,8 +35,10 @@ defmodule Tackle.AgentSupervisor do
   @doc """
   Starts one root-agent scope.
 
-  Returns the scope reference and the minted root agent reference so callers can
-  address the root agent without a PID.
+  Returns the scope reference, the minted root agent reference, and the scope
+  supervisor PID. This result is below the public runtime boundary;
+  `Tackle.Runtime.start_scope/2` converts it into a PID-free
+  `Tackle.Runtime.Scope`.
   """
   @spec start_scope(ScopeSpec.t(), keyword()) ::
           {:ok, %{scope_ref: ScopeRef.t(), root_agent_ref: AgentRef.t(), pid: pid()}}

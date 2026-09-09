@@ -8,6 +8,8 @@ defmodule Tackle.CLI.TUITest do
   alias Tackle.CLI.TUI
   alias Tackle.CLI.TUI.MessageView
   alias Tackle.Lib.{Event, Message, State}
+  alias Tackle.Runtime.AgentRef
+  alias Tackle.Runtime.ID
   alias Tackle.Session.Snapshot
 
   defmodule SessionStub do
@@ -30,14 +32,20 @@ defmodule Tackle.CLI.TUITest do
       def generate(_schema, _opts), do: {:error, :not_used}
     end
 
-    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
+    def start_link({test_pid, agent_ref}),
+      do: GenServer.start_link(__MODULE__, {test_pid, agent_ref})
 
-    def child_spec(test_pid) do
-      %{id: __MODULE__, start: {__MODULE__, :start_link, [test_pid]}, restart: :temporary}
+    def child_spec({test_pid, agent_ref}) do
+      %{
+        id: __MODULE__,
+        start: {__MODULE__, :start_link, [{test_pid, agent_ref}]},
+        restart: :temporary
+      }
     end
 
     @impl true
-    def init(test_pid) do
+    def init({test_pid, agent_ref}) do
+      {:ok, _pid} = Tackle.Runtime.Registry.register(agent_ref, :agent)
       {:ok, llm} = Tackle.Lib.LLM.select([Adapter], "openai-codex/test-model")
       agent_state = State.new(llm: llm)
       {:ok, %{test_pid: test_pid, subscriber: nil, agent_state: agent_state}}
@@ -95,12 +103,13 @@ defmodule Tackle.CLI.TUITest do
 
   setup do
     test_pid = self()
-    session = start_supervised!({SessionStub, test_pid})
+    agent_ref = AgentRef.new!(ID.generate(), ID.generate())
+    _session = start_supervised!({SessionStub, {test_pid, agent_ref}})
 
     tui =
       start_supervised!(
         {TUI,
-         session: session,
+         agent_ref: agent_ref,
          models: ["openai-codex/test-model", "openai-codex/other-model"],
          clipboard_writer: fn content ->
            send(test_pid, {:copied, content})
@@ -111,7 +120,7 @@ defmodule Tackle.CLI.TUITest do
       )
 
     assert_receive {:subscribed, ^tui}
-    %{session: session, tui: tui}
+    %{agent_ref: agent_ref, tui: tui}
   end
 
   test "runs as an ExRatatui.App with session and input state", %{tui: tui} do
@@ -788,25 +797,27 @@ defmodule Tackle.CLI.TUITest do
              state.conversation.items
   end
 
-  test "returns an error when the session terminates abnormally" do
-    {:ok, session} = SessionStub.start_link(self())
+  test "returns an error when the agent terminates abnormally" do
+    test_pid = self()
+    agent_ref = AgentRef.new!(ID.generate(), ID.generate())
+    {:ok, session} = SessionStub.start_link({test_pid, agent_ref})
     Process.unlink(session)
 
     task =
       Task.async(fn ->
-        TUI.start(session: session, test_mode: {40, 10})
+        TUI.start(agent_ref: agent_ref, test_mode: {40, 10})
       end)
 
     assert_receive {:subscribed, tui}
     _snapshot = Runtime.snapshot(tui)
     Process.exit(session, :kill)
 
-    assert {:error, {:session_down, :killed}} = Task.await(task)
+    assert {:error, {:agent_down, :killed}} = Task.await(task)
     refute Process.alive?(tui)
   end
 
-  test "treats an App shutdown as a clean exit", %{session: session} do
-    task = Task.async(fn -> TUI.start(session: session, test_mode: {40, 10}) end)
+  test "treats an App shutdown as a clean exit", %{agent_ref: agent_ref} do
+    task = Task.async(fn -> TUI.start(agent_ref: agent_ref, test_mode: {40, 10}) end)
 
     assert_receive {:subscribed, tui}
     _snapshot = Runtime.snapshot(tui)
@@ -815,8 +826,8 @@ defmodule Tackle.CLI.TUITest do
     assert Task.await(task) == :ok
   end
 
-  test "stops the App when the process calling start dies", %{session: session} do
-    caller = spawn(fn -> TUI.start(session: session, test_mode: {40, 10}) end)
+  test "stops the App when the process calling start dies", %{agent_ref: agent_ref} do
+    caller = spawn(fn -> TUI.start(agent_ref: agent_ref, test_mode: {40, 10}) end)
 
     assert_receive {:subscribed, tui}
     _snapshot = Runtime.snapshot(tui)

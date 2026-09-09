@@ -12,7 +12,7 @@ defmodule Tackle.Runtime.DelegationTest do
         {"worker#{i}", agent_spec("worker#{i}", mode: :immediate, content: "answer #{i}")}
       end)
 
-    scope = start_scope(root: [allow_recursion: true], profiles: profiles)
+    scope = start_scope(root: [allow_delegation: true], profiles: profiles)
 
     tasks =
       for i <- 1..4 do
@@ -33,7 +33,7 @@ defmodule Tackle.Runtime.DelegationTest do
   test "each delegated run receives its own answer" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{
           "alpha" => agent_spec("alpha", model: "test/echo", content: "alpha answer"),
           "beta" => agent_spec("beta", model: "test/child", content: "beta answer")
@@ -53,7 +53,7 @@ defmodule Tackle.Runtime.DelegationTest do
   test "a provider error settles as a library error with agent state" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"worker" => agent_spec("worker", mode: :error)}
       )
 
@@ -68,7 +68,7 @@ defmodule Tackle.Runtime.DelegationTest do
   test "a turn task crash settles as a runtime error" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"worker" => agent_spec("worker", mode: :crash)}
       )
 
@@ -82,7 +82,7 @@ defmodule Tackle.Runtime.DelegationTest do
   test "a run timeout settles as timeout and cleans up the child" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"worker" => agent_spec("worker", mode: :block)}
       )
 
@@ -101,7 +101,7 @@ defmodule Tackle.Runtime.DelegationTest do
   test "requester termination cancels and cleans up attached work" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         profiles: %{"worker" => agent_spec("worker", mode: :block)}
       )
 
@@ -130,7 +130,7 @@ defmodule Tackle.Runtime.DelegationTest do
   end
 
   test "unknown profiles are rejected by name" do
-    scope = start_scope(root: [allow_recursion: true])
+    scope = start_scope(root: [allow_delegation: true])
 
     assert {:error, {:unknown_profile, "nope"}} =
              Tackle.Runtime.request_agent(scope.root_agent_ref, "nope", "go")
@@ -138,18 +138,18 @@ defmodule Tackle.Runtime.DelegationTest do
 
   test "recursion must be granted by the parent" do
     scope =
-      start_scope(root: [allow_recursion: false], profiles: %{"worker" => agent_spec("worker")})
+      start_scope(root: [allow_delegation: false], profiles: %{"worker" => agent_spec("worker")})
 
-    assert {:error, {:rejected, :recursion_not_allowed}} =
+    assert {:error, {:rejected, :delegation_not_allowed}} =
              Tackle.Runtime.request_agent(scope.root_agent_ref, "worker", "go")
   end
 
   test "max_spawn_depth is enforced" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         limits: Limits.new!(max_spawn_depth: 1),
-        profiles: %{"worker" => agent_spec("worker", allow_recursion: true, mode: :block)}
+        profiles: %{"worker" => agent_spec("worker", allow_delegation: true, mode: :block)}
       )
 
     {:ok, run_ref} = Tackle.Runtime.request_agent(scope.root_agent_ref, "worker", "go")
@@ -162,7 +162,7 @@ defmodule Tackle.Runtime.DelegationTest do
   test "max_children_per_agent is enforced" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         limits: Limits.new!(max_children_per_agent: 1, max_agents_per_fleet: 16),
         profiles: %{"worker" => agent_spec("worker", mode: :block)}
       )
@@ -177,7 +177,7 @@ defmodule Tackle.Runtime.DelegationTest do
   test "max_agents_per_fleet is enforced under concurrent admission" do
     scope =
       start_scope(
-        root: [allow_recursion: true],
+        root: [allow_delegation: true],
         limits: Limits.new!(max_agents_per_fleet: 3, max_children_per_agent: 16),
         profiles: %{"worker" => agent_spec("worker", mode: :block)}
       )
