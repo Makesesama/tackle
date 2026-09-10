@@ -52,7 +52,7 @@ defmodule Tackle.Lib.UsageTest do
   end
 
   describe "prompt cache metrics" do
-    test "calculates prompt volume and the Pi-compatible cache hit rate" do
+    test "calculates prompt volume and its raw cached share" do
       usage = %Usage{
         input_tokens: 100,
         output_tokens: 10,
@@ -68,6 +68,61 @@ defmodule Tackle.Lib.UsageTest do
       assert Usage.cache_hit_rate(%Usage{input_tokens: 100}) == nil
       assert Usage.cache_hit_rate(%Usage{input_tokens: 100, cache_read_tokens: 0}) == 0.0
       assert Usage.cache_hit_rate(%Usage{cache_read_tokens: 0, cache_write_tokens: 0}) == nil
+    end
+
+    test "measures reuse against the preceding prompt rather than new content" do
+      usages = [
+        %Usage{input_tokens: 10, cache_read_tokens: 0},
+        %Usage{input_tokens: 10, cache_read_tokens: 10},
+        %Usage{input_tokens: 10, cache_read_tokens: 20}
+      ]
+
+      aggregate = Usage.aggregate(usages)
+      assert_in_delta Usage.cache_hit_rate(aggregate), 0.5, 0.000_001
+
+      assert Usage.cache_reuse(usages) == %{
+               reusable_tokens: 30,
+               reused_tokens: 30,
+               missed_tokens: 0,
+               rate: 1.0
+             }
+
+      assert Usage.cache_reuse_rate(usages) == 1.0
+    end
+
+    test "reports tokens from reusable prefixes that missed the cache" do
+      usages = [
+        %Usage{input_tokens: 100, cache_read_tokens: 0},
+        %Usage{input_tokens: 150, cache_read_tokens: 50},
+        %Usage{input_tokens: 50, cache_read_tokens: 200}
+      ]
+
+      assert Usage.cache_reuse(usages) == %{
+               reusable_tokens: 300,
+               reused_tokens: 250,
+               missed_tokens: 50,
+               rate: 250 / 300
+             }
+    end
+
+    test "requires consecutive prompt checkpoints with cache reporting" do
+      assert Usage.cache_reuse([]) == nil
+      assert Usage.cache_reuse([%Usage{input_tokens: 100}]) == nil
+
+      assert Usage.cache_reuse([
+               %Usage{input_tokens: 100},
+               %Usage{input_tokens: 100}
+             ]) == nil
+
+      assert Usage.cache_reuse([
+               %Usage{input_tokens: 100},
+               %Usage{input_tokens: 100, cache_read_tokens: 0}
+             ]) == %{
+               reusable_tokens: 100,
+               reused_tokens: 0,
+               missed_tokens: 100,
+               rate: 0.0
+             }
     end
 
     test "includes cache buckets when deriving a missing total" do

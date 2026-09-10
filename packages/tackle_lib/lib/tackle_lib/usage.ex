@@ -28,6 +28,13 @@ defmodule Tackle.Lib.Usage do
           optional(:estimated) => boolean()
         }
 
+  @type cache_reuse :: %{
+          reusable_tokens: non_neg_integer(),
+          reused_tokens: non_neg_integer(),
+          missed_tokens: non_neg_integer(),
+          rate: float()
+        }
+
   @type t :: %__MODULE__{
           input_tokens: token_count(),
           output_tokens: token_count(),
@@ -196,12 +203,14 @@ defmodule Tackle.Lib.Usage do
   end
 
   @doc """
-  Returns the token-weighted prompt cache hit rate as a ratio from `0.0` to `1.0`.
+  Returns the cached share of total prompt volume as a ratio from `0.0` to `1.0`.
 
-  The calculation matches Pi's cache-hit metric:
+  The calculation is:
   `cache_read_tokens / (input_tokens + cache_read_tokens + cache_write_tokens)`.
-  Returns `nil` when the provider did not report cache buckets or prompt usage is
-  empty, so unsupported cache reporting is not presented as a zero-percent hit.
+  This raw share includes cold-start and newly appended content; use
+  `cache_reuse_rate/1` to measure whether previously sent prompt tokens were
+  actually reused. Returns `nil` when the provider did not report cache buckets
+  or prompt usage is empty.
   """
   @spec cache_hit_rate(t() | map() | nil) :: float() | nil
   def cache_hit_rate(usage) do
@@ -222,6 +231,71 @@ defmodule Tackle.Lib.Usage do
   end
 
   @doc """
+  Measures how much of each preceding prompt was served from cache.
+
+  Unlike `cache_hit_rate/1`, which reports the cached share of all prompt
+  volume, this compares consecutive generation checkpoints. For each reported
+  checkpoint after the first, the reusable amount is the smaller of the
+  previous and current prompt volumes. Cache reads are capped at that amount,
+  then summed across the sequence.
+
+  This makes naturally new conversation content neutral. For example, prompts
+  of 10, 20, and 30 tokens can have a raw cache-hit rate of 50% while still
+  achieving 100% reuse of every preceding prompt.
+
+  Returns `nil` until at least one consecutive checkpoint reports cache
+  buckets and has reusable prompt volume. Callers must start a new sequence
+  after compaction or any other non-append-only context rewrite.
+  """
+  @spec cache_reuse([t() | map() | nil]) :: cache_reuse() | nil
+  def cache_reuse(usages) when is_list(usages) do
+    {_previous_prompt, reusable_tokens, reused_tokens} =
+      Enum.reduce(usages, {nil, 0, 0}, fn value, {previous_prompt, reusable, reused} ->
+        usage = normalize(value)
+        current_prompt = prompt_tokens(usage)
+
+        cond do
+          not is_integer(current_prompt) or current_prompt <= 0 ->
+            {nil, reusable, reused}
+
+          not is_integer(previous_prompt) ->
+            {current_prompt, reusable, reused}
+
+          not cache_buckets_reported?(usage) ->
+            {current_prompt, reusable, reused}
+
+          true ->
+            current_reusable = min(previous_prompt, current_prompt)
+            current_reused = min(usage.cache_read_tokens || 0, current_reusable)
+
+            {
+              current_prompt,
+              reusable + current_reusable,
+              reused + current_reused
+            }
+        end
+      end)
+
+    if reusable_tokens > 0 do
+      %{
+        reusable_tokens: reusable_tokens,
+        reused_tokens: reused_tokens,
+        missed_tokens: reusable_tokens - reused_tokens,
+        rate: reused_tokens / reusable_tokens
+      }
+    end
+  end
+
+  @doc "Returns the preceding-prompt cache reuse ratio for a usage sequence."
+  @spec cache_reuse_rate([t() | map() | nil]) :: float() | nil
+  def cache_reuse_rate(usages) when is_list(usages) do
+    case cache_reuse(usages) do
+      %{rate: rate} -> rate
+      nil -> nil
+    end
+  end
+
+  @doc """
   Converts a usage struct to a plain map without nil values.
   """
   @spec to_map(t() | nil) :: map() | nil
@@ -233,6 +307,12 @@ defmodule Tackle.Lib.Usage do
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
   end
+
+  defp cache_buckets_reported?(%__MODULE__{} = usage) do
+    is_integer(usage.cache_read_tokens) or is_integer(usage.cache_write_tokens)
+  end
+
+  defp cache_buckets_reported?(nil), do: false
 
   defp sum_token_field(usages, field) do
     usages

@@ -473,50 +473,47 @@ defmodule Tackle.CLI.TUITest do
 
   # -- metrics -------------------------------------------------------------
 
-  test "shows the latest Pi-compatible cache hit rate and cost in status", %{tui: tui} do
+  test "shows preceding-prompt cache reuse and cumulative cost in status", %{tui: tui} do
     inject_paste(tui, "go")
     inject_key(tui, "enter")
     assert_receive {:submitted, "go"}
 
     state = state(tui)
 
-    send(
-      tui,
-      {:tackle_event, state.session_id, "turn-1",
-       Event.usage(%{
-         input_tokens: 100,
-         output_tokens: 10,
-         cache_read_tokens: 50,
-         cache_write_tokens: 50,
-         cost: 0.84,
-         cost_estimated: true,
-         currency: "USD"
-       })}
-    )
+    first_usage = %{
+      input_tokens: 100,
+      output_tokens: 10,
+      cache_read_tokens: 0,
+      cost: 0.16,
+      cost_estimated: true,
+      currency: "USD"
+    }
+
+    second_usage = %{
+      input_tokens: 100,
+      output_tokens: 10,
+      cache_read_tokens: 100,
+      cost: 0.84,
+      cost_estimated: true,
+      currency: "USD"
+    }
+
+    send(tui, {:tackle_event, state.session_id, "turn-1", Event.usage(first_usage)})
+    send(tui, {:tackle_event, state.session_id, "turn-1", Event.usage(second_usage)})
 
     live_state = state(tui)
     live_status = status_text(live_state)
     assert live_status =~ "ctx 210/1k (21.0%)"
-    assert live_status =~ "in 100"
-    assert live_status =~ "out 10"
-    assert live_status =~ "CH25.0%"
-    assert live_status =~ "~$0.84"
+    assert live_status =~ "in 200"
+    assert live_status =~ "out 20"
+    assert live_status =~ "CH100.0%"
+    assert live_status =~ "~$1.00"
 
     agent_state = %{
       live_state.agent_state
       | messages: [
-          Message.assistant(
-            content: "done",
-            token_usage: %{
-              input_tokens: 100,
-              output_tokens: 10,
-              cache_read_tokens: 50,
-              cache_write_tokens: 50,
-              cost: 0.84,
-              cost_estimated: true,
-              currency: "USD"
-            }
-          )
+          Message.assistant(content: "tool call", token_usage: first_usage),
+          Message.assistant(content: "done", token_usage: second_usage)
         ],
         status: :completed
     }
@@ -525,10 +522,10 @@ defmodule Tackle.CLI.TUITest do
     settled_status = status_text(state(tui))
 
     assert settled_status =~ "ctx 210/1k (21.0%)"
-    assert settled_status =~ "in 100"
-    assert settled_status =~ "out 10"
-    assert settled_status =~ "CH25.0%"
-    assert settled_status =~ "~$0.84"
+    assert settled_status =~ "in 200"
+    assert settled_status =~ "out 20"
+    assert settled_status =~ "CH100.0%"
+    assert settled_status =~ "~$1.00"
   end
 
   test "omits context and token statistics when they are unavailable", %{tui: tui} do

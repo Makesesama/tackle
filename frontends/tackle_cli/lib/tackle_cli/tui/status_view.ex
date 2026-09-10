@@ -5,7 +5,7 @@ defmodule Tackle.CLI.TUI.StatusView do
   The status row reports honest turn state (`ready`, `thinking`, `running
   <tool>`, `cancelling`, `cancelled`, `failed`) followed by whatever usage
   metadata is actually available: context pressure, input/output tokens, cache
-  hit rate, and cost. Missing metadata is omitted rather than shown as zero, and
+  reuse rate, and cost. Missing metadata is omitted rather than shown as zero, and
   a `~` before the cost marks a price-card estimate instead of
   provider-reported billing.
 
@@ -18,7 +18,6 @@ defmodule Tackle.CLI.TUI.StatusView do
   alias Tackle.CLI.TUI.{Browser, Conversation, MessageView, Picker, State, Theme, Util}
   alias Tackle.Lib
   alias Tackle.Lib.{ContextUsage, Usage}
-  alias Tackle.Lib.State, as: AgentState
 
   @spinner_frames ~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 
@@ -230,18 +229,25 @@ defmodule Tackle.CLI.TUI.StatusView do
       context_indicator(displayed_context_usage(state)),
       token_indicator("in", usage.input_tokens),
       token_indicator("out", usage.output_tokens),
-      cache_hit_indicator(usage),
+      cache_hit_indicator(displayed_usage_checkpoints(state)),
       cost_indicator(usage)
     ]
     |> Enum.reject(&is_nil/1)
   end
 
   defp displayed_usage(state) do
-    settled = AgentState.usage(state.agent_state)
-
-    [settled, state.live_usage]
-    |> Enum.reject(&(is_nil(&1) or not usage_activity?(&1)))
+    state
+    |> displayed_usage_checkpoints()
     |> Usage.aggregate()
+  end
+
+  defp displayed_usage_checkpoints(state) do
+    settled =
+      state.agent_state.messages
+      |> Enum.map(&Usage.normalize(&1.token_usage))
+      |> Enum.reject(&(is_nil(&1) or not usage_activity?(&1)))
+
+    settled ++ state.live_usages
   end
 
   defp displayed_context_usage(%State{live_context_usage: %ContextUsage{} = context}), do: context
@@ -259,21 +265,15 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp token_indicator(_label, nil), do: nil
   defp token_indicator(label, tokens), do: "#{label} #{format_token_count(tokens)}"
 
-  defp cache_hit_indicator(%Usage{} = usage) do
-    with rate when is_float(rate) <- Usage.cache_hit_rate(usage),
-         true <- cache_activity?(usage) do
-      percentage = :erlang.float_to_binary(rate * 100, decimals: 1)
-      "CH#{percentage}%"
-    else
-      _unavailable -> nil
-    end
-  end
+  defp cache_hit_indicator(usages) do
+    case Usage.cache_reuse_rate(usages) do
+      rate when is_float(rate) ->
+        percentage = :erlang.float_to_binary(rate * 100, decimals: 1)
+        "CH#{percentage}%"
 
-  defp cache_activity?(%Usage{} = usage) do
-    Enum.any?(
-      [usage.cache_read_tokens, usage.cache_write_tokens],
-      &(is_integer(&1) and &1 > 0)
-    )
+      _unavailable ->
+        nil
+    end
   end
 
   defp cost_indicator(%Usage{cost: cost, currency: currency} = usage) when is_number(cost) do

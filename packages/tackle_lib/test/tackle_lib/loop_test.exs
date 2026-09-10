@@ -157,8 +157,8 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
-  # Captures the structured opts[:messages] array (the sole conversation
-  # transport) so tests can assert on the per-turn instruction it carries.
+  # Captures the structured opts[:messages] array so tests can assert that
+  # provider context contains only persisted conversation messages.
   defmodule MessagesCapturingAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -281,7 +281,6 @@ defmodule Tackle.Lib.LoopTest do
 
   setup do
     previous_llm = Application.get_env(:tackle_lib, :llm)
-    previous_instruction = Application.get_env(:tackle_lib, :instruction)
     Application.put_env(:tackle_lib, :llm, TestAdapter)
 
     on_exit(fn ->
@@ -290,41 +289,18 @@ defmodule Tackle.Lib.LoopTest do
       else
         Application.delete_env(:tackle_lib, :llm)
       end
-
-      if previous_instruction do
-        Application.put_env(:tackle_lib, :instruction, previous_instruction)
-      else
-        Application.delete_env(:tackle_lib, :instruction)
-      end
     end)
   end
 
-  test "uses configured loop instruction" do
+  test "sends only persisted messages to the provider" do
     Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
-
-    Application.put_env(:tackle_lib, :instruction,
-      without_tool_results: "CUSTOM no tools instruction",
-      with_tool_results: "CUSTOM tool results instruction"
-    )
-
     Process.put(:test_pid, self())
 
     state = State.new(model: "test/model")
 
     assert {:ok, _state} = Loop.run(state, "hello")
 
-    # The per-turn instruction rides as the trailing user message of the
-    # structured array — there is no flattened prompt string anymore.
-    assert_receive {:messages, messages}
-    assert is_list(messages)
-    instruction = List.last(messages)
-    assert instruction.role == :user
-    assert instruction.content =~ "CUSTOM no tools instruction"
-
-    refute Enum.any?(messages, fn m ->
-             is_binary(m[:content]) and
-               m.content =~ "Based on the conversation above, decide your next action."
-           end)
+    assert_receive {:messages, [%{role: :user, content: "hello"}]}
   end
 
   test "native protocol: plain content is treated as the final answer" do
@@ -384,16 +360,15 @@ defmodule Tackle.Lib.LoopTest do
 
     assert {:ok, _state} = Loop.run(state, "do the thing")
 
-    # First LLM call: a real array, not one user blob. The first entry is the
-    # user turn; the last entry is the per-turn instruction (also a user msg).
+    # The first request contains only the persisted user turn.
     assert_receive {:messages, first_messages}
-    assert is_list(first_messages)
-    assert Enum.any?(first_messages, &(&1.role == :user and &1.content == "do the thing"))
+    assert [%{role: :user, content: "do the thing"}] = first_messages
 
-    # Second LLM call: the array now carries the assistant tool-call turn and
-    # the tool result, linked by tool_call_id.
+    # The second request extends that exact prefix with the assistant tool call
+    # and linked result. No synthetic instruction is inserted between them.
     assert_receive {:messages, second_messages}
-    assert is_list(second_messages)
+    assert Enum.take(second_messages, length(first_messages)) == first_messages
+    assert length(second_messages) == 3
 
     assistant_call =
       Enum.find(second_messages, fn m ->

@@ -22,41 +22,16 @@ defmodule Tackle.Lib.Loop do
   Tool execution always uses provider-native tool calls. If a prompt renderer
   returns a response schema, it is used only for structured non-tool responses.
 
-  ## Instruction prompt
+  ## Append-only provider context
 
-  The short instruction appended after the conversation can be configured with
-  `:instruction` under `:tackle_lib` or the in-tree host fallback:
-
-      config :tackle_lib,
-        instruction: [
-          without_tool_results: "Decide whether to call tools or answer.",
-          with_tool_results: "Use the tool results to answer."
-        ]
-
-      config :my_app, Tackle.Lib,
-        instruction: fn has_tool_results ->
-          if has_tool_results, do: "Answer from the tool results.", else: "Continue."
-        end
-
-  A single string applies to both cases. A keyword list or map may provide
-  `:without_tool_results` and/or `:with_tool_results`; omitted keys fall back to
-  Tackle.Lib's defaults.
+  Each generation receives the persisted user, assistant, and tool messages
+  without a synthetic per-step message. Loop-wide guidance belongs in the
+  stable system prompt so provider prompt caches can reuse the complete
+  preceding request.
 
   """
 
   require Logger
-
-  @default_instruction_with_tool_results """
-  Based on the conversation and tool results above, provide your final answer to the user.
-  You now have the information you need - summarize and respond clearly.
-  Only call more tools if the results were insufficient or you need additional data.
-  """
-
-  @default_instruction_without_tool_results """
-  Based on the conversation above, decide your next action.
-  If you need information, call the appropriate tools.
-  If you already have enough information, answer the user directly.
-  """
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
@@ -209,18 +184,10 @@ defmodule Tackle.Lib.Loop do
     snapshot = snapshot(callbacks)
     system_prompt = snapshot.system_prompt
 
-    last_message = List.last(state.messages)
-    has_tool_results = last_message && last_message.role == :tool
-
-    instruction = instruction(has_tool_results)
-
-    # Structured message array (mature-harness shape): each turn is its own
-    # role-tagged map, assistant tool calls and tool results are linked by
-    # tool_call_id. The per-turn instruction rides as a trailing user message.
-    # This is the SOLE conversation transport — the loop never flattens history.
-    structured_messages =
-      Messages.to_provider(state.messages) ++
-        [%{role: :user, content: instruction}]
+    # Each persisted turn is its own role-tagged map. Assistant tool calls and
+    # tool results are linked by tool_call_id, and subsequent requests extend
+    # this array without injecting or replacing synthetic messages.
+    structured_messages = Messages.to_provider(state.messages)
 
     response_schema =
       SystemPrompt.response_schema(
@@ -278,53 +245,6 @@ defmodule Tackle.Lib.Loop do
     do: %{event | id: pending_id}
 
   defp stamp_pending_id(event, _pending_id), do: event
-
-  defp instruction(has_tool_results) do
-    configured_instruction()
-    |> resolve_instruction(has_tool_results)
-    |> ensure_instruction!()
-  end
-
-  defp configured_instruction do
-    Application.get_env(:tackle_lib, :instruction) ||
-      get_in(Application.get_env(:my_app, Tackle.Lib, []), [:instruction])
-  end
-
-  defp resolve_instruction(nil, true), do: @default_instruction_with_tool_results
-  defp resolve_instruction(nil, false), do: @default_instruction_without_tool_results
-
-  defp resolve_instruction(instruction, _has_tool_results) when is_binary(instruction) do
-    instruction
-  end
-
-  defp resolve_instruction(instruction, has_tool_results) when is_function(instruction, 1) do
-    instruction.(has_tool_results)
-  end
-
-  defp resolve_instruction(instructions, has_tool_results)
-       when is_list(instructions) or is_map(instructions) do
-    key = if has_tool_results, do: :with_tool_results, else: :without_tool_results
-    default = resolve_instruction(nil, has_tool_results)
-
-    get_instruction(instructions, key) || default
-  end
-
-  defp resolve_instruction(other, _has_tool_results), do: other
-
-  defp get_instruction(instructions, key) when is_list(instructions) do
-    Keyword.get(instructions, key)
-  end
-
-  defp get_instruction(instructions, key) when is_map(instructions) do
-    Map.get(instructions, key) || Map.get(instructions, Atom.to_string(key))
-  end
-
-  defp ensure_instruction!(instruction) when is_binary(instruction), do: instruction
-
-  defp ensure_instruction!(instruction) do
-    raise ArgumentError,
-          "Tackle.Lib instruction config must resolve to a string, got: #{inspect(instruction)}"
-  end
 
   defp handle_llm_response(state, response, callbacks, result) do
     thinking = get_string_field(response, "thinking")

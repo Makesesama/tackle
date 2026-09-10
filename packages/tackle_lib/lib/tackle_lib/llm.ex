@@ -56,9 +56,8 @@ defmodule Tackle.Lib.LLM do
   provider-neutral, role-tagged array (see `Tackle.Lib.Messages.to_provider/1`)
   where each conversation turn is its own map — `:user`, `:assistant` (with
   native `:tool_calls`), and `:tool` (linked by `:tool_call_id`). Adapters send
-  THIS array to the provider, preserving turn structure and enabling provider
-  prompt caching. The trailing per-turn instruction is the last `:user` entry
-  of the array.
+  THIS array to the provider, preserving turn structure and an append-only
+  prefix for provider prompt caching.
 
   When a run is cancellable, opts also
     include `:cancellation_signal`; adapters should observe it and abort

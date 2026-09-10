@@ -628,17 +628,10 @@ structured documentation differently for web prompts and MCP. ExampleHost render
 Markdown for its web agent and XML-oriented descriptions for MCP while sharing
 the same tool modules.
 
-The short trailing instruction used on each loop step can be configured as one
-string, a keyword/map with `:without_tool_results` and `:with_tool_results`, or a
-one-argument function:
-
-```elixir
-config :tackle_lib,
-  instruction: [
-    without_tool_results: "Call a tool if more facts are needed; otherwise answer.",
-    with_tool_results: "Answer from the results or call another tool if incomplete."
-  ]
-```
+The loop sends the persisted user, assistant, and tool messages without adding
+synthetic per-step messages. Provider context therefore remains append-only
+across tool calls. Put loop-wide behavioral guidance in the stable system prompt
+rather than at the end of each request.
 
 ## Snapshots and configuration stability
 
@@ -680,19 +673,26 @@ cache markers by default for its web agent.
 
 Each assistant generation may carry `%Tackle.Lib.Usage{}` with input, output,
 reasoning, cache-read, cache-write, total tokens, optional cost/currency, model,
-provider, and raw provider metadata. The input/cache buckets are disjoint;
-`Tackle.Lib.Usage.prompt_tokens/1` sums them and
-`Tackle.Lib.Usage.cache_hit_rate/1` returns the Pi-compatible token-weighted rate:
+provider, and raw provider metadata. The input/cache buckets are disjoint. `Tackle.Lib.Usage.prompt_tokens/1` sums
+them, while `Tackle.Lib.Usage.cache_hit_rate/1` returns the raw cached share of
+prompt volume:
 
 ```text
 cache_read_tokens / (input_tokens + cache_read_tokens + cache_write_tokens)
 ```
 
-The rate is `nil` when cache reporting is unavailable or prompt usage is empty.
-`Tackle.Lib.usage(state)` derives aggregate usage from assistant messages so a
-separate mutable total cannot drift. Cost aggregation is conservative: costs
-are summed only when every entry has numeric cost and currencies are compatible;
-an aggregate containing any estimate is itself estimated.
+That raw share includes cold-start and newly appended content. To measure cache
+quality, `Tackle.Lib.Usage.cache_reuse/1` compares each checkpoint with the
+preceding prompt and reports reusable, reused, and missed tokens plus the reuse
+rate. `cache_reuse_rate/1` returns only that ratio. Start a new sequence after
+compaction or another non-append-only context rewrite.
+
+The metrics return `nil` when their required cache reporting or prompt usage is
+unavailable. `Tackle.Lib.usage(state)` derives aggregate usage from assistant
+messages so a separate mutable total cannot drift. Cost aggregation is
+conservative: costs are summed only when every entry has numeric cost and
+currencies are compatible; an aggregate containing any estimate is itself
+estimated.
 
 `Tackle.Lib.context_usage(state)` uses the latest non-zero assistant usage as a
 checkpoint, preferring provider `total_tokens` and otherwise summing input,

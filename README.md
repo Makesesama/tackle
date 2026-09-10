@@ -78,7 +78,7 @@ This repository is a starting point, not a finished CLI:
   as a distribution dependency, configures it as an available harness adapter,
   and relies on the root harness for credentials, sessions, and turn execution.
   Its footer reports current context pressure plus aggregate input/output,
-  prompt-cache hit rate, and cost when the selected adapter exposes them.
+  preceding-prompt cache reuse, and cost when the selected adapter exposes them.
 - Extension project loading and Burrito packaging are still planned work.
 
 The root harness owns OTP application `:tackle` and namespace `Tackle`. The

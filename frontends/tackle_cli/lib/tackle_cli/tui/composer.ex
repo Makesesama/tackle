@@ -86,6 +86,7 @@ defmodule Tackle.CLI.TUI.Composer do
             streaming_thinking: "",
             streaming_response: "",
             live_usage: nil,
+            live_usages: [],
             live_context_usage: nil,
             tool_activity: [],
             activity: "starting",

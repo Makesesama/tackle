@@ -176,17 +176,24 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         {:tackle_event, session_id, turn_id, %Event{type: :usage, data: %{usage: usage} = data}},
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
-    latest_usage = Usage.normalize(usage) || state.latest_usage
+    normalized_usage = Usage.normalize(usage)
+    latest_usage = normalized_usage || state.latest_usage
 
     live_context_usage =
       Map.get(data, :context_usage) ||
         ContextUsage.from_usage(latest_usage, State.model_info(state.agent_state))
+
+    live_usages =
+      if normalized_usage,
+        do: state.live_usages ++ [normalized_usage],
+        else: state.live_usages
 
     {:noreply,
      %{
        state
        | latest_usage: latest_usage,
          live_usage: latest_usage,
+         live_usages: live_usages,
          live_context_usage: live_context_usage
      }}
   end
@@ -257,6 +264,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         deferred_events: [],
         latest_usage: State.latest_usage(agent_state) || state.latest_usage,
         live_usage: nil,
+        live_usages: [],
         live_context_usage: nil,
         tool_activity: [],
         activity: nil,
@@ -282,6 +290,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         pending_operation: nil,
         deferred_events: [],
         live_usage: nil,
+        live_usages: [],
         live_context_usage: nil,
         tool_activity: [],
         activity: nil,
@@ -301,6 +310,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       | agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
         live_usage: nil,
+        live_usages: [],
         live_context_usage: nil,
         overlay: nil,
         error: nil
