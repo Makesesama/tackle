@@ -30,15 +30,24 @@ defmodule Tackle.Session.Loader do
   @spec load(Projection.t(), Config.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def load(%Projection{} = projection, %Config{} = config, opts \\ []) do
     with {:ok, resolved, changed?} <- resolve_config(projection, config, opts),
-         {:ok, messages} <- decode_messages(projection.messages) do
+         {:ok, messages} <- decode_messages(projection.messages),
+         {:ok, model_messages} <- decode_model_messages(projection, messages) do
       state =
         resolved
         |> Config.to_agent_state(credential_store: Keyword.get(opts, :credential_store))
-        |> install(projection.session_id, messages)
+        |> install(projection.session_id, messages, model_messages)
 
       {:ok, %{state: state, configuration_changed?: changed?}}
     end
   end
+
+  # Older journals precede the model-surface projection. An empty projection is
+  # the mirror-the-transcript default, so replaying them yields the full history
+  # as the provider-visible array.
+  defp decode_model_messages(%Projection{model_messages: []}, messages), do: {:ok, messages}
+
+  defp decode_model_messages(%Projection{model_messages: model_messages}, _messages),
+    do: decode_messages(model_messages)
 
   @doc """
   Resolves the effective configuration for a recorded session.
@@ -87,16 +96,18 @@ defmodule Tackle.Session.Loader do
     end
   end
 
-  defp install(%AgentState{} = state, session_id, messages) do
+  defp install(%AgentState{} = state, session_id, messages, model_messages) do
     %{
       state
       | session_id: session_id,
         messages: messages,
+        model_messages: model_messages,
         current_iteration: 0,
         status: :idle,
         error: nil,
         snapshot: nil,
-        pending_assistant_id: nil
+        pending_assistant_id: nil,
+        overflow_retries: 0
     }
   end
 end

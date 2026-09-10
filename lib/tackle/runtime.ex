@@ -150,6 +150,23 @@ defmodule Tackle.Runtime do
   end
 
   @doc """
+  Runs one manual compaction of an idle agent's model surface.
+
+  Returns the post-compaction snapshot and the durable compaction record.
+  Rejected during an active turn or while an interrupted turn awaits recovery.
+  """
+  @spec compact(AgentRef.t(), keyword()) ::
+          {:ok, Tackle.Session.Snapshot.t(), Tackle.Lib.Compaction.Record.t()}
+          | {:error, term()}
+  def compact(agent_ref, opts \\ [])
+
+  def compact(%AgentRef{} = agent_ref, opts) when is_list(opts) do
+    with_session(agent_ref, &Session.compact(&1, opts))
+  end
+
+  def compact(%AgentRef{}, opts), do: {:error, {:invalid_compact_options, opts}}
+
+  @doc """
   Requests one delegated run from an agent or workflow requester.
 
   `spec_or_profile` is either an allowlisted profile name (the model-visible

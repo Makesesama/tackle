@@ -34,6 +34,8 @@ defmodule Tackle.Lib.Loop do
   require Logger
 
   alias Tackle.Lib.Cancellation
+  alias Tackle.Lib.Compaction
+  alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.Hook
   alias Tackle.Lib.JSON
@@ -65,7 +67,7 @@ defmodule Tackle.Lib.Loop do
     callbacks = callbacks(opts)
     snapshot = Snapshot.capture(state)
     callbacks = Map.put(callbacks, :snapshot, snapshot)
-    state = %{state | pending_assistant_id: nil, snapshot: snapshot}
+    state = %{state | pending_assistant_id: nil, snapshot: snapshot, overflow_retries: 0}
 
     emit(callbacks, Event.new(:turn_start, %{session_id: state.session_id}))
 
@@ -104,7 +106,8 @@ defmodule Tackle.Lib.Loop do
         status: :idle,
         error: nil,
         pending_assistant_id: nil,
-        snapshot: snapshot
+        snapshot: snapshot,
+        overflow_retries: 0
     }
 
     loop(state, callbacks)
@@ -132,15 +135,27 @@ defmodule Tackle.Lib.Loop do
 
         emit(callbacks, Event.new(:step_start, %{iteration: state.current_iteration}))
 
-        case invoke_before_prompt(state, callbacks) do
+        case maybe_auto_compact(state, callbacks) do
           {:ok, state} ->
-            state
-            |> call_llm(callbacks)
-            |> handle_llm_call_result(state, callbacks)
+            case invoke_before_prompt(state, callbacks) do
+              {:ok, state} ->
+                state
+                |> call_llm(callbacks)
+                |> handle_llm_call_result(state, callbacks)
+
+              {:error, reason} ->
+                final_state =
+                  State.set_error(state, "Hook aborted before prompt: #{inspect(reason)}")
+
+                {:error, do_after_turn_cleanup(final_state, callbacks)}
+            end
 
           {:error, reason} ->
-            final_state = State.set_error(state, "Hook aborted before prompt: #{inspect(reason)}")
+            final_state = State.set_error(state, "Compaction failed: #{inspect(reason)}")
             {:error, do_after_turn_cleanup(final_state, callbacks)}
+
+          {:cancelled, reason} ->
+            do_after_turn(state, cancel_run(%{state | error: reason}, callbacks), callbacks)
         end
     end
   end
@@ -163,21 +178,105 @@ defmodule Tackle.Lib.Loop do
   end
 
   defp handle_llm_call_result({:error, reason}, state, callbacks) do
-    if cancelled?(callbacks) do
-      do_after_turn(clear_pending_assistant_id(state), cancel_run(state, callbacks), callbacks)
-    else
-      Logger.error("LLM call failed: #{inspect(reason)}")
+    cond do
+      cancelled?(callbacks) ->
+        do_after_turn(clear_pending_assistant_id(state), cancel_run(state, callbacks), callbacks)
 
-      final_state =
-        State.set_error(
-          clear_pending_assistant_id(state),
-          "Failed to get response: #{inspect(reason)}"
+      recoverable_overflow?(state, reason, callbacks) ->
+        recover_overflow(state, reason, callbacks)
+
+      true ->
+        Logger.error("LLM call failed: #{inspect(reason)}")
+
+        final_state =
+          State.set_error(
+            clear_pending_assistant_id(state),
+            "Failed to get response: #{inspect(reason)}"
+          )
+
+        error_event = Event.new(:error, %{error: final_state.error, reason: reason})
+        emit(callbacks, error_event)
+        {:error, do_after_turn_cleanup(final_state, callbacks)}
+    end
+  end
+
+  # Provider-confirmed context overflow is distinct from proactive pressure. A
+  # single compact-and-retry is allowed per turn: bypass the normal threshold,
+  # compact once, and reissue the same request. Any compaction failure keeps the
+  # original provider error.
+  defp recover_overflow(state, reason, callbacks) do
+    Logger.warning("Provider reported context overflow; attempting one compaction retry")
+
+    emit(callbacks, Event.new(:compaction_retry, %{trigger: :overflow, reason: reason}))
+
+    case Compaction.compact(state, :overflow, compaction_opts(state, callbacks)) do
+      {:ok, state, _record} ->
+        state = %{state | overflow_retries: state.overflow_retries + 1}
+        state |> call_llm(callbacks) |> handle_llm_call_result(state, callbacks)
+
+      {:error, {:durable_commit_failed, _reason} = error} ->
+        final_state = State.set_error(clear_pending_assistant_id(state), inspect(error))
+        {:error, do_after_turn_cleanup(final_state, callbacks)}
+
+      {:cancelled, _reason} ->
+        do_after_turn(clear_pending_assistant_id(state), cancel_run(state, callbacks), callbacks)
+
+      {:error, _compaction_reason} ->
+        final_state =
+          State.set_error(
+            clear_pending_assistant_id(state),
+            "Failed to get response: #{inspect(reason)}"
+          )
+
+        emit(
+          callbacks,
+          Event.new(:error, %{error: final_state.error, reason: reason})
         )
 
-      error_event = Event.new(:error, %{error: final_state.error, reason: reason})
-      emit(callbacks, error_event)
-      {:error, do_after_turn_cleanup(final_state, callbacks)}
+        {:error, do_after_turn_cleanup(final_state, callbacks)}
     end
+  end
+
+  defp recoverable_overflow?(%State{} = state, reason, callbacks) do
+    LLM.context_window_exceeded?(reason) and overflow_retries_remaining?(state, callbacks)
+  end
+
+  defp overflow_retries_remaining?(%State{} = state, callbacks) do
+    case Compaction.resolve(state, snapshot: snapshot(callbacks)) do
+      {:ok, resolved, _info} -> state.overflow_retries < resolved.overflow_retry_limit
+      {:error, _reason} -> false
+    end
+  end
+
+  defp maybe_auto_compact(state, callbacks) do
+    with true <- Compaction.enabled?(state),
+         {:ok, resolved, info} <- Compaction.resolve(state, snapshot: snapshot(callbacks)),
+         true <- resolved.usable?,
+         %ContextUsage{tokens: tokens} <- ContextUsage.estimate(state, info),
+         true <- Compaction.Policy.pressure?(resolved, tokens) do
+      case Compaction.compact(state, :pressure, compaction_opts(state, callbacks)) do
+        {:ok, state, _record} ->
+          {:ok, state}
+
+        {:error, {:durable_commit_failed, _reason} = error} ->
+          {:error, error}
+
+        {:cancelled, reason} ->
+          {:cancelled, reason}
+
+        {:error, _reason} ->
+          # A summary/validation failure leaves the model surface unchanged; the
+          # request proceeds and may still fit. Only durability failures are fatal.
+          {:ok, state}
+      end
+    else
+      _skip -> {:ok, state}
+    end
+  end
+
+  defp compaction_opts(_state, callbacks) do
+    [snapshot: snapshot(callbacks), event_callback: callbacks.event]
+    |> maybe_put_cancellation_signal(callbacks.cancellation_signal)
   end
 
   defp call_llm(%State{} = state, callbacks) do
@@ -186,8 +285,9 @@ defmodule Tackle.Lib.Loop do
 
     # Each persisted turn is its own role-tagged map. Assistant tool calls and
     # tool results are linked by tool_call_id, and subsequent requests extend
-    # this array without injecting or replacing synthetic messages.
-    structured_messages = Messages.to_provider(state.messages)
+    # this array without injecting or replacing synthetic messages. Compaction
+    # may have replaced the array with a checkpoint plus a recent tail.
+    structured_messages = Messages.to_provider(State.model_messages(state))
 
     response_schema =
       SystemPrompt.response_schema(
@@ -267,7 +367,7 @@ defmodule Tackle.Lib.Loop do
       content && content != "" ->
         handle_content_response(state, callbacks, content, message_opts)
 
-      has_tool_results_in_recent_messages?(state.messages) &&
+      has_tool_results_in_recent_messages?(State.model_messages(state)) &&
           not State.max_iterations_reached?(state) ->
         Logger.warning("LLM failed to provide content after tool results, retrying...")
         loop(state, callbacks)

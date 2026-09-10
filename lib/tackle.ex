@@ -85,6 +85,19 @@ defmodule Tackle do
   @spec snapshot(AgentRef.t()) :: {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
   def snapshot(%AgentRef{} = agent_ref), do: Runtime.session_snapshot(agent_ref)
 
+  @doc """
+  Runs one manual compaction of an idle agent's model-visible context.
+
+  The canonical transcript is preserved; only the provider-visible projection
+  becomes a synthetic checkpoint plus a verbatim recent tail, committed durably
+  before the in-memory replacement is installed. Returns the post-compaction
+  snapshot and the durable `Tackle.Lib.Compaction.Record`.
+  """
+  @spec compact(AgentRef.t(), keyword()) ::
+          {:ok, Tackle.Session.Snapshot.t(), Tackle.Lib.Compaction.Record.t()}
+          | {:error, term()}
+  def compact(%AgentRef{} = agent_ref, opts \\ []), do: Runtime.compact(agent_ref, opts)
+
   @doc "Subscribes the caller to correlated session events and terminal outcomes."
   @spec subscribe(AgentRef.t()) :: {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
   def subscribe(%AgentRef{} = agent_ref), do: Runtime.subscribe(agent_ref)

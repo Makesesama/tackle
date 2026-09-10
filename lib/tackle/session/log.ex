@@ -28,6 +28,7 @@ defmodule Tackle.Session.Log do
     "session.forked" => 1,
     "turn.started" => 1,
     "message.appended" => 1,
+    "context.compacted" => 1,
     "tool.execution_started" => 1,
     "turn.completed" => 1,
     "turn.errored" => 1,

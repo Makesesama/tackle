@@ -8,6 +8,7 @@ defmodule Tackle.Config do
   """
 
   alias Tackle.Config.File, as: ConfigFile
+  alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
@@ -47,7 +48,8 @@ defmodule Tackle.Config do
     :prompt_renderer,
     :prompt_renderer_opts,
     :id_generator,
-    :llm_stream
+    :llm_stream,
+    :compaction
   ]
 
   @enforce_keys [:adapters, :model_ref, :llm]
@@ -64,7 +66,8 @@ defmodule Tackle.Config do
             prompt_renderer: nil,
             prompt_renderer_opts: [],
             id_generator: &ID.uuid4/0,
-            llm_stream: false
+            llm_stream: false,
+            compaction: nil
 
   @type t :: %__MODULE__{
           adapters: [module()],
@@ -80,7 +83,8 @@ defmodule Tackle.Config do
           prompt_renderer: module() | nil,
           prompt_renderer_opts: keyword(),
           id_generator: ID.generator(),
-          llm_stream: boolean()
+          llm_stream: boolean(),
+          compaction: CompactionConfig.t() | nil
         }
 
   @doc """
@@ -147,7 +151,8 @@ defmodule Tackle.Config do
            ),
          :ok <- validate_prompt_renderer(Keyword.get(opts, :prompt_renderer)),
          :ok <- validate_id_generator(Keyword.get(opts, :id_generator, &ID.uuid4/0)),
-         :ok <- validate_boolean(:llm_stream, Keyword.get(opts, :llm_stream, false)) do
+         :ok <- validate_boolean(:llm_stream, Keyword.get(opts, :llm_stream, false)),
+         {:ok, compaction} <- resolve_compaction(Keyword.get(opts, :compaction)) do
       {:ok,
        %__MODULE__{
          adapters: adapters,
@@ -164,7 +169,8 @@ defmodule Tackle.Config do
          prompt_renderer: Keyword.get(opts, :prompt_renderer),
          prompt_renderer_opts: Keyword.get(opts, :prompt_renderer_opts, []),
          id_generator: Keyword.get(opts, :id_generator, &ID.uuid4/0),
-         llm_stream: Keyword.get(opts, :llm_stream, false)
+         llm_stream: Keyword.get(opts, :llm_stream, false),
+         compaction: compaction
        }}
     end
   end
@@ -205,7 +211,8 @@ defmodule Tackle.Config do
       llm_opts: llm_opts,
       prompt_renderer: config.prompt_renderer,
       prompt_renderer_opts: config.prompt_renderer_opts,
-      id_generator: config.id_generator
+      id_generator: config.id_generator,
+      compaction: config.compaction
     )
   end
 
@@ -442,6 +449,15 @@ defmodule Tackle.Config do
       {:error, {:invalid_prompt_renderer, renderer}}
     end
   end
+
+  # Compaction is enabled by default in the root harness; the trigger policy is
+  # inert for models whose declared window cannot hold the reserves (see
+  # `Tackle.Lib.Compaction.Policy`). Pass `compaction: false` to disable it.
+  defp resolve_compaction(nil), do: CompactionConfig.new([])
+  defp resolve_compaction(%CompactionConfig{} = config), do: CompactionConfig.new(config)
+  defp resolve_compaction(false), do: CompactionConfig.new(false)
+  defp resolve_compaction(opts) when is_list(opts), do: CompactionConfig.new(opts)
+  defp resolve_compaction(other), do: {:error, {:invalid_option, :compaction, other}}
 
   defp validate_optional_string(_name, nil), do: :ok
   defp validate_optional_string(_name, value) when is_binary(value), do: :ok

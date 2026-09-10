@@ -258,7 +258,42 @@ defmodule Tackle.Plugins.Codex do
   end
 
   defp response_result(%{status: status, body: body}, _model, _schema, _event_callback) do
-    {:error, {:http_error, status, HTTP.error_body(body)}}
+    error_body = HTTP.error_body(body)
+
+    case classify_overflow(status, error_body) do
+      :context_window_exceeded -> {:error, :context_window_exceeded}
+      :other -> {:error, {:http_error, status, error_body}}
+    end
+  end
+
+  # Only wire errors that unambiguously name a context/token limit are treated
+  # as overflow, so the harness can run exactly one compact-and-retry. Generic
+  # 4xx/5xx, rate limits, and transport failures stay unclassified.
+  @overflow_markers [
+    "context_length_exceeded",
+    "context_window_exceeded",
+    "maximum context length",
+    "exceeds the context window",
+    "too many tokens",
+    "input is too long",
+    "reduce the length of the messages"
+  ]
+
+  defp classify_overflow(status, error_body) when status in [400, 413, 422] do
+    if overflow_message?(error_body), do: :context_window_exceeded, else: :other
+  end
+
+  defp classify_overflow(_status, _error_body), do: :other
+
+  defp overflow_message?(error_body) do
+    text =
+      case error_body do
+        body when is_binary(body) -> body
+        body -> inspect(body, limit: 20, printable_limit: 4_096)
+      end
+
+    downcased = String.downcase(text)
+    Enum.any?(@overflow_markers, &String.contains?(downcased, &1))
   end
 
   defp build_request_body(schema, opts) do

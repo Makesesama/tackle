@@ -328,6 +328,7 @@ session.recovered
 session.closed
 turn.started
 message.appended
+context.compacted
 tool.execution_started
 turn.completed
 turn.errored
@@ -352,6 +353,34 @@ A durable message projection includes the relevant fields from `Tackle.Lib.Messa
 - validated provider continuation state.
 
 Tool definitions, prompt renderers, adapters, and hook modules are not stored as executable terms. Audit events may store model references, tool names, and prompt/tool version hashes.
+
+### 7.5 `context.compacted`
+
+`context.compacted` is version 1 and records one durable compaction of the
+provider-visible model surface. It never rewrites the append-only transcript; it
+only says which synthetic checkpoint now leads the model projection and which
+transcript ids it shadows:
+
+```text
+compaction_id              # also the synthetic checkpoint message id
+trigger                    # pressure | overflow | manual
+summary_message            # the encoded synthetic checkpoint message
+shadowed_message_ids       # provenance, in transcript order
+first_retained_message_id  # nil when no tail exists
+previous_compaction_id     # optional audit chain link
+tokens_before
+estimated_tokens_after
+summary_usage              # auxiliary summarizer usage
+summary_model
+created_at
+details                    # bounded plain-data extension field
+```
+
+The event is committed and synced before the in-memory replacement is installed.
+Replay folds `message.appended` into both `Projection.messages` (the canonical
+transcript) and `Projection.model_messages` (the provider surface), while
+`context.compacted` replaces only the model-surface prefix with the checkpoint.
+Search, previews, and message counts continue to read the transcript.
 
 ## 8. Turn persistence protocol
 
@@ -454,6 +483,26 @@ There is no initial user-configurable buffered durability mode. Agent provider a
 
 The implementation must propagate full-disk, permission, device, sync, and log-process failures. It must never suppress them to preserve apparent agent progress.
 
+### 9.1 Compaction durability barrier
+
+Checkpoint compaction is the one session operation that changes the
+provider-visible projection rather than appending to it. It preserves the same
+fail-closed contract:
+
+1. `Tackle.Lib.Compaction` selects and snapshots a balanced plan without mutation;
+2. it generates and strictly validates the summary (non-empty, complete, no tool
+   calls, strictly smaller than the shadowed region);
+3. it commits one `context.compacted` event through `Tackle.Session.Compaction`,
+   which resolves the live journal by session id and syncs the commit;
+4. only after a successful commit does it install the replacement in
+   `State.model_messages`.
+
+A summarizer, validation, or commit failure leaves the model context unchanged. A
+commit failure is returned as `{:error, {:durable_commit_failed, reason}}` so the
+loop fails the turn instead of continuing with an unpersisted checkpoint. The
+canonical transcript is never compacted, so history remains append-only,
+inspectable, searchable, and forkable.
+
 ## 10. Loading, replay, and runtime reconstruction
 
 ### 10.1 Replay
@@ -523,7 +572,9 @@ Runtime reconstruction then:
 2. resolves the recorded model/profile or an explicit user override;
 3. creates a fresh `%Tackle.Lib.State{}`;
 4. replaces its generated session ID with the durable session ID;
-5. installs validated durable messages in order;
+5. installs validated durable messages in order (both the complete transcript in
+   `State.messages` and the replayed provider projection in
+   `State.model_messages`);
 6. resets runtime status, error, pending assistant state, snapshot, hooks, tools, registries, and context appropriately;
 7. attaches fresh runtime handles and cancellation state; and
 8. records a durable configuration change if the user selected a different model or profile.

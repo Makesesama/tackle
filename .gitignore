@@ -7,6 +7,14 @@
 # The directory Mix downloads your dependencies sources to.
 /deps/
 
+# Package-local build output and dependencies for the separate Mix projects.
+/packages/*/_build/
+/packages/*/deps/
+/plugins/*/_build/
+/plugins/*/deps/
+/frontends/*/_build/
+/frontends/*/deps/
+
 # Where third-party dependencies like ExDoc output generated docs.
 /doc/
 

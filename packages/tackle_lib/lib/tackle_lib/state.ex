@@ -10,6 +10,7 @@ defmodule Tackle.Lib.State do
   models exist.
   """
 
+  alias Tackle.Lib.Compaction
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
@@ -23,6 +24,7 @@ defmodule Tackle.Lib.State do
   @type t :: %__MODULE__{
           session_id: String.t(),
           messages: [Message.t()],
+          model_messages: [Message.t()] | nil,
           current_iteration: non_neg_integer(),
           max_iterations: iteration_limit(),
           status: status(),
@@ -40,13 +42,17 @@ defmodule Tackle.Lib.State do
           hooks: [module()],
           snapshot: Tackle.Lib.Snapshot.t() | nil,
           error: String.t() | nil,
-          pending_assistant_id: String.t() | nil
+          pending_assistant_id: String.t() | nil,
+          compaction: Compaction.Config.t() | nil,
+          last_compaction_id: String.t() | nil,
+          overflow_retries: non_neg_integer()
         }
 
   @default_max_iterations :infinity
 
   defstruct session_id: nil,
             messages: [],
+            model_messages: nil,
             current_iteration: 0,
             max_iterations: @default_max_iterations,
             status: :idle,
@@ -64,7 +70,10 @@ defmodule Tackle.Lib.State do
             hooks: [],
             snapshot: nil,
             error: nil,
-            pending_assistant_id: nil
+            pending_assistant_id: nil,
+            compaction: nil,
+            last_compaction_id: nil,
+            overflow_retries: 0
 
   @doc """
   Creates a new agent state with the given options.
@@ -82,6 +91,8 @@ defmodule Tackle.Lib.State do
     * `:llm_opts` - Extra options passed through to the LLM adapter
     * `:hooks` - List of Tackle.Lib.Hook modules for lifecycle callbacks (default: [])
     * `:id_generator` - Zero-arity function used for generated ids
+    * `:compaction` - `Tackle.Lib.Compaction.Config`, options, `false`, or `nil`
+      (default: `nil`, compaction disabled)
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
@@ -111,8 +122,30 @@ defmodule Tackle.Lib.State do
       hooks: Keyword.get(opts, :hooks, []),
       snapshot: nil,
       error: nil,
-      pending_assistant_id: nil
+      pending_assistant_id: nil,
+      compaction: normalize_compaction(Keyword.get(opts, :compaction))
     }
+  end
+
+  defp normalize_compaction(nil), do: nil
+
+  defp normalize_compaction(%Compaction.Config{} = config) do
+    case Compaction.Config.new(config) do
+      {:ok, config} -> config
+      {:error, reason} -> raise ArgumentError, "invalid :compaction config: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_compaction(opts) when is_list(opts) or is_boolean(opts) do
+    case Compaction.Config.new(opts) do
+      {:ok, config} -> config
+      {:error, reason} -> raise ArgumentError, "invalid :compaction config: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_compaction(other) do
+    raise ArgumentError,
+          "expected :compaction to be a config, options, false, or nil, got: #{inspect(other)}"
   end
 
   defp validate_llm_selection!(nil), do: nil
@@ -125,11 +158,32 @@ defmodule Tackle.Lib.State do
 
   @doc """
   Adds a message to the conversation history.
+
+  The canonical transcript always receives the message. The model projection is
+  kept in step: while it mirrors the transcript (`nil`) it stays mirrored, and
+  once compaction has replaced it the message is appended explicitly.
   """
   @spec add_message(t(), Message.t()) :: t()
   def add_message(%__MODULE__{} = state, %Message{} = message) do
-    %{state | messages: state.messages ++ [message]}
+    %{
+      state
+      | messages: state.messages ++ [message],
+        model_messages: append_model(state.model_messages, message)
+    }
   end
+
+  defp append_model(nil, _message), do: nil
+  defp append_model(model_messages, message), do: model_messages ++ [message]
+
+  @doc """
+  Returns the provider-visible model message projection.
+
+  `nil` means the projection mirrors the complete settled transcript; after a
+  compaction the projection is an explicit `[checkpoint | recent tail]` list.
+  """
+  @spec model_messages(t()) :: [Message.t()]
+  def model_messages(%__MODULE__{model_messages: nil, messages: messages}), do: messages
+  def model_messages(%__MODULE__{model_messages: model_messages}), do: model_messages
 
   @doc """
   Updates the agent status.

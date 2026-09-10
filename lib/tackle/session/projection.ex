@@ -23,6 +23,8 @@ defmodule Tackle.Session.Projection do
             model_ref: nil,
             thinking: nil,
             messages: [],
+            model_messages: [],
+            compactions: [],
             turns: %{},
             active_turn: nil,
             last_seq: 0,
@@ -45,6 +47,8 @@ defmodule Tackle.Session.Projection do
           model_ref: String.t() | nil,
           thinking: String.t() | nil,
           messages: [map()],
+          model_messages: [map()],
+          compactions: [map()],
           turns: %{optional(String.t()) => turn()},
           active_turn: turn() | nil,
           last_seq: non_neg_integer(),
@@ -118,6 +122,8 @@ defmodule Tackle.Session.Projection do
       model: projection.model_ref,
       tags: projection.tags,
       message_count: length(projection.messages),
+      model_message_count: length(projection.model_messages),
+      compaction_count: length(projection.compactions),
       preview: preview(projection),
       last_indexed_seq: projection.last_seq,
       parent_session_id: parent_session_id(projection)
@@ -240,8 +246,28 @@ defmodule Tackle.Session.Projection do
 
   defp apply_event(%{"type" => "message.appended", "data" => data}, projection) do
     message = Map.fetch!(data, "message")
-    projection = %{projection | messages: projection.messages ++ [message]}
+
+    projection = %{
+      projection
+      | messages: projection.messages ++ [message],
+        model_messages: projection.model_messages ++ [message]
+    }
+
     maybe_resolve_tool(projection, message)
+  end
+
+  # Compaction replaces only the model-visible projection. The canonical
+  # transcript (`messages`) is never touched, so history stays inspectable and
+  # searchable while the provider surface is a checkpoint plus a verbatim tail.
+  defp apply_event(%{"type" => "context.compacted", "data" => data}, projection) do
+    summary = Map.fetch!(data, "summary_message")
+    retained = retained_model_messages(projection.model_messages, data)
+
+    %{
+      projection
+      | model_messages: [summary | retained],
+        compactions: projection.compactions ++ [data]
+    }
   end
 
   defp apply_event(%{"type" => "tool.execution_started", "data" => data}, projection) do
@@ -275,6 +301,29 @@ defmodule Tackle.Session.Projection do
   end
 
   defp maybe_resolve_tool(projection, _message), do: projection
+
+  # The first retained id pins the tail exactly. If it is missing (for example a
+  # hand-written event), fall back to dropping the leading shadowed ids so replay
+  # still reconstructs a valid surface rather than failing a whole session.
+  defp retained_model_messages(model_messages, data) do
+    shadowed_ids = Map.get(data, "shadowed_message_ids", [])
+
+    case Map.get(data, "first_retained_message_id") do
+      nil ->
+        drop_shadowed(model_messages, shadowed_ids)
+
+      id when is_binary(id) ->
+        case Enum.find_index(model_messages, &(Map.get(&1, "id") == id)) do
+          nil -> drop_shadowed(model_messages, shadowed_ids)
+          index -> Enum.drop(model_messages, index)
+        end
+    end
+  end
+
+  defp drop_shadowed(messages, shadowed_ids) do
+    shadowed = MapSet.new(shadowed_ids)
+    Enum.drop_while(messages, &MapSet.member?(shadowed, Map.get(&1, "id")))
+  end
 
   defp settle_turn(projection, event, data) do
     turn_id = data["turn_id"] || event["turn_id"]

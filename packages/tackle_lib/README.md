@@ -669,6 +669,49 @@ state `:session_id` to every adapter so providers with cache-affinity keys can
 reuse the same cache route across steps and turns. ExampleHost enables explicit
 cache markers by default for its web agent.
 
+## Context compaction
+
+`Tackle.Lib.Compaction` replaces the **provider-visible projection** when a long
+session approaches the model's context window. It never touches the canonical
+transcript: `State.messages` stays complete, while `State.model_messages` becomes a
+synthetic checkpoint plus a verbatim recent tail.
+
+Compaction is opt-in. Supply a config when building state:
+
+```elixir
+state =
+  Tackle.Lib.new(
+    llm: selection,
+    compaction: [
+      summarizer: Tackle.Lib.Compaction.Summarizer.LLM,
+      committer: MyApp.CompactionCommitter,
+      policy: [safety_reserve: 4_096, retain_ratio: 0.16]
+    ]
+  )
+```
+
+Entry points share one transaction:
+
+- automatic `:pressure` compaction before every provider generation, at the
+  model's resolved threshold;
+- one `:overflow` compact-and-retry after a provider
+  `{:error, :context_window_exceeded}`; and
+- `Tackle.Lib.compact/2` for an idle, operator-requested compaction.
+
+A `Tackle.Lib.Compaction.Summarizer` only turns a request into text plus usage.
+The core owns balanced cut selection, strict validation (non-empty, complete, no
+tool calls, strictly smaller than the shadowed region), the durability commit, and
+the in-memory replacement. A `Tackle.Lib.Compaction.Committer` makes the record
+durable before replacement; a commit failure is reported as
+`{:error, {:durable_commit_failed, reason}}` so a host can fail closed.
+
+Lifecycle events `:compaction_start`, `:compaction_end`, and `:compaction_retry`
+carry trigger, before/after estimates, counts, duration, and summary model/usage.
+They never include raw prompts or summary content. `ContextUsage` reads the model
+projection, and retained assistant usage is stripped from it because it no longer
+describes the current request. Treat compaction as the start of a new prompt-cache
+reuse sequence.
+
 ## Usage and billing
 
 Each assistant generation may carry `%Tackle.Lib.Usage{}` with input, output,

@@ -134,6 +134,26 @@ defmodule Tackle.Lib.LLM do
   defdelegate select(adapters, model_ref), to: Selection, as: :resolve
 
   @doc """
+  Classifies a provider-neutral LLM error reason.
+
+  Adapters that can identify a context-window overflow should return
+  `{:error, :context_window_exceeded}` (or `{:error, {:context_window_exceeded,
+  details}}`) so the harness can run one compact-and-retry. Generic `4xx`/`5xx`,
+  transport, and authentication failures must stay unclassified; the harness must
+  never treat them as overflow.
+  """
+  @spec classify_error(term()) :: :context_window_exceeded | :unknown
+  def classify_error(reason) do
+    if context_window_exceeded?(reason), do: :context_window_exceeded, else: :unknown
+  end
+
+  @doc "Returns true when `reason` is a standardized context-overflow error."
+  @spec context_window_exceeded?(term()) :: boolean()
+  def context_window_exceeded?(:context_window_exceeded), do: true
+  def context_window_exceeded?({:context_window_exceeded, _details}), do: true
+  def context_window_exceeded?(_reason), do: false
+
+  @doc """
   Safely resolves and validates optional metadata for one adapter-local model.
 
   Adapters without `model_info/1` return `{:ok, nil}`. Callback failures and

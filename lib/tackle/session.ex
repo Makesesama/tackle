@@ -29,6 +29,7 @@ defmodule Tackle.Session do
   alias Tackle.Auth
   alias Tackle.Config
   alias Tackle.Lib.Cancellation
+  alias Tackle.Lib.Compaction
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.State, as: AgentState
@@ -156,6 +157,22 @@ defmodule Tackle.Session do
   def cancel(session), do: GenServer.call(session, :cancel)
 
   @doc """
+  Runs one manual compaction of the model surface while the session is idle.
+
+  Manual compaction shares the automatic transaction: plan, summarize, strictly
+  validate, commit durably, then install. It is rejected during an active turn
+  or while an interrupted turn requires an explicit recovery decision.
+
+  `opts` may carry `:instructions` to add operator focus; it never removes the
+  default summary invariants.
+  """
+  @spec compact(GenServer.server(), keyword()) ::
+          {:ok, Snapshot.t(), Tackle.Lib.Compaction.Record.t()}
+          | {:error, term()}
+  def compact(session, opts \\ []) when is_list(opts),
+    do: GenServer.call(session, {:compact, opts}, :infinity)
+
+  @doc """
   Explicitly abandons an interrupted turn so durable resume can continue.
 
   A resumed session whose journal ends with `turn.started` and no terminal
@@ -251,6 +268,40 @@ defmodule Tackle.Session do
          }) do
       :ok -> {:reply, :ok, %{state | recovery: nil}}
       {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:compact, _opts}, _from, %{active_turn: active_turn} = state)
+      when not is_nil(active_turn) do
+    {:reply, {:error, :turn_in_progress}, state}
+  end
+
+  def handle_call({:compact, _opts}, _from, %{recovery: recovery} = state)
+      when not is_nil(recovery) do
+    {:reply, {:error, {:recovery_required, recovery}}, state}
+  end
+
+  def handle_call({:compact, opts}, _from, state) do
+    session_id = state.agent_state.session_id
+    event_callback = fn event -> broadcast(state, {:tackle_compaction, session_id, event}) end
+
+    compaction_opts =
+      opts
+      |> Keyword.take([:instructions])
+      |> Keyword.put(:event_callback, event_callback)
+
+    case Compaction.compact(state.agent_state, :manual, compaction_opts) do
+      {:ok, agent_state, record} ->
+        state = %{state | agent_state: agent_state}
+        snapshot = build_snapshot(state)
+        broadcast(state, {:tackle_session_compacted, session_id, snapshot, record})
+        {:reply, {:ok, snapshot, record}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+
+      {:cancelled, reason} ->
+        {:reply, {:error, {:cancelled, reason}}, state}
     end
   end
 
@@ -595,9 +646,19 @@ defmodule Tackle.Session do
         loaded.state
         |> put_runtime_context(scope_ref, agent_ref, opts)
         |> install_persistence_hook()
+        |> install_compaction_committer()
 
       {:ok, agent_state, journal, recovery_for(projection)}
     end
+  end
+
+  defp install_compaction_committer(%AgentState{compaction: nil} = state), do: state
+
+  defp install_compaction_committer(%AgentState{} = state) do
+    # Durable sessions commit the compaction record through the journal before
+    # the library installs the replacement in memory.
+    config = Compaction.Config.put_committer(state.compaction, Tackle.Session.Compaction)
+    %{state | compaction: config}
   end
 
   defp install_persistence_hook(%AgentState{} = state) do

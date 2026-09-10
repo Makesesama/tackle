@@ -676,6 +676,28 @@ defmodule Tackle.Plugins.CodexTest do
              Codex.generate(nil, base_opts(store, fn _options -> flunk("unexpected request") end))
   end
 
+  test "classifies a wire context overflow as a provider-neutral error", %{store: store} do
+    body =
+      JSON.encode!(%{
+        "error" => %{
+          "type" => "invalid_request_error",
+          "code" => "context_length_exceeded",
+          "message" => "Your input exceeds the context window of this model."
+        }
+      })
+
+    request = fn _options -> {:ok, %Req.Response{status: 400, body: body}} end
+
+    assert {:error, :context_window_exceeded} = Codex.generate(nil, base_opts(store, request))
+  end
+
+  test "does not classify generic 4xx errors as overflow", %{store: store} do
+    request = fn _options -> {:ok, %Req.Response{status: 400, body: "bad request"}} end
+
+    assert {:error, {:http_error, 400, "bad request"}} =
+             Codex.generate(nil, base_opts(store, request))
+  end
+
   defp base_opts(store, request) do
     [
       model: "gpt-5.5",

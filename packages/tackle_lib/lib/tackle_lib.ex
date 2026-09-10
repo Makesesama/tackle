@@ -17,6 +17,10 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.Hook` — typed lifecycle hooks (before_prompt, after_prompt,
       before_tool_call, after_tool_call, after_turn).
     * `Tackle.Lib.Message` — conversation message value struct.
+    * `Tackle.Lib.Message` — conversation message value struct.
+    * `Tackle.Lib.Compaction` — checkpoint compaction of the provider-visible
+      model projection, with pluggable summarizers and an optional durability
+      committer.
     * `Tackle.Lib.Tool` — the tool behaviour the loop calls.
     * `Tackle.Lib.Tool.Schema` — provider-neutral tool argument validation/coercion.
     * `Tackle.Lib.JSON` — configurable JSON behaviour with a built-in default adapter.
@@ -24,7 +28,7 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.SystemPrompt` — response-format contract + tool-doc assembly.
     * `Tackle.Lib.Usage` — normalized token/cost metadata for LLM steps.
     * `Tackle.Lib.ModelInfo` — adapter-owned model limits and price cards.
-    * `Tackle.Lib.ContextUsage` — current context-window pressure calculations.
+    * `Tackle.Lib.ContextUsage` — context-window pressure and token estimates.
     * `Tackle.Lib.Event` — provider-independent run/message/tool/usage events.
     * `Tackle.Lib.LLM` — the provider-agnostic LLM behaviour and explicit
       adapter/model selection (the keystone seam).
@@ -61,6 +65,7 @@ defmodule Tackle.Lib do
       Tackle.Lib.last_answer(state)
   """
 
+  alias Tackle.Lib.Compaction
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
@@ -106,6 +111,29 @@ defmodule Tackle.Lib do
   """
   @spec messages(State.t()) :: [Message.t()]
   def messages(%State{messages: messages}), do: messages
+
+  @doc """
+  Returns the provider-visible model message projection.
+
+  Before compaction this mirrors `messages/1`; after compaction it is a
+  synthetic checkpoint followed by a verbatim recent tail. The canonical
+  transcript is never modified by compaction.
+  """
+  @spec model_messages(State.t()) :: [Message.t()]
+  defdelegate model_messages(state), to: State
+
+  @doc """
+  Runs one manual (idle) compaction of the model projection.
+
+  Manual compaction bypasses the automatic pressure threshold but otherwise
+  shares the exact transaction, validation, and durability rules. Returns the
+  updated state and the durable `Tackle.Lib.Compaction.Record`.
+  """
+  @spec compact(State.t(), keyword()) ::
+          {:ok, State.t(), Tackle.Lib.Compaction.Record.t()}
+          | {:error, term()}
+          | {:cancelled, term()}
+  def compact(%State{} = state, opts \\ []), do: Compaction.compact(state, :manual, opts)
 
   @doc """
   Derives aggregate token/cost usage for the current run/session.

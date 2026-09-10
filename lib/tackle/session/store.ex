@@ -35,6 +35,8 @@ defmodule Tackle.Session.Store do
          parent: projection.parent,
          metadata: Projection.metadata(projection),
          messages: projection.messages,
+         model_messages: projection.model_messages,
+         compactions: projection.compactions,
          uncertain_tools: Projection.uncertain_tools(projection)
        }}
     end

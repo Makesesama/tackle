@@ -108,6 +108,17 @@ defmodule Tackle.Session.Journal do
   @spec tool_started(GenServer.server(), map()) :: :ok | {:error, term()}
   def tool_started(journal, call), do: call(journal, {:tool_started, call})
 
+  @doc """
+  Persists one durable compaction replacement.
+
+  The event data replaces the model-surface prefix with `summary_message` while
+  the canonical transcript is untouched. The commit is appended to the active
+  turn when one exists and synced before the caller installs the in-memory
+  replacement.
+  """
+  @spec context_compacted(GenServer.server(), map()) :: :ok | {:error, term()}
+  def context_compacted(journal, data), do: call(journal, {:context_compacted, data})
+
   @doc "Settles the active turn with a terminal event."
   @spec settle_turn(GenServer.server(), atom(), map()) :: :ok | {:error, term()}
   def settle_turn(journal, type, data \\ %{}), do: call(journal, {:settle_turn, type, data})
@@ -162,6 +173,12 @@ defmodule Tackle.Session.Journal do
   @spec persist_tool_started(String.t(), map()) :: :ok | {:error, term()}
   def persist_tool_started(session_id, call) do
     with_journal(session_id, &tool_started(&1, call))
+  end
+
+  @doc "Persistence-hook entry point: persists a compaction replacement by session id."
+  @spec persist_compaction(String.t(), map()) :: :ok | {:error, term()}
+  def persist_compaction(session_id, data) do
+    with_journal(session_id, &context_compacted(&1, data))
   end
 
   @impl true
@@ -265,6 +282,19 @@ defmodule Tackle.Session.Journal do
           {:error, reason} ->
             fail(state, reason)
         end
+    end
+  end
+
+  def handle_call({:context_compacted, _data}, _from, %{materialized?: false} = state) do
+    {:reply, {:error, :no_journal}, state}
+  end
+
+  def handle_call({:context_compacted, data}, _from, state) do
+    event = Log.event("context.compacted", data)
+
+    case commit(state, [event], state_active_turn_id(state)) do
+      {:ok, state, _seq} -> {:reply, :ok, state}
+      {:error, reason} -> fail(state, reason)
     end
   end
 

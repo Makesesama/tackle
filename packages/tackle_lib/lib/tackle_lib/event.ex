@@ -30,6 +30,9 @@ defmodule Tackle.Lib.Event do
           | :status_change
           | :error
           | :provider_event
+          | :compaction_start
+          | :compaction_end
+          | :compaction_retry
 
   @type t :: %__MODULE__{
           type: type(),
