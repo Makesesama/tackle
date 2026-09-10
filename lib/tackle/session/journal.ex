@@ -24,6 +24,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Session.Projection
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
+  alias Tackle.Thinking
 
   @registry Tackle.Session.JournalRegistry
   @call_timeout 60_000
@@ -33,12 +34,14 @@ defmodule Tackle.Session.Journal do
   @type state :: %{
           session_id: String.t(),
           path: String.t(),
-          name: tuple(),
-          lock: Tackle.Session.Storage.Lock.t(),
-          next_seq: pos_integer(),
-          projection: Projection.t(),
+          name: tuple() | nil,
+          lock: Tackle.Session.Storage.Lock.t() | nil,
+          next_seq: pos_integer() | nil,
+          projection: Projection.t() | nil,
           active_turn: turn() | nil,
-          recovered: map() | nil
+          recovered: map() | nil,
+          materialized?: boolean(),
+          open_opts: keyword() | nil
         }
 
   @doc false
@@ -126,12 +129,18 @@ defmodule Tackle.Session.Journal do
   @spec flush(GenServer.server()) :: :ok | {:error, term()}
   def flush(journal), do: call(journal, :flush)
 
-  @doc "Returns the journal's durable projection."
+  @doc """
+  Returns the journal's durable projection.
+
+  A new session that has not received its first prompt is not materialized yet,
+  so it returns a provisional, empty projection carrying the metadata that
+  `session.created` will record. It contains no history and no durable file.
+  """
   @spec projection(GenServer.server()) :: {:ok, Projection.t()} | {:error, term()}
   def projection(journal), do: call(journal, :projection)
 
   @doc "Returns the derived catalog summary for this session."
-  @spec summary(GenServer.server()) :: {:ok, map()} | {:error, term()}
+  @spec summary(GenServer.server()) :: {:ok, map() | nil} | {:error, term()}
   def summary(journal), do: call(journal, :summary)
 
   @doc "Returns the live journal status (session id, last sequence, health)."
@@ -159,6 +168,29 @@ defmodule Tackle.Session.Journal do
   def init(opts) do
     Process.flag(:trap_exit, true)
     session_id = Keyword.fetch!(opts, :session_id)
+
+    with {:ok, path} <- Storage.journal_path(session_id, opts),
+         {:ok, state} <- open_or_defer(session_id, path, opts) do
+      {:ok, state}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  # A new durable session is materialized on its first prompt, not when a scope
+  # starts. The owner process exists immediately so the runtime can fail closed
+  # and address the journal, but no directory, ownership lock, log file, or
+  # catalog entry is created until there is real work to persist. An existing
+  # journal is opened and validated eagerly so resume never fabricates history.
+  defp open_or_defer(session_id, path, opts) do
+    if File.exists?(path) do
+      open_existing(session_id, opts)
+    else
+      {:ok, deferred_state(session_id, path, opts)}
+    end
+  end
+
+  defp open_existing(session_id, opts) do
     repair? = Keyword.get(opts, :repair, false)
 
     with {:ok, lock} <- Storage.acquire_lock(session_id, opts) do
@@ -168,34 +200,70 @@ defmodule Tackle.Session.Journal do
 
         {:error, reason} ->
           Storage.release_lock(lock)
-          {:stop, {:journal_open_failed, session_id, reason}}
+          {:error, {:journal_open_failed, session_id, reason}}
       end
-    else
-      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp deferred_state(session_id, path, opts) do
+    %{
+      session_id: session_id,
+      path: path,
+      name: nil,
+      lock: nil,
+      next_seq: nil,
+      projection: nil,
+      active_turn: nil,
+      recovered: nil,
+      materialized?: false,
+      open_opts: opts
+    }
+  end
+
+  defp ensure_materialized(%{materialized?: true} = state), do: {:ok, state}
+
+  defp ensure_materialized(%{materialized?: false} = state) do
+    case Storage.acquire_lock(state.session_id, state.open_opts) do
+      {:ok, lock} ->
+        case Reader.open_writable(state.session_id, state.open_opts) do
+          {:ok, opened} ->
+            build_state(state.session_id, lock, opened, state.open_opts)
+
+          {:error, reason} ->
+            Storage.release_lock(lock)
+            {:error, {:journal_open_failed, state.session_id, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   @impl true
   def handle_call({:begin_turn, operation, input, turn_id}, _from, state) do
-    if state.active_turn do
-      {:reply, {:error, :turn_in_progress}, state}
-    else
-      event =
-        Log.event("turn.started", %{
-          "turn_id" => turn_id,
-          "operation" => Atom.to_string(operation),
-          "input" => input,
-          "started_at" => now()
-        })
+    with {:ok, state} <- ensure_materialized(state) do
+      if state.active_turn do
+        {:reply, {:error, :turn_in_progress}, state}
+      else
+        event =
+          Log.event("turn.started", %{
+            "turn_id" => turn_id,
+            "operation" => Atom.to_string(operation),
+            "input" => input,
+            "started_at" => now()
+          })
 
-      case commit(state, [event], turn_id) do
-        {:ok, state, _seq} ->
-          turn = %{turn_id: turn_id, operation: operation}
-          {:reply, {:ok, turn_id}, %{state | active_turn: turn}}
+        case commit(state, [event], turn_id) do
+          {:ok, state, _seq} ->
+            turn = %{turn_id: turn_id, operation: operation}
+            {:reply, {:ok, turn_id}, %{state | active_turn: turn}}
 
-        {:error, reason} ->
-          fail(state, reason)
+          {:error, reason} ->
+            fail(state, reason)
+        end
       end
+    else
+      {:error, reason} -> fail(state, reason)
     end
   end
 
@@ -227,6 +295,10 @@ defmodule Tackle.Session.Journal do
     end
   end
 
+  def handle_call({:settle_turn, _type, _data}, _from, %{materialized?: false} = state) do
+    {:reply, {:error, :no_active_turn}, state}
+  end
+
   def handle_call({:settle_turn, type, data}, _from, state) do
     case settle_event(state, type, data) do
       {:ok, event, turn_id} ->
@@ -238,6 +310,17 @@ defmodule Tackle.Session.Journal do
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
+  end
+
+  # Reconfiguring or retitling an unmaterialized session only updates the
+  # metadata that will be written into `session.created`; it must never create
+  # a durable session on its own.
+  def handle_call(
+        {:configuration_changed, %Config{} = config},
+        _from,
+        %{materialized?: false} = state
+      ) do
+    {:reply, :ok, %{state | open_opts: update_creation_config(state.open_opts, config)}}
   end
 
   def handle_call({:configuration_changed, %Config{} = config}, _from, state) do
@@ -254,6 +337,10 @@ defmodule Tackle.Session.Journal do
     end
   end
 
+  def handle_call({:metadata_changed, attrs}, _from, %{materialized?: false} = state) do
+    {:reply, :ok, %{state | open_opts: update_creation_metadata(state.open_opts, attrs)}}
+  end
+
   def handle_call({:metadata_changed, attrs}, _from, state) do
     event = Log.event("session.metadata_changed", Map.put_new(attrs, "changed_at", now()))
 
@@ -261,6 +348,10 @@ defmodule Tackle.Session.Journal do
       {:ok, state, _seq} -> {:reply, :ok, state}
       {:error, reason} -> fail(state, reason)
     end
+  end
+
+  def handle_call(:close_journal, _from, %{materialized?: false} = state) do
+    {:reply, :ok, state}
   end
 
   def handle_call(:close_journal, _from, state) do
@@ -272,6 +363,8 @@ defmodule Tackle.Session.Journal do
     end
   end
 
+  def handle_call(:flush, _from, %{materialized?: false} = state), do: {:reply, :ok, state}
+
   def handle_call(:flush, _from, state) do
     case Reader.sync(state.name) do
       :ok -> {:reply, :ok, state}
@@ -279,12 +372,30 @@ defmodule Tackle.Session.Journal do
     end
   end
 
+  def handle_call(:projection, _from, %{materialized?: false} = state),
+    do: {:reply, {:ok, provisional_projection(state)}, state}
+
   def handle_call(:projection, _from, state) do
     {:reply, {:ok, state.projection}, state}
   end
 
+  def handle_call(:summary, _from, %{materialized?: false} = state),
+    do: {:reply, {:ok, nil}, state}
+
   def handle_call(:summary, _from, state) do
     {:reply, {:ok, build_summary(state)}, state}
+  end
+
+  def handle_call(:status, _from, %{materialized?: false} = state) do
+    status = %{
+      session_id: state.session_id,
+      last_seq: 0,
+      active_turn: nil,
+      recovered: nil,
+      materialized?: false
+    }
+
+    {:reply, {:ok, status}, state}
   end
 
   def handle_call(:status, _from, state) do
@@ -292,7 +403,8 @@ defmodule Tackle.Session.Journal do
       session_id: state.session_id,
       last_seq: state.projection.last_seq,
       active_turn: state.active_turn,
-      recovered: state.recovered
+      recovered: state.recovered,
+      materialized?: true
     }
 
     {:reply, {:ok, status}, state}
@@ -312,6 +424,8 @@ defmodule Tackle.Session.Journal do
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
+  def terminate(_reason, %{materialized?: false}), do: :ok
+
   def terminate(_reason, state) do
     _ = Reader.sync(state.name)
     _ = Reader.close(state.name)
@@ -329,7 +443,9 @@ defmodule Tackle.Session.Journal do
       next_seq: nil,
       projection: nil,
       active_turn: nil,
-      recovered: nil
+      recovered: nil,
+      materialized?: true,
+      open_opts: nil
     }
 
     case initialize(opened, state, opts) do
@@ -339,9 +455,39 @@ defmodule Tackle.Session.Journal do
       {:error, reason} ->
         _ = Reader.close(opened.name)
         _ = Storage.release_lock(lock)
-        {:stop, reason}
+        {:error, reason}
     end
   end
+
+  defp update_creation_config(opts, %Config{} = config) do
+    opts
+    |> Keyword.put(:model_ref, config.model_ref)
+    |> Keyword.put(:thinking, Thinking.from_llm_opts(config.llm_opts))
+  end
+
+  # An unmaterialized session has no durable history, but callers still need the
+  # creation metadata (recorded model, thinking, cwd) so configuration can be
+  # resolved the same way before the first prompt. Nothing is written here.
+  defp provisional_projection(%{session_id: session_id, open_opts: opts}) do
+    %Projection{
+      session_id: session_id,
+      cwd: Keyword.get(opts, :cwd),
+      title: Keyword.get(opts, :title),
+      tags: Keyword.get(opts, :tags, []),
+      model_ref: Keyword.get(opts, :model_ref),
+      thinking: Keyword.get(opts, :thinking),
+      status: :clean
+    }
+  end
+
+  defp update_creation_metadata(opts, attrs) do
+    opts
+    |> put_creation_attr(:title, Map.get(attrs, "title"))
+    |> put_creation_attr(:tags, Map.get(attrs, "tags"))
+  end
+
+  defp put_creation_attr(opts, _key, nil), do: opts
+  defp put_creation_attr(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp initialize(%{new?: true}, state, opts) do
     header =

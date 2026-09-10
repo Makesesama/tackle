@@ -13,15 +13,45 @@ defmodule Tackle.Session.JournalTest do
   end
 
   describe "new journal" do
-    test "writes a header and session.created then reports its projection", ctx do
+    test "defers materialization until the first turn", ctx do
       {:ok, journal} = start_journal(ctx)
 
       assert {:ok, projection} = Journal.projection(journal)
       assert projection.session_id == ctx.session_id
-      assert projection.last_seq == 1
+      assert projection.last_seq == 0
+      assert projection.messages == []
 
       assert {:ok, status} = Journal.status(journal)
-      assert status.last_seq == 1
+      assert status.last_seq == 0
+      assert status.materialized? == false
+
+      {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
+      refute File.exists?(path)
+      refute File.dir?(Path.dirname(path))
+
+      assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+
+      assert {:ok, projection} = Journal.projection(journal)
+      assert projection.last_seq == 2
+
+      assert {:ok, status} = Journal.status(journal)
+      assert status.last_seq == 2
+      assert File.exists?(path)
+    end
+
+    test "does not create a journal when closed before the first turn", ctx do
+      {:ok, journal} = start_journal(ctx)
+
+      assert :ok = Journal.close_journal(journal)
+      assert :ok = Journal.flush(journal)
+
+      {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
+      refute File.exists?(path)
+      refute File.dir?(Path.dirname(path))
+
+      stop_journal(journal)
+
+      assert {:error, _reason} = Reader.read(ctx.session_id, home: ctx.home)
     end
   end
 

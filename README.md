@@ -164,6 +164,13 @@ A root scope can own one durable session journal. Add a
 internal `:disk_log` under `$TACKLE_HOME/sessions/<session-id>/session.dlog`.
 The CLI does this by default, so every CLI root conversation is durable.
 
+A new session is materialized on its first prompt. Starting a scope and closing
+it again without submitting a turn creates no session directory, journal,
+lock, or catalog entry: `Tackle.Session.Journal.projection/1` reports a
+provisional empty projection, and reconfiguring the idle agent only updates the
+metadata that the eventual `session.created` commit records. Resuming an
+existing session still opens and validates its journal immediately.
+
 ```elixir
 {:ok, session} = Tackle.Session.Spec.new()
 {:ok, spec} = Tackle.Runtime.ScopeSpec.new(root_spec: root_spec, session: session)

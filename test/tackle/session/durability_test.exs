@@ -4,8 +4,10 @@ defmodule Tackle.Session.DurabilityTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Runtime.ScopeSpec
+  alias Tackle.Session.Catalog
   alias Tackle.Session.Journal
   alias Tackle.Session.Reader
+  alias Tackle.Session.Storage
 
   setup do
     home = Tackle.Test.Runtime.tmp_home()
@@ -191,6 +193,42 @@ defmodule Tackle.Session.DurabilityTest do
 
     assert Tackle.Session.Journal.whereis(snapshot.session_id) == {:error, :not_found}
     assert {:error, _reason} = Reader.read(snapshot.session_id, home: ctx.home)
+  end
+
+  test "starting and stopping a durable scope without a prompt creates no session", ctx do
+    scope = start_durable_scope(home: ctx.home, root: [content: "answer"])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+
+    {:ok, dir} = Storage.session_dir(session_id, home: ctx.home)
+    refute File.exists?(dir)
+    assert {:error, :not_found} = Catalog.get(session_id)
+
+    stop_scope(scope.scope_ref)
+
+    refute File.exists?(dir)
+    assert {:error, _reason} = Tackle.inspect_session(session_id, home: ctx.home)
+    assert {:error, :not_found} = Catalog.get(session_id)
+  end
+
+  test "records pre-prompt reconfiguration in session.created without creating early", ctx do
+    scope = start_durable_scope(home: ctx.home, root: [model: "test/echo", content: "answer"])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+
+    {:ok, dir} = Storage.session_dir(session_id, home: ctx.home)
+
+    assert {:ok, _snapshot} = Tackle.reconfigure(scope.root_agent_ref, model: "test/child")
+    refute File.exists?(dir)
+
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
+
+    {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    created = Enum.find(replay.commits, &(&1["seq"] == 1))
+
+    assert [%{"type" => "session.created", "data" => %{"model_ref" => "test/child"}}] =
+             created["events"]
   end
 
   test "journal owner failure terminates the durable scope", ctx do
