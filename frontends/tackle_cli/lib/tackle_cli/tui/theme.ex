@@ -18,6 +18,10 @@ defmodule Tackle.CLI.TUI.Theme do
   background so a card reads as a block without competing with the prose.
   `:diff_add` and `:diff_del` pair a foreground with a tinted background so the
   `+`/`-` markers survive even where the background is not painted.
+
+  `:selection_surface` is the one deliberately saturated surface. It marks the
+  transcript entry the browser is standing on, where the point is to be
+  unambiguous at a glance rather than quiet.
   """
 
   alias ExRatatui.Style
@@ -34,6 +38,7 @@ defmodule Tackle.CLI.TUI.Theme do
           | :surface_raised
           | :user_surface
           | :error_surface
+          | :selection_surface
           | :diff_add
           | :diff_del
           | :diff_context
@@ -50,6 +55,7 @@ defmodule Tackle.CLI.TUI.Theme do
     surface: %Style{bg: {:indexed, 235}},
     surface_raised: %Style{bg: {:indexed, 237}},
     user_surface: %Style{bg: {:indexed, 236}},
+    selection_surface: %Style{bg: {:indexed, 24}},
     error_surface: %Style{bg: {:indexed, 52}},
     diff_add: %Style{fg: :green, bg: {:indexed, 22}},
     diff_del: %Style{fg: :red, bg: {:indexed, 52}},

@@ -4,10 +4,11 @@ defmodule Tackle.CLI.TUITest do
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
   alias ExRatatui.Runtime
   alias ExRatatui.Text.Line
+  alias ExRatatui.Style
   alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, Textarea, TextInput, WidgetList}
   alias ExRatatui.Widgets.List, as: SelectionList
   alias Tackle.CLI.TUI
-  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView}
+  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker}
   alias Tackle.Lib.{Event, Message, State}
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.ID
@@ -84,7 +85,17 @@ defmodule Tackle.CLI.TUITest do
       send(state.test_pid, {:reconfigured, opts})
       model = Keyword.get(opts, :model, state.agent_state.llm.ref)
       {:ok, llm} = Tackle.Lib.LLM.select([Adapter], model)
-      {:ok, llm_opts} = Tackle.Thinking.put_llm_opts(state.agent_state.llm_opts, opts[:thinking])
+
+      llm_opts =
+        case Keyword.fetch(opts, :thinking) do
+          {:ok, level} ->
+            {:ok, updated} = Tackle.Thinking.put_llm_opts(state.agent_state.llm_opts, level)
+            updated
+
+          :error ->
+            state.agent_state.llm_opts
+        end
+
       agent_state = %{state.agent_state | llm: llm, model: llm.model, llm_opts: llm_opts}
 
       snapshot = %Snapshot{
@@ -197,6 +208,27 @@ defmodule Tackle.CLI.TUITest do
       terminal = ExRatatui.init_test_terminal(30, 8)
       :ok = ExRatatui.draw(terminal, TUI.scene(state, frame(state)))
       assert is_binary(ExRatatui.get_buffer_content(terminal))
+    end
+
+    test "draws every menu and the browser at a small size", %{tui: tui} do
+      _state =
+        settle_messages(tui, [Message.user("question"), Message.assistant(content: "answer")])
+
+      inject_resize(tui, 30, 8)
+
+      Enum.each([{"f1", "Model"}, {"f2", "Reasoning level"}, {"f3", "Settings"}], fn {key, title} ->
+        inject_key(tui, key)
+        assert_draws(state(tui), 30, 8, title)
+        inject_key(tui, "esc")
+      end)
+
+      inject_key(tui, "f4")
+      browse = state(tui)
+      assert browse.focus == :transcript
+      assert_draws(browse, 30, 8, "Browsing")
+
+      inject_key(tui, "enter")
+      assert_draws(state(tui), 30, 8)
     end
   end
 
@@ -336,38 +368,106 @@ defmodule Tackle.CLI.TUITest do
 
   # -- settings ------------------------------------------------------------
 
-  test "selects the model and thinking level from the settings popup", %{tui: tui} do
+  test "F1 picks a model from a searchable menu", %{tui: tui} do
     inject_paste(tui, "keep this draft")
-    inject_key(tui, "f2")
+    inject_key(tui, "f1")
     state = state(tui)
-    assert {:settings, %{field: :model}} = state.overlay
+    assert {:picker, %{kind: :model, picker: picker}} = state.overlay
+    assert picker.query == ""
+    assert status_text(state) =~ "Menu"
 
-    inject_key(tui, "right")
+    assert %SelectionList{items: items, selected: 0} = popup_content(state)
+    assert Enum.at(items, 0) =~ "✓"
+    assert Enum.at(items, 0) =~ "test-model  [openai-codex]"
+    assert popup_title(state) =~ "Model"
+
     inject_key(tui, "down")
-    inject_key(tui, "right")
     inject_key(tui, "enter")
 
-    assert_receive {:reconfigured, [model: "openai-codex/other-model", thinking: "minimal"]}
+    assert_receive {:reconfigured, [model: "openai-codex/other-model"]}
 
     state = state(tui)
     assert state.overlay == nil
     assert state.agent_state.model == "other-model"
-    assert Tackle.Thinking.from_llm_opts(state.agent_state.llm_opts) == "minimal"
-    assert header_text(state) =~ "thinking minimal"
+    assert header_text(state) =~ "openai-codex/other-model"
     assert status_text(state) =~ "ctx 0/2k (0.0%)"
     assert draft(tui) == "keep this draft"
   end
 
-  test "does not open model settings while a turn is active", %{tui: tui} do
+  test "the model menu ranks a provider-qualified query above a proxy id", %{tui: tui} do
+    inject_key(tui, "f1")
+
+    Enum.each(["o", "t", "h", "e", "r"], &inject_key(tui, &1))
+    state = state(tui)
+
+    assert {:picker, %{picker: picker}} = state.overlay
+    assert picker.query == "other"
+
+    assert %SelectionList{items: ["   other-model  [openai-codex]"], selected: 0} =
+             popup_content(state)
+
+    inject_key(tui, "backspace")
+    assert {:picker, %{picker: %{query: "othe"}}} = state(tui).overlay
+
+    inject_key(tui, "esc")
+    assert state(tui).overlay == nil
+  end
+
+  test "F2 picks the reasoning level from a searchable menu", %{tui: tui} do
+    inject_key(tui, "f2")
+    state = state(tui)
+
+    assert {:picker, %{kind: :thinking}} = state.overlay
+    assert popup_title(state) =~ "Reasoning level"
+
+    assert %SelectionList{items: items} = popup_content(state)
+    assert hd(items) =~ "off"
+    assert hd(items) =~ "No reasoning"
+
+    Enum.each(["m", "i", "n", "i", "m", "a", "l"], &inject_key(tui, &1))
+    assert {:picker, %{picker: %{query: "minimal"}}} = state(tui).overlay
+
+    inject_key(tui, "enter")
+    assert_receive {:reconfigured, [thinking: "minimal"]}
+
+    state = state(tui)
+    assert state.overlay == nil
+    assert Tackle.Thinking.from_llm_opts(state.agent_state.llm_opts) == "minimal"
+    assert header_text(state) =~ "thinking minimal"
+  end
+
+  test "F3 opens the settings menu, which is empty until there is something to configure", %{
+    tui: tui
+  } do
+    inject_key(tui, "f3")
+    state = state(tui)
+
+    assert {:picker, %{kind: :settings, picker: %Picker{items: []}}} = state.overlay
+    assert popup_title(state) =~ "Settings"
+    assert %Paragraph{text: text} = popup_content(state)
+    assert text =~ "No settings yet"
+
+    # With no rows there is nothing to apply, so Enter is inert and Esc closes.
+    inject_key(tui, "enter")
+    assert {:picker, %{kind: :settings}} = state(tui).overlay
+
+    inject_key(tui, "esc")
+    assert state(tui).overlay == nil
+  end
+
+  test "configuration menus are idle only", %{tui: tui} do
     inject_paste(tui, "work")
     inject_key(tui, "enter")
     assert_receive {:submitted, "work"}
 
-    inject_key(tui, "f2")
-    state = state(tui)
+    Enum.each(["f1", "f2", "f3"], fn key ->
+      inject_key(tui, key)
+      state = state(tui)
 
-    assert state.overlay == nil
-    assert state.notice =~ "when idle"
+      assert state.overlay == nil
+      assert state.notice =~ "when idle"
+    end)
+
     refute_receive {:reconfigured, _}, 50
   end
 
@@ -1001,6 +1101,7 @@ defmodule Tackle.CLI.TUITest do
     assert MessageView.tool_output(entry) == output
 
     inject_key(tui, "f4")
+    inject_key(tui, "enter")
     inspector_state = state(tui)
     assert {:inspector, inspector} = inspector_state.overlay
     assert inspector.entry.id == "tool:call-1"
@@ -1034,6 +1135,7 @@ defmodule Tackle.CLI.TUITest do
 
     inject_paste(tui, "keep my draft")
     inject_key(tui, "f4")
+    inject_key(tui, "enter")
     assert {:inspector, inspector} = state(tui).overlay
     assert inspector.entry.id == "tool:edit"
     assert inspector_text(state(tui)) =~ "Replacement preview"
@@ -1052,15 +1154,19 @@ defmodule Tackle.CLI.TUITest do
     assert ExRatatui.textarea_get_value(state(tui).input) == "keep my draft"
   end
 
-  test "F4 reports when there is no retained tool output", %{tui: tui} do
+  test "F4 reports when there is nothing to browse", %{tui: tui} do
     inject_key(tui, "f4")
     state = state(tui)
 
-    assert state.overlay == nil
-    assert state.notice =~ "No retained tool output"
+    assert state.focus == :composer
+    assert state.selected_entry == nil
+    assert state.notice =~ "No messages to browse yet"
   end
 
-  test "copies full retained source, individual entries, and the full transcript", %{tui: tui} do
+  test "the transcript browser selects, copies, and inspects entries without touching the draft",
+       %{
+         tui: tui
+       } do
     output = String.duplicate("tool output ", 100)
 
     _state =
@@ -1070,44 +1176,156 @@ defmodule Tackle.CLI.TUITest do
         Message.tool_result("call-1", "read", output)
       ])
 
-    inject_key(tui, "f3")
-    copy_state = state(tui)
-    assert {:copy, %{selected: 2}} = copy_state.overlay
+    inject_paste(tui, "keep my draft")
+    inject_key(tui, "f4")
+
+    state = state(tui)
+    assert state.focus == :transcript
+    assert state.selected_entry == "tool:call-1"
+    assert status_text(state) =~ "Browsing"
+    assert status_text(state) =~ "3/3"
+    assert hints_text(state) =~ "Esc or F4 back"
 
     inject_key(tui, "y")
     assert_receive {:copied, ^output}
-    assert popup_title(state(tui)) =~ "Copied full source"
+    assert status_text(state(tui)) =~ "Copied full source"
 
-    inject_key(tui, "o")
-    assert {:inspector, inspector} = state(tui).overlay
-    assert inspector.entry.id == "tool:call-1"
+    # Every entry in the transcript is reachable, and each keeps its own source.
+    inject_key(tui, "p")
+    inject_key(tui, "y")
+    assert_receive {:copied, copied_answer}
+    assert copied_answer =~ "Exact **Markdown** source"
 
-    inject_key(tui, "esc")
-    assert state(tui).overlay == nil
-
-    inject_key(tui, "f3")
-    inject_key(tui, "up")
-    inject_key(tui, "enter")
-    assert_receive {:copied, "Tackle:\n# Answer\n\nExact **Markdown** source"}
+    inject_key(tui, "p")
+    inject_key(tui, "y")
+    assert_receive {:copied, "You:\nquestion"}
 
     inject_key(tui, "a")
     assert_receive {:copied, full}
     assert full =~ "You:\nquestion"
     assert full =~ output
 
+    # The selection stops at the ends instead of wrapping.
+    inject_key(tui, "p")
+    inject_key(tui, "y")
+    assert_receive {:copied, "You:\nquestion"}
+
+    inject_key(tui, "n")
+    inject_key(tui, "enter")
+    assert {:inspector, inspector} = state(tui).overlay
+    assert inspector.entry.id == "message:1:assistant"
+
     inject_key(tui, "esc")
     assert state(tui).overlay == nil
+
+    inject_key(tui, "esc")
+    state = state(tui)
+    assert state.focus == :composer
+    assert state.selected_entry == nil
+    assert draft(tui) == "keep my draft"
   end
 
-  test "copy overlay reports an empty conversation without writing to the clipboard", %{tui: tui} do
-    inject_key(tui, "f3")
-    state = state(tui)
-    assert {:copy, %{selected: nil}} = state.overlay
+  test "typing and pasting are inert while the transcript holds focus", %{tui: tui} do
+    _state =
+      settle_messages(tui, [Message.user("question"), Message.assistant(content: "answer")])
 
-    inject_key(tui, "enter")
+    inject_paste(tui, "draft first")
+    inject_key(tui, "f4")
+
+    Enum.each(["h", "e", "l", "l", "o", "x", "z"], &inject_key(tui, &1))
+    inject_paste(tui, "ignored")
+
     state = state(tui)
-    assert state.overlay |> elem(1) |> Map.fetch!(:notice) == "Nothing to copy"
-    refute_receive {:copied, _content}
+    assert state.focus == :transcript
+    assert state.overlay == nil
+    assert ExRatatui.textarea_get_value(state.input) == "draft first"
+    assert find_widget(state, &match?(%Popup{}, &1)) == nil
+
+    inject_key(tui, "f4")
+    state = state(tui)
+    assert state.focus == :composer
+    assert ExRatatui.textarea_get_value(state.input) == "draft first"
+  end
+
+  test "the browser keeps the selection visible in a long transcript", %{tui: tui} do
+    messages = Enum.map(1..20, fn n -> Message.user("message-#{n}") end)
+    _state = settle_messages(tui, messages)
+
+    inject_key(tui, "f4")
+    state = state(tui)
+    assert state.selected_entry == "message:19:user"
+
+    Enum.each(1..40, fn _ -> inject_key(tui, "p") end)
+    state = state(tui)
+
+    assert state.selected_entry == "message:0:user"
+    # The transcript scrolled back to follow the selection rather than leaving it
+    # highlighted off-screen.
+    assert state.conversation.scroll_offset == 0
+    assert state.conversation.follow? == false
+  end
+
+  test "the browser re-anchors when the selected entry is replaced by a settled one", %{
+    tui: tui
+  } do
+    inject_paste(tui, "hi")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "hi"}
+
+    session_id = state(tui).session_id
+    send(tui, {:tackle_event, session_id, "turn-1", Event.new(:message_delta, %{delta: "Hello"})})
+
+    inject_key(tui, "f4")
+    assert state(tui).selected_entry == "streaming:response"
+
+    finish_turn(tui, [Message.user("hi"), Message.assistant(content: "Hello")])
+    state = state(tui)
+
+    assert state.focus == :transcript
+    assert state.selected_entry == "message:1:assistant"
+    assert highlighted_ids(state) == ["message:1:assistant"]
+  end
+
+  test "the browser keeps the reading chords live", %{tui: tui} do
+    _state =
+      settle_messages(tui, [
+        Message.user("ask"),
+        Message.assistant(thinking: "reasoning here", content: "answer")
+      ])
+
+    inject_key(tui, "f4")
+    inject_key(tui, "t", ["ctrl"])
+    state = state(tui)
+
+    assert state.focus == :transcript
+    assert state.thinking_expanded?
+
+    inject_key(tui, "f", ["ctrl"])
+    state = state(tui)
+    assert {:search, _} = state.overlay
+
+    inject_key(tui, "esc")
+    state = state(tui)
+    assert state.overlay == nil
+    assert state.focus == :transcript
+  end
+
+  test "the browser highlight follows the selection", %{tui: tui} do
+    _state =
+      settle_messages(tui, [Message.user("question"), Message.assistant(content: "answer")])
+
+    inject_key(tui, "f4")
+    state = state(tui)
+    assert state.selected_entry == "message:1:assistant"
+    assert highlighted_ids(state) == ["message:1:assistant"]
+
+    inject_key(tui, "p")
+    state = state(tui)
+    assert state.selected_entry == "message:0:user"
+    assert highlighted_ids(state) == ["message:0:user"]
+
+    inject_key(tui, "esc")
+    assert highlighted_ids(state(tui)) == []
   end
 
   # -- reasoning -----------------------------------------------------------
@@ -1132,7 +1350,7 @@ defmodule Tackle.CLI.TUITest do
     assert expanded =~ "answer"
   end
 
-  # -- search and palette --------------------------------------------------
+  # -- search and menus ----------------------------------------------------
 
   test "searches retained source including hidden tool output and reveals matches", %{tui: tui} do
     _state =
@@ -1169,32 +1387,42 @@ defmodule Tackle.CLI.TUITest do
     refute_receive {:submitted, _}
   end
 
-  test "palette filters commands, runs them, and preserves the draft", %{tui: tui} do
+  test "menu search filters the list and preserves the draft", %{tui: tui} do
     inject_paste(tui, "draft survives")
-    inject_key(tui, "f1")
-    state = state(tui)
-    assert {:palette, %{query: ""}} = state.overlay
+    inject_key(tui, "f2")
 
-    Enum.each(["t", "o", "g", "g", "l", "e"], &inject_key(tui, &1))
+    Enum.each(["h", "i", "g", "h"], &inject_key(tui, &1))
     state = state(tui)
 
-    assert {:palette, %{query: "toggle"}} = state.overlay
-    assert status_text(state) =~ "Reveal or collapse supplied reasoning"
+    assert {:picker, %{picker: %{query: "high"}}} = state.overlay
+    assert status_text(state) =~ "Deep reasoning"
 
-    assert %SelectionList{items: ["Toggle reasoning  ·  Ctrl+T"], selected: 0} =
-             popup_content(state)
+    # A prefix match ranks above the looser one that contains it.
+    assert %SelectionList{items: [first | _rest], selected: 0} = popup_content(state)
+    assert first =~ "high"
+    assert first =~ "Deep reasoning"
 
     inject_key(tui, "enter")
+    assert_receive {:reconfigured, [thinking: "high"]}
+
+    state = state(tui)
+    assert state.overlay == nil
+    assert header_text(state) =~ "thinking high"
+    assert draft(tui) == "draft survives"
+  end
+
+  test "menu search reports no matches without changing the selection target", %{tui: tui} do
+    inject_key(tui, "f2")
+
+    Enum.each(["z", "z", "z"], &inject_key(tui, &1))
     state = state(tui)
 
-    assert state.overlay == nil
-    assert state.thinking_expanded?
-    assert draft(tui) == "draft survives"
+    assert %Paragraph{text: " No options match."} = popup_content(state)
 
-    inject_key(tui, "f1")
-    inject_key(tui, "esc")
-    assert state(tui).overlay == nil
-    assert draft(tui) == "draft survives"
+    # Enter on an empty result set is inert rather than selecting nothing.
+    inject_key(tui, "enter")
+    assert {:picker, _} = state(tui).overlay
+    refute_receive {:reconfigured, _}, 50
   end
 
   # -- cancel and quit -----------------------------------------------------
@@ -1387,6 +1615,35 @@ defmodule Tackle.CLI.TUITest do
     |> find_widget(&match?(%Popup{}, &1))
     |> Map.fetch!(:content)
   end
+
+  # The browser highlight is a merge of the selection surface over each widget
+  # of the selected entry, so the ids carrying it are the selected ones.
+  defp assert_draws(state, width, height, expected \\ nil) do
+    terminal = ExRatatui.init_test_terminal(width, height)
+    :ok = ExRatatui.draw(terminal, TUI.scene(state, frame(state)))
+    content = ExRatatui.get_buffer_content(terminal)
+    assert is_binary(content)
+    if expected, do: assert(content =~ expected, "expected #{inspect(expected)} in:\n#{content}")
+    content
+  end
+
+  defp highlighted_ids(state) do
+    state.conversation.item_ids
+    |> Enum.zip(state.conversation.items)
+    |> Enum.flat_map(fn
+      {id, {widget, _height}} ->
+        if widget |> Map.get(:style, %Style{}) |> Map.get(:bg) == selection_bg(),
+          do: [id],
+          else: []
+
+      _other ->
+        []
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp selection_bg, do: Tackle.CLI.TUI.Theme.style(:selection_surface).bg
 
   defp inspector_text(state) do
     {:inspector, inspector} = state.overlay

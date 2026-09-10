@@ -337,6 +337,25 @@ defmodule Tackle.CLI.TUI.MessageView do
     |> render_rows(width)
   end
 
+  @doc """
+  Layers a background over every widget of an entry.
+
+  Each rendered widget already paints a full-width band from its own style, so
+  the selection surface is merged *over* that style: backgrounds the entry set
+  (tool cards, user messages) give way to the selection, while every foreground
+  and modifier the entry chose is preserved.
+  """
+  @spec highlight([widget_item()], Style.t()) :: [widget_item()]
+  def highlight(items, %Style{} = style) do
+    Enum.map(items, fn {widget, height} -> {merge_style(widget, style), height} end)
+  end
+
+  defp merge_style(%{style: widget_style} = widget, style) when is_struct(widget_style) do
+    %{widget | style: Theme.merge(widget_style, style)}
+  end
+
+  defp merge_style(widget, _style), do: widget
+
   @doc "Builds widgets for the full retained text of an entry (output inspector)."
   @spec inspect_items(t(), pos_integer()) :: [widget_item()]
   def inspect_items(%__MODULE__{kind: :tool} = entry, width),

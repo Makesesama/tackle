@@ -4,9 +4,20 @@ defmodule Tackle.CLI.TUI do
 
   The shell is transcript-first: a compact header, a border-light transcript
   that owns the flexible middle of the screen, a native multiline composer that
-  grows with the draft, and optional reading, status, and hint rows. Overlays
-  (settings, source copy, output inspector, transcript search, and a searchable
-  command/help palette) are modal and always route keys before the composer.
+  grows with the draft, and optional reading, status, and hint rows.
+
+  Two kinds of surface sit above the composer:
+
+    * **Menus** are modal search-first lists that always route keys before the
+      composer: the model (`F1`), the reasoning level (`F2`), and settings
+      (`F3`), plus the output inspector and transcript search. Menus hold
+      configuration, and the settings menu stays empty until the harness gains
+      options beyond the model and the reasoning level; quick actions do not
+      belong in it.
+    * **The transcript browser** (`F4`) is a focus mode rather than an overlay.
+      There is no popup, the composer stops accepting text, and the arrows move
+      a highlighted entry so it can be copied (`y`, `a`) or inspected (`Enter`).
+      Esc or `F4` returns to the prompt.
 
   The TUI owns presentation and input state while the root harness continues to
   own the scope and agent loop. It addresses the root agent through a
@@ -16,9 +27,10 @@ defmodule Tackle.CLI.TUI do
 
   While a turn is active the composer keeps accepting a draft, but Enter does
   not submit it: there is no queue, so the draft is explicitly labeled as
-  belonging to the next turn. Esc closes overlays, then requests cancellation,
-  and never exits while idle; Ctrl+C is the distinct quit action and asks for
-  confirmation when a draft or active turn would be lost.
+  belonging to the next turn. Esc leaves the transcript browser, closes
+  overlays, then requests cancellation, and never exits while idle; Ctrl+C is
+  the distinct quit action and asks for confirmation when a draft or active turn
+  would be lost.
   """
 
   use ExRatatui.App
@@ -29,55 +41,10 @@ defmodule Tackle.CLI.TUI do
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Style
   alias Tackle.CLI.Clipboard
-  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Theme}
+  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, Theme}
   alias Tackle.Lib.{ContextUsage, Event, Message, ModelInfo, State, Usage}
   alias Tackle.Session.Snapshot
   alias Tackle.Thinking
-
-  @commands [
-    %{
-      id: :settings,
-      label: "Model & thinking",
-      keys: "F2",
-      description: "Change the model and reasoning level when idle"
-    },
-    %{
-      id: :copy,
-      label: "Copy source",
-      keys: "F3",
-      description: "Copy a message, tool output, or the full transcript"
-    },
-    %{
-      id: :inspect,
-      label: "Inspect output",
-      keys: "F4",
-      description: "Open the latest retained tool output"
-    },
-    %{
-      id: :search,
-      label: "Search transcript",
-      keys: "Ctrl+F",
-      description: "Search full retained message and tool text"
-    },
-    %{
-      id: :thinking,
-      label: "Toggle reasoning",
-      keys: "Ctrl+T",
-      description: "Reveal or collapse supplied reasoning"
-    },
-    %{
-      id: :cancel,
-      label: "Cancel turn",
-      keys: "Esc",
-      description: "Request cancellation of the active turn"
-    },
-    %{
-      id: :quit,
-      label: "Quit",
-      keys: "Ctrl+C",
-      description: "Exit Tackle, confirming when a draft or turn would be lost"
-    }
-  ]
 
   @spec start(keyword()) :: :ok | {:error, term()}
   def start(opts) when is_list(opts) do
@@ -116,6 +83,8 @@ defmodule Tackle.CLI.TUI do
         models: models,
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
         overlay: nil,
+        focus: :composer,
+        selected_entry: nil,
         pending_prompt: nil,
         streaming_thinking: "",
         streaming_response: "",
@@ -402,22 +371,22 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_overlay(key, %{overlay: {:confirm_quit, _}} = state),
     do: dispatch_confirm_quit(key, state)
 
-  defp dispatch_overlay(key, %{overlay: {:settings, _}} = state),
-    do: dispatch_settings(key, state)
-
-  defp dispatch_overlay(key, %{overlay: {:copy, _}} = state), do: dispatch_copy(key, state)
+  defp dispatch_overlay(key, %{overlay: {:picker, _}} = state), do: dispatch_picker(key, state)
 
   defp dispatch_overlay(key, %{overlay: {:inspector, _}} = state),
     do: dispatch_inspector(key, state)
 
   defp dispatch_overlay(key, %{overlay: {:search, _}} = state), do: dispatch_search(key, state)
-  defp dispatch_overlay(key, %{overlay: {:palette, _}} = state), do: dispatch_palette(key, state)
+
+  defp dispatch_base(%Key{code: "f1"}, state), do: open_picker(:model, state)
+  defp dispatch_base(%Key{code: "f2"}, state), do: open_picker(:thinking, state)
+  defp dispatch_base(%Key{code: "f3"}, state), do: open_picker(:settings, state)
+  defp dispatch_base(%Key{code: "f4"}, state), do: toggle_focus(state)
+
+  defp dispatch_base(%Key{} = key, %{focus: :transcript} = state),
+    do: dispatch_transcript(key, state)
 
   defp dispatch_base(%Key{code: "esc"}, state), do: escape(state)
-  defp dispatch_base(%Key{code: "f1"}, state), do: open_palette(state)
-  defp dispatch_base(%Key{code: "f2"}, state), do: open_settings(state)
-  defp dispatch_base(%Key{code: "f3"}, state), do: open_copy(state)
-  defp dispatch_base(%Key{code: "f4"}, state), do: open_inspector(state)
 
   defp dispatch_base(%Key{code: code, modifiers: modifiers} = key, state) do
     cond do
@@ -461,33 +430,103 @@ defmodule Tackle.CLI.TUI do
 
   defp dispatch_confirm_quit(_key, state), do: {:noreply, state, render?: false}
 
-  defp dispatch_settings(%Key{code: "esc"}, state), do: {:noreply, %{state | overlay: nil}}
+  # -- menu keys -----------------------------------------------------------
 
-  defp dispatch_settings(%Key{code: code}, state) when code in ["up", "down"] do
-    {:settings, settings} = state.overlay
-    field = if settings.field == :model, do: :thinking, else: :model
-    {:noreply, %{state | overlay: {:settings, %{settings | field: field}}}}
+  defp dispatch_picker(%Key{code: "esc"}, state), do: {:noreply, %{state | overlay: nil}}
+
+  defp dispatch_picker(%Key{code: code}, state) when code in ["up", "down"] do
+    {:picker, picker} = state.overlay
+    delta = if code == "up", do: -1, else: 1
+
+    {:noreply,
+     %{state | overlay: {:picker, %{picker | picker: Picker.move(picker.picker, delta)}}}}
   end
 
-  defp dispatch_settings(%Key{code: code}, state) when code in ["left", "right"],
-    do: {:noreply, cycle_setting(state, code)}
+  defp dispatch_picker(%Key{code: "enter"}, state) do
+    {:picker, %{kind: kind, picker: picker}} = state.overlay
 
-  defp dispatch_settings(%Key{code: "enter"}, state), do: apply_settings(state)
-  defp dispatch_settings(_key, state), do: {:noreply, state, render?: false}
+    case Picker.selected(picker) do
+      nil -> {:noreply, state, render?: false}
+      item -> apply_picker(kind, item, state)
+    end
+  end
 
-  defp dispatch_copy(%Key{code: "esc"}, state), do: {:noreply, %{state | overlay: nil}}
+  defp dispatch_picker(%Key{code: "backspace"}, state) do
+    {:picker, picker} = state.overlay
 
-  defp dispatch_copy(%Key{code: code}, state) when code in ["up", "down"],
-    do: {:noreply, move_copy_selection(state, code)}
+    {:noreply, %{state | overlay: {:picker, %{picker | picker: Picker.backspace(picker.picker)}}}}
+  end
 
-  defp dispatch_copy(%Key{code: code}, state) when code in ["enter", "y", "Y"],
-    do: copy_selected_entry(state)
+  defp dispatch_picker(%Key{code: code, modifiers: modifiers}, state)
+       when is_binary(code) and modifiers == [] do
+    if String.length(code) == 1 do
+      {:picker, picker} = state.overlay
 
-  defp dispatch_copy(%Key{code: code}, state) when code in ["o", "O"],
-    do: inspect_selected_entry(state)
+      {:noreply,
+       %{state | overlay: {:picker, %{picker | picker: Picker.insert(picker.picker, code)}}}}
+    else
+      {:noreply, state, render?: false}
+    end
+  end
 
-  defp dispatch_copy(%Key{code: code}, state) when code in ["a", "A"], do: copy_all_entries(state)
-  defp dispatch_copy(_key, state), do: {:noreply, state, render?: false}
+  defp dispatch_picker(_key, state), do: {:noreply, state, render?: false}
+
+  # -- transcript browser --------------------------------------------------
+
+  defp dispatch_transcript(%Key{code: "esc"}, state), do: leave_focus(state)
+
+  defp dispatch_transcript(%Key{code: code}, state) when code in ["up", "p"] do
+    {:noreply, move_focus(state, -1)}
+  end
+
+  defp dispatch_transcript(%Key{code: code}, state) when code in ["down", "n"] do
+    {:noreply, move_focus(state, 1)}
+  end
+
+  defp dispatch_transcript(%Key{code: "page_up"}, state),
+    do: scroll_reply(state, scroll_conversation(state, -page_size(state)))
+
+  defp dispatch_transcript(%Key{code: "page_down"}, state),
+    do: scroll_reply(state, scroll_conversation(state, page_size(state)))
+
+  defp dispatch_transcript(%Key{code: code}, state) when code in ["enter", "i"] do
+    case focus_entry(state) do
+      nil -> {:noreply, %{state | notice: "Nothing to inspect"}}
+      entry -> {:noreply, %{state | overlay: {:inspector, build_inspector(state, entry)}}}
+    end
+  end
+
+  defp dispatch_transcript(%Key{code: code}, state) when code in ["y", "Y"] do
+    case focus_entry(state) do
+      nil ->
+        {:noreply, %{state | notice: "Nothing to copy"}}
+
+      entry ->
+        notice = clipboard_notice(state, MessageView.source_text(entry), "Copied full source")
+        {:noreply, %{state | notice: notice}}
+    end
+  end
+
+  defp dispatch_transcript(%Key{code: code}, state) when code in ["a", "A"] do
+    case Conversation.text(state.conversation) do
+      "" ->
+        {:noreply, %{state | notice: "Nothing to copy"}}
+
+      text ->
+        {:noreply, %{state | notice: clipboard_notice(state, text, "Copied full transcript")}}
+    end
+  end
+
+  # Reading is what the browser is for, so the two chords that help you read
+  # stay live: search the transcript, and reveal the reasoning behind an answer.
+  # Every other key is inert, because typing is off while the browser has focus.
+  defp dispatch_transcript(%Key{code: code, modifiers: modifiers}, state) do
+    cond do
+      "ctrl" in modifiers and code == "f" -> open_search(state)
+      "ctrl" in modifiers and code == "t" -> toggle_thinking(state)
+      true -> {:noreply, state, render?: false}
+    end
+  end
 
   defp dispatch_inspector(%Key{code: "esc"}, state), do: {:noreply, %{state | overlay: nil}}
 
@@ -525,25 +564,6 @@ defmodule Tackle.CLI.TUI do
 
   defp dispatch_search(_key, state), do: {:noreply, state, render?: false}
 
-  defp dispatch_palette(%Key{code: "esc"}, state), do: {:noreply, %{state | overlay: nil}}
-
-  defp dispatch_palette(%Key{code: code}, state) when code in ["up", "down"],
-    do: {:noreply, move_palette_selection(state, code)}
-
-  defp dispatch_palette(%Key{code: "enter"}, state), do: run_selected_command(state)
-
-  defp dispatch_palette(%Key{code: "backspace"}, state),
-    do: {:noreply, filter_palette(state, :backspace)}
-
-  defp dispatch_palette(%Key{code: code, modifiers: modifiers}, state)
-       when is_binary(code) and modifiers == [] do
-    if String.length(code) == 1,
-      do: {:noreply, filter_palette(state, {:insert, code})},
-      else: {:noreply, state, render?: false}
-  end
-
-  defp dispatch_palette(_key, state), do: {:noreply, state, render?: false}
-
   # -- paste ---------------------------------------------------------------
 
   defp handle_paste(%{overlay: {:search, search}} = state, content) do
@@ -551,10 +571,15 @@ defmodule Tackle.CLI.TUI do
     refresh_search(state)
   end
 
-  defp handle_paste(%{overlay: {:palette, palette}} = state, content) do
-    query = palette.query <> String.replace(content, ~r/\s+/u, " ")
-    refresh_palette(%{state | overlay: {:palette, %{palette | query: query, selected: 0}}})
+  defp handle_paste(%{overlay: {:picker, picker}} = state, content) do
+    query = picker.picker.query <> String.replace(content, ~r/\s+/u, " ")
+
+    %{state | overlay: {:picker, %{picker | picker: Picker.new(picker.picker.items, query)}}}
   end
+
+  # The transcript browser owns the keyboard, so a paste must not land in a
+  # composer the user cannot see the cursor in.
+  defp handle_paste(%{focus: :transcript} = state, _content), do: state
 
   defp handle_paste(%{overlay: nil} = state, content) do
     # Normalize line endings before the single native edit so pasted drafts
@@ -595,44 +620,6 @@ defmodule Tackle.CLI.TUI do
     {:noreply, %{state | overlay: {:confirm_quit, %{reason: :turn}}}}
   end
 
-  defp open_settings(state) do
-    if state.active_turn do
-      {:noreply, %{state | notice: "Model settings are available when idle"}}
-    else
-      model_index = Enum.find_index(state.models, &(&1 == model_ref(state.agent_state))) || 0
-      thinking = Thinking.from_llm_opts(state.agent_state.llm_opts)
-      thinking_index = Enum.find_index(Thinking.levels(), &(&1 == thinking)) || 0
-
-      {:noreply,
-       %{
-         state
-         | overlay:
-             {:settings,
-              %{field: :model, model_index: model_index, thinking_index: thinking_index}}
-       }}
-    end
-  end
-
-  defp open_copy(state) do
-    selected =
-      case Conversation.entries(state.conversation) do
-        [] -> nil
-        entries -> length(entries) - 1
-      end
-
-    {:noreply, %{state | overlay: {:copy, %{selected: selected, notice: nil}}}}
-  end
-
-  defp open_inspector(state) do
-    case latest_output_entry(state.conversation) do
-      nil ->
-        {:noreply, %{state | notice: "No retained tool output yet · F3 browses source"}}
-
-      entry ->
-        {:noreply, %{state | overlay: {:inspector, build_inspector(state, entry)}}}
-    end
-  end
-
   defp open_search(state) do
     state = %{
       state
@@ -640,10 +627,6 @@ defmodule Tackle.CLI.TUI do
     }
 
     {:noreply, refresh_search(state)}
-  end
-
-  defp open_palette(state) do
-    {:noreply, %{state | overlay: {:palette, %{query: "", selected: 0}}}}
   end
 
   defp toggle_thinking(state) do
@@ -707,74 +690,162 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
-  # -- overlay actions -----------------------------------------------------
+  # -- menus ---------------------------------------------------------------
 
-  defp move_copy_selection(state, direction) do
-    count = length(Conversation.entries(state.conversation))
+  defp open_picker(_kind, %{active_turn: turn} = state) when not is_nil(turn) do
+    {:noreply, %{state | notice: "Configuration is available when idle"}}
+  end
+
+  defp open_picker(kind, state) do
+    {:noreply,
+     %{state | overlay: {:picker, %{kind: kind, picker: Picker.new(picker_items(kind, state))}}}}
+  end
+
+  defp apply_picker(:model, item, state), do: reconfigure(state, model: item.id)
+  defp apply_picker(:thinking, item, state), do: reconfigure(state, thinking: item.id)
+
+  defp reconfigure(state, opts) do
+    case Tackle.reconfigure(state.agent_ref, opts) do
+      {:ok, %Snapshot{} = snapshot} ->
+        state = %{
+          state
+          | agent_state: snapshot.agent_state,
+            active_turn: snapshot.active_turn,
+            overlay: nil,
+            error: nil,
+            outcome: nil
+        }
+
+        {:noreply, refresh_conversation(state)}
+
+      {:error, reason} ->
+        # Reconfiguration failure preserves the conversation and the draft.
+        state = %{state | overlay: nil, error: format_reason(reason)}
+        {:noreply, refresh_conversation(state, [:error])}
+    end
+  end
+
+  defp picker_items(:model, state) do
+    current = model_ref(state.agent_state)
+
+    Enum.map(state.models, fn ref ->
+      {provider, id} = split_model_ref(ref)
+
+      %{
+        id: ref,
+        primary: id,
+        secondary: provider && "[#{provider}]",
+        marker: current_marker(ref, current),
+        # Provider first, then the qualified ref, then the bare id: an exact
+        # `openai/gpt-5` query must outrank a proxy id like
+        # `openrouter/openai/gpt-5`.
+        search: Enum.join(Enum.reject([provider, ref, id], &is_nil/1), " ")
+      }
+    end)
+  end
+
+  defp picker_items(:thinking, state) do
+    current = Thinking.from_llm_opts(state.agent_state.llm_opts)
+
+    Enum.map(Thinking.levels(), fn level ->
+      %{
+        id: level,
+        primary: level,
+        secondary: thinking_description(level),
+        marker: current_marker(level, current),
+        search: level
+      }
+    end)
+  end
+
+  # Settings are configuration that is not the model or the reasoning level.
+  # There is nothing to list yet, and the menu says so instead of disappearing.
+  # The first real setting also needs an `apply_picker/3` clause: selecting a row
+  # there is what writes the value.
+  defp picker_items(:settings, _state), do: []
+
+  defp current_marker(value, value), do: "✓"
+  defp current_marker(_value, _current), do: " "
+
+  defp split_model_ref(ref) do
+    case String.split(ref, "/", parts: 2) do
+      [provider, id] when provider != "" and id != "" -> {provider, id}
+      _unqualified -> {nil, ref}
+    end
+  end
+
+  defp thinking_description("off"), do: "No reasoning"
+  defp thinking_description("minimal"), do: "Briefest reasoning"
+  defp thinking_description("low"), do: "Light reasoning"
+  defp thinking_description("medium"), do: "Balanced reasoning"
+  defp thinking_description("high"), do: "Deep reasoning"
+  defp thinking_description("xhigh"), do: "Maximum reasoning"
+  defp thinking_description(_level), do: nil
+
+  # -- transcript browser --------------------------------------------------
+
+  defp toggle_focus(%{focus: :transcript} = state), do: leave_focus(state)
+
+  defp toggle_focus(%{focus: :composer} = state) do
+    case Conversation.entries(state.conversation) do
+      [] ->
+        {:noreply, %{state | notice: "No messages to browse yet"}}
+
+      entries ->
+        selected = List.last(entries).id
+        state = %{state | focus: :transcript, selected_entry: selected, notice: nil}
+
+        state = %{
+          state
+          | conversation: Conversation.scroll_into_view(state.conversation, selected)
+        }
+
+        {:noreply, refresh_conversation(state)}
+    end
+  end
+
+  defp leave_focus(state) do
+    state = %{state | focus: :composer, selected_entry: nil}
+    {:noreply, refresh_conversation(state)}
+  end
+
+  defp move_focus(state, delta) do
+    entries = Conversation.entries(state.conversation)
+    count = length(entries)
 
     if count == 0 do
       state
     else
-      {:copy, copy} = state.overlay
-      delta = if direction == "up", do: -1, else: 1
-      selected = clamp((copy_selection(copy, count) || 0) + delta, 0, count - 1)
-      %{state | overlay: {:copy, %{copy | selected: selected, notice: nil}}}
+      index = Enum.find_index(entries, &(&1.id == state.selected_entry)) || count - 1
+      selected = Enum.at(entries, clamp(index + delta, 0, count - 1)).id
+
+      state
+      |> Map.put(:selected_entry, selected)
+      |> Map.put(:conversation, Conversation.scroll_into_view(state.conversation, selected))
+      |> refresh_selection(state.selected_entry, selected)
     end
   end
 
-  defp copy_selected_entry(%{overlay: {:copy, copy}} = state) do
-    entries = Conversation.entries(state.conversation)
+  # Only the entries that changed need re-rendering, so stepping through a long
+  # transcript does not re-measure every Markdown block in it.
+  defp refresh_selection(state, previous, selected) do
+    sections =
+      [previous, selected]
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&Conversation.section_of(state.conversation, &1))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
 
-    case selected_entry(entries, copy) do
-      nil ->
-        {:noreply, put_copy_notice(state, "Nothing to copy")}
-
-      entry ->
-        notice = clipboard_notice(state, MessageView.source_text(entry), "Copied full source")
-        {:noreply, put_copy_notice(state, notice)}
+    if sections == [] do
+      state
+    else
+      %{state | conversation: Conversation.refresh(state.conversation, state, sections)}
     end
   end
 
-  defp inspect_selected_entry(%{overlay: {:copy, copy}} = state) do
-    entries = Conversation.entries(state.conversation)
+  defp focus_entry(%{selected_entry: nil}), do: nil
 
-    case selected_entry(entries, copy) do
-      nil ->
-        {:noreply, put_copy_notice(state, "Nothing to inspect")}
-
-      entry ->
-        {:noreply, %{state | overlay: {:inspector, build_inspector(state, entry)}}}
-    end
-  end
-
-  defp selected_entry(entries, copy) do
-    case copy_selection(copy, length(entries)) do
-      index when is_integer(index) -> Enum.at(entries, index)
-      _none -> nil
-    end
-  end
-
-  defp copy_all_entries(%{overlay: {:copy, _copy}} = state) do
-    case Conversation.text(state.conversation) do
-      "" ->
-        {:noreply, put_copy_notice(state, "Nothing to copy")}
-
-      text ->
-        {:noreply,
-         put_copy_notice(state, clipboard_notice(state, text, "Copied full transcript"))}
-    end
-  end
-
-  defp put_copy_notice(%{overlay: {:copy, copy}} = state, notice) do
-    %{state | overlay: {:copy, %{copy | notice: notice}}}
-  end
-
-  defp copy_selection(_copy, 0), do: nil
-
-  defp copy_selection(%{selected: selected}, count) when is_integer(selected),
-    do: clamp(selected, 0, count - 1)
-
-  defp copy_selection(_copy, count), do: count - 1
+  defp focus_entry(state), do: Conversation.entry(state.conversation, state.selected_entry)
 
   defp scroll_inspector(%{overlay: {:inspector, inspector}} = state, code) do
     max_offset = max(inspector.content_height - inspector.viewport_height, 0)
@@ -843,116 +914,6 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
-  defp filter_palette(%{overlay: {:palette, palette}} = state, :backspace) do
-    query = palette.query |> String.graphemes() |> Enum.drop(-1) |> Enum.join()
-    %{state | overlay: {:palette, %{palette | query: query, selected: 0}}}
-  end
-
-  defp filter_palette(%{overlay: {:palette, palette}} = state, {:insert, text}) do
-    %{state | overlay: {:palette, %{palette | query: palette.query <> text, selected: 0}}}
-  end
-
-  defp refresh_palette(%{overlay: {:palette, palette}} = state) do
-    commands = filtered_commands(state, palette.query)
-    selected = clamp(palette.selected, 0, max(length(commands) - 1, 0))
-    %{state | overlay: {:palette, %{palette | selected: selected}}}
-  end
-
-  defp move_palette_selection(state, direction) do
-    {:palette, palette} = state.overlay
-    commands = filtered_commands(state, palette.query)
-    delta = if direction == "up", do: -1, else: 1
-    selected = clamp(palette.selected + delta, 0, max(length(commands) - 1, 0))
-    %{state | overlay: {:palette, %{palette | selected: selected}}}
-  end
-
-  defp run_selected_command(state) do
-    {:palette, palette} = state.overlay
-    commands = filtered_commands(state, palette.query)
-    command = Enum.at(commands, clamp(palette.selected, 0, max(length(commands) - 1, 0)))
-
-    if command do
-      run_command(%{state | overlay: nil}, command.id)
-    else
-      {:noreply, state, render?: false}
-    end
-  end
-
-  defp run_command(state, :settings), do: open_settings(state)
-  defp run_command(state, :copy), do: open_copy(state)
-  defp run_command(state, :inspect), do: open_inspector(state)
-  defp run_command(state, :search), do: open_search(state)
-  defp run_command(state, :thinking), do: toggle_thinking(state)
-  defp run_command(state, :cancel), do: escape(state)
-  defp run_command(state, :quit), do: quit(state)
-
-  defp filtered_commands(state, query) do
-    needle = query |> String.trim() |> String.downcase()
-
-    Enum.filter(@commands, fn command ->
-      command_available?(command.id, state) and
-        (needle == "" or
-           String.contains?(
-             String.downcase(command.label <> " " <> command.description),
-             needle
-           ))
-    end)
-  end
-
-  defp command_available?(:settings, state), do: state.active_turn == nil
-  defp command_available?(:cancel, state), do: state.active_turn != nil
-  defp command_available?(_id, _state), do: true
-
-  defp cycle_setting(state, direction) do
-    {:settings, settings} = state.overlay
-    delta = if direction == "left", do: -1, else: 1
-
-    settings =
-      case settings.field do
-        :model ->
-          %{
-            settings
-            | model_index: cycle_index(settings.model_index, delta, length(state.models))
-          }
-
-        :thinking ->
-          %{
-            settings
-            | thinking_index:
-                cycle_index(settings.thinking_index, delta, length(Thinking.levels()))
-          }
-      end
-
-    %{state | overlay: {:settings, settings}}
-  end
-
-  defp cycle_index(index, delta, count), do: Integer.mod(index + delta, max(count, 1))
-
-  defp apply_settings(state) do
-    {:settings, settings} = state.overlay
-    model = Enum.at(state.models, settings.model_index)
-    thinking = Enum.at(Thinking.levels(), settings.thinking_index)
-
-    case Tackle.reconfigure(state.agent_ref, model: model, thinking: thinking) do
-      {:ok, %Snapshot{} = snapshot} ->
-        state = %{
-          state
-          | agent_state: snapshot.agent_state,
-            active_turn: snapshot.active_turn,
-            overlay: nil,
-            error: nil,
-            outcome: nil
-        }
-
-        {:noreply, refresh_conversation(state)}
-
-      {:error, reason} ->
-        # Reconfiguration failure preserves the conversation and the draft.
-        state = %{state | overlay: nil, error: format_reason(reason)}
-        {:noreply, refresh_conversation(state, [:error])}
-    end
-  end
-
   # -- conversation state --------------------------------------------------
 
   defp new_conversation(width, height) do
@@ -966,13 +927,37 @@ defmodule Tackle.CLI.TUI do
     state
     |> Map.put(:conversation, Conversation.refresh(state.conversation, state))
     |> relayout()
+    |> reselect_missing_entry()
   end
 
   defp refresh_conversation(state, sections) do
     state
     |> Map.put(:conversation, Conversation.refresh(state.conversation, state, sections))
     |> relayout()
+    |> reselect_missing_entry()
   end
+
+  # Streaming entries are replaced by settled ones when a turn finishes, so a
+  # selection can name an id that no longer exists. Re-anchor to the newest entry
+  # rather than leaving the browser standing on nothing, and re-render just that
+  # section so the highlight follows the state.
+  defp reselect_missing_entry(%{focus: :transcript, selected_entry: id} = state) do
+    entries = Conversation.entries(state.conversation)
+
+    if entries == [] or Enum.any?(entries, &(&1.id == id)) do
+      state
+    else
+      selected = List.last(entries).id
+      state = %{state | selected_entry: selected}
+
+      sections =
+        [Conversation.section_of(state.conversation, selected)] |> Enum.reject(&is_nil/1)
+
+      %{state | conversation: Conversation.refresh(state.conversation, state, sections)}
+    end
+  end
+
+  defp reselect_missing_entry(state), do: state
 
   defp relayout(state) do
     {width, height} = state.size
@@ -1046,13 +1031,6 @@ defmodule Tackle.CLI.TUI do
     else
       {:noreply, scrolled_state}
     end
-  end
-
-  defp latest_output_entry(conversation) do
-    conversation
-    |> Conversation.entries()
-    |> Enum.reverse()
-    |> Enum.find(&(&1.kind == :tool))
   end
 
   defp build_inspector(state, entry) do
@@ -1185,14 +1163,19 @@ defmodule Tackle.CLI.TUI do
     }
   end
 
+  defp composer_title(%{focus: :transcript}), do: " Browsing · Esc or F4 returns "
   defp composer_title(%{active_turn: nil}), do: " Prompt "
   defp composer_title(_state), do: " Draft · next turn (not queued) "
 
+  defp composer_placeholder(%{focus: :transcript}),
+    do: "Transcript focused — typing is off · ↑/↓ move · Enter inspect · y copy"
+
   defp composer_placeholder(%{active_turn: nil}),
-    do: "Ask Tackle… Enter sends · Shift+Enter or Ctrl+J newline · F1 help"
+    do: "Ask Tackle… Enter sends · Shift+Enter or Ctrl+J newline · F1 model"
 
   defp composer_placeholder(_state), do: "Draft the next instruction — kept, not queued"
 
+  defp composer_color(%{focus: :transcript}), do: :cyan
   defp composer_color(%{active_turn: nil}), do: :green
   defp composer_color(_state), do: :dark_gray
 
@@ -1202,40 +1185,19 @@ defmodule Tackle.CLI.TUI do
     [{overlay_widget(state), %Rect{x: 0, y: 0, width: width, height: height}}]
   end
 
-  defp overlay_widget(%{overlay: {:settings, settings}} = state) do
-    model = Enum.at(state.models, settings.model_index) || "configured default"
-    thinking = Enum.at(Thinking.levels(), settings.thinking_index)
-    selected = if settings.field == :model, do: 0, else: 1
-
-    %Popup{
-      content: %SelectionList{
-        items: ["Model      ‹ #{model} ›", "Thinking   ‹ #{thinking} ›"],
-        selected: selected,
-        highlight_symbol: "› ",
-        highlight_style: %Style{fg: :cyan, modifiers: [:bold]},
-        style: %Style{fg: :white}
-      },
-      block: panel_block(" Settings · ↑/↓ field · ←/→ select · Enter apply · Esc cancel ", :cyan),
-      percent_width: 80,
-      percent_height: 30
-    }
-  end
-
-  defp overlay_widget(%{overlay: {:copy, copy}} = state) do
-    entries = Conversation.entries(state.conversation)
+  defp overlay_widget(%{overlay: {:picker, %{kind: kind, picker: picker}}}) do
+    items = Picker.filtered(picker)
+    selected = clamp(picker.selected, 0, max(length(items) - 1, 0))
 
     content =
-      case entries do
+      case items do
         [] ->
-          %Paragraph{
-            text: " There is no conversation source to copy.",
-            style: %Style{fg: :dark_gray}
-          }
+          empty_menu(kind)
 
-        entries ->
+        items ->
           %SelectionList{
-            items: Enum.map(entries, &copy_preview/1),
-            selected: copy_selection(copy, length(entries)),
+            items: Enum.map(items, &Picker.row/1),
+            selected: selected,
             highlight_symbol: "› ",
             highlight_style: %Style{fg: :cyan, modifiers: [:bold]},
             style: %Style{fg: :white},
@@ -1243,20 +1205,11 @@ defmodule Tackle.CLI.TUI do
           }
       end
 
-    title =
-      case copy.notice do
-        nil ->
-          " Copy source · ↑/↓ select · Y/Enter copy full source · O inspect · A copy all · Esc close "
-
-        notice ->
-          " #{notice} · Esc close "
-      end
-
     %Popup{
       content: content,
-      block: panel_block(title, :cyan),
-      percent_width: 85,
-      percent_height: 60
+      block: panel_block(picker_title(kind, picker.query, length(items)), :cyan),
+      percent_width: 72,
+      percent_height: 55
     }
   end
 
@@ -1306,34 +1259,6 @@ defmodule Tackle.CLI.TUI do
     }
   end
 
-  defp overlay_widget(%{overlay: {:palette, palette}} = state) do
-    commands = filtered_commands(state, palette.query)
-    selected = clamp(palette.selected, 0, max(length(commands) - 1, 0))
-
-    content =
-      case commands do
-        [] ->
-          %Paragraph{text: " No commands match.", style: %Style{fg: :dark_gray}}
-
-        commands ->
-          %SelectionList{
-            items: Enum.map(commands, fn command -> "#{command.label}  ·  #{command.keys}" end),
-            selected: selected,
-            highlight_symbol: "› ",
-            highlight_style: %Style{fg: :cyan, modifiers: [:bold]},
-            style: %Style{fg: :white},
-            scroll_padding: 2
-          }
-      end
-
-    %Popup{
-      content: content,
-      block: panel_block(palette_title(palette.query, length(commands)), :cyan),
-      percent_width: 72,
-      percent_height: 55
-    }
-  end
-
   defp overlay_widget(%{overlay: {:confirm_quit, confirm}}) do
     text =
       case confirm.reason do
@@ -1349,11 +1274,32 @@ defmodule Tackle.CLI.TUI do
     }
   end
 
-  defp palette_title("", count),
-    do: " Help · #{count} commands · type to filter · Enter run · Esc close "
+  defp empty_menu(:settings) do
+    %Paragraph{
+      text:
+        " No settings yet.\n\n The model and the reasoning level have their own menus; anything else the harness makes configurable will appear here.",
+      style: %Style{fg: :dark_gray}
+    }
+  end
 
-  defp palette_title(query, count),
-    do: " Help · filter “#{truncate(query, 24)}” · #{count} matches · Enter run · Esc close "
+  defp empty_menu(:model),
+    do: %Paragraph{text: " No models match.", style: %Style{fg: :dark_gray}}
+
+  defp empty_menu(_kind),
+    do: %Paragraph{text: " No options match.", style: %Style{fg: :dark_gray}}
+
+  defp picker_title(kind, query, count) do
+    label =
+      case kind do
+        :model -> "Model"
+        :thinking -> "Reasoning level"
+        :settings -> "Settings"
+      end
+
+    filter = if query == "", do: "", else: " filter “#{truncate(query, 24)}” ·"
+
+    " #{label} ·#{filter} #{count} #{if count == 1, do: "entry", else: "entries"} · type to filter · Enter select · Esc close "
+  end
 
   defp inspector_position(
          %{content_height: content_height, viewport_height: viewport_height} = inspector
@@ -1367,7 +1313,7 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
-  defp copy_preview(entry) do
+  defp entry_preview(entry) do
     text =
       if entry.kind == :tool, do: MessageView.text(entry), else: MessageView.source_text(entry)
 
@@ -1404,10 +1350,23 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
-  defp status_segments(%{overlay: {:palette, palette}} = state) do
-    case filtered_commands(state, palette.query) do
-      [] -> ["Help", "no commands match"]
-      commands -> ["Help", command_at(commands, palette.selected).description]
+  defp status_segments(%{overlay: {:picker, %{picker: picker}}}) do
+    case Picker.selected(picker) do
+      nil -> ["Menu", "no matches"]
+      item -> ["Menu", item[:secondary] || item[:primary]]
+    end
+  end
+
+  defp status_segments(%{focus: :transcript, notice: notice}) when is_binary(notice),
+    do: ["Browsing", notice]
+
+  defp status_segments(%{focus: :transcript} = state) do
+    entries = Conversation.entries(state.conversation)
+    index = Enum.find_index(entries, &(&1.id == state.selected_entry)) || 0
+
+    case focus_entry(state) do
+      nil -> ["Browsing", "nothing selected"]
+      entry -> ["Browsing", "#{index + 1}/#{length(entries)}", entry_preview(entry)]
     end
   end
 
@@ -1420,10 +1379,6 @@ defmodule Tackle.CLI.TUI do
       nil -> ""
       match -> match.preview
     end
-  end
-
-  defp command_at(commands, selected) do
-    Enum.at(commands, clamp(selected, 0, max(length(commands) - 1, 0)))
   end
 
   defp busy_segments(%{active_turn: nil}), do: []
@@ -1445,13 +1400,25 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
+  defp hint_segments(%{overlay: {:picker, _}}), do: ["↑/↓ select", "Enter apply", "Esc close"]
+
+  defp hint_segments(%{focus: :transcript}) do
+    [
+      "↑/↓ browse",
+      "Enter inspect",
+      "y copy source",
+      "a copy transcript",
+      "Esc or F4 back"
+    ]
+  end
+
   defp hint_segments(%{active_turn: nil}) do
     [
       "Enter send",
-      "F1 help",
-      "F2 model",
-      "F3 source",
-      "F4 output",
+      "F1 model",
+      "F2 reasoning",
+      "F3 settings",
+      "F4 browse",
       "Ctrl+F search",
       "Shift+Enter newline",
       "Ctrl+T reasoning",
@@ -1462,9 +1429,7 @@ defmodule Tackle.CLI.TUI do
   defp hint_segments(_state) do
     [
       "Esc cancel",
-      "F1 help",
-      "F3 source",
-      "F4 output",
+      "F4 browse",
       "Ctrl+F search",
       "draft kept · not queued",
       "Ctrl+C quit"

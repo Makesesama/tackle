@@ -12,7 +12,7 @@ defmodule Tackle.CLI.TUI.Conversation do
 
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.Paragraph
-  alias Tackle.CLI.TUI.MessageView
+  alias Tackle.CLI.TUI.{MessageView, Theme}
 
   @mouse_scroll_rows 3
   @sections [:settled, :pending, :tools, :thinking, :response, :error]
@@ -226,6 +226,53 @@ defmodule Tackle.CLI.TUI.Conversation do
   @spec page_size(t()) :: pos_integer()
   def page_size(%__MODULE__{} = conversation), do: max(conversation.viewport_height - 1, 1)
 
+  @doc """
+  Scrolls the minimum amount that brings an entry fully into view.
+
+  A no-op when the entry already fits, so stepping through adjacent entries
+  moves the selection without dragging the transcript on every keypress.
+  """
+  @spec scroll_into_view(t(), String.t()) :: t()
+  def scroll_into_view(%__MODULE__{} = conversation, id) when is_binary(id) do
+    case entry_span(conversation, id) do
+      nil ->
+        conversation
+
+      {top, height} ->
+        bottom = top + height
+        viewport = conversation.viewport_height
+        max_offset = max(conversation.content_height - viewport, 0)
+
+        cond do
+          top < conversation.scroll_offset ->
+            move_to(conversation, top, max_offset)
+
+          bottom > conversation.scroll_offset + viewport ->
+            move_to(conversation, bottom - viewport, max_offset)
+
+          true ->
+            conversation
+        end
+    end
+  end
+
+  @doc "Returns the section holding an entry id, or nil when it is not cached."
+  @spec section_of(t(), String.t()) :: section() | nil
+  def section_of(%__MODULE__{} = conversation, id) when is_binary(id) do
+    Enum.find(@sections, fn section ->
+      conversation.sections
+      |> Map.get(section, %{entries: []})
+      |> Map.fetch!(:entries)
+      |> Enum.any?(&(&1.id == id))
+    end)
+  end
+
+  @doc "Returns the cached entry for an id, or nil when it is not cached."
+  @spec entry(t(), String.t()) :: MessageView.t() | nil
+  def entry(%__MODULE__{} = conversation, id) when is_binary(id) do
+    conversation |> entries() |> Enum.find(&(&1.id == id))
+  end
+
   @doc "Returns whether a terminal coordinate lies within the transcript."
   @spec contains?(t(), integer(), integer()) :: boolean()
   def contains?(%__MODULE__{rect: rect}, x, y) when is_integer(x) and is_integer(y) do
@@ -315,6 +362,19 @@ defmodule Tackle.CLI.TUI.Conversation do
     Map.new(@sections, &{&1, %{entries: [], groups: [], item_ids: []}})
   end
 
+  # The browser stands on one entry at a time. The highlighted entry keeps its
+  # own colors and only gains the selection surface, so a tool card or user
+  # message still reads as itself while it is selected.
+  defp render_entry(entry, width, state) do
+    items = MessageView.render_entry(entry, width)
+
+    if Map.get(state, :selected_entry) == entry.id do
+      MessageView.highlight(items, Theme.style(:selection_surface))
+    else
+      items
+    end
+  end
+
   defp build_section(state, section, width) do
     entries =
       state
@@ -322,7 +382,7 @@ defmodule Tackle.CLI.TUI.Conversation do
       |> Enum.with_index()
       |> Enum.map(fn {entry, index} -> %{entry | id: entry.id || "#{section}:#{index}"} end)
 
-    groups = Enum.map(entries, &MessageView.render_entry(&1, width))
+    groups = Enum.map(entries, &render_entry(&1, width, state))
 
     item_ids =
       Enum.zip(entries, groups)
@@ -467,6 +527,40 @@ defmodule Tackle.CLI.TUI.Conversation do
         items |> Enum.take(index) |> Enum.reduce(0, fn {_item, h}, total -> total + h end)
     end
   end
+
+  # Returns the row offset and height of an entry, or nil when it is absent.
+  defp entry_span(%__MODULE__{} = conversation, id) do
+    case Enum.find_index(conversation.item_ids, &(&1 == id)) do
+      nil ->
+        nil
+
+      index ->
+        top =
+          conversation.items
+          |> Enum.take(index)
+          |> Enum.reduce(0, fn {_item, h}, offset -> offset + h end)
+
+        height =
+          conversation.item_ids
+          |> Enum.zip(conversation.items)
+          |> Enum.drop(index)
+          |> Enum.take_while(fn {item_id, _item} -> item_id == id end)
+          |> Enum.reduce(0, fn {_item_id, {_widget, h}}, total -> total + h end)
+
+        {top, height}
+    end
+  end
+
+  defp move_to(conversation, offset, max_offset) do
+    scroll_offset = clamp(offset, 0, max_offset)
+
+    conversation
+    |> Map.merge(%{scroll_offset: scroll_offset, follow?: false, new_output?: false})
+    |> put_anchor()
+    |> put_visible()
+  end
+
+  defp clamp(value, minimum, maximum), do: value |> max(minimum) |> min(maximum)
 
   defp search_preview(source, needle) do
     line =
