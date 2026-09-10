@@ -122,6 +122,9 @@
           # Common shell hook for both environments
           commonShellHook = ''
             ${preCommitCheck.shellHook}
+              # Enable Tackle development-only behaviour (e.g. the elixir_eval tool)
+              export TACKLE_DEV=1
+
               # Set up `mix` to save dependencies to the local directory
               mkdir -p .nix-mix
               mkdir -p .nix-hex

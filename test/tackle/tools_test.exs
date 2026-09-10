@@ -17,7 +17,11 @@ defmodule Tackle.ToolsTest do
     %{context: %{cwd: directory}, directory: directory}
   end
 
-  test "exposes the five default developer tools" do
+  test "exposes the four default tools plus elixir_eval when TACKLE_DEV is set" do
+    previous = System.get_env("TACKLE_DEV")
+    on_exit(fn -> restore_env("TACKLE_DEV", previous) end)
+
+    System.put_env("TACKLE_DEV", "1")
     assert Tools.default() == [Read, Bash, ElixirEval, Edit, Write]
 
     assert Enum.map(Tools.default(), & &1.name()) == [
@@ -27,6 +31,16 @@ defmodule Tackle.ToolsTest do
              "edit",
              "write"
            ]
+  end
+
+  test "omits elixir_eval from the defaults when TACKLE_DEV is unset" do
+    previous = System.get_env("TACKLE_DEV")
+    on_exit(fn -> restore_env("TACKLE_DEV", previous) end)
+
+    System.delete_env("TACKLE_DEV")
+    assert Tools.default() == [Read, Bash, Edit, Write]
+
+    assert Enum.map(Tools.default(), & &1.name()) == ["read", "bash", "edit", "write"]
   end
 
   test "write creates parents and read resolves paths from the context cwd", %{
@@ -219,4 +233,7 @@ defmodule Tackle.ToolsTest do
     assert {:error, "Evaluation aborted"} = Task.await(task, 1_000)
     Cancellation.delete(signal)
   end
+
+  defp restore_env("TACKLE_DEV", nil), do: System.delete_env("TACKLE_DEV")
+  defp restore_env("TACKLE_DEV", value), do: System.put_env("TACKLE_DEV", value)
 end
