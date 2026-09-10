@@ -14,7 +14,7 @@ defmodule Tackle.CLI.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :tackle_codex, :tackle]
+      extra_applications: [:logger, :tackle_codex, :tackle_deepseek, :tackle]
     ]
   end
 
@@ -22,6 +22,7 @@ defmodule Tackle.CLI.MixProject do
     [
       {:tackle, path: "../.."},
       {:tackle_codex, path: "../../plugins/tackle_codex"},
+      {:tackle_deepseek, path: "../../plugins/tackle_deepseek"},
       {:optimus, "~> 0.6"},
       {:ex_ratatui, path: "../../repos/ex_ratatui"},
       {:rustler, ">= 0.0.0"}

@@ -5,8 +5,9 @@ harness.
 
 This is a separate Mix project so CLI dependencies and presentation concerns stay
 out of the root harness and `packages/tackle_lib`. The shipped CLI distribution
-bundles first-party plugins such as `plugins/tackle_codex`, configures them as
-available harness adapters, and then talks to the root `:tackle` application for
+bundles the first-party `plugins/tackle_codex` and `plugins/tackle_deepseek`
+adapters, configures them as available harness adapters, and then talks to the
+root `:tackle` application for
 configuration, credential storage, scoped runtime ownership, and turn execution.
 The CLI starts one root scope, addresses the root agent through a
 `Tackle.Runtime.AgentRef`, and stops the complete scope on exit; it never stores
@@ -18,16 +19,27 @@ Adapter availability is a harness and distribution concern.
 
 ## Usage during development
 
+From the repository root, fetch the frontend dependencies once and then use the
+root delegation task:
+
 ```sh
-mix deps.get
+(cd frontends/tackle_cli && mix deps.get)
 mix tackle --help
 mix tackle models
 mix tackle auth status
 mix tackle auth login openai-codex
+mix tackle auth login deepseek
+mix tackle run --model deepseek/deepseek-chat "Inspect this project"
 mix tackle run --thinking high "Inspect this project"
 ```
 
-Run `mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.
+DeepSeek login stores the key under the `deepseek` credential namespace. The
+credential file is plaintext JSON protected by user-only filesystem permissions;
+alternatively, set `DEEPSEEK_API_KEY`. When the terminal does not support hidden
+input, the command falls back to a visible prompt.
+
+The same `mix tackle` commands continue to work from this directory. Run
+`mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.
 The shell is transcript-first and fullscreen: a compact header, a border-light
 transcript that owns the flexible middle of the screen, an optional reading row,
 an optional status/metrics row, a growing multiline composer, and a responsive

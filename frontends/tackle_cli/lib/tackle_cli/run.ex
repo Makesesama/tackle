@@ -2,6 +2,7 @@ defmodule Tackle.CLI.Run do
   @moduledoc false
 
   alias Tackle.CLI.Distribution
+  alias Tackle.CLI.SecretInput
   alias Tackle.CLI.TUI
   alias Tackle.Plugins.Codex.OAuth
   alias Tackle.Runtime.AgentSpec
@@ -9,6 +10,8 @@ defmodule Tackle.CLI.Run do
   alias Tackle.Session.Spec, as: SessionSpec
 
   @codex_provider "openai-codex"
+  @deepseek_provider "deepseek"
+  @auth_providers [@codex_provider, @deepseek_provider]
   @terminal_timeout 60_000
 
   @spec run(%{
@@ -117,10 +120,7 @@ defmodule Tackle.CLI.Run do
   def auth_login(%{provider: provider}) do
     with {:ok, _apps} <- ensure_started(),
          :ok <- supported_auth_provider(provider),
-         {:ok, device} <- OAuth.request_device_code(),
-         :ok <- print_device_instructions(device),
-         {:ok, credentials} <- OAuth.complete_device_code(device),
-         :ok <- Tackle.Auth.put(provider, credentials) do
+         :ok <- login(provider) do
       IO.puts("Stored credentials for #{provider}.")
       0
     else
@@ -261,10 +261,24 @@ defmodule Tackle.CLI.Run do
     Application.ensure_all_started(:tackle_cli)
   end
 
-  defp supported_auth_provider(@codex_provider), do: :ok
+  defp supported_auth_provider(provider) when provider in @auth_providers, do: :ok
 
   defp supported_auth_provider(provider),
-    do: {:error, {:unsupported_auth_provider, provider, supported: [@codex_provider]}}
+    do: {:error, {:unsupported_auth_provider, provider, supported: @auth_providers}}
+
+  defp login(@codex_provider) do
+    with {:ok, device} <- OAuth.request_device_code(),
+         :ok <- print_device_instructions(device),
+         {:ok, credentials} <- OAuth.complete_device_code(device) do
+      Tackle.Auth.put(@codex_provider, credentials)
+    end
+  end
+
+  defp login(@deepseek_provider) do
+    with {:ok, api_key} <- SecretInput.read("DeepSeek API key: ") do
+      Tackle.Auth.put(@deepseek_provider, %{"api_key" => api_key})
+    end
+  end
 
   defp print_device_instructions(device) do
     IO.puts("Open #{device.verification_uri} and enter code #{device.user_code}.")

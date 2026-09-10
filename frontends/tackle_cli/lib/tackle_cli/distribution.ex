@@ -1,7 +1,7 @@
 defmodule Tackle.CLI.Distribution do
   @moduledoc false
 
-  @default_adapters [Tackle.Plugins.Codex]
+  @default_adapters [Tackle.Plugins.Codex, Tackle.Plugins.DeepSeek]
 
   @doc "Installs default CLI distribution contributions before the harness starts."
   @spec configure() :: :ok

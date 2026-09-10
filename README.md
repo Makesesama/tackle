@@ -90,6 +90,21 @@ references, and library configuration from `:tackle`/`Tackle.*` to
 `:tackle_lib`/`Tackle.Lib.*`. The Phoenix integration keeps its
 `:tackle_phoenix` and `Tackle.Phoenix.*` identities.
 
+## CLI during development
+
+Fetch the separate frontend project's dependencies once, then run the CLI from
+the repository root:
+
+```sh
+(cd frontends/tackle_cli && mix deps.get)
+mix tackle --help
+mix tackle
+```
+
+The root task delegates to `frontends/tackle_cli` so its terminal and provider
+dependencies remain outside the root harness. Running `mix tackle` directly
+inside `frontends/tackle_cli` remains supported.
+
 ## Basic harness API
 
 The harness accepts already-loaded adapter and capability modules. General

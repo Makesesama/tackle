@@ -1,0 +1,495 @@
+defmodule Tackle.Plugins.DeepSeekTest do
+  use ExUnit.Case, async: false
+
+  alias Tackle.Lib.{Cancellation, LLM, ModelInfo, Usage}
+  alias Tackle.Plugins.DeepSeek
+
+  defmodule CredentialStore do
+    @behaviour Tackle.Lib.CredentialStore
+
+    @impl true
+    def fetch(agent, namespace), do: Agent.get(agent, &Map.fetch(&1, namespace))
+
+    @impl true
+    def put(agent, namespace, credentials) do
+      Agent.update(agent, &Map.put(&1, namespace, credentials))
+    end
+
+    @impl true
+    def delete(agent, namespace), do: Agent.update(agent, &Map.delete(&1, namespace))
+  end
+
+  setup do
+    start_supervised!({Agent, fn -> %{DeepSeek.adapter_id() => %{"api_key" => "stored-key"}} end},
+      id: {Agent, make_ref()}
+    )
+    |> then(&{:ok, store: {CredentialStore, &1}})
+  end
+
+  test "exposes selectable models with limits and price cards" do
+    assert DeepSeek.adapter_id() == "deepseek"
+    assert DeepSeek.models() == ["deepseek-chat", "deepseek-reasoner", "deepseek-flash"]
+
+    Enum.each(["deepseek-chat", "deepseek-reasoner"], fn model ->
+      assert {:ok, %ModelInfo{} = info} = LLM.model_info(DeepSeek, model)
+      assert info.context_window == 128_000
+      assert info.max_output_tokens == 128_000
+      assert info.pricing.currency == "USD"
+      assert info.pricing.unit_tokens == 1_000_000
+    end)
+
+    assert {:ok, %ModelInfo{} = flash} = LLM.model_info(DeepSeek, "deepseek-flash")
+    assert flash.context_window == 1_000_000
+    assert flash.max_output_tokens == 384_000
+    assert flash.pricing.input == 0.3
+    assert flash.pricing.output == 1.2
+    assert flash.pricing.cache_read == 0.006
+    assert flash.pricing.currency == "USD"
+    assert flash.pricing.unit_tokens == 1_000_000
+
+    assert {:ok, nil} = LLM.model_info(DeepSeek, "unknown")
+    assert {:ok, selection} = LLM.select([DeepSeek], "deepseek/deepseek-chat")
+    assert selection.model == "deepseek-chat"
+    assert {:ok, flash_selection} = LLM.select([DeepSeek], "deepseek/deepseek-flash")
+    assert flash_selection.model == "deepseek-flash"
+  end
+
+  test "translates messages and tools and normalizes DeepSeek cache usage", %{store: store} do
+    test_pid = self()
+
+    request = fn options ->
+      send(test_pid, {:request, options})
+
+      streaming_response(options, [
+        sse(%{
+          "id" => "chat-1",
+          "model" => "deepseek-chat",
+          "choices" => [%{"index" => 0, "delta" => %{"content" => "hel"}, "finish_reason" => nil}]
+        }),
+        sse(%{
+          "id" => "chat-1",
+          "model" => "deepseek-chat",
+          "choices" => [
+            %{"index" => 0, "delta" => %{"content" => "lo"}, "finish_reason" => "stop"}
+          ],
+          "usage" => %{
+            "prompt_tokens" => 12,
+            "completion_tokens" => 4,
+            "total_tokens" => 16,
+            "prompt_cache_hit_tokens" => 2,
+            "prompt_cache_miss_tokens" => 10,
+            "completion_tokens_details" => %{"reasoning_tokens" => 1}
+          }
+        }),
+        "data: [DONE]\n\n"
+      ])
+    end
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.merge(
+        system: "Be useful",
+        temperature: 0.3,
+        max_tokens: 2_000,
+        messages: [
+          %{role: :user, content: "search"},
+          %{
+            role: :assistant,
+            content: nil,
+            tool_calls: [
+              %{
+                id: "call-old",
+                type: "function",
+                function: %{name: "search", arguments: "{\"query\":\"old\"}"}
+              }
+            ]
+          },
+          %{role: :tool, tool_call_id: "call-old", name: "search", content: "old result"}
+        ],
+        tools: [
+          %{
+            name: "search",
+            description: "Search documents",
+            input_schema: [query: [type: :string, required: true, description: "Query"]]
+          }
+        ]
+      )
+
+    assert {:ok, selection} = LLM.select([DeepSeek], "deepseek/deepseek-chat")
+    assert {:ok, result} = LLM.generate_with(selection, nil, opts)
+    assert result.data == %{"content" => "hello", "tool_calls" => []}
+    assert result.model == "deepseek-chat"
+    assert result.provider == "deepseek"
+
+    assert %Usage{
+             input_tokens: 10,
+             output_tokens: 4,
+             cache_read_tokens: 2,
+             cache_write_tokens: 0,
+             reasoning_tokens: 1,
+             total_tokens: 16,
+             cost_estimated: true,
+             currency: "USD"
+           } = result.usage
+
+    assert_receive {:request, request_options}
+    assert request_options[:url] == "https://api.deepseek.com/chat/completions"
+    assert header(request_options, "authorization") == "Bearer stored-key"
+    assert header(request_options, "accept") == "text/event-stream"
+
+    assert {:ok, body} = JSON.decode(request_options[:body])
+    assert body["model"] == "deepseek-chat"
+    assert body["stream"] == true
+    assert body["stream_options"] == %{"include_usage" => true}
+    assert body["temperature"] == 0.3
+    assert body["max_tokens"] == 2_000
+
+    assert [
+             %{"role" => "system", "content" => "Be useful"},
+             %{"role" => "user"},
+             %{"role" => "assistant", "tool_calls" => [old_call]},
+             %{"role" => "tool", "tool_call_id" => "call-old"}
+           ] = body["messages"]
+
+    assert old_call["function"]["arguments"] == "{\"query\":\"old\"}"
+
+    assert [
+             %{
+               "type" => "function",
+               "function" => %{
+                 "name" => "search",
+                 "parameters" => parameters,
+                 "strict" => false
+               }
+             }
+           ] = body["tools"]
+
+    assert parameters["required"] == ["query"]
+    assert body["tool_choice"] == "auto"
+  end
+
+  test "streams reasoning and tool argument deltas across chunk boundaries", %{store: store} do
+    wire =
+      Enum.join([
+        sse(%{
+          "model" => "deepseek-reasoner",
+          "choices" => [
+            %{
+              "index" => 0,
+              "delta" => %{"reasoning_content" => "considering"},
+              "finish_reason" => nil
+            }
+          ]
+        }),
+        sse(%{
+          "model" => "deepseek-reasoner",
+          "choices" => [
+            %{
+              "index" => 0,
+              "delta" => %{
+                "tool_calls" => [
+                  %{
+                    "index" => 0,
+                    "id" => "call-1",
+                    "function" => %{"name" => "search", "arguments" => "{\"query\":"}
+                  }
+                ]
+              },
+              "finish_reason" => nil
+            }
+          ]
+        }),
+        sse(%{
+          "model" => "deepseek-reasoner",
+          "choices" => [
+            %{
+              "index" => 0,
+              "delta" => %{
+                "tool_calls" => [
+                  %{"index" => 0, "function" => %{"arguments" => "\"cats\"}"}}
+                ]
+              },
+              "finish_reason" => "tool_calls"
+            }
+          ],
+          "usage" => %{
+            "prompt_tokens" => 8,
+            "completion_tokens" => 5,
+            "total_tokens" => 13,
+            "prompt_cache_hit_tokens" => 3
+          }
+        }),
+        "data: [DONE]\n\n"
+      ])
+
+    request = fn options -> streaming_response(options, split_binary(wire, [7, 31, 3, 89])) end
+    opts = base_opts(store, request) |> Keyword.put(:model, "deepseek-reasoner")
+
+    assert {:ok, result} =
+             DeepSeek.stream(nil, opts, fn event -> send(self(), {:event, event}) end)
+
+    assert result.data == %{
+             "thinking" => "considering",
+             "tool_calls" => [
+               %{"id" => "call-1", "name" => "search", "arguments" => "{\"query\":\"cats\"}"}
+             ]
+           }
+
+    assert result.provider_state == %{
+             "provider" => "deepseek",
+             "model" => "deepseek-reasoner",
+             "reasoning_content" => "considering"
+           }
+
+    assert_receive {:event, %{type: :reasoning_delta, delta: "considering"}}
+    assert_receive {:event, %{type: :tool_input_delta, delta: "{\"query\":"}}
+    assert_receive {:event, %{type: :tool_input_delta, delta: "\"cats\"}"}}
+    assert_receive {:event, %{type: :usage}}
+  end
+
+  test "replays reasoner content only for the same provider and model", %{store: store} do
+    test_pid = self()
+
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(test_pid, {:body, body})
+
+      streaming_response(options, [
+        sse(%{
+          "model" => "deepseek-reasoner",
+          "choices" => [%{"delta" => %{"content" => "done"}, "finish_reason" => "stop"}]
+        }),
+        "data: [DONE]\n\n"
+      ])
+    end
+
+    provider_state = %{
+      "provider" => "deepseek",
+      "model" => "deepseek-reasoner",
+      "reasoning_content" => "previous reasoning"
+    }
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.merge(
+        model: "deepseek-reasoner",
+        messages: [
+          %{
+            role: :assistant,
+            content: nil,
+            tool_calls: [
+              %{id: "call-1", function: %{name: "search", arguments: "{}"}}
+            ],
+            provider_state: provider_state
+          },
+          %{role: :tool, tool_call_id: "call-1", content: "result"}
+        ]
+      )
+
+    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert_receive {:body, body}
+    assert [%{"reasoning_content" => "previous reasoning"}, _tool] = body["messages"]
+  end
+
+  test "replays flash reasoning content only when the request carries tools", %{store: store} do
+    test_pid = self()
+
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(test_pid, {:body, body})
+
+      streaming_response(options, [
+        sse(%{
+          "model" => "deepseek-flash",
+          "choices" => [%{"delta" => %{"content" => "done"}, "finish_reason" => "stop"}]
+        }),
+        "data: [DONE]\n\n"
+      ])
+    end
+
+    provider_state = %{
+      "provider" => "deepseek",
+      "model" => "deepseek-flash",
+      "reasoning_content" => "previous reasoning"
+    }
+
+    messages = [
+      %{
+        role: :assistant,
+        content: nil,
+        tool_calls: [%{id: "call-1", function: %{name: "search", arguments: "{}"}}],
+        provider_state: provider_state
+      },
+      %{role: :tool, tool_call_id: "call-1", content: "result"}
+    ]
+
+    tools = [
+      %{name: "search", description: "Search", input_schema: [query: [type: :string]]}
+    ]
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.merge(model: "deepseek-flash", messages: messages, tools: tools)
+
+    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert_receive {:body, %{"messages" => [assistant, _tool]}}
+    assert assistant["reasoning_content"] == "previous reasoning"
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.merge(model: "deepseek-flash", messages: messages)
+
+    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert_receive {:body, %{"messages" => [assistant, _tool]}}
+    refute Map.has_key?(assistant, "reasoning_content")
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.merge(model: "deepseek-reasoner", messages: messages)
+
+    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert_receive {:body, %{"messages" => [assistant, _tool]}}
+    # The reasoner always replays the key, but an empty string when the stored
+    # provider state belongs to a different model.
+    assert assistant["reasoning_content"] == ""
+  end
+
+  test "requests JSON output and parses a structured response", %{store: store} do
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      assert body["response_format"] == %{"type" => "json_object"}
+      assert [%{"role" => "system", "content" => instruction}, _user] = body["messages"]
+      assert instruction =~ "Return only a JSON object matching this JSON Schema"
+      assert instruction =~ "\"answer\""
+
+      streaming_response(options, [
+        sse(%{
+          "model" => "deepseek-chat",
+          "choices" => [
+            %{"delta" => %{"content" => "{\"answer\":\"yes\"}"}, "finish_reason" => "stop"}
+          ]
+        }),
+        "data: [DONE]\n\n"
+      ])
+    end
+
+    assert {:ok, %{data: %{"answer" => "yes"}}} =
+             DeepSeek.generate(
+               [answer: [type: :string, required: true]],
+               base_opts(store, request)
+             )
+  end
+
+  test "maps reasoning effort to DeepSeek thinking controls", %{store: store} do
+    test_pid = self()
+
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(test_pid, {:body, body})
+
+      streaming_response(options, [
+        sse(%{
+          "choices" => [%{"delta" => %{"content" => "ok"}, "finish_reason" => "stop"}]
+        })
+      ])
+    end
+
+    assert {:ok, _result} =
+             DeepSeek.generate(
+               nil,
+               Keyword.put(base_opts(store, request), :reasoning_effort, :high)
+             )
+
+    assert_receive {:body,
+                    %{
+                      "thinking" => %{"type" => "enabled"},
+                      "reasoning_effort" => "high"
+                    }}
+  end
+
+  test "halts an active response stream after cancellation", %{store: store} do
+    signal = Cancellation.new_signal()
+    on_exit(fn -> Cancellation.delete(signal) end)
+
+    request = fn options ->
+      streaming_response(options, [
+        sse(%{"choices" => [%{"delta" => %{"content" => "one"}, "finish_reason" => nil}]}),
+        sse(%{"choices" => [%{"delta" => %{"content" => "two"}, "finish_reason" => "stop"}]})
+      ])
+    end
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.put(:cancellation_signal, signal)
+
+    assert {:error, :cancelled} =
+             DeepSeek.stream(nil, opts, fn
+               %{type: :text_delta, delta: "one"} -> Cancellation.cancel(signal)
+               _event -> :ok
+             end)
+  end
+
+  test "validates model and credentials before requesting", %{store: store} do
+    request = fn _options -> flunk("unexpected request") end
+
+    assert {:error, {:unsupported_model, "unknown"}} =
+             DeepSeek.generate(nil, Keyword.put(base_opts(store, request), :model, "unknown"))
+
+    empty_store_agent = start_supervised!({Agent, fn -> %{} end}, id: {Agent, make_ref()})
+    empty_store = {CredentialStore, empty_store_agent}
+
+    previous = System.get_env("DEEPSEEK_API_KEY")
+    System.delete_env("DEEPSEEK_API_KEY")
+
+    on_exit(fn ->
+      if previous, do: System.put_env("DEEPSEEK_API_KEY", previous)
+    end)
+
+    assert {:error, :missing_deepseek_api_key} =
+             DeepSeek.generate(nil, base_opts(empty_store, request))
+  end
+
+  defp base_opts(store, request) do
+    [
+      model: "deepseek-chat",
+      messages: [%{role: :user, content: "hello"}],
+      tools: [],
+      credential_store: store,
+      request: request
+    ]
+  end
+
+  defp streaming_response(options, chunks) do
+    into = Keyword.fetch!(options, :into)
+    initial = {%Req.Request{}, %Req.Response{status: 200, headers: %{}, body: ""}}
+
+    {_request, response} =
+      Enum.reduce_while(chunks, initial, fn chunk, pair ->
+        case into.({:data, chunk}, pair) do
+          {:cont, next_pair} -> {:cont, next_pair}
+          {:halt, next_pair} -> {:halt, next_pair}
+        end
+      end)
+
+    {:ok, response}
+  end
+
+  defp sse(event), do: "data: #{JSON.encode!(event)}\n\n"
+
+  defp header(options, name) do
+    options
+    |> Keyword.fetch!(:headers)
+    |> Enum.find_value(fn {key, value} -> if key == name, do: value end)
+  end
+
+  defp split_binary(binary, sizes) do
+    {chunks, rest} =
+      Enum.map_reduce(sizes, binary, fn size, remaining ->
+        size = min(size, byte_size(remaining))
+        <<chunk::binary-size(^size), rest::binary>> = remaining
+        {chunk, rest}
+      end)
+
+    chunks ++ [rest]
+  end
+end
