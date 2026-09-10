@@ -25,7 +25,7 @@ defmodule Tackle.CLI.Main do
   defp dispatch({:auth_logout, opts}), do: Run.auth_logout(opts)
 
   defp puts(message, device, status) do
-    IO.puts(device, message)
+    Owl.IO.puts(message, device)
     status
   end
 end

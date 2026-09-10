@@ -2,7 +2,6 @@ defmodule Tackle.CLI.Run do
   @moduledoc false
 
   alias Tackle.CLI.Distribution
-  alias Tackle.CLI.SecretInput
   alias Tackle.CLI.TUI
   alias Tackle.Plugins.Codex.OAuth
   alias Tackle.Runtime.AgentSpec
@@ -96,7 +95,7 @@ defmodule Tackle.CLI.Run do
     with {:ok, _apps} <- ensure_started(),
          {:ok, filters} <- session_filters(limit),
          {:ok, %{sessions: sessions}} <- list_sessions(query, filters) do
-      Enum.each(sessions, &puts_session/1)
+      sessions |> Enum.map(&session_row/1) |> print_table()
       0
     else
       {:error, reason} -> error(reason)
@@ -108,7 +107,7 @@ defmodule Tackle.CLI.Run do
   def models do
     with {:ok, _apps} <- ensure_started(),
          {:ok, models} <- Tackle.available_models() do
-      Enum.each(models, &IO.puts/1)
+      models |> Enum.map(&%{"model" => to_string(&1)}) |> print_table()
       0
     else
       {:error, reason} -> error(reason)
@@ -121,7 +120,7 @@ defmodule Tackle.CLI.Run do
     with {:ok, _apps} <- ensure_started(),
          :ok <- supported_auth_provider(provider),
          :ok <- login(provider) do
-      IO.puts("Stored credentials for #{provider}.")
+      Owl.IO.puts(Owl.Data.tag("Stored credentials for #{provider}.", :green))
       0
     else
       {:error, reason} -> error(reason)
@@ -137,11 +136,11 @@ defmodule Tackle.CLI.Run do
          :ok <- supported_auth_provider(provider) do
       case Tackle.Auth.status(provider) do
         :stored ->
-          IO.puts("#{provider}: stored")
+          Owl.IO.puts(Owl.Data.tag("#{provider}: stored", :green))
           0
 
         :missing ->
-          IO.puts("#{provider}: missing")
+          Owl.IO.puts(Owl.Data.tag("#{provider}: missing", :yellow))
           1
 
         {:error, reason} ->
@@ -157,13 +156,27 @@ defmodule Tackle.CLI.Run do
   def auth_logout(%{provider: provider}) do
     with {:ok, _apps} <- ensure_started(),
          :ok <- supported_auth_provider(provider),
+         :ok <- confirm_logout(provider),
          :ok <- Tackle.Auth.delete(provider) do
-      IO.puts("Deleted credentials for #{provider}.")
+      Owl.IO.puts(Owl.Data.tag("Deleted credentials for #{provider}.", :green))
       0
     else
-      {:error, reason} -> error(reason)
-      reason -> error(reason)
+      {:error, :aborted} ->
+        Owl.IO.puts(Owl.Data.tag("aborted", :yellow))
+        1
+
+      {:error, reason} ->
+        error(reason)
+
+      reason ->
+        error(reason)
     end
+  end
+
+  defp confirm_logout(provider) do
+    question = Owl.Data.tag("Delete stored credentials for #{provider}?", :yellow)
+
+    if Owl.IO.confirm(message: question), do: :ok, else: {:error, :aborted}
   end
 
   defp start_scope(model, thinking, llm_stream, opts) do
@@ -215,20 +228,31 @@ defmodule Tackle.CLI.Run do
   defp list_sessions(nil, filters), do: Tackle.list_sessions(filters)
   defp list_sessions(query, filters), do: Tackle.search_sessions(query, filters)
 
-  defp puts_session(session) do
-    title = session.title || session.preview || "(untitled)"
+  defp session_row(session) do
+    %{
+      "session" => session.session_id,
+      "updated" => to_string(session.updated_at),
+      "status" => to_string(session.status),
+      "messages" => Integer.to_string(session.message_count),
+      "title" => session.title || session.preview || "(untitled)"
+    }
+  end
 
-    IO.puts(
-      "#{session.session_id}  #{session.updated_at}  #{session.status}  " <>
-        "#{session.message_count} messages  #{title}"
-    )
+  # Owl.Table.new/2 requires a nonempty list, and an empty result is reachable
+  # for both `models` and `sessions`.
+  defp print_table([]), do: Owl.IO.puts(Owl.Data.tag("(none)", :yellow))
+
+  defp print_table(rows) do
+    rows
+    |> Owl.Table.new(border_style: :solid_rounded, padding_x: 1)
+    |> Owl.IO.puts()
   end
 
   defp run_prompt(agent_ref, prompt) do
     with {:ok, snapshot} <- Tackle.subscribe(agent_ref),
          {:ok, turn_id} <- Tackle.submit(agent_ref, prompt),
          {:ok, answer} <- await_answer(snapshot.session_id, turn_id) do
-      IO.puts(answer)
+      Owl.IO.puts(answer)
       0
     else
       {:error, reason} -> error(reason)
@@ -269,20 +293,35 @@ defmodule Tackle.CLI.Run do
   defp login(@codex_provider) do
     with {:ok, device} <- OAuth.request_device_code(),
          :ok <- print_device_instructions(device),
-         {:ok, credentials} <- OAuth.complete_device_code(device) do
+         {:ok, credentials} <- complete_device_code(device) do
       Tackle.Auth.put(@codex_provider, credentials)
     end
   end
 
   defp login(@deepseek_provider) do
-    with {:ok, api_key} <- SecretInput.read("DeepSeek API key: ") do
-      Tackle.Auth.put(@deepseek_provider, %{"api_key" => api_key})
-    end
+    api_key = Owl.IO.input(label: "DeepSeek API key", secret: true, cast: :string)
+    Tackle.Auth.put(@deepseek_provider, %{"api_key" => api_key})
+  end
+
+  defp complete_device_code(device) do
+    Owl.Spinner.run(fn -> OAuth.complete_device_code(device) end,
+      labels: [
+        processing: "Waiting for authorization...",
+        ok: "Authorized",
+        error: fn reason -> "Authorization failed: #{inspect(reason)}" end
+      ]
+    )
   end
 
   defp print_device_instructions(device) do
-    IO.puts("Open #{device.verification_uri} and enter code #{device.user_code}.")
-    IO.puts("Waiting for authorization...")
+    Owl.IO.puts([
+      "Open ",
+      Owl.Data.tag(device.verification_uri, [:cyan, :underline]),
+      " and enter code ",
+      Owl.Data.tag(device.user_code, [:cyan, :bright]),
+      "."
+    ])
+
     :ok
   end
 
@@ -304,7 +343,7 @@ defmodule Tackle.CLI.Run do
   end
 
   defp error(reason) do
-    IO.puts(:stderr, "error: #{inspect(reason)}")
+    Owl.IO.puts(Owl.Data.tag("error: #{inspect(reason)}", :red), :stderr)
     1
   end
 end
