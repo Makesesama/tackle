@@ -105,6 +105,24 @@ The root task delegates to `frontends/tackle_cli` so its terminal and provider
 dependencies remain outside the root harness. Running `mix tackle` directly
 inside `frontends/tackle_cli` remains supported.
 
+### Sandboxed dogfooding on Linux
+
+The development shell also provides `jailed-tackle`, a Bubblewrap launcher built
+with [`jailed-agents`](https://github.com/andersonjoseph/jailed-agents):
+
+```sh
+nix develop
+jailed-tackle
+```
+
+Run it from the repository root. The jail gives Tackle read-write access to the
+entire current working directory and to `~/.tackle`, and enables network access
+for provider calls. Other home-directory contents and host control sockets are
+not mounted, and the host Nix daemon remains unavailable. Tackle can still
+modify or delete anything in the repository, including `.git`, so keep valuable
+work committed or backed up. The launcher is Linux-only because it relies on
+Bubblewrap and Linux namespaces.
+
 ## Basic harness API
 
 The harness accepts already-loaded adapter and capability modules. General

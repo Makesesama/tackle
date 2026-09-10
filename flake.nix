@@ -6,6 +6,11 @@
 
     treefmt-nix.url = "github:numtide/treefmt-nix";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix";
+
+    jailed-agents = {
+      url = "github:andersonjoseph/jailed-agents";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -14,6 +19,7 @@
       nixpkgs,
       treefmt-nix,
       pre-commit-hooks,
+      jailed-agents,
       ...
     }@inputs:
     let
@@ -49,6 +55,15 @@
           }
         );
 
+      mkJailedTackle =
+        {
+          pkgs,
+          system,
+        }:
+        pkgs.callPackage ./nix/packages/jailed-tackle.nix {
+          inherit jailed-agents system;
+        };
+
       treefmtEval = forAllSystems (
         {
           pkgs,
@@ -68,6 +83,9 @@
         in
         {
           default = package;
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          jailed-tackle = mkJailedTackle { inherit pkgs system; };
         }
       );
       checks = forAllSystems (
@@ -98,6 +116,8 @@
         }:
         let
           preCommitCheck = self.checks.${system}.pre-commit-check;
+          jailedTackle =
+            if pkgs.stdenv.hostPlatform.isLinux then mkJailedTackle { inherit pkgs system; } else null;
 
           # Common shell hook for both environments
           commonShellHook = ''
@@ -119,7 +139,7 @@
           # Development shell with all tools
           default = pkgs.callPackage ./nix/shells/shell.nix {
             package = self.packages.${system}.default;
-            inherit preCommitCheck commonShellHook;
+            inherit preCommitCheck commonShellHook jailedTackle;
           };
         }
       );

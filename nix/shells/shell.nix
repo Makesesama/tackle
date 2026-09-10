@@ -3,12 +3,13 @@
   package,
   commonShellHook,
   preCommitCheck,
+  jailedTackle ? null,
 }:
 
 let
   platformPackages =
     with pkgs;
-    lib.optional stdenv.isLinux inotify-tools
+    lib.optional stdenv.hostPlatform.isLinux inotify-tools
     ++ lib.optionals stdenv.isDarwin (
       with darwin.apple_sdk.frameworks;
       [
@@ -30,6 +31,7 @@ pkgs.mkShell {
     # Development tools
     pkgs.tokei
   ]
-  ++ platformPackages;
+  ++ platformPackages
+  ++ pkgs.lib.optional (jailedTackle != null) jailedTackle;
   shellHook = commonShellHook;
 }
