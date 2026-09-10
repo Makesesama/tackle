@@ -26,6 +26,8 @@ pkgs.mkShell {
     pkgs.beamPackages.expert
 
     # Build tools
+    pkgs.cargo
+    pkgs.rustc
     pkgs.watchman
 
     # Development tools

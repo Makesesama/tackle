@@ -147,29 +147,28 @@ Mouse capture is enabled for wheel scrolling, so native terminal selection
 requires the terminal's mouse-override gesture (typically Shift-drag).
 The non-TUI command path remains available for automation.
 
-### Local ExRatatui fork
+### Pinned ExRatatui fork
 
 Until the width-aware Markdown measurement API is released in Hex, this
-frontend intentionally uses the local `../../repos/ex_ratatui` fork at commit
+frontend uses the fork at
+`ssh://git@git.makussu.de:2122/Makussu/ex_ratatui.git`, pinned to commit
 `410c2e7`. The fork still declares version `0.13.1`, so the CLI configuration
 forces an ExRatatui source build instead of loading the published precompiled
 NIF. The direct `:rustler` dependency in `mix.exs` is required by that source
 build.
 
-The fork must be present when developing the TUI, and a Rust/Cargo toolchain is
-required:
+Access to the fork and a Rust/Cargo toolchain are required. The Nix development
+shell provides the toolchain:
 
 ```sh
-# from the repository root, place the approved checkout at repos/ex_ratatui
 cd frontends/tackle_cli
 mix deps.get
 mix compile --warnings-as-errors
 ```
 
 The escript archive is suitable for non-TUI commands only: native libraries
-cannot be loaded directly from its embedded ZIP. A portable checkout should
-switch back to the released ExRatatui package once the measurement API is
-available there.
+cannot be loaded directly from its embedded ZIP. The frontend can switch back
+to the released ExRatatui package once the measurement API is available there.
 
 ## Code layout
 
