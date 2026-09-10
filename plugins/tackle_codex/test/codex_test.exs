@@ -4,6 +4,7 @@ defmodule Tackle.Plugins.CodexTest do
   alias Tackle.Lib
   alias Tackle.Lib.{Cancellation, LLM, Loop, ModelInfo, Usage}
   alias Tackle.Plugins.Codex
+  alias Tackle.Plugins.Codex.SSE
 
   defmodule CredentialStore do
     @behaviour Tackle.Lib.CredentialStore
@@ -266,6 +267,168 @@ defmodule Tackle.Plugins.CodexTest do
     assert_receive {:event, %{type: :tool_input_delta, delta: "\"cats\"}"}}
   end
 
+  test "uses cached WebSocket transport by default", %{store: store} do
+    test_pid = self()
+
+    websocket_request = fn body, options, headers, event_callback ->
+      send(test_pid, {:websocket_request, body, options, headers})
+
+      parser =
+        SSE.new()
+        |> SSE.push_event(
+          %{
+            "type" => "response.completed",
+            "response" => %{
+              "id" => "resp-1",
+              "status" => "completed",
+              "model" => "gpt-5.5",
+              "output" => [
+                %{
+                  "type" => "message",
+                  "content" => [%{"type" => "output_text", "text" => "websocket"}]
+                }
+              ]
+            }
+          },
+          event_callback
+        )
+
+      {:ok, %{status: 200, body: parser}}
+    end
+
+    opts =
+      base_opts(store, fn _options -> flunk("unexpected SSE request") end)
+      |> Keyword.delete(:transport)
+      |> Keyword.put(:session_id, "ws-session")
+      |> Keyword.put(:websocket_request, websocket_request)
+
+    assert {:ok, %{data: %{"content" => "websocket"}}} = Codex.generate(nil, opts)
+
+    assert_receive {:websocket_request, body, request_options, headers}
+    assert request_options[:transport] == :auto
+    assert request_options[:responses_url] == "https://chatgpt.com/backend-api/codex/responses"
+
+    assert body["input"] == [
+             %{"role" => "user", "content" => [%{"type" => "input_text", "text" => "hello"}]}
+           ]
+
+    assert header_value(headers, "openai-beta") == "responses_websockets=2026-02-06"
+    assert header_value(headers, "session-id") == "ws-session"
+  end
+
+  test "auto transport falls back to SSE before WebSocket streaming starts", %{store: store} do
+    request = fn options ->
+      streaming_response(options, [
+        sse(%{
+          "type" => "response.completed",
+          "response" => %{
+            "status" => "completed",
+            "output" => [
+              %{
+                "type" => "message",
+                "content" => [%{"type" => "output_text", "text" => "fallback"}]
+              }
+            ]
+          }
+        })
+      ])
+    end
+
+    websocket_request = fn _body, _options, _headers, _callback ->
+      {:error, {:websocket_transport_failed, :before_stream, :connection_refused}}
+    end
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.put(:transport, :auto)
+      |> Keyword.put(:websocket_request, websocket_request)
+
+    assert {:ok, %{data: %{"content" => "fallback"}}} = Codex.generate(nil, opts)
+  end
+
+  test "auto transport does not replay over SSE when an injected WebSocket raises after streaming starts",
+       %{
+         store: store
+       } do
+    test_pid = self()
+
+    websocket_request = fn _body, _options, _headers, callback ->
+      callback.(%{type: :text_delta, delta: "partial"})
+      raise "closed"
+    end
+
+    opts =
+      base_opts(store, fn _options -> flunk("unexpected SSE replay") end)
+      |> Keyword.put(:transport, :auto)
+      |> Keyword.put(:websocket_request, websocket_request)
+
+    assert {:error, {:websocket_transport_failed, :after_stream, "closed"}} =
+             Codex.stream(nil, opts, fn event -> send(test_pid, {:event, event}) end)
+
+    assert_receive {:event, %{type: :text_delta, delta: "partial"}}
+  end
+
+  test "refreshes and retries an explicit WebSocket after a 401 upgrade", %{store: store} do
+    calls = start_supervised!({Agent, fn -> 0 end}, id: {Agent, make_ref()})
+    refreshed_access = jwt("websocket-account")
+
+    request = fn options ->
+      assert String.ends_with?(options[:url], "/oauth/token")
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body:
+           JSON.encode!(%{
+             "access_token" => refreshed_access,
+             "refresh_token" => "websocket-refresh",
+             "expires_in" => 3_600
+           })
+       }}
+    end
+
+    websocket_request = fn _body, _options, headers, event_callback ->
+      case Agent.get_and_update(calls, &{&1, &1 + 1}) do
+        0 ->
+          assert header_value(headers, "authorization") == "Bearer access-token"
+
+          {:error,
+           {:websocket_transport_failed, :before_stream, {:http_error, 401, "unauthorized"}}}
+
+        1 ->
+          assert header_value(headers, "authorization") == "Bearer #{refreshed_access}"
+
+          parser =
+            SSE.push_event(
+              SSE.new(),
+              %{
+                "type" => "response.completed",
+                "response" => %{
+                  "status" => "completed",
+                  "output" => [
+                    %{
+                      "type" => "message",
+                      "content" => [%{"type" => "output_text", "text" => "retried"}]
+                    }
+                  ]
+                }
+              },
+              event_callback
+            )
+
+          {:ok, %{status: 200, body: parser}}
+      end
+    end
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.put(:transport, :websocket_cached)
+      |> Keyword.put(:websocket_request, websocket_request)
+
+    assert {:ok, %{data: %{"content" => "retried"}}} = Codex.generate(nil, opts)
+    assert Agent.get(calls, & &1) == 2
+  end
+
   test "refreshes an expired credential and persists the rotated refresh token", %{store: store} do
     {store_module, store_agent} = store
 
@@ -519,7 +682,8 @@ defmodule Tackle.Plugins.CodexTest do
       messages: [%{role: :user, content: "hello"}],
       tools: [],
       credential_store: store,
-      request: request
+      request: request,
+      transport: :sse
     ]
   end
 
@@ -553,7 +717,11 @@ defmodule Tackle.Plugins.CodexTest do
   defp header(options, name) do
     options
     |> Keyword.fetch!(:headers)
-    |> Enum.find_value(fn {key, value} -> if key == name, do: value end)
+    |> header_value(name)
+  end
+
+  defp header_value(headers, name) do
+    Enum.find_value(headers, fn {key, value} -> if key == name, do: value end)
   end
 
   defp split_binary(binary, sizes) do

@@ -13,6 +13,7 @@ defmodule Tackle.Plugins.Codex.MixProject do
 
   def application do
     [
+      mod: {Tackle.Plugins.Codex.Application, []},
       extra_applications: [:crypto, :logger]
     ]
   end
@@ -22,6 +23,7 @@ defmodule Tackle.Plugins.Codex.MixProject do
       # Req 0.8 uses Elixir's standard-library JSON module. Req 0.7 depends on
       # Jason, which this project deliberately does not include.
       {:req, "== 0.8.0-rc.0"},
+      {:mint_web_socket, "~> 1.0"},
       {:tackle_lib, path: "../../packages/tackle_lib"}
     ]
   end

@@ -4,7 +4,10 @@ defmodule Tackle.Plugins.Codex do
 
   The adapter uses ChatGPT subscription OAuth credentials stored under the
   `"openai-codex"` credential namespace and sends provider-neutral Tackle
-  messages and tools to the Codex Responses SSE endpoint.
+  messages and tools to the Codex Responses endpoint. By default it attempts
+  connection-scoped WebSocket continuation and falls back to SSE before
+  streaming begins. Pass `transport: :sse`, `:websocket`, or
+  `:websocket_cached` to select an explicit transport.
 
   Authentication interaction is exposed separately through
   `Tackle.Plugins.Codex.OAuth`; `generate/2` and `stream/3` never prompt the
@@ -19,6 +22,7 @@ defmodule Tackle.Plugins.Codex do
   alias Tackle.Plugins.Codex.HTTP
   alias Tackle.Plugins.Codex.OAuth
   alias Tackle.Plugins.Codex.SSE
+  alias Tackle.Plugins.Codex.WebSocket
 
   @adapter_id "openai-codex"
   @default_base_url "https://chatgpt.com/backend-api"
@@ -71,6 +75,11 @@ defmodule Tackle.Plugins.Codex do
     end
   end
 
+  @doc "Closes cached WebSocket connections owned by a Tackle session."
+  @spec close_session(String.t()) :: :ok
+  def close_session(session_id) when is_binary(session_id),
+    do: WebSocket.close_session(session_id)
+
   @impl true
   def generate(schema, opts) do
     perform(schema, opts, fn _event -> :ok end)
@@ -121,6 +130,28 @@ defmodule Tackle.Plugins.Codex do
   end
 
   defp send_request(body, opts, access_token, account_id, event_callback) do
+    case Keyword.get(opts, :transport, :auto) do
+      :sse ->
+        send_sse_request(body, opts, access_token, account_id, event_callback)
+
+      transport when transport in [:websocket, :websocket_cached] ->
+        send_websocket_request(body, opts, access_token, account_id, event_callback, transport)
+
+      :auto ->
+        case send_websocket_request(body, opts, access_token, account_id, event_callback, :auto) do
+          {:error, {:websocket_transport_failed, :before_stream, _reason}} ->
+            send_sse_request(body, opts, access_token, account_id, event_callback)
+
+          result ->
+            result
+        end
+
+      transport ->
+        {:error, {:invalid_transport, transport}}
+    end
+  end
+
+  defp send_sse_request(body, opts, access_token, account_id, event_callback) do
     signal = Keyword.get(opts, :cancellation_signal)
     initial_parser = SSE.new()
 
@@ -137,7 +168,7 @@ defmodule Tackle.Plugins.Codex do
     request_options = [
       method: :post,
       url: responses_url(opts),
-      headers: headers(opts, access_token, account_id),
+      headers: sse_headers(opts, access_token, account_id),
       body: JSON.encode!(body),
       raw: true,
       retry: false,
@@ -145,6 +176,71 @@ defmodule Tackle.Plugins.Codex do
     ]
 
     HTTP.stream(request_options, initial_parser, stream, opts)
+  end
+
+  defp send_websocket_request(
+         body,
+         opts,
+         access_token,
+         account_id,
+         event_callback,
+         transport
+       ) do
+    websocket_opts =
+      opts
+      |> Keyword.put(:transport, transport)
+      |> Keyword.put(:responses_url, responses_url(opts))
+
+    request = Keyword.get(opts, :websocket_request, &WebSocket.request/4)
+    visibility = :atomics.new(1, signed: false)
+
+    tracked_callback = fn event ->
+      :atomics.put(visibility, 1, 1)
+      event_callback.(event)
+    end
+
+    result =
+      try do
+        request.(
+          body,
+          websocket_opts,
+          websocket_headers(opts, access_token, account_id),
+          tracked_callback
+        )
+      rescue
+        exception ->
+          {:error,
+           {:websocket_transport_failed, websocket_phase(visibility),
+            Exception.message(exception)}}
+      catch
+        kind, reason ->
+          {:error, {:websocket_transport_failed, websocket_phase(visibility), {kind, reason}}}
+      end
+      |> preserve_observed_websocket_phase(visibility)
+
+    case {transport, result} do
+      {explicit,
+       {:error,
+        {:websocket_transport_failed, :before_stream, {:http_error, status, response_body}}}}
+      when explicit in [:websocket, :websocket_cached] ->
+        {:error, {:http_error, status, response_body}}
+
+      {_transport, result} ->
+        result
+    end
+  end
+
+  defp preserve_observed_websocket_phase(
+         {:error, {:websocket_transport_failed, :before_stream, reason}},
+         visibility
+       ) do
+    {:error, {:websocket_transport_failed, websocket_phase(visibility), reason}}
+  end
+
+  defp preserve_observed_websocket_phase(result, _visibility), do: result
+
+  defp websocket_phase(visibility) do
+    if :atomics.get(visibility, 1) == 0, do: :before_stream, else: :after_stream
   end
 
   defp response_result(%{status: status, body: body}, model, schema, event_callback)
@@ -413,18 +509,29 @@ defmodule Tackle.Plugins.Codex do
     end
   end
 
-  defp headers(opts, access_token, account_id) do
+  defp sse_headers(opts, access_token, account_id) do
+    base_headers(opts, access_token, account_id) ++
+      [
+        {"openai-beta", "responses=experimental"},
+        {"accept", "text/event-stream"},
+        {"content-type", "application/json"}
+      ]
+  end
+
+  defp websocket_headers(opts, access_token, account_id) do
+    base_headers(opts, access_token, account_id) ++
+      [{"openai-beta", "responses_websockets=2026-02-06"}]
+  end
+
+  defp base_headers(opts, access_token, account_id) do
     base = [
       {"authorization", "Bearer #{access_token}"},
       {"chatgpt-account-id", account_id},
       {"originator", Keyword.get(opts, :originator, "tackle")},
-      {"user-agent", user_agent()},
-      {"openai-beta", "responses=experimental"},
-      {"accept", "text/event-stream"},
-      {"content-type", "application/json"}
+      {"user-agent", user_agent()}
     ]
 
-    case Keyword.get(opts, :session_id) do
+    case prompt_cache_key(opts) do
       session_id when is_binary(session_id) and session_id != "" ->
         base ++ [{"session-id", session_id}, {"x-client-request-id", session_id}]
 

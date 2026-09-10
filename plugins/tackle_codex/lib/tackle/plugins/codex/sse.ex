@@ -34,6 +34,12 @@ defmodule Tackle.Plugins.Codex.SSE do
   @spec cancel(t()) :: t()
   def cancel(%__MODULE__{} = state), do: %{state | cancelled?: true}
 
+  @doc false
+  @spec push_event(t(), map(), (map() -> any())) :: t()
+  def push_event(%__MODULE__{} = state, %{} = event, callback) do
+    handle_event(state, event, callback)
+  end
+
   @spec push(t(), binary(), (map() -> any())) :: t()
   def push(%__MODULE__{} = state, chunk, callback) when is_binary(chunk) do
     [buffer | complete_lines] =

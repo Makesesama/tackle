@@ -72,10 +72,27 @@ When the plugin is available to the host distribution:
 
 The adapter maps `:reasoning_effort` and `:reasoning_summary` options to the
 Responses API and emits provider-supplied reasoning summaries as normalized
-reasoning deltas. The adapter currently uses the SSE Responses transport. For
-stateless reasoning-model continuations it stores the provider's opaque response output on
-the assistant message and replays it only for the same provider and model. Hosts
-that persist conversations must preserve `Tackle.Lib.Message.provider_state`.
+reasoning deltas. It defaults to `transport: :auto`, which first tries a
+session-scoped WebSocket and falls back to SSE if the WebSocket fails before any
+response events arrive. Set `transport: :sse` to force HTTP streaming,
+`:websocket` to reuse a connection while sending full context, or
+`:websocket_cached` to require WebSocket continuation without automatic SSE
+fallback.
+
+With `:auto` and `:websocket_cached`, the adapter reuses the connection and sends
+`previous_response_id` plus only newly appended input when the current request
+extends the preceding request and all non-input request options still match. It
+sends full context whenever that invariant does not hold and retries once with
+full context if the provider no longer recognizes the previous response. Idle
+connections close after five minutes by default; `:websocket_idle_timeout` and
+`:websocket_connect_timeout` override the idle and connection timeouts. A host
+that knows a session has ended can release its connection immediately with
+`Tackle.Plugins.Codex.close_session(session_id)`.
+
+For stateless SSE continuations and full-context WebSocket recovery, the adapter
+stores the provider's opaque response output on the assistant message and replays
+it only for the same provider and model. Hosts that persist conversations must
+preserve `Tackle.Lib.Message.provider_state`.
 
 For prompt caching, Tackle.Lib supplies its stable session ID on every model
 request. The adapter uses it as `prompt_cache_key` and sends matching
@@ -91,8 +108,7 @@ represent an API charge or invoice, so hosts must not treat the estimate as
 provider-reported billing. Catalog values are maintained with the adapter and
 should be reviewed whenever its selectable model list changes.
 
-WebSocket connection reuse, zstd request compression, and automatic model
-discovery are deliberately out of scope for the initial implementation.
+Zstd request compression and automatic model discovery remain out of scope.
 
 ## Development
 
