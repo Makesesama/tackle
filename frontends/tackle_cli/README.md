@@ -41,6 +41,7 @@ hint row. Empty optional rows are not reserved when the terminal is short.
 | Shift+Enter, Ctrl+Enter, Ctrl+J | Insert a newline. Ctrl+J is the reliable fallback because many terminals cannot distinguish Shift+Enter. |
 | Esc | Close the open overlay first, then request cancellation of the active turn. Esc never exits while idle. |
 | Ctrl+C | Quit. Confirms first when an unsent draft or an active turn would be lost; quits immediately when idle with an empty draft. |
+| Alt+N | Start a new session. Confirms first with a Y/N prompt; on confirm the current root scope stops (stopping an active turn with it) and a fresh session and scope start without restarting the shell. Durable history is not deleted—resume it later with `--resume`. |
 | F1 | Searchable command/help palette. Type to filter, ↑/↓ to select, Enter to run, Esc to close. |
 | F2 | Model and thinking selector (idle only). ↑/↓ switches field, ←/→ cycles, Enter applies, Esc cancels. A reconfigure failure preserves the conversation and the draft. |
 | F3 | Source copy overlay. ↑/↓ selects, Y/Enter copies the full retained source of the entry, O opens the output inspector, A copies the full transcript, Esc closes. |
@@ -124,7 +125,7 @@ This shell is an experimentation build. It intentionally does not implement:
 
 - queued or steering prompts while a turn runs (the draft is kept, not queued);
 - approval or permission prompts;
-- conversation persistence, session browsing, branching, or reconnect;
+- session browsing, branching, or reconnect (a new session starts a fresh root scope, but the shell cannot yet list or reopen past sessions);
 - inline terminal-scrollback rendering (the TUI owns the alternate screen);
 - a theme framework (colors are semantic but fixed), authoritative file diffs,
   or a plugin presenter registry;

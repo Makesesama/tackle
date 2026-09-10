@@ -31,6 +31,11 @@ defmodule Tackle.CLI.TUI do
   overlays, then requests cancellation, and never exits while idle; Ctrl+C is
   the distinct quit action and asks for confirmation when a draft or active turn
   would be lost.
+
+  `Alt+N` starts a new session behind a yes/no confirmation. The frontend asks
+  the harness for a fresh root scope, subscribes to its root agent, and stops
+  the previous scope, so the shell, its configuration menus, and the terminal
+  stay up.
   """
 
   use ExRatatui.App
@@ -41,8 +46,10 @@ defmodule Tackle.CLI.TUI do
   alias ExRatatui.Widgets.{Block, Paragraph, Popup, Textarea, TextInput, WidgetList}
   alias ExRatatui.Widgets.List, as: SelectionList
   alias Tackle.CLI.Clipboard
+  alias Tackle.CLI.Keybinds
   alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, Theme, ToolView}
   alias Tackle.Lib.{ContextUsage, Event, Message, ModelInfo, State, Usage}
+  alias Tackle.Runtime.Scope
   alias Tackle.Session.Snapshot
   alias Tackle.Thinking
 
@@ -76,6 +83,8 @@ defmodule Tackle.CLI.TUI do
       state = %{
         agent_ref: agent_ref,
         agent_monitor: agent_monitor,
+        scope_ref: snapshot.scope_ref,
+        new_session: Keyword.get(opts, :new_session),
         session_id: snapshot.session_id,
         agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
@@ -340,36 +349,48 @@ defmodule Tackle.CLI.TUI do
 
   @impl true
   def terminate(_reason, state) do
-    _ = Tackle.unsubscribe(state.agent_ref)
+    # The shell owns whichever scope it is currently attached to, which is the
+    # initial scope until a new session replaces it. Stopping it here keeps a
+    # swapped-in scope from outliving the shell.
+    retire_scope(state)
     :ok
   end
 
   # -- key dispatch --------------------------------------------------------
 
   defp dispatch_key(%Key{kind: "repeat"} = key, state) do
-    if repeatable?(key), do: dispatch(key, state), else: {:noreply, state, render?: false}
+    if Keybinds.repeatable?(key),
+      do: dispatch(key, state),
+      else: {:noreply, state, render?: false}
   end
 
   defp dispatch_key(key, state), do: dispatch(key, state)
 
-  defp repeatable?(%Key{code: code, modifiers: modifiers}) do
-    cond do
-      code in ["esc", "enter", "f1", "f2", "f3", "f4"] -> false
-      "ctrl" in modifiers and code in ["c", "f", "t", "j", "home", "end"] -> false
-      true -> true
+  defp dispatch(key, state) do
+    case Keybinds.global(key) do
+      :quit -> quit(state)
+      :unbound -> dispatch_overlay(key, state)
     end
   end
 
-  defp dispatch(%Key{code: "c", modifiers: modifiers} = key, state) do
-    if "ctrl" in modifiers, do: quit(state), else: dispatch_overlay(key, state)
+  defp dispatch_overlay(key, %{overlay: nil} = state),
+    do: dispatch_base(Keybinds.base(key, state.focus), key, state)
+
+  defp dispatch_overlay(key, %{overlay: {:confirm_quit, _}} = state) do
+    case Keybinds.confirm(key) do
+      :confirm -> {:stop, state}
+      :cancel -> {:noreply, %{state | overlay: nil}}
+      :ignore -> {:noreply, state, render?: false}
+    end
   end
 
-  defp dispatch(key, state), do: dispatch_overlay(key, state)
-
-  defp dispatch_overlay(key, %{overlay: nil} = state), do: dispatch_base(key, state)
-
-  defp dispatch_overlay(key, %{overlay: {:confirm_quit, _}} = state),
-    do: dispatch_confirm_quit(key, state)
+  defp dispatch_overlay(key, %{overlay: {:confirm_new_session, _}} = state) do
+    case Keybinds.confirm(key) do
+      :confirm -> start_new_session(state)
+      :cancel -> {:noreply, %{state | overlay: nil}}
+      :ignore -> {:noreply, state, render?: false}
+    end
+  end
 
   defp dispatch_overlay(key, %{overlay: {:picker, _}} = state), do: dispatch_picker(key, state)
 
@@ -378,89 +399,56 @@ defmodule Tackle.CLI.TUI do
 
   defp dispatch_overlay(key, %{overlay: {:search, _}} = state), do: dispatch_search(key, state)
 
-  defp dispatch_base(%Key{code: "f1"}, state), do: open_picker(:model, state)
-  defp dispatch_base(%Key{code: "f2"}, state), do: open_picker(:thinking, state)
-  defp dispatch_base(%Key{code: "f3"}, state), do: open_picker(:settings, state)
-  defp dispatch_base(%Key{code: "f4"}, state), do: toggle_focus(state)
+  # Behaviour for each intent the binding table can return. Keeping one clause
+  # per intent means an addition to `Keybinds` fails loudly here until it is
+  # given behaviour, instead of silently doing nothing.
+  defp dispatch_base(:model_picker, _key, state), do: open_picker(:model, state)
+  defp dispatch_base(:thinking_picker, _key, state), do: open_picker(:thinking, state)
+  defp dispatch_base(:settings_picker, _key, state), do: open_picker(:settings, state)
+  defp dispatch_base(:browse, _key, state), do: toggle_focus(state)
+  defp dispatch_base(:escape, _key, state), do: escape(state)
+  defp dispatch_base(:new_session, _key, state), do: request_new_session(state)
+  defp dispatch_base(:search, _key, state), do: open_search(state)
+  defp dispatch_base(:toggle_thinking, _key, state), do: toggle_thinking(state)
 
-  defp dispatch_base(%Key{} = key, %{focus: :transcript} = state),
-    do: dispatch_transcript(key, state)
+  defp dispatch_base(:scroll_start, _key, state),
+    do: scroll_reply(state, scroll_conversation_to(state, :start))
 
-  defp dispatch_base(%Key{code: "esc"}, state), do: escape(state)
+  defp dispatch_base(:scroll_end, _key, state),
+    do: scroll_reply(state, scroll_conversation_to(state, :end))
 
-  defp dispatch_base(%Key{code: code, modifiers: modifiers} = key, state) do
-    cond do
-      "ctrl" in modifiers ->
-        dispatch_ctrl(code, key, state)
+  defp dispatch_base(:page_up, _key, state),
+    do: scroll_reply(state, scroll_conversation(state, -page_size(state)))
 
-      code in ["page_up", "page_down"] and modifiers == [] ->
-        dispatch_page(code, state)
+  defp dispatch_base(:page_down, _key, state),
+    do: scroll_reply(state, scroll_conversation(state, page_size(state)))
 
-      code == "enter" and modifiers == [] ->
-        submit_prompt(state)
+  defp dispatch_base(:newline, _key, state), do: insert_newline(state)
+  defp dispatch_base(:submit, _key, state), do: submit_prompt(state)
+  defp dispatch_base(:composer, key, state), do: composer_key(key, state)
 
-      code == "enter" ->
-        insert_newline(state)
-
-      true ->
-        composer_key(key, state)
-    end
-  end
-
-  defp dispatch_ctrl(code, key, state) do
-    case code do
-      "f" ->
-        open_search(state)
-
-      "t" ->
-        toggle_thinking(state)
-
-      "home" ->
-        scroll_reply(state, scroll_conversation_to(state, :start))
-
-      "end" ->
-        scroll_reply(state, scroll_conversation_to(state, :end))
-
-      "j" ->
-        insert_newline(state)
-
-      "enter" ->
-        insert_newline(state)
-
-      _other ->
-        composer_key(key, state)
-    end
-  end
-
-  defp dispatch_page("page_up", state) do
-    scroll_reply(state, scroll_conversation(state, -page_size(state)))
-  end
-
-  defp dispatch_page("page_down", state) do
-    scroll_reply(state, scroll_conversation(state, page_size(state)))
-  end
-
-  defp dispatch_confirm_quit(%Key{code: code}, state) when code in ["y", "Y", "enter"],
-    do: {:stop, state}
-
-  defp dispatch_confirm_quit(%Key{code: code}, state) when code in ["n", "N", "esc"],
-    do: {:noreply, %{state | overlay: nil}}
-
-  defp dispatch_confirm_quit(_key, state), do: {:noreply, state, render?: false}
+  defp dispatch_base({:transcript, intent}, _key, state),
+    do: dispatch_transcript_intent(intent, state)
 
   # -- menu keys -----------------------------------------------------------
 
-  defp dispatch_picker(%Key{code: "esc"}, state), do: {:noreply, %{state | overlay: nil}}
+  defp dispatch_picker(key, state), do: dispatch_picker_intent(Keybinds.picker(key), state)
 
-  defp dispatch_picker(%Key{code: code}, state) when code in ["up", "down"] do
+  defp dispatch_picker_intent(:close, state), do: {:noreply, %{state | overlay: nil}}
+
+  defp dispatch_picker_intent(:previous, state) do
     {:picker, picker} = state.overlay
-    delta = if code == "up", do: -1, else: 1
 
-    {:noreply,
-     %{state | overlay: {:picker, %{picker | picker: Picker.move(picker.picker, delta)}}}}
+    {:noreply, %{state | overlay: {:picker, %{picker | picker: Picker.move(picker.picker, -1)}}}}
   end
 
-  defp dispatch_picker(%Key{code: "enter"}, state) do
+  defp dispatch_picker_intent(:next, state) do
+    {:picker, picker} = state.overlay
+
+    {:noreply, %{state | overlay: {:picker, %{picker | picker: Picker.move(picker.picker, 1)}}}}
+  end
+
+  defp dispatch_picker_intent(:accept, state) do
     {:picker, %{kind: kind, picker: picker}} = state.overlay
 
     case Picker.selected(picker) do
@@ -469,52 +457,47 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
-  defp dispatch_picker(%Key{code: "backspace"}, state) do
+  defp dispatch_picker_intent(:backspace, state) do
     {:picker, picker} = state.overlay
 
     {:noreply, %{state | overlay: {:picker, %{picker | picker: Picker.backspace(picker.picker)}}}}
   end
 
-  defp dispatch_picker(%Key{code: code, modifiers: modifiers}, state)
-       when is_binary(code) and modifiers == [] do
-    if String.length(code) == 1 do
-      {:picker, picker} = state.overlay
+  defp dispatch_picker_intent({:insert, text}, state) do
+    {:picker, picker} = state.overlay
 
-      {:noreply,
-       %{state | overlay: {:picker, %{picker | picker: Picker.insert(picker.picker, code)}}}}
-    else
-      {:noreply, state, render?: false}
-    end
+    {:noreply,
+     %{state | overlay: {:picker, %{picker | picker: Picker.insert(picker.picker, text)}}}}
   end
 
-  defp dispatch_picker(_key, state), do: {:noreply, state, render?: false}
+  defp dispatch_picker_intent(:ignore, state), do: {:noreply, state, render?: false}
 
   # -- transcript browser --------------------------------------------------
 
-  defp dispatch_transcript(%Key{code: "esc"}, state), do: leave_focus(state)
+  defp dispatch_transcript_intent(:leave, state), do: leave_focus(state)
 
-  defp dispatch_transcript(%Key{code: code}, state) when code in ["up", "p"] do
-    {:noreply, move_focus(state, -1)}
-  end
+  defp dispatch_transcript_intent(:previous, state), do: {:noreply, move_focus(state, -1)}
 
-  defp dispatch_transcript(%Key{code: code}, state) when code in ["down", "n"] do
-    {:noreply, move_focus(state, 1)}
-  end
+  defp dispatch_transcript_intent(:next, state), do: {:noreply, move_focus(state, 1)}
 
-  defp dispatch_transcript(%Key{code: "page_up"}, state),
+  defp dispatch_transcript_intent(:page_up, state),
     do: scroll_reply(state, scroll_conversation(state, -page_size(state)))
 
-  defp dispatch_transcript(%Key{code: "page_down"}, state),
+  defp dispatch_transcript_intent(:page_down, state),
     do: scroll_reply(state, scroll_conversation(state, page_size(state)))
 
-  defp dispatch_transcript(%Key{code: code}, state) when code in ["enter", "i"] do
+  defp dispatch_transcript_intent(:search, state), do: open_search(state)
+
+  defp dispatch_transcript_intent(:toggle_thinking, state), do: toggle_thinking(state)
+
+  defp dispatch_transcript_intent(:inspect, state) do
     case focus_entry(state) do
       nil -> {:noreply, %{state | notice: "Nothing to inspect"}}
       entry -> {:noreply, %{state | overlay: {:inspector, build_inspector(state, entry)}}}
     end
   end
 
-  defp dispatch_transcript(%Key{code: code}, state) when code in ["y", "Y"] do
+  defp dispatch_transcript_intent(:copy_source, state) do
     case focus_entry(state) do
       nil ->
         {:noreply, %{state | notice: "Nothing to copy"}}
@@ -525,7 +508,7 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
-  defp dispatch_transcript(%Key{code: code}, state) when code in ["a", "A"] do
+  defp dispatch_transcript_intent(:copy_transcript, state) do
     case Conversation.text(state.conversation) do
       "" ->
         {:noreply, %{state | notice: "Nothing to copy"}}
@@ -535,52 +518,43 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
-  # Reading is what the browser is for, so the two chords that help you read
-  # stay live: search the transcript, and reveal the reasoning behind an answer.
-  # Every other key is inert, because typing is off while the browser has focus.
-  defp dispatch_transcript(%Key{code: code, modifiers: modifiers}, state) do
-    cond do
-      "ctrl" in modifiers and code == "f" -> open_search(state)
-      "ctrl" in modifiers and code == "t" -> toggle_thinking(state)
-      true -> {:noreply, state, render?: false}
-    end
-  end
+  defp dispatch_transcript_intent(:ignore, state), do: {:noreply, state, render?: false}
 
-  defp dispatch_inspector(%Key{code: "esc"}, state), do: {:noreply, %{state | overlay: nil}}
+  defp dispatch_inspector(key, state),
+    do: dispatch_inspector_intent(Keybinds.inspector(key), state)
 
-  defp dispatch_inspector(%Key{code: code}, state)
-       when code in ["up", "down", "page_up", "page_down", "home", "end"],
-       do: {:noreply, scroll_inspector(state, code)}
+  defp dispatch_inspector_intent(:close, state), do: {:noreply, %{state | overlay: nil}}
 
-  defp dispatch_inspector(%Key{code: code}, state) when code in ["y", "Y"],
-    do: copy_inspector(state)
+  defp dispatch_inspector_intent({:scroll, code}, state),
+    do: {:noreply, scroll_inspector(state, code)}
 
-  defp dispatch_inspector(%Key{code: code}, state) when code in ["left", "right"],
+  defp dispatch_inspector_intent(:copy_source, state), do: copy_inspector(state)
+
+  defp dispatch_inspector_intent({:adjacent, code}, state),
     do: {:noreply, adjacent_tool(state, code)}
 
-  defp dispatch_inspector(%Key{code: code}, %{overlay: {:inspector, inspector}} = state)
-       when code in ["a", "A"] do
+  defp dispatch_inspector_intent(:copy_arguments, %{overlay: {:inspector, inspector}} = state) do
     args = ToolView.arguments(inspector.entry.tool_arguments)
     notice = clipboard_notice(state, JSON.encode!(args), "Copied tool arguments")
     {:noreply, %{state | overlay: {:inspector, %{inspector | notice: notice}}}}
   end
 
-  defp dispatch_inspector(_key, state), do: {:noreply, state, render?: false}
+  defp dispatch_inspector_intent(:ignore, state), do: {:noreply, state, render?: false}
 
-  defp dispatch_search(%Key{code: "esc"}, state), do: {:noreply, %{state | overlay: nil}}
+  defp dispatch_search(key, state), do: dispatch_search_intent(Keybinds.search(key), state)
 
-  defp dispatch_search(%Key{code: code}, state) when code in ["enter", "down"],
-    do: {:noreply, next_search_match(state, 1)}
+  defp dispatch_search_intent(:close, state), do: {:noreply, %{state | overlay: nil}}
 
-  defp dispatch_search(%Key{code: "up"}, state), do: {:noreply, next_search_match(state, -1)}
+  defp dispatch_search_intent(:next, state), do: {:noreply, next_search_match(state, 1)}
 
-  defp dispatch_search(%Key{code: code}, state) when is_binary(code) do
-    {:search, search} = state.overlay
+  defp dispatch_search_intent(:previous, state), do: {:noreply, next_search_match(state, -1)}
+
+  defp dispatch_search_intent({:input, code}, %{overlay: {:search, search}} = state) do
     :ok = ExRatatui.text_input_handle_key(search.input, code)
     {:noreply, refresh_search(state)}
   end
 
-  defp dispatch_search(_key, state), do: {:noreply, state, render?: false}
+  defp dispatch_search_intent(:ignore, state), do: {:noreply, state, render?: false}
 
   # -- paste ---------------------------------------------------------------
 
@@ -636,6 +610,104 @@ defmodule Tackle.CLI.TUI do
 
   defp quit(state) do
     {:noreply, %{state | overlay: {:confirm_quit, %{reason: :turn}}}}
+  end
+
+  # -- new session ---------------------------------------------------------
+
+  # Confirmation exists because adopting a fresh scope stops the current one,
+  # taking any active turn and delegated work with it. Durable history is not
+  # deleted; the shell simply moves on to a new, empty session.
+  defp request_new_session(%{new_session: nil} = state) do
+    {:noreply, %{state | notice: "New session is unavailable in this frontend"}}
+  end
+
+  defp request_new_session(state) do
+    reason = if state.active_turn, do: :turn, else: :idle
+    {:noreply, %{state | overlay: {:confirm_new_session, %{reason: reason}}}}
+  end
+
+  defp start_new_session(state) do
+    overrides = %{
+      model: model_ref(state.agent_state),
+      thinking: Thinking.from_llm_opts(state.agent_state.llm_opts)
+    }
+
+    case state.new_session.(overrides) do
+      {:ok, %Scope{} = scope} ->
+        adopt_scope(state, scope)
+
+      {:error, reason} ->
+        {:noreply, %{state | overlay: nil, error: format_reason(reason)}}
+
+      other ->
+        {:noreply, %{state | overlay: nil, error: format_reason({:invalid_new_session, other})}}
+    end
+  end
+
+  # Subscribe before retiring the old scope so a failure to adopt the
+  # replacement leaves the current session untouched. The replacement scope is
+  # already running, so an adoption failure must stop it rather than leak it.
+  defp adopt_scope(state, %Scope{} = scope) do
+    with {:ok, %Snapshot{} = snapshot} <- Tackle.subscribe(scope.root_agent_ref),
+         {:ok, monitor} <- Tackle.monitor_agent(scope.root_agent_ref) do
+      retire_scope(state)
+      {:noreply, reset_session(state, scope, snapshot, monitor)}
+    else
+      {:error, reason} ->
+        shutdown_scope(scope.scope_ref)
+        {:noreply, %{state | overlay: nil, error: format_reason(reason)}}
+    end
+  end
+
+  defp retire_scope(state) do
+    if is_reference(state.agent_monitor), do: Process.demonitor(state.agent_monitor, [:flush])
+    _ = if state.agent_ref, do: Tackle.unsubscribe(state.agent_ref)
+    shutdown_scope(state.scope_ref)
+    :ok
+  end
+
+  defp shutdown_scope(nil), do: :ok
+
+  defp shutdown_scope(scope_ref) do
+    _ = Tackle.stop_scope(scope_ref)
+    :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp reset_session(state, %Scope{} = scope, %Snapshot{} = snapshot, monitor) do
+    :ok = ExRatatui.textarea_set_value(state.input, "")
+
+    state = %{
+      state
+      | agent_ref: scope.root_agent_ref,
+        agent_monitor: monitor,
+        scope_ref: scope.scope_ref,
+        session_id: snapshot.session_id,
+        agent_state: snapshot.agent_state,
+        active_turn: snapshot.active_turn,
+        pending_prompt: nil,
+        streaming_thinking: "",
+        streaming_response: "",
+        latest_usage: latest_usage(snapshot.agent_state),
+        live_usage: nil,
+        live_context_usage: nil,
+        tool_activity: [],
+        activity: nil,
+        error: nil,
+        outcome: nil,
+        notice: "New session",
+        thinking_expanded?: false,
+        draft_lines: 1,
+        draft_empty?: true,
+        overlay: nil,
+        focus: :composer,
+        selected_entry: nil
+    }
+
+    {width, height} = state.size
+    state = %{state | conversation: new_conversation(width, height)}
+    refresh_conversation(state)
   end
 
   defp open_search(state) do
@@ -1292,6 +1364,24 @@ defmodule Tackle.CLI.TUI do
     }
   end
 
+  defp overlay_widget(%{overlay: {:confirm_new_session, confirm}}) do
+    text =
+      case confirm.reason do
+        :idle ->
+          " Start a new session?\n\n This conversation is closed and a fresh one begins."
+
+        :turn ->
+          " Start a new session?\n\n The active turn is stopped and a fresh conversation begins."
+      end
+
+    %Popup{
+      content: %Paragraph{text: text, style: %Style{fg: :white}},
+      block: panel_block(" Confirm new session · Y/Enter start · N/Esc cancel ", :yellow),
+      percent_width: 50,
+      percent_height: 25
+    }
+  end
+
   defp empty_menu(:settings) do
     %Paragraph{
       text:
@@ -1433,6 +1523,7 @@ defmodule Tackle.CLI.TUI do
   defp hint_segments(%{active_turn: nil}) do
     [
       "Enter send",
+      "Alt+N new session",
       "F1 model",
       "F2 reasoning",
       "F3 settings",
@@ -1447,6 +1538,7 @@ defmodule Tackle.CLI.TUI do
   defp hint_segments(_state) do
     [
       "Esc cancel",
+      "Alt+N new session",
       "F4 browse",
       "Ctrl+F search",
       "draft kept · not queued",

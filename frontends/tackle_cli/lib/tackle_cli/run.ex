@@ -19,14 +19,18 @@ defmodule Tackle.CLI.Run do
           abandon: boolean()
         }) :: non_neg_integer()
   def run(%{model: model, thinking: thinking, prompt: nil} = opts) do
-    case start_scope(model, thinking, true, opts) do
+    scope_opts = [resume: opts.resume, override_config: not is_nil(model)]
+
+    case start_scope(model, thinking, true, scope_opts) do
       {:ok, scope} -> run_tui(scope, opts)
       {:error, reason} -> error(reason)
     end
   end
 
   def run(%{model: model, thinking: thinking, prompt: prompt} = opts) when is_binary(prompt) do
-    case start_scope(model, thinking, false, opts) do
+    scope_opts = [resume: opts.resume, override_config: not is_nil(model)]
+
+    case start_scope(model, thinking, false, scope_opts) do
       {:ok, scope} -> run_prompt_scope(scope, prompt, opts)
       {:error, reason} -> error(reason)
     end
@@ -34,24 +38,44 @@ defmodule Tackle.CLI.Run do
 
   defp run_tui(scope, opts) do
     case ensure_recoverable(scope.root_agent_ref, opts.abandon) do
-      :ok -> start_tui(scope)
+      :ok -> start_tui(scope, opts)
       {:error, reason} -> error(reason)
     end
   after
     stop_scope(scope.scope_ref)
   end
 
-  defp start_tui(scope) do
+  defp start_tui(scope, opts) do
     case Tackle.available_models() do
-      {:ok, models} -> start_tui_session(scope, models)
+      {:ok, models} -> start_tui_session(scope, models, opts)
       {:error, reason} -> error(reason)
     end
   end
 
-  defp start_tui_session(scope, models) do
-    case TUI.start(agent_ref: scope.root_agent_ref, models: models) do
+  defp start_tui_session(scope, models, opts) do
+    case TUI.start(
+           agent_ref: scope.root_agent_ref,
+           models: models,
+           new_session: new_session_fun(opts)
+         ) do
       :ok -> 0
       {:error, reason} -> error(reason)
+    end
+  end
+
+  # A new session is a fresh root scope: a new durable session id and a new
+  # root agent, started and stopped by the frontend while the shell stays up.
+  # The live model and reasoning level carry over unless the frontend cannot
+  # report them, in which case the command-line selection is used again.
+  defp new_session_fun(opts) do
+    fn overrides ->
+      start_scope(
+        Map.get(overrides, :model) || opts.model,
+        Map.get(overrides, :thinking) || opts.thinking,
+        true,
+        resume: nil,
+        override_config: false
+      )
     end
   end
 
@@ -162,8 +186,8 @@ defmodule Tackle.CLI.Run do
   # on the command line, so an unmodified resume adopts the recorded selection.
   defp durable_session(opts) do
     SessionSpec.new(
-      session_id: Map.get(opts, :resume),
-      override_config: not is_nil(Map.get(opts, :model))
+      session_id: Keyword.get(opts, :resume),
+      override_config: Keyword.get(opts, :override_config, false)
     )
   end
 
