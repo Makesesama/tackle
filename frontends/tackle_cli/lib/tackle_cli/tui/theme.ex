@@ -25,6 +25,7 @@ defmodule Tackle.CLI.TUI.Theme do
   """
 
   alias ExRatatui.Style
+  alias ExRatatui.Widgets.Block
 
   @type tone ::
           :text
@@ -65,6 +66,23 @@ defmodule Tackle.CLI.TUI.Theme do
   @doc "Returns the semantic style for `tone`."
   @spec style(tone() | atom()) :: Style.t()
   def style(tone), do: Map.get(@styles, tone, %Style{})
+
+  @doc """
+  Builds the rounded panel chrome shared by every overlay.
+
+  Overlays differ in content, not in border treatment, so the block is built
+  once here from the same semantic color the overlay already uses for its
+  content.
+  """
+  @spec panel_block(String.t(), atom()) :: Block.t()
+  def panel_block(title, color) do
+    %Block{
+      title: title,
+      borders: [:all],
+      border_type: :rounded,
+      border_style: %Style{fg: color}
+    }
+  end
 
   @doc "Adds bold to a style without dropping its color or background."
   @spec bold(Style.t()) :: Style.t()

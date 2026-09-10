@@ -159,6 +159,38 @@ cannot be loaded directly from its embedded ZIP. A portable checkout should
 switch back to the released ExRatatui package once the measurement API is
 available there.
 
+## Code layout
+
+The TUI is split by surface rather than by layer. `Tackle.CLI.TUI` is the
+coordinator: it owns the ExRatatui callbacks, the key-table routing, and the
+process lifecycle, and everything else is a module that takes and returns
+`Tackle.CLI.TUI.State`.
+
+| module | owns |
+| --- | --- |
+| `TUI` | callbacks, key routing, process lifecycle |
+| `TUI.State` | the state struct, mounting, adopting a session |
+| `TUI.Viewport` | transcript/layout synchronization and scrolling |
+| `TUI.RuntimeEvents` | projecting harness events into state |
+| `TUI.Composer` | draft editing and submission |
+| `TUI.Browser` | transcript focus, selection, and copy |
+| `TUI.Menu` | model, reasoning, and settings pickers |
+| `TUI.Search` | transcript search |
+| `TUI.Inspector` | the scrollable tool-output inspector |
+| `TUI.Session` | root scope ownership and teardown |
+| `TUI.View` | the scene and ordinary widgets |
+| `TUI.StatusView` | status row, metrics, and hints |
+| `TUI.Layout` | responsive regions for a terminal size |
+| `TUI.Conversation` | transcript cache, anchors, and row scrolling |
+| `TUI.MessageView` / `TUI.ToolView` | entry rendering and tool-card details |
+| `TUI.Picker` / `TUI.Theme` / `TUI.Util` | menu filtering, palette, shared helpers |
+
+Presentation is pure: a module that renders takes state and returns widgets,
+and a module that handles input returns the next state plus the ExRatatui
+reply. New behaviour belongs in the module that owns the surface, and the
+`dispatch_base/3` clauses in `TUI` are where an addition to `Keybinds` fails
+loudly until it is given behaviour.
+
 ## Development checks
 
 ```sh
