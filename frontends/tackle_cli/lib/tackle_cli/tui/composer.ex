@@ -14,8 +14,9 @@ defmodule Tackle.CLI.TUI.Composer do
   belonging to the next turn instead of being delivered to the running one.
   """
 
+  alias ExRatatui.Command
   alias ExRatatui.Event.Key
-  alias Tackle.CLI.TUI.{State, Util, Viewport}
+  alias Tackle.CLI.TUI.{State, Viewport}
 
   @doc """
   Applies a bracketed paste as one edit.
@@ -63,44 +64,49 @@ defmodule Tackle.CLI.TUI.Composer do
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def submit(%State{} = state) do
     cond do
-      state.active_turn ->
+      state.active_turn != nil or state.pending_operation != nil ->
         {:noreply, %{state | notice: "Busy · draft kept for the next turn (not queued)"}}
 
       state.draft_empty? ->
         {:noreply, state, render?: false}
 
       true ->
-        prompt = state.input |> ExRatatui.textarea_get_value() |> String.trim()
+        raw_draft = ExRatatui.textarea_get_value(state.input)
+        prompt = String.trim(raw_draft)
+        ref = make_ref()
+        agent_ref = state.agent_ref
 
-        case Tackle.submit(state.agent_ref, prompt) do
-          {:ok, turn_id} ->
-            :ok = ExRatatui.textarea_set_value(state.input, "")
+        :ok = ExRatatui.textarea_set_value(state.input, "")
 
-            state = %{
-              state
-              | active_turn: %{id: turn_id},
-                pending_prompt: prompt,
-                streaming_thinking: "",
-                streaming_response: "",
-                live_usage: nil,
-                live_context_usage: nil,
-                tool_activity: [],
-                activity: "starting",
-                error: nil,
-                outcome: nil,
-                notice: nil,
-                draft_lines: 1,
-                draft_empty?: true
-            }
+        state = %{
+          state
+          | pending_operation: %{ref: ref, kind: :submit, raw_draft: raw_draft},
+            pending_prompt: prompt,
+            turn_timeline: [],
+            streaming_thinking: "",
+            streaming_response: "",
+            live_usage: nil,
+            live_context_usage: nil,
+            tool_activity: [],
+            activity: "starting",
+            error: nil,
+            outcome: nil,
+            notice: nil
+        }
 
-            state = Viewport.scroll_to(state, :end)
+        state =
+          state
+          |> Viewport.update_draft()
+          |> Viewport.scroll_to(:end)
+          |> Viewport.refresh([:pending, :turn, :error])
 
-            {:noreply, Viewport.refresh(state, [:pending, :tools, :thinking, :response, :error])}
+        command =
+          Command.async(
+            fn -> Tackle.submit(agent_ref, prompt) end,
+            &{:tui_operation_result, ref, :submit, &1}
+          )
 
-          {:error, reason} ->
-            # The exact draft stays in the composer so the user can retry or edit.
-            {:noreply, Viewport.refresh(%{state | error: Util.format_reason(reason)}, [:error])}
-        end
+        {:noreply, state, commands: [command]}
     end
   end
 end

@@ -139,6 +139,36 @@ defmodule Tackle.CLI.TUI.MessageView do
     end
   end
 
+  def section_entries(state, :turn) do
+    state
+    |> Map.get(:turn_timeline, [])
+    |> Enum.with_index()
+    |> Enum.map(fn
+      {%{kind: :thinking, content: content} = item, index} ->
+        entry(:thinking, content,
+          id: Map.get(item, :id, live_text_id(:thinking, index)),
+          label: "Thinking:",
+          source: content,
+          collapsed?: not state.thinking_expanded?,
+          style: style(:thinking)
+        )
+
+      {%{kind: :assistant, content: content} = item, index} ->
+        entry(:assistant, content,
+          id: Map.get(item, :id, live_text_id(:assistant, index)),
+          label: "Tackle:",
+          source: content,
+          style: style(:assistant)
+        )
+
+      {%{kind: :tool} = item, _index} ->
+        tool_entry(item, Map.get(item, :timeline_id, "tool:#{tool_id(item)}"))
+    end)
+  end
+
+  # Kept as a small compatibility seam for callers that render a standalone
+  # collection of live tools. The conversation itself uses the ordered :turn
+  # section above.
   def section_entries(state, :tools) do
     Enum.map(state.tool_activity, &tool_entry(&1, "tool:#{tool_id(&1)}"))
   end
@@ -188,6 +218,10 @@ defmodule Tackle.CLI.TUI.MessageView do
       []
     end
   end
+
+  defp live_text_id(:thinking, 0), do: "streaming:thinking"
+  defp live_text_id(:assistant, 0), do: "streaming:response"
+  defp live_text_id(kind, index), do: "streaming:#{kind}:#{index}"
 
   defp build_call_entry(call, call_index, results, index) do
     id = value(call, :id)

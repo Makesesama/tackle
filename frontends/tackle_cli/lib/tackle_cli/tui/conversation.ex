@@ -15,11 +15,11 @@ defmodule Tackle.CLI.TUI.Conversation do
   alias Tackle.CLI.TUI.{MessageView, Theme}
 
   @mouse_scroll_rows 3
-  @sections [:settled, :pending, :tools, :thinking, :response, :error]
+  @sections [:settled, :pending, :turn, :error]
   @max_search_matches 200
 
   @typedoc "Sections whose entries can be refreshed independently."
-  @type section :: :settled | :pending | :tools | :thinking | :response | :error
+  @type section :: :settled | :pending | :turn | :error
 
   @typedoc "Cached typed entries and their rendered widget groups for a section."
   @type section_cache :: %{

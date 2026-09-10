@@ -58,7 +58,9 @@ defmodule Tackle.CLI.TUI do
 
   use ExRatatui.App
 
+  alias ExRatatui.Command
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
+  alias ExRatatui.Subscription
   alias Tackle.CLI.Keybinds
 
   alias Tackle.CLI.TUI.{
@@ -71,7 +73,6 @@ defmodule Tackle.CLI.TUI do
     Search,
     Session,
     State,
-    Util,
     View,
     Viewport
   }
@@ -151,6 +152,15 @@ defmodule Tackle.CLI.TUI do
 
   @impl true
   def handle_info(message, state), do: RuntimeEvents.handle(message, state)
+
+  @impl true
+  def subscriptions(state) do
+    if state.active_turn != nil or state.pending_operation != nil do
+      [Subscription.interval(:tui_spinner, 80, {:tui_spinner_tick})]
+    else
+      []
+    end
+  end
 
   @impl true
   def terminate(_reason, state) do
@@ -252,22 +262,41 @@ defmodule Tackle.CLI.TUI do
 
   # -- base actions --------------------------------------------------------
 
-  defp escape(%{active_turn: nil} = state) do
+  defp escape(%{active_turn: nil, pending_operation: nil} = state) do
     {:noreply, %{state | notice: "Idle · Esc does not quit · Ctrl+C quits"}}
   end
 
-  defp escape(state) do
-    if state.activity == "cancelling" do
-      {:noreply, %{state | notice: "Cancellation already requested"}}
-    else
-      case Tackle.cancel(state.agent_ref) do
-        :ok -> {:noreply, %{state | activity: "cancelling"}}
-        {:error, reason} -> {:noreply, %{state | error: Util.format_reason(reason)}}
-      end
-    end
+  defp escape(%{pending_operation: %{kind: :submit} = operation} = state) do
+    operation = Map.put(operation, :cancellation_requested?, true)
+
+    {:noreply,
+     %{state | pending_operation: operation, activity: "cancelling", notice: "Cancelling…"}}
   end
 
-  defp quit(%{active_turn: nil} = state) do
+  defp escape(%{pending_operation: %{kind: :cancel}} = state) do
+    {:noreply, %{state | notice: "Cancellation already requested"}}
+  end
+
+  defp escape(state) do
+    ref = make_ref()
+    agent_ref = state.agent_ref
+
+    command =
+      Command.async(
+        fn -> Tackle.cancel(agent_ref) end,
+        &{:tui_operation_result, ref, :cancel, &1}
+      )
+
+    state = %{
+      state
+      | pending_operation: %{ref: ref, kind: :cancel},
+        activity: "cancelling"
+    }
+
+    {:noreply, state, commands: [command]}
+  end
+
+  defp quit(%{active_turn: nil, pending_operation: nil} = state) do
     if state.draft_empty? do
       {:stop, state}
     else

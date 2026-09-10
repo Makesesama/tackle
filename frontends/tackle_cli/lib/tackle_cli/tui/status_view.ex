@@ -20,6 +20,8 @@ defmodule Tackle.CLI.TUI.StatusView do
   alias Tackle.Lib.{ContextUsage, Usage}
   alias Tackle.Lib.State, as: AgentState
 
+  @spinner_frames ~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+
   @doc "Builds the status row for the current state and terminal width."
   @spec status_widget(State.t(), integer()) :: ExRatatui.Widgets.Paragraph.t()
   def status_widget(%State{} = state, width) do
@@ -39,18 +41,28 @@ defmodule Tackle.CLI.TUI.StatusView do
 
   @doc "Returns the short word describing the current turn state."
   @spec status_label(State.t()) :: String.t()
-  def status_label(%State{active_turn: nil, error: error}) when is_binary(error), do: "failed"
-  def status_label(%State{active_turn: nil, outcome: :cancelled}), do: "cancelled"
-  def status_label(%State{active_turn: nil}), do: "ready"
-  def status_label(%State{activity: nil}), do: "working"
-  def status_label(%State{activity: activity}), do: activity
+  def status_label(%State{} = state) do
+    label =
+      case state do
+        %State{pending_operation: %{kind: :reconfigure}} -> "reconfiguring"
+        %State{pending_operation: %{kind: :cancel}} -> "cancelling"
+        %State{pending_operation: %{kind: :submit}, activity: activity} -> activity || "starting"
+        %State{active_turn: nil, error: error} when is_binary(error) -> "failed"
+        %State{active_turn: nil, outcome: :cancelled} -> "cancelled"
+        %State{active_turn: nil} -> "ready"
+        %State{activity: nil} -> "working"
+        %State{activity: activity} -> activity
+      end
+
+    if busy?(state), do: "#{spinner(state.spinner_frame)} #{label}", else: label
+  end
 
   @doc "Returns the style that carries the current turn state's meaning."
   @spec status_style(State.t()) :: ExRatatui.Style.t()
   def status_style(state) do
     cond do
       is_binary(state.error) -> Theme.style(:error)
-      state.active_turn -> Theme.style(:accent_soft)
+      state.active_turn != nil or state.pending_operation != nil -> Theme.style(:accent_soft)
       state.outcome == :cancelled -> Theme.style(:warning)
       true -> Theme.style(:muted)
     end
@@ -115,7 +127,7 @@ defmodule Tackle.CLI.TUI.StatusView do
     end
   end
 
-  defp busy_segments(%State{active_turn: nil}), do: []
+  defp busy_segments(%State{active_turn: nil, pending_operation: nil}), do: []
   defp busy_segments(%State{draft_empty?: true}), do: []
   defp busy_segments(%State{}), do: ["draft kept · not queued"]
 
@@ -132,7 +144,7 @@ defmodule Tackle.CLI.TUI.StatusView do
     ]
   end
 
-  defp hint_segments(%State{active_turn: nil}) do
+  defp hint_segments(%State{active_turn: nil, pending_operation: nil}) do
     [
       "Enter send",
       "Alt+N new session",
@@ -277,6 +289,10 @@ defmodule Tackle.CLI.TUI.StatusView do
   end
 
   defp cost_indicator(%Usage{}), do: nil
+
+  defp busy?(state), do: not is_nil(state.active_turn) or not is_nil(state.pending_operation)
+
+  defp spinner(frame), do: Enum.at(@spinner_frames, rem(frame, length(@spinner_frames)))
 
   defp format_token_count(tokens) when tokens < 1_000, do: Integer.to_string(tokens)
 

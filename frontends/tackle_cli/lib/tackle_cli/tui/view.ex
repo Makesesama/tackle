@@ -154,19 +154,19 @@ defmodule Tackle.CLI.TUI.View do
   end
 
   defp composer_title(%State{focus: :transcript}), do: " Browsing · Esc or F4 returns "
-  defp composer_title(%State{active_turn: nil}), do: " Prompt "
+  defp composer_title(%State{active_turn: nil, pending_operation: nil}), do: " Prompt "
   defp composer_title(%State{}), do: " Draft · next turn (not queued) "
 
   defp composer_placeholder(%State{focus: :transcript}),
     do: "Transcript focused — typing is off · ↑/↓ move · Enter inspect · y copy"
 
-  defp composer_placeholder(%State{active_turn: nil}),
+  defp composer_placeholder(%State{active_turn: nil, pending_operation: nil}),
     do: "Ask Tackle… Enter sends · Shift+Enter or Ctrl+J newline · F1 model"
 
   defp composer_placeholder(%State{}), do: "Draft the next instruction — kept, not queued"
 
   defp composer_color(%State{focus: :transcript}), do: :cyan
-  defp composer_color(%State{active_turn: nil}), do: :green
+  defp composer_color(%State{active_turn: nil, pending_operation: nil}), do: :green
   defp composer_color(%State{}), do: :dark_gray
 
   # -- overlays ------------------------------------------------------------

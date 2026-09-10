@@ -17,11 +17,11 @@ defmodule Tackle.CLI.TUI.Menu do
   what writes the value.
   """
 
+  alias ExRatatui.Command
   alias ExRatatui.Style
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Paragraph, Popup}
-  alias Tackle.CLI.TUI.{Picker, State, Theme, Util, Viewport}
-  alias Tackle.Session.Snapshot
+  alias Tackle.CLI.TUI.{Picker, State, Theme, Util}
   alias Tackle.Thinking
 
   @doc """
@@ -31,6 +31,10 @@ defmodule Tackle.CLI.TUI.Menu do
   """
   @spec open(atom(), State.t()) :: {:noreply, State.t()}
   def open(_kind, %State{active_turn: turn} = state) when not is_nil(turn) do
+    {:noreply, %{state | notice: "Configuration is available when idle"}}
+  end
+
+  def open(_kind, %State{pending_operation: operation} = state) when not is_nil(operation) do
     {:noreply, %{state | notice: "Configuration is available when idle"}}
   end
 
@@ -167,24 +171,25 @@ defmodule Tackle.CLI.TUI.Menu do
   defp apply_selection(:thinking, item, state), do: reconfigure(state, thinking: item.id)
 
   defp reconfigure(state, opts) do
-    case Tackle.reconfigure(state.agent_ref, opts) do
-      {:ok, %Snapshot{} = snapshot} ->
-        state = %{
-          state
-          | agent_state: snapshot.agent_state,
-            active_turn: snapshot.active_turn,
-            overlay: nil,
-            error: nil,
-            outcome: nil
-        }
+    ref = make_ref()
+    agent_ref = state.agent_ref
 
-        {:noreply, Viewport.refresh(state)}
+    command =
+      Command.async(
+        fn -> Tackle.reconfigure(agent_ref, opts) end,
+        &{:tui_operation_result, ref, :reconfigure, &1}
+      )
 
-      {:error, reason} ->
-        # Reconfiguration failure preserves the conversation and the draft.
-        state = %{state | overlay: nil, error: Util.format_reason(reason)}
-        {:noreply, Viewport.refresh(state, [:error])}
-    end
+    state = %{
+      state
+      | pending_operation: %{ref: ref, kind: :reconfigure},
+        overlay: nil,
+        activity: "reconfiguring",
+        error: nil,
+        outcome: nil
+    }
+
+    {:noreply, state, commands: [command]}
   end
 
   defp current_marker(value, value), do: "✓"
