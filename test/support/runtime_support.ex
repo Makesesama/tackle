@@ -128,6 +128,7 @@ defmodule Tackle.Test.Runtime do
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.ScopeSpec
+  alias Tackle.Session.Spec, as: SessionSpec
 
   @doc "Builds a trusted agent spec using the deterministic test adapter."
   def agent_spec(name, opts \\ []) do
@@ -168,8 +169,43 @@ defmodule Tackle.Test.Runtime do
     ScopeSpec.new!(
       root_spec: agent_spec("root", root_opts),
       limits: limits,
-      profiles: Keyword.get(opts, :profiles, %{})
+      profiles: Keyword.get(opts, :profiles, %{}),
+      session: Keyword.get(opts, :session)
     )
+  end
+
+  @doc "Creates an isolated storage home removed when the test exits."
+  def tmp_home do
+    home =
+      Path.join(
+        System.tmp_dir!(),
+        "tackle-session-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir_p!(home)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf(home) end)
+    home
+  end
+
+  @doc "Builds a validated durable session request rooted at an isolated home."
+  def session_spec(opts \\ []) do
+    home = Keyword.get_lazy(opts, :home, &tmp_home/0)
+    opts = opts |> Keyword.delete(:home) |> Keyword.put(:storage, home: home)
+    SessionSpec.new!(opts)
+  end
+
+  @doc "Starts a durable root scope rooted at an isolated storage home."
+  def start_durable_scope(opts \\ []) do
+    session_opts = Keyword.get(opts, :session, [])
+
+    session_opts =
+      case Keyword.fetch(opts, :home) do
+        {:ok, home} -> Keyword.put_new(session_opts, :home, home)
+        :error -> session_opts
+      end
+
+    session = session_spec(session_opts)
+    start_scope(Keyword.put(opts, :session, session))
   end
 
   @doc "Starts a scope and registers cleanup for the current test."

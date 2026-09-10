@@ -4,12 +4,27 @@ defmodule Tackle.CLI.ParserTest do
   alias Tackle.CLI.Parser
 
   test "parses the default run command with only a model override" do
-    assert {:ok, {:run, %{model: "openai-codex/gpt-5.6-sol", thinking: nil, prompt: nil}}} =
-             Parser.parse(["--model", "openai-codex/gpt-5.6-sol"])
+    assert {:ok,
+            {:run,
+             %{
+               model: "openai-codex/gpt-5.6-sol",
+               thinking: nil,
+               prompt: nil,
+               resume: nil,
+               abandon: false
+             }}} = Parser.parse(["--model", "openai-codex/gpt-5.6-sol"])
   end
 
   test "parses run prompt without exposing adapter module selection" do
-    assert {:ok, {:run, %{model: "openai-codex/gpt-5.6-sol", thinking: "high", prompt: "hello"}}} =
+    assert {:ok,
+            {:run,
+             %{
+               model: "openai-codex/gpt-5.6-sol",
+               thinking: "high",
+               prompt: "hello",
+               resume: nil,
+               abandon: false
+             }}} =
              Parser.parse([
                "run",
                "--model",
@@ -18,6 +33,22 @@ defmodule Tackle.CLI.ParserTest do
                "high",
                "hello"
              ])
+  end
+
+  test "parses durable session resume and recovery options" do
+    assert {:ok, {:run, run}} =
+             Parser.parse(["run", "--resume", "session-1", "--abandon", "hello"])
+
+    assert run.resume == "session-1"
+    assert run.abandon == true
+    assert run.prompt == "hello"
+  end
+
+  test "parses session listing and search command" do
+    assert {:ok, {:sessions, %{query: nil, limit: nil}}} = Parser.parse(["sessions"])
+
+    assert {:ok, {:sessions, %{query: "hello", limit: 5}}} =
+             Parser.parse(["sessions", "--query", "hello", "--limit", "5"])
   end
 
   test "parses model listing command" do

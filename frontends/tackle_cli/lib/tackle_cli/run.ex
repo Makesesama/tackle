@@ -4,6 +4,7 @@ defmodule Tackle.CLI.Run do
   alias Tackle.Plugins.Codex.OAuth
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.ScopeSpec
+  alias Tackle.Session.Spec, as: SessionSpec
 
   @codex_provider "openai-codex"
   @terminal_timeout 60_000
@@ -11,42 +12,62 @@ defmodule Tackle.CLI.Run do
   @spec run(%{
           model: String.t() | nil,
           thinking: String.t() | nil,
-          prompt: String.t() | nil
+          prompt: String.t() | nil,
+          resume: String.t() | nil,
+          abandon: boolean()
         }) :: non_neg_integer()
-  def run(%{model: model, thinking: thinking, prompt: nil}) do
-    case start_scope(model, thinking, true) do
-      {:ok, scope} ->
-        try do
-          case Tackle.available_models() do
-            {:ok, models} ->
-              case Tackle.CLI.TUI.start(agent_ref: scope.root_agent_ref, models: models) do
-                :ok -> 0
-                {:error, reason} -> error(reason)
-              end
+  def run(%{model: model, thinking: thinking, prompt: nil} = opts) do
+    with {:ok, scope} <- start_scope(model, thinking, true, opts) do
+      try do
+        case ensure_recoverable(scope.root_agent_ref, opts.abandon) do
+          :ok ->
+            case Tackle.available_models() do
+              {:ok, models} ->
+                case Tackle.CLI.TUI.start(agent_ref: scope.root_agent_ref, models: models) do
+                  :ok -> 0
+                  {:error, reason} -> error(reason)
+                end
 
-            {:error, reason} ->
-              error(reason)
-          end
-        after
-          stop_scope(scope.scope_ref)
+              {:error, reason} ->
+                error(reason)
+            end
+
+          {:error, reason} ->
+            error(reason)
         end
-
-      {:error, reason} ->
-        error(reason)
+      after
+        stop_scope(scope.scope_ref)
+      end
+    else
+      {:error, reason} -> error(reason)
     end
   end
 
-  def run(%{model: model, thinking: thinking, prompt: prompt}) when is_binary(prompt) do
-    case start_scope(model, thinking, false) do
-      {:ok, scope} ->
-        try do
-          run_prompt(scope.root_agent_ref, prompt)
-        after
-          stop_scope(scope.scope_ref)
+  def run(%{model: model, thinking: thinking, prompt: prompt} = opts) when is_binary(prompt) do
+    with {:ok, scope} <- start_scope(model, thinking, false, opts) do
+      try do
+        case ensure_recoverable(scope.root_agent_ref, opts.abandon) do
+          :ok -> run_prompt(scope.root_agent_ref, prompt)
+          {:error, reason} -> error(reason)
         end
+      after
+        stop_scope(scope.scope_ref)
+      end
+    else
+      {:error, reason} -> error(reason)
+    end
+  end
 
-      {:error, reason} ->
-        error(reason)
+  @spec sessions(%{query: String.t() | nil, limit: pos_integer() | nil}) :: non_neg_integer()
+  def sessions(%{query: query, limit: limit}) do
+    with {:ok, _apps} <- ensure_started(),
+         {:ok, filters} <- session_filters(limit),
+         {:ok, %{sessions: sessions}} <- list_sessions(query, filters) do
+      Enum.each(sessions, &puts_session/1)
+      0
+    else
+      {:error, reason} -> error(reason)
+      reason -> error(reason)
     end
   end
 
@@ -115,18 +136,62 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp start_scope(model, thinking, llm_stream) do
+  defp start_scope(model, thinking, llm_stream, opts) do
     with {:ok, _apps} <- ensure_started(),
          {:ok, overrides} <- overrides(model, thinking, llm_stream),
          {:ok, config} <- Tackle.load_config(overrides: overrides),
          {:ok, root_spec} <- AgentSpec.new(name: "root", config: config),
-         {:ok, scope_spec} <- ScopeSpec.new(root_spec: root_spec, profiles: %{}),
+         {:ok, session} <- durable_session(opts),
+         {:ok, scope_spec} <- ScopeSpec.new(root_spec: root_spec, profiles: %{}, session: session),
          {:ok, scope} <- Tackle.start_scope(scope_spec) do
       {:ok, scope}
     else
       {:error, reason} -> {:error, reason}
       reason -> {:error, reason}
     end
+  end
+
+  # Root conversations are durable by default. An explicit resume selects an
+  # existing session; `override_config` is set only when the user chose a model
+  # on the command line, so an unmodified resume adopts the recorded selection.
+  defp durable_session(opts) do
+    SessionSpec.new(
+      session_id: Map.get(opts, :resume),
+      override_config: not is_nil(Map.get(opts, :model))
+    )
+  end
+
+  defp ensure_recoverable(agent_ref, abandon?) do
+    case Tackle.snapshot(agent_ref) do
+      {:ok, %{recovery: nil}} ->
+        :ok
+
+      {:ok, %{recovery: recovery}} ->
+        if abandon? do
+          Tackle.abandon_turn(agent_ref)
+        else
+          {:error, {:interrupted_session, recovery}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp session_filters(nil), do: {:ok, %{}}
+  defp session_filters(limit) when is_integer(limit) and limit > 0, do: {:ok, %{limit: limit}}
+  defp session_filters(limit), do: {:error, {:invalid_limit, limit}}
+
+  defp list_sessions(nil, filters), do: Tackle.list_sessions(filters)
+  defp list_sessions(query, filters), do: Tackle.search_sessions(query, filters)
+
+  defp puts_session(session) do
+    title = session.title || session.preview || "(untitled)"
+
+    IO.puts(
+      "#{session.session_id}  #{session.updated_at}  #{session.status}  " <>
+        "#{session.message_count} messages  #{title}"
+    )
   end
 
   defp run_prompt(agent_ref, prompt) do

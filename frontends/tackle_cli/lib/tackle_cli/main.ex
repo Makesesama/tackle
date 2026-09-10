@@ -17,6 +17,7 @@ defmodule Tackle.CLI.Main do
   end
 
   defp dispatch({:run, opts}), do: Run.run(opts)
+  defp dispatch({:sessions, opts}), do: Run.sessions(opts)
   defp dispatch({:models, %{}}), do: Run.models()
   defp dispatch({:auth_login, opts}), do: Run.auth_login(opts)
   defp dispatch({:auth_status, opts}), do: Run.auth_status(opts)

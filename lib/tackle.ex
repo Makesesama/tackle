@@ -27,6 +27,8 @@ defmodule Tackle do
   alias Tackle.Runtime.Scope
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
+  alias Tackle.Session.Spec, as: SessionSpec
+  alias Tackle.Session.Store
 
   @doc """
   Starts a root-agent scope from a trusted `Tackle.Runtime.ScopeSpec`.
@@ -90,4 +92,61 @@ defmodule Tackle do
   @doc "Unsubscribes the caller from session deliveries."
   @spec unsubscribe(AgentRef.t()) :: :ok | {:error, term()}
   def unsubscribe(%AgentRef{} = agent_ref), do: Runtime.unsubscribe(agent_ref)
+
+  @doc """
+  Explicitly abandons an interrupted durable turn for an agent.
+
+  A resumed session whose journal ends with `turn.started` and no terminal
+  event is interrupted. If unresolved tools may have produced external effects,
+  automatic continuation is prohibited until the frontend records the recovery
+  decision. This appends `turn.abandoned` and clears the recovery gate.
+  """
+  @spec abandon_turn(AgentRef.t()) :: :ok | {:error, term()}
+  def abandon_turn(%AgentRef{} = agent_ref), do: Runtime.abandon_turn(agent_ref)
+
+  @doc """
+  Resumes a durable session into a new root scope.
+
+  The scope spec supplies the trusted agent configuration; the session id
+  selects the durable conversation. `opts` may carry `:repair`,
+  `:override_config`, `:storage`, and `:cwd`. The recorded model is re-resolved
+  through the current adapters unless `:override_config` is set, in which case
+  a durable configuration change is recorded.
+  """
+  @spec resume_session(String.t(), ScopeSpec.t(), keyword()) ::
+          {:ok, Scope.t()} | {:error, term()}
+  def resume_session(session_id, %ScopeSpec{} = spec, opts \\ []) do
+    with {:ok, session} <- SessionSpec.new(Keyword.merge(opts, session_id: session_id)),
+         {:ok, spec} <- ScopeSpec.new(%{spec | session: session}) do
+      start_scope(spec)
+    end
+  end
+
+  @doc "Reads and projects a durable session without starting a runtime scope."
+  @spec inspect_session(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def inspect_session(session_id, opts \\ []), do: Store.inspect_session(session_id, opts)
+
+  @doc "Lists durable sessions with stable cursor pagination."
+  @spec list_sessions(map() | keyword()) :: {:ok, map()} | {:error, term()}
+  def list_sessions(filters \\ %{}), do: Store.list(filters)
+
+  @doc "Searches durable sessions using the default indexed fields."
+  @spec search_sessions(String.t(), map() | keyword()) :: {:ok, map()} | {:error, term()}
+  def search_sessions(query, filters \\ %{}), do: Store.search(query, filters)
+
+  @doc "Returns the derived catalog summary for one session."
+  @spec session_summary(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
+  def session_summary(session_id, opts \\ []), do: Store.summary(session_id, opts)
+
+  @doc "Materializes a new self-contained session from validated parent history."
+  @spec fork_session(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def fork_session(session_id, opts \\ []), do: Store.fork(session_id, opts)
+
+  @doc "Moves an inactive session into the trash and removes it from the catalog."
+  @spec delete_session(String.t(), keyword()) :: :ok | {:error, term()}
+  def delete_session(session_id, opts \\ []), do: Store.delete(session_id, opts)
+
+  @doc "Runs an explicit durability barrier for a live durable session."
+  @spec flush_session(String.t()) :: :ok | {:error, term()}
+  def flush_session(session_id), do: Store.flush(session_id)
 end

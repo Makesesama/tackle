@@ -10,6 +10,8 @@ defmodule Tackle.Application do
         {Tackle.Auth.Store, path: auth_file, name: Tackle.Auth.Store},
         {Tackle.Runtime.CancellationStore, []},
         {Tackle.Runtime.Registry, []},
+        {Registry, keys: :unique, name: Tackle.Session.JournalRegistry},
+        Tackle.Session.Catalog,
         {Tackle.AgentSupervisor, name: Tackle.AgentSupervisor}
       ]
 

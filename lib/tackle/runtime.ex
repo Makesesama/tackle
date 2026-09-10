@@ -110,6 +110,18 @@ defmodule Tackle.Runtime do
     with_session(agent_ref, &Session.cancel/1)
   end
 
+  @doc """
+  Explicitly abandons an interrupted durable turn for an agent.
+
+  Resuming a session whose journal ends without a terminal turn event requires
+  an explicit recovery decision; this records `turn.abandoned` and clears the
+  recovery gate.
+  """
+  @spec abandon_turn(AgentRef.t()) :: :ok | {:error, term()}
+  def abandon_turn(%AgentRef{} = agent_ref) do
+    with_session(agent_ref, &Session.abandon_turn/1)
+  end
+
   @doc "Subscribes the caller to an agent's correlated events and terminal outcomes."
   @spec subscribe(AgentRef.t()) :: {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
   def subscribe(%AgentRef{} = agent_ref) do

@@ -39,6 +39,11 @@ defmodule Tackle.Session do
   alias Tackle.Runtime.Registry
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.Task, as: TurnTask
+  alias Tackle.Session.Journal
+  alias Tackle.Session.Loader
+  alias Tackle.Session.Persistence
+  alias Tackle.Session.Projection
+  alias Tackle.Session.Spec, as: SessionSpec
 
   @task_shutdown_timeout 1_000
 
@@ -89,12 +94,18 @@ defmodule Tackle.Session do
     @moduledoc "An atomic view of a Tackle session and its active turn."
 
     @enforce_keys [:session_id, :agent_state]
-    defstruct [:session_id, :agent_state, :active_turn, :stats, :agent_ref, :scope_ref]
+    defstruct [:session_id, :agent_state, :active_turn, :stats, :agent_ref, :scope_ref, :recovery]
 
     @type active_turn :: %{
             required(:id) => String.t(),
             required(:operation) => :run | :continue,
             required(:cancellation_requested?) => boolean()
+          }
+
+    @type recovery :: %{
+            required(:turn_id) => String.t(),
+            required(:operation) => term(),
+            required(:uncertain_tools) => [map()]
           }
 
     @type t :: %__MODULE__{
@@ -103,7 +114,8 @@ defmodule Tackle.Session do
             active_turn: active_turn() | nil,
             stats: Tackle.Session.Stats.t() | nil,
             agent_ref: AgentRef.t() | nil,
-            scope_ref: ScopeRef.t() | nil
+            scope_ref: ScopeRef.t() | nil,
+            recovery: recovery() | nil
           }
   end
 
@@ -143,6 +155,17 @@ defmodule Tackle.Session do
   @spec cancel(GenServer.server()) :: :ok
   def cancel(session), do: GenServer.call(session, :cancel)
 
+  @doc """
+  Explicitly abandons an interrupted turn so durable resume can continue.
+
+  A resumed session whose journal ends with `turn.started` and no terminal
+  event is interrupted. Automatic continuation is prohibited while unresolved
+  tools may have produced external effects; the frontend must inspect the
+  uncertainty and call this to record `turn.abandoned` before new work.
+  """
+  @spec abandon_turn(GenServer.server()) :: :ok | {:error, term()}
+  def abandon_turn(session), do: GenServer.call(session, :abandon_turn)
+
   @doc "Updates model and thinking settings while the session is idle."
   @spec reconfigure(GenServer.server(), keyword()) :: {:ok, Snapshot.t()} | {:error, term()}
   def reconfigure(session, opts) when is_list(opts),
@@ -181,12 +204,9 @@ defmodule Tackle.Session do
     work_supervisor = Keyword.get(opts, :work_supervisor) || work_supervisor(scope_ref)
 
     with :ok <- validate_ownership(scope_ref, agent_ref, coordinator, work_supervisor),
-         :ok <- register(scope_ref, agent_ref) do
-      agent_state =
-        config
-        |> Config.to_agent_state(credential_store: Auth.credential_store())
-        |> put_runtime_context(scope_ref, agent_ref, opts)
-
+         :ok <- register(scope_ref, agent_ref),
+         {:ok, agent_state, journal, recovery} <-
+           build_agent_state(config, scope_ref, agent_ref, opts) do
       state = %{
         config: config,
         agent_state: agent_state,
@@ -198,7 +218,9 @@ defmodule Tackle.Session do
         lifetime: Keyword.get(opts, :lifetime, :explicit),
         parent: Keyword.get(opts, :parent),
         terminal: Keyword.get(opts, :terminal),
-        work_supervisor: work_supervisor
+        work_supervisor: work_supervisor,
+        journal: journal,
+        recovery: recovery
       }
 
       register_with_coordinator(state)
@@ -215,6 +237,21 @@ defmodule Tackle.Session do
 
   def handle_call(:continue, _from, state) do
     start_turn(:continue, nil, state)
+  end
+
+  def handle_call(:abandon_turn, _from, %{recovery: nil} = state) do
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:abandon_turn, _from, %{journal: journal, recovery: recovery} = state)
+      when not is_nil(journal) do
+    case Journal.settle_turn(journal, "turn.abandoned", %{
+           "turn_id" => recovery.turn_id,
+           "reason" => "abandoned_by_frontend"
+         }) do
+      :ok -> {:reply, :ok, %{state | recovery: nil}}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:cancel, _from, %{active_turn: nil} = state) do
@@ -235,11 +272,17 @@ defmodule Tackle.Session do
   def handle_call({:reconfigure, opts}, _from, state) do
     case Config.reconfigure(state.config, opts) do
       {:ok, config} ->
-        agent_state = apply_configuration(state.agent_state, config)
-        state = %{state | config: config, agent_state: agent_state}
-        snapshot = build_snapshot(state)
-        broadcast(state, {:tackle_session_reconfigured, snapshot.session_id, snapshot})
-        {:reply, {:ok, snapshot}, state}
+        case persist_configuration(state, config) do
+          :ok ->
+            agent_state = apply_configuration(state.agent_state, config)
+            state = %{state | config: config, agent_state: agent_state}
+            snapshot = build_snapshot(state)
+            broadcast(state, {:tackle_session_reconfigured, snapshot.session_id, snapshot})
+            {:reply, {:ok, snapshot}, state}
+
+          {:error, reason} ->
+            {:stop, {:persistence_failed, reason}, {:error, reason}, state}
+        end
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -266,8 +309,14 @@ defmodule Tackle.Session do
   end
 
   def handle_call(:close, _from, state) do
-    broadcast(state, {:tackle_session_closed, state.agent_state.session_id})
-    {:stop, :normal, :ok, state}
+    case persist_close(state) do
+      :ok ->
+        broadcast(state, {:tackle_session_closed, state.agent_state.session_id})
+        {:stop, :normal, :ok, state}
+
+      {:error, reason} ->
+        {:stop, {:persistence_failed, reason}, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -298,20 +347,33 @@ defmodule Tackle.Session do
     case result do
       {outcome, %AgentState{} = agent_state}
       when outcome in [:ok, :error, :cancelled] ->
-        state = %{state | agent_state: agent_state, active_turn: nil}
+        case persist_terminal(state, result) do
+          :ok ->
+            state = %{state | agent_state: agent_state, active_turn: nil}
 
-        broadcast(
-          state,
-          {:tackle_turn_finished, agent_state.session_id, active_turn.id, result}
-        )
+            broadcast(
+              state,
+              {:tackle_turn_finished, agent_state.session_id, active_turn.id, result}
+            )
 
-        settle(state, result)
+            settle(state, result)
+
+          {:error, reason} ->
+            {:stop, {:persistence_failed, reason}, %{state | active_turn: nil}}
+        end
 
       invalid_result ->
         reason = {:invalid_turn_result, invalid_result}
-        state = %{state | active_turn: nil}
-        broadcast_turn_failure(state, active_turn.id, reason)
-        settle(state, {:runtime_error, reason})
+
+        case persist_terminal(state, {:runtime_error, reason}) do
+          :ok ->
+            state = %{state | active_turn: nil}
+            broadcast_turn_failure(state, active_turn.id, reason)
+            settle(state, {:runtime_error, reason})
+
+          {:error, persist_reason} ->
+            {:stop, {:persistence_failed, persist_reason}, %{state | active_turn: nil}}
+        end
     end
   end
 
@@ -321,9 +383,16 @@ defmodule Tackle.Session do
       ) do
     Cancellation.delete(active_turn.signal)
     release_turn(state)
-    state = %{state | active_turn: nil}
-    broadcast_turn_failure(state, active_turn.id, reason)
-    settle(state, {:runtime_error, reason})
+
+    case persist_terminal(state, {:runtime_error, reason}) do
+      :ok ->
+        state = %{state | active_turn: nil}
+        broadcast_turn_failure(state, active_turn.id, reason)
+        settle(state, {:runtime_error, reason})
+
+      {:error, persist_reason} ->
+        {:stop, {:persistence_failed, persist_reason}, %{state | active_turn: nil}}
+    end
   end
 
   def handle_info({:runtime_cancel, reason}, state) do
@@ -348,6 +417,11 @@ defmodule Tackle.Session do
     :ok
   end
 
+  defp start_turn(_operation, _input, %{recovery: recovery} = state)
+       when not is_nil(recovery) do
+    {:reply, {:error, {:recovery_required, recovery}}, state}
+  end
+
   defp start_turn(_operation, _input, %{active_turn: active_turn} = state)
        when not is_nil(active_turn) do
     {:reply, {:error, :turn_in_progress}, state}
@@ -370,27 +444,35 @@ defmodule Tackle.Session do
     agent_state = state.agent_state
     run_opts = turn_opts(state.config, session_pid, turn_id, signal)
 
-    case start_turn_task(state.work_supervisor, fn ->
-           case operation do
-             :run -> Tackle.Lib.run(agent_state, input, run_opts)
-             :continue -> Tackle.Lib.continue(agent_state, run_opts)
-           end
-         end) do
-      {:ok, task} ->
-        active_turn = %{
-          id: turn_id,
-          operation: operation,
-          task: task,
-          signal: signal,
-          cancellation_requested?: false
-        }
+    case begin_turn(state, operation, input, turn_id) do
+      :ok ->
+        case start_turn_task(state.work_supervisor, fn ->
+               case operation do
+                 :run -> Tackle.Lib.run(agent_state, input, run_opts)
+                 :continue -> Tackle.Lib.continue(agent_state, run_opts)
+               end
+             end) do
+          {:ok, task} ->
+            active_turn = %{
+              id: turn_id,
+              operation: operation,
+              task: task,
+              signal: signal,
+              cancellation_requested?: false
+            }
 
-        {:reply, {:ok, turn_id}, %{state | active_turn: active_turn}}
+            {:reply, {:ok, turn_id}, %{state | active_turn: active_turn}}
+
+          {:error, reason} ->
+            Cancellation.delete(signal)
+            release_turn(state)
+            {:reply, {:error, {:turn_task_failed, reason}}, state}
+        end
 
       {:error, reason} ->
         Cancellation.delete(signal)
         release_turn(state)
-        {:reply, {:error, {:turn_task_failed, reason}}, state}
+        {:reply, {:error, {:persistence_failed, reason}}, state}
     end
   end
 
@@ -476,6 +558,103 @@ defmodule Tackle.Session do
 
   defp put_runtime_context(agent_state, _scope_ref, _agent_ref, _opts), do: agent_state
 
+  defp build_agent_state(config, scope_ref, agent_ref, opts) do
+    case Keyword.get(opts, :durable) do
+      nil ->
+        agent_state =
+          config
+          |> Config.to_agent_state(credential_store: Auth.credential_store())
+          |> put_runtime_context(scope_ref, agent_ref, opts)
+
+        {:ok, agent_state, nil, nil}
+
+      %SessionSpec{} = durable ->
+        build_durable_agent_state(config, scope_ref, agent_ref, opts, durable)
+    end
+  end
+
+  defp build_durable_agent_state(config, scope_ref, agent_ref, opts, durable) do
+    with {:ok, journal} <- Journal.whereis(durable.session_id),
+         {:ok, projection} <- Journal.projection(journal),
+         {:ok, loaded} <-
+           Loader.load(projection, config,
+             credential_store: Auth.credential_store(),
+             override_config: durable.override_config
+           ),
+         :ok <- persist_configuration_change(journal, loaded.configuration_changed?, config) do
+      agent_state =
+        loaded.state
+        |> put_runtime_context(scope_ref, agent_ref, opts)
+        |> install_persistence_hook()
+
+      {:ok, agent_state, journal, recovery_for(projection)}
+    end
+  end
+
+  defp install_persistence_hook(%AgentState{} = state) do
+    # The hook module is added directly rather than through Config's module
+    # validation, so ensure it is loaded before the loop's function_exported?
+    # dispatch can see it.
+    _ = Code.ensure_loaded(Persistence)
+    %{state | hooks: state.hooks ++ [Persistence]}
+  end
+
+  defp recovery_for(%Projection{} = projection) do
+    case projection.active_turn do
+      nil ->
+        nil
+
+      %{} = turn ->
+        %{
+          turn_id: turn.turn_id,
+          operation: turn.operation,
+          uncertain_tools: Map.get(turn, :pending_tools, [])
+        }
+    end
+  end
+
+  defp persist_configuration_change(_journal, false, _config), do: :ok
+
+  defp persist_configuration_change(journal, true, config) do
+    Journal.configuration_changed(journal, config)
+  end
+
+  defp begin_turn(%{journal: nil}, _operation, _input, _turn_id), do: :ok
+
+  defp begin_turn(%{journal: journal}, operation, input, turn_id) do
+    case Journal.begin_turn(journal, operation, input, turn_id) do
+      {:ok, _turn_id} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp persist_terminal(%{journal: nil}, _result), do: :ok
+
+  defp persist_terminal(%{journal: journal, active_turn: %{id: turn_id}}, result) do
+    {type, data} = terminal_event(result)
+    Journal.settle_turn(journal, type, Map.put(data, "turn_id", turn_id))
+  end
+
+  defp terminal_event({:ok, _agent_state}), do: {"turn.completed", %{"status" => "completed"}}
+
+  defp terminal_event({:error, %AgentState{} = agent_state}),
+    do: {"turn.errored", %{"error" => agent_state.error}}
+
+  defp terminal_event({:cancelled, %AgentState{} = agent_state}),
+    do: {"turn.cancelled", %{"reason" => agent_state.error}}
+
+  defp terminal_event({:runtime_error, reason}),
+    do: {"turn.crashed", %{"reason" => inspect(reason)}}
+
+  defp persist_configuration(%{journal: nil}, _config), do: :ok
+
+  defp persist_configuration(%{journal: journal}, config) do
+    Journal.configuration_changed(journal, config)
+  end
+
+  defp persist_close(%{journal: nil}), do: :ok
+  defp persist_close(%{journal: journal}), do: Journal.close_journal(journal)
+
   defp validate_ownership(%ScopeRef{}, %AgentRef{}, coordinator, work_supervisor)
        when not is_nil(coordinator) and not is_nil(work_supervisor),
        do: :ok
@@ -548,7 +727,8 @@ defmodule Tackle.Session do
       active_turn: active_turn,
       stats: Stats.from_agent_state(state.agent_state),
       agent_ref: state.agent_ref,
-      scope_ref: state.scope_ref
+      scope_ref: state.scope_ref,
+      recovery: state.recovery
     }
   end
 

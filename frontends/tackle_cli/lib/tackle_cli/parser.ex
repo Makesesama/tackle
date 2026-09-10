@@ -6,8 +6,11 @@ defmodule Tackle.CLI.Parser do
            %{
              model: String.t() | nil,
              thinking: String.t() | nil,
-             prompt: String.t() | nil
+             prompt: String.t() | nil,
+             resume: String.t() | nil,
+             abandon: boolean()
            }}
+          | {:sessions, %{query: String.t() | nil, limit: pos_integer() | nil}}
           | {:models, %{}}
           | {:auth_login, %{provider: String.t()}}
           | {:auth_status, %{provider: String.t() | nil}}
@@ -34,6 +37,12 @@ defmodule Tackle.CLI.Parser do
   defp parse_result({:ok, result}, _parser), do: {:ok, run_command(result)}
   defp parse_result({:ok, [:run], result}, _parser), do: {:ok, run_command(result)}
   defp parse_result({:ok, [:models], _result}, _parser), do: {:ok, {:models, %{}}}
+
+  defp parse_result({:ok, [:sessions], result}, _parser) do
+    {:ok,
+     {:sessions,
+      %{query: Map.get(result.options, :query), limit: Map.get(result.options, :limit)}}}
+  end
 
   defp parse_result({:ok, [:auth], _result}, parser),
     do: {:help, format_help(parser, [:auth])}
@@ -83,6 +92,20 @@ defmodule Tackle.CLI.Parser do
           help: "Thinking level: off, minimal, low, medium, high, or xhigh",
           parser: :string,
           global: true
+        ],
+        resume: [
+          value_name: "SESSION_ID",
+          long: "--resume",
+          help: "Resume a durable session by id instead of starting a new one",
+          parser: :string,
+          global: true
+        ]
+      ],
+      flags: [
+        abandon: [
+          long: "--abandon",
+          help: "Record turn.abandoned for an interrupted resumed session",
+          global: true
         ]
       ],
       subcommands: [
@@ -101,6 +124,24 @@ defmodule Tackle.CLI.Parser do
         models: [
           name: "models",
           about: "List models exposed by root harness adapter loading"
+        ],
+        sessions: [
+          name: "sessions",
+          about: "List or search durable sessions",
+          options: [
+            query: [
+              value_name: "TEXT",
+              long: "--query",
+              help: "Full-text query over indexed session fields",
+              parser: :string
+            ],
+            limit: [
+              value_name: "N",
+              long: "--limit",
+              help: "Maximum number of results",
+              parser: :integer
+            ]
+          ]
         ],
         auth: [
           name: "auth",
@@ -141,7 +182,9 @@ defmodule Tackle.CLI.Parser do
      %{
        model: Map.get(result.options, :model),
        thinking: Map.get(result.options, :thinking),
-       prompt: Map.get(result.args, :prompt)
+       prompt: Map.get(result.args, :prompt),
+       resume: Map.get(result.options, :resume),
+       abandon: Map.get(result.flags, :abandon, false) == true
      }}
   end
 

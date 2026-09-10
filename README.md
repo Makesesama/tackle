@@ -157,6 +157,71 @@ between calls. These tools inherit the Tackle process's filesystem and
 operating-system permissions and are not a sandbox. `Tackle.Lib` provides the
 `:telemetry` runtime dependency used by tool execution.
 
+### Durable sessions
+
+A root scope can own one durable session journal. Add a
+`Tackle.Session.Spec` to the `ScopeSpec` and the scope stores an append-only
+internal `:disk_log` under `$TACKLE_HOME/sessions/<session-id>/session.dlog`.
+The CLI does this by default, so every CLI root conversation is durable.
+
+```elixir
+{:ok, session} = Tackle.Session.Spec.new()
+{:ok, spec} = Tackle.Runtime.ScopeSpec.new(root_spec: root_spec, session: session)
+{:ok, scope} = Tackle.start_scope(spec)
+```
+
+Durability is fail-closed. A turn's `turn.started` commit is synced before its
+Task starts, every settled message is committed before the loop performs the
+next provider or tool effect, and the terminal event is synced before terminal
+outcomes are delivered. If a journal append, sync, or validation fails, the
+session stops instead of continuing with memory-only state.
+
+A session whose journal ends with `turn.started` and no terminal event is
+interrupted. Resuming it requires an explicit recovery decision; while it is
+unresolved, `Tackle.submit/2` and `Tackle.continue/1` return
+`{:error, {:recovery_required, info}}`. `Tackle.Session.Snapshot.recovery`
+exposes the unresolved turn and any tools whose external effects are uncertain.
+
+```elixir
+{:ok, scope} = Tackle.resume_session(session_id, scope_spec)
+
+case Tackle.snapshot(scope.root_agent_ref) do
+  {:ok, %{recovery: nil}} -> :ok
+  {:ok, %{recovery: recovery}} -> handle_interrupted(recovery)
+end
+
+:ok = Tackle.abandon_turn(scope.root_agent_ref)
+```
+
+Session inspection and management never expose a PID or the journal process:
+
+- `Tackle.inspect_session/2` reads and projects a session without starting one;
+- `Tackle.list_sessions/1` and `Tackle.search_sessions/2` use the rebuildable
+  derived catalog with stable cursor pagination;
+- `Tackle.fork_session/2` materializes a self-contained session from validated
+  parent history, so the child survives deletion of the parent;
+- `Tackle.delete_session/2` moves an inactive session into `sessions/trash/` and
+  refuses to delete an active one; and
+- `Tackle.flush_session/1` runs an explicit durability barrier.
+
+Internal `.dlog` files are trusted local state, never a portable interchange
+format, and are not accepted as imports. Search indexes the title, user and
+assistant text, `cwd`, and tags by default; it excludes reasoning, provider
+continuation state, tool arguments, and tool output. Checkpoints and in-place
+migration are deliberately not implemented yet. See
+[`docs/SESSION_ARCHITECTURE.md`](docs/SESSION_ARCHITECTURE.md) for the accepted
+architecture and its remaining deferrals.
+
+The CLI exposes durable sessions directly:
+
+```sh
+tackle run "explain this module"          # new durable session
+tackle run --resume <session-id> "carry on"
+tackle run --resume <session-id> --abandon "continue after a crash"
+tackle sessions                           # newest sessions first
+tackle sessions --query "cache invalidation" --limit 10
+```
+
 ### Breaking migration to scoped runtime
 
 Session-PID startup is replaced by scope startup: `Tackle.start_session/1`,

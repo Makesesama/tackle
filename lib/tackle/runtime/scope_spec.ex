@@ -17,7 +17,8 @@ defmodule Tackle.Runtime.ScopeSpec do
   defstruct scope_ref: nil,
             root_spec: nil,
             limits: nil,
-            profiles: %{}
+            profiles: %{},
+            session: nil
 
   @type resolver :: (-> {:ok, AgentSpec.t()} | {:error, term()})
 
@@ -25,7 +26,8 @@ defmodule Tackle.Runtime.ScopeSpec do
           scope_ref: ScopeRef.t(),
           root_spec: AgentSpec.t(),
           limits: Limits.t(),
-          profiles: %{optional(String.t()) => AgentSpec.t() | resolver()}
+          profiles: %{optional(String.t()) => AgentSpec.t() | resolver()},
+          session: Tackle.Session.Spec.t() | nil
         }
 
   @doc "Builds a validated scope spec, minting a scope id when absent."
@@ -38,13 +40,15 @@ defmodule Tackle.Runtime.ScopeSpec do
          {:ok, root_spec} <- AgentSpec.new(raw_root_spec),
          {:ok, limits} <- Limits.new(Map.get(opts, :limits, Limits.default())),
          {:ok, profiles} <- validate_profiles(Map.get(opts, :profiles, %{})),
+         {:ok, session} <- validate_session(Map.get(opts, :session)),
          {:ok, scope_ref} <- scope_ref(Map.get(opts, :scope_ref)) do
       {:ok,
        %__MODULE__{
          scope_ref: scope_ref,
          root_spec: root_spec,
          limits: limits,
-         profiles: profiles
+         profiles: profiles,
+         session: session
        }}
     else
       {:error, _reason} = error -> error
@@ -93,9 +97,17 @@ defmodule Tackle.Runtime.ScopeSpec do
     with {:ok, root_spec} <- AgentSpec.new(spec.root_spec),
          {:ok, limits} <- Limits.new(spec.limits || Limits.default()),
          {:ok, profiles} <- validate_profiles(spec.profiles),
+         {:ok, session} <- validate_session(spec.session),
          {:ok, scope_ref} <- scope_ref(scope_ref) do
       {:ok,
-       %{spec | scope_ref: scope_ref, root_spec: root_spec, limits: limits, profiles: profiles}}
+       %{
+         spec
+         | scope_ref: scope_ref,
+           root_spec: root_spec,
+           limits: limits,
+           profiles: profiles,
+           session: session
+       }}
     end
   end
 
@@ -127,4 +139,12 @@ defmodule Tackle.Runtime.ScopeSpec do
   defp validate_profile(_name, %AgentSpec{} = spec), do: AgentSpec.new(spec)
   defp validate_profile(_name, resolver) when is_function(resolver, 0), do: {:ok, resolver}
   defp validate_profile(name, value), do: {:error, {:invalid_profile, name, value}}
+
+  defp validate_session(nil), do: {:ok, nil}
+
+  defp validate_session(%Tackle.Session.Spec{} = session) do
+    Tackle.Session.Spec.new(session)
+  end
+
+  defp validate_session(value), do: {:error, {:invalid_session, value}}
 end
