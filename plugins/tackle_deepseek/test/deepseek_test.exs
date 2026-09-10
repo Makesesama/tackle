@@ -28,30 +28,46 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
   test "exposes selectable models with limits and price cards" do
     assert DeepSeek.adapter_id() == "deepseek"
-    assert DeepSeek.models() == ["deepseek-chat", "deepseek-reasoner", "deepseek-flash"]
 
-    Enum.each(["deepseek-chat", "deepseek-reasoner"], fn model ->
-      assert {:ok, %ModelInfo{} = info} = LLM.model_info(DeepSeek, model)
-      assert info.context_window == 128_000
-      assert info.max_output_tokens == 128_000
-      assert info.pricing.currency == "USD"
-      assert info.pricing.unit_tokens == 1_000_000
-    end)
+    assert DeepSeek.models() == [
+             "deepseek-flash",
+             "deepseek-v4-flash",
+             "deepseek-v4-flash-vision-exp",
+             "deepseek-v4-pro"
+           ]
 
     assert {:ok, %ModelInfo{} = flash} = LLM.model_info(DeepSeek, "deepseek-flash")
     assert flash.context_window == 1_000_000
-    assert flash.max_output_tokens == 384_000
+    assert flash.max_output_tokens == 256_000
     assert flash.pricing.input == 0.3
     assert flash.pricing.output == 1.2
     assert flash.pricing.cache_read == 0.006
     assert flash.pricing.currency == "USD"
     assert flash.pricing.unit_tokens == 1_000_000
 
+    Enum.each(["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"], fn model ->
+      assert {:ok, %ModelInfo{} = info} = LLM.model_info(DeepSeek, model)
+      assert info.context_window == 1_000_000
+      assert info.max_output_tokens == 384_000
+      assert info.pricing.input == 0.14
+      assert info.pricing.output == 0.28
+      assert info.pricing.cache_read == 0.0028
+      assert info.pricing.cache_write == 0
+    end)
+
+    assert {:ok, %ModelInfo{} = pro} = LLM.model_info(DeepSeek, "deepseek-v4-pro")
+    assert pro.context_window == 1_000_000
+    assert pro.max_output_tokens == 384_000
+    assert pro.pricing.input == 0.435
+    assert pro.pricing.output == 0.87
+    assert pro.pricing.cache_read == 0.003625
+    assert pro.pricing.cache_write == 0
+
     assert {:ok, nil} = LLM.model_info(DeepSeek, "unknown")
-    assert {:ok, selection} = LLM.select([DeepSeek], "deepseek/deepseek-chat")
-    assert selection.model == "deepseek-chat"
-    assert {:ok, flash_selection} = LLM.select([DeepSeek], "deepseek/deepseek-flash")
-    assert flash_selection.model == "deepseek-flash"
+    assert {:ok, selection} = LLM.select([DeepSeek], "deepseek/deepseek-flash")
+    assert selection.model == "deepseek-flash"
+    assert {:ok, pro_selection} = LLM.select([DeepSeek], "deepseek/deepseek-v4-pro")
+    assert pro_selection.model == "deepseek-v4-pro"
   end
 
   test "translates messages and tools and normalizes DeepSeek cache usage", %{store: store} do
@@ -63,12 +79,12 @@ defmodule Tackle.Plugins.DeepSeekTest do
       streaming_response(options, [
         sse(%{
           "id" => "chat-1",
-          "model" => "deepseek-chat",
+          "model" => "deepseek-flash",
           "choices" => [%{"index" => 0, "delta" => %{"content" => "hel"}, "finish_reason" => nil}]
         }),
         sse(%{
           "id" => "chat-1",
-          "model" => "deepseek-chat",
+          "model" => "deepseek-flash",
           "choices" => [
             %{"index" => 0, "delta" => %{"content" => "lo"}, "finish_reason" => "stop"}
           ],
@@ -115,10 +131,10 @@ defmodule Tackle.Plugins.DeepSeekTest do
         ]
       )
 
-    assert {:ok, selection} = LLM.select([DeepSeek], "deepseek/deepseek-chat")
+    assert {:ok, selection} = LLM.select([DeepSeek], "deepseek/deepseek-flash")
     assert {:ok, result} = LLM.generate_with(selection, nil, opts)
     assert result.data == %{"content" => "hello", "tool_calls" => []}
-    assert result.model == "deepseek-chat"
+    assert result.model == "deepseek-flash"
     assert result.provider == "deepseek"
 
     assert %Usage{
@@ -138,7 +154,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     assert header(request_options, "accept") == "text/event-stream"
 
     assert {:ok, body} = JSON.decode(request_options[:body])
-    assert body["model"] == "deepseek-chat"
+    assert body["model"] == "deepseek-flash"
     assert body["stream"] == true
     assert body["stream_options"] == %{"include_usage" => true}
     assert body["temperature"] == 0.3
@@ -152,6 +168,8 @@ defmodule Tackle.Plugins.DeepSeekTest do
            ] = body["messages"]
 
     assert old_call["function"]["arguments"] == "{\"query\":\"old\"}"
+    assert Enum.at(body["messages"], 2)["content"] == ""
+    assert request_options[:retry] == false
 
     assert [
              %{
@@ -172,7 +190,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     wire =
       Enum.join([
         sse(%{
-          "model" => "deepseek-reasoner",
+          "model" => "deepseek-v4-pro",
           "choices" => [
             %{
               "index" => 0,
@@ -182,7 +200,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
           ]
         }),
         sse(%{
-          "model" => "deepseek-reasoner",
+          "model" => "deepseek-v4-pro",
           "choices" => [
             %{
               "index" => 0,
@@ -200,7 +218,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
           ]
         }),
         sse(%{
-          "model" => "deepseek-reasoner",
+          "model" => "deepseek-v4-pro",
           "choices" => [
             %{
               "index" => 0,
@@ -223,7 +241,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       ])
 
     request = fn options -> streaming_response(options, split_binary(wire, [7, 31, 3, 89])) end
-    opts = base_opts(store, request) |> Keyword.put(:model, "deepseek-reasoner")
+    opts = base_opts(store, request) |> Keyword.put(:model, "deepseek-v4-pro")
 
     assert {:ok, result} =
              DeepSeek.stream(nil, opts, fn event -> send(self(), {:event, event}) end)
@@ -237,7 +255,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
     assert result.provider_state == %{
              "provider" => "deepseek",
-             "model" => "deepseek-reasoner",
+             "model" => "deepseek-v4-pro",
              "reasoning_content" => "considering"
            }
 
@@ -247,7 +265,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     assert_receive {:event, %{type: :usage}}
   end
 
-  test "replays reasoner content only for the same provider and model", %{store: store} do
+  test "replays V4 Pro reasoning only for the same provider and model", %{store: store} do
     test_pid = self()
 
     request = fn options ->
@@ -256,7 +274,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
       streaming_response(options, [
         sse(%{
-          "model" => "deepseek-reasoner",
+          "model" => "deepseek-v4-pro",
           "choices" => [%{"delta" => %{"content" => "done"}, "finish_reason" => "stop"}]
         }),
         "data: [DONE]\n\n"
@@ -265,14 +283,14 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
     provider_state = %{
       "provider" => "deepseek",
-      "model" => "deepseek-reasoner",
+      "model" => "deepseek-v4-pro",
       "reasoning_content" => "previous reasoning"
     }
 
     opts =
       base_opts(store, request)
       |> Keyword.merge(
-        model: "deepseek-reasoner",
+        model: "deepseek-v4-pro",
         messages: [
           %{
             role: :assistant,
@@ -291,7 +309,9 @@ defmodule Tackle.Plugins.DeepSeekTest do
     assert [%{"reasoning_content" => "previous reasoning"}, _tool] = body["messages"]
   end
 
-  test "replays flash reasoning content only when the request carries tools", %{store: store} do
+  test "replays reasoning content for flash and V4 without weakening model affinity", %{
+    store: store
+  } do
     test_pid = self()
 
     request = fn options ->
@@ -341,17 +361,108 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
     assert {:ok, _result} = DeepSeek.generate(nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
-    refute Map.has_key?(assistant, "reasoning_content")
+    assert assistant["reasoning_content"] == "previous reasoning"
+
+    v4_messages = [
+      put_in(hd(messages), [:provider_state, "model"], "deepseek-v4-flash"),
+      List.last(messages)
+    ]
 
     opts =
       base_opts(store, request)
-      |> Keyword.merge(model: "deepseek-reasoner", messages: messages)
+      |> Keyword.merge(model: "deepseek-v4-flash", messages: v4_messages)
 
     assert {:ok, _result} = DeepSeek.generate(nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
-    # The reasoner always replays the key, but an empty string when the stored
-    # provider state belongs to a different model.
+    assert assistant["reasoning_content"] == "previous reasoning"
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.merge(model: "deepseek-v4-pro", messages: messages)
+
+    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert_receive {:body, %{"messages" => [assistant, _tool]}}
     assert assistant["reasoning_content"] == ""
+  end
+
+  test "keeps repeated cache-prefix projections byte-identical", %{store: store} do
+    test_pid = self()
+
+    request = fn options ->
+      send(test_pid, {:request_body, options[:body]})
+
+      streaming_response(options, [
+        sse(%{
+          "model" => "deepseek-v4-flash",
+          "choices" => [%{"delta" => %{"content" => "done"}, "finish_reason" => "stop"}]
+        }),
+        "data: [DONE]\n\n"
+      ])
+    end
+
+    raw_arguments = "{ \"query\" : \"cats\" }"
+
+    messages = [
+      %{role: :user, content: "search"},
+      %{
+        role: :assistant,
+        content: nil,
+        tool_calls: [
+          %{id: "call-1", function: %{name: "search", arguments: raw_arguments}}
+        ],
+        provider_state: %{
+          "provider" => "deepseek",
+          "model" => "deepseek-v4-flash",
+          "reasoning_content" => "cached reasoning"
+        }
+      },
+      %{role: :tool, tool_call_id: "call-1", content: "result"}
+    ]
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.merge(model: "deepseek-v4-flash", system: "Stable", messages: messages)
+
+    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert_receive {:request_body, first}
+    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert_receive {:request_body, second}
+    assert first == second
+
+    assert {:ok, body} = JSON.decode(first)
+    assert Enum.at(body["messages"], 2)["content"] == ""
+    assert Enum.at(body["messages"], 2)["reasoning_content"] == "cached reasoning"
+
+    assert get_in(body, [
+             "messages",
+             Access.at(2),
+             "tool_calls",
+             Access.at(0),
+             "function",
+             "arguments"
+           ]) ==
+             raw_arguments
+  end
+
+  test "rejects malformed or unpaired historical tool calls before requesting", %{store: store} do
+    request = fn _options -> flunk("unexpected request") end
+
+    malformed = [
+      %{
+        role: :assistant,
+        content: nil,
+        tool_calls: [%{id: "call-1", function: %{name: "search", arguments: "{"}}]
+      },
+      %{role: :tool, tool_call_id: "call-1", content: "result"}
+    ]
+
+    assert {:error, :invalid_tool_call} =
+             DeepSeek.generate(nil, Keyword.put(base_opts(store, request), :messages, malformed))
+
+    unpaired = [%{role: :tool, tool_call_id: "call-1", content: "result"}]
+
+    assert {:error, {:invalid_tool_history, {:unexpected_tool_result, "call-1"}}} =
+             DeepSeek.generate(nil, Keyword.put(base_opts(store, request), :messages, unpaired))
   end
 
   test "requests JSON output and parses a structured response", %{store: store} do
@@ -364,7 +475,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
       streaming_response(options, [
         sse(%{
-          "model" => "deepseek-chat",
+          "model" => "deepseek-flash",
           "choices" => [
             %{"delta" => %{"content" => "{\"answer\":\"yes\"}"}, "finish_reason" => "stop"}
           ]
@@ -390,7 +501,8 @@ defmodule Tackle.Plugins.DeepSeekTest do
       streaming_response(options, [
         sse(%{
           "choices" => [%{"delta" => %{"content" => "ok"}, "finish_reason" => "stop"}]
-        })
+        }),
+        "data: [DONE]\n\n"
       ])
     end
 
@@ -405,6 +517,22 @@ defmodule Tackle.Plugins.DeepSeekTest do
                       "thinking" => %{"type" => "enabled"},
                       "reasoning_effort" => "high"
                     }}
+
+    assert {:ok, _result} =
+             DeepSeek.generate(
+               nil,
+               Keyword.put(base_opts(store, request), :reasoning_effort, :off)
+             )
+
+    assert_receive {:body, off_body}
+    assert off_body["thinking"] == %{"type" => "disabled"}
+    refute Map.has_key?(off_body, "reasoning_effort")
+
+    assert {:error, {:invalid_reasoning_effort, :extreme}} =
+             DeepSeek.generate(
+               nil,
+               Keyword.put(base_opts(store, request), :reasoning_effort, :extreme)
+             )
   end
 
   test "halts an active response stream after cancellation", %{store: store} do
@@ -451,7 +579,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
   defp base_opts(store, request) do
     [
-      model: "deepseek-chat",
+      model: "deepseek-flash",
       messages: [%{role: :user, content: "hello"}],
       tools: [],
       credential_store: store,

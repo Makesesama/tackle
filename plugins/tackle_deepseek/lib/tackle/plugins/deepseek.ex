@@ -18,15 +18,22 @@ defmodule Tackle.Plugins.DeepSeek do
 
   @adapter_id "deepseek"
   @default_base_url "https://api.deepseek.com"
-  @models ["deepseek-chat", "deepseek-reasoner", "deepseek-flash"]
+  @models [
+    "deepseek-flash",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
+    "deepseek-v4-pro"
+  ]
+  @reasoning_models @models
 
   # `{context_window, max_output_tokens, {input, output, cache_read, cache_write}}`.
   # Prices are USD per million tokens and use DeepSeek's peak rates; off-peak
-  # requests are billed at half.
+  # requests are billed at half where DeepSeek offers off-peak pricing.
   @model_info %{
-    "deepseek-chat" => {128_000, 128_000, {0.57, 1.68, 0.07, 0}},
-    "deepseek-reasoner" => {128_000, 128_000, {0.57, 1.68, 0.07, 0}},
-    "deepseek-flash" => {1_000_000, 384_000, {0.3, 1.2, 0.006, 0}}
+    "deepseek-flash" => {1_000_000, 256_000, {0.3, 1.2, 0.006, 0}},
+    "deepseek-v4-flash" => {1_000_000, 384_000, {0.14, 0.28, 0.0028, 0}},
+    "deepseek-v4-flash-vision-exp" => {1_000_000, 384_000, {0.14, 0.28, 0.0028, 0}},
+    "deepseek-v4-pro" => {1_000_000, 384_000, {0.435, 0.87, 0.003625, 0}}
   }
 
   @impl true
@@ -128,9 +135,9 @@ defmodule Tackle.Plugins.DeepSeek do
     model = Keyword.fetch!(opts, :model)
 
     with {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
-         {:ok, messages} <-
-           convert_messages(Keyword.get(opts, :messages, []), model, tools != []),
-         {:ok, response_format, schema_instruction} <- response_options(schema) do
+         {:ok, messages} <- convert_messages(Keyword.get(opts, :messages, []), model),
+         {:ok, response_format, schema_instruction} <- response_options(schema),
+         {:ok, reasoning_options} <- reasoning_options(opts) do
       messages =
         prepend_system_and_schema(messages, Keyword.get(opts, :system), schema_instruction)
 
@@ -149,7 +156,7 @@ defmodule Tackle.Plugins.DeepSeek do
         |> maybe_put("max_tokens", Keyword.get(opts, :max_tokens))
         |> maybe_put("stop", Keyword.get(opts, :stop))
         |> maybe_put("user_id", Keyword.get(opts, :user_id))
-        |> put_reasoning_options(opts)
+        |> Map.merge(reasoning_options)
 
       {:ok, body}
     end
@@ -157,30 +164,38 @@ defmodule Tackle.Plugins.DeepSeek do
     KeyError -> {:error, :model_required}
   end
 
-  defp convert_messages(messages, model, tools?) when is_list(messages) do
+  defp convert_messages(messages, model) when is_list(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, converted} ->
-      case convert_message(message, model, tools?) do
+      case convert_message(message, model) do
         {:ok, nil} -> {:cont, {:ok, converted}}
         {:ok, item} -> {:cont, {:ok, [item | converted]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
     |> case do
-      {:ok, converted} -> {:ok, Enum.reverse(converted)}
-      error -> error
+      {:ok, converted} ->
+        converted = Enum.reverse(converted)
+
+        case validate_tool_history(converted) do
+          :ok -> {:ok, converted}
+          {:error, reason} -> {:error, {:invalid_tool_history, reason}}
+        end
+
+      error ->
+        error
     end
   end
 
-  defp convert_messages(_messages, _model, _tools?), do: {:error, :invalid_messages}
+  defp convert_messages(_messages, _model), do: {:error, :invalid_messages}
 
-  defp convert_message(message, _model, _tools?) when not is_map(message),
+  defp convert_message(message, _model) when not is_map(message),
     do: {:error, :invalid_message}
 
-  defp convert_message(message, model, tools?) do
+  defp convert_message(message, model) do
     case normalize_role(field(message, :role)) do
       :user -> text_message("user", field(message, :content))
-      :assistant -> assistant_message(message, model, tools?)
+      :assistant -> assistant_message(message, model)
       :tool -> tool_message(message)
       role -> {:error, {:unsupported_message_role, role}}
     end
@@ -191,7 +206,7 @@ defmodule Tackle.Plugins.DeepSeek do
 
   defp text_message(_role, _content), do: {:error, :invalid_message_content}
 
-  defp assistant_message(message, model, tools?) do
+  defp assistant_message(message, model) do
     content = field(message, :content)
     tool_calls = field(message, :tool_calls) |> List.wrap()
 
@@ -203,7 +218,7 @@ defmodule Tackle.Plugins.DeepSeek do
         assistant =
           %{"role" => "assistant", "content" => normalize_assistant_content(content)}
           |> maybe_put("tool_calls", non_empty(tool_calls))
-          |> maybe_put_reasoning_content(message, model, tools?)
+          |> maybe_put_reasoning_content(message, model)
 
         {:ok, assistant}
       end
@@ -241,19 +256,58 @@ defmodule Tackle.Plugins.DeepSeek do
     name = field(call, :name) || field(function, :name)
     arguments = field(call, :arguments) || field(function, :arguments) || %{}
 
-    if is_binary(id) and id != "" and is_binary(name) and name != "" do
+    with true <- is_binary(id) and id != "",
+         true <- is_binary(name) and name != "",
+         {:ok, arguments} <- encode_arguments(arguments) do
       {:ok,
        %{
          "id" => id,
          "type" => "function",
-         "function" => %{"name" => name, "arguments" => encode_arguments(arguments)}
+         "function" => %{"name" => name, "arguments" => arguments}
        }}
     else
-      {:error, :invalid_tool_call}
+      _invalid -> {:error, :invalid_tool_call}
     end
   end
 
   defp convert_tool_call(_call), do: {:error, :invalid_tool_call}
+
+  defp validate_tool_history(messages) do
+    messages
+    |> Enum.reduce_while({:ok, MapSet.new()}, fn message, {:ok, pending} ->
+      role = message["role"]
+      tool_calls = message["tool_calls"] || []
+
+      cond do
+        role == "assistant" and tool_calls != [] and MapSet.size(pending) == 0 ->
+          ids = Enum.map(tool_calls, & &1["id"])
+          next_pending = MapSet.new(ids)
+
+          if length(ids) == MapSet.size(next_pending),
+            do: {:cont, {:ok, next_pending}},
+            else: {:halt, {:error, :duplicate_tool_call_id}}
+
+        role == "tool" and MapSet.member?(pending, message["tool_call_id"]) ->
+          {:cont, {:ok, MapSet.delete(pending, message["tool_call_id"])}}
+
+        role == "tool" ->
+          {:halt, {:error, {:unexpected_tool_result, message["tool_call_id"]}}}
+
+        MapSet.size(pending) > 0 ->
+          {:halt, {:error, :missing_tool_results}}
+
+        true ->
+          {:cont, {:ok, pending}}
+      end
+    end)
+    |> case do
+      {:ok, pending} ->
+        if MapSet.size(pending) == 0, do: :ok, else: {:error, :missing_tool_results}
+
+      error ->
+        error
+    end
+  end
 
   defp convert_tools(tools) when is_list(tools) do
     tools
@@ -369,21 +423,14 @@ defmodule Tackle.Plugins.DeepSeek do
     if content == "", do: messages, else: [%{"role" => "system", "content" => content} | messages]
   end
 
-  defp maybe_put_reasoning_content(message, source, model, tools?) do
-    if replay_reasoning?(model, tools?) do
+  defp maybe_put_reasoning_content(message, source, model) do
+    if model in @reasoning_models do
       reasoning_content = replay_reasoning_content(field(source, :provider_state), model)
       Map.put(message, "reasoning_content", reasoning_content || "")
     else
       message
     end
   end
-
-  # DeepSeek concatenates prior `reasoning_content` into the context when a
-  # request carries tools, so thinking turns must be replayed for tool loops.
-  # Without tools the provider ignores it.
-  defp replay_reasoning?("deepseek-reasoner", _tools?), do: true
-  defp replay_reasoning?("deepseek-flash", tools?), do: tools?
-  defp replay_reasoning?(_model, _tools?), do: false
 
   defp replay_reasoning_content(provider_state, model) when is_map(provider_state) do
     provider = field(provider_state, :provider)
@@ -405,20 +452,23 @@ defmodule Tackle.Plugins.DeepSeek do
     end
   end
 
-  defp put_reasoning_options(body, opts) do
+  defp reasoning_options(opts) do
     case Keyword.get(opts, :reasoning_effort) do
       nil ->
-        body
+        {:ok, %{}}
 
       effort when effort in [:off, :none, "off", "none"] ->
-        body
-        |> Map.put("thinking", %{"type" => "disabled"})
-        |> Map.put("reasoning_effort", "none")
+        {:ok, %{"thinking" => %{"type" => "disabled"}}}
+
+      effort when effort in [:low, :high, :max, "low", "high", "max"] ->
+        {:ok,
+         %{
+           "thinking" => %{"type" => "enabled"},
+           "reasoning_effort" => to_string(effort)
+         }}
 
       effort ->
-        body
-        |> Map.put("thinking", %{"type" => "enabled"})
-        |> Map.put("reasoning_effort", to_string(effort))
+        {:error, {:invalid_reasoning_effort, effort}}
     end
   end
 
@@ -508,11 +558,19 @@ defmodule Tackle.Plugins.DeepSeek do
   defp valid_optional_content(nil), do: :ok
   defp valid_optional_content(content) when is_binary(content), do: :ok
   defp valid_optional_content(_content), do: {:error, :invalid_message_content}
-  defp normalize_assistant_content(nil), do: nil
+  defp normalize_assistant_content(nil), do: ""
   defp normalize_assistant_content(content), do: content
   defp empty_content?(content), do: content in [nil, ""]
-  defp encode_arguments(arguments) when is_binary(arguments), do: arguments
-  defp encode_arguments(arguments), do: JSON.encode!(arguments)
+
+  defp encode_arguments(arguments) when is_binary(arguments) do
+    case JSON.decode(arguments) do
+      {:ok, %{} = _arguments} -> {:ok, arguments}
+      _invalid -> {:error, :invalid_tool_call_arguments}
+    end
+  end
+
+  defp encode_arguments(%{} = arguments), do: {:ok, JSON.encode!(arguments)}
+  defp encode_arguments(_arguments), do: {:error, :invalid_tool_call_arguments}
 
   defp field(map, key) when is_map(map) do
     case Map.fetch(map, key) do
