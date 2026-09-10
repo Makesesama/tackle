@@ -39,6 +39,8 @@ defmodule Tackle.Lib.Messages do
   convention), not a map.
   """
 
+  alias Tackle.Lib.ID
+  alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
 
   @doc """
@@ -124,7 +126,7 @@ defmodule Tackle.Lib.Messages do
   defp tool_call_id(%{id: id}) when is_binary(id) and id != "", do: id
   defp tool_call_id(%{"id" => id}) when is_binary(id) and id != "", do: id
   # Fall back to a deterministic-ish id so the call still links to its result.
-  defp tool_call_id(_), do: Tackle.Lib.ID.uuid4()
+  defp tool_call_id(_), do: ID.uuid4()
 
   defp tool_call_name(%{name: name}) when is_binary(name), do: name
   defp tool_call_name(%{"name" => name}) when is_binary(name), do: name
@@ -135,6 +137,6 @@ defmodule Tackle.Lib.Messages do
   defp tool_call_arguments(_), do: %{}
 
   defp encode_arguments(args) when is_binary(args), do: args
-  defp encode_arguments(args) when is_map(args), do: Tackle.Lib.JSON.encode!(args)
+  defp encode_arguments(args) when is_map(args), do: JSON.encode!(args)
   defp encode_arguments(_), do: "{}"
 end

@@ -1,15 +1,19 @@
 defmodule Tackle.Session.JournalTest do
   use ExUnit.Case, async: false
 
+  import Tackle.Test.Runtime
+
   alias Tackle.Lib.Message
+  alias Tackle.Runtime.ID
   alias Tackle.Session.Journal
+  alias Tackle.Session.Loader
   alias Tackle.Session.Log
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
 
   setup do
-    home = Tackle.Test.Runtime.tmp_home()
-    {:ok, home: home, session_id: Tackle.Runtime.ID.generate()}
+    home = tmp_home()
+    {:ok, home: home, session_id: ID.generate()}
   end
 
   describe "new journal" do
@@ -58,7 +62,7 @@ defmodule Tackle.Session.JournalTest do
   describe "turn protocol" do
     test "persists turn boundaries and messages with contiguous sequences", ctx do
       {:ok, journal} = start_journal(ctx)
-      turn_id = Tackle.Runtime.ID.generate()
+      turn_id = ID.generate()
 
       assert {:ok, ^turn_id} = Journal.begin_turn(journal, :run, "hello", turn_id)
       assert :ok = Journal.append_message(journal, Message.user("hello"))
@@ -95,7 +99,7 @@ defmodule Tackle.Session.JournalTest do
   describe "replay after reopen" do
     test "continues sequence numbering and reconstructs messages", ctx do
       {:ok, journal} = start_journal(ctx)
-      turn_id = Tackle.Runtime.ID.generate()
+      turn_id = ID.generate()
       {:ok, ^turn_id} = Journal.begin_turn(journal, :run, "hello", turn_id)
       :ok = Journal.append_message(journal, Message.user("hello"))
       :ok = Journal.settle_turn(journal, "turn.completed", %{})
@@ -132,7 +136,7 @@ defmodule Tackle.Session.JournalTest do
   describe "repair" do
     test "requires explicit repair for an uncleanly closed log", ctx do
       {:ok, journal} = start_journal(ctx)
-      turn_id = Tackle.Runtime.ID.generate()
+      turn_id = ID.generate()
       {:ok, ^turn_id} = Journal.begin_turn(journal, :run, "hello", turn_id)
       :ok = Journal.append_message(journal, Message.user("hello"))
       :ok = Journal.settle_turn(journal, "turn.completed", %{})
@@ -221,9 +225,9 @@ defmodule Tackle.Session.JournalTest do
     end
 
     test "rejects a header with a mismatched session id" do
-      home = Tackle.Test.Runtime.tmp_home()
-      session_id = Tackle.Runtime.ID.generate()
-      other = Tackle.Runtime.ID.generate()
+      home = tmp_home()
+      session_id = ID.generate()
+      other = ID.generate()
 
       write_raw_journal!(%{home: home, session_id: session_id}, [
         Log.header(session_id: other, created_at: now(), cwd: nil, parent: nil)
@@ -271,7 +275,7 @@ defmodule Tackle.Session.JournalTest do
   end
 
   defp decode_messages(projection) do
-    {:ok, messages} = Tackle.Session.Loader.decode_messages(projection.messages)
+    {:ok, messages} = Loader.decode_messages(projection.messages)
     messages
   end
 
@@ -312,7 +316,7 @@ defmodule Tackle.Session.JournalTest do
     Log.commit(
       session_id: ctx.session_id,
       seq: seq,
-      commit_id: Tackle.Runtime.ID.generate(),
+      commit_id: ID.generate(),
       written_at: now(),
       turn_id: nil,
       events: events

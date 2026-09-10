@@ -357,7 +357,7 @@ defmodule Tackle.Lib.LLM do
 
   defp call_model_info(adapter, model) do
     if function_exported?(adapter, :model_info, 1) do
-      {:ok, apply(adapter, :model_info, [model])}
+      {:ok, adapter.model_info(model)}
     else
       {:ok, nil}
     end

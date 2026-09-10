@@ -37,11 +37,11 @@ defmodule Tackle.CLI.TUI do
 
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
   alias ExRatatui.Layout.Rect
+  alias ExRatatui.Style
   alias ExRatatui.Widgets.{Block, Paragraph, Popup, Textarea, TextInput, WidgetList}
   alias ExRatatui.Widgets.List, as: SelectionList
-  alias ExRatatui.Style
   alias Tackle.CLI.Clipboard
-  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, Theme}
+  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, Theme, ToolView}
   alias Tackle.Lib.{ContextUsage, Event, Message, ModelInfo, State, Usage}
   alias Tackle.Session.Snapshot
   alias Tackle.Thinking
@@ -390,23 +390,11 @@ defmodule Tackle.CLI.TUI do
 
   defp dispatch_base(%Key{code: code, modifiers: modifiers} = key, state) do
     cond do
-      "ctrl" in modifiers and code == "f" ->
-        open_search(state)
+      "ctrl" in modifiers ->
+        dispatch_ctrl(code, key, state)
 
-      "ctrl" in modifiers and code == "t" ->
-        toggle_thinking(state)
-
-      "ctrl" in modifiers and code == "home" ->
-        scroll_reply(state, scroll_conversation_to(state, :start))
-
-      "ctrl" in modifiers and code == "end" ->
-        scroll_reply(state, scroll_conversation_to(state, :end))
-
-      code == "page_up" and modifiers == [] ->
-        scroll_reply(state, scroll_conversation(state, -page_size(state)))
-
-      code == "page_down" and modifiers == [] ->
-        scroll_reply(state, scroll_conversation(state, page_size(state)))
+      code in ["page_up", "page_down"] and modifiers == [] ->
+        dispatch_page(code, state)
 
       code == "enter" and modifiers == [] ->
         submit_prompt(state)
@@ -414,12 +402,42 @@ defmodule Tackle.CLI.TUI do
       code == "enter" ->
         insert_newline(state)
 
-      "ctrl" in modifiers and code == "j" ->
-        insert_newline(state)
-
       true ->
         composer_key(key, state)
     end
+  end
+
+  defp dispatch_ctrl(code, key, state) do
+    case code do
+      "f" ->
+        open_search(state)
+
+      "t" ->
+        toggle_thinking(state)
+
+      "home" ->
+        scroll_reply(state, scroll_conversation_to(state, :start))
+
+      "end" ->
+        scroll_reply(state, scroll_conversation_to(state, :end))
+
+      "j" ->
+        insert_newline(state)
+
+      "enter" ->
+        insert_newline(state)
+
+      _other ->
+        composer_key(key, state)
+    end
+  end
+
+  defp dispatch_page("page_up", state) do
+    scroll_reply(state, scroll_conversation(state, -page_size(state)))
+  end
+
+  defp dispatch_page("page_down", state) do
+    scroll_reply(state, scroll_conversation(state, page_size(state)))
   end
 
   defp dispatch_confirm_quit(%Key{code: code}, state) when code in ["y", "Y", "enter"],
@@ -542,7 +560,7 @@ defmodule Tackle.CLI.TUI do
 
   defp dispatch_inspector(%Key{code: code}, %{overlay: {:inspector, inspector}} = state)
        when code in ["a", "A"] do
-    args = Tackle.CLI.TUI.ToolView.arguments(inspector.entry.tool_arguments)
+    args = ToolView.arguments(inspector.entry.tool_arguments)
     notice = clipboard_notice(state, JSON.encode!(args), "Copied tool arguments")
     {:noreply, %{state | overlay: {:inspector, %{inspector | notice: notice}}}}
   end
@@ -1501,8 +1519,7 @@ defmodule Tackle.CLI.TUI do
     settled = State.usage(state.agent_state)
 
     [settled, state.live_usage]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.reject(&(not usage_activity?(&1)))
+    |> Enum.reject(&(is_nil(&1) or not usage_activity?(&1)))
     |> Usage.aggregate()
   end
 
@@ -1683,17 +1700,25 @@ defmodule Tackle.CLI.TUI do
         {width, height}
 
       nil ->
-        width = Keyword.get(opts, :width)
-        height = Keyword.get(opts, :height)
+        configured_terminal_size(opts)
+    end
+  end
 
-        if is_integer(width) and is_integer(height) do
-          {width, height}
-        else
-          case ExRatatui.terminal_size() do
-            {width, height} when is_integer(width) and is_integer(height) -> {width, height}
-            {:error, _reason} -> {80, 24}
-          end
-        end
+  defp configured_terminal_size(opts) do
+    width = Keyword.get(opts, :width)
+    height = Keyword.get(opts, :height)
+
+    if is_integer(width) and is_integer(height) do
+      {width, height}
+    else
+      detect_terminal_size()
+    end
+  end
+
+  defp detect_terminal_size do
+    case ExRatatui.terminal_size() do
+      {width, height} when is_integer(width) and is_integer(height) -> {width, height}
+      {:error, _reason} -> {80, 24}
     end
   end
 

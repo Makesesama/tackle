@@ -33,9 +33,8 @@ defmodule Tackle.Session.Codec do
   @doc "Returns `:ok` when `value` belongs to the durable data model."
   @spec validate(term()) :: :ok | {:error, term()}
   def validate(value) do
-    with :ok <- validate_value(value, 0),
-         :ok <- validate_total_size(value) do
-      :ok
+    with :ok <- validate_value(value, 0) do
+      validate_total_size(value)
     end
   end
 

@@ -3,13 +3,13 @@ defmodule Tackle.CLI.TUITest do
 
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
   alias ExRatatui.Runtime
-  alias ExRatatui.Text.Line
   alias ExRatatui.Style
-  alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, Textarea, TextInput, WidgetList}
+  alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.List, as: SelectionList
+  alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, Textarea, TextInput, WidgetList}
   alias Tackle.CLI.TUI
-  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker}
-  alias Tackle.Lib.{Event, Message, State}
+  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, Theme}
+  alias Tackle.Lib.{Event, LLM, Message, State}
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.ID
   alias Tackle.Session.Snapshot
@@ -48,7 +48,7 @@ defmodule Tackle.CLI.TUITest do
     @impl true
     def init({test_pid, agent_ref}) do
       {:ok, _pid} = Tackle.Runtime.Registry.register(agent_ref, :agent)
-      {:ok, llm} = Tackle.Lib.LLM.select([Adapter], "openai-codex/test-model")
+      {:ok, llm} = LLM.select([Adapter], "openai-codex/test-model")
       agent_state = State.new(llm: llm)
       {:ok, %{test_pid: test_pid, subscriber: nil, agent_state: agent_state}}
     end
@@ -84,7 +84,7 @@ defmodule Tackle.CLI.TUITest do
     def handle_call({:reconfigure, opts}, _from, state) do
       send(state.test_pid, {:reconfigured, opts})
       model = Keyword.get(opts, :model, state.agent_state.llm.ref)
-      {:ok, llm} = Tackle.Lib.LLM.select([Adapter], model)
+      {:ok, llm} = LLM.select([Adapter], model)
 
       llm_opts =
         case Keyword.fetch(opts, :thinking) do
@@ -1643,7 +1643,7 @@ defmodule Tackle.CLI.TUITest do
     |> Enum.uniq()
   end
 
-  defp selection_bg, do: Tackle.CLI.TUI.Theme.style(:selection_surface).bg
+  defp selection_bg, do: Theme.style(:selection_surface).bg
 
   defp inspector_text(state) do
     {:inspector, inspector} = state.overlay

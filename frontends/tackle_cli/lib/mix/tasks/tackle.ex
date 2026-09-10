@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Tackle do
   use Mix.Task
 
+  alias Tackle.CLI.Main
+
   @shortdoc "Runs the Tackle CLI in the development environment"
   @moduledoc """
   Runs the Tackle CLI through Mix so development dependencies, including native
@@ -17,7 +19,7 @@ defmodule Mix.Tasks.Tackle do
 
   @impl Mix.Task
   def run(args) do
-    case Tackle.CLI.Main.main(args) do
+    case Main.main(args) do
       0 -> :ok
       status -> System.halt(status)
     end

@@ -10,6 +10,7 @@ defmodule Tackle.Lib.State do
   models exist.
   """
 
+  alias Tackle.Lib.ID
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Policy
@@ -35,7 +36,7 @@ defmodule Tackle.Lib.State do
           prompt_renderer: module() | nil,
           prompt_renderer_opts: keyword(),
           llm_opts: keyword(),
-          id_generator: Tackle.Lib.ID.generator(),
+          id_generator: ID.generator(),
           hooks: [module()],
           snapshot: Tackle.Lib.Snapshot.t() | nil,
           error: String.t() | nil,
@@ -59,7 +60,7 @@ defmodule Tackle.Lib.State do
             prompt_renderer: nil,
             prompt_renderer_opts: [],
             llm_opts: [],
-            id_generator: &Tackle.Lib.ID.uuid4/0,
+            id_generator: &ID.uuid4/0,
             hooks: [],
             snapshot: nil,
             error: nil,
@@ -84,7 +85,7 @@ defmodule Tackle.Lib.State do
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    id_generator = Keyword.get(opts, :id_generator, &Tackle.Lib.ID.uuid4/0)
+    id_generator = Keyword.get(opts, :id_generator, &ID.uuid4/0)
 
     tools = Keyword.get(opts, :tools, [])
     llm = validate_llm_selection!(Keyword.get(opts, :llm))

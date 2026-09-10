@@ -4,9 +4,10 @@ defmodule Tackle.Session.CatalogTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Session.Catalog
+  alias Tackle.Session.Storage
 
   setup do
-    home = Tackle.Test.Runtime.tmp_home()
+    home = tmp_home()
     {:ok, home: home}
   end
 
@@ -77,7 +78,7 @@ defmodule Tackle.Session.CatalogTest do
     cwd = unique_cwd(ctx, "rebuild")
     session_id = create_session(ctx, cwd: cwd, title: "Rebuildable")
 
-    {:ok, path} = Tackle.Session.Storage.summary_path(session_id, home: ctx.home)
+    {:ok, path} = Storage.summary_path(session_id, home: ctx.home)
     File.write!(path, "not an etf sidecar")
 
     Catalog.rebuild(home: ctx.home)

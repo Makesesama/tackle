@@ -21,7 +21,9 @@ defmodule Tackle.Lib.Snapshot do
   caching without leaking the full snapshot content.
   """
 
+  alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
+  alias Tackle.Lib.SystemPrompt
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Registry
 
@@ -111,7 +113,7 @@ defmodule Tackle.Lib.Snapshot do
   def system_prompt_version_id(nil), do: nil
 
   def system_prompt_version_id(prompt) when is_binary(prompt) do
-    Tackle.Lib.SystemPrompt.version_id(prompt)
+    SystemPrompt.version_id(prompt)
   end
 
   @doc """
@@ -156,7 +158,7 @@ defmodule Tackle.Lib.Snapshot do
   end
 
   defp resolve_default_adapter do
-    Tackle.Lib.LLM.adapter()
+    LLM.adapter()
   rescue
     _ -> nil
   end

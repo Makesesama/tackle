@@ -11,6 +11,7 @@ defmodule Tackle.Session.Spec do
   the configured `TACKLE_HOME`.
   """
 
+  alias Tackle.Runtime.ID
   alias Tackle.Session.Storage
 
   @enforce_keys []
@@ -73,7 +74,7 @@ defmodule Tackle.Session.Spec do
 
   @doc "Returns the durable session id, minting one when the spec omits it."
   @spec session_id(t()) :: String.t()
-  def session_id(%__MODULE__{session_id: nil}), do: Tackle.Runtime.ID.generate()
+  def session_id(%__MODULE__{session_id: nil}), do: ID.generate()
   def session_id(%__MODULE__{session_id: session_id}), do: session_id
 
   @doc "Returns the resolved storage options for this session."

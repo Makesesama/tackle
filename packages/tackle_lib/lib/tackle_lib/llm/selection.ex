@@ -9,6 +9,8 @@ defmodule Tackle.Lib.LLM.Selection do
 
   @adapter_id_pattern ~r/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/
 
+  alias Tackle.Lib.LLM
+
   @enforce_keys [:adapter, :adapter_id, :model, :ref]
   defstruct [:adapter, :adapter_id, :model, :ref, :model_info]
 
@@ -28,7 +30,7 @@ defmodule Tackle.Lib.LLM.Selection do
          {:ok, adapter} <- fetch_adapter(adapter_index, adapter_id),
          {:ok, models} <- adapter_models(adapter, adapter_id),
          :ok <- ensure_model(models, adapter_id, model),
-         {:ok, model_info} <- Tackle.Lib.LLM.model_info(adapter, model) do
+         {:ok, model_info} <- LLM.model_info(adapter, model) do
       {:ok,
        %__MODULE__{
          adapter: adapter,
@@ -122,9 +124,8 @@ defmodule Tackle.Lib.LLM.Selection do
   end
 
   defp adapter_models(adapter, adapter_id) do
-    with {:ok, models} <- adapter_callback(adapter, :models),
-         {:ok, models} <- validate_models(models, adapter_id) do
-      {:ok, models}
+    with {:ok, models} <- adapter_callback(adapter, :models) do
+      validate_models(models, adapter_id)
     end
   end
 

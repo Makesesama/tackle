@@ -4,16 +4,17 @@ defmodule Tackle.Runtime.CapabilityTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Lib.Message
+  alias Tackle.Tools.Subagent
 
   test "the subagent tool is never part of the default tool set" do
-    refute Tackle.Tools.Subagent in Tackle.Tools.default()
+    refute Subagent in Tackle.Tools.default()
   end
 
   test "declaring trusted profiles does not inject the subagent tool" do
     scope = start_scope(profiles: %{"worker" => agent_spec("worker")})
 
     assert {:ok, snapshot} = Tackle.snapshot(scope.root_agent_ref)
-    refute Tackle.Tools.Subagent in snapshot.agent_state.tools
+    refute Subagent in snapshot.agent_state.tools
   end
 
   test "delegation requires the grant and a matching trusted profile" do
@@ -24,7 +25,7 @@ defmodule Tackle.Runtime.CapabilityTest do
       )
 
     assert {:ok, "worker answer"} =
-             Tackle.Tools.Subagent.run(
+             Subagent.run(
                %{"profile" => "worker", "prompt" => "do work"},
                %{runtime: handle(authorized)}
              )
@@ -36,7 +37,7 @@ defmodule Tackle.Runtime.CapabilityTest do
       )
 
     assert {:error, message} =
-             Tackle.Tools.Subagent.run(
+             Subagent.run(
                %{"profile" => "worker", "prompt" => "do work"},
                %{runtime: handle(unauthorized, allow_delegation: false)}
              )
@@ -46,7 +47,7 @@ defmodule Tackle.Runtime.CapabilityTest do
     profileless = start_scope(root: [allow_delegation: true, tools: [Tackle.Tools.Subagent]])
 
     assert {:error, message} =
-             Tackle.Tools.Subagent.run(
+             Subagent.run(
                %{"profile" => "worker", "prompt" => "do work"},
                %{runtime: handle(profileless)}
              )

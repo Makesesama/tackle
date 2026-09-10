@@ -1,6 +1,7 @@
 defmodule Tackle.Lib.ToolTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.JSON
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Schema
   alias Tackle.Lib.Tool.Schema.JsonSchema
@@ -265,7 +266,7 @@ defmodule Tackle.Lib.ToolTest do
     assert {:ok, %Tackle.Lib.Tool.Result{} = result} = Tool.settle(EchoTool, call, %{})
     assert result.tool_call_id == "call_1"
     assert result.output == %{"limit" => 3, "query" => "hi"}
-    assert {:ok, %{"limit" => 3, "query" => "hi"}} = Tackle.Lib.JSON.decode(result.content)
+    assert {:ok, %{"limit" => 3, "query" => "hi"}} = JSON.decode(result.content)
   end
 
   test "settle/3 returns structured output validation errors" do
@@ -281,7 +282,7 @@ defmodule Tackle.Lib.ToolTest do
     assert {:ok, encoded} =
              Tool.execute_tool_call(EchoTool, %{"query" => "hi", "limit" => "3"}, %{})
 
-    assert {:ok, %{"limit" => 3, "query" => "hi"}} = Tackle.Lib.JSON.decode(encoded)
+    assert {:ok, %{"limit" => 3, "query" => "hi"}} = JSON.decode(encoded)
 
     assert {:error, error} = Tool.execute_tool_call(EchoTool, %{"limit" => "nope"}, %{})
     assert error == "Error: The tool received invalid input and could not run."

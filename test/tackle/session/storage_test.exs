@@ -1,11 +1,14 @@
 defmodule Tackle.Session.StorageTest do
   use ExUnit.Case, async: true
 
+  import Tackle.Test.Runtime
+
+  alias Tackle.Runtime.ID
   alias Tackle.Session.Storage
 
   setup do
-    home = Tackle.Test.Runtime.tmp_home()
-    {:ok, home: home, session_id: Tackle.Runtime.ID.generate()}
+    home = tmp_home()
+    {:ok, home: home, session_id: ID.generate()}
   end
 
   test "rejects session ids that could escape the storage root", ctx do

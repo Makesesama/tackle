@@ -446,28 +446,7 @@ defmodule Tackle.Session do
 
     case begin_turn(state, operation, input, turn_id) do
       :ok ->
-        case start_turn_task(state.work_supervisor, fn ->
-               case operation do
-                 :run -> Tackle.Lib.run(agent_state, input, run_opts)
-                 :continue -> Tackle.Lib.continue(agent_state, run_opts)
-               end
-             end) do
-          {:ok, task} ->
-            active_turn = %{
-              id: turn_id,
-              operation: operation,
-              task: task,
-              signal: signal,
-              cancellation_requested?: false
-            }
-
-            {:reply, {:ok, turn_id}, %{state | active_turn: active_turn}}
-
-          {:error, reason} ->
-            Cancellation.delete(signal)
-            release_turn(state)
-            {:reply, {:error, {:turn_task_failed, reason}}, state}
-        end
+        launch_turn(operation, input, state, agent_state, run_opts, signal, turn_id)
 
       {:error, reason} ->
         Cancellation.delete(signal)
@@ -476,7 +455,37 @@ defmodule Tackle.Session do
     end
   end
 
+  defp launch_turn(operation, input, state, agent_state, run_opts, signal, turn_id) do
+    case start_turn_task(state.work_supervisor, fn ->
+           run_operation(operation, agent_state, input, run_opts)
+         end) do
+      {:ok, task} ->
+        active_turn = %{
+          id: turn_id,
+          operation: operation,
+          task: task,
+          signal: signal,
+          cancellation_requested?: false
+        }
+
+        {:reply, {:ok, turn_id}, %{state | active_turn: active_turn}}
+
+      {:error, reason} ->
+        Cancellation.delete(signal)
+        release_turn(state)
+        {:reply, {:error, {:turn_task_failed, reason}}, state}
+    end
+  end
+
   defp start_turn_task(work_supervisor, fun), do: TurnTask.start(work_supervisor, fun)
+
+  defp run_operation(:run, agent_state, input, run_opts) do
+    Tackle.Lib.run(agent_state, input, run_opts)
+  end
+
+  defp run_operation(:continue, agent_state, _input, run_opts) do
+    Tackle.Lib.continue(agent_state, run_opts)
+  end
 
   defp turn_opts(config, session_pid, turn_id, signal) do
     [

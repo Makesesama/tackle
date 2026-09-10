@@ -16,10 +16,10 @@ defmodule Tackle.Phoenix.Runner do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.Message
-  alias Tackle.Phoenix.PubSub
   alias Tackle.Lib.State
   alias Tackle.Lib.Telemetry
   alias Tackle.Lib.Usage
+  alias Tackle.Phoenix.PubSub
 
   @timeout :timer.minutes(30)
   @termination_grace_period 1_000

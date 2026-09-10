@@ -3,8 +3,10 @@ defmodule Tackle.Tools.SubagentTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Tools.Subagent
+
   test "the subagent tool is opt-in, not part of the default tool set" do
-    refute Tackle.Tools.Subagent in Tackle.Tools.default()
+    refute Subagent in Tackle.Tools.default()
   end
 
   test "delegates to an allowlisted profile and returns its answer" do
@@ -18,7 +20,7 @@ defmodule Tackle.Tools.SubagentTest do
     context = %{runtime: handle}
 
     assert {:ok, "worker answer"} =
-             Tackle.Tools.Subagent.run(%{"profile" => "worker", "prompt" => "do work"}, context)
+             Subagent.run(%{"profile" => "worker", "prompt" => "do work"}, context)
   end
 
   test "rejects delegation when recursion is not granted" do
@@ -31,7 +33,7 @@ defmodule Tackle.Tools.SubagentTest do
     context = %{runtime: handle(scope, allow_delegation: false)}
 
     assert {:error, message} =
-             Tackle.Tools.Subagent.run(%{"profile" => "worker", "prompt" => "do work"}, context)
+             Subagent.run(%{"profile" => "worker", "prompt" => "do work"}, context)
 
     assert message =~ "not permitted"
   end
@@ -41,14 +43,14 @@ defmodule Tackle.Tools.SubagentTest do
     context = %{runtime: handle(scope)}
 
     assert {:error, message} =
-             Tackle.Tools.Subagent.run(%{"profile" => "ghost", "prompt" => "do work"}, context)
+             Subagent.run(%{"profile" => "ghost", "prompt" => "do work"}, context)
 
     assert message =~ "unknown subagent profile"
   end
 
   test "rejects a missing runtime handle" do
     assert {:error, message} =
-             Tackle.Tools.Subagent.run(%{"profile" => "worker", "prompt" => "go"}, %{})
+             Subagent.run(%{"profile" => "worker", "prompt" => "go"}, %{})
 
     assert message =~ "no runtime handle"
   end
@@ -106,7 +108,7 @@ defmodule Tackle.Tools.SubagentTest do
     handle = handle(scope)
 
     assert {:error, message} =
-             Tackle.Tools.Subagent.run(
+             Subagent.run(
                %{"profile" => "worker", "prompt" => "go"},
                %{runtime: handle}
              )

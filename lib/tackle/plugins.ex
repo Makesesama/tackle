@@ -27,9 +27,8 @@ defmodule Tackle.Plugins do
   @doc "Returns canonical model references exposed by the configured adapters."
   @spec available_model_refs(keyword()) :: {:ok, [String.t()]} | {:error, term()}
   def available_model_refs(opts \\ []) do
-    with {:ok, adapters} <- available_adapters(opts),
-         {:ok, refs} <- model_refs(adapters) do
-      {:ok, refs}
+    with {:ok, adapters} <- available_adapters(opts) do
+      model_refs(adapters)
     end
   end
 

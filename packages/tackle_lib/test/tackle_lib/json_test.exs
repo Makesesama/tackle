@@ -1,6 +1,8 @@
 defmodule Tackle.Lib.JSONTest do
   use ExUnit.Case, async: false
 
+  alias Tackle.Lib.JSON
+
   defmodule TestJSONAdapter do
     @behaviour Tackle.Lib.JSON
 
@@ -32,19 +34,19 @@ defmodule Tackle.Lib.JSONTest do
   test "uses built-in JSON adapter by default" do
     Application.delete_env(:tackle_lib, :json)
 
-    assert Tackle.Lib.JSON.adapter() == Tackle.Lib.JSON.Default
-    assert {:ok, encoded} = Tackle.Lib.JSON.encode(%{hello: "world"})
-    assert {:ok, %{"hello" => "world"}} = Tackle.Lib.JSON.decode(encoded)
+    assert JSON.adapter() == JSON.Default
+    assert {:ok, encoded} = JSON.encode(%{hello: "world"})
+    assert {:ok, %{"hello" => "world"}} = JSON.decode(encoded)
   end
 
   test "uses configured JSON adapter" do
     Application.put_env(:tackle_lib, :json, TestJSONAdapter)
 
-    assert Tackle.Lib.JSON.adapter() == TestJSONAdapter
-    assert {:ok, "custom:%{hello: \"world\"}"} = Tackle.Lib.JSON.encode(%{hello: "world"})
-    assert "custom!:%{hello: \"world\"}" = Tackle.Lib.JSON.encode!(%{hello: "world"})
-    assert {:ok, %{"decoded" => true}} = Tackle.Lib.JSON.decode("custom")
-    assert %{"decoded!" => true} = Tackle.Lib.JSON.decode!("custom!")
+    assert JSON.adapter() == TestJSONAdapter
+    assert {:ok, "custom:%{hello: \"world\"}"} = JSON.encode(%{hello: "world"})
+    assert "custom!:%{hello: \"world\"}" = JSON.encode!(%{hello: "world"})
+    assert {:ok, %{"decoded" => true}} = JSON.decode("custom")
+    assert %{"decoded!" => true} = JSON.decode!("custom!")
   end
 
   test "does not read the root harness application config" do
@@ -61,6 +63,6 @@ defmodule Tackle.Lib.JSONTest do
     Application.delete_env(:tackle_lib, :json)
     Application.put_env(:tackle, :json, TestJSONAdapter)
 
-    assert Tackle.Lib.JSON.adapter() == Tackle.Lib.JSON.Default
+    assert JSON.adapter() == JSON.Default
   end
 end

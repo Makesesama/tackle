@@ -3,6 +3,7 @@ defmodule Tackle.Runtime.SupervisionTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.AgentScope.Coordinator
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
 
@@ -23,7 +24,7 @@ defmodule Tackle.Runtime.SupervisionTest do
     assert root_snapshot.depth == 0
     assert root_snapshot.status == :live
 
-    assert %{agent_count: 1} = Tackle.AgentScope.Coordinator.snapshot(coordinator)
+    assert %{agent_count: 1} = Coordinator.snapshot(coordinator)
   end
 
   test "two root agents are isolated in different scopes" do
@@ -122,7 +123,7 @@ defmodule Tackle.Runtime.SupervisionTest do
 
     healthy = Tackle.Runtime.await(healthy_run, 5_000)
     assert healthy.status == :ok
-    assert Tackle.Runtime.Outcome.answer(healthy) == "healthy answer"
+    assert Outcome.answer(healthy) == "healthy answer"
 
     assert {:ok, root_snapshot} = Tackle.Runtime.agent_snapshot(scope.root_agent_ref)
     assert root_snapshot.status == :live

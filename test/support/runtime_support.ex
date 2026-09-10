@@ -126,6 +126,7 @@ defmodule Tackle.Test.Runtime do
 
   alias Tackle.Config
   alias Tackle.Runtime.AgentSpec
+  alias Tackle.Runtime.Handle
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Spec, as: SessionSpec
@@ -224,7 +225,7 @@ defmodule Tackle.Test.Runtime do
 
   @doc "Builds an authorized runtime handle for a started scope."
   def handle(scope, opts \\ []) do
-    Tackle.Runtime.Handle.new(scope.scope_ref, scope.root_agent_ref,
+    Handle.new(scope.scope_ref, scope.root_agent_ref,
       allow_delegation: Keyword.get(opts, :allow_delegation, true),
       limits: Keyword.get(opts, :limits)
     )

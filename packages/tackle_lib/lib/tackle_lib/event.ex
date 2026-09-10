@@ -78,61 +78,71 @@ defmodule Tackle.Lib.Event do
   end
 
   def normalize(%{} = event, opts) do
-    type = event[:type] || event["type"]
-    provider = Keyword.get(opts, :provider) || event[:provider] || event["provider"]
+    type = event_value(event, [:type, "type"])
+    provider = Keyword.get(opts, :provider) || event_value(event, [:provider, "provider"])
 
     metadata =
       %{}
       |> maybe_put(:provider, provider)
-      |> maybe_put(:raw, event[:raw] || event["raw"] || event)
+      |> maybe_put(:raw, event_value(event, [:raw, "raw"], event))
 
-    case normalize_type(type) do
-      :message_delta ->
-        new(
-          :message_delta,
-          %{delta: event[:delta] || event["delta"] || event[:text] || event["text"] || ""},
-          metadata: metadata
-        )
+    build_normalized(normalize_type(type), event, metadata)
+  end
 
-      :reasoning_delta ->
-        new(
-          :message_delta,
-          %{
-            delta: event[:delta] || event["delta"] || event[:text] || event["text"] || "",
-            field: :reasoning
-          },
-          metadata: metadata
-        )
+  defp build_normalized(:message_delta, event, metadata) do
+    new(
+      :message_delta,
+      %{delta: event_value(event, [:delta, "delta", :text, "text"], "")},
+      metadata: metadata
+    )
+  end
 
-      :tool_input_delta ->
-        new(
-          :message_delta,
-          %{
-            delta: event[:delta] || event["delta"] || event[:input] || event["input"] || "",
-            field: :tool_input,
-            tool_call_id: event[:tool_call_id] || event["tool_call_id"],
-            tool_name: event[:tool_name] || event["tool_name"] || event[:name] || event["name"],
-            tool_calls: event[:tool_calls] || event["tool_calls"]
-          },
-          metadata: metadata
-        )
+  defp build_normalized(:reasoning_delta, event, metadata) do
+    new(
+      :message_delta,
+      %{
+        delta: event_value(event, [:delta, "delta", :text, "text"], ""),
+        field: :reasoning
+      },
+      metadata: metadata
+    )
+  end
 
-      :usage ->
-        new(:usage, %{usage: Usage.normalize(event[:usage] || event["usage"] || event)},
-          metadata: metadata
-        )
+  defp build_normalized(:tool_input_delta, event, metadata) do
+    new(
+      :message_delta,
+      %{
+        delta: event_value(event, [:delta, "delta", :input, "input"], ""),
+        field: :tool_input,
+        tool_call_id: event_value(event, [:tool_call_id, "tool_call_id"]),
+        tool_name: event_value(event, [:tool_name, "tool_name", :name, "name"]),
+        tool_calls: event_value(event, [:tool_calls, "tool_calls"])
+      },
+      metadata: metadata
+    )
+  end
 
-      :error ->
-        new(
-          :error,
-          %{error: event[:error] || event["error"] || event[:message] || event["message"]},
-          metadata: metadata
-        )
+  defp build_normalized(:usage, event, metadata) do
+    new(:usage, %{usage: Usage.normalize(event_value(event, [:usage, "usage"], event))},
+      metadata: metadata
+    )
+  end
 
-      normalized_type when is_atom(normalized_type) ->
-        data = event |> drop_keys([:type, "type", :raw, "raw"])
-        new(normalized_type, data, metadata: metadata)
-    end
+  defp build_normalized(:error, event, metadata) do
+    new(
+      :error,
+      %{error: event_value(event, [:error, "error", :message, "message"])},
+      metadata: metadata
+    )
+  end
+
+  defp build_normalized(type, event, metadata) when is_atom(type) do
+    data = event |> drop_keys([:type, "type", :raw, "raw"])
+    new(type, data, metadata: metadata)
+  end
+
+  defp event_value(event, keys, default \\ nil) do
+    Enum.find_value(keys, default, fn key -> Map.get(event, key) end)
   end
 
   @doc """

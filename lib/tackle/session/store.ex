@@ -138,16 +138,14 @@ defmodule Tackle.Session.Store do
   end
 
   defp publish_fork(temp_dir, final_dir, new_id, parent_id, parent_seq, replay, selected, opts) do
-    try do
-      with :ok <- write_fork_journal(temp_dir, new_id, parent_id, parent_seq, replay, selected),
-           :ok <- validate_fork(temp_dir, new_id, opts),
-           :ok <- Storage.publish_directory(temp_dir, final_dir) do
-        index_fork(new_id, opts)
-        {:ok, new_id}
-      end
-    after
-      _ = File.rm_rf(temp_dir)
+    with :ok <- write_fork_journal(temp_dir, new_id, parent_id, parent_seq, replay, selected),
+         :ok <- validate_fork(temp_dir, new_id, opts),
+         :ok <- Storage.publish_directory(temp_dir, final_dir) do
+      index_fork(new_id, opts)
+      {:ok, new_id}
     end
+  after
+    _ = File.rm_rf(temp_dir)
   end
 
   defp validate_fork(temp_dir, new_id, opts) do

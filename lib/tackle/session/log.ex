@@ -227,11 +227,8 @@ defmodule Tackle.Session.Log do
       required and not known_event?(type) ->
         {:error, {:unsupported_required_event, type, version}}
 
-      Map.get(@event_versions, type) == version or not known_event?(type) ->
-        case Codec.validate(Map.get(event, "data", %{})) do
-          :ok -> :ok
-          {:error, reason} -> {:error, {:invalid_event_data, type, reason}}
-        end
+      supported_event?(type, version) ->
+        validate_event_data(event, type)
 
       true ->
         {:error, {:unsupported_event_version, type, version}}
@@ -239,4 +236,15 @@ defmodule Tackle.Session.Log do
   end
 
   defp validate_event(other), do: {:error, {:invalid_event, other}}
+
+  defp supported_event?(type, version) do
+    Map.get(@event_versions, type) == version or not known_event?(type)
+  end
+
+  defp validate_event_data(event, type) do
+    case Codec.validate(Map.get(event, "data", %{})) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:invalid_event_data, type, reason}}
+    end
+  end
 end

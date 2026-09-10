@@ -122,9 +122,8 @@ defmodule Tackle.Session.Storage do
   @doc "Creates a private directory (and parents) with restrictive permissions."
   @spec ensure_private_dir(String.t()) :: :ok | {:error, term()}
   def ensure_private_dir(path) do
-    with :ok <- mkdir_p(path),
-         :ok <- chmod(path, @dir_mode) do
-      :ok
+    with :ok <- mkdir_p(path) do
+      chmod(path, @dir_mode)
     end
   end
 
@@ -150,23 +149,26 @@ defmodule Tackle.Session.Storage do
   @spec list_session_ids(keyword()) :: {:ok, [String.t()]} | {:error, term()}
   def list_session_ids(opts \\ []) do
     with {:ok, root} <- sessions_root(opts) do
-      case File.ls(root) do
-        {:ok, entries} ->
-          ids =
-            entries
-            |> Enum.reject(&(&1 in [@trash_dir, @catalog_dir]))
-            |> Enum.filter(&(validate_session_id(&1) == :ok))
-            |> Enum.filter(fn id -> File.dir?(Path.join(root, id)) end)
-            |> Enum.sort()
+      list_session_ids_in(root)
+    end
+  end
 
-          {:ok, ids}
+  defp list_session_ids_in(root) do
+    case File.ls(root) do
+      {:ok, entries} ->
+        ids =
+          entries
+          |> Enum.reject(&(&1 in [@trash_dir, @catalog_dir]))
+          |> Enum.filter(&(validate_session_id(&1) == :ok and File.dir?(Path.join(root, &1))))
+          |> Enum.sort()
 
-        {:error, :enoent} ->
-          {:ok, []}
+        {:ok, ids}
 
-        {:error, reason} ->
-          {:error, {:storage_unavailable, root, reason}}
-      end
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        {:error, {:storage_unavailable, root, reason}}
     end
   end
 

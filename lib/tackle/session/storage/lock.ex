@@ -127,9 +127,10 @@ defmodule Tackle.Session.Storage.Lock do
   end
 
   defp process_alive?(pid) do
-    cond do
-      File.dir?("/proc") -> File.dir?("/proc/#{pid}")
-      true -> kill_zero(pid)
+    if File.dir?("/proc") do
+      File.dir?("/proc/#{pid}")
+    else
+      kill_zero(pid)
     end
   end
 

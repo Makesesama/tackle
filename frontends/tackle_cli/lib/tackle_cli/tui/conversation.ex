@@ -315,22 +315,24 @@ defmodule Tackle.CLI.TUI.Conversation do
     else
       conversation
       |> entries()
-      |> Stream.flat_map(fn entry ->
-        source = MessageView.search_text(entry)
-
-        if String.contains?(String.downcase(source), needle) do
-          [
-            %{
-              id: entry.id,
-              entry: entry,
-              preview: MessageView.sanitize(search_preview(source, needle))
-            }
-          ]
-        else
-          []
-        end
-      end)
+      |> Stream.flat_map(&search_entry(&1, needle))
       |> Enum.take(@max_search_matches)
+    end
+  end
+
+  defp search_entry(entry, needle) do
+    source = MessageView.search_text(entry)
+
+    if String.contains?(String.downcase(source), needle) do
+      [
+        %{
+          id: entry.id,
+          entry: entry,
+          preview: MessageView.sanitize(search_preview(source, needle))
+        }
+      ]
+    else
+      []
     end
   end
 
@@ -443,17 +445,16 @@ defmodule Tackle.CLI.TUI.Conversation do
     if is_binary(id) do
       first = Enum.find_index(item_ids, &(&1 == id))
 
-      prior_rows =
-        if first < index do
-          items
-          |> Enum.slice(first, index - first)
-          |> Enum.reduce(0, fn {_, height}, sum -> sum + height end)
-        else
-          0
-        end
-
-      %{id: id, offset: prior_rows + within}
+      %{id: id, offset: prior_row_count(items, first, index) + within}
     end
+  end
+
+  defp prior_row_count(_items, first, index) when first >= index, do: 0
+
+  defp prior_row_count(items, first, index) do
+    items
+    |> Enum.slice(first, index - first)
+    |> Enum.reduce(0, fn {_, height}, sum -> sum + height end)
   end
 
   # Returns the item index containing `offset` and the row offset within it.

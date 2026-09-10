@@ -1,6 +1,8 @@
 defmodule Tackle.Lib.Tool.DSL do
   @moduledoc false
 
+  alias Tackle.Lib.Tool
+
   @doc "Defines the public name the LLM uses to call this tool."
   defmacro tool_name(name) do
     quote do
@@ -36,7 +38,7 @@ defmodule Tackle.Lib.Tool.DSL do
   @doc "Adds a field to the surrounding `input` or `output` block."
   defmacro field(name, type, opts \\ []) do
     quote bind_quoted: [name: name, type: type, opts: opts] do
-      Tackle.Lib.Tool.__field__(__MODULE__, @tackle_schema_context, name, type, opts)
+      Tool.__field__(__MODULE__, @tackle_schema_context, name, type, opts)
     end
   end
 end

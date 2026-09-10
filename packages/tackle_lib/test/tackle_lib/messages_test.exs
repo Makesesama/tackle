@@ -1,6 +1,7 @@
 defmodule Tackle.Lib.MessagesTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
 
@@ -39,7 +40,7 @@ defmodule Tackle.Lib.MessagesTest do
       assert tool_call.function.name == "search"
       # arguments are serialized to a JSON string (OpenAI tool-call convention)
       assert is_binary(tool_call.function.arguments)
-      assert {:ok, %{"q" => "cats"}} = Tackle.Lib.JSON.decode(tool_call.function.arguments)
+      assert {:ok, %{"q" => "cats"}} = JSON.decode(tool_call.function.arguments)
     end
 
     test "maps a tool result linked back to its call id" do

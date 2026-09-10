@@ -241,10 +241,14 @@ defmodule Tackle.Session.Journal do
 
   @impl true
   def handle_call({:begin_turn, operation, input, turn_id}, _from, state) do
-    with {:ok, state} <- ensure_materialized(state) do
-      if state.active_turn do
+    case ensure_materialized(state) do
+      {:error, reason} ->
+        fail(state, reason)
+
+      {:ok, %{active_turn: active_turn} = state} when is_map(active_turn) ->
         {:reply, {:error, :turn_in_progress}, state}
-      else
+
+      {:ok, state} ->
         event =
           Log.event("turn.started", %{
             "turn_id" => turn_id,
@@ -261,9 +265,6 @@ defmodule Tackle.Session.Journal do
           {:error, reason} ->
             fail(state, reason)
         end
-      end
-    else
-      {:error, reason} -> fail(state, reason)
     end
   end
 

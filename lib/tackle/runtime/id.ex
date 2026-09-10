@@ -7,6 +7,8 @@ defmodule Tackle.Runtime.ID do
   length bound so they are safe to log and route without truncation.
   """
 
+  alias Tackle.Lib.ID, as: LibID
+
   @max_bytes 128
 
   @typedoc "An opaque runtime identifier."
@@ -14,7 +16,7 @@ defmodule Tackle.Runtime.ID do
 
   @doc "Generates a new unique runtime identifier."
   @spec generate() :: t()
-  def generate, do: Tackle.Lib.ID.uuid4()
+  def generate, do: LibID.uuid4()
 
   @doc "Returns true when `value` is a valid runtime identifier."
   @spec valid?(term()) :: boolean()

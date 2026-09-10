@@ -3,9 +3,9 @@ defmodule Tackle.Phoenix.RunnerTest do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
-  alias Tackle.Phoenix.Runner
   alias Tackle.Lib.State
   alias Tackle.Lib.Usage
+  alias Tackle.Phoenix.Runner
 
   @pubsub __MODULE__.PubSub
   @registry __MODULE__.Registry

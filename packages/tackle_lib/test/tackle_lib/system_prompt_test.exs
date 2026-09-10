@@ -1,6 +1,8 @@
 defmodule Tackle.Lib.SystemPromptTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.SystemPrompt
+
   defmodule TestTool do
     @behaviour Tackle.Lib.Tool
 
@@ -41,12 +43,12 @@ defmodule Tackle.Lib.SystemPromptTest do
   describe "builder" do
     test "composes raw text, sections, tools, and response format" do
       prompt =
-        Tackle.Lib.SystemPrompt.new()
-        |> Tackle.Lib.SystemPrompt.add_raw("You are helpful.")
-        |> Tackle.Lib.SystemPrompt.add_section("Rules", "Be concise.")
-        |> Tackle.Lib.SystemPrompt.add_tools([TestTool])
-        |> Tackle.Lib.SystemPrompt.add_response_format()
-        |> Tackle.Lib.SystemPrompt.to_string()
+        SystemPrompt.new()
+        |> SystemPrompt.add_raw("You are helpful.")
+        |> SystemPrompt.add_section("Rules", "Be concise.")
+        |> SystemPrompt.add_tools([TestTool])
+        |> SystemPrompt.add_response_format()
+        |> SystemPrompt.to_string()
 
       assert prompt =~ "You are helpful."
       assert prompt =~ "## Rules\n\nBe concise."
@@ -62,13 +64,13 @@ defmodule Tackle.Lib.SystemPromptTest do
       ]
 
       prompt =
-        Tackle.Lib.SystemPrompt.new()
-        |> Tackle.Lib.SystemPrompt.add_tools(
+        SystemPrompt.new()
+        |> SystemPrompt.add_tools(
           [TestTool],
           Keyword.put(opts, :title, "Capabilities")
         )
-        |> Tackle.Lib.SystemPrompt.add_response_format(opts)
-        |> Tackle.Lib.SystemPrompt.to_string()
+        |> SystemPrompt.add_response_format(opts)
+        |> SystemPrompt.to_string()
 
       assert prompt =~ "## Capabilities"
       assert prompt =~ "capability: test_tool"
@@ -84,33 +86,33 @@ defmodule Tackle.Lib.SystemPromptTest do
         prompt_renderer_opts: [schema: [answer: [type: :string]]]
       ]
 
-      assert Tackle.Lib.SystemPrompt.response_schema(opts) == [answer: [type: :string]]
+      assert SystemPrompt.response_schema(opts) == [answer: [type: :string]]
     end
 
     test "default renderer uses native tools without a JSON response schema" do
-      assert Tackle.Lib.SystemPrompt.response_schema() == nil
+      assert SystemPrompt.response_schema() == nil
     end
   end
 
   describe "version_id/1" do
     test "returns nil for nil" do
-      assert Tackle.Lib.SystemPrompt.version_id(nil) == nil
+      assert SystemPrompt.version_id(nil) == nil
     end
 
     test "is deterministic" do
-      id1 = Tackle.Lib.SystemPrompt.version_id("hello")
-      id2 = Tackle.Lib.SystemPrompt.version_id("hello")
+      id1 = SystemPrompt.version_id("hello")
+      id2 = SystemPrompt.version_id("hello")
       assert id1 == id2
     end
 
     test "different prompts produce different ids" do
-      id1 = Tackle.Lib.SystemPrompt.version_id("Prompt A")
-      id2 = Tackle.Lib.SystemPrompt.version_id("Prompt B")
+      id1 = SystemPrompt.version_id("Prompt A")
+      id2 = SystemPrompt.version_id("Prompt B")
       assert id1 != id2
     end
 
     test "produces 16-char hex string" do
-      id = Tackle.Lib.SystemPrompt.version_id("hello")
+      id = SystemPrompt.version_id("hello")
       assert is_binary(id)
       assert String.length(id) == 16
     end

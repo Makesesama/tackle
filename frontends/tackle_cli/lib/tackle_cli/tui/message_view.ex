@@ -23,8 +23,9 @@ defmodule Tackle.CLI.TUI.MessageView do
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Markdown, Paragraph}
-  alias Tackle.Lib.Message
   alias Tackle.CLI.TUI.{Theme, ToolView}
+  alias Tackle.Lib.JSON
+  alias Tackle.Lib.Message
   @conversation_chunk_rows 64
   @max_markdown_scroll 65_535
   @zero_width_grapheme ~r/^[\p{M}\p{Cf}]+$/u
@@ -113,18 +114,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           (message.tool_calls || [])
           |> Enum.with_index()
           |> Enum.map(fn {call, call_index} ->
-            id = value(call, :id)
-            result = Map.get(results, id)
-
-            tool_entry(
-              %{
-                name: value(call, :name),
-                arguments: value(call, :arguments),
-                status: result_status(result),
-                result: if(result, do: result.content)
-              },
-              if(is_binary(id), do: "tool:#{id}", else: "message:#{index}:call:#{call_index}")
-            )
+            build_call_entry(call, call_index, results, index)
           end)
 
         prose ++ calls
@@ -197,6 +187,21 @@ defmodule Tackle.CLI.TUI.MessageView do
     else
       []
     end
+  end
+
+  defp build_call_entry(call, call_index, results, index) do
+    id = value(call, :id)
+    result = Map.get(results, id)
+
+    tool_entry(
+      %{
+        name: value(call, :name),
+        arguments: value(call, :arguments),
+        status: result_status(result),
+        result: if(result, do: result.content)
+      },
+      if(is_binary(id), do: "tool:#{id}", else: "message:#{index}:call:#{call_index}")
+    )
   end
 
   @doc "Builds a typed welcome entry used when a session has no messages yet."
@@ -609,7 +614,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   defp format_value(value) when is_binary(value), do: value
 
   defp format_value(value) when is_map(value) or is_list(value) do
-    case Tackle.Lib.JSON.encode(value) do
+    case JSON.encode(value) do
       {:ok, encoded} -> encoded
       {:error, _reason} -> inspect(value)
     end
@@ -647,7 +652,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       units
       |> Enum.chunk_by(fn {_grapheme, span_style} -> span_style end)
       |> Enum.map(fn [{_grapheme, span_style} | _rest] = chunk ->
-        content = chunk |> Enum.map(&elem(&1, 0)) |> Enum.join()
+        content = Enum.map_join(chunk, &elem(&1, 0))
         span(content, span_style)
       end)
 

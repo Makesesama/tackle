@@ -7,6 +7,7 @@ defmodule Tackle.Lib.Message do
   map this struct to their own storage if they need durability.
   """
 
+  alias Tackle.Lib.ID
   alias Tackle.Lib.Usage
 
   @type role :: :user | :assistant | :tool
@@ -125,7 +126,7 @@ defmodule Tackle.Lib.Message do
     case Keyword.get(opts, :id) do
       nil ->
         opts
-        |> Keyword.get(:id_generator, &Tackle.Lib.ID.uuid4/0)
+        |> Keyword.get(:id_generator, &ID.uuid4/0)
         |> then(fn generator -> generator.() end)
 
       id when is_binary(id) ->

@@ -1,6 +1,8 @@
 defmodule Tackle.CLI.Run do
   @moduledoc false
 
+  alias Tackle.CLI.Distribution
+  alias Tackle.CLI.TUI
   alias Tackle.Plugins.Codex.OAuth
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.ScopeSpec
@@ -17,45 +19,49 @@ defmodule Tackle.CLI.Run do
           abandon: boolean()
         }) :: non_neg_integer()
   def run(%{model: model, thinking: thinking, prompt: nil} = opts) do
-    with {:ok, scope} <- start_scope(model, thinking, true, opts) do
-      try do
-        case ensure_recoverable(scope.root_agent_ref, opts.abandon) do
-          :ok ->
-            case Tackle.available_models() do
-              {:ok, models} ->
-                case Tackle.CLI.TUI.start(agent_ref: scope.root_agent_ref, models: models) do
-                  :ok -> 0
-                  {:error, reason} -> error(reason)
-                end
-
-              {:error, reason} ->
-                error(reason)
-            end
-
-          {:error, reason} ->
-            error(reason)
-        end
-      after
-        stop_scope(scope.scope_ref)
-      end
-    else
+    case start_scope(model, thinking, true, opts) do
+      {:ok, scope} -> run_tui(scope, opts)
       {:error, reason} -> error(reason)
     end
   end
 
   def run(%{model: model, thinking: thinking, prompt: prompt} = opts) when is_binary(prompt) do
-    with {:ok, scope} <- start_scope(model, thinking, false, opts) do
-      try do
-        case ensure_recoverable(scope.root_agent_ref, opts.abandon) do
-          :ok -> run_prompt(scope.root_agent_ref, prompt)
-          {:error, reason} -> error(reason)
-        end
-      after
-        stop_scope(scope.scope_ref)
-      end
-    else
+    case start_scope(model, thinking, false, opts) do
+      {:ok, scope} -> run_prompt_scope(scope, prompt, opts)
       {:error, reason} -> error(reason)
     end
+  end
+
+  defp run_tui(scope, opts) do
+    case ensure_recoverable(scope.root_agent_ref, opts.abandon) do
+      :ok -> start_tui(scope)
+      {:error, reason} -> error(reason)
+    end
+  after
+    stop_scope(scope.scope_ref)
+  end
+
+  defp start_tui(scope) do
+    case Tackle.available_models() do
+      {:ok, models} -> start_tui_session(scope, models)
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  defp start_tui_session(scope, models) do
+    case TUI.start(agent_ref: scope.root_agent_ref, models: models) do
+      :ok -> 0
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  defp run_prompt_scope(scope, prompt, opts) do
+    case ensure_recoverable(scope.root_agent_ref, opts.abandon) do
+      :ok -> run_prompt(scope.root_agent_ref, prompt)
+      {:error, reason} -> error(reason)
+    end
+  after
+    stop_scope(scope.scope_ref)
   end
 
   @spec sessions(%{query: String.t() | nil, limit: pos_integer() | nil}) :: non_neg_integer()
@@ -227,7 +233,7 @@ defmodule Tackle.CLI.Run do
   end
 
   defp ensure_started do
-    Tackle.CLI.Distribution.configure()
+    Distribution.configure()
     Application.ensure_all_started(:tackle_cli)
   end
 

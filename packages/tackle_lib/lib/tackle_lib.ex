@@ -61,6 +61,7 @@ defmodule Tackle.Lib do
       Tackle.Lib.last_answer(state)
   """
 
+  alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
@@ -118,7 +119,7 @@ defmodule Tackle.Lib do
   Returns `nil` when the adapter does not declare a context window.
   """
   @spec context_usage(State.t()) :: Tackle.Lib.ContextUsage.t() | nil
-  def context_usage(%State{} = state), do: Tackle.Lib.ContextUsage.estimate(state)
+  def context_usage(%State{} = state), do: ContextUsage.estimate(state)
 
   @doc """
   Checks if the agent has completed its task.

@@ -190,16 +190,19 @@ defmodule Tackle.Session.Catalog do
     opts = Map.get(state, :opts, [])
     :ets.delete_all_objects(state.table)
 
-    with {:ok, session_ids} <- Storage.list_session_ids(opts) do
-      Enum.reduce(session_ids, %{indexed: 0, skipped: 0}, fn session_id, acc ->
-        case index_session(state.table, session_id, opts) do
-          :ok -> %{acc | indexed: acc.indexed + 1}
-          {:error, _reason} -> %{acc | skipped: acc.skipped + 1}
-        end
-      end)
-    else
+    case Storage.list_session_ids(opts) do
+      {:ok, session_ids} -> index_sessions(state.table, session_ids, opts)
       {:error, _reason} -> %{indexed: 0, skipped: 0}
     end
+  end
+
+  defp index_sessions(table, session_ids, opts) do
+    Enum.reduce(session_ids, %{indexed: 0, skipped: 0}, fn session_id, acc ->
+      case index_session(table, session_id, opts) do
+        :ok -> %{acc | indexed: acc.indexed + 1}
+        {:error, _reason} -> %{acc | skipped: acc.skipped + 1}
+      end
+    end)
   end
 
   defp index_session(table, session_id, opts) do
@@ -257,20 +260,27 @@ defmodule Tackle.Session.Catalog do
 
   defp to_entry(summary) do
     %Entry{
-      session_id: summary[:session_id] || summary["session_id"],
-      title: summary[:title] || summary["title"],
-      cwd: summary[:cwd] || summary["cwd"],
-      created_at: summary[:created_at] || summary["created_at"],
-      updated_at: summary[:updated_at] || summary["updated_at"],
-      status: decode_status(summary[:status] || summary["status"]),
-      model: summary[:model] || summary["model"],
-      tags: summary[:tags] || summary["tags"] || [],
-      message_count: summary[:message_count] || summary["message_count"] || 0,
-      preview: summary[:preview] || summary["preview"],
-      last_indexed_seq: summary[:last_indexed_seq] || summary["last_indexed_seq"] || 0,
-      parent_session_id: summary[:parent_session_id] || summary["parent_session_id"],
-      search_text: summary[:search_text] || summary["search_text"] || ""
+      session_id: fetch_value(summary, :session_id),
+      title: fetch_value(summary, :title),
+      cwd: fetch_value(summary, :cwd),
+      created_at: fetch_value(summary, :created_at),
+      updated_at: fetch_value(summary, :updated_at),
+      status: summary |> fetch_value(:status) |> decode_status(),
+      model: fetch_value(summary, :model),
+      tags: fetch_value(summary, :tags, []),
+      message_count: fetch_value(summary, :message_count, 0),
+      preview: fetch_value(summary, :preview),
+      last_indexed_seq: fetch_value(summary, :last_indexed_seq, 0),
+      parent_session_id: fetch_value(summary, :parent_session_id),
+      search_text: fetch_value(summary, :search_text, "")
     }
+  end
+
+  defp fetch_value(summary, key, default \\ nil) do
+    case Map.get(summary, key) do
+      nil -> Map.get(summary, to_string(key), default)
+      value -> value
+    end
   end
 
   defp filter(entries, filters) do
@@ -281,11 +291,13 @@ defmodule Tackle.Session.Catalog do
     tags = Map.get(filters, :tags) || []
 
     entries
-    |> Enum.filter(&matches_text?(&1, text))
-    |> Enum.filter(fn entry -> is_nil(cwd) or entry.cwd == cwd end)
-    |> Enum.filter(fn entry -> is_nil(status) or entry.status == status end)
-    |> Enum.filter(fn entry -> is_nil(model) or entry.model == model end)
-    |> Enum.filter(fn entry -> Enum.all?(tags, &(&1 in entry.tags)) end)
+    |> Enum.filter(fn entry ->
+      matches_text?(entry, text) and
+        (is_nil(cwd) or entry.cwd == cwd) and
+        (is_nil(status) or entry.status == status) and
+        (is_nil(model) or entry.model == model) and
+        Enum.all?(tags, &(&1 in entry.tags))
+    end)
   end
 
   defp matches_text?(_entry, nil), do: true

@@ -267,11 +267,7 @@ defmodule Tackle.CLI.TUI.ToolView do
           shown
           |> Enum.with_index()
           |> Enum.map(fn {line, offset} ->
-            case kind do
-              :del -> diff_row("-", old_line + offset, line, Theme.style(:diff_del))
-              :ins -> diff_row("+", new_line + offset, line, Theme.style(:diff_add))
-              :eq -> diff_row(" ", new_line + offset, line, Theme.style(:diff_context))
-            end
+            diff_row_for(kind, line, offset, old_line, new_line)
           end)
 
         rendered =
@@ -284,6 +280,18 @@ defmodule Tackle.CLI.TUI.ToolView do
       end)
 
     rows
+  end
+
+  defp diff_row_for(:del, line, offset, old_line, _new_line) do
+    diff_row("-", old_line + offset, line, Theme.style(:diff_del))
+  end
+
+  defp diff_row_for(:ins, line, offset, _old_line, new_line) do
+    diff_row("+", new_line + offset, line, Theme.style(:diff_add))
+  end
+
+  defp diff_row_for(:eq, line, offset, _old_line, new_line) do
+    diff_row(" ", new_line + offset, line, Theme.style(:diff_context))
   end
 
   defp diff_row(sign, number, line, style) do

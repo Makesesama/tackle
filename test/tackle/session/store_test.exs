@@ -3,11 +3,12 @@ defmodule Tackle.Session.StoreTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
   alias Tackle.Session.Storage
 
   setup do
-    home = Tackle.Test.Runtime.tmp_home()
+    home = tmp_home()
     {:ok, home: home}
   end
 
@@ -66,7 +67,7 @@ defmodule Tackle.Session.StoreTest do
   test "flush_session is a durability barrier for live and unknown sessions", ctx do
     {session_id, _scope} = create_session(ctx)
     assert :ok = Tackle.flush_session(session_id)
-    assert :ok = Tackle.flush_session(Tackle.Runtime.ID.generate())
+    assert :ok = Tackle.flush_session(ID.generate())
   end
 
   defp create_session(ctx) do

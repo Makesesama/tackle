@@ -1,12 +1,13 @@
 defmodule Tackle.CLI.Main do
   @moduledoc false
 
+  alias Tackle.CLI.Distribution
   alias Tackle.CLI.Parser
   alias Tackle.CLI.Run
 
   @spec main([String.t()]) :: non_neg_integer()
   def main(argv \\ []) do
-    Tackle.CLI.Distribution.configure()
+    Distribution.configure()
 
     case Parser.parse(argv) do
       {:ok, command} -> dispatch(command)

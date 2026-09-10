@@ -3,6 +3,7 @@ defmodule Tackle.Session.DurabilityTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Runtime.ID
   alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Catalog
   alias Tackle.Session.Journal
@@ -10,7 +11,7 @@ defmodule Tackle.Session.DurabilityTest do
   alias Tackle.Session.Storage
 
   setup do
-    home = Tackle.Test.Runtime.tmp_home()
+    home = tmp_home()
     {:ok, home: home}
   end
 
@@ -109,7 +110,7 @@ defmodule Tackle.Session.DurabilityTest do
   end
 
   test "requires explicit recovery for an interrupted turn", ctx do
-    session_id = Tackle.Runtime.ID.generate()
+    session_id = ID.generate()
 
     {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
     {:ok, _turn_id} = Journal.begin_turn(journal, :run, "interrupted")
@@ -191,7 +192,7 @@ defmodule Tackle.Session.DurabilityTest do
     scope = start_scope(root: [content: "answer"])
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
 
-    assert Tackle.Session.Journal.whereis(snapshot.session_id) == {:error, :not_found}
+    assert Journal.whereis(snapshot.session_id) == {:error, :not_found}
     assert {:error, _reason} = Reader.read(snapshot.session_id, home: ctx.home)
   end
 
@@ -243,7 +244,7 @@ defmodule Tackle.Session.DurabilityTest do
            end) ==
              :ok
 
-    assert Tackle.Session.Journal.whereis(snapshot.session_id) == {:error, :not_found}
+    assert Journal.whereis(snapshot.session_id) == {:error, :not_found}
   end
 
   defp commit_kind(%{"events" => [event | _rest]}) do
@@ -261,14 +262,14 @@ defmodule Tackle.Session.DurabilityTest do
         :tool_started
 
       "message.appended" ->
-        case event["data"]["message"] do
-          %{"role" => "user"} -> :user
-          %{"role" => "assistant"} -> :assistant
-          %{"role" => "tool"} -> :tool_result
-        end
+        message_role(event["data"]["message"])
 
       other ->
         other
     end
   end
+
+  defp message_role(%{"role" => "user"}), do: :user
+  defp message_role(%{"role" => "assistant"}), do: :assistant
+  defp message_role(%{"role" => "tool"}), do: :tool_result
 end

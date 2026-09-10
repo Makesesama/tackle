@@ -61,8 +61,10 @@ defmodule Tackle.Lib.Loop do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.Hook
+  alias Tackle.Lib.JSON
   alias Tackle.Lib.LLM
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Messages
   alias Tackle.Lib.Snapshot
   alias Tackle.Lib.State
   alias Tackle.Lib.SystemPrompt
@@ -217,7 +219,7 @@ defmodule Tackle.Lib.Loop do
     # tool_call_id. The per-turn instruction rides as a trailing user message.
     # This is the SOLE conversation transport — the loop never flattens history.
     structured_messages =
-      Tackle.Lib.Messages.to_provider(state.messages) ++
+      Messages.to_provider(state.messages) ++
         [%{role: :user, content: instruction}]
 
     response_schema =
@@ -470,28 +472,29 @@ defmodule Tackle.Lib.Loop do
   end
 
   defp normalize_tool_call(call) do
-    function = call["function"] || Map.get(call, :function, %{})
-
-    name =
-      call["name"] || Map.get(call, :name) || function["name"] || Map.get(function, :name)
-
-    arguments =
-      call["arguments"] || Map.get(call, :arguments) || function["arguments"] ||
-        Map.get(function, :arguments, %{})
+    function = fetch_call(call, "function", :function, %{})
 
     %Call{
-      id: call["id"] || Map.get(call, :id),
-      name: name,
-      arguments: normalize_tool_arguments(arguments),
-      definition_id: call["definition_id"] || Map.get(call, :definition_id),
+      id: fetch_call(call, "id", :id),
+      name: fetch_call(call, "name", :name) || fetch_call(function, "name", :name),
+      arguments:
+        normalize_tool_arguments(
+          fetch_call(call, "arguments", :arguments) ||
+            fetch_call(function, "arguments", :arguments, %{})
+        ),
+      definition_id: fetch_call(call, "definition_id", :definition_id),
       raw: call
     }
+  end
+
+  defp fetch_call(map, string_key, atom_key, default \\ nil) do
+    Map.get(map, string_key) || Map.get(map, atom_key, default)
   end
 
   defp normalize_tool_arguments(arguments) when is_map(arguments), do: arguments
 
   defp normalize_tool_arguments(arguments) when is_binary(arguments) do
-    case Tackle.Lib.JSON.decode(arguments) do
+    case JSON.decode(arguments) do
       {:ok, decoded} when is_map(decoded) -> decoded
       _ -> %{}
     end

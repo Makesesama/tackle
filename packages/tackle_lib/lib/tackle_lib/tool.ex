@@ -30,6 +30,9 @@ defmodule Tackle.Lib.Tool do
 
   require Logger
 
+  alias Tackle.Lib.JSON
+  alias Tackle.Lib.Tool.Schema
+
   @doc "Returns the unique name of the tool."
   @callback name() :: String.t()
 
@@ -154,17 +157,7 @@ defmodule Tackle.Lib.Tool do
     input_schema = env.module |> Module.get_attribute(:tackle_input_fields) |> Enum.reverse()
     output_schema = env.module |> Module.get_attribute(:tackle_output_fields) |> Enum.reverse()
 
-    unless is_binary(tool_name) and tool_name != "" do
-      raise ArgumentError, "#{inspect(env.module)} must define tool_name \"...\""
-    end
-
-    unless is_binary(description) and description != "" do
-      raise ArgumentError, "#{inspect(env.module)} must define description \"...\""
-    end
-
-    unless Module.defines?(env.module, {:run, 2}) do
-      raise ArgumentError, "#{inspect(env.module)} must define run/2"
-    end
+    validate_tool_attributes!(env, tool_name, description)
 
     output_schema = if output_schema == [], do: nil, else: output_schema
     defines_output_schema? = Module.defines?(env.module, {:output_schema, 0})
@@ -189,6 +182,20 @@ defmodule Tackle.Lib.Tool do
     end
   end
 
+  defp validate_tool_attributes!(env, tool_name, description) do
+    unless is_binary(tool_name) and tool_name != "" do
+      raise ArgumentError, "#{inspect(env.module)} must define tool_name \"...\""
+    end
+
+    unless is_binary(description) and description != "" do
+      raise ArgumentError, "#{inspect(env.module)} must define description \"...\""
+    end
+
+    unless Module.defines?(env.module, {:run, 2}) do
+      raise ArgumentError, "#{inspect(env.module)} must define run/2"
+    end
+  end
+
   @doc """
   The tool's public name.
   """
@@ -207,7 +214,7 @@ defmodule Tackle.Lib.Tool do
         }
   def definition(tool_module) do
     definition =
-      Tackle.Lib.Tool.Schema.definition(
+      Schema.definition(
         tool_module.name(),
         tool_module.description(),
         tool_module.parameters_schema(),
@@ -332,9 +339,9 @@ defmodule Tackle.Lib.Tool do
   def validate_args(tool_module, args) do
     schema = tool_module.parameters_schema()
 
-    case Tackle.Lib.Tool.Schema.validate(schema, normalize_map_arguments(schema, args || %{})) do
+    case Schema.validate(schema, normalize_map_arguments(schema, args || %{})) do
       {:ok, normalized} -> {:ok, normalized}
-      {:error, errors} -> {:error, Tackle.Lib.Tool.Schema.format_errors(errors)}
+      {:error, errors} -> {:error, Schema.format_errors(errors)}
     end
   end
 
@@ -433,7 +440,7 @@ defmodule Tackle.Lib.Tool do
         {:ok, result}
 
       schema ->
-        case Tackle.Lib.Tool.Schema.validate_output(schema, result) do
+        case Schema.validate_output(schema, result) do
           {:ok, output} -> {:ok, output}
           {:error, reason} -> {:error, {:invalid_output, reason}}
         end
@@ -482,7 +489,7 @@ defmodule Tackle.Lib.Tool do
   defp normalize_map_argument(args, field, :map) do
     case fetch_argument(args, field) do
       {:ok, key, value} when is_binary(value) ->
-        case Tackle.Lib.JSON.decode(value) do
+        case JSON.decode(value) do
           {:ok, decoded} when is_map(decoded) -> Map.put(args, key, decoded)
           _ -> args
         end
@@ -511,7 +518,7 @@ defmodule Tackle.Lib.Tool do
   end
 
   defp format_result(result) when is_map(result) or is_list(result) do
-    Tackle.Lib.JSON.encode!(result)
+    JSON.encode!(result)
   end
 
   defp format_result(result) when is_binary(result), do: result

@@ -53,9 +53,7 @@ defmodule Tackle.Session.Reader do
       case open(session_id, path, :read_only) do
         {:ok, name} ->
           try do
-            with {:ok, replay} <- fold(name, session_id, path) do
-              {:ok, replay}
-            end
+            fold(name, session_id, path)
           after
             _ = :disk_log.close(name)
           end
@@ -147,27 +145,7 @@ defmodule Tackle.Session.Reader do
     with {:ok, _preserved} <- Storage.preserve_for_recovery(session_id, file, opts) do
       case open_for_repair(session_id, path) do
         {:repaired, name, recovered, badbytes} ->
-          recovered_info = %{
-            "recovered_items" => recovered,
-            "bad_bytes" => badbytes,
-            "repaired_at" => DateTime.to_iso8601(DateTime.utc_now())
-          }
-
-          case fold(name, session_id, path) do
-            {:ok, replay} ->
-              {:ok,
-               %{
-                 name: name,
-                 path: path,
-                 projection: replay.projection,
-                 recovered: recovered_info,
-                 new?: false
-               }}
-
-            {:error, reason} ->
-              _ = :disk_log.close(name)
-              {:error, {:repaired_history_invalid, reason}}
-          end
+          repaired_result(name, session_id, path, recovered, badbytes)
 
         {:ok, name} ->
           finish_open(name, session_id, path, false, nil)
@@ -175,6 +153,30 @@ defmodule Tackle.Session.Reader do
         {:error, reason} ->
           {:error, {:journal_open_failed, path, reason}}
       end
+    end
+  end
+
+  defp repaired_result(name, session_id, path, recovered, badbytes) do
+    recovered_info = %{
+      "recovered_items" => recovered,
+      "bad_bytes" => badbytes,
+      "repaired_at" => DateTime.to_iso8601(DateTime.utc_now())
+    }
+
+    case fold(name, session_id, path) do
+      {:ok, replay} ->
+        {:ok,
+         %{
+           name: name,
+           path: path,
+           projection: replay.projection,
+           recovered: recovered_info,
+           new?: false
+         }}
+
+      {:error, reason} ->
+        _ = :disk_log.close(name)
+        {:error, {:repaired_history_invalid, reason}}
     end
   end
 

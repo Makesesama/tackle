@@ -1,3 +1,7 @@
+# credo:disable-for-this-file Credo.Check.Refactor.Apply
+# `Anubis.Server.Frame` and `Anubis.Server.Response` come from the optional
+# `:anubis_mcp` dependency. `apply/3` keeps this integration compilable (without
+# undefined-module warnings) for hosts that do not include Anubis.
 defmodule Tackle.Lib.Integrations.Anubis do
   @moduledoc """
   Integration helpers for exposing `Tackle.Lib.Tool` modules through Anubis MCP.
@@ -22,6 +26,7 @@ defmodule Tackle.Lib.Integrations.Anubis do
 
   alias Anubis.Server.Frame
   alias Anubis.Server.Response
+  alias Tackle.Lib.ID
   alias Tackle.Lib.Integrations.Anubis.Schema, as: AnubisSchema
   alias Tackle.Lib.Integrations.Registry
   alias Tackle.Lib.Tool
@@ -116,5 +121,5 @@ defmodule Tackle.Lib.Integrations.Anubis do
     end
   end
 
-  defp call_id(opts), do: Keyword.get_lazy(opts, :call_id, &Tackle.Lib.ID.uuid4/0)
+  defp call_id(opts), do: Keyword.get_lazy(opts, :call_id, &ID.uuid4/0)
 end

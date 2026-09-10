@@ -12,6 +12,7 @@ defmodule Tackle.Runtime.ScopeSpec do
   alias Tackle.Runtime.ID
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.ScopeRef
+  alias Tackle.Session.Spec, as: SessionSpec
 
   @enforce_keys [:root_spec]
   defstruct scope_ref: nil,
@@ -142,8 +143,8 @@ defmodule Tackle.Runtime.ScopeSpec do
 
   defp validate_session(nil), do: {:ok, nil}
 
-  defp validate_session(%Tackle.Session.Spec{} = session) do
-    Tackle.Session.Spec.new(session)
+  defp validate_session(%SessionSpec{} = session) do
+    SessionSpec.new(session)
   end
 
   defp validate_session(value), do: {:error, {:invalid_session, value}}

@@ -105,15 +105,13 @@ defmodule Tackle.Config do
          {:ok, env_opts} <- environment_options(env),
          {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, adapters),
          {:ok, config} <- session_opts |> Keyword.put(:adapters, adapters) |> new(),
-         {:ok, cwd} <- fetch_cwd(opts, config.context),
-         {:ok, config} <-
-           load_system_prompt(
-             config,
-             Keyword.get(session_opts, :system_prompt),
-             cwd,
-             Path.dirname(config_path)
-           ) do
-      {:ok, config}
+         {:ok, cwd} <- fetch_cwd(opts, config.context) do
+      load_system_prompt(
+        config,
+        Keyword.get(session_opts, :system_prompt),
+        cwd,
+        Path.dirname(config_path)
+      )
     end
   end
 
@@ -231,19 +229,20 @@ defmodule Tackle.Config do
 
   defp normalize_thinking_option(opts) do
     case Keyword.fetch(opts, :thinking) do
-      {:ok, level} ->
-        llm_opts = Keyword.get(opts, :llm_opts, [])
+      {:ok, level} -> normalize_thinking_level(opts, level)
+      :error -> {:ok, opts}
+    end
+  end
 
-        if Keyword.keyword?(llm_opts) do
-          with {:ok, llm_opts} <- Thinking.put_llm_opts(llm_opts, level) do
-            {:ok, opts |> Keyword.delete(:thinking) |> Keyword.put(:llm_opts, llm_opts)}
-          end
-        else
-          {:error, {:invalid_option, :llm_opts, llm_opts}}
-        end
+  defp normalize_thinking_level(opts, level) do
+    llm_opts = Keyword.get(opts, :llm_opts, [])
 
-      :error ->
-        {:ok, opts}
+    with true <- Keyword.keyword?(llm_opts),
+         {:ok, llm_opts} <- Thinking.put_llm_opts(llm_opts, level) do
+      {:ok, opts |> Keyword.delete(:thinking) |> Keyword.put(:llm_opts, llm_opts)}
+    else
+      false -> {:error, {:invalid_option, :llm_opts, llm_opts}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
