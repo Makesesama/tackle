@@ -79,9 +79,8 @@ defmodule Tackle.Plugins.DeepSeek do
   @impl true
   def usage(opts) do
     with :ok <- not_cancelled(opts),
-         {:ok, api_key} <- api_key(opts),
-         {:ok, body} <- balance_request(api_key, opts) do
-      {:ok, body}
+         {:ok, api_key} <- api_key(opts) do
+      balance_request(api_key, opts)
     end
   end
 
@@ -388,32 +387,7 @@ defmodule Tackle.Plugins.DeepSeek do
 
   defp validate_tool_history(messages) do
     messages
-    |> Enum.reduce_while({:ok, MapSet.new()}, fn message, {:ok, pending} ->
-      role = message["role"]
-      tool_calls = message["tool_calls"] || []
-
-      cond do
-        role == "assistant" and tool_calls != [] and MapSet.size(pending) == 0 ->
-          ids = Enum.map(tool_calls, & &1["id"])
-          next_pending = MapSet.new(ids)
-
-          if length(ids) == MapSet.size(next_pending),
-            do: {:cont, {:ok, next_pending}},
-            else: {:halt, {:error, :duplicate_tool_call_id}}
-
-        role == "tool" and MapSet.member?(pending, message["tool_call_id"]) ->
-          {:cont, {:ok, MapSet.delete(pending, message["tool_call_id"])}}
-
-        role == "tool" ->
-          {:halt, {:error, {:unexpected_tool_result, message["tool_call_id"]}}}
-
-        MapSet.size(pending) > 0 ->
-          {:halt, {:error, :missing_tool_results}}
-
-        true ->
-          {:cont, {:ok, pending}}
-      end
-    end)
+    |> Enum.reduce_while({:ok, MapSet.new()}, &validate_tool_message/2)
     |> case do
       {:ok, pending} ->
         if MapSet.size(pending) == 0, do: :ok, else: {:error, :missing_tool_results}
@@ -421,6 +395,44 @@ defmodule Tackle.Plugins.DeepSeek do
       error ->
         error
     end
+  end
+
+  defp validate_tool_message(
+         %{"role" => "assistant", "tool_calls" => [_ | _]} = message,
+         {:ok, pending}
+       ) do
+    if MapSet.size(pending) == 0 do
+      start_tool_calls(message["tool_calls"])
+    else
+      {:halt, {:error, :missing_tool_results}}
+    end
+  end
+
+  defp validate_tool_message(%{"role" => "tool"} = message, {:ok, pending}) do
+    tool_call_id = message["tool_call_id"]
+
+    if MapSet.member?(pending, tool_call_id) do
+      {:cont, {:ok, MapSet.delete(pending, tool_call_id)}}
+    else
+      {:halt, {:error, {:unexpected_tool_result, tool_call_id}}}
+    end
+  end
+
+  defp validate_tool_message(_message, {:ok, pending}) do
+    if MapSet.size(pending) > 0 do
+      {:halt, {:error, :missing_tool_results}}
+    else
+      {:cont, {:ok, pending}}
+    end
+  end
+
+  defp start_tool_calls(tool_calls) do
+    ids = Enum.map(tool_calls, & &1["id"])
+    next_pending = MapSet.new(ids)
+
+    if length(ids) == MapSet.size(next_pending),
+      do: {:cont, {:ok, next_pending}},
+      else: {:halt, {:error, :duplicate_tool_call_id}}
   end
 
   defp convert_tools(tools) when is_list(tools) do

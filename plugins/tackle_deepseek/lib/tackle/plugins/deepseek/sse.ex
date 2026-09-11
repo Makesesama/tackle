@@ -278,17 +278,8 @@ defmodule Tackle.Plugins.DeepSeek.SSE do
              {:ok, index} <- tool_index(delta),
              false <- MapSet.member?(seen, index),
              {:ok, call, arguments_delta} <- merge_tool_delta(acc.tool_calls[index], delta) do
-          if arguments_delta != "" do
-            emit(callback, %{
-              type: :tool_input_delta,
-              delta: arguments_delta,
-              tool_call_id: call["id"],
-              tool_name: call["name"]
-            })
-          end
-
-          next = %{acc | tool_calls: Map.put(acc.tool_calls, index, call)}
-          {:cont, {next, MapSet.put(seen, index)}}
+          acc = accumulate_tool_delta(acc, index, call, arguments_delta, callback)
+          {:cont, {acc, MapSet.put(seen, index)}}
         else
           true -> {:halt, {put_error(acc, :duplicate_tool_call_index), seen}}
           {:error, reason} -> {:halt, {put_error(acc, reason), seen}}
@@ -301,6 +292,19 @@ defmodule Tackle.Plugins.DeepSeek.SSE do
 
   defp append_tool_deltas(state, _tool_calls, _callback),
     do: put_error(state, :invalid_tool_call_deltas)
+
+  defp accumulate_tool_delta(acc, index, call, arguments_delta, callback) do
+    if arguments_delta != "" do
+      emit(callback, %{
+        type: :tool_input_delta,
+        delta: arguments_delta,
+        tool_call_id: call["id"],
+        tool_name: call["name"]
+      })
+    end
+
+    %{acc | tool_calls: Map.put(acc.tool_calls, index, call)}
+  end
 
   defp tool_index(%{"index" => index}) when is_integer(index) and index >= 0,
     do: {:ok, index}
@@ -364,21 +368,32 @@ defmodule Tackle.Plugins.DeepSeek.SSE do
 
   defp validate_each_tool_call(calls) do
     Enum.reduce_while(calls, :ok, fn call, :ok ->
-      cond do
-        not (is_binary(call["id"]) and call["id"] != "") ->
-          {:halt, {:error, :missing_tool_call_id}}
-
-        not (is_binary(call["name"]) and call["name"] != "") ->
-          {:halt, {:error, :missing_tool_call_name}}
-
-        true ->
-          case JSON.decode(call["arguments"]) do
-            {:ok, %{} = _arguments} -> {:cont, :ok}
-            {:ok, _other} -> {:halt, {:error, :tool_call_arguments_not_an_object}}
-            {:error, _reason} -> {:halt, {:error, :invalid_tool_call_arguments_json}}
-          end
+      case validate_tool_call(call) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp validate_tool_call(call) do
+    cond do
+      not (is_binary(call["id"]) and call["id"] != "") ->
+        {:error, :missing_tool_call_id}
+
+      not (is_binary(call["name"]) and call["name"] != "") ->
+        {:error, :missing_tool_call_name}
+
+      true ->
+        validate_tool_call_arguments(call["arguments"])
+    end
+  end
+
+  defp validate_tool_call_arguments(arguments) do
+    case JSON.decode(arguments) do
+      {:ok, %{} = _arguments} -> :ok
+      {:ok, _other} -> {:error, :tool_call_arguments_not_an_object}
+      {:error, _reason} -> {:error, :invalid_tool_call_arguments_json}
+    end
   end
 
   defp validate_unique_tool_ids(calls) do

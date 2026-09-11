@@ -5,6 +5,7 @@ defmodule Tackle.Session.CompactionTest do
 
   alias Tackle.Lib.Compaction
   alias Tackle.Lib.Compaction.Summary
+  alias Tackle.Lib.Usage
   alias Tackle.Session.Projection
   alias Tackle.Session.Reader
 
@@ -27,7 +28,7 @@ defmodule Tackle.Session.CompactionTest do
     def default_summary do
       %Summary{
         content: "compacted background",
-        usage: Tackle.Lib.Usage.normalize(%{"input_tokens" => 5, "output_tokens" => 7}),
+        usage: Usage.normalize(%{"input_tokens" => 5, "output_tokens" => 7}),
         model: "test/echo"
       }
     end

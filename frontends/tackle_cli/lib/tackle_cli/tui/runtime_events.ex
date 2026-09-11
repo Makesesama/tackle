@@ -13,6 +13,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   alias ExRatatui.Command
   alias Tackle.CLI.TUI.{Compaction, State, Util, Viewport}
+  alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.Lib.{ContextUsage, Event, Usage}
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Session.Snapshot
@@ -32,8 +33,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
-  def handle({:tui_flush_stream, ref}, %State{stream_flush_ref: ref} = state) do
-    {:noreply, Viewport.refresh(%{state | stream_flush_ref: nil}, [:turn])}
+  def handle({:tui_flush_stream, ref}, %State{stream: %Stream{flush_ref: ref}} = state) do
+    {:noreply, Viewport.refresh(%{state | stream: %{state.stream | flush_ref: nil}}, [:turn])}
   end
 
   def handle({:tui_flush_stream, _stale_ref}, state),
@@ -198,22 +199,24 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       when is_binary(delta) do
     case Map.get(data, :field) do
       :reasoning ->
-        state = %{
-          state
-          | streaming_thinking: state.streaming_thinking <> delta,
-            turn_timeline: append_text(state.turn_timeline, :thinking, delta),
-            activity: "thinking"
+        stream = %{
+          state.stream
+          | thinking: state.stream.thinking <> delta,
+            timeline: append_text(state.stream.timeline, :thinking, delta)
         }
+
+        state = %{state | stream: stream, activity: "thinking"}
 
         stream_reply(state)
 
       field when field in [nil, :content] ->
-        state = %{
-          state
-          | streaming_response: state.streaming_response <> delta,
-            turn_timeline: append_text(state.turn_timeline, :assistant, delta),
-            activity: "responding"
+        stream = %{
+          state.stream
+          | response: state.stream.response <> delta,
+            timeline: append_text(state.stream.timeline, :assistant, delta)
         }
+
+        state = %{state | stream: stream, activity: "responding"}
 
         stream_reply(state)
 
@@ -227,25 +230,25 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
     normalized_usage = Usage.normalize(usage)
-    latest_usage = normalized_usage || state.latest_usage
+    latest_usage = normalized_usage || state.metrics.latest_usage
 
-    live_context_usage =
+    context_usage =
       Map.get(data, :context_usage) ||
         ContextUsage.from_usage(latest_usage, State.model_info(state.agent_state))
 
-    live_usages =
+    turn_usages =
       if normalized_usage,
-        do: state.live_usages ++ [normalized_usage],
-        else: state.live_usages
+        do: state.metrics.turn_usages ++ [normalized_usage],
+        else: state.metrics.turn_usages
 
-    {:noreply,
-     %{
-       state
-       | latest_usage: latest_usage,
-         live_usage: latest_usage,
-         live_usages: live_usages,
-         live_context_usage: live_context_usage
-     }}
+    metrics = %{
+      state.metrics
+      | latest_usage: latest_usage,
+        turn_usages: turn_usages,
+        context_usage: context_usage
+    }
+
+    {:noreply, %{state | metrics: metrics}}
   end
 
   def handle(
@@ -257,9 +260,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     state = %{
       state
-      | turn_timeline: put_timeline_tool(state.turn_timeline, tool),
-        activity: tool_activity_label(data, "running"),
-        stream_flush_ref: nil
+      | stream: %{
+          state.stream
+          | timeline: put_timeline_tool(state.stream.timeline, tool),
+            flush_ref: nil
+        },
+        activity: tool_activity_label(data, "running")
     }
 
     {:noreply, Viewport.refresh(state, [:turn])}
@@ -314,16 +320,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       | agent_state: agent_state,
         active_turn: nil,
         pending_prompt: nil,
-        streaming_thinking: "",
-        streaming_response: "",
-        turn_timeline: [],
-        stream_flush_ref: nil,
+        stream: Stream.reset(state.stream),
         pending_operation: nil,
         deferred_events: [],
-        latest_usage: State.latest_usage(agent_state) || state.latest_usage,
-        live_usage: nil,
-        live_usages: [],
-        live_context_usage: nil,
+        metrics: %Metrics{
+          latest_usage: State.latest_usage(agent_state) || state.metrics.latest_usage
+        },
         tool_activity: [],
         activity: nil,
         error: error,
@@ -341,15 +343,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       state
       | active_turn: nil,
         pending_prompt: nil,
-        streaming_thinking: "",
-        streaming_response: "",
-        turn_timeline: [],
-        stream_flush_ref: nil,
+        stream: Stream.reset(state.stream),
         pending_operation: nil,
         deferred_events: [],
-        live_usage: nil,
-        live_usages: [],
-        live_context_usage: nil,
+        metrics: Metrics.reset(state.metrics),
         tool_activity: [],
         activity: nil,
         error: Util.format_reason(reason),
@@ -367,9 +364,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       state
       | agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
-        live_usage: nil,
-        live_usages: [],
-        live_context_usage: nil,
+        metrics: Metrics.reset(state.metrics),
         overlay: nil,
         error: nil
     }
@@ -438,16 +433,16 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, Viewport.refresh(state, [:error])}
   end
 
-  defp stream_reply(%State{coalesce_stream?: false} = state),
+  defp stream_reply(%State{stream: %Stream{coalesce?: false}} = state),
     do: {:noreply, Viewport.refresh(state, [:turn])}
 
-  defp stream_reply(%State{stream_flush_ref: ref} = state) when is_reference(ref),
+  defp stream_reply(%State{stream: %Stream{flush_ref: ref}} = state) when is_reference(ref),
     do: {:noreply, state, render?: false}
 
   defp stream_reply(state) do
     ref = make_ref()
 
-    {:noreply, %{state | stream_flush_ref: ref},
+    {:noreply, %{state | stream: %{state.stream | flush_ref: ref}},
      render?: false, commands: [Command.send_after(@stream_frame_ms, {:tui_flush_stream, ref})]}
   end
 
@@ -467,9 +462,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     state = %{
       state
-      | turn_timeline: put_timeline_tool(state.turn_timeline, tool),
-        activity: tool_activity_label(data, label),
-        stream_flush_ref: nil
+      | stream: %{
+          state.stream
+          | timeline: put_timeline_tool(state.stream.timeline, tool),
+            flush_ref: nil
+        },
+        activity: tool_activity_label(data, label)
     }
 
     {:noreply, Viewport.refresh(state, [:turn])}

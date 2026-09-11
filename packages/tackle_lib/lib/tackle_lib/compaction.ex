@@ -43,6 +43,7 @@ defmodule Tackle.Lib.Compaction do
   never includes raw prompts or summary content.
   """
 
+  alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction.Config
   alias Tackle.Lib.Compaction.Plan
   alias Tackle.Lib.Compaction.Policy
@@ -233,7 +234,6 @@ defmodule Tackle.Lib.Compaction do
              compaction_id,
              trigger,
              summary,
-             summary_message,
              plan,
              ctx,
              new_model_messages,
@@ -375,7 +375,6 @@ defmodule Tackle.Lib.Compaction do
          compaction_id,
          trigger,
          summary,
-         summary_message,
          plan,
          ctx,
          new_model_messages,
@@ -388,7 +387,7 @@ defmodule Tackle.Lib.Compaction do
      %Record{
        compaction_id: compaction_id,
        trigger: trigger,
-       summary_message: summary_message,
+       summary_message: checkpoint_message(compaction_id, summary.content),
        shadowed_message_ids: plan.shadowed_ids,
        first_retained_message_id: plan.first_retained_id,
        previous_compaction_id: state.last_compaction_id,
@@ -446,8 +445,8 @@ defmodule Tackle.Lib.Compaction do
   end
 
   defp check_signal(signal) do
-    if Tackle.Lib.Cancellation.cancelled?(signal) do
-      {:cancelled, Tackle.Lib.Cancellation.reason(signal) || :cancelled}
+    if Cancellation.cancelled?(signal) do
+      {:cancelled, Cancellation.reason(signal) || :cancelled}
     else
       :ok
     end

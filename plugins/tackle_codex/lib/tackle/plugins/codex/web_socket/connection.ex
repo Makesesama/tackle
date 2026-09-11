@@ -234,20 +234,18 @@ defmodule Tackle.Plugins.Codex.WebSocket.Connection do
   end
 
   defp receive_response(state, caller, request_id, monitor, started?, deadline) do
-    cond do
-      remaining(deadline) <= 0 ->
-        {:error, phase(started?), :receive_timeout, state}
+    if remaining(deadline) <= 0 do
+      {:error, phase(started?), :receive_timeout, state}
+    else
+      receive do
+        {:cancel, ^caller, ^request_id} ->
+          {:error, phase(started?), :cancelled, state}
 
-      true ->
-        receive do
-          {:cancel, ^caller, ^request_id} ->
-            {:error, phase(started?), :cancelled, state}
-
-          {:DOWN, ^monitor, :process, ^caller, reason} ->
-            {:error, phase(started?), {:caller_stopped, reason}, state}
-        after
-          0 -> receive_frames(state, caller, request_id, monitor, started?, deadline)
-        end
+        {:DOWN, ^monitor, :process, ^caller, reason} ->
+          {:error, phase(started?), {:caller_stopped, reason}, state}
+      after
+        0 -> receive_frames(state, caller, request_id, monitor, started?, deadline)
+      end
     end
   end
 
@@ -256,22 +254,15 @@ defmodule Tackle.Plugins.Codex.WebSocket.Connection do
 
     case Mint.WebSocket.recv(state.connection, 0, timeout) do
       {:ok, connection, responses} ->
-        state = %{state | connection: connection}
-        deadline = record_activity(caller, request_id, responses, state.receive_timeout, deadline)
-
-        case process_responses(responses, state, caller, request_id, monitor, started?) do
-          {:cont, state, started?} ->
-            receive_response(state, caller, request_id, monitor, started?, deadline)
-
-          {:done, event, state} ->
-            {:ok, event, state}
-
-          {:retry_full, state} ->
-            {:error, :previous_response_not_found, state}
-
-          {:error, reason, state, started?} ->
-            {:error, phase(started?), reason, state}
-        end
+        on_responses(
+          responses,
+          %{state | connection: connection},
+          caller,
+          request_id,
+          monitor,
+          started?,
+          deadline
+        )
 
       {:error, connection, %Mint.TransportError{reason: :timeout}, []} ->
         receive_response(
@@ -284,24 +275,61 @@ defmodule Tackle.Plugins.Codex.WebSocket.Connection do
         )
 
       {:error, connection, reason, responses} ->
-        state = %{state | connection: connection}
+        on_transport_error(
+          responses,
+          reason,
+          %{state | connection: connection},
+          caller,
+          request_id,
+          monitor,
+          started?,
+          deadline
+        )
+    end
+  end
 
-        _deadline =
-          record_activity(caller, request_id, responses, state.receive_timeout, deadline)
+  defp on_responses(responses, state, caller, request_id, monitor, started?, deadline) do
+    deadline = record_activity(caller, request_id, responses, state.receive_timeout, deadline)
 
-        case process_responses(responses, state, caller, request_id, monitor, started?) do
-          {:done, event, state} ->
-            {:ok, event, state}
+    case process_responses(responses, state, caller, request_id, monitor, started?) do
+      {:cont, state, started?} ->
+        receive_response(state, caller, request_id, monitor, started?, deadline)
 
-          {:retry_full, state} ->
-            {:error, :previous_response_not_found, state}
+      {:done, event, state} ->
+        {:ok, event, state}
 
-          {:cont, state, started?} ->
-            {:error, phase(started?), reason, state}
+      {:retry_full, state} ->
+        {:error, :previous_response_not_found, state}
 
-          {:error, frame_reason, state, started?} ->
-            {:error, phase(started?), frame_reason, state}
-        end
+      {:error, reason, state, started?} ->
+        {:error, phase(started?), reason, state}
+    end
+  end
+
+  defp on_transport_error(
+         responses,
+         reason,
+         state,
+         caller,
+         request_id,
+         monitor,
+         started?,
+         deadline
+       ) do
+    _deadline = record_activity(caller, request_id, responses, state.receive_timeout, deadline)
+
+    case process_responses(responses, state, caller, request_id, monitor, started?) do
+      {:done, event, state} ->
+        {:ok, event, state}
+
+      {:retry_full, state} ->
+        {:error, :previous_response_not_found, state}
+
+      {:cont, state, started?} ->
+        {:error, phase(started?), reason, state}
+
+      {:error, frame_reason, state, started?} ->
+        {:error, phase(started?), frame_reason, state}
     end
   end
 
@@ -313,25 +341,36 @@ defmodule Tackle.Plugins.Codex.WebSocket.Connection do
   end
 
   defp process_responses(responses, state, caller, request_id, monitor, started?) do
-    Enum.reduce_while(responses, {:cont, state, started?}, fn
-      {:data, request_ref, data}, {:cont, %{request_ref: request_ref} = state, started?} ->
-        case Mint.WebSocket.decode(state.websocket, data) do
-          {:ok, websocket, frames} ->
-            state = %{state | websocket: websocket}
-
-            case process_frames(frames, state, caller, request_id, monitor, started?) do
-              {:cont, state, started?} -> {:cont, {:cont, state, started?}}
-              result -> {:halt, result}
-            end
-
-          {:error, websocket, reason} ->
-            {:halt, {:error, reason, %{state | websocket: websocket}, started?}}
-        end
-
-      _response, acc ->
-        {:cont, acc}
+    Enum.reduce_while(responses, {:cont, state, started?}, fn response, acc ->
+      case handle_response(response, acc, caller, request_id, monitor) do
+        {:cont, state, started?} -> {:cont, {:cont, state, started?}}
+        result -> {:halt, result}
+      end
     end)
   end
+
+  defp handle_response(
+         {:data, request_ref, data},
+         {:cont, %{request_ref: request_ref} = state, started?},
+         caller,
+         request_id,
+         monitor
+       ) do
+    case Mint.WebSocket.decode(state.websocket, data) do
+      {:ok, websocket, frames} ->
+        state = %{state | websocket: websocket}
+
+        case process_frames(frames, state, caller, request_id, monitor, started?) do
+          {:cont, state, started?} -> {:cont, state, started?}
+          result -> result
+        end
+
+      {:error, websocket, reason} ->
+        {:error, reason, %{state | websocket: websocket}, started?}
+    end
+  end
+
+  defp handle_response(_response, acc, _caller, _request_id, _monitor), do: acc
 
   defp process_frames(frames, state, caller, request_id, monitor, started?) do
     Enum.reduce_while(frames, {:cont, state, started?}, fn frame, {:cont, state, started?} ->
@@ -344,33 +383,8 @@ defmodule Tackle.Plugins.Codex.WebSocket.Connection do
 
   defp process_frame({:text, text}, state, caller, request_id, monitor, started?) do
     case decode_event(text) do
-      {:ok, event} ->
-        state = capture_response_id(state, event)
-
-        cond do
-          previous_response_not_found?(event) and not started? ->
-            {:retry_full, state}
-
-          terminal_event?(event) ->
-            event = normalize_terminal_event(event)
-            started? = started? or emits_callback?(event)
-
-            case deliver_event(caller, request_id, event, monitor) do
-              :ok -> {:done, event, state}
-              {:error, reason} -> {:error, reason, state, started?}
-            end
-
-          true ->
-            started? = started? or emits_callback?(event)
-
-            case deliver_event(caller, request_id, event, monitor) do
-              :ok -> {:cont, state, started?}
-              {:error, reason} -> {:error, reason, state, started?}
-            end
-        end
-
-      {:error, reason} ->
-        {:error, reason, state, started?}
+      {:ok, event} -> process_text_event(event, state, caller, request_id, monitor, started?)
+      {:error, reason} -> {:error, reason, state, started?}
     end
   end
 
@@ -401,6 +415,24 @@ defmodule Tackle.Plugins.Codex.WebSocket.Connection do
 
   defp process_frame({:error, reason}, state, _caller, _request_id, _monitor, started?),
     do: {:error, reason, state, started?}
+
+  defp process_text_event(event, state, caller, request_id, monitor, started?) do
+    state = capture_response_id(state, event)
+
+    if previous_response_not_found?(event) and not started? do
+      {:retry_full, state}
+    else
+      terminal? = terminal_event?(event)
+      event = if terminal?, do: normalize_terminal_event(event), else: event
+      started? = started? or emits_callback?(event)
+
+      case deliver_event(caller, request_id, event, monitor) do
+        :ok when terminal? -> {:done, event, state}
+        :ok -> {:cont, state, started?}
+        {:error, reason} -> {:error, reason, state, started?}
+      end
+    end
+  end
 
   defp deliver_event(caller, request_id, event, monitor) do
     delivery_id = make_ref()
@@ -522,26 +554,29 @@ defmodule Tackle.Plugins.Codex.WebSocket.Connection do
   defp close_connection(%__MODULE__{connection: nil} = state), do: state
 
   defp close_connection(state) do
-    state =
-      if state.websocket && state.request_ref do
-        case Mint.WebSocket.encode(state.websocket, :close) do
-          {:ok, websocket, data} ->
-            case Mint.WebSocket.stream_request_body(state.connection, state.request_ref, data) do
-              {:ok, connection} -> %{state | connection: connection, websocket: websocket}
-              _error -> state
-            end
-
-          _error ->
-            state
-        end
-      else
-        state
-      end
+    state = close_websocket(state)
 
     Mint.HTTP.close(state.connection)
     %{state | connection: nil, websocket: nil, request_ref: nil}
   rescue
     _exception -> %{state | connection: nil, websocket: nil, request_ref: nil}
+  end
+
+  defp close_websocket(%__MODULE__{websocket: nil} = state), do: state
+  defp close_websocket(%__MODULE__{request_ref: nil} = state), do: state
+
+  defp close_websocket(state) do
+    case Mint.WebSocket.encode(state.websocket, :close) do
+      {:ok, websocket, data} -> stream_close_frame(state, websocket, data)
+      _error -> state
+    end
+  end
+
+  defp stream_close_frame(state, websocket, data) do
+    case Mint.WebSocket.stream_request_body(state.connection, state.request_ref, data) do
+      {:ok, connection} -> %{state | connection: connection, websocket: websocket}
+      _error -> state
+    end
   end
 
   defp schedule_idle(%__MODULE__{idle_timeout: timeout} = state)
