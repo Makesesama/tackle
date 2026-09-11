@@ -17,6 +17,11 @@ let
         exit 2
       fi
 
+      # The jail does not mount the host locale archive. C.UTF-8 is provided by
+      # glibc itself and keeps Elixir's native filename encoding set to UTF-8.
+      export LANG=C.UTF-8
+      export LC_ALL=C.UTF-8
+
       # The jail is a development context, so enable Tackle development-only
       # behaviour (e.g. the elixir_eval tool) unconditionally.
       export TACKLE_DEV=1
@@ -39,6 +44,7 @@ jailedAgents.makeJailedAgent {
     pkgs.hex
     pkgs.beamPackages.rebar3
     pkgs.stdenv.cc
+    pkgs.util-linux
     pkgs.gnumake
     pkgs.pkg-config
     pkgs.rustc

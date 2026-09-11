@@ -5,6 +5,7 @@ defmodule Tackle.Session.StorageTest do
 
   alias Tackle.Runtime.ID
   alias Tackle.Session.Storage
+  alias Tackle.Session.Storage.Lock
 
   setup do
     home = tmp_home()
@@ -23,6 +24,36 @@ defmodule Tackle.Session.StorageTest do
     assert File.dir?(dir)
     assert {:ok, %{mode: mode}} = File.stat(dir)
     assert Bitwise.band(mode, 0o777) == 0o700
+  end
+
+  test "reclaims a lock when a PID is reused by another process", ctx do
+    {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
+    path = Lock.path(dir)
+
+    stale_owner =
+      Lock.current_owner()
+      |> Map.update("process_identity", "stale", &(&1 <> "-stale"))
+
+    File.write!(path, JSON.encode!(stale_owner))
+
+    assert {:ok, lock} = Storage.acquire_lock(ctx.session_id, home: ctx.home)
+    assert lock.owner["process_identity"] != stale_owner["process_identity"]
+  end
+
+  test "reclaims a legacy lock acquired before the current VM started", ctx do
+    {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
+
+    File.write!(
+      Lock.path(dir),
+      JSON.encode!(%{
+        "pid" => System.pid(),
+        "node" => "nonode@nohost",
+        "started_at" => 0
+      })
+    )
+
+    assert {:ok, lock} = Storage.acquire_lock(ctx.session_id, home: ctx.home)
+    assert lock.owner["started_at"] > 0
   end
 
   test "writes sidecar files atomically", ctx do

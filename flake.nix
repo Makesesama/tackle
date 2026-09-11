@@ -133,8 +133,9 @@
               export PATH=$MIX_HOME/bin:$PATH
               export PATH=$HEX_HOME/bin:$PATH
 
-              # BEAM-specific
-              export LANG=en_US.UTF-8
+              # BEAM-specific. C.UTF-8 is available without a separately
+              # mounted locale archive, including inside jailed-tackle.
+              export LANG=C.UTF-8
               export ERL_AFLAGS="-kernel shell_history enabled"
           '';
         in

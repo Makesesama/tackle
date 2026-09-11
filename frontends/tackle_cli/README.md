@@ -31,7 +31,14 @@ mix tackle auth login openai-codex
 mix tackle auth login deepseek
 mix tackle run --model deepseek/deepseek-chat "Inspect this project"
 mix tackle run --thinking high "Inspect this project"
+mix tackle run --resume SESSION_ID
+mix tackle run --resume SESSION_ID --abandon
 ```
+
+Resuming automatically runs controlled repair when the journal was not closed
+cleanly. Tackle preserves the original journal under the session's `recovery/`
+directory and validates recovered history before use. `--abandon` remains an
+explicit, separate decision for a turn interrupted by the crash.
 
 DeepSeek login stores the key under the `deepseek` credential namespace. The
 credential file is plaintext JSON protected by user-only filesystem permissions;

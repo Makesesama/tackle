@@ -195,11 +195,16 @@ defmodule Tackle.CLI.Run do
   end
 
   # Root conversations are durable by default. An explicit resume selects an
-  # existing session; `override_config` is set only when the user chose a model
-  # on the command line, so an unmodified resume adopts the recorded selection.
+  # existing session and permits controlled repair of an unclean journal. The
+  # repair path preserves the original journal and validates recovered history.
+  # `override_config` is set only when the user chose a model on the command
+  # line, so an unmodified resume adopts the recorded selection.
   defp durable_session(opts) do
+    resume = Keyword.get(opts, :resume)
+
     SessionSpec.new(
-      session_id: Keyword.get(opts, :resume),
+      session_id: resume,
+      repair: is_binary(resume),
       override_config: Keyword.get(opts, :override_config, false)
     )
   end

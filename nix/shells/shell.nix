@@ -9,7 +9,10 @@
 let
   platformPackages =
     with pkgs;
-    lib.optional stdenv.hostPlatform.isLinux inotify-tools
+    lib.optionals stdenv.hostPlatform.isLinux [
+      inotify-tools
+      util-linux
+    ]
     ++ lib.optionals stdenv.isDarwin (
       with darwin.apple_sdk.frameworks;
       [

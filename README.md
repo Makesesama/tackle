@@ -264,6 +264,12 @@ tackle sessions                           # newest sessions first
 tackle sessions --query "cache invalidation" --limit 10
 ```
 
+The CLI automatically runs controlled journal repair when a resumed session was
+not closed cleanly. The original journal is preserved under the session's
+`recovery/` directory and recovered history is validated before use. Repair does
+not silently resolve an interrupted turn; pass `--abandon` to record that
+separate recovery decision.
+
 ### Breaking migration to scoped runtime
 
 Session-PID startup is replaced by scope startup: `Tackle.start_session/1`,

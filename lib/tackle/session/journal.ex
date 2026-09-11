@@ -24,6 +24,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Session.Projection
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
+  alias Tackle.Session.Storage.Lock
   alias Tackle.Thinking
 
   @registry Tackle.Session.JournalRegistry
@@ -442,6 +443,10 @@ defmodule Tackle.Session.Journal do
   end
 
   @impl true
+  def handle_info({port, {:exit_status, status}}, %{lock: %Lock{port: port}} = state) do
+    {:stop, {:journal_failure, {:writer_lock_lost, status}}, state}
+  end
+
   def handle_info({:disk_log, _node, _log, info}, state) do
     case notification_health(info) do
       :ok ->

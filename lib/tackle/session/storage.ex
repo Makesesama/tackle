@@ -130,9 +130,11 @@ defmodule Tackle.Session.Storage do
   @doc """
   Acquires the exclusive writable ownership of one session directory.
 
-  The lock is a small file recording the owning operating-system process. A
-  live owner is rejected with `{:error, :session_in_use}`; a stale lock left by
-  a dead process is reclaimed. Cross-BEAM distributed leases are not promised.
+  On systems with `flock`, the lock is held by the owning operating-system
+  process and remains reliable across PID namespaces. Other systems use the
+  recorded process identity as a best-effort fallback. A live owner is rejected
+  with `{:error, :session_in_use}`; stale fallback locks are reclaimed.
+  Cross-node distributed leases are not promised.
   """
   @spec acquire_lock(String.t(), keyword()) :: {:ok, Lock.t()} | {:error, term()}
   def acquire_lock(session_id, opts \\ []) do
