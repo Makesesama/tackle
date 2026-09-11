@@ -275,6 +275,10 @@ defmodule Tackle.CLI.TUI do
      %{state | pending_operation: operation, activity: "cancelling", notice: "Cancelling…"}}
   end
 
+  defp escape(%{pending_operation: %{kind: :compact}} = state) do
+    {:noreply, %{state | notice: "Manual compaction cannot be cancelled; draft kept"}}
+  end
+
   defp escape(%{pending_operation: %{kind: :cancel}} = state) do
     {:noreply, %{state | notice: "Cancellation already requested"}}
   end

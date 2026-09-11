@@ -73,8 +73,9 @@ hint row. Empty optional rows are not reserved when the terminal is short.
 | F1 | Searchable command/help palette. Type to filter, ↑/↓ to select, Enter to run, Esc to close. |
 | F2 | Model and thinking selector (idle only). ↑/↓ switches field, ←/→ cycles, Enter applies, Esc cancels. A reconfigure failure preserves the conversation and the draft. |
 | F3 | Source copy overlay. ↑/↓ selects, Y/Enter copies the full retained source of the entry, O opens the output inspector, A copies the full transcript, Esc closes. |
-| F4 | Details for the latest tool call, including pending calls. ←/→ browses previous/next tools; ↑/↓, PgUp/PgDn, Home/End scroll. Y copies raw output (arguments when no output exists), A copies tool arguments, Esc closes. |
+| F4 | Browse transcript entries with ↑/↓. Enter opens the selected entry (including compaction summaries) in the scrollable inspector; Y copies its source; Esc returns to the composer. |
 | Ctrl+F | Transcript search over full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
+| Ctrl+K | Compact context manually while idle. The draft is retained. Manual compaction cannot currently be cancelled. |
 | Ctrl+T | Reveal or collapse supplied reasoning. |
 | Page Up/Page Down, mouse wheel | Scroll the transcript. Ctrl+Home jumps to the oldest row; Ctrl+End returns to the newest row and resumes following. |
 
@@ -144,8 +145,25 @@ available context/token/cache/cost metrics. Optional metrics are dropped before
 working state, cancellation, or the composer when the terminal is narrow, and
 the status row itself disappears on very short terminals. A `~` before cost
 (for example `~$0.84`) marks a price-card estimate rather than
-provider-reported billing. Missing metadata is omitted; context pressure is
-informational only and automatic compaction is not implemented.
+provider-reported billing. Missing metadata is omitted.
+
+### Compaction
+
+Manual (Ctrl+K) and automatic compaction show cards inline in the conversation,
+not pinned above the input. Each card stays at its position between messages and
+scrolls with the transcript. Progress updates the same card, distinguishing
+context pressure from overflow and showing additional tightening passes. On
+success it reports before/after token estimates; failures and cancellation are
+explicit. The canonical conversation is not removed or replaced by the summary.
+
+The summary stays collapsed: F4 enters transcript browsing, ↑/↓ selects a card,
+Enter opens its full source in the scrollable inspector, and Y copies it.
+Resuming a compacted session exposes its current checkpoint summary at the start
+of the transcript, labeled as restored because its historical position and token
+counts are unavailable. Live cards retain their chronological positions for the
+current session view; they are not a persisted compaction archive. Drafts remain
+editable and are never queued during manual compaction; Esc does not cancel that
+synchronous session operation.
 
 ## Experimental limitations
 

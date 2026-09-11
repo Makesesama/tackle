@@ -23,7 +23,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Markdown, Paragraph}
-  alias Tackle.CLI.TUI.{Theme, ToolView}
+  alias Tackle.CLI.TUI.{Compaction, Theme, ToolView}
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   @conversation_chunk_rows 64
@@ -46,7 +46,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   ]
 
   @typedoc "A terminal conversation entry before it is projected into widgets."
-  @type kind :: :user | :assistant | :thinking | :tool | :error | :welcome
+  @type kind :: :user | :assistant | :thinking | :tool | :compaction | :error | :welcome
   @type t :: %__MODULE__{
           kind: kind(),
           content: String.t(),
@@ -101,27 +101,34 @@ defmodule Tackle.CLI.TUI.MessageView do
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
-    messages
-    |> Enum.with_index()
-    |> Enum.flat_map(fn
-      {%Message{role: :tool, tool_call_id: id} = message, index} ->
-        if MapSet.member?(call_ids, id), do: [], else: message_entries(message, index, state)
+    cards = Enum.filter(Map.get(state, :compactions, []), &is_nil(&1.turn_id))
 
-      {%Message{role: :assistant} = message, index} ->
-        prose = message_entries(%{message | tool_calls: []}, index, state)
+    groups =
+      messages
+      |> Enum.with_index()
+      |> Enum.map(fn
+        {%Message{role: :tool, tool_call_id: id} = message, index} ->
+          if MapSet.member?(call_ids, id), do: [], else: message_entries(message, index, state)
 
-        calls =
-          (message.tool_calls || [])
-          |> Enum.with_index()
-          |> Enum.map(fn {call, call_index} ->
-            build_call_entry(call, call_index, results, index)
-          end)
+        {%Message{role: :assistant} = message, index} ->
+          prose = message_entries(%{message | tool_calls: []}, index, state)
 
-        prose ++ calls
+          calls =
+            (message.tool_calls || [])
+            |> Enum.with_index()
+            |> Enum.map(fn {call, call_index} ->
+              build_call_entry(call, call_index, results, index)
+            end)
 
-      {message, index} ->
-        message_entries(message, index, state)
-    end)
+          prose ++ calls
+
+        {message, index} ->
+          message_entries(message, index, state)
+      end)
+
+    Enum.flat_map(Enum.with_index(groups), fn {entries, index} ->
+      Enum.map(Enum.filter(cards, &(&1.boundary == index)), &compaction_entry/1) ++ entries
+    end) ++ Enum.map(Enum.filter(cards, &(&1.boundary >= length(messages))), &compaction_entry/1)
   end
 
   def section_entries(state, :pending) do
@@ -159,6 +166,9 @@ defmodule Tackle.CLI.TUI.MessageView do
           source: content,
           style: style(:assistant)
         )
+
+      {%{kind: :compaction, id: id}, _index} ->
+        state.compactions |> Enum.find(&(&1.id == id)) |> compaction_entry()
 
       {%{kind: :tool} = item, _index} ->
         tool_entry(item, Map.get(item, :timeline_id, "tool:#{tool_id(item)}"))
@@ -216,6 +226,24 @@ defmodule Tackle.CLI.TUI.MessageView do
     else
       []
     end
+  end
+
+  defp compaction_entry(data) do
+    text =
+      if Map.get(data, :restored?),
+        do: "Restored context checkpoint (historical position unavailable)",
+        else: Compaction.card_text(data)
+
+    summary = Map.get(data, :summary)
+    source = if summary, do: text <> "\n\n" <> summary, else: text
+
+    entry(:compaction, text,
+      id: data.id,
+      label: "Compaction:",
+      source: source,
+      collapsed?: is_binary(summary),
+      style: if(data.status == :failed, do: Theme.style(:error), else: Theme.style(:accent_soft))
+    )
   end
 
   defp live_text_id(:thinking, 0), do: "streaming:thinking"
@@ -358,6 +386,11 @@ defmodule Tackle.CLI.TUI.MessageView do
     render_rows(thinking_rows(entry, :expanded), width)
   end
 
+  def render_entry(%__MODULE__{kind: :compaction} = entry, width) do
+    hint = if entry.collapsed?, do: " · F4 browse, Enter summary", else: ""
+    render_rows([row([span("◦ " <> entry.content <> hint, entry.style)], %Style{})], width)
+  end
+
   def render_entry(%__MODULE__{kind: :tool} = entry, width),
     do: ToolView.render(entry, width)
 
@@ -432,6 +465,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   def style(:assistant), do: Theme.style(:text)
   def style(:thinking), do: Theme.style(:muted)
   def style(:tool), do: Theme.style(:muted)
+  def style(:compaction), do: Theme.style(:accent_soft)
   def style(:error), do: Theme.style(:error)
   def style(:welcome), do: Theme.style(:muted)
 

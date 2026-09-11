@@ -23,8 +23,8 @@ defmodule Tackle.CLI.TUI.State do
   """
 
   alias Tackle.CLI.Clipboard
+  alias Tackle.CLI.TUI.{Compaction, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
-  alias Tackle.CLI.TUI.Viewport
   alias Tackle.Lib.Message
   alias Tackle.Lib.{ModelInfo, Usage}
   alias Tackle.Lib.State, as: AgentState
@@ -65,6 +65,7 @@ defmodule Tackle.CLI.TUI.State do
           metrics: Metrics.t(),
           tool_activity: [map()],
           activity: String.t() | nil,
+          compactions: [map()],
           error: String.t() | nil,
           outcome: :cancelled | :failed | nil,
           notice: String.t() | nil,
@@ -96,6 +97,7 @@ defmodule Tackle.CLI.TUI.State do
             metrics: %Metrics{},
             tool_activity: [],
             activity: nil,
+            compactions: [],
             error: nil,
             outcome: nil,
             notice: nil,
@@ -134,7 +136,7 @@ defmodule Tackle.CLI.TUI.State do
         conversation: Viewport.new_conversation(width, height)
       }
 
-      {:ok, Viewport.refresh(state)}
+      {:ok, state |> Compaction.restore() |> Viewport.refresh()}
     else
       :error -> {:error, :missing_agent_ref}
       {:error, reason} -> {:error, reason}
@@ -169,6 +171,7 @@ defmodule Tackle.CLI.TUI.State do
         metrics: %Metrics{latest_usage: latest_usage(snapshot.agent_state)},
         tool_activity: [],
         activity: nil,
+        compactions: [],
         error: nil,
         outcome: nil,
         notice: "New session",
@@ -182,7 +185,7 @@ defmodule Tackle.CLI.TUI.State do
 
     {width, height} = state.size
     state = %{state | conversation: Viewport.new_conversation(width, height)}
-    Viewport.refresh(state)
+    state |> Compaction.restore() |> Viewport.refresh()
   end
 
   @doc "Returns the selected model reference, or nil when the state names none."

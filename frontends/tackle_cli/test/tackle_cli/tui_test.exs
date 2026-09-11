@@ -508,10 +508,12 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "k", ["ctrl"])
     assert_receive :compact_requested
 
-    state = await_state(tui, &(&1.pending_operation == nil and is_binary(&1.notice)))
+    state =
+      await_state(tui, &(&1.pending_operation == nil and &1.agent_state.model_messages != nil))
 
-    assert state.notice == "Compacted 1 message · 1.2k → 300 est. tokens"
-    assert state.agent_state.model_messages != nil
+    assert state.notice == nil
+    assert conversation_text(state) =~ "Context compacted · 1.2k → 300 est. tokens"
+    refute status_text(state) =~ "est. tokens"
     assert status_text(state) =~ "compacted"
   end
 
