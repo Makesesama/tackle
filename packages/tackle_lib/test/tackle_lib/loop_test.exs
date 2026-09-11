@@ -363,6 +363,8 @@ defmodule Tackle.Lib.LoopTest do
           {:ok,
            %{
              data: %{
+               "content" => "I will inspect this first.",
+               "thinking" => "Need the tool.",
                "tool_calls" => [%{"id" => "c1", "name" => "first", "arguments" => %{}}]
              },
              usage: nil,
@@ -459,7 +461,7 @@ defmodule Tackle.Lib.LoopTest do
     state =
       State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: test_pid})
 
-    assert {:ok, _state} = Loop.run(state, "do the thing")
+    assert {:ok, state} = Loop.run(state, "do the thing")
 
     # The first request contains only the persisted user turn.
     assert_receive {:messages, first_messages}
@@ -477,6 +479,11 @@ defmodule Tackle.Lib.LoopTest do
       end)
 
     assert assistant_call, "expected a structured assistant tool-call turn"
+    assert assistant_call.content == "I will inspect this first."
+
+    persisted_call = Enum.find(state.messages, &Tackle.Lib.Message.has_tool_calls?/1)
+    assert persisted_call.content == "I will inspect this first."
+    assert persisted_call.thinking == "Need the tool."
 
     assert [%{id: call_id, type: "function", function: %{name: "first"}}] =
              assistant_call.tool_calls

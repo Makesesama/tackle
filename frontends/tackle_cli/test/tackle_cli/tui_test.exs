@@ -686,6 +686,79 @@ defmodule Tackle.CLI.TUITest do
            end)
   end
 
+  test "keeps streamed message boundaries and reconciles canonical content", %{tui: tui} do
+    inject_paste(tui, "hi")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "hi"}
+
+    session_id = state(tui).session_id
+
+    first =
+      Message.assistant(
+        id: "assistant-1",
+        content: "First canonical preamble.",
+        thinking: "First canonical thought.",
+        tool_calls: [%{id: "call-1", name: "read", arguments: %{}}]
+      )
+
+    send(tui, {:tackle_event, session_id, "turn-1", Event.message_start(id: first.id)})
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(
+         :message_delta,
+         %{field: :reasoning, delta: "First streamed thought."},
+         id: first.id
+       )}
+    )
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:message_delta, %{delta: "First streamed preamble."}, id: first.id)}
+    )
+
+    send(tui, {:tackle_event, session_id, "turn-1", Event.message_end(first)})
+
+    second = Message.assistant(id: "assistant-2", content: "Second canonical preamble.")
+    send(tui, {:tackle_event, session_id, "turn-1", Event.message_start(id: second.id)})
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:message_delta, %{delta: "Second streamed preamble."}, id: second.id)}
+    )
+
+    streaming_state = state(tui)
+
+    assert Enum.map(streaming_state.stream.timeline, & &1.content) == [
+             "First canonical thought.",
+             "First canonical preamble.",
+             "Second streamed preamble."
+           ]
+
+    assert Enum.map(streaming_state.stream.timeline, & &1.message_id) == [
+             "assistant-1",
+             "assistant-1",
+             "assistant-2"
+           ]
+
+    send(tui, {:tackle_event, session_id, "turn-1", Event.message_end(second)})
+    reconciled_state = state(tui)
+
+    assert Enum.map(reconciled_state.stream.timeline, & &1.content) == [
+             "First canonical thought.",
+             "First canonical preamble.",
+             "Second canonical preamble."
+           ]
+
+    assert reconciled_state.stream.active_message_id == nil
+
+    entry_ids = Enum.map(reconciled_state.conversation.sections[:turn].entries, & &1.id)
+    assert length(Enum.uniq(entry_ids)) == 3
+  end
+
   test "ignores stale and uncorrelated runtime events", %{tui: tui} do
     inject_paste(tui, "hi")
     inject_key(tui, "enter")
