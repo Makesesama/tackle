@@ -60,6 +60,8 @@ defmodule Tackle.Lib.Loop do
     * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs.
     * `:llm_stream` - When true, use `Tackle.Lib.LLM.stream/4` if the adapter supports it.
     * `:cancellation_signal` - Optional `Tackle.Lib.Cancellation.Signal` checked between loop steps.
+    * `:tool_supervisor` - Optional `Task.Supervisor` used when the state's tool policy is
+      `:concurrent`. Ignored (and not required) for the default sequential policy.
   """
   @spec run(State.t(), String.t(), keyword()) ::
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
@@ -522,20 +524,59 @@ defmodule Tackle.Lib.Loop do
 
   defp normalize_tool_arguments(_arguments), do: %{}
 
-  defp execute_tool_calls(
-         %State{tool_policy: %Policy{execution_mode: :sequential}} = state,
-         tool_calls,
-         callbacks
-       ) do
+  defp execute_tool_calls(%State{} = state, tool_calls, callbacks) do
+    case state.tool_policy do
+      %Policy{execution_mode: :concurrent} ->
+        execute_tool_calls_concurrently(state, tool_calls, callbacks)
+
+      %Policy{} ->
+        execute_tool_calls_sequentially(state, tool_calls, callbacks)
+    end
+  end
+
+  defp execute_tool_calls_sequentially(state, tool_calls, callbacks) do
     Enum.reduce_while(tool_calls, state, fn tool_call, acc_state ->
       execute_tool_call_until_cancelled(tool_call, acc_state, callbacks)
     end)
-    |> case do
-      %State{status: :cancelled} = state -> {:cancelled, state}
-      %State{status: :error} = state -> {:error, state}
-      %State{} = state -> {:ok, state}
+    |> settle_tool_batch()
+  end
+
+  # Concurrent execution keeps the loop process as the only writer of `State`:
+  # every call in the batch is prepared and dispatched here, tools settle in
+  # supervised tasks, and the results are committed back in the model's order.
+  defp execute_tool_calls_concurrently(state, tool_calls, callbacks) do
+    supervisor = callbacks.tool_supervisor
+
+    cond do
+      is_nil(supervisor) ->
+        raise ArgumentError,
+              "concurrent tool execution requires a :tool_supervisor option; " <>
+                "pass a Task.Supervisor or use the sequential tool policy"
+
+      cancelled?(callbacks) ->
+        {:cancelled, cancel_state(state, callbacks)}
+
+      true ->
+        case prepare_tool_batch(tool_calls, state, callbacks) do
+          {:ok, jobs, state} ->
+            {settlements, outcome} = run_tool_batch(jobs, supervisor, callbacks)
+            state = commit_tool_batch(jobs, settlements, state, callbacks)
+
+            cond do
+              state.status == :error -> {:error, state}
+              outcome == :cancelled -> {:cancelled, cancel_state(state, callbacks)}
+              true -> {:ok, state}
+            end
+
+          {:abort, state} ->
+            {:error, state}
+        end
     end
   end
+
+  defp settle_tool_batch(%State{status: :cancelled} = state), do: {:cancelled, state}
+  defp settle_tool_batch(%State{status: :error} = state), do: {:error, state}
+  defp settle_tool_batch(%State{} = state), do: {:ok, state}
 
   defp execute_tool_call_until_cancelled(tool_call, state, callbacks) do
     if cancelled?(callbacks) do
@@ -584,6 +625,157 @@ defmodule Tackle.Lib.Loop do
       Event.new(:tool_start, %{tool_call_id: tool_call.id, name: name, arguments: args})
     )
 
+    tool_call
+    |> settle_tool_call(state, callbacks)
+    |> append_tool_settlement(state, callbacks)
+  end
+
+  # ── Concurrent batch ──────────────────────────────────────────────────
+
+  @tool_poll_ms 100
+  @tool_shutdown_ms 1_000
+
+  # Runs every `before_tool_call` hook up front, emits each `tool_start`, and
+  # captures one execution job per call. Hooks are gates, so an abort anywhere in
+  # the batch stops the whole batch before any tool runs.
+  defp prepare_tool_batch(tool_calls, state, callbacks) do
+    Enum.reduce_while(Enum.with_index(tool_calls), {:ok, [], state}, fn {call, index},
+                                                                        {:ok, jobs, acc_state} ->
+      tool_call = %{call | id: call.id || generate_call_id(acc_state)}
+
+      case invoke_before_tool_call(acc_state, tool_call, callbacks) do
+        {:ok, acc_state} ->
+          emit(
+            callbacks,
+            Event.new(:tool_start, %{
+              tool_call_id: tool_call.id,
+              name: tool_call.name,
+              arguments: tool_call.arguments
+            })
+          )
+
+          job = %{index: index, call: tool_call, state: acc_state}
+          {:cont, {:ok, [job | jobs], acc_state}}
+
+        {:error, reason} ->
+          {:halt,
+           {:abort,
+            State.set_error(acc_state, "Hook aborted before tool call: #{inspect(reason)}")}}
+      end
+    end)
+    |> case do
+      {:ok, jobs, state} -> {:ok, Enum.reverse(jobs), state}
+      {:abort, state} -> {:abort, state}
+    end
+  end
+
+  defp run_tool_batch(jobs, supervisor, callbacks) do
+    jobs
+    |> Enum.map(&start_tool_task(&1, supervisor, callbacks))
+    |> await_tool_batch(%{}, callbacks)
+  end
+
+  defp start_tool_task(%{index: index, call: call, state: state}, supervisor, callbacks) do
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        :proc_lib.set_label("tool:#{call.name}")
+        settle_tool_call(call, state, callbacks)
+      end)
+
+    {index, call, task}
+  end
+
+  defp await_tool_batch([], settlements, _callbacks), do: {settlements, :ok}
+
+  defp await_tool_batch(pending, settlements, callbacks) do
+    {settlements, pending} = drain_tool_tasks(pending, settlements)
+
+    cond do
+      pending == [] -> {settlements, :ok}
+      cancelled?(callbacks) -> {shutdown_tool_tasks(pending, settlements), :cancelled}
+      true -> await_tool_batch(pending, settlements, callbacks)
+    end
+  end
+
+  defp drain_tool_tasks(pending, settlements) do
+    by_ref = Map.new(pending, fn {index, call, task} -> {task.ref, {index, call}} end)
+
+    settled =
+      pending
+      |> Enum.map(fn {_index, _call, task} -> task end)
+      |> Task.yield_many(@tool_poll_ms)
+
+    {settlements, done_refs} =
+      Enum.reduce(settled, {settlements, MapSet.new()}, fn {task, result}, {acc, done} ->
+        case result do
+          nil ->
+            {acc, done}
+
+          {:ok, settlement} ->
+            {index, _call} = Map.fetch!(by_ref, task.ref)
+            {Map.put(acc, index, settlement), MapSet.put(done, task.ref)}
+
+          {:exit, reason} ->
+            {index, call} = Map.fetch!(by_ref, task.ref)
+            Logger.error("Tool task for #{call.name} exited: #{inspect(reason)}")
+
+            {Map.put(acc, index, crashed_tool_settlement(call, reason)),
+             MapSet.put(done, task.ref)}
+        end
+      end)
+
+    pending =
+      Enum.reject(pending, fn {_index, _call, task} ->
+        MapSet.member?(done_refs, task.ref)
+      end)
+
+    {settlements, pending}
+  end
+
+  defp shutdown_tool_tasks(pending, settlements) do
+    Enum.reduce(pending, settlements, fn {index, _call, task}, acc ->
+      case Task.shutdown(task, @tool_shutdown_ms) do
+        {:ok, settlement} -> Map.put(acc, index, settlement)
+        _other -> acc
+      end
+    end)
+  end
+
+  # Commits every available settlement in call order. A cancelled batch can lack
+  # settlements for tools that never finished; those calls are skipped so a tool
+  # that did run still records its result.
+  defp commit_tool_batch(jobs, settlements, state, callbacks) do
+    Enum.reduce_while(jobs, state, fn %{index: index}, acc_state ->
+      case Map.fetch(settlements, index) do
+        {:ok, settlement} ->
+          case append_tool_settlement(settlement, acc_state, callbacks) do
+            {:ok, acc_state} -> {:cont, acc_state}
+            {:abort, acc_state} -> {:halt, acc_state}
+          end
+
+        :error ->
+          {:cont, acc_state}
+      end
+    end)
+  end
+
+  defp crashed_tool_settlement(%Call{} = call, reason) do
+    {:error,
+     %ToolError{
+       tool_call_id: call.id,
+       name: call.name,
+       reason: :execution_error,
+       message: "Tool crashed: #{inspect(reason)}",
+       content: "Error: The tool failed while completing the request.",
+       details: reason,
+       metadata: %{definition_id: call.definition_id}
+     }}
+  end
+
+  # Runs one call's settle pipeline (resolve, execute, validate, telemetry).
+  # Sequential execution calls this inline; concurrent execution calls it inside a
+  # supervised task. It never touches agent state or emits agent events.
+  defp settle_tool_call(%Call{name: name} = tool_call, state, callbacks) do
     telemetry_name = telemetry_tool_name(name, state)
     telemetry_ref = Telemetry.start([:tackle, :tool, :execution], %{tool_name: telemetry_name})
     started_at = System.monotonic_time()
@@ -607,7 +799,7 @@ defmodule Tackle.Lib.Loop do
         %{tool_name: telemetry_name, outcome: tool_outcome(settlement)}
       )
 
-      append_tool_settlement(settlement, state, callbacks)
+      settlement
     rescue
       error ->
         Telemetry.exception(
@@ -772,7 +964,8 @@ defmodule Tackle.Lib.Loop do
       event: Keyword.get(opts, :event_callback, fn _event -> :ok end),
       llm_stream?: Keyword.get(opts, :llm_stream, false),
       cancellation_signal:
-        Keyword.get(opts, :cancellation_signal) || Keyword.get(opts, :cancel_signal)
+        Keyword.get(opts, :cancellation_signal) || Keyword.get(opts, :cancel_signal),
+      tool_supervisor: Keyword.get(opts, :tool_supervisor)
     }
   end
 

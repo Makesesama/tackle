@@ -1,3 +1,32 @@
+defmodule Tackle.Test.BlockingTool do
+  @moduledoc false
+
+  @behaviour Tackle.Lib.Tool
+
+  @impl true
+  def name, do: "blocking"
+
+  @impl true
+  def description, do: "Blocks until the test process releases it."
+
+  @impl true
+  def parameters_schema do
+    [name: [type: :string, required: true]]
+  end
+
+  @impl true
+  def execute(%{"name" => name}, context) do
+    test_pid = Map.fetch!(context, :test_pid)
+    send(test_pid, {:tool_entered, name, self()})
+
+    receive do
+      {:release, ^name} -> {:ok, %{name: name}}
+    after
+      5_000 -> {:error, "timed out waiting for release"}
+    end
+  end
+end
+
 defmodule Tackle.Test.Adapter do
   @moduledoc false
 
@@ -37,6 +66,13 @@ defmodule Tackle.Test.Adapter do
           response(content, opts)
         else
           tool_call_response(Keyword.fetch!(opts, :tool_call), opts)
+        end
+
+      :tools_then_answer ->
+        if tool_result?(opts) do
+          response(content, opts)
+        else
+          tool_calls_response(Keyword.fetch!(opts, :tool_calls), opts)
         end
 
       :echo_prompt ->
@@ -101,9 +137,13 @@ defmodule Tackle.Test.Adapter do
   end
 
   defp tool_call_response(call, opts) do
+    tool_calls_response([call], opts)
+  end
+
+  defp tool_calls_response(calls, opts) do
     {:ok,
      %{
-       data: %{"content" => nil, "tool_calls" => [call]},
+       data: %{"content" => nil, "tool_calls" => calls},
        usage: nil,
        model: Keyword.fetch!(opts, :model),
        provider: adapter_id()
@@ -154,6 +194,7 @@ defmodule Tackle.Test.Runtime do
         adapters: [Tackle.Test.Adapter],
         model: Keyword.get(opts, :model, "test/echo"),
         tools: Keyword.get(opts, :tools, []),
+        context: Keyword.get(opts, :context, %{}),
         system_prompt: Keyword.get(opts, :system_prompt, "You are a test agent."),
         max_iterations: Keyword.get(opts, :max_iterations, 5),
         llm_opts: Keyword.merge(default_llm_opts, Keyword.get(opts, :llm_opts, [])),

@@ -111,7 +111,7 @@ defmodule Tackle.AgentScope do
 
     opts = if session_spec, do: Keyword.put(opts, :durable, session_spec), else: opts
 
-    {Tackle.Session, {spec.root_spec.config, opts}}
+    {Tackle.Session.Supervisor, {spec.root_spec.config, opts}}
   end
 
   @doc "Mints a root agent reference for a scope spec."

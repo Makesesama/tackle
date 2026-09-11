@@ -520,12 +520,62 @@ than executing a different definition. Tool names must be unique in a registry.
 Definitions and tool sets have deterministic SHA-256-derived IDs for audit and
 cache keys.
 
-### Tool policy
+### Tool execution modes
 
-Tool calls currently execute **sequentially in the exact order requested by the
-model**. Tackle.Lib intentionally does not support forced tool choice, provider-side
-parallel tool calls, allow/deny options, or weighting. These keys are removed
-from `llm_opts`:
+Tackle.Lib supports two tool execution modes. They differ only in **when** the
+calls in a single model-requested batch run; both always append tool results in
+the exact order the model requested them.
+
+|                                        | `:sequential` (library default) | `:concurrent`                            |
+| -------------------------------------- | ------------------------------- | ---------------------------------------- |
+| Batch execution                        | one call at a time              | every call starts together               |
+| Supervisor required                    | no                              | yes — the `:tool_supervisor` run option  |
+| Tool result order                      | requested order                 | requested order                          |
+| Events                                 | `tool_start`/`tool_end` interleave per call | all `tool_start` first, then results in order |
+| Tool crash                             | normal turn error path          | becomes a tool error; siblings continue  |
+| Cancellation                           | calls not yet started are skipped | in-flight tasks are shut down          |
+| `before_tool_call` hooks               | immediately before each call    | for the whole batch before any call      |
+| `after_tool_call` hooks                | per call, threading context     | after the batch, in requested order      |
+| Side-effect ordering within the batch  | requested order                 | none between calls                       |
+
+Both modes are correct for **independent** calls — reads, edits to different
+files, standalone commands — which is why concurrency is a good default when the
+host can supply a supervisor.
+
+Sequential is the safer choice when:
+
+* calls in one batch may have ordered side effects (an edit followed by a shell
+  command that uses the file, or two shell commands), because concurrency gives
+  no ordering between them;
+* a tool is unsafe to overlap (shells contending for `git`, package managers,
+  bound ports, or code evaluated inside the live BEAM);
+* the host wants the trivial resource bound instead of adding its own pool; or
+* the host does not run OTP supervision and cannot supply a `Task.Supervisor`.
+
+**Tackle.Lib defaults to `:sequential`** so any host can run a turn without OTP
+supervision. The Tackle harness pins `:concurrent` for every session and
+supplies a per-session tool supervisor; `Tackle.Config` does not accept a
+`:tool_policy` option.
+
+```elixir
+# Library default: sequential, no supervisor needed.
+state = Tackle.Lib.new(tools: tools)
+
+# Opt in to concurrency under a host-owned supervisor.
+state = Tackle.Lib.new(tools: tools, tool_policy: Tackle.Lib.Tool.Policy.concurrent())
+
+Tackle.Lib.run(state, "apply every fix", tool_supervisor: MyApp.ToolTaskSupervisor)
+```
+
+In `:concurrent` mode each call runs as a task under the supplied
+`Task.Supervisor`. A tool crash becomes a tool error result, cancellation shuts
+the batch down, and results are still appended in call order. The supervisor is
+host-owned so one agent session cannot leak tasks into another; the library
+raises if `:concurrent` is configured without a `:tool_supervisor`.
+
+Either mode may still select its tools up front. Tackle.Lib intentionally does
+not support forced tool choice, provider-side parallel tool calls, allow/deny
+options, or weighting. These keys are removed from `llm_opts`:
 
 - `:tool_choice`
 - `:parallel_tool_calls`
@@ -946,7 +996,7 @@ Tackle.Lib does **not** provide:
 - persistence or a database schema;
 - authentication, authorization, tenant scoping, quotas, or billing;
 - concrete tools;
-- provider-side parallel tool execution;
+- provider-side parallel tool execution (local `:concurrent` execution is available, but the provider is never asked to schedule calls);
 - forced tool selection or weighted/allow-deny tool policies;
 - preemptive cancellation of code that ignores its signal;
 - automatic provider retries/backoff;
