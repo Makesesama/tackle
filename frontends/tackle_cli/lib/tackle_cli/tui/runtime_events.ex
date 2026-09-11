@@ -233,18 +233,32 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, %{state | deferred_events: state.deferred_events ++ [message]}, render?: false}
   end
 
+  # Message identity is part of the live projection. Keeping it here prevents
+  # adjacent deltas from separate LLM iterations from being rendered as one
+  # continuously rewritten response.
   def handle(
         {:tackle_event, session_id, turn_id,
-         %Event{type: :message_delta, data: %{delta: delta} = data}},
+         %Event{type: :message_start, id: id, data: %{role: :assistant}}},
+        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+      )
+      when is_binary(id) do
+    {:noreply, %{state | stream: %{state.stream | active_message_id: id}}, render?: false}
+  end
+
+  def handle(
+        {:tackle_event, session_id, turn_id,
+         %Event{type: :message_delta, id: event_id, data: %{delta: delta} = data}},
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       )
       when is_binary(delta) do
+    message_id = event_id || state.stream.active_message_id
+
     case Map.get(data, :field) do
       :reasoning ->
         stream = %{
           state.stream
           | thinking: state.stream.thinking <> delta,
-            timeline: append_text(state.stream.timeline, :thinking, delta)
+            timeline: append_text(state.stream.timeline, :thinking, delta, message_id)
         }
 
         state = %{state | stream: stream, activity: "thinking"}
@@ -255,7 +269,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         stream = %{
           state.stream
           | response: state.stream.response <> delta,
-            timeline: append_text(state.stream.timeline, :assistant, delta)
+            timeline: append_text(state.stream.timeline, :assistant, delta, message_id)
         }
 
         state = %{state | stream: stream, activity: "responding"}
@@ -267,6 +281,35 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
+  # Replace streamed text with the canonical message while preserving its place
+  # among tool and compaction entries. This makes live and settled transcripts
+  # agree even when a provider's terminal payload differs from its deltas.
+  def handle(
+        {:tackle_event, session_id, turn_id,
+         %Event{
+           type: :message_end,
+           data: %{message: %Tackle.Lib.Message{id: id, role: :assistant} = message}
+         }},
+        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+      ) do
+    ids = append_message_id(state.stream.message_ids, id)
+    {timeline, reconciled?} = reconcile_message(state.stream.timeline, message, state.stream)
+
+    stream = %{
+      state.stream
+      | timeline: timeline,
+        message_ids: ids,
+        active_message_id: nil,
+        flush_ref: if(reconciled?, do: nil, else: state.stream.flush_ref)
+    }
+
+    state = %{state | stream: stream}
+
+    if reconciled?,
+      do: {:noreply, Viewport.refresh(state, [:turn])},
+      else: {:noreply, state, render?: false}
+  end
+
   # Canonical message boundaries let live compaction entries retain their place
   # when streaming output is replaced by the finished turn's transcript.
   def handle(
@@ -274,8 +317,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
          %Event{type: :message_end, data: %{message: %Tackle.Lib.Message{id: id}}}},
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
-    ids = state.stream.message_ids
-    ids = if id in ids, do: ids, else: ids ++ [id]
+    ids = append_message_id(state.stream.message_ids, id)
     {:noreply, %{state | stream: %{state.stream | message_ids: ids}}, render?: false}
   end
 
@@ -506,15 +548,62 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
      render?: false, commands: [Command.send_after(@stream_frame_ms, {:tui_flush_stream, ref})]}
   end
 
-  defp append_text(timeline, kind, delta) do
+  defp append_text(timeline, kind, delta, message_id) do
     case List.pop_at(timeline, -1) do
       {%{kind: ^kind} = entry, rest} ->
-        rest ++ [%{entry | content: entry.content <> delta}]
+        if Map.get(entry, :message_id) == message_id do
+          rest ++ [%{entry | content: entry.content <> delta}]
+        else
+          timeline ++ [text_timeline_entry(kind, delta, message_id)]
+        end
 
       _other ->
-        timeline ++ [%{kind: kind, content: delta}]
+        timeline ++ [text_timeline_entry(kind, delta, message_id)]
     end
   end
+
+  defp text_timeline_entry(kind, content, message_id) when is_binary(message_id) do
+    %{
+      kind: kind,
+      content: content,
+      message_id: message_id,
+      id: "streaming:#{message_id}:#{kind}"
+    }
+  end
+
+  defp text_timeline_entry(kind, content, _message_id), do: %{kind: kind, content: content}
+
+  defp reconcile_message(timeline, message, stream) do
+    index = Enum.find_index(timeline, &(&1[:message_id] == message.id))
+    canonical_entries = canonical_message_entries(message)
+
+    cond do
+      is_integer(index) ->
+        remaining = Enum.reject(timeline, &(&1[:message_id] == message.id))
+        {Enum.take(remaining, index) ++ canonical_entries ++ Enum.drop(remaining, index), true}
+
+      stream.active_message_id == message.id and canonical_entries != [] ->
+        {timeline ++ canonical_entries, true}
+
+      true ->
+        {timeline, false}
+    end
+  end
+
+  defp canonical_message_entries(message) do
+    []
+    |> maybe_append_message_text(:thinking, message.thinking, message.id)
+    |> maybe_append_message_text(:assistant, message.content, message.id)
+  end
+
+  defp maybe_append_message_text(entries, kind, content, message_id)
+       when is_binary(content) and content != "" do
+    entries ++ [text_timeline_entry(kind, content, message_id)]
+  end
+
+  defp maybe_append_message_text(entries, _kind, _content, _message_id), do: entries
+
+  defp append_message_id(ids, id), do: if(id in ids, do: ids, else: ids ++ [id])
 
   defp settle_tool(state, data, status, label) do
     state = put_tool_activity(state, data, status)

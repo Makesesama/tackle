@@ -360,6 +360,7 @@ defmodule Tackle.Lib.Loop do
     content = get_string_field(response, "content")
 
     message_opts = [
+      content: content,
       thinking: thinking,
       token_usage: Map.get(result, :usage),
       model: Map.get(result, :model),
