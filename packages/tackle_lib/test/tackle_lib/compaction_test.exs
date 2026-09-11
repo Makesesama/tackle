@@ -10,6 +10,7 @@ defmodule Tackle.Lib.CompactionTest do
   alias Tackle.Lib.Message
   alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.State
+  alias Tackle.Lib.Usage
 
   defmodule TestSummarizer do
     @behaviour Tackle.Lib.Compaction.Summarizer
@@ -176,7 +177,7 @@ defmodule Tackle.Lib.CompactionTest do
     end
 
     test "resets retained usage and provider state without changing the transcript" do
-      usage = Tackle.Lib.Usage.normalize(%{"total_tokens" => 5_000})
+      usage = Usage.normalize(%{"total_tokens" => 5_000})
       provider_state = %{"provider" => "test", "opaque" => text(10_000)}
       retained = %{assistant(700) | token_usage: usage, provider_state: provider_state}
       state = state([user(700), retained])
@@ -230,7 +231,7 @@ defmodule Tackle.Lib.CompactionTest do
         {:ok,
          %Summary{
            content: text(600),
-           usage: Tackle.Lib.Usage.normalize(%{"output_tokens" => 500})
+           usage: Usage.normalize(%{"output_tokens" => 500})
          }}
       )
 

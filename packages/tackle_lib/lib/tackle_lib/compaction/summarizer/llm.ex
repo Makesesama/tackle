@@ -55,23 +55,21 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
   end
 
   defp build_summary(%{data: data} = response) do
-    cond do
-      tool_calls?(data) ->
-        {:error, :summary_tool_calls}
+    if tool_calls?(data) do
+      {:error, :summary_tool_calls}
+    else
+      case content(data) do
+        content when is_binary(content) and content != "" ->
+          {:ok,
+           %Summary{
+             content: content,
+             usage: normalize_usage(Map.get(response, :usage)),
+             model: Map.get(response, :model)
+           }}
 
-      true ->
-        case content(data) do
-          content when is_binary(content) and content != "" ->
-            {:ok,
-             %Summary{
-               content: content,
-               usage: normalize_usage(Map.get(response, :usage)),
-               model: Map.get(response, :model)
-             }}
-
-          _empty ->
-            {:error, :empty_summary}
-        end
+        _empty ->
+          {:error, :empty_summary}
+      end
     end
   end
 

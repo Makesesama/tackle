@@ -140,8 +140,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   def section_entries(state, :turn) do
-    state
-    |> Map.get(:turn_timeline, [])
+    state.stream.timeline
     |> Enum.with_index()
     |> Enum.map(fn
       {%{kind: :thinking, content: content} = item, index} ->
@@ -174,14 +173,14 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   def section_entries(state, :thinking) do
-    if state.streaming_thinking == "" do
+    if state.stream.thinking == "" do
       []
     else
       [
-        entry(:thinking, state.streaming_thinking,
+        entry(:thinking, state.stream.thinking,
           id: "streaming:thinking",
           label: "Thinking:",
-          source: state.streaming_thinking,
+          source: state.stream.thinking,
           collapsed?: not state.thinking_expanded?,
           style: style(:thinking)
         )
@@ -190,14 +189,14 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   def section_entries(state, :response) do
-    if state.streaming_response == "" do
+    if state.stream.response == "" do
       []
     else
       [
-        entry(:assistant, state.streaming_response,
+        entry(:assistant, state.stream.response,
           id: "streaming:response",
           label: "Tackle:",
-          source: state.streaming_response,
+          source: state.stream.response,
           style: style(:assistant)
         )
       ]

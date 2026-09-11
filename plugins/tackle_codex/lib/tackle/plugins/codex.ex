@@ -88,18 +88,16 @@ defmodule Tackle.Plugins.Codex do
     with {:ok, interaction} <- interaction(opts),
          :ok <- not_cancelled(opts),
          {:ok, device} <- OAuth.request_device_code(opts),
-         :ok <- announce_device(interaction, device),
-         {:ok, credentials} <- poll_device_code(interaction, device, opts) do
-      {:ok, credentials}
+         :ok <- announce_device(interaction, device) do
+      poll_device_code(interaction, device, opts)
     end
   end
 
   @impl true
   def usage(opts) do
     with :ok <- not_cancelled(opts),
-         {:ok, handle} <- credential_store(opts),
-         {:ok, body} <- usage_request(handle, opts) do
-      {:ok, body}
+         {:ok, handle} <- credential_store(opts) do
+      usage_request(handle, opts)
     end
   end
 

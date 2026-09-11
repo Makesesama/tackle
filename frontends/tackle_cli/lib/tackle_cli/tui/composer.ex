@@ -17,6 +17,7 @@ defmodule Tackle.CLI.TUI.Composer do
   alias ExRatatui.Command
   alias ExRatatui.Event.Key
   alias Tackle.CLI.TUI.{State, Viewport}
+  alias Tackle.CLI.TUI.State.{Metrics, Stream}
 
   @doc """
   Applies a bracketed paste as one edit.
@@ -82,12 +83,8 @@ defmodule Tackle.CLI.TUI.Composer do
           state
           | pending_operation: %{ref: ref, kind: :submit, raw_draft: raw_draft},
             pending_prompt: prompt,
-            turn_timeline: [],
-            streaming_thinking: "",
-            streaming_response: "",
-            live_usage: nil,
-            live_usages: [],
-            live_context_usage: nil,
+            stream: Stream.reset(state.stream),
+            metrics: Metrics.reset(state.metrics),
             tool_activity: [],
             activity: "starting",
             error: nil,

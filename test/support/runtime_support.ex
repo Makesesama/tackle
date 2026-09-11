@@ -48,45 +48,42 @@ defmodule Tackle.Test.Adapter do
   @impl true
   def generate(_schema, opts) do
     test_pid = Keyword.get(opts, :test_pid, self())
-    mode = Keyword.get(opts, :mode, :immediate)
     content = Keyword.get(opts, :content, "answer")
     signal = Keyword.get(opts, :cancellation_signal)
 
     send(test_pid, {:adapter_called, self(), Keyword.fetch!(opts, :model), opts})
 
-    case mode do
-      :immediate ->
-        response(content, opts)
+    respond(Keyword.get(opts, :mode, :immediate), test_pid, content, signal, opts)
+  end
 
-      :manual ->
-        await_manual(test_pid, content, signal, opts)
+  defp respond(:immediate, _test_pid, content, _signal, opts), do: response(content, opts)
 
-      :tool_then_answer ->
-        if tool_result?(opts) do
-          response(content, opts)
-        else
-          tool_call_response(Keyword.fetch!(opts, :tool_call), opts)
-        end
+  defp respond(:manual, test_pid, content, signal, opts),
+    do: await_manual(test_pid, content, signal, opts)
 
-      :tools_then_answer ->
-        if tool_result?(opts) do
-          response(content, opts)
-        else
-          tool_calls_response(Keyword.fetch!(opts, :tool_calls), opts)
-        end
+  defp respond(:tool_then_answer, _test_pid, content, _signal, opts),
+    do: tool_answer(content, opts, [Keyword.fetch!(opts, :tool_call)])
 
-      :echo_prompt ->
-        response(last_user_prompt(opts), opts)
+  defp respond(:tools_then_answer, _test_pid, content, _signal, opts),
+    do: tool_answer(content, opts, Keyword.fetch!(opts, :tool_calls))
 
-      :crash ->
-        raise "adapter crash"
+  defp respond(:echo_prompt, _test_pid, _content, _signal, opts),
+    do: response(last_user_prompt(opts), opts)
 
-      :error ->
-        {:error, :adapter_error}
+  defp respond(:crash, _test_pid, _content, _signal, _opts), do: raise("adapter crash")
 
-      :block ->
-        block_until_cancelled(signal)
-        {:error, :cancelled}
+  defp respond(:error, _test_pid, _content, _signal, _opts), do: {:error, :adapter_error}
+
+  defp respond(:block, _test_pid, _content, signal, _opts) do
+    block_until_cancelled(signal)
+    {:error, :cancelled}
+  end
+
+  defp tool_answer(content, opts, tool_calls) do
+    if tool_result?(opts) do
+      response(content, opts)
+    else
+      tool_calls_response(tool_calls, opts)
     end
   end
 
@@ -134,10 +131,6 @@ defmodule Tackle.Test.Adapter do
       %{"role" => "tool"} -> true
       _other -> false
     end)
-  end
-
-  defp tool_call_response(call, opts) do
-    tool_calls_response([call], opts)
   end
 
   defp tool_calls_response(calls, opts) do

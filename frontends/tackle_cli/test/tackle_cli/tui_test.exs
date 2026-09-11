@@ -8,9 +8,9 @@ defmodule Tackle.CLI.TUITest do
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, Textarea, TextInput, WidgetList}
   alias Tackle.CLI.TUI
-  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, Theme}
-  alias Tackle.Lib.{Event, LLM, Message, State}
+  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, RuntimeEvents, Theme}
   alias Tackle.Lib.Compaction, as: LibCompaction
+  alias Tackle.Lib.{Event, LLM, Message, State}
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.ID
   alias Tackle.Session.Snapshot
@@ -536,7 +536,7 @@ defmodule Tackle.CLI.TUITest do
     state = %{state | pending_operation: %{ref: ref, kind: :compact}, activity: "compacting"}
 
     assert {:noreply, failed} =
-             Tackle.CLI.TUI.RuntimeEvents.handle(
+             RuntimeEvents.handle(
                {:tui_operation_result, ref, :compact, {:error, :turn_in_progress}},
                state
              )
@@ -606,7 +606,13 @@ defmodule Tackle.CLI.TUITest do
   test "omits context and token statistics when they are unavailable", %{tui: tui} do
     state = state(tui)
     llm = %{state.agent_state.llm | model_info: nil}
-    state = %{state | agent_state: %{state.agent_state | llm: llm}, latest_usage: nil}
+
+    state = %{
+      state
+      | agent_state: %{state.agent_state | llm: llm},
+        metrics: %{state.metrics | latest_usage: nil}
+    }
+
     status = status_text(state)
 
     refute status =~ "ctx "
@@ -638,8 +644,8 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_event, session_id, "turn-1", event})
 
     streaming_state = state(tui)
-    assert streaming_state.streaming_thinking == "Checking"
-    assert streaming_state.streaming_response == "Hello"
+    assert streaming_state.stream.thinking == "Checking"
+    assert streaming_state.stream.response == "Hello"
     assert conversation_text(streaming_state) =~ "thought"
     assert conversation_text(streaming_state) =~ "Checking"
 
@@ -657,8 +663,8 @@ defmodule Tackle.CLI.TUITest do
 
     assert settled_state.active_turn == nil
     assert settled_state.pending_prompt == nil
-    assert settled_state.streaming_thinking == ""
-    assert settled_state.streaming_response == ""
+    assert settled_state.stream.thinking == ""
+    assert settled_state.stream.response == ""
 
     conversation = conversation_text(settled_state)
 
@@ -687,15 +693,15 @@ defmodule Tackle.CLI.TUITest do
 
     send(tui, {:tackle_event, "other-session", "turn-1", delta})
     send(tui, {:tackle_event, state.session_id, "other-turn", delta})
-    assert state(tui).streaming_response == ""
+    assert state(tui).stream.response == ""
 
     send(tui, {:tackle_event, state.session_id, "turn-1", delta})
-    assert state(tui).streaming_response == "stale"
+    assert state(tui).stream.response == "stale"
 
     finish_turn(tui, [Message.user("hi"), Message.assistant(content: "done")])
 
     send(tui, {:tackle_event, state.session_id, "turn-1", delta})
-    assert state(tui).streaming_response == ""
+    assert state(tui).stream.response == ""
     assert conversation_text(state(tui)) =~ "done"
   end
 

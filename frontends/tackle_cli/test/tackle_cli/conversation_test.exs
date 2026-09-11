@@ -3,6 +3,7 @@ defmodule Tackle.CLI.TUI.ConversationTest do
 
   alias ExRatatui.Layout.Rect
   alias Tackle.CLI.TUI.Conversation
+  alias Tackle.CLI.TUI.State.Stream
   alias Tackle.Lib.{Message, State}
 
   test "refresh preserves the row inside a multi-widget tool card, not just its header" do
@@ -48,8 +49,7 @@ defmodule Tackle.CLI.TUI.ConversationTest do
       agent_state: %State{messages: messages},
       pending_prompt: nil,
       tool_activity: [],
-      streaming_thinking: "",
-      streaming_response: "",
+      stream: %Stream{},
       thinking_expanded?: false,
       error: nil
     }

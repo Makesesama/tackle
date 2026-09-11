@@ -126,39 +126,45 @@ defmodule Tackle.Lib.Loop do
         {:error, do_after_turn_cleanup(final_state, callbacks)}
 
       true ->
-        state = State.increment_iteration(state)
-        state = State.set_status(state, :thinking)
+        iterate(state, callbacks)
+    end
+  end
 
-        emit(callbacks, Event.new(:status_change, %{status: :thinking}))
+  defp iterate(state, callbacks) do
+    state = State.increment_iteration(state)
+    state = State.set_status(state, :thinking)
 
-        assistant_id = state.id_generator.()
-        state = %{state | pending_assistant_id: assistant_id}
-        emit(callbacks, Event.message_start(id: assistant_id, role: :assistant))
+    emit(callbacks, Event.new(:status_change, %{status: :thinking}))
 
-        emit(callbacks, Event.new(:step_start, %{iteration: state.current_iteration}))
+    assistant_id = state.id_generator.()
+    state = %{state | pending_assistant_id: assistant_id}
+    emit(callbacks, Event.message_start(id: assistant_id, role: :assistant))
 
-        case maybe_auto_compact(state, callbacks) do
-          {:ok, state} ->
-            case invoke_before_prompt(state, callbacks) do
-              {:ok, state} ->
-                state
-                |> call_llm(callbacks)
-                |> handle_llm_call_result(state, callbacks)
+    emit(callbacks, Event.new(:step_start, %{iteration: state.current_iteration}))
 
-              {:error, reason} ->
-                final_state =
-                  State.set_error(state, "Hook aborted before prompt: #{inspect(reason)}")
+    case maybe_auto_compact(state, callbacks) do
+      {:ok, state} ->
+        before_prompt(state, callbacks)
 
-                {:error, do_after_turn_cleanup(final_state, callbacks)}
-            end
+      {:error, reason} ->
+        final_state = State.set_error(state, "Compaction failed: #{inspect(reason)}")
+        {:error, do_after_turn_cleanup(final_state, callbacks)}
 
-          {:error, reason} ->
-            final_state = State.set_error(state, "Compaction failed: #{inspect(reason)}")
-            {:error, do_after_turn_cleanup(final_state, callbacks)}
+      {:cancelled, reason} ->
+        do_after_turn(state, cancel_run(%{state | error: reason}, callbacks), callbacks)
+    end
+  end
 
-          {:cancelled, reason} ->
-            do_after_turn(state, cancel_run(%{state | error: reason}, callbacks), callbacks)
-        end
+  defp before_prompt(state, callbacks) do
+    case invoke_before_prompt(state, callbacks) do
+      {:ok, state} ->
+        state
+        |> call_llm(callbacks)
+        |> handle_llm_call_result(state, callbacks)
+
+      {:error, reason} ->
+        final_state = State.set_error(state, "Hook aborted before prompt: #{inspect(reason)}")
+        {:error, do_after_turn_cleanup(final_state, callbacks)}
     end
   end
 
@@ -557,20 +563,24 @@ defmodule Tackle.Lib.Loop do
         {:cancelled, cancel_state(state, callbacks)}
 
       true ->
-        case prepare_tool_batch(tool_calls, state, callbacks) do
-          {:ok, jobs, state} ->
-            {settlements, outcome} = run_tool_batch(jobs, supervisor, callbacks)
-            state = commit_tool_batch(jobs, settlements, state, callbacks)
+        run_concurrent_batch(tool_calls, state, callbacks, supervisor)
+    end
+  end
 
-            cond do
-              state.status == :error -> {:error, state}
-              outcome == :cancelled -> {:cancelled, cancel_state(state, callbacks)}
-              true -> {:ok, state}
-            end
+  defp run_concurrent_batch(tool_calls, state, callbacks, supervisor) do
+    case prepare_tool_batch(tool_calls, state, callbacks) do
+      {:ok, jobs, state} ->
+        {settlements, outcome} = run_tool_batch(jobs, supervisor, callbacks)
+        state = commit_tool_batch(jobs, settlements, state, callbacks)
 
-          {:abort, state} ->
-            {:error, state}
+        case {state.status, outcome} do
+          {:error, _status} -> {:error, state}
+          {_status, :cancelled} -> {:cancelled, cancel_state(state, callbacks)}
+          _other -> {:ok, state}
         end
+
+      {:abort, state} ->
+        {:error, state}
     end
   end
 
@@ -747,16 +757,17 @@ defmodule Tackle.Lib.Loop do
   defp commit_tool_batch(jobs, settlements, state, callbacks) do
     Enum.reduce_while(jobs, state, fn %{index: index}, acc_state ->
       case Map.fetch(settlements, index) do
-        {:ok, settlement} ->
-          case append_tool_settlement(settlement, acc_state, callbacks) do
-            {:ok, acc_state} -> {:cont, acc_state}
-            {:abort, acc_state} -> {:halt, acc_state}
-          end
-
-        :error ->
-          {:cont, acc_state}
+        {:ok, settlement} -> commit_tool_settlement(settlement, acc_state, callbacks)
+        :error -> {:cont, acc_state}
       end
     end)
+  end
+
+  defp commit_tool_settlement(settlement, acc_state, callbacks) do
+    case append_tool_settlement(settlement, acc_state, callbacks) do
+      {:ok, acc_state} -> {:cont, acc_state}
+      {:abort, acc_state} -> {:halt, acc_state}
+    end
   end
 
   defp crashed_tool_settlement(%Call{} = call, reason) do

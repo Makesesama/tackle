@@ -6,7 +6,10 @@ defmodule Tackle.CLI.TUI.State do
   its monitor, the subscribed snapshot, the live turn, the composer, the
   overlay stack, the transcript model, and the usage/metrics projection. Every
   feature module takes and returns this struct, which keeps the state shape in
-  one place instead of an anonymous map spread across the frontend.
+  one place instead of an anonymous map spread across the frontend. The
+  turn-scoped groups travel as nested values: `State.Stream` holds the live
+  streaming turn and `State.Metrics` holds the usage and context numbers, so
+  each group is reset by one call when a turn settles.
 
   It also owns the two ways the state is created: `new/1` mounts a shell onto
   an existing root agent, and `reset/4` adopts a replacement scope behind a new
@@ -20,9 +23,10 @@ defmodule Tackle.CLI.TUI.State do
   """
 
   alias Tackle.CLI.Clipboard
+  alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.TUI.Viewport
-  alias Tackle.Lib.{ContextUsage, ModelInfo, Usage}
   alias Tackle.Lib.Message
+  alias Tackle.Lib.{ModelInfo, Usage}
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Runtime.Scope
   alias Tackle.Session.Snapshot
@@ -54,18 +58,11 @@ defmodule Tackle.CLI.TUI.State do
           focus: focus(),
           selected_entry: String.t() | nil,
           pending_prompt: String.t() | nil,
-          streaming_thinking: String.t(),
-          streaming_response: String.t(),
-          turn_timeline: [map()],
-          stream_flush_ref: reference() | nil,
-          coalesce_stream?: boolean(),
+          stream: Stream.t(),
           pending_operation: map() | nil,
           deferred_events: [term()],
           spinner_frame: non_neg_integer(),
-          latest_usage: Usage.t() | nil,
-          live_usage: Usage.t() | nil,
-          live_usages: [Usage.t()],
-          live_context_usage: ContextUsage.t() | nil,
+          metrics: Metrics.t(),
           tool_activity: [map()],
           activity: String.t() | nil,
           error: String.t() | nil,
@@ -92,18 +89,11 @@ defmodule Tackle.CLI.TUI.State do
             focus: :composer,
             selected_entry: nil,
             pending_prompt: nil,
-            streaming_thinking: "",
-            streaming_response: "",
-            turn_timeline: [],
-            stream_flush_ref: nil,
-            coalesce_stream?: true,
+            stream: %Stream{},
             pending_operation: nil,
             deferred_events: [],
             spinner_frame: 0,
-            latest_usage: nil,
-            live_usage: nil,
-            live_usages: [],
-            live_context_usage: nil,
+            metrics: %Metrics{},
             tool_activity: [],
             activity: nil,
             error: nil,
@@ -139,7 +129,7 @@ defmodule Tackle.CLI.TUI.State do
         input: ExRatatui.textarea_new(),
         models: available_models(opts, snapshot.agent_state),
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
-        coalesce_stream?: is_nil(Keyword.get(opts, :test_mode)),
+        stream: %Stream{coalesce?: is_nil(Keyword.get(opts, :test_mode))},
         size: {width, height},
         conversation: Viewport.new_conversation(width, height)
       }
@@ -172,17 +162,11 @@ defmodule Tackle.CLI.TUI.State do
         agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
         pending_prompt: nil,
-        streaming_thinking: "",
-        streaming_response: "",
-        turn_timeline: [],
-        stream_flush_ref: nil,
+        stream: Stream.reset(state.stream),
         pending_operation: nil,
         deferred_events: [],
         spinner_frame: 0,
-        latest_usage: latest_usage(snapshot.agent_state),
-        live_usage: nil,
-        live_usages: [],
-        live_context_usage: nil,
+        metrics: %Metrics{latest_usage: latest_usage(snapshot.agent_state)},
         tool_activity: [],
         activity: nil,
         error: nil,

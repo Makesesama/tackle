@@ -1,8 +1,8 @@
 defmodule Tackle.CLI.TUI.ModulesTest do
   use ExUnit.Case, async: true
 
-  alias Tackle.CLI.TUI.{Composer, Inspector, Menu, State, Util, Viewport}
   alias Tackle.CLI.TUI.Compaction, as: TUICompaction
+  alias Tackle.CLI.TUI.{Composer, Inspector, Menu, State, Util, Viewport}
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.{Message, ModelInfo, Usage}
   alias Tackle.Lib.State, as: AgentState

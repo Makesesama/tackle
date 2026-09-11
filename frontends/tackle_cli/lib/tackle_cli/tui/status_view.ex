@@ -41,21 +41,22 @@ defmodule Tackle.CLI.TUI.StatusView do
   @doc "Returns the short word describing the current turn state."
   @spec status_label(State.t()) :: String.t()
   def status_label(%State{} = state) do
-    label =
-      case state do
-        %State{pending_operation: %{kind: :reconfigure}} -> "reconfiguring"
-        %State{pending_operation: %{kind: :compact}} -> "compacting"
-        %State{pending_operation: %{kind: :cancel}} -> "cancelling"
-        %State{pending_operation: %{kind: :submit}, activity: activity} -> activity || "starting"
-        %State{active_turn: nil, error: error} when is_binary(error) -> "failed"
-        %State{active_turn: nil, outcome: :cancelled} -> "cancelled"
-        %State{active_turn: nil} -> "ready"
-        %State{activity: nil} -> "working"
-        %State{activity: activity} -> activity
-      end
-
+    label = turn_label(state)
     if busy?(state), do: "#{spinner(state.spinner_frame)} #{label}", else: label
   end
+
+  defp turn_label(%State{pending_operation: %{kind: :reconfigure}}), do: "reconfiguring"
+  defp turn_label(%State{pending_operation: %{kind: :compact}}), do: "compacting"
+  defp turn_label(%State{pending_operation: %{kind: :cancel}}), do: "cancelling"
+
+  defp turn_label(%State{pending_operation: %{kind: :submit}, activity: activity}),
+    do: activity || "starting"
+
+  defp turn_label(%State{active_turn: nil, error: error}) when is_binary(error), do: "failed"
+  defp turn_label(%State{active_turn: nil, outcome: :cancelled}), do: "cancelled"
+  defp turn_label(%State{active_turn: nil}), do: "ready"
+  defp turn_label(%State{activity: nil}), do: "working"
+  defp turn_label(%State{activity: activity}), do: activity
 
   @doc "Returns the style that carries the current turn state's meaning."
   @spec status_style(State.t()) :: ExRatatui.Style.t()
@@ -262,10 +263,12 @@ defmodule Tackle.CLI.TUI.StatusView do
       |> Enum.map(&Usage.normalize(&1.token_usage))
       |> Enum.reject(&(is_nil(&1) or not usage_activity?(&1)))
 
-    settled ++ state.live_usages
+    settled ++ state.metrics.turn_usages
   end
 
-  defp displayed_context_usage(%State{live_context_usage: %ContextUsage{} = context}), do: context
+  defp displayed_context_usage(%State{metrics: %{context_usage: %ContextUsage{} = context}}),
+    do: context
+
   defp displayed_context_usage(%State{} = state), do: Lib.context_usage(state.agent_state)
 
   defp context_indicator(%ContextUsage{} = context) do

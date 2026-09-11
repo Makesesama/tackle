@@ -568,18 +568,7 @@ defmodule Tackle.Plugins.Codex.WebSocketTest do
   end
 
   defp send_upgrade_response(socket, headers) do
-    key =
-      headers
-      |> String.split("\r\n")
-      |> Enum.find_value(fn line ->
-        case String.split(line, ":", parts: 2) do
-          [name, value] ->
-            if String.downcase(name) == "sec-websocket-key", do: String.trim(value)
-
-          _parts ->
-            nil
-        end
-      end)
+    key = websocket_key(headers)
 
     accept = :crypto.hash(:sha, key <> "258EAFA5-E914-47DA-95CA-C5AB0DC85B11") |> Base.encode64()
 
@@ -592,6 +581,22 @@ defmodule Tackle.Plugins.Codex.WebSocketTest do
     )
   end
 
+  defp websocket_key(headers) do
+    headers
+    |> String.split("\r\n")
+    |> Enum.find_value(&header_value(&1, "sec-websocket-key"))
+  end
+
+  defp header_value(line, name) do
+    case String.split(line, ":", parts: 2) do
+      [header, value] ->
+        if String.downcase(header) == name, do: String.trim(value)
+
+      _parts ->
+        nil
+    end
+  end
+
   defp recv_json_frame(socket) do
     with {:ok, <<_fin_opcode, masked_length>>} <- :gen_tcp.recv(socket, 2, 2_000),
          masked? <- Bitwise.band(masked_length, 0x80) != 0,
@@ -599,9 +604,8 @@ defmodule Tackle.Plugins.Codex.WebSocketTest do
          {:ok, payload_length} <- recv_payload_length(socket, length_code),
          {:ok, mask} <- recv_mask(socket, masked?),
          {:ok, payload} <- :gen_tcp.recv(socket, payload_length, 2_000),
-         decoded <- apply_mask(payload, mask),
-         {:ok, event} <- JSON.decode(decoded) do
-      {:ok, event}
+         decoded <- apply_mask(payload, mask) do
+      JSON.decode(decoded)
     end
   end
 
