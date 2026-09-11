@@ -5,8 +5,14 @@ defmodule Tackle.Runtime.Registry do
   This is the only PID resolution boundary in the runtime. Public APIs accept
   references; internal routing resolves them here. Entries disappear
   automatically when their process terminates.
+
+  Besides scope, coordinator, work-supervisor, agent, workflow, and run
+  registrations, the registry also holds each agent's per-session tool
+  `Task.Supervisor` under `{:tool_supervisor, scope_id, agent_id}`. That is a
+  process name keyed by agent reference, not a runtime reference of its own.
   """
 
+  alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Ref
 
   @name __MODULE__
@@ -55,6 +61,23 @@ defmodule Tackle.Runtime.Registry do
   @spec work_supervisor(Ref.t()) :: {:ok, pid()} | {:error, :not_found}
   def work_supervisor(ref) do
     Registry.lookup(@name, {:work_supervisor, Ref.scope_id(ref)}) |> first()
+  end
+
+  @doc """
+  Returns the via name for an agent's per-session tool `Task.Supervisor`.
+
+  The name is derived from the agent reference, so tool supervisors stay
+  discoverable without dynamic atom generation.
+  """
+  @spec tool_supervisor_name(AgentRef.t()) :: {:via, module(), {module(), tuple()}}
+  def tool_supervisor_name(%AgentRef{scope_id: scope_id, agent_id: agent_id}) do
+    {:via, Registry, {@name, {:tool_supervisor, scope_id, agent_id}}}
+  end
+
+  @doc "Returns the live tool supervisor pid for an agent, or an explicit error."
+  @spec tool_supervisor(AgentRef.t()) :: {:ok, pid()} | {:error, :not_found}
+  def tool_supervisor(%AgentRef{scope_id: scope_id, agent_id: agent_id}) do
+    Registry.lookup(@name, {:tool_supervisor, scope_id, agent_id}) |> first()
   end
 
   @doc "Returns the root agent reference registered for a scope."

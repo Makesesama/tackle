@@ -3,6 +3,7 @@ defmodule Tackle.ConfigTest do
 
   alias Tackle.Config
   alias Tackle.Lib.LLM.Selection
+  alias Tackle.Lib.Tool.Policy
 
   defmodule Adapter do
     @behaviour Tackle.Lib.LLM
@@ -121,6 +122,21 @@ defmodule Tackle.ConfigTest do
 
     assert {:error, {:invalid_option, :max_iterations, 0}} =
              Config.new(adapters: [Adapter], model: "test/small", max_iterations: 0)
+  end
+
+  test "pins tool execution to concurrent and rejects a tool policy option" do
+    assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small")
+    assert %Policy{execution_mode: :concurrent} = config.tool_policy
+
+    state = Config.to_agent_state(config)
+    assert %Policy{execution_mode: :concurrent} = state.tool_policy
+
+    assert {:error, {:unknown_options, [:tool_policy]}} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               tool_policy: Policy.default()
+             )
   end
 
   test "returns explicit validation errors" do

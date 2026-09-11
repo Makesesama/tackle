@@ -16,7 +16,7 @@ This document extends the package and harness boundaries in [`architecture-spec.
 6. Fleets are lifecycle, membership, concurrency, and resource-policy boundaries. A fleet is not itself a workflow.
 7. Runtime communication initially uses correlated request/reply. General free-form agent chat, broadcast messaging, and durable mailboxes are deferred.
 8. Runtime entities are addressed through stable IDs and a Registry. PIDs are internal implementation details.
-9. Parallelism belongs in workflows or explicit batch orchestration, not in a second agent loop or an implicit change to `Tackle.Lib`'s sequential tool policy.
+9. A single model tool batch may execute concurrently when the host opts in with `Tackle.Lib.Tool.Policy` `:concurrent`; the runtime supplies the per-session tool supervisor and the loop still commits results in call order. General parallel orchestration (fan-out, aggregation, fleets) belongs in workflows or explicit batch orchestration, not in a second agent loop.
 10. Parent-owned work follows structured cancellation: cancelling a parent cancels its attached descendants unless work was explicitly detached.
 11. Crashed in-memory agents and workflows are not silently restarted as if their state had survived. Crashes are reported as terminal runtime failures.
 12. Persistence is not required for this architecture. All agents, workflows, requests, and fleet state may disappear when their owning process or the BEAM terminates.
@@ -39,7 +39,7 @@ The first implementation uses these defaults:
 - A busy ephemeral child rejects additional work. General-purpose agent inboxes and queues are deferred.
 - Fleet concurrency overflow is rejected explicitly in the initial implementation rather than queued.
 - Scoped runtime processes are temporary. Lost in-memory state is not restarted or reconstructed.
-- No change to `Tackle.Lib` is expected. Subagents, workflows, scopes, and fleets are root-harness responsibilities.
+- Subagents, workflows, scopes, and fleets are root-harness responsibilities. The one library-side capability the runtime relies on is the `:concurrent` tool policy (`Tackle.Lib.Tool.Policy.concurrent/0`) with a host-supplied `:tool_supervisor`. The harness pins concurrency for every session and exposes no tool-policy option; all orchestration above one tool batch stays in the harness.
 
 ## 2. Current foundation
 
@@ -177,12 +177,16 @@ Tackle.Supervisor
 └── Tackle.AgentSupervisor                 global DynamicSupervisor
     ├── AgentScope A                        Supervisor; one per root agent
     │   ├── ScopeCoordinator                GenServer
-    │   ├── Root AgentSession               Tackle.Session
+    │   ├── Root SessionSupervisor          Supervisor; root agent
+    │   │   ├── Task.Supervisor             root tool execution
+    │   │   └── Tackle.Session              root agent loop owner
     │   └── WorkSupervisor                  DynamicSupervisor
     │       ├── root turn Task
-    │       ├── researcher AgentSession
+    │       ├── researcher SessionSupervisor
+    │       │   ├── Task.Supervisor         researcher tool execution
+    │       │   └── Tackle.Session
     │       ├── researcher turn Task
-    │       ├── reviewer AgentSession
+    │       ├── reviewer SessionSupervisor
     │       ├── workflow process
     │       └── deeper delegated agents
     └── AgentScope B
@@ -193,13 +197,15 @@ Tackle.Supervisor
 
 Each `AgentScope` is a small static Supervisor containing:
 
-1. the root `Tackle.Session`;
+1. the root `Tackle.Session.Supervisor` (which owns the root session and its tool supervisor);
 2. the scope coordinator; and
 3. one `WorkSupervisor` DynamicSupervisor.
 
-The root agent is not itself a supervisor. The root session and its work supervisor are siblings beneath `AgentScope`. A GenServer should not start an ad hoc supervisor beneath itself because that reverses normal OTP ownership and makes crash cleanup less reliable.
+The root session is not itself a supervisor. It runs beneath a small per-session `Tackle.Session.Supervisor` whose sibling is the session's tool `Task.Supervisor`. A GenServer does not start an ad hoc supervisor beneath itself because that reverses normal OTP ownership and makes crash cleanup less reliable; the tool supervisor therefore gets its own supervised parent instead.
 
-`WorkSupervisor` accepts heterogeneous temporary child specifications. It owns descendant `Tackle.Session` processes, workflows, request helpers, and turn Tasks. A supervised turn can be started as a temporary `Task` child that sends a correlated terminal result to its owning session; the session monitors it and handles crash outcomes. This removes the need for separate global session, workflow, and Task supervisors while retaining the existing rule that the LLM loop never runs inside a GenServer callback.
+Every session — root or descendant — runs under its own `Tackle.Session.Supervisor` so that concurrent tool execution has a dedicated, session-local `Task.Supervisor`. Descendant session supervisors are temporary children of the scope `WorkSupervisor`; the root session supervisor is a static child of `AgentScope`. There is exactly one tool supervisor per agent, so a subagent never shares tool tasks with its parent, and terminating a session subtree cleans up every in-flight tool task for exactly one agent.
+
+`WorkSupervisor` accepts heterogeneous temporary child specifications. It owns descendant `Tackle.Session.Supervisor` subtrees (each session plus its tool supervisor), workflows, request helpers, and turn Tasks. A supervised turn can be started as a temporary `Task` child that sends a correlated terminal result to its owning session; the session monitors it and handles crash outcomes. This removes the need for separate global session, workflow, and Task supervisors while retaining the existing rule that the LLM loop never runs inside a GenServer callback.
 
 Stopping one `AgentScope` physically terminates its root agent, all descendants, workflows, active turn Tasks, and request helpers. No global coordinator has to enumerate and individually terminate every member to clean up the root agent.
 
@@ -226,7 +232,7 @@ root
 
 Physical supervision provides complete scope cleanup. Logical ownership provides selective branch cancellation, spawn-depth calculation, child limits, cycle detection, authorization, and correlated result routing. It remains necessary even though every process is physically beneath the same root scope.
 
-No descendant agent receives a dedicated supervisor. If a descendant is allowed to launch another agent, it asks the same root scope to start that agent under the shared `WorkSupervisor` and records itself as the logical parent.
+No descendant agent receives a dedicated scope of its own. If a descendant is allowed to launch another agent, it asks the same root scope to start that agent under the shared `WorkSupervisor` and records itself as the logical parent. What every descendant does receive is a small per-session supervisor owning that agent's session and its tool `Task.Supervisor`; that pair is a single cleanup and failure unit, not a nested scope or workflow boundary.
 
 ### 4.2 Scope API
 
@@ -257,6 +263,8 @@ The runtime is intentionally in memory. Restarting an agent or coordinator after
 - `AgentScope` is a temporary child of the global `Tackle.AgentSupervisor` and is not restarted after it terminates;
 - the root session, scope coordinator, and work supervisor are scope-critical processes;
 - failure of a scope-critical process terminates the complete scope instead of reconstructing empty state;
+- a per-session supervisor uses `:one_for_all` with no restart allowance: an abnormal exit of a session or its tool supervisor tears the session subtree down instead of reconstructing an empty session;
+- a root session or root tool supervisor failure therefore terminates the complete scope, while a descendant session or descendant tool supervisor failure is isolated to that descendant;
 - descendant agents, workflows, helpers, and Tasks are temporary dynamic children and are not restarted;
 - a descendant failure is reported to its requester and does not terminate unrelated sibling work;
 - normal `Tackle.Lib` errors and cancellation are terminal outcomes, not crashes;
@@ -470,18 +478,20 @@ request_agent(parent, spec, prompt) → run reference
 await(run reference, timeout) → correlated outcome
 ```
 
-The subagent tool performs these operations back-to-back and therefore behaves synchronously from `Tackle.Lib`'s perspective. Workflows can retain several run references and await them independently, which provides one shared primitive for sequential and parallel orchestration without changing tool execution inside `Tackle.Lib`.
+The subagent tool performs these operations back-to-back and therefore behaves synchronously from `Tackle.Lib`'s perspective. Workflows can retain several run references and await them independently, which provides one shared primitive for sequential and parallel orchestration independently of how `Tackle.Lib` executes an individual tool batch.
 
 ### 8.2 Parallel execution
 
-`Tackle.Lib` currently executes tool calls sequentially. If a model emits multiple individual subagent tool calls, they will therefore execute sequentially.
+`Tackle.Lib` executes tool calls sequentially by default. The host may opt a session into `:concurrent` tool execution with `Tackle.Lib.Tool.Policy.concurrent/0`; the runtime then passes the session's own tool `Task.Supervisor` as the `:tool_supervisor` run option. The loop runs every call in one batch as a supervised task and commits results in the model's call order, so the transcript is identical to the sequential one. A tool crash is isolated to its task and surfaces as a tool error; cancelling the turn shuts the batch down.
 
-Do not change core tool execution policy solely to create fleets. Parallel fan-out should initially happen through either:
+If a model emits multiple individual subagent tool calls in one batch, those calls can now start their children in parallel under that same policy. That is a property of the batch, not of delegation: subagents themselves remain ordinary agents in the same scope.
+
+Do not build fleets by changing core tool execution policy. Parallel fan-out and aggregation that spans multiple turns, depends on intermediate results, or needs its own failure policy should still happen through either:
 
 1. an explicit batch orchestration tool that starts several child agents concurrently and awaits all results; or
 2. a host workflow that starts concurrent child runs, collects correlated outcomes, and launches any aggregation step.
 
-Substantial parallel orchestration belongs in workflows. This keeps concurrency policy in the runtime rather than coupling it to provider tool-call behavior.
+Substantial parallel orchestration belongs in workflows. Concurrent tool execution is limited to one model-requested batch and keeps its concurrency policy explicit and host-owned.
 
 ## 9. Agent specifications and trusted configuration
 
@@ -827,7 +837,7 @@ Acceptance criteria:
 
 ### Task 9: explicit parallel and batch orchestration
 
-Provide host-side helpers for parallel fan-out without modifying `Tackle.Lib`'s sequential tool execution. Conceptually:
+Provide host-side helpers for parallel fan-out across delegated runs. These orchestrate several agents over multiple turns; they are independent of how one `Tackle.Lib` tool batch executes. Conceptually:
 
 ```elixir
 request_many(parent_ref, requests)

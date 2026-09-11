@@ -12,7 +12,9 @@ defmodule Tackle.Session do
   tasks under the scope's shared `Tackle.AgentScope.WorkSupervisor`, registers
   itself in the runtime Registry, and accounts for its turn through the scope
   coordinator. A session without scoped runtime ownership fails to initialize:
-  there is no unscoped fallback supervisor.
+  there is no unscoped fallback supervisor. Each session also runs beneath a
+  `Tackle.Session.Supervisor` that owns its per-session tool `Task.Supervisor`, so
+  concurrent tool execution is isolated per agent.
 
   An `:ephemeral` session delivers one correlated terminal outcome to its
   request helper and then stops. A session process is never reset for another
@@ -219,8 +221,10 @@ defmodule Tackle.Session do
     agent_ref = Keyword.get(opts, :agent_ref)
     coordinator = Keyword.get(opts, :coordinator) || coordinator_pid(scope_ref)
     work_supervisor = Keyword.get(opts, :work_supervisor) || work_supervisor(scope_ref)
+    tool_supervisor = Keyword.get(opts, :tool_supervisor)
 
-    with :ok <- validate_ownership(scope_ref, agent_ref, coordinator, work_supervisor),
+    with :ok <-
+           validate_ownership(scope_ref, agent_ref, coordinator, work_supervisor, tool_supervisor),
          :ok <- register(scope_ref, agent_ref),
          {:ok, agent_state, journal, recovery} <-
            build_agent_state(config, scope_ref, agent_ref, opts) do
@@ -236,6 +240,7 @@ defmodule Tackle.Session do
         parent: Keyword.get(opts, :parent),
         terminal: Keyword.get(opts, :terminal),
         work_supervisor: work_supervisor,
+        tool_supervisor: tool_supervisor,
         journal: journal,
         recovery: recovery
       }
@@ -434,6 +439,7 @@ defmodule Tackle.Session do
       ) do
     Cancellation.delete(active_turn.signal)
     release_turn(state)
+    terminate_tool_tasks(state)
 
     case persist_terminal(state, {:runtime_error, reason}) do
       :ok ->
@@ -493,7 +499,7 @@ defmodule Tackle.Session do
     turn_id = state.config.id_generator.()
     session_pid = self()
     agent_state = state.agent_state
-    run_opts = turn_opts(state.config, session_pid, turn_id, signal)
+    run_opts = turn_opts(state, session_pid, turn_id, signal)
 
     case begin_turn(state, operation, input, turn_id) do
       :ok ->
@@ -538,11 +544,12 @@ defmodule Tackle.Session do
     Tackle.Lib.continue(agent_state, run_opts)
   end
 
-  defp turn_opts(config, session_pid, turn_id, signal) do
+  defp turn_opts(state, session_pid, turn_id, signal) do
     [
       event_callback: fn event -> send(session_pid, {:tackle_event, turn_id, event}) end,
       cancellation_signal: signal,
-      llm_stream: config.llm_stream
+      llm_stream: state.config.llm_stream,
+      tool_supervisor: state.tool_supervisor
     ]
   end
 
@@ -725,20 +732,27 @@ defmodule Tackle.Session do
   defp persist_close(%{journal: nil}), do: :ok
   defp persist_close(%{journal: journal}), do: Journal.close_journal(journal)
 
-  defp validate_ownership(%ScopeRef{}, %AgentRef{}, coordinator, work_supervisor)
-       when not is_nil(coordinator) and not is_nil(work_supervisor),
+  defp validate_ownership(%ScopeRef{}, %AgentRef{}, coordinator, work_supervisor, tool_supervisor)
+       when not is_nil(coordinator) and not is_nil(work_supervisor) and
+              not is_nil(tool_supervisor),
        do: :ok
 
-  defp validate_ownership(scope_ref, _agent_ref, _coordinator, _work_supervisor)
+  defp validate_ownership(scope_ref, _agent_ref, _coordinator, _work_supervisor, _tool_supervisor)
        when not is_struct(scope_ref, ScopeRef),
        do: {:error, {:missing_scope_ownership, :scope_ref}}
 
-  defp validate_ownership(_scope_ref, agent_ref, _coordinator, _work_supervisor)
+  defp validate_ownership(_scope_ref, agent_ref, _coordinator, _work_supervisor, _tool_supervisor)
        when not is_struct(agent_ref, AgentRef),
        do: {:error, {:missing_scope_ownership, :agent_ref}}
 
-  defp validate_ownership(_scope_ref, _agent_ref, _coordinator, _work_supervisor),
-    do: {:error, :missing_scope_supervision}
+  defp validate_ownership(
+         _scope_ref,
+         _agent_ref,
+         _coordinator,
+         _work_supervisor,
+         _tool_supervisor
+       ),
+       do: {:error, :missing_scope_supervision}
 
   defp register(%ScopeRef{} = scope_ref, %AgentRef{scope_id: scope_id} = agent_ref)
        when scope_ref.scope_id == scope_id do
@@ -854,6 +868,21 @@ defmodule Tackle.Session do
     TurnTask.shutdown(active_turn.task, @task_shutdown_timeout)
     safe_cancellation(fn -> Cancellation.delete(active_turn.signal) end)
     :ok
+  end
+
+  # A crashed turn can leave tool tasks running under the session's tool
+  # supervisor. Only one turn runs at a time, so none of them belong to any
+  # future work and they are terminated here instead of leaking.
+  defp terminate_tool_tasks(%{tool_supervisor: nil}), do: :ok
+
+  defp terminate_tool_tasks(%{tool_supervisor: supervisor}) do
+    supervisor
+    |> Task.Supervisor.children()
+    |> Enum.each(&Task.Supervisor.terminate_child(supervisor, &1))
+
+    :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   # The default ETS cancellation store can lose its lazily-created table when

@@ -5,7 +5,7 @@ defmodule Tackle.Runtime.Request do
   The helper exists before the child session starts, so terminal routing is
   established before the child can finish. It:
 
-  1. starts one fresh ephemeral `Tackle.Session` under the scope work supervisor;
+  1. starts one fresh ephemeral session subtree under the scope work supervisor;
   2. installs the correlated terminal destination on that session;
   3. submits the delegated prompt;
   4. stores exactly one terminal outcome;
@@ -23,6 +23,7 @@ defmodule Tackle.Runtime.Request do
   alias Tackle.Runtime.RunRef
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Session
+  alias Tackle.Session.Supervisor, as: SessionSupervisor
 
   @default_linger 5_000
 
@@ -219,10 +220,16 @@ defmodule Tackle.Runtime.Request do
 
     case DynamicSupervisor.start_child(
            state.work_supervisor,
-           Session.child_spec({state.config, opts})
+           SessionSupervisor.child_spec({state.config, opts})
          ) do
-      {:ok, pid} ->
-        {:ok, %{state | session_pid: pid, session_monitor: Process.monitor(pid)}}
+      {:ok, supervisor} ->
+        case SessionSupervisor.session_pid(supervisor) do
+          pid when is_pid(pid) ->
+            {:ok, %{state | session_pid: pid, session_monitor: Process.monitor(pid)}}
+
+          nil ->
+            {:error, :session_not_started}
+        end
 
       {:error, reason} ->
         {:error, reason}

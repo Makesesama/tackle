@@ -3,8 +3,10 @@ defmodule Tackle.Lib.LoopTest do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
+  alias Tackle.Lib.JSON
   alias Tackle.Lib.Loop
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Usage
 
   defmodule FirstTool do
@@ -101,6 +103,105 @@ defmodule Tackle.Lib.LoopTest do
 
         _count ->
           {:ok, %{data: %{"content" => "done"}, usage: nil, model: "test/model"}}
+      end
+    end
+  end
+
+  defmodule BlockingTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "blocking"
+
+    @impl true
+    def description, do: "Blocks until released by the test process."
+
+    @impl true
+    def parameters_schema do
+      [name: [type: :string, required: true]]
+    end
+
+    @impl true
+    def execute(args, %{test_pid: test_pid}) do
+      name = Map.fetch!(args, "name")
+      send(test_pid, {:tool_entered, name, self()})
+
+      receive do
+        {:release, ^name} -> {:ok, %{name: name}}
+      after
+        2_000 -> {:ok, %{name: name, timed_out: true}}
+      end
+    end
+  end
+
+  defmodule CrashingTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "crash"
+
+    @impl true
+    def description, do: "Exits the task to exercise crash isolation."
+
+    @impl true
+    def parameters_schema, do: []
+
+    # An exit is not an exception, so it escapes the tool settlement rescue and
+    # terminates the supervised tool task itself.
+    @impl true
+    def execute(_args, _context), do: exit(:tool_boom)
+  end
+
+  defmodule ParallelToolAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      case Process.get(:call_count, 0) do
+        0 ->
+          Process.put(:call_count, 1)
+
+          {:ok,
+           %{
+             data: %{
+               "tool_calls" => [
+                 %{"id" => "c1", "name" => "blocking", "arguments" => %{"name" => "one"}},
+                 %{"id" => "c2", "name" => "blocking", "arguments" => %{"name" => "two"}}
+               ]
+             },
+             usage: nil,
+             model: "test/model"
+           }}
+
+        _count ->
+          {:ok, %{data: %{"content" => "done"}, usage: nil, model: "test/model"}}
+      end
+    end
+  end
+
+  defmodule CrashAndBlockAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      case Process.get(:call_count, 0) do
+        0 ->
+          Process.put(:call_count, 1)
+
+          {:ok,
+           %{
+             data: %{
+               "tool_calls" => [
+                 %{"id" => "bad", "name" => "crash", "arguments" => %{}},
+                 %{"id" => "good", "name" => "blocking", "arguments" => %{"name" => "ok"}}
+               ]
+             },
+             usage: nil,
+             model: "test/model"
+           }}
+
+        _count ->
+          {:ok, %{data: %{"content" => "recovered"}, usage: nil, model: "test/model"}}
       end
     end
   end
@@ -474,6 +575,98 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:event, %Event{type: :tool_start, data: %{name: "second"}}}
     assert_receive {:tool_execute, :second}
     assert_receive {:event, %Event{type: :tool_end, data: %{name: "second"}}}
+  end
+
+  test "concurrent policy dispatches a batch in parallel and commits results in call order" do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
+    test_pid = self()
+
+    state =
+      State.new(
+        model: "test/model",
+        tools: [BlockingTool],
+        tool_policy: Policy.concurrent(),
+        context: %{test_pid: test_pid}
+      )
+
+    run =
+      Task.async(fn ->
+        Loop.run(state, "run both",
+          tool_supervisor: supervisor,
+          event_callback: fn event -> send(test_pid, {:event, event}) end
+        )
+      end)
+
+    # Both tools enter before either is released, proving parallel dispatch.
+    assert_receive {:event, %Event{type: :tool_start, data: %{name: "blocking"}}}
+    assert_receive {:event, %Event{type: :tool_start, data: %{name: "blocking"}}}
+    assert_receive {:tool_entered, first_name, first_task}
+    assert_receive {:tool_entered, second_name, second_task}
+    assert MapSet.new([first_name, second_name]) == MapSet.new(["one", "two"])
+
+    send(first_task, {:release, first_name})
+    send(second_task, {:release, second_name})
+
+    assert {:ok, final_state} = Task.await(run, 5_000)
+    assert final_state.status == :completed
+
+    tool_messages = Enum.filter(final_state.messages, &(&1.role == :tool))
+    assert Enum.map(tool_messages, & &1.tool_call_id) == ["c1", "c2"]
+
+    assert Enum.map(tool_messages, fn message ->
+             message.content |> JSON.decode!() |> Map.fetch!("name")
+           end) == ["one", "two"]
+  end
+
+  test "concurrent policy converts a crashed tool into an error result" do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+    Application.put_env(:tackle_lib, :llm, CrashAndBlockAdapter)
+    test_pid = self()
+
+    state =
+      State.new(
+        model: "test/model",
+        tools: [CrashingTool, BlockingTool],
+        tool_policy: Policy.concurrent(),
+        context: %{test_pid: test_pid}
+      )
+
+    run =
+      Task.async(fn ->
+        Loop.run(state, "run both",
+          tool_supervisor: supervisor,
+          event_callback: fn event -> send(test_pid, {:event, event}) end
+        )
+      end)
+
+    assert_receive {:event, %Event{type: :tool_start, data: %{name: "crash"}}}
+    assert_receive {:event, %Event{type: :tool_start, data: %{name: "blocking"}}}
+    assert_receive {:tool_entered, "ok", blocker}
+    send(blocker, {:release, "ok"})
+
+    assert {:ok, final_state} = Task.await(run, 5_000)
+    assert final_state.status == :completed
+
+    assert_receive {:event, %Event{type: :tool_error, data: %{name: "crash"}}}
+    assert_receive {:event, %Event{type: :tool_end, data: %{name: "blocking"}}}
+
+    tool_messages = Enum.filter(final_state.messages, &(&1.role == :tool))
+    assert Enum.map(tool_messages, & &1.tool_call_id) == ["bad", "good"]
+  end
+
+  test "concurrent policy without a tool supervisor raises" do
+    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
+
+    state =
+      State.new(
+        model: "test/model",
+        tools: [BlockingTool],
+        tool_policy: Policy.concurrent(),
+        context: %{test_pid: self()}
+      )
+
+    assert_raise ArgumentError, ~r/tool_supervisor/, fn -> Loop.run(state, "run both") end
   end
 
   test "emits sanitized tool telemetry with host allowlisted names" do

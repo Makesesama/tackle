@@ -5,6 +5,13 @@ defmodule Tackle.Config do
   `new/1` is the pure validation boundary for already-resolved options. `load/1`
   applies the harness configuration precedence before passing those options to
   `new/1`; it never resolves module names from file or environment data.
+
+  Harness sessions always execute tools concurrently
+  (`Tackle.Lib.Tool.Policy.concurrent/0`) under the session's own tool supervisor.
+  `:tool_policy` is not a harness option: `Tackle.Lib` still supports sequential
+  execution for hosts that need it, but the Tackle runtime pins concurrency. See
+  the tool policy section of [`../packages/tackle_lib/README.md`](../packages/tackle_lib/README.md)
+  for the difference between the two modes.
   """
 
   require Logger
@@ -44,7 +51,6 @@ defmodule Tackle.Config do
     :system_prompt,
     :context,
     :max_iterations,
-    :tool_policy,
     :thinking,
     :llm_opts,
     :prompt_renderer,
@@ -144,7 +150,6 @@ defmodule Tackle.Config do
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
          :ok <- validate_map(:context, Keyword.get(opts, :context, %{})),
          :ok <- validate_iteration_limit(Keyword.get(opts, :max_iterations, :infinity)),
-         :ok <- validate_tool_policy(Keyword.get(opts, :tool_policy, Policy.default())),
          :ok <- validate_keyword_option(:llm_opts, Keyword.get(opts, :llm_opts, [])),
          :ok <- validate_reserved_llm_options(Keyword.get(opts, :llm_opts, [])),
          :ok <-
@@ -167,7 +172,7 @@ defmodule Tackle.Config do
            Keyword.get_lazy(opts, :system_prompt, fn -> SystemPrompt.default(tools) end),
          context: Keyword.get(opts, :context, %{}),
          max_iterations: Keyword.get(opts, :max_iterations, :infinity),
-         tool_policy: Keyword.get(opts, :tool_policy, Policy.default()),
+         tool_policy: Policy.concurrent(),
          llm_opts: Keyword.get(opts, :llm_opts, []),
          prompt_renderer: Keyword.get(opts, :prompt_renderer),
          prompt_renderer_opts: Keyword.get(opts, :prompt_renderer_opts, []),
@@ -531,9 +536,6 @@ defmodule Tackle.Config do
   end
 
   defp reserved_llm_option?(_key), do: false
-
-  defp validate_tool_policy(%Policy{}), do: :ok
-  defp validate_tool_policy(policy), do: {:error, {:invalid_option, :tool_policy, policy}}
 
   defp validate_id_generator(generator) when is_function(generator, 0), do: :ok
   defp validate_id_generator(generator), do: {:error, {:invalid_option, :id_generator, generator}}
