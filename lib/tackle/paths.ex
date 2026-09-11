@@ -31,6 +31,23 @@ defmodule Tackle.Paths do
     end
   end
 
+  @doc """
+  Resolves the user-level `~/.agents` directory used by the Agent Skills standard.
+
+  The directory is independent of `TACKLE_HOME`; `:user_home` overrides the
+  operating-system home so callers and tests can stay hermetic.
+  """
+  @spec agents_dir([resolve_option()]) :: {:ok, Path.t()} | {:error, :user_home_unavailable}
+  def agents_dir(opts \\ []) do
+    case Keyword.get_lazy(opts, :user_home, &System.user_home/0) do
+      value when is_binary(value) and value != "" ->
+        {:ok, Path.join(value, ".agents") |> Path.expand()}
+
+      _ ->
+        {:error, :user_home_unavailable}
+    end
+  end
+
   @doc "Resolves `$TACKLE_HOME/config.json`."
   @spec config_file([resolve_option()]) :: {:ok, Path.t()} | {:error, :user_home_unavailable}
   def config_file(opts \\ []) do

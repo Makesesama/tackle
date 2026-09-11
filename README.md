@@ -60,8 +60,10 @@ This repository is a starting point, not a finished CLI:
   configuration, a scoped agent runtime, a supervised credential store,
   and built-in `read`, `bash`, `elixir_eval`, `edit`, and `write` developer tools
   under `Tackle.Tools.*`. It composes a coding system prompt with global and
-  project `AGENTS.md` guidance. Configuration loads from `~/.tackle/config.json`,
-  environment, and explicit overrides without loading modules from data.
+  project `AGENTS.md` guidance, and discovers Agent Skills from `.agents/skills`
+  directories so the model can load them on demand. Configuration loads from
+  `~/.tackle/config.json`, environment, and explicit overrides without loading
+  modules from data.
 - [`packages/tackle_lib`](packages/tackle_lib/README.md) contains the existing
   agent library and its API documentation (`Tackle.Lib.*`).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the

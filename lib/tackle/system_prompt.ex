@@ -7,20 +7,23 @@ defmodule Tackle.SystemPrompt do
     1. an explicit base prompt, `$TACKLE_HOME/SYSTEM.md`, or the built-in prompt;
     2. `$TACKLE_HOME/APPEND_SYSTEM.md`, when present;
     3. `$TACKLE_HOME/AGENTS.md` and `AGENTS.md` files from filesystem root to
-       the current working directory; and
-    4. the current working directory.
+       the current working directory;
+    4. available Agent Skills from `.agents/skills`, when present; and
+    5. the current working directory.
 
   Missing optional files are ignored. Unreadable or invalid UTF-8 files return
   explicit errors so a session never starts with silently incomplete guidance.
   """
 
   alias Tackle.Lib.SystemPrompt, as: PromptBuilder
+  alias Tackle.Skills
 
   @type build_option ::
           {:base, String.t() | nil}
           | {:cwd, Path.t()}
           | {:home, Path.t()}
           | {:tools, [module()]}
+          | {:skills, [Skills.Skill.t()]}
 
   @doc "Builds the effective system prompt for one configured session."
   @spec build([build_option()]) :: {:ok, String.t()} | {:error, term()}
@@ -31,12 +34,14 @@ defmodule Tackle.SystemPrompt do
          {:ok, tools} <- fetch_tools(opts),
          {:ok, base} <- resolve_base(Keyword.get(opts, :base), home, tools),
          {:ok, append} <- read_optional(Path.join(home, "APPEND_SYSTEM.md")),
+         {:ok, skills} <- fetch_skills(opts),
          {:ok, context_files} <- load_context_files(cwd, home) do
       prompt =
         PromptBuilder.new()
         |> PromptBuilder.add_raw(base)
         |> add_optional(append)
         |> add_context(context_files)
+        |> add_skills(skills, tools)
         |> PromptBuilder.add_raw("Current working directory: #{cwd}")
         |> PromptBuilder.to_string()
 
@@ -61,6 +66,13 @@ defmodule Tackle.SystemPrompt do
     case Keyword.get(opts, :tools, []) do
       tools when is_list(tools) -> {:ok, tools}
       tools -> {:error, {:invalid_system_prompt_option, :tools, tools}}
+    end
+  end
+
+  defp fetch_skills(opts) do
+    case Keyword.get(opts, :skills, []) do
+      skills when is_list(skills) -> {:ok, skills}
+      skills -> {:error, {:invalid_system_prompt_option, :skills, skills}}
     end
   end
 
@@ -163,6 +175,15 @@ defmodule Tackle.SystemPrompt do
 
   defp add_optional(prompt, nil), do: prompt
   defp add_optional(prompt, content), do: PromptBuilder.add_raw(prompt, content)
+
+  defp add_skills(prompt, [], _tools), do: prompt
+
+  defp add_skills(prompt, skills, tools) do
+    case Skills.format_for_prompt(skills, tools: tools) do
+      "" -> prompt
+      section -> PromptBuilder.add_raw(prompt, section)
+    end
+  end
 
   defp add_context(prompt, []), do: prompt
 

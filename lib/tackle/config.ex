@@ -7,6 +7,8 @@ defmodule Tackle.Config do
   `new/1`; it never resolves module names from file or environment data.
   """
 
+  require Logger
+
   alias Tackle.Config.File, as: ConfigFile
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.ID
@@ -114,7 +116,8 @@ defmodule Tackle.Config do
         config,
         Keyword.get(session_opts, :system_prompt),
         cwd,
-        Path.dirname(config_path)
+        Path.dirname(config_path),
+        env
       )
     end
   end
@@ -325,13 +328,31 @@ defmodule Tackle.Config do
     if File.dir?(cwd), do: {:ok, cwd}, else: {:error, {:invalid_option, :cwd, cwd}}
   end
 
-  defp load_system_prompt(config, base, cwd, home) do
+  defp load_system_prompt(config, base, cwd, home, env) do
     context = Map.put(config.context, :cwd, cwd)
+    skills = discover_skills(cwd, env)
 
-    case SystemPrompt.build(base: base, cwd: cwd, home: home, tools: config.tools) do
+    case SystemPrompt.build(
+           base: base,
+           cwd: cwd,
+           home: home,
+           tools: config.tools,
+           skills: skills
+         ) do
       {:ok, prompt} -> {:ok, %{config | context: context, system_prompt: prompt}}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp discover_skills(cwd, env) do
+    user_home = Map.get(env, "HOME") || Map.get(env, "USERPROFILE")
+    discovery = Tackle.Skills.discover(cwd: cwd, user_home: user_home)
+
+    Enum.each(discovery.warnings, fn %{path: path, message: message} ->
+      Logger.warning("skipping or adjusting skill #{path}: #{message}")
+    end)
+
+    discovery.skills
   end
 
   defp environment_options(env) do

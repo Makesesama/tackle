@@ -108,6 +108,31 @@ defmodule Tackle.Config.FileTest do
     refute config.system_prompt =~ "expert coding assistant"
   end
 
+  test "includes project skills in the system prompt", %{home: home, env: env} do
+    cwd = Path.join(home, "workspace")
+    File.mkdir_p!(Path.join(cwd, ".git"))
+
+    skill_dir = Path.join([cwd, ".agents", "skills", "demo"])
+    File.mkdir_p!(skill_dir)
+
+    File.write!(
+      Path.join(skill_dir, "SKILL.md"),
+      "---\nname: demo\ndescription: Demonstrates skills.\n---\nbody\n"
+    )
+
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter],
+               cwd: cwd,
+               env: env,
+               overrides: [model: "test/default"]
+             )
+
+    assert config.system_prompt =~ "<available_skills>"
+    assert config.system_prompt =~ "<name>demo</name>"
+    assert config.system_prompt =~ "<description>Demonstrates skills.</description>"
+  end
+
   test "environment overrides the file", %{home: home, env: env} do
     write_config(home, ~s({"model":"test/file","thinking":"low"}))
 

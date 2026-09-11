@@ -98,6 +98,27 @@ defmodule Tackle.SystemPromptTest do
              SystemPrompt.build(cwd: cwd, home: home, tools: [])
   end
 
+  test "includes available skills before the working directory", %{cwd: cwd, home: home} do
+    skill = %Tackle.Skills.Skill{
+      name: "brave-search",
+      description: "Search the web.",
+      path: "/tmp/brave-search/SKILL.md",
+      dir: "/tmp/brave-search"
+    }
+
+    assert {:ok, prompt} =
+             SystemPrompt.build(cwd: cwd, home: home, tools: [Tool], skills: [skill])
+
+    assert prompt =~ "<available_skills>"
+    assert prompt =~ "<name>brave-search</name>"
+    assert_in_order(prompt, ["<available_skills>", "Current working directory: #{cwd}"])
+  end
+
+  test "rejects an invalid skills option", %{cwd: cwd, home: home} do
+    assert {:error, {:invalid_system_prompt_option, :skills, :nope}} =
+             SystemPrompt.build(cwd: cwd, home: home, tools: [], skills: :nope)
+  end
+
   defp assert_in_order(content, snippets) do
     {_offset, _length} =
       Enum.reduce(snippets, {0, byte_size(content)}, fn snippet, {offset, remaining} ->
