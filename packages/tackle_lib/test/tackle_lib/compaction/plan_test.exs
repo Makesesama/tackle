@@ -91,8 +91,10 @@ defmodule Tackle.Lib.Compaction.PlanTest do
       assert hd(plan.retained).role == :user
     end
 
-    test "handles one oversized turn by cutting at an assistant boundary" do
+    test "summarizes an oversized turn prefix instead of retaining the whole turn" do
       messages = [
+        message(:user, tokens(100)),
+        message(:assistant, tokens(100)),
         message(:user, tokens(10)),
         message(:assistant, nil, tool_calls: [%{id: "c1", name: "t", arguments: %{}}]),
         message(:tool, tokens(500), tool_call_id: "c1"),
@@ -102,10 +104,11 @@ defmodule Tackle.Lib.Compaction.PlanTest do
       ]
 
       assert {:ok, plan} = Plan.select(messages, retain_tokens: 100)
-      assert plan.cut_index > 0
-      refute match?(%Message{role: :tool}, hd(plan.retained))
-      assert length(plan.shadowed) > 0
-      assert length(plan.retained) > 0
+      assert plan.cut_index == 7
+      assert [%Message{role: :assistant}] = plan.retained
+      assert plan.retained_tokens < 100
+      assert plan.tokens_before > plan.retained_tokens * 100
+      assert Enum.any?(plan.shadowed, &(&1.role == :tool))
     end
 
     test "returns nothing_to_shadow for a single message" do

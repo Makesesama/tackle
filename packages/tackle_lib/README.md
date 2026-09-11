@@ -714,7 +714,11 @@ cache markers by default for its web agent.
 `Tackle.Lib.Compaction` replaces the **provider-visible projection** when a long
 session approaches the model's context window. It never touches the canonical
 transcript: `State.messages` stays complete, while `State.model_messages` becomes a
-synthetic checkpoint plus a verbatim recent tail.
+synthetic checkpoint plus a recent structurally valid tail. The planner walks
+backward toward the retention target and may split an oversized turn at an
+assistant boundary rather than keeping that entire turn. Retained content and
+tool linkage stay intact, while stale usage and provider continuation metadata
+are cleared at the new context boundary.
 
 Compaction is opt-in. Supply a config when building state:
 
@@ -739,9 +743,11 @@ Entry points share one transaction:
 - `Tackle.Lib.compact/2` for an idle, operator-requested compaction.
 
 A `Tackle.Lib.Compaction.Summarizer` only turns a request into text plus usage.
-The core owns balanced cut selection, strict validation (non-empty, complete, no
-tool calls, strictly smaller than the shadowed region), the durability commit, and
-the in-memory replacement. A `Tackle.Lib.Compaction.Committer` makes the record
+It receives the state's host-supplied `llm_opts` (including credential-store
+handles); explicit compaction `:llm_opts` are merged on top. The core owns
+balanced cut selection, strict validation (non-empty, complete, no tool calls,
+strictly smaller than the shadowed region), the durability commit, and the
+in-memory replacement. A `Tackle.Lib.Compaction.Committer` makes the record
 durable before replacement; a commit failure is reported as
 `{:error, {:durable_commit_failed, reason}}` so a host can fail closed.
 
