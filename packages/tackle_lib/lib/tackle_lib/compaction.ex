@@ -5,7 +5,7 @@ defmodule Tackle.Lib.Compaction do
   Compaction never touches the canonical transcript. `Tackle.Lib.State.messages`
   remains the complete, settled conversation; only `model_messages` — the array
   sent to providers — is replaced by a synthetic checkpoint followed by a
-  verbatim recent tail:
+  recent tail whose content and tool linkage are preserved:
 
       [old prefix ..............][recent balanced tail]
                   ↓
@@ -26,9 +26,10 @@ defmodule Tackle.Lib.Compaction do
   checkpoint.
 
   After replacement, retained assistant usage no longer describes the current
-  request, so it is stripped from the model projection while the canonical
-  transcript keeps it. The next assistant response re-establishes an
-  authoritative usage checkpoint.
+  request, and provider continuation state may replay large opaque reasoning
+  payloads from the pre-compaction context. Both are stripped from the model
+  projection while the canonical transcript keeps them. The next assistant
+  response re-establishes authoritative usage and continuation checkpoints.
 
   ## Entry points
 
@@ -190,10 +191,21 @@ defmodule Tackle.Lib.Compaction do
     end
   end
 
+  defp context_tokens_before(state, info, fallback) do
+    case ContextUsage.estimate(state, info) do
+      %ContextUsage{tokens: tokens} -> tokens
+      nil -> fallback
+    end
+  end
+
   defp start_pass(state, trigger, config, resolved, info, opts, pass) do
     case Plan.select(State.model_messages(state), retain_tokens: resolved.retain_tokens) do
-      {:ok, plan} -> attempt(state, trigger, config, resolved, info, plan, pass, opts)
-      {:error, _reason} = error -> error
+      {:ok, plan} ->
+        plan = %{plan | tokens_before: context_tokens_before(state, info, plan.tokens_before)}
+        attempt(state, trigger, config, resolved, info, plan, pass, opts)
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -214,7 +226,7 @@ defmodule Tackle.Lib.Compaction do
          {:ok, summary} <- summarize(state, config, resolved, ctx, plan, trigger, opts),
          :ok <- validate_summary(summary, plan, resolved),
          summary_message = checkpoint_message(compaction_id, summary.content),
-         new_model_messages = [summary_message | strip_usage(plan.retained)],
+         new_model_messages = [summary_message | reset_retained_metadata(plan.retained)],
          {:ok, record} <-
            build_record(
              state,
@@ -294,9 +306,9 @@ defmodule Tackle.Lib.Compaction do
       summary_max_tokens: resolved.summary_max_tokens
     }
 
-    summarizer_opts = Keyword.take(opts, [:llm_opts])
+    llm_opts = Keyword.merge(state.llm_opts, Keyword.get(opts, :llm_opts, []))
 
-    case config.summarizer.summarize(request, summarizer_opts) do
+    case config.summarizer.summarize(request, llm_opts: llm_opts) do
       {:ok, summary} ->
         {:ok, summary}
 
@@ -408,10 +420,9 @@ defmodule Tackle.Lib.Compaction do
     kind, reason -> {:error, {:durable_commit_failed, {kind, reason}}}
   end
 
-  defp strip_usage(messages) do
-    Enum.map(messages, fn
-      %Message{token_usage: nil} = message -> message
-      %Message{} = message -> %{message | token_usage: nil}
+  defp reset_retained_metadata(messages) do
+    Enum.map(messages, fn %Message{} = message ->
+      %{message | token_usage: nil, provider_state: nil}
     end)
   end
 

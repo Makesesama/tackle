@@ -12,9 +12,9 @@ defmodule Tackle.Session.CompactionTest do
     @behaviour Tackle.Lib.Compaction.Summarizer
 
     @impl true
-    def summarize(request, _opts) do
+    def summarize(request, opts) do
       if pid = Application.get_env(:tackle, :compaction_summary_pid) do
-        send(pid, {:compaction_request, request})
+        send(pid, {:compaction_request, request, opts})
       end
 
       case Application.get_env(:tackle, :compaction_summary_result, :default) do
@@ -56,6 +56,11 @@ defmodule Tackle.Session.CompactionTest do
 
     assert {:ok, compacted, record} = Tackle.compact(scope.root_agent_ref)
     assert record.trigger == :manual
+
+    assert_receive {:compaction_request, _request, summarizer_opts}, 5_000
+
+    assert {Tackle.Auth.Store, _reference} =
+             summarizer_opts[:llm_opts][:credential_store]
 
     assert [checkpoint, retained] = compacted.agent_state.model_messages
     assert Compaction.checkpoint?(checkpoint)

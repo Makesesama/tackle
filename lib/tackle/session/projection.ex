@@ -258,10 +258,15 @@ defmodule Tackle.Session.Projection do
 
   # Compaction replaces only the model-visible projection. The canonical
   # transcript (`messages`) is never touched, so history stays inspectable and
-  # searchable while the provider surface is a checkpoint plus a verbatim tail.
+  # searchable. Retained content and tool linkage remain verbatim, but stale
+  # usage and provider continuation state are reset at the context boundary.
   defp apply_event(%{"type" => "context.compacted", "data" => data}, projection) do
     summary = Map.fetch!(data, "summary_message")
-    retained = retained_model_messages(projection.model_messages, data)
+
+    retained =
+      projection.model_messages
+      |> retained_model_messages(data)
+      |> reset_retained_metadata()
 
     %{
       projection
@@ -323,6 +328,10 @@ defmodule Tackle.Session.Projection do
   defp drop_shadowed(messages, shadowed_ids) do
     shadowed = MapSet.new(shadowed_ids)
     Enum.drop_while(messages, &MapSet.member?(shadowed, Map.get(&1, "id")))
+  end
+
+  defp reset_retained_metadata(messages) do
+    Enum.map(messages, &Map.drop(&1, ["token_usage", "provider_state"]))
   end
 
   defp settle_turn(projection, event, data) do

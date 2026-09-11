@@ -8,8 +8,10 @@ defmodule Tackle.Lib.Compaction.Plan do
 
     * it never begins the retained tail with an orphan tool result;
     * it never separates an assistant tool call from its linked results;
-    * it prefers a user-turn boundary when one exists; and
-    * it keeps at least the retention budget of recent messages where possible.
+    * it naturally lands on a user-turn boundary when the target falls between
+      turns; and
+    * it keeps approximately the retention target, allowing less when one
+      oversized message would otherwise keep an enormous turn verbatim.
 
   All decisions are deterministic and derived from stable message ids so the
   same projection and policy always produce the same plan.
@@ -42,7 +44,7 @@ defmodule Tackle.Lib.Compaction.Plan do
   @doc """
   Selects a compaction plan for `messages`.
 
-  `:retain_tokens` sets the minimum token budget kept verbatim in the tail.
+  `:retain_tokens` sets the approximate token target kept verbatim in the tail.
   Returns `{:error, :nothing_to_shadow}` when no structurally valid cut exists.
   """
   @spec select([Message.t()], keyword()) :: {:ok, t()} | {:error, term()}
@@ -80,16 +82,13 @@ defmodule Tackle.Lib.Compaction.Plan do
   end
 
   defp choose_cut(messages, candidates, retain_tokens) do
-    satisfying =
-      Enum.filter(candidates, fn index -> tail_tokens(messages, index) >= retain_tokens end)
+    target_index = retention_target_index(messages, retain_tokens)
 
-    cut =
-      case satisfying do
-        [] -> List.first(candidates)
-        list -> List.last(list)
-      end
-
-    cut = prefer_user_boundary(messages, candidates, cut)
+    # Choose the first valid boundary at or after the message that crossed the
+    # target. This is deliberately different from requiring the retained tail
+    # to meet a minimum: one oversized tool result or response should be
+    # summarized, not force the entire containing turn to remain verbatim.
+    cut = Enum.find(candidates, &(&1 >= target_index)) || List.last(candidates)
 
     if cut > 0 and cut < length(messages) do
       {:ok, cut}
@@ -98,17 +97,20 @@ defmodule Tackle.Lib.Compaction.Plan do
     end
   end
 
-  # Retaining a little more to begin the tail at a user turn is preferred over a
-  # mid-turn assistant boundary. User boundaries are always structurally valid;
-  # when none exist (for example, one oversized turn) the budget cut stands.
-  defp prefer_user_boundary(messages, candidates, cut) do
-    user_candidates =
-      Enum.filter(candidates, fn index -> Enum.at(messages, index).role == :user end)
+  defp retention_target_index(messages, retain_tokens) do
+    messages
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.reduce_while({0, 0}, fn {message, index}, {tokens, _index} ->
+      tokens = tokens + ContextUsage.estimate_message(message)
 
-    case Enum.filter(user_candidates, &(&1 <= cut)) do
-      [] -> cut
-      list -> List.last(list)
-    end
+      if tokens >= retain_tokens do
+        {:halt, {tokens, index}}
+      else
+        {:cont, {tokens, index}}
+      end
+    end)
+    |> elem(1)
   end
 
   defp build(messages, cut) do
@@ -130,7 +132,4 @@ defmodule Tackle.Lib.Compaction.Plan do
       retained_tokens: ContextUsage.estimate_messages(retained)
     }
   end
-
-  defp tail_tokens(messages, index),
-    do: messages |> Enum.drop(index) |> ContextUsage.estimate_messages()
 end

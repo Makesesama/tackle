@@ -15,8 +15,9 @@ defmodule Tackle.Lib.CompactionTest do
     @behaviour Tackle.Lib.Compaction.Summarizer
 
     @impl true
-    def summarize(request, _opts) do
+    def summarize(request, opts) do
       Process.put(:last_request, request)
+      Process.put(:last_summarizer_opts, opts)
 
       case Process.get(:summarize_result, {:ok, default_summary()}) do
         fun when is_function(fun, 1) -> fun.(request)
@@ -84,6 +85,7 @@ defmodule Tackle.Lib.CompactionTest do
   setup do
     for key <- [
           :last_request,
+          :last_summarizer_opts,
           :last_record,
           :last_commit_context,
           :summarize_result,
@@ -137,6 +139,29 @@ defmodule Tackle.Lib.CompactionTest do
       assert Compaction.checkpoint?(hd(compacted.model_messages))
     end
 
+    test "forwards state LLM options and applies per-call overrides" do
+      credential_store = {TestCredentialStore, make_ref()}
+
+      state =
+        state([user(10), assistant(10)],
+          llm_opts: [credential_store: credential_store, receive_timeout: 1_000]
+        )
+
+      assert {:ok, _compacted, _record} =
+               Compaction.compact(state, :manual,
+                 llm_opts: [receive_timeout: 2_000, request_tag: "summary"]
+               )
+
+      assert Process.get(:last_summarizer_opts) ==
+               [
+                 llm_opts: [
+                   credential_store: credential_store,
+                   receive_timeout: 2_000,
+                   request_tag: "summary"
+                 ]
+               ]
+    end
+
     test "disables automatic pressure compaction without a usable window" do
       state = state([user(700), assistant(700)], policy: [safety_reserve: 5_000])
 
@@ -150,15 +175,22 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:error, :no_context_window} = Compaction.compact(state, :pressure, [])
     end
 
-    test "strips stale retained usage from the projection but keeps it in the transcript" do
+    test "resets retained usage and provider state without changing the transcript" do
       usage = Tackle.Lib.Usage.normalize(%{"total_tokens" => 5_000})
-      retained = %{assistant(700) | token_usage: usage}
+      provider_state = %{"provider" => "test", "opaque" => text(10_000)}
+      retained = %{assistant(700) | token_usage: usage, provider_state: provider_state}
       state = state([user(700), retained])
 
-      assert {:ok, compacted, _record} = Compaction.compact(state, :manual, [])
+      assert {:ok, compacted, record} = Compaction.compact(state, :manual, [])
 
-      assert List.last(compacted.model_messages).token_usage == nil
-      assert List.last(compacted.messages).token_usage == usage
+      assert record.tokens_before == 5_000
+      compacted_retained = List.last(compacted.model_messages)
+      canonical_retained = List.last(compacted.messages)
+
+      assert compacted_retained.token_usage == nil
+      assert compacted_retained.provider_state == nil
+      assert canonical_retained.token_usage == usage
+      assert canonical_retained.provider_state == provider_state
     end
 
     test "a summary failure changes neither the model surface nor the journal" do
@@ -345,7 +377,11 @@ defmodule Tackle.Lib.CompactionTest do
       )
       |> then(fn config -> struct(config, Keyword.get(opts, :config_opts, [])) end)
 
-    State.new(llm: selection(), compaction: config)
+    State.new(
+      llm: selection(),
+      llm_opts: Keyword.get(opts, :llm_opts, []),
+      compaction: config
+    )
     |> then(fn state -> Enum.reduce(messages, state, &State.add_message(&2, &1)) end)
   end
 

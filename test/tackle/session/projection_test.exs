@@ -44,10 +44,16 @@ defmodule Tackle.Session.ProjectionTest do
   end
 
   test "context.compacted replaces the model prefix but never the transcript" do
+    retained = %{
+      message("a1", :assistant, "reply")
+      | token_usage: %Tackle.Lib.Usage{total_tokens: 90},
+        provider_state: %{"provider" => "test", "opaque" => "large-continuation"}
+    }
+
     projection =
       Projection.new(header())
       |> Projection.apply_commit(commit(1, [message_event(message("u1", :user, "old"))]))
-      |> Projection.apply_commit(commit(2, [message_event(message("a1", :assistant, "reply"))]))
+      |> Projection.apply_commit(commit(2, [message_event(retained)]))
 
     {:ok, summary} = Codec.encode_message(message("ckpt-1", :user, "checkpoint"))
 
@@ -71,6 +77,13 @@ defmodule Tackle.Session.ProjectionTest do
     assert Enum.map(compacted.messages, & &1["id"]) == ["u1", "a1"]
     assert Enum.map(compacted.model_messages, & &1["id"]) == ["ckpt-1", "a1"]
     assert length(compacted.compactions) == 1
+
+    canonical_retained = List.last(compacted.messages)
+    model_retained = List.last(compacted.model_messages)
+    assert canonical_retained["token_usage"]["total_tokens"] == 90
+    assert canonical_retained["provider_state"]["opaque"] == "large-continuation"
+    refute Map.has_key?(model_retained, "token_usage")
+    refute Map.has_key?(model_retained, "provider_state")
 
     assert Projection.search_text(compacted) =~ "old"
     refute Projection.search_text(compacted) =~ "checkpoint"
