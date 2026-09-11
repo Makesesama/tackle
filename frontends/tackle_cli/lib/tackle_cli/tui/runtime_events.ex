@@ -114,16 +114,16 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
             activity: nil,
             error: nil,
             outcome: nil,
-            notice: Compaction.notice(record)
+            notice: nil
         }
 
-        {:noreply, Viewport.refresh(state)}
+        {:noreply, state |> Compaction.completed(record) |> Viewport.refresh()}
 
       {:error, reason} ->
-        operation_failed(state, reason)
+        compaction_failed(state, reason)
 
       other ->
-        operation_failed(state, {:invalid_compact_result, other})
+        compaction_failed(state, {:invalid_compact_result, other})
     end
   end
 
@@ -148,17 +148,19 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         {:tackle_compaction, session_id, %Event{} = event},
         %State{session_id: session_id} = state
       ) do
-    {:noreply, %{state | activity: compaction_activity(event)}}
+    {:noreply,
+     state |> Compaction.project(event.type, event.data) |> Viewport.refresh([:settled, :turn])}
   end
 
   def handle({:tackle_compaction, _session_id, _event}, state),
     do: {:noreply, state, render?: false}
 
   def handle(
-        {:tackle_session_compacted, session_id, %Snapshot{} = snapshot, _record},
+        {:tackle_session_compacted, session_id, %Snapshot{} = snapshot, record},
         %State{session_id: session_id} = state
       ) do
-    {:noreply, %{state | agent_state: snapshot.agent_state}, render?: false}
+    state = %{state | agent_state: snapshot.agent_state}
+    {:noreply, state |> Compaction.completed(record) |> Viewport.refresh()}
   end
 
   def handle({:tackle_session_compacted, _session_id, _snapshot, _record}, state),
@@ -223,6 +225,18 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       _field ->
         {:noreply, state, render?: false}
     end
+  end
+
+  # Canonical message boundaries let live compaction entries retain their place
+  # when streaming output is replaced by the finished turn's transcript.
+  def handle(
+        {:tackle_event, session_id, turn_id,
+         %Event{type: :message_end, data: %{message: %Tackle.Lib.Message{id: id}}}},
+        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+      ) do
+    ids = state.stream.message_ids
+    ids = if id in ids, do: ids, else: ids ++ [id]
+    {:noreply, %{state | stream: %{state.stream | message_ids: ids}}, render?: false}
   end
 
   def handle(
@@ -298,7 +312,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       )
       when type in [:compaction_start, :compaction_end, :compaction_retry] do
-    {:noreply, %{state | activity: compaction_activity(event)}}
+    {:noreply,
+     state |> Compaction.project(event.type, event.data) |> Viewport.refresh([:settled, :turn])}
   end
 
   def handle(
@@ -313,6 +328,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       )
       when outcome in [:ok, :error, :cancelled] do
+    state = Compaction.settle(state, agent_state)
     error = if outcome == :error, do: agent_state.error || "turn failed", else: nil
 
     state = %{
@@ -339,6 +355,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         {:tackle_turn_failed, session_id, turn_id, reason},
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
+    state = Compaction.settle(state, state.agent_state)
+
     state = %{
       state
       | active_turn: nil,
@@ -353,7 +371,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         outcome: :failed
     }
 
-    {:noreply, Viewport.refresh(state, [:pending, :turn, :error])}
+    {:noreply, Viewport.refresh(state, [:settled, :pending, :turn, :error])}
   end
 
   def handle(
@@ -404,8 +422,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, Viewport.refresh(state, [:pending, :error])}
   end
 
-  defp compaction_activity(%Event{type: type, data: data}),
-    do: Compaction.activity({type, data})
+  defp compaction_failed(state, reason) do
+    state = Compaction.project(state, :compaction_end, %{status: :failed, error: reason})
+    operation_failed(Viewport.refresh(state, [:settled, :turn]), reason)
+  end
 
   defp cancel_command(state) do
     ref = make_ref()

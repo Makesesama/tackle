@@ -12,6 +12,7 @@ defmodule Tackle.CLI.TUI.State.Stream do
           thinking: String.t(),
           response: String.t(),
           timeline: [map()],
+          message_ids: [String.t()],
           flush_ref: reference() | nil,
           coalesce?: boolean()
         }
@@ -19,6 +20,7 @@ defmodule Tackle.CLI.TUI.State.Stream do
   defstruct thinking: "",
             response: "",
             timeline: [],
+            message_ids: [],
             flush_ref: nil,
             coalesce?: true
 
@@ -29,6 +31,6 @@ defmodule Tackle.CLI.TUI.State.Stream do
   """
   @spec reset(t()) :: t()
   def reset(%__MODULE__{} = stream) do
-    %{stream | thinking: "", response: "", timeline: [], flush_ref: nil}
+    %{stream | thinking: "", response: "", timeline: [], message_ids: [], flush_ref: nil}
   end
 end

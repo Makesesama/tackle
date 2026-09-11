@@ -118,7 +118,9 @@ defmodule Tackle.CLI.TUI.StatusView do
   end
 
   defp status_segments(%State{} = state) do
-    [status_label(state)] ++ busy_segments(state) ++ metric_segments(state)
+    [status_label(state), state.notice]
+    |> Enum.reject(&is_nil/1)
+    |> Kernel.++(busy_segments(state) ++ metric_segments(state))
   end
 
   defp current_search_preview(matches, index) do
@@ -160,6 +162,9 @@ defmodule Tackle.CLI.TUI.StatusView do
       "Ctrl+C quit"
     ]
   end
+
+  defp hint_segments(%State{pending_operation: %{kind: :compact}}),
+    do: ["Compacting · draft kept", "F4 browse", "Ctrl+C quit"]
 
   defp hint_segments(%State{}) do
     [
