@@ -7,7 +7,7 @@ defmodule Tackle.CLI.Parser do
              model: String.t() | nil,
              thinking: String.t() | nil,
              prompt: String.t() | nil,
-             resume: String.t() | nil,
+             resume: String.t() | :latest | nil,
              abandon: boolean()
            }}
           | {:sessions, %{query: String.t() | nil, limit: pos_integer() | nil}}
@@ -27,6 +27,7 @@ defmodule Tackle.CLI.Parser do
   @spec parse([String.t()]) :: parse_result()
   def parse(argv) when is_list(argv) do
     parser = parser()
+    argv = normalize_resume(argv)
 
     parser
     |> Optimus.parse(argv)
@@ -34,6 +35,31 @@ defmodule Tackle.CLI.Parser do
   end
 
   def parse(argv), do: {:error, "invalid argv: #{inspect(argv)}"}
+
+  # An Optimus option cannot take an optional value, so a valueless `--resume`
+  # is rewritten to the hidden `--resume-latest` flag before parsing. A value
+  # is consumed as the session id only when it is not itself a flag, and `--`
+  # still ends option parsing for the rest of the command line.
+  defp normalize_resume(["--" | _rest] = argv), do: argv
+
+  defp normalize_resume(["--resume" | rest]) do
+    case rest do
+      [value | tail] ->
+        if resume_value?(value),
+          do: ["--resume", value | normalize_resume(tail)],
+          else: ["--resume-latest" | normalize_resume(rest)]
+
+      [] ->
+        ["--resume-latest"]
+    end
+  end
+
+  defp normalize_resume([token | rest]), do: [token | normalize_resume(rest)]
+  defp normalize_resume([]), do: []
+
+  defp resume_value?("--"), do: false
+  defp resume_value?("-" <> _rest), do: false
+  defp resume_value?(_value), do: true
 
   defp parse_result({:ok, result}, _parser), do: {:ok, run_command(result)}
   defp parse_result({:ok, [:run], result}, _parser), do: {:ok, run_command(result)}
@@ -100,7 +126,7 @@ defmodule Tackle.CLI.Parser do
         resume: [
           value_name: "SESSION_ID",
           long: "--resume",
-          help: "Resume a durable session by id instead of starting a new one",
+          help: "Resume a durable session; omit the id to resume the most recent one",
           parser: :string,
           global: true
         ]
@@ -109,6 +135,12 @@ defmodule Tackle.CLI.Parser do
         abandon: [
           long: "--abandon",
           help: "Record turn.abandoned for an interrupted resumed session",
+          global: true
+        ],
+        # Rewrite target for a valueless `--resume`; never documented.
+        resume_latest: [
+          long: "--resume-latest",
+          hide: true,
           global: true
         ]
       ],
@@ -192,9 +224,17 @@ defmodule Tackle.CLI.Parser do
        model: Map.get(result.options, :model),
        thinking: Map.get(result.options, :thinking),
        prompt: Map.get(result.args, :prompt),
-       resume: Map.get(result.options, :resume),
+       resume: resume(result),
        abandon: Map.get(result.flags, :abandon, false) == true
      }}
+  end
+
+  # An explicit session id wins over the rewrite of a valueless `--resume`.
+  defp resume(result) do
+    case Map.get(result.options, :resume) do
+      nil -> if Map.get(result.flags, :resume_latest, false), do: :latest, else: nil
+      session_id -> session_id
+    end
   end
 
   defp format_errors(parser, errors) do

@@ -35,6 +35,8 @@ mix tackle auth logout deepseek
 mix tackle run --model deepseek/deepseek-chat "Inspect this project"
 mix tackle run --thinking high "Inspect this project"
 mix tackle run --resume SESSION_ID
+mix tackle run --resume
+mix tackle run --resume -- "Carry on from here"
 mix tackle run --resume SESSION_ID --abandon
 ```
 
@@ -42,6 +44,12 @@ Resuming automatically runs controlled repair when the journal was not closed
 cleanly. Tackle preserves the original journal under the session's `recovery/`
 directory and validates recovered history before use. `--abandon` remains an
 explicit, separate decision for a turn interrupted by the crash.
+
+`--resume` without a session id continues the most recently updated durable
+session. Quitting the shell prints the command that reopens the session it was
+last attached to, so a session started, or switched to, inside the shell is also
+recoverable. A session id directly after `--resume` always wins, so a one-shot
+prompt for a valueless `--resume` follows `--` (or comes before the flag).
 
 Provider login, logout, status, and usage are adapter-driven: the CLI resolves
 the adapter by its `adapter_id` and delegates, so any configured
@@ -171,7 +179,7 @@ This shell is an experimentation build. It intentionally does not implement:
 
 - queued or steering prompts while a turn runs (the draft is kept, not queued);
 - approval or permission prompts;
-- session browsing, branching, or reconnect (a new session starts a fresh root scope, but the shell cannot yet list or reopen past sessions);
+- session browsing, branching, or reconnect (a new session starts a fresh root scope, and the shell cannot yet list or reopen past sessions; on exit it prints the `--resume` command for the session it was attached to);
 - inline terminal-scrollback rendering (the TUI owns the alternate screen);
 - a theme framework (colors are semantic but fixed), authoritative file diffs,
   or a plugin presenter registry;

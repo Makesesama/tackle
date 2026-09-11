@@ -15,7 +15,7 @@ defmodule Tackle.CLI.Run do
           model: String.t() | nil,
           thinking: String.t() | nil,
           prompt: String.t() | nil,
-          resume: String.t() | nil,
+          resume: String.t() | :latest | nil,
           abandon: boolean()
         }) :: non_neg_integer()
   def run(%{model: model, thinking: thinking, prompt: nil} = opts) do
@@ -58,9 +58,24 @@ defmodule Tackle.CLI.Run do
            models: models,
            new_session: new_session_fun(opts)
          ) do
-      :ok -> 0
-      {:error, reason} -> error(reason)
+      {:ok, session_id} ->
+        print_resume_hint(session_id)
+        0
+
+      {:error, reason} ->
+        error(reason)
     end
+  end
+
+  # The shell reports the session it was attached to when it exits, which can
+  # differ from the one it started with after the user opened a new session.
+  defp print_resume_hint(nil), do: :ok
+
+  defp print_resume_hint(session_id) do
+    Owl.IO.puts([
+      Owl.Data.tag("Resume this session: ", :cyan),
+      "tackle --resume #{session_id}"
+    ])
   end
 
   # A new session is a fresh root scope: a new durable session id and a new
@@ -266,16 +281,27 @@ defmodule Tackle.CLI.Run do
   # existing session and permits controlled repair of an unclean journal. The
   # repair path preserves the original journal and validates recovered history.
   # `override_config` is set only when the user chose a model on the command
-  # line, so an unmodified resume adopts the recorded selection.
+  # line, so an unmodified resume adopts the recorded selection. `:latest`
+  # resolves to the most recently updated durable session.
   defp durable_session(opts) do
-    resume = Keyword.get(opts, :resume)
-
-    SessionSpec.new(
-      session_id: resume,
-      repair: is_binary(resume),
-      override_config: Keyword.get(opts, :override_config, false)
-    )
+    with {:ok, session_id} <- resolve_resume(Keyword.get(opts, :resume)) do
+      SessionSpec.new(
+        session_id: session_id,
+        repair: is_binary(session_id),
+        override_config: Keyword.get(opts, :override_config, false)
+      )
+    end
   end
+
+  defp resolve_resume(:latest) do
+    case Tackle.list_sessions(limit: 1) do
+      {:ok, %{sessions: [session | _rest]}} -> {:ok, session.session_id}
+      {:ok, %{sessions: []}} -> {:error, :no_sessions}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp resolve_resume(session_id), do: {:ok, session_id}
 
   defp ensure_recoverable(agent_ref, abandon?) do
     case Tackle.snapshot(agent_ref) do

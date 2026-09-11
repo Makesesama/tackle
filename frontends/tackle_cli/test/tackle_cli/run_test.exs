@@ -105,6 +105,32 @@ defmodule Tackle.CLI.RunTest do
     assert File.ls!(recovery_dir) != []
   end
 
+  test "resume without an id continues the most recently updated session", %{home: home} do
+    # The catalog is process-global, so start the harness before seeding for the
+    # seeded commits to be indexed under this test's home.
+    {:ok, _apps} = Application.ensure_all_started(:tackle)
+
+    older = seed_session(home, "older")
+    Process.sleep(5)
+    newer = seed_session(home, "newer")
+
+    output =
+      capture_io(fn ->
+        assert 0 ==
+                 Run.run(%{
+                   model: nil,
+                   thinking: nil,
+                   prompt: "continued",
+                   resume: :latest,
+                   abandon: false
+                 })
+      end)
+
+    assert output =~ "repaired"
+    assert completed_prompt?(newer, "continued", home)
+    refute completed_prompt?(older, "continued", home)
+  end
+
   test "auth commands dispatch to the resolved adapter" do
     Application.put_env(:tackle, :adapters, [AuthAdapter])
     on_exit(fn -> Tackle.Auth.delete("cli-auth") end)
@@ -153,6 +179,26 @@ defmodule Tackle.CLI.RunTest do
 
   defp restore_env(name, nil), do: System.delete_env(name)
   defp restore_env(name, value), do: System.put_env(name, value)
+
+  # Seeds one closed, cleanly settled durable session in `home`.
+  defp seed_session(home, prompt) do
+    session_id = "session-#{System.unique_integer([:positive])}"
+    {:ok, journal} = Journal.start_link(session_id: session_id, home: home)
+    Process.unlink(journal)
+
+    assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, prompt)
+    assert :ok = Journal.append_message(journal, Message.user(prompt))
+    assert :ok = Journal.settle_turn(journal, "turn.completed", %{})
+    assert :ok = Journal.close_journal(journal)
+    GenServer.stop(journal)
+
+    session_id
+  end
+
+  defp completed_prompt?(session_id, prompt, home) do
+    {:ok, session} = Tackle.inspect_session(session_id, home: home)
+    Enum.any?(session.messages, &(&1["content"] == prompt))
+  end
 
   defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)

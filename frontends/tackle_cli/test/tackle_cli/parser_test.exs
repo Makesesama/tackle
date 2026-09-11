@@ -44,6 +44,28 @@ defmodule Tackle.CLI.ParserTest do
     assert run.prompt == "hello"
   end
 
+  test "parses a valueless resume as the most recent session" do
+    assert {:ok, {:run, %{resume: :latest, prompt: nil}}} = Parser.parse(["--resume"])
+    assert {:ok, {:run, %{resume: :latest, prompt: nil}}} = Parser.parse(["run", "--resume"])
+
+    assert {:ok, {:run, %{resume: :latest, model: "deepseek/deepseek-chat"}}} =
+             Parser.parse(["--resume", "--model", "deepseek/deepseek-chat"])
+
+    assert {:ok, {:run, %{resume: :latest, abandon: true}}} =
+             Parser.parse(["run", "--resume", "--abandon"])
+  end
+
+  test "keeps an explicit session id and an id after a double dash" do
+    assert {:ok, {:run, %{resume: "session-1", prompt: "hello"}}} =
+             Parser.parse(["run", "--resume=session-1", "hello"])
+
+    assert {:ok, {:run, %{resume: "session-1", prompt: "hello"}}} =
+             Parser.parse(["run", "--resume", "session-1", "hello"])
+
+    assert {:ok, {:run, %{resume: nil, prompt: "--resume"}}} =
+             Parser.parse(["run", "--", "--resume"])
+  end
+
   test "parses session listing and search command" do
     assert {:ok, {:sessions, %{query: nil, limit: nil}}} = Parser.parse(["sessions"])
 
