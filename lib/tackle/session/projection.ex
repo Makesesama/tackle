@@ -1,14 +1,49 @@
+defmodule Tackle.Session.ProjectionError do
+  @moduledoc """
+  Raised when a validated commit cannot be folded into a projection.
+
+  Replay treats this as corruption rather than repairing it: an invalid parent
+  link, a duplicate entry id, an unknown active position, or a malformed
+  compaction record stops writable resume instead of silently dropping history.
+  """
+
+  defexception [:message, :reason]
+
+  @impl true
+  def exception(opts) do
+    reason = Keyword.get(opts, :reason)
+    %__MODULE__{reason: reason, message: "invalid projection transition: #{inspect(reason)}"}
+  end
+end
+
 defmodule Tackle.Session.Projection do
   @moduledoc """
   Durable projection folded from validated journal commits.
 
-  A projection is plain conversation data plus audit metadata. It never holds
-  runtime handles, and it is not a `%Tackle.Lib.State{}`: the runtime state is
-  rebuilt from a projection together with current trusted configuration.
+  A projection is conversation data plus audit metadata. It never holds runtime
+  handles, and it is not a `%Tackle.Lib.State{}`: the runtime state is rebuilt
+  from a projection together with current trusted configuration.
 
-  The projection is what the catalog summarizes, what the loader reconstructs
-  from, and what forks copy.
+  Conversation structure is folded into a `Tackle.Lib.Tree`, even for linear
+  journals, so branching state and the canonical archive are derived through one
+  implementation. Two projections expose the accepted semantics:
+
+    * `messages` — the complete archive of settled messages on every branch, in
+      commit order; shared ancestors appear once. Search and counts read this.
+    * `model_messages` — the active path's provider-visible context, with the
+      compactions that occur on that path applied.
+
+  `tree_enabled?` records whether the session is allowed to branch. A legacy
+  linear journal keeps `false` until the host records an explicit
+  `tree.enabled` transition; the derived chain is already present either way.
   """
+
+  alias Tackle.Lib.Compaction.Record
+  alias Tackle.Lib.Message
+  alias Tackle.Lib.Tree
+  alias Tackle.Session.Codec
+  alias Tackle.Session.Compaction
+  alias Tackle.Session.ProjectionError
 
   @terminal_events ~w(turn.completed turn.errored turn.cancelled turn.crashed turn.abandoned)
 
@@ -22,6 +57,8 @@ defmodule Tackle.Session.Projection do
             tags: [],
             model_ref: nil,
             thinking: nil,
+            tree_enabled?: false,
+            tree: nil,
             messages: [],
             model_messages: [],
             compactions: [],
@@ -46,6 +83,8 @@ defmodule Tackle.Session.Projection do
           tags: [String.t()],
           model_ref: String.t() | nil,
           thinking: String.t() | nil,
+          tree_enabled?: boolean(),
+          tree: Tree.t(),
           messages: [map()],
           model_messages: [map()],
           compactions: [map()],
@@ -69,7 +108,9 @@ defmodule Tackle.Session.Projection do
       model_ref: Keyword.get(opts, :model_ref),
       thinking: Keyword.get(opts, :thinking),
       title: Keyword.get(opts, :title),
-      tags: Keyword.get(opts, :tags, [])
+      tags: Keyword.get(opts, :tags, []),
+      tree_enabled?: Keyword.get(opts, :tree, false) or header["tree"] == true,
+      tree: Tree.new()
     }
   end
 
@@ -77,11 +118,17 @@ defmodule Tackle.Session.Projection do
   Applies one validated commit to a projection.
 
   The commit envelope must already have passed `Tackle.Session.Log.validate_commit/3`.
-  Unknown optional events are ignored by the core projection.
+  Unknown optional events are ignored by the core projection. A commit that
+  cannot be folded consistently raises `Tackle.Session.ProjectionError` so
+  replay can reject it instead of dropping history.
   """
   @spec apply_commit(t(), map()) :: t()
   def apply_commit(%__MODULE__{} = projection, %{"seq" => seq, "events" => events} = commit) do
-    projection = Enum.reduce(events, projection, &apply_event/2)
+    projection =
+      events
+      |> Enum.reduce(projection, &apply_event/2)
+      |> refresh()
+
     %{projection | last_seq: seq, updated_at: commit["written_at"] || projection.updated_at}
   end
 
@@ -136,7 +183,8 @@ defmodule Tackle.Session.Projection do
   Explicit or derived title, user and assistant message text, cwd, and explicit
   tags are indexed. Reasoning, provider continuation state, tool arguments, and
   tool output are excluded by default to bound index size and accidental secret
-  exposure.
+  exposure. Search covers the complete archive, so switching branches never
+  removes results.
   """
   @spec search_text(t()) :: String.t()
   def search_text(%__MODULE__{} = projection) do
@@ -150,6 +198,34 @@ defmodule Tackle.Session.Projection do
     parts
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join("\n")
+  end
+
+  @doc """
+  Returns a bounded, payload-free summary of the conversation tree.
+
+  Hosts that inspect a session without starting a runtime scope use this to
+  discover branches, parent links, and the active position. Full message and
+  compaction payloads stay in `messages` and `compactions` so they are not
+  duplicated.
+  """
+  @spec tree_summary(t()) :: map()
+  def tree_summary(%__MODULE__{tree: nil} = projection) do
+    %{enabled?: projection.tree_enabled?, active_id: nil, entries: []}
+  end
+
+  def tree_summary(%__MODULE__{tree: %Tree{} = tree} = projection) do
+    entries =
+      tree
+      |> Tree.enumerate()
+      |> Enum.map(fn %{id: id, parent_id: parent_id, kind: kind} ->
+        %{id: id, parent_id: parent_id, kind: kind}
+      end)
+
+    %{
+      enabled?: projection.tree_enabled?,
+      active_id: Tree.active_id(tree),
+      entries: entries
+    }
   end
 
   @doc "Returns the first part of the first user message as a preview."
@@ -190,7 +266,8 @@ defmodule Tackle.Session.Projection do
         tags: Map.get(data, "tags", projection.tags),
         model_ref: Map.get(data, "model_ref", projection.model_ref),
         thinking: Map.get(data, "thinking", projection.thinking),
-        cwd: Map.get(data, "cwd", projection.cwd)
+        cwd: Map.get(data, "cwd", projection.cwd),
+        tree_enabled?: projection.tree_enabled? or Map.get(data, "tree", false)
     }
   end
 
@@ -224,6 +301,17 @@ defmodule Tackle.Session.Projection do
 
   defp apply_event(%{"type" => "session.forked"}, projection), do: projection
 
+  defp apply_event(%{"type" => "tree.enabled"}, projection) do
+    %{projection | tree_enabled?: true}
+  end
+
+  defp apply_event(%{"type" => "tree.navigated", "data" => data}, projection) do
+    case Tree.move(projection.tree, Map.get(data, "to_id")) do
+      {:ok, tree} -> %{projection | tree: tree}
+      {:error, reason} -> raise ProjectionError, reason: reason
+    end
+  end
+
   defp apply_event(%{"type" => "turn.started", "data" => data} = event, projection) do
     turn_id = data["turn_id"] || event["turn_id"]
 
@@ -245,34 +333,35 @@ defmodule Tackle.Session.Projection do
   end
 
   defp apply_event(%{"type" => "message.appended", "data" => data}, projection) do
-    message = Map.fetch!(data, "message")
+    parent_id = parent_id(data, projection.tree.active_id)
+    message = decode_message(Map.fetch!(data, "message"))
 
-    projection = %{
-      projection
-      | messages: projection.messages ++ [message],
-        model_messages: projection.model_messages ++ [message]
-    }
-
-    maybe_resolve_tool(projection, message)
+    case Tree.append_message(projection.tree, message, parent_id: parent_id) do
+      {:ok, tree, _entry} -> %{projection | tree: tree}
+      {:error, reason} -> raise ProjectionError, reason: reason
+    end
   end
 
-  # Compaction replaces only the model-visible projection. The canonical
-  # transcript (`messages`) is never touched, so history stays inspectable and
-  # searchable. Retained content and tool linkage remain verbatim, but stale
-  # usage and provider continuation state are reset at the context boundary.
+  # Compaction replaces only the active branch's model surface. The canonical
+  # archive is never touched, so history stays inspectable and searchable.
+  # Sibling branches never inherit the checkpoint because it is an entry on one
+  # branch's ancestry.
   defp apply_event(%{"type" => "context.compacted", "data" => data}, projection) do
-    summary = Map.fetch!(data, "summary_message")
+    parent_id = parent_id(data, projection.tree.active_id)
 
-    retained =
-      projection.model_messages
-      |> retained_model_messages(data)
-      |> reset_retained_metadata()
+    case Compaction.decode(data) do
+      {:ok, %Record{} = record} ->
+        case Tree.append_compaction(projection.tree, record, parent_id: parent_id) do
+          {:ok, tree, _entry} ->
+            %{projection | tree: tree, compactions: projection.compactions ++ [data]}
 
-    %{
-      projection
-      | model_messages: [summary | retained],
-        compactions: projection.compactions ++ [data]
-    }
+          {:error, reason} ->
+            raise ProjectionError, reason: reason
+        end
+
+      {:error, reason} ->
+        raise ProjectionError, reason: {:invalid_compaction, reason}
+    end
   end
 
   defp apply_event(%{"type" => "tool.execution_started", "data" => data}, projection) do
@@ -294,44 +383,47 @@ defmodule Tackle.Session.Projection do
 
   defp apply_event(_event, projection), do: projection
 
-  defp maybe_resolve_tool(projection, %{"role" => "tool", "tool_call_id" => tool_call_id}) do
-    update_active_turn(projection, fn turn ->
-      pending =
-        Enum.reject(turn.pending_tools, fn pending ->
-          pending.tool_call_id == tool_call_id
-        end)
+  # The archive and the active model surface are both derived projections of the
+  # tree, so a single fold implementation serves live appends and replay.
+  defp refresh(%__MODULE__{tree: tree} = projection) do
+    %{
+      projection
+      | messages: plain_messages(tree),
+        model_messages: plain_model_messages(tree)
+    }
+  end
 
-      %{turn | pending_tools: pending}
+  defp plain_messages(tree) do
+    tree
+    |> Tree.enumerate()
+    |> Enum.flat_map(fn
+      %{kind: :message, message: %Message{} = message} -> [plain_message(message)]
+      _entry -> []
     end)
   end
 
-  defp maybe_resolve_tool(projection, _message), do: projection
+  defp plain_model_messages(tree) do
+    tree
+    |> Tree.model_context()
+    |> Enum.map(&plain_message/1)
+  end
 
-  # The first retained id pins the tail exactly. If it is missing (for example a
-  # hand-written event), fall back to dropping the leading shadowed ids so replay
-  # still reconstructs a valid surface rather than failing a whole session.
-  defp retained_model_messages(model_messages, data) do
-    shadowed_ids = Map.get(data, "shadowed_message_ids", [])
+  defp plain_message(%Message{} = message) do
+    message
+    |> Codec.encode_message!()
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
 
-    case Map.get(data, "first_retained_message_id") do
-      nil ->
-        drop_shadowed(model_messages, shadowed_ids)
-
-      id when is_binary(id) ->
-        case Enum.find_index(model_messages, &(Map.get(&1, "id") == id)) do
-          nil -> drop_shadowed(model_messages, shadowed_ids)
-          index -> Enum.drop(model_messages, index)
-        end
+  defp decode_message(data) do
+    case Codec.decode_message(data) do
+      {:ok, message} -> message
+      {:error, reason} -> raise ProjectionError, reason: reason
     end
   end
 
-  defp drop_shadowed(messages, shadowed_ids) do
-    shadowed = MapSet.new(shadowed_ids)
-    Enum.drop_while(messages, &MapSet.member?(shadowed, Map.get(&1, "id")))
-  end
-
-  defp reset_retained_metadata(messages) do
-    Enum.map(messages, &Map.drop(&1, ["token_usage", "provider_state"]))
+  defp parent_id(data, default) do
+    if Map.has_key?(data, "parent_id"), do: data["parent_id"], else: default
   end
 
   defp settle_turn(projection, event, data) do

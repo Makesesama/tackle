@@ -279,6 +279,58 @@ not closed cleanly. The original journal is preserved under the session's
 not silently resolve an interrupted turn; pass `--abandon` to record that
 separate recovery decision.
 
+### Conversation trees
+
+Durable CLI sessions keep their history as an optional conversation tree, so a
+session can hold alternative paths instead of a single linear transcript. The
+engine owns the tree rules in `Tackle.Lib.Tree`; the root harness owns durable
+records and the CLI owns the picker. A tree is opt-in for library hosts
+(`Tackle.Lib.new(tree: true)`), and durable root sessions enable it by default.
+
+Three surfaces are deliberately distinct:
+
+- the **canonical tree** holds every settled entry on every branch, once;
+- the **active transcript** (`Tackle.Lib.messages/1`) is the selected branch and
+  is never compacted; and
+- the **model context** (`Tackle.Lib.model_messages/1`) is the selected branch
+  with the compactions that occur on that path applied.
+
+`Tackle.Lib.usage/1` aggregates assistant usage across the whole archive while
+`Tackle.Lib.branch_usage/1` follows the active path. `Tackle.Lib.context_usage/1`
+reports the model projection, so branch switches reset context pressure to the
+selected branch.
+
+Navigation is an idle, committed operation: it validates the destination,
+persists `tree.navigated`, and only then installs the new position. It never
+runs a turn, re-executes a tool, or edits entries, and an incomplete tool batch
+is inspectable but not selectable.
+
+```elixir
+{:ok, scope} = Tackle.start_scope(scope_spec)
+{:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "investigate the cache")
+
+# Move to the parent of an earlier user message and get it back as a draft.
+{:ok, _snapshot, outcome} = Tackle.navigate(scope.root_agent_ref, {:edit, user_message_id})
+outcome.draft.content
+
+# Return to the empty conversation before the first message.
+{:ok, _snapshot, _outcome} = Tackle.navigate(scope.root_agent_ref, nil)
+```
+
+In the terminal, `/tree` (or `F5`) opens a search-first picker over the tree.
+Selecting a user message moves to its parent and, when the composer is
+untouched, fills it with that message so submitting the edit creates a sibling
+branch. Selecting other entries moves to them. Escape closes the picker without
+changing the conversation or the draft, and the picker states plainly that
+navigation does not undo workspace changes.
+
+Existing linear journals still load unchanged: their chain becomes the initial
+tree, and the first branching write records an explicit `tree.enabled`
+transition rather than rewriting the source file. `Tackle.fork_session/2`
+remains sequence-based and copies the tree and active position into the
+self-contained child. See [`docs/SESSION_TREE_PLAN.md`](docs/SESSION_TREE_PLAN.md)
+for the implemented first version and the deliberately deferred increments.
+
 ### Breaking migration to scoped runtime
 
 Session-PID startup is replaced by scope startup: `Tackle.start_session/1`,

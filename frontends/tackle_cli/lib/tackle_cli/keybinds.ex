@@ -61,6 +61,7 @@ defmodule Tackle.CLI.Keybinds do
           | :submit
           | :thinking_picker
           | :toggle_thinking
+          | :tree
           | :unbound
           | {:adjacent, String.t()}
           | {:input, String.t()}
@@ -92,7 +93,7 @@ defmodule Tackle.CLI.Keybinds do
   leave, or open something.
   """
   @spec repeatable?(Key.t()) :: boolean()
-  def repeatable?(%Key{code: code}) when code in ["esc", "enter", "f1", "f2", "f3", "f4"],
+  def repeatable?(%Key{code: code}) when code in ["esc", "enter", "f1", "f2", "f3", "f4", "f5"],
     do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
@@ -115,6 +116,7 @@ defmodule Tackle.CLI.Keybinds do
   def base(%Key{code: "f2"}, _focus), do: :thinking_picker
   def base(%Key{code: "f3"}, _focus), do: :settings_picker
   def base(%Key{code: "f4"}, _focus), do: :browse
+  def base(%Key{code: "f5"}, _focus), do: :tree
 
   def base(key, :transcript), do: {:transcript, transcript(key)}
   def base(key, _composer), do: composer(key)

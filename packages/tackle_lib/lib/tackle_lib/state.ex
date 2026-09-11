@@ -16,6 +16,7 @@ defmodule Tackle.Lib.State do
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry
+  alias Tackle.Lib.Tree
   alias Tackle.Lib.Usage
 
   @type status :: :idle | :thinking | :acting | :completed | :error | :cancelled
@@ -45,7 +46,9 @@ defmodule Tackle.Lib.State do
           pending_assistant_id: String.t() | nil,
           compaction: Compaction.Config.t() | nil,
           last_compaction_id: String.t() | nil,
-          overflow_retries: non_neg_integer()
+          overflow_retries: non_neg_integer(),
+          tree: Tree.t() | nil,
+          tree_committer: module() | nil
         }
 
   @default_max_iterations :infinity
@@ -73,7 +76,9 @@ defmodule Tackle.Lib.State do
             pending_assistant_id: nil,
             compaction: nil,
             last_compaction_id: nil,
-            overflow_retries: 0
+            overflow_retries: 0,
+            tree: nil,
+            tree_committer: nil
 
   @doc """
   Creates a new agent state with the given options.
@@ -93,6 +98,10 @@ defmodule Tackle.Lib.State do
     * `:id_generator` - Zero-arity function used for generated ids
     * `:compaction` - `Tackle.Lib.Compaction.Config`, options, `false`, or `nil`
       (default: `nil`, compaction disabled)
+    * `:tree` - `true`, a `Tackle.Lib.Tree`, or `nil`/`false` (default: `nil`).
+      `true` enables an opt-in conversation tree with branching history.
+    * `:tree_committer` - module implementing `Tackle.Lib.Tree.Committer` used
+      to persist navigation before it is installed (default: `nil`)
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
@@ -123,8 +132,20 @@ defmodule Tackle.Lib.State do
       snapshot: nil,
       error: nil,
       pending_assistant_id: nil,
-      compaction: normalize_compaction(Keyword.get(opts, :compaction))
+      compaction: normalize_compaction(Keyword.get(opts, :compaction)),
+      tree: normalize_tree(Keyword.get(opts, :tree)),
+      tree_committer: Keyword.get(opts, :tree_committer)
     }
+  end
+
+  defp normalize_tree(nil), do: nil
+  defp normalize_tree(false), do: nil
+  defp normalize_tree(true), do: Tree.new()
+  defp normalize_tree(%Tree{} = tree), do: tree
+
+  defp normalize_tree(other) do
+    raise ArgumentError,
+          "expected :tree to be true, a Tackle.Lib.Tree, false, or nil, got: #{inspect(other)}"
   end
 
   defp normalize_compaction(nil), do: nil
@@ -159,11 +180,30 @@ defmodule Tackle.Lib.State do
   @doc """
   Adds a message to the conversation history.
 
-  The canonical transcript always receives the message. The model projection is
-  kept in step: while it mirrors the transcript (`nil`) it stays mirrored, and
-  once compaction has replaced it the message is appended explicitly.
+  In linear mode the canonical transcript always receives the message and the
+  model projection is kept in step: while it mirrors the transcript (`nil`) it
+  stays mirrored, and once compaction has replaced it the message is appended
+  explicitly.
+
+  In tree mode the message is appended to the active position and the transcript
+  and model-context readers are re-derived from the tree.
   """
   @spec add_message(t(), Message.t()) :: t()
+  def add_message(%__MODULE__{tree: %Tree{} = tree} = state, %Message{} = message) do
+    case Tree.append_message(tree, message) do
+      {:ok, tree, _entry} ->
+        %{
+          state
+          | tree: tree,
+            messages: Tree.transcript(tree),
+            model_messages: Tree.model_context(tree)
+        }
+
+      {:error, reason} ->
+        raise ArgumentError, "cannot append message to conversation tree: #{inspect(reason)}"
+    end
+  end
+
   def add_message(%__MODULE__{} = state, %Message{} = message) do
     %{
       state
@@ -214,16 +254,34 @@ defmodule Tackle.Lib.State do
   @doc """
   Derives aggregate token/cost usage for the current run/session.
 
-  Tackle.Lib does not persist sessions, but `State` is the in-memory session/run
-  representation. Usage is derived from assistant messages so messages remain
-  the source of truth and no running total can drift.
+  In tree mode this covers the complete archive: every settled assistant message
+  is counted once even when branches share it. Use `branch_usage/1` for the
+  active path.
   """
   @spec usage(t()) :: Usage.t()
+  def usage(%__MODULE__{tree: %Tree{} = tree}), do: Tree.usage(tree)
+
   def usage(%__MODULE__{} = state) do
     state.messages
     |> Enum.map(& &1.token_usage)
     |> Usage.aggregate()
   end
+
+  @doc """
+  Derives token/cost usage for the active conversation path only.
+
+  Linear mode has a single path, so this equals `usage/1`.
+  """
+  @spec branch_usage(t()) :: Usage.t()
+  def branch_usage(%__MODULE__{tree: %Tree{} = tree}), do: Tree.branch_usage(tree)
+  def branch_usage(%__MODULE__{} = state), do: usage(state)
+
+  @doc """
+  Returns the most recent compaction id on the active path, or nil.
+  """
+  @spec last_compaction_id(t()) :: String.t() | nil
+  def last_compaction_id(%__MODULE__{tree: %Tree{} = tree}), do: Tree.last_compaction_id(tree)
+  def last_compaction_id(%__MODULE__{last_compaction_id: id}), do: id
 
   @doc """
   Sets an error on the state.

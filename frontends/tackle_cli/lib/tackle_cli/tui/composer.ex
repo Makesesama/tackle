@@ -16,7 +16,7 @@ defmodule Tackle.CLI.TUI.Composer do
 
   alias ExRatatui.Command
   alias ExRatatui.Event.Key
-  alias Tackle.CLI.TUI.{State, Viewport}
+  alias Tackle.CLI.TUI.{State, Tree, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
 
   @doc """
@@ -55,56 +55,77 @@ defmodule Tackle.CLI.TUI.Composer do
   def key(%State{} = state, _key), do: {:noreply, state, render?: false}
 
   @doc """
-  Submits the trimmed draft as the next turn.
+  Submits the trimmed draft as the next turn, or runs a shell command.
 
-  Does nothing while a turn is active (the draft is kept and labeled) or when
-  the draft is empty. A rejected submit reports the failure in the status row
-  and leaves the draft untouched.
+  `/tree` opens the conversation-tree picker instead of sending a prompt. Does
+  nothing while a turn is active (the draft is kept and labeled) or when the
+  draft is empty. A rejected submit reports the failure in the status row and
+  leaves the draft untouched.
   """
   @spec submit(State.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def submit(%State{} = state) do
+    raw_draft = ExRatatui.textarea_get_value(state.input)
+
     cond do
       state.active_turn != nil or state.pending_operation != nil ->
         {:noreply, %{state | notice: "Busy · draft kept for the next turn (not queued)"}}
+
+      String.trim(raw_draft) == "/tree" ->
+        {:noreply, open_tree(state)}
 
       state.draft_empty? ->
         {:noreply, state, render?: false}
 
       true ->
-        raw_draft = ExRatatui.textarea_get_value(state.input)
-        prompt = String.trim(raw_draft)
-        ref = make_ref()
-        agent_ref = state.agent_ref
-
-        :ok = ExRatatui.textarea_set_value(state.input, "")
-
-        state = %{
-          state
-          | pending_operation: %{ref: ref, kind: :submit, raw_draft: raw_draft},
-            pending_prompt: prompt,
-            stream: Stream.reset(state.stream),
-            metrics: Metrics.reset(state.metrics),
-            tool_activity: [],
-            activity: "starting",
-            error: nil,
-            outcome: nil,
-            notice: nil
-        }
-
-        state =
-          state
-          |> Viewport.update_draft()
-          |> Viewport.scroll_to(:end)
-          |> Viewport.refresh([:pending, :turn, :error])
-
-        command =
-          Command.async(
-            fn -> Tackle.submit(agent_ref, prompt) end,
-            &{:tui_operation_result, ref, :submit, &1}
-          )
-
-        {:noreply, state, commands: [command]}
+        submit_turn(state, raw_draft)
     end
+  end
+
+  defp open_tree(%State{} = state) do
+    {:noreply, opened} = Tree.open(state)
+
+    if match?({:tree, _}, opened.overlay) do
+      :ok = ExRatatui.textarea_set_value(opened.input, "")
+      opened |> Viewport.update_draft() |> Viewport.relayout()
+    else
+      # The picker did not open (no tree, empty tree); keep the draft intact.
+      opened
+    end
+  end
+
+  defp submit_turn(%State{} = state, raw_draft) do
+    prompt = String.trim(raw_draft)
+    ref = make_ref()
+    agent_ref = state.agent_ref
+
+    :ok = ExRatatui.textarea_set_value(state.input, "")
+
+    state = %{
+      state
+      | pending_operation: %{ref: ref, kind: :submit, raw_draft: raw_draft},
+        pending_prompt: prompt,
+        stream: Stream.reset(state.stream),
+        metrics: Metrics.reset(state.metrics),
+        tool_activity: [],
+        activity: "starting",
+        error: nil,
+        outcome: nil,
+        notice: nil
+    }
+
+    state =
+      state
+      |> Viewport.update_draft()
+      |> Viewport.scroll_to(:end)
+      |> Viewport.refresh([:pending, :turn, :error])
+
+    command =
+      Command.async(
+        fn -> Tackle.submit(agent_ref, prompt) end,
+        &{:tui_operation_result, ref, :submit, &1}
+      )
+
+    {:noreply, state, commands: [command]}
   end
 end

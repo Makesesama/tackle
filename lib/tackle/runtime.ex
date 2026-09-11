@@ -167,6 +167,36 @@ defmodule Tackle.Runtime do
   def compact(%AgentRef{}, opts), do: {:error, {:invalid_compact_options, opts}}
 
   @doc """
+  Reads an agent's conversation tree.
+
+  Returns `{:ok, nil}` when the agent has branching disabled and the
+  `Tackle.Lib.Tree` otherwise. The tree is a pure value, so the caller never
+  receives a journal PID or a runtime handle.
+  """
+  @spec tree(AgentRef.t()) :: {:ok, Tackle.Lib.Tree.t() | nil} | {:error, term()}
+  def tree(%AgentRef{} = agent_ref) do
+    with_session(agent_ref, &Session.tree/1)
+  end
+
+  @doc """
+  Navigates an idle agent's conversation tree.
+
+  The destination is validated and committed to the journal before the new
+  active position is installed and published to subscribers. Rejected during an
+  active turn or while an interrupted turn awaits recovery.
+  """
+  @spec navigate(AgentRef.t(), Tackle.Lib.Tree.Navigator.target(), keyword()) ::
+          {:ok, Tackle.Session.Snapshot.t(), Tackle.Lib.Tree.Navigator.outcome()}
+          | {:error, term()}
+  def navigate(agent_ref, target, opts \\ [])
+
+  def navigate(%AgentRef{} = agent_ref, target, opts) when is_list(opts) do
+    with_session(agent_ref, &Session.navigate(&1, target, opts))
+  end
+
+  def navigate(%AgentRef{}, _target, opts), do: {:error, {:invalid_navigation_options, opts}}
+
+  @doc """
   Requests one delegated run from an agent or workflow requester.
 
   `spec_or_profile` is either an allowlisted profile name (the model-visible

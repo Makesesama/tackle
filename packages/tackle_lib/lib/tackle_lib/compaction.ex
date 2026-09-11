@@ -54,6 +54,7 @@ defmodule Tackle.Lib.Compaction do
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
   alias Tackle.Lib.Tool.Registry
+  alias Tackle.Lib.Tree
 
   @marker "[[context-checkpoint]]"
 
@@ -240,11 +241,7 @@ defmodule Tackle.Lib.Compaction do
              pass
            ),
          :ok <- commit(state, config, record) do
-      state = %{
-        state
-        | model_messages: new_model_messages,
-          last_compaction_id: record.compaction_id
-      }
+      state = install(state, record, new_model_messages)
 
       emit(opts, :compaction_end, %{
         compaction_id: record.compaction_id,
@@ -390,7 +387,7 @@ defmodule Tackle.Lib.Compaction do
        summary_message: checkpoint_message(compaction_id, summary.content),
        shadowed_message_ids: plan.shadowed_ids,
        first_retained_message_id: plan.first_retained_id,
-       previous_compaction_id: state.last_compaction_id,
+       previous_compaction_id: State.last_compaction_id(state),
        tokens_before: plan.tokens_before,
        estimated_tokens_after: estimated_tokens_after,
        summary_usage: summary.usage,
@@ -403,7 +400,14 @@ defmodule Tackle.Lib.Compaction do
   defp commit(_state, %Config{committer: nil}, _record), do: :ok
 
   defp commit(state, %Config{committer: module}, %Record{} = record) do
-    case module.commit(record, %{session_id: state.session_id, context: state.context}) do
+    context = %{
+      session_id: state.session_id,
+      context: state.context,
+      tree: state.tree,
+      tree_parent_id: state.tree && state.tree.active_id
+    }
+
+    case module.commit(record, context) do
       :ok ->
         :ok
 
@@ -417,6 +421,30 @@ defmodule Tackle.Lib.Compaction do
     error -> {:error, {:durable_commit_failed, Exception.message(error)}}
   catch
     kind, reason -> {:error, {:durable_commit_failed, {kind, reason}}}
+  end
+
+  # In tree mode a compaction is a first-class entry on the active branch: the
+  # record becomes a node, and the model context is re-derived from the tree so
+  # the checkpoint applies only to the branch it was created on. Linear mode
+  # keeps replacing the explicit model projection as before.
+  defp install(%State{tree: %Tree{} = tree} = state, %Record{} = record, _model_messages) do
+    case Tree.append_compaction(tree, record) do
+      {:ok, tree, _entry} ->
+        %{
+          state
+          | tree: tree,
+            messages: Tree.transcript(tree),
+            model_messages: Tree.model_context(tree),
+            last_compaction_id: record.compaction_id
+        }
+
+      {:error, reason} ->
+        raise ArgumentError, "cannot append compaction to conversation tree: #{inspect(reason)}"
+    end
+  end
+
+  defp install(%State{} = state, %Record{} = record, model_messages) do
+    %{state | model_messages: model_messages, last_compaction_id: record.compaction_id}
   end
 
   defp reset_retained_metadata(messages) do

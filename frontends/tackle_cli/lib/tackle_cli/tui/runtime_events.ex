@@ -12,7 +12,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   """
 
   alias ExRatatui.Command
-  alias Tackle.CLI.TUI.{Compaction, State, Util, Viewport}
+  alias Tackle.CLI.TUI.{Compaction, State, Tree, Util, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.Lib.{ContextUsage, Event, Usage}
   alias Tackle.Lib.State, as: AgentState
@@ -138,6 +138,32 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
+  def handle(
+        {:tui_operation_result, ref, :navigate, result},
+        %State{pending_operation: %{ref: ref, kind: :navigate}} = state
+      ) do
+    case result do
+      {:ok, %Snapshot{} = snapshot, outcome} ->
+        state = %{
+          state
+          | pending_operation: nil,
+            agent_state: snapshot.agent_state,
+            active_turn: snapshot.active_turn,
+            activity: nil,
+            error: nil,
+            outcome: nil
+        }
+
+        {:noreply, state |> Tree.apply_outcome(outcome) |> Viewport.refresh()}
+
+      {:error, reason} ->
+        operation_failed(state, reason)
+
+      other ->
+        operation_failed(state, {:invalid_navigate_result, other})
+    end
+  end
+
   def handle({:tui_operation_result, _ref, _kind, _result}, state),
     do: {:noreply, state, render?: false}
 
@@ -164,6 +190,20 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   def handle({:tackle_session_compacted, _session_id, _snapshot, _record}, state),
+    do: {:noreply, state, render?: false}
+
+  # Another frontend can navigate the same session while this shell is attached.
+  # Refresh from the committed snapshot so every attached view agrees, without
+  # touching the local draft or overlay.
+  def handle(
+        {:tackle_session_navigated, session_id, %Snapshot{} = snapshot, outcome},
+        %State{session_id: session_id, pending_operation: nil} = state
+      ) do
+    state = %{state | agent_state: snapshot.agent_state, active_turn: snapshot.active_turn}
+    {:noreply, state |> Tree.apply_outcome(outcome) |> Viewport.refresh()}
+  end
+
+  def handle({:tackle_session_navigated, _session_id, _snapshot, _outcome}, state),
     do: {:noreply, state, render?: false}
 
   # A turn can begin emitting from its supervised task before the asynchronous

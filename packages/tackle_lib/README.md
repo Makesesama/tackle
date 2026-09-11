@@ -808,6 +808,56 @@ projection, and retained assistant usage is stripped from it because it no longe
 describes the current request. Treat compaction as the start of a new prompt-cache
 reuse sequence.
 
+## Conversation trees
+
+`Tackle.Lib.Tree` is an optional, pure conversation tree for sessions that need
+alternative paths. It is opt-in and needs no process, storage, or OTP
+supervision:
+
+```elixir
+state = Tackle.Lib.new(llm: selection, tree: true, tree_committer: MyApp.TreeCommitter)
+{:ok, state} = Tackle.Lib.run(state, "investigate the cache")
+
+# Move to the parent of an earlier user message; the selected message comes back
+# as a draft so the host can refill its editor and create a sibling branch.
+{:ok, state, outcome} = Tackle.Lib.navigate(state, {:edit, user_message_id})
+outcome.draft.content
+
+# Return to the empty conversation before the first message.
+{:ok, state, _outcome} = Tackle.Lib.navigate(state, nil)
+```
+
+Every settled message and committed compaction becomes an entry with a stable id
+and an optional parent link. Message entries reuse the message id and compaction
+entries reuse the compaction id, so identity matches the rest of the harness and
+is unique across kinds.
+
+Three readers stay deliberately distinct:
+
+- `Tackle.Lib.Tree.enumerate/1` — every entry on every branch, once, in
+  chronological order (the whole-tree archive);
+- `Tackle.Lib.messages/1` — the active path's complete, uncompacted transcript;
+  and
+- `Tackle.Lib.model_messages/1` — the active path's provider context, with only
+  the compactions that occur on that path applied.
+
+Accordingly, `Tackle.Lib.usage/1` aggregates assistant usage across the whole
+archive while `Tackle.Lib.branch_usage/1` follows the active path, and
+`Tackle.Lib.context_usage/1` measures the selected model projection. A compaction
+on one branch never changes a sibling's context, and returning after a
+compaction restores the same summary without re-summarizing.
+
+Navigation never runs a turn, re-executes a tool, or edits entries. It validates
+the destination against the current revision, rejects a structurally incomplete
+tool batch with `{:error, {:unsafe_continuation, id}}`, and commits through a
+`Tackle.Lib.Tree.Committer` before installing the position. A missing committer
+is valid only for explicitly in-memory use. Failed validation or commit leaves
+the accepted state unchanged. `Tackle.Lib.Tree.restore/2` is the validated
+restoration path for hosts that persist their own entries.
+
+Linear mode is unchanged: without `tree: true`, `State.messages` remains the
+entire conversation archive, as before.
+
 ## Usage and billing
 
 Each assistant generation may carry `%Tackle.Lib.Usage{}` with input, output,

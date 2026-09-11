@@ -10,10 +10,20 @@ defmodule Tackle.Session.Loader do
   When the recorded configuration cannot be resolved against the current
   adapters, loading returns a typed `:configuration_required` error instead of
   silently switching providers or models.
+
+  ## Linear and branching sessions
+
+  A projection always folds a `Tackle.Lib.Tree`, so one restoration path serves
+  both shapes. A session whose projection is marked `tree_enabled?` is restored
+  with an active tree; requesting `tree: true` also adopts the derived chain of a
+  legacy linear journal (the host records the explicit `tree.enabled` transition
+  separately). A tree-enabled session is never silently flattened: the tree is
+  restored or a typed error is returned.
   """
 
   alias Tackle.Config
   alias Tackle.Lib.State, as: AgentState
+  alias Tackle.Lib.Tree
   alias Tackle.Session.Codec
   alias Tackle.Session.Projection
 
@@ -26,18 +36,60 @@ defmodule Tackle.Session.Loader do
   selected the supplied configuration, so the recorded selection is superseded
   and a configuration change must be persisted. Otherwise the recorded
   selection is re-resolved through the current adapters.
+
+  `:tree` (false by default) requests branching support for a session whose
+  journal predates tree enablement; the derived chain becomes the active tree.
   """
   @spec load(Projection.t(), Config.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def load(%Projection{} = projection, %Config{} = config, opts \\ []) do
     with {:ok, resolved, changed?} <- resolve_config(projection, config, opts),
-         {:ok, messages} <- decode_messages(projection.messages),
-         {:ok, model_messages} <- decode_model_messages(projection, messages) do
+         {:ok, conversation} <- decode_conversation(projection, opts) do
       state =
         resolved
         |> Config.to_agent_state(credential_store: Keyword.get(opts, :credential_store))
-        |> install(projection.session_id, messages, model_messages)
+        |> install(projection.session_id, conversation)
 
       {:ok, %{state: state, configuration_changed?: changed?}}
+    end
+  end
+
+  defp decode_conversation(%Projection{tree_enabled?: true} = projection, _opts) do
+    restore_tree(projection)
+  end
+
+  defp decode_conversation(%Projection{} = projection, opts) do
+    if Keyword.get(opts, :tree, false) do
+      restore_tree(projection)
+    else
+      decode_linear(projection)
+    end
+  end
+
+  defp restore_tree(%Projection{tree: nil}), do: restore_tree_value(Tree.new())
+
+  defp restore_tree(%Projection{tree: %Tree{} = tree}), do: restore_tree_value(tree)
+
+  defp restore_tree_value(%Tree{} = tree) do
+    descriptors = tree |> Tree.enumerate() |> Enum.map(&Map.from_struct/1)
+
+    case Tree.restore(descriptors, active_id: tree.active_id) do
+      {:ok, tree} ->
+        {:ok,
+         %{
+           tree: tree,
+           messages: Tree.transcript(tree),
+           model_messages: Tree.model_context(tree)
+         }}
+
+      {:error, reason} ->
+        {:error, {:invalid_tree, reason}}
+    end
+  end
+
+  defp decode_linear(%Projection{} = projection) do
+    with {:ok, messages} <- decode_messages(projection.messages),
+         {:ok, model_messages} <- decode_model_messages(projection, messages) do
+      {:ok, %{tree: nil, messages: messages, model_messages: model_messages}}
     end
   end
 
@@ -96,12 +148,16 @@ defmodule Tackle.Session.Loader do
     end
   end
 
-  defp install(%AgentState{} = state, session_id, messages, model_messages) do
+  defp install(%AgentState{} = state, session_id, conversation) do
+    tree = Map.get(conversation, :tree)
+
     %{
       state
       | session_id: session_id,
-        messages: messages,
-        model_messages: model_messages,
+        messages: conversation.messages,
+        model_messages: conversation.model_messages,
+        tree: tree,
+        last_compaction_id: tree && Tree.last_compaction_id(tree),
         current_iteration: 0,
         status: :idle,
         error: nil,

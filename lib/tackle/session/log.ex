@@ -29,6 +29,8 @@ defmodule Tackle.Session.Log do
     "turn.started" => 1,
     "message.appended" => 1,
     "context.compacted" => 1,
+    "tree.enabled" => 1,
+    "tree.navigated" => 1,
     "tool.execution_started" => 1,
     "turn.completed" => 1,
     "turn.errored" => 1,

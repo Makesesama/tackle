@@ -538,6 +538,20 @@ Do not persist and later trust `%Tackle.Lib.State.context` wholesale. Authorizat
 organization membership, and tool availability may have changed. Rebuild them
 from current server-side state.
 
+### Conversation trees in a Phoenix host
+
+Branching is a library capability, not a Phoenix feature. A Phoenix host that
+wants in-session branching opts in with `Tackle.Lib.new(tree: true)` and persists
+its own entries through a `Tackle.Lib.Tree.Committer`; nothing in this package
+requires the root harness or its `:disk_log` journal. When a session is
+tree-enabled, remember the reader contract: `State.messages` is the **active
+branch's** transcript, not the whole archive. Hosts that index or display the
+complete history read `Tackle.Lib.Tree.enumerate/1`, while model context is
+`State.model_messages/1` (the active branch with only its own compactions).
+Usage follows the same split: `Tackle.Lib.branch_usage/1` for the active path,
+and the tree's own aggregate for the archive. Linear Phoenix sessions are
+unchanged and keep `State.messages` as the complete transcript.
+
 ## Telemetry
 
 Runner turns emit:

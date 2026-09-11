@@ -98,6 +98,26 @@ defmodule Tackle do
           | {:error, term()}
   def compact(%AgentRef{} = agent_ref, opts \\ []), do: Runtime.compact(agent_ref, opts)
 
+  @doc """
+  Reads an agent's conversation tree, or `nil` when branching is disabled.
+  """
+  @spec tree(AgentRef.t()) :: {:ok, Tackle.Lib.Tree.t() | nil} | {:error, term()}
+  def tree(%AgentRef{} = agent_ref), do: Runtime.tree(agent_ref)
+
+  @doc """
+  Navigates an idle agent's conversation tree.
+
+  Navigation never runs a turn, re-executes a tool, or edits existing entries.
+  The destination is persisted before it is installed, and unsafe continuation
+  points are rejected with `{:error, {:unsafe_continuation, id}}`. An edit
+  target returns the selected user message as a draft.
+  """
+  @spec navigate(AgentRef.t(), Tackle.Lib.Tree.Navigator.target(), keyword()) ::
+          {:ok, Tackle.Session.Snapshot.t(), Tackle.Lib.Tree.Navigator.outcome()}
+          | {:error, term()}
+  def navigate(%AgentRef{} = agent_ref, target, opts \\ []),
+    do: Runtime.navigate(agent_ref, target, opts)
+
   @doc "Subscribes the caller to correlated session events and terminal outcomes."
   @spec subscribe(AgentRef.t()) :: {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
   def subscribe(%AgentRef{} = agent_ref), do: Runtime.subscribe(agent_ref)

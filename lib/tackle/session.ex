@@ -47,6 +47,7 @@ defmodule Tackle.Session do
   alias Tackle.Session.Persistence
   alias Tackle.Session.Projection
   alias Tackle.Session.Spec, as: SessionSpec
+  alias Tackle.Session.Tree, as: SessionTree
 
   @task_shutdown_timeout 1_000
 
@@ -192,6 +193,29 @@ defmodule Tackle.Session do
 
   def reconfigure(_session, opts), do: {:error, {:invalid_config, opts}}
 
+  @doc """
+  Reads the session's conversation tree, or `nil` when branching is disabled.
+  """
+  @spec tree(GenServer.server()) :: {:ok, Tackle.Lib.Tree.t() | nil}
+  def tree(session), do: GenServer.call(session, :tree)
+
+  @doc """
+  Navigates the session's conversation tree while it is idle.
+
+  Navigation is rejected during an active turn or while an interrupted turn
+  requires an explicit recovery decision. The destination is validated, the
+  committed position is persisted through the tree committer, and only then is
+  the new position installed and published to subscribers.
+
+  `target` is described in `Tackle.Lib.Tree.Navigator`; `opts` may carry
+  `:expected_revision` and `:mode`. Returns the post-navigation snapshot and the
+  navigation outcome, which can expose the selected user message as a draft.
+  """
+  @spec navigate(GenServer.server(), Tackle.Lib.Tree.Navigator.target(), keyword()) ::
+          {:ok, Snapshot.t(), Tackle.Lib.Tree.Navigator.outcome()} | {:error, term()}
+  def navigate(session, target, opts \\ []) when is_list(opts),
+    do: GenServer.call(session, {:navigate, target, opts}, :infinity)
+
   @doc "Returns an atomic session snapshot."
   @spec snapshot(GenServer.server()) :: Snapshot.t()
   def snapshot(session), do: GenServer.call(session, :snapshot)
@@ -312,6 +336,38 @@ defmodule Tackle.Session do
 
   def handle_call(:cancel, _from, %{active_turn: nil} = state) do
     {:reply, :ok, state}
+  end
+
+  def handle_call(:tree, _from, state) do
+    {:reply, {:ok, state.agent_state.tree}, state}
+  end
+
+  def handle_call({:navigate, _target, _opts}, _from, %{active_turn: active} = state)
+      when not is_nil(active) do
+    {:reply, {:error, :turn_in_progress}, state}
+  end
+
+  def handle_call({:navigate, _target, _opts}, _from, %{recovery: recovery} = state)
+      when not is_nil(recovery) do
+    {:reply, {:error, {:recovery_required, recovery}}, state}
+  end
+
+  def handle_call({:navigate, target, opts}, _from, state) do
+    case Tackle.Lib.navigate(state.agent_state, target, opts) do
+      {:ok, agent_state, outcome} ->
+        state = %{state | agent_state: agent_state}
+        snapshot = build_snapshot(state)
+
+        broadcast(
+          state,
+          {:tackle_session_navigated, agent_state.session_id, snapshot, outcome}
+        )
+
+        {:reply, {:ok, snapshot, outcome}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:cancel, _from, state) do
@@ -646,18 +702,27 @@ defmodule Tackle.Session do
          {:ok, loaded} <-
            Loader.load(projection, config,
              credential_store: Auth.credential_store(),
-             override_config: durable.override_config
+             override_config: durable.override_config,
+             tree: durable.tree
            ),
-         :ok <- persist_configuration_change(journal, loaded.configuration_changed?, config) do
+         :ok <- persist_configuration_change(journal, loaded.configuration_changed?, config),
+         :ok <- enable_tree_if_needed(journal, projection, durable.tree) do
       agent_state =
         loaded.state
         |> put_runtime_context(scope_ref, agent_ref, opts)
         |> install_persistence_hook()
         |> install_compaction_committer()
+        |> install_tree_committer()
 
       {:ok, agent_state, journal, recovery_for(projection)}
     end
   end
+
+  # A legacy linear journal is never rewritten; enabling branching appends one
+  # explicit versioned transition before any tree-specific write.
+  defp enable_tree_if_needed(_journal, _projection, false), do: :ok
+  defp enable_tree_if_needed(_journal, %Projection{tree_enabled?: true}, true), do: :ok
+  defp enable_tree_if_needed(journal, _projection, true), do: Journal.enable_tree(journal)
 
   defp install_compaction_committer(%AgentState{compaction: nil} = state), do: state
 
@@ -674,6 +739,14 @@ defmodule Tackle.Session do
     # dispatch can see it.
     _ = Code.ensure_loaded(Persistence)
     %{state | hooks: state.hooks ++ [Persistence]}
+  end
+
+  defp install_tree_committer(%AgentState{tree: nil} = state), do: state
+
+  defp install_tree_committer(%AgentState{} = state) do
+    # Durable tree navigations are committed through the journal before the
+    # library installs the new active position.
+    %{state | tree_committer: SessionTree}
   end
 
   defp recovery_for(%Projection{} = projection) do

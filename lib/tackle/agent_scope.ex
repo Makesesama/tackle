@@ -83,7 +83,8 @@ defmodule Tackle.AgentScope do
       title: session.title,
       tags: session.tags,
       model_ref: session.model_ref || config.model_ref,
-      thinking: session.thinking || Tackle.Thinking.from_llm_opts(config.llm_opts)
+      thinking: session.thinking || Tackle.Thinking.from_llm_opts(config.llm_opts),
+      tree: session.tree
     ]
 
     [{Tackle.Session.Journal, opts ++ session.storage}]
