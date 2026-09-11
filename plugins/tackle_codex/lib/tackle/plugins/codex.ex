@@ -9,15 +9,18 @@ defmodule Tackle.Plugins.Codex do
   streaming begins. Pass `transport: :sse`, `:websocket`, or
   `:websocket_cached` to select an explicit transport.
 
-  Authentication interaction is exposed separately through
-  `Tackle.Plugins.Codex.OAuth`; `generate/2` and `stream/3` never prompt the
-  user.
+  Authentication interaction is exposed through the optional `login/1` and
+  `usage/1` callbacks: the adapter owns the device-code flow and talks to the
+  user through a `Tackle.Lib.Interaction` handle supplied in `opts`. The
+  underlying protocol helpers remain available through `Tackle.Plugins.Codex.OAuth`.
+  `generate/2` and `stream/3` never prompt the user.
   """
 
   @behaviour Tackle.Lib.LLM
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
+  alias Tackle.Lib.Interaction
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Codex.HTTP
   alias Tackle.Plugins.Codex.OAuth
@@ -79,6 +82,105 @@ defmodule Tackle.Plugins.Codex do
   @spec close_session(String.t()) :: :ok
   def close_session(session_id) when is_binary(session_id),
     do: WebSocket.close_session(session_id)
+
+  @impl true
+  def login(opts) do
+    with {:ok, interaction} <- interaction(opts),
+         :ok <- not_cancelled(opts),
+         {:ok, device} <- OAuth.request_device_code(opts),
+         :ok <- announce_device(interaction, device),
+         {:ok, credentials} <- poll_device_code(interaction, device, opts) do
+      {:ok, credentials}
+    end
+  end
+
+  @impl true
+  def usage(opts) do
+    with :ok <- not_cancelled(opts),
+         {:ok, handle} <- credential_store(opts),
+         {:ok, body} <- usage_request(handle, opts) do
+      {:ok, body}
+    end
+  end
+
+  defp announce_device(interaction, device) do
+    Interaction.info(interaction, [
+      "Open ",
+      device.verification_uri,
+      " and enter code ",
+      device.user_code,
+      "."
+    ])
+  end
+
+  defp poll_device_code(interaction, device, opts) do
+    Interaction.progress(
+      interaction,
+      [
+        label: "Waiting for authorization...",
+        ok: "Authorized",
+        error: fn reason -> "Authorization failed: #{inspect(reason)}" end
+      ],
+      fn -> OAuth.complete_device_code(device, opts) end
+    )
+  end
+
+  defp usage_request(handle, opts) do
+    with {:ok, credentials} <- fresh_credentials(handle, nil, opts),
+         {:ok, auth} <- OAuth.access(credentials),
+         result <- send_usage_request(auth, opts) do
+      retry_usage_unauthorized(result, handle, credentials, opts)
+    end
+  end
+
+  defp retry_usage_unauthorized({:error, {:http_error, 401, _body}}, handle, rejected, opts) do
+    rejected_access_token = rejected["access_token"] || rejected["access"]
+
+    with {:ok, credentials} <- fresh_credentials(handle, rejected_access_token, opts),
+         {:ok, auth} <- OAuth.access(credentials) do
+      send_usage_request(auth, opts)
+    end
+  end
+
+  defp retry_usage_unauthorized(result, _handle, _rejected, _opts), do: result
+
+  defp send_usage_request(auth, opts) do
+    request_options = [
+      method: :get,
+      url: usage_url(opts),
+      headers: base_headers(opts, auth.access_token, auth.account_id),
+      retry: false,
+      receive_timeout: Keyword.get(opts, :receive_timeout, 30_000)
+    ]
+
+    with {:ok, response} <- HTTP.request(request_options, opts) do
+      usage_response(response)
+    end
+  end
+
+  defp usage_response(%{status: status, body: body}) when status in 200..299 do
+    HTTP.decode_json(body)
+  end
+
+  defp usage_response(%{status: status, body: body}) do
+    {:error, {:http_error, status, HTTP.error_body(body)}}
+  end
+
+  defp usage_url(opts) do
+    base_url = Keyword.get(opts, :base_url, @default_base_url) |> String.trim_trailing("/")
+
+    if String.ends_with?(base_url, "/wham/usage"), do: base_url, else: base_url <> "/wham/usage"
+  end
+
+  defp interaction(opts) do
+    case Keyword.fetch(opts, :interaction) do
+      {:ok, {module, _reference} = handle} when is_atom(module) and not is_nil(module) ->
+        {:ok, handle}
+
+      _other ->
+        {:error, :interaction_required}
+    end
+  end
 
   @impl true
   def generate(schema, opts) do

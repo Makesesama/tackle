@@ -14,6 +14,7 @@ defmodule Tackle.CLI.Parser do
           | {:models, %{}}
           | {:auth_login, %{provider: String.t()}}
           | {:auth_status, %{provider: String.t() | nil}}
+          | {:auth_usage, %{provider: String.t() | nil}}
           | {:auth_logout, %{provider: String.t()}}
 
   @type parse_result ::
@@ -52,6 +53,9 @@ defmodule Tackle.CLI.Parser do
 
   defp parse_result({:ok, [:auth, :status], result}, _parser),
     do: {:ok, {:auth_status, %{provider: Map.get(result.args, :provider)}}}
+
+  defp parse_result({:ok, [:auth, :usage], result}, _parser),
+    do: {:ok, {:auth_usage, %{provider: Map.get(result.args, :provider)}}}
 
   defp parse_result({:ok, [:auth, :logout], result}, _parser),
     do: {:ok, {:auth_logout, %{provider: result.args.provider}}}
@@ -157,6 +161,11 @@ defmodule Tackle.CLI.Parser do
               about: "Show provider credential status",
               args: [provider: provider_arg(required: false)]
             ],
+            usage: [
+              name: "usage",
+              about: "Show provider account usage",
+              args: [provider: provider_arg(required: false)]
+            ],
             logout: [
               name: "logout",
               about: "Delete stored provider credentials",
@@ -171,7 +180,7 @@ defmodule Tackle.CLI.Parser do
   defp provider_arg(opts) do
     [
       value_name: "PROVIDER",
-      help: "Provider id such as openai-codex",
+      help: "Adapter id such as openai-codex or deepseek",
       required: Keyword.fetch!(opts, :required),
       parser: :string
     ]

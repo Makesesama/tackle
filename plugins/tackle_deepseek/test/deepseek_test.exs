@@ -19,6 +19,31 @@ defmodule Tackle.Plugins.DeepSeekTest do
     def delete(agent, namespace), do: Agent.update(agent, &Map.delete(&1, namespace))
   end
 
+  defmodule Interaction do
+    @behaviour Tackle.Lib.Interaction
+
+    @impl true
+    def info(reference, message) do
+      send(reference, {:interaction_info, IO.iodata_to_binary(message)})
+      :ok
+    end
+
+    @impl true
+    def prompt(reference, opts) do
+      send(reference, {:interaction_prompt, opts})
+      Process.get(:prompt_result) || {:ok, "  prompted-key  "}
+    end
+
+    @impl true
+    def confirm(_reference, _message), do: false
+
+    @impl true
+    def progress(reference, opts, fun) do
+      send(reference, {:interaction_progress, Keyword.get(opts, :label)})
+      fun.()
+    end
+  end
+
   setup do
     start_supervised!({Agent, fn -> %{DeepSeek.adapter_id() => %{"api_key" => "stored-key"}} end},
       id: {Agent, make_ref()}
@@ -598,6 +623,59 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
     assert {:error, {:http_error, 400, "bad request"}} =
              DeepSeek.generate(nil, base_opts(store, request))
+  end
+
+  test "login prompts for an API key through the interaction handle" do
+    test_pid = self()
+
+    assert {:ok, %{"api_key" => "prompted-key"}} =
+             DeepSeek.login(interaction: {Interaction, test_pid})
+
+    assert_receive {:interaction_prompt, opts}
+    assert opts[:label] =~ "API key"
+    assert opts[:secret] == true
+  end
+
+  test "login rejects an empty API key" do
+    Process.put(:prompt_result, {:ok, "   "})
+    test_pid = self()
+
+    assert {:error, :empty_api_key} = DeepSeek.login(interaction: {Interaction, test_pid})
+  after
+    Process.delete(:prompt_result)
+  end
+
+  test "login requires an interaction handle" do
+    assert {:error, :interaction_required} = DeepSeek.login([])
+  end
+
+  test "usage returns the account balance for the stored key", %{store: store} do
+    test_pid = self()
+
+    request = fn options ->
+      send(test_pid, {:balance_request, options})
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: JSON.encode!(%{"is_available" => true, "balance_infos" => []})
+       }}
+    end
+
+    assert {:ok, %{"is_available" => true, "balance_infos" => []}} =
+             DeepSeek.usage(credential_store: store, request: request)
+
+    assert_receive {:balance_request, options}
+    assert options[:method] == :get
+    assert options[:url] == "https://api.deepseek.com/user/balance"
+    assert header(options, "authorization") == "Bearer stored-key"
+  end
+
+  test "usage surfaces provider errors", %{store: store} do
+    request = fn _options -> {:ok, %Req.Response{status: 401, body: "unauthorized"}} end
+
+    assert {:error, {:http_error, 401, "unauthorized"}} =
+             DeepSeek.usage(credential_store: store, request: request)
   end
 
   defp base_opts(store, request) do

@@ -6,6 +6,31 @@ defmodule Tackle.Plugins.CodexTest do
   alias Tackle.Plugins.Codex
   alias Tackle.Plugins.Codex.SSE
 
+  defmodule Interaction do
+    @behaviour Tackle.Lib.Interaction
+
+    @impl true
+    def info(reference, message) do
+      send(reference, {:interaction_info, IO.iodata_to_binary(message)})
+      :ok
+    end
+
+    @impl true
+    def prompt(reference, opts) do
+      send(reference, {:interaction_prompt, opts})
+      {:error, :unexpected_prompt}
+    end
+
+    @impl true
+    def confirm(_reference, _message), do: false
+
+    @impl true
+    def progress(reference, opts, fun) do
+      send(reference, {:interaction_progress, Keyword.get(opts, :label)})
+      fun.()
+    end
+  end
+
   defmodule CredentialStore do
     @behaviour Tackle.Lib.CredentialStore
 
@@ -696,6 +721,99 @@ defmodule Tackle.Plugins.CodexTest do
 
     assert {:error, {:http_error, 400, "bad request"}} =
              Codex.generate(nil, base_opts(store, request))
+  end
+
+  test "login runs the device-code flow through the interaction handle" do
+    access_token = jwt("device-account")
+    counter = start_supervised!({Agent, fn -> 0 end}, id: {Agent, make_ref()})
+    test_pid = self()
+
+    request = fn options ->
+      cond do
+        String.ends_with?(options[:url], "/deviceauth/usercode") ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body:
+               JSON.encode!(%{
+                 "device_auth_id" => "device-id",
+                 "user_code" => "ABCD-EFGH",
+                 "interval" => "0"
+               })
+           }}
+
+        String.ends_with?(options[:url], "/deviceauth/token") ->
+          poll = Agent.get_and_update(counter, &{&1, &1 + 1})
+
+          if poll == 0 do
+            {:ok, %Req.Response{status: 403, body: ""}}
+          else
+            {:ok,
+             %Req.Response{
+               status: 200,
+               body:
+                 JSON.encode!(%{
+                   "authorization_code" => "device-code",
+                   "code_verifier" => "device-verifier"
+                 })
+             }}
+          end
+
+        String.ends_with?(options[:url], "/oauth/token") ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body:
+               JSON.encode!(%{
+                 "access_token" => access_token,
+                 "refresh_token" => "device-refresh",
+                 "expires_in" => 3_600
+               })
+           }}
+      end
+    end
+
+    opts = [
+      interaction: {Interaction, test_pid},
+      request: request,
+      now: 1_000,
+      sleep: fn _milliseconds -> :ok end
+    ]
+
+    assert {:ok, credentials} = Codex.login(opts)
+    assert credentials["access_token"] == access_token
+    assert credentials["refresh_token"] == "device-refresh"
+    assert_receive {:interaction_info, info}
+    assert info =~ "ABCD-EFGH"
+    assert_receive {:interaction_progress, "Waiting for authorization..."}
+  end
+
+  test "login requires an interaction handle" do
+    assert {:error, :interaction_required} = Codex.login(request: fn _options -> :unused end)
+  end
+
+  test "usage fetches the account report with stored credentials", %{store: store} do
+    test_pid = self()
+
+    request = fn options ->
+      send(test_pid, {:usage_request, options})
+      {:ok, %Req.Response{status: 200, body: JSON.encode!(%{"plan_type" => "plus"})}}
+    end
+
+    assert {:ok, %{"plan_type" => "plus"}} =
+             Codex.usage(credential_store: store, request: request)
+
+    assert_receive {:usage_request, options}
+    assert options[:method] == :get
+    assert options[:url] == "https://chatgpt.com/backend-api/wham/usage"
+    assert header(options, "authorization") == "Bearer access-token"
+  end
+
+  test "usage surfaces provider errors", %{store: store} do
+    request = fn _options -> {:ok, %Req.Response{status: 403, body: "no usage"}} end
+
+    assert {:error, {:http_error, 403, "no usage"}} =
+             Codex.usage(credential_store: store, request: request)
   end
 
   defp base_opts(store, request) do

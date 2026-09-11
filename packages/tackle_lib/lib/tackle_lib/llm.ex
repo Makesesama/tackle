@@ -34,6 +34,15 @@ defmodule Tackle.Lib.LLM do
   implement the optional `stream/3` callback; Tackle.Lib normalizes provider
   stream events into `%Tackle.Lib.Event{}` before hosts see them.
 
+  ## Account flows
+
+  The behaviour also covers everything a provider needs beyond generation, so a
+  frontend never hard-codes provider knowledge. Adapters may optionally
+  implement `login/1`, `logout/1`, `status/1`, and `usage/1`. Interactive work
+  talks to the user through a `Tackle.Lib.Interaction` handle passed in `opts`,
+  and credential access goes through `Tackle.Lib.CredentialStore`, keeping the
+  adapter independent of terminal rendering and host storage.
+
   ## The contract
 
   An adapter implements `generate/2`:
@@ -120,7 +129,57 @@ defmodule Tackle.Lib.LLM do
               event_callback :: (term() -> any())
             ) :: {:ok, adapter_response()} | {:error, term()}
 
-  @optional_callbacks adapter_id: 0, models: 0, model_info: 1, stream: 3
+  @doc """
+  Runs the adapter's interactive login flow and returns credentials to store.
+
+  The adapter owns the complete flow—device codes, browser hand-off, API-key
+  prompts—and talks to the user through the `:interaction` handle in `opts`
+  (see `Tackle.Lib.Interaction`). The returned map is opaque and JSON-compatible;
+  the host persists it under the adapter's `adapter_id/0` credential namespace and
+  replays it to the adapter through a `:credential_store` handle.
+
+  This callback is optional. Adapters whose credentials are supplied externally
+  (environment variables, injected configuration) simply omit it, and hosts
+  report `:unsupported_provider_flow`.
+  """
+  @callback login(opts :: keyword()) :: {:ok, credentials :: map()} | {:error, term()}
+
+  @doc """
+  Removes or revokes the adapter's stored credentials.
+
+  Optional. When an adapter omits `logout/1`, the host deletes the credentials
+  stored under `adapter_id/0`. Adapters that must call a provider revocation
+  endpoint implement it and are then responsible for their own cleanup.
+  """
+  @callback logout(opts :: keyword()) :: :ok | {:error, term()}
+
+  @doc """
+  Reports the adapter's stored credential state.
+
+  Optional. When an adapter omits `status/1`, the host reads the credential
+  store and reports `:stored` or `:missing`. Adapters that can detect expiry or
+  account state should return their own atom or `{:ok, details}`.
+  """
+  @callback status(opts :: keyword()) :: {:ok, status :: term()} | {:error, term()}
+
+  @doc """
+  Returns the adapter's provider account usage.
+
+  Optional. The report is a host-renderable, JSON-compatible map (for example a
+  plan name, credit balance, or rate-limit windows). Tackle.Lib never interprets
+  it; the frontend decides how to present it. Adapters that expose no account
+  endpoint omit it and hosts report `:unsupported_provider_flow`.
+  """
+  @callback usage(opts :: keyword()) :: {:ok, report :: map()} | {:error, term()}
+
+  @optional_callbacks adapter_id: 0,
+                      models: 0,
+                      model_info: 1,
+                      stream: 3,
+                      login: 1,
+                      logout: 1,
+                      status: 1,
+                      usage: 1
 
   @doc """
   Selects an adapter and model from a canonical `adapter_id/model` reference.

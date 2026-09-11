@@ -27,8 +27,11 @@ root delegation task:
 mix tackle --help
 mix tackle models
 mix tackle auth status
+mix tackle auth status deepseek
 mix tackle auth login openai-codex
 mix tackle auth login deepseek
+mix tackle auth usage deepseek
+mix tackle auth logout deepseek
 mix tackle run --model deepseek/deepseek-chat "Inspect this project"
 mix tackle run --thinking high "Inspect this project"
 mix tackle run --resume SESSION_ID
@@ -40,10 +43,16 @@ cleanly. Tackle preserves the original journal under the session's `recovery/`
 directory and validates recovered history before use. `--abandon` remains an
 explicit, separate decision for a turn interrupted by the crash.
 
-DeepSeek login stores the key under the `deepseek` credential namespace. The
-credential file is plaintext JSON protected by user-only filesystem permissions;
-alternatively, set `DEEPSEEK_API_KEY`. When the terminal does not support hidden
-input, the command falls back to a visible prompt.
+Provider login, logout, status, and usage are adapter-driven: the CLI resolves
+the adapter by its `adapter_id` and delegates, so any configured
+`Tackle.Lib.LLM` plugin works without CLI changes. `auth status` without a
+provider lists every configured provider. DeepSeek login prompts for a key
+through the adapter and stores it under the `deepseek` credential namespace;
+`auth usage deepseek` reports the account balance, and `auth usage` without a
+provider reports it for every provider that supports it. The credential file is
+plaintext JSON protected by user-only filesystem permissions; alternatively, set
+`DEEPSEEK_API_KEY`. When the terminal does not support hidden input, the command
+falls back to a visible prompt.
 
 The same `mix tackle` commands continue to work from this directory. Run
 `mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.

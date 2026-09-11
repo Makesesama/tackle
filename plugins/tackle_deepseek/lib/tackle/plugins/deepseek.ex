@@ -5,13 +5,15 @@ defmodule Tackle.Plugins.DeepSeek do
   The adapter sends provider-neutral Tackle messages and tools to DeepSeek's
   OpenAI-compatible streaming endpoint. API keys may be supplied explicitly,
   through a host-owned `Tackle.Lib.CredentialStore`, or through the
-  `DEEPSEEK_API_KEY` environment variable.
+  `DEEPSEEK_API_KEY` environment variable. `login/1` prompts for a key through a
+  `Tackle.Lib.Interaction` handle and `usage/1` reports the account balance.
   """
 
   @behaviour Tackle.Lib.LLM
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
+  alias Tackle.Lib.Interaction
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.DeepSeek.HTTP
   alias Tackle.Plugins.DeepSeek.SSE
@@ -62,6 +64,83 @@ defmodule Tackle.Plugins.DeepSeek do
       nil ->
         nil
     end
+  end
+
+  @impl true
+  def login(opts) do
+    with {:ok, interaction} <- interaction(opts),
+         {:ok, api_key} <-
+           Interaction.prompt(interaction, label: "DeepSeek API key", secret: true),
+         {:ok, api_key} <- normalize_api_key(api_key) do
+      {:ok, %{"api_key" => api_key}}
+    end
+  end
+
+  @impl true
+  def usage(opts) do
+    with :ok <- not_cancelled(opts),
+         {:ok, api_key} <- api_key(opts),
+         {:ok, body} <- balance_request(api_key, opts) do
+      {:ok, body}
+    end
+  end
+
+  defp interaction(opts) do
+    case Keyword.fetch(opts, :interaction) do
+      {:ok, {module, _reference} = handle} when is_atom(module) and not is_nil(module) ->
+        {:ok, handle}
+
+      _other ->
+        {:error, :interaction_required}
+    end
+  end
+
+  defp normalize_api_key(api_key) when is_binary(api_key) do
+    case String.trim(api_key) do
+      "" -> {:error, :empty_api_key}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp normalize_api_key(_api_key), do: {:error, :invalid_api_key}
+
+  defp balance_request(api_key, opts) do
+    request_options = [
+      method: :get,
+      url: balance_url(opts),
+      headers: balance_headers(api_key),
+      retry: false,
+      receive_timeout: Keyword.get(opts, :receive_timeout, 30_000)
+    ]
+
+    with {:ok, response} <- HTTP.request(request_options, opts) do
+      balance_response(response)
+    end
+  end
+
+  defp balance_response(%{status: status, body: body}) when status in 200..299 do
+    HTTP.decode_json(body)
+  end
+
+  defp balance_response(%{status: status, body: body}) do
+    {:error, {:http_error, status, HTTP.error_body(body)}}
+  end
+
+  defp balance_url(opts) do
+    base_url = Keyword.get(opts, :base_url, @default_base_url) |> String.trim_trailing("/")
+
+    if String.ends_with?(base_url, "/user/balance"),
+      do: base_url,
+      else: base_url <> "/user/balance"
+  end
+
+  defp balance_headers(api_key) do
+    [
+      {"authorization", "Bearer #{api_key}"},
+      {"content-type", "application/json"},
+      {"accept", "application/json"},
+      {"user-agent", user_agent()}
+    ]
   end
 
   @impl true

@@ -1,16 +1,14 @@
 defmodule Tackle.CLI.Run do
   @moduledoc false
 
+  alias Tackle.Auth.Provider
   alias Tackle.CLI.Distribution
+  alias Tackle.CLI.Interaction
   alias Tackle.CLI.TUI
-  alias Tackle.Plugins.Codex.OAuth
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Spec, as: SessionSpec
 
-  @codex_provider "openai-codex"
-  @deepseek_provider "deepseek"
-  @auth_providers [@codex_provider, @deepseek_provider]
   @terminal_timeout 60_000
 
   @spec run(%{
@@ -118,8 +116,7 @@ defmodule Tackle.CLI.Run do
   @spec auth_login(%{provider: String.t()}) :: non_neg_integer()
   def auth_login(%{provider: provider}) do
     with {:ok, _apps} <- ensure_started(),
-         :ok <- supported_auth_provider(provider),
-         :ok <- login(provider) do
+         :ok <- Provider.login(provider, interaction: Interaction.handle()) do
       Owl.IO.puts(Owl.Data.tag("Stored credentials for #{provider}.", :green))
       0
     else
@@ -129,23 +126,22 @@ defmodule Tackle.CLI.Run do
   end
 
   @spec auth_status(%{provider: String.t() | nil}) :: non_neg_integer()
-  def auth_status(%{provider: provider}) do
-    provider = provider || @codex_provider
-
+  def auth_status(%{provider: nil}) do
     with {:ok, _apps} <- ensure_started(),
-         :ok <- supported_auth_provider(provider) do
-      case Tackle.Auth.status(provider) do
-        :stored ->
-          Owl.IO.puts(Owl.Data.tag("#{provider}: stored", :green))
-          0
+         {:ok, providers} <- Provider.list() do
+      providers |> Enum.map(&auth_status_row/1) |> print_table()
+      0
+    else
+      {:error, reason} -> error(reason)
+      reason -> error(reason)
+    end
+  end
 
-        :missing ->
-          Owl.IO.puts(Owl.Data.tag("#{provider}: missing", :yellow))
-          1
-
-        {:error, reason} ->
-          error(reason)
-      end
+  def auth_status(%{provider: provider}) do
+    with {:ok, _apps} <- ensure_started(),
+         {:ok, status} <- Provider.status(provider) do
+      Owl.IO.puts(["#{provider}: ", status_tag(status)])
+      if status == :missing, do: 1, else: 0
     else
       {:error, reason} -> error(reason)
       reason -> error(reason)
@@ -155,9 +151,8 @@ defmodule Tackle.CLI.Run do
   @spec auth_logout(%{provider: String.t()}) :: non_neg_integer()
   def auth_logout(%{provider: provider}) do
     with {:ok, _apps} <- ensure_started(),
-         :ok <- supported_auth_provider(provider),
          :ok <- confirm_logout(provider),
-         :ok <- Tackle.Auth.delete(provider) do
+         :ok <- Provider.logout(provider) do
       Owl.IO.puts(Owl.Data.tag("Deleted credentials for #{provider}.", :green))
       0
     else
@@ -171,6 +166,79 @@ defmodule Tackle.CLI.Run do
       reason ->
         error(reason)
     end
+  end
+
+  @spec auth_usage(%{provider: String.t() | nil}) :: non_neg_integer()
+  def auth_usage(%{provider: nil}) do
+    with {:ok, _apps} <- ensure_started(),
+         {:ok, providers} <- Provider.list() do
+      Enum.each(providers, &print_provider_usage/1)
+      0
+    else
+      {:error, reason} -> error(reason)
+      reason -> error(reason)
+    end
+  end
+
+  def auth_usage(%{provider: provider}) do
+    with {:ok, _apps} <- ensure_started(),
+         {:ok, report} <- Provider.usage(provider) do
+      print_usage(provider, report)
+      0
+    else
+      {:error, reason} -> error(reason)
+      reason -> error(reason)
+    end
+  end
+
+  defp print_provider_usage(provider) do
+    case Provider.usage(provider.id) do
+      {:ok, report} -> print_usage(provider.id, report)
+      {:error, {:unsupported_provider_flow, _id, _callback}} -> :ok
+      {:error, reason} -> Owl.IO.puts(Owl.Data.tag("#{provider.id}: #{inspect(reason)}", :yellow))
+    end
+  end
+
+  defp auth_status_row(provider) do
+    status =
+      case Provider.status(provider.id) do
+        {:ok, status} -> status
+        {:error, reason} -> reason
+      end
+
+    %{"provider" => provider.id, "status" => status_label(status)}
+  end
+
+  defp status_label(:stored), do: "stored"
+  defp status_label(:missing), do: "missing"
+  defp status_label(other), do: inspect(other)
+
+  defp status_tag(:stored), do: Owl.Data.tag("stored", :green)
+  defp status_tag(:missing), do: Owl.Data.tag("missing", :yellow)
+  defp status_tag(other), do: Owl.Data.tag(inspect(other), :red)
+
+  defp print_usage(provider, report) when is_map(report) do
+    Owl.IO.puts(Owl.Data.tag("#{provider} usage", :cyan))
+
+    report
+    |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
+    |> Enum.each(fn {key, value} -> print_usage_field(key, value) end)
+  end
+
+  defp print_usage_field(key, value) when is_binary(value) do
+    Owl.IO.puts(["  ", Owl.Data.tag(to_string(key), :cyan), ": ", value])
+  end
+
+  defp print_usage_field(key, value) do
+    Owl.IO.puts(["  ", Owl.Data.tag(to_string(key), :cyan), ":"])
+    Owl.IO.puts(indent_inspect(value))
+  end
+
+  defp indent_inspect(value) do
+    value
+    |> inspect(pretty: true, limit: :infinity, printable_limit: 1_024)
+    |> String.replace("\n", "\n    ")
+    |> then(&("    " <> &1))
   end
 
   defp confirm_logout(provider) do
@@ -288,46 +356,6 @@ defmodule Tackle.CLI.Run do
   defp ensure_started do
     Distribution.configure()
     Application.ensure_all_started(:tackle_cli)
-  end
-
-  defp supported_auth_provider(provider) when provider in @auth_providers, do: :ok
-
-  defp supported_auth_provider(provider),
-    do: {:error, {:unsupported_auth_provider, provider, supported: @auth_providers}}
-
-  defp login(@codex_provider) do
-    with {:ok, device} <- OAuth.request_device_code(),
-         :ok <- print_device_instructions(device),
-         {:ok, credentials} <- complete_device_code(device) do
-      Tackle.Auth.put(@codex_provider, credentials)
-    end
-  end
-
-  defp login(@deepseek_provider) do
-    api_key = Owl.IO.input(label: "DeepSeek API key", secret: true, cast: :string)
-    Tackle.Auth.put(@deepseek_provider, %{"api_key" => api_key})
-  end
-
-  defp complete_device_code(device) do
-    Owl.Spinner.run(fn -> OAuth.complete_device_code(device) end,
-      labels: [
-        processing: "Waiting for authorization...",
-        ok: "Authorized",
-        error: fn reason -> "Authorization failed: #{inspect(reason)}" end
-      ]
-    )
-  end
-
-  defp print_device_instructions(device) do
-    Owl.IO.puts([
-      "Open ",
-      Owl.Data.tag(device.verification_uri, [:cyan, :underline]),
-      " and enter code ",
-      Owl.Data.tag(device.user_code, [:cyan, :bright]),
-      "."
-    ])
-
-    :ok
   end
 
   defp overrides(model, thinking, llm_stream) do

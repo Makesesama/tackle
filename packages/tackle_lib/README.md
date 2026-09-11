@@ -327,6 +327,12 @@ Implement `Tackle.Lib.LLM`:
 
 @callback stream(schema, opts, event_callback) ::
             {:ok, response} | {:error, term()}
+
+# Optional account flow, owned end-to-end by the adapter.
+@callback login(opts :: keyword()) :: {:ok, credentials :: map()} | {:error, term()}
+@callback logout(opts :: keyword()) :: :ok | {:error, term()}
+@callback status(opts :: keyword()) :: {:ok, term()} | {:error, term()}
+@callback usage(opts :: keyword()) :: {:ok, report :: map()} | {:error, term()}
 ```
 
 `adapter_id/0` and `models/0` are required for adapters passed to
@@ -346,6 +352,40 @@ Hosts may inject a `{module, reference}` credential-store handle in
 `Tackle.Lib.CredentialStore.fetch/2`, `put/3`, and `delete/2`. Tackle.Lib treats
 credential maps as opaque JSON-compatible data; OAuth flows, token schemas,
 refresh logic, and persistence remain outside the library.
+
+### Account flows
+
+The optional `login/1`, `logout/1`, `status/1`, and `usage/1` callbacks let an
+adapter own its complete account lifecycle so a frontend never hard-codes
+provider knowledge:
+
+- `login/1` runs the interactive flow (device code, browser hand-off, API-key
+  prompt) and returns credentials to store. The host passes a
+  `Tackle.Lib.Interaction` handle in `opts[:interaction]`; the adapter calls
+  `info/2`, `prompt/2`, `confirm/2`, and `progress/3` on it instead of depending
+  on a terminal library.
+- `logout/1` revokes or removes credentials. When omitted, the host deletes the
+  credentials stored under `adapter_id/0`.
+- `status/1` reports credential state. When omitted, the host reads the
+  credential store and returns `{:ok, :stored} | {:ok, :missing}`.
+- `usage/1` returns a host-renderable map (plan, balance, rate-limit windows).
+  Adapters with no account endpoint omit it.
+
+The host resolves adapters by `adapter_id/0`, injects `:interaction`,
+`:credential_store`, and any supplied options, and stores the map returned by
+`login/1`. Example:
+
+```elixir
+@impl true
+def login(opts) do
+  with {:ok, interaction} <- Keyword.fetch(opts, :interaction),
+       :ok <- Tackle.Lib.Interaction.info(interaction, "Open the provider portal."),
+       {:ok, token} <-
+         Tackle.Lib.Interaction.prompt(interaction, label: "API token", secret: true) do
+    {:ok, %{"token" => token}}
+  end
+end
+```
 
 `stream/3` is optional. When absent, Tackle.Lib calls `generate/2` and still emits a
 normalized usage event when usage is returned.

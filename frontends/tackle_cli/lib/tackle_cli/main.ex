@@ -22,6 +22,7 @@ defmodule Tackle.CLI.Main do
   defp dispatch({:models, %{}}), do: Run.models()
   defp dispatch({:auth_login, opts}), do: Run.auth_login(opts)
   defp dispatch({:auth_status, opts}), do: Run.auth_status(opts)
+  defp dispatch({:auth_usage, opts}), do: Run.auth_usage(opts)
   defp dispatch({:auth_logout, opts}), do: Run.auth_logout(opts)
 
   defp puts(message, device, status) do

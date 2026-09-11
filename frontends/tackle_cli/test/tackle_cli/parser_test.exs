@@ -60,6 +60,7 @@ defmodule Tackle.CLI.ParserTest do
     assert help =~ "Manage provider credentials"
     assert help =~ "login"
     assert help =~ "status"
+    assert help =~ "usage"
     assert help =~ "logout"
   end
 
@@ -68,6 +69,11 @@ defmodule Tackle.CLI.ParserTest do
              Parser.parse(["auth", "login", "openai-codex"])
 
     assert {:ok, {:auth_status, %{provider: nil}}} = Parser.parse(["auth", "status"])
+
+    assert {:ok, {:auth_usage, %{provider: nil}}} = Parser.parse(["auth", "usage"])
+
+    assert {:ok, {:auth_usage, %{provider: "deepseek"}}} =
+             Parser.parse(["auth", "usage", "deepseek"])
 
     assert {:ok, {:auth_logout, %{provider: "openai-codex"}}} =
              Parser.parse(["auth", "logout", "openai-codex"])

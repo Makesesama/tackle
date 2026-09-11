@@ -5,6 +5,10 @@ defmodule Tackle.Auth do
   Credentials are stored as plaintext JSON protected by filesystem permissions;
   they are not encrypted. This module never exposes the complete credential
   file and returns only one provider namespace at a time.
+
+  Adapter-driven login, logout, status, and usage flows live in
+  `Tackle.Auth.Provider`, which resolves a provider by adapter id and stores the
+  credentials returned by the adapter through this module.
   """
 
   alias Tackle.Auth.Store

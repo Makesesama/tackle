@@ -31,6 +31,31 @@ defmodule Tackle.CLI.RunTest do
     end
   end
 
+  defmodule AuthAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "cli-auth"
+
+    @impl true
+    def models, do: ["auth-echo"]
+
+    @impl true
+    def generate(_schema, _opts), do: {:error, :not_used}
+
+    @impl true
+    def login(opts) do
+      send(self(), {:auth_login, opts})
+      {:ok, %{"token" => "value"}}
+    end
+
+    @impl true
+    def usage(opts) do
+      send(self(), {:auth_usage, opts})
+      {:ok, %{"plan" => "pro"}}
+    end
+  end
+
   setup do
     home = Path.join(System.tmp_dir!(), "tackle-cli-run-#{System.unique_integer([:positive])}")
     previous_home = System.get_env("TACKLE_HOME")
@@ -78,6 +103,52 @@ defmodule Tackle.CLI.RunTest do
     assert output =~ "repaired"
     {:ok, recovery_dir} = Storage.recovery_dir(session_id, home: home)
     assert File.ls!(recovery_dir) != []
+  end
+
+  test "auth commands dispatch to the resolved adapter" do
+    Application.put_env(:tackle, :adapters, [AuthAdapter])
+    on_exit(fn -> Tackle.Auth.delete("cli-auth") end)
+
+    login_output =
+      capture_io(fn -> assert 0 == Run.auth_login(%{provider: "cli-auth"}) end)
+
+    assert login_output =~ "Stored credentials for cli-auth."
+    assert_receive {:auth_login, _opts}
+    assert {:ok, %{"token" => "value"}} = Tackle.Auth.fetch("cli-auth")
+
+    status_output =
+      capture_io(fn -> assert 0 == Run.auth_status(%{provider: "cli-auth"}) end)
+
+    assert status_output =~ "stored"
+
+    usage_output =
+      capture_io(fn -> assert 0 == Run.auth_usage(%{provider: "cli-auth"}) end)
+
+    assert usage_output =~ "pro"
+    assert_receive {:auth_usage, _opts}
+  end
+
+  test "auth status without a provider lists every configured provider" do
+    Application.put_env(:tackle, :adapters, [Adapter, AuthAdapter])
+
+    output = capture_io(fn -> assert 0 == Run.auth_status(%{provider: nil}) end)
+
+    assert output =~ "cli-test"
+    assert output =~ "cli-auth"
+  end
+
+  test "auth commands reject providers that are not configured" do
+    Application.put_env(:tackle, :adapters, [Adapter])
+
+    output =
+      capture_io(:stderr, fn -> assert 1 == Run.auth_login(%{provider: "missing"}) end)
+
+    assert output =~ "unsupported_auth_provider"
+
+    usage_output =
+      capture_io(:stderr, fn -> assert 1 == Run.auth_usage(%{provider: "missing"}) end)
+
+    assert usage_output =~ "unsupported_auth_provider"
   end
 
   defp restore_env(name, nil), do: System.delete_env(name)
