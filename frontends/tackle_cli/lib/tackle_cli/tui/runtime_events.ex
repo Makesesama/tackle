@@ -12,7 +12,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   """
 
   alias ExRatatui.Command
-  alias Tackle.CLI.TUI.{State, Util, Viewport}
+  alias Tackle.CLI.TUI.{Compaction, State, Util, Viewport}
   alias Tackle.Lib.{ContextUsage, Event, Usage}
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Session.Snapshot
@@ -100,6 +100,33 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   def handle(
+        {:tui_operation_result, ref, :compact, result},
+        %State{pending_operation: %{ref: ref, kind: :compact}} = state
+      ) do
+    case result do
+      {:ok, %Snapshot{} = snapshot, record} ->
+        state = %{
+          state
+          | pending_operation: nil,
+            agent_state: snapshot.agent_state,
+            active_turn: snapshot.active_turn,
+            activity: nil,
+            error: nil,
+            outcome: nil,
+            notice: Compaction.notice(record)
+        }
+
+        {:noreply, Viewport.refresh(state)}
+
+      {:error, reason} ->
+        operation_failed(state, reason)
+
+      other ->
+        operation_failed(state, {:invalid_compact_result, other})
+    end
+  end
+
+  def handle(
         {:tui_operation_result, ref, :cancel, result},
         %State{pending_operation: %{ref: ref, kind: :cancel}} = state
       ) do
@@ -111,6 +138,29 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   def handle({:tui_operation_result, _ref, _kind, _result}, state),
+    do: {:noreply, state, render?: false}
+
+  # Manual compaction broadcasts its progress and completion while the idle
+  # session performs the summarization; the operation result above remains the
+  # authoritative state update.
+  def handle(
+        {:tackle_compaction, session_id, %Event{} = event},
+        %State{session_id: session_id} = state
+      ) do
+    {:noreply, %{state | activity: compaction_activity(event)}}
+  end
+
+  def handle({:tackle_compaction, _session_id, _event}, state),
+    do: {:noreply, state, render?: false}
+
+  def handle(
+        {:tackle_session_compacted, session_id, %Snapshot{} = snapshot, _record},
+        %State{session_id: session_id} = state
+      ) do
+    {:noreply, %{state | agent_state: snapshot.agent_state}, render?: false}
+  end
+
+  def handle({:tackle_session_compacted, _session_id, _snapshot, _record}, state),
     do: {:noreply, state, render?: false}
 
   # A turn can begin emitting from its supervised task before the asynchronous
@@ -238,6 +288,14 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   def handle(
+        {:tackle_event, session_id, turn_id, %Event{type: type} = event},
+        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+      )
+      when type in [:compaction_start, :compaction_end, :compaction_retry] do
+    {:noreply, %{state | activity: compaction_activity(event)}}
+  end
+
+  def handle(
         {:tackle_event, session_id, turn_id, %Event{type: type}},
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do
@@ -350,6 +408,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     state = state |> Viewport.update_draft() |> Viewport.relayout()
     {:noreply, Viewport.refresh(state, [:pending, :error])}
   end
+
+  defp compaction_activity(%Event{type: type, data: data}),
+    do: Compaction.activity({type, data})
 
   defp cancel_command(state) do
     ref = make_ref()

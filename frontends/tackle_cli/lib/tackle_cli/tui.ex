@@ -65,6 +65,7 @@ defmodule Tackle.CLI.TUI do
 
   alias Tackle.CLI.TUI.{
     Browser,
+    Compaction,
     Composer,
     Conversation,
     Inspector,
@@ -225,6 +226,7 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base(:browse, _key, state), do: Browser.toggle_focus(state)
   defp dispatch_base(:escape, _key, state), do: escape(state)
   defp dispatch_base(:new_session, _key, state), do: Session.request_new(state)
+  defp dispatch_base(:compact, _key, state), do: Compaction.request(state)
   defp dispatch_base(:search, _key, state), do: Search.open(state)
   defp dispatch_base(:toggle_thinking, _key, state), do: Viewport.toggle_thinking(state)
 

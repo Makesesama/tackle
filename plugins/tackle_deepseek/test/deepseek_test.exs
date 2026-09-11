@@ -577,6 +577,29 @@ defmodule Tackle.Plugins.DeepSeekTest do
              DeepSeek.generate(nil, base_opts(empty_store, request))
   end
 
+  test "classifies a wire context overflow as a provider-neutral error", %{store: store} do
+    body =
+      JSON.encode!(%{
+        "error" => %{
+          "message" =>
+            "This model's maximum context length is 65536 tokens. However, you requested too many tokens.",
+          "type" => "invalid_request_error",
+          "code" => "context_length_exceeded"
+        }
+      })
+
+    request = fn _options -> {:ok, %Req.Response{status: 400, body: body}} end
+
+    assert {:error, :context_window_exceeded} = DeepSeek.generate(nil, base_opts(store, request))
+  end
+
+  test "does not classify generic 4xx errors as overflow", %{store: store} do
+    request = fn _options -> {:ok, %Req.Response{status: 400, body: "bad request"}} end
+
+    assert {:error, {:http_error, 400, "bad request"}} =
+             DeepSeek.generate(nil, base_opts(store, request))
+  end
+
   defp base_opts(store, request) do
     [
       model: "deepseek-flash",

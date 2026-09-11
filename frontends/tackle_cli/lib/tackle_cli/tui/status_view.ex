@@ -17,7 +17,7 @@ defmodule Tackle.CLI.TUI.StatusView do
 
   alias Tackle.CLI.TUI.{Browser, Conversation, MessageView, Picker, State, Theme, Util}
   alias Tackle.Lib
-  alias Tackle.Lib.{ContextUsage, Usage}
+  alias Tackle.Lib.{Compaction, ContextUsage, Usage}
 
   @spinner_frames ~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 
@@ -44,6 +44,7 @@ defmodule Tackle.CLI.TUI.StatusView do
     label =
       case state do
         %State{pending_operation: %{kind: :reconfigure}} -> "reconfiguring"
+        %State{pending_operation: %{kind: :compact}} -> "compacting"
         %State{pending_operation: %{kind: :cancel}} -> "cancelling"
         %State{pending_operation: %{kind: :submit}, activity: activity} -> activity || "starting"
         %State{active_turn: nil, error: error} when is_binary(error) -> "failed"
@@ -152,6 +153,7 @@ defmodule Tackle.CLI.TUI.StatusView do
       "F3 settings",
       "F4 browse",
       "Ctrl+F search",
+      "Ctrl+K compact",
       "Shift+Enter newline",
       "Ctrl+T reasoning",
       "Ctrl+C quit"
@@ -226,6 +228,7 @@ defmodule Tackle.CLI.TUI.StatusView do
     usage = displayed_usage(state)
 
     [
+      compaction_indicator(state),
       context_indicator(displayed_context_usage(state)),
       token_indicator("in", usage.input_tokens),
       token_indicator("out", usage.output_tokens),
@@ -234,6 +237,18 @@ defmodule Tackle.CLI.TUI.StatusView do
     ]
     |> Enum.reject(&is_nil/1)
   end
+
+  # A checkpoint leading the model projection means the provider surface is
+  # compacted even though the transcript still shows the full history.
+  defp compaction_indicator(%State{agent_state: %Lib.State{model_messages: messages}})
+       when is_list(messages) do
+    case messages do
+      [first | _rest] -> if Compaction.checkpoint?(first), do: "compacted", else: nil
+      [] -> nil
+    end
+  end
+
+  defp compaction_indicator(_state), do: nil
 
   defp displayed_usage(state) do
     state

@@ -96,5 +96,13 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
   defp normalize_usage(usage), do: Usage.normalize(usage)
 
   defp maybe_put_max_tokens(opts, nil), do: opts
-  defp maybe_put_max_tokens(opts, max), do: Keyword.put(opts, :max_output_tokens, max)
+
+  defp maybe_put_max_tokens(opts, max) do
+    # OpenAI-compatible adapters (DeepSeek and others) read `:max_tokens`; the
+    # provider-neutral library name is `:max_output_tokens`. Set both so the
+    # summary cap is honoured wherever the adapter supports a limit.
+    opts
+    |> Keyword.put(:max_output_tokens, max)
+    |> Keyword.put(:max_tokens, max)
+  end
 end

@@ -10,6 +10,7 @@ defmodule Tackle.CLI.TUITest do
   alias Tackle.CLI.TUI
   alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, Theme}
   alias Tackle.Lib.{Event, LLM, Message, State}
+  alias Tackle.Lib.Compaction, as: LibCompaction
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.ID
   alias Tackle.Session.Snapshot
@@ -79,6 +80,36 @@ defmodule Tackle.CLI.TUITest do
     def handle_call(:cancel, _from, state) do
       send(state.test_pid, :cancelled)
       {:reply, :ok, state}
+    end
+
+    def handle_call({:compact, _opts}, _from, state) do
+      send(state.test_pid, :compact_requested)
+
+      checkpoint = LibCompaction.checkpoint_message("ckpt-1", "compacted background")
+
+      agent_state = %{
+        state.agent_state
+        | model_messages: [checkpoint | state.agent_state.messages]
+      }
+
+      snapshot = %Snapshot{
+        session_id: agent_state.session_id,
+        agent_state: agent_state,
+        active_turn: nil
+      }
+
+      record = %Tackle.Lib.Compaction.Record{
+        compaction_id: "ckpt-1",
+        trigger: :manual,
+        summary_message: checkpoint,
+        shadowed_message_ids: ["u1"],
+        first_retained_message_id: nil,
+        tokens_before: 1_200,
+        estimated_tokens_after: 300,
+        created_at: "2026-01-01T00:00:00Z"
+      }
+
+      {:reply, {:ok, snapshot, record}, %{state | agent_state: agent_state}}
     end
 
     def handle_call({:reconfigure, opts}, _from, state) do
@@ -469,6 +500,50 @@ defmodule Tackle.CLI.TUITest do
     end)
 
     refute_receive {:reconfigured, _}, 50
+  end
+
+  # -- compaction ------------------------------------------------------------
+
+  test "Ctrl+K compacts when idle and reports the projection shrink", %{tui: tui} do
+    inject_key(tui, "k", ["ctrl"])
+    assert_receive :compact_requested
+
+    state = await_state(tui, &(&1.pending_operation == nil and is_binary(&1.notice)))
+
+    assert state.notice == "Compacted 1 message · 1.2k → 300 est. tokens"
+    assert state.agent_state.model_messages != nil
+    assert status_text(state) =~ "compacted"
+  end
+
+  test "compaction is idle only and never runs during a turn", %{tui: tui} do
+    inject_paste(tui, "work")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "work"}
+
+    _state = await_state(tui, &(&1.active_turn != nil))
+    inject_key(tui, "k", ["ctrl"])
+
+    state = state(tui)
+    assert state.notice =~ "when idle"
+    assert state.pending_operation == nil
+    refute_receive :compact_requested, 50
+  end
+
+  test "a rejected compaction is reported in the error row", %{tui: tui} do
+    state = state(tui)
+    ref = make_ref()
+
+    state = %{state | pending_operation: %{ref: ref, kind: :compact}, activity: "compacting"}
+
+    assert {:noreply, failed} =
+             Tackle.CLI.TUI.RuntimeEvents.handle(
+               {:tui_operation_result, ref, :compact, {:error, :turn_in_progress}},
+               state
+             )
+
+    assert failed.pending_operation == nil
+    assert failed.activity == nil
+    assert failed.error =~ "turn_in_progress"
   end
 
   # -- metrics -------------------------------------------------------------
@@ -1537,6 +1612,22 @@ defmodule Tackle.CLI.TUITest do
   # -- helpers -------------------------------------------------------------
 
   defp state(tui), do: :sys.get_state(tui).user_state
+
+  defp await_state(tui, predicate, attempts \\ 400)
+
+  defp await_state(tui, predicate, attempts) when attempts > 0 do
+    state = state(tui)
+
+    if predicate.(state) do
+      state
+    else
+      Process.sleep(5)
+      await_state(tui, predicate, attempts - 1)
+    end
+  end
+
+  defp await_state(_tui, _predicate, 0),
+    do: flunk("shell state never reached the expected condition")
 
   defp frame(state) do
     {width, height} = state.size

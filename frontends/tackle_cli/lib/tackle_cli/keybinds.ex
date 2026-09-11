@@ -36,6 +36,7 @@ defmodule Tackle.CLI.Keybinds do
           | :browse
           | :cancel
           | :close
+          | :compact
           | :composer
           | :confirm
           | :copy_arguments
@@ -95,7 +96,7 @@ defmodule Tackle.CLI.Keybinds do
     do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
-      when is_ctrl(modifiers) and code in ["c", "f", "t", "j", "home", "end"],
+      when is_ctrl(modifiers) and code in ["c", "f", "t", "j", "k", "home", "end"],
       do: false
 
   def repeatable?(%Key{}), do: true
@@ -123,6 +124,8 @@ defmodule Tackle.CLI.Keybinds do
   defp composer(%Key{code: "esc"}), do: :escape
   defp composer(%Key{code: "n", modifiers: modifiers}) when is_alt(modifiers), do: :new_session
   defp composer(%Key{code: "f", modifiers: modifiers}) when is_ctrl(modifiers), do: :search
+
+  defp composer(%Key{code: "k", modifiers: modifiers}) when is_ctrl(modifiers), do: :compact
 
   defp composer(%Key{code: "t", modifiers: modifiers}) when is_ctrl(modifiers),
     do: :toggle_thinking

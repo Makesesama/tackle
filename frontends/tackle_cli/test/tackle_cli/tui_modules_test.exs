@@ -2,6 +2,7 @@ defmodule Tackle.CLI.TUI.ModulesTest do
   use ExUnit.Case, async: true
 
   alias Tackle.CLI.TUI.{Composer, Inspector, Menu, State, Util, Viewport}
+  alias Tackle.CLI.TUI.Compaction, as: TUICompaction
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.{Message, ModelInfo, Usage}
   alias Tackle.Lib.State, as: AgentState
@@ -172,6 +173,43 @@ defmodule Tackle.CLI.TUI.ModulesTest do
       model: "test-model",
       ref: "openai-codex/test-model"
     }
+  end
+
+  describe "Compaction" do
+    test "request/1 refuses while a turn or another operation is active" do
+      busy = %State{active_turn: %{id: "turn-1"}}
+      assert {:noreply, refused} = TUICompaction.request(busy)
+      assert refused.notice =~ "when idle"
+
+      pending = %State{pending_operation: %{ref: make_ref(), kind: :submit}}
+      assert {:noreply, waiting} = TUICompaction.request(pending)
+      assert waiting.notice =~ "Wait for the current operation"
+    end
+
+    test "notice/1 summarises the shrink and falls back safely" do
+      record = %{
+        tokens_before: 1_200,
+        estimated_tokens_after: 300,
+        shadowed_message_ids: ["a", "b"]
+      }
+
+      assert TUICompaction.notice(record) ==
+               "Compacted 2 messages · 1.2k → 300 est. tokens"
+
+      assert TUICompaction.notice(%{}) == "Compacted context"
+      assert TUICompaction.notice(nil) == "Compacted context"
+    end
+
+    test "activity/1 maps lifecycle events to status words" do
+      assert TUICompaction.activity({:compaction_start, %{}}) == "compacting"
+      assert TUICompaction.activity({:compaction_retry, %{}}) == "compacting"
+      assert TUICompaction.activity({:compaction_end, %{status: :completed}}) == "compacted"
+
+      assert TUICompaction.activity({:compaction_end, %{status: :cancelled}}) ==
+               "compaction cancelled"
+
+      assert TUICompaction.activity({:compaction_end, %{status: :failed}}) == "compaction failed"
+    end
   end
 
   defp agent_state do
