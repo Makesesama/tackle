@@ -11,6 +11,10 @@ defmodule Tackle.CLI.TUI.State do
   streaming turn and `State.Metrics` holds the usage and context numbers, so
   each group is reset by one call when a turn settles.
 
+  Besides presentation the struct carries the two things the shell owes its
+  starter: the `new_session` factory that builds a replacement scope, and the
+  `owner` process that learns which session the shell exited with.
+
   It also owns the two ways the state is created: `new/1` mounts a shell onto
   an existing root agent, and `reset/4` adopts a replacement scope behind a new
   session. Both subscribe before they build so a failed subscription leaves the
@@ -48,6 +52,7 @@ defmodule Tackle.CLI.TUI.State do
           agent_monitor: reference() | nil,
           scope_ref: term(),
           new_session: (map() -> {:ok, Scope.t()} | {:error, term()}) | nil,
+          owner: pid() | nil,
           session_id: String.t() | nil,
           agent_state: AgentState.t() | nil,
           active_turn: map() | nil,
@@ -80,6 +85,7 @@ defmodule Tackle.CLI.TUI.State do
             agent_monitor: nil,
             scope_ref: nil,
             new_session: nil,
+            owner: nil,
             session_id: nil,
             agent_state: nil,
             active_turn: nil,
@@ -125,6 +131,7 @@ defmodule Tackle.CLI.TUI.State do
         agent_monitor: agent_monitor,
         scope_ref: snapshot.scope_ref,
         new_session: Keyword.get(opts, :new_session),
+        owner: Keyword.get(opts, :owner),
         session_id: snapshot.session_id,
         agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,

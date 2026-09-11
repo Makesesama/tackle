@@ -263,10 +263,15 @@ The CLI exposes durable sessions directly:
 ```sh
 tackle run "explain this module"          # new durable session
 tackle run --resume <session-id> "carry on"
+tackle run --resume                       # most recently updated session
 tackle run --resume <session-id> --abandon "continue after a crash"
 tackle sessions                           # newest sessions first
 tackle sessions --query "cache invalidation" --limit 10
 ```
+
+`--resume` without a session id continues the most recently updated session.
+When the terminal frontend exits it prints the `--resume` command for the
+session it was last attached to.
 
 The CLI automatically runs controlled journal repair when a resumed session was
 not closed cleanly. The original journal is preserved under the session's

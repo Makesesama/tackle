@@ -13,6 +13,7 @@ defmodule Tackle.CLI.TUITest do
   alias Tackle.Lib.{Event, LLM, Message, State}
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.ID
+  alias Tackle.Runtime.Scope
   alias Tackle.Session.Snapshot
 
   defmodule SessionStub do
@@ -1600,10 +1601,44 @@ defmodule Tackle.CLI.TUITest do
     task = Task.async(fn -> TUI.start(agent_ref: agent_ref, test_mode: {40, 10}) end)
 
     assert_receive {:subscribed, tui}
-    _snapshot = Runtime.snapshot(tui)
+    session_id = state(tui).session_id
     GenServer.stop(tui, :shutdown)
 
-    assert Task.await(task) == :ok
+    assert {:ok, ^session_id} = Task.await(task)
+  end
+
+  test "reports the session it was attached to when it exits" do
+    test_pid = self()
+    first_ref = AgentRef.new!(ID.generate(), ID.generate())
+    replacement_ref = AgentRef.new!(ID.generate(), ID.generate())
+    {:ok, first} = SessionStub.start_link({test_pid, first_ref})
+    Process.unlink(first)
+    {:ok, replacement} = SessionStub.start_link({test_pid, replacement_ref})
+    Process.unlink(replacement)
+
+    task =
+      Task.async(fn ->
+        TUI.start(
+          agent_ref: first_ref,
+          test_mode: {40, 10},
+          new_session: fn _overrides ->
+            {:ok, %Scope{scope_ref: nil, root_agent_ref: replacement_ref}}
+          end
+        )
+      end)
+
+    assert_receive {:subscribed, tui}
+    first_session = state(tui).session_id
+
+    inject_key(tui, "n", ["alt"])
+    inject_key(tui, "y")
+
+    replacement_session = await_state(tui, &(&1.session_id != first_session)).session_id
+    assert is_binary(replacement_session)
+
+    inject_key(tui, "c", ["ctrl"])
+
+    assert {:ok, ^replacement_session} = Task.await(task)
   end
 
   test "stops the App when the process calling start dies", %{agent_ref: agent_ref} do

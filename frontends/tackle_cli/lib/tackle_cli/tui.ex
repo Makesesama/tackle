@@ -78,7 +78,14 @@ defmodule Tackle.CLI.TUI do
     Viewport
   }
 
-  @spec start(keyword()) :: :ok | {:error, term()}
+  @doc """
+  Runs the shell until the user quits.
+
+  Returns the session the shell was attached to when it exited, so the caller
+  can offer to resume it. That session is the one the shell last displayed,
+  which is not necessarily the one it was started with.
+  """
+  @spec start(keyword()) :: {:ok, String.t() | nil} | {:error, term()}
   def start(opts) when is_list(opts) do
     opts = Keyword.put_new(opts, :mouse_capture, true)
     caller = self()
@@ -169,6 +176,7 @@ defmodule Tackle.CLI.TUI do
     # initial scope until a new session replaces it. Stopping it here keeps a
     # swapped-in scope from outliving the shell.
     Session.retire(state)
+    notify_owner(state)
     :ok
   end
 
@@ -320,23 +328,41 @@ defmodule Tackle.CLI.TUI do
 
   # -- app lifecycle -------------------------------------------------------
 
+  # The shell reports the session it leaves behind to the process that started
+  # it, because only that process survives the terminal teardown and can print
+  # a resume command afterwards.
+  defp notify_owner(%State{owner: owner, session_id: session_id}) when is_pid(owner) do
+    send(owner, {:tui_exit, session_id})
+    :ok
+  end
+
+  defp notify_owner(_state), do: :ok
+
   defp run_app(caller, result_ref, opts) do
     Process.flag(:trap_exit, true)
     caller_monitor = Process.monitor(caller)
 
+    opts =
+      opts
+      |> Keyword.put_new(:name, nil)
+      |> Keyword.put(:owner, self())
+
     result =
-      case start_link(Keyword.put_new(opts, :name, nil)) do
-        {:ok, pid} -> await_exit(pid, caller, caller_monitor)
+      case start_link(opts) do
+        {:ok, pid} -> await_exit(pid, caller, caller_monitor, nil)
         {:error, reason} -> {:error, reason}
       end
 
     if result != :caller_down, do: send(caller, {result_ref, result})
   end
 
-  defp await_exit(pid, caller, caller_monitor) do
+  defp await_exit(pid, caller, caller_monitor, reported_session_id) do
     receive do
+      {:tui_exit, session_id} ->
+        await_exit(pid, caller, caller_monitor, session_id)
+
       {:EXIT, ^pid, reason} when reason in [:normal, :shutdown] ->
-        :ok
+        {:ok, reported_session_id}
 
       {:EXIT, ^pid, reason} ->
         {:error, reason}
