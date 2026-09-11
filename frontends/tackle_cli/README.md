@@ -82,6 +82,7 @@ hint row. Empty optional rows are not reserved when the terminal is short.
 | F2 | Model and thinking selector (idle only). ↑/↓ switches field, ←/→ cycles, Enter applies, Esc cancels. A reconfigure failure preserves the conversation and the draft. |
 | F3 | Source copy overlay. ↑/↓ selects, Y/Enter copies the full retained source of the entry, O opens the output inspector, A copies the full transcript, Esc closes. |
 | F4 | Browse transcript entries with ↑/↓. Enter opens the selected entry (including compaction summaries) in the scrollable inspector; Y copies its source; Esc returns to the composer. |
+| F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
 | Ctrl+F | Transcript search over full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
 | Ctrl+K | Compact context manually while idle. The draft is retained. Manual compaction cannot currently be cancelled. |
 | Ctrl+T | Reveal or collapse supplied reasoning. |
@@ -173,13 +174,33 @@ current session view; they are not a persisted compaction archive. Drafts remain
 editable and are never queued during manual compaction; Esc does not cancel that
 synchronous session operation.
 
+### Conversation tree (`/tree`)
+
+Type `/tree` (or press F5) while idle to browse the session's conversation tree.
+The picker is search-first: type to filter, ↑/↓ to move, Enter to select, Esc to
+close without changing the conversation or the draft.
+
+Rows are drawn with branch indentation, and the active position is marked. Rows
+whose tool batch is incomplete are labeled *inspect only* and cannot be selected,
+because navigating there would replay a tool or fabricate a result.
+
+Selecting a user message moves to its parent and, when the composer is untouched,
+fills it with that message; submitting the edit then creates a sibling branch.
+Selecting another entry moves to it, and the start row returns to the empty
+conversation before the first message. An existing non-empty draft is never
+overwritten by a selected message; the notice says the draft was kept.
+
+Navigation is committed before it is installed, so the selected position is
+restored on `--resume` even when you exit without sending another prompt. The
+picker states plainly that navigation does not undo workspace changes.
+
 ## Experimental limitations
 
 This shell is an experimentation build. It intentionally does not implement:
 
 - queued or steering prompts while a turn runs (the draft is kept, not queued);
 - approval or permission prompts;
-- session browsing, branching, or reconnect (a new session starts a fresh root scope, and the shell cannot yet list or reopen past sessions; on exit it prints the `--resume` command for the session it was attached to);
+- session browsing, branching, or reconnect (a new session starts a fresh root scope, and the shell cannot yet list or reopen past sessions; on exit it prints the `--resume` command for the session it was attached to); note that in-session `/tree` branching is implemented and is distinct from session browsing;
 - inline terminal-scrollback rendering (the TUI owns the alternate screen);
 - a theme framework (colors are semantic but fixed), authoritative file diffs,
   or a plugin presenter registry;
@@ -228,6 +249,7 @@ process lifecycle, and everything else is a module that takes and returns
 | `TUI.Composer` | draft editing and submission |
 | `TUI.Browser` | transcript focus, selection, and copy |
 | `TUI.Menu` | model, reasoning, and settings pickers |
+| `TUI.Tree` | the `/tree` conversation picker and navigation outcomes |
 | `TUI.Search` | transcript search |
 | `TUI.Inspector` | the scrollable tool-output inspector |
 | `TUI.Session` | root scope ownership and teardown |

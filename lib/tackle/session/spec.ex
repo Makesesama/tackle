@@ -24,6 +24,7 @@ defmodule Tackle.Session.Spec do
             model_ref: nil,
             thinking: nil,
             override_config: false,
+            tree: true,
             storage: []
 
   @type t :: %__MODULE__{
@@ -36,6 +37,7 @@ defmodule Tackle.Session.Spec do
           model_ref: String.t() | nil,
           thinking: String.t() | nil,
           override_config: boolean(),
+          tree: boolean(),
           storage: keyword()
         }
 
@@ -55,6 +57,7 @@ defmodule Tackle.Session.Spec do
       model_ref: Map.get(opts, :model_ref),
       thinking: Map.get(opts, :thinking),
       override_config: Map.get(opts, :override_config, false),
+      tree: Map.get(opts, :tree, true),
       storage: Map.get(opts, :storage, [])
     }
 
@@ -95,6 +98,7 @@ defmodule Tackle.Session.Spec do
          :ok <- validate_optional_string(:model_ref, spec.model_ref),
          :ok <- validate_optional_string(:thinking, spec.thinking),
          :ok <- validate_boolean(:override_config, spec.override_config),
+         :ok <- validate_boolean(:tree, spec.tree),
          :ok <- validate_storage(spec.storage) do
       {:ok, spec}
     end

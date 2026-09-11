@@ -70,6 +70,8 @@ defmodule Tackle.Lib do
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tree
+  alias Tackle.Lib.Tree.Navigator
 
   @doc """
   Creates a new agent state. See `Tackle.Lib.State.new/1` for options.
@@ -140,6 +142,103 @@ defmodule Tackle.Lib do
   """
   @spec usage(State.t()) :: Tackle.Lib.Usage.t()
   defdelegate usage(state), to: State
+
+  @doc """
+  Derives token/cost usage for the active conversation path only.
+
+  Linear mode has a single path, so this equals `usage/1`. In tree mode it
+  excludes sibling branches.
+  """
+  @spec branch_usage(State.t()) :: Tackle.Lib.Usage.t()
+  defdelegate branch_usage(state), to: State
+
+  @doc """
+  Returns the conversation tree, or `nil` when tree history is disabled.
+  """
+  @spec tree(State.t()) :: Tree.t() | nil
+  def tree(%State{tree: tree}), do: tree
+
+  @doc """
+  Navigates the active position of an opt-in tree session.
+
+  The library prepares the transition against the tree's current revision,
+  validates the destination, and commits through the configured
+  `Tackle.Lib.Tree.Committer` before installing the new position. Navigation
+  never runs a turn, re-executes a tool, or modifies entries.
+
+  Targets are described in `Tackle.Lib.Tree.Navigator`. Expected failures
+  include `:tree_disabled`, `{:unknown_entry, id}`, `{:unsafe_continuation,
+  id}`, `{:stale_transition, expected, actual}`, and
+  `{:durable_commit_failed, reason}`. A failed validation or commit leaves the
+  accepted state unchanged.
+  """
+  @spec navigate(State.t(), Navigator.target(), keyword()) ::
+          {:ok, State.t(), Navigator.outcome()} | {:error, term()}
+  def navigate(%State{} = state, target, opts \\ []) do
+    case state.tree do
+      nil ->
+        {:error, :tree_disabled}
+
+      %Tree{} = tree ->
+        cond do
+          active?(state) ->
+            {:error, :turn_in_progress}
+
+          true ->
+            with {:ok, outcome} <- Navigator.navigate(tree, target, opts),
+                 :ok <- commit_navigation(state, outcome.change, opts) do
+              {:ok, install_navigation(state, outcome), outcome}
+            end
+        end
+    end
+  end
+
+  # The library refuses to navigate a state that is visibly mid-turn. Immutable
+  # state cannot know about another process executing a copy, so the host must
+  # still serialize turns, navigation, and compaction.
+  defp active?(%State{status: status}), do: status in [:thinking, :acting]
+
+  defp commit_navigation(_state, nil, _opts), do: :ok
+
+  defp commit_navigation(%State{} = state, change, opts) do
+    case Keyword.get(opts, :committer) || state.tree_committer do
+      nil ->
+        :ok
+
+      module ->
+        commit_with(module, change, state)
+    end
+  end
+
+  defp commit_with(module, change, state) do
+    case module.commit_navigation(change, %{session_id: state.session_id, context: state.context}) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:durable_commit_failed, reason}}
+      other -> {:error, {:durable_commit_failed, {:unexpected_commit_result, other}}}
+    end
+  rescue
+    error -> {:error, {:durable_commit_failed, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {:durable_commit_failed, {kind, reason}}}
+  end
+
+  defp install_navigation(%State{} = state, outcome) do
+    tree = outcome.tree
+
+    %{
+      state
+      | tree: tree,
+        messages: Tree.transcript(tree),
+        model_messages: Tree.model_context(tree),
+        last_compaction_id: Tree.last_compaction_id(tree),
+        current_iteration: 0,
+        status: :idle,
+        error: nil,
+        pending_assistant_id: nil,
+        snapshot: nil,
+        overflow_retries: 0
+    }
+  end
 
   @doc """
   Calculates current context-window usage for the selected model.

@@ -202,6 +202,12 @@ defmodule Tackle.Session.Reader do
   end
 
   defp fold(name, session_id, path) do
+    do_fold(name, session_id, path)
+  rescue
+    error in Tackle.Session.ProjectionError -> {:error, {:invalid_projection, error.reason}}
+  end
+
+  defp do_fold(name, session_id, path) do
     with {:ok, items} <- collect(name),
          {:ok, header, raw_commits} <- split_header(items, path),
          :ok <- Log.validate_header(header, session_id),

@@ -37,6 +37,7 @@ defmodule Tackle.Session.Store do
          messages: projection.messages,
          model_messages: projection.model_messages,
          compactions: projection.compactions,
+         tree: Projection.tree_summary(projection),
          uncertain_tools: Projection.uncertain_tools(projection)
        }}
     end

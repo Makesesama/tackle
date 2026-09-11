@@ -49,6 +49,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Composer` | draft editing and submission |
   | `Tackle.CLI.TUI.Browser` | transcript focus, selection, and copy |
   | `Tackle.CLI.TUI.Menu` | model, reasoning, and settings pickers |
+  | `Tackle.CLI.TUI.Tree` | the `/tree` conversation picker and navigation |
   | `Tackle.CLI.TUI.Search` | transcript search |
   | `Tackle.CLI.TUI.Inspector` | the scrollable tool-output inspector |
   | `Tackle.CLI.TUI.Session` | root scope ownership and teardown |
@@ -74,6 +75,7 @@ defmodule Tackle.CLI.TUI do
     Search,
     Session,
     State,
+    Tree,
     View,
     Viewport
   }
@@ -219,6 +221,9 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_overlay(key, %{overlay: {:picker, _}} = state),
     do: Menu.handle(Keybinds.picker(key), state)
 
+  defp dispatch_overlay(key, %{overlay: {:tree, _}} = state),
+    do: Tree.handle(Keybinds.picker(key), state)
+
   defp dispatch_overlay(key, %{overlay: {:inspector, _}} = state),
     do: Inspector.handle(Keybinds.inspector(key), state)
 
@@ -235,6 +240,7 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base(:escape, _key, state), do: escape(state)
   defp dispatch_base(:new_session, _key, state), do: Session.request_new(state)
   defp dispatch_base(:compact, _key, state), do: Compaction.request(state)
+  defp dispatch_base(:tree, _key, state), do: Tree.open(state)
   defp dispatch_base(:search, _key, state), do: Search.open(state)
   defp dispatch_base(:toggle_thinking, _key, state), do: Viewport.toggle_thinking(state)
 
@@ -261,6 +267,7 @@ defmodule Tackle.CLI.TUI do
 
   defp handle_paste(%{overlay: {:search, _}} = state, content), do: Search.paste(state, content)
   defp handle_paste(%{overlay: {:picker, _}} = state, content), do: Menu.paste(state, content)
+  defp handle_paste(%{overlay: {:tree, _}} = state, content), do: Tree.paste(state, content)
 
   # The transcript browser owns the keyboard, so a paste must not land in a
   # composer the user cannot see the cursor in.

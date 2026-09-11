@@ -39,6 +39,7 @@ defmodule Tackle.CLI.TUI.State do
   @type overlay ::
           nil
           | {:picker, map()}
+          | {:tree, map()}
           | {:inspector, map()}
           | {:search, map()}
           | {:confirm_quit, map()}

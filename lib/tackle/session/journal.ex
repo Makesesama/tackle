@@ -17,6 +17,7 @@ defmodule Tackle.Session.Journal do
 
   alias Tackle.Config
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tree.Change
   alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
   alias Tackle.Session.Codec
@@ -102,8 +103,9 @@ defmodule Tackle.Session.Journal do
   end
 
   @doc "Persists a settled message on the current turn."
-  @spec append_message(GenServer.server(), Message.t()) :: :ok | {:error, term()}
-  def append_message(journal, %Message{} = message), do: call(journal, {:append_message, message})
+  @spec append_message(GenServer.server(), Message.t(), term()) :: :ok | {:error, term()}
+  def append_message(journal, %Message{} = message, parent \\ :none),
+    do: call(journal, {:append_message, message, parent})
 
   @doc "Persists tool execution intent before the tool is invoked."
   @spec tool_started(GenServer.server(), map()) :: :ok | {:error, term()}
@@ -123,6 +125,25 @@ defmodule Tackle.Session.Journal do
   @doc "Settles the active turn with a terminal event."
   @spec settle_turn(GenServer.server(), atom(), map()) :: :ok | {:error, term()}
   def settle_turn(journal, type, data \\ %{}), do: call(journal, {:settle_turn, type, data})
+
+  @doc """
+  Persists one committed navigation before the library installs it.
+
+  Navigation is durable on its own, so a session that is resumed after the
+  user exits without sending another prompt restores the selected position,
+  including the position before the first message.
+  """
+  @spec tree_navigated(GenServer.server(), Change.t()) :: :ok | {:error, term()}
+  def tree_navigated(journal, %Change{} = change), do: call(journal, {:tree_navigated, change})
+
+  @doc """
+  Records the explicit `tree.enabled` transition for a legacy linear session.
+
+  The durable file is not rewritten; the event only records that later writes
+  may branch. An already-enabled or unmaterialized session is a no-op.
+  """
+  @spec enable_tree(GenServer.server()) :: :ok | {:error, term()}
+  def enable_tree(journal), do: call(journal, :enable_tree)
 
   @doc "Persists an accepted idle configuration change."
   @spec configuration_changed(GenServer.server(), Config.t()) :: :ok | {:error, term()}
@@ -163,11 +184,13 @@ defmodule Tackle.Session.Journal do
   Persistence-hook entry point: persists a settled message by session id.
 
   Sessions without a journal — ephemeral delegated agents — are a no-op so the
-  same hook module can be installed unconditionally.
+  same hook module can be installed unconditionally. `parent` is `:none` for a
+  linear session, or `{:tree, parent_id}` (which may be `nil`) for a branching
+  one, so the parent link is committed with the message payload.
   """
-  @spec persist_message(String.t(), Message.t()) :: :ok | {:error, term()}
-  def persist_message(session_id, %Message{} = message) do
-    with_journal(session_id, &append_message(&1, message))
+  @spec persist_message(String.t(), Message.t(), term()) :: :ok | {:error, term()}
+  def persist_message(session_id, %Message{} = message, parent \\ :none) do
+    with_journal(session_id, &append_message(&1, message, parent))
   end
 
   @doc "Persistence-hook entry point: persists a tool intent by session id."
@@ -299,9 +322,9 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  def handle_call({:append_message, %Message{} = message}, _from, state) do
+  def handle_call({:append_message, %Message{} = message, parent}, _from, state) do
     with %{turn_id: turn_id} <- state.active_turn,
-         {:ok, event} <- message_event(message),
+         {:ok, event} <- message_event(message, parent),
          {:ok, state, _seq} <- commit(state, [event], turn_id) do
       {:reply, :ok, state}
     else
@@ -329,6 +352,44 @@ defmodule Tackle.Session.Journal do
 
   def handle_call({:settle_turn, _type, _data}, _from, %{materialized?: false} = state) do
     {:reply, {:error, :no_active_turn}, state}
+  end
+
+  def handle_call({:tree_navigated, _change}, _from, %{materialized?: false} = state) do
+    {:reply, {:error, :no_journal}, state}
+  end
+
+  def handle_call({:tree_navigated, %Change{} = change}, _from, state) do
+    event =
+      Log.event("tree.navigated", %{
+        "from_id" => change.from_id,
+        "to_id" => change.to_id,
+        "selected_id" => change.selected_id,
+        "mode" => Atom.to_string(change.mode),
+        "revision" => change.revision,
+        "navigated_at" => now()
+      })
+
+    case commit(state, [event], state_active_turn_id(state)) do
+      {:ok, state, _seq} -> {:reply, :ok, state}
+      {:error, reason} -> fail(state, reason)
+    end
+  end
+
+  def handle_call(:enable_tree, _from, %{materialized?: false} = state) do
+    {:reply, :ok, %{state | open_opts: Keyword.put(state.open_opts, :tree, true)}}
+  end
+
+  def handle_call(:enable_tree, _from, %{projection: %Projection{tree_enabled?: true}} = state) do
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:enable_tree, _from, state) do
+    event = Log.event("tree.enabled", %{"enabled_at" => now()})
+
+    case commit(state, [event], nil) do
+      {:ok, state, _seq} -> {:reply, :ok, state}
+      {:error, reason} -> fail(state, reason)
+    end
   end
 
   def handle_call({:settle_turn, type, data}, _from, state) do
@@ -512,6 +573,7 @@ defmodule Tackle.Session.Journal do
       tags: Keyword.get(opts, :tags, []),
       model_ref: Keyword.get(opts, :model_ref),
       thinking: Keyword.get(opts, :thinking),
+      tree_enabled?: Keyword.get(opts, :tree, false),
       status: :clean
     }
   end
@@ -540,7 +602,8 @@ defmodule Tackle.Session.Journal do
         "model_ref" => Keyword.get(opts, :model_ref),
         "thinking" => Keyword.get(opts, :thinking),
         "title" => Keyword.get(opts, :title),
-        "tags" => Keyword.get(opts, :tags, [])
+        "tags" => Keyword.get(opts, :tags, []),
+        "tree" => Keyword.get(opts, :tree, false)
       })
 
     with :ok <- Reader.log(state.name, header),
@@ -604,12 +667,21 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  defp message_event(%Message{} = message) do
+  defp message_event(%Message{} = message, parent) do
     case Codec.encode_message(message) do
-      {:ok, data} -> {:ok, Log.event("message.appended", %{"message" => data})}
-      {:error, reason} -> {:error, reason}
+      {:ok, data} ->
+        {:ok, Log.event("message.appended", maybe_put_parent(%{"message" => data}, parent))}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
+
+  # `:none` keeps a linear journal unchanged; `{:tree, parent_id}` records the
+  # entry the message attaches to, including `nil` for a new root, alongside the
+  # message payload in the same commit.
+  defp maybe_put_parent(data, :none), do: data
+  defp maybe_put_parent(data, {:tree, parent_id}), do: Map.put(data, "parent_id", parent_id)
 
   defp tool_event(call) do
     data = %{

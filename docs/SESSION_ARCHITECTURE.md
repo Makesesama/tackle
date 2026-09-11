@@ -748,7 +748,18 @@ A fork creates a new independent session at a validated commit sequence:
 
 The child can be loaded after the parent is deleted. Parent metadata exists for lineage and navigation, not for replay dependency.
 
-Branching several active histories inside one file is deferred. The current `Tackle.Lib.State.messages` model is linear, so one file per independent branch is the smaller design.
+Branching several histories inside one file is now implemented as an optional
+conversation tree. A session's projection always folds a `Tackle.Lib.Tree`; the
+`session.created` event records tree enablement, `message.appended` carries the
+entry parent link, `context.compacted` attaches to the active branch, and
+`tree.navigated` records a committed position change. The canonical archive
+(`Projection.messages`) covers every branch once, while the active transcript
+and model context follow the selected ancestry. A legacy linear journal loads
+unchanged and records an explicit `tree.enabled` transition before its first
+branching write. Independent forks remain one file per session and copy the
+tree and active position; see
+[the conversation tree plan](SESSION_TREE_PLAN.md), which retains the existing
+journal durability contract.
 
 ## 16. Deletion and retention
 
