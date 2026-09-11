@@ -7,6 +7,7 @@
 let
   jailedAgents = jailed-agents.lib.${system};
   jail = jailedAgents.internals.jail;
+  ketch = pkgs.callPackage ./ketch.nix { };
 
   tackleDevelopmentWrapper = pkgs.writeShellApplication {
     name = "tackle-development";
@@ -33,7 +34,10 @@ in
 jailedAgents.makeJailedAgent {
   name = "jailed-tackle";
   pkg = tackleDevelopmentWrapper;
-  configPaths = [ "~/.tackle" ];
+  configPaths = [
+    "~/.tackle"
+    "~/.config/ketch/config.json"
+  ];
 
   # Keep the host Nix daemon outside the jail. The coding toolchain is exposed
   # explicitly instead, while jailed-agents supplies Bash, Git, ripgrep, curl,
@@ -52,6 +56,8 @@ jailedAgents.makeJailedAgent {
     pkgs.watchman
     pkgs.tokei
     pkgs.beamPackages.expert
+    ketch
+    pkgs.chromium
   ]
   ++ pkgs.lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.inotify-tools;
 
