@@ -23,6 +23,7 @@ defmodule Tackle.Session.Catalog do
 
   @table __MODULE__
   @summary_schema_version 1
+  @rebuild_session_timeout 2_000
 
   @type filters :: %{
           optional(:text) => String.t() | nil,
@@ -102,8 +103,8 @@ defmodule Tackle.Session.Catalog do
 
   Valid, current sidecars are used directly; missing, stale, corrupt, or
   incompatible summaries are rebuilt by folding the journal. Sessions whose
-  journal cannot be read are omitted and reported as skipped rather than
-  pretending results are complete.
+  journal cannot be read within the per-session rebuild timeout are omitted and
+  reported as skipped rather than blocking the entire catalog.
   """
   @spec rebuild(keyword()) :: %{indexed: non_neg_integer(), skipped: non_neg_integer()}
   def rebuild(opts \\ []) do
@@ -197,11 +198,18 @@ defmodule Tackle.Session.Catalog do
   end
 
   defp index_sessions(table, session_ids, opts) do
-    Enum.reduce(session_ids, %{indexed: 0, skipped: 0}, fn session_id, acc ->
-      case index_session(table, session_id, opts) do
-        :ok -> %{acc | indexed: acc.indexed + 1}
-        {:error, _reason} -> %{acc | skipped: acc.skipped + 1}
-      end
+    timeout = Keyword.get(opts, :rebuild_session_timeout, @rebuild_session_timeout)
+
+    session_ids
+    |> Task.async_stream(&index_session(table, &1, opts),
+      max_concurrency: System.schedulers_online(),
+      ordered: false,
+      timeout: timeout,
+      on_timeout: :kill_task
+    )
+    |> Enum.reduce(%{indexed: 0, skipped: 0}, fn
+      {:ok, :ok}, acc -> %{acc | indexed: acc.indexed + 1}
+      _skipped, acc -> %{acc | skipped: acc.skipped + 1}
     end)
   end
 
@@ -231,6 +239,7 @@ defmodule Tackle.Session.Catalog do
 
   defp read_sidecar(session_id, opts) do
     with {:ok, path} <- Storage.summary_path(session_id, opts),
+         {:ok, %File.Stat{type: :regular}} <- File.stat(path),
          {:ok, binary} <- File.read(path),
          {:ok, payload} <- decode_sidecar(binary),
          true <- payload["schema_version"] == @summary_schema_version,

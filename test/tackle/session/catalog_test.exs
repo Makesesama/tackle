@@ -88,6 +88,30 @@ defmodule Tackle.Session.CatalogTest do
     assert entry.last_indexed_seq > 0
   end
 
+  test "a stalled session does not block the catalog rebuild", ctx do
+    healthy_id = create_session(ctx, cwd: unique_cwd(ctx, "healthy"), title: "Healthy")
+    blocked_dir = Path.join([ctx.home, "sessions", "blocked-journal"])
+    journal_path = Path.join(blocked_dir, "session.dlog")
+    blocked_summary_dir = Path.join([ctx.home, "sessions", "blocked-summary"])
+    summary_path = Path.join(blocked_summary_dir, "summary.etf")
+    File.mkdir_p!(blocked_dir)
+    File.mkdir_p!(blocked_summary_dir)
+    _ = File.rm(journal_path)
+    _ = File.rm(summary_path)
+
+    mkfifo = System.find_executable("mkfifo") || flunk("mkfifo is required for this test")
+    assert {"", 0} = System.cmd(mkfifo, [journal_path], stderr_to_stdout: true)
+    assert {"", 0} = System.cmd(mkfifo, [summary_path], stderr_to_stdout: true)
+
+    started_at = System.monotonic_time(:millisecond)
+
+    assert %{indexed: 1, skipped: 2} =
+             Catalog.rebuild(home: ctx.home, rebuild_session_timeout: 250)
+
+    assert System.monotonic_time(:millisecond) - started_at < 2_000
+    assert {:ok, %{session_id: ^healthy_id}} = Catalog.get(healthy_id)
+  end
+
   test "marks stale projections and catches them up by sequence", ctx do
     cwd = unique_cwd(ctx, "stale")
 
