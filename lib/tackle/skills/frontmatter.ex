@@ -62,7 +62,7 @@ defmodule Tackle.Skills.Frontmatter do
 
       leading_space?(line) ->
         case entries do
-          [{key, values} | rest] -> {:cont, {:ok, [{key, values ++ [String.trim(line)]} | rest]}}
+          [{key, values} | rest] -> {:cont, {:ok, [{key, [String.trim(line) | values]} | rest]}}
           [] -> {:halt, {:error, :malformed_frontmatter}}
         end
 
@@ -76,7 +76,9 @@ defmodule Tackle.Skills.Frontmatter do
 
   defp entry(_line, {:error, reason}), do: {:halt, {:error, reason}}
 
-  defp value([first | rest]) do
+  defp value(values) do
+    [first | rest] = Enum.reverse(values)
+
     cond do
       block_marker?(first) -> join(rest)
       rest != [] -> join([first | rest])

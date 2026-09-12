@@ -36,13 +36,8 @@ defmodule Tackle.Runtime.Handle do
 
   @doc "Returns the handle stored in an agent context, if any."
   @spec from_context(map() | nil) :: t() | nil
-  def from_context(context) when is_map(context) do
-    case Map.get(context, :runtime) || Map.get(context, "runtime") do
-      %__MODULE__{} = handle -> handle
-      _other -> nil
-    end
-  end
-
+  def from_context(%{runtime: %__MODULE__{} = handle}), do: handle
+  def from_context(%{"runtime" => %__MODULE__{} = handle}), do: handle
   def from_context(_context), do: nil
 
   defp fetch(opts, key, default) when is_list(opts), do: Keyword.get(opts, key, default)

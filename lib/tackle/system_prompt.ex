@@ -129,19 +129,15 @@ defmodule Tackle.SystemPrompt do
   defp tool_guidelines(tool_names) do
     tool_names = MapSet.new(tool_names)
 
-    []
-    |> maybe_add_guideline(
-      MapSet.member?(tool_names, "bash"),
-      "Use bash for file operations such as listing, searching, and finding files."
-    )
-    |> maybe_add_guideline(
-      MapSet.member?(tool_names, "read") and MapSet.member?(tool_names, "edit"),
-      "Use read to examine file contents and edit for precise changes."
-    )
+    [
+      {MapSet.member?(tool_names, "bash"),
+       "Use bash for file operations such as listing, searching, and finding files."},
+      {MapSet.member?(tool_names, "read") and MapSet.member?(tool_names, "edit"),
+       "Use read to examine file contents and edit for precise changes."}
+    ]
+    |> Enum.filter(&elem(&1, 0))
+    |> Enum.map(&elem(&1, 1))
   end
-
-  defp maybe_add_guideline(guidelines, true, guideline), do: guidelines ++ [guideline]
-  defp maybe_add_guideline(guidelines, false, _guideline), do: guidelines
 
   defp load_context_files(cwd, home) do
     paths =
@@ -151,14 +147,19 @@ defmodule Tackle.SystemPrompt do
       ]
       |> Enum.uniq()
 
-    Enum.reduce_while(paths, {:ok, []}, fn path, {:ok, files} ->
+    paths
+    |> Enum.reduce_while({:ok, []}, fn path, {:ok, files} ->
       case read_optional(path) do
         {:ok, nil} -> {:cont, {:ok, files}}
-        {:ok, content} -> {:cont, {:ok, files ++ [%{path: path, content: content}]}}
+        {:ok, content} -> {:cont, {:ok, [%{path: path, content: content} | files]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+    |> reverse_context_files()
   end
+
+  defp reverse_context_files({:ok, files}), do: {:ok, Enum.reverse(files)}
+  defp reverse_context_files({:error, reason}), do: {:error, reason}
 
   defp ancestor_directories(cwd), do: ancestor_directories(cwd, [])
 

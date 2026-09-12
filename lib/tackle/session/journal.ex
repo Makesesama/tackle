@@ -684,11 +684,12 @@ defmodule Tackle.Session.Journal do
   defp maybe_put_parent(data, {:tree, parent_id}), do: Map.put(data, "parent_id", parent_id)
 
   defp tool_event(call) do
+    call = normalize_tool_call(call)
+
     data = %{
-      "tool_call_id" => Map.get(call, :id) || Map.get(call, "id"),
-      "name" => Map.get(call, :name) || Map.get(call, "name"),
-      "arguments" =>
-        Codec.normalize(Map.get(call, :arguments) || Map.get(call, "arguments") || %{}),
+      "tool_call_id" => Map.get(call, "id"),
+      "name" => Map.get(call, "name"),
+      "arguments" => Map.get(call, "arguments") || %{},
       "started_at" => now()
     }
 
@@ -697,6 +698,15 @@ defmodule Tackle.Session.Journal do
       {:error, reason} -> {:error, {:invalid_tool_call, reason}}
     end
   end
+
+  defp normalize_tool_call(%Tackle.Lib.Tool.Call{} = call) do
+    call
+    |> Map.from_struct()
+    |> Map.take([:id, :name, :arguments])
+    |> Codec.normalize()
+  end
+
+  defp normalize_tool_call(call), do: Codec.normalize(call)
 
   defp settle_event(state, type, data) do
     turn_id = state_active_turn_id(state) || data["turn_id"]

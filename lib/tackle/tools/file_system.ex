@@ -18,11 +18,10 @@ defmodule Tackle.Tools.FileSystem do
     "#{path}: #{reason |> :file.format_error() |> List.to_string()}"
   end
 
-  defp cwd(context) do
-    case Map.get(context, :cwd) || Map.get(context, "cwd") do
-      nil -> File.cwd()
-      cwd when is_binary(cwd) -> {:ok, Path.expand(cwd)}
-      cwd -> {:error, "Invalid working directory: #{inspect(cwd)}"}
-    end
-  end
+  defp cwd(%{cwd: cwd}), do: normalize_cwd(cwd)
+  defp cwd(%{"cwd" => cwd}), do: normalize_cwd(cwd)
+  defp cwd(_context), do: File.cwd()
+
+  defp normalize_cwd(cwd) when is_binary(cwd), do: {:ok, Path.expand(cwd)}
+  defp normalize_cwd(cwd), do: {:error, "Invalid working directory: #{inspect(cwd)}"}
 end

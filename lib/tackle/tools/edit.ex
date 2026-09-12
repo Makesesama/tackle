@@ -66,8 +66,9 @@ defmodule Tackle.Tools.Edit do
   defp validate_edits(_edits), do: {:error, "edits must be an array"}
 
   defp validate_edit(edit, index) when is_map(edit) do
-    old_text = Map.get(edit, "oldText") || Map.get(edit, :oldText)
-    new_text = Map.get(edit, "newText") || Map.get(edit, :newText)
+    edit = stringify_edit_keys(edit)
+    old_text = Map.get(edit, "oldText")
+    new_text = Map.get(edit, "newText")
 
     cond do
       not is_binary(old_text) -> {:error, "edits[#{index}].oldText must be a string"}
@@ -78,6 +79,14 @@ defmodule Tackle.Tools.Edit do
   end
 
   defp validate_edit(_edit, index), do: {:error, "edits[#{index}] must be an object"}
+
+  defp stringify_edit_keys(edit) do
+    Map.new(edit, fn
+      {:oldText, value} -> {"oldText", value}
+      {:newText, value} -> {"newText", value}
+      pair -> pair
+    end)
+  end
 
   defp read_utf8(absolute_path, display_path) do
     case File.read(absolute_path) do

@@ -353,7 +353,7 @@ defmodule Tackle.Session.Projection do
       {:ok, %Record{} = record} ->
         case Tree.append_compaction(projection.tree, record, parent_id: parent_id) do
           {:ok, tree, _entry} ->
-            %{projection | tree: tree, compactions: projection.compactions ++ [data]}
+            %{projection | tree: tree, compactions: append(projection.compactions, data)}
 
           {:error, reason} ->
             raise ProjectionError, reason: reason
@@ -372,7 +372,7 @@ defmodule Tackle.Session.Projection do
     }
 
     update_active_turn(projection, fn turn ->
-      %{turn | pending_tools: turn.pending_tools ++ [pending]}
+      %{turn | pending_tools: append(turn.pending_tools, pending)}
     end)
   end
 
@@ -449,6 +449,8 @@ defmodule Tackle.Session.Projection do
       pending_tools: []
     }
   end
+
+  defp append(items, item), do: Enum.concat(items, [item])
 
   defp terminal_status("turn.completed"), do: :completed
   defp terminal_status("turn.errored"), do: :errored

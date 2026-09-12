@@ -739,7 +739,7 @@ defmodule Tackle.Session do
     # validation, so ensure it is loaded before the loop's function_exported?
     # dispatch can see it.
     _ = Code.ensure_loaded(Persistence)
-    %{state | hooks: state.hooks ++ [Persistence]}
+    %{state | hooks: append(state.hooks, Persistence)}
   end
 
   defp install_tree_committer(%AgentState{tree: nil} = state), do: state
@@ -749,6 +749,8 @@ defmodule Tackle.Session do
     # library installs the new active position.
     %{state | tree_committer: SessionTree}
   end
+
+  defp append(items, item), do: Enum.concat(items, [item])
 
   defp recovery_for(%Projection{} = projection) do
     case projection.active_turn do
