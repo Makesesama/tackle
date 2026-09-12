@@ -29,6 +29,8 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.ModelInfo` — adapter-owned model limits and price cards.
     * `Tackle.Lib.ContextUsage` — context-window pressure and token estimates.
     * `Tackle.Lib.Event` — provider-independent run/message/tool/usage events.
+    * `Tackle.Lib.Retry` — bounded transient-provider retries with cancellable
+      exponential backoff.
     * `Tackle.Lib.LLM` — the provider-agnostic LLM behaviour and explicit
       adapter/model selection (the keystone seam).
     * `Tackle.Lib.Integrations.*` — optional glue for exposing tools through other

@@ -43,6 +43,7 @@ defmodule Tackle.Lib.SnapshotTest do
       assert snapshot.tools_version_id == Snapshot.tools_version_id([SnapshotTestTool])
       assert snapshot.hooks == []
       assert snapshot.llm_opts == [temperature: 0.5]
+      assert snapshot.retry == state.retry
       assert %DateTime{} = snapshot.captured_at
 
       # Tool registry is frozen

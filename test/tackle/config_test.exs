@@ -3,6 +3,7 @@ defmodule Tackle.ConfigTest do
 
   alias Tackle.Config
   alias Tackle.Lib.LLM.Selection
+  alias Tackle.Lib.Retry
   alias Tackle.Lib.Tool.Policy
 
   defmodule Adapter do
@@ -112,6 +113,29 @@ defmodule Tackle.ConfigTest do
 
     assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small", tools: [])
     assert config.tools == []
+  end
+
+  test "configures provider retry policy and passes it to agent state" do
+    assert {:ok, default} = Config.new(adapters: [Adapter], model: "test/small")
+    assert default.retry == Retry.new!()
+    assert Config.to_agent_state(default).retry == default.retry
+
+    assert {:ok, configured} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               retry: [max_retries: 1, base_delay_ms: 10, max_delay_ms: 20]
+             )
+
+    assert configured.retry == Retry.new!(max_retries: 1, base_delay_ms: 10, max_delay_ms: 20)
+
+    assert {:ok, disabled} =
+             Config.new(adapters: [Adapter], model: "test/small", retry: false)
+
+    refute Config.to_agent_state(disabled).retry.enabled?
+
+    assert {:error, {:invalid_retry_config, {:max_retries, -1}}} =
+             Config.new(adapters: [Adapter], model: "test/small", retry: [max_retries: -1])
   end
 
   test "uses unlimited iterations by default and accepts an explicit limit" do

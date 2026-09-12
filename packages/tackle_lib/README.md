@@ -253,6 +253,7 @@ Tackle.Lib.continue(state, run_opts)
 | `:prompt_renderer` | Prompt renderer module | configured/default renderer |
 | `:prompt_renderer_opts` | Renderer options | `[]` |
 | `:id_generator` | Zero-arity session/message/tool-call ID function | UUID generator |
+| `:retry` | `Tackle.Lib.Retry`, options, or `false` for provider-message retries | 3 retries, 2s base, 60s cap |
 
 Pass a positive integer as `:max_iterations` when a host needs a bounded run.
 
@@ -647,6 +648,7 @@ events. Event types include:
 - `:message_start`, `:message_delta`, `:message_end`
 - `:tool_start`, `:tool_end`, `:tool_error`
 - `:usage`, `:status_change`, `:error`
+- `:retry_scheduled`, `:retry_start`, `:retry_end`
 - `:provider_event` for unrecognized provider data
 
 Every event is `%Tackle.Lib.Event{type, id, parent_id, data, timestamp, metadata}`.
@@ -662,6 +664,35 @@ should not append them to the visible answer bubble by default. The
 Event callbacks should be fast. Send events to another process or PubSub rather
 than doing slow database work in the callback; use hooks or the Phoenix Store
 settlement seam for durable work.
+
+## Provider retries
+
+Transient provider-message failures are retried around the current generation,
+not around the whole turn. The default policy makes at most three retries with
+deterministic exponential delays of 2, 4, and 8 seconds (capped at 60 seconds).
+Configure it per state:
+
+```elixir
+Tackle.Lib.new(
+  retry: [max_retries: 3, base_delay_ms: 2_000, max_delay_ms: 60_000]
+)
+```
+
+Use `retry: false` or `max_retries: 0` to disable retries. Context overflow is
+classified first and retains its compact-and-retry path. Cancellation,
+authentication, quota/billing, context overflow, and unknown failures are never
+transient retries; hooks, tools, compaction commits, and other persistence also
+remain outside this policy. The backoff wait cooperatively polls the turn's
+cancellation signal.
+
+A retry reuses the same provider messages, pending assistant message ID, and
+loop iteration. It does not append a second user message. Hosts rendering
+streaming deltas should clear output for the pending assistant ID when they
+receive `:retry_scheduled`, before the next attempt emits more deltas.
+
+Retry lifecycle data includes the one-indexed `attempt`; `:retry_scheduled` also
+includes `max_retries`, `delay_ms`, and `reason`, while the single terminal
+`:retry_end` includes `success?` and the final `reason` on failure.
 
 ## Cooperative cancellation
 

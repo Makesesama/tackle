@@ -355,6 +355,13 @@ by model. `TACKLE_THINKING` overrides the file in the same way that
 `TACKLE_MODEL` overrides `model`. Adapter modules are always supplied as
 executable code, never converted from JSON strings.
 
+Configured sessions retry transient provider-message failures three times by
+default, using deterministic exponential delays of 2, 4, and 8 seconds with a
+60-second cap. Programmatic callers can set `retry: false` or pass
+`retry: [max_retries: ..., base_delay_ms: ..., max_delay_ms: ...]` to
+`Tackle.Config.new/1`. Authentication, quota/billing, context overflow,
+cancellation, and unknown failures are not transient retries.
+
 Configured sessions also build an effective coding prompt for their working
 directory. The built-in prompt lists the selected tools and core coding
 guidelines. The following optional UTF-8 files customize it:

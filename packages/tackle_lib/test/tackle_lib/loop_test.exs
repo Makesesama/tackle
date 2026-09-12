@@ -349,6 +349,60 @@ defmodule Tackle.Lib.LoopTest do
   # Captures opts[:messages] (the structured array) on every call, then drives a
   # tool-call turn followed by a content turn so the second call's array carries
   # the assistant tool-call turn and the linked tool result.
+  defmodule RetryThenSuccessAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, opts) do
+      call_count = Process.get(:retry_call_count, 0)
+      Process.put(:retry_call_count, call_count + 1)
+      send(Process.get(:test_pid), {:retry_messages, Keyword.fetch!(opts, :messages)})
+
+      if call_count == 0 do
+        {:error, {:request_failed, :timeout}}
+      else
+        {:ok, %{data: %{"content" => "retried"}, usage: nil, model: "test/model"}}
+      end
+    end
+  end
+
+  defmodule AlwaysTransientAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      send(Process.get(:test_pid), :retry_call)
+      {:error, {:http_error, 503, "unavailable"}}
+    end
+  end
+
+  defmodule PermanentFailureAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      send(Process.get(:test_pid), :retry_call)
+      {:error, {:http_error, 401, "unauthorized"}}
+    end
+  end
+
+  defmodule CancelDuringRetryAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, opts) do
+      signal = Keyword.fetch!(opts, :cancellation_signal)
+      send(Process.get(:test_pid), :retry_call)
+
+      spawn(fn ->
+        Process.sleep(20)
+        Cancellation.cancel(signal, "cancelled in backoff")
+      end)
+
+      {:error, {:request_failed, :timeout}}
+    end
+  end
+
   defmodule StructuredMessagesCapturingAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -393,6 +447,107 @@ defmodule Tackle.Lib.LoopTest do
         Application.delete_env(:tackle_lib, :llm)
       end
     end)
+  end
+
+  test "retries a transient provider failure without duplicating the turn" do
+    Application.put_env(:tackle_lib, :llm, RetryThenSuccessAdapter)
+    Process.put(:test_pid, self())
+    Process.put(:retry_call_count, 0)
+
+    state = State.new(model: "test/model", retry: [base_delay_ms: 0])
+
+    assert {:ok, state} =
+             Loop.run(state, "hello",
+               event_callback: fn event -> send(self(), {:event, event}) end
+             )
+
+    assert state.current_iteration == 1
+    assert Enum.map(state.messages, & &1.role) == [:user, :assistant]
+    assert List.last(state.messages).content == "retried"
+    assert_receive {:retry_messages, [%{role: :user, content: "hello"}]}
+    assert_receive {:retry_messages, [%{role: :user, content: "hello"}]}
+
+    assert_receive {:event,
+                    %Event{
+                      type: :retry_scheduled,
+                      data: %{
+                        attempt: 1,
+                        max_retries: 3,
+                        delay_ms: 0,
+                        reason: {:request_failed, :timeout}
+                      }
+                    }}
+
+    assert_receive {:event, %Event{type: :retry_start, data: %{attempt: 1}}}
+    assert_receive {:event, %Event{type: :retry_end, data: %{attempt: 1, success?: true}}}
+  end
+
+  test "emits one retry end and returns the last error after exhausting retries" do
+    Application.put_env(:tackle_lib, :llm, AlwaysTransientAdapter)
+    Process.put(:test_pid, self())
+
+    state = State.new(model: "test/model", retry: [max_retries: 2, base_delay_ms: 0])
+
+    assert {:error, state} =
+             Loop.run(state, "hello",
+               event_callback: fn event -> send(self(), {:event, event}) end
+             )
+
+    assert state.current_iteration == 1
+    assert Enum.map(state.messages, & &1.role) == [:user]
+    assert state.error =~ "503"
+    assert_receive :retry_call
+    assert_receive :retry_call
+    assert_receive :retry_call
+    refute_receive :retry_call
+
+    events = collect_events([])
+
+    retry_types =
+      events
+      |> Enum.filter(&(&1.type in [:retry_scheduled, :retry_start, :retry_end]))
+      |> Enum.map(& &1.type)
+
+    assert retry_types == [
+             :retry_scheduled,
+             :retry_start,
+             :retry_scheduled,
+             :retry_start,
+             :retry_end
+           ]
+
+    assert [%Event{data: %{attempt: 2, success?: false}}] =
+             Enum.filter(events, &(&1.type == :retry_end))
+  end
+
+  test "does not retry a permanent provider failure" do
+    Application.put_env(:tackle_lib, :llm, PermanentFailureAdapter)
+    Process.put(:test_pid, self())
+
+    assert {:error, _state} = Loop.run(State.new(model: "test/model"), "hello")
+    assert_receive :retry_call
+    refute_receive :retry_call
+  end
+
+  test "cancels cooperatively during provider retry backoff" do
+    Application.put_env(:tackle_lib, :llm, CancelDuringRetryAdapter)
+    Process.put(:test_pid, self())
+    signal = Cancellation.new_signal()
+
+    assert {:cancelled, state} =
+             Loop.run(State.new(model: "test/model", retry: [base_delay_ms: 5_000]), "hello",
+               cancellation_signal: signal,
+               event_callback: fn event -> send(self(), {:event, event}) end
+             )
+
+    assert state.status == :cancelled
+    assert state.error == "cancelled in backoff"
+    assert state.current_iteration == 1
+    assert_receive :retry_call
+    refute_receive :retry_call
+    assert_receive {:event, %Event{type: :retry_scheduled}}
+    assert_receive {:event, %Event{type: :retry_end, data: %{success?: false}}}
+    assert_receive {:event, %Event{type: :turn_cancelled}}
   end
 
   test "sends only persisted messages to the provider" do
@@ -1014,6 +1169,14 @@ defmodule Tackle.Lib.LoopTest do
       assert_receive :adapter_config_swapped
       assert_receive :snapshot_adapter_called
       refute_receive :replacement_adapter_called, 20
+    end
+  end
+
+  defp collect_events(events) do
+    receive do
+      {:event, %Event{} = event} -> collect_events([event | events])
+    after
+      0 -> Enum.reverse(events)
     end
   end
 end

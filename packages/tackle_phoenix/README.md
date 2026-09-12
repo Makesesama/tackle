@@ -489,7 +489,9 @@ end
 ```
 
 `EventReducer` handles `:message_start`, visible content
-`:message_delta`, and `:message_end`. It intentionally ignores reasoning and
+`:message_delta`, `:retry_scheduled`, and `:message_end`. A retry clears the
+provisional streaming entry for that pending message ID before replacement
+deltas arrive. It intentionally ignores reasoning and
 tool-input deltas for the visible bubble. Handle domain-specific events such as
 navigation, resource previews, or current-tool indicators before/after invoking
 the reducer.

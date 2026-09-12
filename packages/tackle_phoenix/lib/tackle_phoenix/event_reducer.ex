@@ -69,8 +69,9 @@ defmodule Tackle.Phoenix.EventReducer do
   @doc """
   Consumes a stream-related `Tackle.Lib.Event`.
 
-  Returns an updated socket for `:message_start`, `:message_delta`, and
-  `:message_end`; all other events are returned unchanged.
+  Returns an updated socket for `:message_start`, `:message_delta`,
+  `:retry_scheduled`, and `:message_end`; all other events are returned
+  unchanged.
   """
   def handle_tackle_event(socket, %Event{type: :message_start, data: data} = event) do
     if assistant_message?(data) do
@@ -99,6 +100,10 @@ defmodule Tackle.Phoenix.EventReducer do
     else
       socket
     end
+  end
+
+  def handle_tackle_event(socket, %Event{type: :retry_scheduled} = event) do
+    clear_streaming_message(socket, extract_message_id(event.data, event))
   end
 
   def handle_tackle_event(socket, %Event{
@@ -183,6 +188,8 @@ defmodule Tackle.Phoenix.EventReducer do
   end
 
   defp append_message_delta(socket, _message_id, _messages, _data), do: socket
+
+  defp clear_streaming_message(socket, nil), do: socket
 
   defp clear_streaming_message(socket, message_id) do
     messages = current_streaming_messages(socket)

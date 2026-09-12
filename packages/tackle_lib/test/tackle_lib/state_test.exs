@@ -19,7 +19,17 @@ defmodule Tackle.Lib.StateTest do
       assert state.llm == nil
       assert state.model == nil
       assert state.tools == []
+      assert state.retry == Tackle.Lib.Retry.new!()
       assert is_function(state.id_generator, 0)
+    end
+
+    test "validates retry options" do
+      assert State.new(retry: false).retry.enabled? == false
+      assert State.new(retry: [max_retries: 1]).retry.max_retries == 1
+
+      assert_raise ArgumentError, ~r/invalid :retry config/, fn ->
+        State.new(retry: [base_delay_ms: -1])
+      end
     end
 
     test "accepts custom options" do
