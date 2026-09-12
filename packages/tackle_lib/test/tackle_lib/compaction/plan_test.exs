@@ -27,8 +27,8 @@ defmodule Tackle.Lib.Compaction.PlanTest do
 
       assert {:ok, plan} = Plan.select(messages, retain_tokens: 150)
       assert plan.cut_index == 2
-      assert length(plan.shadowed) == 2
-      assert length(plan.retained) == 2
+      assert [_, _] = plan.shadowed
+      assert [_, _] = plan.retained
       assert plan.retained_tokens >= 150
       assert plan.tokens_before == ContextUsage.estimate_messages(messages)
       assert plan.first_retained_id == Enum.at(messages, 2).id

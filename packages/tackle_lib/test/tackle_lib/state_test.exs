@@ -3,6 +3,7 @@ defmodule Tackle.Lib.StateTest do
 
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Retry
   alias Tackle.Lib.State
   alias Tackle.Lib.Usage
 
@@ -19,7 +20,7 @@ defmodule Tackle.Lib.StateTest do
       assert state.llm == nil
       assert state.model == nil
       assert state.tools == []
-      assert state.retry == Tackle.Lib.Retry.new!()
+      assert state.retry == Retry.new!()
       assert is_function(state.id_generator, 0)
     end
 
@@ -86,7 +87,7 @@ defmodule Tackle.Lib.StateTest do
 
       state = State.add_message(state, message)
 
-      assert length(state.messages) == 1
+      assert [_message] = state.messages
       assert hd(state.messages).content == "Hello"
     end
   end

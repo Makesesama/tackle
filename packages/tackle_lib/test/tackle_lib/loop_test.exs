@@ -5,6 +5,7 @@ defmodule Tackle.Lib.LoopTest do
   alias Tackle.Lib.Event
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Loop
+  alias Tackle.Lib.Message
   alias Tackle.Lib.State
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Usage
@@ -625,8 +626,8 @@ defmodule Tackle.Lib.LoopTest do
     # The second request extends that exact prefix with the assistant tool call
     # and linked result. No synthetic instruction is inserted between them.
     assert_receive {:messages, second_messages}
-    assert Enum.take(second_messages, length(first_messages)) == first_messages
-    assert length(second_messages) == 3
+    assert Enum.take(second_messages, Enum.count(first_messages)) == first_messages
+    assert [_, _, _] = second_messages
 
     assistant_call =
       Enum.find(second_messages, fn m ->
@@ -636,7 +637,7 @@ defmodule Tackle.Lib.LoopTest do
     assert assistant_call, "expected a structured assistant tool-call turn"
     assert assistant_call.content == "I will inspect this first."
 
-    persisted_call = Enum.find(state.messages, &Tackle.Lib.Message.has_tool_calls?/1)
+    persisted_call = Enum.find(state.messages, &Message.has_tool_calls?/1)
     assert persisted_call.content == "I will inspect this first."
     assert persisted_call.thinking == "Need the tool."
 

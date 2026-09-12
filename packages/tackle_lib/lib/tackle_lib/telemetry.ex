@@ -14,7 +14,7 @@ defmodule Tackle.Lib.Telemetry do
     telemetry_ref = make_ref()
 
     :telemetry.execute(
-      event_prefix ++ [:start],
+      List.insert_at(event_prefix, -1, :start),
       %{system_time: System.system_time()},
       Map.put(metadata, :telemetry_ref, telemetry_ref)
     )
@@ -27,7 +27,7 @@ defmodule Tackle.Lib.Telemetry do
       when is_list(event_prefix) and is_reference(telemetry_ref) and is_map(measurements) and
              is_map(metadata) do
     :telemetry.execute(
-      event_prefix ++ [:stop],
+      List.insert_at(event_prefix, -1, :stop),
       measurements,
       metadata |> Map.put(:telemetry_ref, telemetry_ref)
     )
@@ -45,7 +45,7 @@ defmodule Tackle.Lib.Telemetry do
       when is_list(event_prefix) and is_reference(telemetry_ref) and is_map(measurements) and
              is_map(metadata) do
     :telemetry.execute(
-      event_prefix ++ [:exception],
+      List.insert_at(event_prefix, -1, :exception),
       measurements,
       metadata |> Map.put(:telemetry_ref, telemetry_ref)
     )

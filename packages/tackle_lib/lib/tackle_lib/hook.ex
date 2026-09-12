@@ -138,7 +138,7 @@ defmodule Tackle.Lib.Hook do
   end
 
   defp apply_hook(hook_module, event, args, acc_context) do
-    full_args = args ++ [acc_context]
+    full_args = List.insert_at(args, -1, acc_context)
     arity = length(full_args)
 
     if function_exported?(hook_module, event, arity) do

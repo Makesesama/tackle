@@ -266,7 +266,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:ok, twice, _record} = Compaction.compact(once, :manual, [])
 
       checkpoints = Enum.filter(twice.model_messages, &Compaction.checkpoint?/1)
-      assert length(checkpoints) == 1
+      assert [_checkpoint] = checkpoints
 
       request = Process.get(:last_request)
       assert request.prior_summary == "checkpoint summary"
@@ -336,7 +336,7 @@ defmodule Tackle.Lib.CompactionTest do
 
     {:ok, _compacted, _record} =
       Compaction.compact(state, :pressure,
-        event_callback: fn event -> Agent.update(agent, &(&1 ++ [event])) end
+        event_callback: fn event -> Agent.update(agent, &List.insert_at(&1, -1, event)) end
       )
 
     Agent.get(agent, & &1)

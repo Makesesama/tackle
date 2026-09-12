@@ -114,7 +114,7 @@ defmodule Tackle.Lib.SystemPrompt do
   end
 
   defp add(%__MODULE__{sections: sections} = prompt, section) do
-    %{prompt | sections: sections ++ [section]}
+    %{prompt | sections: List.insert_at(sections, -1, section)}
   end
 
   defp normalize_tool_opts(nil), do: []

@@ -24,6 +24,7 @@ defmodule Tackle.Lib.Snapshot do
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
+  alias Tackle.Lib.Retry
   alias Tackle.Lib.SystemPrompt
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Registry
@@ -100,7 +101,7 @@ defmodule Tackle.Lib.Snapshot do
       model: model,
       model_ref: model_ref,
       llm_opts: Map.get(state, :llm_opts, []),
-      retry: Map.get(state, :retry, Tackle.Lib.Retry.new!()),
+      retry: Map.get(state, :retry, Retry.new!()),
       captured_at: DateTime.utc_now()
     }
   end
@@ -129,8 +130,11 @@ defmodule Tackle.Lib.Snapshot do
   @spec tools_version_id([module()]) :: String.t()
   def tools_version_id(tools) when is_list(tools) do
     tools
-    |> Enum.map(&Tool.definition/1)
-    |> Enum.map(&Map.drop(&1, [:definition_id]))
+    |> Enum.map(fn tool ->
+      tool
+      |> Tool.definition()
+      |> Map.drop([:definition_id])
+    end)
     |> :erlang.term_to_binary()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)

@@ -1,8 +1,11 @@
 defmodule Tackle.Lib.TreeTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.Compaction.Config
   alias Tackle.Lib.Compaction.Record
+  alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
+  alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.State
   alias Tackle.Lib.Tree
   alias Tackle.Lib.Tree.Change
@@ -333,17 +336,17 @@ defmodule Tackle.Lib.TreeTest do
   describe "compaction integration" do
     test "appends a compaction entry and keeps the branch transcript" do
       config =
-        Tackle.Lib.Compaction.Config.new!(
+        Config.new!(
           summarizer: TreeSummarizer,
           policy: [retain_tokens: 10, summary_max_tokens: 1_000, max_summary_tokens: 1_000]
         )
 
-      selection = %Tackle.Lib.LLM.Selection{
+      selection = %Selection{
         adapter: TreeAdapter,
         adapter_id: "test",
         model: "tree-model",
         ref: "test/tree-model",
-        model_info: %Tackle.Lib.ModelInfo{model: "tree-model", context_window: 100_000}
+        model_info: %ModelInfo{model: "tree-model", context_window: 100_000}
       }
 
       state = State.new(tree: true, llm: selection, compaction: config)

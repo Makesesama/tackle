@@ -163,11 +163,15 @@ defmodule Tackle.Lib.Tree do
     |> ancestry(id)
     |> Enum.reduce([], fn
       %Entry{kind: :message, message: %Message{} = message}, acc ->
-        acc ++ [message]
+        [message | acc]
 
       %Entry{kind: :compaction, compaction: %Record{} = record}, acc ->
-        apply_compaction(acc, record)
+        acc
+        |> Enum.reverse()
+        |> apply_compaction(record)
+        |> Enum.reverse()
     end)
+    |> Enum.reverse()
   end
 
   @doc "Returns the last assistant answer on the active path, or nil."
@@ -489,10 +493,8 @@ defmodule Tackle.Lib.Tree do
 
   defp entry_tool_result_ids(_entry), do: []
 
-  defp tool_call_id(call) when is_map(call) do
-    Map.get(call, :id) || Map.get(call, "id")
-  end
-
+  defp tool_call_id(%{id: id}), do: id
+  defp tool_call_id(%{"id" => id}), do: id
   defp tool_call_id(_call), do: nil
 
   defp fetch(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))

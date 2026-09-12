@@ -56,7 +56,9 @@ defmodule Tackle.Lib.Compaction.Request do
     directive =
       Prompt.directive(prior_summary: request.prior_summary, instructions: request.instructions)
 
-    provider_messages(request.messages) ++ [%{role: :user, content: directive}]
+    request.messages
+    |> provider_messages()
+    |> List.insert_at(-1, %{role: :user, content: directive})
   end
 
   defp provider_messages(messages), do: Messages.to_provider(messages)
