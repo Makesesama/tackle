@@ -17,7 +17,6 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.Hook` — typed lifecycle hooks (before_prompt, after_prompt,
       before_tool_call, after_tool_call, after_turn).
     * `Tackle.Lib.Message` — conversation message value struct.
-    * `Tackle.Lib.Message` — conversation message value struct.
     * `Tackle.Lib.Compaction` — checkpoint compaction of the provider-visible
       model projection, with pluggable summarizers and an optional durability
       committer.
