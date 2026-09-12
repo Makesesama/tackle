@@ -42,7 +42,7 @@ defmodule Tackle.Session.StoreTest do
 
     assert {:ok, child_id} = Tackle.fork_session(parent_id, home: ctx.home, seq: 5)
     assert {:ok, child} = Tackle.inspect_session(child_id, home: ctx.home)
-    assert length(child.messages) == 2
+    assert [_, _] = child.messages
     assert child.last_seq == 6
     assert child.status == :clean
   end

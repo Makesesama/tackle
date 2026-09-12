@@ -207,8 +207,8 @@ defmodule Tackle.Runtime.DelegationTest do
     rejected =
       Enum.filter(results, &match?({:error, {:rejected, :max_agents_per_fleet}}, &1))
 
-    assert length(admitted) == 2
-    assert length(rejected) == 2
+    assert [_, _] = admitted
+    assert [_, _] = rejected
 
     Enum.each(tasks, &send(&1.pid, :release))
     Task.await_many(tasks, 2_000)

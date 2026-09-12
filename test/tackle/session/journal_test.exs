@@ -84,7 +84,7 @@ defmodule Tackle.Session.JournalTest do
                %{"type" => "turn.completed"}
              ] = Enum.map(replay.commits, &commit_type?/1)
 
-      assert length(replay.projection.messages) == 2
+      assert [_, _] = replay.projection.messages
       assert replay.projection.status == :clean
       assert replay.projection.active_turn == nil
     end
@@ -323,12 +323,7 @@ defmodule Tackle.Session.JournalTest do
     )
   end
 
-  defp list_dir(dir) do
-    case File.ls(dir) do
-      {:ok, files} -> {:ok, files}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp list_dir(dir), do: File.ls(dir)
 
   defp recovery_files(ctx) do
     with {:ok, dir} <- Storage.recovery_dir(ctx.session_id, home: ctx.home) do
