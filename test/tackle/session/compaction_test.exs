@@ -92,8 +92,8 @@ defmodule Tackle.Session.CompactionTest do
     assert {:ok, _compacted, _record} = Tackle.compact(scope.root_agent_ref)
 
     assert {:ok, inspected} = Tackle.inspect_session(session_id, home: ctx.home)
-    assert length(inspected.messages) == 2
-    assert length(inspected.model_messages) == 2
+    assert [_, _] = inspected.messages
+    assert [_, _] = inspected.model_messages
     assert hd(inspected.messages)["content"] =~ "secret-marker"
     refute hd(inspected.model_messages)["content"] =~ "secret-marker"
 
@@ -176,8 +176,8 @@ defmodule Tackle.Session.CompactionTest do
     assert {:ok, child_id} = Tackle.fork_session(snapshot.session_id, home: ctx.home)
     assert {:ok, child} = Tackle.inspect_session(child_id, home: ctx.home)
 
-    assert length(child.messages) == 2
-    assert length(child.model_messages) == 2
+    assert [_, _] = child.messages
+    assert [_, _] = child.model_messages
     assert hd(child.model_messages)["role"] == "user"
     assert child.compactions != []
 

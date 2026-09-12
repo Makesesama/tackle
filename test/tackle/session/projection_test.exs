@@ -76,7 +76,7 @@ defmodule Tackle.Session.ProjectionTest do
 
     assert Enum.map(compacted.messages, & &1["id"]) == ["u1", "a1"]
     assert Enum.map(compacted.model_messages, & &1["id"]) == ["ckpt-1", "a1"]
-    assert length(compacted.compactions) == 1
+    assert [_compaction] = compacted.compactions
 
     canonical_retained = List.last(compacted.messages)
     model_retained = List.last(compacted.model_messages)

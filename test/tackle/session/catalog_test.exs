@@ -62,13 +62,13 @@ defmodule Tackle.Session.CatalogTest do
     {:ok, %{sessions: first_page, next_cursor: cursor}} =
       Tackle.list_sessions(%{cwd: cwd, limit: 2})
 
-    assert length(first_page) == 2
+    assert [_, _] = first_page
     assert is_binary(cursor)
 
     {:ok, %{sessions: second_page, next_cursor: nil}} =
       Tackle.list_sessions(%{cwd: cwd, limit: 2, cursor: cursor})
 
-    assert length(second_page) == 1
+    assert [_session] = second_page
 
     all_ids = Enum.map(first_page ++ second_page, & &1.session_id)
     assert Enum.sort(all_ids) == Enum.sort(ids)
@@ -114,7 +114,7 @@ defmodule Tackle.Session.CatalogTest do
 
   defp create_session(ctx, opts) do
     root_opts = [content: Keyword.get(opts, :content, "answer")]
-    session_opts = Keyword.take(opts, [:cwd, :title, :tags]) ++ [home: ctx.home]
+    session_opts = opts |> Keyword.take([:cwd, :title, :tags]) |> Keyword.put(:home, ctx.home)
 
     scope = start_durable_scope(home: ctx.home, session: session_opts, root: root_opts)
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)

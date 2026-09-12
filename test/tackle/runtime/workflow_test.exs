@@ -35,11 +35,13 @@ defmodule Tackle.Test.ParallelWorkflow do
   def handle_result(_run_ref, outcome, %{phase: :research} = state) do
     results = [Outcome.answer(outcome) | state.results]
 
-    if length(results) < 2 do
-      {:ok, %{state | results: results}}
-    else
-      prompt = "aggregate " <> Enum.join(Enum.sort(results), ",")
-      {:ok, %{state | results: results, phase: :aggregate}, [{"aggregator", prompt}]}
+    case results do
+      [_result] ->
+        {:ok, %{state | results: results}}
+
+      [_first, _second | _rest] ->
+        prompt = "aggregate " <> Enum.join(Enum.sort(results), ",")
+        {:ok, %{state | results: results, phase: :aggregate}, [{"aggregator", prompt}]}
     end
   end
 
@@ -157,7 +159,7 @@ defmodule Tackle.Runtime.WorkflowTest do
     assert_receive {:adapter_called, _task, _, _opts}, 2_000
 
     sessions = running_child_sessions(scope)
-    assert length(sessions) == 2
+    assert [_, _] = sessions
 
     assert :ok = Runtime.cancel(workflow_ref, :user_cancelled)
     assert {:error, {:cancelled, :user_cancelled}} = Runtime.await_workflow(workflow_ref, 5_000)

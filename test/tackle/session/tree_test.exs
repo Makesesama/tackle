@@ -66,7 +66,7 @@ defmodule Tackle.Session.TreeTest do
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
     {:ok, tree} = Tackle.tree(resumed.root_agent_ref)
-    assert length(Tree.children(tree, nil)) == 2
+    assert [_, _] = Tree.children(tree, nil)
     assert Enum.map(Tree.transcript(tree), & &1.content) == ["second question", "second"]
   end
 
@@ -86,7 +86,7 @@ defmodule Tackle.Session.TreeTest do
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
     {:ok, tree} = Tackle.tree(scope.root_agent_ref)
-    assert length(Tree.children(tree, nil)) == 2
+    assert [_, _] = Tree.children(tree, nil)
     assert Enum.map(Tree.transcript(tree), & &1.content) == ["edited first", "answer"]
     assert Enum.count(Tree.enumerate(tree), &(&1.kind == :message)) == 4
   end
@@ -131,7 +131,7 @@ defmodule Tackle.Session.TreeTest do
 
     {:ok, resumed_snapshot} = Tackle.snapshot(resumed.root_agent_ref)
     tree = resumed_snapshot.agent_state.tree
-    assert length(Tree.transcript(tree)) == 2
+    assert [_, _] = Tree.transcript(tree)
 
     {:ok, projection} = Reader.projection(session_id, home: ctx.home)
     assert projection.tree_enabled?
