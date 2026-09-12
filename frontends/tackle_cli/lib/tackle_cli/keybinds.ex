@@ -101,7 +101,11 @@ defmodule Tackle.CLI.Keybinds do
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
-      when is_ctrl(modifiers) and code in ["c", "f", "t", "j", "k", "home", "end"],
+      when is_ctrl(modifiers) and code in ["c", "f", "t", "j", "k"],
+      do: false
+
+  def repeatable?(%Key{code: code, modifiers: modifiers})
+      when is_alt(modifiers) and code in ["<", ">"],
       do: false
 
   def repeatable?(%Key{}), do: true
@@ -137,9 +141,9 @@ defmodule Tackle.CLI.Keybinds do
   defp composer(%Key{code: "t", modifiers: modifiers}) when is_ctrl(modifiers),
     do: :toggle_thinking
 
-  defp composer(%Key{code: "home", modifiers: modifiers}) when is_ctrl(modifiers),
-    do: :scroll_start
-
+  # Alt+< and Alt+> jump the transcript to its oldest and newest rows, in the
+  # spirit of the emacs beginning/end-of-buffer chords.
+  defp composer(%Key{code: "<", modifiers: modifiers}) when is_alt(modifiers), do: :scroll_start
   defp composer(%Key{code: ">", modifiers: modifiers}) when is_alt(modifiers), do: :scroll_end
 
   defp composer(%Key{code: code, modifiers: modifiers})

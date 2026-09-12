@@ -1267,7 +1267,7 @@ defmodule Tackle.CLI.TUITest do
     assert scrolled_state.conversation.scroll_offset < bottom_state.conversation.scroll_offset
     refute scrolled_state.conversation.follow?
 
-    inject_key(tui, "home", ["ctrl"])
+    inject_key(tui, "<", ["alt"])
     assert state(tui).conversation.scroll_offset == 0
 
     render_count = Runtime.snapshot(tui).render_count
