@@ -130,10 +130,22 @@ Old scene snapshots remain valid after updates. ExRatatui still owns the
 terminal and receives only the viewport's owned styled rows—no NIF resources
 or pointers are shared between native libraries.
 
+The conversation uses a content-first layout, drawing on Codex's hanging message
+gutters and Opal's compact, target-first tool headings. Assistant Markdown has a
+small `●` gutter; plain user prompts keep a subtle background and `›` marker.
+Wrapped continuations align with the text, not the marker, and a right margin
+keeps prose off the terminal edge. Below four columns, message chrome yields to
+content. Reasoning uses muted text and italic previews rather than an accented
+heading.
+
 The conversation renders assistant responses as Markdown, including while a
 response is streaming. Tool calls and matching results share one card, identified
-by call ID, with the command or path as its heading rather than a JSON argument
-dump. Successful tool output is subdued; failures remain explicit. Inline
+by call ID, with the command or path emphasized and the tool name subdued rather
+than a JSON argument dump. Tool cards are borderless, with indented output instead
+of raised bands or heavy rails. Completed calls use a checkmark without repeating
+"completed"; requested, running, and failed states remain explicit. Truncated
+headers point to F4 details. Successful tool output is subdued; failures remain
+explicit. Inline
 output keeps a bounded head/tail preview (including after wrapping), with hidden
 lines indicated. F3 copies the full retained source and F4 opens scrollable
 details with the full output and arguments; its ←/→ keys browse tool cards.

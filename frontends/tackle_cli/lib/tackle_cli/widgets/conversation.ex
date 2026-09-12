@@ -32,9 +32,24 @@ defmodule Tackle.CLI.Widgets.Conversation do
 
   @doc false
   @spec cell(MessageView.t(), pos_integer()) :: [{Cell.t(), non_neg_integer()}]
-  def cell(%MessageView{kind: :assistant} = entry, width) do
-    {resource, height} = Native.conversation_markdown(entry.content, width, style(entry.style))
-    [{%Cell{state: resource, style: entry.style}, height}]
+  def cell(%MessageView{kind: kind} = entry, width) when kind in [:assistant, :user] do
+    base =
+      if kind == :user,
+        do: Theme.merge(Theme.style(:user_surface), entry.style),
+        else: entry.style
+
+    marker = if kind == :user, do: "›", else: "●"
+
+    {resource, height} =
+      Native.conversation_message(
+        entry.content,
+        width,
+        kind == :assistant,
+        style(base),
+        {marker, style(Theme.style(:accent_soft))}
+      )
+
+    [{%Cell{state: resource, style: base}, height}]
   end
 
   def cell(%MessageView{} = entry, width) do

@@ -2,10 +2,10 @@ defmodule Tackle.CLI.TUI.ToolView do
   @moduledoc """
   Built-in, render-only tool cards.
 
-  A card is a full-width band: a `surface_raised` header with the tool name,
-  target, and status, then `surface` body rows marked by a status-colored rail.
-  Commands and paths are the landmarks, not serialized argument maps. Unknown
-  tools retain a generic source fallback.
+  Cards are borderless: a status marker and prominent command/path, followed
+  by indented, muted output. Completed calls omit redundant status text;
+  running, requested and failed calls stay explicit. Unknown tools retain a
+  generic source fallback.
 
   Edit previews compare the submitted replacement strings, never files on disk.
   They are not authoritative file diffs; line numbers are relative to each
@@ -21,7 +21,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   @header_rows 2
   @diff_bytes 32_000
   @diff_lines 400
-  @rail "▌"
+  @rail "│"
 
   @doc "A compact, source-independent title for a tool call."
   def title(name, arguments, status) do
@@ -32,19 +32,18 @@ defmodule Tackle.CLI.TUI.ToolView do
   @doc "Renders a bounded inline card or complete retained details."
   def render(entry, width, mode \\ :preview) do
     args = arguments(entry.tool_arguments)
-    surface = Theme.style(:surface)
 
     header =
       entry
       |> header_rows(args, width)
-      |> MessageView.wrap_rows(width)
-      |> Enum.take(@header_rows)
+      |> wrap_indented(width, 2)
+      |> truncate_header(width)
 
     body =
       entry
       |> body_rows(args, mode)
-      |> MessageView.wrap_rows(width)
-      |> trim(mode, surface)
+      |> wrap_indented(width, 4)
+      |> trim(mode, width)
 
     MessageView.render_lines(header ++ body)
   end
@@ -75,24 +74,31 @@ defmodule Tackle.CLI.TUI.ToolView do
     if is_binary(value), do: value, else: ""
   end
 
-  defp header_rows(entry, args, width) do
-    surface = Theme.style(:surface_raised)
+  defp header_rows(entry, args, _width) do
     name = entry.tool_name || "unknown"
     target = target(name, args)
     status = entry.tool_status
 
-    left =
-      [
-        MessageView.span(marker(status) <> " ", Theme.merge(surface, marker_style(status))),
-        MessageView.span(name, Theme.merge(surface, Theme.bold(Theme.style(:text))))
-      ] ++
-        if target == "",
-          do: [],
-          else: [MessageView.span("  " <> target, Theme.merge(surface, Theme.style(:muted)))]
+    state =
+      if status == :completed,
+        do: [],
+        else: [MessageView.span(status_text(status) <> " · ", status_style(status))]
 
-    right = [MessageView.span(status_text(status), Theme.merge(surface, status_style(status)))]
+    heading =
+      if target == "" do
+        [MessageView.span(name, Theme.bold(Theme.style(:text)))]
+      else
+        [
+          MessageView.span(target, Theme.bold(Theme.style(:text))),
+          MessageView.span("  · " <> name, Theme.style(:muted))
+        ]
+      end
 
-    [MessageView.row(pad_between(left, right, width), surface)]
+    [
+      MessageView.row(
+        [MessageView.span(marker(status) <> " ", marker_style(status))] ++ state ++ heading
+      )
+    ]
   end
 
   defp body_rows(entry, args, mode) do
@@ -104,16 +110,14 @@ defmodule Tackle.CLI.TUI.ToolView do
   end
 
   defp generic_rows(entry, args, mode) do
-    surface = Theme.style(:surface)
-    rail = rail_style(surface, entry.tool_status)
-    muted = Theme.merge(surface, Theme.style(:muted))
+    muted = Theme.style(:muted)
 
     argument_rows =
       cond do
-        mode == :details -> [body_row(rail, muted, "Arguments: " <> encode(args))]
+        mode == :details -> [body_row(muted, "Arguments: " <> encode(args))]
         entry.tool_name in ["read", "bash"] -> []
         map_size(args) == 0 -> []
-        true -> [body_row(rail, muted, String.slice(encode(args), 0, 240))]
+        true -> [body_row(muted, String.slice(encode(args), 0, 240))]
       end
 
     argument_rows ++ output_rows(entry, mode)
@@ -122,16 +126,13 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp write_rows(entry, args, mode) do
     case get(args, :content) do
       content when is_binary(content) ->
-        surface = Theme.style(:surface)
-        rail = rail_style(surface, entry.tool_status)
         lines = String.split(content, "\n", trim: false)
         shown = if mode == :preview, do: Enum.take(lines, @preview_rows), else: lines
 
         header =
           [
             body_row(
-              rail,
-              Theme.merge(surface, Theme.style(:subtle)),
+              Theme.style(:subtle),
               "Content preview · #{length(lines)} lines · prior file not compared"
             )
           ]
@@ -139,7 +140,7 @@ defmodule Tackle.CLI.TUI.ToolView do
         rows =
           header ++
             Enum.map(shown, fn line ->
-              body_row(rail, Theme.merge(surface, Theme.style(:text)), line)
+              body_row(Theme.style(:text), line)
             end)
 
         rows ++ result_rows(entry, mode)
@@ -153,9 +154,6 @@ defmodule Tackle.CLI.TUI.ToolView do
     edits = get(args, :edits)
 
     if is_list(edits) and edits != [] do
-      surface = Theme.style(:surface)
-      rail = rail_style(surface, entry.tool_status)
-
       label =
         if mode == :details,
           do: "Replacement preview · not a verified file diff",
@@ -165,7 +163,7 @@ defmodule Tackle.CLI.TUI.ToolView do
       shown = if mode == :preview, do: Enum.take(edits, 2), else: edits
 
       rows = [
-        body_row(rail, Theme.merge(surface, Theme.style(:subtle)), label)
+        body_row(Theme.style(:subtle), label)
       ]
 
       rows =
@@ -189,13 +187,10 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp output_rows(%{tool_output: nil}, _mode), do: []
 
   defp output_rows(entry, mode) do
-    surface = Theme.style(:surface)
-    rail = rail_style(surface, entry.tool_status)
-
     text_style =
       if entry.tool_status == :failed,
-        do: Theme.merge(surface, Theme.style(:error)),
-        else: Theme.merge(surface, Theme.style(:muted))
+        do: Theme.style(:error),
+        else: Theme.style(:muted)
 
     lines = String.split(entry.tool_output, "\n", trim: false)
 
@@ -215,10 +210,10 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     Enum.map(shown, fn
       {:hidden, text} ->
-        body_row(rail, Theme.merge(surface, Theme.style(:subtle)), text)
+        body_row(Theme.style(:subtle), text)
 
       {:line, line} ->
-        body_row(rail, text_style, clip_line(line, mode))
+        body_row(text_style, clip_line(line, mode))
     end)
   end
 
@@ -310,52 +305,56 @@ defmodule Tackle.CLI.TUI.ToolView do
   end
 
   defp context_row(text) do
-    surface = Theme.style(:surface)
-    style = Theme.merge(surface, Theme.style(:subtle))
-    body_row(style, style, text)
+    style = Theme.style(:subtle)
+    body_row(style, text)
   end
 
   defp warn_row(text) do
-    surface = Theme.style(:surface)
-    style = Theme.merge(surface, Theme.style(:warning))
-    body_row(style, style, text)
+    style = Theme.style(:warning)
+    body_row(style, text)
   end
 
-  defp body_row(rail, text_style, text) do
-    MessageView.row(
-      [MessageView.span(@rail <> " ", rail), MessageView.span(text, text_style)],
-      text_style
-    )
+  defp body_row(text_style, text) do
+    MessageView.row([MessageView.span(text, text_style)], text_style)
   end
 
   # Cap wrapped rows, not only source lines. Keep both ends for diagnostics.
-  defp trim(rows, :details, _surface), do: rows
+  defp trim(rows, :details, _width), do: rows
 
-  defp trim(rows, :preview, surface) when length(rows) > @preview_rows do
+  defp trim(rows, :preview, width) when length(rows) > @preview_rows do
     hidden = length(rows) - @preview_rows + 1
     head = div(@preview_rows - 1, 2)
     tail = @preview_rows - 1 - head
-    style = Theme.merge(surface, Theme.style(:subtle))
-    hint = body_row(style, style, "… #{hidden} lines hidden · F4 details")
+    style = Theme.style(:subtle)
+    hint = body_row(style, "… #{hidden} lines hidden · F4 details")
+
+    hint = hd(wrap_indented([hint], width, 4))
 
     Enum.take(rows, head) ++ [hint] ++ Enum.take(rows, -tail)
   end
 
-  defp trim(rows, :preview, _surface), do: rows
+  defp trim(rows, :preview, _width), do: rows
 
-  defp pad_between(left, right, width) do
-    gap = width - spans_width(left) - spans_width(right)
+  # Reserve the gutter before wrapping so continuations align with content.
+  # Small terminals spend their columns on text instead of indentation.
+  defp wrap_indented(rows, width, indent) do
+    indent = if width > indent + 1, do: indent, else: 0
 
-    if gap >= 1 do
-      left ++ [MessageView.span(String.duplicate(" ", gap), %Style{})] ++ right
-    else
-      left ++ [MessageView.span(" ", %Style{})] ++ right
-    end
+    rows
+    |> MessageView.wrap_rows(max(width - indent, 1))
+    |> Enum.with_index()
+    |> Enum.map(fn {row, index} ->
+      prefix = if indent == 2 and index == 0, do: "", else: String.duplicate(" ", indent)
+      %{row | spans: [MessageView.span(prefix) | row.spans]}
+    end)
   end
 
-  defp spans_width(spans) do
-    Enum.reduce(spans, 0, fn span, total -> total + MessageView.display_width(span.content) end)
+  defp truncate_header(rows, width) when length(rows) > @header_rows do
+    hint = MessageView.row("  … · F4 details", Theme.style(:subtle))
+    [hd(rows), hd(MessageView.wrap_rows([hint], width))]
   end
+
+  defp truncate_header(rows, _width), do: rows
 
   defp clip_line(line, :preview) when is_binary(line) do
     if String.length(line) > 500,
@@ -364,12 +363,6 @@ defmodule Tackle.CLI.TUI.ToolView do
   end
 
   defp clip_line(line, :details), do: line
-
-  # A completed card uses a quiet rail so the color signal is reserved for
-  # work in flight and failures; diff rows keep their own sign colors.
-  defp rail_style(surface, :running), do: Theme.merge(surface, Theme.style(:accent_soft))
-  defp rail_style(surface, :failed), do: Theme.merge(surface, Theme.style(:error))
-  defp rail_style(surface, _status), do: Theme.merge(surface, Theme.style(:subtle))
 
   defp marker(:running), do: "●"
   defp marker(:failed), do: "✗"
@@ -383,7 +376,6 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp status_text(:running), do: "running"
   defp status_text(:failed), do: "failed"
-  defp status_text(:completed), do: "completed"
   defp status_text(_), do: "requested"
 
   defp status_style(:failed), do: Theme.style(:error)

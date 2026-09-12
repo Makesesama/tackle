@@ -15,6 +15,9 @@ pub struct HistoryCell {
     lines: Vec<MeasuredLine>,
     height: usize,
     style: Style,
+    gutter: u16,
+    right_padding: u16,
+    marker: Option<Span<'static>>,
 }
 
 struct MeasuredLine {
@@ -32,6 +35,47 @@ impl HistoryCell {
             style,
             true,
         )
+    }
+
+    /// A message has a hanging gutter, not a prefix inside its wrapped text.
+    /// On tiny terminals chrome yields to at least one column of content.
+    pub fn message(
+        source: &str,
+        width: u16,
+        markdown: bool,
+        style: Style,
+        marker: Span<'static>,
+    ) -> Self {
+        let width = width.max(1);
+        let gutter = if width >= 4 { 2 } else { 0 };
+        let right_padding = if width >= 4 { 1 } else { 0 };
+        let source = sanitize(source);
+        let text = if markdown {
+            tui_markdown::from_str(&source)
+        } else {
+            Text::from(source.split('\n').map(Line::from).collect::<Vec<_>>())
+        };
+        let mut cell = Self::new(text, width - gutter - right_padding, style, markdown);
+        // Plain prompts preserve indentation and explicit newlines, but still
+        // wrap by grapheme instead of clipping at the content edge.
+        if !markdown {
+            let rows: Vec<_> = cell
+                .lines
+                .into_iter()
+                .flat_map(|line| grapheme_wrap(line.line, width - gutter - right_padding))
+                .collect();
+            cell = Self::new(
+                Text::from(rows),
+                width - gutter - right_padding,
+                style,
+                false,
+            );
+        }
+        cell.width = width;
+        cell.gutter = gutter;
+        cell.right_padding = right_padding;
+        cell.marker = Some(marker);
+        cell
     }
 
     pub fn rows(lines: Vec<Line<'static>>, width: u16) -> Self {
@@ -85,6 +129,9 @@ impl HistoryCell {
             lines,
             height: top,
             style,
+            gutter: 0,
+            right_padding: 0,
+            marker: None,
         }
     }
 
@@ -96,6 +143,19 @@ impl HistoryCell {
     }
 
     fn render(&self, offset: usize, area: Rect, buffer: &mut Buffer) {
+        buffer.set_style(area, self.style);
+        if offset == 0 && self.gutter > 0 {
+            if let Some(marker) = &self.marker {
+                Line::from(marker.clone())
+                    .render(Rect::new(area.x, area.y, self.gutter, 1), buffer);
+            }
+        }
+        let area = Rect::new(
+            area.x + self.gutter,
+            area.y,
+            area.width.saturating_sub(self.gutter + self.right_padding),
+            area.height,
+        );
         let first = self
             .lines
             .partition_point(|line| line.top + line.height <= offset);
@@ -391,6 +451,69 @@ mod tests {
         assert!(text(&paint(&conversation, 10, 1, 0)).contains("body"));
         assert!(text(&paint(&conversation, 10, 1, 1)).trim().is_empty());
         assert!(paint(&conversation, 0, 0, 0).content.is_empty());
+    }
+
+    #[test]
+    fn message_gutters_survive_wrapping_and_clipping_without_repeating_markers() {
+        for markdown in [false, true] {
+            for width in [1, 3, 4, 12, 40] {
+                let style = Style::default().bg(Color::Indexed(236));
+                let cell = Arc::new(HistoryCell::message(
+                    "alpha beta gamma\n\n  indented 界e\u{301}",
+                    width,
+                    markdown,
+                    style,
+                    Span::styled("●", Style::default().fg(Color::Cyan)),
+                ));
+                let conversation = Conversation::new(vec![cell]);
+                let full = paint(&conversation, width, conversation.height as u16, 0);
+                assert!(full
+                    .content
+                    .iter()
+                    .all(|cell| cell.bg == Color::Indexed(236)));
+                for offset in 0..conversation.height {
+                    let clipped = paint(&conversation, width, 1, offset);
+                    for x in 0..width {
+                        assert_eq!(clipped[(2 + x, 3)], full[(2 + x, 3 + offset as u16)]);
+                    }
+                    if width >= 4 {
+                        assert_eq!(
+                            clipped[(2, 3)].symbol(),
+                            if offset == 0 { "●" } else { " " }
+                        );
+                        assert_eq!(clipped[(3, 3)].symbol(), " ");
+                        assert_eq!(clipped[(width + 1, 3)].symbol(), " ");
+                    }
+                }
+                let mut selected = paint(&conversation, width, 1, 0);
+                conversation
+                    .widget(0, &[0], Style::default().bg(Color::Blue))
+                    .render(selected.area, &mut selected);
+                assert!(selected.content.iter().all(|cell| cell.bg == Color::Blue));
+            }
+        }
+    }
+
+    #[test]
+    fn plain_messages_preserve_indentation_and_do_not_parse_markdown() {
+        let conversation = Conversation::new(vec![Arc::new(HistoryCell::message(
+            "  **raw**\nnext",
+            10,
+            false,
+            Style::default(),
+            Span::raw("›"),
+        ))]);
+        let buffer = paint(&conversation, 10, 3, 0);
+        let rows: Vec<String> = buffer
+            .content
+            .chunks(10)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        assert_eq!(rows, ["›   **raw ", "  **      ", "  next    "]);
+        assert!(!buffer
+            .content
+            .iter()
+            .any(|cell| cell.modifier.contains(Modifier::BOLD)));
     }
 
     #[test]

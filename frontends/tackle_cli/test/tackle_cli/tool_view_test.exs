@@ -23,8 +23,8 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert MessageView.search_text(entry) =~ "oldText"
 
     text = entry |> ToolView.render(80) |> text()
-    assert text =~ "✓ edit  lib/parser.ex"
-    assert text =~ "completed"
+    assert text =~ "✓ lib/parser.ex  · edit"
+    refute text =~ "completed"
     assert text =~ "Replacement preview"
     assert entry |> MessageView.inspect_items(100) |> text() =~ "not a verified file diff"
     assert text =~ "1 │ -  old"
@@ -165,6 +165,29 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert text(MessageView.inspect_items(entry, 80)) =~ "LAST DIAGNOSTIC"
   end
 
+  test "wrapped tool output keeps its gutter and bounded headers signal truncation" do
+    [entry] = settled([Message.tool_result("r", "read", "abcdefghijklmnop")])
+    rows = ToolView.render(entry, 12) |> Enum.flat_map(fn {widget, _} -> widget.text end)
+    assert Enum.map(tl(rows), &plain/1) == ["    abcdefgh", "    ijklmnop"]
+
+    [long] =
+      settled([
+        Message.assistant(
+          tool_calls: [
+            %{id: "r", name: "read", arguments: %{"path" => String.duplicate("long/", 20)}}
+          ]
+        )
+      ])
+
+    assert text(ToolView.render(long, 30)) =~ "… · F4 details"
+
+    for width <- [1, 4, 8, 30] do
+      for {widget, _} <- ToolView.render(long, width), row <- widget.text do
+        assert MessageView.display_width(plain(row)) <= width
+      end
+    end
+  end
+
   test "diff markers have actual native red/green cells and controls remain data" do
     [entry] =
       settled([
@@ -201,7 +224,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert Enum.any?(cells, &(&1.bg == {:indexed, 22}))
   end
 
-  test "tool cards paint a raised header band, a surface body band, and a status rail" do
+  test "tool cards use a borderless target-first header and indented muted output" do
     [entry] =
       settled([
         Message.assistant(tool_calls: [%{id: "r", name: "read", arguments: %{"path" => "a.ex"}}]),
@@ -220,12 +243,15 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     header = Enum.filter(cells, &(&1.row == 0))
     body = Enum.filter(cells, &(&1.row == 1))
 
-    assert Enum.all?(header, &(&1.bg == {:indexed, 237}))
-    assert Enum.all?(body, &(&1.bg == {:indexed, 235}))
-    assert Enum.any?(body, &(&1.symbol == "▌"))
+    assert Enum.all?(header ++ body, &(&1.bg == :reset))
+    assert Enum.find(header, &(&1.symbol == "a")).modifiers == [:bold]
+    assert Enum.find(body, &(&1.symbol == "l")).col == 4
+    assert Enum.find(body, &(&1.symbol == "l")).fg == {:indexed, 245}
+    refute Enum.any?(body, &(&1.symbol in ["▌", "│"]))
 
-    right = header |> Enum.sort_by(& &1.col) |> Enum.map_join(& &1.symbol)
-    assert right =~ "completed"
+    heading = header |> Enum.sort_by(& &1.col) |> Enum.map_join(& &1.symbol)
+    assert heading =~ "✓ a.ex  · read"
+    refute heading =~ "completed"
   end
 
   defp settled(messages),
