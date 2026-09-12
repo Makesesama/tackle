@@ -109,7 +109,7 @@ defmodule Tackle.CLI.TUI.Viewport do
   @spec toggle_thinking(State.t()) :: {:noreply, State.t()}
   def toggle_thinking(%State{} = state) do
     state = %{state | thinking_expanded?: not state.thinking_expanded?}
-    {:noreply, refresh(state, [:settled, :thinking])}
+    {:noreply, refresh(state, [:settled, :turn])}
   end
 
   @doc "Scrolls the transcript by a row delta."

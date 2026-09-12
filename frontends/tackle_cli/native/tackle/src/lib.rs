@@ -1,3 +1,4 @@
+mod conversation;
 mod input;
 mod surface;
 mod widgets;

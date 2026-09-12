@@ -9,5 +9,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # Same Rust stack as the pinned ExRatatui fork, but no shared resources or ABI.
-ratatui = { version = "0.30", default-features = false, features = ["underline-color"] }
+ratatui = { version = "0.30", default-features = false, features = ["underline-color", "unstable-rendered-line-info"] }
 rustler = { version = "0.38", default-features = false, features = ["derive", "nif_version_2_16"] }
+tui-markdown = "0.3"

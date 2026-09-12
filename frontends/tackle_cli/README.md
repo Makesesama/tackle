@@ -120,6 +120,16 @@ the composer.
 
 ## Transcript behavior
 
+The conversation is Tackle's custom Rust `Conversation` widget in
+`native/tackle`, inspired by Codex's history cells and live transcript tail.
+Elixir retains ordered entries, copy/search source, tool preview formatting,
+and reading anchors. Immutable native cells own Markdown parsing, measured
+layout, viewport clipping, and selection paint. Unchanged cells are reused on
+stream updates and selection changes; resizing replaces width-dependent cells.
+Old scene snapshots remain valid after updates. ExRatatui still owns the
+terminal and receives only the viewport's owned styled rows—no NIF resources
+or pointers are shared between native libraries.
+
 The conversation renders assistant responses as Markdown, including while a
 response is streaming. Tool calls and matching results share one card, identified
 by call ID, with the command or path as its heading rather than a JSON argument
@@ -152,11 +162,13 @@ reasoning collapse/expand, and terminal resize preserve a logical
 scrolling back to the bottom) resumes following.
 
 Markdown heights are measured at the current content width and remeasured after
-terminal resize. Long histories are sliced to the visible row range; long
-Markdown responses retain their complete source and use bounded scroll windows
-rather than splitting Markdown syntax across widgets. Responses beyond the
-native 65,536-row scroll range fall back to bounded plain-text source instead
-of crashing.
+terminal resize. Each response is parsed once per changed source/width, without
+duplicating its source into 64-row widgets. Native cell and logical-line indexes
+skip to the viewport; only visible rows are painted. Transcript offsets exceed
+65,535 rows without a whole-response plain-text fallback. An individual logical
+line exceeding Ratatui's `u16` scroll range uses styled grapheme wrapping instead
+of word wrapping; complete raw source remains available for copy and search.
+Native surface output is limited to 65,536 cells per render.
 
 The status row shows honest turn state (`ready`, `starting`, `thinking`,
 `responding`, `running <tool>`, `cancelling`, `cancelled`, `failed`) plus
@@ -267,7 +279,8 @@ process lifecycle, and everything else is a module that takes and returns
 | `TUI.View` | the scene and ordinary widgets |
 | `TUI.StatusView` | status row, metrics, and hints |
 | `TUI.Layout` | responsive regions for a terminal size |
-| `TUI.Conversation` | transcript cache, anchors, and row scrolling |
+| `Widgets.Conversation` / `native/tackle/src/widgets/conversation.rs` | immutable native history cells, Markdown layout, clipped viewport and selection paint |
+| `TUI.Conversation` | transcript projection cache, anchors, and row scrolling |
 | `TUI.MessageView` / `TUI.ToolView` | entry rendering and tool-card details |
 | `TUI.Picker` / `TUI.Theme` / `TUI.Util` | menu filtering, palette, shared helpers |
 
@@ -288,7 +301,8 @@ cargo test --manifest-path native/tackle/Cargo.toml
 cargo fmt --manifest-path native/tackle/Cargo.toml --check
 ```
 
-The custom input uses the existing Rust dependencies and the owned styled-row
+The custom input uses the existing Rust dependencies; the native conversation
+adds `tui-markdown` (also used by ExRatatui). Both use the owned styled-row
 surface bridge; no resources or pointers are shared with ExRatatui's NIF.
 Attachments, history search, completions, selections, and Vim mode are not yet
 implemented.

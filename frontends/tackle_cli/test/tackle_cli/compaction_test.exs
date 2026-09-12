@@ -81,19 +81,17 @@ defmodule Tackle.CLI.TUI.CompactionTest do
     assert checkpoint.id == card_id
     assert Enum.map(rest, & &1.content) == Enum.map(later, & &1.content)
 
-    [{_, _}, {%ExRatatui.Widgets.WidgetList{} = transcript, rect} | _] = View.scene(state, nil)
+    [{_, _}, {%Tackle.CLI.Widgets.Conversation{} = transcript, rect} | _] = View.scene(state, nil)
     assert rect == state.conversation.rect
-    assert transcript.items == state.conversation.visible_items
+    assert transcript.state == state.conversation.native
 
-    refute Enum.any?(transcript.items, fn {widget, _height} ->
-             inspect(widget) =~ "Context compacted"
-           end)
+    terminal = ExRatatui.init_test_terminal(elem(state.size, 0), elem(state.size, 1))
+    :ok = ExRatatui.draw(terminal, View.scene(state, nil))
+    refute ExRatatui.get_buffer_content(terminal) =~ "Context compacted"
 
     reading = Viewport.scroll_to(state, :start)
-
-    assert Enum.any?(reading.conversation.visible_items, fn {widget, _height} ->
-             inspect(widget) =~ "Context compacted"
-           end)
+    :ok = ExRatatui.draw(terminal, View.scene(reading, nil))
+    assert ExRatatui.get_buffer_content(terminal) =~ "Context compacted"
   end
 
   test "automatic cards keep their place between streamed messages after settlement" do
