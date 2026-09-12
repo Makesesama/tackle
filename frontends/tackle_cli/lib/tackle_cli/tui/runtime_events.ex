@@ -486,8 +486,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   def handle(_message, state), do: {:noreply, state, render?: false}
 
   defp submit_failed(state, operation, reason) do
-    if ExRatatui.textarea_get_value(state.input) == "" do
-      :ok = ExRatatui.textarea_set_value(state.input, operation.raw_draft)
+    if Tackle.CLI.Widgets.Input.get_value(state.input) == "" do
+      :ok = Tackle.CLI.Widgets.Input.set_value(state.input, operation.raw_draft)
     end
 
     state = %{

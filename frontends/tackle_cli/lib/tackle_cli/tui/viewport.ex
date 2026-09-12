@@ -3,7 +3,7 @@ defmodule Tackle.CLI.TUI.Viewport do
   Keeps the transcript model, the screen regions, and the draft metrics in sync.
 
   The conversation cache and the responsive layout are two views of the same
-  terminal: the composer's logical line count decides how many rows the
+  terminal: the composer's wrapped row count decides how many rows the
   transcript gets, and the transcript rect decides the wrapping width for every
   Markdown block. Every surface that changes a prompt, a streaming delta, or a
   terminal size therefore has to end in this module, which is why it exists
@@ -79,6 +79,7 @@ defmodule Tackle.CLI.TUI.Viewport do
   """
   @spec resize(State.t()) :: State.t()
   def resize(%State{} = state) do
+    state = update_draft(state)
     {width, height} = state.size
     regions = Layout.regions(width, height, state.draft_lines, reading?(state.conversation))
 
@@ -90,14 +91,16 @@ defmodule Tackle.CLI.TUI.Viewport do
   @spec reading?(Conversation.t()) :: boolean()
   def reading?(conversation), do: conversation.new_output? or not conversation.follow?
 
-  @doc "Recomputes the composer's logical line count and emptiness."
+  @doc "Recomputes the composer's wrapped row count and emptiness."
   @spec update_draft(State.t()) :: State.t()
   def update_draft(%State{} = state) do
-    value = ExRatatui.textarea_get_value(state.input)
+    value = Tackle.CLI.Widgets.Input.get_value(state.input)
+
+    {width, _height} = state.size
 
     %{
       state
-      | draft_lines: max(length(String.split(value, "\n")), 1),
+      | draft_lines: Tackle.CLI.Widgets.Input.rows(state.input, max(width - 2, 1)),
         draft_empty?: String.trim(value) == ""
     }
   end

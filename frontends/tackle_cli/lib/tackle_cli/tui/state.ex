@@ -136,7 +136,7 @@ defmodule Tackle.CLI.TUI.State do
         session_id: snapshot.session_id,
         agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
-        input: ExRatatui.textarea_new(),
+        input: Tackle.CLI.Widgets.Input.new(),
         models: available_models(opts, snapshot.agent_state),
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
         stream: %Stream{coalesce?: is_nil(Keyword.get(opts, :test_mode))},
@@ -161,7 +161,7 @@ defmodule Tackle.CLI.TUI.State do
   """
   @spec reset(t(), Scope.t(), Snapshot.t(), reference()) :: t()
   def reset(%__MODULE__{} = state, %Scope{} = scope, %Snapshot{} = snapshot, monitor) do
-    :ok = ExRatatui.textarea_set_value(state.input, "")
+    :ok = Tackle.CLI.Widgets.Input.set_value(state.input, "")
 
     state = %{
       state

@@ -90,15 +90,25 @@ hint row. Empty optional rows are not reserved when the terminal is short.
 
 ## Composer behavior
 
-The composer is the native multiline `Textarea`, not a prompt field. It grows
-with the draft's logical line count up to eight visible lines. The native
-widget scrolls horizontally instead of soft-wrapping, so one logical line is
-always one screen row and long lines are read by moving the caret rather than
-by wrapping.
+The composer is Tackle's custom Rust `Input` widget in `native/tackle`, inspired
+by the separation between Codex's textarea and higher-level composer. It grows
+with the draft's **wrapped screen rows** up to eight visible rows, then scrolls
+vertically to keep the caret visible. Wrapping uses grapheme boundaries (not
+word boundaries), preserves source whitespace, and reserves a visible insertion
+cell at the end of a full row. Resizing remeasures the draft and transcript.
+
+Left/Right and Backspace/Delete operate on complete graphemes, including
+combining marks and emoji. Up/Down move by visual row and retain the preferred
+column. Home/End and Ctrl+A/E move to logical line boundaries; Ctrl+W deletes
+the preceding whitespace-delimited word. The caret is hidden while browsing or
+using an overlay. Tabs paint as spaces and other control characters as visible
+replacements without changing the submitted source.
 
 Bracketed paste lands as one edit and never submits. CRLF is normalized to `\n`;
 lone CR is dropped before the edit. Ctrl+U undoes and Ctrl+R redoes a full
-multiline paste. Unknown modified chords (for example Alt+G) are ignored by the
+multiline paste. Undo and redo each retain at most 100 snapshots / 8 MiB; a
+programmatic draft replacement resets both histories. Unknown modified chords
+(for example Alt+G) are ignored by the
 native widget. Key releases are ignored; key repeats apply to text and
 navigation but not to submit, quit, or overlay shortcuts.
 
@@ -246,6 +256,7 @@ process lifecycle, and everything else is a module that takes and returns
 | `TUI.State` | the state struct, mounting, adopting a session |
 | `TUI.Viewport` | transcript/layout synchronization and scrolling |
 | `TUI.RuntimeEvents` | projecting harness events into state |
+| `Widgets.Input` / `native/tackle/src/widgets/input.rs` | native draft resource, editing, wrapping, and caret paint |
 | `TUI.Composer` | draft editing and submission |
 | `TUI.Browser` | transcript focus, selection, and copy |
 | `TUI.Menu` | model, reasoning, and settings pickers |
@@ -273,4 +284,11 @@ mix deps.get
 mix compile --warnings-as-errors
 mix test
 mix format --check-formatted
+cargo test --manifest-path native/tackle/Cargo.toml
+cargo fmt --manifest-path native/tackle/Cargo.toml --check
 ```
+
+The custom input uses the existing Rust dependencies and the owned styled-row
+surface bridge; no resources or pointers are shared with ExRatatui's NIF.
+Attachments, history search, completions, selections, and Vim mode are not yet
+implemented.

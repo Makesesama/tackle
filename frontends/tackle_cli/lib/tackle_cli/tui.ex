@@ -298,6 +298,10 @@ defmodule Tackle.CLI.TUI do
     {:noreply, %{state | notice: "Cancellation already requested"}}
   end
 
+  defp escape(%{activity: "cancelling"} = state) do
+    {:noreply, %{state | notice: "Cancellation already requested"}}
+  end
+
   defp escape(state) do
     ref = make_ref()
     agent_ref = state.agent_ref

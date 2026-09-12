@@ -10,14 +10,15 @@ defmodule Tackle.CLI.TUI.View do
   spare.
 
   Layout is computed once per frame from the terminal size and the draft's
-  logical line count, so the widget list and the rectangles can never disagree.
+  wrapped row count, so the widget list and the rectangles can never disagree.
   Overlays are appended last so they paint above everything else; each overlay's
   own popup is rendered by the module that owns its state.
   """
 
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
-  alias ExRatatui.Widgets.{Block, Paragraph, Popup, Textarea, WidgetList}
+  alias ExRatatui.Widgets.{Block, Paragraph, Popup, WidgetList}
+  alias Tackle.CLI.Widgets.Input
 
   alias Tackle.CLI.TUI.{
     Conversation,
@@ -139,11 +140,10 @@ defmodule Tackle.CLI.TUI.View do
   # -- composer ------------------------------------------------------------
 
   defp composer_widget(state) do
-    %Textarea{
+    %Input{
       state: state.input,
       placeholder: composer_placeholder(state),
-      placeholder_style: Theme.style(:subtle),
-      cursor_line_style: %Style{bg: {:indexed, 235}},
+      focused: state.focus == :composer and is_nil(state.overlay),
       block: %Block{
         title: composer_title(state),
         title_style: %Style{fg: composer_color(state)},

@@ -278,7 +278,7 @@ defmodule Tackle.CLI.TUI.Tree do
     case Map.get(outcome, :draft) do
       %Message{content: content} when is_binary(content) and content != "" ->
         if state.draft_empty? do
-          :ok = ExRatatui.textarea_set_value(state.input, content)
+          :ok = Tackle.CLI.Widgets.Input.set_value(state.input, content)
           state |> Viewport.update_draft() |> Viewport.relayout()
         else
           %{state | notice: notice(outcome) <> " · draft kept"}
