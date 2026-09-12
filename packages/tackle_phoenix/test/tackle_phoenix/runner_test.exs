@@ -5,6 +5,7 @@ defmodule Tackle.Phoenix.RunnerTest do
   alias Tackle.Lib.Event
   alias Tackle.Lib.State
   alias Tackle.Lib.Usage
+  alias Tackle.Phoenix.EventReducer
   alias Tackle.Phoenix.Runner
 
   @pubsub __MODULE__.PubSub
@@ -105,6 +106,25 @@ defmodule Tackle.Phoenix.RunnerTest do
     end
 
     defp notify(%{test_pid: test_pid}, message), do: send(test_pid, {:store, message})
+  end
+
+  test "retry events clear only the provisional streaming message" do
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        streaming_messages: %{
+          "pending-message" => %{content: "partial"},
+          "other-message" => %{content: "settled elsewhere"}
+        }
+      }
+    }
+
+    event = Event.new(:retry_scheduled, %{attempt: 1}, id: "pending-message")
+    socket = EventReducer.handle_tackle_event(socket, event)
+
+    assert socket.assigns.streaming_messages == %{
+             "other-message" => %{content: "settled elsewhere"}
+           }
   end
 
   setup do

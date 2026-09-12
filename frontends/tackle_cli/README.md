@@ -201,6 +201,11 @@ provider-reported billing. Missing metadata is omitted.
 
 ### Compaction
 
+Transient provider-message failures retry automatically with cancellable
+exponential backoff. If a streamed attempt fails, its provisional text is
+cleared before the replacement attempt begins; settled earlier timeline entries
+are retained.
+
 Manual (Ctrl+K) and automatic compaction show cards inline in the conversation,
 not pinned above the input. Each card stays at its position between messages and
 scrolls with the transcript. Progress updates the same card, distinguishing

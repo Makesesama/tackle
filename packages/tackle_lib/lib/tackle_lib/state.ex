@@ -14,6 +14,7 @@ defmodule Tackle.Lib.State do
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Retry
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry
   alias Tackle.Lib.Tree
@@ -44,6 +45,7 @@ defmodule Tackle.Lib.State do
           snapshot: Tackle.Lib.Snapshot.t() | nil,
           error: String.t() | nil,
           pending_assistant_id: String.t() | nil,
+          retry: Retry.t(),
           compaction: Compaction.Config.t() | nil,
           last_compaction_id: String.t() | nil,
           overflow_retries: non_neg_integer(),
@@ -74,6 +76,7 @@ defmodule Tackle.Lib.State do
             snapshot: nil,
             error: nil,
             pending_assistant_id: nil,
+            retry: Retry.new!(),
             compaction: nil,
             last_compaction_id: nil,
             overflow_retries: 0,
@@ -97,6 +100,8 @@ defmodule Tackle.Lib.State do
     * `:hooks` - List of Tackle.Lib.Hook modules for lifecycle callbacks (default: [])
     * `:id_generator` - Zero-arity function used for generated ids
     * `:session_id` - Existing session id to install without invoking `:id_generator`
+    * `:retry` - `Tackle.Lib.Retry`, options, `false`, or `nil` (default: three
+      retries with deterministic exponential backoff starting at 2 seconds)
     * `:compaction` - `Tackle.Lib.Compaction.Config`, options, `false`, or `nil`
       (default: `nil`, compaction disabled)
     * `:tree` - `true`, a `Tackle.Lib.Tree`, or `nil`/`false` (default: `nil`).
@@ -133,6 +138,7 @@ defmodule Tackle.Lib.State do
       snapshot: nil,
       error: nil,
       pending_assistant_id: nil,
+      retry: normalize_retry(Keyword.get(opts, :retry)),
       compaction: normalize_compaction(Keyword.get(opts, :compaction)),
       tree: normalize_tree(Keyword.get(opts, :tree)),
       tree_committer: Keyword.get(opts, :tree_committer)
@@ -147,6 +153,13 @@ defmodule Tackle.Lib.State do
   defp normalize_tree(other) do
     raise ArgumentError,
           "expected :tree to be true, a Tackle.Lib.Tree, false, or nil, got: #{inspect(other)}"
+  end
+
+  defp normalize_retry(value) do
+    case Retry.new(value) do
+      {:ok, retry} -> retry
+      {:error, reason} -> raise ArgumentError, "invalid :retry config: #{inspect(reason)}"
+    end
   end
 
   defp normalize_compaction(nil), do: nil

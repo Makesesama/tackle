@@ -42,6 +42,7 @@ defmodule Tackle.Lib.Loop do
   alias Tackle.Lib.LLM
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
+  alias Tackle.Lib.Retry
   alias Tackle.Lib.Snapshot
   alias Tackle.Lib.State
   alias Tackle.Lib.SystemPrompt
@@ -169,14 +170,97 @@ defmodule Tackle.Lib.Loop do
   defp before_prompt(state, callbacks) do
     case invoke_before_prompt(state, callbacks) do
       {:ok, state} ->
-        state
-        |> call_llm(callbacks)
-        |> handle_llm_call_result(state, callbacks)
+        call_provider(state, callbacks)
 
       {:error, reason} ->
         final_state = State.set_error(state, "Hook aborted before prompt: #{inspect(reason)}")
         {:error, do_after_turn_cleanup(final_state, callbacks)}
     end
+  end
+
+  defp call_provider(state, callbacks) do
+    case call_llm(state, callbacks) do
+      {:error, reason} = error ->
+        cond do
+          cancelled?(callbacks) or recoverable_overflow?(state, reason, callbacks) ->
+            handle_llm_call_result(error, state, callbacks)
+
+          Retry.available?(snapshot(callbacks).retry, 0) and Retry.retryable?(reason) ->
+            retry_llm(state, callbacks, reason, 1)
+
+          true ->
+            handle_llm_call_result(error, state, callbacks)
+        end
+
+      result ->
+        handle_llm_call_result(result, state, callbacks)
+    end
+  end
+
+  defp retry_llm(state, callbacks, reason, attempt) do
+    retry = snapshot(callbacks).retry
+    delay_ms = Retry.delay(retry, attempt)
+
+    emit(
+      callbacks,
+      Event.new(
+        :retry_scheduled,
+        %{
+          attempt: attempt,
+          max_retries: retry.max_retries,
+          delay_ms: delay_ms,
+          reason: reason
+        },
+        id: state.pending_assistant_id
+      )
+    )
+
+    case Retry.wait(delay_ms, callbacks.cancellation_signal) do
+      :ok ->
+        if cancelled?(callbacks) do
+          emit_retry_end(callbacks, false, attempt, reason)
+          handle_llm_call_result({:error, reason}, state, callbacks)
+        else
+          emit(
+            callbacks,
+            Event.new(:retry_start, %{attempt: attempt}, id: state.pending_assistant_id)
+          )
+
+          handle_retry_result(call_llm(state, callbacks), state, callbacks, attempt)
+        end
+
+      {:cancelled, _reason} ->
+        emit_retry_end(callbacks, false, attempt, reason)
+        handle_llm_call_result({:error, reason}, state, callbacks)
+    end
+  end
+
+  defp handle_retry_result({:error, reason} = error, state, callbacks, attempt) do
+    retry = snapshot(callbacks).retry
+
+    cond do
+      cancelled?(callbacks) or recoverable_overflow?(state, reason, callbacks) ->
+        emit_retry_end(callbacks, false, attempt, reason)
+        handle_llm_call_result(error, state, callbacks)
+
+      Retry.available?(retry, attempt) and Retry.retryable?(reason) ->
+        retry_llm(state, callbacks, reason, attempt + 1)
+
+      true ->
+        emit_retry_end(callbacks, false, attempt, reason)
+        handle_llm_call_result(error, state, callbacks)
+    end
+  end
+
+  defp handle_retry_result(result, state, callbacks, attempt) do
+    emit_retry_end(callbacks, true, attempt, nil)
+    handle_llm_call_result(result, state, callbacks)
+  end
+
+  defp emit_retry_end(callbacks, success?, attempt, reason) do
+    data = %{success?: success?, attempt: attempt}
+    data = if is_nil(reason), do: data, else: Map.put(data, :reason, reason)
+    emit(callbacks, Event.new(:retry_end, data))
   end
 
   defp handle_llm_call_result({:ok, %{data: response} = result}, state, callbacks) do
@@ -231,7 +315,7 @@ defmodule Tackle.Lib.Loop do
     case Compaction.compact(state, :overflow, compaction_opts(state, callbacks)) do
       {:ok, state, _record} ->
         state = %{state | overflow_retries: state.overflow_retries + 1}
-        state |> call_llm(callbacks) |> handle_llm_call_result(state, callbacks)
+        call_provider(state, callbacks)
 
       {:error, {:durable_commit_failed, _reason} = error} ->
         final_state = State.set_error(clear_pending_assistant_id(state), inspect(error))

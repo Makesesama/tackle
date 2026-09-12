@@ -234,6 +234,24 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, %{state | deferred_events: state.deferred_events ++ [message]}, render?: false}
   end
 
+  def handle(
+        {:tackle_event, session_id, turn_id, %Event{type: :retry_scheduled, id: event_id}},
+        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+      ) do
+    message_id = event_id || state.stream.active_message_id
+    timeline = Enum.reject(state.stream.timeline, &(&1[:message_id] == message_id))
+
+    stream = %{
+      state.stream
+      | thinking: timeline_text(timeline, :thinking),
+        response: timeline_text(timeline, :assistant),
+        timeline: timeline,
+        flush_ref: nil
+    }
+
+    {:noreply, Viewport.refresh(%{state | stream: stream}, [:turn])}
+  end
+
   # Message identity is part of the live projection. Keeping it here prevents
   # adjacent deltas from separate LLM iterations from being rendered as one
   # continuously rewritten response.
@@ -547,6 +565,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     {:noreply, %{state | stream: %{state.stream | flush_ref: ref}},
      render?: false, commands: [Command.send_after(@stream_frame_ms, {:tui_flush_stream, ref})]}
+  end
+
+  defp timeline_text(timeline, kind) do
+    timeline
+    |> Enum.filter(&(&1[:kind] == kind))
+    |> Enum.map_join(& &1.content)
   end
 
   defp append_text(timeline, kind, delta, message_id) do

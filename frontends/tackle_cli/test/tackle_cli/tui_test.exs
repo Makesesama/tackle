@@ -787,6 +787,49 @@ defmodule Tackle.CLI.TUITest do
 
   # -- streaming and transcript -------------------------------------------
 
+  test "discards provisional streamed output before a provider retry", %{tui: tui} do
+    inject_paste(tui, "hi")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "hi"}
+
+    session_id = state(tui).session_id
+    message_id = "assistant-retry"
+
+    send(tui, {:tackle_event, session_id, "turn-1", Event.message_start(id: message_id)})
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:message_delta, %{field: :reasoning, delta: "bad thought"}, id: message_id)}
+    )
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:message_delta, %{delta: "partial"}, id: message_id)}
+    )
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:retry_scheduled, %{attempt: 1, delay_ms: 0})}
+    )
+
+    retried = state(tui)
+    assert retried.stream.thinking == ""
+    assert retried.stream.response == ""
+    assert retried.stream.timeline == []
+    assert retried.stream.active_message_id == message_id
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:message_delta, %{delta: "complete"}, id: message_id)}
+    )
+
+    assert state(tui).stream.response == "complete"
+  end
+
   test "projects streaming text and settles the completed conversation", %{tui: tui} do
     inject_paste(tui, "hi")
     inject_key(tui, "enter")

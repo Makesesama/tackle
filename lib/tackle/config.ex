@@ -21,6 +21,7 @@ defmodule Tackle.Config do
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
+  alias Tackle.Lib.Retry
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
   alias Tackle.SystemPrompt
@@ -58,6 +59,7 @@ defmodule Tackle.Config do
     :prompt_renderer_opts,
     :id_generator,
     :llm_stream,
+    :retry,
     :compaction
   ]
 
@@ -76,6 +78,7 @@ defmodule Tackle.Config do
             prompt_renderer_opts: [],
             id_generator: &ID.uuid4/0,
             llm_stream: false,
+            retry: Retry.new!(),
             compaction: nil
 
   @type t :: %__MODULE__{
@@ -93,6 +96,7 @@ defmodule Tackle.Config do
           prompt_renderer_opts: keyword(),
           id_generator: ID.generator(),
           llm_stream: boolean(),
+          retry: Retry.t(),
           compaction: CompactionConfig.t() | nil
         }
 
@@ -161,6 +165,7 @@ defmodule Tackle.Config do
          :ok <- validate_prompt_renderer(Keyword.get(opts, :prompt_renderer)),
          :ok <- validate_id_generator(Keyword.get(opts, :id_generator, &ID.uuid4/0)),
          :ok <- validate_boolean(:llm_stream, Keyword.get(opts, :llm_stream, false)),
+         {:ok, retry} <- Retry.new(Keyword.get(opts, :retry)),
          {:ok, compaction} <- resolve_compaction(Keyword.get(opts, :compaction)) do
       {:ok,
        %__MODULE__{
@@ -179,6 +184,7 @@ defmodule Tackle.Config do
          prompt_renderer_opts: Keyword.get(opts, :prompt_renderer_opts, []),
          id_generator: Keyword.get(opts, :id_generator, &ID.uuid4/0),
          llm_stream: Keyword.get(opts, :llm_stream, false),
+         retry: retry,
          compaction: compaction
        }}
     end
@@ -222,6 +228,7 @@ defmodule Tackle.Config do
       prompt_renderer_opts: config.prompt_renderer_opts,
       id_generator: config.id_generator,
       session_id: Keyword.get(harness_opts, :session_id),
+      retry: config.retry,
       compaction: config.compaction
     )
   end

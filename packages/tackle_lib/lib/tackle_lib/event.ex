@@ -33,6 +33,9 @@ defmodule Tackle.Lib.Event do
           | :compaction_start
           | :compaction_end
           | :compaction_retry
+          | :retry_scheduled
+          | :retry_start
+          | :retry_end
 
   @type t :: %__MODULE__{
           type: type(),

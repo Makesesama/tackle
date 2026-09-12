@@ -43,6 +43,7 @@ defmodule Tackle.Lib.Snapshot do
           model: String.t() | nil,
           model_ref: String.t() | nil,
           llm_opts: keyword(),
+          retry: Tackle.Lib.Retry.t(),
           captured_at: DateTime.t()
         }
 
@@ -61,6 +62,7 @@ defmodule Tackle.Lib.Snapshot do
     :model,
     :model_ref,
     :llm_opts,
+    :retry,
     :captured_at
   ]
 
@@ -98,6 +100,7 @@ defmodule Tackle.Lib.Snapshot do
       model: model,
       model_ref: model_ref,
       llm_opts: Map.get(state, :llm_opts, []),
+      retry: Map.get(state, :retry, Tackle.Lib.Retry.new!()),
       captured_at: DateTime.utc_now()
     }
   end
