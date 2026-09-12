@@ -34,8 +34,9 @@ defp deps do
 end
 ```
 
-Tackle.Lib requires Elixir `~> 1.18` and includes `:telemetry` for its bounded
-lifecycle events. The Anubis MCP bridge requires the optional `:anubis_mcp`
+Tackle.Lib requires Elixir `~> 1.18`, includes `:telemetry` for its bounded
+lifecycle events, and uses `:jsv` for standards-compliant JSON Schema output
+validation. The Anubis MCP bridge requires the optional `:anubis_mcp`
 dependency to be available in the final application.
 
 ## Which package do I need?
@@ -465,7 +466,8 @@ Provider adapters are also responsible for translating Tackle.Lib's normalized
 tool definitions into the provider wire format. `opts[:tools]` contains
 serializable `:input_schema` field maps. In code that still has a tool module's
 native keyword schema, `Tackle.Lib.Tool.Schema.JsonSchema.to_json_schema/1` provides
-the standard JSON Schema projection.
+the standard JSON Schema projection. `JsonSchema.validate_output/2` validates
+JSON Schema maps using JSV and Draft 2020-12.
 
 ## Tool system
 

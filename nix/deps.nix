@@ -185,7 +185,121 @@ let
     with beamPackages;
     with self;
     {
- 
+
+      abnf_parsec =
+        let
+          version = "2.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "abnf_parsec";
+            appConfigPath = ../config;
+
+            src = fetchHex {
+              inherit version;
+              pkg = "abnf_parsec";
+              sha256 = "e0ed6290c7cc7e5020c006d1003520390c9bdd20f7c3f776bd49bfe3c5cd362a";
+            };
+
+            beamDeps = [
+              nimble_parsec
+            ];
+          };
+        in
+        drv;
+
+      idna =
+        let
+          version = "7.1.0";
+          drv = buildRebar3 {
+            inherit version;
+            name = "idna";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "idna";
+              sha256 = "6ae959a025bf36df61a8cab8508d9654891b5426a84c44d82deaffd6ddf8c71f";
+            };
+          };
+        in
+        drv;
+
+      jsv =
+        let
+          version = "0.22.0";
+          drv = buildMix {
+            inherit version;
+            name = "jsv";
+            appConfigPath = ../config;
+
+            src = fetchHex {
+              inherit version;
+              pkg = "jsv";
+              sha256 = "79bae1f970413c86771051a8ea0bd553cc1e866d285270be539f1ef3ca044f3c";
+            };
+
+            beamDeps = [
+              abnf_parsec
+              idna
+              texture
+            ];
+          };
+        in
+        drv;
+
+      nimble_parsec =
+        let
+          version = "1.4.2";
+          drv = buildMix {
+            inherit version;
+            name = "nimble_parsec";
+            appConfigPath = ../config;
+
+            src = fetchHex {
+              inherit version;
+              pkg = "nimble_parsec";
+              sha256 = "4b21398942dda052b403bbe1da991ccd03a053668d147d53fb8c4e0efe09c973";
+            };
+          };
+        in
+        drv;
+
+      telemetry =
+        let
+          version = "1.4.2";
+          drv = buildRebar3 {
+            inherit version;
+            name = "telemetry";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "telemetry";
+              sha256 = "928f6495066506077862c0d1646609eed891a4326bee3126ba54b60af61febb1";
+            };
+          };
+        in
+        drv;
+
+      texture =
+        let
+          version = "1.2.1";
+          drv = buildMix {
+            inherit version;
+            name = "texture";
+            appConfigPath = ../config;
+
+            src = fetchHex {
+              inherit version;
+              pkg = "texture";
+              sha256 = "925b1938891ce5c1d589df408faa7ed57dd872e4aac9521b32495a29b265cb17";
+            };
+
+            beamDeps = [
+              abnf_parsec
+            ];
+          };
+        in
+        drv;
+
     };
 in
 self
