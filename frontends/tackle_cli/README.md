@@ -226,8 +226,10 @@ output keeps a bounded head/tail preview (including after wrapping), with hidden
 lines indicated. F3 copies the full retained source and F4 opens scrollable
 details with the full output and arguments; its ←/→ keys browse tool cards.
 
-Edits show red `-` and green `+` replacement previews, context, relative line
-numbers, and per-replacement change counts. These compare the submitted
+Edits use compact, borderless replacement previews: muted line numbers, soft red
+`-` and green `+` markers, and per-replacement counts in one heading. Code stays
+neutral on the terminal background; only changed words receive a subtle tint.
+Unchanged context is subdued. These compare the submitted
 `oldText`/`newText` strings, **not files on disk**: even after completion they are
 labeled previews, not verified file diffs. Failed calls remain failed. Write
 cards show submitted content without pretending that an overwrite is a new

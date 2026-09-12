@@ -16,10 +16,9 @@ defmodule Tackle.CLI.TUI.Theme do
 
   Surfaces are deliberately subtle: they sit a few steps off the terminal
   background so a card reads as a block without competing with the prose.
-  `:diff_add` and `:diff_del` pair a foreground with a tinted background so the
-  `+`/`-` markers survive even where the background is not painted.
-  `:diff_add_inline` and `:diff_del_inline` are the same bands with the tint on
-  the tokens that changed inside an otherwise similar line.
+  `:diff_add` and `:diff_del` are soft foreground accents for counts and `+`/`-`
+  markers. Diff rows leave the terminal background untouched; only changed
+  tokens use the restrained `:diff_add_inline` and `:diff_del_inline` tints.
 
   `:selection_surface` is the one deliberately saturated surface. It marks the
   transcript entry the browser is standing on, where the point is to be
@@ -62,11 +61,11 @@ defmodule Tackle.CLI.TUI.Theme do
     user_surface: %Style{bg: {:indexed, 236}},
     selection_surface: %Style{bg: {:indexed, 24}},
     error_surface: %Style{bg: {:indexed, 52}},
-    diff_add: %Style{fg: :green, bg: {:indexed, 22}},
-    diff_add_inline: %Style{fg: :light_green, bg: {:indexed, 28}},
-    diff_del: %Style{fg: :red, bg: {:indexed, 52}},
-    diff_del_inline: %Style{fg: :light_red, bg: {:indexed, 88}},
-    diff_context: %Style{fg: {:indexed, 245}, bg: {:indexed, 235}}
+    diff_add: %Style{fg: {:indexed, 114}},
+    diff_add_inline: %Style{fg: {:indexed, 151}, bg: {:indexed, 22}},
+    diff_del: %Style{fg: {:indexed, 174}},
+    diff_del_inline: %Style{fg: {:indexed, 217}, bg: {:indexed, 52}},
+    diff_context: %Style{fg: {:indexed, 245}}
   }
 
   @doc "Returns the semantic style for `tone`."
