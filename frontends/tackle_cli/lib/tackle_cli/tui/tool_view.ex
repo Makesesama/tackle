@@ -9,18 +9,24 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   Edit previews compare the submitted replacement strings, never files on disk.
   They are not authoritative file diffs; line numbers are relative to each
-  replacement. Added and removed rows carry both a `+`/`-` marker and a tinted
-  background, so the change survives even where the terminal does not paint
-  backgrounds. Execution outcome and preview provenance remain separate.
+  replacement. `similar` matches the lines in Rust and marks the tokens that
+  changed inside an otherwise similar line, so a one-word change stays legible
+  instead of reading as a whole-line rewrite. Added and removed rows carry both
+  a `+`/`-` marker and a tinted background, so the change survives even where
+  the terminal does not paint backgrounds. The preview keeps a line of context
+  around each change and elides longer unchanged runs; details print every
+  submitted line. A replacement too large to match falls back to a bounded
+  before/after window. Execution outcome and preview provenance remain
+  separate.
   """
 
   alias ExRatatui.Style
+  alias Tackle.CLI.Native
   alias Tackle.CLI.TUI.{MessageView, Theme}
 
   @preview_rows 6
+  @preview_context 1
   @header_rows 2
-  @diff_bytes 32_000
-  @diff_lines 400
   @rail "│"
 
   @doc "A compact, source-independent title for a tool call."
@@ -222,28 +228,10 @@ defmodule Tackle.CLI.TUI.ToolView do
     new = get(edit, :newText)
 
     if is_binary(old) and is_binary(new) do
-      before = String.split(old, "\n", trim: false)
-      after_lines = String.split(new, "\n", trim: false)
+      {added, removed, rows} = diff_rows(old, new, mode)
+      label = replacement_label(index, mode, added, removed)
 
-      operations =
-        if byte_size(old) + byte_size(new) <= @diff_bytes and
-             length(before) + length(after_lines) <= @diff_lines do
-          List.myers_difference(before, after_lines)
-        else
-          # Avoid quadratic matching on huge replacements. Still show honest
-          # before/after data, with complete source available in details.
-          [del: before, ins: after_lines]
-        end
-
-      added = operations |> Keyword.get_values(:ins) |> List.flatten() |> length()
-      removed = operations |> Keyword.get_values(:del) |> List.flatten() |> length()
-
-      label =
-        if mode == :details,
-          do: "@@ replacement #{index} · +#{added} -#{removed} · relative lines @@",
-          else: "@@ #{index} · +#{added} -#{removed} · local lines @@"
-
-      [context_row(label) | diff_rows(operations, mode)]
+      [context_row(label) | Enum.map(rows, &diff_row/1)]
     else
       [warn_row("Replacement #{index}: invalid preview data")]
     end
@@ -252,49 +240,30 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp replacement(_edit, index, _mode),
     do: [warn_row("Replacement #{index}: invalid preview data")]
 
-  defp diff_rows(operations, mode) do
-    {rows, _old_line, _new_line} =
-      Enum.reduce(operations, {[], 1, 1}, fn {kind, lines}, {rows, old_line, new_line} ->
-        count = length(lines)
-        shown = if mode == :preview, do: Enum.take(lines, @preview_rows), else: lines
+  # `similar` matches the lines and marks the changed tokens in Rust; the card
+  # owns the palette, wrapping and the row budget. A positive context keeps that
+  # many unchanged lines around each change and elides longer runs; 0 prints
+  # every submitted line. A positive row budget returns only a head/tail window.
+  defp diff_rows(old, new, :preview),
+    do: diff_rows(old, new, @preview_context, @preview_rows)
 
-        rendered =
-          shown
-          |> Enum.with_index()
-          |> Enum.map(fn {line, offset} ->
-            diff_row_for(kind, line, offset, old_line, new_line)
-          end)
+  defp diff_rows(old, new, :details), do: diff_rows(old, new, 0, 0)
 
-        rendered =
-          if length(shown) < count,
-            do:
-              [
-                context_row("… #{count - length(shown)} lines hidden · F4 details")
-                | Enum.reverse(rendered)
-              ]
-              |> Enum.reverse(),
-            else: rendered
-
-        {rows ++ rendered, old_line + if(kind == :ins, do: 0, else: count),
-         new_line + if(kind == :del, do: 0, else: count)}
-      end)
-
-    rows
+  defp diff_rows(old, new, context, max_rows) do
+    {:ok, {added, removed}, rows} = Native.diff_rows(old, new, context, max_rows)
+    {added, removed, rows}
   end
 
-  defp diff_row_for(:del, line, offset, old_line, _new_line) do
-    diff_row("-", old_line + offset, line, Theme.style(:diff_del))
-  end
+  defp replacement_label(index, :details, added, removed),
+    do: "@@ replacement #{index} · +#{added} -#{removed} · relative lines @@"
 
-  defp diff_row_for(:ins, line, offset, _old_line, new_line) do
-    diff_row("+", new_line + offset, line, Theme.style(:diff_add))
-  end
+  defp replacement_label(index, :preview, added, removed),
+    do: "@@ #{index} · +#{added} -#{removed} · local lines @@"
 
-  defp diff_row_for(:eq, line, offset, _old_line, new_line) do
-    diff_row(" ", new_line + offset, line, Theme.style(:diff_context))
-  end
-
-  defp diff_row(sign, number, line, style) do
+  # One diff row: gutter, marker, then the line itself. Tokens `similar`
+  # matched as changed keep the row's band but take the brighter tint.
+  defp diff_row({tag, number, spans}) do
+    style = diff_style(tag)
     marker_style = Theme.merge(style, %Style{modifiers: [:bold]})
     number_style = Theme.merge(style, Theme.style(:subtle))
 
@@ -302,12 +271,29 @@ defmodule Tackle.CLI.TUI.ToolView do
       [
         MessageView.span(@rail <> " ", marker_style),
         MessageView.span(String.pad_leading(to_string(number), 3) <> " │ ", number_style),
-        MessageView.span(sign <> "  ", marker_style),
-        MessageView.span(line, style)
+        MessageView.span(sign(tag) <> "  ", marker_style)
+        | Enum.map(spans, &content_span(&1, tag, style))
       ],
       style
     )
   end
+
+  defp diff_row({:elision, count}), do: context_row("… #{count} lines hidden · F4 details")
+
+  defp content_span({text, true}, tag, _style), do: MessageView.span(text, inline_style(tag))
+  defp content_span({text, false}, _tag, style), do: MessageView.span(text, style)
+
+  defp sign(:del), do: "-"
+  defp sign(:ins), do: "+"
+  defp sign(:ctx), do: " "
+
+  defp diff_style(:del), do: Theme.style(:diff_del)
+  defp diff_style(:ins), do: Theme.style(:diff_add)
+  defp diff_style(:ctx), do: Theme.style(:diff_context)
+
+  defp inline_style(:del), do: Theme.style(:diff_del_inline)
+  defp inline_style(:ins), do: Theme.style(:diff_add_inline)
+  defp inline_style(:ctx), do: Theme.style(:diff_context)
 
   defp context_row(text) do
     style = Theme.style(:subtle)
