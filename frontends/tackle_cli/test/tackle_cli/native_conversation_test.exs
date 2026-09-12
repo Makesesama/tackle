@@ -41,6 +41,26 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
            ]
   end
 
+  test "native message gutters align wrapped prose and preserve plain prompt source" do
+    source = "  **raw**\nnext\n"
+
+    model =
+      Conversation.new(%Rect{width: 10, height: 12})
+      |> Conversation.refresh(
+        projection([Message.user(source), Message.assistant(content: "**answer**")])
+      )
+      |> Conversation.scroll_to(:start)
+
+    rows = String.split(paint(model), "\n")
+    assert Enum.take(rows, 4) == ["›   **raw ", "  **      ", "  next    ", "          "]
+    assert Enum.any?(rows, &String.starts_with?(&1, "● answer"))
+    assert MessageView.source(Conversation.entry(model, "message:0:user")) == source
+
+    tiny = Conversation.resize(model, %Rect{width: 1, height: 12})
+    refute paint(tiny) =~ "›"
+    assert paint(tiny) =~ "*"
+  end
+
   test "tail replacement and selection reuse settled cells and leave old scenes intact" do
     state = projection([Message.assistant(content: "# settled")])
     state = %{state | stream: %Stream{timeline: [%{kind: :assistant, content: "old tail"}]}}

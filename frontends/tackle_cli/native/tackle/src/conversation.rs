@@ -67,6 +67,20 @@ fn conversation_markdown(
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn conversation_message(
+    source: String,
+    width: u16,
+    markdown: bool,
+    base: WireStyle,
+    marker: WireSpan,
+) -> NifResult<(ResourceArc<CellResource>, usize)> {
+    let marker = Span::styled(sanitize(&marker.0).replace('\n', " "), style(marker.1)?);
+    let cell = HistoryCell::message(&source, width, markdown, style(base)?, marker);
+    let height = cell.height();
+    Ok((ResourceArc::new(CellResource(Arc::new(cell))), height))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn conversation_rows(
     rows: Vec<WireLine>,
     width: u16,

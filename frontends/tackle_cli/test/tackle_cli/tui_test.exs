@@ -824,7 +824,7 @@ defmodule Tackle.CLI.TUITest do
            end)
 
     assert [{%Cell{}, height}] = state.conversation.items
-    assert height == Markdown.measure_height(markdown, state.conversation.width)
+    assert height == Markdown.measure_height(markdown, state.conversation.width - 3)
 
     terminal = ExRatatui.init_test_terminal(80, 24)
     :ok = ExRatatui.draw(terminal, TUI.scene(state, frame(state)))
@@ -850,7 +850,7 @@ defmodule Tackle.CLI.TUITest do
     state = state(tui)
 
     assert {_cell, height} = List.last(state.conversation.items)
-    assert height == Markdown.measure_height(markdown, state.conversation.width)
+    assert height == Markdown.measure_height(markdown, state.conversation.width - 3)
 
     terminal = ExRatatui.init_test_terminal(80, 24)
     :ok = ExRatatui.draw(terminal, TUI.scene(state, frame(state)))
@@ -874,9 +874,9 @@ defmodule Tackle.CLI.TUITest do
     narrow_state = state(tui)
 
     assert [{%Cell{}, narrow_height}] = narrow_state.conversation.items
-    assert narrow_height == Markdown.measure_height(markdown, narrow_state.conversation.width)
+    assert narrow_height == Markdown.measure_height(markdown, narrow_state.conversation.width - 3)
 
-    refute wide_height == Markdown.measure_height(markdown, narrow_state.conversation.width)
+    refute wide_height == Markdown.measure_height(markdown, narrow_state.conversation.width - 3)
   end
 
   test "keeps long Markdown source intact while bounding visible windows", %{tui: tui} do
@@ -893,7 +893,7 @@ defmodule Tackle.CLI.TUITest do
     state = state(tui)
 
     assert [{%Cell{}, _}, {%Cell{}, 1}, {%Cell{}, height}] = state.conversation.items
-    assert height == Markdown.measure_height(markdown, state.conversation.width)
+    assert height == Markdown.measure_height(markdown, state.conversation.width - 3)
     assert List.last(Conversation.entries(state.conversation)).content == markdown
 
     [{%Paragraph{text: rows}, rect}] =
@@ -1141,8 +1141,8 @@ defmodule Tackle.CLI.TUITest do
     assert running_state.activity == "running read"
 
     running_conversation = conversation_text(running_state)
-    assert running_conversation =~ "● read"
-    assert running_conversation =~ "read  mix.exs"
+    assert running_conversation =~ "● running · mix.exs  · read"
+    assert running_conversation =~ "mix.exs  · read"
     refute running_conversation =~ "args:"
     assert running_conversation =~ "running"
 
@@ -1161,10 +1161,10 @@ defmodule Tackle.CLI.TUITest do
     assert [%{id: "call-1", status: :completed}] = completed_state.tool_activity
 
     completed_conversation = conversation_text(completed_state)
-    assert completed_conversation =~ "✓ read"
-    assert completed_conversation =~ "read  mix.exs"
-    assert completed_conversation =~ "completed"
-    assert completed_conversation =~ "▌ output"
+    assert completed_conversation =~ "✓ mix.exs"
+    assert completed_conversation =~ "mix.exs  · read"
+    refute completed_conversation =~ "completed"
+    assert completed_conversation =~ "    output"
     assert completed_conversation =~ "…"
   end
 
@@ -1193,9 +1193,9 @@ defmodule Tackle.CLI.TUITest do
 
     failed_state = state(tui)
     assert failed_state.activity == "failed bash"
-    assert conversation_text(failed_state) =~ "✗ bash"
+    assert conversation_text(failed_state) =~ "✗ failed · bash"
     assert conversation_text(failed_state) =~ "failed"
-    assert conversation_text(failed_state) =~ "▌ command exited with status 1"
+    assert conversation_text(failed_state) =~ "    command exited with status 1"
   end
 
   test "renders settled tool calls and results with stable ids", %{tui: tui} do
@@ -1222,9 +1222,9 @@ defmodule Tackle.CLI.TUITest do
     conversation = conversation_text(state)
 
     refute conversation =~ "● read"
-    assert conversation =~ "✓ read  README.md"
-    assert conversation =~ "completed"
-    assert conversation =~ "▌ project documentation"
+    assert conversation =~ "✓ README.md  · read"
+    refute conversation =~ "completed"
+    assert conversation =~ "    project documentation"
     assert Enum.count(Conversation.entries(state.conversation), &(&1.kind == :tool)) == 1
     refute conversation =~ "Tackle:"
     assert conversation =~ "Done"

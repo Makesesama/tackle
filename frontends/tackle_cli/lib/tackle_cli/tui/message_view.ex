@@ -495,8 +495,8 @@ defmodule Tackle.CLI.TUI.MessageView do
     header =
       row(
         [
-          span("✦ ", Theme.style(:accent)),
-          span("thought", Theme.bold(Theme.style(:accent_soft))),
+          span(if(mode == :collapsed, do: "› ", else: "⌄ "), muted),
+          span("thought", muted),
           span("  ·  #{length(lines)} lines", muted)
         ] ++ hint,
         %Style{}
@@ -507,7 +507,7 @@ defmodule Tackle.CLI.TUI.MessageView do
         [header | collapsed_thinking_rows(lines, muted)]
 
       :expanded ->
-        [header | Enum.map(lines, &row([span(&1, muted)], %Style{}))]
+        [header | Enum.map(lines, &row([span("  " <> &1, Theme.italic(muted))], %Style{}))]
     end
   end
 
@@ -518,7 +518,7 @@ defmodule Tackle.CLI.TUI.MessageView do
 
       first ->
         preview = truncate_line(first, 180)
-        [row([span("  ", %Style{}), span(preview, muted)], %Style{})]
+        [row([span("  ", %Style{}), span(preview, Theme.italic(muted))], %Style{})]
     end
   end
 
