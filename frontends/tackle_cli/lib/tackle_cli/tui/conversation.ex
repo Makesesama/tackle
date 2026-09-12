@@ -374,8 +374,8 @@ defmodule Tackle.CLI.TUI.Conversation do
 
   @doc "Returns the reading-back affordance text, or nil while following."
   @spec affordance(t()) :: String.t() | nil
-  def affordance(%__MODULE__{new_output?: true}), do: "↓ New output · Ctrl+End latest"
-  def affordance(%__MODULE__{follow?: false}), do: "↑ Reading back · Ctrl+End latest"
+  def affordance(%__MODULE__{new_output?: true}), do: "↓ New output · Alt+> latest"
+  def affordance(%__MODULE__{follow?: false}), do: "↑ Reading back · Alt+> latest"
   def affordance(%__MODULE__{}), do: nil
 
   @doc """
