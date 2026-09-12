@@ -199,7 +199,7 @@ defmodule Tackle.CLI.TUI.ToolView do
         mode == :details ->
           Enum.map(lines, &{:line, &1})
 
-        length(lines) <= 4 ->
+        Enum.count_until(lines, 5) <= 4 ->
           Enum.map(lines, &{:line, &1})
 
         true ->
@@ -267,7 +267,12 @@ defmodule Tackle.CLI.TUI.ToolView do
 
         rendered =
           if length(shown) < count,
-            do: rendered ++ [context_row("… #{count - length(shown)} lines hidden · F4 details")],
+            do:
+              [
+                context_row("… #{count - length(shown)} lines hidden · F4 details")
+                | Enum.reverse(rendered)
+              ]
+              |> Enum.reverse(),
             else: rendered
 
         {rows ++ rendered, old_line + if(kind == :ins, do: 0, else: count),

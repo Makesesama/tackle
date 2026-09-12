@@ -404,11 +404,9 @@ defmodule Tackle.CLI.TUI.Conversation do
   @spec widget(t()) :: NativeConversation.t()
   def widget(%__MODULE__{} = conversation) do
     selected =
-      conversation.item_ids
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {id, index} ->
-        if id && id == conversation.selected_entry, do: [index], else: []
-      end)
+      for {id, index} <- Enum.with_index(conversation.item_ids),
+          id && id == conversation.selected_entry,
+          do: index
 
     %NativeConversation{
       state: conversation.native,

@@ -150,12 +150,14 @@ defmodule Tackle.CLI.TUI.Compaction do
 
     timeline =
       if turn_id,
-        do: state.stream.timeline ++ [%{kind: :compaction, id: card.id}],
+        do:
+          [%{kind: :compaction, id: card.id} | Enum.reverse(state.stream.timeline)]
+          |> Enum.reverse(),
         else: state.stream.timeline
 
     %{
       state
-      | compactions: state.compactions ++ [card],
+      | compactions: [card | Enum.reverse(state.compactions)] |> Enum.reverse(),
         stream: %{state.stream | timeline: timeline}
     }
   end

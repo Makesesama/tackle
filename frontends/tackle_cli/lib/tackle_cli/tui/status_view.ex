@@ -209,12 +209,13 @@ defmodule Tackle.CLI.TUI.StatusView do
       candidate = used + 4 + MessageView.display_width(segment)
 
       if candidate <= width do
-        {kept ++ [segment], candidate}
+        {[segment | kept], candidate}
       else
         {kept, used}
       end
     end)
     |> elem(0)
+    |> Enum.reverse()
   end
 
   defp entry_preview(entry) do
