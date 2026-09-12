@@ -1,4 +1,5 @@
 mod conversation;
+mod diff;
 mod input;
 mod surface;
 mod tree;
@@ -35,6 +36,24 @@ fn badge(label: String, width: u16, height: u16) -> NifResult<(Atom, Vec<surface
     widgets::badge::Badge { label: &label }.render(area, &mut buffer);
     let lines = surface::lines(&buffer).map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
     Ok((atoms::ok(), lines))
+}
+
+/// Rows for one submitted `edit` replacement.
+///
+/// Returns `{:ok, {added_lines, removed_lines}, rows}`. A row is
+/// `{tag, number, spans}` with `tag` in `:del | :ins | :ctx` and
+/// `spans` a list of `{text, emphasized}` runs, or `{:elision, count}`
+/// for lines left out of the printed window. `similar` does the matching;
+/// the card paints it.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn diff_rows(
+    old: String,
+    new: String,
+    context: usize,
+    max_rows: usize,
+) -> (Atom, (usize, usize), Vec<diff::DiffRow>) {
+    let (counts, rows) = diff::rows(&old, &new, context, max_rows);
+    (atoms::ok(), counts, rows)
 }
 
 rustler::init!("Elixir.Tackle.CLI.Native");

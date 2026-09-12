@@ -18,6 +18,8 @@ defmodule Tackle.CLI.TUI.Theme do
   background so a card reads as a block without competing with the prose.
   `:diff_add` and `:diff_del` pair a foreground with a tinted background so the
   `+`/`-` markers survive even where the background is not painted.
+  `:diff_add_inline` and `:diff_del_inline` are the same bands with the tint on
+  the tokens that changed inside an otherwise similar line.
 
   `:selection_surface` is the one deliberately saturated surface. It marks the
   transcript entry the browser is standing on, where the point is to be
@@ -41,7 +43,9 @@ defmodule Tackle.CLI.TUI.Theme do
           | :error_surface
           | :selection_surface
           | :diff_add
+          | :diff_add_inline
           | :diff_del
+          | :diff_del_inline
           | :diff_context
 
   @styles %{
@@ -59,7 +63,9 @@ defmodule Tackle.CLI.TUI.Theme do
     selection_surface: %Style{bg: {:indexed, 24}},
     error_surface: %Style{bg: {:indexed, 52}},
     diff_add: %Style{fg: :green, bg: {:indexed, 22}},
+    diff_add_inline: %Style{fg: :light_green, bg: {:indexed, 28}},
     diff_del: %Style{fg: :red, bg: {:indexed, 52}},
+    diff_del_inline: %Style{fg: :light_red, bg: {:indexed, 88}},
     diff_context: %Style{fg: {:indexed, 245}, bg: {:indexed, 235}}
   }
 
