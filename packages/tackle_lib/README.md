@@ -511,6 +511,14 @@ are treated as absent. Tackle.Lib never creates atoms from provider/user keys.
 4. preserve the raw result for host events;
 5. project the result to text/JSON for the model transcript.
 
+A tool that also produces non-text content returns `%Tackle.Lib.Tool.Content{}`
+from `execute/2`. Settlement then keeps its text projection as the transcript's
+string `content` (what human-facing surfaces and token estimates read) and
+carries its extra parts — currently images — on
+`Tackle.Lib.Tool.Result.parts` and the linked message's `parts`. `to_provider/1`
+turns those into a provider-neutral content-part array that adapters lower into
+their wire format; text-only adapters degrade the parts explicitly.
+
 Do not bypass settlement in custom runtimes. It is what keeps agent and MCP
 execution consistent.
 

@@ -53,6 +53,36 @@ defmodule Tackle.Lib.MessagesTest do
       assert entry.content == "found 3 cats"
     end
 
+    test "emits a content-part array when a tool result carries content parts" do
+      msg =
+        Message.tool_result("call_1", "read", "Read image chart.png (image/png).",
+          parts: [%{"type" => "image", "media_type" => "image/png", "data" => "aGVsbG8="}]
+        )
+
+      assert [entry] = Messages.to_provider([msg])
+      assert entry.role == :tool
+
+      assert entry.content == [
+               %{"type" => "text", "text" => "Read image chart.png (image/png)."},
+               %{"type" => "image", "media_type" => "image/png", "data" => "aGVsbG8="}
+             ]
+    end
+
+    test "omits an empty text part when tool content has no text projection" do
+      msg =
+        Message.tool_result("call_1", "read", "",
+          parts: [%{"type" => "image", "media_type" => "image/png", "data" => "aGVsbG8="}]
+        )
+
+      assert [%{content: [%{"type" => "image"}]}] = Messages.to_provider([msg])
+    end
+
+    test "ignores an empty parts list on a tool result" do
+      msg = Message.tool_result("call_1", "search", "found 3 cats", parts: [])
+
+      assert [%{content: "found 3 cats"}] = Messages.to_provider([msg])
+    end
+
     test "preserves a full multi-turn tool exchange as separate linked messages" do
       messages = [
         Message.user("how many cats?"),

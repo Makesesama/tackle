@@ -15,6 +15,9 @@ defmodule Tackle.Session.Codec do
 
   `%Tackle.Lib.State{}` is never serialized. Conversation data is converted to
   plain maps here and rebuilt into structs by `Tackle.Session.Loader`.
+
+  Message content parts (see `Tackle.Lib.Tool.Content`) are plain maps with
+  binary keys, so a tool result that read an image round-trips unchanged.
   """
 
   alias Tackle.Lib.Message
@@ -70,9 +73,9 @@ defmodule Tackle.Session.Codec do
   Encodes one settled message into its durable map representation.
 
   The durable message keeps every field required for exact continuation:
-  identity, role, content, reasoning state, normalized tool calls and results,
-  timestamp, normalized usage, selected model, and validated provider
-  continuation state.
+  identity, role, content, structured content parts, reasoning state, normalized
+  tool calls and results, timestamp, normalized usage, selected model, and
+  validated provider continuation state.
   """
   @spec encode_message(Message.t()) :: {:ok, map()} | {:error, term()}
   def encode_message(%Message{} = message) do
@@ -91,6 +94,7 @@ defmodule Tackle.Session.Codec do
       "id" => message.id,
       "role" => encode_role(message.role),
       "content" => message.content,
+      "parts" => message.parts,
       "thinking" => message.thinking,
       "tool_calls" => encode_tool_calls(message.tool_calls),
       "tool_call_id" => message.tool_call_id,
@@ -117,6 +121,7 @@ defmodule Tackle.Session.Codec do
         id: Map.get(data, "id"),
         role: role,
         content: Map.get(data, "content"),
+        parts: decode_parts(Map.get(data, "parts")),
         thinking: Map.get(data, "thinking"),
         tool_calls: tool_calls,
         tool_call_id: Map.get(data, "tool_call_id"),
@@ -154,6 +159,12 @@ defmodule Tackle.Session.Codec do
   end
 
   def decode_datetime(other), do: {:error, {:invalid_timestamp, other}}
+
+  # Content parts are opaque, durable plain data. Malformed values decode to
+  # `nil` so a hand-edited session degrades to text-only instead of failing to
+  # load.
+  defp decode_parts(parts) when is_list(parts) and parts != [], do: parts
+  defp decode_parts(_parts), do: nil
 
   @doc false
   @spec encode_usage(Usage.t() | nil) :: map() | nil

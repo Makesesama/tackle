@@ -26,6 +26,7 @@ defmodule Tackle.Lib.Message do
           tool_calls: [tool_call()] | nil,
           tool_call_id: String.t() | nil,
           tool_name: String.t() | nil,
+          parts: [map()] | nil,
           timestamp: DateTime.t(),
           token_usage: Usage.t() | nil,
           model: String.t() | nil,
@@ -39,6 +40,7 @@ defmodule Tackle.Lib.Message do
             tool_calls: nil,
             tool_call_id: nil,
             tool_name: nil,
+            parts: nil,
             timestamp: nil,
             token_usage: nil,
             model: nil,
@@ -89,7 +91,12 @@ defmodule Tackle.Lib.Message do
   @doc """
   Creates a new tool result message.
 
+  `parts` carries extra provider-neutral content parts (for example an image the
+  tool read). `content` remains the string projection that human-facing surfaces
+  and token estimates use; adapters combine both when building the model input.
+
   ## Options
+    * `:parts` - extra content parts (see `Tackle.Lib.Tool.Content`)
     * `:id_generator` - zero-arity function returning a message id
   """
   @spec tool_result(String.t(), String.t(), String.t(), keyword()) :: t()
@@ -100,6 +107,7 @@ defmodule Tackle.Lib.Message do
       content: content,
       tool_call_id: tool_call_id,
       tool_name: tool_name,
+      parts: normalize_parts(Keyword.get(opts, :parts)),
       timestamp: DateTime.utc_now()
     }
   end
@@ -133,4 +141,7 @@ defmodule Tackle.Lib.Message do
         id
     end
   end
+
+  defp normalize_parts(parts) when is_list(parts) and parts != [], do: parts
+  defp normalize_parts(_parts), do: nil
 end

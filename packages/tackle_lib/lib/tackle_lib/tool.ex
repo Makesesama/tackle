@@ -354,20 +354,26 @@ defmodule Tackle.Lib.Tool do
     * execute host tool
     * validate output when an output schema exists
     * encode/project output for the model transcript
+
+  A tool that returns `%Tackle.Lib.Tool.Content{}` settles into a text
+  projection plus its extra content parts; every other result settles into text
+  only.
   """
   @spec settle(module(), Tackle.Lib.Tool.Call.t(), map()) ::
           {:ok, Tackle.Lib.Tool.Result.t()} | {:error, Tackle.Lib.Tool.Error.t()}
   def settle(tool_module, %Tackle.Lib.Tool.Call{} = call, context) do
     with {:ok, normalized_args} <- validate_args(tool_module, call.arguments),
          {:ok, raw_result} <- execute_tool(tool_module, normalized_args, context),
-         {:ok, output} <- validate_output(tool_module, raw_result) do
+         {:ok, output} <- validate_output(tool_module, raw_result),
+         {:ok, {content, parts}} <- project_output(output) do
       {:ok,
        %Tackle.Lib.Tool.Result{
          tool_call_id: call.id,
          name: call.name,
          raw: raw_result,
          output: output,
-         content: project_output(output),
+         content: content,
+         parts: parts,
          metadata: %{definition_id: call.definition_id}
        }}
     else
@@ -434,6 +440,8 @@ defmodule Tackle.Lib.Tool do
       {:error, {:exception, error}}
   end
 
+  defp validate_output(_tool_module, %Tackle.Lib.Tool.Content{} = content), do: {:ok, content}
+
   defp validate_output(tool_module, result) do
     case output_schema(tool_module) do
       nil ->
@@ -447,7 +455,14 @@ defmodule Tackle.Lib.Tool do
     end
   end
 
-  defp project_output(result), do: format_result(result)
+  defp project_output(%Tackle.Lib.Tool.Content{text: text, parts: parts}) do
+    case Tackle.Lib.Tool.Content.validate(parts) do
+      :ok -> {:ok, {text, parts}}
+      {:error, reason} -> {:error, {:invalid_output, reason}}
+    end
+  end
+
+  defp project_output(result), do: {:ok, {format_result(result), []}}
 
   defp tool_error(call, reason, message, details \\ nil) do
     %Tackle.Lib.Tool.Error{

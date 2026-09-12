@@ -102,6 +102,33 @@ defmodule Tackle.Session.CodecTest do
       assert decoded.tool_name == "read"
     end
 
+    test "round-trips a tool result message with image content parts" do
+      message =
+        Message.tool_result("call-1", "read", "Read image shot.png (image/png).",
+          parts: [%{"type" => "image", "media_type" => "image/png", "data" => "aGVsbG8="}]
+        )
+
+      assert {:ok, data} = Codec.encode_message(message)
+
+      assert data["parts"] == [
+               %{"type" => "image", "media_type" => "image/png", "data" => "aGVsbG8="}
+             ]
+
+      assert {:ok, decoded} = Codec.decode_message(data)
+      assert decoded.content == "Read image shot.png (image/png)."
+      assert decoded.parts == message.parts
+    end
+
+    test "decodes a tool result without parts to nil parts" do
+      message = Message.tool_result("call-1", "read", "file contents")
+
+      assert {:ok, data} = Codec.encode_message(message)
+      assert data["parts"] == nil
+
+      assert {:ok, decoded} = Codec.decode_message(data)
+      assert decoded.parts == nil
+    end
+
     test "rejects a message carrying a pid in provider state" do
       message = Message.assistant(content: "hi", provider_state: %{"pid" => self()})
       assert {:error, {:invalid_message, {:forbidden_term, :pid}}} = Codec.encode_message(message)

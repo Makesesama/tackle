@@ -121,6 +121,40 @@ defmodule Tackle.Lib.ToolTest do
     end
   end
 
+  defmodule ContentTool do
+    use Tackle.Lib.Tool
+
+    tool_name("view")
+    description("Returns text plus an image content part.")
+
+    input do
+      field(:media_type, :string, required: true)
+    end
+
+    def run(%{"media_type" => media_type}, _context) do
+      {:ok,
+       Tackle.Lib.Tool.Content.new(
+         "Read image chart.png (#{media_type}).",
+         [Tackle.Lib.Tool.Content.image(media_type, "aGVsbG8=")]
+       )}
+    end
+  end
+
+  defmodule InvalidContentTool do
+    use Tackle.Lib.Tool
+
+    tool_name("invalid_content")
+    description("Returns an unsupported content part.")
+
+    input do
+      field(:value, :string, required: true)
+    end
+
+    def run(_args, _context) do
+      {:ok, Tackle.Lib.Tool.Content.new("nope", [%{"type" => "video"}])}
+    end
+  end
+
   describe "Schema.validate/2" do
     test "coerces known args, applies defaults, and drops unknown args" do
       assert {:ok,
@@ -254,6 +288,42 @@ defmodule Tackle.Lib.ToolTest do
 
     assert [%{name: "search", output_schema: [results: [type: {:list, :map}, required: true]]}] =
              Tackle.Lib.Tool.Registry.definitions(registry)
+  end
+
+  test "settle/3 projects tool content into text plus content parts" do
+    call = %Tackle.Lib.Tool.Call{
+      id: "call_content",
+      name: "view",
+      arguments: %{"media_type" => "image/png"}
+    }
+
+    assert {:ok, %Tackle.Lib.Tool.Result{} = result} = Tool.settle(ContentTool, call, %{})
+    assert result.content == "Read image chart.png (image/png)."
+
+    assert result.parts == [
+             %{"type" => "image", "media_type" => "image/png", "data" => "aGVsbG8="}
+           ]
+
+    assert result.raw == result.output
+  end
+
+  test "settle/3 returns an output error for unsupported content parts" do
+    call = %Tackle.Lib.Tool.Call{
+      id: "call_bad",
+      name: "invalid_content",
+      arguments: %{"value" => "x"}
+    }
+
+    assert {:error, %Tackle.Lib.Tool.Error{} = error} = Tool.settle(InvalidContentTool, call, %{})
+    assert error.reason == :invalid_output
+    assert error.message =~ "unsupported type \"video\""
+  end
+
+  test "settle/3 keeps text-only results free of content parts" do
+    call = %Tackle.Lib.Tool.Call{id: "call_plain", name: "echo", arguments: %{"query" => "hi"}}
+
+    assert {:ok, %Tackle.Lib.Tool.Result{} = result} = Tool.settle(EchoTool, call, %{})
+    assert result.parts == []
   end
 
   test "settle/3 returns structured successful results" do

@@ -13,10 +13,10 @@ Advertised models:
 
 The catalog follows deepseek-harness and Pi. All models have a 1,000,000-token
 context window; `deepseek-flash` defaults to a 256,000-token maximum output,
-while the V4 cards expose 384,000 tokens. Although
-`deepseek-v4-flash-vision-exp` is a
-vision-capable provider model, Tackle's current provider-neutral message
-contract is text-only; this plugin does not yet serialize images.
+while the V4 cards expose 384,000 tokens. DeepSeek's Chat Completions tool
+results are text-only, so this plugin does not serialize image content parts: a
+tool result carrying one sends an explicit `[image content omitted: ...]` note
+instead of the image bytes.
 
 ## Usage
 
