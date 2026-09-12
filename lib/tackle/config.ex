@@ -21,7 +21,6 @@ defmodule Tackle.Config do
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
-  alias Tackle.Lib.Tool.Adapters.Web, as: ToolAdapter
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
   alias Tackle.SystemPrompt
@@ -29,6 +28,8 @@ defmodule Tackle.Config do
 
   @loader_option_keys [:available_adapters, :cwd, :env, :overrides]
   @reconfigure_option_keys [:model, :thinking]
+
+  @tool_callbacks [{:name, 0}, {:description, 0}, {:parameters_schema, 0}, {:execute, 2}]
 
   @reserved_llm_option_names MapSet.new([
                                "credential_store",
@@ -432,7 +433,7 @@ defmodule Tackle.Config do
   end
 
   defp validate_tools(tools) when is_list(tools) do
-    validated = ToolAdapter.wrap(tools)
+    validated = validate_tool_modules(tools)
     names = Enum.map(validated, & &1.name())
 
     cond do
@@ -453,6 +454,35 @@ defmodule Tackle.Config do
   end
 
   defp validate_tools(tools), do: {:error, {:invalid_option, :tools, tools}}
+
+  defp validate_tool_modules(tools) do
+    Enum.map(tools, fn
+      tool when is_atom(tool) ->
+        case missing_tool_callbacks(tool) do
+          [] ->
+            tool
+
+          missing ->
+            raise ArgumentError,
+                  "#{inspect(tool)} is not a valid Tackle.Lib.Tool; missing callbacks: " <>
+                    Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
+        end
+
+      tool ->
+        raise ArgumentError,
+              "Tackle.Config expects a list of tool modules, got: #{inspect(tool)}"
+    end)
+  end
+
+  defp missing_tool_callbacks(tool) do
+    if Code.ensure_loaded?(tool) do
+      Enum.reject(@tool_callbacks, fn {name, arity} ->
+        function_exported?(tool, name, arity)
+      end)
+    else
+      @tool_callbacks
+    end
+  end
 
   defp validate_modules(name, modules) when is_list(modules) do
     case Enum.find(modules, &(not valid_module?(&1))) do

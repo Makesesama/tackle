@@ -44,6 +44,10 @@ defmodule Tackle.ConfigTest do
     def run(%{"value" => value}, _context), do: {:ok, %{value: value}}
   end
 
+  defmodule IncompleteTool do
+    def name, do: "incomplete"
+  end
+
   test "resolves an explicit adapter and canonical model reference" do
     assert {:ok, config} =
              Config.new(
@@ -178,5 +182,28 @@ defmodule Tackle.ConfigTest do
                model: "test/small",
                llm_opts: [provider: %{"api_key" => "must-not-enter-config"}]
              )
+  end
+
+  test "rejects tool modules that do not implement the Tackle.Lib.Tool callbacks" do
+    assert {:error, {:invalid_tools, message}} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               tools: [IncompleteTool]
+             )
+
+    assert message =~ "IncompleteTool"
+    assert message =~ "missing callbacks: description/0"
+  end
+
+  test "rejects non-module tool values" do
+    assert {:error, {:invalid_tools, message}} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               tools: ["not a module"]
+             )
+
+    assert message =~ "expects a list of tool modules"
   end
 end

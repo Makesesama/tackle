@@ -29,7 +29,7 @@ should also read [`../tackle_phoenix/README.md`](../tackle_phoenix/README.md).
 state =
   Tackle.Lib.new(
     model: "anthropic/claude-sonnet-4",
-    tools: Tackle.Lib.Tool.Adapters.Web.wrap([MyApp.Tools.Search, MyApp.Tools.Fetch]),
+    tools: [MyApp.Tools.Search, MyApp.Tools.Fetch],
     system_prompt: MyApp.build_system_prompt(),
     context: %{user_id: user.id}
   )
@@ -99,8 +99,8 @@ end
   against it before being projected into the transcript.
 - To adapt a richer existing tool abstraction, implement the `Tackle.Lib.Tool`
   callbacks manually instead of using the DSL — the loop only sees the behaviour.
-- Wrap tool lists with `Tackle.Lib.Tool.Adapters.Web.wrap/1` before passing to
-  `Tackle.Lib.new/1`; it validates each module exports the required callbacks.
+- Pass tool modules directly to `Tackle.Lib.new/1`; each one must export the
+  required `Tackle.Lib.Tool` callbacks. The loop itself does not validate them.
 
 ## The LLM adapter (host-supplied)
 

@@ -162,9 +162,9 @@ end
 ```
 
 Tool arguments are normalized to **string keys** before `run/2`. A tool returns
-`{:ok, result}` or `{:error, reason}`. Expected failures should not raise. At a
-public agent boundary, `Tackle.Lib.Tool.Adapters.Web.wrap/1` can validate the tool
-modules before they are placed in state.
+`{:ok, result}` or `{:error, reason}`. Expected failures should not raise. Hosts
+that expose tools across a public boundary should validate their tool modules
+(e.g. with `Tackle.Lib.Tool.Registry.new/1`) before they are placed in state.
 
 ### 3. Compose a prompt and run the agent
 
