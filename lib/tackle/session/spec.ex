@@ -106,12 +106,7 @@ defmodule Tackle.Session.Spec do
 
   defp validate_session_id(nil), do: :ok
 
-  defp validate_session_id(session_id) do
-    case Storage.validate_session_id(session_id) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp validate_session_id(session_id), do: Storage.validate_session_id(session_id)
 
   defp validate_parent(nil), do: :ok
 

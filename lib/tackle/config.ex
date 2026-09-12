@@ -329,9 +329,9 @@ defmodule Tackle.Config do
     end
   end
 
-  defp context_cwd(context) do
-    Map.get(context, :cwd) || Map.get(context, "cwd") || File.cwd()
-  end
+  defp context_cwd(%{cwd: cwd}), do: cwd
+  defp context_cwd(%{"cwd" => cwd}), do: cwd
+  defp context_cwd(_context), do: File.cwd()
 
   defp normalize_cwd({:ok, cwd}), do: normalize_cwd(cwd)
   defp normalize_cwd({:error, reason}), do: {:error, {:cwd_unavailable, reason}}

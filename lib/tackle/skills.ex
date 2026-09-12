@@ -189,21 +189,24 @@ defmodule Tackle.Skills do
   end
 
   defp dedupe(skills, warnings) do
-    {skills, warnings} =
-      Enum.reduce(skills, {[], warnings}, fn skill, {accepted, warnings} ->
+    {skills, collision_warnings} =
+      Enum.reduce(skills, {[], []}, fn skill, {accepted, collision_warnings} ->
         cond do
           Enum.any?(accepted, &(&1.path == skill.path)) ->
-            {accepted, warnings}
+            {accepted, collision_warnings}
 
           collision = Enum.find(accepted, &(&1.name == skill.name)) ->
-            {accepted, warnings ++ [collision_warning(skill, collision)]}
+            {accepted, [collision_warning(skill, collision) | collision_warnings]}
 
           true ->
-            {accepted ++ [skill], warnings}
+            {[skill | accepted], collision_warnings}
         end
       end)
 
-    %{skills: skills, warnings: warnings}
+    %{
+      skills: Enum.reverse(skills),
+      warnings: warnings ++ Enum.reverse(collision_warnings)
+    }
   end
 
   defp collision_warning(skill, winner) do
@@ -286,26 +289,31 @@ defmodule Tackle.Skills do
   end
 
   defp render(skills, hint) do
-    lines =
-      [
-        "The following skills provide specialized instructions for specific tasks.",
-        hint,
-        "When a skill file references a relative path, resolve it against the skill directory " <>
-          "(the directory containing SKILL.md) and use that absolute path in tool commands.",
-        "",
-        "<available_skills>"
-      ] ++
-        Enum.flat_map(skills, fn skill ->
-          [
-            "  <skill>",
-            "    <name>#{escape(skill.name)}</name>",
-            "    <description>#{escape(skill.description)}</description>",
-            "    <location>#{escape(skill.path)}</location>",
-            "  </skill>"
-          ]
-        end) ++ ["</available_skills>"]
+    skill_lines =
+      Enum.flat_map(skills, fn skill ->
+        [
+          "  <skill>",
+          "    <name>#{escape(skill.name)}</name>",
+          "    <description>#{escape(skill.description)}</description>",
+          "    <location>#{escape(skill.path)}</location>",
+          "  </skill>"
+        ]
+      end)
 
-    Enum.join(lines, "\n")
+    lines =
+      Enum.concat(
+        [
+          "The following skills provide specialized instructions for specific tasks.",
+          hint,
+          "When a skill file references a relative path, resolve it against the skill directory " <>
+            "(the directory containing SKILL.md) and use that absolute path in tool commands.",
+          "",
+          "<available_skills>"
+        ],
+        skill_lines
+      )
+
+    Enum.join(Enum.concat(lines, ["</available_skills>"]), "\n")
   end
 
   defp loader_hint(tools) do
