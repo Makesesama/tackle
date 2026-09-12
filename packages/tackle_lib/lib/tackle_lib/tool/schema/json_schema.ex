@@ -5,6 +5,8 @@ defmodule Tackle.Lib.Tool.Schema.JsonSchema do
   This module is intentionally separate from `Tackle.Lib.Tool.Schema` so core Tackle.Lib
   remains format-agnostic. Provider adapters that speak JSON Schema can opt into
   this projection at the adapter boundary.
+
+  Validation is delegated to `JSV` using JSON Schema Draft 2020-12.
   """
 
   @type schema :: Tackle.Lib.Tool.Schema.t()
@@ -25,12 +27,18 @@ defmodule Tackle.Lib.Tool.Schema.JsonSchema do
     %{"type" => "object", "properties" => properties, "required" => required}
   end
 
-  @doc "Validates output against the JSON Schema subset emitted by `to_json_schema/1`."
+  @doc "Validates output against a JSON Schema."
   @spec validate_output(map(), term()) :: {:ok, term()} | {:error, String.t()}
   def validate_output(%{} = schema, output) do
-    case validate_json_schema(schema, output, "$") do
-      :ok -> {:ok, output}
-      {:error, message} -> {:error, "Invalid tool output: #{message}"}
+    with {:ok, root} <- JSV.build(schema, atoms: false, warnings: :silent),
+         {:ok, _validated} <- JSV.validate(stringify_map_keys(output), root, cast: false) do
+      {:ok, output}
+    else
+      {:error, %JSV.ValidationError{} = error} ->
+        {:error, "Invalid tool output: #{format_validation_error(error)}"}
+
+      {:error, %JSV.BuildError{} = error} ->
+        {:error, "Invalid output schema: #{Exception.message(error)}"}
     end
   end
 
@@ -38,130 +46,41 @@ defmodule Tackle.Lib.Tool.Schema.JsonSchema do
   @spec validate(map(), term()) :: {:ok, term()} | {:error, String.t()}
   def validate(schema, output), do: validate_output(schema, output)
 
-  defp validate_json_schema(%{"type" => types} = schema, value, path) when is_list(types) do
-    if is_nil(value) and "null" in types do
-      :ok
-    else
-      schema
-      |> Map.put("type", Enum.reject(types, &(&1 == "null")))
-      |> validate_json_schema(value, path)
-    end
-  end
+  defp format_validation_error(error) do
+    error
+    |> JSV.normalize_error()
+    |> Map.fetch!(:details)
+    |> Enum.flat_map(fn detail ->
+      path = format_instance_path(detail.instanceLocation)
 
-  defp validate_json_schema(%{type: type} = schema, value, path) do
-    schema
-    |> Map.new(fn {key, val} -> {to_string(key), val} end)
-    |> Map.put("type", to_string(type))
-    |> validate_json_schema(value, path)
-  end
-
-  defp validate_json_schema(%{"type" => [type]} = schema, value, path) do
-    schema
-    |> Map.put("type", type)
-    |> validate_json_schema(value, path)
-  end
-
-  defp validate_json_schema(%{"type" => "object"} = schema, value, path) when is_map(value) do
-    required = Map.get(schema, "required", [])
-    properties = Map.get(schema, "properties", %{})
-
-    with :ok <- validate_required(value, required, path) do
-      validate_properties(value, properties, path)
-    end
-  end
-
-  defp validate_json_schema(%{"type" => "object"}, _value, path),
-    do: {:error, "#{path} must be an object"}
-
-  defp validate_json_schema(%{"type" => "array", "items" => item_schema}, value, path)
-       when is_list(value) do
-    value
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {item, index}, :ok ->
-      case validate_json_schema(item_schema, item, "#{path}[#{index}]") do
-        :ok -> {:cont, :ok}
-        error -> {:halt, error}
-      end
+      Enum.map(detail.errors, fn error ->
+        if path == "$", do: error.message, else: "#{path} #{error.message}"
+      end)
     end)
+    |> Enum.join("; ")
   end
 
-  defp validate_json_schema(%{"type" => "array"}, _value, path),
-    do: {:error, "#{path} must be an array"}
+  defp format_instance_path("#"), do: "$"
 
-  defp validate_json_schema(%{"enum" => values}, value, path) when is_list(values) do
-    if value in values,
-      do: :ok,
-      else: {:error, "#{path} must be one of #{Enum.join(values, ", ")}"}
+  defp format_instance_path("#/" <> pointer) do
+    pointer
+    |> String.split("/")
+    |> Enum.map_join(".", &unescape_pointer_segment/1)
+    |> then(&"$.#{&1}")
   end
 
-  defp validate_json_schema(%{"type" => "string"}, value, path) do
-    if is_binary(value), do: :ok, else: {:error, "#{path} must be a string"}
+  defp unescape_pointer_segment(segment) do
+    segment
+    |> String.replace("~1", "/")
+    |> String.replace("~0", "~")
   end
 
-  defp validate_json_schema(%{"type" => "integer"}, value, path) do
-    if is_integer(value), do: :ok, else: {:error, "#{path} must be an integer"}
+  defp stringify_map_keys(%{} = map) do
+    Map.new(map, fn {key, value} -> {to_string(key), stringify_map_keys(value)} end)
   end
 
-  defp validate_json_schema(%{"type" => "number"}, value, path) do
-    if is_integer(value) or is_float(value), do: :ok, else: {:error, "#{path} must be a number"}
-  end
-
-  defp validate_json_schema(%{"type" => "boolean"}, value, path) do
-    if is_boolean(value), do: :ok, else: {:error, "#{path} must be a boolean"}
-  end
-
-  defp validate_json_schema(_schema, _value, _path), do: :ok
-
-  defp validate_required(value, required, path) do
-    Enum.reduce_while(required, :ok, fn field, :ok ->
-      if has_string_or_atom_key?(value, field) do
-        {:cont, :ok}
-      else
-        {:halt, {:error, "#{path}.#{field} is required"}}
-      end
-    end)
-  end
-
-  defp validate_properties(value, properties, path) do
-    Enum.reduce_while(properties, :ok, fn {field, schema}, :ok ->
-      case fetch_string_or_atom_key(value, field) do
-        {:ok, nil} -> {:cont, :ok}
-        {:ok, field_value} -> validate_property(field_value, schema, "#{path}.#{field}")
-        :error -> {:cont, :ok}
-      end
-    end)
-  end
-
-  defp validate_property(value, schema, path) do
-    case validate_json_schema(schema, value, path) do
-      :ok -> {:cont, :ok}
-      error -> {:halt, error}
-    end
-  end
-
-  defp has_string_or_atom_key?(map, field) do
-    Map.has_key?(map, field) ||
-      case safe_existing_atom(field) do
-        nil -> false
-        atom -> Map.has_key?(map, atom)
-      end
-  end
-
-  defp fetch_string_or_atom_key(map, field) do
-    atom_field = safe_existing_atom(field)
-
-    cond do
-      Map.has_key?(map, field) -> {:ok, Map.get(map, field)}
-      atom_field && Map.has_key?(map, atom_field) -> {:ok, Map.get(map, atom_field)}
-      true -> :error
-    end
-  end
-
-  defp safe_existing_atom(field) do
-    String.to_existing_atom(field)
-  rescue
-    ArgumentError -> nil
-  end
+  defp stringify_map_keys(list) when is_list(list), do: Enum.map(list, &stringify_map_keys/1)
+  defp stringify_map_keys(value), do: value
 
   defp field_json_schema(opts) do
     type = Keyword.get(opts, :type, :string)

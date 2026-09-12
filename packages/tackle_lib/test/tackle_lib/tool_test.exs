@@ -316,4 +316,49 @@ defmodule Tackle.Lib.ToolTest do
              }
            } = JsonSchema.to_json_schema(EchoTool.parameters_schema())
   end
+
+  test "JsonSchema validates output with JSV" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "status" => %{"const" => "complete"},
+        "items" => %{
+          "type" => "array",
+          "minItems" => 1,
+          "items" => %{
+            "type" => "object",
+            "properties" => %{"score" => %{"type" => "number", "minimum" => 0}},
+            "required" => ["score"]
+          }
+        }
+      },
+      "required" => ["status", "items"],
+      "additionalProperties" => false
+    }
+
+    output = %{"status" => "complete", "items" => [%{"score" => 0.5}]}
+    atom_keyed_output = %{status: "complete", items: [%{score: 0.5}]}
+
+    assert {:ok, ^output} = JsonSchema.validate_output(schema, output)
+    assert {:ok, ^atom_keyed_output} = JsonSchema.validate_output(schema, atom_keyed_output)
+
+    assert {:error, error} =
+             JsonSchema.validate_output(schema, %{
+               "status" => "pending",
+               "items" => [%{"score" => -1}],
+               "extra" => true
+             })
+
+    assert error =~ "Invalid tool output"
+    assert error =~ "complete"
+    assert error =~ "minimum"
+    assert error =~ "additional properties"
+  end
+
+  test "JsonSchema returns an error for an invalid schema" do
+    assert {:error, error} =
+             JsonSchema.validate_output(%{"type" => "not-a-json-schema-type"}, "value")
+
+    assert error =~ "Invalid output schema"
+  end
 end
