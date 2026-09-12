@@ -393,6 +393,15 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   def handle(
+        {:tackle_event, session_id, turn_id,
+         %Event{type: :tool_execution_end, data: %{status: status} = data}},
+        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+      )
+      when status in [:completed, :failed] do
+    settle_tool(state, data, status, Atom.to_string(status))
+  end
+
+  def handle(
         {:tackle_event, session_id, turn_id, %Event{type: :tool_end, data: data}},
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       ) do

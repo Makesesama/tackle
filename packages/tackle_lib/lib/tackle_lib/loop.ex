@@ -731,9 +731,9 @@ defmodule Tackle.Lib.Loop do
       Event.new(:tool_start, %{tool_call_id: tool_call.id, name: name, arguments: args})
     )
 
-    tool_call
-    |> settle_tool_call(state, callbacks)
-    |> append_tool_settlement(state, callbacks)
+    settlement = settle_tool_call(tool_call, state, callbacks)
+    emit_tool_execution_end(settlement, callbacks)
+    append_tool_settlement(settlement, state, callbacks)
   end
 
   # ── Concurrent batch ──────────────────────────────────────────────────
@@ -794,16 +794,16 @@ defmodule Tackle.Lib.Loop do
   defp await_tool_batch([], settlements, _callbacks), do: {settlements, :ok}
 
   defp await_tool_batch(pending, settlements, callbacks) do
-    {settlements, pending} = drain_tool_tasks(pending, settlements)
+    {settlements, pending} = drain_tool_tasks(pending, settlements, callbacks)
 
     cond do
       pending == [] -> {settlements, :ok}
-      cancelled?(callbacks) -> {shutdown_tool_tasks(pending, settlements), :cancelled}
+      cancelled?(callbacks) -> {shutdown_tool_tasks(pending, settlements, callbacks), :cancelled}
       true -> await_tool_batch(pending, settlements, callbacks)
     end
   end
 
-  defp drain_tool_tasks(pending, settlements) do
+  defp drain_tool_tasks(pending, settlements, callbacks) do
     by_ref = Map.new(pending, fn {index, call, task} -> {task.ref, {index, call}} end)
 
     settled =
@@ -819,14 +819,16 @@ defmodule Tackle.Lib.Loop do
 
           {:ok, settlement} ->
             {index, _call} = Map.fetch!(by_ref, task.ref)
+            emit_tool_execution_end(settlement, callbacks)
             {Map.put(acc, index, settlement), MapSet.put(done, task.ref)}
 
           {:exit, reason} ->
             {index, call} = Map.fetch!(by_ref, task.ref)
             Logger.error("Tool task for #{call.name} exited: #{inspect(reason)}")
 
-            {Map.put(acc, index, crashed_tool_settlement(call, reason)),
-             MapSet.put(done, task.ref)}
+            settlement = crashed_tool_settlement(call, reason)
+            emit_tool_execution_end(settlement, callbacks)
+            {Map.put(acc, index, settlement), MapSet.put(done, task.ref)}
         end
       end)
 
@@ -838,13 +840,45 @@ defmodule Tackle.Lib.Loop do
     {settlements, pending}
   end
 
-  defp shutdown_tool_tasks(pending, settlements) do
+  defp shutdown_tool_tasks(pending, settlements, callbacks) do
     Enum.reduce(pending, settlements, fn {index, _call, task}, acc ->
       case Task.shutdown(task, @tool_shutdown_ms) do
-        {:ok, settlement} -> Map.put(acc, index, settlement)
-        _other -> acc
+        {:ok, settlement} ->
+          emit_tool_execution_end(settlement, callbacks)
+          Map.put(acc, index, settlement)
+
+        _other ->
+          acc
       end
     end)
+  end
+
+  # Execution progress is transient and may arrive out of call order. Keep it
+  # separate from tool_end/tool_error, which follow ordered message persistence.
+  # Only the loop emits these events, never the worker tasks.
+  defp emit_tool_execution_end({:ok, %ToolResult{} = result}, callbacks) do
+    emit(
+      callbacks,
+      Event.new(:tool_execution_end, %{
+        tool_call_id: result.tool_call_id,
+        name: result.name,
+        status: :completed,
+        result: result.content
+      })
+    )
+  end
+
+  defp emit_tool_execution_end({:error, %ToolError{} = error}, callbacks) do
+    emit(
+      callbacks,
+      Event.new(:tool_execution_end, %{
+        tool_call_id: error.tool_call_id,
+        name: error.name || "unknown",
+        status: :failed,
+        error: error.message,
+        reason: error.reason
+      })
+    )
   end
 
   # Commits every available settlement in call order. A cancelled batch can lack

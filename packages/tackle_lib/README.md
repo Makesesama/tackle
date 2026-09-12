@@ -543,7 +543,7 @@ the exact order the model requested them.
 | Batch execution                        | one call at a time              | every call starts together               |
 | Supervisor required                    | no                              | yes — the `:tool_supervisor` run option  |
 | Tool result order                      | requested order                 | requested order                          |
-| Events                                 | `tool_start`/`tool_end` interleave per call | all `tool_start` first, then results in order |
+| Events                                 | `tool_start`/`tool_end` interleave per call | all `tool_start` first, execution progress per worker, settlement in order |
 | Tool crash                             | normal turn error path          | becomes a tool error; siblings continue  |
 | Cancellation                           | calls not yet started are skipped | in-flight tasks are shut down          |
 | `before_tool_call` hooks               | immediately before each call    | for the whole batch before any call      |
@@ -655,7 +655,7 @@ events. Event types include:
 - `:turn_start`, `:turn_end`, `:turn_cancelled`
 - `:step_start`, `:step_end`
 - `:message_start`, `:message_delta`, `:message_end`
-- `:tool_start`, `:tool_end`, `:tool_error`
+- `:tool_start`, `:tool_execution_end`, `:tool_end`, `:tool_error`
 - `:usage`, `:status_change`, `:error`
 - `:retry_scheduled`, `:retry_start`, `:retry_end`
 - `:provider_event` for unrecognized provider data
@@ -669,6 +669,17 @@ in-flight display state safely.
 Reasoning and tool-input deltas are tagged in event data. A user-facing UI
 should not append them to the visible answer bubble by default. The
 `tackle_phoenix` event reducer follows this rule.
+
+`:tool_execution_end` reports each completed execution as the loop collects its
+worker result, without waiting for the rest of a concurrent batch. It carries
+`tool_call_id`, `name`, and `status` (`:completed` or `:failed`), plus `result`
+on success or `error`/`reason` on failure. Sequential execution emits it too.
+These are transient progress events, not persistence acknowledgements: they may
+arrive out of provider order, before transcript commits, and tools terminated by
+cancellation without a result do not emit one. The existing `:tool_end` and
+`:tool_error` events still follow ordered message finalization; hooks and model
+history remain in provider order. UIs should update the same row by call ID when
+both progress and settlement arrive.
 
 Event callbacks should be fast. Send events to another process or PubSub rather
 than doing slow database work in the callback; use hooks or the Phoenix Store
