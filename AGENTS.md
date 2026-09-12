@@ -25,6 +25,11 @@ mix format --check-formatted
 # Focused library test
 (cd packages/tackle_lib && mix test test/tackle_lib/loop_test.exs)
 
+# Anubis MCP bridge: only when affected
+(cd packages/tackle_anubis && mix deps.get)
+(cd packages/tackle_anubis && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_anubis && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+
 # Phoenix integration: only when affected
 (cd packages/tackle_phoenix && mix deps.get)
 (cd packages/tackle_phoenix && mix compile --warnings-as-errors && mix test)
@@ -63,6 +68,10 @@ Burrito, or lint commands for tooling that has not been wired up.
   `README.md` and relevant source before changing its API.
 - `packages/tackle_phoenix/`: existing Phoenix LiveView (`~> 1.1.33`) and
   PubSub (`~> 2.1`) integration, with its own Mix project and tests.
+- `packages/tackle_anubis/`: optional Anubis MCP bridge (`:tackle_anubis`,
+  `Tackle.Anubis.*`) extracted out of `tackle_lib`, with its own Mix project and
+  tests. It depends on `:tackle_lib` and `:anubis_mcp`; nothing in the harness or
+  CLI depends on it.
 - `plugins/tackle_codex/`: first-party OpenAI Codex adapter, ChatGPT OAuth
   protocol helpers, and Responses SSE transport. It is a separate Mix project
   that depends on `:tackle_lib`, not the root harness.
@@ -91,10 +100,11 @@ keep those identities distinct when composing them.
 - Provider adapters are user-provided plugins. OpenAI Codex is the only
   first-party adapter maintained here; it uses the same contracts as external
   ones.
-- MCP belongs in a later harness plugin. The current `packages/tackle_lib`
-  library retains its optional `:anubis_mcp` dependency and integration code:
-  treat any later extraction as a compatibility-sensitive migration, not
-  permission to delete it now.
+- MCP belongs in a later harness plugin. The inherited Anubis MCP server bridge
+  now lives in `packages/tackle_anubis` (`Tackle.Anubis.*`) with `:anubis_mcp` as
+  a required dependency of that package; `packages/tackle_lib` must stay free of
+  MCP code and dependencies and keeps only the provider-neutral
+  `Tackle.Lib.Integrations.Registry` seam.
 - Keep optional dependencies with the plugins that need them. The minimal
   harness must not require Phoenix or MCP.
 - Start with a simple CLI; add Burrito packaging afterward. Validate how
@@ -178,9 +188,10 @@ Summarize changed files, validation, and unresolved risks.
 ### Ask first
 
 - Breaking public APIs, renaming OTP applications/modules, or moving/removing
-  existing functionality (including extracting the inherited MCP integration).
-  The approved library identity migration is the exception currently in
-  progress; do not generalize that approval to later changes.
+  existing functionality. The approved library identity migration and the
+  `Tackle.Lib.Integrations.Anubis` → `Tackle.Anubis` extraction are the
+  exceptions already in progress; do not generalize that approval to later
+  changes.
 - Adding dependencies, new first-party provider adapters, or core features that
   could live in plugins.
 - Committing to a plugin loading/distribution mechanism, changing release or

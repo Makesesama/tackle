@@ -1,6 +1,6 @@
-defmodule Tackle.Lib.Integrations.Anubis.Schema do
+defmodule Tackle.Anubis.Schema do
   @moduledoc """
-  Peri projection for registering Tackle.Lib tools with Anubis.
+  Peri projection for registering Tackle.Lib tools with an Anubis server.
 
   Kept in the Anubis integration so `Tackle.Lib.Tool.Schema` remains independent of
   any provider/runtime schema format.
@@ -38,8 +38,8 @@ defmodule Tackle.Lib.Integrations.Anubis.Schema do
   defp peri_type(:float, _enum), do: :float
   # Some MCP clients serialize nested object arguments as JSON strings even
   # when the tool schema advertises an object. Accept either at the Anubis
-  # boundary; Tackle.Lib.Integrations.Anubis decodes string values with the
-  # configured Tackle.Lib.JSON behaviour before core Tackle.Lib validation runs.
+  # boundary; Tackle.Anubis decodes string values with the configured
+  # Tackle.Lib.JSON behaviour before core Tackle.Lib validation runs.
   defp peri_type(:map, _enum), do: {:either, {:map, :string}}
   defp peri_type({:list, inner}, _enum), do: {:list, peri_type(inner, nil)}
   defp peri_type({:array, inner}, _enum), do: {:list, peri_type(inner, nil)}

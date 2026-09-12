@@ -36,8 +36,9 @@ end
 
 Tackle.Lib requires Elixir `~> 1.18`, includes `:telemetry` for its bounded
 lifecycle events, and uses `:jsv` for standards-compliant JSON Schema output
-validation. The Anubis MCP bridge requires the optional `:anubis_mcp`
-dependency to be available in the final application.
+validation. Exposing Tackle.Lib tools through Anubis MCP is a separate
+package ([`../tackle_anubis`](../tackle_anubis/README.md)); the core library has
+no MCP dependency.
 
 ## Which package do I need?
 
@@ -47,7 +48,7 @@ dependency to be available in the final application.
 | Your application already owns processes and persistence | `tackle_lib` |
 | Supervised background turns with cancellation and PubSub | `tackle_lib` + `tackle_phoenix` |
 | Incrementally rendered LiveView chat | `tackle_lib` + `tackle_phoenix` |
-| Expose the same tools through Anubis MCP | `tackle_lib` with optional `:anubis_mcp` |
+| Expose the same tools through Anubis MCP | `tackle_anubis` (brings `tackle_lib`) |
 
 ## Architecture
 
@@ -68,7 +69,7 @@ host application
       │   ├── hooks and events
       │   └── cooperative cancellation
       ├── provider-neutral tool schemas
-      └── optional Anubis MCP bridge
+      └── integration registry for host-owned bridges
 ```
 
 The central boundary is intentional: Tackle.Lib knows **how** to run an agent turn,
@@ -217,7 +218,7 @@ Tackle.Lib can be used to build:
 - audit and persistence extensions through lifecycle hooks;
 - provider-switchable agents through the `Tackle.Lib.LLM` behaviour;
 - prompt variants through `Tackle.Lib.PromptRenderer`;
-- tools reused by an agent and an MCP server through the Anubis integration;
+- tools reused by an agent and an MCP server through the `tackle_anubis` bridge;
 - parent/child or other orchestration models implemented by host tools and
   persistence; and
 - deterministic tests through injected ID generators and fake LLM adapters.
@@ -961,15 +962,27 @@ The adapter implements `encode/1`, `encode!/1`, `decode/1`, and `decode!/1`.
 
 ## Reusing tools through Anubis MCP
 
-With the optional `:anubis_mcp` dependency available:
+The Anubis MCP bridge lives in the sibling [`tackle_anubis`](../tackle_anubis/README.md)
+package (`Tackle.Anubis`), so the core library carries neither `:anubis_mcp` nor
+Anubis-specific code. Add it alongside `tackle_lib`:
+
+```elixir
+# mix.exs
+defp deps do
+  [
+    {:tackle_lib, path: "packages/tackle_lib"},
+    {:tackle_anubis, path: "packages/tackle_anubis"}
+  ]
+end
+```
 
 ```elixir
 def init(_client_info, frame) do
-  {:ok, Tackle.Lib.Integrations.Anubis.register_all(frame, @tools)}
+  {:ok, Tackle.Anubis.register_all(frame, @tools)}
 end
 
 def handle_tool_call(name, params, frame) do
-  Tackle.Lib.Integrations.Anubis.dispatch(name, params, frame,
+  Tackle.Anubis.dispatch(name, params, frame,
     tools: @tools,
     context: &MyApp.MCP.Context.from_frame/1
   )
@@ -1121,4 +1134,4 @@ Start with these files:
 - `lib/tackle_lib/hook.ex` and `lib/tackle_lib/event.ex` — extension/streaming seams
 - `lib/tackle_lib/cancellation.ex` — cooperative cancellation
 - `lib/tackle_lib/snapshot.ex` — per-turn configuration stability
-- `lib/tackle_lib/integrations/anubis.ex` — optional MCP bridge
+- `lib/tackle_lib/integrations/registry.ex` — registry for host-owned tool bridges
