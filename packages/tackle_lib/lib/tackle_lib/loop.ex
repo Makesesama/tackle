@@ -60,6 +60,8 @@ defmodule Tackle.Lib.Loop do
     * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs.
     * `:llm_stream` - When true, use `Tackle.Lib.LLM.stream/4` if the adapter supports it.
     * `:cancellation_signal` - Optional `Tackle.Lib.Cancellation.Signal` checked between loop steps.
+    * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot. When omitted,
+      the state's configured id generator is used.
     * `:tool_supervisor` - Optional `Task.Supervisor` used when the state's tool policy is
       `:concurrent`. Ignored (and not required) for the default sequential policy.
   """
@@ -67,7 +69,7 @@ defmodule Tackle.Lib.Loop do
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
   def run(%State{} = state, user_input, opts \\ []) do
     callbacks = callbacks(opts)
-    snapshot = Snapshot.capture(state)
+    snapshot = Snapshot.capture(state, turn_id: Keyword.get(opts, :turn_id))
     callbacks = Map.put(callbacks, :snapshot, snapshot)
     state = %{state | pending_assistant_id: nil, snapshot: snapshot, overflow_retries: 0}
 
@@ -99,7 +101,7 @@ defmodule Tackle.Lib.Loop do
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
   def continue(%State{} = state, opts \\ []) do
     callbacks = callbacks(opts)
-    snapshot = state.snapshot || Snapshot.capture(state)
+    snapshot = continue_snapshot(state, Keyword.get(opts, :turn_id))
     callbacks = Map.put(callbacks, :snapshot, snapshot)
 
     state = %{
@@ -114,6 +116,15 @@ defmodule Tackle.Lib.Loop do
 
     loop(state, callbacks)
   end
+
+  defp continue_snapshot(%State{snapshot: %Snapshot{} = snapshot}, turn_id)
+       when is_binary(turn_id) and turn_id != "",
+       do: %{snapshot | turn_id: turn_id}
+
+  defp continue_snapshot(%State{snapshot: %Snapshot{} = snapshot}, _turn_id), do: snapshot
+
+  defp continue_snapshot(%State{} = state, turn_id),
+    do: Snapshot.capture(state, turn_id: turn_id)
 
   defp loop(%State{} = state, callbacks) do
     cond do

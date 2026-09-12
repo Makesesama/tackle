@@ -53,6 +53,16 @@ defmodule TackleTest do
     end
   end
 
+  defmodule SnapshotTurnHook do
+    @behaviour Tackle.Lib.Hook
+
+    @impl true
+    def before_prompt(state, context) do
+      send(Map.fetch!(context, :test_pid), {:snapshot_turn_id, state.snapshot.turn_id})
+      :ok
+    end
+  end
+
   defmodule AdapterA do
     @behaviour Tackle.Lib.LLM
 
@@ -208,6 +218,26 @@ defmodule TackleTest do
            end)
 
     assert Cancellation.reason(signal) == nil
+  end
+
+  test "uses the harness turn id in the library snapshot" do
+    scope =
+      start_scope(
+        adapters: [ControlledAdapter],
+        model: "controlled/test",
+        hooks: [SnapshotTurnHook],
+        context: %{test_pid: self()},
+        llm_opts: [test_pid: self()]
+      )
+
+    agent_ref = scope.root_agent_ref
+    assert {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
+    assert {:ok, turn_id} = Tackle.submit(agent_ref, "hello")
+    assert_receive {:snapshot_turn_id, ^turn_id}
+    assert_receive {:adapter_called, task_pid, "test", _signal}
+
+    send(task_pid, {:respond, "done"})
+    assert {:finished, {:ok, _state}, _events} = await_terminal(session_id, turn_id)
   end
 
   test "rejects overlapping turns" do

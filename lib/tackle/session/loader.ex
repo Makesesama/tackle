@@ -46,8 +46,11 @@ defmodule Tackle.Session.Loader do
          {:ok, conversation} <- decode_conversation(projection, opts) do
       state =
         resolved
-        |> Config.to_agent_state(credential_store: Keyword.get(opts, :credential_store))
-        |> install(projection.session_id, conversation)
+        |> Config.to_agent_state(
+          credential_store: Keyword.get(opts, :credential_store),
+          session_id: projection.session_id
+        )
+        |> install(conversation)
 
       {:ok, %{state: state, configuration_changed?: changed?}}
     end
@@ -148,13 +151,12 @@ defmodule Tackle.Session.Loader do
     end
   end
 
-  defp install(%AgentState{} = state, session_id, conversation) do
+  defp install(%AgentState{} = state, conversation) do
     tree = Map.get(conversation, :tree)
 
     %{
       state
-      | session_id: session_id,
-        messages: conversation.messages,
+      | messages: conversation.messages,
         model_messages: conversation.model_messages,
         tree: tree,
         last_compaction_id: tree && Tree.last_compaction_id(tree),

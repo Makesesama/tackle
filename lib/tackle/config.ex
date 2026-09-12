@@ -221,6 +221,7 @@ defmodule Tackle.Config do
       prompt_renderer: config.prompt_renderer,
       prompt_renderer_opts: config.prompt_renderer_opts,
       id_generator: config.id_generator,
+      session_id: Keyword.get(harness_opts, :session_id),
       compaction: config.compaction
     )
   end
