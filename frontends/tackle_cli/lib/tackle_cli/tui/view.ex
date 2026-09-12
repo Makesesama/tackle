@@ -20,6 +20,7 @@ defmodule Tackle.CLI.TUI.View do
   alias Tackle.CLI.Widgets.Input
 
   alias Tackle.CLI.TUI.{
+    Browser,
     Conversation,
     Inspector,
     Layout,
@@ -92,7 +93,9 @@ defmodule Tackle.CLI.TUI.View do
   end
 
   defp transcript_widget(state) do
-    Conversation.widget(state.conversation)
+    if state.focus == :transcript,
+      do: Browser.widget(state),
+      else: Conversation.widget(state.conversation)
   end
 
   defp reading_widgets(nil, _conversation), do: []
@@ -150,7 +153,9 @@ defmodule Tackle.CLI.TUI.View do
     }
   end
 
-  defp composer_title(%State{focus: :transcript}), do: " Browsing · Esc to return "
+  defp composer_title(%State{focus: :transcript, browse_page: page}),
+    do: " Browsing · #{page} · ←/→ pages · Esc/F4 back "
+
   defp composer_title(%State{active_turn: nil, pending_operation: nil}), do: " › "
   defp composer_title(%State{}), do: " Draft · not queued "
 

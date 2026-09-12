@@ -78,6 +78,17 @@ impl HistoryCell {
         cell
     }
 
+    /// Plain diagnostic text retains indentation and wraps by grapheme without
+    /// imposing Markdown interpretation or a message gutter.
+    pub fn plain(source: &str, width: u16, style: Style) -> Self {
+        let source = sanitize(source);
+        let lines: Vec<_> = source
+            .split('\n')
+            .flat_map(|line| grapheme_wrap(Line::from(line.to_owned()), width.max(1)))
+            .collect();
+        Self::new(Text::from(lines), width, style, false)
+    }
+
     pub fn rows(lines: Vec<Line<'static>>, width: u16) -> Self {
         Self::new(Text::from(lines), width, Style::default(), false)
     }

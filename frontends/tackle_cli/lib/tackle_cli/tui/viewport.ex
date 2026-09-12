@@ -62,14 +62,16 @@ defmodule Tackle.CLI.TUI.Viewport do
     {width, height} = state.size
     regions = Layout.regions(width, height, state.draft_lines, reading?(state.conversation))
 
+    rect = browse_rect(state, regions.transcript)
+
     conversation =
-      if regions.transcript == state.conversation.rect do
+      if rect == state.conversation.rect do
         state.conversation
       else
-        Conversation.resize(state.conversation, regions.transcript)
+        Conversation.resize(state.conversation, rect)
       end
 
-    %{state | conversation: conversation}
+    %{state | conversation: conversation} |> Tackle.CLI.TUI.Browser.resize()
   end
 
   @doc """
@@ -84,9 +86,21 @@ defmodule Tackle.CLI.TUI.Viewport do
     {width, height} = state.size
     regions = Layout.regions(width, height, state.draft_lines, reading?(state.conversation))
 
-    state = %{state | conversation: Conversation.resize(state.conversation, regions.transcript)}
+    state = %{
+      state
+      | conversation:
+          Conversation.resize(state.conversation, browse_rect(state, regions.transcript))
+    }
+
     refresh(state)
   end
+
+  # The native Browse tab row consumes one row only when content still fits.
+  defp browse_rect(%State{focus: :transcript, browse_page: :transcript}, %{height: height} = rect)
+       when height > 1,
+       do: %{rect | y: rect.y + 1, height: height - 1}
+
+  defp browse_rect(_state, rect), do: rect
 
   @doc "Whether the transcript is showing the reading-back affordance."
   @spec reading?(Conversation.t()) :: boolean()

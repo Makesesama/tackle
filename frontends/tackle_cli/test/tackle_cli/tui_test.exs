@@ -255,16 +255,27 @@ defmodule Tackle.CLI.TUITest do
 
       inject_resize(tui, 30, 8)
 
-      Enum.each([{"f1", "Model"}, {"f2", "Reasoning level"}, {"f3", "Settings"}], fn {key, title} ->
-        inject_key(tui, key)
-        assert_draws(state(tui), 30, 8, title)
-        inject_key(tui, "esc")
-      end)
+      Enum.each(
+        [{"f1", "Model"}, {"f2", "Reasoning level"}, {"f3", "Settings"}],
+        fn {key, title} ->
+          inject_key(tui, key)
+          assert_draws(state(tui), 30, 8, title)
+          inject_key(tui, "esc")
+        end
+      )
 
       inject_key(tui, "f4")
       browse = state(tui)
       assert browse.focus == :transcript
       assert_draws(browse, 30, 8, "Browsing")
+
+      inject_key(tui, "right")
+      assert state(tui).browse_page == :overview
+      assert state(tui).overlay == nil
+      assert_draws(state(tui), 30, 8, "Browse / overview")
+      inject_key(tui, "left")
+      assert state(tui).focus == :transcript
+      assert state(tui).selected_entry == browse.selected_entry
 
       inject_key(tui, "enter")
       assert_draws(state(tui), 30, 8)
@@ -1628,13 +1639,14 @@ defmodule Tackle.CLI.TUITest do
     assert Input.get_value(state(tui).input) == "keep my draft"
   end
 
-  test "F4 reports when there is nothing to browse", %{tui: tui} do
+  test "F4 opens Overview when there are no messages", %{tui: tui} do
     inject_key(tui, "f4")
     state = state(tui)
 
-    assert state.focus == :composer
+    assert state.focus == :transcript
     assert state.selected_entry == nil
-    assert state.notice =~ "No messages to browse yet"
+    assert state.browse_page == :overview
+    assert state.overlay == nil
   end
 
   test "the transcript browser selects, copies, and inspects entries without touching the draft",
@@ -2154,7 +2166,9 @@ defmodule Tackle.CLI.TUITest do
   end
 
   defp highlighted_ids(state) do
-    widget = transcript_widget(state)
+    widget =
+      find_widget(state, &match?(%Tackle.CLI.Widgets.Browse{}, &1)) || transcript_widget(state)
+
     Enum.map(widget.selected, &Enum.at(state.conversation.item_ids, &1)) |> Enum.uniq()
   end
 

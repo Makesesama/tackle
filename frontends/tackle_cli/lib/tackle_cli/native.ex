@@ -18,6 +18,12 @@ defmodule Tackle.CLI.Native do
   def input_render(_state, _width, _height, _placeholder, _focused),
     do: :erlang.nif_error(:nif_not_loaded)
 
+  def browse_document(_source, _width, _style), do: :erlang.nif_error(:nif_not_loaded)
+  def browse_scroll(_offset, _total, _height, _delta), do: :erlang.nif_error(:nif_not_loaded)
+
+  def browse_render(_state, _page, _width, _height, _offset, _selected, _styles),
+    do: :erlang.nif_error(:nif_not_loaded)
+
   def conversation_markdown(_source, _width, _style), do: :erlang.nif_error(:nif_not_loaded)
 
   def conversation_message(_source, _width, _markdown, _style, _marker),

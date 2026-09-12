@@ -120,6 +120,13 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp status_segments(%State{focus: :transcript, notice: notice}) when is_binary(notice),
     do: ["Browsing", notice]
 
+  defp status_segments(%State{focus: :transcript, browse_page: page}) when page != :transcript,
+    do: [
+      "Browsing",
+      Atom.to_string(page),
+      "Transcript · Overview · Prompt · Context · Tools · Events"
+    ]
+
   defp status_segments(%State{focus: :transcript} = state) do
     entries = Conversation.entries(state.conversation)
     index = Enum.find_index(entries, &(&1.id == state.selected_entry)) || 0
@@ -153,10 +160,14 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp hint_segments(%State{overlay: {:usage_chart, _}}),
     do: ["Tab/←/→ mode", "R reload", "Esc close"]
 
+  defp hint_segments(%State{focus: :transcript, browse_page: page}) when page != :transcript,
+    do: ["←/→ or Tab page", "↑/↓ scroll", "R refresh", "Y copy page", "Esc or F4 back"]
+
   defp hint_segments(%State{focus: :transcript}) do
     [
       "↑/↓ browse",
       "Enter inspect",
+      "←/→ or Tab page",
       "y copy source",
       "a copy transcript",
       "F6 usage",

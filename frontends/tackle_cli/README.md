@@ -158,13 +158,59 @@ is short.
 | F1 | Search-first model selector (idle only). Type to filter, ↑/↓ to select, Enter to apply, Esc to close. |
 | F2 | Reasoning-level selector (idle only). A reconfigure failure preserves the conversation and the draft. |
 | F3 | Settings picker (currently empty). Copy source with Y in the F4 transcript browser instead. |
-| F4 | Browse transcript entries with ↑/↓. Enter opens the selected entry (including compaction summaries) in the scrollable inspector; Y copies its source; Esc returns to the composer. |
+| F4 | Unified Browse: Transcript, Overview, Prompt, Context, Tools, Events. ←/→ or Tab/Shift+Tab switches pages. Transcript ↑/↓ selects entries, Enter inspects, Y copies source. Other pages scroll with ↑/↓, Page Up/Down, Home/End or wheel; R refreshes, Y copies. Esc/F4 returns to the draft. |
 | F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
 | F6 | Open cumulative settled token usage. Tab or ←/→ switches Current/This-week sessions, R reloads, Esc closes. |
 | Ctrl+F | Transcript search over full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
 | Ctrl+K | Compact context manually while idle. The draft is retained. Manual compaction cannot currently be cancelled. |
 | Ctrl+T | Reveal or collapse supplied reasoning. |
 | Page Up/Page Down, mouse wheel | Scroll the transcript. Alt+< jumps to the oldest row; Alt+> returns to the newest row and resumes following. |
+
+## Browse and local observability
+
+F4 opens a single, Tackle-owned native Browse widget in the main pane—not a
+separate diagnostics popup. It opens Transcript when messages exist, otherwise
+Overview. Left/right or Tab/Shift+Tab cycles all six pages; Esc or F4 returns
+to the composer without touching the draft. There is no separate F7/D shortcut.
+
+Rust owns responsive page tabs, plain-text grapheme wrapping, scroll bounds and
+viewport clipping. The transcript page reuses the existing immutable native
+history cells and selection painting. Diagnostic pages retain immutable native
+documents; incoming events do not re-layout or change their contents until R
+refreshes or the page is reopened. Resize re-measures the retained source. Only
+visible styled rows cross back into ExRatatui. Tiny panes prioritize content
+over tabs; narrow tab bars show the active page and its position.
+
+The Transcript page retains its usual copy, search, reasoning and Enter-to-inspect
+actions. The remaining pages are read-only:
+
+- **Overview:** session/turn correlation, activity, selected model and limits,
+  reasoning, retry/compaction/tool policies, hooks, settled archive and branch
+  usage, separate live-turn usage, and context pressure. Unknown values remain
+  `nil`; estimated context and costs retain their estimation flags.
+- **Prompt:** the configured composed system prompt, not a capture of later
+  hook or adapter transformations.
+- **Context:** the last settled model projection, including compactions,
+  message IDs, timestamps, usage, text, supplied reasoning, and tool calls.
+  Active-turn additions may not yet be present. Multimodal parts are counted,
+  not dumped; F4 remains the active transcript and F5 the canonical tree.
+- **Tools:** registered provider-neutral definitions, before per-turn hook changes.
+- **Events:** the latest 500 lifecycle events received for the attached session,
+  oldest first, with turn/message/tool correlation, emitter/receipt timestamps,
+  and local monotonic elapsed milliseconds. Retry attempts and delays, tool
+  execution versus settlement, compaction, failures, and terminal outcomes are
+  visible. Streaming deltas are counted without copying their payloads. Dropped
+  event counts are explicit. Elapsed time is **not provider execution latency**.
+
+This is local UI observability using existing harness events, not a global
+`:telemetry` collector, durable trace, or exact provider-request capture. Events
+are not reconstructed on resume and reset on a new session. Event detail fields
+are allowlisted, strings capped at 200 characters, and error bodies/tool I/O
+omitted (inspect the transcript for retained output). Diagnostics do not fetch
+credentials, dump arbitrary adapter options/context, or include raw usage,
+provider metadata, or opaque continuation state. Prompt/context text and tool
+arguments can themselves contain private information: inspect and copy locally
+with care; copied pages are **not** automatically scrubbed support bundles.
 
 ## Composer behavior
 
@@ -396,7 +442,9 @@ process lifecycle, and everything else is a module that takes and returns
 | `Widgets.Input` / `native/tackle/src/widgets/input.rs` | native draft resource, editing, wrapping, and caret paint |
 | `TUI.Composer` | draft editing, submission, and history recall |
 | `TUI.History` | the in-memory prompt history and its browsing position |
-| `TUI.Browser` | transcript focus, selection, and copy |
+| `TUI.Browser` | unified Browse navigation, frozen pages, transcript selection and copy |
+| `Widgets.Browse` / `native/tackle/src/widgets/browse.rs` | native page tabs, document viewport and scroll bounds |
+| `TUI.Diagnostics` / `TUI.Observations` | diagnostic projections and bounded local lifecycle history |
 | `TUI.Menu` | model, reasoning, and settings pickers |
 | `TUI.Tree` | the `/tree` conversation picker and navigation outcomes |
 | `TUI.UsageChart` | async durable usage loading, UTC bucketing, and chart popup |
