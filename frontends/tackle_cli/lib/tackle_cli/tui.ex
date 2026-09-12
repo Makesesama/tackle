@@ -18,6 +18,8 @@ defmodule Tackle.CLI.TUI do
       There is no popup, the composer stops accepting text, and the arrows move
       a highlighted entry so it can be copied (`y`, `a`) or inspected (`Enter`).
       Esc or `F4` returns to the prompt.
+      Left/right or Tab switches to Overview, Prompt, Context, Tools and Events
+      within the same native Browse widget; R refreshes these frozen pages.
     * **Usage** (`F6`) is a modal chronological chart over settled durable
       token usage, switchable between the current session and all sessions.
 
@@ -49,6 +51,8 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Viewport` | transcript/layout synchronization and scrolling |
   | `Tackle.CLI.TUI.RuntimeEvents` | projecting harness events into state |
   | `Tackle.CLI.TUI.Composer` | draft editing and submission |
+  | `Tackle.CLI.TUI.Diagnostics` | read-only diagnostic pages |
+  | `Tackle.CLI.TUI.Observations` | bounded, correlated local event history |
   | `Tackle.CLI.TUI.Browser` | transcript focus, selection, and copy |
   | `Tackle.CLI.TUI.Menu` | model, reasoning, and settings pickers |
   | `Tackle.CLI.TUI.Tree` | the `/tree` conversation picker and navigation |
@@ -150,7 +154,9 @@ defmodule Tackle.CLI.TUI do
 
       nil ->
         if Conversation.contains?(state.conversation, mouse.x, mouse.y) do
-          Viewport.scroll_reply(state, Viewport.scroll(state, delta))
+          if Browser.page?(state),
+            do: {:noreply, Browser.scroll(state, delta)},
+            else: Viewport.scroll_reply(state, Viewport.scroll(state, delta))
         else
           {:noreply, state, render?: false}
         end

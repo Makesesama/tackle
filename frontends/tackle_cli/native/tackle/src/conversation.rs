@@ -15,7 +15,7 @@ use rustler::{Atom, Error, NifResult, NifUntaggedEnum, ResourceArc};
 use std::sync::Arc;
 
 pub struct CellResource(Arc<HistoryCell>);
-pub struct ConversationResource(Conversation, u16);
+pub struct ConversationResource(pub(crate) Conversation, pub(crate) u16);
 #[rustler::resource_impl]
 impl rustler::Resource for CellResource {}
 #[rustler::resource_impl]

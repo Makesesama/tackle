@@ -12,7 +12,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   """
 
   alias ExRatatui.Command
-  alias Tackle.CLI.TUI.{Compaction, State, Tree, UsageChart, Util, Viewport}
+  alias Tackle.CLI.TUI.{Compaction, Observations, State, Tree, UsageChart, Util, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.{ContextUsage, Event, Usage}
@@ -26,7 +26,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           {:noreply, State.t()}
           | {:noreply, State.t(), keyword()}
           | {:stop, State.t()}
-  def handle({:tui_spinner_tick}, %State{} = state) do
+  def handle(message, state), do: route(message, Observations.observe(message, state))
+
+  defp route({:tui_spinner_tick}, %State{} = state) do
     if busy?(state) do
       {:noreply, %{state | spinner_frame: state.spinner_frame + 1}}
     else
@@ -34,17 +36,17 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
-  def handle({:tui_flush_stream, ref}, %State{stream: %Stream{flush_ref: ref}} = state) do
+  defp route({:tui_flush_stream, ref}, %State{stream: %Stream{flush_ref: ref}} = state) do
     {:noreply, Viewport.refresh(%{state | stream: %{state.stream | flush_ref: nil}}, [:turn])}
   end
 
-  def handle({:tui_flush_stream, _stale_ref}, state),
+  defp route({:tui_flush_stream, _stale_ref}, state),
     do: {:noreply, state, render?: false}
 
-  def handle(
-        {:tui_operation_result, ref, :submit, result},
-        %State{pending_operation: %{ref: ref, kind: :submit} = operation} = state
-      ) do
+  defp route(
+         {:tui_operation_result, ref, :submit, result},
+         %State{pending_operation: %{ref: ref, kind: :submit} = operation} = state
+       ) do
     case result do
       {:ok, turn_id} when is_binary(turn_id) ->
         deferred = state.deferred_events
@@ -76,10 +78,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
-  def handle(
-        {:tui_operation_result, ref, :reconfigure, result},
-        %State{pending_operation: %{ref: ref, kind: :reconfigure}} = state
-      ) do
+  defp route(
+         {:tui_operation_result, ref, :reconfigure, result},
+         %State{pending_operation: %{ref: ref, kind: :reconfigure}} = state
+       ) do
     case result do
       {:ok, %Snapshot{} = snapshot} ->
         state = %{
@@ -101,10 +103,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
-  def handle(
-        {:tui_operation_result, ref, :compact, result},
-        %State{pending_operation: %{ref: ref, kind: :compact}} = state
-      ) do
+  defp route(
+         {:tui_operation_result, ref, :compact, result},
+         %State{pending_operation: %{ref: ref, kind: :compact}} = state
+       ) do
     case result do
       {:ok, %Snapshot{} = snapshot, record} ->
         state = %{
@@ -128,10 +130,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
-  def handle(
-        {:tui_operation_result, ref, :cancel, result},
-        %State{pending_operation: %{ref: ref, kind: :cancel}} = state
-      ) do
+  defp route(
+         {:tui_operation_result, ref, :cancel, result},
+         %State{pending_operation: %{ref: ref, kind: :cancel}} = state
+       ) do
     case result do
       :ok -> {:noreply, %{state | pending_operation: nil, activity: "cancelling"}}
       {:error, reason} -> operation_failed(state, reason)
@@ -139,10 +141,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
-  def handle(
-        {:tui_operation_result, ref, :navigate, result},
-        %State{pending_operation: %{ref: ref, kind: :navigate}} = state
-      ) do
+  defp route(
+         {:tui_operation_result, ref, :navigate, result},
+         %State{pending_operation: %{ref: ref, kind: :navigate}} = state
+       ) do
     case result do
       {:ok, %Snapshot{} = snapshot, outcome} ->
         state = %{
@@ -165,85 +167,85 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
-  def handle({:tui_operation_result, _ref, _kind, _result}, state),
+  defp route({:tui_operation_result, _ref, _kind, _result}, state),
     do: {:noreply, state, render?: false}
 
-  def handle({:tui_usage_timeline_result, ref, mode, session_id, result}, state),
+  defp route({:tui_usage_timeline_result, ref, mode, session_id, result}, state),
     do: UsageChart.apply_result(state, ref, mode, session_id, result)
 
   # Manual compaction broadcasts its progress and completion while the idle
   # session performs the summarization; the operation result above remains the
   # authoritative state update.
-  def handle(
-        {:tackle_compaction, session_id, %Event{} = event},
-        %State{session_id: session_id} = state
-      ) do
+  defp route(
+         {:tackle_compaction, session_id, %Event{} = event},
+         %State{session_id: session_id} = state
+       ) do
     {:noreply,
      state |> Compaction.project(event.type, event.data) |> Viewport.refresh([:settled, :turn])}
   end
 
-  def handle({:tackle_compaction, _session_id, _event}, state),
+  defp route({:tackle_compaction, _session_id, _event}, state),
     do: {:noreply, state, render?: false}
 
-  def handle(
-        {:tackle_session_compacted, session_id, %Snapshot{} = snapshot, record},
-        %State{session_id: session_id} = state
-      ) do
+  defp route(
+         {:tackle_session_compacted, session_id, %Snapshot{} = snapshot, record},
+         %State{session_id: session_id} = state
+       ) do
     state = %{state | agent_state: snapshot.agent_state}
     {:noreply, state |> Compaction.completed(record) |> Viewport.refresh()}
   end
 
-  def handle({:tackle_session_compacted, _session_id, _snapshot, _record}, state),
+  defp route({:tackle_session_compacted, _session_id, _snapshot, _record}, state),
     do: {:noreply, state, render?: false}
 
   # Another frontend can navigate the same session while this shell is attached.
   # Refresh from the committed snapshot so every attached view agrees, without
   # touching the local draft or overlay.
-  def handle(
-        {:tackle_session_navigated, session_id, %Snapshot{} = snapshot, outcome},
-        %State{session_id: session_id, pending_operation: nil} = state
-      ) do
+  defp route(
+         {:tackle_session_navigated, session_id, %Snapshot{} = snapshot, outcome},
+         %State{session_id: session_id, pending_operation: nil} = state
+       ) do
     state = %{state | agent_state: snapshot.agent_state, active_turn: snapshot.active_turn}
     {:noreply, state |> Tree.apply_outcome(outcome) |> Viewport.refresh()}
   end
 
-  def handle({:tackle_session_navigated, _session_id, _snapshot, _outcome}, state),
+  defp route({:tackle_session_navigated, _session_id, _snapshot, _outcome}, state),
     do: {:noreply, state, render?: false}
 
   # A turn can begin emitting from its supervised task before the asynchronous
   # submit command's reply reaches this process. Hold those messages briefly;
   # the submit result re-enqueues them after installing the correlated turn id.
-  def handle(
-        {:tackle_event, session_id, _turn_id, %Event{}} = message,
-        %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
-          state
-      ) do
+  defp route(
+         {:tackle_event, session_id, _turn_id, %Event{}} = message,
+         %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
+           state
+       ) do
     deferred_events = append(state.deferred_events, message)
     {:noreply, %{state | deferred_events: deferred_events}, render?: false}
   end
 
-  def handle(
-        {:tackle_turn_finished, session_id, _turn_id, _result} = message,
-        %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
-          state
-      ) do
+  defp route(
+         {:tackle_turn_finished, session_id, _turn_id, _result} = message,
+         %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
+           state
+       ) do
     deferred_events = append(state.deferred_events, message)
     {:noreply, %{state | deferred_events: deferred_events}, render?: false}
   end
 
-  def handle(
-        {:tackle_turn_failed, session_id, _turn_id, _reason} = message,
-        %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
-          state
-      ) do
+  defp route(
+         {:tackle_turn_failed, session_id, _turn_id, _reason} = message,
+         %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
+           state
+       ) do
     deferred_events = append(state.deferred_events, message)
     {:noreply, %{state | deferred_events: deferred_events}, render?: false}
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id, %Event{type: :retry_scheduled, id: event_id}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: :retry_scheduled, id: event_id}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     message_id = event_id || state.stream.active_message_id
     timeline = Enum.reject(state.stream.timeline, &(&1[:message_id] == message_id))
 
@@ -261,21 +263,21 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   # Message identity is part of the live projection. Keeping it here prevents
   # adjacent deltas from separate LLM iterations from being rendered as one
   # continuously rewritten response.
-  def handle(
-        {:tackle_event, session_id, turn_id,
-         %Event{type: :message_start, id: id, data: %{role: :assistant}}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      )
-      when is_binary(id) do
+  defp route(
+         {:tackle_event, session_id, turn_id,
+          %Event{type: :message_start, id: id, data: %{role: :assistant}}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       )
+       when is_binary(id) do
     {:noreply, %{state | stream: %{state.stream | active_message_id: id}}, render?: false}
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id,
-         %Event{type: :message_delta, id: event_id, data: %{delta: delta} = data}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      )
-      when is_binary(delta) do
+  defp route(
+         {:tackle_event, session_id, turn_id,
+          %Event{type: :message_delta, id: event_id, data: %{delta: delta} = data}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       )
+       when is_binary(delta) do
     message_id = event_id || state.stream.active_message_id
 
     case Map.get(data, :field) do
@@ -309,14 +311,14 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   # Replace streamed text with the canonical message while preserving its place
   # among tool and compaction entries. This makes live and settled transcripts
   # agree even when a provider's terminal payload differs from its deltas.
-  def handle(
-        {:tackle_event, session_id, turn_id,
-         %Event{
-           type: :message_end,
-           data: %{message: %Tackle.Lib.Message{id: id, role: :assistant} = message}
-         }},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_event, session_id, turn_id,
+          %Event{
+            type: :message_end,
+            data: %{message: %Tackle.Lib.Message{id: id, role: :assistant} = message}
+          }},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     ids = append_message_id(state.stream.message_ids, id)
     {timeline, reconciled?} = reconcile_message(state.stream.timeline, message, state.stream)
 
@@ -337,19 +339,19 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   # Canonical message boundaries let live compaction entries retain their place
   # when streaming output is replaced by the finished turn's transcript.
-  def handle(
-        {:tackle_event, session_id, turn_id,
-         %Event{type: :message_end, data: %{message: %Tackle.Lib.Message{id: id}}}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_event, session_id, turn_id,
+          %Event{type: :message_end, data: %{message: %Tackle.Lib.Message{id: id}}}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     ids = append_message_id(state.stream.message_ids, id)
     {:noreply, %{state | stream: %{state.stream | message_ids: ids}}, render?: false}
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id, %Event{type: :usage, data: %{usage: usage} = data}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: :usage, data: %{usage: usage} = data}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     normalized_usage = Usage.normalize(usage)
     latest_usage = normalized_usage || state.metrics.latest_usage
 
@@ -372,10 +374,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, %{state | metrics: metrics}}
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id, %Event{type: :tool_start, data: data}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: :tool_start, data: data}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     state = put_tool_activity(state, data, :running)
     tool = find_tool(state.tool_activity, data)
 
@@ -392,58 +394,58 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, Viewport.refresh(state, [:turn])}
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id,
-         %Event{type: :tool_execution_end, data: %{status: status} = data}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      )
-      when status in [:completed, :failed] do
+  defp route(
+         {:tackle_event, session_id, turn_id,
+          %Event{type: :tool_execution_end, data: %{status: status} = data}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       )
+       when status in [:completed, :failed] do
     settle_tool(state, data, status, Atom.to_string(status))
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id, %Event{type: :tool_end, data: data}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: :tool_end, data: data}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     settle_tool(state, data, :completed, "completed")
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id, %Event{type: :tool_error, data: data}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: :tool_error, data: data}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     settle_tool(state, data, :failed, "failed")
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id, %Event{type: :status_change, data: data}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: :status_change, data: data}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     activity = value(data, :status) |> format_activity()
     {:noreply, %{state | activity: activity}}
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id, %Event{type: type} = event},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      )
-      when type in [:compaction_start, :compaction_end, :compaction_retry] do
+  defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: type} = event},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       )
+       when type in [:compaction_start, :compaction_end, :compaction_retry] do
     {:noreply,
      state |> Compaction.project(event.type, event.data) |> Viewport.refresh([:settled, :turn])}
   end
 
-  def handle(
-        {:tackle_event, session_id, turn_id, %Event{type: type}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: type}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     {:noreply, %{state | activity: format_activity(type)}}
   end
 
-  def handle(
-        {:tackle_turn_finished, session_id, turn_id, {outcome, %AgentState{} = agent_state}},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      )
-      when outcome in [:ok, :error, :cancelled] do
+  defp route(
+         {:tackle_turn_finished, session_id, turn_id, {outcome, %AgentState{} = agent_state}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       )
+       when outcome in [:ok, :error, :cancelled] do
     state = state |> Compaction.settle(agent_state) |> UsageChart.invalidate_cache()
     error = if outcome == :error, do: agent_state.error || "turn failed", else: nil
 
@@ -467,10 +469,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, Viewport.refresh(state)}
   end
 
-  def handle(
-        {:tackle_turn_failed, session_id, turn_id, reason},
-        %State{session_id: session_id, active_turn: %{id: turn_id}} = state
-      ) do
+  defp route(
+         {:tackle_turn_failed, session_id, turn_id, reason},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
     state = Compaction.settle(state, state.agent_state)
 
     state = %{
@@ -490,10 +492,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, Viewport.refresh(state, [:settled, :pending, :turn, :error])}
   end
 
-  def handle(
-        {:tackle_session_reconfigured, session_id, %Snapshot{} = snapshot},
-        %State{session_id: session_id} = state
-      ) do
+  defp route(
+         {:tackle_session_reconfigured, session_id, %Snapshot{} = snapshot},
+         %State{session_id: session_id} = state
+       ) do
     state = %{
       state
       | agent_state: snapshot.agent_state,
@@ -506,18 +508,18 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, Viewport.refresh(state)}
   end
 
-  def handle({:tackle_session_closed, session_id}, %State{session_id: session_id} = state) do
+  defp route({:tackle_session_closed, session_id}, %State{session_id: session_id} = state) do
     {:stop, state}
   end
 
-  def handle(
-        {:DOWN, monitor_ref, :process, _pid, reason},
-        %State{agent_monitor: monitor_ref}
-      ) do
+  defp route(
+         {:DOWN, monitor_ref, :process, _pid, reason},
+         %State{agent_monitor: monitor_ref}
+       ) do
     exit({:agent_down, reason})
   end
 
-  def handle(_message, state), do: {:noreply, state, render?: false}
+  defp route(_message, state), do: {:noreply, state, render?: false}
 
   defp submit_failed(state, operation, reason) do
     if Input.get_value(state.input) == "" do

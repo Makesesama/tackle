@@ -1,3 +1,4 @@
+mod browse;
 mod conversation;
 mod diff;
 mod input;

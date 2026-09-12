@@ -36,6 +36,7 @@ defmodule Tackle.CLI.Keybinds do
           | :browse
           | :cancel
           | :close
+          | :refresh
           | :compact
           | :composer
           | :confirm
@@ -185,6 +186,13 @@ defmodule Tackle.CLI.Keybinds do
   def transcript(%Key{code: "page_down"}), do: :page_down
   def transcript(%Key{code: "enter"}), do: :inspect
   def transcript(%Key{code: "i"}), do: :inspect
+  def transcript(%Key{code: "left"}), do: {:adjacent, "left"}
+  def transcript(%Key{code: "right"}), do: {:adjacent, "right"}
+  def transcript(%Key{code: "tab", modifiers: ["shift"]}), do: {:adjacent, "left"}
+  def transcript(%Key{code: "tab"}), do: {:adjacent, "right"}
+  def transcript(%Key{code: "home"}), do: :scroll_start
+  def transcript(%Key{code: "end"}), do: :scroll_end
+  def transcript(%Key{code: code, modifiers: []}) when code in ["r", "R"], do: :refresh
   def transcript(%Key{code: "y"}), do: :copy_source
   def transcript(%Key{code: "Y"}), do: :copy_source
   def transcript(%Key{code: "a"}), do: :copy_transcript
