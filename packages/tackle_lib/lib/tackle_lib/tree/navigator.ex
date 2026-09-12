@@ -56,47 +56,49 @@ defmodule Tackle.Lib.Tree.Navigator do
     with :ok <- validate_revision(tree, Keyword.get(opts, :expected_revision)),
          {:ok, selected_id, destination_id, mode} <- resolve_target(tree, target),
          :ok <- validate_resumable(tree, destination_id) do
-      draft = draft_message(tree, selected_id, mode)
-
-      if destination_id == tree.active_id do
-        {:ok,
-         %{
-           tree: tree,
-           selected_id: selected_id,
-           destination_id: destination_id,
-           draft: draft,
-           mode: mode,
-           noop?: true,
-           change: nil
-         }}
-      else
-        change = %Change{
-          session_id: Keyword.get(opts, :session_id),
-          from_id: tree.active_id,
-          to_id: destination_id,
-          selected_id: selected_id,
-          mode: mode,
-          revision: tree.revision + 1
-        }
-
-        case Tree.move(tree, destination_id) do
-          {:ok, tree} ->
-            {:ok,
-             %{
-               tree: tree,
-               selected_id: selected_id,
-               destination_id: destination_id,
-               draft: draft,
-               mode: mode,
-               noop?: false,
-               change: change
-             }}
-
-          {:error, _reason} = error ->
-            error
-        end
-      end
+      select(tree, selected_id, destination_id, mode, opts)
     end
+  end
+
+  defp select(tree, selected_id, destination_id, mode, opts) do
+    draft = draft_message(tree, selected_id, mode)
+
+    if destination_id == tree.active_id do
+      {:ok, outcome(tree, selected_id, destination_id, draft, mode, nil, true)}
+    else
+      change = %Change{
+        session_id: Keyword.get(opts, :session_id),
+        from_id: tree.active_id,
+        to_id: destination_id,
+        selected_id: selected_id,
+        mode: mode,
+        revision: tree.revision + 1
+      }
+
+      move(tree, selected_id, destination_id, draft, mode, change)
+    end
+  end
+
+  defp move(tree, selected_id, destination_id, draft, mode, change) do
+    case Tree.move(tree, destination_id) do
+      {:ok, tree} ->
+        {:ok, outcome(tree, selected_id, destination_id, draft, mode, change, false)}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp outcome(tree, selected_id, destination_id, draft, mode, change, noop?) do
+    %{
+      tree: tree,
+      selected_id: selected_id,
+      destination_id: destination_id,
+      draft: draft,
+      mode: mode,
+      noop?: noop?,
+      change: change
+    }
   end
 
   defp resolve_target(_tree, nil), do: {:ok, nil, nil, :move}

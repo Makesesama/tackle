@@ -25,6 +25,7 @@ defmodule Tackle.CLI.TUI.Composer do
   alias ExRatatui.Event.Key
   alias Tackle.CLI.TUI.{History, State, Tree, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
+  alias Tackle.CLI.Widgets.Input
 
   @doc """
   Applies a bracketed paste as one edit.
@@ -35,14 +36,14 @@ defmodule Tackle.CLI.TUI.Composer do
   @spec paste(State.t(), String.t()) :: State.t()
   def paste(%State{} = state, content) do
     content = content |> String.replace("\r\n", "\n") |> String.replace("\r", "")
-    :ok = Tackle.CLI.Widgets.Input.insert_str(state.input, content)
+    :ok = Input.insert_str(state.input, content)
     state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()
   end
 
   @doc "Inserts a literal newline without submitting."
   @spec insert_newline(State.t()) :: {:noreply, State.t()}
   def insert_newline(%State{} = state) do
-    :ok = Tackle.CLI.Widgets.Input.insert_str(state.input, "\n")
+    :ok = Input.insert_str(state.input, "\n")
     {:noreply, state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()}
   end
 
@@ -56,7 +57,7 @@ defmodule Tackle.CLI.TUI.Composer do
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def key(%State{} = state, %Key{code: code, modifiers: modifiers}) when is_binary(code) do
     {width, _height} = state.size
-    :ok = Tackle.CLI.Widgets.Input.handle_key(state.input, code, modifiers, max(width - 2, 1))
+    :ok = Input.handle_key(state.input, code, modifiers, max(width - 2, 1))
     {:noreply, state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()}
   end
 
@@ -135,7 +136,7 @@ defmodule Tackle.CLI.TUI.Composer do
   @spec submit(State.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def submit(%State{} = state) do
-    raw_draft = Tackle.CLI.Widgets.Input.get_value(state.input)
+    raw_draft = Input.get_value(state.input)
 
     cond do
       state.active_turn != nil or state.pending_operation != nil ->
@@ -156,7 +157,7 @@ defmodule Tackle.CLI.TUI.Composer do
     {:noreply, opened} = Tree.open(state)
 
     if match?({:tree, _}, opened.overlay) do
-      :ok = Tackle.CLI.Widgets.Input.set_value(opened.input, "")
+      :ok = Input.set_value(opened.input, "")
       opened |> Viewport.update_draft() |> Viewport.relayout()
     else
       # The picker did not open (no tree, empty tree); keep the draft intact.
@@ -169,7 +170,7 @@ defmodule Tackle.CLI.TUI.Composer do
     ref = make_ref()
     agent_ref = state.agent_ref
 
-    :ok = Tackle.CLI.Widgets.Input.set_value(state.input, "")
+    :ok = Input.set_value(state.input, "")
 
     state = %{
       state
@@ -200,10 +201,10 @@ defmodule Tackle.CLI.TUI.Composer do
     {:noreply, state, commands: [command]}
   end
 
-  defp draft(%State{} = state), do: Tackle.CLI.Widgets.Input.get_value(state.input)
+  defp draft(%State{} = state), do: Input.get_value(state.input)
 
   defp load(%State{} = state, history, text) do
-    :ok = Tackle.CLI.Widgets.Input.set_value(state.input, text)
+    :ok = Input.set_value(state.input, text)
     %{state | history: history} |> Viewport.update_draft() |> Viewport.relayout()
   end
 

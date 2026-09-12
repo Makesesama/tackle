@@ -456,22 +456,24 @@ defmodule Tackle.Config do
   defp validate_tools(tools), do: {:error, {:invalid_option, :tools, tools}}
 
   defp validate_tool_modules(tools) do
-    Enum.map(tools, fn
-      tool when is_atom(tool) ->
-        case missing_tool_callbacks(tool) do
-          [] ->
-            tool
+    Enum.map(tools, &validate_tool_module/1)
+  end
 
-          missing ->
-            raise ArgumentError,
-                  "#{inspect(tool)} is not a valid Tackle.Lib.Tool; missing callbacks: " <>
-                    Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
-        end
+  defp validate_tool_module(tool) when is_atom(tool) do
+    case missing_tool_callbacks(tool) do
+      [] -> tool
+      missing -> raise ArgumentError, missing_callbacks_message(tool, missing)
+    end
+  end
 
-      tool ->
-        raise ArgumentError,
-              "Tackle.Config expects a list of tool modules, got: #{inspect(tool)}"
-    end)
+  defp validate_tool_module(tool) do
+    raise ArgumentError, "Tackle.Config expects a list of tool modules, got: #{inspect(tool)}"
+  end
+
+  defp missing_callbacks_message(tool, missing) do
+    callbacks = Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
+
+    "#{inspect(tool)} is not a valid Tackle.Lib.Tool; missing callbacks: " <> callbacks
   end
 
   defp missing_tool_callbacks(tool) do

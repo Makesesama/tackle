@@ -50,15 +50,18 @@ defmodule Tackle.Lib.Tool.Schema.JsonSchema do
     error
     |> JSV.normalize_error()
     |> Map.fetch!(:details)
-    |> Enum.flat_map(fn detail ->
-      path = format_instance_path(detail.instanceLocation)
-
-      Enum.map(detail.errors, fn error ->
-        if path == "$", do: error.message, else: "#{path} #{error.message}"
-      end)
-    end)
+    |> Enum.flat_map(&format_detail/1)
     |> Enum.join("; ")
   end
+
+  defp format_detail(detail) do
+    path = format_instance_path(detail.instanceLocation)
+
+    Enum.map(detail.errors, &format_message(path, &1))
+  end
+
+  defp format_message("$", error), do: error.message
+  defp format_message(path, error), do: "#{path} #{error.message}"
 
   defp format_instance_path("#"), do: "$"
 

@@ -29,6 +29,7 @@ defmodule Tackle.CLI.TUI.State do
   alias Tackle.CLI.Clipboard
   alias Tackle.CLI.TUI.{Compaction, History, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
+  alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Message
   alias Tackle.Lib.{ModelInfo, Usage}
   alias Tackle.Lib.State, as: AgentState
@@ -83,6 +84,10 @@ defmodule Tackle.CLI.TUI.State do
           conversation: Tackle.CLI.TUI.Conversation.t()
         }
 
+  # The shell deliberately keeps all presentation state in one struct so every
+  # feature module passes the same shape; the extra field only changes the VM's
+  # internal map representation, which is acceptable for this frontend.
+  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct agent_ref: nil,
             agent_monitor: nil,
             scope_ref: nil,
@@ -138,7 +143,7 @@ defmodule Tackle.CLI.TUI.State do
         session_id: snapshot.session_id,
         agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
-        input: Tackle.CLI.Widgets.Input.new(),
+        input: Input.new(),
         history: History.new(),
         models: available_models(opts, snapshot.agent_state),
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
@@ -164,7 +169,7 @@ defmodule Tackle.CLI.TUI.State do
   """
   @spec reset(t(), Scope.t(), Snapshot.t(), reference()) :: t()
   def reset(%__MODULE__{} = state, %Scope{} = scope, %Snapshot{} = snapshot, monitor) do
-    :ok = Tackle.CLI.Widgets.Input.set_value(state.input, "")
+    :ok = Input.set_value(state.input, "")
 
     state = %{
       state
