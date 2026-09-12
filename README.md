@@ -129,6 +129,58 @@ modify or delete anything in the repository, including `.git`, so keep valuable
 work committed or backed up. The launcher is Linux-only because it relies on
 Bubblewrap and Linux namespaces.
 
+### Production jailed package on Linux
+
+`tackle-cli-jail` provides `bin/tackle`, wraps the production Burrito package,
+and runs from any project folder with Nix builds enabled. It is separate from
+the checkout-based `jailed-tackle` development launcher above:
+
+```sh
+# From the Tackle repository root:
+nix build .#tackle-cli-jail --out-link result-jailed
+./result-jailed/bin/tackle --version
+./result-jailed/bin/tackle
+```
+
+The new package requires a multi-user Nix installation with the daemon socket at
+`/nix/var/nix/daemon-socket/socket`, `/etc/nix/nix.conf`, and working Bubblewrap
+user namespaces. It mounts the current directory and `~/.tackle` read-write;
+Burrito extracts into `~/.tackle/burrito/.burrito`. It does not enable
+`TACKLE_DEV`, mount Ketch configuration, or require Mix to launch the CLI.
+`TACKLE_MODEL` and `TACKLE_THINKING` are forwarded; credentials come from
+`~/.tackle/auth.json`. This launcher fixes `TACKLE_HOME` to `~/.tackle`.
+
+**Nix access weakens isolation:** the whole host `/nix` tree is readable, including
+store paths containing source or configuration. The daemon socket is accessible,
+so the agent can request host builds and other daemon operations allowed for your
+user. A trusted Nix user has additional powers; this is not a boundary against a
+hostile agent. Network access is enabled, and project files (including `.git`)
+and Tackle state can be modified or deleted. Other home files, SSH credentials,
+and unrelated host control sockets are not mounted.
+
+Inside the jail, `nix build` and `nix develop --command ...` use the host daemon
+with flakes enabled. The full read-only store mount makes new build outputs and
+their symlink targets visible immediately, avoiding per-path closure enumeration
+and stale/GC'd cached-direnv references. Automatic sourcing of the launch shell's
+or nested cached direnv environments is **not implemented**; use `nix develop`
+explicitly. Host user Nix configuration, private-fetch credentials, and arbitrary
+devshell environment variables are not forwarded. Daemon-side build sandboxing
+continues to follow the host's Nix configuration.
+
+A credential-free host smoke test checks a real offline Nix build inside the
+jail, visibility of its new output, hidden home files, production environment,
+and the packaged CLI's informational commands:
+
+```sh
+nix build .#tackle-cli-jail.tests.smoke --out-link result-jail-test
+./result-jail-test/bin/test-jailed-tackle-cli
+```
+
+Run this on the host, not inside the old development jail or a Nix build sandbox.
+Also open the actual jailed TUI and exit with Ctrl+C to check native startup.
+The jail wrapper is a Nix package, not a second portable single-file executable;
+keep `tackle-cli` for the unjailed, copyable Burrito artifact.
+
 ## Basic harness API
 
 The harness accepts already-loaded adapter and capability modules. General
