@@ -18,6 +18,7 @@ defmodule Tackle.CLI.TUI.Viewport do
   """
 
   alias Tackle.CLI.TUI.{Conversation, Layout, State}
+  alias Tackle.CLI.Widgets.Input
 
   @doc "Creates the empty transcript model for a terminal size."
   @spec new_conversation(integer(), integer()) :: Conversation.t()
@@ -94,13 +95,13 @@ defmodule Tackle.CLI.TUI.Viewport do
   @doc "Recomputes the composer's wrapped row count and emptiness."
   @spec update_draft(State.t()) :: State.t()
   def update_draft(%State{} = state) do
-    value = Tackle.CLI.Widgets.Input.get_value(state.input)
+    value = Input.get_value(state.input)
 
     {width, _height} = state.size
 
     %{
       state
-      | draft_lines: Tackle.CLI.Widgets.Input.rows(state.input, max(width - 2, 1)),
+      | draft_lines: Input.rows(state.input, max(width - 2, 1)),
         draft_empty?: String.trim(value) == ""
     }
   end

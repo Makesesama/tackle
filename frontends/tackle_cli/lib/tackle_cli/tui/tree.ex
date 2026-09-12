@@ -25,6 +25,7 @@ defmodule Tackle.CLI.TUI.Tree do
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Paragraph, Popup}
   alias Tackle.CLI.TUI.{Compaction, Picker, State, Theme, Util, Viewport}
+  alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tree, as: ConversationTree
 
@@ -278,7 +279,7 @@ defmodule Tackle.CLI.TUI.Tree do
     case Map.get(outcome, :draft) do
       %Message{content: content} when is_binary(content) and content != "" ->
         if state.draft_empty? do
-          :ok = Tackle.CLI.Widgets.Input.set_value(state.input, content)
+          :ok = Input.set_value(state.input, content)
           state |> Viewport.update_draft() |> Viewport.relayout()
         else
           %{state | notice: notice(outcome) <> " · draft kept"}

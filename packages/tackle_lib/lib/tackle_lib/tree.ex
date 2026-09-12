@@ -300,9 +300,9 @@ defmodule Tackle.Lib.Tree do
   """
   @spec restore([map()], keyword()) :: {:ok, t()} | {:error, term()}
   def restore(entries, opts \\ []) when is_list(entries) do
-    with {:ok, tree} <- build_restored(entries, %__MODULE__{}, 1),
-         {:ok, tree} <- restore_active(tree, Keyword.get(opts, :active_id)) do
-      {:ok, tree}
+    case build_restored(entries, %__MODULE__{}, 1) do
+      {:ok, tree} -> restore_active(tree, Keyword.get(opts, :active_id))
+      {:error, _reason} = error -> error
     end
   end
 

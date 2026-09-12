@@ -177,16 +177,18 @@ defmodule Tackle.Lib do
         {:error, :tree_disabled}
 
       %Tree{} = tree ->
-        cond do
-          active?(state) ->
-            {:error, :turn_in_progress}
+        navigate_tree(state, tree, target, opts)
+    end
+  end
 
-          true ->
-            with {:ok, outcome} <- Navigator.navigate(tree, target, opts),
-                 :ok <- commit_navigation(state, outcome.change, opts) do
-              {:ok, install_navigation(state, outcome), outcome}
-            end
-        end
+  defp navigate_tree(%State{} = state, tree, target, opts) do
+    if active?(state) do
+      {:error, :turn_in_progress}
+    else
+      with {:ok, outcome} <- Navigator.navigate(tree, target, opts),
+           :ok <- commit_navigation(state, outcome.change, opts) do
+        {:ok, install_navigation(state, outcome), outcome}
+      end
     end
   end
 

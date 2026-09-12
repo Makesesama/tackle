@@ -14,6 +14,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   alias ExRatatui.Command
   alias Tackle.CLI.TUI.{Compaction, State, Tree, Util, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
+  alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.{ContextUsage, Event, Usage}
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Session.Snapshot
@@ -486,8 +487,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   def handle(_message, state), do: {:noreply, state, render?: false}
 
   defp submit_failed(state, operation, reason) do
-    if Tackle.CLI.Widgets.Input.get_value(state.input) == "" do
-      :ok = Tackle.CLI.Widgets.Input.set_value(state.input, operation.raw_draft)
+    if Input.get_value(state.input) == "" do
+      :ok = Input.set_value(state.input, operation.raw_draft)
     end
 
     state = %{
