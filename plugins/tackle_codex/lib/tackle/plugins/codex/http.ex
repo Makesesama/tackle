@@ -29,6 +29,8 @@ defmodule Tackle.Plugins.Codex.HTTP do
   @spec stream(keyword(), term(), stream_callback(), keyword()) ::
           {:ok, Req.Response.t() | map()} | {:error, term()}
   def stream(request_options, initial_acc, callback, opts \\ []) do
+    callback = preserve_error_body(callback)
+
     result =
       case Keyword.fetch(opts, :stream) do
         {:ok, stream_fun} ->
@@ -38,7 +40,7 @@ defmodule Tackle.Plugins.Codex.HTTP do
           stream_request(request_options, initial_acc, callback, opts)
       end
 
-    normalize_stream_result(result)
+    normalize_stream_result(result, initial_acc)
   rescue
     exception -> {:error, {:request_failed, Exception.message(exception)}}
   catch
@@ -76,20 +78,55 @@ defmodule Tackle.Plugins.Codex.HTTP do
     request_fun.(Keyword.put(request_options, :into, into))
   end
 
-  defp normalize_stream_result({:ok, %Req.Response{} = response, acc}),
-    do: {:ok, %{response | body: acc}}
+  defp preserve_error_body(callback) do
+    fn chunk, response, acc ->
+      case response do
+        %{status: status} when is_integer(status) and status not in 200..299 ->
+          {:cont, append_error_body(acc, chunk)}
 
-  defp normalize_stream_result({:ok, %{status: _status} = response, acc}),
-    do: {:ok, Map.put(response, :body, acc)}
+        _response ->
+          callback.(chunk, response, acc)
+      end
+    end
+  end
 
-  defp normalize_stream_result({:ok, %Req.Response{} = response}), do: {:ok, response}
-  defp normalize_stream_result({:ok, %{status: _status} = response}), do: {:ok, response}
+  defp append_error_body({:http_error_body, body}, chunk),
+    do: {:http_error_body, String.slice(body <> chunk, 0, 4_096)}
 
-  defp normalize_stream_result({:error, reason, _response, _acc}),
+  defp append_error_body(_acc, chunk),
+    do: {:http_error_body, String.slice(chunk, 0, 4_096)}
+
+  defp normalize_stream_result({:ok, %Req.Response{} = response, acc}, initial_acc),
+    do: {:ok, %{response | body: stream_body(response.status, acc, initial_acc)}}
+
+  defp normalize_stream_result({:ok, %{status: status} = response, acc}, initial_acc),
+    do: {:ok, Map.put(response, :body, stream_body(status, acc, initial_acc))}
+
+  defp normalize_stream_result({:ok, %Req.Response{} = response}, initial_acc),
+    do: {:ok, %{response | body: stream_body(response.status, response.body, initial_acc)}}
+
+  defp normalize_stream_result(
+         {:ok, %{status: status, body: body} = response},
+         initial_acc
+       ),
+       do: {:ok, Map.put(response, :body, stream_body(status, body, initial_acc))}
+
+  defp normalize_stream_result({:error, reason, _response, _acc}, _initial_acc),
     do: {:error, {:request_failed, reason}}
 
-  defp normalize_stream_result({:error, reason}), do: {:error, {:request_failed, reason}}
-  defp normalize_stream_result(other), do: {:error, {:invalid_http_response, other}}
+  defp normalize_stream_result({:error, reason}, _initial_acc),
+    do: {:error, {:request_failed, reason}}
+
+  defp normalize_stream_result(other, _initial_acc),
+    do: {:error, {:invalid_http_response, other}}
+
+  defp stream_body(_status, {:http_error_body, body}, _initial_acc), do: body
+
+  defp stream_body(status, body, initial_acc)
+       when is_integer(status) and status not in 200..299 and body == initial_acc,
+       do: ""
+
+  defp stream_body(_status, body, _initial_acc), do: body
 
   @spec decode_json(term()) :: {:ok, map()} | {:error, term()}
   def decode_json(%{} = body), do: {:ok, body}

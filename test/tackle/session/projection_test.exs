@@ -1,6 +1,7 @@
 defmodule Tackle.Session.ProjectionTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.Message
   alias Tackle.Session.Codec
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
@@ -124,5 +125,80 @@ defmodule Tackle.Session.ProjectionTest do
     assert metadata.message_count == 0
     assert metadata.model_message_count == 0
     assert metadata.compaction_count == 0
+  end
+
+  test "a durable tool result resolves its pending tool start" do
+    projection =
+      Projection.new(header())
+      |> Projection.apply_commit(commit(1, [turn_event("turn-1")]))
+      |> Projection.apply_commit(commit(2, [tool_start_event("call-1")]))
+      |> Projection.apply_commit(commit(3, [tool_result_event("call-1")]))
+
+    assert Projection.uncertain_tools(projection) == []
+    assert projection.turns["turn-1"].pending_tools == []
+  end
+
+  test "only the matching tool start is resolved by a tool result" do
+    projection =
+      Projection.new(header())
+      |> Projection.apply_commit(commit(1, [turn_event("turn-1")]))
+      |> Projection.apply_commit(
+        commit(2, [tool_start_event("call-1"), tool_start_event("call-2")])
+      )
+      |> Projection.apply_commit(commit(3, [tool_result_event("call-1")]))
+
+    assert [%{tool_call_id: "call-2", name: "bash", started_at: "2026-01-01T00:00:00Z"}] =
+             Projection.uncertain_tools(projection)
+  end
+
+  test "a resolved tool start stays resolved once the turn settles" do
+    projection =
+      Projection.new(header())
+      |> Projection.apply_commit(commit(1, [turn_event("turn-1")]))
+      |> Projection.apply_commit(commit(2, [tool_start_event("call-1")]))
+      |> Projection.apply_commit(commit(3, [tool_result_event("call-1")]))
+      |> Projection.apply_commit(commit(4, [turn_settled_event("turn-1")]))
+
+    assert Projection.uncertain_tools(projection) == []
+  end
+
+  test "an unresolved tool start stays uncertain after the turn settles" do
+    projection =
+      Projection.new(header())
+      |> Projection.apply_commit(commit(1, [turn_event("turn-1")]))
+      |> Projection.apply_commit(commit(2, [tool_start_event("call-1")]))
+      |> Projection.apply_commit(commit(3, [turn_settled_event("turn-1")]))
+
+    assert [%{tool_call_id: "call-1"}] = Projection.uncertain_tools(projection)
+  end
+
+  defp turn_event(turn_id) do
+    Log.event("turn.started", %{
+      "turn_id" => turn_id,
+      "operation" => "run",
+      "input" => "prompt",
+      "started_at" => "2026-01-01T00:00:00Z"
+    })
+  end
+
+  defp turn_settled_event(turn_id) do
+    Log.event("turn.completed", %{
+      "turn_id" => turn_id,
+      "status" => "completed",
+      "ended_at" => "2026-01-01T00:00:04Z"
+    })
+  end
+
+  defp tool_start_event(tool_call_id) do
+    Log.event("tool.execution_started", %{
+      "tool_call_id" => tool_call_id,
+      "name" => "bash",
+      "arguments" => %{},
+      "started_at" => "2026-01-01T00:00:00Z"
+    })
+  end
+
+  defp tool_result_event(tool_call_id) do
+    message_event(Message.tool_result(tool_call_id, "bash", "output"))
   end
 end

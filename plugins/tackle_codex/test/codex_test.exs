@@ -210,6 +210,65 @@ defmodule Tackle.Plugins.CodexTest do
     assert parameters["required"] == ["query"]
   end
 
+  test "closes dangling tool calls left by a cancelled turn", %{store: store} do
+    test_pid = self()
+
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(test_pid, {:request_input, body["input"]})
+
+      streaming_response(options, [
+        sse(%{
+          "type" => "response.completed",
+          "response" => %{
+            "status" => "completed",
+            "output" => [
+              %{
+                "type" => "message",
+                "content" => [%{"type" => "output_text", "text" => "continued"}]
+              }
+            ]
+          }
+        })
+      ])
+    end
+
+    messages = [
+      %{role: :user, content: "run both"},
+      %{
+        role: :assistant,
+        content: nil,
+        tool_calls: [
+          %{id: "call-finished", name: "search", arguments: %{"query" => "one"}},
+          %{id: "call-cancelled", name: "search", arguments: %{"query" => "two"}}
+        ]
+      },
+      %{
+        role: :tool,
+        tool_call_id: "call-finished",
+        name: "search",
+        content: "finished"
+      },
+      %{role: :user, content: "continue"}
+    ]
+
+    opts = base_opts(store, request) |> Keyword.put(:messages, messages)
+
+    assert {:ok, %{data: %{"content" => "continued"}}} = Codex.generate(nil, opts)
+    assert_receive {:request_input, input}
+
+    assert Enum.count(input, &(&1["type"] == "function_call_output")) == 2
+
+    assert Enum.any?(
+             input,
+             &(&1 == %{
+                 "type" => "function_call_output",
+                 "call_id" => "call-cancelled",
+                 "output" => "aborted"
+               })
+           )
+  end
+
   test "streams text, reasoning, and tool argument deltas across chunk boundaries", %{
     store: store
   } do
@@ -701,6 +760,28 @@ defmodule Tackle.Plugins.CodexTest do
              Codex.generate(nil, base_opts(store, fn _options -> flunk("unexpected request") end))
   end
 
+  test "preserves a streamed HTTP error body", %{store: store} do
+    body = JSON.encode!(%{"detail" => "No tool output found for function call call-1."})
+
+    request = fn options ->
+      streaming_response(options, split_binary(body, [5, 17]), 400)
+    end
+
+    assert {:error, {:http_error, 400, ^body}} =
+             Codex.generate(nil, base_opts(store, request))
+  end
+
+  test "does not expose the stream accumulator for a bodyless HTTP error", %{store: store} do
+    stream = fn _options, initial_acc, _callback ->
+      {:ok, %Req.Response{status: 400, body: nil}, initial_acc}
+    end
+
+    opts = base_opts(store, fn _options -> flunk("unexpected legacy request") end)
+    opts = Keyword.put(opts, :stream, stream)
+
+    assert {:error, {:http_error, 400, ""}} = Codex.generate(nil, opts)
+  end
+
   test "classifies a wire context overflow as a provider-neutral error", %{store: store} do
     body =
       JSON.encode!(%{
@@ -837,9 +918,9 @@ defmodule Tackle.Plugins.CodexTest do
     }
   end
 
-  defp streaming_response(options, chunks) do
+  defp streaming_response(options, chunks, status \\ 200) do
     into = Keyword.fetch!(options, :into)
-    initial = {%Req.Request{}, %Req.Response{status: 200, headers: %{}, body: ""}}
+    initial = {%Req.Request{}, %Req.Response{status: status, headers: %{}, body: ""}}
 
     {_request, response} =
       Enum.reduce_while(chunks, initial, fn chunk, pair ->

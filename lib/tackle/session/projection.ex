@@ -145,9 +145,10 @@ defmodule Tackle.Session.Projection do
   @doc """
   Returns tool executions started without a durable result.
 
-  A tool start without a later tool message means the tool may have produced an
-  external effect whose outcome is uncertain. Automatic continuation is
-  prohibited while such a tool is unresolved.
+  A tool result message resolves the matching `tool.execution_started`, so
+  resolved executions are excluded. A start without a later tool message means
+  the tool may have produced an external effect whose outcome is uncertain.
+  Automatic continuation is prohibited while such a tool is unresolved.
   """
   @spec uncertain_tools(t()) :: [map()]
   def uncertain_tools(%__MODULE__{turns: turns}) do
@@ -336,10 +337,9 @@ defmodule Tackle.Session.Projection do
     parent_id = parent_id(data, projection.tree.active_id)
     message = decode_message(Map.fetch!(data, "message"))
 
-    case Tree.append_message(projection.tree, message, parent_id: parent_id) do
-      {:ok, tree, _entry} -> %{projection | tree: tree}
-      {:error, reason} -> raise ProjectionError, reason: reason
-    end
+    projection
+    |> resolve_pending_tool(message)
+    |> append_message(message, parent_id)
   end
 
   # Compaction replaces only the active branch's model surface. The canonical
@@ -382,6 +382,25 @@ defmodule Tackle.Session.Projection do
   end
 
   defp apply_event(_event, projection), do: projection
+
+  defp append_message(%__MODULE__{tree: tree} = projection, message, parent_id) do
+    case Tree.append_message(tree, message, parent_id: parent_id) do
+      {:ok, tree, _entry} -> %{projection | tree: tree}
+      {:error, reason} -> raise ProjectionError, reason: reason
+    end
+  end
+
+  # A durable tool result settles the matching `tool.execution_started`: once the
+  # outcome is recorded the execution is no longer uncertain, so it must not gate
+  # recovery. A start without a result stays pending for the whole session.
+  defp resolve_pending_tool(projection, %Message{role: :tool, tool_call_id: id})
+       when is_binary(id) do
+    update_active_turn(projection, fn turn ->
+      %{turn | pending_tools: Enum.reject(turn.pending_tools, &(&1.tool_call_id == id))}
+    end)
+  end
+
+  defp resolve_pending_tool(projection, _message), do: projection
 
   # The archive and the active model surface are both derived projections of the
   # tree, so a single fold implementation serves live appends and replay.

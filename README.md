@@ -76,12 +76,14 @@ This repository is a starting point, not a finished CLI:
   first-party OpenAI Codex adapter, including ChatGPT OAuth protocol helpers,
   token refresh, Responses SSE transport, and provider-neutral translation.
 - [`frontends/tackle_cli`](frontends/tackle_cli/README.md) contains the default
-  Optimus/ex_ratatui CLI entrypoint. It ships with the first-party Codex plugin
-  as a distribution dependency, configures it as an available harness adapter,
-  and relies on the root harness for credentials, sessions, and turn execution.
-  Its footer reports current context pressure plus aggregate input/output,
-  preceding-prompt cache reuse, and cost when the selected adapter exposes them.
-- Extension project loading and Burrito packaging are still planned work.
+  Optimus/ex_ratatui CLI entrypoint. Its Burrito release produces a fixed
+  distribution that bundles the first-party Codex and DeepSeek plugins; runtime
+  plugin discovery remains deferred. The frontend relies on the root harness
+  for credentials, sessions, and turn execution. Its footer reports current
+  context pressure plus aggregate input/output, preceding-prompt cache reuse,
+  and cost when the selected adapter exposes them.
+- General extension project loading remains planned work; Burrito packaging is
+  now configured in the CLI frontend.
 
 The root harness owns OTP application `:tackle` and namespace `Tackle`. The
 reusable library owns OTP application `:tackle_lib` and namespace `Tackle.Lib`;
@@ -402,7 +404,8 @@ deferred.
    library, with explicit extension boundaries.
 2. Implement the OpenAI Codex adapter through those boundaries and demonstrate
    that a user-provided adapter can be substituted without editing the core.
-3. Package with Burrito and verify the user-provided plugin workflow.
+3. Package the fixed first-party distribution with Burrito; then design and
+   verify the user-provided plugin workflow separately.
 4. Add optional capabilities, including MCP, as separate plugins later.
 
 Avoid a plugin marketplace, speculative frameworks, or additional frontends
@@ -441,6 +444,8 @@ mix format --check-formatted
 
 These are separate Mix projects, not an umbrella: root checks do not validate
 all packages. Dependency fetching needs network access and writable Mix/Hex
-caches. No CLI installation or Burrito build command is available yet.
+caches. No dynamic plugin installation command is available yet. Burrito build
+commands and native-library requirements are documented in
+[`frontends/tackle_cli/README.md`](frontends/tackle_cli/README.md).
 
 See [AGENTS.md](AGENTS.md) for contributor and coding-agent guidance.

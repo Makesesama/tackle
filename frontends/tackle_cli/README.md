@@ -17,6 +17,65 @@ The CLI may select a canonical model reference with `--model` and a reasoning
 level with `--thinking`, but it does not load or select adapter modules directly.
 Adapter availability is a harness and distribution concern.
 
+The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
+are compiled into it. It does not discover or load third-party plugins at
+runtime. That keeps packaging separate from the future plugin-loading design.
+
+## Single-file release
+
+[Burrito](https://github.com/burrito-elixir/burrito) wraps this frontend and its
+OTP release into one executable. Build the distributable from the repository
+root with Nix; the target architecture is selected from the build host:
+
+```sh
+nix build .#tackle-cli
+./result/bin/tackle --version
+```
+
+The release has two Rust NIFs: ExRatatui and Tackle's native widgets. The Nix
+package builds both from their locked sources with the target-specific Rust and
+C toolchains, then assembles the release with the exact Erlang/OTP patch used by
+Burrito's precompiled ERTS. The resulting executable is `result/bin/tackle`.
+
+Burrito's Linux payload boots on musl, so neither a glibc NIF nor a release
+assembled with a different OTP patch can run there. `nix/packages/burrito-runtime.nix`
+pins the compiler and the [BEAM Machine](https://github.com/elixir-lang/beam-machine)
+ERTS together. Do not bypass that pin by building under a newer development
+shell and substituting an older `TACKLE_ERTS_VERSION`: OTP applications such as
+`:crypto` can change version between patch releases, leaving Burrito's musl NIF
+beside the assembled release's glibc NIF. The wrapper then boots on musl but
+loads the glibc library and crashes.
+
+The package's install check starts the real TUI under a pseudo-terminal in
+addition to running informational commands. This exercises `:crypto` and both
+Rust NIFs, which `--version`, `--help`, and `models` do not all load. When
+updating the runtime pin, update the fixed ERTS hashes and keep the compiler and
+BEAM Machine artifact on the same exact OTP patch.
+
+Direct `mix release` remains useful while developing release configuration, but
+it is not the distributable build: it uses the active shell's OTP and network
+ERTS resolution. On Linux it also requires the musl variables supplied by the
+Nix development shell. `Tackle.CLI.Release.verify_linux_nifs/1`, wired between
+`:assemble` and `&Burrito.wrap/1`, rejects glibc Rust NIFs and the shared
+`libgcc_s.so.1` unwinder before wrapping.
+
+Smoke-test the non-interactive path before publishing:
+
+```sh
+./result/bin/tackle --version
+./result/bin/tackle --help
+./result/bin/tackle models
+# Open the TUI as well; Ctrl+C exits after startup.
+./result/bin/tackle
+```
+
+`--version`, `--help`, and `models` do not exercise every OTP NIF used by the
+TUI, so they are not sufficient on their own.
+
+The binary extracts its ordinary OTP release into Burrito's per-user cache on
+first run; use `./result/bin/tackle maintenance uninstall` when testing a
+rebuilt binary with the same application version.
+
 ## Usage during development
 
 From the repository root, fetch the frontend dependencies once and then use the

@@ -83,6 +83,7 @@
         in
         {
           default = package;
+          tackle-cli = package;
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           jailed-tackle = mkJailedTackle { inherit pkgs system; };
@@ -142,7 +143,6 @@
         {
           # Development shell with all tools
           default = pkgs.callPackage ./nix/shells/shell.nix {
-            package = self.packages.${system}.default;
             inherit preCommitCheck commonShellHook jailedTackle;
           };
         }

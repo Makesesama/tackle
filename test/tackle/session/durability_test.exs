@@ -3,6 +3,7 @@ defmodule Tackle.Session.DurabilityTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Lib.Message
   alias Tackle.Runtime.ID
   alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Catalog
@@ -107,6 +108,27 @@ defmodule Tackle.Session.DurabilityTest do
              "second",
              "second answer"
            ]
+  end
+
+  test "an interrupted turn whose tool results are durable reports no uncertain tools", ctx do
+    session_id = ID.generate()
+
+    {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
+    {:ok, turn_id} = Journal.begin_turn(journal, :run, "interrupted")
+    assert :ok = Journal.tool_started(journal, %{id: "call-1", name: "bash", arguments: %{}})
+    assert :ok = Journal.append_message(journal, Message.tool_result("call-1", "bash", "output"))
+    :ok = GenServer.stop(journal)
+
+    scope =
+      start_durable_scope(
+        home: ctx.home,
+        session: [session_id: session_id],
+        root: [content: "recovered answer"]
+      )
+
+    assert {:ok, snapshot} = Tackle.snapshot(scope.root_agent_ref)
+
+    assert snapshot.recovery == %{turn_id: turn_id, operation: "run", uncertain_tools: []}
   end
 
   test "requires explicit recovery for an interrupted turn", ctx do
