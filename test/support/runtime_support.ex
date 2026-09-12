@@ -137,7 +137,7 @@ defmodule Tackle.Test.Adapter do
     {:ok,
      %{
        data: %{"content" => nil, "tool_calls" => calls},
-       usage: nil,
+       usage: Keyword.get(opts, :usage),
        model: Keyword.fetch!(opts, :model),
        provider: adapter_id()
      }}
@@ -147,7 +147,7 @@ defmodule Tackle.Test.Adapter do
     {:ok,
      %{
        data: %{"content" => content, "tool_calls" => []},
-       usage: nil,
+       usage: Keyword.get(opts, :usage),
        model: Keyword.fetch!(opts, :model),
        provider: adapter_id()
      }}

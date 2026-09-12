@@ -159,6 +159,16 @@ defmodule Tackle do
   @spec inspect_session(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def inspect_session(session_id, opts \\ []), do: Store.inspect_session(session_id, opts)
 
+  @doc "Returns chronological settled token usage for one durable session."
+  @spec session_usage_timeline(String.t(), keyword()) ::
+          {:ok, Tackle.Session.UsageTimeline.t()} | {:error, term()}
+  def session_usage_timeline(session_id, opts \\ []), do: Store.usage_timeline(session_id, opts)
+
+  @doc "Returns chronological settled token usage across every durable session."
+  @spec all_usage_timeline(keyword()) ::
+          {:ok, Tackle.Session.UsageTimeline.t()} | {:error, term()}
+  def all_usage_timeline(opts \\ []), do: Store.all_usage_timeline(opts)
+
   @doc "Lists durable sessions with stable cursor pagination."
   @spec list_sessions(map() | keyword()) :: {:ok, map()} | {:error, term()}
   def list_sessions(filters \\ %{}), do: Store.list(filters)

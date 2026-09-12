@@ -12,7 +12,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   """
 
   alias ExRatatui.Command
-  alias Tackle.CLI.TUI.{Compaction, State, Tree, Util, Viewport}
+  alias Tackle.CLI.TUI.{Compaction, State, Tree, UsageChart, Util, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.{ContextUsage, Event, Usage}
@@ -167,6 +167,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   def handle({:tui_operation_result, _ref, _kind, _result}, state),
     do: {:noreply, state, render?: false}
+
+  def handle({:tui_usage_timeline_result, ref, mode, session_id, result}, state),
+    do: UsageChart.apply_result(state, ref, mode, session_id, result)
 
   # Manual compaction broadcasts its progress and completion while the idle
   # session performs the summarization; the operation result above remains the
@@ -432,7 +435,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
       )
       when outcome in [:ok, :error, :cancelled] do
-    state = Compaction.settle(state, agent_state)
+    state = state |> Compaction.settle(agent_state) |> UsageChart.invalidate_cache()
     error = if outcome == :error, do: agent_state.error || "turn failed", else: nil
 
     state = %{

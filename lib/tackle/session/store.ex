@@ -15,6 +15,7 @@ defmodule Tackle.Session.Store do
   alias Tackle.Session.Projection
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
+  alias Tackle.Session.UsageTimeline
 
   @doc """
   Reads and projects a session without creating an agent scope.
@@ -40,6 +41,66 @@ defmodule Tackle.Session.Store do
          tree: Projection.tree_summary(projection),
          uncertain_tools: Projection.uncertain_tools(projection)
        }}
+    end
+  end
+
+  @doc "Returns chronological settled token usage for one durable session."
+  @spec usage_timeline(String.t(), keyword()) ::
+          {:ok, UsageTimeline.t()} | {:error, term()}
+  def usage_timeline(session_id, opts \\ []) do
+    with {:ok, projection} <- usage_projection(session_id, reader_opts(opts)) do
+      {:ok, UsageTimeline.from_projection(projection, opts)}
+    end
+  end
+
+  @doc """
+  Returns chronological settled token usage across every durable session.
+
+  Session journals are replayed concurrently with a bounded worker count. Pass
+  `:usage_concurrency` to override the default, which is capped at eight.
+  `:since` and `:until` accept UTC-compatible `DateTime` bounds for the returned
+  samples.
+  """
+  @spec all_usage_timeline(keyword()) :: {:ok, UsageTimeline.t()} | {:error, term()}
+  def all_usage_timeline(opts \\ []) do
+    reader_opts = reader_opts(opts)
+
+    with {:ok, session_ids} <- Storage.list_session_ids(reader_opts) do
+      results =
+        Task.async_stream(
+          session_ids,
+          &Reader.projection(&1, reader_opts),
+          ordered: true,
+          max_concurrency: usage_concurrency(opts),
+          timeout: :infinity
+        )
+
+      {timelines, skipped} =
+        session_ids
+        |> Enum.zip(results)
+        |> Enum.reduce({[], []}, fn
+          {_session_id, {:ok, {:ok, projection}}}, {timelines, skipped} ->
+            {[UsageTimeline.from_projection(projection, opts) | timelines], skipped}
+
+          {session_id, {:ok, {:error, reason}}}, {timelines, skipped} ->
+            {timelines, [%{session_id: session_id, reason: reason} | skipped]}
+
+          {session_id, {:exit, reason}}, {timelines, skipped} ->
+            {timelines, [%{session_id: session_id, reason: {:reader_exit, reason}} | skipped]}
+        end)
+
+      {:ok, UsageTimeline.merge(Enum.reverse(timelines), Enum.reverse(skipped))}
+    end
+  end
+
+  defp reader_opts(opts), do: Keyword.drop(opts, [:usage_concurrency, :since, :until])
+
+  defp usage_concurrency(opts) do
+    default = min(max(System.schedulers_online(), 1), 8)
+
+    case Keyword.get(opts, :usage_concurrency, default) do
+      concurrency when is_integer(concurrency) and concurrency > 0 -> concurrency
+      _invalid -> default
     end
   end
 
@@ -109,6 +170,13 @@ defmodule Tackle.Session.Store do
 
       {:error, :not_found} ->
         trash(session_id, opts)
+    end
+  end
+
+  defp usage_projection(session_id, opts) do
+    case Journal.whereis(session_id) do
+      {:ok, journal} -> Journal.projection(journal)
+      {:error, :not_found} -> Reader.projection(session_id, opts)
     end
   end
 

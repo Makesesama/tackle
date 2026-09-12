@@ -16,7 +16,7 @@ defmodule Tackle.CLI.TUITest do
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.ID
   alias Tackle.Runtime.Scope
-  alias Tackle.Session.Snapshot
+  alias Tackle.Session.{Snapshot, UsageTimeline}
 
   defmodule SessionStub do
     use GenServer
@@ -165,6 +165,11 @@ defmodule Tackle.CLI.TUITest do
          clipboard_writer: fn content ->
            send(test_pid, {:copied, content})
            :ok
+         end,
+         usage_timeline_loader: fn mode, session_id ->
+           send(test_pid, {:usage_timeline_requested, mode, session_id})
+           scope = if mode == :current, do: {:session, session_id}, else: :all
+           {:ok, %UsageTimeline{scope: scope}}
          end,
          name: nil,
          test_mode: {80, 24}}
@@ -655,6 +660,48 @@ defmodule Tackle.CLI.TUITest do
     end)
 
     refute_receive {:reconfigured, _}, 50
+  end
+
+  # -- usage chart ----------------------------------------------------------
+
+  test "F6 opens the current usage chart and switches to all sessions", %{tui: tui} do
+    session_id = state(tui).session_id
+
+    inject_key(tui, "f6")
+    assert_receive {:usage_timeline_requested, :current, ^session_id}
+
+    current = await_state(tui, &match?({:usage_chart, %{status: :empty}}, &1.overlay))
+    assert popup_title(current) =~ "Current"
+    assert popup_content(current).text =~ "No settled token usage"
+    assert status_text(current) =~ "Usage · Current"
+    assert hints_text(current) =~ "Tab/←/→ mode"
+
+    inject_key(tui, "tab")
+    assert_receive {:usage_timeline_requested, :all, ^session_id}
+
+    all =
+      await_state(tui, fn state ->
+        match?({:usage_chart, %{mode: :all, status: :empty}}, state.overlay)
+      end)
+
+    assert popup_title(all) =~ "All sessions"
+
+    inject_key(tui, "r")
+    assert_receive {:usage_timeline_requested, :all, ^session_id}
+    await_state(tui, &match?({:usage_chart, %{mode: :all, status: :empty}}, &1.overlay))
+
+    inject_key(tui, "tab")
+    refute_receive {:usage_timeline_requested, :current, ^session_id}, 50
+
+    cached =
+      await_state(tui, fn state ->
+        match?({:usage_chart, %{mode: :current, status: :empty}}, state.overlay)
+      end)
+
+    assert popup_title(cached) =~ "Current"
+
+    inject_key(tui, "esc")
+    assert state(tui).overlay == nil
   end
 
   # -- compaction ------------------------------------------------------------

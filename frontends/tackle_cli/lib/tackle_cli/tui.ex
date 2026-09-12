@@ -18,6 +18,8 @@ defmodule Tackle.CLI.TUI do
       There is no popup, the composer stops accepting text, and the arrows move
       a highlighted entry so it can be copied (`y`, `a`) or inspected (`Enter`).
       Esc or `F4` returns to the prompt.
+    * **Usage** (`F6`) is a modal chronological chart over settled durable
+      token usage, switchable between the current session and all sessions.
 
   The TUI owns presentation and input state while the root harness continues to
   own the scope and agent loop. It addresses the root agent through a
@@ -50,6 +52,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Browser` | transcript focus, selection, and copy |
   | `Tackle.CLI.TUI.Menu` | model, reasoning, and settings pickers |
   | `Tackle.CLI.TUI.Tree` | the `/tree` conversation picker and navigation |
+  | `Tackle.CLI.TUI.UsageChart` | durable usage loading, bucketing, and chart popup |
   | `Tackle.CLI.TUI.Search` | transcript search |
   | `Tackle.CLI.TUI.Inspector` | the scrollable tool-output inspector |
   | `Tackle.CLI.TUI.Session` | root scope ownership and teardown |
@@ -76,6 +79,7 @@ defmodule Tackle.CLI.TUI do
     Session,
     State,
     Tree,
+    UsageChart,
     View,
     Viewport
   }
@@ -230,6 +234,9 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_overlay(key, %{overlay: {:search, _}} = state),
     do: Search.handle(Keybinds.search(key), state)
 
+  defp dispatch_overlay(key, %{overlay: {:usage_chart, _}} = state),
+    do: UsageChart.handle(Keybinds.usage_chart(key), state)
+
   # Behaviour for each intent the binding table can return. Keeping one clause
   # per intent means an addition to `Keybinds` fails loudly here until it is
   # given behaviour, instead of silently doing nothing.
@@ -241,6 +248,7 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base(:new_session, _key, state), do: Session.request_new(state)
   defp dispatch_base(:compact, _key, state), do: Compaction.request(state)
   defp dispatch_base(:tree, _key, state), do: Tree.open(state)
+  defp dispatch_base(:usage_chart, _key, state), do: UsageChart.open(state)
   defp dispatch_base(:search, _key, state), do: Search.open(state)
   defp dispatch_base(:toggle_thinking, _key, state), do: Viewport.toggle_thinking(state)
 

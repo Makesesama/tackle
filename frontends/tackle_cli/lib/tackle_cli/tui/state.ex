@@ -34,7 +34,7 @@ defmodule Tackle.CLI.TUI.State do
   alias Tackle.Lib.{ModelInfo, Usage}
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Runtime.Scope
-  alias Tackle.Session.Snapshot
+  alias Tackle.Session.{Snapshot, UsageTimeline}
 
   @typedoc "An open surface above the composer, or `nil` when the shell is plain."
   @type overlay ::
@@ -43,6 +43,7 @@ defmodule Tackle.CLI.TUI.State do
           | {:tree, map()}
           | {:inspector, map()}
           | {:search, map()}
+          | {:usage_chart, map()}
           | {:confirm_quit, map()}
           | {:confirm_new_session, map()}
 
@@ -62,6 +63,9 @@ defmodule Tackle.CLI.TUI.State do
           history: History.t(),
           models: [String.t()],
           clipboard_writer: (String.t() -> :ok | {:error, term()}),
+          usage_timeline_loader: (:current | :all, String.t() | nil ->
+                                    {:ok, term()} | {:error, term()}),
+          usage_timeline_cache: map(),
           overlay: overlay(),
           focus: focus(),
           selected_entry: String.t() | nil,
@@ -100,6 +104,8 @@ defmodule Tackle.CLI.TUI.State do
             history: %History{},
             models: [],
             clipboard_writer: &Clipboard.copy_local/1,
+            usage_timeline_loader: &__MODULE__.default_usage_timeline_loader/2,
+            usage_timeline_cache: %{},
             overlay: nil,
             focus: :composer,
             selected_entry: nil,
@@ -147,6 +153,8 @@ defmodule Tackle.CLI.TUI.State do
         history: History.new(),
         models: available_models(opts, snapshot.agent_state),
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
+        usage_timeline_loader:
+          Keyword.get(opts, :usage_timeline_loader, &__MODULE__.default_usage_timeline_loader/2),
         stream: %Stream{coalesce?: is_nil(Keyword.get(opts, :test_mode))},
         size: {width, height},
         conversation: Viewport.new_conversation(width, height)
@@ -204,6 +212,18 @@ defmodule Tackle.CLI.TUI.State do
     state = %{state | conversation: Viewport.new_conversation(width, height)}
     state |> Compaction.restore() |> Viewport.refresh()
   end
+
+  @doc false
+  @spec default_usage_timeline_loader(atom(), String.t() | nil) ::
+          {:ok, term()} | {:error, term()}
+  def default_usage_timeline_loader(:current, session_id) when is_binary(session_id),
+    do: Tackle.session_usage_timeline(session_id)
+
+  def default_usage_timeline_loader(:current, session_id),
+    do: {:error, {:invalid_session_id, session_id}}
+
+  def default_usage_timeline_loader(:all, _session_id),
+    do: Tackle.all_usage_timeline(since: UsageTimeline.calendar_week_start())
 
   @doc "Returns the selected model reference, or nil when the state names none."
   @spec model_ref(AgentState.t() | nil) :: String.t() | nil
