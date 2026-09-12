@@ -59,6 +59,15 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert output =~ "Error: Could not find oldText"
     refute output =~ "applied"
     refute output =~ "✓"
+    refute output =~ "Replacement"
+    refute output =~ "1 - a"
+    refute output =~ "1 + b"
+
+    details = text(MessageView.inspect_items(failed, 100))
+    assert details =~ "Error: Could not find oldText"
+    assert details =~ "oldText"
+    refute details =~ "Replacement preview"
+    assert MessageView.search_text(failed) =~ "newText"
   end
 
   test "multiple calls of the same tool keep distinct stable live and settled ids" do
@@ -168,7 +177,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
   end
 
   test "wrapped tool output keeps its gutter and bounded headers signal truncation" do
-    [entry] = settled([Message.tool_result("r", "read", "abcdefghijklmnop")])
+    [entry] = settled([Message.tool_result("r", "custom", "abcdefghijklmnop")])
     rows = ToolView.render(entry, 12) |> Enum.flat_map(fn {widget, _} -> widget.text end)
     assert Enum.map(tl(rows), &plain/1) == ["    abcdefgh", "    ijklmnop"]
 
@@ -235,7 +244,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       assert Enum.map_join(emphasized, & &1.symbol) == token
       assert Enum.all?(line -- emphasized, &(&1.bg == :reset))
       assert Enum.find(line, &(&1.symbol == "l")).fg == :reset
-      assert Enum.find(line, &(&1.col == 6)).fg == {:indexed, 240}
+      assert Enum.find(line, &(&1.col == 6)).fg == {:indexed, 243}
     end
   end
 
@@ -276,8 +285,10 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
   test "tool cards use a borderless target-first header and indented muted output" do
     [entry] =
       settled([
-        Message.assistant(tool_calls: [%{id: "r", name: "read", arguments: %{"path" => "a.ex"}}]),
-        Message.tool_result("r", "read", "line one")
+        Message.assistant(
+          tool_calls: [%{id: "r", name: "bash", arguments: %{"command" => "cat a.ex"}}]
+        ),
+        Message.tool_result("r", "bash", "line one")
       ])
 
     items = ToolView.render(entry, 40)
@@ -295,12 +306,59 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert Enum.all?(header ++ body, &(&1.bg == :reset))
     assert Enum.find(header, &(&1.symbol == "a")).modifiers == [:bold]
     assert Enum.find(body, &(&1.symbol == "l")).col == 4
-    assert Enum.find(body, &(&1.symbol == "l")).fg == {:indexed, 245}
+    assert Enum.find(body, &(&1.symbol == "l")).fg == {:indexed, 246}
     refute Enum.any?(body, &(&1.symbol in ["▌", "│"]))
 
     heading = header |> Enum.sort_by(& &1.col) |> Enum.map_join(& &1.symbol)
-    assert heading =~ "✓ a.ex  · read"
+    assert heading =~ "✓ cat a.ex  · bash"
     refute heading =~ "completed"
+  end
+
+  test "successful reads collapse to a header without losing source or arguments" do
+    output = "first line\n" <> String.duplicate("source\n", 100) <> "last line"
+    args = %{"path" => "lib/example.ex", "offset" => 20, "limit" => 100}
+
+    [entry] =
+      settled([
+        Message.assistant(tool_calls: [%{id: "r", name: "read", arguments: args}]),
+        Message.tool_result("r", "read", output)
+      ])
+
+    assert text(ToolView.render(entry, 80)) == "✓ lib/example.ex  · read  · F4 details"
+    assert MessageView.full_text(entry) == output
+    assert MessageView.search_text(entry) =~ "last line"
+    details = text(MessageView.inspect_items(entry, 100))
+    assert details =~ "first line"
+    assert details =~ "last line"
+    assert details =~ "\"offset\":20"
+
+    [failed] = settled([Message.tool_result("r", "read", "Error: permission denied")])
+    assert text(ToolView.render(failed, 80)) =~ "Error: permission denied"
+  end
+
+  test "bash keeps two tail lines, clips wide output and preserves complete details" do
+    output = "build started\n\n" <> String.duplicate("界", 100) <> "\n42 tests passed\n"
+    [entry] = settled([Message.tool_result("b", "bash", output)])
+
+    for width <- [1, 4, 8, 30, 80] do
+      items = ToolView.render(entry, width)
+      assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 5
+
+      for {widget, _} <- items, row <- widget.text do
+        assert MessageView.display_width(plain(row)) <= width
+      end
+    end
+
+    preview = text(ToolView.render(entry, 80))
+    assert preview =~ "42 tests passed"
+    assert preview =~ "… F4 details"
+    refute preview =~ "build started"
+    refute preview =~ "lines hidden"
+    assert MessageView.full_text(entry) == output
+    assert text(MessageView.inspect_items(entry, 80)) =~ "build started"
+
+    [empty] = settled([Message.tool_result("b", "bash", "\n\n")])
+    assert text(ToolView.render(empty, 80)) == "✓ bash"
   end
 
   defp settled(messages),

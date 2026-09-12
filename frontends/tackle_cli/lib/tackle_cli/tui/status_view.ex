@@ -167,16 +167,10 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp hint_segments(%State{active_turn: nil, pending_operation: nil}) do
     [
       "Enter send",
-      "Alt+N new session",
+      "Ctrl+J newline",
       "F1 model",
       "F2 reasoning",
-      "F3 settings",
       "F4 browse",
-      "F6 usage",
-      "Ctrl+F search",
-      "Ctrl+K compact",
-      "Shift+Enter newline",
-      "Ctrl+T reasoning",
       "Ctrl+C quit"
     ]
   end
@@ -187,11 +181,8 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp hint_segments(%State{}) do
     [
       "Esc cancel",
-      "Alt+N new session",
+      "Ctrl+J newline",
       "F4 browse",
-      "F6 usage",
-      "Ctrl+F search",
-      "draft kept · not queued",
       "Ctrl+C quit"
     ]
   end
@@ -207,13 +198,13 @@ defmodule Tackle.CLI.TUI.StatusView do
     |> Enum.reduce([first | List.wrap(last)], fn segment, acc ->
       candidate = List.insert_at(acc, -2, segment)
 
-      if String.length(Enum.join(candidate, " · ")) <= max(width, 1) do
+      if MessageView.display_width(Enum.join(candidate, "   ")) <= max(width, 1) do
         candidate
       else
         acc
       end
     end)
-    |> Enum.join(" · ")
+    |> Enum.join("   ")
     |> Util.truncate(max(width, 1))
   end
 

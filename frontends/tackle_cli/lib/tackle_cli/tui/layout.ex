@@ -8,7 +8,8 @@ defmodule Tackle.CLI.TUI.Layout do
   priority order.
 
   The composer grows with the native editor's measured visual rows, including
-  soft wraps and the final insertion cell, up to eight content rows.
+  soft wraps and the final insertion cell, up to eight content rows. The two
+  chrome rows are a top divider and bottom padding, not an enclosing box.
   """
 
   alias ExRatatui.Layout.Rect
