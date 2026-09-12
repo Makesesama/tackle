@@ -3,6 +3,7 @@ defmodule Tackle.Runtime.ToolConcurrencyTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Lib.Event
   alias Tackle.Runtime.Registry
   alias Tackle.Test.BlockingTool
 
@@ -35,8 +36,20 @@ defmodule Tackle.Runtime.ToolConcurrencyTest do
     assert_receive {:tool_entered, second_name, second_task}, 5_000
     assert MapSet.new([first_name, second_name]) == MapSet.new(["one", "two"])
 
-    send(first_task, {:release, first_name})
-    send(second_task, {:release, second_name})
+    tasks = Map.new([{first_name, first_task}, {second_name, second_task}])
+    session_id = snapshot.session_id
+    send(tasks["two"], {:release, "two"})
+
+    assert_receive {:tackle_event, ^session_id, ^turn_id,
+                    %Event{
+                      type: :tool_execution_end,
+                      data: %{tool_call_id: "c2", status: :completed}
+                    }},
+                   2_000
+
+    refute_receive {:tackle_event, ^session_id, ^turn_id, %Event{type: :tool_end}}, 20
+    assert Process.alive?(tasks["one"])
+    send(tasks["one"], {:release, "one"})
 
     assert_receive {:tackle_turn_finished, session_id, ^turn_id, {:ok, state}}, 5_000
     assert session_id == snapshot.session_id
@@ -65,6 +78,8 @@ defmodule Tackle.Runtime.ToolConcurrencyTest do
     assert_eventually(fn ->
       not Process.alive?(first_task) and not Process.alive?(second_task)
     end)
+
+    refute_receive {:tackle_event, _session_id, ^turn_id, %Event{type: :tool_execution_end}}, 20
   end
 
   test "a root tool supervisor crash tears down the scope" do

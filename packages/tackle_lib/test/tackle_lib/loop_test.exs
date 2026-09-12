@@ -734,6 +734,10 @@ defmodule Tackle.Lib.LoopTest do
 
     assert_receive {:event, %Event{type: :tool_start, data: %{name: "first"}}}
     assert_receive {:tool_execute, :first}
+
+    assert_receive {:event,
+                    %Event{type: :tool_execution_end, data: %{name: "first", status: :completed}}}
+
     assert_receive {:event, %Event{type: :tool_end, data: %{name: "first"}}}
     assert_receive {:event, %Event{type: :tool_start, data: %{name: "second"}}}
     assert_receive {:tool_execute, :second}
@@ -768,14 +772,33 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:tool_entered, second_name, second_task}
     assert MapSet.new([first_name, second_name]) == MapSet.new(["one", "two"])
 
-    send(first_task, {:release, first_name})
-    send(second_task, {:release, second_name})
+    tasks = Map.new([{first_name, first_task}, {second_name, second_task}])
+    # A later call finishes while the first is still blocked. Progress must not
+    # wait for that first call, and settlement must remain in provider order.
+    send(tasks["two"], {:release, "two"})
+
+    assert_receive {:event,
+                    %Event{
+                      type: :tool_execution_end,
+                      data: %{tool_call_id: "c2", status: :completed, result: result}
+                    }},
+                   1_000
+
+    assert JSON.decode!(result) == %{"name" => "two"}
+    refute_receive {:event, %Event{type: :tool_end}}, 20
+    refute_receive {:event, %Event{type: :message_end, data: %{role: :tool}}}, 20
+    assert Process.alive?(tasks["one"])
+    send(tasks["one"], {:release, "one"})
 
     assert {:ok, final_state} = Task.await(run, 5_000)
     assert final_state.status == :completed
 
     tool_messages = Enum.filter(final_state.messages, &(&1.role == :tool))
     assert Enum.map(tool_messages, & &1.tool_call_id) == ["c1", "c2"]
+    assert_receive {:event, %Event{type: :tool_execution_end, data: %{tool_call_id: "c1"}}}
+    refute_receive {:event, %Event{type: :tool_execution_end}}, 20
+    assert_receive {:event, %Event{type: :tool_end, data: %{tool_call_id: "c1"}}}
+    assert_receive {:event, %Event{type: :tool_end, data: %{tool_call_id: "c2"}}}
 
     assert Enum.map(tool_messages, fn message ->
              message.content |> JSON.decode!() |> Map.fetch!("name")
@@ -806,6 +829,15 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:event, %Event{type: :tool_start, data: %{name: "crash"}}}
     assert_receive {:event, %Event{type: :tool_start, data: %{name: "blocking"}}}
     assert_receive {:tool_entered, "ok", blocker}
+
+    assert_receive {:event,
+                    %Event{
+                      type: :tool_execution_end,
+                      data: %{tool_call_id: "bad", status: :failed, reason: :execution_error}
+                    }},
+                   1_000
+
+    refute_receive {:event, %Event{type: :tool_error}}, 20
     send(blocker, {:release, "ok"})
 
     assert {:ok, final_state} = Task.await(run, 5_000)

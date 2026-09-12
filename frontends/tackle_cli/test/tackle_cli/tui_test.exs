@@ -1425,6 +1425,72 @@ defmodule Tackle.CLI.TUITest do
     assert completed_conversation =~ "F4 details"
   end
 
+  test "renders individual execution completions before ordered settlement", %{tui: tui} do
+    inject_paste(tui, "go")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "go"}
+    session_id = state(tui).session_id
+
+    for id <- ["first", "second"] do
+      send(
+        tui,
+        {:tackle_event, session_id, "turn-1",
+         Event.new(:tool_start, %{tool_call_id: id, name: "read", arguments: %{"path" => id}})}
+      )
+    end
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:tool_execution_end, %{
+         tool_call_id: "second",
+         name: "read",
+         status: :completed,
+         result: "second output"
+       })}
+    )
+
+    progress = state(tui)
+
+    assert [%{id: "first", status: :running}, %{id: "second", status: :completed}] =
+             progress.tool_activity
+
+    assert conversation_text(progress) =~ "● running · first"
+    assert conversation_text(progress) =~ "✓ second"
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:tool_execution_end, %{
+         tool_call_id: "first",
+         name: "read",
+         status: :failed,
+         error: "read failed"
+       })}
+    )
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:tool_error, %{tool_call_id: "first", name: "read", error: "read failed"})}
+    )
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1",
+       Event.new(:tool_end, %{tool_call_id: "second", name: "read", result: "second output"})}
+    )
+
+    settled = state(tui)
+
+    assert [%{id: "first", status: :failed}, %{id: "second", status: :completed}] =
+             settled.tool_activity
+
+    tools = Enum.filter(settled.stream.timeline, &(&1.kind == :tool))
+    assert Enum.map(tools, & &1.id) == ["first", "second"]
+    assert conversation_text(settled) =~ "read failed"
+  end
+
   test "renders failed live tool calls", %{tui: tui} do
     inject_paste(tui, "go")
     inject_key(tui, "enter")

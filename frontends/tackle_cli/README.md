@@ -17,6 +17,10 @@ The CLI may select a canonical model reference with `--model` and a reasoning
 level with `--thinking`, but it does not load or select adapter modules directly.
 Adapter availability is a harness and distribution concern.
 
+Live tool rows update independently as each execution succeeds or fails, even
+while other calls in the batch are still running. Rows stay in requested order;
+execution status is transient progress, not confirmation of a durable commit.
+
 The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
 are compiled into it. It does not discover or load third-party plugins at
 runtime. That keeps packaging separate from the future plugin-loading design.
