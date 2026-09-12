@@ -4,15 +4,16 @@ defmodule Tackle.CLI.TUI.Conversation do
 
   Sections are refreshed independently, so streaming deltas only rebuild the
   section they affect. The cache keeps typed entries with their full retained
-  source; only the visible widget slice crosses the native boundary. A reading
+  source; immutable native cells cache layout and only viewport paint crosses
+  back to the terminal bridge. A reading
   anchor identifies an entry and an offset within that entry, so streaming
   updates, reasoning collapse, and terminal resize do not silently replace the
   passage the user is reading.
   """
 
   alias ExRatatui.Layout.Rect
-  alias ExRatatui.Widgets.Paragraph
-  alias Tackle.CLI.TUI.{MessageView, Theme}
+  alias Tackle.CLI.TUI.MessageView
+  alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
 
   @mouse_scroll_rows 3
   @sections [:settled, :pending, :turn, :error]
@@ -24,6 +25,7 @@ defmodule Tackle.CLI.TUI.Conversation do
   @typedoc "Cached typed entries and their rendered widget groups for a section."
   @type section_cache :: %{
           entries: [MessageView.t()],
+          width: pos_integer() | nil,
           groups: [[MessageView.widget_item()]],
           item_ids: [[String.t()]]
         }
@@ -38,6 +40,8 @@ defmodule Tackle.CLI.TUI.Conversation do
         }
 
   @type t :: %__MODULE__{
+          native: reference() | nil,
+          selected_entry: String.t() | nil,
           width: pos_integer(),
           viewport_height: non_neg_integer(),
           rect: Rect.t(),
@@ -53,7 +57,9 @@ defmodule Tackle.CLI.TUI.Conversation do
           anchor: anchor() | nil
         }
 
-  defstruct width: 1,
+  defstruct native: nil,
+            selected_entry: nil,
+            width: 1,
             viewport_height: 0,
             rect: %Rect{},
             sections: %{},
@@ -70,7 +76,10 @@ defmodule Tackle.CLI.TUI.Conversation do
   @doc "Creates an empty conversation model for the transcript rect."
   @spec new(Rect.t()) :: t()
   def new(%Rect{} = rect) do
+    {native, 0} = NativeConversation.assemble([], max(rect.width, 1))
+
     %__MODULE__{
+      native: native,
       width: max(rect.width, 1),
       viewport_height: max(rect.height, 0),
       rect: rect,
@@ -82,13 +91,34 @@ defmodule Tackle.CLI.TUI.Conversation do
   @spec resize(t(), Rect.t()) :: t()
   def resize(%__MODULE__{} = conversation, %Rect{} = rect) do
     anchor = reading_anchor(conversation)
+    width = max(rect.width, 1)
+
+    {sections, items, item_ids, native, content_height} =
+      if width == conversation.width do
+        {conversation.sections, conversation.items, conversation.item_ids, conversation.native,
+         conversation.content_height}
+      else
+        sections =
+          Map.new(conversation.sections, fn {section, cache} ->
+            {section, cache_entries(cache.entries, width, cache)}
+          end)
+
+        {items, item_ids} = build_items(sections, width)
+        {native, height} = NativeConversation.assemble(items, width)
+        {sections, items, item_ids, native, height}
+      end
 
     resized = %{
-      new(rect)
-      | sections: conversation.sections,
-        items: conversation.items,
-        item_ids: conversation.item_ids,
-        content_height: conversation.content_height,
+      conversation
+      | width: width,
+        rect: rect,
+        viewport_height: max(rect.height, 0),
+        native: native,
+        selected_entry: conversation.selected_entry,
+        sections: sections,
+        items: items,
+        item_ids: item_ids,
+        content_height: content_height,
         follow?: conversation.follow?,
         new_output?: conversation.new_output?,
         anchor: anchor
@@ -125,11 +155,15 @@ defmodule Tackle.CLI.TUI.Conversation do
     section_cache =
       Enum.reduce(sections, Map.merge(empty_sections(), conversation.sections), fn section,
                                                                                    caches ->
-        Map.put(caches, section, build_section(state, section, conversation.width))
+        Map.put(
+          caches,
+          section,
+          build_section(state, section, conversation.width, caches[section])
+        )
       end)
 
     {items, item_ids} = build_items(section_cache, conversation.width)
-    content_height = Enum.reduce(items, 0, fn {_widget, height}, total -> total + height end)
+    {native, content_height} = NativeConversation.assemble(items, conversation.width)
     max_offset = max(content_height - conversation.viewport_height, 0)
 
     anchored_offset = anchor_offset(item_ids, items, preserved_anchor)
@@ -154,7 +188,9 @@ defmodule Tackle.CLI.TUI.Conversation do
 
     refreshed = %{
       conversation
-      | sections: section_cache,
+      | native: native,
+        selected_entry: Map.get(state, :selected_entry),
+        sections: section_cache,
         items: items,
         item_ids: item_ids,
         content_height: content_height,
@@ -345,9 +381,9 @@ defmodule Tackle.CLI.TUI.Conversation do
   @doc """
   Slices widget items to the rows intersecting a viewport.
 
-  Returns the visible items and the row offset into the first visible item,
-  which is what the native `WidgetList` needs to clip a partially visible
-  paragraph without sending the whole transcript across the NIF boundary.
+  Returns the visible cell handles and the row offset into the first cell.
+  This metadata supports browsing and reading anchors; native conversation
+  paint uses the complete immutable resource and its own viewport clipping.
   """
   @spec slice([MessageView.widget_item()], non_neg_integer(), non_neg_integer()) ::
           {[MessageView.widget_item()], non_neg_integer()}
@@ -361,36 +397,58 @@ defmodule Tackle.CLI.TUI.Conversation do
   def mouse_scroll_rows, do: @mouse_scroll_rows
 
   defp empty_sections do
-    Map.new(@sections, &{&1, %{entries: [], groups: [], item_ids: []}})
+    Map.new(@sections, &{&1, %{entries: [], groups: [], item_ids: [], width: nil}})
   end
 
-  # The browser stands on one entry at a time. The highlighted entry keeps its
-  # own colors and only gains the selection surface, so a tool card or user
-  # message still reads as itself while it is selected.
-  defp render_entry(entry, width, state) do
-    items = MessageView.render_entry(entry, width)
+  @doc "Returns the native widget for this immutable transcript snapshot."
+  @spec widget(t()) :: NativeConversation.t()
+  def widget(%__MODULE__{} = conversation) do
+    selected =
+      conversation.item_ids
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {id, index} ->
+        if id && id == conversation.selected_entry, do: [index], else: []
+      end)
 
-    if Map.get(state, :selected_entry) == entry.id do
-      MessageView.highlight(items, Theme.style(:selection_surface))
-    else
-      items
-    end
+    %NativeConversation{
+      state: conversation.native,
+      scroll_offset: conversation.scroll_offset,
+      selected: selected
+    }
   end
 
-  defp build_section(state, section, width) do
+  defp build_section(state, section, width, previous) do
     entries =
       state
       |> MessageView.section_entries(section)
       |> Enum.with_index()
       |> Enum.map(fn {entry, index} -> %{entry | id: entry.id || "#{section}:#{index}"} end)
 
-    groups = Enum.map(entries, &render_entry(&1, width, state))
+    cache_entries(entries, width, previous)
+  end
+
+  defp cache_entries(entries, width, previous) do
+    cached =
+      if Map.get(previous, :width) == width,
+        do:
+          Map.new(Enum.zip(previous.entries, previous.groups), fn {entry, group} ->
+            {entry.id, {entry, group}}
+          end),
+        else: %{}
+
+    groups =
+      Enum.map(entries, fn entry ->
+        case Map.get(cached, entry.id) do
+          {^entry, group} -> group
+          _ -> NativeConversation.cell(entry, width)
+        end
+      end)
 
     item_ids =
       Enum.zip(entries, groups)
       |> Enum.map(fn {entry, items} -> List.duplicate(entry.id, length(items)) end)
 
-    %{entries: entries, groups: groups, item_ids: item_ids}
+    %{entries: entries, groups: groups, item_ids: item_ids, width: width}
   end
 
   defp build_items(section_cache, width) do
@@ -402,7 +460,7 @@ defmodule Tackle.CLI.TUI.Conversation do
 
     groups =
       if groups == [] do
-        welcome = MessageView.render_entry(MessageView.welcome_entry(), width)
+        welcome = NativeConversation.cell(MessageView.welcome_entry(), width)
         [{welcome, List.duplicate("welcome", length(welcome))}]
       else
         groups
@@ -411,7 +469,7 @@ defmodule Tackle.CLI.TUI.Conversation do
     pairs =
       groups
       |> Enum.map(fn {group, ids} -> Enum.zip(group, ids) end)
-      |> Enum.intersperse([{{%Paragraph{text: ""}, 1}, nil}])
+      |> Enum.intersperse([{NativeConversation.spacer(width), nil}])
       |> List.flatten()
 
     items = Enum.map(pairs, fn {item, _id} -> item end)

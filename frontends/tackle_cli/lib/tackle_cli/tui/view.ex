@@ -17,7 +17,7 @@ defmodule Tackle.CLI.TUI.View do
 
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
-  alias ExRatatui.Widgets.{Block, Paragraph, Popup, WidgetList}
+  alias ExRatatui.Widgets.{Block, Paragraph, Popup}
   alias Tackle.CLI.Widgets.Input
 
   alias Tackle.CLI.TUI.{
@@ -93,10 +93,7 @@ defmodule Tackle.CLI.TUI.View do
   end
 
   defp transcript_widget(state) do
-    %WidgetList{
-      items: state.conversation.visible_items,
-      scroll_offset: state.conversation.visible_offset
-    }
+    Conversation.widget(state.conversation)
   end
 
   defp reading_widgets(nil, _conversation), do: []

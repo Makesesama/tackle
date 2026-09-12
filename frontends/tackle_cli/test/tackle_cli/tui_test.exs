@@ -3,12 +3,13 @@ defmodule Tackle.CLI.TUITest do
 
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
   alias ExRatatui.Runtime
-  alias ExRatatui.Style
   alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.List, as: SelectionList
-  alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, TextInput, WidgetList}
+  alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, TextInput}
+  alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
+  alias Tackle.CLI.Widgets.Conversation.Cell
   alias Tackle.CLI.TUI
-  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, RuntimeEvents, Theme}
+  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, RuntimeEvents}
   alias Tackle.Lib.Compaction, as: LibCompaction
   alias Tackle.Lib.{Event, LLM, Message, State}
   alias Tackle.Runtime.AgentRef
@@ -285,7 +286,7 @@ defmodule Tackle.CLI.TUITest do
     assert header_text(state) =~ "thinking off"
     assert header_text(state) =~ "ready"
 
-    assert %WidgetList{} = transcript_widget(state)
+    assert %NativeConversation{} = transcript_widget(state)
     assert conversation_text(state) =~ "Welcome to Tackle"
 
     assert %Tackle.CLI.Widgets.Input{block: %{title: " Prompt "}} = composer_widget(state)
@@ -490,7 +491,9 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "enter")
     assert_receive {:reconfigured, [thinking: "minimal"]}
 
-    state = state(tui)
+    state =
+      await_state(tui, &(Tackle.Thinking.from_llm_opts(&1.agent_state.llm_opts) == "minimal"))
+
     assert state.overlay == nil
     assert Tackle.Thinking.from_llm_opts(state.agent_state.llm_opts) == "minimal"
     assert header_text(state) =~ "thinking minimal"
@@ -705,13 +708,8 @@ defmodule Tackle.CLI.TUITest do
     assert conversation =~ "Checked"
     assert conversation =~ "Hello"
 
-    assert Enum.any?(transcript_widget(settled_state).items, fn
-             {%Markdown{content: "Hello"}, height} ->
-               height == Markdown.measure_height("Hello", settled_state.conversation.width)
-
-             _item ->
-               false
-           end)
+    assert {%Cell{}, height} = List.last(settled_state.conversation.items)
+    assert height == Markdown.measure_height("Hello", settled_state.conversation.width)
   end
 
   test "keeps streamed message boundaries and reconciles canonical content", %{tui: tui} do
@@ -825,18 +823,8 @@ defmodule Tackle.CLI.TUITest do
              match?(%MessageView{kind: :assistant, content: ^markdown}, entry)
            end)
 
-    assert Enum.any?(state.conversation.items, fn
-             {%Markdown{content: ^markdown, style: %{fg: nil}}, height} ->
-               height == Markdown.measure_height(markdown, state.conversation.width)
-
-             _item ->
-               false
-           end)
-
-    refute Enum.any?(state.conversation.items, fn
-             {%Paragraph{text: text}, _height} -> plain(text) =~ "**bold**"
-             _item -> false
-           end)
+    assert [{%Cell{}, height}] = state.conversation.items
+    assert height == Markdown.measure_height(markdown, state.conversation.width)
 
     terminal = ExRatatui.init_test_terminal(80, 24)
     :ok = ExRatatui.draw(terminal, TUI.scene(state, frame(state)))
@@ -861,13 +849,8 @@ defmodule Tackle.CLI.TUITest do
 
     state = state(tui)
 
-    assert Enum.any?(state.conversation.items, fn
-             {%Markdown{content: ^markdown}, height} ->
-               height == Markdown.measure_height(markdown, state.conversation.width)
-
-             _item ->
-               false
-           end)
+    assert {_cell, height} = List.last(state.conversation.items)
+    assert height == Markdown.measure_height(markdown, state.conversation.width)
 
     terminal = ExRatatui.init_test_terminal(80, 24)
     :ok = ExRatatui.draw(terminal, TUI.scene(state, frame(state)))
@@ -885,23 +868,13 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     wide_state = state(tui)
 
-    [{_wide_markdown, wide_height}] =
-      wide_state.conversation.items
-      |> Enum.filter(fn
-        {%Markdown{}, _height} -> true
-        _item -> false
-      end)
+    [{%Cell{}, wide_height}] = wide_state.conversation.items
 
     inject_resize(tui, 24, 24)
     narrow_state = state(tui)
 
-    assert Enum.any?(narrow_state.conversation.items, fn
-             {%Markdown{content: ^markdown}, narrow_height} ->
-               narrow_height == Markdown.measure_height(markdown, narrow_state.conversation.width)
-
-             _item ->
-               false
-           end)
+    assert [{%Cell{}, narrow_height}] = narrow_state.conversation.items
+    assert narrow_height == Markdown.measure_height(markdown, narrow_state.conversation.width)
 
     refute wide_height == Markdown.measure_height(markdown, narrow_state.conversation.width)
   end
@@ -919,19 +892,15 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
-    markdown_items =
-      Enum.filter(state.conversation.items, fn
-        {%Markdown{}, _height} -> true
-        _item -> false
-      end)
+    assert [{%Cell{}, _}, {%Cell{}, 1}, {%Cell{}, height}] = state.conversation.items
+    assert height == Markdown.measure_height(markdown, state.conversation.width)
+    assert List.last(Conversation.entries(state.conversation)).content == markdown
 
-    assert markdown_items != []
+    [{%Paragraph{text: rows}, rect}] =
+      NativeConversation.render(transcript_widget(state), state.conversation.rect)
 
-    assert Enum.uniq(Enum.map(markdown_items, fn {%Markdown{content: content}, _} -> content end)) ==
-             [markdown]
-
-    assert Enum.all?(markdown_items, fn {_widget, height} -> height <= 64 end)
-    assert length(state.conversation.visible_items) < length(state.conversation.items)
+    assert length(rows) == rect.height
+    assert plain(rows) =~ "line 200"
   end
 
   test "falls back safely when Markdown exceeds the native scroll range" do
@@ -1024,8 +993,8 @@ defmodule Tackle.CLI.TUITest do
     assert resized_state.conversation.anchor.id == anchor.id
     refute resized_state.conversation.follow?
 
-    assert hd(resized_state.conversation.visible_items) ==
-             hd(scrolled_state.conversation.visible_items)
+    assert conversation_text(resized_state) =~ "message"
+    assert resized_state.conversation.anchor == scrolled_state.conversation.anchor
 
     assert resized_state.conversation.visible_offset == scrolled_state.conversation.visible_offset
 
@@ -1049,8 +1018,8 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
-    assert Enum.all?(state.conversation.items, fn {_widget, height} -> height <= 64 end)
-    assert length(state.conversation.visible_items) < length(state.conversation.items)
+    assert length(state.conversation.items) == 3
+    assert List.last(Conversation.entries(state.conversation)).content == response
 
     terminal = ExRatatui.init_test_terminal(30, 16)
     :ok = ExRatatui.draw(terminal, TUI.scene(state, frame(state)))
@@ -1118,9 +1087,9 @@ defmodule Tackle.CLI.TUITest do
     state = state(tui)
 
     assert [
-             {%Paragraph{}, 2},
+             {%Cell{}, 2},
              {_spacer, 1},
-             {%Markdown{content: "LATEST"}, 1}
+             {%Cell{}, 1}
            ] = state.conversation.items
 
     terminal = ExRatatui.init_test_terminal(12, 24)
@@ -1587,7 +1556,7 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "enter")
     assert_receive {:reconfigured, [thinking: "high"]}
 
-    state = state(tui)
+    state = await_state(tui, &is_nil(&1.pending_operation))
     assert state.overlay == nil
     assert header_text(state) =~ "thinking high"
     assert draft(tui) == "draft survives"
@@ -1793,7 +1762,7 @@ defmodule Tackle.CLI.TUITest do
   end
 
   defp transcript_widget(state) do
-    find_widget(state, &match?(%WidgetList{}, &1))
+    find_widget(state, &match?(%NativeConversation{}, &1))
   end
 
   defp composer_widget(state) do
@@ -1849,8 +1818,8 @@ defmodule Tackle.CLI.TUITest do
     |> Map.fetch!(:content)
   end
 
-  # The browser highlight is a merge of the selection surface over each widget
-  # of the selected entry, so the ids carrying it are the selected ones.
+  # Native selection indexes name the cells receiving the selection surface;
+  # native_conversation_test also verifies their actual full-width paint.
   defp assert_draws(state, width, height, expected \\ nil) do
     terminal = ExRatatui.init_test_terminal(width, height)
     :ok = ExRatatui.draw(terminal, TUI.scene(state, frame(state)))
@@ -1861,22 +1830,9 @@ defmodule Tackle.CLI.TUITest do
   end
 
   defp highlighted_ids(state) do
-    state.conversation.item_ids
-    |> Enum.zip(state.conversation.items)
-    |> Enum.flat_map(fn
-      {id, {widget, _height}} ->
-        if widget |> Map.get(:style, %Style{}) |> Map.get(:bg) == selection_bg(),
-          do: [id],
-          else: []
-
-      _other ->
-        []
-    end)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
+    widget = transcript_widget(state)
+    Enum.map(widget.selected, &Enum.at(state.conversation.item_ids, &1)) |> Enum.uniq()
   end
-
-  defp selection_bg, do: Theme.style(:selection_surface).bg
 
   defp inspector_text(state) do
     {:inspector, inspector} = state.overlay
@@ -1891,14 +1847,10 @@ defmodule Tackle.CLI.TUITest do
   defp plain(lines) when is_list(lines), do: Enum.map_join(lines, "\n", &plain/1)
 
   defp conversation_text(state) do
-    state
-    |> transcript_widget()
-    |> Map.fetch!(:items)
-    |> Enum.map_join("\n", fn
-      {%Paragraph{text: text}, _height} -> plain(text)
-      {%Markdown{content: content}, _height} -> content
-      {_widget, _height} -> ""
-    end)
+    [{%Paragraph{text: lines}, _}] =
+      NativeConversation.render(transcript_widget(state), state.conversation.rect)
+
+    plain(lines)
   end
 
   defp draft(tui) do
@@ -1920,7 +1872,9 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "enter")
     assert_receive {:submitted, "x"}
 
-    settle_messages(tui, [
+    await_state(tui, &(&1.active_turn != nil))
+
+    finish_turn(tui, [
       Message.user("x"),
       Message.assistant(tool_calls: [%{id: "call-1", name: "read", arguments: %{}}]),
       Message.tool_result("call-1", "read", output)
