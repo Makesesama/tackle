@@ -4,9 +4,10 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.Paragraph
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{Conversation, MessageView, Theme}
+  alias Tackle.CLI.TUI.{Conversation, MessageView, Theme, Viewport}
   alias Tackle.CLI.TUI.State.Stream
   alias Tackle.CLI.Widgets.Conversation, as: Widget
+  alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.{Message, State}
 
   test "all entry types paint in chronological order through a native snapshot" do
@@ -124,8 +125,8 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
   end
 
   test "live reasoning expands and collapses without changing source or draft" do
-    input = Tackle.CLI.Widgets.Input.new()
-    :ok = Tackle.CLI.Widgets.Input.set_value(input, "keep draft")
+    input = Input.new()
+    :ok = Input.set_value(input, "keep draft")
 
     state = %Tackle.CLI.TUI.State{
       input: input,
@@ -135,14 +136,14 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
       stream: %Stream{timeline: [%{kind: :thinking, content: "first\nsecond\nthird"}]}
     }
 
-    state = Tackle.CLI.TUI.Viewport.refresh(state)
+    state = Viewport.refresh(state)
     refute paint(state.conversation) =~ "third"
-    {:noreply, expanded} = Tackle.CLI.TUI.Viewport.toggle_thinking(state)
+    {:noreply, expanded} = Viewport.toggle_thinking(state)
     assert paint(expanded.conversation) =~ "third"
-    {:noreply, collapsed} = Tackle.CLI.TUI.Viewport.toggle_thinking(expanded)
+    {:noreply, collapsed} = Viewport.toggle_thinking(expanded)
     refute paint(collapsed.conversation) =~ "third"
     assert Conversation.text(collapsed.conversation) =~ "third"
-    assert Tackle.CLI.Widgets.Input.get_value(input) == "keep draft"
+    assert Input.get_value(input) == "keep draft"
   end
 
   test "copy and search retain controls removed by paint" do

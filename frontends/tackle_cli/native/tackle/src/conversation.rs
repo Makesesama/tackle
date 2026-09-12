@@ -22,11 +22,11 @@ impl rustler::Resource for CellResource {}
 impl rustler::Resource for ConversationResource {}
 
 #[derive(NifUntaggedEnum)]
-pub enum WireColor {
+pub(crate) enum WireColor {
     Index(u8),
     Rgb((u8, u8, u8)),
 }
-type WireStyle = (Option<WireColor>, Option<WireColor>, Option<WireColor>, u16);
+pub(crate) type WireStyle = (Option<WireColor>, Option<WireColor>, Option<WireColor>, u16);
 type WireSpan = (String, WireStyle);
 type WireLine = (Vec<WireSpan>, WireStyle);
 
@@ -36,7 +36,7 @@ fn color(value: Option<WireColor>) -> Option<Color> {
         WireColor::Rgb((r, g, b)) => Color::Rgb(r, g, b),
     })
 }
-fn style((fg, bg, underline, bits): WireStyle) -> NifResult<Style> {
+pub(crate) fn style((fg, bg, underline, bits): WireStyle) -> NifResult<Style> {
     let supported = Modifier::BOLD
         | Modifier::DIM
         | Modifier::ITALIC

@@ -29,5 +29,8 @@ defmodule Tackle.CLI.Native do
   def conversation_render(_state, _width, _height, _offset, _selected, _selection),
     do: :erlang.nif_error(:nif_not_loaded)
 
+  def tree_render(_nodes, _selected, _width, _height, _accent, _muted, _selection, _text),
+    do: :erlang.nif_error(:nif_not_loaded)
+
   def badge(_label, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
 end

@@ -71,7 +71,7 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
     ]
 
     wrapped = MessageView.wrap_rows(rows, 6)
-    assert length(wrapped) > 1
+    assert [_, _ | _] = wrapped
     assert Enum.all?(wrapped, &(&1.style == surface))
     assert Enum.any?(wrapped, fn line -> Enum.any?(line.spans, &(&1.style.fg == :red)) end)
   end

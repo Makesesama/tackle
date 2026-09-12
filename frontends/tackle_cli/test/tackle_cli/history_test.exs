@@ -41,7 +41,7 @@ defmodule Tackle.CLI.TUI.HistoryTest do
     test "caps the list and drops the oldest entry first" do
       history = Enum.reduce(1..150, History.new(), &History.record(&2, "prompt #{&1}"))
 
-      assert length(history.entries) == 100
+      assert Enum.count_until(history.entries, 101) == 100
       assert hd(history.entries) == "prompt 150"
       assert List.last(history.entries) == "prompt 51"
     end
