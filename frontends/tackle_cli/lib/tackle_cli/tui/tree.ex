@@ -3,7 +3,9 @@ defmodule Tackle.CLI.TUI.Tree do
   The conversation-tree picker: `/tree`.
 
   A tree browser is a search-first `Picker` over the session's settled history,
-  rendered with branch indentation and an active-position marker. Selecting a
+  rendered with branch indentation and an active-position marker. Independent
+  root histories begin at the left edge (the synthetic start row adds no fork);
+  real forks within a history retain their connectors. Selecting a
   user message moves to its parent and offers that message back to the composer
   as a draft, so submitting the edit creates a sibling branch. Selecting any
   other entry moves to it; selecting the start row returns to the empty
@@ -21,11 +23,8 @@ defmodule Tackle.CLI.TUI.Tree do
   """
 
   alias ExRatatui.Command
-  alias ExRatatui.Style
-  alias ExRatatui.Widgets.List, as: SelectionList
-  alias ExRatatui.Widgets.{Paragraph, Popup}
-  alias Tackle.CLI.TUI.{Compaction, Picker, State, Theme, Util, Viewport}
-  alias Tackle.CLI.Widgets.Input
+  alias Tackle.CLI.TUI.{Compaction, Picker, State, Util, Viewport}
+  alias Tackle.CLI.Widgets.{Input, TreePopup}
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tree, as: ConversationTree
 
@@ -55,7 +54,12 @@ defmodule Tackle.CLI.TUI.Tree do
     if ConversationTree.empty?(state.agent_state.tree) do
       {:noreply, %{state | notice: "The conversation tree is empty"}}
     else
-      picker = Picker.new(items(state.agent_state.tree))
+      picker =
+        state.agent_state.tree
+        |> items()
+        |> Picker.new()
+        |> select_active()
+
       {:noreply, %{state | overlay: {:tree, %{picker: picker}}}}
     end
   end
@@ -76,73 +80,198 @@ defmodule Tackle.CLI.TUI.Tree do
   @spec items(ConversationTree.t()) :: [Picker.item()]
   def items(%ConversationTree{} = tree) do
     active = ConversationTree.active_id(tree)
+    active_path = tree |> ConversationTree.active_path() |> MapSet.new(& &1.id)
 
     root = %{
       id: @root_id,
-      primary: "↩  Start of conversation",
-      secondary: "empty active path",
+      primary: "Start of conversation",
+      secondary: if(is_nil(active), do: "current position", else: nil),
       marker: marker(active, nil),
-      search: "start root beginning empty conversation"
+      search: "start root beginning empty conversation",
+      depth: 0,
+      connector?: false,
+      last?: true,
+      ancestor_continues: [],
+      active?: is_nil(active),
+      unsafe?: false
     }
 
-    rows =
+    roots =
       tree
       |> ConversationTree.roots()
-      |> Enum.flat_map(&walk(tree, &1, 0, active))
+      |> Enum.sort_by(fn entry -> if subtree_active?(tree, entry, active), do: 0, else: 1 end)
+
+    multiple_roots? = match?([_, _ | _], roots)
+
+    rows =
+      roots
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {entry, index} ->
+        walk(
+          tree,
+          entry,
+          if(multiple_roots?, do: 1, else: 0),
+          multiple_roots?,
+          index == length(roots) - 1,
+          %{},
+          active,
+          active_path
+        )
+      end)
+
+    # Multiple histories share only a synthetic root, not a conversation entry.
+    # Like pi, suppress that virtual fork and shift its entire forest left.
+    rows = if multiple_roots?, do: Enum.map(rows, &without_virtual_root/1), else: rows
 
     [root | rows]
   end
 
-  @doc "Renders the open tree picker as a popup."
-  @spec popup(State.t()) :: Popup.t()
-  def popup(%State{overlay: {:tree, %{picker: picker}}}) do
-    items = Picker.filtered(picker)
-    selected = Util.clamp(picker.selected, 0, max(length(items) - 1, 0))
-
-    content =
-      case items do
-        [] ->
-          %Paragraph{text: " No entries match.", style: %Style{fg: :dark_gray}}
-
-        items ->
-          %SelectionList{
-            items: Enum.map(items, &Picker.row/1),
-            selected: selected,
-            highlight_symbol: "› ",
-            highlight_style: %Style{fg: :cyan, modifiers: [:bold]},
-            style: %Style{fg: :white},
-            scroll_padding: 2
-          }
-      end
-
-    %Popup{
-      content: content,
-      block: Theme.panel_block(title(picker.query, length(items)), :cyan),
-      percent_width: 78,
-      percent_height: 62
+  defp without_virtual_root(item) do
+    %{
+      item
+      | depth: item.depth - 1,
+        connector?: item.connector? and item.depth > 1,
+        ancestor_continues: tl(item.ancestor_continues)
     }
   end
 
-  defp walk(tree, entry, depth, active) do
-    child_rows =
-      tree
-      |> ConversationTree.children(entry.id)
-      |> Enum.flat_map(&walk(tree, &1, depth + 1, active))
+  @doc "Renders the open tree picker with a native tree viewport."
+  @spec popup(State.t()) :: TreePopup.t()
+  def popup(%State{overlay: {:tree, %{picker: picker}}}) do
+    items = filtered(picker)
 
-    [row(tree, entry, depth, active) | child_rows]
+    %TreePopup{
+      nodes: Enum.map(items, &tree_node/1),
+      selected: Util.clamp(picker.selected, 0, max(length(items) - 1, 0)),
+      query: picker.query,
+      count: length(items)
+    }
   end
 
-  defp row(tree, entry, depth, active) do
+  defp walk(
+         tree,
+         entry,
+         depth,
+         connector?,
+         last?,
+         ancestors,
+         active,
+         active_path
+       ) do
+    children =
+      tree
+      |> ConversationTree.children(entry.id)
+      |> Enum.sort_by(fn child -> if subtree_active?(tree, child, active), do: 0, else: 1 end)
+
+    multiple_children? = match?([_, _ | _], children)
+
+    child_depth =
+      cond do
+        multiple_children? -> depth + 1
+        connector? and depth > 0 -> depth + 1
+        true -> depth
+      end
+
+    child_ancestors =
+      if connector? do
+        put_gutter(ancestors, depth - 1, not last?)
+      else
+        ancestors
+      end
+
+    child_rows =
+      children
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {child, index} ->
+        walk(
+          tree,
+          child,
+          child_depth,
+          multiple_children?,
+          index == length(children) - 1,
+          child_ancestors,
+          active,
+          active_path
+        )
+      end)
+
+    [
+      row(tree, entry, depth, connector?, last?, ancestors, active, active_path)
+      | child_rows
+    ]
+  end
+
+  defp row(tree, entry, depth, connector?, last?, ancestors, active, active_path) do
     resumable? = ConversationTree.resumable?(tree, entry.id)
-    indent = String.duplicate("   ", depth)
 
     %{
       id: target(entry, resumable?),
-      primary: indent <> connector(entry) <> label(entry),
+      primary: label(entry),
       secondary: secondary(entry, resumable?),
       marker: marker(active, entry.id),
-      search: search_text(entry)
+      search: search_text(entry),
+      depth: depth,
+      connector?: connector?,
+      last?: last?,
+      ancestor_continues: gutters(ancestors, depth),
+      active?: MapSet.member?(active_path, entry.id),
+      unsafe?: not resumable?
     }
+  end
+
+  defp tree_node(item) do
+    %{
+      text: display_label(item),
+      secondary:
+        if(item.marker == "●", do: current_position(item.secondary), else: item.secondary),
+      depth: item.depth,
+      connector?: item.connector?,
+      last?: item.last?,
+      ancestor_continues: item.ancestor_continues,
+      active?: item.active?,
+      unsafe?: item.unsafe?
+    }
+  end
+
+  defp current_position(nil), do: "current position"
+  defp current_position("current position"), do: "current position"
+  defp current_position(secondary), do: "current position · " <> secondary
+
+  defp display_label(%{id: @root_id, primary: primary}), do: "↩  " <> primary
+  defp display_label(%{primary: primary}), do: primary
+
+  defp select_active(%Picker{items: items} = picker) do
+    selected = Enum.find_index(items, &(&1.marker == "●")) || 0
+    %{picker | selected: selected}
+  end
+
+  defp gutters(_ancestors, 0), do: []
+
+  defp gutters(ancestors, depth) do
+    Enum.map(0..(depth - 1), &Map.get(ancestors, &1, false))
+  end
+
+  defp put_gutter(ancestors, position, continues?) when position >= 0,
+    do: Map.put(ancestors, position, continues?)
+
+  defp put_gutter(ancestors, _position, _continues?), do: ancestors
+
+  defp subtree_active?(_tree, _entry, nil), do: false
+
+  defp subtree_active?(tree, entry, active) do
+    entry.id == active ||
+      Enum.any?(ConversationTree.children(tree, entry.id), &subtree_active?(tree, &1, active))
+  end
+
+  defp filtered(%Picker{query: "", items: items}), do: items
+
+  defp filtered(%Picker{items: items, query: query}) do
+    matches = items |> Picker.filter(query) |> MapSet.new()
+    Enum.filter(items, &MapSet.member?(matches, &1))
+  end
+
+  defp selected_item(%Picker{} = picker) do
+    picker |> filtered() |> Enum.at(picker.selected)
   end
 
   # An incomplete tool batch is inspectable but not selectable: navigating there
@@ -151,27 +280,24 @@ defmodule Tackle.CLI.TUI.Tree do
   defp target(%{kind: :message, message: %Message{role: :user, id: id}}, true), do: {:edit, id}
   defp target(%{id: id}, true), do: {:entry, id}
 
-  defp connector(%{kind: :message, message: %Message{role: :user}}), do: "▸ "
-  defp connector(%{kind: :message, message: %Message{role: :assistant}}), do: "◆ "
-  defp connector(%{kind: :message, message: %Message{role: :tool}}), do: "⚙ "
-  defp connector(%{kind: :compaction}), do: "⊟ "
-  defp connector(_entry), do: "· "
-
   defp label(%{kind: :message, message: %Message{role: :user} = message}),
-    do: preview(message.content)
+    do: "user: " <> preview(message.content)
 
   defp label(%{kind: :message, message: %Message{role: :assistant} = message}) do
-    case message.content do
-      content when is_binary(content) and content != "" -> preview(content)
-      _other -> if message.tool_calls in [nil, []], do: "(reasoning)", else: "(tool calls)"
-    end
+    content =
+      case message.content do
+        content when is_binary(content) and content != "" -> preview(content)
+        _other -> if message.tool_calls in [nil, []], do: "(reasoning)", else: "(tool calls)"
+      end
+
+    "assistant: " <> content
   end
 
   defp label(%{kind: :message, message: %Message{role: :tool} = message}),
-    do: "#{message.tool_name || "tool"} result"
+    do: "[#{message.tool_name || "tool"} result]"
 
   defp label(%{kind: :compaction, compaction: compaction}),
-    do: "context compacted · #{length(compaction.shadowed_message_ids)} messages"
+    do: "[context compacted · #{length(compaction.shadowed_message_ids)} messages]"
 
   defp label(_entry), do: "entry"
 
@@ -221,7 +347,7 @@ defmodule Tackle.CLI.TUI.Tree do
   defp dispatch(:accept, state) do
     {:tree, %{picker: picker}} = state.overlay
 
-    case Picker.selected(picker) do
+    case selected_item(picker) do
       nil ->
         {:noreply, state, render?: false}
 
@@ -297,11 +423,4 @@ defmodule Tackle.CLI.TUI.Tree do
     do: "Moved before the first message · workspace is unchanged"
 
   defp notice(_outcome), do: "Moved to an earlier position · workspace is unchanged"
-
-  defp title(query, count) do
-    filter = if query == "", do: "", else: " filter “#{Util.truncate(query, 24)}” ·"
-    unit = if count == 1, do: "entry", else: "entries"
-
-    " Conversation tree ·#{filter} #{count} #{unit} · Enter select · type to filter · Esc close · navigation does not undo workspace changes "
-  end
 end

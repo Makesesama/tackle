@@ -5,12 +5,13 @@ defmodule Tackle.CLI.TreeTest do
   alias Tackle.CLI.Keybinds
   alias Tackle.CLI.TUI.{Composer, Picker, Tree, Viewport}
   alias Tackle.CLI.TUI.State, as: TuiState
+  alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.{Message, State}
   alias Tackle.Lib.Tree, as: ConversationTree
 
   defp base_state(opts \\ []) do
-    input = Tackle.CLI.Widgets.Input.new()
-    :ok = Tackle.CLI.Widgets.Input.set_value(input, Keyword.get(opts, :draft, ""))
+    input = Input.new()
+    :ok = Input.set_value(input, Keyword.get(opts, :draft, ""))
 
     state = %TuiState{
       input: input,
@@ -61,7 +62,7 @@ defmodule Tackle.CLI.TreeTest do
     refute Keybinds.repeatable?(%Key{code: "f5", modifiers: []})
   end
 
-  test "items render branches with an active marker and edit targets" do
+  test "items project branch structure, active path, and edit targets" do
     tree = tree_with_branches()
     items = Tree.items(tree)
 
@@ -71,12 +72,148 @@ defmodule Tackle.CLI.TreeTest do
     assert Enum.any?(labels, &String.contains?(&1, "investigate"))
     assert Enum.any?(labels, &String.contains?(&1, "try B"))
 
-    # The active branch (try B) is marked and its user message targets an edit.
+    assert Enum.all?(items, &(length(&1.ancestor_continues) == &1.depth))
+    assert Enum.count(items, & &1.active?) == 2
+
+    # The active leaf is marked and user messages target edits.
     active = Enum.find(items, &(&1.marker == "●"))
     assert active.id == {:entry, ConversationTree.active_id(tree)}
 
     edit = Enum.find(items, &match?({:edit, _}, &1.id))
     assert match?({:edit, _}, edit.id)
+  end
+
+  test "multiple root histories start at the left edge without a virtual fork" do
+    tree = tree_with_branches()
+    items = Tree.items(tree)
+
+    assert Enum.map(tl(items), &{&1.depth, &1.connector?, &1.ancestor_continues}) == [
+             {0, false, []},
+             {1, false, [false]},
+             {0, false, []},
+             {1, false, [false]}
+           ]
+
+    {:noreply, state} = Tree.open(base_state(agent_state: %{State.new() | tree: tree}))
+    popup = Tree.popup(state)
+    area = %ExRatatui.Layout.Rect{x: 0, y: 0, width: 80, height: 10}
+
+    [{%ExRatatui.Widgets.Paragraph{text: lines}, ^area}] =
+      Tackle.CLI.Widgets.Tree.render(
+        %Tackle.CLI.Widgets.Tree{nodes: popup.nodes, selected: popup.selected},
+        area
+      )
+
+    text = Enum.map(lines, fn line -> Enum.map_join(line.spans, & &1.content) end)
+    assert Enum.at(text, 1) =~ "  ┬ • user: try B"
+    assert Enum.at(text, 2) =~ "› └─ • assistant: result B"
+    assert Enum.at(text, 3) =~ "  ┬ user: investigate"
+    assert Enum.at(text, 4) =~ "  └─ assistant: two approaches"
+    refute Enum.any?(text, &String.contains?(&1, "├"))
+  end
+
+  test "real forks inside multiple root histories retain their connectors" do
+    {:ok, tree, root} =
+      ConversationTree.append_message(ConversationTree.new(), Message.user("shared"))
+
+    {:ok, tree, first} =
+      ConversationTree.append_message(tree, Message.assistant(content: "first"))
+
+    {:ok, tree} = ConversationTree.move(tree, root.id)
+
+    {:ok, tree, second} =
+      ConversationTree.append_message(tree, Message.assistant(content: "second"))
+
+    {:ok, tree} = ConversationTree.move(tree, nil)
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("other root"))
+
+    by_id = Map.new(Tree.items(tree), &{&1.id, &1})
+    assert by_id[{:edit, root.id}].depth == 0
+    refute by_id[{:edit, root.id}].connector?
+
+    for entry <- [first, second] do
+      assert by_id[{:entry, entry.id}].depth == 1
+      assert by_id[{:entry, entry.id}].connector?
+      assert by_id[{:entry, entry.id}].ancestor_continues == [false]
+    end
+  end
+
+  test "popup uses the native tree surface" do
+    state = base_state(agent_state: %{State.new() | tree: tree_with_branches()})
+    assert {:noreply, state} = Tree.open(state)
+    assert %Tackle.CLI.Widgets.TreePopup{nodes: nodes, count: count} = Tree.popup(state)
+    assert count == length(nodes)
+    assert Enum.any?(nodes, &String.starts_with?(&1.text, "user: "))
+    popup = Tree.popup(state)
+    assert Enum.at(nodes, popup.selected).secondary == "current position"
+    assert hd(nodes).secondary == nil
+  end
+
+  test "linear history stays flat and opens on the active leaf" do
+    {:ok, tree, _} =
+      ConversationTree.append_message(ConversationTree.new(), Message.user("first"))
+
+    {:ok, tree, _} =
+      ConversationTree.append_message(tree, Message.assistant(content: "second"))
+
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("third"))
+    items = Tree.items(tree)
+    messages = tl(items)
+
+    assert Enum.all?(messages, &(&1.depth == 0 and not &1.connector?))
+
+    state = base_state(agent_state: %{State.new() | tree: tree})
+    assert {:noreply, %{overlay: {:tree, %{picker: picker}}}} = Tree.open(state)
+    assert Picker.selected(picker).id == {:edit, ConversationTree.active_id(tree)}
+  end
+
+  test "only actual sibling paths receive branch connectors" do
+    {:ok, tree, root} =
+      ConversationTree.append_message(ConversationTree.new(), Message.user("root"))
+
+    {:ok, tree, first} =
+      ConversationTree.append_message(tree, Message.assistant(content: "first branch"))
+
+    {:ok, tree} = ConversationTree.move(tree, root.id)
+
+    {:ok, tree, second} =
+      ConversationTree.append_message(tree, Message.assistant(content: "second branch"))
+
+    items = Tree.items(tree)
+    by_id = Map.new(items, &{&1.id, &1})
+
+    refute by_id[{:edit, root.id}].connector?
+    assert by_id[{:entry, first.id}].connector?
+    assert by_id[{:entry, second.id}].connector?
+  end
+
+  test "native rendering joins forks with visible rails on both sibling paths" do
+    {:ok, tree, root} =
+      ConversationTree.append_message(ConversationTree.new(), Message.user("shared"))
+
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("A"))
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.assistant(content: "answer A"))
+    {:ok, tree} = ConversationTree.move(tree, root.id)
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("B"))
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.assistant(content: "answer B"))
+
+    state = base_state(agent_state: %{State.new() | tree: tree})
+    {:noreply, state} = Tree.open(state)
+    popup = Tree.popup(state)
+    area = %ExRatatui.Layout.Rect{x: 0, y: 0, width: 80, height: 10}
+
+    [{%ExRatatui.Widgets.Paragraph{text: lines}, ^area}] =
+      Tackle.CLI.Widgets.Tree.render(
+        %Tackle.CLI.Widgets.Tree{nodes: popup.nodes, selected: popup.selected},
+        area
+      )
+
+    text = Enum.map(lines, fn line -> Enum.map_join(line.spans, & &1.content) end)
+    assert Enum.at(text, 1) =~ "┬ • user: shared"
+    assert Enum.at(text, 2) =~ "├──┬ • user: B"
+    assert Enum.at(text, 3) =~ "› │  └─ • assistant: answer B"
+    assert Enum.at(text, 4) =~ "└──┬ user: A"
+    assert Enum.at(text, 5) =~ "   └─ assistant: answer A"
   end
 
   test "an incomplete tool batch is inspect only" do
@@ -106,7 +243,7 @@ defmodule Tackle.CLI.TreeTest do
   test "open mounts the picker and cancel leaves conversation state unchanged" do
     state = base_state(agent_state: %{State.new() | tree: tree_with_branches()})
     assert {:noreply, %{overlay: {:tree, %{picker: picker}}}} = Tree.open(state)
-    assert length(Picker.filtered(picker)) >= 4
+    assert [_, _, _, _ | _] = Picker.filtered(picker)
 
     assert {:noreply, %{overlay: nil}} =
              Tree.handle(:close, %{state | overlay: {:tree, %{picker: picker}}})
@@ -146,7 +283,7 @@ defmodule Tackle.CLI.TreeTest do
     outcome = %{mode: :edit, draft: Message.user("earlier text"), destination_id: nil}
     state = Tree.apply_outcome(state, outcome)
 
-    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "earlier text"
+    assert Input.get_value(state.input) == "earlier text"
     assert state.notice =~ "workspace is unchanged"
   end
 
@@ -156,7 +293,7 @@ defmodule Tackle.CLI.TreeTest do
     outcome = %{mode: :edit, draft: Message.user("earlier text"), destination_id: nil}
     state = Tree.apply_outcome(state, outcome)
 
-    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "my own draft"
+    assert Input.get_value(state.input) == "my own draft"
     assert state.notice =~ "draft kept"
   end
 
@@ -164,14 +301,14 @@ defmodule Tackle.CLI.TreeTest do
     state = base_state(draft: "keep me")
     state = Tree.apply_outcome(state, %{mode: :move, draft: nil, destination_id: "a1"})
 
-    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "keep me"
+    assert Input.get_value(state.input) == "keep me"
   end
 
   test "/tree opens the picker instead of submitting while idle" do
     state = base_state(agent_state: %{State.new() | tree: tree_with_branches()}, draft: "/tree")
 
     assert {:noreply, %{overlay: {:tree, _}, pending_operation: nil}} = Composer.submit(state)
-    assert Tackle.CLI.Widgets.Input.get_value(state.input) == ""
+    assert Input.get_value(state.input) == ""
   end
 
   test "/tree while busy keeps the draft and does not open" do
@@ -180,7 +317,7 @@ defmodule Tackle.CLI.TreeTest do
 
     assert {:noreply, %{overlay: nil, notice: notice}} = Composer.submit(state)
     assert notice =~ "Busy"
-    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "/tree"
+    assert Input.get_value(state.input) == "/tree"
   end
 
   test "/tree with no tree keeps the draft and explains why" do
@@ -188,6 +325,6 @@ defmodule Tackle.CLI.TreeTest do
 
     assert {:noreply, %{overlay: nil, notice: notice}} = Composer.submit(state)
     assert notice =~ "no conversation tree"
-    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "/tree"
+    assert Input.get_value(state.input) == "/tree"
   end
 end

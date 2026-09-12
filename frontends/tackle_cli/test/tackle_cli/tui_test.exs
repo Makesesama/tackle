@@ -6,10 +6,11 @@ defmodule Tackle.CLI.TUITest do
   alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, TextInput}
-  alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
-  alias Tackle.CLI.Widgets.Conversation.Cell
   alias Tackle.CLI.TUI
   alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, RuntimeEvents}
+  alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
+  alias Tackle.CLI.Widgets.Conversation.Cell
+  alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Compaction, as: LibCompaction
   alias Tackle.Lib.{Event, LLM, Message, State}
   alias Tackle.Runtime.AgentRef
@@ -273,7 +274,7 @@ defmodule Tackle.CLI.TUITest do
     assert state.agent_state.model == "test-model"
     assert state.agent_state.llm.ref == "openai-codex/test-model"
     assert is_reference(state.input)
-    assert Tackle.CLI.Widgets.Input.get_value(state.input) == ""
+    assert Input.get_value(state.input) == ""
     assert state.draft_lines == 1
     assert state.draft_empty?
     assert function_exported?(TUI, :start_link, 1)
@@ -947,7 +948,7 @@ defmodule Tackle.CLI.TUITest do
     assert reconciled_state.stream.active_message_id == nil
 
     entry_ids = Enum.map(reconciled_state.conversation.sections[:turn].entries, & &1.id)
-    assert length(Enum.uniq(entry_ids)) == 3
+    assert [_, _, _] = Enum.uniq(entry_ids)
   end
 
   test "ignores stale and uncorrelated runtime events", %{tui: tui} do
@@ -1087,8 +1088,11 @@ defmodule Tackle.CLI.TUITest do
     state = state(tui)
 
     messages =
-      Enum.map(1..20, fn index -> Message.user("older message #{index}") end) ++
-        [Message.assistant(content: "LATEST-SENTINEL")]
+      1..21
+      |> Enum.map(fn
+        21 -> Message.assistant(content: "LATEST-SENTINEL")
+        index -> Message.user("older message #{index}")
+      end)
 
     agent_state = %{state.agent_state | messages: messages, status: :completed}
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
@@ -1183,7 +1187,7 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
-    assert length(state.conversation.items) == 3
+    assert [_, _, _] = state.conversation.items
     assert List.last(Conversation.entries(state.conversation)).content == response
 
     terminal = ExRatatui.init_test_terminal(30, 16)
@@ -1467,7 +1471,7 @@ defmodule Tackle.CLI.TUITest do
     assert {:inspector, inspector} = state(tui).overlay
     assert inspector.entry.id == "tool:edit"
     inject_key(tui, "esc")
-    assert Tackle.CLI.Widgets.Input.get_value(state(tui).input) == "keep my draft"
+    assert Input.get_value(state(tui).input) == "keep my draft"
   end
 
   test "F4 reports when there is nothing to browse", %{tui: tui} do
@@ -1554,13 +1558,13 @@ defmodule Tackle.CLI.TUITest do
     state = state(tui)
     assert state.focus == :transcript
     assert state.overlay == nil
-    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "draft first"
+    assert Input.get_value(state.input) == "draft first"
     assert find_widget(state, &match?(%Popup{}, &1)) == nil
 
     inject_key(tui, "f4")
     state = state(tui)
     assert state.focus == :composer
-    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "draft first"
+    assert Input.get_value(state.input) == "draft first"
   end
 
   test "the browser keeps the selection visible in a long transcript", %{tui: tui} do
@@ -2029,7 +2033,7 @@ defmodule Tackle.CLI.TUITest do
   end
 
   defp draft(tui) do
-    Tackle.CLI.Widgets.Input.get_value(state(tui).input)
+    Input.get_value(state(tui).input)
   end
 
   defp settle_messages(tui, messages) do

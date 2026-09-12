@@ -35,13 +35,15 @@ defmodule Tackle.CLI.TUI.ConversationTest do
   test "search reaches entries beyond the result limit" do
     state =
       projection(
-        Enum.map(1..205, &Message.user("message #{&1}")) ++
-          [Message.user("needle in newest turn")]
+        Enum.map(1..206, fn
+          206 -> Message.user("needle in newest turn")
+          index -> Message.user("message #{index}")
+        end)
       )
 
     conversation = Conversation.new(%Rect{width: 80, height: 10}) |> Conversation.refresh(state)
     assert [%{preview: "needle in newest turn"}] = Conversation.search(conversation, "needle")
-    assert length(Conversation.search(conversation, "message")) == 200
+    assert Enum.count_until(Conversation.search(conversation, "message"), 201) == 200
   end
 
   defp projection(messages) do

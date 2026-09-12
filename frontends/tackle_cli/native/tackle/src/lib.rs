@@ -1,6 +1,7 @@
 mod conversation;
 mod input;
 mod surface;
+mod tree;
 mod widgets;
 
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};

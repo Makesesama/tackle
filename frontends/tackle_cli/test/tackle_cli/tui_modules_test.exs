@@ -3,6 +3,7 @@ defmodule Tackle.CLI.TUI.ModulesTest do
 
   alias Tackle.CLI.TUI.Compaction, as: TUICompaction
   alias Tackle.CLI.TUI.{Composer, Inspector, Menu, State, Util, Viewport}
+  alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.{Message, ModelInfo, Usage}
   alias Tackle.Lib.State, as: AgentState
@@ -108,15 +109,15 @@ defmodule Tackle.CLI.TUI.ModulesTest do
 
   describe "Viewport" do
     test "update_draft/1 tracks logical lines and emptiness" do
-      state = %State{input: Tackle.CLI.Widgets.Input.new()}
+      state = %State{input: Input.new()}
 
-      :ok = Tackle.CLI.Widgets.Input.insert_str(state.input, "one\ntwo")
+      :ok = Input.insert_str(state.input, "one\ntwo")
       state = Viewport.update_draft(state)
 
       assert state.draft_lines == 2
       refute state.draft_empty?
 
-      :ok = Tackle.CLI.Widgets.Input.set_value(state.input, "   \n")
+      :ok = Input.set_value(state.input, "   \n")
       state = Viewport.update_draft(state)
 
       assert state.draft_lines == 2
@@ -146,7 +147,7 @@ defmodule Tackle.CLI.TUI.ModulesTest do
 
       state = Composer.paste(state, "a\r\nb\rc")
 
-      assert Tackle.CLI.Widgets.Input.get_value(state.input) == "a\nbc"
+      assert Input.get_value(state.input) == "a\nbc"
       assert state.draft_lines == 2
       refute state.draft_empty?
       assert state.active_turn == nil
@@ -218,7 +219,7 @@ defmodule Tackle.CLI.TUI.ModulesTest do
 
   defp shell_state do
     %State{
-      input: Tackle.CLI.Widgets.Input.new(),
+      input: Input.new(),
       agent_state: agent_state(),
       conversation: Viewport.new_conversation(80, 24),
       size: {80, 24},
