@@ -140,7 +140,7 @@ defmodule Tackle.CLI.Keybinds do
   defp composer(%Key{code: "home", modifiers: modifiers}) when is_ctrl(modifiers),
     do: :scroll_start
 
-  defp composer(%Key{code: "end", modifiers: modifiers}) when is_ctrl(modifiers), do: :scroll_end
+  defp composer(%Key{code: ">", modifiers: modifiers}) when is_alt(modifiers), do: :scroll_end
 
   defp composer(%Key{code: code, modifiers: modifiers})
        when is_ctrl(modifiers) and code in ["j", "enter"], do: :newline

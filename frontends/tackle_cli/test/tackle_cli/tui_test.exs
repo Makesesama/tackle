@@ -1214,7 +1214,7 @@ defmodule Tackle.CLI.TUITest do
 
     assert resized_state.conversation.visible_offset == scrolled_state.conversation.visible_offset
 
-    inject_key(tui, "end", ["ctrl"])
+    inject_key(tui, ">", ["alt"])
     followed_state = state(tui)
     assert followed_state.conversation.follow?
     refute followed_state.conversation.new_output?
@@ -1282,7 +1282,7 @@ defmodule Tackle.CLI.TUITest do
     assert state(tui).conversation.scroll_offset == scrolled_offset - 3
     refute state(tui).conversation.follow?
 
-    inject_key(tui, "end", ["ctrl"])
+    inject_key(tui, ">", ["alt"])
     assert state(tui).conversation.follow?
   end
 
