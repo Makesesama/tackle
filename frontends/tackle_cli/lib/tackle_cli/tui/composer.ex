@@ -4,9 +4,16 @@ defmodule Tackle.CLI.TUI.Composer do
 
   The composer is the one place a prompt is produced, so this module owns every
   way text gets into or out of it: native key handling, newline insertion,
-  bracketed paste, and submission. Each edit ends in `Viewport.update_draft/1`
-  and `Viewport.relayout/1` so the growing input reserves exactly the rows it
-  needs without re-measuring the transcript.
+  bracketed paste, submission, and prompt history. Each edit ends in
+  `Viewport.update_draft/1` and `Viewport.relayout/1` so the growing input
+  reserves exactly the rows it needs without re-measuring the transcript.
+
+  History recall reuses the same native load path: the recalled prompt is set
+  as the draft and the row count is left to `Viewport`. Plain Up/Down
+  (`previous/2` and `next/2`) only recall when the draft is empty or a prompt is
+  already showing, so arrow keys still move the cursor inside a draft that is
+  being written; Ctrl+P/Ctrl+N (`history_previous/1` and `history_next/1`) always
+  recall. Any edit ends recall, keeping the loaded text as the new draft.
 
   Submission is deliberately conservative. A failed submit keeps the exact draft
   in the composer so the user can retry or edit, and a submit while a turn is
@@ -16,7 +23,7 @@ defmodule Tackle.CLI.TUI.Composer do
 
   alias ExRatatui.Command
   alias ExRatatui.Event.Key
-  alias Tackle.CLI.TUI.{State, Tree, Viewport}
+  alias Tackle.CLI.TUI.{History, State, Tree, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
 
   @doc """
@@ -29,14 +36,14 @@ defmodule Tackle.CLI.TUI.Composer do
   def paste(%State{} = state, content) do
     content = content |> String.replace("\r\n", "\n") |> String.replace("\r", "")
     :ok = Tackle.CLI.Widgets.Input.insert_str(state.input, content)
-    state |> Viewport.update_draft() |> Viewport.relayout()
+    state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()
   end
 
   @doc "Inserts a literal newline without submitting."
   @spec insert_newline(State.t()) :: {:noreply, State.t()}
   def insert_newline(%State{} = state) do
     :ok = Tackle.CLI.Widgets.Input.insert_str(state.input, "\n")
-    {:noreply, state |> Viewport.update_draft() |> Viewport.relayout()}
+    {:noreply, state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()}
   end
 
   @doc """
@@ -50,10 +57,72 @@ defmodule Tackle.CLI.TUI.Composer do
   def key(%State{} = state, %Key{code: code, modifiers: modifiers}) when is_binary(code) do
     {width, _height} = state.size
     :ok = Tackle.CLI.Widgets.Input.handle_key(state.input, code, modifiers, max(width - 2, 1))
-    {:noreply, state |> Viewport.update_draft() |> Viewport.relayout()}
+    {:noreply, state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()}
   end
 
   def key(%State{} = state, _key), do: {:noreply, state, render?: false}
+
+  @doc """
+  Handles a plain Up arrow.
+
+  Up recalls the previous prompt when the draft is empty or a prompt is already
+  showing. With a non-empty draft it moves the cursor instead, so a multi-line
+  prompt being written is not hijacked by history; `history_previous/1` is the
+  chord that always recalls.
+  """
+  @spec previous(State.t(), Key.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
+  def previous(%State{} = state, key) do
+    if state.draft_empty? or History.browsing?(state.history) do
+      recall_previous(state)
+    else
+      key(state, key)
+    end
+  end
+
+  @doc """
+  Handles a plain Down arrow.
+
+  Down steps toward the newest prompt while one is showing, or restores the
+  draft captured when browsing began; with no prompt showing it moves the cursor.
+  """
+  @spec next(State.t(), Key.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
+  def next(%State{} = state, key) do
+    case History.next(state.history) do
+      :none -> key(state, key)
+      {history, text} -> {:noreply, load(state, history, text)}
+    end
+  end
+
+  @doc """
+  Recalls the previous (older) prompt, whatever the draft holds.
+
+  This is the explicit history chord, so it does not defer to the cursor like
+  the Up arrow does; the current draft is captured and handed back by
+  `history_next/1`. Does nothing, without a render, on an empty history.
+  """
+  @spec history_previous(State.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
+  def history_previous(%State{} = state), do: recall_previous(state)
+
+  @doc """
+  Recalls the next (newer) prompt, or restores the draft past the newest entry.
+
+  Does nothing when no prompt is showing, so the chord is inert rather than
+  clobbering the draft.
+  """
+  @spec history_next(State.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
+  def history_next(%State{} = state) do
+    case History.next(state.history) do
+      :none -> {:noreply, state, render?: false}
+      {history, text} -> {:noreply, load(state, history, text)}
+    end
+  end
+
+  defp recall_previous(%State{} = state) do
+    case History.previous(state.history, draft(state)) do
+      :none -> {:noreply, state, render?: false}
+      {history, text} -> {:noreply, load(state, history, text)}
+    end
+  end
 
   @doc """
   Submits the trimmed draft as the next turn, or runs a shell command.
@@ -105,6 +174,7 @@ defmodule Tackle.CLI.TUI.Composer do
     state = %{
       state
       | pending_operation: %{ref: ref, kind: :submit, raw_draft: raw_draft},
+        history: History.record(state.history, prompt),
         pending_prompt: prompt,
         stream: Stream.reset(state.stream),
         metrics: Metrics.reset(state.metrics),
@@ -129,4 +199,16 @@ defmodule Tackle.CLI.TUI.Composer do
 
     {:noreply, state, commands: [command]}
   end
+
+  defp draft(%State{} = state), do: Tackle.CLI.Widgets.Input.get_value(state.input)
+
+  defp load(%State{} = state, history, text) do
+    :ok = Tackle.CLI.Widgets.Input.set_value(state.input, text)
+    %{state | history: history} |> Viewport.update_draft() |> Viewport.relayout()
+  end
+
+  # Editing, pasting, or inserting a newline turns a recalled prompt into a
+  # normal draft, so the next Up captures it again instead of jumping positions.
+  defp settle_history(%State{} = state),
+    do: %{state | history: History.leave_browsing(state.history)}
 end

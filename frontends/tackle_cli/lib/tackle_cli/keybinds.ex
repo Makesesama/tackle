@@ -43,6 +43,8 @@ defmodule Tackle.CLI.Keybinds do
           | :copy_source
           | :copy_transcript
           | :escape
+          | :history_next
+          | :history_previous
           | :ignore
           | :inspect
           | :leave
@@ -144,6 +146,18 @@ defmodule Tackle.CLI.Keybinds do
   defp composer(%Key{code: "page_down", modifiers: []}), do: :page_down
   defp composer(%Key{code: "enter", modifiers: []}), do: :submit
   defp composer(%Key{code: "enter"}), do: :newline
+
+  # Plain Up/Down recall prompts only when the draft is free for it, and
+  # otherwise move the cursor; Ctrl+P/Ctrl+N always recall. Both land in the
+  # composer, which owns the decision because it can read the draft.
+  defp composer(%Key{code: "up", modifiers: []}), do: :previous
+  defp composer(%Key{code: "down", modifiers: []}), do: :next
+
+  defp composer(%Key{code: "p", modifiers: modifiers}) when is_ctrl(modifiers),
+    do: :history_previous
+
+  defp composer(%Key{code: "n", modifiers: modifiers}) when is_ctrl(modifiers), do: :history_next
+
   defp composer(%Key{}), do: :composer
 
   # -- transcript browser --------------------------------------------------

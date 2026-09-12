@@ -3,13 +3,13 @@ defmodule Tackle.CLI.TUI.State do
   The shell's complete presentation state.
 
   One struct carries everything the panes read and write: the agent handle and
-  its monitor, the subscribed snapshot, the live turn, the composer, the
-  overlay stack, the transcript model, and the usage/metrics projection. Every
-  feature module takes and returns this struct, which keeps the state shape in
-  one place instead of an anonymous map spread across the frontend. The
-  turn-scoped groups travel as nested values: `State.Stream` holds the live
-  streaming turn and `State.Metrics` holds the usage and context numbers, so
-  each group is reset by one call when a turn settles.
+  its monitor, the subscribed snapshot, the live turn, the composer, the prompt
+  history, the overlay stack, the transcript model, and the usage/metrics
+  projection. Every feature module takes and returns this struct, which keeps
+  the state shape in one place instead of an anonymous map spread across the
+  frontend. The turn-scoped groups travel as nested values: `State.Stream` holds
+  the live streaming turn and `State.Metrics` holds the usage and context
+  numbers, so each group is reset by one call when a turn settles.
 
   Besides presentation the struct carries the two things the shell owes its
   starter: the `new_session` factory that builds a replacement scope, and the
@@ -27,7 +27,7 @@ defmodule Tackle.CLI.TUI.State do
   """
 
   alias Tackle.CLI.Clipboard
-  alias Tackle.CLI.TUI.{Compaction, Viewport}
+  alias Tackle.CLI.TUI.{Compaction, History, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.Lib.Message
   alias Tackle.Lib.{ModelInfo, Usage}
@@ -58,6 +58,7 @@ defmodule Tackle.CLI.TUI.State do
           agent_state: AgentState.t() | nil,
           active_turn: map() | nil,
           input: reference(),
+          history: History.t(),
           models: [String.t()],
           clipboard_writer: (String.t() -> :ok | {:error, term()}),
           overlay: overlay(),
@@ -91,6 +92,7 @@ defmodule Tackle.CLI.TUI.State do
             agent_state: nil,
             active_turn: nil,
             input: nil,
+            history: %History{},
             models: [],
             clipboard_writer: &Clipboard.copy_local/1,
             overlay: nil,
@@ -137,6 +139,7 @@ defmodule Tackle.CLI.TUI.State do
         agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
         input: Tackle.CLI.Widgets.Input.new(),
+        history: History.new(),
         models: available_models(opts, snapshot.agent_state),
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
         stream: %Stream{coalesce?: is_nil(Keyword.get(opts, :test_mode))},
@@ -171,6 +174,7 @@ defmodule Tackle.CLI.TUI.State do
         session_id: snapshot.session_id,
         agent_state: snapshot.agent_state,
         active_turn: snapshot.active_turn,
+        history: History.leave_browsing(state.history),
         pending_prompt: nil,
         stream: Stream.reset(state.stream),
         pending_operation: nil,

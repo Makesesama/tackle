@@ -427,6 +427,128 @@ defmodule Tackle.CLI.TUITest do
     assert composer_widget(state).block.title =~ "not queued"
   end
 
+  # -- prompt history ------------------------------------------------------
+
+  test "Up and Down walk recorded prompts from an empty draft", %{tui: tui} do
+    submit_prompt(tui, "first prompt")
+    submit_prompt(tui, "second\nprompt")
+
+    inject_key(tui, "up")
+    assert draft(tui) == "second\nprompt"
+    assert state(tui).draft_lines == 2
+
+    inject_key(tui, "up")
+    assert draft(tui) == "first prompt"
+
+    # Stepping past the oldest entry keeps showing it instead of wrapping around.
+    inject_key(tui, "up")
+    assert draft(tui) == "first prompt"
+
+    inject_key(tui, "down")
+    assert draft(tui) == "second\nprompt"
+
+    # Past the newest entry the empty draft that browsing started from returns.
+    inject_key(tui, "down")
+    assert draft(tui) == ""
+    assert state(tui).draft_lines == 1
+
+    inject_key(tui, "down")
+    assert draft(tui) == ""
+  end
+
+  test "Up moves the cursor inside a non-empty draft instead of browsing", %{tui: tui} do
+    submit_prompt(tui, "recorded prompt")
+
+    inject_paste(tui, "one\ntwo")
+    inject_key(tui, "up")
+
+    assert draft(tui) == "one\ntwo"
+    assert state(tui).history.index == nil
+
+    inject_key(tui, "p", ["ctrl"])
+    assert draft(tui) == "recorded prompt"
+  end
+
+  test "Ctrl+P and Ctrl+N browse history from any draft", %{tui: tui} do
+    submit_prompt(tui, "older")
+    submit_prompt(tui, "newer")
+
+    inject_paste(tui, "half-written")
+
+    inject_key(tui, "p", ["ctrl"])
+    assert draft(tui) == "newer"
+
+    inject_key(tui, "p", ["ctrl"])
+    assert draft(tui) == "older"
+
+    inject_key(tui, "n", ["ctrl"])
+    assert draft(tui) == "newer"
+
+    inject_key(tui, "n", ["ctrl"])
+    assert draft(tui) == "half-written"
+  end
+
+  test "editing a recalled prompt keeps it as the draft", %{tui: tui} do
+    submit_prompt(tui, "recalled")
+
+    inject_key(tui, "up")
+    assert draft(tui) == "recalled"
+
+    inject_key(tui, "x")
+    assert draft(tui) == "recalledx"
+    assert state(tui).history.index == nil
+
+    inject_key(tui, "p", ["ctrl"])
+    assert draft(tui) == "recalled"
+
+    inject_key(tui, "n", ["ctrl"])
+    assert draft(tui) == "recalledx"
+  end
+
+  test "a repeated prompt is recorded once", %{tui: tui} do
+    submit_prompt(tui, "same")
+    submit_prompt(tui, "same")
+
+    assert state(tui).history.entries == ["same"]
+  end
+
+  test "history survives a new session", %{agent_ref: agent_ref} do
+    test_pid = self()
+    replacement_ref = AgentRef.new!(ID.generate(), ID.generate())
+    {:ok, replacement} = SessionStub.start_link({test_pid, replacement_ref})
+    Process.unlink(replacement)
+
+    task =
+      Task.async(fn ->
+        TUI.start(
+          agent_ref: agent_ref,
+          models: ["openai-codex/test-model"],
+          test_mode: {80, 24},
+          new_session: fn _overrides ->
+            {:ok, %Scope{scope_ref: nil, root_agent_ref: replacement_ref}}
+          end
+        )
+      end)
+
+    assert_receive {:subscribed, tui}
+    submit_prompt(tui, "remembered")
+    first_session = state(tui).session_id
+
+    inject_key(tui, "n", ["alt"])
+    inject_key(tui, "y")
+
+    replacement = await_state(tui, &(&1.session_id != first_session))
+    assert replacement.history.entries == ["remembered"]
+
+    inject_key(tui, "up")
+    assert draft(tui) == "remembered"
+
+    # The recalled prompt is now the draft, so quitting asks for confirmation.
+    inject_key(tui, "c", ["ctrl"])
+    inject_key(tui, "y")
+    assert {:ok, _session} = Task.await(task)
+  end
+
   # -- settings ------------------------------------------------------------
 
   test "F1 picks a model from a searchable menu", %{tui: tui} do
@@ -1851,6 +1973,16 @@ defmodule Tackle.CLI.TUITest do
       NativeConversation.render(transcript_widget(state), state.conversation.rect)
 
     plain(lines)
+  end
+
+  defp submit_prompt(tui, prompt) do
+    inject_paste(tui, prompt)
+    inject_key(tui, "enter")
+    assert_receive {:submitted, ^prompt}
+    await_state(tui, &(&1.active_turn != nil))
+
+    finish_turn(tui, [Message.user(prompt), Message.assistant(content: "ok")])
+    await_state(tui, &is_nil(&1.active_turn))
   end
 
   defp draft(tui) do

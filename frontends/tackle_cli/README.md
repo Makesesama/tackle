@@ -75,6 +75,8 @@ hint row. Empty optional rows are not reserved when the terminal is short.
 | --- | --- |
 | Enter | Send the draft when idle. While a turn is active the draft is kept but **not queued**. |
 | Shift+Enter, Ctrl+Enter, Ctrl+J | Insert a newline. Ctrl+J is the reliable fallback because many terminals cannot distinguish Shift+Enter. |
+| ↑ / ↓ | Recall older/newer prompts when the draft is empty or a prompt is already showing. With a non-empty draft they move the caret instead, so a multi-line prompt is never hijacked. |
+| Ctrl+P / Ctrl+N | Recall older/newer prompts from any draft. ↓/Ctrl+N past the newest prompt returns the draft you were writing. History is in-memory and capped at 100 prompts. |
 | Esc | Close the open overlay first, then request cancellation of the active turn. Esc never exits while idle. |
 | Ctrl+C | Quit. Confirms first when an unsent draft or an active turn would be lost; quits immediately when idle with an empty draft. |
 | Alt+N | Start a new session. Confirms first with a Y/N prompt; on confirm the current root scope stops (stopping an active turn with it) and a fresh session and scope start without restarting the shell. Durable history is not deleted—resume it later with `--resume`. |
@@ -99,7 +101,10 @@ cell at the end of a full row. Resizing remeasures the draft and transcript.
 
 Left/Right and Backspace/Delete operate on complete graphemes, including
 combining marks and emoji. Up/Down move by visual row and retain the preferred
-column. Home/End and Ctrl+A/E move to logical line boundaries; Ctrl+W deletes
+column, except when the draft is empty or a recalled prompt is showing: then
+they walk the in-memory prompt history instead. Ctrl+P/Ctrl+N always walk that
+history, whatever the draft holds. Home/End and Ctrl+A/E move to logical line
+boundaries; Ctrl+W deletes
 the preceding whitespace-delimited word. The caret is hidden while browsing or
 using an overlay. Tabs paint as spaces and other control characters as visible
 replacements without changing the submitted source.
@@ -111,6 +116,10 @@ programmatic draft replacement resets both histories. Unknown modified chords
 (for example Alt+G) are ignored by the
 native widget. Key releases are ignored; key repeats apply to text and
 navigation but not to submit, quit, or overlay shortcuts.
+
+Submitted prompts are appended to an in-memory history: newest first, capped at
+100, with consecutive duplicates skipped. It survives a new session but is not
+written to disk, so it is lost when the shell exits.
 
 While a turn is active the composer is labeled "Draft · next turn (not queued)"
 and Enter does not send. There is no queue, so the draft is explicitly reserved
@@ -281,7 +290,8 @@ process lifecycle, and everything else is a module that takes and returns
 | `TUI.Viewport` | transcript/layout synchronization and scrolling |
 | `TUI.RuntimeEvents` | projecting harness events into state |
 | `Widgets.Input` / `native/tackle/src/widgets/input.rs` | native draft resource, editing, wrapping, and caret paint |
-| `TUI.Composer` | draft editing and submission |
+| `TUI.Composer` | draft editing, submission, and history recall |
+| `TUI.History` | the in-memory prompt history and its browsing position |
 | `TUI.Browser` | transcript focus, selection, and copy |
 | `TUI.Menu` | model, reasoning, and settings pickers |
 | `TUI.Tree` | the `/tree` conversation picker and navigation outcomes |
