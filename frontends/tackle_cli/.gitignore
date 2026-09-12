@@ -6,3 +6,7 @@
 /tackle
 erl_crash.dump
 *.ez
+
+# Rustler builds native artifacts into priv; Cargo.lock remains tracked.
+/priv/native/
+/native/*/target/
