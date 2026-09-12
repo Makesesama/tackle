@@ -155,7 +155,7 @@ hint row. Empty optional rows are not reserved when the terminal is short.
 | Ctrl+F | Transcript search over full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
 | Ctrl+K | Compact context manually while idle. The draft is retained. Manual compaction cannot currently be cancelled. |
 | Ctrl+T | Reveal or collapse supplied reasoning. |
-| Page Up/Page Down, mouse wheel | Scroll the transcript. Ctrl+Home jumps to the oldest row; Alt+> returns to the newest row and resumes following. |
+| Page Up/Page Down, mouse wheel | Scroll the transcript. Alt+< jumps to the oldest row; Alt+> returns to the newest row and resumes following. |
 
 ## Composer behavior
 
