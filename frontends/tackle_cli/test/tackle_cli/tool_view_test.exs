@@ -27,8 +27,10 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     refute text =~ "completed"
     assert text =~ "Replacement preview"
     assert entry |> MessageView.inspect_items(100) |> text() =~ "not a verified file diff"
-    assert text =~ "1 │ -  old"
-    assert text =~ "1 │ +  new"
+    assert text =~ "1 - old"
+    refute text =~ "@@"
+    refute text =~ "│"
+    assert text =~ "1 + new"
     refute text =~ "oldText"
     refute text =~ "Successfully replaced"
   end
@@ -122,8 +124,8 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
     details = text(MessageView.inspect_items(entry, 80))
     assert details =~ "+1 -1 · relative lines"
-    assert details =~ "2 │ -  before"
-    assert details =~ "2 │ +  after"
+    assert details =~ "2 - before"
+    assert details =~ "2 + after"
     assert details =~ "replacement 3"
     assert details =~ "third-new"
   end
@@ -188,7 +190,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     end
   end
 
-  test "diff markers have actual native red/green cells and controls remain data" do
+  test "diffs keep neutral rows and tint only changed tokens; controls remain data" do
     [entry] =
       settled([
         Message.assistant(
@@ -199,7 +201,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
               arguments: %{
                 "path" => "safe\e]52;c;evil\a.ex",
                 "edits" => [
-                  %{"oldText" => "before", "newText" => "after"}
+                  %{"oldText" => "let total = 41", "newText" => "let total = 42"}
                 ]
               }
             }
@@ -218,10 +220,57 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
              ])
 
     %{cells: cells} = CellSession.take_cells(session)
-    assert Enum.any?(cells, &(&1.symbol == "-" and &1.fg == :red))
-    assert Enum.any?(cells, &(&1.symbol == "+" and &1.fg == :green))
-    assert Enum.any?(cells, &(&1.bg == {:indexed, 52}))
-    assert Enum.any?(cells, &(&1.bg == {:indexed, 22}))
+
+    for {row, sign, color, tint, token} <- [
+          {2, "-", 174, 52, "41"},
+          {3, "+", 114, 22, "42"}
+        ] do
+      line = Enum.filter(cells, &(&1.row == row))
+      marker = Enum.find(line, &(&1.symbol == sign))
+      assert marker.fg == {:indexed, color}
+      assert marker.bg == :reset
+      assert marker.modifiers == []
+
+      emphasized = Enum.filter(line, &(&1.bg == {:indexed, tint}))
+      assert Enum.map_join(emphasized, & &1.symbol) == token
+      assert Enum.all?(line -- emphasized, &(&1.bg == :reset))
+      assert Enum.find(line, &(&1.symbol == "l")).fg == :reset
+      assert Enum.find(line, &(&1.col == 6)).fg == {:indexed, 240}
+    end
+  end
+
+  test "minimal diff previews stay bounded on narrow terminals and retain full details" do
+    old = "context\nlet total = 41\n" <> String.duplicate("tail ", 40)
+    new = String.replace(old, "41", "42")
+
+    [entry] =
+      settled([
+        Message.assistant(
+          tool_calls: [
+            %{
+              id: "e",
+              name: "edit",
+              arguments: %{"path" => "a.ex", "edits" => [%{"oldText" => old, "newText" => new}]}
+            }
+          ]
+        )
+      ])
+
+    for width <- [1, 4, 8, 30, 80] do
+      items = ToolView.render(entry, width)
+      assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 8
+
+      for {widget, _} <- items, row <- widget.text do
+        assert MessageView.display_width(plain(row)) <= width
+      end
+    end
+
+    details = MessageView.inspect_items(entry, 240)
+    assert text(details) =~ String.duplicate("tail ", 40)
+    context = for {widget, _} <- details, row <- widget.text, plain(row) =~ "context", do: row
+    assert [row] = context
+    assert row.style.bg == nil
+    assert Enum.all?(row.spans, &is_nil(&1.style.bg))
   end
 
   test "tool cards use a borderless target-first header and indented muted output" do
