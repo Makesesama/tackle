@@ -31,8 +31,6 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.Event` — provider-independent run/message/tool/usage events.
     * `Tackle.Lib.LLM` — the provider-agnostic LLM behaviour and explicit
       adapter/model selection (the keystone seam).
-    * `Tackle.Lib.Tool.Adapters.*` — small adapters that make public runtime boundaries
-      explicit, such as `Tackle.Lib.Tool.Adapters.Web.wrap/1` for agent tools.
     * `Tackle.Lib.Integrations.*` — optional glue for exposing tools through other
       protocols/runtimes such as Anubis MCP.
 
@@ -55,7 +53,7 @@ defmodule Tackle.Lib do
       state =
         Tackle.Lib.new(
           llm: llm,
-          tools: Tackle.Lib.Tool.Adapters.Web.wrap([MyApp.Tools.Search, MyApp.Tools.Fetch]),
+          tools: [MyApp.Tools.Search, MyApp.Tools.Fetch],
           system_prompt: MyApp.build_system_prompt(),
           context: %{user_id: user.id}
         )
