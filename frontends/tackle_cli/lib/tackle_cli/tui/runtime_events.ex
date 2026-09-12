@@ -63,7 +63,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
         if Map.get(operation, :cancellation_requested?, false) do
           {state, cancel_command} = cancel_command(%{state | activity: "cancelling"})
-          {:noreply, state, commands: deferred_commands ++ [cancel_command]}
+          {:noreply, state, commands: append(deferred_commands, cancel_command)}
         else
           {:noreply, %{state | pending_operation: nil}, commands: deferred_commands}
         end
@@ -215,7 +215,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
           state
       ) do
-    {:noreply, %{state | deferred_events: state.deferred_events ++ [message]}, render?: false}
+    deferred_events = append(state.deferred_events, message)
+    {:noreply, %{state | deferred_events: deferred_events}, render?: false}
   end
 
   def handle(
@@ -223,7 +224,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
           state
       ) do
-    {:noreply, %{state | deferred_events: state.deferred_events ++ [message]}, render?: false}
+    deferred_events = append(state.deferred_events, message)
+    {:noreply, %{state | deferred_events: deferred_events}, render?: false}
   end
 
   def handle(
@@ -231,7 +233,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
           state
       ) do
-    {:noreply, %{state | deferred_events: state.deferred_events ++ [message]}, render?: false}
+    deferred_events = append(state.deferred_events, message)
+    {:noreply, %{state | deferred_events: deferred_events}, render?: false}
   end
 
   def handle(
@@ -353,7 +356,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     turn_usages =
       if normalized_usage,
-        do: state.metrics.turn_usages ++ [normalized_usage],
+        do: append(state.metrics.turn_usages, normalized_usage),
         else: state.metrics.turn_usages
 
     metrics = %{
@@ -577,13 +580,13 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     case List.pop_at(timeline, -1) do
       {%{kind: ^kind} = entry, rest} ->
         if Map.get(entry, :message_id) == message_id do
-          rest ++ [%{entry | content: entry.content <> delta}]
+          append(rest, %{entry | content: entry.content <> delta})
         else
-          timeline ++ [text_timeline_entry(kind, delta, message_id)]
+          append(timeline, text_timeline_entry(kind, delta, message_id))
         end
 
       _other ->
-        timeline ++ [text_timeline_entry(kind, delta, message_id)]
+        append(timeline, text_timeline_entry(kind, delta, message_id))
     end
   end
 
@@ -623,12 +626,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp maybe_append_message_text(entries, kind, content, message_id)
        when is_binary(content) and content != "" do
-    entries ++ [text_timeline_entry(kind, content, message_id)]
+    append(entries, text_timeline_entry(kind, content, message_id))
   end
 
   defp maybe_append_message_text(entries, _kind, _content, _message_id), do: entries
 
-  defp append_message_id(ids, id), do: if(id in ids, do: ids, else: ids ++ [id])
+  defp append_message_id(ids, id), do: if(id in ids, do: ids, else: append(ids, id))
 
   defp settle_tool(state, data, status, label) do
     state = put_tool_activity(state, data, status)
@@ -651,7 +654,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp put_timeline_tool(timeline, tool) do
     case Enum.find_index(timeline, &same_timeline_tool?(&1, tool)) do
-      nil -> timeline ++ [Map.put(tool, :kind, :tool)]
+      nil -> append(timeline, Map.put(tool, :kind, :tool))
       index -> List.replace_at(timeline, index, Map.put(tool, :kind, :tool))
     end
   end
@@ -684,7 +687,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     case Enum.find_index(state.tool_activity, &same_tool?(&1, id, name)) do
       nil ->
-        %{state | tool_activity: state.tool_activity ++ [updates]}
+        %{state | tool_activity: append(state.tool_activity, updates)}
 
       index ->
         tool_activity =
@@ -693,6 +696,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         %{state | tool_activity: tool_activity}
     end
   end
+
+  defp append(items, item), do: Enum.reverse([item | Enum.reverse(items)])
 
   defp merge_tool_activity(existing, updates) do
     Enum.reduce(updates, existing, fn
