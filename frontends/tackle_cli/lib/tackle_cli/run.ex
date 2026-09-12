@@ -379,9 +379,18 @@ defmodule Tackle.CLI.Run do
     end
   end
 
+  @doc false
+  @spec standalone?() :: boolean()
+  def standalone?, do: Burrito.Util.running_standalone?()
+
   defp ensure_started do
     Distribution.configure()
-    Application.ensure_all_started(:tackle_cli)
+
+    if standalone?() do
+      {:ok, []}
+    else
+      Application.ensure_all_started(:tackle_cli)
+    end
   end
 
   defp overrides(model, thinking, llm_stream) do
@@ -401,8 +410,58 @@ defmodule Tackle.CLI.Run do
     :exit, _reason -> :ok
   end
 
+  # An interrupted turn is not a failure to explain away: the runtime refuses to
+  # continue until the frontend records an explicit recovery decision, so the
+  # operator needs the turn identity, the unresolved tools, and the exact flag
+  # that resolves them.
+  defp error({:interrupted_session, recovery}) do
+    Owl.IO.puts(
+      Owl.Data.tag(
+        "error: turn #{recovery[:turn_id]} (#{recovery[:operation]}) was interrupted and needs a recovery decision",
+        :red
+      ),
+      :stderr
+    )
+
+    print_uncertain_tools(recovery[:uncertain_tools] || [])
+
+    Owl.IO.puts(
+      Owl.Data.tag(
+        "Re-run with --abandon to record turn.abandoned for that turn and continue the session.",
+        :yellow
+      ),
+      :stderr
+    )
+
+    1
+  end
+
   defp error(reason) do
     Owl.IO.puts(Owl.Data.tag("error: #{inspect(reason)}", :red), :stderr)
     1
+  end
+
+  defp print_uncertain_tools([]), do: :ok
+
+  defp print_uncertain_tools(tools) do
+    Owl.IO.puts(
+      Owl.Data.tag("#{length(tools)} tool executions have no durable result:", :yellow),
+      :stderr
+    )
+
+    Enum.each(tools, fn tool ->
+      Owl.IO.puts(
+        [
+          "  - ",
+          to_string(tool[:name]),
+          " started ",
+          to_string(tool[:started_at]),
+          " (",
+          to_string(tool[:tool_call_id]),
+          ")"
+        ],
+        :stderr
+      )
+    end)
   end
 end

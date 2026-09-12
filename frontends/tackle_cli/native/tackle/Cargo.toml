@@ -12,3 +12,6 @@ crate-type = ["cdylib"]
 ratatui = { version = "0.30", default-features = false, features = ["underline-color", "unstable-rendered-line-info"] }
 rustler = { version = "0.38", default-features = false, features = ["derive", "nif_version_2_16"] }
 tui-markdown = "0.3"
+
+[build-dependencies]
+cc = "1"

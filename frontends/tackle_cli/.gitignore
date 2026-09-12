@@ -3,6 +3,7 @@
 /cover/
 /doc/
 /tmp/
+/burrito_out/
 /tackle
 erl_crash.dump
 *.ez

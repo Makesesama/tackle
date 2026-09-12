@@ -433,9 +433,44 @@ defmodule Tackle.Plugins.Codex do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+    |> then(fn
+      {:ok, items} -> {:ok, close_dangling_tool_calls(items)}
+      error -> error
+    end)
   end
 
   defp convert_messages(_messages, _model), do: {:error, :invalid_messages}
+
+  # A cancelled turn can leave a committed assistant tool call without a tool
+  # result. The Responses API rejects that history on the next prompt, so close
+  # only those dangling calls with the same prompt-only marker Codex uses for
+  # interrupted tools.
+  defp close_dangling_tool_calls(items) do
+    completed_call_ids =
+      items
+      |> Enum.flat_map(fn
+        %{"type" => "function_call_output", "call_id" => call_id}
+        when is_binary(call_id) and call_id != "" ->
+          [call_id]
+
+        _item ->
+          []
+      end)
+      |> MapSet.new()
+
+    Enum.flat_map(items, fn
+      %{"type" => "function_call", "call_id" => call_id} = item
+      when is_binary(call_id) and call_id != "" ->
+        if MapSet.member?(completed_call_ids, call_id) do
+          [item]
+        else
+          [item, %{"type" => "function_call_output", "call_id" => call_id, "output" => "aborted"}]
+        end
+
+      item ->
+        [item]
+    end)
+  end
 
   defp convert_message(message, _index, _model) when not is_map(message),
     do: {:error, :invalid_message}
