@@ -32,6 +32,13 @@ nix build .#tackle-cli
 ./result/bin/tackle --version
 ```
 
+On Linux, `nix build .#tackle-cli-jail` builds a separate Bubblewrap wrapper
+(`bin/tackle`)
+around this same production binary, with host-daemon Nix build support. See
+[production jailed package](../../README.md#production-jailed-package-on-linux)
+for permissions, requirements, and the credential-free host smoke test. The
+existing `jailed-tackle` command remains the development-checkout launcher.
+
 The release has two Rust NIFs: ExRatatui and Tackle's native widgets. The Nix
 package builds both from their locked sources with the target-specific Rust and
 C toolchains, then assembles the release with the exact Erlang/OTP patch used by
