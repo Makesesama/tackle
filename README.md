@@ -43,10 +43,10 @@ this project plans to implement and maintain**, and it should use the same
 extension contracts as third-party adapters, not a privileged core code path.
 
 MCP is a **future plugin for the harness**, not a required root dependency.
-The reusable library retains its inherited optional Anubis MCP bridge during
-this identity migration; other optional integrations should follow the same
-separation. Phoenix and SaaS-specific concerns are not requirements for the
-standalone harness.
+The inherited Anubis MCP **server** bridge was extracted out of the library into
+`packages/tackle_anubis` so the core stays MCP-free; other optional integrations
+should follow the same separation. Phoenix and SaaS-specific concerns are not
+requirements for the standalone harness.
 
 Plugin discovery, loading, and distribution are not yet specified. In
 particular, how user-provided plugins work with a Burrito binary needs to be
@@ -68,10 +68,11 @@ This repository is a starting point, not a finished CLI:
   agent library and its API documentation (`Tackle.Lib.*`).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the
   existing Phoenix integration; it is not the intended CLI foundation.
-- The library currently includes an optional Anubis MCP integration. That is
-  inherited functionality and remains in `Tackle.Lib.Integrations.Anubis`; a
-  future extraction needs a deliberate compatibility migration rather than
-  silent removal.
+- The library carries no MCP code or dependency. The inherited Anubis MCP bridge
+  was extracted into [`packages/tackle_anubis`](packages/tackle_anubis/README.md)
+  (`:tackle_anubis` / `Tackle.Anubis.*`), a breaking rename of the former
+  `Tackle.Lib.Integrations.Anubis`; `tackle_lib` keeps only the provider-neutral
+  `Tackle.Lib.Integrations.Registry` seam.
 - [`plugins/tackle_codex`](plugins/tackle_codex/README.md) contains the
   first-party OpenAI Codex adapter, including ChatGPT OAuth protocol helpers,
   token refresh, Responses SSE transport, and provider-neutral translation.

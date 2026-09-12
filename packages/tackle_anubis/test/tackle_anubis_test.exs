@@ -1,9 +1,9 @@
-defmodule Tackle.Lib.Integrations.AnubisTest do
+defmodule Tackle.AnubisTest do
   use ExUnit.Case, async: true
 
   alias Anubis.Server.Frame
-  alias Tackle.Lib.Integrations.Anubis
-  alias Tackle.Lib.Integrations.Anubis.Schema
+  alias Tackle.Anubis
+  alias Tackle.Anubis.Schema
 
   defmodule SearchTool do
     use Tackle.Lib.Tool

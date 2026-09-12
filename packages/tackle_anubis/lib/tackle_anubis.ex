@@ -1,8 +1,4 @@
-# credo:disable-for-this-file Credo.Check.Refactor.Apply
-# `Anubis.Server.Frame` and `Anubis.Server.Response` come from the optional
-# `:anubis_mcp` dependency. `apply/3` keeps this integration compilable (without
-# undefined-module warnings) for hosts that do not include Anubis.
-defmodule Tackle.Lib.Integrations.Anubis do
+defmodule Tackle.Anubis do
   @moduledoc """
   Integration helpers for exposing `Tackle.Lib.Tool` modules through Anubis MCP.
 
@@ -13,11 +9,11 @@ defmodule Tackle.Lib.Integrations.Anubis do
   ## Example
 
       def init(_client_info, frame) do
-        {:ok, Tackle.Lib.Integrations.Anubis.register_all(frame, @tools)}
+        {:ok, Tackle.Anubis.register_all(frame, @tools)}
       end
 
       def handle_tool_call(name, params, frame) do
-        Tackle.Lib.Integrations.Anubis.dispatch(name, params, frame,
+        Tackle.Anubis.dispatch(name, params, frame,
           tools: @tools,
           context: &MyApp.MCP.Context.from_frame/1
         )
@@ -26,8 +22,8 @@ defmodule Tackle.Lib.Integrations.Anubis do
 
   alias Anubis.Server.Frame
   alias Anubis.Server.Response
+  alias Tackle.Anubis.Schema, as: AnubisSchema
   alias Tackle.Lib.ID
-  alias Tackle.Lib.Integrations.Anubis.Schema, as: AnubisSchema
   alias Tackle.Lib.Integrations.Registry
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.{Call, Error, Result}
@@ -81,21 +77,21 @@ defmodule Tackle.Lib.Integrations.Anubis do
       scopes: Keyword.get(opts, :scopes, [])
     ]
 
-    apply(Frame, :register_tool, [frame, definition.name, registration_opts])
+    Frame.register_tool(frame, definition.name, registration_opts)
   end
 
   defp run_tool(tool_module, call, context) do
-    response_type = apply(Response, :tool, [])
+    response_type = Response.tool()
 
     case Tool.settle(tool_module, call, context) do
       {:ok, %Result{output: output}} when is_map(output) ->
-        apply(Response, :structured, [response_type, output])
+        Response.structured(response_type, output)
 
       {:ok, %Result{content: content}} ->
-        apply(Response, :text, [response_type, content])
+        Response.text(response_type, content)
 
       {:error, %Error{message: message}} ->
-        apply(Response, :error, [response_type, message])
+        Response.error(response_type, message)
     end
   end
 

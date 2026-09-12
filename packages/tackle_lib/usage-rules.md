@@ -170,10 +170,11 @@ argument enrichment. Persist messages in `after_message/3`; do teardown in
 
 ## Integrations
 
-- `Tackle.Lib.Integrations.Anubis` exposes `Tackle.Lib.Tool` modules through Anubis MCP.
-  It owns no server setup, auth, or tenant scope — the host Anubis server
-  resolves/authorizes the request and passes a context builder to `dispatch/4`.
-  Requires the optional `:anubis_mcp` dep.
+- `Tackle.Lib.Integrations.Registry` is the provider-neutral seam for exposing
+  `Tackle.Lib.Tool` modules through host-owned bridges. It owns no server setup,
+  auth, or tenant scope.
+- The Anubis MCP bridge is the sibling `tackle_anubis` package (`Tackle.Anubis`),
+  not part of Tackle.Lib. Add it when a host wants MCP.
 
 ## Things to avoid
 

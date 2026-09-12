@@ -37,11 +37,12 @@ packages/
       tackle_lib/                # Existing reusable engine and contracts
     test/
   tackle_phoenix/                 # Existing optional Phoenix integration
+  tackle_anubis/                  # Optional Anubis MCP bridge (extracted from tackle_lib)
 
 plugins/
   tackle_codex/                  # Planned first-party provider plugin
   tackle_dev_tools/              # Proposed bundled developer-tool package
-  tackle_mcp/                    # Future plugin; requires separate migration
+  tackle_mcp/                    # Future harness-side MCP plugin; not the Anubis bridge
 
 frontends/
   tackle_cli/                    # CLI entrypoint and terminal presentation
@@ -59,6 +60,7 @@ Proposed component identities:
 | Harness | `:tackle` | `Tackle.*` |
 | Library | `:tackle_lib` | `Tackle.Lib.*` |
 | Existing Phoenix integration | `:tackle_phoenix` | `Tackle.Phoenix.*` (unchanged) |
+| Anubis MCP bridge | `:tackle_anubis` | `Tackle.Anubis.*` |
 | Codex plugin | `:tackle_codex` | `Tackle.Plugins.Codex.*` |
 | Developer tools | `:tackle_dev_tools` | `Tackle.Plugins.DevTools.*` |
 | CLI | `:tackle_cli` | `Tackle.CLI.*` |
@@ -74,7 +76,10 @@ Its public facade becomes `Tackle.Lib`; examples of migrated contracts are `Tack
 
 It must not depend on the harness, a frontend, a concrete provider, or developer-specific tools. A different application can use this package to build its own harness without depending on `:tackle`.
 
-Preserve the inherited optional MCP bridge during the rename. Its later extraction is a separate compatibility-sensitive change.
+The inherited optional MCP bridge was extracted into `packages/tackle_anubis`
+(`:tackle_anubis` / `Tackle.Anubis.*`, a breaking rename of
+`Tackle.Lib.Integrations.Anubis`) so the library keeps no MCP dependency and only
+the provider-neutral `Tackle.Lib.Integrations.Registry` seam.
 
 ### Developer harness: root `lib/tackle`
 
@@ -221,7 +226,9 @@ This is an intentional breaking library migration. Do not add broad compatibilit
 ### Later, separately scoped
 
 - Decide and validate binary packaging and third-party plugin distribution.
-- Extract MCP with an explicit compatibility strategy.
+- Extract MCP with an explicit compatibility strategy. Done for the Anubis server
+  bridge: it is now `packages/tackle_anubis`; a harness-side MCP client plugin
+  remains future work.
 - Build a web frontend when needed; do not introduce web-only dependencies now.
 
 ## 8. Validation and acceptance

@@ -33,8 +33,8 @@ defmodule Tackle.Lib do
       exponential backoff.
     * `Tackle.Lib.LLM` — the provider-agnostic LLM behaviour and explicit
       adapter/model selection (the keystone seam).
-    * `Tackle.Lib.Integrations.*` — optional glue for exposing tools through other
-      protocols/runtimes such as Anubis MCP.
+    * `Tackle.Lib.Integrations.Registry` — provider-neutral registry for exposing
+      tools through host-owned bridges (for example `Tackle.Anubis`).
 
   ## What the host provides
 
