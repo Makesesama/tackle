@@ -258,6 +258,10 @@ defmodule Tackle.CLI.TUI do
 
   defp dispatch_base(:newline, _key, state), do: Composer.insert_newline(state)
   defp dispatch_base(:submit, _key, state), do: Composer.submit(state)
+  defp dispatch_base(:history_previous, _key, state), do: Composer.history_previous(state)
+  defp dispatch_base(:history_next, _key, state), do: Composer.history_next(state)
+  defp dispatch_base(:previous, key, state), do: Composer.previous(state, key)
+  defp dispatch_base(:next, key, state), do: Composer.next(state, key)
   defp dispatch_base(:composer, key, state), do: Composer.key(state, key)
 
   defp dispatch_base({:transcript, intent}, _key, state),
