@@ -559,12 +559,61 @@ defmodule Tackle.Plugins.Codex do
     call_id = field(message, :tool_call_id)
     content = field(message, :content) || ""
 
-    if is_binary(call_id) and call_id != "" and is_binary(content) do
-      {:ok, [%{"type" => "function_call_output", "call_id" => call_id, "output" => content}]}
+    if is_binary(call_id) and call_id != "" do
+      case tool_output_content(content) do
+        {:ok, output} ->
+          {:ok, [%{"type" => "function_call_output", "call_id" => call_id, "output" => output}]}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     else
       {:error, :invalid_tool_message}
     end
   end
+
+  # Text-only tool results stay a plain string output. A tool that also read
+  # structured content (for example an image) sends a content-item array, which
+  # the Responses API accepts as a function call output body.
+  defp tool_output_content(content) when is_binary(content), do: {:ok, content}
+
+  defp tool_output_content(content) when is_list(content) do
+    content
+    |> Enum.reduce_while({:ok, []}, fn part, {:ok, items} ->
+      case tool_output_content_item(part) do
+        {:ok, item} -> {:cont, {:ok, [item | items]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, items} -> {:ok, Enum.reverse(items)}
+      error -> error
+    end
+  end
+
+  defp tool_output_content(_content), do: {:error, :invalid_tool_message}
+
+  defp tool_output_content_item(part) when is_map(part) do
+    case field(part, :type) do
+      "text" -> input_text_item(field(part, :text))
+      "image" -> input_image_item(field(part, :media_type), field(part, :data))
+      type -> {:error, {:unsupported_tool_content, type}}
+    end
+  end
+
+  defp tool_output_content_item(_part), do: {:error, :invalid_tool_message}
+
+  defp input_text_item(text) when is_binary(text) do
+    {:ok, %{"type" => "input_text", "text" => text}}
+  end
+
+  defp input_text_item(_text), do: {:error, :invalid_tool_message}
+
+  defp input_image_item(media_type, data) when is_binary(media_type) and is_binary(data) do
+    {:ok, %{"type" => "input_image", "image_url" => "data:#{media_type};base64,#{data}"}}
+  end
+
+  defp input_image_item(_media_type, _data), do: {:error, :invalid_tool_message}
 
   defp convert_tools(tools) when is_list(tools) do
     Enum.reduce_while(tools, {:ok, []}, fn tool, {:ok, acc} ->

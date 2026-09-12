@@ -334,6 +334,55 @@ defmodule Tackle.Plugins.DeepSeekTest do
     assert [%{"reasoning_content" => "previous reasoning"}, _tool] = body["messages"]
   end
 
+  test "replaces structured tool content with a text note for the text-only wire format", %{
+    store: store
+  } do
+    test_pid = self()
+
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(test_pid, {:body, body})
+
+      streaming_response(options, [
+        sse(%{
+          "model" => "deepseek-flash",
+          "choices" => [%{"delta" => %{"content" => "done"}, "finish_reason" => "stop"}]
+        }),
+        "data: [DONE]\n\n"
+      ])
+    end
+
+    messages = [
+      %{
+        role: :assistant,
+        content: nil,
+        tool_calls: [%{id: "call-1", function: %{name: "read", arguments: "{}"}}]
+      },
+      %{
+        role: :tool,
+        tool_call_id: "call-1",
+        name: "read",
+        content: [
+          %{"type" => "text", "text" => "Read image shot.png (image/png)."},
+          %{"type" => "image", "media_type" => "image/png", "data" => "aGVsbG8="}
+        ]
+      }
+    ]
+
+    opts =
+      base_opts(store, request)
+      |> Keyword.merge(model: "deepseek-flash", messages: messages)
+
+    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+
+    assert_receive {:body, %{"messages" => [_assistant, tool]}}
+    assert tool["role"] == "tool"
+
+    assert tool["content"] ==
+             "Read image shot.png (image/png).\n" <>
+               "[image content omitted: this model accepts text-only tool results]"
+  end
+
   test "replays reasoning content for flash and V4 without weakening model affinity", %{
     store: store
   } do

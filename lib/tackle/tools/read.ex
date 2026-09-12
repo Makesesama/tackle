@@ -1,24 +1,35 @@
 defmodule Tackle.Tools.Read do
-  @moduledoc "Reads UTF-8 text files for the agent."
+  @moduledoc "Reads UTF-8 text files and supported images for the agent."
 
   use Tackle.Lib.Tool
 
+  alias Tackle.Lib.Tool.Content
   alias Tackle.Tools.{FileSystem, Output}
+
+  # Images travel to the model as base64 content parts and stay in the durable
+  # session, so they are capped well below the session codec's binary limit.
+  @max_image_bytes 5 * 1_024 * 1_024
 
   tool_name("read")
 
   description(
-    "Read a UTF-8 text file. Paths may be relative to the current working directory or absolute. " <>
-      "Output is limited to 2,000 lines or 50KB; use offset and limit to continue reading large files."
+    "Read a file. Text files return their UTF-8 contents (limited to 2,000 lines or 50KB; use offset " <>
+      "and limit to continue reading large files). PNG, JPEG, GIF, and WebP images return a short " <>
+      "summary and attach the image itself for visual inspection. Paths may be relative to the " <>
+      "current working directory or absolute."
   )
 
   input do
     field(:path, :string, required: true, description: "Path to the file to read")
-    field(:offset, :integer, description: "1-based line number to start reading from")
-    field(:limit, :integer, description: "Maximum number of lines to read")
+
+    field(:offset, :integer,
+      description: "1-based line number to start reading text from (text files only)"
+    )
+
+    field(:limit, :integer, description: "Maximum number of text lines to read (text files only)")
   end
 
-  @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
+  @spec run(map(), map()) :: {:ok, String.t() | Content.t()} | {:error, String.t()}
   def run(%{"path" => path} = args, context) do
     offset = Map.get(args, "offset", 1)
     limit = Map.get(args, "limit")
@@ -26,22 +37,74 @@ defmodule Tackle.Tools.Read do
     with :ok <- validate_positive(:offset, offset),
          :ok <- validate_optional_positive(:limit, limit),
          {:ok, absolute_path} <- FileSystem.resolve_path(path, context),
-         {:ok, content} <- read_utf8(absolute_path, path) do
-      select(content, path, offset, limit)
+         {:ok, file} <- read_file(absolute_path, path) do
+      render(file, path, offset, limit)
     end
   end
 
-  defp read_utf8(absolute_path, display_path) do
+  defp read_file(absolute_path, display_path) do
     case File.read(absolute_path) do
-      {:ok, content} ->
-        if String.valid?(content),
-          do: {:ok, content},
-          else: {:error, "Could not read #{display_path}: file is not valid UTF-8"}
+      {:ok, data} ->
+        classify(data, display_path)
 
       {:error, reason} ->
         {:error, "Could not read #{FileSystem.format_error(display_path, reason)}"}
     end
   end
+
+  defp classify(data, display_path) do
+    case image_media_type(data) do
+      nil ->
+        if String.valid?(data) do
+          {:ok, {:text, data}}
+        else
+          {:error,
+           "Could not read #{display_path}: file is not valid UTF-8 and is not a supported image " <>
+             "(PNG, JPEG, GIF, WebP)"}
+        end
+
+      media_type ->
+        read_image(data, media_type, display_path)
+    end
+  end
+
+  defp image_media_type(<<0x89, "PNG\r\n", 0x1A, 0x0A, _rest::binary>>), do: "image/png"
+  defp image_media_type(<<0xFF, 0xD8, 0xFF, _rest::binary>>), do: "image/jpeg"
+  defp image_media_type(<<"GIF87a", _rest::binary>>), do: "image/gif"
+  defp image_media_type(<<"GIF89a", _rest::binary>>), do: "image/gif"
+
+  defp image_media_type(<<"RIFF", _size::binary-size(4), "WEBP", _rest::binary>>),
+    do: "image/webp"
+
+  defp image_media_type(_data), do: nil
+
+  defp read_image(data, media_type, display_path) do
+    size = byte_size(data)
+
+    if size > @max_image_bytes do
+      {:error,
+       "Could not read #{display_path}: image is #{Output.format_size(size)}, larger than the " <>
+         "#{Output.format_size(@max_image_bytes)} image read limit. Downscale it (for example with " <>
+         "bash) and read it again."}
+    else
+      {:ok, {:image, media_type, size, Base.encode64(data)}}
+    end
+  end
+
+  defp render({:image, media_type, size, data}, path, offset, limit) do
+    if offset == 1 and is_nil(limit) do
+      {:ok,
+       Content.new(
+         "Read image #{path} (#{media_type}, #{Output.format_size(size)}). " <>
+           "The image is attached to this tool result.",
+         [Content.image(media_type, data)]
+       )}
+    else
+      {:error, "offset and limit apply only to text files"}
+    end
+  end
+
+  defp render({:text, content}, path, offset, limit), do: select(content, path, offset, limit)
 
   defp select(content, path, offset, limit) do
     lines = String.split(content, "\n")

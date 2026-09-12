@@ -269,6 +269,88 @@ defmodule Tackle.Plugins.CodexTest do
            )
   end
 
+  test "sends content-part tool results as function call output items", %{store: store} do
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(self(), {:request_input, body["input"]})
+
+      streaming_response(options, [
+        sse(%{
+          "type" => "response.completed",
+          "response" => %{
+            "status" => "completed",
+            "output" => [
+              %{
+                "type" => "message",
+                "content" => [%{"type" => "output_text", "text" => "I can see it"}]
+              }
+            ]
+          }
+        })
+      ])
+    end
+
+    messages = [
+      %{role: :user, content: "what does this screenshot show?"},
+      %{
+        role: :assistant,
+        content: nil,
+        tool_calls: [%{id: "call-1", name: "read", arguments: %{"path" => "shot.png"}}]
+      },
+      %{
+        role: :tool,
+        tool_call_id: "call-1",
+        name: "read",
+        content: [
+          %{"type" => "text", "text" => "Read image shot.png (image/png)."},
+          %{"type" => "image", "media_type" => "image/png", "data" => "aGVsbG8="}
+        ]
+      }
+    ]
+
+    opts = base_opts(store, request) |> Keyword.put(:messages, messages)
+
+    assert {:ok, %{data: %{"content" => "I can see it"}}} = Codex.generate(nil, opts)
+    assert_receive {:request_input, input}
+
+    assert Enum.any?(
+             input,
+             &(&1 == %{
+                 "type" => "function_call_output",
+                 "call_id" => "call-1",
+                 "output" => [
+                   %{"type" => "input_text", "text" => "Read image shot.png (image/png)."},
+                   %{
+                     "type" => "input_image",
+                     "image_url" => "data:image/png;base64,aGVsbG8="
+                   }
+                 ]
+               })
+           )
+  end
+
+  test "rejects a tool result with an unsupported content part", %{store: store} do
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(self(), {:request_input, body["input"]})
+      streaming_response(options, [sse(%{"type" => "response.completed", "response" => %{}})])
+    end
+
+    messages = [
+      %{role: :user, content: "look"},
+      %{
+        role: :tool,
+        tool_call_id: "call-1",
+        name: "read",
+        content: [%{"type" => "video", "data" => "x"}]
+      }
+    ]
+
+    opts = base_opts(store, request) |> Keyword.put(:messages, messages)
+
+    assert {:error, {:unsupported_tool_content, "video"}} = Codex.generate(nil, opts)
+  end
+
   test "streams text, reasoning, and tool argument deltas across chunk boundaries", %{
     store: store
   } do

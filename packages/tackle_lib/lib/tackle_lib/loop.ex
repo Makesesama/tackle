@@ -973,7 +973,8 @@ defmodule Tackle.Lib.Loop do
   defp append_tool_settlement({:ok, %ToolResult{} = result}, state, callbacks) do
     tool_message =
       Message.tool_result(result.tool_call_id, result.name, result.content,
-        id_generator: state.id_generator
+        id_generator: state.id_generator,
+        parts: result.parts
       )
 
     state = State.add_message(state, tool_message)

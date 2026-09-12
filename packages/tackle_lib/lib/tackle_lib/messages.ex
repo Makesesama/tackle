@@ -35,6 +35,16 @@ defmodule Tackle.Lib.Messages do
       # tool result, linked back to the call by id
       %{role: :tool, tool_call_id: "call_1", name: "search", content: "..."}
 
+  A tool result that read extra content (for example an image) carries it in the
+  message's `:parts`, and its `:content` becomes the provider-neutral part array
+  instead of a string:
+
+      %{role: :tool, tool_call_id: "call_1", name: "read",
+        content: [
+          %{"type" => "text", "text" => "Read image report.png (image/png, 12.0KB)."},
+          %{"type" => "image", "media_type" => "image/png", "data" => "iVBORw0KG..."}
+        ]}
+
   Tool-call `arguments` are emitted as a JSON **string** (the OpenAI tool-call
   convention), not a map.
   """
@@ -70,7 +80,7 @@ defmodule Tackle.Lib.Messages do
       role: :tool,
       tool_call_id: message.tool_call_id,
       name: message.tool_name,
-      content: message.content || ""
+      content: tool_content(message)
     }
   end
 
@@ -95,6 +105,18 @@ defmodule Tackle.Lib.Messages do
   end
 
   def to_provider_message(_), do: nil
+
+  # A tool result without extra parts stays a plain string. With parts, the text
+  # projection becomes the leading text part of a provider-neutral part array.
+  defp tool_content(%Message{content: content, parts: parts}) do
+    text = content || ""
+
+    case List.wrap(parts) do
+      [] -> text
+      parts when text == "" -> parts
+      parts -> [%{"type" => "text", "text" => text} | parts]
+    end
+  end
 
   defp maybe_put_provider_state(nil, _provider_state), do: nil
 

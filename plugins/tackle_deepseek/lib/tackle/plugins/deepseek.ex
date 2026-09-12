@@ -342,12 +342,54 @@ defmodule Tackle.Plugins.DeepSeek do
     call_id = field(message, :tool_call_id)
     content = field(message, :content)
 
-    if is_binary(call_id) and call_id != "" and is_binary(content) do
-      {:ok, %{"role" => "tool", "tool_call_id" => call_id, "content" => content}}
+    if is_binary(call_id) and call_id != "" do
+      case tool_text_content(content) do
+        {:ok, text} -> {:ok, %{"role" => "tool", "tool_call_id" => call_id, "content" => text}}
+        {:error, reason} -> {:error, reason}
+      end
     else
       {:error, :invalid_tool_message}
     end
   end
+
+  defp tool_text_content(content) when is_binary(content), do: {:ok, content}
+
+  # DeepSeek's Chat Completions tool results are text-only, so structured parts
+  # (currently images) are replaced by an explicit note instead of being dropped
+  # silently or failing the whole request.
+  defp tool_text_content(content) when is_list(content) do
+    content
+    |> Enum.reduce_while({:ok, []}, fn part, {:ok, texts} ->
+      case tool_text_part(part) do
+        {:ok, text} -> {:cont, {:ok, [text | texts]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, texts} -> {:ok, texts |> Enum.reverse() |> Enum.join("\n")}
+      error -> error
+    end
+  end
+
+  defp tool_text_content(_content), do: {:error, :invalid_tool_message}
+
+  defp tool_text_part(part) when is_map(part) do
+    case field(part, :type) do
+      "text" ->
+        case field(part, :text) do
+          text when is_binary(text) -> {:ok, text}
+          _text -> {:error, :invalid_message_content}
+        end
+
+      "image" ->
+        {:ok, "[image content omitted: this model accepts text-only tool results]"}
+
+      type ->
+        {:error, {:unsupported_tool_content, type}}
+    end
+  end
+
+  defp tool_text_part(_part), do: {:error, :invalid_tool_message}
 
   defp convert_tool_calls(tool_calls) when is_list(tool_calls) do
     tool_calls
