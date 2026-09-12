@@ -49,7 +49,8 @@ defmodule Tackle.Session.Reader do
   """
   @spec read(String.t(), keyword()) :: {:ok, replay()} | {:error, term()}
   def read(session_id, opts \\ []) do
-    with {:ok, path} <- journal_path(session_id, opts) do
+    with {:ok, path} <- journal_path(session_id, opts),
+         :ok <- validate_journal_file(path) do
       case open(session_id, path, :read_only) do
         {:ok, name} ->
           try do
@@ -321,6 +322,14 @@ defmodule Tackle.Session.Reader do
     {:ok, :erlang.binary_to_term(binary, [:safe])}
   rescue
     ArgumentError -> {:error, {:undecodable_item, index}}
+  end
+
+  defp validate_journal_file(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular}} -> :ok
+      {:ok, %File.Stat{type: type}} -> {:error, {:invalid_journal_file, path, type}}
+      {:error, _reason} -> :ok
+    end
   end
 
   defp journal_path(session_id, opts) do
