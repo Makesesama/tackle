@@ -66,7 +66,7 @@ defmodule Tackle.Lib.MessagesTest do
 
       result = Messages.to_provider(messages)
 
-      assert length(result) == 4
+      assert [_, _, _, _] = result
       assert Enum.map(result, & &1.role) == [:user, :assistant, :tool, :assistant]
 
       [_user, assistant_call, tool_result, _final] = result

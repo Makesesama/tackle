@@ -75,19 +75,17 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
 
   defp build_summary(_response), do: {:error, :invalid_summary_response}
 
-  defp content(data) when is_map(data) do
-    Map.get(data, "content") || Map.get(data, :content)
-  end
-
+  defp content(%{"content" => value, content: content}) when value in [nil, false], do: content
+  defp content(%{"content" => content}), do: content
+  defp content(%{content: content}), do: content
   defp content(_data), do: nil
 
-  defp tool_calls?(data) when is_map(data) do
-    case Map.get(data, "tool_calls") || Map.get(data, :tool_calls) do
-      calls when is_list(calls) -> calls != []
-      _other -> false
-    end
-  end
+  defp tool_calls?(%{"tool_calls" => value, tool_calls: calls})
+       when value in [nil, false] and is_list(calls),
+       do: calls != []
 
+  defp tool_calls?(%{"tool_calls" => calls}) when is_list(calls), do: calls != []
+  defp tool_calls?(%{tool_calls: calls}) when is_list(calls), do: calls != []
   defp tool_calls?(_data), do: false
 
   defp normalize_usage(nil), do: nil

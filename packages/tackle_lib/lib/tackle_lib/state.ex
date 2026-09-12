@@ -221,13 +221,13 @@ defmodule Tackle.Lib.State do
   def add_message(%__MODULE__{} = state, %Message{} = message) do
     %{
       state
-      | messages: state.messages ++ [message],
+      | messages: List.insert_at(state.messages, -1, message),
         model_messages: append_model(state.model_messages, message)
     }
   end
 
   defp append_model(nil, _message), do: nil
-  defp append_model(model_messages, message), do: model_messages ++ [message]
+  defp append_model(model_messages, message), do: List.insert_at(model_messages, -1, message)
 
   @doc """
   Returns the provider-visible model message projection.
