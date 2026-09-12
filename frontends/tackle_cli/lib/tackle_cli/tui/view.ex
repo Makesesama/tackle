@@ -31,6 +31,7 @@ defmodule Tackle.CLI.TUI.View do
     StatusView,
     Theme,
     Tree,
+    UsageChart,
     Viewport
   }
 
@@ -179,6 +180,7 @@ defmodule Tackle.CLI.TUI.View do
   defp overlay_widget(%State{overlay: {:tree, _}} = state), do: Tree.popup(state)
   defp overlay_widget(%State{overlay: {:inspector, _}} = state), do: Inspector.popup(state)
   defp overlay_widget(%State{overlay: {:search, _}} = state), do: Search.popup(state)
+  defp overlay_widget(%State{overlay: {:usage_chart, _}} = state), do: UsageChart.popup(state)
 
   defp overlay_widget(%State{overlay: {:confirm_quit, confirm}}) do
     text =

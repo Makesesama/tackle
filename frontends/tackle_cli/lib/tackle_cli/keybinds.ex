@@ -10,7 +10,7 @@ defmodule Tackle.CLI.Keybinds do
 
   Each context gets its own resolver—`global/1` for chords that are live
   everywhere, then `base/2`, `transcript/1`, `confirm/1`, `picker/1`,
-  `inspector/1`, and `search/1`—and clauses are tried in order, so more
+  `inspector/1`, `search/1`, and `usage_chart/1`—and clauses are tried in order, so more
   specific chords must be listed before their unmodified keys.
 
   Modifier lists arrive in ExRatatui's canonical order (`"shift"`, `"ctrl"`,
@@ -65,6 +65,7 @@ defmodule Tackle.CLI.Keybinds do
           | :toggle_thinking
           | :tree
           | :unbound
+          | :usage_chart
           | {:adjacent, String.t()}
           | {:input, String.t()}
           | {:insert, String.t()}
@@ -95,8 +96,9 @@ defmodule Tackle.CLI.Keybinds do
   leave, or open something.
   """
   @spec repeatable?(Key.t()) :: boolean()
-  def repeatable?(%Key{code: code}) when code in ["esc", "enter", "f1", "f2", "f3", "f4", "f5"],
-    do: false
+  def repeatable?(%Key{code: code})
+      when code in ["esc", "enter", "f1", "f2", "f3", "f4", "f5", "f6"],
+      do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
       when is_ctrl(modifiers) and code in ["c", "f", "t", "j", "k", "home", "end"],
@@ -119,6 +121,7 @@ defmodule Tackle.CLI.Keybinds do
   def base(%Key{code: "f3"}, _focus), do: :settings_picker
   def base(%Key{code: "f4"}, _focus), do: :browse
   def base(%Key{code: "f5"}, _focus), do: :tree
+  def base(%Key{code: "f6"}, _focus), do: :usage_chart
 
   def base(key, :transcript), do: {:transcript, transcript(key)}
   def base(key, _composer), do: composer(key)
@@ -241,6 +244,17 @@ defmodule Tackle.CLI.Keybinds do
   def inspector(%Key{code: "a"}), do: :copy_arguments
   def inspector(%Key{code: "A"}), do: :copy_arguments
   def inspector(%Key{}), do: :ignore
+
+  # -- usage chart ---------------------------------------------------------
+
+  @doc "Resolves a chord inside the usage chart overlay."
+  @spec usage_chart(Key.t()) :: :close | :toggle | :reload | :ignore
+  def usage_chart(%Key{code: "esc"}), do: :close
+  def usage_chart(%Key{code: "tab"}), do: :toggle
+  def usage_chart(%Key{code: "left"}), do: :toggle
+  def usage_chart(%Key{code: "right"}), do: :toggle
+  def usage_chart(%Key{code: code}) when code in ["r", "R"], do: :reload
+  def usage_chart(%Key{}), do: :ignore
 
   # -- transcript search ---------------------------------------------------
 

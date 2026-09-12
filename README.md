@@ -297,6 +297,9 @@ end
 Session inspection and management never expose a PID or the journal process:
 
 - `Tackle.inspect_session/2` reads and projects a session without starting one;
+- `Tackle.session_usage_timeline/2` and `Tackle.all_usage_timeline/1` return
+  timestamped settled assistant-message usage for one or every durable session;
+  the global scan replays independent journals with bounded concurrency;
 - `Tackle.list_sessions/1` and `Tackle.search_sessions/2` use the rebuildable
   derived catalog with stable cursor pagination;
 - `Tackle.fork_session/2` materializes a self-contained session from validated
@@ -326,7 +329,10 @@ tackle sessions --query "cache invalidation" --limit 10
 
 `--resume` without a session id continues the most recently updated session.
 When the terminal frontend exits it prints the `--resume` command for the
-session it was last attached to.
+session it was last attached to. In the TUI, `F6` opens a cumulative token-usage
+chart and switches between the complete current session and the current UTC
+calendar week across all durable sessions. Fork-copied message records are
+counted once in the global view.
 
 The CLI automatically runs controlled journal repair when a resumed session was
 not closed cleanly. The original journal is preserved under the session's

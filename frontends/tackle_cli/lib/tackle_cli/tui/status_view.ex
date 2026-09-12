@@ -15,7 +15,17 @@ defmodule Tackle.CLI.TUI.StatusView do
   terminal never hides the quit action behind optional discoverability text.
   """
 
-  alias Tackle.CLI.TUI.{Browser, Conversation, MessageView, Picker, State, Theme, Util}
+  alias Tackle.CLI.TUI.{
+    Browser,
+    Conversation,
+    MessageView,
+    Picker,
+    State,
+    Theme,
+    UsageChart,
+    Util
+  }
+
   alias Tackle.Lib
   alias Tackle.Lib.{Compaction, ContextUsage, Usage}
 
@@ -97,6 +107,9 @@ defmodule Tackle.CLI.TUI.StatusView do
     end
   end
 
+  defp status_segments(%State{overlay: {:usage_chart, chart_state}}),
+    do: UsageChart.status_segments(chart_state)
+
   defp status_segments(%State{overlay: {:picker, %{picker: picker}}}) do
     case Picker.selected(picker) do
       nil -> ["Menu", "no matches"]
@@ -137,12 +150,16 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp hint_segments(%State{overlay: {:picker, _}}),
     do: ["↑/↓ select", "Enter apply", "Esc close"]
 
+  defp hint_segments(%State{overlay: {:usage_chart, _}}),
+    do: ["Tab/←/→ mode", "R reload", "Esc close"]
+
   defp hint_segments(%State{focus: :transcript}) do
     [
       "↑/↓ browse",
       "Enter inspect",
       "y copy source",
       "a copy transcript",
+      "F6 usage",
       "Esc or F4 back"
     ]
   end
@@ -155,6 +172,7 @@ defmodule Tackle.CLI.TUI.StatusView do
       "F2 reasoning",
       "F3 settings",
       "F4 browse",
+      "F6 usage",
       "Ctrl+F search",
       "Ctrl+K compact",
       "Shift+Enter newline",
@@ -171,6 +189,7 @@ defmodule Tackle.CLI.TUI.StatusView do
       "Esc cancel",
       "Alt+N new session",
       "F4 browse",
+      "F6 usage",
       "Ctrl+F search",
       "draft kept · not queued",
       "Ctrl+C quit"

@@ -151,6 +151,7 @@ hint row. Empty optional rows are not reserved when the terminal is short.
 | F3 | Source copy overlay. ↑/↓ selects, Y/Enter copies the full retained source of the entry, O opens the output inspector, A copies the full transcript, Esc closes. |
 | F4 | Browse transcript entries with ↑/↓. Enter opens the selected entry (including compaction summaries) in the scrollable inspector; Y copies its source; Esc returns to the composer. |
 | F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
+| F6 | Open cumulative settled token usage. Tab or ←/→ switches Current/This-week sessions, R reloads, Esc closes. |
 | Ctrl+F | Transcript search over full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
 | Ctrl+K | Compact context manually while idle. The draft is retained. Manual compaction cannot currently be cancelled. |
 | Ctrl+T | Reveal or collapse supplied reasoning. |
@@ -265,6 +266,21 @@ the status row itself disappears on very short terminals. A `~` before cost
 (for example `~$0.84`) marks a price-card estimate rather than
 provider-reported billing. Missing metadata is omitted.
 
+F6 opens a modal usage chart without shrinking the transcript. Current mode
+covers the current session's complete branch archive; All sessions merges every
+durable journal by assistant-message timestamp and removes exact history copies
+introduced by session forks. Current mode accumulates from the beginning of the
+session; All sessions accumulates only the current UTC calendar week beginning
+Monday at 00:00. The total-token line never decreases between buckets. Its
+summary separates uncached input, output, combined cache-read/write tokens, and
+available provider-reported or price-card-estimated cost; `~$` marks an estimate
+and unavailable cost is not invented. All journals are replayed with bounded
+concurrency. Successful Current/All snapshots are cached for instant mode
+switching, invalidated after a settled turn, and bypassed by R. An in-flight
+response appears only after it settles. Loading, empty, partial, and error states
+remain inside the overlay. The implementation uses ExRatatui's built-in `Chart`
+widget and adds no custom native widget.
+
 ### Compaction
 
 Transient provider-message failures retry automatically with cancellable
@@ -366,6 +382,7 @@ process lifecycle, and everything else is a module that takes and returns
 | `TUI.Browser` | transcript focus, selection, and copy |
 | `TUI.Menu` | model, reasoning, and settings pickers |
 | `TUI.Tree` | the `/tree` conversation picker and navigation outcomes |
+| `TUI.UsageChart` | async durable usage loading, UTC bucketing, and chart popup |
 | `TUI.Search` | transcript search |
 | `TUI.Inspector` | the scrollable tool-output inspector |
 | `TUI.Session` | root scope ownership and teardown |
