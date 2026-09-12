@@ -96,6 +96,7 @@ defmodule Tackle.Lib.State do
     * `:llm_opts` - Extra options passed through to the LLM adapter
     * `:hooks` - List of Tackle.Lib.Hook modules for lifecycle callbacks (default: [])
     * `:id_generator` - Zero-arity function used for generated ids
+    * `:session_id` - Existing session id to install without invoking `:id_generator`
     * `:compaction` - `Tackle.Lib.Compaction.Config`, options, `false`, or `nil`
       (default: `nil`, compaction disabled)
     * `:tree` - `true`, a `Tackle.Lib.Tree`, or `nil`/`false` (default: `nil`).
@@ -112,7 +113,7 @@ defmodule Tackle.Lib.State do
     model = if llm, do: llm.model, else: Keyword.get(opts, :model)
 
     %__MODULE__{
-      session_id: id_generator.(),
+      session_id: Keyword.get(opts, :session_id) || id_generator.(),
       messages: [],
       current_iteration: 0,
       max_iterations: Keyword.get(opts, :max_iterations, @default_max_iterations),

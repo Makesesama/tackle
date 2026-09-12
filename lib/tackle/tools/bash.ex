@@ -7,6 +7,8 @@ defmodule Tackle.Tools.Bash do
   alias Tackle.Tools.{FileSystem, Output}
 
   @poll_interval 50
+  @full_output_attempts 3
+  @private_file_mode 0o600
 
   tool_name("bash")
 
@@ -148,16 +150,39 @@ defmodule Tackle.Tools.Bash do
     end
   end
 
-  defp save_full_output(output) do
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "tackle-bash-#{System.unique_integer([:positive, :monotonic])}.log"
-      )
+  defp save_full_output(output), do: save_full_output(output, @full_output_attempts)
 
-    case File.write(path, output) do
-      :ok -> path
-      {:error, _reason} -> nil
+  defp save_full_output(_output, 0), do: nil
+
+  defp save_full_output(output, attempts) do
+    suffix = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
+    path = Path.join(System.tmp_dir!(), "tackle-bash-#{suffix}.log")
+
+    case File.open(path, [:write, :binary, :exclusive]) do
+      {:ok, file} ->
+        result =
+          try do
+            with :ok <- File.chmod(path, @private_file_mode) do
+              IO.binwrite(file, output)
+            end
+          after
+            File.close(file)
+          end
+
+        case result do
+          :ok ->
+            path
+
+          {:error, _reason} ->
+            _ = File.rm(path)
+            nil
+        end
+
+      {:error, :eexist} ->
+        save_full_output(output, attempts - 1)
+
+      {:error, _reason} ->
+        nil
     end
   end
 

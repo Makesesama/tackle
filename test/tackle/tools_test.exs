@@ -154,6 +154,20 @@ defmodule Tackle.ToolsTest do
     assert failure == "failed\n\nCommand exited with code 7"
   end
 
+  test "bash stores full truncated output in a private, random, exclusively-created file", %{
+    context: context
+  } do
+    byte_count = Output.max_bytes() + 1
+    assert {:ok, output} = Bash.run(%{"command" => "printf 'x%.0s' {1..#{byte_count}}"}, context)
+    assert [_, path] = Regex.run(~r/Full output: ([^\]]+)\]\z/, output)
+
+    on_exit(fn -> File.rm(path) end)
+
+    assert File.read!(path) == String.duplicate("x", byte_count)
+    assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+    assert Path.basename(path) =~ ~r/^tackle-bash-[A-Za-z0-9_-]{22}\.log$/
+  end
+
   test "bash honors timeout and cooperative cancellation", %{context: context} do
     assert {:error, "Command timed out"} =
              Bash.run(%{"command" => "sleep 5", "timeout" => 0.05}, context)

@@ -21,6 +21,7 @@ defmodule Tackle.Lib.Snapshot do
   caching without leaking the full snapshot content.
   """
 
+  alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.SystemPrompt
@@ -163,8 +164,9 @@ defmodule Tackle.Lib.Snapshot do
     _ -> nil
   end
 
-  defp generate_turn_id(state) when is_map(state) do
-    session_id = Map.get(state, :session_id) || "unknown"
-    "#{session_id}-#{System.unique_integer([:positive])}"
+  defp generate_turn_id(%{id_generator: id_generator}) when is_function(id_generator, 0) do
+    id_generator.()
   end
+
+  defp generate_turn_id(_state), do: ID.uuid4()
 end

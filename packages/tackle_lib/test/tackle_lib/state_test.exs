@@ -38,6 +38,16 @@ defmodule Tackle.Lib.StateTest do
       assert state.id_generator.() == "custom-id"
     end
 
+    test "accepts an existing session id without invoking the id generator" do
+      state =
+        State.new(
+          session_id: "persisted-session",
+          id_generator: fn -> flunk("id generator should not be invoked") end
+        )
+
+      assert state.session_id == "persisted-session"
+    end
+
     test "accepts an explicit LLM selection and uses its adapter-local model" do
       selection = %Selection{
         adapter: ExampleAdapter,

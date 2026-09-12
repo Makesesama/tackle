@@ -604,6 +604,7 @@ defmodule Tackle.Session do
     [
       event_callback: fn event -> send(session_pid, {:tackle_event, turn_id, event}) end,
       cancellation_signal: signal,
+      turn_id: turn_id,
       llm_stream: state.config.llm_stream,
       tool_supervisor: state.tool_supervisor
     ]

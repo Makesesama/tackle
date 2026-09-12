@@ -36,7 +36,7 @@ defmodule Tackle.Lib.SnapshotTest do
 
       snapshot = Snapshot.capture(state)
 
-      assert snapshot.turn_id =~ state.session_id
+      assert is_binary(snapshot.turn_id)
       assert snapshot.system_prompt == "You are a test agent."
       assert snapshot.model == "test/model"
       assert snapshot.tools == [SnapshotTestTool]
@@ -49,6 +49,30 @@ defmodule Tackle.Lib.SnapshotTest do
       assert %Registry{} = snapshot.tool_registry
       [def] = Registry.definitions(snapshot.tool_registry)
       assert def.name == "snapshot_test"
+    end
+
+    test "uses the configured id generator when no turn id is supplied" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      id_generator = fn ->
+        Agent.get_and_update(counter, fn current -> {"id-#{current + 1}", current + 1} end)
+      end
+
+      state = State.new(id_generator: id_generator)
+      snapshot = Snapshot.capture(state)
+
+      assert state.session_id == "id-1"
+      assert snapshot.turn_id == "id-2"
+    end
+
+    test "uses an explicit host turn id without invoking the configured generator" do
+      state =
+        State.new(
+          session_id: "session-id",
+          id_generator: fn -> flunk("id generator should not be invoked") end
+        )
+
+      assert Snapshot.capture(state, turn_id: "turn-id").turn_id == "turn-id"
     end
 
     test "freezes an explicit adapter and model selection" do
