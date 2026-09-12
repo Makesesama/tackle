@@ -53,6 +53,8 @@ jailedAgents.makeJailedAgent {
     pkgs.pkg-config
     pkgs.rustc
     pkgs.cargo
+    pkgs.rustfmt
+    pkgs.clippy
     pkgs.watchman
     pkgs.tokei
     pkgs.beamPackages.expert

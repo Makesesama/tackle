@@ -34,6 +34,8 @@ pkgs.mkShell {
     pkgs.watchman
 
     # Development tools
+    pkgs.rustfmt
+    pkgs.clippy
     pkgs.tokei
   ]
   ++ platformPackages
