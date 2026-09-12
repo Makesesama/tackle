@@ -4,8 +4,11 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   Cards are borderless: a status marker and prominent command/path, followed
   by indented, muted output. Completed calls omit redundant status text;
-  running, requested and failed calls stay explicit. Unknown tools retain a
-  generic source fallback.
+  running, requested and failed calls stay explicit. Successful reads collapse
+  to their path; successful Bash output shows at most two clipped tail lines.
+  Full retained output stays in details. Failed edits show the error instead of
+  a replacement preview (details retain the submitted arguments as source).
+  Unknown tools retain a generic source fallback.
 
   Edit previews compare the submitted replacement strings, never files on disk.
   They are not authoritative file diffs; line numbers are relative to each
@@ -45,7 +48,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     body =
       entry
-      |> body_rows(args, mode)
+      |> body_rows(args, mode, width)
       |> wrap_indented(width, 4)
       |> trim(mode, width)
 
@@ -98,14 +101,35 @@ defmodule Tackle.CLI.TUI.ToolView do
         ]
       end
 
+    summary =
+      if name == "read" and status == :completed and is_binary(entry.tool_output) do
+        text = if entry.tool_output == "", do: "  · empty", else: "  · F4 details"
+        [MessageView.span(text, Theme.style(:subtle))]
+      else
+        []
+      end
+
     [
       MessageView.row(
-        [MessageView.span(marker(status) <> " ", marker_style(status))] ++ state ++ heading
+        [MessageView.span(marker(status) <> " ", marker_style(status))] ++
+          state ++ heading ++ summary
       )
     ]
   end
 
-  defp body_rows(entry, args, mode) do
+  defp body_rows(%{tool_name: "read", tool_status: :completed}, _args, :preview, _width),
+    do: []
+
+  defp body_rows(%{tool_name: "bash", tool_status: :completed} = entry, _args, :preview, width),
+    do: bash_preview(entry.tool_output, width)
+
+  defp body_rows(%{tool_name: "edit", tool_status: :failed} = entry, _args, :preview, _width),
+    do: output_rows(entry, :preview)
+
+  defp body_rows(%{tool_name: "edit", tool_status: :failed} = entry, args, :details, _width),
+    do: generic_rows(entry, args, :details)
+
+  defp body_rows(entry, args, mode, _width) do
     case entry.tool_name do
       "edit" -> edit_rows(entry, args, mode)
       "write" -> write_rows(entry, args, mode)
@@ -125,6 +149,49 @@ defmodule Tackle.CLI.TUI.ToolView do
       end
 
     argument_rows ++ output_rows(entry, mode)
+  end
+
+  # Successful shell output is a two-line tail, not a wrapped wall of logs.
+  # Clip only paint; the inspector, search and copy keep the original output.
+  defp bash_preview(nil, _width), do: []
+
+  defp bash_preview(output, width) do
+    content_width = if width > 5, do: width - 4, else: max(width, 1)
+
+    lines =
+      output
+      |> MessageView.sanitize()
+      |> String.split("\n", trim: false)
+      |> Enum.reject(&(String.trim(&1) == ""))
+
+    tail = Enum.take(lines, -2)
+    clipped? = Enum.any?(tail, &(MessageView.display_width(&1) > content_width))
+
+    hint =
+      if length(lines) > 2 or clipped?,
+        do: [body_row(Theme.style(:subtle), "… F4 details" |> clip_width(content_width))],
+        else: []
+
+    hint ++ Enum.map(tail, &body_row(Theme.style(:muted), clip_width(&1, content_width)))
+  end
+
+  defp clip_width(text, width) do
+    if MessageView.display_width(text) <= width do
+      text
+    else
+      {graphemes, _used} =
+        text
+        |> String.graphemes()
+        |> Enum.reduce_while({[], 0}, fn grapheme, {kept, used} ->
+          next = used + MessageView.display_width(grapheme)
+
+          if next < width,
+            do: {:cont, {[grapheme | kept], next}},
+            else: {:halt, {kept, used}}
+        end)
+
+      Enum.reverse(graphemes) |> Enum.join() |> Kernel.<>("…")
+    end
   end
 
   defp write_rows(entry, args, mode) do

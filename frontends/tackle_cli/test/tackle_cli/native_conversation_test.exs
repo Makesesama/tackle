@@ -32,7 +32,9 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     assert text =~ "answer"
     refute text =~ "**answer**"
     assert text =~ "file.ex"
-    assert text =~ "tool-output"
+    refute text =~ "tool-output"
+    assert text =~ "F4 details"
+    assert List.last(Conversation.entries(model)).tool_output == "tool-output"
 
     assert Enum.map(Conversation.entries(model), & &1.kind) == [
              :user,

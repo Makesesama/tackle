@@ -13,8 +13,8 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
     cells = draw(MessageView.render_entry(entry, 20), 20, 3)
 
     header = Enum.filter(cells, &(&1.row == 0))
-    assert Enum.all?(header, &(&1.bg == {:indexed, 236}))
-    assert Enum.any?(header, &(&1.symbol == "›" and &1.fg == :cyan))
+    assert Enum.all?(header, &(&1.bg == {:indexed, 235}))
+    assert Enum.any?(header, &(&1.symbol == "›" and &1.fg == {:indexed, 110}))
     assert Enum.any?(header, &(&1.symbol == "h"))
   end
 

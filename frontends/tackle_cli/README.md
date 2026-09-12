@@ -132,8 +132,13 @@ The same `mix tackle` commands continue to work from this directory. Run
 `mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.
 The shell is transcript-first and fullscreen: a compact header, a border-light
 transcript that owns the flexible middle of the screen, an optional reading row,
-an optional status/metrics row, a growing multiline composer, and a responsive
-hint row. Empty optional rows are not reserved when the terminal is short.
+an optional status/metrics row, a growing multiline composer, and a short hint
+row. A neutral top divider replaces the composer box; model and reasoning live
+in the header, while turn state appears only in the status row (falling back to
+the header on short terminals). Muted blue accents and quiet overlay borders
+keep attention on the conversation. The footer shows a curated set of shortcuts,
+not the full key map below. Empty optional rows are not reserved when the terminal
+is short.
 
 ## Keys (experimental)
 
@@ -146,9 +151,9 @@ hint row. Empty optional rows are not reserved when the terminal is short.
 | Esc | Close the open overlay first, then request cancellation of the active turn. Esc never exits while idle. |
 | Ctrl+C | Quit. Confirms first when an unsent draft or an active turn would be lost; quits immediately when idle with an empty draft. |
 | Alt+N | Start a new session. Confirms first with a Y/N prompt; on confirm the current root scope stops (stopping an active turn with it) and a fresh session and scope start without restarting the shell. Durable history is not deleted—resume it later with `--resume`. |
-| F1 | Searchable command/help palette. Type to filter, ↑/↓ to select, Enter to run, Esc to close. |
-| F2 | Model and thinking selector (idle only). ↑/↓ switches field, ←/→ cycles, Enter applies, Esc cancels. A reconfigure failure preserves the conversation and the draft. |
-| F3 | Source copy overlay. ↑/↓ selects, Y/Enter copies the full retained source of the entry, O opens the output inspector, A copies the full transcript, Esc closes. |
+| F1 | Search-first model selector (idle only). Type to filter, ↑/↓ to select, Enter to apply, Esc to close. |
+| F2 | Reasoning-level selector (idle only). A reconfigure failure preserves the conversation and the draft. |
+| F3 | Settings picker (currently empty). Copy source with Y in the F4 transcript browser instead. |
 | F4 | Browse transcript entries with ↑/↓. Enter opens the selected entry (including compaction summaries) in the scrollable inspector; Y copies its source; Esc returns to the composer. |
 | F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
 | F6 | Open cumulative settled token usage. Tab or ←/→ switches Current/This-week sessions, R reloads, Esc closes. |
@@ -188,7 +193,7 @@ Submitted prompts are appended to an in-memory history: newest first, capped at
 100, with consecutive duplicates skipped. It survives a new session but is not
 written to disk, so it is lost when the shell exits.
 
-While a turn is active the composer is labeled "Draft · next turn (not queued)"
+While a turn is active the composer is labeled "Draft · not queued"
 and Enter does not send. There is no queue, so the draft is explicitly reserved
 for the next turn instead of being delivered to the running one. A failed
 submit, failed reconfiguration, or rejected operation keeps the exact draft in
@@ -221,10 +226,16 @@ than a JSON argument dump. Tool cards are borderless, with indented output inste
 of raised bands or heavy rails. Completed calls use a checkmark without repeating
 "completed"; requested, running, and failed states remain explicit. Truncated
 headers point to F4 details. Successful tool output is subdued; failures remain
-explicit. Inline
-output keeps a bounded head/tail preview (including after wrapping), with hidden
-lines indicated. F3 copies the full retained source and F4 opens scrollable
-details with the full output and arguments; its ←/→ keys browse tool cards.
+explicit. Successful reads collapse to a path-only card with an F4 details hint,
+without dumping file contents into the conversation. Successful Bash calls show
+at most two non-empty tail lines, clipped rather than wrapped, with one details
+hint when output is hidden. Empty shell output adds no body rows. Failures and
+unknown tools keep bounded diagnostic previews. Failed edits show only the error,
+not a replacement preview; their inspector retains the submitted arguments as
+source. Other inline output keeps a bounded head/tail preview (including after
+wrapping), with hidden lines indicated. F4 browses entries: Y copies the full
+retained source and Enter opens scrollable details with the full output and
+arguments; its ←/→ keys browse tool cards.
 
 Edits use compact, borderless replacement previews: muted line numbers, soft red
 `-` and green `+` markers, and per-replacement counts in one heading. Code stays

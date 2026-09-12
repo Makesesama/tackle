@@ -8,7 +8,7 @@ defmodule Tackle.CLI.TUI.ConversationTest do
 
   test "refresh preserves the row inside a multi-widget tool card, not just its header" do
     messages =
-      [Message.tool_result("read", "read", "one\ntwo\nthree\nfour")] ++
+      [Message.tool_result("read", "custom", "one\ntwo\nthree\nfour")] ++
         Enum.map(1..10, &Message.user("following #{&1}"))
 
     state = projection(messages)

@@ -18,7 +18,6 @@ defmodule Tackle.CLI.TUI.Menu do
   """
 
   alias ExRatatui.Command
-  alias ExRatatui.Style
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Paragraph, Popup}
   alias Tackle.CLI.TUI.{Picker, State, Theme, Util}
@@ -115,8 +114,8 @@ defmodule Tackle.CLI.TUI.Menu do
             items: Enum.map(items, &Picker.row/1),
             selected: selected,
             highlight_symbol: "› ",
-            highlight_style: %Style{fg: :cyan, modifiers: [:bold]},
-            style: %Style{fg: :white},
+            highlight_style: Theme.merge(Theme.style(:selection_surface), Theme.style(:accent)),
+            style: Theme.style(:text),
             scroll_padding: 2
           }
       end
@@ -214,15 +213,15 @@ defmodule Tackle.CLI.TUI.Menu do
     %Paragraph{
       text:
         " No settings yet.\n\n The model and the reasoning level have their own menus; anything else the harness makes configurable will appear here.",
-      style: %Style{fg: :dark_gray}
+      style: Theme.style(:muted)
     }
   end
 
   defp empty_menu(:model),
-    do: %Paragraph{text: " No models match.", style: %Style{fg: :dark_gray}}
+    do: %Paragraph{text: " No models match.", style: Theme.style(:muted)}
 
   defp empty_menu(_kind),
-    do: %Paragraph{text: " No options match.", style: %Style{fg: :dark_gray}}
+    do: %Paragraph{text: " No options match.", style: Theme.style(:muted)}
 
   defp title(kind, query, count) do
     label =
@@ -232,8 +231,8 @@ defmodule Tackle.CLI.TUI.Menu do
         :settings -> "Settings"
       end
 
-    filter = if query == "", do: "", else: " filter “#{Util.truncate(query, 24)}” ·"
+    filter = if query == "", do: "type to filter", else: "“#{Util.truncate(query, 24)}”"
 
-    " #{label} ·#{filter} #{count} #{if count == 1, do: "entry", else: "entries"} · type to filter · Enter select · Esc close "
+    " #{label} · #{count} · #{filter} "
   end
 end

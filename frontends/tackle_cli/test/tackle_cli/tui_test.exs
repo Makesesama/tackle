@@ -7,7 +7,7 @@ defmodule Tackle.CLI.TUITest do
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, TextInput}
   alias Tackle.CLI.TUI
-  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, RuntimeEvents}
+  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, RuntimeEvents, Viewport}
   alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
   alias Tackle.CLI.Widgets.Conversation.Cell
   alias Tackle.CLI.Widgets.Input
@@ -290,17 +290,58 @@ defmodule Tackle.CLI.TUITest do
 
     assert header_text(state) =~ "openai-codex/test-model"
     assert header_text(state) =~ "thinking off"
-    assert header_text(state) =~ "ready"
+    refute header_text(state) =~ "ready"
 
     assert %NativeConversation{} = transcript_widget(state)
     assert conversation_text(state) =~ "Welcome to Tackle"
 
-    assert %Tackle.CLI.Widgets.Input{block: %{title: " Prompt "}} = composer_widget(state)
+    assert %Tackle.CLI.Widgets.Input{
+             block: %{title: " › ", borders: [:top], padding: {1, 1, 0, 1}}
+           } = composer_widget(state)
+
     assert status_text(state) =~ "ready"
     assert status_text(state) =~ "ctx 0/1k (0.0%)"
     assert hints_text(state) =~ "Enter send"
     assert hints_text(state) =~ "Ctrl+C quit"
     refute status_text(state) =~ "CH"
+  end
+
+  test "short terminals keep turn state in the header without a status row", %{tui: tui} do
+    for {changes, label} <- [
+          {%{}, "ready"},
+          {%{active_turn: %{id: "test"}, activity: "thinking"}, "thinking"},
+          {%{pending_operation: %{kind: :cancel}}, "cancelling"},
+          {%{error: "Something failed"}, "failed"},
+          {%{outcome: :cancelled}, "cancelled"}
+        ] do
+      short = state(tui) |> Map.merge(changes) |> Map.put(:size, {20, 5}) |> Viewport.resize()
+      assert is_nil(status_text(short))
+      assert header_text(short) =~ label
+
+      tall = %{short | size: {80, 24}} |> Viewport.resize()
+      assert status_text(tall) =~ label
+      assert header_text(tall) == " Tackle  ·  openai-codex/test-model  ·  thinking off"
+    end
+  end
+
+  test "header keeps the model before reasoning and hints stay curated", %{tui: tui} do
+    compact = %{state(tui) | size: {40, 24}} |> Viewport.resize()
+    assert header_text(compact) =~ "openai-codex/test-model"
+    refute header_text(compact) =~ "thinking off"
+    assert hints_text(compact) =~ "Enter send"
+    assert hints_text(compact) =~ "Ctrl+C quit"
+
+    wide = %{compact | size: {200, 24}} |> Viewport.resize()
+
+    assert hints_text(wide) ==
+             " Enter send   Ctrl+J newline   F1 model   F2 reasoning   F4 browse   Ctrl+C quit"
+
+    terminal = ExRatatui.init_test_terminal(200, 24)
+    :ok = ExRatatui.draw(terminal, TUI.scene(wide, frame(wide)))
+    buffer = ExRatatui.get_buffer_content(terminal)
+    assert buffer =~ "What would you like to build?"
+    refute buffer =~ "╭"
+    refute buffer =~ "╰"
   end
 
   test "submits the trimmed draft on Enter and clears the composer", %{tui: tui} do
@@ -1380,8 +1421,8 @@ defmodule Tackle.CLI.TUITest do
     assert completed_conversation =~ "✓ mix.exs"
     assert completed_conversation =~ "mix.exs  · read"
     refute completed_conversation =~ "completed"
-    assert completed_conversation =~ "    output"
-    assert completed_conversation =~ "…"
+    refute completed_conversation =~ "    output"
+    assert completed_conversation =~ "F4 details"
   end
 
   test "renders failed live tool calls", %{tui: tui} do
@@ -1440,7 +1481,8 @@ defmodule Tackle.CLI.TUITest do
     refute conversation =~ "● read"
     assert conversation =~ "✓ README.md  · read"
     refute conversation =~ "completed"
-    assert conversation =~ "    project documentation"
+    refute conversation =~ "    project documentation"
+    assert conversation =~ "F4 details"
     assert Enum.count(Conversation.entries(state.conversation), &(&1.kind == :tool)) == 1
     refute conversation =~ "Tackle:"
     assert conversation =~ "Done"
@@ -1450,7 +1492,7 @@ defmodule Tackle.CLI.TUITest do
            end)
   end
 
-  test "keeps full tool output for the inspector and copy while previewing head and tail", %{
+  test "keeps full read output for the inspector and copy while collapsing inline output", %{
     tui: tui
   } do
     output = Enum.map_join(1..50, "\n", &"line-#{&1}")
@@ -1458,10 +1500,9 @@ defmodule Tackle.CLI.TUITest do
     state = settle_tool_output(tui, output)
     inline = conversation_text(state)
 
-    assert inline =~ "line-1"
-    assert inline =~ "line-2"
-    assert inline =~ "… 46 lines hidden"
-    assert inline =~ "line-50"
+    assert inline =~ "F4 details"
+    refute inline =~ "line-1"
+    refute inline =~ "line-50"
     refute inline =~ "line-25"
 
     entry = Enum.find(Conversation.entries(state.conversation), &(&1.id == "tool:call-1"))
@@ -1741,7 +1782,8 @@ defmodule Tackle.CLI.TUITest do
     assert match.id == "tool:call-9"
 
     refute state.conversation.follow?
-    assert conversation_text(state) =~ "NEEDLE-TOKEN"
+    assert conversation_text(state) =~ "secret.txt"
+    assert status_text(state) =~ "NEEDLE-TOKEN"
     assert status_text(state) =~ "Match 1/1"
     assert popup_title(state) =~ "1/1"
     assert %TextInput{} = popup_content(state)

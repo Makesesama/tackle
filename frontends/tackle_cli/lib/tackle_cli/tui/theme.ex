@@ -20,9 +20,9 @@ defmodule Tackle.CLI.TUI.Theme do
   markers. Diff rows leave the terminal background untouched; only changed
   tokens use the restrained `:diff_add_inline` and `:diff_del_inline` tints.
 
-  `:selection_surface` is the one deliberately saturated surface. It marks the
-  transcript entry the browser is standing on, where the point is to be
-  unambiguous at a glance rather than quiet.
+  A desaturated blue accent marks activity and selection. Overlay borders and
+  the composer divider stay neutral; warning and error colors carry meaning
+  rather than decorating the shell.
   """
 
   alias ExRatatui.Style
@@ -33,6 +33,7 @@ defmodule Tackle.CLI.TUI.Theme do
           | :muted
           | :subtle
           | :accent
+          | :accent_soft
           | :success
           | :warning
           | :error
@@ -49,17 +50,17 @@ defmodule Tackle.CLI.TUI.Theme do
 
   @styles %{
     text: %Style{},
-    muted: %Style{fg: {:indexed, 245}},
-    subtle: %Style{fg: {:indexed, 240}},
-    accent: %Style{fg: :cyan, modifiers: [:bold]},
-    accent_soft: %Style{fg: :cyan},
-    success: %Style{fg: :green},
-    warning: %Style{fg: :yellow},
-    error: %Style{fg: :red},
+    muted: %Style{fg: {:indexed, 246}},
+    subtle: %Style{fg: {:indexed, 243}},
+    accent: %Style{fg: {:indexed, 110}, modifiers: [:bold]},
+    accent_soft: %Style{fg: {:indexed, 110}},
+    success: %Style{fg: {:indexed, 114}},
+    warning: %Style{fg: {:indexed, 179}},
+    error: %Style{fg: {:indexed, 174}},
     surface: %Style{bg: {:indexed, 235}},
     surface_raised: %Style{bg: {:indexed, 237}},
-    user_surface: %Style{bg: {:indexed, 236}},
-    selection_surface: %Style{bg: {:indexed, 24}},
+    user_surface: %Style{bg: {:indexed, 235}},
+    selection_surface: %Style{bg: {:indexed, 60}},
     error_surface: %Style{bg: {:indexed, 52}},
     diff_add: %Style{fg: {:indexed, 114}},
     diff_add_inline: %Style{fg: {:indexed, 151}, bg: {:indexed, 22}},
@@ -75,9 +76,8 @@ defmodule Tackle.CLI.TUI.Theme do
   @doc """
   Builds the rounded panel chrome shared by every overlay.
 
-  Overlays differ in content, not in border treatment, so the block is built
-  once here from the same semantic color the overlay already uses for its
-  content.
+  Borders stay neutral. The existing color argument supplies a semantic title
+  accent, so confirmations retain their warning without a bright perimeter.
   """
   @spec panel_block(String.t(), atom()) :: Block.t()
   def panel_block(title, color) do
@@ -85,9 +85,15 @@ defmodule Tackle.CLI.TUI.Theme do
       title: title,
       borders: [:all],
       border_type: :rounded,
-      border_style: %Style{fg: color}
+      border_style: style(:subtle),
+      title_style: panel_title_style(color)
     }
   end
+
+  defp panel_title_style(:cyan), do: style(:accent_soft)
+  defp panel_title_style(:yellow), do: style(:warning)
+  defp panel_title_style(:red), do: style(:error)
+  defp panel_title_style(color), do: %Style{fg: color}
 
   @doc "Adds bold to a style without dropping its color or background."
   @spec bold(Style.t()) :: Style.t()

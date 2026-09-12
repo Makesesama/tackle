@@ -2,12 +2,11 @@ defmodule Tackle.CLI.TUI.View do
   @moduledoc """
   The scene: a flat list of widgets and the rectangles they occupy.
 
-  The shell is transcript-first. A one-row header shows the model, the
-  reasoning level, and the turn state; the transcript owns the flexible middle
-  of the screen; the composer sits below it with a border whose color and title
-  say whether the shell is idle, drafting during a turn, or browsing. Optional
-  reading, status, and hint rows appear only when the terminal has rows to
-  spare.
+  The shell is transcript-first. A one-row header shows the model and
+  reasoning level; the transcript owns the flexible middle of the screen;
+  a quiet divider introduces the composer. Turn state lives in the status row
+  (or the header on short terminals), never both. Optional reading, status,
+  and hint rows appear only when the terminal has rows to spare.
 
   Layout is computed once per frame from the terminal size and the draft's
   wrapped row count, so the widget list and the rectangles can never disagree.
@@ -48,7 +47,7 @@ defmodule Tackle.CLI.TUI.View do
       Layout.regions(width, height, state.draft_lines, Viewport.reading?(state.conversation))
 
     [
-      {header_widget(state, width), regions.header},
+      {header_widget(state, width, is_nil(regions.status)), regions.header},
       {transcript_widget(state), regions.transcript}
     ] ++
       reading_widgets(regions.reading, state.conversation) ++
@@ -60,30 +59,29 @@ defmodule Tackle.CLI.TUI.View do
 
   # -- header and transcript ----------------------------------------------
 
-  defp header_widget(state, width) do
-    %Paragraph{text: [MessageView.row(header_spans(state, width), %Style{})], style: %Style{}}
+  defp header_widget(state, width, show_status?) do
+    %Paragraph{text: [MessageView.row(header_spans(state, width, show_status?), %Style{})]}
   end
 
-  # The header drops the least important segment first: the model, then the
-  # reasoning level, then the turn state, which is never dropped.
-  defp header_spans(state, width) do
+  # Keep model identity before reasoning. On short terminals the header also
+  # carries turn state, which takes priority over configuration and branding.
+  defp header_spans(state, width, show_status?) do
     model = State.model_ref(state.agent_state) || "configured default"
     thinking = Thinking.from_llm_opts(state.agent_state.llm_opts)
     separator = MessageView.span("  ·  ", Theme.style(:subtle))
 
-    base = [MessageView.span(" Tackle", Theme.style(:accent))]
+    base = [MessageView.span(" Tackle", Theme.bold(Theme.style(:text)))]
     model_part = [separator, MessageView.span(model, Theme.style(:muted))]
     thinking_part = [separator, MessageView.span("thinking #{thinking}", Theme.style(:muted))]
 
-    status_part = [
-      separator,
-      MessageView.span(StatusView.status_label(state), StatusView.status_style(state))
-    ]
+    status = MessageView.span(StatusView.status_label(state), StatusView.status_style(state))
+    status_part = if show_status?, do: [separator, status], else: []
 
     variants = [
       base ++ model_part ++ thinking_part ++ status_part,
-      base ++ thinking_part ++ status_part,
-      base ++ status_part
+      base ++ model_part ++ status_part,
+      base ++ status_part,
+      if(show_status?, do: [status], else: base)
     ]
 
     Enum.find(variants, List.last(variants), &(spans_width(&1) <= max(width, 1)))
@@ -144,29 +142,25 @@ defmodule Tackle.CLI.TUI.View do
       focused: state.focus == :composer and is_nil(state.overlay),
       block: %Block{
         title: composer_title(state),
-        title_style: %Style{fg: composer_color(state)},
-        borders: [:all],
-        border_type: :rounded,
-        border_style: %Style{fg: composer_color(state)}
+        title_style: Theme.style(:muted),
+        borders: [:top],
+        border_style: Theme.style(:subtle),
+        padding: {1, 1, 0, 1}
       }
     }
   end
 
-  defp composer_title(%State{focus: :transcript}), do: " Browsing · Esc or F4 returns "
-  defp composer_title(%State{active_turn: nil, pending_operation: nil}), do: " Prompt "
-  defp composer_title(%State{}), do: " Draft · next turn (not queued) "
+  defp composer_title(%State{focus: :transcript}), do: " Browsing · Esc to return "
+  defp composer_title(%State{active_turn: nil, pending_operation: nil}), do: " › "
+  defp composer_title(%State{}), do: " Draft · not queued "
 
   defp composer_placeholder(%State{focus: :transcript}),
-    do: "Transcript focused — typing is off · ↑/↓ move · Enter inspect · y copy"
+    do: "Transcript focused"
 
   defp composer_placeholder(%State{active_turn: nil, pending_operation: nil}),
-    do: "Ask Tackle… Enter sends · Shift+Enter or Ctrl+J newline · F1 model"
+    do: "What would you like to build?"
 
-  defp composer_placeholder(%State{}), do: "Draft the next instruction — kept, not queued"
-
-  defp composer_color(%State{focus: :transcript}), do: :cyan
-  defp composer_color(%State{active_turn: nil, pending_operation: nil}), do: :green
-  defp composer_color(%State{}), do: :dark_gray
+  defp composer_placeholder(%State{}), do: "Write the next instruction…"
 
   # -- overlays ------------------------------------------------------------
 
@@ -190,7 +184,7 @@ defmodule Tackle.CLI.TUI.View do
       end
 
     %Popup{
-      content: %Paragraph{text: text, style: %Style{fg: :white}},
+      content: %Paragraph{text: text, style: Theme.style(:text)},
       block: Theme.panel_block(" Confirm quit · Y/Enter quit · N/Esc cancel ", :yellow),
       percent_width: 50,
       percent_height: 25
@@ -208,7 +202,7 @@ defmodule Tackle.CLI.TUI.View do
       end
 
     %Popup{
-      content: %Paragraph{text: text, style: %Style{fg: :white}},
+      content: %Paragraph{text: text, style: Theme.style(:text)},
       block: Theme.panel_block(" Confirm new session · Y/Enter start · N/Esc cancel ", :yellow),
       percent_width: 50,
       percent_height: 25
