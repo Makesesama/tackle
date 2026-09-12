@@ -7,9 +7,8 @@ defmodule Tackle.CLI.TUI.Layout do
   and hint rows appear only when the terminal has rows to spare, in that
   priority order.
 
-  The composer grows with the draft's logical line count. The native textarea
-  scrolls horizontally instead of soft-wrapping, so one logical line is always
-  one screen row and the growth calculation stays exact.
+  The composer grows with the native editor's measured visual rows, including
+  soft wraps and the final insertion cell, up to eight content rows.
   """
 
   alias ExRatatui.Layout.Rect
@@ -32,7 +31,7 @@ defmodule Tackle.CLI.TUI.Layout do
   @doc """
   Computes screen regions for a terminal of `width` x `height` cells.
 
-  `draft_lines` is the composer's logical line count. `reading_active?`
+  `draft_lines` is the composer's wrapped row count. `reading_active?`
   requests the reading-back affordance row, which takes priority over the
   optional status and hint rows.
   """

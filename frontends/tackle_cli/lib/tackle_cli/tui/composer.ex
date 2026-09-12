@@ -5,7 +5,7 @@ defmodule Tackle.CLI.TUI.Composer do
   The composer is the one place a prompt is produced, so this module owns every
   way text gets into or out of it: native key handling, newline insertion,
   bracketed paste, and submission. Each edit ends in `Viewport.update_draft/1`
-  and `Viewport.relayout/1` so the growing textarea reserves exactly the rows it
+  and `Viewport.relayout/1` so the growing input reserves exactly the rows it
   needs without re-measuring the transcript.
 
   Submission is deliberately conservative. A failed submit keeps the exact draft
@@ -28,19 +28,19 @@ defmodule Tackle.CLI.TUI.Composer do
   @spec paste(State.t(), String.t()) :: State.t()
   def paste(%State{} = state, content) do
     content = content |> String.replace("\r\n", "\n") |> String.replace("\r", "")
-    :ok = ExRatatui.textarea_insert_str(state.input, content)
+    :ok = Tackle.CLI.Widgets.Input.insert_str(state.input, content)
     state |> Viewport.update_draft() |> Viewport.relayout()
   end
 
   @doc "Inserts a literal newline without submitting."
   @spec insert_newline(State.t()) :: {:noreply, State.t()}
   def insert_newline(%State{} = state) do
-    :ok = ExRatatui.textarea_insert_str(state.input, "\n")
+    :ok = Tackle.CLI.Widgets.Input.insert_str(state.input, "\n")
     {:noreply, state |> Viewport.update_draft() |> Viewport.relayout()}
   end
 
   @doc """
-  Hands a chord to the native textarea.
+  Hands a chord to the native input widget.
 
   The widget owns text editing, so unknown modified chords are ignored by the
   crate rather than by this module. A chord without a code is not an edit.
@@ -48,7 +48,8 @@ defmodule Tackle.CLI.TUI.Composer do
   @spec key(State.t(), Key.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def key(%State{} = state, %Key{code: code, modifiers: modifiers}) when is_binary(code) do
-    :ok = ExRatatui.textarea_handle_key(state.input, code, modifiers)
+    {width, _height} = state.size
+    :ok = Tackle.CLI.Widgets.Input.handle_key(state.input, code, modifiers, max(width - 2, 1))
     {:noreply, state |> Viewport.update_draft() |> Viewport.relayout()}
   end
 
@@ -65,7 +66,7 @@ defmodule Tackle.CLI.TUI.Composer do
   @spec submit(State.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def submit(%State{} = state) do
-    raw_draft = ExRatatui.textarea_get_value(state.input)
+    raw_draft = Tackle.CLI.Widgets.Input.get_value(state.input)
 
     cond do
       state.active_turn != nil or state.pending_operation != nil ->
@@ -86,7 +87,7 @@ defmodule Tackle.CLI.TUI.Composer do
     {:noreply, opened} = Tree.open(state)
 
     if match?({:tree, _}, opened.overlay) do
-      :ok = ExRatatui.textarea_set_value(opened.input, "")
+      :ok = Tackle.CLI.Widgets.Input.set_value(opened.input, "")
       opened |> Viewport.update_draft() |> Viewport.relayout()
     else
       # The picker did not open (no tree, empty tree); keep the draft intact.
@@ -99,7 +100,7 @@ defmodule Tackle.CLI.TUI.Composer do
     ref = make_ref()
     agent_ref = state.agent_ref
 
-    :ok = ExRatatui.textarea_set_value(state.input, "")
+    :ok = Tackle.CLI.Widgets.Input.set_value(state.input, "")
 
     state = %{
       state

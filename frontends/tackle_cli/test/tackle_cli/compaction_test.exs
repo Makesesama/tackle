@@ -22,7 +22,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
     state = shell()
     {:noreply, running, commands: [_]} = Compaction.request(state)
     assert card(running).content == "Compacting context…"
-    assert ExRatatui.textarea_get_value(running.input) == "draft"
+    assert Tackle.CLI.Widgets.Input.get_value(running.input) == "draft"
 
     record = record()
 
@@ -53,7 +53,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
     assert MessageView.source(card(completed)) =~ "background summary"
     assert card(completed).collapsed?
     assert completed.agent_state.messages == state.agent_state.messages
-    assert ExRatatui.textarea_get_value(completed.input) == "draft"
+    assert Tackle.CLI.Widgets.Input.get_value(completed.input) == "draft"
 
     {:noreply, browsing} = Browser.toggle_focus(completed)
     {:noreply, inspecting} = Browser.handle(:inspect, browsing)
@@ -175,7 +175,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
 
     assert card(failed).content =~ "Compaction failed"
     assert failed.pending_operation == nil
-    assert ExRatatui.textarea_get_value(failed.input) == "draft"
+    assert Tackle.CLI.Widgets.Input.get_value(failed.input) == "draft"
   end
 
   test "resumed checkpoints expose their summary without inventing token counts" do
@@ -249,8 +249,8 @@ defmodule Tackle.CLI.TUI.CompactionTest do
   end
 
   defp shell do
-    input = ExRatatui.textarea_new()
-    :ok = ExRatatui.textarea_set_value(input, "draft")
+    input = Tackle.CLI.Widgets.Input.new()
+    :ok = Tackle.CLI.Widgets.Input.set_value(input, "draft")
 
     Viewport.refresh(%State{
       session_id: "session",

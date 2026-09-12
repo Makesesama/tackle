@@ -9,8 +9,8 @@ defmodule Tackle.CLI.TreeTest do
   alias Tackle.Lib.Tree, as: ConversationTree
 
   defp base_state(opts \\ []) do
-    input = ExRatatui.textarea_new()
-    :ok = ExRatatui.textarea_set_value(input, Keyword.get(opts, :draft, ""))
+    input = Tackle.CLI.Widgets.Input.new()
+    :ok = Tackle.CLI.Widgets.Input.set_value(input, Keyword.get(opts, :draft, ""))
 
     state = %TuiState{
       input: input,
@@ -146,7 +146,7 @@ defmodule Tackle.CLI.TreeTest do
     outcome = %{mode: :edit, draft: Message.user("earlier text"), destination_id: nil}
     state = Tree.apply_outcome(state, outcome)
 
-    assert ExRatatui.textarea_get_value(state.input) == "earlier text"
+    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "earlier text"
     assert state.notice =~ "workspace is unchanged"
   end
 
@@ -156,7 +156,7 @@ defmodule Tackle.CLI.TreeTest do
     outcome = %{mode: :edit, draft: Message.user("earlier text"), destination_id: nil}
     state = Tree.apply_outcome(state, outcome)
 
-    assert ExRatatui.textarea_get_value(state.input) == "my own draft"
+    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "my own draft"
     assert state.notice =~ "draft kept"
   end
 
@@ -164,14 +164,14 @@ defmodule Tackle.CLI.TreeTest do
     state = base_state(draft: "keep me")
     state = Tree.apply_outcome(state, %{mode: :move, draft: nil, destination_id: "a1"})
 
-    assert ExRatatui.textarea_get_value(state.input) == "keep me"
+    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "keep me"
   end
 
   test "/tree opens the picker instead of submitting while idle" do
     state = base_state(agent_state: %{State.new() | tree: tree_with_branches()}, draft: "/tree")
 
     assert {:noreply, %{overlay: {:tree, _}, pending_operation: nil}} = Composer.submit(state)
-    assert ExRatatui.textarea_get_value(state.input) == ""
+    assert Tackle.CLI.Widgets.Input.get_value(state.input) == ""
   end
 
   test "/tree while busy keeps the draft and does not open" do
@@ -180,7 +180,7 @@ defmodule Tackle.CLI.TreeTest do
 
     assert {:noreply, %{overlay: nil, notice: notice}} = Composer.submit(state)
     assert notice =~ "Busy"
-    assert ExRatatui.textarea_get_value(state.input) == "/tree"
+    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "/tree"
   end
 
   test "/tree with no tree keeps the draft and explains why" do
@@ -188,6 +188,6 @@ defmodule Tackle.CLI.TreeTest do
 
     assert {:noreply, %{overlay: nil, notice: notice}} = Composer.submit(state)
     assert notice =~ "no conversation tree"
-    assert ExRatatui.textarea_get_value(state.input) == "/tree"
+    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "/tree"
   end
 end

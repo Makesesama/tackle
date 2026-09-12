@@ -28,7 +28,7 @@ defmodule Tackle.CLI.Keybinds do
   What a chord means in the current context.
 
   `Tackle.CLI.TUI` decides the behaviour; unknown chords resolve to `:ignore`
-  (do nothing, do not render) or `:composer` (let the textarea handle them).
+  (do nothing, do not render) or `:composer` (let the input widget handle them).
   """
   @type intent ::
           :accept

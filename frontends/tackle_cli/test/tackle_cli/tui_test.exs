@@ -6,7 +6,7 @@ defmodule Tackle.CLI.TUITest do
   alias ExRatatui.Style
   alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.List, as: SelectionList
-  alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, Textarea, TextInput, WidgetList}
+  alias ExRatatui.Widgets.{Markdown, Paragraph, Popup, TextInput, WidgetList}
   alias Tackle.CLI.TUI
   alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, RuntimeEvents, Theme}
   alias Tackle.Lib.Compaction, as: LibCompaction
@@ -272,7 +272,7 @@ defmodule Tackle.CLI.TUITest do
     assert state.agent_state.model == "test-model"
     assert state.agent_state.llm.ref == "openai-codex/test-model"
     assert is_reference(state.input)
-    assert ExRatatui.textarea_get_value(state.input) == ""
+    assert Tackle.CLI.Widgets.Input.get_value(state.input) == ""
     assert state.draft_lines == 1
     assert state.draft_empty?
     assert function_exported?(TUI, :start_link, 1)
@@ -288,7 +288,7 @@ defmodule Tackle.CLI.TUITest do
     assert %WidgetList{} = transcript_widget(state)
     assert conversation_text(state) =~ "Welcome to Tackle"
 
-    assert %Textarea{block: %{title: " Prompt "}} = composer_widget(state)
+    assert %Tackle.CLI.Widgets.Input{block: %{title: " Prompt "}} = composer_widget(state)
     assert status_text(state) =~ "ready"
     assert status_text(state) =~ "ctx 0/1k (0.0%)"
     assert hints_text(state) =~ "Enter send"
@@ -301,7 +301,7 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "enter")
 
     assert_receive {:submitted, "hi"}
-    state = state(tui)
+    state = await_state(tui, &is_nil(&1.pending_operation))
 
     assert state.active_turn == %{id: "turn-1"}
     assert state.pending_prompt == "hi"
@@ -314,7 +314,7 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "enter")
 
     assert_receive {:submitted, "fail\nsecond line"}
-    state = state(tui)
+    state = await_state(tui, &is_nil(&1.pending_operation))
 
     assert state.active_turn == nil
     assert draft(tui) == "fail\nsecond line"
@@ -366,6 +366,34 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "c", ["ctrl"], "release")
     assert Process.alive?(tui)
     assert draft(tui) == "\n\naa"
+  end
+
+  test "resize alone rewraps and redraws the composer without editing the draft", %{tui: tui} do
+    source = String.duplicate("x", 60)
+    inject_paste(tui, source)
+    assert state(tui).draft_lines == 1
+    before_resize = Runtime.snapshot(tui).render_count
+
+    inject_resize(tui, 22, 24)
+    narrow = state(tui)
+    assert narrow.draft_lines == 4
+    assert regions(narrow).composer.height == 6
+    assert Runtime.snapshot(tui).render_count > before_resize
+    assert draft(tui) == source
+
+    terminal = ExRatatui.init_test_terminal(22, 24)
+    :ok = ExRatatui.draw(terminal, TUI.scene(narrow, frame(narrow)))
+    assert ExRatatui.get_buffer_content(terminal) =~ String.duplicate("x", 20)
+
+    inject_resize(tui, 80, 24)
+    wide = state(tui)
+    assert wide.draft_lines == 1
+    assert regions(wide).composer.height == 3
+    assert draft(tui) == source
+
+    # Resizing is not an edit and must not add an undo entry.
+    inject_key(tui, "u", ["ctrl"])
+    assert draft(tui) == ""
   end
 
   test "growing the draft shrinks the transcript instead of the composer", %{tui: tui} do
@@ -1305,7 +1333,7 @@ defmodule Tackle.CLI.TUITest do
     assert {:inspector, inspector} = state(tui).overlay
     assert inspector.entry.id == "tool:edit"
     inject_key(tui, "esc")
-    assert ExRatatui.textarea_get_value(state(tui).input) == "keep my draft"
+    assert Tackle.CLI.Widgets.Input.get_value(state(tui).input) == "keep my draft"
   end
 
   test "F4 reports when there is nothing to browse", %{tui: tui} do
@@ -1392,13 +1420,13 @@ defmodule Tackle.CLI.TUITest do
     state = state(tui)
     assert state.focus == :transcript
     assert state.overlay == nil
-    assert ExRatatui.textarea_get_value(state.input) == "draft first"
+    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "draft first"
     assert find_widget(state, &match?(%Popup{}, &1)) == nil
 
     inject_key(tui, "f4")
     state = state(tui)
     assert state.focus == :composer
-    assert ExRatatui.textarea_get_value(state.input) == "draft first"
+    assert Tackle.CLI.Widgets.Input.get_value(state.input) == "draft first"
   end
 
   test "the browser keeps the selection visible in a long transcript", %{tui: tui} do
@@ -1594,7 +1622,8 @@ defmodule Tackle.CLI.TUITest do
 
     inject_key(tui, "esc")
     assert_receive :cancelled
-    assert state(tui).activity == "cancelling"
+    state = await_state(tui, &is_nil(&1.pending_operation))
+    assert state.activity == "cancelling"
 
     inject_key(tui, "esc")
     refute_receive :cancelled, 100
@@ -1768,7 +1797,7 @@ defmodule Tackle.CLI.TUITest do
   end
 
   defp composer_widget(state) do
-    find_widget(state, &match?(%Textarea{}, &1))
+    find_widget(state, &match?(%Tackle.CLI.Widgets.Input{}, &1))
   end
 
   defp status_text(state) do
@@ -1873,7 +1902,7 @@ defmodule Tackle.CLI.TUITest do
   end
 
   defp draft(tui) do
-    ExRatatui.textarea_get_value(state(tui).input)
+    Tackle.CLI.Widgets.Input.get_value(state(tui).input)
   end
 
   defp settle_messages(tui, messages) do
