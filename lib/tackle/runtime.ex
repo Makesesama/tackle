@@ -203,6 +203,12 @@ defmodule Tackle.Runtime do
   form) or a trusted `AgentSpec`. The coordinator admits the child, a request
   helper installs correlated terminal routing, and a fresh ephemeral agent runs
   the delegated prompt. Returns a stable `RunRef` for `await/2`.
+
+  A trusted spec with `model_source: :parent` copies only the requesting agent's
+  model reference and thinking level at request time, resolving against the
+  child's configured adapters before admission. Resolution runs outside the
+  coordinator to avoid calling an agent from inside its admission owner.
+  Existing runs and profiles with `model_source: :configured` are unchanged.
   """
   @spec request_agent(
           Handle.t() | AgentRef.t(),
@@ -217,6 +223,7 @@ defmodule Tackle.Runtime do
     with {:ok, scope_ref, parent_ref} <- resolve_requester(requester),
          {:ok, coordinator} <- coordinator(scope_ref),
          {:ok, spec} <- resolve_spec(coordinator, spec_or_profile),
+         {:ok, spec} <- resolve_model_source(spec, parent_ref),
          {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref),
          {:ok, admission} <-
            Coordinator.admit_agent(coordinator, parent_ref, spec, lifetime: :ephemeral) do
@@ -234,7 +241,8 @@ defmodule Tackle.Runtime do
         allow_delegation: admission.allow_delegation,
         limits: admission.limits,
         parent: %{agent_ref: parent_ref},
-        timeout: Keyword.get(opts, :timeout, AgentSpec.timeout(spec, admission.limits))
+        timeout: Keyword.get(opts, :timeout, AgentSpec.timeout(spec, admission.limits)),
+        event_callback: Keyword.get(opts, :event_callback)
       }
 
       case DynamicSupervisor.start_child(work_supervisor, Request.child_spec(arg)) do
@@ -399,6 +407,20 @@ defmodule Tackle.Runtime do
   end
 
   defp resolve_requester(other), do: {:error, {:invalid_requester, other}}
+
+  defp resolve_model_source(%AgentSpec{model_source: :configured} = spec, _parent_ref),
+    do: {:ok, spec}
+
+  defp resolve_model_source(%AgentSpec{model_source: :parent} = spec, parent_ref) do
+    with {:ok, %{agent_state: state}} <- session_snapshot(parent_ref),
+         {:ok, config} <-
+           Tackle.Config.reconfigure(spec.config,
+             model: state.llm.ref,
+             thinking: Tackle.Thinking.from_llm_opts(state.llm_opts)
+           ) do
+      {:ok, %{spec | config: config}}
+    end
+  end
 
   defp resolve_spec(_coordinator, %AgentSpec{} = spec), do: AgentSpec.new(spec)
 

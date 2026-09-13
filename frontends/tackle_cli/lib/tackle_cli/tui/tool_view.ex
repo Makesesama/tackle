@@ -8,6 +8,8 @@ defmodule Tackle.CLI.TUI.ToolView do
   to their path; successful Bash output shows at most two clipped tail lines.
   Full retained output stays in details. Failed edits show the error instead of
   a replacement preview (details retain the submitted arguments as source).
+  Subagents show their profile, assignment, explicit status, and locally observed
+  elapsed time while the turn is live. Full arguments and findings stay in details.
   Unknown tools retain a generic source fallback.
 
   Edit previews compare the submitted replacement strings, never files on disk.
@@ -73,12 +75,34 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     value =
       case name do
+        "subagent" -> get(args, :profile)
         "bash" -> get(args, :command)
         name when name in ["read", "edit", "write"] -> get(args, :path)
         _ -> get(args, :path) || get(args, :command)
       end
 
     if is_binary(value), do: value, else: ""
+  end
+
+  defp header_rows(%{tool_name: "subagent"} = entry, args, _width) do
+    profile = target("subagent", args)
+    profile = if profile == "", do: "unknown profile", else: profile
+    status = entry.tool_status
+
+    elapsed =
+      case entry.tool_elapsed_ms do
+        ms when is_integer(ms) and ms >= 0 -> " · " <> elapsed_text(ms)
+        _ -> ""
+      end
+
+    [
+      MessageView.row([
+        MessageView.span(marker(status) <> " ", marker_style(status)),
+        MessageView.span(status_text(status) <> " · ", status_style(status)),
+        MessageView.span(profile, Theme.bold(Theme.style(:text))),
+        MessageView.span(" · subagent" <> elapsed, Theme.style(:muted))
+      ])
+    ]
   end
 
   defp header_rows(entry, args, _width) do
@@ -115,6 +139,27 @@ defmodule Tackle.CLI.TUI.ToolView do
           state ++ heading ++ summary
       )
     ]
+  end
+
+  defp body_rows(%{tool_name: "subagent"} = entry, args, :preview, _width) do
+    assignment =
+      case get(args, :prompt) do
+        prompt when is_binary(prompt) ->
+          # Only paint is shortened; search, copy and details retain the source.
+          prompt = prompt |> MessageView.sanitize() |> String.replace(~r/\s+/u, " ")
+
+          preview =
+            if String.length(prompt) > 240,
+              do: String.slice(prompt, 0, 240) <> "… · F4 details",
+              else: prompt
+
+          [body_row(Theme.style(:muted), "Task: " <> preview)]
+
+        _ ->
+          [body_row(Theme.style(:subtle), "Task unavailable · F4 details")]
+      end
+
+    assignment ++ output_rows(entry, :preview)
   end
 
   defp body_rows(%{tool_name: "read", tool_status: :completed}, _args, :preview, _width),
@@ -425,6 +470,12 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp marker_style(:completed), do: Theme.style(:success)
   defp marker_style(_), do: Theme.style(:muted)
 
+  defp elapsed_text(ms) do
+    seconds = div(ms, 1_000)
+    if seconds < 60, do: "#{seconds}s", else: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+  end
+
+  defp status_text(:completed), do: "completed"
   defp status_text(:running), do: "running"
   defp status_text(:failed), do: "failed"
   defp status_text(_), do: "requested"

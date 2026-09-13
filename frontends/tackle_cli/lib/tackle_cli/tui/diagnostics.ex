@@ -55,6 +55,18 @@ defmodule Tackle.CLI.TUI.Diagnostics do
       "Context pressure may be estimated; this is not an exact provider request capture."
   end
 
+  defp body(state, :subagents) do
+    "Live delegated sessions in this scope. This page updates while open.\n" <>
+      "Child conversation text can be inspected while the child is running; credentials, raw adapter options, and opaque provider state are omitted.\n\n" <>
+      case state.subagents |> Map.values() |> Enum.sort_by(& &1.started_at_ms) do
+        [] ->
+          "No subagents observed for this turn."
+
+        subagents ->
+          Enum.map_join(subagents, "\n\n", &subagent_dump/1)
+      end
+  end
+
   defp body(state, :prompt) do
     "Configured composed system prompt (not a capture of hook/adapter transformations):\n\n" <>
       (state.agent_state.system_prompt || "System prompt unavailable.")
@@ -105,6 +117,75 @@ defmodule Tackle.CLI.TUI.Diagnostics do
       else
         observations.events |> Enum.reverse() |> Enum.map_join("\n\n", &dump/1)
       end
+  end
+
+  defp subagent_dump(subagent) do
+    live = live_subagent(subagent)
+
+    dump(%{
+      run_id: subagent.run_id,
+      agent_id: subagent.agent_ref && subagent.agent_ref.agent_id,
+      profile: subagent.profile,
+      status: live.status,
+      active_turn_id: live.active_turn_id,
+      model: live.model,
+      thinking: live.thinking,
+      iteration: live.iteration,
+      max_iterations: live.max_iterations,
+      messages: live.messages,
+      error: live.error
+    })
+  end
+
+  defp live_subagent(%{status: status} = subagent) when status != :running do
+    Map.merge(empty_subagent(), %{status: status})
+  end
+
+  defp live_subagent(subagent) do
+    with {:ok, snapshot} <- Tackle.Runtime.session_snapshot(subagent.agent_ref) do
+      agent = snapshot.agent_state
+
+      %{
+        status: live_status(agent, snapshot),
+        active_turn_id: snapshot.active_turn && snapshot.active_turn.id,
+        model: State.model_ref(agent),
+        thinking: Tackle.Thinking.from_llm_opts(agent.llm_opts),
+        iteration: agent.current_iteration,
+        max_iterations: agent.max_iterations,
+        messages: Enum.map(agent.messages, &subagent_message/1),
+        error: agent.error
+      }
+    else
+      {:error, reason} -> Map.merge(empty_subagent(), %{status: :unavailable, error: reason})
+    end
+  end
+
+  defp live_status(_agent, %{active_turn: %{} = _turn}), do: :running
+  defp live_status(agent, _snapshot), do: agent.status
+
+  defp empty_subagent do
+    %{
+      status: nil,
+      active_turn_id: nil,
+      model: nil,
+      thinking: nil,
+      iteration: nil,
+      max_iterations: nil,
+      messages: [],
+      error: nil
+    }
+  end
+
+  defp subagent_message(message) do
+    %{
+      id: message.id,
+      role: message.role,
+      tool_call_id: message.tool_call_id,
+      tool_name: message.tool_name,
+      tool_calls: message.tool_calls,
+      content: message.content,
+      thinking: message.thinking
+    }
   end
 
   defp compaction_policy(nil), do: nil

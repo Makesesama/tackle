@@ -5,11 +5,11 @@ defmodule Tackle.CLI.Run do
   alias Tackle.CLI.Distribution
   alias Tackle.CLI.Interaction
   alias Tackle.CLI.TUI
-  alias Tackle.Runtime.AgentSpec
-  alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Spec, as: SessionSpec
 
-  @terminal_timeout 60_000
+  # A subagent tool can be silent for its five-minute run budget. Leave time
+  # for the child to settle and the parent to consume its result.
+  @terminal_timeout :timer.minutes(6)
 
   @spec run(%{
           model: String.t() | nil,
@@ -265,10 +265,8 @@ defmodule Tackle.CLI.Run do
   defp start_scope(model, thinking, llm_stream, opts) do
     with {:ok, _apps} <- ensure_started(),
          {:ok, overrides} <- overrides(model, thinking, llm_stream),
-         {:ok, config} <- Tackle.load_config(overrides: overrides),
-         {:ok, root_spec} <- AgentSpec.new(name: "root", config: config),
          {:ok, session} <- durable_session(opts),
-         {:ok, scope_spec} <- ScopeSpec.new(root_spec: root_spec, profiles: %{}, session: session),
+         {:ok, scope_spec} <- Tackle.Coding.scope_spec([overrides: overrides], session),
          {:ok, scope} <- Tackle.start_scope(scope_spec) do
       {:ok, scope}
     else

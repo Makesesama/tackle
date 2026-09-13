@@ -251,6 +251,53 @@ bindings do not carry between calls. These tools inherit the Tackle process's fi
 operating-system permissions and are not a sandbox. `Tackle.Lib` provides the
 `:telemetry` runtime dependency used by tool execution.
 
+### Explorer subagent
+
+CLI sessions enable the built-in `explorer` profile by default, including new
+sessions opened inside the TUI and resumed sessions. Ask the agent to delegate a
+bounded investigation, for example:
+
+```sh
+tackle run "Ask an explorer to trace session recovery and report the relevant files"
+```
+
+The root can call `subagent` with `profile: "explorer"` and a self-contained
+`prompt`. The explorer has a fresh conversation, shares the configured working
+directory, and returns findings through a dedicated inline tool card. The card
+shows profile, assignment, status, and a live local elapsed clock; F4 retains
+full arguments and findings. Timing is transient observation data, not persisted
+provider latency. Parallel calls keep separate cards. The explorer
+uses `read` and `bash`, is instructed not to edit files, and cannot delegate.
+**This is not a read-only sandbox:** bash retains the harness's filesystem,
+network, and OS permissions. Do not use this profile as an isolation boundary.
+
+`Tackle.Coding.scope_spec/2` owns this composition in the root harness. It loads
+normal global/project guidance for both agents, advertises the profile to the
+root, and limits the scope to two simultaneous explorers plus the root. Excess
+requests are rejected rather than queued. Each child has at most 20 loop
+iterations and a five-minute run timeout; stopping the scope cleans up children.
+The one-shot CLI allows six minutes of event silence so it does not interrupt a
+child at the previous one-minute frontend timeout.
+
+Each explorer request uses the requesting root's current model and thinking
+level, including the selection restored by resume and later idle model changes.
+Already-running children keep the selection they started with. Only these two
+settings are inherited: prompts, tools, limits, context, and adapter options
+remain the child's trusted configuration; parent history and credentials are
+not copied. The selected model must be available through the child's configured
+adapters, otherwise the request fails before admitting a child.
+
+This is the provider-neutral `AgentSpec.model_source: :parent` policy. Generic
+profiles default to `:configured` and keep their explicitly configured model;
+model-generated arguments cannot select or change this policy.
+
+Child transcripts remain ephemeral: the durable root records the subagent tool
+call and returned findings, not the child's full history. The footer and usage
+charts currently count root usage only, **not child usage or total delegation
+cost**. Live child activity, configurable profiles, recursive delegation, and
+persistent child conversations remain deferred. General runtime scopes and
+`Tackle.Tools.default/0` do not automatically gain subagent capability.
+
 ### Durable sessions
 
 A root scope can own one durable session journal. Add a

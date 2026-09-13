@@ -31,6 +31,47 @@ defmodule Tackle.CLI.RunTest do
     end
   end
 
+  defmodule ExplorerAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "cli-explorer"
+
+    @impl true
+    def models, do: ["test", "alternate"]
+
+    @impl true
+    def generate(_schema, opts) do
+      send(Application.fetch_env!(:tackle_cli, :explorer_test_pid), {:explorer_generation, opts})
+      messages = Keyword.fetch!(opts, :messages)
+      explorer? = String.contains?(Keyword.fetch!(opts, :system), "## Explorer assignment")
+      task = if explorer?, do: "Inspect fixture.txt", else: "parent-only request"
+      current_messages = messages |> Enum.reverse() |> Enum.take_while(&(&1.content != task))
+      tool_result = Enum.find(current_messages, &(&1.role == :tool))
+
+      data =
+        cond do
+          tool_result ->
+            %{"content" => "Observed: #{tool_result.content}", "tool_calls" => []}
+
+          explorer? ->
+            call("read", %{"path" => "fixture.txt"})
+
+          true ->
+            call("subagent", %{"profile" => "explorer", "prompt" => "Inspect fixture.txt"})
+        end
+
+      {:ok, %{data: data, usage: nil, model: Keyword.fetch!(opts, :model)}}
+    end
+
+    defp call(name, args) do
+      %{
+        "content" => nil,
+        "tool_calls" => [%{"id" => "call-#{name}", "name" => name, "arguments" => args}]
+      }
+    end
+  end
+
   defmodule AuthAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -71,6 +112,62 @@ defmodule Tackle.CLI.RunTest do
     end)
 
     {:ok, home: home}
+  end
+
+  test "default CLI sessions delegate, return findings, and recreate the profile on resume", %{
+    home: home
+  } do
+    Application.put_env(:tackle, :adapters, [ExplorerAdapter])
+    Application.put_env(:tackle_cli, :explorer_test_pid, self())
+    on_exit(fn -> Application.delete_env(:tackle_cli, :explorer_test_pid) end)
+    File.mkdir_p!(home)
+    File.write!(Path.join(home, "fixture.txt"), "explorer fixture finding")
+
+    # No CLI feature flag, credentials, native terminal, or real provider calls.
+    File.cd!(home, fn ->
+      Enum.reduce(1..2, nil, fn attempt, resume ->
+        output =
+          capture_io(fn ->
+            assert 0 ==
+                     Run.run(%{
+                       model: if(attempt == 1, do: "cli-explorer/alternate", else: nil),
+                       thinking: nil,
+                       prompt: "parent-only request",
+                       resume: resume,
+                       abandon: false
+                     })
+          end)
+
+        assert output =~ "explorer fixture finding"
+        [journal_path] = Path.wildcard(Path.join(home, "sessions/*/session.dlog"))
+        journal_path |> Path.dirname() |> Path.basename()
+      end)
+    end)
+
+    assert_receive {:explorer_generation, root_opts}
+    assert Keyword.fetch!(root_opts, :system) =~ "profile \"explorer\""
+    assert_receive {:explorer_generation, child_opts}
+    assert Keyword.fetch!(child_opts, :model) == "alternate"
+    assert Keyword.fetch!(child_opts, :system) =~ "## Explorer assignment"
+    assert Enum.any?(child_opts[:messages], &(&1.content == "Inspect fixture.txt"))
+    refute Enum.any?(child_opts[:messages], &(&1.content == "parent-only request"))
+    assert_receive {:explorer_generation, _child_answer}
+    assert_receive {:explorer_generation, _root_answer}
+    assert_receive {:explorer_generation, _resumed_root}
+    assert_receive {:explorer_generation, resumed_child}
+    assert Keyword.fetch!(resumed_child, :model) == "alternate"
+    assert Keyword.fetch!(resumed_child, :system) =~ "## Explorer assignment"
+    assert Enum.any?(resumed_child[:messages], &(&1.content == "Inspect fixture.txt"))
+    refute Enum.any?(resumed_child[:messages], &(&1.role == :tool))
+
+    [journal_path] = Path.wildcard(Path.join(home, "sessions/*/session.dlog"))
+    session_id = journal_path |> Path.dirname() |> Path.basename()
+    assert {:ok, stored} = Tackle.inspect_session(session_id, home: home)
+
+    assert Enum.any?(
+             stored.messages,
+             &(&1["role"] == "tool" and &1["content"] =~ "explorer fixture finding")
+           )
   end
 
   test "resume automatically repairs an unclean journal", %{home: home} do

@@ -26,7 +26,7 @@ defmodule Tackle.CLI.TUI.Browser do
     Viewport
   }
 
-  @pages [:transcript, :overview, :prompt, :context, :tools, :events]
+  @pages [:transcript, :overview, :subagents, :prompt, :context, :tools, :events]
 
   @doc "Whether Browse is displaying a non-transcript page."
   @spec page?(State.t()) :: boolean()

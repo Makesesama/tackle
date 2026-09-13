@@ -58,17 +58,14 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
     refute Diagnostics.text(state, :events) =~ "private text"
   end
 
-  test "runtime captures retry before projecting it, and deferred events only on replay" do
+  test "runtime correlates an event that arrives before submit confirmation" do
     state = %{state() | active_turn: nil, pending_operation: %{kind: :submit}}
     event = Event.new(:retry_scheduled, %{attempt: 1, delay_ms: 2000, reason: "secret"})
     message = {:tackle_event, "session", "turn", event}
 
-    {:noreply, deferred, render?: false} = RuntimeEvents.handle(message, state)
-    assert deferred.observations.events == []
-    assert deferred.deferred_events == [message]
-
-    {:noreply, projected} =
-      RuntimeEvents.handle(message, %{deferred | active_turn: %{id: "turn"}})
+    {:noreply, projected} = RuntimeEvents.handle(message, state)
+    assert projected.active_turn == %{id: "turn"}
+    assert projected.deferred_events == []
 
     assert [%{type: :retry_scheduled, data: %{attempt: 1, delay_ms: 2000}}] =
              projected.observations.events
@@ -83,6 +80,62 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
 
     assert settled.active_turn == nil
     assert [%{type: :turn_finished, data: %{status: :cancelled}}, _] = settled.observations.events
+  end
+
+  test "an early event installs and projects the submitted turn immediately" do
+    ref = make_ref()
+
+    pending = %{
+      state()
+      | active_turn: nil,
+        pending_prompt: "go",
+        stream: %{state().stream | coalesce?: false},
+        pending_operation: %{ref: ref, kind: :submit, raw_draft: "go"}
+    }
+
+    event = {:tackle_event, "session", "turn", Event.new(:message_delta, %{delta: "done"})}
+    assert {:noreply, live} = RuntimeEvents.handle(event, pending)
+    assert live.active_turn == %{id: "turn"}
+    assert live.pending_operation.kind == :submit
+    assert live.stream.response == "done"
+    assert Tackle.CLI.TUI.Conversation.text(live.conversation) =~ "done"
+
+    assert {:noreply, confirmed, commands: []} =
+             RuntimeEvents.handle({:tui_operation_result, ref, :submit, {:ok, "turn"}}, live)
+
+    assert confirmed.active_turn == %{id: "turn"}
+    assert confirmed.pending_operation == nil
+    assert confirmed.stream.response == "done"
+  end
+
+  test "an early terminal outcome is not overwritten by submit completion" do
+    ref = make_ref()
+
+    agent = %{
+      state().agent_state
+      | messages: [Message.user("go"), Message.assistant(content: "done")]
+    }
+
+    pending = %{
+      state()
+      | active_turn: nil,
+        pending_prompt: "go",
+        pending_operation: %{ref: ref, kind: :submit, raw_draft: "go"}
+    }
+
+    finished = {:tackle_turn_finished, "session", "turn", {:ok, agent}}
+    assert {:noreply, settled} = RuntimeEvents.handle(finished, pending)
+    assert settled.active_turn == nil
+    assert settled.pending_operation == nil
+    assert settled.agent_state.messages == agent.messages
+
+    assert {:noreply, unchanged, render?: false} =
+             RuntimeEvents.handle(
+               {:tui_operation_result, ref, :submit, {:ok, "turn"}},
+               settled
+             )
+
+    assert unchanged == settled
   end
 
   test "failed turns and manual compaction are observed without retaining failure bodies" do

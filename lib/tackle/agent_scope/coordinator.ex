@@ -26,6 +26,7 @@ defmodule Tackle.AgentScope.Coordinator do
 
   @type entry :: %{
           ref: AgentRef.t(),
+          name: String.t(),
           pid: pid() | nil,
           monitor: reference() | nil,
           parent: AgentRef.t() | nil,
@@ -143,6 +144,7 @@ defmodule Tackle.AgentScope.Coordinator do
 
     root_entry = %{
       ref: root_ref,
+      name: spec.root_spec.name,
       pid: nil,
       monitor: nil,
       parent: nil,
@@ -257,6 +259,7 @@ defmodule Tackle.AgentScope.Coordinator do
 
       entry = %{
         ref: agent_ref,
+        name: spec.name,
         pid: nil,
         monitor: nil,
         parent: parent.ref,
@@ -400,6 +403,7 @@ defmodule Tackle.AgentScope.Coordinator do
   defp entry_snapshot(state, entry) do
     %{
       ref: entry.ref,
+      name: entry.name,
       pid: entry.pid,
       status: entry.status,
       parent: entry.parent,

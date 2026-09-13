@@ -506,7 +506,7 @@ A subagent needs an explicit agent specification describing the configuration th
 - runtime limits and timeout;
 - parent/fleet metadata.
 
-The implemented `AgentSpec` carries a trusted `name`, a resolved `Tackle.Config`, an `allow_delegation` grant, and a per-run timeout. The configuration policy is:
+The implemented `AgentSpec` carries a trusted `name`, a resolved `Tackle.Config`, an `allow_delegation` grant, a per-run timeout, and `model_source` (`:configured` by default). With `model_source: :parent`, `request_agent/4` reads the requesting agent's current model and thinking level outside the coordinator and re-resolves them against the child's configured adapters before admission. No other options or conversation state are inherited, and existing runs are unchanged. The coding explorer uses this policy so resume and idle root model changes affect subsequent requests. Model-visible tool data cannot set this policy. The configuration policy is:
 
 - the harness constructs executable configuration from trusted modules already present in the running distribution;
 - model-generated input may select only a trusted named profile exposed by the host;
