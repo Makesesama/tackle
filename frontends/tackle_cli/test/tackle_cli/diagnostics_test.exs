@@ -189,7 +189,7 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
   test "Browse pages work with an empty transcript and preserves draft, focus and resize" do
     state = state()
     :ok = Input.set_value(state.input, "draft")
-    assert Keybinds.base(%Key{code: "f7"}, :composer) == :composer
+    assert Keybinds.base(%Key{code: "f8"}, :composer) == :composer
     assert Keybinds.transcript(%Key{code: "d"}) == :ignore
 
     {:noreply, opened} = TUI.handle_event(%Key{code: "f4"}, state)

@@ -21,6 +21,7 @@ defmodule Tackle.CLI.TUI.StatusView do
     MessageView,
     Picker,
     State,
+    Subagents,
     Theme,
     UsageChart,
     Util
@@ -117,6 +118,16 @@ defmodule Tackle.CLI.TUI.StatusView do
     end
   end
 
+  defp status_segments(%State{focus: :subagents, notice: notice}) when is_binary(notice),
+    do: ["Subagents", notice]
+
+  defp status_segments(%State{focus: :subagents} = state) do
+    tasks = Subagents.tasks(state)
+    index = Enum.find_index(tasks, &(&1.id == state.subagent_selected)) || 0
+
+    ["Subagents", "#{index + 1}/#{length(tasks)}", "#{length(tasks)} running"]
+  end
+
   defp status_segments(%State{focus: :transcript, notice: notice}) when is_binary(notice),
     do: ["Browsing", notice]
 
@@ -160,6 +171,9 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp hint_segments(%State{overlay: {:usage_chart, _}}),
     do: ["Tab/←/→ mode", "R reload", "Esc close"]
 
+  defp hint_segments(%State{focus: :subagents}),
+    do: ["↑/↓ select", "Enter details", "Esc back"]
+
   defp hint_segments(%State{focus: :transcript, browse_page: page}) when page != :transcript,
     do: ["←/→ or Tab page", "↑/↓ scroll", "R refresh", "Y copy page", "Esc or F4 back"]
 
@@ -189,13 +203,13 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp hint_segments(%State{pending_operation: %{kind: :compact}}),
     do: ["Compacting · draft kept", "F4 browse", "Ctrl+C quit"]
 
-  defp hint_segments(%State{}) do
-    [
-      "Esc cancel",
-      "Ctrl+J newline",
-      "F4 browse",
-      "Ctrl+C quit"
-    ]
+  # Only the running-task row teaches F7, so the curated idle hints stay put.
+  defp hint_segments(%State{} = state) do
+    if Subagents.active?(state) do
+      ["Esc cancel", "F7 tasks", "Ctrl+C quit"]
+    else
+      ["Esc cancel", "Ctrl+J newline", "F4 browse", "Ctrl+C quit"]
+    end
   end
 
   # Keeps the first and last hint (the essential send/quit pair) visible and

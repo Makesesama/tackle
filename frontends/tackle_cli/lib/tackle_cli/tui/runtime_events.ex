@@ -12,7 +12,18 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   """
 
   alias ExRatatui.Command
-  alias Tackle.CLI.TUI.{Compaction, Observations, State, Tree, UsageChart, Util, Viewport}
+
+  alias Tackle.CLI.TUI.{
+    Compaction,
+    Observations,
+    State,
+    Subagents,
+    Tree,
+    UsageChart,
+    Util,
+    Viewport
+  }
+
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.{ContextUsage, Event, Usage}
@@ -393,7 +404,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         activity: tool_activity_label(tool, "running")
     }
 
-    {:noreply, Viewport.refresh(state, [:turn])}
+    {:noreply, state |> Subagents.reconcile() |> Viewport.refresh([:turn])}
   end
 
   defp route(
@@ -468,7 +479,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         outcome: if(outcome == :cancelled, do: :cancelled, else: nil)
     }
 
-    {:noreply, Viewport.refresh(state)}
+    {:noreply, state |> Subagents.reconcile() |> Viewport.refresh()}
   end
 
   defp route(
@@ -491,7 +502,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         outcome: :failed
     }
 
-    {:noreply, Viewport.refresh(state, [:settled, :pending, :turn, :error])}
+    {:noreply,
+     state |> Subagents.reconcile() |> Viewport.refresh([:settled, :pending, :turn, :error])}
   end
 
   defp route(
@@ -677,7 +689,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         activity: tool_activity_label(tool, label)
     }
 
-    {:noreply, Viewport.refresh(state, [:turn])}
+    {:noreply, state |> Subagents.reconcile() |> Viewport.refresh([:turn])}
   end
 
   defp put_timeline_tool(timeline, nil), do: timeline

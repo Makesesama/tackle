@@ -48,7 +48,7 @@ defmodule Tackle.CLI.TUI.State do
           | {:confirm_new_session, map()}
 
   @typedoc "Which pane owns the keyboard."
-  @type focus :: :composer | :transcript
+  @type focus :: :composer | :transcript | :subagents
 
   @type t :: %__MODULE__{
           agent_ref: Tackle.Runtime.AgentRef.t() | nil,
@@ -68,6 +68,7 @@ defmodule Tackle.CLI.TUI.State do
           usage_timeline_cache: map(),
           overlay: overlay(),
           focus: focus(),
+          subagent_selected: String.t() | nil,
           selected_entry: String.t() | nil,
           browse_page:
             :transcript | :overview | :subagents | :prompt | :context | :tools | :events,
@@ -113,6 +114,7 @@ defmodule Tackle.CLI.TUI.State do
             usage_timeline_cache: %{},
             overlay: nil,
             focus: :composer,
+            subagent_selected: nil,
             selected_entry: nil,
             browse_page: :transcript,
             browse_content: nil,
@@ -216,6 +218,7 @@ defmodule Tackle.CLI.TUI.State do
         draft_empty?: true,
         overlay: nil,
         focus: :composer,
+        subagent_selected: nil,
         selected_entry: nil,
         browse_page: :transcript,
         browse_content: nil

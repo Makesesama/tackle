@@ -23,6 +23,7 @@ defmodule Tackle.CLI.TUI.Layout do
   @type regions :: %{
           header: Rect.t(),
           transcript: Rect.t(),
+          sidebar: Rect.t() | nil,
           reading: Rect.t() | nil,
           status: Rect.t() | nil,
           composer: Rect.t(),
@@ -36,8 +37,8 @@ defmodule Tackle.CLI.TUI.Layout do
   requests the reading-back affordance row, which takes priority over the
   optional status and hint rows.
   """
-  @spec regions(integer(), integer(), pos_integer(), boolean()) :: regions()
-  def regions(width, height, draft_lines, reading_active?) do
+  @spec regions(integer(), integer(), pos_integer(), boolean(), boolean()) :: regions()
+  def regions(width, height, draft_lines, reading_active?, subagents_active? \\ false) do
     width = max(width, 1)
     height = max(height, 0)
 
@@ -54,7 +55,8 @@ defmodule Tackle.CLI.TUI.Layout do
     {hints?, transcript_height} = take_optional_row(true, available)
 
     header = %Rect{x: 0, y: 0, width: width, height: min(height, @header_height)}
-    transcript = %Rect{x: 0, y: @header_height, width: width, height: transcript_height}
+    transcript_area = %Rect{x: 0, y: @header_height, width: width, height: transcript_height}
+    {transcript, sidebar} = split_sidebar(transcript_area, subagents_active?)
     y = @header_height + transcript_height
 
     {reading, y} = optional_rect(reading?, y, width)
@@ -65,6 +67,7 @@ defmodule Tackle.CLI.TUI.Layout do
     %{
       header: header,
       transcript: transcript,
+      sidebar: sidebar,
       reading: reading,
       status: status,
       composer: composer,
@@ -83,6 +86,17 @@ defmodule Tackle.CLI.TUI.Layout do
 
     draft_lines |> max(@composer_min_lines) |> min(max_lines)
   end
+
+  defp split_sidebar(%Rect{width: width} = rect, true) when width > 1 do
+    sidebar_width = width |> div(3) |> max(18) |> min(36) |> min(width - 1)
+
+    {
+      %{rect | width: width - sidebar_width},
+      %{rect | x: rect.x + width - sidebar_width, width: sidebar_width}
+    }
+  end
+
+  defp split_sidebar(rect, _active?), do: {rect, nil}
 
   defp take_optional_row(false, available), do: {false, available}
 
