@@ -57,6 +57,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           tool_output: String.t() | nil,
           tool_name: String.t() | nil,
           tool_arguments: term(),
+          model: String.t() | nil,
           tool_status: atom() | nil,
           tool_elapsed_ms: non_neg_integer() | nil,
           collapsed?: boolean()
@@ -72,6 +73,7 @@ defmodule Tackle.CLI.TUI.MessageView do
     :tool_output,
     :tool_name,
     :tool_arguments,
+    :model,
     :tool_status,
     :tool_elapsed_ms,
     style: %Style{},
@@ -268,11 +270,13 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   @doc "Builds a typed welcome entry used when a session has no messages yet."
-  @spec welcome_entry() :: t()
-  def welcome_entry do
+  @spec welcome_entry(String.t() | nil) :: t()
+  def welcome_entry(model \\ nil) do
+    model_text = if is_binary(model), do: " Model: #{model}.", else: ""
+
     entry(
       :welcome,
-      "Welcome to Tackle. Type a prompt below to start a session.",
+      "Welcome to Tackle.#{model_text} Type a prompt below to start a session.",
       id: "welcome",
       style: style(:welcome)
     )
@@ -659,6 +663,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       tool_output: output,
       tool_name: name,
       tool_arguments: arguments,
+      model: value(tool, :model),
       tool_status: status,
       tool_elapsed_ms: value(tool, :elapsed_ms),
       style: style(:tool)
@@ -676,6 +681,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       tool_output: Keyword.get(opts, :tool_output),
       tool_name: Keyword.get(opts, :tool_name),
       tool_arguments: Keyword.get(opts, :tool_arguments),
+      model: Keyword.get(opts, :model),
       tool_status: Keyword.get(opts, :tool_status),
       tool_elapsed_ms: Keyword.get(opts, :tool_elapsed_ms),
       collapsed?: Keyword.get(opts, :collapsed?, false)

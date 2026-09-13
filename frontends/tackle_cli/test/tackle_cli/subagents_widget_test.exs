@@ -29,10 +29,17 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
                %{
                  id: "one",
                  profile: "scout",
+                 model: "test/scout",
                  summary: "Inspect the layout cache and report…",
                  elapsed: "12s"
                },
-               %{id: "two", profile: "worker", summary: "Implement the widget", elapsed: "1m 5s"}
+               %{
+                 id: "two",
+                 profile: "worker",
+                 model: "test/worker",
+                 summary: "Implement the widget",
+                 elapsed: "1m 5s"
+               }
              ]
 
       assert widget.selected == nil
@@ -46,7 +53,7 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
     end
 
     test "a missing profile and prompt still produce a task row" do
-      assert [%{profile: "subagent", summary: "Working", elapsed: nil}] =
+      assert [%{profile: "subagent", model: nil, summary: "Working", elapsed: nil}] =
                Sidebar.from_activity([%{name: "subagent", status: :running, id: "one"}]).tasks
     end
 
@@ -62,6 +69,7 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
         status: :running,
         id: id,
         arguments: %{"profile" => profile, "prompt" => prompt},
+        model: "test/#{profile}",
         elapsed_ms: ms
       }
     end
@@ -183,22 +191,23 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
   test "native widget animates each running task" do
     {:noreply, state} = shell() |> start("one", "Inspect") |> Subagents.focus()
 
-    assert [{paragraph, %Rect{width: 24, height: 4}}] =
+    assert [{paragraph, %Rect{width: 24, height: 5}}] =
              ExRatatui.Widget.render(
                Sidebar.from_activity(Subagents.tasks(state), state.subagent_selected, 0),
-               %Rect{width: 24, height: 4}
+               %Rect{width: 24, height: 5}
              )
 
     text = paragraph.text |> Enum.flat_map(& &1.spans) |> Enum.map_join(& &1.content)
 
     assert text =~ "Tasks"
     assert text =~ "› ⠋ scout"
+    assert text =~ "model pending"
     assert text =~ "Inspect"
 
     assert [{animated, _rect}] =
              ExRatatui.Widget.render(
                Sidebar.from_activity(Subagents.tasks(state), state.subagent_selected, 1),
-               %Rect{width: 24, height: 4}
+               %Rect{width: 24, height: 5}
              )
 
     animated_text = animated.text |> Enum.flat_map(& &1.spans) |> Enum.map_join(& &1.content)

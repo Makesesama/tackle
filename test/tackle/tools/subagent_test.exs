@@ -17,10 +17,16 @@ defmodule Tackle.Tools.SubagentTest do
       )
 
     handle = handle(scope)
-    context = %{runtime: handle}
+    context = %{runtime: handle, event_callback: &send(self(), {:event, &1})}
 
     assert {:ok, "worker answer"} =
              Subagent.run(%{"profile" => "worker", "prompt" => "do work"}, context)
+
+    assert_receive {:event,
+                    %{
+                      type: :subagent_started,
+                      data: %{profile: "worker", model: "test/echo", status: :running}
+                    }}
   end
 
   test "rejects delegation when recursion is not granted" do
@@ -77,6 +83,18 @@ defmodule Tackle.Tools.SubagentTest do
     {:ok, %{session_id: session_id}} = Tackle.Session.subscribe(session)
 
     assert {:ok, turn_id} = Tackle.Runtime.submit(scope.root_agent_ref, "delegate the work")
+
+    assert_receive {:tackle_event, ^session_id, ^turn_id,
+                    %{
+                      type: :subagent_started,
+                      data: %{
+                        tool_call_id: "call_1",
+                        profile: "worker",
+                        model: "test/echo",
+                        status: :running
+                      }
+                    }},
+                   5_000
 
     assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, state}}, 5_000
     assert Tackle.Lib.last_answer(state) == "final answer"

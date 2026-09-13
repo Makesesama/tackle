@@ -12,7 +12,7 @@ use crate::{
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use rustler::{Atom, Error, NifResult};
 
-type WireTask = (String, String, Option<String>);
+type WireTask = (String, String, String, Option<String>);
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn subagents_render(
@@ -32,13 +32,15 @@ fn subagents_render(
     let mut byte_count = 0usize;
     let tasks = tasks
         .into_iter()
-        .map(|(profile, assignment, elapsed)| {
+        .map(|(profile, model, assignment, elapsed)| {
             byte_count = byte_count
                 .saturating_add(profile.len())
+                .saturating_add(model.len())
                 .saturating_add(assignment.len())
                 .saturating_add(elapsed.as_ref().map(String::len).unwrap_or(0));
             SubagentTask {
                 profile: sanitize(&profile).replace('\n', " "),
+                model: sanitize(&model).replace('\n', " "),
                 assignment: sanitize(&assignment).replace('\n', " "),
                 elapsed: elapsed.map(|value| sanitize(&value).replace('\n', " ")),
             }

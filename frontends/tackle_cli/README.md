@@ -52,11 +52,11 @@ a TUI model change. Already-running children retain their original selection.
 Tools, prompts, limits, and conversation context remain separate; only model and
 thinking follow the parent.
 
-Children have a dedicated inline card showing the profile, assignment, explicit
-running/completed/failed status, and bounded findings or error output. While one
-or more children are running, a minimal native task sidebar opens beside the
-transcript and lists each active profile, assignment, and elapsed time with an
-animated running indicator; it closes when no child remains active. Parallel
+Children have a dedicated inline card showing the profile, resolved model,
+assignment, explicit running/completed/failed status, and bounded findings or
+error output. While one or more children are running, a minimal native task
+sidebar opens beside the transcript and lists each active profile, resolved
+model, assignment, and elapsed time with an animated running indicator; it closes when no child remains active. Parallel
 calls keep independent cards in request order. F4 details retain full arguments
 and findings; search includes the assignment. A live elapsed clock measures local
 time since the frontend observed tool start, freezes at execution completion,

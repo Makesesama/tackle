@@ -409,6 +409,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
               name: "subagent",
               status: :running,
               arguments: %{profile: "scout", prompt: "Inspect files"},
+              model: "openai-codex/gpt-5.5",
               elapsed_ms: 65_900
             }
           ]
@@ -417,9 +418,15 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       )
 
     assert entry.tool_elapsed_ms == 65_900
-    assert text(ToolView.render(entry, 100)) =~ "running · scout · subagent · 1m 5s"
-    assert text(ToolView.render(%{entry | tool_elapsed_ms: 999}, 100)) =~ "subagent · 0s"
-    assert text(ToolView.render(%{entry | tool_elapsed_ms: nil}, 100)) =~ "subagent\n"
+
+    assert text(ToolView.render(entry, 100)) =~
+             "running · scout · subagent · openai-codex/gpt-5.5 · 1m 5s"
+
+    assert text(ToolView.render(%{entry | tool_elapsed_ms: 999}, 100)) =~
+             "openai-codex/gpt-5.5 · 0s"
+
+    assert text(ToolView.render(%{entry | tool_elapsed_ms: nil}, 100)) =~
+             "subagent · openai-codex/gpt-5.5\n"
   end
 
   test "subagent previews are bounded, sanitized, and retain full assignments in details" do

@@ -10,6 +10,7 @@ use ratatui::{
 #[derive(Clone, Debug)]
 pub struct SubagentTask {
     pub profile: String,
+    pub model: String,
     pub assignment: String,
     pub elapsed: Option<String>,
 }
@@ -67,6 +68,7 @@ impl Widget for Subagents<'_> {
                 heading.push(Span::styled(format!("  {elapsed}"), self.muted));
             }
             lines.push(Line::from(heading));
+            lines.push(Line::from(Span::styled(task.model.as_str(), self.muted)));
             lines.push(Line::from(Span::styled(
                 task.assignment.as_str(),
                 self.muted,
@@ -94,10 +96,11 @@ mod tests {
     fn paints_running_tasks_in_a_quiet_sidebar() {
         let tasks = vec![SubagentTask {
             profile: "scout".into(),
+            model: "openai-codex/gpt-5.5".into(),
             assignment: "Inspect the layout".into(),
             elapsed: Some("12s".into()),
         }];
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 4));
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 5));
         Subagents {
             tasks: &tasks,
             accent: Style::new().fg(Color::Cyan),
@@ -110,6 +113,7 @@ mod tests {
 
         assert!(rendered(&buffer, 0).contains("Tasks"));
         assert!(rendered(&buffer, 1).contains("⠋ scout  12s"));
-        assert!(rendered(&buffer, 2).contains("Inspect the layout"));
+        assert!(rendered(&buffer, 2).contains("openai-codex/gpt-5.5"));
+        assert!(rendered(&buffer, 3).contains("Inspect the layout"));
     }
 }
