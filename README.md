@@ -253,7 +253,7 @@ operating-system permissions and are not a sandbox. `Tackle.Lib` provides the
 
 ### Configured subagents
 
-The coding harness includes an `explorer` profile and discovers additional
+The coding harness includes `scout`, `reviewer`, and `worker` profiles and discovers additional
 subagent definitions from Markdown files. User definitions live recursively
 under `$TACKLE_HOME/agents`; project definitions live under the nearest
 `.tackle/agents` directory at or above the configured working directory,
@@ -287,6 +287,10 @@ optional fields are `tools`, `model`, `thinking`, `timeoutMs`, `maxIterations`,
 values, duplicate definitions within one source, unavailable models, and tools
 not already available to the root harness fail startup explicitly.
 
+Default profiles are implemented as modules conforming to
+`Tackle.Agents.Default`; each returns an inert `Tackle.Agents.Definition`.
+User and project files can override these defaults by name.
+
 Agent files are inert configuration. Tool names resolve only against modules
 already selected by trusted harness code; they cannot load modules or arbitrary
 code. Omitting `tools` inherits the root's trusted tools. Omitting `model` makes
@@ -300,35 +304,36 @@ Advertised profiles are included in the root prompt with their descriptions.
 Profiles that omit `advertise: true` remain callable by exact name but are not
 listed proactively.
 
-### Explorer subagent
+### Default subagents
 
-CLI sessions enable the built-in `explorer` profile by default, including new
-sessions opened inside the TUI and resumed sessions. Ask the agent to delegate a
-bounded investigation, for example:
+CLI sessions enable three built-in profiles by default, including new sessions
+opened inside the TUI and resumed sessions:
 
-```sh
-tackle run "Ask an explorer to trace session recovery and report the relevant files"
-```
+- `scout` performs fast, read-only codebase reconnaissance with `read` and `bash`;
+- `reviewer` performs read-only correctness, regression, and security review with
+  `read` and `bash`;
+- `worker` performs implementation tasks with the root harness trusted coding tools.
 
-The root can call `subagent` with `profile: "explorer"` and a self-contained
-`prompt`. The explorer has a fresh conversation, shares the configured working
-directory, and returns findings through a dedicated inline tool card. The card
+The former `explorer` profile is no longer built in. The root calls `subagent`
+with one of these profile names and a self-contained `prompt`. Each child has a
+fresh conversation, shares the configured working directory, and returns its
+result through a dedicated inline tool card. The card
 shows profile, assignment, status, and a live local elapsed clock; F4 retains
 full arguments and findings. Timing is transient observation data, not persisted
-provider latency. Parallel calls keep separate cards. The explorer
-uses `read` and `bash`, is instructed not to edit files, and cannot delegate.
+provider latency. Parallel calls keep separate cards. Built-in children cannot
+delegate; scout and reviewer are instructed not to edit files.
 **This is not a read-only sandbox:** bash retains the harness's filesystem,
 network, and OS permissions. Do not use this profile as an isolation boundary.
 
 `Tackle.Coding.scope_spec/2` owns this composition in the root harness. It loads
-normal global/project guidance for both agents, advertises the profile to the
-root, and limits the scope to two simultaneous explorers plus the root. Excess
+normal global/project guidance for root and child agents, advertises the profiles to the
+root, and limits the scope to two simultaneous children plus the root. Excess
 requests are rejected rather than queued. Each child has at most 20 loop
 iterations and a five-minute run timeout; stopping the scope cleans up children.
 The one-shot CLI allows six minutes of event silence so it does not interrupt a
 child at the previous one-minute frontend timeout.
 
-Each explorer request uses the requesting root's current model and thinking
+Each built-in child request uses the requesting root's current model and thinking
 level, including the selection restored by resume and later idle model changes.
 Already-running children keep the selection they started with. Only these two
 settings are inherited: prompts, tools, limits, context, and adapter options

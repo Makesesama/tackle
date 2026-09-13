@@ -363,14 +363,14 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
   test "subagents show profile, assignment, explicit outcomes and retained findings" do
     args = %{
-      "profile" => "explorer",
+      "profile" => "scout",
       "prompt" => "Trace recovery\nand cite files",
       "timeout_ms" => 5_000
     }
 
     call = Message.assistant(tool_calls: [%{id: "explore", name: "subagent", arguments: args}])
     [requested] = settled([call])
-    assert text(ToolView.render(requested, 80)) =~ "requested · explorer · subagent"
+    assert text(ToolView.render(requested, 80)) =~ "requested · scout · subagent"
     assert text(ToolView.render(requested, 80)) =~ "Task: Trace recovery and cite files"
     refute text(ToolView.render(requested, 80)) =~ "timeout_ms"
 
@@ -378,7 +378,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       settled([call, Message.tool_result("explore", "subagent", "lib/recovery.ex:42: findings")])
 
     assert completed.id == requested.id
-    assert text(ToolView.render(completed, 80)) =~ "completed · explorer · subagent"
+    assert text(ToolView.render(completed, 80)) =~ "completed · scout · subagent"
     assert text(ToolView.render(completed, 80)) =~ "lib/recovery.ex:42"
     assert MessageView.search_text(completed) =~ "Trace recovery"
     assert MessageView.full_text(completed) == "lib/recovery.ex:42: findings"
@@ -393,7 +393,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         ] do
       [failed] = settled([call, Message.tool_result("explore", "subagent", "Error: " <> reason)])
       output = text(ToolView.render(failed, 100))
-      assert output =~ "failed · explorer · subagent"
+      assert output =~ "failed · scout · subagent"
       assert output =~ reason
       refute output =~ "✓"
     end
@@ -408,7 +408,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
               id: "explore",
               name: "subagent",
               status: :running,
-              arguments: %{profile: "explorer", prompt: "Inspect files"},
+              arguments: %{profile: "scout", prompt: "Inspect files"},
               elapsed_ms: 65_900
             }
           ]
@@ -417,14 +417,14 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       )
 
     assert entry.tool_elapsed_ms == 65_900
-    assert text(ToolView.render(entry, 100)) =~ "running · explorer · subagent · 1m 5s"
+    assert text(ToolView.render(entry, 100)) =~ "running · scout · subagent · 1m 5s"
     assert text(ToolView.render(%{entry | tool_elapsed_ms: 999}, 100)) =~ "subagent · 0s"
     assert text(ToolView.render(%{entry | tool_elapsed_ms: nil}, 100)) =~ "subagent\n"
   end
 
   test "subagent previews are bounded, sanitized, and retain full assignments in details" do
     args = %{
-      "profile" => "explorer\e]52;c;evil\a",
+      "profile" => "scout\e]52;c;evil\a",
       "prompt" => String.duplicate("界 trace ", 500) <> "FINAL TASK"
     }
 

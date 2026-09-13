@@ -31,21 +31,21 @@ defmodule Tackle.CLI.RunTest do
     end
   end
 
-  defmodule ExplorerAdapter do
+  defmodule ScoutAdapter do
     @behaviour Tackle.Lib.LLM
 
     @impl true
-    def adapter_id, do: "cli-explorer"
+    def adapter_id, do: "cli-scout"
 
     @impl true
     def models, do: ["test", "alternate"]
 
     @impl true
     def generate(_schema, opts) do
-      send(Application.fetch_env!(:tackle_cli, :explorer_test_pid), {:explorer_generation, opts})
+      send(Application.fetch_env!(:tackle_cli, :scout_test_pid), {:scout_generation, opts})
       messages = Keyword.fetch!(opts, :messages)
-      explorer? = String.contains?(Keyword.fetch!(opts, :system), "## Explorer assignment")
-      task = if explorer?, do: "Inspect fixture.txt", else: "parent-only request"
+      scout? = String.contains?(Keyword.fetch!(opts, :system), "## Scout assignment")
+      task = if scout?, do: "Inspect fixture.txt", else: "parent-only request"
       current_messages = messages |> Enum.reverse() |> Enum.take_while(&(&1.content != task))
       tool_result = Enum.find(current_messages, &(&1.role == :tool))
 
@@ -54,11 +54,11 @@ defmodule Tackle.CLI.RunTest do
           tool_result ->
             %{"content" => "Observed: #{tool_result.content}", "tool_calls" => []}
 
-          explorer? ->
+          scout? ->
             call("read", %{"path" => "fixture.txt"})
 
           true ->
-            call("subagent", %{"profile" => "explorer", "prompt" => "Inspect fixture.txt"})
+            call("subagent", %{"profile" => "scout", "prompt" => "Inspect fixture.txt"})
         end
 
       {:ok, %{data: data, usage: nil, model: Keyword.fetch!(opts, :model)}}
@@ -117,11 +117,11 @@ defmodule Tackle.CLI.RunTest do
   test "default CLI sessions delegate, return findings, and recreate the profile on resume", %{
     home: home
   } do
-    Application.put_env(:tackle, :adapters, [ExplorerAdapter])
-    Application.put_env(:tackle_cli, :explorer_test_pid, self())
-    on_exit(fn -> Application.delete_env(:tackle_cli, :explorer_test_pid) end)
+    Application.put_env(:tackle, :adapters, [ScoutAdapter])
+    Application.put_env(:tackle_cli, :scout_test_pid, self())
+    on_exit(fn -> Application.delete_env(:tackle_cli, :scout_test_pid) end)
     File.mkdir_p!(home)
-    File.write!(Path.join(home, "fixture.txt"), "explorer fixture finding")
+    File.write!(Path.join(home, "fixture.txt"), "scout fixture finding")
 
     # No CLI feature flag, credentials, native terminal, or real provider calls.
     File.cd!(home, fn ->
@@ -130,7 +130,7 @@ defmodule Tackle.CLI.RunTest do
           capture_io(fn ->
             assert 0 ==
                      Run.run(%{
-                       model: if(attempt == 1, do: "cli-explorer/alternate", else: nil),
+                       model: if(attempt == 1, do: "cli-scout/alternate", else: nil),
                        thinking: nil,
                        prompt: "parent-only request",
                        resume: resume,
@@ -138,25 +138,25 @@ defmodule Tackle.CLI.RunTest do
                      })
           end)
 
-        assert output =~ "explorer fixture finding"
+        assert output =~ "scout fixture finding"
         [journal_path] = Path.wildcard(Path.join(home, "sessions/*/session.dlog"))
         journal_path |> Path.dirname() |> Path.basename()
       end)
     end)
 
-    assert_receive {:explorer_generation, root_opts}
-    assert Keyword.fetch!(root_opts, :system) =~ "profile \"explorer\""
-    assert_receive {:explorer_generation, child_opts}
+    assert_receive {:scout_generation, root_opts}
+    assert Keyword.fetch!(root_opts, :system) =~ "profile \"scout\""
+    assert_receive {:scout_generation, child_opts}
     assert Keyword.fetch!(child_opts, :model) == "alternate"
-    assert Keyword.fetch!(child_opts, :system) =~ "## Explorer assignment"
+    assert Keyword.fetch!(child_opts, :system) =~ "## Scout assignment"
     assert Enum.any?(child_opts[:messages], &(&1.content == "Inspect fixture.txt"))
     refute Enum.any?(child_opts[:messages], &(&1.content == "parent-only request"))
-    assert_receive {:explorer_generation, _child_answer}
-    assert_receive {:explorer_generation, _root_answer}
-    assert_receive {:explorer_generation, _resumed_root}
-    assert_receive {:explorer_generation, resumed_child}
+    assert_receive {:scout_generation, _child_answer}
+    assert_receive {:scout_generation, _root_answer}
+    assert_receive {:scout_generation, _resumed_root}
+    assert_receive {:scout_generation, resumed_child}
     assert Keyword.fetch!(resumed_child, :model) == "alternate"
-    assert Keyword.fetch!(resumed_child, :system) =~ "## Explorer assignment"
+    assert Keyword.fetch!(resumed_child, :system) =~ "## Scout assignment"
     assert Enum.any?(resumed_child[:messages], &(&1.content == "Inspect fixture.txt"))
     refute Enum.any?(resumed_child[:messages], &(&1.role == :tool))
 
@@ -166,7 +166,7 @@ defmodule Tackle.CLI.RunTest do
 
     assert Enum.any?(
              stored.messages,
-             &(&1["role"] == "tool" and &1["content"] =~ "explorer fixture finding")
+             &(&1["role"] == "tool" and &1["content"] =~ "scout fixture finding")
            )
   end
 
