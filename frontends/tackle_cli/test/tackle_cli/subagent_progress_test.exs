@@ -63,6 +63,31 @@ defmodule Tackle.CLI.SubagentProgressTest do
     assert two.tool_status == :completed
   end
 
+  test "subagent start metadata adds the resolved model to the live card" do
+    state = start(shell(), "one", "Inspect")
+
+    with_model =
+      event(state, :subagent_started, %{
+        tool_call_id: "one",
+        run_id: "run-one",
+        profile: "scout",
+        model: "openai-codex/gpt-5.5",
+        status: :running
+      })
+
+    [card] = cards(with_model)
+    assert card.model == "openai-codex/gpt-5.5"
+
+    rendered =
+      card
+      |> MessageView.render_entry(100)
+      |> Enum.flat_map(fn {widget, _height} -> widget.text end)
+      |> Enum.flat_map(& &1.spans)
+      |> Enum.map_join(& &1.content)
+
+    assert rendered =~ "openai-codex/gpt-5.5"
+  end
+
   test "clock refresh preserves the reading anchor and only changes live entries" do
     state = shell()
     messages = Enum.map(1..30, &Message.user("message #{&1}"))

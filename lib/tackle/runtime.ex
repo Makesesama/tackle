@@ -208,7 +208,10 @@ defmodule Tackle.Runtime do
   model reference and thinking level at request time, resolving against the
   child's configured adapters before admission. Resolution runs outside the
   coordinator to avoid calling an agent from inside its admission owner.
-  Existing runs and profiles with `model_source: :configured` are unchanged.
+  The model is captured after parent-inheritance resolution and included in the
+  returned run reference, so callers can display the actual child selection
+  without racing its ephemeral session. Existing runs and profiles with
+  `model_source: :configured` are unchanged.
   """
   @spec request_agent(
           Handle.t() | AgentRef.t(),
@@ -227,7 +230,8 @@ defmodule Tackle.Runtime do
          {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref),
          {:ok, admission} <-
            Coordinator.admit_agent(coordinator, parent_ref, spec, lifetime: :ephemeral) do
-      run_ref = RunRef.new!(scope_ref.scope_id, ID.generate(), admission.agent_ref)
+      run_ref =
+        RunRef.new!(scope_ref.scope_id, ID.generate(), admission.agent_ref, spec.config.model_ref)
 
       arg = %{
         scope_ref: scope_ref,

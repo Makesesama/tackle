@@ -305,6 +305,7 @@ defmodule Tackle.CLI.TUITest do
 
     assert %NativeConversation{} = transcript_widget(state)
     assert conversation_text(state) =~ "Welcome to Tackle"
+    assert conversation_text(state) =~ "Model: openai-codex/test-model"
 
     assert %Tackle.CLI.Widgets.Input{
              block: %{title: " › ", borders: [:top], padding: {1, 1, 0, 1}}

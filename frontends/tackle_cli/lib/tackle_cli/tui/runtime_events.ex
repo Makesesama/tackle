@@ -388,6 +388,31 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: :subagent_started, data: data}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
+    tool_call_id = value(data, :tool_call_id)
+    model = value(data, :model)
+
+    tools =
+      Enum.map(state.tool_activity, fn
+        %{id: ^tool_call_id, name: "subagent"} = tool when is_binary(tool_call_id) ->
+          if is_binary(model), do: Map.put(tool, :model, model), else: tool
+
+        tool ->
+          tool
+      end)
+
+    timeline = Enum.reduce(tools, state.stream.timeline, &put_timeline_tool(&2, &1))
+
+    {:noreply,
+     Viewport.refresh(
+       %{state | tool_activity: tools, stream: %{state.stream | timeline: timeline}},
+       [:turn]
+     )}
+  end
+
+  defp route(
          {:tackle_event, session_id, turn_id, %Event{type: :tool_start, data: data}},
          %State{session_id: session_id, active_turn: %{id: turn_id}} = state
        ) do

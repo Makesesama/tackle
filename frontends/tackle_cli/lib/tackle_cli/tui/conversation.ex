@@ -54,7 +54,8 @@ defmodule Tackle.CLI.TUI.Conversation do
           scroll_offset: non_neg_integer(),
           follow?: boolean(),
           new_output?: boolean(),
-          anchor: anchor() | nil
+          anchor: anchor() | nil,
+          welcome_model: String.t() | nil
         }
 
   defstruct native: nil,
@@ -71,7 +72,8 @@ defmodule Tackle.CLI.TUI.Conversation do
             scroll_offset: 0,
             follow?: true,
             new_output?: false,
-            anchor: nil
+            anchor: nil,
+            welcome_model: nil
 
   @doc "Creates an empty conversation model for the transcript rect."
   @spec new(Rect.t()) :: t()
@@ -103,7 +105,7 @@ defmodule Tackle.CLI.TUI.Conversation do
             {section, cache_entries(cache.entries, width, cache)}
           end)
 
-        {items, item_ids} = build_items(sections, width)
+        {items, item_ids} = build_items(sections, width, conversation.welcome_model)
         {native, height} = NativeConversation.assemble(items, width)
         {sections, items, item_ids, native, height}
       end
@@ -162,7 +164,8 @@ defmodule Tackle.CLI.TUI.Conversation do
         )
       end)
 
-    {items, item_ids} = build_items(section_cache, conversation.width)
+    welcome_model = model_ref(state)
+    {items, item_ids} = build_items(section_cache, conversation.width, welcome_model)
     {native, content_height} = NativeConversation.assemble(items, conversation.width)
     max_offset = max(content_height - conversation.viewport_height, 0)
 
@@ -197,7 +200,8 @@ defmodule Tackle.CLI.TUI.Conversation do
         scroll_offset: scroll_offset,
         follow?: follow?,
         new_output?: new_output?,
-        anchor: nil
+        anchor: nil,
+        welcome_model: welcome_model
     }
 
     refreshed
@@ -449,7 +453,7 @@ defmodule Tackle.CLI.TUI.Conversation do
     %{entries: entries, groups: groups, item_ids: item_ids, width: width}
   end
 
-  defp build_items(section_cache, width) do
+  defp build_items(section_cache, width, welcome_model) do
     groups =
       Enum.flat_map(@sections, fn section ->
         cache = Map.fetch!(section_cache, section)
@@ -458,7 +462,7 @@ defmodule Tackle.CLI.TUI.Conversation do
 
     groups =
       if groups == [] do
-        welcome = NativeConversation.cell(MessageView.welcome_entry(), width)
+        welcome = NativeConversation.cell(MessageView.welcome_entry(welcome_model), width)
         [{welcome, List.duplicate("welcome", length(welcome))}]
       else
         groups
@@ -474,6 +478,10 @@ defmodule Tackle.CLI.TUI.Conversation do
     item_ids = Enum.map(pairs, fn {_item, id} -> id end)
     {items, item_ids}
   end
+
+  defp model_ref(%{agent_state: %{llm: %{ref: ref}}}) when is_binary(ref), do: ref
+  defp model_ref(%{agent_state: %{model: model}}) when is_binary(model), do: model
+  defp model_ref(_state), do: nil
 
   defp put_visible(%__MODULE__{} = conversation) do
     {visible_items, visible_offset} =

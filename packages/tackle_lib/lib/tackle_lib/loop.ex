@@ -927,7 +927,7 @@ defmodule Tackle.Lib.Loop do
         with_tool_telemetry_context(state, telemetry_ref, fn ->
           case Registry.resolve(tool_registry(callbacks), tool_call) do
             {:ok, %{module: tool_module}} ->
-              Tool.settle(tool_module, tool_call, tool_context(state, callbacks))
+              Tool.settle(tool_module, tool_call, tool_context(state, callbacks, tool_call))
 
             {:error, reason} ->
               registry_error(tool_call, reason)
@@ -1118,8 +1118,11 @@ defmodule Tackle.Lib.Loop do
   defp maybe_put_cancellation_signal(opts, signal),
     do: Keyword.put(opts, :cancellation_signal, signal)
 
-  defp tool_context(%State{} = state, callbacks) do
-    context = Map.merge(state.context, callbacks.event_context)
+  defp tool_context(%State{} = state, callbacks, %Call{} = tool_call) do
+    context =
+      state.context
+      |> Map.merge(callbacks.event_context)
+      |> Map.put(:tool_call_id, tool_call.id)
 
     case callbacks.cancellation_signal do
       nil -> context

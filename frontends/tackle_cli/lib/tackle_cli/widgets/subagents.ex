@@ -2,8 +2,8 @@ defmodule Tackle.CLI.Widgets.Subagents do
   @moduledoc """
   Native sidebar for active delegated tasks.
 
-  The widget intentionally receives only the profile, assignment, and locally
-  observed elapsed time. Rust owns the compact task layout, wrapping, clipping,
+  The widget intentionally receives only the profile, model, assignment, and
+  locally observed elapsed time. Rust owns the compact task layout, wrapping,
   and minimal sidebar chrome so the surface can evolve independently.
   """
 
@@ -30,6 +30,7 @@ defmodule Tackle.CLI.Widgets.Subagents do
         %{
           id: Map.get(task, :id),
           profile: value(args, :profile) || "subagent",
+          model: value(task, :model),
           summary: summary(value(args, :prompt)),
           elapsed: elapsed(task[:elapsed_ms])
         }
@@ -64,10 +65,14 @@ defmodule Tackle.CLI.Widgets.Subagents do
   defp wire_task(task) do
     {
       task.profile |> to_string() |> MessageView.sanitize(),
+      task.model |> model_text() |> MessageView.sanitize(),
       task.summary |> to_string() |> MessageView.sanitize(),
       task.elapsed
     }
   end
+
+  defp model_text(model) when is_binary(model) and model != "", do: model
+  defp model_text(_model), do: "model pending"
 
   defp summary(prompt) when is_binary(prompt) do
     words = prompt |> MessageView.sanitize() |> String.split()

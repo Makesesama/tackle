@@ -111,7 +111,9 @@ defmodule Tackle.Tools.Subagent do
         data = %{
           run_id: run_ref.run_id,
           agent_ref: run_ref.agent_ref,
+          tool_call_id: Map.get(context, :tool_call_id),
           profile: profile,
+          model: run_ref.model_ref,
           status: outcome_status(outcome)
         }
 

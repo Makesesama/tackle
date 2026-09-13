@@ -95,12 +95,18 @@ defmodule Tackle.CLI.TUI.ToolView do
         _ -> ""
       end
 
+    model =
+      case Map.get(entry, :model) do
+        model when is_binary(model) and model != "" -> " · " <> model
+        _ -> ""
+      end
+
     [
       MessageView.row([
         MessageView.span(marker(status) <> " ", marker_style(status)),
         MessageView.span(status_text(status) <> " · ", status_style(status)),
         MessageView.span(profile, Theme.bold(Theme.style(:text))),
-        MessageView.span(" · subagent" <> elapsed, Theme.style(:muted))
+        MessageView.span(" · subagent" <> model <> elapsed, Theme.style(:muted))
       ])
     ]
   end
