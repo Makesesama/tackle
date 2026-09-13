@@ -6,10 +6,10 @@ defmodule Tackle.CLI.SubagentProgressTest do
   alias Tackle.Lib.{Event, Message}
   alias Tackle.Lib.State, as: AgentState
 
-  test "parallel explorers keep assignments, independent clocks, and stable order" do
+  test "parallel scouts keep assignments, independent clocks, and stable order" do
     state = shell()
     state = start(state, "one", "Inspect first") |> start("two", "Inspect second")
-    assert state.activity == "running subagent · explorer"
+    assert state.activity == "running subagent · scout"
     assert Enum.map(cards(state), & &1.id) == ["tool:one", "tool:two"]
 
     # Move local observation times backwards instead of sleeping.
@@ -29,7 +29,7 @@ defmodule Tackle.CLI.SubagentProgressTest do
         result: "second findings"
       })
 
-    assert completed.activity == "completed subagent · explorer"
+    assert completed.activity == "completed subagent · scout"
     [one, two] = cards(completed)
     assert one.tool_status == :running
     assert two.tool_status == :completed
@@ -125,7 +125,7 @@ defmodule Tackle.CLI.SubagentProgressTest do
       event(state, :tool_start, %{
         tool_call_id: id,
         name: "subagent",
-        arguments: %{"profile" => "explorer", "prompt" => prompt}
+        arguments: %{"profile" => "scout", "prompt" => prompt}
       })
 
   defp event(state, type, data) do

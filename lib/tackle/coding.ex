@@ -2,13 +2,15 @@ defmodule Tackle.Coding do
   @moduledoc """
   Composition of a coding scope with declarative subagent profiles.
 
-  The built-in explorer is joined by profiles discovered from
-  `$TACKLE_HOME/agents` and the nearest project `.tackle/agents` directory.
+  The built-in scout, reviewer, and worker profiles are joined by profiles
+  discovered from `$TACKLE_HOME/agents` and the nearest project
+  `.tackle/agents` directory.
   Project profiles override user profiles, which override built-ins. Profile
   files may select only tools already available to the trusted root harness.
   """
 
   alias Tackle.Agents
+  alias Tackle.Agents.Default
   alias Tackle.Agents.Definition
   alias Tackle.Config
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
@@ -25,18 +27,6 @@ defmodule Tackle.Coding do
   capability limits, not an operating-system sandbox. Evaluate returned work
   before relying on it. At most two children can run at once; excess requests
   are rejected rather than queued.
-  """
-
-  @exploration """
-  ## Explorer assignment
-
-  You are the explorer subagent. Investigate only the self-contained task in the
-  user prompt and return concise findings with file paths, line references, and
-  uncertainties. You have a fresh conversation, not the parent's history.
-  Use read to inspect files and bash to list and search the codebase. Do not edit,
-  create, or delete files, install dependencies, or run commands with workspace
-  side effects. You share the parent's workspace; this is not an isolated copy.
-  You cannot delegate. Return your findings rather than implementing changes.
   """
 
   @doc """
@@ -73,7 +63,7 @@ defmodule Tackle.Coding do
     Agents.discover(
       cwd: config.context.cwd,
       env: Keyword.get_lazy(loader_opts, :env, &System.get_env/0),
-      builtins: [explorer_definition()]
+      builtins: Default.definitions()
     )
   end
 
@@ -151,18 +141,6 @@ defmodule Tackle.Coding do
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp explorer_definition do
-    %Definition{
-      name: "explorer",
-      description: "Read-only codebase investigation with concise, cited findings",
-      prompt: @exploration,
-      source: :builtin,
-      tools: ["read", "bash"],
-      advertise: true,
-      allow_delegation: false
-    }
-  end
 
   defp min_iterations(:infinity, configured), do: min(20, configured)
   defp min_iterations(value, configured), do: min(value, min(20, configured))

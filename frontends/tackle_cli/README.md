@@ -27,7 +27,7 @@ runtime. That keeps packaging separate from the future plugin-loading design.
 
 ## Configured subagents
 
-In addition to the built-in explorer, the CLI loads Markdown agent definitions
+In addition to the built-in scout, reviewer, and worker, the CLI loads Markdown agent definitions
 from `$TACKLE_HOME/agents/**/*.md` and the nearest project
 `.tackle/agents/**/*.md` directory. Project definitions override user and
 built-in definitions by name. Definitions configure the agent prompt, trusted
@@ -36,21 +36,17 @@ optional bounded delegation. See the root
 [configured subagent documentation](../../README.md#configured-subagents) for
 the file format and security boundaries.
 
-## Explorer subagent
+## Default subagents
 
-Every CLI coding scope now enables the `explorer` profile by default—no flag is
-needed. The root can delegate a self-contained investigation through `subagent`
-and receives findings in the normal tool result. Try:
-
-```sh
-tackle run "Ask an explorer to trace the cancellation path and cite relevant files"
-```
-
-Explorers have `read` and `bash`, fresh conversation context, no further
-delegation, a 20-iteration/five-minute budget, and a limit of two simultaneous
-children. They share the workspace and are instructed not to edit it, but
+Every CLI coding scope enables `scout`, `reviewer`, and `worker` by default;
+the former `explorer` profile has been removed. Scout performs quick read-only
+reconnaissance, reviewer performs read-only code review, and worker can implement
+changes with the root harness trusted coding tools. All have fresh conversation
+context, no further delegation, a 20-iteration/five-minute budget, and share a
+limit of two simultaneous children. They share the workspace. Scout and reviewer
+are instructed not to edit it, but
 **bash is not sandboxed or enforced read-only**. Profiles are configured by
-`Tackle.Coding` in the root harness, not the frontend. Each explorer request
+`Tackle.Coding` in the root harness, not the frontend. Each built-in child request
 uses the root's current model and thinking selection, including after resume or
 a TUI model change. Already-running children retain their original selection.
 Tools, prompts, limits, and conversation context remain separate; only model and
@@ -68,7 +64,7 @@ shows the turn cancellation; it does not claim the child completed.
 Only returned findings are retained in the root journal; child transcripts are
 ephemeral. Footer and chart usage totals exclude child usage. Streaming child
 activity and profile customization are deferred. See the root
-[explorer documentation](../../README.md#explorer-subagent) for details.
+[default subagent documentation](../../README.md#default-subagents) for details.
 
 ## Single-file release
 
