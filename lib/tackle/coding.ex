@@ -1,33 +1,30 @@
 defmodule Tackle.Coding do
   @moduledoc """
-  Composition of a coding scope with the built-in explorer profile.
+  Composition of a coding scope with declarative subagent profiles.
 
-  The CLI uses this policy by default; `Tackle.Config`, `Tackle.Tools.default/0`,
-  and the general runtime remain unchanged. Explorer runs are ephemeral, use a
-  fresh conversation, and cannot delegate. They share the configured workspace
-  and use the requesting root's current model/thinking selection at request
-  time, not its conversation history. Existing child runs are never reconfigured.
-
-  The explorer has `read` and `bash` (only when also available to the root).
-  Its no-edit instruction is policy, not a sandbox: bash retains OS permissions.
+  The built-in explorer is joined by profiles discovered from
+  `$TACKLE_HOME/agents` and the nearest project `.tackle/agents` directory.
+  Project profiles override user profiles, which override built-ins. Profile
+  files may select only tools already available to the trusted root harness.
   """
 
+  alias Tackle.Agents
+  alias Tackle.Agents.Definition
   alias Tackle.Config
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
-  alias Tackle.Tools.{Bash, Read, Subagent}
+  alias Tackle.Tools.Subagent
 
   @delegation """
   ## Delegation
 
-  Use the subagent tool with profile "explorer" for bounded code investigation.
-  Supply a self-contained prompt with the relevant context and expected deliverable;
-  the explorer does not see this conversation. Prefer doing trivial tasks yourself.
-  The explorer shares this workspace, uses read and bash, and is instructed not to
-  edit files (this is not a sandbox). It cannot delegate or be messaged again.
-  Evaluate its returned findings before relying on them. Ask for file and line
-  references and a concise summary of uncertainties. At most two explorers can
-  run at once; excess requests are rejected, not queued.
+  Use the subagent tool for bounded work that benefits from a fresh, focused
+  context. Choose only from the configured profiles below and give the child a
+  self-contained assignment with the relevant context and expected deliverable.
+  Child sessions are ephemeral and share this workspace; tool restrictions are
+  capability limits, not an operating-system sandbox. Evaluate returned work
+  before relying on it. At most two children can run at once; excess requests
+  are rejected rather than queued.
   """
 
   @exploration """
@@ -43,67 +40,141 @@ defmodule Tackle.Coding do
   """
 
   @doc """
-  Loads coding configuration and builds a scope with an explorer allowlist.
+  Loads coding configuration and builds a scope with discovered subagents.
 
-  Accepts `Tackle.Config.load/1` options and an optional durable root session.
-  Both prompts load the same instruction files with their respective tool sets.
-  Each explorer is bounded to 20 loop iterations and five minutes. Scope limits
-  allow the root plus two children, with no recursive delegation.
+  Agent files are validated at startup. Invalid files, unknown tools, and model
+  selections unavailable through the configured adapters are explicit errors.
+  Every child is capped at 20 loop iterations and five minutes. Scope limits
+  allow the root plus two children.
   """
   @spec scope_spec(keyword(), SessionSpec.t() | nil) :: {:ok, ScopeSpec.t()} | {:error, term()}
   def scope_spec(loader_opts \\ [], session \\ nil) do
     with {:ok, config} <- Config.load(loader_opts),
-         {:ok, root_config} <- load_tools(loader_opts, Enum.uniq(config.tools ++ [Subagent])),
-         {:ok, explorer_config} <-
-           load_tools(loader_opts, Enum.filter(config.tools, &(&1 in [Read, Bash]))),
+         discovery <- discover(config, loader_opts),
+         :ok <- validate_discovery(discovery),
+         {:ok, profiles} <- build_profiles(discovery.definitions, config, loader_opts),
+         {:ok, root_config} <- root_config(config, discovery.definitions, loader_opts),
          {:ok, root_spec} <-
            AgentSpec.new(
              name: "root",
-             config: append_prompt(root_config, @delegation),
-             allow_delegation: true
-           ),
-         {:ok, explorer_spec} <- explorer_spec(explorer_config) do
+             config: root_config,
+             allow_delegation: map_size(profiles) > 0
+           ) do
       ScopeSpec.new(
         root_spec: root_spec,
         session: session,
-        limits: limits(),
-        profiles: %{"explorer" => explorer_spec}
+        limits: limits(discovery.definitions),
+        profiles: profiles
       )
     end
   end
 
-  defp load_tools(opts, tools) do
-    overrides = opts |> Keyword.get(:overrides, []) |> Keyword.put(:tools, tools)
-    Config.load(Keyword.put(opts, :overrides, overrides))
-  end
-
-  defp explorer_spec(config) do
-    config = %{
-      append_prompt(config, @exploration)
-      | max_iterations: min_iterations(config.max_iterations),
-        llm_stream: false
-    }
-
-    AgentSpec.new(
-      name: "explorer",
-      config: config,
-      allow_delegation: false,
-      model_source: :parent
+  defp discover(config, loader_opts) do
+    Agents.discover(
+      cwd: config.context.cwd,
+      env: Keyword.get_lazy(loader_opts, :env, &System.get_env/0),
+      builtins: [explorer_definition()]
     )
   end
 
-  defp append_prompt(config, section),
-    do: %{config | system_prompt: Enum.join([config.system_prompt, section], "\n\n")}
+  defp validate_discovery(%{warnings: []}), do: :ok
 
-  defp min_iterations(:infinity), do: 20
-  defp min_iterations(value), do: min(value, 20)
+  defp validate_discovery(%{warnings: warnings}) do
+    {:error, {:invalid_agent_definitions, warnings}}
+  end
 
-  defp limits do
+  defp build_profiles(definitions, root_config, loader_opts) do
+    Enum.reduce_while(definitions, {:ok, %{}}, fn definition, {:ok, profiles} ->
+      case build_profile(definition, root_config, loader_opts) do
+        {:ok, spec} -> {:cont, {:ok, Map.put(profiles, definition.name, spec)}}
+        {:error, reason} -> {:halt, {:error, {:invalid_agent_profile, definition.path, reason}}}
+      end
+    end)
+  end
+
+  defp build_profile(definition, root_config, loader_opts) do
+    with {:ok, tools} <- profile_tools(definition, root_config.tools),
+         {:ok, config} <- load_profile_config(definition, tools, loader_opts) do
+      config = %{
+        config
+        | max_iterations: min_iterations(config.max_iterations, definition.max_iterations),
+          llm_stream: false
+      }
+
+      AgentSpec.new(
+        name: definition.name,
+        config: config,
+        allow_delegation: definition.allow_delegation,
+        timeout: min(definition.timeout, :timer.minutes(5)),
+        model_source: if(definition.model, do: :configured, else: :parent)
+      )
+    end
+  end
+
+  defp profile_tools(%Definition{tools: nil} = definition, trusted_tools) do
+    tools = if definition.allow_delegation, do: trusted_tools ++ [Subagent], else: trusted_tools
+    {:ok, Enum.uniq(tools)}
+  end
+
+  defp profile_tools(%Definition{tools: names} = definition, trusted_tools) do
+    with {:ok, tools} <- Tackle.Tools.resolve_names(names, trusted_tools) do
+      tools = if definition.allow_delegation, do: tools ++ [Subagent], else: tools
+      {:ok, Enum.uniq(tools)}
+    end
+  end
+
+  defp load_profile_config(definition, tools, loader_opts) do
+    profile_overrides =
+      [tools: tools, system_prompt: definition.prompt]
+      |> maybe_put(:model, definition.model)
+      |> maybe_put(:thinking, definition.thinking)
+
+    load_with_overrides(loader_opts, profile_overrides)
+  end
+
+  defp root_config(config, definitions, loader_opts) do
+    with {:ok, root_config} <-
+           load_with_overrides(loader_opts, tools: Enum.uniq(config.tools ++ [Subagent])) do
+      prompt =
+        [root_config.system_prompt, @delegation, Agents.format_for_prompt(definitions)]
+        |> Enum.reject(&(&1 in [nil, ""]))
+        |> Enum.join("\n\n")
+
+      {:ok, %{root_config | system_prompt: prompt}}
+    end
+  end
+
+  defp load_with_overrides(opts, overrides) do
+    merged = opts |> Keyword.get(:overrides, []) |> Keyword.merge(overrides)
+    Config.load(Keyword.put(opts, :overrides, merged))
+  end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp explorer_definition do
+    %Definition{
+      name: "explorer",
+      description: "Read-only codebase investigation with concise, cited findings",
+      prompt: @exploration,
+      source: :builtin,
+      tools: ["read", "bash"],
+      advertise: true,
+      allow_delegation: false
+    }
+  end
+
+  defp min_iterations(:infinity, configured), do: min(20, configured)
+  defp min_iterations(value, configured), do: min(value, min(20, configured))
+
+  defp limits(definitions) do
+    max_spawn_depth = if Enum.any?(definitions, & &1.allow_delegation), do: 2, else: 1
+
     [
       max_agents_per_fleet: 3,
       max_concurrent_turns: 3,
       max_children_per_agent: 2,
-      max_spawn_depth: 1,
+      max_spawn_depth: max_spawn_depth,
       run_timeout: :timer.minutes(5)
     ]
   end

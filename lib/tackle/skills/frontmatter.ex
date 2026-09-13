@@ -8,18 +8,29 @@ defmodule Tackle.Skills.Frontmatter do
   # Unknown keys are preserved so callers can decide what to use. A document
   # without a leading `---` fence has no frontmatter and parses to an empty map.
 
-  @type parsed :: {:ok, map()} | {:error, :unterminated_frontmatter | :malformed_frontmatter}
+  @type error_reason :: :unterminated_frontmatter | :malformed_frontmatter
+  @type parsed :: {:ok, map()} | {:error, error_reason()}
+  @type document :: %{frontmatter: map(), body: String.t()}
 
   @key_regex ~r/^([A-Za-z0-9_.-]+):[ \t]?(.*)$/
   @block_regex ~r/^[|>][+-]?\d*$/
 
   @spec parse(String.t()) :: parsed()
   def parse(contents) when is_binary(contents) do
-    contents
-    |> strip_bom()
-    |> normalize_newlines()
-    |> extract()
-    |> to_map()
+    with {:ok, document} <- parse_document(contents) do
+      {:ok, document.frontmatter}
+    end
+  end
+
+  @doc false
+  @spec parse_document(String.t()) :: {:ok, document()} | {:error, error_reason()}
+  def parse_document(contents) when is_binary(contents) do
+    contents = contents |> strip_bom() |> normalize_newlines()
+
+    with {:ok, lines, body} <- extract(contents),
+         {:ok, frontmatter} <- to_map({:ok, lines}) do
+      {:ok, %{frontmatter: frontmatter, body: body}}
+    end
   end
 
   defp extract(contents) do
@@ -27,11 +38,11 @@ defmodule Tackle.Skills.Frontmatter do
       ["---" | rest] ->
         case Enum.split_while(rest, &(String.trim(&1) != "---")) do
           {_lines, []} -> {:error, :unterminated_frontmatter}
-          {lines, _closing} -> {:ok, lines}
+          {lines, [_closing | body]} -> {:ok, lines, body |> Enum.join("\n") |> String.trim()}
         end
 
       _ ->
-        {:ok, []}
+        {:ok, [], String.trim(contents)}
     end
   end
 
@@ -40,8 +51,6 @@ defmodule Tackle.Skills.Frontmatter do
       {:ok, Map.new(entries, fn {key, values} -> {key, value(values)} end)}
     end
   end
-
-  defp to_map({:error, reason}), do: {:error, reason}
 
   defp entries(lines) do
     lines

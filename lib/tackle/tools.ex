@@ -28,6 +28,19 @@ defmodule Tackle.Tools do
     [Read, Bash] ++ optional_elixir_eval() ++ [Edit, Write]
   end
 
+  @doc "Resolves names only from a trusted set of already-selected tool modules."
+  @spec resolve_names([String.t()], [module()]) ::
+          {:ok, [module()]} | {:error, {:unknown_tool_names, [String.t()]}}
+  def resolve_names(names, trusted_tools) when is_list(names) and is_list(trusted_tools) do
+    tools_by_name = Map.new(trusted_tools, &{&1.name(), &1})
+    unknown = names |> Enum.reject(&Map.has_key?(tools_by_name, &1)) |> Enum.uniq() |> Enum.sort()
+
+    case unknown do
+      [] -> {:ok, Enum.map(names, &Map.fetch!(tools_by_name, &1))}
+      unknown -> {:error, {:unknown_tool_names, unknown}}
+    end
+  end
+
   defp optional_elixir_eval do
     if dev?(), do: [ElixirEval], else: []
   end
