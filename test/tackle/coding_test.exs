@@ -49,12 +49,106 @@ defmodule Tackle.CodingTest do
       assert config.system_prompt =~ "Global guidance: cite sources."
     end
 
-    assert spec.root_spec.config.system_prompt =~ "profile \"explorer\""
+    assert spec.root_spec.config.system_prompt =~ "<name>explorer</name>"
     assert explorer.config.system_prompt =~ "Do not edit"
     refute explorer.config.system_prompt =~ "- edit:"
     refute explorer.config.system_prompt =~ "- elixir_eval:"
     refute explorer.config.system_prompt =~ "## Delegation"
+    assert spec.root_spec.config.system_prompt =~ "- subagent:"
     assert {:error, {:unknown_profile, "other"}} = ScopeSpec.resolve_profile(spec, "other")
+  end
+
+  test "loads project Markdown profiles with trusted tools and advertised descriptions", %{
+    opts: opts,
+    cwd: cwd
+  } do
+    path = Path.join([cwd, ".tackle", "agents", "reviewer.md"])
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(path, """
+    ---
+    name: reviewer
+    description: Review <changes> & report defects
+    tools: read
+    model: test/child
+    thinking: high
+    timeoutMs: 1000
+    maxIterations: 7
+    advertise: true
+    ---
+
+    Review the requested work. Do not modify files.
+    """)
+
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    assert {:ok, reviewer} = ScopeSpec.resolve_profile(spec, "reviewer")
+    assert reviewer.config.tools == [Read]
+    assert reviewer.config.model_ref == "test/child"
+    assert reviewer.model_source == :configured
+    assert reviewer.timeout == 1_000
+    assert reviewer.config.max_iterations == 7
+    assert reviewer.config.system_prompt =~ "Review the requested work"
+    assert reviewer.config.system_prompt =~ "Project guidance: preserve tests."
+    assert spec.root_spec.config.system_prompt =~ "<name>reviewer</name>"
+
+    assert spec.root_spec.config.system_prompt =~
+             "<description>Review &lt;changes&gt; &amp; report defects</description>"
+  end
+
+  test "project profiles override user profiles and omitted models inherit the parent", %{
+    opts: opts,
+    cwd: cwd
+  } do
+    home = opts[:env]["TACKLE_HOME"]
+    write_agent(Path.join([home, "agents", "shared.md"]), "shared", "User profile", "User prompt")
+
+    write_agent(
+      Path.join([cwd, ".tackle", "agents", "shared.md"]),
+      "shared",
+      "Project profile",
+      "Project prompt"
+    )
+
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    shared = spec.profiles["shared"]
+    assert shared.model_source == :parent
+    assert shared.config.system_prompt =~ "Project prompt"
+    refute shared.config.system_prompt =~ "User prompt"
+    assert spec.root_spec.config.system_prompt =~ "Project profile"
+    refute spec.root_spec.config.system_prompt =~ "User profile"
+  end
+
+  test "invalid profile files and unavailable tools fail startup", %{opts: opts, cwd: cwd} do
+    path = Path.join([cwd, ".tackle", "agents", "bad.md"])
+    write_agent(path, "bad", "Bad profile", "Prompt", "tools: invented\n")
+
+    assert {:error, {:invalid_agent_profile, ^path, {:unknown_tool_names, ["invented"]}}} =
+             Coding.scope_spec(opts)
+
+    File.write!(path, "---\nname: bad\ndescription: Bad\nunknown: value\n---\nPrompt\n")
+
+    assert {:error, {:invalid_agent_definitions, [%{path: ^path, message: message}]}} =
+             Coding.scope_spec(opts)
+
+    assert message =~ "unknown frontmatter fields"
+  end
+
+  test "project profiles can explicitly allow bounded nested delegation", %{opts: opts, cwd: cwd} do
+    path = Path.join([cwd, ".tackle", "agents", "lead.md"])
+
+    write_agent(
+      path,
+      "lead",
+      "Delegating lead",
+      "Delegate only when needed.",
+      "tools: read\nallowDelegation: true\n"
+    )
+
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    lead = spec.profiles["lead"]
+    assert lead.allow_delegation
+    assert lead.config.tools == [Read, Subagent]
+    assert spec.limits.max_spawn_depth == 2
   end
 
   test "preserves explicit prompts and narrower tools/iteration limits", %{opts: opts} do
@@ -190,6 +284,19 @@ defmodule Tackle.CodingTest do
     assert child.llm.ref == "test/child"
     assert Tackle.Thinking.from_llm_opts(child.llm_opts) == "high"
     refute Enum.any?(child.messages, &(&1.content == "record selection"))
+  end
+
+  defp write_agent(path, name, description, prompt, extra \\ "") do
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(path, """
+    ---
+    name: #{name}
+    description: #{description}
+    #{extra}---
+
+    #{prompt}
+    """)
   end
 
   defp update_overrides(opts, overrides) do

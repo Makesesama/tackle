@@ -251,6 +251,55 @@ bindings do not carry between calls. These tools inherit the Tackle process's fi
 operating-system permissions and are not a sandbox. `Tackle.Lib` provides the
 `:telemetry` runtime dependency used by tool execution.
 
+### Configured subagents
+
+The coding harness includes an `explorer` profile and discovers additional
+subagent definitions from Markdown files. User definitions live recursively
+under `$TACKLE_HOME/agents`; project definitions live under the nearest
+`.tackle/agents` directory at or above the configured working directory,
+stopping at the Git root. Precedence is built-in, then user, then project, so a
+valid project definition replaces a same-named user or built-in definition.
+
+An agent file contains a deliberately small YAML-frontmatter subset followed by
+its system prompt:
+
+```markdown
+---
+name: reviewer
+description: Reviews changes for correctness and regressions
+tools: read, bash
+model: openai-codex/gpt-5.5
+thinking: high
+timeoutMs: 300000
+maxIterations: 20
+advertise: true
+allowDelegation: false
+---
+
+Review the requested change. Report concrete findings with file and line
+references. Do not edit files.
+```
+
+`name` and `description` are required, as is a non-empty prompt body. Supported
+optional fields are `tools`, `model`, `thinking`, `timeoutMs`, `maxIterations`,
+`advertise`, and `allowDelegation`. Tool lists may be comma-separated, a simple
+`[read, bash]` list, or an indented `- read` block list. Unknown fields, invalid
+values, duplicate definitions within one source, unavailable models, and tools
+not already available to the root harness fail startup explicitly.
+
+Agent files are inert configuration. Tool names resolve only against modules
+already selected by trusted harness code; they cannot load modules or arbitrary
+code. Omitting `tools` inherits the root's trusted tools. Omitting `model` makes
+the child use the requesting parent's current model and thinking selection;
+setting `model` pins the configured selection. A `thinking` override requires an
+explicit `model`. `allowDelegation` independently grants the child the subagent
+tool and raises the coding scope's spawn-depth ceiling to one nested generation;
+all other inherited fleet limits remain authoritative.
+
+Advertised profiles are included in the root prompt with their descriptions.
+Profiles that omit `advertise: true` remain callable by exact name but are not
+listed proactively.
+
 ### Explorer subagent
 
 CLI sessions enable the built-in `explorer` profile by default, including new
@@ -294,9 +343,9 @@ model-generated arguments cannot select or change this policy.
 Child transcripts remain ephemeral: the durable root records the subagent tool
 call and returned findings, not the child's full history. The footer and usage
 charts currently count root usage only, **not child usage or total delegation
-cost**. Live child activity, configurable profiles, recursive delegation, and
-persistent child conversations remain deferred. General runtime scopes and
-`Tackle.Tools.default/0` do not automatically gain subagent capability.
+cost**. Live child activity, persistent child conversations, and background
+fleets remain deferred. General runtime scopes and `Tackle.Tools.default/0` do
+not automatically gain subagent capability.
 
 ### Durable sessions
 

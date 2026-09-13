@@ -226,6 +226,13 @@ defmodule Tackle.SkillsTest do
   end
 
   describe "Frontmatter.parse/1" do
+    test "parses a complete document and retains its Markdown body" do
+      assert {:ok, %{frontmatter: frontmatter, body: "Agent prompt."}} =
+               Frontmatter.parse_document("---\r\nname: reviewer\r\n---\r\n\r\nAgent prompt.\r\n")
+
+      assert frontmatter == %{"name" => "reviewer"}
+    end
+
     test "returns an empty map without a fence" do
       assert {:ok, %{}} = Frontmatter.parse("just some markdown")
     end

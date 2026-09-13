@@ -25,6 +25,17 @@ The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
 are compiled into it. It does not discover or load third-party plugins at
 runtime. That keeps packaging separate from the future plugin-loading design.
 
+## Configured subagents
+
+In addition to the built-in explorer, the CLI loads Markdown agent definitions
+from `$TACKLE_HOME/agents/**/*.md` and the nearest project
+`.tackle/agents/**/*.md` directory. Project definitions override user and
+built-in definitions by name. Definitions configure the agent prompt, trusted
+tool subset, model/thinking, timeout, iteration bound, advertisement, and
+optional bounded delegation. See the root
+[configured subagent documentation](../../README.md#configured-subagents) for
+the file format and security boundaries.
+
 ## Explorer subagent
 
 Every CLI coding scope now enables the `explorer` profile by default—no flag is
