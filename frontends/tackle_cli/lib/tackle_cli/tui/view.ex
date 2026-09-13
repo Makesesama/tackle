@@ -18,6 +18,7 @@ defmodule Tackle.CLI.TUI.View do
   alias ExRatatui.Style
   alias ExRatatui.Widgets.{Block, Paragraph, Popup}
   alias Tackle.CLI.Widgets.Input
+  alias Tackle.CLI.Widgets.Subagents, as: TaskSidebar
 
   alias Tackle.CLI.TUI.{
     Browser,
@@ -29,6 +30,7 @@ defmodule Tackle.CLI.TUI.View do
     Search,
     State,
     StatusView,
+    Subagents,
     Theme,
     Tree,
     UsageChart,
@@ -45,12 +47,19 @@ defmodule Tackle.CLI.TUI.View do
     {width, height} = state.size
 
     regions =
-      Layout.regions(width, height, state.draft_lines, Viewport.reading?(state.conversation))
+      Layout.regions(
+        width,
+        height,
+        state.draft_lines,
+        Viewport.reading?(state.conversation),
+        Subagents.active?(state)
+      )
 
     [
       {header_widget(state, width, is_nil(regions.status)), regions.header},
       {transcript_widget(state), regions.transcript}
     ] ++
+      sidebar_widgets(regions.sidebar, state) ++
       reading_widgets(regions.reading, state.conversation) ++
       status_widgets(regions.status, state, width) ++
       [{composer_widget(state), regions.composer}] ++
@@ -96,6 +105,18 @@ defmodule Tackle.CLI.TUI.View do
     if state.focus == :transcript,
       do: Browser.widget(state),
       else: Conversation.widget(state.conversation)
+  end
+
+  defp sidebar_widgets(nil, _state), do: []
+
+  defp sidebar_widgets(rect, state) do
+    [
+      {TaskSidebar.from_activity(
+         Subagents.tasks(state),
+         state.subagent_selected,
+         state.spinner_frame
+       ), rect}
+    ]
   end
 
   defp reading_widgets(nil, _conversation), do: []
@@ -153,11 +174,16 @@ defmodule Tackle.CLI.TUI.View do
     }
   end
 
+  defp composer_title(%State{focus: :subagents}),
+    do: " Subagents · ↑/↓ select · Enter details · Esc back "
+
   defp composer_title(%State{focus: :transcript, browse_page: page}),
     do: " Browsing · #{page} · ←/→ pages · Esc/F4 back "
 
   defp composer_title(%State{active_turn: nil, pending_operation: nil}), do: " › "
   defp composer_title(%State{}), do: " Draft · not queued "
+
+  defp composer_placeholder(%State{focus: :subagents}), do: "Subagents focused"
 
   defp composer_placeholder(%State{focus: :transcript}),
     do: "Transcript focused"

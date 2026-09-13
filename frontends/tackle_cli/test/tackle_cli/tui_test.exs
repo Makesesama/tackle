@@ -2253,6 +2253,7 @@ defmodule Tackle.CLI.TUITest do
       [
         regions.header,
         regions.transcript,
+        regions.sidebar,
         regions.reading,
         regions.status,
         regions.composer,
@@ -2266,7 +2267,9 @@ defmodule Tackle.CLI.TUITest do
       assert rect.y + rect.height <= height
     end)
 
-    rects
+    vertical_rects = Enum.reject(rects, &(&1 == regions.sidebar))
+
+    vertical_rects
     |> Enum.chunk_every(2, 1, :discard)
     |> Enum.each(fn [above, below] -> assert above.y + above.height <= below.y end)
   end

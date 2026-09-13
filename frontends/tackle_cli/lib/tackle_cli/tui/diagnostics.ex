@@ -137,7 +137,7 @@ defmodule Tackle.CLI.TUI.Diagnostics do
     })
   end
 
-  defp live_subagent(%{status: status} = subagent) when status != :running do
+  defp live_subagent(%{status: status}) when status != :running do
     Map.merge(empty_subagent(), %{status: status})
   end
 

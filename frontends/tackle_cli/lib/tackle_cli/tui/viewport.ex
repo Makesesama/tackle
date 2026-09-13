@@ -17,13 +17,13 @@ defmodule Tackle.CLI.TUI.Viewport do
   hits an edge does not repaint the frame.
   """
 
-  alias Tackle.CLI.TUI.{Conversation, Layout, State}
+  alias Tackle.CLI.TUI.{Conversation, Layout, State, Subagents}
   alias Tackle.CLI.Widgets.Input
 
   @doc "Creates the empty transcript model for a terminal size."
   @spec new_conversation(integer(), integer()) :: Conversation.t()
   def new_conversation(width, height) do
-    regions = Layout.regions(width, height, 1, false)
+    regions = Layout.regions(width, height, 1, false, false)
     Conversation.new(regions.transcript)
   end
 
@@ -60,7 +60,15 @@ defmodule Tackle.CLI.TUI.Viewport do
   @spec relayout(State.t()) :: State.t()
   def relayout(%State{} = state) do
     {width, height} = state.size
-    regions = Layout.regions(width, height, state.draft_lines, reading?(state.conversation))
+
+    regions =
+      Layout.regions(
+        width,
+        height,
+        state.draft_lines,
+        reading?(state.conversation),
+        Subagents.active?(state)
+      )
 
     rect = browse_rect(state, regions.transcript)
 
@@ -84,7 +92,15 @@ defmodule Tackle.CLI.TUI.Viewport do
   def resize(%State{} = state) do
     state = update_draft(state)
     {width, height} = state.size
-    regions = Layout.regions(width, height, state.draft_lines, reading?(state.conversation))
+
+    regions =
+      Layout.regions(
+        width,
+        height,
+        state.draft_lines,
+        reading?(state.conversation),
+        Subagents.active?(state)
+      )
 
     state = %{
       state

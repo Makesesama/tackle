@@ -40,6 +40,18 @@ defmodule Tackle.CLI.Native do
   # does the matching and the intraline emphasis in Rust.
   def diff_rows(_old, _new, _context, _max_rows), do: :erlang.nif_error(:nif_not_loaded)
 
+  def subagents_render(
+        _tasks,
+        _width,
+        _height,
+        _accent,
+        _muted,
+        _text,
+        _selected,
+        _spinner_frame
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
+
   def tree_render(_nodes, _selected, _width, _height, _accent, _muted, _selection, _text),
     do: :erlang.nif_error(:nif_not_loaded)
 

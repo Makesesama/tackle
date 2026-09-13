@@ -82,6 +82,7 @@ defmodule Tackle.CLI.TUI do
     Search,
     Session,
     State,
+    Subagents,
     Tree,
     UsageChart,
     View,
@@ -255,6 +256,7 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base(:compact, _key, state), do: Compaction.request(state)
   defp dispatch_base(:tree, _key, state), do: Tree.open(state)
   defp dispatch_base(:usage_chart, _key, state), do: UsageChart.open(state)
+  defp dispatch_base(:subagents, _key, state), do: Subagents.focus(state)
   defp dispatch_base(:search, _key, state), do: Search.open(state)
   defp dispatch_base(:toggle_thinking, _key, state), do: Viewport.toggle_thinking(state)
 
@@ -277,6 +279,9 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base(:previous, key, state), do: Composer.previous(state, key)
   defp dispatch_base(:next, key, state), do: Composer.next(state, key)
   defp dispatch_base(:composer, key, state), do: Composer.key(state, key)
+
+  defp dispatch_base({:subagents, intent}, _key, state),
+    do: Subagents.handle(intent, state)
 
   defp dispatch_base({:transcript, intent}, _key, state),
     do: Browser.handle(intent, state)

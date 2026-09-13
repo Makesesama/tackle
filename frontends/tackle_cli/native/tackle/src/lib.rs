@@ -2,6 +2,7 @@ mod browse;
 mod conversation;
 mod diff;
 mod input;
+mod subagents;
 mod surface;
 mod tree;
 mod widgets;

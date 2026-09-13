@@ -61,6 +61,7 @@ defmodule Tackle.CLI.Keybinds do
           | :scroll_start
           | :search
           | :settings_picker
+          | :subagents
           | :submit
           | :thinking_picker
           | :toggle_thinking
@@ -71,6 +72,7 @@ defmodule Tackle.CLI.Keybinds do
           | {:input, String.t()}
           | {:insert, String.t()}
           | {:scroll, String.t()}
+          | {:subagents, intent()}
           | {:transcript, intent()}
 
   # Ctrl and Alt chords are accepted with or without Shift, matching how
@@ -98,7 +100,7 @@ defmodule Tackle.CLI.Keybinds do
   """
   @spec repeatable?(Key.t()) :: boolean()
   def repeatable?(%Key{code: code})
-      when code in ["esc", "enter", "f1", "f2", "f3", "f4", "f5", "f6"],
+      when code in ["esc", "enter", "f1", "f2", "f3", "f4", "f5", "f6", "f7"],
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
@@ -127,7 +129,9 @@ defmodule Tackle.CLI.Keybinds do
   def base(%Key{code: "f4"}, _focus), do: :browse
   def base(%Key{code: "f5"}, _focus), do: :tree
   def base(%Key{code: "f6"}, _focus), do: :usage_chart
+  def base(%Key{code: "f7"}, _focus), do: :subagents
 
+  def base(key, :subagents), do: {:subagents, subagents(key)}
   def base(key, :transcript), do: {:transcript, transcript(key)}
   def base(key, _composer), do: composer(key)
 
@@ -203,6 +207,17 @@ defmodule Tackle.CLI.Keybinds do
     do: :toggle_thinking
 
   def transcript(%Key{}), do: :ignore
+
+  # -- subagent sidebar ----------------------------------------------------
+
+  @doc "Resolves navigation while the active-task sidebar owns focus."
+  @spec subagents(Key.t()) :: intent
+  def subagents(%Key{code: "esc"}), do: :leave
+  def subagents(%Key{code: "up"}), do: :previous
+  def subagents(%Key{code: "down"}), do: :next
+  def subagents(%Key{code: "enter"}), do: :inspect
+  def subagents(%Key{code: "i"}), do: :inspect
+  def subagents(%Key{}), do: :ignore
 
   # -- confirmations -------------------------------------------------------
 
