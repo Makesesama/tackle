@@ -19,7 +19,10 @@ defmodule Tackle.CLI.TUI.Observations do
     :tool_call_id,
     :model,
     :provider,
-    :trigger
+    :trigger,
+    :run_id,
+    :profile,
+    :agent_ref
   ]
 
   defstruct events: [], dropped: 0, deltas: 0, origin: nil, sequence: 0

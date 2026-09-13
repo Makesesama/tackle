@@ -58,6 +58,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           tool_name: String.t() | nil,
           tool_arguments: term(),
           tool_status: atom() | nil,
+          tool_elapsed_ms: non_neg_integer() | nil,
           collapsed?: boolean()
         }
 
@@ -72,6 +73,7 @@ defmodule Tackle.CLI.TUI.MessageView do
     :tool_name,
     :tool_arguments,
     :tool_status,
+    :tool_elapsed_ms,
     style: %Style{},
     collapsed?: false
   ]
@@ -658,6 +660,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       tool_name: name,
       tool_arguments: arguments,
       tool_status: status,
+      tool_elapsed_ms: value(tool, :elapsed_ms),
       style: style(:tool)
     )
   end
@@ -674,6 +677,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       tool_name: Keyword.get(opts, :tool_name),
       tool_arguments: Keyword.get(opts, :tool_arguments),
       tool_status: Keyword.get(opts, :tool_status),
+      tool_elapsed_ms: Keyword.get(opts, :tool_elapsed_ms),
       collapsed?: Keyword.get(opts, :collapsed?, false)
     }
   end

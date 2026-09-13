@@ -59,6 +59,7 @@ defmodule Tackle.Lib.Loop do
 
   ## Options
     * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs.
+    * `:event_context` - Additional host context merged into tool execution context.
     * `:llm_stream` - When true, use `Tackle.Lib.LLM.stream/4` if the adapter supports it.
     * `:cancellation_signal` - Optional `Tackle.Lib.Cancellation.Signal` checked between loop steps.
     * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot. When omitted,
@@ -1104,6 +1105,7 @@ defmodule Tackle.Lib.Loop do
   defp callbacks(opts) do
     %{
       event: Keyword.get(opts, :event_callback, fn _event -> :ok end),
+      event_context: Keyword.get(opts, :event_context, %{}),
       llm_stream?: Keyword.get(opts, :llm_stream, false),
       cancellation_signal:
         Keyword.get(opts, :cancellation_signal) || Keyword.get(opts, :cancel_signal),
@@ -1116,10 +1118,13 @@ defmodule Tackle.Lib.Loop do
   defp maybe_put_cancellation_signal(opts, signal),
     do: Keyword.put(opts, :cancellation_signal, signal)
 
-  defp tool_context(%State{} = state, %{cancellation_signal: nil}), do: state.context
+  defp tool_context(%State{} = state, callbacks) do
+    context = Map.merge(state.context, callbacks.event_context)
 
-  defp tool_context(%State{} = state, %{cancellation_signal: signal}) do
-    Map.put(state.context, :cancellation_signal, signal)
+    case callbacks.cancellation_signal do
+      nil -> context
+      signal -> Map.put(context, :cancellation_signal, signal)
+    end
   end
 
   defp cancelled?(%{cancellation_signal: signal}), do: Cancellation.cancelled?(signal)

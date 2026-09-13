@@ -25,6 +25,40 @@ The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
 are compiled into it. It does not discover or load third-party plugins at
 runtime. That keeps packaging separate from the future plugin-loading design.
 
+## Explorer subagent
+
+Every CLI coding scope now enables the `explorer` profile by default—no flag is
+needed. The root can delegate a self-contained investigation through `subagent`
+and receives findings in the normal tool result. Try:
+
+```sh
+tackle run "Ask an explorer to trace the cancellation path and cite relevant files"
+```
+
+Explorers have `read` and `bash`, fresh conversation context, no further
+delegation, a 20-iteration/five-minute budget, and a limit of two simultaneous
+children. They share the workspace and are instructed not to edit it, but
+**bash is not sandboxed or enforced read-only**. Profiles are configured by
+`Tackle.Coding` in the root harness, not the frontend. Each explorer request
+uses the root's current model and thinking selection, including after resume or
+a TUI model change. Already-running children retain their original selection.
+Tools, prompts, limits, and conversation context remain separate; only model and
+thinking follow the parent.
+
+Children have a dedicated inline card showing the profile, assignment, explicit
+running/completed/failed status, and bounded findings or error output. Parallel
+calls keep independent cards in request order. F4 details retain full arguments
+and findings; search includes the assignment. A live elapsed clock measures local
+time since the frontend observed tool start, freezes at execution completion,
+and disappears when canonical history replaces live progress. It is not provider
+latency or durable timing. Cancellation of the parent clears live cards and
+shows the turn cancellation; it does not claim the child completed.
+
+Only returned findings are retained in the root journal; child transcripts are
+ephemeral. Footer and chart usage totals exclude child usage. Streaming child
+activity and profile customization are deferred. See the root
+[explorer documentation](../../README.md#explorer-subagent) for details.
+
 ## Single-file release
 
 [Burrito](https://github.com/burrito-elixir/burrito) wraps this frontend and its

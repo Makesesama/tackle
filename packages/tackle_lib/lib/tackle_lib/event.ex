@@ -27,6 +27,8 @@ defmodule Tackle.Lib.Event do
           | :tool_execution_end
           | :tool_end
           | :tool_error
+          | :subagent_started
+          | :subagent_finished
           | :usage
           | :status_change
           | :error

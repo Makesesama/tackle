@@ -21,6 +21,7 @@ defmodule Tackle.Runtime.Request do
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Registry
   alias Tackle.Runtime.RunRef
+  alias Tackle.Lib.Event
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Session
   alias Tackle.Session.Supervisor, as: SessionSupervisor
@@ -39,6 +40,7 @@ defmodule Tackle.Runtime.Request do
           optional(:limits) => Tackle.Runtime.Limits.t() | nil,
           optional(:parent) => map() | nil,
           optional(:timeout) => timeout(),
+          optional(:event_callback) => (Event.t() -> any()),
           optional(:linger) => timeout()
         }
 
@@ -95,6 +97,7 @@ defmodule Tackle.Runtime.Request do
       limits: Map.get(arg, :limits),
       parent: Map.get(arg, :parent),
       timeout: Map.get(arg, :timeout, :infinity),
+      event_callback: Map.get(arg, :event_callback),
       session_pid: nil,
       session_monitor: nil,
       outcome: nil,
@@ -214,6 +217,7 @@ defmodule Tackle.Runtime.Request do
       coordinator: state.coordinator,
       work_supervisor: state.work_supervisor,
       parent: state.parent,
+      context_overrides: event_context(state),
       terminal: %{destination: self(), run_id: state.run_ref.run_id},
       id: {:session, state.agent_ref.agent_id}
     ]
@@ -235,6 +239,11 @@ defmodule Tackle.Runtime.Request do
         {:error, reason}
     end
   end
+
+  defp event_context(%{event_callback: callback}) when is_function(callback, 1),
+    do: %{event_callback: callback}
+
+  defp event_context(_state), do: %{}
 
   defp submit_prompt(%{session_pid: pid, prompt: prompt} = state) do
     case Session.submit(pid, prompt) do

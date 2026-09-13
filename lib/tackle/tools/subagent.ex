@@ -19,6 +19,7 @@ defmodule Tackle.Tools.Subagent do
 
   use Tackle.Lib.Tool
 
+  alias Tackle.Lib.Event
   alias Tackle.Runtime
   alias Tackle.Runtime.Handle
   alias Tackle.Runtime.Outcome
@@ -51,8 +52,12 @@ defmodule Tackle.Tools.Subagent do
     with {:ok, handle} <- fetch_handle(context),
          :ok <- ensure_delegation(handle),
          {:ok, opts} <- timeout_opts(args, handle),
+         opts = put_event_callback(opts, context),
          {:ok, run_ref} <- request(handle, profile, prompt, opts) do
-      handle_outcome(Runtime.await(run_ref, :infinity))
+      emit(context, :subagent_started, run_ref, profile)
+      outcome = Runtime.await(run_ref, :infinity)
+      emit(context, :subagent_finished, run_ref, profile, outcome)
+      handle_outcome(outcome)
     end
   end
 
@@ -84,6 +89,13 @@ defmodule Tackle.Tools.Subagent do
     end
   end
 
+  defp put_event_callback(opts, context) do
+    case Map.get(context, :event_callback) do
+      callback when is_function(callback, 1) -> Keyword.put(opts, :event_callback, callback)
+      _other -> opts
+    end
+  end
+
   defp request(handle, profile, prompt, opts) do
     case Runtime.request_agent(handle, profile, prompt, opts) do
       {:ok, run_ref} -> {:ok, run_ref}
@@ -92,6 +104,27 @@ defmodule Tackle.Tools.Subagent do
       {:error, reason} -> {:error, "could not start subagent: #{inspect(reason)}"}
     end
   end
+
+  defp emit(context, type, run_ref, profile, outcome \\ nil) do
+    case Map.get(context, :event_callback) do
+      callback when is_function(callback, 1) ->
+        data = %{
+          run_id: run_ref.run_id,
+          agent_ref: run_ref.agent_ref,
+          profile: profile,
+          status: outcome_status(outcome)
+        }
+
+        callback.(Event.new(type, data))
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp outcome_status(nil), do: :running
+  defp outcome_status(%Outcome{status: status}), do: status
+  defp outcome_status({:error, _reason}), do: :runtime_error
 
   defp handle_outcome(%Outcome{status: :ok} = outcome),
     do: {:ok, Outcome.answer(outcome) || "(subagent produced no answer)"}

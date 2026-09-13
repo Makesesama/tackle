@@ -361,6 +361,103 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert text(ToolView.render(empty, 80)) == "✓ bash"
   end
 
+  test "subagents show profile, assignment, explicit outcomes and retained findings" do
+    args = %{
+      "profile" => "explorer",
+      "prompt" => "Trace recovery\nand cite files",
+      "timeout_ms" => 5_000
+    }
+
+    call = Message.assistant(tool_calls: [%{id: "explore", name: "subagent", arguments: args}])
+    [requested] = settled([call])
+    assert text(ToolView.render(requested, 80)) =~ "requested · explorer · subagent"
+    assert text(ToolView.render(requested, 80)) =~ "Task: Trace recovery and cite files"
+    refute text(ToolView.render(requested, 80)) =~ "timeout_ms"
+
+    [completed] =
+      settled([call, Message.tool_result("explore", "subagent", "lib/recovery.ex:42: findings")])
+
+    assert completed.id == requested.id
+    assert text(ToolView.render(completed, 80)) =~ "completed · explorer · subagent"
+    assert text(ToolView.render(completed, 80)) =~ "lib/recovery.ex:42"
+    assert MessageView.search_text(completed) =~ "Trace recovery"
+    assert MessageView.full_text(completed) == "lib/recovery.ex:42: findings"
+    assert text(MessageView.inspect_items(completed, 100)) =~ "timeout_ms"
+    assert text(MessageView.inspect_items(completed, 100)) =~ "cite files"
+    assert completed.tool_elapsed_ms == nil
+
+    for reason <- [
+          "subagent timed out",
+          "subagent was cancelled",
+          "unknown subagent profile: missing"
+        ] do
+      [failed] = settled([call, Message.tool_result("explore", "subagent", "Error: " <> reason)])
+      output = text(ToolView.render(failed, 100))
+      assert output =~ "failed · explorer · subagent"
+      assert output =~ reason
+      refute output =~ "✓"
+    end
+  end
+
+  test "live subagent elapsed time renders without inventing historical durations" do
+    [entry] =
+      MessageView.section_entries(
+        %{
+          tool_activity: [
+            %{
+              id: "explore",
+              name: "subagent",
+              status: :running,
+              arguments: %{profile: "explorer", prompt: "Inspect files"},
+              elapsed_ms: 65_900
+            }
+          ]
+        },
+        :tools
+      )
+
+    assert entry.tool_elapsed_ms == 65_900
+    assert text(ToolView.render(entry, 100)) =~ "running · explorer · subagent · 1m 5s"
+    assert text(ToolView.render(%{entry | tool_elapsed_ms: 999}, 100)) =~ "subagent · 0s"
+    assert text(ToolView.render(%{entry | tool_elapsed_ms: nil}, 100)) =~ "subagent\n"
+  end
+
+  test "subagent previews are bounded, sanitized, and retain full assignments in details" do
+    args = %{
+      "profile" => "explorer\e]52;c;evil\a",
+      "prompt" => String.duplicate("界 trace ", 500) <> "FINAL TASK"
+    }
+
+    [entry] =
+      settled([
+        Message.assistant(tool_calls: [%{id: "explore", name: "subagent", arguments: args}]),
+        Message.tool_result(
+          "explore",
+          "subagent",
+          String.duplicate("finding\n", 100) <> "FINAL FINDING"
+        )
+      ])
+
+    for width <- [1, 4, 8, 30, 80] do
+      items = ToolView.render(entry, width)
+      assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 8
+      refute text(items) =~ "evil"
+
+      for {widget, _} <- items, row <- widget.text do
+        assert MessageView.display_width(plain(row)) <= width
+      end
+    end
+
+    assert text(MessageView.inspect_items(entry, 100)) =~ "FINAL TASK"
+    assert MessageView.search_text(entry) =~ "FINAL TASK"
+    assert MessageView.full_text(entry) =~ "FINAL FINDING"
+    assert entry.tool_arguments == args
+
+    [missing] = settled([Message.tool_result("orphan", "subagent", "retained findings")])
+    assert text(ToolView.render(missing, 100)) =~ "unknown profile"
+    assert text(ToolView.render(missing, 100)) =~ "Task unavailable"
+  end
+
   defp settled(messages),
     do:
       MessageView.section_entries(

@@ -30,7 +30,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp route({:tui_spinner_tick}, %State{} = state) do
     if busy?(state) do
-      {:noreply, %{state | spinner_frame: state.spinner_frame + 1}}
+      state = %{state | spinner_frame: state.spinner_frame + 1}
+      {:noreply, refresh_subagent_clocks(state)}
     else
       {:noreply, state, render?: false}
     end
@@ -49,25 +50,28 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
        ) do
     case result do
       {:ok, turn_id} when is_binary(turn_id) ->
-        deferred = state.deferred_events
+        case state.active_turn do
+          nil ->
+            state = %{
+              state
+              | pending_operation: nil,
+                deferred_events: [],
+                active_turn: %{id: turn_id},
+                activity: "starting",
+                error: nil,
+                outcome: nil
+            }
 
-        state = %{
-          state
-          | deferred_events: [],
-            active_turn: %{id: turn_id},
-            activity: "starting",
-            error: nil,
-            outcome: nil
-        }
+            state =
+              state |> Viewport.update_draft() |> Viewport.refresh([:pending, :turn, :error])
 
-        state = state |> Viewport.update_draft() |> Viewport.refresh([:pending, :turn, :error])
-        deferred_commands = Enum.map(deferred, &Command.message/1)
+            submit_started(state, operation, [])
 
-        if Map.get(operation, :cancellation_requested?, false) do
-          {state, cancel_command} = cancel_command(%{state | activity: "cancelling"})
-          {:noreply, state, commands: append(deferred_commands, cancel_command)}
-        else
-          {:noreply, %{state | pending_operation: nil}, commands: deferred_commands}
+          %{id: ^turn_id} ->
+            submit_started(%{state | pending_operation: nil, deferred_events: []}, operation, [])
+
+          %{id: active_turn_id} ->
+            submit_failed(state, operation, {:unexpected_turn, active_turn_id, turn_id})
         end
 
       {:error, reason} ->
@@ -212,34 +216,32 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   defp route({:tackle_session_navigated, _session_id, _snapshot, _outcome}, state),
     do: {:noreply, state, render?: false}
 
-  # A turn can begin emitting from its supervised task before the asynchronous
-  # submit command's reply reaches this process. Hold those messages briefly;
-  # the submit result re-enqueues them after installing the correlated turn id.
+  # The session can emit from the new turn before the asynchronous submit
+  # command reports its id. The event already carries that id, and only one turn
+  # can be admitted for this pending submit, so install it immediately instead
+  # of withholding a potentially large stream behind another sender's reply.
   defp route(
-         {:tackle_event, session_id, _turn_id, %Event{}} = message,
+         {:tackle_event, session_id, turn_id, %Event{}} = message,
          %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
            state
        ) do
-    deferred_events = append(state.deferred_events, message)
-    {:noreply, %{state | deferred_events: deferred_events}, render?: false}
+    project_early_turn(message, turn_id, state)
   end
 
   defp route(
-         {:tackle_turn_finished, session_id, _turn_id, _result} = message,
+         {:tackle_turn_finished, session_id, turn_id, _result} = message,
          %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
            state
        ) do
-    deferred_events = append(state.deferred_events, message)
-    {:noreply, %{state | deferred_events: deferred_events}, render?: false}
+    project_early_turn(message, turn_id, state)
   end
 
   defp route(
-         {:tackle_turn_failed, session_id, _turn_id, _reason} = message,
+         {:tackle_turn_failed, session_id, turn_id, _reason} = message,
          %State{session_id: session_id, active_turn: nil, pending_operation: %{kind: :submit}} =
            state
        ) do
-    deferred_events = append(state.deferred_events, message)
-    {:noreply, %{state | deferred_events: deferred_events}, render?: false}
+    project_early_turn(message, turn_id, state)
   end
 
   defp route(
@@ -388,7 +390,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           | timeline: put_timeline_tool(state.stream.timeline, tool),
             flush_ref: nil
         },
-        activity: tool_activity_label(data, "running")
+        activity: tool_activity_label(tool, "running")
     }
 
     {:noreply, Viewport.refresh(state, [:turn])}
@@ -520,6 +522,20 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp route(_message, state), do: {:noreply, state, render?: false}
+
+  defp project_early_turn(message, turn_id, state) do
+    state = %{state | active_turn: %{id: turn_id}, deferred_events: []}
+    route(message, Observations.observe(message, state))
+  end
+
+  defp submit_started(state, operation, commands) do
+    if Map.get(operation, :cancellation_requested?, false) and state.active_turn != nil do
+      {state, cancel_command} = cancel_command(%{state | activity: "cancelling"})
+      {:noreply, state, commands: append(commands, cancel_command)}
+    else
+      {:noreply, state, commands: commands}
+    end
+  end
 
   defp submit_failed(state, operation, reason) do
     if Input.get_value(state.input) == "" do
@@ -658,7 +674,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           | timeline: put_timeline_tool(state.stream.timeline, tool),
             flush_ref: nil
         },
-        activity: tool_activity_label(data, label)
+        activity: tool_activity_label(tool, label)
     }
 
     {:noreply, Viewport.refresh(state, [:turn])}
@@ -701,13 +717,55 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     case Enum.find_index(state.tool_activity, &same_tool?(&1, id, name)) do
       nil ->
-        %{state | tool_activity: append(state.tool_activity, updates)}
+        %{state | tool_activity: append(state.tool_activity, observe_tool_time(updates))}
 
       index ->
         tool_activity =
-          List.update_at(state.tool_activity, index, &merge_tool_activity(&1, updates))
+          List.update_at(state.tool_activity, index, fn tool ->
+            tool |> merge_tool_activity(updates) |> observe_tool_time()
+          end)
 
         %{state | tool_activity: tool_activity}
+    end
+  end
+
+  # Local observation time only: never persisted or presented as provider
+  # latency. Ordered settlement may repeat execution completion; freeze once.
+  defp observe_tool_time(%{name: "subagent", status: status} = tool) do
+    now = System.monotonic_time(:millisecond)
+
+    case {status, Map.get(tool, :started_at_ms), Map.get(tool, :finished_at_ms)} do
+      {:running, nil, nil} ->
+        tool |> Map.put(:started_at_ms, now) |> Map.put(:elapsed_ms, 0)
+
+      {status, started, nil} when status in [:completed, :failed] and is_integer(started) ->
+        tool |> Map.put(:finished_at_ms, now) |> Map.put(:elapsed_ms, max(now - started, 0))
+
+      _ ->
+        tool
+    end
+  end
+
+  defp observe_tool_time(tool), do: tool
+
+  defp refresh_subagent_clocks(state) do
+    now = System.monotonic_time(:millisecond)
+
+    tools =
+      Enum.map(state.tool_activity, fn
+        %{name: "subagent", status: :running, started_at_ms: started} = tool ->
+          Map.put(tool, :elapsed_ms, div(max(now - started, 0), 1_000) * 1_000)
+
+        tool ->
+          tool
+      end)
+
+    if tools == state.tool_activity do
+      state
+    else
+      timeline = Enum.reduce(tools, state.stream.timeline, &put_timeline_tool(&2, &1))
+      state = %{state | tool_activity: tools, stream: %{state.stream | timeline: timeline}}
+      Viewport.refresh(state, [:turn])
     end
   end
 
@@ -725,7 +783,20 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp tool_activity_label(data, status) do
     name = value(data, :name) || value(data, :tool_name) || "tool"
-    "#{status} #{name}"
+
+    profile =
+      if name == "subagent" do
+        args = Tackle.CLI.TUI.ToolView.arguments(value(data, :arguments))
+
+        case value(args, :profile) do
+          profile when is_binary(profile) -> " · " <> profile
+          _ -> ""
+        end
+      else
+        ""
+      end
+
+    "#{status} #{name}#{profile}" |> Tackle.CLI.TUI.MessageView.sanitize()
   end
 
   defp value(map, key) when is_map(map),

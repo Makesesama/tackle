@@ -9,7 +9,10 @@ defmodule Tackle.Runtime.AgentSpec do
 
   `:config` is a fully resolved `Tackle.Config`; `:allow_delegation` is the
   explicit grant that lets this agent request descendants; `:timeout` bounds a
-  single delegated run.
+  single delegated run. `:model_source` defaults to `:configured`; `:parent`
+  resolves the requesting agent's current model and thinking level when a run
+  is requested. All other child configuration stays explicit. This setting is
+  trusted host policy, never a model-visible tool argument.
   """
 
   alias Tackle.Config
@@ -18,13 +21,20 @@ defmodule Tackle.Runtime.AgentSpec do
   @default_timeout :timer.minutes(5)
 
   @enforce_keys [:name, :config]
-  defstruct [:name, :config, allow_delegation: false, timeout: @default_timeout]
+  defstruct [
+    :name,
+    :config,
+    allow_delegation: false,
+    timeout: @default_timeout,
+    model_source: :configured
+  ]
 
   @type t :: %__MODULE__{
           name: String.t(),
           config: Config.t(),
           allow_delegation: boolean(),
-          timeout: pos_integer()
+          timeout: pos_integer(),
+          model_source: :configured | :parent
         }
 
   @doc "Builds a validated agent spec."
@@ -37,7 +47,8 @@ defmodule Tackle.Runtime.AgentSpec do
       name: name,
       config: config,
       allow_delegation: Map.get(opts, :allow_delegation, false),
-      timeout: Map.get(opts, :timeout, @default_timeout)
+      timeout: Map.get(opts, :timeout, @default_timeout),
+      model_source: Map.get(opts, :model_source, :configured)
     }
 
     validate(spec)
@@ -69,6 +80,9 @@ defmodule Tackle.Runtime.AgentSpec do
 
       not is_boolean(spec.allow_delegation) ->
         {:error, {:invalid_allow_delegation, spec.allow_delegation}}
+
+      spec.model_source not in [:configured, :parent] ->
+        {:error, {:invalid_model_source, spec.model_source}}
 
       not (is_integer(spec.timeout) and spec.timeout > 0) ->
         {:error, {:invalid_agent_timeout, spec.timeout}}
