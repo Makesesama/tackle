@@ -1,3 +1,47 @@
+defmodule Tackle.Test.InterruptedBackgroundSubagent do
+  @moduledoc false
+
+  @behaviour Tackle.Lib.Tool
+
+  alias Tackle.Lib.Event
+  alias Tackle.Tools.Subagent
+
+  @impl true
+  def name, do: "interrupted_background_subagent"
+
+  @impl true
+  def description, do: "Starts a background subagent but does not return its launch result."
+
+  @impl true
+  def parameters_schema do
+    [
+      profile: [type: :string, required: true],
+      prompt: [type: :string, required: true]
+    ]
+  end
+
+  @impl true
+  def execute(args, context) do
+    test_pid = Map.fetch!(context, :test_pid)
+
+    event_callback = fn
+      %Event{type: :subagent_started, data: %{run_id: run_id}} ->
+        send(test_pid, {:background_launch_paused, self(), run_id})
+
+        receive do
+          :return_background_launch -> :ok
+        end
+
+      _event ->
+        :ok
+    end
+
+    args
+    |> Map.put("background", true)
+    |> Subagent.run(Map.put(context, :event_callback, event_callback))
+  end
+end
+
 defmodule Tackle.Tools.SubagentAsyncTest do
   use ExUnit.Case, async: false
 
@@ -211,6 +255,108 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert_eventually(fn ->
       match?({:ok, {:completed, %Outcome{status: :ok}}}, run_status(scope, run_id))
     end)
+  end
+
+  test "a committed background launch does not duplicate its run id on the next turn" do
+    tool_call = %{
+      "id" => "committed-background",
+      "name" => "subagent",
+      "arguments" => %{
+        "profile" => "worker",
+        "prompt" => "do work",
+        "background" => true
+      }
+    }
+
+    scope =
+      start_scope(
+        root: [
+          allow_delegation: true,
+          mode: :tools_then_answer,
+          tools: [Subagent],
+          llm_opts: [tool_calls: [tool_call]]
+        ],
+        profiles: %{"worker" => agent_spec("worker", model: "test/child", mode: :manual)}
+      )
+
+    {:ok, %{session_id: session_id}} = Tackle.Runtime.subscribe(scope.root_agent_ref)
+    {:ok, turn_id} = Tackle.Runtime.submit(scope.root_agent_ref, "delegate")
+
+    assert_receive {:adapter_called, child_task, "child", _opts}, 2_000
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 2_000
+    {:ok, parent} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+    assert Tackle.Session.inbox(parent) == []
+
+    send(child_task, {:respond, "worker answer"})
+  end
+
+  test "an interrupted background launch gives its run id to the parent's next turn" do
+    tool_call = %{
+      "id" => "interrupted-background",
+      "name" => "interrupted_background_subagent",
+      "arguments" => %{"profile" => "worker", "prompt" => "do work"}
+    }
+
+    scope =
+      start_scope(
+        root: [
+          allow_delegation: true,
+          mode: :tools_then_answer,
+          tools: [Tackle.Test.InterruptedBackgroundSubagent],
+          context: %{test_pid: self()},
+          llm_opts: [tool_calls: [tool_call]]
+        ],
+        profiles: %{"worker" => agent_spec("worker", model: "test/child", mode: :manual)}
+      )
+
+    {:ok, %{session_id: session_id}} = Tackle.Runtime.subscribe(scope.root_agent_ref)
+    {:ok, first_turn} = Tackle.Runtime.submit(scope.root_agent_ref, "delegate")
+
+    assert_receive {:adapter_called, _root_task, "echo", _opts}, 2_000
+    assert_receive {:background_launch_paused, tool_task, run_id}, 2_000
+    assert_receive {:adapter_called, child_task, "child", _opts}, 2_000
+    tool_monitor = Process.monitor(tool_task)
+
+    assert {:ok, :running} = run_status(scope, run_id)
+    assert :ok = Tackle.Runtime.cancel_turn(scope.root_agent_ref)
+
+    assert_receive {:tackle_turn_finished, ^session_id, ^first_turn,
+                    {:cancelled, cancelled_state}},
+                   2_000
+
+    refute Enum.any?(cancelled_state.messages, fn message ->
+             message.role == :tool and message.tool_call_id == "interrupted-background"
+           end)
+
+    assert_receive {:DOWN, ^tool_monitor, :process, ^tool_task, _reason}, 2_000
+    {:ok, parent} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+
+    assert [%{message: launch_message}] = Tackle.Session.inbox(parent)
+    assert launch_message =~ "Started background subagent #{run_id}."
+    assert launch_message =~ "subagent_status"
+    assert {:ok, :running} = run_status(scope, run_id)
+
+    {:ok, second_turn} = Tackle.Runtime.submit(scope.root_agent_ref, "continue")
+    assert_receive {:adapter_called, _root_task, "echo", second_opts}, 2_000
+
+    assert Enum.any?(Keyword.fetch!(second_opts, :messages), fn
+             %{role: :user, content: content} when is_binary(content) -> content =~ run_id
+             _message -> false
+           end)
+
+    assert :ok = Tackle.Runtime.cancel_turn(scope.root_agent_ref)
+
+    assert_receive {:tackle_turn_finished, ^session_id, ^second_turn, {:cancelled, _state}},
+                   2_000
+
+    send(child_task, {:respond, "worker answer"})
+
+    assert_eventually(fn ->
+      match?({:ok, {:completed, %Outcome{status: :ok}}}, run_status(scope, run_id))
+    end)
+
+    assert {:ok, result} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle(scope)})
+    assert result =~ "worker answer"
   end
 
   test "completion is queued for the parent's next turn" do

@@ -45,6 +45,8 @@ defmodule Tackle.Runtime.Request do
           optional(:timeout) => timeout(),
           optional(:event_callback) => (Event.t() -> any()),
           optional(:completion_message) => (RunRef.t(), Outcome.t() -> String.t()),
+          optional(:launch_message) => (RunRef.t() -> String.t()),
+          optional(:origin) => %{turn_id: String.t(), tool_call_id: String.t()},
           optional(:profile) => String.t(),
           optional(:retention) => :linger | :until_collected
         }
@@ -136,7 +138,6 @@ defmodule Tackle.Runtime.Request do
   @impl true
   def init(%{run_ref: %RunRef{} = run_ref} = arg) do
     Process.flag(:trap_exit, true)
-    {:ok, _pid} = Registry.register(run_ref, :request)
 
     state = %{
       run_ref: run_ref,
@@ -166,10 +167,15 @@ defmodule Tackle.Runtime.Request do
       cancelled: false
     }
 
-    # The child session must not be started from `init/1`: the helper is itself a
-    # child of the same work supervisor, so a nested start_child would deadlock
-    # the supervisor. `handle_continue/2` runs after init returns.
-    {:ok, state, {:continue, :setup}}
+    with {:ok, _pid} <- Registry.register(run_ref, :request),
+         :ok <- register_background_launch(arg) do
+      # The child session must not be started from `init/1`: the helper is itself a
+      # child of the same work supervisor, so a nested start_child would deadlock
+      # the supervisor. `handle_continue/2` runs after init returns.
+      {:ok, state, {:continue, :setup}}
+    else
+      {:error, reason} -> {:stop, {:launch_registration_failed, reason}}
+    end
   end
 
   @impl true
@@ -304,6 +310,29 @@ defmodule Tackle.Runtime.Request do
     stop_child(state)
     :ok
   end
+
+  defp register_background_launch(%{
+         launch_message: callback,
+         origin: %{turn_id: turn_id, tool_call_id: tool_call_id} = origin,
+         parent: %{agent_ref: parent_ref},
+         run_ref: %RunRef{} = run_ref
+       })
+       when is_function(callback, 1) and is_binary(turn_id) and turn_id != "" and
+              is_binary(tool_call_id) and tool_call_id != "" do
+    with message when is_binary(message) <- callback.(run_ref),
+         {:ok, parent} <- Registry.whereis(parent_ref) do
+      Session.background_started(parent, run_ref, origin, message)
+    else
+      {:error, reason} -> {:error, reason}
+      message when not is_binary(message) -> {:error, {:invalid_launch_message, message}}
+    end
+  rescue
+    error -> {:error, {:launch_message_failed, error}}
+  catch
+    kind, reason -> {:error, {:launch_message_failed, {kind, reason}}}
+  end
+
+  defp register_background_launch(_arg), do: :ok
 
   defp monitor_requester(%{requester: nil} = state), do: {:ok, state}
 

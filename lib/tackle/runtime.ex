@@ -270,6 +270,8 @@ defmodule Tackle.Runtime do
         event_callback: Keyword.get(opts, :event_callback),
         completion_callback: Keyword.get(opts, :completion_callback),
         completion_message: Keyword.get(opts, :completion_message),
+        launch_message: Keyword.get(opts, :launch_message),
+        origin: Keyword.get(opts, :origin),
         profile: spec.name,
         retention: Keyword.get(opts, :retention, :linger)
       }

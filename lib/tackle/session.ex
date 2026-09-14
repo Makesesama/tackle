@@ -168,6 +168,14 @@ defmodule Tackle.Session do
     GenServer.call(session, {:deliver, from, message})
   end
 
+  @doc "Queues a background launch until its tool result is committed or a later turn consumes it."
+  @spec background_started(GenServer.server(), RunRef.t(), map(), String.t()) ::
+          :ok | {:error, term()}
+  def background_started(session, %RunRef{} = run_ref, origin, message)
+      when is_map(origin) and is_binary(message) do
+    GenServer.call(session, {:background_started, run_ref, origin, message})
+  end
+
   @doc "Publishes one background-run completion from the owning request helper."
   @spec background_finished(GenServer.server(), RunRef.t(), String.t() | nil, Outcome.t()) :: :ok
   def background_finished(session, %RunRef{} = run_ref, profile, %Outcome{} = outcome) do
@@ -312,6 +320,40 @@ defmodule Tackle.Session do
 
     {:reply, :ok,
      %{state | inbox: :queue.in(envelope, state.inbox), inbox_count: state.inbox_count + 1}}
+  end
+
+  def handle_call(
+        {:background_started, _run_ref, _origin, _message},
+        _from,
+        %{inbox_count: count} = state
+      )
+      when count >= @max_inbox_messages do
+    {:reply, {:error, :inbox_full}, state}
+  end
+
+  def handle_call(
+        {:background_started, %RunRef{agent_ref: %AgentRef{} = from} = run_ref,
+         %{turn_id: turn_id, tool_call_id: tool_call_id}, message},
+        _from,
+        state
+      )
+      when is_binary(turn_id) and is_binary(tool_call_id) do
+    envelope = %{
+      from: from,
+      message: message,
+      background_launch: %{
+        run_id: run_ref.run_id,
+        turn_id: turn_id,
+        tool_call_id: tool_call_id
+      }
+    }
+
+    {:reply, :ok,
+     %{state | inbox: :queue.in(envelope, state.inbox), inbox_count: state.inbox_count + 1}}
+  end
+
+  def handle_call({:background_started, _run_ref, _origin, _message}, _from, state) do
+    {:reply, {:error, :invalid_background_launch}, state}
   end
 
   def handle_call(:continue, _from, state) do
@@ -513,7 +555,11 @@ defmodule Tackle.Session do
       when outcome in [:ok, :error, :cancelled] ->
         case persist_terminal(state, result) do
           :ok ->
-            state = %{state | agent_state: agent_state, active_turn: nil}
+            state =
+              state
+              |> Map.put(:agent_state, agent_state)
+              |> Map.put(:active_turn, nil)
+              |> discard_reported_background_launches(active_turn, agent_state)
 
             broadcast(
               state,
@@ -632,6 +678,7 @@ defmodule Tackle.Session do
           operation: operation,
           task: task,
           signal: signal,
+          initial_message_ids: MapSet.new(agent_state.messages, & &1.id),
           cancellation_requested?: false
         }
 
@@ -707,6 +754,39 @@ defmodule Tackle.Session do
 
   defp clear_inbox(state),
     do: %{state | inbox: :queue.new(), inbox_count: 0}
+
+  defp discard_reported_background_launches(
+         state,
+         %{id: turn_id, initial_message_ids: initial_message_ids},
+         %AgentState{} = agent_state
+       ) do
+    reported_tool_calls =
+      agent_state.messages
+      |> Enum.reject(&MapSet.member?(initial_message_ids, &1.id))
+      |> Enum.flat_map(fn
+        %Message{role: :tool, tool_call_id: tool_call_id} when is_binary(tool_call_id) ->
+          [tool_call_id]
+
+        _message ->
+          []
+      end)
+      |> MapSet.new()
+
+    inbox =
+      state.inbox
+      |> :queue.to_list()
+      |> Enum.reject(fn
+        %{
+          background_launch: %{turn_id: ^turn_id, tool_call_id: tool_call_id}
+        } ->
+          MapSet.member?(reported_tool_calls, tool_call_id)
+
+        _envelope ->
+          false
+      end)
+
+    %{state | inbox: :queue.from_list(inbox), inbox_count: length(inbox)}
+  end
 
   defp broadcast_inbox_drained(state, messages) do
     Enum.each(messages, fn %{from: from} ->

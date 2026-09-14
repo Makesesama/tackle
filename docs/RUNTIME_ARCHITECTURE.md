@@ -548,9 +548,12 @@ cancel parent turn
 A background subagent is turn-independent rather than scope-independent. It may
 outlive the tool task and the root turn that launched it, allowing the same root
 session to accept new direction while the child continues. It retains its logical
-parent for authorization, result collection, and next-turn completion delivery,
-and stopping the root scope still terminates it. Work detached from the parent
-session or root scope remains deferred.
+parent for authorization, result collection, and next-turn completion delivery.
+The request helper registers the launch with that parent before the child starts;
+if cancellation prevents the launch tool result from being committed, the run ID
+remains queued for the parent's next turn. Stopping the root scope still
+terminates the child. Work detached from the parent session or root scope remains
+deferred.
 
 Cancellation remains cooperative inside a turn:
 
