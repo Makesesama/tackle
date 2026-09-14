@@ -17,7 +17,9 @@ This document extends the package and harness boundaries in [`architecture-spec.
 7. Runtime communication initially uses correlated request/reply. General free-form agent chat, broadcast messaging, and durable mailboxes are deferred.
 8. Runtime entities are addressed through stable IDs and a Registry. PIDs are internal implementation details.
 9. A single model tool batch may execute concurrently when the host opts in with `Tackle.Lib.Tool.Policy` `:concurrent`; the runtime supplies the per-session tool supervisor and the loop still commits results in call order. General parallel orchestration (fan-out, aggregation, fleets) belongs in workflows or explicit batch orchestration, not in a second agent loop.
-10. Parent-owned work follows structured cancellation: cancelling a parent cancels its attached descendants unless work was explicitly detached.
+10. Parent-owned work follows structured cancellation: cancelling a parent
+    cancels its attached descendants. A background subagent is explicitly detached
+    from the launching turn, but remains owned by the parent session and root scope.
 11. Crashed in-memory agents and workflows are not silently restarted as if their state had survived. Crashes are reported as terminal runtime failures.
 12. Persistence is not required for this architecture. All agents, workflows, requests, and fleet state may disappear when their owning process or the BEAM terminates.
 13. Every top-level agent owns one physical execution scope. The root agent, all of its descendant agents, workflows, and active turn Tasks live in that scope.
@@ -540,9 +542,15 @@ cancel workflow
 cancel parent turn
   → cancel attached child runs
   → stop attached ephemeral child agents
+  → leave explicitly backgrounded child runs active
 ```
 
-Work may continue independently only when it was explicitly created as detached. Detached work should not be the default.
+A background subagent is turn-independent rather than scope-independent. It may
+outlive the tool task and the root turn that launched it, allowing the same root
+session to accept new direction while the child continues. It retains its logical
+parent for authorization, result collection, and next-turn completion delivery,
+and stopping the root scope still terminates it. Work detached from the parent
+session or root scope remains deferred.
 
 Cancellation remains cooperative inside a turn:
 

@@ -2015,6 +2015,23 @@ defmodule Tackle.CLI.TUITest do
     assert {:ok, ^session_id} = Task.await(task)
   end
 
+  test "reports a supervised agent shutdown without crashing the App" do
+    test_pid = self()
+    agent_ref = AgentRef.new!(ID.generate(), ID.generate())
+    {:ok, session} = SessionStub.start_link({test_pid, agent_ref})
+    Process.unlink(session)
+
+    task = Task.async(fn -> TUI.start(agent_ref: agent_ref, test_mode: {40, 10}) end)
+
+    assert_receive {:subscribed, tui}
+    session_id = state(tui).session_id
+    Process.exit(session, :shutdown)
+
+    assert is_binary(session_id)
+    assert {:error, {:agent_down, :shutdown}} = Task.await(task)
+    refute Process.alive?(tui)
+  end
+
   test "reports the session it was attached to when it exits" do
     test_pid = self()
     first_ref = AgentRef.new!(ID.generate(), ID.generate())

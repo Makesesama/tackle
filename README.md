@@ -350,9 +350,11 @@ call and returned findings, not the child's full history. Subagent calls wait by
 default. A call with `background: true` returns a stable run ID immediately;
 `subagent_status` reports whether it is running and consumes its retained terminal
 outcome when complete. Completion notices use the root session's bounded,
-next-turn inbox. Background work remains attached to its logical parent and scope,
-so parent cancellation or scope shutdown cleans it up. The footer and usage charts
-currently count root usage only, **not child usage or total delegation cost**.
+next-turn inbox. Background work is independent of the launching root turn: Esc
+may cancel that turn and the root may accept new direction while the child keeps
+running. It remains owned by the same root session and scope, so starting a new
+CLI session or otherwise stopping that scope cleans it up. The footer and usage
+charts currently count root usage only, **not child usage or total delegation cost**.
 Persistent child conversations and reusable agents remain deferred. General
 runtime scopes and `Tackle.Tools.default/0` do not automatically gain subagent
 capability.
