@@ -181,7 +181,7 @@ defmodule Tackle.CLI.TUI.View do
     do: " Browsing · #{page} · ←/→ pages · Esc/F4 back "
 
   defp composer_title(%State{active_turn: nil, pending_operation: nil}), do: " › "
-  defp composer_title(%State{}), do: " Draft · not queued "
+  defp composer_title(%State{}), do: " Queue next message "
 
   defp composer_placeholder(%State{focus: :subagents}), do: "Subagents focused"
 

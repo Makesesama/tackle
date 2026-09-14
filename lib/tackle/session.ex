@@ -149,8 +149,9 @@ defmodule Tackle.Session do
     }
   end
 
-  @doc "Starts a turn and appends `input` as one user message."
-  @spec submit(GenServer.server(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  @doc "Starts a turn, or queues input for the active turn's next provider boundary."
+  @spec submit(GenServer.server(), String.t()) ::
+          {:ok, String.t() | :queued} | {:error, term()}
   def submit(session, input) when is_binary(input), do: GenServer.call(session, {:submit, input})
   def submit(_session, input), do: {:error, {:invalid_input, input}}
 
@@ -315,7 +316,7 @@ defmodule Tackle.Session do
         recovery: recovery,
         inbox: :queue.new(),
         inbox_count: 0,
-        background_wake_scheduled?: false
+        inbox_wake_scheduled?: false
       }
 
       register_with_coordinator(state)
@@ -326,6 +327,16 @@ defmodule Tackle.Session do
   end
 
   @impl true
+  def handle_call({:submit, _input}, _from, %{recovery: recovery} = state)
+      when not is_nil(recovery) do
+    {:reply, {:error, {:recovery_required, recovery}}, state}
+  end
+
+  def handle_call({:submit, input}, _from, %{active_turn: active_turn} = state)
+      when not is_nil(active_turn) do
+    queue_user_message(state, input)
+  end
+
   def handle_call({:submit, input}, _from, state) do
     start_turn(:run, input, state)
   end
@@ -337,9 +348,9 @@ defmodule Tackle.Session do
 
   def handle_call({:deliver, %AgentRef{} = from, message}, _from_call, state) do
     envelope = %{from: from, message: message}
-
-    {:reply, :ok,
-     %{state | inbox: :queue.in(envelope, state.inbox), inbox_count: state.inbox_count + 1}}
+    state = enqueue(state, envelope)
+    state = if state.active_turn == nil, do: schedule_inbox_wake(state), else: state
+    {:reply, :ok, state}
   end
 
   def handle_call(
@@ -368,12 +379,18 @@ defmodule Tackle.Session do
       }
     }
 
-    {:reply, :ok,
-     %{state | inbox: :queue.in(envelope, state.inbox), inbox_count: state.inbox_count + 1}}
+    {:reply, :ok, enqueue(state, envelope)}
   end
 
   def handle_call({:background_started, _run_ref, _origin, _message}, _from, state) do
     {:reply, {:error, :invalid_background_launch}, state}
+  end
+
+  def handle_call(:take_incoming_messages, _from, state) do
+    envelopes = deliverable_inbox(state)
+    state = drop_deliverable_inbox(state)
+    broadcast_inbox_drained(state, envelopes)
+    {:reply, {:ok, Enum.map(envelopes, &envelope_content/1)}, state}
   end
 
   def handle_call(:continue, _from, state) do
@@ -537,7 +554,7 @@ defmodule Tackle.Session do
       ) do
     {state, queued?} = queue_background_completion(state, run_ref, outcome, message)
     publish_background_finished(state, run_ref, profile, outcome)
-    state = if queued?, do: schedule_background_wake(state), else: state
+    state = if queued?, do: schedule_inbox_wake(state), else: state
     {:noreply, state}
   end
 
@@ -643,14 +660,14 @@ defmodule Tackle.Session do
     {:noreply, cancel_active_turn(state, reason)}
   end
 
-  def handle_info(:tackle_background_wake, state) do
-    state = %{state | background_wake_scheduled?: false}
+  def handle_info(:tackle_inbox_wake, state) do
+    state = %{state | inbox_wake_scheduled?: false}
 
-    case start_background_notice_turn(state) do
-      {:ok, turn_id, state} ->
+    case start_inbox_turn(state) do
+      {:ok, turn_id, reason, state} ->
         broadcast(
           state,
-          {:tackle_turn_started, state.agent_state.session_id, turn_id, :background_notice}
+          {:tackle_turn_started, state.agent_state.session_id, turn_id, reason}
         )
 
         {:noreply, state}
@@ -761,6 +778,7 @@ defmodule Tackle.Session do
       cancellation_signal: signal,
       turn_id: turn_id,
       llm_stream: state.config.llm_stream,
+      take_incoming_messages: fn -> GenServer.call(session_pid, :take_incoming_messages) end,
       tool_supervisor: state.tool_supervisor
     ]
   end
@@ -783,7 +801,7 @@ defmodule Tackle.Session do
     if state.lifetime == :ephemeral do
       {:stop, :normal, state}
     else
-      {:noreply, schedule_background_wake(state)}
+      {:noreply, schedule_inbox_wake(state)}
     end
   end
 
@@ -825,30 +843,30 @@ defmodule Tackle.Session do
     {state, true}
   end
 
-  defp schedule_background_wake(
+  defp schedule_inbox_wake(
          %{
            lifetime: :explicit,
            recovery: nil,
            active_turn: nil,
-           background_wake_scheduled?: false
+           inbox_wake_scheduled?: false
          } = state
        ) do
-    if background_completion_pending?(state) do
-      send(self(), :tackle_background_wake)
-      %{state | background_wake_scheduled?: true}
+    if deliverable_inbox_pending?(state) do
+      send(self(), :tackle_inbox_wake)
+      %{state | inbox_wake_scheduled?: true}
     else
       state
     end
   end
 
-  defp schedule_background_wake(state), do: state
+  defp schedule_inbox_wake(state), do: state
 
-  defp start_background_notice_turn(
-         %{lifetime: :explicit, recovery: nil, active_turn: nil} = state
-       ) do
-    if background_completion_pending?(state) do
+  defp start_inbox_turn(%{lifetime: :explicit, recovery: nil, active_turn: nil} = state) do
+    if deliverable_inbox_pending?(state) do
+      reason = inbox_turn_reason(state)
+
       case start_turn(:continue, nil, state) do
-        {:reply, {:ok, turn_id}, state} -> {:ok, turn_id, state}
+        {:reply, {:ok, turn_id}, state} -> {:ok, turn_id, reason, state}
         {:reply, {:error, _reason}, state} -> {:skip, state}
       end
     else
@@ -856,12 +874,22 @@ defmodule Tackle.Session do
     end
   end
 
-  defp start_background_notice_turn(state), do: {:skip, state}
+  defp start_inbox_turn(state), do: {:skip, state}
 
-  defp background_completion_pending?(state) do
+  defp deliverable_inbox_pending?(state) do
     state.inbox
     |> :queue.to_list()
-    |> Enum.any?(&Map.has_key?(&1, :background_completion))
+    |> Enum.any?(&deliverable_envelope?/1)
+  end
+
+  defp inbox_turn_reason(state) do
+    deliverable = Enum.filter(:queue.to_list(state.inbox), &deliverable_envelope?/1)
+
+    if Enum.all?(deliverable, &Map.has_key?(&1, :background_completion)) do
+      :background_notice
+    else
+      :queued_messages
+    end
   end
 
   defp project_inbox(%{inbox_count: 0} = state), do: {state.agent_state, [], []}
@@ -870,11 +898,9 @@ defmodule Tackle.Session do
     envelopes = :queue.to_list(state.inbox)
 
     {projected_messages, agent_state} =
-      Enum.map_reduce(envelopes, state.agent_state, fn
-        %{from: from, message: content}, agent_state ->
-          body = "Message from agent #{from.agent_id}:\n\n#{content}"
-          message = Message.user(body, id_generator: agent_state.id_generator)
-          {message, AgentState.add_message(agent_state, message)}
+      Enum.map_reduce(envelopes, state.agent_state, fn envelope, agent_state ->
+        message = Message.user(envelope_content(envelope), id_generator: agent_state.id_generator)
+        {message, AgentState.add_message(agent_state, message)}
       end)
 
     {agent_state, envelopes, projected_messages}
@@ -902,6 +928,43 @@ defmodule Tackle.Session do
 
   defp clear_inbox(state),
     do: %{state | inbox: :queue.new(), inbox_count: 0}
+
+  defp queue_user_message(%{inbox_count: count} = state, _message)
+       when count >= @max_inbox_messages do
+    {:reply, {:error, :inbox_full}, state}
+  end
+
+  defp queue_user_message(state, message) do
+    state = enqueue(state, %{from: :user, message: message})
+    {:reply, {:ok, :queued}, state}
+  end
+
+  defp enqueue(state, envelope) do
+    %{state | inbox: :queue.in(envelope, state.inbox), inbox_count: state.inbox_count + 1}
+  end
+
+  defp deliverable_inbox(state) do
+    state.inbox
+    |> :queue.to_list()
+    |> Enum.filter(&deliverable_envelope?/1)
+  end
+
+  defp drop_deliverable_inbox(state) do
+    retained =
+      state.inbox
+      |> :queue.to_list()
+      |> Enum.reject(&deliverable_envelope?/1)
+
+    %{state | inbox: :queue.from_list(retained), inbox_count: length(retained)}
+  end
+
+  defp deliverable_envelope?(envelope), do: not Map.has_key?(envelope, :background_launch)
+
+  defp envelope_content(%{from: :user, message: content}), do: content
+
+  defp envelope_content(%{from: %AgentRef{} = from, message: content}) do
+    "Message from agent #{from.agent_id}:\n\n#{content}"
+  end
 
   defp discard_reported_background_launches(
          state,
@@ -937,14 +1000,18 @@ defmodule Tackle.Session do
   end
 
   defp broadcast_inbox_drained(state, messages) do
-    Enum.each(messages, fn %{from: from} ->
-      event =
-        Event.new(:subagent_message_received, %{
-          from_agent_ref: from,
-          agent_ref: state.agent_ref
-        })
+    Enum.each(messages, fn
+      %{from: %AgentRef{} = from} ->
+        event =
+          Event.new(:subagent_message_received, %{
+            from_agent_ref: from,
+            agent_ref: state.agent_ref
+          })
 
-      broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+        broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+
+      %{from: :user} ->
+        :ok
     end)
   end
 

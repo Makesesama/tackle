@@ -911,6 +911,107 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
+  test "appends incoming messages before the first provider call" do
+    Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+    Process.put(:test_pid, self())
+    Process.put(:incoming_polls, 0)
+
+    callback = fn ->
+      polls = Process.get(:incoming_polls, 0)
+      Process.put(:incoming_polls, polls + 1)
+      if polls == 0, do: {:ok, ["queued first"]}, else: {:ok, []}
+    end
+
+    assert {:ok, state} =
+             Loop.run(State.new(model: "test/model"), "hello", take_incoming_messages: callback)
+
+    assert_receive {:messages,
+                    [%{role: :user, content: "hello"}, %{role: :user, content: "queued first"}]}
+
+    assert Enum.map(state.messages, &{&1.role, &1.content}) == [
+             {:user, "hello"},
+             {:user, "queued first"},
+             {:assistant, "done"}
+           ]
+  end
+
+  test "appends incoming messages only after a complete tool batch" do
+    Application.put_env(:tackle_lib, :llm, StructuredMessagesCapturingAdapter)
+    Process.put(:test_pid, self())
+    Process.put(:call_count, 0)
+    Process.put(:incoming_polls, 0)
+
+    callback = fn ->
+      polls = Process.get(:incoming_polls, 0)
+      Process.put(:incoming_polls, polls + 1)
+      if polls == 1, do: {:ok, ["after tools"]}, else: {:ok, []}
+    end
+
+    state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+    assert {:ok, _state} = Loop.run(state, "hello", take_incoming_messages: callback)
+
+    assert_receive {:messages, [%{role: :user, content: "hello"}]}
+    assert_receive {:tool_execute, :first}
+    assert_receive {:messages, messages}
+    assert Enum.map(messages, & &1.role) == [:user, :assistant, :tool, :user]
+    assert List.last(messages).content == "after tools"
+  end
+
+  test "continues the same run when a message arrives at the final response boundary" do
+    Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+    Process.put(:test_pid, self())
+    Process.put(:incoming_polls, 0)
+
+    callback = fn ->
+      polls = Process.get(:incoming_polls, 0)
+      Process.put(:incoming_polls, polls + 1)
+      if polls == 1, do: {:ok, ["follow up"]}, else: {:ok, []}
+    end
+
+    assert {:ok, state} =
+             Loop.run(State.new(model: "test/model"), "hello", take_incoming_messages: callback)
+
+    assert_receive {:messages, [%{role: :user, content: "hello"}]}
+    assert_receive {:messages, messages}
+    assert Enum.map(messages, & &1.role) == [:user, :assistant, :user]
+    assert List.last(messages).content == "follow up"
+    assert state.current_iteration == 2
+  end
+
+  test "reports invalid incoming callback results" do
+    Application.put_env(:tackle_lib, :llm, NoCallAdapter)
+    Process.put(:test_pid, self())
+
+    assert {:error, state} =
+             Loop.run(State.new(model: "test/model"), "hello",
+               take_incoming_messages: fn -> {:ok, [""]} end
+             )
+
+    assert state.status == :error
+    assert state.error =~ "invalid_incoming_messages"
+    refute_receive :llm_called, 20
+  end
+
+  test "does not consume incoming messages after cancellation" do
+    Application.put_env(:tackle_lib, :llm, NoCallAdapter)
+    Process.put(:test_pid, self())
+    signal = Cancellation.new_signal()
+    Cancellation.cancel(signal, "stop")
+
+    assert {:cancelled, state} =
+             Loop.run(State.new(model: "test/model"), "hello",
+               cancellation_signal: signal,
+               take_incoming_messages: fn ->
+                 send(self(), :incoming_polled)
+                 {:ok, ["late"]}
+               end
+             )
+
+    assert Enum.map(state.messages, & &1.content) == []
+    refute_receive :incoming_polled, 20
+    refute_receive :llm_called, 20
+  end
+
   test "cancels before starting the LLM call" do
     Application.put_env(:tackle_lib, :llm, NoCallAdapter)
     Process.put(:test_pid, self())

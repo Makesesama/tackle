@@ -5,7 +5,7 @@ defmodule Tackle.Runtime.MessagingTest do
 
   alias Tackle.Runtime.Limits
 
-  test "in-scope messages queue while a child is busy and join its next turn" do
+  test "in-scope messages join a busy child's active turn at the next boundary" do
     scope =
       start_scope(
         root: [allow_delegation: true],
@@ -32,6 +32,14 @@ defmodule Tackle.Runtime.MessagingTest do
     assert from == scope.root_agent_ref
 
     send(child_task, {:respond, "first"})
+    assert_receive {:adapter_called, child_task, "echo", opts}, 2_000
+
+    assert Enum.any?(Keyword.fetch!(opts, :messages), fn
+             %{role: :user, content: content} -> content =~ "new facts"
+             _message -> false
+           end)
+
+    send(child_task, {:respond, "second"})
 
     assert_eventually(fn ->
       Tackle.Runtime.session_pid(child.agent_ref) == {:error, :not_found}
@@ -42,15 +50,40 @@ defmodule Tackle.Runtime.MessagingTest do
     first = start_scope()
     second = start_scope()
 
+    {:ok, _turn_id} = Tackle.submit(first.root_agent_ref, "keep inbox busy")
+    assert_receive {:adapter_called, task, "echo", _opts}
+    {:ok, session} = Tackle.Runtime.session_pid(first.root_agent_ref)
+
+    :sys.suspend(session)
+
+    callers =
+      Enum.map(1..33, fn i ->
+        Task.async(fn ->
+          Tackle.Runtime.tell(first.root_agent_ref, first.root_agent_ref, "message #{i}")
+        end)
+      end)
+
+    Process.sleep(20)
+    :sys.resume(session)
+    results = Task.await_many(callers)
+    assert Enum.count(results, &(&1 == :ok)) == 32
+    assert Enum.count(results, &(&1 == {:error, :inbox_full})) == 1
+
     assert {:error, :scope_mismatch} =
              Tackle.Runtime.tell(first.root_agent_ref, second.root_agent_ref, "nope")
 
-    for i <- 1..32 do
-      assert :ok = Tackle.Runtime.tell(first.root_agent_ref, first.root_agent_ref, "message #{i}")
-    end
+    send(task, {:respond, "done"})
+    assert_receive {:adapter_called, task, "echo", opts}
 
-    assert {:error, :inbox_full} =
-             Tackle.Runtime.tell(first.root_agent_ref, first.root_agent_ref, "overflow")
+    assert Enum.count(Keyword.fetch!(opts, :messages), fn
+             %{role: :user, content: content} ->
+               String.starts_with?(content, "Message from agent")
+
+             _message ->
+               false
+           end) == 32
+
+    send(task, {:respond, "done again"})
   end
 
   defp inbox(agent_ref) do

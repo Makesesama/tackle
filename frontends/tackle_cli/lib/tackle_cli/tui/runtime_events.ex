@@ -90,6 +90,18 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
             submit_failed(state, operation, {:unexpected_turn, active_turn_id, turn_id})
         end
 
+      {:ok, :queued} ->
+        state = %{
+          state
+          | pending_operation: nil,
+            deferred_events: [],
+            pending_prompt: nil,
+            activity: nil,
+            notice: "Message queued for the next safe boundary"
+        }
+
+        {:noreply, Viewport.refresh(state, [:pending, :turn, :error])}
+
       {:error, reason} ->
         submit_failed(state, operation, reason)
 

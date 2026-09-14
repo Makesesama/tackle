@@ -65,7 +65,8 @@ defmodule Tackle do
   def monitor_agent(%AgentRef{} = agent_ref), do: Runtime.monitor_agent(agent_ref)
 
   @doc "Starts a turn and appends one user message."
-  @spec submit(AgentRef.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  @spec submit(AgentRef.t(), String.t()) ::
+          {:ok, String.t() | :queued} | {:error, term()}
   def submit(%AgentRef{} = agent_ref, input), do: Runtime.submit(agent_ref, input)
 
   @doc "Continues the conversation without appending another user message."

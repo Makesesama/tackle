@@ -240,18 +240,22 @@ defmodule TackleTest do
     assert {:finished, {:ok, _state}, _events} = await_terminal(session_id, turn_id)
   end
 
-  test "rejects overlapping turns" do
+  test "queues overlapping turns at the next provider boundary" do
     scope = start_controlled_scope()
     agent_ref = scope.root_agent_ref
     {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
 
     assert {:ok, turn_id} = Tackle.submit(agent_ref, "first")
     assert_receive {:adapter_called, task_pid, "test", _signal}
-    assert {:error, :turn_in_progress} = Tackle.submit(agent_ref, "second")
+    assert {:ok, :queued} = Tackle.submit(agent_ref, "second")
     assert {:error, :turn_in_progress} = Tackle.subscribe(agent_ref)
 
     send(task_pid, {:respond, "done"})
-    assert {:finished, {:ok, _state}, _events} = await_terminal(session_id, turn_id)
+    assert_receive {:adapter_called, second_task, "test", _signal}
+    send(second_task, {:respond, "done again"})
+    assert {:finished, {:ok, state}, _events} = await_terminal(session_id, turn_id)
+
+    assert Enum.any?(state.messages, &(&1.role == :user and &1.content == "second"))
   end
 
   test "reconfigures model and thinking while preserving settled history" do
