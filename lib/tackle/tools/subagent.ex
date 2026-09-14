@@ -5,7 +5,8 @@ defmodule Tackle.Tools.Subagent do
   The subagent is an ordinary Tackle agent running the same `Tackle.Lib` loop in
   the same root scope. Foreground mode waits for its terminal outcome and
   returns the final answer. Background mode returns a stable run id immediately;
-  use `subagent_status` to inspect or collect it later. The child session remains
+  use `subagent_wait` to block for it or `subagent_status` to inspect or collect
+  it later. The child session remains
   one-shot and stops after its first terminal result.
 
   Delegation is opt-in and permissioned:
@@ -30,7 +31,8 @@ defmodule Tackle.Tools.Subagent do
   description(
     "Delegate a self-contained task to a fresh subagent. By default this waits and returns " <>
       "the final answer. Set background=true to continue immediately with a run id, then use " <>
-      "subagent_status to collect it. Choose one configured profile. The one-shot child cannot " <>
+      "subagent_wait to block or subagent_status to check and collect it. Choose one configured " <>
+      "profile. The one-shot child cannot " <>
       "receive more work after it finishes."
   )
 
@@ -121,8 +123,9 @@ defmodule Tackle.Tools.Subagent do
 
   defp finish(%{"background" => true}, run_ref, _profile, _context) do
     {:ok,
-     "Started background subagent #{run_ref.run_id}. Continue other work and use " <>
-       "subagent_status with this run_id to collect its result."}
+     "Started background subagent #{run_ref.run_id}. Continue other work, then use " <>
+       "subagent_wait with this run_id to wait for and collect its result, or subagent_status " <>
+       "to check without waiting."}
   end
 
   defp finish(_args, run_ref, profile, context) do

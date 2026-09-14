@@ -6,7 +6,7 @@ defmodule Tackle.CodingTest do
   alias Tackle.Coding
   alias Tackle.Runtime
   alias Tackle.Runtime.{Handle, Outcome, ScopeSpec}
-  alias Tackle.Tools.{Bash, Read, Subagent, SubagentStatus}
+  alias Tackle.Tools.{Bash, Read, Subagent, SubagentStatus, SubagentWait}
 
   setup do
     home = tmp_home()
@@ -29,7 +29,10 @@ defmodule Tackle.CodingTest do
     assert {:ok, spec} = Coding.scope_spec(opts)
     assert spec.root_spec.allow_delegation
     assert Subagent in spec.root_spec.config.tools
+    assert SubagentStatus in spec.root_spec.config.tools
+    assert SubagentWait in spec.root_spec.config.tools
     refute Subagent in Tackle.Tools.default()
+    refute SubagentWait in Tackle.Tools.default()
     assert Map.keys(spec.profiles) |> Enum.sort() == ["reviewer", "scout", "worker"]
     assert {:ok, scout} = ScopeSpec.resolve_profile(spec, "scout")
     assert scout.config.tools == [Read, Bash]
@@ -60,6 +63,7 @@ defmodule Tackle.CodingTest do
     refute scout.config.system_prompt =~ "- elixir_eval:"
     refute scout.config.system_prompt =~ "## Delegation"
     assert spec.root_spec.config.system_prompt =~ "- subagent:"
+    assert spec.root_spec.config.system_prompt =~ "- subagent_wait:"
     assert {:error, {:unknown_profile, "other"}} = ScopeSpec.resolve_profile(spec, "other")
   end
 
@@ -151,13 +155,14 @@ defmodule Tackle.CodingTest do
     lead = spec.profiles["lead"]
     assert lead.allow_delegation
     assert lead.config.tools == [Read, Subagent]
+    refute SubagentWait in lead.config.tools
     assert spec.limits.max_spawn_depth == 2
   end
 
   test "preserves explicit prompts and narrower tools/iteration limits", %{opts: opts} do
     opts = update_overrides(opts, tools: [Read], max_iterations: 3, system_prompt: "Custom base")
     assert {:ok, spec} = Coding.scope_spec(opts)
-    assert spec.root_spec.config.tools == [Read, Subagent, SubagentStatus]
+    assert spec.root_spec.config.tools == [Read, Subagent, SubagentStatus, SubagentWait]
     assert spec.profiles["scout"].config.tools == [Read, Bash]
     assert spec.profiles["scout"].config.max_iterations == 3
     assert spec.profiles["scout"].config.system_prompt =~ "Scout assignment"
