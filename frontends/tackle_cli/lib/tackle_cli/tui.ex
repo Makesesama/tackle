@@ -383,20 +383,23 @@ defmodule Tackle.CLI.TUI do
 
     result =
       case start_link(opts) do
-        {:ok, pid} -> await_exit(pid, caller, caller_monitor, nil)
+        {:ok, pid} -> await_exit(pid, caller, caller_monitor, nil, nil)
         {:error, reason} -> {:error, reason}
       end
 
     if result != :caller_down, do: send(caller, {result_ref, result})
   end
 
-  defp await_exit(pid, caller, caller_monitor, reported_session_id) do
+  defp await_exit(pid, caller, caller_monitor, reported_session_id, runtime_error) do
     receive do
       {:tui_exit, session_id} ->
-        await_exit(pid, caller, caller_monitor, session_id)
+        await_exit(pid, caller, caller_monitor, session_id, runtime_error)
+
+      {:tui_runtime_error, reason} ->
+        await_exit(pid, caller, caller_monitor, reported_session_id, reason)
 
       {:EXIT, ^pid, reason} when reason in [:normal, :shutdown] ->
-        {:ok, reported_session_id}
+        if runtime_error, do: {:error, runtime_error}, else: {:ok, reported_session_id}
 
       {:EXIT, ^pid, reason} ->
         {:error, reason}

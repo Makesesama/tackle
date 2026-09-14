@@ -568,11 +568,14 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:stop, state}
   end
 
+  # Stop the terminal App normally, then let its runner report the runtime
+  # failure. Raising here only adds a second GenServer crash to the agent loss.
   defp route(
          {:DOWN, monitor_ref, :process, _pid, reason},
-         %State{agent_monitor: monitor_ref}
+         %State{agent_monitor: monitor_ref, owner: owner} = state
        ) do
-    exit({:agent_down, reason})
+    if is_pid(owner), do: send(owner, {:tui_runtime_error, {:agent_down, reason}})
+    {:stop, state}
   end
 
   defp route(_message, state), do: {:noreply, state, render?: false}

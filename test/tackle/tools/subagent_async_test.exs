@@ -3,6 +3,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Lib.Event
   alias Tackle.Runtime.Outcome
   alias Tackle.Tools.{Subagent, SubagentStatus}
 
@@ -50,6 +51,71 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
     assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
     assert message =~ "already collected"
+  end
+
+  test "background launch survives parent turn cancellation and the next turn" do
+    subagent_call = %{
+      "id" => "background-child",
+      "name" => "subagent",
+      "arguments" => %{
+        "profile" => "worker",
+        "prompt" => "do work",
+        "background" => true
+      }
+    }
+
+    blocking_call = %{
+      "id" => "keep-parent-busy",
+      "name" => "blocking",
+      "arguments" => %{"name" => "parent"}
+    }
+
+    scope =
+      start_scope(
+        session: session_spec(tree: true),
+        root: [
+          allow_delegation: true,
+          mode: :tools_then_answer,
+          tools: [Subagent, Tackle.Test.BlockingTool],
+          context: %{test_pid: self()},
+          llm_opts: [tool_calls: [subagent_call, blocking_call]]
+        ],
+        profiles: %{"worker" => agent_spec("worker", model: "test/child", mode: :manual)}
+      )
+
+    {:ok, %{session_id: session_id}} = Tackle.Runtime.subscribe(scope.root_agent_ref)
+    {:ok, first_turn} = Tackle.Runtime.submit(scope.root_agent_ref, "delegate")
+
+    assert_receive {:tackle_event, ^session_id, ^first_turn,
+                    %Event{type: :subagent_started, data: %{run_id: run_id}}},
+                   2_000
+
+    assert_receive {:adapter_called, child_task, "child", _opts}, 2_000
+    assert_receive {:tool_entered, "parent", _blocking_task}, 2_000
+    child_monitor = Process.monitor(child_task)
+    {:ok, run_ref} = Tackle.Runtime.RunRef.new(scope.scope_ref.scope_id, run_id)
+    {:ok, request} = Tackle.Runtime.Registry.whereis(run_ref)
+    request_monitor = Process.monitor(request)
+
+    assert :ok = Tackle.Runtime.cancel_turn(scope.root_agent_ref)
+
+    assert_receive {:tackle_turn_finished, ^session_id, ^first_turn, {:cancelled, _state}},
+                   2_000
+
+    assert {:ok, :running} = run_status(scope, run_id)
+    refute_receive {:DOWN, ^request_monitor, :process, ^request, _reason}, 20
+    refute_receive {:DOWN, ^child_monitor, :process, ^child_task, _reason}, 20
+    assert Process.alive?(child_task)
+
+    assert {:ok, second_turn} = Tackle.Runtime.submit(scope.root_agent_ref, "continue")
+    assert_receive {:tackle_turn_finished, ^session_id, ^second_turn, {:ok, _state}}, 2_000
+    assert {:ok, _session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+
+    send(child_task, {:respond, "worker answer"})
+
+    assert_eventually(fn ->
+      match?({:ok, {:completed, %Outcome{status: :ok}}}, run_status(scope, run_id))
+    end)
   end
 
   test "completion is queued for the parent's next turn" do
