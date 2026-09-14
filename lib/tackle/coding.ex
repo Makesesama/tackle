@@ -21,15 +21,21 @@ defmodule Tackle.Coding do
   ## Delegation
 
   Use the subagent tool for bounded work that benefits from a fresh, focused
-  context. Set `background` when the parent should continue immediately, then
-  use `subagent_wait` to block until completion or `subagent_status` to check and
-  collect the result. Any terminal background outcome automatically queues a
+  context. Prefer foreground mode when the result is needed for the current
+  task; it waits for the child automatically. Set `background` only to
+  parallelize genuinely independent work. After delegating an assignment, do
+  not perform that same assignment yourself. Continue only with clearly
+  non-overlapping work, or call `subagent_wait` when there is nothing independent
+  to do or the result is needed. Use `subagent_status` only to check or collect a
+  run without waiting. Any terminal background outcome automatically queues a
   notice and continues the parent once its current turn is idle. Choose only
   from the configured profiles below and give the child a self-contained
-  assignment with the relevant context and expected deliverable. Child sessions are one-shot and
-  share this workspace; tool restrictions are capability limits, not an
-  operating-system sandbox. Evaluate returned work before relying on it. At most
-  two children can run at once; excess requests are rejected rather than queued.
+  assignment with the relevant context and expected deliverable. Child sessions
+  are one-shot and share this workspace; keep a single writer, so the parent
+  must not edit while a background child may be editing. Tool restrictions are
+  capability limits, not an operating-system sandbox. Evaluate returned work
+  before relying on it. At most two children can run at once; excess requests
+  are rejected rather than queued.
   """
 
   @doc """

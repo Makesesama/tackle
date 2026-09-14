@@ -551,6 +551,15 @@ defmodule Tackle.Session do
 
   @impl true
   def handle_info(
+        {:tackle_event, _turn_id,
+         %Event{type: :subagent_progress, data: %{background: true}} = event},
+        state
+      ) do
+    broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+    {:noreply, state}
+  end
+
+  def handle_info(
         {:tackle_event, turn_id, %Event{} = event},
         %{active_turn: %{id: turn_id}} = state
       ) do

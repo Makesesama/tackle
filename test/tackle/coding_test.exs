@@ -57,6 +57,10 @@ defmodule Tackle.CodingTest do
     assert spec.root_spec.config.system_prompt =~ "<name>scout</name>"
     assert spec.root_spec.config.system_prompt =~ "<name>reviewer</name>"
     assert spec.root_spec.config.system_prompt =~ "<name>worker</name>"
+    assert spec.root_spec.config.system_prompt =~ "Prefer foreground mode"
+    assert spec.root_spec.config.system_prompt =~ "same assignment yourself"
+    assert spec.root_spec.config.system_prompt =~ "call `subagent_wait`"
+    assert spec.root_spec.config.system_prompt =~ "keep a single writer"
     assert spec.profiles["reviewer"].config.tools == [Read, Bash]
     assert spec.profiles["worker"].config.tools == Tackle.Tools.default()
     assert scout.config.system_prompt =~ "Do not edit"

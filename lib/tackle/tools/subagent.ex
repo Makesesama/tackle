@@ -31,11 +31,11 @@ defmodule Tackle.Tools.Subagent do
 
   description(
     "Delegate a self-contained task to a fresh subagent. By default this waits and returns " <>
-      "the final answer. Set background=true to continue immediately with a run id; the parent " <>
-      "is automatically notified on any terminal outcome. Use subagent_wait to block sooner or " <>
-      "subagent_status to check and collect it. Choose one configured " <>
-      "profile. The one-shot child cannot " <>
-      "receive more work after it finishes."
+      "the final answer. Use background=true only for independent work. After a background " <>
+      "launch, do not repeat the delegated task: continue only non-overlapping work or use " <>
+      "subagent_wait to block. The parent is automatically notified on any terminal outcome; " <>
+      "subagent_status checks or collects without waiting. Choose one configured profile. " <>
+      "The one-shot child cannot receive more work after it finishes."
   )
 
   input do
@@ -99,9 +99,10 @@ defmodule Tackle.Tools.Subagent do
   end
 
   defp put_callbacks(opts, context, args) do
-    opts = put_event_callback(opts, context, Map.get(args, "profile"))
+    background? = Map.get(args, "background", false)
+    opts = put_event_callback(opts, context, Map.get(args, "profile"), background?)
 
-    if Map.get(args, "background", false) do
+    if background? do
       opts
       |> Keyword.put(:completion_message, &completion_message/2)
       |> Keyword.put(:launch_message, &launch_message/1)
@@ -110,7 +111,7 @@ defmodule Tackle.Tools.Subagent do
     end
   end
 
-  defp put_event_callback(opts, context, profile) do
+  defp put_event_callback(opts, context, profile, background?) do
     case Map.get(context, :event_callback) do
       callback when is_function(callback, 1) ->
         tool_call_id = Map.get(context, :tool_call_id)
@@ -123,6 +124,7 @@ defmodule Tackle.Tools.Subagent do
               tool_call_id: tool_call_id,
               profile: profile,
               model: run_ref.model_ref,
+              background: background?,
               event: child_event
             })
           )
@@ -161,9 +163,10 @@ defmodule Tackle.Tools.Subagent do
   end
 
   defp launch_message(run_ref) do
-    "Started background subagent #{run_ref.run_id}. Continue other work; you will be notified " <>
-      "when it finishes. Use subagent_wait with this run_id to block for and collect its result, " <>
-      "or subagent_status to check without waiting."
+    "Started background subagent #{run_ref.run_id}. Do not repeat its assignment. Continue only " <>
+      "with non-overlapping work; otherwise use subagent_wait with this run_id to block for and " <>
+      "collect its result. You will be notified when it finishes, or use subagent_status to " <>
+      "check without waiting."
   end
 
   defp completion_message(run_ref, %Outcome{status: :ok}) do
