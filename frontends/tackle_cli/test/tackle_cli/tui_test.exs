@@ -1827,8 +1827,9 @@ defmodule Tackle.CLI.TUITest do
     collapsed = conversation_text(state)
     assert collapsed =~ "thought"
     assert collapsed =~ "first line"
+    assert collapsed =~ "second line"
+    assert collapsed =~ "third line"
     assert collapsed =~ "Ctrl+T to reveal"
-    refute collapsed =~ "third line"
 
     inject_key(tui, "t", ["ctrl"])
     expanded = conversation_text(state(tui))

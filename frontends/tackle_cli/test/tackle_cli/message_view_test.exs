@@ -26,7 +26,7 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
     refute text(items) =~ "Tackle:"
   end
 
-  test "collapsed reasoning is one summary row that expands to every source line" do
+  test "collapsed reasoning shows every source line and expands previews" do
     state = %{
       agent_state: %State{
         messages: [Message.assistant(thinking: "first\nsecond\nthird", content: "x")]
@@ -41,7 +41,8 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
     assert collapsed =~ "3 lines"
     assert collapsed =~ "Ctrl+T to reveal"
     assert collapsed =~ "first"
-    refute collapsed =~ "third"
+    assert collapsed =~ "second"
+    assert collapsed =~ "third"
 
     [expanded_entry | _rest] =
       MessageView.section_entries(%{state | thinking_expanded?: true}, :settled)
