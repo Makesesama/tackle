@@ -548,8 +548,10 @@ cancel parent turn
 A background subagent is turn-independent rather than scope-independent. It may
 outlive the tool task and the root turn that launched it, allowing the same root
 session to accept new direction while the child continues. It retains its logical
-parent for authorization, result collection, and next-turn completion delivery.
-The request helper registers the launch with that parent before the child starts;
+parent for authorization, result collection, and terminal completion delivery.
+Every terminal outcome queues a bounded inbox notice and automatically continues
+an idle parent; a busy parent is continued after its current turn settles. The
+request helper registers the launch with that parent before the child starts;
 if cancellation prevents the launch tool result from being committed, the run ID
 remains queued for the parent's next turn. Stopping the root scope still
 terminates the child. Work detached from the parent session or root scope remains
@@ -812,11 +814,11 @@ receives `Tackle.Tools.SubagentWait` and `Tackle.Tools.SubagentStatus`: setting
 `background: true` on a subagent call returns a stable run ID immediately. The
 wait tool blocks until that run finishes and consumes its retained outcome; the
 status tool checks without blocking and consumes an already-complete outcome.
-Cancelling the wait leaves the background run available. Completion is queued in
-the parent's bounded next-turn inbox and published as a `:subagent_finished`
-event. Background requests are
-owned by the logical parent session rather than the short-lived tool task, but
-remain attached to structured parent and scope cancellation. A child profile
+Cancelling the wait leaves the background run available. Every terminal outcome
+is queued in the parent's bounded inbox, published as a `:subagent_finished`
+event, and automatically continues the parent once it is idle. Background
+requests are owned by the logical parent session rather than the short-lived
+tool task, but remain attached to structured parent and scope cancellation. A child profile
 does not receive delegation tools unless recursive delegation is explicitly
 granted.
 

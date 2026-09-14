@@ -23,10 +23,10 @@ defmodule Tackle.Coding do
   Use the subagent tool for bounded work that benefits from a fresh, focused
   context. Set `background` when the parent should continue immediately, then
   use `subagent_wait` to block until completion or `subagent_status` to check and
-  collect the result. Background completion notices are queued for the parent's
-  next turn. Choose only from the
-  configured profiles below and give the child a self-contained assignment with
-  the relevant context and expected deliverable. Child sessions are one-shot and
+  collect the result. Any terminal background outcome automatically queues a
+  notice and continues the parent once its current turn is idle. Choose only
+  from the configured profiles below and give the child a self-contained
+  assignment with the relevant context and expected deliverable. Child sessions are one-shot and
   share this workspace; tool restrictions are capability limits, not an
   operating-system sandbox. Evaluate returned work before relying on it. At most
   two children can run at once; excess requests are rejected rather than queued.
