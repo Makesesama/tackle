@@ -217,7 +217,7 @@ defmodule Tackle.Agents do
          {:ok, thinking} <- optional_string(frontmatter, "thinking"),
          :ok <- validate_thinking_model(thinking, model),
          {:ok, timeout} <- positive_integer(frontmatter, "timeoutMs", :timer.minutes(5)),
-         {:ok, max_iterations} <- positive_integer(frontmatter, "maxIterations", 20),
+         {:ok, max_iterations} <- positive_integer(frontmatter, "maxIterations", :infinity),
          {:ok, advertise} <- boolean(frontmatter, "advertise", false),
          {:ok, allow_delegation} <- boolean(frontmatter, "allowDelegation", false),
          :ok <- nonempty_prompt(body) do

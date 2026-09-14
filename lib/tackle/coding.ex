@@ -36,7 +36,8 @@ defmodule Tackle.Coding do
 
   Agent files are validated at startup. Invalid files, unknown tools, and model
   selections unavailable through the configured adapters are explicit errors.
-  Every child is capped at 20 loop iterations and five minutes. Scope limits
+  Children have unlimited loop iterations by default and a five-minute timeout.
+  Explicit root or profile iteration limits are still enforced. Scope limits
   allow the root plus two children.
   """
   @spec scope_spec(keyword(), SessionSpec.t() | nil) :: {:ok, ScopeSpec.t()} | {:error, term()}
@@ -158,8 +159,9 @@ defmodule Tackle.Coding do
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp min_iterations(:infinity, configured), do: min(20, configured)
-  defp min_iterations(value, configured), do: min(value, min(20, configured))
+  defp min_iterations(:infinity, configured), do: configured
+  defp min_iterations(value, :infinity), do: value
+  defp min_iterations(value, configured), do: min(value, configured)
 
   defp limits(definitions) do
     max_spawn_depth = if Enum.any?(definitions, & &1.allow_delegation), do: 2, else: 1
