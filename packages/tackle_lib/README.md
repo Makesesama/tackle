@@ -655,7 +655,8 @@ events. Event types include:
 - `:turn_start`, `:turn_end`, `:turn_cancelled`
 - `:step_start`, `:step_end`
 - `:message_start`, `:message_delta`, `:message_end`
-- `:tool_start`, `:tool_execution_end`, `:tool_end`, `:tool_error`
+- `:tool_start`, `:tool_progress`, `:tool_execution_end`, `:tool_end`, `:tool_error`
+- host-defined lifecycle events such as `:subagent_started`, `:subagent_progress`, and `:subagent_finished`
 - `:usage`, `:status_change`, `:error`
 - `:retry_scheduled`, `:retry_start`, `:retry_end`
 - `:provider_event` for unrecognized provider data
@@ -669,6 +670,11 @@ in-flight display state safely.
 Reasoning and tool-input deltas are tagged in event data. A user-facing UI
 should not append them to the visible answer bubble by default. The
 `tackle_phoenix` event reducer follows this rule.
+
+Host tools may emit transient `:tool_progress` events through the callback in
+their execution context. Progress should carry `tool_call_id`, `name`, and a
+bounded `delta`; it is presentation data and is replaced by the canonical
+`:tool_end` or `:tool_error` settlement.
 
 `:tool_execution_end` reports each completed execution as the loop collects its
 worker result, without waiting for the rest of a concurrent batch. It carries

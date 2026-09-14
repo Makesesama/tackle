@@ -90,6 +90,8 @@ defmodule Tackle.CLI.TUI.Subagents do
       status: :running,
       arguments: Map.get(tracked, :arguments),
       model: Map.get(tracked, :model),
+      subagent_work: Map.get(tracked, :work),
+      subagent_output: Map.get(tracked, :work_output),
       run_id: Map.get(tracked, :run_id),
       agent_ref: Map.get(tracked, :agent_ref),
       started_at_ms: Map.get(tracked, :started_at_ms),

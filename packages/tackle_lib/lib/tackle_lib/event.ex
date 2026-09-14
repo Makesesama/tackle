@@ -24,10 +24,12 @@ defmodule Tackle.Lib.Event do
           | :message_delta
           | :message_end
           | :tool_start
+          | :tool_progress
           | :tool_execution_end
           | :tool_end
           | :tool_error
           | :subagent_started
+          | :subagent_progress
           | :subagent_finished
           | :usage
           | :status_change
@@ -227,12 +229,17 @@ defmodule Tackle.Lib.Event do
   defp normalize_type(type) when type in [:step_start, "step_start"], do: :step_start
   defp normalize_type(type) when type in [:step_end, "step_end"], do: :step_end
   defp normalize_type(type) when type in [:tool_start, "tool_start"], do: :tool_start
+  defp normalize_type(type) when type in [:tool_progress, "tool_progress"], do: :tool_progress
 
   defp normalize_type(type) when type in [:tool_execution_end, "tool_execution_end"],
     do: :tool_execution_end
 
   defp normalize_type(type) when type in [:tool_end, "tool_end"], do: :tool_end
   defp normalize_type(type) when type in [:tool_error, "tool_error"], do: :tool_error
+
+  defp normalize_type(type) when type in [:subagent_progress, "subagent_progress"],
+    do: :subagent_progress
+
   defp normalize_type(type) when is_atom(type), do: type
   defp normalize_type(_type), do: :provider_event
 

@@ -60,6 +60,8 @@ defmodule Tackle.CLI.TUI.MessageView do
           model: String.t() | nil,
           tool_status: atom() | nil,
           tool_elapsed_ms: non_neg_integer() | nil,
+          subagent_work: String.t() | nil,
+          subagent_output: String.t() | nil,
           collapsed?: boolean()
         }
 
@@ -76,6 +78,8 @@ defmodule Tackle.CLI.TUI.MessageView do
     :model,
     :tool_status,
     :tool_elapsed_ms,
+    :subagent_work,
+    :subagent_output,
     style: %Style{},
     collapsed?: false
   ]
@@ -309,7 +313,12 @@ defmodule Tackle.CLI.TUI.MessageView do
   expose their labeled message source.
   """
   @spec full_text(t()) :: String.t()
-  def full_text(%__MODULE__{kind: :tool} = entry), do: tool_output(entry) || source_text(entry)
+  def full_text(%__MODULE__{kind: :tool, tool_output: output}) when is_binary(output), do: output
+
+  def full_text(%__MODULE__{kind: :tool, subagent_output: output}) when is_binary(output),
+    do: output
+
+  def full_text(%__MODULE__{kind: :tool} = entry), do: source_text(entry)
   def full_text(%__MODULE__{} = entry), do: source_text(entry)
 
   @doc "Returns source text used by transcript search, excluding paint-only chrome."
@@ -318,7 +327,7 @@ defmodule Tackle.CLI.TUI.MessageView do
     entry.content <>
       "\n" <>
       format_value(entry.tool_arguments || %{}) <>
-      "\n" <> (tool_output(entry) || "")
+      "\n" <> (tool_output(entry) || entry.subagent_output || "")
   end
 
   def search_text(%__MODULE__{} = entry), do: source(entry)
@@ -666,6 +675,8 @@ defmodule Tackle.CLI.TUI.MessageView do
       model: value(tool, :model),
       tool_status: status,
       tool_elapsed_ms: value(tool, :elapsed_ms),
+      subagent_work: value(tool, :subagent_work),
+      subagent_output: value(tool, :subagent_output),
       style: style(:tool)
     )
   end
@@ -684,6 +695,8 @@ defmodule Tackle.CLI.TUI.MessageView do
       model: Keyword.get(opts, :model),
       tool_status: Keyword.get(opts, :tool_status),
       tool_elapsed_ms: Keyword.get(opts, :tool_elapsed_ms),
+      subagent_work: Keyword.get(opts, :subagent_work),
+      subagent_output: Keyword.get(opts, :subagent_output),
       collapsed?: Keyword.get(opts, :collapsed?, false)
     }
   end

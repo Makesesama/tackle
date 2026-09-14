@@ -31,6 +31,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   alias Tackle.Session.Snapshot
 
   @stream_frame_ms 32
+  @max_live_tool_input_bytes 50 * 1_024
+  @max_live_tool_output_bytes 50 * 1_024
+  @max_subagent_work_bytes 16 * 1_024
 
   @doc "Handles one harness or shell-operation message."
   @spec handle(term(), State.t()) ::
@@ -262,6 +265,11 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     message_id = event_id || state.stream.active_message_id
     timeline = Enum.reject(state.stream.timeline, &(&1[:message_id] == message_id))
 
+    tool_activity =
+      Enum.reject(state.tool_activity, fn tool ->
+        tool[:status] == :preparing and tool[:message_id] == message_id
+      end)
+
     stream = %{
       state.stream
       | thinking: timeline_text(timeline, :thinking),
@@ -270,7 +278,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         flush_ref: nil
     }
 
-    {:noreply, Viewport.refresh(%{state | stream: stream}, [:turn])}
+    {:noreply, Viewport.refresh(%{state | stream: stream, tool_activity: tool_activity}, [:turn])}
   end
 
   # Message identity is part of the live projection. Keeping it here prevents
@@ -314,6 +322,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
         state = %{state | stream: stream, activity: "responding"}
 
+        stream_reply(state)
+
+      :tool_input ->
+        state = put_streaming_tool_input(state, data, delta, message_id)
         stream_reply(state)
 
       _field ->
@@ -394,6 +406,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     tool_call_id = value(data, :tool_call_id)
     model = value(data, :model)
 
+    tracked = Map.get(state.subagents, value(data, :run_id), %{})
+
     tools =
       Enum.map(state.tool_activity, fn
         %{id: ^tool_call_id, name: "subagent"} = tool when is_binary(tool_call_id) ->
@@ -401,6 +415,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           |> maybe_put_value(:model, model)
           |> maybe_put_value(:run_id, value(data, :run_id))
           |> maybe_put_value(:agent_ref, value(data, :agent_ref))
+          |> maybe_put_value(:subagent_work, Map.get(tracked, :work))
+          |> maybe_put_value(:subagent_output, Map.get(tracked, :work_output))
 
         tool ->
           tool
@@ -430,6 +446,14 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp route(
+         {:tackle_event, session_id, _turn_id, %Event{type: :subagent_progress, data: data}},
+         %State{session_id: session_id} = state
+       ) do
+    state = state |> put_subagent_progress(data) |> Subagents.reconcile()
+    stream_reply(state)
+  end
+
+  defp route(
          {:tackle_event, session_id, turn_id, %Event{type: :tool_start, data: data}},
          %State{session_id: session_id, active_turn: %{id: turn_id}} = state
        ) do
@@ -447,6 +471,14 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     }
 
     {:noreply, state |> Subagents.reconcile() |> Viewport.refresh([:turn])}
+  end
+
+  defp route(
+         {:tackle_event, session_id, turn_id, %Event{type: :tool_progress, data: data}},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
+    state = put_tool_progress(state, data)
+    stream_reply(state)
   end
 
   defp route(
@@ -720,6 +752,90 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp append_message_id(ids, id), do: if(id in ids, do: ids, else: append(ids, id))
 
+  defp put_streaming_tool_input(state, data, delta, message_id) do
+    id = value(data, :tool_call_id)
+    name = value(data, :tool_name) || value(data, :name) || "tool"
+    current = find_tool(state.tool_activity, %{tool_call_id: id, name: name})
+
+    arguments =
+      case value(data, :arguments) do
+        arguments when is_binary(arguments) ->
+          arguments
+
+        arguments when is_map(arguments) ->
+          arguments
+
+        _other ->
+          append_bounded_prefix(value(current, :arguments), delta, @max_live_tool_input_bytes)
+      end
+
+    state =
+      put_tool_activity(
+        state,
+        %{tool_call_id: id, name: name, arguments: arguments, message_id: message_id},
+        :preparing
+      )
+
+    tool = find_tool(state.tool_activity, %{tool_call_id: id, name: name})
+
+    %{
+      state
+      | stream: %{
+          state.stream
+          | timeline: put_timeline_tool(state.stream.timeline, tool),
+            flush_ref: state.stream.flush_ref
+        },
+        activity: tool_activity_label(tool, "receiving")
+    }
+  end
+
+  defp append_bounded_prefix(current, delta, max_bytes) when is_binary(delta) do
+    current = if is_binary(current), do: current, else: ""
+
+    if byte_size(current) >= max_bytes do
+      current
+    else
+      content = current <> delta
+
+      if byte_size(content) <= max_bytes,
+        do: content,
+        else: take_valid_prefix(content, max_bytes)
+    end
+  end
+
+  defp append_bounded_prefix(current, _delta, _max_bytes), do: current
+
+  defp take_valid_prefix(content, bytes) do
+    prefix = binary_part(content, 0, bytes)
+
+    cond do
+      String.valid?(prefix) -> prefix
+      bytes > 0 -> take_valid_prefix(content, bytes - 1)
+      true -> ""
+    end
+  end
+
+  defp put_tool_progress(state, data) do
+    id = value(data, :tool_call_id)
+    name = value(data, :name) || value(data, :tool_name) || "unknown"
+    delta = value(data, :delta) || value(data, :output) || ""
+    current = find_tool(state.tool_activity, data)
+    output = append_bounded(value(current, :result), delta, @max_live_tool_output_bytes)
+
+    state = put_tool_activity(state, %{tool_call_id: id, name: name, result: output}, :running)
+    tool = find_tool(state.tool_activity, data)
+
+    %{
+      state
+      | stream: %{
+          state.stream
+          | timeline: put_timeline_tool(state.stream.timeline, tool),
+            flush_ref: state.stream.flush_ref
+        },
+        activity: tool_activity_label(tool, "running")
+    }
+  end
+
   defp settle_tool(state, data, status, label) do
     state = put_tool_activity(state, data, status)
     tool = find_tool(state.tool_activity, data)
@@ -769,7 +885,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       status: status,
       arguments: value(data, :arguments),
       result: value(data, :result),
-      error: value(data, :error) || value(data, :reason)
+      error: value(data, :error) || value(data, :reason),
+      message_id: value(data, :message_id)
     }
 
     case Enum.find_index(state.tool_activity, &same_tool?(&1, id, name)) do
@@ -850,6 +967,185 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       {_key, nil}, activity -> activity
       {key, value}, activity -> Map.put(activity, key, value)
     end)
+  end
+
+  defp put_subagent_progress(state, data) do
+    run_id = value(data, :run_id)
+    child_event = value(data, :event) || value(data, :child_event)
+    existing = Map.get(state.subagents, run_id, %{run_id: run_id})
+    updated = project_subagent_work(existing, child_event, data)
+
+    subagents =
+      if is_binary(run_id), do: Map.put(state.subagents, run_id, updated), else: state.subagents
+
+    tools =
+      Enum.map(state.tool_activity, fn tool ->
+        if same_subagent_progress?(tool, data) do
+          tool
+          |> maybe_put_value(:subagent_work, Map.get(updated, :work))
+          |> maybe_put_value(:subagent_output, Map.get(updated, :work_output))
+        else
+          tool
+        end
+      end)
+
+    timeline = Enum.reduce(tools, state.stream.timeline, &put_timeline_tool(&2, &1))
+
+    %{
+      state
+      | subagents: subagents,
+        tool_activity: tools,
+        stream: %{state.stream | timeline: timeline}
+    }
+  end
+
+  defp project_subagent_work(existing, %Event{type: type, data: event_data}, _data),
+    do: project_subagent_event(existing, type, event_data)
+
+  defp project_subagent_work(existing, %{type: type, data: event_data}, _data)
+       when is_map(event_data),
+       do: project_subagent_event(existing, type, event_data)
+
+  defp project_subagent_work(existing, _child_event, data) do
+    case value(data, :delta) || value(data, :activity) do
+      text when is_binary(text) -> put_subagent_text(existing, text, value(data, :field))
+      _other -> existing
+    end
+  end
+
+  defp project_subagent_event(existing, :message_delta, data) do
+    put_subagent_text(existing, value(data, :delta) || "", value(data, :field))
+  end
+
+  defp project_subagent_event(existing, :tool_start, data) do
+    name = value(data, :name) || value(data, :tool_name) || "tool"
+
+    existing
+    |> Map.put(:work_phase, {:tool, value(data, :tool_call_id) || name})
+    |> Map.put(:work_buffer, "")
+    |> Map.put(:work_boundary?, true)
+    |> Map.put(:work, "Running #{name}#{subagent_target(name, value(data, :arguments))}")
+  end
+
+  defp project_subagent_event(existing, :tool_progress, data) do
+    delta = value(data, :delta) || value(data, :output) || ""
+    delta = if is_binary(delta), do: delta, else: ""
+    phase = {:tool, value(data, :tool_call_id) || value(data, :name) || "tool"}
+    put_subagent_activity(existing, delta, phase, nil)
+  end
+
+  defp project_subagent_event(existing, type, data)
+       when type in [:tool_end, :tool_execution_end] do
+    name = value(data, :name) || value(data, :tool_name) || "tool"
+
+    existing
+    |> Map.put(:work_phase, nil)
+    |> Map.put(:work_buffer, "")
+    |> Map.put(:work, "Completed #{name}")
+  end
+
+  defp project_subagent_event(existing, :tool_error, data) do
+    name = value(data, :name) || value(data, :tool_name) || "tool"
+
+    existing
+    |> Map.put(:work_phase, nil)
+    |> Map.put(:work_buffer, "")
+    |> Map.put(:work, "Failed #{name}")
+  end
+
+  defp project_subagent_event(existing, :status_change, data) do
+    Map.put(existing, :work, value(data, :status) |> format_activity())
+  end
+
+  defp project_subagent_event(existing, _type, _data), do: existing
+
+  defp put_subagent_text(existing, "", _field), do: existing
+
+  defp put_subagent_text(existing, delta, field) do
+    prefix = if field == :reasoning, do: "Thinking: ", else: "Writing: "
+    put_subagent_activity(existing, delta, {:message, field || :content}, prefix)
+  end
+
+  defp put_subagent_activity(existing, delta, phase, prefix) do
+    phase_changed? = Map.get(existing, :work_phase) != phase
+    boundary? = Map.get(existing, :work_boundary?, false)
+    current_buffer = if phase_changed? or boundary?, do: "", else: Map.get(existing, :work_buffer)
+    buffer = append_bounded(current_buffer, delta, @max_subagent_work_bytes)
+
+    separator =
+      if (phase_changed? or boundary?) and nonempty?(Map.get(existing, :work_output)) and
+           delta != "",
+         do: "\n",
+         else: ""
+
+    output =
+      append_bounded(
+        Map.get(existing, :work_output),
+        separator <> delta,
+        @max_subagent_work_bytes
+      )
+
+    work = (prefix || "") <> latest_work_line(buffer)
+
+    existing
+    |> Map.put(:work_phase, phase)
+    |> Map.put(:work_buffer, buffer)
+    |> Map.put(:work_boundary?, false)
+    |> Map.put(:work_output, output)
+    |> Map.put(:work, work)
+  end
+
+  defp nonempty?(value), do: is_binary(value) and value != ""
+
+  defp latest_work_line(output) do
+    output
+    |> to_string()
+    |> String.split("\n")
+    |> Enum.reject(&(String.trim(&1) == ""))
+    |> List.last()
+    |> case do
+      nil -> "Working"
+      line -> if String.length(line) > 240, do: "…" <> String.slice(line, -239, 239), else: line
+    end
+  end
+
+  defp subagent_target(name, arguments) do
+    target = Tackle.CLI.TUI.ToolView.title(name, arguments, :running)
+    target = String.replace_prefix(target, "● #{name}", "") |> String.trim()
+    if target == "", do: "", else: " · " <> target
+  end
+
+  defp same_subagent_progress?(tool, data) do
+    run_id = value(data, :run_id)
+    tool_call_id = value(data, :tool_call_id)
+    agent_ref = value(data, :agent_ref)
+
+    tool.name == "subagent" and
+      ((is_binary(run_id) and value(tool, :run_id) == run_id) or
+         (is_binary(tool_call_id) and tool.id == tool_call_id) or
+         (not is_nil(agent_ref) and value(tool, :agent_ref) == agent_ref))
+  end
+
+  defp append_bounded(current, delta, max_bytes) when is_binary(delta) do
+    content = if(is_binary(current), do: current, else: "") <> delta
+
+    if byte_size(content) <= max_bytes do
+      content
+    else
+      take_valid_tail(content, byte_size(content) - max_bytes)
+    end
+  end
+
+  defp append_bounded(current, _delta, _max_bytes), do: current
+
+  defp take_valid_tail(content, start) do
+    tail = binary_part(content, start, byte_size(content) - start)
+
+    cond do
+      String.valid?(tail) -> tail
+      start < byte_size(content) -> take_valid_tail(content, start + 1)
+      true -> ""
+    end
   end
 
   defp put_subagent(subagents, data, tool \\ nil) do

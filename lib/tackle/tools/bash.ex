@@ -3,7 +3,7 @@ defmodule Tackle.Tools.Bash do
 
   use Tackle.Lib.Tool
 
-  alias Tackle.Lib.Cancellation
+  alias Tackle.Lib.{Cancellation, Event}
   alias Tackle.Tools.{FileSystem, Output}
 
   @poll_interval 50
@@ -30,7 +30,7 @@ defmodule Tackle.Tools.Bash do
          :ok <- validate_timeout(timeout),
          {:ok, cwd} <- FileSystem.resolve_path(".", context),
          {:ok, executable} <- find_bash() do
-      execute(executable, command, cwd, timeout, Map.get(context, :cancellation_signal))
+      execute(executable, command, cwd, timeout, context)
     end
   end
 
@@ -48,7 +48,7 @@ defmodule Tackle.Tools.Bash do
     end
   end
 
-  defp execute(executable, command, cwd, timeout, signal) do
+  defp execute(executable, command, cwd, timeout, context) do
     port =
       Port.open(
         {:spawn_executable, String.to_charlist(executable)},
@@ -64,8 +64,9 @@ defmodule Tackle.Tools.Bash do
       )
 
     deadline = deadline(timeout)
+    signal = Map.get(context, :cancellation_signal)
 
-    case collect(port, deadline, signal, []) do
+    case collect(port, deadline, signal, context, [], "") do
       {:ok, status, output} -> settle(status, output)
       {:error, reason, output} -> {:error, append_output(reason, format_output(output))}
     end
@@ -74,33 +75,69 @@ defmodule Tackle.Tools.Bash do
       {:error, "Could not execute command: #{Exception.message(error)}"}
   end
 
-  defp collect(port, deadline, signal, output) do
+  defp collect(port, deadline, signal, context, output, pending_utf8) do
     receive do
       {^port, {:data, data}} ->
-        collect(port, deadline, signal, [data | output])
+        {progress, pending_utf8} = split_live_utf8(pending_utf8 <> data)
+        emit_progress(context, progress)
+        collect(port, deadline, signal, context, [data | output], pending_utf8)
 
       {^port, {:exit_status, status}} ->
+        emit_progress(context, sanitize(pending_utf8))
         {:ok, status, output |> Enum.reverse() |> IO.iodata_to_binary() |> sanitize()}
     after
       wait_time(deadline) ->
         cond do
           cancelled?(signal) ->
+            emit_progress(context, sanitize(pending_utf8))
             close(port)
 
             {:error, "Command aborted",
              output |> Enum.reverse() |> IO.iodata_to_binary() |> sanitize()}
 
           timed_out?(deadline) ->
+            emit_progress(context, sanitize(pending_utf8))
             close(port)
 
             {:error, "Command timed out",
              output |> Enum.reverse() |> IO.iodata_to_binary() |> sanitize()}
 
           true ->
-            collect(port, deadline, signal, output)
+            collect(port, deadline, signal, context, output, pending_utf8)
         end
     end
   end
+
+  defp split_live_utf8(data) do
+    case :unicode.characters_to_binary(data, :utf8, :utf8) do
+      valid when is_binary(valid) ->
+        {valid, ""}
+
+      {:incomplete, valid, rest} ->
+        {valid, IO.iodata_to_binary(rest)}
+
+      {:error, _valid, _rest} ->
+        {sanitize(data), ""}
+    end
+  end
+
+  defp emit_progress(context, data) when is_binary(data) and data != "" do
+    case Map.get(context, :event_callback) do
+      callback when is_function(callback, 1) ->
+        callback.(
+          Event.new(:tool_progress, %{
+            tool_call_id: Map.get(context, :tool_call_id),
+            name: "bash",
+            delta: sanitize(data)
+          })
+        )
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp emit_progress(_context, _data), do: :ok
 
   defp deadline(nil), do: :infinity
 

@@ -78,6 +78,15 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}, 2_000
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
 
+    assert_receive {:event, %Event{type: :subagent_started, data: %{run_id: ^run_id}}}, 2_000
+
+    assert_receive {:event,
+                    %Event{
+                      type: :subagent_progress,
+                      data: %{run_id: ^run_id, event: %Event{type: :turn_start}}
+                    }},
+                   2_000
+
     assert {:ok, "Subagent " <> status} =
              SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
 

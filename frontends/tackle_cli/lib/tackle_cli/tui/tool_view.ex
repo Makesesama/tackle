@@ -165,14 +165,20 @@ defmodule Tackle.CLI.TUI.ToolView do
           [body_row(Theme.style(:subtle), "Task unavailable · F4 details")]
       end
 
-    assignment ++ output_rows(entry, :preview)
+    assignment ++ subagent_work_rows(entry) ++ output_rows(entry, :preview)
+  end
+
+  defp body_rows(%{tool_name: "subagent"} = entry, args, :details, _width) do
+    output = entry.tool_output || entry.subagent_output
+    generic_rows(%{entry | tool_output: output}, args, :details)
   end
 
   defp body_rows(%{tool_name: "read", tool_status: :completed}, _args, :preview, _width),
     do: []
 
-  defp body_rows(%{tool_name: "bash", tool_status: :completed} = entry, _args, :preview, width),
-    do: bash_preview(entry.tool_output, width)
+  defp body_rows(%{tool_name: "bash", tool_status: status} = entry, _args, :preview, width)
+       when status in [:running, :completed],
+       do: bash_preview(entry.tool_output, width)
 
   defp body_rows(%{tool_name: "edit", tool_status: :failed} = entry, _args, :preview, _width),
     do: output_rows(entry, :preview)
@@ -187,6 +193,12 @@ defmodule Tackle.CLI.TUI.ToolView do
       _ -> generic_rows(entry, args, mode)
     end
   end
+
+  defp subagent_work_rows(%{subagent_work: work}) when is_binary(work) and work != "" do
+    [body_row(Theme.style(:accent_soft), "Now: " <> MessageView.sanitize(work))]
+  end
+
+  defp subagent_work_rows(_entry), do: []
 
   defp generic_rows(entry, args, mode) do
     muted = Theme.style(:muted)
@@ -466,12 +478,14 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp clip_line(line, :details), do: line
 
+  defp marker(:preparing), do: "◐"
   defp marker(:running), do: "●"
   defp marker(:failed), do: "✗"
   defp marker(:completed), do: "✓"
   defp marker(_), do: "›"
 
   defp marker_style(:failed), do: Theme.style(:error)
+  defp marker_style(:preparing), do: Theme.style(:accent_soft)
   defp marker_style(:running), do: Theme.style(:accent_soft)
   defp marker_style(:completed), do: Theme.style(:success)
   defp marker_style(_), do: Theme.style(:muted)
@@ -481,11 +495,13 @@ defmodule Tackle.CLI.TUI.ToolView do
     if seconds < 60, do: "#{seconds}s", else: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
   end
 
+  defp status_text(:preparing), do: "preparing"
   defp status_text(:completed), do: "completed"
   defp status_text(:running), do: "running"
   defp status_text(:failed), do: "failed"
   defp status_text(_), do: "requested"
 
+  defp status_style(:preparing), do: Theme.style(:accent_soft)
   defp status_style(:failed), do: Theme.style(:error)
   defp status_style(:running), do: Theme.style(:accent_soft)
   defp status_style(_), do: Theme.style(:subtle)

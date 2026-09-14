@@ -88,6 +88,164 @@ defmodule Tackle.CLI.SubagentProgressTest do
     assert rendered =~ "openai-codex/gpt-5.5"
   end
 
+  test "streamed tool input previews a write before execution starts" do
+    state = shell()
+
+    state =
+      event(state, :message_delta, %{
+        field: :tool_input,
+        tool_call_id: "write-one",
+        tool_name: "write",
+        delta: ~s({"path":"lib/demo.ex","content":"hel)
+      })
+
+    [partial] = cards(state)
+    assert partial.tool_status == :preparing
+    assert partial.tool_arguments =~ ~s("path":"lib/demo.ex")
+
+    state =
+      event(state, :message_delta, %{
+        field: :tool_input,
+        tool_call_id: "write-one",
+        tool_name: "write",
+        delta: ~s(lo"})
+      })
+
+    [complete] = cards(state)
+    rendered = render_text(complete)
+    assert rendered =~ "lib/demo.ex"
+    assert rendered =~ "preparing"
+    assert rendered =~ "hello"
+  end
+
+  test "streamed tool input keeps a bounded valid UTF-8 presentation buffer" do
+    state =
+      event(shell(), :message_delta, %{
+        field: :tool_input,
+        tool_call_id: "write-large",
+        tool_name: "write",
+        delta: ~s({"path":"large.ex","content":") <> String.duplicate("界", 30_000)
+      })
+
+    [entry] = cards(state)
+    assert byte_size(entry.tool_arguments) <= 50 * 1_024
+    assert String.valid?(entry.tool_arguments)
+    assert String.starts_with?(entry.tool_arguments, ~s({"path":"large.ex"))
+    assert render_text(entry) =~ "large.ex"
+  end
+
+  test "a provider retry discards its provisional tool input card" do
+    state = event(shell(), :message_start, %{role: :assistant}, id: "assistant-one")
+
+    state =
+      event(
+        state,
+        :message_delta,
+        %{
+          field: :tool_input,
+          tool_call_id: "write-one",
+          tool_name: "write",
+          delta: ~s({"path":"retry.ex","content":"partial)
+        },
+        id: "assistant-one"
+      )
+
+    assert [%{tool_status: :preparing}] = cards(state)
+
+    retried = event(state, :retry_scheduled, %{attempt: 1}, id: "assistant-one")
+    assert retried.tool_activity == []
+    assert cards(retried) == []
+  end
+
+  test "bash progress replaces the live tail with the canonical settlement" do
+    state =
+      event(shell(), :tool_start, %{
+        tool_call_id: "bash-one",
+        name: "bash",
+        arguments: %{"command" => "mix test"}
+      })
+
+    state =
+      state
+      |> event(:tool_progress, %{tool_call_id: "bash-one", name: "bash", delta: "first\n"})
+      |> event(:tool_progress, %{tool_call_id: "bash-one", name: "bash", delta: "second\n"})
+
+    [running] = cards(state)
+    assert running.tool_status == :running
+    assert running.tool_output == "first\nsecond\n"
+    assert render_text(running) =~ "second"
+
+    settled =
+      event(state, :tool_execution_end, %{
+        tool_call_id: "bash-one",
+        name: "bash",
+        status: :completed,
+        result: "canonical output"
+      })
+
+    [completed] = cards(settled)
+    assert completed.tool_status == :completed
+    assert completed.tool_output == "canonical output"
+    refute completed.tool_output =~ "first"
+  end
+
+  test "child events update the matching subagent card and sidebar task" do
+    state =
+      shell()
+      |> start("one", "Inspect")
+      |> event(:subagent_started, %{
+        tool_call_id: "one",
+        run_id: "run-one",
+        profile: "scout",
+        model: "test/scout",
+        status: :running
+      })
+
+    state =
+      event(state, :subagent_progress, %{
+        run_id: "run-one",
+        tool_call_id: "one",
+        event: Event.new(:message_delta, %{field: :content, delta: "Inspecting"})
+      })
+
+    state =
+      event(state, :subagent_progress, %{
+        run_id: "run-one",
+        tool_call_id: "one",
+        event:
+          Event.new(:tool_start, %{
+            tool_call_id: "child-bash",
+            name: "bash",
+            arguments: %{"command" => "mix compile"}
+          })
+      })
+
+    assert [%{subagent_work: work}] = Tackle.CLI.TUI.Subagents.tasks(state)
+    assert work =~ "Running bash"
+    assert work =~ "mix compile"
+    assert render_text(hd(cards(state))) =~ "Now: Running bash"
+
+    state =
+      event(state, :subagent_progress, %{
+        run_id: "run-one",
+        event:
+          Event.new(:tool_progress, %{
+            tool_call_id: "child-bash",
+            name: "bash",
+            delta: "compiled 42 files\n"
+          })
+      })
+
+    assert [
+             %{
+               subagent_work: "compiled 42 files",
+               subagent_output: "Inspecting\ncompiled 42 files\n"
+             }
+           ] = Tackle.CLI.TUI.Subagents.tasks(state)
+
+    assert render_text(hd(cards(state))) =~ "compiled 42 files"
+  end
+
   test "clock refresh preserves the reading anchor and only changes live entries" do
     state = shell()
     messages = Enum.map(1..30, &Message.user("message #{&1}"))
@@ -134,6 +292,14 @@ defmodule Tackle.CLI.SubagentProgressTest do
   defp cards(state),
     do: state.conversation |> Conversation.entries() |> Enum.filter(&(&1.kind == :tool))
 
+  defp render_text(entry) do
+    entry
+    |> MessageView.render_entry(100)
+    |> Enum.flat_map(fn {widget, _height} -> widget.text end)
+    |> Enum.flat_map(& &1.spans)
+    |> Enum.map_join(& &1.content)
+  end
+
   defp age(state, id, ms) do
     tools =
       Enum.map(state.tool_activity, fn tool ->
@@ -153,20 +319,25 @@ defmodule Tackle.CLI.SubagentProgressTest do
         arguments: %{"profile" => "scout", "prompt" => prompt}
       })
 
-  defp event(state, type, data) do
-    {:noreply, state} =
-      RuntimeEvents.handle({:tackle_event, "session", "turn", Event.new(type, data)}, state)
-
-    state
+  defp event(state, type, data, opts \\ []) do
+    case RuntimeEvents.handle(
+           {:tackle_event, "session", "turn", Event.new(type, data, opts)},
+           state
+         ) do
+      {:noreply, state} -> state
+      {:noreply, state, _opts} -> state
+    end
   end
 
   defp shell do
-    Viewport.refresh(%State{
+    state = %State{
       session_id: "session",
       active_turn: %{id: "turn"},
       input: Input.new(),
       agent_state: %AgentState{},
       conversation: Viewport.new_conversation(80, 24)
-    })
+    }
+
+    Viewport.refresh(%{state | stream: %{state.stream | coalesce?: false}})
   end
 end
