@@ -7,15 +7,17 @@ defmodule Tackle.Runtime.Request do
 
   1. starts one fresh ephemeral session subtree under the scope work supervisor;
   2. installs the correlated terminal destination on that session;
-  3. submits the delegated prompt;
-  4. stores exactly one terminal outcome;
-  5. answers status, collection, and `await/2` callers;
-  6. cancels and cleans up on timeout.
+  3. subscribes before submitting when the caller requested child events;
+  4. submits the delegated prompt;
+  5. stores exactly one terminal outcome;
+  6. answers status, collection, and `await/2` callers;
+  7. cancels and cleans up on timeout.
 
   Foreground requests briefly linger after settlement for an awaiting caller.
   Background requests retain their outcome until it is collected, cancelled,
-  or their owning scope stops. The helper never becomes an event bus: it only
-  carries the one correlated terminal outcome.
+  or their owning scope stops. Child events are observed only when an event
+  callback was supplied and remain transient; the correlated terminal outcome
+  is still the request's only retained result.
   """
 
   use GenServer, restart: :temporary
@@ -43,7 +45,7 @@ defmodule Tackle.Runtime.Request do
           optional(:limits) => Tackle.Runtime.Limits.t() | nil,
           optional(:parent) => map() | nil,
           optional(:timeout) => timeout(),
-          optional(:event_callback) => (Event.t() -> any()),
+          optional(:event_callback) => (Event.t() -> any()) | (RunRef.t(), Event.t() -> any()),
           optional(:completion_message) => (RunRef.t(), Outcome.t() -> String.t()),
           optional(:launch_message) => (RunRef.t() -> String.t()),
           optional(:origin) => %{turn_id: String.t(), tool_call_id: String.t()},
@@ -182,6 +184,7 @@ defmodule Tackle.Runtime.Request do
   def handle_continue(:setup, state) do
     with {:ok, state} <- monitor_requester(state),
          {:ok, state} <- start_child_session(state),
+         {:ok, state} <- subscribe_to_child_events(state),
          {:ok, state} <- submit_prompt(state) do
       {:noreply, arm_deadline(state, state.timeout)}
     else
@@ -256,6 +259,14 @@ defmodule Tackle.Runtime.Request do
   end
 
   @impl true
+  def handle_info(
+        {:tackle_event, _session_id, _turn_id, %Event{} = event},
+        state
+      ) do
+    publish_child_event(state, event)
+    {:noreply, state}
+  end
+
   def handle_info({:tackle_runtime_terminal, run_id, %Outcome{} = outcome}, state) do
     if run_id == state.run_ref.run_id do
       {:noreply, settle(state, outcome)}
@@ -377,6 +388,28 @@ defmodule Tackle.Runtime.Request do
     do: %{event_callback: callback}
 
   defp event_context(_state), do: %{}
+
+  defp subscribe_to_child_events(%{event_callback: callback, session_pid: pid} = state)
+       when is_function(callback, 1) or is_function(callback, 2) do
+    case Session.subscribe(pid) do
+      {:ok, _snapshot} -> {:ok, state}
+      {:error, reason} -> {:error, {:event_subscription_failed, reason}}
+    end
+  catch
+    :exit, reason -> {:error, {:event_subscription_failed, reason}}
+  end
+
+  defp subscribe_to_child_events(state), do: {:ok, state}
+
+  defp publish_child_event(%{event_callback: callback, run_ref: run_ref}, %Event{} = event)
+       when is_function(callback, 2),
+       do: callback.(run_ref, event)
+
+  defp publish_child_event(%{event_callback: callback}, %Event{} = event)
+       when is_function(callback, 1),
+       do: callback.(event)
+
+  defp publish_child_event(_state, _event), do: :ok
 
   defp submit_prompt(%{session_pid: pid, prompt: prompt} = state) do
     case Session.submit(pid, prompt) do

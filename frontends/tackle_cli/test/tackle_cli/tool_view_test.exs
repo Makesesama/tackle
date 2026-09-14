@@ -399,6 +399,30 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     end
   end
 
+  test "live subagent work is visible inline and retained in details" do
+    [entry] =
+      MessageView.section_entries(
+        %{
+          tool_activity: [
+            %{
+              id: "explore",
+              name: "subagent",
+              status: :running,
+              arguments: %{profile: "scout", prompt: "Inspect files"},
+              subagent_work: "Reading lib/tackle.ex",
+              subagent_output: "opened config\nreading source"
+            }
+          ]
+        },
+        :tools
+      )
+
+    assert text(ToolView.render(entry, 100)) =~ "Now: Reading lib/tackle.ex"
+    assert text(MessageView.inspect_items(entry, 100)) =~ "opened config"
+    assert MessageView.full_text(entry) == "opened config\nreading source"
+    assert MessageView.search_text(entry) =~ "reading source"
+  end
+
   test "live subagent elapsed time renders without inventing historical durations" do
     [entry] =
       MessageView.section_entries(

@@ -97,7 +97,7 @@ defmodule Tackle.Tools.Subagent do
   end
 
   defp put_callbacks(opts, context, args) do
-    opts = put_event_callback(opts, context)
+    opts = put_event_callback(opts, context, Map.get(args, "profile"))
 
     if Map.get(args, "background", false) do
       opts
@@ -108,10 +108,26 @@ defmodule Tackle.Tools.Subagent do
     end
   end
 
-  defp put_event_callback(opts, context) do
+  defp put_event_callback(opts, context, profile) do
     case Map.get(context, :event_callback) do
-      callback when is_function(callback, 1) -> Keyword.put(opts, :event_callback, callback)
-      _other -> opts
+      callback when is_function(callback, 1) ->
+        tool_call_id = Map.get(context, :tool_call_id)
+
+        Keyword.put(opts, :event_callback, fn run_ref, child_event ->
+          callback.(
+            Event.new(:subagent_progress, %{
+              run_id: run_ref.run_id,
+              agent_ref: run_ref.agent_ref,
+              tool_call_id: tool_call_id,
+              profile: profile,
+              model: run_ref.model_ref,
+              event: child_event
+            })
+          )
+        end)
+
+      _other ->
+        opts
     end
   end
 

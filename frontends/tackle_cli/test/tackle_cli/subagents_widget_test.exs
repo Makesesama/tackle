@@ -31,6 +31,7 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
                  profile: "scout",
                  model: "test/scout",
                  summary: "Inspect the layout cache and report…",
+                 work: "Starting…",
                  elapsed: "12s"
                },
                %{
@@ -38,6 +39,7 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
                  profile: "worker",
                  model: "test/worker",
                  summary: "Implement the widget",
+                 work: "Starting…",
                  elapsed: "1m 5s"
                }
              ]
@@ -53,7 +55,15 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
     end
 
     test "a missing profile and prompt still produce a task row" do
-      assert [%{profile: "subagent", model: nil, summary: "Working", elapsed: nil}] =
+      assert [
+               %{
+                 profile: "subagent",
+                 model: nil,
+                 summary: "Working",
+                 work: "Starting…",
+                 elapsed: nil
+               }
+             ] =
                Sidebar.from_activity([%{name: "subagent", status: :running, id: "one"}]).tasks
     end
 
@@ -256,6 +266,7 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
     assert text =~ "› ⠋ scout"
     assert text =~ "model pending"
     assert text =~ "Inspect"
+    assert text =~ "Starting…"
 
     assert [{animated, _rect}] =
              ExRatatui.Widget.render(

@@ -18,7 +18,9 @@ level with `--thinking`, but it does not load or select adapter modules directly
 Adapter availability is a harness and distribution concern.
 
 Live tool rows update independently as each execution succeeds or fails, even
-while other calls in the batch are still running. Rows stay in requested order;
+while other calls in the batch are still running. Bash output is shown as a
+bounded live tail, and streamed tool arguments let write cards preview incoming
+paths and content before execution starts. Rows stay in requested order;
 execution status is transient progress, not confirmation of a durable commit.
 
 The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
@@ -56,17 +58,19 @@ Children have a dedicated inline card showing the profile, resolved model,
 assignment, explicit running/completed/failed status, and bounded findings or
 error output. While one or more children are running, a minimal native task
 sidebar opens beside the transcript and lists each active profile, resolved
-model, assignment, and elapsed time with an animated running indicator; it closes when no child remains active. Parallel
-calls keep independent cards in request order. F4 details retain full arguments
-and findings; search includes the assignment. A live elapsed clock measures local
+model, assignment, current bounded activity, and elapsed time with an animated
+running indicator; it closes when no child remains active. Parallel calls keep
+independent cards in request order. F4 details retain full arguments and bounded
+live activity until canonical findings arrive; search includes the assignment.
+A live elapsed clock measures local
 time since the frontend observed tool start, freezes at execution completion,
 and disappears when canonical history replaces live progress. It is not provider
 latency or durable timing. Cancellation of the parent clears live cards and
 shows the turn cancellation; it does not claim the child completed.
 
-Only returned findings are retained in the root journal; child transcripts are
-ephemeral. Footer and chart usage totals exclude child usage. Streaming child
-activity and profile customization are deferred. See the root
+Only returned findings are retained in the root journal; child transcripts and
+forwarded progress are ephemeral. Footer and chart usage totals exclude child
+usage. See the root
 [default subagent documentation](../../README.md#default-subagents) for details.
 
 ## Single-file release

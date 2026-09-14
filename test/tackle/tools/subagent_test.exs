@@ -3,6 +3,7 @@ defmodule Tackle.Tools.SubagentTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Lib.Event
   alias Tackle.Tools.Subagent
 
   test "the subagent tool is opt-in, not part of the default tool set" do
@@ -17,7 +18,8 @@ defmodule Tackle.Tools.SubagentTest do
       )
 
     handle = handle(scope)
-    context = %{runtime: handle, event_callback: &send(self(), {:event, &1})}
+    test_pid = self()
+    context = %{runtime: handle, event_callback: fn event -> send(test_pid, {:event, event}) end}
 
     assert {:ok, "worker answer"} =
              Subagent.run(%{"profile" => "worker", "prompt" => "do work"}, context)
@@ -28,6 +30,19 @@ defmodule Tackle.Tools.SubagentTest do
                       data: %{profile: "worker", model: "test/echo", status: :running}
                     }}
 
+    assert_receive {:event,
+                    %Event{
+                      type: :subagent_progress,
+                      data: %{
+                        run_id: run_id,
+                        profile: "worker",
+                        model: "test/echo",
+                        event: %Event{type: :message_end, data: %{role: :user}}
+                      }
+                    }},
+                   2_000
+
+    assert is_binary(run_id)
     assert_receive {:event, %{type: :subagent_finished}}, 2_000
   end
 

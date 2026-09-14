@@ -12,6 +12,7 @@ pub struct SubagentTask {
     pub profile: String,
     pub model: String,
     pub assignment: String,
+    pub work: String,
     pub elapsed: Option<String>,
 }
 
@@ -73,6 +74,7 @@ impl Widget for Subagents<'_> {
                 task.assignment.as_str(),
                 self.muted,
             )));
+            lines.push(Line::from(Span::styled(task.work.as_str(), self.accent)));
         }
 
         Paragraph::new(lines)
@@ -98,6 +100,7 @@ mod tests {
             profile: "scout".into(),
             model: "openai-codex/gpt-5.5".into(),
             assignment: "Inspect the layout".into(),
+            work: "Reading runtime.ex".into(),
             elapsed: Some("12s".into()),
         }];
         let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 5));
@@ -115,5 +118,6 @@ mod tests {
         assert!(rendered(&buffer, 1).contains("⠋ scout  12s"));
         assert!(rendered(&buffer, 2).contains("openai-codex/gpt-5.5"));
         assert!(rendered(&buffer, 3).contains("Inspect the layout"));
+        assert!(rendered(&buffer, 4).contains("Reading runtime.ex"));
     }
 }
