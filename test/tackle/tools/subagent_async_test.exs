@@ -76,6 +76,8 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
     assert_receive {:launched, {:ok, launch_message}}, 2_000
     assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}, 2_000
+    assert launch_message =~ "Do not repeat its assignment"
+    assert launch_message =~ "non-overlapping work"
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
 
     assert_receive {:event, %Event{type: :subagent_started, data: %{run_id: ^run_id}}}, 2_000
@@ -258,6 +260,23 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     refute_receive {:DOWN, ^child_monitor, :process, ^child_task, _reason}, 20
     assert Process.alive?(child_task)
 
+    child_event = Event.new(:message_delta, %{field: :content, delta: "still working"})
+    send(request, {:tackle_event, "child-session", "child-turn", child_event})
+
+    assert_receive {:tackle_event, ^session_id, nil,
+                    %Event{
+                      type: :subagent_progress,
+                      data: %{
+                        run_id: ^run_id,
+                        tool_call_id: "background-child",
+                        profile: "worker",
+                        model: "test/child",
+                        background: true,
+                        event: ^child_event
+                      }
+                    }},
+                   2_000
+
     assert {:ok, second_turn} = Tackle.Runtime.submit(scope.root_agent_ref, "continue")
     assert_receive {:tackle_turn_finished, ^session_id, ^second_turn, {:ok, _state}}, 2_000
     assert {:ok, _session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
@@ -391,7 +410,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
                %{runtime: handle(scope), event_callback: fn _event -> :ok end}
              )
 
-    assert launch_message =~ "you will be notified"
+    assert launch_message =~ "You will be notified"
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
 
     assert_receive {:tackle_event, ^session_id, nil,
