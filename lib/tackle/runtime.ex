@@ -149,6 +149,27 @@ defmodule Tackle.Runtime do
     with_session(agent_ref, fn pid -> {:ok, Session.snapshot(pid)} end)
   end
 
+  @doc "Delivers text to an in-scope agent's bounded next-turn inbox."
+  @spec tell(AgentRef.t(), AgentRef.t(), String.t()) :: :ok | {:error, term()}
+  def tell(%AgentRef{} = from, %AgentRef{} = to, message) when is_binary(message) do
+    cond do
+      from.scope_id != to.scope_id ->
+        {:error, :scope_mismatch}
+
+      message == "" ->
+        {:error, :empty_message}
+
+      true ->
+        with {:ok, coordinator} <- coordinator(from),
+             {:ok, _sender} <- Coordinator.agent_snapshot(coordinator, from),
+             {:ok, _recipient} <- Coordinator.agent_snapshot(coordinator, to) do
+          with_session(to, &Session.deliver(&1, from, message))
+        end
+    end
+  end
+
+  def tell(%AgentRef{}, %AgentRef{}, message), do: {:error, {:invalid_message, message}}
+
   @doc """
   Runs one manual compaction of an idle agent's model surface.
 
@@ -237,7 +258,7 @@ defmodule Tackle.Runtime do
         scope_ref: scope_ref,
         agent_ref: admission.agent_ref,
         run_ref: run_ref,
-        requester: self(),
+        requester: request_owner(opts, parent_ref),
         config: spec.config,
         prompt: prompt,
         work_supervisor: work_supervisor,
@@ -246,7 +267,11 @@ defmodule Tackle.Runtime do
         limits: admission.limits,
         parent: %{agent_ref: parent_ref},
         timeout: Keyword.get(opts, :timeout, AgentSpec.timeout(spec, admission.limits)),
-        event_callback: Keyword.get(opts, :event_callback)
+        event_callback: Keyword.get(opts, :event_callback),
+        completion_callback: Keyword.get(opts, :completion_callback),
+        completion_message: Keyword.get(opts, :completion_message),
+        profile: spec.name,
+        retention: Keyword.get(opts, :retention, :linger)
       }
 
       case DynamicSupervisor.start_child(work_supervisor, Request.child_spec(arg)) do
@@ -263,9 +288,31 @@ defmodule Tackle.Runtime do
   def request_agent(_requester, _spec_or_profile, prompt, _opts),
     do: {:error, {:invalid_prompt, prompt}}
 
-  @doc "Waits for one correlated run outcome."
+  @doc "Waits for one correlated terminal outcome and consumes the run."
   @spec await(RunRef.t(), timeout()) :: Outcome.t() | {:error, term()}
   def await(%RunRef{} = run_ref, timeout \\ :infinity), do: Request.await(run_ref, timeout)
+
+  @doc "Returns whether a delegated run is still running or has completed."
+  @spec run_status(RunRef.t()) ::
+          {:ok, :running | {:completed, Outcome.t()}} | {:error, term()}
+  def run_status(%RunRef{} = run_ref), do: Request.status(run_ref)
+
+  @doc "Returns run status only when the run belongs to `owner`."
+  @spec run_status(AgentRef.t(), RunRef.t()) ::
+          {:ok, :running | {:completed, Outcome.t()}} | {:error, term()}
+  def run_status(%AgentRef{} = owner, %RunRef{} = run_ref), do: Request.status(run_ref, owner)
+
+  @doc "Collects a completed delegated run and releases its retained outcome."
+  @spec collect(RunRef.t()) :: Outcome.t() | {:error, term()}
+  def collect(%RunRef{} = run_ref), do: Request.collect(run_ref)
+
+  @doc "Collects a completed delegated run only when it belongs to `owner`."
+  @spec collect(AgentRef.t(), RunRef.t()) :: Outcome.t() | {:error, term()}
+  def collect(%AgentRef{} = owner, %RunRef{} = run_ref), do: Request.collect(run_ref, owner)
+
+  @doc "Returns the child agent reference associated with a live delegated run."
+  @spec run_agent_ref(RunRef.t()) :: {:ok, AgentRef.t()} | {:error, term()}
+  def run_agent_ref(%RunRef{} = run_ref), do: Request.agent_ref(run_ref)
 
   @doc """
   Starts one host-defined workflow under the scope work supervisor.
@@ -370,7 +417,13 @@ defmodule Tackle.Runtime do
   end
 
   def cancel(%RunRef{} = run_ref, reason) do
-    with {:ok, request} <- Registry.whereis(run_ref), do: Request.cancel(request, reason)
+    with {:ok, request} <- Registry.whereis(run_ref) do
+      try do
+        Request.cancel(request, reason)
+      catch
+        :exit, exit_reason -> {:error, {:request_terminated, exit_reason}}
+      end
+    end
   end
 
   def cancel(%WorkflowRef{} = workflow_ref, reason) do
@@ -423,6 +476,22 @@ defmodule Tackle.Runtime do
              thinking: Tackle.Thinking.from_llm_opts(state.llm_opts)
            ) do
       {:ok, %{spec | config: config}}
+    end
+  end
+
+  defp request_owner(opts, parent_ref) do
+    case Keyword.get(opts, :owner, :requester) do
+      :parent ->
+        case Registry.whereis(parent_ref) do
+          {:ok, parent} -> parent
+          {:error, :not_found} -> nil
+        end
+
+      :requester ->
+        self()
+
+      other ->
+        raise ArgumentError, "invalid request owner: #{inspect(other)}"
     end
   end
 

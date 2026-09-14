@@ -346,11 +346,16 @@ profiles default to `:configured` and keep their explicitly configured model;
 model-generated arguments cannot select or change this policy.
 
 Child transcripts remain ephemeral: the durable root records the subagent tool
-call and returned findings, not the child's full history. The footer and usage
-charts currently count root usage only, **not child usage or total delegation
-cost**. Live child activity, persistent child conversations, and background
-fleets remain deferred. General runtime scopes and `Tackle.Tools.default/0` do
-not automatically gain subagent capability.
+call and returned findings, not the child's full history. Subagent calls wait by
+default. A call with `background: true` returns a stable run ID immediately;
+`subagent_status` reports whether it is running and consumes its retained terminal
+outcome when complete. Completion notices use the root session's bounded,
+next-turn inbox. Background work remains attached to its logical parent and scope,
+so parent cancellation or scope shutdown cleans it up. The footer and usage charts
+currently count root usage only, **not child usage or total delegation cost**.
+Persistent child conversations and reusable agents remain deferred. General
+runtime scopes and `Tackle.Tools.default/0` do not automatically gain subagent
+capability.
 
 ### Durable sessions
 

@@ -153,6 +153,26 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
     assert [%{type: :compaction_start, turn_id: nil}, _] = compacted.observations.events
   end
 
+  test "completed background subagents remain completed after their session exits" do
+    state = %{state() | active_turn: nil}
+
+    finished =
+      Event.new(:subagent_finished, %{
+        run_id: "background-run",
+        profile: "scout",
+        status: :completed,
+        agent_ref: %Tackle.Runtime.AgentRef{scope_id: "scope", agent_id: "child"}
+      })
+
+    assert {:noreply, projected} =
+             RuntimeEvents.handle({:tackle_event, "session", nil, finished}, state)
+
+    assert projected.subagents["background-run"].status == :completed
+    diagnostics = Diagnostics.text(projected, :subagents)
+    assert diagnostics =~ "status: :completed"
+    refute diagnostics =~ "status: :unavailable"
+  end
+
   test "pages distinguish projections and exclude opaque state and raw usage" do
     transcript = Message.user("archived text")
 
@@ -196,7 +216,12 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
     assert opened.overlay == nil
     assert opened.focus == :transcript
     assert opened.browse_page == :overview
-    {:noreply, prompt} = TUI.handle_event(%Key{code: "right"}, opened)
+
+    {:noreply, prompt} =
+      opened
+      |> then(fn state -> elem(TUI.handle_event(%Key{code: "right"}, state), 1) end)
+      |> then(fn state -> TUI.handle_event(%Key{code: "right"}, state) end)
+
     assert prompt.overlay == nil
     assert prompt.browse_page == :prompt
     {:noreply, pasted} = TUI.handle_event(%Paste{content: "ignored"}, prompt)
@@ -236,6 +261,7 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
 
     {:noreply, state} = TUI.handle_event(%Key{code: "f4"}, state)
     {:noreply, state} = TUI.handle_event(%Key{code: "tab"}, state)
+    {:noreply, state} = TUI.handle_event(%Key{code: "tab"}, state)
     assert state.browse_page == :prompt
     native = state.browse_content.native
     transcript_offset = state.conversation.scroll_offset
@@ -250,6 +276,8 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
       )
 
     assert state.browse_content.native == native
+    {:noreply, state} = TUI.handle_event(%Key{code: "tab", modifiers: ["shift"]}, state)
+    assert state.browse_page == :subagents
     {:noreply, state} = TUI.handle_event(%Key{code: "tab", modifiers: ["shift"]}, state)
     assert state.browse_page == :overview
     {:noreply, state} = TUI.handle_event(%Key{code: "left"}, state)

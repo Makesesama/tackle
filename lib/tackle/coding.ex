@@ -15,18 +15,20 @@ defmodule Tackle.Coding do
   alias Tackle.Config
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
-  alias Tackle.Tools.Subagent
+  alias Tackle.Tools.{Subagent, SubagentStatus}
 
   @delegation """
   ## Delegation
 
   Use the subagent tool for bounded work that benefits from a fresh, focused
-  context. Choose only from the configured profiles below and give the child a
-  self-contained assignment with the relevant context and expected deliverable.
-  Child sessions are ephemeral and share this workspace; tool restrictions are
-  capability limits, not an operating-system sandbox. Evaluate returned work
-  before relying on it. At most two children can run at once; excess requests
-  are rejected rather than queued.
+  context. Set `background` when the parent should continue immediately, then
+  use `subagent_status` with the returned run id to collect the result. Background
+  completion notices are queued for the parent's next turn. Choose only from the
+  configured profiles below and give the child a self-contained assignment with
+  the relevant context and expected deliverable. Child sessions are one-shot and
+  share this workspace; tool restrictions are capability limits, not an
+  operating-system sandbox. Evaluate returned work before relying on it. At most
+  two children can run at once; excess requests are rejected rather than queued.
   """
 
   @doc """
@@ -42,8 +44,10 @@ defmodule Tackle.Coding do
     with {:ok, config} <- Config.load(loader_opts),
          discovery <- discover(config, loader_opts),
          :ok <- validate_discovery(discovery),
-         {:ok, profiles} <- build_profiles(discovery.definitions, config, loader_opts),
-         {:ok, root_config} <- root_config(config, discovery.definitions, loader_opts),
+         root_tools = Enum.uniq(config.tools ++ [Subagent, SubagentStatus]),
+         {:ok, profiles} <-
+           build_profiles(discovery.definitions, config.tools, root_tools, loader_opts),
+         {:ok, root_config} <- root_config(discovery.definitions, root_tools, loader_opts),
          {:ok, root_spec} <-
            AgentSpec.new(
              name: "root",
@@ -73,17 +77,17 @@ defmodule Tackle.Coding do
     {:error, {:invalid_agent_definitions, warnings}}
   end
 
-  defp build_profiles(definitions, root_config, loader_opts) do
+  defp build_profiles(definitions, default_tools, trusted_tools, loader_opts) do
     Enum.reduce_while(definitions, {:ok, %{}}, fn definition, {:ok, profiles} ->
-      case build_profile(definition, root_config, loader_opts) do
+      case build_profile(definition, default_tools, trusted_tools, loader_opts) do
         {:ok, spec} -> {:cont, {:ok, Map.put(profiles, definition.name, spec)}}
         {:error, reason} -> {:halt, {:error, {:invalid_agent_profile, definition.path, reason}}}
       end
     end)
   end
 
-  defp build_profile(definition, root_config, loader_opts) do
-    with {:ok, tools} <- profile_tools(definition, root_config.tools),
+  defp build_profile(definition, default_tools, trusted_tools, loader_opts) do
+    with {:ok, tools} <- profile_tools(definition, default_tools, trusted_tools),
          {:ok, config} <- load_profile_config(definition, tools, loader_opts) do
       config = %{
         config
@@ -101,30 +105,42 @@ defmodule Tackle.Coding do
     end
   end
 
-  defp profile_tools(%Definition{tools: nil} = definition, trusted_tools) do
-    tools = if definition.allow_delegation, do: trusted_tools ++ [Subagent], else: trusted_tools
+  defp profile_tools(%Definition{tools: nil} = definition, default_tools, _trusted_tools) do
+    tools = if definition.allow_delegation, do: default_tools ++ [Subagent], else: default_tools
     {:ok, Enum.uniq(tools)}
   end
 
-  defp profile_tools(%Definition{tools: names} = definition, trusted_tools) do
-    with {:ok, tools} <- Tackle.Tools.resolve_names(names, trusted_tools) do
+  defp profile_tools(%Definition{tools: names} = definition, _default_tools, trusted_tools) do
+    resolution_tools = Enum.uniq(trusted_tools ++ Tackle.Tools.default())
+
+    with {:ok, tools} <- Tackle.Tools.resolve_names(names, resolution_tools) do
       tools = if definition.allow_delegation, do: tools ++ [Subagent], else: tools
       {:ok, Enum.uniq(tools)}
     end
   end
 
   defp load_profile_config(definition, tools, loader_opts) do
+    prompt =
+      [definition.prompt, parent_system_prompt(definition, loader_opts)]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join("\n\n")
+
     profile_overrides =
-      [tools: tools, system_prompt: definition.prompt]
+      [tools: tools, system_prompt: prompt]
       |> maybe_put(:model, definition.model)
       |> maybe_put(:thinking, definition.thinking)
 
     load_with_overrides(loader_opts, profile_overrides)
   end
 
-  defp root_config(config, definitions, loader_opts) do
-    with {:ok, root_config} <-
-           load_with_overrides(loader_opts, tools: Enum.uniq(config.tools ++ [Subagent])) do
+  defp parent_system_prompt(%Definition{source: :builtin}, loader_opts) do
+    loader_opts |> Keyword.get(:overrides, []) |> Keyword.get(:system_prompt)
+  end
+
+  defp parent_system_prompt(_definition, _loader_opts), do: nil
+
+  defp root_config(definitions, root_tools, loader_opts) do
+    with {:ok, root_config} <- load_with_overrides(loader_opts, tools: root_tools) do
       prompt =
         [root_config.system_prompt, @delegation, Agents.format_for_prompt(definitions)]
         |> Enum.reject(&(&1 in [nil, ""]))

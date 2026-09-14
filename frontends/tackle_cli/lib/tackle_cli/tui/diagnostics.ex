@@ -58,7 +58,7 @@ defmodule Tackle.CLI.TUI.Diagnostics do
   defp body(state, :subagents) do
     "Live delegated sessions in this scope. This page updates while open.\n" <>
       "Child conversation text can be inspected while the child is running; credentials, raw adapter options, and opaque provider state are omitted.\n\n" <>
-      case state.subagents |> Map.values() |> Enum.sort_by(& &1.started_at_ms) do
+      case state.subagents |> Map.values() |> Enum.sort_by(&Map.get(&1, :started_at_ms, 0)) do
         [] ->
           "No subagents observed for this turn."
 
@@ -137,8 +137,12 @@ defmodule Tackle.CLI.TUI.Diagnostics do
     })
   end
 
-  defp live_subagent(%{status: status}) when status != :running do
+  defp live_subagent(%{status: status}) when status not in [:running, :completed] do
     Map.merge(empty_subagent(), %{status: status})
+  end
+
+  defp live_subagent(%{status: :completed}) do
+    Map.merge(empty_subagent(), %{status: :completed})
   end
 
   defp live_subagent(subagent) do

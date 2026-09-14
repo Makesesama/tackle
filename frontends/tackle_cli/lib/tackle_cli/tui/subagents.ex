@@ -17,8 +17,22 @@ defmodule Tackle.CLI.TUI.Subagents do
 
   @doc "Running delegated children in request order."
   @spec tasks(State.t()) :: [map()]
-  def tasks(%State{} = state),
-    do: Enum.filter(state.tool_activity, &match?(%{name: "subagent", status: :running}, &1))
+  def tasks(%State{} = state) do
+    tool_tasks =
+      Enum.filter(state.tool_activity, &match?(%{name: "subagent", status: :running}, &1))
+
+    tracked_tasks =
+      state.subagents
+      |> Map.values()
+      |> Enum.filter(&(&1[:status] == :running))
+      |> Enum.reject(fn tracked ->
+        Enum.any?(tool_tasks, &same_run?(&1, tracked))
+      end)
+      |> Enum.map(&tracked_task/1)
+      |> Enum.sort_by(&Map.get(&1, :started_at_ms, 0))
+
+    tool_tasks ++ tracked_tasks
+  end
 
   @doc "Moves focus to the active-task sidebar, selecting the first task."
   @spec focus(State.t()) :: {:noreply, State.t()}
@@ -63,6 +77,25 @@ defmodule Tackle.CLI.TUI.Subagents do
   end
 
   def reconcile(%State{} = state), do: %{state | subagent_selected: nil}
+
+  defp same_run?(tool, tracked) do
+    run_id = Map.get(tracked, :run_id)
+    is_binary(run_id) and Map.get(tool, :run_id) == run_id
+  end
+
+  defp tracked_task(tracked) do
+    %{
+      id: Map.get(tracked, :tool_call_id) || Map.get(tracked, :run_id),
+      name: "subagent",
+      status: :running,
+      arguments: Map.get(tracked, :arguments),
+      model: Map.get(tracked, :model),
+      run_id: Map.get(tracked, :run_id),
+      agent_ref: Map.get(tracked, :agent_ref),
+      started_at_ms: Map.get(tracked, :started_at_ms),
+      elapsed_ms: Map.get(tracked, :elapsed_ms)
+    }
+  end
 
   defp keep(tasks, selected) do
     if Enum.any?(tasks, &(&1.id == selected)), do: selected, else: hd(tasks).id

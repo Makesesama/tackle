@@ -392,7 +392,12 @@ reply(request, result)
 cancel(run | workflow | fleet)
 ```
 
-Asynchronous `tell`, broadcasts, free-form autonomous chat, and durable mailboxes are deferred until a coding-harness use case requires them.
+In addition to correlated request/reply, `Runtime.tell/3` delivers text between
+agents in the same scope through a bounded in-memory inbox. Messages become user
+messages at the recipient's next turn boundary; inbox overflow is rejected.
+There is no broadcast command bus. Durable mailboxes, free-form autonomous chat,
+and reconstruction of queued messages after process or BEAM failure remain
+deferred.
 
 ### 6.2 Routing
 
@@ -791,7 +796,15 @@ task: delegated prompt
 
 The tool receives an opaque runtime handle through `Tackle.Lib.State.context`, resolves the selected profile through a trusted host allowlist, calls `request_agent`, awaits the result, and returns the child's answer or typed failure as the parent's linked tool result.
 
-The tool is not part of `Tackle.Tools.default/0` initially. A child profile does not receive the tool unless recursive delegation is explicitly granted.
+The tool is not part of `Tackle.Tools.default/0` initially. The coding root also
+receives `Tackle.Tools.SubagentStatus`: setting `background: true` on a subagent
+call returns a stable run ID immediately, and the status tool polls or consumes
+the retained outcome. Completion is queued in the parent's bounded next-turn
+inbox and published as a `:subagent_finished` event. Background requests are
+owned by the logical parent session rather than the short-lived tool task, but
+remain attached to structured parent and scope cancellation. A child profile
+does not receive delegation tools unless recursive delegation is explicitly
+granted.
 
 Acceptance criteria:
 
@@ -991,11 +1004,11 @@ The following are intentionally deferred:
 - distributed process discovery and cross-node messaging;
 - a fleet containing several independent root-agent scopes;
 - durable workflow execution;
-- bounded reusable-agent inboxes and queues;
+- durable/replayable inboxes and queues;
 - long-lived named-agent semantics;
-- general asynchronous `tell` and broadcast messaging;
+- broadcast messaging;
 - a workflow DSL;
-- detached background work beyond an explicit ownership policy;
+- detached background work outside the implemented logical-parent ownership policy;
 - token and monetary fleet budgets;
 - additional public API signatures and module names beyond the implemented scoped facade.
 

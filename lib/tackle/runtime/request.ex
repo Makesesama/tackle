@@ -9,10 +9,13 @@ defmodule Tackle.Runtime.Request do
   2. installs the correlated terminal destination on that session;
   3. submits the delegated prompt;
   4. stores exactly one terminal outcome;
-  5. answers `await/2` callers and cancels/cleans up on timeout.
+  5. answers status, collection, and `await/2` callers;
+  6. cancels and cleans up on timeout.
 
-  The helper is a temporary child of the scope work supervisor. It never
-  becomes an event bus: it only carries the one correlated terminal outcome.
+  Foreground requests briefly linger after settlement for an awaiting caller.
+  Background requests retain their outcome until it is collected, cancelled,
+  or their owning scope stops. The helper never becomes an event bus: it only
+  carries the one correlated terminal outcome.
   """
 
   use GenServer, restart: :temporary
@@ -41,7 +44,9 @@ defmodule Tackle.Runtime.Request do
           optional(:parent) => map() | nil,
           optional(:timeout) => timeout(),
           optional(:event_callback) => (Event.t() -> any()),
-          optional(:linger) => timeout()
+          optional(:completion_message) => (RunRef.t(), Outcome.t() -> String.t()),
+          optional(:profile) => String.t(),
+          optional(:retention) => :linger | :until_collected
         }
 
   @doc false
@@ -66,7 +71,7 @@ defmodule Tackle.Runtime.Request do
         try do
           GenServer.call(request, {:await, timeout}, :infinity)
         catch
-          :exit, reason -> {:error, {:request_terminated, reason}}
+          :exit, _reason -> {:error, :request_terminated}
         end
 
       {:error, :not_found} ->
@@ -74,9 +79,59 @@ defmodule Tackle.Runtime.Request do
     end
   end
 
-  @doc "Requests cancellation of the run's attached child."
+  @doc "Returns a run's current state without consuming a terminal outcome."
+  @spec status(RunRef.t()) :: {:ok, :running | {:completed, Outcome.t()}} | {:error, term()}
+  def status(%RunRef{} = run_ref) do
+    call(run_ref, :status)
+  end
+
+  @doc "Returns a run's current state after validating its logical parent."
+  @spec status(RunRef.t(), AgentRef.t()) ::
+          {:ok, :running | {:completed, Outcome.t()}} | {:error, term()}
+  def status(%RunRef{} = run_ref, %AgentRef{} = owner) do
+    call(run_ref, {:status, owner})
+  end
+
+  @doc "Collects a terminal outcome, removing its retained request helper."
+  @spec collect(RunRef.t()) :: Outcome.t() | {:error, term()}
+  def collect(%RunRef{} = run_ref) do
+    call(run_ref, :collect)
+  end
+
+  @doc "Collects a terminal outcome after validating its logical parent."
+  @spec collect(RunRef.t(), AgentRef.t()) :: Outcome.t() | {:error, term()}
+  def collect(%RunRef{} = run_ref, %AgentRef{} = owner) do
+    call(run_ref, {:collect, owner})
+  end
+
+  @doc "Returns the child agent reference owned by a run."
+  @spec agent_ref(RunRef.t()) :: {:ok, AgentRef.t()} | {:error, term()}
+  def agent_ref(%RunRef{} = run_ref) do
+    call(run_ref, :agent_ref)
+  end
+
+  @doc """
+  Requests cooperative cancellation of the run's attached child.
+
+  An already completed retained run is discarded. A running request remains
+  alive until the child reports its terminal cancelled outcome.
+  """
   @spec cancel(GenServer.server(), term()) :: :ok
-  def cancel(request, reason \\ :cancelled), do: GenServer.cast(request, {:cancel, reason})
+  def cancel(request, reason \\ :cancelled), do: GenServer.call(request, {:cancel, reason})
+
+  defp call(%RunRef{} = run_ref, request) do
+    case Registry.whereis(run_ref) do
+      {:ok, server} ->
+        try do
+          GenServer.call(server, request)
+        catch
+          :exit, _reason -> {:error, :request_terminated}
+        end
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
 
   @impl true
   def init(%{run_ref: %RunRef{} = run_ref} = arg) do
@@ -98,6 +153,9 @@ defmodule Tackle.Runtime.Request do
       parent: Map.get(arg, :parent),
       timeout: Map.get(arg, :timeout, :infinity),
       event_callback: Map.get(arg, :event_callback),
+      completion_message: Map.get(arg, :completion_message),
+      profile: Map.get(arg, :profile),
+      retention: Map.get(arg, :retention, :linger),
       session_pid: nil,
       session_monitor: nil,
       outcome: nil,
@@ -133,6 +191,47 @@ defmodule Tackle.Runtime.Request do
   end
 
   @impl true
+  def handle_call(:status, _from, %{outcome: %Outcome{} = outcome} = state) do
+    {:reply, {:ok, {:completed, outcome}}, state}
+  end
+
+  def handle_call(:status, _from, state), do: {:reply, {:ok, :running}, state}
+
+  def handle_call(
+        {:status, owner},
+        _from,
+        %{parent: %{agent_ref: owner}, outcome: %Outcome{} = outcome} = state
+      ) do
+    {:reply, {:ok, {:completed, outcome}}, state}
+  end
+
+  def handle_call({:status, owner}, _from, %{parent: %{agent_ref: owner}} = state),
+    do: {:reply, {:ok, :running}, state}
+
+  def handle_call({:status, _owner}, _from, state), do: {:reply, {:error, :not_owner}, state}
+
+  def handle_call(:collect, _from, %{outcome: %Outcome{} = outcome} = state) do
+    {:stop, :normal, outcome, cancel_timers(state)}
+  end
+
+  def handle_call(
+        {:collect, owner},
+        _from,
+        %{parent: %{agent_ref: owner}, outcome: %Outcome{} = outcome} = state
+      ) do
+    {:stop, :normal, outcome, cancel_timers(state)}
+  end
+
+  def handle_call({:collect, owner}, _from, %{parent: %{agent_ref: owner}} = state),
+    do: {:reply, {:error, :running}, state}
+
+  def handle_call({:collect, _owner}, _from, state),
+    do: {:reply, {:error, :not_owner}, state}
+
+  def handle_call(:collect, _from, state), do: {:reply, {:error, :running}, state}
+
+  def handle_call(:agent_ref, _from, state), do: {:reply, {:ok, state.agent_ref}, state}
+
   def handle_call({:await, _timeout}, _from, %{outcome: %Outcome{} = outcome} = state) do
     {:stop, :normal, outcome, cancel_timers(state)}
   end
@@ -142,9 +241,12 @@ defmodule Tackle.Runtime.Request do
     {:noreply, arm_await_timeout(state, timeout)}
   end
 
-  @impl true
-  def handle_cast({:cancel, reason}, state) do
-    {:noreply, cancel_child(state, reason)}
+  def handle_call({:cancel, _reason}, _from, %{outcome: %Outcome{}} = state) do
+    {:stop, :normal, :ok, cancel_timers(state)}
+  end
+
+  def handle_call({:cancel, reason}, _from, state) do
+    {:reply, :ok, cancel_child(state, reason)}
   end
 
   @impl true
@@ -188,6 +290,8 @@ defmodule Tackle.Runtime.Request do
   def handle_info({:request_timeout, :linger}, state) do
     {:stop, :normal, state}
   end
+
+  def handle_info(:collected, state), do: {:stop, :normal, state}
 
   def handle_info({:EXIT, _pid, reason}, state) do
     if state.outcome, do: {:noreply, state}, else: {:stop, reason, state}
@@ -276,10 +380,48 @@ defmodule Tackle.Runtime.Request do
   defp settle(state, %Outcome{} = outcome) do
     state = cancel_timers(state)
     state = cancel_child(%{state | outcome: outcome}, :settled)
+    notify_parent(state, outcome)
     Enum.each(state.awaiters, &GenServer.reply(&1, outcome))
-    linger = Process.send_after(self(), {:request_timeout, :linger}, @default_linger)
-    %{state | awaiters: [], linger_timer: linger}
+
+    cond do
+      state.awaiters != [] ->
+        send(self(), :collected)
+        %{state | awaiters: []}
+
+      state.retention == :until_collected ->
+        %{state | awaiters: []}
+
+      true ->
+        linger = Process.send_after(self(), {:request_timeout, :linger}, @default_linger)
+        %{state | awaiters: [], linger_timer: linger}
+    end
   end
+
+  defp notify_parent(
+         %{
+           completion_message: callback,
+           run_ref: run_ref,
+           parent: %{agent_ref: parent_ref},
+           agent_ref: agent_ref,
+           profile: profile
+         },
+         outcome
+       )
+       when is_function(callback, 2) do
+    with message when is_binary(message) <- callback.(run_ref, outcome),
+         {:ok, parent} <- Registry.whereis(parent_ref) do
+      Session.deliver(parent, agent_ref, message)
+      Session.background_finished(parent, run_ref, profile, outcome)
+    end
+
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp notify_parent(_state, _outcome), do: :ok
 
   defp timeout_outcome(state) do
     Outcome.new(:timeout, reason: :run_timeout, agent_ref: state.agent_ref)

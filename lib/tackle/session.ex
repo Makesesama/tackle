@@ -34,12 +34,14 @@ defmodule Tackle.Session do
   alias Tackle.Lib.Compaction
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
+  alias Tackle.Lib.Message
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Handle
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Registry
+  alias Tackle.Runtime.RunRef
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.Task, as: TurnTask
   alias Tackle.Session.Journal
@@ -50,6 +52,7 @@ defmodule Tackle.Session do
   alias Tackle.Session.Tree, as: SessionTree
 
   @task_shutdown_timeout 1_000
+  @max_inbox_messages 32
 
   defmodule Stats do
     @moduledoc "Derived, immutable token, cost, model, and context statistics."
@@ -159,6 +162,22 @@ defmodule Tackle.Session do
   @spec cancel(GenServer.server()) :: :ok
   def cancel(session), do: GenServer.call(session, :cancel)
 
+  @doc "Queues an in-scope message for this agent's next turn."
+  @spec deliver(GenServer.server(), AgentRef.t(), String.t()) :: :ok | {:error, term()}
+  def deliver(session, %AgentRef{} = from, message) when is_binary(message) do
+    GenServer.call(session, {:deliver, from, message})
+  end
+
+  @doc "Publishes one background-run completion from the owning request helper."
+  @spec background_finished(GenServer.server(), RunRef.t(), String.t() | nil, Outcome.t()) :: :ok
+  def background_finished(session, %RunRef{} = run_ref, profile, %Outcome{} = outcome) do
+    GenServer.cast(session, {:background_finished, run_ref, profile, outcome})
+  end
+
+  @doc "Returns queued in-scope messages awaiting the next turn."
+  @spec inbox(GenServer.server()) :: [map()]
+  def inbox(session), do: GenServer.call(session, :inbox)
+
   @doc """
   Runs one manual compaction of the model surface while the session is idle.
 
@@ -266,7 +285,9 @@ defmodule Tackle.Session do
         work_supervisor: work_supervisor,
         tool_supervisor: tool_supervisor,
         journal: journal,
-        recovery: recovery
+        recovery: recovery,
+        inbox: :queue.new(),
+        inbox_count: 0
       }
 
       register_with_coordinator(state)
@@ -279,6 +300,18 @@ defmodule Tackle.Session do
   @impl true
   def handle_call({:submit, input}, _from, state) do
     start_turn(:run, input, state)
+  end
+
+  def handle_call({:deliver, _from, _message}, _from_call, %{inbox_count: count} = state)
+      when count >= @max_inbox_messages do
+    {:reply, {:error, :inbox_full}, state}
+  end
+
+  def handle_call({:deliver, %AgentRef{} = from, message}, _from_call, state) do
+    envelope = %{from: from, message: message}
+
+    {:reply, :ok,
+     %{state | inbox: :queue.in(envelope, state.inbox), inbox_count: state.inbox_count + 1}}
   end
 
   def handle_call(:continue, _from, state) do
@@ -405,6 +438,10 @@ defmodule Tackle.Session do
     {:reply, build_snapshot(state), state}
   end
 
+  def handle_call(:inbox, _from, state) do
+    {:reply, :queue.to_list(state.inbox), state}
+  end
+
   def handle_call(:subscribe, _from, %{active_turn: active_turn} = state)
       when not is_nil(active_turn) do
     {:reply, {:error, :turn_in_progress}, state}
@@ -429,6 +466,21 @@ defmodule Tackle.Session do
       {:error, reason} ->
         {:stop, {:persistence_failed, reason}, {:error, reason}, state}
     end
+  end
+
+  @impl true
+  def handle_cast({:background_finished, run_ref, profile, outcome}, state) do
+    event =
+      Event.new(:subagent_finished, %{
+        run_id: run_ref.run_id,
+        agent_ref: run_ref.agent_ref,
+        profile: profile,
+        model: run_ref.model_ref,
+        status: outcome.status
+      })
+
+    broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+    {:noreply, state}
   end
 
   @impl true
@@ -554,11 +606,13 @@ defmodule Tackle.Session do
     signal = Cancellation.new_signal()
     turn_id = state.config.id_generator.()
     session_pid = self()
-    agent_state = state.agent_state
+    {agent_state, inbox_messages} = project_inbox(state)
     run_opts = turn_opts(state, session_pid, turn_id, signal)
 
     case begin_turn(state, operation, input, turn_id) do
       :ok ->
+        state = clear_inbox(state)
+        broadcast_inbox_drained(state, inbox_messages)
         launch_turn(operation, input, state, agent_state, run_opts, signal, turn_id)
 
       {:error, reason} ->
@@ -604,7 +658,8 @@ defmodule Tackle.Session do
     [
       event_callback: fn event -> send(session_pid, {:tackle_event, turn_id, event}) end,
       event_context: %{
-        event_callback: fn event -> send(session_pid, {:tackle_event, turn_id, event}) end
+        event_callback: fn event -> send(session_pid, {:tackle_event, turn_id, event}) end,
+        runtime_turn_id: turn_id
       },
       cancellation_signal: signal,
       turn_id: turn_id,
@@ -633,6 +688,36 @@ defmodule Tackle.Session do
     else
       {:noreply, state}
     end
+  end
+
+  defp project_inbox(%{inbox_count: 0} = state), do: {state.agent_state, []}
+
+  defp project_inbox(state) do
+    messages = :queue.to_list(state.inbox)
+
+    agent_state =
+      Enum.reduce(messages, state.agent_state, fn %{from: from, message: content}, agent_state ->
+        body = "Message from agent #{from.agent_id}:\n\n#{content}"
+        message = Message.user(body, id_generator: agent_state.id_generator)
+        AgentState.add_message(agent_state, message)
+      end)
+
+    {agent_state, messages}
+  end
+
+  defp clear_inbox(state),
+    do: %{state | inbox: :queue.new(), inbox_count: 0}
+
+  defp broadcast_inbox_drained(state, messages) do
+    Enum.each(messages, fn %{from: from} ->
+      event =
+        Event.new(:subagent_message_received, %{
+          from_agent_ref: from,
+          agent_ref: state.agent_ref
+        })
+
+      broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+    end)
   end
 
   defp deliver_terminal(%{terminal: nil}, _result), do: :ok

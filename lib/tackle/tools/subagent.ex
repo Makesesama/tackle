@@ -3,9 +3,10 @@ defmodule Tackle.Tools.Subagent do
   Opt-in tool that delegates one self-contained task to a fresh subagent.
 
   The subagent is an ordinary Tackle agent running the same `Tackle.Lib` loop in
-  the same root scope. The tool starts one correlated run, waits for its
-  terminal outcome, and returns the subagent's final answer as tool output. The
-  subagent is ephemeral: it cannot be addressed again after it finishes.
+  the same root scope. Foreground mode waits for its terminal outcome and
+  returns the final answer. Background mode returns a stable run id immediately;
+  use `subagent_status` to inspect or collect it later. The child session remains
+  one-shot and stops after its first terminal result.
 
   Delegation is opt-in and permissioned:
 
@@ -27,10 +28,10 @@ defmodule Tackle.Tools.Subagent do
   tool_name("subagent")
 
   description(
-    "Delegate a self-contained task to a fresh subagent and return its final answer. " <>
-      "The subagent runs the same agent loop with its own context, so use it to isolate " <>
-      "large or parallelizable work. Choose one of the configured profiles. The subagent " <>
-      "cannot be messaged again after it finishes."
+    "Delegate a self-contained task to a fresh subagent. By default this waits and returns " <>
+      "the final answer. Set background=true to continue immediately with a run id, then use " <>
+      "subagent_status to collect it. Choose one configured profile. The one-shot child cannot " <>
+      "receive more work after it finishes."
   )
 
   input do
@@ -40,6 +41,11 @@ defmodule Tackle.Tools.Subagent do
     )
 
     field(:prompt, :string, required: true, description: "Self-contained task for the subagent")
+
+    field(:background, :boolean,
+      default: false,
+      description: "Return immediately with a run id instead of waiting for completion"
+    )
 
     field(:timeout_ms, :integer,
       description: "Optional maximum wait in milliseconds, bounded by the scope run timeout"
@@ -52,12 +58,11 @@ defmodule Tackle.Tools.Subagent do
     with {:ok, handle} <- fetch_handle(context),
          :ok <- ensure_delegation(handle),
          {:ok, opts} <- timeout_opts(args, handle),
-         opts = put_event_callback(opts, context),
+         opts = put_callbacks(opts, context, profile, args),
+         opts = put_retention(opts, args),
          {:ok, run_ref} <- request(handle, profile, prompt, opts) do
       emit(context, :subagent_started, run_ref, profile)
-      outcome = Runtime.await(run_ref, :infinity)
-      emit(context, :subagent_finished, run_ref, profile, outcome)
-      handle_outcome(outcome)
+      finish(args, run_ref, profile, context)
     end
   end
 
@@ -89,11 +94,50 @@ defmodule Tackle.Tools.Subagent do
     end
   end
 
+  defp put_callbacks(opts, context, _profile, args) do
+    opts = put_event_callback(opts, context)
+
+    if Map.get(args, "background", false) do
+      Keyword.put(opts, :completion_message, &completion_message/2)
+    else
+      opts
+    end
+  end
+
   defp put_event_callback(opts, context) do
     case Map.get(context, :event_callback) do
       callback when is_function(callback, 1) -> Keyword.put(opts, :event_callback, callback)
       _other -> opts
     end
+  end
+
+  defp put_retention(opts, %{"background" => true}) do
+    opts
+    |> Keyword.put(:owner, :parent)
+    |> Keyword.put(:retention, :until_collected)
+  end
+
+  defp put_retention(opts, _args), do: opts
+
+  defp finish(%{"background" => true}, run_ref, _profile, _context) do
+    {:ok,
+     "Started background subagent #{run_ref.run_id}. Continue other work and use " <>
+       "subagent_status with this run_id to collect its result."}
+  end
+
+  defp finish(_args, run_ref, profile, context) do
+    outcome = Runtime.await(run_ref, :infinity)
+    emit(context, :subagent_finished, run_ref, profile, outcome)
+    handle_outcome(outcome)
+  end
+
+  defp completion_message(run_ref, %Outcome{status: :ok}) do
+    "Background subagent #{run_ref.run_id} completed. Use subagent_status to collect its result."
+  end
+
+  defp completion_message(run_ref, %Outcome{} = outcome) do
+    "Background subagent #{run_ref.run_id} finished with #{Outcome.message(outcome)}. " <>
+      "Use subagent_status to collect its result."
   end
 
   defp request(handle, profile, prompt, opts) do
