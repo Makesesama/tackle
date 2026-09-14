@@ -60,8 +60,8 @@ defmodule Tackle.Tools.Subagent do
     with {:ok, handle} <- fetch_handle(context),
          :ok <- ensure_delegation(handle),
          {:ok, opts} <- timeout_opts(args, handle),
-         opts = put_callbacks(opts, context, profile, args),
-         opts = put_retention(opts, args),
+         opts = put_callbacks(opts, context, args),
+         opts = put_retention(opts, context, args),
          {:ok, run_ref} <- request(handle, profile, prompt, opts) do
       emit(context, :subagent_started, run_ref, profile)
       finish(args, run_ref, profile, context)
@@ -96,11 +96,13 @@ defmodule Tackle.Tools.Subagent do
     end
   end
 
-  defp put_callbacks(opts, context, _profile, args) do
+  defp put_callbacks(opts, context, args) do
     opts = put_event_callback(opts, context)
 
     if Map.get(args, "background", false) do
-      Keyword.put(opts, :completion_message, &completion_message/2)
+      opts
+      |> Keyword.put(:completion_message, &completion_message/2)
+      |> Keyword.put(:launch_message, &launch_message/1)
     else
       opts
     end
@@ -113,25 +115,37 @@ defmodule Tackle.Tools.Subagent do
     end
   end
 
-  defp put_retention(opts, %{"background" => true}) do
+  defp put_retention(opts, context, %{"background" => true}) do
     opts
     |> Keyword.put(:owner, :parent)
     |> Keyword.put(:retention, :until_collected)
+    |> put_origin(context)
   end
 
-  defp put_retention(opts, _args), do: opts
+  defp put_retention(opts, _context, _args), do: opts
+
+  defp put_origin(opts, %{runtime_turn_id: turn_id, tool_call_id: tool_call_id})
+       when is_binary(turn_id) and turn_id != "" and is_binary(tool_call_id) and
+              tool_call_id != "" do
+    Keyword.put(opts, :origin, %{turn_id: turn_id, tool_call_id: tool_call_id})
+  end
+
+  defp put_origin(opts, _context), do: opts
 
   defp finish(%{"background" => true}, run_ref, _profile, _context) do
-    {:ok,
-     "Started background subagent #{run_ref.run_id}. Continue other work, then use " <>
-       "subagent_wait with this run_id to wait for and collect its result, or subagent_status " <>
-       "to check without waiting."}
+    {:ok, launch_message(run_ref)}
   end
 
   defp finish(_args, run_ref, profile, context) do
     outcome = Runtime.await(run_ref, :infinity)
     emit(context, :subagent_finished, run_ref, profile, outcome)
     handle_outcome(outcome)
+  end
+
+  defp launch_message(run_ref) do
+    "Started background subagent #{run_ref.run_id}. Continue other work, then use " <>
+      "subagent_wait with this run_id to wait for and collect its result, or subagent_status " <>
+      "to check without waiting."
   end
 
   defp completion_message(run_ref, %Outcome{status: :ok}) do
