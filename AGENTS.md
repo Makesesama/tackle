@@ -40,6 +40,11 @@ mix format --check-formatted
 (cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
 (cd plugins/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
+# MCP client plugin
+(cd plugins/tackle_mcp && mix deps.get)
+(cd plugins/tackle_mcp && mix compile --warnings-as-errors && mix test)
+(cd plugins/tackle_mcp && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+
 # CLI frontend
 (cd frontends/tackle_cli && mix deps.get)
 (cd frontends/tackle_cli && mix compile --warnings-as-errors && mix test)

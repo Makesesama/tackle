@@ -42,11 +42,13 @@ Provider adapters are user-provided plugins. **OpenAI Codex is the only adapter
 this project plans to implement and maintain**, and it should use the same
 extension contracts as third-party adapters, not a privileged core code path.
 
-MCP is a **future plugin for the harness**, not a required root dependency.
-The inherited Anubis MCP **server** bridge was extracted out of the library into
-`packages/tackle_anubis` so the core stays MCP-free; other optional integrations
-should follow the same separation. Phoenix and SaaS-specific concerns are not
-requirements for the standalone harness.
+MCP is available as an optional harness plugin in
+[`plugins/tackle_mcp`](plugins/tackle_mcp). It uses Anubis as an MCP **client**
+and turns external MCP tools into ordinary `Tackle.Lib.Tool` modules; it is not
+a required root dependency. The inherited Anubis MCP **server** bridge remains
+in `packages/tackle_anubis`, so both directions stay outside the MCP-free core.
+Other optional integrations should follow the same separation. Phoenix and
+SaaS-specific concerns are not requirements for the standalone harness.
 
 Plugin discovery, loading, and distribution are not yet specified. In
 particular, how user-provided plugins work with a Burrito binary needs to be
@@ -76,6 +78,11 @@ This repository is a starting point, not a finished CLI:
 - [`plugins/tackle_codex`](plugins/tackle_codex/README.md) contains the
   first-party OpenAI Codex adapter, including ChatGPT OAuth protocol helpers,
   token refresh, Responses SSE transport, and provider-neutral translation.
+- [`plugins/tackle_mcp`](plugins/tackle_mcp/README.md) contains the optional
+  Anubis-based MCP client plugin. Trusted host startup can connect STDIO or
+  Streamable HTTP servers, discover their tools, and add the returned proxy
+  modules to a session's normal `:tools` list. The plugin currently bridges
+  tools only and is not bundled by the CLI.
 - [`frontends/tackle_cli`](frontends/tackle_cli/README.md) contains the default
   Optimus/ex_ratatui CLI entrypoint. Its Burrito release produces a fixed
   distribution that bundles the first-party Codex and DeepSeek plugins; runtime
@@ -580,7 +587,9 @@ deferred.
    that a user-provided adapter can be substituted without editing the core.
 3. Package the fixed first-party distribution with Burrito; then design and
    verify the user-provided plugin workflow separately.
-4. Add optional capabilities, including MCP, as separate plugins later.
+4. Add optional capabilities as separate plugins; the first MCP tools client is
+   implemented in `plugins/tackle_mcp`, while CLI configuration and general
+   extension loading remain later integration work.
 
 Avoid a plugin marketplace, speculative frameworks, or additional frontends
 before the minimal harness works.
@@ -608,6 +617,11 @@ mix format --check-formatted
 (cd plugins/tackle_codex && mix deps.get)
 (cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
 (cd plugins/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+
+# MCP client plugin
+(cd plugins/tackle_mcp && mix deps.get)
+(cd plugins/tackle_mcp && mix compile --warnings-as-errors && mix test)
+(cd plugins/tackle_mcp && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
 # CLI frontend
 (cd frontends/tackle_cli && mix deps.get)
