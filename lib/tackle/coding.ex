@@ -28,14 +28,14 @@ defmodule Tackle.Coding do
   non-overlapping work, or call `subagent_wait` when there is nothing independent
   to do or the result is needed. Use `subagent_status` only to check or collect a
   run without waiting. Any terminal background outcome automatically queues a
-  notice and continues the parent once its current turn is idle. Choose only
-  from the configured profiles below and give the child a self-contained
-  assignment with the relevant context and expected deliverable. Child sessions
-  are one-shot and share this workspace; keep a single writer, so the parent
-  must not edit while a background child may be editing. Tool restrictions are
-  capability limits, not an operating-system sandbox. Evaluate returned work
-  before relying on it. At most two children can run at once; excess requests
-  are rejected rather than queued.
+  notice; it joins the active turn at its next safe boundary, or starts a
+  continuation when the parent is idle. Choose only from the configured profiles
+  below and give the child a self-contained assignment with the relevant context
+  and expected deliverable. Child sessions are one-shot and share this workspace;
+  keep a single writer, so the parent must not edit while a background child may
+  be editing. Tool restrictions are capability limits, not an operating-system
+  sandbox. Evaluate returned work before relying on it. At most two children can
+  run at once; excess requests are rejected rather than queued.
   """
 
   @doc """

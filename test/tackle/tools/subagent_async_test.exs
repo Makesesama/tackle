@@ -507,7 +507,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert Tackle.Lib.last_answer(snapshot.agent_state) =~ "finished with cancelled"
   end
 
-  test "completion waits for an active parent turn to settle before continuing it" do
+  test "completion joins an active parent turn at its next safe boundary" do
     scope =
       start_scope(
         root: [allow_delegation: true, mode: :manual],
@@ -536,9 +536,6 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     refute_receive {:tackle_turn_started, ^session_id, _turn_id, :background_notice}, 20
 
     send(parent_task, {:respond, "parent done"})
-    assert_receive {:tackle_turn_finished, ^session_id, ^parent_turn, {:ok, _state}}, 2_000
-
-    assert_receive {:tackle_turn_started, ^session_id, automatic_turn, :background_notice}, 2_000
     assert_receive {:adapter_called, automatic_task, "echo", automatic_opts}, 2_000
 
     assert Enum.any?(Keyword.fetch!(automatic_opts, :messages), fn
@@ -550,7 +547,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
            end)
 
     send(automatic_task, {:respond, "notice handled"})
-    assert_receive {:tackle_turn_finished, ^session_id, ^automatic_turn, {:ok, _state}}, 2_000
+    assert_receive {:tackle_turn_finished, ^session_id, ^parent_turn, {:ok, _state}}, 2_000
   end
 
   test "only the logical parent can collect a background run" do

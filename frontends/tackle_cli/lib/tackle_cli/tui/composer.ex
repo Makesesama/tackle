@@ -126,12 +126,12 @@ defmodule Tackle.CLI.TUI.Composer do
   end
 
   @doc """
-  Submits the trimmed draft as the next turn, or runs a shell command.
+  Submits the trimmed draft as the next turn, queues it at a safe boundary, or
+  runs a shell command.
 
-  `/tree` opens the conversation-tree picker instead of sending a prompt. Does
-  nothing while a turn is active (the draft is kept and labeled) or when the
-  draft is empty. A rejected submit reports the failure in the status row and
-  leaves the draft untouched.
+  `/tree` opens the conversation-tree picker instead of sending a prompt. An
+  empty draft does nothing. A rejected submit reports the failure in the status
+  row and restores the draft.
   """
   @spec submit(State.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
@@ -139,10 +139,10 @@ defmodule Tackle.CLI.TUI.Composer do
     raw_draft = Input.get_value(state.input)
 
     cond do
-      state.active_turn != nil or state.pending_operation != nil ->
-        {:noreply, %{state | notice: "Busy · draft kept for the next turn (not queued)"}}
+      state.pending_operation != nil ->
+        {:noreply, %{state | notice: "Busy · submission pending; draft kept"}}
 
-      String.trim(raw_draft) == "/tree" ->
+      String.trim(raw_draft) == "/tree" and state.active_turn == nil ->
         {:noreply, open_tree(state)}
 
       state.draft_empty? ->

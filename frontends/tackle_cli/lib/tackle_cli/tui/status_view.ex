@@ -161,9 +161,10 @@ defmodule Tackle.CLI.TUI.StatusView do
     end
   end
 
-  defp busy_segments(%State{active_turn: nil, pending_operation: nil}), do: []
+  defp busy_segments(%State{active_turn: nil}), do: []
+  defp busy_segments(%State{notice: notice}) when is_binary(notice), do: []
   defp busy_segments(%State{draft_empty?: true}), do: []
-  defp busy_segments(%State{}), do: ["draft kept · not queued"]
+  defp busy_segments(%State{}), do: ["new prompts queue at the next safe boundary"]
 
   defp hint_segments(%State{overlay: {:picker, _}}),
     do: ["↑/↓ select", "Enter apply", "Esc close"]

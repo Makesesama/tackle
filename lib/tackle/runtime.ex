@@ -93,7 +93,8 @@ defmodule Tackle.Runtime do
   end
 
   @doc "Submits one turn to an agent and appends a user message."
-  @spec submit(AgentRef.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  @spec submit(AgentRef.t(), String.t()) ::
+          {:ok, String.t() | :queued} | {:error, term()}
   def submit(%AgentRef{} = agent_ref, input) do
     with_session(agent_ref, &Session.submit(&1, input))
   end

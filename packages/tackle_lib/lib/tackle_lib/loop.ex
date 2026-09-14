@@ -66,6 +66,11 @@ defmodule Tackle.Lib.Loop do
       the state's configured id generator is used.
     * `:tool_supervisor` - Optional `Task.Supervisor` used when the state's tool policy is
       `:concurrent`. Ignored (and not required) for the default sequential policy.
+    * `:take_incoming_messages` - Optional zero-arity host callback returning
+      `{:ok, [message]}` or `{:error, reason}`. Incoming text is appended as user
+      messages immediately before the next provider call. The callback is polled
+      before the first call, after each complete tool batch, and after a final
+      assistant response so steering never interrupts an executing tool batch.
   """
   @spec run(State.t(), String.t(), keyword()) ::
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
@@ -129,6 +134,23 @@ defmodule Tackle.Lib.Loop do
     do: Snapshot.capture(state, turn_id: turn_id)
 
   defp loop(%State{} = state, callbacks) do
+    if cancelled?(callbacks) do
+      do_after_turn(state, cancel_run(state, callbacks), callbacks)
+    else
+      case append_incoming_messages(state, callbacks) do
+        {:ok, state, _count} ->
+          continue_loop(state, callbacks)
+
+        {:error, reason, state} ->
+          final_state =
+            State.set_error(state, "Could not receive queued messages: #{inspect(reason)}")
+
+          {:error, do_after_turn_cleanup(final_state, callbacks)}
+      end
+    end
+  end
+
+  defp continue_loop(%State{} = state, callbacks) do
     cond do
       cancelled?(callbacks) ->
         do_after_turn(state, cancel_run(state, callbacks), callbacks)
@@ -555,17 +577,80 @@ defmodule Tackle.Lib.Loop do
     case emit_and_finalize_message(state, callbacks, assistant_message) do
       {:ok, state} ->
         state = clear_pending_assistant_id(state)
-        emit(callbacks, Event.new(:status_change, %{status: :completed}))
-
-        emit(
-          callbacks,
-          Event.new(:turn_end, %{session_id: state.session_id, status: :completed})
-        )
-
-        {:ok, do_after_turn_cleanup(state, callbacks)}
+        continue_after_assistant(state, callbacks)
 
       {:error, state} ->
         {:error, do_after_turn_cleanup(clear_pending_assistant_id(state), callbacks)}
+    end
+  end
+
+  defp continue_after_assistant(state, callbacks) do
+    if cancelled?(callbacks) do
+      do_after_turn(state, cancel_run(state, callbacks), callbacks)
+    else
+      case append_incoming_messages(state, callbacks) do
+        {:ok, state, 0} ->
+          emit(callbacks, Event.new(:status_change, %{status: :completed}))
+
+          emit(
+            callbacks,
+            Event.new(:turn_end, %{session_id: state.session_id, status: :completed})
+          )
+
+          {:ok, do_after_turn_cleanup(state, callbacks)}
+
+        {:ok, state, _count} ->
+          continue_loop(state, callbacks)
+
+        {:error, reason, state} ->
+          final_state =
+            State.set_error(state, "Could not receive queued messages: #{inspect(reason)}")
+
+          {:error, do_after_turn_cleanup(final_state, callbacks)}
+      end
+    end
+  end
+
+  defp append_incoming_messages(state, %{take_incoming_messages: nil}),
+    do: {:ok, state, 0}
+
+  defp append_incoming_messages(state, callbacks) do
+    case take_incoming_messages(callbacks) do
+      {:ok, incoming} -> append_incoming_batch(state, callbacks, incoming)
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp append_incoming_batch(state, callbacks, incoming) do
+    Enum.reduce_while(incoming, {:ok, state, 0}, fn content, {:ok, state, count} ->
+      message = Message.user(content, id_generator: state.id_generator)
+      state = State.add_message(state, message)
+
+      case emit_and_finalize_message(state, callbacks, message) do
+        {:ok, state} -> {:cont, {:ok, state, count + 1}}
+        {:error, state} -> {:halt, {:error, :message_hook_failed, state}}
+      end
+    end)
+  end
+
+  defp take_incoming_messages(%{take_incoming_messages: callback})
+       when is_function(callback, 0) do
+    case callback.() do
+      {:ok, messages} when is_list(messages) -> validate_incoming_messages(messages)
+      {:error, _reason} = error -> error
+      other -> {:error, {:invalid_incoming_messages, other}}
+    end
+  rescue
+    error -> {:error, {:incoming_messages_callback_failed, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {:incoming_messages_callback_failed, {kind, reason}}}
+  end
+
+  defp validate_incoming_messages(messages) do
+    if Enum.all?(messages, &(is_binary(&1) and &1 != "")) do
+      {:ok, messages}
+    else
+      {:error, {:invalid_incoming_messages, messages}}
     end
   end
 
@@ -1109,7 +1194,8 @@ defmodule Tackle.Lib.Loop do
       llm_stream?: Keyword.get(opts, :llm_stream, false),
       cancellation_signal:
         Keyword.get(opts, :cancellation_signal) || Keyword.get(opts, :cancel_signal),
-      tool_supervisor: Keyword.get(opts, :tool_supervisor)
+      tool_supervisor: Keyword.get(opts, :tool_supervisor),
+      take_incoming_messages: Keyword.get(opts, :take_incoming_messages)
     }
   end
 

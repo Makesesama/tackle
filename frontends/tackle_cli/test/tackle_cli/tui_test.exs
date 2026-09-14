@@ -76,7 +76,8 @@ defmodule Tackle.CLI.TUITest do
       if String.starts_with?(prompt, "fail") do
         {:reply, {:error, :rejected}, state}
       else
-        {:reply, {:ok, "turn-1"}, state}
+        result = if prompt == "second draft", do: {:ok, :queued}, else: {:ok, "turn-1"}
+        {:reply, result, state}
       end
     end
 
@@ -469,7 +470,7 @@ defmodule Tackle.CLI.TUITest do
     assert_regions_within_bounds(regions(grown), 80, 24)
   end
 
-  test "keeps drafting while busy without queuing or submitting", %{tui: tui} do
+  test "queues a prompt while busy and clears it after acceptance", %{tui: tui} do
     inject_paste(tui, "first")
     inject_key(tui, "enter")
     assert_receive {:submitted, "first"}
@@ -477,13 +478,12 @@ defmodule Tackle.CLI.TUITest do
     inject_paste(tui, "second draft")
     inject_key(tui, "enter")
 
-    refute_receive {:submitted, _}, 100
+    assert_receive {:submitted, "second draft"}
     state = state(tui)
 
-    assert draft(tui) == "second draft"
+    assert draft(tui) == ""
     assert state.active_turn != nil
-    assert status_text(state) =~ "not queued"
-    assert composer_widget(state).block.title =~ "not queued"
+    assert composer_widget(state).block.title =~ "Queue next message"
   end
 
   # -- prompt history ------------------------------------------------------
