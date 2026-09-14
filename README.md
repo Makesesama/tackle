@@ -271,7 +271,6 @@ tools: read, bash
 model: openai-codex/gpt-5.5
 thinking: high
 timeoutMs: 300000
-maxIterations: 20
 advertise: true
 allowDelegation: false
 ---
@@ -328,10 +327,11 @@ network, and OS permissions. Do not use this profile as an isolation boundary.
 `Tackle.Coding.scope_spec/2` owns this composition in the root harness. It loads
 normal global/project guidance for root and child agents, advertises the profiles to the
 root, and limits the scope to two simultaneous children plus the root. Excess
-requests are rejected rather than queued. Each child has at most 20 loop
-iterations and a five-minute run timeout; stopping the scope cleans up children.
-The one-shot CLI allows six minutes of event silence so it does not interrupt a
-child at the previous one-minute frontend timeout.
+requests are rejected rather than queued. Children have unlimited loop iterations
+by default and a five-minute run timeout; `maxIterations` or a narrower root
+iteration limit can still bound an individual child. Stopping the scope cleans up
+children. The one-shot CLI allows six minutes of event silence so it does not
+interrupt a child at the previous one-minute frontend timeout.
 
 Each built-in child request uses the requesting root's current model and thinking
 level, including the selection restored by resume and later idle model changes.

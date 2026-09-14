@@ -11,6 +11,7 @@ defmodule Tackle.Agents.DefaultTest do
     assert Enum.all?(definitions, &match?(%Definition{source: :builtin}, &1))
     assert Enum.all?(definitions, & &1.advertise)
     assert Enum.all?(definitions, &(not &1.allow_delegation))
+    assert Enum.all?(definitions, &(&1.max_iterations == :infinity))
 
     assert Enum.find(definitions, &(&1.name == "scout")).tools == ["read", "bash"]
     assert Enum.find(definitions, &(&1.name == "reviewer")).tools == ["read", "bash"]

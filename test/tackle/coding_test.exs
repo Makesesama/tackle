@@ -35,7 +35,7 @@ defmodule Tackle.CodingTest do
     assert scout.config.tools == [Read, Bash]
     refute scout.allow_delegation
     assert scout.model_source == :parent
-    assert scout.config.max_iterations == 20
+    assert scout.config.max_iterations == :infinity
     refute scout.config.llm_stream
     assert scout.config.model_ref == spec.root_spec.config.model_ref
     assert scout.config.context.cwd == cwd

@@ -17,7 +17,7 @@ defmodule Tackle.Agents.Definition do
     :thinking,
     tools: nil,
     timeout: :timer.minutes(5),
-    max_iterations: 20,
+    max_iterations: :infinity,
     advertise: false,
     allow_delegation: false
   ]
@@ -34,7 +34,7 @@ defmodule Tackle.Agents.Definition do
           thinking: String.t() | nil,
           tools: [String.t()] | nil,
           timeout: pos_integer(),
-          max_iterations: pos_integer(),
+          max_iterations: pos_integer() | :infinity,
           advertise: boolean(),
           allow_delegation: boolean()
         }
