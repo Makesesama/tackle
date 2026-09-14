@@ -15,6 +15,8 @@ defmodule Tackle.CLI.Output.Progress do
   @type t :: %__MODULE__{screen: pid(), spinner_id: reference(), width: pos_integer()}
   @type handle :: t() | :disabled
 
+  @finish_timeout 250
+
   @doc "Starts progress when stderr is an interactive terminal."
   @spec start(keyword()) :: handle()
   def start(opts \\ []) do
@@ -49,20 +51,27 @@ defmodule Tackle.CLI.Output.Progress do
   def finish(:disabled, _result), do: :ok
 
   def finish(%__MODULE__{} = progress, result) do
-    {label, resolution} =
-      case result do
-        {:ok, _value} -> {"Done", :ok}
-        {:error, _reason} -> {"Failed", :error}
-      end
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        {label, resolution} =
+          case result do
+            {:ok, _value} -> {"Done", :ok}
+            {:error, _reason} -> {"Failed", :error}
+          end
 
-    Owl.Spinner.stop(
-      id: progress.spinner_id,
-      resolution: resolution,
-      label: truncate(progress, label)
-    )
+        Owl.Spinner.stop(
+          id: progress.spinner_id,
+          resolution: resolution,
+          label: truncate(progress, label)
+        )
 
-    Owl.LiveScreen.flush(progress.screen)
-    GenServer.stop(progress.screen)
+        Owl.LiveScreen.flush(progress.screen)
+        GenServer.stop(progress.screen)
+      end)
+
+    await_finish(pid, monitor)
+    terminate_spinner(progress.spinner_id)
+    terminate_screen(progress.screen)
     :ok
   rescue
     _exception -> :ok
@@ -116,16 +125,33 @@ defmodule Tackle.CLI.Output.Progress do
   defp start_spinner(screen, width) do
     progress = %__MODULE__{screen: screen, spinner_id: make_ref(), width: width}
 
-    case Owl.Spinner.start(
-           id: progress.spinner_id,
-           live_screen_server: screen,
-           labels: [processing: truncate(progress, "Starting agent…")]
-         ) do
-      {:ok, _spinner} ->
-        progress
+    # `start_link/1` links the command to the screen. Progress is optional, so
+    # detach it before Owl can render and make every unsuccessful startup path
+    # explicitly release the detached process.
+    Process.unlink(screen)
 
-      _other ->
-        GenServer.stop(screen)
+    try do
+      case Owl.Spinner.start(
+             id: progress.spinner_id,
+             live_screen_server: screen,
+             labels: [processing: truncate(progress, "Starting agent…")]
+           ) do
+        {:ok, _spinner} ->
+          progress
+
+        _other ->
+          terminate_screen(screen)
+          :disabled
+      end
+    rescue
+      _exception ->
+        terminate_spinner(progress.spinner_id)
+        terminate_screen(screen)
+        :disabled
+    catch
+      _kind, _reason ->
+        terminate_spinner(progress.spinner_id)
+        terminate_screen(screen)
         :disabled
     end
   end
@@ -136,6 +162,46 @@ defmodule Tackle.CLI.Output.Progress do
     end
 
     progress
+  end
+
+  defp await_finish(pid, monitor) do
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+    after
+      @finish_timeout ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+        end
+    end
+  end
+
+  defp terminate_spinner(spinner_id) do
+    case Registry.lookup(Owl.WidgetsRegistry, spinner_id) do
+      [{pid, _value}] -> terminate_process(pid)
+      [] -> :ok
+    end
+  end
+
+  defp terminate_screen(screen), do: terminate_process(screen)
+
+  defp terminate_process(pid) do
+    if Process.alive?(pid) do
+      monitor = Process.monitor(pid)
+      Process.exit(pid, :shutdown)
+
+      receive do
+        {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+      after
+        @finish_timeout ->
+          Process.exit(pid, :kill)
+
+          receive do
+            {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+          end
+      end
+    end
   end
 
   defp truncate(progress, label) do
