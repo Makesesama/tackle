@@ -235,7 +235,7 @@ defmodule Tackle.CLI.RunTest do
     login_output =
       capture_io(fn -> assert 0 == Run.auth_login(%{provider: "cli-auth"}) end)
 
-    assert login_output =~ "Stored credentials for cli-auth."
+    assert login_output =~ "Authenticated with cli-auth."
     assert_receive {:auth_login, _opts}
     assert {:ok, %{"token" => "value"}} = Tackle.Auth.fetch("cli-auth")
 
@@ -266,12 +266,15 @@ defmodule Tackle.CLI.RunTest do
     output =
       capture_io(:stderr, fn -> assert 1 == Run.auth_login(%{provider: "missing"}) end)
 
-    assert output =~ "unsupported_auth_provider"
+    assert output =~ ~s(Provider "missing" is not configured.)
+    assert output =~ "Available providers: cli-test"
+    refute output =~ "unsupported_auth_provider"
 
     usage_output =
       capture_io(:stderr, fn -> assert 1 == Run.auth_usage(%{provider: "missing"}) end)
 
-    assert usage_output =~ "unsupported_auth_provider"
+    assert usage_output =~ ~s(Provider "missing" is not configured.)
+    refute usage_output =~ "unsupported_auth_provider"
   end
 
   test "an interrupted session reports a recovery hint instead of a raw inspect", %{home: home} do

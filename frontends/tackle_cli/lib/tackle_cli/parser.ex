@@ -10,12 +10,25 @@ defmodule Tackle.CLI.Parser do
              resume: String.t() | :latest | nil,
              abandon: boolean()
            }}
-          | {:sessions, %{query: String.t() | nil, limit: pos_integer() | nil}}
+          | {:sessions,
+             %{
+               query: String.t() | nil,
+               limit: pos_integer() | nil,
+               cursor: String.t() | nil,
+               format: :human | :plain | :json,
+               color: :auto | :always | :never
+             }}
           | {:models, %{}}
-          | {:auth_login, %{provider: String.t()}}
-          | {:auth_status, %{provider: String.t() | nil}}
-          | {:auth_usage, %{provider: String.t() | nil}}
-          | {:auth_logout, %{provider: String.t()}}
+          | {:auth_login, auth_options(String.t())}
+          | {:auth_status, auth_options(String.t() | nil)}
+          | {:auth_usage, auth_options(String.t() | nil)}
+          | {:auth_logout, auth_options(String.t())}
+
+  @type auth_options(provider) :: %{
+          provider: provider,
+          format: :human | :plain | :json,
+          color: :auto | :always | :never
+        }
 
   @type parse_result ::
           {:ok, command()}
@@ -68,23 +81,29 @@ defmodule Tackle.CLI.Parser do
   defp parse_result({:ok, [:sessions], result}, _parser) do
     {:ok,
      {:sessions,
-      %{query: Map.get(result.options, :query), limit: Map.get(result.options, :limit)}}}
+      %{
+        query: Map.get(result.options, :query),
+        limit: Map.get(result.options, :limit),
+        cursor: Map.get(result.options, :cursor),
+        format: Map.get(result.options, :format, :human),
+        color: Map.get(result.options, :color, :auto)
+      }}}
   end
 
   defp parse_result({:ok, [:auth], _result}, parser),
     do: {:help, format_help(parser, [:auth])}
 
   defp parse_result({:ok, [:auth, :login], result}, _parser),
-    do: {:ok, {:auth_login, %{provider: result.args.provider}}}
+    do: {:ok, {:auth_login, auth_command(result, result.args.provider)}}
 
   defp parse_result({:ok, [:auth, :status], result}, _parser),
-    do: {:ok, {:auth_status, %{provider: Map.get(result.args, :provider)}}}
+    do: {:ok, {:auth_status, auth_command(result, Map.get(result.args, :provider))}}
 
   defp parse_result({:ok, [:auth, :usage], result}, _parser),
-    do: {:ok, {:auth_usage, %{provider: Map.get(result.args, :provider)}}}
+    do: {:ok, {:auth_usage, auth_command(result, Map.get(result.args, :provider))}}
 
   defp parse_result({:ok, [:auth, :logout], result}, _parser),
-    do: {:ok, {:auth_logout, %{provider: result.args.provider}}}
+    do: {:ok, {:auth_logout, auth_command(result, result.args.provider)}}
 
   defp parse_result({:error, errors}, parser),
     do: {:error, format_errors(parser, errors)}
@@ -174,14 +193,35 @@ defmodule Tackle.CLI.Parser do
             limit: [
               value_name: "N",
               long: "--limit",
-              help: "Maximum number of results",
+              help: "Maximum number of results (default: 20)",
               parser: :integer
+            ],
+            cursor: [
+              value_name: "CURSOR",
+              long: "--cursor",
+              help: "Continue from a cursor returned by JSON output",
+              parser: :string
+            ],
+            format: [
+              value_name: "FORMAT",
+              long: "--format",
+              help: "Output format: human, plain, or json",
+              parser: &output_format/1,
+              default: :human
+            ],
+            color: [
+              value_name: "WHEN",
+              long: "--color",
+              help: "Color output: auto, always, or never",
+              parser: &color_mode/1,
+              default: :auto
             ]
           ]
         ],
         auth: [
           name: "auth",
           about: "Manage provider credentials",
+          options: output_options(global: true),
           subcommands: [
             login: [
               name: "login",
@@ -207,6 +247,47 @@ defmodule Tackle.CLI.Parser do
         ]
       ]
     )
+  end
+
+  defp output_options(opts) do
+    global? = Keyword.get(opts, :global, false)
+
+    [
+      format: [
+        value_name: "FORMAT",
+        long: "--format",
+        help: "Output format: human, plain, or json",
+        parser: &output_format/1,
+        default: :human,
+        global: global?
+      ],
+      color: [
+        value_name: "WHEN",
+        long: "--color",
+        help: "Color output: auto, always, or never",
+        parser: &color_mode/1,
+        default: :auto,
+        global: global?
+      ]
+    ]
+  end
+
+  defp output_format(value) when value in ["human", "plain", "json"],
+    do: {:ok, String.to_existing_atom(value)}
+
+  defp output_format(_value), do: {:error, "must be human, plain, or json"}
+
+  defp color_mode(value) when value in ["auto", "always", "never"],
+    do: {:ok, String.to_existing_atom(value)}
+
+  defp color_mode(_value), do: {:error, "must be auto, always, or never"}
+
+  defp auth_command(result, provider) do
+    %{
+      provider: provider,
+      format: Map.get(result.options, :format, :human),
+      color: Map.get(result.options, :color, :auto)
+    }
   end
 
   defp provider_arg(opts) do

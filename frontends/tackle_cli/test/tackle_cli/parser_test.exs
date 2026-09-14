@@ -67,10 +67,40 @@ defmodule Tackle.CLI.ParserTest do
   end
 
   test "parses session listing and search command" do
-    assert {:ok, {:sessions, %{query: nil, limit: nil}}} = Parser.parse(["sessions"])
+    assert {:ok,
+            {:sessions, %{query: nil, limit: nil, cursor: nil, format: :human, color: :auto}}} =
+             Parser.parse(["sessions"])
 
-    assert {:ok, {:sessions, %{query: "hello", limit: 5}}} =
-             Parser.parse(["sessions", "--query", "hello", "--limit", "5"])
+    assert {:ok,
+            {:sessions,
+             %{
+               query: "hello",
+               limit: 5,
+               cursor: "next-page",
+               format: :json,
+               color: :never
+             }}} =
+             Parser.parse([
+               "sessions",
+               "--query",
+               "hello",
+               "--limit",
+               "5",
+               "--cursor",
+               "next-page",
+               "--format",
+               "json",
+               "--color",
+               "never"
+             ])
+  end
+
+  test "rejects unsupported session output options" do
+    assert {:error, error} = Parser.parse(["sessions", "--format", "yaml"])
+    assert error =~ "must be human, plain, or json"
+
+    assert {:error, error} = Parser.parse(["sessions", "--color", "sometimes"])
+    assert error =~ "must be auto, always, or never"
   end
 
   test "parses model listing command" do
@@ -87,18 +117,36 @@ defmodule Tackle.CLI.ParserTest do
   end
 
   test "parses auth commands" do
-    assert {:ok, {:auth_login, %{provider: "openai-codex"}}} =
+    assert {:ok, {:auth_login, %{provider: "openai-codex", format: :human, color: :auto}}} =
              Parser.parse(["auth", "login", "openai-codex"])
 
-    assert {:ok, {:auth_status, %{provider: nil}}} = Parser.parse(["auth", "status"])
+    assert {:ok, {:auth_status, %{provider: nil, format: :human, color: :auto}}} =
+             Parser.parse(["auth", "status"])
 
-    assert {:ok, {:auth_usage, %{provider: nil}}} = Parser.parse(["auth", "usage"])
+    assert {:ok, {:auth_usage, %{provider: nil, format: :human, color: :auto}}} =
+             Parser.parse(["auth", "usage"])
 
-    assert {:ok, {:auth_usage, %{provider: "deepseek"}}} =
-             Parser.parse(["auth", "usage", "deepseek"])
+    assert {:ok, {:auth_usage, %{provider: "deepseek", format: :json, color: :never}}} =
+             Parser.parse([
+               "auth",
+               "usage",
+               "deepseek",
+               "--format",
+               "json",
+               "--color",
+               "never"
+             ])
 
-    assert {:ok, {:auth_logout, %{provider: "openai-codex"}}} =
-             Parser.parse(["auth", "logout", "openai-codex"])
+    assert {:ok, {:auth_logout, %{provider: "openai-codex", format: :plain, color: :auto}}} =
+             Parser.parse(["auth", "logout", "openai-codex", "--format", "plain"])
+  end
+
+  test "rejects unsupported auth output options" do
+    assert {:error, error} = Parser.parse(["auth", "status", "--format", "yaml"])
+    assert error =~ "must be human, plain, or json"
+
+    assert {:error, error} = Parser.parse(["auth", "usage", "--color", "sometimes"])
+    assert error =~ "must be auto, always, or never"
   end
 
   test "does not expose adapter module selection" do

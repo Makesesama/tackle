@@ -4,6 +4,10 @@ defmodule Tackle.CLI.Run do
   alias Tackle.Auth.Provider
   alias Tackle.CLI.Distribution
   alias Tackle.CLI.Interaction
+  alias Tackle.CLI.Output
+  alias Tackle.CLI.Output.Auth, as: AuthOutput
+  alias Tackle.CLI.Output.Progress
+  alias Tackle.CLI.Output.Sessions, as: SessionsOutput
   alias Tackle.CLI.TUI
   alias Tackle.Session.Spec, as: SessionSpec
 
@@ -103,12 +107,19 @@ defmodule Tackle.CLI.Run do
     stop_scope(scope.scope_ref)
   end
 
-  @spec sessions(%{query: String.t() | nil, limit: pos_integer() | nil}) :: non_neg_integer()
-  def sessions(%{query: query, limit: limit}) do
+  @spec sessions(%{
+          query: String.t() | nil,
+          limit: pos_integer() | nil,
+          cursor: String.t() | nil,
+          format: Output.format(),
+          color: Output.color_mode()
+        }) :: non_neg_integer()
+  def sessions(%{query: query, limit: limit, cursor: cursor} = opts) do
     with {:ok, _apps} <- ensure_started(),
-         {:ok, filters} <- session_filters(limit),
-         {:ok, %{sessions: sessions}} <- list_sessions(query, filters) do
-      sessions |> Enum.map(&session_row/1) |> print_table()
+         {:ok, filters} <- session_filters(limit, cursor),
+         {:ok, page} <- list_sessions(query, filters) do
+      output = Output.new(format: opts.format, color: opts.color)
+      page |> SessionsOutput.render(query, output) |> then(&Output.puts(output, &1))
       0
     else
       {:error, reason} -> error(reason)
@@ -128,136 +139,192 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  @spec auth_login(%{provider: String.t()}) :: non_neg_integer()
-  def auth_login(%{provider: provider}) do
+  @spec auth_login(%{
+          provider: String.t(),
+          format: Output.format(),
+          color: Output.color_mode()
+        }) :: non_neg_integer()
+  def auth_login(%{provider: provider} = opts) do
+    output = auth_output(opts)
+
     with {:ok, _apps} <- ensure_started(),
-         :ok <- Provider.login(provider, interaction: Interaction.handle()) do
-      Owl.IO.puts(Owl.Data.tag("Stored credentials for #{provider}.", :green))
+         :ok <- ensure_human_format(output, :login),
+         :ok <- Provider.login(provider, interaction: Interaction.handle(output)) do
+      :login |> AuthOutput.render_action(provider, :ok, output) |> then(&Output.puts(output, &1))
       0
     else
-      {:error, reason} -> error(reason)
-      reason -> error(reason)
+      {:error, reason} -> auth_error(reason, output)
+      reason -> auth_error(reason, output)
     end
   end
 
-  @spec auth_status(%{provider: String.t() | nil}) :: non_neg_integer()
-  def auth_status(%{provider: nil}) do
+  @spec auth_status(%{
+          provider: String.t() | nil,
+          format: Output.format(),
+          color: Output.color_mode()
+        }) :: non_neg_integer()
+  def auth_status(%{provider: nil} = opts) do
+    output = auth_output(opts)
+
     with {:ok, _apps} <- ensure_started(),
          {:ok, providers} <- Provider.list() do
-      providers |> Enum.map(&auth_status_row/1) |> print_table()
+      providers
+      |> Enum.map(&auth_status_entry/1)
+      |> AuthOutput.render_status(output)
+      |> then(&Output.puts(output, &1))
+
       0
     else
-      {:error, reason} -> error(reason)
-      reason -> error(reason)
+      {:error, reason} -> auth_error(reason, output)
+      reason -> auth_error(reason, output)
     end
   end
 
-  def auth_status(%{provider: provider}) do
+  def auth_status(%{provider: provider} = opts) when is_binary(provider) do
+    output = auth_output(opts)
+
     with {:ok, _apps} <- ensure_started(),
+         {:ok, [matching]} <- auth_providers(provider),
          {:ok, status} <- Provider.status(provider) do
-      Owl.IO.puts(["#{provider}: ", status_tag(status)])
+      [%{provider: matching, result: {:ok, status}}]
+      |> AuthOutput.render_status(output)
+      |> then(&Output.puts(output, &1))
+
       if status == :missing, do: 1, else: 0
     else
-      {:error, reason} -> error(reason)
-      reason -> error(reason)
+      {:error, reason} -> auth_error(reason, output)
+      reason -> auth_error(reason, output)
     end
   end
 
-  @spec auth_logout(%{provider: String.t()}) :: non_neg_integer()
-  def auth_logout(%{provider: provider}) do
+  @spec auth_logout(%{
+          provider: String.t(),
+          format: Output.format(),
+          color: Output.color_mode()
+        }) :: non_neg_integer()
+  def auth_logout(%{provider: provider} = opts) do
+    output = auth_output(opts)
+
     with {:ok, _apps} <- ensure_started(),
-         :ok <- confirm_logout(provider),
+         :ok <- ensure_human_format(output, :logout),
+         :ok <- confirm_logout(provider, output),
          :ok <- Provider.logout(provider) do
-      Owl.IO.puts(Owl.Data.tag("Deleted credentials for #{provider}.", :green))
+      :logout
+      |> AuthOutput.render_action(provider, :ok, output)
+      |> then(&Output.puts(output, &1))
+
       0
     else
       {:error, :aborted} ->
-        Owl.IO.puts(Owl.Data.tag("aborted", :yellow))
+        :logout
+        |> AuthOutput.render_action(provider, :aborted, output)
+        |> then(&Output.puts(output, &1))
+
         1
 
       {:error, reason} ->
-        error(reason)
+        auth_error(reason, output)
 
       reason ->
-        error(reason)
+        auth_error(reason, output)
     end
   end
 
-  @spec auth_usage(%{provider: String.t() | nil}) :: non_neg_integer()
-  def auth_usage(%{provider: nil}) do
+  @spec auth_usage(%{
+          provider: String.t() | nil,
+          format: Output.format(),
+          color: Output.color_mode()
+        }) :: non_neg_integer()
+  def auth_usage(%{provider: nil} = opts) do
+    output = auth_output(opts)
+
     with {:ok, _apps} <- ensure_started(),
          {:ok, providers} <- Provider.list() do
-      Enum.each(providers, &print_provider_usage/1)
+      providers
+      |> auth_usage_entries()
+      |> AuthOutput.render_usage(output)
+      |> then(&Output.puts(output, &1))
+
       0
     else
-      {:error, reason} -> error(reason)
-      reason -> error(reason)
+      {:error, reason} -> auth_error(reason, output)
+      reason -> auth_error(reason, output)
     end
   end
 
-  def auth_usage(%{provider: provider}) do
+  def auth_usage(%{provider: provider} = opts) when is_binary(provider) do
+    output = auth_output(opts)
+
     with {:ok, _apps} <- ensure_started(),
+         {:ok, _providers} <- auth_providers(provider),
          {:ok, report} <- Provider.usage(provider) do
-      print_usage(provider, report)
+      [%{provider: provider, result: {:ok, report}}]
+      |> AuthOutput.render_usage(output)
+      |> then(&Output.puts(output, &1))
+
       0
     else
-      {:error, reason} -> error(reason)
-      reason -> error(reason)
+      {:error, reason} -> auth_error(reason, output)
+      reason -> auth_error(reason, output)
     end
   end
 
-  defp print_provider_usage(provider) do
-    case Provider.usage(provider.id) do
-      {:ok, report} -> print_usage(provider.id, report)
-      {:error, {:unsupported_provider_flow, _id, _callback}} -> :ok
-      {:error, reason} -> Owl.IO.puts(Owl.Data.tag("#{provider.id}: #{inspect(reason)}", :yellow))
+  defp auth_output(opts) do
+    Output.new(
+      format: Map.get(opts, :format, :human),
+      color: Map.get(opts, :color, :auto)
+    )
+  end
+
+  defp ensure_human_format(%Output{format: :human}, _flow), do: :ok
+
+  defp ensure_human_format(_output, flow) do
+    {:error, {:interactive_auth_requires_human_output, flow}}
+  end
+
+  defp auth_providers(provider) do
+    with {:ok, providers} <- Provider.list(),
+         {:ok, matching} <- find_auth_provider(provider, providers) do
+      {:ok, [matching]}
     end
   end
 
-  defp auth_status_row(provider) do
-    status =
-      case Provider.status(provider.id) do
-        {:ok, status} -> status
-        {:error, reason} -> reason
-      end
+  defp find_auth_provider(provider, providers) do
+    case Enum.find(providers, &(&1.id == provider)) do
+      nil ->
+        supported = Enum.map(providers, & &1.id)
+        {:error, {:unsupported_auth_provider, provider, {:supported, supported}}}
 
-    %{"provider" => provider.id, "status" => status_label(status)}
+      matching ->
+        {:ok, matching}
+    end
   end
 
-  defp status_label(:stored), do: "stored"
-  defp status_label(:missing), do: "missing"
-  defp status_label(other), do: inspect(other)
-
-  defp status_tag(:stored), do: Owl.Data.tag("stored", :green)
-  defp status_tag(:missing), do: Owl.Data.tag("missing", :yellow)
-  defp status_tag(other), do: Owl.Data.tag(inspect(other), :red)
-
-  defp print_usage(provider, report) when is_map(report) do
-    Owl.IO.puts(Owl.Data.tag("#{provider} usage", :cyan))
-
-    report
-    |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
-    |> Enum.each(fn {key, value} -> print_usage_field(key, value) end)
+  defp auth_status_entry(provider) do
+    %{provider: provider, result: Provider.status(provider.id)}
   end
 
-  defp print_usage_field(key, value) when is_binary(value) do
-    Owl.IO.puts(["  ", Owl.Data.tag(to_string(key), :cyan), ": ", value])
+  defp auth_usage_entries(providers) do
+    providers
+    |> Enum.map(fn provider -> %{provider: provider.id, result: Provider.usage(provider.id)} end)
+    |> Enum.reject(fn
+      %{result: {:error, {:unsupported_provider_flow, _provider, :usage}}} -> true
+      _entry -> false
+    end)
   end
 
-  defp print_usage_field(key, value) do
-    Owl.IO.puts(["  ", Owl.Data.tag(to_string(key), :cyan), ":"])
-    Owl.IO.puts(indent_inspect(value))
+  defp auth_error(reason, output) do
+    error_output = %{output | device: :stderr}
+    reason |> AuthOutput.render_error(error_output) |> then(&Output.puts(error_output, &1))
+    1
   end
 
-  defp indent_inspect(value) do
-    value
-    |> inspect(pretty: true, limit: :infinity, printable_limit: 1_024)
-    |> String.replace("\n", "\n    ")
-    |> then(&("    " <> &1))
-  end
-
-  defp confirm_logout(provider) do
-    question = Owl.Data.tag("Delete stored credentials for #{provider}?", :yellow)
+  defp confirm_logout(provider, output) do
+    question = [
+      Output.style(output, :warning, "Delete stored credentials for "),
+      Output.style(output, :heading, provider),
+      "?"
+    ]
 
     if Owl.IO.confirm(message: question), do: :ok, else: {:error, :aborted}
   end
@@ -318,22 +385,17 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp session_filters(nil), do: {:ok, %{}}
-  defp session_filters(limit) when is_integer(limit) and limit > 0, do: {:ok, %{limit: limit}}
-  defp session_filters(limit), do: {:error, {:invalid_limit, limit}}
+  defp session_filters(nil, cursor), do: {:ok, compact_filters(%{limit: 20, cursor: cursor})}
+
+  defp session_filters(limit, cursor) when is_integer(limit) and limit > 0,
+    do: {:ok, compact_filters(%{limit: limit, cursor: cursor})}
+
+  defp session_filters(limit, _cursor), do: {:error, {:invalid_limit, limit}}
+
+  defp compact_filters(filters), do: Map.reject(filters, fn {_key, value} -> is_nil(value) end)
 
   defp list_sessions(nil, filters), do: Tackle.list_sessions(filters)
   defp list_sessions(query, filters), do: Tackle.search_sessions(query, filters)
-
-  defp session_row(session) do
-    %{
-      "session" => session.session_id,
-      "updated" => to_string(session.updated_at),
-      "status" => to_string(session.status),
-      "messages" => Integer.to_string(session.message_count),
-      "title" => session.title || session.preview || "(untitled)"
-    }
-  end
 
   # Owl.Table.new/2 requires a nonempty list, and an empty result is reachable
   # for both `models` and `sessions`.
@@ -346,17 +408,27 @@ defmodule Tackle.CLI.Run do
   end
 
   defp run_prompt(agent_ref, prompt) do
-    with {:ok, snapshot} <- Tackle.subscribe(agent_ref),
-         {:ok, turn_id} <- Tackle.submit(agent_ref, prompt),
-         {:ok, answer} <- await_answer(snapshot.session_id, turn_id) do
-      Owl.IO.puts(answer)
-      0
-    else
-      {:error, reason} -> error(reason)
+    progress = Progress.start()
+
+    result =
+      with {:ok, snapshot} <- Tackle.subscribe(agent_ref),
+           {:ok, turn_id} <- Tackle.submit(agent_ref, prompt) do
+        await_answer(snapshot.session_id, turn_id, progress)
+      end
+
+    Progress.finish(progress, result)
+
+    case result do
+      {:ok, answer} ->
+        Owl.IO.puts(answer)
+        0
+
+      {:error, reason} ->
+        error(reason)
     end
   end
 
-  defp await_answer(session_id, turn_id) do
+  defp await_answer(session_id, turn_id, progress) do
     receive do
       {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, agent_state}} ->
         {:ok, Tackle.Lib.last_answer(agent_state) || ""}
@@ -370,8 +442,8 @@ defmodule Tackle.CLI.Run do
       {:tackle_turn_failed, ^session_id, ^turn_id, reason} ->
         {:error, reason}
 
-      {:tackle_event, ^session_id, ^turn_id, _event} ->
-        await_answer(session_id, turn_id)
+      {:tackle_event, ^session_id, ^turn_id, event} ->
+        await_answer(session_id, turn_id, Progress.event(progress, event))
     after
       @terminal_timeout -> {:error, :timeout}
     end
