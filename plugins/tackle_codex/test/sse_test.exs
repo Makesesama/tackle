@@ -96,6 +96,41 @@ defmodule Tackle.Plugins.Codex.SSETest do
              SSE.result(parser, "gpt-5.5", nil)
   end
 
+  test "keeps reasoning summary parts on separate lines and strips markdown emphasis" do
+    callback = fn event -> send(self(), {:event, event}) end
+
+    wire =
+      Enum.map_join(
+        [
+          %{
+            "type" => "response.reasoning_summary_text.delta",
+            "output_index" => 0,
+            "summary_index" => 0,
+            "delta" => "**First thought**"
+          },
+          %{
+            "type" => "response.reasoning_summary_text.delta",
+            "output_index" => 0,
+            "summary_index" => 1,
+            "delta" => "**Second thought**"
+          },
+          %{
+            "type" => "response.completed",
+            "response" => %{"status" => "completed", "output" => []}
+          }
+        ],
+        fn event -> "data: " <> JSON.encode!(event) <> "\n\n" end
+      )
+
+    parser = SSE.new() |> SSE.push(wire, callback) |> SSE.finish(callback)
+
+    assert_receive {:event, %{type: :reasoning_delta, delta: "First thought"}}
+    assert_receive {:event, %{type: :reasoning_delta, delta: "\n\nSecond thought"}}
+
+    assert {:ok, %{data: %{"thinking" => "First thought\n\nSecond thought"}}} =
+             SSE.result(parser, "gpt-5.5", nil)
+  end
+
   test "decodes structured response content when a schema was requested" do
     wire =
       "data: " <>

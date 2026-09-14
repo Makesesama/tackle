@@ -18,7 +18,9 @@ defmodule Tackle.Plugins.Codex.SSE do
           buffer: binary(),
           data_lines: [binary()],
           content_parts: %{optional(non_neg_integer()) => binary()},
-          thinking_parts: %{optional(non_neg_integer()) => binary()},
+          thinking_parts: %{
+            optional({non_neg_integer(), non_neg_integer()}) => binary()
+          },
           tool_calls: %{optional(non_neg_integer()) => map()},
           provider_output: [map()],
           usage: map() | nil,
@@ -167,8 +169,16 @@ defmodule Tackle.Plugins.Codex.SSE do
          callback
        )
        when is_binary(delta) do
-    emit(callback, %{type: :reasoning_delta, delta: delta})
-    %{state | thinking_parts: append_part(state.thinking_parts, output_index(event), delta)}
+    delta = normalize_thinking(delta)
+
+    if delta == "" do
+      state
+    else
+      part = reasoning_part(event)
+      {thinking_parts, emitted_delta} = append_thinking_part(state.thinking_parts, part, delta)
+      emit(callback, %{type: :reasoning_delta, delta: emitted_delta})
+      %{state | thinking_parts: thinking_parts}
+    end
   end
 
   defp handle_event(
@@ -224,7 +234,7 @@ defmodule Tackle.Plugins.Codex.SSE do
            event,
          _callback
        ) do
-    put_part(state, :thinking_parts, output_index(event), reasoning_text(item))
+    put_reasoning_parts(state, output_index(event), item)
   end
 
   defp handle_event(state, %{"type" => type, "response" => response}, callback)
@@ -282,7 +292,7 @@ defmodule Tackle.Plugins.Codex.SSE do
         put_part(acc, :content_parts, index, message_text(item))
 
       {%{"type" => "reasoning"} = item, index}, acc ->
-        put_part(acc, :thinking_parts, index, reasoning_text(item))
+        put_reasoning_parts(acc, index, item)
 
       {_item, _index}, acc ->
         acc
@@ -330,19 +340,31 @@ defmodule Tackle.Plugins.Codex.SSE do
 
   defp message_text(_item), do: ""
 
-  defp reasoning_text(item), do: text_parts(item["summary"])
+  defp reasoning_part(event), do: {output_index(event), summary_index(event)}
 
-  defp text_parts(parts) when is_list(parts) do
-    parts
-    |> Enum.map(fn
-      %{"text" => text} when is_binary(text) -> text
-      _part -> ""
-    end)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.join("\n\n")
+  defp put_reasoning_parts(state, output_index, item) do
+    case item["summary"] do
+      parts when is_list(parts) ->
+        Enum.with_index(parts)
+        |> Enum.reduce(state, fn {part, summary_index}, acc ->
+          text =
+            case part do
+              %{"text" => text} when is_binary(text) -> normalize_thinking(text)
+              _part -> ""
+            end
+
+          put_part(acc, :thinking_parts, {output_index, summary_index}, text)
+        end)
+
+      _summary ->
+        state
+    end
   end
 
-  defp text_parts(_parts), do: ""
+  defp summary_index(%{"summary_index" => index}) when is_integer(index) and index >= 0,
+    do: index
+
+  defp summary_index(_event), do: 0
 
   defp normalize_usage(nil), do: nil
 
@@ -388,6 +410,10 @@ defmodule Tackle.Plugins.Codex.SSE do
 
   defp put_part(state, _field, _index, ""), do: state
 
+  defp put_part(state, :thinking_parts, index, text) do
+    Map.update!(state, :thinking_parts, &Map.put(&1, index, normalize_thinking(text)))
+  end
+
   defp put_part(state, field, index, text) do
     Map.update!(state, field, &Map.put(&1, index, text))
   end
@@ -397,6 +423,17 @@ defmodule Tackle.Plugins.Codex.SSE do
     |> Enum.sort_by(fn {index, _text} -> index end)
     |> Enum.map_join(separator, fn {_index, text} -> text end)
   end
+
+  defp append_thinking_part(parts, index, delta) do
+    separator = if map_size(parts) > 0 and not Map.has_key?(parts, index), do: "\n\n", else: ""
+    {Map.update(parts, index, delta, &(&1 <> delta)), separator <> delta}
+  end
+
+  # Codex wraps its reasoning summaries in Markdown emphasis. Thinking is a
+  # plain-text provider-neutral field, so remove the markers even when they
+  # arrive split across streaming deltas.
+  defp normalize_thinking(text) when is_binary(text), do: String.replace(text, "**", "")
+  defp normalize_thinking(text), do: text
 
   defp provider_output(output) when is_list(output) do
     Enum.map(output, fn
