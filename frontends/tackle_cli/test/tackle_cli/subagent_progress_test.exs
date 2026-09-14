@@ -259,6 +259,41 @@ defmodule Tackle.CLI.SubagentProgressTest do
     refute ticked.conversation.follow?
   end
 
+  test "an automatic background-notice turn is adopted before its events" do
+    state = %{shell() | active_turn: nil, activity: nil}
+
+    assert {:noreply, started} =
+             RuntimeEvents.handle(
+               {:tackle_turn_started, "session", "notice-turn", :background_notice},
+               state
+             )
+
+    assert started.active_turn == %{
+             id: "notice-turn",
+             operation: :continue,
+             cancellation_requested?: false
+           }
+
+    assert started.activity == "processing subagent notice"
+
+    assert {:noreply, progressed} =
+             RuntimeEvents.handle(
+               {:tackle_event, "session", "notice-turn",
+                Event.new(:status_change, %{status: :responding})},
+               started
+             )
+
+    assert progressed.activity == "responding"
+
+    assert {:noreply, settled} =
+             RuntimeEvents.handle(
+               {:tackle_turn_finished, "session", "notice-turn", {:ok, started.agent_state}},
+               started
+             )
+
+    assert settled.active_turn == nil
+  end
+
   test "foreign events are ignored and a completion without a start has no invented duration" do
     state = shell()
     foreign = {:tackle_event, "other", "turn", Event.new(:tool_start, %{name: "subagent"})}

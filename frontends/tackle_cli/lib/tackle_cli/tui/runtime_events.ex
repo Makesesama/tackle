@@ -230,6 +230,30 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   defp route({:tackle_session_navigated, _session_id, _snapshot, _outcome}, state),
     do: {:noreply, state, render?: false}
 
+  # A background subagent terminal notice wakes an idle parent without a frontend
+  # submit command. Adopt that internally-started continuation before its events;
+  # the session broadcasts this message before processing the turn task's output.
+  defp route(
+         {:tackle_turn_started, session_id, turn_id, :background_notice},
+         %State{session_id: session_id, active_turn: nil} = state
+       ) do
+    state = %{
+      state
+      | active_turn: %{id: turn_id, operation: :continue, cancellation_requested?: false},
+        pending_prompt: nil,
+        stream: Stream.reset(state.stream),
+        deferred_events: [],
+        activity: "processing subagent notice",
+        error: nil,
+        outcome: nil
+    }
+
+    {:noreply, Viewport.refresh(state, [:pending, :turn, :error])}
+  end
+
+  defp route({:tackle_turn_started, _session_id, _turn_id, :background_notice}, state),
+    do: {:noreply, state, render?: false}
+
   # The session can emit from the new turn before the asynchronous submit
   # command reports its id. The event already carries that id, and only one turn
   # can be admitted for this pending submit, so install it immediately instead

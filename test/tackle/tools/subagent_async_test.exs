@@ -264,6 +264,11 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert_eventually(fn ->
       match?({:ok, {:completed, %Outcome{status: :ok}}}, run_status(scope, run_id))
     end)
+
+    assert_receive {:tackle_turn_started, ^session_id, automatic_turn, :background_notice}, 2_000
+
+    assert_receive {:tackle_turn_finished, ^session_id, ^automatic_turn, {:ok, _state}}, 2_000
+    assert {:ok, _session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
   end
 
   test "a committed background launch does not duplicate its run id on the next turn" do
@@ -368,59 +373,11 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert result =~ "worker answer"
   end
 
-  test "completion is queued for the parent's next turn" do
+  test "completion automatically continues an idle parent with the terminal notice" do
     scope =
       start_scope(
         root: [allow_delegation: true, mode: :echo_messages],
         profiles: %{"worker" => agent_spec("worker", content: "worker answer")}
-      )
-
-    handle = handle(scope)
-
-    assert {:ok, launch_message} =
-             Subagent.run(
-               %{"profile" => "worker", "prompt" => "do work", "background" => true},
-               %{runtime: handle, event_callback: fn _event -> :ok end}
-             )
-
-    [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
-
-    assert_eventually(fn ->
-      match?(
-        {:ok, {:completed, %Outcome{status: :ok}}},
-        run_status(scope, run_id)
-      )
-    end)
-
-    {:ok, parent_session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
-
-    assert_eventually(fn ->
-      Enum.any?(Tackle.Session.inbox(parent_session), fn envelope ->
-        envelope.message =~ "Background subagent #{run_id} completed"
-      end)
-    end)
-
-    assert {:ok, _turn_id} = Tackle.Runtime.submit(scope.root_agent_ref, "what completed?")
-
-    assert_eventually(fn ->
-      is_nil(
-        Tackle.Runtime.session_snapshot(scope.root_agent_ref)
-        |> elem(1)
-        |> Map.get(:active_turn)
-      )
-    end)
-
-    {:ok, snapshot} = Tackle.Runtime.session_snapshot(scope.root_agent_ref)
-
-    assert Tackle.Lib.last_answer(snapshot.agent_state) =~
-             "Background subagent #{run_id} completed"
-  end
-
-  test "completion publishes after the launching turn has settled" do
-    scope =
-      start_scope(
-        root: [allow_delegation: true],
-        profiles: %{"worker" => agent_spec("worker", mode: :manual, content: "worker answer")}
       )
 
     {:ok, %{session_id: session_id}} = Tackle.Runtime.subscribe(scope.root_agent_ref)
@@ -431,16 +388,147 @@ defmodule Tackle.Tools.SubagentAsyncTest do
                %{runtime: handle(scope), event_callback: fn _event -> :ok end}
              )
 
+    assert launch_message =~ "you will be notified"
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
-    assert_receive {:adapter_called, child_task, "echo", _opts}, 2_000
-    send(child_task, {:respond, "worker answer"})
 
     assert_receive {:tackle_event, ^session_id, nil,
-                    %Tackle.Lib.Event{
+                    %Event{type: :subagent_finished, data: %{run_id: ^run_id, status: :ok}}},
+                   2_000
+
+    assert_receive {:tackle_turn_started, ^session_id, automatic_turn, :background_notice}, 2_000
+
+    assert_receive {:tackle_turn_finished, ^session_id, ^automatic_turn, {:ok, _state}}, 2_000
+
+    {:ok, snapshot} = Tackle.Runtime.session_snapshot(scope.root_agent_ref)
+
+    assert Tackle.Lib.last_answer(snapshot.agent_state) =~
+             "Background subagent #{run_id} completed"
+
+    {:ok, parent_session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+    assert Tackle.Session.inbox(parent_session) == []
+  end
+
+  test "every non-success terminal state automatically notifies the parent" do
+    cases = [
+      {:error, :error, %{}, "finished with Failed to get response"},
+      {:crash, :runtime_error, %{}, "finished with runtime_error"},
+      {:block, :timeout, %{"timeout_ms" => 25}, "finished with timeout"}
+    ]
+
+    Enum.each(cases, fn {mode, expected_status, extra_args, expected_notice} ->
+      scope =
+        start_scope(
+          root: [allow_delegation: true, mode: :echo_messages],
+          profiles: %{"worker" => agent_spec("worker", mode: mode)}
+        )
+
+      {:ok, %{session_id: session_id}} = Tackle.Runtime.subscribe(scope.root_agent_ref)
+
+      args =
+        Map.merge(
+          %{"profile" => "worker", "prompt" => "do work", "background" => true},
+          extra_args
+        )
+
+      assert {:ok, launch_message} = Subagent.run(args, %{runtime: handle(scope)})
+      [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
+
+      assert_receive {:tackle_event, ^session_id, nil,
+                      %Event{
+                        type: :subagent_finished,
+                        data: %{run_id: ^run_id, status: ^expected_status}
+                      }},
+                     2_000
+
+      assert_receive {:tackle_turn_started, ^session_id, automatic_turn, :background_notice},
+                     2_000
+
+      assert_receive {:tackle_turn_finished, ^session_id, ^automatic_turn, {:ok, _state}}, 2_000
+
+      {:ok, snapshot} = Tackle.Runtime.session_snapshot(scope.root_agent_ref)
+      answer = Tackle.Lib.last_answer(snapshot.agent_state)
+      assert answer =~ "Background subagent #{run_id}"
+      assert answer =~ expected_notice
+    end)
+  end
+
+  test "a cancelled background run automatically notifies the parent" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true, mode: :echo_messages],
+        profiles: %{"worker" => agent_spec("worker", mode: :block)}
+      )
+
+    {:ok, %{session_id: session_id}} = Tackle.Runtime.subscribe(scope.root_agent_ref)
+
+    assert {:ok, launch_message} =
+             Subagent.run(
+               %{"profile" => "worker", "prompt" => "do work", "background" => true},
+               %{runtime: handle(scope)}
+             )
+
+    [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
+    {:ok, run_ref} = Tackle.Runtime.RunRef.new(scope.scope_ref.scope_id, run_id)
+    assert :ok = Tackle.Runtime.cancel(run_ref)
+
+    assert_receive {:tackle_event, ^session_id, nil,
+                    %Event{
                       type: :subagent_finished,
-                      data: %{run_id: ^run_id, status: :ok}
+                      data: %{run_id: ^run_id, status: :cancelled}
                     }},
                    2_000
+
+    assert_receive {:tackle_turn_started, ^session_id, automatic_turn, :background_notice}, 2_000
+    assert_receive {:tackle_turn_finished, ^session_id, ^automatic_turn, {:ok, _state}}, 2_000
+
+    {:ok, snapshot} = Tackle.Runtime.session_snapshot(scope.root_agent_ref)
+    assert Tackle.Lib.last_answer(snapshot.agent_state) =~ "finished with cancelled"
+  end
+
+  test "completion waits for an active parent turn to settle before continuing it" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true, mode: :manual],
+        profiles: %{
+          "worker" => agent_spec("worker", model: "test/child", content: "worker answer")
+        }
+      )
+
+    {:ok, %{session_id: session_id}} = Tackle.Runtime.subscribe(scope.root_agent_ref)
+    assert {:ok, parent_turn} = Tackle.Runtime.submit(scope.root_agent_ref, "stay busy")
+    assert_receive {:adapter_called, parent_task, "echo", _opts}, 2_000
+
+    assert {:ok, launch_message} =
+             Subagent.run(
+               %{"profile" => "worker", "prompt" => "do work", "background" => true},
+               %{runtime: handle(scope), event_callback: fn _event -> :ok end}
+             )
+
+    [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
+    assert_receive {:adapter_called, _child_task, "child", _opts}, 2_000
+
+    assert_receive {:tackle_event, ^session_id, nil,
+                    %Event{type: :subagent_finished, data: %{run_id: ^run_id, status: :ok}}},
+                   2_000
+
+    refute_receive {:tackle_turn_started, ^session_id, _turn_id, :background_notice}, 20
+
+    send(parent_task, {:respond, "parent done"})
+    assert_receive {:tackle_turn_finished, ^session_id, ^parent_turn, {:ok, _state}}, 2_000
+
+    assert_receive {:tackle_turn_started, ^session_id, automatic_turn, :background_notice}, 2_000
+    assert_receive {:adapter_called, automatic_task, "echo", automatic_opts}, 2_000
+
+    assert Enum.any?(Keyword.fetch!(automatic_opts, :messages), fn
+             %{role: :user, content: content} when is_binary(content) ->
+               content =~ "Background subagent #{run_id} completed"
+
+             _message ->
+               false
+           end)
+
+    send(automatic_task, {:respond, "notice handled"})
+    assert_receive {:tackle_turn_finished, ^session_id, ^automatic_turn, {:ok, _state}}, 2_000
   end
 
   test "only the logical parent can collect a background run" do

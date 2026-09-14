@@ -464,7 +464,6 @@ defmodule Tackle.Runtime.Request do
            completion_message: callback,
            run_ref: run_ref,
            parent: %{agent_ref: parent_ref},
-           agent_ref: agent_ref,
            profile: profile
          },
          outcome
@@ -472,8 +471,7 @@ defmodule Tackle.Runtime.Request do
        when is_function(callback, 2) do
     with message when is_binary(message) <- callback.(run_ref, outcome),
          {:ok, parent} <- Registry.whereis(parent_ref) do
-      Session.deliver(parent, agent_ref, message)
-      Session.background_finished(parent, run_ref, profile, outcome)
+      Session.background_finished(parent, run_ref, profile, outcome, message)
     end
 
     :ok

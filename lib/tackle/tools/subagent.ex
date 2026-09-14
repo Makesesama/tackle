@@ -4,9 +4,10 @@ defmodule Tackle.Tools.Subagent do
 
   The subagent is an ordinary Tackle agent running the same `Tackle.Lib` loop in
   the same root scope. Foreground mode waits for its terminal outcome and
-  returns the final answer. Background mode returns a stable run id immediately;
-  use `subagent_wait` to block for it or `subagent_status` to inspect or collect
-  it later. The child session remains
+  returns the final answer. Background mode returns a stable run id immediately.
+  Any terminal outcome automatically notifies and continues the parent once it
+  is idle; use `subagent_wait` to block for the result sooner or
+  `subagent_status` to inspect or collect it later. The child session remains
   one-shot and stops after its first terminal result.
 
   Delegation is opt-in and permissioned:
@@ -30,8 +31,9 @@ defmodule Tackle.Tools.Subagent do
 
   description(
     "Delegate a self-contained task to a fresh subagent. By default this waits and returns " <>
-      "the final answer. Set background=true to continue immediately with a run id, then use " <>
-      "subagent_wait to block or subagent_status to check and collect it. Choose one configured " <>
+      "the final answer. Set background=true to continue immediately with a run id; the parent " <>
+      "is automatically notified on any terminal outcome. Use subagent_wait to block sooner or " <>
+      "subagent_status to check and collect it. Choose one configured " <>
       "profile. The one-shot child cannot " <>
       "receive more work after it finishes."
   )
@@ -159,9 +161,9 @@ defmodule Tackle.Tools.Subagent do
   end
 
   defp launch_message(run_ref) do
-    "Started background subagent #{run_ref.run_id}. Continue other work, then use " <>
-      "subagent_wait with this run_id to wait for and collect its result, or subagent_status " <>
-      "to check without waiting."
+    "Started background subagent #{run_ref.run_id}. Continue other work; you will be notified " <>
+      "when it finishes. Use subagent_wait with this run_id to block for and collect its result, " <>
+      "or subagent_status to check without waiting."
   end
 
   defp completion_message(run_ref, %Outcome{status: :ok}) do

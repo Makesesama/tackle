@@ -351,11 +351,13 @@ default. A call with `background: true` returns a stable run ID immediately. The
 root-only `subagent_wait` tool blocks until that run finishes and consumes its
 retained outcome; `subagent_status` checks without blocking and consumes an
 already-complete outcome. Cancelling a wait leaves the background run available.
-Completion notices use the root session's bounded,
-next-turn inbox. Background work is independent of the launching root turn: Esc
-may cancel that turn and the root may accept new direction while the child keeps
-running. It remains owned by the same root session and scope, so starting a new
-CLI session or otherwise stopping that scope cleans it up. If cancellation wins
+Every terminal outcome queues a notice in the root session's bounded inbox and
+automatically continues the root once its current turn is idle. That continuation
+is a normal model turn and contributes normal provider usage. Background work is
+independent of the launching root turn: Esc may cancel that turn and the root
+may accept new direction while the child keeps running. It remains owned by the
+same root session and scope, so starting a new CLI session or otherwise stopping
+that scope cleans it up. If cancellation wins
 the race before the launch tool result is committed, the run ID is queued into
 the root agent's next turn so it can still use `subagent_wait` or
 `subagent_status`. The footer and usage charts currently count root usage only,

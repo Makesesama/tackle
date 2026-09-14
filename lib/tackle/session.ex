@@ -176,10 +176,29 @@ defmodule Tackle.Session do
     GenServer.call(session, {:background_started, run_ref, origin, message})
   end
 
-  @doc "Publishes one background-run completion from the owning request helper."
+  @doc "Publishes one background-run completion from its owning request helper."
   @spec background_finished(GenServer.server(), RunRef.t(), String.t() | nil, Outcome.t()) :: :ok
   def background_finished(session, %RunRef{} = run_ref, profile, %Outcome{} = outcome) do
     GenServer.cast(session, {:background_finished, run_ref, profile, outcome})
+  end
+
+  @doc "Queues a completion notice, publishes it, and wakes the idle parent."
+  @spec background_finished(
+          GenServer.server(),
+          RunRef.t(),
+          String.t() | nil,
+          Outcome.t(),
+          String.t()
+        ) :: :ok
+  def background_finished(
+        session,
+        %RunRef{} = run_ref,
+        profile,
+        %Outcome{} = outcome,
+        message
+      )
+      when is_binary(message) do
+    GenServer.cast(session, {:background_finished, run_ref, profile, outcome, message})
   end
 
   @doc "Returns queued in-scope messages awaiting the next turn."
@@ -295,7 +314,8 @@ defmodule Tackle.Session do
         journal: journal,
         recovery: recovery,
         inbox: :queue.new(),
-        inbox_count: 0
+        inbox_count: 0,
+        background_wake_scheduled?: false
       }
 
       register_with_coordinator(state)
@@ -511,17 +531,21 @@ defmodule Tackle.Session do
   end
 
   @impl true
-  def handle_cast({:background_finished, run_ref, profile, outcome}, state) do
-    event =
-      Event.new(:subagent_finished, %{
-        run_id: run_ref.run_id,
-        agent_ref: run_ref.agent_ref,
-        profile: profile,
-        model: run_ref.model_ref,
-        status: outcome.status
-      })
+  def handle_cast(
+        {:background_finished, %RunRef{} = run_ref, profile, %Outcome{} = outcome, message},
+        state
+      ) do
+    {state, queued?} = queue_background_completion(state, run_ref, outcome, message)
+    publish_background_finished(state, run_ref, profile, outcome)
+    state = if queued?, do: schedule_background_wake(state), else: state
+    {:noreply, state}
+  end
 
-    broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+  def handle_cast(
+        {:background_finished, %RunRef{} = run_ref, profile, %Outcome{} = outcome},
+        state
+      ) do
+    publish_background_finished(state, run_ref, profile, outcome)
     {:noreply, state}
   end
 
@@ -610,6 +634,23 @@ defmodule Tackle.Session do
     {:noreply, cancel_active_turn(state, reason)}
   end
 
+  def handle_info(:tackle_background_wake, state) do
+    state = %{state | background_wake_scheduled?: false}
+
+    case start_background_notice_turn(state) do
+      {:ok, turn_id, state} ->
+        broadcast(
+          state,
+          {:tackle_turn_started, state.agent_state.session_id, turn_id, :background_notice}
+        )
+
+        {:noreply, state}
+
+      {:skip, state} ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:DOWN, monitor_ref, :process, subscriber, _reason}, state) do
     subscribers =
       case Map.get(state.subscribers, subscriber) do
@@ -652,15 +693,15 @@ defmodule Tackle.Session do
     signal = Cancellation.new_signal()
     turn_id = state.config.id_generator.()
     session_pid = self()
-    {agent_state, inbox_messages} = project_inbox(state)
+    {agent_state, inbox_messages, projected_messages} = project_inbox(state)
     run_opts = turn_opts(state, session_pid, turn_id, signal)
 
-    case begin_turn(state, operation, input, turn_id) do
-      :ok ->
-        state = clear_inbox(state)
-        broadcast_inbox_drained(state, inbox_messages)
-        launch_turn(operation, input, state, agent_state, run_opts, signal, turn_id)
-
+    with :ok <- begin_turn(state, operation, input, turn_id),
+         :ok <- persist_inbox_messages(state, agent_state, projected_messages) do
+      state = clear_inbox(state)
+      broadcast_inbox_drained(state, inbox_messages)
+      launch_turn(operation, input, state, agent_state, run_opts, signal, turn_id)
+    else
       {:error, reason} ->
         Cancellation.delete(signal)
         release_turn(state)
@@ -733,24 +774,122 @@ defmodule Tackle.Session do
     if state.lifetime == :ephemeral do
       {:stop, :normal, state}
     else
-      {:noreply, state}
+      {:noreply, schedule_background_wake(state)}
     end
   end
 
-  defp project_inbox(%{inbox_count: 0} = state), do: {state.agent_state, []}
+  defp publish_background_finished(state, run_ref, profile, outcome) do
+    event =
+      Event.new(:subagent_finished, %{
+        run_id: run_ref.run_id,
+        agent_ref: run_ref.agent_ref,
+        profile: profile,
+        model: run_ref.model_ref,
+        status: outcome.status
+      })
+
+    broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+  end
+
+  defp queue_background_completion(
+         %{inbox_count: count} = state,
+         _run_ref,
+         _outcome,
+         _message
+       )
+       when count >= @max_inbox_messages,
+       do: {state, false}
+
+  defp queue_background_completion(state, run_ref, outcome, message) do
+    envelope = %{
+      from: run_ref.agent_ref,
+      message: message,
+      background_completion: %{run_id: run_ref.run_id, status: outcome.status}
+    }
+
+    state = %{
+      state
+      | inbox: :queue.in(envelope, state.inbox),
+        inbox_count: state.inbox_count + 1
+    }
+
+    {state, true}
+  end
+
+  defp schedule_background_wake(
+         %{
+           lifetime: :explicit,
+           recovery: nil,
+           active_turn: nil,
+           background_wake_scheduled?: false
+         } = state
+       ) do
+    if background_completion_pending?(state) do
+      send(self(), :tackle_background_wake)
+      %{state | background_wake_scheduled?: true}
+    else
+      state
+    end
+  end
+
+  defp schedule_background_wake(state), do: state
+
+  defp start_background_notice_turn(
+         %{lifetime: :explicit, recovery: nil, active_turn: nil} = state
+       ) do
+    if background_completion_pending?(state) do
+      case start_turn(:continue, nil, state) do
+        {:reply, {:ok, turn_id}, state} -> {:ok, turn_id, state}
+        {:reply, {:error, _reason}, state} -> {:skip, state}
+      end
+    else
+      {:skip, state}
+    end
+  end
+
+  defp start_background_notice_turn(state), do: {:skip, state}
+
+  defp background_completion_pending?(state) do
+    state.inbox
+    |> :queue.to_list()
+    |> Enum.any?(&Map.has_key?(&1, :background_completion))
+  end
+
+  defp project_inbox(%{inbox_count: 0} = state), do: {state.agent_state, [], []}
 
   defp project_inbox(state) do
-    messages = :queue.to_list(state.inbox)
+    envelopes = :queue.to_list(state.inbox)
 
-    agent_state =
-      Enum.reduce(messages, state.agent_state, fn %{from: from, message: content}, agent_state ->
-        body = "Message from agent #{from.agent_id}:\n\n#{content}"
-        message = Message.user(body, id_generator: agent_state.id_generator)
-        AgentState.add_message(agent_state, message)
+    {projected_messages, agent_state} =
+      Enum.map_reduce(envelopes, state.agent_state, fn
+        %{from: from, message: content}, agent_state ->
+          body = "Message from agent #{from.agent_id}:\n\n#{content}"
+          message = Message.user(body, id_generator: agent_state.id_generator)
+          {message, AgentState.add_message(agent_state, message)}
       end)
 
-    {agent_state, messages}
+    {agent_state, envelopes, projected_messages}
   end
+
+  defp persist_inbox_messages(%{journal: nil}, _agent_state, _messages), do: :ok
+
+  defp persist_inbox_messages(%{journal: journal}, agent_state, messages) do
+    Enum.reduce_while(messages, :ok, fn message, :ok ->
+      case Journal.append_message(journal, message, inbox_tree_parent(agent_state, message.id)) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp inbox_tree_parent(%AgentState{tree: %Tackle.Lib.Tree{} = tree}, message_id) do
+    case Tackle.Lib.Tree.entry(tree, message_id) do
+      %{parent_id: parent_id} -> {:tree, parent_id}
+      _entry -> :none
+    end
+  end
+
+  defp inbox_tree_parent(%AgentState{}, _message_id), do: :none
 
   defp clear_inbox(state),
     do: %{state | inbox: :queue.new(), inbox_count: 0}
