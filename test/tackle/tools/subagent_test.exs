@@ -27,6 +27,8 @@ defmodule Tackle.Tools.SubagentTest do
                       type: :subagent_started,
                       data: %{profile: "worker", model: "test/echo", status: :running}
                     }}
+
+    assert_receive {:event, %{type: :subagent_finished}}, 2_000
   end
 
   test "rejects delegation when recursion is not granted" do

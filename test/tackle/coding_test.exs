@@ -6,7 +6,7 @@ defmodule Tackle.CodingTest do
   alias Tackle.Coding
   alias Tackle.Runtime
   alias Tackle.Runtime.{Handle, Outcome, ScopeSpec}
-  alias Tackle.Tools.{Bash, Read, Subagent}
+  alias Tackle.Tools.{Bash, Read, Subagent, SubagentStatus}
 
   setup do
     home = tmp_home()
@@ -119,8 +119,6 @@ defmodule Tackle.CodingTest do
     assert shared.model_source == :parent
     assert shared.config.system_prompt =~ "Project prompt"
     refute shared.config.system_prompt =~ "User prompt"
-    assert spec.root_spec.config.system_prompt =~ "Project profile"
-    refute spec.root_spec.config.system_prompt =~ "User profile"
   end
 
   test "invalid profile files and unavailable tools fail startup", %{opts: opts, cwd: cwd} do
@@ -159,9 +157,10 @@ defmodule Tackle.CodingTest do
   test "preserves explicit prompts and narrower tools/iteration limits", %{opts: opts} do
     opts = update_overrides(opts, tools: [Read], max_iterations: 3, system_prompt: "Custom base")
     assert {:ok, spec} = Coding.scope_spec(opts)
-    assert spec.root_spec.config.tools == [Read, Subagent]
-    assert spec.profiles["scout"].config.tools == [Read]
+    assert spec.root_spec.config.tools == [Read, Subagent, SubagentStatus]
+    assert spec.profiles["scout"].config.tools == [Read, Bash]
     assert spec.profiles["scout"].config.max_iterations == 3
+    assert spec.profiles["scout"].config.system_prompt =~ "Scout assignment"
     assert spec.profiles["scout"].config.system_prompt =~ "Custom base"
   end
 

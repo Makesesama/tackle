@@ -135,6 +135,59 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
       assert left.subagent_selected == nil
     end
 
+    test "a background child keeps the sidebar open after its launching turn settles" do
+      state = shell() |> start("one", "Inspect")
+
+      {:noreply, state} =
+        RuntimeEvents.handle(
+          {:tackle_event, "session", "turn",
+           Event.new(:subagent_started, %{
+             tool_call_id: "one",
+             run_id: "run-one",
+             profile: "scout",
+             model: "test/scout",
+             status: :running
+           })},
+          state
+        )
+
+      {:noreply, state} =
+        RuntimeEvents.handle(
+          {:tackle_event, "session", "turn",
+           Event.new(:tool_execution_end, %{
+             tool_call_id: "one",
+             name: "subagent",
+             status: :completed,
+             result: "Started background subagent run-one."
+           })},
+          state
+        )
+
+      {:noreply, state} =
+        RuntimeEvents.handle(
+          {:tackle_turn_finished, "session", "turn", {:ok, state.agent_state}},
+          state
+        )
+
+      assert Subagents.active?(state)
+      assert [%{id: "one", run_id: "run-one", status: :running}] = Subagents.tasks(state)
+      assert state.conversation.rect.width < 80
+
+      {:noreply, finished} =
+        RuntimeEvents.handle(
+          {:tackle_event, "session", nil,
+           Event.new(:subagent_finished, %{
+             run_id: "run-one",
+             profile: "scout",
+             status: :ok
+           })},
+          state
+        )
+
+      refute Subagents.active?(finished)
+      assert finished.conversation.rect.width == 80
+    end
+
     test "focus without a running child only reports a notice" do
       {:noreply, state} = Subagents.focus(shell())
       assert state.focus == :composer

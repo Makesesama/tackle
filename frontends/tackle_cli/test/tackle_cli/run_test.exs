@@ -145,7 +145,7 @@ defmodule Tackle.CLI.RunTest do
     end)
 
     assert_receive {:scout_generation, root_opts}
-    assert Keyword.fetch!(root_opts, :system) =~ "profile \"scout\""
+    assert Keyword.fetch!(root_opts, :system) =~ "<name>scout</name>"
     assert_receive {:scout_generation, child_opts}
     assert Keyword.fetch!(child_opts, :model) == "alternate"
     assert Keyword.fetch!(child_opts, :system) =~ "## Scout assignment"

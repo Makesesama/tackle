@@ -397,19 +397,36 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     tools =
       Enum.map(state.tool_activity, fn
         %{id: ^tool_call_id, name: "subagent"} = tool when is_binary(tool_call_id) ->
-          if is_binary(model), do: Map.put(tool, :model, model), else: tool
+          tool
+          |> maybe_put_value(:model, model)
+          |> maybe_put_value(:run_id, value(data, :run_id))
+          |> maybe_put_value(:agent_ref, value(data, :agent_ref))
 
         tool ->
           tool
       end)
 
+    subagents = put_subagent(state.subagents, data, find_tool(tools, data))
     timeline = Enum.reduce(tools, state.stream.timeline, &put_timeline_tool(&2, &1))
 
     {:noreply,
      Viewport.refresh(
-       %{state | tool_activity: tools, stream: %{state.stream | timeline: timeline}},
+       %{
+         state
+         | tool_activity: tools,
+           subagents: subagents,
+           stream: %{state.stream | timeline: timeline}
+       },
        [:turn]
      )}
+  end
+
+  defp route(
+         {:tackle_event, session_id, _turn_id, %Event{type: :subagent_finished, data: data}},
+         %State{session_id: session_id} = state
+       ) do
+    state = %{state | subagents: put_subagent(state.subagents, data)}
+    {:noreply, state |> Subagents.reconcile() |> Viewport.relayout()}
   end
 
   defp route(
@@ -797,11 +814,28 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           tool
       end)
 
-    if tools == state.tool_activity do
+    subagents =
+      Map.new(state.subagents, fn
+        {run_id, %{status: :running, started_at_ms: started} = subagent}
+        when is_integer(started) ->
+          {run_id, Map.put(subagent, :elapsed_ms, div(max(now - started, 0), 1_000) * 1_000)}
+
+        entry ->
+          entry
+      end)
+
+    if tools == state.tool_activity and subagents == state.subagents do
       state
     else
       timeline = Enum.reduce(tools, state.stream.timeline, &put_timeline_tool(&2, &1))
-      state = %{state | tool_activity: tools, stream: %{state.stream | timeline: timeline}}
+
+      state = %{
+        state
+        | tool_activity: tools,
+          subagents: subagents,
+          stream: %{state.stream | timeline: timeline}
+      }
+
       Viewport.refresh(state, [:turn])
     end
   end
@@ -814,6 +848,34 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       {key, value}, activity -> Map.put(activity, key, value)
     end)
   end
+
+  defp put_subagent(subagents, data, tool \\ nil) do
+    case value(data, :run_id) do
+      run_id when is_binary(run_id) ->
+        now = System.monotonic_time(:millisecond)
+        existing = Map.get(subagents, run_id, %{run_id: run_id, started_at_ms: now})
+
+        updates = %{
+          agent_ref: value(data, :agent_ref),
+          tool_call_id: value(data, :tool_call_id),
+          profile: value(data, :profile),
+          model: value(data, :model),
+          arguments: value(data, :arguments) || value(tool, :arguments),
+          status: normalize_subagent_status(value(data, :status))
+        }
+
+        Map.put(subagents, run_id, merge_tool_activity(existing, updates))
+
+      _other ->
+        subagents
+    end
+  end
+
+  defp normalize_subagent_status(:ok), do: :completed
+  defp normalize_subagent_status(status), do: status
+
+  defp maybe_put_value(map, _key, nil), do: map
+  defp maybe_put_value(map, key, value), do: Map.put(map, key, value)
 
   defp same_tool?(tool, id, _name) when is_binary(id), do: tool.id == id
   defp same_tool?(tool, nil, name), do: is_nil(tool.id) and tool.name == name
@@ -850,5 +912,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   defp format_activity(type) when is_binary(type), do: String.replace(type, "_", " ")
   defp format_activity(_other), do: "working"
 
-  defp busy?(state), do: not is_nil(state.active_turn) or not is_nil(state.pending_operation)
+  defp busy?(state) do
+    not is_nil(state.active_turn) or not is_nil(state.pending_operation) or
+      Subagents.active?(state)
+  end
 end

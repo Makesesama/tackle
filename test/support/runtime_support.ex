@@ -70,6 +70,9 @@ defmodule Tackle.Test.Adapter do
   defp respond(:echo_prompt, _test_pid, _content, _signal, opts),
     do: response(last_user_prompt(opts), opts)
 
+  defp respond(:echo_messages, _test_pid, _content, _signal, opts),
+    do: response(user_prompts(opts), opts)
+
   defp respond(:crash, _test_pid, _content, _signal, _opts), do: raise("adapter crash")
 
   defp respond(:error, _test_pid, _content, _signal, _opts), do: {:error, :adapter_error}
@@ -113,14 +116,25 @@ defmodule Tackle.Test.Adapter do
 
   defp last_user_prompt(opts) do
     opts
-    |> Keyword.get(:messages, [])
-    |> Enum.filter(fn message -> Map.get(message, :role) == :user end)
-    |> Enum.reverse()
+    |> user_messages()
     |> case do
       [_instruction, previous | _rest] -> Map.get(previous, :content, "")
       [only] -> Map.get(only, :content, "")
       [] -> ""
     end
+  end
+
+  defp user_prompts(opts) do
+    opts
+    |> user_messages()
+    |> Enum.map_join("\n", &Map.get(&1, :content, ""))
+  end
+
+  defp user_messages(opts) do
+    opts
+    |> Keyword.get(:messages, [])
+    |> Enum.filter(fn message -> Map.get(message, :role) == :user end)
+    |> Enum.reverse()
   end
 
   defp tool_result?(opts) do
