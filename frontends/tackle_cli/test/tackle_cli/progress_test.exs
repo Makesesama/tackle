@@ -56,4 +56,49 @@ defmodule Tackle.CLI.Output.ProgressTest do
       assert Progress.finish(progress, {:ok, "answer"}) == :ok
     end
   end
+
+  test "finishing cannot block indefinitely when the live screen cannot render" do
+    spinner_id = make_ref()
+    spinner = start_blocked_spinner(spinner_id)
+
+    progress = %Progress{
+      screen: start_blocked_screen(),
+      spinner_id: spinner_id,
+      width: 80
+    }
+
+    task = Task.async(fn -> Progress.finish(progress, {:ok, "answer"}) end)
+
+    assert Task.await(task, 1_000) == :ok
+    refute Process.alive?(spinner)
+    refute Process.alive?(progress.screen)
+  end
+
+  defp start_blocked_spinner(spinner_id) do
+    parent = self()
+
+    pid =
+      spawn(fn ->
+        Process.flag(:trap_exit, true)
+        Registry.register(Owl.WidgetsRegistry, spinner_id, nil)
+        send(parent, {:spinner_registered, self()})
+        blocked_screen_loop()
+      end)
+
+    assert_receive {:spinner_registered, ^pid}
+    pid
+  end
+
+  defp start_blocked_screen do
+    spawn(fn ->
+      Process.flag(:trap_exit, true)
+      blocked_screen_loop()
+    end)
+  end
+
+  defp blocked_screen_loop do
+    receive do
+      _message -> blocked_screen_loop()
+    end
+  end
 end
