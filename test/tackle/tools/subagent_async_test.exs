@@ -5,7 +5,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
   alias Tackle.Lib.Event
   alias Tackle.Runtime.Outcome
-  alias Tackle.Tools.{Subagent, SubagentStatus}
+  alias Tackle.Tools.{Subagent, SubagentStatus, SubagentWait}
 
   test "background launch survives the tool caller and retains its result until collected" do
     scope =
@@ -51,6 +51,101 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
     assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
     assert message =~ "already collected"
+  end
+
+  test "parent wait blocks for and collects a background result" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{"worker" => agent_spec("worker", mode: :manual)}
+      )
+
+    handle = handle(scope)
+
+    assert {:ok, launch_message} =
+             Subagent.run(
+               %{"profile" => "worker", "prompt" => "do work", "background" => true},
+               %{runtime: handle}
+             )
+
+    [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
+    assert_receive {:adapter_called, child_task, "echo", _opts}, 2_000
+
+    waiter =
+      Task.async(fn -> SubagentWait.run(%{"run_id" => run_id}, %{runtime: handle}) end)
+
+    refute Task.yield(waiter, 20)
+    send(child_task, {:respond, "worker answer"})
+
+    assert {:ok, result} = Task.await(waiter, 2_000)
+    assert result =~ "Subagent #{run_id} completed"
+    assert result =~ "worker answer"
+
+    assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert message =~ "already collected"
+  end
+
+  test "cancelling a parent wait leaves the background run available" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{"worker" => agent_spec("worker", mode: :manual)}
+      )
+
+    handle = handle(scope)
+
+    assert {:ok, launch_message} =
+             Subagent.run(
+               %{"profile" => "worker", "prompt" => "do work", "background" => true},
+               %{runtime: handle}
+             )
+
+    [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
+    assert_receive {:adapter_called, child_task, "echo", _opts}, 2_000
+
+    waiter =
+      Task.async(fn -> SubagentWait.run(%{"run_id" => run_id}, %{runtime: handle}) end)
+
+    refute Task.yield(waiter, 20)
+    assert nil == Task.shutdown(waiter, :brutal_kill)
+    assert {:ok, :running} = run_status(scope, run_id)
+
+    send(child_task, {:respond, "worker answer"})
+
+    assert_eventually(fn ->
+      match?({:ok, {:completed, %Outcome{status: :ok}}}, run_status(scope, run_id))
+    end)
+
+    assert {:ok, result} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert result =~ "worker answer"
+  end
+
+  test "parent wait rejects runs owned by another root" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{"worker" => agent_spec("worker", mode: :block)}
+      )
+
+    {:ok, run_ref} =
+      Tackle.Runtime.request_agent(scope.root_agent_ref, "worker", "go",
+        retention: :until_collected,
+        owner: :parent
+      )
+
+    other_scope = start_scope(root: [allow_delegation: true])
+
+    assert {:error, message} =
+             SubagentWait.run(%{"run_id" => run_ref.run_id}, %{runtime: handle(other_scope)})
+
+    assert message =~ "not found"
+    :ok = Tackle.Runtime.cancel(run_ref)
+  end
+
+  test "parent wait validates its context and run id" do
+    assert {:error, message} = SubagentWait.run(%{"run_id" => "missing"}, %{})
+    assert message =~ "no runtime handle"
+    assert {:error, "subagent_wait requires a run_id"} = SubagentWait.run(%{}, %{})
   end
 
   test "background launch survives parent turn cancellation and the next turn" do

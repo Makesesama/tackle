@@ -15,15 +15,16 @@ defmodule Tackle.Coding do
   alias Tackle.Config
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
-  alias Tackle.Tools.{Subagent, SubagentStatus}
+  alias Tackle.Tools.{Subagent, SubagentStatus, SubagentWait}
 
   @delegation """
   ## Delegation
 
   Use the subagent tool for bounded work that benefits from a fresh, focused
   context. Set `background` when the parent should continue immediately, then
-  use `subagent_status` with the returned run id to collect the result. Background
-  completion notices are queued for the parent's next turn. Choose only from the
+  use `subagent_wait` to block until completion or `subagent_status` to check and
+  collect the result. Background completion notices are queued for the parent's
+  next turn. Choose only from the
   configured profiles below and give the child a self-contained assignment with
   the relevant context and expected deliverable. Child sessions are one-shot and
   share this workspace; tool restrictions are capability limits, not an
@@ -45,7 +46,7 @@ defmodule Tackle.Coding do
     with {:ok, config} <- Config.load(loader_opts),
          discovery <- discover(config, loader_opts),
          :ok <- validate_discovery(discovery),
-         root_tools = Enum.uniq(config.tools ++ [Subagent, SubagentStatus]),
+         root_tools = Enum.uniq(config.tools ++ [Subagent, SubagentStatus, SubagentWait]),
          {:ok, profiles} <-
            build_profiles(discovery.definitions, config.tools, root_tools, loader_opts),
          {:ok, root_config} <- root_config(discovery.definitions, root_tools, loader_opts),

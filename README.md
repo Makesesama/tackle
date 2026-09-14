@@ -347,9 +347,11 @@ model-generated arguments cannot select or change this policy.
 
 Child transcripts remain ephemeral: the durable root records the subagent tool
 call and returned findings, not the child's full history. Subagent calls wait by
-default. A call with `background: true` returns a stable run ID immediately;
-`subagent_status` reports whether it is running and consumes its retained terminal
-outcome when complete. Completion notices use the root session's bounded,
+default. A call with `background: true` returns a stable run ID immediately. The
+root-only `subagent_wait` tool blocks until that run finishes and consumes its
+retained outcome; `subagent_status` checks without blocking and consumes an
+already-complete outcome. Cancelling a wait leaves the background run available.
+Completion notices use the root session's bounded,
 next-turn inbox. Background work is independent of the launching root turn: Esc
 may cancel that turn and the root may accept new direction while the child keeps
 running. It remains owned by the same root session and scope, so starting a new

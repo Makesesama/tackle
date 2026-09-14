@@ -805,10 +805,13 @@ task: delegated prompt
 The tool receives an opaque runtime handle through `Tackle.Lib.State.context`, resolves the selected profile through a trusted host allowlist, calls `request_agent`, awaits the result, and returns the child's answer or typed failure as the parent's linked tool result.
 
 The tool is not part of `Tackle.Tools.default/0` initially. The coding root also
-receives `Tackle.Tools.SubagentStatus`: setting `background: true` on a subagent
-call returns a stable run ID immediately, and the status tool polls or consumes
-the retained outcome. Completion is queued in the parent's bounded next-turn
-inbox and published as a `:subagent_finished` event. Background requests are
+receives `Tackle.Tools.SubagentWait` and `Tackle.Tools.SubagentStatus`: setting
+`background: true` on a subagent call returns a stable run ID immediately. The
+wait tool blocks until that run finishes and consumes its retained outcome; the
+status tool checks without blocking and consumes an already-complete outcome.
+Cancelling the wait leaves the background run available. Completion is queued in
+the parent's bounded next-turn inbox and published as a `:subagent_finished`
+event. Background requests are
 owned by the logical parent session rather than the short-lived tool task, but
 remain attached to structured parent and scope cancellation. A child profile
 does not receive delegation tools unless recursive delegation is explicitly
