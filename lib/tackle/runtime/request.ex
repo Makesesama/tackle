@@ -70,17 +70,13 @@ defmodule Tackle.Runtime.Request do
   @doc "Waits for one correlated terminal outcome."
   @spec await(RunRef.t(), timeout()) :: Outcome.t() | {:error, term()}
   def await(%RunRef{} = run_ref, timeout \\ :infinity) do
-    case Registry.whereis(run_ref) do
-      {:ok, request} ->
-        try do
-          GenServer.call(request, {:await, timeout}, :infinity)
-        catch
-          :exit, _reason -> {:error, :request_terminated}
-        end
+    await_call(run_ref, {:await, timeout})
+  end
 
-      {:error, :not_found} ->
-        {:error, :not_found}
-    end
+  @doc "Waits for one correlated terminal outcome after validating its logical parent."
+  @spec await(RunRef.t(), AgentRef.t(), timeout()) :: Outcome.t() | {:error, term()}
+  def await(%RunRef{} = run_ref, %AgentRef{} = owner, timeout) do
+    await_call(run_ref, {:await, owner, timeout})
   end
 
   @doc "Returns a run's current state without consuming a terminal outcome."
@@ -123,6 +119,20 @@ defmodule Tackle.Runtime.Request do
   @spec cancel(GenServer.server(), term()) :: :ok
   def cancel(request, reason \\ :cancelled), do: GenServer.call(request, {:cancel, reason})
 
+  defp await_call(%RunRef{} = run_ref, message) do
+    case Registry.whereis(run_ref) do
+      {:ok, request} ->
+        try do
+          GenServer.call(request, message, :infinity)
+        catch
+          :exit, _reason -> {:error, :request_terminated}
+        end
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
   defp call(%RunRef{} = run_ref, request) do
     case Registry.whereis(run_ref) do
       {:ok, server} ->
@@ -162,7 +172,7 @@ defmodule Tackle.Runtime.Request do
       session_pid: nil,
       session_monitor: nil,
       outcome: nil,
-      awaiters: [],
+      awaiters: %{},
       await_timer: nil,
       deadline_timer: nil,
       linger_timer: nil,
@@ -246,8 +256,23 @@ defmodule Tackle.Runtime.Request do
   end
 
   def handle_call({:await, timeout}, from, state) do
-    state = %{state | awaiters: [from | state.awaiters]}
-    {:noreply, arm_await_timeout(state, timeout)}
+    {:noreply, register_awaiter(state, from, timeout)}
+  end
+
+  def handle_call(
+        {:await, owner, _timeout},
+        _from,
+        %{parent: %{agent_ref: owner}, outcome: %Outcome{} = outcome} = state
+      ) do
+    {:stop, :normal, outcome, cancel_timers(state)}
+  end
+
+  def handle_call({:await, owner, timeout}, from, %{parent: %{agent_ref: owner}} = state) do
+    {:noreply, register_awaiter(state, from, timeout)}
+  end
+
+  def handle_call({:await, _owner, _timeout}, _from, state) do
+    {:reply, {:error, :not_owner}, state}
   end
 
   def handle_call({:cancel, _reason}, _from, %{outcome: %Outcome{}} = state) do
@@ -290,6 +315,17 @@ defmodule Tackle.Runtime.Request do
         %{requester_monitor: monitor} = state
       ) do
     {:stop, :normal, cancel_child(state, :requester_terminated)}
+  end
+
+  def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
+    case Map.pop(state.awaiters, monitor) do
+      {nil, _awaiters} ->
+        {:noreply, state}
+
+      {_from, awaiters} ->
+        state = %{state | awaiters: awaiters}
+        {:noreply, disarm_await_timer_if_idle(state)}
+    end
   end
 
   def handle_info({:runtime_cancel, reason}, state) do
@@ -437,25 +473,43 @@ defmodule Tackle.Runtime.Request do
 
   defp arm_await_timeout(state, _timeout), do: state
 
+  defp register_awaiter(state, {pid, _tag} = from, timeout) do
+    monitor = Process.monitor(pid)
+    state = %{state | awaiters: Map.put(state.awaiters, monitor, from)}
+    arm_await_timeout(state, timeout)
+  end
+
+  defp disarm_await_timer_if_idle(%{awaiters: awaiters, await_timer: timer} = state)
+       when map_size(awaiters) == 0 and not is_nil(timer) do
+    Process.cancel_timer(timer)
+    %{state | await_timer: nil}
+  end
+
+  defp disarm_await_timer_if_idle(state), do: state
+
   defp settle(%{outcome: %Outcome{}} = state, _outcome), do: state
 
   defp settle(state, %Outcome{} = outcome) do
     state = cancel_timers(state)
     state = cancel_child(%{state | outcome: outcome}, :settled)
     notify_parent(state, outcome)
-    Enum.each(state.awaiters, &GenServer.reply(&1, outcome))
+
+    Enum.each(state.awaiters, fn {monitor, from} ->
+      Process.demonitor(monitor, [:flush])
+      GenServer.reply(from, outcome)
+    end)
 
     cond do
-      state.awaiters != [] ->
+      map_size(state.awaiters) > 0 ->
         send(self(), :collected)
-        %{state | awaiters: []}
+        %{state | awaiters: %{}}
 
       state.retention == :until_collected ->
-        %{state | awaiters: []}
+        %{state | awaiters: %{}}
 
       true ->
         linger = Process.send_after(self(), {:request_timeout, :linger}, @default_linger)
-        %{state | awaiters: [], linger_timer: linger}
+        %{state | awaiters: %{}, linger_timer: linger}
     end
   end
 
