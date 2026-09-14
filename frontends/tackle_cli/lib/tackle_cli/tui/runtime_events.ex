@@ -15,9 +15,11 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   alias Tackle.CLI.TUI.{
     Compaction,
+    MessageView,
     Observations,
     State,
     Subagents,
+    ToolView,
     Tree,
     UsageChart,
     Util,
@@ -1134,7 +1136,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp subagent_target(name, arguments) do
-    target = Tackle.CLI.TUI.ToolView.title(name, arguments, :running)
+    target = ToolView.title(name, arguments, :running)
     target = String.replace_prefix(target, "● #{name}", "") |> String.trim()
     if target == "", do: "", else: " · " <> target
   end
@@ -1208,7 +1210,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     profile =
       if name == "subagent" do
-        args = Tackle.CLI.TUI.ToolView.arguments(value(data, :arguments))
+        args = ToolView.arguments(value(data, :arguments))
 
         case value(args, :profile) do
           profile when is_binary(profile) -> " · " <> profile
@@ -1218,7 +1220,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         ""
       end
 
-    "#{status} #{name}#{profile}" |> Tackle.CLI.TUI.MessageView.sanitize()
+    "#{status} #{name}#{profile}" |> MessageView.sanitize()
   end
 
   defp value(map, key) when is_map(map),

@@ -31,6 +31,7 @@ defmodule Tackle.Lib.Tool do
   require Logger
 
   alias Tackle.Lib.JSON
+  alias Tackle.Lib.Tool.Content
   alias Tackle.Lib.Tool.Schema
 
   @doc "Returns the unique name of the tool."
@@ -456,7 +457,7 @@ defmodule Tackle.Lib.Tool do
   end
 
   defp project_output(%Tackle.Lib.Tool.Content{text: text, parts: parts}) do
-    case Tackle.Lib.Tool.Content.validate(parts) do
+    case Content.validate(parts) do
       :ok -> {:ok, {text, parts}}
       {:error, reason} -> {:error, {:invalid_output, reason}}
     end

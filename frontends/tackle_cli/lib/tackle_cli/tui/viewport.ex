@@ -17,7 +17,7 @@ defmodule Tackle.CLI.TUI.Viewport do
   hits an edge does not repaint the frame.
   """
 
-  alias Tackle.CLI.TUI.{Conversation, Layout, State, Subagents}
+  alias Tackle.CLI.TUI.{Browser, Conversation, Layout, State, Subagents}
   alias Tackle.CLI.Widgets.Input
 
   @doc "Creates the empty transcript model for a terminal size."
@@ -79,7 +79,7 @@ defmodule Tackle.CLI.TUI.Viewport do
         Conversation.resize(state.conversation, rect)
       end
 
-    %{state | conversation: conversation} |> Tackle.CLI.TUI.Browser.resize()
+    %{state | conversation: conversation} |> Browser.resize()
   end
 
   @doc """
