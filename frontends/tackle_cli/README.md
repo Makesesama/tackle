@@ -171,9 +171,29 @@ prompt for a valueless `--resume` follows `--` (or comes before the flag).
 
 Provider login, logout, status, and usage are adapter-driven: the CLI resolves
 the adapter by its `adapter_id` and delegates, so any configured
-`Tackle.Lib.LLM` plugin works without CLI changes. `auth status` without a
-provider lists every configured provider. DeepSeek login prompts for a key
-through the adapter and stores it under the `deepseek` credential namespace;
+`Tackle.Lib.LLM` plugin works without CLI changes. One-shot `run` commands show
+compact event-driven progress on stderr when it is an interactive terminal; the
+final answer remains the only stdout result, and redirected/non-terminal runs
+stay free of progress and ANSI control sequences.
+The progress renderer uses a command-local `Owl.LiveScreen` rather than Owl's
+application-wide stdout screen.
+
+`tackle sessions` defaults to the 20 most recent sessions and uses a borderless,
+width-aware human layout. Narrow terminals switch to stacked summaries instead
+of dropping or abbreviating session IDs. Use `--limit N` to request more rows,
+`--format plain` for stable tab-separated output, or `--format json` for a
+structured page including `next_cursor`; pass that value back through `--cursor`
+to retrieve the next page. Human output honors `--color auto|always|never` and
+`NO_COLOR`; plain and JSON output never contain ANSI sequences.
+
+`tackle auth status` uses the same borderless output policy and shows each
+provider's credential status and supported auth flows. `auth status` and `auth
+usage` support `--format human|plain|json` and `--color auto|always|never`;
+plain and JSON modes are stable, ANSI-free machine output. Login and logout
+remain interactive and therefore require human output. Provider failures are
+translated into actionable messages instead of exposing internal Elixir tuples.
+DeepSeek login prompts for a key through the adapter and stores it under the
+`deepseek` credential namespace;
 `auth usage deepseek` reports the account balance, and `auth usage` without a
 provider reports it for every provider that supports it. The credential file is
 plaintext JSON protected by user-only filesystem permissions; alternatively, set
