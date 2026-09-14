@@ -46,7 +46,7 @@ defmodule Tackle.Agents do
 
     %{
       definitions: definitions |> Map.values() |> Enum.sort_by(& &1.name),
-      warnings: warnings
+      warnings: Enum.reverse(warnings)
     }
   end
 
@@ -115,24 +115,28 @@ defmodule Tackle.Agents do
     |> Enum.reduce({definitions, warnings}, fn path, {definitions, warnings} ->
       case load_file(path, source) do
         {:ok, definition} ->
-          case Map.get(definitions, definition.name) do
-            %Definition{source: ^source, path: previous_path} ->
-              warning =
-                warning(
-                  path,
-                  "agent name #{definition.name} is already defined in #{previous_path}"
-                )
-
-              {definitions, warnings ++ [warning]}
-
-            _other ->
-              {Map.put(definitions, definition.name, definition), warnings}
-          end
+          merge_definition(definition, source, path, definitions, warnings)
 
         {:error, message} ->
-          {definitions, warnings ++ [warning(path, message)]}
+          {definitions, [warning(path, message) | warnings]}
       end
     end)
+  end
+
+  defp merge_definition(definition, source, path, definitions, warnings) do
+    case Map.get(definitions, definition.name) do
+      %Definition{source: ^source, path: previous_path} ->
+        warning =
+          warning(
+            path,
+            "agent name #{definition.name} is already defined in #{previous_path}"
+          )
+
+        {definitions, [warning | warnings]}
+
+      _other ->
+        {Map.put(definitions, definition.name, definition), warnings}
+    end
   end
 
   defp merge_definitions(new_definitions, {definitions, warnings}) do
@@ -143,10 +147,7 @@ defmodule Tackle.Agents do
   end
 
   defp markdown_files(dir) do
-    cond do
-      not File.dir?(dir) -> []
-      true -> walk_markdown(dir)
-    end
+    if File.dir?(dir), do: walk_markdown(dir), else: []
   end
 
   defp walk_markdown(dir) do
@@ -155,18 +156,20 @@ defmodule Tackle.Agents do
         entries
         |> Enum.sort()
         |> Enum.reject(&String.starts_with?(&1, "."))
-        |> Enum.flat_map(fn entry ->
-          path = Path.join(dir, entry)
-
-          cond do
-            File.dir?(path) -> walk_markdown(path)
-            String.ends_with?(entry, ".md") and regular_file?(path) -> [path]
-            true -> []
-          end
-        end)
+        |> Enum.flat_map(&walk_entry(dir, &1))
 
       {:error, _reason} ->
         []
+    end
+  end
+
+  defp walk_entry(dir, entry) do
+    path = Path.join(dir, entry)
+
+    cond do
+      File.dir?(path) -> walk_markdown(path)
+      String.ends_with?(entry, ".md") and regular_file?(path) -> [path]
+      true -> []
     end
   end
 

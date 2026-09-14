@@ -87,7 +87,7 @@ defmodule Tackle.CLI.Widgets.Subagents do
         words
         |> Enum.take(6)
         |> Enum.join(" ")
-        |> then(&if(length(words) > 6, do: &1 <> "…", else: &1))
+        |> then(&if(Enum.count_until(words, 7) == 7, do: &1 <> "…", else: &1))
     end
   end
 

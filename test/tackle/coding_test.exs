@@ -6,6 +6,7 @@ defmodule Tackle.CodingTest do
   alias Tackle.Coding
   alias Tackle.Runtime
   alias Tackle.Runtime.{Handle, Outcome, ScopeSpec}
+  alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Tools.{Bash, Read, Subagent, SubagentStatus, SubagentWait}
 
   setup do
@@ -270,7 +271,7 @@ defmodule Tackle.CodingTest do
 
   test "resumed scout follows the recorded root selection, not startup defaults", %{opts: opts} do
     home = tmp_home()
-    session = Tackle.Session.Spec.new!(storage: [home: home])
+    session = SessionSpec.new!(storage: [home: home])
     {:ok, spec} = Coding.scope_spec(opts, session)
     {:ok, scope} = Tackle.start_scope(spec)
     on_exit(fn -> Tackle.Test.Runtime.stop_scope(scope.scope_ref) end)
@@ -283,7 +284,7 @@ defmodule Tackle.CodingTest do
     assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
     assert :ok = Tackle.stop_scope(scope.scope_ref)
 
-    session = Tackle.Session.Spec.new!(session_id: session_id, storage: [home: home])
+    session = SessionSpec.new!(session_id: session_id, storage: [home: home])
     {:ok, spec} = Coding.scope_spec(opts, session)
     assert spec.profiles["scout"].config.model_ref == "test/echo"
     {:ok, resumed} = Tackle.start_scope(spec)

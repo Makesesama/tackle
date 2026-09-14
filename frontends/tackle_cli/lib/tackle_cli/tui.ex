@@ -154,13 +154,7 @@ defmodule Tackle.CLI.TUI do
         {:noreply, Inspector.scroll(state, delta)}
 
       nil ->
-        if Conversation.contains?(state.conversation, mouse.x, mouse.y) do
-          if Browser.page?(state),
-            do: {:noreply, Browser.scroll(state, delta)},
-            else: Viewport.scroll_reply(state, Viewport.scroll(state, delta))
-        else
-          {:noreply, state, render?: false}
-        end
+        scroll_conversation(state, mouse, delta)
 
       _overlay ->
         {:noreply, state, render?: false}
@@ -168,6 +162,14 @@ defmodule Tackle.CLI.TUI do
   end
 
   def handle_event(_event, state), do: {:noreply, state, render?: false}
+
+  defp scroll_conversation(state, mouse, delta) do
+    case {Conversation.contains?(state.conversation, mouse.x, mouse.y), Browser.page?(state)} do
+      {true, true} -> {:noreply, Browser.scroll(state, delta)}
+      {true, false} -> Viewport.scroll_reply(state, Viewport.scroll(state, delta))
+      _other -> {:noreply, state, render?: false}
+    end
+  end
 
   # -- runtime events ------------------------------------------------------
 

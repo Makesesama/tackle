@@ -3,10 +3,14 @@ defmodule Tackle.CLI.Standalone do
 
   use Task
 
+  alias Burrito.Util
+  alias Burrito.Util.Args
+  alias Tackle.CLI.Main
+
   @spec start_link(term()) :: {:ok, pid()} | :ignore
   def start_link(_arg) do
-    if Burrito.Util.running_standalone?() do
-      run(Burrito.Util.Args.argv())
+    if Util.running_standalone?() do
+      run(Args.argv())
       :ignore
     else
       Task.start_link(fn -> :ok end)
@@ -16,7 +20,7 @@ defmodule Tackle.CLI.Standalone do
   defp run(argv) do
     status =
       try do
-        Tackle.CLI.Main.main(argv)
+        Main.main(argv)
       rescue
         exception ->
           IO.puts(:stderr, "tackle crashed: " <> Exception.message(exception))

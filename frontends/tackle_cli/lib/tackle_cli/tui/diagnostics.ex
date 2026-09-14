@@ -146,21 +146,23 @@ defmodule Tackle.CLI.TUI.Diagnostics do
   end
 
   defp live_subagent(subagent) do
-    with {:ok, snapshot} <- Tackle.Runtime.session_snapshot(subagent.agent_ref) do
-      agent = snapshot.agent_state
+    case Tackle.Runtime.session_snapshot(subagent.agent_ref) do
+      {:ok, snapshot} ->
+        agent = snapshot.agent_state
 
-      %{
-        status: live_status(agent, snapshot),
-        active_turn_id: snapshot.active_turn && snapshot.active_turn.id,
-        model: State.model_ref(agent),
-        thinking: Tackle.Thinking.from_llm_opts(agent.llm_opts),
-        iteration: agent.current_iteration,
-        max_iterations: agent.max_iterations,
-        messages: Enum.map(agent.messages, &subagent_message/1),
-        error: agent.error
-      }
-    else
-      {:error, reason} -> Map.merge(empty_subagent(), %{status: :unavailable, error: reason})
+        %{
+          status: live_status(agent, snapshot),
+          active_turn_id: snapshot.active_turn && snapshot.active_turn.id,
+          model: State.model_ref(agent),
+          thinking: Tackle.Thinking.from_llm_opts(agent.llm_opts),
+          iteration: agent.current_iteration,
+          max_iterations: agent.max_iterations,
+          messages: Enum.map(agent.messages, &subagent_message/1),
+          error: agent.error
+        }
+
+      {:error, reason} ->
+        Map.merge(empty_subagent(), %{status: :unavailable, error: reason})
     end
   end
 

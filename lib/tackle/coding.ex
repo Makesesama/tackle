@@ -108,7 +108,11 @@ defmodule Tackle.Coding do
   end
 
   defp profile_tools(%Definition{tools: nil} = definition, default_tools, _trusted_tools) do
-    tools = if definition.allow_delegation, do: default_tools ++ [Subagent], else: default_tools
+    tools =
+      if definition.allow_delegation,
+        do: append_tool(default_tools, Subagent),
+        else: default_tools
+
     {:ok, Enum.uniq(tools)}
   end
 
@@ -116,9 +120,17 @@ defmodule Tackle.Coding do
     resolution_tools = Enum.uniq(trusted_tools ++ Tackle.Tools.default())
 
     with {:ok, tools} <- Tackle.Tools.resolve_names(names, resolution_tools) do
-      tools = if definition.allow_delegation, do: tools ++ [Subagent], else: tools
+      tools =
+        if definition.allow_delegation,
+          do: append_tool(tools, Subagent),
+          else: tools
+
       {:ok, Enum.uniq(tools)}
     end
+  end
+
+  defp append_tool(tools, tool) do
+    Enum.reverse([tool | Enum.reverse(tools)])
   end
 
   defp load_profile_config(definition, tools, loader_opts) do

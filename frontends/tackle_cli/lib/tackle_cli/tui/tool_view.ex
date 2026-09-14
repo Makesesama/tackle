@@ -231,7 +231,7 @@ defmodule Tackle.CLI.TUI.ToolView do
     clipped? = Enum.any?(tail, &(MessageView.display_width(&1) > content_width))
 
     hint =
-      if length(lines) > 2 or clipped?,
+      if Enum.count_until(lines, 3) == 3 or clipped?,
         do: [body_row(Theme.style(:subtle), "… F4 details" |> clip_width(content_width))],
         else: []
 
@@ -245,16 +245,18 @@ defmodule Tackle.CLI.TUI.ToolView do
       {graphemes, _used} =
         text
         |> String.graphemes()
-        |> Enum.reduce_while({[], 0}, fn grapheme, {kept, used} ->
-          next = used + MessageView.display_width(grapheme)
-
-          if next < width,
-            do: {:cont, {[grapheme | kept], next}},
-            else: {:halt, {kept, used}}
-        end)
+        |> Enum.reduce_while({[], 0}, &keep_grapheme(&1, &2, width))
 
       Enum.reverse(graphemes) |> Enum.join() |> Kernel.<>("…")
     end
+  end
+
+  defp keep_grapheme(grapheme, {kept, used}, width) do
+    next = used + MessageView.display_width(grapheme)
+
+    if next < width,
+      do: {:cont, {[grapheme | kept], next}},
+      else: {:halt, {kept, used}}
   end
 
   defp write_rows(entry, args, mode) do

@@ -48,7 +48,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Lib.Event
-  alias Tackle.Runtime.Outcome
+  alias Tackle.Runtime.{Outcome, RunRef}
   alias Tackle.Tools.{Subagent, SubagentStatus, SubagentWait}
 
   test "background launch survives the tool caller and retains its result until collected" do
@@ -244,7 +244,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert_receive {:adapter_called, child_task, "child", _opts}, 2_000
     assert_receive {:tool_entered, "parent", _blocking_task}, 2_000
     child_monitor = Process.monitor(child_task)
-    {:ok, run_ref} = Tackle.Runtime.RunRef.new(scope.scope_ref.scope_id, run_id)
+    {:ok, run_ref} = RunRef.new(scope.scope_ref.scope_id, run_id)
     {:ok, request} = Tackle.Runtime.Registry.whereis(run_ref)
     request_monitor = Process.monitor(request)
 
@@ -471,7 +471,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
              )
 
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
-    {:ok, run_ref} = Tackle.Runtime.RunRef.new(scope.scope_ref.scope_id, run_id)
+    {:ok, run_ref} = RunRef.new(scope.scope_ref.scope_id, run_id)
     assert :ok = Tackle.Runtime.cancel(run_ref)
 
     assert_receive {:tackle_event, ^session_id, nil,
@@ -558,7 +558,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
   end
 
   defp run_status(scope, run_id) do
-    {:ok, run_ref} = Tackle.Runtime.RunRef.new(scope.scope_ref.scope_id, run_id)
+    {:ok, run_ref} = RunRef.new(scope.scope_ref.scope_id, run_id)
     Tackle.Runtime.run_status(run_ref)
   end
 

@@ -22,11 +22,11 @@ defmodule Tackle.Runtime.Request do
 
   use GenServer, restart: :temporary
 
+  alias Tackle.Lib.Event
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Registry
   alias Tackle.Runtime.RunRef
-  alias Tackle.Lib.Event
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Session
   alias Tackle.Session.Supervisor, as: SessionSupervisor
