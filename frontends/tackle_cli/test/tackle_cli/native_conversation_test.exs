@@ -139,11 +139,11 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     }
 
     state = Viewport.refresh(state)
-    refute paint(state.conversation) =~ "third"
+    assert paint(state.conversation) =~ "third"
     {:noreply, expanded} = Viewport.toggle_thinking(state)
     assert paint(expanded.conversation) =~ "third"
     {:noreply, collapsed} = Viewport.toggle_thinking(expanded)
-    refute paint(collapsed.conversation) =~ "third"
+    assert paint(collapsed.conversation) =~ "third"
     assert Conversation.text(collapsed.conversation) =~ "third"
     assert Input.get_value(input) == "keep draft"
   end

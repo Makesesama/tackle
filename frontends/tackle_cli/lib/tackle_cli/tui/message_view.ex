@@ -527,14 +527,10 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   defp collapsed_thinking_rows(lines, muted) do
-    case Enum.find(lines, &(&1 != "")) do
-      nil ->
-        []
-
-      first ->
-        preview = truncate_line(first, 180)
-        [row([span("  ", %Style{}), span(preview, Theme.italic(muted))], %Style{})]
-    end
+    Enum.map(lines, fn line ->
+      preview = truncate_line(line, 180)
+      row([span("  ", %Style{}), span(preview, Theme.italic(muted))], %Style{})
+    end)
   end
 
   defp error_rows(entry) do
