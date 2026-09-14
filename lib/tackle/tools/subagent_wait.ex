@@ -14,8 +14,6 @@ defmodule Tackle.Tools.SubagentWait do
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.RunRef
 
-  @poll_interval 50
-
   tool_name("subagent_wait")
 
   description(
@@ -47,17 +45,8 @@ defmodule Tackle.Tools.SubagentWait do
   end
 
   defp wait(run_ref, owner) do
-    case Runtime.run_status(owner, run_ref) do
-      {:ok, :running} ->
-        Process.sleep(@poll_interval)
-        wait(run_ref, owner)
-
-      {:ok, {:completed, %Outcome{}}} ->
-        Runtime.collect(owner, run_ref) |> handle_outcome(run_ref)
-
-      {:error, reason} ->
-        {:error, unavailable(reason)}
-    end
+    Runtime.await(owner, run_ref, :infinity)
+    |> handle_outcome(run_ref)
   end
 
   defp handle_outcome(%Outcome{status: :ok} = outcome, run_ref) do

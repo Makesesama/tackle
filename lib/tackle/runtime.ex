@@ -294,6 +294,12 @@ defmodule Tackle.Runtime do
   @spec await(RunRef.t(), timeout()) :: Outcome.t() | {:error, term()}
   def await(%RunRef{} = run_ref, timeout \\ :infinity), do: Request.await(run_ref, timeout)
 
+  @doc "Waits for and consumes a run only when it belongs to `owner`."
+  @spec await(AgentRef.t(), RunRef.t(), timeout()) :: Outcome.t() | {:error, term()}
+  def await(%AgentRef{} = owner, %RunRef{} = run_ref, timeout) do
+    Request.await(run_ref, owner, timeout)
+  end
+
   @doc "Returns whether a delegated run is still running or has completed."
   @spec run_status(RunRef.t()) ::
           {:ok, :running | {:completed, Outcome.t()}} | {:error, term()}

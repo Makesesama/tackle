@@ -186,6 +186,9 @@ defmodule Tackle.Tools.SubagentAsyncTest do
         owner: :parent
       )
 
+    assert {:error, :not_owner} =
+             Tackle.Runtime.await(run_ref.agent_ref, run_ref, :infinity)
+
     other_scope = start_scope(root: [allow_delegation: true])
 
     assert {:error, message} =
