@@ -84,6 +84,7 @@
         {
           default = package;
           tackle-cli = package;
+          tackle-web = pkgs.callPackage ./nix/packages/tackle-web.nix { };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           jailed-tackle = mkJailedTackle { inherit pkgs system; };
@@ -129,6 +130,11 @@
             ${preCommitCheck.shellHook}
               # Enable Tackle development-only behaviour (e.g. the elixir_eval tool)
               export TACKLE_DEV=1
+
+              # forcola ships a shim linked against the FHS loader, which does
+              # not exist on NixOS. Build it from source (cargo is on PATH)
+              # instead of letting the package download the precompiled binary.
+              export FORCOLA_BUILD=1
 
               # Set up `mix` to save dependencies to the local directory
               mkdir -p .nix-mix
