@@ -194,9 +194,13 @@ defmodule Tackle.Session.Codec do
 
   defp decode_role(nil), do: {:ok, nil}
 
-  defp decode_role(role) when role in ["user", "assistant", "tool"] do
-    {:ok, String.to_existing_atom(role)}
-  end
+  # The literals are matched rather than round-tripped through
+  # `String.to_existing_atom/1`, which raises `:badarg` when the atom has not
+  # been materialized in this VM yet — decoding a stored `"tool"` message on a
+  # freshly started node crashed the reader instead of returning a role.
+  defp decode_role("user"), do: {:ok, :user}
+  defp decode_role("assistant"), do: {:ok, :assistant}
+  defp decode_role("tool"), do: {:ok, :tool}
 
   defp decode_role(role), do: {:error, {:invalid_role, role}}
 

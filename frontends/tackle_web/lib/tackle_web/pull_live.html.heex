@@ -1,0 +1,162 @@
+<Layouts.app flash={@flash}>
+  <.async_result :let={loaded} assign={@loaded}>
+    <:loading>
+      <div class="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-sm opacity-70">
+        <span class="loading loading-spinner"></span>
+        <p>
+          Fetching {@owner}/{@repo}#{@number} and cloning both sides of the pull request...
+        </p>
+      </div>
+    </:loading>
+
+    <:failed :let={failure}>
+      <div class="flex flex-1 items-center justify-center p-8">
+        <div class="alert alert-error max-w-xl flex-col items-start gap-2 text-sm">
+          <p>{async_failure_message(failure)}</p>
+          <.link navigate={~p"/"} class="link link-hover text-xs">Back to the local diff</.link>
+        </div>
+      </div>
+    </:failed>
+
+    <header class="flex-none border-b border-base-300 bg-base-200 px-4 py-3">
+      <div class="flex items-baseline gap-2">
+        <h1 class="text-sm font-semibold">{loaded.pull.title}</h1>
+        <span class="font-mono text-xs opacity-60">
+          {@owner}/{@repo}#{@number}
+        </span>
+        <span :if={loaded.pull.draft} class="badge badge-xs badge-ghost">draft</span>
+        <span
+          class="badge badge-xs"
+          class={[
+            loaded.pull.state == "open" && "badge-success",
+            loaded.pull.state != "open" && "badge-ghost"
+          ]}
+        >
+          {loaded.pull.state}
+        </span>
+      </div>
+      <div class="mt-1 flex items-center gap-3 text-xs opacity-70">
+        <span :if={loaded.pull.author} class="font-mono">{loaded.pull.author}</span>
+        <span class="font-mono">
+          {loaded.pull.base_ref} ← {loaded.pull.head_ref}
+        </span>
+        <span>
+          {length(loaded.diff.files)} files,
+          <span class="text-success">+{loaded.diff.additions}</span>
+          <span class="text-error">-{loaded.diff.deletions}</span>
+        </span>
+        <a
+          :if={loaded.pull.html_url}
+          href={loaded.pull.html_url}
+          target="_blank"
+          rel="noreferrer"
+          class="link link-hover ml-auto"
+        >
+          View on GitHub
+        </a>
+      </div>
+    </header>
+
+    <p
+      :if={@comment_error}
+      class="flex-none border-b border-error bg-error/10 px-4 py-2 text-xs text-error"
+    >
+      {@comment_error}
+    </p>
+
+    <div class="flex-none border-b border-base-300 px-4 py-2">
+      <form id="ask-general" phx-submit="ask" class="flex items-center gap-2">
+        <input
+          type="text"
+          name="question[body]"
+          placeholder="Ask the assistant about this pull request..."
+          autocomplete="off"
+          disabled={@processing}
+          class="input input-sm input-bordered min-w-0 flex-1 font-mono text-xs"
+        />
+        <button type="submit" class="btn btn-xs btn-secondary" disabled={@processing}>
+          Ask
+        </button>
+      </form>
+
+      <div class="mt-1 flex items-center gap-2 text-xs">
+        <span :if={@processing} class="flex items-center gap-2 opacity-70">
+          <span class="loading loading-spinner loading-xs"></span>
+          <span :if={@activity} class="truncate font-mono">{@activity}</span>
+          <span :if={!@activity}>Thinking...</span>
+          <button type="button" class="btn btn-xs btn-ghost" phx-click="cancel_turn">Stop</button>
+        </span>
+        <span :if={!@processing and is_nil(@agent_error)} class="opacity-50">
+          Ask about a line with the <span class="font-mono font-bold text-secondary">?</span>
+          beside it, or ask here about the whole pull request.
+        </span>
+      </div>
+    </div>
+
+    <div
+      :if={@agent_error}
+      class="flex flex-none items-center gap-2 border-b border-error bg-error/10 px-4 py-2 text-xs text-error"
+    >
+      <span>{@agent_error}</span>
+      <span :if={credential_hint(@agent_error)} class="opacity-80">
+        {credential_hint(@agent_error)}
+      </span>
+      <button
+        :if={not @processing and asked?(@agent_state)}
+        type="button"
+        class="btn btn-xs btn-ghost"
+        phx-click="retry_turn"
+      >
+        Retry
+      </button>
+    </div>
+
+    <div class="flex min-h-0 flex-1">
+      <aside class="flex w-80 flex-none flex-col overflow-y-auto border-r border-base-300">
+        <div class="flex-none border-b border-base-300 px-3 py-2 text-xs">
+          <span class="font-semibold">
+            {reviewed_count(@review, loaded.diff.files)}/{length(loaded.diff.files)}
+          </span>
+          files reviewed <span class="ml-2 text-success">+{loaded.diff.additions}</span>
+          <span class="ml-1 text-error">-{loaded.diff.deletions}</span>
+        </div>
+
+        <.file_nav files={loaded.diff.files} review={@review} />
+      </aside>
+
+      <main class="min-w-0 flex-1 overflow-auto">
+        <section
+          :if={
+            agent_threads(@agent, general_anchor()) != [] or
+              agent_streaming(@agent, general_anchor())
+          }
+          class="border-b border-base-300 px-3 py-2"
+        >
+          <h2 class="mb-1 text-[0.6875rem] font-semibold uppercase opacity-60">
+            About this pull request
+          </h2>
+          <.thread :for={answer <- agent_threads(@agent, general_anchor())} answer={answer} />
+          <div
+            :if={streaming = agent_streaming(@agent, general_anchor())}
+            class="diff-answer diff-answer--streaming"
+          >
+            <p class="diff-reply">{streaming.content}</p>
+          </div>
+        </section>
+
+        <p :if={loaded.diff.files == []} class="p-8 text-center text-sm opacity-70">
+          This pull request changes nothing.
+        </p>
+
+        <.file
+          :for={file <- loaded.diff.files}
+          file={file}
+          review={@review}
+          comments={comments_for(@review, file.path)}
+          comment_at={@comment_at}
+          agent={@agent}
+        />
+      </main>
+    </div>
+  </.async_result>
+</Layouts.app>

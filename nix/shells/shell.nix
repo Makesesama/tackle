@@ -51,6 +51,12 @@ pkgs.mkShell {
     pkgs.xz
     pkgs.zig_0_16
 
+    # tackle_web builds its assets with these. config/dev.exs points the
+    # Tailwind and Esbuild packages at them, so nothing is downloaded into
+    # _build/ on NixOS.
+    pkgs.tailwindcss_4
+    pkgs.esbuild
+
     # Development tools
     pkgs.rustfmt
     pkgs.clippy
