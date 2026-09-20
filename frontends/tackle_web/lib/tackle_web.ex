@@ -79,8 +79,9 @@ defmodule Tackle.Web do
     quote do
       # HTML escaping functionality
       import Phoenix.HTML
-      # Core UI components
+      # Core UI helpers and the design system the interface is built from
       import Tackle.Web.CoreComponents
+      import Tackle.Web.Components.UI
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS

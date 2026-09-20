@@ -433,26 +433,6 @@ defmodule Tackle.Web.PullLiveTest do
     %{"question" => %{"body" => body}}
   end
 
-  # The assistant runs in a supervised task, so its answer arrives as a PubSub
-  # message some time after the event that asked for it.
-  defp eventually(view, text, attempts \\ 100) do
-    outcome =
-      Enum.reduce_while(1..attempts, :timeout, fn _attempt, _acc ->
-        if render(view) =~ text do
-          {:halt, :found}
-        else
-          Process.sleep(20)
-          {:cont, :timeout}
-        end
-      end)
-
-    if outcome == :timeout do
-      flunk("The page never showed #{inspect(text)}.")
-    end
-
-    :ok
-  end
-
   defp comment_button(line) do
     "button[phx-click=comment_at][phx-value-line='#{line}'][phx-value-side=new]"
   end

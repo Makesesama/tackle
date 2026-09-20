@@ -14,81 +14,59 @@
    The heroicons installation itself is managed by your mix.exs */
 @plugin "../vendor/heroicons";
 
-/* daisyUI Tailwind Plugin. */
+/* daisyUI supplies the theme variables (and the plugins in this file are how
+   `@plugin` resolves them); the components the interface is built from are our
+   own, in Tackle.Web.Components.UI. daisyUI's component classes are unused. */
 @plugin "daisyui/packages/bundle/daisyui" {
   themes: false;
 }
 
-/* daisyUI theme plugin.
-  We ship with two themes, a light one inspired on Phoenix colors and a dark one inspired
-  on Elixir colors. Build your own at: https://daisyui.com/theme-generator/ */
-@plugin "daisyui/packages/bundle/daisyui-theme" {
-  name: "dark";
-  default: false;
-  prefersdark: true;
-  color-scheme: "dark";
-  --color-base-100: oklch(30.33% 0.016 252.42);
-  --color-base-200: oklch(25.26% 0.014 253.1);
-  --color-base-300: oklch(20.15% 0.012 254.09);
-  --color-base-content: oklch(97.807% 0.029 256.847);
-  --color-primary: oklch(58% 0.233 277.117);
-  --color-primary-content: oklch(96% 0.018 272.314);
-  --color-secondary: oklch(58% 0.233 277.117);
-  --color-secondary-content: oklch(96% 0.018 272.314);
-  --color-accent: oklch(60% 0.25 292.717);
-  --color-accent-content: oklch(96% 0.016 293.756);
-  --color-neutral: oklch(37% 0.044 257.287);
-  --color-neutral-content: oklch(98% 0.003 247.858);
-  --color-info: oklch(58% 0.158 241.966);
-  --color-info-content: oklch(97% 0.013 236.62);
-  --color-success: oklch(60% 0.118 184.704);
-  --color-success-content: oklch(98% 0.014 180.72);
-  --color-warning: oklch(66% 0.179 58.318);
-  --color-warning-content: oklch(98% 0.022 95.277);
-  --color-error: oklch(58% 0.253 17.585);
-  --color-error-content: oklch(96% 0.015 12.422);
-  --radius-selector: 0.25rem;
-  --radius-field: 0.25rem;
-  --radius-box: 0.5rem;
-  --size-selector: 0.21875rem;
-  --size-field: 0.21875rem;
-  --border: 1.5px;
-  --depth: 1;
-  --noise: 0;
-}
+/* The interface's palette.
 
+   The page is white, hairlines and secondary text are grey, and there is
+   exactly one colour: pink. Pink is `primary`, so anything interactive,
+   selected or new is pink, and nothing else competes with it. The other
+   accents are that same pink at one of its own weights — there is nowhere for a
+   second brand colour to come from — with one exception: `error` stays red, so
+   that a failure never reads as just another accent.
+
+   Sizes and radii are set here rather than per component so every control in
+   the interface lines up with every other one. */
 @plugin "daisyui/packages/bundle/daisyui-theme" {
-  name: "light";
+  name: "tackle";
   default: true;
   prefersdark: false;
   color-scheme: "light";
-  --color-base-100: oklch(98% 0 0);
-  --color-base-200: oklch(96% 0.001 286.375);
-  --color-base-300: oklch(92% 0.004 286.32);
-  --color-base-content: oklch(21% 0.006 285.885);
-  --color-primary: oklch(70% 0.213 47.604);
-  --color-primary-content: oklch(98% 0.016 73.684);
-  --color-secondary: oklch(55% 0.027 264.364);
-  --color-secondary-content: oklch(98% 0.002 247.839);
-  --color-accent: oklch(0% 0 0);
-  --color-accent-content: oklch(100% 0 0);
-  --color-neutral: oklch(44% 0.017 285.786);
-  --color-neutral-content: oklch(98% 0 0);
-  --color-info: oklch(62% 0.214 259.815);
-  --color-info-content: oklch(97% 0.014 254.604);
-  --color-success: oklch(70% 0.14 182.503);
-  --color-success-content: oklch(98% 0.014 180.72);
-  --color-warning: oklch(66% 0.179 58.318);
-  --color-warning-content: oklch(98% 0.022 95.277);
-  --color-error: oklch(58% 0.253 17.585);
-  --color-error-content: oklch(96% 0.015 12.422);
-  --radius-selector: 0.25rem;
-  --radius-field: 0.25rem;
-  --radius-box: 0.5rem;
-  --size-selector: 0.21875rem;
-  --size-field: 0.21875rem;
-  --border: 1.5px;
-  --depth: 1;
+
+  --color-base-100: #ffffff;
+  --color-base-200: #fafafa;
+  --color-base-300: #ededf0;
+  --color-base-content: #18181b;
+
+  --color-primary: #db2777;
+  --color-primary-content: #ffffff;
+  --color-secondary: #18181b;
+  --color-secondary-content: #ffffff;
+  --color-accent: #fdf2f8;
+  --color-accent-content: #9d174d;
+  --color-neutral: #18181b;
+  --color-neutral-content: #ffffff;
+  --color-info: #db2777;
+  --color-info-content: #ffffff;
+  --color-success: #db2777;
+  --color-success-content: #ffffff;
+  --color-warning: #9d174d;
+  --color-warning-content: #ffffff;
+  --color-error: #b42318;
+  --color-error-content: #ffffff;
+
+  --radius-selector: 0.5rem;
+  --radius-field: 0.625rem;
+  --radius-box: 0.875rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
   --noise: 0;
 }
 
@@ -97,45 +75,99 @@
 @custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);
 @custom-variant phx-change-loading (.phx-change-loading&, .phx-change-loading &);
 
-/* Use the data attribute for dark mode  */
-@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
-
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
 /* This file is for your main application CSS */
 
+html {
+  background-color: var(--color-base-100);
+  color: var(--color-base-content);
+  -webkit-font-smoothing: antialiased;
+  scrollbar-width: thin;
+}
+
+::selection {
+  background-color: color-mix(in oklab, var(--color-primary) 22%, transparent);
+}
+
+/* A form control that has focus is pink, so the accent marks where typing goes
+   rather than decorating the page. */
+.ui-control:focus-visible,
+.ui-control:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-primary) 15%, transparent);
+}
+
+/* The caret that marks a streaming answer, in the diff and in chat. */
+.ui-caret::after {
+  content: "\258C";
+  animation: ui-caret 1s steps(2, start) infinite;
+}
+
+@keyframes ui-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
 /* Diff viewer. The line kind is interpolated into the class name in the
    template ("diff-line--#{kind}"), so Tailwind's scanner cannot see the
-   variants; the colours are plain CSS over daisyUI's theme variables instead. */
+   variants; the colours are plain CSS over the theme variables instead.
+
+   An added line is the one place pink carries meaning rather than decoration:
+   it is washed with the accent and railed with it. A removed line is grey and
+   struck through to a softer grey, which keeps a diff readable without a second
+   colour. */
+.diff-line-group {
+  --diff-gutter: 3.5rem;
+}
+
 .diff-line {
   display: grid;
-  grid-template-columns: 3.25rem 3.25rem 1rem 1fr 3.25rem;
+  grid-template-columns: var(--diff-gutter) var(--diff-gutter) 1.25rem minmax(0, 1fr) 3rem;
   align-items: start;
+  border-left: 2px solid transparent;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.75rem;
-  line-height: 1.6;
+  line-height: 1.7;
 }
 
 .diff-line--add {
-  background-color: color-mix(in oklab, var(--color-success) 18%, transparent);
+  border-left-color: var(--color-primary);
+  background-color: var(--color-accent);
 }
 
 .diff-line--remove {
-  background-color: color-mix(in oklab, var(--color-error) 18%, transparent);
+  border-left-color: var(--color-base-300);
+  background-color: var(--color-base-200);
+}
+
+.diff-line--remove .diff-code,
+.diff-line--remove .diff-gutter {
+  color: color-mix(in oklab, var(--color-base-content) 55%, transparent);
 }
 
 .diff-gutter {
-  padding: 0 0.5rem;
+  padding: 0 0.75rem;
   text-align: right;
-  color: color-mix(in oklab, currentColor 45%, transparent);
+  color: color-mix(in oklab, var(--color-base-content) 40%, transparent);
+  font-variant-numeric: tabular-nums;
   user-select: none;
 }
 
 .diff-marker {
   text-align: center;
-  opacity: 0.6;
   user-select: none;
+}
+
+.diff-line--add .diff-marker {
+  color: var(--color-primary);
+}
+
+.diff-line--remove .diff-marker {
+  color: color-mix(in oklab, var(--color-base-content) 45%, transparent);
 }
 
 /* Leading whitespace is source code and has to survive. */
@@ -146,99 +178,127 @@
 
 .diff-note {
   font-style: italic;
-  opacity: 0.6;
+  color: color-mix(in oklab, var(--color-base-content) 50%, transparent);
   white-space: pre;
 }
 
 .diff-hunk {
-  padding: 0.125rem 0.75rem;
-  background-color: var(--color-base-300);
-  color: color-mix(in oklab, currentColor 65%, transparent);
+  padding: 0.25rem 0.875rem;
+  border-top: 1px solid var(--color-base-300);
+  border-bottom: 1px solid var(--color-base-300);
+  background-color: var(--color-base-200);
+  color: color-mix(in oklab, var(--color-base-content) 55%, transparent);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.6875rem;
 }
 
 /* The comment and question affordances stay out of the way until the line is
-   pointed at, so a diff nobody has asked about reads exactly like a diff. */
+   pointed at, so a diff nobody has asked about reads exactly like a diff.
+   `+` is a comment (outlined) and `?` is a question (filled); both are pink,
+   because pink is what this interface uses to say "you can do something here". */
 .diff-action {
   display: flex;
   justify-content: center;
   gap: 0.125rem;
+  padding-top: 0.125rem;
 }
 
 .diff-comment-action,
 .diff-ask-action {
+  display: grid;
+  place-items: center;
   width: 1.25rem;
   height: 1.25rem;
-  border-radius: 0.25rem;
+  border-radius: 999px;
   cursor: pointer;
-  font-weight: 700;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
   opacity: 0;
+  transition: opacity 120ms ease-out;
 }
 
 .diff-comment-action {
+  border: 1px solid var(--color-primary);
+  background-color: var(--color-base-100);
   color: var(--color-primary);
 }
 
 .diff-ask-action {
-  color: var(--color-secondary);
-}
-
-.diff-line:hover .diff-comment-action,
-.diff-comment-action:focus,
-.diff-line:hover .diff-ask-action,
-.diff-ask-action:focus {
-  opacity: 1;
-}
-
-.diff-comment-action:hover {
+  border: 1px solid var(--color-primary);
   background-color: var(--color-primary);
   color: var(--color-primary-content);
 }
 
+.diff-line:hover .diff-comment-action,
+.diff-comment-action:focus-visible,
+.diff-line:hover .diff-ask-action,
+.diff-ask-action:focus-visible {
+  opacity: 1;
+}
+
+.diff-comment-action:hover,
 .diff-ask-action:hover {
-  background-color: var(--color-secondary);
-  color: var(--color-secondary-content);
+  background-color: var(--color-primary);
+  color: var(--color-primary-content);
 }
 
 /* Comments and their form line up with the code column rather than the gutters,
-   so they read as attached to the line above them. */
+   so they read as attached to the line above them. A thread in the conversation
+   area above the diff is not attached to a line, so it stays flush. */
 .diff-comment,
 .diff-comment-form,
 .diff-answer,
 .diff-answer-form {
-  margin-left: 7.5rem;
-  padding: 0.5rem 1rem;
-  background-color: var(--color-base-200);
+  padding: 0.625rem 1rem;
+}
+
+.diff-line-group .diff-comment,
+.diff-line-group .diff-comment-form,
+.diff-line-group .diff-answer,
+.diff-line-group .diff-answer-form {
+  margin-left: calc(var(--diff-gutter) * 2 + 1.25rem);
 }
 
 .diff-comment {
   border-left: 2px solid var(--color-primary);
+  background-color: var(--color-base-100);
   font-size: 0.75rem;
 }
 
 .diff-comment + .diff-comment {
-  margin-top: 0.125rem;
+  margin-top: 1px;
 }
 
 /* An answer sits under the line it is about, marked in the same way a comment
-   is, so the two read as the same kind of thing attached to the code. */
+   is, so the two read as the same kind of thing attached to the code. Answers
+   are washed with the accent; comments are not, because the reader wrote those
+   and the assistant wrote these. */
 .diff-answer {
-  border-left: 2px solid var(--color-secondary);
+  border-left: 2px solid var(--color-primary);
+  background-color: var(--color-accent);
   font-size: 0.75rem;
 }
 
 .diff-answer + .diff-answer {
-  margin-top: 0.125rem;
+  margin-top: 1px;
+}
+
+.diff-comment-form,
+.diff-answer-form {
+  background-color: var(--color-base-100);
 }
 
 .diff-question {
   white-space: pre-wrap;
-  opacity: 0.7;
+  overflow-wrap: anywhere;
+  color: var(--color-accent-content);
+  font-weight: 500;
 }
 
 .diff-reply {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .diff-reply + .diff-reply,
@@ -249,16 +309,115 @@
 .diff-steps {
   margin-top: 0.25rem;
   font-style: italic;
-  opacity: 0.5;
+  color: color-mix(in oklab, var(--color-base-content) 45%, transparent);
 }
 
-.diff-answer--streaming .diff-reply::after {
+.diff-answer--streaming .diff-reply:last-child::after {
   content: "\258C";
-  animation: diff-caret 1s steps(2, start) infinite;
+  animation: ui-caret 1s steps(2, start) infinite;
 }
 
-@keyframes diff-caret {
-  50% {
-    opacity: 0;
-  }
+/* Chat. A turn is one column of messages: questions from the reader, answers
+   from the assistant, and the work behind an answer collapsed between them.
+   Sizing a bubble to its content and pushing the reader's own messages right
+   keeps the two speakers apart without a second column. The reader's messages
+   are the filled pink ones. */
+.chat-message {
+  width: fit-content;
+  max-width: 85%;
+  padding: 0.625rem 0.875rem;
+  border-radius: 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.65;
+}
+
+.chat-message--user {
+  margin-left: auto;
+  border-bottom-right-radius: 0.375rem;
+  background-color: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.chat-message--assistant {
+  border: 1px solid var(--color-base-300);
+  border-bottom-left-radius: 0.375rem;
+  background-color: var(--color-base-200);
+}
+
+.chat-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-message--streaming .chat-text::after {
+  content: "\258C";
+  animation: ui-caret 1s steps(2, start) infinite;
+}
+
+/* Tool calls, results and reasoning: present, but behind a summary, because a
+   reader wants the answer and not the search history that produced it. */
+.chat-work {
+  font-size: 0.75rem;
+  color: color-mix(in oklab, var(--color-base-content) 65%, transparent);
+}
+
+.chat-work-summary {
+  display: inline-flex;
+  cursor: pointer;
+  align-items: center;
+  gap: 0.375rem;
+  list-style: none;
+  user-select: none;
+}
+
+.chat-work-summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-work-summary::before {
+  content: "\25B8";
+  color: var(--color-primary);
+  transition: transform 120ms ease-out;
+}
+
+.chat-work[open] .chat-work-summary::before {
+  transform: rotate(90deg);
+}
+
+.chat-work-summary:hover {
+  color: var(--color-base-content);
+}
+
+.chat-work-body {
+  margin-top: 0.5rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid var(--color-base-300);
+}
+
+.chat-work-step + .chat-work-step {
+  margin-top: 0.625rem;
+}
+
+.chat-work-thinking,
+.chat-work-call,
+.chat-work-output {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.chat-work-thinking {
+  font-style: italic;
+}
+
+.chat-work-tool {
+  font-weight: 600;
+  color: var(--color-base-content);
+}
+
+.chat-work-output {
+  margin-top: 0.125rem;
+  max-height: 12rem;
+  overflow: auto;
+  color: color-mix(in oklab, var(--color-base-content) 75%, transparent);
 }

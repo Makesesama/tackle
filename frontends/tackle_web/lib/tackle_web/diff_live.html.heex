@@ -1,114 +1,84 @@
 <Layouts.app flash={@flash}>
-  <form
-    id="pull-request"
-    phx-submit="open_pull_request"
-    class="flex flex-none flex-wrap items-end gap-3 border-b border-base-300 px-4 py-3"
-  >
-    <div class="flex flex-col gap-1">
-      <label
-        for="reference"
-        class="text-[0.6875rem] font-medium uppercase tracking-wide opacity-60"
-      >
-        Pull request
-      </label>
-      <input
-        id="reference"
-        type="text"
-        name="reference"
-        placeholder="owner/repo#123 or https://github.com/owner/repo/pull/123"
-        class="input input-sm w-[28rem] font-mono text-xs"
-      />
-    </div>
-    <button type="submit" class="btn btn-sm btn-primary" phx-disable-with="Opening...">
-      Review pull request
-    </button>
-    <p :if={@pr_error} class="text-xs text-error">{@pr_error}</p>
-  </form>
+  <div class="flex flex-none flex-col border-b border-base-300">
+    <form
+      id="pull-request"
+      phx-submit="open_pull_request"
+      class="flex flex-wrap items-end gap-3 px-4 py-3"
+    >
+      <.field label="Pull request" for="reference" class="min-w-0 flex-1">
+        <.input
+          id="reference"
+          name="reference"
+          placeholder="owner/repo#123 or https://github.com/owner/repo/pull/123"
+          class="font-mono"
+        />
+      </.field>
+      <.button type="submit" phx-disable-with="Opening...">Review pull request</.button>
+    </form>
 
-  <form
-    id="local-diff"
-    phx-submit="load"
-    class="flex flex-none flex-wrap items-end gap-3 border-b border-base-300 bg-base-200 px-4 py-3"
-  >
-    <div class="flex flex-col gap-1">
-      <label for="repo" class="text-[0.6875rem] font-medium uppercase tracking-wide opacity-60">
-        Repository
-      </label>
-      <input
-        id="repo"
-        type="text"
-        name="repo"
-        value={@repo}
-        placeholder="/path/to/repo"
-        class="input input-sm w-[28rem] font-mono text-xs"
-      />
-    </div>
-    <div class="flex flex-col gap-1">
-      <label for="base" class="text-[0.6875rem] font-medium uppercase tracking-wide opacity-60">
-        Base
-      </label>
-      <input
-        id="base"
-        type="text"
-        name="base"
-        value={@base}
-        class="input input-sm w-40 font-mono text-xs"
-      />
-    </div>
-    <div class="flex flex-col gap-1">
-      <label for="head" class="text-[0.6875rem] font-medium uppercase tracking-wide opacity-60">
-        Head
-      </label>
-      <input
-        id="head"
-        type="text"
-        name="head"
-        value={@head}
-        class="input input-sm w-40 font-mono text-xs"
-      />
-    </div>
-    <button type="submit" class="btn btn-sm btn-primary" phx-disable-with="Loading...">
-      Show diff
-    </button>
-  </form>
+    <form
+      id="local-diff"
+      phx-submit="load"
+      class="flex flex-wrap items-end gap-3 border-t border-base-300 bg-base-200 px-4 py-3"
+    >
+      <.field label="Repository" for="repo" class="min-w-0 flex-1">
+        <.input id="repo" name="repo" value={@repo} placeholder="/path/to/repo" class="font-mono" />
+      </.field>
+      <.field label="Base" for="base" class="w-32">
+        <.input id="base" name="base" value={@base} class="font-mono" />
+      </.field>
+      <.field label="Head" for="head" class="w-32">
+        <.input id="head" name="head" value={@head} class="font-mono" />
+      </.field>
+      <.button type="submit" phx-disable-with="Loading...">Show diff</.button>
+    </form>
 
-  <div :if={is_nil(@diff)} class="grid flex-1 place-items-center p-8">
-    <p class="max-w-md text-center text-sm opacity-70">
+    <.alert :if={@pr_error} tone="error" class="m-4">{@pr_error}</.alert>
+  </div>
+
+  <div :if={is_nil(@diff)} class="flex flex-1 items-center justify-center p-8">
+    <.empty_state icon="hero-code-bracket" title="Review a local change">
       Enter the path to a local git repository, then the two refs to compare.
-    </p>
+    </.empty_state>
   </div>
 
   <.async_result :let={diff} :if={@diff} assign={@diff}>
     <:loading>
-      <div class="flex flex-1 items-center justify-center gap-3 text-sm opacity-70">
-        <span class="loading loading-spinner loading-sm"></span> Loading diff...
+      <div class="flex flex-1 items-center justify-center gap-2 text-xs text-base-content/45">
+        <.spinner /> Loading diff...
       </div>
     </:loading>
 
     <:failed :let={failure}>
       <div class="flex flex-1 items-center justify-center p-8">
-        <div class="alert alert-error max-w-xl text-sm">{failure_message(failure)}</div>
+        <.alert tone="error" title="That diff could not be loaded" class="max-w-xl">
+          {failure_message(failure)}
+        </.alert>
       </div>
     </:failed>
 
     <div class="flex min-h-0 flex-1">
-      <aside class="flex w-80 flex-none flex-col overflow-y-auto border-r border-base-300">
-        <div class="flex-none border-b border-base-300 px-3 py-2 text-xs">
-          <span class="font-semibold">{length(diff.files)}</span>
-          files changed <span class="ml-2 text-success">+{diff.additions}</span>
-          <span class="ml-1 text-error">-{diff.deletions}</span>
-          <div class="mt-1 font-mono text-[0.6875rem] opacity-60">
-            {short_sha(diff.base_sha)}...{short_sha(diff.head_sha)}
+      <aside class="flex w-80 flex-none flex-col overflow-y-auto border-r border-base-300 bg-base-200">
+        <div class="flex-none border-b border-base-300 px-3 py-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-xs text-base-content/60">
+              <span class="font-medium text-base-content">{length(diff.files)}</span>
+              files changed
+            </p>
+            <.diff_stats additions={diff.additions} deletions={diff.deletions} />
           </div>
+          <p class="mt-1 font-mono text-[0.6875rem] text-base-content/45">
+            {short_sha(diff.base_sha)}...{short_sha(diff.head_sha)}
+          </p>
         </div>
 
         <.file_nav files={diff.files} />
       </aside>
 
       <main class="min-w-0 flex-1 overflow-auto">
-        <p :if={diff.files == []} class="p-8 text-center text-sm opacity-70">
-          No changes between these refs.
-        </p>
+        <.empty_state :if={diff.files == []} icon="hero-check-circle" title="No changes">
+          These refs point at the same tree.
+        </.empty_state>
 
         <.file :for={file <- diff.files} file={file} />
       </main>

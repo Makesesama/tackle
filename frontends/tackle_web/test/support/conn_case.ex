@@ -15,6 +15,9 @@ defmodule Tackle.Web.ConnCase do
   this option is not recommended for other databases.
   """
 
+  import ExUnit.Assertions, only: [flunk: 1]
+  import Phoenix.LiveViewTest, only: [render: 1]
+
   use ExUnit.CaseTemplate
 
   using do
@@ -33,5 +36,31 @@ defmodule Tackle.Web.ConnCase do
 
   setup _tags do
     {:ok, conn: Phoenix.ConnTest.build_conn()}
+  end
+
+  @doc """
+  Waits until the rendered page contains `text`.
+
+  An assistant turn runs in a supervised task, so its result arrives as a PubSub
+  message some time after the click or submit that asked for it. Asserting on the
+  next render is a race; this is the wait both assistant surfaces test with.
+  """
+  @spec eventually(Phoenix.LiveViewTest.View.t(), String.t(), pos_integer()) :: :ok
+  def eventually(view, text, attempts \\ 100) do
+    outcome =
+      Enum.reduce_while(1..attempts, :timeout, fn _attempt, _acc ->
+        if render(view) =~ text do
+          {:halt, :found}
+        else
+          Process.sleep(20)
+          {:cont, :timeout}
+        end
+      end)
+
+    if outcome == :timeout do
+      flunk("The page never showed #{inspect(text)}.")
+    end
+
+    :ok
   end
 end

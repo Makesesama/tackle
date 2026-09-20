@@ -51,6 +51,12 @@ mix format --check-formatted
 (cd frontends/tackle_cli && mix format --check-formatted)
 (cd frontends/tackle_cli && mix escript.build)
 
+# Web frontend (Phoenix; assets need the dev shell's tailwindcss/esbuild)
+(cd frontends/tackle_web && mix deps.get)
+(cd frontends/tackle_web && mix compile --warnings-as-errors && mix test)
+(cd frontends/tackle_web && mix format --check-formatted)
+(cd frontends/tackle_web && mix assets.build)
+
 # Inspect changes before handing off
 git status --short
 git diff --check
@@ -84,6 +90,14 @@ Burrito, or lint commands for tooling that has not been wired up.
   a separate Mix project that depends on the root harness and bundles Codex as a
   distribution dependency; runtime adapter loading remains a root harness
   concern.
+- `frontends/tackle_web/`: Phoenix frontend with two surfaces on one
+  `Tackle.Web.*` namespace. `/chat` is the ordinary Tackle agent as a chat
+  conversation, driven through `Tackle.Phoenix.Runner` and backed by an
+  in-memory conversation store; `/` and `/pulls/...` are the diff and pull
+  request review surfaces with the review assistant. It depends on the root
+  harness, both provider plugins, and `packages/tackle_phoenix`; the review
+  surfaces are documented by their module docs, and the mix project is separate
+  from the harness.
 - `flake.nix`, `nix/`: development environment, dependency, and build setup.
 - `deps/`, `_build/`, `.nix-mix/`, `.nix-hex/`: dependencies, build output,
   and local caches; not hand-maintained source.

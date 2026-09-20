@@ -1,0 +1,56 @@
+<Layouts.app flash={@flash} section={:chat}>
+  <div class="flex min-h-0 flex-1">
+    <Chat.chat_sidebar conversations={@conversations} />
+
+    <section class="min-h-0 flex-1 overflow-y-auto px-6 py-10">
+      <div class="mx-auto w-full max-w-xl">
+        <h1 class="text-lg font-semibold tracking-tight">Start a chat</h1>
+        <p class="mt-2 text-xs leading-relaxed text-base-content/60">
+          The assistant runs the same harness as the <span class="font-mono">tackle</span>
+          command line: the built-in read, bash, edit and write tools, the system prompt
+          assembled from <span class="font-mono">AGENTS.md</span>
+          and Agent Skills, and the providers you have signed in to.
+        </p>
+
+        <.card padding="lg" class="mt-6">
+          <.form for={@form} phx-submit="create" class="flex flex-col gap-4">
+            <.field
+              label="Working directory"
+              for={@form[:workspace].id}
+              hint="The directory the assistant reads and writes in."
+            >
+              <.input field={@form[:workspace]} class="font-mono" />
+            </.field>
+
+            <.field label="Model" for={@form[:model].id}>
+              <.input
+                field={@form[:model]}
+                type="select"
+                options={Enum.map(@models, &{&1, &1})}
+                class="font-mono"
+              />
+            </.field>
+
+            <.button type="submit" size="md" disabled={@models == []}>Start chat</.button>
+          </.form>
+        </.card>
+
+        <.alert
+          :if={@models == []}
+          tone="brand"
+          title="No model can run yet"
+          class="mt-4"
+        >
+          No provider adapters are configured. Add one with <span class="font-mono">config :tackle, :adapters</span>.
+        </.alert>
+
+        <.alert :if={@error} tone="error" class="mt-4">{@error}</.alert>
+
+        <.alert :if={is_nil(@error)} tone="neutral" class="mt-4">
+          Conversations are held in memory. They last until this server stops, and are
+          not written to disk.
+        </.alert>
+      </div>
+    </section>
+  </div>
+</Layouts.app>

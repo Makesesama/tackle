@@ -18,12 +18,15 @@ defmodule Tackle.Web.FakeAdapter do
 
   `Tackle.Lib` falls back to `generate/2` when an adapter does not implement
   `stream/3`, so this adapter needs no streaming machinery.
+
+  It offers two models so tests can prove a conversation changes model without
+  changing provider; both answer the same way.
   """
 
   @behaviour Tackle.Lib.LLM
 
   @adapter_id "fake"
-  @models ["echo"]
+  @models ["echo", "echo-2"]
   @read_request ~r/read (\S+)/
 
   @impl true

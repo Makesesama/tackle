@@ -3,6 +3,7 @@ defmodule Tackle.Web.Layouts do
   This module holds layouts and related functionality
   used by your application.
   """
+
   use Tackle.Web, :html
 
   # Embed all files in layouts/* within this module.
@@ -12,29 +13,41 @@ defmodule Tackle.Web.Layouts do
   embed_templates("layouts/*")
 
   @doc """
-  Renders your app layout.
+  The app shell: the wordmark, the two sections, and the page.
 
-  This function is typically invoked from every template,
-  and it often contains your application menu, sidebar,
-  or similar.
+  Chat and Review are two ways into the same harness rather than two
+  applications, so they share one shell and the open one is marked in pink in
+  the navigation. A page fills everything under the navigation and scrolls its
+  own panes, so the shell itself never scrolls.
 
   ## Examples
 
-      <Layouts.app flash={@flash}>
+      <Layouts.app flash={@flash} section={:chat}>
         <h1>Content</h1>
       </Layouts.app>
-
   """
   attr(:flash, :map, required: true, doc: "the map of flash messages")
+
+  attr(:section, :atom,
+    default: nil,
+    doc: "which section this page belongs to, for the header navigation"
+  )
 
   slot(:inner_block, required: true)
 
   def app(assigns) do
     ~H"""
     <div class="flex h-dvh flex-col overflow-hidden bg-base-100 text-base-content">
-      <header class="flex flex-none items-center gap-3 border-b border-base-300 bg-base-200 px-4 py-2">
-        <a href="/" class="text-sm font-semibold tracking-tight">Tackle</a>
-        <span class="text-xs opacity-60">review</span>
+      <header class="flex flex-none items-stretch gap-1 border-b border-base-300 px-4">
+        <.link
+          navigate={~p"/"}
+          class="mr-3 inline-flex items-center gap-2 text-sm font-semibold tracking-tight"
+        >
+          <span class="size-2 flex-none rounded-full bg-primary" /> Tackle
+        </.link>
+
+        <.nav_link navigate={~p"/chat"} active={@section == :chat}>Chat</.nav_link>
+        <.nav_link navigate={~p"/"} active={@section in [nil, :review]}>Review</.nav_link>
       </header>
 
       <main class="flex min-h-0 flex-1 flex-col">
