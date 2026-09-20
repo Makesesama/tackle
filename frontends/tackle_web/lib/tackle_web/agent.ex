@@ -38,8 +38,8 @@ defmodule Tackle.Web.Agent do
   alias Tackle.Lib.SystemPrompt
   alias Tackle.Tools.Bash
   alias Tackle.Tools.Read
+  alias Tackle.Web.Providers
 
-  @default_adapters [Tackle.Plugins.Codex, Tackle.Plugins.DeepSeek]
   @tools [Read, Bash]
 
   # Enough for a few rounds of reading and grepping. The loop stops here rather
@@ -59,17 +59,11 @@ defmodule Tackle.Web.Agent do
   @doc """
   The provider adapters this host offers.
 
-  Overridable with `config :tackle_web, :agent_adapters`, which is how a
-  deployment adds a provider plugin of its own, and how tests run the assistant
-  against a deterministic adapter instead of a real provider.
+  Resolved by `Tackle.Web.Providers`, which the chat frontend uses too, so both
+  surfaces offer the same providers and honour the same override.
   """
   @spec adapters() :: [module()]
-  def adapters do
-    case Application.get_env(:tackle_web, :agent_adapters) do
-      adapters when is_list(adapters) and adapters != [] -> adapters
-      _unset -> @default_adapters
-    end
-  end
+  def adapters, do: Providers.adapters()
 
   @doc "The tools the assistant may call."
   @spec tools() :: [module()]
@@ -77,12 +71,7 @@ defmodule Tackle.Web.Agent do
 
   @doc "Every `adapter/model` reference the assistant can run."
   @spec models() :: [String.t()]
-  def models do
-    Enum.flat_map(adapters(), fn adapter ->
-      adapter_id = adapter.adapter_id()
-      Enum.map(adapter.models(), &"#{adapter_id}/#{&1}")
-    end)
-  end
+  def models, do: Providers.models()
 
   @doc """
   The model used when a conversation does not pick one.
@@ -91,12 +80,7 @@ defmodule Tackle.Web.Agent do
   model the adapters list.
   """
   @spec default_model() :: String.t() | nil
-  def default_model do
-    case Application.get_env(:tackle_web, :agent_model) do
-      model when is_binary(model) and model != "" -> model
-      _unset -> List.first(models())
-    end
-  end
+  def default_model, do: Providers.default_model()
 
   @doc """
   Resolves a canonical `adapter/model` reference against the available adapters.
@@ -104,8 +88,7 @@ defmodule Tackle.Web.Agent do
   `nil` selects `default_model/0`.
   """
   @spec select(String.t() | nil) :: {:ok, LLM.Selection.t()} | {:error, term()}
-  def select(nil), do: select(default_model())
-  def select(model_ref) when is_binary(model_ref), do: LLM.select(adapters(), model_ref)
+  def select(model_ref), do: Providers.select(model_ref)
 
   @doc """
   The credential-store handle handed to adapters.

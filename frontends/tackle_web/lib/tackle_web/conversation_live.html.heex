@@ -1,0 +1,117 @@
+<Layouts.app flash={@flash} section={:chat}>
+  <div class="flex min-h-0 flex-1">
+    <Chat.chat_sidebar conversations={@conversations} current_id={@conversation_id} />
+
+    <section class="flex min-h-0 flex-1 flex-col">
+      <header class="flex flex-none items-center gap-3 border-b border-base-300 px-4 py-2">
+        <div class="min-w-0 flex-1">
+          <p class="truncate text-sm font-medium">
+            {@loaded && @conversation && @conversation.title}
+          </p>
+          <p :if={@conversation} class="truncate font-mono text-[0.6875rem] text-base-content/45">
+            {@conversation.cwd}
+          </p>
+        </div>
+
+        <.input
+          :if={@models != []}
+          type="select"
+          name="model"
+          value={@model}
+          options={Enum.map(@models, &{&1, &1})}
+          disabled={@processing}
+          title="The model that answers the next message"
+          phx-change="select_model"
+          class="font-mono"
+          wrapper_class="w-56"
+        />
+
+        <.icon_button
+          phx-click="delete"
+          phx-value-id={@conversation_id}
+          title="Delete this conversation"
+        >
+          <.icon name="hero-trash-mini" class="size-4" />
+        </.icon_button>
+      </header>
+
+      <div
+        :if={@error}
+        class="flex flex-none items-center gap-3 border-b border-error/20 bg-error/5 px-4 py-2 text-xs text-error"
+      >
+        <span class="min-w-0 flex-1">{@error}</span>
+        <.button
+          :if={not @processing and asked?(@agent_state)}
+          size="xs"
+          variant="quiet"
+          phx-click="retry_turn"
+          class="text-error hover:bg-error/10 hover:text-error"
+        >
+          Retry
+        </.button>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto px-4 py-6">
+        <div class="mx-auto flex w-full max-w-3xl flex-col gap-3">
+          <div id="agent-messages" phx-update="stream" class="flex flex-col gap-3">
+            <div :for={{dom_id, entry} <- @streams.agent_messages} id={dom_id}>
+              <Chat.message_block block={entry.block} />
+            </div>
+          </div>
+
+          <div :for={{_id, entry} <- @streaming_messages}>
+            <div class="chat-message chat-message--assistant chat-message--streaming">
+              <p class="chat-text">{entry.content}</p>
+            </div>
+          </div>
+
+          <.empty_state
+            :if={(@loaded and @agent_state) && @agent_state.messages == []}
+            icon="hero-chat-bubble-left-right"
+            title="Ask the assistant anything"
+          >
+            It reads and writes files in <span class="font-mono">{workspace(@conversation)}</span>.
+          </.empty_state>
+
+          <div
+            :if={!@loaded}
+            class="flex items-center justify-center gap-2 py-10 text-xs text-base-content/45"
+          >
+            <.spinner size="xs" /> Opening the conversation...
+          </div>
+        </div>
+      </div>
+
+      <div class="flex-none border-t border-base-300 px-4 py-3">
+        <form
+          phx-submit="send"
+          phx-change="draft"
+          class="mx-auto flex w-full max-w-3xl flex-col gap-2"
+        >
+          <div class="flex items-center gap-2 rounded-xl border border-base-300 bg-base-100 py-1.5 pl-3 pr-1.5 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/15">
+            <input
+              type="text"
+              name="message[body]"
+              value={@draft}
+              placeholder="Ask the assistant..."
+              autocomplete="off"
+              phx-debounce="200"
+              disabled={is_nil(@agent_state)}
+              class="min-w-0 flex-1 bg-transparent py-1 font-mono text-xs text-base-content placeholder:text-base-content/35 focus:outline-none disabled:cursor-not-allowed"
+            />
+
+            <.button type="submit" disabled={@processing or is_nil(@agent_state)}>Send</.button>
+            <.button :if={@processing} type="button" variant="quiet" phx-click="cancel_turn">
+              Stop
+            </.button>
+          </div>
+
+          <div :if={@processing} class="flex items-center gap-2 text-xs text-base-content/45">
+            <.spinner size="xs" />
+            <span class="truncate font-mono">{@activity || "Thinking..."}</span>
+          </div>
+        </form>
+      </div>
+    </section>
+  </div>
+</Layouts.app>

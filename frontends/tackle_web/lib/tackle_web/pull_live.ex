@@ -37,6 +37,7 @@ defmodule Tackle.Web.PullLive do
   alias Tackle.Lib.Event
   alias Tackle.Lib.State
   alias Tackle.Phoenix.EventReducer
+  alias Tackle.Web.AgentActivity
   alias Tackle.Web.AgentMessageView
   alias Tackle.Web.AgentSession
   alias Tackle.Web.AgentThreads
@@ -357,7 +358,7 @@ defmodule Tackle.Web.PullLive do
   end
 
   defp track_activity(socket, %Event{type: :tool_start, data: data}) do
-    assign(socket, :activity, activity_label(data))
+    assign(socket, :activity, AgentActivity.label(data))
   end
 
   defp track_activity(socket, %Event{type: type}) when type in [:tool_end, :tool_error] do
@@ -365,26 +366,6 @@ defmodule Tackle.Web.PullLive do
   end
 
   defp track_activity(socket, _event), do: socket
-
-  defp activity_label(%{name: "bash", arguments: %{"command" => command}})
-       when is_binary(command) do
-    "$ " <> first_line(command)
-  end
-
-  defp activity_label(%{name: "read", arguments: %{"path" => path}}) when is_binary(path) do
-    "Reading #{path}"
-  end
-
-  defp activity_label(%{name: name}) when is_binary(name), do: "Running #{name}"
-  defp activity_label(_data), do: "Working"
-
-  defp first_line(text) do
-    text
-    |> String.split("\n", trim: true)
-    |> List.first()
-    |> Kernel.||(text)
-    |> String.slice(0, 80)
-  end
 
   defp put_turn_error(socket, :ok), do: assign(socket, :agent_error, nil)
 

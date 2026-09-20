@@ -58,11 +58,23 @@ config :phoenix, :json_library, JSON
 # Lumis.available_themes/0 is accepted.
 config :tackle_web, highlight_theme: "github_light"
 
-# Model the review assistant runs when a conversation does not pick one, as a
+# Model an assistant conversation runs when the user does not pick one, as a
 # canonical "adapter/model" reference built from the provider plugins' ids.
 # Requires credentials for that provider: `openai-codex/*` uses the ChatGPT
 # session stored by `mix tackle auth`, `deepseek/*` an API key.
 config :tackle_web, agent_model: "openai-codex/gpt-5.6-terra"
+
+# Provider adapters bundled with this frontend: the repo's two plugin packages,
+# wired in the same way any external plugin would be. `Tackle.Web.Providers`
+# reads this list through `Tackle.Plugins`, and so does the chat: a conversation
+# can run any `adapter/model` reference these expose. Override the list per
+# deployment, or in tests, with `config :tackle_web, :agent_adapters`.
+config :tackle, adapters: [Tackle.Plugins.Codex, Tackle.Plugins.DeepSeek]
+
+# Directory a new chat starts in. Each conversation remembers the directory it
+# was started with, so changing this only affects conversations created later.
+# Defaults to the directory the frontend was started from.
+# config :tackle_web, chat_cwd: "/path/to/a/checkout"
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

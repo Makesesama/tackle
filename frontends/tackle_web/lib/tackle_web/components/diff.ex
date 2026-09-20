@@ -8,9 +8,13 @@ defmodule Tackle.Web.Components.Diff do
 
   Passing `review: nil` renders the read-only form. That is the whole difference,
   so the two views cannot drift apart in how they show a diff.
+
+  The colours come from `Tackle.Web.Components.UI`: an added line is washed with
+  the interface's one accent and a removed line is grey, so a diff reads without
+  a second colour.
   """
 
-  use Phoenix.Component
+  use Tackle.Web, :html
 
   alias Tackle.Web.Diff
 
@@ -24,12 +28,14 @@ defmodule Tackle.Web.Components.Diff do
 
   def file_nav(assigns) do
     ~H"""
-    <nav class="flex flex-col py-1">
-      <div :for={file <- @files} class="flex items-center gap-1.5 px-2 py-1 hover:bg-base-200">
-        <input
+    <nav class="flex flex-col gap-0.5 p-1.5">
+      <div
+        :for={file <- @files}
+        class="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-base-200"
+      >
+        <.input
           :if={@review}
           type="checkbox"
-          class="checkbox checkbox-xs flex-none"
           checked={MapSet.member?(@review.viewed, file.path)}
           phx-click="toggle_viewed"
           phx-value-path={file.path}
@@ -39,12 +45,9 @@ defmodule Tackle.Web.Components.Diff do
           href={"#file-" <> file_id(file.path)}
           class="flex min-w-0 flex-1 items-center gap-2 text-xs"
         >
-          <span class={["badge badge-xs flex-none", status_class(file.status)]}>
-            {status_label(file.status)}
-          </span>
+          <.badge tone={status_tone(file.status)}>{status_label(file.status)}</.badge>
           <span class="min-w-0 flex-1 truncate font-mono" title={file.path}>{file.path}</span>
-          <span class="flex-none text-success">+{file.additions}</span>
-          <span class="flex-none text-error">-{file.deletions}</span>
+          <.diff_stats additions={file.additions} deletions={file.deletions} />
         </a>
       </div>
     </nav>
@@ -69,30 +72,31 @@ defmodule Tackle.Web.Components.Diff do
 
     ~H"""
     <section id={"file-" <> file_id(@file.path)} class="border-b border-base-300">
-      <header class="sticky top-0 z-10 flex items-center gap-2 border-b border-base-300 bg-base-200 px-3 py-2">
-        <span class={["badge badge-sm flex-none", status_class(@file.status)]}>
-          {status_label(@file.status)}
-        </span>
-        <span class="font-mono text-xs font-semibold">{@file.path}</span>
-        <span :if={@file.status == :renamed} class="font-mono text-xs opacity-60">
+      <header class="sticky top-0 z-10 flex items-center gap-2 border-b border-base-300 bg-base-100/95 px-3 py-2 backdrop-blur">
+        <.badge tone={status_tone(@file.status)} size="sm">{status_label(@file.status)}</.badge>
+        <span class="truncate font-mono text-xs font-medium">{@file.path}</span>
+        <span :if={@file.status == :renamed} class="truncate font-mono text-xs text-base-content/45">
           from {@file.old_path}
         </span>
-        <span :if={@review} class="ml-3 flex items-center gap-1.5 text-xs">
-          <input
+        <label
+          :if={@review}
+          class="ml-2 flex flex-none items-center gap-1.5 text-xs text-base-content/60"
+        >
+          <.input
             type="checkbox"
-            class="checkbox checkbox-xs"
             checked={MapSet.member?(@review.viewed, @file.path)}
             phx-click="toggle_viewed"
             phx-value-path={@file.path}
           /> reviewed
-        </span>
-        <span class="ml-auto flex-none text-xs">
-          <span class="text-success">+{@file.additions}</span>
-          <span class="ml-1 text-error">-{@file.deletions}</span>
-        </span>
+        </label>
+        <.diff_stats
+          additions={@file.additions}
+          deletions={@file.deletions}
+          class="ml-auto flex-none"
+        />
       </header>
 
-      <p :if={@file.hunks == []} class="px-3 py-2 font-mono text-xs opacity-60">
+      <p :if={@file.hunks == []} class="px-3 py-2 font-mono text-xs text-base-content/45">
         No textual changes (binary, or name and mode only).
       </p>
 
@@ -155,6 +159,7 @@ defmodule Tackle.Web.Components.Diff do
             phx-value-side={elem(@anchor, 0)}
             phx-value-line={elem(@anchor, 1)}
             title="Comment on this line"
+            aria-label={"Comment on #{@path} line #{elem(@anchor, 1)}"}
           >
             +
           </button>
@@ -167,6 +172,7 @@ defmodule Tackle.Web.Components.Diff do
             phx-value-side={elem(@anchor, 0)}
             phx-value-line={elem(@anchor, 1)}
             title="Ask the assistant about this line"
+            aria-label={"Ask the assistant about #{@path} line #{elem(@anchor, 1)}"}
           >
             ?
           </button>
@@ -174,19 +180,20 @@ defmodule Tackle.Web.Components.Diff do
       </div>
 
       <div :for={comment <- @thread} class="diff-comment">
-        <div class="flex items-baseline gap-2 text-[0.6875rem] opacity-60">
-          <span class="font-semibold">{comment.author}</span>
+        <div class="flex items-center gap-2 text-[0.6875rem] text-base-content/45">
+          <span class="font-semibold text-base-content/70">{comment.author}</span>
           <span>{format_time(comment.inserted_at)}</span>
-          <button
-            type="button"
-            class="ml-auto hover:underline"
+          <.button
+            size="xs"
+            variant="danger"
+            class="ml-auto"
             phx-click="delete_comment"
             phx-value-id={comment.id}
           >
             Delete
-          </button>
+          </.button>
         </div>
-        <p class="whitespace-pre-wrap">{comment.body}</p>
+        <p class="mt-1 whitespace-pre-wrap">{comment.body}</p>
       </div>
 
       <.thread :for={answer <- @answers} answer={answer} />
@@ -199,34 +206,36 @@ defmodule Tackle.Web.Components.Diff do
         <input type="hidden" name="comment[path]" value={@path} />
         <input type="hidden" name="comment[side]" value={elem(@anchor, 0)} />
         <input type="hidden" name="comment[line]" value={elem(@anchor, 1)} />
-        <textarea
+        <.input
+          type="textarea"
           name="comment[body]"
           rows="3"
           autofocus
-          class="textarea textarea-sm w-full font-mono text-xs"
+          class="font-mono"
           placeholder={"Comment on #{@path} line #{elem(@anchor, 1)}"}
-        ></textarea>
-        <div class="mt-1 flex gap-2">
-          <button type="submit" class="btn btn-xs btn-primary">Comment</button>
-          <button type="button" class="btn btn-xs btn-ghost" phx-click="cancel_comment">
+        />
+        <div class="mt-2 flex gap-2">
+          <.button type="submit" size="xs">Comment</.button>
+          <.button type="button" size="xs" variant="quiet" phx-click="cancel_comment">
             Cancel
-          </button>
+          </.button>
         </div>
       </form>
 
       <form :if={@asking} phx-submit="ask" class="diff-answer-form">
-        <textarea
+        <.input
+          type="textarea"
           name="question[body]"
           rows="3"
           autofocus
-          class="textarea textarea-sm w-full font-mono text-xs"
+          class="font-mono"
           placeholder={"Ask about #{@path} line #{elem(@anchor, 1)}"}
-        ></textarea>
-        <div class="mt-1 flex gap-2">
-          <button type="submit" class="btn btn-xs btn-secondary">Ask</button>
-          <button type="button" class="btn btn-xs btn-ghost" phx-click="cancel_ask">
+        />
+        <div class="mt-2 flex gap-2">
+          <.button type="submit" size="xs">Ask</.button>
+          <.button type="button" size="xs" variant="quiet" phx-click="cancel_ask">
             Cancel
-          </button>
+          </.button>
         </div>
       </form>
     </div>
@@ -316,10 +325,10 @@ defmodule Tackle.Web.Components.Diff do
   defp status_label(:renamed), do: "renamed"
   defp status_label(:modified), do: "modified"
 
-  defp status_class(:added), do: "badge-success"
-  defp status_class(:deleted), do: "badge-error"
-  defp status_class(:renamed), do: "badge-warning"
-  defp status_class(:modified), do: "badge-neutral"
+  defp status_tone(:added), do: "added"
+  defp status_tone(:deleted), do: "removed"
+  defp status_tone(:renamed), do: "renamed"
+  defp status_tone(:modified), do: "neutral"
 
   defp format_time(%DateTime{} = at), do: Calendar.strftime(at, "%Y-%m-%d %H:%M")
 end
