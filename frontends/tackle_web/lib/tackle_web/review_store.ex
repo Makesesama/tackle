@@ -1,13 +1,14 @@
 defmodule Tackle.Web.ReviewStore do
   @moduledoc """
-  Durable, shared review state: comments and viewed markers per pull request.
+  Durable, shared review state: comments and viewed markers per review.
 
-  Review state belongs to the team viewing a pull request, not to a browser tab,
-  so it lives in one process that every `Tackle.Web.PullLive` reads from and
-  writes to. Mutations are broadcast on a per-pull-request topic so a second
-  viewer sees a comment appear without reloading.
+  Review state belongs to a review inside a project, not to a browser tab, so it
+  lives in one process that every review screen reads from and writes to.
+  Mutations are broadcast on a per-review topic so a second viewer sees a comment
+  appear without reloading.
 
-  Durability is a JSON file per pull request under `Tackle.Web.Paths.reviews_root/0`.
+  Durability is a JSON file per review under `Tackle.Web.Paths.reviews_root/0`, named
+  after the project's slug and the review id.
   A write goes to a temporary file and is renamed into place, so an interrupted
   write cannot truncate a file that is already there. Writes happen on the
   GenServer, which is also what makes them serialized.
@@ -30,10 +31,10 @@ defmodule Tackle.Web.ReviewStore do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @doc "Returns the review state of a pull request."
-  @spec get(String.t(), String.t(), pos_integer()) :: Review.t()
-  def get(owner, name, number) do
-    GenServer.call(__MODULE__, {:get, Review.file_name(owner, name, number)})
+  @doc "Returns the review state of one review."
+  @spec get(String.t(), String.t()) :: Review.t()
+  def get(slug, review_id) do
+    GenServer.call(__MODULE__, {:get, Review.file_name(slug, review_id)})
   end
 
   @doc """
@@ -41,43 +42,43 @@ defmodule Tackle.Web.ReviewStore do
 
   Returns the stored comment so the caller can broadcast or scroll to it.
   """
-  @spec add_comment(String.t(), String.t(), pos_integer(), map()) ::
+  @spec add_comment(String.t(), String.t(), map()) ::
           {:ok, Review.comment()} | {:error, String.t()}
-  def add_comment(owner, name, number, attrs) do
-    GenServer.call(__MODULE__, {:add_comment, Review.file_name(owner, name, number), attrs})
+  def add_comment(slug, review_id, attrs) do
+    GenServer.call(__MODULE__, {:add_comment, Review.file_name(slug, review_id), attrs})
   end
 
   @doc "Removes a comment by id. Unknown ids are ignored."
-  @spec delete_comment(String.t(), String.t(), pos_integer(), String.t()) :: :ok
-  def delete_comment(owner, name, number, id) do
-    GenServer.call(__MODULE__, {:delete_comment, Review.file_name(owner, name, number), id})
+  @spec delete_comment(String.t(), String.t(), String.t()) :: :ok
+  def delete_comment(slug, review_id, id) do
+    GenServer.call(__MODULE__, {:delete_comment, Review.file_name(slug, review_id), id})
   end
 
   @doc "Marks a file as seen, or unseen."
-  @spec set_viewed(String.t(), String.t(), pos_integer(), String.t(), boolean()) :: :ok
-  def set_viewed(owner, name, number, path, viewed?) do
+  @spec set_viewed(String.t(), String.t(), String.t(), boolean()) :: :ok
+  def set_viewed(slug, review_id, path, viewed?) do
     GenServer.call(
       __MODULE__,
-      {:set_viewed, Review.file_name(owner, name, number), path, viewed? == true}
+      {:set_viewed, Review.file_name(slug, review_id), path, viewed? == true}
     )
   end
 
   @doc "Flips a file's viewed marker and returns its new value."
-  @spec toggle_viewed(String.t(), String.t(), pos_integer(), String.t()) :: boolean()
-  def toggle_viewed(owner, name, number, path) do
-    GenServer.call(__MODULE__, {:toggle_viewed, Review.file_name(owner, name, number), path})
+  @spec toggle_viewed(String.t(), String.t(), String.t()) :: boolean()
+  def toggle_viewed(slug, review_id, path) do
+    GenServer.call(__MODULE__, {:toggle_viewed, Review.file_name(slug, review_id), path})
   end
 
-  @doc "Subscribes the calling process to this pull request's review changes."
-  @spec subscribe(String.t(), String.t(), pos_integer()) :: :ok
-  def subscribe(owner, name, number) do
-    Phoenix.PubSub.subscribe(pubsub(), topic(owner, name, number))
+  @doc "Subscribes the calling process to this review's changes."
+  @spec subscribe(String.t(), String.t()) :: :ok
+  def subscribe(slug, review_id) do
+    Phoenix.PubSub.subscribe(pubsub(), topic(slug, review_id))
   end
 
-  @doc "PubSub topic on which review changes for a pull request are announced."
-  @spec topic(String.t(), String.t(), pos_integer()) :: String.t()
-  def topic(owner, name, number) do
-    @topic_prefix <> Review.file_name(owner, name, number)
+  @doc "PubSub topic on which review changes for one review are announced."
+  @spec topic(String.t(), String.t()) :: String.t()
+  def topic(slug, review_id) do
+    @topic_prefix <> Review.file_name(slug, review_id)
   end
 
   # -- server ---------------------------------------------------------------

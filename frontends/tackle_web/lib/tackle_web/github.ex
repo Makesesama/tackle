@@ -29,8 +29,18 @@ defmodule Tackle.Web.GitHub do
   # `https://github.com/owner/repo/pull/123`, `owner/repo#123` and
   # `owner/repo/pull/123` all name the same pull request.
   @reference ~r{^(?:https?://github\.com/)?(?<owner>[^/\s]+)/(?<repo>[^/\s#]+?)(?:/pull/|#)(?<number>\d+)/?$}
+  @repository ~r{^(?<owner>[^/\s]+)/(?<name>[^/\s]+)$}
 
   @type pull_reference :: {owner :: String.t(), name :: String.t(), number :: pos_integer()}
+
+  @type repository :: %{
+          owner: String.t(),
+          name: String.t(),
+          default_branch: String.t(),
+          private: boolean(),
+          description: String.t() | nil,
+          html_url: String.t() | nil
+        }
 
   @type pull :: %{
           owner: String.t(),
@@ -67,6 +77,74 @@ defmodule Tackle.Web.GitHub do
       nil ->
         {:error,
          "Expected a pull request like https://github.com/owner/repo/pull/123 or owner/repo#123"}
+    end
+  end
+
+  @doc """
+  Parses a repository reference typed into the add-project form.
+
+  Accepts `owner/name`, `https://github.com/owner/name` and either with a
+  trailing `.git` or `/`.
+  """
+  @spec parse_repository(String.t()) :: {:ok, {String.t(), String.t()}} | {:error, String.t()}
+  def parse_repository(input) do
+    cleaned =
+      input
+      |> to_string()
+      |> String.trim()
+      |> String.trim_trailing("/")
+      |> String.replace_suffix(".git", "")
+      |> without_host()
+
+    case Regex.named_captures(@repository, cleaned) do
+      %{"owner" => owner, "name" => name} ->
+        {:ok, {owner, name}}
+
+      nil ->
+        {:error, "Expected a repository like owner/name or https://github.com/owner/name"}
+    end
+  end
+
+  @doc """
+  Fetches a repository's metadata, which is where its default branch comes from.
+  """
+  @spec repository(String.t(), String.t()) :: {:ok, repository()} | {:error, String.t()}
+  def repository(owner, name) do
+    with {:ok, body} <- get("/repos/#{owner}/#{name}", :repository),
+         true <- is_map(body) do
+      {:ok, repository_from_api(body, owner, name)}
+    else
+      false -> {:error, "GitHub returned an unexpected response body."}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Maps a GitHub repository payload onto the fields the add-project form uses.
+  """
+  @spec repository_from_api(map(), String.t(), String.t()) :: repository()
+  def repository_from_api(body, owner, name) do
+    %{
+      owner: owner,
+      name: name,
+      default_branch: body["default_branch"] || "main",
+      private: body["private"] == true,
+      description: body["description"],
+      html_url: body["html_url"]
+    }
+  end
+
+  @doc """
+  Fetches a repository's open pull requests, most recently updated first.
+  """
+  @spec pull_requests(String.t(), String.t()) :: {:ok, [pull()]} | {:error, String.t()}
+  def pull_requests(owner, name) do
+    with {:ok, body} <- get("/repos/#{owner}/#{name}/pulls?state=open&per_page=30"),
+         true <- is_list(body) do
+      {:ok, Enum.map(body, &from_api(&1, owner, name))}
+    else
+      false -> {:error, "GitHub returned an unexpected response body."}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -182,7 +260,7 @@ defmodule Tackle.Web.GitHub do
     end
   end
 
-  defp get(path) do
+  defp get(path, context \\ :pull_request) do
     options = [
       base_url: api_url(),
       headers: headers(),
@@ -193,7 +271,7 @@ defmodule Tackle.Web.GitHub do
 
     case Req.get(path, options) do
       {:ok, %Req.Response{status: 200, body: raw}} -> decode(raw)
-      {:ok, %Req.Response{status: status, body: raw}} -> {:error, api_error(status, raw)}
+      {:ok, %Req.Response{status: status, body: raw}} -> {:error, api_error(status, raw, context)}
       {:error, exception} -> {:error, transport_error(exception)}
     end
   end
@@ -218,21 +296,35 @@ defmodule Tackle.Web.GitHub do
     end
   end
 
-  defp api_error(404, _raw) do
+  defp api_error(404, _raw, :repository) do
+    "GitHub has no such repository. Private repositories also need a token."
+  end
+
+  defp api_error(404, _raw, _context) do
     "GitHub has no such pull request. Private repositories also need a token."
   end
 
-  defp api_error(401, _raw), do: "GitHub rejected the configured token."
+  defp api_error(401, _raw, _context), do: "GitHub rejected the configured token."
 
-  defp api_error(403, raw) do
+  defp api_error(403, raw, context) do
     if is_binary(raw) and String.contains?(raw, "rate limit") do
       "GitHub rate limit reached. Configure a token to raise it."
     else
-      "GitHub denied access to this pull request."
+      "GitHub denied access to #{describe(context)}."
     end
   end
 
-  defp api_error(status, _raw), do: "GitHub responded with HTTP #{status}."
+  defp api_error(status, _raw, _context), do: "GitHub responded with HTTP #{status}."
+
+  defp describe(:repository), do: "this repository"
+  defp describe(_context), do: "this pull request"
+
+  defp without_host(value) do
+    case String.split(value, "://", parts: 2) do
+      [_scheme, rest] -> rest |> String.split("/", parts: 2) |> List.last()
+      [_value] -> value
+    end
+  end
 
   defp transport_error(%{__struct__: module} = exception) do
     if module == Req.TransportError do

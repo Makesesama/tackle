@@ -7,9 +7,9 @@ defmodule Tackle.Web.AgentStore do
   board with no accounts, so most of those phases have nothing to do. What is
   left is real:
 
-    * `enrich_state/3` pins the conversation to one checkout and one pull
-      request. The Runner treats the agent's context as opaque, so this is the
-      only place that decides which repository the assistant may read.
+    * `enrich_state/3` pins the conversation to one review and its checkout. The
+      Runner treats the agent's context as opaque, so this is the only place that
+      decides which repository the assistant may read.
     * `before_turn/2` fails closed when that checkout has gone away, rather than
       letting the model start a turn whose every tool call would fail.
     * `persist_user_message/3` records which line the question was asked about.
@@ -23,7 +23,10 @@ defmodule Tackle.Web.AgentStore do
       session topic mid-turn, which keeps every viewer in step without relying on
       the dual-topic fan-out.
 
-  Host state is `%{review: map, cwd: Path.t(), anchors: %{message_id => anchor}}`.
+  Host state is `%{loaded: loaded_review, anchors: %{message_id => anchor}}`,
+  where `loaded_review` is what `Tackle.Web.Projects.load_review/2` returned: the
+  project, the review id, the refs and the checkout. Keeping that one map whole
+  is what lets the same store serve a GitHub pull request and a local diff.
   """
 
   @behaviour Tackle.Phoenix.Store
@@ -33,15 +36,14 @@ defmodule Tackle.Web.AgentStore do
   alias Tackle.Lib.State
   alias Tackle.Web.AgentConversation
 
-  @typedoc "Opaque Runner state: the pull request, its checkout, and question anchors."
+  @typedoc "Opaque Runner state: the loaded review and the question anchors."
   @type host_state :: %{
-          review: map(),
-          cwd: Path.t(),
+          loaded: Tackle.Web.Project.Source.loaded_review(),
           anchors: %{optional(String.t()) => term()}
         }
 
   @impl true
-  def before_turn(%{cwd: cwd}, _opts) do
+  def before_turn(%{loaded: %{cwd: cwd}}, _opts) do
     if is_binary(cwd) and File.dir?(cwd) do
       :ok
     else
@@ -50,7 +52,7 @@ defmodule Tackle.Web.AgentStore do
   end
 
   @impl true
-  def enrich_state(%{review: review, cwd: cwd}, %State{} = state, opts) do
+  def enrich_state(%{loaded: loaded}, %State{} = state, opts) do
     turn =
       state.context
       |> Map.get(:turn, %{})
@@ -63,7 +65,8 @@ defmodule Tackle.Web.AgentStore do
     context =
       state.context
       |> Map.put_new(:persistence, %{})
-      |> Map.merge(%{cwd: cwd, review: review, turn: turn})
+      |> Map.merge(context_of(loaded))
+      |> Map.put(:turn, turn)
 
     %{state | context: context}
   end
@@ -102,21 +105,34 @@ defmodule Tackle.Web.AgentStore do
   @impl true
   def after_turn(host_state, _result, _opts), do: host_state
 
+  defp context_of(loaded) do
+    %{
+      cwd: loaded.cwd,
+      project: loaded.project,
+      review: %{
+        review_id: loaded.review_id,
+        title: loaded.title,
+        base_ref: loaded.base_ref,
+        head_ref: loaded.head_ref
+      }
+    }
+  end
+
   defp anchor_of(%State{context: context}), do: get_in(context, [:turn, :anchor])
 
   # Every viewer needs to know which line a question was asked about, not just
   # the one that asked it. The topic is derived here from the same conversation
   # key `Tackle.Web.AgentSession` subscribes with.
-  defp broadcast(%{review: %{owner: owner, repo: repo, number: number}}, message) do
-    topic = Tackle.Phoenix.PubSub.topic(AgentConversation.key(owner, repo, number), nil)
+  defp broadcast(%{loaded: %{project: project, review_id: review_id}}, message) do
+    topic = Tackle.Phoenix.PubSub.topic(AgentConversation.key(project.slug, review_id), nil)
 
     Phoenix.PubSub.broadcast(Tackle.Web.PubSub, topic, message)
   end
 
   defp broadcast(_host_state, _message), do: :ok
 
-  defp persist(%{review: %{owner: owner, repo: repo, number: number}} = host_state, state) do
-    path = AgentConversation.path(owner, repo, number)
+  defp persist(%{loaded: %{project: project, review_id: review_id}} = host_state, state) do
+    path = AgentConversation.path(project.slug, review_id)
 
     case AgentConversation.save(path, state.messages, host_state.anchors) do
       :ok ->

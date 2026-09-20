@@ -52,6 +52,36 @@ defmodule Tackle.Web.AgentThreadsTest do
     assert AgentThreads.key(thread.anchor) == :general
   end
 
+  test "a question about a range hangs under the range's last line" do
+    messages = [user("q1", "Why these lines?")]
+    anchors = %{"q1" => {"lib/widget.ex", :new, 12, 15}}
+
+    assert [thread] = AgentThreads.all(messages, anchors)
+    # The whole range is remembered; only the rendering position is the end.
+    assert thread.anchor == {"lib/widget.ex", :new, 12, 15}
+    assert AgentThreads.key(thread.anchor) == {"lib/widget.ex", :new, 15}
+
+    assert Map.keys(AgentThreads.by_anchor([thread])) == [{"lib/widget.ex", :new, 15}]
+  end
+
+  test "a range and a line ending there share one group" do
+    messages = [user("q1", "A range?"), user("q2", "One line?")]
+    anchors = %{"q1" => {"lib/widget.ex", :new, 12, 30}, "q2" => {"lib/widget.ex", :new, 30}}
+
+    grouped = messages |> AgentThreads.all(anchors) |> AgentThreads.by_anchor()
+
+    assert [%{question: %Message{id: "q1"}}, %{question: %Message{id: "q2"}}] =
+             grouped[{"lib/widget.ex", :new, 30}]
+  end
+
+  test "a streaming answer is placed under the range's last line" do
+    messages = [user("q1", "Why these lines?")]
+    threads = AgentThreads.all(messages, %{"q1" => {"lib/widget.ex", :new, 12, 15}})
+
+    assert AgentThreads.streaming(threads, %{"m1" => %{content: "..."}}) ==
+             %{{"lib/widget.ex", :new, 15} => %{content: "..."}}
+  end
+
   test "messages with no recorded anchor are ignored" do
     messages = [user("q1", "Unknown provenance."), assistant("a1", "Answer.")]
 

@@ -72,6 +72,46 @@ defmodule Tackle.Web.RepoCache do
     end
   end
 
+  @doc """
+  Ensures the clone of `owner/name` has a working tree at `branch`.
+
+  This is the checkout a chat runs in: one clone per repository, left on the
+  default branch rather than on a pull request. When `branch` is unknown to the
+  clone (a stale default, say) the clone's own `origin/HEAD` is used instead, so
+  a project added while a repository was named differently still opens.
+  """
+  @spec default_checkout(String.t(), String.t(), String.t() | nil) ::
+          {:ok, Path.t()} | {:error, String.t()}
+  def default_checkout(owner, name, branch) do
+    path = Paths.repo_path(owner, name)
+
+    with :ok <- ensure_clone(owner, name, path) do
+      materialize_branch(path, branch)
+    end
+  end
+
+  # A clone made with `--no-checkout` already has HEAD pointing at the default
+  # branch, so the usual "same commit, skip the switch" shortcut would leave the
+  # work tree empty. The switch is therefore forced while the tree has never been
+  # materialised, and skipped afterwards.
+  defp materialize_branch(path, branch) do
+    ref = if is_binary(branch) and branch != "", do: "refs/remotes/origin/#{branch}"
+
+    case materialize(path, ref || "refs/remotes/origin/HEAD", not materialized?(path)) do
+      :ok -> {:ok, path}
+      {:error, _reason} -> materialize_default(path)
+    end
+  end
+
+  defp materialized?(path), do: File.exists?(Path.join(path, ".git/index"))
+
+  defp materialize_default(path) do
+    case materialize(path, "refs/remotes/origin/HEAD", not materialized?(path)) do
+      :ok -> {:ok, path}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @doc "Local ref holding a pull request's head, as produced by `pull_request_checkout/4`."
   @spec pull_ref(pos_integer()) :: String.t()
   def pull_ref(number), do: "refs/remotes/origin/pr/#{number}"
@@ -172,11 +212,11 @@ defmodule Tackle.Web.RepoCache do
   # Leaves the work tree at `ref`. Skipping the switch when HEAD already points
   # at the right commit keeps reopening a pull request cheap: a switch rewrites
   # every file, and this runs on each page load.
-  defp materialize(path, ref) do
+  defp materialize(path, ref, force? \\ false) do
     config = Git.Config.new(working_dir: path, env: GitHub.git_env(), timeout: @checkout_timeout)
 
     with {:ok, sha} <- rev_parse(config, ref),
-         :ok <- switch_if_needed(path, config, sha) do
+         :ok <- switch_if_needed(path, config, sha, force?) do
       :ok
     end
   end
@@ -194,14 +234,14 @@ defmodule Tackle.Web.RepoCache do
     end
   end
 
-  defp switch_if_needed(path, config, sha) do
+  defp switch_if_needed(path, config, sha, force?) do
     current =
       case Git.rev_parse(ref: "HEAD", config: config) do
         {:ok, head} when is_binary(head) -> String.trim(head)
         _other -> nil
       end
 
-    if current == sha do
+    if not force? and current == sha do
       :ok
     else
       case Git.switch(detach: true, branch: sha, config: config) do

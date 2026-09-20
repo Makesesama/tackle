@@ -3,13 +3,15 @@ defmodule Tackle.Web.ReviewTest do
 
   alias Tackle.Web.Review
 
-  describe "file_name/3" do
+  describe "file_name/2" do
     test "combines the pull request identity" do
-      assert Review.file_name("elixir-lang", "elixir", 42) == "elixir-lang__elixir__42.json"
+      assert Review.file_name("github-elixir-lang-elixir-1a2b3c", "pr-42") ==
+               "github-elixir-lang-elixir-1a2b3c__pr-42.json"
     end
 
     test "keeps hyphens, which GitHub logins contain" do
-      assert Review.file_name("a-b", "c-d", 1) == "a-b__c-d__1.json"
+      assert Review.file_name("local-a-b-9f8e7d", "main..feature~x") ==
+               "local-a-b-9f8e7d__main..feature~x.json"
     end
   end
 

@@ -12,7 +12,8 @@ defmodule Tackle.Web.Application do
       {Phoenix.PubSub, name: Tackle.Web.PubSub},
       # Review state (comments and viewed markers) is shared by every viewer of a
       # pull request, so it lives in one process above the LiveViews. Chat
-      # conversations are shared the same way, but only in memory.
+      # conversations and projects are shared the same way, but only in memory.
+      Tackle.Web.ProjectStore,
       Tackle.Web.ReviewStore,
       Tackle.Web.ChatStore,
       # Agent infrastructure for Tackle.Phoenix.Runner: one Runner per pull

@@ -45,10 +45,10 @@ defmodule Tackle.Web.Components.UITest do
 
       html =
         rendered_to_string(~H"""
-        <.button navigate="/chat">New chat</.button>
+        <.button navigate="/projects">Projects</.button>
         """)
 
-      assert html =~ ~s(href="/chat")
+      assert html =~ ~s(href="/projects")
       refute html =~ "<button"
     end
 
@@ -204,17 +204,17 @@ defmodule Tackle.Web.Components.UITest do
 
       active =
         rendered_to_string(~H"""
-        <.nav_link navigate="/chat" active={true}>Chat</.nav_link>
+        <.nav_link navigate="/projects" active={true}>Projects</.nav_link>
         """)
 
       other =
         rendered_to_string(~H"""
-        <.nav_link navigate="/chat" active={false}>Chat</.nav_link>
+        <.nav_link navigate="/projects" active={false}>Projects</.nav_link>
         """)
 
       assert active =~ ~s(aria-current="page")
       assert active =~ "border-primary"
-      assert other =~ ~s(href="/chat")
+      assert other =~ ~s(href="/projects")
       refute other =~ "border-primary"
     end
   end

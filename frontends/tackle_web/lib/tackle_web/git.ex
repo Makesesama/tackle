@@ -60,6 +60,57 @@ defmodule Tackle.Web.Git do
   @spec valid_repo?(repo) :: boolean()
   def valid_repo?(repo), do: validate(repo) == :ok
 
+  @type branch :: %{name: String.t(), current?: boolean()}
+
+  @doc """
+  Lists the branches of a repository, local branches first.
+
+  Remote-tracking branches are reported under the name they have on the remote
+  (`origin/main` is `main`), so a branch offered by the picker is the name a
+  reviewer would type, and a local branch shadows its remote-tracking copy.
+  """
+  @spec branches(repo) :: {:ok, [branch()]} | {:error, String.t()}
+  def branches(repo) do
+    case Git.branch(list: true, all: true, config: config(repo)) do
+      {:ok, branches} when is_list(branches) ->
+        {:ok,
+         branches
+         |> Enum.map(&branch/1)
+         |> Enum.reject(&is_nil/1)
+         |> Enum.uniq_by(& &1.name)}
+
+      {:ok, _other} ->
+        {:error, "Could not list the branches of #{repo}."}
+
+      {:error, reason} ->
+        {:error, describe(reason)}
+    end
+  end
+
+  @doc """
+  The branch a work tree is checked out on, or `nil` when it is detached.
+  """
+  @spec current_branch(repo) :: String.t() | nil
+  def current_branch(repo) do
+    case Git.rev_parse(abbrev_ref: true, ref: "HEAD", config: config(repo)) do
+      {:ok, name} when is_binary(name) -> String.trim(name)
+      _other -> nil
+    end
+  end
+
+  defp branch(%Git.Branch{name: "remotes/" <> rest, current: current}) do
+    case String.split(rest, "/", parts: 2) do
+      [_remote, name] when name != "" -> %{name: name, current?: current}
+      _other -> nil
+    end
+  end
+
+  defp branch(%Git.Branch{name: name, current: current}) when name != "" do
+    %{name: name, current?: current}
+  end
+
+  defp branch(_branch), do: nil
+
   @doc """
   Reads the blob at `ref:path`.
 

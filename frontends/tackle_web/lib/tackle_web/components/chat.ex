@@ -24,15 +24,16 @@ defmodule Tackle.Web.Components.Chat do
   @max_thinking_chars 4_000
   @max_command_chars 120
 
-  @doc "The list of conversations, newest first, with the current one marked."
+  @doc "The list of one project's conversations, newest first, with the current one marked."
   attr(:conversations, :list, required: true)
+  attr(:slug, :string, required: true)
   attr(:current_id, :string, default: nil)
 
   def chat_sidebar(assigns) do
     ~H"""
     <aside class="flex w-72 flex-none flex-col border-r border-base-300 bg-base-200">
       <div class="flex-none p-2">
-        <.button navigate={~p"/chat"} variant="ghost" class="w-full justify-start">
+        <.button navigate={~p"/projects/#{@slug}"} variant="ghost" class="w-full justify-start">
           <.icon name="hero-plus-mini" class="size-4" /> New chat
         </.button>
       </div>
@@ -44,7 +45,7 @@ defmodule Tackle.Web.Components.Chat do
 
         <div :for={conversation <- @conversations} class="group relative mb-1">
           <.link
-            navigate={~p"/chat/#{conversation.id}"}
+            navigate={~p"/projects/#{@slug}/chats/#{conversation.id}"}
             class={[
               "block rounded-lg border px-2.5 py-2 transition-colors",
               conversation.id == @current_id && "border-primary/20 bg-accent",

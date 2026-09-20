@@ -1,0 +1,181 @@
+<Layouts.app flash={@flash} section={:projects}>
+  <div class="min-h-0 flex-1 overflow-y-auto">
+    <div class="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-6">
+      <nav class="flex items-center gap-2 text-xs text-base-content/55">
+        <.link navigate={~p"/projects"} class="hover:text-base-content">Projects</.link>
+        <span>/</span>
+        <span class="font-mono text-base-content">{@project.name}</span>
+      </nav>
+
+      <header class="flex flex-col gap-1">
+        <div class="flex flex-wrap items-center gap-2">
+          <h1 class="text-sm font-semibold tracking-tight">{@project.name}</h1>
+          <.badge tone={if @project.kind == :github, do: "brand", else: "neutral"}>
+            {Project.label(@project.kind)}
+          </.badge>
+          <.badge :if={@project.default_branch} tone="muted">
+            {@project.default_branch}
+          </.badge>
+        </div>
+        <p class="font-mono text-[0.6875rem] text-base-content/45">{@project.locator}</p>
+      </header>
+
+      <.alert :if={@error} tone="error">{@error}</.alert>
+
+      <div class="flex flex-col gap-5 lg:flex-row lg:items-start">
+        <section class="flex min-w-0 flex-1 flex-col gap-3">
+          <.section_title>Reviews</.section_title>
+
+          <.async_result :let={reviews} assign={@reviews}>
+            <:loading>
+              <p class="flex items-center gap-2 text-xs text-base-content/45">
+                <.spinner size="xs" /> Looking for reviews...
+              </p>
+            </:loading>
+
+            <:failed :let={failure}>
+              <.alert tone="error" title="Could not list reviews">
+                {async_failure_message(failure)}
+              </.alert>
+            </:failed>
+
+            <div :if={reviews != []} class="flex flex-col gap-2">
+              <div
+                :for={review <- reviews}
+                class="flex items-center gap-3 rounded-xl border border-base-300 bg-base-100 px-3 py-2.5 transition-colors hover:border-primary/30"
+              >
+                <.link
+                  navigate={~p"/projects/#{@slug}/reviews/#{review.review_id}"}
+                  class="min-w-0 flex-1"
+                >
+                  <span class="block truncate text-sm">{review.title}</span>
+                  <span class="mt-0.5 block truncate font-mono text-[0.6875rem] text-base-content/45">
+                    {review.review_id}
+                    <span :if={review.author}>&middot; {review.author}</span>
+                    <span :if={review.base_ref}>
+                      &middot; {review.base_ref} ← {review.head_ref}
+                    </span>
+                  </span>
+                </.link>
+                <.icon
+                  name="hero-chevron-right-mini"
+                  class="size-4 flex-none text-base-content/35"
+                />
+              </div>
+            </div>
+          </.async_result>
+
+          <.async_result :let={branches} assign={@branches}>
+            <:loading>
+              <p class="flex items-center gap-2 text-xs text-base-content/45">
+                <.spinner size="xs" /> Reading branches...
+              </p>
+            </:loading>
+
+            <:failed :let={failure}>
+              <.alert tone="error" title="Could not read the branches">
+                {async_failure_message(failure)}
+              </.alert>
+            </:failed>
+
+            <.card :if={branches != []}>
+              <form id="open-review" phx-submit="review" class="flex flex-col gap-3">
+                <div class="flex flex-wrap items-end gap-3">
+                  <.field label="Base" for="base" class="min-w-0 flex-1">
+                    <.input
+                      id="base"
+                      type="select"
+                      name="review[base]"
+                      value={default_base(branches, @project)}
+                      options={branch_names(branches)}
+                      class="font-mono"
+                    />
+                  </.field>
+
+                  <.field label="Head" for="head" class="min-w-0 flex-1">
+                    <.input
+                      id="head"
+                      type="select"
+                      name="review[head]"
+                      value={default_head(branches)}
+                      options={branch_names(branches)}
+                      class="font-mono"
+                    />
+                  </.field>
+
+                  <.button type="submit">Open review</.button>
+                </div>
+                <p class="text-[0.6875rem] leading-relaxed text-base-content/45">
+                  Any two refs work. The assistant reads the repository itself, so a local review
+                  does not move your working tree.
+                </p>
+              </form>
+            </.card>
+          </.async_result>
+
+          <.empty_state
+            :if={no_reviews?(@reviews, @branches)}
+            icon="hero-code-bracket"
+            title="Nothing to review yet"
+          >
+            A local project offers its branches to compare; a GitHub project offers its open pull
+            requests.
+          </.empty_state>
+        </section>
+
+        <section class="flex w-full flex-col gap-3 lg:w-80 lg:flex-none">
+          <.section_title>Chats</.section_title>
+
+          <.card padding="md">
+            <form id="new-chat" phx-submit="new_chat" class="flex flex-col gap-2">
+              <.field label="Model" for="model">
+                <.input
+                  id="model"
+                  type="select"
+                  name="chat[model]"
+                  value={default_model(@models)}
+                  options={@models}
+                  disabled={@creating}
+                  class="font-mono"
+                />
+              </.field>
+              <.button type="submit" disabled={@creating} phx-disable-with="Starting...">
+                New chat
+              </.button>
+            </form>
+            <p class="mt-2 text-[0.6875rem] leading-relaxed text-base-content/45">
+              The assistant reads and writes files in this project's checkout.
+            </p>
+          </.card>
+
+          <p :if={@chats == []} class="text-xs leading-relaxed text-base-content/45">
+            No conversations yet.
+          </p>
+
+          <div :for={chat <- @chats} class="group relative">
+            <.link
+              navigate={~p"/projects/#{@slug}/chats/#{chat.id}"}
+              class="block rounded-xl border border-base-300 bg-base-100 px-3 py-2 transition-colors hover:border-primary/30"
+            >
+              <span class="block truncate pr-6 text-xs">{chat.title}</span>
+              <span class="mt-0.5 block truncate text-[0.6875rem] text-base-content/45">
+                {chat.message_count} messages
+              </span>
+            </.link>
+
+            <.icon_button
+              size="xs"
+              variant="danger"
+              class="absolute right-1.5 top-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+              phx-click="delete_chat"
+              phx-value-id={chat.id}
+              title="Delete this conversation"
+            >
+              <.icon name="hero-trash-micro" class="size-3" />
+            </.icon_button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</Layouts.app>

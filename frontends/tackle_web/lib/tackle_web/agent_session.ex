@@ -1,6 +1,6 @@
 defmodule Tackle.Web.AgentSession do
   @moduledoc """
-  Wires one pull request's conversation to a `Tackle.Phoenix.Runner`.
+  Wires one review's conversation to a `Tackle.Phoenix.Runner`.
 
   LiveViews talk to this module rather than to `Tackle.Phoenix.Runner`, so the
   infrastructure names (`Registry`, supervisors, PubSub, store) stay in one
@@ -8,9 +8,16 @@ defmodule Tackle.Web.AgentSession do
   which is what lets a Runner be recreated after its idle timeout without losing
   the conversation.
 
-  A conversation is keyed by `owner/repo#number`, so every viewer of a pull
-  request shares one conversation and one agent. That is the point — a reviewer
-  asks a question and the answer is already sitting there for the next person.
+  A conversation is keyed by the project's slug and the review id, so every
+  viewer of the same review shares one conversation and one agent. That is the
+  point — a reviewer asks a question and the answer is already sitting there for
+  the next person — and it is why the same code serves a GitHub pull request and
+  a local ref range.
+
+  Every function takes a *loaded review*, the map
+  `Tackle.Web.Projects.load_review/2` returns. It already carries the project,
+  the review id, the refs and the checkout, so nothing here has to know where the
+  code came from.
   """
 
   alias Tackle.Lib.State
@@ -18,6 +25,7 @@ defmodule Tackle.Web.AgentSession do
   alias Tackle.Web.Agent
   alias Tackle.Web.AgentConversation
   alias Tackle.Web.AgentStore
+  alias Tackle.Web.Project.Source
 
   @config %{
     registry: Tackle.Web.AgentRegistry,
@@ -27,16 +35,6 @@ defmodule Tackle.Web.AgentSession do
     store: AgentStore,
     agent: Agent
   }
-
-  @typedoc "A pull request, as the assistant and the transcript identify it."
-  @type review :: %{
-          owner: String.t(),
-          repo: String.t(),
-          number: pos_integer(),
-          title: String.t() | nil,
-          base_ref: String.t() | nil,
-          head_ref: String.t() | nil
-        }
 
   @typedoc """
   A conversation's current state.
@@ -54,11 +52,16 @@ defmodule Tackle.Web.AgentSession do
           runner_pid: pid() | nil
         }
 
-  @doc "Subscribes the caller to the conversation's turn events."
-  @spec subscribe(review()) :: :ok | {:error, term()}
-  def subscribe(%{owner: owner, repo: repo, number: number}) do
-    Runner.subscribe(@config, AgentConversation.key(owner, repo, number), nil)
-  end
+  @doc """
+  Subscribes the caller to the conversation's turn events.
+
+  Keyed by the project and review rather than by a loaded review, so a viewer can
+  subscribe as soon as the page mounts — before, and independently of, the clone
+  a first load may have to make.
+  """
+  @spec subscribe(String.t(), String.t()) :: :ok | {:error, term()}
+  def subscribe(slug, review_id),
+    do: Runner.subscribe(@config, AgentConversation.key(slug, review_id), nil)
 
   @doc """
   Reads the conversation atomically: agent state, anchors, and active turn.
@@ -69,31 +72,26 @@ defmodule Tackle.Web.AgentSession do
   Returns `{:error, reason}` when the agent cannot be built at all — an unknown
   model reference, for instance.
   """
-  @spec snapshot(review(), Path.t(), keyword()) :: {:ok, snapshot()} | {:error, term()}
-  def snapshot(review, cwd, opts \\ []) do
-    transcript = AgentConversation.load(transcript_path(review))
+  @spec snapshot(Source.loaded_review(), keyword()) :: {:ok, snapshot()} | {:error, term()}
+  def snapshot(loaded, opts \\ []) do
+    transcript = AgentConversation.load(transcript_path(loaded))
 
     with {:ok, agent_state} <-
-           Agent.new(
-             cwd: cwd,
-             review: review,
-             model: Keyword.get(opts, :model),
-             messages: transcript.messages
-           ),
-         %{} = snapshot <- start_and_snapshot(review, agent_state, cwd, transcript.anchors) do
+           Agent.new(loaded, model: Keyword.get(opts, :model), messages: transcript.messages),
+         %{} = snapshot <- start_and_snapshot(loaded, agent_state, transcript.anchors) do
       {:ok, Map.put(snapshot, :anchors, transcript.anchors)}
     end
   end
 
   # `Runner.get_or_start/3` looks the Runner up in a Registry and starts one if it
-  # is absent, so two viewers opening the same pull request at once can both see
-  # it as absent. The loser is told the process is already started and simply has
-  # to ask again, now that the Registry knows about it.
-  defp start_and_snapshot(review, agent_state, cwd, anchors) do
-    opts = [agent_state: agent_state, host_state: host_state(review, cwd, anchors)]
+  # is absent, so two viewers opening the same review at once can both see it as
+  # absent. The loser is told the process is already started and simply has to
+  # ask again, now that the Registry knows about it.
+  defp start_and_snapshot(loaded, agent_state, anchors) do
+    opts = [agent_state: agent_state, host_state: host_state(loaded, anchors)]
 
-    case Runner.snapshot(@config, key(review), opts) do
-      {:error, {:already_started, _pid}} -> Runner.snapshot(@config, key(review), opts)
+    case Runner.snapshot(@config, key(loaded), opts) do
+      {:error, {:already_started, _pid}} -> Runner.snapshot(@config, key(loaded), opts)
       result -> result
     end
   end
@@ -105,27 +103,27 @@ defmodule Tackle.Web.AgentSession do
   `opts[:anchors]` carries the anchors already known so a Runner started for
   this turn inherits them.
   """
-  @spec run_turn(review(), Path.t(), State.t(), String.t(), keyword()) ::
+  @spec run_turn(Source.loaded_review(), State.t(), String.t(), keyword()) ::
           {:ok, pid()} | {:error, term()}
-  def run_turn(review, cwd, %State{} = state, input, opts \\ []) do
+  def run_turn(loaded, %State{} = state, input, opts \\ []) do
     Runner.run_turn(
       @config,
-      key(review),
+      key(loaded),
       anchored(state, Keyword.get(opts, :anchor)),
       input,
-      runner_opts(review, cwd, opts)
+      runner_opts(loaded, opts)
     )
   end
 
   @doc "Retries the last question without appending a new one."
-  @spec continue_turn(review(), Path.t(), State.t(), keyword()) ::
+  @spec continue_turn(Source.loaded_review(), State.t(), keyword()) ::
           {:ok, pid()} | {:error, term()}
-  def continue_turn(review, cwd, %State{} = state, opts \\ []) do
+  def continue_turn(loaded, %State{} = state, opts \\ []) do
     Runner.continue_turn(
       @config,
-      key(review),
+      key(loaded),
       anchored(state, Keyword.get(opts, :anchor)),
-      runner_opts(review, cwd, opts)
+      runner_opts(loaded, opts)
     )
   end
 
@@ -134,9 +132,9 @@ defmodule Tackle.Web.AgentSession do
   def cancel_turn(pid), do: Runner.cancel_turn(pid)
 
   @doc "The path of the conversation's stored transcript."
-  @spec transcript_path(review()) :: Path.t()
-  def transcript_path(%{owner: owner, repo: repo, number: number}) do
-    AgentConversation.path(owner, repo, number)
+  @spec transcript_path(Source.loaded_review()) :: Path.t()
+  def transcript_path(%{project: project, review_id: review_id}) do
+    AgentConversation.path(project.slug, review_id)
   end
 
   # The anchor of the question being asked right now belongs on the agent state,
@@ -148,23 +146,21 @@ defmodule Tackle.Web.AgentSession do
     %{state | context: Map.put(state.context, :turn, turn)}
   end
 
-  defp runner_opts(review, cwd, opts) do
+  defp runner_opts(loaded, opts) do
     [
-      host_state: host_state(review, cwd, Keyword.get(opts, :anchors, %{})),
-      telemetry_metadata: telemetry_metadata(review)
+      host_state: host_state(loaded, Keyword.get(opts, :anchors, %{})),
+      telemetry_metadata: telemetry_metadata(loaded)
     ]
   end
 
-  defp host_state(review, cwd, anchors) do
-    %{review: review, cwd: cwd, anchors: anchors}
-  end
+  defp host_state(loaded, anchors), do: %{loaded: loaded, anchors: anchors}
 
   # Bounded and non-secret, per the Runner's telemetry contract.
-  defp telemetry_metadata(%{owner: owner, repo: repo, number: number}) do
-    %{source: :review, repository: "#{owner}/#{repo}", pull_request: number}
+  defp telemetry_metadata(%{project: project, review_id: review_id}) do
+    %{source: :review, project: project.slug, review: review_id}
   end
 
-  defp key(%{owner: owner, repo: repo, number: number}) do
-    AgentConversation.key(owner, repo, number)
+  defp key(%{project: project, review_id: review_id}) do
+    AgentConversation.key(project.slug, review_id)
   end
 end

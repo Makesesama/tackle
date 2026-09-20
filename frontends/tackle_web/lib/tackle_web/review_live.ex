@@ -1,26 +1,36 @@
-defmodule Tackle.Web.PullLive do
+defmodule Tackle.Web.ReviewLive do
   @moduledoc """
-  Reviews a GitHub pull request: its diff, the comments on it, which files a
-  reviewer has been through, and the assistant you can ask about the code.
+  Reviews one diff inside a project: the diff itself, the comments on it, which
+  files a reviewer has been through, and the assistant you can ask about the
+  code.
 
-  The diff is computed locally from a clone rather than read from the API.
+  The review is whatever its project's source says it is —
+  `Tackle.Web.Project.Source` for the contract, `Tackle.Web.Projects.load_review/2`
+  for the call. A GitHub pull request and a local `base..head` range arrive here
+  as the same map: a diff, a title, two refs and a checkout. Nothing on this
+  screen asks where the code came from.
+
+  The diff is computed locally from a checkout rather than read from an API.
   GitHub reports comment positions as hunk offsets, which shift as soon as the
   pull request head moves, so comments here are anchored to `{path, side, line}`
   instead and survive a rebase.
 
-  Review state is shared: it lives in `Tackle.Web.ReviewStore`, and every viewer
-  of this pull request is subscribed to its changes, so a comment left in one
-  browser appears in another without a reload.
+  Review state is shared: it lives in `Tackle.Web.ReviewStore` under
+  `{project slug, review id}`, and every viewer of this review is subscribed to
+  its changes, so a comment left in one browser appears in another without a
+  reload.
 
   ## Asking the assistant
 
-  The assistant is a `Tackle.Phoenix.Runner` conversation per pull request, wired
-  through `Tackle.Web.AgentSession`. A question is asked *from a line*, and its
-  answer is rendered under that line, next to the code it is about — so the
-  anchor of a question is part of the conversation, not a detail of the browser
-  tab that asked it. `Tackle.Web.AgentStore` records it and announces it on the
-  conversation topic, which is how other viewers place an answer they did not ask
-  for.
+  The assistant is a `Tackle.Phoenix.Runner` conversation per review, wired
+  through `Tackle.Web.AgentSession`. A question is asked *from a line* with the
+  `?` beside it, and its answer is rendered under that line, next to the code it
+  is about. Shift-clicking a second line extends the question to the range
+  between them — `Tackle.Web.Anchor` describes the selection — and the answer
+  then hangs under the range's last line. The anchor is part of the conversation,
+  not a detail of the browser tab that asked it: `Tackle.Web.AgentStore` records
+  it and announces it on the conversation topic, which is how other viewers place
+  an answer they did not ask for.
 
   `Tackle.Phoenix.EventReducer` drives the streaming state: it keeps
   `:agent_state` and `:streaming_messages` up to date and filters reasoning and
@@ -41,64 +51,61 @@ defmodule Tackle.Web.PullLive do
   alias Tackle.Web.AgentMessageView
   alias Tackle.Web.AgentSession
   alias Tackle.Web.AgentThreads
-  alias Tackle.Web.Diff
-  alias Tackle.Web.GitHub
-  alias Tackle.Web.RepoCache
+  alias Tackle.Web.Anchor
+  alias Tackle.Web.Projects
   alias Tackle.Web.Review
   alias Tackle.Web.ReviewStore
 
   @impl true
-  def mount(%{"owner" => owner, "repo" => name, "number" => number}, _session, socket) do
-    number = String.to_integer(number)
-    conversation = %{owner: owner, repo: name, number: number}
+  def mount(%{"slug" => slug, "review_id" => review_id}, _session, socket) do
+    case Projects.get(slug) do
+      nil ->
+        {:ok, push_navigate(socket, to: ~p"/projects")}
 
-    if connected?(socket) do
-      ReviewStore.subscribe(owner, name, number)
-      AgentSession.subscribe(conversation)
+      project ->
+        if connected?(socket) do
+          ReviewStore.subscribe(slug, review_id)
+          AgentSession.subscribe(slug, review_id)
+        end
+
+        socket =
+          socket
+          |> assign(
+            page_title: "#{project.name} · #{review_id}",
+            project: project,
+            slug: slug,
+            review_id: review_id,
+            review_state: ReviewStore.get(slug, review_id),
+            pull: nil,
+            comment_at: nil,
+            comment_error: nil,
+            ask_at: nil,
+            agent_error: nil,
+            activity: nil,
+            processing: false,
+            runner_pid: nil,
+            anchors: %{},
+            agent: nil,
+            tackle_message_view: AgentMessageView,
+            loaded: AsyncResult.loading()
+          )
+          |> start_async(:loaded, fn -> load(project, review_id) end)
+
+        {:ok, socket}
     end
-
-    socket =
-      socket
-      |> assign(
-        page_title: "#{owner}/#{name}##{number}",
-        owner: owner,
-        repo: name,
-        number: number,
-        conversation: conversation,
-        review: ReviewStore.get(owner, name, number),
-        comment_at: nil,
-        comment_error: nil,
-        ask_at: nil,
-        agent_error: nil,
-        activity: nil,
-        processing: false,
-        runner_pid: nil,
-        anchors: %{},
-        agent: nil,
-        tackle_message_view: AgentMessageView,
-        loaded: AsyncResult.loading()
-      )
-      |> start_async(:loaded, fn -> load(owner, name, number) end)
-
-    {:ok, socket}
   end
 
   # `start_async/3` rather than `assign_async/3`: the completion has to set the
   # agent assigns the reducer needs, and only `start_async` runs the callback
   # where that can happen.
   @impl true
-  def handle_async(:loaded, {:ok, {:ok, loaded}}, socket) do
-    %{pull: pull, diff: diff, cwd: cwd, agent: snapshot} = loaded
-
+  def handle_async(:loaded, {:ok, {:ok, %{review: review, agent: snapshot}}}, socket) do
     socket =
       socket
       |> assign(
-        loaded: AsyncResult.ok(socket.assigns.loaded, loaded),
-        pull: pull,
-        diff: diff,
-        cwd: cwd,
-        conversation:
-          conversation(socket.assigns.owner, socket.assigns.repo, socket.assigns.number, pull),
+        loaded: AsyncResult.ok(socket.assigns.loaded, review),
+        loaded_review: review,
+        pull: Map.get(review, :pull),
         anchors: snapshot.anchors,
         agent_state: snapshot.agent_state,
         processing: snapshot.turn_active?,
@@ -158,9 +165,9 @@ defmodule Tackle.Web.PullLive do
 
   @impl true
   def handle_event("toggle_viewed", %{"path" => path}, socket) do
-    %{owner: owner, repo: name, number: number} = socket.assigns
+    %{slug: slug, review_id: review_id} = socket.assigns
 
-    ReviewStore.toggle_viewed(owner, name, number, path)
+    ReviewStore.toggle_viewed(slug, review_id, path)
     {:noreply, refresh_review(socket)}
   end
 
@@ -182,9 +189,9 @@ defmodule Tackle.Web.PullLive do
 
   @impl true
   def handle_event("add_comment", %{"comment" => comment}, socket) do
-    %{owner: owner, repo: name, number: number} = socket.assigns
+    %{slug: slug, review_id: review_id} = socket.assigns
 
-    case ReviewStore.add_comment(owner, name, number, comment) do
+    case ReviewStore.add_comment(slug, review_id, comment) do
       {:ok, _comment} ->
         {:noreply, socket |> assign(comment_at: nil, comment_error: nil) |> refresh_review()}
 
@@ -195,18 +202,22 @@ defmodule Tackle.Web.PullLive do
 
   @impl true
   def handle_event("delete_comment", %{"id" => id}, socket) do
-    %{owner: owner, repo: name, number: number} = socket.assigns
+    %{slug: slug, review_id: review_id} = socket.assigns
 
-    ReviewStore.delete_comment(owner, name, number, id)
+    ReviewStore.delete_comment(slug, review_id, id)
     {:noreply, refresh_review(socket)}
   end
 
   @impl true
-  def handle_event("ask_at", %{"path" => path, "side" => side, "line" => line}, socket) do
+  def handle_event("ask_at", %{"path" => path, "side" => side, "line" => line} = params, socket) do
     case anchor(side, line) do
       {:ok, side, number} ->
-        {:noreply,
-         socket |> assign(ask_at: {path, side, number}, agent_error: nil) |> refresh_agent()}
+        # A shift-click extends the selection to this line; a plain click starts a
+        # new one. The modifier arrives as click metadata (see `assets/js/app.js`)
+        # because LiveView does not send it by default.
+        ask_at = ask_at(socket.assigns.ask_at, params["shiftKey"], path, side, number)
+
+        {:noreply, socket |> assign(ask_at: ask_at, agent_error: nil) |> refresh_agent()}
 
       :error ->
         {:noreply, socket}
@@ -220,9 +231,9 @@ defmodule Tackle.Web.PullLive do
 
   @impl true
   def handle_event("ask", %{"question" => %{"body" => body}}, socket) do
-    # A question from the box above the diff is about the pull request as a
-    # whole; it still gets an anchor, so its answer has somewhere to go and the
-    # transcript can tell the two kinds apart.
+    # A question from the box above the diff is about the review as a whole; it
+    # still gets an anchor, so its answer has somewhere to go and the transcript
+    # can tell the two kinds apart.
     emit(socket, socket.assigns.ask_at || general_anchor(), body)
   end
 
@@ -232,9 +243,9 @@ defmodule Tackle.Web.PullLive do
 
   @impl true
   def handle_event("retry_turn", _params, socket) do
-    %{conversation: conversation, cwd: cwd, agent_state: state, anchors: anchors} = socket.assigns
+    %{loaded_review: review, agent_state: state, anchors: anchors} = socket.assigns
 
-    case AgentSession.continue_turn(conversation, cwd, state, anchors: anchors) do
+    case AgentSession.continue_turn(review, state, anchors: anchors) do
       {:ok, pid} ->
         {:noreply, start_turn_state(socket, pid)}
 
@@ -250,17 +261,13 @@ defmodule Tackle.Web.PullLive do
     {:noreply, socket}
   end
 
-  # Fetching the metadata, cloning both sides and reading the conversation is one
-  # unit of work: a review is not worth showing until the diff it is about can be
-  # rendered, and the assistant cannot be asked anything until the checkout it
-  # reads exists.
-  defp load(owner, name, number) do
-    with {:ok, pull} <- GitHub.pull(owner, name, number),
-         {:ok, path} <- RepoCache.pull_request_checkout(owner, name, number, pull.base_ref),
-         {:ok, diff} <-
-           Diff.load(path, RepoCache.base_ref(pull.base_ref), RepoCache.pull_ref(number)),
-         {:ok, agent} <- AgentSession.snapshot(conversation(owner, name, number, pull), path) do
-      {:ok, %{pull: pull, diff: diff, cwd: path, agent: agent}}
+  # Loading the review and reading its conversation is one unit of work: a review
+  # is not worth showing until the diff it is about can be rendered, and the
+  # assistant cannot be asked anything until the checkout it reads exists.
+  defp load(project, review_id) do
+    with {:ok, review} <- Projects.load_review(project, review_id),
+         {:ok, agent} <- AgentSession.snapshot(review) do
+      {:ok, %{review: review, agent: agent}}
     end
   end
 
@@ -281,9 +288,9 @@ defmodule Tackle.Web.PullLive do
   end
 
   defp run_turn(socket, anchor, body) do
-    %{conversation: conversation, cwd: cwd, agent_state: state, anchors: anchors} = socket.assigns
+    %{loaded_review: review, agent_state: state, anchors: anchors} = socket.assigns
 
-    case AgentSession.run_turn(conversation, cwd, state, question(anchor, body),
+    case AgentSession.run_turn(review, state, question(anchor, body),
            anchor: anchor,
            anchors: anchors
          ) do
@@ -305,32 +312,29 @@ defmodule Tackle.Web.PullLive do
   # the file itself, so a reference is enough — and unlike a hidden field it is
   # still readable in a transcript that has outlived the browser that asked.
   defp question(:general, body) do
-    "About this pull request as a whole:\n\n#{String.trim(body)}"
+    "About this review as a whole:\n\n#{String.trim(body)}"
   end
 
-  defp question({path, side, line}, body) do
-    "About #{path} line #{line} (the #{side} side of the diff):\n\n#{String.trim(body)}"
+  # The selection is named with `Anchor.label/1`, the same wording the form shows,
+  # so the assistant and the reviewer are told about the same region.
+  defp question(anchor, body) when is_tuple(anchor) do
+    path = elem(anchor, 0)
+    side = elem(anchor, 1)
+
+    "About #{path} #{Anchor.label(anchor)} (the #{side} side of the diff):\n\n" <>
+      String.trim(body)
   end
 
-  defp review(socket) do
-    %{owner: owner, repo: name, number: number} = socket.assigns
-    ReviewStore.get(owner, name, number)
-  end
+  defp ask_at(ask_at, true, path, side, line), do: Anchor.extend(ask_at, path, side, line)
+  defp ask_at(_ask_at, _shift, path, side, line), do: Anchor.new(path, side, line)
 
   # The store announces changes so other viewers stay in sync. Reading it back
   # here as well means the render answering this event is already up to date,
   # rather than a round trip behind its own broadcast.
-  defp refresh_review(socket), do: assign(socket, :review, review(socket))
+  defp refresh_review(socket) do
+    %{slug: slug, review_id: review_id} = socket.assigns
 
-  defp conversation(owner, repo, number, pull) do
-    %{
-      owner: owner,
-      repo: repo,
-      number: number,
-      title: Map.get(pull, :title),
-      base_ref: Map.get(pull, :base_ref),
-      head_ref: Map.get(pull, :head_ref)
-    }
+    assign(socket, :review_state, ReviewStore.get(slug, review_id))
   end
 
   defp put_agent_state(socket, %State{} = state) do
@@ -424,7 +428,7 @@ defmodule Tackle.Web.PullLive do
   end
 
   # The anchor of a question asked through the box above the diff.
-  defp general_anchor, do: AgentThreads.general_key()
+  defp general_anchor, do: Anchor.general()
 
   defp asked?(%State{messages: messages}) do
     Enum.any?(messages, &(&1.role == :user))

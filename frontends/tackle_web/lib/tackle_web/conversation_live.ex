@@ -27,38 +27,46 @@ defmodule Tackle.Web.ConversationLive do
   alias Tackle.Web.ChatSession
   alias Tackle.Web.ChatStore
   alias Tackle.Web.Components.Chat
+  alias Tackle.Web.Projects
 
   @impl true
-  def mount(%{"id" => id}, _session, socket) do
-    socket =
-      socket
-      |> assign(
-        section: :chat,
-        conversation_id: id,
-        conversation: nil,
-        conversations: ChatStore.list(),
-        models: ChatAgent.models(),
-        model: nil,
-        draft: "",
-        agent_state: nil,
-        streaming_messages: %{},
-        tackle_message_view: ChatMessageView,
-        processing: false,
-        runner_pid: nil,
-        activity: nil,
-        error: nil,
-        loaded: false
-      )
-      # The stream container is rendered before anything is done with the
-      # conversation, so the disconnected render of this page — which never
-      # reaches a Runner — has a stream to render as well.
-      |> stream(:agent_messages, [])
-
-    if connected?(socket) do
-      _ = ChatStore.subscribe()
-      {:ok, connect(socket, id)}
+  def mount(%{"slug" => slug, "id" => id}, _session, socket) do
+    if Projects.get(slug) == nil do
+      # A conversation only makes sense inside the project that decides the
+      # directory the assistant reads, so an unknown project is not a page.
+      {:ok, push_navigate(socket, to: ~p"/projects")}
     else
-      {:ok, socket}
+      socket =
+        socket
+        |> assign(
+          section: :projects,
+          slug: slug,
+          conversation_id: id,
+          conversation: nil,
+          conversations: ChatStore.list(slug),
+          models: ChatAgent.models(),
+          model: nil,
+          draft: "",
+          agent_state: nil,
+          streaming_messages: %{},
+          tackle_message_view: ChatMessageView,
+          processing: false,
+          runner_pid: nil,
+          activity: nil,
+          error: nil,
+          loaded: false
+        )
+        # The stream container is rendered before anything is done with the
+        # conversation, so the disconnected render of this page — which never
+        # reaches a Runner — has a stream to render as well.
+        |> stream(:agent_messages, [])
+
+      if connected?(socket) do
+        _ = ChatStore.subscribe()
+        {:ok, connect(socket, id)}
+      else
+        {:ok, socket}
+      end
     end
   end
 
@@ -97,12 +105,12 @@ defmodule Tackle.Web.ConversationLive do
   end
 
   def handle_info({:chat_updated, id}, socket) do
-    socket = assign(socket, :conversations, ChatStore.list())
+    socket = assign(socket, :conversations, ChatStore.list(socket.assigns.slug))
 
     if id == socket.assigns.conversation_id do
       # The transcript itself arrives through turn events; this only picks up a
       # title and model the store now holds.
-      case ChatStore.get(id) do
+      case conversation_of(socket, id) do
         nil ->
           {:noreply, gone(socket)}
 
@@ -120,7 +128,7 @@ defmodule Tackle.Web.ConversationLive do
     if id == socket.assigns.conversation_id do
       {:noreply, gone(socket)}
     else
-      {:noreply, assign(socket, :conversations, ChatStore.list())}
+      {:noreply, assign(socket, :conversations, ChatStore.list(socket.assigns.slug))}
     end
   end
 
@@ -180,9 +188,9 @@ defmodule Tackle.Web.ConversationLive do
       {:noreply,
        socket
        |> put_flash(:info, "Conversation deleted.")
-       |> push_navigate(to: ~p"/chat")}
+       |> push_navigate(to: ~p"/projects/#{socket.assigns.slug}")}
     else
-      {:noreply, assign(socket, :conversations, ChatStore.list())}
+      {:noreply, assign(socket, :conversations, ChatStore.list(socket.assigns.slug))}
     end
   end
 
@@ -190,7 +198,7 @@ defmodule Tackle.Web.ConversationLive do
   # directory it was started in and the model it runs all come from the stored
   # conversation, so a conversation that cannot be loaded has nothing to show.
   defp connect(socket, id) do
-    case ChatStore.get(id) do
+    case conversation_of(socket, id) do
       nil ->
         gone(socket)
 
@@ -245,10 +253,19 @@ defmodule Tackle.Web.ConversationLive do
     end
   end
 
+  # A conversation belongs to the project it was started in, so one addressed
+  # under another project is treated as missing rather than rendered.
+  defp conversation_of(socket, id) do
+    case ChatStore.get(id) do
+      %{project_slug: slug} = conversation when slug == socket.assigns.slug -> conversation
+      _other -> nil
+    end
+  end
+
   defp gone(socket) do
     socket
     |> put_flash(:error, "That conversation is no longer in memory.")
-    |> push_navigate(to: ~p"/chat")
+    |> push_navigate(to: ~p"/projects/#{socket.assigns.slug}")
   end
 
   defp track_activity(socket, %Event{type: :tool_start, data: data}) do
