@@ -1,6 +1,6 @@
 defmodule Tackle.Web.AgentConversation do
   @moduledoc """
-  Durable transcript for one pull request's conversation with the assistant.
+  Durable transcript for one review's conversation with the assistant.
 
   `Tackle.Phoenix.Runner` keeps a conversation in memory and stops after thirty
   minutes idle, so the transcript has to outlive it. It is written whenever a
@@ -13,9 +13,11 @@ defmodule Tackle.Web.AgentConversation do
   off instead of degrading into plain text.
 
   Alongside the messages it stores where each question was asked. A question is
-  asked *about a line*, and the answer belongs under that line, so the anchor is
+  asked *about a line or a range*, and the answer belongs there, so the anchor is
   part of the conversation rather than a detail of the browser tab that asked it.
-  Anchors are keyed by the id of the question message they belong to.
+  Anchors are keyed by the id of the question message they belong to, and a range
+  carries both the line its thread hangs under and the first line of the
+  selection, so the whole region survives a reload.
 
   As with the review state, the directory is created on demand and writing is
   atomic: a reader never sees a half-written file. A missing or corrupt file
@@ -27,19 +29,18 @@ defmodule Tackle.Web.AgentConversation do
 
   alias Tackle.Lib.Message
   alias Tackle.Session.Codec
+  alias Tackle.Web.Anchor
   alias Tackle.Web.Paths
   alias Tackle.Web.Review
 
   @version 1
 
   @typedoc """
-  Where a question was asked: a file, one side of the diff, and a line.
-
-  The same shape the review comments are anchored to, so the diff component looks
-  up comments and assistant threads with one key. `:general` means the question
-  was about the pull request as a whole rather than a line.
+  Where a question was asked, as `Tackle.Web.Anchor` describes it: a file, one
+  side of the diff, and one line or a range. `:general` means the question was
+  about the review as a whole rather than a line.
   """
-  @type anchor :: {String.t(), :new | :old, pos_integer()} | :general
+  @type anchor :: Anchor.at()
 
   @typedoc "A stored conversation: the messages and the anchor of each question."
   @type transcript :: %{
@@ -48,25 +49,26 @@ defmodule Tackle.Web.AgentConversation do
         }
 
   @doc """
-  Identity of a pull request's conversation.
+  Identity of one review's conversation.
 
   Doubles as the `user_id` handed to `Tackle.Phoenix.Runner`, which keys one
-  Runner per value.
+  Runner per value, so every viewer of the same review shares one conversation.
   """
-  @spec key(String.t(), String.t(), pos_integer()) :: String.t()
-  def key(owner, name, number) when is_binary(owner) and is_binary(name) do
-    "#{owner}/#{name}##{number}"
+  @spec key(String.t(), String.t()) :: String.t()
+  def key(slug, review_id) when is_binary(slug) and is_binary(review_id) do
+    "#{slug}##{review_id}"
   end
 
   @doc """
-  File holding a pull request's transcript.
+  File holding a review's transcript.
 
-  Named with `Tackle.Web.Review.file_name/3` so the transcript and the review of
-  the same pull request always agree on their names; only the directory differs.
+  Named with `Tackle.Web.Review.file_name/2` so the transcript and the review
+  state of the same review always agree on their names; only the directory
+  differs.
   """
-  @spec path(String.t(), String.t(), pos_integer()) :: Path.t()
-  def path(owner, name, number) do
-    Path.join(Paths.conversations_root(), Review.file_name(owner, name, number))
+  @spec path(String.t(), String.t()) :: Path.t()
+  def path(slug, review_id) do
+    Path.join(Paths.conversations_root(), Review.file_name(slug, review_id))
   end
 
   @doc """
@@ -170,16 +172,28 @@ defmodule Tackle.Web.AgentConversation do
   defp decode_anchor(:general), do: :general
   defp decode_anchor("general"), do: :general
 
-  defp decode_anchor(%{"path" => path, "side" => side, "line" => line})
+  defp decode_anchor(%{"path" => path, "line" => line} = stored)
        when is_binary(path) and is_integer(line) and line > 0 do
-    case side do
-      "new" -> {path, :new, line}
-      "old" -> {path, :old, line}
-      _other -> nil
+    case {side_from_json(stored["side"]), first_line(stored, line)} do
+      {side, {:ok, first}} when not is_nil(side) -> Anchor.new(path, side, first, line)
+      _invalid -> nil
     end
   end
 
   defp decode_anchor(_anchor), do: nil
+
+  defp side_from_json("new"), do: :new
+  defp side_from_json("old"), do: :old
+  defp side_from_json(_other), do: nil
+
+  # A range stores the first line of the selection next to the line its thread
+  # hangs under. A missing `from_line` is a single-line anchor, which is how
+  # transcripts written before ranges existed still load.
+  defp first_line(%{"from_line" => from}, _line) when is_integer(from) and from > 0,
+    do: {:ok, from}
+
+  defp first_line(%{"from_line" => _invalid}, _line), do: :error
+  defp first_line(_stored, line), do: {:ok, line}
 
   defp encode_anchors(anchors) when is_map(anchors) do
     for {id, anchor} <- anchors, is_binary(id), encoded = encode_anchor(anchor), into: %{} do
@@ -192,6 +206,12 @@ defmodule Tackle.Web.AgentConversation do
   defp encode_anchor({path, side, line})
        when is_binary(path) and side in [:new, :old] and is_integer(line) and line > 0 do
     %{"path" => path, "side" => Atom.to_string(side), "line" => line}
+  end
+
+  defp encode_anchor({path, side, first, last})
+       when is_binary(path) and side in [:new, :old] and is_integer(first) and first > 0 and
+              is_integer(last) and last > 0 do
+    %{"path" => path, "side" => Atom.to_string(side), "line" => last, "from_line" => first}
   end
 
   defp encode_anchor(_anchor), do: nil

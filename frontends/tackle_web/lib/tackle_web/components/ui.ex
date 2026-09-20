@@ -37,7 +37,7 @@ defmodule Tackle.Web.Components.UI do
 
       <.button phx-click="send">Send</.button>
       <.button variant="quiet" size="xs" phx-click="cancel_turn">Stop</.button>
-      <.button navigate={~p"/chat"} variant="ghost">Back to chat</.button>
+      <.button navigate={~p"/projects"} variant="ghost">Back to projects</.button>
   """
   attr(:variant, :string, values: ~w(primary ghost quiet danger), default: "primary")
   attr(:size, :string, values: ~w(xs sm md), default: "sm")

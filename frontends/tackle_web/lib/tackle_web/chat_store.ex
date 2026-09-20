@@ -1,6 +1,6 @@
 defmodule Tackle.Web.ChatStore do
   @moduledoc """
-  In-memory conversations for the chat frontend.
+  In-memory conversations for the chat frontend, scoped to a project.
 
   A conversation belongs to the frontend rather than to the browser tab that
   started it, so it lives in one process above the LiveViews and every viewer
@@ -9,10 +9,11 @@ defmodule Tackle.Web.ChatStore do
   frontend starts from an empty list. There is no database behind this by
   design — the shape here is what a durable store would have to keep.
 
-  Each conversation remembers the directory it was started in and the model it
-  runs, because both are part of what a conversation is: the assistant reads
-  files relative to that directory, and resuming a transcript with a different
-  model is a supported change rather than a new conversation.
+  Each conversation remembers the project it belongs to, the directory it was
+  started in and the model it runs, because all three are part of what a
+  conversation is: the project decides which checkout the assistant reads, and
+  resuming a transcript with a different model is a supported change rather than
+  a new conversation.
 
   Mutations are announced on `chat:conversations`, so a sidebar open elsewhere
   learns that a conversation was created, renamed by its first question, or
@@ -31,6 +32,7 @@ defmodule Tackle.Web.ChatStore do
           id: String.t(),
           title: String.t(),
           model: String.t() | nil,
+          project_slug: String.t(),
           cwd: Path.t(),
           messages: [Message.t()],
           inserted_at: DateTime.t(),
@@ -42,6 +44,7 @@ defmodule Tackle.Web.ChatStore do
           id: String.t(),
           title: String.t(),
           model: String.t() | nil,
+          project_slug: String.t(),
           cwd: Path.t(),
           message_count: non_neg_integer(),
           inserted_at: DateTime.t(),
@@ -56,16 +59,24 @@ defmodule Tackle.Web.ChatStore do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @doc "Lists every conversation, most recently updated first, without its messages."
-  @spec list() :: [summary()]
-  def list, do: GenServer.call(__MODULE__, :list)
+  @doc """
+  Lists one project's conversations, most recently updated first, without their
+  messages.
+
+  A conversation belongs to a project because the project is what decides the
+  directory the assistant reads; there is no such thing as a conversation
+  without one.
+  """
+  @spec list(String.t()) :: [summary()]
+  def list(project_slug) when is_binary(project_slug),
+    do: GenServer.call(__MODULE__, {:list, project_slug})
 
   @doc "Returns a conversation, messages and all, or `nil` when it is unknown."
   @spec get(String.t()) :: conversation() | nil
   def get(id) when is_binary(id), do: GenServer.call(__MODULE__, {:get, id})
 
   @doc """
-  Creates a conversation in `:cwd` running `:model`.
+  Creates a conversation in `:cwd` running `:model`, inside `:project_slug`.
 
   The directory has to exist: a conversation whose every tool call would fail is
   rejected here rather than at the first question.
@@ -116,10 +127,11 @@ defmodule Tackle.Web.ChatStore do
   end
 
   @impl true
-  def handle_call(:list, _from, state) do
+  def handle_call({:list, project_slug}, _from, state) do
     summaries =
       state.conversations
       |> Map.values()
+      |> Enum.filter(&(&1.project_slug == project_slug))
       |> Enum.sort_by(& &1.updated_at, {:desc, DateTime})
       |> Enum.map(&summarize/1)
 
@@ -172,13 +184,14 @@ defmodule Tackle.Web.ChatStore do
   # -- internals ------------------------------------------------------------
 
   defp build(attrs) do
-    cwd = attrs |> Keyword.get(:cwd) |> normalize_cwd()
-
-    case cwd do
-      {:ok, cwd} -> {:ok, new(cwd, Keyword.get(attrs, :model))}
-      {:error, reason} -> {:error, reason}
+    with {:ok, project_slug} <- normalize_project(Keyword.get(attrs, :project_slug)),
+         {:ok, cwd} <- normalize_cwd(Keyword.get(attrs, :cwd)) do
+      {:ok, new(cwd, Keyword.get(attrs, :model), project_slug)}
     end
   end
+
+  defp normalize_project(slug) when is_binary(slug) and slug != "", do: {:ok, slug}
+  defp normalize_project(slug), do: {:error, {:invalid_project, slug}}
 
   defp normalize_cwd(cwd) when is_binary(cwd) and cwd != "" do
     cwd = Path.expand(cwd)
@@ -187,13 +200,14 @@ defmodule Tackle.Web.ChatStore do
 
   defp normalize_cwd(cwd), do: {:error, {:invalid_workspace, cwd}}
 
-  defp new(cwd, model) do
+  defp new(cwd, model, project_slug) do
     now = DateTime.utc_now()
 
     %{
       id: ID.uuid4(),
       title: @untitled,
       model: model,
+      project_slug: project_slug,
       cwd: cwd,
       messages: [],
       inserted_at: now,
@@ -241,7 +255,7 @@ defmodule Tackle.Web.ChatStore do
 
   defp summarize(conversation) do
     conversation
-    |> Map.take([:id, :title, :model, :cwd, :inserted_at, :updated_at])
+    |> Map.take([:id, :title, :model, :project_slug, :cwd, :inserted_at, :updated_at])
     |> Map.put(:message_count, length(conversation.messages))
   end
 

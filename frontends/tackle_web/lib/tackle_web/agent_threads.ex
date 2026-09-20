@@ -12,21 +12,20 @@ defmodule Tackle.Web.AgentThreads do
   reader — tool calls and their results — is counted rather than listed, because
   a reviewer reading a diff wants the answer, not the assistant's search history.
 
-  Threads are keyed the same way as review comments (`{path, side, line}`), so
-  the diff component can look up comments and threads with one anchor.
+  Threads are keyed by `Tackle.Web.Anchor`, so the diff component can look up
+  comments and threads with one key. A question about one line and a question
+  about a range ending on that line share a key: the range's thread hangs under
+  its last line.
   """
 
   alias Tackle.Lib.Message
+  alias Tackle.Web.Anchor
 
-  @general :general
+  @typedoc "Where a question was asked, as `Tackle.Web.Anchor` describes it."
+  @type anchor :: Anchor.at()
 
-  @typedoc """
-  Where a question was asked.
-
-  `{path, side, line}` matches the review-comment anchor, so one key looks up
-  both. `:general` is a question about the pull request as a whole.
-  """
-  @type anchor :: {String.t(), :new | :old, pos_integer()} | :general
+  @typedoc "The key a thread is grouped under; see `key/1`."
+  @type key :: {String.t(), :new | :old, pos_integer()} | :general
 
   @typedoc "A question, the answers it produced, and how much work they took."
   @type thread :: %{
@@ -37,22 +36,14 @@ defmodule Tackle.Web.AgentThreads do
         }
 
   @doc """
-  The key a thread is filed under: `{path, side, line}`, or `:general`.
+  The key a thread is filed under: `{path, side, last}`, or `:general`.
 
-  Questions asked without picking a line are filed under `:general`, which the UI
-  renders as a conversation of its own rather than against the diff.
+  A range is keyed by its last line, so its answer hangs under the end of the
+  selection. Questions asked without picking a line are filed under `:general`,
+  which the UI renders as a conversation of its own rather than against the diff.
   """
-  @spec key(term()) :: anchor()
-  def key({path, side, line})
-      when is_binary(path) and side in [:new, :old] and is_integer(line) do
-    {path, side, line}
-  end
-
-  def key(_anchor), do: @general
-
-  @doc "The key used for questions that are not about a particular line."
-  @spec general_key() :: :general
-  def general_key, do: @general
+  @spec key(term()) :: key()
+  def key(anchor), do: Anchor.key(anchor)
 
   @doc """
   Builds the conversation's threads, oldest question first.
@@ -79,7 +70,7 @@ defmodule Tackle.Web.AgentThreads do
   end
 
   @doc "Groups threads by `key/1`, keeping the order they were asked in."
-  @spec by_anchor([thread()]) :: %{anchor() => [thread()]}
+  @spec by_anchor([thread()]) :: %{key() => [thread()]}
   def by_anchor(threads) when is_list(threads) do
     Enum.reduce(threads, %{}, fn thread, grouped ->
       Map.update(grouped, key(thread.anchor), [thread], &(&1 ++ [thread]))
@@ -103,7 +94,7 @@ defmodule Tackle.Web.AgentThreads do
   answer being streamed belongs under the question that asked for it, exactly
   like a finished one.
   """
-  @spec streaming([thread()], %{optional(String.t()) => term()}) :: %{anchor() => term()}
+  @spec streaming([thread()], %{optional(String.t()) => term()}) :: %{key() => term()}
   def streaming(threads, streaming_messages)
       when is_list(threads) and is_map(streaming_messages) do
     case {active_anchor(threads), Map.values(streaming_messages)} do

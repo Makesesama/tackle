@@ -22,9 +22,9 @@ defmodule Tackle.Web.ReviewStoreTest do
   end
 
   describe "comments" do
-    test "stores a comment on the line it was written about", %{identity: {owner, name, number}} do
+    test "stores a comment on the line it was written about", %{identity: {slug, review_id}} do
       assert {:ok, comment} =
-               ReviewStore.add_comment(owner, name, number, %{
+               ReviewStore.add_comment(slug, review_id, %{
                  "path" => "lib/a.ex",
                  "side" => "new",
                  "line" => "42",
@@ -38,12 +38,12 @@ defmodule Tackle.Web.ReviewStoreTest do
       assert comment.id =~ ~r/^[0-9a-f]{16}$/
       assert %DateTime{} = comment.inserted_at
 
-      assert ReviewStore.get(owner, name, number).comments == [comment]
+      assert ReviewStore.get(slug, review_id).comments == [comment]
     end
 
-    test "keeps comments in the order they were written", %{identity: {owner, name, number}} do
+    test "keeps comments in the order they were written", %{identity: {slug, review_id}} do
       for body <- ["first", "second", "third"] do
-        ReviewStore.add_comment(owner, name, number, %{
+        ReviewStore.add_comment(slug, review_id, %{
           "path" => "lib/a.ex",
           "side" => "new",
           "line" => 1,
@@ -51,13 +51,13 @@ defmodule Tackle.Web.ReviewStoreTest do
         })
       end
 
-      assert ReviewStore.get(owner, name, number).comments |> Enum.map(& &1.body) ==
+      assert ReviewStore.get(slug, review_id).comments |> Enum.map(& &1.body) ==
                ["first", "second", "third"]
     end
 
-    test "refuses a comment without a body", %{identity: {owner, name, number}} do
+    test "refuses a comment without a body", %{identity: {slug, review_id}} do
       assert {:error, message} =
-               ReviewStore.add_comment(owner, name, number, %{
+               ReviewStore.add_comment(slug, review_id, %{
                  "path" => "lib/a.ex",
                  "side" => "new",
                  "line" => 1,
@@ -65,13 +65,13 @@ defmodule Tackle.Web.ReviewStoreTest do
                })
 
       assert message =~ "Write something"
-      assert ReviewStore.get(owner, name, number).comments == []
+      assert ReviewStore.get(slug, review_id).comments == []
     end
 
-    test "refuses a comment without a usable line", %{identity: {owner, name, number}} do
+    test "refuses a comment without a usable line", %{identity: {slug, review_id}} do
       for line <- ["", "abc", "0", "-3", nil] do
         assert {:error, message} =
-                 ReviewStore.add_comment(owner, name, number, %{
+                 ReviewStore.add_comment(slug, review_id, %{
                    "path" => "lib/a.ex",
                    "side" => "new",
                    "line" => line,
@@ -82,9 +82,9 @@ defmodule Tackle.Web.ReviewStoreTest do
       end
     end
 
-    test "refuses a comment without a side", %{identity: {owner, name, number}} do
+    test "refuses a comment without a side", %{identity: {slug, review_id}} do
       assert {:error, message} =
-               ReviewStore.add_comment(owner, name, number, %{
+               ReviewStore.add_comment(slug, review_id, %{
                  "path" => "lib/a.ex",
                  "line" => 1,
                  "body" => "x"
@@ -93,9 +93,9 @@ defmodule Tackle.Web.ReviewStoreTest do
       assert message =~ "new or the old side"
     end
 
-    test "refuses a comment without a file", %{identity: {owner, name, number}} do
+    test "refuses a comment without a file", %{identity: {slug, review_id}} do
       assert {:error, message} =
-               ReviewStore.add_comment(owner, name, number, %{
+               ReviewStore.add_comment(slug, review_id, %{
                  "path" => "",
                  "side" => "new",
                  "line" => 1,
@@ -106,21 +106,21 @@ defmodule Tackle.Web.ReviewStoreTest do
     end
 
     test "removes a comment by id and ignores unknown ids", %{
-      identity: {owner, name, number}
+      identity: {slug, review_id}
     } do
-      {:ok, comment} = add_comment(owner, name, number, "remove me")
+      {:ok, comment} = add_comment(slug, review_id, "remove me")
 
-      assert ReviewStore.delete_comment(owner, name, number, comment.id) == :ok
-      assert ReviewStore.get(owner, name, number).comments == []
+      assert ReviewStore.delete_comment(slug, review_id, comment.id) == :ok
+      assert ReviewStore.get(slug, review_id).comments == []
 
-      assert ReviewStore.delete_comment(owner, name, number, "not-an-id") == :ok
+      assert ReviewStore.delete_comment(slug, review_id, "not-an-id") == :ok
     end
 
-    test "keeps comments on different files apart", %{identity: {owner, name, number}} do
-      add_comment(owner, name, number, "on a", %{"path" => "lib/a.ex"})
-      add_comment(owner, name, number, "on b", %{"path" => "lib/b.ex"})
+    test "keeps comments on different files apart", %{identity: {slug, review_id}} do
+      add_comment(slug, review_id, "on a", %{"path" => "lib/a.ex"})
+      add_comment(slug, review_id, "on b", %{"path" => "lib/b.ex"})
 
-      review = ReviewStore.get(owner, name, number)
+      review = ReviewStore.get(slug, review_id)
 
       assert Review.comments_by_line(review, "lib/a.ex") |> map_size() == 1
       assert Review.comments_by_line(review, "lib/b.ex") |> map_size() == 1
@@ -129,43 +129,43 @@ defmodule Tackle.Web.ReviewStoreTest do
   end
 
   describe "viewed markers" do
-    test "marking a file as seen is idempotent", %{identity: {owner, name, number}} do
-      assert ReviewStore.set_viewed(owner, name, number, "lib/a.ex", true) == :ok
-      assert ReviewStore.set_viewed(owner, name, number, "lib/a.ex", true) == :ok
+    test "marking a file as seen is idempotent", %{identity: {slug, review_id}} do
+      assert ReviewStore.set_viewed(slug, review_id, "lib/a.ex", true) == :ok
+      assert ReviewStore.set_viewed(slug, review_id, "lib/a.ex", true) == :ok
 
-      assert ReviewStore.get(owner, name, number).viewed == MapSet.new(["lib/a.ex"])
+      assert ReviewStore.get(slug, review_id).viewed == MapSet.new(["lib/a.ex"])
     end
 
-    test "a file can be marked unseen again", %{identity: {owner, name, number}} do
-      ReviewStore.set_viewed(owner, name, number, "lib/a.ex", true)
-      ReviewStore.set_viewed(owner, name, number, "lib/a.ex", false)
+    test "a file can be marked unseen again", %{identity: {slug, review_id}} do
+      ReviewStore.set_viewed(slug, review_id, "lib/a.ex", true)
+      ReviewStore.set_viewed(slug, review_id, "lib/a.ex", false)
 
-      assert ReviewStore.get(owner, name, number).viewed == MapSet.new()
+      assert ReviewStore.get(slug, review_id).viewed == MapSet.new()
     end
 
     test "toggling flips the marker and reports the new value", %{
-      identity: {owner, name, number}
+      identity: {slug, review_id}
     } do
-      assert ReviewStore.toggle_viewed(owner, name, number, "lib/a.ex") == true
-      assert ReviewStore.get(owner, name, number).viewed == MapSet.new(["lib/a.ex"])
+      assert ReviewStore.toggle_viewed(slug, review_id, "lib/a.ex") == true
+      assert ReviewStore.get(slug, review_id).viewed == MapSet.new(["lib/a.ex"])
 
-      assert ReviewStore.toggle_viewed(owner, name, number, "lib/a.ex") == false
-      assert ReviewStore.get(owner, name, number).viewed == MapSet.new()
+      assert ReviewStore.toggle_viewed(slug, review_id, "lib/a.ex") == false
+      assert ReviewStore.get(slug, review_id).viewed == MapSet.new()
     end
 
-    test "an unseen file is not viewed", %{identity: {owner, name, number}} do
-      assert ReviewStore.get(owner, name, number).viewed == MapSet.new()
+    test "an unseen file is not viewed", %{identity: {slug, review_id}} do
+      assert ReviewStore.get(slug, review_id).viewed == MapSet.new()
     end
   end
 
   describe "persistence" do
     test "writes comments as JSON under the reviews root", %{
       root: root,
-      identity: {owner, name, number}
+      identity: {slug, review_id}
     } do
-      {:ok, comment} = add_comment(owner, name, number, "persist me")
+      {:ok, comment} = add_comment(slug, review_id, "persist me")
 
-      path = Path.join(root, Review.file_name(owner, name, number))
+      path = Path.join(root, Review.file_name(slug, review_id))
       assert {:ok, contents} = File.read(path)
 
       assert %{"comments" => [stored]} = JSON.decode!(contents)
@@ -175,21 +175,20 @@ defmodule Tackle.Web.ReviewStoreTest do
       assert stored["line"] == 3
     end
 
-    test "writes viewed markers as JSON", %{root: root, identity: {owner, name, number}} do
-      ReviewStore.set_viewed(owner, name, number, "lib/a.ex", true)
+    test "writes viewed markers as JSON", %{root: root, identity: {slug, review_id}} do
+      ReviewStore.set_viewed(slug, review_id, "lib/a.ex", true)
 
-      contents = root |> Path.join(Review.file_name(owner, name, number)) |> File.read!()
+      contents = root |> Path.join(Review.file_name(slug, review_id)) |> File.read!()
 
       assert %{"viewed" => ["lib/a.ex"]} = JSON.decode!(contents)
     end
 
     test "reads state an earlier run left behind", %{root: root} do
-      owner = unique_owner()
-      number = 1
+      {slug, review_id} = unique_identity()
       Paths.ensure_dir!(root)
 
       File.write!(
-        Path.join(root, Review.file_name(owner, "widgets", number)),
+        Path.join(root, Review.file_name(slug, review_id)),
         JSON.encode!(%{
           "version" => 1,
           "viewed" => ["lib/a.ex"],
@@ -207,7 +206,7 @@ defmodule Tackle.Web.ReviewStoreTest do
         })
       )
 
-      review = ReviewStore.get(owner, "widgets", number)
+      review = ReviewStore.get(slug, review_id)
 
       assert review.viewed == MapSet.new(["lib/a.ex"])
       assert [comment] = review.comments
@@ -218,29 +217,29 @@ defmodule Tackle.Web.ReviewStoreTest do
     end
 
     test "treats unreadable state as an empty review instead of failing", %{root: root} do
-      owner = unique_owner()
+      {slug, review_id} = unique_identity()
       Paths.ensure_dir!(root)
-      File.write!(Path.join(root, Review.file_name(owner, "widgets", 1)), "{ not json")
+      File.write!(Path.join(root, Review.file_name(slug, review_id)), "{ not json")
 
-      assert ReviewStore.get(owner, "widgets", 1) == Review.new()
+      assert ReviewStore.get(slug, review_id) == Review.new()
     end
   end
 
   describe "notifications" do
-    test "announces a change to subscribers of that pull request", %{
-      identity: {owner, name, number}
+    test "announces a change to subscribers of that review", %{
+      identity: {slug, review_id}
     } do
-      assert ReviewStore.subscribe(owner, name, number) == :ok
-      add_comment(owner, name, number, "hello")
+      assert ReviewStore.subscribe(slug, review_id) == :ok
+      add_comment(slug, review_id, "hello")
 
       assert_receive {:review_updated, _file}, 1_000
     end
 
-    test "does not announce a rejected comment", %{identity: {owner, name, number}} do
-      ReviewStore.subscribe(owner, name, number)
+    test "does not announce a rejected comment", %{identity: {slug, review_id}} do
+      ReviewStore.subscribe(slug, review_id)
 
       {:error, _message} =
-        ReviewStore.add_comment(owner, name, number, %{
+        ReviewStore.add_comment(slug, review_id, %{
           "path" => "lib/a.ex",
           "side" => "new",
           "line" => 1,
@@ -250,34 +249,31 @@ defmodule Tackle.Web.ReviewStoreTest do
       refute_receive {:review_updated, _file}, 100
     end
 
-    test "does not announce another pull request's changes", %{
-      identity: {owner, name, number}
+    test "does not announce another review's changes", %{
+      identity: {slug, review_id}
     } do
-      other = unique_identity()
-      ReviewStore.subscribe(other |> elem(0), other |> elem(1), other |> elem(2))
+      {other_slug, other_review_id} = unique_identity()
+      ReviewStore.subscribe(other_slug, other_review_id)
 
-      add_comment(owner, name, number, "not for you")
+      add_comment(slug, review_id, "not for you")
 
       refute_receive {:review_updated, _file}, 100
     end
   end
 
-  defp add_comment(owner, name, number, body, overrides \\ %{}) do
+  defp add_comment(slug, review_id, body, overrides \\ %{}) do
     ReviewStore.add_comment(
-      owner,
-      name,
-      number,
+      slug,
+      review_id,
       Map.merge(%{"path" => "lib/a.ex", "side" => "new", "line" => 3, "body" => body}, overrides)
     )
   end
 
-  defp unique_owner do
-    "owner#{System.unique_integer([:positive])}"
-  end
-
+  # A distinct project and review per test keeps the store's cache from leaking
+  # between them.
   defp unique_identity do
-    number = System.unique_integer([:positive])
-    {unique_owner(), "widgets", number}
+    {"github-acme-widgets-#{System.unique_integer([:positive])}",
+     "pr-#{System.unique_integer([:positive])}"}
   end
 
   defp restore(key, nil), do: Application.delete_env(:tackle_web, key)

@@ -14,6 +14,10 @@ defmodule Tackle.Web.GitFixture do
   @spec build() :: Path.t()
   def build do
     dir = Path.join(System.tmp_dir!(), "tackle_web_git_#{System.unique_integer([:positive])}")
+
+    # The scratch name is only unique within one VM, so a directory a previous
+    # run left behind would otherwise be reused and fail half way through.
+    File.rm_rf(dir)
     File.mkdir_p!(dir)
 
     git(dir, ["init", "-q", "-b", "main"])

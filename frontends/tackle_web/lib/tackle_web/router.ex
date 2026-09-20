@@ -17,14 +17,13 @@ defmodule Tackle.Web.Router do
   scope "/", Tackle.Web do
     pipe_through(:browser)
 
-    # Chat: the ordinary Tackle agent, one conversation per page.
-    live("/chat", ChatLive)
-    live("/chat/:id", ConversationLive)
-
-    # Review: a local diff and a GitHub pull request, both with the review
-    # assistant attached to the code.
-    live("/", DiffLive)
-    live("/pulls/:owner/:repo/:number", PullLive)
+    # Everything is scoped to a project: a project is one local repository or
+    # one GitHub repository, and both its chats and its reviews live inside it.
+    live("/", ProjectsLive)
+    live("/projects", ProjectsLive)
+    live("/projects/:slug", ProjectLive)
+    live("/projects/:slug/reviews/:review_id", ReviewLive)
+    live("/projects/:slug/chats/:id", ConversationLive)
   end
 
   # Other scopes may use custom stacks.

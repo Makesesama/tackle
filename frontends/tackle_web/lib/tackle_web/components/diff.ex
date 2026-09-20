@@ -16,6 +16,7 @@ defmodule Tackle.Web.Components.Diff do
 
   use Tackle.Web, :html
 
+  alias Tackle.Web.Anchor
   alias Tackle.Web.Diff
 
   @doc """
@@ -119,6 +120,10 @@ defmodule Tackle.Web.Components.Diff do
   @doc """
   A single rendered diff line, plus the comments and assistant threads anchored
   to it.
+
+  A question about a range is shown under the range's last line, because that is
+  the key `Tackle.Web.Anchor` files it under, while the lines the reviewer
+  selected are marked so the region being written about is visible.
   """
   attr(:line, :map, required: true)
   attr(:path, :string, required: true)
@@ -128,22 +133,30 @@ defmodule Tackle.Web.Components.Diff do
   attr(:agent, :map, default: nil)
 
   def line(assigns) do
-    anchor = Diff.anchor(assigns.line)
-    key = anchor && {assigns.path, elem(anchor, 0), elem(anchor, 1)}
+    line_anchor = Diff.anchor(assigns.line)
+    {side, number} = split(line_anchor)
+    key = line_key(assigns.path, line_anchor)
+    ask_at = assigns.agent && Map.get(assigns.agent, :ask_at)
 
     assigns =
       assigns
-      |> assign(:anchor, anchor)
+      |> assign(:anchor, line_anchor)
       |> assign(:key, key)
-      |> assign(:line_id, line_id(anchor, assigns.path))
-      |> assign(:thread, thread(assigns.comments, anchor))
+      |> assign(:line_id, line_id(line_anchor, assigns.path))
+      |> assign(:thread, thread(assigns.comments, line_anchor))
       |> assign(:answers, agent_threads(assigns.agent, key))
       |> assign(:replying, agent_streaming(assigns.agent, key))
-      |> assign(:asking, match?(%{ask_at: ^key}, assigns.agent))
+      |> assign(:asking, not is_nil(key) and Anchor.key(ask_at) == key)
+      |> assign(:selected, Anchor.contains?(ask_at, assigns.path, side, number))
+      |> assign(:ask_label, if(Anchor.key(ask_at) == key, do: Anchor.label(ask_at)))
 
     ~H"""
     <div class="diff-line-group" id={@line_id}>
-      <div class={["diff-line group", "diff-line--#{@line.kind}"]}>
+      <div class={[
+        "diff-line group",
+        "diff-line--#{@line.kind}",
+        @selected && "diff-line--selected"
+      ]}>
         <span class="diff-gutter">{@line.old}</span>
         <span class="diff-gutter">{@line.new}</span>
         <span class="diff-marker">{marker(@line.kind)}</span>
@@ -171,7 +184,7 @@ defmodule Tackle.Web.Components.Diff do
             phx-value-path={@path}
             phx-value-side={elem(@anchor, 0)}
             phx-value-line={elem(@anchor, 1)}
-            title="Ask the assistant about this line"
+            title="Ask the assistant about this line; shift-click another line to ask about a range"
             aria-label={"Ask the assistant about #{@path} line #{elem(@anchor, 1)}"}
           >
             ?
@@ -223,13 +236,14 @@ defmodule Tackle.Web.Components.Diff do
       </form>
 
       <form :if={@asking} phx-submit="ask" class="diff-answer-form">
+        <p class="diff-ask-scope">Ask about {@path} {@ask_label}</p>
         <.input
           type="textarea"
           name="question[body]"
           rows="3"
           autofocus
           class="font-mono"
-          placeholder={"Ask about #{@path} line #{elem(@anchor, 1)}"}
+          placeholder="Ask a question..."
         />
         <div class="mt-2 flex gap-2">
           <.button type="submit" size="xs">Ask</.button>
@@ -319,6 +333,14 @@ defmodule Tackle.Web.Components.Diff do
   defp marker(:remove), do: "-"
   defp marker(:context), do: ""
   defp marker(:note), do: ""
+
+  # A diff line that carries no anchor (the no-newline marker) has no side, no
+  # number and no key, so it can hold neither comments nor questions.
+  defp split({side, number}), do: {side, number}
+  defp split(_anchor), do: {nil, nil}
+
+  defp line_key(path, {side, number}), do: {path, side, number}
+  defp line_key(_path, _anchor), do: nil
 
   defp status_label(:added), do: "added"
   defp status_label(:deleted), do: "deleted"

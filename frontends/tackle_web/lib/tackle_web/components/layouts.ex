@@ -13,12 +13,12 @@ defmodule Tackle.Web.Layouts do
   embed_templates("layouts/*")
 
   @doc """
-  The app shell: the wordmark, the two sections, and the page.
+  The app shell: the wordmark, the navigation, and the page.
 
-  Chat and Review are two ways into the same harness rather than two
-  applications, so they share one shell and the open one is marked in pink in
-  the navigation. A page fills everything under the navigation and scrolls its
-  own panes, so the shell itself never scrolls.
+  Everything happens inside a project, so there is one section to navigate to and
+  it is marked in pink while a project page is open. A page fills everything
+  under the navigation and scrolls its own panes, so the shell itself never
+  scrolls.
 
   ## Examples
 
@@ -46,8 +46,7 @@ defmodule Tackle.Web.Layouts do
           <span class="size-2 flex-none rounded-full bg-primary" /> Tackle
         </.link>
 
-        <.nav_link navigate={~p"/chat"} active={@section == :chat}>Chat</.nav_link>
-        <.nav_link navigate={~p"/"} active={@section in [nil, :review]}>Review</.nav_link>
+        <.nav_link navigate={~p"/projects"} active={@section == :projects}>Projects</.nav_link>
       </header>
 
       <main class="flex min-h-0 flex-1 flex-col">

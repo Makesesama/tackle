@@ -1,6 +1,10 @@
-<Layouts.app flash={@flash} section={:chat}>
+<Layouts.app flash={@flash} section={:projects}>
   <div class="flex min-h-0 flex-1">
-    <Chat.chat_sidebar conversations={@conversations} current_id={@conversation_id} />
+    <Chat.chat_sidebar
+      conversations={@conversations}
+      slug={@slug}
+      current_id={@conversation_id}
+    />
 
     <section class="flex min-h-0 flex-1 flex-col">
       <header class="flex flex-none items-center gap-3 border-b border-base-300 px-4 py-2">

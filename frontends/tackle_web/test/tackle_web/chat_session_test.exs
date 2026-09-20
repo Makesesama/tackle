@@ -10,6 +10,8 @@ defmodule Tackle.Web.ChatSessionTest do
   alias Tackle.Web.ChatSession
   alias Tackle.Web.ChatStore
 
+  @slug "local-widgets-1a2b3c"
+
   @turn_timeout 5_000
 
   setup do
@@ -18,7 +20,7 @@ defmodule Tackle.Web.ChatSessionTest do
 
   describe "the first look at a conversation" do
     test "builds an agent and reports no turn running", %{cwd: cwd} do
-      {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+      {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
 
       assert {:ok, snapshot} = ChatSession.snapshot(conversation)
 
@@ -29,7 +31,7 @@ defmodule Tackle.Web.ChatSessionTest do
     end
 
     test "resumes the stored transcript", %{cwd: cwd} do
-      {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+      {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
       :ok = ChatStore.put_messages(conversation.id, [Message.user("Remembered?")])
 
       assert {:ok, snapshot} = ChatSession.snapshot(ChatStore.get(conversation.id))
@@ -40,7 +42,7 @@ defmodule Tackle.Web.ChatSessionTest do
 
   describe "a turn" do
     test "answers and settles the transcript into the store", %{cwd: cwd} do
-      {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+      {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
       {:ok, snapshot} = ChatSession.snapshot(conversation)
       :ok = ChatSession.subscribe(conversation.id)
 
@@ -62,7 +64,7 @@ defmodule Tackle.Web.ChatSessionTest do
     end
 
     test "can be retried without asking a new question", %{cwd: cwd} do
-      {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+      {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
       {:ok, snapshot} = ChatSession.snapshot(conversation)
       :ok = ChatSession.subscribe(conversation.id)
 
@@ -80,7 +82,7 @@ defmodule Tackle.Web.ChatSessionTest do
     end
 
     test "is refused when the working directory is gone", %{cwd: cwd} do
-      {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+      {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
       {:ok, snapshot} = ChatSession.snapshot(conversation)
 
       File.rm_rf!(cwd)
@@ -92,7 +94,7 @@ defmodule Tackle.Web.ChatSessionTest do
 
   describe "changing the model" do
     test "keeps the conversation and changes the configuration", %{cwd: cwd} do
-      {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+      {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
       {:ok, state} = ChatAgent.new(cwd: cwd, model: "fake/echo")
       state = ChatAgent.with_messages(state, [Message.user("Hello")])
       :ok = ChatStore.put_messages(conversation.id, state.messages)
@@ -109,7 +111,7 @@ defmodule Tackle.Web.ChatSessionTest do
     end
 
     test "reports a model no adapter offers", %{cwd: cwd} do
-      {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+      {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
       {:ok, state} = ChatAgent.new(cwd: cwd, model: "fake/echo")
 
       assert {:error, {:unknown_model, "fake/nope"}} =

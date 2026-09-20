@@ -60,10 +60,16 @@ defmodule Tackle.Web.Diff do
     end
   end
 
-  defp parse(patch) do
-    case GitDiff.parse_patch(patch) do
-      {:ok, patches} -> {:ok, patches}
-      {:error, _reason} -> {:error, "the diff could not be parsed"}
+  # Two refs pointing at the same tree produce no patch at all, which is an
+  # empty diff rather than a malformed one.
+  defp parse(patch) when is_binary(patch) do
+    if String.trim(patch) == "" do
+      {:ok, []}
+    else
+      case GitDiff.parse_patch(patch) do
+        {:ok, patches} -> {:ok, patches}
+        {:error, _reason} -> {:error, "the diff could not be parsed"}
+      end
     end
   end
 

@@ -1,17 +1,19 @@
-<Layouts.app flash={@flash}>
-  <.async_result :let={loaded} assign={@loaded}>
+<Layouts.app flash={@flash} section={:projects}>
+  <.async_result :let={review} assign={@loaded}>
     <:loading>
       <div class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-xs text-base-content/45">
         <.spinner />
-        <p>Fetching {@owner}/{@repo}#{@number} and cloning both sides of the pull request...</p>
+        <p>Loading {@review_id} in {@project.name}...</p>
       </div>
     </:loading>
 
     <:failed :let={failure}>
       <div class="flex flex-1 items-center justify-center p-8">
-        <.alert tone="error" title="That pull request could not be opened" class="max-w-xl">
+        <.alert tone="error" title="That review could not be opened" class="max-w-xl">
           <:actions>
-            <.button navigate={~p"/"} variant="ghost" size="xs">Back to the local diff</.button>
+            <.button navigate={~p"/projects/#{@slug}"} variant="ghost" size="xs">
+              Back to {@project.name}
+            </.button>
           </:actions>
           {async_failure_message(failure)}
         </.alert>
@@ -19,23 +21,30 @@
     </:failed>
 
     <header class="flex flex-none flex-col gap-2 border-b border-base-300 px-4 py-3">
+      <div class="flex flex-wrap items-center gap-2 text-xs text-base-content/55">
+        <.link navigate={~p"/projects/#{@slug}"} class="font-medium hover:text-base-content">
+          {@project.name}
+        </.link>
+        <span>/</span>
+        <span class="font-mono">{@review_id}</span>
+      </div>
+
       <div class="flex flex-wrap items-center gap-2">
-        <h1 class="text-sm font-semibold tracking-tight">{loaded.pull.title}</h1>
-        <.badge :if={loaded.pull.draft}>draft</.badge>
-        <.badge tone={if loaded.pull.state == "open", do: "added", else: "muted"}>
-          {loaded.pull.state}
+        <h1 class="text-sm font-semibold tracking-tight">{review.title}</h1>
+        <.badge :if={@pull && @pull.draft}>draft</.badge>
+        <.badge :if={@pull} tone={if @pull.state == "open", do: "added", else: "muted"}>
+          {@pull.state}
         </.badge>
       </div>
 
       <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-base-content/55">
-        <span class="font-mono">{@owner}/{@repo}#{@number}</span>
-        <span :if={loaded.pull.author} class="font-mono">{loaded.pull.author}</span>
-        <span class="font-mono">{loaded.pull.base_ref} ← {loaded.pull.head_ref}</span>
+        <span :if={@pull && @pull.author} class="font-mono">{@pull.author}</span>
+        <span class="font-mono">{review.base_ref} ← {review.head_ref}</span>
         <span class="flex items-center gap-1.5">
-          {length(loaded.diff.files)} files
-          <.diff_stats additions={loaded.diff.additions} deletions={loaded.diff.deletions} />
+          {length(review.diff.files)} files
+          <.diff_stats additions={review.diff.additions} deletions={review.diff.deletions} />
         </span>
-        <.external_link :if={loaded.pull.html_url} href={loaded.pull.html_url} class="ml-auto">
+        <.external_link :if={@pull && @pull.html_url} href={@pull.html_url} class="ml-auto">
           View on GitHub
         </.external_link>
       </div>
@@ -45,7 +54,7 @@
       <form id="ask-general" phx-submit="ask" class="flex items-center gap-2">
         <.input
           name="question[body]"
-          placeholder="Ask the assistant about this pull request..."
+          placeholder="Ask the assistant about this review..."
           autocomplete="off"
           disabled={@processing}
           class="font-mono"
@@ -63,7 +72,8 @@
         </span>
         <span :if={!@processing and is_nil(@agent_error)}>
           Ask about a line with the <span class="font-mono font-semibold text-primary">?</span>
-          beside it, or ask here about the whole pull request.
+          beside it, shift-click another line to ask about a range, or ask here about the whole
+          review.
         </span>
       </div>
     </div>
@@ -94,19 +104,19 @@
           <div class="flex items-center justify-between gap-2">
             <p class="text-xs text-base-content/60">
               <span class="font-medium text-base-content">
-                {reviewed_count(@review, loaded.diff.files)}/{length(loaded.diff.files)}
+                {reviewed_count(@review_state, review.diff.files)}/{length(review.diff.files)}
               </span>
               files reviewed
             </p>
-            <.diff_stats additions={loaded.diff.additions} deletions={loaded.diff.deletions} />
+            <.diff_stats additions={review.diff.additions} deletions={review.diff.deletions} />
           </div>
           <.progress
-            value={reviewed_count(@review, loaded.diff.files)}
-            max={length(loaded.diff.files)}
+            value={reviewed_count(@review_state, review.diff.files)}
+            max={length(review.diff.files)}
           />
         </div>
 
-        <.file_nav files={loaded.diff.files} review={@review} />
+        <.file_nav files={review.diff.files} review={@review_state} />
       </aside>
 
       <main class="min-w-0 flex-1 overflow-auto">
@@ -117,7 +127,7 @@
           }
           class="border-b border-base-300 px-3 py-3"
         >
-          <.section_title class="mb-2">About this pull request</.section_title>
+          <.section_title class="mb-2">About this review</.section_title>
           <.thread :for={answer <- agent_threads(@agent, general_anchor())} answer={answer} />
           <div
             :if={streaming = agent_streaming(@agent, general_anchor())}
@@ -128,18 +138,18 @@
         </section>
 
         <.empty_state
-          :if={loaded.diff.files == []}
+          :if={review.diff.files == []}
           icon="hero-check-circle"
           title="Nothing to review"
         >
-          This pull request changes nothing.
+          This diff changes nothing.
         </.empty_state>
 
         <.file
-          :for={file <- loaded.diff.files}
+          :for={file <- review.diff.files}
           file={file}
-          review={@review}
-          comments={comments_for(@review, file.path)}
+          review={@review_state}
+          comments={comments_for(@review_state, file.path)}
           comment_at={@comment_at}
           agent={@agent}
         />

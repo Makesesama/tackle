@@ -30,6 +30,11 @@ const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
   hooks: {...colocatedHooks},
+  // Shift-clicking a line's "?" extends a question to a range, so the server has
+  // to know whether the modifier was held. LiveView does not send it otherwise.
+  metadata: {
+    click: (e, _el) => ({shiftKey: e.shiftKey}),
+  },
 })
 
 // Show progress bar on live navigation and form submits

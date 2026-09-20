@@ -7,15 +7,36 @@ defmodule Tackle.Web.ConversationLiveTest do
 
   alias Tackle.Web.ChatFixture
   alias Tackle.Web.ChatStore
+  alias Tackle.Web.Project
+  alias Tackle.Web.ProjectStore
+
+  # The conversation routes are project-scoped. A chat only needs its project's
+  # slug to be addressed; the project itself decides the checkout it runs in,
+  # and these tests create the conversation directly with one.
+  @slug "local-widgets-1a2b3c"
 
   setup do
-    ChatFixture.setup()
+    context = ChatFixture.setup()
+
+    # The route names a project, so one has to exist for the page to mount.
+    {:ok, _project} =
+      ProjectStore.put(%Project{
+        slug: @slug,
+        kind: :local,
+        locator: context.cwd,
+        name: "widgets",
+        default_branch: "main"
+      })
+
+    on_exit(fn -> ProjectStore.remove(@slug) end)
+
+    context
   end
 
   test "answers a message and keeps the transcript", %{conn: conn, cwd: cwd} do
-    {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+    {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
 
-    {:ok, view, _html} = live(conn, ~p"/chat/#{conversation.id}")
+    {:ok, view, _html} = live(conn, ~p"/projects/#{@slug}/chats/#{conversation.id}")
     assert has_element?(view, "form[phx-submit=send]")
 
     view |> form("form[phx-submit=send]", message("Hello")) |> render_submit()
@@ -27,9 +48,9 @@ defmodule Tackle.Web.ConversationLiveTest do
   end
 
   test "the composer is cleared once the message is sent", %{conn: conn, cwd: cwd} do
-    {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+    {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
 
-    {:ok, view, _html} = live(conn, ~p"/chat/#{conversation.id}")
+    {:ok, view, _html} = live(conn, ~p"/projects/#{@slug}/chats/#{conversation.id}")
 
     # The composer is a controlled input, so what the reader types is what the
     # server renders, and sending it is what empties it again.
@@ -43,13 +64,13 @@ defmodule Tackle.Web.ConversationLiveTest do
   end
 
   test "the conversation is read back on the next visit", %{conn: conn, cwd: cwd} do
-    {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+    {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
 
-    {:ok, view, _html} = live(conn, ~p"/chat/#{conversation.id}")
+    {:ok, view, _html} = live(conn, ~p"/projects/#{@slug}/chats/#{conversation.id}")
     view |> form("form[phx-submit=send]", message("Remembered?")) |> render_submit()
     eventually(view, "Echo: Remembered?")
 
-    {:ok, reloaded, _html} = live(conn, ~p"/chat/#{conversation.id}")
+    {:ok, reloaded, _html} = live(conn, ~p"/projects/#{@slug}/chats/#{conversation.id}")
 
     assert has_element?(reloaded, ".chat-message--user .chat-text", "Remembered?")
     assert has_element?(reloaded, ".chat-message--assistant .chat-text", "Echo: Remembered?")
@@ -60,9 +81,9 @@ defmodule Tackle.Web.ConversationLiveTest do
     cwd: cwd
   } do
     File.write!(Path.join(cwd, "notes.txt"), "hello from the file\n")
-    {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+    {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
 
-    {:ok, view, _html} = live(conn, ~p"/chat/#{conversation.id}")
+    {:ok, view, _html} = live(conn, ~p"/projects/#{@slug}/chats/#{conversation.id}")
     view |> form("form[phx-submit=send]", message("Please read notes.txt")) |> render_submit()
 
     eventually(view, "hello from the file")
@@ -74,8 +95,8 @@ defmodule Tackle.Web.ConversationLiveTest do
   end
 
   test "a second viewer sees the answer it did not ask for", %{conn: conn, cwd: cwd} do
-    {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
-    path = ~p"/chat/#{conversation.id}"
+    {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
+    path = ~p"/projects/#{@slug}/chats/#{conversation.id}"
 
     {:ok, asker, _html} = live(conn, path)
     {:ok, watcher, _html} = live(conn, path)
@@ -87,9 +108,9 @@ defmodule Tackle.Web.ConversationLiveTest do
   end
 
   test "switching the model keeps the conversation", %{conn: conn, cwd: cwd} do
-    {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+    {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
 
-    {:ok, view, _html} = live(conn, ~p"/chat/#{conversation.id}")
+    {:ok, view, _html} = live(conn, ~p"/projects/#{@slug}/chats/#{conversation.id}")
     view |> form("form[phx-submit=send]", message("Hello")) |> render_submit()
     eventually(view, "Echo: Hello")
 
@@ -107,9 +128,9 @@ defmodule Tackle.Web.ConversationLiveTest do
     # a misconfigured default is the way a page meets an agent that cannot
     # start.
     Application.put_env(:tackle_web, :agent_model, "fake/nope")
-    {:ok, conversation} = ChatStore.create(cwd: cwd, model: nil)
+    {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: nil)
 
-    {:ok, _view, html} = live(conn, ~p"/chat/#{conversation.id}")
+    {:ok, _view, html} = live(conn, ~p"/projects/#{@slug}/chats/#{conversation.id}")
 
     assert html =~ "is not offered by the configured providers"
   end
@@ -117,20 +138,22 @@ defmodule Tackle.Web.ConversationLiveTest do
   test "a conversation that is gone returns to the list", %{conn: conn} do
     # The LiveView is not mounted at all: mount finds no conversation to attach
     # to and redirects before rendering the chat.
-    assert {:error, {:live_redirect, %{to: "/chat"}}} =
-             live(conn, ~p"/chat/no-such-conversation")
+    assert {:error, {:live_redirect, %{to: to}}} =
+             live(conn, ~p"/projects/#{@slug}/chats/no-such-conversation")
+
+    assert to == "/projects/#{@slug}"
   end
 
   test "deleting the conversation returns to the list", %{conn: conn, cwd: cwd} do
-    {:ok, conversation} = ChatStore.create(cwd: cwd, model: "fake/echo")
+    {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
 
-    {:ok, view, _html} = live(conn, ~p"/chat/#{conversation.id}")
+    {:ok, view, _html} = live(conn, ~p"/projects/#{@slug}/chats/#{conversation.id}")
 
     view
     |> element("header button[phx-click=delete][phx-value-id='#{conversation.id}']")
     |> render_click()
 
-    assert_redirect(view, ~p"/chat")
+    assert_redirect(view, ~p"/projects/#{@slug}")
     assert ChatStore.get(conversation.id) == nil
   end
 

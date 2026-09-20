@@ -21,11 +21,12 @@ defmodule Tackle.Web.AgentConversationTest do
   end
 
   test "the key identifies the pull request a conversation belongs to" do
-    assert AgentConversation.key("hexpm", "hexpm", 1923) == "hexpm/hexpm#1923"
+    assert AgentConversation.key("github-hexpm-hexpm-9a1b2c", "pr-1923") ==
+             "github-hexpm-hexpm-9a1b2c#pr-1923"
   end
 
   test "a stored conversation round-trips with its anchors" do
-    path = AgentConversation.path("acme", "widgets", 7)
+    path = AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")
     anchor = {"lib/widget.ex", :new, 12}
 
     messages = [
@@ -41,8 +42,58 @@ defmodule Tackle.Web.AgentConversationTest do
     assert anchors == %{"q1" => anchor, "q2" => :general}
   end
 
+  test "a range anchor round-trips with both ends" do
+    path = AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")
+    anchor = {"lib/widget.ex", :new, 12, 15}
+
+    assert :ok =
+             AgentConversation.save(path, [Message.user("Why these lines?")], %{"q1" => anchor})
+
+    assert %{anchors: %{"q1" => ^anchor}} = AgentConversation.load(path)
+  end
+
+  test "a transcript written before ranges existed loads its anchor as one line" do
+    path = AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")
+    File.mkdir_p!(Path.dirname(path))
+
+    body =
+      JSON.encode!(%{
+        "version" => 1,
+        "messages" => [],
+        "anchors" => %{"q1" => %{"path" => "lib/widget.ex", "side" => "old", "line" => 3}}
+      })
+
+    File.write!(path, body)
+
+    assert %{anchors: %{"q1" => {"lib/widget.ex", :old, 3}}} = AgentConversation.load(path)
+  end
+
+  test "a range with an unusable first line is dropped, like any malformed anchor" do
+    path = AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")
+    File.mkdir_p!(Path.dirname(path))
+
+    body =
+      JSON.encode!(%{
+        "version" => 1,
+        "messages" => [],
+        "anchors" => %{
+          "q1" => %{
+            "path" => "lib/widget.ex",
+            "side" => "new",
+            "line" => 4,
+            "from_line" => 0
+          }
+        }
+      })
+
+    File.write!(path, body)
+
+    assert %{anchors: anchors} = AgentConversation.load(path)
+    assert anchors == %{}
+  end
+
   test "a restored message keeps its tool call, which is what continuing needs" do
-    path = AgentConversation.path("acme", "widgets", 7)
+    path = AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")
 
     call = %{id: "call-1", name: "read", arguments: %{"path" => "lib/widget.ex"}}
     messages = [%Message{id: "a1", role: :assistant, tool_calls: [call]}]
@@ -53,12 +104,12 @@ defmodule Tackle.Web.AgentConversationTest do
   end
 
   test "a missing conversation loads as empty" do
-    assert AgentConversation.load(AgentConversation.path("acme", "widgets", 7)) ==
+    assert AgentConversation.load(AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")) ==
              AgentConversation.empty()
   end
 
   test "an unreadable conversation loads as empty rather than raising" do
-    path = AgentConversation.path("acme", "widgets", 7)
+    path = AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, "not json at all")
 
@@ -66,7 +117,7 @@ defmodule Tackle.Web.AgentConversationTest do
   end
 
   test "an unrecognized anchor is dropped without losing the messages" do
-    path = AgentConversation.path("acme", "widgets", 7)
+    path = AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")
     File.mkdir_p!(Path.dirname(path))
 
     body =
@@ -89,7 +140,7 @@ defmodule Tackle.Web.AgentConversationTest do
   end
 
   test "saving replaces the previous transcript instead of appending" do
-    path = AgentConversation.path("acme", "widgets", 7)
+    path = AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")
 
     assert :ok = AgentConversation.save(path, [Message.user("First.")])
     assert :ok = AgentConversation.save(path, [Message.user("Second.")])
@@ -98,7 +149,7 @@ defmodule Tackle.Web.AgentConversationTest do
   end
 
   test "saving writes no temporary file behind" do
-    path = AgentConversation.path("acme", "widgets", 7)
+    path = AgentConversation.path("github-acme-widgets-1a2b3c", "pr-7")
 
     assert :ok = AgentConversation.save(path, [Message.user("Only.")])
 

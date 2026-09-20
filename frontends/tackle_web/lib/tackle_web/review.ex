@@ -50,12 +50,15 @@ defmodule Tackle.Web.Review do
   @doc """
   File name a review is persisted under.
 
-  Pull request owners are GitHub logins, which may contain hyphens but never
-  underscores, so `owner__name__number` cannot be ambiguous.
+  Keyed by the project's slug and the review id the source chose, so a GitHub
+  pull request and a local ref range are stored the same way. A slug never
+  contains an underscore and a review id never contains one either — a pull
+  request is `pr-<number>` and a ref range has git's own character rules — so
+  the two halves cannot be confused for one another.
   """
-  @spec file_name(String.t(), String.t(), pos_integer()) :: String.t()
-  def file_name(owner, name, number) do
-    "#{owner}__#{name}__#{number}.json"
+  @spec file_name(String.t(), String.t()) :: String.t()
+  def file_name(slug, review_id) do
+    "#{slug}__#{review_id}.json"
   end
 
   @doc "Serializes a review for the on-disk cache."

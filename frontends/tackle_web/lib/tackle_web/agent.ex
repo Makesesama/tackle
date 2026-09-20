@@ -4,7 +4,7 @@ defmodule Tackle.Web.Agent do
   conversation.
 
   This is the host facade `Tackle.Phoenix.Runner` expects under its `:agent`
-  config key. It builds a `Tackle.Lib.State` for a pull request conversation and
+  config key. It builds a `Tackle.Lib.State` for one review conversation and
   delegates each turn to `Tackle.Lib`.
 
   ## Providers
@@ -25,7 +25,8 @@ defmodule Tackle.Web.Agent do
   ## Tools
 
   The assistant gets `read` and `bash`, both resolving paths against the
-  conversation's `:cwd` — the pull request's own checkout. `bash` is what makes
+  conversation's `:cwd` — the review's own checkout, whether that is a pull
+  request clone or a local repository. `bash` is what makes
   questions like "when did this change?" answerable at all: it is how the
   assistant runs `git log`, `git blame` and `rg`. It also means the assistant
   runs commands as the server user, inside that checkout. Treat a conversation
@@ -46,11 +47,9 @@ defmodule Tackle.Web.Agent do
   # than running away on a question the checkout cannot answer.
   @max_iterations 30
 
-  @typedoc "A pull request, as much as the assistant needs to reason about it."
+  @typedoc "A review, as much as the assistant needs to reason about it."
   @type review :: %{
-          owner: String.t(),
-          repo: String.t(),
-          number: pos_integer(),
+          review_id: String.t(),
           title: String.t() | nil,
           base_ref: String.t() | nil,
           head_ref: String.t() | nil
@@ -101,18 +100,20 @@ defmodule Tackle.Web.Agent do
   @doc """
   Builds the agent state for one review conversation.
 
+  Takes a loaded review as `Tackle.Web.Projects.load_review/2` returns it, so the
+  prompt, the context and the working directory all describe the same review.
+
   ## Options
 
-    * `:cwd` (required) — the pull request checkout the assistant reads.
-    * `:review` (required) — the `t:review/0` map the prompt describes.
     * `:model` — a canonical `adapter/model` reference; defaults to
       `default_model/0`.
     * `:messages` — messages to restore a previous conversation from.
   """
-  @spec new(keyword()) :: {:ok, State.t()} | {:error, term()}
-  def new(opts) do
+  @spec new(Tackle.Web.Project.Source.loaded_review(), keyword()) ::
+          {:ok, State.t()} | {:error, term()}
+  def new(loaded, opts \\ []) do
     with {:ok, selection} <- select(Keyword.get(opts, :model)) do
-      {:ok, build(selection, opts)}
+      {:ok, build(selection, loaded, opts)}
     end
   end
 
@@ -129,17 +130,15 @@ defmodule Tackle.Web.Agent do
     Tackle.Lib.continue(state, Keyword.put_new(opts, :llm_stream, true))
   end
 
-  defp build(selection, opts) do
-    cwd = Keyword.fetch!(opts, :cwd)
-    review = Keyword.fetch!(opts, :review)
+  defp build(selection, loaded, opts) do
     tools = tools()
 
     state =
       State.new(
         llm: selection,
         tools: tools,
-        context: %{cwd: cwd, review: review},
-        system_prompt: system_prompt(tools, cwd, review),
+        context: context(loaded),
+        system_prompt: system_prompt(tools, loaded),
         # Where the adapters find the host's credential store.
         llm_opts: [credential_store: credential_store()],
         max_iterations: @max_iterations
@@ -148,10 +147,23 @@ defmodule Tackle.Web.Agent do
     Enum.reduce(Keyword.get(opts, :messages, []), state, &State.add_message(&2, &1))
   end
 
-  defp system_prompt(tools, cwd, review) do
+  defp context(loaded) do
+    %{
+      cwd: loaded.cwd,
+      project: loaded.project,
+      review: %{
+        review_id: loaded.review_id,
+        title: loaded.title,
+        base_ref: loaded.base_ref,
+        head_ref: loaded.head_ref
+      }
+    }
+  end
+
+  defp system_prompt(tools, loaded) do
     SystemPrompt.new()
     |> SystemPrompt.add_section("Your job", job())
-    |> SystemPrompt.add_section("The pull request", facts(review, cwd))
+    |> SystemPrompt.add_section("The review", facts(loaded))
     |> SystemPrompt.add_section("How to work", how_to_work())
     |> SystemPrompt.add_tools(tools)
     |> SystemPrompt.add_response_format()
@@ -160,9 +172,9 @@ defmodule Tackle.Web.Agent do
 
   defp job do
     """
-    You are helping a reviewer understand one pull request. The reviewer reads
-    the diff and asks you questions about it, and your answers are shown beside
-    the code they are looking at.
+    You are helping a reviewer understand one diff. The reviewer reads it and
+    asks you questions about it, and your answers are shown beside the code they
+    are looking at.
 
     Answer the question that was asked. A reviewer asking about one line usually
     wants to know whether it is correct, what it affects, or why it is there --
@@ -170,17 +182,29 @@ defmodule Tackle.Web.Agent do
     """
   end
 
-  defp facts(review, cwd) do
+  defp facts(loaded) do
     """
-    - Repository: #{review.owner}/#{review.repo}
-    - Pull request: ##{review.number}#{title_suffix(review)}
-    - Base branch: #{review.base_ref || "unknown"} <- Head: #{review.head_ref || "unknown"}
-    - Checkout: #{cwd}, a full working copy with the pull request's head commit
-      checked out. Relative paths resolve from there.
-
-    The diff for this pull request is `git diff $(git merge-base #{review.base_ref || "HEAD"} HEAD) HEAD`.
+    - Project: #{loaded.project.name} (#{loaded.project.kind}, #{loaded.project.locator})
+    - Review: #{loaded.review_id}#{title_suffix(loaded)}
+    - Comparing: #{loaded.base_ref || "unknown"} <- #{loaded.head_ref || "unknown"}
+    - Checkout: #{loaded.cwd}
+    #{checkout_note(loaded)}
+    The diff under review is `git diff $(git merge-base #{loaded.base_ref || "HEAD"} #{head_revision(loaded)}) #{head_revision(loaded)}`.
     """
   end
+
+  # On GitHub the checkout is a working copy at the review's head, so `HEAD` is
+  # the revision under review. A local project's checkout is the repository
+  # itself, which is probably on another branch, so the head ref has to be named.
+  defp checkout_note(%{project: %{kind: :github}}),
+    do: "  It has the review's head commit checked out, so relative paths resolve from there.\n"
+
+  defp checkout_note(_loaded),
+    do:
+      "  This is the repository itself and may be on another branch: read the reviewed revision with git, for example `git show REV:path`.\n"
+
+  defp head_revision(%{project: %{kind: :github}}), do: "HEAD"
+  defp head_revision(loaded), do: loaded.head_ref || "HEAD"
 
   defp how_to_work do
     """
@@ -197,5 +221,5 @@ defmodule Tackle.Web.Agent do
   end
 
   defp title_suffix(%{title: title}) when is_binary(title) and title != "", do: " — #{title}"
-  defp title_suffix(_review), do: ""
+  defp title_suffix(_loaded), do: ""
 end
