@@ -23,7 +23,7 @@ defmodule Tackle.Plugins.MCP.MixProject do
       {:anubis_mcp, "~> 2.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
-      {:tackle_lib, path: "../../packages/tackle_lib"}
+      {:tackle_lib, path: "../tackle_lib"}
     ]
   end
 end

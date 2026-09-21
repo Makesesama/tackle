@@ -1,4 +1,8 @@
-# Used by "mix format"
+# Repository-level formatting for the independent apps and packages.
 [
-  inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
+  inputs: [
+    ".formatter.exs",
+    "{apps,packages}/*/{mix,.formatter}.exs",
+    "{apps,packages}/*/{config,lib,test}/**/*.{ex,exs}"
+  ]
 ]

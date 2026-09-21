@@ -59,7 +59,7 @@ package builds both NIFs reproducibly from their locked sources.
 
 ## Validation
 
-Run the CLI checks from `frontends/tackle_cli`:
+Run the CLI checks from `apps/tackle_cli`:
 
 ```sh
 mix deps.get

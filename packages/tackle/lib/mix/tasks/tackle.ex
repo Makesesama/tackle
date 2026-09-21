@@ -1,12 +1,12 @@
 defmodule Mix.Tasks.Tackle do
   use Mix.Task
 
-  @cli_project Path.expand("../../../frontends/tackle_cli", __DIR__)
+  @cli_project Path.expand("../../../../../apps/tackle_cli", __DIR__)
 
   @shortdoc "Runs the Tackle CLI in the development environment"
   @moduledoc """
-  Runs the CLI frontend from the repository root while keeping its dependencies
-  in the separate `frontends/tackle_cli` Mix project.
+  Runs the CLI application while keeping its dependencies in the separate
+  `apps/tackle_cli` Mix project.
 
       mix tackle
       mix tackle run "Inspect this project"

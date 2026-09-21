@@ -4,7 +4,7 @@ let
   # package this needs no custom ERTS, so the binary cache can supply Erlang.
   beamPackages = pkgs.beamPackages;
 
-  web = ../../frontends/tackle_web;
+  web = ../../apps/tackle_web;
   root = ../..;
 
   # Keep worktrees, credentials, sessions, caches and build artifacts out of the
@@ -25,7 +25,7 @@ let
     inherit root;
     fileset = lib.fileset.unions [
       (projectFiles web)
-      (projectFiles root)
+      (projectFiles ../../packages/tackle)
       (projectFiles ../../packages/tackle_lib)
       (projectFiles ../../packages/tackle_runtime)
       (projectFiles ../../packages/tackle_phoenix)
@@ -40,7 +40,7 @@ let
   # Unoverridden call, only so the forcola shim below can read forcola's source.
   # The file lives inside the frontend project because deps_nix derives its
   # relative src/appConfig paths from the output location.
-  baseDeps = pkgs.callPackage ../../frontends/tackle_web/nix/tackle-web-deps.nix {
+  baseDeps = pkgs.callPackage ../../apps/tackle_web/nix/tackle-web-deps.nix {
     inherit beamPackages;
   };
 
@@ -115,10 +115,10 @@ let
     lockFile = "${baseDeps.lumis.src}/native/lumis_nif/Cargo.lock";
   };
 
-  deps = pkgs.callPackage ../../frontends/tackle_web/nix/tackle-web-deps.nix {
+  deps = pkgs.callPackage ../../apps/tackle_web/nix/tackle-web-deps.nix {
     inherit beamPackages;
     overrides = final: prev: {
-      tackle = prev.tackle.override { src = src; };
+      tackle = prev.tackle.override { src = "${src}/packages/tackle"; };
       tackle_lib = prev.tackle_lib.override { src = "${src}/packages/tackle_lib"; };
       tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
       tackle_phoenix = prev.tackle_phoenix.override { src = "${src}/packages/tackle_phoenix"; };
@@ -188,7 +188,7 @@ beamPackages.mixRelease {
   inherit src mixNixDeps;
 
   postUnpack = ''
-    sourceRoot="$sourceRoot/frontends/tackle_web"
+    sourceRoot="$sourceRoot/apps/tackle_web"
   '';
 
   # mixRelease's build phase has already run `mix compile --no-deps-check`.

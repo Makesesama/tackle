@@ -31,7 +31,7 @@ This is currently an in-repo path plugin:
 ```elixir
 defp deps do
   [
-    {:tackle_mcp, path: "plugins/tackle_mcp"}
+    {:tackle_mcp, path: "packages/tackle_mcp"}
   ]
 end
 ```

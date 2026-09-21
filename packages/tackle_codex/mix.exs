@@ -24,7 +24,7 @@ defmodule Tackle.Plugins.Codex.MixProject do
       # Jason, which this project deliberately does not include.
       {:req, "== 0.8.0-rc.0"},
       {:mint_web_socket, "~> 1.0"},
-      {:tackle_lib, path: "../../packages/tackle_lib"}
+      {:tackle_lib, path: "../tackle_lib"}
     ]
   end
 end

@@ -66,7 +66,7 @@ part of this work.
 | --- | --- |
 | `packages/tackle_lib` | Tree values and invariants; settled-message insertion; active-path and model-context projection; navigation validation and state transition; compaction integration; provider-neutral change records and persistence seam. |
 | Root `Tackle` | Plain-data codecs; journal validation/commit/sync; recovery and replay orchestration; serialized runtime operations; catalog/search; durable session APIs. |
-| `frontends/tackle_cli` | `/tree`, selection and rendering, filters, editor drafts, notices, and applying authoritative snapshots. |
+| `apps/tackle_cli` | `/tree`, selection and rendering, filters, editor drafts, notices, and applying authoritative snapshots. |
 | Other hosts, including Phoenix | Their own storage and runtime adapters using the same library rules. No root-harness dependency is required. |
 
 The root must decode validated records into library values and invoke the shared
@@ -368,9 +368,8 @@ Run focused tests at each step, then the affected separate projects from a
 configured `nix develop` shell:
 
 ```sh
-mix compile --warnings-as-errors
-mix test
-mix format --check-formatted
+(cd packages/tackle && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle && mix format --check-formatted)
 
 (cd packages/tackle_lib && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_lib && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
@@ -378,12 +377,12 @@ mix format --check-formatted
 (cd packages/tackle_phoenix && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_phoenix && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
-(cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
-(cd plugins/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+(cd packages/tackle_codex && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
-(cd frontends/tackle_cli && mix compile --warnings-as-errors && mix test)
-(cd frontends/tackle_cli && mix format --check-formatted)
-(cd frontends/tackle_cli && mix escript.build)
+(cd apps/tackle_cli && mix compile --warnings-as-errors && mix test)
+(cd apps/tackle_cli && mix format --check-formatted)
+(cd apps/tackle_cli && mix escript.build)
 
 git diff --check
 ```

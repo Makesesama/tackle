@@ -13,7 +13,7 @@ let
     name = "tackle-development";
     runtimeInputs = [ pkgs.elixir ];
     text = ''
-      if [[ ! -f mix.exs || ! -d frontends/tackle_cli ]]; then
+      if [[ ! -f packages/tackle/mix.exs || ! -f apps/tackle_cli/mix.exs ]]; then
         echo "jailed-tackle must be run from the Tackle repository root" >&2
         exit 2
       fi
@@ -27,6 +27,7 @@ let
       # behaviour (e.g. the elixir_eval tool) unconditionally.
       export TACKLE_DEV=1
 
+      cd apps/tackle_cli
       exec mix tackle "$@"
     '';
   };

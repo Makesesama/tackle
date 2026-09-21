@@ -131,7 +131,7 @@ Avoid having live footer cost differ from settled-message cost.
 
 Implement `model_info/1` in:
 
-`plugins/tackle_codex/lib/tackle/plugins/codex.ex`
+`packages/tackle_codex/lib/tackle/plugins/codex.ex`
 
 The local Pi checkout was inspected as a reference. Its catalog currently declares:
 
@@ -177,7 +177,7 @@ If output reservation is included, expose fields such as `reserved_output_tokens
 
 ### 5. Project statistics through harness snapshots
 
-Update `lib/tackle/session.ex` and tests. A session snapshot should expose, directly or through a dedicated stats struct:
+Update `packages/tackle/lib/tackle/session.ex` and tests. A session snapshot should expose, directly or through a dedicated stats struct:
 
 - aggregate session usage (`State.usage/1`),
 - latest generation usage,
@@ -196,7 +196,7 @@ If context pressure is attached to usage events, keep it provider-neutral and en
 
 ### 6. Update CLI footer
 
-Update `frontends/tackle_cli/lib/tackle_cli/tui.ex` and its tests. Replace the cache-only prefix with compact session stats, for example:
+Update `apps/tackle_cli/lib/tackle_cli/tui.ex` and its tests. Replace the cache-only prefix with compact session stats, for example:
 
 ```text
 ctx 84k/272k (30.9%) · in 126k · out 8k · CH71.0% · ~$0.84
@@ -214,7 +214,7 @@ Guidance:
 
 Current test to extend:
 
-`frontends/tackle_cli/test/tackle_cli/tui_test.exs`
+`apps/tackle_cli/test/tackle_cli/tui_test.exs`
 
 It already checks the Pi-compatible cache rate and can be expanded to verify context, aggregate input/output, cost, estimated marker, unavailable metadata, and updates after model reconfiguration.
 
@@ -224,8 +224,8 @@ Update:
 
 - root `README.md`;
 - `packages/tackle_lib/README.md`;
-- `plugins/tackle_codex/README.md`; and
-- `frontends/tackle_cli/README.md`.
+- `packages/tackle_codex/README.md`; and
+- `apps/tackle_cli/README.md`.
 
 Document callback shape, disjoint token buckets, context calculation, estimate semantics, price ownership, and that automatic compaction remains future work.
 
@@ -240,10 +240,10 @@ Document callback shape, disjoint token buckets, context calculation, estimate s
 - `packages/tackle_lib/lib/tackle_lib/message.ex`
 - `packages/tackle_lib/lib/tackle_lib/loop.ex`
 - `packages/tackle_lib/lib/tackle_lib/snapshot.ex`
-- `lib/tackle/session.ex`
-- `plugins/tackle_codex/lib/tackle/plugins/codex.ex`
-- `plugins/tackle_codex/lib/tackle/plugins/codex/sse.ex`
-- `frontends/tackle_cli/lib/tackle_cli/tui.ex`
+- `packages/tackle/lib/tackle/session.ex`
+- `packages/tackle_codex/lib/tackle/plugins/codex.ex`
+- `packages/tackle_codex/lib/tackle/plugins/codex/sse.ex`
+- `apps/tackle_cli/lib/tackle_cli/tui.ex`
 
 ## Suggested focused tests
 
@@ -252,9 +252,9 @@ Document callback shape, disjoint token buckets, context calculation, estimate s
 - `packages/tackle_lib/test/tackle_lib/usage_test.exs`
 - `packages/tackle_lib/test/tackle_lib/llm_test.exs`
 - `packages/tackle_lib/test/tackle_lib/state_test.exs`
-- `test/tackle_test.exs`
-- `plugins/tackle_codex/test/codex_test.exs`
-- `frontends/tackle_cli/test/tackle_cli/tui_test.exs`
+- `packages/tackle/test/tackle_test.exs`
+- `packages/tackle_codex/test/codex_test.exs`
+- `apps/tackle_cli/test/tackle_cli/tui_test.exs`
 
 Because `Tackle.Lib.Usage` is consumed by the Phoenix package, run Phoenix checks too after the library struct changes.
 
@@ -266,16 +266,16 @@ From repository root:
 (cd packages/tackle_lib && mix format 'lib/tackle_lib/{usage,model_info,context_usage,llm,state}.ex' 'lib/tackle_lib/llm/selection.ex' 'test/tackle_lib/{usage,model_info,context_usage,llm,state}_test.exs')
 (cd packages/tackle_lib && mix compile --warnings-as-errors && mix test)
 
-mix format 'lib/tackle/session.ex' 'test/tackle_test.exs'
-mix compile --warnings-as-errors && mix test
+(cd packages/tackle && mix format 'lib/tackle/session.ex' 'test/tackle_test.exs')
+(cd packages/tackle && mix compile --warnings-as-errors && mix test)
 
 (cd packages/tackle_phoenix && mix compile --warnings-as-errors && mix test)
 
-(cd plugins/tackle_codex && mix format 'lib/tackle/plugins/codex.ex' 'lib/tackle/plugins/codex/sse.ex' 'test/codex_test.exs')
-(cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_codex && mix format 'lib/tackle/plugins/codex.ex' 'lib/tackle/plugins/codex/sse.ex' 'test/codex_test.exs')
+(cd packages/tackle_codex && mix compile --warnings-as-errors && mix test)
 
-(cd frontends/tackle_cli && mix format 'lib/tackle_cli/tui.ex' 'test/tackle_cli/tui_test.exs')
-(cd frontends/tackle_cli && mix compile --warnings-as-errors && mix test)
+(cd apps/tackle_cli && mix format 'lib/tackle_cli/tui.ex' 'test/tackle_cli/tui_test.exs')
+(cd apps/tackle_cli && mix compile --warnings-as-errors && mix test)
 
 git diff --check
 git status --short

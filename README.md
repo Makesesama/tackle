@@ -4,9 +4,9 @@ Tackle is an Elixir agent harness for developers, built around a small core and
 an extensible, plugin-first architecture.
 
 It starts with an in-house agent library already used in a SaaS application.
-The reusable library now lives at [`packages/tackle_lib`](packages/tackle_lib)
-under the `Tackle.Lib` namespace, while the repository root remains the `Tackle`
-developer harness—not the SaaS application turned into a CLI.
+The reusable library lives at [`packages/tackle_lib`](packages/tackle_lib)
+under the `Tackle.Lib` namespace, while the developer harness lives at
+[`packages/tackle`](packages/tackle). Runnable applications live under `apps/`.
 
 ## Goals
 
@@ -26,9 +26,9 @@ developer harness—not the SaaS application turned into a CLI.
 | Layer | Responsibility |
 | --- | --- |
 | `packages/tackle_lib` | Reusable, provider- and frontend-independent agent library (`Tackle.Lib`). |
-| Developer harness | Minimal composition and runtime glue for the library, configuration, and plugins. |
-| CLI frontend | Terminal input/output and interaction; no duplicate agent loop. |
-| Plugins | Provider adapters and optional capabilities, using explicit extension contracts. |
+| `packages/tackle` | Minimal composition and runtime glue for the library, configuration, and plugins. |
+| `apps/tackle_cli` | Terminal input/output and interaction; no duplicate agent loop. |
+| Plugin packages | Provider adapters and optional capabilities under `packages/`, using explicit extension contracts. |
 | Burrito release | Binary packaging of the harness, not a new runtime abstraction. |
 
 Keep the core focused on the agent loop and the contracts needed to extend it.
@@ -43,9 +43,9 @@ this project plans to implement and maintain**, and it should use the same
 extension contracts as third-party adapters, not a privileged core code path.
 
 MCP is available as an optional harness plugin in
-[`plugins/tackle_mcp`](plugins/tackle_mcp). It uses Anubis as an MCP **client**
+[`packages/tackle_mcp`](packages/tackle_mcp). It uses Anubis as an MCP **client**
 and turns external MCP tools into ordinary `Tackle.Lib.Tool` modules; it is not
-a required root dependency. The inherited Anubis MCP **server** bridge remains
+a required harness dependency. The inherited Anubis MCP **server** bridge remains
 in `packages/tackle_anubis`, so both directions stay outside the MCP-free core.
 Other optional integrations should follow the same separation. Phoenix and
 SaaS-specific concerns are not requirements for the standalone harness.
@@ -58,7 +58,7 @@ resolved and tested before promising a binary plugin workflow.
 
 This repository is a starting point, not a finished CLI:
 
-- The root Mix project provides frontend-independent adapter/model
+- [`packages/tackle`](packages/tackle) provides frontend-independent adapter/model
   configuration, composes the reusable scoped runtime, a supervised credential store,
   and built-in `read`, `bash`, `elixir_eval`, `edit`, and `write` developer tools
   under `Tackle.Tools.*`. It composes a coding system prompt with global and
@@ -79,25 +79,27 @@ This repository is a starting point, not a finished CLI:
   (`:tackle_anubis` / `Tackle.Anubis.*`), a breaking rename of the former
   `Tackle.Lib.Integrations.Anubis`; `tackle_lib` keeps only the provider-neutral
   `Tackle.Lib.Integrations.Registry` seam.
-- [`plugins/tackle_codex`](plugins/tackle_codex/README.md) contains the
+- [`packages/tackle_codex`](packages/tackle_codex/README.md) contains the
   first-party OpenAI Codex adapter, including ChatGPT OAuth protocol helpers,
   token refresh, Responses SSE transport, and provider-neutral translation.
-- [`plugins/tackle_mcp`](plugins/tackle_mcp/README.md) contains the optional
+- [`packages/tackle_deepseek`](packages/tackle_deepseek/README.md) contains the
+  optional DeepSeek provider adapter bundled by the current app distributions.
+- [`packages/tackle_mcp`](packages/tackle_mcp/README.md) contains the optional
   Anubis-based MCP client plugin. Trusted host startup can connect STDIO or
   Streamable HTTP servers, discover their tools, and add the returned proxy
   modules to a session's normal `:tools` list. The plugin currently bridges
   tools only and is not bundled by the CLI.
-- [`frontends/tackle_cli`](frontends/tackle_cli/README.md) contains the default
+- [`apps/tackle_cli`](apps/tackle_cli/README.md) contains the default
   Optimus/ex_ratatui CLI entrypoint. Its Burrito release produces a fixed
   distribution that bundles the first-party Codex and DeepSeek plugins; runtime
-  plugin discovery remains deferred. The frontend relies on the root harness
+  plugin discovery remains deferred. The frontend relies on the harness package
   for credentials, sessions, and turn execution. Its footer reports current
   context pressure plus aggregate input/output, preceding-prompt cache reuse,
   and cost when the selected adapter exposes them.
 - General extension project loading remains planned work; Burrito packaging is
   now configured in the CLI frontend.
 
-The root harness owns OTP application `:tackle` and namespace `Tackle`. The
+The harness package owns OTP application `:tackle` and namespace `Tackle`. The
 reusable library owns OTP application `:tackle_lib` and namespace `Tackle.Lib`;
 the reusable runtime owns OTP application `:tackle_runtime` and namespace
 `Tackle.Runtime`; the CLI frontend owns OTP application `:tackle_cli` and
@@ -109,18 +111,18 @@ references, and library configuration from `:tackle`/`Tackle.*` to
 
 ## CLI during development
 
-Fetch the separate frontend project's dependencies once, then run the CLI from
-the repository root:
+Fetch the CLI app's dependencies once, then run it from its project directory:
 
 ```sh
-(cd frontends/tackle_cli && mix deps.get)
+cd apps/tackle_cli
+mix deps.get
 mix tackle --help
 mix tackle
 ```
 
-The root task delegates to `frontends/tackle_cli` so its terminal and provider
-dependencies remain outside the root harness. Running `mix tackle` directly
-inside `frontends/tackle_cli` remains supported.
+The CLI keeps its terminal and provider dependencies outside the harness
+package. The harness's Mix task can still delegate to `apps/tackle_cli` when
+invoked from `packages/tackle`.
 
 ### Sandboxed dogfooding on Linux
 
@@ -301,7 +303,7 @@ optional fields are `tools`, `model`, `thinking`, `timeoutMs`, `maxIterations`,
 `advertise`, and `allowDelegation`. Tool lists may be comma-separated, a simple
 `[read, bash]` list, or an indented `- read` block list. Unknown fields, invalid
 values, duplicate definitions within one source, unavailable models, and tools
-not already available to the root harness fail startup explicitly.
+not already available to the harness package fail startup explicitly.
 
 Default profiles are implemented as modules conforming to
 `Tackle.Agents.Default`; each returns an inert `Tackle.Agents.Definition`.
@@ -328,7 +330,7 @@ opened inside the TUI and resumed sessions:
 - `scout` performs fast, read-only codebase reconnaissance with `read` and `bash`;
 - `reviewer` performs read-only correctness, regression, and security review with
   `read` and `bash`;
-- `worker` performs implementation tasks with the root harness trusted coding tools.
+- `worker` performs implementation tasks with the harness's trusted coding tools.
 
 The former `explorer` profile is no longer built in. The root calls `subagent`
 with one of these profile names and a self-contained `prompt`. Each child has a
@@ -341,7 +343,7 @@ delegate; scout and reviewer are instructed not to edit files.
 **This is not a read-only sandbox:** bash retains the harness's filesystem,
 network, and OS permissions. Do not use this profile as an isolation boundary.
 
-`Tackle.Coding.scope_spec/2` owns this composition in the root harness. It loads
+`Tackle.Coding.scope_spec/2` owns this composition in the harness package. It loads
 normal global/project guidance for root and child agents, advertises the profiles to the
 root, and limits the scope to two simultaneous children plus the root. Excess
 requests are rejected rather than queued. Children have unlimited loop iterations
@@ -481,7 +483,7 @@ separate recovery decision.
 
 Durable CLI sessions keep their history as an optional conversation tree, so a
 session can hold alternative paths instead of a single linear transcript. The
-engine owns the tree rules in `Tackle.Lib.Tree`; the root harness owns durable
+engine owns the tree rules in `Tackle.Lib.Tree`; the harness package owns durable
 records and the CLI owns the picker. A tree is opt-in for library hosts
 (`Tackle.Lib.new(tree: true)`), and durable root sessions enable it by default.
 
@@ -603,7 +605,7 @@ deferred.
 3. Package the fixed first-party distribution with Burrito; then design and
    verify the user-provided plugin workflow separately.
 4. Add optional capabilities as separate plugins; the first MCP tools client is
-   implemented in `plugins/tackle_mcp`, while CLI configuration and general
+   implemented in `packages/tackle_mcp`, while CLI configuration and general
    extension loading remain later integration work.
 
 Avoid a plugin marketplace, speculative frameworks, or additional frontends
@@ -611,16 +613,16 @@ before the minimal harness works.
 
 ## Development
 
-The root project requires Elixir `~> 1.20`; the existing packages declare
-`~> 1.18`. The Nix development shell selects Elixir 1.20 and Erlang/OTP 29.
+The harness and app projects require Elixir `~> 1.20`; the lower-level
+packages declare `~> 1.18`. The Nix development shell selects Elixir 1.20 and Erlang/OTP 29.
 Enter it with `nix develop`, or use the repository's direnv setup.
 
 ```sh
-# Root harness
-mix deps.get
-mix compile --warnings-as-errors
-mix test
-mix format --check-formatted
+# Harness package
+(cd packages/tackle && mix deps.get)
+(cd packages/tackle && mix compile --warnings-as-errors)
+(cd packages/tackle && mix test)
+(cd packages/tackle && mix format --check-formatted)
 
 # Agent library (a separate Mix project)
 (cd packages/tackle_lib && mix deps.get && mix test)
@@ -629,26 +631,26 @@ mix format --check-formatted
 (cd packages/tackle_phoenix && mix deps.get && mix test)
 
 # First-party OpenAI Codex plugin
-(cd plugins/tackle_codex && mix deps.get)
-(cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
-(cd plugins/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+(cd packages/tackle_codex && mix deps.get)
+(cd packages/tackle_codex && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
 # MCP client plugin
-(cd plugins/tackle_mcp && mix deps.get)
-(cd plugins/tackle_mcp && mix compile --warnings-as-errors && mix test)
-(cd plugins/tackle_mcp && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+(cd packages/tackle_mcp && mix deps.get)
+(cd packages/tackle_mcp && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_mcp && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
-# CLI frontend
-(cd frontends/tackle_cli && mix deps.get)
-(cd frontends/tackle_cli && mix compile --warnings-as-errors && mix test)
-(cd frontends/tackle_cli && mix format --check-formatted)
-(cd frontends/tackle_cli && mix escript.build)
+# CLI app
+(cd apps/tackle_cli && mix deps.get)
+(cd apps/tackle_cli && mix compile --warnings-as-errors && mix test)
+(cd apps/tackle_cli && mix format --check-formatted)
+(cd apps/tackle_cli && mix escript.build)
 ```
 
 These are separate Mix projects, not an umbrella: root checks do not validate
 all packages. Dependency fetching needs network access and writable Mix/Hex
 caches. No dynamic plugin installation command is available yet. Burrito build
 commands and native-library requirements are documented in
-[`frontends/tackle_cli/README.md`](frontends/tackle_cli/README.md).
+[`apps/tackle_cli/README.md`](apps/tackle_cli/README.md).
 
 See [AGENTS.md](AGENTS.md) for contributor and coding-agent guidance.

@@ -4,10 +4,10 @@ Terminal frontend and default product entrypoint for the Tackle developer
 harness.
 
 This is a separate Mix project so CLI dependencies and presentation concerns stay
-out of the root harness and `packages/tackle_lib`. The shipped CLI distribution
-bundles the first-party `plugins/tackle_codex` and `plugins/tackle_deepseek`
+out of the harness and `packages/tackle_lib`. The shipped CLI distribution
+bundles the first-party `packages/tackle_codex` and `packages/tackle_deepseek`
 adapters, configures them as available harness adapters, and then talks to the
-root `:tackle` application for
+`:tackle` application for
 configuration, credential storage, scoped runtime ownership, and turn execution.
 The CLI starts one root scope, addresses the root agent through a
 `Tackle.Runtime.AgentRef`, and stops the complete scope on exit; it never stores
@@ -43,12 +43,12 @@ the file format and security boundaries.
 Every CLI coding scope enables `scout`, `reviewer`, and `worker` by default;
 the former `explorer` profile has been removed. Scout performs quick read-only
 reconnaissance, reviewer performs read-only code review, and worker can implement
-changes with the root harness trusted coding tools. All have fresh conversation
+changes with the harness's trusted coding tools. All have fresh conversation
 context, no further delegation, a 20-iteration/five-minute budget, and share a
 limit of two simultaneous children. They share the workspace. Scout and reviewer
 are instructed not to edit it, but
 **bash is not sandboxed or enforced read-only**. Profiles are configured by
-`Tackle.Coding` in the root harness, not the frontend. Each built-in child request
+`Tackle.Coding` in the harness package, not the frontend. Each built-in child request
 uses the root's current model and thinking selection, including after resume or
 a TUI model change. Already-running children retain their original selection.
 Tools, prompts, limits, and conversation context remain separate; only model and
@@ -138,11 +138,11 @@ rebuilt binary with the same application version.
 
 ## Usage during development
 
-From the repository root, fetch the frontend dependencies once and then use the
-root delegation task:
+From the repository root, enter the CLI app and fetch its dependencies once:
 
 ```sh
-(cd frontends/tackle_cli && mix deps.get)
+cd apps/tackle_cli
+mix deps.get
 mix tackle --help
 mix tackle models
 mix tackle auth status
@@ -482,7 +482,7 @@ ExRatatui. The direct `:rustler` dependency and a Rust/Cargo toolchain are
 therefore still required. The Nix development shell provides the toolchain:
 
 ```sh
-cd frontends/tackle_cli
+cd apps/tackle_cli
 mix deps.get
 mix compile --warnings-as-errors
 ```

@@ -6,53 +6,41 @@ This document distinguishes implemented package boundaries from explicitly futur
 
 ## 1. Agreed decisions
 
-1. The repository-root application is the Tackle developer harness. Its implementation lives in `lib/tackle`, with `lib/tackle.ex` as its public facade.
+1. `packages/tackle` is the Tackle developer harness. Its implementation lives in `packages/tackle/lib/tackle`, with `packages/tackle/lib/tackle.ex` as its public facade.
 2. The harness owns configuration reading and plugin composition. Reusable scoped supervision, subagents, limits, and workflows live in `packages/tackle_runtime`; host-specific sessions, persistence, authorization, and billing remain in adapters.
 3. Rename the existing reusable library from `packages/tackle` to `packages/tackle_lib`, preserving its implementation and capabilities rather than replacing or copying its engine.
 4. Give the library the OTP application identity `:tackle_lib` and namespace `Tackle.Lib.*`. The harness retains `:tackle` and `Tackle.*`.
 5. The harness is frontend-agnostic. Build a CLI first; a future web frontend uses the same harness API and session lifecycle.
 6. Provider adapters are plugins. The first-party Codex adapter uses the same provider-neutral library contract as third-party adapters.
 
-The package move and library namespace change explicitly supersede the current README/AGENTS requirement to retain the library at `packages/tackle`. Update those instructions when implementing the migration.
+The library namespace migration and the later repository restructuring preserve the OTP and module identities while placing every reusable Mix project under `packages/` and every runnable product under `apps/`.
 
 ## 2. Target repository layout
 
 ```text
-mix.exs                          # :tackle — developer harness application
-lib/
-  tackle.ex                      # Public harness facade
-  tackle/
-    application.ex               # Harness supervision
-    config.ex                    # Read, resolve, and validate configuration
-    plugins.ex                   # Resolve and compose configured plugins
-    session.ex                   # Session ownership and turn coordination
-
-test/                            # Harness tests
+apps/
+  tackle_cli/                    # CLI entrypoint and terminal presentation
+  tackle_web/                    # Phoenix web application
 
 packages/
-  tackle_lib/                    # :tackle_lib, Tackle.Lib.*
+  tackle/                        # :tackle — developer harness and composition
     mix.exs
     lib/
-      tackle_lib.ex              # Tackle.Lib facade
-      tackle_lib/                # Existing reusable engine and contracts
+      tackle.ex                  # Public harness facade
+      tackle/                    # Configuration, tools, sessions, and persistence
     test/
+  tackle_lib/                    # :tackle_lib, Tackle.Lib.* agent engine/contracts
   tackle_runtime/                # :tackle_runtime, Tackle.Runtime.* orchestration
-  tackle_phoenix/                 # Existing optional Phoenix integration
-  tackle_anubis/                  # Optional Anubis MCP bridge (extracted from tackle_lib)
-
-plugins/
-  tackle_codex/                  # Planned first-party provider plugin
-  tackle_dev_tools/              # Proposed bundled developer-tool package
-  tackle_mcp/                    # Future harness-side MCP plugin; not the Anubis bridge
-
-frontends/
-  tackle_cli/                    # CLI entrypoint and terminal presentation
-  tackle_web/                    # Future web application, not built now
+  tackle_phoenix/                # Reusable Phoenix integration
+  tackle_anubis/                 # Optional Anubis MCP bridge
+  tackle_codex/                  # First-party Codex provider plugin
+  tackle_deepseek/               # Optional DeepSeek provider plugin
+  tackle_mcp/                    # Optional harness-side MCP client plugin
 ```
 
 The supporting modules above describe responsibilities, not a requirement to create every file immediately. Keep each implementation as small as its actual use case permits.
 
-Retain separate Mix projects rather than introducing an umbrella in this work. Implemented plugins and frontends have their own Mix projects, dependencies, and tests. Do not create empty projects for future features.
+Retain separate Mix projects rather than introducing an umbrella in this work. Packages and apps have their own Mix projects, dependencies, and tests. Do not create empty projects for future features.
 
 Proposed component identities:
 
@@ -91,7 +79,7 @@ fan-out, and workflows. Hosts implement `Tackle.Runtime.AgentBackend` so tenant,
 persistence, billing, credentials, and local-session policy stay outside the
 runtime package.
 
-### Developer harness: root `lib/tackle`
+### Developer harness: `packages/tackle`
 
 Owns:
 
@@ -106,9 +94,9 @@ The harness invokes `Tackle.Lib`; it does not implement another agent loop or pr
 
 Use OTP processes for real ownership, concurrency, and supervision. Configuration parsing and plugin validation can remain ordinary functions. Do not add an application-wide plugin server simply to hold a list of modules.
 
-### Plugins: `plugins/`
+### Plugin packages
 
-Provider translation and optional capabilities live outside the harness and library.
+Provider translation and optional capabilities live as independent projects under `packages/`, outside the harness and library.
 
 - Codex implements `Tackle.Lib.LLM`, including protocol translation, authentication integration, and streaming normalization through the library contract.
 - Developer tools implement `Tackle.Lib.Tool`. Group related filesystem/shell tools in one package initially rather than making one package per operation.
@@ -117,9 +105,9 @@ Provider translation and optional capabilities live outside the harness and libr
 
 Bundled plugins have no privileged execution path. Being shipped with the product does not imply being enabled for every session.
 
-### Frontends: `frontends/`
+### Applications: `apps/`
 
-Frontends own user interaction and presentation, not agent execution policy.
+Applications own user interaction and presentation, not agent execution policy.
 
 The CLI owns argument parsing, terminal input/output, rendering, and signal/shortcut translation. It passes explicit overrides into harness configuration resolution rather than implementing a separate configuration policy.
 
@@ -137,7 +125,7 @@ Provider / tool plugins  ──────────────────�
 Harness configuration selects available plugin implementations.
 ```
 
-The root harness does not depend on CLI or Web. Each frontend executable/application depends on the harness and declares the bundled plugin dependencies needed for that distribution. This keeps the dependency graph acyclic while allowing the harness to load and configure those available plugins.
+The harness package does not depend on CLI or Web. Each executable application depends on the harness and declares the bundled plugin dependencies needed for that distribution. This keeps the dependency graph acyclic while allowing the harness to load and configure those available plugins.
 
 Distinguish distribution composition from runtime composition: the executable supplies available packages; `Tackle.Plugins` resolves and configures their contributions. Exact release/Burrito assembly remains undecided and is not part of this specification's implementation approval.
 
@@ -246,7 +234,7 @@ This is an intentional breaking library migration. Do not add broad compatibilit
 The architecture is satisfied when:
 
 - An independent Mix host can depend only on `:tackle_lib` and run a deterministic agent turn.
-- The root harness and library compile together without duplicate application or module identities.
+- The harness and library compile together without duplicate application or module identities.
 - A fake/custom provider can replace Codex through configuration without core changes.
 - Two sessions can select different adapters without changing global configuration between turns.
 - Harness tests drive input, streaming, retry, cancellation, failure, and session snapshots without terminal IO or Phoenix.
