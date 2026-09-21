@@ -256,7 +256,7 @@ mailbox work. `handle_host_message/2` may return:
 
 The last form sends host-delivered input through the same gate, correlation,
 persistence, cancellation, telemetry, billing, and settlement lifecycle as a
-public turn. ExampleHost uses this seam for durable parent/child agent delivery.
+public turn. A host can use this seam for durable parent/child agent delivery.
 
 ## 4. Build Runner configuration
 
@@ -570,17 +570,16 @@ bounded host correlation under `telemetry_metadata:` when starting a turn.
 
 An optional `:telemetry_adapter` in Runner config may implement
 `with_context(telemetry_ref, fun)` to carry an OpenTelemetry span/context into
-the supervised turn task and tool execution. ExampleHost uses this to preserve
+the supervised turn task and tool execution. A host can use this to preserve
 parent/child span relationships without placing prompts or payloads in
 telemetry metadata.
 
 Core Tackle.Lib separately emits tool-execution telemetry documented in the core
 README.
 
-## ExampleHost host implementation
+## Example host implementation
 
-ExampleHost is a reference implementation, not a dependency of these packages.
-Its wiring is split as follows:
+A production host can split its wiring as follows:
 
 | Layer | File | Responsibility |
 |---|---|---|
@@ -588,13 +587,13 @@ Its wiring is split as follows:
 | Host session API | `lib/my_app/agent/session.ex` | Runner config, DB bootstrap, reload/switch/subscribe API |
 | Store | `lib/my_app/agent/session_store.ex` | Ecto persistence, tenant reauthorization, quota, billing, recovery |
 | Agent factory | `lib/my_app/agent/agent.ex` | tools, model, prompt, hooks, session auth reconstruction |
-| LLM adapter | `lib/my_app/ai/tackle_adapter.ex` | OpenRouter/native-tool translation and streaming |
+| LLM adapter | `lib/my_app/ai/tackle_adapter.ex` | provider/native-tool translation and streaming |
 | Persistence hook | `lib/my_app/agent/hooks/persistence.ex` | incremental idempotent message finalization |
 | LiveViews | `lib/my_app_web/live/agent_panel_live.ex`, `agent_sessions_live/show.ex` | subscription, submit/retry/cancel, domain events |
 | MessageView | `lib/my_app_web/components/agent_chat.ex` | grouping, markdown, rich tool presentation |
 | Telemetry | `lib/my_app/telemetry/open_telemetry/agent_workflow.ex` | generic telemetry to OpenTelemetry spans |
 
-### ExampleHost-specific policies
+### Example production policies
 
 These are intentionally outside `tackle_phoenix`:
 

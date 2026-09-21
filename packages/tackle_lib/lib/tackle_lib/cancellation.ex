@@ -24,9 +24,6 @@ defmodule Tackle.Lib.Cancellation do
 
       config :tackle_lib, cancellation_store: MyApp.TackleCancellationStore
 
-      config :my_app, Tackle.Lib,
-        cancellation_store: MyApp.TackleCancellationStore
-
   """
 
   defmodule Signal do
@@ -96,8 +93,6 @@ defmodule Tackle.Lib.Cancellation do
   defp signal_store(%Signal{}), do: store()
 
   defp store do
-    Application.get_env(:tackle_lib, :cancellation_store) ||
-      get_in(Application.get_env(:my_app, Tackle.Lib, []), [:cancellation_store]) ||
-      @default_store
+    Application.get_env(:tackle_lib, :cancellation_store) || @default_store
   end
 end

@@ -23,24 +23,30 @@ defmodule Tackle.Web.ReviewLive do
   ## Asking the assistant
 
   The assistant is a `Tackle.Phoenix.Runner` conversation per review, wired
-  through `Tackle.Web.AgentSession`. A question is asked *from a line* with the
-  `?` beside it, and its answer is rendered under that line, next to the code it
-  is about. Shift-clicking a second line extends the question to the range
-  between them — `Tackle.Web.Anchor` describes the selection — and the answer
-  then hangs under the range's last line. The anchor is part of the conversation,
-  not a detail of the browser tab that asked it: `Tackle.Web.AgentStore` records
-  it and announces it on the conversation topic, which is how other viewers place
-  an answer they did not ask for.
+  through `Tackle.Web.AgentSession`. A question is asked *from a place in the
+  diff*: selecting a line — by clicking its number, dragging over several, or
+  shift-clicking to extend — with the selection published to this process by
+  `assets/js/app.js`.
+
+  Answers are not rendered inside the diff. They are shown in the panel on the
+  right, each thread naming the lines it is about and linking back to them. The
+  diff stays a diff, and the conversation stays readable as a conversation.
+
+  The anchor is part of the conversation, not a detail of the browser tab that
+  asked it: `Tackle.Web.AgentStore` records it and announces it on the
+  conversation topic, which is how other viewers place an answer they did not
+  ask for.
 
   `Tackle.Phoenix.EventReducer` drives the streaming state: it keeps
   `:agent_state` and `:streaming_messages` up to date and filters reasoning and
-  tool-input deltas out of the visible answer. This surface renders the anchored
-  threads from `agent_state` rather than the reducer's message stream, because a
-  message stream renders in one place and these answers render under many.
+  tool-input deltas out of the visible answer. This surface renders the threads
+  `Tackle.Web.AgentThreads` derives from `agent_state`, because a message stream
+  renders in one place and these threads are spread across the diff.
   """
 
   use Tackle.Web, :live_view
 
+  import Tackle.Web.Components.Assistant, only: [thread: 1]
   import Tackle.Web.Components.Diff
 
   alias Phoenix.LiveView.AsyncResult
@@ -53,6 +59,7 @@ defmodule Tackle.Web.ReviewLive do
   alias Tackle.Web.AgentThreads
   alias Tackle.Web.Anchor
   alias Tackle.Web.Projects
+  alias Tackle.Web.Question
   alias Tackle.Web.Review
   alias Tackle.Web.ReviewStore
 
@@ -209,23 +216,32 @@ defmodule Tackle.Web.ReviewLive do
   end
 
   @impl true
-  def handle_event("ask_at", %{"path" => path, "side" => side, "line" => line} = params, socket) do
-    case anchor(side, line) do
-      {:ok, side, number} ->
-        # A shift-click extends the selection to this line; a plain click starts a
-        # new one. The modifier arrives as click metadata (see `assets/js/app.js`)
-        # because LiveView does not send it by default.
-        ask_at = ask_at(socket.assigns.ask_at, params["shiftKey"], path, side, number)
+  def handle_event("select_lines", params, socket) do
+    # One event serves the JavaScript selection and the `?` button: the button
+    # sends the line it sits on as an already-collapsed range, the hook sends the
+    # two ends of the drag. `extend` is what a shift-click means — keep the
+    # selection that is there and grow it to this line.
+    from = params["from"] || params["line"]
+    to = params["to"] || params["line"]
+    extend? = truthy(params["extend"]) or truthy(params["shiftKey"])
 
-        {:noreply, socket |> assign(ask_at: ask_at, agent_error: nil) |> refresh_agent()}
+    with {:ok, _side, from} <- anchor(params["side"], from),
+         {:ok, side, to} <- anchor(params["side"], to) do
+      ask_at =
+        if extend? do
+          Anchor.extend(socket.assigns.ask_at, params["path"], side, to)
+        else
+          Anchor.new(params["path"], side, from, to)
+        end
 
-      :error ->
-        {:noreply, socket}
+      {:noreply, socket |> assign(ask_at: ask_at, agent_error: nil) |> refresh_agent()}
+    else
+      :error -> {:noreply, socket}
     end
   end
 
   @impl true
-  def handle_event("cancel_ask", _params, socket) do
+  def handle_event("clear_selection", _params, socket) do
     {:noreply, socket |> assign(:ask_at, nil) |> refresh_agent()}
   end
 
@@ -290,7 +306,7 @@ defmodule Tackle.Web.ReviewLive do
   defp run_turn(socket, anchor, body) do
     %{loaded_review: review, agent_state: state, anchors: anchors} = socket.assigns
 
-    case AgentSession.run_turn(review, state, question(anchor, body),
+    case AgentSession.run_turn(review, state, Question.prompt(anchor, body),
            anchor: anchor,
            anchors: anchors
          ) do
@@ -308,25 +324,12 @@ defmodule Tackle.Web.ReviewLive do
     |> refresh_agent()
   end
 
-  # The location of the question is part of the question. The assistant can read
-  # the file itself, so a reference is enough — and unlike a hidden field it is
-  # still readable in a transcript that has outlived the browser that asked.
-  defp question(:general, body) do
-    "About this review as a whole:\n\n#{String.trim(body)}"
-  end
-
-  # The selection is named with `Anchor.label/1`, the same wording the form shows,
-  # so the assistant and the reviewer are told about the same region.
-  defp question(anchor, body) when is_tuple(anchor) do
-    path = elem(anchor, 0)
-    side = elem(anchor, 1)
-
-    "About #{path} #{Anchor.label(anchor)} (the #{side} side of the diff):\n\n" <>
-      String.trim(body)
-  end
-
-  defp ask_at(ask_at, true, path, side, line), do: Anchor.extend(ask_at, path, side, line)
-  defp ask_at(_ask_at, _shift, path, side, line), do: Anchor.new(path, side, line)
+  # The location of the question is part of the question, so the transcript that
+  # outlives the browser still says what was asked about. `Tackle.Web.Question`
+  # owns both the prompt and the wording the panel shows back.
+  defp truthy(true), do: true
+  defp truthy("true"), do: true
+  defp truthy(_other), do: false
 
   # The store announces changes so other viewers stay in sync. Reading it back
   # here as well means the render answering this event is already up to date,
@@ -341,25 +344,46 @@ defmodule Tackle.Web.ReviewLive do
     socket |> assign(:agent_state, state) |> refresh_agent()
   end
 
-  # `:agent` is what the diff component reads: the threads grouped by the same
+  # `:agent` is what the diff and the panel read: the threads grouped by the
   # anchor comments use, plus the answer currently streaming, if any. It is
   # derived from the transcript, so it is recomputed whenever that changes.
   defp refresh_agent(socket) do
     case Map.get(socket.assigns, :agent_state) do
       %State{} = state ->
         threads = AgentThreads.all(state.messages, socket.assigns.anchors)
+        grouped = AgentThreads.by_anchor(threads)
+        ask_at = socket.assigns.ask_at
+
+        streaming =
+          AgentThreads.streaming(threads, Map.get(socket.assigns, :streaming_messages, %{}))
 
         assign(socket, :agent, %{
-          threads: AgentThreads.by_anchor(threads),
-          streaming:
-            AgentThreads.streaming(threads, Map.get(socket.assigns, :streaming_messages, %{})),
-          ask_at: socket.assigns.ask_at
+          list: threads,
+          threads: grouped,
+          thread_ids: thread_ids(grouped),
+          streaming: streaming,
+          streaming_entry: streaming |> Map.values() |> List.first(),
+          ask_at: ask_at,
+          ask_scope: ask_scope(ask_at)
         })
 
       _not_loaded ->
         assign(socket, :agent, nil)
     end
   end
+
+  # The line a marker links to: the most recent thread asked about it. An anchor
+  # can carry more than one thread, and the newest is the one a reader following
+  # the marker wants.
+  defp thread_ids(grouped) do
+    Map.new(grouped, fn {key, threads} -> {key, List.last(threads).question.id} end)
+  end
+
+  # What the composer says the pending question is about. A question with no
+  # selection is about the review as a whole, which needs no caption.
+  defp ask_scope(nil), do: nil
+  defp ask_scope(:general), do: nil
+  defp ask_scope(anchor), do: "#{elem(anchor, 0)} #{Anchor.label(anchor)}"
 
   defp track_activity(socket, %Event{type: :tool_start, data: data}) do
     assign(socket, :activity, AgentActivity.label(data))

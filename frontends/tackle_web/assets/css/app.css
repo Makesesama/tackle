@@ -254,19 +254,14 @@ html {
 }
 
 /* Comments and their form line up with the code column rather than the gutters,
-   so they read as attached to the line above them. A thread in the conversation
-   area above the diff is not attached to a line, so it stays flush. */
+   so they read as attached to the line above them. */
 .diff-comment,
-.diff-comment-form,
-.diff-answer,
-.diff-answer-form {
+.diff-comment-form {
   padding: 0.625rem 1rem;
 }
 
 .diff-line-group .diff-comment,
-.diff-line-group .diff-comment-form,
-.diff-line-group .diff-answer,
-.diff-line-group .diff-answer-form {
+.diff-line-group .diff-comment-form {
   margin-left: calc(var(--diff-gutter) * 2 + 1.25rem);
 }
 
@@ -280,58 +275,108 @@ html {
   margin-top: 1px;
 }
 
-/* An answer sits under the line it is about, marked in the same way a comment
-   is, so the two read as the same kind of thing attached to the code. Answers
-   are washed with the accent; comments are not, because the reader wrote those
-   and the assistant wrote these. */
-.diff-answer {
-  border-left: 2px solid var(--color-primary);
-  background-color: var(--color-accent);
-  font-size: 0.75rem;
-}
-
-.diff-answer + .diff-answer {
-  margin-top: 1px;
-}
-
-.diff-comment-form,
-.diff-answer-form {
+.diff-comment-form {
   background-color: var(--color-base-100);
 }
 
-/* Names the lines a question covers, above the box that writes it, so a range
-   is never asked about without being named. */
-.diff-ask-scope {
-  margin-bottom: 0.375rem;
+/* The line numbers are the handle a question is selected by: clicking one
+   selects the line, dragging over several selects the range, and shift-clicking
+   extends. The cursor says so, and the tint on hover says which line is under
+   the pointer without changing how any line reads. */
+.diff-line[data-path] .diff-gutter,
+.diff-line[data-path] .diff-marker,
+.diff-line[data-path] .diff-action {
+  cursor: pointer;
+}
+
+.diff-line[data-path]:hover .diff-gutter {
+  color: var(--color-primary);
+  background-color: color-mix(in oklab, var(--color-primary) 8%, transparent);
+}
+
+/* The count of questions asked about a line. The answers live in the panel on
+   the right; this only says that there is something to read, and links to it. */
+.diff-thread-marker {
+  display: grid;
+  place-items: center;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background-color: var(--color-accent);
+  color: var(--color-accent-content);
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.diff-thread-marker:hover {
+  background-color: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+/* Names the selection a pending question is about, above the box that writes it,
+   so a range is never asked about without being named. */
+.assistant-scope {
   font-size: 0.6875rem;
   font-weight: 600;
   color: var(--color-primary);
 }
 
-.diff-question {
+/* The assistant panel. A thread is one question and its answers, washed with the
+   accent so it reads as the assistant's, while a comment on the same line is
+   left plain because the reader wrote it. The panel is a column of these, and
+   nothing about them is attached to a line any more. */
+.assistant-thread {
+  padding: 0.625rem 0.75rem;
+  border-left: 2px solid var(--color-primary);
+  border-radius: 0 0.5rem 0.5rem 0;
+  background-color: var(--color-base-100);
+  font-size: 0.75rem;
+}
+
+/* A note of where the question was asked, linked to the line it names. */
+.assistant-anchor {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.6875rem;
+  color: var(--color-primary);
+}
+
+.assistant-anchor:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.assistant-question {
+  margin-top: 0.375rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--color-accent-content);
   font-weight: 500;
+  color: var(--color-accent-content);
 }
 
-.diff-reply {
+.assistant-reply {
+  margin-top: 0.5rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  line-height: 1.65;
 }
 
-.diff-reply + .diff-reply,
-.diff-question + .diff-reply {
+.assistant-reply + .assistant-reply {
   margin-top: 0.5rem;
 }
 
-.diff-steps {
+.assistant-steps {
   margin-top: 0.25rem;
   font-style: italic;
   color: color-mix(in oklab, var(--color-base-content) 45%, transparent);
 }
 
-.diff-answer--streaming .diff-reply:last-child::after {
+.assistant-thread--streaming .assistant-reply:last-child::after {
   content: "\258C";
   animation: ui-caret 1s steps(2, start) infinite;
 }

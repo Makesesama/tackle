@@ -20,9 +20,7 @@ defmodule Tackle.Lib.JSON do
   @doc "Returns the configured JSON adapter."
   @spec adapter() :: module()
   def adapter do
-    Application.get_env(:tackle_lib, :json) ||
-      Application.get_env(:my_app, Tackle.Lib, [])[:json] ||
-      Tackle.Lib.JSON.Default
+    Application.get_env(:tackle_lib, :json) || Tackle.Lib.JSON.Default
   end
 
   @doc "Encodes a term to JSON using the configured adapter."

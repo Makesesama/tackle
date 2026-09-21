@@ -24,11 +24,9 @@ defmodule Tackle.Lib.LLM do
   Its adapter-local model id is passed as `opts[:model]`, so separate states can
   use different providers without changing application-global configuration.
 
-  For compatibility, callers may still configure one default adapter. Tackle.Lib
-  reads its own `:tackle_lib` key first and also accepts the historical host key:
+  Callers may configure one default adapter under Tackle.Lib's application key:
 
       config :tackle_lib, llm: MyApp.AI.TackleAdapter
-      config :my_app, Tackle.Lib, llm: MyApp.AI.TackleAdapter
 
   `adapter/0`, `generate/2`, and `stream/3` use that default. Adapters may
   implement the optional `stream/3` callback; Tackle.Lib normalizes provider
@@ -242,9 +240,7 @@ defmodule Tackle.Lib.LLM do
   """
   @spec adapter() :: module()
   def adapter do
-    resolved =
-      Application.get_env(:tackle_lib, :llm) ||
-        get_in(Application.get_env(:my_app, Tackle.Lib, []), [:llm])
+    resolved = Application.get_env(:tackle_lib, :llm)
 
     case resolved do
       nil ->
