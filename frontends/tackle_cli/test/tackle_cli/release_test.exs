@@ -13,6 +13,13 @@ defmodule Tackle.CLI.ReleaseTest do
     ]
   end
 
+  defp runtime_libraries do
+    [
+      {:ex_ratatui, &ExRatatui.Native.load_from/0},
+      {:tackle_cli, &Release.tackle_load_from/0}
+    ]
+  end
+
   test "Linux release verification rejects a glibc native library" do
     with_env("BURRITO_TARGET", "linux_aarch64", fn ->
       release = release_fixture("libc.so.6")
@@ -35,7 +42,7 @@ defmodule Tackle.CLI.ReleaseTest do
 
   test "Linux release verification accepts musl native libraries" do
     with_env("BURRITO_TARGET", "linux_aarch64", fn ->
-      release = release_fixture("libc.so")
+      release = release_fixture("libc.so", runtime_libraries())
 
       assert Release.verify_linux_nifs(release) == release
     end)
@@ -54,9 +61,9 @@ defmodule Tackle.CLI.ReleaseTest do
     end)
   end
 
-  test "Linux release verification rejects ExRatatui's precompiled NIF" do
+  test "Linux release verification accepts ExRatatui's precompiled musl NIF" do
     with_env("BURRITO_TARGET", "linux_aarch64", fn ->
-      precompiled = "priv/native/libex_ratatui-v0.13.1-nif-2.17-aarch64-unknown-linux-musl"
+      precompiled = "priv/native/libex_ratatui-v0.15.0-nif-2.17-aarch64-unknown-linux-musl"
 
       libraries = [
         {:ex_ratatui, fn -> {:ex_ratatui, precompiled} end},
@@ -65,9 +72,7 @@ defmodule Tackle.CLI.ReleaseTest do
 
       release = release_fixture("libc.so", libraries)
 
-      assert_raise Mix.Error, ~r/precompiled NIF/, fn ->
-        Release.verify_linux_nifs(release, libraries)
-      end
+      assert Release.verify_linux_nifs(release, libraries) == release
     end)
   end
 

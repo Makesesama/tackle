@@ -15,19 +15,18 @@ defmodule Tackle.CLI.TUI.MessageView do
   group. A `Paragraph` paints its style background across its whole rect, so a
   group becomes a full-width band even when its text is short.
 
-  Assistant content is rendered as Markdown with measured, source-preserving
-  row windows. Tool entries keep a bounded head/tail preview inline and the
-  complete result available through the output inspector.
+  Assistant content is retained here and handed to the native conversation
+  widget for measured Markdown layout. Tool entries keep a bounded head/tail
+  preview inline and the complete result available through the output inspector.
   """
 
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
-  alias ExRatatui.Widgets.{Markdown, Paragraph}
+  alias ExRatatui.Widgets.Paragraph
   alias Tackle.CLI.TUI.{Compaction, Theme, ToolView}
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   @conversation_chunk_rows 64
-  @max_markdown_scroll 65_535
   @zero_width_grapheme ~r/^[\p{M}\p{Cf}]+$/u
   @emoji_presentation ~r/\p{Emoji_Presentation}/u
   @wide_codepoint_ranges [
@@ -389,10 +388,6 @@ defmodule Tackle.CLI.TUI.MessageView do
 
   @doc "Builds widgets for a typed entry while preserving full source separately."
   @spec render_entry(t(), pos_integer()) :: [widget_item()]
-  def render_entry(%__MODULE__{kind: :assistant} = entry, width) do
-    render_markdown(entry, width)
-  end
-
   def render_entry(%__MODULE__{kind: :thinking, collapsed?: true} = entry, width) do
     render_rows(thinking_rows(entry, :collapsed), width)
   end
@@ -546,37 +541,6 @@ defmodule Tackle.CLI.TUI.MessageView do
       prefix = if index == 0, do: "✗ ", else: "  "
       row([span(prefix, marker), span(line, text)], surface)
     end)
-  end
-
-  defp render_markdown(%__MODULE__{content: content, style: style}, width) do
-    content = sanitize(content)
-    height = Markdown.measure_height(content, max(width, 1))
-
-    cond do
-      height <= @conversation_chunk_rows ->
-        [{%Markdown{content: content, style: style}, height}]
-
-      height <= @max_markdown_scroll + 1 ->
-        0..(height - 1)//@conversation_chunk_rows
-        |> Enum.map(fn scroll_offset ->
-          item_height = min(@conversation_chunk_rows, height - scroll_offset)
-
-          {
-            %Markdown{
-              content: content,
-              style: style,
-              scroll: {scroll_offset, 0}
-            },
-            item_height
-          }
-        end)
-
-      true ->
-        # Ratatui encodes Paragraph scroll offsets as u16. Keep the complete
-        # source in the entry, but use bounded plain text if Markdown is too
-        # tall for that native field.
-        render_text(content, width, style)
-    end
   end
 
   defp message_entries(%Message{role: :user, content: content}, index, _state)

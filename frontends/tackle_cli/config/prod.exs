@@ -1,15 +1,12 @@
 import Config
 
 # Burrito boots the Linux payload on a musl ERTS, so every Rust NIF the release
-# bundles has to be a musl build for that target's CPU. Both NIFs are compiled
-# from source: the pinned ExRatatui fork adds `Markdown.measure_height/2`, which
-# the published precompiled artifacts do not export. Rustler bakes the target
-# triple into the compiled module, so the triple has to be known while the
-# crates are compiled, and the Burrito target being built is the only thing that
-# names it.
+# bundles has to target musl for that CPU. ExRatatui supplies a precompiled musl
+# NIF selected with `TARGET_ABI=musl`; Tackle's native widgets are compiled from
+# source, so Rustler needs the target triple while the crate is compiled.
 #
-# The toolchain is the one the Nix development shell provides, through three
-# variables:
+# The Tackle NIF toolchain is the one the Nix development shell provides,
+# through three variables:
 #
 #   * TACKLE_MUSL_CC    - C compiler for the same musl triple: the crates'
 #                         `CC_<target>`, used to find the static unwinder they
@@ -51,6 +48,5 @@ if triple = linux_musl_targets[System.get_env("BURRITO_TARGET")] do
         cargo -> [cargo: {:bin, cargo}]
       end
 
-  config :ex_ratatui, ExRatatui.Native, nif_opts
   config :tackle_cli, Tackle.CLI.Native, nif_opts
 end

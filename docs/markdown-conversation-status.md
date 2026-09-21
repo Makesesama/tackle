@@ -1,104 +1,68 @@
 # Markdown Conversation History — Implementation Status
 
-_Last updated: 2026-09-09_
+_Last updated: 2026-09-21_
 
 ## Goal
 
 The Tackle CLI conversation history renders assistant messages as Markdown while
 preserving streaming updates, terminal resize behavior, row-based scrolling,
 follow-to-latest behavior, mouse hit detection, and bounded rendering for long
-histories. Conversation state and message presentation are separated from the
-TUI lifecycle.
+histories.
 
 ## Implemented
 
-The CLI now has two focused presentation modules:
+The conversation path is split between Elixir projection and a Tackle-owned
+native widget:
 
-- `Tackle.CLI.TUI.Conversation` owns the conversation panel dimensions, section
-  cache, row heights, viewport slicing, scrolling, follow-tail policy, title,
-  and mouse hit detection.
-- `Tackle.CLI.TUI.MessageView` owns typed conversation entries and conversion to
-  primitive ExRatatui widgets. User, thinking, tool, error, and welcome entries
-  remain Paragraph widgets. Assistant entries use
-  `%ExRatatui.Widgets.Markdown{}` with the provider's Markdown source preserved
-  unchanged.
+- `Tackle.CLI.TUI.Conversation` owns panel dimensions, section caches, row
+  heights, scrolling, follow-tail policy, and mouse hit detection.
+- `Tackle.CLI.TUI.MessageView` projects messages into typed entries and renders
+  non-message entries as primitive ExRatatui widgets.
+- `Tackle.CLI.Widgets.Conversation` turns user and assistant entries into
+  immutable native history cells and renders only visible viewport rows.
+- `native/tackle/src/widgets/conversation.rs` parses assistant Markdown,
+  measures wrapped lines with Ratatui, caches width-dependent layout, clips the
+  viewport, and paints selection styles.
 
-Assistant height is calculated with:
+Assistant source is parsed with `tui-markdown` and measured with Ratatui's
+`Paragraph::line_count`. The native cell returns its measured height to Elixir
+and is rebuilt when streaming content or the terminal width changes. Settled
+cells remain cached while the live tail updates.
 
-```elixir
-ExRatatui.Widgets.Markdown.measure_height(content, available_width)
-```
+Transcript scrolling is not limited by Ratatui's `u16` paragraph scroll field.
+The native widget stores transcript-wide offsets as `usize`, renders clipped
+logical-line windows, and grapheme-wraps exceptionally tall individual lines.
+The complete Markdown source remains available for copy and inspection.
 
-The measured height is cached with each rendered item and recalculated whenever
-streaming content changes or the terminal width changes. The measured width is
-the conversation panel's inner width, matching the width used by the Markdown
-widget at render time.
-
-A long assistant response is not split into Markdown source fragments. When its
-measured height exceeds the 64-row WidgetList safety chunk, the view creates
-bounded Markdown windows that all retain the complete source and set the
-widget's vertical `scroll` offset. This preserves fenced-code, list, and other
-Markdown semantics while allowing `Conversation` to pass only the items that
-intersect the viewport to `WidgetList`. Row scrolling and partial-item clipping
-therefore continue to work without an unbounded WidgetList item. The public
-ExRatatui API has no pre-rendered Markdown-line primitive, so each visible
-window still lets the native renderer parse the complete source; source
-splitting would be less correct. ExRatatui and Ratatui encode Paragraph scroll
-offsets as unsigned 16-bit values. If a pathological response exceeds 65,536
-rendered rows, the CLI falls back to bounded plain-text source windows rather
-than constructing an invalid Markdown widget and crashing.
-
-Streaming deltas rebuild only their section (`:thinking`, `:response`, or
-`:tools`). Settled messages and all sections are rebuilt when a turn completes,
-the session is reconfigured, or the terminal is resized. Existing row scrolling,
-mouse-wheel hit testing, and follow-to-latest behavior remain in place.
-
-Focused CLI tests cover:
-
-- actual Markdown widgets and role styles;
-- exact width-aware assistant heights;
-- streaming Markdown with an incomplete fenced code block;
-- resize remeasurement;
-- row scrolling, follow-tail behavior, mouse scrolling, and long histories;
-- preserving complete Markdown source across bounded long-response windows;
-- safe fallback beyond the native Markdown scroll-offset range;
-- existing user, thinking, tool, error, and lifecycle behavior.
+Focused Elixir integration tests cover Markdown rendering, incomplete fenced
+code blocks during streaming, resize remeasurement, long histories, viewport
+clipping, selection, and source preservation. Rust unit tests compare native
+measurement and clipped windows directly against Ratatui and cover offsets
+beyond the `u16` range.
 
 ## ExRatatui integration
 
-The frontend uses the approved local fork rather than the published Hex package:
+The frontend uses the released Hex package:
 
 ```elixir
-{:ex_ratatui, path: "../../repos/ex_ratatui"}
+{:ex_ratatui, "~> 0.15.0"}
 ```
 
-The fork is expected at `repos/ex_ratatui` at commit `410c2e7`. It still declares
-version `0.13.1`; therefore version resolution alone would make
-`RustlerPrecompiled` load the published 0.13.1 NIF, which does not export
-`markdown_measure_height/2`. `frontends/tackle_cli/config/config.exs` forces a
-source build:
+Normal development uses ExRatatui's published precompiled NIF. Tackle's native
+conversation and input widgets remain a separate Rustler crate with no shared
+resources or ABI, so the CLI still declares `:rustler` directly and requires a
+Rust/Cargo toolchain for that crate.
 
-```elixir
-config :rustler_precompiled, :force_build, ex_ratatui: true
-```
-
-The CLI also declares direct `{:rustler, ">= 0.0.0"}` because ExRatatui's
-Rustler dependency is optional and is not fetched transitively for a source
-build. A Rust/Cargo toolchain is consequently required for CLI compilation.
-The nested fork is not modified by this Tackle change.
-
-This local path is a temporary development integration. Once the measurement
-API is released in a portable ExRatatui package, the CLI can return to that
-released dependency and remove the force-build workaround.
+For Linux Burrito releases, `TARGET_ABI=musl` selects ExRatatui's precompiled
+musl artifact while Tackle's NIF is compiled for the same target. The Nix
+package builds both NIFs reproducibly from their locked sources.
 
 ## Validation
 
-The focused TUI test suite passes with the local fork source-built. The full
-CLI checks should be run from `frontends/tackle_cli`:
+Run the CLI checks from `frontends/tackle_cli`:
 
 ```sh
 mix deps.get
-mix format 'lib/tackle_cli/tui.ex' 'lib/tackle_cli/tui/**/*.ex' 'test/tackle_cli/tui_test.exs' 'mix.exs' 'config/config.exs'
 mix compile --warnings-as-errors
 mix test
 mix format --check-formatted
