@@ -34,8 +34,6 @@ defmodule Tackle.CLI.Release do
   defp verify_nif!(release, {app, load_from}) do
     {^app, relative_path} = load_from.()
 
-    verify_source_build!(app, relative_path)
-
     release.path
     |> Path.join("lib/#{app}-*/#{relative_path}.so")
     |> Path.wildcard()
@@ -47,24 +45,6 @@ defmodule Tackle.CLI.Release do
         Enum.each(paths, &verify_musl!/1)
     end
   end
-
-  # A precompiled ExRatatui NIF is always the wrong artifact here, even the musl
-  # one: the pinned fork adds `Markdown.measure_height/2`, and the published
-  # artifacts do not export that NIF. It would pass the musl check below and
-  # then fail on the first Markdown measurement, so reject it at build time.
-  defp verify_source_build!(:ex_ratatui, relative_path) do
-    if String.starts_with?(Path.basename(relative_path), "libex_ratatui-") do
-      Mix.raise("""
-      the Linux release would bundle ExRatatui's precompiled NIF (#{relative_path}), \
-      which does not export this frontend's pinned fork API.
-
-      Keep `config :rustler_precompiled, :force_build, ex_ratatui: true` and release \
-      from the Nix development shell so both NIFs are compiled for musl instead.
-      """)
-    end
-  end
-
-  defp verify_source_build!(_app, _relative_path), do: :ok
 
   defp verify_musl!(path) do
     bytes = File.read!(path)

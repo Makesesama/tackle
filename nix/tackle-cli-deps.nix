@@ -230,15 +230,15 @@ let
 
       ex_ratatui =
         let
-          version = "0.13.1";
+          version = "0.15.0";
           drv = buildMix {
             inherit version;
             name = "ex_ratatui";
 
-            src = builtins.fetchGit {
-              url = "ssh://git@git.makussu.de:2122/Makussu/ex_ratatui.git";
-              rev = "410c2e7a99be4f546eaafd222dafe4e0b99b25a0";
-              allRefs = true;
+            src = fetchHex {
+              inherit version;
+              pkg = "ex_ratatui";
+              sha256 = "77a576dc6e439cf749e00e06a84290692e5e8d5515110628f2c9b053a19fe932";
             };
 
             beamDeps = [

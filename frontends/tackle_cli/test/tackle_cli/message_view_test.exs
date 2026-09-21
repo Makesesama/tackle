@@ -4,7 +4,7 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
   alias ExRatatui.CellSession
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Text.Line
-  alias ExRatatui.Widgets.{Markdown, WidgetList}
+  alias ExRatatui.Widgets.WidgetList
   alias Tackle.CLI.TUI.MessageView
   alias Tackle.Lib.{Message, State}
 
@@ -16,14 +16,6 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
     assert Enum.all?(header, &(&1.bg == {:indexed, 235}))
     assert Enum.any?(header, &(&1.symbol == "›" and &1.fg == {:indexed, 110}))
     assert Enum.any?(header, &(&1.symbol == "h"))
-  end
-
-  test "assistant prose renders as Markdown without a redundant role label" do
-    [entry] = settled([Message.assistant(content: "# Title\n\nbody")])
-    items = MessageView.render_entry(entry, 40)
-
-    assert Enum.any?(items, fn {widget, _height} -> match?(%Markdown{}, widget) end)
-    refute text(items) =~ "Tackle:"
   end
 
   test "collapsed reasoning shows every source line and expands previews" do
@@ -95,9 +87,8 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
   end
 
   defp text(items) do
-    Enum.map_join(items, "\n", fn
-      {%Markdown{content: content}, _height} -> content
-      {widget, _height} -> widget |> Map.fetch!(:text) |> plain()
+    Enum.map_join(items, "\n", fn {widget, _height} ->
+      widget |> Map.fetch!(:text) |> plain()
     end)
   end
 

@@ -113,10 +113,11 @@ BEAM Machine artifact on the same exact OTP patch.
 
 Direct `mix release` remains useful while developing release configuration, but
 it is not the distributable build: it uses the active shell's OTP and network
-ERTS resolution. On Linux it also requires the musl variables supplied by the
-Nix development shell. `Tackle.CLI.Release.verify_linux_nifs/1`, wired between
-`:assemble` and `&Burrito.wrap/1`, rejects glibc Rust NIFs and the shared
-`libgcc_s.so.1` unwinder before wrapping.
+ERTS resolution. On Linux it also requires `TARGET_ABI=musl` for ExRatatui and
+the Tackle NIF musl variables supplied by the Nix development shell.
+`Tackle.CLI.Release.verify_linux_nifs/1`, wired between `:assemble` and
+`&Burrito.wrap/1`, rejects glibc Rust NIFs and the shared `libgcc_s.so.1`
+unwinder before wrapping.
 
 Smoke-test the non-interactive path before publishing:
 
@@ -471,18 +472,14 @@ Mouse capture is enabled for wheel scrolling, so native terminal selection
 requires the terminal's mouse-override gesture (typically Shift-drag).
 The non-TUI command path remains available for automation.
 
-### Pinned ExRatatui fork
+### Native dependencies
 
-Until the width-aware Markdown measurement API is released in Hex, this
-frontend uses the fork at
-`ssh://git@git.makussu.de:2122/Makussu/ex_ratatui.git`, pinned to commit
-`410c2e7`. The fork still declares version `0.13.1`, so the CLI configuration
-forces an ExRatatui source build instead of loading the published precompiled
-NIF. The direct `:rustler` dependency in `mix.exs` is required by that source
-build.
-
-Access to the fork and a Rust/Cargo toolchain are required. The Nix development
-shell provides the toolchain:
+The frontend uses the released ExRatatui package and its precompiled NIF during
+normal development. Tackle's transcript, input, browse, and other native widgets
+live in a separate Rustler crate under `native/tackle`; that crate measures and
+renders assistant Markdown directly, without sharing resources or ABI with
+ExRatatui. The direct `:rustler` dependency and a Rust/Cargo toolchain are
+therefore still required. The Nix development shell provides the toolchain:
 
 ```sh
 cd frontends/tackle_cli
@@ -491,8 +488,7 @@ mix compile --warnings-as-errors
 ```
 
 The escript archive is suitable for non-TUI commands only: native libraries
-cannot be loaded directly from its embedded ZIP. The frontend can switch back
-to the released ExRatatui package once the measurement API is available there.
+cannot be loaded directly from its embedded ZIP.
 
 ## Code layout
 
