@@ -1,21 +1,16 @@
 defmodule Tackle.Runtime.AgentSpec do
   @moduledoc """
-  Trusted, resolved configuration for one agent the runtime may start.
+  Trusted configuration for one agent the runtime may start.
 
-  An `AgentSpec` is produced by trusted harness code (a named profile or a host
-  workflow) from modules already present in the distribution. Model-generated
-  data may only select a trusted profile name; it can never name arbitrary
-  modules, supervisors, or executable code.
+  `:config` is opaque backend-owned data. Model-generated data may select only
+  an allowlisted profile name; it can never provide backend modules, executable
+  code, or configuration. Backend-specific validation occurs when a `ScopeSpec`
+  is built or a profile is resolved.
 
-  `:config` is a fully resolved `Tackle.Config`; `:allow_delegation` is the
-  explicit grant that lets this agent request descendants; `:timeout` bounds a
-  single delegated run. `:model_source` defaults to `:configured`; `:parent`
-  resolves the requesting agent's current model and thinking level when a run
-  is requested. All other child configuration stays explicit. This setting is
-  trusted host policy, never a model-visible tool argument.
+  `:model_source` is opaque trusted policy interpreted by the backend. It is
+  retained for root-harness compatibility; generic backends may ignore it.
   """
 
-  alias Tackle.Config
   alias Tackle.Runtime.Limits
 
   @default_timeout :timer.minutes(5)
@@ -31,27 +26,25 @@ defmodule Tackle.Runtime.AgentSpec do
 
   @type t :: %__MODULE__{
           name: String.t(),
-          config: Config.t(),
+          config: map(),
           allow_delegation: boolean(),
           timeout: pos_integer(),
-          model_source: :configured | :parent
+          model_source: term()
         }
 
-  @doc "Builds a validated agent spec."
+  @doc "Builds a validated backend-neutral agent spec."
   @spec new(t() | keyword() | map()) :: {:ok, t()} | {:error, term()}
   def new(%__MODULE__{} = spec), do: validate(spec)
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
 
   def new(%{name: name, config: config} = opts) do
-    spec = %__MODULE__{
+    validate(%__MODULE__{
       name: name,
       config: config,
       allow_delegation: Map.get(opts, :allow_delegation, false),
       timeout: Map.get(opts, :timeout, @default_timeout),
       model_source: Map.get(opts, :model_source, :configured)
-    }
-
-    validate(spec)
+    })
   end
 
   def new(value), do: {:error, {:invalid_agent_spec, value}}
@@ -65,7 +58,7 @@ defmodule Tackle.Runtime.AgentSpec do
     end
   end
 
-  @doc "Returns the agent's per-run timeout, defaulting to the run limit."
+  @doc "Returns the agent's per-run timeout, bounded by the scope limit."
   @spec timeout(t(), Limits.t()) :: pos_integer()
   def timeout(%__MODULE__{timeout: timeout}, %Limits{} = limits),
     do: min(timeout, limits.run_timeout)
@@ -75,7 +68,7 @@ defmodule Tackle.Runtime.AgentSpec do
       not (is_binary(spec.name) and spec.name != "") ->
         {:error, {:invalid_agent_name, spec.name}}
 
-      not is_struct(spec.config, Config) ->
+      not is_map(spec.config) ->
         {:error, {:invalid_agent_config, spec.config}}
 
       not is_boolean(spec.allow_delegation) ->

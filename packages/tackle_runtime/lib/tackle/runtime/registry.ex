@@ -89,6 +89,15 @@ defmodule Tackle.Runtime.Registry do
     end
   end
 
+  @doc "Returns the host backend registered for a scope."
+  @spec backend(Ref.t()) :: {:ok, module()} | {:error, :not_found}
+  def backend(ref) do
+    case Registry.lookup(@name, {:backend, Ref.scope_id(ref)}) do
+      [{_pid, backend}] when is_atom(backend) -> {:ok, backend}
+      _other -> {:error, :not_found}
+    end
+  end
+
   @doc "Returns the workflow server pid for a workflow reference."
   @spec workflow(Ref.t()) :: {:ok, pid()} | {:error, :not_found}
   def workflow(ref), do: Registry.lookup(@name, Ref.registry_key(ref)) |> first()

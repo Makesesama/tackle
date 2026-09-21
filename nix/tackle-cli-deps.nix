@@ -574,6 +574,7 @@ let
 
             beamDeps = [
               tackle_lib
+              tackle_runtime
             ];
           };
         in
@@ -626,6 +627,22 @@ let
             beamDeps = [
               jsv
               telemetry
+            ];
+          };
+        in
+        drv;
+
+      tackle_runtime =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_runtime";
+
+            src = ../packages/tackle_runtime;
+
+            beamDeps = [
+              tackle_lib
             ];
           };
         in

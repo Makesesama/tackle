@@ -22,12 +22,13 @@ handlers yet. Integrate the EventReducer manually as shown below.
 
 ## Installation
 
-This package is currently an in-repo path package, not a Hex package. Copy or
-extract both sibling packages while preserving this layout:
+This package is currently an in-repo path package, not a Hex package. Preserve
+these sibling packages:
 
 ```text
 packages/
   tackle_lib/
+  tackle_runtime/
   tackle_phoenix/
 ```
 
@@ -38,6 +39,7 @@ Then add:
 defp deps do
   [
     {:tackle_lib, path: "packages/tackle_lib"},
+    {:tackle_runtime, path: "packages/tackle_runtime"},
     {:tackle_phoenix, path: "packages/tackle_phoenix"}
   ]
 end
@@ -51,6 +53,7 @@ Phoenix PubSub `~> 2.1`.
 | Concern | Owner |
 |---|---|
 | LLM loop, messages, tools, events | `Tackle.Lib` |
+| Optional scopes, subagents, limits, workflows | `Tackle.Runtime` |
 | Turn process, supervised task, cancellation token | `Tackle.Phoenix.Runner` |
 | PubSub topic and event/terminal broadcast | `Tackle.Phoenix.PubSub` |
 | Usage collection and terminal settlement ordering | `Tackle.Phoenix.Runner` |
@@ -117,7 +120,22 @@ when recreated.
 
 The built-in Registry is node-local. If requests for one conversation can land
 on multiple cluster nodes, add sticky routing or a distributed ownership layer
-in the host; `Tackle.Phoenix` does not provide cluster-wide process discovery.
+in the host; neither `Tackle.Phoenix` nor `Tackle.Runtime` provides cluster-wide
+process discovery.
+
+### Optional scoped runtime and subagents
+
+Use `Tackle.Phoenix.RuntimeBackend` when a Phoenix/SaaS host needs the reusable
+scope, subagent, fan-out, or workflow layer. Build a trusted
+`Tackle.Phoenix.RuntimeSpec` for the root and every allowlisted child profile,
+then create a `Tackle.Runtime.ScopeSpec` with
+`backend: Tackle.Phoenix.RuntimeBackend`.
+
+Each runtime-owned Runner receives a dedicated tool `Task.Supervisor`. Every
+child still executes the complete `Tackle.Phoenix.Store` lifecycle, including
+`before_turn/2`, persistence, settlement, and billing. Child profiles should
+use distinct host state/session identities; the runtime never invents tenant or
+persistence policy.
 
 ## 2. Provide an agent module
 

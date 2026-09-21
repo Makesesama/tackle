@@ -1,13 +1,13 @@
 # Tackle architecture specification
 
-Status: architectural direction agreed; detailed contracts below are proposals until implemented.
+Status: architectural direction implemented; later plugin/distribution items remain proposals.
 Scope: package boundaries, composition, frontend independence, and migration order.
-This document describes the target architecture, not currently working functionality.
+This document distinguishes implemented package boundaries from explicitly future work.
 
 ## 1. Agreed decisions
 
 1. The repository-root application is the Tackle developer harness. Its implementation lives in `lib/tackle`, with `lib/tackle.ex` as its public facade.
-2. The harness owns configuration reading, plugin loading and composition, and shared session/runtime coordination. There is no separate `tackle_runtime` package.
+2. The harness owns configuration reading and plugin composition. Reusable scoped supervision, subagents, limits, and workflows live in `packages/tackle_runtime`; host-specific sessions, persistence, authorization, and billing remain in adapters.
 3. Rename the existing reusable library from `packages/tackle` to `packages/tackle_lib`, preserving its implementation and capabilities rather than replacing or copying its engine.
 4. Give the library the OTP application identity `:tackle_lib` and namespace `Tackle.Lib.*`. The harness retains `:tackle` and `Tackle.*`.
 5. The harness is frontend-agnostic. Build a CLI first; a future web frontend uses the same harness API and session lifecycle.
@@ -36,6 +36,7 @@ packages/
       tackle_lib.ex              # Tackle.Lib facade
       tackle_lib/                # Existing reusable engine and contracts
     test/
+  tackle_runtime/                # :tackle_runtime, Tackle.Runtime.* orchestration
   tackle_phoenix/                 # Existing optional Phoenix integration
   tackle_anubis/                  # Optional Anubis MCP bridge (extracted from tackle_lib)
 
@@ -59,6 +60,7 @@ Proposed component identities:
 | --- | --- | --- |
 | Harness | `:tackle` | `Tackle.*` |
 | Library | `:tackle_lib` | `Tackle.Lib.*` |
+| Scoped runtime | `:tackle_runtime` | `Tackle.Runtime.*` |
 | Existing Phoenix integration | `:tackle_phoenix` | `Tackle.Phoenix.*` (unchanged) |
 | Anubis MCP bridge | `:tackle_anubis` | `Tackle.Anubis.*` |
 | Codex plugin | `:tackle_codex` | `Tackle.Plugins.Codex.*` |
@@ -81,6 +83,14 @@ The inherited optional MCP bridge was extracted into `packages/tackle_anubis`
 `Tackle.Lib.Integrations.Anubis`) so the library keeps no MCP dependency and only
 the provider-neutral `Tackle.Lib.Integrations.Registry` seam.
 
+### Reusable runtime: `packages/tackle_runtime`
+
+Depends only on `tackle_lib` and owns scoped OTP supervision, stable references,
+admission limits, per-agent tool supervision, delegated requests, cancellation,
+fan-out, and workflows. Hosts implement `Tackle.Runtime.AgentBackend` so tenant,
+persistence, billing, credentials, and local-session policy stay outside the
+runtime package.
+
 ### Developer harness: root `lib/tackle`
 
 Owns:
@@ -88,8 +98,8 @@ Owns:
 - Reading and validating developer-harness configuration.
 - Resolving explicitly configured plugins and composing their contributions.
 - Selecting model, adapter, tools, hooks, and developer prompts.
-- Creating and owning sessions and running turns under supervision.
-- Owning cancellation-signal cleanup and handling normal results and task failures.
+- Root `Tackle.Session` persistence, journals, credentials, and the runtime backend that adapts them.
+- Handling normal results and task failures through the reusable runtime.
 - Exposing shared commands, session snapshots, and event delivery to frontends.
 
 The harness invokes `Tackle.Lib`; it does not implement another agent loop or provider protocol.

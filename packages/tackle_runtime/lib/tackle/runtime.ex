@@ -2,16 +2,19 @@ defmodule Tackle.Runtime do
   @moduledoc """
   Public runtime API for root-agent scopes, delegated agents, and cancellation.
 
-  The runtime is the root-harness orchestration layer above `Tackle.Lib`. It
+  The runtime is a reusable orchestration layer above `Tackle.Lib`. It
   addresses everything by stable references (`Tackle.Runtime.ScopeRef`,
   `AgentRef`, `WorkflowRef`, `RunRef`) and never requires callers to hold PIDs.
+  Concrete agent lifecycle and host policy are supplied through
+  `Tackle.Runtime.AgentBackend`.
 
-  A scope is one root agent plus every descendant it creates and is also the
-  fleet boundary for the initial coding harness. See `docs/RUNTIME_ARCHITECTURE.md`.
+  A scope is one root agent plus every descendant it creates and forms the
+  runtime's physical cleanup and logical ownership boundary.
   """
 
   alias Tackle.AgentScope.Coordinator
   alias Tackle.AgentSupervisor
+  alias Tackle.Runtime.AgentBackend
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.Handle
@@ -27,7 +30,6 @@ defmodule Tackle.Runtime do
   alias Tackle.Runtime.Workflow
   alias Tackle.Runtime.Workflow.Server, as: WorkflowServer
   alias Tackle.Runtime.WorkflowRef
-  alias Tackle.Session
 
   @doc """
   Starts one root-agent scope from a trusted `ScopeSpec`.
@@ -96,19 +98,19 @@ defmodule Tackle.Runtime do
   @spec submit(AgentRef.t(), String.t()) ::
           {:ok, String.t() | :queued} | {:error, term()}
   def submit(%AgentRef{} = agent_ref, input) do
-    with_session(agent_ref, &Session.submit(&1, input))
+    with_agent(agent_ref, :submit, [input])
   end
 
   @doc "Continues an agent conversation without appending a user message."
   @spec continue(AgentRef.t()) :: {:ok, String.t()} | {:error, term()}
   def continue(%AgentRef{} = agent_ref) do
-    with_session(agent_ref, &Session.continue/1)
+    with_agent(agent_ref, :continue, [])
   end
 
   @doc "Requests cooperative cancellation of an agent's active turn."
   @spec cancel_turn(AgentRef.t()) :: :ok | {:error, term()}
   def cancel_turn(%AgentRef{} = agent_ref) do
-    with_session(agent_ref, &Session.cancel/1)
+    with_agent(agent_ref, :cancel, [:user_cancelled])
   end
 
   @doc """
@@ -120,34 +122,36 @@ defmodule Tackle.Runtime do
   """
   @spec abandon_turn(AgentRef.t()) :: :ok | {:error, term()}
   def abandon_turn(%AgentRef{} = agent_ref) do
-    with_session(agent_ref, &Session.abandon_turn/1)
+    with_agent(agent_ref, :abandon_turn, [])
   end
 
   @doc "Subscribes the caller to an agent's correlated events and terminal outcomes."
-  @spec subscribe(AgentRef.t()) :: {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
+  @spec subscribe(AgentRef.t()) :: {:ok, term()} | :ok | {:error, term()}
   def subscribe(%AgentRef{} = agent_ref) do
-    with_session(agent_ref, &Session.subscribe/1)
+    with_agent(agent_ref, :subscribe, [])
   end
 
   @doc "Unsubscribes the caller from an agent's deliveries."
   @spec unsubscribe(AgentRef.t()) :: :ok | {:error, term()}
   def unsubscribe(%AgentRef{} = agent_ref) do
-    with_session(agent_ref, &Session.unsubscribe/1)
+    with_agent(agent_ref, :unsubscribe, [])
   end
 
   @doc "Updates an idle agent's model and thinking settings."
-  @spec reconfigure(AgentRef.t(), keyword()) ::
-          {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
+  @spec reconfigure(AgentRef.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def reconfigure(%AgentRef{} = agent_ref, opts) when is_list(opts) do
-    with_session(agent_ref, &Session.reconfigure(&1, opts))
+    with_agent(agent_ref, :reconfigure, [opts])
   end
 
   def reconfigure(%AgentRef{}, opts), do: {:error, {:invalid_config, opts}}
 
   @doc "Returns an agent's atomic conversation snapshot."
-  @spec session_snapshot(AgentRef.t()) :: {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
+  @spec session_snapshot(AgentRef.t()) :: {:ok, term()} | {:error, term()}
   def session_snapshot(%AgentRef{} = agent_ref) do
-    with_session(agent_ref, fn pid -> {:ok, Session.snapshot(pid)} end)
+    case with_agent(agent_ref, :snapshot, []) do
+      {:error, _reason} = error -> error
+      snapshot -> {:ok, snapshot}
+    end
   end
 
   @doc "Delivers text to an in-scope agent's bounded next-turn inbox."
@@ -164,7 +168,7 @@ defmodule Tackle.Runtime do
         with {:ok, coordinator} <- coordinator(from),
              {:ok, _sender} <- Coordinator.agent_snapshot(coordinator, from),
              {:ok, _recipient} <- Coordinator.agent_snapshot(coordinator, to) do
-          with_session(to, &Session.deliver(&1, from, message))
+          with_agent(to, :deliver, [from, message])
         end
     end
   end
@@ -177,13 +181,11 @@ defmodule Tackle.Runtime do
   Returns the post-compaction snapshot and the durable compaction record.
   Rejected during an active turn or while an interrupted turn awaits recovery.
   """
-  @spec compact(AgentRef.t(), keyword()) ::
-          {:ok, Tackle.Session.Snapshot.t(), Tackle.Lib.Compaction.Record.t()}
-          | {:error, term()}
+  @spec compact(AgentRef.t(), keyword()) :: {:ok, term(), term()} | {:error, term()}
   def compact(agent_ref, opts \\ [])
 
   def compact(%AgentRef{} = agent_ref, opts) when is_list(opts) do
-    with_session(agent_ref, &Session.compact(&1, opts))
+    with_agent(agent_ref, :compact, [opts])
   end
 
   def compact(%AgentRef{}, opts), do: {:error, {:invalid_compact_options, opts}}
@@ -197,7 +199,7 @@ defmodule Tackle.Runtime do
   """
   @spec tree(AgentRef.t()) :: {:ok, Tackle.Lib.Tree.t() | nil} | {:error, term()}
   def tree(%AgentRef{} = agent_ref) do
-    with_session(agent_ref, &Session.tree/1)
+    with_agent(agent_ref, :tree, [])
   end
 
   @doc """
@@ -207,13 +209,12 @@ defmodule Tackle.Runtime do
   active position is installed and published to subscribers. Rejected during an
   active turn or while an interrupted turn awaits recovery.
   """
-  @spec navigate(AgentRef.t(), Tackle.Lib.Tree.Navigator.target(), keyword()) ::
-          {:ok, Tackle.Session.Snapshot.t(), Tackle.Lib.Tree.Navigator.outcome()}
-          | {:error, term()}
+  @spec navigate(AgentRef.t(), term(), keyword()) ::
+          {:ok, term(), term()} | {:error, term()}
   def navigate(agent_ref, target, opts \\ [])
 
   def navigate(%AgentRef{} = agent_ref, target, opts) when is_list(opts) do
-    with_session(agent_ref, &Session.navigate(&1, target, opts))
+    with_agent(agent_ref, :navigate, [target, opts])
   end
 
   def navigate(%AgentRef{}, _target, opts), do: {:error, {:invalid_navigation_options, opts}}
@@ -247,20 +248,28 @@ defmodule Tackle.Runtime do
   def request_agent(requester, spec_or_profile, prompt, opts) when is_binary(prompt) do
     with {:ok, scope_ref, parent_ref} <- resolve_requester(requester),
          {:ok, coordinator} <- coordinator(scope_ref),
+         {:ok, backend} <- Registry.backend(scope_ref),
          {:ok, spec} <- resolve_spec(coordinator, spec_or_profile),
-         {:ok, spec} <- resolve_model_source(spec, parent_ref),
+         {:ok, parent_pid} <- Registry.whereis(parent_ref),
+         {:ok, spec} <- AgentBackend.prepare_child(backend, spec, parent_pid),
          {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref),
          {:ok, admission} <-
            Coordinator.admit_agent(coordinator, parent_ref, spec, lifetime: :ephemeral) do
       run_ref =
-        RunRef.new!(scope_ref.scope_id, ID.generate(), admission.agent_ref, spec.config.model_ref)
+        RunRef.new!(
+          scope_ref.scope_id,
+          ID.generate(),
+          admission.agent_ref,
+          AgentBackend.model_ref(backend, spec)
+        )
 
       arg = %{
         scope_ref: scope_ref,
         agent_ref: admission.agent_ref,
         run_ref: run_ref,
         requester: request_owner(opts, parent_ref),
-        config: spec.config,
+        backend: backend,
+        agent_spec: spec,
         prompt: prompt,
         work_supervisor: work_supervisor,
         coordinator: coordinator,
@@ -443,17 +452,18 @@ defmodule Tackle.Runtime do
   @doc "Projects an outcome into a `Tackle.Lib`-style result."
   defdelegate to_lib_result(outcome), to: Outcome
 
-  defp with_session(%AgentRef{} = agent_ref, fun) do
-    case Registry.whereis(agent_ref) do
-      {:ok, pid} ->
-        try do
-          fun.(pid)
-        catch
-          :exit, reason -> {:error, {:agent_unavailable, reason}}
-        end
-
-      {:error, :not_found} ->
-        {:error, :not_found}
+  defp with_agent(%AgentRef{} = agent_ref, operation, args) do
+    with {:ok, pid} <- Registry.whereis(agent_ref),
+         {:ok, backend} <- backend(agent_ref) do
+      try do
+        backend.call(pid, operation, args)
+      rescue
+        exception -> {:error, {:agent_backend_failed, Exception.message(exception)}}
+      catch
+        :exit, reason -> {:error, {:agent_unavailable, reason}}
+      end
+    else
+      {:error, :not_found} -> {:error, :not_found}
     end
   end
 
@@ -461,6 +471,19 @@ defmodule Tackle.Runtime do
     case Registry.coordinator(ref) do
       {:ok, pid} -> {:ok, pid}
       {:error, :not_found} -> {:error, :scope_not_found}
+    end
+  end
+
+  defp backend(ref) do
+    case Registry.backend(ref) do
+      {:ok, backend} ->
+        {:ok, backend}
+
+      {:error, :not_found} ->
+        case Application.get_env(:tackle_runtime, :default_backend) do
+          backend when is_atom(backend) and not is_nil(backend) -> {:ok, backend}
+          _other -> {:error, :not_found}
+        end
     end
   end
 
@@ -473,20 +496,6 @@ defmodule Tackle.Runtime do
   end
 
   defp resolve_requester(other), do: {:error, {:invalid_requester, other}}
-
-  defp resolve_model_source(%AgentSpec{model_source: :configured} = spec, _parent_ref),
-    do: {:ok, spec}
-
-  defp resolve_model_source(%AgentSpec{model_source: :parent} = spec, parent_ref) do
-    with {:ok, %{agent_state: state}} <- session_snapshot(parent_ref),
-         {:ok, config} <-
-           Tackle.Config.reconfigure(spec.config,
-             model: state.llm.ref,
-             thinking: Tackle.Thinking.from_llm_opts(state.llm_opts)
-           ) do
-      {:ok, %{spec | config: config}}
-    end
-  end
 
   defp request_owner(opts, parent_ref) do
     case Keyword.get(opts, :owner, :requester) do

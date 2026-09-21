@@ -23,13 +23,15 @@ defmodule Tackle.Runtime.Request do
   use GenServer, restart: :temporary
 
   alias Tackle.Lib.Event
+  alias Tackle.Runtime.AgentBackend
+  alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentRef
+  alias Tackle.Runtime.AgentSpec
+  alias Tackle.Runtime.AgentSupervisor
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Registry
   alias Tackle.Runtime.RunRef
   alias Tackle.Runtime.ScopeRef
-  alias Tackle.Session
-  alias Tackle.Session.Supervisor, as: SessionSupervisor
 
   @default_linger 5_000
 
@@ -37,7 +39,8 @@ defmodule Tackle.Runtime.Request do
           required(:scope_ref) => ScopeRef.t(),
           required(:agent_ref) => AgentRef.t(),
           required(:run_ref) => RunRef.t(),
-          required(:config) => Tackle.Config.t(),
+          required(:backend) => module(),
+          required(:agent_spec) => AgentSpec.t(),
           required(:prompt) => String.t(),
           required(:work_supervisor) => GenServer.server(),
           optional(:coordinator) => GenServer.server() | nil,
@@ -157,7 +160,8 @@ defmodule Tackle.Runtime.Request do
       scope_ref: arg.scope_ref,
       coordinator: Map.get(arg, :coordinator),
       work_supervisor: arg.work_supervisor,
-      config: arg.config,
+      backend: arg.backend,
+      agent_spec: arg.agent_spec,
       prompt: arg.prompt,
       requester: Map.get(arg, :requester),
       requester_monitor: nil,
@@ -169,6 +173,7 @@ defmodule Tackle.Runtime.Request do
       completion_message: Map.get(arg, :completion_message),
       profile: Map.get(arg, :profile),
       retention: Map.get(arg, :retention, :linger),
+      child: nil,
       session_pid: nil,
       session_monitor: nil,
       outcome: nil,
@@ -292,8 +297,14 @@ defmodule Tackle.Runtime.Request do
     {:noreply, state}
   end
 
-  def handle_info({:tackle_runtime_terminal, run_id, %Outcome{} = outcome}, state) do
+  def handle_info({:tackle_runtime_event, %Event{} = event}, state) do
+    publish_child_event(state, event)
+    {:noreply, state}
+  end
+
+  def handle_info({:tackle_runtime_terminal, run_id, result}, state) do
     if run_id == state.run_ref.run_id do
+      outcome = AgentBackend.outcome(state.backend, result, state.agent_ref)
       {:noreply, settle(state, outcome)}
     else
       {:noreply, state}
@@ -367,8 +378,9 @@ defmodule Tackle.Runtime.Request do
        when is_function(callback, 1) and is_binary(turn_id) and turn_id != "" and
               is_binary(tool_call_id) and tool_call_id != "" do
     with message when is_binary(message) <- callback.(run_ref),
-         {:ok, parent} <- Registry.whereis(parent_ref) do
-      Session.background_started(parent, run_ref, origin, message)
+         {:ok, parent} <- Registry.whereis(parent_ref),
+         {:ok, backend} <- Registry.backend(parent_ref) do
+      AgentBackend.notify(backend, parent, {:background_started, run_ref, origin, message})
     else
       {:error, reason} -> {:error, reason}
       message when not is_binary(message) -> {:error, {:invalid_launch_message, message}}
@@ -388,51 +400,57 @@ defmodule Tackle.Runtime.Request do
   end
 
   defp start_child_session(state) do
-    opts = [
+    context = %AgentContext{
+      kind: :child,
       scope_ref: state.scope_ref,
       agent_ref: state.agent_ref,
+      coordinator: state.coordinator,
+      work_supervisor: state.work_supervisor,
       lifetime: :ephemeral,
       allow_delegation: state.allow_delegation,
       limits: state.limits,
-      coordinator: state.coordinator,
-      work_supervisor: state.work_supervisor,
       parent: state.parent,
-      context_overrides: event_context(state),
       terminal: %{destination: self(), run_id: state.run_ref.run_id},
-      id: {:session, state.agent_ref.agent_id}
-    ]
+      event_callback: event_callback(state),
+      scope_options: nil
+    }
 
-    case DynamicSupervisor.start_child(
-           state.work_supervisor,
-           SessionSupervisor.child_spec({state.config, opts})
-         ) do
+    child_spec = AgentSupervisor.child_spec({state.backend, state.agent_spec, context})
+
+    case DynamicSupervisor.start_child(state.work_supervisor, child_spec) do
       {:ok, supervisor} ->
-        case SessionSupervisor.session_pid(supervisor) do
-          pid when is_pid(pid) ->
-            {:ok, %{state | session_pid: pid, session_monitor: Process.monitor(pid)}}
-
-          nil ->
-            {:error, :session_not_started}
-        end
+        await_registered_agent(state, supervisor, 20)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp event_context(%{event_callback: callback}) when is_function(callback, 1),
-    do: %{event_callback: callback}
+  defp await_registered_agent(state, supervisor, attempts) when attempts > 0 do
+    case Registry.whereis(state.agent_ref) do
+      {:ok, pid} ->
+        {:ok,
+         %{state | session_pid: pid, session_monitor: Process.monitor(pid), child: supervisor}}
 
-  defp event_context(_state), do: %{}
+      {:error, :not_found} ->
+        Process.sleep(1)
+        await_registered_agent(state, supervisor, attempts - 1)
+    end
+  end
+
+  defp await_registered_agent(_state, _supervisor, 0), do: {:error, :agent_not_registered}
+
+  defp event_callback(%{event_callback: callback}) when is_function(callback, 1), do: callback
+  defp event_callback(_state), do: nil
 
   defp subscribe_to_child_events(%{event_callback: callback, session_pid: pid} = state)
        when is_function(callback, 1) or is_function(callback, 2) do
-    case Session.subscribe(pid) do
+    case backend_call(state.backend, pid, :subscribe, []) do
       {:ok, _snapshot} -> {:ok, state}
+      :ok -> {:ok, state}
       {:error, reason} -> {:error, {:event_subscription_failed, reason}}
+      other -> {:error, {:event_subscription_failed, {:invalid_result, other}}}
     end
-  catch
-    :exit, reason -> {:error, {:event_subscription_failed, reason}}
   end
 
   defp subscribe_to_child_events(state), do: {:ok, state}
@@ -448,12 +466,11 @@ defmodule Tackle.Runtime.Request do
   defp publish_child_event(_state, _event), do: :ok
 
   defp submit_prompt(%{session_pid: pid, prompt: prompt} = state) do
-    case Session.submit(pid, prompt) do
+    case backend_call(state.backend, pid, :submit, [prompt]) do
       {:ok, _turn_id} -> {:ok, state}
       {:error, reason} -> {:error, reason}
+      other -> {:error, {:invalid_submit_result, other}}
     end
-  catch
-    :exit, reason -> {:error, {:session_unavailable, reason}}
   end
 
   defp arm_deadline(state, :infinity), do: state
@@ -524,8 +541,13 @@ defmodule Tackle.Runtime.Request do
        )
        when is_function(callback, 2) do
     with message when is_binary(message) <- callback.(run_ref, outcome),
-         {:ok, parent} <- Registry.whereis(parent_ref) do
-      Session.background_finished(parent, run_ref, profile, outcome, message)
+         {:ok, parent} <- Registry.whereis(parent_ref),
+         {:ok, backend} <- Registry.backend(parent_ref) do
+      AgentBackend.notify(
+        backend,
+        parent,
+        {:background_finished, run_ref, profile, outcome, message}
+      )
     end
 
     :ok
@@ -546,28 +568,39 @@ defmodule Tackle.Runtime.Request do
   defp cancel_child(%{cancelled: true} = state, _reason), do: state
 
   defp cancel_child(state, reason) do
-    safe_session_cancel(state.session_pid, reason)
+    safe_session_cancel(state.backend, state.session_pid, reason)
     %{state | cancelled: true}
   end
 
   defp stop_child(%{session_pid: nil}), do: :ok
 
-  defp stop_child(%{session_pid: pid}) do
-    safe_session_cancel(pid, :request_terminated)
+  defp stop_child(%{backend: backend, session_pid: pid} = state) do
+    safe_session_cancel(backend, pid, :request_terminated)
+
+    if is_pid(state.child) and Process.alive?(state.child) do
+      DynamicSupervisor.terminate_child(state.work_supervisor, state.child)
+    end
+
     :ok
   end
 
-  # The ephemeral child stops itself once it settles, so it can exit between the
-  # aliveness check and the cancel call. Cancellation is best-effort by design.
-  defp safe_session_cancel(pid, reason) do
+  # The ephemeral child can exit between the aliveness check and cancellation.
+  # Cancellation is best-effort by design.
+  defp safe_session_cancel(backend, pid, reason) do
     if is_pid(pid) and Process.alive?(pid) do
-      Session.cancel(pid)
+      backend_call(backend, pid, :cancel, [reason])
       send(pid, {:runtime_cancel, reason})
     end
 
     :ok
+  end
+
+  defp backend_call(backend, pid, operation, args) do
+    backend.call(pid, operation, args)
+  rescue
+    exception -> {:error, {:agent_backend_failed, Exception.message(exception)}}
   catch
-    :exit, _reason -> :ok
+    :exit, reason -> {:error, {:agent_unavailable, reason}}
   end
 
   defp cancel_timers(state) do

@@ -63,6 +63,7 @@ defmodule Tackle.Coding do
              allow_delegation: map_size(profiles) > 0
            ) do
       ScopeSpec.new(
+        backend: Tackle.Runtime.RootBackend,
         root_spec: root_spec,
         session: session,
         limits: limits(discovery.definitions),
