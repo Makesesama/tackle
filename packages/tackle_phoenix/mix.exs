@@ -26,7 +26,7 @@ defmodule Tackle.Phoenix.MixProject do
       # The framework-free agent core (Tackle.Lib.*) this layer drives.
       {:tackle_lib, path: "../tackle_lib"},
       # Phoenix runtime + LiveView UI glue (Runner/EventReducer/Chat/PubSub).
-      {:phoenix_live_view, "~> 1.1.33"},
+      {:phoenix_live_view, ">= 1.1.33 and < 1.3.0"},
       {:phoenix_pubsub, "~> 2.1"}
     ]
   end
