@@ -57,9 +57,8 @@ defmodule Tackle.Runtime.AgentContext do
   @doc "Registers the calling backend process as the live agent for this context."
   @spec register(t(), pid()) :: :ok | {:error, term()}
   def register(%__MODULE__{} = context, pid \\ self()) when is_pid(pid) do
-    with {:ok, _pid} <- register_runtime(context.agent_ref, pid),
-         :ok <- Coordinator.register_agent(context.coordinator, context.agent_ref, pid) do
-      :ok
+    with {:ok, _pid} <- register_runtime(context.agent_ref, pid) do
+      Coordinator.register_agent(context.coordinator, context.agent_ref, pid)
     end
   end
 

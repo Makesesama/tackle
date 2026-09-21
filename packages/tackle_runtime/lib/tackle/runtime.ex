@@ -462,8 +462,6 @@ defmodule Tackle.Runtime do
       catch
         :exit, reason -> {:error, {:agent_unavailable, reason}}
       end
-    else
-      {:error, :not_found} -> {:error, :not_found}
     end
   end
 

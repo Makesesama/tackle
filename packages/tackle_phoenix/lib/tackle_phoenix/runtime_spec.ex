@@ -49,20 +49,8 @@ defmodule Tackle.Phoenix.RuntimeSpec do
   end
 
   defp validate(%__MODULE__{} = spec) do
-    required_runner_keys = [
-      :registry,
-      :dynamic_supervisor,
-      :task_supervisor,
-      :pubsub,
-      :store,
-      :agent
-    ]
-
     cond do
-      not is_map(spec.runner) ->
-        {:error, {:invalid_runner_config, spec.runner}}
-
-      not Enum.all?(required_runner_keys, &Map.has_key?(spec.runner, &1)) ->
+      not valid_runner?(spec.runner) ->
         {:error, {:invalid_runner_config, spec.runner}}
 
       not (is_binary(spec.user_id) and spec.user_id != "") ->
@@ -80,5 +68,11 @@ defmodule Tackle.Phoenix.RuntimeSpec do
       true ->
         {:ok, spec}
     end
+  end
+
+  defp valid_runner?(runner) do
+    required = [:registry, :dynamic_supervisor, :task_supervisor, :pubsub, :store, :agent]
+
+    is_map(runner) and Enum.all?(required, &Map.has_key?(runner, &1))
   end
 end

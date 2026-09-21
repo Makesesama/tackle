@@ -249,17 +249,15 @@ defmodule Tackle.Phoenix.Runner do
   end
 
   def handle_call({:runtime_submit, input}, _from, state) do
-    with {:ok, opts} <- runtime_turn_opts(state, :run) do
-      start_turn(:run, state, state.agent_state, input, opts)
-    else
+    case runtime_turn_opts(state, :run) do
+      {:ok, opts} -> start_turn(:run, state, state.agent_state, input, opts)
       {:error, reason} -> {:reply, {:error, reason}, state, @timeout}
     end
   end
 
   def handle_call(:runtime_continue, _from, state) do
-    with {:ok, opts} <- runtime_turn_opts(state, :continue) do
-      start_turn(:continue, state, state.agent_state, nil, opts)
-    else
+    case runtime_turn_opts(state, :continue) do
+      {:ok, opts} -> start_turn(:continue, state, state.agent_state, nil, opts)
       {:error, reason} -> {:reply, {:error, reason}, state, @timeout}
     end
   end
