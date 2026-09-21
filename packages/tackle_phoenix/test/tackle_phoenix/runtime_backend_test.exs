@@ -20,7 +20,7 @@ defmodule Tackle.Phoenix.RuntimeBackendTest do
     def continue(state, opts) do
       tool_supervisor = Keyword.fetch!(opts, :tool_supervisor)
       send(state.context.test_pid, {:tool_supervisor, GenServer.whereis(tool_supervisor)})
-      {:ok, Tackle.Lib.State.add_message(state, Tackle.Lib.Message.assistant(content: "done"))}
+      {:ok, State.add_message(state, Message.assistant(content: "done"))}
     end
   end
 

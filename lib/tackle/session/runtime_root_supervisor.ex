@@ -24,7 +24,7 @@ defmodule Tackle.Session.RuntimeRootSupervisor do
         restart: :permanent
       )
 
-    children = journal_children(config, session_spec) ++ [session_child]
+    children = Enum.reverse([session_child | journal_children(config, session_spec)])
     Supervisor.init(children, strategy: :one_for_all, max_restarts: 0, max_seconds: 1)
   end
 

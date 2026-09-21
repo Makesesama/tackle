@@ -3,6 +3,7 @@ defmodule Tackle.Lib.ToolTest do
 
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Tool
+  alias Tackle.Lib.Tool.Content
   alias Tackle.Lib.Tool.Schema
   alias Tackle.Lib.Tool.Schema.JsonSchema
 
@@ -133,9 +134,9 @@ defmodule Tackle.Lib.ToolTest do
 
     def run(%{"media_type" => media_type}, _context) do
       {:ok,
-       Tackle.Lib.Tool.Content.new(
+       Content.new(
          "Read image chart.png (#{media_type}).",
-         [Tackle.Lib.Tool.Content.image(media_type, "aGVsbG8=")]
+         [Content.image(media_type, "aGVsbG8=")]
        )}
     end
   end
@@ -151,7 +152,7 @@ defmodule Tackle.Lib.ToolTest do
     end
 
     def run(_args, _context) do
-      {:ok, Tackle.Lib.Tool.Content.new("nope", [%{"type" => "video"}])}
+      {:ok, Content.new("nope", [%{"type" => "video"}])}
     end
   end
 

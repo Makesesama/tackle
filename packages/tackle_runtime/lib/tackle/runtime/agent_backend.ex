@@ -93,9 +93,7 @@ defmodule Tackle.Runtime.AgentBackend do
   defp validate_module(backend) do
     case Code.ensure_loaded(backend) do
       {:module, ^backend} ->
-        required = [validate_spec: 1, child_spec: 2, call: 3]
-
-        if Enum.all?(required, fn {name, arity} -> function_exported?(backend, name, arity) end) do
+        if exports_required_functions?(backend) do
           :ok
         else
           {:error, {:invalid_agent_backend, backend}}
@@ -104,5 +102,11 @@ defmodule Tackle.Runtime.AgentBackend do
       {:error, reason} ->
         {:error, {:agent_backend_unavailable, backend, reason}}
     end
+  end
+
+  defp exports_required_functions?(backend) do
+    required = [validate_spec: 1, child_spec: 2, call: 3]
+
+    Enum.all?(required, fn {name, arity} -> function_exported?(backend, name, arity) end)
   end
 end
