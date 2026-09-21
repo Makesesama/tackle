@@ -159,24 +159,35 @@ defmodule Tackle.Web.ReviewLiveTest do
       assert ReviewStore.get(slug, review_id).comments == []
     end
 
-    test "answers a question asked about a line, under that line", %{conn: conn, path: path} do
+    test "answers a question asked about a line in the assistant panel", %{
+      conn: conn,
+      path: path
+    } do
       {:ok, view, _html} = live(conn, path)
       render_async(view, @async_timeout)
 
       view |> element(ask_button(1)) |> render_click()
-      view |> form("form.diff-answer-form", question_form("Why is this here?")) |> render_submit()
+      view |> form("#ask", question_form("Why is this here?")) |> render_submit()
 
       eventually(view, "Echo:")
 
-      # The point of the whole feature: the answer is rendered inside the line
-      # group of the line that was asked about.
+      # The answer is beside the diff, not inside it, and the thread still says
+      # which line it is about. Only the wording the reader typed is shown: the
+      # location the prompt carried is already named by the anchor above it.
       assert has_element?(
                view,
-               "##{@added_line} .diff-answer .diff-reply",
+               "#assistant .assistant-thread .assistant-reply",
                "Echo: About #{@changed_file} line 1"
              )
 
-      assert has_element?(view, "##{@added_line} .diff-question", "Why is this here?")
+      assert view |> element("#assistant .assistant-question") |> render() ==
+               ~s(<p class="assistant-question">Why is this here?</p>)
+
+      assert has_element?(view, "#assistant .assistant-anchor", "line 1")
+
+      # The line in the diff only carries a marker back to the thread.
+      assert has_element?(view, "##{@added_line} .diff-thread-marker")
+      refute has_element?(view, "##{@added_line} .assistant-reply")
     end
 
     test "shift-clicking a second line asks about the range under its last line", %{
@@ -187,26 +198,19 @@ defmodule Tackle.Web.ReviewLiveTest do
       render_async(view, @async_timeout)
 
       view |> element(ask_button(1)) |> render_click()
-      # The browser sends the modifier with the click metadata.
-      view |> render_click("ask_at", shift_click(2))
+      view |> render_click("select_lines", shift_click(2))
 
-      # The form names the selection, so a range is never asked about unnamed.
-      assert has_element?(view, "form.diff-answer-form .diff-ask-scope", "lines 1-2")
+      # The composer names the selection, so a range is never asked about unnamed.
+      assert has_element?(view, "#ask .assistant-scope", "lines 1-2")
 
       view
-      |> form("form.diff-answer-form", question_form("What about both lines?"))
+      |> form("#ask", question_form("What about both lines?"))
       |> render_submit()
 
       eventually(view, "Echo: About #{@changed_file} lines 1-2")
 
-      # The answer hangs under the last line of the range, not the first.
-      assert has_element?(
-               view,
-               "##{@added_line_2} .diff-answer .diff-reply",
-               "Echo: About #{@changed_file} lines 1-2"
-             )
-
-      refute has_element?(view, "##{@added_line} .diff-answer .diff-reply", "Echo:")
+      # One thread, named as the range, not one thread per line.
+      assert has_element?(view, "#assistant .assistant-anchor", "lines 1-2")
     end
 
     test "the lines of a range selection are marked while it is written", %{
@@ -217,17 +221,30 @@ defmodule Tackle.Web.ReviewLiveTest do
       render_async(view, @async_timeout)
 
       view |> element(ask_button(1)) |> render_click()
-      view |> render_click("ask_at", plain_click(2))
+      view |> render_click("select_lines", plain_click(2))
 
       # A plain click starts a fresh single-line selection.
-      assert has_element?(view, "form.diff-answer-form .diff-ask-scope", "line 2")
-      refute has_element?(view, "form.diff-answer-form .diff-ask-scope", "lines 1-2")
+      assert has_element?(view, "#ask .assistant-scope", "line 2")
+      refute has_element?(view, "#ask .assistant-scope", "lines 1-2")
 
-      view |> render_click("ask_at", shift_click(1))
+      view |> render_click("select_lines", shift_click(1))
 
-      assert has_element?(view, "form.diff-answer-form .diff-ask-scope", "lines 1-2")
+      assert has_element?(view, "#ask .assistant-scope", "lines 1-2")
       assert has_element?(view, "##{@added_line} .diff-line--selected")
       assert has_element?(view, "##{@added_line_2} .diff-line--selected")
+    end
+
+    test "a selection can be cleared without asking anything", %{conn: conn, path: path} do
+      {:ok, view, _html} = live(conn, path)
+      render_async(view, @async_timeout)
+
+      view |> element(ask_button(1)) |> render_click()
+      assert has_element?(view, "#ask .assistant-scope", "line 1")
+
+      view |> element("#ask button[phx-click=clear_selection]") |> render_click()
+
+      refute has_element?(view, "#ask .assistant-scope")
+      refute has_element?(view, "##{@added_line} .diff-line--selected")
     end
 
     test "reads the review's checkout when a question asks it to", %{conn: conn, path: path} do
@@ -237,36 +254,38 @@ defmodule Tackle.Web.ReviewLiveTest do
       view |> element(ask_button(1)) |> render_click()
 
       view
-      |> form("form.diff-answer-form", question_form("Please read #{@changed_file}"))
+      |> form("#ask", question_form("Please read #{@changed_file}"))
       |> render_submit()
 
       eventually(view, "Read:")
 
       # The tool ran in the clone and the file it read came back through the
       # loop, so the assistant is reading the review and not guessing.
-      assert has_element?(view, "##{@added_line} .diff-reply", "defmodule FromThePullRequest")
+      assert has_element?(view, "#assistant .assistant-reply", "defmodule FromThePullRequest")
       # The tool call and its result produced no answer of their own, only the
       # read did, so they are counted instead of shown.
-      assert has_element?(view, "##{@added_line} .diff-steps", "without an answer")
+      assert has_element?(view, "#assistant .assistant-steps", "without an answer")
     end
 
     test "a question can also be asked about the whole review", %{conn: conn, path: path} do
       {:ok, view, _html} = live(conn, path)
       render_async(view, @async_timeout)
 
-      view |> form("#ask-general", question_form("What does this change?")) |> render_submit()
+      view |> form("#ask", question_form("What does this change?")) |> render_submit()
 
       eventually(view, "Echo: About this review as a whole")
-      assert has_element?(view, "main .diff-reply", "What does this change?")
+      assert has_element?(view, "#assistant .assistant-reply", "What does this change?")
+      assert has_element?(view, "#assistant .assistant-anchor", "this review")
 
-      refute has_element?(view, "##{@added_line} .diff-answer .diff-reply", "Echo:")
+      # Nothing was asked about a line, so no line carries a marker.
+      refute has_element?(view, "##{@added_line} .diff-thread-marker")
     end
 
     test "an empty question is refused", %{conn: conn, path: path} do
       {:ok, view, _html} = live(conn, path)
       render_async(view, @async_timeout)
 
-      html = view |> form("#ask-general", question_form("   ")) |> render_submit()
+      html = view |> form("#ask", question_form("   ")) |> render_submit()
 
       assert html =~ "Write a question first."
       refute html =~ "Echo:"
@@ -277,16 +296,19 @@ defmodule Tackle.Web.ReviewLiveTest do
       render_async(view, @async_timeout)
 
       view |> element(ask_button(1)) |> render_click()
-      view |> form("form.diff-answer-form", question_form("Remembered?")) |> render_submit()
+      view |> form("#ask", question_form("Remembered?")) |> render_submit()
       eventually(view, "Echo:")
 
       {:ok, reloaded, _html} = live(conn, path)
       render_async(reloaded, @async_timeout)
 
       # Both the question and the answer come back, and the anchor with them, so
-      # the answer is still under the line it belongs to.
-      assert has_element?(reloaded, "##{@added_line} .diff-question", "Remembered?")
-      assert has_element?(reloaded, "##{@added_line} .diff-answer .diff-reply", "Echo:")
+      # the panel still says which line the thread is about.
+      assert reloaded |> element("#assistant .assistant-question") |> render() ==
+               ~s(<p class="assistant-question">Remembered?</p>)
+
+      assert has_element?(reloaded, "#assistant .assistant-reply", "Echo:")
+      assert has_element?(reloaded, "#assistant .assistant-anchor", "line 1")
     end
 
     test "a question asked in one viewer appears in another", %{conn: conn, path: path} do
@@ -298,15 +320,18 @@ defmodule Tackle.Web.ReviewLiveTest do
       asker |> element(ask_button(1)) |> render_click()
 
       asker
-      |> form("form.diff-answer-form", question_form("Seen by both?"))
+      |> form("#ask", question_form("Seen by both?"))
       |> render_submit()
 
       eventually(watcher, "Echo:")
 
-      # The watcher never saw the ask form, so it learned the anchor from the
+      # The watcher never saw the selection, so it learned the anchor from the
       # conversation rather than from its own request.
-      assert has_element?(watcher, "##{@added_line} .diff-question", "Seen by both?")
-      assert has_element?(watcher, "##{@added_line} .diff-answer .diff-reply", "Echo:")
+      assert watcher |> element("#assistant .assistant-question") |> render() ==
+               ~s(<p class="assistant-question">Seen by both?</p>)
+
+      assert has_element?(watcher, "#assistant .assistant-reply", "Echo:")
+      assert has_element?(watcher, "#assistant .assistant-anchor", "line 1")
     end
 
     test "a comment made in one viewer appears in another", %{conn: conn, path: path} do
@@ -364,7 +389,7 @@ defmodule Tackle.Web.ReviewLiveTest do
       # The whole point of a local project: the assistant is here too, not only
       # on a GitHub pull request.
       assert has_element?(view, ask_button(1, "lib/added.ex"))
-      assert has_element?(view, "#ask-general")
+      assert has_element?(view, "#ask")
     end
 
     test "the assistant reads the repository it was pointed at", %{conn: conn, path: path} do
@@ -374,11 +399,11 @@ defmodule Tackle.Web.ReviewLiveTest do
       view |> element(ask_button(1, "lib/added.ex")) |> render_click()
 
       view
-      |> form("form.diff-answer-form", question_form("Please read lib/added.ex"))
+      |> form("#ask", question_form("Please read lib/added.ex"))
       |> render_submit()
 
       eventually(view, "Read:")
-      assert has_element?(view, "#line-lib-added-ex-L1-new .diff-reply", "defmodule Added")
+      assert has_element?(view, "#assistant .assistant-reply", "defmodule Added")
     end
 
     test "a range can be selected on a local review", %{conn: conn, path: path} do
@@ -386,9 +411,9 @@ defmodule Tackle.Web.ReviewLiveTest do
       render_async(view, @async_timeout)
 
       view |> element(ask_button(1, "lib/added.ex")) |> render_click()
-      view |> render_click("ask_at", shift_click(2, "lib/added.ex"))
+      view |> render_click("select_lines", shift_click(2, "lib/added.ex"))
 
-      assert has_element?(view, "form.diff-answer-form .diff-ask-scope", "lines 1-2")
+      assert has_element?(view, "#ask .assistant-scope", "lines 1-2")
       assert has_element?(view, "#line-lib-added-ex-L1-new .diff-line--selected")
       assert has_element?(view, "#line-lib-added-ex-L2-new .diff-line--selected")
     end
@@ -432,7 +457,7 @@ defmodule Tackle.Web.ReviewLiveTest do
   end
 
   defp ask_button(line, path \\ @changed_file) do
-    "button[phx-click=ask_at][phx-value-line='#{line}'][phx-value-path='#{path}'][phx-value-side=new]"
+    "button[phx-click=select_lines][phx-value-from='#{line}'][phx-value-path='#{path}'][phx-value-side=new]"
   end
 
   defp question_form(body) do
@@ -453,8 +478,9 @@ defmodule Tackle.Web.ReviewLiveTest do
     }
   end
 
-  # The payload a browser sends for a click carries the modifier keys as click
-  # metadata, which `assets/js/app.js` opts into.
+  # The payload the selection hook sends: the two ends of the range it drew. The
+  # `?` button sends the same shape, collapsed to the line it sits on, and the
+  # modifier as click metadata.
   defp shift_click(line, path \\ @changed_file), do: click(line, path, true)
   defp plain_click(line, path \\ @changed_file), do: click(line, path, false)
 
@@ -462,8 +488,9 @@ defmodule Tackle.Web.ReviewLiveTest do
     %{
       "path" => path,
       "side" => "new",
-      "line" => to_string(line),
-      "shiftKey" => shift?
+      "from" => to_string(line),
+      "to" => to_string(line),
+      "extend" => shift?
     }
   end
 

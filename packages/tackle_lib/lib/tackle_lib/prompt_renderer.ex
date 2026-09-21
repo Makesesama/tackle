@@ -19,17 +19,13 @@ defmodule Tackle.Lib.PromptRenderer do
   @doc "Returns the configured prompt renderer module."
   @spec configured_renderer() :: module()
   def configured_renderer do
-    Application.get_env(:tackle_lib, :prompt_renderer) ||
-      get_in(Application.get_env(:my_app, Tackle.Lib, []), [:prompt_renderer]) ||
-      @default_renderer
+    Application.get_env(:tackle_lib, :prompt_renderer) || @default_renderer
   end
 
   @doc "Returns configured renderer options."
   @spec configured_opts() :: keyword()
   def configured_opts do
-    Application.get_env(:tackle_lib, :prompt_renderer_opts) ||
-      get_in(Application.get_env(:my_app, Tackle.Lib, []), [:prompt_renderer_opts]) ||
-      []
+    Application.get_env(:tackle_lib, :prompt_renderer_opts) || []
   end
 
   @doc "Resolves renderer options from explicit opts plus config defaults."

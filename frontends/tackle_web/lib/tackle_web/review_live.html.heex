@@ -50,53 +50,7 @@
       </div>
     </header>
 
-    <div class="flex flex-none flex-col gap-2 border-b border-base-300 px-4 py-3">
-      <form id="ask-general" phx-submit="ask" class="flex items-center gap-2">
-        <.input
-          name="question[body]"
-          placeholder="Ask the assistant about this review..."
-          autocomplete="off"
-          disabled={@processing}
-          class="font-mono"
-          wrapper_class="min-w-0 flex-1"
-        />
-        <.button type="submit" disabled={@processing}>Ask</.button>
-      </form>
-
-      <div class="flex flex-wrap items-center gap-2 text-xs text-base-content/45">
-        <span :if={@processing} class="flex items-center gap-2">
-          <.spinner size="xs" />
-          <span :if={@activity} class="truncate font-mono">{@activity}</span>
-          <span :if={!@activity}>Thinking...</span>
-          <.button type="button" size="xs" variant="quiet" phx-click="cancel_turn">Stop</.button>
-        </span>
-        <span :if={!@processing and is_nil(@agent_error)}>
-          Ask about a line with the <span class="font-mono font-semibold text-primary">?</span>
-          beside it, shift-click another line to ask about a range, or ask here about the whole
-          review.
-        </span>
-      </div>
-    </div>
-
     <.alert :if={@comment_error} tone="error" class="mx-4 mt-4">{@comment_error}</.alert>
-
-    <.alert :if={@agent_error} tone="error" class="mx-4 mt-4">
-      <:actions>
-        <.button
-          :if={not @processing and asked?(@agent_state)}
-          size="xs"
-          variant="quiet"
-          class="text-error hover:bg-error/10 hover:text-error"
-          phx-click="retry_turn"
-        >
-          Retry
-        </.button>
-      </:actions>
-      {@agent_error}
-      <span :if={credential_hint(@agent_error)} class="block opacity-80">
-        {credential_hint(@agent_error)}
-      </span>
-    </.alert>
 
     <div class="flex min-h-0 flex-1">
       <aside class="flex w-80 flex-none flex-col overflow-y-auto border-r border-base-300 bg-base-200">
@@ -119,24 +73,11 @@
         <.file_nav files={review.diff.files} review={@review_state} />
       </aside>
 
-      <main class="min-w-0 flex-1 overflow-auto">
-        <section
-          :if={
-            agent_threads(@agent, general_anchor()) != [] or
-              agent_streaming(@agent, general_anchor())
-          }
-          class="border-b border-base-300 px-3 py-3"
-        >
-          <.section_title class="mb-2">About this review</.section_title>
-          <.thread :for={answer <- agent_threads(@agent, general_anchor())} answer={answer} />
-          <div
-            :if={streaming = agent_streaming(@agent, general_anchor())}
-            class="diff-answer diff-answer--streaming"
-          >
-            <p class="diff-reply">{streaming.content}</p>
-          </div>
-        </section>
-
+      <main
+        id="diff"
+        phx-hook="LineSelection"
+        class="min-w-0 flex-1 overflow-auto"
+      >
         <.empty_state
           :if={review.diff.files == []}
           icon="hero-check-circle"
@@ -154,6 +95,117 @@
           agent={@agent}
         />
       </main>
+
+      <aside
+        id="assistant"
+        class="flex w-96 flex-none flex-col border-l border-base-300 bg-base-200"
+      >
+        <header class="flex flex-none items-center gap-2 border-b border-base-300 px-3 py-2.5">
+          <.section_title>Assistant</.section_title>
+          <div
+            :if={@processing}
+            class="ml-auto flex items-center gap-2 text-xs text-base-content/55"
+          >
+            <.spinner size="xs" />
+            <span :if={@activity} class="max-w-40 truncate font-mono" title={@activity}>
+              {@activity}
+            </span>
+            <span :if={!@activity}>Thinking...</span>
+          </div>
+          <.button
+            :if={@processing}
+            type="button"
+            size="xs"
+            variant="quiet"
+            phx-click="cancel_turn"
+          >
+            Stop
+          </.button>
+        </header>
+
+        <div
+          id="assistant-threads"
+          phx-hook="AutoScroll"
+          class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3"
+        >
+          <p
+            :if={@agent.list == [] and is_nil(@agent.streaming_entry)}
+            class="text-xs leading-relaxed text-base-content/45"
+          >
+            Select lines in the diff — by their numbers, shift-clicking to extend a
+            range — and ask about them here. With nothing selected, a question is
+            about the whole review.
+          </p>
+
+          <.thread :for={thread <- @agent.list} thread={thread} />
+
+          <div
+            :if={streaming = @agent.streaming_entry}
+            class="assistant-thread assistant-thread--streaming"
+          >
+            <p class="assistant-reply">{streaming.content}</p>
+          </div>
+        </div>
+
+        <.alert :if={@agent_error} tone="error" class="mx-3 mb-3 max-h-48 flex-none overflow-y-auto">
+          <:actions>
+            <.button
+              :if={not @processing and asked?(@agent_state)}
+              size="xs"
+              variant="quiet"
+              class="text-error hover:bg-error/10 hover:text-error"
+              phx-click="retry_turn"
+            >
+              Retry
+            </.button>
+          </:actions>
+          <span class="block whitespace-normal">
+            {@agent_error}
+            <span :if={credential_hint(@agent_error)} class="mt-1 block opacity-80">
+              {credential_hint(@agent_error)}
+            </span>
+          </span>
+        </.alert>
+
+        <form
+          id="ask"
+          phx-submit="ask"
+          class="flex flex-none flex-col gap-2 border-t border-base-300 bg-base-100 p-3"
+        >
+          <div :if={@agent.ask_scope} class="flex items-center gap-2">
+            <p class="assistant-scope min-w-0 flex-1 truncate">
+              Ask about {@agent.ask_scope}
+            </p>
+            <button
+              type="button"
+              class="flex-none text-[0.6875rem] text-base-content/45 hover:text-base-content"
+              phx-click="clear_selection"
+            >
+              Clear
+            </button>
+          </div>
+          <p :if={!@agent.ask_scope} class="text-[0.6875rem] text-base-content/45">
+            Asking about the whole review.
+          </p>
+
+          <.input
+            type="textarea"
+            name="question[body]"
+            rows="3"
+            autocomplete="off"
+            disabled={@processing}
+            class="font-mono"
+            placeholder="Ask the assistant about this review..."
+          />
+
+          <div class="flex items-center gap-2">
+            <.button type="submit" disabled={@processing}>Ask</.button>
+            <span :if={@agent.ask_scope} class="text-[0.6875rem] text-base-content/45">
+              Shift-click a line's number to extend the selection.
+            </span>
+          </div>
+        </form>
+      </aside>
     </div>
   </.async_result>
 </Layouts.app>

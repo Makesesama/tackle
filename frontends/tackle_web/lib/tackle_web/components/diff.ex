@@ -59,8 +59,11 @@ defmodule Tackle.Web.Components.Diff do
   One file's unified diff.
 
   `comments` maps `{side, line}` to the comments anchored there, and `comment_at`
-  is the `{path, side, line}` whose form is currently open. `agent` carries the
-  assistant's threads for the same anchors; `nil` renders the read-only form.
+  is the `{path, side, line}` whose form is currently open.
+
+  `agent` carries the assistant's threads grouped by the same anchors. It is what
+  makes a line selectable for a question, and what puts a marker back on a line
+  that has already been asked about. `nil` renders the read-only form.
   """
   attr(:file, :map, required: true)
   attr(:review, :map, default: nil)
@@ -118,12 +121,19 @@ defmodule Tackle.Web.Components.Diff do
   end
 
   @doc """
-  A single rendered diff line, plus the comments and assistant threads anchored
-  to it.
+  A single rendered diff line, the comments anchored to it, and the marker that
+  says the assistant has been asked about it.
 
-  A question about a range is shown under the range's last line, because that is
-  the key `Tackle.Web.Anchor` files it under, while the lines the reviewer
-  selected are marked so the region being written about is visible.
+  Selecting a line for a question is the reviewer's gesture, not the browser's.
+  The line carries the anchor it stands for in `data-` attributes, and
+  `assets/js/app.js` turns a click, a drag or a shift-click on the line numbers
+  into one selection; `?` does the same thing without JavaScript. The lines the
+  selection covers are marked, so the region being asked about is visible before
+  the question is written.
+
+  A question's answer is not rendered here: threads live in
+  `Tackle.Web.Components.Assistant`, beside the code rather than inside it. A line
+  that has been asked about only carries a count, which links to the thread.
   """
   attr(:line, :map, required: true)
   attr(:path, :string, required: true)
@@ -141,22 +151,28 @@ defmodule Tackle.Web.Components.Diff do
     assigns =
       assigns
       |> assign(:anchor, line_anchor)
+      |> assign(:side, side)
+      |> assign(:number, number)
       |> assign(:key, key)
       |> assign(:line_id, line_id(line_anchor, assigns.path))
       |> assign(:thread, thread(assigns.comments, line_anchor))
-      |> assign(:answers, agent_threads(assigns.agent, key))
-      |> assign(:replying, agent_streaming(assigns.agent, key))
-      |> assign(:asking, not is_nil(key) and Anchor.key(ask_at) == key)
+      |> assign(:answer_count, answer_count(assigns.agent, key))
+      |> assign(:thread_id, thread_id(assigns.agent, key))
+      |> assign(:selectable, not is_nil(assigns.agent) and not is_nil(line_anchor))
       |> assign(:selected, Anchor.contains?(ask_at, assigns.path, side, number))
-      |> assign(:ask_label, if(Anchor.key(ask_at) == key, do: Anchor.label(ask_at)))
 
     ~H"""
     <div class="diff-line-group" id={@line_id}>
-      <div class={[
-        "diff-line group",
-        "diff-line--#{@line.kind}",
-        @selected && "diff-line--selected"
-      ]}>
+      <div
+        class={[
+          "diff-line group",
+          "diff-line--#{@line.kind}",
+          @selected && "diff-line--selected"
+        ]}
+        data-path={@selectable && @path}
+        data-side={@selectable && @side}
+        data-line={@selectable && @number}
+      >
         <span class="diff-gutter">{@line.old}</span>
         <span class="diff-gutter">{@line.new}</span>
         <span class="diff-marker">{marker(@line.kind)}</span>
@@ -169,26 +185,35 @@ defmodule Tackle.Web.Components.Diff do
             class="diff-comment-action"
             phx-click="comment_at"
             phx-value-path={@path}
-            phx-value-side={elem(@anchor, 0)}
-            phx-value-line={elem(@anchor, 1)}
+            phx-value-side={@side}
+            phx-value-line={@number}
             title="Comment on this line"
-            aria-label={"Comment on #{@path} line #{elem(@anchor, 1)}"}
+            aria-label={"Comment on #{@path} line #{@number}"}
           >
             +
           </button>
           <button
-            :if={not is_nil(@agent) and not is_nil(@anchor)}
+            :if={@selectable}
             type="button"
             class="diff-ask-action"
-            phx-click="ask_at"
+            phx-click="select_lines"
             phx-value-path={@path}
-            phx-value-side={elem(@anchor, 0)}
-            phx-value-line={elem(@anchor, 1)}
+            phx-value-side={@side}
+            phx-value-from={@number}
+            phx-value-to={@number}
             title="Ask the assistant about this line; shift-click another line to ask about a range"
-            aria-label={"Ask the assistant about #{@path} line #{elem(@anchor, 1)}"}
+            aria-label={"Ask the assistant about #{@path} line #{@number}"}
           >
             ?
           </button>
+          <a
+            :if={@answer_count > 0 and @thread_id}
+            class="diff-thread-marker"
+            href={"#" <> @thread_id}
+            title={"#{@answer_count} question(s) asked about this line"}
+          >
+            {@answer_count}
+          </a>
         </span>
       </div>
 
@@ -209,45 +234,21 @@ defmodule Tackle.Web.Components.Diff do
         <p class="mt-1 whitespace-pre-wrap">{comment.body}</p>
       </div>
 
-      <.thread :for={answer <- @answers} answer={answer} />
-
-      <div :if={@replying} class="diff-answer diff-answer--streaming">
-        <p class="diff-reply">{@replying.content}</p>
-      </div>
-
       <form :if={@key && @comment_at == @key} phx-submit="add_comment" class="diff-comment-form">
         <input type="hidden" name="comment[path]" value={@path} />
-        <input type="hidden" name="comment[side]" value={elem(@anchor, 0)} />
-        <input type="hidden" name="comment[line]" value={elem(@anchor, 1)} />
+        <input type="hidden" name="comment[side]" value={@side} />
+        <input type="hidden" name="comment[line]" value={@number} />
         <.input
           type="textarea"
           name="comment[body]"
           rows="3"
           autofocus
           class="font-mono"
-          placeholder={"Comment on #{@path} line #{elem(@anchor, 1)}"}
+          placeholder={"Comment on #{@path} line #{@number}"}
         />
         <div class="mt-2 flex gap-2">
           <.button type="submit" size="xs">Comment</.button>
           <.button type="button" size="xs" variant="quiet" phx-click="cancel_comment">
-            Cancel
-          </.button>
-        </div>
-      </form>
-
-      <form :if={@asking} phx-submit="ask" class="diff-answer-form">
-        <p class="diff-ask-scope">Ask about {@path} {@ask_label}</p>
-        <.input
-          type="textarea"
-          name="question[body]"
-          rows="3"
-          autofocus
-          class="font-mono"
-          placeholder="Ask a question..."
-        />
-        <div class="mt-2 flex gap-2">
-          <.button type="submit" size="xs">Ask</.button>
-          <.button type="button" size="xs" variant="quiet" phx-click="cancel_ask">
             Cancel
           </.button>
         </div>
@@ -263,7 +264,7 @@ defmodule Tackle.Web.Components.Diff do
   def file_id(path), do: String.replace(path, ~r/[^A-Za-z0-9_-]/, "-")
 
   @doc """
-  Element id for one line, so an answer can be linked to directly.
+  Element id for one line, so a thread can be linked back to the code it is about.
 
   A line is identified by the side and number it has in that file's diff, which
   is also its review anchor.
@@ -281,53 +282,25 @@ defmodule Tackle.Web.Components.Diff do
 
   defp thread(_comments, _anchor), do: []
 
-  @doc """
-  One question about the code and the answers it produced.
-
-  Rendered under the line the question was asked about, and in the conversation
-  area for questions that were about the pull request as a whole.
-  """
-  attr(:answer, :map, required: true)
-
-  def thread(assigns) do
-    ~H"""
-    <div class="diff-answer">
-      <p class="diff-question">{@answer.question.content}</p>
-      <p :for={reply <- @answer.replies} class="diff-reply">{reply.content}</p>
-      <p :if={@answer.steps > 0} class="diff-steps">
-        {@answer.steps} step(s) without an answer
-      </p>
-    </div>
-    """
+  # How many questions have been asked about this line. The threads themselves are
+  # in the assistant panel; a diff line only has to say that there is something
+  # to read.
+  defp answer_count(%{threads: threads}, key) when is_map(threads) and not is_nil(key) do
+    threads |> Map.get(key, []) |> length()
   end
 
-  @doc """
-  The assistant's threads for one anchor, or `[]` when there are none.
+  defp answer_count(_agent, _key), do: 0
 
-  Threads are keyed like review comments (`{path, side, line}`), so this is the
-  same key the caller already builds to compare against `comment_at`.
-  """
-  @spec agent_threads(map() | nil, term()) :: [map()]
-  def agent_threads(%{threads: threads}, anchor)
-      when is_map(threads) and not is_nil(anchor) do
-    Map.get(threads, anchor, [])
+  # The most recent thread for this line, so the marker links to it. Older threads
+  # for the same line are still in the panel, just not the link's target.
+  defp thread_id(%{thread_ids: ids}, key) when is_map(ids) and not is_nil(key) do
+    case Map.get(ids, key) do
+      nil -> nil
+      id -> "thread-" <> id
+    end
   end
 
-  def agent_threads(_agent, _anchor), do: []
-
-  @doc """
-  The answer currently streaming for one anchor, or `nil`.
-
-  Only one turn runs per conversation, so at most one anchor has a streaming
-  answer at a time.
-  """
-  @spec agent_streaming(map() | nil, term()) :: map() | nil
-  def agent_streaming(%{streaming: streaming}, anchor)
-      when is_map(streaming) and not is_nil(anchor) do
-    Map.get(streaming, anchor)
-  end
-
-  def agent_streaming(_agent, _anchor), do: nil
+  defp thread_id(_agent, _key), do: nil
 
   defp marker(:add), do: "+"
   defp marker(:remove), do: "-"

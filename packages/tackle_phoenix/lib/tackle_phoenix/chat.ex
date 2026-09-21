@@ -4,10 +4,8 @@ defmodule Tackle.Phoenix.Chat do
 
   > #### Scaffold {: .info}
   > This module currently documents the intended surface. The injected
-  > callbacks are populated in a later slice of the `tackle_phoenix` extraction,
-  > by moving the generic subscription/settlement plumbing out of
-  > `MyAppWeb.Live.AgentPanelLive`. Until then it is a placeholder so
-  > the namespace compiles.
+  > callbacks are planned for a later release. Until then it is a placeholder
+  > so the namespace compiles.
 
   When complete, `use Tackle.Phoenix.Chat` will inject:
 

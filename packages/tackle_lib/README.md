@@ -8,8 +8,8 @@ application.
 This document has two goals:
 
 1. describe the complete Tackle.Lib surface and its limits; and
-2. explain how ExampleHost hosts Tackle.Lib so the same design can be reused in
-   another application.
+2. explain reusable host integration patterns for building an agent in another
+   application.
 
 For an OTP/Phoenix runtime with supervised turns, PubSub, and LiveView stream
 support, also read [`../tackle_phoenix/README.md`](../tackle_phoenix/README.md).
@@ -223,10 +223,10 @@ Tackle.Lib can be used to build:
   persistence; and
 - deterministic tests through injected ID generators and fake LLM adapters.
 
-ExampleHost uses all of the important seams: OpenRouter is behind an adapter,
-domain tools receive organization-aware permission context, Ecto persists
-messages, subscriptions gate and bill turns, Phoenix streams events to the UI,
-and selected tools are also exposed through MCP.
+A production host can use all of the important seams: place provider access
+behind an adapter, pass tenant-aware permission context to domain tools, persist
+messages with Ecto, gate and bill turns, stream Phoenix events to the UI, and
+expose selected tools through MCP.
 
 ## Public API
 
@@ -619,8 +619,8 @@ A useful host context shape is:
 
 Tackle.Lib does not authorize this data. The host must derive trusted context from
 the authenticated request or persisted session, and every data-holding tool
-must enforce the tenant boundary itself. ExampleHost reconstructs authorization
-from the persisted user and organization before every durable turn rather than
+must enforce the tenant boundary itself. A durable host should reconstruct
+authorization from persisted user and tenant data before every turn rather than
 trusting browser-supplied IDs.
 
 ## Hooks
@@ -641,7 +641,7 @@ steps, or `{:error, reason}` to abort the turn. Hooks run in configured order;
 each receives the context returned by the previous hook.
 
 Good hook uses include audit logging, incremental persistence, correlation
-metadata, and cleanup. ExampleHost uses `after_message/3` and `after_turn/2` for
+metadata, and cleanup. Hosts can use `after_message/3` and `after_turn/2` for
 idempotent message persistence and title generation.
 
 Do not use hooks as a substitute for tool authorization. A hook can abort a
@@ -773,8 +773,8 @@ always uses provider-native tool calls. The built-in
 `Tackle.Lib.PromptRenderer.NativeTools` is the default.
 
 A host may implement `description_metadata/0` on tools and render the same
-structured documentation differently for web prompts and MCP. ExampleHost renders
-Markdown for its web agent and XML-oriented descriptions for MCP while sharing
+structured documentation differently for web prompts and MCP—for example,
+Markdown for a web agent and XML-oriented descriptions for MCP while sharing
 the same tool modules.
 
 The loop sends the persisted user, assistant, and tool messages without adding
@@ -815,8 +815,8 @@ tools = Tackle.Lib.Cache.mark_last_tool(tools, control)
 This only marks cache breakpoints; it does not store or evict cached content.
 Providers that ignore the marker are unaffected. The loop also sends the stable
 state `:session_id` to every adapter so providers with cache-affinity keys can
-reuse the same cache route across steps and turns. ExampleHost enables explicit
-cache markers by default for its web agent.
+reuse the same cache route across steps and turns. A host may enable explicit
+cache markers for any agent whose provider supports them.
 
 ## Context compaction
 
@@ -1045,15 +1045,15 @@ Two supported persistence approaches are:
 2. **`Tackle.Phoenix.Store`.** Let the generic Runner own process lifecycle while
    the Store gates, enriches, persists, bills, and recovers the turn.
 
-ExampleHost combines incremental hook persistence with Store-level write-ahead
-pending assistant rows and terminal recovery. That is a host reliability policy,
-not a requirement of core Tackle.Lib.
+A production host can combine incremental hook persistence with Store-level
+write-ahead pending assistant rows and terminal recovery. That is a host
+reliability policy, not a requirement of core Tackle.Lib.
 
-## ExampleHost reference implementation
+## Example host architecture
 
-The current host is a useful example of where each concern belongs:
+The following generic layout illustrates where each concern belongs:
 
-| Concern | ExampleHost implementation | Reusable lesson |
+| Concern | Example implementation | Reusable lesson |
 |---|---|---|
 | Adapter configuration | `config/config.exs` | Configure `:tackle_lib, :llm` |
 | Provider adapter | `lib/my_app/ai/tackle_adapter.ex` | Translate structured messages/tools at one boundary |
@@ -1071,32 +1071,31 @@ The current host is a useful example of where each concern belongs:
 | OpenTelemetry bridge | `lib/my_app/telemetry/open_telemetry/agent_workflow.ex` | Export bounded generic telemetry |
 | Durable child agents | `lib/my_app/agent/subagents.ex` | Build orchestration host-side with tools + storage |
 
-### End-to-end ExampleHost turn
+### End-to-end host turn
 
-1. A LiveView derives `current_scope`, organization, permissions, locale, and
-   current page context.
-2. `MyApp.Agent.Session.run_turn/4` loads/reuses the per-user/session
-   Runner.
+1. A LiveView derives `current_scope`, tenant, permissions, locale, and current
+   page context.
+2. `MyApp.Agent.Session.run_turn/4` loads or reuses the per-user/session Runner.
 3. `SessionStore.before_turn/2` re-authorizes a persisted session and checks the
-   organization subscription limit before provider work.
+   tenant's quota before provider work.
 4. `SessionStore.enrich_state/3` injects trusted persistence, authorization, and
    telemetry context.
 5. The Runner writes the user message, creates a cancellation signal, and starts
    `MyApp.Agent.continue/2` under `Task.Supervisor.async_nolink`.
-6. Tackle.Lib calls `MyApp.AI.TackleAdapter`, which lowers structured
-   messages and native tool definitions to OpenRouter.
+6. Tackle.Lib calls `MyApp.AI.TackleAdapter`, which lowers structured messages
+   and native tool definitions to the selected provider.
 7. Domain tools query through the permission context. The Runner broadcasts
    normalized events and aggregates usage.
 8. The LiveView uses `Tackle.Phoenix.EventReducer` and the host MessageView to
    render streaming and finalized messages.
 9. `SessionStore.settle_turn/4` persists final messages, marks interrupted rows
-   when needed, charges organization usage, and settles child-agent state.
+   when needed, charges usage, and settles child-agent state.
 10. The Runner broadcasts the terminal result and cleans up the cancellation
     signal.
 
 ### What to copy and what to redesign
 
-Copy the **boundaries**, not ExampleHost's domain code:
+Copy the **boundaries**, not the example application's domain code:
 
 - copy/adapt the `Tackle.Lib.LLM`, `Tackle.Lib.Tool`, `Tackle.Lib.Hook`, and
   `Tackle.Phoenix.Store` patterns;
@@ -1106,8 +1105,8 @@ Copy the **boundaries**, not ExampleHost's domain code:
 - preserve structured messages and tool-call linkage;
 - keep event transport and UI rendering outside core Tackle.Lib.
 
-ExampleHost's datasets, reports, video tools, subscription credits, and subagent
-policies are examples, not Tackle.Lib requirements.
+Datasets, reports, subscription credits, and subagent policies belong to the
+host application; they are not Tackle.Lib requirements.
 
 ## Important limitations
 

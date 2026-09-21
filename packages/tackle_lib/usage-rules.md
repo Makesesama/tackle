@@ -5,16 +5,16 @@ loop, a tool-calling contract, system-prompt machinery, and typed lifecycle
 hooks. It owns **no persistence, no concrete tools, and no provider SDK** — the
 host application supplies those. Keep it that way when working with it.
 
-For the complete capability reference, portability guide, and annotated
-ExampleHost host implementation, read [`README.md`](README.md). Phoenix/OTP hosts
-should also read [`../tackle_phoenix/README.md`](../tackle_phoenix/README.md).
+For the complete capability reference, portability guide, and annotated host
+architecture, read [`README.md`](README.md). Phoenix/OTP hosts should also read
+[`../tackle_phoenix/README.md`](../tackle_phoenix/README.md).
 
 ## Golden rules
 
-- **Never reference host modules from Tackle.Lib.** Tackle.Lib must not mention
-  `MyApp.*`/`MyAppWeb.*` in code. Host behaviour is injected
-  via config (e.g. `config :tackle_lib, llm: MyApp.AI.TackleAdapter`) or
-  passed in at call time. A docstring mention is fine; a code reference is not.
+- **Never reference host modules from Tackle.Lib.** Host behaviour is injected
+  via config (e.g. `config :tackle_lib, llm: MyApp.AI.TackleAdapter`) or passed
+  in at call time. Tackle.Lib must remain independent of every embedding
+  application's namespace.
 - **The host must configure an LLM adapter** implementing `Tackle.Lib.LLM`. There is
   no default and `Tackle.Lib.LLM.adapter/0` raises without one.
 - **`State` is immutable, in-memory, and not persisted.** Tackle.Lib threads it
