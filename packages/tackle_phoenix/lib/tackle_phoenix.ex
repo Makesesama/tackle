@@ -21,6 +21,9 @@ defmodule Tackle.Phoenix do
       `Tackle.Lib.Event`s out over PubSub, and settles the turn
       (`:ok` / `:error` / `:cancelled` → `:agent_turn_done`, crash →
       `:agent_turn_failed`).
+    * `Tackle.Phoenix.RuntimeBackend` and `RuntimeSpec` — optional adapters that
+      let `Tackle.Runtime` supervise Phoenix root and child agents without
+      bypassing the host Store lifecycle.
     * `Tackle.Phoenix.EventReducer` — a pure LiveView stream reducer that turns
       streamed `Tackle.Lib.Event`s into incrementally rendered messages.
     * `Tackle.Phoenix.Chat` — a `use`-able LiveView mixin that wires

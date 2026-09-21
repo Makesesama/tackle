@@ -7,12 +7,12 @@ defmodule Tackle.Runtime.Scope do
   scope supervisor PID stays below the runtime boundary and is never part of the
   public handle.
 
-      {:ok, scope} = Tackle.start_scope(scope_spec)
+      {:ok, scope} = Tackle.Runtime.start_scope(scope_spec)
 
-      {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
-      {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, prompt)
+      {:ok, snapshot} = Tackle.Runtime.subscribe(scope.root_agent_ref)
+      {:ok, turn_id} = Tackle.Runtime.submit(scope.root_agent_ref, prompt)
 
-      :ok = Tackle.stop_scope(scope.scope_ref)
+      :ok = Tackle.Runtime.stop_scope(scope.scope_ref)
   """
 
   alias Tackle.Runtime.AgentRef

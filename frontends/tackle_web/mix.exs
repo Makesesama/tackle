@@ -46,7 +46,7 @@ defmodule Tackle.Web.MixProject do
       # precompiled binaries that expect an FHS dynamic loader.
       {:deps_nix, "~> 3.0", only: :dev},
 
-      # Harness + the reusable agent core and their Phoenix glue.
+      # Harness + reusable agent core/runtime and their Phoenix glue.
       {:tackle, path: "../.."},
       {:tackle_lib, path: "../../packages/tackle_lib"},
       {:tackle_phoenix, path: "../../packages/tackle_phoenix"},
@@ -138,8 +138,9 @@ defmodule Tackle.Web.MixProject do
       ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"],
 
-      # --include-paths: tackle, tackle_lib and tackle_phoenix are path deps in
-      #   this monorepo; without it they are omitted from the generated file.
+      # --include-paths: tackle, tackle_lib, tackle_runtime and tackle_phoenix
+      #   are path deps in this monorepo; without it they are omitted from the
+      #   generated file.
       # --no-app-config: otherwise every dependency is given an appConfigPath and
       #   any edit to config/ invalidates and rebuilds all of them. Matches how
       #   nix/tackle-cli-deps.nix is generated.

@@ -128,20 +128,21 @@ The current runtime keeps one settled `%Tackle.Lib.State{}` in each `Tackle.Sess
 A durable root scope adds one critical journal owner:
 
 ```text
-Tackle.Supervisor
-├── Tackle.Auth.Store
+Tackle.Runtime.Supervisor
 ├── Tackle.Runtime.Registry
-├── SessionCatalog                         derived search/list projection
 └── Tackle.AgentSupervisor
     └── AgentScope
+        ├── WorkSupervisor
         ├── ScopeCoordinator
-        ├── Root SessionJournal            one writable owner
-        ├── Root Tackle.Session
-        └── WorkSupervisor
-            ├── root turn Task
-            ├── ephemeral subagent sessions
-            ├── workflows
-            └── descendant turn Tasks
+        └── Runtime.AgentSupervisor
+            ├── Task.Supervisor             root tool execution
+            └── Session.RuntimeRootSupervisor
+                ├── Root SessionJournal     one writable owner
+                └── Root Tackle.Session
+
+Tackle.Supervisor
+├── Tackle.Auth.Store
+└── SessionCatalog                         derived search/list projection
 ```
 
 The exact child ordering and module names may change, but these behaviors are required:

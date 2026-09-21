@@ -25,6 +25,11 @@ mix format --check-formatted
 # Focused library test
 (cd packages/tackle_lib && mix test test/tackle_lib/loop_test.exs)
 
+# Reusable OTP runtime: scopes, subagents, workflows
+(cd packages/tackle_runtime && mix deps.get)
+(cd packages/tackle_runtime && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_runtime && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+
 # Anubis MCP bridge: only when affected
 (cd packages/tackle_anubis && mix deps.get)
 (cd packages/tackle_anubis && mix compile --warnings-as-errors && mix test)
@@ -77,8 +82,13 @@ Burrito, or lint commands for tooling that has not been wired up.
   OTP application `:tackle_lib`, and namespace `Tackle.Lib.*`. Its `lib/` holds
   the engine and extension contracts; `test/` holds ExUnit tests. Read its
   `README.md` and relevant source before changing its API.
+- `packages/tackle_runtime/`: reusable OTP orchestration above `tackle_lib`,
+  including scopes, stable refs, admission limits, per-agent tool supervision,
+  subagents, and workflows. Hosts provide an agent backend for their lifecycle
+  and persistence policy.
 - `packages/tackle_phoenix/`: existing Phoenix LiveView (`~> 1.1.33`) and
-  PubSub (`~> 2.1`) integration, with its own Mix project and tests.
+  PubSub (`~> 2.1`) integration, with its own Mix project and tests. It includes
+  a runtime backend that keeps delegated turns inside the host Store lifecycle.
 - `packages/tackle_anubis/`: optional Anubis MCP bridge (`:tackle_anubis`,
   `Tackle.Anubis.*`) extracted out of `tackle_lib`, with its own Mix project and
   tests. It depends on `:tackle_lib` and `:anubis_mcp`; nothing in the harness or
@@ -112,7 +122,8 @@ keep those identities distinct when composing them.
   relocating, or copying its agent loop into the CLI. The identity migration to
   `Tackle.Lib.*`/`:tackle_lib` is intentional and breaking.
 - Keep the engine independent of terminal rendering, provider protocols,
-  Phoenix, and SaaS concerns such as tenancy or billing.
+  Phoenix, and SaaS concerns such as tenancy or billing. Reusable scoped OTP
+  orchestration belongs in `packages/tackle_runtime`, not `tackle_lib`.
 - Prefer existing behaviours, tools, hooks, and events as extension seams.
   Add the smallest explicit contract needed by a real use case; do not build
   speculative registries or parallel plugin frameworks.

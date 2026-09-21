@@ -31,6 +31,7 @@ let
     fileset = lib.fileset.unions [
       (projectFiles root)
       (projectFiles ../../packages/tackle_lib)
+      (projectFiles ../../packages/tackle_runtime)
       (projectFiles ../../plugins/tackle_codex)
       (projectFiles ../../plugins/tackle_deepseek)
       (projectFiles ../../frontends/tackle_cli)
@@ -105,6 +106,7 @@ let
     overrides = final: prev: {
       tackle = prev.tackle.override { src = src; };
       tackle_lib = prev.tackle_lib.override { src = "${src}/packages/tackle_lib"; };
+      tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
       tackle_codex = prev.tackle_codex.override { src = "${src}/plugins/tackle_codex"; };
       tackle_deepseek = prev.tackle_deepseek.override { src = "${src}/plugins/tackle_deepseek"; };
       ex_ratatui = prev.ex_ratatui.override {

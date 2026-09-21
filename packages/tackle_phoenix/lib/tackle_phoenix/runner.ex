@@ -20,6 +20,7 @@ defmodule Tackle.Phoenix.Runner do
   alias Tackle.Lib.Telemetry
   alias Tackle.Lib.Usage
   alias Tackle.Phoenix.PubSub
+  alias Tackle.Runtime.AgentContext
 
   @timeout :timer.minutes(30)
   @termination_grace_period 1_000
@@ -135,12 +136,34 @@ defmodule Tackle.Phoenix.Runner do
   end
 
   @doc "Requests cancellation for the turn currently owned by `pid`."
-  def cancel_turn(pid) when is_pid(pid) do
-    if Process.alive?(pid), do: GenServer.cast(pid, :cancel_turn)
+  def cancel_turn(pid, reason \\ :user_cancelled)
+
+  def cancel_turn(pid, reason) when is_pid(pid) do
+    if Process.alive?(pid), do: GenServer.cast(pid, {:cancel_turn, reason})
     :ok
   end
 
-  def cancel_turn(_pid), do: :ok
+  def cancel_turn(_pid, _reason), do: :ok
+
+  @doc false
+  def runtime_submit(pid, input) when is_pid(pid) and is_binary(input) do
+    GenServer.call(pid, {:runtime_submit, input}, :infinity)
+  end
+
+  @doc false
+  def runtime_continue(pid) when is_pid(pid) do
+    GenServer.call(pid, :runtime_continue, :infinity)
+  end
+
+  @doc false
+  def runtime_subscribe(pid, subscriber \\ self()) when is_pid(pid) and is_pid(subscriber) do
+    GenServer.call(pid, {:runtime_subscribe, subscriber})
+  end
+
+  @doc false
+  def runtime_unsubscribe(pid, subscriber \\ self()) when is_pid(pid) and is_pid(subscriber) do
+    GenServer.call(pid, {:runtime_unsubscribe, subscriber})
+  end
 
   def start_link({config, user_id, session_id, agent_state, host_state}) do
     registry_key = build_registry_key(user_id, session_id)
@@ -160,26 +183,33 @@ defmodule Tackle.Phoenix.Runner do
     # removed.
     Process.flag(:trap_exit, true)
 
-    host_state = init_host_state(config.store, host_state)
+    case register_runtime(config) do
+      :ok ->
+        host_state = init_host_state(config.store, host_state)
 
-    state = %{
-      config: config,
-      user_id: user_id,
-      initial_session_id: session_id,
-      host_state: host_state,
-      agent_state: agent_state,
-      turn_task: nil,
-      turn_signal: nil,
-      turn_usage: empty_turn_usage(),
-      turn_telemetry_ref: nil,
-      turn_operation: nil,
-      turn_started_at: nil,
-      turn_metadata: %{},
-      turn_opts: [],
-      turn_stats: empty_turn_stats()
-    }
+        state = %{
+          config: config,
+          user_id: user_id,
+          initial_session_id: session_id,
+          host_state: host_state,
+          agent_state: agent_state,
+          runtime_subscribers: MapSet.new(),
+          turn_task: nil,
+          turn_signal: nil,
+          turn_usage: empty_turn_usage(),
+          turn_telemetry_ref: nil,
+          turn_operation: nil,
+          turn_started_at: nil,
+          turn_metadata: %{},
+          turn_opts: [],
+          turn_stats: empty_turn_stats()
+        }
 
-    {:ok, state, @timeout}
+        {:ok, state, @timeout}
+
+      {:error, reason} ->
+        {:stop, {:runtime_registration_failed, reason}}
+    end
   end
 
   @impl true
@@ -188,16 +218,7 @@ defmodule Tackle.Phoenix.Runner do
   end
 
   def handle_call(:snapshot, _from, state) do
-    turn_active? = not is_nil(state.turn_task)
-
-    snapshot = %{
-      agent_state: state.agent_state,
-      session_id: current_session_id(state),
-      turn_active?: turn_active?,
-      runner_pid: if(turn_active?, do: self())
-    }
-
-    {:reply, snapshot, state, @timeout}
+    {:reply, snapshot_value(state), state, @timeout}
   end
 
   def handle_call({:update_state, %State{} = agent_state}, _from, state) do
@@ -217,6 +238,32 @@ defmodule Tackle.Phoenix.Runner do
     {:reply, current_session_id(state), state, @timeout}
   end
 
+  def handle_call({:runtime_subscribe, subscriber}, _from, state) do
+    subscribers = MapSet.put(state.runtime_subscribers, subscriber)
+    {:reply, {:ok, snapshot_value(state)}, %{state | runtime_subscribers: subscribers}, @timeout}
+  end
+
+  def handle_call({:runtime_unsubscribe, subscriber}, _from, state) do
+    subscribers = MapSet.delete(state.runtime_subscribers, subscriber)
+    {:reply, :ok, %{state | runtime_subscribers: subscribers}, @timeout}
+  end
+
+  def handle_call({:runtime_submit, input}, _from, state) do
+    with {:ok, opts} <- runtime_turn_opts(state, :run) do
+      start_turn(:run, state, state.agent_state, input, opts)
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state, @timeout}
+    end
+  end
+
+  def handle_call(:runtime_continue, _from, state) do
+    with {:ok, opts} <- runtime_turn_opts(state, :continue) do
+      start_turn(:continue, state, state.agent_state, nil, opts)
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state, @timeout}
+    end
+  end
+
   def handle_call({:run_turn, %State{} = agent_state, input, opts}, _from, state)
       when is_binary(input) do
     start_turn(:run, state, agent_state, input, opts)
@@ -227,8 +274,8 @@ defmodule Tackle.Phoenix.Runner do
   end
 
   @impl true
-  def handle_cast(:cancel_turn, state) do
-    if state.turn_signal, do: Cancellation.cancel(state.turn_signal, :user_cancelled)
+  def handle_cast({:cancel_turn, reason}, state) do
+    if state.turn_signal, do: Cancellation.cancel(state.turn_signal, reason)
     {:noreply, state, @timeout}
   end
 
@@ -246,6 +293,7 @@ defmodule Tackle.Phoenix.Runner do
     Cancellation.delete(signal)
 
     {state, result} = settle_completed_turn(state, result)
+    notify_runtime_terminal(state, result)
     state = clear_turn(state)
     broadcast(state, {:agent_turn_done, result})
 
@@ -256,7 +304,9 @@ defmodule Tackle.Phoenix.Runner do
     Process.demonitor(ref, [:flush])
     if state.turn_signal, do: Cancellation.delete(state.turn_signal)
 
-    state = state |> fail_turn(reason) |> clear_turn()
+    state = fail_turn(state, reason)
+    notify_runtime_terminal(state, {:runtime_error, reason})
+    state = clear_turn(state)
 
     broadcast(state, {:agent_turn_failed, reason})
     {:noreply, state, @timeout}
@@ -305,11 +355,13 @@ defmodule Tackle.Phoenix.Runner do
 
   defp settle_terminated_turn(state, {:ok, result}) do
     {state, result} = settle_completed_turn(state, result)
+    notify_runtime_terminal(state, result)
     broadcast(state, {:agent_turn_done, result})
   end
 
   defp settle_terminated_turn(state, {:exit, reason}) do
     state = fail_turn(state, reason)
+    notify_runtime_terminal(state, {:runtime_error, reason})
     broadcast(state, {:agent_turn_failed, reason})
   end
 
@@ -361,7 +413,9 @@ defmodule Tackle.Phoenix.Runner do
 
         turn_opts = opts |> Keyword.put(:user_message_id, user_message.id) |> store_turn_opts()
         state = %{state | host_state: host_state, agent_state: enriched_state}
-        broadcast(state, {:agent_event, Event.message_end(user_message)})
+        user_event = Event.message_end(user_message)
+        broadcast(state, {:agent_event, user_event})
+        notify_runtime_event(state, user_event)
 
         task = start_agent_task(state, enriched_state, signal, opts, session_pid)
 
@@ -430,24 +484,25 @@ defmodule Tackle.Phoenix.Runner do
 
     Task.Supervisor.async_nolink(state.config.task_supervisor, fn ->
       with_telemetry_context(state.config, telemetry_ref, fn ->
-        state.config.agent.continue(enriched_state, build_run_opts(session_pid, signal, opts))
+        state.config.agent.continue(
+          enriched_state,
+          build_run_opts(state.config, session_pid, signal, opts)
+        )
       end)
     end)
   end
 
-  defp build_run_opts(session_pid, signal, opts) do
+  defp build_run_opts(config, session_pid, signal, opts) do
     [
       event_callback: fn event -> send(session_pid, {:tackle_event, event}) end,
       cancellation_signal: signal
     ]
-    |> then(fn base ->
-      if extra_hooks = Keyword.get(opts, :extra_hooks) do
-        Keyword.put(base, :extra_hooks, extra_hooks)
-      else
-        base
-      end
-    end)
+    |> maybe_put(:tool_supervisor, Map.get(config, :tool_supervisor))
+    |> maybe_put(:extra_hooks, Keyword.get(opts, :extra_hooks))
   end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp handle_host_message(state, message) do
     store = state.config.store
@@ -645,6 +700,7 @@ defmodule Tackle.Phoenix.Runner do
     |> collect_turn_usage(event)
     |> collect_turn_stats(event)
     |> tap(&broadcast(&1, {:agent_event, event}))
+    |> tap(&notify_runtime_event(&1, event))
   end
 
   defp process_tackle_event(state, %Event{} = event) do
@@ -652,6 +708,7 @@ defmodule Tackle.Phoenix.Runner do
     |> collect_turn_usage(event)
     |> collect_turn_stats(event)
     |> tap(&broadcast(&1, {:agent_event, event}))
+    |> tap(&notify_runtime_event(&1, event))
   end
 
   defp persist_pending_message(state, data) do
@@ -705,6 +762,56 @@ defmodule Tackle.Phoenix.Runner do
       host_state
     end
   end
+
+  defp register_runtime(%{runtime_context: %AgentContext{} = context}) do
+    AgentContext.register(context)
+  end
+
+  defp register_runtime(_config), do: :ok
+
+  defp runtime_turn_opts(state, operation) do
+    with {:ok, opts} <- normalize_run_turn_opts(Map.get(state.config, :runtime_turn_opts, [])) do
+      metadata = Keyword.get(opts, :telemetry_metadata, %{})
+
+      telemetry_ref =
+        Telemetry.start([:tackle, :phoenix, :turn], Map.put(metadata, :operation, operation))
+
+      {:ok,
+       opts
+       |> Keyword.put(:turn_telemetry_ref, telemetry_ref)
+       |> Keyword.put(:turn_started_at, System.monotonic_time())}
+    end
+  end
+
+  defp snapshot_value(state) do
+    turn_active? = not is_nil(state.turn_task)
+
+    %{
+      agent_state: state.agent_state,
+      session_id: current_session_id(state),
+      turn_active?: turn_active?,
+      runner_pid: if(turn_active?, do: self())
+    }
+  end
+
+  defp notify_runtime_event(state, %Event{} = event) do
+    state
+    |> Map.get(:runtime_subscribers, MapSet.new())
+    |> Enum.each(&send(&1, {:tackle_runtime_event, event}))
+
+    :ok
+  end
+
+  defp notify_runtime_terminal(
+         %{config: %{runtime_context: %AgentContext{terminal: terminal}}},
+         result
+       )
+       when is_map(terminal) do
+    send(terminal.destination, {:tackle_runtime_terminal, terminal.run_id, result})
+    :ok
+  end
+
+  defp notify_runtime_terminal(_state, _result), do: :ok
 
   defp current_session_id(state), do: state.config.store.current_session_id(state.host_state)
 

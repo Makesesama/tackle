@@ -11,8 +11,10 @@ This document has two goals:
 2. explain reusable host integration patterns for building an agent in another
    application.
 
-For an OTP/Phoenix runtime with supervised turns, PubSub, and LiveView stream
-support, also read [`../tackle_phoenix/README.md`](../tackle_phoenix/README.md).
+For scoped agents, subagents, and workflows, read
+[`../tackle_runtime/README.md`](../tackle_runtime/README.md). For Phoenix turns,
+PubSub, and LiveView stream support, also read
+[`../tackle_phoenix/README.md`](../tackle_phoenix/README.md).
 
 ## Status and installation
 
@@ -46,7 +48,9 @@ no MCP dependency.
 |---|---|
 | CLI command, Oban job, test, or one synchronous turn | `tackle_lib` |
 | Your application already owns processes and persistence | `tackle_lib` |
+| Scoped agents, subagents, limits, and workflows | `tackle_lib` + `tackle_runtime` |
 | Supervised background turns with cancellation and PubSub | `tackle_lib` + `tackle_phoenix` |
+| Phoenix subagents and workflows | `tackle_lib` + `tackle_runtime` + `tackle_phoenix` |
 | Incrementally rendered LiveView chat | `tackle_lib` + `tackle_phoenix` |
 | Expose the same tools through Anubis MCP | `tackle_anubis` (brings `tackle_lib`) |
 
@@ -1121,7 +1125,7 @@ Tackle.Lib does **not** provide:
 - preemptive cancellation of code that ignores its signal;
 - automatic provider retries/backoff;
 - distributed process discovery or a cluster-wide session registry;
-- built-in parent/child orchestration; or
+- built-in parent/child orchestration (use the optional `tackle_runtime` package); or
 - a complete chat UI.
 
 `Tackle.Phoenix.Chat` is currently a documented scaffold, not a working LiveView
@@ -1129,7 +1133,7 @@ mixin. Use `Tackle.Phoenix.EventReducer` directly as shown in the Phoenix README
 
 ## Porting checklist
 
-- [ ] Copy/extract `packages/tackle_lib` and optionally `packages/tackle_phoenix`.
+- [ ] Copy/extract `packages/tackle_lib` and optionally `packages/tackle_runtime` and `packages/tackle_phoenix`.
 - [ ] Configure a `Tackle.Lib.LLM` adapter.
 - [ ] Verify the adapter preserves structured messages and tool-call IDs.
 - [ ] Define tools with narrow, tenant-aware context.

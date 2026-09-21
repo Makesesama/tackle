@@ -24,15 +24,15 @@ This document extends the package and harness boundaries in [`architecture-spec.
 12. Persistence is not required for this architecture. All agents, workflows, requests, and fleet state may disappear when their owning process or the BEAM terminates.
 13. Every top-level agent owns one physical execution scope. The root agent, all of its descendant agents, workflows, and active turn Tasks live in that scope.
 14. For the initial coding harness, one root-agent scope is one fleet. A separate fleet process above multiple independent root agents is deferred.
-15. Descendant agents do not receive supervisors of their own. They share the root scope's work supervisor while the scope coordinator retains their logical parent/child relationships.
+15. Every agent receives a small execution supervisor for its backend process and dedicated tool `Task.Supervisor`. Descendant agent subtrees remain physical siblings under the root scope's work supervisor while the coordinator retains logical parent/child relationships.
 
 ### 1.1 Accepted implementation defaults
 
 The first implementation uses these defaults:
 
 - The CLI's primary agent is created in an explicit root-agent scope with an empty trusted profile allowlist.
-- A global DynamicSupervisor owns root-agent scopes; each root-agent scope physically owns one root `Tackle.Session`, one scope coordinator, and one DynamicSupervisor for all descendant work.
-- The scope work supervisor owns subagent sessions, workflows, request helpers, and supervised turn Tasks. There is no separate supervisor per subagent or workflow.
+- A global DynamicSupervisor owns root-agent scopes; each root-agent scope physically owns one root backend agent subtree, one scope coordinator, and one DynamicSupervisor for descendant work.
+- The scope work supervisor owns delegated agent subtrees, workflows, request helpers, and supervised turn/awaiter Tasks. There is no separate scope per subagent or workflow.
 - The scope coordinator enforces fleet limits and records logical ownership. It is a control-plane process and does not relay streaming token events.
 - Subagent configuration is selected from trusted named profiles resolved by the harness.
 - The subagent tool is opt-in initially rather than part of every agent's default tool set.
@@ -41,7 +41,7 @@ The first implementation uses these defaults:
 - A busy ephemeral child rejects additional work. General-purpose agent inboxes and queues are deferred.
 - Fleet concurrency overflow is rejected explicitly in the initial implementation rather than queued.
 - Scoped runtime processes are temporary. Lost in-memory state is not restarted or reconstructed.
-- Subagents, workflows, scopes, and fleets are root-harness responsibilities. The one library-side capability the runtime relies on is the `:concurrent` tool policy (`Tackle.Lib.Tool.Policy.concurrent/0`) with a host-supplied `:tool_supervisor`. The harness pins concurrency for every session and exposes no tool-policy option; all orchestration above one tool batch stays in the harness.
+- Subagents, workflows, scopes, and fleets belong to the optional `:tackle_runtime` package. `Tackle.Lib` remains unaware of them. Hosts supply a `Tackle.Runtime.AgentBackend`; the root harness adapts `Tackle.Session`, while `Tackle.Phoenix` adapts `Runner`/`Store`. The runtime supplies one dedicated tool supervisor per agent.
 
 ## 2. Current foundation
 
@@ -170,44 +170,36 @@ A scope or fleet does not run LLM loops and should not relay every streaming eve
 
 OTP supervision is responsible for process lifecycle, cleanup, and failure isolation. Supervisors do not coordinate workflow state, route every message, or enforce budgets themselves; those responsibilities belong to the scope coordinator and ordinary runtime modules.
 
-The accepted initial process tree is:
+The implemented reusable process tree is:
 
 ```text
-Tackle.Supervisor
-├── Tackle.Auth.Store
+Tackle.Runtime.Supervisor
+├── Tackle.Runtime.CancellationStore
 ├── Tackle.Runtime.Registry
 └── Tackle.AgentSupervisor                 global DynamicSupervisor
     ├── AgentScope A                        Supervisor; one per root agent
+    │   ├── WorkSupervisor                  DynamicSupervisor
     │   ├── ScopeCoordinator                GenServer
-    │   ├── Root SessionSupervisor          Supervisor; root agent
-    │   │   ├── Task.Supervisor             root tool execution
-    │   │   └── Tackle.Session              root agent loop owner
-    │   └── WorkSupervisor                  DynamicSupervisor
-    │       ├── root turn Task
-    │       ├── researcher SessionSupervisor
-    │       │   ├── Task.Supervisor         researcher tool execution
-    │       │   └── Tackle.Session
-    │       ├── researcher turn Task
-    │       ├── reviewer SessionSupervisor
-    │       ├── workflow process
-    │       └── deeper delegated agents
+    │   └── Runtime.AgentSupervisor         root agent subtree
+    │       ├── Task.Supervisor             root tool execution
+    │       └── host backend agent
+    │
+    │   WorkSupervisor children may include:
+    │   ├── request helpers
+    │   ├── Runtime.AgentSupervisor         delegated agent subtree
+    │   │   ├── Task.Supervisor             child tool execution
+    │   │   └── host backend agent
+    │   ├── workflow processes
+    │   └── supervised turn/awaiter Tasks
     └── AgentScope B
         └── ...
 ```
 
-`Tackle.AgentSupervisor` owns root-agent scopes rather than every session directly. All agents, including the CLI root, enter through a scope; there is no global session or turn supervisor and no unscoped session fallback.
+`Tackle.AgentSupervisor` owns root-agent scopes rather than every agent directly. All agents enter through a scope; there is no unscoped runtime fallback.
 
-Each `AgentScope` is a small static Supervisor containing:
+Each concrete agent runs under `Tackle.Runtime.AgentSupervisor`, which owns the agent's dedicated tool `Task.Supervisor` and one backend child. The backend child is `Tackle.Session` in the root harness and `Tackle.Phoenix.Runner` in Phoenix/SaaS hosts. This keeps supervision reusable while leaving persistence, authorization, billing, and host delivery semantics in adapters.
 
-1. the root `Tackle.Session.Supervisor` (which owns the root session and its tool supervisor);
-2. the scope coordinator; and
-3. one `WorkSupervisor` DynamicSupervisor.
-
-The root session is not itself a supervisor. It runs beneath a small per-session `Tackle.Session.Supervisor` whose sibling is the session's tool `Task.Supervisor`. A GenServer does not start an ad hoc supervisor beneath itself because that reverses normal OTP ownership and makes crash cleanup less reliable; the tool supervisor therefore gets its own supervised parent instead.
-
-Every session — root or descendant — runs under its own `Tackle.Session.Supervisor` so that concurrent tool execution has a dedicated, session-local `Task.Supervisor`. Descendant session supervisors are temporary children of the scope `WorkSupervisor`; the root session supervisor is a static child of `AgentScope`. There is exactly one tool supervisor per agent, so a subagent never shares tool tasks with its parent, and terminating a session subtree cleans up every in-flight tool task for exactly one agent.
-
-`WorkSupervisor` accepts heterogeneous temporary child specifications. It owns descendant `Tackle.Session.Supervisor` subtrees (each session plus its tool supervisor), workflows, request helpers, and turn Tasks. A supervised turn can be started as a temporary `Task` child that sends a correlated terminal result to its owning session; the session monitors it and handles crash outcomes. This removes the need for separate global session, workflow, and Task supervisors while retaining the existing rule that the LLM loop never runs inside a GenServer callback.
+`WorkSupervisor` accepts heterogeneous temporary child specifications. It owns descendant agent subtrees, workflows, request helpers, and turn/awaiter Tasks. There is exactly one tool supervisor per agent, so a child never shares tool tasks with its parent and subtree termination cleans up every in-flight tool task for that agent.
 
 Stopping one `AgentScope` physically terminates its root agent, all descendants, workflows, active turn Tasks, and request helpers. No global coordinator has to enumerate and individually terminate every member to clean up the root agent.
 
@@ -263,10 +255,10 @@ The exact function and module names may change during implementation, but the si
 The runtime is intentionally in memory. Restarting an agent or coordinator after it crashes would create an empty process without the state it previously owned. Therefore:
 
 - `AgentScope` is a temporary child of the global `Tackle.AgentSupervisor` and is not restarted after it terminates;
-- the root session, scope coordinator, and work supervisor are scope-critical processes;
+- the root backend agent, scope coordinator, and work supervisor are scope-critical processes;
 - failure of a scope-critical process terminates the complete scope instead of reconstructing empty state;
-- a per-session supervisor uses `:one_for_all` with no restart allowance: an abnormal exit of a session or its tool supervisor tears the session subtree down instead of reconstructing an empty session;
-- a root session or root tool supervisor failure therefore terminates the complete scope, while a descendant session or descendant tool supervisor failure is isolated to that descendant;
+- each `Tackle.Runtime.AgentSupervisor` uses `:one_for_all` with no restart allowance: an exit of the backend agent or its tool supervisor tears the agent subtree down instead of reconstructing empty state;
+- a root backend or root tool-supervisor failure therefore terminates the complete scope, while a descendant backend or tool-supervisor failure is isolated to that descendant;
 - descendant agents, workflows, helpers, and Tasks are temporary dynamic children and are not restarted;
 - a descendant failure is reported to its requester and does not terminate unrelated sibling work;
 - normal `Tackle.Lib` errors and cancellation are terminal outcomes, not crashes;
@@ -351,11 +343,11 @@ This migration is intentionally breaking and retains no compatibility wrapper:
 - `allow_recursion` is renamed `allow_delegation` throughout the root runtime;
 - `Tackle.Session.start_child/1`, the unscoped `start_turn_task(nil, fun)` fallback, and the global `Tackle.SessionSupervisor` and `Tackle.TaskSupervisor` are removed.
 
-A session without scoped runtime ownership is an initialization error rather than an implicit global-supervisor fallback. `Tackle.Phoenix.Runner` is unaffected: it does not use the root `Tackle.Session` runtime.
+A root `Tackle.Session` without scoped runtime ownership is an initialization error rather than an implicit global-supervisor fallback. `Tackle.Phoenix.Runner` may still run standalone, or it may run under the scope through `Tackle.Phoenix.RuntimeBackend`.
 
 ### 5.3 Trusted profiles versus model-selected names
 
-`Tackle.Config` describes exactly one agent loop. `Tackle.Runtime.AgentSpec` is the trusted, resolved description of one runtime agent (name, `Tackle.Config`, per-run timeout, delegation grant). `Tackle.Runtime.ScopeSpec` is the trusted description of one root scope (root `AgentSpec`, trusted profile allowlist, fleet `Limits`).
+`Tackle.Config` describes one root-harness agent loop. `Tackle.Runtime.AgentSpec` is the trusted, resolved description of one runtime agent (name, opaque backend configuration, per-run timeout, delegation grant). `Tackle.Runtime.ScopeSpec` selects one trusted backend and describes one root scope (root `AgentSpec`, trusted profile allowlist, fleet `Limits`).
 
 Model-visible or file-generated data may only select an allowlisted profile *name*. It can never name a module, construct a profile implementation, widen limits, or address a process. File/model configuration that selects a trusted profile name does not, by itself, inject the subagent tool: tool exposure, the `allow_delegation` grant, and a matching trusted profile are three independent controls.
 

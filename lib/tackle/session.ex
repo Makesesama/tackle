@@ -12,9 +12,9 @@ defmodule Tackle.Session do
   tasks under the scope's shared `Tackle.AgentScope.WorkSupervisor`, registers
   itself in the runtime Registry, and accounts for its turn through the scope
   coordinator. A session without scoped runtime ownership fails to initialize:
-  there is no unscoped fallback supervisor. Each session also runs beneath a
-  `Tackle.Session.Supervisor` that owns its per-session tool `Task.Supervisor`, so
-  concurrent tool execution is isolated per agent.
+  there is no unscoped fallback supervisor. Each session runs beneath a
+  `Tackle.Runtime.AgentSupervisor`, whose dedicated tool `Task.Supervisor` keeps
+  concurrent tool execution isolated per agent.
 
   An `:ephemeral` session delivers one correlated terminal outcome to its
   request helper and then stops. A session process is never reset for another

@@ -59,7 +59,7 @@ resolved and tested before promising a binary plugin workflow.
 This repository is a starting point, not a finished CLI:
 
 - The root Mix project provides frontend-independent adapter/model
-  configuration, a scoped agent runtime, a supervised credential store,
+  configuration, composes the reusable scoped runtime, a supervised credential store,
   and built-in `read`, `bash`, `elixir_eval`, `edit`, and `write` developer tools
   under `Tackle.Tools.*`. It composes a coding system prompt with global and
   project `AGENTS.md` guidance, and discovers Agent Skills from `.agents/skills`
@@ -68,8 +68,12 @@ This repository is a starting point, not a finished CLI:
   modules from data.
 - [`packages/tackle_lib`](packages/tackle_lib/README.md) contains the existing
   agent library and its API documentation (`Tackle.Lib.*`).
+- [`packages/tackle_runtime`](packages/tackle_runtime/README.md) contains the
+  reusable scoped OTP runtime: supervision, limits, subagents, fan-out, and
+  workflows (`Tackle.Runtime.*`).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the
-  existing Phoenix integration; it is not the intended CLI foundation.
+  Phoenix integration and a runtime backend that preserves Store lifecycle
+  hooks for root and delegated agents; it is not the intended CLI foundation.
 - The library carries no MCP code or dependency. The inherited Anubis MCP bridge
   was extracted into [`packages/tackle_anubis`](packages/tackle_anubis/README.md)
   (`:tackle_anubis` / `Tackle.Anubis.*`), a breaking rename of the former
@@ -95,8 +99,9 @@ This repository is a starting point, not a finished CLI:
 
 The root harness owns OTP application `:tackle` and namespace `Tackle`. The
 reusable library owns OTP application `:tackle_lib` and namespace `Tackle.Lib`;
-the CLI frontend owns OTP application `:tackle_cli` and namespace
-`Tackle.CLI`. These identities are intentionally separate. This is a breaking
+the reusable runtime owns OTP application `:tackle_runtime` and namespace
+`Tackle.Runtime`; the CLI frontend owns OTP application `:tackle_cli` and
+namespace `Tackle.CLI`. These identities are intentionally separate. This is a breaking
 library migration: downstream users must change package paths, module
 references, and library configuration from `:tackle`/`Tackle.*` to
 `:tackle_lib`/`Tackle.Lib.*`. The Phoenix integration keeps its
@@ -209,7 +214,12 @@ config :tackle, adapters: [MyCodexAdapter]
   )
 
 root_spec = Tackle.Runtime.AgentSpec.new!(name: "root", config: config)
-scope_spec = Tackle.Runtime.ScopeSpec.new!(root_spec: root_spec, profiles: %{})
+scope_spec =
+  Tackle.Runtime.ScopeSpec.new!(
+    backend: Tackle.Runtime.RootBackend,
+    root_spec: root_spec,
+    profiles: %{}
+  )
 
 {:ok, scope} = Tackle.start_scope(scope_spec)
 
@@ -389,7 +399,12 @@ existing session still opens and validates its journal immediately.
 
 ```elixir
 {:ok, session} = Tackle.Session.Spec.new()
-{:ok, spec} = Tackle.Runtime.ScopeSpec.new(root_spec: root_spec, session: session)
+{:ok, spec} =
+  Tackle.Runtime.ScopeSpec.new(
+    backend: Tackle.Runtime.RootBackend,
+    root_spec: root_spec,
+    session: session
+  )
 {:ok, scope} = Tackle.start_scope(spec)
 ```
 
