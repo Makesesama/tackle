@@ -621,7 +621,7 @@ Define small root-harness types for:
 
 The identity model must carry the root scope, agent, workflow, run, parent, and correlation identifiers needed by routing and cancellation. Runtime references must not expose PIDs.
 
-Candidate source locations are under `lib/tackle/runtime/`; exact filenames are implementation details.
+Candidate source locations are under `packages/tackle/lib/tackle/runtime/`; exact filenames are implementation details.
 
 Acceptance criteria:
 
@@ -919,16 +919,16 @@ Acceptance criteria:
 
 ### Task 12: compatibility, documentation, and full validation
 
-Migrate the root `Tackle` facade and CLI to create the primary agent in an implicit default scope while preserving their user-facing behavior. Keep the CLI thin; fleet visualization is not required initially.
+Migrate the `packages/tackle` facade and CLI to create the primary agent in an implicit default scope while preserving their user-facing behavior. Keep the CLI thin; fleet visualization is not required initially.
 
 Update this document and relevant README/API documentation with implemented module names and any deliberately changed details. Distinguish working behavior from later plans.
 
-Validation for the affected root project must include:
+Validation for the affected harness package must include:
 
 ```sh
-mix compile --warnings-as-errors
-mix test
-mix format --check-formatted
+(cd packages/tackle && mix compile --warnings-as-errors)
+(cd packages/tackle && mix test)
+(cd packages/tackle && mix format --check-formatted)
 
 git diff --check
 git status --short
@@ -939,9 +939,9 @@ If a public `Tackle.Lib` contract unexpectedly changes, also run the library and
 Acceptance criteria:
 
 - Existing CLI one-shot and interactive behavior remains functional.
-- Existing root tests pass alongside the new runtime tests.
+- Existing harness tests pass alongside the new runtime tests.
 - Public runtime behavior is documented.
-- The implementation adds no provider-specific behavior to the root runtime or `Tackle.Lib`.
+- The implementation adds no provider-specific behavior to the harness runtime or `Tackle.Lib`.
 - No dependency, persistence mechanism, or distributed runtime assumption is introduced.
 
 ### 13.1 Dependency order

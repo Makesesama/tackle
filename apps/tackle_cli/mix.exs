@@ -24,9 +24,9 @@ defmodule Tackle.CLI.MixProject do
 
   defp deps do
     [
-      {:tackle, path: "../.."},
-      {:tackle_codex, path: "../../plugins/tackle_codex"},
-      {:tackle_deepseek, path: "../../plugins/tackle_deepseek"},
+      {:tackle, path: "../../packages/tackle"},
+      {:tackle_codex, path: "../../packages/tackle_codex"},
+      {:tackle_deepseek, path: "../../packages/tackle_deepseek"},
       {:optimus, "~> 0.6"},
       {:owl, "~> 0.13"},
       {:ucwidth, "~> 0.2"},

@@ -47,15 +47,15 @@ defmodule Tackle.Web.MixProject do
       {:deps_nix, "~> 3.0", only: :dev},
 
       # Harness + reusable agent core/runtime and their Phoenix glue.
-      {:tackle, path: "../.."},
+      {:tackle, path: "../../packages/tackle"},
       {:tackle_lib, path: "../../packages/tackle_lib"},
       {:tackle_phoenix, path: "../../packages/tackle_phoenix"},
 
       # Provider adapters. These are the repo's plugin packages, wired in the
       # same way any external plugin would be: both implement Tackle.Lib.LLM,
       # and the model reference the user picks decides which one runs.
-      {:tackle_codex, path: "../../plugins/tackle_codex"},
-      {:tackle_deepseek, path: "../../plugins/tackle_deepseek"},
+      {:tackle_codex, path: "../../packages/tackle_codex"},
+      {:tackle_deepseek, path: "../../packages/tackle_deepseek"},
 
       # Web layer. tackle_phoenix brings LiveView/PubSub, but not Phoenix itself.
       # LiveView is held at the same ~> 1.1.33 range tackle_phoenix requires;

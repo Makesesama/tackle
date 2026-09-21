@@ -7,18 +7,16 @@
 # The directory Mix downloads your dependencies sources to.
 /deps/
 
-# Package-local build output and dependencies for the separate Mix projects.
+# Project-local build output and dependencies for the separate Mix projects.
 /packages/*/_build/
 /packages/*/deps/
-/plugins/*/_build/
-/plugins/*/deps/
-/frontends/*/_build/
-/frontends/*/deps/
+/apps/*/_build/
+/apps/*/deps/
 
 # tackle_web compiles assets with esbuild/tailwind into priv/static/assets.
-/frontends/tackle_web/priv/static/assets/
-/frontends/tackle_web/priv/static/cache_manifest.json
-/frontends/tackle_web/assets/node_modules/
+/apps/tackle_web/priv/static/assets/
+/apps/tackle_web/priv/static/cache_manifest.json
+/apps/tackle_web/assets/node_modules/
 
 # Where third-party dependencies like ExDoc output generated docs.
 /doc/

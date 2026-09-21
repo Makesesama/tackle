@@ -19,7 +19,7 @@ defmodule Tackle.Plugins.DeepSeek.MixProject do
     [
       # Req 0.8 uses Elixir's standard-library JSON module.
       {:req, "== 0.8.0-rc.0"},
-      {:tackle_lib, path: "../../packages/tackle_lib"}
+      {:tackle_lib, path: "../tackle_lib"}
     ]
   end
 end

@@ -570,7 +570,7 @@ let
             inherit version;
             name = "tackle";
 
-            src = ../.;
+            src = ../packages/tackle;
 
             beamDeps = [
               tackle_lib
@@ -587,7 +587,7 @@ let
             inherit version;
             name = "tackle_codex";
 
-            src = ../plugins/tackle_codex;
+            src = ../packages/tackle_codex;
 
             beamDeps = [
               req
@@ -605,7 +605,7 @@ let
             inherit version;
             name = "tackle_deepseek";
 
-            src = ../plugins/tackle_deepseek;
+            src = ../packages/tackle_deepseek;
 
             beamDeps = [
               req

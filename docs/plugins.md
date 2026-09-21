@@ -60,7 +60,7 @@ custom project structure beyond an ordinary Mix project.
 
 ## Ownership and frontend independence
 
-The root harness in `lib/tackle` owns configuration reading, extension discovery,
+The harness package in `packages/tackle/lib/tackle` owns configuration reading, extension discovery,
 project preparation, loading, and composition. There is no separate plugin
 runtime package.
 

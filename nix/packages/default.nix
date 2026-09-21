@@ -29,12 +29,12 @@ let
   src = lib.fileset.toSource {
     inherit root;
     fileset = lib.fileset.unions [
-      (projectFiles root)
+      (projectFiles ../../packages/tackle)
       (projectFiles ../../packages/tackle_lib)
       (projectFiles ../../packages/tackle_runtime)
-      (projectFiles ../../plugins/tackle_codex)
-      (projectFiles ../../plugins/tackle_deepseek)
-      (projectFiles ../../frontends/tackle_cli)
+      (projectFiles ../../packages/tackle_codex)
+      (projectFiles ../../packages/tackle_deepseek)
+      (projectFiles ../../apps/tackle_cli)
       (lib.fileset.fileFilter (
         file:
         lib.any file.hasExt [
@@ -42,7 +42,7 @@ let
           "toml"
           "lock"
         ]
-      ) ../../frontends/tackle_cli/native)
+      ) ../../apps/tackle_cli/native)
     ];
   };
 
@@ -94,7 +94,7 @@ let
       '';
     };
 
-  tackleNif = native "tackle" "${src}/frontends/tackle_cli/native/tackle";
+  tackleNif = native "tackle" "${src}/apps/tackle_cli/native/tackle";
   exRatatuiNif = native "ex_ratatui" "${deps.ex_ratatui.src}/native/ex_ratatui";
   nativeConfig = pkgs.writeTextDir "config.exs" ''
     import Config
@@ -104,11 +104,11 @@ let
   deps = pkgs.callPackage ../tackle-cli-deps.nix {
     inherit beamPackages;
     overrides = final: prev: {
-      tackle = prev.tackle.override { src = src; };
+      tackle = prev.tackle.override { src = "${src}/packages/tackle"; };
       tackle_lib = prev.tackle_lib.override { src = "${src}/packages/tackle_lib"; };
       tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
-      tackle_codex = prev.tackle_codex.override { src = "${src}/plugins/tackle_codex"; };
-      tackle_deepseek = prev.tackle_deepseek.override { src = "${src}/plugins/tackle_deepseek"; };
+      tackle_codex = prev.tackle_codex.override { src = "${src}/packages/tackle_codex"; };
+      tackle_deepseek = prev.tackle_deepseek.override { src = "${src}/packages/tackle_deepseek"; };
       ex_ratatui = prev.ex_ratatui.override {
         appConfigPath = nativeConfig;
         nativeBuildInputs = [ ];
@@ -136,7 +136,7 @@ beamPackages.mixRelease {
   ++ lib.optional linux pkgs.util-linux;
 
   postUnpack = ''
-    sourceRoot="$sourceRoot/frontends/tackle_cli"
+    sourceRoot="$sourceRoot/apps/tackle_cli"
   '';
   env = {
     BURRITO_TARGET = target;

@@ -103,8 +103,12 @@
           pre-commit-check = inputs.pre-commit-hooks.lib.${system}.run {
             src = ./.;
             hooks = {
-              credo.enable = true;
-              credo.package = pkgs.elixir;
+              credo = {
+                enable = true;
+                package = pkgs.elixir;
+                entry = "${pkgs.bash}/bin/bash -c 'cd packages/tackle && exec mix credo --strict'";
+                pass_filenames = false;
+              };
               # dialyzer.enable = true;
               # dialyzer.package = pkgs.elixir;
               treefmt = {

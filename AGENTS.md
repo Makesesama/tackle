@@ -11,11 +11,11 @@ Run these from the repository root unless noted. Use `nix develop` for the
 configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 
 ```sh
-# Root project: dependencies, compilation, tests, formatting
-mix deps.get
-mix compile --warnings-as-errors
-mix test
-mix format --check-formatted
+# Harness package: dependencies, compilation, tests, formatting
+(cd packages/tackle && mix deps.get)
+(cd packages/tackle && mix compile --warnings-as-errors)
+(cd packages/tackle && mix test)
+(cd packages/tackle && mix format --check-formatted)
 
 # Library: run checks in its own Mix project
 (cd packages/tackle_lib && mix deps.get)
@@ -41,26 +41,26 @@ mix format --check-formatted
 (cd packages/tackle_phoenix && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
 # OpenAI Codex plugin
-(cd plugins/tackle_codex && mix deps.get)
-(cd plugins/tackle_codex && mix compile --warnings-as-errors && mix test)
-(cd plugins/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+(cd packages/tackle_codex && mix deps.get)
+(cd packages/tackle_codex && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_codex && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
 # MCP client plugin
-(cd plugins/tackle_mcp && mix deps.get)
-(cd plugins/tackle_mcp && mix compile --warnings-as-errors && mix test)
-(cd plugins/tackle_mcp && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+(cd packages/tackle_mcp && mix deps.get)
+(cd packages/tackle_mcp && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_mcp && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
-# CLI frontend
-(cd frontends/tackle_cli && mix deps.get)
-(cd frontends/tackle_cli && mix compile --warnings-as-errors && mix test)
-(cd frontends/tackle_cli && mix format --check-formatted)
-(cd frontends/tackle_cli && mix escript.build)
+# CLI app
+(cd apps/tackle_cli && mix deps.get)
+(cd apps/tackle_cli && mix compile --warnings-as-errors && mix test)
+(cd apps/tackle_cli && mix format --check-formatted)
+(cd apps/tackle_cli && mix escript.build)
 
-# Web frontend (Phoenix; assets need the dev shell's tailwindcss/esbuild)
-(cd frontends/tackle_web && mix deps.get)
-(cd frontends/tackle_web && mix compile --warnings-as-errors && mix test)
-(cd frontends/tackle_web && mix format --check-formatted)
-(cd frontends/tackle_web && mix assets.build)
+# Web app (Phoenix; assets need the dev shell's tailwindcss/esbuild)
+(cd apps/tackle_web && mix deps.get)
+(cd apps/tackle_web && mix compile --warnings-as-errors && mix test)
+(cd apps/tackle_web && mix format --check-formatted)
+(cd apps/tackle_web && mix assets.build)
 
 # Inspect changes before handing off
 git status --short
@@ -69,15 +69,15 @@ git diff
 ```
 
 Remove `--check-formatted` to apply formatting, and prefer explicit changed-file
-paths to avoid unrelated churn. Root formatting and tests do not recurse into
-the packages. Fetch dependencies only when needed; report unavailable tools,
+paths to avoid unrelated churn. Checks in one app or package do not recurse into
+the other projects. Fetch dependencies only when needed; report unavailable tools,
 network access, or caches as blockers, not as passing checks. Do not invent CLI,
 Burrito, or lint commands for tooling that has not been wired up.
 
 ## Repository map and stack
 
-- `lib/`, `test/`, `mix.exs`: root Elixir `~> 1.20` Mix application; currently
-  a scaffold, not a working developer CLI.
+- `packages/tackle/`: Elixir `~> 1.20` developer harness and composition layer;
+  it is a library package rather than a runnable app.
 - `packages/tackle_lib/`: existing framework-free library, Elixir `~> 1.18`,
   OTP application `:tackle_lib`, and namespace `Tackle.Lib.*`. Its `lib/` holds
   the engine and extension contracts; `test/` holds ExUnit tests. Read its
@@ -93,14 +93,15 @@ Burrito, or lint commands for tooling that has not been wired up.
   `Tackle.Anubis.*`) extracted out of `tackle_lib`, with its own Mix project and
   tests. It depends on `:tackle_lib` and `:anubis_mcp`; nothing in the harness or
   CLI depends on it.
-- `plugins/tackle_codex/`: first-party OpenAI Codex adapter, ChatGPT OAuth
-  protocol helpers, and Responses SSE transport. It is a separate Mix project
-  that depends on `:tackle_lib`, not the root harness.
-- `frontends/tackle_cli/`: default Optimus/ex_ratatui terminal entrypoint. It is
-  a separate Mix project that depends on the root harness and bundles Codex as a
-  distribution dependency; runtime adapter loading remains a root harness
-  concern.
-- `frontends/tackle_web/`: Phoenix frontend with two surfaces on one
+- `packages/tackle_codex/` and `packages/tackle_deepseek/`: provider adapter
+  packages. Codex is the maintained first-party adapter; both depend on
+  `:tackle_lib`, not the harness package.
+- `packages/tackle_mcp/`: optional Anubis-based MCP client plugin that exposes
+  discovered MCP tools through the provider-neutral tool contract.
+- `apps/tackle_cli/`: default Optimus/ex_ratatui terminal entrypoint. It is a
+  separate Mix project that depends on the harness and bundles Codex as a
+  distribution dependency; runtime adapter loading remains a harness concern.
+- `apps/tackle_web/`: Phoenix app with two surfaces on one
   `Tackle.Web.*` namespace. `/chat` is the ordinary Tackle agent as a chat
   conversation, driven through `Tackle.Phoenix.Runner` and backed by an
   in-memory conversation store; `/` and `/pulls/...` are the diff and pull
@@ -112,7 +113,7 @@ Burrito, or lint commands for tooling that has not been wired up.
 - `deps/`, `_build/`, `.nix-mix/`, `.nix-hex/`: dependencies, build output,
   and local caches; not hand-maintained source.
 
-These are separate projects, not an umbrella. The root harness uses
+These are separate projects, not an umbrella. The harness package uses
 `:tackle`/`Tackle`, while the reusable library uses `:tackle_lib`/`Tackle.Lib`;
 keep those identities distinct when composing them.
 
@@ -145,7 +146,7 @@ keep those identities distinct when composing them.
 ## Code style
 
 Use idiomatic Elixir: `Tackle.Lib.ModuleName` for library contracts and
-`Tackle.ModuleName` for the root harness, `snake_case` functions and files,
+`Tackle.ModuleName` for the harness package, `snake_case` functions and files,
 pattern matching, explicit result tuples for expected failures, and small
 modules with clear responsibilities. Document public contracts and add useful
 specs. Use behaviours and `@impl true` for extension implementations; keep
@@ -207,7 +208,7 @@ Summarize changed files, validation, and unresolved risks.
 ### Always
 
 - Preserve the library at `packages/tackle_lib` and keep core contracts
-  provider-neutral. Its public modules are `Tackle.Lib.*`; the root harness
+  provider-neutral. Its public modules are `Tackle.Lib.*`; the harness package
   remains `Tackle.*` under `:tackle`.
 - Prefer plugins for optional features and keep the CLI a thin frontend.
 - Update relevant documentation when public behaviour changes; label plans as plans.
