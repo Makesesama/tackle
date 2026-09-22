@@ -259,7 +259,6 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base(:tree, _key, state), do: Tree.open(state)
   defp dispatch_base(:usage_chart, _key, state), do: UsageChart.open(state)
   defp dispatch_base(:subagents, _key, state), do: Subagents.focus(state)
-  defp dispatch_base(:search, _key, state), do: Search.open(state)
   defp dispatch_base(:toggle_thinking, _key, state), do: Viewport.toggle_thinking(state)
 
   defp dispatch_base(:scroll_start, _key, state),

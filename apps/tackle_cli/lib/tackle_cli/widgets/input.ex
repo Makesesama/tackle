@@ -8,9 +8,10 @@ defmodule Tackle.CLI.Widgets.Input do
   precedence. `set_value/2` resets undo/redo; `insert_str/2` is one undoable edit.
 
   Arrow keys move by grapheme or visual row. Home/End (Ctrl+A/E) move within a
-  logical line; Ctrl+W deletes the preceding word, Ctrl+U/R undo/redo. Unknown
-  modified chords are ignored. Wrapping preserves all source whitespace and
-  reserves a visible insertion cell. Undo retains at most 100 snapshots / 8 MiB.
+  logical line; Alt+B/F and Ctrl+B/F move by whitespace-delimited word;
+  Ctrl+W deletes the preceding word, and Ctrl+U/R undo/redo. Unknown modified
+  chords are ignored. Wrapping preserves all source whitespace and reserves a
+  visible insertion cell. Undo retains at most 100 snapshots / 8 MiB.
 
   Paint replaces control characters (tabs display as spaces) without changing
   the draft. A reversed cell is the caret; it is hidden when `focused` is false.

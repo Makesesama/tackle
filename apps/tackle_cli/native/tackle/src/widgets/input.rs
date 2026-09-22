@@ -80,6 +80,38 @@ struct Layout<'a> {
     rows: usize,
 }
 
+fn is_whitespace(glyph: &Glyph<'_>) -> bool {
+    glyph.symbol.chars().all(char::is_whitespace)
+}
+
+fn previous_word_start(glyphs: &[Glyph<'_>], cursor: usize) -> usize {
+    let mut start = cursor;
+    let mut seen_word = false;
+    for glyph in glyphs.iter().rev().filter(|glyph| glyph.start < cursor) {
+        let whitespace = is_whitespace(glyph);
+        if seen_word && whitespace {
+            break;
+        }
+        seen_word |= !whitespace;
+        start = glyph.start;
+    }
+    start
+}
+
+fn next_word_end(glyphs: &[Glyph<'_>], cursor: usize) -> usize {
+    let mut end = cursor;
+    let mut seen_word = false;
+    for glyph in glyphs.iter().filter(|glyph| glyph.start >= cursor) {
+        let whitespace = is_whitespace(glyph);
+        if seen_word && whitespace {
+            break;
+        }
+        seen_word |= !whitespace;
+        end = glyph.end;
+    }
+    end
+}
+
 fn layout(text: &str, width: u16) -> Layout<'_> {
     let width = usize::from(width.max(1));
     let mut row = 0;
@@ -176,6 +208,7 @@ impl Input {
 
     pub fn key(&mut self, code: &str, modifiers: &[String], width: u16) {
         let ctrl = modifiers.len() == 1 && modifiers[0] == "ctrl";
+        let alt = modifiers.len() == 1 && modifiers[0] == "alt";
         let plain = modifiers.is_empty();
         let shift = modifiers.len() == 1 && modifiers[0] == "shift";
         if ctrl && matches!(code, "u" | "r") {
@@ -190,15 +223,15 @@ impl Input {
             }
             return;
         }
-        let action = match (code, ctrl, plain) {
-            ("a", true, _) => "home",
-            ("e", true, _) => "end",
-            ("b", true, _) => "left",
-            ("f", true, _) => "right",
-            ("h", true, _) => "backspace",
-            ("d", true, _) => "delete",
-            ("w", true, _) => "word_backspace",
-            (_, _, true) => code,
+        let action = match (code, ctrl, alt, plain) {
+            ("a", true, _, _) => "home",
+            ("e", true, _, _) => "end",
+            ("b", true, _, _) | ("b", _, true, _) => "word_left",
+            ("f", true, _, _) | ("f", _, true, _) => "word_right",
+            ("h", true, _, _) => "backspace",
+            ("d", true, _, _) => "delete",
+            ("w", true, _, _) => "word_backspace",
+            (_, _, _, true) => code,
             _ => "",
         };
         let glyphs = glyphs(self.value());
@@ -221,6 +254,8 @@ impl Input {
                     .find('\n')
                     .map_or(self.value().len(), |p| cursor + p)
             }
+            "word_left" => self.draft.cursor = previous_word_start(&glyphs, cursor),
+            "word_right" => self.draft.cursor = next_word_end(&glyphs, cursor),
             "backspace" => {
                 self.replace(previous, cursor, "");
                 return;
@@ -230,17 +265,7 @@ impl Input {
                 return;
             }
             "word_backspace" => {
-                let mut start = cursor;
-                let mut seen_word = false;
-                for g in glyphs.iter().rev().filter(|g| g.start < cursor) {
-                    let space = g.symbol.chars().all(char::is_whitespace);
-                    if seen_word && space {
-                        break;
-                    }
-                    seen_word |= !space;
-                    start = g.start;
-                }
-                self.replace(start, cursor, "");
+                self.replace(previous_word_start(&glyphs, cursor), cursor, "");
                 return;
             }
             "up" | "down" => {
@@ -427,6 +452,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn emacs_chords_move_by_whitespace_delimited_words() {
+        let mut input = Input::default();
+        input.set("  alpha  βe\u{301}ta\nlast  ".into());
+
+        input.key("b", &["alt".into()], 40);
+        assert_eq!(&input.value()[input.draft.cursor..], "last  ");
+        input.key("b", &["ctrl".into()], 40);
+        assert_eq!(&input.value()[input.draft.cursor..], "βe\u{301}ta\nlast  ");
+
+        input.key("f", &["alt".into()], 40);
+        assert_eq!(&input.value()[input.draft.cursor..], "\nlast  ");
+        input.key("f", &["ctrl".into()], 40);
+        assert_eq!(&input.value()[input.draft.cursor..], "  ");
+        input.key("f", &["ctrl".into()], 40);
+        assert_eq!(input.draft.cursor, input.value().len());
+
+        input.set("word".into());
+        input.key("a", &["ctrl".into()], 40);
+        input.key("b", &["ctrl".into()], 40);
+        assert_eq!(input.draft.cursor, 0);
+        input.key("f", &["ctrl".into()], 40);
+        input.key("f", &["ctrl".into()], 40);
+        assert_eq!(input.draft.cursor, input.value().len());
     }
 
     #[test]
