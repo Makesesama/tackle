@@ -19,6 +19,7 @@ defmodule Tackle.Phoenix.Runner do
   alias Tackle.Lib.State
   alias Tackle.Lib.Telemetry
   alias Tackle.Lib.Usage
+  alias Tackle.Phoenix.EventReducer
   alias Tackle.Phoenix.PubSub
   alias Tackle.Runtime.AgentContext
 
@@ -71,7 +72,14 @@ defmodule Tackle.Phoenix.Runner do
     end
   end
 
-  @doc "Returns one atomic snapshot of the runner state and active turn."
+  @doc """
+  Returns one atomic snapshot of the runner state and active turn.
+
+  The snapshot also contains `:streaming_messages`, a map of provisional
+  visible answer text keyed by message ID. It is cleared on retry, settlement,
+  or turn termination; reasoning and tool-input deltas are never stored there.
+  Hosts can use this alongside `:agent_state` to hydrate a newly joined view.
+  """
   def snapshot(%{} = config, user_id, opts \\ []) do
     with {:ok, pid} <- get_or_start(config, user_id, opts) do
       snapshot(pid)
@@ -195,6 +203,7 @@ defmodule Tackle.Phoenix.Runner do
           agent_state: agent_state,
           runtime_subscribers: MapSet.new(),
           turn_task: nil,
+          streaming_messages: %{},
           turn_signal: nil,
           turn_usage: empty_turn_usage(),
           turn_telemetry_ref: nil,
@@ -648,6 +657,7 @@ defmodule Tackle.Phoenix.Runner do
     %{
       state
       | turn_task: nil,
+        streaming_messages: %{},
         turn_signal: nil,
         turn_usage: empty_turn_usage(),
         turn_telemetry_ref: nil,
@@ -694,18 +704,52 @@ defmodule Tackle.Phoenix.Runner do
   defp process_tackle_event(state, %Event{type: :message_start, data: data} = event) do
     state
     |> persist_pending_message(data)
+    |> update_streaming(event)
     |> collect_turn_usage(event)
     |> collect_turn_stats(event)
     |> tap(&broadcast(&1, {:agent_event, event}))
     |> tap(&notify_runtime_event(&1, event))
   end
 
-  defp process_tackle_event(state, %Event{} = event) do
+  defp process_tackle_event(
+         state,
+         %Event{type: :message_end, data: %{message: %Message{} = message}} = event
+       ) do
     state
+    |> update_snapshot_message(message)
+    |> forward_event(event)
+  end
+
+  defp process_tackle_event(state, %Event{} = event), do: forward_event(state, event)
+
+  defp forward_event(state, event) do
+    state
+    |> update_streaming(event)
     |> collect_turn_usage(event)
     |> collect_turn_stats(event)
     |> tap(&broadcast(&1, {:agent_event, event}))
     |> tap(&notify_runtime_event(&1, event))
+  end
+
+  defp update_snapshot_message(%{agent_state: %State{} = agent_state} = state, message) do
+    if Enum.any?(agent_state.messages, &(&1.id == message.id)) do
+      state
+    else
+      %{state | agent_state: State.add_message(agent_state, message)}
+    end
+  end
+
+  defp update_snapshot_message(state, _message), do: state
+
+  defp update_streaming(state, event) do
+    Map.update(
+      state,
+      :streaming_messages,
+      EventReducer.project_streaming(%{}, event),
+      fn messages ->
+        EventReducer.project_streaming(messages, event)
+      end
+    )
   end
 
   defp persist_pending_message(state, data) do
@@ -787,6 +831,7 @@ defmodule Tackle.Phoenix.Runner do
       agent_state: state.agent_state,
       session_id: current_session_id(state),
       turn_active?: turn_active?,
+      streaming_messages: state.streaming_messages,
       runner_pid: if(turn_active?, do: self())
     }
   end

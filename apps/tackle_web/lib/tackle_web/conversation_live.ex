@@ -50,6 +50,7 @@ defmodule Tackle.Web.ConversationLive do
           agent_state: nil,
           streaming_messages: %{},
           tackle_message_view: ChatMessageView,
+          tackle_stream_rows?: true,
           processing: false,
           runner_pid: nil,
           activity: nil,
@@ -59,7 +60,7 @@ defmodule Tackle.Web.ConversationLive do
         # The stream container is rendered before anything is done with the
         # conversation, so the disconnected render of this page — which never
         # reaches a Runner — has a stream to render as well.
-        |> stream(:agent_messages, [])
+        |> stream(:agent_messages, [], dom_id: & &1.id)
 
       if connected?(socket) do
         _ = ChatStore.subscribe()
@@ -218,6 +219,7 @@ defmodule Tackle.Web.ConversationLive do
               loaded: true
             )
             |> EventReducer.init_stream(snapshot.agent_state)
+            |> EventReducer.restore_streaming_messages(snapshot.streaming_messages)
 
           {:error, reason} ->
             assign(socket,

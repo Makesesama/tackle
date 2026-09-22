@@ -108,6 +108,74 @@ defmodule Tackle.Phoenix.RunnerTest do
     defp notify(%{test_pid: test_pid}, message), do: send(test_pid, {:store, message})
   end
 
+  test "snapshot retains only visible in-flight content and retries discard the partial answer" do
+    messages = %{}
+    start = Event.message_start(id: "answer")
+    text = Event.new(:message_delta, %{delta: "Hel"}, id: "answer")
+    reasoning = Event.new(:message_delta, %{delta: "secret", field: :reasoning}, id: "answer")
+    tool = Event.new(:message_delta, %{delta: "{}", field: :tool_input}, id: "answer")
+
+    messages =
+      Enum.reduce(
+        [start, text, reasoning, tool],
+        messages,
+        &EventReducer.project_streaming(&2, &1)
+      )
+
+    assert messages == %{"answer" => %{content: "Hel"}}
+
+    assert EventReducer.project_streaming(
+             messages,
+             Event.new(:retry_scheduled, %{}, id: "answer")
+           ) == %{}
+
+    assert EventReducer.project_streaming(
+             messages,
+             Event.message_end(Tackle.Lib.Message.assistant(id: "answer", content: "Hello"))
+           ) == %{}
+  end
+
+  test "runner snapshot replays in-flight text after subscribers join" do
+    config = correlation_runner_config(Tackle.Phoenix.RunnerShutdownAgent)
+    agent_state = %State{context: %{test_pid: self(), persistence: %{}}}
+    host_state = %{test_pid: self(), session_id: "stream-session"}
+
+    assert {:ok, runner} =
+             Runner.run_turn(config, "stream-user", agent_state, "Hi",
+               session_id: "stream-session",
+               agent_state: agent_state,
+               host_state: host_state
+             )
+
+    assert_receive {:runner_shutdown_agent_started, _pid, _signal}
+    send(runner, {:tackle_event, Event.message_start(id: "answer")})
+    send(runner, {:tackle_event, Event.new(:message_delta, %{delta: "Hello"}, id: "answer")})
+
+    send(
+      runner,
+      {:tackle_event,
+       Event.new(:message_delta, %{delta: "private", field: :reasoning}, id: "answer")}
+    )
+
+    assert %{streaming_messages: %{"answer" => %{content: "Hello"}}} = Runner.snapshot(runner)
+    assistant = Tackle.Lib.Message.assistant(id: "answer", content: "Hello!")
+    send(runner, {:tackle_event, Event.message_end(assistant)})
+
+    assert %{agent_state: %State{messages: [_user, ^assistant]}, streaming_messages: %{}} =
+             Runner.snapshot(runner)
+
+    send(runner, {:tackle_event, Event.message_start(id: "retry")})
+
+    send(
+      runner,
+      {:tackle_event, Event.new(:message_delta, %{delta: "discard", id: "retry"}, id: "retry")}
+    )
+
+    send(runner, {:tackle_event, Event.new(:retry_scheduled, %{}, id: "retry")})
+    assert %{streaming_messages: %{}} = Runner.snapshot(runner)
+    :ok = Runner.cancel_turn(runner)
+  end
+
   test "retry events clear only the provisional streaming message" do
     socket = %Phoenix.LiveView.Socket{
       assigns: %{

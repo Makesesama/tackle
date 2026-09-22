@@ -7,7 +7,7 @@ defmodule Tackle.Phoenix.EventReducer do
     * begin a transient in-flight message on `:message_start`
     * append token chunks from `:message_delta` (content deltas only)
     * finalize the message on `:message_end`
-    * keep a stream of grouped message blocks
+    * keep a stream of grouped message blocks and keyed in-flight chat rows
 
   This module is effectively pure: it only mutates LiveView socket assigns and
   streams. It owns *no* persistence, PubSub, or task/cancellation logic. Message
@@ -19,6 +19,9 @@ defmodule Tackle.Phoenix.EventReducer do
     * `:agent_state` — a `Tackle.Lib.State`.
     * `:streaming_messages` — a map of in-flight streaming entries (initialized
       by `init_stream/2`).
+    * `:message_stream_blocks` — cached settled blocks for incremental updates.
+    * `:tackle_stream_rows?` — opt into rendering transient rows in the stream;
+      hosts with their own streaming presentation may omit it.
     * `:tackle_message_view` — the `Tackle.Phoenix.MessageView` implementation.
 
   The host wires the view once (typically in `mount/3`):
@@ -40,24 +43,69 @@ defmodule Tackle.Phoenix.EventReducer do
 
   @doc "Initializes stream state from an existing agent state."
   def init_stream(socket, %State{} = agent_state) do
+    entries = message_blocks(socket, agent_state)
+
     socket
     |> clear_streaming_messages()
-    |> sync_message_stream(agent_state)
+    |> Phoenix.LiveView.stream(@stream_name, entries, reset: true)
+    |> Component.assign(:message_stream_blocks, Map.new(entries, &{&1.id, &1}))
   end
 
-  @doc "Resets the message stream from the current agent state."
+  @doc "Synchronizes settled blocks, updating only blocks whose contents changed."
   def sync_message_stream(socket, %State{} = agent_state) do
-    Phoenix.LiveView.stream(
-      socket,
-      @stream_name,
-      message_blocks(socket, agent_state),
-      reset: true
-    )
+    entries = message_blocks(socket, agent_state)
+    previous = Map.get(socket.assigns, :message_stream_blocks, %{})
+    current = Map.new(entries, &{&1.id, &1})
+
+    socket =
+      if Map.has_key?(socket.assigns, :message_stream_blocks) do
+        socket
+        |> delete_missing_blocks(previous, current)
+        |> insert_changed_blocks(entries, previous)
+      else
+        Phoenix.LiveView.stream(socket, @stream_name, entries, reset: true)
+      end
+
+    Component.assign(socket, :message_stream_blocks, current)
+  end
+
+  defp delete_missing_blocks(socket, previous, current) do
+    Enum.reduce(previous, socket, fn {id, entry}, socket ->
+      if Map.has_key?(current, id),
+        do: socket,
+        else: Phoenix.LiveView.stream_delete(socket, @stream_name, entry)
+    end)
+  end
+
+  defp insert_changed_blocks(socket, entries, previous) do
+    Enum.with_index(entries)
+    |> Enum.reduce(socket, fn {entry, index}, socket ->
+      if Map.get(previous, entry.id) == entry,
+        do: socket,
+        else: Phoenix.LiveView.stream_insert(socket, @stream_name, entry, at: index)
+    end)
   end
 
   @doc "Clears all in-flight streaming assistant chunks."
   def clear_streaming_messages(socket) do
+    socket =
+      Enum.reduce(current_streaming_messages(socket), socket, fn {id, _entry}, socket ->
+        delete_streaming_row(socket, id)
+      end)
+
     Component.assign(socket, :streaming_messages, %{})
+  end
+
+  @doc "Restores in-flight content from a Runner snapshot after loading the transcript."
+  def restore_streaming_messages(socket, messages) when is_map(messages) do
+    Enum.reduce(messages, socket, fn {id, entry}, socket ->
+      socket
+      |> Component.assign(
+        :streaming_messages,
+        Map.put(current_streaming_messages(socket), id, entry)
+      )
+      |> put_streaming_row(id, entry)
+    end)
   end
 
   @doc "Converts grouped message blocks into stream items."
@@ -66,13 +114,36 @@ defmodule Tackle.Phoenix.EventReducer do
   def messages_from_block(messages) when is_list(messages), do: messages
   def messages_from_block(_), do: []
 
-  @doc """
-  Consumes a stream-related `Tackle.Lib.Event`.
+  @doc "Projects in-flight answer text for snapshots without a LiveView socket."
+  def project_streaming(messages, %Event{} = event) when is_map(messages) do
+    id = extract_message_id(event.data, event)
 
-  Returns an updated socket for `:message_start`, `:message_delta`,
-  `:retry_scheduled`, and `:message_end`; all other events are returned
-  unchanged.
-  """
+    case event do
+      %Event{type: :message_start, data: data} ->
+        if assistant_message?(data) and is_binary(id),
+          do: Map.put_new(messages, id, %{content: ""}),
+          else: messages
+
+      %Event{type: :message_delta, data: data} ->
+        if content_delta?(data) and is_binary(id) do
+          delta = delta_text(data)
+
+          Map.update(messages, id, %{content: delta}, fn entry ->
+            %{entry | content: entry.content <> delta}
+          end)
+        else
+          messages
+        end
+
+      %Event{type: type} when type in [:retry_scheduled, :message_end] ->
+        Map.delete(messages, id)
+
+      _ ->
+        messages
+    end
+  end
+
+  @doc "Consumes a stream-related event and updates its LiveView socket."
   def handle_tackle_event(socket, %Event{type: :message_start, data: data} = event) do
     if assistant_message?(data) do
       maybe_start_message(
@@ -110,12 +181,17 @@ defmodule Tackle.Phoenix.EventReducer do
         type: :message_end,
         data: %{message: %Message{} = message}
       }) do
-    agent_state = State.add_message(socket.assigns.agent_state, message)
+    agent_state = socket.assigns.agent_state
+
+    agent_state =
+      if Enum.any?(agent_state.messages, &(&1.id == message.id)),
+        do: agent_state,
+        else: State.add_message(agent_state, message)
 
     socket
     |> Component.assign(:agent_state, agent_state)
     |> sync_message_stream(agent_state)
-    |> clear_streaming_message(message.id)
+    |> settle_streaming_message(message.id, agent_state)
   end
 
   def handle_tackle_event(socket, _event), do: socket
@@ -164,11 +240,11 @@ defmodule Tackle.Phoenix.EventReducer do
     else
       view = message_view(socket)
 
-      Component.assign(
-        socket,
-        :streaming_messages,
-        Map.put(messages, message_id, view.new_streaming_message())
-      )
+      entry = view.new_streaming_message()
+
+      socket
+      |> Component.assign(:streaming_messages, Map.put(messages, message_id, entry))
+      |> put_streaming_row(message_id, entry)
     end
   end
 
@@ -180,7 +256,10 @@ defmodule Tackle.Phoenix.EventReducer do
         view = message_view(socket)
         current = Map.get(messages, message_id, view.new_streaming_message())
         entry = view.append_streaming_delta(current, delta)
-        Component.assign(socket, :streaming_messages, Map.put(messages, message_id, entry))
+
+        socket
+        |> Component.assign(:streaming_messages, Map.put(messages, message_id, entry))
+        |> put_streaming_row(message_id, entry)
 
       _ ->
         socket
@@ -189,11 +268,26 @@ defmodule Tackle.Phoenix.EventReducer do
 
   defp append_message_delta(socket, _message_id, _messages, _data), do: socket
 
+  defp settle_streaming_message(socket, id, agent_state) do
+    if Enum.any?(message_blocks(socket, agent_state), &(&1.id == streaming_id(id))) do
+      Component.assign(
+        socket,
+        :streaming_messages,
+        Map.delete(current_streaming_messages(socket), id)
+      )
+    else
+      clear_streaming_message(socket, id)
+    end
+  end
+
   defp clear_streaming_message(socket, nil), do: socket
 
   defp clear_streaming_message(socket, message_id) do
     messages = current_streaming_messages(socket)
-    Component.assign(socket, :streaming_messages, Map.delete(messages, message_id))
+
+    socket
+    |> Component.assign(:streaming_messages, Map.delete(messages, message_id))
+    |> delete_streaming_row(message_id)
   end
 
   defp extract_message_id(data, event) when is_map(data) and is_struct(event, Event) do
@@ -229,14 +323,30 @@ defmodule Tackle.Phoenix.EventReducer do
 
     messages
     |> view.group_messages()
-    |> Enum.with_index()
-    |> Enum.map(fn {block, index} ->
-      %{id: stream_entry_id(index), block: block}
+    |> Enum.map(fn block ->
+      [first | _] = messages_from_block(block)
+      %{id: "agent-msg-block-#{first.id}", block: block}
     end)
   end
 
   defp message_stream_entries(_socket, _), do: []
 
-  defp stream_entry_id(index) when is_integer(index), do: "agent-msg-block-#{index}"
-  defp stream_entry_id(index), do: "agent-msg-block-#{inspect(index)}"
+  defp delete_streaming_row(%{assigns: assigns} = socket, id) do
+    if Map.get(assigns, :tackle_stream_rows?, false),
+      do: Phoenix.LiveView.stream_delete(socket, @stream_name, %{id: streaming_id(id)}),
+      else: socket
+  end
+
+  defp streaming_id(id), do: "agent-msg-block-#{id}"
+
+  defp put_streaming_row(%{assigns: assigns} = socket, id, entry) do
+    if Map.get(assigns, :tackle_stream_rows?, false) do
+      Phoenix.LiveView.stream_insert(socket, @stream_name, %{
+        id: streaming_id(id),
+        block: {:streaming, entry}
+      })
+    else
+      socket
+    end
+  end
 end
