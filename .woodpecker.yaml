@@ -6,28 +6,28 @@ steps:
   - name: library
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command ./nix/ci-check.sh library
+      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh library
   - name: runtime
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command ./nix/ci-check.sh runtime
+      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh runtime
   - name: provider-plugins
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command ./nix/ci-check.sh provider-plugins
+      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh provider-plugins
   - name: integration-plugins
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command ./nix/ci-check.sh integration-plugins
+      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh integration-plugins
   - name: harness
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command ./nix/ci-check.sh harness
+      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh harness
   - name: cli
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command ./nix/ci-check.sh cli
+      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh cli
   - name: web
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command ./nix/ci-check.sh web
+      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh web
