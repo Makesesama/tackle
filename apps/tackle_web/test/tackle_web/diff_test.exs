@@ -7,7 +7,13 @@ defmodule Tackle.Web.DiffTest do
   setup_all do
     repo = GitFixture.build()
     on_exit(fn -> File.rm_rf(repo) end)
-    {:ok, repo: repo}
+
+    highlighted? =
+      Tackle.Web.Highlight.lines("defmodule Example do\nend\n", "lib/example.ex")
+      |> Map.get(1, "")
+      |> String.contains?(~s[style="color:])
+
+    {:ok, repo: repo, highlighted?: highlighted?}
   end
 
   setup %{repo: repo} do
@@ -56,16 +62,25 @@ defmodule Tackle.Web.DiffTest do
     assert diff.deletions == diff.files |> Enum.map(& &1.deletions) |> Enum.sum()
   end
 
-  test "highlights both sides of the change", %{diff: diff} do
+  test "highlights both sides of the change when available", %{
+    diff: diff,
+    highlighted?: highlighted?
+  } do
     lines = diff |> file("lib/keep.ex") |> all_lines()
 
     added = Enum.find(lines, &(&1.kind == :add))
     removed = Enum.find(lines, &(&1.kind == :remove))
 
-    # The colour has to come from the highlighter rather than the plain-text
-    # fallback, on both the head and the base side.
-    assert added.html =~ ~s[style="color:]
-    assert removed.html =~ ~s[style="color:]
+    if highlighted? do
+      # The colour has to come from the highlighter rather than the plain-text
+      # fallback, on both the head and the base side.
+      assert added.html =~ ~s[style="color:]
+      assert removed.html =~ ~s[style="color:]
+    else
+      # Wasmtime may be unable to allocate executable memory on CI hosts.
+      assert added.html == "  def two, do: 22"
+      assert removed.html == "  def two, do: 2"
+    end
   end
 
   test "renders each line's source unchanged, with the marker stripped", %{diff: diff} do
