@@ -77,6 +77,30 @@ defmodule Tackle.Plugins.CodexTest do
       assert info.pricing.unit_tokens == 1_000_000
     end)
 
+    assert {:ok, %ModelInfo{} = sol} = LLM.model_info(Codex, "gpt-6-sol")
+    assert sol.context_window == 272_000
+
+    assert sol.pricing == %{
+             input: 2,
+             output: 10,
+             cache_read: 0.2,
+             cache_write: 2.5,
+             currency: "USD",
+             unit_tokens: 1_000_000
+           }
+
+    assert {:ok, %ModelInfo{} = luna} = LLM.model_info(Codex, "gpt-6-luna")
+    assert luna.context_window == 272_000
+
+    assert luna.pricing == %{
+             input: 0.1,
+             output: 0.5,
+             cache_read: 0.01,
+             cache_write: 0.125,
+             currency: "USD",
+             unit_tokens: 1_000_000
+           }
+
     assert {:ok, nil} = LLM.model_info(Codex, "unknown")
   end
 

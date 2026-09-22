@@ -101,12 +101,15 @@ normalized into the library's separate cache-read, cache-write, and uncached-inp
 buckets.
 
 `model_info/1` exposes the explicit Codex catalog's context windows, maximum
-output limits, and USD-per-million-token price cards. Tackle.Lib applies those
-cards consistently to streaming and settled usage when the provider omits cost.
-These totals are marked estimated. ChatGPT subscription usage does not necessarily
-represent an API charge or invoice, so hosts must not treat the estimate as
-provider-reported billing. Catalog values are maintained with the adapter and
-should be reviewed whenever its selectable model list changes.
+output limits, and USD-per-million-token price cards. These are the selectable
+Codex limits, which may be lower than a model's public API context window; the
+flat price cards cover the advertised window and do not model public API
+long-context tiers. Tackle.Lib applies those cards consistently to streaming and
+settled usage when the provider omits cost. These totals are marked estimated.
+ChatGPT subscription usage does not necessarily represent an API charge or
+invoice, so hosts must not treat the estimate as provider-reported billing.
+Catalog values are maintained with the adapter and should be reviewed whenever
+its selectable model list changes.
 
 Zstd request compression and automatic model discovery remain out of scope.
 
