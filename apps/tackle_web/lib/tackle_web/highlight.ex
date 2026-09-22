@@ -20,13 +20,18 @@ defmodule Tackle.Web.Highlight do
   Highlights `source` as `path` and returns `%{line_number => html}`.
 
   Line numbers are 1-based and match the file's own numbering, so a fragment can
-  be looked up by the line number a diff reports.
+  be looked up by the line number a diff reports. Returns an empty map when
+  highlighting is unavailable; diff lines then render as escaped plain text.
   """
   @spec lines(String.t(), Path.t()) :: %{pos_integer() => String.t()}
   def lines(source, path) do
-    source
-    |> Lumis.highlight!(formatter: {:html_inline, language: path, theme: theme()})
-    |> split_lines()
+    case Lumis.highlight(source, formatter: {:html_inline, language: path, theme: theme()}) do
+      {:ok, html} -> split_lines(html)
+      {:error, _reason} -> %{}
+    end
+  rescue
+    # A missing or panicked NIF can raise instead of returning an error tuple.
+    _error in [Lumis.HighlightError, ErlangError] -> %{}
   end
 
   @doc """
@@ -45,7 +50,9 @@ defmodule Tackle.Web.Highlight do
 
   # Each line arrives as its own <div>; the content keeps the newline that
   # ended the line, which would render as a blank line inside the UI row.
-  defp split_lines(html) do
+  @doc false
+  @spec split_lines(String.t()) :: %{pos_integer() => String.t()}
+  def split_lines(html) do
     @line_pattern
     |> Regex.scan(html)
     |> Map.new(fn [_match, number, content] ->
