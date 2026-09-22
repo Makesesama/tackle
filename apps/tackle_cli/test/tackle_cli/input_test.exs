@@ -100,6 +100,36 @@ defmodule Tackle.CLI.Widgets.InputTest do
     assert Input.get_value(input) == "one "
   end
 
+  test "emacs word navigation uses grapheme-safe whitespace boundaries" do
+    input = Input.new()
+    :ok = Input.set_value(input, "one  βéta\nthree  ")
+
+    :ok = Input.handle_key(input, "b", ["alt"], 20)
+    :ok = Input.insert_str(input, "|")
+    assert Input.get_value(input) == "one  βéta\n|three  "
+
+    :ok = Input.set_value(input, "one  βéta\nthree  ")
+    :ok = Input.handle_key(input, "b", ["ctrl"], 20)
+    :ok = Input.handle_key(input, "b", ["ctrl"], 20)
+    :ok = Input.insert_str(input, "|")
+    assert Input.get_value(input) == "one  |βéta\nthree  "
+
+    :ok = Input.set_value(input, "one  βéta\nthree  ")
+    Enum.each(1..3, fn _ -> :ok = Input.handle_key(input, "b", ["alt"], 20) end)
+    :ok = Input.handle_key(input, "f", ["alt"], 20)
+    :ok = Input.handle_key(input, "f", ["alt"], 20)
+    :ok = Input.insert_str(input, "|")
+    assert Input.get_value(input) == "one  βéta|\nthree  "
+
+    :ok = Input.set_value(input, "one  βéta\nthree  ")
+    Enum.each(1..3, fn _ -> :ok = Input.handle_key(input, "b", ["ctrl"], 20) end)
+    :ok = Input.handle_key(input, "f", ["ctrl"], 20)
+    :ok = Input.handle_key(input, "f", ["ctrl"], 20)
+    :ok = Input.handle_key(input, "f", ["ctrl"], 20)
+    :ok = Input.insert_str(input, "|")
+    assert Input.get_value(input) == "one  βéta\nthree|  "
+  end
+
   test "the native boundary rejects oversized areas and control-bearing placeholders" do
     input = Input.new()
     assert {:error, :invalid_size} = Native.input_render(input, 257, 256, "", true)

@@ -429,6 +429,21 @@ defmodule Tackle.CLI.TUITest do
     assert draft(tui) == "\n\naa"
   end
 
+  test "emacs word navigation works with Alt and Ctrl chords", %{tui: tui} do
+    inject_paste(tui, "one two three")
+
+    inject_key(tui, "b", ["alt"])
+    inject_key(tui, "b", ["ctrl"])
+    inject_key(tui, "X")
+    assert draft(tui) == "one Xtwo three"
+
+    inject_key(tui, "f", ["alt"])
+    inject_key(tui, "f", ["ctrl"])
+    inject_key(tui, "!")
+    assert draft(tui) == "one Xtwo three!"
+    assert state(tui).overlay == nil
+  end
+
   test "resize alone rewraps and redraws the composer without editing the draft", %{tui: tui} do
     source = String.duplicate("x", 60)
     inject_paste(tui, source)
@@ -1836,6 +1851,7 @@ defmodule Tackle.CLI.TUITest do
         Message.tool_result("call-9", "read", "hidden NEEDLE-TOKEN tail")
       ])
 
+    inject_key(tui, "f4")
     inject_key(tui, "f", ["ctrl"])
     state = state(tui)
     assert {:search, %{query: ""}} = state.overlay
@@ -1848,7 +1864,6 @@ defmodule Tackle.CLI.TUITest do
     assert match.id == "tool:call-9"
 
     refute state.conversation.follow?
-    assert conversation_text(state) =~ "secret.txt"
     assert status_text(state) =~ "NEEDLE-TOKEN"
     assert status_text(state) =~ "Match 1/1"
     assert popup_title(state) =~ "1/1"
@@ -1859,6 +1874,8 @@ defmodule Tackle.CLI.TUITest do
 
     inject_key(tui, "esc")
     assert state(tui).overlay == nil
+    inject_key(tui, "f4")
+    assert conversation_text(state(tui)) =~ "secret.txt"
     refute_receive {:submitted, _}
   end
 

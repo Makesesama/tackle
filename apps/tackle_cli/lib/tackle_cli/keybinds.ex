@@ -104,7 +104,7 @@ defmodule Tackle.CLI.Keybinds do
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
-      when is_ctrl(modifiers) and code in ["c", "f", "t", "j", "k"],
+      when is_ctrl(modifiers) and code in ["c", "t", "j", "k"],
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
@@ -139,7 +139,6 @@ defmodule Tackle.CLI.Keybinds do
 
   defp composer(%Key{code: "esc"}), do: :escape
   defp composer(%Key{code: "n", modifiers: modifiers}) when is_alt(modifiers), do: :new_session
-  defp composer(%Key{code: "f", modifiers: modifiers}) when is_ctrl(modifiers), do: :search
 
   defp composer(%Key{code: "k", modifiers: modifiers}) when is_ctrl(modifiers), do: :compact
 
@@ -295,6 +294,6 @@ defmodule Tackle.CLI.Keybinds do
   def search(%Key{code: "enter"}), do: :next
   def search(%Key{code: "down"}), do: :next
   def search(%Key{code: "up"}), do: :previous
-  def search(%Key{code: code}) when is_binary(code), do: {:input, code}
+  def search(%Key{code: code, modifiers: []}) when is_binary(code), do: {:input, code}
   def search(%Key{}), do: :ignore
 end

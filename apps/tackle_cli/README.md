@@ -230,7 +230,9 @@ is short.
 | F4 | Unified Browse: Transcript, Overview, Prompt, Context, Tools, Events. ←/→ or Tab/Shift+Tab switches pages. Transcript ↑/↓ selects entries, Enter inspects, Y copies source. Other pages scroll with ↑/↓, Page Up/Down, Home/End or wheel; R refreshes, Y copies. Esc/F4 returns to the draft. |
 | F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
 | F6 | Open cumulative settled token usage. Tab or ←/→ switches Current/This-week sessions, R reloads, Esc closes. |
-| Ctrl+F | Transcript search over full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
+| Ctrl+B / Alt+B (input bar) | Move the caret backward by one whitespace-delimited word. |
+| Ctrl+F / Alt+F (input bar) | Move the caret forward by one whitespace-delimited word. |
+| Ctrl+F (Browse transcript) | Search full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
 | Ctrl+K | Compact context manually while idle. The draft is retained. Manual compaction cannot currently be cancelled. |
 | Ctrl+T | Reveal or collapse supplied reasoning. |
 | Page Up/Page Down, mouse wheel | Scroll the transcript. Alt+< jumps to the oldest row; Alt+> returns to the newest row and resumes following. |
@@ -295,10 +297,11 @@ combining marks and emoji. Up/Down move by visual row and retain the preferred
 column, except when the draft is empty or a recalled prompt is showing: then
 they walk the in-memory prompt history instead. Ctrl+P/Ctrl+N always walk that
 history, whatever the draft holds. Home/End and Ctrl+A/E move to logical line
-boundaries; Ctrl+W deletes
-the preceding whitespace-delimited word. The caret is hidden while browsing or
-using an overlay. Tabs paint as spaces and other control characters as visible
-replacements without changing the submitted source.
+boundaries; Ctrl+B/Alt+B and Ctrl+F/Alt+F move backward and forward by a
+whitespace-delimited word; Ctrl+W deletes the preceding word. The caret is
+hidden while browsing or using an overlay. Tabs paint as spaces and other
+control characters as visible replacements without changing the submitted
+source.
 
 Bracketed paste lands as one edit and never submits. CRLF is normalized to `\n`;
 lone CR is dropped before the edit. Ctrl+U undoes and Ctrl+R redoes a full
@@ -366,8 +369,9 @@ cards show submitted content without pretending that an overwrite is a new
 file. No filesystem reads, new dependencies, or tool execution changes are
 involved. Large replacements skip expensive matching and show before/after
 lines instead; complete submitted replacements remain available in details.
-Ctrl+F searches the same retained source, including output hidden behind the
-preview, and returns at most 200 matching entries per keystroke.
+While the transcript browser is focused, Ctrl+F searches the same retained
+source, including output hidden behind the preview, and returns at most 200
+matching entries per keystroke.
 
 Paint is a security boundary: ANSI/OSC control sequences, other non-display
 bytes, and tabs are stripped or normalized before model or tool text reaches a
@@ -466,7 +470,7 @@ This shell is an experimentation build. It intentionally does not implement:
 - inline terminal-scrollback rendering (the TUI owns the alternate screen);
 - a theme framework (colors are semantic but fixed), authoritative file diffs,
   or a plugin presenter registry;
-- background search indexing (Ctrl+F is synchronous and capped).
+- background search indexing (browser Ctrl+F search is synchronous and capped).
 
 Mouse capture is enabled for wheel scrolling, so native terminal selection
 requires the terminal's mouse-override gesture (typically Shift-drag).
