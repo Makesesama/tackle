@@ -224,8 +224,6 @@ defmodule Tackle.Phoenix.EventReducer do
   defp message_blocks(socket, %State{messages: messages}),
     do: message_stream_entries(socket, messages)
 
-  defp message_blocks(socket, _), do: message_stream_entries(socket, [])
-
   defp message_stream_entries(socket, messages) when is_list(messages) do
     view = message_view(socket)
 

@@ -147,6 +147,10 @@
           ciShellHook = ''
             ${projectShellHook}
             export MIX_ENV=test
+
+            # Mix's downloaded rebar3 uses /usr/bin/env, which NixOS does not
+            # provide. Force Mix to use the rebar3 from this shell instead.
+            export MIX_REBAR3=${pkgs.beamPackages.rebar3}/bin/rebar3
           '';
 
           commonShellHook = ''

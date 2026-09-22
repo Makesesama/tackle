@@ -679,7 +679,6 @@ defmodule Tackle.Phoenix.Runner do
   defp collect_turn_stats(state, %Event{}), do: state
 
   defp exception_type(kind) when kind in [:error, :exit, :throw], do: kind
-  defp exception_type(_kind), do: :unknown
 
   defp normalize_result(result, fallback_state, turn_usage) do
     case result do
@@ -854,7 +853,6 @@ defmodule Tackle.Phoenix.Runner do
   defp normalize_usage(%{} = usage), do: usage |> Usage.normalize() |> nonzero_usage()
   defp normalize_usage(_other), do: nil
 
-  defp nonzero_usage(nil), do: nil
   defp nonzero_usage(%Usage{} = usage), do: if(usage_total_tokens(usage) > 0, do: usage)
 
   defp usage_total_tokens(%Usage{} = usage) do
