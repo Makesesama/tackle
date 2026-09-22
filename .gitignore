@@ -34,3 +34,7 @@ erl_crash.dump
 tackle-*.tar
 
 .pre-commit-config.yaml
+
+.nix-mix
+.nix-hex
+.pi
