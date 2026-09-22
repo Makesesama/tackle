@@ -147,7 +147,11 @@
           </div>
         </div>
 
-        <.alert :if={@agent_error} tone="error" class="mx-3 mb-3 max-h-48 flex-none overflow-y-auto">
+        <.alert
+          :if={@agent_error}
+          tone="error"
+          class="mx-3 mb-3 max-h-48 flex-none overflow-y-auto"
+        >
           <:actions>
             <.button
               :if={not @processing and asked?(@agent_state)}
