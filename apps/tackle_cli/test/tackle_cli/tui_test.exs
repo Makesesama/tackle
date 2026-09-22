@@ -309,7 +309,12 @@ defmodule Tackle.CLI.TUITest do
     assert conversation_text(state) =~ "Model: openai-codex/test-model"
 
     assert %Tackle.CLI.Widgets.Input{
-             block: %{title: " › ", borders: [:top], padding: {1, 1, 0, 1}}
+             block: %{
+               title: " Message ",
+               borders: [:all],
+               border_type: :rounded,
+               padding: {1, 1, 0, 0}
+             }
            } = composer_widget(state)
 
     assert status_text(state) =~ "ready"
@@ -353,8 +358,8 @@ defmodule Tackle.CLI.TUITest do
     :ok = ExRatatui.draw(terminal, TUI.scene(wide, frame(wide)))
     buffer = ExRatatui.get_buffer_content(terminal)
     assert buffer =~ "What would you like to build?"
-    refute buffer =~ "╭"
-    refute buffer =~ "╰"
+    assert buffer =~ "╭ Message "
+    assert buffer =~ "╰"
   end
 
   test "submits the trimmed draft on Enter and clears the composer", %{tui: tui} do
@@ -459,7 +464,7 @@ defmodule Tackle.CLI.TUITest do
 
     terminal = ExRatatui.init_test_terminal(22, 24)
     :ok = ExRatatui.draw(terminal, TUI.scene(narrow, frame(narrow)))
-    assert ExRatatui.get_buffer_content(terminal) =~ String.duplicate("x", 20)
+    assert ExRatatui.get_buffer_content(terminal) =~ String.duplicate("x", 18)
 
     inject_resize(tui, 80, 24)
     wide = state(tui)

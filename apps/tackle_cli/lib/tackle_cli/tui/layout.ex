@@ -9,7 +9,8 @@ defmodule Tackle.CLI.TUI.Layout do
 
   The composer grows with the native editor's measured visual rows, including
   soft wraps and the final insertion cell, up to eight content rows. The two
-  chrome rows are a top divider and bottom padding, not an enclosing box.
+  chrome rows enclose the input in a rounded box. On tiny terminals the box
+  yields to editable content.
   """
 
   alias ExRatatui.Layout.Rect
@@ -42,9 +43,11 @@ defmodule Tackle.CLI.TUI.Layout do
     width = max(width, 1)
     height = max(height, 0)
 
+    chrome_height = if composer_box?(width, height), do: @composer_border_height, else: 0
+
     composer_height =
       min(
-        composer_lines(height, draft_lines) + @composer_border_height,
+        composer_lines(height, draft_lines, chrome_height) + chrome_height,
         max(height - @header_height, 0)
       )
 
@@ -77,10 +80,24 @@ defmodule Tackle.CLI.TUI.Layout do
 
   @doc "Returns the composer's content line count for a terminal height."
   @spec composer_lines(integer(), pos_integer()) :: pos_integer()
-  def composer_lines(height, draft_lines) do
+  def composer_lines(height, draft_lines),
+    do: composer_lines(height, draft_lines, @composer_border_height)
+
+  @doc "Whether there is room for input borders, padding, and an editable cell."
+  @spec composer_box?(integer(), integer()) :: boolean()
+  def composer_box?(width, height), do: width >= 5 and height >= 4
+
+  @doc "Shared content width for composer measurement, navigation, and paint."
+  @spec composer_content_width(integer(), integer()) :: pos_integer()
+  def composer_content_width(width, height) do
+    inset = if composer_box?(width, height), do: 4, else: 0
+    max(width - inset, 1)
+  end
+
+  defp composer_lines(height, draft_lines, chrome_height) do
     max_lines =
       height
-      |> Kernel.-(@header_height + @composer_border_height + @min_transcript_height)
+      |> Kernel.-(@header_height + chrome_height + @min_transcript_height)
       |> min(@composer_max_lines)
       |> max(@composer_min_lines)
 

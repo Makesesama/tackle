@@ -20,9 +20,9 @@ defmodule Tackle.CLI.TUI.Theme do
   markers. Diff rows leave the terminal background untouched; only changed
   tokens use the restrained `:diff_add_inline` and `:diff_del_inline` tints.
 
-  A desaturated blue accent marks activity and selection. Overlay borders and
-  the composer divider stay neutral; warning and error colors carry meaning
-  rather than decorating the shell.
+  A desaturated blue accent marks activity, selection, and the focused input
+  border. Overlay and unfocused input borders stay neutral; warning and error
+  colors carry meaning rather than decorating the shell.
   """
 
   alias ExRatatui.Style
