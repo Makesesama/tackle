@@ -526,10 +526,13 @@ their wire format; text-only adapters degrade the parts explicitly.
 Do not bypass settlement in custom runtimes. It is what keeps agent and MCP
 execution consistent.
 
-Expected tool failures return `{:error, reason}`. Tackle.Lib converts them into a
-linked tool result with sanitized model-facing content while detailed failure
-information remains available in `:tool_error` events. Exceptions are rescued
-and logged as bugs; they should not be normal control flow.
+Expected tool failures return `{:error, reason}`. They use sanitized model-facing
+content by default. A tool may implement `model_error/1` to deliberately project
+an expected failure into a safe diagnostic for the linked tool result, allowing
+the agent to react to failures such as a non-zero command or rejected
+delegation. Detailed failure information remains available in `:tool_error`
+events. Exceptions are rescued and logged as bugs; they should not be normal
+control flow.
 
 Unknown tools and stale `definition_id` values settle as typed errors rather
 than executing a different definition. Tool names must be unique in a registry.

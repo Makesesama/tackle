@@ -122,6 +122,38 @@ defmodule Tackle.Tools.SubagentTest do
     assert Enum.any?(tools_used, &(&1.name == "subagent"))
   end
 
+  test "a delegated failure remains visible in the parent tool transcript" do
+    tool_call = %{
+      "id" => "call_failure",
+      "name" => "subagent",
+      "arguments" => %{"profile" => "worker", "prompt" => "do the work"}
+    }
+
+    scope =
+      start_scope(
+        root: [
+          allow_delegation: true,
+          tools: [Tackle.Tools.Subagent],
+          mode: :tool_then_answer,
+          llm_opts: [tool_call: tool_call, content: "recovered"]
+        ],
+        profiles: %{"worker" => agent_spec("worker", mode: :error)}
+      )
+
+    {:ok, session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+    {:ok, %{session_id: session_id}} = Tackle.Session.subscribe(session)
+    assert {:ok, turn_id} = Tackle.Runtime.submit(scope.root_agent_ref, "delegate the work")
+
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, state}}, 5_000
+
+    tool_result =
+      Enum.find(state.messages, &(&1.role == :tool and &1.tool_call_id == "call_failure"))
+
+    assert tool_result.content =~ "Error: subagent failed:"
+    assert tool_result.content =~ "adapter_error"
+    refute tool_result.content == "Error: The tool failed while completing the request."
+  end
+
   test "a delegated run failure is reported to the calling agent as a tool error" do
     tool_call = %{
       "id" => "call_1",

@@ -35,6 +35,10 @@ defmodule Tackle.Tools.SubagentStatus do
 
   def run(_args, _context), do: {:error, "subagent_status requires a run_id"}
 
+  @impl true
+  def model_error(reason) when is_binary(reason), do: reason
+  def model_error(_reason), do: nil
+
   defp fetch_handle(context) do
     case Handle.from_context(context) do
       %Handle{} = handle -> {:ok, handle}

@@ -57,6 +57,60 @@ defmodule Tackle.Lib.ToolTest do
     def execute(_args, _context), do: {:ok, %{ok: "not boolean"}}
   end
 
+  defmodule FailingTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "failing"
+
+    @impl true
+    def description, do: "Returns an expected failure."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, _context), do: {:error, "dependency compilation failed around :idna"}
+
+    @impl true
+    def model_error(reason), do: reason
+  end
+
+  defmodule OpaqueFailureTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "opaque_failure"
+
+    @impl true
+    def description, do: "Returns an internal failure term."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, _context), do: {:error, {:credentials, "secret-token"}}
+  end
+
+  defmodule CrashingProjectionTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "crashing_projection"
+
+    @impl true
+    def description, do: "Raises while projecting an expected error."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, _context), do: {:error, :expected_failure}
+
+    @impl true
+    def model_error(_reason), do: raise("projection failed")
+  end
+
   defmodule DSLSearchTool do
     use Tackle.Lib.Tool
 
@@ -346,6 +400,41 @@ defmodule Tackle.Lib.ToolTest do
     assert {:error, %Tackle.Lib.Tool.Error{} = error} = Tool.settle(InvalidOutputTool, call, %{})
     assert error.reason == :invalid_output
     assert error.message =~ "Invalid tool output"
+    assert error.content == "Error: The tool failed while completing the request."
+  end
+
+  test "settle/3 preserves explicitly projected execution errors for the calling agent" do
+    call = %Tackle.Lib.Tool.Call{id: "call_failure", name: "failing", arguments: %{}}
+
+    assert {:error, %Tackle.Lib.Tool.Error{} = error} = Tool.settle(FailingTool, call, %{})
+    assert error.reason == :execution_error
+    assert error.message == "dependency compilation failed around :idna"
+    assert error.content == "Error: dependency compilation failed around :idna"
+  end
+
+  test "settle/3 sanitizes execution errors without an explicit projection" do
+    call = %Tackle.Lib.Tool.Call{id: "call_opaque", name: "opaque_failure", arguments: %{}}
+
+    assert {:error, %Tackle.Lib.Tool.Error{} = error} =
+             Tool.settle(OpaqueFailureTool, call, %{})
+
+    assert error.reason == :execution_error
+    assert error.message =~ "credentials"
+    assert error.content == "Error: The tool failed while completing the request."
+    refute error.content =~ "secret-token"
+  end
+
+  test "settle/3 sanitizes a failing error projection" do
+    call = %Tackle.Lib.Tool.Call{
+      id: "call_projection",
+      name: "crashing_projection",
+      arguments: %{}
+    }
+
+    assert {:error, %Tackle.Lib.Tool.Error{} = error} =
+             Tool.settle(CrashingProjectionTool, call, %{})
+
+    assert error.reason == :execution_error
     assert error.content == "Error: The tool failed while completing the request."
   end
 
