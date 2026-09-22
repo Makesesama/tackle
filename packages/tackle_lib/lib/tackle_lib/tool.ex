@@ -74,11 +74,16 @@ defmodule Tackle.Lib.Tool do
     * `args` — map of argument values matching the parameters schema.
     * `context` — host-supplied context map (user info, permissions, etc.).
 
-  Returns `{:ok, result}` or `{:error, reason}`.
+  Returns `{:ok, result}` or `{:error, reason}`. Errors are sanitized before
+  entering the model transcript unless the tool explicitly implements
+  `model_error/1` to expose a safe diagnostic.
   """
   @callback execute(args :: map(), context :: map()) :: {:ok, any()} | {:error, term()}
 
-  @optional_callbacks output_schema: 0, description_metadata: 0
+  @doc "Optional projection of an expected failure into a safe model-facing diagnostic."
+  @callback model_error(reason :: term()) :: String.t() | nil
+
+  @optional_callbacks output_schema: 0, description_metadata: 0, model_error: 1
 
   @doc """
   Defines a Tackle.Lib tool with the canonical DSL.
@@ -382,11 +387,24 @@ defmodule Tackle.Lib.Tool do
         {:error, tool_error(call, :invalid_output, reason)}
 
       {:error, {:tool_execution_error, reason}} when is_binary(reason) ->
-        {:error, tool_error(call, :execution_error, reason, reason)}
+        {:error,
+         tool_error(
+           call,
+           :execution_error,
+           reason,
+           reason,
+           model_error_content(tool_module, reason)
+         )}
 
       {:error, {:tool_execution_error, reason}} ->
         {:error,
-         tool_error(call, :execution_error, "Tool execution failed: #{inspect(reason)}", reason)}
+         tool_error(
+           call,
+           :execution_error,
+           "Tool execution failed: #{inspect(reason)}",
+           reason,
+           model_error_content(tool_module, reason)
+         )}
 
       {:error, reason} when is_binary(reason) ->
         {:error, tool_error(call, :invalid_input, reason)}
@@ -465,16 +483,29 @@ defmodule Tackle.Lib.Tool do
 
   defp project_output(result), do: {:ok, {format_result(result), []}}
 
-  defp tool_error(call, reason, message, details \\ nil) do
+  defp tool_error(call, reason, message, details \\ nil, content \\ nil) do
     %Tackle.Lib.Tool.Error{
       tool_call_id: call.id,
       name: call.name,
       reason: reason,
       message: message,
-      content: sanitized_tool_error_content(reason),
+      content: content || sanitized_tool_error_content(reason),
       details: details,
       metadata: %{definition_id: call.definition_id}
     }
+  end
+
+  defp model_error_content(tool_module, reason) do
+    if function_exported?(tool_module, :model_error, 1) do
+      case tool_module.model_error(reason) do
+        diagnostic when is_binary(diagnostic) and diagnostic != "" -> "Error: #{diagnostic}"
+        _other -> nil
+      end
+    end
+  rescue
+    _error -> nil
+  catch
+    _kind, _reason -> nil
   end
 
   defp sanitized_tool_error_content(:invalid_input) do
