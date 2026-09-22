@@ -85,6 +85,10 @@ defmodule Tackle.Web.Components.Chat do
   def message_block(assigns) do
     ~H"""
     <%= case @block do %>
+      <% {:streaming, entry} -> %>
+        <div class="chat-message chat-message--assistant chat-message--streaming">
+          <p class="chat-text">{entry.content}</p>
+        </div>
       <% {:visible, %Message{role: :user} = message} -> %>
         <.chat_message role={:user} message={message} />
       <% {:visible, %Message{} = message} -> %>

@@ -5,6 +5,8 @@ defmodule Tackle.Web.ConversationLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias Tackle.Lib.Event
+  alias Tackle.Lib.Message
   alias Tackle.Web.ChatFixture
   alias Tackle.Web.ChatStore
   alias Tackle.Web.Project
@@ -31,6 +33,43 @@ defmodule Tackle.Web.ConversationLiveTest do
     on_exit(fn -> ProjectStore.remove(@slug) end)
 
     context
+  end
+
+  test "updates a single keyed row as deltas arrive and settles it without resetting the transcript",
+       %{
+         conn: conn,
+         cwd: cwd
+       } do
+    {:ok, conversation} = ChatStore.create(project_slug: @slug, cwd: cwd, model: "fake/echo")
+    {:ok, view, _html} = live(conn, ~p"/projects/#{@slug}/chats/#{conversation.id}")
+
+    send(view.pid, {:agent_event, Event.message_start(id: "partial")})
+    send(view.pid, {:agent_event, Event.new(:message_delta, %{delta: "Hel"}, id: "partial")})
+    assert has_element?(view, "#agent-msg-block-partial .chat-text", "Hel")
+    send(view.pid, {:agent_event, Event.new(:message_delta, %{delta: "lo"}, id: "partial")})
+    assert has_element?(view, "#agent-msg-block-partial .chat-text", "Hello")
+
+    send(
+      view.pid,
+      {:agent_event,
+       Event.new(:message_delta, %{delta: "secret", field: :reasoning}, id: "partial")}
+    )
+
+    refute has_element?(view, "#agent-msg-block-partial .chat-text", "Hellosecret")
+
+    send(
+      view.pid,
+      {:agent_event, Event.message_end(Message.assistant(id: "partial", content: "Finished"))}
+    )
+
+    assert has_element?(view, "#agent-msg-block-partial .chat-text", "Finished")
+    refute has_element?(view, "#agent-msg-block-partial .chat-message--streaming")
+
+    send(view.pid, {:agent_event, Event.message_start(id: "retry")})
+    send(view.pid, {:agent_event, Event.new(:message_delta, %{delta: "Discard me"}, id: "retry")})
+    assert has_element?(view, "#agent-msg-block-retry .chat-text", "Discard me")
+    send(view.pid, {:agent_event, Event.new(:retry_scheduled, %{}, id: "retry")})
+    refute has_element?(view, "#agent-msg-block-retry")
   end
 
   test "answers a message and keeps the transcript", %{conn: conn, cwd: cwd} do

@@ -33,12 +33,14 @@ defmodule Tackle.Web.ChatSession do
     * `:agent_state` — the `Tackle.Lib.State` a LiveView renders from.
     * `:turn_active?` — whether a turn is running.
     * `:runner_pid` — the turn owner while one is running, for cancellation.
+    * `:streaming_messages` — visible provisional answer text keyed by message ID.
   """
   @type snapshot :: %{
           agent_state: State.t(),
           session_id: String.t() | nil,
           turn_active?: boolean(),
-          runner_pid: pid() | nil
+          runner_pid: pid() | nil,
+          streaming_messages: %{optional(String.t()) => %{content: String.t()}}
         }
 
   @doc "Subscribes the caller to the conversation's turn events."

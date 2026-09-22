@@ -63,12 +63,6 @@
             </div>
           </div>
 
-          <div :for={{_id, entry} <- @streaming_messages}>
-            <div class="chat-message chat-message--assistant chat-message--streaming">
-              <p class="chat-text">{entry.content}</p>
-            </div>
-          </div>
-
           <.empty_state
             :if={(@loaded and @agent_state) && @agent_state.messages == []}
             icon="hero-chat-bubble-left-right"
