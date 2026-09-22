@@ -129,35 +129,54 @@
           jailedTackle =
             if pkgs.stdenv.hostPlatform.isLinux then mkJailedTackle { inherit pkgs system; } else null;
 
-          # Common shell hook for both environments
+          ciShellHook = ''
+            # Keep Mix and Hex state in the checkout so CI jobs do not depend
+            # on or modify the Woodpecker agent user's home directory.
+            mkdir -p .nix-mix .nix-hex
+            export MIX_HOME=$PWD/.nix-mix
+            export HEX_HOME=$PWD/.nix-hex
+            export PATH=$MIX_HOME/bin:$HEX_HOME/bin:$PATH
+
+            export MIX_ENV=test
+            export LANG=C.UTF-8
+
+            # Build forcola from source because its precompiled binary expects
+            # an FHS loader that is not present on NixOS.
+            export FORCOLA_BUILD=1
+          '';
+
           commonShellHook = ''
             ${preCommitCheck.shellHook}
-              # Enable Tackle development-only behaviour (e.g. the elixir_eval tool)
-              export TACKLE_DEV=1
+            ${ciShellHook}
 
-              # forcola ships a shim linked against the FHS loader, which does
-              # not exist on NixOS. Build it from source (cargo is on PATH)
-              # instead of letting the package download the precompiled binary.
-              export FORCOLA_BUILD=1
-
-              # Set up `mix` to save dependencies to the local directory
-              mkdir -p .nix-mix
-              mkdir -p .nix-hex
-              export MIX_HOME=$PWD/.nix-mix
-              export HEX_HOME=$PWD/.nix-hex
-              export PATH=$MIX_HOME/bin:$PATH
-              export PATH=$HEX_HOME/bin:$PATH
-
-              # BEAM-specific. C.UTF-8 is available without a separately
-              # mounted locale archive, including inside jailed-tackle.
-              export LANG=C.UTF-8
-              export ERL_AFLAGS="-kernel shell_history enabled"
+            # Enable Tackle development-only behaviour (e.g. elixir_eval).
+            export TACKLE_DEV=1
+            export ERL_AFLAGS="-kernel shell_history enabled"
           '';
         in
         {
           # Development shell with all tools
           default = pkgs.callPackage ./nix/shells/shell.nix {
             inherit preCommitCheck commonShellHook jailedTackle;
+          };
+
+          # Lean, non-interactive shell used by the Woodpecker local backend.
+          ci = pkgs.mkShell {
+            packages = [
+              pkgs.elixir
+              pkgs.hex
+              pkgs.beamPackages.rebar3
+              pkgs.git
+              pkgs.stdenv.cc
+              pkgs.gnumake
+              pkgs.pkg-config
+              pkgs.cargo
+              pkgs.rustc
+              pkgs.rustfmt
+              pkgs.tailwindcss_4
+              pkgs.esbuild
+            ];
+            shellHook = ciShellHook;
           };
         }
       );
