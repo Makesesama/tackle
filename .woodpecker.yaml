@@ -1,0 +1,113 @@
+# Basic validation for every Mix project in this monorepo.
+# Keep the image aligned with the Elixir 1.20 / Erlang 29 development toolchain.
+variables:
+  - &elixir_image hexpm/elixir:1.20.4-erlang-29.0.6-debian-bookworm-20260824
+  - &environment
+    MIX_ENV: test
+    LANG: C.UTF-8
+    FORCOLA_BUILD: "1"
+when:
+  - event: [push, pull_request, tag, manual]
+steps:
+  - name: library
+    image: *elixir_image
+    environment: *environment
+    commands:
+      - apt-get update && apt-get install --yes --no-install-recommends git build-essential ca-certificates
+      - mix local.hex --force
+      - mix local.rebar --force
+      - cd packages/tackle_lib
+      - mix deps.get --check-locked
+      - mix compile --warnings-as-errors
+      - mix test
+      - mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}'
+  - name: runtime
+    image: *elixir_image
+    environment: *environment
+    commands:
+      - apt-get update && apt-get install --yes --no-install-recommends git build-essential ca-certificates
+      - mix local.hex --force
+      - mix local.rebar --force
+      - cd packages/tackle_runtime
+      - mix deps.get --check-locked
+      - mix compile --warnings-as-errors
+      - mix test
+      - mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}'
+  - name: provider-plugins
+    image: *elixir_image
+    environment: *environment
+    commands:
+      - apt-get update && apt-get install --yes --no-install-recommends git build-essential ca-certificates
+      - mix local.hex --force
+      - mix local.rebar --force
+      - |
+        for project in packages/tackle_codex packages/tackle_deepseek; do
+          (
+            cd "$project"
+            mix deps.get --check-locked
+            mix compile --warnings-as-errors
+            mix test
+            mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}'
+          )
+        done
+  - name: integration-plugins
+    image: *elixir_image
+    environment: *environment
+    commands:
+      - apt-get update && apt-get install --yes --no-install-recommends git build-essential ca-certificates
+      - mix local.hex --force
+      - mix local.rebar --force
+      - |
+        for project in packages/tackle_anubis packages/tackle_mcp packages/tackle_phoenix; do
+          (
+            cd "$project"
+            mix deps.get --check-locked
+            mix compile --warnings-as-errors
+            mix test
+            mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}'
+          )
+        done
+  - name: harness
+    image: *elixir_image
+    environment: *environment
+    commands:
+      - apt-get update && apt-get install --yes --no-install-recommends git build-essential ca-certificates
+      - mix local.hex --force
+      - mix local.rebar --force
+      - cd packages/tackle
+      - mix deps.get --check-locked
+      - mix compile --warnings-as-errors
+      - mix test
+      - mix format --check-formatted
+  - name: cli
+    image: *elixir_image
+    environment: *environment
+    commands:
+      - apt-get update && apt-get install --yes --no-install-recommends git build-essential ca-certificates curl
+      - curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs | sh -s -- --profile minimal --component rustfmt --default-toolchain stable -y
+      - export PATH="$HOME/.cargo/bin:$PATH"
+      - mix local.hex --force
+      - mix local.rebar --force
+      - cd apps/tackle_cli
+      - mix deps.get --check-locked
+      - mix compile --warnings-as-errors
+      - mix test
+      - mix format --check-formatted
+      - cargo test --locked --manifest-path native/tackle/Cargo.toml
+      - cargo fmt --manifest-path native/tackle/Cargo.toml --check
+      - mix escript.build
+  - name: web
+    image: *elixir_image
+    environment: *environment
+    commands:
+      - apt-get update && apt-get install --yes --no-install-recommends git build-essential ca-certificates curl
+      - curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs | sh -s -- --profile minimal --default-toolchain stable -y
+      - export PATH="$HOME/.cargo/bin:$PATH"
+      - mix local.hex --force
+      - mix local.rebar --force
+      - cd apps/tackle_web
+      - mix deps.get --check-locked
+      - mix compile --warnings-as-errors
+      - mix test
+      - mix format --check-formatted
+      - mix assets.build
