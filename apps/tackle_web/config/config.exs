@@ -22,6 +22,15 @@ config :tackle_web, Tackle.Web.Endpoint,
   pubsub_server: Tackle.Web.PubSub,
   live_view: [signing_salt: "BYdTUWHK"]
 
+# In Nix shells (including CI's MIX_ENV=test) and on NixOS, use binaries
+# already on PATH rather than asking the Mix tasks to download them. Release
+# builds still supply binaries at the tasks' default paths (see
+# nix/packages/tackle-web.nix).
+if System.get_env("IN_NIX_SHELL") != nil or File.exists?("/etc/NIXOS") do
+  config :tailwind, path: System.find_executable("tailwindcss")
+  config :esbuild, path: System.find_executable("esbuild")
+end
+
 # Configure esbuild (the version is required). Kept in sync with the nixpkgs
 # esbuild that NixOS builds use, so the version check does not warn.
 config :esbuild,

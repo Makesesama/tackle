@@ -1,30 +1,5 @@
 import Config
 
-# On NixOS the tailwindcss and esbuild executables come from nixpkgs rather
-# than being downloaded into _build/ by the Tailwind/Esbuild packages: the dev
-# shell provides them, and nix/packages/tackle-web.nix symlinks them the same
-# way for release builds. Setting a global :path next to the global :version in
-# config/config.exs is fine -- Tailwind only rejects a *per-profile* :version
-# when :path is set.
-is_nixos = File.exists?("/etc/NIXOS")
-
-tailwind_path =
-  if is_nixos do
-    System.find_executable("tailwindcss")
-  else
-    nil
-  end
-
-esbuild_path =
-  if is_nixos do
-    System.find_executable("esbuild")
-  else
-    nil
-  end
-
-config :tailwind, path: tailwind_path
-config :esbuild, path: esbuild_path
-
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #
