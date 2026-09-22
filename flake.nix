@@ -129,15 +129,14 @@
           jailedTackle =
             if pkgs.stdenv.hostPlatform.isLinux then mkJailedTackle { inherit pkgs system; } else null;
 
-          ciShellHook = ''
-            # Keep Mix and Hex state in the checkout so CI jobs do not depend
-            # on or modify the Woodpecker agent user's home directory.
+          projectShellHook = ''
+            # Keep Mix and Hex state in the checkout so commands do not depend
+            # on or modify the invoking user's home directory.
             mkdir -p .nix-mix .nix-hex
             export MIX_HOME=$PWD/.nix-mix
             export HEX_HOME=$PWD/.nix-hex
             export PATH=$MIX_HOME/bin:$HEX_HOME/bin:$PATH
 
-            export MIX_ENV=test
             export LANG=C.UTF-8
 
             # Build forcola from source because its precompiled binary expects
@@ -145,9 +144,14 @@
             export FORCOLA_BUILD=1
           '';
 
+          ciShellHook = ''
+            ${projectShellHook}
+            export MIX_ENV=test
+          '';
+
           commonShellHook = ''
             ${preCommitCheck.shellHook}
-            ${ciShellHook}
+            ${projectShellHook}
 
             # Enable Tackle development-only behaviour (e.g. elixir_eval).
             export TACKLE_DEV=1
