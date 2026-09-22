@@ -4,7 +4,8 @@ defmodule Tackle.CLI.Widgets.InputTest do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.{Block, Paragraph}
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{Composer, State, Viewport}
+  alias ExRatatui.Event.Key
+  alias Tackle.CLI.TUI.{Composer, Layout, State, Theme, View, Viewport}
   alias Tackle.CLI.Widgets.Input
 
   test "measurement, resize, and vertical editing use the same soft wraps" do
@@ -14,20 +15,78 @@ defmodule Tackle.CLI.Widgets.InputTest do
     state = %State{
       input: input,
       agent_state: Tackle.Lib.State.new(),
-      size: {6, 20},
-      conversation: Viewport.new_conversation(6, 20)
+      size: {8, 20},
+      conversation: Viewport.new_conversation(8, 20)
     }
 
     state = state |> Viewport.update_draft() |> Viewport.relayout()
     assert state.draft_lines == 3
 
-    :ok = Input.handle_key(input, "up", [], 4)
+    {:noreply, state} = Composer.key(state, %Key{code: "up", modifiers: []})
     :ok = Input.insert_str(input, "!")
     assert Input.get_value(input) == "abcd!efgh"
 
     resized = Viewport.resize(%{state | size: {20, 20}})
     assert resized.draft_lines == 1
     assert Input.get_value(input) == "abcd!efgh"
+  end
+
+  test "the input bar paints a padded rounded box and dims when focus leaves" do
+    state = input_state(30, 12)
+    {widget, rect} = composer(state)
+
+    assert widget.block.border_style == Theme.style(:accent_soft)
+    assert [{%Block{}, ^rect}, {%Paragraph{}, inner}] = Input.render(widget, rect)
+    assert inner.width == Layout.composer_content_width(30, 12)
+    assert inner.x == 2
+    assert inner.height == 1
+
+    terminal = ExRatatui.init_test_terminal(30, 12)
+    :ok = ExRatatui.draw(terminal, [{widget, rect}])
+    rows = terminal |> ExRatatui.get_buffer_content() |> String.split("\n")
+    assert Enum.at(rows, rect.y) =~ "╭"
+    assert Enum.at(rows, rect.y) =~ "Message"
+    assert Enum.at(rows, rect.y + 1) =~ "│ What would you like to"
+    assert Enum.at(rows, rect.y + 2) =~ "╰"
+    assert Enum.at(rows, rect.y + 2) =~ "╯"
+
+    {unfocused, _} = composer(%{state | focus: :subagents})
+    assert unfocused.block.border_style == Theme.style(:subtle)
+    refute unfocused.focused
+  end
+
+  test "tiny terminals drop input chrome without losing the editable row" do
+    for {width, height} <- [{1, 5}, {4, 8}, {20, 2}, {20, 3}] do
+      state = input_state(width, height)
+      :ok = Input.set_value(state.input, "x")
+      state = state |> Viewport.update_draft() |> Viewport.relayout()
+      {widget, rect} = composer(state)
+
+      assert widget.block == nil
+      assert rect.height >= 1
+      assert rect.y + rect.height <= height
+      assert Layout.composer_content_width(width, height) == width
+      assert state.draft_lines == Input.rows(state.input, width)
+
+      terminal = ExRatatui.init_test_terminal(width, height)
+      :ok = ExRatatui.draw(terminal, [{widget, rect}])
+      assert ExRatatui.get_buffer_content(terminal) =~ "x"
+    end
+  end
+
+  defp input_state(width, height) do
+    %State{
+      input: Input.new(),
+      agent_state: Tackle.Lib.State.new(),
+      size: {width, height},
+      conversation: Viewport.new_conversation(width, height)
+    }
+  end
+
+  defp composer(state) do
+    state
+    |> View.scene(nil)
+    |> Enum.find(fn {widget, _rect} -> match?(%Input{}, widget) end)
   end
 
   test "paste and grapheme edits are undoable; replacing the draft clears history" do

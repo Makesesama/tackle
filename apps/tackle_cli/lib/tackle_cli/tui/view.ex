@@ -4,7 +4,7 @@ defmodule Tackle.CLI.TUI.View do
 
   The shell is transcript-first. A one-row header shows the model and
   reasoning level; the transcript owns the flexible middle of the screen;
-  a quiet divider introduces the composer. Turn state lives in the status row
+  a rounded input bar encloses the composer. Turn state lives in the status row
   (or the header on short terminals), never both. Optional reading, status,
   and hint rows appear only when the terminal has rows to spare.
 
@@ -160,17 +160,26 @@ defmodule Tackle.CLI.TUI.View do
   # -- composer ------------------------------------------------------------
 
   defp composer_widget(state) do
+    {width, height} = state.size
+    focused? = state.focus == :composer and is_nil(state.overlay)
+
+    block =
+      if Layout.composer_box?(width, height) do
+        %Block{
+          title: composer_title(state),
+          title_style: Theme.style(:muted),
+          borders: [:all],
+          border_type: :rounded,
+          border_style: Theme.style(if(focused?, do: :accent_soft, else: :subtle)),
+          padding: {1, 1, 0, 0}
+        }
+      end
+
     %Input{
       state: state.input,
       placeholder: composer_placeholder(state),
-      focused: state.focus == :composer and is_nil(state.overlay),
-      block: %Block{
-        title: composer_title(state),
-        title_style: Theme.style(:muted),
-        borders: [:top],
-        border_style: Theme.style(:subtle),
-        padding: {1, 1, 0, 1}
-      }
+      focused: focused?,
+      block: block
     }
   end
 
@@ -180,7 +189,7 @@ defmodule Tackle.CLI.TUI.View do
   defp composer_title(%State{focus: :transcript, browse_page: page}),
     do: " Browsing · #{page} · ←/→ pages · Esc/F4 back "
 
-  defp composer_title(%State{active_turn: nil, pending_operation: nil}), do: " › "
+  defp composer_title(%State{active_turn: nil, pending_operation: nil}), do: " Message "
   defp composer_title(%State{}), do: " Queue next message "
 
   defp composer_placeholder(%State{focus: :subagents}), do: "Subagents focused"

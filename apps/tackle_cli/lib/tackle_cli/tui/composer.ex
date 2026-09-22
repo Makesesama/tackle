@@ -23,7 +23,7 @@ defmodule Tackle.CLI.TUI.Composer do
 
   alias ExRatatui.Command
   alias ExRatatui.Event.Key
-  alias Tackle.CLI.TUI.{History, State, Tree, Viewport}
+  alias Tackle.CLI.TUI.{History, Layout, State, Tree, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
 
@@ -56,8 +56,11 @@ defmodule Tackle.CLI.TUI.Composer do
   @spec key(State.t(), Key.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def key(%State{} = state, %Key{code: code, modifiers: modifiers}) when is_binary(code) do
-    {width, _height} = state.size
-    :ok = Input.handle_key(state.input, code, modifiers, max(width - 2, 1))
+    {width, height} = state.size
+
+    :ok =
+      Input.handle_key(state.input, code, modifiers, Layout.composer_content_width(width, height))
+
     {:noreply, state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()}
   end
 

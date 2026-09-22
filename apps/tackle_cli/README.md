@@ -206,9 +206,11 @@ The same `mix tackle` commands continue to work from this directory. Run
 The shell is transcript-first and fullscreen: a compact header, a border-light
 transcript that owns the flexible middle of the screen, an optional reading row,
 an optional status/metrics row, a growing multiline composer, and a short hint
-row. A neutral top divider replaces the composer box; model and reasoning live
-in the header, while turn state appears only in the status row (falling back to
-the header on short terminals). Muted blue accents and quiet overlay borders
+row. A rounded, horizontally padded input bar encloses the composer, with a
+muted blue border while focused; model and reasoning live in the header, while
+turn state appears only in the status row (falling back to the header on short
+terminals). The input border yields to editable text on tiny terminals. Muted
+blue accents and quiet overlay borders
 keep attention on the conversation. The footer shows a curated set of shortcuts,
 not the full key map below. Empty optional rows are not reserved when the terminal
 is short.

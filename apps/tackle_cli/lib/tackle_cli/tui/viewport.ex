@@ -127,11 +127,11 @@ defmodule Tackle.CLI.TUI.Viewport do
   def update_draft(%State{} = state) do
     value = Input.get_value(state.input)
 
-    {width, _height} = state.size
+    {width, height} = state.size
 
     %{
       state
-      | draft_lines: Input.rows(state.input, max(width - 2, 1)),
+      | draft_lines: Input.rows(state.input, Layout.composer_content_width(width, height)),
         draft_empty?: String.trim(value) == ""
     }
   end
