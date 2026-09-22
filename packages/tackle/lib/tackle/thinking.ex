@@ -7,7 +7,7 @@ defmodule Tackle.Thinking do
   sending a provider-specific disabled value.
   """
 
-  @levels ~w(off minimal low medium high xhigh)
+  @levels ~w(off minimal low medium high xhigh max)
 
   @doc "Returns the thinking levels in frontend display order."
   @spec levels() :: [String.t(), ...]

@@ -550,7 +550,7 @@ built-in defaults < ~/.tackle/config.json < TACKLE_MODEL/TACKLE_THINKING < expli
 
 `TACKLE_HOME` changes the directory containing `config.json` and `auth.json`.
 The configuration file accepts `model` and `thinking` fields. Thinking may be
-`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`; supported levels can vary
+`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; supported levels can vary
 by model. `TACKLE_THINKING` overrides the file in the same way that
 `TACKLE_MODEL` overrides `model`. Adapter modules are always supplied as
 executable code, never converted from JSON strings.

@@ -70,8 +70,8 @@ When the plugin is available to the host distribution:
   )
 ```
 
-The adapter maps `:reasoning_effort` and `:reasoning_summary` options to the
-Responses API and emits provider-supplied reasoning summaries as normalized
+The adapter maps `:reasoning_effort` (including the canonical `"max"` level)
+and `:reasoning_summary` options to the Responses API and emits provider-supplied reasoning summaries as normalized
 reasoning deltas. It defaults to `transport: :auto`, which first tries a
 session-scoped WebSocket and falls back to SSE if the WebSocket fails before any
 response events arrive. Set `transport: :sse` to force HTTP streaming,

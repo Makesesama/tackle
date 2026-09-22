@@ -158,4 +158,8 @@ defmodule Tackle.CLI.ParserTest do
     assert help =~ "--thinking"
     refute help =~ "--adapter"
   end
+
+  test "parses the canonical max thinking level" do
+    assert {:ok, {:run, %{thinking: "max"}}} = Parser.parse(["run", "--thinking", "max"])
+  end
 end

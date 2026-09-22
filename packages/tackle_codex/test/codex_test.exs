@@ -131,7 +131,7 @@ defmodule Tackle.Plugins.CodexTest do
       Keyword.merge(base_opts(store, request),
         session_id: "session-123",
         system: "Be useful",
-        reasoning_effort: "high",
+        reasoning_effort: "max",
         reasoning_summary: "auto",
         temperature: 0.3,
         messages: [
@@ -193,7 +193,7 @@ defmodule Tackle.Plugins.CodexTest do
     assert body["model"] == "gpt-5.5"
     assert body["prompt_cache_key"] == "session-123"
     assert body["instructions"] == "Be useful"
-    assert body["reasoning"] == %{"effort" => "high", "summary" => "auto"}
+    assert body["reasoning"] == %{"effort" => "max", "summary" => "auto"}
     refute Map.has_key?(body, "temperature")
 
     assert Enum.any?(

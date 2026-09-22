@@ -14,7 +14,7 @@ The CLI starts one root scope, addresses the root agent through a
 or checks a runtime PID.
 
 The CLI may select a canonical model reference with `--model` and a reasoning
-level with `--thinking`, but it does not load or select adapter modules directly.
+level with `--thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`), but it does not load or select adapter modules directly.
 Adapter availability is a harness and distribution concern.
 
 Live tool rows update independently as each execution succeeds or fails, even
@@ -153,6 +153,7 @@ mix tackle auth usage deepseek
 mix tackle auth logout deepseek
 mix tackle run --model deepseek/deepseek-chat "Inspect this project"
 mix tackle run --thinking high "Inspect this project"
+mix tackle run --thinking max "Inspect this project"
 mix tackle run --resume SESSION_ID
 mix tackle run --resume
 mix tackle run --resume -- "Carry on from here"
