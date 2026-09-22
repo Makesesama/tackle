@@ -62,7 +62,7 @@ defmodule Tackle.Tools.Bash do
           :stderr_to_stdout,
           :use_stdio,
           :hide,
-          {:args, [~c"-lc", String.to_charlist(command)]},
+          {:args, [~c"-c", String.to_charlist(command)]},
           {:cd, String.to_charlist(cwd)}
         ]
       )

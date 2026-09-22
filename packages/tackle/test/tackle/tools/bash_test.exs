@@ -52,8 +52,9 @@ defmodule Tackle.Tools.BashTest do
     assert collect_progress([]) |> Enum.map_join(& &1.data.delta) == "€"
   end
 
-  test "still executes normally when no event callback is supplied" do
-    assert {:ok, "quiet"} = Bash.run(%{"command" => "printf quiet"}, %{})
+  test "runs a non-login shell without an event callback" do
+    assert {:ok, "quiet"} =
+             Bash.run(%{"command" => "shopt -q login_shell && exit 1; printf quiet"}, %{})
   end
 
   defp collect_progress(events) do
