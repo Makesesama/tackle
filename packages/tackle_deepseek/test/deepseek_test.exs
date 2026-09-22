@@ -602,6 +602,16 @@ defmodule Tackle.Plugins.DeepSeekTest do
     assert off_body["thinking"] == %{"type" => "disabled"}
     refute Map.has_key?(off_body, "reasoning_effort")
 
+    assert {:ok, _result} =
+             DeepSeek.generate(
+               nil,
+               Keyword.put(base_opts(store, request), :reasoning_effort, :max)
+             )
+
+    assert_receive {:body, %{} = body}
+    assert body["thinking"] == %{"type" => "enabled"}
+    assert body["reasoning_effort"] == "max"
+
     assert {:error, {:invalid_reasoning_effort, :extreme}} =
              DeepSeek.generate(
                nil,

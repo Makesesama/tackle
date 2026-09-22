@@ -206,7 +206,8 @@ defmodule Tackle.CLI.TUI.Menu do
   defp thinking_description("low"), do: "Light reasoning"
   defp thinking_description("medium"), do: "Balanced reasoning"
   defp thinking_description("high"), do: "Deep reasoning"
-  defp thinking_description("xhigh"), do: "Maximum reasoning"
+  defp thinking_description("xhigh"), do: "Extra-high reasoning"
+  defp thinking_description("max"), do: "Maximum reasoning"
   defp thinking_description(_level), do: nil
 
   defp empty_menu(:settings) do

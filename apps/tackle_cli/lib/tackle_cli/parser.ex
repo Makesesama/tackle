@@ -138,7 +138,7 @@ defmodule Tackle.CLI.Parser do
         thinking: [
           value_name: "LEVEL",
           long: "--thinking",
-          help: "Thinking level: off, minimal, low, medium, high, or xhigh",
+          help: "Thinking level: off, minimal, low, medium, high, xhigh, or max",
           parser: :string,
           global: true
         ],

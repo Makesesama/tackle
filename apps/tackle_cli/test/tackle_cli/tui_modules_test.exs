@@ -227,4 +227,15 @@ defmodule Tackle.CLI.TUI.ModulesTest do
       draft_empty?: true
     }
   end
+
+  test "describes xhigh and max as distinct reasoning levels" do
+    state = %State{agent_state: agent_state()}
+    items = Menu.items(:thinking, state)
+
+    assert %{id: "xhigh", secondary: "Extra-high reasoning"} =
+             Enum.find(items, &(&1.id == "xhigh"))
+
+    assert %{id: "max", secondary: "Maximum reasoning"} =
+             Enum.find(items, &(&1.id == "max"))
+  end
 end
