@@ -42,7 +42,7 @@ defmodule Tackle.CLI.MCP do
   end
 
   def remove(name) do
-    with {:ok, _} <- Application.ensure_all_started(:tackle_cli),
+    with {:ok, _} <- ensure_started(),
          {:ok, servers} <- Config.list(),
          {:ok, _definition} <- fetch_server(servers, name),
          :ok <- Tackle.Auth.delete(namespace(name)),
@@ -56,7 +56,7 @@ defmodule Tackle.CLI.MCP do
   end
 
   def status(name) do
-    with {:ok, _} <- Application.ensure_all_started(:tackle_cli),
+    with {:ok, _} <- ensure_started(),
          {:ok, servers} <- Config.list() do
       servers = if name, do: Map.take(servers, [name]), else: servers
 
@@ -88,7 +88,7 @@ defmodule Tackle.CLI.MCP do
   end
 
   def logout(name) do
-    with {:ok, _} <- Application.ensure_all_started(:tackle_cli),
+    with {:ok, _} <- ensure_started(),
          {:ok, servers} <- Config.list(),
          {:ok, _} <- fetch_server(servers, name),
          :ok <- Tackle.Auth.delete(namespace(name)),
@@ -101,7 +101,7 @@ defmodule Tackle.CLI.MCP do
   end
 
   def login(%{name: name, client_id: client_id}) do
-    with {:ok, _} <- Application.ensure_all_started(:tackle_cli),
+    with {:ok, _} <- ensure_started(),
          {:ok, servers} <- Config.list(),
          {:ok, %{"transport" => "http", "url" => url}} <- fetch_server(servers, name),
          {:ok, listener} <-
@@ -130,7 +130,8 @@ defmodule Tackle.CLI.MCP do
            result <- OAuth.complete(flow, state, code: code),
            :ok <- respond(socket, result),
            {:ok, credentials} <- result,
-           :ok <- Tackle.Auth.put(namespace(name), persistable(credentials)) do
+           :ok <- Tackle.Auth.put(namespace(name), persistable(credentials)),
+           :ok <- Tackle.CLI.MCP.Connections.invalidate(name) do
         Owl.IO.puts("Authorized MCP server #{name}")
         0
       else
@@ -221,6 +222,16 @@ defmodule Tackle.CLI.MCP do
   end
 
   def namespace(name), do: "mcp:#{name}"
+
+  # Standalone commands run inside the CLI application's start callback.
+  # Starting that same application again there would block its own startup.
+  defp ensure_started do
+    if System.get_env("__BURRITO") do
+      Application.ensure_all_started(:tackle_mcp)
+    else
+      Application.ensure_all_started(:tackle_cli)
+    end
+  end
 
   defp fail(reason) do
     Owl.IO.puts("MCP error: #{inspect(reason)}", :stderr)
