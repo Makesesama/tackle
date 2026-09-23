@@ -23,7 +23,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert MessageView.search_text(entry) =~ "oldText"
 
     text = entry |> ToolView.render(80) |> text()
-    assert text =~ "✓ lib/parser.ex  · edit"
+    assert text =~ "· lib/parser.ex  · edit"
     refute text =~ "completed"
     assert text =~ "Replacement preview"
     assert entry |> MessageView.inspect_items(100) |> text() =~ "not a verified file diff"
@@ -179,7 +179,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
   test "wrapped tool output keeps its gutter and bounded headers signal truncation" do
     [entry] = settled([Message.tool_result("r", "custom", "abcdefghijklmnop")])
     rows = ToolView.render(entry, 12) |> Enum.flat_map(fn {widget, _} -> widget.text end)
-    assert Enum.map(tl(rows), &plain/1) == ["    abcdefgh", "    ijklmnop"]
+    assert Enum.map(tl(rows), &plain/1) == ["  abcdefghij", "  klmnop"]
 
     [long] =
       settled([
@@ -244,7 +244,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       assert Enum.map_join(emphasized, & &1.symbol) == token
       assert Enum.all?(line -- emphasized, &(&1.bg == :reset))
       assert Enum.find(line, &(&1.symbol == "l")).fg == :reset
-      assert Enum.find(line, &(&1.col == 6)).fg == {:indexed, 243}
+      assert Enum.find(line, &(&1.col == 4)).fg == {:indexed, 243}
     end
   end
 
@@ -305,12 +305,12 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
     assert Enum.all?(header ++ body, &(&1.bg == :reset))
     assert Enum.find(header, &(&1.symbol == "a")).modifiers == [:bold]
-    assert Enum.find(body, &(&1.symbol == "l")).col == 4
+    assert Enum.find(body, &(&1.symbol == "l")).col == 2
     assert Enum.find(body, &(&1.symbol == "l")).fg == {:indexed, 246}
     refute Enum.any?(body, &(&1.symbol in ["▌", "│"]))
 
     heading = header |> Enum.sort_by(& &1.col) |> Enum.map_join(& &1.symbol)
-    assert heading =~ "✓ cat a.ex  · bash"
+    assert heading =~ "· cat a.ex  · bash"
     refute heading =~ "completed"
   end
 
@@ -324,7 +324,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         Message.tool_result("r", "read", output)
       ])
 
-    assert text(ToolView.render(entry, 80)) == "✓ lib/example.ex  · read  · F4 details"
+    assert text(ToolView.render(entry, 80)) == "· lib/example.ex  · read  · F4 details"
     assert MessageView.full_text(entry) == output
     assert MessageView.search_text(entry) =~ "last line"
     details = text(MessageView.inspect_items(entry, 100))
@@ -358,7 +358,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert text(MessageView.inspect_items(entry, 80)) =~ "build started"
 
     [empty] = settled([Message.tool_result("b", "bash", "\n\n")])
-    assert text(ToolView.render(empty, 80)) == "✓ bash"
+    assert text(ToolView.render(empty, 80)) == "· bash"
   end
 
   test "subagents show profile, assignment, explicit outcomes and retained findings" do

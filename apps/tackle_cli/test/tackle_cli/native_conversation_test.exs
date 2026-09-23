@@ -28,7 +28,7 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
 
     text = paint(model)
     assert text =~ "question"
-    assert text =~ "reasoning"
+    refute text =~ "reasoning"
     assert text =~ "answer"
     refute text =~ "**answer**"
     assert text =~ "file.ex"
@@ -139,11 +139,11 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     }
 
     state = Viewport.refresh(state)
-    assert paint(state.conversation) =~ "third"
+    refute paint(state.conversation) =~ "third"
     {:noreply, expanded} = Viewport.toggle_thinking(state)
     assert paint(expanded.conversation) =~ "third"
     {:noreply, collapsed} = Viewport.toggle_thinking(expanded)
-    assert paint(collapsed.conversation) =~ "third"
+    refute paint(collapsed.conversation) =~ "third"
     assert Conversation.text(collapsed.conversation) =~ "third"
     assert Input.get_value(input) == "keep draft"
   end

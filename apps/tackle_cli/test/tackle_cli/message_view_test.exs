@@ -18,7 +18,7 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
     assert Enum.any?(header, &(&1.symbol == "h"))
   end
 
-  test "collapsed reasoning shows every source line and expands previews" do
+  test "collapsed reasoning is compact and expands on demand" do
     state = %{
       agent_state: %State{
         messages: [Message.assistant(thinking: "first\nsecond\nthird", content: "x")]
@@ -31,15 +31,20 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
 
     assert collapsed =~ "thought"
     assert collapsed =~ "3 lines"
-    assert collapsed =~ "Ctrl+T to reveal"
-    assert collapsed =~ "first"
-    assert collapsed =~ "second"
-    assert collapsed =~ "third"
+    assert collapsed =~ "Ctrl+T to expand"
+    refute collapsed =~ "first"
+    refute collapsed =~ "second"
+    refute collapsed =~ "third"
 
     [expanded_entry | _rest] =
       MessageView.section_entries(%{state | thinking_expanded?: true}, :settled)
 
     assert text(MessageView.render_entry(expanded_entry, 40)) =~ "third"
+
+    wrapped = MessageView.render_entry(%{expanded_entry | source: String.duplicate("x", 24)}, 12)
+    rows = for {widget, _} <- wrapped, row <- widget.text, do: plain(row)
+    assert Enum.take(rows, -3) == ["  xxxxxxxxxx", "  xxxxxxxxxx", "  xxxx"]
+    assert MessageView.search_text(entry) =~ "third"
   end
 
   test "paint strips terminal controls from every span while copy keeps the source" do
