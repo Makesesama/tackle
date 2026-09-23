@@ -500,8 +500,11 @@ defmodule Tackle.Phoenix.Runner do
   end
 
   defp build_run_opts(config, session_pid, signal, opts) do
+    event_callback = fn event -> send(session_pid, {:tackle_event, event}) end
+
     [
-      event_callback: fn event -> send(session_pid, {:tackle_event, event}) end,
+      event_callback: event_callback,
+      event_context: %{event_callback: event_callback},
       cancellation_signal: signal
     ]
     |> maybe_put(:tool_supervisor, Map.get(config, :tool_supervisor))
