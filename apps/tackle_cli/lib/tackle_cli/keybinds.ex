@@ -166,9 +166,8 @@ defmodule Tackle.CLI.Keybinds do
   defp composer(%Key{code: "enter", modifiers: []}), do: :submit
   defp composer(%Key{code: "enter"}), do: :newline
 
-  # Plain Up/Down recall prompts only when the draft is free for it, and
-  # otherwise move the cursor; Ctrl+P/Ctrl+N always recall. Both land in the
-  # composer, which owns the decision because it can read the draft.
+  # Up always recalls the latest prompt (saving any unsent draft); Down moves
+  # toward the saved draft while browsing, or moves the cursor otherwise.
   defp composer(%Key{code: "up", modifiers: []}), do: :previous
   defp composer(%Key{code: "down", modifiers: []}), do: :next
 

@@ -9,11 +9,10 @@ defmodule Tackle.CLI.TUI.Composer do
   reserves exactly the rows it needs without re-measuring the transcript.
 
   History recall reuses the same native load path: the recalled prompt is set
-  as the draft and the row count is left to `Viewport`. Plain Up/Down
-  (`previous/2` and `next/2`) only recall when the draft is empty or a prompt is
-  already showing, so arrow keys still move the cursor inside a draft that is
-  being written; Ctrl+P/Ctrl+N (`history_previous/1` and `history_next/1`) always
-  recall. Any edit ends recall, keeping the loaded text as the new draft.
+  as the draft and the row count is left to `Viewport`. Up recalls the newest
+  prompt even while writing a draft; Down walks back toward that draft while
+  browsing, or moves the cursor otherwise. Ctrl+P/Ctrl+N offer the same history
+  navigation. Any edit ends recall, keeping the loaded text as the new draft.
 
   Submission is deliberately conservative. A failed submit keeps the exact draft
   in the composer so the user can retry or edit, and a submit while a turn is
@@ -136,22 +135,9 @@ defmodule Tackle.CLI.TUI.Composer do
 
   def key(%State{} = state, _key), do: {:noreply, state, render?: false}
 
-  @doc """
-  Handles a plain Up arrow.
-
-  Up recalls the previous prompt when the draft is empty or a prompt is already
-  showing. With a non-empty draft it moves the cursor instead, so a multi-line
-  prompt being written is not hijacked by history; `history_previous/1` is the
-  chord that always recalls.
-  """
+  @doc "Recalls the next older prompt, saving the current draft for Down to restore."
   @spec previous(State.t(), Key.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
-  def previous(%State{} = state, key) do
-    if state.draft_empty? or History.browsing?(state.history) do
-      recall_previous(state)
-    else
-      key(state, key)
-    end
-  end
+  def previous(%State{} = state, _key), do: recall_previous(state)
 
   @doc """
   Handles a plain Down arrow.
@@ -170,9 +156,8 @@ defmodule Tackle.CLI.TUI.Composer do
   @doc """
   Recalls the previous (older) prompt, whatever the draft holds.
 
-  This is the explicit history chord, so it does not defer to the cursor like
-  the Up arrow does; the current draft is captured and handed back by
-  `history_next/1`. Does nothing, without a render, on an empty history.
+  The current draft is captured and handed back by `history_next/1`. Does
+  nothing, without a render, on an empty history.
   """
   @spec history_previous(State.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def history_previous(%State{} = state), do: recall_previous(state)
@@ -272,6 +257,13 @@ defmodule Tackle.CLI.TUI.Composer do
       )
 
     {:noreply, state, commands: [command]}
+  end
+
+  @doc "Clears the draft and ends history browsing without affecting the active turn."
+  @spec clear(State.t()) :: {:noreply, State.t()}
+  def clear(%State{} = state) do
+    :ok = Input.set_value(state.input, "")
+    {:noreply, state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()}
   end
 
   defp draft(%State{} = state), do: Input.get_value(state.input)

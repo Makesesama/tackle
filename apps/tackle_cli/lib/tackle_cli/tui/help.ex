@@ -13,7 +13,7 @@ defmodule Tackle.CLI.TUI.Help do
     "↑/↓           prompt history",
     "Ctrl+P/N      prompt history",
     "Ctrl+B/F      move by word",
-    "Esc           cancel turn",
+    "Esc           clear draft / cancel turn",
     "Ctrl+C        quit",
     "Alt+N         new session",
     "Ctrl+K        compact context",
