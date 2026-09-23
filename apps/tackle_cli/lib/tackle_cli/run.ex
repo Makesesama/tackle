@@ -333,7 +333,9 @@ defmodule Tackle.CLI.Run do
     with {:ok, _apps} <- ensure_started(),
          {:ok, overrides} <- overrides(model, thinking, llm_stream),
          {:ok, session} <- durable_session(opts),
-         {:ok, scope_spec} <- Tackle.Coding.scope_spec([overrides: overrides], session),
+         {:ok, mcp_tools} <- Tackle.CLI.MCP.Connections.tools(),
+         {:ok, scope_spec} <-
+           Tackle.Coding.scope_spec([overrides: overrides, root_tools: mcp_tools], session),
          {:ok, scope} <- Tackle.start_scope(scope_spec) do
       {:ok, scope}
     else

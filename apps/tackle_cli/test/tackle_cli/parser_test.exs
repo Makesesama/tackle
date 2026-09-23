@@ -149,6 +149,40 @@ defmodule Tackle.CLI.ParserTest do
     assert error =~ "must be auto, always, or never"
   end
 
+  test "parses MCP connection and OAuth commands" do
+    assert {:help, help} = Parser.parse(["mcp"])
+    assert help =~ "Manage MCP servers"
+    assert {:ok, {:mcp_list, %{}}} = Parser.parse(["mcp", "list"])
+
+    assert {:ok,
+            {:mcp_add, %{name: "docs", http: "https://mcp.example/mcp", stdio: nil, args: []}}} =
+             Parser.parse(["mcp", "add", "docs", "--http", "https://mcp.example/mcp"])
+
+    assert {:ok, {:mcp_add, %{name: "local", stdio: "npx", args: ["-y", "server"]}}} =
+             Parser.parse([
+               "mcp",
+               "add",
+               "local",
+               "--stdio",
+               "npx",
+               "--arg",
+               "-y",
+               "--arg",
+               "server"
+             ])
+
+    assert {:ok, {:mcp_remove, "docs"}} = Parser.parse(["mcp", "remove", "docs"])
+
+    assert {:ok, {:mcp_login, %{name: "docs", client_id: nil}}} =
+             Parser.parse(["mcp", "auth", "login", "docs"])
+
+    assert {:ok, {:mcp_login, %{name: "docs", client_id: "registered"}}} =
+             Parser.parse(["mcp", "auth", "login", "docs", "--client-id", "registered"])
+
+    assert {:ok, {:mcp_status, nil}} = Parser.parse(["mcp", "auth", "status"])
+    assert {:ok, {:mcp_logout, "docs"}} = Parser.parse(["mcp", "auth", "logout", "docs"])
+  end
+
   test "does not expose adapter module selection" do
     assert {:error, error} = Parser.parse(["run", "--adapter", "Some.Module"])
     assert error =~ "unrecognized arguments"

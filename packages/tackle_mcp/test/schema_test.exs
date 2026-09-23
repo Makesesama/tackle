@@ -25,6 +25,21 @@ defmodule Tackle.Plugins.MCP.SchemaTest do
            ]
   end
 
+  test "accepts MCP object-or-string property as an object" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "params" => %{
+          "description" => "Filter parameters",
+          "oneOf" => [%{"type" => "object"}, %{"type" => "string"}]
+        }
+      }
+    }
+
+    assert {:ok, [params: [type: :map, required: false, description: "Filter parameters"]]} =
+             Schema.to_tackle(schema)
+  end
+
   test "rejects malformed or unsupported root schemas" do
     assert {:error, {:unsupported_root_type, "array"}} =
              Schema.to_tackle(%{"type" => "array"})

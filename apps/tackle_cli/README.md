@@ -27,6 +27,34 @@ The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
 are compiled into it. It does not discover or load third-party plugins at
 runtime. That keeps packaging separate from the future plugin-loading design.
 
+## MCP connections (experimental)
+
+`mix tackle mcp add NAME --stdio COMMAND --arg ARG` adds a local server;
+`mix tackle mcp add NAME --http https://host/mcp` adds a Streamable HTTP
+server. `mix tackle mcp list` and `mix tackle mcp remove NAME` manage definitions
+in `$TACKLE_HOME/mcp.json` (not credentials). STDIO servers are connected and
+their discovered tools are available to the root agent when starting a run;
+configured subagents must explicitly list an MCP tool name to use it.
+
+`mix tackle mcp auth login NAME` discovers the HTTP server's OAuth endpoints,
+prints a browser authorization URL and waits on a loopback callback. Credentials
+are stored in `$TACKLE_HOME/auth.json` under `mcp:NAME`; `mcp auth status`
+and `mcp auth logout NAME` inspect/delete them. By default the authorization
+server must support dynamic client registration; use `mcp auth login NAME
+--client-id ID` for a pre-registered public client. The flow prints the
+browser URL but does not open the browser itself.
+
+Authenticated HTTP servers use the stored OAuth bearer token when establishing
+an Anubis connection. The CLI refreshes expiring tokens before connecting and
+updates the active HTTP transport with renewed tokens during long-running
+sessions. Anubis debug logging is disabled by the CLI because it prints bearer
+headers. While the TUI runs, its OTP console Logger handler is temporarily
+filtered so unrelated Logger events cannot paint over the screen; the filter
+is removed on exit. Direct writes to stdout/stderr from third-party code are
+not caught by Logger filters and must be redirected at their source. Redirect
+responses are not currently supported by Anubis 2.0's HTTP
+redirect handler; configure the server's final MCP endpoint URL directly.
+
 ## Configured subagents
 
 In addition to the built-in scout, reviewer, and worker, the CLI loads Markdown agent definitions

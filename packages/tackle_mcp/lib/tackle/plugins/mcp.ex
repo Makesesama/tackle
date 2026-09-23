@@ -55,6 +55,30 @@ defmodule Tackle.Plugins.MCP do
   @spec tools(connection()) :: [module()]
   def tools(%{tools: tools}), do: tools
 
+  @doc "Updates the bearer header on an existing HTTP connection after token refresh."
+  @spec update_http_token(connection(), String.t()) :: :ok | {:error, term()}
+  def update_http_token(%{server_name: server_name, supervisor: supervisor}, token)
+      when is_binary(token) and token != "" do
+    if Process.alive?(supervisor) do
+      transport =
+        {:via, Registry, {Tackle.Plugins.MCP.Registry, {{:mcp_server, server_name}, :transport}}}
+
+      try do
+        :sys.replace_state(transport, fn state ->
+          %{state | headers: Map.put(state.headers, "authorization", "Bearer " <> token)}
+        end)
+
+        :ok
+      catch
+        :exit, reason -> {:error, {:http_transport_unavailable, reason}}
+      end
+    else
+      {:error, :http_transport_unavailable}
+    end
+  end
+
+  def update_http_token(_, _), do: {:error, :invalid_http_token}
+
   defp finish_connect(supervisor, client_name, connection, opts) do
     monitor = Process.monitor(supervisor)
 
