@@ -104,18 +104,13 @@ defmodule Tackle.Web.ChatSession do
   @spec cancel_turn(pid() | nil) :: :ok
   def cancel_turn(pid), do: Runner.cancel_turn(pid)
 
-  # `Runner.get_or_start/3` looks the Runner up in a Registry and starts one if
-  # it is absent, so two viewers opening the same conversation at once can both
-  # see it as absent. The loser is told the process is already started and
-  # simply has to ask again, now that the Registry knows about it.
+  # Runner.get_or_start/3 already handles a concurrent start by returning the
+  # existing runner's pid.
   defp runner(id, agent_state) do
-    opts = [agent_state: agent_state, host_state: host_state(id)]
-
-    case Runner.get_or_start(@config, id, opts) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, _pid}} -> Runner.get_or_start(@config, id, opts)
-      {:error, reason} -> {:error, reason}
-    end
+    Runner.get_or_start(@config, id,
+      agent_state: agent_state,
+      host_state: host_state(id)
+    )
   end
 
   defp restore(%{cwd: cwd, model: model, messages: messages}) do
