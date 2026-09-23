@@ -398,8 +398,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   def render_entry(%__MODULE__{kind: :compaction} = entry, width) do
-    hint = if entry.collapsed?, do: " · F4 browse, Enter summary", else: ""
-    render_rows([row([span("◦ " <> entry.content <> hint, entry.style)], %Style{})], width)
+    render_rows([row([span("◦ " <> entry.content, entry.style)], %Style{})], width)
   end
 
   def render_entry(%__MODULE__{kind: :tool} = entry, width),
@@ -506,8 +505,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           span(
             "thought · #{length(lines)} #{if(length(lines) == 1, do: "line", else: "lines")}",
             muted
-          ),
-          span(if(mode == :collapsed, do: " · Ctrl+T to expand", else: ""), Theme.style(:subtle))
+          )
         ],
         %Style{}
       )
