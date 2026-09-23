@@ -25,9 +25,9 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     text = entry |> ToolView.render(80) |> text()
     assert text =~ "  edit  lib/parser.ex"
     refute text =~ "completed"
-    refute text =~ "Replacement preview"
+    refute text =~ "replacement"
     details = entry |> MessageView.inspect_items(100) |> text()
-    refute details =~ "Replacement preview"
+    refute details =~ "replacement"
     assert details =~ "Submitted text (not a verified file diff)"
     assert text =~ "1 - old"
     refute text =~ "@@"
@@ -136,10 +136,13 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     details = text(MessageView.inspect_items(entry, 80))
     assert details =~ "+1 -1"
     refute details =~ "relative lines"
-    refute text(ToolView.render(entry, 80)) =~ "local lines"
+    preview = text(ToolView.render(entry, 80))
+    refute preview =~ "replacement"
+    assert preview =~ "+1 -1"
+    refute preview =~ "local lines"
     assert details =~ "2 - before"
     assert details =~ "2 + after"
-    assert details =~ "replacement 3"
+    refute details =~ "replacement"
     assert details =~ "third-new"
   end
 
@@ -180,7 +183,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert text(MessageView.inspect_items(entry, 80)) =~ "LAST DIAGNOSTIC"
   end
 
-  test "wrapped tool output keeps its gutter and bounded headers signal truncation" do
+  test "wrapped tool output keeps its gutter and bounded headers omit truncation hints" do
     [entry] = settled([Message.tool_result("r", "custom", "abcdefghijklmnop")])
     rows = ToolView.render(entry, 12) |> Enum.flat_map(fn {widget, _} -> widget.text end)
     assert Enum.map(tl(rows), &plain/1) == ["    abcdefgh", "    ijklmnop"]
@@ -194,7 +197,8 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         )
       ])
 
-    assert text(ToolView.render(long, 30)) =~ "header clipped"
+    assert text(ToolView.render(long, 30)) =~ "long/"
+    refute text(ToolView.render(long, 30)) =~ "header clipped"
     refute text(ToolView.render(long, 30)) =~ "F4 details"
 
     for width <- [1, 4, 8, 30] do
@@ -359,6 +363,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert preview =~ "…"
     refute preview =~ "F4 details"
     refute preview =~ "build started"
+    refute preview =~ "output clipped"
     refute preview =~ "lines hidden"
     assert MessageView.full_text(entry) == output
     assert text(MessageView.inspect_items(entry, 80)) =~ "build started"

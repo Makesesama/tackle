@@ -57,7 +57,7 @@ defmodule Tackle.CLI.TUI.ToolView do
       entry
       |> header_rows(header_args, width)
       |> wrap_indented(width, 4, true)
-      |> truncate_header(width)
+      |> Enum.take(@header_rows)
 
     body =
       entry
@@ -254,14 +254,7 @@ defmodule Tackle.CLI.TUI.ToolView do
       |> Enum.reject(&(String.trim(&1) == ""))
 
     tail = Enum.take(lines, -2)
-    clipped? = Enum.any?(tail, &(MessageView.display_width(&1) > content_width))
-
-    hint =
-      if Enum.count_until(lines, 3) == 3 or clipped?,
-        do: [body_row(Theme.style(:subtle), "output clipped" |> clip_width(content_width))],
-        else: []
-
-    hint ++ Enum.map(tail, &body_row(Theme.style(:muted), clip_width(&1, content_width)))
+    Enum.map(tail, &body_row(Theme.style(:muted), clip_width(&1, content_width)))
   end
 
   defp clip_width(text, width) do
@@ -293,7 +286,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp incoming_file_rows(%{tool_name: "edit"}, raw) do
     text = partial_field(raw, "newText") || partial_field(raw, "oldText")
-    incoming_text_rows("Replacement incoming (partial)", text)
+    incoming_text_rows("Edit incoming (partial)", text)
   end
 
   defp incoming_text_rows(label, text) do
@@ -417,14 +410,14 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     if is_binary(old) and is_binary(new) do
       {added, removed, rows} = diff_rows(old, new, mode)
-      [replacement_heading(index, mode, added, removed) | Enum.map(rows, &diff_row/1)]
+      [replacement_heading(added, removed) | Enum.map(rows, &diff_row/1)]
     else
-      [warn_row("Replacement #{index}: invalid preview data")]
+      [warn_row("Edit #{index}: invalid preview data")]
     end
   end
 
   defp replacement(_edit, index, _mode),
-    do: [warn_row("Replacement #{index}: invalid preview data")]
+    do: [warn_row("Edit #{index}: invalid preview data")]
 
   # `similar` matches the lines and marks the changed tokens in Rust; the card
   # owns the palette, wrapping and the row budget. A positive context keeps that
@@ -440,11 +433,8 @@ defmodule Tackle.CLI.TUI.ToolView do
     {added, removed, rows}
   end
 
-  defp replacement_heading(index, _mode, added, removed) do
-    label = "replacement #{index}"
-
+  defp replacement_heading(added, removed) do
     MessageView.row([
-      MessageView.span(label <> "  ", Theme.style(:muted)),
       MessageView.span("+#{added}", Theme.style(:diff_add)),
       MessageView.span(" "),
       MessageView.span("-#{removed}", Theme.style(:diff_del))
@@ -531,13 +521,6 @@ defmodule Tackle.CLI.TUI.ToolView do
       end)
     end)
   end
-
-  defp truncate_header(rows, width) when length(rows) > @header_rows do
-    hint = MessageView.row("  header clipped", Theme.style(:subtle))
-    [hd(rows), hd(MessageView.wrap_rows([hint], width))]
-  end
-
-  defp truncate_header(rows, _width), do: rows
 
   defp clip_line(line, :preview) when is_binary(line) do
     if String.length(line) > 500,
