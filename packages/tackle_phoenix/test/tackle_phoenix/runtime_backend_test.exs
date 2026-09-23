@@ -77,6 +77,25 @@ defmodule Tackle.Phoenix.RuntimeBackendTest do
     assert_receive {:store, "child-session", :settle_turn}
   end
 
+  test "runtime mail delivery is explicitly unsupported without a host mailbox" do
+    scope_spec =
+      ScopeSpec.new!(
+        backend: RuntimeBackend,
+        root_spec: agent_spec("root", "root-session", false)
+      )
+
+    assert {:ok, scope} = Runtime.start_scope(scope_spec)
+    on_exit(fn -> Runtime.stop_scope(scope.scope_ref) end)
+
+    assert {:error, {:unsupported_agent_operation, :deliver}} =
+             Runtime.tell(scope.root_agent_ref, scope.root_agent_ref, "hello")
+
+    {:ok, envelope} = Runtime.Envelope.new(:completion, scope.root_agent_ref, "finished")
+
+    assert {:error, {:unsupported_agent_operation, :deliver}} =
+             Runtime.Messaging.deliver(scope.root_agent_ref, envelope)
+  end
+
   defp agent_spec(name, session_id, allow_delegation) do
     state = %State{
       context: %{test_pid: self(), persistence: %{}},

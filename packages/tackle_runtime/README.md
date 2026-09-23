@@ -30,7 +30,17 @@ A host backend owns:
 - authorization, quota, persistence, and billing;
 - turn submission, cancellation, snapshots, and event delivery;
 - backend-specific parent configuration inheritance;
-- durable background notifications.
+- model-facing message delivery through one `:deliver` backend operation.
+
+`Tackle.Runtime.Messaging.deliver/2` routes validated
+`Tackle.Runtime.Envelope` values to an in-scope recipient. `Runtime.tell/3`
+uses it for ordinary agent text. Deferred work uses `:launch` envelopes
+correlated with a turn and tool call, and `:completion` envelopes that may wake
+an idle agent. Hosts own queueing, presentation, and capacity: the root harness
+bounds ordinary text separately from deferred envelopes and returns an error
+on overflow. Envelopes are transient unless the host persists them. A host
+without an inbox rejects `:deliver`; the Phoenix backend currently does so
+instead of acknowledging an undelivered message.
 
 Implement `Tackle.Runtime.AgentBackend`, put trusted opaque configuration in an
 `AgentSpec`, and select the backend in the `ScopeSpec`:

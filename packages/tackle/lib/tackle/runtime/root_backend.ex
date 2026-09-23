@@ -34,7 +34,7 @@ defmodule Tackle.Runtime.RootBackend do
   def call(pid, :snapshot, []), do: Session.snapshot(pid)
   def call(pid, :reconfigure, [opts]), do: Session.reconfigure(pid, opts)
   def call(pid, :abandon_turn, []), do: Session.abandon_turn(pid)
-  def call(pid, :deliver, [from, message]), do: Session.deliver(pid, from, message)
+  def call(pid, :deliver, [envelope]), do: Session.deliver(pid, envelope)
   def call(pid, :compact, [opts]), do: Session.compact(pid, opts)
   def call(pid, :tree, []), do: Session.tree(pid)
   def call(pid, :navigate, [target, opts]), do: Session.navigate(pid, target, opts)
@@ -70,12 +70,8 @@ defmodule Tackle.Runtime.RootBackend do
   end
 
   @impl true
-  def notify(pid, {:background_started, run_ref, origin, message}) do
-    Session.background_started(pid, run_ref, origin, message)
-  end
-
-  def notify(pid, {:background_finished, run_ref, profile, outcome, message}) do
-    Session.background_finished(pid, run_ref, profile, outcome, message)
+  def notify(pid, {:background_finished, run_ref, profile, outcome}) do
+    Session.background_finished(pid, run_ref, profile, outcome)
   end
 
   def notify(_pid, _notification), do: :ok

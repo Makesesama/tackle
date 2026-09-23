@@ -34,6 +34,13 @@ defmodule Tackle.Runtime.AgentBackend do
 
   @callback validate_spec(AgentSpec.t()) :: :ok | {:error, term()}
   @callback child_spec(AgentSpec.t(), AgentContext.t()) :: Supervisor.child_spec()
+  @doc """
+  Performs an agent operation. `:deliver` accepts one validated
+  `Tackle.Runtime.Envelope` in its argument list and synchronously reports
+  acceptance or failure. Hosts without a mailbox return
+  `{:error, {:unsupported_agent_operation, :deliver}}`. Backends own capacity,
+  projection, and wake-up policy; they must not acknowledge dropped messages.
+  """
   @callback call(pid(), operation(), [term()]) :: term()
   @callback prepare_child(AgentSpec.t(), pid()) :: {:ok, AgentSpec.t()} | {:error, term()}
   @callback model_ref(AgentSpec.t()) :: String.t() | nil

@@ -37,6 +37,7 @@ defmodule Tackle.Session do
   alias Tackle.Lib.Message
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Runtime.AgentRef
+  alias Tackle.Runtime.Envelope
   alias Tackle.Runtime.Handle
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
@@ -53,6 +54,7 @@ defmodule Tackle.Session do
 
   @task_shutdown_timeout 1_000
   @max_inbox_messages 32
+  @max_deferred_messages 128
 
   defmodule Stats do
     @moduledoc "Derived, immutable token, cost, model, and context statistics."
@@ -163,43 +165,14 @@ defmodule Tackle.Session do
   @spec cancel(GenServer.server()) :: :ok
   def cancel(session), do: GenServer.call(session, :cancel)
 
-  @doc "Queues an in-scope message for this agent's next turn."
-  @spec deliver(GenServer.server(), AgentRef.t(), String.t()) :: :ok | {:error, term()}
-  def deliver(session, %AgentRef{} = from, message) when is_binary(message) do
-    GenServer.call(session, {:deliver, from, message})
-  end
+  @doc "Queues an envelope for the next provider boundary or an idle agent's next turn."
+  @spec deliver(GenServer.server(), Envelope.t()) :: :ok | {:error, term()}
+  def deliver(session, %Envelope{} = envelope), do: GenServer.call(session, {:deliver, envelope})
 
-  @doc "Queues a background launch until its tool result is committed or a later turn consumes it."
-  @spec background_started(GenServer.server(), RunRef.t(), map(), String.t()) ::
-          :ok | {:error, term()}
-  def background_started(session, %RunRef{} = run_ref, origin, message)
-      when is_map(origin) and is_binary(message) do
-    GenServer.call(session, {:background_started, run_ref, origin, message})
-  end
-
-  @doc "Publishes one background-run completion from its owning request helper."
+  @doc "Publishes one background-run completion event from its owning request helper."
   @spec background_finished(GenServer.server(), RunRef.t(), String.t() | nil, Outcome.t()) :: :ok
   def background_finished(session, %RunRef{} = run_ref, profile, %Outcome{} = outcome) do
     GenServer.cast(session, {:background_finished, run_ref, profile, outcome})
-  end
-
-  @doc "Queues a completion notice, publishes it, and wakes the idle parent."
-  @spec background_finished(
-          GenServer.server(),
-          RunRef.t(),
-          String.t() | nil,
-          Outcome.t(),
-          String.t()
-        ) :: :ok
-  def background_finished(
-        session,
-        %RunRef{} = run_ref,
-        profile,
-        %Outcome{} = outcome,
-        message
-      )
-      when is_binary(message) do
-    GenServer.cast(session, {:background_finished, run_ref, profile, outcome, message})
   end
 
   @doc "Returns queued in-scope messages awaiting the next turn."
@@ -341,49 +314,11 @@ defmodule Tackle.Session do
     start_turn(:run, input, state)
   end
 
-  def handle_call({:deliver, _from, _message}, _from_call, %{inbox_count: count} = state)
-      when count >= @max_inbox_messages do
-    {:reply, {:error, :inbox_full}, state}
-  end
-
-  def handle_call({:deliver, %AgentRef{} = from, message}, _from_call, state) do
-    envelope = %{from: from, message: message}
-    state = enqueue(state, envelope)
-    state = if state.active_turn == nil, do: schedule_inbox_wake(state), else: state
-    {:reply, :ok, state}
-  end
-
-  def handle_call(
-        {:background_started, _run_ref, _origin, _message},
-        _from,
-        %{inbox_count: count} = state
-      )
-      when count >= @max_inbox_messages do
-    {:reply, {:error, :inbox_full}, state}
-  end
-
-  def handle_call(
-        {:background_started, %RunRef{agent_ref: %AgentRef{} = from} = run_ref,
-         %{turn_id: turn_id, tool_call_id: tool_call_id}, message},
-        _from,
-        state
-      )
-      when is_binary(turn_id) and is_binary(tool_call_id) do
-    envelope = %{
-      from: from,
-      message: message,
-      background_launch: %{
-        run_id: run_ref.run_id,
-        turn_id: turn_id,
-        tool_call_id: tool_call_id
-      }
-    }
-
-    {:reply, :ok, enqueue(state, envelope)}
-  end
-
-  def handle_call({:background_started, _run_ref, _origin, _message}, _from, state) do
-    {:reply, {:error, :invalid_background_launch}, state}
+  def handle_call({:deliver, %Envelope{} = envelope}, _from_call, state) do
+    case Envelope.new(envelope.kind, envelope.from, envelope.message, envelope.origin) do
+      {:ok, _validated} -> enqueue_envelope(state, envelope)
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:take_incoming_messages, _from, state) do
@@ -548,16 +483,6 @@ defmodule Tackle.Session do
   end
 
   @impl true
-  def handle_cast(
-        {:background_finished, %RunRef{} = run_ref, profile, %Outcome{} = outcome, message},
-        state
-      ) do
-    {state, queued?} = queue_background_completion(state, run_ref, outcome, message)
-    publish_background_finished(state, run_ref, profile, outcome)
-    state = if queued?, do: schedule_inbox_wake(state), else: state
-    {:noreply, state}
-  end
-
   def handle_cast(
         {:background_finished, %RunRef{} = run_ref, profile, %Outcome{} = outcome},
         state
@@ -818,31 +743,6 @@ defmodule Tackle.Session do
     broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
   end
 
-  defp queue_background_completion(
-         %{inbox_count: count} = state,
-         _run_ref,
-         _outcome,
-         _message
-       )
-       when count >= @max_inbox_messages,
-       do: {state, false}
-
-  defp queue_background_completion(state, run_ref, outcome, message) do
-    envelope = %{
-      from: run_ref.agent_ref,
-      message: message,
-      background_completion: %{run_id: run_ref.run_id, status: outcome.status}
-    }
-
-    state = %{
-      state
-      | inbox: :queue.in(envelope, state.inbox),
-        inbox_count: state.inbox_count + 1
-    }
-
-    {state, true}
-  end
-
   defp schedule_inbox_wake(
          %{
            lifetime: :explicit,
@@ -885,7 +785,7 @@ defmodule Tackle.Session do
   defp inbox_turn_reason(state) do
     deliverable = Enum.filter(:queue.to_list(state.inbox), &deliverable_envelope?/1)
 
-    if Enum.all?(deliverable, &Map.has_key?(&1, :background_completion)) do
+    if Enum.all?(deliverable, &match?(%Envelope{kind: :completion}, &1)) do
       :background_notice
     else
       :queued_messages
@@ -929,14 +829,51 @@ defmodule Tackle.Session do
   defp clear_inbox(state),
     do: %{state | inbox: :queue.new(), inbox_count: 0}
 
-  defp queue_user_message(%{inbox_count: count} = state, _message)
-       when count >= @max_inbox_messages do
-    {:reply, {:error, :inbox_full}, state}
+  defp queue_user_message(state, message) do
+    if ordinary_inbox_count(state) >= @max_inbox_messages do
+      {:reply, {:error, :inbox_full}, state}
+    else
+      {:reply, {:ok, :queued}, enqueue(state, %{from: :user, message: message})}
+    end
   end
 
-  defp queue_user_message(state, message) do
-    state = enqueue(state, %{from: :user, message: message})
-    {:reply, {:ok, :queued}, state}
+  defp enqueue_envelope(state, %Envelope{kind: kind} = envelope) do
+    cond do
+      kind == :message and ordinary_inbox_count(state) >= @max_inbox_messages ->
+        {:reply, {:error, :inbox_full}, state}
+
+      kind != :message and deferred_inbox_count(state) >= @max_deferred_messages ->
+        {:reply, {:error, :deferred_inbox_full}, state}
+
+      true ->
+        state = enqueue(state, envelope)
+
+        state =
+          if kind == :launch or state.active_turn != nil,
+            do: state,
+            else: schedule_inbox_wake(state)
+
+        {:reply, :ok, state}
+    end
+  end
+
+  defp ordinary_inbox_count(state) do
+    state.inbox
+    |> :queue.to_list()
+    |> Enum.count(fn
+      %Envelope{kind: :message} -> true
+      %{from: :user} -> true
+      _other -> false
+    end)
+  end
+
+  defp deferred_inbox_count(state) do
+    state.inbox
+    |> :queue.to_list()
+    |> Enum.count(fn
+      %Envelope{kind: kind} when kind in [:launch, :completion] -> true
+      _other -> false
+    end)
   end
 
   defp enqueue(state, envelope) do
@@ -958,11 +895,12 @@ defmodule Tackle.Session do
     %{state | inbox: :queue.from_list(retained), inbox_count: length(retained)}
   end
 
-  defp deliverable_envelope?(envelope), do: not Map.has_key?(envelope, :background_launch)
+  defp deliverable_envelope?(%Envelope{kind: :launch}), do: false
+  defp deliverable_envelope?(_envelope), do: true
 
   defp envelope_content(%{from: :user, message: content}), do: content
 
-  defp envelope_content(%{from: %AgentRef{} = from, message: content}) do
+  defp envelope_content(%Envelope{from: %AgentRef{} = from, message: content}) do
     "Message from agent #{from.agent_id}:\n\n#{content}"
   end
 
@@ -987,9 +925,7 @@ defmodule Tackle.Session do
       state.inbox
       |> :queue.to_list()
       |> Enum.reject(fn
-        %{
-          background_launch: %{turn_id: ^turn_id, tool_call_id: tool_call_id}
-        } ->
+        %Envelope{kind: :launch, origin: %{turn_id: ^turn_id, tool_call_id: tool_call_id}} ->
           MapSet.member?(reported_tool_calls, tool_call_id)
 
         _envelope ->
@@ -1001,7 +937,7 @@ defmodule Tackle.Session do
 
   defp broadcast_inbox_drained(state, messages) do
     Enum.each(messages, fn
-      %{from: %AgentRef{} = from} ->
+      %Envelope{from: %AgentRef{} = from} ->
         event =
           Event.new(:subagent_message_received, %{
             from_agent_ref: from,
