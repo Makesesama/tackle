@@ -5,6 +5,9 @@ defmodule Tackle.MixProject do
     [
       app: :tackle,
       version: "0.1.0",
+      description: "Developer agent harness built on Tackle.Lib and Tackle.Runtime",
+      source_url: "https://github.com/Makesesama/tackle",
+      package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),

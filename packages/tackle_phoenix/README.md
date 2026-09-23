@@ -22,28 +22,29 @@ handlers yet. Integrate the EventReducer manually as shown below.
 
 ## Installation
 
-This package is currently an in-repo path package, not a Hex package. Preserve
-these sibling packages:
-
-```text
-packages/
-  tackle_lib/
-  tackle_runtime/
-  tackle_phoenix/
-```
-
-Then add:
+This package is distributed from this Git monorepo, not Hex. Add the following
+dependency to your application's `mix.exs`, replacing `REF` with the same
+published tag or commit SHA for all Tackle packages:
 
 ```elixir
-# mix.exs
 defp deps do
   [
-    {:tackle_lib, path: "packages/tackle_lib"},
-    {:tackle_runtime, path: "packages/tackle_runtime"},
-    {:tackle_phoenix, path: "packages/tackle_phoenix"}
+    {:tackle_phoenix,
+     git: "https://github.com/Makesesama/tackle.git",
+     ref: "REF",
+     subdir: "packages/tackle_phoenix"}
   ]
 end
 ```
+
+Run `mix deps.get`. The package's sibling `path:` dependencies resolve
+`Tackle.Lib` and `Tackle.Runtime` from the same checked-out commit. Do not add
+separate top-level Git dependencies for them unless you need them directly;
+Mix will report diverging dependencies unless explicitly overridden. Mix's
+`:subdir` option requires Elixir 1.13 or newer.
+
+For local development, work from the repository checkout; its sibling
+packages are already present.
 
 `Tackle.Phoenix` requires Elixir `~> 1.18`, Phoenix LiveView `~> 1.1.33`, and
 Phoenix PubSub `~> 2.1`.

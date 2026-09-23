@@ -5,6 +5,9 @@ defmodule Tackle.Phoenix.MixProject do
     [
       app: :tackle_phoenix,
       version: "0.1.0",
+      description: "Phoenix and LiveView integration for Tackle agents",
+      source_url: "https://github.com/Makesesama/tackle",
+      package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
