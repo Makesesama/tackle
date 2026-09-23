@@ -1206,7 +1206,7 @@ defmodule Tackle.CLI.TUITest do
 
     conversation = conversation_text(settled_state)
 
-    assert conversation =~ "› hi"
+    assert conversation =~ "›  hi"
     assert conversation =~ "hi"
     assert conversation =~ "thought"
     refute conversation =~ "Checked"
@@ -1581,7 +1581,7 @@ defmodule Tackle.CLI.TUITest do
     state = state(tui)
 
     assert [
-             {%Cell{}, 2},
+             {%Cell{}, 3},
              {_spacer, 1},
              {%Cell{}, 1}
            ] = state.conversation.items
@@ -1608,7 +1608,7 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
-    assert [{_watch, 2}, {_spacer_one, 1}, {_heart, 2}, {_spacer_two, 1}, {_accent, 2}] =
+    assert [{_watch, 3}, {_spacer_one, 1}, {_heart, 3}, {_spacer_two, 1}, {_accent, 2}] =
              state.conversation.items
   end
 
@@ -1635,8 +1635,8 @@ defmodule Tackle.CLI.TUITest do
     assert running_state.activity == "running read"
 
     running_conversation = conversation_text(running_state)
-    assert running_conversation =~ "● running · mix.exs  · read"
-    assert running_conversation =~ "mix.exs  · read"
+    assert running_conversation =~ "● running  read  mix.exs"
+    assert running_conversation =~ "read  mix.exs"
     refute running_conversation =~ "args:"
     assert running_conversation =~ "running"
 
@@ -1655,8 +1655,8 @@ defmodule Tackle.CLI.TUITest do
     assert [%{id: "call-1", status: :completed}] = completed_state.tool_activity
 
     completed_conversation = conversation_text(completed_state)
-    assert completed_conversation =~ "· mix.exs"
-    assert completed_conversation =~ "mix.exs  · read"
+    assert completed_conversation =~ "  read  mix.exs"
+    refute completed_conversation =~ "· mix.exs"
     refute completed_conversation =~ "completed"
     refute completed_conversation =~ "    output"
     refute completed_conversation =~ "F4 details"
@@ -1692,8 +1692,8 @@ defmodule Tackle.CLI.TUITest do
     assert [%{id: "first", status: :running}, %{id: "second", status: :completed}] =
              progress.tool_activity
 
-    assert conversation_text(progress) =~ "● running · first"
-    assert conversation_text(progress) =~ "· second"
+    assert conversation_text(progress) =~ "● running  read  first"
+    assert conversation_text(progress) =~ "  read  second"
 
     send(
       tui,
@@ -1753,7 +1753,7 @@ defmodule Tackle.CLI.TUITest do
 
     failed_state = state(tui)
     assert failed_state.activity == "failed bash"
-    assert conversation_text(failed_state) =~ "✗ failed · bash"
+    assert conversation_text(failed_state) =~ "✗ failed  bash"
     assert conversation_text(failed_state) =~ "failed"
     assert conversation_text(failed_state) =~ "  command exited with status 1"
   end
@@ -1782,7 +1782,7 @@ defmodule Tackle.CLI.TUITest do
     conversation = conversation_text(state)
 
     refute conversation =~ "● read"
-    assert conversation =~ "· README.md  · read"
+    assert conversation =~ "  read  README.md"
     refute conversation =~ "completed"
     refute conversation =~ "    project documentation"
     refute conversation =~ "F4 details"

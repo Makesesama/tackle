@@ -55,8 +55,8 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
       |> Conversation.scroll_to(:start)
 
     rows = String.split(paint(model), "\n")
-    assert Enum.take(rows, 4) == ["›   **raw ", "  **      ", "  next    ", "          "]
-    assert Enum.any?(rows, &String.starts_with?(&1, "● answer"))
+    assert Enum.take(rows, 4) == ["›    **r  ", "   aw**   ", "   next   ", "          "]
+    assert Enum.any?(rows, &String.starts_with?(&1, "●  answe"))
     assert MessageView.source(Conversation.entry(model, "message:0:user")) == source
 
     tiny = Conversation.resize(model, %Rect{width: 1, height: 12})
@@ -115,7 +115,8 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
 
       painted = Enum.map_join(rows, "\n", fn row -> Enum.map_join(row, &elem(&1, 0)) end)
 
-      assert painted =~ "● IO.puts(\"hello\")"
+      assert painted =~ "elixir"
+      assert painted =~ "IO.puts(\"hello\")"
       refute painted =~ "```"
 
       assert Enum.any?(List.flatten(rows), fn {text, fg, _bg, _under, _modifiers} ->
@@ -145,9 +146,10 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     painted = Enum.map(rows, fn row -> Enum.map_join(row, &elem(&1, 0)) end)
 
     assert length(cells) == 3
-    assert Enum.any?(painted, &String.starts_with?(&1, "      IO.pu"))
-    assert Enum.any?(painted, &String.starts_with?(&1, "  after"))
-    assert Enum.all?(tl(painted), &String.starts_with?(&1, "  "))
+    assert Enum.any?(painted, &String.starts_with?(&1, "    elixir"))
+    assert Enum.any?(painted, &String.starts_with?(&1, "       IO."))
+    assert Enum.any?(painted, &String.starts_with?(&1, "   after"))
+    assert Enum.all?(tl(painted), &String.starts_with?(&1, "   "))
     refute Enum.join(painted) =~ "```"
   end
 

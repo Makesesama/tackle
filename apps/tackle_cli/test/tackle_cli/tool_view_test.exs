@@ -23,12 +23,12 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert MessageView.search_text(entry) =~ "oldText"
 
     text = entry |> ToolView.render(80) |> text()
-    assert text =~ "· lib/parser.ex  · edit"
+    assert text =~ "  edit  lib/parser.ex"
     refute text =~ "completed"
     refute text =~ "Replacement preview"
     details = entry |> MessageView.inspect_items(100) |> text()
     refute details =~ "Replacement preview"
-    assert details =~ "Submitted text · not a verified file diff"
+    assert details =~ "Submitted text (not a verified file diff)"
     assert text =~ "1 - old"
     refute text =~ "@@"
     refute text =~ "│"
@@ -183,7 +183,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
   test "wrapped tool output keeps its gutter and bounded headers signal truncation" do
     [entry] = settled([Message.tool_result("r", "custom", "abcdefghijklmnop")])
     rows = ToolView.render(entry, 12) |> Enum.flat_map(fn {widget, _} -> widget.text end)
-    assert Enum.map(tl(rows), &plain/1) == ["  abcdefghij", "  klmnop"]
+    assert Enum.map(tl(rows), &plain/1) == ["    abcdefgh", "    ijklmnop"]
 
     [long] =
       settled([
@@ -194,7 +194,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         )
       ])
 
-    assert text(ToolView.render(long, 30)) =~ "…"
+    assert text(ToolView.render(long, 30)) =~ "header clipped"
     refute text(ToolView.render(long, 30)) =~ "F4 details"
 
     for width <- [1, 4, 8, 30] do
@@ -287,7 +287,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert Enum.all?(row.spans, &is_nil(&1.style.bg))
   end
 
-  test "tool cards use a borderless target-first header and indented muted output" do
+  test "tool cards use a borderless tool-first header and indented muted output" do
     [entry] =
       settled([
         Message.assistant(
@@ -309,13 +309,13 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     body = Enum.filter(cells, &(&1.row == 1))
 
     assert Enum.all?(header ++ body, &(&1.bg == :reset))
-    assert Enum.find(header, &(&1.symbol == "a")).modifiers == [:bold]
-    assert Enum.find(body, &(&1.symbol == "l")).col == 2
+    assert Enum.find(header, &(&1.symbol == "c")).modifiers == [:bold]
+    assert Enum.find(body, &(&1.symbol == "l")).col == 4
     assert Enum.find(body, &(&1.symbol == "l")).fg == {:indexed, 246}
     refute Enum.any?(body, &(&1.symbol in ["▌", "│"]))
 
     heading = header |> Enum.sort_by(& &1.col) |> Enum.map_join(& &1.symbol)
-    assert heading =~ "· cat a.ex  · bash"
+    assert heading =~ "  bash  cat a.ex"
     refute heading =~ "completed"
   end
 
@@ -329,7 +329,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         Message.tool_result("r", "read", output)
       ])
 
-    assert text(ToolView.render(entry, 80)) == "· lib/example.ex  · read"
+    assert text(ToolView.render(entry, 80)) == "  read  lib/example.ex"
     assert MessageView.full_text(entry) == output
     assert MessageView.search_text(entry) =~ "last line"
     details = text(MessageView.inspect_items(entry, 100))
@@ -364,7 +364,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert text(MessageView.inspect_items(entry, 80)) =~ "build started"
 
     [empty] = settled([Message.tool_result("b", "bash", "\n\n")])
-    assert text(ToolView.render(empty, 80)) == "· bash"
+    assert text(ToolView.render(empty, 80)) == "  bash"
   end
 
   test "subagents show profile, assignment, explicit outcomes and retained findings" do
@@ -376,7 +376,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
     call = Message.assistant(tool_calls: [%{id: "explore", name: "subagent", arguments: args}])
     [requested] = settled([call])
-    assert text(ToolView.render(requested, 80)) =~ "requested · scout · subagent"
+    assert text(ToolView.render(requested, 80)) =~ "requested  subagent  scout"
     assert text(ToolView.render(requested, 80)) =~ "Task: Trace recovery and cite files"
     refute text(ToolView.render(requested, 80)) =~ "timeout_ms"
 
@@ -384,7 +384,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       settled([call, Message.tool_result("explore", "subagent", "lib/recovery.ex:42: findings")])
 
     assert completed.id == requested.id
-    assert text(ToolView.render(completed, 80)) =~ "completed · scout · subagent"
+    assert text(ToolView.render(completed, 80)) =~ "  subagent  scout"
     assert text(ToolView.render(completed, 80)) =~ "lib/recovery.ex:42"
     assert MessageView.search_text(completed) =~ "Trace recovery"
     assert MessageView.full_text(completed) == "lib/recovery.ex:42: findings"
@@ -399,7 +399,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         ] do
       [failed] = settled([call, Message.tool_result("explore", "subagent", "Error: " <> reason)])
       output = text(ToolView.render(failed, 100))
-      assert output =~ "failed · scout · subagent"
+      assert output =~ "failed  subagent  scout"
       assert output =~ reason
       refute output =~ "✓"
     end
@@ -450,16 +450,16 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert entry.tool_elapsed_ms == 65_900
 
     assert text(ToolView.render(entry, 100)) =~
-             "running · scout · subagent · openai-codex/gpt-5.5 · 1m 5s"
+             "running  subagent  scout  openai-codex/gpt-5.5  1m 5s"
 
     assert text(ToolView.render(%{entry | tool_elapsed_ms: 999}, 100)) =~
-             "openai-codex/gpt-5.5 · 0s"
+             "openai-codex/gpt-5.5  0s"
 
     assert text(ToolView.render(%{entry | tool_elapsed_ms: nil}, 100)) =~
-             "subagent · openai-codex/gpt-5.5\n"
+             "subagent  scout  openai-codex/gpt-5.5\n"
 
     assert text(ToolView.render(%{entry | tool_status: :completed, tool_elapsed_ms: 65_900}, 100)) =~
-             "scout · subagent · openai-codex/gpt-5.5 · 65s"
+             "scout  openai-codex/gpt-5.5  65s"
 
     refute text(ToolView.render(%{entry | tool_status: :completed, tool_elapsed_ms: 65_900}, 100)) =~
              "completed"
