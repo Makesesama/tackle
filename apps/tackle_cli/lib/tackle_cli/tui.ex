@@ -29,9 +29,8 @@ defmodule Tackle.CLI.TUI do
   operation, so it never retains a runtime PID. Events are correlated by
   session id and active turn id; stale events cannot mutate the current turn.
 
-  While a turn is active the composer keeps accepting a draft, but Enter does
-  not submit it: there is no queue, so the draft is explicitly labeled as
-  belonging to the next turn. Esc leaves the transcript browser, closes
+  While a turn is active the composer keeps accepting drafts; Enter queues
+  them for the next safe boundary. Esc leaves the transcript browser, closes
   overlays, clears a non-empty draft, then requests cancellation on a subsequent
   press, and never exits while idle; Ctrl+C is
   the distinct quit action and asks for confirmation when a draft or active turn
@@ -142,7 +141,7 @@ defmodule Tackle.CLI.TUI do
   def handle_event(%Key{kind: "release"}, state), do: {:noreply, state, render?: false}
 
   def handle_event(%Key{} = key, state) do
-    dispatch_key(key, %{state | notice: nil})
+    dispatch_key(key, %{state | notice: nil, queue_notice_at: nil})
   end
 
   def handle_event(%Paste{content: content}, state), do: {:noreply, handle_paste(state, content)}
