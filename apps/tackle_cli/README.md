@@ -348,16 +348,18 @@ The conversation renders assistant responses as Markdown, including while a
 response is streaming. Tool calls and matching results share one card, identified
 by call ID, with the command or path emphasized and the tool name subdued rather
 than a JSON argument dump. Tool cards are borderless, with indented output instead
-of raised bands or heavy rails. Completed calls use a checkmark without repeating
-"completed"; requested, running, and failed states remain explicit. Truncated
-headers point to F4 details. Successful tool output is subdued; failures remain
-explicit. Successful reads collapse to a path-only card with an F4 details hint,
-without dumping file contents into the conversation. Successful Bash calls show
-at most two non-empty tail lines, clipped rather than wrapped, with one details
-hint when output is hidden. Empty shell output adds no body rows. Failures and
-unknown tools keep bounded diagnostic previews. Failed edits show only the error,
+of raised bands or heavy rails. Completed calls use a quiet dot without
+repeating "completed"; requested, running, and failed states remain explicit.
+Truncated headers and hidden output use a quiet ellipsis; F4 still opens the
+transcript browser. Successful tool output is subdued; failures remain explicit.
+Successful reads collapse to a path-only card without dumping file contents into
+the conversation. Successful Bash calls show at most two non-empty tail lines,
+clipped rather than wrapped, with an ellipsis when output is hidden. Empty shell
+output adds no body rows. Failures and unknown tools keep bounded diagnostic
+previews. Failed edits show only the error,
 not a replacement preview; their inspector retains the submitted arguments as
-source. Other inline output keeps a bounded head/tail preview (including after
+source. Completed subagents with a measured duration show just the elapsed
+seconds instead of a completion label. Other inline output keeps a bounded head/tail preview (including after
 wrapping), with hidden lines indicated. F4 browses entries: Y copies the full
 retained source and Enter opens scrollable details with the full output and
 arguments; its ←/→ keys browse tool cards.
@@ -367,7 +369,7 @@ Edits use compact, borderless replacement previews: muted line numbers, soft red
 neutral on the terminal background; only changed words receive a subtle tint.
 Unchanged context is subdued. These compare the submitted
 `oldText`/`newText` strings, **not files on disk**: even after completion they are
-labeled previews, not verified file diffs. Failed calls remain failed. Write
+not verified file diffs. Failed calls remain failed. Write
 cards show submitted content without pretending that an overwrite is a new
 file. No filesystem reads, new dependencies, or tool execution changes are
 involved. Large replacements skip expensive matching and show before/after

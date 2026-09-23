@@ -25,8 +25,10 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     text = entry |> ToolView.render(80) |> text()
     assert text =~ "· lib/parser.ex  · edit"
     refute text =~ "completed"
-    assert text =~ "Replacement preview"
-    assert entry |> MessageView.inspect_items(100) |> text() =~ "not a verified file diff"
+    refute text =~ "Replacement preview"
+    details = entry |> MessageView.inspect_items(100) |> text()
+    refute details =~ "Replacement preview"
+    assert details =~ "Submitted text · not a verified file diff"
     assert text =~ "1 - old"
     refute text =~ "@@"
     refute text =~ "│"
@@ -132,7 +134,9 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       settled([Message.assistant(tool_calls: [%{id: "edit", name: "edit", arguments: args}])])
 
     details = text(MessageView.inspect_items(entry, 80))
-    assert details =~ "+1 -1 · relative lines"
+    assert details =~ "+1 -1"
+    refute details =~ "relative lines"
+    refute text(ToolView.render(entry, 80)) =~ "local lines"
     assert details =~ "2 - before"
     assert details =~ "2 + after"
     assert details =~ "replacement 3"
@@ -190,7 +194,8 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         )
       ])
 
-    assert text(ToolView.render(long, 30)) =~ "… · F4 details"
+    assert text(ToolView.render(long, 30)) =~ "…"
+    refute text(ToolView.render(long, 30)) =~ "F4 details"
 
     for width <- [1, 4, 8, 30] do
       for {widget, _} <- ToolView.render(long, width), row <- widget.text do
@@ -324,7 +329,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         Message.tool_result("r", "read", output)
       ])
 
-    assert text(ToolView.render(entry, 80)) == "· lib/example.ex  · read  · F4 details"
+    assert text(ToolView.render(entry, 80)) == "· lib/example.ex  · read"
     assert MessageView.full_text(entry) == output
     assert MessageView.search_text(entry) =~ "last line"
     details = text(MessageView.inspect_items(entry, 100))
@@ -351,7 +356,8 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
     preview = text(ToolView.render(entry, 80))
     assert preview =~ "42 tests passed"
-    assert preview =~ "… F4 details"
+    assert preview =~ "…"
+    refute preview =~ "F4 details"
     refute preview =~ "build started"
     refute preview =~ "lines hidden"
     assert MessageView.full_text(entry) == output
@@ -451,6 +457,12 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
     assert text(ToolView.render(%{entry | tool_elapsed_ms: nil}, 100)) =~
              "subagent · openai-codex/gpt-5.5\n"
+
+    assert text(ToolView.render(%{entry | tool_status: :completed, tool_elapsed_ms: 65_900}, 100)) =~
+             "scout · subagent · openai-codex/gpt-5.5 · 65s"
+
+    refute text(ToolView.render(%{entry | tool_status: :completed, tool_elapsed_ms: 65_900}, 100)) =~
+             "completed"
   end
 
   test "subagent previews are bounded, sanitized, and retain full assignments in details" do

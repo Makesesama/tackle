@@ -1502,7 +1502,7 @@ defmodule Tackle.CLI.TUITest do
     assert completed_conversation =~ "mix.exs  · read"
     refute completed_conversation =~ "completed"
     refute completed_conversation =~ "    output"
-    assert completed_conversation =~ "F4 details"
+    refute completed_conversation =~ "F4 details"
   end
 
   test "renders individual execution completions before ordered settlement", %{tui: tui} do
@@ -1628,7 +1628,7 @@ defmodule Tackle.CLI.TUITest do
     assert conversation =~ "· README.md  · read"
     refute conversation =~ "completed"
     refute conversation =~ "    project documentation"
-    assert conversation =~ "F4 details"
+    refute conversation =~ "F4 details"
     assert Enum.count(Conversation.entries(state.conversation), &(&1.kind == :tool)) == 1
     refute conversation =~ "Tackle:"
     assert conversation =~ "Done"
@@ -1646,7 +1646,7 @@ defmodule Tackle.CLI.TUITest do
     state = settle_tool_output(tui, output)
     inline = conversation_text(state)
 
-    assert inline =~ "F4 details"
+    refute inline =~ "F4 details"
     refute inline =~ "line-1"
     refute inline =~ "line-50"
     refute inline =~ "line-25"
@@ -1692,7 +1692,7 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "enter")
     assert {:inspector, inspector} = state(tui).overlay
     assert inspector.entry.id == "tool:edit"
-    assert inspector_text(state(tui)) =~ "Replacement preview"
+    refute inspector_text(state(tui)) =~ "Replacement preview"
     inject_key(tui, "a")
     assert_receive {:copied, encoded}
     assert JSON.decode!(encoded) == args
@@ -1897,7 +1897,7 @@ defmodule Tackle.CLI.TUITest do
     refute collapsed =~ "first line"
     refute collapsed =~ "second line"
     refute collapsed =~ "third line"
-    assert collapsed =~ "Ctrl+T to expand"
+    refute collapsed =~ "Ctrl+T to expand"
 
     inject_key(tui, "t", ["ctrl"])
     expanded = conversation_text(state(tui))

@@ -31,7 +31,7 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
 
     assert collapsed =~ "thought"
     assert collapsed =~ "3 lines"
-    assert collapsed =~ "Ctrl+T to expand"
+    refute collapsed =~ "Ctrl+T to expand"
     refute collapsed =~ "first"
     refute collapsed =~ "second"
     refute collapsed =~ "third"

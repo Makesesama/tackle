@@ -9,8 +9,9 @@ defmodule Tackle.CLI.TUI.ToolView do
   to their path; successful Bash output shows at most two clipped tail lines.
   Full retained output stays in details. Failed edits show the error instead of
   a replacement preview (details retain the submitted arguments as source).
-  Subagents show their profile, assignment, explicit status, and locally observed
-  elapsed time while the turn is live. Full arguments and findings stay in details.
+  Subagents show their profile, assignment, live status, and locally observed
+  elapsed time when available. Completed subagents show just the elapsed seconds
+  instead of a completion label. Full arguments and findings stay in details.
   Unknown tools retain a generic source fallback.
 
   Edit previews compare the submitted replacement strings, never files on disk.
@@ -100,7 +101,13 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     elapsed =
       case entry.tool_elapsed_ms do
-        ms when is_integer(ms) and ms >= 0 -> " · " <> elapsed_text(ms)
+        ms when is_integer(ms) and ms >= 0 and status != :completed -> " · " <> elapsed_text(ms)
+        _ -> ""
+      end
+
+    completed_time =
+      case {status, entry.tool_elapsed_ms} do
+        {:completed, ms} when is_integer(ms) and ms >= 0 -> " · #{div(ms, 1_000)}s"
         _ -> ""
       end
 
@@ -113,9 +120,9 @@ defmodule Tackle.CLI.TUI.ToolView do
     [
       MessageView.row([
         MessageView.span(marker(status) <> " ", marker_style(status)),
-        MessageView.span(status_text(status) <> " · ", status_style(status)),
+        MessageView.span(subagent_status(status, entry.tool_elapsed_ms), status_style(status)),
         MessageView.span(profile, Theme.bold(Theme.style(:text))),
-        MessageView.span(" · subagent" <> model <> elapsed, Theme.style(:muted))
+        MessageView.span(" · subagent" <> model <> elapsed <> completed_time, Theme.style(:muted))
       ])
     ]
   end
@@ -141,9 +148,8 @@ defmodule Tackle.CLI.TUI.ToolView do
       end
 
     summary =
-      if name == "read" and status == :completed and is_binary(entry.tool_output) do
-        text = if entry.tool_output == "", do: "  · empty", else: "  · F4 details"
-        [MessageView.span(text, Theme.style(:subtle))]
+      if name == "read" and status == :completed and entry.tool_output == "" do
+        [MessageView.span("  · empty", Theme.style(:subtle))]
       else
         []
       end
@@ -165,13 +171,13 @@ defmodule Tackle.CLI.TUI.ToolView do
 
           preview =
             if String.length(prompt) > 240,
-              do: String.slice(prompt, 0, 240) <> "… · F4 details",
+              do: String.slice(prompt, 0, 240) <> "…",
               else: prompt
 
           [body_row(Theme.style(:muted), "Task: " <> preview)]
 
         _ ->
-          [body_row(Theme.style(:subtle), "Task unavailable · F4 details")]
+          [body_row(Theme.style(:subtle), "Task unavailable")]
       end
 
     assignment ++ subagent_work_rows(entry) ++ output_rows(entry, :preview)
@@ -250,7 +256,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     hint =
       if Enum.count_until(lines, 3) == 3 or clipped?,
-        do: [body_row(Theme.style(:subtle), "… F4 details" |> clip_width(content_width))],
+        do: [body_row(Theme.style(:subtle), "…" |> clip_width(content_width))],
         else: []
 
     hint ++ Enum.map(tail, &body_row(Theme.style(:muted), clip_width(&1, content_width)))
@@ -289,7 +295,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   end
 
   defp incoming_text_rows(label, text) do
-    heading = [context_row(label <> " · F4 details")]
+    heading = [context_row(label)]
 
     if is_binary(text) do
       heading ++
@@ -351,16 +357,14 @@ defmodule Tackle.CLI.TUI.ToolView do
 
       rows =
         if mode == :details,
-          do: [context_row("Replacement preview · not a verified file diff")],
+          do: [context_row("Submitted text · not a verified file diff")],
           else: []
 
-      rows =
-        rows ++
-          (shown
-           |> Enum.with_index(1)
-           |> Enum.flat_map(fn {edit, index} -> replacement(edit, index, mode) end))
-
-      rows ++ result_rows(entry, mode)
+      rows ++
+        (shown
+         |> Enum.with_index(1)
+         |> Enum.flat_map(fn {edit, index} -> replacement(edit, index, mode) end)) ++
+        result_rows(entry, mode)
     else
       generic_rows(entry, args, mode)
     end
@@ -392,7 +396,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
         true ->
           Enum.map(Enum.take(lines, 2), &{:line, &1}) ++
-            [{:hidden, "… #{length(lines) - 4} lines hidden · F4 details"}] ++
+            [{:hidden, "… #{length(lines) - 4} lines hidden"}] ++
             Enum.map(Enum.take(lines, -2), &{:line, &1})
       end
 
@@ -434,16 +438,14 @@ defmodule Tackle.CLI.TUI.ToolView do
     {added, removed, rows}
   end
 
-  defp replacement_heading(index, mode, added, removed) do
-    label = if mode == :preview, do: "Replacement preview #{index}", else: "replacement #{index}"
-    lines = if mode == :preview, do: "local lines", else: "relative lines"
+  defp replacement_heading(index, _mode, added, removed) do
+    label = "replacement #{index}"
 
     MessageView.row([
       MessageView.span(label <> " · ", Theme.style(:muted)),
       MessageView.span("+#{added}", Theme.style(:diff_add)),
       MessageView.span(" "),
-      MessageView.span("-#{removed}", Theme.style(:diff_del)),
-      MessageView.span(" · " <> lines, Theme.style(:subtle))
+      MessageView.span("-#{removed}", Theme.style(:diff_del))
     ])
   end
 
@@ -459,7 +461,7 @@ defmodule Tackle.CLI.TUI.ToolView do
     ])
   end
 
-  defp diff_row({:elision, count}), do: context_row("… #{count} lines hidden · F4 details")
+  defp diff_row({:elision, count}), do: context_row("… #{count} lines hidden")
 
   defp content_span({text, true}, tag, _style), do: MessageView.span(text, inline_style(tag))
   defp content_span({text, false}, _tag, style), do: MessageView.span(text, style)
@@ -498,7 +500,7 @@ defmodule Tackle.CLI.TUI.ToolView do
     head = div(@preview_rows - 1, 2)
     tail = @preview_rows - 1 - head
     style = Theme.style(:subtle)
-    hint = body_row(style, "… #{hidden} lines hidden · F4 details")
+    hint = body_row(style, "… #{hidden} lines hidden")
 
     hint = hd(wrap_indented([hint], width, 2))
 
@@ -529,7 +531,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   end
 
   defp truncate_header(rows, width) when length(rows) > @header_rows do
-    hint = MessageView.row("  … · F4 details", Theme.style(:subtle))
+    hint = MessageView.row("  …", Theme.style(:subtle))
     [hd(rows), hd(MessageView.wrap_rows([hint], width))]
   end
 
@@ -559,6 +561,9 @@ defmodule Tackle.CLI.TUI.ToolView do
     seconds = div(ms, 1_000)
     if seconds < 60, do: "#{seconds}s", else: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
   end
+
+  defp subagent_status(:completed, ms) when is_integer(ms) and ms >= 0, do: ""
+  defp subagent_status(status, _ms), do: status_text(status) <> " · "
 
   defp status_text(:preparing), do: "preparing"
   defp status_text(:completed), do: "completed"
