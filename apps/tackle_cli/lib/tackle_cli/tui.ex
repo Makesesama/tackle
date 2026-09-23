@@ -101,6 +101,14 @@ defmodule Tackle.CLI.TUI do
   """
   @spec start(keyword()) :: {:ok, String.t() | nil} | {:error, term()}
   def start(opts) when is_list(opts) do
+    if Keyword.has_key?(opts, :test_mode) do
+      start_with_quiet_console(opts)
+    else
+      Tackle.CLI.TUI.Logging.with_quiet_console(fn -> start_with_quiet_console(opts) end)
+    end
+  end
+
+  defp start_with_quiet_console(opts) do
     opts = Keyword.put_new(opts, :mouse_capture, true)
     caller = self()
     result_ref = make_ref()

@@ -135,3 +135,43 @@ mix compile --warnings-as-errors
 mix test
 mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}'
 ```
+
+## OAuth for Streamable HTTP
+
+`Tackle.Plugins.MCP.OAuth` is a functional OAuth helper; the host owns browser
+launch, loopback listener, and credential storage. Start a flow, open its URL,
+then pass the callback's `state` and `code` to `complete/3`:
+
+```elixir
+{:ok, flow} = Tackle.Plugins.MCP.OAuth.begin("https://mcp.example.com/mcp",
+  redirect_uri: "http://localhost:49152/callback",
+  finch_name: MyApp.MCPFinch,
+  client_id: "registered-client", # optional; DCR is used if omitted
+  scope: "tools")
+
+# Open flow.authorization_url in a browser and receive callback parameters.
+{:ok, credentials} = Tackle.Plugins.MCP.OAuth.complete(flow, callback_state,
+  code: authorization_code)
+# Persist credentials securely in host-owned storage.
+```
+
+The API performs protected-resource metadata discovery (well-known endpoint,
+then `WWW-Authenticate` challenge), authorization-server metadata discovery
+(with OpenID Connect discovery fallback), optional dynamic client registration,
+PKCE S256, resource-indicated authorization/code exchange, and token refresh.
+`complete/3` checks state with a constant-time comparison. Credentials are
+returned as a map containing `:access_token`, `:refresh_token` (if issued),
+`:client_id`, `:client_secret` (if issued), `:token_endpoint`, and `:resource`;
+store that map in a secure credential store. `refresh/2` returns an updated map.
+For hermetic tests, pass `request: fn method, url, headers, body, opts -> ... end`
+instead of `finch_name:`. OAuth operations use Finch when no injected request
+function is provided. Network metadata and endpoints require HTTPS; HTTP is
+permitted only for loopback URLs.
+
+OAuth credentials are supplied as bearer headers by the CLI. Anubis 2.0's
+307 redirect handler currently raises on redirects instead of following them;
+configure the final MCP endpoint URL directly. Transport headers are static
+by default; the CLI updates the live Anubis HTTP transport on refresh. Other
+hosts must manage token rotation themselves. Anubis debug logs include bearer
+headers, so the CLI disables those logs. Loopback callback security/lifecycle
+and secure persistence are the frontend's responsibility.

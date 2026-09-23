@@ -17,40 +17,74 @@ defmodule Tackle.Plugins.MCP.Tool do
            Schema.to_tackle(Map.get(descriptor, "inputSchema", %{})) do
       public_name = public_name(server_name, raw_name)
       output_schema = Map.get(descriptor, "outputSchema")
-      module = proxy_module(server_name, raw_name)
+      module = proxy_module(server_name, raw_name, {descriptor, connection, timeout})
 
-      quoted =
-        quote do
-          @behaviour Tackle.Lib.Tool
-
-          @impl true
-          def name, do: unquote(public_name)
-
-          @impl true
-          def description, do: unquote(description)
-
-          @impl true
-          def parameters_schema, do: unquote(Macro.escape(parameters_schema))
-
-          @impl true
-          def output_schema, do: unquote(Macro.escape(output_schema))
-
-          @impl true
-          def execute(arguments, _context) do
-            unquote(__MODULE__).execute(
-              unquote(Macro.escape(client)),
-              unquote(raw_name),
-              arguments,
-              unquote(connection),
-              unquote(timeout)
-            )
-          end
-        end
-
-      case Module.create(module, quoted, Macro.Env.location(__ENV__)) do
-        {:module, ^module, _binary, _term} -> {:ok, module}
-        other -> {:error, {:module_creation_failed, module, other}}
+      if Code.ensure_loaded?(module) and function_exported?(module, :mcp_descriptor, 0) and
+           module.mcp_descriptor() == {descriptor, client, connection, timeout} do
+        {:ok, module}
+      else
+        create_module(
+          module,
+          descriptor,
+          client,
+          connection,
+          timeout,
+          public_name,
+          parameters_schema,
+          output_schema,
+          raw_name,
+          description
+        )
       end
+    end
+  end
+
+  defp create_module(
+         module,
+         descriptor,
+         client,
+         connection,
+         timeout,
+         public_name,
+         parameters_schema,
+         output_schema,
+         raw_name,
+         description
+       ) do
+    quoted =
+      quote do
+        @behaviour Tackle.Lib.Tool
+
+        def mcp_descriptor,
+          do: unquote(Macro.escape({descriptor, client, connection, timeout}))
+
+        @impl true
+        def name, do: unquote(public_name)
+
+        @impl true
+        def description, do: unquote(description)
+
+        @impl true
+        def parameters_schema, do: unquote(Macro.escape(parameters_schema))
+
+        @impl true
+        def output_schema, do: unquote(Macro.escape(output_schema))
+
+        @impl true
+        def execute(arguments, _context) do
+          unquote(__MODULE__).execute(
+            unquote(Macro.escape(client)),
+            unquote(raw_name),
+            arguments,
+            unquote(connection),
+            unquote(timeout)
+          )
+        end
+      end
+
+    case Module.create(module, quoted, Macro.Env.location(__ENV__)) do
+      {:module, ^module, _binary, _term} -> {:ok, module}
+      other -> {:error, {:module_creation_failed, module, other}}
     end
   end
 
@@ -95,9 +129,9 @@ defmodule Tackle.Plugins.MCP.Tool do
     end)
   end
 
-  defp proxy_module(server_name, raw_name) do
+  defp proxy_module(server_name, raw_name, contract) do
     hash =
-      :crypto.hash(:sha256, server_name <> <<0>> <> raw_name)
+      :crypto.hash(:sha256, :erlang.term_to_binary({server_name, raw_name, contract}))
       |> Base.encode16(case: :upper)
 
     Module.concat(Tackle.Plugins.MCP.Generated, "Tool#{hash}")

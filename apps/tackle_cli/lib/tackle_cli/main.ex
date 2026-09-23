@@ -3,6 +3,7 @@ defmodule Tackle.CLI.Main do
 
   alias Tackle.CLI.Distribution
   alias Tackle.CLI.Parser
+  alias Tackle.CLI.MCP, as: MCPCommands
   alias Tackle.CLI.Run
 
   @spec main([String.t()]) :: non_neg_integer()
@@ -17,6 +18,12 @@ defmodule Tackle.CLI.Main do
     end
   end
 
+  defp dispatch({:mcp_list, _}), do: MCPCommands.list()
+  defp dispatch({:mcp_add, opts}), do: MCPCommands.add(opts)
+  defp dispatch({:mcp_remove, name}), do: MCPCommands.remove(name)
+  defp dispatch({:mcp_login, name}), do: MCPCommands.login(name)
+  defp dispatch({:mcp_status, name}), do: MCPCommands.status(name)
+  defp dispatch({:mcp_logout, name}), do: MCPCommands.logout(name)
   defp dispatch({:run, opts}), do: Run.run(opts)
   defp dispatch({:sessions, opts}), do: Run.sessions(opts)
   defp dispatch({:models, %{}}), do: Run.models()

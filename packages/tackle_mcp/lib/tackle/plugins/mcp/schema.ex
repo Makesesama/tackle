@@ -5,8 +5,9 @@ defmodule Tackle.Plugins.MCP.Schema do
   Tackle's native schema is intentionally smaller than JSON Schema. This module
   preserves top-level properties, required fields, descriptions, defaults, and
   enums when their types have an exact Tackle representation. Nested object
-  constraints remain the MCP server's responsibility; unsupported property
-  schemas are rejected during discovery.
+  constraints remain the MCP server's responsibility. A common object-or-string
+  union is projected as an object (the JSON string alternative is not exposed
+  to the model); other unsupported property schemas are rejected during discovery.
   """
 
   @type result :: {:ok, Tackle.Lib.Tool.Schema.t()} | {:error, term()}
@@ -91,6 +92,17 @@ defmodule Tackle.Plugins.MCP.Schema do
     if name != "" and byte_size(name) <= 128,
       do: :ok,
       else: {:error, {:invalid_property_name, name}}
+  end
+
+  defp property_type(%{"oneOf" => variants} = property) when is_list(variants) do
+    # Tackle's native schema cannot represent unions. For object-or-JSON-string
+    # inputs, advertise the structured object branch; the MCP server validates
+    # the full schema after execution. Do not reject the entire tool catalog.
+    case variants do
+      [%{"type" => "object"}, %{"type" => "string"}] -> {:ok, :map}
+      [%{"type" => "string"}, %{"type" => "object"}] -> {:ok, :map}
+      _ -> {:error, {:unsupported_property_schema, property}}
+    end
   end
 
   defp property_type(%{"type" => "string"}), do: {:ok, :string}

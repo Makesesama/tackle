@@ -25,6 +25,7 @@ defmodule Tackle.Plugins.MCP.MixProject do
   defp deps do
     [
       {:anubis_mcp, "~> 2.0"},
+      {:finch, "~> 0.19"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
       {:tackle_lib, path: "../tackle_lib"},

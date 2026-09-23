@@ -41,6 +41,10 @@ defmodule Tackle.Coding do
   @doc """
   Loads coding configuration and builds a scope with discovered subagents.
 
+  `:root_tools` adds trusted tools to the root only; named profiles may opt in
+  by explicitly listing those tools in their definition. The host owns the
+  lifecycle of any contributed tools and their connections.
+
   Agent files are validated at startup. Invalid files, unknown tools, and model
   selections unavailable through the configured adapters are explicit errors.
   Children have unlimited loop iterations by default and a five-minute timeout.
@@ -49,10 +53,16 @@ defmodule Tackle.Coding do
   """
   @spec scope_spec(keyword(), SessionSpec.t() | nil) :: {:ok, ScopeSpec.t()} | {:error, term()}
   def scope_spec(loader_opts \\ [], session \\ nil) do
-    with {:ok, config} <- Config.load(loader_opts),
+    with {:ok, config} <- Config.load(Keyword.drop(loader_opts, [:root_tools])),
+         :ok <- validate_root_tools(Keyword.get(loader_opts, :root_tools, [])),
          discovery <- discover(config, loader_opts),
          :ok <- validate_discovery(discovery),
-         root_tools = Enum.uniq(config.tools ++ [Subagent, SubagentStatus, SubagentWait]),
+         root_tools =
+           Enum.uniq(
+             config.tools ++
+               Keyword.get(loader_opts, :root_tools, []) ++
+               [Subagent, SubagentStatus, SubagentWait]
+           ),
          {:ok, profiles} <-
            build_profiles(discovery.definitions, config.tools, root_tools, loader_opts),
          {:ok, root_config} <- root_config(discovery.definitions, root_tools, loader_opts),
@@ -71,6 +81,17 @@ defmodule Tackle.Coding do
       )
     end
   end
+
+  defp validate_root_tools(tools) when is_list(tools) do
+    if Enum.all?(tools, fn tool ->
+         is_atom(tool) and Code.ensure_loaded?(tool) and
+           function_exported?(tool, :name, 0) and function_exported?(tool, :execute, 2)
+       end),
+       do: :ok,
+       else: {:error, :invalid_root_tools}
+  end
+
+  defp validate_root_tools(_), do: {:error, :invalid_root_tools}
 
   defp discover(config, loader_opts) do
     Agents.discover(
@@ -173,6 +194,7 @@ defmodule Tackle.Coding do
 
   defp load_with_overrides(opts, overrides) do
     merged = opts |> Keyword.get(:overrides, []) |> Keyword.merge(overrides)
+    opts = Keyword.take(opts, [:available_adapters, :cwd, :env])
     Config.load(Keyword.put(opts, :overrides, merged))
   end
 

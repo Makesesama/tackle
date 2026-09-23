@@ -23,6 +23,12 @@ defmodule Tackle.CLI.Parser do
           | {:auth_status, auth_options(String.t() | nil)}
           | {:auth_usage, auth_options(String.t() | nil)}
           | {:auth_logout, auth_options(String.t())}
+          | {:mcp_list, %{}}
+          | {:mcp_add, map()}
+          | {:mcp_remove, String.t()}
+          | {:mcp_login, %{name: String.t(), client_id: String.t() | nil}}
+          | {:mcp_status, String.t() | nil}
+          | {:mcp_logout, String.t()}
 
   @type auth_options(provider) :: %{
           provider: provider,
@@ -89,6 +95,39 @@ defmodule Tackle.CLI.Parser do
         color: Map.get(result.options, :color, :auto)
       }}}
   end
+
+  defp parse_result({:ok, [:mcp], _result}, parser),
+    do: {:help, format_help(parser, [:mcp])}
+
+  defp parse_result({:ok, [:mcp, :list], _result}, _parser), do: {:ok, {:mcp_list, %{}}}
+
+  defp parse_result({:ok, [:mcp, :add], result}, _parser) do
+    {:ok,
+     {:mcp_add,
+      %{
+        name: result.args.name,
+        stdio: Map.get(result.options, :stdio),
+        http: Map.get(result.options, :http),
+        args: Map.get(result.options, :arg, [])
+      }}}
+  end
+
+  defp parse_result({:ok, [:mcp, :remove], result}, _parser),
+    do: {:ok, {:mcp_remove, result.args.name}}
+
+  defp parse_result({:ok, [:mcp, :auth], _result}, parser),
+    do: {:help, format_help(parser, [:mcp, :auth])}
+
+  defp parse_result({:ok, [:mcp, :auth, :login], result}, _parser),
+    do:
+      {:ok,
+       {:mcp_login, %{name: result.args.name, client_id: Map.get(result.options, :client_id)}}}
+
+  defp parse_result({:ok, [:mcp, :auth, :status], result}, _parser),
+    do: {:ok, {:mcp_status, Map.get(result.args, :name)}}
+
+  defp parse_result({:ok, [:mcp, :auth, :logout], result}, _parser),
+    do: {:ok, {:mcp_logout, result.args.name}}
 
   defp parse_result({:ok, [:auth], _result}, parser),
     do: {:help, format_help(parser, [:auth])}
@@ -215,6 +254,50 @@ defmodule Tackle.CLI.Parser do
               help: "Color output: auto, always, or never",
               parser: &color_mode/1,
               default: :auto
+            ]
+          ]
+        ],
+        mcp: [
+          name: "mcp",
+          about: "Manage MCP servers and OAuth connections",
+          subcommands: [
+            list: [name: "list", about: "List configured MCP servers"],
+            add: [
+              name: "add",
+              about: "Add a server definition",
+              args: [name: [value_name: "NAME", required: true, parser: :string]],
+              options: [
+                stdio: [long: "--stdio", value_name: "COMMAND", parser: :string],
+                http: [long: "--http", value_name: "URL", parser: :string],
+                arg: [long: "--arg", value_name: "ARG", parser: :string, multiple: true]
+              ]
+            ],
+            remove: [
+              name: "remove",
+              about: "Remove a server definition",
+              args: [name: [value_name: "NAME", required: true, parser: :string]]
+            ],
+            auth: [
+              name: "auth",
+              about: "Manage MCP OAuth credentials",
+              subcommands: [
+                login: [
+                  name: "login",
+                  about: "Authorize an HTTP server",
+                  args: [name: [value_name: "NAME", required: true, parser: :string]],
+                  options: [client_id: [long: "--client-id", value_name: "ID", parser: :string]]
+                ],
+                status: [
+                  name: "status",
+                  about: "Show OAuth status",
+                  args: [name: [value_name: "NAME", required: false, parser: :string]]
+                ],
+                logout: [
+                  name: "logout",
+                  about: "Delete stored MCP credentials",
+                  args: [name: [value_name: "NAME", required: true, parser: :string]]
+                ]
+              ]
             ]
           ]
         ],

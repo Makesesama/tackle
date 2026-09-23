@@ -26,6 +26,17 @@ defmodule Tackle.CodingTest do
     %{opts: opts, cwd: cwd}
   end
 
+  test "root-only tools do not automatically reach subagents", %{opts: opts} do
+    opts = Keyword.put(opts, :root_tools, [Tackle.Tools.Write])
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    assert Tackle.Tools.Write in spec.root_spec.config.tools
+    refute Tackle.Tools.Write in spec.profiles["scout"].config.tools
+    refute Tackle.Tools.Write in spec.profiles["reviewer"].config.tools
+
+    assert {:error, :invalid_root_tools} =
+             Coding.scope_spec(Keyword.put(opts, :root_tools, ["Module.Name"]))
+  end
+
   test "composes a default scout without changing generic defaults", %{opts: opts, cwd: cwd} do
     assert {:ok, spec} = Coding.scope_spec(opts)
     assert spec.root_spec.allow_delegation
