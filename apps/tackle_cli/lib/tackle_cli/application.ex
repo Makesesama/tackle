@@ -9,9 +9,9 @@ defmodule Tackle.CLI.Application do
     Application.put_env(:anubis_mcp, :log, false)
 
     children = [
-      Tackle.CLI.Standalone,
       {Finch, name: Tackle.CLI.MCP.Finch},
-      Tackle.CLI.MCP.Connections
+      Tackle.CLI.MCP.Connections,
+      Tackle.CLI.Standalone
     ]
 
     Supervisor.start_link(children,

@@ -34,7 +34,10 @@ runtime. That keeps packaging separate from the future plugin-loading design.
 server. `mix tackle mcp list` and `mix tackle mcp remove NAME` manage definitions
 in `$TACKLE_HOME/mcp.json` (not credentials). STDIO servers are connected and
 their discovered tools are available to the root agent when starting a run;
-configured subagents must explicitly list an MCP tool name to use it.
+configured subagents must explicitly list an MCP tool name to use it. If a
+server fails to connect or refresh, its tools are omitted from new runs; other
+servers remain available and the CLI logs a warning. The server is retried on
+later runs (or after its credentials are fixed).
 
 `mix tackle mcp auth login NAME` discovers the HTTP server's OAuth endpoints,
 prints a browser authorization URL and waits on a loopback callback. Credentials

@@ -2,6 +2,8 @@ defmodule Tackle.CLI.MCP.Connections do
   @moduledoc false
   use GenServer
 
+  require Logger
+
   alias Tackle.CLI.MCP.Config
   alias Tackle.Plugins.MCP
   alias Tackle.Plugins.MCP.OAuth
@@ -13,7 +15,13 @@ defmodule Tackle.CLI.MCP.Connections do
   def start_link(_opts), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
   @doc "Connects configured servers once per CLI process and returns root-only tool modules."
-  def tools, do: GenServer.call(__MODULE__, :tools, 120_000)
+  def tools do
+    GenServer.call(__MODULE__, :tools, 120_000)
+  catch
+    :exit, {:timeout, _} ->
+      Logger.warning("MCP discovery timed out; MCP tools disabled for this run")
+      {:ok, []}
+  end
 
   @doc "Disconnects a server immediately after logout or removal."
   def invalidate(name), do: GenServer.call(__MODULE__, {:invalidate, name})
@@ -30,18 +38,14 @@ defmodule Tackle.CLI.MCP.Connections do
   def handle_call(:tools, _from, state) do
     case Config.list() do
       {:ok, definitions} ->
-        case reconcile(Enum.sort(definitions), state) do
-          {:ok, connections} ->
-            tools =
-              connections
-              |> Map.values()
-              |> Enum.flat_map(fn entry -> MCP.tools(entry.connection) end)
+        {connections, enabled} = reconcile(Enum.sort(definitions), state)
 
-            {:reply, {:ok, tools}, connections}
+        tools =
+          Enum.flat_map(enabled, fn name ->
+            MCP.tools(connections[name].connection)
+          end)
 
-          {:error, reason, connections} ->
-            {:reply, {:error, reason}, connections}
-        end
+        {:reply, {:ok, tools}, connections}
 
       error ->
         {:reply, error, state}
@@ -113,45 +117,57 @@ defmodule Tackle.CLI.MCP.Connections do
         end
       end)
 
-    Enum.reduce_while(definitions, {:ok, state}, fn {name, definition}, {:ok, current} ->
-      entry = Map.get(current, name)
+    Enum.reduce(definitions, {state, []}, fn {name, definition}, {current, enabled} ->
+      case reconcile_server(name, definition, Map.get(current, name)) do
+        {:ok, entry} ->
+          {Map.put(current, name, entry), [name | enabled]}
 
-      cond do
-        entry && entry.definition == definition && Process.alive?(entry.connection.supervisor) &&
-          is_integer(Map.get(entry, :retry_after)) &&
-            Map.get(entry, :retry_after) > System.system_time(:second) ->
-          {:halt, {:error, {:mcp_connection_failed, name, :mcp_token_refresh_pending}, current}}
+        {:error, reason, entry} ->
+          Logger.warning("MCP server #{name} disabled for this run: #{inspect(reason)}")
 
-        entry && entry.definition == definition && Process.alive?(entry.connection.supervisor) &&
-            not renewal_due?(entry) ->
-          {:cont, {:ok, current}}
+          current =
+            if entry, do: Map.put(current, name, entry), else: Map.delete(current, name)
 
-        entry && entry.definition == definition && Process.alive?(entry.connection.supervisor) &&
-            renewal_due?(entry) ->
-          case refresh_connection(name, entry) do
-            {:ok, updated} ->
-              {:cont, {:ok, Map.put(current, name, updated)}}
-
-            {:error, reason} ->
-              failed = Map.put(entry, :retry_after, System.system_time(:second) + @retry_interval)
-
-              {:halt,
-               {:error, {:mcp_connection_failed, name, reason}, Map.put(current, name, failed)}}
-          end
-
-        entry ->
-          case reconnect(name, %{entry | definition: definition}) do
-            {:ok, updated} -> {:cont, {:ok, Map.put(current, name, updated)}}
-            {:error, reason} -> {:halt, {:error, {:mcp_connection_failed, name, reason}, current}}
-          end
-
-        true ->
-          case connect(name, definition) do
-            {:ok, connected} -> {:cont, {:ok, Map.put(current, name, connected)}}
-            {:error, reason} -> {:halt, {:error, {:mcp_connection_failed, name, reason}, current}}
-          end
+          {current, enabled}
       end
     end)
+    |> then(fn {connections, enabled} -> {connections, Enum.reverse(enabled)} end)
+  end
+
+  defp reconcile_server(name, definition, entry) do
+    cond do
+      entry && entry.definition == definition && Process.alive?(entry.connection.supervisor) &&
+        is_integer(Map.get(entry, :retry_after)) &&
+          Map.get(entry, :retry_after) > System.system_time(:second) ->
+        {:error, :mcp_token_refresh_pending, entry}
+
+      entry && entry.definition == definition && Process.alive?(entry.connection.supervisor) &&
+          not renewal_due?(entry) ->
+        {:ok, entry}
+
+      entry && entry.definition == definition && Process.alive?(entry.connection.supervisor) &&
+          renewal_due?(entry) ->
+        case refresh_connection(name, entry) do
+          {:ok, updated} ->
+            {:ok, updated}
+
+          {:error, reason} ->
+            failed = Map.put(entry, :retry_after, System.system_time(:second) + @retry_interval)
+            {:error, reason, failed}
+        end
+
+      entry ->
+        case reconnect(name, %{entry | definition: definition}) do
+          {:ok, updated} -> {:ok, updated}
+          {:error, reason} -> {:error, reason, nil}
+        end
+
+      true ->
+        case connect(name, definition) do
+          {:ok, connected} -> {:ok, connected}
+          {:error, reason} -> {:error, reason, nil}
+        end
+    end
   end
 
   defp renewal_due?(%{retry_after: retry_after}) when is_integer(retry_after),

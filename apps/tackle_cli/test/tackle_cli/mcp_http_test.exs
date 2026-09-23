@@ -58,8 +58,7 @@ defmodule Tackle.CLI.MCPHTTPTest do
         "access_token" => "bad"
       })
 
-    assert {:error, {:mcp_connection_failed, ^name, :mcp_credentials_for_different_resource}} =
-             Connections.tools()
+    assert {:ok, []} = Connections.tools()
 
     refute_receive {:mcp_request, _, _}
   end
@@ -68,7 +67,7 @@ defmodule Tackle.CLI.MCPHTTPTest do
     assert {:ok, [_ | _]} = Connections.tools()
     :ok = Tackle.Auth.delete("mcp:#{name}")
     assert :ok = Connections.invalidate(name)
-    assert {:error, {:mcp_connection_failed, ^name, :mcp_auth_required}} = Connections.tools()
+    assert {:ok, []} = Connections.tools()
   end
 
   test "removes a connection when its definition disappears", %{name: name} do
@@ -96,9 +95,27 @@ defmodule Tackle.CLI.MCPHTTPTest do
       update_in(state, [name, :expires_at], fn _ -> System.system_time(:second) + 1 end)
     end)
 
-    assert {:error, {:mcp_connection_failed, ^name, _}} = Connections.tools()
+    assert {:ok, []} = Connections.tools()
     assert {:ok, "still-running"} = tool.execute(%{"value" => "still-running"}, %{})
     assert_receive {:mcp_request, "initial", "tools/call"}
+  end
+
+  test "a failed server does not hide healthy tools and can connect on a later run", %{
+    name: name,
+    url: url
+  } do
+    failed = "aaa#{System.unique_integer([:positive])}"
+    on_exit(fn -> Connections.invalidate(failed) end)
+    :ok = Config.put(failed, %{"transport" => "http", "url" => url})
+
+    assert {:ok, tools} = Connections.tools()
+    assert Enum.any?(tools, &(&1.name() == "mcp__#{name}__echo"))
+    refute Enum.any?(tools, &(&1.name() == "mcp__#{failed}__echo"))
+
+    :ok = Tackle.Auth.put("mcp:#{failed}", %{"resource" => url, "access_token" => "initial"})
+
+    assert {:ok, tools} = Connections.tools()
+    assert Enum.any?(tools, &(&1.name() == "mcp__#{failed}__echo"))
   end
 
   test "refreshes the bearer token for tools held by an existing session", %{name: name, url: url} do
