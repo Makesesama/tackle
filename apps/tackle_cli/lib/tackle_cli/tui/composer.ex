@@ -36,8 +36,78 @@ defmodule Tackle.CLI.TUI.Composer do
   @spec paste(State.t(), String.t()) :: State.t()
   def paste(%State{} = state, content) do
     content = content |> String.replace("\r\n", "\n") |> String.replace("\r", "")
+    content = image_path_prompt(content) || content
     :ok = Input.insert_str(state.input, content)
     state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()
+  end
+
+  # Some terminals paste images as file paths rather than clipboard bytes.
+  # Only reinterpret a single existing, supported image path; arbitrary text
+  # and multi-line pastes must keep their usual editing behavior.
+  defp image_path_prompt(content) do
+    path = String.trim(content)
+
+    if path != "" and not String.contains?(path, ["\n", "\r"]) and File.regular?(path) do
+      case File.stat(path) do
+        {:ok, %{size: size}} when size <= 5 * 1024 * 1024 ->
+          case File.read(path) do
+            {:ok, bytes} ->
+              case Tackle.CLI.ImageClipboard.image_extension(bytes) do
+                {:ok, _extension} ->
+                  " Please use the read tool to inspect this image: #{Path.expand(path)} "
+
+                _ ->
+                  nil
+              end
+
+            _ ->
+              nil
+          end
+
+        _ ->
+          nil
+      end
+    end
+  end
+
+  @doc "Pastes an image from the OS clipboard, or text when no image is available."
+  @spec paste_clipboard(State.t()) :: {:noreply, State.t()}
+  def paste_clipboard(%State{} = state) do
+    case state.clipboard_image_reader.() do
+      {:ok, bytes} ->
+        case Tackle.CLI.ImageClipboard.save(bytes) do
+          {:ok, path} ->
+            {:noreply,
+             paste(
+               %{state | image_paths: [path | state.image_paths]},
+               " Please use the read tool to inspect this image: #{path} "
+             )}
+
+          {:error, reason} ->
+            image_error(state, reason)
+        end
+
+      {:error, :no_image_in_clipboard} ->
+        paste_clipboard_text(state)
+
+      {:error, reason} ->
+        image_error(state, reason)
+
+      other ->
+        image_error(state, {:invalid_clipboard_result, other})
+    end
+  end
+
+  defp paste_clipboard_text(state) do
+    case state.clipboard_text_reader.() do
+      {:ok, text} when is_binary(text) -> {:noreply, paste(state, text)}
+      {:error, reason} -> image_error(state, reason)
+      other -> image_error(state, {:invalid_clipboard_result, other})
+    end
+  end
+
+  defp image_error(state, reason) do
+    {:noreply, %{state | notice: "Image paste failed: #{inspect(reason)} · draft kept"}}
   end
 
   @doc "Inserts a literal newline without submitting."

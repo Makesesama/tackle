@@ -41,6 +41,7 @@ defmodule Tackle.CLI.Keybinds do
           | :composer
           | :confirm
           | :copy_arguments
+          | :paste_clipboard
           | :copy_source
           | :copy_transcript
           | :escape
@@ -105,7 +106,7 @@ defmodule Tackle.CLI.Keybinds do
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
-      when is_ctrl(modifiers) and code in ["c", "t", "j", "k"],
+      when is_ctrl(modifiers) and code in ["c", "t", "j", "k", "v"],
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
@@ -143,6 +144,9 @@ defmodule Tackle.CLI.Keybinds do
 
   defp composer(%Key{code: "esc"}), do: :escape
   defp composer(%Key{code: "n", modifiers: modifiers}) when is_alt(modifiers), do: :new_session
+
+  defp composer(%Key{code: "v", modifiers: modifiers}) when is_ctrl(modifiers),
+    do: :paste_clipboard
 
   defp composer(%Key{code: "k", modifiers: modifiers}) when is_ctrl(modifiers), do: :compact
 

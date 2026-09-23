@@ -307,8 +307,16 @@ control characters as visible replacements without changing the submitted
 source.
 
 Bracketed paste lands as one edit and never submits. CRLF is normalized to `\n`;
-lone CR is dropped before the edit. Ctrl+U undoes and Ctrl+R redoes a full
-multiline paste. Undo and redo each retain at most 100 snapshots / 8 MiB; a
+lone CR is dropped before the edit. In the composer, Ctrl+V pastes clipboard
+text or, if available, an image (PNG, JPEG, GIF, WebP, up to 5 MiB). A terminal
+that pastes an image as a file path is also supported. Clipboard images need
+`wl-paste` (Wayland), `xclip` (X11), or `pngpaste` (macOS); text fallback on macOS
+uses `pbpaste`. The CLI saves clipboard images in a private temporary directory
+until it exits and inserts a path with a request to use the `read` tool. Images
+are **not** directly attached to user messages; the agent must read the file,
+and those saved paths will not work after the CLI exits. Ctrl+U undoes and
+Ctrl+R redoes a full multiline paste. Undo and redo each retain at most 100
+snapshots / 8 MiB; a
 programmatic draft replacement resets both histories. Unknown modified chords
 (for example Alt+G) are ignored by the
 native widget. Key releases are ignored; key repeats apply to text and

@@ -17,6 +17,8 @@ defmodule Tackle.CLI.TUI.Help do
     "Ctrl+C        quit",
     "Alt+N         new session",
     "Ctrl+K        compact context",
+    "Ctrl+V        paste text or clipboard image",
+    "              (agent reads saved path; not attached)",
     "Ctrl+T        toggle thinking",
     "F1/F2/F3      model / reasoning / settings",
     "F4/F5/F6/F7   browse / tree / usage / tasks",

@@ -158,6 +158,8 @@ defmodule Tackle.CLI.TUITest do
     agent_ref = AgentRef.new!(ID.generate(), ID.generate())
     _session = start_supervised!({SessionStub, {test_pid, agent_ref}})
 
+    clipboard_agent = start_supervised!({Agent, fn -> {:error, :no_image_in_clipboard} end})
+
     tui =
       start_supervised!(
         {TUI,
@@ -167,6 +169,8 @@ defmodule Tackle.CLI.TUITest do
            send(test_pid, {:copied, content})
            :ok
          end,
+         clipboard_image_reader: fn -> Agent.get(clipboard_agent, & &1) end,
+         clipboard_text_reader: fn -> {:ok, "clipboard text"} end,
          usage_timeline_loader: fn mode, session_id ->
            send(test_pid, {:usage_timeline_requested, mode, session_id})
            scope = if mode == :current, do: {:session, session_id}, else: :all
@@ -177,7 +181,7 @@ defmodule Tackle.CLI.TUITest do
       )
 
     assert_receive {:subscribed, ^tui}
-    %{agent_ref: agent_ref, tui: tui}
+    %{agent_ref: agent_ref, tui: tui, clipboard_agent: clipboard_agent}
   end
 
   # -- layout --------------------------------------------------------------
@@ -462,6 +466,48 @@ defmodule Tackle.CLI.TUITest do
     assert state.active_turn == nil
     assert regions(state).composer.height == 4
     refute_receive {:submitted, _}, 50
+  end
+
+  test "pasting an existing image file path uses the same composer", %{tui: tui} do
+    image = <<137, 80, 78, 71, 13, 10, 26, 10, 0>>
+    path = Path.join(System.tmp_dir!(), "tackle-paste-#{System.unique_integer([:positive])}.png")
+    File.write!(path, image)
+    on_exit(fn -> File.rm(path) end)
+
+    inject_paste(tui, path)
+    assert draft(tui) =~ "Please use the read tool to inspect this image: #{path}"
+  end
+
+  test "Ctrl+V pastes text when clipboard has no image", %{tui: tui} do
+    inject_key(tui, "v", ["ctrl"])
+    assert draft(tui) == "clipboard text"
+  end
+
+  test "Ctrl+V inserts image path prompt, leaving the image readable", %{
+    tui: tui,
+    clipboard_agent: clipboard_agent
+  } do
+    image = <<137, 80, 78, 71, 13, 10, 26, 10, 0>>
+    Agent.update(clipboard_agent, fn _ -> {:ok, image} end)
+
+    inject_paste(tui, "describe")
+    inject_key(tui, "v", ["ctrl"])
+    prompt = draft(tui)
+    assert prompt =~ "describe Please use the read tool to inspect this image: "
+    path = prompt |> String.split("inspect this image: ") |> List.last() |> String.trim()
+    assert File.read!(path) == image
+    assert File.stat!(path).mode == 0o100600
+  end
+
+  test "failed image paste keeps the draft and reports an error", %{
+    tui: tui,
+    clipboard_agent: clipboard_agent
+  } do
+    inject_paste(tui, "keep this")
+    Agent.update(clipboard_agent, fn _ -> {:ok, "not an image"} end)
+    inject_key(tui, "v", ["ctrl"])
+    assert draft(tui) == "keep this"
+    assert state(tui).notice =~ "Image paste failed"
   end
 
   test "Ctrl+U undoes and Ctrl+R redoes a full multiline paste", %{tui: tui} do
