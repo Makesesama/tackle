@@ -181,9 +181,20 @@ defmodule Tackle.Lib.Loop do
       {:ok, state} ->
         before_prompt(state, callbacks)
 
+      {:error, reason, committed_state} ->
+        final_state = State.set_error(committed_state, "Compaction failed: #{inspect(reason)}")
+        {:error, do_after_turn_cleanup(final_state, callbacks)}
+
       {:error, reason} ->
         final_state = State.set_error(state, "Compaction failed: #{inspect(reason)}")
         {:error, do_after_turn_cleanup(final_state, callbacks)}
+
+      {:cancelled, reason, committed_state} ->
+        do_after_turn(
+          committed_state,
+          cancel_run(%{committed_state | error: reason}, callbacks),
+          callbacks
+        )
 
       {:cancelled, reason} ->
         do_after_turn(state, cancel_run(%{state | error: reason}, callbacks), callbacks)
@@ -340,12 +351,33 @@ defmodule Tackle.Lib.Loop do
         state = %{state | overflow_retries: state.overflow_retries + 1}
         call_provider(state, callbacks)
 
+      {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
+        final_state = State.set_error(clear_pending_assistant_id(committed_state), inspect(error))
+        {:error, do_after_turn_cleanup(final_state, callbacks)}
+
       {:error, {:durable_commit_failed, _reason} = error} ->
         final_state = State.set_error(clear_pending_assistant_id(state), inspect(error))
         {:error, do_after_turn_cleanup(final_state, callbacks)}
 
+      {:cancelled, _reason, committed_state} ->
+        do_after_turn(
+          clear_pending_assistant_id(committed_state),
+          cancel_run(committed_state, callbacks),
+          callbacks
+        )
+
       {:cancelled, _reason} ->
         do_after_turn(clear_pending_assistant_id(state), cancel_run(state, callbacks), callbacks)
+
+      {:error, _compaction_reason, committed_state} ->
+        final_state =
+          State.set_error(
+            clear_pending_assistant_id(committed_state),
+            "Failed to get response: #{inspect(reason)}"
+          )
+
+        emit(callbacks, Event.new(:error, %{error: final_state.error, reason: reason}))
+        {:error, do_after_turn_cleanup(final_state, callbacks)}
 
       {:error, _compaction_reason} ->
         final_state =
@@ -384,11 +416,21 @@ defmodule Tackle.Lib.Loop do
         {:ok, state, _record} ->
           {:ok, state}
 
+        {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
+          {:error, error, committed_state}
+
         {:error, {:durable_commit_failed, _reason} = error} ->
           {:error, error}
 
+        {:cancelled, reason, committed_state} ->
+          {:cancelled, reason, committed_state}
+
         {:cancelled, reason} ->
           {:cancelled, reason}
+
+        {:error, _reason, committed_state} ->
+          # A prior pass committed successfully; continue with that checkpoint.
+          {:ok, committed_state}
 
         {:error, _reason} ->
           # A summary/validation failure leaves the model surface unchanged; the
@@ -473,8 +515,23 @@ defmodule Tackle.Lib.Loop do
   defp stamp_pending_id(event, _pending_id), do: event
 
   defp handle_llm_response(state, response, callbacks, result) do
+    case get_tool_calls(response) do
+      {:ok, tool_calls} ->
+        handle_valid_llm_response(state, response, callbacks, result, tool_calls)
+
+      {:error, reason} ->
+        final_state =
+          state
+          |> clear_pending_assistant_id()
+          |> State.set_error("Invalid provider tool calls: #{inspect(reason)}")
+
+        emit(callbacks, Event.new(:error, %{error: final_state.error, reason: reason}))
+        {:error, do_after_turn_cleanup(final_state, callbacks)}
+    end
+  end
+
+  defp handle_valid_llm_response(state, response, callbacks, result, tool_calls) do
     thinking = get_string_field(response, "thinking")
-    tool_calls = get_tool_calls(response)
     content = get_string_field(response, "content")
 
     message_opts = [
@@ -676,10 +733,22 @@ defmodule Tackle.Lib.Loop do
         _ -> []
       end
 
-    raw_calls
-    |> Enum.map(&normalize_tool_call/1)
-    |> Enum.filter(fn %Call{name: name} -> name != nil end)
+    if Enum.all?(raw_calls, &valid_tool_call?/1) do
+      {:ok,
+       raw_calls
+       |> Enum.map(&normalize_tool_call/1)
+       |> Enum.filter(fn %Call{name: name} -> name != nil end)}
+    else
+      {:error, :malformed_tool_call}
+    end
   end
+
+  defp valid_tool_call?(%{} = call) do
+    function = fetch_call(call, "function", :function, %{})
+    is_map(function)
+  end
+
+  defp valid_tool_call?(_call), do: false
 
   defp normalize_tool_call(call) do
     function = fetch_call(call, "function", :function, %{})

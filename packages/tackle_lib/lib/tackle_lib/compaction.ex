@@ -20,7 +20,10 @@ defmodule Tackle.Lib.Compaction do
     3. commit one durable record through the configured committer;
     4. only after a successful commit install the replacement in memory.
 
-  A summary, validation, or commit failure leaves the model context unchanged.
+  A summary, validation, or commit failure leaves the model context unchanged
+  for that pass. If a later tightening pass fails after an earlier pass was
+  committed, the error includes the latest committed state as a third tuple
+  element so the caller can preserve the durable checkpoint.
   A commit failure is reported as `{:error, {:durable_commit_failed, reason}}`
   so the caller can fail closed rather than continue with an unpersisted
   checkpoint.
@@ -107,9 +110,13 @@ defmodule Tackle.Lib.Compaction do
   Runs one compaction transaction, possibly running a second tightening pass.
 
   Returns `{:ok, state, record}`, `{:error, reason}`, or `{:cancelled, reason}`.
+  When a later pass fails after a successful commit, returns
+  `{:error | :cancelled, reason, committed_state}` instead.
   """
   @spec compact(State.t(), trigger(), keyword()) ::
-          {:ok, State.t(), Record.t()} | {:error, term()} | {:cancelled, term()}
+          {:ok, State.t(), Record.t()}
+          | {:error | :cancelled, term()}
+          | {:error | :cancelled, term(), State.t()}
   def compact(%State{} = state, trigger, opts \\ [])
       when trigger in [:pressure, :overflow, :manual] do
     config = config(state)
@@ -165,6 +172,9 @@ defmodule Tackle.Lib.Compaction do
 
           {:error, :nothing_to_shadow} ->
             finish(state, last_record)
+
+          {status, reason} when status in [:error, :cancelled] and not is_nil(last_record) ->
+            {status, reason, state}
 
           other ->
             other
@@ -226,6 +236,7 @@ defmodule Tackle.Lib.Compaction do
 
     with :ok <- check_cancel(opts),
          {:ok, summary} <- summarize(state, config, resolved, ctx, plan, trigger, opts),
+         :ok <- check_cancel(opts),
          :ok <- validate_summary(summary, plan, resolved),
          summary_message = checkpoint_message(compaction_id, summary.content),
          new_model_messages = [summary_message | reset_retained_metadata(plan.retained)],
@@ -240,6 +251,7 @@ defmodule Tackle.Lib.Compaction do
              new_model_messages,
              pass
            ),
+         :ok <- check_cancel(opts),
          :ok <- commit(state, config, record) do
       state = install(state, record, new_model_messages)
 
@@ -305,18 +317,33 @@ defmodule Tackle.Lib.Compaction do
 
     llm_opts = Keyword.merge(state.llm_opts, Keyword.get(opts, :llm_opts, []))
 
-    case config.summarizer.summarize(request, llm_opts: llm_opts) do
+    summarizer_opts = [
+      llm_opts: llm_opts,
+      cancellation_signal: Keyword.get(opts, :cancellation_signal)
+    ]
+
+    case config.summarizer.summarize(request, summarizer_opts) do
       {:ok, summary} ->
         {:ok, summary}
 
       {:error, reason} ->
-        {:error, reason}
+        case check_cancel(opts) do
+          :ok -> {:error, reason}
+          cancelled -> cancelled
+        end
 
       other ->
-        {:error, {:invalid_summary_result, other}}
+        case check_cancel(opts) do
+          :ok -> {:error, {:invalid_summary_result, other}}
+          cancelled -> cancelled
+        end
     end
   rescue
-    error -> {:error, {:summarizer_failed, Exception.message(error)}}
+    error ->
+      case check_cancel(opts) do
+        :ok -> {:error, {:summarizer_failed, Exception.message(error)}}
+        cancelled -> cancelled
+      end
   end
 
   defp merged_instructions(nil, nil), do: nil

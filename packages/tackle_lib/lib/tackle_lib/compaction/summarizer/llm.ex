@@ -48,6 +48,7 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
       ]
       |> maybe_put_max_tokens(request.summary_max_tokens)
       |> Kernel.++(Keyword.get(opts, :llm_opts, []))
+      |> Keyword.put(:cancellation_signal, Keyword.get(opts, :cancellation_signal))
 
     with {:ok, response} <- LLM.generate_with(selection, nil, generate_opts) do
       build_summary(response)

@@ -125,6 +125,157 @@ defmodule Tackle.Phoenix.RunnerTest do
     defp notify(%{test_pid: test_pid}, message), do: send(test_pid, {:store, message})
   end
 
+  defmodule MinimalStore do
+    @moduledoc false
+    @behaviour Tackle.Phoenix.Store
+
+    @impl true
+    def before_turn(_host, _opts), do: :ok
+    @impl true
+    def enrich_state(_host, state, _opts), do: state
+    @impl true
+    def persist_user_message(host, _state, _message), do: host
+    @impl true
+    def settle_turn(host, _result, _usage, _opts), do: host
+    @impl true
+    def current_session_id(host), do: host.session_id
+    @impl true
+    def handle_turn_failed(host, _reason, _opts), do: {host, nil}
+  end
+
+  defmodule RichMessageView do
+    @behaviour Tackle.Phoenix.MessageView
+
+    @impl true
+    def group_messages(messages), do: Enum.map(messages, &{:visible, &1})
+    @impl true
+    def new_streaming_message, do: %{content: "", html: ""}
+    @impl true
+    def append_streaming_delta(entry, delta) do
+      content = entry.content <> delta
+      %{entry | content: content, html: "<p>#{content}</p>"}
+    end
+  end
+
+  test "restoring a snapshot uses the host message view for subsequent deltas" do
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        tackle_message_view: RichMessageView,
+        streaming_messages: %{},
+        tackle_stream_rows?: false
+      }
+    }
+
+    socket = EventReducer.restore_streaming_messages(socket, %{"answer" => %{content: "Hel"}})
+    assert socket.assigns.streaming_messages["answer"] == %{content: "Hel", html: "<p>Hel</p>"}
+
+    socket =
+      EventReducer.handle_tackle_event(
+        socket,
+        Event.new(:message_delta, %{delta: "lo"}, id: "answer")
+      )
+
+    assert socket.assigns.streaming_messages["answer"] == %{
+             content: "Hello",
+             html: "<p>Hello</p>"
+           }
+  end
+
+  test "a minimal Store without optional after_turn completes a turn" do
+    config = %{correlation_runner_config(CorrelationAgent) | store: MinimalStore}
+    agent_state = %State{context: %{persistence: %{}}}
+    :ok = Runner.subscribe(config, "minimal-user", "minimal-session")
+
+    assert {:ok, _runner} =
+             Runner.run_turn(config, "minimal-user", agent_state, "hi",
+               session_id: "minimal-session",
+               agent_state: agent_state,
+               host_state: %{session_id: "minimal-session"}
+             )
+
+    assert_receive {:agent_turn_done, {:ok, %State{messages: [_user, _assistant]}}}
+  end
+
+  test "two subscribers with the same session id never receive each other's turns" do
+    config = %{correlation_runner_config(CorrelationAgent) | store: MinimalStore}
+    agent_state = %State{context: %{persistence: %{}}}
+    :ok = Runner.subscribe(config, "subscriber-a", "shared-session")
+
+    assert {:ok, _runner} =
+             Runner.run_turn(config, "subscriber-b", agent_state, "private",
+               session_id: "shared-session",
+               agent_state: agent_state,
+               host_state: %{session_id: "shared-session"}
+             )
+
+    refute_receive {:agent_event, _event}, 100
+    refute_receive {:agent_turn_done, _result}, 100
+  end
+
+  test "rejects a stale transcript instead of dropping settled messages" do
+    config = %{correlation_runner_config(CorrelationAgent) | store: MinimalStore}
+    agent_state = %State{context: %{persistence: %{}}}
+    :ok = Runner.subscribe(config, "stale-user", "stale-session")
+
+    opts = [
+      session_id: "stale-session",
+      agent_state: agent_state,
+      host_state: %{session_id: "stale-session"}
+    ]
+
+    assert {:ok, runner} = Runner.run_turn(config, "stale-user", agent_state, "first", opts)
+    assert_receive {:agent_turn_done, {:ok, %State{messages: [_user, _assistant]}}}
+
+    assert {:error, :stale_agent_state} =
+             Runner.run_turn(config, "stale-user", agent_state, "second", opts)
+
+    assert %State{messages: [_user, _assistant]} = Runner.get_state(config, "stale-user", opts)
+
+    assert {:error, :stale_agent_state} =
+             Runner.continue_turn(config, "stale-user", agent_state, opts)
+
+    assert is_pid(runner)
+  end
+
+  test "rejects state updates while a turn is active" do
+    config = shutdown_runner_config()
+    agent_state = %State{context: %{test_pid: self(), persistence: %{}}}
+    opts = [session_id: "shutdown-session", agent_state: agent_state]
+
+    assert {:ok, runner} = Runner.run_turn(config, "update-user", agent_state, "start", opts)
+    assert_receive {:runner_shutdown_agent_started, _pid, _signal}
+
+    assert {:error, :turn_in_progress} =
+             Runner.update_state(config, "update-user", %State{}, opts)
+
+    assert %{agent_state: %State{messages: [_user]}} = Runner.snapshot(runner)
+    :ok = Runner.cancel_turn(runner)
+  end
+
+  test "concurrent get_or_start callers resolve the same runner" do
+    config = %{correlation_runner_config(CorrelationAgent) | store: MinimalStore}
+    state = %State{}
+    opts = [session_id: "race", agent_state: state, host_state: %{session_id: "race"}]
+
+    results =
+      1..20
+      |> Task.async_stream(fn _ -> Runner.get_or_start(config, "racer", opts) end,
+        max_concurrency: 20,
+        ordered: false
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert [{:ok, pid}] = Enum.uniq(results)
+    assert Process.alive?(pid)
+  end
+
+  test "inactivity timeout does not stop an active turn" do
+    state = runner_state() |> Map.put(:turn_task, %{ref: make_ref()})
+    assert {:noreply, ^state, _timeout} = Runner.handle_info(:timeout, state)
+    assert {:stop, :normal, _state} = Runner.handle_info(:timeout, %{state | turn_task: nil})
+  end
+
   test "snapshot retains only visible in-flight content and retries discard the partial answer" do
     messages = %{}
     start = Event.message_start(id: "answer")

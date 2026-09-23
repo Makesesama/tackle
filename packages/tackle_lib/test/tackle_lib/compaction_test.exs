@@ -159,7 +159,8 @@ defmodule Tackle.Lib.CompactionTest do
                    credential_store: credential_store,
                    receive_timeout: 2_000,
                    request_tag: "summary"
-                 ]
+                 ],
+                 cancellation_signal: nil
                ]
     end
 
@@ -259,6 +260,37 @@ defmodule Tackle.Lib.CompactionTest do
       refute Process.get(:last_record)
     end
 
+    test "cancellation during summarization does not commit a checkpoint" do
+      state = state([user(700), assistant(700)])
+      signal = Cancellation.new_signal()
+
+      Process.put(:summarize_result, fn _request ->
+        :ok = Cancellation.cancel(signal, :user_cancelled)
+        {:ok, TestSummarizer.default_summary()}
+      end)
+
+      assert {:cancelled, :user_cancelled} =
+               Compaction.compact(state, :pressure, cancellation_signal: signal)
+
+      assert Process.get(:last_summarizer_opts)[:cancellation_signal] == signal
+      refute Process.get(:last_record)
+    end
+
+    test "a cancelled summarizer error is reported as cancellation" do
+      state = state([user(700), assistant(700)])
+      signal = Cancellation.new_signal()
+
+      Process.put(:summarize_result, fn _request ->
+        :ok = Cancellation.cancel(signal, :user_cancelled)
+        {:error, :provider_stopped}
+      end)
+
+      assert {:cancelled, :user_cancelled} =
+               Compaction.compact(state, :pressure, cancellation_signal: signal)
+
+      refute Process.get(:last_record)
+    end
+
     test "merges a prior checkpoint instead of growing a chain" do
       state = state([user(700), assistant(700)])
 
@@ -282,6 +314,30 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:ok, compacted, _record} = Compaction.compact(state, :pressure, [])
       assert Process.get(:commit_count) == 2
       assert Enum.count(compacted.model_messages, &Compaction.checkpoint?/1) == 1
+    end
+
+    test "a failed second pass returns the checkpoint already durably committed" do
+      state =
+        state([user(3_000), assistant(3_000)],
+          config_opts: [max_passes: 2],
+          policy: [summary_max_tokens: 100, max_summary_tokens: 100]
+        )
+
+      Process.put(:summarize_result, fn _request ->
+        if Process.get(:commit_count, 0) == 0 do
+          {:ok, TestSummarizer.default_summary()}
+        else
+          {:error, :second_pass_failed}
+        end
+      end)
+
+      assert {:error, :second_pass_failed, committed} =
+               Compaction.compact(state, :pressure, [])
+
+      assert Process.get(:commit_count) == 1
+      assert [checkpoint | _] = committed.model_messages
+      assert checkpoint.id == Process.get(:last_record).compaction_id
+      assert committed.messages == state.messages
     end
 
     test "emits lifecycle events without raw summary content" do

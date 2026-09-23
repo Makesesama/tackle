@@ -362,10 +362,14 @@ otherwise needs enough state for the Store and agent to work.
 
 Only one turn can run per Runner. Concurrent `run_turn`/`continue_turn` calls
 return `{:error, :turn_in_progress}` without disturbing the accepted turn.
+A caller with an outdated transcript/model projection receives
+`{:error, :stale_agent_state}`; reload via `snapshot/1` before retrying. This
+prevents an older LiveView or job from replacing already-settled messages.
+Hosts still control updates to *idle* state with `update_state/4`.
 
-`replace_state/3` also returns `{:error, :turn_in_progress}` while a task is
-active. Prefer `snapshot/1` over separate state/status calls so a LiveView does
-not race a running turn.
+`replace_state/3` and `update_state/4` also return `{:error, :turn_in_progress}`
+while a task is active. Prefer `snapshot/1` over separate state/status calls so a
+LiveView does not race a running turn.
 
 ### Correlated/pre-persisted inputs
 
@@ -400,8 +404,13 @@ Topic names are:
 
 ```text
 agent:session:current:<user_id>   # no persisted session yet
-agent:session:<session_id>        # durable session
+agent:session:<byte length of user_id>:<user_id>:<session_id>  # durable session
 ```
+
+Persisted-session topics include the user key, so identical session IDs in
+separate user/tenant scopes cannot share broadcasts. If upgrading from older
+versions that used `agent:session:<session_id>`, reconnect subscribers using
+`Runner.subscribe/3` rather than retaining hard-coded topic strings.
 
 When the first user message creates a persisted session during the turn,
 `broadcast_turn/4` sends to both the current-user topic and new session topic.

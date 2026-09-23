@@ -223,6 +223,13 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     do: {:noreply, state, render?: false}
 
   defp route(
+         {:tackle_session_compacted, session_id, %Snapshot{} = snapshot, nil},
+         %State{session_id: session_id} = state
+       ) do
+    {:noreply, %{state | agent_state: snapshot.agent_state} |> Viewport.refresh()}
+  end
+
+  defp route(
          {:tackle_session_compacted, session_id, %Snapshot{} = snapshot, record},
          %State{session_id: session_id} = state
        ) do

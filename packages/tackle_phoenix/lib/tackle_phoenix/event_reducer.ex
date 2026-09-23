@@ -98,7 +98,11 @@ defmodule Tackle.Phoenix.EventReducer do
 
   @doc "Restores in-flight content from a Runner snapshot after loading the transcript."
   def restore_streaming_messages(socket, messages) when is_map(messages) do
-    Enum.reduce(messages, socket, fn {id, entry}, socket ->
+    view = socket.assigns.tackle_message_view
+
+    Enum.reduce(messages, socket, fn {id, %{content: content}}, socket ->
+      entry = view.append_streaming_delta(view.new_streaming_message(), content)
+
       socket
       |> Component.assign(
         :streaming_messages,

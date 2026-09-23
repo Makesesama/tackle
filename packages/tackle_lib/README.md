@@ -862,7 +862,12 @@ Entry points share one transaction:
 
 A `Tackle.Lib.Compaction.Summarizer` only turns a request into text plus usage.
 It receives the state's host-supplied `llm_opts` (including credential-store
-handles); explicit compaction `:llm_opts` are merged on top. The core owns
+handles) and the optional `:cancellation_signal`; explicit compaction `:llm_opts`
+are merged on top. Summarizers should forward the signal to blocking provider
+calls and check it cooperatively. If a later tightening pass fails after an
+earlier pass has already committed, `compact/2` returns
+`{:error | :cancelled, reason, committed_state}`; retain that state so the
+in-memory projection matches the durable checkpoint. The core owns
 balanced cut selection, strict validation (non-empty, complete, no tool calls,
 strictly smaller than the shadowed region), the durability commit, and the
 in-memory replacement. A `Tackle.Lib.Compaction.Committer` makes the record
@@ -1158,7 +1163,7 @@ mixin. Use `Tackle.Phoenix.EventReducer` directly as shown in the Phoenix README
 
 Start with these files:
 
-- `lib/tackle.ex` — public facade
+- `lib/tackle_lib.ex` — public facade
 - `lib/tackle_lib/loop.ex` — authoritative lifecycle
 - `lib/tackle_lib/state.ex` and `lib/tackle_lib/message.ex` — in-memory model
 - `lib/tackle_lib/usage.ex`, `model_info.ex`, and `context_usage.ex` — session statistics

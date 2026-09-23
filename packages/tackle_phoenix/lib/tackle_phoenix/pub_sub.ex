@@ -29,7 +29,9 @@ defmodule Tackle.Phoenix.PubSub do
   """
   @spec topic(binary(), binary() | nil) :: String.t()
   def topic(user_id, nil) when is_binary(user_id), do: "agent:session:current:#{user_id}"
-  def topic(_user_id, session_id) when is_binary(session_id), do: "agent:session:#{session_id}"
+
+  def topic(user_id, session_id) when is_binary(user_id) and is_binary(session_id),
+    do: "agent:session:#{byte_size(user_id)}:#{user_id}:#{session_id}"
 
   @doc """
   Subscribes the calling process to a (user, session) topic.
