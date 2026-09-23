@@ -64,6 +64,9 @@ defmodule Tackle.CLI.TUI.State do
           history: History.t(),
           models: [String.t()],
           clipboard_writer: (String.t() -> :ok | {:error, term()}),
+          clipboard_text_reader: (-> {:ok, binary()} | {:error, term()}),
+          clipboard_image_reader: (-> {:ok, binary()} | {:error, term()}),
+          image_paths: [String.t()],
           usage_timeline_loader: (:current | :all, String.t() | nil ->
                                     {:ok, term()} | {:error, term()}),
           usage_timeline_cache: map(),
@@ -111,6 +114,9 @@ defmodule Tackle.CLI.TUI.State do
             history: %History{},
             models: [],
             clipboard_writer: &Clipboard.copy_local/1,
+            clipboard_text_reader: &Tackle.CLI.ImageClipboard.read_text/0,
+            clipboard_image_reader: &Tackle.CLI.ImageClipboard.read/0,
+            image_paths: [],
             usage_timeline_loader: &__MODULE__.default_usage_timeline_loader/2,
             usage_timeline_cache: %{},
             overlay: nil,
@@ -165,6 +171,10 @@ defmodule Tackle.CLI.TUI.State do
         history: History.new(),
         models: available_models(opts, snapshot.agent_state),
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
+        clipboard_text_reader:
+          Keyword.get(opts, :clipboard_text_reader, &Tackle.CLI.ImageClipboard.read_text/0),
+        clipboard_image_reader:
+          Keyword.get(opts, :clipboard_image_reader, &Tackle.CLI.ImageClipboard.read/0),
         usage_timeline_loader:
           Keyword.get(opts, :usage_timeline_loader, &__MODULE__.default_usage_timeline_loader/2),
         stream: %Stream{coalesce?: is_nil(Keyword.get(opts, :test_mode))},

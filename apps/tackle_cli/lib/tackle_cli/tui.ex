@@ -192,6 +192,12 @@ defmodule Tackle.CLI.TUI do
     # initial scope until a new session replaces it. Stopping it here keeps a
     # swapped-in scope from outliving the shell.
     Session.retire(state)
+
+    Enum.each(state.image_paths, fn path ->
+      File.rm(path)
+      File.rmdir(Path.dirname(path))
+    end)
+
     notify_owner(state)
     :ok
   end
@@ -286,6 +292,7 @@ defmodule Tackle.CLI.TUI do
     do: Viewport.scroll_reply(state, Viewport.scroll(state, Viewport.page_size(state)))
 
   defp dispatch_base(:newline, _key, state), do: Composer.insert_newline(state)
+  defp dispatch_base(:paste_clipboard, _key, state), do: Composer.paste_clipboard(state)
   defp dispatch_base(:submit, _key, state), do: Composer.submit(state)
   defp dispatch_base(:history_previous, _key, state), do: Composer.history_previous(state)
   defp dispatch_base(:history_next, _key, state), do: Composer.history_next(state)
