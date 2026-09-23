@@ -3,31 +3,117 @@
 when:
   - event: [push, pull_request, tag, manual]
 steps:
-  - name: library
+  - name: tackle_lib
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh library
-  - name: runtime
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd packages/tackle_lib
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
+        '
+  - name: tackle_runtime
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh runtime
-  - name: provider-plugins
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd packages/tackle_runtime
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
+        '
+  - name: tackle_codex
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh provider-plugins
-  - name: integration-plugins
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd packages/tackle_codex
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
+        '
+  - name: tackle_deepseek
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh integration-plugins
-  - name: harness
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd packages/tackle_deepseek
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
+        '
+  - name: tackle_anubis
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh harness
-  - name: cli
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd packages/tackle_anubis
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
+        '
+  - name: tackle_mcp
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh cli
-  - name: web
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd packages/tackle_mcp
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
+        '
+  - name: tackle_phoenix
     image: bash
     commands:
-      - nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash ./nix/ci-check.sh web
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd packages/tackle_phoenix
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
+        '
+  - name: tackle
+    image: bash
+    commands:
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd packages/tackle
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted
+        '
+  - name: tackle_cli
+    image: bash
+    commands:
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd apps/tackle_cli
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted
+          cargo test --locked --manifest-path native/tackle/Cargo.toml
+          cargo fmt --manifest-path native/tackle/Cargo.toml --check
+          mix escript.build
+        '
+  - name: tackle_web
+    image: bash
+    commands:
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd apps/tackle_web
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted
+          mix assets.build
+        '
