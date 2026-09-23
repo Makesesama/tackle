@@ -5,6 +5,9 @@ defmodule Tackle.Anubis.MixProject do
     [
       app: :tackle_anubis,
       version: "0.1.0",
+      description: "Anubis MCP server bridge for Tackle.Lib tools",
+      source_url: "https://github.com/Makesesama/tackle",
+      package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps()

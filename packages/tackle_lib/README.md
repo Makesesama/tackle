@@ -18,23 +18,25 @@ PubSub, and LiveView stream support, also read
 
 ## Status and installation
 
-Tackle.Lib currently lives as an in-repo Mix package. It is not published to Hex and
-the repository root is a different Mix project. To use it in another project
-today, either:
-
-- copy/extract `packages/tackle_lib` into that project and use a path dependency; or
-- extract the package to its own Git repository, then use a normal Git dependency.
-
-For a copied package under `packages/tackle_lib`:
+Tackle.Lib is available from this Git monorepo, not Hex. Add this dependency
+to your application's `mix.exs`, replacing `REF` with a published tag or commit
+SHA (do not use a floating branch for a reproducible build):
 
 ```elixir
-# mix.exs
 defp deps do
   [
-    {:tackle_lib, path: "packages/tackle_lib"}
+    {:tackle_lib,
+     git: "https://github.com/Makesesama/tackle.git",
+     ref: "REF",
+     subdir: "packages/tackle_lib"}
   ]
 end
 ```
+
+Then run `mix deps.get`. Mix's `:subdir` option requires Elixir 1.13 or newer;
+Tackle.Lib requires Elixir `~> 1.18`. This Git-only installation is not a Hex
+release. To work on the library within a checkout, use its local Mix project in
+`packages/tackle_lib` instead.
 
 Tackle.Lib requires Elixir `~> 1.18`, includes `:telemetry` for its bounded
 lifecycle events, and uses `:jsv` for standards-compliant JSON Schema output
