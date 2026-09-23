@@ -72,8 +72,9 @@ defmodule Tackle.Lib.Event do
   Normalizes a provider/adapter stream event into a Tackle.Lib event.
 
   Adapters should prefer emitting Tackle.Lib-shaped events directly, but this helper
-  accepts common provider-ish event maps so `Tackle.Lib.LLM.stream/4` can be the
-  normalization boundary.
+  accepts common provider-ish event maps so the optional `stream/3` callback in
+  `Tackle.Lib.LLM` can produce standard events for hosts at this normalization
+  boundary.
   """
   @spec normalize(t() | tuple() | map(), keyword()) :: t()
   def normalize(event, opts \\ [])

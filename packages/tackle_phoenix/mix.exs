@@ -8,6 +8,7 @@ defmodule Tackle.Phoenix.MixProject do
       description: "Phoenix and LiveView integration for Tackle agents",
       source_url: "https://github.com/Makesesama/tackle",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
+      docs: [main: "readme", extras: ["README.md"]],
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -31,7 +32,8 @@ defmodule Tackle.Phoenix.MixProject do
       {:tackle_runtime, path: "../tackle_runtime"},
       # Phoenix runtime + LiveView UI glue (Runner/EventReducer/Chat/PubSub).
       {:phoenix_live_view, ">= 1.1.33 and < 1.3.0"},
-      {:phoenix_pubsub, "~> 2.1"}
+      {:phoenix_pubsub, "~> 2.1"},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false}
     ]
   end
 end

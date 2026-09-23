@@ -60,7 +60,7 @@ defmodule Tackle.Lib.Loop do
   ## Options
     * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs.
     * `:event_context` - Additional host context merged into tool execution context.
-    * `:llm_stream` - When true, use `Tackle.Lib.LLM.stream/4` if the adapter supports it.
+    * `:llm_stream` - When true, use the optional `stream/3` callback in `Tackle.Lib.LLM` if the adapter supports it.
     * `:cancellation_signal` - Optional `Tackle.Lib.Cancellation.Signal` checked between loop steps.
     * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot. When omitted,
       the state's configured id generator is used.

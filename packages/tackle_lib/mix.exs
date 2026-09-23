@@ -8,6 +8,7 @@ defmodule Tackle.Lib.MixProject do
       description: "Provider-independent agent loop and extension contracts for Elixir",
       source_url: "https://github.com/Makesesama/tackle",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
+      docs: [main: "readme", extras: ["README.md"]],
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -27,7 +28,8 @@ defmodule Tackle.Lib.MixProject do
   defp deps do
     [
       {:jsv, "~> 0.22"},
-      {:telemetry, "~> 1.0"}
+      {:telemetry, "~> 1.0"},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false}
     ]
   end
 end
