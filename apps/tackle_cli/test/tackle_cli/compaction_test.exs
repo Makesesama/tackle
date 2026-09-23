@@ -239,7 +239,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
 
   test "manual compaction hints do not promise cancellation" do
     state = %{shell() | pending_operation: %{kind: :compact}}
-    refute StatusView.hints_widget(state, 80).text =~ "Esc cancel"
+    refute inspect(StatusView.status_widget(state, 80).text) =~ "Esc cancel"
   end
 
   defp card(state),

@@ -189,16 +189,15 @@ defmodule Tackle.CLI.TUITest do
   # -- layout --------------------------------------------------------------
 
   describe "responsive layout" do
-    test "normal terminals keep header, transcript, status, composer, and hints" do
+    test "normal terminals keep header, transcript, composer, and status" do
       regions = Layout.regions(80, 24, 1, false)
 
       assert regions.header.height == 1
       assert regions.transcript.height > 0
       assert regions.status
-      assert regions.hints
       assert regions.reading == nil
       assert regions.composer.y < regions.status.y
-      assert regions.status.y < regions.hints.y
+      assert regions.status.y + regions.status.height == 24
       assert regions.composer.height == 3
 
       assert_regions_within_bounds(regions, 80, 24)
@@ -238,7 +237,6 @@ defmodule Tackle.CLI.TUITest do
       assert tiny.transcript.height == 1
       assert tiny.reading == nil
       assert tiny.status == nil
-      assert tiny.hints == nil
       assert_regions_within_bounds(tiny, 20, 5)
 
       smaller = Layout.regions(10, 2, 1, false)
@@ -307,7 +305,7 @@ defmodule Tackle.CLI.TUITest do
     assert function_exported?(TUI, :start_link, 1)
   end
 
-  test "renders compact header, border-light transcript, composer, status, and hints", %{tui: tui} do
+  test "renders compact header, border-light transcript, composer, and status", %{tui: tui} do
     state = state(tui)
 
     assert header_text(state) =~ "openai-codex/test-model"
@@ -329,8 +327,22 @@ defmodule Tackle.CLI.TUITest do
 
     assert status_text(state) =~ "ready"
     assert status_text(state) =~ "ctx 0/1k (0.0%)"
-    assert hints_text(state) == " ? help"
+    assert status_text(state) =~ "? help"
     refute status_text(state) =~ "CH"
+  end
+
+  test "right-aligns help beside status without losing the leading state", %{tui: tui} do
+    for width <- [20, 40, 80] do
+      sized = %{state(tui) | size: {width, 24}} |> Viewport.resize()
+      status = status_text(sized)
+      assert status =~ "ready"
+      assert String.ends_with?(status, "? help")
+      assert MessageView.display_width(status) == width - 1
+    end
+
+    tiny = %{state(tui) | size: {8, 8}} |> Viewport.resize()
+    assert status_text(tiny) =~ "ready"
+    refute status_text(tiny) =~ "? help"
   end
 
   test "short terminals keep turn state in the header without a status row", %{tui: tui} do
@@ -355,7 +367,7 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "?", ["shift"])
     opened = state(tui)
     assert match?({:help, _}, opened.overlay)
-    assert hints_text(opened) == " ? help"
+    assert status_text(opened) =~ "? help"
 
     assert Enum.any?(TUI.scene(opened, frame(opened)), fn {widget, _rect} ->
              match?(%ExRatatui.Widgets.Popup{}, widget)
@@ -412,16 +424,15 @@ defmodule Tackle.CLI.TUITest do
     assert state(tui).overlay == nil
   end
 
-  test "header keeps the model before reasoning and hints stay curated", %{tui: tui} do
+  test "header keeps the model before reasoning and help stays on the status row", %{tui: tui} do
     compact = %{state(tui) | size: {40, 24}} |> Viewport.resize()
     assert header_text(compact) =~ "openai-codex/test-model"
     refute header_text(compact) =~ "thinking off"
-    assert hints_text(compact) == " ? help"
+    assert status_text(compact) =~ "? help"
 
     wide = %{compact | size: {200, 24}} |> Viewport.resize()
 
-    assert hints_text(wide) ==
-             " ? help"
+    assert status_text(wide) =~ "? help"
 
     terminal = ExRatatui.init_test_terminal(200, 24)
     :ok = ExRatatui.draw(terminal, TUI.scene(wide, frame(wide)))
@@ -1028,7 +1039,7 @@ defmodule Tackle.CLI.TUITest do
     assert popup_title(current) =~ "Current"
     assert popup_content(current).text =~ "No settled token usage"
     assert status_text(current) =~ "Usage · Current"
-    assert hints_text(current) == " ? help"
+    assert status_text(current) =~ "? help"
 
     inject_key(tui, "tab")
     assert_receive {:usage_timeline_requested, :all, ^session_id}
@@ -1107,6 +1118,7 @@ defmodule Tackle.CLI.TUITest do
   # -- metrics -------------------------------------------------------------
 
   test "shows preceding-prompt cache reuse and cumulative cost in status", %{tui: tui} do
+    inject_resize(tui, 120, 24)
     inject_paste(tui, "go")
     inject_key(tui, "enter")
     assert_receive {:submitted, "go"}
@@ -1957,7 +1969,7 @@ defmodule Tackle.CLI.TUITest do
     assert state.selected_entry == "tool:call-1"
     assert status_text(state) =~ "Browsing"
     assert status_text(state) =~ "3/3"
-    assert hints_text(state) == " ? help"
+    assert status_text(state) =~ "? help"
 
     inject_key(tui, "y")
     assert_receive {:copied, ^output}
@@ -2462,13 +2474,6 @@ defmodule Tackle.CLI.TUITest do
     end
   end
 
-  defp hints_text(state) do
-    case regions(state).hints do
-      nil -> nil
-      rect -> widget_text_at(state, rect)
-    end
-  end
-
   defp reading_text(state) do
     case regions(state).reading do
       nil -> nil
@@ -2606,8 +2611,7 @@ defmodule Tackle.CLI.TUITest do
         regions.sidebar,
         regions.composer,
         regions.reading,
-        regions.status,
-        regions.hints
+        regions.status
       ]
       |> Enum.reject(&is_nil/1)
 
