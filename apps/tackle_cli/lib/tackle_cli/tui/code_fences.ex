@@ -1,9 +1,9 @@
 defmodule Tackle.CLI.TUI.CodeFences do
   @moduledoc false
 
-  # Only intercept Elixir fences: tui-markdown already handles other languages,
-  # but its bundled syntect syntax set does not include Elixir.
-  @spec split(String.t()) :: [{:markdown, String.t()} | {:elixir, String.t()}]
+  # Render fenced code on the same surface regardless of language. The Markdown
+  # renderer does not apply a background across highlighted code blocks.
+  @spec split(String.t()) :: [{:markdown, String.t()} | {:code, String.t(), String.t()}]
   def split(source) do
     source
     |> String.split("\n", trim: false)
@@ -14,37 +14,43 @@ defmodule Tackle.CLI.TUI.CodeFences do
   defp scan_line(line, {parts, current, :prose}) do
     case opening(line) do
       {fence, info} ->
-        if elixir?(info) do
-          {flush(parts, current, :markdown), [], {:elixir, fence}}
-        else
-          {parts, [line | current], {:other, fence}}
-        end
+        {flush(parts, current, :markdown), [], {:code, fence, language(info)}}
 
       nil ->
         {parts, [line | current], :prose}
     end
   end
 
-  defp scan_line(line, {parts, current, {:other, fence}}) do
+  defp scan_line(line, {parts, current, {:code, fence, language}}) do
     if closing?(line, fence),
-      do: {parts, [line | current], :prose},
-      else: {parts, [line | current], {:other, fence}}
-  end
-
-  defp scan_line(line, {parts, current, {:elixir, fence}}) do
-    if closing?(line, fence),
-      do: {flush(parts, current, :elixir), [], :prose},
-      else: {parts, [line | current], {:elixir, fence}}
+      do: {flush(parts, current, {:code, language}), [], :prose},
+      else: {parts, [line | current], {:code, fence, language}}
   end
 
   defp finish({parts, current, state}) do
-    kind = if match?({:elixir, _}, state), do: :elixir, else: :markdown
+    kind =
+      case state do
+        {:code, _, language} -> {:code, language}
+        :prose -> :markdown
+      end
+
     parts = flush(parts, current, kind)
     if parts == [], do: [{:markdown, ""}], else: Enum.reverse(parts)
   end
 
   defp flush(parts, [], _kind), do: parts
-  defp flush(parts, lines, kind), do: [{kind, lines |> Enum.reverse() |> Enum.join("\n")} | parts]
+
+  defp flush(parts, lines, kind) do
+    content = lines |> Enum.reverse() |> Enum.join("\n")
+
+    segment =
+      case kind do
+        {:code, language} -> {:code, language, content}
+        :markdown -> {:markdown, content}
+      end
+
+    [segment | parts]
+  end
 
   defp opening(line) do
     case Regex.run(~r/^ {0,3}(`{3,}|~{3,})(.*)$/, line) do
@@ -59,9 +65,9 @@ defmodule Tackle.CLI.TUI.CodeFences do
     end
   end
 
-  defp elixir?(info) do
-    token = info |> String.trim() |> String.split(~r/\s+/, parts: 2) |> hd()
-    String.downcase(token) in ["elixir", "ex", "exs"]
+  defp language(info) do
+    token = info |> String.trim() |> String.split(~r/\s+/, parts: 2) |> hd() |> String.downcase()
+    if token in ["ex", "exs"], do: "elixir", else: token
   end
 
   defp closing?(line, fence) do
