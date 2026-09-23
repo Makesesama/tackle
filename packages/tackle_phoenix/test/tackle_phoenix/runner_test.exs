@@ -31,6 +31,23 @@ defmodule Tackle.Phoenix.RunnerTest do
     end
   end
 
+  defmodule EventContextAgent do
+    @moduledoc false
+
+    alias Tackle.Lib.Event
+    alias Tackle.Lib.State
+
+    def continue(%State{} = state, opts) do
+      send(state.context.test_pid, {:run_opts, opts})
+
+      Keyword.fetch!(opts, :event_context).event_callback.(
+        Event.new(:tool_progress, %{output: "hi"})
+      )
+
+      {:ok, state}
+    end
+  end
+
   defmodule CrashingAgent do
     @moduledoc false
 
@@ -202,6 +219,50 @@ defmodule Tackle.Phoenix.RunnerTest do
     start_supervised!({DynamicSupervisor, strategy: :one_for_one, name: @dynamic_supervisor})
     start_supervised!({Task.Supervisor, name: @task_supervisor})
     :ok
+  end
+
+  test "passes the same loop event callback to the tool context" do
+    config = correlation_runner_config(EventContextAgent)
+    agent_state = %State{context: %{test_pid: self(), persistence: %{}}}
+    host_state = %{test_pid: self(), session_id: "event-context-session"}
+
+    :ok = Runner.subscribe(config, "event-context-user", "event-context-session")
+
+    assert {:ok, _runner} =
+             Runner.run_turn(config, "event-context-user", agent_state, "hello",
+               session_id: "event-context-session",
+               agent_state: agent_state,
+               host_state: host_state
+             )
+
+    assert_receive {:run_opts, opts}
+    assert %{event_callback: callback} = Keyword.fetch!(opts, :event_context)
+    assert is_function(callback, 1)
+    assert callback == Keyword.fetch!(opts, :event_callback)
+    assert_receive {:agent_event, %Event{type: :tool_progress, data: %{output: "hi"}}}
+  end
+
+  test "runtime turns pass the loop event callback to the tool context" do
+    config =
+      correlation_runner_config(EventContextAgent)
+      |> Map.put(:runtime_turn_opts, [])
+
+    agent_state = %State{context: %{test_pid: self(), persistence: %{}}}
+    host_state = %{test_pid: self(), session_id: "runtime-event-session"}
+
+    assert {:ok, runner} =
+             Runner.get_or_start(config, "runtime-event-user",
+               session_id: "runtime-event-session",
+               agent_state: agent_state,
+               host_state: host_state
+             )
+
+    assert {:ok, %{turn_active?: false}} = Runner.runtime_subscribe(runner)
+    assert {:ok, ^runner} = Runner.runtime_submit(runner, "hello")
+    assert_receive {:run_opts, opts}
+    assert %{event_callback: callback} = Keyword.fetch!(opts, :event_context)
+    assert callback == Keyword.fetch!(opts, :event_callback)
+    assert_receive {:tackle_runtime_event, %Event{type: :tool_progress, data: %{output: "hi"}}}
   end
 
   test "session runners are temporary supervisor children" do

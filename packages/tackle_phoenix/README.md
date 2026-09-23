@@ -94,7 +94,12 @@ Tackle.Phoenix.Runner (temporary GenServer, one user/session key)
 
 The Runner appends and broadcasts the user message before starting the task,
 then calls `config.agent.continue/2`. It does not call `run/3`, because doing so
-would append the user message twice.
+would append the user message twice. The turn's `event_callback` is also passed
+in `event_context` so tools can emit progress and subagent events through the
+same Runner/PubSub path. This does not add `runtime_turn_id` or background
+launch-envelope delivery: the Phoenix runtime backend currently rejects
+`:deliver`, so background inbox notifications do not have the root Session's
+turn-origin/hold-until-settled behavior.
 
 ## 1. Start the OTP infrastructure
 
