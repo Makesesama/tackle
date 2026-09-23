@@ -4,9 +4,9 @@ defmodule Tackle.CLI.TUI.View do
 
   The shell is transcript-first. A one-row header shows the model and
   reasoning level; the transcript owns the flexible middle of the screen;
-  a rounded input bar encloses the composer. Turn state lives in the status row
-  (or the header on short terminals), never both. Optional reading, status,
-  and hint rows appear only when the terminal has rows to spare.
+  a rounded input bar encloses the composer. Turn state and the `?` shortcut
+  cue live below the bar, with reading position there when relevant. The header
+  carries turn state only on short terminals.
 
   Layout is computed once per frame from the terminal size and the draft's
   wrapped row count, so the widget list and the rectangles can never disagree.
@@ -23,6 +23,7 @@ defmodule Tackle.CLI.TUI.View do
   alias Tackle.CLI.TUI.{
     Browser,
     Conversation,
+    Help,
     Inspector,
     Layout,
     Menu,
@@ -183,11 +184,8 @@ defmodule Tackle.CLI.TUI.View do
     }
   end
 
-  defp composer_title(%State{focus: :subagents}),
-    do: " Subagents · ↑/↓ select · Enter details · Esc back "
-
-  defp composer_title(%State{focus: :transcript, browse_page: page}),
-    do: " Browsing · #{page} · ←/→ pages · Esc/F4 back "
+  defp composer_title(%State{focus: :subagents}), do: " Message "
+  defp composer_title(%State{focus: :transcript}), do: " Message "
 
   defp composer_title(%State{active_turn: nil, pending_operation: nil}), do: " Message "
   defp composer_title(%State{}), do: " Queue next message "
@@ -210,6 +208,7 @@ defmodule Tackle.CLI.TUI.View do
     [{overlay_widget(state), %Rect{x: 0, y: 0, width: width, height: height}}]
   end
 
+  defp overlay_widget(%State{overlay: {:help, _}} = state), do: Help.popup(state)
   defp overlay_widget(%State{overlay: {:picker, _}} = state), do: Menu.popup(state)
   defp overlay_widget(%State{overlay: {:tree, _}} = state), do: Tree.popup(state)
   defp overlay_widget(%State{overlay: {:inspector, _}} = state), do: Inspector.popup(state)

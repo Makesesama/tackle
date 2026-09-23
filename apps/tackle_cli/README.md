@@ -204,22 +204,22 @@ falls back to a visible prompt.
 
 The same `mix tackle` commands continue to work from this directory. Run
 `mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.
-The shell is transcript-first and fullscreen: a compact header, a border-light
-transcript that owns the flexible middle of the screen, an optional reading row,
-an optional status/metrics row, a growing multiline composer, and a short hint
-row. A rounded, horizontally padded input bar encloses the composer, with a
-muted blue border while focused; model and reasoning live in the header, while
-turn state appears only in the status row (falling back to the header on short
-terminals). The input border yields to editable text on tiny terminals. Muted
-blue accents and quiet overlay borders
-keep attention on the conversation. The footer shows a curated set of shortcuts,
-not the full key map below. Empty optional rows are not reserved when the terminal
-is short.
+The shell is transcript-first and fullscreen: a compact model header, a
+border-light transcript, and a growing multiline composer. Reading position,
+status/metrics and a quiet `? help` cue sit **below** the input bar, not above
+it. `?` opens a shortcut reference when the draft is empty (or while browsing);
+with a non-empty draft it inserts a literal question mark. Esc or ? closes the
+reference. The bar uses a muted blue border while focused; turn state falls
+back to the header on short terminals. Tiny terminals drop optional footer rows
+and yield the input border to editable text. The status row combines input and
+output token counts into a single `tokens in/out` segment; unavailable counts
+are omitted rather than reported as zero.
 
 ## Keys (experimental)
 
 | Key | Action |
 | --- | --- |
+| ? (empty draft or Browse) | Open the shortcut reference. Esc or ? closes it. In a non-empty draft, ? is inserted normally. |
 | Enter | Send the draft when idle. While a turn is active the draft is kept but **not queued**. |
 | Shift+Enter, Ctrl+Enter, Ctrl+J | Insert a newline. Ctrl+J is the reliable fallback because many terminals cannot distinguish Shift+Enter. |
 | ↑ / ↓ | Recall older/newer prompts when the draft is empty or a prompt is already showing. With a non-empty draft they move the caret instead, so a multi-line prompt is never hijacked. |

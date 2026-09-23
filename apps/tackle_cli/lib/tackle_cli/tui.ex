@@ -76,6 +76,7 @@ defmodule Tackle.CLI.TUI do
     Compaction,
     Composer,
     Conversation,
+    Help,
     Inspector,
     Menu,
     RuntimeEvents,
@@ -215,6 +216,9 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_overlay(key, %{overlay: nil} = state),
     do: dispatch_base(Keybinds.base(key, state.focus), key, state)
 
+  defp dispatch_overlay(key, %{overlay: {:help, _}} = state),
+    do: Help.handle(Keybinds.help(key), state)
+
   defp dispatch_overlay(key, %{overlay: {:confirm_quit, _}} = state) do
     case Keybinds.confirm(key) do
       :confirm -> {:stop, state}
@@ -249,6 +253,14 @@ defmodule Tackle.CLI.TUI do
   # Behaviour for each intent the binding table can return. Keeping one clause
   # per intent means an addition to `Keybinds` fails loudly here until it is
   # given behaviour, instead of silently doing nothing.
+  defp dispatch_base(:help, key, state) do
+    if state.focus != :composer or state.draft_empty? do
+      Help.open(state)
+    else
+      Composer.key(state, key)
+    end
+  end
+
   defp dispatch_base(:model_picker, _key, state), do: Menu.open(:model, state)
   defp dispatch_base(:thinking_picker, _key, state), do: Menu.open(:thinking, state)
   defp dispatch_base(:settings_picker, _key, state), do: Menu.open(:settings, state)

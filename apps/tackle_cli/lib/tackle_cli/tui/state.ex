@@ -39,6 +39,7 @@ defmodule Tackle.CLI.TUI.State do
   @typedoc "An open surface above the composer, or `nil` when the shell is plain."
   @type overlay ::
           nil
+          | {:help, map()}
           | {:picker, map()}
           | {:tree, map()}
           | {:inspector, map()}
