@@ -191,6 +191,8 @@ defmodule Tackle.CLI.TUITest do
       assert regions.status
       assert regions.hints
       assert regions.reading == nil
+      assert regions.composer.y < regions.status.y
+      assert regions.status.y < regions.hints.y
       assert regions.composer.height == 3
 
       assert_regions_within_bounds(regions, 80, 24)
@@ -205,6 +207,8 @@ defmodule Tackle.CLI.TUITest do
       assert three_lines.transcript.height == one_line.transcript.height - 2
 
       assert reading.reading
+      assert reading.composer.y + reading.composer.height == reading.reading.y
+      assert reading.reading.y < reading.status.y
       assert reading.transcript.height == one_line.transcript.height - 1
       assert_regions_within_bounds(reading, 80, 24)
     end
@@ -319,8 +323,7 @@ defmodule Tackle.CLI.TUITest do
 
     assert status_text(state) =~ "ready"
     assert status_text(state) =~ "ctx 0/1k (0.0%)"
-    assert hints_text(state) =~ "Enter send"
-    assert hints_text(state) =~ "Ctrl+C quit"
+    assert hints_text(state) == " ? help"
     refute status_text(state) =~ "CH"
   end
 
@@ -342,17 +345,77 @@ defmodule Tackle.CLI.TUITest do
     end
   end
 
+  test "question mark opens shortcut help without consuming the draft", %{tui: tui} do
+    inject_key(tui, "?", ["shift"])
+    opened = state(tui)
+    assert match?({:help, _}, opened.overlay)
+    assert hints_text(opened) == " ? help"
+
+    assert Enum.any?(TUI.scene(opened, frame(opened)), fn {widget, _rect} ->
+             match?(%ExRatatui.Widgets.Popup{}, widget)
+           end)
+
+    inject_key(tui, "down")
+    assert match?({:help, %{offset: 1}}, state(tui).overlay)
+    inject_key(tui, "x")
+    assert match?({:help, _}, state(tui).overlay)
+    inject_key(tui, "?")
+    assert state(tui).overlay == nil
+
+    inject_paste(tui, "draft")
+    inject_key(tui, "?", ["shift"])
+    assert state(tui).overlay == nil
+    assert draft(tui) == "draft?"
+
+    inject_key(tui, "?", ["shift"])
+    assert draft(tui) == "draft??"
+    inject_key(tui, "esc")
+    assert state(tui).overlay == nil
+  end
+
+  test "shortcut reference scrolls and clips safely on narrow terminals", %{tui: tui} do
+    inject_resize(tui, 30, 8)
+    inject_key(tui, "?")
+    opened = state(tui)
+    assert {:help, %{offset: 0}} = opened.overlay
+
+    [{popup, _rect}] =
+      Enum.filter(TUI.scene(opened, frame(opened)), fn {widget, _} ->
+        match?(%ExRatatui.Widgets.Popup{}, widget)
+      end)
+
+    assert popup.content.text =~ "? / Esc close"
+    assert popup.content.text =~ "Compose"
+    refute popup.content.text =~ "Tasks (F7)"
+
+    assert :ok =
+             ExRatatui.draw(ExRatatui.init_test_terminal(30, 8), TUI.scene(opened, frame(opened)))
+
+    for _ <- 1..40, do: inject_key(tui, "down")
+    scrolled = state(tui)
+    assert {:help, %{offset: offset}} = scrolled.overlay
+    assert offset > 0
+
+    [{popup, _}] =
+      Enum.filter(TUI.scene(scrolled, frame(scrolled)), fn {widget, _} ->
+        match?(%ExRatatui.Widgets.Popup{}, widget)
+      end)
+
+    assert popup.content.text =~ "Esc           back"
+    inject_key(tui, "esc")
+    assert state(tui).overlay == nil
+  end
+
   test "header keeps the model before reasoning and hints stay curated", %{tui: tui} do
     compact = %{state(tui) | size: {40, 24}} |> Viewport.resize()
     assert header_text(compact) =~ "openai-codex/test-model"
     refute header_text(compact) =~ "thinking off"
-    assert hints_text(compact) =~ "Enter send"
-    assert hints_text(compact) =~ "Ctrl+C quit"
+    assert hints_text(compact) == " ? help"
 
     wide = %{compact | size: {200, 24}} |> Viewport.resize()
 
     assert hints_text(wide) ==
-             " Enter send   Ctrl+J newline   F1 model   F2 reasoning   F4 browse   Ctrl+C quit"
+             " ? help"
 
     terminal = ExRatatui.init_test_terminal(200, 24)
     :ok = ExRatatui.draw(terminal, TUI.scene(wide, frame(wide)))
@@ -747,7 +810,7 @@ defmodule Tackle.CLI.TUITest do
     assert popup_title(current) =~ "Current"
     assert popup_content(current).text =~ "No settled token usage"
     assert status_text(current) =~ "Usage · Current"
-    assert hints_text(current) =~ "Tab/←/→ mode"
+    assert hints_text(current) == " ? help"
 
     inject_key(tui, "tab")
     assert_receive {:usage_timeline_requested, :all, ^session_id}
@@ -856,8 +919,7 @@ defmodule Tackle.CLI.TUITest do
     live_state = state(tui)
     live_status = status_text(live_state)
     assert live_status =~ "ctx 210/1k (21.0%)"
-    assert live_status =~ "in 200"
-    assert live_status =~ "out 20"
+    assert live_status =~ "tokens 200/20 in/out"
     assert live_status =~ "CH100.0%"
     assert live_status =~ "~$1.00"
 
@@ -874,8 +936,7 @@ defmodule Tackle.CLI.TUITest do
     settled_status = status_text(state(tui))
 
     assert settled_status =~ "ctx 210/1k (21.0%)"
-    assert settled_status =~ "in 200"
-    assert settled_status =~ "out 20"
+    assert settled_status =~ "tokens 200/20 in/out"
     assert settled_status =~ "CH100.0%"
     assert settled_status =~ "~$1.00"
   end
@@ -1678,7 +1739,7 @@ defmodule Tackle.CLI.TUITest do
     assert state.selected_entry == "tool:call-1"
     assert status_text(state) =~ "Browsing"
     assert status_text(state) =~ "3/3"
-    assert hints_text(state) =~ "Esc or F4 back"
+    assert hints_text(state) == " ? help"
 
     inject_key(tui, "y")
     assert_receive {:copied, ^output}
@@ -2282,9 +2343,9 @@ defmodule Tackle.CLI.TUITest do
         regions.header,
         regions.transcript,
         regions.sidebar,
+        regions.composer,
         regions.reading,
         regions.status,
-        regions.composer,
         regions.hints
       ]
       |> Enum.reject(&is_nil/1)

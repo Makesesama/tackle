@@ -3,16 +3,11 @@ defmodule Tackle.CLI.TUI.StatusView do
   The status row, the metric segments, and the responsive hint row.
 
   The status row reports honest turn state (`ready`, `thinking`, `running
-  <tool>`, `cancelling`, `cancelled`, `failed`) followed by whatever usage
-  metadata is actually available: context pressure, input/output tokens, cache
-  reuse rate, and cost. Missing metadata is omitted rather than shown as zero, and
-  a `~` before the cost marks a price-card estimate instead of
-  provider-reported billing.
+  <tool>`, `cancelling`, `cancelled`, `failed`) followed by available usage
+  metadata: context pressure, combined input/output tokens, cache reuse and
+  cost. Missing metadata is omitted rather than shown as zero.
 
-  Both rows are width-aware. Optional metrics are dropped before the working
-  state, and the hint row keeps the first and last hint (the essential
-  send/quit pair) while adding middle hints only while they fit, so a narrow
-  terminal never hides the quit action behind optional discoverability text.
+  The single footer cue opens a separate key map with `?`.
   """
 
   alias Tackle.CLI.TUI.{
@@ -42,9 +37,9 @@ defmodule Tackle.CLI.TUI.StatusView do
 
   @doc "Builds the hint row for the current state and terminal width."
   @spec hints_widget(State.t(), integer()) :: ExRatatui.Widgets.Paragraph.t()
-  def hints_widget(%State{} = state, width) do
+  def hints_widget(%State{} = _state, width) do
     %ExRatatui.Widgets.Paragraph{
-      text: " " <> fit_hints(hint_segments(state), width - 1),
+      text: " " <> Util.truncate("? help", max(width - 1, 1)),
       style: Theme.style(:subtle)
     }
   end
@@ -95,6 +90,8 @@ defmodule Tackle.CLI.TUI.StatusView do
 
   # An overlay owns the status row while it is open, so search and menus show
   # what the keyboard will do instead of turn metrics the user cannot act on.
+  defp status_segments(%State{overlay: {:help, _}}), do: ["Shortcuts", "↑/↓ scroll · ?/Esc close"]
+
   defp status_segments(%State{overlay: {:search, search}}) do
     case search.matches do
       [] ->
@@ -166,74 +163,6 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp busy_segments(%State{draft_empty?: true}), do: []
   defp busy_segments(%State{}), do: ["new prompts queue at the next safe boundary"]
 
-  defp hint_segments(%State{overlay: {:picker, _}}),
-    do: ["↑/↓ select", "Enter apply", "Esc close"]
-
-  defp hint_segments(%State{overlay: {:usage_chart, _}}),
-    do: ["Tab/←/→ mode", "R reload", "Esc close"]
-
-  defp hint_segments(%State{focus: :subagents}),
-    do: ["↑/↓ select", "Enter details", "Esc back"]
-
-  defp hint_segments(%State{focus: :transcript, browse_page: page}) when page != :transcript,
-    do: ["←/→ or Tab page", "↑/↓ scroll", "R refresh", "Y copy page", "Esc or F4 back"]
-
-  defp hint_segments(%State{focus: :transcript}) do
-    [
-      "↑/↓ browse",
-      "Enter inspect",
-      "←/→ or Tab page",
-      "y copy source",
-      "a copy transcript",
-      "F6 usage",
-      "Esc or F4 back"
-    ]
-  end
-
-  defp hint_segments(%State{active_turn: nil, pending_operation: nil}) do
-    [
-      "Enter send",
-      "Ctrl+J newline",
-      "F1 model",
-      "F2 reasoning",
-      "F4 browse",
-      "Ctrl+C quit"
-    ]
-  end
-
-  defp hint_segments(%State{pending_operation: %{kind: :compact}}),
-    do: ["Compacting · draft kept", "F4 browse", "Ctrl+C quit"]
-
-  # Only the running-task row teaches F7, so the curated idle hints stay put.
-  defp hint_segments(%State{} = state) do
-    if Subagents.active?(state) do
-      ["Esc cancel", "F7 tasks", "Ctrl+C quit"]
-    else
-      ["Esc cancel", "Ctrl+J newline", "F4 browse", "Ctrl+C quit"]
-    end
-  end
-
-  # Keeps the first and last hint (the essential send/quit pair) visible and
-  # adds middle hints while they fit, so narrow terminals never hide the quit
-  # action behind optional discoverability text.
-  defp fit_hints([first | rest], width) do
-    {middle, tail} = Enum.split(rest, max(length(rest) - 1, 0))
-    last = List.first(tail)
-
-    middle
-    |> Enum.reduce([first | List.wrap(last)], fn segment, acc ->
-      candidate = List.insert_at(acc, -2, segment)
-
-      if MessageView.display_width(Enum.join(candidate, "   ")) <= max(width, 1) do
-        candidate
-      else
-        acc
-      end
-    end)
-    |> Enum.join("   ")
-    |> Util.truncate(max(width, 1))
-  end
-
   # Fits the leading status word plus as many metric segments as the width
   # allows. The first segment is always kept so the working state survives a
   # narrow terminal.
@@ -272,9 +201,8 @@ defmodule Tackle.CLI.TUI.StatusView do
 
     [
       compaction_indicator(state),
+      token_indicator(usage.input_tokens, usage.output_tokens),
       context_indicator(displayed_context_usage(state)),
-      token_indicator("in", usage.input_tokens),
-      token_indicator("out", usage.output_tokens),
       cache_hit_indicator(displayed_usage_checkpoints(state)),
       cost_indicator(usage)
     ]
@@ -322,8 +250,14 @@ defmodule Tackle.CLI.TUI.StatusView do
 
   defp context_indicator(nil), do: nil
 
-  defp token_indicator(_label, nil), do: nil
-  defp token_indicator(label, tokens), do: "#{label} #{format_token_count(tokens)}"
+  defp token_indicator(nil, nil), do: nil
+
+  defp token_indicator(input, output) do
+    "tokens #{token_count(input)}/#{token_count(output)} in/out"
+  end
+
+  defp token_count(nil), do: "–"
+  defp token_count(tokens), do: format_token_count(tokens)
 
   defp cache_hit_indicator(usages) do
     case Usage.cache_reuse_rate(usages) do

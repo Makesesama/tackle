@@ -4,8 +4,8 @@ defmodule Tackle.CLI.TUI.Layout do
 
   The transcript owns the flexible middle of the screen. The header and the
   composer have fixed or draft-driven heights, and optional reading, status,
-  and hint rows appear only when the terminal has rows to spare, in that
-  priority order.
+  and hint rows appear below the composer only when the terminal has rows to
+  spare, in that priority order.
 
   The composer grows with the native editor's measured visual rows, including
   soft wraps and the final insertion cell, up to eight content rows. The two
@@ -62,10 +62,10 @@ defmodule Tackle.CLI.TUI.Layout do
     {transcript, sidebar} = split_sidebar(transcript_area, subagents_active?)
     y = @header_height + transcript_height
 
-    {reading, y} = optional_rect(reading?, y, width)
-    {status, y} = optional_rect(status?, y, width)
     composer = %Rect{x: 0, y: y, width: width, height: composer_height}
-    {hints, _y} = optional_rect(hints?, y + composer_height, width)
+    {reading, y} = optional_rect(reading?, y + composer_height, width)
+    {status, y} = optional_rect(status?, y, width)
+    {hints, _y} = optional_rect(hints?, y, width)
 
     %{
       header: header,

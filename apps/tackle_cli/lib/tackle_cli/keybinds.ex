@@ -44,6 +44,7 @@ defmodule Tackle.CLI.Keybinds do
           | :copy_source
           | :copy_transcript
           | :escape
+          | :help
           | :history_next
           | :history_previous
           | :ignore
@@ -100,7 +101,7 @@ defmodule Tackle.CLI.Keybinds do
   """
   @spec repeatable?(Key.t()) :: boolean()
   def repeatable?(%Key{code: code})
-      when code in ["esc", "enter", "f1", "f2", "f3", "f4", "f5", "f6", "f7"],
+      when code in ["?", "esc", "enter", "f1", "f2", "f3", "f4", "f5", "f6", "f7"],
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
@@ -123,6 +124,9 @@ defmodule Tackle.CLI.Keybinds do
   come back wrapped as `{:transcript, intent}` so the caller can route them.
   """
   @spec base(Key.t(), atom()) :: intent
+  def base(%Key{code: "?", modifiers: modifiers}, _focus)
+      when modifiers in [[], ["shift"]], do: :help
+
   def base(%Key{code: "f1"}, _focus), do: :model_picker
   def base(%Key{code: "f2"}, _focus), do: :thinking_picker
   def base(%Key{code: "f3"}, _focus), do: :settings_picker
@@ -217,6 +221,13 @@ defmodule Tackle.CLI.Keybinds do
   def subagents(%Key{code: "enter"}), do: :inspect
   def subagents(%Key{code: "i"}), do: :inspect
   def subagents(%Key{}), do: :ignore
+
+  @doc "Resolves keys in the shortcut reference."
+  @spec help(Key.t()) :: :close | :previous | :next | :ignore
+  def help(%Key{code: code}) when code in ["esc", "?", "enter"], do: :close
+  def help(%Key{code: "up"}), do: :previous
+  def help(%Key{code: "down"}), do: :next
+  def help(%Key{}), do: :ignore
 
   # -- confirmations -------------------------------------------------------
 
