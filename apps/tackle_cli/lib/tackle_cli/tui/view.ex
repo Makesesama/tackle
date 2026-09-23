@@ -5,8 +5,8 @@ defmodule Tackle.CLI.TUI.View do
   The shell is transcript-first. A one-row header shows the model and
   reasoning level; the transcript owns the flexible middle of the screen;
   a rounded input bar encloses the composer. Turn state and the `?` shortcut
-  cue live below the bar, with reading position there when relevant. The header
-  carries turn state only on short terminals.
+  cue share a row below the bar, with reading position there when relevant.
+  The header carries turn state only on short terminals.
 
   Layout is computed once per frame from the terminal size and the draft's
   wrapped row count, so the widget list and the rectangles can never disagree.
@@ -64,7 +64,6 @@ defmodule Tackle.CLI.TUI.View do
       reading_widgets(regions.reading, state.conversation) ++
       status_widgets(regions.status, state, width) ++
       [{composer_widget(state), regions.composer}] ++
-      hints_widgets(regions.hints, state, width) ++
       overlay_widgets(state, width, height)
   end
 
@@ -150,12 +149,6 @@ defmodule Tackle.CLI.TUI.View do
 
   defp status_widgets(rect, state, width) do
     [{StatusView.status_widget(state, width), rect}]
-  end
-
-  defp hints_widgets(nil, _state, _width), do: []
-
-  defp hints_widgets(rect, state, width) do
-    [{StatusView.hints_widget(state, width), rect}]
   end
 
   # -- composer ------------------------------------------------------------

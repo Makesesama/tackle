@@ -1,13 +1,13 @@
 defmodule Tackle.CLI.TUI.StatusView do
   @moduledoc """
-  The status row, the metric segments, and the responsive hint row.
+  The status row, metric segments, and right-aligned help cue.
 
   The status row reports honest turn state (`ready`, `thinking`, `running
   <tool>`, `cancelling`, `cancelled`, `failed`) followed by available usage
   metadata: context pressure, combined input/output tokens, cache reuse and
   cost. Missing metadata is omitted rather than shown as zero.
 
-  The single footer cue opens a separate key map with `?`.
+  The right-hand status cue opens a separate key map with `?`.
   """
 
   alias Tackle.CLI.TUI.{
@@ -18,29 +18,20 @@ defmodule Tackle.CLI.TUI.StatusView do
     State,
     Subagents,
     Theme,
-    UsageChart,
-    Util
+    UsageChart
   }
 
   alias Tackle.Lib
   alias Tackle.Lib.{Compaction, ContextUsage, Usage}
 
   @spinner_frames ~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+  @help_cue "? help"
 
   @doc "Builds the status row for the current state and terminal width."
   @spec status_widget(State.t(), integer()) :: ExRatatui.Widgets.Paragraph.t()
   def status_widget(%State{} = state, width) do
     %ExRatatui.Widgets.Paragraph{
       text: [MessageView.row(status_spans(state, width), %ExRatatui.Style{})]
-    }
-  end
-
-  @doc "Builds the hint row for the current state and terminal width."
-  @spec hints_widget(State.t(), integer()) :: ExRatatui.Widgets.Paragraph.t()
-  def hints_widget(%State{} = _state, width) do
-    %ExRatatui.Widgets.Paragraph{
-      text: " " <> Util.truncate("? help", max(width - 1, 1)),
-      style: Theme.style(:subtle)
     }
   end
 
@@ -76,16 +67,35 @@ defmodule Tackle.CLI.TUI.StatusView do
   end
 
   defp status_spans(state, width) do
-    case fit_segments(status_segments(state), width - 1) do
-      [] ->
-        [MessageView.span(" ", %ExRatatui.Style{})]
+    segments = status_segments(state)
+    # Leave a gap and a right margin when the cue fits alongside the leading state.
+    cue_width = MessageView.display_width(@help_cue)
+    show_cue? = width >= MessageView.display_width(hd(segments)) + cue_width + 4
+    available = if show_cue?, do: width - cue_width - 3, else: width - 1
 
-      [first | rest] ->
-        [MessageView.span(" " <> first, status_style(state))] ++
-          Enum.map(rest, fn segment ->
-            MessageView.span("  ·  " <> segment, Theme.style(:muted))
-          end)
+    [first | rest] = fit_segments(segments, available)
+
+    spans =
+      [MessageView.span(" " <> first, status_style(state))] ++
+        Enum.map(rest, fn segment ->
+          MessageView.span("  ·  " <> segment, Theme.style(:muted))
+        end)
+
+    if show_cue? do
+      gap = max(width - spans_width(spans) - cue_width - 1, 0)
+
+      spans ++
+        [
+          MessageView.span(String.duplicate(" ", gap), %ExRatatui.Style{}),
+          MessageView.span(@help_cue, Theme.style(:subtle))
+        ]
+    else
+      spans
     end
+  end
+
+  defp spans_width(spans) do
+    Enum.reduce(spans, 0, fn span, total -> total + MessageView.display_width(span.content) end)
   end
 
   # An overlay owns the status row while it is open, so search and menus show
