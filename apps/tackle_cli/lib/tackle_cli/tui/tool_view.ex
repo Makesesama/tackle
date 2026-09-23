@@ -43,9 +43,17 @@ defmodule Tackle.CLI.TUI.ToolView do
   def render(entry, width, mode \\ :preview) do
     args = arguments(entry.tool_arguments)
 
+    header_args =
+      if mode == :preview and entry.tool_status == :preparing and
+           entry.tool_name in ["edit", "write"] and is_binary(entry.tool_arguments) do
+        Map.put(args, "path", partial_field(entry.tool_arguments, "path"))
+      else
+        args
+      end
+
     header =
       entry
-      |> header_rows(args, width)
+      |> header_rows(header_args, width)
       |> wrap_indented(width, 2, true)
       |> truncate_header(width)
 
@@ -181,6 +189,15 @@ defmodule Tackle.CLI.TUI.ToolView do
        when status in [:running, :completed],
        do: bash_preview(entry.tool_output, width)
 
+  defp body_rows(
+         %{tool_name: name, tool_status: :preparing, tool_arguments: raw} = entry,
+         %{"input" => raw},
+         :preview,
+         _width
+       )
+       when name in ["edit", "write"] and is_binary(raw),
+       do: incoming_file_rows(entry, raw)
+
   defp body_rows(%{tool_name: "edit", tool_status: :failed} = entry, _args, :preview, _width),
     do: output_rows(entry, :preview)
 
@@ -258,6 +275,44 @@ defmodule Tackle.CLI.TUI.ToolView do
     if next < width,
       do: {:cont, {[grapheme | kept], next}},
       else: {:halt, {kept, used}}
+  end
+
+  # During input streaming JSON is often incomplete. Extract only string values
+  # we can decode; never paint the escaped JSON envelope in the inline card.
+  defp incoming_file_rows(%{tool_name: "write"}, raw) do
+    incoming_text_rows("Content incoming · partial", partial_field(raw, "content"))
+  end
+
+  defp incoming_file_rows(%{tool_name: "edit"}, raw) do
+    text = partial_field(raw, "newText") || partial_field(raw, "oldText")
+    incoming_text_rows("Replacement incoming · partial", text)
+  end
+
+  defp incoming_text_rows(label, text) do
+    heading = [context_row(label <> " · F4 details")]
+
+    if is_binary(text) do
+      heading ++
+        (text
+         |> String.split("\n", trim: false)
+         |> Enum.take(@preview_rows - 1)
+         |> Enum.map(&body_row(Theme.style(:text), clip_line(&1, :preview))))
+    else
+      heading
+    end
+  end
+
+  defp partial_field(raw, key) do
+    # A value may end mid-string (or mid-escape); decode only its complete
+    # escaped prefix. JSON.decode handles quoted characters and Unicode escapes.
+    pattern = ~r/(?<!\\)"#{key}"\s*:\s*"((?:\\.|[^"\\])*)/s
+
+    with [_, escaped] <- Regex.run(pattern, raw),
+         {:ok, value} <- JSON.decode("\"" <> escaped <> "\"") do
+      value
+    else
+      _ -> nil
+    end
   end
 
   defp write_rows(entry, args, mode) do
