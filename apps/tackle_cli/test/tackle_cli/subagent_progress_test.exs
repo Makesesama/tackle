@@ -102,6 +102,11 @@ defmodule Tackle.CLI.SubagentProgressTest do
     [partial] = cards(state)
     assert partial.tool_status == :preparing
     assert partial.tool_arguments =~ ~s("path":"lib/demo.ex")
+    partial_render = render_text(partial)
+    assert partial_render =~ "lib/demo.ex"
+    assert partial_render =~ "hel"
+    refute partial_render =~ ~s("content")
+    refute partial_render =~ ~s({"input")
 
     state =
       event(state, :message_delta, %{
@@ -132,6 +137,45 @@ defmodule Tackle.CLI.SubagentProgressTest do
     assert String.valid?(entry.tool_arguments)
     assert String.starts_with?(entry.tool_arguments, ~s({"path":"large.ex"))
     assert render_text(entry) =~ "large.ex"
+    refute render_text(entry) =~ ~s({"input")
+    refute render_text(entry) =~ ~s("content")
+  end
+
+  test "streamed edit input shows replacement text without the JSON envelope" do
+    state =
+      event(shell(), :message_delta, %{
+        field: :tool_input,
+        tool_call_id: "edit-one",
+        tool_name: "edit",
+        delta: ~s({"path":"lib/demo.ex","edits":[{"oldText":"before","newText":"after)
+      })
+
+    [entry] = cards(state)
+    assert entry.tool_status == :preparing
+    rendered = render_text(entry)
+    assert rendered =~ "lib/demo.ex"
+    assert rendered =~ "after"
+    refute rendered =~ ~s("newText")
+    refute rendered =~ ~s({"input")
+    assert MessageView.search_text(entry) =~ "oldText"
+  end
+
+  test "streamed write input decodes escaped text and does not paint unfinished escapes" do
+    state =
+      event(shell(), :message_delta, %{
+        field: :tool_input,
+        tool_call_id: "write-escaped",
+        tool_name: "write",
+        delta: ~s({"path":"demo.ex","content":"first\\nsecond\\"quoted\\)
+      })
+
+    [entry] = cards(state)
+    rendered = render_text(entry)
+    assert rendered =~ "first"
+    assert rendered =~ "second"
+    refute rendered =~ ~s(\\n)
+    refute rendered =~ ~s({"input")
+    assert MessageView.search_text(entry) =~ ~s(\\n)
   end
 
   test "a provider retry discards its provisional tool input card" do
