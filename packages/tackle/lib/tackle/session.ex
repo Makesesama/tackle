@@ -187,7 +187,9 @@ defmodule Tackle.Session do
   or while an interrupted turn requires an explicit recovery decision.
 
   `opts` may carry `:instructions` to add operator focus; it never removes the
-  default summary invariants.
+  default summary invariants. If a later pass fails after an earlier checkpoint
+  was committed, the session retains and broadcasts the committed projection
+  even though the call returns an error.
   """
   @spec compact(GenServer.server(), keyword()) ::
           {:ok, Snapshot.t(), Tackle.Lib.Compaction.Record.t()}
@@ -373,8 +375,20 @@ defmodule Tackle.Session do
         broadcast(state, {:tackle_session_compacted, session_id, snapshot, record})
         {:reply, {:ok, snapshot, record}, state}
 
+      {:error, reason, agent_state} ->
+        state = %{state | agent_state: agent_state}
+        snapshot = build_snapshot(state)
+        broadcast(state, {:tackle_session_compacted, session_id, snapshot, nil})
+        {:reply, {:error, reason}, state}
+
       {:error, reason} ->
         {:reply, {:error, reason}, state}
+
+      {:cancelled, reason, agent_state} ->
+        state = %{state | agent_state: agent_state}
+        snapshot = build_snapshot(state)
+        broadcast(state, {:tackle_session_compacted, session_id, snapshot, nil})
+        {:reply, {:error, {:cancelled, reason}}, state}
 
       {:cancelled, reason} ->
         {:reply, {:error, {:cancelled, reason}}, state}

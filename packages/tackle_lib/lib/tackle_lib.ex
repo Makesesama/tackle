@@ -136,8 +136,8 @@ defmodule Tackle.Lib do
   """
   @spec compact(State.t(), keyword()) ::
           {:ok, State.t(), Tackle.Lib.Compaction.Record.t()}
-          | {:error, term()}
-          | {:cancelled, term()}
+          | {:error | :cancelled, term()}
+          | {:error | :cancelled, term(), State.t()}
   def compact(%State{} = state, opts \\ []), do: Compaction.compact(state, :manual, opts)
 
   @doc """

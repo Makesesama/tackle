@@ -60,6 +60,23 @@ defmodule Tackle.CLI.TUI.CompactionTest do
     assert {:inspector, %{entry: %{kind: :compaction}}} = inspecting.overlay
   end
 
+  test "a committed checkpoint is synced even when a later manual pass fails" do
+    state = shell()
+    {:noreply, running, commands: [_]} = Compaction.request(state)
+    checkpoint = LibCompaction.checkpoint_message("partial", "saved context")
+
+    snapshot = %Snapshot{
+      session_id: "session",
+      agent_state: %{state.agent_state | model_messages: [checkpoint]}
+    }
+
+    {:noreply, updated} =
+      RuntimeEvents.handle({:tackle_session_compacted, "session", snapshot, nil}, running)
+
+    assert updated.agent_state.model_messages == [checkpoint]
+    assert updated.pending_operation == running.pending_operation
+  end
+
   test "manual cards stay between messages and scroll away with the conversation" do
     {:noreply, running, _} = Compaction.request(shell())
     completed = running |> Compaction.completed(record()) |> Viewport.refresh()

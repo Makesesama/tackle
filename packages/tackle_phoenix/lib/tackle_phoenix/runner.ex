@@ -56,12 +56,15 @@ defmodule Tackle.Phoenix.Runner do
         {:ok, pid}
 
       [] ->
-        DynamicSupervisor.start_child(
-          config.dynamic_supervisor,
-          {__MODULE__,
-           {config, user_id, session_id, Keyword.get(opts, :agent_state),
-            Keyword.get(opts, :host_state)}}
-        )
+        case DynamicSupervisor.start_child(
+               config.dynamic_supervisor,
+               {__MODULE__,
+                {config, user_id, session_id, Keyword.get(opts, :agent_state),
+                 Keyword.get(opts, :host_state)}}
+             ) do
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          result -> result
+        end
     end
   end
 
@@ -230,6 +233,11 @@ defmodule Tackle.Phoenix.Runner do
     {:reply, snapshot_value(state), state, @timeout}
   end
 
+  def handle_call({:update_state, %State{}}, _from, %{turn_task: task} = state)
+      when not is_nil(task) do
+    {:reply, {:error, :turn_in_progress}, state, @timeout}
+  end
+
   def handle_call({:update_state, %State{} = agent_state}, _from, state) do
     {:reply, :ok, %{state | agent_state: agent_state}, @timeout}
   end
@@ -287,6 +295,9 @@ defmodule Tackle.Phoenix.Runner do
   end
 
   @impl true
+  def handle_info(:timeout, %{turn_task: task} = state) when not is_nil(task),
+    do: {:noreply, state, @timeout}
+
   def handle_info(:timeout, state), do: {:stop, :normal, state}
 
   def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
@@ -381,10 +392,17 @@ defmodule Tackle.Phoenix.Runner do
     end
   end
 
+  defp stale_transcript?(%State{} = current, %State{} = supplied) do
+    current.messages != supplied.messages or current.model_messages != supplied.model_messages
+  end
+
   defp start_turn(:run, state, %State{} = agent_state, input, opts) do
     cond do
       state.turn_task ->
         reject_turn(state, opts, :run, :turn_in_progress)
+
+      stale_transcript?(state.agent_state, agent_state) ->
+        reject_turn(state, opts, :run, :stale_agent_state)
 
       (reason = gate_turn(state, opts)) != :ok ->
         reject_turn(state, opts, :run, reason)
@@ -446,6 +464,9 @@ defmodule Tackle.Phoenix.Runner do
     cond do
       state.turn_task ->
         reject_turn(state, opts, :continue, :turn_in_progress)
+
+      stale_transcript?(state.agent_state, agent_state) ->
+        reject_turn(state, opts, :continue, :stale_agent_state)
 
       (reason = gate_turn(state, opts)) != :ok ->
         reject_turn(state, opts, :continue, reason)
@@ -774,16 +795,25 @@ defmodule Tackle.Phoenix.Runner do
     turn_usage = aggregate_turn_usage(state.turn_usage)
     {result, agent_state} = normalize_result(result, state.agent_state, turn_usage)
     state = %{state | agent_state: agent_state}
+    store = state.config.store
 
     state =
       with_turn_context(state, fn ->
         state
-        |> update_host(&state.config.store.settle_turn(&1, result, turn_usage, state.turn_opts))
-        |> update_host(&state.config.store.after_turn(&1, result, state.turn_opts))
+        |> update_host(&store.settle_turn(&1, result, turn_usage, state.turn_opts))
+        |> maybe_after_turn(store, result)
         |> stop_turn_telemetry(turn_outcome(result))
       end)
 
     {state, result}
+  end
+
+  defp maybe_after_turn(state, store, result) do
+    if function_exported?(store, :after_turn, 3) do
+      update_host(state, &store.after_turn(&1, result, state.turn_opts))
+    else
+      state
+    end
   end
 
   defp fail_turn(state, reason) do

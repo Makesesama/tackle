@@ -578,6 +578,31 @@ defmodule Tackle.Lib.LoopTest do
     assert last.thinking == "reasoned"
   end
 
+  defmodule MalformedToolAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      {:ok,
+       %{
+         data: %{"tool_calls" => Process.get(:bad_tool_calls)},
+         usage: nil,
+         model: "test/model"
+       }}
+    end
+  end
+
+  test "rejects malformed provider tool calls without crashing the loop" do
+    Application.put_env(:tackle_lib, :llm, MalformedToolAdapter)
+
+    for calls <- [[nil], [%{"function" => "not a map"}]] do
+      Process.put(:bad_tool_calls, calls)
+      assert {:error, state} = Loop.run(State.new(model: "test/model"), "hello")
+      assert state.status == :error
+      assert state.error =~ "Invalid provider tool calls"
+    end
+  end
+
   test "native protocol: native tool_calls drive tool execution then plain-content answer" do
     Application.put_env(:tackle_lib, :llm, NativeToolThenContentAdapter)
     Process.put(:test_pid, self())
