@@ -33,6 +33,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   alias Tackle.Session.Snapshot
 
   @stream_frame_ms 32
+  @queue_notice_ms 3_000
   @max_live_tool_input_bytes 50 * 1_024
   @max_live_tool_output_bytes 50 * 1_024
   @max_subagent_work_bytes 16 * 1_024
@@ -45,11 +46,13 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   def handle(message, state), do: route(message, Observations.observe(message, state))
 
   defp route({:tui_spinner_tick}, %State{} = state) do
-    if busy?(state) do
-      state = %{state | spinner_frame: state.spinner_frame + 1}
+    expired = expire_queue_notice(state)
+
+    if busy?(expired) do
+      state = %{expired | spinner_frame: expired.spinner_frame + 1}
       {:noreply, refresh_subagent_clocks(state)}
     else
-      {:noreply, state, render?: false}
+      {:noreply, expired, render?: expired != state}
     end
   end
 
@@ -95,12 +98,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           state
           | pending_operation: nil,
             deferred_events: [],
-            pending_prompt: nil,
-            activity: nil,
-            notice: "Message queued for the next safe boundary"
+            queued_prompts: state.queued_prompts ++ [String.trim(operation.raw_draft)],
+            notice: "Message queued for the next safe boundary",
+            queue_notice_at: System.monotonic_time(:millisecond)
         }
 
-        {:noreply, Viewport.refresh(state, [:pending, :turn, :error])}
+        {:noreply, Viewport.refresh(state, [:turn])}
 
       {:error, reason} ->
         submit_failed(state, operation, reason)
@@ -248,16 +251,21 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   # submit command. Adopt that internally-started continuation before its events;
   # the session broadcasts this message before processing the turn task's output.
   defp route(
-         {:tackle_turn_started, session_id, turn_id, :background_notice},
+         {:tackle_turn_started, session_id, turn_id, reason},
          %State{session_id: session_id, active_turn: nil} = state
-       ) do
+       )
+       when reason in [:background_notice, :queued_messages] do
     state = %{
       state
       | active_turn: %{id: turn_id, operation: :continue, cancellation_requested?: false},
         pending_prompt: nil,
         stream: Stream.reset(state.stream),
         deferred_events: [],
-        activity: "processing subagent notice",
+        activity:
+          if(reason == :queued_messages,
+            do: "processing queued messages",
+            else: "processing subagent notice"
+          ),
         error: nil,
         outcome: nil
     }
@@ -368,6 +376,57 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
       _field ->
         {:noreply, state, render?: false}
+    end
+  end
+
+  # Queued user messages arrive as complete messages, without streaming deltas.
+  defp route(
+         {:tackle_event, session_id, turn_id,
+          %Event{
+            type: :message_end,
+            data: %{message: %Tackle.Lib.Message{id: id, role: :user, content: content}}
+          }},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
+    ids = append_message_id(state.stream.message_ids, id)
+
+    cond do
+      id in state.stream.message_ids ->
+        {:noreply, state, render?: false}
+
+      content == state.pending_prompt ->
+        stream = %{
+          state.stream
+          | message_ids: ids,
+            timeline:
+              state.stream.timeline ++
+                [%{kind: :user, content: content, id: "streaming:#{id}:user", message_id: id}]
+        }
+
+        {:noreply,
+         Viewport.refresh(%{state | pending_prompt: nil, stream: stream}, [:pending, :turn])}
+
+      true ->
+        queued_prompts = pop_queued_prompt(state.queued_prompts, content)
+
+        stream = %{
+          state.stream
+          | message_ids: ids,
+            timeline:
+              state.stream.timeline ++
+                [%{kind: :user, content: content, id: "streaming:#{id}:user", message_id: id}]
+        }
+
+        state = %{
+          state
+          | stream: stream,
+            queued_prompts: queued_prompts,
+            notice:
+              if(queued_prompts == [] and state.queue_notice_at, do: nil, else: state.notice),
+            queue_notice_at: if(queued_prompts == [], do: nil, else: state.queue_notice_at)
+        }
+
+        {:noreply, Viewport.refresh(state, [:turn])}
     end
   end
 
@@ -579,6 +638,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       | agent_state: agent_state,
         active_turn: nil,
         pending_prompt: nil,
+        notice: nil,
+        queue_notice_at: nil,
         stream: Stream.reset(state.stream),
         pending_operation: nil,
         deferred_events: [],
@@ -604,6 +665,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       state
       | active_turn: nil,
         pending_prompt: nil,
+        notice: nil,
+        queue_notice_at: nil,
         stream: Stream.reset(state.stream),
         pending_operation: nil,
         deferred_events: [],
@@ -673,10 +736,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       state
       | pending_operation: nil,
         deferred_events: [],
-        pending_prompt: nil,
-        activity: nil,
+        pending_prompt: if(state.active_turn, do: state.pending_prompt, else: nil),
+        activity: if(state.active_turn, do: state.activity, else: nil),
         error: Util.format_reason(reason),
-        outcome: :failed
+        outcome: if(state.active_turn, do: state.outcome, else: :failed)
     }
 
     state = state |> Viewport.update_draft() |> Viewport.relayout()
@@ -1248,6 +1311,17 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp format_activity(type) when is_binary(type), do: String.replace(type, "_", " ")
   defp format_activity(_other), do: "working"
+
+  defp expire_queue_notice(%State{queue_notice_at: at} = state) when is_integer(at) do
+    if System.monotonic_time(:millisecond) - at >= @queue_notice_ms,
+      do: %{state | notice: nil, queue_notice_at: nil},
+      else: state
+  end
+
+  defp expire_queue_notice(state), do: state
+
+  defp pop_queued_prompt([content | rest], content), do: rest
+  defp pop_queued_prompt(prompts, _content), do: prompts
 
   defp busy?(state) do
     not is_nil(state.active_turn) or not is_nil(state.pending_operation) or

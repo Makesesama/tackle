@@ -615,6 +615,103 @@ defmodule Tackle.CLI.TUITest do
     assert composer_widget(state).block.title =~ "Queue next message"
   end
 
+  test "queued prompts remain in the transcript without erasing live output", %{tui: tui} do
+    inject_paste(tui, "first")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "first"}
+    await_state(tui, &(&1.active_turn != nil))
+
+    session_id = state(tui).session_id
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1", Event.new(:message_delta, %{delta: "Still working"})}
+    )
+
+    assert conversation_text(state(tui)) =~ "Still working"
+
+    inject_paste(tui, "second draft")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "second draft"}
+    queued = await_state(tui, &(&1.queued_prompts == ["second draft"]))
+
+    assert queued.stream.response == "Still working"
+    assert conversation_text(queued) =~ "Still working"
+    assert conversation_text(queued) =~ "second draft"
+    refute conversation_text(queued) =~ "Welcome to Tackle"
+    assert queued.notice == "Message queued for the next safe boundary"
+
+    # The transient status notice expires even when no keys are pressed.
+    expired = %{queued | queue_notice_at: System.monotonic_time(:millisecond) - 3_001}
+    {:noreply, expired} = RuntimeEvents.handle({:tui_spinner_tick}, expired)
+    assert expired.notice == nil
+    assert expired.queued_prompts == ["second draft"]
+
+    user = Message.user("second draft", id: "queued-user")
+    send(tui, {:tackle_event, session_id, "turn-1", Event.message_end(user)})
+    delivered = await_state(tui, &(&1.queued_prompts == []))
+    assert delivered.notice == nil
+    assert Enum.any?(delivered.stream.timeline, &(&1[:message_id] == "queued-user"))
+    assert conversation_text(delivered) =~ "Still working"
+    assert conversation_text(delivered) =~ "second draft"
+
+    finish_turn(tui, [Message.user("first"), user, Message.assistant(content: "done")])
+    settled = state(tui)
+    assert settled.notice == nil
+    assert settled.queued_prompts == []
+    assert conversation_text(settled) =~ "second draft"
+  end
+
+  test "queued messages survive a turn boundary until the queued continuation", %{tui: tui} do
+    inject_paste(tui, "first")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "first"}
+    await_state(tui, &(&1.active_turn != nil))
+    inject_paste(tui, "second draft")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "second draft"}
+    await_state(tui, &(&1.queued_prompts == ["second draft"]))
+
+    finish_turn(tui, [Message.user("first"), Message.assistant(content: "first done")])
+    waiting = state(tui)
+    assert waiting.queued_prompts == ["second draft"]
+    assert conversation_text(waiting) =~ "second draft"
+    assert waiting.notice == nil
+
+    send(tui, {:tackle_turn_started, waiting.session_id, "turn-2", :queued_messages})
+
+    started =
+      await_state(
+        tui,
+        &(&1.active_turn == %{id: "turn-2", operation: :continue, cancellation_requested?: false})
+      )
+
+    assert conversation_text(started) =~ "second draft"
+
+    send(
+      tui,
+      {:tackle_event, waiting.session_id, "turn-2",
+       Event.message_end(Message.user("second draft", id: "queued-2"))}
+    )
+
+    delivered = await_state(tui, &(&1.queued_prompts == []))
+    assert conversation_text(delivered) =~ "second draft"
+
+    agent_state = %{
+      delivered.agent_state
+      | messages: [
+          Message.user("first"),
+          Message.user("second draft"),
+          Message.assistant(content: "done")
+        ]
+    }
+
+    send(tui, {:tackle_turn_finished, waiting.session_id, "turn-2", {:ok, agent_state}})
+    settled = await_state(tui, &is_nil(&1.active_turn))
+    assert settled.queued_prompts == []
+    assert conversation_text(settled) =~ "second draft"
+  end
+
   # -- prompt history ------------------------------------------------------
 
   test "Up and Down walk recorded prompts from an empty draft", %{tui: tui} do

@@ -154,32 +154,56 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   def section_entries(state, :turn) do
-    state.stream.timeline
-    |> Enum.with_index()
-    |> Enum.map(fn
-      {%{kind: :thinking, content: content} = item, index} ->
-        entry(:thinking, content,
-          id: Map.get(item, :id, live_text_id(:thinking, index)),
-          label: "Thinking:",
+    live_entries =
+      state.stream.timeline
+      |> Enum.with_index()
+      |> Enum.map(fn
+        {%{kind: :thinking, content: content} = item, index} ->
+          entry(:thinking, content,
+            id: Map.get(item, :id, live_text_id(:thinking, index)),
+            label: "Thinking:",
+            source: content,
+            collapsed?: not state.thinking_expanded?,
+            style: style(:thinking)
+          )
+
+        {%{kind: :user, content: content} = item, index} ->
+          entry(:user, content,
+            id: Map.get(item, :id, live_text_id(:user, index)),
+            label: "You:",
+            source: content,
+            style: style(:user)
+          )
+
+        {%{kind: :assistant, content: content} = item, index} ->
+          entry(:assistant, content,
+            id: Map.get(item, :id, live_text_id(:assistant, index)),
+            label: "Tackle:",
+            source: content,
+            style: style(:assistant)
+          )
+
+        {%{kind: :compaction, id: id}, _index} ->
+          state.compactions |> Enum.find(&(&1.id == id)) |> compaction_entry()
+
+        {%{kind: :tool} = item, _index} ->
+          tool_entry(item, Map.get(item, :timeline_id, "tool:#{tool_id(item)}"))
+      end)
+
+    queued_entries =
+      state
+      |> Map.get(:queued_prompts, [])
+      |> Enum.with_index()
+      |> Enum.map(fn {content, index} ->
+        entry(:user, content,
+          id: "queued:#{index}",
+          label: "You · queued:",
           source: content,
-          collapsed?: not state.thinking_expanded?,
-          style: style(:thinking)
+          style: style(:user)
         )
+      end)
 
-      {%{kind: :assistant, content: content} = item, index} ->
-        entry(:assistant, content,
-          id: Map.get(item, :id, live_text_id(:assistant, index)),
-          label: "Tackle:",
-          source: content,
-          style: style(:assistant)
-        )
-
-      {%{kind: :compaction, id: id}, _index} ->
-        state.compactions |> Enum.find(&(&1.id == id)) |> compaction_entry()
-
-      {%{kind: :tool} = item, _index} ->
-        tool_entry(item, Map.get(item, :timeline_id, "tool:#{tool_id(item)}"))
-    end)
+    live_entries ++ queued_entries
   end
 
   # Kept as a small compatibility seam for callers that render a standalone

@@ -14,10 +14,8 @@ defmodule Tackle.CLI.TUI.Composer do
   browsing, or moves the cursor otherwise. Ctrl+P/Ctrl+N offer the same history
   navigation. Any edit ends recall, keeping the loaded text as the new draft.
 
-  Submission is deliberately conservative. A failed submit keeps the exact draft
-  in the composer so the user can retry or edit, and a submit while a turn is
-  active keeps the draft as well: there is no queue, so the draft is labeled as
-  belonging to the next turn instead of being delivered to the running one.
+  A failed submit restores the exact draft so the user can retry or edit.
+  Submissions during an active turn are queued for the next safe boundary.
   """
 
   alias ExRatatui.Command
@@ -234,15 +232,24 @@ defmodule Tackle.CLI.TUI.Composer do
       state
       | pending_operation: %{ref: ref, kind: :submit, raw_draft: raw_draft},
         history: History.record(state.history, prompt),
-        pending_prompt: prompt,
-        stream: Stream.reset(state.stream),
-        metrics: Metrics.reset(state.metrics),
-        tool_activity: [],
-        activity: "starting",
-        error: nil,
-        outcome: nil,
         notice: nil
     }
+
+    state =
+      if state.active_turn == nil do
+        %{
+          state
+          | pending_prompt: prompt,
+            stream: Stream.reset(state.stream),
+            metrics: Metrics.reset(state.metrics),
+            tool_activity: [],
+            activity: "starting",
+            error: nil,
+            outcome: nil
+        }
+      else
+        state
+      end
 
     state =
       state
