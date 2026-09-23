@@ -32,7 +32,8 @@ defmodule Tackle.CLI.TUI do
   While a turn is active the composer keeps accepting a draft, but Enter does
   not submit it: there is no queue, so the draft is explicitly labeled as
   belonging to the next turn. Esc leaves the transcript browser, closes
-  overlays, then requests cancellation, and never exits while idle; Ctrl+C is
+  overlays, clears a non-empty draft, then requests cancellation on a subsequent
+  press, and never exits while idle; Ctrl+C is
   the distinct quit action and asks for confirmation when a draft or active turn
   would be lost.
 
@@ -70,6 +71,7 @@ defmodule Tackle.CLI.TUI do
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
   alias ExRatatui.Subscription
   alias Tackle.CLI.Keybinds
+  alias Tackle.CLI.Widgets.Input
 
   alias Tackle.CLI.TUI.{
     Browser,
@@ -322,30 +324,38 @@ defmodule Tackle.CLI.TUI do
 
   # -- base actions --------------------------------------------------------
 
-  defp escape(%{active_turn: nil, pending_operation: nil} = state) do
+  defp escape(state) do
+    if Input.get_value(state.input) != "" do
+      Composer.clear(state)
+    else
+      escape_empty(state)
+    end
+  end
+
+  defp escape_empty(%{active_turn: nil, pending_operation: nil} = state) do
     {:noreply, %{state | notice: "Idle · Esc does not quit · Ctrl+C quits"}}
   end
 
-  defp escape(%{pending_operation: %{kind: :submit} = operation} = state) do
+  defp escape_empty(%{pending_operation: %{kind: :submit} = operation} = state) do
     operation = Map.put(operation, :cancellation_requested?, true)
 
     {:noreply,
      %{state | pending_operation: operation, activity: "cancelling", notice: "Cancelling…"}}
   end
 
-  defp escape(%{pending_operation: %{kind: :compact}} = state) do
+  defp escape_empty(%{pending_operation: %{kind: :compact}} = state) do
     {:noreply, %{state | notice: "Manual compaction cannot be cancelled; draft kept"}}
   end
 
-  defp escape(%{pending_operation: %{kind: :cancel}} = state) do
+  defp escape_empty(%{pending_operation: %{kind: :cancel}} = state) do
     {:noreply, %{state | notice: "Cancellation already requested"}}
   end
 
-  defp escape(%{activity: "cancelling"} = state) do
+  defp escape_empty(%{activity: "cancelling"} = state) do
     {:noreply, %{state | notice: "Cancellation already requested"}}
   end
 
-  defp escape(state) do
+  defp escape_empty(state) do
     ref = make_ref()
     agent_ref = state.agent_ref
 

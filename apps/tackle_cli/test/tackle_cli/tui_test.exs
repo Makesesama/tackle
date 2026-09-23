@@ -644,17 +644,31 @@ defmodule Tackle.CLI.TUITest do
     assert draft(tui) == ""
   end
 
-  test "Up moves the cursor inside a non-empty draft instead of browsing", %{tui: tui} do
+  test "Up recalls the newest prompt from a non-empty multiline draft", %{tui: tui} do
+    submit_prompt(tui, "older")
     submit_prompt(tui, "recorded prompt")
 
     inject_paste(tui, "one\ntwo")
     inject_key(tui, "up")
 
+    assert draft(tui) == "recorded prompt"
+    assert state(tui).history.index == 0
+
+    inject_key(tui, "up")
+    assert draft(tui) == "older"
+
+    inject_key(tui, "down")
+    assert draft(tui) == "recorded prompt"
+    inject_key(tui, "down")
     assert draft(tui) == "one\ntwo"
     assert state(tui).history.index == nil
+  end
 
-    inject_key(tui, "p", ["ctrl"])
-    assert draft(tui) == "recorded prompt"
+  test "Up on an empty history keeps the draft", %{tui: tui} do
+    inject_paste(tui, "work in progress")
+    inject_key(tui, "up")
+    assert draft(tui) == "work in progress"
+    assert state(tui).history.index == nil
   end
 
   test "Ctrl+P and Ctrl+N browse history from any draft", %{tui: tui} do
@@ -2031,6 +2045,49 @@ defmodule Tackle.CLI.TUITest do
   end
 
   # -- cancel and quit -----------------------------------------------------
+
+  test "Esc clears an unsent draft and ends history browsing", %{tui: tui} do
+    submit_prompt(tui, "remembered")
+    inject_paste(tui, "unfinished\nmessage")
+    inject_key(tui, "esc")
+    assert draft(tui) == ""
+    assert state(tui).draft_lines == 1
+    assert state(tui).draft_empty?
+
+    inject_key(tui, "up")
+    assert draft(tui) == "remembered"
+    inject_key(tui, "esc")
+    assert draft(tui) == ""
+    assert state(tui).history.index == nil
+
+    inject_key(tui, "up")
+    inject_key(tui, "down")
+    assert draft(tui) == ""
+  end
+
+  test "Esc clears a draft before cancelling an active turn", %{tui: tui} do
+    inject_paste(tui, "active")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "active"}
+    await_state(tui, &(&1.active_turn != nil))
+    inject_paste(tui, "next message")
+    inject_key(tui, "esc")
+    assert draft(tui) == ""
+    refute_receive :cancelled, 100
+
+    inject_key(tui, "esc")
+    assert_receive :cancelled
+  end
+
+  test "Esc closes an overlay before clearing the draft", %{tui: tui} do
+    inject_paste(tui, "draft")
+    inject_key(tui, "f1")
+    inject_key(tui, "esc")
+    assert state(tui).overlay == nil
+    assert draft(tui) == "draft"
+    inject_key(tui, "esc")
+    assert draft(tui) == ""
+  end
 
   test "Esc closes overlays, cancels once, and never exits while idle", %{tui: tui} do
     inject_key(tui, "f1")

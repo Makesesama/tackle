@@ -222,9 +222,9 @@ are omitted rather than reported as zero.
 | ? (empty draft or Browse) | Open the shortcut reference. Esc or ? closes it. In a non-empty draft, ? is inserted normally. |
 | Enter | Send the draft when idle. While a turn is active the draft is kept but **not queued**. |
 | Shift+Enter, Ctrl+Enter, Ctrl+J | Insert a newline. Ctrl+J is the reliable fallback because many terminals cannot distinguish Shift+Enter. |
-| ↑ / ↓ | Recall older/newer prompts when the draft is empty or a prompt is already showing. With a non-empty draft they move the caret instead, so a multi-line prompt is never hijacked. |
+| ↑ / ↓ | ↑ recalls older prompts even with a non-empty draft; ↓ walks toward the newest prompt and restores the draft you were writing. Outside history browsing, ↓ moves the caret. |
 | Ctrl+P / Ctrl+N | Recall older/newer prompts from any draft. ↓/Ctrl+N past the newest prompt returns the draft you were writing. History is in-memory and capped at 100 prompts. |
-| Esc | Close the open overlay first, then request cancellation of the active turn. Esc never exits while idle. |
+| Esc | Close the open overlay first, then clear a non-empty draft; with an empty draft, request cancellation of the active turn. Esc never exits while idle. |
 | Ctrl+C | Quit. Confirms first when an unsent draft or an active turn would be lost; quits immediately when idle with an empty draft. |
 | Alt+N | Start a new session. Confirms first with a Y/N prompt; on confirm the current root scope stops (stopping an active turn with it) and a fresh session and scope start without restarting the shell. Durable history is not deleted—resume it later with `--resume`. |
 | F1 | Search-first model selector (idle only). Type to filter, ↑/↓ to select, Enter to apply, Esc to close. |
@@ -296,10 +296,10 @@ word boundaries), preserves source whitespace, and reserves a visible insertion
 cell at the end of a full row. Resizing remeasures the draft and transcript.
 
 Left/Right and Backspace/Delete operate on complete graphemes, including
-combining marks and emoji. Up/Down move by visual row and retain the preferred
-column, except when the draft is empty or a recalled prompt is showing: then
-they walk the in-memory prompt history instead. Ctrl+P/Ctrl+N always walk that
-history, whatever the draft holds. Home/End and Ctrl+A/E move to logical line
+combining marks and emoji. Up recalls prompt history even when a draft is
+present; Down steps toward the saved draft while browsing history and otherwise
+moves by visual row, retaining the preferred column. Ctrl+P/Ctrl+N also walk
+history. Home/End and Ctrl+A/E move to logical line
 boundaries; Ctrl+B/Alt+B and Ctrl+F/Alt+F move backward and forward by a
 whitespace-delimited word; Ctrl+W deletes the preceding word. The caret is
 hidden while browsing or using an overlay. Tabs paint as spaces and other
