@@ -88,6 +88,7 @@
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           jailed-tackle = mkJailedTackle { inherit pkgs system; };
+          tackle-clipboard-paste = pkgs.callPackage ./nix/packages/clipboard-paste.nix { };
           tackle-cli-jail = pkgs.callPackage ./nix/packages/jailed-tackle-cli.nix {
             inherit jailed-agents system;
             tackle-cli = package;

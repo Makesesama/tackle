@@ -160,7 +160,29 @@ nix develop
 jailed-tackle
 ```
 
-Run it from the repository root. The jail gives Tackle read-write access to the
+Run it from the repository root. In `jailed-tackle`, **Ctrl+V** in the
+composer asks a narrowly scoped host handler to read a PNG from the host
+clipboard and stages it in the jail. This does not expose the compositor socket
+or clipboard utilities to jailed tools, but **any code in the jail can invoke
+this host clipboard-read capability**. The host needs `wl-paste` (Wayland) or
+`xclip` (X11) installed and available on the launcher's `PATH`. This bridge
+accepts only PNG up to 5 MiB; other clipboard formats are not pasted in the
+jail. Some terminals send Ctrl+V as a bracketed text paste instead of a key;
+for those terminals, use the manual fallback below.
+
+To stage an image without the key, copy a PNG on the host. The jail prints a
+per-launch session ID and a host command such as
+`tackle-clipboard-paste tackle-paste-XXXXXXXX`. From another **host** terminal,
+run `nix run .#tackle-clipboard-paste -- tackle-paste-XXXXXXXX`, substituting
+that ID. The image appears in the composer without Ctrl+V. You can bind this
+host command to a hotkey. Images are staged in a private per-launch host
+directory mounted read-only in the jail and removed when it exits; Tackle keeps
+a temporary copy until the CLI exits. Agent tools can read pasted images, and
+reading one can persist its contents in session history. Do not paste secrets
+you do not want the agent to see. This is not a boundary against other processes
+running as your host user.
+
+The jail gives Tackle read-write access to the
 entire current working directory, to `~/.tackle`, and to the configured Ketch
 research client and its `/home/makussu/.config/ketch/config.json` configuration.
 Network access is enabled for provider and research calls. Other home-directory
@@ -185,8 +207,9 @@ nix build .#tackle-cli-jail --out-link result-jailed
 
 The new package requires a multi-user Nix installation with the daemon socket at
 `/nix/var/nix/daemon-socket/socket`, `/etc/nix/nix.conf`, and working Bubblewrap
-user namespaces. It mounts the current directory and `~/.tackle` read-write;
-Burrito extracts into `~/.tackle/burrito/.burrito`. It does not enable
+user namespaces. It mounts the current directory and `~/.tackle` read-write,
+plus the same per-launch host image staging directory read-only; it does not
+mount a compositor socket. Burrito extracts into `~/.tackle/burrito/.burrito`. It does not enable
 `TACKLE_DEV`, mount Ketch configuration, or require Mix to launch the CLI.
 `TACKLE_MODEL` and `TACKLE_THINKING` are forwarded; credentials come from
 `~/.tackle/auth.json`. This launcher fixes `TACKLE_HOME` to `~/.tackle`.

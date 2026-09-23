@@ -171,6 +171,8 @@ defmodule Tackle.CLI.TUITest do
          end,
          clipboard_image_reader: fn -> Agent.get(clipboard_agent, & &1) end,
          clipboard_text_reader: fn -> {:ok, "clipboard text"} end,
+         clipboard_paste_dir: nil,
+         clipboard_paste_command: nil,
          usage_timeline_loader: fn mode, session_id ->
            send(test_pid, {:usage_timeline_requested, mode, session_id})
            scope = if mode == :current, do: {:session, session_id}, else: :all
@@ -475,7 +477,10 @@ defmodule Tackle.CLI.TUITest do
     on_exit(fn -> File.rm(path) end)
 
     inject_paste(tui, path)
-    assert draft(tui) =~ "Please use the read tool to inspect this image: #{path}"
+    assert draft(tui) == "[image-1]"
+    inject_key(tui, "enter")
+    assert_receive {:submitted, prompt}
+    assert prompt =~ "Please use the read tool to inspect this image: #{path}"
   end
 
   test "Ctrl+V pastes text when clipboard has no image", %{tui: tui} do
@@ -493,10 +498,66 @@ defmodule Tackle.CLI.TUITest do
     inject_paste(tui, "describe")
     inject_key(tui, "v", ["ctrl"])
     prompt = draft(tui)
-    assert prompt =~ "describe Please use the read tool to inspect this image: "
-    path = prompt |> String.split("inspect this image: ") |> List.last() |> String.trim()
+    assert prompt == "describe [image-1]"
+    [path] = state(tui).image_paths
     assert File.read!(path) == image
     assert File.stat!(path).mode == 0o100600
+    inject_key(tui, "enter")
+    assert_receive {:submitted, submitted}
+    assert submitted =~ "describe  Please use the read tool to inspect this image: #{path}"
+  end
+
+  test "long pasted text uses numbered tokens but submits the full text", %{tui: tui} do
+    first = String.duplicate("one ", 260)
+    second = String.duplicate("two ", 260)
+    inject_paste(tui, "summarize: ")
+    inject_paste(tui, first)
+    inject_paste(tui, second)
+    assert draft(tui) == "summarize: [text-1] [text-2]"
+
+    inject_key(tui, "u", ["ctrl"])
+    assert draft(tui) == "summarize: [text-1]"
+    inject_key(tui, "r", ["ctrl"])
+    assert draft(tui) == "summarize: [text-1] [text-2]"
+    inject_key(tui, "enter")
+    assert_receive {:submitted, submitted}
+
+    assert submitted ==
+             "summarize: #{String.trim_trailing(first)}  #{String.trim_trailing(second)}"
+
+    assert state(tui).history.entries == ["summarize: [text-1] [text-2]"]
+  end
+
+  test "short pastes stay literal and long text tokens survive failed submission", %{tui: tui} do
+    long = String.duplicate("line\n", 220)
+    inject_paste(tui, "fail ")
+    inject_paste(tui, long)
+    assert draft(tui) == "fail [text-1]"
+    inject_key(tui, "enter")
+    assert_receive {:submitted, submitted}
+    assert submitted == "fail #{String.trim_trailing(long)}"
+    _state = await_state(tui, &is_nil(&1.pending_operation))
+    assert draft(tui) == "fail [text-1]"
+  end
+
+  test "failed submit restores a paste token and a second image gets a new number", %{
+    tui: tui,
+    clipboard_agent: clipboard_agent
+  } do
+    image = <<137, 80, 78, 71, 13, 10, 26, 10, 0>>
+    Agent.update(clipboard_agent, fn _ -> {:ok, image} end)
+    inject_paste(tui, "fail ")
+    inject_key(tui, "v", ["ctrl"])
+    inject_key(tui, "v", ["ctrl"])
+    assert draft(tui) == "fail [image-1] [image-2]"
+    [second, first] = state(tui).image_paths
+    assert first != second
+    inject_key(tui, "enter")
+    assert_receive {:submitted, submitted}
+    assert submitted =~ first
+    assert submitted =~ second
+    _state = await_state(tui, &is_nil(&1.pending_operation))
+    assert draft(tui) == "fail [image-1] [image-2]"
   end
 
   test "failed image paste keeps the draft and reports an error", %{

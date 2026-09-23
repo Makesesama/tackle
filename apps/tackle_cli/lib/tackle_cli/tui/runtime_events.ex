@@ -98,7 +98,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           state
           | pending_operation: nil,
             deferred_events: [],
-            queued_prompts: state.queued_prompts ++ [String.trim(operation.raw_draft)],
+            queued_prompts: state.queued_prompts ++ [operation.prompt],
             notice: "Message queued for the next safe boundary",
             queue_notice_at: System.monotonic_time(:millisecond)
         }
