@@ -13,7 +13,7 @@ defmodule Tackle.CLI.Widgets.Conversation do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{MessageView, Theme}
+  alias Tackle.CLI.TUI.{CodeFences, MessageView, Theme}
   alias Tackle.CLI.Widgets.Surface
 
   defmodule Cell do
@@ -40,20 +40,63 @@ defmodule Tackle.CLI.Widgets.Conversation do
 
     marker = if kind == :user, do: "›", else: "●"
 
-    {resource, height} =
-      Native.conversation_message(
-        entry.content,
-        width,
-        kind == :assistant,
-        style(base),
-        {marker, style(Theme.style(:accent_soft))}
-      )
+    if kind == :assistant do
+      entry.content
+      |> CodeFences.split()
+      |> Enum.with_index()
+      |> Enum.map(fn {segment, index} ->
+        assistant_cell(segment, index == 0, width, base, marker)
+      end)
+    else
+      {resource, height} =
+        Native.conversation_message(
+          entry.content,
+          width,
+          false,
+          style(base),
+          {marker, style(Theme.style(:accent_soft))}
+        )
 
-    [{%Cell{state: resource, style: base}, height}]
+      [{%Cell{state: resource, style: base}, height}]
+    end
   end
 
   def cell(%MessageView{} = entry, width) do
     entry |> MessageView.render_entry(width) |> Enum.map(&paragraph_cell(&1, width))
+  end
+
+  defp assistant_cell({:markdown, content}, first?, width, base, marker) do
+    {resource, height} =
+      Native.conversation_message(
+        content,
+        width,
+        true,
+        style(base),
+        {if(first?, do: marker, else: ""), style(Theme.style(:accent_soft))}
+      )
+
+    {%Cell{state: resource, style: base}, height}
+  end
+
+  defp assistant_cell({:elixir, code}, first?, width, base, marker) do
+    # The highlighter supplies token colours and its own lighter background.
+    # Keep the colours but paint a single darker band across every code row.
+    surface = Theme.merge(base, Theme.style(:code_surface))
+
+    rows =
+      code
+      |> ExRatatui.CodeBlock.highlight("elixir", :base16_ocean_dark)
+      |> Enum.map(fn %Line{spans: spans, style: row_style} ->
+        {Enum.map(spans, fn %Span{content: content, style: span_style} ->
+           {String.trim_trailing(content, "\n"), style(%{span_style | bg: nil})}
+         end), style(%{row_style | bg: nil})}
+      end)
+
+    # The last newline of a fenced block is structural, not an extra code row.
+    rows = if rows == [], do: [{[], style(%Style{})}], else: rows
+    marker = if first?, do: {marker, style(Theme.style(:accent_soft))}, else: nil
+    {resource, height} = Native.conversation_code(rows, width, style(surface), marker)
+    {%Cell{state: resource, style: surface}, height}
   end
 
   @doc false

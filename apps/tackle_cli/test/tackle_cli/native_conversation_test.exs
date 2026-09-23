@@ -101,6 +101,56 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     assert paint(narrow) =~ "title"
   end
 
+  test "Elixir fences highlight both settled and streaming assistant code without showing fences" do
+    for source <- [
+          "```elixir\nIO.puts(\"hello\")\n```",
+          "```elixir\nIO.puts(\"hello\")"
+        ] do
+      entry = %MessageView{kind: :assistant, content: source}
+      cells = Widget.cell(entry, 36)
+      {scene, height} = Widget.assemble(cells, 36)
+
+      {:ok, rows} =
+        Native.conversation_render(scene, 36, height, 0, [], Widget.style(%ExRatatui.Style{}))
+
+      painted = Enum.map_join(rows, "\n", fn row -> Enum.map_join(row, &elem(&1, 0)) end)
+
+      assert painted =~ "● IO.puts(\"hello\")"
+      refute painted =~ "```"
+
+      assert Enum.any?(List.flatten(rows), fn {text, fg, _bg, _under, _modifiers} ->
+               text == "IO" and match?({_, _, _}, fg)
+             end)
+
+      # Every cell of the snippet, including indentation, padding and trailing
+      # whitespace, carries the same surface rather than the highlighter's bg.
+      code_bg = Widget.style(Theme.style(:code_surface)) |> elem(1)
+
+      assert Enum.all?(List.flatten(rows), fn {_text, _fg, bg, _under, _modifiers} ->
+               bg == code_bg
+             end)
+
+      assert MessageView.source(entry) == source
+    end
+  end
+
+  test "Elixir code keeps indentation and wraps with the message gutter" do
+    source = "before\n\n```ex\n    IO.puts(\"hello\")\n```\n\nafter"
+    cells = Widget.cell(%MessageView{kind: :assistant, content: source}, 12)
+    {scene, height} = Widget.assemble(cells, 12)
+
+    {:ok, rows} =
+      Native.conversation_render(scene, 12, height, 0, [], Widget.style(%ExRatatui.Style{}))
+
+    painted = Enum.map(rows, fn row -> Enum.map_join(row, &elem(&1, 0)) end)
+
+    assert length(cells) == 3
+    assert Enum.any?(painted, &String.starts_with?(&1, "      IO.pu"))
+    assert Enum.any?(painted, &String.starts_with?(&1, "  after"))
+    assert Enum.all?(tl(painted), &String.starts_with?(&1, "  "))
+    refute Enum.join(painted) =~ "```"
+  end
+
   test "native paint sanitizes direct callers, bounds buffers and rejects mixed widths" do
     style = Widget.style(%ExRatatui.Style{})
     source = "safe\e]52;c;secret\a\e[31m red\e[0m\tend\u009b31m!"
