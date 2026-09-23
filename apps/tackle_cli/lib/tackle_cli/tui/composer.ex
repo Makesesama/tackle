@@ -20,7 +20,7 @@ defmodule Tackle.CLI.TUI.Composer do
 
   alias ExRatatui.Command
   alias ExRatatui.Event.Key
-  alias Tackle.CLI.TUI.{History, Layout, State, Tree, Viewport}
+  alias Tackle.CLI.TUI.{ClipboardPaste, History, Layout, Pastes, State, Tree, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
 
@@ -33,9 +33,32 @@ defmodule Tackle.CLI.TUI.Composer do
   @spec paste(State.t(), String.t()) :: State.t()
   def paste(%State{} = state, content) do
     content = content |> String.replace("\r\n", "\n") |> String.replace("\r", "")
-    content = image_path_prompt(content) || content
-    :ok = Input.insert_str(state.input, content)
+
+    state =
+      case image_path_prompt(content) do
+        nil ->
+          if Pastes.long_text?(content) do
+            Pastes.insert(state, :text, content)
+          else
+            :ok = Input.insert_str(state.input, content)
+            state
+          end
+
+        instruction ->
+          Pastes.insert(state, :image, instruction)
+      end
+
     state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()
+  end
+
+  @doc "Inserts a saved clipboard image as a compact token in the draft."
+  @spec paste_image(State.t(), String.t()) :: State.t()
+  def paste_image(%State{} = state, path) do
+    state
+    |> Pastes.insert(:image, " Please use the read tool to inspect this image: #{path} ")
+    |> settle_history()
+    |> Viewport.update_draft()
+    |> Viewport.relayout()
   end
 
   # Some terminals paste images as file paths rather than clipboard bytes.
@@ -68,17 +91,31 @@ defmodule Tackle.CLI.TUI.Composer do
   end
 
   @doc "Pastes an image from the OS clipboard, or text when no image is available."
-  @spec paste_clipboard(State.t()) :: {:noreply, State.t()}
+  @spec paste_clipboard(State.t()) ::
+          {:noreply, State.t()} | {:noreply, State.t(), keyword()}
+  def paste_clipboard(%State{clipboard_paste_command: command} = state)
+      when is_binary(command) do
+    if state.clipboard_paste_pending do
+      {:noreply, %{state | notice: "Host clipboard paste already requested"}}
+    else
+      ref = make_ref()
+
+      {:noreply, %{state | clipboard_paste_pending: ref, notice: "Reading host clipboard…"},
+       commands: [
+         Command.async(
+           fn -> ClipboardPaste.request(command) end,
+           &{:host_clipboard_paste_result, ref, &1}
+         )
+       ]}
+    end
+  end
+
   def paste_clipboard(%State{} = state) do
     case state.clipboard_image_reader.() do
       {:ok, bytes} ->
         case Tackle.CLI.ImageClipboard.save(bytes) do
           {:ok, path} ->
-            {:noreply,
-             paste(
-               %{state | image_paths: [path | state.image_paths]},
-               " Please use the read tool to inspect this image: #{path} "
-             )}
+            {:noreply, paste_image(%{state | image_paths: [path | state.image_paths]}, path)}
 
           {:error, reason} ->
             image_error(state, reason)
@@ -222,7 +259,7 @@ defmodule Tackle.CLI.TUI.Composer do
   end
 
   defp submit_turn(%State{} = state, raw_draft) do
-    prompt = String.trim(raw_draft)
+    prompt = raw_draft |> Pastes.expand(state) |> String.trim()
     ref = make_ref()
     agent_ref = state.agent_ref
 
@@ -230,8 +267,8 @@ defmodule Tackle.CLI.TUI.Composer do
 
     state = %{
       state
-      | pending_operation: %{ref: ref, kind: :submit, raw_draft: raw_draft},
-        history: History.record(state.history, prompt),
+      | pending_operation: %{ref: ref, kind: :submit, raw_draft: raw_draft, prompt: prompt},
+        history: History.record(state.history, String.trim(raw_draft)),
         notice: nil
     }
 

@@ -8,6 +8,10 @@ let
   jailedAgents = jailed-agents.lib.${system};
   jail = jailedAgents.internals.jail;
   ketch = pkgs.callPackage ./ketch.nix { };
+  clipboardPaste = import ./clipboard-paste-jail.nix {
+    inherit pkgs;
+    jail = jail.combinators;
+  };
 
   tackleDevelopmentWrapper = pkgs.writeShellApplication {
     name = "tackle-development";
@@ -83,10 +87,13 @@ jailedAgents.makeJailedAgent {
 
   # A fresh installation might not have TACKLE_HOME yet. This setup runs on
   # the host before Bubblewrap starts and creates only Tackle's state directory.
-  baseJailOptions = jailedAgents.commonJailOptions ++ [
-    (jail.combinators.add-runtime ''
-      mkdir -p "$HOME/.tackle"
-      chmod 700 "$HOME/.tackle"
-    '')
-  ];
+  baseJailOptions =
+    jailedAgents.commonJailOptions
+    ++ clipboardPaste
+    ++ [
+      (jail.combinators.add-runtime ''
+        mkdir -p "$HOME/.tackle"
+        chmod 700 "$HOME/.tackle"
+      '')
+    ];
 }

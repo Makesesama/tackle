@@ -74,6 +74,7 @@ defmodule Tackle.CLI.TUI do
 
   alias Tackle.CLI.TUI.{
     Browser,
+    ClipboardPaste,
     Compaction,
     Composer,
     Conversation,
@@ -184,14 +185,41 @@ defmodule Tackle.CLI.TUI do
   # -- runtime events ------------------------------------------------------
 
   @impl true
+  def handle_info(:host_clipboard_paste_tick, state), do: {:noreply, ClipboardPaste.poll(state)}
+
+  def handle_info(
+        {:host_clipboard_paste_result, ref, result},
+        %{clipboard_paste_pending: ref} = state
+      ) do
+    state = %{state | clipboard_paste_pending: nil}
+
+    case result do
+      :ok ->
+        {:noreply, ClipboardPaste.poll(%{state | notice: nil})}
+
+      {:error, reason} ->
+        {:noreply, %{state | notice: "Host image paste failed: #{inspect(reason)} · draft kept"}}
+    end
+  end
+
+  def handle_info({:host_clipboard_paste_result, _ref, _result}, state),
+    do: {:noreply, state, render?: false}
+
   def handle_info(message, state), do: RuntimeEvents.handle(message, state)
 
   @impl true
   def subscriptions(state) do
-    if state.active_turn != nil or state.pending_operation != nil do
-      [Subscription.interval(:tui_spinner, 80, {:tui_spinner_tick})]
+    spinner =
+      if state.active_turn != nil or state.pending_operation != nil do
+        [Subscription.interval(:tui_spinner, 80, {:tui_spinner_tick})]
+      else
+        []
+      end
+
+    if state.clipboard_paste_dir do
+      [Subscription.interval(:host_clipboard_paste, 300, :host_clipboard_paste_tick) | spinner]
     else
-      []
+      spinner
     end
   end
 

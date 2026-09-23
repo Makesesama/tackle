@@ -8,6 +8,7 @@
 let
   jailedAgents = jailed-agents.lib.${system};
   jail = jailedAgents.internals.jail.combinators;
+  clipboardPaste = import ./clipboard-paste-jail.nix { inherit pkgs jail; };
 
   # Keep the policy shared with the credential-free runtime smoke test.
   mkJail =
@@ -38,23 +39,26 @@ let
         NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       };
-      baseJailOptions = jailedAgents.commonJailOptions ++ [
-        (jail.add-runtime ''
-          if [[ ! -S /nix/var/nix/daemon-socket/socket ]]; then
-            echo "tackle jail requires the host Nix daemon socket" >&2
-            exit 2
-          fi
-          mkdir -p "$HOME/.tackle"
-          chmod 700 "$HOME/.tackle"
-        '')
-        (jail.wrap-entry (entry: ''
-          # Keep the extracted release persistent without exposing all user data.
-          # Do not inherit dev-shell hooks, Mix paths, or TACKLE_DEV in production.
-          export TACKLE_HOME="$HOME/.tackle"
-          export TACKLE_CLI_INSTALL_DIR="$TACKLE_HOME/burrito"
-          exec ${entry}
-        ''))
-      ];
+      baseJailOptions =
+        jailedAgents.commonJailOptions
+        ++ clipboardPaste
+        ++ [
+          (jail.add-runtime ''
+            if [[ ! -S /nix/var/nix/daemon-socket/socket ]]; then
+              echo "tackle jail requires the host Nix daemon socket" >&2
+              exit 2
+            fi
+            mkdir -p "$HOME/.tackle"
+            chmod 700 "$HOME/.tackle"
+          '')
+          (jail.wrap-entry (entry: ''
+            # Keep the extracted release persistent without exposing all user data.
+            # Do not inherit dev-shell hooks, Mix paths, or TACKLE_DEV in production.
+            export TACKLE_HOME="$HOME/.tackle"
+            export TACKLE_CLI_INSTALL_DIR="$TACKLE_HOME/burrito"
+            exec ${entry}
+          ''))
+        ];
     };
 
   package = mkJail tackle-cli;

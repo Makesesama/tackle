@@ -337,10 +337,15 @@ source.
 Bracketed paste lands as one edit and never submits. CRLF is normalized to `\n`;
 lone CR is dropped before the edit. In the composer, Ctrl+V pastes clipboard
 text or, if available, an image (PNG, JPEG, GIF, WebP, up to 5 MiB). A terminal
-that pastes an image as a file path is also supported. Clipboard images need
+that pastes an image as a file path is also supported. Images appear as numbered
+`[image-1]` tokens in the composer; text pastes of at least 1,000 bytes appear
+as `[text-1]`, with separate counters for each type. Enter expands the tokens
+before sending the full prompt to the agent. Smaller text pastes remain editable
+as ordinary text. Clipboard images need
 `wl-paste` (Wayland), `xclip` (X11), or `pngpaste` (macOS); text fallback on macOS
 uses `pbpaste`. The CLI saves clipboard images in a private temporary directory
-until it exits and inserts a path with a request to use the `read` tool. Images
+until it exits and expands image tokens into paths with a request to use the
+`read` tool. Images
 are **not** directly attached to user messages; the agent must read the file,
 and those saved paths will not work after the CLI exits. Ctrl+U undoes and
 Ctrl+R redoes a full multiline paste. Undo and redo each retain at most 100

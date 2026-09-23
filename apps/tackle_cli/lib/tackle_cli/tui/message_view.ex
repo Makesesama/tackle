@@ -23,7 +23,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
-  alias Tackle.CLI.TUI.{Compaction, Theme, ToolView}
+  alias Tackle.CLI.TUI.{Compaction, Pastes, Theme, ToolView}
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   @conversation_chunk_rows 64
@@ -141,7 +141,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   def section_entries(state, :pending) do
     if is_binary(state.pending_prompt) do
       [
-        entry(:user, state.pending_prompt,
+        entry(:user, Pastes.collapse(state.pending_prompt, state),
           id: "pending",
           label: "You:",
           source: state.pending_prompt,
@@ -168,7 +168,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           )
 
         {%{kind: :user, content: content} = item, index} ->
-          entry(:user, content,
+          entry(:user, Pastes.collapse(content, state),
             id: Map.get(item, :id, live_text_id(:user, index)),
             label: "You:",
             source: content,
@@ -195,7 +195,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       |> Map.get(:queued_prompts, [])
       |> Enum.with_index()
       |> Enum.map(fn {content, index} ->
-        entry(:user, content,
+        entry(:user, Pastes.collapse(content, state),
           id: "queued:#{index}",
           label: "You · queued:",
           source: content,
@@ -571,10 +571,10 @@ defmodule Tackle.CLI.TUI.MessageView do
     end)
   end
 
-  defp message_entries(%Message{role: :user, content: content}, index, _state)
+  defp message_entries(%Message{role: :user, content: content}, index, state)
        when is_binary(content) do
     [
-      entry(:user, content,
+      entry(:user, Pastes.collapse(content, state),
         id: "message:#{index}:user",
         label: "You:",
         source: content,
