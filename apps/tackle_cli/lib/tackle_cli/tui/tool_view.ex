@@ -2,11 +2,12 @@ defmodule Tackle.CLI.TUI.ToolView do
   @moduledoc """
   Built-in, render-only tool cards.
 
-  Cards are borderless: a quiet dot for completed calls (not an emoji check),
-  colored activity/failure markers, and a prominent command/path. Preview rows
-  use a two-cell hanging indent. Completed calls omit redundant status text;
+  Cards are borderless: completed calls have no marker, while activity/failure
+  markers accompany a prominent command/path. Preview rows use a four-cell
+  hanging indent. Completed calls omit redundant status text;
   running, requested and failed calls stay explicit. Successful reads collapse
-  to their path; successful Bash output shows at most two clipped tail lines.
+  to a tool/path header; successful Bash output shows at most two clipped tail
+  lines.
   Full retained output stays in details. Failed edits show the error instead of
   a replacement preview (details retain the submitted arguments as source).
   Subagents show their profile, assignment, live status, and locally observed
@@ -35,9 +36,9 @@ defmodule Tackle.CLI.TUI.ToolView do
   @header_rows 2
 
   @doc "A compact, source-independent title for a tool call."
-  def title(name, arguments, status) do
+  def title(name, arguments, _status) do
     target = target(name, arguments)
-    "#{marker(status)} #{name}" <> if(target == "", do: "", else: "  " <> target)
+    name <> if(target == "", do: "", else: "  " <> target)
   end
 
   @doc "Renders a bounded inline card or complete retained details."
@@ -55,13 +56,13 @@ defmodule Tackle.CLI.TUI.ToolView do
     header =
       entry
       |> header_rows(header_args, width)
-      |> wrap_indented(width, 2, true)
+      |> wrap_indented(width, 4, true)
       |> truncate_header(width)
 
     body =
       entry
       |> body_rows(args, mode, width)
-      |> wrap_indented(width, 2)
+      |> wrap_indented(width, 4)
       |> trim(mode, width)
 
     MessageView.render_lines(header ++ body)
@@ -101,28 +102,29 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     elapsed =
       case entry.tool_elapsed_ms do
-        ms when is_integer(ms) and ms >= 0 and status != :completed -> " · " <> elapsed_text(ms)
+        ms when is_integer(ms) and ms >= 0 and status != :completed -> "  " <> elapsed_text(ms)
         _ -> ""
       end
 
     completed_time =
       case {status, entry.tool_elapsed_ms} do
-        {:completed, ms} when is_integer(ms) and ms >= 0 -> " · #{div(ms, 1_000)}s"
+        {:completed, ms} when is_integer(ms) and ms >= 0 -> "  #{div(ms, 1_000)}s"
         _ -> ""
       end
 
     model =
       case Map.get(entry, :model) do
-        model when is_binary(model) and model != "" -> " · " <> model
+        model when is_binary(model) and model != "" -> "  " <> model
         _ -> ""
       end
 
     [
       MessageView.row([
-        MessageView.span(marker(status) <> " ", marker_style(status)),
-        MessageView.span(subagent_status(status, entry.tool_elapsed_ms), status_style(status)),
+        MessageView.span(marker(status), marker_style(status)),
+        MessageView.span(subagent_status(status), status_style(status)),
+        MessageView.span("subagent  ", Theme.style(:muted)),
         MessageView.span(profile, Theme.bold(Theme.style(:text))),
-        MessageView.span(" · subagent" <> model <> elapsed <> completed_time, Theme.style(:muted))
+        MessageView.span(model <> elapsed <> completed_time, Theme.style(:muted))
       ])
     ]
   end
@@ -135,28 +137,28 @@ defmodule Tackle.CLI.TUI.ToolView do
     state =
       if status == :completed,
         do: [],
-        else: [MessageView.span(status_text(status) <> " · ", status_style(status))]
+        else: [MessageView.span(status_text(status) <> "  ", status_style(status))]
 
     heading =
       if target == "" do
         [MessageView.span(name, Theme.bold(Theme.style(:text)))]
       else
         [
-          MessageView.span(target, Theme.bold(Theme.style(:text))),
-          MessageView.span("  · " <> name, Theme.style(:muted))
+          MessageView.span(name <> "  ", Theme.style(:muted)),
+          MessageView.span(target, Theme.bold(Theme.style(:text)))
         ]
       end
 
     summary =
       if name == "read" and status == :completed and entry.tool_output == "" do
-        [MessageView.span("  · empty", Theme.style(:subtle))]
+        [MessageView.span("  empty", Theme.style(:subtle))]
       else
         []
       end
 
     [
       MessageView.row(
-        [MessageView.span(marker(status) <> " ", marker_style(status))] ++
+        [MessageView.span(marker(status), marker_style(status))] ++
           state ++ heading ++ summary
       )
     ]
@@ -243,7 +245,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp bash_preview(nil, _width), do: []
 
   defp bash_preview(output, width) do
-    content_width = if width > 3, do: width - 2, else: max(width, 1)
+    content_width = if width > 5, do: width - 4, else: max(width, 1)
 
     lines =
       output
@@ -256,7 +258,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     hint =
       if Enum.count_until(lines, 3) == 3 or clipped?,
-        do: [body_row(Theme.style(:subtle), "…" |> clip_width(content_width))],
+        do: [body_row(Theme.style(:subtle), "output clipped" |> clip_width(content_width))],
         else: []
 
     hint ++ Enum.map(tail, &body_row(Theme.style(:muted), clip_width(&1, content_width)))
@@ -286,12 +288,12 @@ defmodule Tackle.CLI.TUI.ToolView do
   # During input streaming JSON is often incomplete. Extract only string values
   # we can decode; never paint the escaped JSON envelope in the inline card.
   defp incoming_file_rows(%{tool_name: "write"}, raw) do
-    incoming_text_rows("Content incoming · partial", partial_field(raw, "content"))
+    incoming_text_rows("Content incoming (partial)", partial_field(raw, "content"))
   end
 
   defp incoming_file_rows(%{tool_name: "edit"}, raw) do
     text = partial_field(raw, "newText") || partial_field(raw, "oldText")
-    incoming_text_rows("Replacement incoming · partial", text)
+    incoming_text_rows("Replacement incoming (partial)", text)
   end
 
   defp incoming_text_rows(label, text) do
@@ -331,7 +333,7 @@ defmodule Tackle.CLI.TUI.ToolView do
           [
             body_row(
               Theme.style(:subtle),
-              "Content preview · #{length(lines)} lines · prior file not compared"
+              "Content preview (#{length(lines)} lines; prior file not compared)"
             )
           ]
 
@@ -357,7 +359,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
       rows =
         if mode == :details,
-          do: [context_row("Submitted text · not a verified file diff")],
+          do: [context_row("Submitted text (not a verified file diff)")],
           else: []
 
       rows ++
@@ -396,7 +398,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
         true ->
           Enum.map(Enum.take(lines, 2), &{:line, &1}) ++
-            [{:hidden, "… #{length(lines) - 4} lines hidden"}] ++
+            [{:hidden, "#{length(lines) - 4} lines hidden"}] ++
             Enum.map(Enum.take(lines, -2), &{:line, &1})
       end
 
@@ -442,7 +444,7 @@ defmodule Tackle.CLI.TUI.ToolView do
     label = "replacement #{index}"
 
     MessageView.row([
-      MessageView.span(label <> " · ", Theme.style(:muted)),
+      MessageView.span(label <> "  ", Theme.style(:muted)),
       MessageView.span("+#{added}", Theme.style(:diff_add)),
       MessageView.span(" "),
       MessageView.span("-#{removed}", Theme.style(:diff_del))
@@ -461,7 +463,7 @@ defmodule Tackle.CLI.TUI.ToolView do
     ])
   end
 
-  defp diff_row({:elision, count}), do: context_row("… #{count} lines hidden")
+  defp diff_row({:elision, count}), do: context_row("#{count} lines hidden")
 
   defp content_span({text, true}, tag, _style), do: MessageView.span(text, inline_style(tag))
   defp content_span({text, false}, _tag, style), do: MessageView.span(text, style)
@@ -500,9 +502,9 @@ defmodule Tackle.CLI.TUI.ToolView do
     head = div(@preview_rows - 1, 2)
     tail = @preview_rows - 1 - head
     style = Theme.style(:subtle)
-    hint = body_row(style, "… #{hidden} lines hidden")
+    hint = body_row(style, "#{hidden} lines hidden")
 
-    hint = hd(wrap_indented([hint], width, 2))
+    hint = hd(wrap_indented([hint], width, 4))
 
     Enum.take(rows, head) ++ [hint] ++ Enum.take(rows, -tail)
   end
@@ -510,7 +512,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp trim(rows, :preview, _width), do: rows
 
   # Wrap each logical row inside its gutter. The first header line starts at
-  # the edge; its continuations and every body row align two cells in.
+  # the edge; its continuations and every body row align four cells in.
   defp wrap_indented(rows, width, indent, header? \\ false) do
     indent = if width > indent + 1, do: indent, else: 0
 
@@ -531,7 +533,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   end
 
   defp truncate_header(rows, width) when length(rows) > @header_rows do
-    hint = MessageView.row("  …", Theme.style(:subtle))
+    hint = MessageView.row("  header clipped", Theme.style(:subtle))
     [hd(rows), hd(MessageView.wrap_rows([hint], width))]
   end
 
@@ -545,11 +547,10 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp clip_line(line, :details), do: line
 
-  defp marker(:preparing), do: "◐"
-  defp marker(:running), do: "●"
-  defp marker(:failed), do: "✗"
-  defp marker(:completed), do: "·"
-  defp marker(_), do: "›"
+  defp marker(:preparing), do: "◐ "
+  defp marker(:running), do: "● "
+  defp marker(:failed), do: "✗ "
+  defp marker(_), do: "  "
 
   defp marker_style(:failed), do: Theme.style(:error)
   defp marker_style(:preparing), do: Theme.style(:accent_soft)
@@ -562,11 +563,10 @@ defmodule Tackle.CLI.TUI.ToolView do
     if seconds < 60, do: "#{seconds}s", else: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
   end
 
-  defp subagent_status(:completed, ms) when is_integer(ms) and ms >= 0, do: ""
-  defp subagent_status(status, _ms), do: status_text(status) <> " · "
+  defp subagent_status(:completed), do: ""
+  defp subagent_status(status), do: status_text(status) <> "  "
 
   defp status_text(:preparing), do: "preparing"
-  defp status_text(:completed), do: "completed"
   defp status_text(:running), do: "running"
   defp status_text(:failed), do: "failed"
   defp status_text(_), do: "requested"

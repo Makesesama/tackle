@@ -29,8 +29,8 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
     [entry | _rest] = MessageView.section_entries(state, :settled)
     collapsed = text(MessageView.render_entry(entry, 60))
 
-    assert collapsed =~ "thought"
-    assert collapsed =~ "3 lines"
+    assert collapsed =~ "thought (3 lines)"
+    refute collapsed =~ "·"
     refute collapsed =~ "Ctrl+T to expand"
     refute collapsed =~ "first"
     refute collapsed =~ "second"
@@ -45,6 +45,11 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
     rows = for {widget, _} <- wrapped, row <- widget.text, do: plain(row)
     assert Enum.take(rows, -3) == ["  xxxxxxxxxx", "  xxxxxxxxxx", "  xxxx"]
     assert MessageView.search_text(entry) =~ "third"
+  end
+
+  test "compaction notices do not add decorative markers" do
+    entry = %MessageView{kind: :compaction, content: "Context compacted"}
+    assert text(MessageView.render_entry(entry, 40)) == "Context compacted"
   end
 
   test "paint strips terminal controls from every span while copy keeps the source" do

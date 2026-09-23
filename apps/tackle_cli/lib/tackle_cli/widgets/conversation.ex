@@ -95,7 +95,7 @@ defmodule Tackle.CLI.Widgets.Conversation do
     # The last newline of a fenced block is structural, not an extra code row.
     rows = if rows == [], do: [{[], style(%Style{})}], else: rows
     marker = if first?, do: {marker, style(Theme.style(:accent_soft))}, else: nil
-    {resource, height} = Native.conversation_code(rows, width, style(surface), marker)
+    {resource, height} = Native.conversation_code(rows, width, style(surface), marker, "elixir")
     {%Cell{state: resource, style: surface}, height}
   end
 

@@ -106,6 +106,7 @@ fn conversation_code(
     width: u16,
     base: WireStyle,
     marker: Option<WireSpan>,
+    language: String,
 ) -> NifResult<(ResourceArc<CellResource>, usize)> {
     let lines = rows
         .into_iter()
@@ -120,7 +121,7 @@ fn conversation_code(
     let marker = marker
         .map(|(text, wire)| Ok(Span::styled(sanitize(&text), style(wire)?)))
         .transpose()?;
-    let cell = HistoryCell::code(lines, width, style(base)?, marker);
+    let cell = HistoryCell::code(lines, width, style(base)?, marker, sanitize(&language));
     let height = cell.height();
     Ok((ResourceArc::new(CellResource(Arc::new(cell))), height))
 }

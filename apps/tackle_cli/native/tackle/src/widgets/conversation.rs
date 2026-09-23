@@ -47,8 +47,8 @@ impl HistoryCell {
         marker: Span<'static>,
     ) -> Self {
         let width = width.max(1);
-        let gutter = if width >= 4 { 2 } else { 0 };
-        let right_padding = if width >= 4 { 1 } else { 0 };
+        let gutter = if width >= 6 { 3 } else { 0 };
+        let right_padding = if width >= 6 { 2 } else { 0 };
         let source = sanitize(source);
         let text = if markdown {
             tui_markdown::from_str(&source)
@@ -100,15 +100,20 @@ impl HistoryCell {
         width: u16,
         style: Style,
         marker: Option<Span<'static>>,
+        language: String,
     ) -> Self {
         let width = width.max(1);
-        let gutter = if width >= 4 { 2 } else { 0 };
-        let right_padding = if width >= 4 { 1 } else { 0 };
+        let gutter = if width >= 6 { 3 } else { 0 };
+        let right_padding = if width >= 6 { 2 } else { 0 };
         let content_width = width - gutter - right_padding;
-        let lines: Vec<_> = lines
+        let mut lines: Vec<_> = lines
             .into_iter()
             .flat_map(|line| grapheme_wrap(line, content_width))
             .collect();
+        let padding = " "
+            .repeat(usize::from(content_width).saturating_sub(Span::raw(language.clone()).width()));
+        let header = Line::from(vec![Span::raw(padding), Span::styled(language, style)]);
+        lines.insert(0, header);
         let mut cell = Self::new(Text::from(lines), content_width, style, false);
         cell.width = width;
         cell.gutter = gutter;
@@ -511,12 +516,14 @@ mod tests {
                     for x in 0..width {
                         assert_eq!(clipped[(2 + x, 3)], full[(2 + x, 3 + offset as u16)]);
                     }
-                    if width >= 4 {
+                    if width >= 6 {
                         assert_eq!(
                             clipped[(2, 3)].symbol(),
                             if offset == 0 { "●" } else { " " }
                         );
                         assert_eq!(clipped[(3, 3)].symbol(), " ");
+                        assert_eq!(clipped[(4, 3)].symbol(), " ");
+                        assert_eq!(clipped[(width, 3)].symbol(), " ");
                         assert_eq!(clipped[(width + 1, 3)].symbol(), " ");
                     }
                 }
@@ -544,7 +551,7 @@ mod tests {
             .chunks(10)
             .map(|row| row.iter().map(|cell| cell.symbol()).collect())
             .collect();
-        assert_eq!(rows, ["›   **raw ", "  **      ", "  next    "]);
+        assert_eq!(rows, ["›    **r  ", "   aw**   ", "   next   "]);
         assert!(!buffer
             .content
             .iter()
