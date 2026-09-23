@@ -49,10 +49,8 @@ defmodule Tackle.Phoenix.RuntimeBackend do
   def call(pid, :unsubscribe, []), do: Runner.runtime_unsubscribe(pid, self())
   def call(pid, :snapshot, []), do: Runner.snapshot(pid)
 
-  def call(pid, :deliver, [from, message]) do
-    send(pid, {:tackle_runtime_message, from, message})
-    :ok
-  end
+  def call(_pid, :deliver, [_envelope]),
+    do: {:error, {:unsupported_agent_operation, :deliver}}
 
   def call(_pid, operation, _args), do: {:error, {:unsupported_agent_operation, operation}}
 

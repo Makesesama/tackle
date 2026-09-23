@@ -22,12 +22,16 @@ defmodule Tackle.Runtime.Request do
 
   use GenServer, restart: :temporary
 
+  require Logger
+
   alias Tackle.Lib.Event
   alias Tackle.Runtime.AgentBackend
   alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.AgentSupervisor
+  alias Tackle.Runtime.Envelope
+  alias Tackle.Runtime.Messaging
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Registry
   alias Tackle.Runtime.RunRef
@@ -378,9 +382,8 @@ defmodule Tackle.Runtime.Request do
        when is_function(callback, 1) and is_binary(turn_id) and turn_id != "" and
               is_binary(tool_call_id) and tool_call_id != "" do
     with message when is_binary(message) <- callback.(run_ref),
-         {:ok, parent} <- Registry.whereis(parent_ref),
-         {:ok, backend} <- Registry.backend(parent_ref) do
-      AgentBackend.notify(backend, parent, {:background_started, run_ref, origin, message})
+         {:ok, envelope} <- Envelope.new(:launch, run_ref.agent_ref, message, origin) do
+      Messaging.deliver(parent_ref, envelope)
     else
       {:error, reason} -> {:error, reason}
       message when not is_binary(message) -> {:error, {:invalid_launch_message, message}}
@@ -534,30 +537,55 @@ defmodule Tackle.Runtime.Request do
          %{
            completion_message: callback,
            run_ref: run_ref,
-           parent: %{agent_ref: parent_ref},
-           profile: profile
-         },
+           parent: %{agent_ref: parent_ref}
+         } = state,
          outcome
        )
        when is_function(callback, 2) do
-    with message when is_binary(message) <- callback.(run_ref, outcome),
-         {:ok, parent} <- Registry.whereis(parent_ref),
-         {:ok, backend} <- Registry.backend(parent_ref) do
-      AgentBackend.notify(
-        backend,
-        parent,
-        {:background_finished, run_ref, profile, outcome, message}
-      )
-    end
+    # Publish the observational event before delivery can wake a new turn.
+    # Mailbox order from this request to the parent preserves that ordering.
+    publish_completion(state, outcome)
 
-    :ok
+    with message when is_binary(message) <- callback.(run_ref, outcome),
+         {:ok, envelope} <- Envelope.new(:completion, run_ref.agent_ref, message),
+         :ok <- Messaging.deliver(parent_ref, envelope) do
+      :ok
+    else
+      error ->
+        Logger.warning(
+          "background completion delivery failed for #{run_ref.run_id}: #{inspect(error)}"
+        )
+    end
   rescue
-    _error -> :ok
+    error ->
+      Logger.warning(
+        "background completion delivery crashed for #{run_ref.run_id}: #{Exception.message(error)}"
+      )
   catch
-    _kind, _reason -> :ok
+    kind, reason ->
+      Logger.warning(
+        "background completion delivery failed for #{run_ref.run_id}: #{inspect({kind, reason})}"
+      )
   end
 
   defp notify_parent(_state, _outcome), do: :ok
+
+  defp publish_completion(
+         %{run_ref: run_ref, parent: %{agent_ref: parent_ref}, profile: profile},
+         outcome
+       ) do
+    with {:ok, parent} <- Registry.whereis(parent_ref),
+         {:ok, backend} <- Registry.backend(parent_ref),
+         :ok <-
+           AgentBackend.notify(backend, parent, {:background_finished, run_ref, profile, outcome}) do
+      :ok
+    else
+      error ->
+        Logger.warning(
+          "background completion event failed for #{run_ref.run_id}: #{inspect(error)}"
+        )
+    end
+  end
 
   defp timeout_outcome(state) do
     Outcome.new(:timeout, reason: :run_timeout, agent_ref: state.agent_ref)

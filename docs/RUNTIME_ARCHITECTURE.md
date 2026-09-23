@@ -387,11 +387,24 @@ cancel(run | workflow | fleet)
 ```
 
 In addition to correlated request/reply, `Runtime.tell/3` delivers text between
-agents in the same scope through a bounded in-memory inbox. Messages become user
-messages at the recipient's next turn boundary; inbox overflow is rejected.
-There is no broadcast command bus. Durable mailboxes, free-form autonomous chat,
-and reconstruction of queued messages after process or BEAM failure remain
-deferred.
+agents in the same scope through `Tackle.Runtime.Messaging`. All model-facing
+agent messages use a validated `Tackle.Runtime.Envelope` and one backend
+`:deliver` operation. A busy root-harness agent sees messages at its next
+provider boundary; an idle persistent agent is woken for a new turn. Ordinary
+text messages have a bounded inbox and require a live sender; the supplied
+sender reference is not authenticated as the caller's identity.
+
+Deferred tools use the same delivery path. A `:launch` envelope carries the
+originating turn and tool-call IDs, so the root harness discards it if the tool
+result commits, or makes it visible after an interrupted turn. A `:completion`
+envelope wakes an idle agent. These envelopes have separate bounded capacity
+(128 in the root harness); overflow returns an error that the request helper
+logs, rather than silently dropping a completion. Envelopes are transient if
+the scope/session stops. Host backends without a mailbox must reject `:deliver`
+explicitly; the Phoenix backend currently does so. Correlated terminal outcomes
+and observational events remain separate from model-facing messages. Durable
+mailboxes, free-form autonomous chat, and reconstruction of queued messages
+after process or BEAM failure remain deferred.
 
 ### 6.2 Routing
 

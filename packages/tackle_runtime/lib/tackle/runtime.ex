@@ -17,8 +17,10 @@ defmodule Tackle.Runtime do
   alias Tackle.Runtime.AgentBackend
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.AgentSpec
+  alias Tackle.Runtime.Envelope
   alias Tackle.Runtime.Handle
   alias Tackle.Runtime.ID
+  alias Tackle.Runtime.Messaging
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Ref
   alias Tackle.Runtime.Registry
@@ -154,7 +156,7 @@ defmodule Tackle.Runtime do
     end
   end
 
-  @doc "Delivers text to an in-scope agent's bounded next-turn inbox."
+  @doc "Delivers text to an in-scope agent's bounded inbox (at the next provider boundary when busy)."
   @spec tell(AgentRef.t(), AgentRef.t(), String.t()) :: :ok | {:error, term()}
   def tell(%AgentRef{} = from, %AgentRef{} = to, message) when is_binary(message) do
     cond do
@@ -165,10 +167,8 @@ defmodule Tackle.Runtime do
         {:error, :empty_message}
 
       true ->
-        with {:ok, coordinator} <- coordinator(from),
-             {:ok, _sender} <- Coordinator.agent_snapshot(coordinator, from),
-             {:ok, _recipient} <- Coordinator.agent_snapshot(coordinator, to) do
-          with_agent(to, :deliver, [from, message])
+        with {:ok, envelope} <- Envelope.new(:message, from, message) do
+          Messaging.deliver(to, envelope)
         end
     end
   end
@@ -278,7 +278,6 @@ defmodule Tackle.Runtime do
         parent: %{agent_ref: parent_ref},
         timeout: Keyword.get(opts, :timeout, AgentSpec.timeout(spec, admission.limits)),
         event_callback: Keyword.get(opts, :event_callback),
-        completion_callback: Keyword.get(opts, :completion_callback),
         completion_message: Keyword.get(opts, :completion_message),
         launch_message: Keyword.get(opts, :launch_message),
         origin: Keyword.get(opts, :origin),
