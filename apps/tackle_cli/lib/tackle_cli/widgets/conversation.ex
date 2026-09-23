@@ -78,14 +78,14 @@ defmodule Tackle.CLI.Widgets.Conversation do
     {%Cell{state: resource, style: base}, height}
   end
 
-  defp assistant_cell({:elixir, code}, first?, width, base, marker) do
+  defp assistant_cell({:code, language, code}, first?, width, base, marker) do
     # The highlighter supplies token colours and its own lighter background.
     # Keep the colours but paint a single darker band across every code row.
     surface = Theme.merge(base, Theme.style(:code_surface))
 
     rows =
       code
-      |> ExRatatui.CodeBlock.highlight("elixir", :base16_ocean_dark)
+      |> ExRatatui.CodeBlock.highlight(language, :base16_ocean_dark)
       |> Enum.map(fn %Line{spans: spans, style: row_style} ->
         {Enum.map(spans, fn %Span{content: content, style: span_style} ->
            {String.trim_trailing(content, "\n"), style(%{span_style | bg: nil})}
@@ -95,7 +95,7 @@ defmodule Tackle.CLI.Widgets.Conversation do
     # The last newline of a fenced block is structural, not an extra code row.
     rows = if rows == [], do: [{[], style(%Style{})}], else: rows
     marker = if first?, do: {marker, style(Theme.style(:accent_soft))}, else: nil
-    {resource, height} = Native.conversation_code(rows, width, style(surface), marker, "elixir")
+    {resource, height} = Native.conversation_code(rows, width, style(surface), marker, language)
     {%Cell{state: resource, style: surface}, height}
   end
 

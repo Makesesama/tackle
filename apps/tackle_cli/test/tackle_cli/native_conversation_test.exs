@@ -135,6 +135,59 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     end
   end
 
+  test "shell and Erlang fences share the code surface in settled and streaming messages" do
+    for {language, snippet} <- [{"sh", "echo hello"}, {"erlang", "hello() -> ok."}],
+        source <- ["```#{language}\n#{snippet}\n```", "```#{language}\n#{snippet}"] do
+      cells = Widget.cell(%MessageView{kind: :assistant, content: source}, 36)
+      {scene, height} = Widget.assemble(cells, 36)
+
+      {:ok, rows} =
+        Native.conversation_render(scene, 36, height, 0, [], Widget.style(%ExRatatui.Style{}))
+
+      painted = Enum.map_join(rows, "\n", fn row -> Enum.map_join(row, &elem(&1, 0)) end)
+      assert painted =~ language
+      assert painted =~ snippet
+      refute painted =~ "```"
+
+      assert Enum.any?(List.flatten(rows), fn {text, fg, _bg, _under, _modifiers} ->
+               text in ["echo", "hello"] and match?({_, _, _}, fg)
+             end)
+
+      code_bg = Widget.style(Theme.style(:code_surface)) |> elem(1)
+
+      assert Enum.all?(List.flatten(rows), fn {_text, _fg, bg, _under, _modifiers} ->
+               bg == code_bg
+             end)
+    end
+  end
+
+  test "every fenced language uses the same code surface, including unknown and unlabelled code" do
+    for {language, snippet} <- [
+          {"python", "print(1)"},
+          {"rust", "fn main() {}"},
+          {"json", "{\"ok\": true}"},
+          {"made-up-language", "raw code"},
+          {"", "plain code"}
+        ],
+        source <- ["```#{language}\n#{snippet}\n```", "```#{language}\n#{snippet}"] do
+      cells = Widget.cell(%MessageView{kind: :assistant, content: source}, 40)
+      {scene, height} = Widget.assemble(cells, 40)
+
+      {:ok, rows} =
+        Native.conversation_render(scene, 40, height, 0, [], Widget.style(%ExRatatui.Style{}))
+
+      painted = Enum.map_join(rows, "\n", fn row -> Enum.map_join(row, &elem(&1, 0)) end)
+      assert painted =~ snippet
+      refute painted =~ "```"
+
+      code_bg = Widget.style(Theme.style(:code_surface)) |> elem(1)
+
+      assert Enum.all?(List.flatten(rows), fn {_text, _fg, bg, _under, _modifiers} ->
+               bg == code_bg
+             end)
+    end
+  end
+
   test "Elixir code keeps indentation and wraps with the message gutter" do
     source = "before\n\n```ex\n    IO.puts(\"hello\")\n```\n\nafter"
     cells = Widget.cell(%MessageView{kind: :assistant, content: source}, 12)

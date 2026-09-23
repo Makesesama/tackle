@@ -592,7 +592,9 @@ cargo fmt --manifest-path native/tackle/Cargo.toml --check
 ```
 
 The custom input uses the existing Rust dependencies; the native conversation
-adds `tui-markdown` (also used by ExRatatui). Both use the owned styled-row
+adds `tui-markdown` (also used by ExRatatui). Assistant fenced code, including
+shell and Erlang, uses the shared code surface and ExRatatui syntax highlighting;
+other Markdown remains with `tui-markdown`. Both use the owned styled-row
 surface bridge; no resources or pointers are shared with ExRatatui's NIF.
 Attachments, history search, completions, selections, and Vim mode are not yet
 implemented.
