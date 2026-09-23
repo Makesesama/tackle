@@ -8,6 +8,7 @@ defmodule Tackle.MixProject do
       description: "Developer agent harness built on Tackle.Lib and Tackle.Runtime",
       source_url: "https://github.com/Makesesama/tackle",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
+      docs: [main: "Tackle"],
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -33,6 +34,7 @@ defmodule Tackle.MixProject do
       {:deps_nix, "~> 3.0", only: :dev},
       {:tackle_lib, path: "../tackle_lib"},
       {:tackle_runtime, path: "../tackle_runtime"},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
       {:ex_dna, "~> 1.5", only: [:dev, :test], runtime: false}

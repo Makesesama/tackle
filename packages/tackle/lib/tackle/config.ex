@@ -10,7 +10,7 @@ defmodule Tackle.Config do
   (`Tackle.Lib.Tool.Policy.concurrent/0`) under the session's own tool supervisor.
   `:tool_policy` is not a harness option: `Tackle.Lib` still supports sequential
   execution for hosts that need it, but the Tackle runtime pins concurrency. See
-  the tool policy section of [`../packages/tackle_lib/README.md`](../packages/tackle_lib/README.md)
+  the tool policy section of the [Tackle.Lib guide](https://github.com/Makesesama/tackle/blob/main/packages/tackle_lib/README.md)
   for the difference between the two modes.
   """
 

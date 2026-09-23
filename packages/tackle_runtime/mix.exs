@@ -8,6 +8,7 @@ defmodule Tackle.Runtime.MixProject do
       description: "Scoped OTP orchestration for Tackle agents",
       source_url: "https://github.com/Makesesama/tackle",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
+      docs: [main: "readme", extras: ["README.md"]],
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -27,7 +28,8 @@ defmodule Tackle.Runtime.MixProject do
 
   defp deps do
     [
-      {:tackle_lib, path: "../tackle_lib"}
+      {:tackle_lib, path: "../tackle_lib"},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false}
     ]
   end
 end

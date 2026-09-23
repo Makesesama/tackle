@@ -13,9 +13,9 @@ defmodule Tackle.Lib.Usage do
   to cache. Total prompt volume is the sum of those three buckets.
 
   Tackle.Lib deliberately does **not** depend on pricing libraries such as
-  `llm_db`. Adapters may expose price cards through `Tackle.Lib.LLM.model_info/1`;
-  the library applies their deterministic arithmetic while leaving provider
-  facts and persistence adapter/host-owned.
+  `llm_db`. Adapters may expose price cards through the optional `model_info/1`
+  callback in `Tackle.Lib.LLM`; the library applies their deterministic arithmetic
+  while leaving provider facts and persistence adapter/host-owned.
   """
 
   @type token_count :: non_neg_integer() | nil
@@ -142,7 +142,7 @@ defmodule Tackle.Lib.Usage do
   @doc """
   Aggregates token and cost usage across multiple LLM generation steps.
 
-  This is useful for deriving run/session totals from `Tackle.Lib.State.messages/1`
+  This is useful for deriving run/session totals from `Tackle.Lib.messages/1`
   without storing a second mutable counter. Token fields are summed field-by-field.
 
   Cost is intentionally conservative: it is summed only when every usage entry

@@ -8,6 +8,7 @@ defmodule Tackle.Plugins.Codex.MixProject do
       description: "OpenAI Codex provider adapter for Tackle.Lib",
       source_url: "https://github.com/Makesesama/tackle",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
+      docs: [main: "readme", extras: ["README.md"]],
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps()
@@ -27,7 +28,8 @@ defmodule Tackle.Plugins.Codex.MixProject do
       # Jason, which this project deliberately does not include.
       {:req, "== 0.8.0-rc.0"},
       {:mint_web_socket, "~> 1.0"},
-      {:tackle_lib, path: "../tackle_lib"}
+      {:tackle_lib, path: "../tackle_lib"},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false}
     ]
   end
 end

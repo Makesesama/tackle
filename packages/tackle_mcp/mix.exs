@@ -8,6 +8,7 @@ defmodule Tackle.Plugins.MCP.MixProject do
       description: "MCP client tools plugin for Tackle.Lib",
       source_url: "https://github.com/Makesesama/tackle",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
+      docs: [main: "readme", extras: ["README.md"]],
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps()
@@ -26,7 +27,8 @@ defmodule Tackle.Plugins.MCP.MixProject do
       {:anubis_mcp, "~> 2.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
-      {:tackle_lib, path: "../tackle_lib"}
+      {:tackle_lib, path: "../tackle_lib"},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false}
     ]
   end
 end

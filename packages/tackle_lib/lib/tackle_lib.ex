@@ -82,7 +82,7 @@ defmodule Tackle.Lib do
 
   ## Options
     * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs.
-    * `:llm_stream` - When true, use `Tackle.Lib.LLM.stream/4` if configured adapter supports it.
+    * `:llm_stream` - When true, use the optional `stream/3` callback in `Tackle.Lib.LLM` if the configured adapter supports it.
     * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot.
   """
   defdelegate run(state, user_input, opts \\ []), to: Loop
