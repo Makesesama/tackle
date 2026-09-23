@@ -25,9 +25,16 @@ native widget:
   viewport, and paints selection styles.
 
 Assistant source is parsed with `tui-markdown` and measured with Ratatui's
-`Paragraph::line_count`. The native cell returns its measured height to Elixir
-and is rebuilt when streaming content or the terminal width changes. Settled
-cells remain cached while the live tail updates.
+`Paragraph::line_count`. Elixir (`elixir`, `ex`, `exs`) fenced blocks are
+extracted before parsing and highlighted with ExRatatui's bundled Elixir
+syntax, then rendered as native code cells with an aligned gutter and
+indentation-preserving wrapping. The code cells use a dark full-width surface
+rather than syntect's token-only background. Their fence markers are hidden in
+the display; other Markdown and code languages continue through
+`tui-markdown`. The original
+source is retained for copy and search. The native cells return their measured
+heights to Elixir and are rebuilt when streaming content or the terminal width
+changes. Settled cells remain cached while the live tail updates.
 
 Transcript scrolling is not limited by Ratatui's `u16` paragraph scroll field.
 The native widget stores transcript-wide offsets as `usize`, renders clipped

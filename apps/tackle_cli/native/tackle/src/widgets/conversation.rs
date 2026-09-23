@@ -93,6 +93,30 @@ impl HistoryCell {
         Self::new(Text::from(lines), width, Style::default(), false)
     }
 
+    /// Highlighted code shares the message gutter but wraps by grapheme,
+    /// preserving indentation and token styles rather than trimming prose words.
+    pub fn code(
+        lines: Vec<Line<'static>>,
+        width: u16,
+        style: Style,
+        marker: Option<Span<'static>>,
+    ) -> Self {
+        let width = width.max(1);
+        let gutter = if width >= 4 { 2 } else { 0 };
+        let right_padding = if width >= 4 { 1 } else { 0 };
+        let content_width = width - gutter - right_padding;
+        let lines: Vec<_> = lines
+            .into_iter()
+            .flat_map(|line| grapheme_wrap(line, content_width))
+            .collect();
+        let mut cell = Self::new(Text::from(lines), content_width, style, false);
+        cell.width = width;
+        cell.gutter = gutter;
+        cell.right_padding = right_padding;
+        cell.marker = marker;
+        cell
+    }
+
     fn new(text: Text<'_>, width: u16, style: Style, wrap: bool) -> Self {
         let width = width.max(1);
         let mut lines = Vec::new();

@@ -39,6 +39,7 @@ defmodule Tackle.CLI.TUI.Theme do
           | :error
           | :surface
           | :surface_raised
+          | :code_surface
           | :user_surface
           | :error_surface
           | :selection_surface
@@ -59,6 +60,7 @@ defmodule Tackle.CLI.TUI.Theme do
     error: %Style{fg: {:indexed, 174}},
     surface: %Style{bg: {:indexed, 235}},
     surface_raised: %Style{bg: {:indexed, 237}},
+    code_surface: %Style{bg: {:indexed, 234}},
     user_surface: %Style{bg: {:indexed, 235}},
     selection_surface: %Style{bg: {:indexed, 60}},
     error_surface: %Style{bg: {:indexed, 52}},

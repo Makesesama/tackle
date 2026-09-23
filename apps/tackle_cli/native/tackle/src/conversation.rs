@@ -101,6 +101,31 @@ fn conversation_rows(
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn conversation_code(
+    rows: Vec<WireLine>,
+    width: u16,
+    base: WireStyle,
+    marker: Option<WireSpan>,
+) -> NifResult<(ResourceArc<CellResource>, usize)> {
+    let lines = rows
+        .into_iter()
+        .map(|(spans, row_style)| {
+            let spans = spans
+                .into_iter()
+                .map(|(text, s)| Ok(Span::styled(sanitize(&text).replace('\n', ""), style(s)?)))
+                .collect::<NifResult<Vec<_>>>()?;
+            Ok(Line::from(spans).style(style(row_style)?))
+        })
+        .collect::<NifResult<Vec<_>>>()?;
+    let marker = marker
+        .map(|(text, wire)| Ok(Span::styled(sanitize(&text), style(wire)?)))
+        .transpose()?;
+    let cell = HistoryCell::code(lines, width, style(base)?, marker);
+    let height = cell.height();
+    Ok((ResourceArc::new(CellResource(Arc::new(cell))), height))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn conversation_new(
     cells: Vec<ResourceArc<CellResource>>,
     width: u16,
