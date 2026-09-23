@@ -2,8 +2,9 @@ defmodule Tackle.CLI.TUI.ToolView do
   @moduledoc """
   Built-in, render-only tool cards.
 
-  Cards are borderless: a status marker and prominent command/path, followed
-  by indented, muted output. Completed calls omit redundant status text;
+  Cards are borderless: a quiet dot for completed calls (not an emoji check),
+  colored activity/failure markers, and a prominent command/path. Preview rows
+  use a two-cell hanging indent. Completed calls omit redundant status text;
   running, requested and failed calls stay explicit. Successful reads collapse
   to their path; successful Bash output shows at most two clipped tail lines.
   Full retained output stays in details. Failed edits show the error instead of
@@ -45,13 +46,13 @@ defmodule Tackle.CLI.TUI.ToolView do
     header =
       entry
       |> header_rows(args, width)
-      |> wrap_indented(width, 2)
+      |> wrap_indented(width, 2, true)
       |> truncate_header(width)
 
     body =
       entry
       |> body_rows(args, mode, width)
-      |> wrap_indented(width, 4)
+      |> wrap_indented(width, 2)
       |> trim(mode, width)
 
     MessageView.render_lines(header ++ body)
@@ -219,7 +220,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp bash_preview(nil, _width), do: []
 
   defp bash_preview(output, width) do
-    content_width = if width > 5, do: width - 4, else: max(width, 1)
+    content_width = if width > 3, do: width - 2, else: max(width, 1)
 
     lines =
       output
@@ -444,24 +445,31 @@ defmodule Tackle.CLI.TUI.ToolView do
     style = Theme.style(:subtle)
     hint = body_row(style, "… #{hidden} lines hidden · F4 details")
 
-    hint = hd(wrap_indented([hint], width, 4))
+    hint = hd(wrap_indented([hint], width, 2))
 
     Enum.take(rows, head) ++ [hint] ++ Enum.take(rows, -tail)
   end
 
   defp trim(rows, :preview, _width), do: rows
 
-  # Reserve the gutter before wrapping so continuations align with content.
-  # Small terminals spend their columns on text instead of indentation.
-  defp wrap_indented(rows, width, indent) do
+  # Wrap each logical row inside its gutter. The first header line starts at
+  # the edge; its continuations and every body row align two cells in.
+  defp wrap_indented(rows, width, indent, header? \\ false) do
     indent = if width > indent + 1, do: indent, else: 0
 
     rows
-    |> MessageView.wrap_rows(max(width - indent, 1))
     |> Enum.with_index()
-    |> Enum.map(fn {row, index} ->
-      prefix = if indent == 2 and index == 0, do: "", else: String.duplicate(" ", indent)
-      %{row | spans: [MessageView.span(prefix) | row.spans]}
+    |> Enum.flat_map(fn {row, index} ->
+      # Header's first line starts at the edge, but its wraps stay indented.
+      first_prefix = if header? and index == 0, do: 0, else: indent
+      # Use the continuation's content width for all wraps; the first line
+      # gets the same predictable break even without its visible gutter.
+      MessageView.wrap_rows([row], max(width - indent, 1))
+      |> Enum.with_index()
+      |> Enum.map(fn {line, wrap_index} ->
+        prefix = if wrap_index == 0, do: first_prefix, else: indent
+        %{line | spans: [MessageView.span(String.duplicate(" ", prefix)) | line.spans]}
+      end)
     end)
   end
 
@@ -483,13 +491,13 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp marker(:preparing), do: "◐"
   defp marker(:running), do: "●"
   defp marker(:failed), do: "✗"
-  defp marker(:completed), do: "✓"
+  defp marker(:completed), do: "·"
   defp marker(_), do: "›"
 
   defp marker_style(:failed), do: Theme.style(:error)
   defp marker_style(:preparing), do: Theme.style(:accent_soft)
   defp marker_style(:running), do: Theme.style(:accent_soft)
-  defp marker_style(:completed), do: Theme.style(:success)
+  defp marker_style(:completed), do: Theme.style(:subtle)
   defp marker_style(_), do: Theme.style(:muted)
 
   defp elapsed_text(ms) do

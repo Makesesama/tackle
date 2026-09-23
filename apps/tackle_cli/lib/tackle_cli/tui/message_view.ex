@@ -393,7 +393,8 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   def render_entry(%__MODULE__{kind: :thinking} = entry, width) do
-    render_rows(thinking_rows(entry, :expanded), width)
+    [header | body] = thinking_rows(entry, :expanded)
+    render_lines(wrap_rows([header], width) ++ wrap_indented_rows(body, width, 2))
   end
 
   def render_entry(%__MODULE__{kind: :compaction} = entry, width) do
@@ -495,36 +496,41 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   defp thinking_rows(entry, mode) do
-    source = sanitize(source(entry))
-    lines = String.split(source, "\n", trim: false)
+    lines = entry |> source() |> sanitize() |> String.split("\n", trim: false)
     muted = Theme.style(:muted)
-
-    hint =
-      if mode == :collapsed, do: [span("  ·  Ctrl+T to reveal", Theme.style(:subtle))], else: []
 
     header =
       row(
         [
           span(if(mode == :collapsed, do: "› ", else: "⌄ "), muted),
-          span("thought", muted),
-          span("  ·  #{length(lines)} lines", muted)
-        ] ++ hint,
+          span(
+            "thought · #{length(lines)} #{if(length(lines) == 1, do: "line", else: "lines")}",
+            muted
+          ),
+          span(if(mode == :collapsed, do: " · Ctrl+T to expand", else: ""), Theme.style(:subtle))
+        ],
         %Style{}
       )
 
-    case mode do
-      :collapsed ->
-        [header | collapsed_thinking_rows(lines, muted)]
-
-      :expanded ->
-        [header | Enum.map(lines, &row([span("  " <> &1, Theme.italic(muted))], %Style{}))]
+    if mode == :collapsed do
+      [header]
+    else
+      [header | Enum.map(lines, &row([span(&1, Theme.italic(muted))], %Style{}))]
     end
   end
 
-  defp collapsed_thinking_rows(lines, muted) do
-    Enum.map(lines, fn line ->
-      preview = truncate_line(line, 180)
-      row([span("  ", %Style{}), span(preview, Theme.italic(muted))], %Style{})
+  # Wrap content before adding the gutter so continuation lines cannot return
+  # to the left edge (or accidentally spend part of their width on indentation).
+  defp wrap_indented_rows(rows, width, indent) do
+    indent = if width > indent + 1, do: indent, else: 0
+
+    Enum.flat_map(rows, fn row ->
+      row
+      |> List.wrap()
+      |> wrap_rows(max(width - indent, 1))
+      |> Enum.map(fn line ->
+        %{line | spans: [span(String.duplicate(" ", indent)) | line.spans]}
+      end)
     end)
   end
 
@@ -707,10 +713,6 @@ defmodule Tackle.CLI.TUI.MessageView do
       end)
 
     Line.new(spans, style: style)
-  end
-
-  defp truncate_line(text, limit) do
-    if String.length(text) > limit, do: String.slice(text, 0, limit - 1) <> "…", else: text
   end
 
   defp wrap_text(text, width) do

@@ -967,7 +967,7 @@ defmodule Tackle.CLI.TUITest do
     assert streaming_state.stream.thinking == "Checking"
     assert streaming_state.stream.response == "Hello"
     assert conversation_text(streaming_state) =~ "thought"
-    assert conversation_text(streaming_state) =~ "Checking"
+    refute conversation_text(streaming_state) =~ "Checking"
 
     agent_state = %{
       streaming_state.agent_state
@@ -991,7 +991,8 @@ defmodule Tackle.CLI.TUITest do
     assert conversation =~ "› hi"
     assert conversation =~ "hi"
     assert conversation =~ "thought"
-    assert conversation =~ "Checked"
+    refute conversation =~ "Checked"
+    assert Conversation.text(settled_state.conversation) =~ "Checked"
     assert conversation =~ "Hello"
 
     assert {%Cell{}, 1} = List.last(settled_state.conversation.items)
@@ -1436,7 +1437,7 @@ defmodule Tackle.CLI.TUITest do
     assert [%{id: "call-1", status: :completed}] = completed_state.tool_activity
 
     completed_conversation = conversation_text(completed_state)
-    assert completed_conversation =~ "✓ mix.exs"
+    assert completed_conversation =~ "· mix.exs"
     assert completed_conversation =~ "mix.exs  · read"
     refute completed_conversation =~ "completed"
     refute completed_conversation =~ "    output"
@@ -1474,7 +1475,7 @@ defmodule Tackle.CLI.TUITest do
              progress.tool_activity
 
     assert conversation_text(progress) =~ "● running · first"
-    assert conversation_text(progress) =~ "✓ second"
+    assert conversation_text(progress) =~ "· second"
 
     send(
       tui,
@@ -1536,7 +1537,7 @@ defmodule Tackle.CLI.TUITest do
     assert failed_state.activity == "failed bash"
     assert conversation_text(failed_state) =~ "✗ failed · bash"
     assert conversation_text(failed_state) =~ "failed"
-    assert conversation_text(failed_state) =~ "    command exited with status 1"
+    assert conversation_text(failed_state) =~ "  command exited with status 1"
   end
 
   test "renders settled tool calls and results with stable ids", %{tui: tui} do
@@ -1563,7 +1564,7 @@ defmodule Tackle.CLI.TUITest do
     conversation = conversation_text(state)
 
     refute conversation =~ "● read"
-    assert conversation =~ "✓ README.md  · read"
+    assert conversation =~ "· README.md  · read"
     refute conversation =~ "completed"
     refute conversation =~ "    project documentation"
     assert conversation =~ "F4 details"
@@ -1832,10 +1833,10 @@ defmodule Tackle.CLI.TUITest do
 
     collapsed = conversation_text(state)
     assert collapsed =~ "thought"
-    assert collapsed =~ "first line"
-    assert collapsed =~ "second line"
-    assert collapsed =~ "third line"
-    assert collapsed =~ "Ctrl+T to reveal"
+    refute collapsed =~ "first line"
+    refute collapsed =~ "second line"
+    refute collapsed =~ "third line"
+    assert collapsed =~ "Ctrl+T to expand"
 
     inject_key(tui, "t", ["ctrl"])
     expanded = conversation_text(state(tui))
