@@ -206,6 +206,28 @@ let
         in
         drv;
 
+      anubis_mcp =
+        let
+          version = "2.0.0";
+          drv = buildMix {
+            inherit version;
+            name = "anubis_mcp";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "anubis_mcp";
+              sha256 = "eaa413da55711008bf090e8b8557642c73a160ed1a41dfbe089e9d8a98a572ee";
+            };
+
+            beamDeps = [
+              finch
+              peri
+              telemetry
+            ];
+          };
+        in
+        drv;
+
       burrito =
         let
           version = "1.6.0";
@@ -242,9 +264,9 @@ let
             };
 
             beamDeps = [
+              rustler
               rustler_precompiled
               telemetry
-              rustler
             ];
           };
         in
@@ -485,6 +507,26 @@ let
         in
         drv;
 
+      peri =
+        let
+          version = "0.9.0";
+          drv = buildMix {
+            inherit version;
+            name = "peri";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "peri";
+              sha256 = "53d773928e3105565cbfffe36bf642d85be1ec00130a176b2090dc3f80d2c273";
+            };
+
+            beamDeps = [
+              jason
+            ];
+          };
+        in
+        drv;
+
       req =
         let
           version = "0.8.0-rc.0";
@@ -627,6 +669,24 @@ let
             beamDeps = [
               jsv
               telemetry
+            ];
+          };
+        in
+        drv;
+
+      tackle_mcp =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_mcp";
+
+            src = ../packages/tackle_mcp;
+
+            beamDeps = [
+              anubis_mcp
+              finch
+              tackle_lib
             ];
           };
         in

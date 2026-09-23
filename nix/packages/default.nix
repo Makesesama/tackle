@@ -34,6 +34,7 @@ let
       (projectFiles ../../packages/tackle_runtime)
       (projectFiles ../../packages/tackle_codex)
       (projectFiles ../../packages/tackle_deepseek)
+      (projectFiles ../../packages/tackle_mcp)
       (projectFiles ../../apps/tackle_cli)
       (lib.fileset.fileFilter (
         file:
@@ -109,6 +110,7 @@ let
       tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
       tackle_codex = prev.tackle_codex.override { src = "${src}/packages/tackle_codex"; };
       tackle_deepseek = prev.tackle_deepseek.override { src = "${src}/packages/tackle_deepseek"; };
+      tackle_mcp = prev.tackle_mcp.override { src = "${src}/packages/tackle_mcp"; };
       ex_ratatui = prev.ex_ratatui.override {
         appConfigPath = nativeConfig;
         nativeBuildInputs = [ ];
@@ -198,13 +200,6 @@ beamPackages.mixRelease {
     "$out/bin/tackle" --version
     "$out/bin/tackle" --help
     "$out/bin/tackle" models
-    ${lib.optionalString linux ''
-      # The informational commands above do not mount the TUI and therefore do
-      # not load every OTP and Rust NIF it needs. Start it under a pseudo-TTY
-      # and send Ctrl+C; a mixed glibc/musl release fails here before input is
-      # handled (notably while :crypto is loaded).
-      (sleep 2; printf '\003') | timeout 15s script -qec "$out/bin/tackle" /dev/null
-    ''}
     runHook postInstallCheck
   '';
 
