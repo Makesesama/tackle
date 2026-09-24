@@ -76,8 +76,8 @@ from `$TACKLE_HOME/agents/**/*.md` and the nearest project
 `.tackle/agents/**/*.md` directory. Project definitions override user and
 built-in definitions by name. Definitions configure the agent prompt, trusted
 tool subset, model/thinking, timeout, iteration bound, advertisement, and
-optional bounded delegation. See the root
-[configured subagent documentation](../../README.md#configured-subagents) for
+optional bounded delegation. See the harness guide's
+[configured subagent documentation](../../packages/tackle/README.md#configured-subagents) for
 the file format and security boundaries.
 
 ## Default subagents
@@ -86,8 +86,8 @@ Every CLI coding scope enables `scout`, `reviewer`, and `worker` by default;
 the former `explorer` profile has been removed. Scout performs quick read-only
 reconnaissance, reviewer performs read-only code review, and worker can implement
 changes with the harness's trusted coding tools. All have fresh conversation
-context, no further delegation, a 20-iteration/five-minute budget, and share a
-limit of two simultaneous children. They share the workspace. Scout and reviewer
+context, no further delegation, unlimited iterations by default, a five-minute
+timeout, and share a limit of two simultaneous children. They share the workspace. Scout and reviewer
 are instructed not to edit it, but
 **bash is not sandboxed or enforced read-only**. Profiles are configured by
 `Tackle.Coding` in the harness package, not the frontend. Each built-in child request
@@ -112,8 +112,8 @@ shows the turn cancellation; it does not claim the child completed.
 
 Only returned findings are retained in the root journal; child transcripts and
 forwarded progress are ephemeral. Footer and chart usage totals exclude child
-usage. See the root
-[default subagent documentation](../../README.md#default-subagents) for details.
+usage. See the harness guide's
+[default subagent documentation](../../packages/tackle/README.md#default-subagents) for details.
 
 ## Single-file release
 
