@@ -23,12 +23,16 @@ bounded live tail, and streamed tool arguments let write cards preview incoming
 paths and content before execution starts. Rows stay in requested order;
 execution status is transient progress, not confirmation of a durable commit.
 
-The empty-session welcome view shows a seven-by-six terminal pixel glyph in
-cyan, blue, and violet. Each pixel uses two character columns for a square-like
-aspect ratio; terminals narrower than 14 columns show the welcome text alone.
-A five-column connected block-character version replaces the `T` in the
-right-aligned header wordmark when space permits. The pixel pattern and palette
-live in `lib/tackle_cli/tui/glyph.ex`.
+On a new, empty session (in terminals at least 40×24), a centered dashboard
+shows the large terminal logo above the project directory, model and thinking
+level, a centered input bar, and up to five previous sessions loaded without
+blocking the shell. Alt+1 through Alt+5 resumes the corresponding session when
+idle with an empty draft (Ctrl+1–5 also works in terminals with extended
+keyboard reporting). Smaller terminals retain the compact welcome transcript.
+Graphics-capable terminals also show the small logo in the normal transcript
+header.
+
+The logo pattern and palette live in `lib/tackle_cli/tui/glyph.ex`.
 
 The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
 are compiled into it. It does not discover or load third-party plugins at
@@ -265,6 +269,7 @@ are omitted rather than reported as zero.
 | Esc | Close the open overlay first, then clear a non-empty draft; with an empty draft, request cancellation of the active turn. Esc never exits while idle. |
 | Ctrl+C | Quit. Confirms first when an unsent draft or an active turn would be lost; quits immediately when idle with an empty draft. |
 | Alt+N | Start a new session. Confirms first with a Y/N prompt; on confirm the current root scope stops (stopping an active turn with it) and a fresh session and scope start without restarting the shell. Durable history is not deleted—resume it later with `--resume`. |
+| Alt+1–5 | Resume one of the five recent sessions when idle with an empty draft. Ctrl+1–5 also works in terminals that report those chords distinctly. A failed resume keeps the current session open. |
 | F1 | Search-first model selector (idle only). Type to filter, ↑/↓ to select, Enter to apply, Esc to close. |
 | F2 | Reasoning-level selector (idle only). A reconfigure failure preserves the conversation and the draft. |
 | F3 | Settings picker (currently empty). Copy source with Y in the F4 transcript browser instead. |
@@ -522,7 +527,7 @@ This shell is an experimentation build. It intentionally does not implement:
 
 - queued or steering prompts while a turn runs (the draft is kept, not queued);
 - approval or permission prompts;
-- session browsing, branching, or reconnect (a new session starts a fresh root scope, and the shell cannot yet list or reopen past sessions; on exit it prints the `--resume` command for the session it was attached to); note that in-session `/tree` branching is implemented and is distinct from session browsing;
+- full session browsing, branching, or reconnect (the new-session dashboard lists only five recent sessions for quick resume; on exit the shell prints the `--resume` command for the session it was attached to); in-session `/tree` branching is distinct from session browsing;
 - inline terminal-scrollback rendering (the TUI owns the alternate screen);
 - a theme framework (colors are semantic but fixed), authoritative file diffs,
   or a plugin presenter registry;

@@ -56,6 +56,10 @@ defmodule Tackle.CLI.TUI.State do
           agent_monitor: reference() | nil,
           scope_ref: term(),
           new_session: (map() -> {:ok, Scope.t()} | {:error, term()}) | nil,
+          list_recent_sessions: (-> {:ok, [map()]} | {:error, term()}) | nil,
+          resume_session: (String.t() -> {:ok, Scope.t()} | {:error, term()}) | nil,
+          recent_sessions: [map()],
+          recent_sessions_ref: reference() | nil,
           owner: pid() | nil,
           session_id: String.t() | nil,
           agent_state: AgentState.t() | nil,
@@ -115,6 +119,10 @@ defmodule Tackle.CLI.TUI.State do
             agent_monitor: nil,
             scope_ref: nil,
             new_session: nil,
+            list_recent_sessions: nil,
+            resume_session: nil,
+            recent_sessions: [],
+            recent_sessions_ref: nil,
             owner: nil,
             session_id: nil,
             agent_state: nil,
@@ -181,6 +189,8 @@ defmodule Tackle.CLI.TUI.State do
         agent_monitor: agent_monitor,
         scope_ref: snapshot.scope_ref,
         new_session: Keyword.get(opts, :new_session),
+        list_recent_sessions: Keyword.get(opts, :list_recent_sessions),
+        resume_session: Keyword.get(opts, :resume_session),
         owner: Keyword.get(opts, :owner),
         session_id: snapshot.session_id,
         agent_state: snapshot.agent_state,
@@ -261,7 +271,9 @@ defmodule Tackle.CLI.TUI.State do
         subagent_selected: nil,
         selected_entry: nil,
         browse_page: :transcript,
-        browse_content: nil
+        browse_content: nil,
+        recent_sessions: [],
+        recent_sessions_ref: nil
     }
 
     {width, height} = state.size

@@ -7,8 +7,19 @@ defmodule Tackle.CLI.TUITest do
   alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Paragraph, Popup, TextInput}
+  alias Tackle.CLI.Keybinds
   alias Tackle.CLI.TUI
-  alias Tackle.CLI.TUI.{Conversation, Layout, MessageView, Picker, RuntimeEvents, Viewport}
+
+  alias Tackle.CLI.TUI.{
+    Conversation,
+    Layout,
+    MessageView,
+    Picker,
+    RecentSessions,
+    RuntimeEvents,
+    Viewport
+  }
+
   alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
   alias Tackle.CLI.Widgets.Conversation.Cell
   alias Tackle.CLI.Widgets.Input
@@ -304,6 +315,195 @@ defmodule Tackle.CLI.TUITest do
     assert state.draft_lines == 1
     assert state.draft_empty?
     assert function_exported?(TUI, :start_link, 1)
+  end
+
+  test "Alt+1–5 select recent sessions and do not repeat" do
+    for index <- 1..5 do
+      key = %Key{code: Integer.to_string(index), modifiers: ["alt"]}
+      assert Keybinds.base(key, :composer) == {:resume_recent, index}
+      assert Keybinds.base(key, :transcript) == {:resume_recent, index}
+      refute Keybinds.repeatable?(key)
+    end
+
+    # Extended terminal keyboard protocols may distinguish Ctrl+digits too.
+    assert Keybinds.base(%Key{code: "2", modifiers: ["ctrl"]}, :composer) ==
+             {:resume_recent, 2}
+  end
+
+  test "recent sessions load after mount without blocking the shell", %{agent_ref: agent_ref} do
+    test_pid = self()
+
+    task =
+      Task.async(fn ->
+        TUI.start(
+          agent_ref: agent_ref,
+          test_mode: {80, 24},
+          list_recent_sessions: fn ->
+            send(test_pid, {:load_started, self()})
+
+            receive do
+              :release -> {:ok, [%{session_id: "previous", title: "Previous"}]}
+            end
+          end
+        )
+      end)
+
+    assert_receive {:subscribed, tui}
+    assert_receive {:load_started, loader}
+    loading = state(tui)
+    assert is_reference(loading.recent_sessions_ref)
+    assert loading.recent_sessions == []
+
+    assert Enum.any?(widgets(loading), fn
+             {%Paragraph{text: lines}, _rect} -> plain(lines) =~ "Loading recent sessions…"
+             _widget -> false
+           end)
+
+    send(loader, :release)
+    loaded = await_state(tui, &(&1.recent_sessions != []))
+    assert loaded.recent_sessions_ref == nil
+    assert [%{session_id: "previous"}] = loaded.recent_sessions
+
+    inject_key(tui, "c", ["ctrl"])
+    assert {:ok, _session_id} = Task.await(task)
+  end
+
+  test "outdated recent-session results cannot overwrite a newer request", %{tui: tui} do
+    state = state(tui)
+    first = make_ref()
+    latest = make_ref()
+
+    state = %{state | recent_sessions_ref: latest, recent_sessions: []}
+
+    assert {:noreply, ^state, render?: false} =
+             RecentSessions.apply_result(state, first, {:ok, [%{session_id: "stale"}]})
+
+    assert {:noreply, updated} =
+             RecentSessions.apply_result(
+               state,
+               latest,
+               {:ok,
+                [
+                  %{session_id: state.session_id},
+                  %{session_id: "new"}
+                ]}
+             )
+
+    assert updated.recent_sessions == [%{session_id: "new"}]
+    assert updated.recent_sessions_ref == nil
+  end
+
+  test "new-session dashboard centers the logo and composer above recent sessions", %{tui: tui} do
+    state = state(tui)
+    sessions = for index <- 1..5, do: %{session_id: "session-#{index}", title: "Session #{index}"}
+    state = %{state | list_recent_sessions: fn -> {:ok, sessions} end, recent_sessions: sessions}
+    scene = widgets(state)
+
+    assert Enum.any?(scene, fn {widget, rect} ->
+             match?(%Paragraph{}, widget) and rect.y == 1 and rect.x == 33
+           end)
+
+    assert {%Input{}, %Rect{x: 5, y: 11, width: 70, height: 3}} =
+             Enum.find(scene, fn {widget, _rect} -> match?(%Input{}, widget) end)
+
+    text =
+      scene
+      |> Enum.filter(fn {widget, _rect} -> match?(%Paragraph{}, widget) end)
+      |> Enum.map_join("\n", fn {widget, _rect} -> plain(widget.text) end)
+
+    assert text =~ File.cwd!()
+    assert text =~ "openai-codex/test-model  ·  thinking off"
+    assert text =~ "Alt+1  Session 1"
+    assert text =~ "Alt+5  Session 5"
+
+    small = %{state | size: {39, 23}}
+    assert %NativeConversation{} = transcript_widget(small)
+  end
+
+  test "dashboard recent sessions use short single-line labels", %{tui: tui} do
+    state = state(tui)
+
+    sessions = [
+      %{session_id: "first", title: String.duplicate("long ", 12)},
+      %{session_id: "second", title: nil, preview: "First line\nSecond line"},
+      %{session_id: "third", title: nil, preview: nil}
+    ]
+
+    state = %{state | list_recent_sessions: fn -> {:ok, sessions} end, recent_sessions: sessions}
+
+    labels =
+      state
+      |> widgets()
+      |> Enum.filter(fn {widget, _rect} -> match?(%Paragraph{}, widget) end)
+      |> Enum.map(fn {widget, _rect} -> plain(widget.text) end)
+
+    first = Enum.find(labels, &String.starts_with?(&1, "Alt+1"))
+    assert first == "Alt+1  #{String.slice(String.duplicate("long ", 12), 0, 31)}…"
+    refute Enum.any?(labels, &String.contains?(&1, "Second line"))
+    assert "Alt+2  First line" in labels
+    assert "Alt+3  third" in labels
+  end
+
+  test "recent shortcut preserves the session and draft on failed resume", %{tui: tui} do
+    current = state(tui)
+
+    :sys.replace_state(tui, fn runtime ->
+      %{
+        runtime
+        | user_state: %{
+            runtime.user_state
+            | recent_sessions: [%{session_id: "previous"}],
+              resume_session: fn id ->
+                send(self(), {:resume_attempt, id})
+                {:error, :unavailable}
+              end
+          }
+      }
+    end)
+
+    inject_key(tui, "1", ["alt"])
+    failed = await_state(tui, &is_binary(&1.error))
+    assert failed.session_id == current.session_id
+    assert failed.agent_ref == current.agent_ref
+    assert failed.error =~ "unavailable"
+  end
+
+  test "recent shortcut adopts the selected scope and retains prompt history", %{
+    agent_ref: agent_ref
+  } do
+    test_pid = self()
+    replacement_ref = AgentRef.new!(ID.generate(), ID.generate())
+    {:ok, replacement} = SessionStub.start_link({test_pid, replacement_ref})
+    Process.unlink(replacement)
+
+    task =
+      Task.async(fn ->
+        TUI.start(
+          agent_ref: agent_ref,
+          test_mode: {80, 24},
+          list_recent_sessions: fn -> {:ok, [%{session_id: "previous", title: "Previous"}]} end,
+          resume_session: fn "previous" ->
+            {:ok, %Scope{scope_ref: nil, root_agent_ref: replacement_ref}}
+          end
+        )
+      end)
+
+    assert_receive {:subscribed, tui}
+    first = await_state(tui, &(length(&1.recent_sessions) == 1))
+    assert first.session_id != nil
+
+    assert Enum.any?(widgets(first), fn {widget, _} ->
+             match?(%Input{}, widget)
+           end)
+
+    inject_key(tui, "1", ["alt"])
+    resumed = await_state(tui, &(&1.agent_ref == replacement_ref))
+    assert resumed.session_id != first.session_id
+    assert resumed.recent_sessions == [%{session_id: "previous", title: "Previous"}]
+
+    inject_key(tui, "c", ["ctrl"])
+    session_id = resumed.session_id
+    assert {:ok, ^session_id} = Task.await(task)
   end
 
   test "renders compact header, border-light transcript, composer, and status", %{tui: tui} do

@@ -82,6 +82,7 @@ defmodule Tackle.CLI.TUI do
     Inspector,
     Menu,
     RuntimeEvents,
+    RecentSessions,
     Search,
     Session,
     State,
@@ -147,7 +148,10 @@ defmodule Tackle.CLI.TUI do
 
     case State.new(opts) do
       {:ok, state} ->
+        {state, commands} = RecentSessions.load(state)
+
         {:ok, state,
+         commands: commands,
          probe_image_protocol: not is_nil(image) and not Keyword.has_key?(opts, :test_mode)}
 
       error ->
@@ -342,6 +346,10 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base(:settings_picker, _key, state), do: Menu.open(:settings, state)
   defp dispatch_base(:browse, _key, state), do: Browser.toggle_focus(state)
   defp dispatch_base(:escape, _key, state), do: escape(state)
+
+  defp dispatch_base({:resume_recent, index}, _key, state),
+    do: Session.resume_recent(state, index)
+
   defp dispatch_base(:new_session, _key, state), do: Session.request_new(state)
   defp dispatch_base(:compact, _key, state), do: Compaction.request(state)
   defp dispatch_base(:tree, _key, state), do: Tree.open(state)

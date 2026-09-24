@@ -60,7 +60,9 @@ defmodule Tackle.CLI.Run do
     case TUI.start(
            agent_ref: scope.root_agent_ref,
            models: models,
-           new_session: new_session_fun(opts)
+           new_session: new_session_fun(opts),
+           list_recent_sessions: recent_sessions_fun(),
+           resume_session: resume_session_fun(opts)
          ) do
       {:ok, session_id} ->
         print_resume_hint(session_id)
@@ -80,6 +82,34 @@ defmodule Tackle.CLI.Run do
       Owl.Data.tag("Resume this session: ", :cyan),
       "tackle --resume #{session_id}"
     ])
+  end
+
+  defp recent_sessions_fun do
+    fn ->
+      case Tackle.list_sessions(limit: 6) do
+        {:ok, %{sessions: sessions}} -> {:ok, sessions}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp resume_session_fun(opts) do
+    fn session_id ->
+      case start_scope(nil, nil, true, resume: session_id, override_config: false) do
+        {:ok, scope} ->
+          case ensure_recoverable(scope.root_agent_ref, opts.abandon) do
+            :ok ->
+              {:ok, scope}
+
+            {:error, reason} ->
+              stop_scope(scope.scope_ref)
+              {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
   end
 
   # A new session is a fresh root scope: a new durable session id and a new
