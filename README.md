@@ -1,62 +1,74 @@
+<p align="center">
+  <img src="docs/assets/tackle-logo.svg" alt="Tackle logo" width="112" height="96">
+</p>
+
 # Tackle
 
-Tackle is an Elixir agent harness for developers, built around a small core and
-an extensible, plugin-first architecture.
+**An Elixir framework for building agent harnesses.** Compose a tool-using
+agent loop, scoped OTP runtime, provider adapters, tools, and your own host
+lifecycle into the harness your application needs. Tackle's CLI is one harness
+built from these pieces, not the framework's only way to run an agent.
 
-It starts with an in-house agent library already used in a SaaS application.
-The reusable library lives at [`packages/tackle_lib`](packages/tackle_lib)
-under the `Tackle.Lib` namespace, while the developer harness lives at
-[`packages/tackle`](packages/tackle). Runnable applications live under `apps/`.
+Tackle keeps provider protocols and frontends outside the core. Bring your own
+adapter and tools; keep decisions about persistence, authorization, and UI in
+your application. The packages are separate Mix projects, so you can use the
+reusable library on its own or add scoped orchestration and integrations.
 
-## Goals
+## Build with Tackle
 
-- **Small core:** keep lines of code and dependencies low. Prefer removing
-  unnecessary machinery to adding abstractions, without sacrificing clarity.
-- **High code quality:** readable, idiomatic Elixir; explicit contracts;
-  focused modules; deterministic tests.
-- **Extensibility first:** users should be able to add capabilities without
-  modifying the core. Optional features belong in plugins.
-- **CLI first:** begin with a simple, usable command-line frontend, separate
-  from the agent engine.
-- **Binary distribution:** package the harness with Burrito after the basic
-  CLI and extension boundaries are working.
+| If you need… | Start with… |
+| --- | --- |
+| A tool-using agent loop in your own process or application | [`tackle_lib`](packages/tackle_lib/README.md) (`Tackle.Lib.*`): provider-neutral messages, tools, hooks, and the `Tackle.Lib.LLM` adapter contract. |
+| Supervised agent scopes, subagents, limits, or workflows | [`tackle_runtime`](packages/tackle_runtime/README.md) (`Tackle.Runtime.*`) on top of `tackle_lib`. Your host supplies the agent backend and lifecycle policy. |
+| A ready-to-compose developer harness | [`tackle`](packages/tackle) (`Tackle.*`): configuration, coding tools, credentials, and a facade over the scoped runtime. See the [harness API](#basic-harness-api). |
+| A Phoenix host integration | [`tackle_phoenix`](packages/tackle_phoenix/README.md): supervised turns, PubSub, and LiveView support. |
+| A terminal frontend | [`tackle_cli`](apps/tackle_cli/README.md): the CLI built on the harness, not an agent engine to embed. |
 
-## Architecture direction
+Implement a `Tackle.Lib.LLM` adapter for your provider, supply
+`Tackle.Lib.Tool` modules for your capabilities, and choose which runtime and
+frontend belong in your host. The [library guide](packages/tackle_lib/README.md)
+documents the extension contracts and host integration patterns; the
+[scoped runtime guide](packages/tackle_runtime/README.md) covers orchestration.
+The [basic harness API](#basic-harness-api) below shows how the developer
+harness composes a scope and starts a turn.
+
+## Design principles
+
+- **Small, readable core:** keep the agent loop independent of provider
+  protocols, terminal rendering, Phoenix, and SaaS policy.
+- **Host-owned decisions:** applications choose their adapters, tools,
+  persistence, authorization, and UI. Optional integrations stay in separate
+  packages instead of becoming mandatory dependencies.
+- **Explicit extension contracts:** use existing behaviours, hooks, and events
+  instead of a universal plugin framework.
+
+The first-party [Codex adapter](packages/tackle_codex/README.md) uses the same
+contracts as third-party adapters. The optional
+[MCP client](packages/tackle_mcp/README.md) exposes discovered tools through the
+ordinary tool contract; the [Anubis server bridge](packages/tackle_anubis/README.md)
+is separate from the core. The CLI currently bundles a fixed set of adapters.
+**General extension-project discovery and loading are not implemented**, and a
+user-provided plugin workflow in the Burrito binary has not been verified.
+
+## Package boundaries
 
 | Layer | Responsibility |
 | --- | --- |
-| `packages/tackle_lib` | Reusable, provider- and frontend-independent agent library (`Tackle.Lib`). |
-| `packages/tackle` | Minimal composition and runtime glue for the library, configuration, and plugins. |
-| `apps/tackle_cli` | Terminal input/output and interaction; no duplicate agent loop. |
-| Plugin packages | Provider adapters and optional capabilities under `packages/`, using explicit extension contracts. |
-| Burrito release | Binary packaging of the harness, not a new runtime abstraction. |
+| `packages/tackle_lib` | Framework-free, provider- and frontend-independent agent loop (`Tackle.Lib`). |
+| `packages/tackle_runtime` | Reusable scoped OTP orchestration (`Tackle.Runtime`). |
+| `packages/tackle` | Developer-harness composition, configuration, and built-in tools (`Tackle`). |
+| Plugin packages | Provider adapters and optional integrations, using explicit contracts. |
+| `apps/tackle_cli` | Terminal interaction and fixed Burrito distribution; no duplicate agent loop. |
 
 Keep the core focused on the agent loop and the contracts needed to extend it.
-Provider protocols, frontend concerns, and optional integrations must not drive
-core policy or force unrelated dependencies into it. Reuse existing library
-behaviours and hooks before inventing a parallel extension framework.
-
-### Adapters and plugins
-
-Provider adapters are user-provided plugins. **OpenAI Codex is the only adapter
-this project plans to implement and maintain**, and it should use the same
-extension contracts as third-party adapters, not a privileged core code path.
-
-MCP is available as an optional harness plugin in
-[`packages/tackle_mcp`](packages/tackle_mcp). It uses Anubis as an MCP **client**
-and turns external MCP tools into ordinary `Tackle.Lib.Tool` modules; it is not
-a required harness dependency. The inherited Anubis MCP **server** bridge remains
-in `packages/tackle_anubis`, so both directions stay outside the MCP-free core.
-Other optional integrations should follow the same separation. Phoenix and
-SaaS-specific concerns are not requirements for the standalone harness.
-
-Plugin discovery, loading, and distribution are not yet specified. In
-particular, how user-provided plugins work with a Burrito binary needs to be
-resolved and tested before promising a binary plugin workflow.
+For planned plugin loading and distribution work, see
+[`docs/plugins.md`](docs/plugins.md); that document is architectural direction,
+not a description of shipped functionality.
 
 ## Current state
 
-This repository is a starting point, not a finished CLI:
+The framework packages and CLI are usable today, with the following boundaries
+and unfinished integrations:
 
 - [`packages/tackle`](packages/tackle) provides frontend-independent adapter/model
   configuration, composes the reusable scoped runtime, a supervised credential store,
@@ -660,8 +672,8 @@ deferred.
    implemented in `packages/tackle_mcp`, while CLI configuration and general
    extension loading remain later integration work.
 
-Avoid a plugin marketplace, speculative frameworks, or additional frontends
-before the minimal harness works.
+Avoid a plugin marketplace or speculative plugin infrastructure; extend the
+existing contracts when a host needs new capabilities.
 
 ## Development
 

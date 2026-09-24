@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 96" role="img" aria-label="Tackle logo">
+  <!-- Pixel grid and palette mirror apps/tackle_cli/lib/tackle_cli/tui/glyph.ex. -->
+  <g fill="#00cddf"><path d="M0 0h16v32H0z"/></g>
+  <g fill="#05aeeb"><path d="M16 0h16v48H16zM32 32h16v16H32z"/></g>
+  <g fill="#086fef"><path d="M32 16h32v16H32zM48 32h16v16H48zM32 48h16v16H32z"/></g>
+  <g fill="#2a46be"><path d="M64 16h16v32H64zM48 48h16v32H48z"/></g>
+  <g fill="#654df2"><path d="M80 0h16v48H80z"/></g>
+  <g fill="#9c3af2"><path d="M96 0h16v32H96zM80 64h16v16H80z"/></g>
+  <g fill="#352baf"><path d="M32 64h16v32H32zM48 80h16v16H48z"/></g>
+</svg>
