@@ -65,27 +65,27 @@ defmodule Tackle.Session.Store do
   def all_usage_timeline(opts \\ []) do
     reader_opts = reader_opts(opts)
 
-    with {:ok, session_ids} <- Storage.list_session_ids(reader_opts) do
+    with {:ok, locations} <- Storage.list_session_locations(reader_opts) do
       results =
         Task.async_stream(
-          session_ids,
-          &Reader.projection(&1, reader_opts),
+          locations,
+          fn {id, location_opts} -> Reader.projection(id, location_opts) end,
           ordered: true,
           max_concurrency: usage_concurrency(opts),
           timeout: :infinity
         )
 
       {timelines, skipped} =
-        session_ids
+        locations
         |> Enum.zip(results)
         |> Enum.reduce({[], []}, fn
-          {_session_id, {:ok, {:ok, projection}}}, {timelines, skipped} ->
+          {_location, {:ok, {:ok, projection}}}, {timelines, skipped} ->
             {[UsageTimeline.from_projection(projection, opts) | timelines], skipped}
 
-          {session_id, {:ok, {:error, reason}}}, {timelines, skipped} ->
+          {{session_id, _opts}, {:ok, {:error, reason}}}, {timelines, skipped} ->
             {timelines, [%{session_id: session_id, reason: reason} | skipped]}
 
-          {session_id, {:exit, reason}}, {timelines, skipped} ->
+          {{session_id, _opts}, {:exit, reason}}, {timelines, skipped} ->
             {timelines, [%{session_id: session_id, reason: {:reader_exit, reason}} | skipped]}
         end)
 

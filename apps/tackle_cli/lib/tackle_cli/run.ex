@@ -10,6 +10,7 @@ defmodule Tackle.CLI.Run do
   alias Tackle.CLI.Output.Sessions, as: SessionsOutput
   alias Tackle.CLI.TUI
   alias Tackle.Session.Spec, as: SessionSpec
+  alias Tackle.Session.Storage
 
   # A subagent tool can be silent for its five-minute run budget. Leave time
   # for the child to settle and the parent to consume its result.
@@ -86,9 +87,9 @@ defmodule Tackle.CLI.Run do
 
   defp recent_sessions_fun do
     fn ->
-      case Tackle.list_sessions(limit: 6) do
-        {:ok, %{sessions: sessions}} -> {:ok, sessions}
-        {:error, reason} -> {:error, reason}
+      with {:ok, ids} <- Storage.list_session_ids(cwd: project_dir()),
+           {:ok, page} <- Tackle.list_sessions(cwd: project_dir(), session_ids: ids, limit: 6) do
+        {:ok, page.sessions}
       end
     end
   end
@@ -146,7 +147,7 @@ defmodule Tackle.CLI.Run do
         }) :: non_neg_integer()
   def sessions(%{query: query, limit: limit, cursor: cursor} = opts) do
     with {:ok, _apps} <- ensure_started(),
-         {:ok, filters} <- session_filters(limit, cursor),
+         {:ok, filters} <- scoped_session_filters(limit, cursor),
          {:ok, page} <- list_sessions(query, filters) do
       output = Output.new(format: opts.format, color: opts.color)
       page |> SessionsOutput.render(query, output) |> then(&Output.puts(output, &1))
@@ -379,11 +380,12 @@ defmodule Tackle.CLI.Run do
   # repair path preserves the original journal and validates recovered history.
   # `override_config` is set only when the user chose a model on the command
   # line, so an unmodified resume adopts the recorded selection. `:latest`
-  # resolves to the most recently updated durable session.
+  # resolves to the most recently updated durable session in this project.
   defp durable_session(opts) do
     with {:ok, session_id} <- resolve_resume(Keyword.get(opts, :resume)) do
       SessionSpec.new(
         session_id: session_id,
+        cwd: project_dir(),
         repair: is_binary(session_id),
         override_config: Keyword.get(opts, :override_config, false)
       )
@@ -391,14 +393,24 @@ defmodule Tackle.CLI.Run do
   end
 
   defp resolve_resume(:latest) do
-    case Tackle.list_sessions(limit: 1) do
-      {:ok, %{sessions: [session | _rest]}} -> {:ok, session.session_id}
-      {:ok, %{sessions: []}} -> {:error, :no_sessions}
-      {:error, reason} -> {:error, reason}
+    with {:ok, ids} <- Storage.list_session_ids(cwd: project_dir()),
+         {:ok, page} <- Tackle.list_sessions(cwd: project_dir(), session_ids: ids, limit: 1) do
+      case page.sessions do
+        [session | _rest] -> {:ok, session.session_id}
+        [] -> {:error, :no_sessions}
+      end
     end
   end
 
-  defp resolve_resume(session_id), do: {:ok, session_id}
+  defp resolve_resume(nil), do: {:ok, nil}
+
+  defp resolve_resume(session_id) do
+    with {:ok, path} <- Storage.journal_path(session_id, cwd: project_dir()) do
+      if File.regular?(path), do: {:ok, session_id}, else: {:error, :no_sessions}
+    end
+  end
+
+  defp project_dir, do: File.cwd!() |> Path.expand()
 
   defp ensure_recoverable(agent_ref, abandon?) do
     case Tackle.snapshot(agent_ref) do
@@ -417,10 +429,18 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp session_filters(nil, cursor), do: {:ok, compact_filters(%{limit: 20, cursor: cursor})}
+  defp scoped_session_filters(limit, cursor) do
+    with {:ok, ids} <- Storage.list_session_ids(cwd: project_dir()),
+         {:ok, filters} <- session_filters(limit, cursor) do
+      {:ok, Map.put(filters, :session_ids, ids)}
+    end
+  end
+
+  defp session_filters(nil, cursor),
+    do: {:ok, compact_filters(%{cwd: project_dir(), limit: 20, cursor: cursor})}
 
   defp session_filters(limit, cursor) when is_integer(limit) and limit > 0,
-    do: {:ok, compact_filters(%{limit: limit, cursor: cursor})}
+    do: {:ok, compact_filters(%{cwd: project_dir(), limit: limit, cursor: cursor})}
 
   defp session_filters(limit, _cursor), do: {:error, {:invalid_limit, limit}}
 

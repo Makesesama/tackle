@@ -78,7 +78,7 @@ defmodule Tackle.Session.CatalogTest do
     cwd = unique_cwd(ctx, "rebuild")
     session_id = create_session(ctx, cwd: cwd, title: "Rebuildable")
 
-    {:ok, path} = Storage.summary_path(session_id, home: ctx.home)
+    {:ok, path} = Storage.summary_path(session_id, home: ctx.home, cwd: cwd)
     File.write!(path, "not an etf sidecar")
 
     Catalog.rebuild(home: ctx.home)
