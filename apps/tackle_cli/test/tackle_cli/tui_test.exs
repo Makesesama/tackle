@@ -2,6 +2,7 @@ defmodule Tackle.CLI.TUITest do
   use ExUnit.Case, async: true
 
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
+  alias ExRatatui.Layout.Rect
   alias ExRatatui.Runtime
   alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.List, as: SelectionList
@@ -359,7 +360,14 @@ defmodule Tackle.CLI.TUITest do
 
       tall = %{short | size: {80, 24}} |> Viewport.resize()
       assert status_text(tall) =~ label
-      assert header_text(tall) == " Tackle  ·  openai-codex/test-model  ·  thinking off"
+
+      assert header_text(tall) ==
+               "openai-codex/test-model  ·  thinking off" <>
+                 String.duplicate(
+                   " ",
+                   80 - 6 - String.length("openai-codex/test-model  ·  thinking off")
+                 ) <>
+                 "Tackle"
     end
   end
 
@@ -424,10 +432,48 @@ defmodule Tackle.CLI.TUITest do
     assert state(tui).overlay == nil
   end
 
+  test "header text fallback stays right-aligned and drops on very narrow terminals", %{tui: tui} do
+    for width <- [7, 20, 40, 80] do
+      sized = %{state(tui) | size: {width, 24}} |> Viewport.resize()
+      header = header_text(sized)
+      assert String.ends_with?(header, "Tackle")
+      assert MessageView.display_width(header) == width
+    end
+
+    narrow = %{state(tui) | size: {6, 5}} |> Viewport.resize()
+    refute header_text(narrow) =~ "Tackle"
+  end
+
+  test "graphics header reserves two rows and scales the glyph beside the name", %{tui: tui} do
+    {:ok, picture} = ExRatatui.Image.new(Tackle.CLI.TUI.Glyph.png())
+    graphic = %{state(tui) | header_image: picture} |> Viewport.resize()
+    [{header, rect} | _] = widgets(graphic)
+    assert rect.height == 2
+    assert plain(header.text) |> String.ends_with?("ackle")
+
+    assert Enum.any?(widgets(graphic), fn
+             {%ExRatatui.Widgets.Image{state: state}, %Rect{x: 70, y: 0, width: 5, height: 2}} ->
+               state == picture.state
+
+             _ ->
+               false
+           end)
+
+    assert graphic.conversation.rect.y == 2
+
+    small = %{graphic | size: {15, 7}} |> Viewport.resize()
+    assert header_text(small) |> String.ends_with?("Tackle")
+
+    refute Enum.any?(widgets(small), fn {widget, _} ->
+             match?(%ExRatatui.Widgets.Image{}, widget)
+           end)
+  end
+
   test "header keeps the model before reasoning and help stays on the status row", %{tui: tui} do
     compact = %{state(tui) | size: {40, 24}} |> Viewport.resize()
     assert header_text(compact) =~ "openai-codex/test-model"
     refute header_text(compact) =~ "thinking off"
+    assert String.ends_with?(header_text(compact), "Tackle")
     assert status_text(compact) =~ "? help"
 
     wide = %{compact | size: {200, 24}} |> Viewport.resize()

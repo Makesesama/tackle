@@ -67,7 +67,8 @@ defmodule Tackle.CLI.TUI.Viewport do
         height,
         state.draft_lines,
         reading?(state.conversation),
-        Subagents.active?(state)
+        Subagents.active?(state),
+        not is_nil(state.header_image)
       )
 
     rect = browse_rect(state, regions.transcript)
@@ -99,7 +100,8 @@ defmodule Tackle.CLI.TUI.Viewport do
         height,
         state.draft_lines,
         reading?(state.conversation),
-        Subagents.active?(state)
+        Subagents.active?(state),
+        not is_nil(state.header_image)
       )
 
     state = %{

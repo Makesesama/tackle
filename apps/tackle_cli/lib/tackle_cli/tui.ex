@@ -127,7 +127,40 @@ defmodule Tackle.CLI.TUI do
   end
 
   @impl true
-  def mount(opts), do: State.new(opts)
+  def mount(opts) do
+    # Test terminals have no graphics protocol. A caller may inject one for
+    # deterministic scene tests without probing the real controlling TTY.
+    protocol =
+      if Keyword.has_key?(opts, :test_mode),
+        do: Keyword.get(opts, :header_protocol),
+        else: detect_graphics_protocol()
+
+    image =
+      if protocol in [:kitty, :sixel, :iterm2] do
+        case ExRatatui.Image.new(Tackle.CLI.TUI.Glyph.png(), protocol: :auto, resize: :scale) do
+          {:ok, widget} -> widget
+          {:error, _reason} -> nil
+        end
+      end
+
+    opts = Keyword.put(opts, :header_image, image)
+
+    case State.new(opts) do
+      {:ok, state} ->
+        {:ok, state,
+         probe_image_protocol: not is_nil(image) and not Keyword.has_key?(opts, :test_mode)}
+
+      error ->
+        error
+    end
+  end
+
+  defp detect_graphics_protocol do
+    case ExRatatui.Image.probe_terminal() do
+      {:ok, %{protocol: protocol}} when protocol in [:kitty, :sixel, :iterm2] -> protocol
+      _ -> nil
+    end
+  end
 
   @impl true
   def render(state, frame), do: View.scene(state, frame)

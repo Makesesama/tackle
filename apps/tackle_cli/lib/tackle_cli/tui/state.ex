@@ -103,6 +103,7 @@ defmodule Tackle.CLI.TUI.State do
           draft_lines: pos_integer(),
           draft_empty?: boolean(),
           size: {pos_integer(), pos_integer()},
+          header_image: ExRatatui.Widgets.Image.t() | nil,
           conversation: Tackle.CLI.TUI.Conversation.t()
         }
 
@@ -159,6 +160,7 @@ defmodule Tackle.CLI.TUI.State do
             draft_lines: 1,
             draft_empty?: true,
             size: {80, 24},
+            header_image: nil,
             conversation: nil
 
   @doc """
@@ -203,6 +205,7 @@ defmodule Tackle.CLI.TUI.State do
           Keyword.get(opts, :usage_timeline_loader, &__MODULE__.default_usage_timeline_loader/2),
         stream: %Stream{coalesce?: is_nil(Keyword.get(opts, :test_mode))},
         size: {width, height},
+        header_image: Keyword.get(opts, :header_image),
         conversation: Viewport.new_conversation(width, height)
       }
 

@@ -16,6 +16,7 @@ defmodule Tackle.CLI.TUI.Layout do
   alias ExRatatui.Layout.Rect
 
   @header_height 1
+  @graphic_header_height 2
   @composer_border_height 2
   @composer_min_lines 1
   @composer_max_lines 8
@@ -38,29 +39,41 @@ defmodule Tackle.CLI.TUI.Layout do
   requests the reading-back affordance row, which takes priority over the
   optional status row.
   """
-  @spec regions(integer(), integer(), pos_integer(), boolean(), boolean()) :: regions()
-  def regions(width, height, draft_lines, reading_active?, subagents_active? \\ false) do
+  @spec regions(integer(), integer(), pos_integer(), boolean(), boolean(), boolean()) :: regions()
+  def regions(
+        width,
+        height,
+        draft_lines,
+        reading_active?,
+        subagents_active? \\ false,
+        graphic? \\ false
+      ) do
     width = max(width, 1)
     height = max(height, 0)
+
+    header_height =
+      if graphic? and width >= 16 and height >= 8,
+        do: @graphic_header_height,
+        else: @header_height
 
     chrome_height = if composer_box?(width, height), do: @composer_border_height, else: 0
 
     composer_height =
       min(
         composer_lines(height, draft_lines, chrome_height) + chrome_height,
-        max(height - @header_height, 0)
+        max(height - header_height, 0)
       )
 
-    available = max(height - @header_height - composer_height, 0)
+    available = max(height - header_height - composer_height, 0)
 
     {reading?, available} = take_optional_row(reading_active?, available)
     {status?, available} = take_optional_row(true, available)
     transcript_height = available
 
-    header = %Rect{x: 0, y: 0, width: width, height: min(height, @header_height)}
-    transcript_area = %Rect{x: 0, y: @header_height, width: width, height: transcript_height}
+    header = %Rect{x: 0, y: 0, width: width, height: min(height, header_height)}
+    transcript_area = %Rect{x: 0, y: header_height, width: width, height: transcript_height}
     {transcript, sidebar} = split_sidebar(transcript_area, subagents_active?)
-    y = @header_height + transcript_height
+    y = header_height + transcript_height
 
     composer = %Rect{x: 0, y: y, width: width, height: composer_height}
     {reading, y} = optional_rect(reading?, y + composer_height, width)
