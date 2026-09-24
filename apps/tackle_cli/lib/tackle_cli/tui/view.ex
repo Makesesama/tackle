@@ -25,6 +25,7 @@ defmodule Tackle.CLI.TUI.View do
   alias Tackle.CLI.TUI.{
     Browser,
     Conversation,
+    Dashboard,
     Help,
     Inspector,
     Layout,
@@ -59,16 +60,25 @@ defmodule Tackle.CLI.TUI.View do
         not is_nil(state.header_image)
       )
 
-    [
-      {header_widget(state, width, is_nil(regions.status), regions.header), regions.header},
-      {transcript_widget(state), regions.transcript}
-    ] ++
-      header_graphic(state, regions.header) ++
-      sidebar_widgets(regions.sidebar, state) ++
-      reading_widgets(regions.reading, state.conversation) ++
-      status_widgets(regions.status, state, width) ++
-      [{composer_widget(state), regions.composer}] ++
-      overlay_widgets(state, width, height)
+    if Dashboard.show?(state) do
+      composer = Dashboard.composer_rect(state)
+
+      Dashboard.widgets(state, composer) ++
+        status_widgets(regions.status, state, width) ++
+        [{composer_widget(state), composer}] ++
+        overlay_widgets(state, width, height)
+    else
+      [
+        {header_widget(state, width, is_nil(regions.status), regions.header), regions.header},
+        {transcript_widget(state), regions.transcript}
+      ] ++
+        header_graphic(state, regions.header) ++
+        sidebar_widgets(regions.sidebar, state) ++
+        reading_widgets(regions.reading, state.conversation) ++
+        status_widgets(regions.status, state, width) ++
+        [{composer_widget(state), regions.composer}] ++
+        overlay_widgets(state, width, height)
+    end
   end
 
   # -- header and transcript ----------------------------------------------

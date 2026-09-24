@@ -16,6 +16,7 @@ defmodule Tackle.CLI.TUI.Help do
     "Esc           clear draft / cancel turn",
     "Ctrl+C        quit",
     "Alt+N         new session",
+    "Alt+1–5      resume recent session (idle, empty draft)",
     "Ctrl+K        compact context",
     "Ctrl+V        paste text or clipboard image",
     "              (agent reads saved path; not attached)",

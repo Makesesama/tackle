@@ -14,7 +14,7 @@ defmodule Tackle.CLI.TUI.Session do
   and it is also what guarantees a swapped-in scope cannot outlive the process.
   """
 
-  alias Tackle.CLI.TUI.{State, Util}
+  alias Tackle.CLI.TUI.{RecentSessions, State, Util}
   alias Tackle.Runtime.Scope
   alias Tackle.Session.Snapshot
   alias Tackle.Thinking
@@ -37,10 +37,7 @@ defmodule Tackle.CLI.TUI.Session do
     {:noreply, %{state | overlay: {:confirm_new_session, %{reason: reason}}}}
   end
 
-  @doc """
-  Starts the replacement session, carrying the current model and reasoning
-  level over as overrides.
-  """
+  @doc "Starts the replacement session, carrying the current model and reasoning level over as overrides."
   @spec start_new(State.t()) :: {:noreply, State.t()}
   def start_new(%State{} = state) do
     overrides = %{
@@ -61,6 +58,48 @@ defmodule Tackle.CLI.TUI.Session do
     end
   end
 
+  @doc "Resumes a recent session by its one-based slot."
+  @spec resume_recent(State.t(), pos_integer()) :: {:noreply, State.t()}
+  def resume_recent(%State{} = state, index) do
+    cond do
+      state.active_turn != nil or state.pending_operation != nil ->
+        {:noreply, %{state | notice: "Resume recent sessions when idle"}}
+
+      not state.draft_empty? ->
+        {:noreply, %{state | notice: "Clear the draft before resuming a recent session"}}
+
+      is_nil(state.resume_session) ->
+        {:noreply, %{state | notice: "Recent-session resume is unavailable in this frontend"}}
+
+      true ->
+        resume_selected(state, index)
+    end
+  end
+
+  defp resume_selected(state, index) do
+    case Enum.at(state.recent_sessions, index - 1) do
+      nil ->
+        {:noreply, %{state | notice: "No recent session in slot #{index}"}}
+
+      session ->
+        case state.resume_session.(session.session_id) do
+          {:ok, %Scope{} = scope} ->
+            adopt(state, scope)
+
+          {:error, reason} ->
+            {:noreply, %{state | error: Util.format_reason(reason)}}
+
+          other ->
+            {:noreply, %{state | error: Util.format_reason({:invalid_resume_session, other})}}
+        end
+    end
+  rescue
+    error -> {:noreply, %{state | error: Util.format_reason({:resume_session_failed, error})}}
+  catch
+    kind, reason ->
+      {:noreply, %{state | error: Util.format_reason({:resume_session_failed, kind, reason})}}
+  end
+
   @doc """
   Subscribes to a replacement scope and adopts it.
 
@@ -72,7 +111,9 @@ defmodule Tackle.CLI.TUI.Session do
     with {:ok, %Snapshot{} = snapshot} <- Tackle.subscribe(scope.root_agent_ref),
          {:ok, monitor} <- Tackle.monitor_agent(scope.root_agent_ref) do
       retire(state)
-      {:noreply, State.reset(state, scope, snapshot, monitor)}
+      state = State.reset(state, scope, snapshot, monitor)
+      {state, commands} = RecentSessions.load(state)
+      {:noreply, state, commands: commands}
     else
       {:error, reason} ->
         shutdown(scope.scope_ref)

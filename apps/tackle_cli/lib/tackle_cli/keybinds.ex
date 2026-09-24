@@ -53,6 +53,7 @@ defmodule Tackle.CLI.Keybinds do
           | :leave
           | :model_picker
           | :new_session
+          | {:resume_recent, pos_integer()}
           | :newline
           | :next
           | :page_down
@@ -106,11 +107,11 @@ defmodule Tackle.CLI.Keybinds do
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
-      when is_ctrl(modifiers) and code in ["c", "t", "j", "k", "v"],
+      when is_ctrl(modifiers) and code in ["c", "t", "j", "k", "v", "1", "2", "3", "4", "5"],
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
-      when is_alt(modifiers) and code in ["<", ">"],
+      when is_alt(modifiers) and code in ["<", ">", "1", "2", "3", "4", "5"],
       do: false
 
   def repeatable?(%Key{}), do: true
@@ -135,6 +136,15 @@ defmodule Tackle.CLI.Keybinds do
   def base(%Key{code: "f5"}, _focus), do: :tree
   def base(%Key{code: "f6"}, _focus), do: :usage_chart
   def base(%Key{code: "f7"}, _focus), do: :subagents
+
+  def base(%Key{code: code, modifiers: modifiers}, _focus)
+      when is_alt(modifiers) and code in ["1", "2", "3", "4", "5"],
+      do: {:resume_recent, String.to_integer(code)}
+
+  # Extended keyboard protocols can also distinguish Ctrl+digits.
+  def base(%Key{code: code, modifiers: modifiers}, _focus)
+      when is_ctrl(modifiers) and code in ["1", "2", "3", "4", "5"],
+      do: {:resume_recent, String.to_integer(code)}
 
   def base(key, :subagents), do: {:subagents, subagents(key)}
   def base(key, :transcript), do: {:transcript, transcript(key)}

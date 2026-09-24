@@ -17,6 +17,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     Compaction,
     MessageView,
     Observations,
+    RecentSessions,
     State,
     Subagents,
     ToolView,
@@ -204,6 +205,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp route({:tui_operation_result, _ref, _kind, _result}, state),
     do: {:noreply, state, render?: false}
+
+  defp route({:tui_recent_sessions_result, ref, result}, state),
+    do: RecentSessions.apply_result(state, ref, result)
 
   defp route({:tui_usage_timeline_result, ref, mode, session_id, result}, state),
     do: UsageChart.apply_result(state, ref, mode, session_id, result)
