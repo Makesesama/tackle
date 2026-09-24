@@ -413,8 +413,17 @@ defmodule Tackle.CLI.TUITest do
              match?(%Paragraph{}, widget) and rect.y == 1 and rect.x == 33
            end)
 
-    assert {%Input{}, %Rect{x: 5, y: 11, width: 70, height: 3}} =
+    assert {%Input{}, %Rect{x: 2, y: 11, width: 76, height: 3}} =
              Enum.find(scene, fn {widget, _rect} -> match?(%Input{}, widget) end)
+
+    for {terminal_width, x, input_width} <- [{40, 2, 36}, {100, 10, 80}] do
+      resized = %{state | size: {terminal_width, 24}}
+
+      assert {%Input{}, %Rect{x: ^x, width: ^input_width}} =
+               resized
+               |> widgets()
+               |> Enum.find(fn {widget, _rect} -> match?(%Input{}, widget) end)
+    end
 
     text =
       scene
@@ -849,6 +858,41 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "r", ["ctrl"])
     assert draft(tui) == "one\ntwo\nthree"
     assert state(tui).draft_lines == 3
+  end
+
+  test "dashboard keeps typed newlines visible until the landing surface runs out of room", %{
+    tui: tui
+  } do
+    :sys.replace_state(tui, fn runtime ->
+      %{runtime | user_state: %{runtime.user_state | list_recent_sessions: fn -> {:ok, []} end}}
+    end)
+
+    assert Tackle.CLI.TUI.Dashboard.show?(state(tui))
+
+    inject_key(tui, "a")
+    inject_key(tui, "j", ["ctrl"])
+    inject_key(tui, "b")
+    assert draft(tui) == "a\nb"
+    assert state(tui).draft_lines == 2
+    assert Tackle.CLI.TUI.Dashboard.show?(state(tui))
+
+    inject_key(tui, "enter", ["shift"])
+    inject_key(tui, "c")
+    assert draft(tui) == "a\nb\nc"
+    assert state(tui).draft_lines == 3
+    assert Tackle.CLI.TUI.Dashboard.show?(state(tui))
+
+    {widget, rect} =
+      state(tui)
+      |> widgets()
+      |> Enum.find(fn {widget, _} -> match?(%Input{}, widget) end)
+
+    assert [{_, _}, {%Paragraph{}, inner}] = Input.render(widget, rect)
+    assert inner.height == 3
+
+    inject_key(tui, "j", ["ctrl"])
+    assert draft(tui) == "a\nb\nc\n"
+    refute Tackle.CLI.TUI.Dashboard.show?(state(tui))
   end
 
   test "handles modified Enter, Ctrl+J, unknown Alt chords, repeats, and releases", %{tui: tui} do

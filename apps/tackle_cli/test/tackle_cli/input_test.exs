@@ -5,7 +5,7 @@ defmodule Tackle.CLI.Widgets.InputTest do
   alias ExRatatui.Widgets.{Block, Paragraph}
   alias Tackle.CLI.Native
   alias ExRatatui.Event.Key
-  alias Tackle.CLI.TUI.{Composer, Layout, State, Theme, View, Viewport}
+  alias Tackle.CLI.TUI.{Composer, Dashboard, Layout, State, Theme, View, Viewport}
   alias Tackle.CLI.Widgets.Input
 
   test "measurement, resize, and vertical editing use the same soft wraps" do
@@ -29,6 +29,73 @@ defmodule Tackle.CLI.Widgets.InputTest do
     resized = Viewport.resize(%{state | size: {20, 20}})
     assert resized.draft_lines == 1
     assert Input.get_value(input) == "abcd!efgh"
+  end
+
+  test "dashboard wraps at its painted width and keeps the next line visible" do
+    for width <- [40, 80, 100] do
+      state = %State{
+        input: Input.new(),
+        agent_state: Tackle.Lib.State.new(),
+        size: {width, 24},
+        list_recent_sessions: fn -> {:ok, []} end,
+        conversation: Viewport.new_conversation(width, 24)
+      }
+
+      content_width = Dashboard.content_width(state)
+      assert content_width == min(width - 4, 80) - 4
+
+      # One row at the terminal width would have clipped this wrap on the dashboard.
+      :ok = Input.set_value(state.input, String.duplicate("x", content_width + 1))
+      state = state |> Viewport.update_draft() |> Viewport.relayout()
+      assert Dashboard.show?(state)
+      assert state.draft_lines == 2
+      {widget, rect} = composer(state)
+      assert rect.height == 4
+      assert [{%Block{}, ^rect}, {%Paragraph{}, inner}] = Input.render(widget, rect)
+      assert inner.width == content_width
+      assert inner.height == 2
+
+      terminal = ExRatatui.init_test_terminal(width, 24)
+      :ok = ExRatatui.draw(terminal, View.scene(state, nil))
+      rows = terminal |> ExRatatui.get_buffer_content() |> String.split("\n")
+      assert Enum.at(rows, inner.y) =~ String.duplicate("x", content_width)
+      assert Enum.at(rows, inner.y + 1) =~ "x"
+
+      # Explicit newlines grow the dashboard too; it leaves the landing surface
+      # only when there is no longer room for the mark and recent sessions.
+      {:noreply, state} = Composer.insert_newline(state)
+      assert Input.get_value(state.input) == String.duplicate("x", content_width + 1) <> "\n"
+      assert state.draft_lines == 3
+      assert Dashboard.show?(state)
+      assert {%Input{}, %Rect{height: 5}} = composer(state)
+
+      {:noreply, state} = Composer.insert_newline(state)
+      assert state.draft_lines == 4
+      refute Dashboard.show?(state)
+      assert {%Input{}, %Rect{width: ^width}} = composer(state)
+    end
+  end
+
+  test "dashboard vertical navigation uses the displayed wrap width" do
+    width = 100
+
+    state = %State{
+      input: Input.new(),
+      agent_state: Tackle.Lib.State.new(),
+      size: {width, 24},
+      list_recent_sessions: fn -> {:ok, []} end,
+      conversation: Viewport.new_conversation(width, 24)
+    }
+
+    content_width = Dashboard.content_width(state)
+    :ok = Input.set_value(state.input, String.duplicate("x", content_width + 5))
+    state = state |> Viewport.update_draft() |> Viewport.relayout()
+    assert Dashboard.show?(state)
+    {:noreply, state} = Composer.key(state, %Key{code: "up", modifiers: []})
+    :ok = Input.insert_str(state.input, "!")
+
+    assert Input.get_value(state.input) ==
+             String.duplicate("x", 5) <> "!" <> String.duplicate("x", content_width)
   end
 
   test "the input bar paints a padded rounded box and dims when focus leaves" do
