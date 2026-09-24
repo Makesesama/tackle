@@ -23,7 +23,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
-  alias Tackle.CLI.TUI.{Compaction, Pastes, Theme, ToolView}
+  alias Tackle.CLI.TUI.{Compaction, Glyph, Pastes, Theme, ToolView}
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   @conversation_chunk_rows 64
@@ -412,6 +412,20 @@ defmodule Tackle.CLI.TUI.MessageView do
 
   @doc "Builds widgets for a typed entry while preserving full source separately."
   @spec render_entry(t(), pos_integer()) :: [widget_item()]
+  def render_entry(%__MODULE__{kind: :welcome} = entry, width) do
+    text_rows =
+      entry.content
+      |> sanitize()
+      |> String.split("\n", trim: false)
+      |> Enum.map(&row([span(&1, Theme.style(:muted))], %Style{}))
+
+    if width >= Glyph.width() do
+      render_rows(Glyph.rows() ++ [row("")] ++ text_rows, width)
+    else
+      render_rows(text_rows, width)
+    end
+  end
+
   def render_entry(%__MODULE__{kind: :thinking, collapsed?: true} = entry, width) do
     render_rows(thinking_rows(entry, :collapsed), width)
   end

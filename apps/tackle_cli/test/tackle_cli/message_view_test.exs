@@ -3,10 +3,44 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
 
   alias ExRatatui.CellSession
   alias ExRatatui.Layout.Rect
+  alias ExRatatui.Layout.Rect
   alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.WidgetList
-  alias Tackle.CLI.TUI.MessageView
+  alias Tackle.CLI.TUI.{Glyph, MessageView}
   alias Tackle.Lib.{Message, State}
+
+  test "the header image encodes the same grid as a transparent PNG" do
+    png = Glyph.png()
+    assert <<137, 80, 78, 71, 13, 10, 26, 10, _::binary>> = png
+    assert {:ok, image} = ExRatatui.Image.new(png)
+    assert ExRatatui.Image.dimensions(image) == {56, 48}
+  end
+
+  test "welcome glyph has uniform two-column pixels and a detached square" do
+    rows = Glyph.rows()
+    assert length(rows) == 6
+    assert Enum.all?(rows, fn row -> MessageView.display_width(plain(row)) == 14 end)
+
+    assert Enum.all?(rows, fn row ->
+             Enum.all?(row.spans, &(&1.content in ["  ", "██"]))
+           end)
+
+    assert Enum.at(rows, 3) |> plain() == "    ████      "
+    assert Enum.at(rows, 4) |> plain() == "    ████  ██  "
+    assert Enum.at(rows, 5) |> plain() == "    ████      "
+
+    assert Enum.count(
+             for row <- rows, span <- row.spans, span.style.fg == {:rgb, 156, 58, 242}, do: span
+           ) == 3
+
+    wide = MessageView.render_entry(MessageView.welcome_entry(), 40)
+    assert text(wide) =~ "██"
+    assert text(wide) =~ "Welcome to Tackle."
+
+    narrow = MessageView.render_entry(MessageView.welcome_entry(), 10)
+    refute text(narrow) =~ "██"
+    assert text(narrow) =~ "Welcome to"
+  end
 
   test "user prompts paint a full-width surface band with an accent marker" do
     [entry] = settled([Message.user("hello")])

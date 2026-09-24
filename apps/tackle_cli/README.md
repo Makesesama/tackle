@@ -23,6 +23,13 @@ bounded live tail, and streamed tool arguments let write cards preview incoming
 paths and content before execution starts. Rows stay in requested order;
 execution status is transient progress, not confirmation of a durable commit.
 
+The empty-session welcome view shows a seven-by-six terminal pixel glyph in
+cyan, blue, and violet. Each pixel uses two character columns for a square-like
+aspect ratio; terminals narrower than 14 columns show the welcome text alone.
+A five-column connected block-character version replaces the `T` in the
+right-aligned header wordmark when space permits. The pixel pattern and palette
+live in `lib/tackle_cli/tui/glyph.ex`.
+
 The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
 are compiled into it. It does not discover or load third-party plugins at
 runtime. That keeps packaging separate from the future plugin-loading design.

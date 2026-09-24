@@ -2,8 +2,10 @@ defmodule Tackle.CLI.TUI.View do
   @moduledoc """
   The scene: a flat list of widgets and the rectangles they occupy.
 
-  The shell is transcript-first. A one-row header shows the model and
-  reasoning level; the transcript owns the flexible middle of the screen;
+  The shell is transcript-first. A header shows the model and
+  reasoning level; graphics-capable terminals reserve three rows for a small
+  right-aligned logo while other terminals use a one-row text header.
+  The transcript owns the flexible middle of the screen;
   a rounded input bar encloses the composer. Turn state and the `?` shortcut
   cue share a row below the bar, with reading position there when relevant.
   The header carries turn state only on short terminals.
@@ -53,13 +55,15 @@ defmodule Tackle.CLI.TUI.View do
         height,
         state.draft_lines,
         Viewport.reading?(state.conversation),
-        Subagents.active?(state)
+        Subagents.active?(state),
+        not is_nil(state.header_image)
       )
 
     [
-      {header_widget(state, width, is_nil(regions.status)), regions.header},
+      {header_widget(state, width, is_nil(regions.status), regions.header), regions.header},
       {transcript_widget(state), regions.transcript}
     ] ++
+      header_graphic(state, regions.header) ++
       sidebar_widgets(regions.sidebar, state) ++
       reading_widgets(regions.reading, state.conversation) ++
       status_widgets(regions.status, state, width) ++
@@ -69,32 +73,62 @@ defmodule Tackle.CLI.TUI.View do
 
   # -- header and transcript ----------------------------------------------
 
-  defp header_widget(state, width, show_status?) do
-    %Paragraph{text: [MessageView.row(header_spans(state, width, show_status?), %Style{})]}
+  defp header_widget(state, width, show_status?, header) do
+    %Paragraph{
+      text: [MessageView.row(header_spans(state, width, show_status?, header), %Style{})]
+    }
+  end
+
+  defp header_graphic(%{header_image: nil}, _rect), do: []
+  defp header_graphic(_state, %{height: height}) when height < 2, do: []
+
+  defp header_graphic(state, rect) do
+    # The five-column mark sits directly before the five-column word suffix.
+    # Its second row is reserved, never painted over the transcript.
+    [{state.header_image, %Rect{x: rect.x + rect.width - 10, y: rect.y, width: 5, height: 2}}]
   end
 
   # Keep model identity before reasoning. On short terminals the header also
   # carries turn state, which takes priority over configuration and branding.
-  defp header_spans(state, width, show_status?) do
+  defp header_spans(state, width, show_status?, header) do
     model = State.model_ref(state.agent_state) || "configured default"
     thinking = Thinking.from_llm_opts(state.agent_state.llm_opts)
     separator = MessageView.span("  ·  ", Theme.style(:subtle))
 
-    base = [MessageView.span(" Tackle", Theme.bold(Theme.style(:text)))]
-    model_part = [separator, MessageView.span(model, Theme.style(:muted))]
+    model_part = [MessageView.span(model, Theme.style(:muted))]
     thinking_part = [separator, MessageView.span("thinking #{thinking}", Theme.style(:muted))]
 
     status = MessageView.span(StatusView.status_label(state), StatusView.status_style(state))
     status_part = if show_status?, do: [separator, status], else: []
 
     variants = [
-      base ++ model_part ++ thinking_part ++ status_part,
-      base ++ model_part ++ status_part,
-      base ++ status_part,
-      if(show_status?, do: [status], else: base)
+      model_part ++ thinking_part ++ status_part,
+      model_part ++ status_part,
+      if(show_status?, do: [status], else: []),
+      []
     ]
 
-    Enum.find(variants, List.last(variants), &(spans_width(&1) <= max(width, 1)))
+    graphic? = header.height >= 2
+
+    brand =
+      if graphic?,
+        do: [MessageView.span("ackle", Theme.bold(Theme.style(:text)))],
+        else: [MessageView.span("Tackle", Theme.bold(Theme.style(:text)))]
+
+    brand_width = if graphic?, do: 10, else: spans_width(brand)
+
+    # Short-terminal turn state must remain visible even when the brand would
+    # fit by itself but not alongside the status label.
+    if width > brand_width and
+         (not show_status? or spans_width([status]) + 1 + brand_width <= width) do
+      space = width - brand_width - 1
+      left = Enum.find(variants, [], &(spans_width(&1) <= space))
+      padding = width - brand_width - spans_width(left)
+      brand_gap = if graphic?, do: 5, else: 0
+      left ++ [MessageView.span(String.duplicate(" ", padding + brand_gap))] ++ brand
+    else
+      Enum.find(variants, [], &(spans_width(&1) <= max(width, 1)))
+    end
   end
 
   defp spans_width(spans) do
