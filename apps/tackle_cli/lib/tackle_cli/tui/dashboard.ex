@@ -12,15 +12,29 @@ defmodule Tackle.CLI.TUI.Dashboard do
 
   @recent_label_width 32
 
-  @doc "Whether the empty session can display the landing surface."
+  @doc "Whether the landing surface can fit the current draft and its surrounding content."
   @spec show?(State.t()) :: boolean()
   def show?(%State{} = state) do
+    {_width, height} = state.size
+    # Keep the six-row mark and the recent-session shortcuts clear of the
+    # composer. Larger drafts continue in the transcript layout.
+    eligible?(state) and state.draft_lines <= min(8, height - 21)
+  end
+
+  @doc "Whether the dashboard can host the draft, independent of its row count."
+  @spec eligible?(State.t()) :: boolean()
+  def eligible?(%State{} = state) do
     {width, height} = state.size
 
-    width >= 40 and height >= 24 and state.draft_lines <= 2 and
-      not is_nil(state.list_recent_sessions) and state.focus == :composer and
-      is_nil(state.active_turn) and is_nil(state.pending_operation) and
-      state.agent_state.messages == []
+    width >= 40 and height >= 24 and not is_nil(state.list_recent_sessions) and
+      state.focus == :composer and is_nil(state.active_turn) and
+      is_nil(state.pending_operation) and state.agent_state.messages == []
+  end
+
+  @doc "Content width of the bounded dashboard composer (excluding border and padding)."
+  @spec content_width(State.t()) :: pos_integer()
+  def content_width(%State{size: {width, height}}) do
+    Layout.composer_content_width(min(width - 4, 80), height)
   end
 
   @doc "The dashboard widgets and their rectangles; the input is supplied by View."
@@ -80,7 +94,7 @@ defmodule Tackle.CLI.TUI.Dashboard do
   @spec composer_rect(State.t()) :: Rect.t()
   def composer_rect(state) do
     {width, height} = state.size
-    input_width = min(width - 4, 70)
+    input_width = min(width - 4, 80)
 
     input_height =
       min(state.draft_lines, 8) + if(Layout.composer_box?(width, height), do: 2, else: 0)

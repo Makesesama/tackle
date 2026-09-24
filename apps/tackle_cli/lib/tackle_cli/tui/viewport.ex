@@ -17,7 +17,7 @@ defmodule Tackle.CLI.TUI.Viewport do
   hits an edge does not repaint the frame.
   """
 
-  alias Tackle.CLI.TUI.{Browser, Conversation, Layout, State, Subagents}
+  alias Tackle.CLI.TUI.{Browser, Conversation, Dashboard, Layout, State, Subagents}
   alias Tackle.CLI.Widgets.Input
 
   @doc "Creates the empty transcript model for a terminal size."
@@ -124,16 +124,25 @@ defmodule Tackle.CLI.TUI.Viewport do
   @spec reading?(Conversation.t()) :: boolean()
   def reading?(conversation), do: conversation.new_output? or not conversation.follow?
 
+  @doc "Width used for draft measurement and vertical cursor navigation."
+  @spec draft_width(State.t()) :: pos_integer()
+  def draft_width(%State{} = state) do
+    if Dashboard.eligible?(state) do
+      Dashboard.content_width(state)
+    else
+      {width, height} = state.size
+      Layout.composer_content_width(width, height)
+    end
+  end
+
   @doc "Recomputes the composer's wrapped row count and emptiness."
   @spec update_draft(State.t()) :: State.t()
   def update_draft(%State{} = state) do
     value = Input.get_value(state.input)
 
-    {width, height} = state.size
-
     %{
       state
-      | draft_lines: Input.rows(state.input, Layout.composer_content_width(width, height)),
+      | draft_lines: Input.rows(state.input, draft_width(state)),
         draft_empty?: String.trim(value) == ""
     }
   end
