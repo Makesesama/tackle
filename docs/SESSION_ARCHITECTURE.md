@@ -165,14 +165,19 @@ $TACKLE_HOME/
 └── sessions/
     ├── catalog/                           derived global data
     ├── trash/                             recoverable deletions
-    └── <session-id>/
-        ├── session.dlog                   canonical journal
-        ├── summary.etf                    optional derived summary
-        ├── checkpoint.etf                 optional derived replay checkpoint
-        └── recovery/                      pre-repair or migration artifacts
+    ├── <session-id>/                    legacy flat session (no project)
+    └── --home-user-project--/           path-derived project directory
+        └── <session-id>/
+            ├── session.dlog             canonical journal
+            ├── summary.etf              optional derived summary
+            ├── checkpoint.etf           optional derived replay checkpoint
+            └── recovery/                pre-repair or migration artifacts
 ```
 
-Session IDs are used as opaque path components after validation. If directory fan-out becomes a measured problem, the implementation may add deterministic sharding without changing session identity or the journal schema.
+Session IDs are used as opaque path components after validation. Project paths are expanded to absolute paths and encoded by escaping literal
+`-` as `-2D`, replacing `/` with `-`, then wrapping in `--`. The catalog scans project directories and legacy flat sessions;
+read/write operations address a project session with the same `:cwd` used at
+creation. Existing flat sessions are not migrated automatically. If directory fan-out becomes a measured problem, the implementation may add deterministic sharding without changing session identity or the journal schema.
 
 The journal is the only required durable file. `summary.etf`, `checkpoint.etf`, and catalog data can always be removed and recreated.
 

@@ -78,6 +78,39 @@ defmodule Tackle.Session.StorageTest do
     assert session_ids == [ctx.session_id]
   end
 
+  test "isolates projects by path and leaves legacy sessions in the root", ctx do
+    project = "/home/dev/projects/example"
+    other = "/home/dev/projects/other"
+
+    assert {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home, cwd: project)
+
+    assert dir ==
+             Path.join([
+               ctx.home,
+               "sessions",
+               "--home-dev-projects-example--",
+               ctx.session_id
+             ])
+
+    assert {:ok, []} = Storage.list_session_ids(home: ctx.home, cwd: other)
+
+    assert {:ok, different} =
+             Storage.session_dir(ctx.session_id,
+               home: ctx.home,
+               cwd: "/home/dev/projects/example-extra"
+             )
+
+    refute different == dir
+    assert {:ok, dash} = Storage.session_dir(ctx.session_id, home: ctx.home, cwd: "/tmp/a-b")
+    assert {:ok, slash} = Storage.session_dir(ctx.session_id, home: ctx.home, cwd: "/tmp/a/b")
+    refute dash == slash
+    session_id = ctx.session_id
+    assert {:ok, [^session_id]} = Storage.list_session_ids(home: ctx.home, cwd: project)
+    assert {:ok, []} = Storage.list_session_ids(home: ctx.home)
+    assert {:ok, [{^session_id, location}]} = Storage.list_session_locations(home: ctx.home)
+    assert location[:project_key] == "--home-dev-projects-example--"
+  end
+
   test "moves a session directory into the trash", ctx do
     {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
     File.write!(Path.join(dir, "session.dlog"), "data")

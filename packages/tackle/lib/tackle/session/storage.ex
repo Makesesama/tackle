@@ -8,11 +8,13 @@ defmodule Tackle.Session.Storage do
       └── sessions/
           ├── catalog/       derived global data
           ├── trash/         recoverable deletions
-          └── <session-id>/
-              ├── session.dlog
-              ├── summary.etf
-              ├── checkpoint.etf
-              └── recovery/
+          ├── <session-id>/      legacy sessions without a project
+          └── --home-user-project--/
+              └── <session-id>/
+                  ├── session.dlog
+                  ├── summary.etf
+                  ├── checkpoint.etf
+                  └── recovery/
 
   The journal is the only required durable file. Summaries, checkpoints, and
   catalog data are disposable projections that can always be removed and
@@ -57,11 +59,11 @@ defmodule Tackle.Session.Storage do
     with {:ok, root} <- sessions_root(opts), do: {:ok, Path.join(root, @catalog_dir)}
   end
 
-  @doc "Returns the private directory for one session."
+  @doc "Returns the private directory for one session. `:cwd` selects its project."
   @spec session_dir(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def session_dir(session_id, opts \\ []) do
     with :ok <- validate_session_id(session_id),
-         {:ok, root} <- sessions_root(opts) do
+         {:ok, root} <- project_root(opts) do
       {:ok, Path.join(root, session_id)}
     end
   end
@@ -147,16 +149,52 @@ defmodule Tackle.Session.Storage do
   @spec release_lock(Lock.t()) :: :ok
   def release_lock(%Lock{} = lock), do: Lock.release(lock)
 
-  @doc "Lists session ids present in the storage root."
+  @doc "Lists session ids in the selected project (or legacy root without `:cwd`)."
   @spec list_session_ids(keyword()) :: {:ok, [String.t()]} | {:error, term()}
   def list_session_ids(opts \\ []) do
-    with {:ok, root} <- sessions_root(opts) do
+    with {:ok, root} <- project_root(opts) do
       list_session_ids_in(root)
     end
   end
 
-  defp list_session_ids_in(root) do
+  @doc "Lists legacy and project session locations for catalog rebuilds."
+  @spec list_session_locations(keyword()) :: {:ok, [{String.t(), keyword()}]} | {:error, term()}
+  def list_session_locations(opts \\ []) do
+    with {:ok, root} <- sessions_root(opts),
+         location_opts = Keyword.drop(opts, [:cwd, :project_key]),
+         {:ok, legacy} <- list_session_ids_in(root),
+         {:ok, entries} <- list_entries(root) do
+      Enum.reduce_while(entries, {:ok, Enum.map(legacy, &{&1, location_opts})}, fn entry,
+                                                                                   {:ok, acc} ->
+        append_project_sessions(root, entry, location_opts, acc)
+      end)
+    end
+  end
+
+  defp append_project_sessions(root, entry, location_opts, acc) do
+    if String.starts_with?(entry, "--") and String.ends_with?(entry, "--") and
+         File.dir?(Path.join(root, entry)) do
+      location = Keyword.put(location_opts, :project_key, entry)
+
+      case list_session_ids(location) do
+        {:ok, ids} -> {:cont, {:ok, acc ++ Enum.map(ids, &{&1, location})}}
+        error -> {:halt, error}
+      end
+    else
+      {:cont, {:ok, acc}}
+    end
+  end
+
+  defp list_entries(root) do
     case File.ls(root) do
+      {:ok, entries} -> {:ok, entries}
+      {:error, :enoent} -> {:ok, []}
+      {:error, reason} -> {:error, {:storage_unavailable, root, reason}}
+    end
+  end
+
+  defp list_session_ids_in(root) do
+    case list_entries(root) do
       {:ok, entries} ->
         ids =
           entries
@@ -166,11 +204,8 @@ defmodule Tackle.Session.Storage do
 
         {:ok, ids}
 
-      {:error, :enoent} ->
-        {:ok, []}
-
-      {:error, reason} ->
-        {:error, {:storage_unavailable, root, reason}}
+      error ->
+        error
     end
   end
 
@@ -240,7 +275,7 @@ defmodule Tackle.Session.Storage do
   @doc "Creates a unique temporary session directory for portable publication."
   @spec temporary_session_dir(keyword()) :: {:ok, String.t()} | {:error, term()}
   def temporary_session_dir(opts \\ []) do
-    with {:ok, root} <- sessions_root(opts),
+    with {:ok, root} <- project_root(opts),
          :ok <- ensure_private_dir(root) do
       suffix = ".tmp-" <> Integer.to_string(System.unique_integer([:positive]))
       path = Path.join(root, suffix)
@@ -275,6 +310,35 @@ defmodule Tackle.Session.Storage do
   @doc "Returns the journal file mode used for newly created journals."
   @spec file_mode() :: non_neg_integer()
   def file_mode, do: @file_mode
+
+  # The enclosing dashes distinguish project directories from legacy session ids.
+  defp project_root(opts) do
+    with {:ok, root} <- sessions_root(opts) do
+      project_root(root, Keyword.get(opts, :cwd), Keyword.get(opts, :project_key))
+    end
+  end
+
+  defp project_root(root, cwd, _key) when is_binary(cwd) do
+    key =
+      "--" <>
+        (cwd
+         |> Path.expand()
+         |> String.trim_leading("/")
+         |> String.replace("-", "-2D")
+         |> String.replace("/", "-")) <> "--"
+
+    {:ok, Path.join(root, key)}
+  end
+
+  defp project_root(root, nil, key) when is_binary(key) do
+    if String.starts_with?(key, "--") and String.ends_with?(key, "--") and
+         not String.contains?(key, "/") and key not in [".", ".."],
+       do: {:ok, Path.join(root, key)},
+       else: {:error, {:invalid_project_key, key}}
+  end
+
+  defp project_root(root, nil, nil), do: {:ok, root}
+  defp project_root(_root, invalid, _key), do: {:error, {:invalid_cwd, invalid}}
 
   defp home(opts) do
     case Keyword.fetch(opts, :home) do

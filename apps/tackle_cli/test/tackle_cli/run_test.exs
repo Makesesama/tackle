@@ -139,7 +139,7 @@ defmodule Tackle.CLI.RunTest do
           end)
 
         assert output =~ "scout fixture finding"
-        [journal_path] = Path.wildcard(Path.join(home, "sessions/*/session.dlog"))
+        [journal_path] = Path.wildcard(Path.join(home, "sessions/--*/*/session.dlog"))
         journal_path |> Path.dirname() |> Path.basename()
       end)
     end)
@@ -160,9 +160,10 @@ defmodule Tackle.CLI.RunTest do
     assert Enum.any?(resumed_child[:messages], &(&1.content == "Inspect fixture.txt"))
     refute Enum.any?(resumed_child[:messages], &(&1.role == :tool))
 
-    [journal_path] = Path.wildcard(Path.join(home, "sessions/*/session.dlog"))
+    [journal_path] = Path.wildcard(Path.join(home, "sessions/--*/*/session.dlog"))
     session_id = journal_path |> Path.dirname() |> Path.basename()
-    assert {:ok, stored} = Tackle.inspect_session(session_id, home: home)
+    assert {:ok, stored} = Tackle.inspect_session(session_id, home: home, cwd: home)
+    assert stored.metadata.cwd == home
 
     assert Enum.any?(
              stored.messages,
@@ -172,7 +173,7 @@ defmodule Tackle.CLI.RunTest do
 
   test "resume automatically repairs an unclean journal", %{home: home} do
     session_id = "session-#{System.unique_integer([:positive])}"
-    {:ok, journal} = Journal.start_link(session_id: session_id, home: home)
+    {:ok, journal} = Journal.start_link(session_id: session_id, home: home, cwd: File.cwd!())
     Process.unlink(journal)
 
     assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "before crash")
@@ -181,7 +182,7 @@ defmodule Tackle.CLI.RunTest do
     assert :ok = Journal.close_journal(journal)
     GenServer.stop(journal)
 
-    {:ok, path} = Storage.journal_path(session_id, home: home)
+    {:ok, path} = Storage.journal_path(session_id, home: home, cwd: File.cwd!())
     <<magic::binary-size(4), _status::binary-size(4), rest::binary>> = File.read!(path)
     File.write!(path, magic <> <<6, 7, 8, 9>> <> rest)
 
@@ -198,34 +199,142 @@ defmodule Tackle.CLI.RunTest do
       end)
 
     assert output =~ "repaired"
-    {:ok, recovery_dir} = Storage.recovery_dir(session_id, home: home)
+    {:ok, recovery_dir} = Storage.recovery_dir(session_id, home: home, cwd: File.cwd!())
     assert File.ls!(recovery_dir) != []
   end
 
-  test "resume without an id continues the most recently updated session", %{home: home} do
+  test "resume without an id selects the newest session in the current project", %{home: home} do
     # The catalog is process-global, so start the harness before seeding for the
     # seeded commits to be indexed under this test's home.
     {:ok, _apps} = Application.ensure_all_started(:tackle)
+    other = Path.join(home, "other")
+    File.mkdir_p!(other)
 
-    older = seed_session(home, "older")
+    older = seed_session(home, "older", cwd: home)
     Process.sleep(5)
-    newer = seed_session(home, "newer")
+    newer = seed_session(home, "newer", cwd: home)
+    Process.sleep(5)
+    foreign = seed_session(home, "foreign", cwd: other)
 
     output =
-      capture_io(fn ->
-        assert 0 ==
-                 Run.run(%{
-                   model: nil,
-                   thinking: nil,
-                   prompt: "continued",
-                   resume: :latest,
-                   abandon: false
-                 })
+      File.cd!(home, fn ->
+        capture_io(fn ->
+          assert 0 ==
+                   Run.run(%{
+                     model: nil,
+                     thinking: nil,
+                     prompt: "continued",
+                     resume: :latest,
+                     abandon: false
+                   })
+        end)
       end)
 
     assert output =~ "repaired"
     assert completed_prompt?(newer, "continued", home)
     refute completed_prompt?(older, "continued", home)
+    refute completed_prompt?(foreign, "continued", home, other)
+
+    denied =
+      File.cd!(home, fn ->
+        capture_io(:stderr, fn ->
+          assert 1 ==
+                   Run.run(%{
+                     model: nil,
+                     thinking: nil,
+                     prompt: "foreign prompt",
+                     resume: foreign,
+                     abandon: false
+                   })
+        end)
+      end)
+
+    assert denied =~ "no_sessions"
+    refute completed_prompt?(foreign, "foreign prompt", home, other)
+
+    listing =
+      File.cd!(home, fn ->
+        capture_io(fn ->
+          assert 0 ==
+                   Run.sessions(%{
+                     query: nil,
+                     limit: nil,
+                     cursor: nil,
+                     format: :plain,
+                     color: :never
+                   })
+        end)
+      end)
+
+    assert listing =~ newer
+    refute listing =~ foreign
+
+    # A flat, pre-layout session with matching metadata is not resumable either.
+    legacy = seed_session(home, "flat", cwd: home)
+    {:ok, flat_path} = Storage.journal_path(legacy, home: home)
+    {:ok, project_path} = Storage.journal_path(legacy, home: home, cwd: home)
+    File.mkdir_p!(Path.dirname(flat_path))
+    File.rename!(Path.dirname(project_path), Path.dirname(flat_path))
+
+    denied_legacy =
+      File.cd!(home, fn ->
+        capture_io(:stderr, fn ->
+          assert 1 ==
+                   Run.run(%{
+                     model: nil,
+                     thinking: nil,
+                     prompt: "flat prompt",
+                     resume: legacy,
+                     abandon: false
+                   })
+        end)
+      end)
+
+    assert denied_legacy =~ "no_sessions"
+
+    after_move =
+      File.cd!(home, fn ->
+        capture_io(fn ->
+          assert 0 ==
+                   Run.sessions(%{
+                     query: "flat",
+                     limit: nil,
+                     cursor: nil,
+                     format: :plain,
+                     color: :never
+                   })
+        end)
+      end)
+
+    refute after_move =~ legacy
+  end
+
+  test "resume without an id refuses sessions from other projects or without a project", %{
+    home: home
+  } do
+    {:ok, _apps} = Application.ensure_all_started(:tackle)
+    project = Path.join(home, "project")
+    File.mkdir_p!(project)
+    foreign = seed_session(home, "foreign", cwd: home)
+    legacy = seed_session(home, "legacy")
+
+    output =
+      File.cd!(project, fn ->
+        capture_io(:stderr, fn ->
+          assert 1 ==
+                   Run.run(%{
+                     model: nil,
+                     thinking: nil,
+                     prompt: "not continued",
+                     resume: :latest,
+                     abandon: false
+                   })
+        end)
+      end)
+
+    assert output =~ "no_sessions"
+    refute completed_prompt?(foreign, "not continued", home)
+    refute completed_prompt?(legacy, "not continued", home, nil)
   end
 
   test "auth commands dispatch to the resolved adapter" do
@@ -313,9 +422,9 @@ defmodule Tackle.CLI.RunTest do
       end)
 
     assert output =~ "repaired"
-    assert completed_prompt?(session_id, "after crash", home)
+    assert completed_prompt?(session_id, "after crash", home, File.cwd!())
 
-    {:ok, journal} = Journal.start_link(session_id: session_id, home: home)
+    {:ok, journal} = Journal.start_link(session_id: session_id, home: home, cwd: File.cwd!())
     Process.unlink(journal)
     {:ok, projection} = Journal.projection(journal)
     GenServer.stop(journal)
@@ -327,9 +436,9 @@ defmodule Tackle.CLI.RunTest do
   defp restore_env(name, value), do: System.put_env(name, value)
 
   # Seeds one closed, cleanly settled durable session in `home`.
-  defp seed_session(home, prompt) do
+  defp seed_session(home, prompt, opts \\ []) do
     session_id = "session-#{System.unique_integer([:positive])}"
-    {:ok, journal} = Journal.start_link(session_id: session_id, home: home)
+    {:ok, journal} = Journal.start_link([session_id: session_id, home: home] ++ opts)
     Process.unlink(journal)
 
     assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, prompt)
@@ -345,7 +454,7 @@ defmodule Tackle.CLI.RunTest do
   # durable result, so resuming it requires an explicit recovery decision.
   defp seed_interrupted_session(home) do
     session_id = "session-#{System.unique_integer([:positive])}"
-    {:ok, journal} = Journal.start_link(session_id: session_id, home: home)
+    {:ok, journal} = Journal.start_link(session_id: session_id, home: home, cwd: File.cwd!())
     Process.unlink(journal)
 
     assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "before crash")
@@ -356,8 +465,11 @@ defmodule Tackle.CLI.RunTest do
     session_id
   end
 
-  defp completed_prompt?(session_id, prompt, home) do
-    {:ok, session} = Tackle.inspect_session(session_id, home: home)
+  defp completed_prompt?(session_id, prompt, home),
+    do: completed_prompt?(session_id, prompt, home, home)
+
+  defp completed_prompt?(session_id, prompt, home, cwd) do
+    {:ok, session} = Tackle.inspect_session(session_id, home: home, cwd: cwd)
     Enum.any?(session.messages, &(&1["content"] == prompt))
   end
 

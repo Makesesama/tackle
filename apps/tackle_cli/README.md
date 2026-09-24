@@ -208,10 +208,18 @@ directory and validates recovered history before use. `--abandon` remains an
 explicit, separate decision for a turn interrupted by the crash.
 
 `--resume` without a session id continues the most recently updated durable
-session. Quitting the shell prints the command that reopens the session it was
-last attached to, so a session started, or switched to, inside the shell is also
-recoverable. A session id directly after `--resume` always wins, so a one-shot
-prompt for a valueless `--resume` follows `--` (or comes before the flag).
+session in the current project directory. Sessions are stored under
+`$TACKLE_HOME/sessions/--<encoded-absolute-path>--/` (slashes become dashes;
+literal dashes are escaped as `-2D`).
+The TUI's recent-session shortcuts and `tackle sessions` listing/search are
+also project-scoped; explicit `--resume SESSION_ID` rejects IDs from other
+projects. Pre-existing flat sessions remain on disk and can be read with the
+library API without `:cwd`, but the CLI does not automatically migrate or
+resume them. Quitting the shell prints the command
+that reopens the session it was last attached to, so a session started, or
+switched to, inside the shell is also recoverable. A session id directly after
+`--resume` always wins, so a one-shot prompt for a valueless `--resume` follows
+`--` (or comes before the flag).
 
 Provider login, logout, status, and usage are adapter-driven: the CLI resolves
 the adapter by its `adapter_id` and delegates, so any configured
@@ -222,7 +230,7 @@ stay free of progress and ANSI control sequences.
 The progress renderer uses a command-local `Owl.LiveScreen` rather than Owl's
 application-wide stdout screen.
 
-`tackle sessions` defaults to the 20 most recent sessions and uses a borderless,
+`tackle sessions` defaults to the 20 most recent sessions in the current project and uses a borderless,
 width-aware human layout. Narrow terminals switch to stacked summaries instead
 of dropping or abbreviating session IDs. Use `--limit N` to request more rows,
 `--format plain` for stable tab-separated output, or `--format json` for a

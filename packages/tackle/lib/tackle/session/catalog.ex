@@ -28,6 +28,7 @@ defmodule Tackle.Session.Catalog do
   @type filters :: %{
           optional(:text) => String.t() | nil,
           optional(:cwd) => String.t() | nil,
+          optional(:session_ids) => [String.t()] | nil,
           optional(:status) => atom() | String.t() | nil,
           optional(:model) => String.t() | nil,
           optional(:tags) => [String.t()],
@@ -191,17 +192,17 @@ defmodule Tackle.Session.Catalog do
     opts = Map.get(state, :opts, [])
     :ets.delete_all_objects(state.table)
 
-    case Storage.list_session_ids(opts) do
-      {:ok, session_ids} -> index_sessions(state.table, session_ids, opts)
+    case Storage.list_session_locations(opts) do
+      {:ok, locations} -> index_sessions(state.table, locations, opts)
       {:error, _reason} -> %{indexed: 0, skipped: 0}
     end
   end
 
-  defp index_sessions(table, session_ids, opts) do
+  defp index_sessions(table, locations, opts) do
     timeout = Keyword.get(opts, :rebuild_session_timeout, @rebuild_session_timeout)
 
-    session_ids
-    |> Task.async_stream(&index_session(table, &1, opts),
+    locations
+    |> Task.async_stream(fn {id, location_opts} -> index_session(table, id, location_opts) end,
       max_concurrency: System.schedulers_online(),
       ordered: false,
       timeout: timeout,
@@ -293,21 +294,23 @@ defmodule Tackle.Session.Catalog do
   end
 
   defp filter(entries, filters) do
-    text = Map.get(filters, :text)
-    cwd = Map.get(filters, :cwd)
-    status = Map.get(filters, :status)
-    model = Map.get(filters, :model)
-    tags = Map.get(filters, :tags) || []
-
-    entries
-    |> Enum.filter(fn entry ->
-      matches_text?(entry, text) and
-        (is_nil(cwd) or entry.cwd == cwd) and
-        (is_nil(status) or entry.status == status) and
-        (is_nil(model) or entry.model == model) and
-        Enum.all?(tags, &(&1 in entry.tags))
-    end)
+    Enum.filter(entries, &matches_filters?(&1, filters))
   end
+
+  defp matches_filters?(entry, filters) do
+    matches_text?(entry, Map.get(filters, :text)) and
+      matches_field?(entry.cwd, Map.get(filters, :cwd)) and
+      matches_session_ids?(entry.session_id, Map.get(filters, :session_ids)) and
+      matches_field?(entry.status, Map.get(filters, :status)) and
+      matches_field?(entry.model, Map.get(filters, :model)) and
+      Enum.all?(Map.get(filters, :tags) || [], &(&1 in entry.tags))
+  end
+
+  defp matches_field?(_value, nil), do: true
+  defp matches_field?(value, expected), do: value == expected
+
+  defp matches_session_ids?(_session_id, nil), do: true
+  defp matches_session_ids?(session_id, ids), do: session_id in ids
 
   defp matches_text?(_entry, nil), do: true
   defp matches_text?(_entry, ""), do: true

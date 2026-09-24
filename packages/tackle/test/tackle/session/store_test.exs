@@ -19,18 +19,27 @@ defmodule Tackle.Session.StoreTest do
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
     stop_scope(scope.scope_ref)
 
-    assert {:ok, child_id} = Tackle.fork_session(parent_id, home: ctx.home)
+    assert {:ok, child_id} =
+             Tackle.fork_session(parent_id, home: ctx.home, cwd: session_cwd(parent_id))
+
     assert child_id != parent_id
 
-    assert {:ok, child} = Tackle.inspect_session(child_id, home: ctx.home)
+    assert {:ok, child} =
+             Tackle.inspect_session(child_id, home: ctx.home, cwd: session_cwd(parent_id))
+
     assert child.parent["session_id"] == parent_id
 
-    assert {:ok, parent} = Tackle.inspect_session(parent_id, home: ctx.home)
+    assert {:ok, parent} =
+             Tackle.inspect_session(parent_id, home: ctx.home, cwd: session_cwd(parent_id))
+
     assert child.messages == parent.messages
 
-    assert :ok = Tackle.delete_session(parent_id, home: ctx.home)
-    assert {:ok, _still_readable} = Tackle.inspect_session(child_id, home: ctx.home)
-    assert {:error, _reason} = Tackle.inspect_session(parent_id, home: ctx.home)
+    cwd = session_cwd(parent_id)
+    assert :ok = Tackle.delete_session(parent_id, home: ctx.home, cwd: cwd)
+
+    assert {:ok, _still_readable} = Tackle.inspect_session(child_id, home: ctx.home, cwd: cwd)
+
+    assert {:error, _reason} = Tackle.inspect_session(parent_id, home: ctx.home, cwd: cwd)
   end
 
   test "forks only up to a selected sequence", ctx do
@@ -40,8 +49,12 @@ defmodule Tackle.Session.StoreTest do
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
     stop_scope(scope.scope_ref)
 
-    assert {:ok, child_id} = Tackle.fork_session(parent_id, home: ctx.home, seq: 5)
-    assert {:ok, child} = Tackle.inspect_session(child_id, home: ctx.home)
+    assert {:ok, child_id} =
+             Tackle.fork_session(parent_id, home: ctx.home, cwd: session_cwd(parent_id), seq: 5)
+
+    assert {:ok, child} =
+             Tackle.inspect_session(child_id, home: ctx.home, cwd: session_cwd(parent_id))
+
     assert [_, _] = child.messages
     assert child.last_seq == 6
     assert child.status == :clean
@@ -51,7 +64,7 @@ defmodule Tackle.Session.StoreTest do
     {session_id, scope} = create_session(ctx)
     stop_scope(scope.scope_ref)
 
-    assert :ok = Tackle.delete_session(session_id, home: ctx.home)
+    assert :ok = Tackle.delete_session(session_id, home: ctx.home, cwd: session_cwd(session_id))
     assert {:error, :not_found} = Catalog.get(session_id)
 
     assert {:ok, trash} = Storage.trash_root(home: ctx.home)
@@ -61,7 +74,9 @@ defmodule Tackle.Session.StoreTest do
 
   test "refuses to delete an active session", ctx do
     {session_id, _scope} = create_session(ctx)
-    assert {:error, :session_active} = Tackle.delete_session(session_id, home: ctx.home)
+
+    assert {:error, :session_active} =
+             Tackle.delete_session(session_id, home: ctx.home, cwd: session_cwd(session_id))
   end
 
   test "flush_session is a durability barrier for live and unknown sessions", ctx do
@@ -73,13 +88,18 @@ defmodule Tackle.Session.StoreTest do
   test "reads current and fork-safe all-session usage timelines", ctx do
     {parent_id, parent_scope} = create_usage_session(ctx, 5)
 
-    assert {:ok, current} = Tackle.session_usage_timeline(parent_id, home: ctx.home)
+    assert {:ok, current} =
+             Tackle.session_usage_timeline(parent_id, home: ctx.home, cwd: session_cwd(parent_id))
+
     assert current.scope == {:session, parent_id}
     assert current.usage.total_tokens == 5
     assert [_sample] = current.samples
 
     stop_scope(parent_scope.scope_ref)
-    assert {:ok, child_id} = Tackle.fork_session(parent_id, home: ctx.home)
+
+    assert {:ok, child_id} =
+             Tackle.fork_session(parent_id, home: ctx.home, cwd: session_cwd(parent_id))
+
     {other_id, other_scope} = create_usage_session(ctx, 7)
     stop_scope(other_scope.scope_ref)
 
@@ -110,6 +130,11 @@ defmodule Tackle.Session.StoreTest do
     assert all.skipped_session_count == 1
     assert [%{session_id: ^bad_id}] = all.skipped_sessions
     assert [%{session_id: ^valid_id}] = Enum.map(all.samples, &%{session_id: &1.session_id})
+  end
+
+  defp session_cwd(id) do
+    {:ok, entry} = Catalog.get(id)
+    entry.cwd
   end
 
   defp create_session(ctx) do

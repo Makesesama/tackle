@@ -509,18 +509,21 @@ The CLI exposes durable sessions directly:
 ```sh
 tackle run "explain this module"          # new durable session
 tackle run --resume <session-id> "carry on"
-tackle run --resume                       # most recently updated session
+tackle run --resume                       # newest session in this project
 tackle run --resume <session-id> --abandon "continue after a crash"
 tackle sessions                           # newest sessions first
 tackle sessions --query "cache invalidation" --limit 10
 ```
 
-`--resume` without a session id continues the most recently updated session.
-When the terminal frontend exits it prints the `--resume` command for the
-session it was last attached to. In the TUI, `F6` opens a cumulative token-usage
-chart and switches between the complete current session and the current UTC
-calendar week across all durable sessions. Fork-copied message records are
-counted once in the global view.
+`--resume` without a session id continues the most recently updated session
+in the current project directory; the TUI recent-session shortcuts use the same
+scope. Older sessions without a recorded directory remain available by explicit
+id via `tackle sessions`, but are not selected automatically. When the terminal
+frontend exits it prints the `--resume` command for the session it was last
+attached to. In the TUI, `F6` opens a cumulative token-usage chart and switches
+between the complete current session and the current UTC calendar week across
+all durable sessions. Fork-copied message records are counted once in the
+global view.
 
 The CLI automatically runs controlled journal repair when a resumed session was
 not closed cleanly. The original journal is preserved under the session's
