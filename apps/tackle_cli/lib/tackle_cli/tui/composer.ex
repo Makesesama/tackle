@@ -9,9 +9,9 @@ defmodule Tackle.CLI.TUI.Composer do
   reserves exactly the rows it needs without re-measuring the transcript.
 
   History recall reuses the same native load path: the recalled prompt is set
-  as the draft and the row count is left to `Viewport`. Up recalls the newest
-  prompt even while writing a draft; Down walks back toward that draft while
-  browsing, or moves the cursor otherwise. Ctrl+P/Ctrl+N offer the same history
+  as the draft and the row count is left to `Viewport`. Up takes back the newest
+  queued prompt from an empty composer, or recalls history while writing a draft;
+  Down walks back toward that draft while browsing, or moves the cursor otherwise. Ctrl+P/Ctrl+N offer the same history
   navigation. Any edit ends recall, keeping the loaded text as the new draft.
 
   A failed submit restores the exact draft so the user can retry or edit.
@@ -170,8 +170,31 @@ defmodule Tackle.CLI.TUI.Composer do
 
   def key(%State{} = state, _key), do: {:noreply, state, render?: false}
 
-  @doc "Recalls the next older prompt, saving the current draft for Down to restore."
+  @doc "Recalls a queued message into an empty composer, otherwise browses history."
   @spec previous(State.t(), Key.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
+  def previous(%State{queued_prompts: prompts, pending_operation: nil} = state, _key)
+      when prompts != [] do
+    if state.draft_empty? do
+      prompt = List.last(prompts)
+      ref = make_ref()
+      agent_ref = state.agent_ref
+      state = %{state | pending_operation: %{ref: ref, kind: :withdraw_queued, prompt: prompt}}
+
+      command =
+        Command.async(
+          fn -> Tackle.withdraw_queued(agent_ref, prompt) end,
+          &{:tui_operation_result, ref, :withdraw_queued, &1}
+        )
+
+      {:noreply, state, commands: [command]}
+    else
+      recall_previous(state)
+    end
+  end
+
+  def previous(%State{pending_operation: %{kind: :withdraw_queued}} = state, _key),
+    do: {:noreply, state, render?: false}
+
   def previous(%State{} = state, _key), do: recall_previous(state)
 
   @doc """

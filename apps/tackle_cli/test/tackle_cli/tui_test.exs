@@ -66,7 +66,7 @@ defmodule Tackle.CLI.TUITest do
       {:ok, _pid} = Tackle.Runtime.Registry.register(agent_ref, :agent)
       {:ok, llm} = LLM.select([Adapter], "openai-codex/test-model")
       agent_state = State.new(llm: llm)
-      {:ok, %{test_pid: test_pid, subscriber: nil, agent_state: agent_state}}
+      {:ok, %{test_pid: test_pid, subscriber: nil, agent_state: agent_state, queued: []}}
     end
 
     @impl true
@@ -89,7 +89,17 @@ defmodule Tackle.CLI.TUITest do
         {:reply, {:error, :rejected}, state}
       else
         result = if prompt == "second draft", do: {:ok, :queued}, else: {:ok, "turn-1"}
-        {:reply, result, state}
+        queued = if result == {:ok, :queued}, do: state.queued ++ [prompt], else: state.queued
+        {:reply, result, %{state | queued: queued}}
+      end
+    end
+
+    def handle_call({:withdraw_queued, prompt}, _from, state) do
+      send(state.test_pid, {:withdrawn, prompt})
+
+      case Enum.find_index(Enum.reverse(state.queued), &(&1 == prompt)) do
+        nil -> {:reply, {:error, :not_queued}, state}
+        index -> {:reply, :ok, %{state | queued: List.delete_at(state.queued, -index - 1)}}
       end
     end
 
@@ -931,6 +941,84 @@ defmodule Tackle.CLI.TUITest do
     assert draft(tui) == ""
     assert state.active_turn != nil
     assert composer_widget(state).block.title =~ "Queue next message"
+  end
+
+  test "Up takes back a queued prompt for editing, without resubmitting it", %{tui: tui} do
+    inject_paste(tui, "first")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "first"}
+    await_state(tui, &(&1.active_turn != nil))
+
+    inject_paste(tui, "second draft")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "second draft"}
+    await_state(tui, &(&1.queued_prompts == ["second draft"]))
+
+    inject_key(tui, "up")
+    assert_receive {:withdrawn, "second draft"}
+    restored = await_state(tui, &(&1.queued_prompts == []))
+    assert draft(tui) == "second draft"
+    assert restored.notice == "Queued message restored to composer"
+    refute_receive {:submitted, "second draft"}, 20
+  end
+
+  test "Up with a draft keeps the queued message and browses history", %{tui: tui} do
+    inject_paste(tui, "first")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "first"}
+    await_state(tui, &(&1.active_turn != nil))
+    inject_paste(tui, "second draft")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "second draft"}
+    await_state(tui, &(&1.queued_prompts == ["second draft"]))
+
+    inject_paste(tui, "working")
+    inject_key(tui, "up")
+    assert draft(tui) == "second draft"
+    assert state(tui).queued_prompts == ["second draft"]
+    refute_receive {:withdrawn, _}, 20
+  end
+
+  test "Up withdraws queued duplicates one at a time", %{tui: tui} do
+    inject_paste(tui, "first")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "first"}
+    await_state(tui, &(&1.active_turn != nil))
+
+    for _ <- 1..2 do
+      inject_paste(tui, "second draft")
+      inject_key(tui, "enter")
+      assert_receive {:submitted, "second draft"}
+    end
+
+    await_state(tui, &(&1.queued_prompts == ["second draft", "second draft"]))
+    inject_key(tui, "up")
+    assert_receive {:withdrawn, "second draft"}
+    remaining = await_state(tui, &(&1.queued_prompts == ["second draft"]))
+    assert remaining.pending_operation == nil
+    assert draft(tui) == "second draft"
+
+    inject_key(tui, "up")
+    refute_receive {:withdrawn, _}, 20
+    assert state(tui).queued_prompts == ["second draft"]
+  end
+
+  test "Up leaves the draft untouched when a queued message was already consumed", %{tui: tui} do
+    inject_paste(tui, "first")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "first"}
+    await_state(tui, &(&1.active_turn != nil))
+    inject_paste(tui, "second draft")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "second draft"}
+    await_state(tui, &(&1.queued_prompts == ["second draft"]))
+
+    assert :ok = Tackle.withdraw_queued(state(tui).agent_ref, "second draft")
+    inject_key(tui, "up")
+    assert_receive {:withdrawn, "second draft"}
+    failed = await_state(tui, &(&1.notice == "Message already delivered; cannot take it back"))
+    assert failed.queued_prompts == ["second draft"]
+    assert draft(tui) == ""
   end
 
   test "queued prompts remain in the transcript without erasing live output", %{tui: tui} do

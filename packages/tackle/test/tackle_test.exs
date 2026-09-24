@@ -258,6 +258,29 @@ defmodule TackleTest do
     assert Enum.any?(state.messages, &(&1.role == :user and &1.content == "second"))
   end
 
+  test "withdraws only the newest matching queued message before delivery" do
+    scope = start_controlled_scope()
+    agent_ref = scope.root_agent_ref
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
+
+    assert {:ok, turn_id} = Tackle.submit(agent_ref, "first")
+    assert_receive {:adapter_called, task_pid, "test", _signal}
+    assert {:ok, :queued} = Tackle.submit(agent_ref, "second")
+    assert {:ok, :queued} = Tackle.submit(agent_ref, "third")
+    assert {:ok, :queued} = Tackle.submit(agent_ref, "second")
+    assert :ok = Tackle.withdraw_queued(agent_ref, "second")
+    assert {:error, :not_queued} = Tackle.withdraw_queued(agent_ref, "missing")
+    assert :ok = Tackle.withdraw_queued(agent_ref, "third")
+
+    send(task_pid, {:respond, "done"})
+    assert_receive {:adapter_called, second_task, "test", _signal}
+    send(second_task, {:respond, "done again"})
+    assert {:finished, {:ok, state}, _events} = await_terminal(session_id, turn_id)
+    assert Enum.count(state.messages, &(&1.role == :user and &1.content == "second")) == 1
+    assert Enum.all?(state.messages, &(&1.content != "third"))
+    assert {:error, :not_queued} = Tackle.withdraw_queued(agent_ref, "second")
+  end
+
   test "reconfigures model and thinking while preserving settled history" do
     scope =
       start_scope(

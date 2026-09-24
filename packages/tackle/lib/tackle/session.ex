@@ -157,6 +157,11 @@ defmodule Tackle.Session do
   def submit(session, input) when is_binary(input), do: GenServer.call(session, {:submit, input})
   def submit(_session, input), do: {:error, {:invalid_input, input}}
 
+  @doc "Withdraws the newest matching user message still waiting in the inbox."
+  @spec withdraw_queued(GenServer.server(), String.t()) :: :ok | {:error, :not_queued}
+  def withdraw_queued(session, content) when is_binary(content),
+    do: GenServer.call(session, {:withdraw_queued, content})
+
   @doc "Continues the current conversation without appending another user message."
   @spec continue(GenServer.server()) :: {:ok, String.t()} | {:error, term()}
   def continue(session), do: GenServer.call(session, :continue)
@@ -314,6 +319,28 @@ defmodule Tackle.Session do
 
   def handle_call({:submit, input}, _from, state) do
     start_turn(:run, input, state)
+  end
+
+  def handle_call({:withdraw_queued, content}, _from, state) do
+    entries = :queue.to_list(state.inbox)
+
+    index =
+      entries
+      |> Enum.with_index()
+      |> Enum.reduce(nil, fn
+        {%{from: :user, message: ^content}, index}, _found -> index
+        _entry, found -> found
+      end)
+
+    case index do
+      nil ->
+        {:reply, {:error, :not_queued}, state}
+
+      index ->
+        retained = List.delete_at(entries, index)
+        state = %{state | inbox: :queue.from_list(retained), inbox_count: length(retained)}
+        {:reply, :ok, state}
+    end
   end
 
   def handle_call({:deliver, %Envelope{} = envelope}, _from_call, state) do

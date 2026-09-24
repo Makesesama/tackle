@@ -69,6 +69,11 @@ defmodule Tackle do
           {:ok, String.t() | :queued} | {:error, term()}
   def submit(%AgentRef{} = agent_ref, input), do: Runtime.submit(agent_ref, input)
 
+  @doc "Withdraws a matching queued user message before it reaches the agent."
+  @spec withdraw_queued(AgentRef.t(), String.t()) :: :ok | {:error, term()}
+  def withdraw_queued(%AgentRef{} = agent_ref, content),
+    do: Runtime.withdraw_queued(agent_ref, content)
+
   @doc "Continues the conversation without appending another user message."
   @spec continue(AgentRef.t()) :: {:ok, String.t()} | {:error, term()}
   def continue(%AgentRef{} = agent_ref), do: Runtime.continue(agent_ref)
