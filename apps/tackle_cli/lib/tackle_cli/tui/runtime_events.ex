@@ -115,6 +115,44 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp route(
+         {:tui_operation_result, ref, :withdraw_queued, result},
+         %State{pending_operation: %{ref: ref, kind: :withdraw_queued, prompt: prompt}} = state
+       ) do
+    state = %{state | pending_operation: nil}
+
+    case result do
+      :ok ->
+        # Preserve edits made while the withdrawal was in flight.
+        draft = Input.get_value(state.input)
+        restored = if draft == "", do: prompt, else: prompt <> "\n" <> draft
+        :ok = Input.set_value(state.input, restored)
+
+        queued_prompts =
+          state.queued_prompts
+          |> Enum.reverse()
+          |> List.delete(prompt)
+          |> Enum.reverse()
+
+        state = %{
+          state
+          | queued_prompts: queued_prompts,
+            notice: "Queued message restored to composer",
+            queue_notice_at: nil
+        }
+
+        {:noreply,
+         state |> Viewport.update_draft() |> Viewport.relayout() |> Viewport.refresh([:turn])}
+
+      {:error, :not_queued} ->
+        {:noreply, %{state | notice: "Message already delivered; cannot take it back"}}
+
+      {:error, reason} ->
+        {:noreply,
+         %{state | notice: "Could not take back message: #{Util.format_reason(reason)}"}}
+    end
+  end
+
+  defp route(
          {:tui_operation_result, ref, :reconfigure, result},
          %State{pending_operation: %{ref: ref, kind: :reconfigure}} = state
        ) do

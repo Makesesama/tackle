@@ -27,6 +27,7 @@ defmodule Tackle.Runtime.RootBackend do
 
   @impl true
   def call(pid, :submit, [input]), do: Session.submit(pid, input)
+  def call(pid, :withdraw_queued, [content]), do: Session.withdraw_queued(pid, content)
   def call(pid, :continue, []), do: Session.continue(pid)
   def call(pid, :cancel, [_reason]), do: Session.cancel(pid)
   def call(pid, :subscribe, []), do: Session.subscribe(pid)

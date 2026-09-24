@@ -103,6 +103,11 @@ defmodule Tackle.Runtime do
     with_agent(agent_ref, :submit, [input])
   end
 
+  @doc "Withdraws the newest matching queued user message, if it has not been consumed."
+  @spec withdraw_queued(AgentRef.t(), String.t()) :: :ok | {:error, term()}
+  def withdraw_queued(%AgentRef{} = agent_ref, content),
+    do: with_agent(agent_ref, :withdraw_queued, [content])
+
   @doc "Continues an agent conversation without appending a user message."
   @spec continue(AgentRef.t()) :: {:ok, String.t()} | {:error, term()}
   def continue(%AgentRef{} = agent_ref) do

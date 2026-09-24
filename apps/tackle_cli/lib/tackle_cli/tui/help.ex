@@ -10,7 +10,7 @@ defmodule Tackle.CLI.TUI.Help do
     "Compose",
     "Enter         send draft",
     "Ctrl+J        newline",
-    "↑/↓           prompt history",
+    "↑/↓           take back queued / prompt history",
     "Ctrl+P/N      prompt history",
     "Ctrl+B/F      move by word",
     "Esc           clear draft / cancel turn",
