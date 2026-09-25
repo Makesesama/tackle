@@ -4,10 +4,37 @@ defmodule Tackle.CodingTest do
   import Tackle.Test.Runtime, only: [tmp_home: 0, eventually: 1]
 
   alias Tackle.Coding
+  alias Tackle.Plugins.Catalog
   alias Tackle.Runtime
   alias Tackle.Runtime.{Handle, Outcome, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Tools.{Bash, Read, Subagent, SubagentStatus, SubagentWait}
+
+  defmodule CatalogTool do
+    use Tackle.Lib.Tool
+
+    tool_name("catalog_test_tool")
+    description("A tool from a host catalog.")
+
+    input do
+      field(:value, :string, required: true)
+    end
+
+    def run(%{"value" => value}, _context), do: {:ok, value}
+  end
+
+  defmodule ConflictingTool do
+    use Tackle.Lib.Tool
+
+    tool_name("read")
+    description("Conflicts with built-in read.")
+
+    input do
+      field(:value, :string, required: true)
+    end
+
+    def run(%{"value" => value}, _context), do: {:ok, value}
+  end
 
   setup do
     home = tmp_home()
@@ -35,6 +62,81 @@ defmodule Tackle.CodingTest do
 
     assert {:error, :invalid_root_tools} =
              Coding.scope_spec(Keyword.put(opts, :root_tools, ["Module.Name"]))
+  end
+
+  test "catalog grants only selected root tools and profile names resolve from trusted tools", %{
+    opts: opts,
+    cwd: cwd
+  } do
+    profile = Path.join([cwd, ".tackle", "agents", "custom.md"])
+
+    write_agent(
+      profile,
+      "custom",
+      "Custom",
+      "Use the approved tools.",
+      "tools: catalog_test_tool\n"
+    )
+
+    assert {:ok, catalog} =
+             Catalog.new(
+               adapters: [%{module: Tackle.Test.Adapter, source: :host}],
+               tools: [%{module: CatalogTool, source: {:project, "example"}}],
+               hooks: []
+             )
+
+    catalog_opts = opts |> Keyword.delete(:available_adapters) |> Keyword.put(:catalog, catalog)
+
+    assert {:ok, spec} =
+             Coding.scope_spec(
+               Keyword.put(catalog_opts, :catalog_root_tools, ["catalog_test_tool"])
+             )
+
+    assert CatalogTool in spec.root_spec.config.tools
+    assert spec.profiles["custom"].config.tools == [CatalogTool]
+    refute CatalogTool in spec.profiles["scout"].config.tools
+
+    assert {:error, {:unknown_tool, "absent"}} =
+             Coding.scope_spec(Keyword.put(catalog_opts, :catalog_root_tools, ["absent"]))
+
+    assert {:error, {:catalog_required_for_root_tools, ["catalog_test_tool"]}} =
+             Coding.scope_spec(Keyword.put(opts, :catalog_root_tools, ["catalog_test_tool"]))
+  end
+
+  test "catalog tools do not become root grants simply by being available", %{opts: opts} do
+    {:ok, catalog} =
+      Catalog.new(
+        adapters: [%{module: Tackle.Test.Adapter, source: :host}],
+        tools: [%{module: CatalogTool, source: :host}],
+        hooks: []
+      )
+
+    assert {:ok, spec} =
+             Coding.scope_spec(
+               opts
+               |> Keyword.delete(:available_adapters)
+               |> Keyword.put(:catalog, catalog)
+             )
+
+    # Catalog availability is distinct from the root's selected tools.
+    refute CatalogTool in spec.root_spec.config.tools
+    refute CatalogTool in spec.profiles["scout"].config.tools
+  end
+
+  test "catalog tool names cannot silently replace built-in tools", %{opts: opts} do
+    {:ok, catalog} =
+      Catalog.new(
+        adapters: [%{module: Tackle.Test.Adapter, source: :host}],
+        tools: [%{module: ConflictingTool, source: :project}],
+        hooks: []
+      )
+
+    assert {:error, {:catalog_tool_conflict, :project, "read"}} =
+             Coding.scope_spec(
+               opts
+               |> Keyword.delete(:available_adapters)
+               |> Keyword.put(:catalog, catalog)
+             )
   end
 
   test "composes a default scout without changing generic defaults", %{opts: opts, cwd: cwd} do

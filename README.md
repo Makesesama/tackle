@@ -46,9 +46,11 @@ The first-party [Codex adapter](packages/tackle_codex/README.md) uses the same
 contracts as third-party adapters. The optional
 [MCP client](packages/tackle_mcp/README.md) exposes discovered tools through the
 ordinary tool contract; the [Anubis server bridge](packages/tackle_anubis/README.md)
-is separate from the core. The CLI currently bundles a fixed set of adapters.
-**General extension-project discovery and loading are not implemented**, and a
-user-provided plugin workflow in the Burrito binary has not been verified.
+is separate from the core. The CLI still bundles its default adapters. The harness now loads **explicitly
+enabled, separately precompiled Mix projects** at host startup through
+`$TACKLE_HOME/plugins.json`. See [`docs/PLUGINS.md`](docs/PLUGINS.md) for the
+trusted enablement schema and limitations; there is no auto-discovery, implicit
+build, or sandbox.
 
 ## Package boundaries
 
@@ -61,9 +63,9 @@ user-provided plugin workflow in the Burrito binary has not been verified.
 | `apps/tackle_cli` | Terminal interaction and fixed Burrito distribution; no duplicate agent loop. |
 
 Keep the core focused on the agent loop and the contracts needed to extend it.
-For planned plugin loading and distribution work, see
-[`docs/plugins.md`](docs/plugins.md); that document is architectural direction,
-not a description of shipped functionality.
+For current plugin integration points and remaining design work,
+see [`docs/PLUGIN_SYSTEM.md`](docs/PLUGIN_SYSTEM.md). For the broader plugin
+model and supported enablement schema, see [`docs/PLUGINS.md`](docs/PLUGINS.md).
 
 ## Current state
 
@@ -103,13 +105,15 @@ and unfinished integrations:
   tools only and is not bundled by the CLI.
 - [`apps/tackle_cli`](apps/tackle_cli/README.md) contains the default
   Optimus/ex_ratatui CLI entrypoint. Its Burrito release produces a fixed
-  distribution that bundles the first-party Codex and DeepSeek plugins; runtime
-  plugin discovery remains deferred. The frontend relies on the harness package
+  distribution that bundles the first-party Codex and DeepSeek plugins; the
+  harness loads explicitly enabled precompiled projects at startup, without
+  automatically discovering projects. The frontend relies on the harness package
   for credentials, sessions, and turn execution. Its footer reports current
   context pressure plus aggregate input/output, preceding-prompt cache reuse,
   and cost when the selected adapter exposes them.
-- General extension project loading remains planned work; Burrito packaging is
-  now configured in the CLI frontend.
+- Explicit external Mix-project startup loading is implemented in the harness;
+  compatibility with arbitrary builds is not guaranteed and executable-path
+  validation remains pending.
 
 The harness package owns OTP application `:tackle` and namespace `Tackle`. The
 reusable library owns OTP application `:tackle_lib` and namespace `Tackle.Lib`;

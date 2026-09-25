@@ -17,6 +17,14 @@ defmodule Tackle.CLI.DistributionTest do
     :ok
   end
 
+  test "the CLI's real catalog includes its bundled adapters and default coding tools" do
+    assert {:ok, catalog} = Distribution.catalog()
+    assert Tackle.Plugins.Catalog.adapter_modules(catalog) == Distribution.default_adapters()
+
+    assert {:ok, [%{module: Tackle.Tools.Read, source: :tackle}]} =
+             Tackle.Plugins.Catalog.resolve_tools(catalog, ["read"])
+  end
+
   test "bundles Codex and DeepSeek as the default adapters" do
     assert Distribution.default_adapters() == [
              Tackle.Plugins.Codex,

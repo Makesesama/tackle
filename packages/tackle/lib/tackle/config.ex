@@ -5,6 +5,9 @@ defmodule Tackle.Config do
   `new/1` is the pure validation boundary for already-resolved options. `load/1`
   applies the harness configuration precedence before passing those options to
   `new/1`; it never resolves module names from file or environment data.
+  A trusted host may supply a `Tackle.Plugins.Catalog` to `load/1` for
+  prevalidated adapter and hook selection. Catalog tools require a separate
+  explicit grant by the host.
 
   Harness sessions always execute tools concurrently
   (`Tackle.Lib.Tool.Policy.concurrent/0`) under the session's own tool supervisor.
@@ -24,10 +27,11 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Retry
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
+  alias Tackle.Plugins.Catalog
   alias Tackle.SystemPrompt
   alias Tackle.Thinking
 
-  @loader_option_keys [:available_adapters, :cwd, :env, :overrides]
+  @loader_option_keys [:available_adapters, :catalog, :cwd, :env, :overrides]
   @reconfigure_option_keys [:model, :thinking]
 
   @tool_callbacks [{:name, 0}, {:description, 0}, {:parameters_schema, 0}, {:execute, 2}]
@@ -105,10 +109,13 @@ defmodule Tackle.Config do
   explicit overrides, in that order.
 
   The supplied `:available_adapters` are executable modules chosen by the
-  harness distribution. Configuration data can select their declared model
-  references but cannot name or load modules. Tests and embedding hosts may
-  supply an `:env` map; normal callers use the process environment. `:cwd`
-  selects the working directory used for prompt discovery and built-in tools.
+  harness distribution. Alternatively, a trusted host can supply `:catalog`
+  to select its adapter and hook modules; specifying both adapter sources, or
+  overriding catalog hooks, is an error. Catalog tools are not granted by this
+  option. Configuration data can select declared model references but cannot
+  name or load modules. Tests and embedding hosts may supply an `:env` map;
+  normal callers use the process environment. `:cwd` selects the working
+  directory used for prompt discovery and built-in tools.
   """
   @spec load(keyword()) :: {:ok, t()} | {:error, term()}
   def load(opts) when is_list(opts) do
@@ -116,6 +123,7 @@ defmodule Tackle.Config do
          :ok <- validate_loader_options(opts),
          {:ok, adapters} <- fetch_available_adapters(opts),
          {:ok, overrides} <- fetch_overrides(opts),
+         {:ok, overrides} <- catalog_hooks(opts, overrides),
          {:ok, env} <- fetch_environment(opts),
          {:ok, config_path} <- Tackle.Paths.config_file(env: env),
          {:ok, file_opts} <- ConfigFile.load(config_path),
@@ -293,10 +301,29 @@ defmodule Tackle.Config do
   end
 
   defp fetch_available_adapters(opts) do
-    case Keyword.fetch(opts, :available_adapters) do
-      {:ok, adapters} when is_list(adapters) and adapters != [] -> {:ok, adapters}
-      {:ok, adapters} -> {:error, {:invalid_option, :available_adapters, adapters}}
-      :error -> Tackle.Plugins.available_adapters()
+    case {Keyword.fetch(opts, :catalog), Keyword.fetch(opts, :available_adapters)} do
+      {{:ok, %Catalog{adapters: []}}, :error} -> {:error, :no_adapters_configured}
+      {{:ok, %Catalog{} = catalog}, :error} -> {:ok, Catalog.adapter_modules(catalog)}
+      {{:ok, %Catalog{}}, {:ok, _}} -> {:error, :conflicting_adapter_sources}
+      {{:ok, value}, _} -> {:error, {:invalid_option, :catalog, value}}
+      {:error, {:ok, adapters}} when is_list(adapters) and adapters != [] -> {:ok, adapters}
+      {:error, {:ok, adapters}} -> {:error, {:invalid_option, :available_adapters, adapters}}
+      {:error, :error} -> Tackle.Plugins.available_adapters()
+    end
+  end
+
+  defp catalog_hooks(opts, overrides) do
+    case Keyword.fetch(opts, :catalog) do
+      {:ok, %Catalog{} = catalog} ->
+        if Keyword.has_key?(overrides, :hooks),
+          do: {:error, :conflicting_hook_sources},
+          else: {:ok, Keyword.put(overrides, :hooks, Catalog.hook_modules(catalog))}
+
+      {:ok, value} ->
+        {:error, {:invalid_option, :catalog, value}}
+
+      :error ->
+        {:ok, overrides}
     end
   end
 

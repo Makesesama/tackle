@@ -5,6 +5,7 @@ defmodule Tackle.ConfigTest do
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Retry
   alias Tackle.Lib.Tool.Policy
+  alias Tackle.Plugins.Catalog
 
   defmodule Adapter do
     @behaviour Tackle.Lib.LLM
@@ -47,6 +48,52 @@ defmodule Tackle.ConfigTest do
 
   defmodule IncompleteTool do
     def name, do: "incomplete"
+  end
+
+  defmodule CatalogHook do
+    @behaviour Tackle.Lib.Hook
+
+    @impl true
+    def after_turn(_state, _context), do: :ok
+  end
+
+  defmodule EarlierHook do
+    @behaviour Tackle.Lib.Hook
+
+    @impl true
+    def before_prompt(_state, _context), do: :ok
+  end
+
+  test "loads adapters and ordered hooks from a trusted catalog without granting its tools" do
+    assert {:ok, catalog} =
+             Catalog.new(
+               adapters: [%{module: Adapter, source: :host}],
+               tools: [%{module: Tool, source: :host}],
+               hooks: [
+                 %{module: EarlierHook, source: :host},
+                 %{module: CatalogHook, source: :host}
+               ]
+             )
+
+    home = Path.join(System.tmp_dir!(), "tackle-catalog-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(home) end)
+
+    assert {:ok, config} =
+             Config.load(
+               catalog: catalog,
+               env: %{"TACKLE_HOME" => home},
+               overrides: [model: "test/small"]
+             )
+
+    assert config.adapters == [Adapter]
+    assert config.hooks == [EarlierHook, CatalogHook]
+    refute Tool in config.tools
+
+    assert {:error, :conflicting_adapter_sources} =
+             Config.load(catalog: catalog, available_adapters: [Adapter])
+
+    assert {:error, :conflicting_hook_sources} =
+             Config.load(catalog: catalog, overrides: [hooks: [CatalogHook]])
   end
 
   test "resolves an explicit adapter and canonical model reference" do

@@ -51,7 +51,7 @@ defmodule Tackle.CLI.Run do
   end
 
   defp start_tui(scope, opts) do
-    case Tackle.available_models() do
+    case Distribution.available_models() do
       {:ok, models} -> start_tui_session(scope, models, opts)
       {:error, reason} -> error(reason)
     end
@@ -161,7 +161,7 @@ defmodule Tackle.CLI.Run do
   @spec models() :: non_neg_integer()
   def models do
     with {:ok, _apps} <- ensure_started(),
-         {:ok, models} <- Tackle.available_models() do
+         {:ok, models} <- Distribution.available_models() do
       models |> Enum.map(&%{"model" => to_string(&1)}) |> print_table()
       0
     else
@@ -365,8 +365,21 @@ defmodule Tackle.CLI.Run do
          {:ok, overrides} <- overrides(model, thinking, llm_stream),
          {:ok, session} <- durable_session(opts),
          {:ok, mcp_tools} <- Tackle.CLI.MCP.Connections.tools(),
+         {:ok, catalog} <- Tackle.CLI.Distribution.catalog(mcp_tools),
          {:ok, scope_spec} <-
-           Tackle.Coding.scope_spec([overrides: overrides, root_tools: mcp_tools], session),
+           Tackle.Coding.scope_spec(
+             [
+               catalog: catalog,
+               overrides: overrides,
+               catalog_root_tools:
+                 Enum.map(mcp_tools, & &1.name()) ++
+                   Enum.map(
+                     Application.get_env(:tackle_cli, :plugin_contributions, %{tools: []}).tools,
+                     & &1.module.name()
+                   )
+             ],
+             session
+           ),
          {:ok, scope} <- Tackle.start_scope(scope_spec) do
       {:ok, scope}
     else
@@ -506,12 +519,16 @@ defmodule Tackle.CLI.Run do
   def standalone?, do: Burrito.Util.running_standalone?()
 
   defp ensure_started do
-    Distribution.configure()
+    result =
+      if standalone?() do
+        {:ok, []}
+      else
+        Application.ensure_all_started(:tackle_cli)
+      end
 
-    if standalone?() do
-      {:ok, []}
-    else
-      Application.ensure_all_started(:tackle_cli)
+    with {:ok, _} <- result do
+      Distribution.configure()
+      result
     end
   end
 

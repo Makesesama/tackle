@@ -8,8 +8,24 @@ defmodule Tackle.CLI.Main do
 
   @spec main([String.t()]) :: non_neg_integer()
   def main(argv \\ []) do
-    Distribution.configure()
+    result =
+      if Burrito.Util.running_standalone?() do
+        {:ok, []}
+      else
+        Application.ensure_all_started(:tackle_cli)
+      end
 
+    case result do
+      {:ok, _apps} ->
+        Distribution.configure()
+        parse_and_dispatch(argv)
+
+      {:error, reason} ->
+        puts("tackle startup failed: #{inspect(reason)}", :stderr, 1)
+    end
+  end
+
+  defp parse_and_dispatch(argv) do
     case Parser.parse(argv) do
       {:ok, command} -> dispatch(command)
       {:help, help} -> puts(help, :stdio, 0)

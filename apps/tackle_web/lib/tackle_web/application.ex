@@ -7,6 +7,43 @@ defmodule Tackle.Web.Application do
 
   @impl true
   def start(_type, _args) do
+    with {:ok, contributions} <- Tackle.Plugins.Loader.load(),
+         {:ok, _catalog} <- validate_contributions(contributions) do
+      Application.put_env(:tackle_web, :plugin_contributions, contributions)
+      start_supervisor()
+    end
+  end
+
+  defp validate_contributions(contributions) do
+    configured = Application.get_env(:tackle_web, :agent_adapters)
+
+    adapters =
+      if is_list(configured) and configured != [] do
+        configured
+      else
+        case Tackle.Plugins.available_adapters() do
+          {:ok, modules} -> modules
+          {:error, :no_adapters_configured} -> []
+          {:error, reason} -> {:error, reason}
+        end
+      end
+
+    case adapters do
+      {:error, reason} ->
+        {:error, reason}
+
+      modules ->
+        Tackle.Plugins.Catalog.new(
+          adapters: Enum.map(modules, &%{module: &1, source: :web}) ++ contributions.adapters,
+          tools:
+            Enum.map(Tackle.Tools.default(), &%{module: &1, source: :tackle}) ++
+              contributions.tools,
+          hooks: contributions.hooks
+        )
+    end
+  end
+
+  defp start_supervisor do
     children = [
       Tackle.Web.Telemetry,
       {Phoenix.PubSub, name: Tackle.Web.PubSub},
