@@ -105,11 +105,13 @@ defmodule Tackle.Web.ChatAgent do
   end
 
   defp load(opts) do
-    Config.load(
-      cwd: Keyword.get(opts, :cwd, default_cwd()),
-      available_adapters: Providers.adapters(),
-      overrides: overrides(opts)
-    )
+    with {:ok, catalog} <- Providers.catalog() do
+      Config.load(
+        catalog: catalog,
+        cwd: Keyword.get(opts, :cwd, default_cwd()),
+        overrides: overrides(opts)
+      )
+    end
   end
 
   defp overrides(opts) do

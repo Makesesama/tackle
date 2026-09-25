@@ -13,6 +13,7 @@ defmodule Tackle.Coding do
   alias Tackle.Agents.Default
   alias Tackle.Agents.Definition
   alias Tackle.Config
+  alias Tackle.Plugins.Catalog
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Tools.{Subagent, SubagentStatus, SubagentWait}
@@ -42,8 +43,11 @@ defmodule Tackle.Coding do
   Loads coding configuration and builds a scope with discovered subagents.
 
   `:root_tools` adds trusted tools to the root only; named profiles may opt in
-  by explicitly listing those tools in their definition. The host owns the
-  lifecycle of any contributed tools and their connections.
+  by explicitly listing those tools in their definition. A trusted `:catalog`
+  selects adapters and hooks through `Tackle.Config`; only names listed in
+  `:catalog_root_tools` grant catalog tools to the root. Catalog names cannot
+  replace built-in coding tools. The host owns the lifecycle of any contributed
+  tools and their connections.
 
   Agent files are validated at startup. Invalid files, unknown tools, and model
   selections unavailable through the configured adapters are explicit errors.
@@ -53,15 +57,18 @@ defmodule Tackle.Coding do
   """
   @spec scope_spec(keyword(), SessionSpec.t() | nil) :: {:ok, ScopeSpec.t()} | {:error, term()}
   def scope_spec(loader_opts \\ [], session \\ nil) do
-    with {:ok, config} <- Config.load(Keyword.drop(loader_opts, [:root_tools])),
+    with {:ok, catalog_tools} <- catalog_root_tools(loader_opts),
+         {:ok, config} <-
+           Config.load(Keyword.drop(loader_opts, [:root_tools, :catalog_root_tools])),
          :ok <- validate_root_tools(Keyword.get(loader_opts, :root_tools, [])),
+         :ok <- validate_catalog_tool_conflicts(loader_opts, config),
          discovery <- discover(config, loader_opts),
          :ok <- validate_discovery(discovery),
          root_tools =
            Enum.uniq(
              config.tools ++
                Keyword.get(loader_opts, :root_tools, []) ++
-               [Subagent, SubagentStatus, SubagentWait]
+               catalog_tools ++ [Subagent, SubagentStatus, SubagentWait]
            ),
          {:ok, profiles} <-
            build_profiles(discovery.definitions, config.tools, root_tools, loader_opts),
@@ -79,6 +86,55 @@ defmodule Tackle.Coding do
         limits: limits(discovery.definitions),
         profiles: profiles
       )
+    end
+  end
+
+  defp validate_catalog_tool_conflicts(opts, config) do
+    case Keyword.fetch(opts, :catalog) do
+      {:ok, %Catalog{} = catalog} -> catalog_tool_conflicts(catalog, opts, config)
+      :error -> :ok
+    end
+  end
+
+  defp catalog_tool_conflicts(catalog, opts, config) do
+    selected =
+      config.tools ++
+        Keyword.get(opts, :root_tools, []) ++ [Subagent, SubagentStatus, SubagentWait]
+
+    catalog_modules = MapSet.new(Enum.map(Catalog.tools(catalog), & &1.module))
+    selected_names = Map.new(selected, &{&1.name(), &1})
+
+    Catalog.tools(catalog)
+    |> Enum.find(&conflicting_catalog_tool?(&1, selected_names, catalog_modules))
+    |> catalog_tool_conflict_result()
+  end
+
+  defp conflicting_catalog_tool?(%{module: module}, selected_names, catalog_modules) do
+    other = Map.get(selected_names, module.name())
+    other != nil and other != module and not MapSet.member?(catalog_modules, other)
+  end
+
+  defp catalog_tool_conflict_result(nil), do: :ok
+
+  defp catalog_tool_conflict_result(%{module: module, source: source}) do
+    {:error, {:catalog_tool_conflict, source, module.name()}}
+  end
+
+  defp catalog_root_tools(opts) do
+    case {Keyword.fetch(opts, :catalog), Keyword.get(opts, :catalog_root_tools, [])} do
+      {:error, []} ->
+        {:ok, []}
+
+      {:error, names} ->
+        {:error, {:catalog_required_for_root_tools, names}}
+
+      {{:ok, %Catalog{} = catalog}, names} ->
+        with {:ok, entries} <- Catalog.resolve_tools(catalog, names) do
+          {:ok, Enum.map(entries, & &1.module)}
+        end
+
+      {{:ok, value}, _names} ->
+        {:error, {:invalid_option, :catalog, value}}
     end
   end
 
@@ -194,7 +250,7 @@ defmodule Tackle.Coding do
 
   defp load_with_overrides(opts, overrides) do
     merged = opts |> Keyword.get(:overrides, []) |> Keyword.merge(overrides)
-    opts = Keyword.take(opts, [:available_adapters, :cwd, :env])
+    opts = Keyword.take(opts, [:available_adapters, :catalog, :cwd, :env])
     Config.load(Keyword.put(opts, :overrides, merged))
   end
 

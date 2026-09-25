@@ -10,6 +10,14 @@ defmodule Tackle.Web.ProvidersTest do
     ChatFixture.setup()
   end
 
+  test "the chat host validates its selected catalog" do
+    assert {:ok, catalog} = Providers.catalog()
+    assert Tackle.Plugins.Catalog.adapter_modules(catalog) == [FakeAdapter]
+
+    assert {:ok, [%{module: Tackle.Tools.Read, source: :tackle}]} =
+             Tackle.Plugins.Catalog.resolve_tools(catalog, ["read"])
+  end
+
   test "the adapters are the configured plugins" do
     assert Providers.adapters() == [FakeAdapter]
   end

@@ -27,6 +27,29 @@ defmodule Tackle.Web.Providers do
   """
 
   alias Tackle.Lib.LLM
+  alias Tackle.Plugins.Catalog
+
+  @doc "Validates this host's selected adapters and built-in chat tools."
+  @spec catalog() :: {:ok, Catalog.t()} | {:error, term()}
+  def catalog do
+    contributions =
+      Application.get_env(:tackle_web, :plugin_contributions, %{
+        adapters: [],
+        tools: [],
+        hooks: []
+      })
+
+    plugin_adapters = Enum.map(contributions.adapters, & &1.module)
+
+    Catalog.new(
+      adapters:
+        Enum.map(base_adapters() -- plugin_adapters, &%{module: &1, source: :web}) ++
+          contributions.adapters,
+      tools:
+        Enum.map(Tackle.Tools.default(), &%{module: &1, source: :tackle}) ++ contributions.tools,
+      hooks: contributions.hooks
+    )
+  end
 
   @doc """
   The adapter modules available to this host.
@@ -36,6 +59,15 @@ defmodule Tackle.Web.Providers do
   """
   @spec adapters() :: [module()]
   def adapters do
+    (base_adapters() ++
+       Enum.map(
+         Application.get_env(:tackle_web, :plugin_contributions, %{adapters: []}).adapters,
+         & &1.module
+       ))
+    |> Enum.uniq()
+  end
+
+  defp base_adapters do
     case Application.get_env(:tackle_web, :agent_adapters) do
       adapters when is_list(adapters) and adapters != [] ->
         adapters
