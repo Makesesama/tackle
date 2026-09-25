@@ -97,6 +97,22 @@ defmodule Tackle.Session.JournalTest do
   end
 
   describe "replay after reopen" do
+    test "replay derives the same message surfaces as live commits", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      :ok = Journal.append_message(journal, Message.user("hello"))
+      :ok = Journal.append_message(journal, Message.assistant(content: "world"))
+      :ok = Journal.settle_turn(journal, "turn.completed", %{})
+
+      {:ok, live} = Journal.projection(journal)
+      {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+
+      assert replay.projection.messages == live.messages
+      assert replay.projection.model_messages == live.model_messages
+      assert replay.projection.tree == live.tree
+      assert replay.projection.last_seq == live.last_seq
+    end
+
     test "continues sequence numbering and reconstructs messages", ctx do
       {:ok, journal} = start_journal(ctx)
       turn_id = ID.generate()
