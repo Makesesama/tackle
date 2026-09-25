@@ -214,7 +214,7 @@ defmodule Tackle.Session.Reader do
          :ok <- Log.validate_header(header, session_id),
          {:ok, projection, commits} <-
            fold_commits(raw_commits, Projection.new(header), session_id) do
-      projection = Projection.classify(projection)
+      projection = projection |> Projection.refresh() |> Projection.classify()
 
       {:ok,
        %{
@@ -247,7 +247,7 @@ defmodule Tackle.Session.Reader do
   defp apply_commit(commit, projection, session_id, expected) do
     with :ok <- Log.validate_commit(commit, session_id, expected),
          {:ok, upcasted} <- upcast_commit(commit) do
-      {:ok, Projection.apply_commit(projection, upcasted), upcasted}
+      {:ok, Projection.apply_replay_commit(projection, upcasted), upcasted}
     end
   end
 

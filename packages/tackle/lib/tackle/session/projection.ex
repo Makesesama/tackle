@@ -36,6 +36,9 @@ defmodule Tackle.Session.Projection do
   `tree_enabled?` records whether the session is allowed to branch. A legacy
   linear journal keeps `false` until the host records an explicit
   `tree.enabled` transition; the derived chain is already present either way.
+
+  Replay folds validated commits into the tree and derives message surfaces
+  once at the end. Live commits refresh the surfaces after each write.
   """
 
   alias Tackle.Lib.Compaction.Record
@@ -123,13 +126,30 @@ defmodule Tackle.Session.Projection do
   replay can reject it instead of dropping history.
   """
   @spec apply_commit(t(), map()) :: t()
-  def apply_commit(%__MODULE__{} = projection, %{"seq" => seq, "events" => events} = commit) do
-    projection =
-      events
-      |> Enum.reduce(projection, &apply_event/2)
-      |> refresh()
+  def apply_commit(%__MODULE__{} = projection, %{"events" => _events} = commit) do
+    projection
+    |> apply_replay_commit(commit)
+    |> refresh()
+  end
 
+  @doc false
+  @spec apply_replay_commit(t(), map()) :: t()
+  def apply_replay_commit(
+        %__MODULE__{} = projection,
+        %{"seq" => seq, "events" => events} = commit
+      ) do
+    projection = Enum.reduce(events, projection, &apply_event/2)
     %{projection | last_seq: seq, updated_at: commit["written_at"] || projection.updated_at}
+  end
+
+  @doc false
+  @spec refresh(t()) :: t()
+  def refresh(%__MODULE__{tree: tree} = projection) do
+    %{
+      projection
+      | messages: plain_messages(tree),
+        model_messages: plain_model_messages(tree)
+    }
   end
 
   @doc "Returns the projection's derived recovery status."
@@ -403,15 +423,7 @@ defmodule Tackle.Session.Projection do
   defp resolve_pending_tool(projection, _message), do: projection
 
   # The archive and the active model surface are both derived projections of the
-  # tree, so a single fold implementation serves live appends and replay.
-  defp refresh(%__MODULE__{tree: tree} = projection) do
-    %{
-      projection
-      | messages: plain_messages(tree),
-        model_messages: plain_model_messages(tree)
-    }
-  end
-
+  # tree. Replay refreshes once after the fold; live appends refresh each commit.
   defp plain_messages(tree) do
     tree
     |> Tree.enumerate()

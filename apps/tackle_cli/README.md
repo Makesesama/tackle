@@ -205,7 +205,9 @@ mix tackle run --resume SESSION_ID --abandon
 Resuming automatically runs controlled repair when the journal was not closed
 cleanly. Tackle preserves the original journal under the session's `recovery/`
 directory and validates recovered history before use. `--abandon` remains an
-explicit, separate decision for a turn interrupted by the crash.
+explicit, separate decision for a turn interrupted by the crash. A normal exit
+from the standalone binary shuts down OTP cleanly; abrupt termination (for
+example, `SIGKILL`) can still require repair on the next resume.
 
 `--resume` without a session id continues the most recently updated durable
 session in the current project directory. Sessions are stored under
