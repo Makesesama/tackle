@@ -57,16 +57,8 @@ defmodule Tackle.Lib.Compaction.Plan do
     end
   end
 
-  defp candidates(messages) do
-    last = length(messages) - 1
-
-    candidates =
-      if last < 1 do
-        []
-      else
-        1..last
-        |> Enum.filter(&valid_boundary?(messages, &1))
-      end
+  defp candidates([previous | rest]) do
+    candidates = collect_candidates(rest, previous, 1, [])
 
     case candidates do
       [] -> {:error, :nothing_to_shadow}
@@ -74,10 +66,22 @@ defmodule Tackle.Lib.Compaction.Plan do
     end
   end
 
-  defp valid_boundary?(messages, index) do
-    message = Enum.at(messages, index)
-    previous = Enum.at(messages, index - 1)
+  defp candidates([]), do: {:error, :nothing_to_shadow}
 
+  defp collect_candidates([], _previous, _index, acc), do: Enum.reverse(acc)
+
+  defp collect_candidates([message | rest], previous, index, acc) do
+    acc =
+      if valid_boundary?(previous, message) do
+        [index | acc]
+      else
+        acc
+      end
+
+    collect_candidates(rest, message, index + 1, acc)
+  end
+
+  defp valid_boundary?(previous, message) do
     message.role in [:user, :assistant] and not Message.has_tool_calls?(previous)
   end
 
@@ -114,8 +118,9 @@ defmodule Tackle.Lib.Compaction.Plan do
   end
 
   defp build(messages, cut) do
-    shadowed = Enum.take(messages, cut)
-    retained = Enum.drop(messages, cut)
+    {shadowed, retained} = Enum.split(messages, cut)
+    shadowed_tokens = ContextUsage.estimate_messages(shadowed)
+    retained_tokens = ContextUsage.estimate_messages(retained)
 
     %__MODULE__{
       cut_index: cut,
@@ -127,9 +132,9 @@ defmodule Tackle.Lib.Compaction.Plan do
           [%Message{id: id} | _rest] -> id
           [] -> nil
         end,
-      tokens_before: ContextUsage.estimate_messages(messages),
-      shadowed_tokens: ContextUsage.estimate_messages(shadowed),
-      retained_tokens: ContextUsage.estimate_messages(retained)
+      tokens_before: shadowed_tokens + retained_tokens,
+      shadowed_tokens: shadowed_tokens,
+      retained_tokens: retained_tokens
     }
   end
 end

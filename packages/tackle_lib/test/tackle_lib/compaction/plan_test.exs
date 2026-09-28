@@ -30,6 +30,9 @@ defmodule Tackle.Lib.Compaction.PlanTest do
       assert [_, _] = plan.shadowed
       assert [_, _] = plan.retained
       assert plan.retained_tokens >= 150
+      assert plan.shadowed_tokens == ContextUsage.estimate_messages(plan.shadowed)
+      assert plan.retained_tokens == ContextUsage.estimate_messages(plan.retained)
+      assert plan.tokens_before == plan.shadowed_tokens + plan.retained_tokens
       assert plan.tokens_before == ContextUsage.estimate_messages(messages)
       assert plan.first_retained_id == Enum.at(messages, 2).id
     end
@@ -111,7 +114,8 @@ defmodule Tackle.Lib.Compaction.PlanTest do
       assert Enum.any?(plan.shadowed, &(&1.role == :tool))
     end
 
-    test "returns nothing_to_shadow for a single message" do
+    test "returns nothing_to_shadow for empty or single-message projections" do
+      assert {:error, :nothing_to_shadow} = Plan.select([])
       assert {:error, :nothing_to_shadow} = Plan.select([message(:user, "hi")])
     end
 
