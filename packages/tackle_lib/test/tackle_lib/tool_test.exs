@@ -38,6 +38,42 @@ defmodule Tackle.Lib.ToolTest do
     def execute(args, _context), do: {:ok, args}
   end
 
+  defmodule DuplicateEchoTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "echo"
+
+    @impl true
+    def description, do: "Different tool with the same public name."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, _context), do: {:ok, "different"}
+  end
+
+  defmodule EmptyNameTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: ""
+
+    @impl true
+    def description, do: "Invalid name."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, _context), do: {:ok, "no name"}
+  end
+
+  defmodule MissingCallbacksTool do
+    def name, do: "incomplete"
+  end
+
   defmodule InvalidOutputTool do
     @behaviour Tackle.Lib.Tool
 
@@ -463,6 +499,32 @@ defmodule Tackle.Lib.ToolTest do
 
     assert {:error, :stale_tool_definition} =
              Tackle.Lib.Tool.Registry.resolve(registry, stale_call)
+  end
+
+  test "registry rejects invalid modules instead of dropping them" do
+    for invalid <- [MissingCallbacksTool, :missing_tool_module, "not a module"] do
+      assert_raise ArgumentError, ~r/not a valid Tackle.Lib.Tool; missing callbacks:/, fn ->
+        Tackle.Lib.Tool.Registry.new([EchoTool, invalid])
+      end
+    end
+  end
+
+  test "registry rejects invalid tool names" do
+    assert_raise ArgumentError, ~r/invalid tool name/, fn ->
+      Tackle.Lib.Tool.Registry.new([EmptyNameTool])
+    end
+  end
+
+  test "registry rejects duplicate names instead of selecting the last implementation" do
+    for tools <- [
+          [EchoTool, DuplicateEchoTool],
+          [DuplicateEchoTool, EchoTool],
+          [EchoTool, EchoTool]
+        ] do
+      assert_raise ArgumentError, ~s(duplicate tool name: "echo"), fn ->
+        Tackle.Lib.Tool.Registry.new(tools)
+      end
+    end
   end
 
   test "JsonSchema.to_json_schema/1 projects schema for provider adapters" do

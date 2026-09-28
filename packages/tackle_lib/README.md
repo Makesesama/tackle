@@ -537,7 +537,9 @@ events. Exceptions are rescued and logged as bugs; they should not be normal
 control flow.
 
 Unknown tools and stale `definition_id` values settle as typed errors rather
-than executing a different definition. Tool names must be unique in a registry.
+than executing a different definition. `Tackle.Lib.Tool.Registry.new/1` raises
+`ArgumentError` for invalid tool modules, invalid names, or duplicate names;
+registration never silently drops tools or selects one duplicate over another.
 Definitions and tool sets have deterministic SHA-256-derived IDs for audit and
 cache keys.
 

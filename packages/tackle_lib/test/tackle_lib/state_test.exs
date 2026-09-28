@@ -7,6 +7,22 @@ defmodule Tackle.Lib.StateTest do
   alias Tackle.Lib.State
   alias Tackle.Lib.Usage
 
+  defmodule SomeTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "some_tool"
+
+    @impl true
+    def description, do: "A state test tool."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, _context), do: {:ok, "ok"}
+  end
+
   describe "new/1" do
     test "creates a new state with defaults" do
       state = State.new()
@@ -47,6 +63,16 @@ defmodule Tackle.Lib.StateTest do
       assert state.max_iterations == 5
       assert state.tools == [SomeTool]
       assert state.id_generator.() == "custom-id"
+    end
+
+    test "rejects invalid tool configuration before creating a usable state" do
+      assert_raise ArgumentError, ~r/not a valid Tackle.Lib.Tool/, fn ->
+        State.new(tools: [SomeTool, :missing_tool_module])
+      end
+
+      assert_raise ArgumentError, ~r/duplicate tool name/, fn ->
+        State.new(tools: [SomeTool, SomeTool])
+      end
     end
 
     test "accepts an existing session id without invoking the id generator" do
