@@ -2,7 +2,7 @@ defmodule Tackle.Runtime.AgentContext do
   @moduledoc """
   Trusted runtime context supplied when a backend starts an agent.
 
-  Backends use `register/2` from their agent process after initialization. This
+  Backends use `register/2` from their agent process during initialization. This
   binds the stable `AgentRef` to the live process and completes coordinator
   admission without exposing PIDs through the public runtime API.
   """
