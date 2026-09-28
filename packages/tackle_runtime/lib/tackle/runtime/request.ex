@@ -352,7 +352,8 @@ defmodule Tackle.Runtime.Request do
     {:noreply, settle(state, timeout_outcome(state))}
   end
 
-  def handle_info({:request_timeout, :await}, state) do
+  def handle_info({:timeout, timer, {:request_timeout, :await}}, %{await_timer: timer} = state)
+      when not is_nil(timer) and map_size(state.awaiters) > 0 do
     {:noreply, settle(state, timeout_outcome(state))}
   end
 
@@ -482,7 +483,7 @@ defmodule Tackle.Runtime.Request do
 
   defp arm_await_timeout(%{await_timer: nil} = state, timeout)
        when is_integer(timeout) and timeout > 0 do
-    timer = Process.send_after(self(), {:request_timeout, :await}, timeout)
+    timer = :erlang.start_timer(timeout, self(), {:request_timeout, :await})
     %{state | await_timer: timer}
   end
 

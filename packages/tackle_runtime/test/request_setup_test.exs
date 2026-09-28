@@ -7,6 +7,8 @@ defmodule Tackle.Runtime.RequestSetupTest do
   alias Tackle.Runtime.Envelope
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Messaging
+  alias Tackle.Runtime.Registry
+  alias Tackle.Runtime.Request
   alias Tackle.Runtime.ScopeSpec
 
   defmodule Backend do
@@ -120,6 +122,52 @@ defmodule Tackle.Runtime.RequestSetupTest do
         snapshot.agent_count == 1
       end)
     end
+  end
+
+  test "a cancelled await timer cannot time out a later waiter" do
+    root =
+      AgentSpec.new!(
+        name: "root",
+        config: %{mode: :root, test_pid: self()},
+        allow_delegation: true
+      )
+
+    child = AgentSpec.new!(name: "child", config: %{mode: :normal, test_pid: self()})
+    scope_spec = ScopeSpec.new!(backend: Backend, root_spec: root, profiles: %{"child" => child})
+
+    {:ok, scope} = Runtime.start_scope(scope_spec)
+    on_exit(fn -> Runtime.stop_scope(scope.scope_ref) end)
+
+    assert {:ok, run_ref} =
+             Runtime.request_agent(scope.root_agent_ref, "child", "go", timeout: :infinity)
+
+    assert_receive {:child_started, _pid}, 2_000
+    {:ok, request} = Registry.whereis(run_ref)
+
+    first_waiter = spawn(fn -> Runtime.await(run_ref, 60_000) end)
+
+    assert_eventually(fn -> map_size(:sys.get_state(request).awaiters) == 1 end)
+    first_timer = :sys.get_state(request).await_timer
+    assert is_reference(first_timer)
+
+    Process.exit(first_waiter, :kill)
+    assert_eventually(fn -> :sys.get_state(request).await_timer == nil end)
+
+    # A timer that already entered the mailbox cannot be recalled by cancel_timer.
+    send(request, {:timeout, first_timer, {:request_timeout, :await}})
+    assert {:ok, :running} = Request.status(run_ref)
+
+    second_waiter = Task.async(fn -> Runtime.await(run_ref, 60_000) end)
+    assert_eventually(fn -> map_size(:sys.get_state(request).awaiters) == 1 end)
+    second_timer = :sys.get_state(request).await_timer
+    assert is_reference(second_timer)
+    refute second_timer == first_timer
+
+    send(request, {:timeout, first_timer, {:request_timeout, :await}})
+    assert {:ok, :running} = Request.status(run_ref)
+
+    send(request, {:timeout, second_timer, {:request_timeout, :await}})
+    assert %{status: :timeout} = Task.await(second_waiter, 2_000)
   end
 
   test "request preparation failures do not reserve a child slot" do
