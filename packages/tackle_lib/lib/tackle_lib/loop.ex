@@ -38,7 +38,6 @@ defmodule Tackle.Lib.Loop do
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.Hook
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.LLM
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
@@ -734,53 +733,17 @@ defmodule Tackle.Lib.Loop do
         _ -> []
       end
 
-    if Enum.all?(raw_calls, &valid_tool_call?/1) do
-      {:ok,
-       raw_calls
-       |> Enum.map(&normalize_tool_call/1)
-       |> Enum.filter(fn %Call{name: name} -> name != nil end)}
-    else
-      {:error, :malformed_tool_call}
+    Enum.reduce_while(raw_calls, {:ok, []}, fn raw_call, {:ok, calls} ->
+      case Call.normalize(raw_call) do
+        {:ok, call} -> {:cont, {:ok, [call | calls]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, calls} -> {:ok, Enum.reverse(calls)}
+      error -> error
     end
   end
-
-  defp valid_tool_call?(%{} = call) do
-    function = fetch_call(call, "function", :function, %{})
-    is_map(function)
-  end
-
-  defp valid_tool_call?(_call), do: false
-
-  defp normalize_tool_call(call) do
-    function = fetch_call(call, "function", :function, %{})
-
-    %Call{
-      id: fetch_call(call, "id", :id),
-      name: fetch_call(call, "name", :name) || fetch_call(function, "name", :name),
-      arguments:
-        normalize_tool_arguments(
-          fetch_call(call, "arguments", :arguments) ||
-            fetch_call(function, "arguments", :arguments, %{})
-        ),
-      definition_id: fetch_call(call, "definition_id", :definition_id),
-      raw: call
-    }
-  end
-
-  defp fetch_call(map, string_key, atom_key, default \\ nil) do
-    Map.get(map, string_key) || Map.get(map, atom_key, default)
-  end
-
-  defp normalize_tool_arguments(arguments) when is_map(arguments), do: arguments
-
-  defp normalize_tool_arguments(arguments) when is_binary(arguments) do
-    case JSON.decode(arguments) do
-      {:ok, decoded} when is_map(decoded) -> decoded
-      _ -> %{}
-    end
-  end
-
-  defp normalize_tool_arguments(_arguments), do: %{}
 
   defp execute_tool_calls(%State{} = state, tool_calls, callbacks) do
     case state.tool_policy do
