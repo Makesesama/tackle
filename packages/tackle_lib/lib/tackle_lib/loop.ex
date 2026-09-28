@@ -83,7 +83,7 @@ defmodule Tackle.Lib.Loop do
     emit(callbacks, Event.new(:turn_start, %{session_id: state.session_id}))
 
     if cancelled?(callbacks) do
-      do_after_turn(state, cancel_run(state, callbacks), callbacks)
+      terminal_result(cancel_run(state, callbacks), callbacks)
     else
       user_message = Message.user(user_input, id_generator: state.id_generator)
       state = State.add_message(state, user_message)
@@ -93,7 +93,7 @@ defmodule Tackle.Lib.Loop do
           loop(state, callbacks)
 
         {:error, state} ->
-          {:error, do_after_turn_cleanup(state, callbacks)}
+          terminal_result({:error, state}, callbacks)
       end
     end
   end
@@ -135,7 +135,7 @@ defmodule Tackle.Lib.Loop do
 
   defp loop(%State{} = state, callbacks) do
     if cancelled?(callbacks) do
-      do_after_turn(state, cancel_run(state, callbacks), callbacks)
+      terminal_result(cancel_run(state, callbacks), callbacks)
     else
       case append_incoming_messages(state, callbacks) do
         {:ok, state, _count} ->
@@ -145,7 +145,7 @@ defmodule Tackle.Lib.Loop do
           final_state =
             State.set_error(state, "Could not receive queued messages: #{inspect(reason)}")
 
-          {:error, do_after_turn_cleanup(final_state, callbacks)}
+          terminal_result({:error, final_state}, callbacks)
       end
     end
   end
@@ -153,12 +153,12 @@ defmodule Tackle.Lib.Loop do
   defp continue_loop(%State{} = state, callbacks) do
     cond do
       cancelled?(callbacks) ->
-        do_after_turn(state, cancel_run(state, callbacks), callbacks)
+        terminal_result(cancel_run(state, callbacks), callbacks)
 
       State.max_iterations_reached?(state) ->
         Logger.warning("Agent reached max iterations (#{state.max_iterations})")
         final_state = State.set_error(state, "Reached maximum iterations without completing")
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
+        terminal_result({:error, final_state}, callbacks)
 
       true ->
         iterate(state, callbacks)
@@ -183,14 +183,10 @@ defmodule Tackle.Lib.Loop do
 
       {:error, reason, committed_state} ->
         final_state = State.set_error(committed_state, "Compaction failed: #{inspect(reason)}")
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
+        terminal_result({:error, final_state}, callbacks)
 
       {:cancelled, reason, committed_state} ->
-        do_after_turn(
-          committed_state,
-          cancel_run(%{committed_state | error: reason}, callbacks),
-          callbacks
-        )
+        terminal_result(cancel_run(%{committed_state | error: reason}, callbacks), callbacks)
     end
   end
 
@@ -201,7 +197,7 @@ defmodule Tackle.Lib.Loop do
 
       {:error, reason} ->
         final_state = State.set_error(state, "Hook aborted before prompt: #{inspect(reason)}")
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
+        terminal_result({:error, final_state}, callbacks)
     end
   end
 
@@ -292,7 +288,7 @@ defmodule Tackle.Lib.Loop do
 
   defp handle_llm_call_result({:ok, %{data: response} = result}, state, callbacks) do
     if cancelled?(callbacks) do
-      do_after_turn(clear_pending_assistant_id(state), cancel_run(state, callbacks), callbacks)
+      terminal_result(cancel_run(state, callbacks), callbacks)
     else
       emit_llm_settlement_events(callbacks, state, result)
 
@@ -302,7 +298,7 @@ defmodule Tackle.Lib.Loop do
 
         {:error, reason} ->
           final_state = State.set_error(state, "Hook aborted after prompt: #{inspect(reason)}")
-          {:error, do_after_turn_cleanup(final_state, callbacks)}
+          terminal_result({:error, final_state}, callbacks)
       end
     end
   end
@@ -310,7 +306,7 @@ defmodule Tackle.Lib.Loop do
   defp handle_llm_call_result({:error, reason}, state, callbacks) do
     cond do
       cancelled?(callbacks) ->
-        do_after_turn(clear_pending_assistant_id(state), cancel_run(state, callbacks), callbacks)
+        terminal_result(cancel_run(state, callbacks), callbacks)
 
       recoverable_overflow?(state, reason, callbacks) ->
         recover_overflow(state, reason, callbacks)
@@ -326,7 +322,7 @@ defmodule Tackle.Lib.Loop do
 
         error_event = Event.new(:error, %{error: final_state.error, reason: reason})
         emit(callbacks, error_event)
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
+        terminal_result({:error, final_state}, callbacks)
     end
   end
 
@@ -346,14 +342,10 @@ defmodule Tackle.Lib.Loop do
 
       {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
         final_state = State.set_error(clear_pending_assistant_id(committed_state), inspect(error))
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
+        terminal_result({:error, final_state}, callbacks)
 
       {:cancelled, _reason, committed_state} ->
-        do_after_turn(
-          clear_pending_assistant_id(committed_state),
-          cancel_run(committed_state, callbacks),
-          callbacks
-        )
+        terminal_result(cancel_run(committed_state, callbacks), callbacks)
 
       {:error, _compaction_reason, committed_state} ->
         final_state =
@@ -363,7 +355,7 @@ defmodule Tackle.Lib.Loop do
           )
 
         emit(callbacks, Event.new(:error, %{error: final_state.error, reason: reason}))
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
+        terminal_result({:error, final_state}, callbacks)
     end
   end
 
@@ -497,7 +489,7 @@ defmodule Tackle.Lib.Loop do
           |> State.set_error("Invalid provider tool calls: #{inspect(reason)}")
 
         emit(callbacks, Event.new(:error, %{error: final_state.error, reason: reason}))
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
+        terminal_result({:error, final_state}, callbacks)
     end
   end
 
@@ -553,12 +545,12 @@ defmodule Tackle.Lib.Loop do
 
         case execute_tool_calls(state, tool_calls, callbacks) do
           {:ok, state} -> loop(state, callbacks)
-          {:error, state} -> {:error, do_after_turn_cleanup(state, callbacks)}
-          {:cancelled, state} -> do_after_turn(state, cancel_run(state, callbacks), callbacks)
+          {:error, state} -> terminal_result({:error, state}, callbacks)
+          {:cancelled, state} -> terminal_result(cancel_run(state, callbacks), callbacks)
         end
 
       {:error, state} ->
-        {:error, do_after_turn_cleanup(clear_pending_assistant_id(state), callbacks)}
+        terminal_result({:error, clear_pending_assistant_id(state)}, callbacks)
     end
   end
 
@@ -608,13 +600,13 @@ defmodule Tackle.Lib.Loop do
         continue_after_assistant(state, callbacks)
 
       {:error, state} ->
-        {:error, do_after_turn_cleanup(clear_pending_assistant_id(state), callbacks)}
+        terminal_result({:error, clear_pending_assistant_id(state)}, callbacks)
     end
   end
 
   defp continue_after_assistant(state, callbacks) do
     if cancelled?(callbacks) do
-      do_after_turn(state, cancel_run(state, callbacks), callbacks)
+      terminal_result(cancel_run(state, callbacks), callbacks)
     else
       case append_incoming_messages(state, callbacks) do
         {:ok, state, 0} ->
@@ -625,7 +617,7 @@ defmodule Tackle.Lib.Loop do
             Event.new(:turn_end, %{session_id: state.session_id, status: :completed})
           )
 
-          {:ok, do_after_turn_cleanup(state, callbacks)}
+          terminal_result({:ok, state}, callbacks)
 
         {:ok, state, _count} ->
           continue_loop(state, callbacks)
@@ -634,7 +626,7 @@ defmodule Tackle.Lib.Loop do
           final_state =
             State.set_error(state, "Could not receive queued messages: #{inspect(reason)}")
 
-          {:error, do_after_turn_cleanup(final_state, callbacks)}
+          terminal_result({:error, final_state}, callbacks)
       end
     end
   end
@@ -1242,17 +1234,17 @@ defmodule Tackle.Lib.Loop do
     %{state | pending_assistant_id: nil}
   end
 
-  defp do_after_turn(_state, {:cancelled, final_state}, callbacks) do
-    {:cancelled, do_after_turn_cleanup(final_state, callbacks)}
-  end
-
-  defp do_after_turn_cleanup(%State{} = state, callbacks) do
+  defp terminal_result({outcome, %State{} = state}, callbacks)
+       when outcome in [:ok, :error, :cancelled] do
     hooks = snapshot_hooks(callbacks)
 
-    case Hook.invoke(hooks, :after_turn, [state], state.context) do
-      {:ok, context} -> %{state | context: context, snapshot: nil}
-      _ -> %{state | snapshot: nil}
-    end
+    state =
+      case Hook.invoke(hooks, :after_turn, [state], state.context) do
+        {:ok, context} -> %{state | context: context, snapshot: nil}
+        _ -> %{state | snapshot: nil}
+      end
+
+    {outcome, state}
   end
 
   # --- Snapshot helpers ---

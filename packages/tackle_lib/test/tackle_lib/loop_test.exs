@@ -1405,6 +1405,111 @@ defmodule Tackle.Lib.LoopTest do
       end
     end
 
+    defmodule TerminalHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def before_prompt(_state, %{abort_prompt: true}), do: {:error, :prompt_rejected}
+      def before_prompt(_state, _context), do: :ok
+
+      @impl true
+      def after_turn(state, context) do
+        send(context.test_pid, {:after_turn, state.status, state.error})
+        send(context.test_pid, {:terminal_event, :after_turn})
+        {:ok, Map.put(context, :cleaned_up, true)}
+      end
+    end
+
+    defmodule FailingTerminalHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def after_turn(state, context) do
+        send(context.test_pid, {:after_turn_failed, state.status})
+        {:error, :teardown_failed}
+      end
+    end
+
+    test "terminal cleanup runs once after outcome events for success, cancellation, hook and provider failures" do
+      signal = Cancellation.new_signal()
+      Cancellation.cancel(signal, "stop")
+
+      cases = [
+        {:completed, TestAdapter, %{}, []},
+        {:cancelled, NoCallAdapter, %{}, [cancellation_signal: signal]},
+        {:error, NoCallAdapter, %{abort_prompt: true}, []},
+        {:error, PermanentFailureAdapter, %{}, []}
+      ]
+
+      for {status, adapter, extra_context, opts} <- cases do
+        Application.put_env(:tackle_lib, :llm, adapter)
+        Process.put(:test_pid, self())
+
+        context = Map.merge(%{test_pid: self()}, extra_context)
+        state = State.new(model: "test/model", hooks: [TerminalHook], context: context)
+
+        result =
+          Loop.run(
+            state,
+            "hello",
+            Keyword.merge(opts,
+              event_callback: fn event -> send(self(), {:event, event.type}) end
+            )
+          )
+
+        outcome = if status == :completed, do: :ok, else: status
+        assert {^outcome, final_state} = result
+        assert final_state.status == status
+        assert final_state.snapshot == nil
+        assert final_state.context.cleaned_up
+
+        assert_receive {:after_turn, ^status, error}
+        assert (status == :completed and error == nil) or is_binary(error)
+        refute_receive {:after_turn, _, _}, 20
+
+        events = collect_terminal_event_types([])
+        assert Enum.count(events, &(&1 == :after_turn)) == 1
+        assert List.last(events) == :after_turn
+
+        if status == :completed do
+          assert Enum.take(events, -2) == [:turn_end, :after_turn]
+        else
+          if status == :cancelled do
+            assert Enum.take(events, -4) ==
+                     [:status_change, :turn_cancelled, :turn_end, :after_turn]
+          else
+            assert :step_start in events
+
+            if adapter == PermanentFailureAdapter,
+              do: assert(Enum.take(events, -2) == [:error, :after_turn])
+          end
+        end
+      end
+    end
+
+    test "after_turn failure preserves the outcome and still clears the snapshot" do
+      state =
+        State.new(
+          model: "test/model",
+          hooks: [FailingTerminalHook],
+          context: %{test_pid: self()}
+        )
+
+      assert {:ok, final_state} = Loop.run(state, "hello")
+      assert_receive {:after_turn_failed, :completed}
+      refute_receive {:after_turn_failed, _}, 20
+      assert final_state.snapshot == nil
+      assert final_state.context == state.context
+    end
+
+    test "continue runs terminal cleanup once" do
+      state = State.new(model: "test/model", hooks: [TerminalHook], context: %{test_pid: self()})
+      assert {:ok, final_state} = Loop.continue(state)
+      assert_receive {:after_turn, :completed, nil}
+      refute_receive {:after_turn, _, _}, 20
+      assert final_state.snapshot == nil
+    end
+
     defmodule ContextMutatorHook do
       @behaviour Tackle.Lib.Hook
 
@@ -1509,8 +1614,9 @@ defmodule Tackle.Lib.LoopTest do
       assert_receive {:hook_fired, :before_tool_call}
       # after_tool_call fires after the tool settles
       assert_receive {:hook_fired, :after_tool_call}
-      # after_turn fires at the very end
+      # after_turn fires at the very end, once for the whole multi-step turn
       assert_receive {:hook_fired, :after_turn}
+      refute_receive {:hook_fired, :after_turn}, 20
     end
 
     test "context mutator hooks propagate context changes" do
@@ -1674,6 +1780,15 @@ defmodule Tackle.Lib.LoopTest do
       assert_receive :adapter_config_swapped
       assert_receive :snapshot_adapter_called
       refute_receive :replacement_adapter_called, 20
+    end
+  end
+
+  defp collect_terminal_event_types(events) do
+    receive do
+      {:event, type} when is_atom(type) -> collect_terminal_event_types([type | events])
+      {:terminal_event, type} -> collect_terminal_event_types([type | events])
+    after
+      0 -> Enum.reverse(events)
     end
   end
 
