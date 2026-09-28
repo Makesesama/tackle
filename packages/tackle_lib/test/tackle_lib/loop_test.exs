@@ -875,6 +875,72 @@ defmodule Tackle.Lib.LoopTest do
     assert Enum.map(tool_messages, & &1.tool_call_id) == ["bad", "good"]
   end
 
+  test "concurrent tool tasks do not copy conversation history" do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
+    test_pid = self()
+
+    # Use ordinary terms, not a large binary (which the BEAM shares between processes).
+    history = for i <- 1..12_000, do: Message.assistant(content: "history #{i}")
+
+    state =
+      State.new(
+        model: "test/model",
+        tools: [BlockingTool],
+        tool_policy: Policy.concurrent(),
+        context: %{test_pid: test_pid}
+      )
+      |> Map.put(:messages, history)
+
+    run = Task.async(fn -> Loop.run(state, "run both", tool_supervisor: supervisor) end)
+
+    assert_receive {:tool_entered, first_name, first_task}, 5_000
+    assert_receive {:tool_entered, second_name, second_task}, 5_000
+
+    try do
+      for task <- [first_task, second_task] do
+        :erlang.garbage_collect(task)
+        assert {:memory, bytes} = Process.info(task, :memory)
+        assert bytes < 500_000, "tool task retained conversation history: #{bytes} bytes"
+      end
+    after
+      send(first_task, {:release, first_name})
+      send(second_task, {:release, second_name})
+    end
+
+    assert {:ok, %{status: :completed}} = Task.await(run, 5_000)
+  end
+
+  test "concurrent preparation errors settle as tool crashes instead of aborting the loop" do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
+    test_pid = self()
+
+    state =
+      State.new(
+        model: "test/model",
+        tools: [BlockingTool],
+        tool_policy: Policy.concurrent(),
+        context: %{test_pid: test_pid}
+      )
+
+    assert {:ok, final_state} =
+             Loop.run(state, "run both",
+               tool_supervisor: supervisor,
+               event_context: nil,
+               event_callback: fn event -> send(test_pid, {:event, event}) end
+             )
+
+    assert final_state.status == :completed
+
+    assert Enum.map(Enum.filter(final_state.messages, &(&1.role == :tool)), & &1.tool_call_id) ==
+             ["c1", "c2"]
+
+    assert_receive {:event, %Event{type: :tool_error, data: %{tool_call_id: "c1"}}}
+    assert_receive {:event, %Event{type: :tool_error, data: %{tool_call_id: "c2"}}}
+    refute_receive {:tool_entered, _, _}
+  end
+
   test "concurrent policy without a tool supervisor raises" do
     Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
 

@@ -886,7 +886,7 @@ defmodule Tackle.Lib.Loop do
       Event.new(:tool_start, %{tool_call_id: tool_call.id, name: name, arguments: args})
     )
 
-    settlement = settle_tool_call(tool_call, state, callbacks)
+    settlement = tool_call |> execution_job(state, callbacks) |> settle_tool_call()
     emit_tool_execution_end(settlement, callbacks)
     append_tool_settlement(settlement, state, callbacks)
   end
@@ -915,7 +915,7 @@ defmodule Tackle.Lib.Loop do
             })
           )
 
-          job = %{index: index, call: tool_call, state: acc_state}
+          job = Map.put(execution_job(tool_call, acc_state, callbacks), :index, index)
           {:cont, {:ok, [job | jobs], acc_state}}
 
         {:error, reason} ->
@@ -936,11 +936,11 @@ defmodule Tackle.Lib.Loop do
     |> await_tool_batch(%{}, callbacks)
   end
 
-  defp start_tool_task(%{index: index, call: call, state: state}, supervisor, callbacks) do
+  defp start_tool_task(%{index: index, call: call} = job, supervisor, _callbacks) do
     task =
       Task.Supervisor.async_nolink(supervisor, fn ->
         :proc_lib.set_label("tool:#{call.name}")
-        settle_tool_call(call, state, callbacks)
+        settle_tool_call(job)
       end)
 
     {index, call, task}
@@ -1068,23 +1068,49 @@ defmodule Tackle.Lib.Loop do
      }}
   end
 
-  # Runs one call's settle pipeline (resolve, execute, validate, telemetry).
+  # The loop owns transcript state; tool tasks receive only the resolved call,
+  # execution context, and telemetry inputs. Hooks may update context between
+  # calls, so each job is built after its before_tool_call hook has run.
+  defp execution_job(%Call{name: name} = call, state, callbacks) do
+    # Preserve the task's exception telemetry and crash settlement if preparing
+    # a call fails (for example, an invalid host execution context).
+    execution =
+      try do
+        case Registry.resolve(tool_registry(callbacks), call) do
+          {:ok, %{module: module}} -> {:ok, module, tool_context(state, callbacks, call)}
+          {:error, reason} -> {:error, reason}
+        end
+      catch
+        kind, reason -> {:raise, kind, reason, __STACKTRACE__}
+      end
+
+    %{
+      call: call,
+      execution: execution,
+      telemetry_name: telemetry_tool_name(name, state.context),
+      telemetry_adapter: get_in(state.context, [:telemetry, :adapter])
+    }
+  end
+
+  # Runs one call's settle pipeline (execute, validate, telemetry).
   # Sequential execution calls this inline; concurrent execution calls it inside a
   # supervised task. It never touches agent state or emits agent events.
-  defp settle_tool_call(%Call{name: name} = tool_call, state, callbacks) do
-    telemetry_name = telemetry_tool_name(name, state)
+  defp settle_tool_call(%{
+         call: tool_call,
+         execution: execution,
+         telemetry_name: telemetry_name,
+         telemetry_adapter: telemetry_adapter
+       }) do
     telemetry_ref = Telemetry.start([:tackle, :tool, :execution], %{tool_name: telemetry_name})
     started_at = System.monotonic_time()
 
     try do
       settlement =
-        with_tool_telemetry_context(state, telemetry_ref, fn ->
-          case Registry.resolve(tool_registry(callbacks), tool_call) do
-            {:ok, %{module: tool_module}} ->
-              Tool.settle(tool_module, tool_call, tool_context(state, callbacks, tool_call))
-
-            {:error, reason} ->
-              registry_error(tool_call, reason)
+        with_tool_telemetry_context(telemetry_adapter, telemetry_ref, fn ->
+          case execution do
+            {:ok, tool_module, context} -> Tool.settle(tool_module, tool_call, context)
+            {:error, reason} -> registry_error(tool_call, reason)
+            {:raise, kind, reason, stacktrace} -> :erlang.raise(kind, reason, stacktrace)
           end
         end)
 
@@ -1119,18 +1145,16 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
-  defp with_tool_telemetry_context(%State{context: context}, telemetry_ref, fun)
+  defp with_tool_telemetry_context(adapter, telemetry_ref, fun)
        when is_reference(telemetry_ref) and is_function(fun, 0) do
-    case get_in(context, [:telemetry, :adapter]) do
-      adapter when is_atom(adapter) and not is_nil(adapter) ->
-        adapter.with_context(telemetry_ref, fun)
-
-      _adapter ->
-        fun.()
+    if is_atom(adapter) and not is_nil(adapter) do
+      adapter.with_context(telemetry_ref, fun)
+    else
+      fun.()
     end
   end
 
-  defp telemetry_tool_name(name, %State{context: context}) when is_binary(name) do
+  defp telemetry_tool_name(name, context) when is_binary(name) do
     allowed_names = get_in(context, [:telemetry, :tool_names]) || []
     if name in allowed_names, do: name, else: "other"
   end
