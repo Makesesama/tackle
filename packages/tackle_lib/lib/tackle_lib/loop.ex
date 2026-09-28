@@ -185,19 +185,12 @@ defmodule Tackle.Lib.Loop do
         final_state = State.set_error(committed_state, "Compaction failed: #{inspect(reason)}")
         {:error, do_after_turn_cleanup(final_state, callbacks)}
 
-      {:error, reason} ->
-        final_state = State.set_error(state, "Compaction failed: #{inspect(reason)}")
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
-
       {:cancelled, reason, committed_state} ->
         do_after_turn(
           committed_state,
           cancel_run(%{committed_state | error: reason}, callbacks),
           callbacks
         )
-
-      {:cancelled, reason} ->
-        do_after_turn(state, cancel_run(%{state | error: reason}, callbacks), callbacks)
     end
   end
 
@@ -346,17 +339,13 @@ defmodule Tackle.Lib.Loop do
 
     emit(callbacks, Event.new(:compaction_retry, %{trigger: :overflow, reason: reason}))
 
-    case Compaction.compact(state, :overflow, compaction_opts(state, callbacks)) do
+    case compact_with_state(state, :overflow, callbacks) do
       {:ok, state, _record} ->
         state = %{state | overflow_retries: state.overflow_retries + 1}
         call_provider(state, callbacks)
 
       {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
         final_state = State.set_error(clear_pending_assistant_id(committed_state), inspect(error))
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
-
-      {:error, {:durable_commit_failed, _reason} = error} ->
-        final_state = State.set_error(clear_pending_assistant_id(state), inspect(error))
         {:error, do_after_turn_cleanup(final_state, callbacks)}
 
       {:cancelled, _reason, committed_state} ->
@@ -366,9 +355,6 @@ defmodule Tackle.Lib.Loop do
           callbacks
         )
 
-      {:cancelled, _reason} ->
-        do_after_turn(clear_pending_assistant_id(state), cancel_run(state, callbacks), callbacks)
-
       {:error, _compaction_reason, committed_state} ->
         final_state =
           State.set_error(
@@ -377,20 +363,6 @@ defmodule Tackle.Lib.Loop do
           )
 
         emit(callbacks, Event.new(:error, %{error: final_state.error, reason: reason}))
-        {:error, do_after_turn_cleanup(final_state, callbacks)}
-
-      {:error, _compaction_reason} ->
-        final_state =
-          State.set_error(
-            clear_pending_assistant_id(state),
-            "Failed to get response: #{inspect(reason)}"
-          )
-
-        emit(
-          callbacks,
-          Event.new(:error, %{error: final_state.error, reason: reason})
-        )
-
         {:error, do_after_turn_cleanup(final_state, callbacks)}
     end
   end
@@ -412,33 +384,32 @@ defmodule Tackle.Lib.Loop do
          true <- resolved.usable?,
          %ContextUsage{tokens: tokens} <- ContextUsage.estimate(state, info),
          true <- Compaction.Policy.pressure?(resolved, tokens) do
-      case Compaction.compact(state, :pressure, compaction_opts(state, callbacks)) do
+      case compact_with_state(state, :pressure, callbacks) do
         {:ok, state, _record} ->
           {:ok, state}
 
         {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
           {:error, error, committed_state}
 
-        {:error, {:durable_commit_failed, _reason} = error} ->
-          {:error, error}
-
         {:cancelled, reason, committed_state} ->
           {:cancelled, reason, committed_state}
 
-        {:cancelled, reason} ->
-          {:cancelled, reason}
-
         {:error, _reason, committed_state} ->
-          # A prior pass committed successfully; continue with that checkpoint.
+          # Continue with a prior committed checkpoint if there is one; otherwise
+          # the model surface is unchanged. Only durability failures are fatal.
           {:ok, committed_state}
-
-        {:error, _reason} ->
-          # A summary/validation failure leaves the model surface unchanged; the
-          # request proceeds and may still fit. Only durability failures are fatal.
-          {:ok, state}
       end
     else
       _skip -> {:ok, state}
+    end
+  end
+
+  # Keep Compaction.compact/3's public result shape; only Loop normalizes
+  # failures to include the state that must survive the turn.
+  defp compact_with_state(state, trigger, callbacks) do
+    case Compaction.compact(state, trigger, compaction_opts(state, callbacks)) do
+      {status, reason} when status in [:error, :cancelled] -> {status, reason, state}
+      result -> result
     end
   end
 
