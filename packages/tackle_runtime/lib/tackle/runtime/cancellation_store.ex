@@ -2,10 +2,10 @@ defmodule Tackle.Runtime.CancellationStore do
   @moduledoc """
   Long-lived cancellation store owned by the Tackle harness.
 
-  `Tackle.Lib`'s default ETS store creates its table lazily in whichever process
-  first needs it, so the table disappears when that process exits. The harness
-  owns this table for the lifetime of the application instead, keeping
-  cancellation state visible across sessions, turn tasks, adapters, and tools.
+  The runtime owns this table for the lifetime of its supervised store process,
+  keeping cancellation state visible across sessions, turn tasks, adapters, and
+  tools. Standalone `Tackle.Lib` users have a separate application-owned default
+  ETS store.
 
   It implements `Tackle.Lib.Cancellation.Store` and is selected through
   `config :tackle_lib, cancellation_store: Tackle.Runtime.CancellationStore`.

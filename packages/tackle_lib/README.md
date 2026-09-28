@@ -763,7 +763,14 @@ config :tackle_lib, cancellation_store: MyApp.CancellationStore
 ```
 
 It defaults to an ETS-backed implementation that supports cross-process access
-on one BEAM node.
+on one BEAM node. A supervised process in the `:tackle_lib` application owns the
+table, so cancellation records survive the exit of tasks that read or write them.
+Ensure the application is started before using the default store (Mix normally
+starts dependency applications; standalone scripts can use
+`Application.ensure_all_started(:tackle_lib)`). Operations raise `ArgumentError`
+if the table is unavailable; they never create a replacement in the caller.
+Records are not durable across store owner or application restarts. Custom stores
+remain host-owned: the host is responsible for starting and supervising them.
 
 ## Prompts and structured non-tool responses
 
