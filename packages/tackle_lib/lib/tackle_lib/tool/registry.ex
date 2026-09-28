@@ -22,24 +22,34 @@ defmodule Tackle.Lib.Tool.Registry do
 
   defstruct entries: %{}
 
-  @doc "Builds a registry from a list of `Tackle.Lib.Tool` modules."
+  @doc """
+  Builds a registry from a list of `Tackle.Lib.Tool` modules.
+
+  Raises `ArgumentError` for a module missing required tool callbacks, an invalid
+  tool name, or a duplicate name (including a module listed twice).
+  """
   @spec new([module()]) :: t()
   def new(tools) when is_list(tools) do
     entries =
-      tools
-      |> Enum.filter(&valid_tool_module?/1)
-      |> Map.new(fn tool_module ->
+      Enum.reduce(tools, %{}, fn tool_module, entries ->
+        validate_tool_module!(tool_module)
         definition = Tool.definition(tool_module)
-        id = definition.definition_id
         name = definition.name
 
-        {name,
-         %{
-           id: id,
-           name: name,
-           module: tool_module,
-           definition: definition
-         }}
+        unless is_binary(name) and name != "" do
+          raise ArgumentError, "invalid tool name for #{inspect(tool_module)}: #{inspect(name)}"
+        end
+
+        if Map.has_key?(entries, name) do
+          raise ArgumentError, "duplicate tool name: #{inspect(name)}"
+        end
+
+        Map.put(entries, name, %{
+          id: definition.definition_id,
+          name: name,
+          module: tool_module,
+          definition: definition
+        })
       end)
 
     %__MODULE__{entries: entries}
@@ -76,11 +86,23 @@ defmodule Tackle.Lib.Tool.Registry do
   @spec get(t(), String.t()) :: entry() | nil
   def get(%__MODULE__{entries: entries}, name), do: Map.get(entries, name)
 
-  defp valid_tool_module?(tool_module) do
-    Code.ensure_loaded?(tool_module) &&
-      function_exported?(tool_module, :name, 0) &&
-      function_exported?(tool_module, :description, 0) &&
-      function_exported?(tool_module, :parameters_schema, 0) &&
-      function_exported?(tool_module, :execute, 2)
+  defp validate_tool_module!(tool_module) do
+    required = [name: 0, description: 0, parameters_schema: 0, execute: 2]
+
+    missing =
+      if is_atom(tool_module) and Code.ensure_loaded?(tool_module) do
+        Enum.reject(required, fn {name, arity} ->
+          function_exported?(tool_module, name, arity)
+        end)
+      else
+        required
+      end
+
+    if missing != [] do
+      callbacks = Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
+
+      raise ArgumentError,
+            "#{inspect(tool_module)} is not a valid Tackle.Lib.Tool; missing callbacks: #{callbacks}"
+    end
   end
 end
