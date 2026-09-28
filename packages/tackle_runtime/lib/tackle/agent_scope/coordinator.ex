@@ -167,6 +167,12 @@ defmodule Tackle.AgentScope.Coordinator do
 
   def handle_call({:register_agent, %AgentRef{} = agent_ref, pid}, _from, state) do
     case Map.fetch(state.agents, agent_ref.agent_id) do
+      {:ok, %{ref: ^agent_ref, cancelled: true}} ->
+        {:reply, {:error, :cancelled}, state}
+
+      {:ok, %{ref: ^agent_ref}} when not is_nil(state.cancelled) ->
+        {:reply, {:error, :cancelled}, state}
+
       {:ok, %{ref: ^agent_ref} = entry} ->
         monitor = Process.monitor(pid)
         entry = %{entry | pid: pid, monitor: monitor, status: :live}
@@ -191,6 +197,9 @@ defmodule Tackle.AgentScope.Coordinator do
   def handle_call({:acquire_turn, %AgentRef{} = agent_ref}, _from, state) do
     cond do
       state.cancelled ->
+        {:reply, {:error, :cancelled}, state}
+
+      cancelled_agent?(state, agent_ref) ->
         {:reply, {:error, :cancelled}, state}
 
       not live_agent?(state, agent_ref) ->
@@ -250,6 +259,7 @@ defmodule Tackle.AgentScope.Coordinator do
   defp admit(state, parent_ref, spec, opts) do
     with :ok <- ensure_active(state),
          {:ok, parent} <- fetch_parent(state, parent_ref),
+         :ok <- ensure_not_cancelled(parent),
          :ok <- ensure_spawn_allowed(parent),
          :ok <- ensure_depth(state, parent),
          :ok <- ensure_child_capacity(state, parent),
@@ -300,6 +310,9 @@ defmodule Tackle.AgentScope.Coordinator do
 
   defp fetch_parent(_state, _ref), do: {:error, :invalid_parent}
 
+  defp ensure_not_cancelled(%{cancelled: true}), do: {:error, :cancelled}
+  defp ensure_not_cancelled(%{cancelled: false}), do: :ok
+
   defp ensure_spawn_allowed(%{allow_delegation: true}), do: :ok
   defp ensure_spawn_allowed(%{allow_delegation: false}), do: {:error, :delegation_not_allowed}
 
@@ -323,8 +336,12 @@ defmodule Tackle.AgentScope.Coordinator do
     end
   end
 
-  defp live_agent?(state, %AgentRef{agent_id: agent_id}) do
-    match?({:ok, %{status: :live}}, Map.fetch(state.agents, agent_id))
+  defp cancelled_agent?(state, %AgentRef{agent_id: agent_id} = ref) do
+    match?({:ok, %{ref: ^ref, cancelled: true}}, Map.fetch(state.agents, agent_id))
+  end
+
+  defp live_agent?(state, %AgentRef{agent_id: agent_id} = ref) do
+    match?({:ok, %{ref: ^ref, status: :live}}, Map.fetch(state.agents, agent_id))
   end
 
   defp put_agent(state, entry) do
