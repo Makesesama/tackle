@@ -257,46 +257,61 @@ defmodule Tackle.Runtime do
          {:ok, spec} <- resolve_spec(coordinator, spec_or_profile),
          {:ok, parent_pid} <- Registry.whereis(parent_ref),
          {:ok, spec} <- AgentBackend.prepare_child(backend, spec, parent_pid),
-         {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref),
-         {:ok, admission} <-
-           Coordinator.admit_agent(coordinator, parent_ref, spec, lifetime: :ephemeral) do
-      run_ref =
-        RunRef.new!(
-          scope_ref.scope_id,
-          ID.generate(),
-          admission.agent_ref,
-          AgentBackend.model_ref(backend, spec)
-        )
+         {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref) do
+      requester = request_owner(opts, parent_ref)
 
-      arg = %{
-        scope_ref: scope_ref,
-        agent_ref: admission.agent_ref,
-        run_ref: run_ref,
-        requester: request_owner(opts, parent_ref),
-        backend: backend,
-        agent_spec: spec,
-        prompt: prompt,
-        work_supervisor: work_supervisor,
-        coordinator: coordinator,
-        allow_delegation: admission.allow_delegation,
-        limits: admission.limits,
-        parent: %{agent_ref: parent_ref},
-        timeout: Keyword.get(opts, :timeout, AgentSpec.timeout(spec, admission.limits)),
+      run_ref =
+        RunRef.new!(scope_ref.scope_id, ID.generate(), nil, AgentBackend.model_ref(backend, spec))
+
+      request_opts = %{
+        timeout: Keyword.fetch(opts, :timeout),
         event_callback: Keyword.get(opts, :event_callback),
         completion_message: Keyword.get(opts, :completion_message),
         launch_message: Keyword.get(opts, :launch_message),
         origin: Keyword.get(opts, :origin),
-        profile: spec.name,
         retention: Keyword.get(opts, :retention, :linger)
       }
 
-      case DynamicSupervisor.start_child(work_supervisor, Request.child_spec(arg)) do
-        {:ok, _pid} ->
-          {:ok, run_ref}
+      with {:ok, admission} <-
+             Coordinator.admit_agent(coordinator, parent_ref, spec, lifetime: :ephemeral) do
+        run_ref = %{run_ref | agent_ref: admission.agent_ref}
 
-        {:error, reason} ->
-          Coordinator.release_agent(coordinator, admission.agent_ref)
-          {:error, {:request_start_failed, reason}}
+        timeout =
+          case request_opts.timeout do
+            {:ok, value} -> value
+            :error -> AgentSpec.timeout(spec, admission.limits)
+          end
+
+        arg = %{
+          scope_ref: scope_ref,
+          agent_ref: admission.agent_ref,
+          run_ref: run_ref,
+          requester: requester,
+          backend: backend,
+          agent_spec: spec,
+          prompt: prompt,
+          work_supervisor: work_supervisor,
+          coordinator: coordinator,
+          allow_delegation: admission.allow_delegation,
+          limits: admission.limits,
+          parent: %{agent_ref: parent_ref},
+          timeout: timeout,
+          event_callback: request_opts.event_callback,
+          completion_message: request_opts.completion_message,
+          launch_message: request_opts.launch_message,
+          origin: request_opts.origin,
+          profile: spec.name,
+          retention: request_opts.retention
+        }
+
+        case DynamicSupervisor.start_child(work_supervisor, Request.child_spec(arg)) do
+          {:ok, _pid} ->
+            {:ok, run_ref}
+
+          {:error, reason} ->
+            Coordinator.release_agent(coordinator, admission.agent_ref)
+            {:error, {:request_start_failed, reason}}
+        end
       end
     end
   end
