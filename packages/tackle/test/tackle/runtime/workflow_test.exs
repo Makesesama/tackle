@@ -85,13 +85,31 @@ defmodule Tackle.Test.SucceedWorkflow do
   end
 end
 
+defmodule Tackle.Test.PartialLaunchWorkflow do
+  @moduledoc false
+  use Tackle.Runtime.Workflow
+
+  @impl true
+  def init(_input), do: {:ok, :running, [{"worker", "go"}, {"missing", "go"}]}
+
+  @impl true
+  def handle_result(_run_ref, _outcome, state), do: {:stop, :done, state}
+end
+
 defmodule Tackle.Runtime.WorkflowTest do
   use ExUnit.Case, async: false
 
   import Tackle.Test.Runtime
 
   alias Tackle.Runtime
-  alias Tackle.Test.{FailingWorkflow, ParallelWorkflow, SequentialWorkflow, SucceedWorkflow}
+
+  alias Tackle.Test.{
+    FailingWorkflow,
+    ParallelWorkflow,
+    PartialLaunchWorkflow,
+    SequentialWorkflow,
+    SucceedWorkflow
+  }
 
   test "sequential workflows feed each outcome into the next request" do
     scope =
@@ -193,6 +211,24 @@ defmodule Tackle.Runtime.WorkflowTest do
 
     assert {:error, {:request_failed, {:unknown_profile, "worker"}}} =
              Runtime.await_workflow(workflow_ref, 5_000)
+  end
+
+  test "a later launch failure cancels already launched requests and awaiters" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{"worker" => agent_spec("worker", mode: :block)}
+      )
+
+    {:ok, workflow_ref} = Runtime.start_workflow(handle(scope), PartialLaunchWorkflow, "topic")
+
+    assert {:error, {:request_failed, {:unknown_profile, "missing"}}} =
+             Runtime.await_workflow(workflow_ref, 5_000)
+
+    assert_eventually(fn ->
+      {:ok, snapshot} = Runtime.scope_snapshot(scope.scope_ref)
+      snapshot.agent_count == 1 and running_child_sessions(scope) == []
+    end)
   end
 
   defp running_child_sessions(scope) do
