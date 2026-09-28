@@ -19,8 +19,10 @@ defmodule Tackle.Lib.Cancellation do
   ## Storage
 
   Cancellation storage is configurable. Tackle.Lib defaults to
-  `Tackle.Lib.Cancellation.Store.Ets` to preserve historical cross-process behavior,
-  but hosts can provide any module implementing `Tackle.Lib.Cancellation.Store`:
+  `Tackle.Lib.Cancellation.Store.Ets`, owned by a supervised process in the
+  `:tackle_lib` application. Start the application before using the default store.
+  Records survive caller exits, but not store owner or application restarts.
+  Hosts can provide any module implementing `Tackle.Lib.Cancellation.Store`:
 
       config :tackle_lib, cancellation_store: MyApp.TackleCancellationStore
 
