@@ -1150,24 +1150,6 @@ Tackle.Lib does **not** provide:
 `Tackle.Phoenix.Chat` is currently a documented scaffold, not a working LiveView
 mixin. Use `Tackle.Phoenix.EventReducer` directly as shown in the Phoenix README.
 
-## Porting checklist
-
-- [ ] Copy/extract `packages/tackle_lib` and optionally `packages/tackle_runtime` and `packages/tackle_phoenix`.
-- [ ] Configure a `Tackle.Lib.LLM` adapter.
-- [ ] Verify the adapter preserves structured messages and tool-call IDs.
-- [ ] Define tools with narrow, tenant-aware context.
-- [ ] Build explicit tool lists per role/surface.
-- [ ] Compose a domain system prompt.
-- [ ] Decide whether state is ephemeral or durable.
-- [ ] For durable state, define message ordering and idempotent writes.
-- [ ] Gate quotas/permissions before starting provider work.
-- [ ] Implement usage pricing/billing in the host.
-- [ ] Observe cancellation in adapters and long-running tools.
-- [ ] Subscribe to events for UI/transport; keep callbacks fast.
-- [ ] Attach bounded telemetry without prompts or tool payloads.
-- [ ] Add fake-adapter tests for success, tool calls, errors, retry, and cancel.
-- [ ] If using Phoenix, follow [`../tackle_phoenix/README.md`](../tackle_phoenix/README.md).
-
 ## Source guide
 
 Start with these files:
