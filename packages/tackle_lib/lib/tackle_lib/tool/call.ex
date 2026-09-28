@@ -17,4 +17,63 @@ defmodule Tackle.Lib.Tool.Call do
         }
 
   defstruct [:id, :name, arguments: %{}, definition_id: nil, raw: nil]
+
+  alias Tackle.Lib.JSON
+
+  @doc """
+  Normalizes a provider tool call with string or atom keys.
+
+  Accepts top-level or nested `function` name and arguments. Arguments may be
+  a map or a JSON object string; missing arguments default to an empty map.
+  Invalid call shapes return `:malformed_tool_call`, and invalid or non-object
+  arguments return `:invalid_tool_arguments`. Invalid JSON is never replaced
+  with empty arguments, since doing so could execute a tool with defaults.
+  """
+  @spec normalize(term()) :: {:ok, t()} | {:error, :malformed_tool_call | :invalid_tool_arguments}
+  def normalize(%{} = call) do
+    function = fetch(call, "function", :function, %{})
+
+    if is_map(function) do
+      name = fetch(call, "name", :name) || fetch(function, "name", :name)
+
+      if is_binary(name) and name != "" do
+        arguments =
+          fetch(call, "arguments", :arguments) ||
+            fetch(function, "arguments", :arguments, %{})
+
+        with {:ok, arguments} <- normalize_arguments(arguments) do
+          {:ok,
+           %__MODULE__{
+             id: fetch(call, "id", :id),
+             name: name,
+             arguments: arguments,
+             definition_id: fetch(call, "definition_id", :definition_id),
+             raw: call
+           }}
+        end
+      else
+        {:error, :malformed_tool_call}
+      end
+    else
+      {:error, :malformed_tool_call}
+    end
+  end
+
+  def normalize(_call), do: {:error, :malformed_tool_call}
+
+  defp fetch(map, string_key, atom_key, default \\ nil) do
+    Map.get(map, string_key) || Map.get(map, atom_key, default)
+  end
+
+  defp normalize_arguments(nil), do: {:ok, %{}}
+  defp normalize_arguments(arguments) when is_map(arguments), do: {:ok, arguments}
+
+  defp normalize_arguments(arguments) when is_binary(arguments) do
+    case JSON.decode(arguments) do
+      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+      _ -> {:error, :invalid_tool_arguments}
+    end
+  end
+
+  defp normalize_arguments(_arguments), do: {:error, :invalid_tool_arguments}
 end

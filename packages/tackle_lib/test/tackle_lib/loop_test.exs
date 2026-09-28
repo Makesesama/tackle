@@ -7,6 +7,7 @@ defmodule Tackle.Lib.LoopTest do
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Usage
 
@@ -578,6 +579,35 @@ defmodule Tackle.Lib.LoopTest do
     assert last.thinking == "reasoned"
   end
 
+  defmodule JsonArgumentsAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      case Process.get(:call_count, 0) do
+        0 ->
+          Process.put(:call_count, 1)
+
+          {:ok,
+           %{
+             data: %{
+               "tool_calls" => [
+                 %{
+                   "id" => "c1",
+                   "function" => %{"name" => "first", "arguments" => ~s({"query":"hi"})}
+                 }
+               ]
+             },
+             usage: nil,
+             model: "test/model"
+           }}
+
+        _ ->
+          {:ok, %{data: %{"content" => "done"}, usage: nil, model: "test/model"}}
+      end
+    end
+  end
+
   defmodule MalformedToolAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -595,12 +625,88 @@ defmodule Tackle.Lib.LoopTest do
   test "rejects malformed provider tool calls without crashing the loop" do
     Application.put_env(:tackle_lib, :llm, MalformedToolAdapter)
 
-    for calls <- [[nil], [%{"function" => "not a map"}]] do
+    for calls <- [
+          [nil],
+          [%{"function" => "not a map"}],
+          [%{"name" => "first", "arguments" => "{"}],
+          [%{"name" => "first", "arguments" => "[]"}],
+          [%{"name" => "first", "arguments" => [1]}]
+        ] do
       Process.put(:bad_tool_calls, calls)
-      assert {:error, state} = Loop.run(State.new(model: "test/model"), "hello")
+
+      assert {:error, state} =
+               Loop.run(
+                 State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()}),
+                 "hello"
+               )
+
       assert state.status == :error
       assert state.error =~ "Invalid provider tool calls"
+      refute_receive {:tool_execute, :first}
     end
+  end
+
+  test "executes a nested call with decoded JSON arguments" do
+    Application.put_env(:tackle_lib, :llm, JsonArgumentsAdapter)
+    Process.put(:call_count, 0)
+
+    state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+
+    assert {:ok, state} = Loop.run(state, "hello")
+    assert_receive {:tool_execute, :first}
+    assert state.status == :completed
+
+    assert Enum.any?(state.messages, fn
+             %{tool_calls: [%Call{arguments: %{"query" => "hi"}}]} -> true
+             _ -> false
+           end)
+  end
+
+  test "rejects an entire batch if a later call has invalid JSON" do
+    Application.put_env(:tackle_lib, :llm, MalformedToolAdapter)
+
+    Process.put(:bad_tool_calls, [
+      %{"name" => "first", "arguments" => %{}},
+      %{"name" => "first", "arguments" => "{"}
+    ])
+
+    assert {:error, state} =
+             Loop.run(
+               State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()}),
+               "hello"
+             )
+
+    assert state.error =~ "invalid_tool_arguments"
+    refute_receive {:tool_execute, :first}
+  end
+
+  test "normalizes provider calls with nested function, atom keys and JSON arguments" do
+    raw = %{
+      id: "call-1",
+      function: %{"name" => "first", "arguments" => ~s({"query":"hi"})},
+      definition_id: "version-1"
+    }
+
+    assert {:ok,
+            %Call{
+              id: "call-1",
+              name: "first",
+              arguments: %{"query" => "hi"},
+              definition_id: "version-1",
+              raw: ^raw
+            }} = Call.normalize(raw)
+
+    assert {:ok, %Call{arguments: %{}}} = Call.normalize(%{"name" => "first"})
+    assert {:error, :malformed_tool_call} = Call.normalize(%{"arguments" => %{}})
+
+    assert {:error, :invalid_tool_arguments} =
+             Call.normalize(%{"name" => "first", "arguments" => "{"})
+
+    assert {:error, :invalid_tool_arguments} =
+             Call.normalize(%{"name" => "first", "arguments" => "[]"})
+
+    assert {:ok, %Call{arguments: %{"query" => "hi"}}} =
+             Call.normalize(%{"name" => "first", "arguments" => %{"query" => "hi"}})
   end
 
   test "native protocol: native tool_calls drive tool execution then plain-content answer" do
