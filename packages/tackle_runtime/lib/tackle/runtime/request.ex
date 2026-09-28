@@ -24,6 +24,7 @@ defmodule Tackle.Runtime.Request do
 
   require Logger
 
+  alias Tackle.AgentScope.Coordinator
   alias Tackle.Lib.Event
   alias Tackle.Runtime.AgentBackend
   alias Tackle.Runtime.AgentContext
@@ -207,14 +208,14 @@ defmodule Tackle.Runtime.Request do
          {:ok, state} <- submit_prompt(state) do
       {:noreply, arm_deadline(state, state.timeout)}
     else
-      {:error, reason} ->
+      {:error, reason, state} ->
         outcome =
           Outcome.new(:runtime_error,
             reason: {:setup_failed, reason},
             agent_ref: state.agent_ref
           )
 
-        {:noreply, settle(state, outcome)}
+        {:noreply, state |> rollback_setup() |> settle(outcome)}
     end
   end
 
@@ -425,7 +426,7 @@ defmodule Tackle.Runtime.Request do
         await_registered_agent(state, supervisor, 20)
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, reason, state}
     end
   end
 
@@ -441,7 +442,8 @@ defmodule Tackle.Runtime.Request do
     end
   end
 
-  defp await_registered_agent(_state, _supervisor, 0), do: {:error, :agent_not_registered}
+  defp await_registered_agent(state, supervisor, 0),
+    do: {:error, :agent_not_registered, %{state | child: supervisor}}
 
   defp event_callback(%{event_callback: callback}) when is_function(callback, 1), do: callback
   defp event_callback(_state), do: nil
@@ -451,8 +453,8 @@ defmodule Tackle.Runtime.Request do
     case backend_call(state.backend, pid, :subscribe, []) do
       {:ok, _snapshot} -> {:ok, state}
       :ok -> {:ok, state}
-      {:error, reason} -> {:error, {:event_subscription_failed, reason}}
-      other -> {:error, {:event_subscription_failed, {:invalid_result, other}}}
+      {:error, reason} -> {:error, {:event_subscription_failed, reason}, state}
+      other -> {:error, {:event_subscription_failed, {:invalid_result, other}}, state}
     end
   end
 
@@ -471,8 +473,8 @@ defmodule Tackle.Runtime.Request do
   defp submit_prompt(%{session_pid: pid, prompt: prompt} = state) do
     case backend_call(state.backend, pid, :submit, [prompt]) do
       {:ok, _turn_id} -> {:ok, state}
-      {:error, reason} -> {:error, reason}
-      other -> {:error, {:invalid_submit_result, other}}
+      {:error, reason} -> {:error, reason, state}
+      other -> {:error, {:invalid_submit_result, other}, state}
     end
   end
 
@@ -600,10 +602,20 @@ defmodule Tackle.Runtime.Request do
     %{state | cancelled: true}
   end
 
-  defp stop_child(%{session_pid: nil}), do: :ok
+  defp rollback_setup(state) do
+    stop_child(state)
 
-  defp stop_child(%{backend: backend, session_pid: pid} = state) do
-    safe_session_cancel(backend, pid, :request_terminated)
+    if state.coordinator do
+      Coordinator.release_agent(state.coordinator, state.agent_ref)
+    end
+
+    if state.session_monitor, do: Process.demonitor(state.session_monitor, [:flush])
+
+    %{state | child: nil, session_pid: nil, session_monitor: nil}
+  end
+
+  defp stop_child(state) do
+    safe_session_cancel(state.backend, state.session_pid, :request_terminated)
 
     if is_pid(state.child) and Process.alive?(state.child) do
       DynamicSupervisor.terminate_child(state.work_supervisor, state.child)

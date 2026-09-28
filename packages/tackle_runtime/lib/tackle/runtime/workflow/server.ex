@@ -187,7 +187,7 @@ defmodule Tackle.Runtime.Workflow.Server do
   defp start_requests(state, requests) do
     case launch_all(state, requests) do
       {:ok, state} -> arm_deadline(state)
-      {:error, reason} -> settle(state, {:error, {:request_failed, reason}})
+      {:error, reason, state} -> settle(state, {:error, {:request_failed, reason}})
     end
   end
 
@@ -195,7 +195,7 @@ defmodule Tackle.Runtime.Workflow.Server do
     Enum.reduce_while(requests, {:ok, state}, fn request, {:ok, acc} ->
       case launch(acc, request) do
         {:ok, acc} -> {:cont, {:ok, acc}}
-        {:error, reason} -> {:halt, {:error, reason}}
+        {:error, reason, acc} -> {:halt, {:error, reason, acc}}
       end
     end)
   end
@@ -205,7 +205,7 @@ defmodule Tackle.Runtime.Workflow.Server do
 
     case Runtime.request_agent(state.handle, profile, prompt, opts) do
       {:ok, run_ref} -> start_awaiter(state, run_ref)
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> {:error, reason, state}
     end
   end
 
@@ -227,7 +227,8 @@ defmodule Tackle.Runtime.Workflow.Server do
         {:ok, %{state | requests: Map.put(state.requests, run_ref.run_id, entry)}}
 
       {:error, reason} ->
-        {:error, reason}
+        Runtime.cancel(run_ref, :awaiter_start_failed)
+        {:error, reason, state}
     end
   end
 
