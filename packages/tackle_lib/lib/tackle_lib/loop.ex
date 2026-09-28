@@ -48,6 +48,7 @@ defmodule Tackle.Lib.Loop do
   alias Tackle.Lib.SystemPrompt
   alias Tackle.Lib.Telemetry
   alias Tackle.Lib.Tool
+  alias Tackle.Lib.Tool.Batch
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Error, as: ToolError
   alias Tackle.Lib.Tool.Policy
@@ -821,7 +822,15 @@ defmodule Tackle.Lib.Loop do
   defp run_concurrent_batch(tool_calls, state, callbacks, supervisor) do
     case prepare_tool_batch(tool_calls, state, callbacks) do
       {:ok, jobs, state} ->
-        {settlements, outcome} = run_tool_batch(jobs, supervisor, callbacks)
+        {settlements, outcome} =
+          Batch.run(
+            jobs,
+            supervisor,
+            &settle_tool_call/1,
+            &emit_tool_execution_end(&1, callbacks),
+            fn -> cancelled?(callbacks) end
+          )
+
         state = commit_tool_batch(jobs, settlements, state, callbacks)
 
         case {state.status, outcome} do
@@ -893,9 +902,6 @@ defmodule Tackle.Lib.Loop do
 
   # ── Concurrent batch ──────────────────────────────────────────────────
 
-  @tool_poll_ms 100
-  @tool_shutdown_ms 1_000
-
   # Runs every `before_tool_call` hook up front, emits each `tool_start`, and
   # captures one execution job per call. Hooks are gates, so an abort anywhere in
   # the batch stops the whole batch before any tool runs.
@@ -928,84 +934,6 @@ defmodule Tackle.Lib.Loop do
       {:ok, jobs, state} -> {:ok, Enum.reverse(jobs), state}
       {:abort, state} -> {:abort, state}
     end
-  end
-
-  defp run_tool_batch(jobs, supervisor, callbacks) do
-    jobs
-    |> Enum.map(&start_tool_task(&1, supervisor, callbacks))
-    |> await_tool_batch(%{}, callbacks)
-  end
-
-  defp start_tool_task(%{index: index, call: call} = job, supervisor, _callbacks) do
-    task =
-      Task.Supervisor.async_nolink(supervisor, fn ->
-        :proc_lib.set_label("tool:#{call.name}")
-        settle_tool_call(job)
-      end)
-
-    {index, call, task}
-  end
-
-  defp await_tool_batch([], settlements, _callbacks), do: {settlements, :ok}
-
-  defp await_tool_batch(pending, settlements, callbacks) do
-    {settlements, pending} = drain_tool_tasks(pending, settlements, callbacks)
-
-    cond do
-      pending == [] -> {settlements, :ok}
-      cancelled?(callbacks) -> {shutdown_tool_tasks(pending, settlements, callbacks), :cancelled}
-      true -> await_tool_batch(pending, settlements, callbacks)
-    end
-  end
-
-  defp drain_tool_tasks(pending, settlements, callbacks) do
-    by_ref = Map.new(pending, fn {index, call, task} -> {task.ref, {index, call}} end)
-
-    settled =
-      pending
-      |> Enum.map(fn {_index, _call, task} -> task end)
-      |> Task.yield_many(@tool_poll_ms)
-
-    {settlements, done_refs} =
-      Enum.reduce(settled, {settlements, MapSet.new()}, fn {task, result}, {acc, done} ->
-        case result do
-          nil ->
-            {acc, done}
-
-          {:ok, settlement} ->
-            {index, _call} = Map.fetch!(by_ref, task.ref)
-            emit_tool_execution_end(settlement, callbacks)
-            {Map.put(acc, index, settlement), MapSet.put(done, task.ref)}
-
-          {:exit, reason} ->
-            {index, call} = Map.fetch!(by_ref, task.ref)
-            Logger.error("Tool task for #{call.name} exited: #{inspect(reason)}")
-
-            settlement = crashed_tool_settlement(call, reason)
-            emit_tool_execution_end(settlement, callbacks)
-            {Map.put(acc, index, settlement), MapSet.put(done, task.ref)}
-        end
-      end)
-
-    pending =
-      Enum.reject(pending, fn {_index, _call, task} ->
-        MapSet.member?(done_refs, task.ref)
-      end)
-
-    {settlements, pending}
-  end
-
-  defp shutdown_tool_tasks(pending, settlements, callbacks) do
-    Enum.reduce(pending, settlements, fn {index, _call, task}, acc ->
-      case Task.shutdown(task, @tool_shutdown_ms) do
-        {:ok, settlement} ->
-          emit_tool_execution_end(settlement, callbacks)
-          Map.put(acc, index, settlement)
-
-        _other ->
-          acc
-      end
-    end)
   end
 
   # Execution progress is transient and may arrive out of call order. Keep it
@@ -1053,19 +981,6 @@ defmodule Tackle.Lib.Loop do
       {:ok, acc_state} -> {:cont, acc_state}
       {:abort, acc_state} -> {:halt, acc_state}
     end
-  end
-
-  defp crashed_tool_settlement(%Call{} = call, reason) do
-    {:error,
-     %ToolError{
-       tool_call_id: call.id,
-       name: call.name,
-       reason: :execution_error,
-       message: "Tool crashed: #{inspect(reason)}",
-       content: "Error: The tool failed while completing the request.",
-       details: reason,
-       metadata: %{definition_id: call.definition_id}
-     }}
   end
 
   # The loop owns transcript state; tool tasks receive only the resolved call,
