@@ -423,27 +423,20 @@ defmodule Tackle.Runtime.Request do
 
     case DynamicSupervisor.start_child(state.work_supervisor, child_spec) do
       {:ok, supervisor} ->
-        await_registered_agent(state, supervisor, 20)
+        # start_child returns after the backend's init, which must register the agent.
+        case Registry.whereis(state.agent_ref) do
+          {:ok, pid} ->
+            {:ok,
+             %{state | session_pid: pid, session_monitor: Process.monitor(pid), child: supervisor}}
+
+          {:error, :not_found} ->
+            {:error, :agent_not_registered, %{state | child: supervisor}}
+        end
 
       {:error, reason} ->
         {:error, reason, state}
     end
   end
-
-  defp await_registered_agent(state, supervisor, attempts) when attempts > 0 do
-    case Registry.whereis(state.agent_ref) do
-      {:ok, pid} ->
-        {:ok,
-         %{state | session_pid: pid, session_monitor: Process.monitor(pid), child: supervisor}}
-
-      {:error, :not_found} ->
-        Process.sleep(1)
-        await_registered_agent(state, supervisor, attempts - 1)
-    end
-  end
-
-  defp await_registered_agent(state, supervisor, 0),
-    do: {:error, :agent_not_registered, %{state | child: supervisor}}
 
   defp event_callback(%{event_callback: callback}) when is_function(callback, 1), do: callback
   defp event_callback(_state), do: nil
