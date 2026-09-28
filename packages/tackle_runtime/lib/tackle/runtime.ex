@@ -459,13 +459,7 @@ defmodule Tackle.Runtime do
   defp with_agent(%AgentRef{} = agent_ref, operation, args) do
     with {:ok, pid} <- Registry.whereis(agent_ref),
          {:ok, backend} <- backend(agent_ref) do
-      try do
-        backend.call(pid, operation, args)
-      rescue
-        exception -> {:error, {:agent_backend_failed, Exception.message(exception)}}
-      catch
-        :exit, reason -> {:error, {:agent_unavailable, reason}}
-      end
+      AgentBackend.call(backend, pid, operation, args)
     end
   end
 

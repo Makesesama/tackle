@@ -9,6 +9,7 @@ defmodule Tackle.Runtime.Messaging do
   """
 
   alias Tackle.AgentScope.Coordinator
+  alias Tackle.Runtime.AgentBackend
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Envelope
   alias Tackle.Runtime.Registry
@@ -22,13 +23,7 @@ defmodule Tackle.Runtime.Messaging do
          :ok <- sender_available(envelope),
          {:ok, recipient} <- Registry.whereis(to),
          {:ok, backend} <- Registry.backend(to) do
-      try do
-        backend.call(recipient, :deliver, [envelope])
-      rescue
-        error -> {:error, {:agent_backend_failed, Exception.message(error)}}
-      catch
-        :exit, reason -> {:error, {:agent_unavailable, reason}}
-      end
+      AgentBackend.call(backend, recipient, :deliver, [envelope])
     end
   end
 

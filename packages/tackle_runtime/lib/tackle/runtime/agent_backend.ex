@@ -69,6 +69,21 @@ defmodule Tackle.Runtime.AgentBackend do
     kind, reason -> {:error, {:agent_backend_failed, {kind, reason}}}
   end
 
+  @doc """
+  Calls a host backend operation, returning backend results unchanged.
+
+  Raised exceptions become `{:error, {:agent_backend_failed, message}}` and
+  exits become `{:error, {:agent_unavailable, reason}}`.
+  """
+  @spec call(module(), pid(), operation(), [term()]) :: term() | {:error, term()}
+  def call(backend, pid, operation, args) do
+    backend.call(pid, operation, args)
+  rescue
+    exception -> {:error, {:agent_backend_failed, Exception.message(exception)}}
+  catch
+    :exit, reason -> {:error, {:agent_unavailable, reason}}
+  end
+
   @doc false
   def model_ref(backend, %AgentSpec{} = spec) do
     if function_exported?(backend, :model_ref, 1), do: backend.model_ref(spec)
