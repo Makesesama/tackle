@@ -249,6 +249,31 @@ defmodule Tackle.Lib.TreeTest do
       refute is_nil(state.tree)
     end
 
+    test "restored branches extend their projections without importing sibling messages" do
+      {tree, _} = append!(Tree.new(), msg("u1", :user, "old"))
+      {tree, _} = append!(tree, msg("a1", :assistant, "reply"))
+      {:ok, tree, _} = Tree.append_compaction(tree, compaction("c1", "summary", ["u1"], "a1"))
+      {tree, _} = append!(tree, msg("u2", :user, "next"))
+      {:ok, tree} = Tree.move(tree, "a1")
+      {tree, _} = append!(tree, msg("u3", :user, "other branch"))
+
+      {:ok, tree} = Tree.move(tree, "u2")
+      restored = State.new(tree: tree)
+      assert restored.messages == Tree.transcript(tree)
+      assert State.model_messages(restored) == Tree.model_context(tree)
+
+      extended = State.add_message(restored, msg("a2", :assistant, "answer"))
+      assert extended.messages == Tree.transcript(extended.tree)
+      assert State.model_messages(extended) == Tree.model_context(extended.tree)
+      refute Enum.any?(extended.messages, &(&1.id == "u3"))
+
+      assert {:ok, sibling, _outcome} = Tackle.Lib.navigate(extended, "u3")
+      sibling = State.add_message(sibling, msg("a3", :assistant, "alternate answer"))
+      assert sibling.messages == Tree.transcript(sibling.tree)
+      assert State.model_messages(sibling) == Tree.model_context(sibling.tree)
+      refute Enum.any?(State.model_messages(sibling), &(&1.id == "c1"))
+    end
+
     test "navigate commits before installing and keeps state on commit failure" do
       state =
         State.new(
@@ -274,7 +299,7 @@ defmodule Tackle.Lib.TreeTest do
 
       assert {:error, {:durable_commit_failed, :nope}} = Tackle.Lib.navigate(failing, nil)
       assert failing.tree.active_id == "u1"
-      assert failing.messages != []
+      assert [_ | _] = failing.messages
     end
 
     test "navigation is rejected when tree mode is disabled" do
@@ -360,6 +385,11 @@ defmodule Tackle.Lib.TreeTest do
       assert [summary | _tail] = Tree.model_context(compacted.tree)
       assert summary.id == id
       assert Tackle.Lib.messages(compacted) |> Enum.map(& &1.id) == ["u1", "a1"]
+
+      appended = State.add_message(compacted, msg("u2", :user, "next"))
+      assert appended.messages == Tree.transcript(appended.tree)
+      assert State.model_messages(appended) == Tree.model_context(appended.tree)
+      assert hd(State.model_messages(appended)).id == id
     end
   end
 

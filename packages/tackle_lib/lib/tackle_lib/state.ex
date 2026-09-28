@@ -105,7 +105,9 @@ defmodule Tackle.Lib.State do
     * `:compaction` - `Tackle.Lib.Compaction.Config`, options, `false`, or `nil`
       (default: `nil`, compaction disabled)
     * `:tree` - `true`, a `Tackle.Lib.Tree`, or `nil`/`false` (default: `nil`).
-      `true` enables an opt-in conversation tree with branching history.
+      `true` enables an opt-in conversation tree with branching history. When
+      given an existing tree, the active transcript and model context are
+      reconstructed from its selected path.
     * `:tree_committer` - module implementing `Tackle.Lib.Tree.Committer` used
       to persist navigation before it is installed (default: `nil`)
   """
@@ -117,9 +119,12 @@ defmodule Tackle.Lib.State do
     llm = validate_llm_selection!(Keyword.get(opts, :llm))
     model = if llm, do: llm.model, else: Keyword.get(opts, :model)
 
+    tree = normalize_tree(Keyword.get(opts, :tree))
+
     %__MODULE__{
       session_id: Keyword.get(opts, :session_id) || id_generator.(),
-      messages: [],
+      messages: if(tree, do: Tree.transcript(tree), else: []),
+      model_messages: if(tree, do: Tree.model_context(tree), else: nil),
       current_iteration: 0,
       max_iterations: Keyword.get(opts, :max_iterations, @default_max_iterations),
       status: :idle,
@@ -140,7 +145,7 @@ defmodule Tackle.Lib.State do
       pending_assistant_id: nil,
       retry: normalize_retry(Keyword.get(opts, :retry)),
       compaction: normalize_compaction(Keyword.get(opts, :compaction)),
-      tree: normalize_tree(Keyword.get(opts, :tree)),
+      tree: tree,
       tree_committer: Keyword.get(opts, :tree_committer)
     }
   end
@@ -199,8 +204,9 @@ defmodule Tackle.Lib.State do
   stays mirrored, and once compaction has replaced it the message is appended
   explicitly.
 
-  In tree mode the message is appended to the active position and the transcript
-  and model-context readers are re-derived from the tree.
+  In tree mode the message is appended to the active position and the existing
+  projections are extended. Navigation and restoration reconstruct projections
+  from the selected tree path.
   """
   @spec add_message(t(), Message.t()) :: t()
   def add_message(%__MODULE__{tree: %Tree{} = tree} = state, %Message{} = message) do
@@ -209,8 +215,8 @@ defmodule Tackle.Lib.State do
         %{
           state
           | tree: tree,
-            messages: Tree.transcript(tree),
-            model_messages: Tree.model_context(tree)
+            messages: state.messages ++ [message],
+            model_messages: model_messages(state) ++ [message]
         }
 
       {:error, reason} ->
@@ -221,13 +227,13 @@ defmodule Tackle.Lib.State do
   def add_message(%__MODULE__{} = state, %Message{} = message) do
     %{
       state
-      | messages: List.insert_at(state.messages, -1, message),
+      | messages: state.messages ++ [message],
         model_messages: append_model(state.model_messages, message)
     }
   end
 
   defp append_model(nil, _message), do: nil
-  defp append_model(model_messages, message), do: List.insert_at(model_messages, -1, message)
+  defp append_model(model_messages, message), do: model_messages ++ [message]
 
   @doc """
   Returns the provider-visible model message projection.
