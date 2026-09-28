@@ -22,6 +22,26 @@ defmodule Tackle.Lib.SnapshotTest do
     def execute(_args, _context), do: {:ok, %{ok: true}}
   end
 
+  defmodule ChangingDefinitionTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "changing_definition"
+
+    @impl true
+    def description do
+      version = Process.get(:snapshot_definition_calls, 0) + 1
+      Process.put(:snapshot_definition_calls, version)
+      "Version #{version}"
+    end
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, _context), do: {:ok, %{}}
+  end
+
   describe "capture/1" do
     test "captures a snapshot from agent state" do
       state =
@@ -50,6 +70,32 @@ defmodule Tackle.Lib.SnapshotTest do
       assert %Registry{} = snapshot.tool_registry
       [def] = Registry.definitions(snapshot.tool_registry)
       assert def.name == "snapshot_test"
+    end
+
+    test "versions the captured registry rather than the state's tool list" do
+      registry = Registry.new([SnapshotTestTool])
+      state = %{State.new() | tools: [], tool_registry: registry}
+
+      snapshot = Snapshot.capture(state)
+
+      assert snapshot.tool_registry == registry
+      assert snapshot.tools_version_id == Snapshot.tools_version_id(registry)
+      refute snapshot.tools_version_id == Snapshot.tools_version_id([])
+    end
+
+    test "does not re-evaluate live tool definitions when capturing" do
+      Process.put(:snapshot_definition_calls, 0)
+      state = State.new(tools: [ChangingDefinitionTool])
+      assert Process.get(:snapshot_definition_calls) == 1
+
+      snapshot = Snapshot.capture(state)
+
+      assert Process.get(:snapshot_definition_calls) == 1
+      assert snapshot.tools_version_id == Snapshot.tools_version_id(snapshot.tool_registry)
+      assert [definition] = Registry.definitions(snapshot.tool_registry)
+      assert definition.description == "Version 1"
+    after
+      Process.delete(:snapshot_definition_calls)
     end
 
     test "uses the configured id generator when no turn id is supplied" do

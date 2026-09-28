@@ -85,6 +85,7 @@ defmodule Tackle.Lib.Snapshot do
     prompt_renderer = Map.get(state, :prompt_renderer)
     prompt_renderer_opts = Map.get(state, :prompt_renderer_opts, [])
     tools = Map.get(state, :tools, [])
+    tool_registry = Map.get(state, :tool_registry)
 
     %__MODULE__{
       turn_id: turn_id,
@@ -92,9 +93,9 @@ defmodule Tackle.Lib.Snapshot do
       system_prompt_version_id: system_prompt_version_id(system_prompt),
       prompt_renderer: prompt_renderer,
       prompt_renderer_opts: prompt_renderer_opts,
-      tools_version_id: tools_version_id(tools),
+      tools_version_id: tools_version_id(tool_registry),
       tools: tools,
-      tool_registry: Map.get(state, :tool_registry),
+      tool_registry: tool_registry,
       hooks: hooks,
       llm: llm,
       llm_adapter: llm_adapter,
@@ -122,19 +123,28 @@ defmodule Tackle.Lib.Snapshot do
   end
 
   @doc """
-  Computes a stable version ID for a list of tool modules.
+  Computes a stable version ID for a tool registry or a list of tool modules.
 
-  Hashes the aggregated provider-neutral definitions so the id changes when any
-  tool's name, description, or schema changes.
+  Hashes provider-neutral definitions so the id changes when any tool's name,
+  description, or schema changes. For snapshots, pass the captured registry to
+  avoid re-evaluating live tool modules.
   """
-  @spec tools_version_id([module()]) :: String.t()
+  @spec tools_version_id(Registry.t() | [module()]) :: String.t()
   def tools_version_id(tools) when is_list(tools) do
     tools
-    |> Enum.map(fn tool ->
-      tool
-      |> Tool.definition()
-      |> Map.drop([:definition_id])
-    end)
+    |> Enum.map(&Tool.definition/1)
+    |> hash_definitions()
+  end
+
+  def tools_version_id(%Registry{} = registry) do
+    registry
+    |> Registry.definitions()
+    |> hash_definitions()
+  end
+
+  defp hash_definitions(definitions) do
+    definitions
+    |> Enum.map(&Map.drop(&1, [:definition_id]))
     |> :erlang.term_to_binary()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
