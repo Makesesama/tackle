@@ -5,6 +5,7 @@ defmodule Tackle.Runtime.RequestSetupTest do
   alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.Envelope
+  alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Messaging
   alias Tackle.Runtime.ScopeSpec
 
@@ -17,6 +18,10 @@ defmodule Tackle.Runtime.RequestSetupTest do
 
     @impl true
     def child_spec(spec, context), do: {__MODULE__, {spec, context}}
+
+    @impl true
+    def model_ref(%AgentSpec{config: %{mode: :model_raise}}), do: raise("model lookup failed")
+    def model_ref(_spec), do: "test-model"
 
     def start_link(arg), do: GenServer.start_link(__MODULE__, arg)
 
@@ -115,6 +120,47 @@ defmodule Tackle.Runtime.RequestSetupTest do
         snapshot.agent_count == 1
       end)
     end
+  end
+
+  test "request preparation failures do not reserve a child slot" do
+    root =
+      AgentSpec.new!(
+        name: "root",
+        config: %{mode: :root, test_pid: self()},
+        allow_delegation: true
+      )
+
+    child = AgentSpec.new!(name: "child", config: %{mode: :normal, test_pid: self()})
+    broken = AgentSpec.new!(name: "broken", config: %{mode: :model_raise, test_pid: self()})
+
+    scope_spec =
+      ScopeSpec.new!(
+        backend: Backend,
+        root_spec: root,
+        profiles: %{"child" => child, "broken" => broken},
+        limits: Limits.new!(max_agents_per_fleet: 2)
+      )
+
+    {:ok, scope} = Runtime.start_scope(scope_spec)
+    on_exit(fn -> Runtime.stop_scope(scope.scope_ref) end)
+
+    for {profile, opts, exception, message} <- [
+          {"broken", [], RuntimeError, "model lookup failed"},
+          {"child", [owner: :invalid], ArgumentError, "invalid request owner: :invalid"}
+        ] do
+      assert_raise exception, message, fn ->
+        Runtime.request_agent(scope.root_agent_ref, profile, "go", opts)
+      end
+
+      assert {:ok, snapshot} = Runtime.scope_snapshot(scope.scope_ref)
+      assert snapshot.agent_count == 1
+      refute_receive {:child_started, _pid}
+    end
+
+    assert {:ok, run_ref} = Runtime.request_agent(scope.root_agent_ref, "child", "go")
+    assert run_ref.model_ref == "test-model"
+    assert_receive {:child_started, _pid}, 2_000
+    assert :ok = Runtime.cancel(run_ref)
   end
 
   test "runtime operations preserve the backend failure contract" do
