@@ -1313,6 +1313,33 @@ defmodule Tackle.Lib.LoopTest do
       end
     end
 
+    defmodule SettlementOrderHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def after_message(_state, %Message{role: :tool}, context) do
+        send(context.test_pid, {:settlement_stage, :after_message})
+        :ok
+      end
+
+      def after_message(_state, _message, _context), do: :ok
+
+      @impl true
+      def after_tool_call(_state, settlement, context) do
+        send(context.test_pid, {:settlement_stage, :after_tool_call})
+        send(context.test_pid, {:settlement_result, settlement})
+        :ok
+      end
+    end
+
+    defmodule AfterToolMessageAbortHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def after_message(_state, %Message{role: :tool}, _context), do: {:error, :message_failed}
+      def after_message(_state, _message, _context), do: :ok
+    end
+
     defmodule AfterToolAbortHook do
       @behaviour Tackle.Lib.Hook
 
@@ -1412,6 +1439,49 @@ defmodule Tackle.Lib.LoopTest do
       assert state.status == :completed
     end
 
+    test "successful and failed tool settlements share message, event, and hook ordering" do
+      Application.put_env(:tackle_lib, :llm, HookTestAdapter)
+
+      for {tools, event_type, settlement_type} <- [
+            {[HookLoggingTool], :tool_end, Tackle.Lib.Tool.Result},
+            {[], :tool_error, Tackle.Lib.Tool.Error}
+          ] do
+        Process.put(:llm_call_count, 0)
+
+        state =
+          State.new(
+            model: "test/model",
+            tools: tools,
+            hooks: [SettlementOrderHook],
+            context: %{test_pid: self()}
+          )
+
+        assert {:ok, _state} =
+                 Loop.run(state, "test settlement order",
+                   event_callback: fn
+                     %Event{type: :message_end, data: %{role: :tool}} ->
+                       send(self(), {:settlement_stage, :message_end})
+
+                     %Event{type: ^event_type} ->
+                       send(self(), {:settlement_stage, event_type})
+
+                     _event ->
+                       :ok
+                   end
+                 )
+
+        stages =
+          for _ <- 1..4 do
+            assert_receive {:settlement_stage, stage}
+            stage
+          end
+
+        assert stages == [:message_end, :after_message, event_type, :after_tool_call]
+        assert_receive {:settlement_result, settlement}
+        assert is_struct(settlement, settlement_type)
+      end
+    end
+
     test "after_tool_call hook errors abort the turn" do
       Application.put_env(:tackle_lib, :llm, HookTestAdapter)
       Process.put(:llm_call_count, 0)
@@ -1428,6 +1498,57 @@ defmodule Tackle.Lib.LoopTest do
       assert state.status == :error
       assert state.error =~ "Hook aborted after tool call"
       assert state.snapshot == nil
+    end
+
+    test "after_message aborts both tool settlements before their event and after_tool_call" do
+      Application.put_env(:tackle_lib, :llm, HookTestAdapter)
+
+      for {tools, event_type} <- [
+            {[HookLoggingTool], :tool_end},
+            {[], :tool_error}
+          ] do
+        Process.put(:llm_call_count, 0)
+
+        state =
+          State.new(
+            model: "test/model",
+            tools: tools,
+            hooks: [AfterToolMessageAbortHook, SettlementOrderHook],
+            context: %{test_pid: self()}
+          )
+
+        assert {:error, state} =
+                 Loop.run(state, "test message abort",
+                   event_callback: fn event -> send(self(), {:event, event}) end
+                 )
+
+        assert state.error =~ "Hook aborted after message: :message_failed"
+        assert_receive {:event, %Event{type: :message_end, data: %{role: :tool}}}
+        refute_receive {:event, %Event{type: ^event_type}}, 20
+        refute_receive {:settlement_stage, :after_tool_call}, 20
+      end
+    end
+
+    test "after_tool_call hook errors abort failed tool settlements too" do
+      Application.put_env(:tackle_lib, :llm, HookTestAdapter)
+      Process.put(:llm_call_count, 0)
+
+      state =
+        State.new(
+          model: "test/model",
+          hooks: [AfterToolAbortHook],
+          context: %{test_pid: self()}
+        )
+
+      assert {:error, state} =
+               Loop.run(state, "test error settlement abort",
+                 event_callback: fn event -> send(self(), {:event, event}) end
+               )
+
+      assert state.status == :error
+      assert state.error =~ "Hook aborted after tool call: :after_tool_failed"
+      assert Enum.any?(state.messages, &(&1.role == :tool))
+      assert_receive {:event, %Event{type: :tool_error, data: %{name: "hook_log"}}}
     end
 
     test "snapshot freezes the LLM adapter for the turn" do
