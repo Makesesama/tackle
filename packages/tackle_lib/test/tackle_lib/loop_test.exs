@@ -830,6 +830,59 @@ defmodule Tackle.Lib.LoopTest do
            end) == ["one", "two"]
   end
 
+  test "concurrent cancellation commits completed results and stops pending tools" do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
+    test_pid = self()
+    signal = Cancellation.new_signal()
+
+    state =
+      State.new(
+        model: "test/model",
+        tools: [BlockingTool],
+        tool_policy: Policy.concurrent(),
+        context: %{test_pid: test_pid}
+      )
+
+    run =
+      Task.async(fn ->
+        Loop.run(state, "run both",
+          tool_supervisor: supervisor,
+          cancellation_signal: signal,
+          event_callback: fn event -> send(test_pid, {:event, event}) end
+        )
+      end)
+
+    try do
+      assert_receive {:tool_entered, "one", first_task}, 2_000
+      assert_receive {:tool_entered, "two", second_task}, 2_000
+      send(second_task, {:release, "two"})
+
+      assert_receive {:event,
+                      %Event{
+                        type: :tool_execution_end,
+                        data: %{tool_call_id: "c2", status: :completed}
+                      }},
+                     2_000
+
+      Cancellation.cancel(signal, "stop batch")
+      assert {:cancelled, final_state} = Task.await(run, 5_000)
+      refute Process.alive?(first_task)
+      assert final_state.status == :cancelled
+
+      assert Enum.map(Enum.filter(final_state.messages, &(&1.role == :tool)), & &1.tool_call_id) ==
+               ["c2"]
+
+      assert_receive {:event, %Event{type: :tool_end, data: %{tool_call_id: "c2"}}}
+      assert_receive {:event, %Event{type: :turn_cancelled, data: %{reason: "stop batch"}}}
+
+      refute_receive {:event, %Event{type: :tool_execution_end, data: %{tool_call_id: "c1"}}},
+                     20
+    after
+      Cancellation.delete(signal)
+    end
+  end
+
   test "concurrent policy converts a crashed tool into an error result" do
     {:ok, supervisor} = Task.Supervisor.start_link()
     Application.put_env(:tackle_lib, :llm, CrashAndBlockAdapter)
