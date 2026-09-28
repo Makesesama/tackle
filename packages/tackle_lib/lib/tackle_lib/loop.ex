@@ -1105,32 +1105,16 @@ defmodule Tackle.Lib.Loop do
         parts: result.parts
       )
 
-    state = State.add_message(state, tool_message)
+    event =
+      Event.new(:tool_end, %{
+        tool_call_id: result.tool_call_id,
+        name: result.name,
+        result: result.content,
+        raw: result.raw,
+        metadata: result.metadata
+      })
 
-    case emit_and_finalize_message(state, callbacks, tool_message) do
-      {:ok, state} ->
-        emit(
-          callbacks,
-          Event.new(:tool_end, %{
-            tool_call_id: result.tool_call_id,
-            name: result.name,
-            result: result.content,
-            raw: result.raw,
-            metadata: result.metadata
-          })
-        )
-
-        case invoke_after_tool_call(state, result, callbacks) do
-          {:ok, state} ->
-            {:ok, state}
-
-          {:error, reason} ->
-            {:abort, State.set_error(state, "Hook aborted after tool call: #{inspect(reason)}")}
-        end
-
-      {:error, state} ->
-        {:abort, state}
-    end
+    finalize_tool_settlement(state, callbacks, tool_message, event, result)
   end
 
   defp append_tool_settlement({:error, %ToolError{} = error}, state, callbacks) do
@@ -1141,23 +1125,27 @@ defmodule Tackle.Lib.Loop do
         id_generator: state.id_generator
       )
 
+    event =
+      Event.new(:tool_error, %{
+        tool_call_id: error.tool_call_id,
+        name: name,
+        error: error.message,
+        reason: error.reason,
+        details: error.details,
+        metadata: error.metadata
+      })
+
+    finalize_tool_settlement(state, callbacks, tool_message, event, error)
+  end
+
+  defp finalize_tool_settlement(state, callbacks, tool_message, event, settlement) do
     state = State.add_message(state, tool_message)
 
     case emit_and_finalize_message(state, callbacks, tool_message) do
       {:ok, state} ->
-        emit(
-          callbacks,
-          Event.new(:tool_error, %{
-            tool_call_id: error.tool_call_id,
-            name: name,
-            error: error.message,
-            reason: error.reason,
-            details: error.details,
-            metadata: error.metadata
-          })
-        )
+        emit(callbacks, event)
 
-        case invoke_after_tool_call(state, error, callbacks) do
+        case invoke_after_tool_call(state, settlement, callbacks) do
           {:ok, state} ->
             {:ok, state}
 
