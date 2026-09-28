@@ -375,6 +375,61 @@ defmodule Tackle.Lib.CompactionTest do
       assert final.overflow_retries == 1
     end
 
+    test "continues after a pressure summary failure without changing the model surface" do
+      state = state([user(700), assistant(700)])
+      Process.put(:adapter_calls, 1)
+      Process.put(:summarize_result, {:error, :summary_unavailable})
+
+      assert {:ok, final} = Tackle.Lib.run(state, "next")
+      assert final.model_messages == nil
+      assert Tackle.Lib.last_answer(final) == "answer"
+      refute Process.get(:last_record)
+    end
+
+    test "keeps the provider error when overflow compaction fails" do
+      state = loop_state([user(100), assistant(100)])
+      Process.put(:summarize_result, {:error, :summary_unavailable})
+
+      assert {:error, final} = Tackle.Lib.run(state, "next")
+      assert final.error =~ "context_window_exceeded"
+      assert Process.get(:adapter_calls) == 1
+      assert final.model_messages == nil
+    end
+
+    test "continues from a committed checkpoint when a later pressure pass fails" do
+      state =
+        state([user(3_000), assistant(3_000)],
+          config_opts: [max_passes: 2],
+          policy: [summary_max_tokens: 100, max_summary_tokens: 100]
+        )
+
+      Process.put(:adapter_calls, 1)
+
+      Process.put(:summarize_result, fn _request ->
+        if Process.get(:commit_count, 0) == 0 do
+          {:ok, TestSummarizer.default_summary()}
+        else
+          {:error, :second_pass_failed}
+        end
+      end)
+
+      assert {:ok, final} = Tackle.Lib.run(state, "next")
+      assert Process.get(:commit_count) == 1
+      assert [checkpoint | _] = final.model_messages
+      assert checkpoint.id == Process.get(:last_record).compaction_id
+      assert Tackle.Lib.last_answer(final) == "answer"
+    end
+
+    test "fails an overflow recovery when the durable commit fails" do
+      state = loop_state([user(100), assistant(100)])
+      state = %{state | compaction: %{state.compaction | committer: FailingCommitter}}
+
+      assert {:error, final} = Tackle.Lib.run(state, "next")
+      assert final.error =~ "durable_commit_failed"
+      assert Process.get(:adapter_calls) == 1
+      assert final.model_messages == nil
+    end
+
     test "fails the turn before the provider call when the durable commit fails" do
       state = state([user(700), assistant(700)], committer: FailingCommitter)
 
