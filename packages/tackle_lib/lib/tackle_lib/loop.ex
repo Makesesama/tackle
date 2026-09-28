@@ -1278,45 +1278,27 @@ defmodule Tackle.Lib.Loop do
   # --- Hook invocations ---
 
   defp invoke_before_prompt(%State{} = state, callbacks) do
-    hooks = snapshot_hooks(callbacks)
-
-    case Hook.invoke(hooks, :before_prompt, [state], state.context) do
-      {:ok, context} -> {:ok, %{state | context: context}}
-      {:error, reason} -> {:error, reason}
-    end
+    invoke_hook(state, callbacks, :before_prompt, [state])
   end
 
   defp invoke_after_prompt(%State{} = state, response, callbacks) do
-    hooks = snapshot_hooks(callbacks)
-
-    case Hook.invoke(hooks, :after_prompt, [state, response], state.context) do
-      {:ok, context} -> {:ok, %{state | context: context}}
-      {:error, reason} -> {:error, reason}
-    end
+    invoke_hook(state, callbacks, :after_prompt, [state, response])
   end
 
   defp invoke_before_tool_call(%State{} = state, %Call{} = tool_call, callbacks) do
-    hooks = snapshot_hooks(callbacks)
-
-    case Hook.invoke(hooks, :before_tool_call, [state, tool_call], state.context) do
-      {:ok, context} -> {:ok, %{state | context: context}}
-      {:error, reason} -> {:error, reason}
-    end
+    invoke_hook(state, callbacks, :before_tool_call, [state, tool_call])
   end
 
   defp invoke_after_tool_call(%State{} = state, tool_result, callbacks) do
-    hooks = snapshot_hooks(callbacks)
-
-    case Hook.invoke(hooks, :after_tool_call, [state, tool_result], state.context) do
-      {:ok, context} -> {:ok, %{state | context: context}}
-      {:error, reason} -> {:error, reason}
-    end
+    invoke_hook(state, callbacks, :after_tool_call, [state, tool_result])
   end
 
   defp invoke_after_message(%State{} = state, %Message{} = message, callbacks) do
-    hooks = snapshot_hooks(callbacks)
+    invoke_hook(state, callbacks, :after_message, [state, message])
+  end
 
-    case Hook.invoke(hooks, :after_message, [state, message], state.context) do
+  defp invoke_hook(%State{} = state, callbacks, event, args) do
+    case Hook.invoke(snapshot_hooks(callbacks), event, args, state.context) do
       {:ok, context} -> {:ok, %{state | context: context}}
       {:error, reason} -> {:error, reason}
     end
