@@ -443,7 +443,7 @@ defmodule Tackle.Runtime.Request do
 
   defp subscribe_to_child_events(%{event_callback: callback, session_pid: pid} = state)
        when is_function(callback, 1) or is_function(callback, 2) do
-    case backend_call(state.backend, pid, :subscribe, []) do
+    case AgentBackend.call(state.backend, pid, :subscribe, []) do
       {:ok, _snapshot} -> {:ok, state}
       :ok -> {:ok, state}
       {:error, reason} -> {:error, {:event_subscription_failed, reason}, state}
@@ -464,7 +464,7 @@ defmodule Tackle.Runtime.Request do
   defp publish_child_event(_state, _event), do: :ok
 
   defp submit_prompt(%{session_pid: pid, prompt: prompt} = state) do
-    case backend_call(state.backend, pid, :submit, [prompt]) do
+    case AgentBackend.call(state.backend, pid, :submit, [prompt]) do
       {:ok, _turn_id} -> {:ok, state}
       {:error, reason} -> {:error, reason, state}
       other -> {:error, {:invalid_submit_result, other}, state}
@@ -621,19 +621,11 @@ defmodule Tackle.Runtime.Request do
   # Cancellation is best-effort by design.
   defp safe_session_cancel(backend, pid, reason) do
     if is_pid(pid) and Process.alive?(pid) do
-      backend_call(backend, pid, :cancel, [reason])
+      AgentBackend.call(backend, pid, :cancel, [reason])
       send(pid, {:runtime_cancel, reason})
     end
 
     :ok
-  end
-
-  defp backend_call(backend, pid, operation, args) do
-    backend.call(pid, operation, args)
-  rescue
-    exception -> {:error, {:agent_backend_failed, Exception.message(exception)}}
-  catch
-    :exit, reason -> {:error, {:agent_unavailable, reason}}
   end
 
   defp cancel_timers(state) do
