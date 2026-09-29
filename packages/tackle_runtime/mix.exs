@@ -28,6 +28,7 @@ defmodule Tackle.Runtime.MixProject do
 
   defp deps do
     [
+      {:benchee, "~> 1.5", only: :dev, runtime: false},
       {:tackle_lib, path: "../tackle_lib"},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false}
     ]

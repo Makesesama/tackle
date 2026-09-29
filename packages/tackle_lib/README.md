@@ -1150,6 +1150,13 @@ Tackle.Lib does **not** provide:
 `Tackle.Phoenix.Chat` is currently a documented scaffold, not a working LiveView
 mixin. Use `Tackle.Phoenix.EventReducer` directly as shown in the Phoenix README.
 
+## Performance benchmarks
+
+Repository-only Benchee suites cover history growth, context estimation, tool
+settlement, and JSON Schema validation. See the [benchmark guide](../../bench/README.md)
+for commands, smoke checks, saved baselines, and measurement limitations.
+Benchee is dev-only and is not a runtime dependency.
+
 ## Source guide
 
 Start with these files:
