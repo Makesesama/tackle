@@ -150,6 +150,7 @@ fn conversation_render(
     offset: usize,
     selected: Vec<usize>,
     selection: WireStyle,
+    text_selection: Option<crate::selection::Range>,
 ) -> NifResult<(Atom, Vec<surface::Line>)> {
     if usize::from(width) * usize::from(height) > MAX_CELLS {
         return Err(Error::Term(Box::new(atoms::invalid_size())));
@@ -163,6 +164,7 @@ fn conversation_render(
         .0
         .widget(offset, &selected, style(selection)?)
         .render(area, &mut buffer);
+    crate::selection::highlight(&mut buffer, area, offset, text_selection);
     let lines = surface::lines(&buffer).map_err(|reason| Error::Term(Box::new(reason)))?;
     Ok((atoms::ok(), lines))
 }

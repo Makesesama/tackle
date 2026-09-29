@@ -22,12 +22,13 @@ defmodule Tackle.CLI.Widgets.Conversation do
     defstruct [:state, style: %ExRatatui.Style{}]
   end
 
-  defstruct [:state, scroll_offset: 0, selected: []]
+  defstruct [:state, scroll_offset: 0, selected: [], text_selection: nil]
 
   @type t :: %__MODULE__{
           state: reference(),
           scroll_offset: non_neg_integer(),
-          selected: [non_neg_integer()]
+          selected: [non_neg_integer()],
+          text_selection: tuple() | nil
         }
 
   @doc false
@@ -136,7 +137,8 @@ defmodule Tackle.CLI.Widgets.Conversation do
         rect.height,
         widget.scroll_offset,
         widget.selected,
-        style(Theme.style(:selection_surface))
+        style(Theme.style(:selection_surface)),
+        widget.text_selection
       )
 
     Surface.place(rows, rect)

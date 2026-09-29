@@ -12,13 +12,14 @@ defmodule Tackle.CLI.Widgets.Browse do
   alias Tackle.CLI.TUI.Theme
   alias Tackle.CLI.Widgets.{Conversation, Surface}
 
-  defstruct [:state, page: 0, scroll_offset: 0, selected: []]
+  defstruct [:state, page: 0, scroll_offset: 0, selected: [], text_selection: nil]
 
   @type t :: %__MODULE__{
           state: reference(),
           page: non_neg_integer(),
           scroll_offset: non_neg_integer(),
-          selected: [non_neg_integer()]
+          selected: [non_neg_integer()],
+          text_selection: tuple() | nil
         }
 
   @doc "Measures a frozen plain-text document at the given width."
@@ -46,7 +47,8 @@ defmodule Tackle.CLI.Widgets.Browse do
         rect.height,
         widget.scroll_offset,
         widget.selected,
-        styles
+        styles,
+        widget.text_selection
       )
 
     Surface.place(rows, rect)

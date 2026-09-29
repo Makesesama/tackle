@@ -42,6 +42,7 @@ fn browse_render(
     offset: usize,
     selected: Vec<usize>,
     styles: (WireStyle, WireStyle, WireStyle),
+    text_selection: Option<crate::selection::Range>,
 ) -> NifResult<(Atom, Vec<surface::Line>)> {
     if usize::from(width) * usize::from(height) > MAX_CELLS || selected.len() > MAX_CELLS {
         return Err(Error::Term(Box::new(atoms::invalid_size())));
@@ -61,6 +62,10 @@ fn browse_render(
         selection: style(styles.2)?,
     }
     .render(area, &mut buffer);
+    let height = body_height(height);
+    let body = Rect::new(0, area.height - height, width, height);
+    let offset = scroll(offset, resource.0.height, height, 0);
+    crate::selection::highlight(&mut buffer, body, offset, text_selection);
     let rows = surface::lines(&buffer).map_err(|reason| Error::Term(Box::new(reason)))?;
     Ok((atoms::ok(), rows))
 }
