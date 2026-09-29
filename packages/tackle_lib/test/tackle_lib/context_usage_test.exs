@@ -44,6 +44,40 @@ defmodule Tackle.Lib.ContextUsageTest do
     assert_in_delta context.percent, 10.3, 0.000_001
   end
 
+  test "skips pre-checkpoint content, selects latest valid assistant usage and estimates Unicode tail" do
+    state =
+      state_with_window(1_000, system_prompt: "system")
+      |> State.add_message(Message.user("before"))
+      |> State.add_message(
+        Message.assistant(content: "older", token_usage: %Usage{total_tokens: 50})
+      )
+      |> State.add_message(Message.user("between"))
+      |> State.add_message(Message.assistant(content: "latest", token_usage: %{total_tokens: 70}))
+      |> State.add_message(Message.assistant(content: "invalid", token_usage: %{total_tokens: 0}))
+      |> State.add_message(Message.user("🙂🙂🙂🙂🙂"))
+
+    assert %ContextUsage{usage_tokens: 70, trailing_tokens: 4, tokens: 74, estimated?: true} =
+             ContextUsage.estimate(state)
+  end
+
+  test "ignores usage on non-assistant messages" do
+    state =
+      state_with_window(1_000, system_prompt: "1234")
+      |> State.add_message(Message.user("12345678") |> Map.put(:token_usage, %{total_tokens: 90}))
+
+    assert %ContextUsage{usage_tokens: 0, tokens: 3, estimated?: true} =
+             ContextUsage.estimate(state)
+  end
+
+  test "uses compacted model projection instead of canonical transcript" do
+    state = state_with_window(1_000, system_prompt: "1234")
+    old = Message.assistant(content: "old", token_usage: %Usage{total_tokens: 500})
+    state = %{state | messages: [old], model_messages: [Message.user("🙂🙂🙂🙂🙂")]}
+
+    assert %ContextUsage{usage_tokens: 0, tokens: 3, estimated?: true} =
+             ContextUsage.estimate(state)
+  end
+
   test "ignores all-zero usage and clearly marks a full-context estimate" do
     state =
       state_with_window(1_000, system_prompt: "1234")

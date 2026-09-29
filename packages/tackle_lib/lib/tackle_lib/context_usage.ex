@@ -54,13 +54,12 @@ defmodule Tackle.Lib.ContextUsage do
       when is_integer(window) and window > 0 do
     messages = State.model_messages(state)
 
-    case latest_usage_checkpoint(messages) do
-      nil ->
-        trailing = estimate_context(state, messages)
+    case estimate_since_checkpoint(Enum.reverse(messages), 0) do
+      {:none, message_tokens} ->
+        trailing = estimate_context(state, message_tokens)
         build(trailing, window, 0, trailing, true)
 
-      {index, usage_tokens} ->
-        trailing = messages |> Enum.drop(index + 1) |> estimate_messages()
+      {usage_tokens, trailing} ->
         build(usage_tokens + trailing, window, usage_tokens, trailing, trailing > 0)
     end
   end
@@ -119,27 +118,26 @@ defmodule Tackle.Lib.ContextUsage do
 
   def estimate_text(value), do: estimate_term(value)
 
-  defp latest_usage_checkpoint(messages) do
-    messages
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      {%Message{role: :assistant, token_usage: usage}, index} ->
-        case Usage.context_tokens(usage) do
-          tokens when is_integer(tokens) and tokens > 0 -> {index, tokens}
-          _invalid -> nil
-        end
+  defp estimate_since_checkpoint([], trailing), do: {:none, trailing}
 
-      {_message, _index} ->
-        nil
-    end)
+  defp estimate_since_checkpoint(
+         [%Message{role: :assistant, token_usage: usage} = message | rest],
+         trailing
+       ) do
+    case Usage.context_tokens(usage) do
+      tokens when is_integer(tokens) and tokens > 0 -> {tokens, trailing}
+      _invalid -> estimate_since_checkpoint(rest, trailing + estimate_message(message))
+    end
   end
 
-  defp estimate_context(state, messages) do
+  defp estimate_since_checkpoint([message | rest], trailing) do
+    estimate_since_checkpoint(rest, trailing + estimate_message(message))
+  end
+
+  defp estimate_context(state, message_tokens) do
     tool_definitions = Registry.definitions(state.tool_registry)
 
-    estimate_text(state.system_prompt) + estimate_messages(messages) +
-      estimate_collection(tool_definitions)
+    estimate_text(state.system_prompt) + message_tokens + estimate_collection(tool_definitions)
   end
 
   defp estimate_collection([]), do: 0
