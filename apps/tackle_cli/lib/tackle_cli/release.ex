@@ -12,6 +12,22 @@ defmodule Tackle.CLI.Release do
   @glibc_markers ["libc.so.6", "GLIBC_"]
   @unwinder_marker "libgcc_s.so.1"
 
+  @doc false
+  @spec standalone_boot(Mix.Release.t()) :: Mix.Release.t()
+  def standalone_boot(release) do
+    path = Path.join([release.path, "releases", release.version, "start"])
+    {:ok, [{:script, id, instructions}]} = :file.consult(path <> ".script")
+
+    # Run after application startup but before boot returns to Burrito's
+    # `-s elixir start_cli`. Do not block an application's supervisor startup.
+    {startup, [started]} = Enum.split(instructions, -1)
+    {:progress, :started} = started
+    script = {:script, id, startup ++ [{:apply, {Tackle.CLI.Standalone, :boot, []}}, started]}
+    File.write!(path <> ".script", :io_lib.format(~c"~tp.~n", [script]))
+    File.write!(path <> ".boot", :erlang.term_to_binary(script))
+    release
+  end
+
   @spec verify_linux_nifs(Mix.Release.t()) :: Mix.Release.t()
   def verify_linux_nifs(release), do: verify_linux_nifs(release, @native_libraries)
 

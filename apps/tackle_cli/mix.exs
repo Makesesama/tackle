@@ -48,6 +48,7 @@ defmodule Tackle.CLI.MixProject do
          steps: [
            :assemble,
            &Tackle.CLI.Release.verify_linux_nifs/1,
+           &Tackle.CLI.Release.standalone_boot/1,
            &Burrito.wrap/1
          ],
          burrito: [

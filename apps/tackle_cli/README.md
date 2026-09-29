@@ -166,6 +166,12 @@ the Tackle NIF musl variables supplied by the Nix development shell.
 `&Burrito.wrap/1`, rejects glibc Rust NIFs and the shared `libgcc_s.so.1`
 unwinder before wrapping.
 
+The assembled release also runs `Tackle.CLI.Standalone.boot/0` after all
+applications start, keeping Burrito's later Elixir CLI entrypoint from parsing
+Tackle's arguments. This leaves the CLI supervisor active and uses graceful
+OTP shutdown on exit. The install check verifies Tackle-specific help/version
+output as well as successful exit status.
+
 Smoke-test the non-interactive path before publishing:
 
 ```sh
@@ -651,7 +657,19 @@ cargo fmt --manifest-path native/tackle/Cargo.toml --check
 
 # Credential-free warmed transcript preparation/paint probes (not terminal latency)
 MIX_ENV=test mix run --no-start bench/conversation.exs
+
+# Isolate native preparation, viewport paint, bridge, and in-memory ANSI draw
+MIX_ENV=test mix run --no-start bench/conversation_native.exs
 ```
+
+The native stage probe includes open-fence highlighting and a long single
+paragraph (not just many short paragraphs). It reports warmed wall-clock p50/p95,
+including NIF scheduling and term conversion—not isolated Rust CPU time. Its
+ExRatatui session draws into memory, not a real terminal emulator. Neither probe
+measures native allocations; BEAM/Benchee memory and reduction metrics cannot
+account for Rust allocations or native CPU work. Use a native profiler for those.
+See [native rendering findings](bench/conversation_native.md) for measurement
+boundaries and remaining optimization candidates.
 
 The custom input uses the existing Rust dependencies; the native conversation
 adds `tui-markdown` (also used by ExRatatui). Assistant fenced code, including

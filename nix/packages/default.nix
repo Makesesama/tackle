@@ -197,8 +197,14 @@ beamPackages.mixRelease {
     export XDG_CACHE_HOME="$HOME/cache"
     export TACKLE_HOME="$HOME/tackle"
     mkdir -p "$HOME"
-    "$out/bin/tackle" --version
-    "$out/bin/tackle" --help
+    # Exit status alone is insufficient: Elixir's own CLI can consume these
+    # flags after release boot and report its version instead of Tackle's.
+    "$out/bin/tackle" --version > version.txt
+    cat version.txt
+    grep -F 'Tackle developer harness 0.1.0' version.txt
+    "$out/bin/tackle" --help > help.txt
+    cat help.txt
+    grep -F -- '--model' help.txt
     "$out/bin/tackle" models
     runHook postInstallCheck
   '';
