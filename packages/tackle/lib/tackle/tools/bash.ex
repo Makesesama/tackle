@@ -4,11 +4,10 @@ defmodule Tackle.Tools.Bash do
   use Tackle.Lib.Tool
 
   alias Tackle.Lib.{Cancellation, Event}
-  alias Tackle.Tools.{FileSystem, Output}
+  alias Tackle.Tools.Bash.Capture
+  alias Tackle.Tools.FileSystem
 
   @poll_interval 50
-  @full_output_attempts 3
-  @private_file_mode 0o600
 
   tool_name("bash")
 
@@ -70,9 +69,9 @@ defmodule Tackle.Tools.Bash do
     deadline = deadline(timeout)
     signal = Map.get(context, :cancellation_signal)
 
-    case collect(port, deadline, signal, context, [], "") do
-      {:ok, status, output} -> settle(status, output)
-      {:error, reason, output} -> {:error, append_output(reason, format_output(output))}
+    case collect(port, deadline, signal, context, Capture.new(), "") do
+      {:ok, status, output} -> settle(status, Capture.finish(output))
+      {:error, reason, output} -> {:error, append_output(reason, Capture.finish(output))}
     end
   rescue
     error in ErlangError ->
@@ -80,15 +79,36 @@ defmodule Tackle.Tools.Bash do
   end
 
   defp collect(port, deadline, signal, context, output, pending_utf8) do
+    case collect_step(port, deadline, signal, context, output, pending_utf8) do
+      {:continue, output, pending_utf8} ->
+        collect(port, deadline, signal, context, output, pending_utf8)
+
+      result ->
+        result
+    end
+  end
+
+  defp collect_step(port, deadline, signal, context, output, pending_utf8) do
     receive do
       {^port, {:data, data}} ->
         {progress, pending_utf8} = split_live_utf8(pending_utf8 <> data)
         emit_progress(context, progress)
-        collect(port, deadline, signal, context, [data | output], pending_utf8)
+        cancelled? = cancelled?(signal)
+        stopping? = cancelled? or timed_out?(deadline)
+        if stopping?, do: emit_progress(context, sanitize(pending_utf8))
+        output = Capture.append(output, progress)
+
+        if stopping? do
+          close(port)
+          reason = if cancelled?, do: "Command aborted", else: "Command timed out"
+          {:error, reason, Capture.append(output, sanitize(pending_utf8))}
+        else
+          {:continue, output, pending_utf8}
+        end
 
       {^port, {:exit_status, status}} ->
         emit_progress(context, sanitize(pending_utf8))
-        {:ok, status, output |> Enum.reverse() |> IO.iodata_to_binary() |> sanitize()}
+        {:ok, status, Capture.append(output, sanitize(pending_utf8))}
     after
       wait_time(deadline) ->
         cond do
@@ -96,20 +116,23 @@ defmodule Tackle.Tools.Bash do
             emit_progress(context, sanitize(pending_utf8))
             close(port)
 
-            {:error, "Command aborted",
-             output |> Enum.reverse() |> IO.iodata_to_binary() |> sanitize()}
+            {:error, "Command aborted", Capture.append(output, sanitize(pending_utf8))}
 
           timed_out?(deadline) ->
             emit_progress(context, sanitize(pending_utf8))
             close(port)
 
-            {:error, "Command timed out",
-             output |> Enum.reverse() |> IO.iodata_to_binary() |> sanitize()}
+            {:error, "Command timed out", Capture.append(output, sanitize(pending_utf8))}
 
           true ->
-            collect(port, deadline, signal, context, output, pending_utf8)
+            {:continue, output, pending_utf8}
         end
     end
+  catch
+    kind, reason ->
+      Capture.discard(output)
+      close(port)
+      :erlang.raise(kind, reason, __STACKTRACE__)
   end
 
   defp split_live_utf8(data) do
@@ -121,8 +144,23 @@ defmodule Tackle.Tools.Bash do
         {valid, IO.iodata_to_binary(rest)}
 
       {:error, _valid, _rest} ->
-        {sanitize(data), ""}
+        # Sanitize invalid sequences together, but keep a possibly valid trailing
+        # character for the next chunk. Replacing byte-by-byte changes grouping.
+        pending = incomplete_suffix(data)
+        prefix = binary_part(data, 0, byte_size(data) - byte_size(pending))
+        {sanitize(prefix), pending}
     end
+  end
+
+  defp incomplete_suffix(data) do
+    Enum.find_value(min(byte_size(data), 3)..1//-1, "", fn size ->
+      suffix = binary_part(data, byte_size(data) - size, size)
+
+      case :unicode.characters_to_binary(suffix, :utf8, :utf8) do
+        {:incomplete, "", _} -> suffix
+        _ -> nil
+      end
+    end)
   end
 
   defp emit_progress(context, data) when is_binary(data) and data != "" do
@@ -168,63 +206,10 @@ defmodule Tackle.Tools.Bash do
     ArgumentError -> :ok
   end
 
-  defp settle(0, output), do: {:ok, format_output(output)}
+  defp settle(0, output), do: {:ok, output}
 
   defp settle(status, output) do
-    {:error, append_output("Command exited with code #{status}", format_output(output))}
-  end
-
-  defp format_output(""), do: "(no output)"
-
-  defp format_output(output) do
-    result = Output.tail(output)
-
-    if result.truncated? do
-      full_output_path = save_full_output(output)
-      start_line = result.total_lines - result.output_lines + 1
-      location = if full_output_path, do: " Full output: #{full_output_path}", else: ""
-
-      result.content <>
-        "\n\n[Showing lines #{start_line}-#{result.total_lines} of #{result.total_lines}.#{location}]"
-    else
-      result.content
-    end
-  end
-
-  defp save_full_output(output), do: save_full_output(output, @full_output_attempts)
-
-  defp save_full_output(_output, 0), do: nil
-
-  defp save_full_output(output, attempts) do
-    suffix = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
-    path = Path.join(System.tmp_dir!(), "tackle-bash-#{suffix}.log")
-
-    case File.open(path, [:write, :binary, :exclusive]) do
-      {:ok, file} ->
-        result =
-          try do
-            with :ok <- File.chmod(path, @private_file_mode) do
-              IO.binwrite(file, output)
-            end
-          after
-            File.close(file)
-          end
-
-        case result do
-          :ok ->
-            path
-
-          {:error, _reason} ->
-            _ = File.rm(path)
-            nil
-        end
-
-      {:error, :eexist} ->
-        save_full_output(output, attempts - 1)
-
-      {:error, _reason} ->
-        nil
-    end
+    {:error, append_output("Command exited with code #{status}", output)}
   end
 
   defp append_output(reason, "(no output)"), do: reason

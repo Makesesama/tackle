@@ -127,6 +127,15 @@ Tools run with the Tackle process's filesystem and OS permissions, not in a
 sandbox. `elixir_eval` executes code inside the live BEAM and must only be
 used in development.
 
+`bash` retains a bounded output tail and incrementally spills oversized output
+as sanitized UTF-8 to an exclusively created, mode-0600 temporary log. Truncated
+results include its path; callers are responsible for removing retained logs.
+If spilling fails, the bounded result is still returned without a full-output
+path. `read` scans text in fixed-size chunks, retaining only a bounded selection;
+exact line counts and UTF-8 validation still require scanning the entire file.
+Supported images are limited to 5MB. These collection bounds do not bound
+memory retained by host progress callbacks or queued process messages.
+
 ## Coding scopes and subagents
 
 `Tackle.Coding.scope_spec/2` builds a scope with built-in and discovered agent
