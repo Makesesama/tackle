@@ -28,6 +28,7 @@ defmodule Tackle.Lib.MixProject do
 
   defp deps do
     [
+      {:benchee, "~> 1.5", only: :dev, runtime: false},
       {:jsv, "~> 0.22"},
       {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false}

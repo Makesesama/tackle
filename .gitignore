@@ -25,6 +25,9 @@
 # Temporary files, for example, from tests.
 /tmp/
 
+# Local Benchee baselines (machine-specific measurements).
+*.benchee
+
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump
 

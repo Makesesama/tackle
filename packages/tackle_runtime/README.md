@@ -14,6 +14,13 @@ tackle_runtime
 tackle   tackle_phoenix
 ```
 
+## Performance benchmarks
+
+Repository-only Benchee suites cover delegated/workflow lifecycles, retained
+request memory, and synthetic streaming bursts. See the
+[benchmark guide](../../bench/README.md) for commands, saved baselines, and
+cross-process measurement limitations. Benchee is dev-only, not a runtime dependency.
+
 ## Responsibilities
 
 The runtime owns:
