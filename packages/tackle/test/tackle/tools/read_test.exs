@@ -3,7 +3,7 @@ defmodule Tackle.Tools.ReadTest do
 
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Content
-  alias Tackle.Tools.Read
+  alias Tackle.Tools.{Output, Read}
 
   @png <<0x89, "PNG\r\n", 0x1A, 0x0A, 0, 0, 0, 13, "IHDR", 0, 0, 0, 1, 0, 0, 0, 1>>
   @jpeg <<0xFF, 0xD8, 0xFF, 0xE0, "JFIF", 0>>
@@ -96,6 +96,132 @@ defmodule Tackle.Tools.ReadTest do
 
     assert {:error, message} = Read.run(%{"path" => "blob.bin"}, context)
     assert message =~ "is not valid UTF-8 and is not a supported image"
+  end
+
+  test "reads bounded selections from large files and still validates the entire text", %{
+    dir: dir,
+    context: context
+  } do
+    prefix = :binary.copy("skip\n", 20_000)
+    write(dir, "large.txt", prefix <> "chosen\n" <> :binary.copy("after\n", 20_000))
+
+    assert {:ok, "chosen\n\n[20001 more lines in file. Use offset=20002 to continue.]"} =
+             Read.run(%{"path" => "large.txt", "offset" => 20_001, "limit" => 1}, context)
+
+    File.write!(Path.join(dir, "large.txt"), prefix <> "chosen\n" <> <<0xFF>>)
+
+    assert {:error, message} =
+             Read.run(%{"path" => "large.txt", "offset" => 20_001, "limit" => 1}, context)
+
+    assert message =~ "is not valid UTF-8"
+  end
+
+  test "validates multibyte characters across chunks and handles empty final lines", %{
+    dir: dir,
+    context: context
+  } do
+    write(dir, "utf8.txt", :binary.copy("a", 64 * 1_024 + 10) <> "\n€\n")
+    assert {:ok, "€\n"} = Read.run(%{"path" => "utf8.txt", "offset" => 2}, context)
+    assert {:ok, ""} = Read.run(%{"path" => "utf8.txt", "offset" => 3}, context)
+
+    write(dir, "empty.txt", "")
+    assert {:ok, ""} = Read.run(%{"path" => "empty.txt"}, context)
+
+    assert {:error, "Offset 2 is beyond end of file (1 lines total)"} =
+             Read.run(%{"path" => "empty.txt", "offset" => 2}, context)
+  end
+
+  test "large selected line reports the existing byte-limit hint", %{dir: dir, context: context} do
+    write(dir, "huge.txt", :binary.copy("x", 2 * 1_024 * 1_024) <> "\nnext")
+
+    assert {:ok,
+            "[Line 1 exceeds the 50.0KB read limit. Use bash to inspect a byte range from huge.txt.]"} =
+             Read.run(%{"path" => "huge.txt"}, context)
+
+    assert {:ok, "next"} = Read.run(%{"path" => "huge.txt", "offset" => 2}, context)
+  end
+
+  test "keeps the trailing empty line at the line limit", %{dir: dir, context: context} do
+    write(dir, "lines.txt", :binary.copy("x\n", 2_000))
+    assert Read.run(%{"path" => "lines.txt"}, context) == {:ok, :binary.copy("x\n", 2_000)}
+    assert {:ok, ""} = Read.run(%{"path" => "lines.txt", "offset" => 2_001}, context)
+
+    write(dir, "lines.txt", :binary.copy("x\n", 2_001))
+    assert {:ok, output} = Read.run(%{"path" => "lines.txt"}, context)
+
+    assert output ==
+             Enum.join(List.duplicate("x", 2_000), "\n") <>
+               "\n\n[Showing lines 1-2000 of 2002. Use offset=2001 to continue.]"
+  end
+
+  test "matches whole-file selection at newline and byte boundaries", %{
+    dir: dir,
+    context: context
+  } do
+    samples = [
+      "",
+      "\n",
+      "\n\n",
+      "one\r\ntwo\n",
+      "one\n\ntwo",
+      :binary.copy("x\n", 2_000),
+      :binary.copy("x\n", 2_001),
+      :binary.copy("é", 25_600) <> "\nlast",
+      :binary.copy("x", 51_199) <> "\n",
+      :binary.copy("x", 51_200) <> "\n"
+    ]
+
+    for data <- samples do
+      write(dir, "boundaries.txt", data)
+
+      for offset <- [1, 2, 3, 2_000, 2_001], limit <- [nil, 1, 2, 2_000] do
+        assert Read.run(
+                 %{"path" => "boundaries.txt", "offset" => offset, "limit" => limit},
+                 context
+               ) ==
+                 original_selection(data, "boundaries.txt", offset, limit)
+      end
+    end
+  end
+
+  defp original_selection(data, path, offset, limit) do
+    lines = String.split(data, "\n")
+    total = length(lines)
+
+    if offset > total do
+      {:error, "Offset #{offset} is beyond end of file (#{total} lines total)"}
+    else
+      selected =
+        if limit, do: Enum.slice(lines, offset - 1, limit), else: Enum.drop(lines, offset - 1)
+
+      result = Output.head(Enum.join(selected, "\n"))
+      consumed = offset - 1 + length(selected)
+      original_result(result, path, offset, limit, consumed, total)
+    end
+  end
+
+  defp original_result(result, path, offset, limit, consumed, total) do
+    cond do
+      result.first_line_too_large? ->
+        {:ok,
+         "[Line #{offset} exceeds the 50.0KB read limit. Use bash to inspect a byte range from #{path}.]"}
+
+      result.truncated? ->
+        last = offset + result.output_lines - 1
+        note = if result.truncated_by == :bytes, do: " (50KB limit)", else: ""
+
+        {:ok,
+         result.content <>
+           "\n\n[Showing lines #{offset}-#{last} of #{total}#{note}. Use offset=#{last + 1} to continue.]"}
+
+      limit && consumed < total ->
+        {:ok,
+         result.content <>
+           "\n\n[#{total - consumed} more lines in file. Use offset=#{consumed + 1} to continue.]"}
+
+      true ->
+        {:ok, result.content}
+    end
   end
 
   test "reports a missing file", %{context: context} do
