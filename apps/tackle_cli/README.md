@@ -99,9 +99,14 @@ thinking follow the parent.
 Children have a dedicated inline card showing the profile, resolved model,
 assignment, explicit running/completed/failed status, and bounded findings or
 error output. While one or more children are running, a minimal native task
-sidebar opens beside the transcript and lists each active profile, resolved
+sidebar opens beside the transcript by default and lists each active profile, resolved
 model, assignment, current bounded activity, and elapsed time with an animated
-running indicator; it closes when no child remains active. Parallel calls keep
+running indicator; it closes when no child remains active. Set
+`"show_subagent_sidebar": false` in `$TACKLE_HOME/config.json` to hide the
+sidebar and leave the transcript full width. F3 → Subagent sidebar toggles and
+saves this setting immediately; the default is `true`. This is a CLI-only display
+preference: inline child cards and delegation still work, but F7 cannot focus a
+hidden sidebar. Parallel calls keep
 independent cards in request order. F4 details retain full arguments and bounded
 live activity until canonical findings arrive; search includes the assignment.
 A live elapsed clock measures local
@@ -282,7 +287,7 @@ are omitted rather than reported as zero.
 | Alt+1–5 | Resume one of the five recent sessions when idle with an empty draft. Ctrl+1–5 also works in terminals that report those chords distinctly. A failed resume keeps the current session open. |
 | F1 | Search-first model selector (idle only). Type to filter, ↑/↓ to select, Enter to apply, Esc to close. |
 | F2 | Reasoning-level selector (idle only). A reconfigure failure preserves the conversation and the draft. |
-| F3 | Settings picker (currently empty). Copy source with Y in the F4 transcript browser instead. |
+| F3 | Settings picker: toggle the subagent sidebar (saved to `$TACKLE_HOME/config.json`). Copy source with Y in the F4 transcript browser instead. |
 | F4 | Unified Browse: Transcript, Overview, Prompt, Context, Tools, Events. ←/→ or Tab/Shift+Tab switches pages. Transcript ↑/↓ selects entries, Enter inspects, Y copies source. Other pages scroll with ↑/↓, Page Up/Down, Home/End or wheel; R refreshes, Y copies. Esc/F4 returns to the draft. |
 | F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
 | F6 | Open cumulative settled token usage. Tab or ←/→ switches Current/This-week sessions, R reloads, Esc closes. |

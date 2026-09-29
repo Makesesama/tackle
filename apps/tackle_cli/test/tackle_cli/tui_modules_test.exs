@@ -102,8 +102,14 @@ defmodule Tackle.CLI.TUI.ModulesTest do
                Menu.items(:thinking, state)
     end
 
-    test "the settings menu has no rows yet" do
-      assert Menu.items(:settings, %State{agent_state: agent_state()}) == []
+    test "settings shows the current sidebar visibility" do
+      state = %State{agent_state: agent_state()}
+
+      assert [%{id: :subagent_sidebar, primary: "Subagent sidebar", secondary: "Shown"}] =
+               Menu.items(:settings, state)
+
+      assert [%{secondary: "Hidden"}] =
+               Menu.items(:settings, %{state | show_subagent_sidebar?: false})
     end
   end
 

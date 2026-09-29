@@ -176,6 +176,17 @@ defmodule Tackle.Config.FileTest do
              )
   end
 
+  test "validates the CLI sidebar preference alongside harness fields", %{home: home, env: env} do
+    path = write_config(home, ~s({"model":"test/file","show_subagent_sidebar":false}))
+    assert {:ok, config} = Config.load(available_adapters: [Adapter], env: env)
+    assert config.model_ref == "test/file"
+
+    File.write!(path, ~s({"model":"test/file","show_subagent_sidebar":"false"}))
+
+    assert {:error, {:invalid_config_field, ^path, "show_subagent_sidebar"}} =
+             Config.load(available_adapters: [Adapter], env: env)
+  end
+
   test "unknown fields and malformed JSON return errors", %{home: home, env: env} do
     path = write_config(home, ~s({"model":"test/file","adapter":"Elixir.System"}))
 

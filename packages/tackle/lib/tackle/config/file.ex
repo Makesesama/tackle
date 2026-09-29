@@ -3,7 +3,9 @@ defmodule Tackle.Config.File do
 
   alias Tackle.Thinking
 
-  @known_fields ["model", "thinking"]
+  # The sidebar preference belongs to the CLI; the harness accepts and validates
+  # the field without carrying presentation state into a session configuration.
+  @known_fields ["model", "thinking", "show_subagent_sidebar"]
 
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
   def load(path) when is_binary(path) do
@@ -31,8 +33,17 @@ defmodule Tackle.Config.File do
 
   defp to_options(path, config) do
     with {:ok, model_opts} <- model_options(path, config),
-         {:ok, thinking_opts} <- thinking_options(path, config) do
+         {:ok, thinking_opts} <- thinking_options(path, config),
+         :ok <- sidebar_option(path, config) do
       {:ok, model_opts ++ thinking_opts}
+    end
+  end
+
+  defp sidebar_option(path, config) do
+    case Map.fetch(config, "show_subagent_sidebar") do
+      {:ok, value} when is_boolean(value) -> :ok
+      {:ok, _value} -> {:error, {:invalid_config_field, path, "show_subagent_sidebar"}}
+      :error -> :ok
     end
   end
 

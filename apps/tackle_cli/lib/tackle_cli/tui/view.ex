@@ -56,7 +56,7 @@ defmodule Tackle.CLI.TUI.View do
         height,
         state.draft_lines,
         Viewport.reading?(state.conversation),
-        Subagents.active?(state),
+        Subagents.visible?(state),
         not is_nil(state.header_image)
       )
 

@@ -11,9 +11,8 @@ defmodule Tackle.CLI.TUI do
     * **Menus** are modal search-first lists that always route keys before the
       composer: the model (`F1`), the reasoning level (`F2`), and settings
       (`F3`), plus the output inspector and transcript search. Menus hold
-      configuration, and the settings menu stays empty until the harness gains
-      options beyond the model and the reasoning level; quick actions do not
-      belong in it.
+      configuration; settings includes the persistent subagent-sidebar
+      visibility preference.
     * **The transcript browser** (`F4`) is a focus mode rather than an overlay.
       There is no popup, the composer stops accepting text, and the arrows move
       a highlighted entry so it can be copied (`y`, `a`) or inspected (`Enter`).
