@@ -71,6 +71,8 @@ defmodule Tackle.Session.TreeProjectionTest do
     assert Enum.map(projection.model_messages, & &1["id"]) == ["u2", "a2"]
 
     summary = Projection.tree_summary(projection)
+    messages = projection.messages
+    search_text = Projection.search_text(projection)
     assert summary.enabled?
     assert summary.active_id == "a2"
     assert Enum.map(summary.entries, & &1.id) == ["u1", "a1", "u2", "a2"]
@@ -92,7 +94,29 @@ defmodule Tackle.Session.TreeProjectionTest do
       )
 
     assert Tree.active_id(projection.tree) == "a1"
+    assert :erts_debug.same(messages, projection.messages)
+    assert :erts_debug.same(search_text, Projection.search_text(projection))
     assert Enum.map(projection.model_messages, & &1["id"]) == ["u1", "a1"]
+  end
+
+  test "a branch append extends the archive and rebuilds model context from its parent" do
+    projection = Projection.new(header(), tree: true)
+
+    projection =
+      projection
+      |> Projection.apply_commit(
+        commit(1, [message_event(message("u1", :user, "root"), parent_id: nil)])
+      )
+      |> Projection.apply_commit(
+        commit(2, [message_event(message("a1", :assistant, "answer A"), parent_id: "u1")])
+      )
+      |> Projection.apply_commit(
+        commit(3, [message_event(message("a2", :assistant, "answer B"), parent_id: "u1")])
+      )
+
+    assert Enum.map(projection.messages, & &1["id"]) == ["u1", "a1", "a2"]
+    assert Enum.map(projection.model_messages, & &1["id"]) == ["u1", "a2"]
+    assert Projection.search_text(projection) == "root\nanswer A\nanswer B"
   end
 
   test "an unknown parent is rejected rather than repaired" do

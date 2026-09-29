@@ -38,7 +38,8 @@ defmodule Tackle.Session.Projection do
   `tree.enabled` transition; the derived chain is already present either way.
 
   Replay folds validated commits into the tree and derives message surfaces
-  once at the end. Live commits refresh the surfaces after each write.
+  once at the end. Live commits update unchanged surfaces incrementally and
+  rebuild only the active model path when navigation or compaction requires it.
   """
 
   alias Tackle.Lib.Compaction.Record
@@ -64,6 +65,7 @@ defmodule Tackle.Session.Projection do
             tree: nil,
             messages: [],
             model_messages: [],
+            search_text: nil,
             compactions: [],
             turns: %{},
             active_turn: nil,
@@ -90,6 +92,7 @@ defmodule Tackle.Session.Projection do
           tree: Tree.t(),
           messages: [map()],
           model_messages: [map()],
+          search_text: String.t() | nil,
           compactions: [map()],
           turns: %{optional(String.t()) => turn()},
           active_turn: turn() | nil,
@@ -126,10 +129,12 @@ defmodule Tackle.Session.Projection do
   replay can reject it instead of dropping history.
   """
   @spec apply_commit(t(), map()) :: t()
-  def apply_commit(%__MODULE__{} = projection, %{"events" => _events} = commit) do
-    projection
-    |> apply_replay_commit(commit)
-    |> refresh()
+  def apply_commit(
+        %__MODULE__{} = projection,
+        %{"seq" => seq, "events" => events} = commit
+      ) do
+    projection = Enum.reduce(events, projection, &apply_live_event/2)
+    %{projection | last_seq: seq, updated_at: commit["written_at"] || projection.updated_at}
   end
 
   @doc false
@@ -145,10 +150,13 @@ defmodule Tackle.Session.Projection do
   @doc false
   @spec refresh(t()) :: t()
   def refresh(%__MODULE__{tree: tree} = projection) do
+    messages = plain_messages(tree)
+
     %{
       projection
-      | messages: plain_messages(tree),
-        model_messages: plain_model_messages(tree)
+      | messages: messages,
+        model_messages: plain_model_messages(tree),
+        search_text: build_search_text(%{projection | messages: messages})
     }
   end
 
@@ -208,7 +216,12 @@ defmodule Tackle.Session.Projection do
   removes results.
   """
   @spec search_text(t()) :: String.t()
-  def search_text(%__MODULE__{} = projection) do
+  def search_text(%__MODULE__{search_text: search_text}) when is_binary(search_text),
+    do: search_text
+
+  def search_text(%__MODULE__{} = projection), do: build_search_text(projection)
+
+  defp build_search_text(%__MODULE__{} = projection) do
     parts =
       [
         projection.title,
@@ -403,6 +416,63 @@ defmodule Tackle.Session.Projection do
 
   defp apply_event(_event, projection), do: projection
 
+  # Live commits keep the archive and active model surface materialized. Most
+  # journal events do not touch either surface, so they only fold their durable
+  # metadata. Message appends encode the new message once and extend the two
+  # lists. A branch append, navigation, or compaction can change active ancestry
+  # and therefore rebuilds only the active model path.
+  defp apply_live_event(%{"type" => "message.appended", "data" => data}, projection) do
+    previous_active_id = Tree.active_id(projection.tree)
+    parent_id = parent_id(data, previous_active_id)
+    message = decode_message(Map.fetch!(data, "message"))
+    plain = plain_message(message)
+
+    projection =
+      projection
+      |> resolve_pending_tool(message)
+      |> append_message(message, parent_id)
+
+    model_messages =
+      if parent_id == previous_active_id do
+        append(projection.model_messages, plain)
+      else
+        plain_model_messages(projection.tree)
+      end
+
+    search_text = append_search_text(projection, message)
+
+    %{
+      projection
+      | messages: append(projection.messages, plain),
+        model_messages: model_messages,
+        search_text: search_text
+    }
+  end
+
+  defp apply_live_event(%{"type" => type} = event, projection)
+       when type in ["session.created", "session.metadata_changed"] do
+    projection = apply_event(event, projection)
+    %{projection | search_text: build_search_text(projection)}
+  end
+
+  defp apply_live_event(%{"type" => type} = event, projection)
+       when type in ["context.compacted", "tree.navigated"] do
+    projection = apply_event(event, projection)
+    %{projection | model_messages: plain_model_messages(projection.tree)}
+  end
+
+  defp apply_live_event(event, projection), do: apply_event(event, projection)
+
+  defp append_search_text(projection, %Message{role: role, content: content})
+       when role in [:user, :assistant] and is_binary(content) and content != "" do
+    append_search_part(search_text(projection), content)
+  end
+
+  defp append_search_text(projection, _message), do: search_text(projection)
+
+  defp append_search_part("", part), do: part
+  defp append_search_part(text, part), do: text <> "\n" <> part
+
   defp append_message(%__MODULE__{tree: tree} = projection, message, parent_id) do
     case Tree.append_message(tree, message, parent_id: parent_id) do
       {:ok, tree, _entry} -> %{projection | tree: tree}
@@ -422,8 +492,9 @@ defmodule Tackle.Session.Projection do
 
   defp resolve_pending_tool(projection, _message), do: projection
 
-  # The archive and the active model surface are both derived projections of the
-  # tree. Replay refreshes once after the fold; live appends refresh each commit.
+  # The archive and active model surface remain derivable from the tree. Replay
+  # refreshes once after folding the complete journal; live commits maintain
+  # them incrementally above.
   defp plain_messages(tree) do
     tree
     |> Tree.enumerate()

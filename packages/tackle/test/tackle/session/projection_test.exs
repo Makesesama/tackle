@@ -44,6 +44,67 @@ defmodule Tackle.Session.ProjectionTest do
     assert Enum.map(projection.model_messages, & &1["id"]) == ["u1", "a1"]
   end
 
+  test "transcript-neutral commits preserve materialized history and cached search" do
+    projection =
+      Projection.new(header())
+      |> Projection.apply_commit(commit(1, [message_event(message("u1", :user, "hello"))]))
+
+    messages = projection.messages
+    model_messages = projection.model_messages
+    search_text = Projection.search_text(projection)
+
+    projection =
+      Projection.apply_commit(
+        projection,
+        commit(2, [turn_event("turn-1"), tool_start_event("call-1")])
+      )
+
+    assert :erts_debug.same(messages, projection.messages)
+    assert :erts_debug.same(model_messages, projection.model_messages)
+    assert :erts_debug.same(search_text, Projection.search_text(projection))
+    assert projection.last_seq == 2
+    assert projection.updated_at == "2026-01-01T00:00:02Z"
+    assert [%{tool_call_id: "call-1"}] = Projection.uncertain_tools(projection)
+  end
+
+  test "replay refresh derives the same surfaces and search cache as live commits" do
+    commits = [
+      commit(1, [message_event(message("u1", :user, "hello"))]),
+      commit(2, [turn_event("turn-1"), tool_start_event("call-1")]),
+      commit(3, [message_event(message("a1", :assistant, "world"))])
+    ]
+
+    live = Enum.reduce(commits, Projection.new(header()), &Projection.apply_commit(&2, &1))
+
+    replay =
+      commits
+      |> Enum.reduce(Projection.new(header()), &Projection.apply_replay_commit(&2, &1))
+      |> Projection.refresh()
+
+    assert replay.messages == live.messages
+    assert replay.model_messages == live.model_messages
+    assert Projection.search_text(replay) == Projection.search_text(live)
+  end
+
+  test "metadata changes rebuild search without rebuilding message surfaces" do
+    projection =
+      Projection.new(header())
+      |> Projection.apply_commit(commit(1, [message_event(message("u1", :user, "hello"))]))
+
+    messages = projection.messages
+    model_messages = projection.model_messages
+
+    updated =
+      Projection.apply_commit(
+        projection,
+        commit(2, [Log.event("session.metadata_changed", %{"title" => "New title"})])
+      )
+
+    assert :erts_debug.same(messages, updated.messages)
+    assert :erts_debug.same(model_messages, updated.model_messages)
+    assert Projection.search_text(updated) == "New title\nhello"
+  end
+
   test "context.compacted replaces the model prefix but never the transcript" do
     retained = %{
       message("a1", :assistant, "reply")
@@ -57,6 +118,8 @@ defmodule Tackle.Session.ProjectionTest do
       |> Projection.apply_commit(commit(2, [message_event(retained)]))
 
     {:ok, summary} = Codec.encode_message(message("ckpt-1", :user, "checkpoint"))
+    messages = projection.messages
+    search_text = Projection.search_text(projection)
 
     compacted =
       Projection.apply_commit(
@@ -75,6 +138,8 @@ defmodule Tackle.Session.ProjectionTest do
         ])
       )
 
+    assert :erts_debug.same(messages, compacted.messages)
+    assert :erts_debug.same(search_text, Projection.search_text(compacted))
     assert Enum.map(compacted.messages, & &1["id"]) == ["u1", "a1"]
     assert Enum.map(compacted.model_messages, & &1["id"]) == ["ckpt-1", "a1"]
     assert [_compaction] = compacted.compactions
