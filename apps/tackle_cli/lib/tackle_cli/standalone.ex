@@ -10,10 +10,19 @@ defmodule Tackle.CLI.Standalone do
   @spec start_link(term()) :: {:ok, pid()} | :ignore
   def start_link(_arg) do
     if Util.running_standalone?() do
-      Task.start_link(fn -> run(Args.argv()) end)
+      :ignore
     else
       Task.start_link(fn -> :ok end)
     end
+  end
+
+  # Called by the release boot script after all applications have started.
+  # Burrito invokes Elixir's CLI after boot: keep boot blocked so that parser
+  # cannot consume our argv, including while System.stop/1 shuts down the VM.
+  @spec boot() :: no_return()
+  def boot do
+    Task.start_link(fn -> run(Args.argv()) end)
+    Process.sleep(:infinity)
   end
 
   defp run(argv) do

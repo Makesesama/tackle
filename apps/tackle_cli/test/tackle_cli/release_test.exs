@@ -102,6 +102,27 @@ defmodule Tackle.CLI.ReleaseTest do
     end)
   end
 
+  test "standalone boot runs after applications start and before boot completes" do
+    release = %Mix.Release{path: tmp_dir(), version: "0.1.0"}
+    path = Path.join([release.path, "releases", release.version, "start"])
+    File.mkdir_p!(Path.dirname(path))
+    startup = {:apply, {:application, :start_boot, [:tackle_cli, :permanent]}}
+    original = {:script, {~c"tackle_cli", ~c"0.1.0"}, [startup, {:progress, :started}]}
+    File.write!(path <> ".script", :io_lib.format(~c"~tp.~n", [original]))
+
+    assert Release.standalone_boot(release) == release
+    assert {:ok, [script]} = :file.consult(path <> ".script")
+
+    assert {:script, _,
+            [
+              ^startup,
+              {:apply, {Tackle.CLI.Standalone, :boot, []}},
+              {:progress, :started}
+            ]} = script
+
+    assert :erlang.binary_to_term(File.read!(path <> ".boot")) == script
+  end
+
   defp release_fixture(contents, libraries \\ source_libraries()) do
     release = %Mix.Release{path: tmp_dir()}
 
