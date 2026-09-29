@@ -365,7 +365,7 @@ defmodule Tackle.Runtime do
          {:ok, coordinator} <- coordinator(scope_ref),
          {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref),
          {:ok, parent_snapshot} <- Coordinator.agent_snapshot(coordinator, parent_ref) do
-      limits = Coordinator.snapshot(coordinator).limits
+      limits = parent_snapshot.limits
       workflow_ref = WorkflowRef.new!(scope_ref.scope_id, ID.generate())
 
       handle =

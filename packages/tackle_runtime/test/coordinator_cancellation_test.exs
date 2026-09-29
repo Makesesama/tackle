@@ -28,6 +28,19 @@ defmodule Tackle.AgentScope.CoordinatorCancellationTest do
     %{coordinator: coordinator, root_ref: root_ref, child_spec: child_spec}
   end
 
+  test "agent snapshot returns scope limits even with pending descendants", %{
+    coordinator: coordinator,
+    root_ref: root_ref,
+    child_spec: child_spec
+  } do
+    assert {:ok, %{agent_ref: child_ref}} =
+             Coordinator.admit_agent(coordinator, root_ref, child_spec)
+
+    limits = Coordinator.snapshot(coordinator).limits
+    assert {:ok, %{limits: ^limits}} = Coordinator.agent_snapshot(coordinator, root_ref)
+    assert {:ok, %{limits: ^limits}} = Coordinator.agent_snapshot(coordinator, child_ref)
+  end
+
   test "a cancelled pending reservation cannot register, acquire a turn, or admit children", %{
     coordinator: coordinator,
     root_ref: root_ref,

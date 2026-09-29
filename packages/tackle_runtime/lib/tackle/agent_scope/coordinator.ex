@@ -427,6 +427,7 @@ defmodule Tackle.AgentScope.Coordinator do
       depth: entry.depth,
       lifetime: entry.lifetime,
       allow_delegation: entry.allow_delegation,
+      limits: state.limits,
       cancelled: entry.cancelled,
       child_count: MapSet.size(entry.children),
       active_turn?: MapSet.member?(state.turns, entry.ref.agent_id)

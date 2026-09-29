@@ -515,6 +515,22 @@ defmodule Tackle.Runtime.Request do
       GenServer.reply(from, outcome)
     end)
 
+    # A retained request still serves status/collection, but its launch inputs
+    # and one-shot completion callbacks are no longer needed after notification.
+    state = %{
+      state
+      | scope_ref: nil,
+        coordinator: nil,
+        agent_spec: nil,
+        prompt: nil,
+        requester: nil,
+        allow_delegation: nil,
+        limits: nil,
+        timeout: nil,
+        completion_message: nil,
+        profile: nil
+    }
+
     cond do
       map_size(state.awaiters) > 0 ->
         send(self(), :collected)
