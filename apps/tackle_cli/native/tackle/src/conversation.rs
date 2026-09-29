@@ -168,3 +168,46 @@ fn conversation_render(
     let lines = surface::lines(&buffer).map_err(|reason| Error::Term(Box::new(reason)))?;
     Ok((atoms::ok(), lines))
 }
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn conversation_sections(
+    sections: Vec<Vec<ResourceArc<CellResource>>>,
+    width: u16,
+) -> NifResult<(ResourceArc<ConversationResource>, usize)> {
+    if width == 0
+        || sections
+            .iter()
+            .flatten()
+            .any(|cell| cell.0.width() != width)
+    {
+        return Err(Error::BadArg);
+    }
+    let sections = sections
+        .into_iter()
+        .map(|cells| cells.into_iter().map(|cell| cell.0.clone()).collect())
+        .collect();
+    let conversation = Conversation::from_sections(sections);
+    let height = conversation.height;
+    Ok((
+        ResourceArc::new(ConversationResource(conversation, width)),
+        height,
+    ))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn conversation_replace(
+    resource: ResourceArc<ConversationResource>,
+    index: usize,
+    cells: Vec<ResourceArc<CellResource>>,
+) -> NifResult<(ResourceArc<ConversationResource>, usize)> {
+    if cells.iter().any(|cell| cell.0.width() != resource.1) {
+        return Err(Error::BadArg);
+    }
+    let cells = cells.into_iter().map(|cell| cell.0.clone()).collect();
+    let conversation = resource.0.replace(index, cells).ok_or(Error::BadArg)?;
+    let height = conversation.height;
+    Ok((
+        ResourceArc::new(ConversationResource(conversation, resource.1)),
+        height,
+    ))
+}

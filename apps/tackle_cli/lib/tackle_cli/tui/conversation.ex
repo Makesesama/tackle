@@ -27,7 +27,8 @@ defmodule Tackle.CLI.TUI.Conversation do
           entries: [MessageView.t()],
           width: pos_integer() | nil,
           groups: [[MessageView.widget_item()]],
-          item_ids: [[String.t()]]
+          item_ids: [[String.t()]],
+          cells: %{optional(String.t()) => map()}
         }
 
   @typedoc "A stable reading position: an entry id plus a row offset inside it."
@@ -47,6 +48,8 @@ defmodule Tackle.CLI.TUI.Conversation do
           viewport_height: non_neg_integer(),
           rect: Rect.t(),
           sections: %{optional(section()) => section_cache()},
+          layouts: [map()],
+          spacer: MessageView.widget_item() | nil,
           items: [MessageView.widget_item()],
           item_ids: [String.t() | nil],
           visible_items: [MessageView.widget_item()],
@@ -66,6 +69,8 @@ defmodule Tackle.CLI.TUI.Conversation do
             viewport_height: 0,
             rect: %Rect{},
             sections: %{},
+            layouts: [],
+            spacer: nil,
             items: [],
             item_ids: [],
             visible_items: [],
@@ -80,14 +85,16 @@ defmodule Tackle.CLI.TUI.Conversation do
   @doc "Creates an empty conversation model for the transcript rect."
   @spec new(Rect.t()) :: t()
   def new(%Rect{} = rect) do
-    {native, 0} = NativeConversation.assemble([], max(rect.width, 1))
+    width = max(rect.width, 1)
+    {native, 0} = NativeConversation.assemble_sections([[], [], [], []], width)
 
     %__MODULE__{
       native: native,
       width: max(rect.width, 1),
       viewport_height: max(rect.height, 0),
       rect: rect,
-      sections: empty_sections()
+      sections: empty_sections(),
+      spacer: NativeConversation.spacer(width)
     }
   end
 
@@ -97,19 +104,24 @@ defmodule Tackle.CLI.TUI.Conversation do
     anchor = reading_anchor(conversation)
     width = max(rect.width, 1)
 
-    {sections, items, item_ids, native, content_height} =
+    {sections, layouts, spacer, items, item_ids, native, content_height} =
       if width == conversation.width do
-        {conversation.sections, conversation.items, conversation.item_ids, conversation.native,
-         conversation.content_height}
+        {conversation.sections, conversation.layouts, conversation.spacer, conversation.items,
+         conversation.item_ids, conversation.native, conversation.content_height}
       else
         sections =
           Map.new(conversation.sections, fn {section, cache} ->
             {section, cache_entries(cache.entries, width, cache)}
           end)
 
-        {items, item_ids} = build_items(sections, width, conversation.welcome_model)
-        {native, height} = NativeConversation.assemble(items, width)
-        {sections, items, item_ids, native, height}
+        spacer = NativeConversation.spacer(width)
+        layouts = build_layouts(sections, [], spacer, width, conversation.welcome_model)
+        {items, item_ids} = flatten_layouts(layouts)
+
+        {native, height} =
+          NativeConversation.assemble_sections(Enum.map(layouts, & &1.items), width)
+
+        {sections, layouts, spacer, items, item_ids, native, height}
       end
 
     resized = %{
@@ -120,6 +132,8 @@ defmodule Tackle.CLI.TUI.Conversation do
         native: native,
         selected_entry: conversation.selected_entry,
         sections: sections,
+        layouts: layouts,
+        spacer: spacer,
         items: items,
         item_ids: item_ids,
         content_height: content_height,
@@ -136,7 +150,7 @@ defmodule Tackle.CLI.TUI.Conversation do
           max_offset
 
         anchor ->
-          anchor_offset(resized.item_ids, resized.items, anchor) ||
+          anchor_offset(resized, anchor) ||
             min(conversation.scroll_offset, max_offset)
 
         true ->
@@ -154,7 +168,7 @@ defmodule Tackle.CLI.TUI.Conversation do
     |> put_visible()
   end
 
-  @doc "Refreshes selected sections and recalculates the complete row model."
+  @doc "Refreshes selected sections, retaining unchanged cells and layout snapshots."
   @spec refresh(t(), map()) :: t()
   @spec refresh(t(), map(), [section()]) :: t()
   def refresh(%__MODULE__{} = conversation, state, sections \\ @sections) do
@@ -172,11 +186,48 @@ defmodule Tackle.CLI.TUI.Conversation do
       end)
 
     welcome_model = model_ref(state)
-    {items, item_ids} = build_items(section_cache, conversation.width, welcome_model)
-    {native, content_height} = NativeConversation.assemble(items, conversation.width)
+
+    layouts =
+      build_layouts(
+        section_cache,
+        conversation.layouts,
+        conversation.spacer,
+        conversation.width,
+        welcome_model
+      )
+
+    layout_changed? = layouts != conversation.layouts
+    layouts = if layout_changed?, do: layouts, else: conversation.layouts
+
+    {items, item_ids, native, content_height} =
+      if layout_changed? do
+        {items, item_ids} = flatten_layouts(layouts)
+
+        {native, height} =
+          layouts
+          |> Enum.with_index()
+          |> Enum.reduce({conversation.native, conversation.content_height}, fn {layout, index},
+                                                                                acc ->
+            if layout == Enum.at(conversation.layouts, index) do
+              acc
+            else
+              {native, _height} = acc
+              NativeConversation.replace_section(native, index, layout.items)
+            end
+          end)
+
+        {items, item_ids, native, height}
+      else
+        {conversation.items, conversation.item_ids, conversation.native,
+         conversation.content_height}
+      end
+
     max_offset = max(content_height - conversation.viewport_height, 0)
 
-    anchored_offset = anchor_offset(item_ids, items, preserved_anchor)
+    anchored_offset =
+      if layout_changed?,
+        do: anchor_offset(%{conversation | layouts: layouts}, preserved_anchor),
+        else: conversation.scroll_offset
 
     {scroll_offset, follow?} =
       if conversation.follow? do
@@ -201,6 +252,7 @@ defmodule Tackle.CLI.TUI.Conversation do
       | native: native,
         selected_entry: Map.get(state, :selected_entry),
         sections: section_cache,
+        layouts: layouts,
         items: items,
         item_ids: item_ids,
         content_height: content_height,
@@ -216,9 +268,11 @@ defmodule Tackle.CLI.TUI.Conversation do
       | text_selection: Tackle.CLI.TUI.TextSelection.reconcile(conversation, refreshed)
     }
 
-    refreshed
-    |> put_anchor()
-    |> put_visible()
+    if layout_changed? do
+      refreshed |> put_anchor() |> put_visible()
+    else
+      %{refreshed | anchor: preserved_anchor}
+    end
   end
 
   @doc "Scrolls by a row delta and updates follow-to-latest state."
@@ -262,11 +316,11 @@ defmodule Tackle.CLI.TUI.Conversation do
   @doc "Reveals a stable entry without changing the active agent turn."
   @spec scroll_to_entry(t(), String.t()) :: t()
   def scroll_to_entry(%__MODULE__{} = conversation, id) when is_binary(id) do
-    case entry_offset(conversation.item_ids, conversation.items, id) do
+    case entry_span(conversation, id) do
       nil ->
         conversation
 
-      offset ->
+      {offset, _height} ->
         conversation
         |> Map.merge(%{scroll_offset: offset, follow?: false, new_output?: false})
         |> put_anchor()
@@ -413,16 +467,32 @@ defmodule Tackle.CLI.TUI.Conversation do
   def mouse_scroll_rows, do: @mouse_scroll_rows
 
   defp empty_sections do
-    Map.new(@sections, &{&1, %{entries: [], groups: [], item_ids: [], width: nil}})
+    Map.new(@sections, &{&1, %{entries: [], groups: [], item_ids: [], cells: %{}, width: nil}})
   end
 
   @doc "Returns the native widget for this immutable transcript snapshot."
   @spec widget(t()) :: NativeConversation.t()
   def widget(%__MODULE__{} = conversation) do
     selected =
-      for {id, index} <- Enum.with_index(conversation.item_ids),
-          id && id == conversation.selected_entry,
-          do: index
+      if conversation.selected_entry do
+        {indices, _base} =
+          Enum.map_reduce(conversation.layouts, 0, fn layout, base ->
+            indices =
+              case Map.get(layout.spans, conversation.selected_entry) do
+                %{indices: indices} ->
+                  indices |> Enum.reverse() |> Enum.map(&(&1 + base))
+
+                nil ->
+                  []
+              end
+
+            {indices, base + tuple_size(layout.rows)}
+          end)
+
+        List.flatten(indices)
+      else
+        []
+      end
 
     %NativeConversation{
       state: conversation.native,
@@ -443,189 +513,263 @@ defmodule Tackle.CLI.TUI.Conversation do
   end
 
   defp cache_entries(entries, width, previous) do
-    cached =
-      if Map.get(previous, :width) == width,
-        do:
-          Map.new(Enum.zip(previous.entries, previous.groups), fn {entry, group} ->
-            {entry.id, {entry, group}}
-          end),
-        else: %{}
+    if previous.width == width and previous.entries == entries do
+      previous
+    else
+      cached =
+        if previous.width == width,
+          do:
+            Map.new(Enum.zip(previous.entries, previous.groups), fn {entry, group} ->
+              {entry.id, {entry, group}}
+            end),
+          else: %{}
 
-    groups =
-      Enum.map(entries, fn entry ->
-        case Map.get(cached, entry.id) do
-          {^entry, group} -> group
-          _ -> NativeConversation.cell(entry, width)
-        end
-      end)
+      {groups, cells} =
+        Enum.map_reduce(entries, %{}, fn entry, cells ->
+          previous_cells = Map.get(Map.get(previous, :cells, %{}), entry.id, %{})
 
-    item_ids =
-      Enum.zip(entries, groups)
-      |> Enum.map(fn {entry, items} -> List.duplicate(entry.id, length(items)) end)
+          {group, cell_cache} =
+            case Map.get(cached, entry.id) do
+              {^entry, group} -> {group, previous_cells}
+              _ -> NativeConversation.cached_cell(entry, width, previous_cells)
+            end
 
-    %{entries: entries, groups: groups, item_ids: item_ids, width: width}
+          {group, Map.put(cells, entry.id, cell_cache)}
+        end)
+
+      item_ids =
+        Enum.zip(entries, groups)
+        |> Enum.map(fn {entry, items} -> List.duplicate(entry.id, length(items)) end)
+
+      %{entries: entries, groups: groups, item_ids: item_ids, cells: cells, width: width}
+    end
   end
 
-  defp build_items(section_cache, width, welcome_model) do
-    groups =
-      Enum.flat_map(@sections, fn section ->
-        cache = Map.fetch!(section_cache, section)
-        Enum.zip(cache.groups, cache.item_ids)
+  defp build_layouts(section_cache, previous, spacer, width, welcome_model) do
+    welcome? = Enum.all?(@sections, &(section_cache[&1].groups == []))
+
+    @sections
+    |> Enum.with_index()
+    |> Enum.map_reduce(false, fn {section, index}, seen? ->
+      cache = Map.fetch!(section_cache, section)
+      welcome = welcome? and index == 0
+      key = {cache.groups, cache.item_ids, seen?, if(welcome, do: {:welcome, welcome_model})}
+      old = Enum.at(previous, index)
+
+      layout =
+        if old && old.key == key do
+          old
+        else
+          {groups, ids} =
+            if welcome do
+              group = NativeConversation.cell(MessageView.welcome_entry(welcome_model), width)
+              {[group], [List.duplicate("welcome", length(group))]}
+            else
+              {cache.groups, cache.item_ids}
+            end
+
+          items = groups |> Enum.intersperse([spacer]) |> List.flatten()
+          item_ids = ids |> Enum.intersperse([nil]) |> List.flatten()
+
+          {items, item_ids} =
+            if seen? and groups != [],
+              do: {[spacer | items], [nil | item_ids]},
+              else: {items, item_ids}
+
+          index_layout(key, items, item_ids)
+        end
+
+      {layout, seen? or layout.items != []}
+    end)
+    |> elem(0)
+  end
+
+  defp index_layout(key, items, ids) do
+    {rows, spans, height} =
+      Enum.zip(items, ids)
+      |> Enum.with_index()
+      |> Enum.reduce({[], %{}, 0}, fn {{{cell, height}, id}, index}, {rows, spans, top} ->
+        spans =
+          if id do
+            Map.update(spans, id, %{top: top, height: height, indices: [index]}, fn span ->
+              contiguous? = hd(span.indices) == index - 1 and span.top + span.height == top
+
+              %{
+                span
+                | indices: [index | span.indices],
+                  height: if(contiguous?, do: span.height + height, else: span.height)
+              }
+            end)
+          else
+            spans
+          end
+
+        {[{top, {cell, height}, id} | rows], spans, top + height}
       end)
 
-    groups =
-      if groups == [] do
-        welcome = NativeConversation.cell(MessageView.welcome_entry(welcome_model), width)
-        [{welcome, List.duplicate("welcome", length(welcome))}]
-      else
-        groups
-      end
+    %{
+      key: key,
+      items: items,
+      item_ids: ids,
+      rows: rows |> Enum.reverse() |> List.to_tuple(),
+      spans: spans,
+      height: height
+    }
+  end
 
-    pairs =
-      groups
-      |> Enum.map(fn {group, ids} -> Enum.zip(group, ids) end)
-      |> Enum.intersperse([{NativeConversation.spacer(width), nil}])
-      |> List.flatten()
-
-    items = Enum.map(pairs, fn {item, _id} -> item end)
-    item_ids = Enum.map(pairs, fn {_item, id} -> id end)
-    {items, item_ids}
+  # Preserve the flat compatibility fields; expensive native placement and row
+  # indexes are retained per section instead of being rebuilt from this list.
+  defp flatten_layouts(layouts) do
+    {Enum.flat_map(layouts, & &1.items), Enum.flat_map(layouts, & &1.item_ids)}
   end
 
   defp model_ref(%{agent_state: %{llm: %{ref: ref}}}) when is_binary(ref), do: ref
   defp model_ref(%{agent_state: %{model: model}}) when is_binary(model), do: model
   defp model_ref(_state), do: nil
 
-  defp put_visible(%__MODULE__{} = conversation) do
-    {visible_items, visible_offset} =
-      slice(conversation.items, conversation.scroll_offset, conversation.viewport_height)
+  @doc false
+  @spec same_prefix?(t(), t(), non_neg_integer()) :: boolean()
+  def same_prefix?(%__MODULE__{} = old, %__MODULE__{} = new, last_row),
+    do: same_prefix_layouts?(old.layouts, new.layouts, last_row)
 
-    %{conversation | visible_items: visible_items, visible_offset: visible_offset}
+  defp same_prefix_layouts?([], [], _row), do: true
+
+  defp same_prefix_layouts?([old | olds], [new | news], row) do
+    cond do
+      old == new ->
+        row < old.height or same_prefix_layouts?(olds, news, row - old.height)
+
+      true ->
+        prefix_rows(old.rows, row) == prefix_rows(new.rows, row) and
+          (row < old.height or same_prefix_layouts?(olds, news, row - old.height))
+    end
+  end
+
+  defp same_prefix_layouts?(_, _, _row), do: false
+
+  defp prefix_rows(rows, row) do
+    last = row_index(rows, row)
+
+    if tuple_size(rows) == 0 do
+      []
+    else
+      for index <- 0..last do
+        {top, {cell, height}, id} = elem(rows, index)
+        {top, height, if(id, do: cell, else: :spacer)}
+      end
+    end
+  end
+
+  defp put_visible(%__MODULE__{} = conversation) do
+    {visible, offset} =
+      visible(conversation.layouts, conversation.scroll_offset, conversation.viewport_height)
+
+    %{conversation | visible_items: visible, visible_offset: offset}
+  end
+
+  # Skip whole retained sections, then binary-search the first visible cell.
+  defp visible([], _offset, _height), do: {[], 0}
+
+  defp visible([layout | rest], offset, height) when offset >= layout.height,
+    do: visible(rest, offset - layout.height, height)
+
+  defp visible([layout | rest], offset, height) do
+    index = row_index(layout.rows, offset)
+    {top, _item, _id} = elem(layout.rows, index)
+    within = offset - top
+    {items, remaining} = take_rows(layout.rows, index, height + within, [])
+    more = if remaining > 0, do: elem(visible(rest, 0, remaining), 0), else: []
+    {items ++ more, within}
+  end
+
+  defp take_rows(rows, index, remaining, acc) when index >= tuple_size(rows) or remaining <= 0,
+    do: {Enum.reverse(acc), remaining}
+
+  defp take_rows(rows, index, remaining, acc) do
+    {_top, {_cell, height} = item, _id} = elem(rows, index)
+    take_rows(rows, index + 1, remaining - height, [item | acc])
+  end
+
+  defp row_index(rows, offset), do: row_index(rows, offset, 0, tuple_size(rows))
+  defp row_index(_rows, _offset, low, high) when low >= high, do: max(low - 1, 0)
+
+  defp row_index(rows, offset, low, high) do
+    mid = div(low + high, 2)
+    {top, _, _} = elem(rows, mid)
+
+    if top <= offset,
+      do: row_index(rows, offset, mid + 1, high),
+      else: row_index(rows, offset, low, mid)
   end
 
   defp put_anchor(%__MODULE__{follow?: true} = conversation), do: %{conversation | anchor: nil}
-
-  defp put_anchor(%__MODULE__{} = conversation),
-    do: %{conversation | anchor: capture_anchor(conversation)}
-
+  defp put_anchor(conversation), do: %{conversation | anchor: capture_anchor(conversation)}
   defp reading_anchor(%__MODULE__{follow?: true}), do: nil
+  defp reading_anchor(conversation), do: conversation.anchor || capture_anchor(conversation)
 
-  defp reading_anchor(%__MODULE__{} = conversation),
-    do: conversation.anchor || capture_anchor(conversation)
+  defp capture_anchor(conversation) do
+    case locate(conversation.layouts, conversation.scroll_offset, 0) do
+      nil ->
+        nil
 
-  defp capture_anchor(%__MODULE__{items: [], item_ids: []}), do: nil
+      {layout, index, _base} ->
+        {_top, _item, id} = elem(layout.rows, index)
+        id = id || nearest_id(conversation.layouts, layout, index)
 
-  defp capture_anchor(%__MODULE__{items: items, item_ids: item_ids, scroll_offset: offset}) do
-    {index, within} = locate_offset(items, offset)
-    id = Enum.at(item_ids, index) || nearest_id(item_ids, index)
-
-    if is_binary(id) do
-      first = Enum.find_index(item_ids, &(&1 == id))
-
-      %{id: id, offset: prior_row_count(items, first, index) + within}
-    end
-  end
-
-  defp prior_row_count(_items, first, index) when first >= index, do: 0
-
-  defp prior_row_count(items, first, index) do
-    items
-    |> Enum.slice(first, index - first)
-    |> Enum.reduce(0, fn {_, height}, sum -> sum + height end)
-  end
-
-  # Returns the item index containing `offset` and the row offset within it.
-  # An offset at or beyond the end of the transcript maps to the final item.
-  defp locate_offset(items, offset) do
-    result =
-      items
-      |> Enum.with_index()
-      |> Enum.reduce_while(offset, fn {{_item, height}, index}, remaining ->
-        height = max(height, 1)
-
-        if remaining < height do
-          {:halt, {index, remaining}}
-        else
-          {:cont, remaining - height}
+        case entry_span(conversation, id) do
+          {start, _height} -> %{id: id, offset: max(conversation.scroll_offset - start, 0)}
+          nil -> nil
         end
-      end)
-
-    case result do
-      {index, within} -> {index, within}
-      _remaining -> {max(length(items) - 1, 0), offset}
     end
   end
 
-  # Spacer rows have no entry id. Anchor to the next real entry, falling back
-  # to the previous one, so resize does not jump to an unrelated passage.
-  defp nearest_id(item_ids, index) do
-    forward =
-      index..(length(item_ids) - 1)
-      |> Enum.find_value(fn position -> binary_at(item_ids, position) end)
+  defp locate([], _offset, _base), do: nil
+
+  defp locate([layout | rest], offset, base) when offset >= layout.height,
+    do: locate(rest, offset - layout.height, base + layout.height)
+
+  defp locate([layout | _], offset, base), do: {layout, row_index(layout.rows, offset), base}
+
+  # Spacer rows anchor to the next entry, or the preceding entry at the end.
+  defp nearest_id(layouts, current, index) do
+    position = Enum.find_index(layouts, &(&1 == current))
+    forward = next_id(current.rows, index + 1, 1)
 
     forward ||
-      (index - 1)..0
-      |> Enum.find_value(fn position -> binary_at(item_ids, position) end)
+      layouts |> Enum.drop(position + 1) |> Enum.find_value(&next_id(&1.rows, 0, 1)) ||
+      next_id(current.rows, index - 1, -1) ||
+      layouts
+      |> Enum.take(position)
+      |> Enum.reverse()
+      |> Enum.find_value(&next_id(&1.rows, tuple_size(&1.rows) - 1, -1))
   end
 
-  defp binary_at(item_ids, position) do
-    case Enum.at(item_ids, position) do
-      id when is_binary(id) -> id
-      _none -> nil
+  defp next_id(rows, index, _step) when index < 0 or index >= tuple_size(rows), do: nil
+
+  defp next_id(rows, index, step) do
+    {_, _, id} = elem(rows, index)
+    id || next_id(rows, index + step, step)
+  end
+
+  defp anchor_offset(_conversation, nil), do: nil
+
+  defp anchor_offset(conversation, %{id: id, offset: offset}) do
+    case entry_span(conversation, id) do
+      {top, height} -> top + min(offset, max(height - 1, 0))
+      nil -> nil
     end
   end
 
-  defp anchor_offset(_item_ids, _items, nil), do: nil
-
-  defp anchor_offset(item_ids, items, %{id: id, offset: offset}) do
-    case Enum.find_index(item_ids, &(&1 == id)) do
-      nil ->
-        nil
-
-      index ->
-        height =
-          Enum.zip(item_ids, items)
-          |> Enum.drop(index)
-          |> Enum.take_while(fn {item_id, _} -> item_id == id end)
-          |> Enum.reduce(0, fn {_, {_, height}}, total -> total + height end)
-
-        preceding =
-          items |> Enum.take(index) |> Enum.reduce(0, fn {_item, h}, total -> total + h end)
-
-        preceding + min(offset, max(height - 1, 0))
-    end
-  end
-
-  defp entry_offset(item_ids, items, id) do
-    case Enum.find_index(item_ids, &(&1 == id)) do
-      nil ->
-        nil
-
-      index ->
-        items |> Enum.take(index) |> Enum.reduce(0, fn {_item, h}, total -> total + h end)
-    end
-  end
-
-  # Returns the row offset and height of an entry, or nil when it is absent.
-  defp entry_span(%__MODULE__{} = conversation, id) do
-    case Enum.find_index(conversation.item_ids, &(&1 == id)) do
-      nil ->
-        nil
-
-      index ->
-        top =
-          conversation.items
-          |> Enum.take(index)
-          |> Enum.reduce(0, fn {_item, h}, offset -> offset + h end)
-
-        height =
-          conversation.item_ids
-          |> Enum.zip(conversation.items)
-          |> Enum.drop(index)
-          |> Enum.take_while(fn {item_id, _item} -> item_id == id end)
-          |> Enum.reduce(0, fn {_item_id, {_widget, h}}, total -> total + h end)
-
-        {top, height}
+  defp entry_span(conversation, id) do
+    Enum.reduce_while(conversation.layouts, 0, fn layout, base ->
+      case Map.get(layout.spans, id) do
+        %{top: top, height: height} -> {:halt, {base + top, height}}
+        nil -> {:cont, base + layout.height}
+      end
+    end)
+    |> case do
+      {top, height} -> {top, height}
+      _ -> nil
     end
   end
 

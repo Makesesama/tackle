@@ -38,6 +38,8 @@ defmodule Tackle.CLI.Native do
     do: :erlang.nif_error(:nif_not_loaded)
 
   def conversation_new(_cells, _width), do: :erlang.nif_error(:nif_not_loaded)
+  def conversation_sections(_sections, _width), do: :erlang.nif_error(:nif_not_loaded)
+  def conversation_replace(_state, _index, _cells), do: :erlang.nif_error(:nif_not_loaded)
 
   def conversation_row(_state, _row), do: :erlang.nif_error(:nif_not_loaded)
   def conversation_selection_text(_state, _range), do: :erlang.nif_error(:nif_not_loaded)

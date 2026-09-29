@@ -46,6 +46,23 @@ defmodule Tackle.CLI.TUI.ConversationTest do
     assert Enum.count_until(Conversation.search(conversation, "message"), 201) == 200
   end
 
+  test "spacer anchors choose the next entry within and across retained sections" do
+    state = %{
+      projection([Message.user("one"), Message.user("two")])
+      | stream: %Stream{timeline: [%{kind: :assistant, content: "tail"}]}
+    }
+
+    old = Conversation.new(%Rect{width: 80, height: 1}) |> Conversation.refresh(state)
+
+    for {offset, id} <- [{1, "message:1:user"}, {3, "streaming:response"}] do
+      scrolled = old |> Conversation.scroll_to(:start) |> Conversation.scroll(offset)
+      assert scrolled.anchor == %{id: id, offset: 0}
+      updated = Conversation.refresh(scrolled, state, [:turn])
+      assert updated.scroll_offset == scrolled.scroll_offset
+      assert updated.anchor == scrolled.anchor
+    end
+  end
+
   defp projection(messages) do
     %{
       agent_state: %State{messages: messages},

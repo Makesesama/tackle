@@ -195,7 +195,7 @@ defmodule Tackle.CLI.TUI.TextSelection do
       {_start, {last_row, _}} = range ->
         same? =
           old.width == new.width and last_row < new.content_height and
-            (prefix(stable_items(old), last_row) == prefix(stable_items(new), last_row) or
+            (Conversation.same_prefix?(old, new, last_row) or
                same_text?(old, new, range))
 
         if same?, do: old.text_selection, else: nil
@@ -215,19 +215,6 @@ defmodule Tackle.CLI.TUI.TextSelection do
   end
 
   defp same_text?(_old, _new, _range), do: false
-
-  defp stable_items(c) do
-    Enum.zip_with(c.items, c.item_ids, fn {cell, height}, id ->
-      {if(id == nil, do: :spacer, else: cell), height}
-    end)
-  end
-
-  defp prefix([], _row), do: []
-
-  defp prefix([item = {_, height} | rest], row) when row >= height,
-    do: [item | prefix(rest, row - height)]
-
-  defp prefix([item | _], _row), do: [item]
 
   defp edge_scroll(state, y) do
     rect = state.conversation.rect

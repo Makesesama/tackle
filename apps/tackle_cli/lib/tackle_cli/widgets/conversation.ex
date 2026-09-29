@@ -33,38 +33,58 @@ defmodule Tackle.CLI.Widgets.Conversation do
 
   @doc false
   @spec cell(MessageView.t(), pos_integer()) :: [{Cell.t(), non_neg_integer()}]
-  def cell(%MessageView{kind: kind} = entry, width) when kind in [:assistant, :user] do
-    base =
-      if kind == :user,
-        do: Theme.merge(Theme.style(:user_surface), entry.style),
-        else: entry.style
+  def cell(%MessageView{kind: :assistant} = entry, width) do
+    {items, _cache} = cached_cell(entry, width, %{})
+    items
+  end
 
-    marker = if kind == :user, do: "›", else: "●"
+  def cell(%MessageView{kind: :user} = entry, width) do
+    base = Theme.merge(Theme.style(:user_surface), entry.style)
 
-    if kind == :assistant do
-      entry.content
-      |> CodeFences.split()
-      |> Enum.with_index()
-      |> Enum.map(fn {segment, index} ->
-        assistant_cell(segment, index == 0, width, base, marker)
-      end)
-    else
-      {resource, height} =
-        Native.conversation_message(
-          entry.content,
-          width,
-          false,
-          style(base),
-          {marker, style(Theme.style(:accent_soft))}
-        )
+    {resource, height} =
+      Native.conversation_message(
+        entry.content,
+        width,
+        false,
+        style(base),
+        {"›", style(Theme.style(:accent_soft))}
+      )
 
-      [{%Cell{state: resource, style: base}, height}]
-    end
+    [{%Cell{state: resource, style: base}, height}]
   end
 
   def cell(%MessageView{} = entry, width) do
     entry |> MessageView.render_entry(width) |> Enum.map(&paragraph_cell(&1, width))
   end
+
+  @doc false
+  @spec cached_cell(MessageView.t(), pos_integer(), map()) ::
+          {[{Cell.t(), non_neg_integer()}], map()}
+  def cached_cell(%MessageView{kind: :assistant} = entry, width, previous) do
+    # Rescan the complete source: an appended fence delimiter can change the
+    # segmentation. Reuse only identical segments, never arbitrary Markdown
+    # paragraphs whose meaning can depend on later reference definitions.
+    {items, cache} =
+      entry.content
+      |> CodeFences.split()
+      |> Enum.with_index()
+      |> Enum.map_reduce(%{}, fn {segment, index}, cache ->
+        key = {segment, index == 0, width, entry.style}
+
+        item =
+          case Map.fetch(previous, key) do
+            {:ok, item} -> item
+            :error -> assistant_cell(segment, index == 0, width, entry.style, "●")
+          end
+
+        {item, Map.put(cache, key, item)}
+      end)
+
+    # Retain only this snapshot's segments, not every version of the live tail.
+    {items, cache}
+  end
+
+  def cached_cell(%MessageView{} = entry, width, _previous), do: {cell(entry, width), %{}}
 
   defp assistant_cell({:markdown, content}, first?, width, base, marker) do
     {resource, height} =
@@ -127,6 +147,18 @@ defmodule Tackle.CLI.Widgets.Conversation do
   def assemble(items, width) do
     Native.conversation_new(Enum.map(items, fn {%Cell{state: state}, _} -> state end), width)
   end
+
+  @doc false
+  def assemble_sections(sections, width) do
+    Native.conversation_sections(Enum.map(sections, &cell_states/1), width)
+  end
+
+  @doc false
+  def replace_section(state, index, items) do
+    Native.conversation_replace(state, index, cell_states(items))
+  end
+
+  defp cell_states(items), do: Enum.map(items, fn {%Cell{state: state}, _} -> state end)
 
   @spec render(t(), Rect.t()) :: [{struct(), Rect.t()}]
   def render(%__MODULE__{} = widget, %Rect{} = rect) do
