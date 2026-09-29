@@ -407,6 +407,19 @@ Old scene snapshots remain valid after updates. ExRatatui still owns the
 terminal and receives only the viewport's owned styled rows—no NIF resources
 or pointers are shared between native libraries.
 
+Unchanged assistant segments (including completed code fences) are reused even
+when another segment in the same response changes. Fence boundaries are rescanned
+from complete source, and each changed prose segment is parsed in full: arbitrary
+paragraph prefixes are not frozen because later Markdown can change their meaning.
+Only the current segment versions are cached. Open code fences still run full
+syntax highlighting on each source change; there is no incremental highlighter.
+
+Native snapshots share unchanged section placement indexes; only changed sections
+cross the assembly boundary. No-op and selection-only refreshes retain the complete
+snapshot. Cached section row indexes drive viewport slicing and reading anchors.
+The flat Elixir item/ID lists remain available and are copied on layout changes,
+so updates are not strictly O(delta) for arbitrarily large histories.
+
 The conversation uses a content-first layout, drawing on Codex's hanging message
 gutters and Opal's compact, target-first tool headings. Assistant Markdown has a
 small `●` gutter; plain user prompts keep a subtle background and `›` marker.
@@ -635,6 +648,9 @@ mix test
 mix format --check-formatted
 cargo test --manifest-path native/tackle/Cargo.toml
 cargo fmt --manifest-path native/tackle/Cargo.toml --check
+
+# Credential-free warmed transcript preparation/paint probes (not terminal latency)
+MIX_ENV=test mix run --no-start bench/conversation.exs
 ```
 
 The custom input uses the existing Rust dependencies; the native conversation

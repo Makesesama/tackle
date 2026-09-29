@@ -223,14 +223,14 @@ impl HistoryCell {
     }
 }
 
-pub struct Conversation {
+struct Section {
     cells: Vec<Arc<HistoryCell>>,
     tops: Vec<usize>,
-    pub height: usize,
+    height: usize,
 }
 
-impl Conversation {
-    pub fn new(cells: Vec<Arc<HistoryCell>>) -> Self {
+impl Section {
+    fn new(cells: Vec<Arc<HistoryCell>>) -> Self {
         let mut height = 0;
         let tops = cells
             .iter()
@@ -245,6 +245,56 @@ impl Conversation {
             tops,
             height,
         }
+    }
+}
+
+pub struct Conversation {
+    sections: Vec<Arc<Section>>,
+    tops: Vec<usize>,
+    cell_starts: Vec<usize>,
+    pub height: usize,
+}
+
+impl Conversation {
+    pub fn new(cells: Vec<Arc<HistoryCell>>) -> Self {
+        Self::from_sections(vec![cells])
+    }
+
+    pub fn from_sections(sections: Vec<Vec<Arc<HistoryCell>>>) -> Self {
+        Self::compose(
+            sections
+                .into_iter()
+                .map(|cells| Arc::new(Section::new(cells)))
+                .collect(),
+        )
+    }
+
+    fn compose(sections: Vec<Arc<Section>>) -> Self {
+        let mut height = 0;
+        let mut cell_start = 0;
+        let mut tops = Vec::with_capacity(sections.len());
+        let mut cell_starts = Vec::with_capacity(sections.len());
+        for section in &sections {
+            tops.push(height);
+            cell_starts.push(cell_start);
+            height += section.height;
+            cell_start += section.cells.len();
+        }
+        Self {
+            sections,
+            tops,
+            cell_starts,
+            height,
+        }
+    }
+
+    pub fn replace(&self, index: usize, cells: Vec<Arc<HistoryCell>>) -> Option<Self> {
+        if index >= self.sections.len() {
+            return None;
+        }
+        let mut sections = self.sections.clone();
+        sections[index] = Arc::new(Section::new(cells));
+        Some(Self::compose(sections))
     }
 
     pub fn widget(
@@ -275,28 +325,49 @@ impl Widget for ConversationWidget<'_> {
             return;
         }
         let conversation = self.conversation;
-        let first = conversation
+        let mut first_section = conversation
             .tops
             .partition_point(|top| *top <= self.offset)
             .saturating_sub(1);
-        for index in first..conversation.cells.len() {
-            let cell = &conversation.cells[index];
-            let top = conversation.tops[index];
-            let skip = self.offset.saturating_sub(top);
-            if skip >= cell.height() {
-                continue;
-            }
-            let y = top.saturating_sub(self.offset);
-            if y >= usize::from(area.height) {
+        while first_section < conversation.sections.len() {
+            let section = &conversation.sections[first_section];
+            if section.height > 0 && conversation.tops[first_section] + section.height > self.offset
+            {
                 break;
             }
-            let height = (cell.height() - skip).min(usize::from(area.height) - y) as u16;
-            let rect = Rect::new(area.x, area.y + y as u16, area.width, height);
-            cell.render(skip, rect, buffer);
-            // Selection overrides even syntax/diff span backgrounds, not their
-            // foreground colors. The full width remains visibly selected.
-            if self.selected.contains(&index) {
-                buffer.set_style(rect, self.selection);
+            first_section += 1;
+        }
+        for section_index in first_section..conversation.sections.len() {
+            let section = &conversation.sections[section_index];
+            let section_top = conversation.tops[section_index];
+            if section_top.saturating_sub(self.offset) >= usize::from(area.height) {
+                break;
+            }
+            let local_offset = self.offset.saturating_sub(section_top);
+            let first = section
+                .tops
+                .partition_point(|top| *top <= local_offset)
+                .saturating_sub(1);
+            for local_index in first..section.cells.len() {
+                let cell = &section.cells[local_index];
+                let top = section_top + section.tops[local_index];
+                let skip = self.offset.saturating_sub(top);
+                if skip >= cell.height() {
+                    continue;
+                }
+                let y = top.saturating_sub(self.offset);
+                if y >= usize::from(area.height) {
+                    break;
+                }
+                let height = (cell.height() - skip).min(usize::from(area.height) - y) as u16;
+                let rect = Rect::new(area.x, area.y + y as u16, area.width, height);
+                cell.render(skip, rect, buffer);
+                if self
+                    .selected
+                    .contains(&(conversation.cell_starts[section_index] + local_index))
+                {
+                    buffer.set_style(rect, self.selection);
+                }
             }
         }
     }
@@ -566,5 +637,45 @@ mod tests {
         );
         assert_eq!(sanitize("ok\x1bPsecret\x1b\\!\u{9b}31mred\u{7f}"), "ok!red");
         assert_eq!(sanitize("ok\x1b]unfinished"), "ok");
+    }
+
+    #[test]
+    fn sections_match_flat_paint_and_preserve_global_selection_indices() {
+        let cell = |source: &str| Arc::new(HistoryCell::plain(source, 12, Style::default()));
+        let first = vec![cell("first"), cell("two\nrows")];
+        let second = vec![cell("third"), cell("last")];
+        let composed = Conversation::from_sections(vec![first.clone(), vec![], second.clone()]);
+        let flat = Conversation::new(first.into_iter().chain(second).collect());
+        for offset in 0..composed.height + 2 {
+            assert_eq!(paint(&composed, 12, 4, offset), paint(&flat, 12, 4, offset));
+        }
+        let mut buffer = paint(&composed, 12, 4, 0);
+        composed
+            .widget(0, &[2], Style::default().bg(Color::Cyan))
+            .render(buffer.area, &mut buffer);
+        assert_eq!(buffer[(2, 6)].bg, Color::Cyan);
+    }
+
+    #[test]
+    fn replacing_a_section_is_immutable_and_empty_sections_are_safe() {
+        let cell = |source: &str| Arc::new(HistoryCell::plain(source, 10, Style::default()));
+        let original =
+            Conversation::from_sections(vec![vec![cell("old")], vec![], vec![cell("tail")]]);
+        assert!(original.replace(3, vec![]).is_none());
+        let replaced = original.replace(0, vec![cell("new"), cell("row")]).unwrap();
+        assert!(Arc::ptr_eq(&original.sections[2], &replaced.sections[2]));
+        assert!(Arc::ptr_eq(&original.sections[1], &replaced.sections[1]));
+        assert!(!Arc::ptr_eq(&original.sections[0], &replaced.sections[0]));
+        let mut selected = paint(&replaced, 10, 3, 0);
+        replaced
+            .widget(0, &[2], Style::default().bg(Color::Cyan))
+            .render(selected.area, &mut selected);
+        assert_eq!(selected[(2, 5)].bg, Color::Cyan);
+        assert!(text(&paint(&original, 10, 3, 0)).starts_with("old       "));
+        assert!(text(&paint(&replaced, 10, 3, 0)).contains("new"));
+        assert!(text(&paint(&replaced, 10, 3, 0)).contains("tail"));
+        let all_empty = Conversation::from_sections(vec![vec![], vec![]]);
+        assert_eq!(all_empty.height, 0);
+        assert_eq!(text(&paint(&all_empty, 10, 2, 0)).trim(), "");
     }
 }
