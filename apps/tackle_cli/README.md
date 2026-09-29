@@ -543,8 +543,24 @@ This shell is an experimentation build. It intentionally does not implement:
   or a plugin presenter registry;
 - background search indexing (browser Ctrl+F search is synchronous and capped).
 
-Mouse capture is enabled for wheel scrolling, so native terminal selection
-requires the terminal's mouse-override gesture (typically Shift-drag).
+Mouse capture supports transcript text selection as well as wheel scrolling:
+- Left-drag highlights text and copies it on release (OSC 52 support required).
+- Double-click selects a word; triple-click selects a rendered line.
+- Drag to the top/bottom edge, or use the wheel while dragging, to extend the
+  selection through off-screen rows.
+- Ctrl+C copies a nonempty selection instead of quitting; Esc clears selection
+  before clearing the draft, leaving Browse, or cancelling a turn.
+
+Selection works in the conversation and Browse's Transcript page, not overlays,
+other Browse pages, or the composer. It copies painted text, including wrapping
+and visible gutters, and trims trailing spaces per row. Existing source-copy
+commands still copy complete retained source. Selection survives scrolling and
+updates below the selected cells; width changes or changes at/before selected
+cells clear it to avoid copying a different passage. Large selections are
+limited to 1,048,576 screen cells.
+
+The terminal's own copy shortcut cannot see app-owned selections. For actual
+native terminal selection, use its mouse-override gesture (typically Shift-drag).
 The non-TUI command path remains available for automation.
 
 ### Native dependencies

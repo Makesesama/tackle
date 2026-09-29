@@ -21,7 +21,10 @@ defmodule Tackle.CLI.Native do
   def browse_document(_source, _width, _style), do: :erlang.nif_error(:nif_not_loaded)
   def browse_scroll(_offset, _total, _height, _delta), do: :erlang.nif_error(:nif_not_loaded)
 
-  def browse_render(_state, _page, _width, _height, _offset, _selected, _styles),
+  def browse_render(state, page, width, height, offset, selected, styles),
+    do: browse_render(state, page, width, height, offset, selected, styles, nil)
+
+  def browse_render(_state, _page, _width, _height, _offset, _selected, _styles, _range),
     do: :erlang.nif_error(:nif_not_loaded)
 
   def conversation_markdown(_source, _width, _style), do: :erlang.nif_error(:nif_not_loaded)
@@ -36,7 +39,13 @@ defmodule Tackle.CLI.Native do
 
   def conversation_new(_cells, _width), do: :erlang.nif_error(:nif_not_loaded)
 
-  def conversation_render(_state, _width, _height, _offset, _selected, _selection),
+  def conversation_row(_state, _row), do: :erlang.nif_error(:nif_not_loaded)
+  def conversation_selection_text(_state, _range), do: :erlang.nif_error(:nif_not_loaded)
+
+  def conversation_render(state, width, height, offset, selected, selection),
+    do: conversation_render(state, width, height, offset, selected, selection, nil)
+
+  def conversation_render(_state, _width, _height, _offset, _selected, _selection, _range),
     do: :erlang.nif_error(:nif_not_loaded)
 
   # Edit preview rows: `{:del | :ins | :ctx, number, [{text, emphasized}]}` or

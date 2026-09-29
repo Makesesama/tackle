@@ -41,6 +41,7 @@ defmodule Tackle.CLI.TUI.Conversation do
 
   @type t :: %__MODULE__{
           native: reference() | nil,
+          text_selection: Tackle.CLI.TUI.TextSelection.t() | nil,
           selected_entry: String.t() | nil,
           width: pos_integer(),
           viewport_height: non_neg_integer(),
@@ -59,6 +60,7 @@ defmodule Tackle.CLI.TUI.Conversation do
         }
 
   defstruct native: nil,
+            text_selection: nil,
             selected_entry: nil,
             width: 1,
             viewport_height: 0,
@@ -141,6 +143,11 @@ defmodule Tackle.CLI.TUI.Conversation do
           min(conversation.scroll_offset, max_offset)
       end
 
+    resized = %{
+      resized
+      | text_selection: Tackle.CLI.TUI.TextSelection.reconcile(conversation, resized)
+    }
+
     resized
     |> Map.merge(%{scroll_offset: scroll_offset, follow?: conversation.follow?})
     |> put_anchor()
@@ -202,6 +209,11 @@ defmodule Tackle.CLI.TUI.Conversation do
         new_output?: new_output?,
         anchor: nil,
         welcome_model: welcome_model
+    }
+
+    refreshed = %{
+      refreshed
+      | text_selection: Tackle.CLI.TUI.TextSelection.reconcile(conversation, refreshed)
     }
 
     refreshed
@@ -415,7 +427,8 @@ defmodule Tackle.CLI.TUI.Conversation do
     %NativeConversation{
       state: conversation.native,
       scroll_offset: conversation.scroll_offset,
-      selected: selected
+      selected: selected,
+      text_selection: Tackle.CLI.TUI.TextSelection.range(conversation.text_selection)
     }
   end
 

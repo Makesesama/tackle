@@ -40,6 +40,7 @@ defmodule Tackle.CLI.TUI.Browser do
     %NativeBrowse{
       state: transcript.state,
       selected: transcript.selected,
+      text_selection: transcript.text_selection,
       scroll_offset: transcript.scroll_offset,
       page: 0
     }

@@ -68,6 +68,7 @@ defmodule Tackle.CLI.TUI do
 
   alias ExRatatui.Command
   alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
+  alias Tackle.CLI.TUI.TextSelection
   alias ExRatatui.Subscription
   alias Tackle.CLI.Keybinds
   alias Tackle.CLI.Widgets.Input
@@ -209,19 +210,36 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
+  def handle_event(%Mouse{button: "left", kind: kind} = mouse, state)
+      when kind in ["down", "drag", "up"] do
+    updated = TextSelection.mouse(mouse, state)
+    {:noreply, updated, render?: updated != state}
+  end
+
   def handle_event(_event, state), do: {:noreply, state, render?: false}
 
   defp scroll_conversation(state, mouse, delta) do
     case {Conversation.contains?(state.conversation, mouse.x, mouse.y), Browser.page?(state)} do
-      {true, true} -> {:noreply, Browser.scroll(state, delta)}
-      {true, false} -> Viewport.scroll_reply(state, Viewport.scroll(state, delta))
-      _other -> {:noreply, state, render?: false}
+      {true, true} ->
+        {:noreply, Browser.scroll(state, delta)}
+
+      {true, false} ->
+        updated = state |> Viewport.scroll(delta) |> TextSelection.after_scroll()
+        {:noreply, updated, render?: updated != state}
+
+      _other ->
+        {:noreply, state, render?: false}
     end
   end
 
   # -- runtime events ------------------------------------------------------
 
   @impl true
+  def handle_info({:text_selection_tick, token}, state) do
+    updated = TextSelection.tick(state, token)
+    {:noreply, updated, render?: updated != state}
+  end
+
   def handle_info(:host_clipboard_paste_tick, state), do: {:noreply, ClipboardPaste.poll(state)}
 
   def handle_info(
@@ -287,6 +305,22 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_key(key, state), do: dispatch(key, state)
 
   defp dispatch(key, state) do
+    selection? = TextSelection.enabled?(state) and state.conversation.text_selection != nil
+
+    cond do
+      selection? and key.code == "esc" ->
+        {:noreply, TextSelection.clear(state)}
+
+      selection? and key.code == "c" and "ctrl" in key.modifiers and
+          TextSelection.selected?(state) ->
+        {:noreply, TextSelection.copy(state)}
+
+      true ->
+        dispatch_unselected(key, state)
+    end
+  end
+
+  defp dispatch_unselected(key, state) do
     case Keybinds.global(key) do
       :quit -> quit(state)
       :unbound -> dispatch_overlay(key, state)
