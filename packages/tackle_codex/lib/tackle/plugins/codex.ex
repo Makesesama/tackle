@@ -39,7 +39,8 @@ defmodule Tackle.Plugins.Codex do
     "gpt-5.6-terra",
     "gpt-6-astra",
     "gpt-6-luna",
-    "gpt-6-sol"
+    "gpt-6-sol",
+    "gpt-6.1-sol"
   ]
   @model_info %{
     "gpt-5.3-codex-spark" => {128_000, {1.75, 14, 0.175, 0}},
@@ -51,7 +52,8 @@ defmodule Tackle.Plugins.Codex do
     "gpt-5.6-terra" => {272_000, {2, 12, 0.2, 2.5}},
     "gpt-6-astra" => {272_000, {10, 50, 1, 12.5}},
     "gpt-6-luna" => {272_000, {0.1, 0.5, 0.01, 0.125}},
-    "gpt-6-sol" => {272_000, {2, 10, 0.2, 2.5}}
+    "gpt-6-sol" => {272_000, {2, 10, 0.2, 2.5}},
+    "gpt-6.1-sol" => {272_000, {2, 10, 0.1, 2.5}}
   }
 
   @impl true
