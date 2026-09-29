@@ -27,7 +27,7 @@ defmodule Tackle.CLI.TUI.State do
   """
 
   alias Tackle.CLI.Clipboard
-  alias Tackle.CLI.TUI.{Compaction, History, Viewport}
+  alias Tackle.CLI.TUI.{Compaction, History, Preferences, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Message
@@ -83,6 +83,7 @@ defmodule Tackle.CLI.TUI.State do
           overlay: overlay(),
           focus: focus(),
           subagent_selected: String.t() | nil,
+          show_subagent_sidebar?: boolean(),
           selected_entry: String.t() | nil,
           browse_page:
             :transcript | :overview | :subagents | :prompt | :context | :tools | :events,
@@ -145,6 +146,7 @@ defmodule Tackle.CLI.TUI.State do
             overlay: nil,
             focus: :composer,
             subagent_selected: nil,
+            show_subagent_sidebar?: true,
             selected_entry: nil,
             browse_page: :transcript,
             browse_content: nil,
@@ -180,6 +182,7 @@ defmodule Tackle.CLI.TUI.State do
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
     with {:ok, agent_ref} <- Keyword.fetch(opts, :agent_ref),
+         {:ok, sidebar?} <- sidebar_preference(opts),
          {:ok, %Snapshot{} = snapshot} <- Tackle.subscribe(agent_ref),
          {:ok, agent_monitor} <- Tackle.monitor_agent(agent_ref) do
       {width, height} = initial_terminal_size(opts)
@@ -214,6 +217,7 @@ defmodule Tackle.CLI.TUI.State do
         usage_timeline_loader:
           Keyword.get(opts, :usage_timeline_loader, &__MODULE__.default_usage_timeline_loader/2),
         stream: %Stream{coalesce?: is_nil(Keyword.get(opts, :test_mode))},
+        show_subagent_sidebar?: sidebar?,
         size: {width, height},
         header_image: Keyword.get(opts, :header_image),
         conversation: Viewport.new_conversation(width, height)
@@ -223,6 +227,14 @@ defmodule Tackle.CLI.TUI.State do
     else
       :error -> {:error, :missing_agent_ref}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp sidebar_preference(opts) do
+    case Keyword.fetch(opts, :show_subagent_sidebar?) do
+      {:ok, value} when is_boolean(value) -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_option, :show_subagent_sidebar?, value}}
+      :error -> Preferences.sidebar()
     end
   end
 

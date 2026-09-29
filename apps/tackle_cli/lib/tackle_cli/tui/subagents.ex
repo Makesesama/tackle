@@ -15,6 +15,10 @@ defmodule Tackle.CLI.TUI.Subagents do
   @spec active?(State.t()) :: boolean()
   def active?(%State{} = state), do: tasks(state) != []
 
+  @doc "Whether the sidebar should be displayed for the current state."
+  @spec visible?(State.t()) :: boolean()
+  def visible?(%State{} = state), do: state.show_subagent_sidebar? and active?(state)
+
   @doc "Running delegated children in request order."
   @spec tasks(State.t()) :: [map()]
   def tasks(%State{} = state) do
@@ -36,6 +40,9 @@ defmodule Tackle.CLI.TUI.Subagents do
 
   @doc "Moves focus to the active-task sidebar, selecting the first task."
   @spec focus(State.t()) :: {:noreply, State.t()}
+  def focus(%State{show_subagent_sidebar?: false} = state),
+    do: {:noreply, %{state | notice: "Subagent sidebar is hidden"}}
+
   def focus(%State{} = state) do
     case tasks(state) do
       [] ->
@@ -69,6 +76,9 @@ defmodule Tackle.CLI.TUI.Subagents do
   remaining task.
   """
   @spec reconcile(State.t()) :: State.t()
+  def reconcile(%State{focus: :subagents, show_subagent_sidebar?: false} = state),
+    do: Viewport.relayout(%{state | focus: :composer, subagent_selected: nil})
+
   def reconcile(%State{focus: :subagents} = state) do
     case tasks(state) do
       [] -> Viewport.relayout(%{state | focus: :composer, subagent_selected: nil})

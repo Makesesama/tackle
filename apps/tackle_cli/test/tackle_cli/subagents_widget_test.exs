@@ -145,6 +145,36 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
       assert left.subagent_selected == nil
     end
 
+    test "hiding the sidebar gives the transcript full width without hiding running tasks" do
+      state = %{shell() | show_subagent_sidebar?: false} |> start("one", "Inspect")
+
+      assert Subagents.active?(state)
+      refute Subagents.visible?(state)
+      assert [%{id: "one"}] = Subagents.tasks(state)
+      assert state.conversation.rect.width == 80
+
+      {:noreply, focused} = Subagents.focus(state)
+      assert focused.focus == :composer
+      assert focused.subagent_selected == nil
+      assert focused.notice == "Subagent sidebar is hidden"
+
+      shown = %{state | show_subagent_sidebar?: true} |> Viewport.relayout()
+      assert Subagents.visible?(shown)
+      assert shown.conversation.rect.width < 80
+      assert Enum.any?(scene(shown), fn {_widget, rect} -> rect.x > 0 and rect.y == 1 end)
+      refute Enum.any?(scene(state), fn {_widget, rect} -> rect.x > 0 and rect.y == 1 end)
+    end
+
+    test "a hidden sidebar releases focus if its visibility changes" do
+      {:noreply, focused} = shell() |> start("one", "Inspect") |> Subagents.focus()
+      assert focused.focus == :subagents
+
+      hidden = %{focused | show_subagent_sidebar?: false} |> Subagents.reconcile()
+      assert hidden.focus == :composer
+      assert hidden.subagent_selected == nil
+      assert hidden.conversation.rect.width == 80
+    end
+
     test "a background child keeps the sidebar open after its launching turn settles" do
       state = shell() |> start("one", "Inspect")
 
@@ -276,6 +306,10 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
 
     animated_text = animated.text |> Enum.flat_map(& &1.spans) |> Enum.map_join(& &1.content)
     assert animated_text =~ "› ⠙ scout"
+  end
+
+  defp scene(state) do
+    Tackle.CLI.TUI.View.scene(state, %ExRatatui.Frame{width: 80, height: 24})
   end
 
   defp start(state, id, prompt) do

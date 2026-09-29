@@ -11,16 +11,15 @@ defmodule Tackle.CLI.TUI.Menu do
   failure closes the menu and reports the reason while preserving both the
   conversation and the draft.
 
-  The settings menu is intentionally empty: it holds configuration that is not
-  the model or the reasoning level, and it says so instead of disappearing. The
-  first real setting also needs an `apply/3` clause, because selecting a row is
-  what writes the value.
+  The sidebar visibility setting is stored in `config.json` and updates only
+  the presentation state; model and reasoning selection still use
+  `Tackle.reconfigure/2`.
   """
 
   alias ExRatatui.Command
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Paragraph, Popup}
-  alias Tackle.CLI.TUI.{Picker, State, Theme, Util}
+  alias Tackle.CLI.TUI.{Picker, Preferences, State, Subagents, Theme, Util, Viewport}
   alias Tackle.Thinking
 
   @doc """
@@ -96,7 +95,17 @@ defmodule Tackle.CLI.TUI.Menu do
     end)
   end
 
-  def items(:settings, _state), do: []
+  def items(:settings, %State{} = state) do
+    [
+      %{
+        id: :subagent_sidebar,
+        primary: "Subagent sidebar",
+        secondary: if(state.show_subagent_sidebar?, do: "Shown", else: "Hidden"),
+        marker: " ",
+        search: "subagent sidebar show hide"
+      }
+    ]
+  end
 
   @doc "Renders the open menu as a popup."
   @spec popup(State.t()) :: Popup.t()
@@ -166,6 +175,19 @@ defmodule Tackle.CLI.TUI.Menu do
 
   defp dispatch(:ignore, state), do: {:noreply, state, render?: false}
 
+  defp apply_selection(:settings, %{id: :subagent_sidebar}, state) do
+    visible? = not state.show_subagent_sidebar?
+
+    case Preferences.put_sidebar(visible?) do
+      :ok ->
+        state = %{state | show_subagent_sidebar?: visible?, overlay: nil, notice: nil}
+        {:noreply, state |> Subagents.reconcile() |> Viewport.relayout()}
+
+      {:error, reason} ->
+        {:noreply, %{state | overlay: nil, notice: "Could not save setting: #{inspect(reason)}"}}
+    end
+  end
+
   defp apply_selection(:model, item, state), do: reconfigure(state, model: item.id)
   defp apply_selection(:thinking, item, state), do: reconfigure(state, thinking: item.id)
 
@@ -209,14 +231,6 @@ defmodule Tackle.CLI.TUI.Menu do
   defp thinking_description("xhigh"), do: "Extra-high reasoning"
   defp thinking_description("max"), do: "Maximum reasoning"
   defp thinking_description(_level), do: nil
-
-  defp empty_menu(:settings) do
-    %Paragraph{
-      text:
-        " No settings yet.\n\n The model and the reasoning level have their own menus; anything else the harness makes configurable will appear here.",
-      style: Theme.style(:muted)
-    }
-  end
 
   defp empty_menu(:model),
     do: %Paragraph{text: " No models match.", style: Theme.style(:muted)}

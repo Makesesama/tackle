@@ -327,6 +327,13 @@ defmodule Tackle.CLI.TUITest do
     assert function_exported?(TUI, :start_link, 1)
   end
 
+  test "mount option hides the subagent sidebar", %{agent_ref: agent_ref} do
+    assert {:ok, shell} =
+             Tackle.CLI.TUI.State.new(agent_ref: agent_ref, show_subagent_sidebar?: false)
+
+    refute shell.show_subagent_sidebar?
+  end
+
   test "Alt+1–5 select recent sessions and do not repeat" do
     for index <- 1..5 do
       key = %Key{code: Integer.to_string(index), modifiers: ["alt"]}
@@ -1370,20 +1377,15 @@ defmodule Tackle.CLI.TUITest do
     assert header_text(state) =~ "thinking minimal"
   end
 
-  test "F3 opens the settings menu, which is empty until there is something to configure", %{
-    tui: tui
-  } do
+  test "F3 opens the sidebar visibility setting", %{tui: tui} do
     inject_key(tui, "f3")
     state = state(tui)
 
-    assert {:picker, %{kind: :settings, picker: %Picker{items: []}}} = state.overlay
+    assert {:picker, %{kind: :settings, picker: %Picker{items: [_]}}} = state.overlay
     assert popup_title(state) =~ "Settings"
-    assert %Paragraph{text: text} = popup_content(state)
-    assert text =~ "No settings yet"
-
-    # With no rows there is nothing to apply, so Enter is inert and Esc closes.
-    inject_key(tui, "enter")
-    assert {:picker, %{kind: :settings}} = state(tui).overlay
+    assert %SelectionList{items: [row]} = popup_content(state)
+    assert row =~ "Subagent sidebar"
+    assert row =~ "Shown"
 
     inject_key(tui, "esc")
     assert state(tui).overlay == nil

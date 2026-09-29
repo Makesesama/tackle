@@ -402,7 +402,9 @@ built-in defaults < ~/.tackle/config.json < TACKLE_MODEL/TACKLE_THINKING < expli
 ```
 
 `TACKLE_HOME` changes the directory containing `config.json` and `auth.json`.
-The configuration file accepts `model` and `thinking` fields. Thinking may be
+The configuration file accepts `model` and `thinking` harness fields and the
+CLI-only boolean `show_subagent_sidebar` (default `true`), which does not affect
+agent sessions. Thinking may be
 `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; supported levels can vary
 by model. `TACKLE_THINKING` overrides the file in the same way that
 `TACKLE_MODEL` overrides `model`. Adapter modules are always supplied as
