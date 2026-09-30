@@ -154,7 +154,9 @@ defmodule Tackle.Session do
   @doc "Starts a turn, or queues input for the active turn's next provider boundary."
   @spec submit(GenServer.server(), String.t()) ::
           {:ok, String.t() | :queued} | {:error, term()}
-  def submit(session, input) when is_binary(input), do: GenServer.call(session, {:submit, input})
+  def submit(session, input) when is_binary(input),
+    do: GenServer.call(session, {:submit, input}, :infinity)
+
   def submit(_session, input), do: {:error, {:invalid_input, input}}
 
   @doc "Withdraws the newest matching user message still waiting in the inbox."
@@ -164,7 +166,7 @@ defmodule Tackle.Session do
 
   @doc "Continues the current conversation without appending another user message."
   @spec continue(GenServer.server()) :: {:ok, String.t()} | {:error, term()}
-  def continue(session), do: GenServer.call(session, :continue)
+  def continue(session), do: GenServer.call(session, :continue, :infinity)
 
   @doc "Requests cooperative cancellation of the active turn."
   @spec cancel(GenServer.server()) :: :ok
@@ -172,7 +174,8 @@ defmodule Tackle.Session do
 
   @doc "Queues an envelope for the next provider boundary or an idle agent's next turn."
   @spec deliver(GenServer.server(), Envelope.t()) :: :ok | {:error, term()}
-  def deliver(session, %Envelope{} = envelope), do: GenServer.call(session, {:deliver, envelope})
+  def deliver(session, %Envelope{} = envelope),
+    do: GenServer.call(session, {:deliver, envelope}, :infinity)
 
   @doc "Publishes one background-run completion event from its owning request helper."
   @spec background_finished(GenServer.server(), RunRef.t(), String.t() | nil, Outcome.t()) :: :ok
@@ -211,12 +214,12 @@ defmodule Tackle.Session do
   uncertainty and call this to record `turn.abandoned` before new work.
   """
   @spec abandon_turn(GenServer.server()) :: :ok | {:error, term()}
-  def abandon_turn(session), do: GenServer.call(session, :abandon_turn)
+  def abandon_turn(session), do: GenServer.call(session, :abandon_turn, :infinity)
 
   @doc "Updates model and thinking settings while the session is idle."
   @spec reconfigure(GenServer.server(), keyword()) :: {:ok, Snapshot.t()} | {:error, term()}
   def reconfigure(session, opts) when is_list(opts),
-    do: GenServer.call(session, {:reconfigure, opts})
+    do: GenServer.call(session, {:reconfigure, opts}, :infinity)
 
   def reconfigure(_session, opts), do: {:error, {:invalid_config, opts}}
 
@@ -1099,7 +1102,12 @@ defmodule Tackle.Session do
     # validation, so ensure it is loaded before the loop's function_exported?
     # dispatch can see it.
     _ = Code.ensure_loaded(Persistence)
-    %{state | hooks: append(state.hooks, Persistence)}
+
+    %{
+      state
+      | hooks: append(state.hooks, Persistence),
+        context: Map.put(state.context, :journal_required, true)
+    }
   end
 
   defp install_tree_committer(%AgentState{tree: nil} = state), do: state

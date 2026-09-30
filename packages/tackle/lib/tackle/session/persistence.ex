@@ -15,7 +15,9 @@ defmodule Tackle.Session.Persistence do
 
   The hook is provider-neutral and storage-free: it resolves the session's
   journal by session id and is a no-op for sessions without one, so the same
-  hook can be installed for durable and ephemeral agents alike.
+  hook can be installed for durable and ephemeral agents alike. Durable session
+  context carries `:journal_required`, so a missing owner fails closed rather
+  than being mistaken for an ephemeral session.
 
   For a branching session the hook reads the just-appended tree entry from the
   settled state and commits the message together with its parent link, rather
@@ -30,13 +32,27 @@ defmodule Tackle.Session.Persistence do
   alias Tackle.Session.Journal
 
   @impl true
-  def after_message(%State{session_id: session_id} = state, %Message{} = message, _context) do
-    Journal.persist_message(session_id, message, tree_parent(state, message.id))
+  def after_message(%State{session_id: session_id} = state, %Message{} = message, context) do
+    persist(session_id, context, fn journal ->
+      Journal.append_message(journal, message, tree_parent(state, message.id))
+    end)
   end
 
   @impl true
-  def before_tool_call(%State{session_id: session_id}, call, _context) do
-    Journal.persist_tool_started(session_id, call)
+  def before_tool_call(%State{session_id: session_id}, call, context) do
+    persist(session_id, context, &Journal.tool_started(&1, call))
+  end
+
+  defp persist(session_id, context, fun) do
+    case Journal.whereis(session_id) do
+      {:ok, journal} ->
+        fun.(journal)
+
+      {:error, :not_found} ->
+        if context[:journal_required],
+          do: {:error, {:journal_unavailable, :not_found}},
+          else: :ok
+    end
   end
 
   defp tree_parent(%State{tree: %Tree{} = tree}, message_id) do

@@ -282,6 +282,27 @@ next provider or tool effect, and the terminal event is synced before terminal
 outcomes are delivered. If a journal append, sync, or validation fails, the
 session stops instead of continuing with memory-only state.
 
+An independent watchdog bounds durable journal operations, startup replay, and
+termination cleanup to 15 seconds. Expiry kills the journal owner and stops its
+durable scope; it does not merely abandon the caller's request or retry the
+write. Trusted hosts can override the deadline in milliseconds using
+`storage: [journal_timeout: 30_000]` on `Tackle.Session.Spec`. Inspection calls
+retain their 60-second client deadline.
+
+A stall automatically captures the operation, stage, sequence, elapsed time,
+queue length, and payload-free stack frames. The watchdog logs this diagnostic
+and makes a bounded, best-effort attempt to save `journal-failure.json` beside
+`session.dlog` with private file permissions, including when the TUI mutes console
+logging. If storage itself is stuck, saving that diagnostic may also fail; scope
+shutdown does not depend on it. Prompts, tool arguments, and conversation payloads
+are not included in the diagnostic.
+
+Killing the owner cannot retract a write already dispatched to `:disk_log`.
+The commit outcome is therefore unknown until journal replay. Existing durable
+history is not intentionally discarded; resume follows the ordinary explicit
+repair and interrupted-turn recovery policy below. This is fail-closed recovery,
+not automatic retry or a guarantee against storage/device failure.
+
 A session whose journal ends with `turn.started` and no terminal event is
 interrupted. Resuming it requires an explicit recovery decision; while it is
 unresolved, `Tackle.submit/2` and `Tackle.continue/1` return

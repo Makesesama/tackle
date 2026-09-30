@@ -8,12 +8,18 @@ defmodule Tackle.Session.Journal do
   API to the session and its internal persistence hook. Callers never open or
   write the journal file directly.
 
+  Durable operations are guarded by an independent watchdog. A missed deadline
+  stops the owner and its durable scope rather than abandoning a request while
+  execution continues. The commit outcome may be unknown: replay is required
+  before any retry. Diagnostics contain stage and stack information, not payloads.
+
   A journal failure is fatal to further durable execution: append, sync, and
   validation failures stop the owner, which terminates its durable scope rather
   than continuing with memory-only state.
   """
 
   use GenServer, restart: :permanent
+  require Logger
 
   alias Tackle.Config
   alias Tackle.Lib.Message
@@ -21,6 +27,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
   alias Tackle.Session.Codec
+  alias Tackle.Session.Journal.Watchdog
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
   alias Tackle.Session.Reader
@@ -99,17 +106,17 @@ defmodule Tackle.Session.Journal do
           {:ok, String.t()} | {:error, term()}
   def begin_turn(journal, operation, input, turn_id)
       when operation in [:run, :continue] and is_binary(turn_id) do
-    call(journal, {:begin_turn, operation, input, turn_id})
+    durable_call(journal, {:begin_turn, operation, input, turn_id})
   end
 
   @doc "Persists a settled message on the current turn."
   @spec append_message(GenServer.server(), Message.t(), term()) :: :ok | {:error, term()}
   def append_message(journal, %Message{} = message, parent \\ :none),
-    do: call(journal, {:append_message, message, parent})
+    do: durable_call(journal, {:append_message, message, parent})
 
   @doc "Persists tool execution intent before the tool is invoked."
   @spec tool_started(GenServer.server(), map()) :: :ok | {:error, term()}
-  def tool_started(journal, call), do: call(journal, {:tool_started, call})
+  def tool_started(journal, call), do: durable_call(journal, {:tool_started, call})
 
   @doc """
   Persists one durable compaction replacement.
@@ -120,11 +127,12 @@ defmodule Tackle.Session.Journal do
   replacement.
   """
   @spec context_compacted(GenServer.server(), map()) :: :ok | {:error, term()}
-  def context_compacted(journal, data), do: call(journal, {:context_compacted, data})
+  def context_compacted(journal, data), do: durable_call(journal, {:context_compacted, data})
 
   @doc "Settles the active turn with a terminal event."
   @spec settle_turn(GenServer.server(), atom(), map()) :: :ok | {:error, term()}
-  def settle_turn(journal, type, data \\ %{}), do: call(journal, {:settle_turn, type, data})
+  def settle_turn(journal, type, data \\ %{}),
+    do: durable_call(journal, {:settle_turn, type, data})
 
   @doc """
   Persists one committed navigation before the library installs it.
@@ -134,7 +142,8 @@ defmodule Tackle.Session.Journal do
   including the position before the first message.
   """
   @spec tree_navigated(GenServer.server(), Change.t()) :: :ok | {:error, term()}
-  def tree_navigated(journal, %Change{} = change), do: call(journal, {:tree_navigated, change})
+  def tree_navigated(journal, %Change{} = change),
+    do: durable_call(journal, {:tree_navigated, change})
 
   @doc """
   Records the explicit `tree.enabled` transition for a legacy linear session.
@@ -143,24 +152,24 @@ defmodule Tackle.Session.Journal do
   may branch. An already-enabled or unmaterialized session is a no-op.
   """
   @spec enable_tree(GenServer.server()) :: :ok | {:error, term()}
-  def enable_tree(journal), do: call(journal, :enable_tree)
+  def enable_tree(journal), do: durable_call(journal, :enable_tree)
 
   @doc "Persists an accepted idle configuration change."
   @spec configuration_changed(GenServer.server(), Config.t()) :: :ok | {:error, term()}
   def configuration_changed(journal, %Config{} = config),
-    do: call(journal, {:configuration_changed, config})
+    do: durable_call(journal, {:configuration_changed, config})
 
   @doc "Persists session metadata such as title and tags."
   @spec metadata_changed(GenServer.server(), map()) :: :ok | {:error, term()}
-  def metadata_changed(journal, attrs), do: call(journal, {:metadata_changed, attrs})
+  def metadata_changed(journal, attrs), do: durable_call(journal, {:metadata_changed, attrs})
 
   @doc "Appends and syncs `session.closed` before releasing ownership."
   @spec close_journal(GenServer.server()) :: :ok | {:error, term()}
-  def close_journal(journal), do: call(journal, :close_journal)
+  def close_journal(journal), do: durable_call(journal, :close_journal)
 
   @doc "Runs an explicit durability barrier over already-appended commits."
   @spec flush(GenServer.server()) :: :ok | {:error, term()}
-  def flush(journal), do: call(journal, :flush)
+  def flush(journal), do: durable_call(journal, :flush)
 
   @doc """
   Returns the journal's durable projection.
@@ -210,8 +219,10 @@ defmodule Tackle.Session.Journal do
     Process.flag(:trap_exit, true)
     session_id = Keyword.fetch!(opts, :session_id)
 
-    with {:ok, path} <- Storage.journal_path(session_id, opts),
+    with {:ok, _watchdog} <- Watchdog.start(self(), session_id, opts),
+         {:ok, path} <- Storage.journal_path(session_id, opts),
          {:ok, state} <- open_or_defer(session_id, path, opts) do
+      Watchdog.ready(self())
       {:ok, state}
     else
       {:error, reason} -> {:stop, reason}
@@ -234,13 +245,19 @@ defmodule Tackle.Session.Journal do
   defp open_existing(session_id, opts) do
     repair? = Keyword.get(opts, :repair, false)
 
+    Watchdog.stage(self(), :acquire_lock)
+
     with {:ok, lock} <- Storage.acquire_lock(session_id, opts) do
+      Watchdog.lock(self(), lock)
+      Watchdog.stage(self(), :open_replay)
+
       case Reader.open_writable(session_id, Keyword.put(opts, :repair, repair?)) do
         {:ok, opened} ->
           build_state(session_id, lock, opened, opts)
 
         {:error, reason} ->
           Storage.release_lock(lock)
+          Watchdog.lock(self(), nil)
           {:error, {:journal_open_failed, session_id, reason}}
       end
     end
@@ -264,14 +281,20 @@ defmodule Tackle.Session.Journal do
   defp ensure_materialized(%{materialized?: true} = state), do: {:ok, state}
 
   defp ensure_materialized(%{materialized?: false} = state) do
+    Watchdog.stage(self(), :acquire_lock)
+
     case Storage.acquire_lock(state.session_id, state.open_opts) do
       {:ok, lock} ->
+        Watchdog.lock(self(), lock)
+        Watchdog.stage(self(), :open_replay)
+
         case Reader.open_writable(state.session_id, state.open_opts) do
           {:ok, opened} ->
             build_state(state.session_id, lock, opened, state.open_opts)
 
           {:error, reason} ->
             Storage.release_lock(lock)
+            Watchdog.lock(self(), nil)
             {:error, {:journal_open_failed, state.session_id, reason}}
         end
 
@@ -323,6 +346,8 @@ defmodule Tackle.Session.Journal do
   end
 
   def handle_call({:append_message, %Message{} = message, parent}, _from, state) do
+    Watchdog.stage(self(), :encode_message, state.next_seq)
+
     with %{turn_id: turn_id} <- state.active_turn,
          {:ok, event} <- message_event(message, parent),
          {:ok, state, _seq} <- commit(state, [event], turn_id) do
@@ -459,6 +484,8 @@ defmodule Tackle.Session.Journal do
   def handle_call(:flush, _from, %{materialized?: false} = state), do: {:reply, :ok, state}
 
   def handle_call(:flush, _from, state) do
+    Watchdog.stage(self(), :sync, state.next_seq)
+
     case Reader.sync(state.name) do
       :ok -> {:reply, :ok, state}
       {:error, reason} -> fail(state, reason)
@@ -518,16 +545,20 @@ defmodule Tackle.Session.Journal do
     end
   end
 
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
+
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, %{materialized?: false}), do: :ok
 
   def terminate(_reason, state) do
-    _ = Reader.sync(state.name)
-    _ = Reader.close(state.name)
-    _ = write_summary_sidecar(state)
-    _ = Storage.release_lock(state.lock)
+    Watchdog.cleanup(self())
+    cleanup_step(:cleanup_sync, fn -> Reader.sync(state.name) end)
+    cleanup_step(:cleanup_close, fn -> Reader.close(state.name) end)
+    cleanup_step(:cleanup_summary, fn -> write_summary_sidecar(state) end)
+    cleanup_step(:cleanup_lock, fn -> Storage.release_lock(state.lock) end)
+    Watchdog.lock(self(), nil)
     :ok
   end
 
@@ -552,6 +583,7 @@ defmodule Tackle.Session.Journal do
       {:error, reason} ->
         _ = Reader.close(opened.name)
         _ = Storage.release_lock(lock)
+        Watchdog.lock(self(), nil)
         {:error, reason}
     end
   end
@@ -606,8 +638,8 @@ defmodule Tackle.Session.Journal do
         "tree" => Keyword.get(opts, :tree, false)
       })
 
-    with :ok <- Reader.log(state.name, header),
-         :ok <- Reader.sync(state.name) do
+    with :ok <- stage(:append_header, 0, fn -> Reader.log(state.name, header) end),
+         :ok <- stage(:sync_header, 0, fn -> Reader.sync(state.name) end) do
       state = %{state | projection: Projection.new(header), next_seq: 1}
 
       case commit(state, [created], nil) do
@@ -648,12 +680,14 @@ defmodule Tackle.Session.Journal do
         events: events
       )
 
-    with :ok <- commit_validation(commit),
-         :ok <- Reader.log(state.name, commit),
-         :ok <- Reader.sync(state.name) do
-      projection = Projection.apply_commit(state.projection, commit)
+    with :ok <- stage(:validate, seq, fn -> commit_validation(commit) end),
+         :ok <- stage(:append, seq, fn -> Reader.log(state.name, commit) end),
+         :ok <- stage(:sync, seq, fn -> Reader.sync(state.name) end) do
+      projection =
+        stage(:projection, seq, fn -> Projection.apply_commit(state.projection, commit) end)
+
       next = %{state | projection: projection, next_seq: seq + 1}
-      Catalog.record(build_summary(next))
+      stage(:catalog, seq, fn -> Catalog.record(build_summary(next)) end)
       {:ok, next, seq}
     end
   end
@@ -769,8 +803,9 @@ defmodule Tackle.Session.Journal do
   defp state_active_turn_id(%{active_turn: %{turn_id: turn_id}}), do: turn_id
   defp state_active_turn_id(_state), do: nil
 
+  defp notification_health({:error_status, :ok}), do: :ok
   defp notification_health({:error_status, status}), do: {:fatal, {:error_status, status}}
-  defp notification_health({:full, _info}), do: {:fatal, :disk_full}
+  defp notification_health(:full), do: {:fatal, :disk_full}
   defp notification_health({:truncated, _info}), do: {:fatal, :truncated}
   defp notification_health({:wrap, _info}), do: {:fatal, :unexpected_wrap}
   defp notification_health({:read_only, _info}), do: {:fatal, :read_only}
@@ -791,6 +826,31 @@ defmodule Tackle.Session.Journal do
 
       {:error, :not_found} ->
         :ok
+    end
+  end
+
+  defp cleanup_step(stage, fun) do
+    Watchdog.stage(self(), stage)
+
+    case fun.() do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Journal #{stage} failed: #{inspect(reason)}")
+    end
+  rescue
+    error -> Logger.warning("Journal #{stage} raised #{inspect(error.__struct__)}")
+  catch
+    kind, _reason -> Logger.warning("Journal #{stage} failed (#{kind})")
+  end
+
+  defp stage(stage, seq, fun) do
+    Watchdog.stage(self(), stage, seq)
+    fun.()
+  end
+
+  defp durable_call(journal, message) do
+    case GenServer.whereis(journal) do
+      pid when is_pid(pid) -> Watchdog.request(pid, message)
+      nil -> {:error, {:journal_unavailable, :not_found}}
     end
   end
 

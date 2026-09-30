@@ -254,6 +254,60 @@ defmodule Tackle.Session.DurabilityTest do
              created["events"]
   end
 
+  test "scope teardown terminates a turn waiting for a journal append", ctx do
+    scope = start_durable_scope(home: ctx.home, root: [mode: :manual])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, _turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
+    assert_receive {:adapter_called, turn_pid, _model, _opts}, 5_000
+    {:ok, journal} = Journal.whereis(snapshot.session_id)
+    :ok = :sys.suspend(journal)
+
+    try do
+      send(turn_pid, {:respond, "answer"})
+
+      assert eventually(fn ->
+               {:messages, messages} = Process.info(journal, :messages)
+
+               Enum.any?(messages, fn
+                 {:"$gen_call", _from, {:append_message, %Message{role: :assistant}, _parent}} ->
+                   true
+
+                 _other ->
+                   false
+               end)
+             end) == :ok
+
+      ref = Process.monitor(turn_pid)
+      stop_scope(scope.scope_ref)
+      assert_receive {:DOWN, ^ref, :process, ^turn_pid, _reason}, 5_000
+      refute Process.alive?(journal)
+      assert Tackle.Runtime.scope_snapshot(scope.scope_ref) == {:error, :scope_not_found}
+    after
+      if Process.alive?(journal), do: :sys.resume(journal)
+    end
+  end
+
+  test "a stalled journal automatically terminates the durable scope", ctx do
+    session = session_spec(home: ctx.home)
+    session = %{session | storage: Keyword.put(session.storage, :journal_timeout, 250)}
+    scope = start_scope(session: session, root: [mode: :manual])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, _turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
+    assert_receive {:adapter_called, turn_pid, _model, _opts}, 5_000
+    {:ok, journal} = Journal.whereis(snapshot.session_id)
+    :ok = :sys.suspend(journal)
+    ref = Process.monitor(turn_pid)
+    send(turn_pid, {:respond, "answer"})
+
+    assert eventually(fn ->
+             Tackle.Runtime.scope_snapshot(scope.scope_ref) == {:error, :scope_not_found}
+           end) == :ok
+
+    assert_receive {:DOWN, ^ref, :process, ^turn_pid, _reason}, 1_000
+    refute Process.alive?(journal)
+    assert Journal.whereis(snapshot.session_id) == {:error, :not_found}
+  end
+
   test "journal owner failure terminates the durable scope", ctx do
     scope = start_durable_scope(home: ctx.home, root: [content: "answer"])
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
