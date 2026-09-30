@@ -132,7 +132,12 @@ defmodule Tackle.CLI.TUI.ModulesTest do
 
     test "scroll/2 moves the transcript and pauses following" do
       state = shell_state()
-      state = %{state | conversation: %{state.conversation | content_height: 200}}
+      messages = Enum.map(1..100, &Message.user("message #{&1}"))
+
+      state =
+        %{state | agent_state: %{state.agent_state | messages: messages}}
+        |> Viewport.refresh()
+        |> Viewport.scroll_to(:start)
 
       scrolled = Viewport.scroll(state, 5)
 

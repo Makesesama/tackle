@@ -446,13 +446,22 @@ Successful reads collapse to a path-only card without dumping file contents into
 the conversation. Successful Bash calls show at most two non-empty tail lines,
 clipped rather than wrapped, with an ellipsis when output is hidden. Empty shell
 output adds no body rows. Failures and unknown tools keep bounded diagnostic
-previews. Failed edits show only the error,
-not a replacement preview; their inspector retains the submitted arguments as
+previews. Failed edits and writes show only the error,
+not a replacement/content preview; their inspector retains the submitted arguments as
 source. Completed subagents with a measured duration show just the elapsed
 seconds instead of a completion label. Other inline output keeps a bounded head/tail preview (including after
 wrapping), with hidden lines indicated. F4 browses entries: Y copies the full
 retained source and Enter opens scrollable details with the full output and
 arguments; its ←/→ keys browse tool cards.
+
+Edits and writes have their own code budget: 16 visual rows by default,
+adapting to the transcript height (up to 20; smaller panes get fewer). Headers,
+counts, and truncation notices sit outside that budget. Edit previews prefer
+complete hunks that fit; oversized changes and writes show a contiguous prefix
+rather than arbitrary head/tail fragments. Summaries report omitted replacements
+(e.g. `3 replacements · 1 omitted`) and source-line coverage (`Showing 16 of 84
+lines`). At most two replacements are matched inline; details retain the rest.
+Routine read and successful command previews stay compact.
 
 Edits use compact, borderless replacement previews: muted line numbers, soft red
 `-` and green `+` markers, and per-replacement counts in one heading. Code stays

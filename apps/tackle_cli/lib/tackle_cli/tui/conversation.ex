@@ -12,7 +12,7 @@ defmodule Tackle.CLI.TUI.Conversation do
   """
 
   alias ExRatatui.Layout.Rect
-  alias Tackle.CLI.TUI.MessageView
+  alias Tackle.CLI.TUI.{MessageView, ToolView}
   alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
 
   @mouse_scroll_rows 3
@@ -24,6 +24,7 @@ defmodule Tackle.CLI.TUI.Conversation do
 
   @typedoc "Cached typed entries and their rendered widget groups for a section."
   @type section_cache :: %{
+          optional(:code_rows) => pos_integer(),
           entries: [MessageView.t()],
           width: pos_integer() | nil,
           groups: [[MessageView.widget_item()]],
@@ -104,24 +105,40 @@ defmodule Tackle.CLI.TUI.Conversation do
     anchor = reading_anchor(conversation)
     width = max(rect.width, 1)
 
+    code_rows = ToolView.preview_code_rows(rect.height)
+
     {sections, layouts, spacer, items, item_ids, native, content_height} =
-      if width == conversation.width do
+      if width == conversation.width and
+           code_rows == ToolView.preview_code_rows(conversation.viewport_height) do
         {conversation.sections, conversation.layouts, conversation.spacer, conversation.items,
          conversation.item_ids, conversation.native, conversation.content_height}
       else
         sections =
           Map.new(conversation.sections, fn {section, cache} ->
-            {section, cache_entries(cache.entries, width, cache)}
+            {section, cache_entries(cache.entries, width, cache, code_rows)}
           end)
 
-        spacer = NativeConversation.spacer(width)
-        layouts = build_layouts(sections, [], spacer, width, conversation.welcome_model)
-        {items, item_ids} = flatten_layouts(layouts)
+        spacer =
+          if width == conversation.width,
+            do: conversation.spacer,
+            else: NativeConversation.spacer(width)
 
-        {native, height} =
-          NativeConversation.assemble_sections(Enum.map(layouts, & &1.items), width)
+        previous_layouts = if width == conversation.width, do: conversation.layouts, else: []
 
-        {sections, layouts, spacer, items, item_ids, native, height}
+        layouts =
+          build_layouts(sections, previous_layouts, spacer, width, conversation.welcome_model)
+
+        if width == conversation.width and layouts == conversation.layouts do
+          {sections, conversation.layouts, spacer, conversation.items, conversation.item_ids,
+           conversation.native, conversation.content_height}
+        else
+          {items, item_ids} = flatten_layouts(layouts)
+
+          {native, height} =
+            NativeConversation.assemble_sections(Enum.map(layouts, & &1.items), width)
+
+          {sections, layouts, spacer, items, item_ids, native, height}
+        end
       end
 
     resized = %{
@@ -181,7 +198,13 @@ defmodule Tackle.CLI.TUI.Conversation do
         Map.put(
           caches,
           section,
-          build_section(state, section, conversation.width, caches[section])
+          build_section(
+            state,
+            section,
+            conversation.width,
+            caches[section],
+            ToolView.preview_code_rows(conversation.viewport_height)
+          )
         )
       end)
 
@@ -502,18 +525,20 @@ defmodule Tackle.CLI.TUI.Conversation do
     }
   end
 
-  defp build_section(state, section, width, previous) do
+  defp build_section(state, section, width, previous, code_rows) do
     entries =
       state
       |> MessageView.section_entries(section)
       |> Enum.with_index()
       |> Enum.map(fn {entry, index} -> %{entry | id: entry.id || "#{section}:#{index}"} end)
 
-    cache_entries(entries, width, previous)
+    cache_entries(entries, width, previous, code_rows)
   end
 
-  defp cache_entries(entries, width, previous) do
-    if previous.width == width and previous.entries == entries do
+  defp cache_entries(entries, width, previous, code_rows) do
+    same_dimensions? = previous.width == width and Map.get(previous, :code_rows) == code_rows
+
+    if same_dimensions? and previous.entries == entries do
       previous
     else
       cached =
@@ -530,8 +555,14 @@ defmodule Tackle.CLI.TUI.Conversation do
 
           {group, cell_cache} =
             case Map.get(cached, entry.id) do
-              {^entry, group} -> {group, previous_cells}
-              _ -> NativeConversation.cached_cell(entry, width, previous_cells)
+              {^entry, group} when same_dimensions? ->
+                {group, previous_cells}
+
+              {^entry, group} when entry.tool_name not in ["edit", "write"] ->
+                {group, previous_cells}
+
+              _ ->
+                NativeConversation.cached_cell(entry, width, previous_cells, code_rows)
             end
 
           {group, Map.put(cells, entry.id, cell_cache)}
@@ -541,7 +572,14 @@ defmodule Tackle.CLI.TUI.Conversation do
         Enum.zip(entries, groups)
         |> Enum.map(fn {entry, items} -> List.duplicate(entry.id, length(items)) end)
 
-      %{entries: entries, groups: groups, item_ids: item_ids, cells: cells, width: width}
+      %{
+        entries: entries,
+        groups: groups,
+        item_ids: item_ids,
+        cells: cells,
+        width: width,
+        code_rows: code_rows
+      }
     end
   end
 

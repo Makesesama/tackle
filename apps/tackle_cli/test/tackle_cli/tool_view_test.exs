@@ -25,7 +25,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     text = entry |> ToolView.render(80) |> text()
     assert text =~ "  edit  lib/parser.ex"
     refute text =~ "completed"
-    refute text =~ "replacement"
+    assert text =~ "1 replacement"
     details = entry |> MessageView.inspect_items(100) |> text()
     refute details =~ "replacement"
     assert details =~ "Submitted text (not a verified file diff)"
@@ -137,7 +137,8 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert details =~ "+1 -1"
     refute details =~ "relative lines"
     preview = text(ToolView.render(entry, 80))
-    refute preview =~ "replacement"
+    assert preview =~ "3 replacements · 1 omitted"
+    refute preview =~ "third-new"
     assert preview =~ "+1 -1"
     refute preview =~ "local lines"
     assert details =~ "2 - before"
@@ -240,8 +241,8 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     %{cells: cells} = CellSession.take_cells(session)
 
     for {row, sign, color, tint, token} <- [
-          {2, "-", 174, 52, "41"},
-          {3, "+", 114, 22, "42"}
+          {3, "-", 174, 52, "41"},
+          {4, "+", 114, 22, "42"}
         ] do
       line = Enum.filter(cells, &(&1.row == row))
       marker = Enum.find(line, &(&1.symbol == sign))
@@ -276,7 +277,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
     for width <- [1, 4, 8, 30, 80] do
       items = ToolView.render(entry, width)
-      assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 8
+      assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 22
 
       for {widget, _} <- items, row <- widget.text do
         assert MessageView.display_width(plain(row)) <= width
@@ -504,6 +505,127 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     [missing] = settled([Message.tool_result("orphan", "subagent", "retained findings")])
     assert text(ToolView.render(missing, 100)) =~ "unknown profile"
     assert text(ToolView.render(missing, 100)) =~ "Task unavailable"
+  end
+
+  test "a fourteen-line insertion stays complete and metadata does not spend code rows" do
+    new = Enum.map_join(1..14, "\n", &"added #{&1}")
+    entry = file_entry("edit", %{path: "a.ex", edits: [%{oldText: "old", newText: new}]})
+    preview = text(ToolView.render(entry, 80))
+
+    assert preview =~ "+14 -1"
+    assert preview =~ "1 - old"
+    for index <- 1..14, do: assert(preview =~ "#{index} + added #{index}")
+    refute preview =~ "Showing"
+    refute preview =~ "hidden"
+  end
+
+  test "writes have sixteen code rows, an honest line summary, and contiguous content" do
+    content = Enum.map_join(1..84, "\n", &"source #{&1}")
+    entry = file_entry("write", %{path: "a.ex", content: content})
+    preview = text(ToolView.render(entry, 80))
+
+    for index <- 1..16, do: assert(preview =~ "    source #{index}\n")
+    assert preview =~ "Showing 16 of 84 lines"
+    refute preview =~ "source 17"
+    refute preview =~ "source 84"
+    assert text(MessageView.inspect_items(entry, 80)) =~ "source 84"
+
+    # Wrapping, not source-line count, spends the budget. No half second line.
+    wrapped = file_entry("write", %{path: "a", content: "abcdefghijkl\nsecond"})
+    preview = text(ToolView.render(wrapped, 12, :preview, code_rows: 2))
+    assert preview =~ "    abcdefgh\n    ijkl"
+    refute preview =~ "second"
+
+    assert Enum.sum(Enum.map(ToolView.render(wrapped, 12, :preview, code_rows: 2), &elem(&1, 1))) ==
+             6
+  end
+
+  test "complete small hunks are preferred to fragments of a larger hunk" do
+    old = Enum.map_join(1..12, "\n", &"old #{&1}") <> "\nc1\nc2\nc3\nc4\nc5\nsmall old"
+    new = String.replace(old, ~r/old \d+/, "big new") |> String.replace("small old", "small new")
+    entry = file_entry("edit", %{path: "a", edits: [%{oldText: old, newText: new}]})
+    preview = text(ToolView.render(entry, 80, :preview, code_rows: 4))
+
+    assert preview =~ "small old"
+    assert preview =~ "small new"
+    refute preview =~ "big new"
+    assert preview =~ "intervening lines omitted"
+    assert preview =~ "Showing 3 of 31 lines"
+  end
+
+  test "oversized lines stay bounded and say that the visible line is partial" do
+    entry = file_entry("write", %{path: "safe", content: String.duplicate("界", 20_000)})
+
+    for width <- [1, 4, 8, 30, 80] do
+      items = ToolView.render(entry, width, :preview, code_rows: 3)
+      assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 7
+
+      for {widget, _} <- items, row <- widget.text do
+        # At one column a wide glyph itself cannot fit; wrapping follows the
+        # existing MessageView behavior rather than splitting the grapheme.
+        assert MessageView.display_width(plain(row)) <= max(width, 2)
+      end
+    end
+
+    assert text(ToolView.render(entry, 80, :preview, code_rows: 3)) =~ "line continues in details"
+    assert MessageView.search_text(entry) =~ String.duplicate("界", 20_000)
+  end
+
+  test "zero-width prefixes and wide graphemes cannot exceed the visual code budget" do
+    for content <- ["\u200B界", "\u0301界", "界界界", "🙂ab🙂"] do
+      entry = file_entry("write", %{path: "a", content: content})
+      items = ToolView.render(entry, 1, :preview, code_rows: 1)
+      assert Enum.sum(Enum.map(items, &elem(&1, 1))) == 5
+    end
+  end
+
+  test "oversized before/after previews and long-line batches retain bounded paint" do
+    old = String.duplicate("old\n", 2_000)
+    new = String.duplicate(String.duplicate("x", 1_000) <> "\n", 2_000)
+    entry = file_entry("edit", %{path: "a", edits: [%{oldText: old, newText: new}]})
+    items = ToolView.render(entry, 80, :preview, code_rows: 4)
+    assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 12
+    assert byte_size(text(items)) < 2_000
+    assert text(items) =~ "+2001 -2001"
+    assert text(items) =~ "Showing"
+  end
+
+  test "incoming content uses the file budget and failed writes keep compact diagnostics" do
+    [incoming] =
+      MessageView.section_entries(
+        %{
+          tool_activity: [
+            %{
+              id: "w",
+              name: "write",
+              status: :preparing,
+              arguments: "{\"path\":\"a\",\"content\":\"one\\ntwo\\nthree\\nfour"
+            }
+          ]
+        },
+        :tools
+      )
+
+    preview = text(ToolView.render(incoming, 80, :preview, code_rows: 3))
+    assert preview =~ "Content incoming (partial)"
+    assert preview =~ "three"
+    refute preview =~ "four"
+    assert preview =~ "Showing 3 of 4 lines"
+
+    failed = %{
+      file_entry("write", %{path: "a", content: "submitted"})
+      | tool_status: :failed,
+        tool_output: "Error: permission denied"
+    }
+
+    preview = text(ToolView.render(failed, 80))
+    assert preview =~ "Error: permission denied"
+    refute preview =~ "submitted"
+  end
+
+  defp file_entry(name, args) do
+    [entry] = settled([Message.assistant(tool_calls: [%{id: name, name: name, arguments: args}])])
+    entry
   end
 
   defp settled(messages),

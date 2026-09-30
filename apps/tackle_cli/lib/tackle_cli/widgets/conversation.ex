@@ -13,7 +13,7 @@ defmodule Tackle.CLI.Widgets.Conversation do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{CodeFences, MessageView, Theme}
+  alias Tackle.CLI.TUI.{CodeFences, MessageView, Theme, ToolView}
   alias Tackle.CLI.Widgets.Surface
 
   defmodule Cell do
@@ -85,6 +85,18 @@ defmodule Tackle.CLI.Widgets.Conversation do
   end
 
   def cached_cell(%MessageView{} = entry, width, _previous), do: {cell(entry, width), %{}}
+
+  @doc false
+  def cached_cell(%MessageView{kind: :tool} = entry, width, _previous, code_rows) do
+    items =
+      entry
+      |> ToolView.render(width, :preview, code_rows: code_rows)
+      |> Enum.map(&paragraph_cell(&1, width))
+
+    {items, %{}}
+  end
+
+  def cached_cell(entry, width, previous, _code_rows), do: cached_cell(entry, width, previous)
 
   defp assistant_cell({:markdown, content}, first?, width, base, marker) do
     {resource, height} =

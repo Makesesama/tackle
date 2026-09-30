@@ -8,8 +8,8 @@ defmodule Tackle.CLI.TUI.ToolView do
   running, requested and failed calls stay explicit. Successful reads collapse
   to a tool/path header; successful Bash output shows at most two clipped tail
   lines.
-  Full retained output stays in details. Failed edits show the error instead of
-  a replacement preview (details retain the submitted arguments as source).
+  Full retained output stays in details. Failed edits/writes show the error instead of
+  submitted changes (details retain the submitted arguments as source).
   Subagents show their profile, assignment, live status, and locally observed
   elapsed time when available. Completed subagents show just the elapsed seconds
   instead of a completion label. Full arguments and findings stay in details.
@@ -25,13 +25,19 @@ defmodule Tackle.CLI.TUI.ToolView do
   around each change and elides longer unchanged runs; details print every
   submitted line. A replacement too large to match falls back to a bounded
   before/after window. Execution outcome and preview provenance remain
-  separate.
+  separate. Edit/write cards have a separate visual code-row budget (16 by
+  default, up to 20 based on transcript height). Summaries and omission notices
+  sit outside it. Whole hunks that fit are preferred; oversized hunks show a
+  contiguous prefix, not arbitrary head/tail fragments. At most two replacements
+  are matched inline, with an explicit omitted-replacement count.
   """
 
   alias Tackle.CLI.Native
   alias Tackle.CLI.TUI.{MessageView, Theme}
 
   @preview_rows 6
+  @file_preview_rows 16
+  @preview_replacements 2
   @preview_context 1
   @header_rows 2
 
@@ -41,8 +47,10 @@ defmodule Tackle.CLI.TUI.ToolView do
     name <> if(target == "", do: "", else: "  " <> target)
   end
 
-  @doc "Renders a bounded inline card or complete retained details."
-  def render(entry, width, mode \\ :preview) do
+  @doc "Renders a bounded inline card or retained details; `:code_rows` budgets edit/write preview rows."
+  @spec render(MessageView.t(), pos_integer(), :preview | :details, keyword()) ::
+          [MessageView.widget_item()]
+  def render(entry, width, mode \\ :preview, opts \\ []) do
     args = arguments(entry.tool_arguments)
 
     header_args =
@@ -60,12 +68,239 @@ defmodule Tackle.CLI.TUI.ToolView do
       |> Enum.take(@header_rows)
 
     body =
-      entry
-      |> body_rows(args, mode, width)
-      |> wrap_indented(width, 4)
-      |> trim(mode, width)
+      if mode == :preview do
+        file_preview(entry, args, width, Keyword.get(opts, :code_rows, @file_preview_rows)) ||
+          compact_body(entry, args, mode, width)
+      else
+        compact_body(entry, args, mode, width)
+      end
 
     MessageView.render_lines(header ++ body)
+  end
+
+  @doc false
+  @spec preview_code_rows(integer()) :: pos_integer()
+  def preview_code_rows(height), do: height |> Kernel.-(4) |> max(1) |> min(20)
+
+  defp compact_body(entry, args, mode, width) do
+    entry
+    |> body_rows(args, mode, width)
+    |> wrap_indented(width, 4)
+    |> trim(mode, width)
+  end
+
+  # File previews are budgeted once, after measuring wrapping. Metadata is
+  # separate from code: counts and omission notices never evict a code row.
+  defp file_preview(%{tool_status: :failed}, _args, _width, _budget), do: nil
+
+  defp file_preview(
+         %{tool_name: name, tool_status: :preparing, tool_arguments: raw},
+         %{"input" => raw},
+         width,
+         budget
+       )
+       when name in ["edit", "write"] and is_binary(raw) do
+    {label, content} =
+      if name == "write",
+        do: {"Content incoming (partial)", partial_field(raw, "content")},
+        else:
+          {"Edit incoming (partial)",
+           partial_field(raw, "newText") || partial_field(raw, "oldText")}
+
+    text_preview(content, label, width, budget)
+  end
+
+  defp file_preview(%{tool_name: "write"}, args, width, budget) do
+    case get(args, :content) do
+      content when is_binary(content) ->
+        text_preview(content, "Content preview (prior file not compared)", width, budget)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp file_preview(%{tool_name: "edit"}, args, width, budget) do
+    case get(args, :edits) do
+      edits when is_list(edits) and edits != [] -> edit_preview(edits, width, budget)
+      _ -> nil
+    end
+  end
+
+  defp file_preview(_entry, _args, _width, _budget), do: nil
+
+  defp text_preview(nil, label, width, _budget), do: preview_note(label, width)
+
+  defp text_preview(content, label, width, budget) do
+    lines = String.split(content, "\n", trim: false)
+    # Build at most the number of logical lines that could fit, not every row.
+    rows = lines |> Enum.take(budget) |> Enum.map(&body_row(Theme.style(:text), &1))
+    {shown, count, _used} = code_prefix(rows, width, budget)
+    preview_note(label, width) ++ shown ++ showing_note(count, length(lines), width)
+  end
+
+  defp edit_preview(edits, width, budget) do
+    {rows, _remaining, shown_count} =
+      edits
+      |> Enum.take(@preview_replacements)
+      |> Enum.with_index(1)
+      |> Enum.reduce({[], budget, 0}, fn {edit, index}, {rows, remaining, count} ->
+        if remaining > 0 do
+          {preview, used} = replacement_preview(edit, index, width, remaining)
+          {rows ++ preview, remaining - used, count + 1}
+        else
+          {rows, remaining, count}
+        end
+      end)
+
+    total = length(edits)
+    omitted = total - shown_count
+    summary = "#{total} " <> if(total == 1, do: "replacement", else: "replacements")
+    summary = if omitted > 0, do: summary <> " · #{omitted} omitted", else: summary
+    preview_note(summary, width) ++ rows
+  end
+
+  defp replacement_preview(edit, index, width, budget) when is_map(edit) do
+    old = get(edit, :oldText)
+    new = get(edit, :newText)
+
+    if is_binary(old) and is_binary(new) do
+      # No native head/tail cut. Matching and oversized before/after fallback
+      # already have native work bounds; only selected lines are wrapped here.
+      {added, removed, source} = diff_rows(old, new, @preview_context, 0)
+
+      total =
+        Enum.reduce(source, 0, fn
+          {:elision, n}, sum -> sum + n
+          _, sum -> sum + 1
+        end)
+
+      hunks = source |> Enum.chunk_by(&match?({:elision, _}, &1))
+
+      {chosen, used, count} =
+        hunks
+        |> Enum.with_index()
+        |> Enum.reject(fn {hunk, _} -> match?([{:elision, _} | _], hunk) end)
+        |> Enum.reduce({[], 0, 0}, fn {hunk, index}, {chosen, used, count} ->
+          case fitting_hunk(hunk, width, budget - used) do
+            {:ok, rows, size} ->
+              {chosen ++ [{index, wrap_indented(rows, width, 4)}], used + size,
+               count + length(rows)}
+
+            :too_large ->
+              {chosen, used, count}
+          end
+        end)
+
+      {paint, count, used} =
+        if chosen == [] do
+          first = Enum.find(hunks, [], fn hunk -> not match?([{:elision, _} | _], hunk) end)
+          first |> Enum.take(budget) |> Enum.map(&diff_row/1) |> code_prefix(width, budget)
+        else
+          paint =
+            Enum.flat_map(chosen, fn {index, rows} ->
+              notice =
+                if index > 0, do: preview_note("… intervening lines omitted", width), else: []
+
+              notice ++ rows
+            end)
+
+          {paint, count, used}
+        end
+
+      heading = wrap_indented([replacement_heading(added, removed)], width, 4) |> Enum.take(1)
+      {heading ++ paint ++ showing_note(count, total, width), used}
+    else
+      {preview_note("Edit #{index}: invalid preview data", width), 0}
+    end
+  end
+
+  defp replacement_preview(_edit, index, width, _budget),
+    do: {preview_note("Edit #{index}: invalid preview data", width), 0}
+
+  # Prefer complete logical lines. Only an oversized first line needs a partial
+  # visual prefix; don't split later lines just to fill the remaining space.
+  defp code_prefix(rows, width, budget) do
+    Enum.reduce_while(rows, {[], 0, 0}, fn row, {shown, count, used} ->
+      size = wrapped_size(row, width, budget - used)
+
+      cond do
+        size <= budget - used ->
+          {:cont, {shown ++ wrap_indented([row], width, 4), count + 1, used + size}}
+
+        used == 0 ->
+          bounded = bound_row(row, content_width(width) * budget)
+          paint = wrap_indented([bounded], width, 4) |> Enum.take(budget)
+          {:halt, {paint ++ preview_note("… line continues in details", width), 1, length(paint)}}
+
+        true ->
+          {:halt, {shown, count, used}}
+      end
+    end)
+  end
+
+  defp fitting_hunk(hunk, width, budget) do
+    Enum.reduce_while(hunk, {:ok, [], 0}, fn source, {:ok, rows, used} ->
+      row = diff_row(source)
+      size = wrapped_size(row, width, budget - used)
+
+      if size <= budget - used,
+        do: {:cont, {:ok, rows ++ [row], used + size}},
+        else: {:halt, :too_large}
+    end)
+  end
+
+  # Match MessageView's grapheme wrapping, including a zero-width grapheme at
+  # the start of a row. Stop as soon as the candidate cannot fit the budget.
+  defp wrapped_size(row, width, limit) do
+    {rows, _used, _occupied} =
+      Enum.reduce_while(row.spans, {1, 0, false}, fn span, acc ->
+        measured = measure_text(span.content, content_width(width), limit, acc)
+        if elem(measured, 0) > limit, do: {:halt, measured}, else: {:cont, measured}
+      end)
+
+    rows
+  end
+
+  defp measure_text("", _width, _limit, acc), do: acc
+  defp measure_text(_text, _width, limit, {rows, _, _} = acc) when rows > limit, do: acc
+
+  defp measure_text(text, width, limit, {rows, used, occupied}) do
+    {grapheme, rest} = String.next_grapheme(text)
+    cells = MessageView.display_width(grapheme)
+
+    next =
+      if occupied and used + cells > width,
+        do: {rows + 1, cells, true},
+        else: {rows, used + cells, true}
+
+    measure_text(rest, width, limit, next)
+  end
+
+  defp content_width(width), do: max(if(width > 5, do: width - 4, else: width), 1)
+
+  # Limit materialization before wrapping a giant source line. Taking visual
+  # rows afterwards is only a final guard for wide graphemes.
+  defp bound_row(row, cells) do
+    {spans, _remaining} =
+      Enum.map_reduce(row.spans, cells, fn span, remaining ->
+        content = String.slice(span.content, 0, max(remaining, 0))
+        {%{span | content: content}, max(remaining - String.length(content), 0)}
+      end)
+
+    %{row | spans: spans}
+  end
+
+  defp showing_note(shown, total, width) when shown < total,
+    do: preview_note("Showing #{shown} of #{total} lines", width)
+
+  defp showing_note(_shown, _total, _width), do: []
+
+  # Notices are a single clipped row even on narrow terminals, so metadata
+  # cannot become a second wall of wrapped text outside the code budget.
+  defp preview_note(text, width) do
+    wrap_indented([context_row(clip_width(text, content_width(width)))], width, 4)
+    |> Enum.take(1)
   end
 
   @doc "The complete arguments, including fields hidden by the compact title."
@@ -197,28 +432,22 @@ defmodule Tackle.CLI.TUI.ToolView do
        when status in [:running, :completed],
        do: bash_preview(entry.tool_output, width)
 
-  defp body_rows(
-         %{tool_name: name, tool_status: :preparing, tool_arguments: raw} = entry,
-         %{"input" => raw},
-         :preview,
-         _width
-       )
-       when name in ["edit", "write"] and is_binary(raw),
-       do: incoming_file_rows(entry, raw)
-
-  defp body_rows(%{tool_name: "edit", tool_status: :failed} = entry, _args, :preview, _width),
-    do: output_rows(entry, :preview)
+  defp body_rows(%{tool_name: name, tool_status: :failed} = entry, _args, :preview, _width)
+       when name in ["edit", "write"],
+       do: output_rows(entry, :preview)
 
   defp body_rows(%{tool_name: "edit", tool_status: :failed} = entry, args, :details, _width),
     do: generic_rows(entry, args, :details)
 
-  defp body_rows(entry, args, mode, _width) do
+  defp body_rows(entry, args, :details, _width) do
     case entry.tool_name do
-      "edit" -> edit_rows(entry, args, mode)
-      "write" -> write_rows(entry, args, mode)
-      _ -> generic_rows(entry, args, mode)
+      "edit" -> edit_rows(entry, args)
+      "write" -> write_rows(entry, args)
+      _ -> generic_rows(entry, args, :details)
     end
   end
+
+  defp body_rows(entry, args, :preview, _width), do: generic_rows(entry, args, :preview)
 
   defp subagent_work_rows(%{subagent_work: work}) when is_binary(work) and work != "" do
     [body_row(Theme.style(:accent_soft), "Now: " <> MessageView.sanitize(work))]
@@ -280,29 +509,6 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   # During input streaming JSON is often incomplete. Extract only string values
   # we can decode; never paint the escaped JSON envelope in the inline card.
-  defp incoming_file_rows(%{tool_name: "write"}, raw) do
-    incoming_text_rows("Content incoming (partial)", partial_field(raw, "content"))
-  end
-
-  defp incoming_file_rows(%{tool_name: "edit"}, raw) do
-    text = partial_field(raw, "newText") || partial_field(raw, "oldText")
-    incoming_text_rows("Edit incoming (partial)", text)
-  end
-
-  defp incoming_text_rows(label, text) do
-    heading = [context_row(label)]
-
-    if is_binary(text) do
-      heading ++
-        (text
-         |> String.split("\n", trim: false)
-         |> Enum.take(@preview_rows - 1)
-         |> Enum.map(&body_row(Theme.style(:text), clip_line(&1, :preview))))
-    else
-      heading
-    end
-  end
-
   defp partial_field(raw, key) do
     # A value may end mid-string (or mid-escape); decode only its complete
     # escaped prefix. JSON.decode handles quoted characters and Unicode escapes.
@@ -316,11 +522,10 @@ defmodule Tackle.CLI.TUI.ToolView do
     end
   end
 
-  defp write_rows(entry, args, mode) do
+  defp write_rows(entry, args) do
     case get(args, :content) do
       content when is_binary(content) ->
         lines = String.split(content, "\n", trim: false)
-        shown = if mode == :preview, do: Enum.take(lines, @preview_rows), else: lines
 
         header =
           [
@@ -332,44 +537,30 @@ defmodule Tackle.CLI.TUI.ToolView do
 
         rows =
           header ++
-            Enum.map(shown, fn line ->
+            Enum.map(lines, fn line ->
               body_row(Theme.style(:text), line)
             end)
 
-        rows ++ result_rows(entry, mode)
+        rows ++ output_rows(entry, :details)
 
       _ ->
-        generic_rows(entry, args, mode)
+        generic_rows(entry, args, :details)
     end
   end
 
-  defp edit_rows(entry, args, mode) do
+  defp edit_rows(entry, args) do
     edits = get(args, :edits)
 
     if is_list(edits) and edits != [] do
-      # Bound work as well as paint for a large batch; the details retain all edits.
-      shown = if mode == :preview, do: Enum.take(edits, 2), else: edits
-
-      rows =
-        if mode == :details,
-          do: [context_row("Submitted text (not a verified file diff)")],
-          else: []
-
-      rows ++
-        (shown
+      [context_row("Submitted text (not a verified file diff)")] ++
+        (edits
          |> Enum.with_index(1)
-         |> Enum.flat_map(fn {edit, index} -> replacement(edit, index, mode) end)) ++
-        result_rows(entry, mode)
+         |> Enum.flat_map(fn {edit, index} -> replacement(edit, index) end)) ++
+        output_rows(entry, :details)
     else
-      generic_rows(entry, args, mode)
+      generic_rows(entry, args, :details)
     end
   end
-
-  defp result_rows(entry, :preview) do
-    if entry.tool_status == :failed, do: output_rows(entry, :preview), else: []
-  end
-
-  defp result_rows(entry, :details), do: output_rows(entry, :details)
 
   defp output_rows(%{tool_output: nil}, _mode), do: []
 
@@ -404,30 +595,25 @@ defmodule Tackle.CLI.TUI.ToolView do
     end)
   end
 
-  defp replacement(edit, index, mode) when is_map(edit) do
+  defp replacement(edit, index) when is_map(edit) do
     old = get(edit, :oldText)
     new = get(edit, :newText)
 
     if is_binary(old) and is_binary(new) do
-      {added, removed, rows} = diff_rows(old, new, mode)
+      {added, removed, rows} = diff_rows(old, new, 0, 0)
       [replacement_heading(added, removed) | Enum.map(rows, &diff_row/1)]
     else
       [warn_row("Edit #{index}: invalid preview data")]
     end
   end
 
-  defp replacement(_edit, index, _mode),
+  defp replacement(_edit, index),
     do: [warn_row("Edit #{index}: invalid preview data")]
 
   # `similar` matches the lines and marks the changed tokens in Rust; the card
   # owns the palette, wrapping and the row budget. A positive context keeps that
   # many unchanged lines around each change and elides longer runs; 0 prints
   # every submitted line. A positive row budget returns only a head/tail window.
-  defp diff_rows(old, new, :preview),
-    do: diff_rows(old, new, @preview_context, @preview_rows)
-
-  defp diff_rows(old, new, :details), do: diff_rows(old, new, 0, 0)
-
   defp diff_rows(old, new, context, max_rows) do
     {:ok, {added, removed}, rows} = Native.diff_rows(old, new, context, max_rows)
     {added, removed, rows}

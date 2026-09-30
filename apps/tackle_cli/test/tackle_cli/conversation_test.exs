@@ -63,6 +63,39 @@ defmodule Tackle.CLI.TUI.ConversationTest do
     end
   end
 
+  test "height-only resize re-budgets file cards and preserves cached no-op refreshes" do
+    content = Enum.map_join(1..84, "\n", &"source #{&1}")
+
+    state =
+      projection([
+        Message.assistant(
+          tool_calls: [
+            %{id: "w", name: "write", arguments: %{path: "a", content: content}}
+          ]
+        )
+      ])
+
+    short = Conversation.new(%Rect{width: 80, height: 18}) |> Conversation.refresh(state)
+    assert short.content_height == 17
+    short = Conversation.scroll_to(short, :start)
+    tall = Conversation.resize(short, %Rect{width: 80, height: 30})
+    assert tall.content_height == 23
+    assert tall.anchor == short.anchor
+    refute tall.follow?
+    assert Conversation.refresh(tall, state).native == tall.native
+
+    tiny = Conversation.resize(tall, %Rect{width: 80, height: 4})
+    assert tiny.content_height == 4
+    assert tiny.sections.settled.code_rows == 1
+  end
+
+  test "height-only resize reuses cells that do not depend on file preview budgets" do
+    state = projection([Message.user("hello"), Message.tool_result("r", "read", "content")])
+    short = Conversation.new(%Rect{width: 80, height: 18}) |> Conversation.refresh(state)
+    tall = Conversation.resize(short, %Rect{width: 80, height: 30})
+    assert tall.sections.settled.groups == short.sections.settled.groups
+  end
+
   defp projection(messages) do
     %{
       agent_state: %State{messages: messages},
