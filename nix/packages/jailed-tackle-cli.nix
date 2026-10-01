@@ -8,6 +8,7 @@
 let
   jailedAgents = jailed-agents.lib.${system};
   jail = jailedAgents.internals.jail.combinators;
+  ketch = pkgs.callPackage ./ketch.nix { };
   clipboardPaste = import ./clipboard-paste-jail.nix { inherit pkgs jail; };
 
   # Keep the policy shared with the credential-free runtime smoke test.
@@ -22,7 +23,10 @@ let
       # of individual closures, this also exposes outputs built after launch.
       # This requires a multi-user host Nix installation (including nix.conf).
       enableNix = true;
-      extraPkgs = [ tackle-cli ];
+      extraPkgs = [
+        tackle-cli
+        ketch
+      ];
       fwdEnv = [
         "TERM"
         "COLORTERM"
@@ -50,6 +54,8 @@ let
             fi
             mkdir -p "$HOME/.tackle"
             chmod 700 "$HOME/.tackle"
+            # Ketch is usable without a config; expose only this file when present.
+            RUNTIME_ARGS+=(--bind-try "$HOME/.config/ketch/config.json" "$HOME/.config/ketch/config.json")
           '')
           (jail.wrap-entry (entry: ''
             # Keep the extracted release persistent without exposing all user data.

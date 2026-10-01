@@ -226,7 +226,8 @@ The new package requires a multi-user Nix installation with the daemon socket at
 user namespaces. It mounts the current directory and `~/.tackle` read-write,
 plus the same per-launch host image staging directory read-only; it does not
 mount a compositor socket. Burrito extracts into `~/.tackle/burrito/.burrito`. It does not enable
-`TACKLE_DEV`, mount Ketch configuration, or require Mix to launch the CLI.
+`TACKLE_DEV` or require Mix to launch the CLI. Ketch is available on `PATH`,
+with `~/.config/ketch/config.json` mounted when present for research calls.
 `TACKLE_MODEL` and `TACKLE_THINKING` are forwarded; credentials come from
 `~/.tackle/auth.json`. This launcher fixes `TACKLE_HOME` to `~/.tackle`.
 
@@ -248,8 +249,8 @@ devshell environment variables are not forwarded. Daemon-side build sandboxing
 continues to follow the host's Nix configuration.
 
 A credential-free host smoke test checks a real offline Nix build inside the
-jail, visibility of its new output, hidden home files, production environment,
-and the packaged CLI's informational commands:
+jail, visibility of its new output, Ketch availability and its config mount,
+hidden home files, production environment, and the packaged CLI's informational commands:
 
 ```sh
 nix build .#tackle-cli-jail.tests.smoke --out-link result-jail-test

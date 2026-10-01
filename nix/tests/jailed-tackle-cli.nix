@@ -12,6 +12,14 @@ let
       test "$TACKLE_HOME" = "$HOME/.tackle"
       test "$TACKLE_CLI_INSTALL_DIR" = "$TACKLE_HOME/burrito"
       test ! -e "$HOME/host-only"
+      test ! -e "$HOME/.config/ketch/host-only"
+      ketch --help > /dev/null
+      if [[ "$1" = missing-config ]]; then
+        test ! -e "$HOME/.config/ketch/config.json"
+        printf 'Ketch without config: OK\n'
+        exit 0
+      fi
+      test "$(cat "$HOME/.config/ketch/config.json")" = '{}'
       test "$NIX_REMOTE" = daemon
       test -S /nix/var/nix/daemon-socket/socket
 
@@ -42,13 +50,15 @@ pkgs.writeShellApplication {
   text = ''
     work=$(mktemp -d)
     trap 'rm -rf "$work"' EXIT
-    mkdir -p "$work/home" "$work/project"
+    mkdir -p "$work/home/.config/ketch" "$work/project"
     export HOME="$work/home"
-    touch "$HOME/host-only"
+    touch "$HOME/host-only" "$HOME/.config/ketch/host-only"
     export TACKLE_DEV=1
     export LANG=C.UTF-8
     export TERM="''${TERM:-xterm}"
     cd "$work/project"
+    ${pkgs.lib.getExe probeJail} missing-config
+    printf '{}\n' > "$HOME/.config/ketch/config.json"
     ${pkgs.lib.getExe probeJail} "$(date +%s%N)-$$"
     ${pkgs.lib.getExe productionJail} --version
     ${pkgs.lib.getExe productionJail} --help
