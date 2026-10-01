@@ -3,7 +3,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   Built-in, render-only tool cards.
 
   Cards are borderless: completed calls have no marker, while activity/failure
-  markers accompany a prominent command/path. Preview rows use a four-cell
+  markers accompany a prominent path or subdued command. Preview rows use a four-cell
   hanging indent. Completed calls omit redundant status text;
   running, requested and failed calls stay explicit. Successful reads collapse
   to a tool/path header; successful Bash output shows at most two clipped tail
@@ -380,7 +380,7 @@ defmodule Tackle.CLI.TUI.ToolView do
       else
         [
           MessageView.span(name <> "  ", Theme.style(:muted)),
-          MessageView.span(target, Theme.bold(Theme.style(:text)))
+          MessageView.span(target, target_style(name))
         ]
       end
 
@@ -398,6 +398,10 @@ defmodule Tackle.CLI.TUI.ToolView do
       )
     ]
   end
+
+  # Commands are often paragraphs long; reserve bold emphasis for file targets.
+  defp target_style(name) when name in ["bash", "elixir_eval"], do: Theme.style(:muted)
+  defp target_style(_name), do: Theme.bold(Theme.style(:text))
 
   defp body_rows(%{tool_name: "subagent"} = entry, args, :preview, _width) do
     assignment =

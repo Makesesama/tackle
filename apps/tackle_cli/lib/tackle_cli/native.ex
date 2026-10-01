@@ -32,6 +32,9 @@ defmodule Tackle.CLI.Native do
   def conversation_message(_source, _width, _markdown, _style, _marker),
     do: :erlang.nif_error(:nif_not_loaded)
 
+  def conversation_prose(_source, _width, _prose_width, _style, _marker),
+    do: :erlang.nif_error(:nif_not_loaded)
+
   def conversation_rows(_rows, _width), do: :erlang.nif_error(:nif_not_loaded)
 
   def conversation_code(_rows, _width, _style, _marker, _language),

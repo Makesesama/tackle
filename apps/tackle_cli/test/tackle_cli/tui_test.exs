@@ -1381,9 +1381,10 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "f3")
     state = state(tui)
 
-    assert {:picker, %{kind: :settings, picker: %Picker{items: [_]}}} = state.overlay
+    assert {:picker, %{kind: :settings, picker: %Picker{items: [_, _]}}} = state.overlay
     assert popup_title(state) =~ "Settings"
-    assert %SelectionList{items: [row]} = popup_content(state)
+    assert %SelectionList{items: [row, prose_row]} = popup_content(state)
+    assert prose_row =~ "Prose width"
     assert row =~ "Subagent sidebar"
     assert row =~ "Shown"
 
@@ -1738,6 +1739,11 @@ defmodule Tackle.CLI.TUITest do
 
     assert reconciled_state.stream.active_message_id == nil
 
+    assistant_entries =
+      Enum.filter(reconciled_state.conversation.sections[:turn].entries, &(&1.kind == :assistant))
+
+    assert [%{final?: false}, %{final?: true}] = assistant_entries
+
     entry_ids = Enum.map(reconciled_state.conversation.sections[:turn].entries, & &1.id)
     assert [_, _, _] = Enum.uniq(entry_ids)
   end
@@ -1780,7 +1786,7 @@ defmodule Tackle.CLI.TUITest do
              match?(%MessageView{kind: :assistant, content: ^markdown}, entry)
            end)
 
-    assert [{%Cell{}, height}] = state.conversation.items
+    assert [{%Cell{}, 1}, {%Cell{}, height}] = state.conversation.items
     assert height > 1
 
     terminal = ExRatatui.init_test_terminal(80, 24)
@@ -1825,12 +1831,12 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     wide_state = state(tui)
 
-    [{%Cell{}, wide_height}] = wide_state.conversation.items
+    [{%Cell{}, 1}, {%Cell{}, wide_height}] = wide_state.conversation.items
 
     inject_resize(tui, 24, 24)
     narrow_state = state(tui)
 
-    assert [{%Cell{}, narrow_height}] = narrow_state.conversation.items
+    assert [{%Cell{}, 1}, {%Cell{}, narrow_height}] = narrow_state.conversation.items
     assert narrow_height > wide_height
   end
 
@@ -1847,7 +1853,9 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
-    assert [{%Cell{}, _}, {%Cell{}, 1}, {%Cell{}, height}] = state.conversation.items
+    assert [{%Cell{}, _}, {%Cell{}, 1}, {%Cell{}, 1}, {%Cell{}, height}] =
+             state.conversation.items
+
     assert height > state.conversation.rect.height
     assert List.last(Conversation.entries(state.conversation)).content == markdown
 
@@ -1965,7 +1973,7 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
-    assert [_, _, _] = state.conversation.items
+    assert [{%Cell{}, _}, {%Cell{}, 1}, {%Cell{}, 1}, {%Cell{}, _}] = state.conversation.items
     assert List.last(Conversation.entries(state.conversation)).content == response
 
     terminal = ExRatatui.init_test_terminal(30, 16)
@@ -2036,6 +2044,7 @@ defmodule Tackle.CLI.TUITest do
     assert [
              {%Cell{}, 3},
              {_spacer, 1},
+             {%Cell{}, 1},
              {%Cell{}, 1}
            ] = state.conversation.items
 

@@ -84,6 +84,7 @@ defmodule Tackle.CLI.TUI.State do
           focus: focus(),
           subagent_selected: String.t() | nil,
           show_subagent_sidebar?: boolean(),
+          prose_width: pos_integer() | nil,
           selected_entry: String.t() | nil,
           browse_page:
             :transcript | :overview | :subagents | :prompt | :context | :tools | :events,
@@ -147,6 +148,7 @@ defmodule Tackle.CLI.TUI.State do
             focus: :composer,
             subagent_selected: nil,
             show_subagent_sidebar?: true,
+            prose_width: nil,
             selected_entry: nil,
             browse_page: :transcript,
             browse_content: nil,

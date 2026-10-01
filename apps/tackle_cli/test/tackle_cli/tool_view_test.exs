@@ -314,7 +314,8 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     body = Enum.filter(cells, &(&1.row == 1))
 
     assert Enum.all?(header ++ body, &(&1.bg == :reset))
-    assert Enum.find(header, &(&1.symbol == "c")).modifiers == [:bold]
+    assert Enum.find(header, &(&1.symbol == "c")).modifiers == []
+    assert Enum.find(header, &(&1.symbol == "c")).fg == {:indexed, 246}
     assert Enum.find(body, &(&1.symbol == "l")).col == 4
     assert Enum.find(body, &(&1.symbol == "l")).fg == {:indexed, 246}
     refute Enum.any?(body, &(&1.symbol in ["▌", "│"]))
@@ -322,6 +323,32 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     heading = header |> Enum.sort_by(& &1.col) |> Enum.map_join(& &1.symbol)
     assert heading =~ "  bash  cat a.ex"
     refute heading =~ "completed"
+  end
+
+  test "file paths retain bold emphasis while long commands stay muted" do
+    for {name, args, bold?} <- [
+          {"read", %{"path" => "lib/example.ex"}, true},
+          {"write", %{"path" => "lib/example.ex"}, true},
+          {"bash", %{"command" => String.duplicate("echo hello; ", 30)}, false}
+        ] do
+      [entry] =
+        settled([Message.assistant(tool_calls: [%{id: "call", name: name, arguments: args}])])
+
+      [{widget, _} | _] = ToolView.render(entry, 80)
+
+      target =
+        widget.text
+        |> hd()
+        |> Map.fetch!(:spans)
+        |> Enum.find(
+          &String.contains?(
+            &1.content,
+            if(bold?, do: "lib/example", else: if(name == "bash", do: "echo", else: "Enum"))
+          )
+        )
+
+      assert :bold in target.style.modifiers == bold?
+    end
   end
 
   test "successful reads collapse to a header without losing source or arguments" do

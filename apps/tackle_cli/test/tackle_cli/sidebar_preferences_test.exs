@@ -73,11 +73,30 @@ defmodule Tackle.CLI.SidebarPreferencesTest do
     assert {:ok, %{"show_subagent_sidebar" => false}} = path |> File.read!() |> JSON.decode()
 
     {:noreply, reopened} = Menu.open(:settings, hidden)
-    assert [%{secondary: "Hidden"}] = Menu.items(:settings, reopened)
+    assert [%{secondary: "Hidden"}, %{id: :prose_width}] = Menu.items(:settings, reopened)
     {:noreply, shown} = Menu.handle(:accept, reopened)
     assert shown.show_subagent_sidebar?
     assert shown.conversation.rect.width < 80
     assert {:ok, true} = Preferences.sidebar()
+  end
+
+  test "prose width toggles locally without changing saved configuration", %{path: path} do
+    state =
+      Viewport.refresh(%State{
+        input: Input.new(),
+        agent_state: %AgentState{},
+        conversation: Viewport.new_conversation(140, 24)
+      })
+
+    {:noreply, opened} = Menu.open(:settings, state)
+    {:noreply, next} = Menu.handle(:next, opened)
+    {:noreply, limited} = Menu.handle(:accept, next)
+    assert limited.prose_width == 80
+    refute File.exists?(path)
+    {:noreply, opened} = Menu.open(:settings, limited)
+    {:noreply, next} = Menu.handle(:next, opened)
+    {:noreply, full} = Menu.handle(:accept, next)
+    assert full.prose_width == nil
   end
 
   test "a failed save leaves the previous visibility intact", %{path: path} do

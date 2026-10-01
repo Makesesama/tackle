@@ -422,6 +422,101 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     assert Conversation.scroll_to_entry(model, "shared").anchor == %{id: "shared", offset: 0}
   end
 
+  test "answer heading is quiet and absent from intermediate commentary and copied source" do
+    messages = [
+      Message.assistant(
+        content: "Inspecting",
+        tool_calls: [%{id: "r", name: "read", arguments: %{}}]
+      ),
+      Message.assistant(content: "Done")
+    ]
+
+    model =
+      Conversation.new(%Rect{width: 80, height: 20}) |> Conversation.refresh(projection(messages))
+
+    assert paint(model) =~ "Answer"
+    assert length(Regex.scan(~r/Answer/, paint(model))) == 1
+    assert MessageView.source(Conversation.entry(model, "message:1:assistant")) == "Done"
+    refute MessageView.source(Conversation.entry(model, "message:0:assistant")) =~ "Answer"
+  end
+
+  test "runtime activity stays borderless beside the answer and retains notification details" do
+    run = "b4db826a-6fc5-4cf4-80a1-2a81ec0c8a46"
+    agent = "ea20e039-a3db-40ea-82f7-62fe8b93d70a"
+
+    source =
+      "Message from agent #{agent}:\n\nBackground subagent #{run} completed. Use subagent_status to collect its result."
+
+    state = projection([Message.user(source), Message.assistant(content: "Done")])
+
+    state =
+      Map.put(state, :subagents, %{run => %{profile: "scout", agent_ref: %{agent_id: agent}}})
+
+    model = Conversation.new(%Rect{width: 80, height: 12}) |> Conversation.refresh(state)
+    assert paint(model) =~ "Scout completed"
+    assert paint(model) =~ "Answer"
+    refute paint(model) =~ run
+    [{%Paragraph{text: rows}, _}] = Widget.render(Conversation.widget(model), model.rect)
+    assert Enum.all?(hd(rows).spans, &(&1.style.bg == :reset))
+    notice = Conversation.entry(model, "message:0:user")
+    assert notice.kind == :notice
+    assert MessageView.full_text(notice) =~ source
+    assert Enum.sum(Enum.map(MessageView.inspect_items(notice, 80), &elem(&1, 1))) > 1
+  end
+
+  test "tiny final answers yield their heading row to content" do
+    for width <- 1..5 do
+      model =
+        Conversation.new(%Rect{width: width, height: 12})
+        |> Conversation.refresh(projection([Message.assistant(content: "Done")]))
+
+      assert length(model.items) == 1
+      assert String.trim(paint(model)) != ""
+    end
+  end
+
+  test "optional prose limit remeasures only prose, leaves code wide, and preserves anchor" do
+    source =
+      String.duplicate("words ", 60) <> "\n\n```text\n" <> String.duplicate("x", 110) <> "\n```"
+
+    state = Map.put(projection([Message.assistant(content: source)]), :prose_width, nil)
+
+    full =
+      Conversation.new(%Rect{width: 140, height: 4})
+      |> Conversation.refresh(state)
+      |> Conversation.scroll_to(:start)
+
+    limited = Conversation.refresh(full, %{state | prose_width: 80})
+    assert limited.content_height > full.content_height
+    assert limited.anchor == full.anchor
+    refute limited.follow?
+    assert Conversation.text(limited) == Conversation.text(full)
+    [{_, old_cache}] = Map.to_list(full.sections.settled.cells)
+    [{_, new_cache}] = Map.to_list(limited.sections.settled.cells)
+
+    code_item = fn cache ->
+      Enum.find_value(cache, fn
+        {{segment, _, _, _, _}, item} -> if elem(segment, 0) == :code, do: item
+        _ -> nil
+      end)
+    end
+
+    # Code is measured at terminal width even though a different preference
+    # invalidates the prose layout.
+    assert code_item.(old_cache) == code_item.(new_cache)
+    assert elem(code_item.(new_cache), 1) == 2
+
+    assert paint(Conversation.resize(limited, %Rect{width: 140, height: 30})) =~
+             String.duplicate("x", 110)
+
+    for width <- [1, 5, 6, 40] do
+      a = Conversation.new(%Rect{width: width, height: 10}) |> Conversation.refresh(state)
+      b = Conversation.refresh(a, %{state | prose_width: 80})
+      assert a.content_height == b.content_height
+      assert paint(a) == paint(b)
+    end
+  end
+
   defp projection(messages) do
     %{
       agent_state: %State{messages: messages},

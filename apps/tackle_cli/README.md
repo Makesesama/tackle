@@ -293,7 +293,7 @@ are omitted rather than reported as zero.
 | Alt+1–5 | Resume one of the five recent sessions when idle with an empty draft. Ctrl+1–5 also works in terminals that report those chords distinctly. A failed resume keeps the current session open. |
 | F1 | Search-first model selector (idle only). Type to filter, ↑/↓ to select, Enter to apply, Esc to close. |
 | F2 | Reasoning-level selector (idle only). A reconfigure failure preserves the conversation and the draft. |
-| F3 | Settings picker: toggle the subagent sidebar (saved to `$TACKLE_HOME/config.json`). Copy source with Y in the F4 transcript browser instead. |
+| F3 | Settings picker: toggle the subagent sidebar (saved to `$TACKLE_HOME/config.json`) or an 80-column assistant prose limit (session-local, off by default). Code and tools keep the available width. Copy source with Y in F4 instead. |
 | F4 | Unified Browse: Transcript, Overview, Prompt, Context, Tools, Events. ←/→ or Tab/Shift+Tab switches pages. Transcript ↑/↓ selects entries, Enter inspects, Y copies source. Other pages scroll with ↑/↓, Page Up/Down, Home/End or wheel; R refreshes, Y copies. Esc/F4 returns to the draft. |
 | F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
 | F6 | Open cumulative settled token usage. Tab or ←/→ switches Current/This-week sessions, R reloads, Esc closes. |
@@ -434,9 +434,26 @@ keeps prose off the terminal edge. Below four columns, message chrome yields to
 content. Reasoning uses muted text and italic previews rather than an accented
 heading.
 
-The conversation renders assistant responses as Markdown, including while a
-response is streaming. Tool calls and matching results share one card, identified
-by call ID, with the command or path emphasized and the tool name subdued rather
+Assistant messages render as Markdown, including while streaming. Completed
+answers (assistant content without tool calls, using the library's final-answer
+contract) get a quiet “Answer” heading; intermediate tool-call commentary does
+not. Below six columns the heading yields to content. Reasoning remains
+collapsed by default; Ctrl+T reveals it.
+
+F3 → Prose width optionally limits assistant prose to 80 content columns on wide
+terminals. Fenced code and tool previews still use the transcript's available
+width. This setting is local to the running shell, defaults to full width, and
+does not change retained source, copy, search, or inspector details.
+
+Runtime subagent completions with a known run/sender pair render as one-line,
+borderless activity notices, such as `Scout completed · F4: details`, rather
+than user-message bands. F4, select the notice, then Enter shows the original
+notification with its IDs; Y copies it. Findings remain in the collection tool's
+details. Notices without runtime correlation (including restored history) retain
+their user-role presentation rather than misclassifying user-authored text.
+
+Tool calls and matching results share one card, identified by call ID, with
+paths emphasized, commands muted and unbolded, and the tool name subdued rather
 than a JSON argument dump. Tool cards are borderless, with indented output instead
 of raised bands or heavy rails. Completed calls use a quiet dot without
 repeating "completed"; requested, running, and failed states remain explicit.

@@ -78,6 +78,25 @@ impl HistoryCell {
         cell
     }
 
+    /// Limit prose content while retaining the full scene width and gutter.
+    /// Measurement and paint must use the same width, including clipped windows.
+    pub fn prose(
+        source: &str,
+        width: u16,
+        limit: Option<u16>,
+        style: Style,
+        marker: Span<'static>,
+    ) -> Self {
+        let width = width.max(1);
+        let measured_width = limit.map_or(width, |limit| {
+            width.min(limit.max(1).saturating_add(if width >= 6 { 5 } else { 0 }))
+        });
+        let mut cell = Self::message(source, measured_width, true, style, marker);
+        cell.right_padding += width - measured_width;
+        cell.width = width;
+        cell
+    }
+
     /// Plain diagnostic text retains indentation and wraps by grapheme without
     /// imposing Markdown interpretation or a message gutter.
     pub fn plain(source: &str, width: u16, style: Style) -> Self {
@@ -472,6 +491,38 @@ mod tests {
 
     fn text(buffer: &Buffer) -> String {
         buffer.content.iter().map(|cell| cell.symbol()).collect()
+    }
+
+    #[test]
+    fn limited_prose_measures_and_paints_the_same_clipped_windows() {
+        let source = "word ".repeat(100);
+        let limited = Arc::new(HistoryCell::prose(
+            &source,
+            120,
+            Some(40),
+            Style::default(),
+            Span::raw("●"),
+        ));
+        let expected = HistoryCell::message(&source, 45, true, Style::default(), Span::raw("●"));
+        assert_eq!(limited.width(), 120);
+        assert_eq!(limited.height(), expected.height());
+        let height = limited.height();
+        let conversation = Conversation::new(vec![limited]);
+        let full = paint(&conversation, 120, height as u16, 0);
+        for offset in 0..height {
+            let clipped = paint(&conversation, 120, 1, offset);
+            for x in 0..120 {
+                assert_eq!(clipped[(x + 2, 3)], full[(x + 2, offset as u16 + 3)]);
+                if x >= 43 {
+                    assert_eq!(clipped[(x + 2, 3)].symbol(), " ");
+                }
+            }
+        }
+        for width in [1, 5, 6, 40] {
+            let a = HistoryCell::prose(&source, width, Some(80), Style::default(), Span::raw("●"));
+            let b = HistoryCell::message(&source, width, true, Style::default(), Span::raw("●"));
+            assert_eq!(a.height(), b.height());
+        }
     }
 
     #[test]

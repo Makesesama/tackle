@@ -69,18 +69,45 @@ defmodule Tackle.CLI.Widgets.Conversation do
       |> CodeFences.split()
       |> Enum.with_index()
       |> Enum.map_reduce(%{}, fn {segment, index}, cache ->
-        key = {segment, index == 0, width, entry.style}
+        prose_width = if elem(segment, 0) == :markdown, do: entry.prose_width
+        key = {segment, index == 0, width, entry.style, prose_width}
 
         item =
           case Map.fetch(previous, key) do
-            {:ok, item} -> item
-            :error -> assistant_cell(segment, index == 0, width, entry.style, "●")
+            {:ok, item} ->
+              item
+
+            :error ->
+              assistant_cell(segment, index == 0, width, entry.style, "●", entry.prose_width)
           end
 
         {item, Map.put(cache, key, item)}
       end)
 
     # Retain only this snapshot's segments, not every version of the live tail.
+    {items, cache} =
+      if entry.final? and width >= 6 do
+        key = {:answer_heading, width}
+
+        heading =
+          Map.get_lazy(previous, key, fn ->
+            paragraph_cell(
+              {%Paragraph{
+                 text: [
+                   MessageView.row([
+                     MessageView.span("   Answer", Theme.style(:accent_soft))
+                   ])
+                 ]
+               }, 1},
+              width
+            )
+          end)
+
+        {[heading | items], Map.put(cache, key, heading)}
+      else
+        {items, cache}
+      end
+
     {items, cache}
   end
 
@@ -98,12 +125,12 @@ defmodule Tackle.CLI.Widgets.Conversation do
 
   def cached_cell(entry, width, previous, _code_rows), do: cached_cell(entry, width, previous)
 
-  defp assistant_cell({:markdown, content}, first?, width, base, marker) do
+  defp assistant_cell({:markdown, content}, first?, width, base, marker, prose_width) do
     {resource, height} =
-      Native.conversation_message(
+      Native.conversation_prose(
         content,
         width,
-        true,
+        prose_width,
         style(base),
         {if(first?, do: marker, else: ""), style(Theme.style(:accent_soft))}
       )
@@ -111,7 +138,7 @@ defmodule Tackle.CLI.Widgets.Conversation do
     {%Cell{state: resource, style: base}, height}
   end
 
-  defp assistant_cell({:code, language, code}, first?, width, base, marker) do
+  defp assistant_cell({:code, language, code}, first?, width, base, marker, _prose_width) do
     # The highlighter supplies token colours and its own lighter background.
     # Keep the colours but paint a single darker band across every code row.
     surface = Theme.merge(base, Theme.style(:code_surface))

@@ -891,6 +891,13 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     []
     |> maybe_append_message_text(:thinking, message.thinking, message.id)
     |> maybe_append_message_text(:assistant, message.content, message.id)
+    |> Enum.map(fn
+      %{kind: :assistant} = item ->
+        Map.put(item, :final?, Tackle.Lib.Message.final_answer?(message))
+
+      item ->
+        item
+    end)
   end
 
   defp maybe_append_message_text(entries, kind, content, message_id)

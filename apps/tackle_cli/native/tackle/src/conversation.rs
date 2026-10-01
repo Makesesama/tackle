@@ -81,6 +81,20 @@ fn conversation_message(
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn conversation_prose(
+    source: String,
+    width: u16,
+    prose_width: Option<u16>,
+    base: WireStyle,
+    marker: WireSpan,
+) -> NifResult<(ResourceArc<CellResource>, usize)> {
+    let marker = Span::styled(sanitize(&marker.0).replace('\n', " "), style(marker.1)?);
+    let cell = HistoryCell::prose(&source, width, prose_width, style(base)?, marker);
+    let height = cell.height();
+    Ok((ResourceArc::new(CellResource(Arc::new(cell))), height))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn conversation_rows(
     rows: Vec<WireLine>,
     width: u16,

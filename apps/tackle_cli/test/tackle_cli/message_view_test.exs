@@ -113,6 +113,80 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
     assert Enum.any?(wrapped, fn line -> Enum.any?(line.spans, &(&1.style.fg == :red)) end)
   end
 
+  test "runtime completions are one-row notices with IDs retained only in source" do
+    run = "7ed0f2de-c217-49cb-8f64-59b633554c25"
+    agent = "9b12d46b-7427-42f1-afda-8727c28204f5"
+
+    source =
+      "Message from agent #{agent}:\n\nBackground subagent #{run} completed. Use subagent_status to collect its result."
+
+    state = %{
+      agent_state: %State{messages: [Message.user(source)]},
+      subagents: %{run => %{profile: "scout", agent_ref: %{agent_id: agent}}}
+    }
+
+    [entry] = MessageView.section_entries(state, :settled)
+    assert entry.kind == :notice
+    assert entry.content == "Scout completed"
+    assert MessageView.full_text(entry) =~ source
+    assert MessageView.search_text(entry) =~ run
+
+    for width <- [1, 8, 40, 120] do
+      items = MessageView.render_entry(entry, width)
+      assert Enum.sum(Enum.map(items, &elem(&1, 1))) == 1
+      refute text(items) =~ run
+      refute text(items) =~ agent
+      assert Enum.all?(items, fn {widget, _} -> is_nil(widget.style.bg) end)
+    end
+
+    failed_source =
+      String.replace(source, "completed", "finished with runtime_error: first\nsecond")
+
+    failed_state = %{
+      state
+      | agent_state: %State{messages: [Message.user(failed_source)]},
+        subagents: %{
+          run => %{profile: "scout", agent_ref: %{agent_id: agent}, status: :runtime_error}
+        }
+    }
+
+    [failed] = MessageView.section_entries(failed_state, :settled)
+    assert failed.content == "Scout failed"
+    assert MessageView.full_text(failed) =~ "first\nsecond"
+
+    mismatched = %{
+      state
+      | subagents: %{run => %{profile: "scout", agent_ref: %{agent_id: "other"}}}
+    }
+
+    assert [%{kind: :user}] = MessageView.section_entries(mismatched, :settled)
+
+    [restored] = MessageView.section_entries(Map.delete(state, :subagents), :settled)
+    assert restored.kind == :user
+    live = %{stream: %{timeline: [%{kind: :user, content: source}]}, subagents: state.subagents}
+
+    assert [%{kind: :notice, content: "Scout completed"}] =
+             MessageView.section_entries(live, :turn)
+
+    [unknown] = settled([Message.user(source)])
+    assert unknown.kind == :user
+    [ordinary] = settled([Message.user("Please explain: " <> source)])
+    assert ordinary.kind == :user
+  end
+
+  test "final answer is classified before tool calls are split from prose" do
+    call = %{id: "r", name: "read", arguments: %{}}
+
+    entries =
+      settled([
+        Message.assistant(content: "Inspecting", tool_calls: [call]),
+        Message.assistant(content: "Done")
+      ])
+
+    assert [%{kind: :assistant, final?: false}, %{kind: :tool}, %{kind: :assistant, final?: true}] =
+             entries
+  end
+
   defp settled(messages),
     do:
       MessageView.section_entries(

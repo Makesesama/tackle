@@ -11,8 +11,9 @@ defmodule Tackle.CLI.TUI.Menu do
   failure closes the menu and reports the reason while preserving both the
   conversation and the draft.
 
-  The sidebar visibility setting is stored in `config.json` and updates only
-  the presentation state; model and reasoning selection still use
+  Sidebar visibility is stored in `config.json`; the optional 80-column prose
+  limit is session-local. Both update only presentation state. Model and
+  reasoning selection still use
   `Tackle.reconfigure/2`.
   """
 
@@ -103,6 +104,17 @@ defmodule Tackle.CLI.TUI.Menu do
         secondary: if(state.show_subagent_sidebar?, do: "Shown", else: "Hidden"),
         marker: " ",
         search: "subagent sidebar show hide"
+      },
+      %{
+        id: :prose_width,
+        primary: "Prose width",
+        secondary:
+          if(state.prose_width,
+            do: "80 columns · this session",
+            else: "Full width · this session"
+          ),
+        marker: " ",
+        search: "prose width readable full 80 columns"
       }
     ]
   end
@@ -174,6 +186,17 @@ defmodule Tackle.CLI.TUI.Menu do
   end
 
   defp dispatch(:ignore, state), do: {:noreply, state, render?: false}
+
+  defp apply_selection(:settings, %{id: :prose_width}, state) do
+    state = %{
+      state
+      | prose_width: if(state.prose_width, do: nil, else: 80),
+        overlay: nil,
+        notice: nil
+    }
+
+    {:noreply, Viewport.refresh(state, [:settled, :turn])}
+  end
 
   defp apply_selection(:settings, %{id: :subagent_sidebar}, state) do
     visible? = not state.show_subagent_sidebar?

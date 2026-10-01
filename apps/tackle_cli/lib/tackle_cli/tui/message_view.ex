@@ -26,6 +26,11 @@ defmodule Tackle.CLI.TUI.MessageView do
   alias Tackle.CLI.TUI.{Compaction, Glyph, Pastes, Theme, ToolView}
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
+  @uuid "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+  @runtime_notice Regex.compile!(
+                    "\\AMessage from agent (#{@uuid}):\\n\\nBackground subagent (#{@uuid}) " <>
+                      "(completed|finished with (?s:.+))\\. Use subagent_status to collect its result\\.\\z"
+                  )
   @conversation_chunk_rows 64
   @zero_width_grapheme ~r/^[\p{M}\p{Cf}]+$/u
   @emoji_presentation ~r/\p{Emoji_Presentation}/u
@@ -45,7 +50,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   ]
 
   @typedoc "A terminal conversation entry before it is projected into widgets."
-  @type kind :: :user | :assistant | :thinking | :tool | :compaction | :error | :welcome
+  @type kind :: :user | :assistant | :thinking | :tool | :notice | :compaction | :error | :welcome
   @type t :: %__MODULE__{
           kind: kind(),
           content: String.t(),
@@ -61,6 +66,8 @@ defmodule Tackle.CLI.TUI.MessageView do
           tool_elapsed_ms: non_neg_integer() | nil,
           subagent_work: String.t() | nil,
           subagent_output: String.t() | nil,
+          final?: boolean(),
+          prose_width: pos_integer() | nil,
           collapsed?: boolean()
         }
 
@@ -79,6 +86,8 @@ defmodule Tackle.CLI.TUI.MessageView do
     :tool_elapsed_ms,
     :subagent_work,
     :subagent_output,
+    :prose_width,
+    final?: false,
     style: %Style{},
     collapsed?: false
   ]
@@ -118,7 +127,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           if MapSet.member?(call_ids, id), do: [], else: message_entries(message, index, state)
 
         {%Message{role: :assistant} = message, index} ->
-          prose = message_entries(%{message | tool_calls: []}, index, state)
+          prose = message_entries(message, index, state)
 
           calls =
             (message.tool_calls || [])
@@ -168,18 +177,15 @@ defmodule Tackle.CLI.TUI.MessageView do
           )
 
         {%{kind: :user, content: content} = item, index} ->
-          entry(:user, Pastes.collapse(content, state),
-            id: Map.get(item, :id, live_text_id(:user, index)),
-            label: "You:",
-            source: content,
-            style: style(:user)
-          )
+          user_entry(content, Map.get(item, :id, live_text_id(:user, index)), state)
 
         {%{kind: :assistant, content: content} = item, index} ->
           entry(:assistant, content,
             id: Map.get(item, :id, live_text_id(:assistant, index)),
-            label: "Tackle:",
+            label: if(Map.get(item, :final?, false), do: "Tackle · Answer:", else: "Tackle:"),
             source: content,
+            final?: Map.get(item, :final?, false),
+            prose_width: Map.get(state, :prose_width),
             style: style(:assistant)
           )
 
@@ -238,6 +244,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           id: "streaming:response",
           label: "Tackle:",
           source: state.stream.response,
+          prose_width: Map.get(state, :prose_width),
           style: style(:assistant)
         )
       ]
@@ -435,6 +442,28 @@ defmodule Tackle.CLI.TUI.MessageView do
     render_lines(wrap_rows([header], width) ++ wrap_indented_rows(body, width, 2))
   end
 
+  def render_entry(%__MODULE__{kind: :notice} = entry, width) do
+    # Clip activity to one row; complete notification source lives in details.
+    text = sanitize(entry.content <> " · F4: details")
+
+    clipped =
+      text
+      |> String.graphemes()
+      |> Enum.reduce_while({[], 0}, fn grapheme, {parts, used} ->
+        size = display_width(grapheme)
+
+        if used + size <= max(width - 1, 0),
+          do: {:cont, {[grapheme | parts], used + size}},
+          else: {:halt, {parts, used}}
+      end)
+      |> elem(0)
+      |> Enum.reverse()
+      |> Enum.join()
+
+    clipped = if clipped == text, do: text, else: clipped <> "…"
+    render_rows([row([span(clipped, entry.style)], %Style{})], width)
+  end
+
   def render_entry(%__MODULE__{kind: :compaction} = entry, width) do
     render_rows([row([span(entry.content, entry.style)], %Style{})], width)
   end
@@ -513,6 +542,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   def style(:assistant), do: Theme.style(:text)
   def style(:thinking), do: Theme.style(:muted)
   def style(:tool), do: Theme.style(:muted)
+  def style(:notice), do: Theme.style(:muted)
   def style(:compaction), do: Theme.style(:accent_soft)
   def style(:error), do: Theme.style(:error)
   def style(:welcome), do: Theme.style(:muted)
@@ -587,14 +617,7 @@ defmodule Tackle.CLI.TUI.MessageView do
 
   defp message_entries(%Message{role: :user, content: content}, index, state)
        when is_binary(content) do
-    [
-      entry(:user, Pastes.collapse(content, state),
-        id: "message:#{index}:user",
-        label: "You:",
-        source: content,
-        style: style(:user)
-      )
-    ]
+    [user_entry(content, "message:#{index}:user", state)]
   end
 
   defp message_entries(%Message{role: :assistant} = message, index, state) do
@@ -618,8 +641,10 @@ defmodule Tackle.CLI.TUI.MessageView do
         [
           entry(:assistant, message.content,
             id: "message:#{index}:assistant",
-            label: "Tackle:",
+            label: if(Message.final_answer?(message), do: "Tackle · Answer:", else: "Tackle:"),
             source: message.content,
+            final?: Message.final_answer?(message),
+            prose_width: Map.get(state, :prose_width),
             style: style(:assistant)
           )
         ]
@@ -656,6 +681,66 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   defp message_entries(_message, _index, _state), do: []
+
+  # The runtime currently projects envelopes into user-role messages. Match
+  # only its complete completion template with a known run/sender pair, not
+  # arbitrary user prose. Without runtime provenance (e.g. resume), leave the
+  # message as a user entry rather than silently hiding user-authored content.
+  defp user_entry(content, id, state) do
+    case runtime_notice(content, state) do
+      {task, status} ->
+        profile = Map.get(task, :profile) || "Subagent"
+
+        entry(:notice, "#{String.capitalize(profile)} #{status}",
+          id: id,
+          label: "Activity:",
+          source: content,
+          collapsed?: true
+        )
+
+      nil ->
+        entry(:user, Pastes.collapse(content, state),
+          id: id,
+          label: "You:",
+          source: content,
+          style: style(:user)
+        )
+    end
+  end
+
+  defp runtime_notice(content, state) do
+    case Regex.run(@runtime_notice, content) do
+      [_, agent_id, run_id, outcome] ->
+        case Map.get(Map.get(state, :subagents, %{}), run_id) do
+          %{agent_ref: %{agent_id: ^agent_id}} = task ->
+            status =
+              case {outcome, Map.get(task, :status)} do
+                {"completed", _} ->
+                  "completed"
+
+                {_, :cancelled} ->
+                  "cancelled"
+
+                {_, :timeout} ->
+                  "timed out"
+
+                {_, status} when status in [:error, :runtime_error, :rejected, :failed] ->
+                  "failed"
+
+                _ ->
+                  "finished"
+              end
+
+            {task, status}
+
+          _ ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
 
   defp result_status(nil), do: :requested
   defp result_status(%Message{content: "Error:" <> _}), do: :failed
@@ -699,6 +784,8 @@ defmodule Tackle.CLI.TUI.MessageView do
       tool_elapsed_ms: Keyword.get(opts, :tool_elapsed_ms),
       subagent_work: Keyword.get(opts, :subagent_work),
       subagent_output: Keyword.get(opts, :subagent_output),
+      final?: Keyword.get(opts, :final?, false),
+      prose_width: Keyword.get(opts, :prose_width),
       collapsed?: Keyword.get(opts, :collapsed?, false)
     }
   end

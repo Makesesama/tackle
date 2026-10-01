@@ -105,10 +105,13 @@ defmodule Tackle.CLI.TUI.ModulesTest do
     test "settings shows the current sidebar visibility" do
       state = %State{agent_state: agent_state()}
 
-      assert [%{id: :subagent_sidebar, primary: "Subagent sidebar", secondary: "Shown"}] =
+      assert [
+               %{id: :subagent_sidebar, primary: "Subagent sidebar", secondary: "Shown"},
+               %{id: :prose_width}
+             ] =
                Menu.items(:settings, state)
 
-      assert [%{secondary: "Hidden"}] =
+      assert [%{secondary: "Hidden"}, %{id: :prose_width}] =
                Menu.items(:settings, %{state | show_subagent_sidebar?: false})
     end
   end
