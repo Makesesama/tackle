@@ -51,7 +51,7 @@ defmodule Tackle.Coding do
 
   Agent files are validated at startup. Invalid files, unknown tools, and model
   selections unavailable through the configured adapters are explicit errors.
-  Children have unlimited loop iterations by default and a five-minute timeout.
+  Children have unlimited loop iterations by default and a five-minute inactivity timeout.
   Explicit root or profile iteration limits are still enforced. Scope limits
   allow the root plus two children.
   """

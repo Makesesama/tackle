@@ -6,6 +6,48 @@ defmodule Tackle.Runtime.DelegationTest do
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
 
+  defmodule ProgressTool do
+    use Tackle.Lib.Tool
+
+    alias Tackle.Lib.Event
+
+    tool_name("progress")
+    description("Produces progress during long work")
+
+    def run(_args, context) do
+      for _ <- 1..5 do
+        Process.sleep(60)
+        context.event_callback.(Event.new(:tool_progress, %{delta: "working"}))
+      end
+
+      {:ok, "done"}
+    end
+  end
+
+  test "tool progress keeps a delegated session alive beyond its idle window" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{
+          "worker" =>
+            agent_spec("worker",
+              mode: :tool_then_answer,
+              tools: [ProgressTool],
+              llm_opts: [
+                tool_call: %{"id" => "progress-1", "name" => "progress", "arguments" => %{}}
+              ],
+              content: "finished"
+            )
+        }
+      )
+
+    {:ok, run_ref} =
+      Tackle.Runtime.request_agent(scope.root_agent_ref, "worker", "go", timeout: 200)
+
+    assert %Outcome{status: :ok} = outcome = Tackle.Runtime.await(run_ref, 5_000)
+    assert Outcome.answer(outcome) == "finished"
+  end
+
   test "concurrent delegated runs are correlated by run reference" do
     profiles =
       Map.new(1..4, fn i ->
@@ -79,7 +121,7 @@ defmodule Tackle.Runtime.DelegationTest do
     refute Outcome.library?(outcome)
   end
 
-  test "a run timeout settles as timeout and cleans up the child" do
+  test "an inactivity timeout settles as timeout and cleans up the child" do
     scope =
       start_scope(
         root: [allow_delegation: true],

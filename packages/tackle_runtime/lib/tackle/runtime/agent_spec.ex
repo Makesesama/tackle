@@ -58,7 +58,7 @@ defmodule Tackle.Runtime.AgentSpec do
     end
   end
 
-  @doc "Returns the agent's per-run timeout, bounded by the scope limit."
+  @doc "Returns the agent's inactivity timeout, bounded by the scope idle limit."
   @spec timeout(t(), Limits.t()) :: pos_integer()
   def timeout(%__MODULE__{timeout: timeout}, %Limits{} = limits),
     do: min(timeout, limits.run_timeout)

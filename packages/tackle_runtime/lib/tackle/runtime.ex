@@ -232,6 +232,11 @@ defmodule Tackle.Runtime do
   helper installs correlated terminal routing, and a fresh ephemeral agent runs
   the delegated prompt. Returns a stable `RunRef` for `await/2`.
 
+  `:timeout` overrides the inactivity window, renewed on each child event; it
+  does not cap total run duration. Without an override, the window comes from
+  the agent spec, bounded by the scope's `run_timeout`. Explicit `await/2`
+  timeouts still bound the caller's total wait.
+
   A trusted spec with `model_source: :parent` copies only the requesting agent's
   model reference and thinking level at request time, resolving against the
   child's configured adapters before admission. Resolution runs outside the

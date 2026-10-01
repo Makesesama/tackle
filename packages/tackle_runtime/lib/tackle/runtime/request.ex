@@ -7,7 +7,7 @@ defmodule Tackle.Runtime.Request do
 
   1. starts one fresh ephemeral session subtree under the scope work supervisor;
   2. installs the correlated terminal destination on that session;
-  3. subscribes before submitting when the caller requested child events;
+  3. subscribes to child progress before submitting;
   4. submits the delegated prompt;
   5. stores exactly one terminal outcome;
   6. answers status, collection, and `await/2` callers;
@@ -15,9 +15,11 @@ defmodule Tackle.Runtime.Request do
 
   Foreground requests briefly linger after settlement for an awaiting caller.
   Background requests retain their outcome until it is collected, cancelled,
-  or their owning scope stops. Child events are observed only when an event
-  callback was supplied and remain transient; the correlated terminal outcome
-  is still the request's only retained result.
+  or their owning scope stops. The run timeout measures inactivity, not total
+  duration: each child event renews the idle window. Child events remain
+  transient and are forwarded only when an event callback was supplied; the
+  correlated terminal outcome is still the request's only retained result.
+  Explicit `await/2` timeouts still bound the caller's total wait.
   """
 
   use GenServer, restart: :temporary
@@ -184,7 +186,7 @@ defmodule Tackle.Runtime.Request do
       outcome: nil,
       awaiters: %{},
       await_timer: nil,
-      deadline_timer: nil,
+      idle_timer: nil,
       linger_timer: nil,
       cancelled: false
     }
@@ -206,7 +208,7 @@ defmodule Tackle.Runtime.Request do
          {:ok, state} <- start_child_session(state),
          {:ok, state} <- subscribe_to_child_events(state),
          {:ok, state} <- submit_prompt(state) do
-      {:noreply, arm_deadline(state, state.timeout)}
+      {:noreply, arm_idle_timeout(state)}
     else
       {:error, reason, state} ->
         outcome =
@@ -299,12 +301,12 @@ defmodule Tackle.Runtime.Request do
         state
       ) do
     publish_child_event(state, event)
-    {:noreply, state}
+    {:noreply, arm_idle_timeout(state)}
   end
 
   def handle_info({:tackle_runtime_event, %Event{} = event}, state) do
     publish_child_event(state, event)
-    {:noreply, state}
+    {:noreply, arm_idle_timeout(state)}
   end
 
   def handle_info({:tackle_runtime_terminal, run_id, result}, state) do
@@ -348,7 +350,8 @@ defmodule Tackle.Runtime.Request do
     {:noreply, cancel_child(state, reason)}
   end
 
-  def handle_info({:request_timeout, :deadline}, state) do
+  def handle_info({:timeout, timer, {:request_timeout, :idle}}, %{idle_timer: timer} = state)
+      when not is_nil(timer) do
     {:noreply, settle(state, timeout_outcome(state))}
   end
 
@@ -442,8 +445,7 @@ defmodule Tackle.Runtime.Request do
   defp event_callback(%{event_callback: callback}) when is_function(callback, 1), do: callback
   defp event_callback(_state), do: nil
 
-  defp subscribe_to_child_events(%{event_callback: callback, session_pid: pid} = state)
-       when is_function(callback, 1) or is_function(callback, 2) do
+  defp subscribe_to_child_events(%{session_pid: pid} = state) do
     case AgentBackend.call(state.backend, pid, :subscribe, []) do
       {:ok, _snapshot} -> {:ok, state}
       :ok -> {:ok, state}
@@ -451,8 +453,6 @@ defmodule Tackle.Runtime.Request do
       other -> {:error, {:event_subscription_failed, {:invalid_result, other}}, state}
     end
   end
-
-  defp subscribe_to_child_events(state), do: {:ok, state}
 
   defp publish_child_event(%{event_callback: callback, run_ref: run_ref}, %Event{} = event)
        when is_function(callback, 2),
@@ -472,11 +472,13 @@ defmodule Tackle.Runtime.Request do
     end
   end
 
-  defp arm_deadline(state, :infinity), do: state
+  defp arm_idle_timeout(%{outcome: %Outcome{}} = state), do: state
+  defp arm_idle_timeout(%{timeout: :infinity} = state), do: state
 
-  defp arm_deadline(state, timeout) when is_integer(timeout) and timeout > 0 do
-    timer = Process.send_after(self(), {:request_timeout, :deadline}, timeout)
-    %{state | deadline_timer: timer}
+  defp arm_idle_timeout(%{timeout: timeout} = state) when is_integer(timeout) and timeout > 0 do
+    if state.idle_timer, do: Process.cancel_timer(state.idle_timer)
+    timer = :erlang.start_timer(timeout, self(), {:request_timeout, :idle})
+    %{state | idle_timer: timer}
   end
 
   defp arm_await_timeout(state, :infinity), do: state
@@ -646,11 +648,11 @@ defmodule Tackle.Runtime.Request do
   end
 
   defp cancel_timers(state) do
-    Enum.each([state.await_timer, state.deadline_timer], fn
+    Enum.each([state.await_timer, state.idle_timer], fn
       nil -> :ok
       timer -> Process.cancel_timer(timer)
     end)
 
-    %{state | await_timer: nil, deadline_timer: nil}
+    %{state | await_timer: nil, idle_timer: nil}
   end
 end

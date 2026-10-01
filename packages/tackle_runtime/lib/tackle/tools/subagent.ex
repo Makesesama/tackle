@@ -52,7 +52,8 @@ defmodule Tackle.Tools.Subagent do
     )
 
     field(:timeout_ms, :integer,
-      description: "Optional maximum wait in milliseconds, bounded by the scope run timeout"
+      description:
+        "Optional inactivity timeout in milliseconds, renewed by child progress and bounded by the scope idle limit"
     )
   end
 

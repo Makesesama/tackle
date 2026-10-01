@@ -5,7 +5,8 @@ defmodule Tackle.Runtime.Limits do
   `Tackle.Lib.State.max_iterations` bounds one agent's internal loop only. These
   limits bound recursive agent creation, concurrent work, and request waits at
   the runtime level. The initial runtime rejects excess concurrency instead of
-  queuing it.
+  queuing it. `run_timeout` bounds inactivity between child events, not total
+  delegated runtime. `workflow_timeout` remains an absolute workflow deadline.
   """
 
   @default_run_timeout :timer.minutes(5)

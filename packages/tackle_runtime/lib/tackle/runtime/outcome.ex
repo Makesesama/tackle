@@ -6,7 +6,7 @@ defmodule Tackle.Runtime.Outcome do
 
   * `:ok` / `:error` / `:cancelled` carry the settled `Tackle.Lib.State`;
   * `:runtime_error` is a turn Task or agent process crash;
-  * `:timeout` is an expired request wait;
+  * `:timeout` is an expired inactivity window or explicit request wait;
   * `:rejected` is a fleet/scope policy refusal.
 
   The struct is internal to the runtime. Model-facing callers project it with

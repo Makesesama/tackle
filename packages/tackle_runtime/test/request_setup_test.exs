@@ -1,6 +1,7 @@
 defmodule Tackle.Runtime.RequestSetupTest do
   use ExUnit.Case, async: false
 
+  alias Tackle.Lib.Event
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentSpec
@@ -35,7 +36,7 @@ defmodule Tackle.Runtime.RequestSetupTest do
         :ok = AgentContext.register(context)
       end
 
-      {:ok, spec.config}
+      {:ok, Map.merge(spec.config, %{context: context, subscriber: nil})}
     end
 
     @impl true
@@ -48,7 +49,7 @@ defmodule Tackle.Runtime.RequestSetupTest do
     end
 
     @impl true
-    def handle_call({:subscribe, []}, _from, state) do
+    def handle_call({:subscribe, []}, {subscriber, _tag}, state) do
       result =
         case state.mode do
           :subscription_error -> {:error, :subscription_denied}
@@ -56,7 +57,24 @@ defmodule Tackle.Runtime.RequestSetupTest do
           _other -> {:ok, %{}}
         end
 
-      {:reply, result, state}
+      {:reply, result, %{state | subscriber: subscriber}}
+    end
+
+    def handle_call({:progress, [event]}, _from, state) do
+      send(state.subscriber, {:tackle_runtime_event, event})
+      {:reply, :ok, state}
+    end
+
+    def handle_call({:finish, []}, _from, state) do
+      %{destination: destination, run_id: run_id} = state.context.terminal
+
+      send(
+        destination,
+        {:tackle_runtime_terminal, run_id,
+         Tackle.Runtime.Outcome.new(:ok, agent_state: Tackle.Lib.State.new())}
+      )
+
+      {:reply, :ok, state}
     end
 
     def handle_call({:submit, [_prompt]}, _from, state) do
@@ -76,6 +94,9 @@ defmodule Tackle.Runtime.RequestSetupTest do
       result = if state.mode == :delivery_raise, do: :raise_backend, else: :ok
       {:reply, result, state}
     end
+
+    @impl true
+    def handle_info({:runtime_cancel, _reason}, state), do: {:noreply, state}
   end
 
   for {mode, reason} <- [
@@ -102,12 +123,7 @@ defmodule Tackle.Runtime.RequestSetupTest do
       {:ok, scope} = Runtime.start_scope(scope_spec)
       on_exit(fn -> Runtime.stop_scope(scope.scope_ref) end)
 
-      opts =
-        if unquote(mode) in [:subscription_error, :subscription_raise],
-          do: [event_callback: fn _event -> :ok end],
-          else: []
-
-      assert {:ok, run_ref} = Runtime.request_agent(scope.root_agent_ref, "child", "go", opts)
+      assert {:ok, run_ref} = Runtime.request_agent(scope.root_agent_ref, "child", "go")
 
       assert_receive {:child_started, child_pid}, 2_000
       monitor = Process.monitor(child_pid)
@@ -168,6 +184,86 @@ defmodule Tackle.Runtime.RequestSetupTest do
 
     send(request, {:timeout, second_timer, {:request_timeout, :await}})
     assert %{status: :timeout} = Task.await(second_waiter, 2_000)
+  end
+
+  for retention <- [:linger, :until_collected] do
+    test "progress renews the idle window for #{retention} requests without a callback" do
+      {scope, run_ref, child, request} = start_idle_request(unquote(retention), 200)
+
+      # Keep working for longer than the entire original timeout window.
+      for type <- [:step_start, :message_delta, :tool_start, :tool_progress, :tool_execution_end] do
+        previous_timer = :sys.get_state(request).idle_timer
+        Process.sleep(60)
+        :ok = Backend.call(child, :progress, [Event.new(type, %{})])
+        assert_eventually(fn -> :sys.get_state(request).idle_timer != previous_timer end)
+        assert {:ok, :running} = Request.status(run_ref)
+      end
+
+      :ok = Backend.call(child, :finish, [])
+      assert %{status: :ok} = Runtime.await(run_ref)
+      assert :ok = Runtime.stop_scope(scope.scope_ref)
+    end
+  end
+
+  test "a stalled request times out after its renewed idle window" do
+    {_scope, run_ref, child, request} = start_idle_request(:until_collected, 200)
+    original_timer = :sys.get_state(request).idle_timer
+    Process.sleep(100)
+    :ok = Backend.call(child, :progress, [Event.new(:step_start, %{})])
+    assert_eventually(fn -> :sys.get_state(request).idle_timer != original_timer end)
+
+    Process.sleep(120)
+    assert {:ok, :running} = Request.status(run_ref)
+    assert %{status: :timeout, reason: :run_timeout} = Runtime.await(run_ref)
+    monitor = Process.monitor(child)
+    assert_receive {:DOWN, ^monitor, :process, ^child, _reason}, 2_000
+  end
+
+  test "stale idle timers and late progress cannot change a settled outcome" do
+    {_scope, run_ref, child, request} = start_idle_request(:until_collected, 60_000)
+    first_timer = :sys.get_state(request).idle_timer
+    :ok = Backend.call(child, :progress, [Event.new(:step_start, %{})])
+    assert_eventually(fn -> :sys.get_state(request).idle_timer != first_timer end)
+    current_timer = :sys.get_state(request).idle_timer
+
+    send(request, {:timeout, first_timer, {:request_timeout, :idle}})
+    assert {:ok, :running} = Request.status(run_ref)
+
+    send(request, {:tackle_event, "session", "turn", Event.new(:tool_execution_end, %{})})
+    assert {:ok, :running} = Request.status(run_ref)
+    refute :sys.get_state(request).idle_timer == current_timer
+
+    :ok = Backend.call(child, :finish, [])
+    assert_eventually(fn -> :sys.get_state(request).outcome != nil end)
+    send(request, {:timeout, current_timer, {:request_timeout, :idle}})
+    send(request, {:tackle_runtime_event, Event.new(:message_delta, %{})})
+    assert {:ok, {:completed, %{status: :ok}}} = Request.status(run_ref)
+    assert :sys.get_state(request).idle_timer == nil
+    assert %{status: :ok} = Request.collect(run_ref)
+  end
+
+  defp start_idle_request(retention, timeout) do
+    root =
+      AgentSpec.new!(
+        name: "root",
+        config: %{mode: :root, test_pid: self()},
+        allow_delegation: true
+      )
+
+    child =
+      AgentSpec.new!(name: "child", config: %{mode: :normal, test_pid: self()}, timeout: timeout)
+
+    scope_spec = ScopeSpec.new!(backend: Backend, root_spec: root, profiles: %{"child" => child})
+    {:ok, scope} = Runtime.start_scope(scope_spec)
+    on_exit(fn -> Runtime.stop_scope(scope.scope_ref) end)
+
+    {:ok, run_ref} =
+      Runtime.request_agent(scope.root_agent_ref, "child", "go", retention: retention)
+
+    assert_receive {:child_started, child}, 2_000
+    {:ok, request} = Registry.whereis(run_ref)
+    assert is_reference(:sys.get_state(request).idle_timer)
+    {scope, run_ref, child, request}
   end
 
   test "request preparation failures do not reserve a child slot" do

@@ -38,7 +38,15 @@ defmodule Tackle.Runtime.AgentBackend do
   Performs an agent operation. `:deliver` accepts one validated
   `Tackle.Runtime.Envelope` in its argument list and synchronously reports
   acceptance or failure. Hosts without a mailbox return
-  `{:error, {:unsupported_agent_operation, :deliver}}`. Backends own capacity,
+  `{:error, {:unsupported_agent_operation, :deliver}}`.
+
+  Delegated requests call `:subscribe` before `:submit` to observe progress for
+  inactivity timeouts, independently of caller event callbacks. Backends must
+  deliver child events to the subscribing process as `{:tackle_runtime_event,
+  event}` (or the host's `{:tackle_event, session_id, turn_id, event}` form).
+  Subscription failure is a request setup error.
+
+  Backends own capacity,
   projection, and wake-up policy; they must not acknowledge dropped messages.
   """
   @callback call(pid(), operation(), [term()]) :: term()

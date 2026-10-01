@@ -216,8 +216,12 @@ network, and OS permissions. Do not use this profile as an isolation boundary.
 normal global/project guidance for root and child agents, advertises the profiles to the
 root, and limits the scope to two simultaneous children plus the root. Excess
 requests are rejected rather than queued. Children have unlimited loop iterations
-by default and a five-minute run timeout; `maxIterations` or a narrower root
-iteration limit can still bound an individual child. Stopping the scope cleans up children.
+by default and a five-minute inactivity timeout, renewed by model steps, streaming
+output, and tool progress. There is no total run-duration cap. `timeoutMs` (and
+the tool's `timeout_ms` override) sets the idle window, not total runtime; a tool
+that produces no progress for that window can still time out. `maxIterations`
+or a narrower root iteration limit can still bound an individual child.
+Stopping the scope cleans up children.
 
 Each built-in child request uses the requesting root's current model and thinking
 level, including the selection restored by resume and later idle model changes.

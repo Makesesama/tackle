@@ -586,6 +586,12 @@ run_timeout
 workflow_timeout
 ```
 
+`run_timeout` measures inactivity between child events rather than total delegated
+runtime. Each model step, streaming delta, or tool-progress event renews that
+window; foreground and background runs may exceed it in total duration.
+Explicit caller `await` timeouts and `workflow_timeout` remain absolute waits
+and deadlines, respectively.
+
 Token and monetary budgets may be added later using normalized usage, but they are not required to establish the in-memory process architecture.
 
 Limits must fail explicitly and predictably. A rejected spawn or request becomes a typed tool/workflow result; it must not crash the parent or silently exceed the configured boundary.

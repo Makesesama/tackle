@@ -87,7 +87,8 @@ the former `explorer` profile has been removed. Scout performs quick read-only
 reconnaissance, reviewer performs read-only code review, and worker can implement
 changes with the harness's trusted coding tools. All have fresh conversation
 context, no further delegation, unlimited iterations by default, a five-minute
-timeout, and share a limit of two simultaneous children. They share the workspace. Scout and reviewer
+inactivity timeout renewed by child progress (not a total runtime cap), and share
+a limit of two simultaneous children. They share the workspace. Scout and reviewer
 are instructed not to edit it, but
 **bash is not sandboxed or enforced read-only**. Profiles are configured by
 `Tackle.Coding` in the harness package, not the frontend. Each built-in child request

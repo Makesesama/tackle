@@ -73,6 +73,21 @@ The root harness provides `Tackle.Runtime.RootBackend` for `Tackle.Session`.
 root and child turn through `Tackle.Phoenix.Runner` and the host's
 `Tackle.Phoenix.Store` callbacks.
 
+## Delegated inactivity timeouts
+
+Delegated requests have no total runtime cap. `AgentSpec.timeout`,
+`Limits.run_timeout`, and the request's `:timeout` option measure the maximum
+interval without child events (five minutes by default). Model steps, streaming
+output, tool boundaries, and tool progress renew that interval for foreground
+and background runs. A silent model/tool call can still expire the idle window.
+The subagent tool's `timeout_ms` override likewise sets an inactivity window.
+
+Backends must support `:subscribe` before `:submit` and deliver child events to
+the subscribing request, even when no caller event callback is provided.
+Subscription failure settles the request as a setup error; events are transient,
+not retained. Explicit `await/2` wait timeouts and workflow deadlines remain
+absolute and are separate from the delegated inactivity timer.
+
 ## Process layout
 
 ```text
