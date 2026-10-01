@@ -1325,7 +1325,11 @@ defmodule Tackle.CLI.TUITest do
 
     assert_receive {:reconfigured, [model: "openai-codex/other-model"]}
 
-    state = state(tui)
+    state =
+      await_state(tui, fn state ->
+        state.pending_operation == nil and state.agent_state.model == "other-model"
+      end)
+
     assert state.overlay == nil
     assert state.agent_state.model == "other-model"
     assert header_text(state) =~ "openai-codex/other-model"
