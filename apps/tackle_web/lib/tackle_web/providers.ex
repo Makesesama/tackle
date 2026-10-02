@@ -12,6 +12,9 @@ defmodule Tackle.Web.Providers do
       session stored by `mix tackle auth`, and resends a request when the
       provider rejects an expired token.
     * `Tackle.Plugins.DeepSeek` (`deepseek/*`) authenticates with an API key.
+    * `Tackle.Plugins.Anthropic` (`anthropic/*`) authenticates with a Claude
+      Pro/Max OAuth session or an Anthropic API key, and refreshes expiring
+      tokens before a request.
 
   ## Configuration
 

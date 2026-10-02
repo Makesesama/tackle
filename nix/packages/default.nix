@@ -34,6 +34,7 @@ let
       (projectFiles ../../packages/tackle_runtime)
       (projectFiles ../../packages/tackle_codex)
       (projectFiles ../../packages/tackle_deepseek)
+      (projectFiles ../../packages/tackle_anthropic)
       (projectFiles ../../packages/tackle_mcp)
       (projectFiles ../../apps/tackle_cli)
       (lib.fileset.fileFilter (
@@ -110,6 +111,7 @@ let
       tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
       tackle_codex = prev.tackle_codex.override { src = "${src}/packages/tackle_codex"; };
       tackle_deepseek = prev.tackle_deepseek.override { src = "${src}/packages/tackle_deepseek"; };
+      tackle_anthropic = prev.tackle_anthropic.override { src = "${src}/packages/tackle_anthropic"; };
       tackle_mcp = prev.tackle_mcp.override { src = "${src}/packages/tackle_mcp"; };
       ex_ratatui = prev.ex_ratatui.override {
         appConfigPath = nativeConfig;

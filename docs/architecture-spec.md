@@ -35,6 +35,7 @@ packages/
   tackle_anubis/                 # Optional Anubis MCP bridge
   tackle_codex/                  # First-party Codex provider plugin
   tackle_deepseek/               # Optional DeepSeek provider plugin
+  tackle_anthropic/              # First-party Anthropic Claude provider plugin
   tackle_mcp/                    # Optional harness-side MCP client plugin
 ```
 

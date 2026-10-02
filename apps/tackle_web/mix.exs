@@ -52,10 +52,12 @@ defmodule Tackle.Web.MixProject do
       {:tackle_phoenix, path: "../../packages/tackle_phoenix"},
 
       # Provider adapters. These are the repo's plugin packages, wired in the
-      # same way any external plugin would be: both implement Tackle.Lib.LLM,
-      # and the model reference the user picks decides which one runs.
+      # same way any external plugin would be: they all implement
+      # Tackle.Lib.LLM, and the model reference the user picks decides which one
+      # runs.
       {:tackle_codex, path: "../../packages/tackle_codex"},
       {:tackle_deepseek, path: "../../packages/tackle_deepseek"},
+      {:tackle_anthropic, path: "../../packages/tackle_anthropic"},
 
       # Web layer. tackle_phoenix brings LiveView/PubSub, but not Phoenix itself.
       # LiveView is held at the same ~> 1.1.33 range tackle_phoenix requires;
@@ -95,7 +97,7 @@ defmodule Tackle.Web.MixProject do
        depth: 1},
 
       # GitHub API. Pinned to match the version already used by the
-      # tackle_codex and tackle_deepseek plugins.
+      # tackle_codex, tackle_deepseek, and tackle_anthropic plugins.
       {:req, "== 0.8.0-rc.0"},
 
       # GitHub OAuth (read-only scopes; no live call in tests).

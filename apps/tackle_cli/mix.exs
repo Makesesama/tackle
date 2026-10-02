@@ -17,7 +17,14 @@ defmodule Tackle.CLI.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :tackle_codex, :tackle_deepseek, :tackle_mcp, :tackle],
+      extra_applications: [
+        :logger,
+        :tackle_codex,
+        :tackle_deepseek,
+        :tackle_anthropic,
+        :tackle_mcp,
+        :tackle
+      ],
       mod: {Tackle.CLI.Application, []}
     ]
   end
@@ -27,6 +34,7 @@ defmodule Tackle.CLI.MixProject do
       {:tackle, path: "../../packages/tackle"},
       {:tackle_codex, path: "../../packages/tackle_codex"},
       {:tackle_deepseek, path: "../../packages/tackle_deepseek"},
+      {:tackle_anthropic, path: "../../packages/tackle_anthropic"},
       {:tackle_mcp, path: "../../packages/tackle_mcp"},
       {:optimus, "~> 0.6"},
       {:owl, "~> 0.13"},

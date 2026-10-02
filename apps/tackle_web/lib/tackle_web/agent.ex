@@ -10,13 +10,15 @@ defmodule Tackle.Web.Agent do
   ## Providers
 
   The available providers are the repo's plugin packages, wired exactly as any
-  external plugin would be: both implement `Tackle.Lib.LLM`, and the model
+  external plugin would be: they all implement `Tackle.Lib.LLM`, and the model
   reference decides which one runs.
 
     * `Tackle.Plugins.Codex` (`openai-codex/*`) authenticates with a ChatGPT
       OAuth session, and resends a request when the provider rejects an expired
       token.
     * `Tackle.Plugins.DeepSeek` (`deepseek/*`) authenticates with an API key.
+    * `Tackle.Plugins.Anthropic` (`anthropic/*`) authenticates with a Claude
+      Pro/Max OAuth session or an Anthropic API key.
 
   Credentials come from `Tackle.Auth`, the harness's file-backed credential
   store, so a login performed by the CLI is reused here. The store handle is

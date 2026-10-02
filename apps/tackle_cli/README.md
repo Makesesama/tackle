@@ -5,8 +5,9 @@ harness.
 
 This is a separate Mix project so CLI dependencies and presentation concerns stay
 out of the harness and `packages/tackle_lib`. The shipped CLI distribution
-bundles the first-party `packages/tackle_codex` and `packages/tackle_deepseek`
-adapters, configures them as available harness adapters, and then talks to the
+bundles the first-party `packages/tackle_codex`, `packages/tackle_deepseek`, and
+`packages/tackle_anthropic` adapters, configures them as available harness
+adapters, and then talks to the
 `:tackle` application for
 configuration, credential storage, scoped runtime ownership, and turn execution.
 The CLI starts one root scope, addresses the root agent through a

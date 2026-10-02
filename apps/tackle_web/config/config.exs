@@ -70,15 +70,17 @@ config :tackle_web, highlight_theme: "github_light"
 # Model an assistant conversation runs when the user does not pick one, as a
 # canonical "adapter/model" reference built from the provider plugins' ids.
 # Requires credentials for that provider: `openai-codex/*` uses the ChatGPT
-# session stored by `mix tackle auth`, `deepseek/*` an API key.
+# session stored by `mix tackle auth`, `deepseek/*` an API key, and
+# `anthropic/*` a Claude Pro/Max session or an Anthropic API key.
 config :tackle_web, agent_model: "openai-codex/gpt-5.6-terra"
 
-# Provider adapters bundled with this frontend: the repo's two plugin packages,
+# Provider adapters bundled with this frontend: the repo's plugin packages,
 # wired in the same way any external plugin would be. `Tackle.Web.Providers`
 # reads this list through `Tackle.Plugins`, and so does the chat: a conversation
 # can run any `adapter/model` reference these expose. Override the list per
 # deployment, or in tests, with `config :tackle_web, :agent_adapters`.
-config :tackle, adapters: [Tackle.Plugins.Codex, Tackle.Plugins.DeepSeek]
+config :tackle,
+  adapters: [Tackle.Plugins.Codex, Tackle.Plugins.DeepSeek, Tackle.Plugins.Anthropic]
 
 # Directory a new chat starts in. Each conversation remembers the directory it
 # was started with, so changing this only affects conversations created later.

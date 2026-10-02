@@ -818,6 +818,23 @@ let
         in
         drv;
 
+      tackle_anthropic =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_anthropic";
+
+            src = ../../../packages/tackle_anthropic;
+
+            beamDeps = [
+              req
+              tackle_lib
+            ];
+          };
+        in
+        drv;
+
       tackle_codex =
         let
           version = "0.1.0";

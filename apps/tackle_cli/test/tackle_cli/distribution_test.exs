@@ -25,21 +25,23 @@ defmodule Tackle.CLI.DistributionTest do
              Tackle.Plugins.Catalog.resolve_tools(catalog, ["read"])
   end
 
-  test "bundles Codex and DeepSeek as the default adapters" do
+  test "bundles Codex, DeepSeek, and Anthropic as the default adapters" do
     assert Distribution.default_adapters() == [
              Tackle.Plugins.Codex,
-             Tackle.Plugins.DeepSeek
+             Tackle.Plugins.DeepSeek,
+             Tackle.Plugins.Anthropic
            ]
   end
 
-  test "registers both bundled adapters with the harness" do
+  test "registers the bundled adapters with the harness" do
     Application.delete_env(:tackle, :adapters)
 
     assert :ok = Distribution.configure()
 
     assert Application.fetch_env!(:tackle, :adapters) == [
              Tackle.Plugins.Codex,
-             Tackle.Plugins.DeepSeek
+             Tackle.Plugins.DeepSeek,
+             Tackle.Plugins.Anthropic
            ]
   end
 end
