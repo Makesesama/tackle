@@ -3,9 +3,9 @@ defmodule Tackle.CLI.TUI.Layout do
   Responsive fullscreen regions for the transcript-first shell.
 
   The transcript owns the flexible middle of the screen. The header and the
-  composer have fixed or draft-driven heights, and optional reading and status
-  rows appear below the composer only when the terminal has rows to spare, in
-  that priority order.
+  composer have fixed or draft-driven heights, and an optional status row
+  appears below the composer only when the terminal has rows to spare.
+  Reading position never changes the screen regions.
 
   The composer grows with the native editor's measured visual rows, including
   soft wraps and the final insertion cell, up to eight content rows. The two
@@ -35,16 +35,15 @@ defmodule Tackle.CLI.TUI.Layout do
   @doc """
   Computes screen regions for a terminal of `width` x `height` cells.
 
-  `draft_lines` is the composer's wrapped row count. `reading_active?`
-  requests the reading-back affordance row, which takes priority over the
-  optional status row.
+  `draft_lines` is the composer's wrapped row count. The fourth argument is
+  retained for compatibility but ignored; the `reading` region is always nil.
   """
   @spec regions(integer(), integer(), pos_integer(), boolean(), boolean(), boolean()) :: regions()
   def regions(
         width,
         height,
         draft_lines,
-        reading_active?,
+        _reading_active?,
         subagents_active? \\ false,
         graphic? \\ false
       ) do
@@ -66,7 +65,6 @@ defmodule Tackle.CLI.TUI.Layout do
 
     available = max(height - header_height - composer_height, 0)
 
-    {reading?, available} = take_optional_row(reading_active?, available)
     {status?, available} = take_optional_row(true, available)
     transcript_height = available
 
@@ -76,14 +74,13 @@ defmodule Tackle.CLI.TUI.Layout do
     y = header_height + transcript_height
 
     composer = %Rect{x: 0, y: y, width: width, height: composer_height}
-    {reading, y} = optional_rect(reading?, y + composer_height, width)
-    {status, _y} = optional_rect(status?, y, width)
+    {status, _y} = optional_rect(status?, y + composer_height, width)
 
     %{
       header: header,
       transcript: transcript,
       sidebar: sidebar,
-      reading: reading,
+      reading: nil,
       status: status,
       composer: composer,
       hints: nil
@@ -126,8 +123,6 @@ defmodule Tackle.CLI.TUI.Layout do
   end
 
   defp split_sidebar(rect, _active?), do: {rect, nil}
-
-  defp take_optional_row(false, available), do: {false, available}
 
   defp take_optional_row(true, available) when available > @min_transcript_height,
     do: {true, available - 1}

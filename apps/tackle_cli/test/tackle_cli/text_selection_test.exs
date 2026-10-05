@@ -5,7 +5,7 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
   alias ExRatatui.Event.{Key, Mouse}
   alias ExRatatui.Layout.Rect
   alias Tackle.CLI.{Native, TUI}
-  alias Tackle.CLI.TUI.{Browser, Conversation, State, TextSelection, Viewport}
+  alias Tackle.CLI.TUI.{Browser, Conversation, Layout, State, TextSelection, Viewport}
   alias Tackle.CLI.Widgets.{Browse, Input}
   alias Tackle.CLI.Widgets.Conversation, as: Widget
   alias Tackle.Lib.Message
@@ -157,6 +157,36 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
     {:noreply, state, _} = TUI.handle_event(%{mouse | kind: "up"}, state)
     refute TextSelection.selected?(state)
     refute_received {:copied, _}
+  end
+
+  test "drag copies a one-line last message without moving the composer or transcript" do
+    state = state("older message")
+
+    messages =
+      Enum.map(1..30, &Message.user("older message #{&1}")) ++
+        [Message.assistant(content: "hello world")]
+
+    state =
+      %{state | agent_state: %{state.agent_state | messages: messages}}
+      |> Viewport.refresh()
+      |> Viewport.scroll_to(:end)
+
+    rect = state.conversation.rect
+    {width, height} = state.size
+    regions = Layout.regions(width, height, state.draft_lines, false)
+    mouse = %Mouse{kind: "down", button: "left", x: 3, y: rect.y + rect.height - 1}
+    {:noreply, clicked, _} = TUI.handle_event(mouse, state)
+
+    refute clicked.conversation.follow?
+    assert clicked.conversation.rect == rect
+    assert clicked.conversation.scroll_offset == state.conversation.scroll_offset
+    assert Layout.regions(width, height, clicked.draft_lines, true) == regions
+    assert Conversation.affordance(clicked.conversation) == nil
+
+    {:noreply, dragged, _} = TUI.handle_event(%{mouse | kind: "drag", x: 7}, clicked)
+    {:noreply, released, _} = TUI.handle_event(%{mouse | kind: "up", x: 7}, dragged)
+    assert_received {:copied, "hello"}
+    assert released.conversation.rect == rect
   end
 
   test "appending within a selected live message preserves unchanged painted selection" do

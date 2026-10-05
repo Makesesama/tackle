@@ -97,7 +97,6 @@ defmodule Tackle.CLI.TUI.TextSelection do
       %{dragging?: true} = selection ->
         state = if kind == "drag", do: edge_scroll(state, y), else: state
         c = state.conversation
-        # Adding the reading row can shrink the viewport after mouse-down.
         # An unchanged physical release must still be an empty click.
         stationary? = kind == "up" and not selection.moved? and selection.pointer == {x, y}
 

@@ -7,7 +7,7 @@ defmodule Tackle.CLI.TUI.View do
   right-aligned logo while other terminals use a one-row text header.
   The transcript owns the flexible middle of the screen;
   a rounded input bar encloses the composer. Turn state and the `?` shortcut
-  cue share a row below the bar, with reading position there when relevant.
+  cue share a row below the bar. Reading position adds no extra rows.
   The header carries turn state only on short terminals.
 
   Layout is computed once per frame from the terminal size and the draft's
@@ -74,7 +74,6 @@ defmodule Tackle.CLI.TUI.View do
       ] ++
         header_graphic(state, regions.header) ++
         sidebar_widgets(regions.sidebar, state) ++
-        reading_widgets(regions.reading, state.conversation) ++
         status_widgets(regions.status, state, width) ++
         [{composer_widget(state), regions.composer}] ++
         overlay_widgets(state, width, height)
@@ -161,30 +160,6 @@ defmodule Tackle.CLI.TUI.View do
          state.spinner_frame
        ), rect}
     ]
-  end
-
-  defp reading_widgets(nil, _conversation), do: []
-
-  defp reading_widgets(rect, conversation) do
-    case Conversation.affordance(conversation) do
-      nil ->
-        [{%Paragraph{text: ""}, rect}]
-
-      text ->
-        [
-          {
-            %Paragraph{
-              text: [
-                MessageView.row(
-                  [MessageView.span(" " <> text, Theme.style(:accent))],
-                  %Style{}
-                )
-              ]
-            },
-            rect
-          }
-        ]
-    end
   end
 
   # -- optional rows -------------------------------------------------------

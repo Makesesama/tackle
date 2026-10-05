@@ -523,8 +523,7 @@ widget, including inside the inspector. Explicit copy actions use the raw
 retained source, so copied output is what the tool or model produced.
 
 Reading position belongs to the user. Scrolling up pauses automatic following
-and shows a reading-back affordance; when new output arrives below the reading
-position the row changes to "New output · Alt+> latest". Streaming updates,
+without adding a status row or moving the input bar. Streaming updates,
 reasoning collapse/expand, and terminal resize preserve a logical
 `{entry, offset}` anchor instead of a raw row offset. Only Alt+> (or
 scrolling back to the bottom) resumes following.

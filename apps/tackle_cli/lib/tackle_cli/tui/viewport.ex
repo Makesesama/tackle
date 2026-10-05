@@ -120,7 +120,7 @@ defmodule Tackle.CLI.TUI.Viewport do
 
   defp browse_rect(_state, rect), do: rect
 
-  @doc "Whether the transcript is showing the reading-back affordance."
+  @doc "Whether transcript following is paused or there is unseen output."
   @spec reading?(Conversation.t()) :: boolean()
   def reading?(conversation), do: conversation.new_output? or not conversation.follow?
 

@@ -225,7 +225,7 @@ defmodule Tackle.CLI.TUITest do
       assert_regions_within_bounds(regions, 80, 24)
     end
 
-    test "the reading row takes priority and the composer grows by logical lines" do
+    test "reading position leaves layout unchanged and the composer grows by logical lines" do
       one_line = Layout.regions(80, 24, 1, false)
       three_lines = Layout.regions(80, 24, 3, false)
       reading = Layout.regions(80, 24, 1, true)
@@ -233,10 +233,8 @@ defmodule Tackle.CLI.TUITest do
       assert three_lines.composer.height == 5
       assert three_lines.transcript.height == one_line.transcript.height - 2
 
-      assert reading.reading
-      assert reading.composer.y + reading.composer.height == reading.reading.y
-      assert reading.reading.y < reading.status.y
-      assert reading.transcript.height == one_line.transcript.height - 1
+      assert reading == one_line
+      assert reading.reading == nil
       assert_regions_within_bounds(reading, 80, 24)
     end
 
@@ -1921,13 +1919,18 @@ defmodule Tackle.CLI.TUITest do
     send(tui, {:tackle_session_reconfigured, state.session_id, snapshot})
     bottom_state = state(tui)
     assert bottom_state.conversation.follow?
-    assert reading_text(bottom_state) == nil
+    assert Conversation.affordance(bottom_state.conversation) == nil
 
     inject_key(tui, "page_up")
     scrolled_state = state(tui)
     assert scrolled_state.conversation.scroll_offset < bottom_state.conversation.scroll_offset
     refute scrolled_state.conversation.follow?
-    assert reading_text(scrolled_state) =~ "Reading back"
+    assert Conversation.affordance(scrolled_state.conversation) == nil
+    painted = assert_draws(scrolled_state, 50, 14)
+    refute painted =~ "Reading back"
+    refute painted =~ "Alt+> latest"
+    assert regions(scrolled_state).composer == regions(bottom_state).composer
+    assert scrolled_state.conversation.rect == bottom_state.conversation.rect
     anchor = scrolled_state.conversation.anchor
     assert anchor
 
@@ -1942,7 +1945,9 @@ defmodule Tackle.CLI.TUITest do
     refute streamed_state.conversation.follow?
     assert streamed_state.conversation.new_output?
     assert streamed_state.conversation.anchor.id == anchor.id
-    assert reading_text(streamed_state) =~ "New output"
+    assert Conversation.affordance(streamed_state.conversation) == nil
+    refute assert_draws(streamed_state, 50, 14) =~ "New output"
+    assert regions(streamed_state).composer == regions(bottom_state).composer
 
     assert hd(streamed_state.conversation.visible_items) ==
              hd(scrolled_state.conversation.visible_items)
@@ -1961,7 +1966,7 @@ defmodule Tackle.CLI.TUITest do
     followed_state = state(tui)
     assert followed_state.conversation.follow?
     refute followed_state.conversation.new_output?
-    assert reading_text(followed_state) == nil
+    assert Conversation.affordance(followed_state.conversation) == nil
   end
 
   test "bounds widgets for one very long agent message", %{tui: tui} do
@@ -2862,13 +2867,6 @@ defmodule Tackle.CLI.TUITest do
 
   defp status_text(state) do
     case regions(state).status do
-      nil -> nil
-      rect -> widget_text_at(state, rect)
-    end
-  end
-
-  defp reading_text(state) do
-    case regions(state).reading do
       nil -> nil
       rect -> widget_text_at(state, rect)
     end
