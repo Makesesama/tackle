@@ -137,6 +137,8 @@ beamPackages.mixRelease {
   # nixpkgs deps.compile hook would recompile path deps into read-only store
   # paths. Only Burrito needs a writable rebuild, handled in configurePhase.
   dontMixDepsCompile = true;
+  # Zig is used by Burrito during release wrapping, not as the app builder.
+  dontUseZigBuild = true;
   nativeBuildInputs = [
     pkgs.zig_0_16
     pkgs.xz
@@ -169,17 +171,16 @@ beamPackages.mixRelease {
     export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
     mkdir -p "$HOME" deps
     ${runtime.seedCache}
-    ${lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (name: dep: ''
-        cp -R ${dep.src} deps/${name}
-        chmod -R u+w deps/${name}
-      '') mixNixDeps
-    )}
+    # Let nixpkgs link dependency sources before replacing Burrito's source
+    # symlink. Pre-populating deps/ conflicts with mixNixDepsPostConfigure.
+    runHook postConfigure
     # Burrito locates its Zig sources via __ENV__.file and writes beside them.
     # Recompile it in this writable build tree, not its buildMix source path.
+    rm deps/burrito
+    cp -R ${deps.burrito.src} deps/burrito
+    chmod -R u+w deps/burrito
     rm _build/prod/lib/burrito
     (cd deps/burrito && MIX_BUILD_PATH="$PWD/../../_build/prod" mix compile --no-deps-check)
-    runHook postConfigure
   '';
 
   installPhase = ''
