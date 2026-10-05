@@ -7,6 +7,12 @@ defmodule Tackle.CLI.TUI.Theme do
   indexed colors so it is stable on true-color and 256-color terminals and
   degrades to the nearest named color elsewhere.
 
+  `TACKLE_THEME=light` or `dark` selects a palette explicitly. Otherwise the
+  final background index in `COLORFGBG` is used when available, falling back to
+  dark. This is a heuristic, not a terminal query. Surface roles always pair
+  a foreground with their background, avoiding unreadable inherited text when
+  the terminal's colors differ from the selected palette.
+
   Two kinds of role exist:
 
     * foreground tones (`:text`, `:muted`, `:subtle`, `:accent`, `:success`,
@@ -49,7 +55,7 @@ defmodule Tackle.CLI.TUI.Theme do
           | :diff_del_inline
           | :diff_context
 
-  @styles %{
+  @dark_styles %{
     text: %Style{},
     muted: %Style{fg: {:indexed, 246}},
     subtle: %Style{fg: {:indexed, 243}},
@@ -58,12 +64,12 @@ defmodule Tackle.CLI.TUI.Theme do
     success: %Style{fg: {:indexed, 114}},
     warning: %Style{fg: {:indexed, 179}},
     error: %Style{fg: {:indexed, 174}},
-    surface: %Style{bg: {:indexed, 235}},
-    surface_raised: %Style{bg: {:indexed, 237}},
-    code_surface: %Style{bg: {:indexed, 234}},
-    user_surface: %Style{bg: {:indexed, 235}},
-    selection_surface: %Style{bg: {:indexed, 60}},
-    error_surface: %Style{bg: {:indexed, 52}},
+    surface: %Style{fg: {:indexed, 252}, bg: {:indexed, 235}},
+    surface_raised: %Style{fg: {:indexed, 252}, bg: {:indexed, 237}},
+    code_surface: %Style{fg: {:indexed, 252}, bg: {:indexed, 234}},
+    user_surface: %Style{fg: {:indexed, 252}, bg: {:indexed, 235}},
+    selection_surface: %Style{fg: {:indexed, 252}, bg: {:indexed, 60}},
+    error_surface: %Style{fg: {:indexed, 252}, bg: {:indexed, 52}},
     diff_add: %Style{fg: {:indexed, 114}},
     diff_add_inline: %Style{fg: {:indexed, 151}, bg: {:indexed, 22}},
     diff_del: %Style{fg: {:indexed, 174}},
@@ -71,9 +77,76 @@ defmodule Tackle.CLI.TUI.Theme do
     diff_context: %Style{fg: {:indexed, 245}}
   }
 
-  @doc "Returns the semantic style for `tone`."
-  @spec style(tone() | atom()) :: Style.t()
-  def style(tone), do: Map.get(@styles, tone, %Style{})
+  @light_styles %{
+    text: %Style{},
+    muted: %Style{fg: {:indexed, 240}},
+    subtle: %Style{fg: {:indexed, 243}},
+    accent: %Style{fg: {:indexed, 25}, modifiers: [:bold]},
+    accent_soft: %Style{fg: {:indexed, 25}},
+    success: %Style{fg: {:indexed, 28}},
+    warning: %Style{fg: {:indexed, 94}},
+    error: %Style{fg: {:indexed, 124}},
+    surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 254}},
+    surface_raised: %Style{fg: {:indexed, 235}, bg: {:indexed, 252}},
+    code_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 254}},
+    user_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 254}},
+    selection_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 153}},
+    error_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 224}},
+    diff_add: %Style{fg: {:indexed, 28}},
+    diff_add_inline: %Style{fg: {:indexed, 22}, bg: {:indexed, 194}},
+    diff_del: %Style{fg: {:indexed, 124}},
+    diff_del_inline: %Style{fg: {:indexed, 88}, bg: {:indexed, 224}},
+    diff_context: %Style{fg: {:indexed, 240}}
+  }
+
+  @type mode :: :light | :dark
+
+  @doc "Returns the palette selected by TACKLE_THEME and COLORFGBG."
+  @spec mode() :: mode()
+  def mode, do: resolve(System.get_env("TACKLE_THEME"), System.get_env("COLORFGBG"))
+
+  @doc "Resolves an explicit light/dark override, or the final COLORFGBG palette index."
+  @spec resolve(String.t() | nil, String.t() | nil) :: mode()
+  def resolve("light", _colorfgbg), do: :light
+  def resolve("dark", _colorfgbg), do: :dark
+
+  def resolve(_auto, colorfgbg) when is_binary(colorfgbg) do
+    case colorfgbg |> String.split(";") |> List.last() |> Integer.parse() do
+      {index, ""} when index in 0..255 ->
+        if light_background?(index), do: :light, else: :dark
+
+      _ ->
+        :dark
+    end
+  end
+
+  def resolve(_auto, _colorfgbg), do: :dark
+
+  # Standard ANSI backgrounds are themeable, so this is only a heuristic.
+  # For the fixed 256-color cube and grayscale ramp, use weighted brightness.
+  defp light_background?(index) when index < 16, do: index in [7, 15]
+  defp light_background?(index) when index >= 232, do: 8 + 10 * (index - 232) > 153
+
+  defp light_background?(index) do
+    cube = index - 16
+    levels = {0, 95, 135, 175, 215, 255}
+    r = elem(levels, div(cube, 36))
+    g = elem(levels, div(rem(cube, 36), 6))
+    b = elem(levels, rem(cube, 6))
+    299 * r + 587 * g + 114 * b > 153_000
+  end
+
+  @doc "Returns the semantic style for `tone`, optionally from an explicit palette."
+  @spec style(tone() | atom(), mode()) :: Style.t()
+  def style(tone, mode \\ mode())
+  def style(tone, :light), do: Map.get(@light_styles, tone, %Style{})
+  def style(tone, :dark), do: Map.get(@dark_styles, tone, %Style{})
+
+  @doc "Returns the syntax-highlighting theme matching the selected palette."
+  @spec code_theme(mode()) :: atom()
+  def code_theme(mode \\ mode())
+  def code_theme(:light), do: :base16_ocean_light
+  def code_theme(:dark), do: :base16_ocean_dark
 
   @doc """
   Builds the rounded panel chrome shared by every overlay.
@@ -96,6 +169,20 @@ defmodule Tackle.CLI.TUI.Theme do
   defp panel_title_style(:yellow), do: style(:warning)
   defp panel_title_style(:red), do: style(:error)
   defp panel_title_style(color), do: %Style{fg: color}
+
+  @doc "Normalizes highlighted token colors for the code surface, dropping token backgrounds."
+  @spec code_style(Style.t(), mode()) :: Style.t()
+  def code_style(style, mode \\ mode())
+
+  def code_style(%Style{fg: {:rgb, r, g, b}} = style, :light) do
+    # Ocean Light includes pastel tokens intended for a brighter background.
+    # Scale bright colors toward black while preserving their hue. A maximum
+    # channel of 96 gives at least 4.5:1 contrast on our light code surface.
+    scale = max(max(r, g), max(b, 96))
+    %{style | fg: {:rgb, div(r * 96, scale), div(g * 96, scale), div(b * 96, scale)}, bg: nil}
+  end
+
+  def code_style(%Style{} = style, _mode), do: %{style | bg: nil}
 
   @doc "Adds bold to a style without dropping its color or background."
   @spec bold(Style.t()) :: Style.t()

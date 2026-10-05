@@ -602,7 +602,7 @@ defmodule Tackle.CLI.TUI.MessageView do
 
   defp error_rows(entry) do
     surface = Theme.style(:error_surface)
-    text = Theme.merge(surface, %Style{fg: :white})
+    text = surface
     marker = Theme.style(:error)
 
     entry.content

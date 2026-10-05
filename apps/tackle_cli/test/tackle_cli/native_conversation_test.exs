@@ -496,7 +496,7 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
 
     code_item = fn cache ->
       Enum.find_value(cache, fn
-        {{segment, _, _, _, _}, item} -> if elem(segment, 0) == :code, do: item
+        {{segment, _, _, _, _, _}, item} -> if elem(segment, 0) == :code, do: item
         _ -> nil
       end)
     end

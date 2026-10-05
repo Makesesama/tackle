@@ -35,6 +35,27 @@ header.
 
 The logo pattern and palette live in `lib/tackle_cli/tui/glyph.ex`.
 
+### Terminal colors
+
+The TUI supports light and dark palettes, including message surfaces, selection,
+errors, diffs, and syntax-highlighted code. It uses the background index from
+`COLORFGBG` when set, otherwise defaults to dark. Because not all terminals
+export that variable (and ANSI colors can be customized), you can override it:
+
+```sh
+TACKLE_THEME=light mix tackle
+TACKLE_THEME=dark tackle
+```
+
+Unset `TACKLE_THEME` or use `auto` to return to the heuristic. Unknown values
+also use the heuristic. Colors are selected for the launch environment; live
+terminal theme-change notifications and OSC background probing are not supported.
+Plain prose retains the terminal's default text/background colors; painted
+surfaces set both colors so an undetected light terminal still has readable text.
+The current jailed launchers do not forward these two environment variables;
+using the override through those launchers requires a separate jail configuration
+change.
+
 The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
 are compiled into it. It does not discover or load third-party plugins at
 runtime. That keeps packaging separate from the future plugin-loading design.

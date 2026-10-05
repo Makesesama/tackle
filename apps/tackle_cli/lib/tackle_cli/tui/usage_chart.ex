@@ -9,7 +9,6 @@ defmodule Tackle.CLI.TUI.UsageChart do
   """
 
   alias ExRatatui.Command
-  alias ExRatatui.Style
   alias ExRatatui.Widgets.{Block, Chart, Paragraph, Popup}
   alias ExRatatui.Widgets.Chart.{Axis, Dataset}
   alias Tackle.CLI.TUI.{State, Theme, Util}
@@ -311,7 +310,7 @@ defmodule Tackle.CLI.TUI.UsageChart do
         title: summary(timeline, samples, width),
         borders: [:top],
         border_style: Theme.style(:subtle),
-        title_style: %Style{fg: :white}
+        title_style: Theme.style(:text)
       }
     }
   end

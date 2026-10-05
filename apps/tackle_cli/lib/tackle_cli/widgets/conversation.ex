@@ -70,7 +70,7 @@ defmodule Tackle.CLI.Widgets.Conversation do
       |> Enum.with_index()
       |> Enum.map_reduce(%{}, fn {segment, index}, cache ->
         prose_width = if elem(segment, 0) == :markdown, do: entry.prose_width
-        key = {segment, index == 0, width, entry.style, prose_width}
+        key = {segment, index == 0, width, entry.style, prose_width, Theme.mode()}
 
         item =
           case Map.fetch(previous, key) do
@@ -87,7 +87,7 @@ defmodule Tackle.CLI.Widgets.Conversation do
     # Retain only this snapshot's segments, not every version of the live tail.
     {items, cache} =
       if entry.final? and width >= 6 do
-        key = {:answer_heading, width}
+        key = {:answer_heading, width, Theme.mode()}
 
         heading =
           Map.get_lazy(previous, key, fn ->
@@ -139,17 +139,17 @@ defmodule Tackle.CLI.Widgets.Conversation do
   end
 
   defp assistant_cell({:code, language, code}, first?, width, base, marker, _prose_width) do
-    # The highlighter supplies token colours and its own lighter background.
-    # Keep the colours but paint a single darker band across every code row.
+    # Keep the matching palette's token colours, but paint a single surface
+    # across every code row instead of the highlighter's background.
     surface = Theme.merge(base, Theme.style(:code_surface))
 
     rows =
       code
-      |> ExRatatui.CodeBlock.highlight(language, :base16_ocean_dark)
+      |> ExRatatui.CodeBlock.highlight(language, Theme.code_theme())
       |> Enum.map(fn %Line{spans: spans, style: row_style} ->
         {Enum.map(spans, fn %Span{content: content, style: span_style} ->
-           {String.trim_trailing(content, "\n"), style(%{span_style | bg: nil})}
-         end), style(%{row_style | bg: nil})}
+           {String.trim_trailing(content, "\n"), style(Theme.code_style(span_style))}
+         end), style(Theme.code_style(row_style))}
       end)
 
     # The last newline of a fenced block is structural, not an extra code row.
