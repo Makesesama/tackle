@@ -742,6 +742,22 @@ let
         in
         drv;
 
+      tackle_sdk =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_sdk";
+
+            src = ../packages/tackle_sdk;
+
+            beamDeps = [
+              tackle_lib
+            ];
+          };
+        in
+        drv;
+
       telemetry =
         let
           version = "1.4.2";

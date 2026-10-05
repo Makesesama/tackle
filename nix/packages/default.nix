@@ -37,6 +37,7 @@ let
       (projectFiles ../../packages/tackle_anthropic)
       (projectFiles ../../packages/tackle_openrouter)
       (projectFiles ../../packages/tackle_mcp)
+      (projectFiles ../../packages/tackle_sdk)
       (projectFiles ../../apps/tackle_cli)
       (lib.fileset.fileFilter (
         file:
@@ -117,6 +118,7 @@ let
         src = "${src}/packages/tackle_openrouter";
       };
       tackle_mcp = prev.tackle_mcp.override { src = "${src}/packages/tackle_mcp"; };
+      tackle_sdk = prev.tackle_sdk.override { src = "${src}/packages/tackle_sdk"; };
       ex_ratatui = prev.ex_ratatui.override {
         appConfigPath = nativeConfig;
         nativeBuildInputs = [ ];

@@ -10,6 +10,7 @@ defmodule Tackle.CLI.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      aliases: aliases(),
       escript: escript(),
       releases: releases()
     ]
@@ -24,6 +25,7 @@ defmodule Tackle.CLI.MixProject do
         :tackle_anthropic,
         :tackle_openrouter,
         :tackle_mcp,
+        :tackle_sdk,
         :tackle
       ],
       mod: {Tackle.CLI.Application, []}
@@ -44,7 +46,21 @@ defmodule Tackle.CLI.MixProject do
       {:ucwidth, "~> 0.2"},
       {:ex_ratatui, "~> 0.15.0"},
       {:rustler, ">= 0.0.0"},
-      {:burrito, "~> 1.6"}
+      {:burrito, "~> 1.6"},
+      # Generates nix/tackle-cli-deps.nix; see the "deps.nix" alias below.
+      {:deps_nix, "~> 3.0", only: :dev}
+    ]
+  end
+
+  defp aliases do
+    [
+      # --include-paths: the tackle_* packages are path deps in this monorepo;
+      #   without it they are omitted from the generated file.
+      # --no-app-config: otherwise every dependency is given an appConfigPath and
+      #   any edit to config/ invalidates and rebuilds all of them.
+      "deps.nix": [
+        "deps.nix --include-paths --no-app-config --output ../../nix/tackle-cli-deps.nix"
+      ]
     ]
   end
 
