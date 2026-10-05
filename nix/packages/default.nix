@@ -133,6 +133,10 @@ beamPackages.mixRelease {
   version = "0.1.0";
   inherit src;
   inherit mixNixDeps;
+  # Dependencies are already compiled by Nix and linked into _build. The
+  # nixpkgs deps.compile hook would recompile path deps into read-only store
+  # paths. Only Burrito needs a writable rebuild, handled in configurePhase.
+  dontMixDepsCompile = true;
   nativeBuildInputs = [
     pkgs.zig_0_16
     pkgs.xz
