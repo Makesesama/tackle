@@ -50,6 +50,11 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd packages/tackle_mcp && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_mcp && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
+# JSON-RPC stdio SDK server for non-BEAM clients
+(cd packages/tackle_sdk && mix deps.get)
+(cd packages/tackle_sdk && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_sdk && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+
 # CLI app
 (cd apps/tackle_cli && mix deps.get)
 (cd apps/tackle_cli && mix compile --warnings-as-errors && mix test)
@@ -98,6 +103,10 @@ Burrito, or lint commands for tooling that has not been wired up.
   `:tackle_lib`, not the harness package.
 - `packages/tackle_mcp/`: optional Anubis-based MCP client plugin that exposes
   discovered MCP tools through the provider-neutral tool contract.
+- `packages/tackle_sdk/`: experimental JSON-RPC 2.0 over stdio server
+  (`Tackle.SDK.*`, `:tackle_sdk`) that lets non-BEAM clients drive the
+  `Tackle.Lib` agent loop. The wire contract is `packages/tackle_sdk/PROTOCOL.md`;
+  tools are server-side only in protocol version 1.
 - `apps/tackle_cli/`: default Optimus/ex_ratatui terminal entrypoint. It is a
   separate Mix project that depends on the harness and bundles Codex as a
   distribution dependency; runtime adapter loading remains a harness concern.
