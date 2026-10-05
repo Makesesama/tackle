@@ -1,7 +1,12 @@
 defmodule Tackle.CLI.Distribution do
   @moduledoc false
 
-  @default_adapters [Tackle.Plugins.Codex, Tackle.Plugins.DeepSeek, Tackle.Plugins.Anthropic]
+  @default_adapters [
+    Tackle.Plugins.Codex,
+    Tackle.Plugins.DeepSeek,
+    Tackle.Plugins.Anthropic,
+    Tackle.Plugins.OpenRouter
+  ]
 
   @doc "Validates bundled adapters, default tools, and host-owned tool modules."
   @spec catalog([module()]) :: {:ok, Tackle.Plugins.Catalog.t()} | {:error, term()}

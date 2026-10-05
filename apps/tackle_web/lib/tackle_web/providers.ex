@@ -15,6 +15,8 @@ defmodule Tackle.Web.Providers do
     * `Tackle.Plugins.Anthropic` (`anthropic/*`) authenticates with a Claude
       Pro/Max OAuth session or an Anthropic API key, and refreshes expiring
       tokens before a request.
+    * `Tackle.Plugins.OpenRouter` (`openrouter/<vendor>/<model>`)
+      authenticates with an OpenRouter API key.
 
   ## Configuration
 

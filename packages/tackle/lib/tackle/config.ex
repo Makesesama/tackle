@@ -58,6 +58,7 @@ defmodule Tackle.Config do
     :context,
     :max_iterations,
     :thinking,
+    :provider_options,
     :llm_opts,
     :prompt_renderer,
     :prompt_renderer_opts,
@@ -148,13 +149,18 @@ defmodule Tackle.Config do
 
   `:adapters` and a canonical `:model` reference such as
   `"openai-codex/gpt-5.5"` are required. Optional `:thinking` is normalized into
-  adapter reasoning options.
+  adapter reasoning options. Optional `:provider_options` is a map of adapter id
+  to that adapter's settings (from the `"provider_options"` field of
+  `config.json`). It is passed to adapters unchanged as the `:provider_options`
+  LLM option, so it survives model changes, and each adapter reads only its own
+  entry. Like other LLM options, it must not contain credentials.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
     with :ok <- validate_keyword(opts),
          :ok <- validate_known_options(opts),
          {:ok, opts} <- normalize_thinking_option(opts),
+         {:ok, opts} <- normalize_provider_options(opts),
          {:ok, adapters} <- fetch_adapters(opts),
          {:ok, model_ref} <- fetch_model_ref(opts),
          {:ok, llm} <- LLM.select(adapters, model_ref),
@@ -277,6 +283,33 @@ defmodule Tackle.Config do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp normalize_provider_options(opts) do
+    case Keyword.pop(opts, :provider_options) do
+      {nil, opts} ->
+        {:ok, opts}
+
+      {%{} = options, opts} ->
+        llm_opts = Keyword.get(opts, :llm_opts, [])
+
+        cond do
+          not Enum.all?(options, &valid_provider_entry?/1) ->
+            {:error, {:invalid_option, :provider_options, options}}
+
+          not Keyword.keyword?(llm_opts) ->
+            {:error, {:invalid_option, :llm_opts, llm_opts}}
+
+          true ->
+            {:ok, Keyword.put(opts, :llm_opts, Keyword.put(llm_opts, :provider_options, options))}
+        end
+
+      {options, _opts} ->
+        {:error, {:invalid_option, :provider_options, options}}
+    end
+  end
+
+  defp valid_provider_entry?({adapter_id, settings}),
+    do: is_binary(adapter_id) and adapter_id != "" and is_map(settings)
 
   defp reconfigured_llm_opts(llm_opts, opts) do
     case Keyword.fetch(opts, :thinking) do

@@ -226,6 +226,9 @@ defmodule Tackle.CLI.Output.Auth do
   def error_message(:missing_deepseek_api_key),
     do: "No DeepSeek API key is available. Run `tackle auth login deepseek`."
 
+  def error_message(:missing_openrouter_api_key),
+    do: "No OpenRouter API key is available. Run `tackle auth login openrouter`."
+
   def error_message(:no_credentials), do: "No credentials are stored for this provider."
   def error_message(:timeout), do: "The provider request timed out."
   def error_message(:cancelled), do: "Authentication was cancelled."

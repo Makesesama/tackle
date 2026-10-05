@@ -7,6 +7,8 @@ Notable changes to Tackle are recorded here. This repository contains separate M
 ### Added
 
 - Added an MIT license and this changelog.
+- Added `packages/tackle_openrouter`, an OpenRouter provider adapter (`openrouter/<vendor>/<model>`) with streamed reasoning and `reasoning_details` replay, automatic Anthropic prompt caching, session-sticky routing, and reported billing cost. The CLI and web distributions bundle it.
+- `config.json` accepts `provider_options`, adapter-keyed settings that the harness passes to adapters as the `:provider_options` LLM option (credential-like keys are rejected). The OpenRouter adapter reads per-model provider routing from it.
 
 ### Release preparation
 

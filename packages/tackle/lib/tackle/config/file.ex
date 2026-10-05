@@ -5,7 +5,7 @@ defmodule Tackle.Config.File do
 
   # The sidebar preference belongs to the CLI; the harness accepts and validates
   # the field without carrying presentation state into a session configuration.
-  @known_fields ["model", "thinking", "show_subagent_sidebar"]
+  @known_fields ["model", "thinking", "show_subagent_sidebar", "provider_options"]
 
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
   def load(path) when is_binary(path) do
@@ -34,10 +34,28 @@ defmodule Tackle.Config.File do
   defp to_options(path, config) do
     with {:ok, model_opts} <- model_options(path, config),
          {:ok, thinking_opts} <- thinking_options(path, config),
+         {:ok, provider_opts} <- provider_options(path, config),
          :ok <- sidebar_option(path, config) do
-      {:ok, model_opts ++ thinking_opts}
+      {:ok, model_opts ++ thinking_opts ++ provider_opts}
     end
   end
+
+  # Adapter-owned settings, keyed by adapter id. The harness only checks the
+  # shape; each adapter interprets its own entry.
+  defp provider_options(path, config) do
+    case Map.fetch(config, "provider_options") do
+      {:ok, options} ->
+        if adapter_settings?(options),
+          do: {:ok, [provider_options: options]},
+          else: {:error, {:invalid_config_field, path, "provider_options"}}
+
+      :error ->
+        {:ok, []}
+    end
+  end
+
+  defp adapter_settings?(%{} = options), do: Enum.all?(Map.values(options), &is_map/1)
+  defp adapter_settings?(_options), do: false
 
   defp sidebar_option(path, config) do
     case Map.fetch(config, "show_subagent_sidebar") do

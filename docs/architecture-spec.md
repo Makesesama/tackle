@@ -36,6 +36,7 @@ packages/
   tackle_codex/                  # First-party Codex provider plugin
   tackle_deepseek/               # Optional DeepSeek provider plugin
   tackle_anthropic/              # First-party Anthropic Claude provider plugin
+  tackle_openrouter/             # OpenRouter provider plugin (multi-vendor gateway)
   tackle_mcp/                    # Optional harness-side MCP client plugin
 ```
 

@@ -98,6 +98,10 @@ and unfinished integrations:
   token refresh, Responses SSE transport, and provider-neutral translation.
 - [`packages/tackle_deepseek`](packages/tackle_deepseek/README.md) contains the
   optional DeepSeek provider adapter bundled by the current app distributions.
+- [`packages/tackle_openrouter`](packages/tackle_openrouter/README.md) contains
+  the OpenRouter provider adapter, which reaches many vendors' models through
+  one API key (`openrouter/<vendor>/<model>`). The current app distributions
+  bundle it.
 - [`packages/tackle_mcp`](packages/tackle_mcp/README.md) contains the optional
   Anubis-based MCP client plugin. Trusted host startup can connect STDIO or
   Streamable HTTP servers, discover their tools, and add the returned proxy
@@ -105,7 +109,8 @@ and unfinished integrations:
   tools only and is not bundled by the CLI.
 - [`apps/tackle_cli`](apps/tackle_cli/README.md) contains the default
   Optimus/ex_ratatui CLI entrypoint. Its Burrito release produces a fixed
-  distribution that bundles the first-party Codex and DeepSeek plugins; the
+  distribution that bundles the first-party Codex, DeepSeek, Anthropic, and
+  OpenRouter plugins; the
   harness loads explicitly enabled precompiled projects at startup, without
   automatically discovering projects. The frontend relies on the harness package
   for credentials, sessions, and turn execution. Its footer reports current

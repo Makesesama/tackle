@@ -58,6 +58,7 @@ defmodule Tackle.Web.MixProject do
       {:tackle_codex, path: "../../packages/tackle_codex"},
       {:tackle_deepseek, path: "../../packages/tackle_deepseek"},
       {:tackle_anthropic, path: "../../packages/tackle_anthropic"},
+      {:tackle_openrouter, path: "../../packages/tackle_openrouter"},
 
       # Web layer. tackle_phoenix brings LiveView/PubSub, but not Phoenix itself.
       # LiveView is held at the same ~> 1.1.33 range tackle_phoenix requires;
@@ -97,7 +98,8 @@ defmodule Tackle.Web.MixProject do
        depth: 1},
 
       # GitHub API. Pinned to match the version already used by the
-      # tackle_codex, tackle_deepseek, and tackle_anthropic plugins.
+      # tackle_codex, tackle_deepseek, tackle_anthropic, and tackle_openrouter
+      # plugins.
       {:req, "== 0.8.0-rc.0"},
 
       # GitHub OAuth (read-only scopes; no live call in tests).

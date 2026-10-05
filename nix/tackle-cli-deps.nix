@@ -56,17 +56,17 @@ let
             (extendedPkgs.makeRustPlatform {
               inherit (fenix) cargo rustc;
             }).buildRustPackage
-            {
-              inherit env buildInputs;
-              pname = "${old.beamModuleName}-native";
-              version = old.version;
-              src = nativeDir;
-              cargoLock = {
-                lockFile = "${nativeDir}/Cargo.lock";
-              };
-              nativeBuildInputs = [ extendedPkgs.cmake ] ++ nativeBuildInputs;
-              doCheck = false;
-            }
+              {
+                inherit env buildInputs;
+                pname = "${old.beamModuleName}-native";
+                version = old.version;
+                src = nativeDir;
+                cargoLock = {
+                  lockFile = "${nativeDir}/Cargo.lock";
+                };
+                nativeBuildInputs = [ extendedPkgs.cmake ] ++ nativeBuildInputs;
+                doCheck = false;
+              }
           ).overrideAttrs
             rustlerPrecompiledOverrides.${old.beamModuleName} or { };
 
@@ -703,6 +703,23 @@ let
             beamDeps = [
               anubis_mcp
               finch
+              tackle_lib
+            ];
+          };
+        in
+        drv;
+
+      tackle_openrouter =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_openrouter";
+
+            src = ../packages/tackle_openrouter;
+
+            beamDeps = [
+              req
               tackle_lib
             ];
           };

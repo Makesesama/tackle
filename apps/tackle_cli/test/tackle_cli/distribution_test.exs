@@ -25,11 +25,12 @@ defmodule Tackle.CLI.DistributionTest do
              Tackle.Plugins.Catalog.resolve_tools(catalog, ["read"])
   end
 
-  test "bundles Codex, DeepSeek, and Anthropic as the default adapters" do
+  test "bundles Codex, DeepSeek, Anthropic, and OpenRouter as the default adapters" do
     assert Distribution.default_adapters() == [
              Tackle.Plugins.Codex,
              Tackle.Plugins.DeepSeek,
-             Tackle.Plugins.Anthropic
+             Tackle.Plugins.Anthropic,
+             Tackle.Plugins.OpenRouter
            ]
   end
 
@@ -41,7 +42,8 @@ defmodule Tackle.CLI.DistributionTest do
     assert Application.fetch_env!(:tackle, :adapters) == [
              Tackle.Plugins.Codex,
              Tackle.Plugins.DeepSeek,
-             Tackle.Plugins.Anthropic
+             Tackle.Plugins.Anthropic,
+             Tackle.Plugins.OpenRouter
            ]
   end
 end

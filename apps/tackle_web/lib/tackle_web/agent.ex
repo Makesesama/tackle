@@ -19,6 +19,8 @@ defmodule Tackle.Web.Agent do
     * `Tackle.Plugins.DeepSeek` (`deepseek/*`) authenticates with an API key.
     * `Tackle.Plugins.Anthropic` (`anthropic/*`) authenticates with a Claude
       Pro/Max OAuth session or an Anthropic API key.
+    * `Tackle.Plugins.OpenRouter` (`openrouter/<vendor>/<model>`)
+      authenticates with an OpenRouter API key.
 
   Credentials come from `Tackle.Auth`, the harness's file-backed credential
   store, so a login performed by the CLI is reused here. The store handle is

@@ -187,6 +187,47 @@ defmodule Tackle.Config.FileTest do
              Config.load(available_adapters: [Adapter], env: env)
   end
 
+  test "passes adapter-keyed provider options through as an LLM option", %{
+    home: home,
+    env: env
+  } do
+    route = %{"only" => ["mistral/zdr"], "allow_fallbacks" => false}
+    options = %{"test" => %{"provider_routing" => %{"file" => route}}}
+
+    write_config(
+      home,
+      JSON.encode!(%{"model" => "test/file", "thinking" => "low", "provider_options" => options})
+    )
+
+    assert {:ok, config} = Config.load(available_adapters: [Adapter], env: env)
+    assert config.llm_opts[:provider_options] == options
+    assert config.llm_opts[:reasoning_effort] == "low"
+
+    # Switching models or thinking keeps the adapter settings.
+    assert {:ok, switched} = Config.reconfigure(config, model: "test/override", thinking: "off")
+    assert switched.llm_opts[:provider_options] == options
+  end
+
+  test "rejects malformed or secret-bearing provider options", %{home: home, env: env} do
+    for options <- [[1], "openrouter", %{"test" => "route"}] do
+      write_config(home, JSON.encode!(%{"model" => "test/file", "provider_options" => options}))
+
+      assert {:error, {:invalid_config_field, _path, "provider_options"}} =
+               Config.load(available_adapters: [Adapter], env: env)
+    end
+
+    write_config(
+      home,
+      JSON.encode!(%{
+        "model" => "test/file",
+        "provider_options" => %{"test" => %{"api_key" => "secret"}}
+      })
+    )
+
+    assert {:error, {:reserved_llm_option, "api_key"}} =
+             Config.load(available_adapters: [Adapter], env: env)
+  end
+
   test "unknown fields and malformed JSON return errors", %{home: home, env: env} do
     path = write_config(home, ~s({"model":"test/file","adapter":"Elixir.System"}))
 
