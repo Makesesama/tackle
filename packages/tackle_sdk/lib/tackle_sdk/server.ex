@@ -22,6 +22,9 @@ defmodule Tackle.SDK.Server do
       (used by tests).
     * `:output` — `:stdio` (default), an IO device, or a one-argument fun
       receiving each encoded line (used by tests).
+    * `:context` — map merged into the tool execution context of every
+      session (default: `%{}`). Hosts use it for facts tools need, such as
+      `cwd` or user identity.
     * `:owner` — process notified with `{:sdk_done, :ok}` just before a clean
       stop; set automatically by `run/1`.
 
@@ -85,6 +88,7 @@ defmodule Tackle.SDK.Server do
       tools: Keyword.get(opts, :tools, []),
       input: Keyword.get(opts, :input, :stdio),
       output: Keyword.get(opts, :output, :stdio),
+      context: Keyword.get(opts, :context, %{}),
       task_sup: task_sup,
       owner: Keyword.get(opts, :owner),
       initialized?: false,
@@ -276,6 +280,7 @@ defmodule Tackle.SDK.Server do
           llm: selection,
           tools: tools,
           system_prompt: params["systemPrompt"],
+          context: state.context,
           max_iterations: max_iterations(params)
         )
 

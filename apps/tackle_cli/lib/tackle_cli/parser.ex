@@ -29,6 +29,7 @@ defmodule Tackle.CLI.Parser do
           | {:mcp_login, %{name: String.t(), client_id: String.t() | nil}}
           | {:mcp_status, String.t() | nil}
           | {:mcp_logout, String.t()}
+          | {:sdk, %{}}
 
   @type auth_options(provider) :: %{
           provider: provider,
@@ -128,6 +129,8 @@ defmodule Tackle.CLI.Parser do
 
   defp parse_result({:ok, [:mcp, :auth, :logout], result}, _parser),
     do: {:ok, {:mcp_logout, result.args.name}}
+
+  defp parse_result({:ok, [:sdk], _result}, _parser), do: {:ok, {:sdk, %{}}}
 
   defp parse_result({:ok, [:auth], _result}, parser),
     do: {:help, format_help(parser, [:auth])}
@@ -300,6 +303,10 @@ defmodule Tackle.CLI.Parser do
               ]
             ]
           ]
+        ],
+        sdk: [
+          name: "sdk",
+          about: "Serve the JSON-RPC stdio SDK protocol for non-BEAM clients"
         ],
         auth: [
           name: "auth",

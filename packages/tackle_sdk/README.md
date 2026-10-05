@@ -43,7 +43,10 @@ Tackle.SDK.run(
 ```
 
 `run/1` blocks until stdin reaches EOF and all in-flight turns settle, so it
-is suitable as the main entrypoint of a `--sdk` mode in a host binary.
+is suitable as the main entrypoint of a `--sdk` mode in a host binary. The
+`tackle` CLI already does this: `tackle sdk` serves the protocol with the
+bundled adapters and the standalone tools (see
+[`apps/tackle_cli/README.md`](../../apps/tackle_cli/README.md)).
 
 A minimal client conversation (any language, one JSON-RPC frame per line on
 stdin):

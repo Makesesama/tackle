@@ -3,6 +3,10 @@ defmodule Tackle.CLI.ParserTest do
 
   alias Tackle.CLI.Parser
 
+  test "parses the sdk subcommand" do
+    assert {:ok, {:sdk, %{}}} = Parser.parse(["sdk"])
+  end
+
   test "parses the default run command with only a model override" do
     assert {:ok,
             {:run,

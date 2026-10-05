@@ -60,6 +60,24 @@ The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
 are compiled into it. It does not discover or load third-party plugins at
 runtime. That keeps packaging separate from the future plugin-loading design.
 
+## SDK server (experimental)
+
+`tackle sdk` (or `mix tackle sdk`) serves the Tackle SDK wire protocol —
+newline-delimited JSON-RPC 2.0 on stdin/stdout — so clients in any language
+can spawn the tackle binary and drive agent sessions: `initialize`,
+`session/new`, `turn/start`, `turn/cancel`, with turn events streamed as
+notifications. The wire contract is specified in
+[`packages/tackle_sdk/PROTOCOL.md`](../../packages/tackle_sdk/PROTOCOL.md).
+
+The server exposes the same bundled adapters as the TUI (models are selected
+per session with the `adapter_id/model` reference, e.g.
+`openai-codex/gpt-5.6-sol`; provider credentials come from the same
+`tackle auth` store) and the standalone tools (`read`, `bash`, `elixir_eval`,
+`edit`, `write`). Subagent tools need a scoped runtime and MCP tools need
+live connections, so neither is on the SDK tool registry yet. Tools are
+server-side only in protocol version 1: clients select a subset of the
+registry per session but cannot supply their own.
+
 ## MCP connections (experimental)
 
 `mix tackle mcp add NAME --stdio COMMAND --arg ARG` adds a local server;
