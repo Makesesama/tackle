@@ -12,6 +12,7 @@ defmodule Tackle.SDK.ServerTest do
   alias Tackle.SDK.Server
   alias Tackle.SDK.Test.EchoTool
   alias Tackle.SDK.Test.FakeLLM
+  alias Tackle.SDK.Test.RecordingLLM
   alias Tackle.SDK.Test.SlowLLM
 
   @init ~s({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
@@ -134,6 +135,26 @@ defmodule Tackle.SDK.ServerTest do
 
       assert %{"id" => 2, "error" => %{"code" => -32602}} = await_response(2)
       assert %{"id" => 3, "error" => %{"code" => -32602}} = await_response(3)
+      assert_receive {:run_result, :ok}
+    end
+
+    test "host llm_opts reach the adapter on every session" do
+      start(
+        [
+          @init,
+          ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"sess-1","model":"record/opts"}}),
+          ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"sess-1","input":"hi"}})
+        ],
+        adapters: [RecordingLLM],
+        llm_opts: [test_pid: self(), marker: "injected"]
+      )
+
+      assert %{"id" => 2, "result" => %{"sessionId" => "sess-1"}} = await_response(2)
+      assert %{"id" => 3, "result" => %{"turnId" => _}} = await_response(3)
+      assert {:ok, _event_types, %{"result" => "ok"}} = collect_event_types(1_000)
+
+      assert_received {:generate_opts, opts}
+      assert Keyword.get(opts, :marker) == "injected"
       assert_receive {:run_result, :ok}
     end
   end

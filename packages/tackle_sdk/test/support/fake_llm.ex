@@ -76,6 +76,33 @@ defmodule Tackle.SDK.Test.SlowLLM do
   end
 end
 
+defmodule Tackle.SDK.Test.RecordingLLM do
+  @moduledoc """
+  `Tackle.Lib.LLM` adapter that reports the generate opts it received to
+  `opts[:test_pid]`, so tests can assert host `llm_opts` reach the adapter.
+  """
+
+  @behaviour Tackle.Lib.LLM
+
+  @impl true
+  def adapter_id, do: "record"
+
+  @impl true
+  def models, do: ["opts"]
+
+  @impl true
+  def generate(_schema, opts) do
+    if pid = Keyword.get(opts, :test_pid), do: send(pid, {:generate_opts, opts})
+
+    {:ok,
+     %{
+       data: %{"content" => "recorded", "tool_calls" => []},
+       usage: nil,
+       model: "opts"
+     }}
+  end
+end
+
 defmodule Tackle.SDK.Test.EchoTool do
   @moduledoc "Server-side test tool that echoes its `text` argument."
 

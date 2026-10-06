@@ -25,6 +25,10 @@ defmodule Tackle.SDK.Server do
     * `:context` — map merged into the tool execution context of every
       session (default: `%{}`). Hosts use it for facts tools need, such as
       `cwd` or user identity.
+    * `:llm_opts` — keyword list merged into the LLM options of every
+      session (default: `[]`). Hosts use it to inject adapter-level
+      configuration such as a `:credential_store` handle; the wire
+      protocol is unchanged.
     * `:owner` — process notified with `{:sdk_done, :ok}` just before a clean
       stop; set automatically by `run/1`.
 
@@ -89,6 +93,7 @@ defmodule Tackle.SDK.Server do
       input: Keyword.get(opts, :input, :stdio),
       output: Keyword.get(opts, :output, :stdio),
       context: Keyword.get(opts, :context, %{}),
+      llm_opts: Keyword.get(opts, :llm_opts, []),
       task_sup: task_sup,
       owner: Keyword.get(opts, :owner),
       initialized?: false,
@@ -278,6 +283,7 @@ defmodule Tackle.SDK.Server do
         State.new(
           session_id: session_id,
           llm: selection,
+          llm_opts: state.llm_opts,
           tools: tools,
           system_prompt: params["systemPrompt"],
           context: state.context,

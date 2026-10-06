@@ -38,9 +38,15 @@ The host embeds the server with its LLM adapters and tool registry:
 ```elixir
 Tackle.SDK.run(
   adapters: [MyApp.CodexAdapter],
-  tools: [MyApp.Tools.Search, MyApp.Tools.Fetch]
+  tools: [MyApp.Tools.Search, MyApp.Tools.Fetch],
+  llm_opts: [credential_store: MyApp.Auth.credential_store()]
 )
 ```
+
+Host-side options such as `:adapters`, `:tools`, `:context`, and `:llm_opts`
+are server configuration; the wire protocol is unchanged. `:llm_opts` is
+merged into every session's LLM options, which is how hosts inject adapter
+handles such as a `:credential_store` (see `Tackle.Lib.CredentialStore`).
 
 `run/1` blocks until stdin reaches EOF and all in-flight turns settle, so it
 is suitable as the main entrypoint of a `--sdk` mode in a host binary. The

@@ -61,6 +61,10 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd apps/tackle_cli && mix format --check-formatted)
 (cd apps/tackle_cli && mix escript.build)
 
+# Emacs client (Elisp; needs an Emacs in the dev shell or PATH)
+(cd apps/etackle && emacs -Q --batch -L . -l test/etackle-test.el \
+    -f ert-run-tests-batch-and-exit)
+
 # Web app (Phoenix; assets need the dev shell's tailwindcss/esbuild)
 (cd apps/tackle_web && mix deps.get)
 (cd apps/tackle_web && mix compile --warnings-as-errors && mix test)
@@ -118,6 +122,10 @@ Burrito, or lint commands for tooling that has not been wired up.
   harness, both provider plugins, and `packages/tackle_phoenix`; the review
   surfaces are documented by their module docs, and the mix project is separate
   from the harness.
+- `apps/etackle/`: Emacs client for the Tackle SDK wire protocol
+  (`packages/tackle_sdk/PROTOCOL.md`), speaking ndjson JSON-RPC over stdio to
+  `tackle sdk`. Plain Emacs Lisp (Emacs 28.1+), not a Mix project; see its
+  `README.md` for usage and its ERT tests for the RPC contract.
 - `flake.nix`, `nix/`: development environment, dependency, and build setup.
 - `deps/`, `_build/`, `.nix-mix/`, `.nix-hex/`: dependencies, build output,
   and local caches; not hand-maintained source.

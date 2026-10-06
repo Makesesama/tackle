@@ -23,6 +23,7 @@ reusable library on its own or add scoped orchestration and integrations.
 | A ready-to-compose developer harness | [`tackle`](packages/tackle) (`Tackle.*`): configuration, coding tools, credentials, and a facade over the scoped runtime. See the [harness guide](packages/tackle/README.md). |
 | A Phoenix host integration | [`tackle_phoenix`](packages/tackle_phoenix/README.md): supervised turns, PubSub, and LiveView support. |
 | A terminal frontend | [`tackle_cli`](apps/tackle_cli/README.md): the CLI built on the harness, not an agent engine to embed. |
+| An Emacs frontend | [`etackle`](apps/etackle/README.md): the first client for the Tackle SDK, driving `tackle sdk` over its stdio JSON-RPC protocol. |
 
 Implement a `Tackle.Lib.LLM` adapter for your provider, supply
 `Tackle.Lib.Tool` modules for your capabilities, and choose which runtime and

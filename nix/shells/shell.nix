@@ -61,6 +61,7 @@ pkgs.mkShell {
     pkgs.rustfmt
     pkgs.clippy
     pkgs.tokei
+    pkgs.emacs
   ]
   ++ platformPackages
   ++ pkgs.lib.optional (jailedTackle != null) jailedTackle;

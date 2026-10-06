@@ -18,7 +18,12 @@ defmodule Tackle.CLI.SDK do
         Tackle.Tools.default() ++
           Enum.map(contributions().tools, & &1.module)
 
-      case Tackle.SDK.run(adapters: adapters, tools: tools, context: %{cwd: cwd()}) do
+      case Tackle.SDK.run(
+             adapters: adapters,
+             tools: tools,
+             context: %{cwd: cwd()},
+             llm_opts: [credential_store: Tackle.Auth.credential_store()]
+           ) do
         :ok -> 0
         {:error, reason} -> error(reason)
       end
