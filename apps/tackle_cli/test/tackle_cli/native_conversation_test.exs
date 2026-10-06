@@ -101,7 +101,11 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     assert paint(narrow) =~ "title"
   end
 
-  test "Elixir fences highlight both settled and streaming assistant code without showing fences" do
+  # Highlighting is disabled in the test environment, so these render the
+  # plain-text fallback; the colored path is covered with a fake highlighter in
+  # ThemeRenderingTest. What matters here is the native shape: the fence
+  # markers never show, and every cell shares the code surface.
+  test "Elixir fences render both settled and streaming assistant code without showing fences" do
     for source <- [
           "```elixir\nIO.puts(\"hello\")\n```",
           "```elixir\nIO.puts(\"hello\")"
@@ -118,10 +122,6 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
       assert painted =~ "elixir"
       assert painted =~ "IO.puts(\"hello\")"
       refute painted =~ "```"
-
-      assert Enum.any?(List.flatten(rows), fn {text, fg, _bg, _under, _modifiers} ->
-               text == "IO" and match?({_, _, _}, fg)
-             end)
 
       # Every cell of the snippet, including indentation, padding and trailing
       # whitespace, carries the same surface rather than the highlighter's bg.
@@ -148,10 +148,6 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
       assert painted =~ language
       assert painted =~ snippet
       refute painted =~ "```"
-
-      assert Enum.any?(List.flatten(rows), fn {text, fg, _bg, _under, _modifiers} ->
-               text in ["echo", "hello"] and match?({_, _, _}, fg)
-             end)
 
       code_bg = Widget.style(Theme.style(:code_surface)) |> elem(1)
 

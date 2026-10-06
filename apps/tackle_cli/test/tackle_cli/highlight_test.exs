@@ -2,50 +2,27 @@ defmodule Tackle.CLI.TUI.HighlightTest do
   use ExUnit.Case, async: false
 
   alias ExRatatui.Style
+  alias Tackle.CLI.Test.{ErrorLumis, FakeLumis, RaisingLumis, ReflowingLumis}
   alias Tackle.CLI.TUI.{Highlight, MessageView, ToolView}
   alias Tackle.Lib.{Message, State}
 
-  # A stand-in for Lumis: the same `highlight/2` contract, canned ANSI so the
-  # suite never downloads a tree-sitter parser. Text before the first space is
-  # painted with a token color; the rest of the line is left unstyled.
-  defmodule FakeLumis do
-    def highlight(source, _opts) do
-      {:ok, source |> String.split("\n", trim: false) |> Enum.map_join("\n", &wrap/1)}
-    end
-
-    defp wrap(line) do
-      case String.split(line, " ", parts: 2) do
-        [styled, plain] -> "\e[38;2;1;2;3m#{styled} \e[0m#{plain}"
-        [line] -> "\e[38;2;1;2;3m#{line}\e[0m"
-      end
-    end
-  end
-
-  defmodule ErrorLumis do
-    def highlight(_source, _opts), do: {:error, "language not loaded"}
-  end
-
-  defmodule RaisingLumis do
-    def highlight(_source, _opts), do: raise(Lumis.HighlightError, error: :nif_panicked)
-  end
-
-  defmodule ReflowingLumis do
-    # One rendered line fewer than the source has: the alignment a diff
-    # relies on is gone, so no line may carry styling.
-    def highlight(source, _opts) do
-      {:ok, source |> String.split("\n", trim: false) |> Enum.take(1) |> Enum.join("\n")}
-    end
-  end
-
   setup do
+    previous_theme = System.get_env("TACKLE_THEME")
     previous = Application.get_env(:tackle_cli, :highlight)
     previous_backend = Application.get_env(:tackle_cli, :highlight_backend)
 
     on_exit(fn ->
+      if previous_theme,
+        do: System.put_env("TACKLE_THEME", previous_theme),
+        else: System.delete_env("TACKLE_THEME")
+
       restore(:highlight, previous)
       restore(:highlight_backend, previous_backend)
     end)
 
+    # The fake paints each palette with its own color; pin one so the
+    # assertions below are deterministic regardless of the ambient terminal.
+    System.put_env("TACKLE_THEME", "dark")
     Application.put_env(:tackle_cli, :highlight, true)
     Application.put_env(:tackle_cli, :highlight_backend, FakeLumis)
     :ok

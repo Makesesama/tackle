@@ -76,8 +76,6 @@ defmodule Tackle.CLI.TUI.ThemeTest do
 
     assert Theme.style(:text, :light) == %ExRatatui.Style{}
     assert Theme.style(:unknown, :light) == %ExRatatui.Style{}
-    assert Theme.code_theme(:light) == :base16_ocean_light
-    assert Theme.code_theme(:dark) == :base16_ocean_dark
   end
 
   test "overlays share a neutral border while warning titles remain distinct" do

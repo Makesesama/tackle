@@ -9,12 +9,17 @@ defmodule Tackle.CLI.MixProject do
       version: "0.1.0",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       aliases: aliases(),
       escript: escript(),
       releases: releases()
     ]
   end
+
+  # Test-only modules (the Lumis stand-in) compile with the test suite.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   def application do
     [

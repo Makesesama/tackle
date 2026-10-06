@@ -10,15 +10,25 @@ defmodule Tackle.CLI.TUI.ThemeRenderingTest do
 
   setup do
     previous = System.get_env("TACKLE_THEME")
+    previous_highlight = Application.get_env(:tackle_cli, :highlight)
+    previous_backend = Application.get_env(:tackle_cli, :highlight_backend)
 
     on_exit(fn ->
       if previous,
         do: System.put_env("TACKLE_THEME", previous),
         else: System.delete_env("TACKLE_THEME")
+
+      restore(:highlight, previous_highlight)
+      restore(:highlight_backend, previous_backend)
     end)
 
+    Application.put_env(:tackle_cli, :highlight, true)
+    Application.put_env(:tackle_cli, :highlight_backend, Tackle.CLI.Test.FakeLumis)
     :ok
   end
+
+  defp restore(key, nil), do: Application.delete_env(:tackle_cli, key)
+  defp restore(key, value), do: Application.put_env(:tackle_cli, key, value)
 
   test "native user prompts pair foreground with background in either mode" do
     for mode <- [:light, :dark] do
@@ -72,35 +82,43 @@ defmodule Tackle.CLI.TUI.ThemeRenderingTest do
 
     assert Enum.all?(List.flatten(light_rows), &(elem(&1, 2) == elem(surface, 1)))
 
-    [line] = ExRatatui.CodeBlock.highlight("IO.puts(:ok)", "elixir", :base16_ocean_light)
+    # The fake highlighter paints light tokens with its light color.
+    token = Enum.find(List.flatten(light_rows), &(elem(&1, 0) == "IO.puts(:ok)"))
+    assert token |> elem(1) == {4, 5, 6}
 
-    token_fg =
-      line.spans
-      |> hd()
-      |> Map.fetch!(:style)
-      |> Theme.code_style()
-      |> Conversation.style()
-      |> elem(0)
-
-    assert Enum.find(List.flatten(light_rows), &(elem(&1, 0) == "IO")) |> elem(1) == token_fg
+    assert Enum.find(List.flatten(dark_rows), &(elem(&1, 0) == "IO.puts(:ok)")) |> elem(1) ==
+             {1, 2, 3}
   end
 
-  test "light code tokens stay dark enough after their backgrounds are removed" do
+  test "code tokens carry the theme's colors on the shared code surface" do
     System.put_env("TACKLE_THEME", "light")
     source = "```elixir\n# comment\nIO.puts(\"hello\")\nfn -> :ok end\n```"
 
     rows =
-      %MessageView{kind: :assistant, content: source} |> Conversation.cell(40) |> paint_native(40)
+      %MessageView{kind: :assistant, content: source}
+      |> Conversation.cell(40)
+      |> paint_native(40)
 
-    for {text, {r, g, b}, _bg, _under, _modifiers} <- List.flatten(rows),
-        String.trim(text) != "" do
-      assert max(max(r, g), b) <= 96
+    surface = Conversation.style(Theme.style(:code_surface))
+
+    # A single surface paints behind every row; the highlighter supplies only
+    # foregrounds, so no token can leave its background on the shell.
+    for {_text, _fg, bg, _under, _modifiers} <- List.flatten(rows) do
+      assert bg == elem(surface, 1)
     end
 
-    # Error scopes can supply bright foregrounds paired with dark backgrounds.
-    # The normalization must not leave white text on the light surface.
-    assert Theme.code_style(%Style{fg: {:rgb, 255, 255, 255}, bg: {:rgb, 255, 0, 0}}) ==
-             %Style{fg: {:rgb, 96, 96, 96}}
+    assert Enum.any?(List.flatten(rows), fn {_text, fg, _bg, _u, _m} -> fg == {4, 5, 6} end)
+  end
+
+  test "a failing highlighter still renders fenced code as plain text" do
+    Application.put_env(:tackle_cli, :highlight_backend, Tackle.CLI.Test.ErrorLumis)
+    System.put_env("TACKLE_THEME", "light")
+    entry = %MessageView{kind: :assistant, content: "```elixir\nIO.puts(:ok)\n```"}
+
+    rows = entry |> Conversation.cell(40) |> paint_native(40)
+
+    assert Enum.any?(List.flatten(rows), &String.contains?(elem(&1, 0), "IO.puts(:ok)"))
+    refute Enum.any?(List.flatten(rows), fn {_text, fg, _bg, _u, _m} -> fg == {4, 5, 6} end)
   end
 
   defp paint_native(items, width) do

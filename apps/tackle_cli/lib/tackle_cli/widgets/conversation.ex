@@ -13,7 +13,7 @@ defmodule Tackle.CLI.Widgets.Conversation do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{CodeFences, MessageView, Theme, ToolView}
+  alias Tackle.CLI.TUI.{CodeFences, Highlight, MessageView, Theme, ToolView}
   alias Tackle.CLI.Widgets.Surface
 
   defmodule Cell do
@@ -143,20 +143,43 @@ defmodule Tackle.CLI.Widgets.Conversation do
     # across every code row instead of the highlighter's background.
     surface = Theme.merge(base, Theme.style(:code_surface))
 
-    rows =
-      code
-      |> ExRatatui.CodeBlock.highlight(language, Theme.code_theme())
-      |> Enum.map(fn %Line{spans: spans, style: row_style} ->
-        {Enum.map(spans, fn %Span{content: content, style: span_style} ->
-           {String.trim_trailing(content, "\n"), style(Theme.code_style(span_style))}
-         end), style(Theme.code_style(row_style))}
-      end)
-
-    # The last newline of a fenced block is structural, not an extra code row.
-    rows = if rows == [], do: [{[], style(%Style{})}], else: rows
+    rows = code_rows(code, language)
     marker = if first?, do: {marker, style(Theme.style(:accent_soft))}, else: nil
     {resource, height} = Native.conversation_code(rows, width, style(surface), marker, language)
     {%Cell{state: resource, style: surface}, height}
+  end
+
+  # Lumis highlights the whole blob in one pass — the same highlighter as the
+  # web app and the edit cards — so lexer state spanning lines is tracked and
+  # the palette matches the rest of the shell. A fence the highlighter cannot
+  # cover renders as plain text on the same surface, never as an error.
+  defp code_rows(code, language) do
+    tokens = Highlight.lines(code, language)
+    default = style(%Style{})
+
+    code
+    |> String.split("\n", trim: false)
+    |> drop_structural_newline(code)
+    |> Enum.with_index(1)
+    |> Enum.map(fn {line, number} ->
+      spans =
+        case Map.get(tokens, number) do
+          nil ->
+            [{line, default}]
+
+          runs ->
+            Enum.map(runs, fn {text, style} -> {text, style(style || %Style{})} end)
+        end
+
+      {spans, default}
+    end)
+  end
+
+  # The newline that ends a fenced block is structural, not an extra code row.
+  defp drop_structural_newline(lines, ""), do: lines
+
+  defp drop_structural_newline(lines, code) when is_binary(code) do
+    if String.ends_with?(code, "\n"), do: Enum.drop(lines, -1), else: lines
   end
 
   @doc false

@@ -1,11 +1,11 @@
 defmodule Tackle.CLI.TUI.Highlight do
   @moduledoc """
-  Syntax highlighting for tool cards.
+  Syntax highlighting for tool cards and fenced code.
 
   Lumis — the same tree-sitter highlighter the web app uses — resolves a
   Neovim theme to ANSI truecolor escapes through its `:terminal` formatter;
   this module parses those back into per-line token runs of
-  `%ExRatatui.Style{}` so cards can paint them on their own surfaces. Like
+  `%ExRatatui.Style{}` so renderers can paint them on their own surfaces. Like
   `Tackle.Web.Highlight`, a whole blob is highlighted in one pass and split
   afterwards, so lexer state that spans lines (heredocs, block comments,
   multi-line strings) is tracked correctly, and a fragment can be looked up

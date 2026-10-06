@@ -165,12 +165,6 @@ defmodule Tackle.CLI.TUI.Theme do
   def style(tone, :light), do: Map.get(@light_styles, tone, %Style{})
   def style(tone, :dark), do: Map.get(@dark_styles, tone, %Style{})
 
-  @doc "Returns the syntax-highlighting theme matching the selected palette."
-  @spec code_theme(mode()) :: atom()
-  def code_theme(mode \\ mode())
-  def code_theme(:light), do: :base16_ocean_light
-  def code_theme(:dark), do: :base16_ocean_dark
-
   @doc """
   Builds the rounded panel chrome shared by every overlay.
 
@@ -192,20 +186,6 @@ defmodule Tackle.CLI.TUI.Theme do
   defp panel_title_style(:yellow), do: style(:warning)
   defp panel_title_style(:red), do: style(:error)
   defp panel_title_style(color), do: %Style{fg: color}
-
-  @doc "Normalizes highlighted token colors for the code surface, dropping token backgrounds."
-  @spec code_style(Style.t(), mode()) :: Style.t()
-  def code_style(style, mode \\ mode())
-
-  def code_style(%Style{fg: {:rgb, r, g, b}} = style, :light) do
-    # Ocean Light includes pastel tokens intended for a brighter background.
-    # Scale bright colors toward black while preserving their hue. A maximum
-    # channel of 96 gives at least 4.5:1 contrast on our light code surface.
-    scale = max(max(r, g), max(b, 96))
-    %{style | fg: {:rgb, div(r * 96, scale), div(g * 96, scale), div(b * 96, scale)}, bg: nil}
-  end
-
-  def code_style(%Style{} = style, _mode), do: %{style | bg: nil}
 
   @doc "Adds bold to a style without dropping its color or background."
   @spec bold(Style.t()) :: Style.t()
