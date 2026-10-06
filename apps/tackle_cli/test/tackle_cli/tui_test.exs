@@ -1,7 +1,7 @@
 defmodule Tackle.CLI.TUITest do
   use ExUnit.Case, async: true
 
-  alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
+  alias ExRatatui.Event.{FocusGained, FocusLost, Key, Mouse, Paste, Resize}
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Runtime
   alias ExRatatui.Text.Line
@@ -373,6 +373,67 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "y")
     assert_receive :title_cleared
     assert {:ok, ^session_id} = Task.await(task)
+  end
+
+  test "notifies when a turn finishes while the terminal is unfocused", %{
+    agent_ref: agent_ref
+  } do
+    test_pid = self()
+
+    task =
+      Task.async(fn ->
+        TUI.start(
+          agent_ref: agent_ref,
+          test_mode: {80, 24},
+          notification_writer: fn message ->
+            send(test_pid, {:notified, message})
+            {:ok, :applied}
+          end
+        )
+      end)
+
+    assert_receive {:subscribed, tui}
+
+    # A focused terminal never posts a completion notification.
+    inject_paste(tui, "hi")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "hi"}
+    await_state(tui, &(&1.active_turn != nil))
+    finish_turn(tui, [Message.user("hi"), Message.assistant(content: "Done")])
+    await_state(tui, &is_nil(&1.active_turn))
+    refute_receive {:notified, _message}
+
+    # Losing focus arms the notification, and the finished turn posts a
+    # preview of the streamed response.
+    :ok = Runtime.inject_event(tui, %FocusLost{})
+    inject_paste(tui, "again")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "again"}
+    await_state(tui, &(&1.active_turn != nil))
+
+    session_id = state(tui).session_id
+
+    send(
+      tui,
+      {:tackle_event, session_id, "turn-1", Event.new(:message_delta, %{delta: "Finished"})}
+    )
+
+    finish_turn(tui, [Message.user("again"), Message.assistant(content: "Finished")])
+    assert_receive {:notified, "Finished"}
+
+    # Regaining focus disarms it again.
+    :ok = Runtime.inject_event(tui, %FocusGained{})
+    inject_paste(tui, "once more")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "once more"}
+    await_state(tui, &(&1.active_turn != nil))
+    finish_turn(tui, [Message.user("once more"), Message.assistant(content: "Done again")])
+    await_state(tui, &is_nil(&1.active_turn))
+    refute_receive {:notified, _message}
+
+    # Idle with an empty draft, Ctrl+C quits without a confirmation.
+    inject_key(tui, "c", ["ctrl"])
+    assert {:ok, _session_id} = Task.await(task)
   end
 
   test "Alt+1–5 select recent sessions and do not repeat" do

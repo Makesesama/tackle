@@ -16,6 +16,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   alias Tackle.CLI.TUI.{
     Compaction,
     MessageView,
+    Notifications,
     Observations,
     RecentSessions,
     State,
@@ -681,6 +682,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
        when outcome in [:ok, :error, :cancelled] do
     state = state |> Compaction.settle(agent_state) |> UsageChart.invalidate_cache()
     error = if outcome == :error, do: agent_state.error || "turn failed", else: nil
+
+    # The notification reads the streamed response, so it must fire before the
+    # turn-scoped stream state is reset below.
+    Notifications.turn_finished(state, outcome)
 
     state = %{
       state

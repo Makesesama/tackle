@@ -60,6 +60,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Inspector` | the scrollable tool-output inspector |
   | `Tackle.CLI.TUI.Session` | root scope ownership and teardown |
   | `Tackle.CLI.TUI.TerminalTitle` | terminal window title synchronization |
+  | `Tackle.CLI.TUI.Notifications` | completion notifications while unfocused |
   | `Tackle.CLI.TUI.View` | the scene and ordinary widgets |
   | `Tackle.CLI.TUI.StatusView` | status row, metrics, and hints |
   """
@@ -67,7 +68,7 @@ defmodule Tackle.CLI.TUI do
   use ExRatatui.App
 
   alias ExRatatui.Command
-  alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
+  alias ExRatatui.Event.{FocusGained, FocusLost, Key, Mouse, Paste, Resize}
   alias Tackle.CLI.TUI.TextSelection
   alias ExRatatui.Subscription
   alias Tackle.CLI.Keybinds
@@ -112,7 +113,13 @@ defmodule Tackle.CLI.TUI do
   end
 
   defp start_with_quiet_console(opts) do
-    opts = Keyword.put_new(opts, :mouse_capture, true)
+    opts =
+      opts
+      |> Keyword.put_new(:mouse_capture, true)
+      # Focus reporting drives the completion notifications: a turn that
+      # finishes while the window is unfocused asks for the user's attention.
+      |> Keyword.put_new(:focus_events, true)
+
     caller = self()
     result_ref = make_ref()
 
@@ -187,6 +194,14 @@ defmodule Tackle.CLI.TUI do
   end
 
   def handle_event(%Paste{content: content}, state), do: {:noreply, handle_paste(state, content)}
+
+  # Focus is bookkeeping for the completion notifications; nothing on screen
+  # depends on it, so the frame is not repainted.
+  def handle_event(%FocusGained{}, state),
+    do: {:noreply, %{state | terminal_focused?: true}, render?: false}
+
+  def handle_event(%FocusLost{}, state),
+    do: {:noreply, %{state | terminal_focused?: false}, render?: false}
 
   def handle_event(%Resize{width: width, height: height}, state) do
     state = %{state | size: {width, height}}

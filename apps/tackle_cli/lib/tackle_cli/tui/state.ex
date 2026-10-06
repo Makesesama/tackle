@@ -73,6 +73,8 @@ defmodule Tackle.CLI.TUI.State do
                                     | :ok
                                     | {:error, term()}),
           terminal_title: String.t() | nil,
+          notification_writer: (String.t() -> Tackle.CLI.Notifications.notify_result()),
+          terminal_focused?: boolean(),
           clipboard_text_reader: (-> {:ok, binary()} | {:error, term()}),
           clipboard_image_reader: (-> {:ok, binary()} | {:error, term()}),
           image_paths: [String.t()],
@@ -140,6 +142,8 @@ defmodule Tackle.CLI.TUI.State do
             clipboard_writer: &Clipboard.copy_local/1,
             terminal_title_writer: &Tackle.CLI.TerminalTitle.write/1,
             terminal_title: nil,
+            notification_writer: &Tackle.CLI.Notifications.write/1,
+            terminal_focused?: true,
             clipboard_text_reader: &Tackle.CLI.ImageClipboard.read_text/0,
             clipboard_image_reader: &Tackle.CLI.ImageClipboard.read/0,
             image_paths: [],
@@ -213,6 +217,8 @@ defmodule Tackle.CLI.TUI.State do
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
         terminal_title_writer: terminal_title_writer(opts),
         terminal_title: nil,
+        notification_writer: notification_writer(opts),
+        terminal_focused?: true,
         clipboard_text_reader:
           Keyword.get(opts, :clipboard_text_reader, &Tackle.CLI.ImageClipboard.read_text/0),
         clipboard_image_reader:
@@ -257,6 +263,23 @@ defmodule Tackle.CLI.TUI.State do
           end
         else
           &Tackle.CLI.TerminalTitle.write/1
+        end
+    end
+  end
+
+  # Test terminals have no desktop notifications, and the default writer would
+  # emit OSC 9 or BEL bytes into the test terminal's output; a no-op writer
+  # keeps the completion path exercised without touching the real terminal.
+  defp notification_writer(opts) do
+    case Keyword.fetch(opts, :notification_writer) do
+      {:ok, writer} ->
+        writer
+
+      :error ->
+        if Keyword.has_key?(opts, :test_mode) do
+          fn _message -> {:ok, :applied} end
+        else
+          &Tackle.CLI.Notifications.write/1
         end
     end
   end
