@@ -1,0 +1,10 @@
+/_build/
+/cover/
+/deps/
+/doc/
+/.elixir_ls/
+/erl_crash.dump
+
+# Rustler builds native artifacts into priv; Cargo.lock remains tracked.
+/priv/native/
+/native/*/target/

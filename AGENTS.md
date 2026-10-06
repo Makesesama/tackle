@@ -55,6 +55,12 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd packages/tackle_sdk && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_sdk && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
+# Native clipboard package (Rustler NIF over arboard; needs cargo)
+(cd packages/clipboard_ex && mix deps.get)
+(cd packages/clipboard_ex && mix compile --warnings-as-errors && mix test)
+(cd packages/clipboard_ex && mix format --check-formatted)
+(cd packages/clipboard_ex/native/clipboard_ex && cargo fmt --check && cargo clippy)
+
 # CLI app
 (cd apps/tackle_cli && mix deps.get)
 (cd apps/tackle_cli && mix compile --warnings-as-errors && mix test)
@@ -111,6 +117,9 @@ Burrito, or lint commands for tooling that has not been wired up.
   (`Tackle.SDK.*`, `:tackle_sdk`) that lets non-BEAM clients drive the
   `Tackle.Lib` agent loop. The wire contract is `packages/tackle_sdk/PROTOCOL.md`;
   tools are server-side only in protocol version 1.
+- `packages/clipboard_ex/`: experimental, Tackle-independent native clipboard
+  package (`Clipboard.*`, `:clipboard_ex`): a Rustler NIF over Rust's `arboard`
+  with tmux/OSC 52 terminal fallbacks. Nothing depends on it yet.
 - `apps/tackle_cli/`: default Optimus/ex_ratatui terminal entrypoint. It is a
   separate Mix project that depends on the harness and bundles Codex as a
   distribution dependency; runtime adapter loading remains a harness concern.

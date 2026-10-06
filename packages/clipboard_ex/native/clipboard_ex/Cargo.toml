@@ -1,0 +1,14 @@
+[package]
+name = "clipboard_ex"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# `wayland-data-control` prefers the Wayland data-control protocols when the
+# compositor offers them and falls back to X11 (or XWayland) otherwise.
+arboard = { version = "3.6", features = ["wayland-data-control"] }
+rustler = { version = "0.38", default-features = false, features = ["derive", "nif_version_2_16"] }
