@@ -43,4 +43,19 @@ defmodule Tackle.CLI.TerminalTitleTest do
   test "osc0/1 frames the title as OSC 0 with a BEL terminator" do
     assert TerminalTitle.osc0("hello") == "\e]0;hello\a"
   end
+
+  describe "clear/0 and write/1" do
+    # ExUnit runs with stdout captured, so these exercise the non-terminal
+    # branch. The terminal branch normalizes emit/1's {:ok, :applied} back to
+    # :ok so the write/1 seam keeps a single success shape for clears; the
+    # interactive shell's clear matches only :ok and would otherwise crash on
+    # exit with a case_clause.
+    test "clear/0 returns :ok, not emit/1's applied marker" do
+      assert TerminalTitle.clear() == :ok
+    end
+
+    test "write/1 with nil clears and returns :ok" do
+      assert TerminalTitle.write(nil) == :ok
+    end
+  end
 end

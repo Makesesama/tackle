@@ -77,7 +77,14 @@ defmodule Tackle.CLI.TerminalTitle do
   """
   @spec clear() :: :ok | {:error, term()}
   def clear do
-    if Native.stdout_is_terminal(), do: osc0("") |> emit(), else: :ok
+    if Native.stdout_is_terminal() do
+      case emit(osc0("")) do
+        {:ok, :applied} -> :ok
+        {:error, _reason} = error -> error
+      end
+    else
+      :ok
+    end
   end
 
   @doc """
