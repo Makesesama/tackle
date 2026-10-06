@@ -51,6 +51,29 @@ defmodule Tackle.CLI.TUI.ThemeTest do
       refute style.fg == style.bg
     end
 
+    # Diff fills are background-only layers; content keeps its own foreground.
+    for mode <- [:light, :dark], tone <- [:diff_add_bg, :diff_del_bg] do
+      style = Theme.style(tone, mode)
+      assert style.fg == nil
+      assert style.bg != nil
+    end
+
+    # Light gutters are opaque and more saturated than the fill so numbers stay
+    # readable on the pastel; dark gutters are a dim foreground over the fill.
+    for tone <- [:diff_add_gutter, :diff_del_gutter] do
+      light = Theme.style(tone, :light)
+      assert light.fg != nil and light.bg != nil
+      dark = Theme.style(tone, :dark)
+      assert dark.fg != nil and dark.bg == nil
+    end
+
+    # Intraline emphasis stays one step more saturated than the line fill, so
+    # changed tokens remain visible on the painted background.
+    for mode <- [:light, :dark] do
+      refute Theme.style(:diff_add_inline, mode).bg == Theme.style(:diff_add_bg, mode).bg
+      refute Theme.style(:diff_del_inline, mode).bg == Theme.style(:diff_del_bg, mode).bg
+    end
+
     assert Theme.style(:text, :light) == %ExRatatui.Style{}
     assert Theme.style(:unknown, :light) == %ExRatatui.Style{}
     assert Theme.code_theme(:light) == :base16_ocean_light

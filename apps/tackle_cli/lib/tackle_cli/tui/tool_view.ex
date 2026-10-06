@@ -19,9 +19,13 @@ defmodule Tackle.CLI.TUI.ToolView do
   They are not authoritative file diffs; line numbers are relative to each
   replacement. `similar` matches the lines in Rust and marks the tokens that
   changed inside an otherwise similar line, so a one-word change stays legible
-  instead of reading as a whole-line rewrite. Rows keep the terminal background
-  and neutral code text, with soft-colored `+`/`-` markers and a compact number
-  gutter. Only changed tokens receive a tint. The preview keeps a line of context
+  instead of reading as a whole-line rewrite. Rows paint a full-width add/delete
+  fill behind neutral code text (context rows keep the terminal background),
+  with soft-colored `+`/`-` markers and a number gutter as wide as the largest
+  line number — opaque and more saturated on light backgrounds so numbers
+  stay readable against the pastel fill. Only changed tokens receive the
+  stronger inline tint, one step more saturated than the fill so intraline
+  emphasis survives on it. The preview keeps a line of context
   around each change and elides longer unchanged runs; details print every
   submitted line. A replacement too large to match falls back to a bounded
   before/after window. Execution outcome and preview provenance remain
@@ -38,6 +42,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   member back into its full card, so no command or output is lost.
   """
 
+  alias ExRatatui.Style
   alias Tackle.CLI.Native
   alias Tackle.CLI.TUI.{MessageView, Theme, ToolGroups}
 
@@ -289,6 +294,7 @@ defmodule Tackle.CLI.TUI.ToolView do
       # No native head/tail cut. Matching and oversized before/after fallback
       # already have native work bounds; only selected lines are wrapped here.
       {added, removed, source} = diff_rows(old, new, @preview_context, 0)
+      number_width = gutter_width(source)
 
       total =
         Enum.reduce(source, 0, fn
@@ -303,7 +309,7 @@ defmodule Tackle.CLI.TUI.ToolView do
         |> Enum.with_index()
         |> Enum.reject(fn {hunk, _} -> match?([{:elision, _} | _], hunk) end)
         |> Enum.reduce({[], 0, 0}, fn {hunk, index}, {chosen, used, count} ->
-          case fitting_hunk(hunk, width, budget - used) do
+          case fitting_hunk(hunk, number_width, width, budget - used) do
             {:ok, rows, size} ->
               {chosen ++ [{index, wrap_indented(rows, width, 4)}], used + size,
                count + length(rows)}
@@ -316,7 +322,11 @@ defmodule Tackle.CLI.TUI.ToolView do
       {paint, count, used} =
         if chosen == [] do
           first = Enum.find(hunks, [], fn hunk -> not match?([{:elision, _} | _], hunk) end)
-          first |> Enum.take(budget) |> Enum.map(&diff_row/1) |> code_prefix(width, budget)
+
+          first
+          |> Enum.take(budget)
+          |> Enum.map(&diff_row(&1, number_width))
+          |> code_prefix(width, budget)
         else
           paint =
             Enum.flat_map(chosen, fn {index, rows} ->
@@ -360,9 +370,9 @@ defmodule Tackle.CLI.TUI.ToolView do
     end)
   end
 
-  defp fitting_hunk(hunk, width, budget) do
+  defp fitting_hunk(hunk, number_width, width, budget) do
     Enum.reduce_while(hunk, {:ok, [], 0}, fn source, {:ok, rows, used} ->
-      row = diff_row(source)
+      row = diff_row(source, number_width)
       size = wrapped_size(row, width, budget - used)
 
       if size <= budget - used,
@@ -726,7 +736,9 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     if is_binary(old) and is_binary(new) do
       {added, removed, rows} = diff_rows(old, new, 0, 0)
-      [replacement_heading(added, removed) | Enum.map(rows, &diff_row/1)]
+      number_width = gutter_width(rows)
+
+      [replacement_heading(added, removed) | Enum.map(rows, &diff_row(&1, number_width))]
     else
       [warn_row("Edit #{index}: invalid preview data")]
     end
@@ -754,17 +766,34 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   # Keep the gutter quiet and the code neutral. Only changed tokens are tinted;
   # markers retain meaning without relying on color or full-width backgrounds.
-  defp diff_row({tag, number, spans}) do
+  # The fill sits on the row style so the tint spans the full terminal
+  # width; context rows leave the terminal background alone. The gutter is a
+  # right-aligned number as wide as the largest one in the replacement.
+  defp diff_row({tag, number, spans}, number_width) do
     style = if tag == :ctx, do: Theme.style(:diff_context), else: Theme.style(:text)
 
-    MessageView.row([
-      MessageView.span(String.pad_leading(to_string(number), 3) <> " ", Theme.style(:subtle)),
-      MessageView.span(sign(tag) <> " ", diff_style(tag))
-      | Enum.map(spans, &content_span(&1, tag, style))
-    ])
+    MessageView.row(
+      [
+        MessageView.span(
+          String.pad_leading(to_string(number), number_width) <> " ",
+          gutter_style(tag)
+        ),
+        MessageView.span(sign(tag) <> " ", diff_style(tag))
+        | Enum.map(spans, &content_span(&1, tag, style))
+      ],
+      fill_style(tag)
+    )
   end
 
-  defp diff_row({:elision, count}), do: context_row("#{count} lines hidden")
+  defp diff_row({:elision, count}, _number_width), do: context_row("#{count} lines hidden")
+
+  defp fill_style(:ins), do: Theme.style(:diff_add_bg)
+  defp fill_style(:del), do: Theme.style(:diff_del_bg)
+  defp fill_style(:ctx), do: %Style{}
+
+  defp gutter_style(:ins), do: Theme.style(:diff_add_gutter)
+  defp gutter_style(:del), do: Theme.style(:diff_del_gutter)
+  defp gutter_style(:ctx), do: Theme.style(:subtle)
 
   defp content_span({text, true}, tag, _style), do: MessageView.span(text, inline_style(tag))
   defp content_span({text, false}, _tag, style), do: MessageView.span(text, style)
@@ -780,6 +809,18 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp inline_style(:del), do: Theme.style(:diff_del_inline)
   defp inline_style(:ins), do: Theme.style(:diff_add_inline)
   defp inline_style(:ctx), do: Theme.style(:diff_context)
+
+  # Codex-style gutter width: the digit count of the largest line number,
+  # at least one cell, so short replacements do not pad to a fixed width.
+  defp gutter_width(rows) do
+    max =
+      Enum.reduce(rows, 0, fn
+        {_tag, number, _spans}, max -> max(max, number)
+        {:elision, _count}, max -> max
+      end)
+
+    max |> to_string() |> String.length() |> max(1)
+  end
 
   defp context_row(text) do
     style = Theme.style(:subtle)

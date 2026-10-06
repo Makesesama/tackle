@@ -23,8 +23,19 @@ defmodule Tackle.CLI.TUI.Theme do
   Surfaces are deliberately subtle: they sit a few steps off the terminal
   background so a card reads as a block without competing with the prose.
   `:diff_add` and `:diff_del` are soft foreground accents for counts and `+`/`-`
-  markers. Diff rows leave the terminal background untouched; only changed
-  tokens use the restrained `:diff_add_inline` and `:diff_del_inline` tints.
+  markers. Diff rows paint a full-width fill behind added and removed lines
+  (`:diff_add_bg` / `:diff_del_bg`, after Codex's diff palette: muted tints on
+  dark, GitHub pastels on light); context rows keep the terminal background.
+  On light backgrounds the number gutter gets its own opaque, more saturated
+  background (`:diff_add_gutter` / `:diff_del_gutter`) so line numbers stay
+  readable against the pastel fill; on dark backgrounds the gutter is a dim
+  foreground over the fill. Changed tokens inside an otherwise similar line
+  use the stronger `:diff_add_inline` and `:diff_del_inline` tints, one step
+  more saturated than the line fill so intraline emphasis survives on it.
+  All diff colors are indexed, stable on true-color and 256-color terminals;
+  on 16-color terminals the terminal itself quantizes them, which can turn a
+  fill into a saturated system color. That degradation is accepted rather
+  than detected.
 
   A desaturated blue accent marks activity, selection, and the focused input
   border. Overlay and unfocused input borders stay neutral; warning and error
@@ -50,8 +61,12 @@ defmodule Tackle.CLI.TUI.Theme do
           | :error_surface
           | :selection_surface
           | :diff_add
+          | :diff_add_bg
+          | :diff_add_gutter
           | :diff_add_inline
           | :diff_del
+          | :diff_del_bg
+          | :diff_del_gutter
           | :diff_del_inline
           | :diff_context
 
@@ -71,9 +86,13 @@ defmodule Tackle.CLI.TUI.Theme do
     selection_surface: %Style{fg: {:indexed, 252}, bg: {:indexed, 60}},
     error_surface: %Style{fg: {:indexed, 252}, bg: {:indexed, 52}},
     diff_add: %Style{fg: {:indexed, 114}},
-    diff_add_inline: %Style{fg: {:indexed, 151}, bg: {:indexed, 22}},
+    diff_add_bg: %Style{bg: {:indexed, 22}},
+    diff_add_gutter: %Style{fg: {:indexed, 243}},
+    diff_add_inline: %Style{fg: {:indexed, 151}, bg: {:indexed, 28}},
     diff_del: %Style{fg: {:indexed, 174}},
-    diff_del_inline: %Style{fg: {:indexed, 217}, bg: {:indexed, 52}},
+    diff_del_bg: %Style{bg: {:indexed, 52}},
+    diff_del_gutter: %Style{fg: {:indexed, 243}},
+    diff_del_inline: %Style{fg: {:indexed, 217}, bg: {:indexed, 88}},
     diff_context: %Style{fg: {:indexed, 245}}
   }
 
@@ -93,9 +112,13 @@ defmodule Tackle.CLI.TUI.Theme do
     selection_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 153}},
     error_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 224}},
     diff_add: %Style{fg: {:indexed, 28}},
-    diff_add_inline: %Style{fg: {:indexed, 22}, bg: {:indexed, 194}},
+    diff_add_bg: %Style{bg: {:indexed, 194}},
+    diff_add_gutter: %Style{fg: {:indexed, 236}, bg: {:indexed, 157}},
+    diff_add_inline: %Style{fg: {:indexed, 22}, bg: {:indexed, 157}},
     diff_del: %Style{fg: {:indexed, 124}},
-    diff_del_inline: %Style{fg: {:indexed, 88}, bg: {:indexed, 224}},
+    diff_del_bg: %Style{bg: {:indexed, 224}},
+    diff_del_gutter: %Style{fg: {:indexed, 236}, bg: {:indexed, 217}},
+    diff_del_inline: %Style{fg: {:indexed, 88}, bg: {:indexed, 217}},
     diff_context: %Style{fg: {:indexed, 240}}
   }
 

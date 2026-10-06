@@ -214,7 +214,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     end
   end
 
-  test "diffs keep neutral rows and tint only changed tokens; controls remain data" do
+  test "diff rows paint fills with a number gutter and tint only changed tokens; controls remain data" do
     [entry] =
       settled([
         Message.assistant(
@@ -245,21 +245,27 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
     %{cells: cells} = CellSession.take_cells(session)
 
-    for {row, sign, color, tint, token} <- [
-          {3, "-", 174, 52, "41"},
-          {4, "+", 114, 22, "42"}
+    for {row, sign, color, fill, tint, token} <- [
+          {3, "-", 174, 52, 88, "41"},
+          {4, "+", 114, 22, 28, "42"}
         ] do
       line = Enum.filter(cells, &(&1.row == row))
       marker = Enum.find(line, &(&1.symbol == sign))
       assert marker.fg == {:indexed, color}
-      assert marker.bg == :reset
+      assert marker.bg == {:indexed, fill}
       assert marker.modifiers == []
 
       emphasized = Enum.filter(line, &(&1.bg == {:indexed, tint}))
       assert Enum.map_join(emphasized, & &1.symbol) == token
-      assert Enum.all?(line -- emphasized, &(&1.bg == :reset))
+      assert Enum.all?(line -- emphasized, &(&1.bg == {:indexed, fill}))
       assert Enum.find(line, &(&1.symbol == "l")).fg == :reset
-      assert Enum.find(line, &(&1.col == 4)).fg == {:indexed, 243}
+
+      # The gutter is one cell wide for single-digit numbers and stays dim on
+      # dark backgrounds; the fill reaches every cell of the row.
+      gutter = Enum.find(line, &(&1.col == 4))
+      assert gutter.symbol == "1"
+      assert gutter.fg == {:indexed, 243}
+      assert gutter.bg == {:indexed, fill}
     end
   end
 
