@@ -332,6 +332,49 @@ defmodule Tackle.CLI.TUITest do
     refute shell.show_subagent_sidebar?
   end
 
+  test "keeps the terminal title in sync with the session and clears it on exit", %{
+    agent_ref: agent_ref
+  } do
+    test_pid = self()
+
+    task =
+      Task.async(fn ->
+        TUI.start(
+          agent_ref: agent_ref,
+          test_mode: {80, 24},
+          terminal_title_writer: fn
+            nil ->
+              send(test_pid, :title_cleared)
+              :ok
+
+            title ->
+              send(test_pid, {:title_set, title})
+              {:ok, :applied}
+          end
+        )
+      end)
+
+    assert_receive {:subscribed, tui}
+    assert_receive {:title_set, title}
+    session_id = state(tui).session_id
+    assert title == "tackle · #{String.slice(session_id, 0, 8)} · idle"
+
+    inject_paste(tui, "hi")
+    inject_key(tui, "enter")
+
+    assert_receive {:submitted, "hi"}
+    busy = await_state(tui, &(&1.terminal_title != title))
+    assert busy.terminal_title == "tackle · #{String.slice(session_id, 0, 8)} · starting"
+
+    inject_key(tui, "c", ["ctrl"])
+    confirm = await_state(tui, &match?({:confirm_quit, _}, &1.overlay))
+    assert confirm.active_turn != nil
+
+    inject_key(tui, "y")
+    assert_receive :title_cleared
+    assert {:ok, ^session_id} = Task.await(task)
+  end
+
   test "Alt+1–5 select recent sessions and do not repeat" do
     for index <- 1..5 do
       key = %Key{code: Integer.to_string(index), modifiers: ["alt"]}

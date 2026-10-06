@@ -317,7 +317,9 @@ reference. The bar uses a muted blue border while focused; turn state falls
 back to the header on short terminals. Tiny terminals drop optional footer rows
 and yield the input border to editable text. The status row combines input and
 output token counts into a single `tokens in/out` segment; unavailable counts
-are omitted rather than reported as zero.
+are omitted rather than reported as zero. While the shell runs it keeps the
+terminal's window title in sync (`tackle · <session> · <activity>`, sanitized
+against control and bidi characters), and clears it on exit.
 
 ## Keys (experimental)
 

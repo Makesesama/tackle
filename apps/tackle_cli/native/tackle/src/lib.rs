@@ -8,6 +8,7 @@ mod surface;
 mod tree;
 mod widgets;
 
+use std::io::IsTerminal;
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use rustler::{Atom, NifResult};
 
@@ -57,6 +58,15 @@ fn diff_rows(
 ) -> (Atom, (usize, usize), Vec<diff::DiffRow>) {
     let (counts, rows) = diff::rows(&old, &new, context, max_rows);
     (atoms::ok(), counts, rows)
+}
+
+/// Whether the process' stdout is an interactive terminal.
+///
+/// Guards terminal-only escape sequences (such as OSC window titles) against
+/// being written into piped or redirected output.
+#[rustler::nif]
+fn stdout_is_terminal() -> bool {
+    std::io::stdout().is_terminal()
 }
 
 rustler::init!("Elixir.Tackle.CLI.Native");

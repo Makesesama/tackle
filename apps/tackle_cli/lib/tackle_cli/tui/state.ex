@@ -68,6 +68,11 @@ defmodule Tackle.CLI.TUI.State do
           history: History.t(),
           models: [String.t()],
           clipboard_writer: (String.t() -> :ok | {:error, term()}),
+          terminal_title_writer: (String.t() | nil ->
+                                    {:ok, Tackle.CLI.TerminalTitle.set_result()}
+                                    | :ok
+                                    | {:error, term()}),
+          terminal_title: String.t() | nil,
           clipboard_text_reader: (-> {:ok, binary()} | {:error, term()}),
           clipboard_image_reader: (-> {:ok, binary()} | {:error, term()}),
           image_paths: [String.t()],
@@ -133,6 +138,8 @@ defmodule Tackle.CLI.TUI.State do
             history: %History{},
             models: [],
             clipboard_writer: &Clipboard.copy_local/1,
+            terminal_title_writer: &Tackle.CLI.TerminalTitle.write/1,
+            terminal_title: nil,
             clipboard_text_reader: &Tackle.CLI.ImageClipboard.read_text/0,
             clipboard_image_reader: &Tackle.CLI.ImageClipboard.read/0,
             image_paths: [],
@@ -204,6 +211,8 @@ defmodule Tackle.CLI.TUI.State do
         history: History.new(),
         models: available_models(opts, snapshot.agent_state),
         clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
+        terminal_title_writer: terminal_title_writer(opts),
+        terminal_title: nil,
         clipboard_text_reader:
           Keyword.get(opts, :clipboard_text_reader, &Tackle.CLI.ImageClipboard.read_text/0),
         clipboard_image_reader:
@@ -229,6 +238,26 @@ defmodule Tackle.CLI.TUI.State do
     else
       :error -> {:error, :missing_agent_ref}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Test terminals have no window title, and the default writer would emit
+  # OSC title bytes into the test terminal's output; a no-op writer keeps the
+  # refresh path exercised without touching the real terminal.
+  defp terminal_title_writer(opts) do
+    case Keyword.fetch(opts, :terminal_title_writer) do
+      {:ok, writer} ->
+        writer
+
+      :error ->
+        if Keyword.has_key?(opts, :test_mode) do
+          fn
+            nil -> :ok
+            _title -> {:ok, :applied}
+          end
+        else
+          &Tackle.CLI.TerminalTitle.write/1
+        end
     end
   end
 

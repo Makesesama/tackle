@@ -59,6 +59,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Search` | transcript search |
   | `Tackle.CLI.TUI.Inspector` | the scrollable tool-output inspector |
   | `Tackle.CLI.TUI.Session` | root scope ownership and teardown |
+  | `Tackle.CLI.TUI.TerminalTitle` | terminal window title synchronization |
   | `Tackle.CLI.TUI.View` | the scene and ordinary widgets |
   | `Tackle.CLI.TUI.StatusView` | status row, metrics, and hints |
   """
@@ -87,6 +88,7 @@ defmodule Tackle.CLI.TUI do
     Session,
     State,
     Subagents,
+    TerminalTitle,
     Tree,
     UsageChart,
     View,
@@ -150,7 +152,7 @@ defmodule Tackle.CLI.TUI do
       {:ok, state} ->
         {state, commands} = RecentSessions.load(state)
 
-        {:ok, state,
+        {:ok, TerminalTitle.refresh(state),
          commands: commands,
          probe_image_protocol: not is_nil(image) and not Keyword.has_key?(opts, :test_mode)}
 
@@ -179,7 +181,9 @@ defmodule Tackle.CLI.TUI do
   def handle_event(%Key{kind: "release"}, state), do: {:noreply, state, render?: false}
 
   def handle_event(%Key{} = key, state) do
-    dispatch_key(key, %{state | notice: nil, queue_notice_at: nil})
+    key
+    |> dispatch_key(%{state | notice: nil, queue_notice_at: nil})
+    |> refresh_terminal_title()
   end
 
   def handle_event(%Paste{content: content}, state), do: {:noreply, handle_paste(state, content)}
@@ -259,7 +263,18 @@ defmodule Tackle.CLI.TUI do
   def handle_info({:host_clipboard_paste_result, _ref, _result}, state),
     do: {:noreply, state, render?: false}
 
-  def handle_info(message, state), do: RuntimeEvents.handle(message, state)
+  def handle_info(message, state),
+    do: RuntimeEvents.handle(message, state) |> refresh_terminal_title()
+
+  # The title tracks the session and its activity, which only change under key
+  # dispatch and runtime events; every other reply shape passes through.
+  defp refresh_terminal_title({:noreply, %State{} = state}),
+    do: {:noreply, TerminalTitle.refresh(state)}
+
+  defp refresh_terminal_title({:noreply, %State{} = state, opts}) when is_list(opts),
+    do: {:noreply, TerminalTitle.refresh(state), opts}
+
+  defp refresh_terminal_title(other), do: other
 
   @impl true
   def subscriptions(state) do
@@ -279,6 +294,9 @@ defmodule Tackle.CLI.TUI do
 
   @impl true
   def terminate(_reason, state) do
+    # The title is the shell's own decoration, so it leaves with the shell.
+    TerminalTitle.clear(state)
+
     # The shell owns whichever scope it is currently attached to, which is the
     # initial scope until a new session replaces it. Stopping it here keeps a
     # swapped-in scope from outliving the shell.
