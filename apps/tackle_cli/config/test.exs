@@ -19,3 +19,7 @@ config :tackle, auth_file: Path.join(test_home, "auth.json")
 # suite the BEAM's `:user_drv_reader` exists but cannot ack the handoff, and
 # every later TUI start would wait out the handoff's 1s ack timeout.
 config :ex_ratatui, detach_local_input: false
+
+# Highlighting would download tree-sitter parsers from the network; the
+# suite exercises the parser and merge logic with a fake backend instead.
+config :tackle_cli, highlight: false

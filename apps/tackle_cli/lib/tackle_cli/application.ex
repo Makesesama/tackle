@@ -3,15 +3,31 @@ defmodule Tackle.CLI.Application do
 
   use Application
 
+  # Lumis downloads and compiles a parser the first time a language is
+  # highlighted; warm the common ones in the background so the first edit card
+  # of a session does not stall on it. Failures are logged by lumis, never
+  # fatal, and any other language still loads on demand.
+  @highlight_languages ~w(elixir erlang heex markdown bash json yaml toml)
+
   @impl true
   def start(_type, _args) do
     # Anubis logs HTTP request headers at debug level, including bearer tokens.
     Application.put_env(:anubis_mcp, :log, false)
+    warm_highlight_languages()
 
     with {:ok, contributions} <- Tackle.Plugins.Loader.load(),
          {:ok, _catalog} <- validate_contributions(contributions) do
       Application.put_env(:tackle_cli, :plugin_contributions, contributions)
       start_supervisor()
+    end
+  end
+
+  defp warm_highlight_languages do
+    if Application.get_env(:tackle_cli, :highlight, true) do
+      languages =
+        Application.get_env(:tackle_cli, :highlight_languages, @highlight_languages)
+
+      Lumis.Languages.async_load(languages)
     end
   end
 

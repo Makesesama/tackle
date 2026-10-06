@@ -20,12 +20,13 @@ defmodule Tackle.CLI.TUI.ToolView do
   replacement. `similar` matches the lines in Rust and marks the tokens that
   changed inside an otherwise similar line, so a one-word change stays legible
   instead of reading as a whole-line rewrite. Rows paint a full-width add/delete
-  fill behind neutral code text (context rows keep the terminal background),
-  with soft-colored `+`/`-` markers and a number gutter as wide as the largest
-  line number — opaque and more saturated on light backgrounds so numbers
-  stay readable against the pastel fill. Only changed tokens receive the
-  stronger inline tint, one step more saturated than the fill so intraline
-  emphasis survives on it. The preview keeps a line of context
+  fill behind syntax-highlighted code — Lumis, the same tree-sitter highlighter
+  as the web app, with plain text as the fallback — while context rows keep the
+  terminal background. Soft-colored `+`/`-` markers and a number gutter as wide
+  as the largest line number sit in front — opaque and more saturated on light
+  backgrounds so numbers stay readable against the pastel fill. Only changed
+  tokens receive the stronger inline tint, one step more saturated than the
+  fill so intraline emphasis survives on it; token colors yield to it. The preview keeps a line of context
   around each change and elides longer unchanged runs; details print every
   submitted line. A replacement too large to match falls back to a bounded
   before/after window. Execution outcome and preview provenance remain
@@ -45,7 +46,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   alias ExRatatui.Style
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{MessageView, Theme, ToolGroups}
+  alias Tackle.CLI.TUI.{Highlight, MessageView, Theme, ToolGroups}
 
   @preview_rows 6
   @file_preview_rows 16
@@ -227,6 +228,8 @@ defmodule Tackle.CLI.TUI.ToolView do
          budget
        )
        when name in ["edit", "write"] and is_binary(raw) do
+    path = partial_field(raw, "path")
+
     {label, content} =
       if name == "write",
         do: {"Content incoming (partial)", partial_field(raw, "content")},
@@ -234,13 +237,19 @@ defmodule Tackle.CLI.TUI.ToolView do
           {"Edit incoming (partial)",
            partial_field(raw, "newText") || partial_field(raw, "oldText")}
 
-    text_preview(content, label, width, budget)
+    text_preview(content, label, width, budget, path)
   end
 
   defp file_preview(%{tool_name: "write"}, args, width, budget) do
     case get(args, :content) do
       content when is_binary(content) ->
-        text_preview(content, "Content preview (prior file not compared)", width, budget)
+        text_preview(
+          content,
+          "Content preview (prior file not compared)",
+          width,
+          budget,
+          get(args, :path)
+        )
 
       _ ->
         nil
@@ -249,31 +258,53 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp file_preview(%{tool_name: "edit"}, args, width, budget) do
     case get(args, :edits) do
-      edits when is_list(edits) and edits != [] -> edit_preview(edits, width, budget)
-      _ -> nil
+      edits when is_list(edits) and edits != [] ->
+        edit_preview(edits, width, budget, get(args, :path))
+
+      _ ->
+        nil
     end
   end
 
   defp file_preview(_entry, _args, _width, _budget), do: nil
 
-  defp text_preview(nil, label, width, _budget), do: preview_note(label, width)
+  # Code previews are syntax-highlighted for the file's language when the
+  # highlighter covers them; plain text is the fallback, never an error.
+  defp text_preview(nil, label, width, _budget, _path), do: preview_note(label, width)
 
-  defp text_preview(content, label, width, budget) do
+  defp text_preview(content, label, width, budget, path) do
     lines = String.split(content, "\n", trim: false)
+    tokens = Highlight.lines(content, path)
+
     # Build at most the number of logical lines that could fit, not every row.
-    rows = lines |> Enum.take(budget) |> Enum.map(&body_row(Theme.style(:text), &1))
+    rows =
+      lines
+      |> Enum.take(budget)
+      |> Enum.with_index(1)
+      |> Enum.map(&code_row(&1, tokens))
+
     {shown, count, _used} = code_prefix(rows, width, budget)
     preview_note(label, width) ++ shown ++ showing_note(count, length(lines), width)
   end
 
-  defp edit_preview(edits, width, budget) do
+  defp code_row({line, number}, tokens) do
+    case Map.get(tokens, number) do
+      nil -> body_row(Theme.style(:text), line)
+      runs -> MessageView.row(Enum.map(runs, &token_span/1))
+    end
+  end
+
+  defp token_span({text, nil}), do: MessageView.span(text, Theme.style(:text))
+  defp token_span({text, style}), do: MessageView.span(text, style)
+
+  defp edit_preview(edits, width, budget, path) do
     {rows, _remaining, shown_count} =
       edits
       |> Enum.take(@preview_replacements)
       |> Enum.with_index(1)
       |> Enum.reduce({[], budget, 0}, fn {edit, index}, {rows, remaining, count} ->
         if remaining > 0 do
-          {preview, used} = replacement_preview(edit, index, width, remaining)
+          {preview, used} = replacement_preview(edit, index, width, remaining, path)
           {rows ++ preview, remaining - used, count + 1}
         else
           {rows, remaining, count}
@@ -287,7 +318,7 @@ defmodule Tackle.CLI.TUI.ToolView do
     preview_note(summary, width) ++ rows
   end
 
-  defp replacement_preview(edit, index, width, budget) when is_map(edit) do
+  defp replacement_preview(edit, index, width, budget, path) when is_map(edit) do
     old = get(edit, :oldText)
     new = get(edit, :newText)
 
@@ -296,6 +327,7 @@ defmodule Tackle.CLI.TUI.ToolView do
       # already have native work bounds; only selected lines are wrapped here.
       {added, removed, source} = diff_rows(old, new, @preview_context, 0)
       number_width = gutter_width(source)
+      tokens = diff_tokens(old, new, path)
 
       total =
         Enum.reduce(source, 0, fn
@@ -310,7 +342,7 @@ defmodule Tackle.CLI.TUI.ToolView do
         |> Enum.with_index()
         |> Enum.reject(fn {hunk, _} -> match?([{:elision, _} | _], hunk) end)
         |> Enum.reduce({[], 0, 0}, fn {hunk, index}, {chosen, used, count} ->
-          case fitting_hunk(hunk, number_width, width, budget - used) do
+          case fitting_hunk(hunk, number_width, width, budget - used, tokens) do
             {:ok, rows, size} ->
               {chosen ++ [{index, wrap_indented(rows, width, 4)}], used + size,
                count + length(rows)}
@@ -326,7 +358,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
           first
           |> Enum.take(budget)
-          |> Enum.map(&diff_row(&1, number_width))
+          |> Enum.map(&diff_row(&1, number_width, tokens))
           |> code_prefix(width, budget)
         else
           paint =
@@ -347,7 +379,7 @@ defmodule Tackle.CLI.TUI.ToolView do
     end
   end
 
-  defp replacement_preview(_edit, index, width, _budget),
+  defp replacement_preview(_edit, index, width, _budget, _path),
     do: {preview_note("Edit #{index}: invalid preview data", width), 0}
 
   # Prefer complete logical lines. Only an oversized first line needs a partial
@@ -371,9 +403,9 @@ defmodule Tackle.CLI.TUI.ToolView do
     end)
   end
 
-  defp fitting_hunk(hunk, number_width, width, budget) do
+  defp fitting_hunk(hunk, number_width, width, budget, tokens) do
     Enum.reduce_while(hunk, {:ok, [], 0}, fn source, {:ok, rows, used} ->
-      row = diff_row(source, number_width)
+      row = diff_row(source, number_width, tokens)
       size = wrapped_size(row, width, budget - used)
 
       if size <= budget - used,
@@ -662,6 +694,7 @@ defmodule Tackle.CLI.TUI.ToolView do
     case get(args, :content) do
       content when is_binary(content) ->
         lines = String.split(content, "\n", trim: false)
+        tokens = Highlight.lines(content, get(args, :path))
 
         header =
           [
@@ -671,11 +704,7 @@ defmodule Tackle.CLI.TUI.ToolView do
             )
           ]
 
-        rows =
-          header ++
-            Enum.map(lines, fn line ->
-              body_row(Theme.style(:text), line)
-            end)
+        rows = header ++ code_rows(lines, tokens)
 
         rows ++ output_rows(entry, :details)
 
@@ -684,6 +713,9 @@ defmodule Tackle.CLI.TUI.ToolView do
     end
   end
 
+  defp code_rows(lines, tokens),
+    do: lines |> Enum.with_index(1) |> Enum.map(&code_row(&1, tokens))
+
   defp edit_rows(entry, args) do
     edits = get(args, :edits)
 
@@ -691,7 +723,7 @@ defmodule Tackle.CLI.TUI.ToolView do
       [context_row("Submitted text (not a verified file diff)")] ++
         (edits
          |> Enum.with_index(1)
-         |> Enum.flat_map(fn {edit, index} -> replacement(edit, index) end)) ++
+         |> Enum.flat_map(fn {edit, index} -> replacement(edit, index, get(args, :path)) end)) ++
         output_rows(entry, :details)
     else
       generic_rows(entry, args, :details)
@@ -731,21 +763,22 @@ defmodule Tackle.CLI.TUI.ToolView do
     end)
   end
 
-  defp replacement(edit, index) when is_map(edit) do
+  defp replacement(edit, index, path) when is_map(edit) do
     old = get(edit, :oldText)
     new = get(edit, :newText)
 
     if is_binary(old) and is_binary(new) do
       {added, removed, rows} = diff_rows(old, new, 0, 0)
       number_width = gutter_width(rows)
+      tokens = diff_tokens(old, new, path)
 
-      [replacement_heading(added, removed) | Enum.map(rows, &diff_row(&1, number_width))]
+      [replacement_heading(added, removed) | Enum.map(rows, &diff_row(&1, number_width, tokens))]
     else
       [warn_row("Edit #{index}: invalid preview data")]
     end
   end
 
-  defp replacement(_edit, index),
+  defp replacement(_edit, index, _path),
     do: [warn_row("Edit #{index}: invalid preview data")]
 
   # `similar` matches the lines and marks the changed tokens in Rust; the card
@@ -770,8 +803,11 @@ defmodule Tackle.CLI.TUI.ToolView do
   # The fill sits on the row style so the tint spans the full terminal
   # width; context rows leave the terminal background alone. The gutter is a
   # right-aligned number as wide as the largest one in the replacement.
-  defp diff_row({tag, number, spans}, number_width) do
+  # Syntax highlighting paints the unemphasized code; the stronger intraline
+  # tint still wins for changed tokens so the emphasis survives on the fill.
+  defp diff_row({tag, number, spans}, number_width, tokens) do
     style = if tag == :ctx, do: Theme.style(:diff_context), else: Theme.style(:text)
+    runs = Map.get(if(tag == :del, do: tokens.del, else: tokens.ins), number)
 
     MessageView.row(
       [
@@ -780,13 +816,62 @@ defmodule Tackle.CLI.TUI.ToolView do
           gutter_style(tag)
         ),
         MessageView.span(sign(tag) <> " ", diff_style(tag))
-        | Enum.map(spans, &content_span(&1, tag, style))
+        | merge_token_runs(spans, runs)
+          |> Enum.map(&content_span(&1, tag, style))
       ],
       fill_style(tag)
     )
   end
 
-  defp diff_row({:elision, count}, _number_width), do: context_row("#{count} lines hidden")
+  defp diff_row({:elision, count}, _number_width, _tokens),
+    do: context_row("#{count} lines hidden")
+
+  # Token styles for both sides of one replacement: removals read from the old
+  # text, insertions and context from the new, matching the row numbering.
+  defp diff_tokens(old, new, path),
+    do: %{del: Highlight.lines(old, path), ins: Highlight.lines(new, path)}
+
+  # Both segmentations concatenate to the same line; walk them together by
+  # grapheme so a boundary in either one becomes a boundary in the result.
+  # A line the highlighter could not cover keeps its diff runs unstyled.
+  @doc false
+  @spec merge_token_runs(
+          [{String.t(), boolean()}],
+          [{String.t(), Style.t() | nil}] | nil
+        ) :: [{String.t(), boolean(), Style.t() | nil}]
+  def merge_token_runs(diff_spans, nil),
+    do: Enum.map(diff_spans, fn {text, emphasized} -> {text, emphasized, nil} end)
+
+  def merge_token_runs(diff_spans, token_runs) do
+    diff_graphemes = expand_runs(diff_spans)
+    token_graphemes = expand_runs(token_runs)
+
+    if length(diff_graphemes) == length(token_graphemes) do
+      diff_graphemes
+      |> Enum.zip(token_graphemes)
+      |> coalesce_runs([])
+    else
+      merge_token_runs(diff_spans, nil)
+    end
+  end
+
+  defp expand_runs(runs) do
+    Enum.flat_map(runs, fn {text, meta} ->
+      text |> String.graphemes() |> Enum.map(&{&1, meta})
+    end)
+  end
+
+  defp coalesce_runs([], acc), do: Enum.reverse(acc)
+
+  defp coalesce_runs([{{grapheme, emphasized}, {_same, style}} | rest], acc) do
+    case acc do
+      [{text, ^emphasized, ^style} | _] ->
+        coalesce_runs(rest, [{text <> grapheme, emphasized, style} | tl(acc)])
+
+      _ ->
+        coalesce_runs(rest, [{grapheme, emphasized, style} | acc])
+    end
+  end
 
   defp fill_style(:ins), do: Theme.style(:diff_add_bg)
   defp fill_style(:del), do: Theme.style(:diff_del_bg)
@@ -796,8 +881,12 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp gutter_style(:del), do: Theme.style(:diff_del_gutter)
   defp gutter_style(:ctx), do: Theme.style(:subtle)
 
-  defp content_span({text, true}, tag, _style), do: MessageView.span(text, inline_style(tag))
-  defp content_span({text, false}, _tag, style), do: MessageView.span(text, style)
+  defp content_span({text, true, _token}, tag, _style),
+    do: MessageView.span(text, inline_style(tag))
+
+  defp content_span({text, false, nil}, _tag, style), do: MessageView.span(text, style)
+
+  defp content_span({text, false, token}, _tag, _style), do: MessageView.span(text, token)
 
   defp sign(:del), do: "-"
   defp sign(:ins), do: "+"

@@ -46,6 +46,12 @@ defmodule Tackle.CLI.MixProject do
       {:ucwidth, "~> 0.2"},
       {:ex_ratatui, "~> 0.15.0"},
       {:rustler, ">= 0.0.0"},
+      # Syntax highlighting for tool cards (tree-sitter, precompiled NIF).
+      # Pinned to the version the web app runs: 0.9+ moved parser
+      # distribution to per-language `lumis_wasm_*` Hex packages, while 0.8
+      # downloads them from the CDN on demand. Nix builds the NIF from
+      # source, which needs rustler present above.
+      {:lumis, "== 0.8.0"},
       {:burrito, "~> 1.6"},
       # Generates nix/tackle-cli-deps.nix; see the "deps.nix" alias below.
       {:deps_nix, "~> 3.0", only: :dev}

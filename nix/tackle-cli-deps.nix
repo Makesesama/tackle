@@ -367,6 +367,28 @@ let
         in
         drv;
 
+      lumis =
+        let
+          version = "0.8.0";
+          drv = buildMix {
+            inherit version;
+            name = "lumis";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "lumis";
+              sha256 = "d5b71a5b082f32fc1d007d02f03922db95b9caec335b03a1985edb726c59f63e";
+            };
+
+            beamDeps = [
+              nimble_options
+              rustler
+              rustler_precompiled
+            ];
+          };
+        in
+        drv.override (workarounds.rustlerPrecompiled { } drv);
+
       mime =
         let
           version = "2.0.7";
@@ -571,7 +593,7 @@ let
 
       rustler_precompiled =
         let
-          version = "0.9.0";
+          version = "0.10.0";
           drv = buildMix {
             inherit version;
             name = "rustler_precompiled";
@@ -579,7 +601,7 @@ let
             src = fetchHex {
               inherit version;
               pkg = "rustler_precompiled";
-              sha256 = "471d97315bd3bf7b64623418b3693eedd8e47de3d1cb79a0ac8f9da7d770d94c";
+              sha256 = "c68c9dc732c12acfdf4a7fa06f4e6f48a641179e6be49a474c8a60809929c430";
             };
 
             beamDeps = [
