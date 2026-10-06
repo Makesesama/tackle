@@ -564,7 +564,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   end
 
   # Commands are often paragraphs long; reserve bold emphasis for file targets.
-  defp target_style(name) when name in ["bash", "elixir_eval"], do: Theme.style(:muted)
+  defp target_style("bash"), do: Theme.style(:muted)
   defp target_style(_name), do: Theme.bold(Theme.style(:text))
 
   defp body_rows(%{tool_name: "subagent"} = entry, args, :preview, _width) do

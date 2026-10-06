@@ -75,7 +75,7 @@ and unfinished integrations:
 
 - [`packages/tackle`](packages/tackle/README.md) provides frontend-independent adapter/model
   configuration, composes the reusable scoped runtime, a supervised credential store,
-  and built-in `read`, `bash`, `elixir_eval`, `edit`, and `write` developer tools
+  and built-in `read`, `bash`, `edit`, and `write` developer tools
   under `Tackle.Tools.*`. It composes a coding system prompt with global and
   project `AGENTS.md` guidance, and discovers Agent Skills from `.agents/skills`
   directories so the model can load them on demand. Configuration loads from
@@ -231,8 +231,8 @@ The new package requires a multi-user Nix installation with the daemon socket at
 `/nix/var/nix/daemon-socket/socket`, `/etc/nix/nix.conf`, and working Bubblewrap
 user namespaces. It mounts the current directory and `~/.tackle` read-write,
 plus the same per-launch host image staging directory read-only; it does not
-mount a compositor socket. Burrito extracts into `~/.tackle/burrito/.burrito`. It does not enable
-`TACKLE_DEV` or require Mix to launch the CLI. Ketch is available on `PATH`,
+mount a compositor socket. Burrito extracts into `~/.tackle/burrito/.burrito`. It does not
+require Mix to launch the CLI. Ketch is available on `PATH`,
 with `~/.config/ketch/config.json` mounted when present for research calls.
 `TACKLE_MODEL` and `TACKLE_THINKING` are forwarded; credentials come from
 `~/.tackle/auth.json`. This launcher fixes `TACKLE_HOME` to `~/.tackle`.

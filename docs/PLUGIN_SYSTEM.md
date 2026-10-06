@@ -21,8 +21,7 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   `parameters_schema/0`, `execute/2`) and rejects duplicate tool names. Hooks
   are checked only for loadable modules; `Tackle.Lib.Hook` callbacks are
   optional, so a module without callbacks does nothing. The defaults come from
-  `Tackle.Tools.default/0`; `TACKLE_DEV` can additionally enable the in-BEAM
-  `ElixirEval` tool, which executes arbitrary Elixir code.
+  `Tackle.Tools.default/0`.
 - `$TACKLE_HOME/config.json` currently accepts **only** `model` and `thinking`.
   Environment settings select those values, not executable modules. Hosts can
   pass trusted `Config.load(overrides: ...)` for tools and hooks; there is no

@@ -158,8 +158,6 @@
             ${preCommitCheck.shellHook}
             ${projectShellHook}
 
-            # Enable Tackle development-only behaviour (e.g. elixir_eval).
-            export TACKLE_DEV=1
             export ERL_AFLAGS="-kernel shell_history enabled"
           '';
         in

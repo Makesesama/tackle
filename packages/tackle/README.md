@@ -109,23 +109,18 @@ Subscribe before starting a turn; active-turn attachment is deferred until event
 replay or projection semantics are defined. Agents use `Tackle.Tools.default/0`
 unless an embedding host explicitly supplies `:tools`; a host can set
 `context: %{cwd: path}` to change the filesystem tools' working directory.
-`elixir_eval` is a development-only tool: `Tackle.Tools.default/0` includes it
-only when the `TACKLE_DEV` environment variable is truthy (the devshell and
-jail set this automatically). It runs stateless code inside the live Tackle BEAM
-with a five-second default timeout; VM side effects persist, but variable
-bindings do not carry between calls. These tools inherit the Tackle process's
+These tools inherit the Tackle process's
 filesystem and operating-system permissions and are not a sandbox. `Tackle.Lib` provides the
 `:telemetry` runtime dependency used by tool execution.
 
 ## Built-in tools
 
 `Tackle.Tools.default/0` supplies `read`, `bash`, `edit`, and `write` to
-configured agents. `elixir_eval` is included only when `TACKLE_DEV` is truthy.
+configured agents.
 Embedding hosts can supply a trusted `:tools` list instead; set
 `context: %{cwd: path}` to choose the filesystem tools' working directory.
 Tools run with the Tackle process's filesystem and OS permissions, not in a
-sandbox. `elixir_eval` executes code inside the live BEAM and must only be
-used in development.
+sandbox.
 
 `bash` retains a bounded output tail and incrementally spills oversized output
 as sanitized UTF-8 to an exclusively created, mode-0600 temporary log. Truncated

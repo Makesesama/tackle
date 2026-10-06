@@ -72,7 +72,7 @@ notifications. The wire contract is specified in
 The server exposes the same bundled adapters as the TUI (models are selected
 per session with the `adapter_id/model` reference, e.g.
 `openai-codex/gpt-5.6-sol`; provider credentials come from the same
-`tackle auth` store) and the standalone tools (`read`, `bash`, `elixir_eval`,
+`tackle auth` store) and the standalone tools (`read`, `bash`,
 `edit`, `write`). Subagent tools need a scoped runtime and MCP tools need
 live connections, so neither is on the SDK tool registry yet. Tools are
 server-side only in protocol version 1: clients select a subset of the

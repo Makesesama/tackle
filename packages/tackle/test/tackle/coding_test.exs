@@ -178,7 +178,6 @@ defmodule Tackle.CodingTest do
     assert spec.profiles["worker"].config.tools == Tackle.Tools.default()
     assert scout.config.system_prompt =~ "Do not edit"
     refute scout.config.system_prompt =~ "- edit:"
-    refute scout.config.system_prompt =~ "- elixir_eval:"
     refute scout.config.system_prompt =~ "## Delegation"
     assert spec.root_spec.config.system_prompt =~ "- subagent:"
     assert spec.root_spec.config.system_prompt =~ "- subagent_wait:"

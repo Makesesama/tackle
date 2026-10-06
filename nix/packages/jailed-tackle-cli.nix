@@ -59,7 +59,7 @@ let
           '')
           (jail.wrap-entry (entry: ''
             # Keep the extracted release persistent without exposing all user data.
-            # Do not inherit dev-shell hooks, Mix paths, or TACKLE_DEV in production.
+            # Do not inherit dev-shell hooks or Mix paths in production.
             export TACKLE_HOME="$HOME/.tackle"
             export TACKLE_CLI_INSTALL_DIR="$TACKLE_HOME/burrito"
             exec ${entry}

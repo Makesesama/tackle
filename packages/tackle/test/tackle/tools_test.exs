@@ -1,9 +1,9 @@
 defmodule Tackle.ToolsTest do
   use ExUnit.Case, async: true
 
-  alias Tackle.Lib.{Cancellation, Tool}
+  alias Tackle.Lib.Cancellation
   alias Tackle.Tools
-  alias Tackle.Tools.{Bash, Edit, ElixirEval, Output, Read, Write}
+  alias Tackle.Tools.{Bash, Edit, Output, Read, Write}
 
   setup do
     directory =
@@ -17,29 +17,8 @@ defmodule Tackle.ToolsTest do
     %{context: %{cwd: directory}, directory: directory}
   end
 
-  test "exposes the four default tools plus elixir_eval when TACKLE_DEV is set" do
-    previous = System.get_env("TACKLE_DEV")
-    on_exit(fn -> restore_env("TACKLE_DEV", previous) end)
-
-    System.put_env("TACKLE_DEV", "1")
-    assert Tools.default() == [Read, Bash, ElixirEval, Edit, Write]
-
-    assert Enum.map(Tools.default(), & &1.name()) == [
-             "read",
-             "bash",
-             "elixir_eval",
-             "edit",
-             "write"
-           ]
-  end
-
-  test "omits elixir_eval from the defaults when TACKLE_DEV is unset" do
-    previous = System.get_env("TACKLE_DEV")
-    on_exit(fn -> restore_env("TACKLE_DEV", previous) end)
-
-    System.delete_env("TACKLE_DEV")
+  test "exposes the four default tools" do
     assert Tools.default() == [Read, Bash, Edit, Write]
-
     assert Enum.map(Tools.default(), & &1.name()) == ["read", "bash", "edit", "write"]
   end
 
@@ -181,73 +160,4 @@ defmodule Tackle.ToolsTest do
     assert {:error, "Command aborted"} = Task.await(task, 1_000)
     Cancellation.delete(signal)
   end
-
-  test "elixir eval validates through the tool seam and uses fresh bindings", %{
-    context: context
-  } do
-    assert {:ok, "Output:\nhello\n\nResult:\n42"} =
-             Tool.execute_tool_call(
-               ElixirEval,
-               %{"code" => ~S[IO.puts("hello"); 6 * 7]},
-               context
-             )
-
-    assert {:error, "timeout must be a positive number of seconds"} =
-             Tool.execute_tool_call(
-               ElixirEval,
-               %{"code" => "1 + 1", "timeout" => 0},
-               context
-             )
-
-    assert {:ok, "Result:\n:stored"} =
-             ElixirEval.run(
-               %{
-                 "code" =>
-                   ~S[Process.put(:tackle_eval_binding, :stored); Process.get(:tackle_eval_binding)]
-               },
-               context
-             )
-
-    assert {:ok, "Result:\nnil"} =
-             ElixirEval.run(%{"code" => ~S[Process.get(:tackle_eval_binding)]}, context)
-  end
-
-  test "elixir eval changes live VM state and formats exceptions", %{context: context} do
-    on_exit(fn -> Application.delete_env(:tackle, :elixir_eval_test_side_effect) end)
-
-    assert {:ok, "Result:\n:ok"} =
-             ElixirEval.run(
-               %{
-                 "code" => "Application.put_env(:tackle, :elixir_eval_test_side_effect, :visible)"
-               },
-               context
-             )
-
-    assert Application.fetch_env!(:tackle, :elixir_eval_test_side_effect) == :visible
-
-    assert {:error, error} = ElixirEval.run(%{"code" => ~S[raise "boom"]}, context)
-    assert error =~ "** (RuntimeError) boom"
-    assert error =~ "tackle_elixir_eval:1"
-  end
-
-  test "elixir eval honors timeout and cooperative cancellation", %{context: context} do
-    assert {:error, "Evaluation timed out"} =
-             ElixirEval.run(%{"code" => "Process.sleep(5_000)", "timeout" => 0.05}, context)
-
-    signal = Cancellation.new_signal()
-    cancelling_context = Map.put(context, :cancellation_signal, signal)
-
-    task =
-      Task.async(fn ->
-        ElixirEval.run(%{"code" => "Process.sleep(5_000)"}, cancelling_context)
-      end)
-
-    Process.sleep(50)
-    assert :ok = Cancellation.cancel(signal, :test_cancelled)
-    assert {:error, "Evaluation aborted"} = Task.await(task, 1_000)
-    Cancellation.delete(signal)
-  end
-
-  defp restore_env("TACKLE_DEV", nil), do: System.delete_env("TACKLE_DEV")
-  defp restore_env("TACKLE_DEV", value), do: System.put_env("TACKLE_DEV", value)
 end

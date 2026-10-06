@@ -27,10 +27,6 @@ let
       export LANG=C.UTF-8
       export LC_ALL=C.UTF-8
 
-      # The jail is a development context, so enable Tackle development-only
-      # behaviour (e.g. the elixir_eval tool) unconditionally.
-      export TACKLE_DEV=1
-
       cd apps/tackle_cli
       exec mix tackle "$@"
     '';
@@ -80,7 +76,6 @@ jailedAgents.makeJailedAgent {
     "MIX_HOME"
     "HEX_HOME"
     "ERL_AFLAGS"
-    "TACKLE_DEV"
     "TACKLE_MODEL"
     "TACKLE_THINKING"
   ];

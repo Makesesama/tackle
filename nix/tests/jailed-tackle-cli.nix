@@ -8,7 +8,6 @@ let
   probe = pkgs.writeShellApplication {
     name = "tackle-jail-probe";
     text = ''
-      test "''${TACKLE_DEV:-}" != 1
       test "$TACKLE_HOME" = "$HOME/.tackle"
       test "$TACKLE_CLI_INSTALL_DIR" = "$TACKLE_HOME/burrito"
       test ! -e "$HOME/host-only"
@@ -53,7 +52,6 @@ pkgs.writeShellApplication {
     mkdir -p "$work/home/.config/ketch" "$work/project"
     export HOME="$work/home"
     touch "$HOME/host-only" "$HOME/.config/ketch/host-only"
-    export TACKLE_DEV=1
     export LANG=C.UTF-8
     export TERM="''${TERM:-xterm}"
     cd "$work/project"
