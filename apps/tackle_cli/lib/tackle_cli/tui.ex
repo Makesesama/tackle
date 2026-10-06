@@ -92,6 +92,7 @@ defmodule Tackle.CLI.TUI do
     TerminalTitle,
     Tree,
     UsageChart,
+    Util,
     View,
     Viewport
   }
@@ -412,6 +413,7 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base(:settings_picker, _key, state), do: Menu.open(:settings, state)
   defp dispatch_base(:browse, _key, state), do: Browser.toggle_focus(state)
   defp dispatch_base(:escape, _key, state), do: escape(state)
+  defp dispatch_base(:copy_final_answer, _key, state), do: copy_final_answer(state)
 
   defp dispatch_base({:resume_recent, index}, _key, state),
     do: Session.resume_recent(state, index)
@@ -465,6 +467,19 @@ defmodule Tackle.CLI.TUI do
   defp handle_paste(state, _content), do: state
 
   # -- base actions --------------------------------------------------------
+
+  # Ctrl+O copies the raw Markdown of the latest final answer, mirroring the
+  # Codex shortcut. A turn in progress does not block it: the previous answer
+  # stays copyable until the new one is complete.
+  defp copy_final_answer(state) do
+    notice =
+      case State.latest_final_answer(state.agent_state) do
+        nil -> "No final answer to copy"
+        answer -> Util.copy_notice(state, answer, "Copied final answer")
+      end
+
+    {:noreply, %{state | notice: notice}}
+  end
 
   defp escape(state) do
     if Input.get_value(state.input) != "" do

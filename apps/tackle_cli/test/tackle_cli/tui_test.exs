@@ -1908,6 +1908,61 @@ defmodule Tackle.CLI.TUITest do
     assert rendered =~ "second"
   end
 
+  describe "Ctrl+O copies the final answer" do
+    test "reports when there is no final answer yet", %{tui: tui} do
+      inject_key(tui, "o", ["ctrl"])
+
+      assert state(tui).notice == "No final answer to copy"
+      refute_received {:copied, _}
+    end
+
+    test "copies the raw Markdown of the latest final answer, skipping tool narration", %{
+      tui: tui
+    } do
+      settle_messages(tui, [
+        Message.user("first question"),
+        Message.assistant(content: "Old answer"),
+        Message.user("second question"),
+        Message.assistant(content: "# Answer\n\n```elixir\n:ok\n```"),
+        Message.assistant(
+          content: "Let me check one more file.",
+          tool_calls: [%{id: "read", name: "read", arguments: %{"path" => "a.ex"}}]
+        )
+      ])
+
+      inject_key(tui, "o", ["ctrl"])
+
+      assert_receive {:copied, "# Answer\n\n```elixir\n:ok\n```"}
+      assert state(tui).notice == "Copied final answer"
+    end
+
+    test "works from the transcript browser", %{tui: tui} do
+      settle_messages(tui, [Message.user("question"), Message.assistant(content: "answer")])
+
+      inject_key(tui, "f4")
+      assert state(tui).focus == :transcript
+      inject_key(tui, "o", ["ctrl"])
+
+      assert_receive {:copied, "answer"}
+      assert state(tui).focus == :transcript
+    end
+
+    test "reports a clipboard failure", %{tui: tui} do
+      settle_messages(tui, [Message.user("question"), Message.assistant(content: "answer")])
+
+      :sys.replace_state(tui, fn runtime ->
+        %{
+          runtime
+          | user_state: %{runtime.user_state | clipboard_writer: fn _ -> {:error, :no_tty} end}
+        }
+      end)
+
+      inject_key(tui, "o", ["ctrl"])
+
+      assert state(tui).notice == "Copy failed: :no_tty"
+    end
+  end
+
   test "renders streaming Markdown while a fenced code block is incomplete", %{tui: tui} do
     inject_paste(tui, "x")
     inject_key(tui, "enter")

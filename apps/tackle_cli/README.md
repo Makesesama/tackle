@@ -353,6 +353,7 @@ it because the agent keeps working.
 | Ctrl+F (Browse transcript) | Search full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
 | Ctrl+K | Compact context manually while idle. The draft is retained. Manual compaction cannot currently be cancelled. |
 | Ctrl+T | Reveal or collapse supplied reasoning. |
+| Ctrl+O | Copy the raw Markdown of the latest final answer (an assistant message without tool calls) through OSC 52. Works in any pane, also during a turn; overlays keep their own keys. |
 | Page Up/Page Down, mouse wheel | Scroll the transcript. Alt+< jumps to the oldest row; Alt+> returns to the newest row and resumes following. |
 
 ## Browse and local observability

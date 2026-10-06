@@ -41,6 +41,7 @@ defmodule Tackle.CLI.Keybinds do
           | :composer
           | :confirm
           | :copy_arguments
+          | :copy_final_answer
           | :paste_clipboard
           | :copy_source
           | :copy_transcript
@@ -107,7 +108,8 @@ defmodule Tackle.CLI.Keybinds do
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
-      when is_ctrl(modifiers) and code in ["c", "t", "j", "k", "v", "1", "2", "3", "4", "5"],
+      when is_ctrl(modifiers) and
+             code in ["c", "o", "t", "j", "k", "v", "1", "2", "3", "4", "5"],
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
@@ -122,7 +124,8 @@ defmodule Tackle.CLI.Keybinds do
   Resolves a chord while no overlay is open.
 
   Function keys open the palettes from the composer and the transcript browser
-  alike; every other chord depends on which pane has `focus`. Transcript chords
+  alike, and Ctrl+O copies the latest final answer from any pane; every other
+  chord depends on which pane has `focus`. Transcript chords
   come back wrapped as `{:transcript, intent}` so the caller can route them.
   """
   @spec base(Key.t(), atom()) :: intent
@@ -145,6 +148,9 @@ defmodule Tackle.CLI.Keybinds do
   def base(%Key{code: code, modifiers: modifiers}, _focus)
       when is_ctrl(modifiers) and code in ["1", "2", "3", "4", "5"],
       do: {:resume_recent, String.to_integer(code)}
+
+  def base(%Key{code: "o", modifiers: modifiers}, _focus) when is_ctrl(modifiers),
+    do: :copy_final_answer
 
   def base(key, :subagents), do: {:subagents, subagents(key)}
   def base(key, :transcript), do: {:transcript, transcript(key)}

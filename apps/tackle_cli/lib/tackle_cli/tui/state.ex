@@ -387,6 +387,24 @@ defmodule Tackle.CLI.TUI.State do
   def latest_usage(_agent_state), do: nil
 
   @doc """
+  Returns the raw Markdown of the most recent final answer in the agent state.
+
+  A final answer is an assistant message with content and no tool calls (see
+  `Tackle.Lib.Message.final_answer?/1`), so narration that preceded tool calls
+  is skipped. Returns `nil` when the conversation has no final answer yet.
+  """
+  @spec latest_final_answer(AgentState.t() | nil) :: String.t() | nil
+  def latest_final_answer(%AgentState{messages: messages}) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(fn message ->
+      if Message.final_answer?(message), do: message.content
+    end)
+  end
+
+  def latest_final_answer(_agent_state), do: nil
+
+  @doc """
   Returns the model references the menus may offer.
 
   The selected model is always present, so a frontend that was given no model
