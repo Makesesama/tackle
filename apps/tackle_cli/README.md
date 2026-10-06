@@ -318,8 +318,10 @@ back to the header on short terminals. Tiny terminals drop optional footer rows
 and yield the input border to editable text. The status row combines input and
 output token counts into a single `tokens in/out` segment; unavailable counts
 are omitted rather than reported as zero. While the shell runs it keeps the
-terminal's window title in sync (`tackle · <session> · <activity>`, sanitized
-against control and bidi characters), and clears it on exit. When a turn
+terminal's window title in sync (`tackle | <session> | <activity> |
+<project>`, with an animated braille activity spinner while a turn runs;
+sanitized against control and bidi characters, ASCII separators so terminals
+that mangle Unicode titles stay readable), and clears it on exit. When a turn
 finishes while the terminal window is unfocused, the shell posts a completion
 notification: an OSC 9 desktop notification on terminals that support it
 (Ghostty, iTerm2, Kitty, WezTerm, Warp; wrapped in a tmux DCS passthrough

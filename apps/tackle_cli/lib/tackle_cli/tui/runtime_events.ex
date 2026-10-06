@@ -668,11 +668,16 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
      state |> Compaction.project(event.type, event.data) |> Viewport.refresh([:settled, :turn])}
   end
 
+  # Remaining event types (turn and step boundaries, retries, provider
+  # events) carry no activity of their own. Codex-rs maps such lifecycle
+  # events onto a small curated status vocabulary instead of trusting the
+  # event name, so the previous activity label stands; a raw name like
+  # "turn end" must not reach the terminal title.
   defp route(
-         {:tackle_event, session_id, turn_id, %Event{type: type}},
+         {:tackle_event, session_id, turn_id, %Event{}},
          %State{session_id: session_id, active_turn: %{id: turn_id}} = state
        ) do
-    {:noreply, %{state | activity: format_activity(type)}}
+    {:noreply, state, render?: false}
   end
 
   defp route(

@@ -357,14 +357,19 @@ defmodule Tackle.CLI.TUITest do
     assert_receive {:subscribed, tui}
     assert_receive {:title_set, title}
     session_id = state(tui).session_id
-    assert title == "tackle · #{String.slice(session_id, 0, 8)} · idle"
+    project = Path.basename(File.cwd!())
+    assert title == "tackle | #{String.slice(session_id, 0, 8)} | idle | #{project}"
 
     inject_paste(tui, "hi")
     inject_key(tui, "enter")
 
     assert_receive {:submitted, "hi"}
     busy = await_state(tui, &(&1.terminal_title != title))
-    assert busy.terminal_title == "tackle · #{String.slice(session_id, 0, 8)} · starting"
+
+    # The spinner frame advances on every tick while the turn runs, so only
+    # the stable segments of the busy title are asserted.
+    assert busy.terminal_title =~
+             ~r{^tackle \| #{String.slice(session_id, 0, 8)} \| [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] starting \| #{Regex.escape(project)}$}u
 
     inject_key(tui, "c", ["ctrl"])
     confirm = await_state(tui, &match?({:confirm_quit, _}, &1.overlay))
