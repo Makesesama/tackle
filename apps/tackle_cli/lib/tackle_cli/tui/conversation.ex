@@ -247,6 +247,21 @@ defmodule Tackle.CLI.TUI.Conversation do
 
     max_offset = max(content_height - conversation.viewport_height, 0)
 
+    updated = %{conversation | sections: section_cache}
+    selected = reconcile_entry_id(Map.get(state, :selected_entry), conversation, updated)
+
+    preserved_anchor =
+      case preserved_anchor do
+        %{id: id} = anchor ->
+          case reconcile_entry_id(id, conversation, updated) do
+            ^id -> anchor
+            replacement -> %{id: replacement, offset: 0}
+          end
+
+        nil ->
+          nil
+      end
+
     anchored_offset =
       if layout_changed?,
         do: anchor_offset(%{conversation | layouts: layouts}, preserved_anchor),
@@ -273,7 +288,7 @@ defmodule Tackle.CLI.TUI.Conversation do
     refreshed = %{
       conversation
       | native: native,
-        selected_entry: Map.get(state, :selected_entry),
+        selected_entry: selected,
         sections: section_cache,
         layouts: layouts,
         items: items,
@@ -785,6 +800,31 @@ defmodule Tackle.CLI.TUI.Conversation do
   defp next_id(rows, index, step) do
     {_, _, id} = elem(rows, index)
     id || next_id(rows, index + step, step)
+  end
+
+  # Grouping changes when reasoning is expanded or another call joins a run.
+  # Keep the reader on the same underlying entry rather than the newest message.
+  defp reconcile_entry_id(nil, _old, _new), do: nil
+
+  defp reconcile_entry_id(id, old, new) do
+    new_entries = entries(new)
+
+    if Enum.any?(new_entries, &(&1.id == id)) do
+      id
+    else
+      old_entry = Enum.find(entries(old), &(&1.id == id))
+
+      candidates =
+        if old_entry, do: Enum.map(old_entry.tool_group || [old_entry], & &1.id), else: [id]
+
+      replacement =
+        Enum.find(new_entries, fn entry ->
+          entry.id in candidates or
+            Enum.any?(entry.tool_group || [], &(&1.id in candidates))
+        end)
+
+      if replacement, do: replacement.id, else: id
+    end
   end
 
   defp anchor_offset(_conversation, nil), do: nil

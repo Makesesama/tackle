@@ -39,7 +39,8 @@ defmodule Tackle.CLI.TUI.ToolView do
   searches) into one card, as in Codex's TUI: a bold `Exploring`/`Explored`
   header with one summary row per call (`Read a.ex, b.ex`, `List packages`,
   `Search query in path`), failed calls marked inline. Details expand every
-  member back into its full card, so no command or output is lost.
+  member back into its full card, including absorbed collapsed reasoning, so
+  no command, output, or thinking is lost.
   """
 
   alias ExRatatui.Style
@@ -105,7 +106,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   # row; the preview keeps one summary row per classified call.
   defp group_render(_entry, members, width, :details) do
     members
-    |> Enum.map(&render(&1, width, :details))
+    |> Enum.map(&MessageView.inspect_items(&1, width))
     |> Enum.intersperse(MessageView.render_lines([MessageView.row("")]))
     |> List.flatten()
   end

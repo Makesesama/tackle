@@ -495,6 +495,16 @@ notification with its IDs; Y copies it. Findings remain in the collection tool's
 details. Notices without runtime correlation (including restored history) retain
 their user-role presentation rather than misclassifying user-authored text.
 
+Activity grouping is always on: two or more exploring calls (file reads,
+listings, searches) share an `Exploring` / `Explored` card. Collapsed reasoning
+between or after these calls is retained inside the group's F4 details, search,
+and copy rather than splitting it. Ctrl+T expands reasoning and restores its
+inline position, splitting groups at visible thinking. Prose and other tools
+remain boundaries; a lone exploring call keeps its usual card. Bash classification
+is best-effort: common `head`/`tail` output filters are ignored, but any unknown
+segment makes the whole call standalone (including `git status; rg ...`). This
+only changes presentation, never tool execution or retained commands/results.
+
 Tool calls and matching results share one card, identified by call ID, with
 paths emphasized, commands muted and unbolded, and the tool name subdued rather
 than a JSON argument dump. Tool cards are borderless, with indented output instead

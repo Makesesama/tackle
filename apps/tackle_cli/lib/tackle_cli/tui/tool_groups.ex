@@ -114,7 +114,7 @@ defmodule Tackle.CLI.TUI.ToolGroups do
     "--shift",
     "--jump-target"
   ]
-  @head_tail_flags ["-n", "--lines", "-c", "--bytes", "-q", "--quiet", "--verbose"]
+  @head_tail_flags ["-n", "--lines", "-c", "--bytes"]
   @sed_flags ["-e", "--expression", "-f", "--file"]
   @sed_range ~r/\A\d+(,\d+)?p\z/
 
@@ -146,26 +146,33 @@ defmodule Tackle.CLI.TUI.ToolGroups do
 
   @doc "Returns whether an entry is an exploring call that may join a group."
   @spec exploring?(map()) :: boolean()
-  def exploring?(%{kind: :tool} = entry), do: classify(entry) != :unknown
+  def exploring?(%{kind: :tool} = entry) do
+    case classify(entry) do
+      [_ | _] -> true
+      _ -> false
+    end
+  end
+
   def exploring?(_entry), do: false
 
   @doc """
   Collapses runs of consecutive exploring entries into single group entries.
 
-  Runs shorter than two entries stay alone: a lone read keeps its normal
-  card. Any other entry — prose, thinking, or a non-exploring tool — ends a
-  run, matching Codex's content and failure boundaries.
+  Runs with fewer than two tool calls stay alone: a lone read keeps its normal
+  card. Collapsed thinking after an exploring call stays inside the group as
+  retained detail, matching Codex's hidden reasoning handling. Prose, expanded
+  thinking, and non-exploring tools end a run.
   """
   @spec group([MessageView.t()]) :: [MessageView.t()]
   def group([]), do: []
 
   def group([entry | rest]) do
     if exploring?(entry) do
-      {run, rest} = Enum.split_while(rest, &exploring?/1)
+      {run, rest} = Enum.split_while(rest, &(exploring?(&1) or hidden_thinking?(&1)))
       members = [entry | run]
 
       grouped =
-        if length(members) > 1,
+        if Enum.count(members, &exploring?/1) > 1,
           do: [MessageView.tool_group_entry(members)],
           else: members
 
@@ -174,6 +181,9 @@ defmodule Tackle.CLI.TUI.ToolGroups do
       [entry | group(rest)]
     end
   end
+
+  defp hidden_thinking?(%{kind: :thinking, collapsed?: true}), do: true
+  defp hidden_thinking?(_entry), do: false
 
   @doc """
   Builds the summary rows for a group's members.
@@ -233,7 +243,7 @@ defmodule Tackle.CLI.TUI.ToolGroups do
       |> Enum.reject(&(comment?(&1) or String.trim(&1) == ""))
       |> Enum.map(&line_actions/1)
 
-    if :unknown in results do
+    if results == [] or :unknown in results do
       :unknown
     else
       results |> List.flatten() |> dedup()
@@ -287,8 +297,12 @@ defmodule Tackle.CLI.TUI.ToolGroups do
 
   defp drop_wrappers(segments) do
     Enum.reject(segments, fn
-      [] -> true
-      [head | _] -> head in @dropped_heads or head in @formatting_heads
+      [] ->
+        true
+
+      [head | tail] ->
+        head in @dropped_heads or head in @formatting_heads or
+          (head in ["head", "tail"] and operands(tail, @head_tail_flags) == [])
     end)
   end
 

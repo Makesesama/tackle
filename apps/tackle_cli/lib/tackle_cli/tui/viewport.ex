@@ -199,7 +199,11 @@ defmodule Tackle.CLI.TUI.Viewport do
     if entries == [] or Enum.any?(entries, &(&1.id == id)) do
       state
     else
-      selected = List.last(entries).id
+      selected =
+        if Enum.any?(entries, &(&1.id == state.conversation.selected_entry)),
+          do: state.conversation.selected_entry,
+          else: List.last(entries).id
+
       state = %{state | selected_entry: selected}
 
       sections =

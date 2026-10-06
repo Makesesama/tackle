@@ -782,10 +782,10 @@ defmodule Tackle.CLI.TUI.MessageView do
   end
 
   @doc """
-  Builds one collapsed activity-group entry from consecutive exploring calls.
+  Builds one collapsed activity-group entry from exploring calls and hidden thinking.
 
   The group keeps every member entry, so details, search, and copy retain the
-  full commands and output. Its id derives from the first member, so the group
+  full commands, output, and reasoning. Its id derives from the first member, so the group
   keeps a stable identity while later calls join the run.
   """
   @spec tool_group_entry([t()]) :: t()

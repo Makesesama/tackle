@@ -44,6 +44,15 @@ defmodule Tackle.CLI.TUI.ToolGroupsTest do
              ]
 
       assert classify("cat a.ex | wc -l") == [{:read, "a.ex"}]
+
+      assert classify("rg -n 'activity|group' lib test README.md | head -120") ==
+               [{:search, "activity|group", "lib"}]
+
+      assert classify("rg --files | head -n 40") == [{:list, nil}]
+      assert classify("cat a.ex | tail -n +10") == [{:read, "a.ex"}]
+      assert classify("cat a.ex | head -n 40 b.ex") == [{:read, "a.ex"}, {:read, "b.ex"}]
+      assert classify("cat a.ex | head --quiet b.ex") == [{:read, "a.ex"}, {:read, "b.ex"}]
+      assert classify("tail -q -n 20 b.ex") == [{:read, "b.ex"}]
       assert classify("grep foo lib || true") == [{:search, "foo", "lib"}]
       assert classify("ls; echo done") == [{:list, nil}]
       assert classify("ls;echo done") == [{:list, nil}]
@@ -58,6 +67,9 @@ defmodule Tackle.CLI.TUI.ToolGroupsTest do
       assert classify("sed -i 's/a/b/' mix.exs") == :unknown
       assert classify("cat") == :unknown
       assert classify("") == :unknown
+      assert classify(" \n # comment only\n") == :unknown
+      assert classify("head -120") == :unknown
+      assert classify("rg foo lib | head -120 | xargs rm") == :unknown
     end
 
     test "unwraps shell invocations and quotes" do
@@ -105,7 +117,7 @@ defmodule Tackle.CLI.TUI.ToolGroupsTest do
       assert entry.tool_group == nil
     end
 
-    test "non-exploring tools, prose, and thinking break runs" do
+    test "collapsed thinking stays in exploring runs while non-exploring tools break them" do
       entries =
         settled([
           Message.assistant(
@@ -134,12 +146,139 @@ defmodule Tackle.CLI.TUI.ToolGroupsTest do
 
       assert Enum.map(entries, &{&1.kind, &1.id}) == [
                {:thinking, "message:0:thinking"},
-               {:tool, "tool:a"},
-               {:thinking, "message:2:thinking"},
-               {:tool, "group:tool:b"},
+               {:tool, "group:tool:a"},
                {:tool, "tool:d"},
                {:tool, "tool:e"}
              ]
+    end
+
+    test "Codex-style exploration groups across steps retain hidden thinking and results" do
+      messages = [
+        Message.assistant(
+          tool_calls: [
+            %{id: "status", name: "bash", arguments: %{"command" => "git status --short"}}
+          ]
+        ),
+        Message.tool_result("status", "bash", "?? todos.md"),
+        Message.assistant(
+          tool_calls: [
+            %{
+              id: "search",
+              name: "bash",
+              arguments: %{"command" => "rg -n 'group|activity' lib | head -120"}
+            }
+          ]
+        ),
+        Message.tool_result("search", "bash", "search output"),
+        Message.assistant(
+          thinking: "Inspect the implementation",
+          tool_calls: [%{id: "read", name: "read", arguments: %{"path" => "lib/tool_groups.ex"}}]
+        ),
+        Message.tool_result("read", "read", "read output"),
+        Message.assistant(thinking: "Ready to explain", content: "Grouping is enabled.")
+      ]
+
+      [status, group, answer] = settled(messages)
+      assert status.id == "tool:status"
+      assert answer.kind == :assistant
+      assert Enum.map(group.tool_group, & &1.kind) == [:tool, :thinking, :tool, :thinking]
+      assert group.id == "group:tool:search"
+      assert MessageView.full_text(group) =~ "search output"
+      assert MessageView.full_text(group) =~ "Inspect the implementation"
+      assert MessageView.source_text(group) =~ "Ready to explain"
+      assert MessageView.search_text(group) =~ "tool_groups.ex"
+      assert MessageView.search_text(group) =~ "Inspect the implementation"
+
+      preview = group |> ToolView.render(80) |> text()
+      assert preview =~ "Explored"
+      assert preview =~ "Search  group|activity in lib"
+      assert preview =~ "Read  tool_groups.ex"
+      refute preview =~ "Inspect the implementation"
+
+      details = group |> MessageView.inspect_items(100) |> text()
+      assert details =~ "Inspect the implementation"
+      assert details =~ "Ready to explain"
+      assert details =~ "search output"
+      assert details =~ "read output"
+
+      assert :binary.match(details, "search output") <
+               :binary.match(details, "Inspect the implementation")
+
+      assert :binary.match(details, "Inspect the implementation") <
+               :binary.match(details, "read output")
+
+      expanded =
+        MessageView.section_entries(
+          %{agent_state: %State{messages: messages}, thinking_expanded?: true},
+          :settled
+        )
+
+      refute Enum.any?(expanded, & &1.tool_group)
+      assert Enum.count(expanded, &(&1.kind == :thinking)) == 2
+    end
+
+    test "prose and user messages break exploring runs" do
+      entries =
+        settled(
+          assistant_calls(read: {"a", "a.ex"}) ++
+            [Message.assistant(content: "A visible update")] ++
+            assistant_calls(read: {"b", "b.ex"}) ++
+            [Message.user("New request")] ++
+            assistant_calls(read: {"c", "c.ex"})
+        )
+
+      assert Enum.map(entries, & &1.kind) == [:tool, :assistant, :tool, :user, :tool]
+      refute Enum.any?(entries, & &1.tool_group)
+    end
+
+    test "thinking alone does not turn a single read into a group" do
+      entries =
+        settled(
+          assistant_calls(read: {"a", "a.ex"}) ++
+            [Message.assistant(thinking: "done", content: "Answer")]
+        )
+
+      assert Enum.map(entries, & &1.kind) == [:tool, :thinking, :assistant]
+      refute Enum.any?(entries, & &1.tool_group)
+    end
+
+    test "live exploration absorbs collapsed thinking but expands it with Ctrl+T" do
+      state = %{
+        stream: %Tackle.CLI.TUI.State.Stream{
+          timeline: [
+            %{
+              kind: :tool,
+              id: "one",
+              name: "bash",
+              arguments: %{"command" => "rg foo lib | head -120"},
+              status: :completed
+            },
+            %{kind: :thinking, content: "Read the matching file"},
+            %{
+              kind: :tool,
+              id: "two",
+              name: "read",
+              arguments: %{"path" => "lib/a.ex"},
+              status: :running
+            }
+          ]
+        },
+        thinking_expanded?: false
+      }
+
+      assert [group] = MessageView.section_entries(state, :turn)
+      assert group.id == "group:tool:one"
+      assert group.tool_status == :running
+      assert group |> ToolView.render(80) |> text() =~ "Exploring"
+      assert group |> MessageView.inspect_items(80) |> text() =~ "Read the matching file"
+      assert Enum.map(group.tool_group, & &1.kind) == [:tool, :thinking, :tool]
+
+      assert [read, thinking, running] =
+               MessageView.section_entries(%{state | thinking_expanded?: true}, :turn)
+
+      assert read.id == "tool:one"
+      assert thinking.kind == :thinking
+      assert running.id == "tool:two"
     end
 
     test "failed exploring calls stay in the group" do

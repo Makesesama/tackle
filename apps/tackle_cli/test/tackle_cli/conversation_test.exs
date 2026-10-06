@@ -96,6 +96,114 @@ defmodule Tackle.CLI.TUI.ConversationTest do
     assert tall.sections.settled.groups == short.sections.settled.groups
   end
 
+  test "native transcript keeps exploration grouped across hidden thinking and turn settlement" do
+    live = %{
+      projection([])
+      | stream: %Stream{
+          timeline: [
+            %{
+              kind: :tool,
+              id: "search",
+              name: "bash",
+              arguments: %{"command" => "rg activity lib | head -120"},
+              output: "found",
+              status: :completed
+            },
+            %{kind: :thinking, content: "Check the implementation"},
+            %{
+              kind: :tool,
+              id: "read",
+              name: "read",
+              arguments: %{"path" => "lib/tool_groups.ex"},
+              status: :running
+            }
+          ]
+        }
+    }
+
+    conversation = Conversation.new(%Rect{width: 80, height: 20}) |> Conversation.refresh(live)
+    assert [group] = conversation.sections.turn.entries
+    assert group.id == "group:tool:search"
+    assert group.tool_status == :running
+
+    assert [%{id: "group:tool:search"}] =
+             Conversation.search(conversation, "Check the implementation")
+
+    assert Conversation.refresh(conversation, live).native == conversation.native
+
+    settled =
+      projection([
+        Message.assistant(
+          tool_calls: [
+            %{
+              id: "search",
+              name: "bash",
+              arguments: %{"command" => "rg activity lib | head -120"}
+            }
+          ]
+        ),
+        Message.tool_result("search", "bash", "found"),
+        Message.assistant(
+          thinking: "Check the implementation",
+          tool_calls: [%{id: "read", name: "read", arguments: %{"path" => "lib/tool_groups.ex"}}]
+        ),
+        Message.tool_result("read", "read", "contents")
+      ])
+
+    refreshed = Conversation.refresh(conversation, settled)
+    assert [group] = refreshed.sections.settled.entries
+    assert group.id == "group:tool:search"
+    assert group.tool_status == :completed
+    assert refreshed.sections.turn.entries == []
+
+    assert [%{id: "group:tool:search"}] =
+             Conversation.search(refreshed, "Check the implementation")
+
+    expanded = Conversation.refresh(refreshed, %{settled | thinking_expanded?: true})
+    assert Enum.map(expanded.sections.settled.entries, & &1.kind) == [:tool, :thinking, :tool]
+    assert Conversation.refresh(expanded, settled).sections.settled.entries == [group]
+  end
+
+  test "expanding an older activity group preserves selection and reading anchor" do
+    messages =
+      [
+        Message.assistant(tool_calls: [%{id: "a", name: "read", arguments: %{"path" => "a.ex"}}]),
+        Message.assistant(
+          thinking: "Inspect b",
+          tool_calls: [%{id: "b", name: "read", arguments: %{"path" => "b.ex"}}]
+        )
+      ] ++ Enum.map(1..20, &Message.user("Later message #{&1}"))
+
+    state = Map.put(projection(messages), :selected_entry, "group:tool:a")
+
+    conversation =
+      Conversation.new(%Rect{width: 80, height: 4})
+      |> Conversation.refresh(state)
+      |> Conversation.scroll_to_entry("group:tool:a")
+
+    expanded_state = %{state | thinking_expanded?: true}
+    expanded = Conversation.refresh(conversation, expanded_state)
+    assert expanded.selected_entry == "tool:a"
+    assert expanded.anchor == %{id: "tool:a", offset: 0}
+    refute expanded.follow?
+
+    collapsed = Conversation.refresh(expanded, %{state | selected_entry: "tool:b"})
+    assert collapsed.selected_entry == "group:tool:a"
+    assert collapsed.anchor == %{id: "group:tool:a", offset: 0}
+
+    shell = %Tackle.CLI.TUI.State{
+      size: {80, 24},
+      conversation: conversation,
+      agent_state: state.agent_state,
+      focus: :transcript,
+      selected_entry: "group:tool:a"
+    }
+
+    assert {:noreply, toggled} = Tackle.CLI.TUI.Viewport.toggle_thinking(shell)
+    assert toggled.selected_entry == "tool:a"
+    assert toggled.conversation.anchor.id == "tool:a"
+  end
+
   defp projection(messages) do
     %{
       agent_state: %State{messages: messages},
