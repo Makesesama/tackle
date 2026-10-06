@@ -23,7 +23,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
-  alias Tackle.CLI.TUI.{Compaction, Glyph, Pastes, Theme, ToolView}
+  alias Tackle.CLI.TUI.{Compaction, Glyph, Pastes, Theme, ToolGroups, ToolView}
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   @uuid "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -64,6 +64,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           model: String.t() | nil,
           tool_status: atom() | nil,
           tool_elapsed_ms: non_neg_integer() | nil,
+          tool_group: [t()] | nil,
           subagent_work: String.t() | nil,
           subagent_output: String.t() | nil,
           final?: boolean(),
@@ -84,6 +85,7 @@ defmodule Tackle.CLI.TUI.MessageView do
     :model,
     :tool_status,
     :tool_elapsed_ms,
+    :tool_group,
     :subagent_work,
     :subagent_output,
     :prose_width,
@@ -142,9 +144,12 @@ defmodule Tackle.CLI.TUI.MessageView do
           message_entries(message, index, state)
       end)
 
-    Enum.flat_map(Enum.with_index(groups), fn {entries, index} ->
-      Enum.map(Enum.filter(cards, &(&1.boundary == index)), &compaction_entry/1) ++ entries
-    end) ++ Enum.map(Enum.filter(cards, &(&1.boundary >= length(messages))), &compaction_entry/1)
+    ToolGroups.group(
+      Enum.flat_map(Enum.with_index(groups), fn {entries, index} ->
+        Enum.map(Enum.filter(cards, &(&1.boundary == index)), &compaction_entry/1) ++ entries
+      end) ++
+        Enum.map(Enum.filter(cards, &(&1.boundary >= length(messages))), &compaction_entry/1)
+    )
   end
 
   def section_entries(state, :pending) do
@@ -209,7 +214,7 @@ defmodule Tackle.CLI.TUI.MessageView do
         )
       end)
 
-    live_entries ++ queued_entries
+    ToolGroups.group(live_entries) ++ queued_entries
   end
 
   # Kept as a small compatibility seam for callers that render a standalone
@@ -343,6 +348,10 @@ defmodule Tackle.CLI.TUI.MessageView do
   expose their labeled message source.
   """
   @spec full_text(t()) :: String.t()
+  def full_text(%__MODULE__{kind: :tool, tool_group: members})
+      when is_list(members) and members != [],
+      do: Enum.map_join(members, "\n\n", &full_text/1)
+
   def full_text(%__MODULE__{kind: :tool, tool_output: output}) when is_binary(output), do: output
 
   def full_text(%__MODULE__{kind: :tool, subagent_output: output}) when is_binary(output),
@@ -353,6 +362,10 @@ defmodule Tackle.CLI.TUI.MessageView do
 
   @doc "Returns source text used by transcript search, excluding paint-only chrome."
   @spec search_text(t()) :: String.t()
+  def search_text(%__MODULE__{kind: :tool, tool_group: members})
+      when is_list(members) and members != [],
+      do: Enum.map_join(members, "\n", &search_text/1)
+
   def search_text(%__MODULE__{kind: :tool} = entry) do
     entry.content <>
       "\n" <>
@@ -768,6 +781,41 @@ defmodule Tackle.CLI.TUI.MessageView do
     )
   end
 
+  @doc """
+  Builds one collapsed activity-group entry from consecutive exploring calls.
+
+  The group keeps every member entry, so details, search, and copy retain the
+  full commands and output. Its id derives from the first member, so the group
+  keeps a stable identity while later calls join the run.
+  """
+  @spec tool_group_entry([t()]) :: t()
+  def tool_group_entry([first | _] = members) do
+    %__MODULE__{
+      kind: :tool,
+      content: Enum.map_join(members, "\n", & &1.content),
+      id: "group:" <> (first.id || "tools"),
+      source: Enum.map_join(members, "\n\n", &source/1),
+      tool_name: "explore",
+      tool_group: members,
+      tool_status: group_status(members),
+      tool_elapsed_ms: group_elapsed(members),
+      style: style(:tool)
+    }
+  end
+
+  defp group_status(members) do
+    if Enum.any?(members, &(&1.tool_status in [:running, :preparing])),
+      do: :running,
+      else: :completed
+  end
+
+  defp group_elapsed(members) do
+    case Enum.filter(members, &(is_integer(&1.tool_elapsed_ms) and &1.tool_elapsed_ms >= 0)) do
+      [] -> nil
+      known -> known |> Enum.map(& &1.tool_elapsed_ms) |> Enum.sum()
+    end
+  end
+
   defp entry(kind, content, opts) when is_binary(content) do
     %__MODULE__{
       kind: kind,
@@ -782,6 +830,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       model: Keyword.get(opts, :model),
       tool_status: Keyword.get(opts, :tool_status),
       tool_elapsed_ms: Keyword.get(opts, :tool_elapsed_ms),
+      tool_group: Keyword.get(opts, :tool_group),
       subagent_work: Keyword.get(opts, :subagent_work),
       subagent_output: Keyword.get(opts, :subagent_output),
       final?: Keyword.get(opts, :final?, false),

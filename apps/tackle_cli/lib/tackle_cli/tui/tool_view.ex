@@ -30,10 +30,16 @@ defmodule Tackle.CLI.TUI.ToolView do
   sit outside it. Whole hunks that fit are preferred; oversized hunks show a
   contiguous prefix, not arbitrary head/tail fragments. At most two replacements
   are matched inline, with an explicit omitted-replacement count.
+
+  Activity groups collapse consecutive exploring calls (reads, listings,
+  searches) into one card, as in Codex's TUI: a bold `Exploring`/`Explored`
+  header with one summary row per call (`Read a.ex, b.ex`, `List packages`,
+  `Search query in path`), failed calls marked inline. Details expand every
+  member back into its full card, so no command or output is lost.
   """
 
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{MessageView, Theme}
+  alias Tackle.CLI.TUI.{MessageView, Theme, ToolGroups}
 
   @preview_rows 6
   @file_preview_rows 16
@@ -50,7 +56,13 @@ defmodule Tackle.CLI.TUI.ToolView do
   @doc "Renders a bounded inline card or retained details; `:code_rows` budgets edit/write preview rows."
   @spec render(MessageView.t(), pos_integer(), :preview | :details, keyword()) ::
           [MessageView.widget_item()]
-  def render(entry, width, mode \\ :preview, opts \\ []) do
+  def render(entry, width, mode \\ :preview, opts \\ [])
+
+  def render(%{tool_group: members} = entry, width, mode, _opts)
+      when is_list(members) and members != [],
+      do: group_render(entry, members, width, mode)
+
+  def render(entry, width, mode, opts) do
     args = arguments(entry.tool_arguments)
 
     header_args =
@@ -81,6 +93,115 @@ defmodule Tackle.CLI.TUI.ToolView do
   @doc false
   @spec preview_code_rows(integer()) :: pos_integer()
   def preview_code_rows(height), do: height |> Kernel.-(4) |> max(1) |> min(20)
+
+  ## Activity groups
+
+  # Details expand every member back into its full card, separated by a blank
+  # row; the preview keeps one summary row per classified call.
+  defp group_render(_entry, members, width, :details) do
+    members
+    |> Enum.map(&render(&1, width, :details))
+    |> Enum.intersperse(MessageView.render_lines([MessageView.row("")]))
+    |> List.flatten()
+  end
+
+  defp group_render(entry, members, width, :preview) do
+    header = wrap_indented(group_header_rows(entry), width, 4, true)
+    body = wrap_indented(group_body_rows(members), width, 4)
+
+    MessageView.render_lines(trim(header ++ body, :preview, width))
+  end
+
+  defp group_header_rows(entry) do
+    status = entry.tool_status
+    title = if status == :running, do: "Exploring", else: "Explored"
+
+    spans = [
+      MessageView.span(group_marker(status), group_marker_style(status)),
+      MessageView.span(title, Theme.bold(Theme.style(:text)))
+    ]
+
+    spans =
+      case {status, entry.tool_elapsed_ms} do
+        {:completed, ms} when is_integer(ms) and ms >= 0 ->
+          spans ++ [MessageView.span("  ·  " <> elapsed_text(ms), Theme.style(:muted))]
+
+        _ ->
+          spans
+      end
+
+    [MessageView.row(spans)]
+  end
+
+  defp group_body_rows(members) do
+    Enum.flat_map(ToolGroups.rows(members), fn row ->
+      case row.error do
+        nil -> [group_row(row)]
+        error -> [group_row(row), group_error_row(error)]
+      end
+    end)
+  end
+
+  defp group_error_row(error) do
+    MessageView.row([
+      MessageView.span("└ ", Theme.style(:subtle)),
+      MessageView.span(error, Theme.style(:error))
+    ])
+  end
+
+  defp group_row(%{kind: :read, names: names, failed?: failed?}) do
+    group_failure_row(
+      [
+        MessageView.span("Read  ", Theme.style(:accent_soft)),
+        MessageView.span(Enum.join(names, ", "), Theme.style(:text))
+      ],
+      failed?
+    )
+  end
+
+  defp group_row(%{kind: :list, path: nil, failed?: failed?}) do
+    group_failure_row([MessageView.span("List", Theme.style(:accent_soft))], failed?)
+  end
+
+  defp group_row(%{kind: :list, path: path, failed?: failed?}) do
+    group_failure_row(
+      [
+        MessageView.span("List  ", Theme.style(:accent_soft)),
+        MessageView.span(path, Theme.style(:text))
+      ],
+      failed?
+    )
+  end
+
+  defp group_row(%{kind: :search, query: query, path: path, failed?: failed?}) do
+    spans = [
+      MessageView.span("Search  ", Theme.style(:accent_soft)),
+      MessageView.span(query || "", Theme.style(:text))
+    ]
+
+    spans =
+      if path,
+        do:
+          spans ++
+            [
+              MessageView.span(" in ", Theme.style(:muted)),
+              MessageView.span(path, Theme.style(:text))
+            ],
+        else: spans
+
+    group_failure_row(spans, failed?)
+  end
+
+  defp group_failure_row(spans, false), do: MessageView.row(spans)
+
+  defp group_failure_row(spans, true),
+    do: MessageView.row(spans ++ [MessageView.span("  (failed)", Theme.style(:error))])
+
+  defp group_marker(:running), do: "● "
+  defp group_marker(_completed), do: "• "
+
+  defp group_marker_style(:running), do: Theme.style(:accent_soft)
+  defp group_marker_style(_completed), do: Theme.style(:subtle)
 
   defp compact_body(entry, args, mode, width) do
     entry

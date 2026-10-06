@@ -97,7 +97,12 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         Message.tool_result("one", "read", "one result")
       ])
 
-    assert Enum.map(entries, &{&1.id, &1.tool_output}) == [
+    # Consecutive exploring calls collapse into one group whose members keep
+    # their distinct stable ids and outputs.
+    [group] = entries
+    assert group.id == "group:tool:one"
+
+    assert Enum.map(group.tool_group, &{&1.id, &1.tool_output}) == [
              {"tool:one", "one result"},
              {"tool:two", "two result"}
            ]

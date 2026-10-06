@@ -2206,8 +2206,8 @@ defmodule Tackle.CLI.TUITest do
     assert [%{id: "first", status: :running}, %{id: "second", status: :completed}] =
              progress.tool_activity
 
-    assert conversation_text(progress) =~ "● running  read  first"
-    assert conversation_text(progress) =~ "  read  second"
+    assert conversation_text(progress) =~ "● Exploring"
+    assert conversation_text(progress) =~ "Read  first, second"
 
     send(
       tui,
