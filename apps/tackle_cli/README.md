@@ -193,6 +193,12 @@ shell and substituting an older `TACKLE_ERTS_VERSION`: OTP applications such as
 beside the assembled release's glibc NIF. The wrapper then boots on musl but
 loads the glibc library and crashes.
 
+The Nix build has no network access, so it never downloads RustlerPrecompiled
+artifacts. The Tackle, ExRatatui, and Lumis NIFs are compiled for the musl
+target in separate derivations from crates vendored via each `Cargo.lock`, then
+installed into the Mix dependencies with Rustler's `skip_compilation?`. Lumis
+still downloads tree-sitter parsers at runtime on first use.
+
 The package's install check starts the real TUI under a pseudo-terminal in
 addition to running informational commands. This exercises `:crypto` and both
 Rust NIFs, which `--version`, `--help`, and `models` do not all load. When

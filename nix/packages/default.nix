@@ -5,6 +5,8 @@ let
   toolchain = pkgs.callPackage ./native-toolchain.nix { };
   linux = pkgs.stdenv.hostPlatform.isLinux;
   cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+  # Cargo's per-target environment variable infix, e.g. x86_64_unknown_linux_musl.
+  underscored = lib.replaceStrings [ "-" ] [ "_" ] toolchain.triple;
   target =
     if linux then
       "linux_${cpu}"
@@ -58,7 +60,6 @@ let
       vendor = pkgs.rustPlatform.importCargoLock {
         lockFile = "${source}/Cargo.lock";
       };
-      underscored = lib.replaceStrings [ "-" ] [ "_" ] toolchain.triple;
     in
     pkgs.stdenv.mkDerivation {
       pname = "${name}-burrito-nif";
@@ -98,12 +99,48 @@ let
       '';
     };
 
+  # Unlike ExRatatui and the Tackle crate, lumis_nif has no build.rs that
+  # embeds the unwinder. Its musl cdylib disables crt-static, so rustc links
+  # `-lgcc_s`, which Burrito's runtime does not ship. Shadow that lookup with
+  # the toolchain's static unwinder, as those build scripts do. Repeat
+  # -crt-static in case Cargo prefers this variable to the crate's target
+  # rustflags. The trailing -lgcc resolves aarch64 outline-atomics helpers.
+  lumisUnwinderShim = lib.optionalString linux ''
+    shim="$TMPDIR/gcc_s_shim"
+    mkdir -p "$shim"
+    cp "$(${toolchain.cc}/bin/cc -print-file-name=libgcc_eh.a)" "$shim/libgcc_s.a"
+    cp "$(${toolchain.cc}/bin/cc -print-file-name=libgcc.a)" "$shim/libgcc.a"
+    export CARGO_TARGET_${lib.toUpper underscored}_RUSTFLAGS="-C target-feature=-crt-static -C link-arg=-static-libgcc -L native=$shim -C link-arg=-lgcc"
+  '';
+  # Fail here rather than at NIF load inside the wrapped binary. These are the
+  # markers Tackle.CLI.Release.verify_linux_nifs/1 rejects.
+  lumisMuslCheck = ''
+    runHook preInstallCheck
+    if grep -qaE 'libc[.]so[.]6|GLIBC_|libgcc_s[.]so[.]1' "$out/lib/lumis_nif.so"; then
+      echo "lumis_nif.so depends on glibc or libgcc_s.so.1" >&2
+      exit 1
+    fi
+    runHook postInstallCheck
+  '';
+
   tackleNif = native "tackle" "${src}/apps/tackle_cli/native/tackle";
   exRatatuiNif = native "ex_ratatui" "${deps.ex_ratatui.src}/native/ex_ratatui";
+  # Lumis, like ExRatatui, is a RustlerPrecompiled package. deps_nix's generic
+  # workaround would have Rustler build it with a glibc toolchain during the Mix
+  # build, so build its NIF here for the Burrito musl target instead.
+  lumisNif = (native "lumis_nif" "${deps.lumis.src}/native/lumis_nif").overrideAttrs (old: {
+    # wasmtime-c-api-impl's build script runs `cmake -P` to install headers.
+    # dontConfigure keeps cmake's setup hook from configuring anything.
+    nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.cmake ];
+    preBuild = lumisUnwinderShim;
+    doInstallCheck = linux;
+    installCheckPhase = lumisMuslCheck;
+  });
   nativeConfig = pkgs.writeTextDir "config.exs" ''
     import Config
-    config :rustler_precompiled, :force_build, ex_ratatui: true
+    config :rustler_precompiled, :force_build, ex_ratatui: true, lumis: true
     config :ex_ratatui, ExRatatui.Native, skip_compilation?: true
+    config :lumis, Lumis.Native, skip_compilation?: true
   '';
   deps = pkgs.callPackage ../tackle-cli-deps.nix {
     inherit beamPackages;
@@ -125,6 +162,16 @@ let
         preConfigure = ''
           mkdir -p priv/native
           cp ${exRatatuiNif}/lib/ex_ratatui.so priv/native/
+        '';
+        preBuild = "";
+      };
+      # Rustler loads `priv/native/<crate>` when RustlerPrecompiled force-builds.
+      lumis = prev.lumis.override {
+        appConfigPath = nativeConfig;
+        nativeBuildInputs = [ ];
+        preConfigure = ''
+          mkdir -p priv/native
+          cp ${lumisNif}/lib/lumis_nif.so priv/native/
         '';
         preBuild = "";
       };
@@ -164,6 +211,7 @@ beamPackages.mixRelease {
     # Nix build skips Rustler; normal Mix/dev-shell builds remain unchanged.
     cat >> config/prod.exs <<'EOF'
     config :ex_ratatui, ExRatatui.Native, skip_compilation?: true
+    config :lumis, Lumis.Native, skip_compilation?: true
     config :tackle_cli, Tackle.CLI.Native, skip_compilation?: true
     EOF
     mkdir -p priv/native
