@@ -240,7 +240,7 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
       refreshed
       | clipboard_writer: fn text ->
           send(test_pid, {:copied, text})
-          :ok
+          {:ok, :confirmed}
         end
     }
 

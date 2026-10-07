@@ -42,6 +42,7 @@ let
       (projectFiles ../../packages/tackle_ollama)
       (projectFiles ../../packages/tackle_mcp)
       (projectFiles ../../packages/tackle_sdk)
+      (projectFiles ../../packages/clipboard_ex)
       (projectFiles ../../apps/tackle_cli)
       (lib.fileset.fileFilter (
         file:
@@ -51,6 +52,14 @@ let
           "lock"
         ]
       ) ../../apps/tackle_cli/native)
+      (lib.fileset.fileFilter (
+        file:
+        lib.any file.hasExt [
+          "rs"
+          "toml"
+          "lock"
+        ]
+      ) ../../packages/clipboard_ex/native)
     ];
   };
 
@@ -126,6 +135,9 @@ let
   '';
 
   tackleNif = native "tackle" "${src}/apps/tackle_cli/native/tackle";
+  # Like the Tackle crate, clipboard_ex's build.rs shadows the shared unwinder
+  # for the musl target, so no Nix-level shim is needed here.
+  clipboardNif = native "clipboard_ex" "${src}/packages/clipboard_ex/native/clipboard_ex";
   exRatatuiNif = native "ex_ratatui" "${deps.ex_ratatui.src}/native/ex_ratatui";
   # Lumis, like ExRatatui, is a RustlerPrecompiled package. deps_nix's generic
   # workaround would have Rustler build it with a glibc toolchain during the Mix
@@ -143,6 +155,7 @@ let
     config :rustler_precompiled, :force_build, ex_ratatui: true, lumis: true
     config :ex_ratatui, ExRatatui.Native, skip_compilation?: true
     config :lumis, Lumis.Native, skip_compilation?: true
+    config :clipboard_ex, Clipboard.Native, skip_compilation?: true
   '';
   deps = pkgs.callPackage ../tackle-cli-deps.nix {
     inherit beamPackages;
@@ -160,6 +173,18 @@ let
       tackle_ollama = prev.tackle_ollama.override { src = "${src}/packages/tackle_ollama"; };
       tackle_mcp = prev.tackle_mcp.override { src = "${src}/packages/tackle_mcp"; };
       tackle_sdk = prev.tackle_sdk.override { src = "${src}/packages/tackle_sdk"; };
+      # Rustler would otherwise compile the crate with the GNU toolchain during
+      # the Mix build; the musl NIF built above is installed instead.
+      clipboard_ex = prev.clipboard_ex.override {
+        src = "${src}/packages/clipboard_ex";
+        appConfigPath = nativeConfig;
+        nativeBuildInputs = [ ];
+        preConfigure = ''
+          mkdir -p priv/native
+          cp ${clipboardNif}/lib/clipboard_ex.so priv/native/
+        '';
+        preBuild = "";
+      };
       ex_ratatui = prev.ex_ratatui.override {
         appConfigPath = nativeConfig;
         nativeBuildInputs = [ ];

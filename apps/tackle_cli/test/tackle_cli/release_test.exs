@@ -9,14 +9,16 @@ defmodule Tackle.CLI.ReleaseTest do
   defp source_libraries do
     [
       {:ex_ratatui, fn -> {:ex_ratatui, "priv/native/ex_ratatui"} end},
-      {:tackle_cli, fn -> {:tackle_cli, "priv/native/tackle"} end}
+      {:tackle_cli, fn -> {:tackle_cli, "priv/native/tackle"} end},
+      {:clipboard_ex, fn -> {:clipboard_ex, "priv/native/clipboard_ex"} end}
     ]
   end
 
   defp runtime_libraries do
     [
       {:ex_ratatui, &ExRatatui.Native.load_from/0},
-      {:tackle_cli, &Release.tackle_load_from/0}
+      {:tackle_cli, &Release.tackle_load_from/0},
+      {:clipboard_ex, &Release.clipboard_load_from/0}
     ]
   end
 
@@ -67,7 +69,8 @@ defmodule Tackle.CLI.ReleaseTest do
 
       libraries = [
         {:ex_ratatui, fn -> {:ex_ratatui, precompiled} end},
-        {:tackle_cli, fn -> {:tackle_cli, "priv/native/tackle"} end}
+        {:tackle_cli, fn -> {:tackle_cli, "priv/native/tackle"} end},
+        {:clipboard_ex, fn -> {:clipboard_ex, "priv/native/clipboard_ex"} end}
       ]
 
       release = release_fixture("libc.so", libraries)

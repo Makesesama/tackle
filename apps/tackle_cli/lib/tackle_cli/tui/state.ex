@@ -67,7 +67,7 @@ defmodule Tackle.CLI.TUI.State do
           input: reference(),
           history: History.t(),
           models: [String.t()],
-          clipboard_writer: (String.t() -> :ok | {:error, term()}),
+          clipboard_writer: (String.t() -> Tackle.CLI.Clipboard.copy_result()),
           terminal_title_writer: (String.t() | nil ->
                                     {:ok, Tackle.CLI.TerminalTitle.set_result()}
                                     | :ok
@@ -136,7 +136,7 @@ defmodule Tackle.CLI.TUI.State do
             input: nil,
             history: %History{},
             models: [],
-            clipboard_writer: &Clipboard.copy_local/1,
+            clipboard_writer: &Clipboard.copy/1,
             terminal_title_writer: &Tackle.CLI.TerminalTitle.write/1,
             terminal_title: nil,
             notification_writer: &Tackle.CLI.Notifications.write/1,
@@ -208,7 +208,7 @@ defmodule Tackle.CLI.TUI.State do
         input: Input.new(),
         history: History.new(),
         models: available_models(opts, snapshot.agent_state),
-        clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy_local/1),
+        clipboard_writer: Keyword.get(opts, :clipboard_writer, &Clipboard.copy/1),
         terminal_title_writer: terminal_title_writer(opts),
         terminal_title: nil,
         notification_writer: notification_writer(opts),

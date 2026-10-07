@@ -127,9 +127,9 @@ Burrito, or lint commands for tooling that has not been wired up.
   (`Tackle.SDK.*`, `:tackle_sdk`) that lets non-BEAM clients drive the
   `Tackle.Lib` agent loop. The wire contract is `packages/tackle_sdk/PROTOCOL.md`;
   tools are server-side only in protocol version 1.
-- `packages/clipboard_ex/`: experimental, Tackle-independent native clipboard
-  package (`Clipboard.*`, `:clipboard_ex`): a Rustler NIF over Rust's `arboard`
-  with tmux/OSC 52 terminal fallbacks. Nothing depends on it yet.
+- `packages/clipboard_ex/`: native clipboard package (`Clipboard.*`,
+  `:clipboard_ex`): a Rustler NIF over Rust's `arboard` with tmux/OSC 52
+  terminal fallbacks. The CLI uses it for copying and for image/text pasting.
 - `apps/tackle_cli/`: default Optimus/ex_ratatui terminal entrypoint. It is a
   separate Mix project that depends on the harness and bundles Codex as a
   distribution dependency; runtime adapter loading remains a harness concern.

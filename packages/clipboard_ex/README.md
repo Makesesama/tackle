@@ -7,7 +7,8 @@ tmux and OSC 52 terminal fallbacks.
 The package and OTP application are `:clipboard_ex`; the modules live under
 `Clipboard`.
 
-> Status: experimental and not yet used by any Tackle app. The API may change.
+> Status: experimental; the API may change. The Tackle CLI uses it for
+> copying and for image/text pasting.
 
 ## Usage
 

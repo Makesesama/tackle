@@ -3,7 +3,8 @@ defmodule Tackle.CLI.Release do
 
   @native_libraries [
     {:ex_ratatui, &ExRatatui.Native.load_from/0},
-    {:tackle_cli, &__MODULE__.tackle_load_from/0}
+    {:tackle_cli, &__MODULE__.tackle_load_from/0},
+    {:clipboard_ex, &__MODULE__.clipboard_load_from/0}
   ]
 
   # Bytes that mark an ELF as linked against glibc, and the shared unwinder
@@ -44,6 +45,8 @@ defmodule Tackle.CLI.Release do
 
   @doc false
   def tackle_load_from, do: {:tackle_cli, "priv/native/tackle"}
+
+  def clipboard_load_from, do: {:clipboard_ex, "priv/native/clipboard_ex"}
 
   defp linux?(target), do: is_binary(target) and String.starts_with?(target, "linux")
 

@@ -229,7 +229,7 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
       conversation: Conversation.new(%Rect{width: 40, height: 12}),
       clipboard_writer: fn text ->
         send(pid, {:copied, text})
-        :ok
+        {:ok, :confirmed}
       end
     }
     |> Viewport.refresh()

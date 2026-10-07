@@ -189,7 +189,7 @@ defmodule Tackle.CLI.TUITest do
          models: ["openai-codex/test-model", "openai-codex/other-model"],
          clipboard_writer: fn content ->
            send(test_pid, {:copied, content})
-           :ok
+           {:ok, :confirmed}
          end,
          clipboard_image_reader: fn -> Agent.get(clipboard_agent, & &1) end,
          clipboard_text_reader: fn -> {:ok, "clipboard text"} end,
@@ -3185,7 +3185,7 @@ defmodule Tackle.CLI.TUITest do
          [
            agent_ref: agent_ref,
            models: ["openai-codex/test-model"],
-           clipboard_writer: fn _content -> :ok end,
+           clipboard_writer: fn _content -> {:ok, :confirmed} end,
            clipboard_text_reader: fn -> {:ok, ""} end,
            name: nil,
            test_mode: {80, 24}

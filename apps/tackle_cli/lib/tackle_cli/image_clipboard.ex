@@ -1,6 +1,12 @@
 defmodule Tackle.CLI.ImageClipboard do
   @moduledoc """
-  Reads a supported image from the OS clipboard and saves it for the CLI agent.
+  Reads images and text from the OS clipboard and saves them for the CLI agent.
+
+  Reading goes through `:clipboard_ex`'s native clipboard, so no external
+  utilities (`wl-paste`, `xclip`, `pbpaste`) are required and pasting works
+  wherever the CLI runs, including as the host process of a jailed session.
+  Images arrive from the clipboard as RGBA pixels and are encoded to PNG
+  before they are saved.
 
   Images are deliberately represented in the prompt by a path, not attached to
   the submitted user message. They are saved through the session's executor so
@@ -11,43 +17,42 @@ defmodule Tackle.CLI.ImageClipboard do
   alias Tackle.Executor
 
   @max_bytes 5 * 1024 * 1024
-  @mime_types ["image/png", "image/jpeg", "image/gif", "image/webp"]
+  # Reject absurd clipboard images before allocating a PNG encoding of them;
+  # ordinary screenshots stay far below this many raw RGBA bytes.
+  @max_raw_bytes 64 * 1024 * 1024
 
-  @doc "Reads clipboard image bytes on Linux or macOS, preferring native clipboard utilities."
+  @png_signature <<137, 80, 78, 71, 13, 10, 26, 10>>
+
+  @doc "Reads a clipboard image as PNG bytes, or an error when there is none."
   @spec read() :: {:ok, binary()} | {:error, term()}
-  def read do
-    case :os.type() do
-      {:unix, :linux} -> read_linux()
-      {:unix, :darwin} -> read_pngpaste()
-      other -> {:error, {:unsupported_platform, other}}
+  def read, do: read(&Clipboard.read_image/0)
+
+  @doc false
+  # The reader is injectable for tests and must return what
+  # `Clipboard.read_image/0` returns.
+  @spec read((-> {:ok, Clipboard.Image.t()} | {:error, term()})) ::
+          {:ok, binary()} | {:error, term()}
+  def read(reader) when is_function(reader, 0) do
+    case reader.() do
+      {:ok, %Clipboard.Image{width: width, height: height, rgba: rgba}} ->
+        encode_png(width, height, rgba)
+
+      {:error, :content_not_available} ->
+        {:error, :no_image_in_clipboard}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   @doc "Reads text from the OS clipboard for a Ctrl+V fallback when there is no image."
   @spec read_text() :: {:ok, binary()} | {:error, term()}
-  def read_text do
-    case :os.type() do
-      {:unix, :linux} ->
-        cond do
-          System.find_executable("wl-paste") ->
-            run_clipboard("wl-paste", ["--type", "text/plain;charset=utf-8"])
+  def read_text, do: read_text(&Clipboard.read_text/0)
 
-          System.find_executable("xclip") ->
-            run_clipboard("xclip", ["-selection", "clipboard", "-o"])
-
-          true ->
-            {:error, :clipboard_unavailable}
-        end
-
-      {:unix, :darwin} ->
-        if System.find_executable("pbpaste"),
-          do: run_clipboard("pbpaste", []),
-          else: {:error, :clipboard_unavailable}
-
-      other ->
-        {:error, {:unsupported_platform, other}}
-    end
-  end
+  @doc false
+  @spec read_text((-> {:ok, binary()} | {:error, term()})) ::
+          {:ok, binary()} | {:error, term()}
+  def read_text(reader) when is_function(reader, 0), do: reader.()
 
   @doc """
   Validates image bytes and writes them to a new owner-only file in the
@@ -75,49 +80,44 @@ defmodule Tackle.CLI.ImageClipboard do
   def image_extension(<<"RIFF", _::binary-size(4), "WEBP", _::binary>>), do: {:ok, ".webp"}
   def image_extension(_bytes), do: {:error, :unsupported_or_invalid_image}
 
-  defp read_linux do
-    cond do
-      System.find_executable("wl-paste") ->
-        first_clipboard_image(&wl_paste/1)
+  @doc false
+  # Encodes RGBA pixels as a PNG, the only clipboard-image format this shell
+  # produces. Pure standard library: filter-0 scanlines deflated with zlib.
+  @spec encode_png(pos_integer(), pos_integer(), binary()) ::
+          {:ok, binary()} | {:error, term()}
+  def encode_png(width, height, rgba) when width > 0 and height > 0 do
+    stride = width * 4
 
-      System.find_executable("xclip") ->
-        first_clipboard_image(&xclip/1)
+    with :ok <- validate_pixels(stride, height, rgba),
+         :ok <- validate_raw_size(rgba) do
+      raw =
+        for row <- 0..(height - 1), into: <<>> do
+          <<0, :binary.part(rgba, row * stride, stride)::binary>>
+        end
 
-      true ->
-        {:error, :clipboard_unavailable}
+      {:ok, @png_signature <> png_chunks(width, height, raw)}
     end
   end
 
-  defp first_clipboard_image(reader) do
-    Enum.reduce_while(@mime_types, {:error, :no_image_in_clipboard}, fn mime, _acc ->
-      case reader.(mime) do
-        {:ok, bytes} when byte_size(bytes) > 0 -> {:halt, {:ok, bytes}}
-        _ -> {:cont, {:error, :no_image_in_clipboard}}
-      end
-    end)
+  def encode_png(_width, _height, _rgba), do: {:error, :invalid_image}
+
+  defp validate_pixels(stride, height, rgba) do
+    if byte_size(rgba) == stride * height, do: :ok, else: {:error, :invalid_image}
   end
 
-  defp wl_paste(mime), do: run_clipboard("wl-paste", ["--type", mime])
-  defp xclip(mime), do: run_clipboard("xclip", ["-selection", "clipboard", "-t", mime, "-o"])
-
-  defp read_pngpaste do
-    if System.find_executable("pngpaste") do
-      case run_clipboard("pngpaste", ["-"]) do
-        {:error, _reason} -> {:error, :no_image_in_clipboard}
-        result -> result
-      end
-    else
-      {:error, :no_image_in_clipboard}
-    end
+  defp validate_raw_size(rgba) do
+    if byte_size(rgba) <= @max_raw_bytes, do: :ok, else: {:error, :image_too_large}
   end
 
-  defp run_clipboard(command, args) do
-    case System.cmd(command, args, stderr_to_stdout: true) do
-      {output, 0} -> {:ok, output}
-      {_output, _status} -> {:error, :no_image_in_clipboard}
-    end
-  rescue
-    error -> {:error, {:clipboard_command_failed, Exception.message(error)}}
+  defp png_chunks(width, height, raw) do
+    ihdr = <<width::32-big, height::32-big, 8, 6, 0, 0, 0>>
+
+    png_chunk("IHDR", ihdr) <> png_chunk("IDAT", :zlib.compress(raw)) <> png_chunk("IEND", "")
+  end
+
+  defp png_chunk(type, data) do
+    crc = :erlang.crc32(type <> data)
+    <<byte_size(data)::32-big, type::binary, data::binary, crc::32-big>>
   end
 
   defp write_private(executor, bytes, extension) do

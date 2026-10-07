@@ -7,6 +7,9 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[build-dependencies]
+cc = "1"
+
 [dependencies]
 # `wayland-data-control` prefers the Wayland data-control protocols when the
 # compositor offers them and falls back to X11 (or XWayland) otherwise.

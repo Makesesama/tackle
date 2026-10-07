@@ -32,8 +32,16 @@ defmodule Tackle.CLI.TUI.ModulesTest do
     end
 
     test "copy_notice/3 reports the clipboard writer outcome" do
-      ok = %State{clipboard_writer: fn _content -> :ok end}
-      assert Util.copy_notice(ok, "text", "Copied") == "Copied"
+      confirmed = %State{clipboard_writer: fn _content -> {:ok, :confirmed} end}
+      assert Util.copy_notice(confirmed, "text", "Copied") == "Copied"
+
+      requested = %State{clipboard_writer: fn _content -> {:ok, :requested} end}
+
+      assert Util.copy_notice(requested, "text", "Copied") ==
+               "Copied · unconfirmed (terminal copy)"
+
+      empty = %State{clipboard_writer: fn _content -> {:error, :empty} end}
+      assert Util.copy_notice(empty, "", "Copied") == "Nothing to copy"
 
       failing = %State{clipboard_writer: fn _content -> {:error, :no_clipboard} end}
       assert Util.copy_notice(failing, "text", "Copied") == "Copy failed: :no_clipboard"

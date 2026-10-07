@@ -37,14 +37,17 @@ defmodule Tackle.CLI.TUI.Util do
   @doc """
   Copies `text` through the shell's clipboard writer.
 
-  Returns the success notice when the write succeeded, otherwise a failure
-  notice carrying the reason, so every copy action reports honestly without
-  repeating the same `case`.
+  Returns the success notice when the native clipboard accepted the text, a
+  notice marking the copy as unconfirmed when only the terminal could be
+  asked, and a failure notice carrying the reason otherwise, so every copy
+  action reports honestly without repeating the same `case`.
   """
   @spec copy_notice(State.t(), String.t(), String.t()) :: String.t()
   def copy_notice(%State{} = state, text, success_notice) do
     case state.clipboard_writer.(text) do
-      :ok -> success_notice
+      {:ok, :confirmed} -> success_notice
+      {:ok, :requested} -> "#{success_notice} · unconfirmed (terminal copy)"
+      {:error, :empty} -> "Nothing to copy"
       {:error, reason} -> "Copy failed: #{format_reason(reason)}"
       other -> "Copy failed: #{format_reason(other)}"
     end

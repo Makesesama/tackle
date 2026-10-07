@@ -250,6 +250,22 @@ let
         in
         drv;
 
+      clipboard_ex =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "clipboard_ex";
+
+            src = ../packages/clipboard_ex;
+
+            beamDeps = [
+              rustler
+            ];
+          };
+        in
+        drv;
+
       ex_ratatui =
         let
           version = "0.15.0";

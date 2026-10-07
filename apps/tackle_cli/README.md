@@ -198,7 +198,8 @@ not answer. See
 policy, requirements, and the credential-free host smoke test. The
 `jailed-tackle` command is the development-checkout launcher.
 
-The release has two Rust NIFs: ExRatatui and Tackle's native widgets. The Nix
+The release has three Rust NIFs built from source: ExRatatui, Tackle's native
+widgets, and the native clipboard. The Nix
 package builds both from their locked sources with the target-specific Rust and
 C toolchains, then assembles the release with the exact Erlang/OTP patch used by
 Burrito's precompiled ERTS. The resulting executable is `result/bin/tackle`.
@@ -213,7 +214,7 @@ beside the assembled release's glibc NIF. The wrapper then boots on musl but
 loads the glibc library and crashes.
 
 The Nix build has no network access, so it never downloads RustlerPrecompiled
-artifacts. The Tackle, ExRatatui, and Lumis NIFs are compiled for the musl
+artifacts. The Tackle, ExRatatui, Lumis, and clipboard NIFs are compiled for the musl
 target in separate derivations from crates vendored via each `Cargo.lock`, then
 installed into the Mix dependencies with Rustler's `skip_compilation?`. Lumis
 still downloads tree-sitter parsers at runtime on first use.
@@ -227,7 +228,7 @@ BEAM Machine artifact on the same exact OTP patch.
 Direct `mix release` remains useful while developing release configuration, but
 it is not the distributable build: it uses the active shell's OTP and network
 ERTS resolution. On Linux it also requires `TARGET_ABI=musl` for ExRatatui and
-the Tackle NIF musl variables supplied by the Nix development shell.
+the Tackle and clipboard NIF musl variables supplied by the Nix development shell.
 `Tackle.CLI.Release.verify_linux_nifs/1`, wired between `:assemble` and
 `&Burrito.wrap/1`, rejects glibc Rust NIFs and the shared `libgcc_s.so.1`
 unwinder before wrapping.
@@ -378,7 +379,7 @@ it because the agent keeps working.
 | Ctrl+F (Browse transcript) | Search full retained message and tool source. Type a query, Enter/↓ next match, ↑ previous, Esc closes. The query is never sent to the agent. |
 | Ctrl+K | Compact context manually while idle. The draft is retained. Manual compaction cannot currently be cancelled. |
 | Ctrl+T | Reveal or collapse supplied reasoning. |
-| Ctrl+O | Copy the raw Markdown of the latest final answer (an assistant message without tool calls) through OSC 52. Works in any pane, also during a turn; overlays keep their own keys. |
+| Ctrl+O | Copy the raw Markdown of the latest final answer (an assistant message without tool calls) to the system clipboard: natively when possible, otherwise through tmux or an OSC 52 escape sequence. Works in any pane, also during a turn; overlays keep their own keys. |
 | Page Up/Page Down, mouse wheel | Scroll the transcript. Alt+< jumps to the oldest row; Alt+> returns to the newest row and resumes following. |
 
 ## Browse and local observability
@@ -454,9 +455,9 @@ that pastes an image as a file path is also supported. Images appear as numbered
 `[image-1]` tokens in the composer; text pastes of at least 1,000 bytes appear
 as `[text-1]`, with separate counters for each type. Enter expands the tokens
 before sending the full prompt to the agent. Smaller text pastes remain editable
-as ordinary text. Clipboard images need
-`wl-paste` (Wayland), `xclip` (X11), or `pngpaste` (macOS); text fallback on macOS
-uses `pbpaste`. The CLI saves clipboard images as private (0600) temporary files
+as ordinary text. Clipboard images and text are read through the native
+clipboard (`packages/clipboard_ex`); no external utilities are needed. The CLI
+saves clipboard images as private (0600) temporary PNG files
 until it exits and expands image tokens into paths with a request to use the
 `read` tool. When tools run in a jail, images are saved in the jail's `/tmp`,
 and a pasted image file path is copied there, so the agent can read them. Images

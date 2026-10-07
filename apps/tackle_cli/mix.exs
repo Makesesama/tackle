@@ -32,6 +32,7 @@ defmodule Tackle.CLI.MixProject do
         :tackle_ollama,
         :tackle_mcp,
         :tackle_sdk,
+        :clipboard_ex,
         :tackle
       ],
       mod: {Tackle.CLI.Application, []}
@@ -48,6 +49,7 @@ defmodule Tackle.CLI.MixProject do
       {:tackle_ollama, path: "../../packages/tackle_ollama"},
       {:tackle_mcp, path: "../../packages/tackle_mcp"},
       {:tackle_sdk, path: "../../packages/tackle_sdk"},
+      {:clipboard_ex, path: "../../packages/clipboard_ex"},
       {:optimus, "~> 0.6"},
       {:owl, "~> 0.13"},
       {:ucwidth, "~> 0.2"},
