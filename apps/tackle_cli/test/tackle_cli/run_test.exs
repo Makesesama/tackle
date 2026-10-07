@@ -123,6 +123,10 @@ defmodule Tackle.CLI.RunTest do
     File.mkdir_p!(home)
     File.write!(Path.join(home, "fixture.txt"), "scout fixture finding")
 
+    # This test asserts an exact delegation sequence; automatic session titles
+    # would interleave an extra generation call, so they are opted out here.
+    File.write!(Path.join(home, "config.json"), ~s({"session_titles": false}))
+
     # No CLI feature flag, credentials, native terminal, or real provider calls.
     File.cd!(home, fn ->
       Enum.reduce(1..2, nil, fn attempt, resume ->

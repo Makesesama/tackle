@@ -125,6 +125,51 @@ defmodule Tackle.ConfigTest do
     assert state.model == "family/nested"
   end
 
+  test "session titles are opt-in through new and resolve a dedicated model" do
+    assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small")
+    assert config.session_titles == nil
+
+    assert {:ok, config} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               session_titles: [model: "test/family/nested"]
+             )
+
+    assert %Tackle.Config.SessionTitles{model_ref: "test/family/nested"} =
+             config.session_titles
+
+    assert config.session_titles.selection.model == "family/nested"
+
+    assert {:ok, config} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               session_titles: [enabled: false, model: "test/small"]
+             )
+
+    assert config.session_titles == nil
+  end
+
+  test "session titles reject unknown options and unknown models" do
+    assert {:error, {:invalid_option, :session_titles, [:unknown]}} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               session_titles: [unknown: true]
+             )
+
+    assert {:error, {:unknown_model, "test/missing"}} =
+             Config.new(
+               adapters: [Adapter],
+               model: "test/small",
+               session_titles: [model: "test/missing"]
+             )
+
+    assert {:error, {:invalid_option, :session_titles, "yes"}} =
+             Config.new(adapters: [Adapter], model: "test/small", session_titles: "yes")
+  end
+
   test "reconfigures model and thinking without changing other session options" do
     assert {:ok, config} =
              Config.new(

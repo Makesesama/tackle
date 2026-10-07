@@ -27,13 +27,17 @@ defmodule Tackle.Session do
 
   use GenServer, restart: :temporary
 
+  require Logger
+
   alias Tackle.AgentScope.Coordinator
   alias Tackle.Auth
   alias Tackle.Config
+  alias Tackle.Config.SessionTitles
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
+  alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
   alias Tackle.Lib.State, as: AgentState
@@ -51,6 +55,7 @@ defmodule Tackle.Session do
   alias Tackle.Session.Persistence
   alias Tackle.Session.Projection
   alias Tackle.Session.Spec, as: SessionSpec
+  alias Tackle.Session.Title
   alias Tackle.Session.Tree, as: SessionTree
 
   @task_shutdown_timeout 1_000
@@ -106,7 +111,16 @@ defmodule Tackle.Session do
     @moduledoc "An atomic view of a Tackle session and its active turn."
 
     @enforce_keys [:session_id, :agent_state]
-    defstruct [:session_id, :agent_state, :active_turn, :stats, :agent_ref, :scope_ref, :recovery]
+    defstruct [
+      :session_id,
+      :agent_state,
+      :active_turn,
+      :stats,
+      :agent_ref,
+      :scope_ref,
+      :recovery,
+      session_title: nil
+    ]
 
     @type active_turn :: %{
             required(:id) => String.t(),
@@ -127,7 +141,8 @@ defmodule Tackle.Session do
             stats: Tackle.Session.Stats.t() | nil,
             agent_ref: AgentRef.t() | nil,
             scope_ref: ScopeRef.t() | nil,
-            recovery: recovery() | nil
+            recovery: recovery() | nil,
+            session_title: String.t() | nil
           }
   end
 
@@ -306,7 +321,9 @@ defmodule Tackle.Session do
         recovery: recovery,
         inbox: :queue.new(),
         inbox_count: 0,
-        inbox_wake_scheduled?: false
+        inbox_wake_scheduled?: false,
+        session_title: projection_title(journal),
+        title_task: nil
       }
 
       register_with_coordinator(state)
@@ -570,7 +587,8 @@ defmodule Tackle.Session do
       {:tackle_event, state.agent_state.session_id, turn_id, event}
     )
 
-    {:noreply, record_interrupted_tool_call(state, event)}
+    state = record_interrupted_tool_call(state, event)
+    {:noreply, maybe_generate_title(state, event)}
   end
 
   def handle_info({:tackle_event, _turn_id, %Event{}}, state), do: {:noreply, state}
@@ -643,6 +661,22 @@ defmodule Tackle.Session do
     {:noreply, cancel_active_turn(state, reason)}
   end
 
+  # A completed title generation commits through the journal's metadata path so
+  # the projection, catalog, and every frontend pick it up. A failure only
+  # leaves the session untitled; it never surfaces as a session error.
+  def handle_info({ref, result}, %{title_task: %TurnTask{ref: ref}} = state) do
+    Process.demonitor(state.title_task.monitor, [:flush])
+    {:noreply, state |> Map.put(:title_task, :done) |> apply_generated_title(result)}
+  end
+
+  def handle_info(
+        {:DOWN, monitor, :process, _pid, _reason},
+        %{title_task: %TurnTask{monitor: monitor}} = state
+      ) do
+    Logger.debug("session title generation crashed")
+    {:noreply, %{state | title_task: :done}}
+  end
+
   def handle_info(:tackle_inbox_wake, state) do
     state = %{state | inbox_wake_scheduled?: false}
 
@@ -675,6 +709,7 @@ defmodule Tackle.Session do
   @impl true
   def terminate(_reason, state) do
     cleanup_active_turn(state.active_turn)
+    cleanup_title_task(state.title_task)
     :ok
   end
 
@@ -1348,8 +1383,100 @@ defmodule Tackle.Session do
       stats: Stats.from_agent_state(state.agent_state),
       agent_ref: state.agent_ref,
       scope_ref: state.scope_ref,
-      recovery: state.recovery
+      recovery: state.recovery,
+      session_title: state.session_title
     }
+  end
+
+  # -- automatic session titles ---------------------------------------------
+
+  # Codex-style automatic titles: the first settled user message of an
+  # untitled durable session starts one bounded, tool-free generation task
+  # (`Tackle.Session.Title`). The task runs concurrently with the active turn,
+  # so the title is ready soon after the prompt instead of after the turn. An
+  # explicit title from the session spec or a resumed journal suppresses
+  # generation, and a session generates at most one title.
+  defp maybe_generate_title(
+         %{session_title: nil, title_task: nil, journal: journal} = state,
+         %Event{type: :message_end, data: %{message: %Message{role: :user} = message}}
+       )
+       when not is_nil(journal) do
+    content = message.content
+
+    if titles_enabled?(state.config) and is_binary(content) and String.trim(content) != "" do
+      start_title_task(state, content)
+    else
+      state
+    end
+  end
+
+  defp maybe_generate_title(state, _event), do: state
+
+  defp titles_enabled?(%Config{session_titles: %SessionTitles{}}), do: true
+  defp titles_enabled?(_config), do: false
+
+  defp start_title_task(state, user_message) do
+    selection = title_selection(state.config)
+    llm_opts = title_llm_opts(state)
+
+    case TurnTask.start(state.work_supervisor, fn ->
+           Title.generate(selection, user_message, llm_opts)
+         end) do
+      {:ok, task} ->
+        %{state | title_task: task}
+
+      {:error, reason} ->
+        Logger.debug("session title task failed to start: #{inspect(reason)}")
+        %{state | title_task: :done}
+    end
+  end
+
+  # A dedicated title model wins when one is configured; otherwise the title
+  # call reuses the session's live selection, like codex falling back to the
+  # current model.
+  defp title_selection(%Config{
+         session_titles: %SessionTitles{selection: %Selection{} = selection}
+       }),
+       do: selection
+
+  defp title_selection(%Config{llm: %Selection{} = selection}), do: selection
+
+  defp title_llm_opts(%{config: config, agent_state: agent_state}) do
+    config.llm_opts
+    |> Keyword.put(:credential_store, Auth.credential_store())
+    |> Keyword.put(:session_id, agent_state.session_id)
+  end
+
+  defp apply_generated_title(state, {:ok, title}) do
+    case Journal.metadata_changed(state.journal, %{"title" => title}) do
+      :ok ->
+        state = %{state | session_title: title}
+
+        broadcast(
+          state,
+          {:tackle_session_title_changed, state.agent_state.session_id, title}
+        )
+
+        state
+
+      {:error, reason} ->
+        Logger.debug("session title commit failed: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp apply_generated_title(state, {:error, reason}) do
+    Logger.debug("session title generation failed: #{inspect(reason)}")
+    state
+  end
+
+  defp projection_title(nil), do: nil
+
+  defp projection_title(journal) do
+    case Journal.projection(journal) do
+      {:ok, %Projection{title: title}} when is_binary(title) -> title
+      _other -> nil
+    end
   end
 
   defp project_usage_event(
@@ -1405,6 +1532,12 @@ defmodule Tackle.Session do
     safe_cancellation(fn -> Cancellation.delete(active_turn.signal) end)
     :ok
   end
+
+  defp cleanup_title_task(nil), do: :ok
+  defp cleanup_title_task(:done), do: :ok
+
+  defp cleanup_title_task(%TurnTask{} = task),
+    do: TurnTask.shutdown(task, @task_shutdown_timeout)
 
   # A crashed turn can leave tool tasks running under the session's tool
   # supervisor. Only one turn runs at a time, so none of them belong to any

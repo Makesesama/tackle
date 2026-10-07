@@ -657,6 +657,24 @@ current session view; they are not a persisted compaction archive. Drafts remain
 editable and are never queued during manual compaction; Esc does not cancel that
 synchronous session operation.
 
+### Session titles
+
+After the first prompt of a new session, one tool-free LLM call generates a
+concise task title (at most 36 characters, following codex-rs thread titles).
+A resumed session that is still untitled is titled from its next prompt. The
+title is committed to the session journal, so `tackle sessions list`, the dashboard
+shortcuts, and search show it, and the terminal window title adopts it. The
+title call runs concurrently with the turn and uses the session's model by
+default; set a dedicated one in `$TACKLE_HOME/config.json`:
+
+```json
+{ "session_titles": { "model": "openai-codex/gpt-5.5-codex-mini" } }
+```
+
+Set `"session_titles": false` to disable generation. A session that already
+carries an explicit title (through `Tackle.Session.Spec`'s `:title`) is never
+retitled, and a resumed session keeps its committed title.
+
 ### Conversation tree (`/tree`)
 
 Type `/tree` (or press F5) while idle to browse the session's conversation tree.

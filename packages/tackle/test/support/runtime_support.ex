@@ -205,7 +205,8 @@ defmodule Tackle.Test.Runtime do
         system_prompt: Keyword.get(opts, :system_prompt, "You are a test agent."),
         max_iterations: Keyword.get(opts, :max_iterations, 5),
         llm_opts: Keyword.merge(default_llm_opts, Keyword.get(opts, :llm_opts, [])),
-        compaction: Keyword.get(opts, :compaction)
+        compaction: Keyword.get(opts, :compaction),
+        session_titles: Keyword.get(opts, :session_titles)
       )
 
     config

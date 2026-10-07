@@ -20,6 +20,7 @@ defmodule Tackle.Config do
   require Logger
 
   alias Tackle.Config.File, as: ConfigFile
+  alias Tackle.Config.SessionTitles
   alias Tackle.Executor
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.ID
@@ -66,7 +67,8 @@ defmodule Tackle.Config do
     :id_generator,
     :llm_stream,
     :retry,
-    :compaction
+    :compaction,
+    :session_titles
   ]
 
   @enforce_keys [:adapters, :model_ref, :llm]
@@ -85,7 +87,8 @@ defmodule Tackle.Config do
             id_generator: &ID.uuid4/0,
             llm_stream: false,
             retry: Retry.new!(),
-            compaction: nil
+            compaction: nil,
+            session_titles: nil
 
   @type t :: %__MODULE__{
           adapters: [module()],
@@ -103,7 +106,8 @@ defmodule Tackle.Config do
           id_generator: ID.generator(),
           llm_stream: boolean(),
           retry: Retry.t(),
-          compaction: CompactionConfig.t() | nil
+          compaction: CompactionConfig.t() | nil,
+          session_titles: SessionTitles.t() | nil
         }
 
   @doc """
@@ -131,6 +135,7 @@ defmodule Tackle.Config do
          {:ok, file_opts} <- ConfigFile.load(config_path),
          {:ok, env_opts} <- environment_options(env),
          {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, adapters),
+         {:ok, session_opts} <- default_session_titles(session_opts),
          {:ok, config} <- session_opts |> Keyword.put(:adapters, adapters) |> new(),
          {:ok, cwd} <- fetch_cwd(opts, config.context) do
       load_system_prompt(
@@ -165,6 +170,8 @@ defmodule Tackle.Config do
          {:ok, adapters} <- fetch_adapters(opts),
          {:ok, model_ref} <- fetch_model_ref(opts),
          {:ok, llm} <- LLM.select(adapters, model_ref),
+         {:ok, session_titles} <-
+           resolve_session_titles(Keyword.get(opts, :session_titles), adapters),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
@@ -201,7 +208,8 @@ defmodule Tackle.Config do
          id_generator: Keyword.get(opts, :id_generator, &ID.uuid4/0),
          llm_stream: Keyword.get(opts, :llm_stream, false),
          retry: retry,
-         compaction: compaction
+         compaction: compaction,
+         session_titles: session_titles
        }}
     end
   end
@@ -332,6 +340,18 @@ defmodule Tackle.Config do
       with {:ok, model_ref} <- Tackle.Plugins.default_model_ref(adapters) do
         {:ok, Keyword.put(session_opts, :model, model_ref)}
       end
+    end
+  end
+
+  # Codex-style automatic titles are on by default for the harness loader; an
+  # explicit `session_titles` entry (including `false`) in `config.json`, the
+  # environment, or the overrides wins. `new/1` alone treats the option as
+  # absent, so embedding hosts opt into the extra LLM call.
+  defp default_session_titles(session_opts) do
+    if Keyword.has_key?(session_opts, :session_titles) do
+      {:ok, session_opts}
+    else
+      {:ok, Keyword.put(session_opts, :session_titles, [])}
     end
   end
 
@@ -588,6 +608,18 @@ defmodule Tackle.Config do
   defp resolve_compaction(false), do: CompactionConfig.new(false)
   defp resolve_compaction(opts) when is_list(opts), do: CompactionConfig.new(opts)
   defp resolve_compaction(other), do: {:error, {:invalid_option, :compaction, other}}
+
+  defp resolve_session_titles(nil, _adapters), do: {:ok, nil}
+  defp resolve_session_titles(false, _adapters), do: {:ok, nil}
+
+  defp resolve_session_titles(%SessionTitles{} = config, adapters),
+    do: SessionTitles.new(config, adapters)
+
+  defp resolve_session_titles(opts, adapters) when is_list(opts),
+    do: SessionTitles.new(opts, adapters)
+
+  defp resolve_session_titles(other, _adapters),
+    do: {:error, {:invalid_option, :session_titles, other}}
 
   defp validate_optional_string(_name, nil), do: :ok
   defp validate_optional_string(_name, value) when is_binary(value), do: :ok

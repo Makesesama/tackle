@@ -450,7 +450,25 @@ built-in defaults < ~/.tackle/config.json < TACKLE_MODEL/TACKLE_THINKING < expli
 `TACKLE_HOME` changes the directory containing `config.json` and `auth.json`.
 The configuration file accepts `model` and `thinking` harness fields and the
 CLI-only boolean `show_subagent_sidebar` (default `true`), which does not affect
-agent sessions. Thinking may be
+agent sessions. It also accepts a `session_titles` object configuring automatic
+LLM-generated session titles: after an untitled durable session settles its
+first user message (or, for a resumed untitled session, its next one), one
+tool-free generation call produces a concise title that is
+committed through the journal and shown in session listings and the terminal
+window title. Titles are enabled by the harness loader (`Tackle.Config.load/1`)
+and can be disabled with `"session_titles": false`; an optional `model` field
+names a canonical model reference such as `"openai-codex/gpt-5.5"` for the
+title call, defaulting to the session's configured model:
+
+```json
+{
+  "model": "openai-codex/gpt-5.5",
+  "session_titles": { "model": "openai-codex/gpt-5.5-codex-mini" }
+}
+```
+
+`Tackle.Config.new/1` treats an absent `session_titles` option as disabled, so
+embedding hosts opt into the extra LLM call explicitly. Thinking may be
 `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; supported levels can vary
 by model. `TACKLE_THINKING` overrides the file in the same way that
 `TACKLE_MODEL` overrides `model`. Adapter modules are always supplied as

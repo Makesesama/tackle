@@ -307,6 +307,21 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   defp route({:tackle_session_navigated, _session_id, _snapshot, _outcome}, state),
     do: {:noreply, state, render?: false}
 
+  # The session titled itself after its first user message. Adopt the title for
+  # the terminal title and reload the dashboard shortcuts so the new name is
+  # listed without waiting for the next mount.
+  defp route(
+         {:tackle_session_title_changed, session_id, title},
+         %State{session_id: session_id} = state
+       )
+       when is_binary(title) do
+    {state, commands} = state |> Map.put(:session_title, title) |> RecentSessions.load()
+    {:noreply, state, commands: commands}
+  end
+
+  defp route({:tackle_session_title_changed, _session_id, _title}, state),
+    do: {:noreply, state, render?: false}
+
   # A background subagent terminal notice wakes an idle parent without a frontend
   # submit command. Adopt that internally-started continuation before its events;
   # the session broadcasts this message before processing the turn task's output.

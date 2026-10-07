@@ -240,6 +240,75 @@ defmodule Tackle.Config.FileTest do
              Config.load(available_adapters: [Adapter], env: env)
   end
 
+  test "session titles are enabled by default and configurable through config.json", %{
+    home: home,
+    env: env
+  } do
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter],
+               env: env,
+               overrides: [model: "test/default"]
+             )
+
+    assert %Tackle.Config.SessionTitles{model_ref: nil, selection: nil} = config.session_titles
+
+    write_config(
+      home,
+      JSON.encode!(%{"session_titles" => %{"model" => "test/file"}})
+    )
+
+    assert {:ok, config} = Config.load(available_adapters: [Adapter], env: env)
+    assert %Tackle.Config.SessionTitles{model_ref: "test/file"} = config.session_titles
+    assert config.session_titles.selection.model == "file"
+
+    write_config(home, ~s({"session_titles": false}))
+
+    assert {:ok, config} = Config.load(available_adapters: [Adapter], env: env)
+    assert config.session_titles == nil
+  end
+
+  test "session titles accept true and null as the default enabled form", %{home: home, env: env} do
+    write_config(home, ~s({"session_titles": true}))
+
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter],
+               env: env,
+               overrides: [model: "test/default"]
+             )
+
+    assert %Tackle.Config.SessionTitles{model_ref: nil} = config.session_titles
+
+    write_config(home, ~s({"session_titles": null}))
+
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter],
+               env: env,
+               overrides: [model: "test/default"]
+             )
+
+    assert %Tackle.Config.SessionTitles{model_ref: nil} = config.session_titles
+  end
+
+  test "invalid session-titles configuration returns errors", %{home: home, env: env} do
+    path = write_config(home, ~s({"session_titles": "yes"}))
+
+    assert {:error, {:invalid_config_field, ^path, "session_titles"}} =
+             Config.load(available_adapters: [Adapter], env: env)
+
+    write_config(home, JSON.encode!(%{"session_titles" => %{"unknown" => true}}))
+
+    assert {:error, {:invalid_config_field, ^path, "session_titles"}} =
+             Config.load(available_adapters: [Adapter], env: env)
+
+    write_config(home, JSON.encode!(%{"session_titles" => %{"model" => "test/missing"}}))
+
+    assert {:error, {:unknown_model, "test/missing"}} =
+             Config.load(available_adapters: [Adapter], env: env)
+  end
+
   test "module-looking strings are data and are never converted to atoms", %{home: home, env: env} do
     module_name = "Elixir.UnloadedTackleAdapter#{System.unique_integer([:positive])}"
     assert_raise ArgumentError, fn -> String.to_existing_atom(module_name) end

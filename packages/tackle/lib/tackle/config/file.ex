@@ -5,7 +5,13 @@ defmodule Tackle.Config.File do
 
   # The sidebar preference belongs to the CLI; the harness accepts and validates
   # the field without carrying presentation state into a session configuration.
-  @known_fields ["model", "thinking", "show_subagent_sidebar", "provider_options"]
+  @known_fields [
+    "model",
+    "thinking",
+    "show_subagent_sidebar",
+    "provider_options",
+    "session_titles"
+  ]
 
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
   def load(path) when is_binary(path) do
@@ -35,9 +41,46 @@ defmodule Tackle.Config.File do
     with {:ok, model_opts} <- model_options(path, config),
          {:ok, thinking_opts} <- thinking_options(path, config),
          {:ok, provider_opts} <- provider_options(path, config),
+         {:ok, title_opts} <- session_titles_options(path, config),
          :ok <- sidebar_option(path, config) do
-      {:ok, model_opts ++ thinking_opts ++ provider_opts}
+      {:ok, model_opts ++ thinking_opts ++ provider_opts ++ title_opts}
     end
+  end
+
+  # LLM-generated session titles: `false` disables them; `true` and `null` mean
+  # the default enabled configuration; an object may set `enabled` (boolean,
+  # default true) and `model` (canonical model reference for the title call,
+  # defaulting to the session model).
+  defp session_titles_options(path, config) do
+    case Map.fetch(config, "session_titles") do
+      {:ok, false} -> {:ok, [session_titles: false]}
+      {:ok, true} -> {:ok, [session_titles: []]}
+      {:ok, nil} -> {:ok, []}
+      {:ok, %{} = titles} -> session_titles_fields(path, titles)
+      {:ok, _other} -> {:error, {:invalid_config_field, path, "session_titles"}}
+      :error -> {:ok, []}
+    end
+  end
+
+  defp session_titles_fields(path, titles) do
+    case Map.keys(titles) -- ["enabled", "model"] do
+      [] ->
+        enabled = Map.get(titles, "enabled", true)
+        model = Map.get(titles, "model")
+
+        if valid_titles_shape?(enabled, model) do
+          {:ok, [session_titles: [enabled: enabled, model: model]]}
+        else
+          {:error, {:invalid_config_field, path, "session_titles"}}
+        end
+
+      _unknown_fields ->
+        {:error, {:invalid_config_field, path, "session_titles"}}
+    end
+  end
+
+  defp valid_titles_shape?(enabled, model) do
+    is_boolean(enabled) and (is_nil(model) or (is_binary(model) and model != ""))
   end
 
   # Adapter-owned settings, keyed by adapter id. The harness only checks the

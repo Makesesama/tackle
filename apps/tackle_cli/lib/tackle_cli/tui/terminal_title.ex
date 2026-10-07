@@ -86,6 +86,12 @@ defmodule Tackle.CLI.TUI.TerminalTitle do
     end
   end
 
+  # A generated or explicit session title names the window; an untitled
+  # session falls back to the id's first block. The title is bounded by the
+  # generator and sanitized by the writer like any other title source.
+  defp session(%State{session_title: title}) when is_binary(title) and title != "",
+    do: title
+
   defp session(%State{session_id: nil}), do: nil
 
   # The session id is a UUID; its first block is enough to tell windows apart

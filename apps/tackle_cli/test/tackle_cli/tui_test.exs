@@ -66,7 +66,20 @@ defmodule Tackle.CLI.TUITest do
       {:ok, _pid} = Tackle.Runtime.Registry.register(agent_ref, :agent)
       {:ok, llm} = LLM.select([Adapter], "openai-codex/test-model")
       agent_state = State.new(llm: llm)
-      {:ok, %{test_pid: test_pid, subscriber: nil, agent_state: agent_state, queued: []}}
+
+      {:ok,
+       %{
+         test_pid: test_pid,
+         subscriber: nil,
+         agent_state: agent_state,
+         queued: [],
+         session_title: nil
+       }}
+    end
+
+    @impl true
+    def handle_info({:set_session_title, title}, state) do
+      {:noreply, %{state | session_title: title}}
     end
 
     @impl true
@@ -76,7 +89,8 @@ defmodule Tackle.CLI.TUITest do
       snapshot = %Snapshot{
         session_id: state.agent_state.session_id,
         agent_state: state.agent_state,
-        active_turn: nil
+        active_turn: nil,
+        session_title: state.session_title
       }
 
       {:reply, {:ok, snapshot}, %{state | subscriber: subscriber}}
@@ -378,6 +392,20 @@ defmodule Tackle.CLI.TUITest do
     assert {:ok, ^session_id} = Task.await(task)
   end
 
+  test "adopts a generated session title for the terminal title", %{tui: tui} do
+    session_id = state(tui).session_id
+
+    send(tui, {:tackle_session_title_changed, "other-session", "Other session"})
+    Process.sleep(20)
+    assert state(tui).session_title == nil
+
+    send(tui, {:tackle_session_title_changed, session_id, "Fix the login form"})
+
+    titled = await_state(tui, &(&1.session_title == "Fix the login form"))
+    assert titled.terminal_title =~ "Fix the login form"
+    refute titled.terminal_title =~ String.slice(session_id, 0, 8)
+  end
+
   test "notifies when a turn finishes while the terminal is unfocused", %{
     agent_ref: agent_ref
   } do
@@ -606,6 +634,7 @@ defmodule Tackle.CLI.TUITest do
     replacement_ref = AgentRef.new!(ID.generate(), ID.generate())
     {:ok, replacement} = SessionStub.start_link({test_pid, replacement_ref})
     Process.unlink(replacement)
+    send(replacement, {:set_session_title, "Adopted title"})
 
     task =
       Task.async(fn ->
@@ -630,6 +659,8 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "1", ["alt"])
     resumed = await_state(tui, &(&1.agent_ref == replacement_ref))
     assert resumed.session_id != first.session_id
+    assert resumed.session_title == "Adopted title"
+    assert resumed.terminal_title =~ "Adopted title"
     assert resumed.recent_sessions == [%{session_id: "previous", title: "Previous"}]
 
     inject_key(tui, "c", ["ctrl"])
