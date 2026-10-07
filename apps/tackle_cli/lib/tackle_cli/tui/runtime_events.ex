@@ -25,6 +25,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     Subagents,
     ToolView,
     Tree,
+    TurnTip,
     UsageChart,
     Util,
     Viewport
@@ -54,7 +55,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     if busy?(expired) do
       state = %{expired | spinner_frame: expired.spinner_frame + 1}
-      {:noreply, refresh_subagent_clocks(state)}
+      {:noreply, state |> refresh_subagent_clocks() |> activate_turn_tip()}
     else
       {:noreply, expired, render?: expired != state}
     end
@@ -79,7 +80,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
               state
               | pending_operation: nil,
                 deferred_events: [],
-                active_turn: %{id: turn_id},
+                active_turn: %{id: turn_id, started_at_ms: operation_started_at(operation)},
                 activity: "starting",
                 error: nil,
                 outcome: nil
@@ -339,7 +340,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
        when reason in [:background_notice, :queued_messages] do
     state = %{
       state
-      | active_turn: %{id: turn_id, operation: :continue, cancellation_requested?: false},
+      | active_turn: %{
+          id: turn_id,
+          operation: :continue,
+          cancellation_requested?: false,
+          started_at_ms: now_ms()
+        },
         pending_prompt: nil,
         stream: Stream.reset(state.stream),
         deferred_events: [],
@@ -731,6 +737,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         pending_prompt: nil,
         notice: nil,
         queue_notice_at: nil,
+        turn_tip: TurnTip.dismiss(state.turn_tip),
         stream: Stream.reset(state.stream),
         pending_operation: nil,
         deferred_events: [],
@@ -758,6 +765,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         pending_prompt: nil,
         notice: nil,
         queue_notice_at: nil,
+        turn_tip: TurnTip.dismiss(state.turn_tip),
         stream: Stream.reset(state.stream),
         pending_operation: nil,
         deferred_events: [],
@@ -804,8 +812,25 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp route(_message, state), do: {:noreply, state, render?: false}
 
+  # The elapsed clock starts when the shell first observed the busy phase, so
+  # a submit that resolves into a turn keeps a continuous clock instead of
+  # restarting at the turn id.
+  defp operation_started_at(operation),
+    do: Map.get(operation, :started_at_ms) || now_ms()
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
+
+  # A working tip appears once the turn has outgrown the tip delay; while a
+  # tip is already showing or no unexposed template remains, this is a no-op.
+  defp activate_turn_tip(%State{} = state) do
+    case TurnTip.activate(state) do
+      %TurnTip{} = tip -> %{state | turn_tip: tip}
+      nil -> state
+    end
+  end
+
   defp project_early_turn(message, turn_id, state) do
-    state = %{state | active_turn: %{id: turn_id}, deferred_events: []}
+    state = %{state | active_turn: %{id: turn_id, started_at_ms: now_ms()}, deferred_events: []}
     route(message, Observations.observe(message, state))
   end
 
@@ -854,7 +879,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         &{:tui_operation_result, ref, :cancel, &1}
       )
 
-    {%{state | pending_operation: %{ref: ref, kind: :cancel}}, command}
+    {%{state | pending_operation: %{ref: ref, kind: :cancel, started_at_ms: now_ms()}}, command}
   end
 
   defp operation_failed(state, reason) do

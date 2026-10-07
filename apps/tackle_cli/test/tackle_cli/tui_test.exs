@@ -17,6 +17,7 @@ defmodule Tackle.CLI.TUITest do
     Picker,
     RecentSessions,
     RuntimeEvents,
+    TurnTip,
     Viewport
   }
 
@@ -273,6 +274,26 @@ defmodule Tackle.CLI.TUITest do
 
       smaller = Layout.regions(10, 2, 1, false)
       assert_regions_within_bounds(smaller, 10, 2)
+    end
+
+    test "the turn-tip row is optional and yields before the status row" do
+      assert Layout.regions(80, 24, 1, false).tip == nil
+
+      regions = Layout.regions(80, 24, 1, false, false, false, true)
+      assert regions.tip
+      assert regions.tip.y == regions.status.y + 1
+      assert regions.tip.y + regions.tip.height == 24
+      assert_regions_within_bounds(regions, 80, 24)
+
+      # The status row is taken first; the tip is the first row given up.
+      short = Layout.regions(80, 7, 1, false, false, false, true)
+      assert short.tip
+      assert short.status
+
+      shorter = Layout.regions(80, 6, 1, false, false, false, true)
+      assert shorter.tip == nil
+      assert shorter.status
+      assert_regions_within_bounds(shorter, 80, 6)
     end
 
     test "renders and draws without crashing at tiny sizes", %{tui: tui} do
@@ -728,6 +749,17 @@ defmodule Tackle.CLI.TUITest do
     refute status_text(tiny) =~ "? help"
   end
 
+  test "an active turn tip renders in the expendable row below the status", %{tui: tui} do
+    base = state(tui)
+    refute tip_rect(base)
+
+    tipped = %{base | turn_tip: %TurnTip{current: "Esc interrupts the running turn"}}
+
+    assert rect = tip_rect(tipped)
+    assert rect.y == 23
+    assert rect.height == 1
+  end
+
   test "short terminals keep turn state in the header without a status row", %{tui: tui} do
     for {changes, label} <- [
           {%{}, "ready"},
@@ -757,7 +789,9 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "?", ["shift"])
     opened = state(tui)
     assert match?({:help, _}, opened.overlay)
-    assert status_text(opened) =~ "? help"
+    # The overlay owns the status row and carries its own close hint.
+    assert status_text(opened) =~ "?/Esc close"
+    refute status_text(opened) =~ "? help"
 
     assert Enum.any?(TUI.scene(opened, frame(opened)), fn {widget, _rect} ->
              match?(%ExRatatui.Widgets.Popup{}, widget)
@@ -877,7 +911,8 @@ defmodule Tackle.CLI.TUITest do
     assert_receive {:submitted, "hi"}
     state = await_state(tui, &is_nil(&1.pending_operation))
 
-    assert state.active_turn == %{id: "turn-1"}
+    assert %{id: "turn-1", started_at_ms: started_at} = state.active_turn
+    assert is_integer(started_at)
     assert state.pending_prompt == "hi"
     assert draft(tui) == ""
     assert state.draft_lines == 1
@@ -1365,7 +1400,10 @@ defmodule Tackle.CLI.TUITest do
     started =
       await_state(
         tui,
-        &(&1.active_turn == %{id: "turn-2", operation: :continue, cancellation_requested?: false})
+        &match?(
+          %{id: "turn-2", operation: :continue, cancellation_requested?: false},
+          &1.active_turn
+        )
       )
 
     assert conversation_text(started) =~ "second draft"
@@ -1650,7 +1688,8 @@ defmodule Tackle.CLI.TUITest do
     assert popup_title(current) =~ "Current"
     assert popup_content(current).text =~ "No settled token usage"
     assert status_text(current) =~ "Usage · Current"
-    assert status_text(current) =~ "? help"
+    # An open overlay owns the status row, so the right-side hints step aside.
+    refute status_text(current) =~ "? help"
 
     inject_key(tui, "tab")
     assert_receive {:usage_timeline_requested, :all, ^session_id}
@@ -3199,6 +3238,16 @@ defmodule Tackle.CLI.TUITest do
 
   defp widgets(state), do: TUI.scene(state, frame(state))
 
+  defp tip_rect(state) do
+    Enum.find_value(widgets(state), fn
+      {%{text: text}, rect} ->
+        if plain(text) =~ "└ ", do: rect
+
+      _widget_without_text ->
+        nil
+    end)
+  end
+
   defp regions(state) do
     {width, height} = state.size
     Layout.regions(width, height, state.draft_lines, reading?(state.conversation))
@@ -3380,7 +3429,8 @@ defmodule Tackle.CLI.TUITest do
         regions.sidebar,
         regions.composer,
         regions.reading,
-        regions.status
+        regions.status,
+        regions.tip
       ]
       |> Enum.reject(&is_nil/1)
 

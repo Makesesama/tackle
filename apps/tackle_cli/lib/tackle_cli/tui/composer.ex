@@ -191,7 +191,16 @@ defmodule Tackle.CLI.TUI.Composer do
       prompt = List.last(prompts)
       ref = make_ref()
       agent_ref = state.agent_ref
-      state = %{state | pending_operation: %{ref: ref, kind: :withdraw_queued, prompt: prompt}}
+
+      state = %{
+        state
+        | pending_operation: %{
+            ref: ref,
+            kind: :withdraw_queued,
+            prompt: prompt,
+            started_at_ms: System.monotonic_time(:millisecond)
+          }
+      }
 
       command =
         Command.async(
@@ -299,7 +308,13 @@ defmodule Tackle.CLI.TUI.Composer do
 
     state = %{
       state
-      | pending_operation: %{ref: ref, kind: :submit, raw_draft: raw_draft, prompt: prompt},
+      | pending_operation: %{
+          ref: ref,
+          kind: :submit,
+          raw_draft: raw_draft,
+          prompt: prompt,
+          started_at_ms: System.monotonic_time(:millisecond)
+        },
         history: History.record(state.history, String.trim(raw_draft)),
         notice: nil
     }

@@ -5,14 +5,23 @@ defmodule Tackle.CLI.TUI.StatusView do
   The status row reports honest turn state (`ready`, `thinking`, `running
   <tool>`, `cancelling`, `cancelled`, `failed`) followed by available usage
   metadata: context pressure, combined input/output tokens, cache reuse and
-  cost. Missing metadata is omitted rather than shown as zero.
+  cost. Missing metadata is omitted rather than shown as zero. While the
+  shell is busy, a compact elapsed clock rides with the leading status word
+  (`working (1m 12s)`), so state and clock survive narrow terminals together.
 
-  The right-hand status cue opens a separate key map with `?`.
+  The right-hand hints follow a documented collapse ladder (the pattern is
+  ported from codex's `bottom_pane/footer.rs`): hints drop whole, lowest
+  priority first, and never render without room for their full text. While
+  a turn runs, `esc interrupt` outlives `? help` because the interrupt is
+  time-critical and the shortcut reference stays reachable through the
+  popup. An open overlay owns the status row, so hints only appear on the
+  plain shell.
   """
 
   alias Tackle.CLI.TUI.{
     Browser,
     Conversation,
+    KeyHint,
     MessageView,
     Picker,
     State,
@@ -25,7 +34,6 @@ defmodule Tackle.CLI.TUI.StatusView do
   alias Tackle.Lib.{Compaction, ContextUsage, Usage}
 
   @spinner_frames ~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
-  @help_cue "? help"
 
   @doc "Builds the status row for the current state and terminal width."
   @spec status_widget(State.t(), integer()) :: ExRatatui.Widgets.Paragraph.t()
@@ -68,10 +76,11 @@ defmodule Tackle.CLI.TUI.StatusView do
 
   defp status_spans(state, width) do
     segments = status_segments(state)
-    # Leave a gap and a right margin when the cue fits alongside the leading state.
-    cue_width = MessageView.display_width(@help_cue)
-    show_cue? = width >= MessageView.display_width(hd(segments)) + cue_width + 4
-    available = if show_cue?, do: width - cue_width - 3, else: width - 1
+    hints = right_hints(state, width, hd(segments))
+    # Reserve the hint row plus its two-column gap and one-column right
+    # margin when hints are showing.
+    hint_width = KeyHint.row_width(hints)
+    available = if hints == [], do: width - 1, else: width - hint_width - 3
 
     [first | rest] = fit_segments(segments, available)
 
@@ -81,18 +90,35 @@ defmodule Tackle.CLI.TUI.StatusView do
           MessageView.span("  ·  " <> segment, Theme.style(:muted))
         end)
 
-    if show_cue? do
-      gap = max(width - spans_width(spans) - cue_width - 1, 0)
+    if hints == [] do
+      spans
+    else
+      gap = max(width - spans_width(spans) - hint_width - 1, 0)
 
       spans ++
         [
-          MessageView.span(String.duplicate(" ", gap), %ExRatatui.Style{}),
-          MessageView.span(@help_cue, Theme.style(:subtle))
+          MessageView.span(String.duplicate(" ", gap), %ExRatatui.Style{})
+          | KeyHint.row_spans(hints)
         ]
-    else
-      spans
     end
   end
+
+  # Right-side hint ladder, fullest first. Hints drop whole from the
+  # ladder's end, so `esc interrupt` outlives `? help` while busy, and the
+  # leading state segment always keeps its space: hints are chosen from the
+  # width it leaves behind.
+  defp right_hints(%State{overlay: nil} = state, width, leading) do
+    candidates =
+      if busy?(state) do
+        [[{"esc", "interrupt"}, {"?", "help"}], [{"esc", "interrupt"}], []]
+      else
+        [[{"?", "help"}], []]
+      end
+
+    KeyHint.first_fitting(candidates, width - 1 - MessageView.display_width(leading) - 3)
+  end
+
+  defp right_hints(%State{}, _width, _leading), do: []
 
   defp spans_width(spans) do
     Enum.reduce(spans, 0, fn span, total -> total + MessageView.display_width(span.content) end)
@@ -156,10 +182,46 @@ defmodule Tackle.CLI.TUI.StatusView do
   end
 
   defp status_segments(%State{} = state) do
-    [status_label(state), state.notice]
+    [leading_segment(state), state.notice]
     |> Enum.reject(&is_nil/1)
     |> Kernel.++(busy_segments(state) ++ metric_segments(state))
   end
+
+  # The elapsed clock rides with the leading status word, the way codex
+  # prints it inline in the working header, so the clock never competes
+  # with metric segments for space.
+  defp leading_segment(state) do
+    case elapsed_ms(state) do
+      nil -> status_label(state)
+      elapsed -> "#{status_label(state)} (#{format_elapsed(elapsed)})"
+    end
+  end
+
+  # An active turn's clock wins over a pending operation's so cancelling a
+  # running turn does not restart the clock; a turn adopted from a snapshot
+  # has no observable start and shows no clock.
+  defp elapsed_ms(%State{active_turn: %{started_at_ms: started_at_ms}}),
+    do: max(System.monotonic_time(:millisecond) - started_at_ms, 0)
+
+  defp elapsed_ms(%State{pending_operation: %{started_at_ms: started_at_ms}}),
+    do: max(System.monotonic_time(:millisecond) - started_at_ms, 0)
+
+  defp elapsed_ms(%State{}), do: nil
+
+  # codex's compact working clock: 0s … 59s, 1m 00s … 59m 59s, 1h 00m 00s.
+  defp format_elapsed(ms) do
+    seconds = div(ms, 1000)
+    {hours, rest} = {div(seconds, 3600), rem(seconds, 3600)}
+    {minutes, secs} = {div(rest, 60), rem(rest, 60)}
+
+    cond do
+      hours > 0 -> "#{hours}h #{pad2(minutes)}m #{pad2(secs)}s"
+      minutes > 0 -> "#{minutes}m #{pad2(secs)}s"
+      true -> "#{seconds}s"
+    end
+  end
+
+  defp pad2(n), do: String.pad_leading(Integer.to_string(n), 2, "0")
 
   defp current_search_preview(matches, index) do
     case Enum.at(matches, index) do

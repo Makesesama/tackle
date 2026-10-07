@@ -312,11 +312,15 @@ defmodule Tackle.CLI.SubagentProgressTest do
                state
              )
 
-    assert started.active_turn == %{
+    assert %{
              id: "notice-turn",
              operation: :continue,
-             cancellation_requested?: false
-           }
+             cancellation_requested?: false,
+             started_at_ms: started_at
+           } =
+             started.active_turn
+
+    assert is_integer(started_at)
 
     assert started.activity == "processing subagent notice"
 

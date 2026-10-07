@@ -64,7 +64,8 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
     message = {:tackle_event, "session", "turn", event}
 
     {:noreply, projected} = RuntimeEvents.handle(message, state)
-    assert projected.active_turn == %{id: "turn"}
+    assert %{id: "turn", started_at_ms: started_at} = projected.active_turn
+    assert is_integer(started_at)
     assert projected.deferred_events == []
 
     assert [%{type: :retry_scheduled, data: %{attempt: 1, delay_ms: 2000}}] =
@@ -95,7 +96,8 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
 
     event = {:tackle_event, "session", "turn", Event.new(:message_delta, %{delta: "done"})}
     assert {:noreply, live} = RuntimeEvents.handle(event, pending)
-    assert live.active_turn == %{id: "turn"}
+    assert %{id: "turn", started_at_ms: started_at} = live.active_turn
+    assert is_integer(started_at)
     assert live.pending_operation.kind == :submit
     assert live.stream.response == "done"
     assert Tackle.CLI.TUI.Conversation.text(live.conversation) =~ "done"
@@ -103,7 +105,8 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
     assert {:noreply, confirmed, commands: []} =
              RuntimeEvents.handle({:tui_operation_result, ref, :submit, {:ok, "turn"}}, live)
 
-    assert confirmed.active_turn == %{id: "turn"}
+    assert %{id: "turn", started_at_ms: started_at} = confirmed.active_turn
+    assert is_integer(started_at)
     assert confirmed.pending_operation == nil
     assert confirmed.stream.response == "done"
   end

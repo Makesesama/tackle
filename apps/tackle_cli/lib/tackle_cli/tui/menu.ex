@@ -226,7 +226,11 @@ defmodule Tackle.CLI.TUI.Menu do
 
     state = %{
       state
-      | pending_operation: %{ref: ref, kind: :reconfigure},
+      | pending_operation: %{
+          ref: ref,
+          kind: :reconfigure,
+          started_at_ms: System.monotonic_time(:millisecond)
+        },
         overlay: nil,
         activity: "reconfiguring",
         error: nil,

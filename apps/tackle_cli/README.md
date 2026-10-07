@@ -339,8 +339,10 @@ The same `mix tackle` commands continue to work from this directory. Run
 `mix tackle` without a prompt to open the supervised `ExRatatui.App` TUI.
 The shell is transcript-first and fullscreen: a compact model header, a
 border-light transcript, and a growing multiline composer. Reading position,
-status/metrics and a quiet `? help` cue sit **below** the input bar, not above
-it. `?` opens a shortcut reference when the draft is empty (or while browsing);
+status/metrics and quiet key hints sit **below** the input bar, not above
+it; an expendable turn-tip row can appear below the status row while a
+long-running turn has a hint to show. `?` opens a shortcut reference when
+the draft is empty (or while browsing);
 with a non-empty draft it inserts a literal question mark. Esc or ? closes the
 reference. The bar uses a muted blue border while focused; turn state falls
 back to the header on short terminals. Tiny terminals drop optional footer rows
@@ -615,11 +617,22 @@ Native surface output is limited to 65,536 cells per render.
 
 The status row shows honest turn state (`ready`, `starting`, `thinking`,
 `responding`, `running <tool>`, `cancelling`, `cancelled`, `failed`) plus
-available context/token/cache/cost metrics. Optional metrics are dropped before
+available context/token/cache/cost metrics. While the shell is busy, a
+compact elapsed clock rides with the leading status word (`working
+(1m 12s)`). The right-side key hints collapse by documented priority as
+the terminal narrows — hints drop whole, never truncated, and `esc
+interrupt` outlives `? help` while a turn runs — and step aside entirely
+while an overlay owns the status row. Optional metrics are dropped before
 working state, cancellation, or the composer when the terminal is narrow, and
 the status row itself disappears on very short terminals. A `~` before cost
 (for example `~$0.84`) marks a price-card estimate rather than
 provider-reported billing. Missing metadata is omitted.
+
+Once a turn has run for thirty seconds, a single turn-tip row can appear
+below the status row with a one-time usage hint (`  └ Esc interrupts the
+running turn`). Each tip is shown at most once per session, only while the
+composer is focused and empty with no overlay open, and the row is the
+first one the layout gives up on short terminals.
 
 F6 opens a modal usage chart without shrinking the transcript. Current mode
 covers the current session's complete branch archive; All sessions merges every

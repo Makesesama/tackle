@@ -379,7 +379,11 @@ defmodule Tackle.CLI.TUI.Tree do
 
     state = %{
       state
-      | pending_operation: %{ref: ref, kind: :navigate},
+      | pending_operation: %{
+          ref: ref,
+          kind: :navigate,
+          started_at_ms: System.monotonic_time(:millisecond)
+        },
         overlay: nil,
         activity: "navigating",
         error: nil,

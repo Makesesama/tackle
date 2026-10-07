@@ -7,8 +7,9 @@ defmodule Tackle.CLI.TUI.View do
   right-aligned logo while other terminals use a one-row text header.
   The transcript owns the flexible middle of the screen;
   a rounded input bar encloses the composer. Turn state and the `?` shortcut
-  cue share a row below the bar. Reading position adds no extra rows.
-  The header carries turn state only on short terminals.
+  cue share a row below the bar, and an expendable turn-tip row appears
+  below that while a long-running turn has a tip to show. Reading position
+  adds no extra rows. The header carries turn state only on short terminals.
 
   Layout is computed once per frame from the terminal size and the draft's
   wrapped row count, so the widget list and the rectangles can never disagree.
@@ -60,7 +61,8 @@ defmodule Tackle.CLI.TUI.View do
         state.draft_lines,
         Viewport.reading?(state.conversation),
         Subagents.visible?(state),
-        not is_nil(state.header_image)
+        not is_nil(state.header_image),
+        state.turn_tip.current != nil
       )
 
     if Dashboard.show?(state) do
@@ -79,6 +81,7 @@ defmodule Tackle.CLI.TUI.View do
         sidebar_widgets(regions.sidebar, state) ++
         status_widgets(regions.status, state, width) ++
         [{composer_widget(state), regions.composer}] ++
+        tip_widgets(regions.tip, state) ++
         overlay_widgets(state, regions.composer, width, height)
     end
   end
@@ -171,6 +174,21 @@ defmodule Tackle.CLI.TUI.View do
 
   defp status_widgets(rect, state, width) do
     [{StatusView.status_widget(state, width), rect}]
+  end
+
+  # The working tip is expendable: it renders only when the layout could
+  # spare a row below the status row and a tip is showing.
+  defp tip_widgets(nil, _state), do: []
+
+  defp tip_widgets(_rect, %State{turn_tip: %{current: nil}}), do: []
+
+  defp tip_widgets(rect, %State{turn_tip: %{current: text}}) do
+    spans = [
+      MessageView.span("  └ ", Theme.style(:subtle)),
+      MessageView.span(text, Theme.style(:subtle))
+    ]
+
+    [{%Paragraph{text: [MessageView.row(spans, %Style{})]}, rect}]
   end
 
   # -- composer ------------------------------------------------------------

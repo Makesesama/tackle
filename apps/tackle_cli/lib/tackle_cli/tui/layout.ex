@@ -3,9 +3,10 @@ defmodule Tackle.CLI.TUI.Layout do
   Responsive fullscreen regions for the transcript-first shell.
 
   The transcript owns the flexible middle of the screen. The header and the
-  composer have fixed or draft-driven heights, and an optional status row
-  appears below the composer only when the terminal has rows to spare.
-  Reading position never changes the screen regions.
+  composer have fixed or draft-driven heights, and optional rows appear
+  below the composer only when the terminal has rows to spare: first the
+  status row, then the expendable turn-tip row. Reading position never
+  changes the screen regions.
 
   The composer grows with the native editor's measured visual rows, including
   soft wraps and the final insertion cell, up to eight content rows. The two
@@ -29,23 +30,27 @@ defmodule Tackle.CLI.TUI.Layout do
           reading: Rect.t() | nil,
           status: Rect.t() | nil,
           composer: Rect.t(),
-          hints: Rect.t() | nil
+          tip: Rect.t() | nil
         }
 
   @doc """
   Computes screen regions for a terminal of `width` x `height` cells.
 
   `draft_lines` is the composer's wrapped row count. The fourth argument is
-  retained for compatibility but ignored; the `reading` region is always nil.
+  retained for compatibility but ignored; the `reading` region is always
+  nil. `tip?` reserves the turn-tip row below the status row; the status row
+  is always taken first, so the tip is the first row the layout gives up.
   """
-  @spec regions(integer(), integer(), pos_integer(), boolean(), boolean(), boolean()) :: regions()
+  @spec regions(integer(), integer(), pos_integer(), boolean(), boolean(), boolean(), boolean()) ::
+          regions()
   def regions(
         width,
         height,
         draft_lines,
         _reading_active?,
         subagents_active? \\ false,
-        graphic? \\ false
+        graphic? \\ false,
+        tip? \\ false
       ) do
     width = max(width, 1)
     height = max(height, 0)
@@ -66,6 +71,7 @@ defmodule Tackle.CLI.TUI.Layout do
     available = max(height - header_height - composer_height, 0)
 
     {status?, available} = take_optional_row(true, available)
+    {tip?, available} = take_optional_row(tip?, available)
     transcript_height = available
 
     header = %Rect{x: 0, y: 0, width: width, height: min(height, header_height)}
@@ -74,7 +80,8 @@ defmodule Tackle.CLI.TUI.Layout do
     y = header_height + transcript_height
 
     composer = %Rect{x: 0, y: y, width: width, height: composer_height}
-    {status, _y} = optional_rect(status?, y + composer_height, width)
+    {status, y} = optional_rect(status?, y + composer_height, width)
+    {tip, _y} = optional_rect(tip?, y, width)
 
     %{
       header: header,
@@ -83,7 +90,7 @@ defmodule Tackle.CLI.TUI.Layout do
       reading: nil,
       status: status,
       composer: composer,
-      hints: nil
+      tip: tip
     }
   end
 
@@ -128,6 +135,8 @@ defmodule Tackle.CLI.TUI.Layout do
     do: {true, available - 1}
 
   defp take_optional_row(true, available), do: {false, available}
+
+  defp take_optional_row(false, available), do: {false, available}
 
   defp optional_rect(true, y, width), do: {%Rect{x: 0, y: y, width: width, height: 1}, y + 1}
   defp optional_rect(false, y, _width), do: {nil, y}

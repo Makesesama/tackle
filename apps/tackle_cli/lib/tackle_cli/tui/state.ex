@@ -27,7 +27,17 @@ defmodule Tackle.CLI.TUI.State do
   """
 
   alias Tackle.CLI.Clipboard
-  alias Tackle.CLI.TUI.{Compaction, FileSearch, History, Preferences, SlashCommands, Viewport}
+
+  alias Tackle.CLI.TUI.{
+    Compaction,
+    FileSearch,
+    History,
+    Preferences,
+    SlashCommands,
+    TurnTip,
+    Viewport
+  }
+
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Message
@@ -109,6 +119,7 @@ defmodule Tackle.CLI.TUI.State do
           pending_operation: map() | nil,
           deferred_events: [term()],
           spinner_frame: non_neg_integer(),
+          turn_tip: TurnTip.t(),
           metrics: Metrics.t(),
           observations: Tackle.CLI.TUI.Observations.t(),
           tool_activity: [map()],
@@ -177,6 +188,7 @@ defmodule Tackle.CLI.TUI.State do
             pending_operation: nil,
             deferred_events: [],
             spinner_frame: 0,
+            turn_tip: %TurnTip{},
             metrics: %Metrics{},
             observations: %Tackle.CLI.TUI.Observations{},
             tool_activity: [],
@@ -326,6 +338,7 @@ defmodule Tackle.CLI.TUI.State do
         pending_operation: nil,
         deferred_events: [],
         spinner_frame: 0,
+        turn_tip: TurnTip.dismiss(state.turn_tip),
         metrics: %Metrics{latest_usage: latest_usage(snapshot.agent_state)},
         observations: %Tackle.CLI.TUI.Observations{},
         tool_activity: [],

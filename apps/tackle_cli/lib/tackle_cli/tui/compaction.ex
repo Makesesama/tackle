@@ -47,7 +47,11 @@ defmodule Tackle.CLI.TUI.Compaction do
 
     state = %{
       state
-      | pending_operation: %{ref: ref, kind: :compact},
+      | pending_operation: %{
+          ref: ref,
+          kind: :compact,
+          started_at_ms: System.monotonic_time(:millisecond)
+        },
         activity: "compacting",
         error: nil,
         outcome: nil,
