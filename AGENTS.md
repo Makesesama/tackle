@@ -59,6 +59,11 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd packages/tackle_sdk && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_sdk && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
+# Lua-scripted agent workflows (needs MIX_REBAR3 from the dev shell for first compile)
+(cd packages/tackle_script && mix deps.get)
+(cd packages/tackle_script && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_script && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+
 # Native clipboard package (Rustler NIF over arboard; needs cargo)
 (cd packages/clipboard_ex && mix deps.get)
 (cd packages/clipboard_ex && mix compile --warnings-as-errors && mix test)
@@ -127,6 +132,10 @@ Burrito, or lint commands for tooling that has not been wired up.
   (`Tackle.SDK.*`, `:tackle_sdk`) that lets non-BEAM clients drive the
   `Tackle.Lib` agent loop. The wire contract is `packages/tackle_sdk/PROTOCOL.md`;
   tools are server-side only in protocol version 1.
+- `packages/tackle_script/`: optional Lua-scripted agent workflows
+  (`Tackle.Script.*`, `:tackle_script`) on top of `tackle_runtime`. Scripts
+  drive the same delegated-run primitives through a sandboxed pure-Elixir
+  Lua VM; nothing else depends on this package.
 - `packages/clipboard_ex/`: native clipboard package (`Clipboard.*`,
   `:clipboard_ex`): a Rustler NIF over Rust's `arboard` with tmux/OSC 52
   terminal fallbacks. The CLI uses it for copying and for image/text pasting.

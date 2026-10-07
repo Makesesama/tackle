@@ -412,6 +412,24 @@ defmodule Tackle.Runtime do
   end
 
   @doc """
+  Starts one trusted work child under the scope work supervisor.
+
+  The child is placed under the scope's work supervisor so scope teardown
+  stops it with the rest of the scope's work, but it is not admitted as an
+  agent and receives no runtime accounting. Hosts build their own stable
+  references, await, and cancellation policy on top of it; script runners are
+  one example. Returns the supervisor's child start result including the PID.
+  """
+  @spec start_work(Handle.t() | AgentRef.t(), Supervisor.child_spec() | {module(), term()}) ::
+          DynamicSupervisor.on_start_child()
+  def start_work(parent, child) do
+    with {:ok, scope_ref, _parent_ref} <- resolve_requester(parent),
+         {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref) do
+      DynamicSupervisor.start_child(work_supervisor, child)
+    end
+  end
+
+  @doc """
   Launches several delegated runs and returns their correlated run references.
 
   Requests are admitted one at a time so scope limits apply, but the runs start
