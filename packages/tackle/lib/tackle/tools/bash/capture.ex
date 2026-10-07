@@ -1,22 +1,26 @@
 defmodule Tackle.Tools.Bash.Capture do
   @moduledoc false
 
+  # Retains a bounded tail of command output. Once output exceeds the display
+  # limits, everything is also spilled to a private file through the executor,
+  # so the file is where the model's `read` tool looks for it.
+
+  alias Tackle.Executor
   alias Tackle.Tools.Output
 
   @max_bytes Output.max_bytes()
   @max_lines Output.max_lines()
-  @private_file_mode 0o600
   @full_output_attempts 3
 
-  @spec new() :: map()
-  def new do
+  @spec new(Executor.t()) :: map()
+  def new(executor \\ Executor.local()) do
     %{
+      executor: executor,
       tail: "",
       prefix: "",
       bytes: 0,
       newlines: 0,
       ends_in_newline?: false,
-      file: nil,
       path: nil,
       spill_failed?: false
     }
@@ -37,7 +41,7 @@ defmodule Tackle.Tools.Bash.Capture do
     }
 
     cond do
-      state.file -> write_spill(state, data)
+      state.path -> write_spill(state, data)
       state.spill_failed? -> state
       truncated?(state) -> start_spill(state, [prefix, data])
       true -> %{state | prefix: state.prefix <> data}
@@ -46,16 +50,13 @@ defmodule Tackle.Tools.Bash.Capture do
 
   @spec discard(map()) :: :ok
   def discard(state) do
-    if state.file, do: File.close(state.file)
-    if state.path, do: File.rm(state.path)
+    if state.path, do: Executor.delete(state.executor, state.path)
     :ok
   end
 
   @spec finish(map()) :: String.t()
   def finish(state) do
-    state = close_spill(state)
-
-    if not truncated?(state) and state.path, do: File.rm(state.path)
+    if not truncated?(state) and state.path, do: Executor.delete(state.executor, state.path)
 
     format_output(state)
   end
@@ -117,64 +118,33 @@ defmodule Tackle.Tools.Bash.Capture do
   defp count_newlines(data), do: length(:binary.matches(data, "\n"))
 
   defp start_spill(state, data) do
-    case open_spill(@full_output_attempts) do
-      {:ok, file, path} ->
-        state = %{state | file: file, path: path, prefix: ""}
-        write_spill(state, data)
-
-      :error ->
-        %{state | prefix: "", spill_failed?: true}
+    case create_spill(state.executor, IO.iodata_to_binary(data), @full_output_attempts) do
+      {:ok, path} -> %{state | path: path, prefix: ""}
+      :error -> %{state | prefix: "", spill_failed?: true}
     end
   end
 
   defp write_spill(state, data) do
-    case :file.write(state.file, data) do
+    case Executor.write(state.executor, state.path, data, mode: :append) do
       :ok ->
         state
 
-      {:error, _} ->
-        File.close(state.file)
-        File.rm(state.path)
-        %{state | file: nil, path: nil, spill_failed?: true}
+      {:error, _reason} ->
+        Executor.delete(state.executor, state.path)
+        %{state | path: nil, spill_failed?: true}
     end
   end
 
-  defp close_spill(%{file: nil} = state), do: state
+  defp create_spill(_executor, _data, 0), do: :error
 
-  defp close_spill(state) do
-    case File.close(state.file) do
-      :ok ->
-        %{state | file: nil}
-
-      {:error, _} ->
-        File.rm(state.path)
-        %{state | file: nil, path: nil, spill_failed?: true}
-    end
-  end
-
-  defp open_spill(0), do: :error
-
-  defp open_spill(attempts) do
+  defp create_spill(executor, data, attempts) do
     suffix = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
-    path = Path.join(System.tmp_dir!(), "tackle-bash-#{suffix}.log")
+    path = Path.join(Executor.tmp_dir(executor), "tackle-bash-#{suffix}.log")
 
-    case File.open(path, [:write, :binary, :exclusive]) do
-      {:ok, file} ->
-        case File.chmod(path, @private_file_mode) do
-          :ok ->
-            {:ok, file, path}
-
-          {:error, _} ->
-            File.close(file)
-            File.rm(path)
-            :error
-        end
-
-      {:error, :eexist} ->
-        open_spill(attempts - 1)
-
-      {:error, _} ->
-        :error
+    case Executor.write(executor, path, data, mode: :create) do
+      :ok -> {:ok, path}
+      {:error, :eexist} -> create_spill(executor, data, attempts - 1)
+      {:error, _reason} -> :error
     end
   end
 end

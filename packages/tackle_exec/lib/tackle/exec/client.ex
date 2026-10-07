@@ -161,19 +161,37 @@ defmodule Tackle.Exec.Client do
   end
 
   @doc """
-  Writes `data` to a file inside the jail, replacing its contents in place.
+  Writes `data` to a file inside the jail.
 
   ## Options
 
+    * `:mode` - `:replace` (default) rewrites the file in place, `:append`
+      appends, and `:create` creates a new owner-only file and fails with
+      `{:error, :eexist}` if the path exists.
     * `:mkdir_p` - create missing parent directories (default `false`).
     * `:timeout` - call timeout in milliseconds.
   """
   @spec write(GenServer.server(), String.t(), binary(), keyword()) :: :ok | {:error, error()}
   def write(client, path, data, opts \\ []) do
-    params = %{path: path, data: data, mkdir_p: Keyword.get(opts, :mkdir_p, false)}
+    params = %{
+      path: path,
+      data: data,
+      mkdir_p: Keyword.get(opts, :mkdir_p, false),
+      mode: Keyword.get(opts, :mode, :replace)
+    }
+
     timeout = Keyword.get(opts, :timeout, @default_call_timeout)
 
     case call(client, {:call, :write, params}, timeout) do
+      {:ok, nil} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Deletes a file inside the jail. Directories are not removed."
+  @spec delete(GenServer.server(), String.t(), timeout()) :: :ok | {:error, error()}
+  def delete(client, path, timeout \\ @default_call_timeout) do
+    case call(client, {:call, :delete, %{path: path}}, timeout) do
       {:ok, nil} -> :ok
       {:error, reason} -> {:error, reason}
     end

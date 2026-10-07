@@ -11,7 +11,8 @@ defmodule Tackle.Exec.Protocol do
       {:signal, id, :term | :kill}
       {:grant, id, pos_integer}
       {:read, id, %{path: binary, offset: non_neg_integer, length: pos_integer}}
-      {:write, id, %{path: binary, data: binary, mkdir_p: boolean}}
+      {:write, id, %{path: binary, data: binary, mkdir_p: boolean, mode: :replace | :append | :create}}
+      {:delete, id, %{path: binary}}
       {:stat, id, %{path: binary}}
 
   ## Messages (jail to host)
@@ -54,6 +55,7 @@ defmodule Tackle.Exec.Protocol do
 
   @file_types [:device, :directory, :other, :regular, :symlink]
   @signals [:term, :kill]
+  @write_modes [:replace, :append, :create]
 
   @typedoc "Host-issued request identifier."
   @type id :: pos_integer()
@@ -73,7 +75,14 @@ defmodule Tackle.Exec.Protocol do
           | {:signal, id(), signal()}
           | {:grant, id(), pos_integer()}
           | {:read, id(), %{path: binary(), offset: non_neg_integer(), length: pos_integer()}}
-          | {:write, id(), %{path: binary(), data: binary(), mkdir_p: boolean()}}
+          | {:write, id(),
+             %{
+               path: binary(),
+               data: binary(),
+               mkdir_p: boolean(),
+               mode: :replace | :append | :create
+             }}
+          | {:delete, id(), %{path: binary()}}
           | {:stat, id(), %{path: binary()}}
 
   @typedoc "Messages sent from the exec-server to the host."
@@ -85,7 +94,7 @@ defmodule Tackle.Exec.Protocol do
           | {:error, id(), binary()}
 
   @typedoc "Operations that receive a single `:ok` or `:error` reply."
-  @type call_op :: :read | :write | :stat
+  @type call_op :: :read | :write | :delete | :stat
 
   @doc "Returns the protocol version."
   @spec version() :: pos_integer()
@@ -159,7 +168,7 @@ defmodule Tackle.Exec.Protocol do
              is_integer(size) and size in 0..@max_file_size and is_boolean(eof),
       do: {:ok, result}
 
-  def parse_result(:write, _params, nil), do: {:ok, nil}
+  def parse_result(op, _params, nil) when op in [:write, :delete], do: {:ok, nil}
 
   def parse_result(:stat, _params, %{type: type, size: size, mode: mode} = result)
       when map_size(result) == 3 and type in @file_types and is_integer(size) and
@@ -191,9 +200,15 @@ defmodule Tackle.Exec.Protocol do
              length > 0,
       do: if(id?(id) and path?(path), do: {:ok, request}, else: {:error, :invalid_request})
 
-  def parse_request({:write, id, %{path: path, data: data, mkdir_p: mkdir_p} = params} = request)
-      when map_size(params) == 3 and is_binary(data) and is_boolean(mkdir_p),
+  def parse_request(
+        {:write, id, %{path: path, data: data, mkdir_p: mkdir_p, mode: mode} = params} = request
+      )
+      when map_size(params) == 4 and is_binary(data) and is_boolean(mkdir_p) and
+             mode in @write_modes,
       do: if(id?(id) and path?(path), do: {:ok, request}, else: {:error, :invalid_request})
+
+  def parse_request({:delete, id, %{path: path} = params} = request) when map_size(params) == 1,
+    do: if(id?(id) and path?(path), do: {:ok, request}, else: {:error, :invalid_request})
 
   def parse_request({:stat, id, %{path: path} = params} = request) when map_size(params) == 1,
     do: if(id?(id) and path?(path), do: {:ok, request}, else: {:error, :invalid_request})

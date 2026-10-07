@@ -4,7 +4,8 @@ defmodule Tackle.Runtime.Registry do
 
   This is the only PID resolution boundary in the runtime. Public APIs accept
   references; internal routing resolves them here. Entries disappear
-  automatically when their process terminates.
+  automatically when their process terminates; lookups treat an entry whose
+  process has already exited as not found.
 
   Besides scope, coordinator, work-supervisor, agent, workflow, and run
   registrations, the registry also holds each agent's per-session tool
@@ -112,6 +113,11 @@ defmodule Tackle.Runtime.Registry do
     |> length()
   end
 
-  defp first([{pid, _value}]) when is_pid(pid), do: {:ok, pid}
+  # Registry removes a dead process's entries asynchronously, so a lookup can
+  # briefly return a process that has already exited. Treat it as gone.
+  defp first([{pid, _value}]) when is_pid(pid) do
+    if Process.alive?(pid), do: {:ok, pid}, else: {:error, :not_found}
+  end
+
   defp first(_other), do: {:error, :not_found}
 end

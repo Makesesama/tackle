@@ -120,7 +120,8 @@ Burrito, or lint commands for tooling that has not been wired up.
 - `packages/tackle_exec/`: dependency-free exec-server (`Tackle.Exec.*`,
   `:tackle_exec`). A host-side client drives a jailed server over a port with
   length-prefixed Erlang terms and treats everything from the jail as hostile.
-  Phase 1 of `docs/EXEC_SERVER_PLAN.md`; built-in tools do not use it yet.
+  The harness's `Tackle.Executor.Jailed` routes the built-in tools through it
+  (`docs/EXEC_SERVER_PLAN.md` phases 1 and 2); the CLI does not use it yet.
 - `packages/tackle_sdk/`: experimental JSON-RPC 2.0 over stdio server
   (`Tackle.SDK.*`, `:tackle_sdk`) that lets non-BEAM clients drive the
   `Tackle.Lib` agent loop. The wire contract is `packages/tackle_sdk/PROTOCOL.md`;

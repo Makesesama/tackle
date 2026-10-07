@@ -3,6 +3,7 @@ defmodule Tackle.Tools.Edit do
 
   use Tackle.Lib.Tool
 
+  alias Tackle.Executor
   alias Tackle.Tools.FileSystem
 
   tool_name("edit")
@@ -24,14 +25,16 @@ defmodule Tackle.Tools.Edit do
 
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def run(%{"path" => path, "edits" => edits}, context) do
+    executor = Executor.from_context(context)
+
     with {:ok, edits} <- validate_edits(edits),
          {:ok, absolute_path} <- FileSystem.resolve_path(path, context) do
-      FileSystem.mutate(absolute_path, fn -> edit_file(absolute_path, path, edits) end)
+      FileSystem.mutate(absolute_path, fn -> edit_file(executor, absolute_path, path, edits) end)
     end
   end
 
-  defp edit_file(absolute_path, display_path, edits) do
-    with {:ok, content} <- read_utf8(absolute_path, display_path),
+  defp edit_file(executor, absolute_path, display_path, edits) do
+    with {:ok, content} <- read_utf8(executor, absolute_path, display_path),
          {bom, content} <- strip_bom(content),
          line_ending <- detect_line_ending(content),
          normalized <- normalize_line_endings(content),
@@ -41,7 +44,7 @@ defmodule Tackle.Tools.Edit do
          edited <- apply_replacements(normalized, replacements),
          :ok <- reject_unchanged(normalized, edited, display_path),
          restored <- bom <> restore_line_endings(edited, line_ending),
-         :ok <- write_content(absolute_path, display_path, restored) do
+         :ok <- write_content(executor, absolute_path, display_path, restored) do
       {:ok, "Successfully replaced #{length(edits)} block(s) in #{display_path}."}
     end
   end
@@ -88,8 +91,8 @@ defmodule Tackle.Tools.Edit do
     end)
   end
 
-  defp read_utf8(absolute_path, display_path) do
-    case File.read(absolute_path) do
+  defp read_utf8(executor, absolute_path, display_path) do
+    case Executor.read_file(executor, absolute_path) do
       {:ok, content} ->
         if String.valid?(content),
           do: {:ok, content},
@@ -188,8 +191,8 @@ defmodule Tackle.Tools.Edit do
   defp restore_line_endings(content, :crlf), do: String.replace(content, "\n", "\r\n")
   defp restore_line_endings(content, :lf), do: content
 
-  defp write_content(absolute_path, display_path, content) do
-    case File.write(absolute_path, content) do
+  defp write_content(executor, absolute_path, display_path, content) do
+    case Executor.write(executor, absolute_path, content) do
       :ok ->
         :ok
 

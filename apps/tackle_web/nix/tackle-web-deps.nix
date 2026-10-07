@@ -813,6 +813,7 @@ let
             beamDeps = [
               tackle_lib
               tackle_runtime
+              tackle_exec
             ];
           };
         in
@@ -866,6 +867,18 @@ let
               req
               tackle_lib
             ];
+          };
+        in
+        drv;
+
+      tackle_exec =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_exec";
+
+            src = ../../../packages/tackle_exec;
           };
         in
         drv;

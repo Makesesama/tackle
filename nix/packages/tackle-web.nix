@@ -28,6 +28,7 @@ let
       (projectFiles ../../packages/tackle)
       (projectFiles ../../packages/tackle_lib)
       (projectFiles ../../packages/tackle_runtime)
+      (projectFiles ../../packages/tackle_exec)
       (projectFiles ../../packages/tackle_phoenix)
       # Hand-written static files. priv/static/assets is produced by the asset
       # pipeline below and is deliberately not taken from the working tree.
@@ -121,6 +122,7 @@ let
       tackle = prev.tackle.override { src = "${src}/packages/tackle"; };
       tackle_lib = prev.tackle_lib.override { src = "${src}/packages/tackle_lib"; };
       tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
+      tackle_exec = prev.tackle_exec.override { src = "${src}/packages/tackle_exec"; };
       tackle_phoenix = prev.tackle_phoenix.override { src = "${src}/packages/tackle_phoenix"; };
       forcola = prev.forcola.overrideAttrs (old: {
         postPatch = (old.postPatch or "") + ''

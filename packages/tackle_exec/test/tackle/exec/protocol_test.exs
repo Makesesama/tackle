@@ -69,6 +69,7 @@ defmodule Tackle.Exec.ProtocolTest do
 
       assert {:ok, ^read} = Protocol.parse_result(:read, @read, read)
       assert {:ok, nil} = Protocol.parse_result(:write, %{}, nil)
+      assert {:ok, nil} = Protocol.parse_result(:delete, %{}, nil)
       assert {:ok, ^stat} = Protocol.parse_result(:stat, %{}, stat)
     end
 
@@ -112,7 +113,10 @@ defmodule Tackle.Exec.ProtocolTest do
             {:signal, 1, :term},
             {:grant, 1, 10},
             {:read, 1, %{path: "a", offset: 0, length: 1}},
-            {:write, 1, %{path: "a", data: "", mkdir_p: true}},
+            {:write, 1, %{path: "a", data: "", mkdir_p: true, mode: :replace}},
+            {:write, 1, %{path: "a", data: "", mkdir_p: false, mode: :append}},
+            {:write, 1, %{path: "a", data: "", mkdir_p: false, mode: :create}},
+            {:delete, 1, %{path: "a"}},
             {:stat, 1, %{path: "a"}}
           ] do
         assert {:ok, ^request} = Protocol.parse_request(request)
@@ -140,7 +144,10 @@ defmodule Tackle.Exec.ProtocolTest do
             {:grant, 1, 0},
             {:read, 0, %{path: "a", offset: 0, length: 1}},
             {:read, 1, %{path: "a", offset: -1, length: 1}},
-            {:write, 1, %{path: "a", data: "", mkdir_p: "yes"}},
+            {:write, 1, %{path: "a", data: "", mkdir_p: "yes", mode: :replace}},
+            {:write, 1, %{path: "a", data: "", mkdir_p: true}},
+            {:write, 1, %{path: "a", data: "", mkdir_p: true, mode: :truncate}},
+            {:delete, 1, %{path: ""}},
             {:stat, 1, %{path: "a\0"}}
           ] do
         assert {:error, :invalid_request} = Protocol.parse_request(request)

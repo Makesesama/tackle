@@ -1,5 +1,9 @@
 defmodule Tackle.Tools.ReadTest do
-  use ExUnit.Case, async: true
+  alias Tackle.Test.Executors
+
+  use ExUnit.Case, async: true, parameterize: Executors.parameters()
+
+  import Executors, only: [start_executor: 1]
 
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Content
@@ -10,12 +14,14 @@ defmodule Tackle.Tools.ReadTest do
   @gif <<"GIF89a", 1, 0, 1, 0>>
   @webp <<"RIFF", 0, 0, 0, 0, "WEBP", "VP8 ", 0>>
 
-  setup do
+  setup :start_executor
+
+  setup %{executor: executor} do
     dir = Path.join(System.tmp_dir!(), "tackle-read-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
 
-    {:ok, dir: dir, context: %{cwd: dir}}
+    {:ok, dir: dir, context: %{cwd: dir, executor: executor}}
   end
 
   defp write(dir, name, data) do

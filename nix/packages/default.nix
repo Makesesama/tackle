@@ -34,6 +34,7 @@ let
       (projectFiles ../../packages/tackle)
       (projectFiles ../../packages/tackle_lib)
       (projectFiles ../../packages/tackle_runtime)
+      (projectFiles ../../packages/tackle_exec)
       (projectFiles ../../packages/tackle_codex)
       (projectFiles ../../packages/tackle_deepseek)
       (projectFiles ../../packages/tackle_anthropic)
@@ -148,6 +149,7 @@ let
       tackle = prev.tackle.override { src = "${src}/packages/tackle"; };
       tackle_lib = prev.tackle_lib.override { src = "${src}/packages/tackle_lib"; };
       tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
+      tackle_exec = prev.tackle_exec.override { src = "${src}/packages/tackle_exec"; };
       tackle_codex = prev.tackle_codex.override { src = "${src}/packages/tackle_codex"; };
       tackle_deepseek = prev.tackle_deepseek.override { src = "${src}/packages/tackle_deepseek"; };
       tackle_anthropic = prev.tackle_anthropic.override { src = "${src}/packages/tackle_anthropic"; };

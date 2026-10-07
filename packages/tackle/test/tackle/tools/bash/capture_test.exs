@@ -67,17 +67,36 @@ defmodule Tackle.Tools.Bash.CaptureTest do
     end
   end
 
-  test "discard closes and removes the spill file" do
+  defmodule FailingAppend do
+    # Local executor whose appends fail, as on a full disk.
+    @behaviour Tackle.Executor
+    alias Tackle.Executor.Local
+
+    defdelegate exec(config, argv, opts), to: Local
+    defdelegate await(config, handle, timeout), to: Local
+    defdelegate cancel(config, handle), to: Local
+    defdelegate read(config, path, offset, length), to: Local
+    defdelegate delete(config, path), to: Local
+    defdelegate tmp_dir(config), to: Local
+
+    def write(config, path, data, opts) do
+      if opts[:mode] == :append,
+        do: {:error, :enospc},
+        else: Local.write(config, path, data, opts)
+    end
+  end
+
+  test "discard removes the spill file" do
     state = Capture.append(Capture.new(), :binary.copy("x", Output.max_bytes() + 1))
     assert File.exists?(state.path)
     assert :ok = Capture.discard(state)
     refute File.exists?(state.path)
-    assert {:error, _} = :file.write(state.file, "later")
   end
 
   test "a write failure removes the incomplete file but preserves bounded output" do
-    state = Capture.append(Capture.new(), :binary.copy("x", Output.max_bytes() + 1))
-    File.close(state.file)
+    executor = {FailingAppend, nil}
+    state = Capture.append(Capture.new(executor), :binary.copy("x", Output.max_bytes() + 1))
+    assert File.exists?(state.path)
     next = Capture.append(state, "last")
     refute File.exists?(state.path)
     assert next.spill_failed?

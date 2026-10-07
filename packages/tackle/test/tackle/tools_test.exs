@@ -1,11 +1,17 @@
 defmodule Tackle.ToolsTest do
-  use ExUnit.Case, async: true
+  alias Tackle.Test.Executors
+
+  use ExUnit.Case, async: true, parameterize: Executors.parameters()
+
+  import Executors, only: [start_executor: 1]
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Tools
   alias Tackle.Tools.{Bash, Edit, Output, Read, Write}
 
-  setup do
+  setup :start_executor
+
+  setup %{executor: executor} do
     directory =
       Path.join(
         System.tmp_dir!(),
@@ -14,7 +20,7 @@ defmodule Tackle.ToolsTest do
 
     File.mkdir_p!(directory)
     on_exit(fn -> File.rm_rf!(directory) end)
-    %{context: %{cwd: directory}, directory: directory}
+    %{context: %{cwd: directory, executor: executor}, directory: directory}
   end
 
   test "exposes the four default tools" do

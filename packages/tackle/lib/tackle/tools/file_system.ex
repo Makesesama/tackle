@@ -13,10 +13,8 @@ defmodule Tackle.Tools.FileSystem do
     :global.trans({{__MODULE__, path}, self()}, operation)
   end
 
-  @spec format_error(String.t(), atom()) :: String.t()
-  def format_error(path, reason) when is_atom(reason) do
-    "#{path}: #{reason |> :file.format_error() |> List.to_string()}"
-  end
+  @spec format_error(String.t(), Tackle.Executor.reason()) :: String.t()
+  def format_error(path, reason), do: "#{path}: #{Tackle.Executor.format_reason(reason)}"
 
   defp cwd(%{cwd: cwd}), do: normalize_cwd(cwd)
   defp cwd(%{"cwd" => cwd}), do: normalize_cwd(cwd)

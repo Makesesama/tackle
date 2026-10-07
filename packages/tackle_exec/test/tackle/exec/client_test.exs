@@ -44,6 +44,15 @@ defmodule Tackle.Exec.ClientTest do
       assert {:error, :enoent, ""} = run(client, ["./missing"], cwd: dir)
     end
 
+    test "commands that finish instantly are reported normally", %{
+      client: client,
+      directory: dir
+    } do
+      for _ <- 1..100 do
+        assert {:ok, 0, "fast\n"} = run(client, ["echo", "fast"], cwd: dir)
+      end
+    end
+
     test "rejects invalid requests before sending them", %{client: client} do
       assert {:error, :invalid_request} = Client.exec(client, [], cwd: "/")
       assert {:error, :invalid_request} = Client.exec(client, ["true"], [])
@@ -174,6 +183,23 @@ defmodule Tackle.Exec.ClientTest do
       assert {:error, :enoent} = Client.read(client, Path.join(dir, "missing"), 0, 1)
       assert {:error, :enoent} = Client.stat(client, Path.join(dir, "missing"))
       assert {:error, :eisdir} = Client.read(client, dir, 0, 1)
+    end
+
+    test "appends, creates private files exclusively, and deletes", %{
+      client: client,
+      directory: dir
+    } do
+      path = Path.join(dir, "spill/out.log")
+
+      assert :ok = Client.write(client, path, "one", mode: :create, mkdir_p: true)
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+      assert {:error, :eexist} = Client.write(client, path, "again", mode: :create)
+      assert :ok = Client.write(client, path, "two", mode: :append)
+      assert File.read!(path) == "onetwo"
+
+      assert :ok = Client.delete(client, path)
+      refute File.exists?(path)
+      assert {:error, :enoent} = Client.delete(client, path)
     end
 
     test "rejects oversized and invalid requests", %{directory: dir} do

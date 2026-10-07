@@ -56,9 +56,13 @@ defmodule Tackle.Runtime.Ref do
   """
   @spec whereis(t()) :: {:ok, pid()} | {:error, :not_found}
   def whereis(ref) do
+    # Entries of exited processes are removed asynchronously; ignore them.
     case Registry.lookup(Tackle.Runtime.Registry, registry_key(ref)) do
-      [{pid, _value}] when is_pid(pid) -> {:ok, pid}
-      _ -> {:error, :not_found}
+      [{pid, _value}] when is_pid(pid) ->
+        if Process.alive?(pid), do: {:ok, pid}, else: {:error, :not_found}
+
+      _ ->
+        {:error, :not_found}
     end
   end
 end

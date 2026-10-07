@@ -3,12 +3,17 @@
 `Tackle.Exec` connects a trusted host to an **exec-server** that runs inside a
 jail. The host keeps the agent loop, credentials, and tool logic. The jail
 runs the primitives that touch the workspace or spawn processes: commands,
-file reads, file writes, and stat calls.
+file reads, writes, appends, deletes, and stat calls.
 
-This package is phase 1 of the [exec-server plan](../../docs/EXEC_SERVER_PLAN.md):
-the protocol, the jail-side server, and the host-side client. It has no
-dependencies. Built-in tools do not use it yet, and there is no jail launcher
-or CLI option yet.
+This package implements phase 1 of the
+[exec-server plan](../../docs/EXEC_SERVER_PLAN.md): the protocol, the jail-side
+server, and the host-side client. It has no dependencies. The harness's
+`Tackle.Executor.Jailed` routes the built-in tools through it (phase 2); there
+is no jail launcher or CLI option yet.
+
+`Tackle.Exec.FileOps` and `Tackle.Exec.Command` hold the filesystem and process
+primitives. The server uses them inside the jail, and the harness's local
+executor uses them on the host, so both behave the same way.
 
 ## Trust model
 
@@ -89,8 +94,14 @@ end
 
 {:ok, %{data: data, size: size, eof: eof}} = Tackle.Exec.Client.read(client, "/work/a.txt", 0, 65_536)
 :ok = Tackle.Exec.Client.write(client, "/work/new/b.txt", "hello", mkdir_p: true)
-{:ok, %{type: :regular, size: 5, mode: mode}} = Tackle.Exec.Client.stat(client, "/work/new/b.txt")
+:ok = Tackle.Exec.Client.write(client, "/work/new/b.txt", " world", mode: :append)
+{:ok, %{type: :regular, size: 11, mode: mode}} = Tackle.Exec.Client.stat(client, "/work/new/b.txt")
+:ok = Tackle.Exec.Client.delete(client, "/work/new/b.txt")
 ```
+
+`write/4` replaces the file in place by default. `mode: :append` appends, and
+`mode: :create` creates a new owner-only (0600) file and fails with `:eexist`
+if the path exists.
 
 The returned reference is also a monitor of the client, so the stream always
 ends: with `:exit_status`, with `:error`, or with `:DOWN` if the client dies.

@@ -6,9 +6,11 @@ defmodule Tackle.Tools do
   embedding host may set `:cwd` in the session context to use another working
   directory.
 
-  The tools run with the filesystem and operating-system permissions of the
-  Tackle process. They do not provide a sandbox or confirmation boundary;
-  applications that execute untrusted work should isolate the whole process.
+  The tools send filesystem and process primitives to the executor in
+  `context.executor` (see `Tackle.Executor`). The default
+  `Tackle.Executor.Local` runs them with the Tackle process's own permissions,
+  without a sandbox or confirmation boundary; `Tackle.Executor.Jailed` runs them
+  inside a jail.
   """
 
   alias Tackle.Tools.{Bash, Edit, Read, Write}

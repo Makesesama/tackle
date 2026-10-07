@@ -1,10 +1,18 @@
 defmodule Tackle.Tools.BashTest do
-  use ExUnit.Case, async: true
+  alias Tackle.Test.Executors
+
+  use ExUnit.Case, async: true, parameterize: Executors.parameters()
+
+  import Executors, only: [start_executor: 1]
 
   alias Tackle.Lib.{Cancellation, Event}
   alias Tackle.Tools.Bash
 
-  test "emits correlated output chunks while retaining the canonical result" do
+  setup :start_executor
+
+  test "emits correlated output chunks while retaining the canonical result", %{
+    executor: executor
+  } do
     test_pid = self()
 
     context = %{
@@ -13,7 +21,8 @@ defmodule Tackle.Tools.BashTest do
     }
 
     assert {:ok, "firstsecond"} =
-             Bash.run(
+             bash(
+               executor,
                %{"command" => "printf first; sleep 0.05; printf second"},
                context
              )
@@ -35,7 +44,7 @@ defmodule Tackle.Tools.BashTest do
     assert Enum.map_join(events, & &1.data.delta) == "firstsecond"
   end
 
-  test "preserves a multibyte character split across port chunks" do
+  test "preserves a multibyte character split across port chunks", %{executor: executor} do
     test_pid = self()
 
     context = %{
@@ -44,7 +53,8 @@ defmodule Tackle.Tools.BashTest do
     }
 
     assert {:ok, "€"} =
-             Bash.run(
+             bash(
+               executor,
                %{"command" => "printf '\\342\\202'; sleep 0.05; printf '\\254'"},
                context
              )
@@ -52,9 +62,11 @@ defmodule Tackle.Tools.BashTest do
     assert collect_progress([]) |> Enum.map_join(& &1.data.delta) == "€"
   end
 
-  test "spools large multi-line output without losing the tail or line counts" do
+  test "spools large multi-line output without losing the tail or line counts", %{
+    executor: executor
+  } do
     command = "for i in {1..3000}; do printf 'line %s\\n' \"$i\"; done"
-    assert {:ok, output} = Bash.run(%{"command" => command}, %{})
+    assert {:ok, output} = bash(executor, %{"command" => command}, %{})
     assert [_, path] = Regex.run(~r/Full output: ([^\]]+)\]\z/, output)
     on_exit(fn -> File.rm(path) end)
 
@@ -64,30 +76,38 @@ defmodule Tackle.Tools.BashTest do
     assert String.ends_with?(File.read!(path), "line 3000\n")
   end
 
-  test "spools sanitized UTF-8 across chunk boundaries" do
+  test "spools sanitized UTF-8 across chunk boundaries", %{executor: executor} do
     command = "printf '\\342\\202'; sleep 0.05; printf '\\254'; printf 'x%.0s' {1..52000}"
-    assert {:ok, output} = Bash.run(%{"command" => command}, %{})
+    assert {:ok, output} = bash(executor, %{"command" => command}, %{})
     assert [_, path] = Regex.run(~r/Full output: ([^\]]+)\]\z/, output)
     on_exit(fn -> File.rm(path) end)
     assert File.read!(path) == "€" <> String.duplicate("x", 52_000)
   end
 
-  test "checks the deadline after receiving output, without an unbounded subprocess" do
+  test "checks the deadline after receiving output, without an unbounded subprocess", %{
+    executor: executor
+  } do
+    # Output arrives well before the deadline; the slow callback then outlasts it.
     assert {:error, "output\n\nCommand timed out"} =
-             Bash.run(
-               %{"command" => "printf output", "timeout" => 0.01},
-               %{event_callback: fn _event -> Process.sleep(20) end}
+             bash(
+               executor,
+               %{"command" => "printf output; sleep 5", "timeout" => 0.5},
+               %{event_callback: fn _event -> Process.sleep(600) end}
              )
   end
 
-  test "preserves a valid character following invalid bytes across chunks" do
+  test "preserves a valid character following invalid bytes across chunks", %{executor: executor} do
     assert {:ok, "�€"} =
-             Bash.run(%{"command" => "printf '\\377\\342\\202'; sleep 0.05; printf '\\254'"}, %{})
+             bash(
+               executor,
+               %{"command" => "printf '\\377\\342\\202'; sleep 0.05; printf '\\254'"},
+               %{}
+             )
   end
 
-  test "retains the valid tail of an oversized line ending in a newline" do
+  test "retains the valid tail of an oversized line ending in a newline", %{executor: executor} do
     assert {:ok, output} =
-             Bash.run(%{"command" => "printf 'x%.0s' {1..205000}; printf '\\n'"}, %{})
+             bash(executor, %{"command" => "printf 'x%.0s' {1..205000}; printf '\\n'"}, %{})
 
     assert String.starts_with?(output, String.duplicate("x", 100))
     assert output =~ "[Showing lines 1-1 of 1. Full output: "
@@ -96,14 +116,15 @@ defmodule Tackle.Tools.BashTest do
     assert File.read!(path) == String.duplicate("x", 205_000) <> "\n"
   end
 
-  test "cancellation retains partial output and its full-output log" do
+  test "cancellation retains partial output and its full-output log", %{executor: executor} do
     signal = Cancellation.new_signal()
     on_exit(fn -> Cancellation.delete(signal) end)
     parent = self()
 
     task =
       Task.async(fn ->
-        Bash.run(
+        bash(
+          executor,
           %{"command" => "printf 'x%.0s' {1..60000}; printf ready; sleep 5"},
           %{
             cancellation_signal: signal,
@@ -123,7 +144,7 @@ defmodule Tackle.Tools.BashTest do
     assert File.read!(path) == String.duplicate("x", 60_000) <> "ready"
   end
 
-  test "callback failures after spilling clean up the command file" do
+  test "callback failures after spilling clean up the command file", %{executor: executor} do
     parent = self()
 
     context = %{
@@ -146,7 +167,8 @@ defmodule Tackle.Tools.BashTest do
     }
 
     assert_raise RuntimeError, "callback failed", fn ->
-      Bash.run(
+      bash(
+        executor,
         %{
           "command" =>
             "printf callback-cleanup-; printf 'x%.0s' {1..60000}; sleep 0.05; printf marker"
@@ -159,10 +181,12 @@ defmodule Tackle.Tools.BashTest do
     refute File.exists?(path)
   end
 
-  test "runs a non-login shell without an event callback" do
+  test "runs a non-login shell without an event callback", %{executor: executor} do
     assert {:ok, "quiet"} =
-             Bash.run(%{"command" => "shopt -q login_shell && exit 1; printf quiet"}, %{})
+             bash(executor, %{"command" => "shopt -q login_shell && exit 1; printf quiet"}, %{})
   end
+
+  defp bash(executor, args, context), do: Bash.run(args, Map.put(context, :executor, executor))
 
   defp collect_progress(events) do
     receive do

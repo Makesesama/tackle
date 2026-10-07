@@ -3,6 +3,7 @@ defmodule Tackle.Tools.Bash do
 
   use Tackle.Lib.Tool
 
+  alias Tackle.Executor
   alias Tackle.Lib.{Cancellation, Event}
   alias Tackle.Tools.Bash.Capture
   alias Tackle.Tools.FileSystem
@@ -27,9 +28,8 @@ defmodule Tackle.Tools.Bash do
 
     with :ok <- validate_command(command),
          :ok <- validate_timeout(timeout),
-         {:ok, cwd} <- FileSystem.resolve_path(".", context),
-         {:ok, executable} <- find_bash() do
-      execute(executable, command, cwd, timeout, context)
+         {:ok, cwd} <- FileSystem.resolve_path(".", context) do
+      execute(Executor.from_context(context), command, cwd, timeout, context)
     end
   end
 
@@ -44,95 +44,89 @@ defmodule Tackle.Tools.Bash do
   defp validate_timeout(timeout) when is_number(timeout) and timeout > 0, do: :ok
   defp validate_timeout(_timeout), do: {:error, "timeout must be a positive number of seconds"}
 
-  defp find_bash do
-    case System.find_executable("bash") do
-      nil -> {:error, "Could not execute command: bash was not found on PATH"}
-      executable -> {:ok, executable}
-    end
-  end
+  defp execute(executor, command, cwd, timeout, context) do
+    case Executor.exec(executor, ["bash", "-c", command], cwd: cwd) do
+      {:ok, handle} ->
+        run = %{
+          executor: executor,
+          handle: handle,
+          deadline: deadline(timeout),
+          signal: Map.get(context, :cancellation_signal),
+          context: context
+        }
 
-  defp execute(executable, command, cwd, timeout, context) do
-    port =
-      Port.open(
-        {:spawn_executable, String.to_charlist(executable)},
-        [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          :use_stdio,
-          :hide,
-          {:args, [~c"-c", String.to_charlist(command)]},
-          {:cd, String.to_charlist(cwd)}
-        ]
-      )
-
-    deadline = deadline(timeout)
-    signal = Map.get(context, :cancellation_signal)
-
-    case collect(port, deadline, signal, context, Capture.new(), "") do
-      {:ok, status, output} -> settle(status, Capture.finish(output))
-      {:error, reason, output} -> {:error, append_output(reason, Capture.finish(output))}
-    end
-  rescue
-    error in ErlangError ->
-      {:error, "Could not execute command: #{Exception.message(error)}"}
-  end
-
-  defp collect(port, deadline, signal, context, output, pending_utf8) do
-    case collect_step(port, deadline, signal, context, output, pending_utf8) do
-      {:continue, output, pending_utf8} ->
-        collect(port, deadline, signal, context, output, pending_utf8)
-
-      result ->
-        result
-    end
-  end
-
-  defp collect_step(port, deadline, signal, context, output, pending_utf8) do
-    receive do
-      {^port, {:data, data}} ->
-        {progress, pending_utf8} = split_live_utf8(pending_utf8 <> data)
-        emit_progress(context, progress)
-        cancelled? = cancelled?(signal)
-        stopping? = cancelled? or timed_out?(deadline)
-        if stopping?, do: emit_progress(context, sanitize(pending_utf8))
-        output = Capture.append(output, progress)
-
-        if stopping? do
-          close(port)
-          reason = if cancelled?, do: "Command aborted", else: "Command timed out"
-          {:error, reason, Capture.append(output, sanitize(pending_utf8))}
-        else
-          {:continue, output, pending_utf8}
+        case collect(run, Capture.new(executor), "") do
+          {:ok, status, output} -> settle(status, Capture.finish(output))
+          {:error, reason, output} -> {:error, append_output(reason, Capture.finish(output))}
         end
 
-      {^port, {:exit_status, status}} ->
-        emit_progress(context, sanitize(pending_utf8))
-        {:ok, status, Capture.append(output, sanitize(pending_utf8))}
-    after
-      wait_time(deadline) ->
-        cond do
-          cancelled?(signal) ->
-            emit_progress(context, sanitize(pending_utf8))
-            close(port)
-
-            {:error, "Command aborted", Capture.append(output, sanitize(pending_utf8))}
-
-          timed_out?(deadline) ->
-            emit_progress(context, sanitize(pending_utf8))
-            close(port)
-
-            {:error, "Command timed out", Capture.append(output, sanitize(pending_utf8))}
-
-          true ->
-            {:continue, output, pending_utf8}
-        end
+      {:error, reason} ->
+        {:error, "Could not execute command: #{Executor.format_reason(reason)}"}
     end
+  end
+
+  defp collect(run, output, pending_utf8) do
+    case collect_step(run, output, pending_utf8) do
+      {:continue, output, pending_utf8} -> collect(run, output, pending_utf8)
+      result -> result
+    end
+  end
+
+  defp collect_step(run, output, pending_utf8) do
+    run.executor
+    |> Executor.await(run.handle, wait_time(run.deadline))
+    |> handle_event(run, output, pending_utf8)
   catch
     kind, reason ->
       Capture.discard(output)
-      close(port)
+      Executor.cancel(run.executor, run.handle)
       :erlang.raise(kind, reason, __STACKTRACE__)
+  end
+
+  defp handle_event({:data, data}, run, output, pending_utf8) do
+    {progress, pending_utf8} = split_live_utf8(pending_utf8 <> data)
+    emit_progress(run.context, progress)
+    continue_or_stop(run, Capture.append(output, progress), pending_utf8)
+  end
+
+  defp handle_event({:exit_status, status}, run, output, pending_utf8) do
+    {:ok, status, flush_pending(run, output, pending_utf8)}
+  end
+
+  defp handle_event({:error, reason}, run, output, pending_utf8) do
+    message = "Command failed: #{Executor.format_reason(reason)}"
+    {:error, message, flush_pending(run, output, pending_utf8)}
+  end
+
+  defp handle_event(:timeout, run, output, pending_utf8) do
+    continue_or_stop(run, output, pending_utf8)
+  end
+
+  # Checked after every event, so a busy command still honours the deadline
+  # and cancellation.
+  defp continue_or_stop(run, output, pending_utf8) do
+    case stop_reason(run) do
+      nil ->
+        {:continue, output, pending_utf8}
+
+      reason ->
+        output = flush_pending(run, output, pending_utf8)
+        Executor.cancel(run.executor, run.handle)
+        {:error, reason, output}
+    end
+  end
+
+  defp stop_reason(run) do
+    cond do
+      cancelled?(run.signal) -> "Command aborted"
+      timed_out?(run.deadline) -> "Command timed out"
+      true -> nil
+    end
+  end
+
+  defp flush_pending(run, output, pending_utf8) do
+    emit_progress(run.context, sanitize(pending_utf8))
+    Capture.append(output, sanitize(pending_utf8))
   end
 
   defp split_live_utf8(data) do
@@ -199,12 +193,6 @@ defmodule Tackle.Tools.Bash do
 
   defp cancelled?(nil), do: false
   defp cancelled?(signal), do: Cancellation.cancelled?(signal)
-
-  defp close(port) do
-    if Port.info(port), do: Port.close(port)
-  rescue
-    ArgumentError -> :ok
-  end
 
   defp settle(0, output), do: {:ok, output}
 

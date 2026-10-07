@@ -25,7 +25,7 @@ defmodule Tackle.Exec.Server do
   sends is validated on the host side.
   """
 
-  alias Tackle.Exec.Protocol
+  alias Tackle.Exec.{Command, FileOps, Protocol}
 
   @chunk_bytes 64 * 1_024
   @max_pending_bytes 16 * 1_024 * 1_024
@@ -40,8 +40,7 @@ defmodule Tackle.Exec.Server do
     state = %{
       io: io,
       execs: %{},
-      ports: %{},
-      kill: System.find_executable("kill")
+      ports: %{}
     }
 
     send_message(state, Protocol.hello())
@@ -110,7 +109,7 @@ defmodule Tackle.Exec.Server do
   end
 
   defp handle_request(state, {:exec, id, params}) do
-    case spawn_command(params) do
+    case Command.open(params.argv, params.cwd, params.env) do
       {:ok, port, os_pid} ->
         exec = %{
           id: id,
@@ -133,7 +132,7 @@ defmodule Tackle.Exec.Server do
 
   defp handle_request(state, {:signal, id, signal}) do
     case state.execs do
-      %{^id => %{status: nil} = exec} -> kill_group(state, exec, signal)
+      %{^id => %{status: nil} = exec} -> kill_group(exec, signal)
       _execs -> :ok
     end
 
@@ -147,58 +146,19 @@ defmodule Tackle.Exec.Server do
     end
   end
 
-  defp handle_request(state, {:read, id, params}),
-    do: run_file_op(state, id, fn -> read(params) end)
+  defp handle_request(state, {:read, id, %{path: path, offset: offset, length: length}}),
+    do: run_file_op(state, id, fn -> FileOps.read(path, offset, length) end)
 
-  defp handle_request(state, {:write, id, params}),
-    do: run_file_op(state, id, fn -> write(params) end)
-
-  defp handle_request(state, {:stat, id, params}),
-    do: run_file_op(state, id, fn -> stat(params) end)
-
-  defp spawn_command(%{argv: [command | args], cwd: cwd, env: env}) do
-    with {:ok, executable} <- find_executable(command, cwd, env) do
-      port =
-        Port.open({:spawn_executable, executable}, [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          :use_stdio,
-          :hide,
-          {:args, args},
-          {:arg0, command},
-          {:cd, cwd},
-          {:env, Enum.map(env, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)}
-        ])
-
-      case Port.info(port, :os_pid) do
-        {:os_pid, os_pid} -> {:ok, port, os_pid}
-        nil -> {:error, "command exited before it started"}
-      end
-    end
-  rescue
-    error in ErlangError -> {:error, port_error(error)}
+  defp handle_request(state, {:write, id, %{path: path, data: data} = params}) do
+    opts = [mkdir_p: params.mkdir_p, mode: params.mode]
+    run_file_op(state, id, fn -> with :ok <- FileOps.write(path, data, opts), do: {:ok, nil} end)
   end
 
-  defp port_error(%ErlangError{original: reason}) when is_atom(reason), do: reason
-  defp port_error(error), do: Exception.message(error)
+  defp handle_request(state, {:delete, id, %{path: path}}),
+    do: run_file_op(state, id, fn -> with :ok <- FileOps.delete(path), do: {:ok, nil} end)
 
-  defp find_executable(command, cwd, env) do
-    if String.contains?(command, "/") do
-      {:ok, Path.expand(command, cwd)}
-    else
-      path =
-        Enum.find_value(env, System.get_env("PATH", ""), fn
-          {"PATH", value} -> value
-          _entry -> nil
-        end)
-
-      case :os.find_executable(String.to_charlist(command), String.to_charlist(path)) do
-        false -> {:error, "#{command}: command not found"}
-        executable -> {:ok, List.to_string(executable)}
-      end
-    end
-  end
+  defp handle_request(state, {:stat, id, %{path: path}}),
+    do: run_file_op(state, id, fn -> FileOps.stat(path) end)
 
   defp exec_output(state, id, data) do
     exec = Map.fetch!(state.execs, id)
@@ -208,7 +168,7 @@ defmodule Tackle.Exec.Server do
         state
 
       exec.pending_bytes + byte_size(data) > @max_pending_bytes ->
-        kill_group(state, exec, :kill)
+        kill_group(exec, :kill)
 
         put_exec(state, %{
           exec
@@ -237,7 +197,7 @@ defmodule Tackle.Exec.Server do
   defp exec_failed(state, port, reason) do
     id = Map.fetch!(state.ports, port)
     exec = Map.fetch!(state.execs, id)
-    kill_group(state, exec, :kill)
+    kill_group(exec, :kill)
 
     exec = %{
       exec
@@ -297,18 +257,18 @@ defmodule Tackle.Exec.Server do
   defp put_exec(state, exec), do: %{state | execs: Map.put(state.execs, exec.id, exec)}
 
   defp kill_running(state) do
-    for {_id, %{status: nil} = exec} <- state.execs, do: kill_group(state, exec, :kill)
+    for {_id, %{status: nil} = exec} <- state.execs, do: kill_group(exec, :kill)
     :ok
   end
 
-  defp kill_group(%{kill: nil}, _exec, _signal) do
-    IO.puts(:stderr, "tackle exec-server cannot signal commands: kill was not found on PATH")
-  end
+  defp kill_group(%{os_pid: os_pid}, signal) do
+    case Command.kill_group(os_pid, signal) do
+      :ok ->
+        :ok
 
-  defp kill_group(%{kill: kill}, %{os_pid: os_pid}, signal) do
-    name = if signal == :kill, do: "KILL", else: "TERM"
-    System.cmd(kill, ["-s", name, "--", "-#{os_pid}"], stderr_to_stdout: true)
-    :ok
+      {:error, reason} ->
+        IO.puts(:stderr, "tackle exec-server cannot signal commands: " <> reason)
+    end
   end
 
   defp run_file_op(state, id, operation) do
@@ -330,35 +290,6 @@ defmodule Tackle.Exec.Server do
 
   defp file_reply(id, {:ok, result}), do: {:ok, id, result}
   defp file_reply(id, {:error, reason}), do: {:error, id, Protocol.wire_error(reason)}
-
-  defp read(%{path: path, offset: offset, length: length}) do
-    with {:ok, %File.Stat{type: type, size: size}} <- File.stat(path),
-         :ok <- if(type == :directory, do: {:error, :eisdir}, else: :ok),
-         {:ok, io} <- :file.open(path, [:read, :raw, :binary]) do
-      try do
-        case :file.pread(io, offset, length) do
-          {:ok, data} -> {:ok, %{data: data, size: size, eof: byte_size(data) < length}}
-          :eof -> {:ok, %{data: "", size: size, eof: true}}
-          {:error, reason} -> {:error, reason}
-        end
-      after
-        :file.close(io)
-      end
-    end
-  end
-
-  defp write(%{path: path, data: data, mkdir_p: mkdir_p}) do
-    with :ok <- if(mkdir_p, do: File.mkdir_p(Path.dirname(path)), else: :ok),
-         :ok <- File.write(path, data) do
-      {:ok, nil}
-    end
-  end
-
-  defp stat(%{path: path}) do
-    with {:ok, %File.Stat{type: type, size: size, mode: mode}} <- File.stat(path) do
-      {:ok, %{type: type, size: size, mode: mode}}
-    end
-  end
 
   defp send_message(%{io: io}, message) do
     Port.command(io, Protocol.encode(message))

@@ -3,6 +3,7 @@ defmodule Tackle.Tools.Write do
 
   use Tackle.Lib.Tool
 
+  alias Tackle.Executor
   alias Tackle.Tools.FileSystem
 
   tool_name("write")
@@ -19,38 +20,22 @@ defmodule Tackle.Tools.Write do
 
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def run(%{"path" => path, "content" => content}, context) do
+    executor = Executor.from_context(context)
+
     with {:ok, absolute_path} <- FileSystem.resolve_path(path, context) do
-      FileSystem.mutate(absolute_path, fn -> write_file(absolute_path, path, content) end)
+      FileSystem.mutate(absolute_path, fn ->
+        write_file(executor, absolute_path, path, content)
+      end)
     end
   end
 
-  defp write_file(absolute_path, display_path, content) do
-    with :ok <- make_parent(absolute_path, display_path),
-         :ok <- write_content(absolute_path, display_path, content) do
-      {:ok, "Successfully wrote to #{display_path}"}
-    end
-  end
-
-  defp make_parent(absolute_path, display_path) do
-    case absolute_path |> Path.dirname() |> File.mkdir_p() do
+  defp write_file(executor, absolute_path, display_path, content) do
+    case Executor.write(executor, absolute_path, content, mkdir_p: true) do
       :ok ->
-        :ok
-
-      {:error, reason, _path} ->
-        {:error,
-         "Could not create parent directory for #{display_path}: #{format_reason(reason)}"}
-    end
-  end
-
-  defp write_content(absolute_path, display_path, content) do
-    case File.write(absolute_path, content) do
-      :ok ->
-        :ok
+        {:ok, "Successfully wrote to #{display_path}"}
 
       {:error, reason} ->
         {:error, "Could not write #{FileSystem.format_error(display_path, reason)}"}
     end
   end
-
-  defp format_reason(reason), do: reason |> :file.format_error() |> List.to_string()
 end

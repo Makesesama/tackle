@@ -88,9 +88,9 @@ and unfinished integrations:
   workflows (`Tackle.Runtime.*`).
 - [`packages/tackle_exec`](packages/tackle_exec/README.md) contains the
   exec-server protocol, jail-side server, and host client for running tool
-  primitives in a jail (`Tackle.Exec.*`). It is phase 1 of the
-  [exec-server plan](docs/EXEC_SERVER_PLAN.md); built-in tools and the CLI do
-  not use it yet.
+  primitives in a jail (`Tackle.Exec.*`). The built-in tools reach it through
+  `Tackle.Executor.Jailed`; the CLI does not offer jailed execution yet (see the
+  [exec-server plan](docs/EXEC_SERVER_PLAN.md)).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the
   Phoenix integration and a runtime backend that preserves Store lifecycle
   hooks for root and delegated agents; it is not the intended CLI foundation.

@@ -3,6 +3,7 @@ defmodule Tackle.Tools.Read do
 
   use Tackle.Lib.Tool
 
+  alias Tackle.Executor
   alias Tackle.Lib.Tool.Content
   alias Tackle.Tools.{FileSystem, Output}
 
@@ -38,42 +39,51 @@ defmodule Tackle.Tools.Read do
     with :ok <- positive(:offset, offset),
          :ok <- optional_positive(:limit, limit),
          {:ok, absolute} <- FileSystem.resolve_path(path, context) do
-      read(absolute, path, offset, limit)
+      read(Executor.from_context(context), absolute, path, offset, limit)
     end
   end
 
-  defp read(path, display, offset, limit) do
-    case File.open(path, [:read, :binary]) do
-      {:ok, io} ->
-        try do
-          case IO.binread(io, 12) do
-            :eof ->
-              text(io, <<>>, display, offset, limit)
+  # The file is read as a sequence of byte ranges through the executor, so the
+  # same logic works locally and inside a jail.
+  defp read(executor, path, display, offset, limit) do
+    source = %{executor: executor, path: path, offset: 0, eof: false}
 
-            {:error, reason} ->
-              read_error(display, reason)
+    case next_chunk(source) do
+      {:ok, first, size, source} -> read_content(source, first, size, display, offset, limit)
+      :eof -> text(source, <<>>, display, offset, limit)
+      {:error, reason} -> read_error(display, reason)
+    end
+  end
 
-            prefix ->
-              case media(prefix) do
-                nil ->
-                  text(io, prefix, display, offset, limit)
+  # The first chunk decides whether the file is a supported image or text.
+  defp read_content(source, first, size, display, offset, limit) do
+    case media(first) do
+      nil ->
+        text(source, first, display, offset, limit)
 
-                type ->
-                  with {:ok, data} <- image(io, prefix, type, display) do
-                    render_image(data, display, offset, limit)
-                  end
-              end
-          end
-        after
-          File.close(io)
+      type ->
+        with {:ok, data} <- image(source, first, size, type, display) do
+          render_image(data, display, offset, limit)
         end
+    end
+  end
+
+  defp next_chunk(%{eof: true}), do: :eof
+
+  defp next_chunk(source) do
+    case Executor.read(source.executor, source.path, source.offset, @chunk_bytes) do
+      {:ok, %{data: ""}} ->
+        :eof
+
+      {:ok, %{data: data, size: size, eof: eof}} ->
+        {:ok, data, size, %{source | offset: source.offset + byte_size(data), eof: eof}}
 
       {:error, reason} ->
-        read_error(display, reason)
+        {:error, reason}
     end
   end
 
-  defp text(io, prefix, path, offset, limit) do
+  defp text(source, prefix, path, offset, limit) do
     state = %{
       pending: "",
       line_no: 1,
@@ -83,7 +93,7 @@ defmodule Tackle.Tools.Read do
       retained_newlines: 0
     }
 
-    case text_chunks(io, prefix, state) do
+    case text_chunks(source, prefix, state) do
       {:error, :invalid} ->
         {:error,
          "Could not read #{path}: file is not valid UTF-8 and is not a supported image " <>
@@ -105,24 +115,24 @@ defmodule Tackle.Tools.Read do
     end
   end
 
-  defp text_chunks(io, data, state) do
+  defp text_chunks(source, data, state) do
     case :unicode.characters_to_binary(state.pending <> data, :utf8, :utf8) do
       valid when is_binary(valid) ->
-        next_text_chunk(io, scan(%{state | pending: ""}, valid))
+        next_text_chunk(source, scan(%{state | pending: ""}, valid))
 
       {:incomplete, valid, rest} ->
-        next_text_chunk(io, scan(%{state | pending: IO.iodata_to_binary(rest)}, valid))
+        next_text_chunk(source, scan(%{state | pending: IO.iodata_to_binary(rest)}, valid))
 
       {:error, _, _} ->
         {:error, :invalid}
     end
   end
 
-  defp next_text_chunk(io, state) do
-    case IO.binread(io, @chunk_bytes) do
+  defp next_text_chunk(source, state) do
+    case next_chunk(source) do
       :eof -> if state.pending == "", do: {:ok, state}, else: {:error, :invalid}
       {:error, reason} -> {:error, reason}
-      data -> text_chunks(io, data, state)
+      {:ok, data, _size, source} -> text_chunks(source, data, state)
     end
   end
 
@@ -176,33 +186,46 @@ defmodule Tackle.Tools.Read do
     end
   end
 
-  defp image(io, prefix, type, path) do
-    case image_chunks(io, [prefix], byte_size(prefix)) do
+  # Reject an oversized image from its reported size before transferring it.
+  defp image(_source, _first, size, _type, path) when size > @max_image_bytes,
+    do: {:error, image_too_large(path, size)}
+
+  defp image(source, first, _size, type, path) do
+    case image_chunks(source, [first], byte_size(first)) do
       {:ok, size, chunks} when size <= @max_image_bytes ->
         encoded = chunks |> Enum.reverse() |> IO.iodata_to_binary() |> Base.encode64()
         {:ok, {:image, type, size, encoded}}
 
       {:ok, size, _} ->
-        {:error,
-         "Could not read #{path}: image is #{Output.format_size(size)}, larger than the #{Output.format_size(@max_image_bytes)} image read limit. Downscale it (for example with bash) and read it again."}
+        {:error, image_too_large(path, size)}
 
       {:error, reason} ->
         read_error(path, reason)
     end
   end
 
-  defp image_chunks(io, chunks, size) do
-    case IO.binread(io, @chunk_bytes) do
+  # The file can grow while it is read, so the limit is checked again here.
+  defp image_chunks(source, chunks, size) do
+    case next_chunk(source) do
       :eof ->
         {:ok, size, chunks}
 
       {:error, reason} ->
         {:error, reason}
 
-      data ->
+      {:ok, data, _size, source} ->
         n = size + byte_size(data)
-        image_chunks(io, if(n <= @max_image_bytes, do: [data | chunks], else: []), n)
+
+        if n <= @max_image_bytes,
+          do: image_chunks(source, [data | chunks], n),
+          else: {:ok, n, []}
     end
+  end
+
+  defp image_too_large(path, size) do
+    "Could not read #{path}: image is #{Output.format_size(size)}, larger than the " <>
+      "#{Output.format_size(@max_image_bytes)} image read limit. Downscale it (for example " <>
+      "with bash) and read it again."
   end
 
   defp media(<<0x89, "PNG\r\n", 0x1A, 0x0A, _::binary>>), do: "image/png"

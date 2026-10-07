@@ -119,12 +119,22 @@ filesystem and operating-system permissions and are not a sandbox. `Tackle.Lib` 
 configured agents.
 Embedding hosts can supply a trusted `:tools` list instead; set
 `context: %{cwd: path}` to choose the filesystem tools' working directory.
-Tools run with the Tackle process's filesystem and OS permissions, not in a
-sandbox.
+By default, tools run with the Tackle process's filesystem and OS permissions,
+not in a sandbox.
+
+The tools keep their logic on the host and send filesystem and process
+primitives to the executor in `context.executor` (see `Tackle.Executor`).
+Without one they use `Tackle.Executor.Local`. A host can start a
+`Tackle.Exec.Client` for a jailed exec-server and pass
+`Tackle.Executor.Jailed.new(client)` to run the same primitives inside the jail;
+the launcher should mount the workspace at the same path as on the host. The
+CLI does not offer this yet. Cancelling or timing out `bash` kills the
+command's whole process group.
 
 `bash` retains a bounded output tail and incrementally spills oversized output
-as sanitized UTF-8 to an exclusively created, mode-0600 temporary log. Truncated
-results include its path; callers are responsible for removing retained logs.
+as sanitized UTF-8 to an exclusively created, mode-0600 temporary log in the
+executor's temporary directory. Truncated results include its path; callers are
+responsible for removing retained logs.
 If spilling fails, the bounded result is still returned without a full-output
 path. `read` scans text in fixed-size chunks, retaining only a bounded selection;
 exact line counts and UTF-8 validation still require scanning the entire file.
