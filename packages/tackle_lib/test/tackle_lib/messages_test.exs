@@ -119,4 +119,47 @@ defmodule Tackle.Lib.MessagesTest do
       assert is_binary(id) and id != ""
     end
   end
+
+  describe "unresolved_tool_calls/1" do
+    test "returns calls without a matching tool result" do
+      messages = [
+        Message.user("run"),
+        Message.assistant(
+          content: nil,
+          tool_calls: [
+            %Tackle.Lib.Tool.Call{id: "call_1", name: "search", arguments: %{"q" => "cats"}},
+            %{id: "call_2", name: "read", arguments: %{}}
+          ]
+        ),
+        Message.tool_result("call_1", "search", "3 cats")
+      ]
+
+      assert Messages.unresolved_tool_calls(messages) == [%{id: "call_2", name: "read"}]
+    end
+
+    test "returns nothing once every call has a result" do
+      messages = [
+        Message.assistant(
+          content: nil,
+          tool_calls: [%{id: "call_1", name: "search", arguments: %{}}]
+        ),
+        Message.tool_result("call_1", "search", "3 cats"),
+        Message.assistant(content: "done")
+      ]
+
+      assert Messages.unresolved_tool_calls(messages) == []
+    end
+
+    test "keeps calls from an earlier turn that were never settled" do
+      messages = [
+        Message.assistant(
+          content: nil,
+          tool_calls: [%{id: "call_1", name: "search", arguments: %{}}]
+        ),
+        Message.user("try again")
+      ]
+
+      assert Messages.unresolved_tool_calls(messages) == [%{id: "call_1", name: "search"}]
+    end
+  end
 end

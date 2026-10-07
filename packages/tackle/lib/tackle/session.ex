@@ -35,6 +35,7 @@ defmodule Tackle.Session do
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Messages
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Envelope
@@ -55,6 +56,8 @@ defmodule Tackle.Session do
   @task_shutdown_timeout 1_000
   @max_inbox_messages 32
   @max_deferred_messages 128
+
+  @interrupted_tool_result "Error: Tool execution was interrupted before a result was recorded; the outcome is unknown."
 
   defmodule Stats do
     @moduledoc "Derived, immutable token, cost, model, and context statistics."
@@ -212,6 +215,10 @@ defmodule Tackle.Session do
   event is interrupted. Automatic continuation is prohibited while unresolved
   tools may have produced external effects; the frontend must inspect the
   uncertainty and call this to record `turn.abandoned` before new work.
+
+  Abandoning also settles the interrupted turn's unresolved tool calls with
+  synthetic results, so the transcript keeps the call/result pairing providers
+  require and the session can accept new work afterwards.
   """
   @spec abandon_turn(GenServer.server()) :: :ok | {:error, term()}
   def abandon_turn(session), do: GenServer.call(session, :abandon_turn, :infinity)
@@ -370,11 +377,18 @@ defmodule Tackle.Session do
 
   def handle_call(:abandon_turn, _from, %{journal: journal, recovery: recovery} = state)
       when not is_nil(journal) do
-    case Journal.settle_turn(journal, "turn.abandoned", %{
-           "turn_id" => recovery.turn_id,
-           "reason" => "abandoned_by_frontend"
-         }) do
-      :ok -> {:reply, :ok, %{state | recovery: nil}}
+    # The interrupted turn is settled first; the reopened journal no longer
+    # tracks it as active, so the synthetic results for its unresolved tool
+    # calls are committed through a dedicated repair turn afterwards.
+    with :ok <-
+           Journal.settle_turn(journal, "turn.abandoned", %{
+             "turn_id" => recovery.turn_id,
+             "reason" => "abandoned_by_frontend"
+           }),
+         {:ok, agent_state} <-
+           repair_interrupted_tool_results(journal, state.agent_state, state.config, nil) do
+      {:reply, :ok, %{state | recovery: nil, agent_state: agent_state}}
+    else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -556,7 +570,7 @@ defmodule Tackle.Session do
       {:tackle_event, state.agent_state.session_id, turn_id, event}
     )
 
-    {:noreply, state}
+    {:noreply, record_interrupted_tool_call(state, event)}
   end
 
   def handle_info({:tackle_event, _turn_id, %Event{}}, state), do: {:noreply, state}
@@ -948,11 +962,31 @@ defmodule Tackle.Session do
     "Message from agent #{from.agent_id}:\n\n#{content}"
   end
 
+  # A tool result the loop settles synthetically on an interrupted batch did
+  # not actually report anything: a background launch whose tool was cut off
+  # still owes its run id to the next turn through the inbox.
+  defp record_interrupted_tool_call(
+         %{active_turn: active_turn} = state,
+         %Event{type: :tool_error, data: %{reason: :interrupted, tool_call_id: id}}
+       )
+       when is_binary(id) do
+    interrupted = Map.get(active_turn, :interrupted_tool_calls, MapSet.new())
+
+    %{
+      state
+      | active_turn: Map.put(active_turn, :interrupted_tool_calls, MapSet.put(interrupted, id))
+    }
+  end
+
+  defp record_interrupted_tool_call(state, _event), do: state
+
   defp discard_reported_background_launches(
          state,
-         %{id: turn_id, initial_message_ids: initial_message_ids},
+         %{id: turn_id, initial_message_ids: initial_message_ids} = active_turn,
          %AgentState{} = agent_state
        ) do
+    interrupted = Map.get(active_turn, :interrupted_tool_calls, MapSet.new())
+
     reported_tool_calls =
       agent_state.messages
       |> Enum.reject(&MapSet.member?(initial_message_ids, &1.id))
@@ -964,6 +998,7 @@ defmodule Tackle.Session do
           []
       end)
       |> MapSet.new()
+      |> MapSet.difference(interrupted)
 
     inbox =
       state.inbox
@@ -1078,8 +1113,65 @@ defmodule Tackle.Session do
         |> install_compaction_committer()
         |> install_tree_committer()
 
-      {:ok, agent_state, journal, recovery_for(projection)}
+      recovery = recovery_for(projection)
+
+      case repair_interrupted_tool_results(journal, agent_state, config, recovery) do
+        {:ok, agent_state} -> {:ok, agent_state, journal, recovery}
+        {:error, reason} -> {:error, reason}
+      end
     end
+  end
+
+  # A settled turn can still leave assistant tool calls without results — a
+  # turn cancelled or crashed mid-batch, or a journal written before the loop
+  # settled interrupted batches. Providers reject that history, which makes the
+  # session impossible to continue, so resume repairs it: one synthetic result
+  # per unresolved call, committed through a dedicated repair turn so the fix
+  # is durable. A turn that still requires an explicit recovery decision is
+  # left untouched; `abandon_turn/1` settles those.
+  defp repair_interrupted_tool_results(_journal, agent_state, _config, recovery)
+       when not is_nil(recovery),
+       do: {:ok, agent_state}
+
+  defp repair_interrupted_tool_results(journal, %AgentState{} = agent_state, config, nil) do
+    case Messages.unresolved_tool_calls(agent_state.messages) do
+      [] ->
+        {:ok, agent_state}
+
+      _calls ->
+        turn_id = config.id_generator.()
+
+        with {:ok, _turn_id} <- Journal.begin_turn(journal, :repair, nil, turn_id),
+             {:ok, agent_state} <- settle_unresolved_tool_results(agent_state),
+             :ok <-
+               Journal.settle_turn(journal, "turn.abandoned", %{
+                 "turn_id" => turn_id,
+                 "reason" => "interrupted_tools_repaired"
+               }) do
+          {:ok, agent_state}
+        end
+    end
+  end
+
+  # Appends one synthetic result per unresolved tool call. The messages go
+  # through the persistence hook, so they are journaled with the same parent
+  # linkage as any other tool result and survive the next resume.
+  defp settle_unresolved_tool_results(%AgentState{} = agent_state) do
+    agent_state.messages
+    |> Messages.unresolved_tool_calls()
+    |> Enum.reduce_while({:ok, agent_state}, fn call, {:ok, acc} ->
+      message =
+        Message.tool_result(call.id, call.name, @interrupted_tool_result,
+          id_generator: acc.id_generator
+        )
+
+      acc = AgentState.add_message(acc, message)
+
+      case Persistence.after_message(acc, message, acc.context) do
+        :ok -> {:cont, {:ok, acc}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   # A legacy linear journal is never rewritten; enabling branching appends one

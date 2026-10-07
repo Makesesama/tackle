@@ -88,10 +88,10 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  @spec begin_turn(GenServer.server(), :run | :continue, String.t() | nil) ::
+  @spec begin_turn(GenServer.server(), :run | :continue | :repair, String.t() | nil) ::
           {:ok, String.t()} | {:error, term()}
   def begin_turn(journal, operation, input)
-      when operation in [:run, :continue] do
+      when operation in [:run, :continue, :repair] do
     begin_turn(journal, operation, input, ID.generate())
   end
 
@@ -102,10 +102,10 @@ defmodule Tackle.Session.Journal do
   durable commits all correlate on one identifier. Returns the turn id after
   the commit is durable.
   """
-  @spec begin_turn(GenServer.server(), :run | :continue, String.t() | nil, String.t()) ::
+  @spec begin_turn(GenServer.server(), :run | :continue | :repair, String.t() | nil, String.t()) ::
           {:ok, String.t()} | {:error, term()}
   def begin_turn(journal, operation, input, turn_id)
-      when operation in [:run, :continue] and is_binary(turn_id) do
+      when operation in [:run, :continue, :repair] and is_binary(turn_id) do
     durable_call(journal, {:begin_turn, operation, input, turn_id})
   end
 

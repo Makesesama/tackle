@@ -976,10 +976,25 @@ defmodule Tackle.Lib.LoopTest do
       refute Process.alive?(first_task)
       assert final_state.status == :cancelled
 
-      assert Enum.map(Enum.filter(final_state.messages, &(&1.role == :tool)), & &1.tool_call_id) ==
-               ["c2"]
+      # The unfinished call is settled with a synthetic result so the persisted
+      # transcript keeps the call/result pairing providers require.
+      tool_messages = Enum.filter(final_state.messages, &(&1.role == :tool))
+      assert Enum.map(tool_messages, & &1.tool_call_id) == ["c2", "c1"]
+
+      assert %Message{tool_call_id: "c1", tool_name: "blocking"} =
+               interrupted =
+               Enum.find(tool_messages, &(&1.tool_call_id == "c1"))
+
+      assert interrupted.content =~ "cancelled before this call completed"
 
       assert_receive {:event, %Event{type: :tool_end, data: %{tool_call_id: "c2"}}}
+
+      assert_receive {:event,
+                      %Event{
+                        type: :tool_error,
+                        data: %{tool_call_id: "c1", reason: :interrupted}
+                      }}
+
       assert_receive {:event, %Event{type: :turn_cancelled, data: %{reason: "stop batch"}}}
 
       refute_receive {:event, %Event{type: :tool_execution_end, data: %{tool_call_id: "c1"}}},
@@ -1316,6 +1331,25 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:event, %Event{type: :tool_start, data: %{name: "cancel_after"}}}
     assert_receive {:tool_execute, :cancel_after}
     assert_receive {:event, %Event{type: :tool_end, data: %{name: "cancel_after"}}}
+
+    # The never-started second call is settled with a synthetic result so the
+    # transcript keeps the call/result pairing providers require on the next
+    # request.
+    tool_messages = Enum.filter(state.messages, &(&1.role == :tool))
+    assert Enum.map(tool_messages, & &1.tool_call_id) == ["call_cancel", "call_second"]
+
+    assert %Message{tool_call_id: "call_second", tool_name: "second"} =
+             synthetic =
+             Enum.find(tool_messages, &(&1.tool_call_id == "call_second"))
+
+    assert synthetic.content =~ "cancelled before this call completed"
+
+    assert_receive {:event,
+                    %Event{
+                      type: :tool_error,
+                      data: %{tool_call_id: "call_second", reason: :interrupted}
+                    }}
+
     assert_receive {:event, %Event{type: :status_change, data: %{status: :cancelled}}}
     assert_receive {:event, %Event{type: :turn_cancelled, data: %{reason: "stop requested"}}}
     refute_receive {:tool_execute, :second}, 20

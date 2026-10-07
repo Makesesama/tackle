@@ -544,9 +544,16 @@ defmodule Tackle.Lib.Loop do
         emit(callbacks, Event.new(:status_change, %{status: :acting}))
 
         case execute_tool_calls(state, tool_calls, callbacks) do
-          {:ok, state} -> loop(state, callbacks)
-          {:error, state} -> terminal_result({:error, state}, callbacks)
-          {:cancelled, state} -> terminal_result(cancel_run(state, callbacks), callbacks)
+          {:ok, state} ->
+            loop(state, callbacks)
+
+          {:error, state} ->
+            state = settle_interrupted_tool_calls(state, callbacks, "aborted")
+            terminal_result({:error, state}, callbacks)
+
+          {:cancelled, state} ->
+            state = settle_interrupted_tool_calls(state, callbacks, "cancelled")
+            terminal_result(cancel_run(state, callbacks), callbacks)
         end
 
       {:error, state} ->
@@ -773,6 +780,45 @@ defmodule Tackle.Lib.Loop do
   defp settle_tool_batch(%State{status: :cancelled} = state), do: {:cancelled, state}
   defp settle_tool_batch(%State{status: :error} = state), do: {:error, state}
   defp settle_tool_batch(%State{} = state), do: {:ok, state}
+
+  # A turn that ends while tool calls are unresolved leaves an assistant
+  # message whose calls have no results. Providers reject that history on the
+  # next request, which makes a stopped session impossible to continue, so an
+  # interrupted batch is settled with synthetic error results before the turn
+  # terminates. The results go through the normal message finalization path,
+  # so durable sessions persist them like any other tool result.
+  defp settle_interrupted_tool_calls(%State{} = state, callbacks, outcome) do
+    state.messages
+    |> Messages.unresolved_tool_calls()
+    |> Enum.reduce(state, &settle_interrupted_tool_call(&1, &2, callbacks, outcome))
+  end
+
+  defp settle_interrupted_tool_call(%{id: id, name: name}, %State{} = state, callbacks, outcome) do
+    content = "Error: Tool execution was #{outcome} before this call completed."
+
+    message =
+      Message.tool_result(id, name, content, id_generator: state.id_generator)
+
+    state = State.add_message(state, message)
+
+    case emit_and_finalize_message(state, callbacks, message) do
+      {:ok, state} ->
+        emit(
+          callbacks,
+          Event.new(:tool_error, %{
+            tool_call_id: id,
+            name: name,
+            error: content,
+            reason: :interrupted
+          })
+        )
+
+        state
+
+      {:error, state} ->
+        state
+    end
+  end
 
   defp execute_tool_call_until_cancelled(tool_call, state, callbacks) do
     if cancelled?(callbacks) do

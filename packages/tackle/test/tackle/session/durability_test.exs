@@ -153,6 +153,111 @@ defmodule Tackle.Session.DurabilityTest do
     assert {:ok, _turn_id} = Tackle.submit(scope.root_agent_ref, "next")
   end
 
+  test "abandoning an interrupted turn settles unresolved tool calls", ctx do
+    session_id = ID.generate()
+
+    {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
+    {:ok, turn_id} = Journal.begin_turn(journal, :run, "interrupted")
+
+    assert :ok = Journal.append_message(journal, Message.user("interrupted"))
+
+    assert :ok =
+             Journal.append_message(
+               journal,
+               Message.assistant(
+                 content: nil,
+                 tool_calls: [%{id: "call-1", name: "bash", arguments: %{}}]
+               )
+             )
+
+    assert :ok = Journal.tool_started(journal, %{id: "call-1", name: "bash", arguments: %{}})
+    :ok = GenServer.stop(journal)
+
+    scope =
+      start_durable_scope(
+        home: ctx.home,
+        session: [session_id: session_id],
+        root: [content: "recovered answer"]
+      )
+
+    assert {:error, {:recovery_required, info}} = Tackle.submit(scope.root_agent_ref, "next")
+    assert info.uncertain_tools != []
+
+    assert :ok = Tackle.abandon_turn(scope.root_agent_ref)
+
+    assert {:ok, snapshot} = Tackle.snapshot(scope.root_agent_ref)
+
+    assert [%Message{role: :tool, tool_call_id: "call-1", tool_name: "bash"} = settled] =
+             Enum.filter(snapshot.agent_state.messages, &(&1.role == :tool))
+
+    assert settled.content =~ "interrupted"
+
+    {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    assert Enum.any?(Enum.map(replay.commits, &commit_kind/1), &(&1 == :tool_result))
+
+    assert {:ok, _turn_id} = Tackle.submit(scope.root_agent_ref, "next")
+  end
+
+  test "resumes a settled turn with unresolved tool calls by repairing the transcript", ctx do
+    session_id = ID.generate()
+
+    {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
+    {:ok, turn_id} = Journal.begin_turn(journal, :run, "run tools")
+
+    assert :ok = Journal.append_message(journal, Message.user("run tools"))
+
+    assert :ok =
+             Journal.append_message(
+               journal,
+               Message.assistant(
+                 content: nil,
+                 tool_calls: [%{id: "call-1", name: "bash", arguments: %{}}]
+               )
+             )
+
+    assert :ok = Journal.tool_started(journal, %{id: "call-1", name: "bash", arguments: %{}})
+
+    assert :ok =
+             Journal.settle_turn(journal, "turn.cancelled", %{
+               "turn_id" => turn_id,
+               "reason" => "stopped by user"
+             })
+
+    :ok = GenServer.stop(journal)
+
+    scope =
+      start_durable_scope(
+        home: ctx.home,
+        session: [session_id: session_id],
+        root: [content: "recovered answer"]
+      )
+
+    # The turn was already settled, so no recovery decision is required; the
+    # unresolved call is repaired with a synthetic result on load.
+    assert {:ok, snapshot} = Tackle.snapshot(scope.root_agent_ref)
+    assert snapshot.recovery == nil
+
+    assert [%Message{role: :tool, tool_call_id: "call-1", tool_name: "bash"} = settled] =
+             Enum.filter(snapshot.agent_state.messages, &(&1.role == :tool))
+
+    assert settled.content =~ "interrupted"
+
+    {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    assert Enum.any?(Enum.map(replay.commits, &commit_kind/1), &(&1 == :tool_result))
+
+    {:ok, _snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "next")
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, state}}, 5_000
+
+    assert Enum.map(state.messages, & &1.role) == [
+             :user,
+             :assistant,
+             :tool,
+             :user,
+             :assistant
+           ]
+  end
+
   test "records a durable configuration change when the model is overridden on resume", ctx do
     scope =
       start_durable_scope(home: ctx.home, root: [model: "test/echo", content: "answer"])

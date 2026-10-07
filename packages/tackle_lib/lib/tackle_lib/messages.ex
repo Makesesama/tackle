@@ -67,6 +67,49 @@ defmodule Tackle.Lib.Messages do
   end
 
   @doc """
+  Returns assistant tool calls that have no matching tool result message.
+
+  Providers reject a request whose history contains an assistant tool call
+  without its tool result, so an interrupted run must settle these before the
+  next provider call. Calls are returned in transcript order as maps with the
+  call's `:id` and `:name`, ready to pair with a synthetic result.
+
+  Tool calls may be `%Tackle.Lib.Tool.Call{}` structs (live loop history) or
+  plain maps with `:id`/`:name` keys (replayed durable history).
+  """
+  @spec unresolved_tool_calls(list(Message.t())) :: [%{id: String.t(), name: String.t()}]
+  def unresolved_tool_calls(messages) when is_list(messages) do
+    messages
+    |> Enum.reduce([], fn
+      %Message{role: :assistant, tool_calls: calls}, pending when is_list(calls) ->
+        Enum.reduce(calls, pending, fn call, acc ->
+          case {tool_call_field(call, :id), tool_call_field(call, :name)} do
+            {id, name} when is_binary(id) and is_binary(name) ->
+              if Enum.any?(acc, &(&1.id == id)) do
+                acc
+              else
+                acc ++ [%{id: id, name: name}]
+              end
+
+            _invalid ->
+              acc
+          end
+        end)
+
+      %Message{role: :tool, tool_call_id: id}, pending when is_binary(id) ->
+        Enum.reject(pending, &(&1.id == id))
+
+      _message, pending ->
+        pending
+    end)
+  end
+
+  defp tool_call_field(%Tackle.Lib.Tool.Call{} = call, key), do: Map.get(call, key)
+
+  defp tool_call_field(call, key) when is_map(call),
+    do: Map.get(call, key) || Map.get(call, Atom.to_string(key))
+
+  @doc """
   Converts a single `%Tackle.Lib.Message{}` into a provider-neutral structured map,
   or `nil` if the message carries nothing meaningful to send.
   """

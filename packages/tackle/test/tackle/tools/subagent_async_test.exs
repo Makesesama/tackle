@@ -360,9 +360,14 @@ defmodule Tackle.Tools.SubagentAsyncTest do
                     {:cancelled, cancelled_state}},
                    2_000
 
-    refute Enum.any?(cancelled_state.messages, fn message ->
-             message.role == :tool and message.tool_call_id == "interrupted-background"
-           end)
+    # The interrupted call is settled with a synthetic result so the transcript
+    # keeps the call/result pairing providers require; the run id itself still
+    # travels to the next turn through the inbox.
+    assert [%{role: :tool, tool_call_id: "interrupted-background"} = settled] =
+             Enum.filter(cancelled_state.messages, &(&1.role == :tool))
+
+    assert settled.tool_name == "interrupted_background_subagent"
+    assert settled.content =~ "cancelled"
 
     assert_receive {:DOWN, ^tool_monitor, :process, ^tool_task, _reason}, 2_000
     {:ok, parent} = Tackle.Runtime.session_pid(scope.root_agent_ref)
@@ -380,10 +385,9 @@ defmodule Tackle.Tools.SubagentAsyncTest do
              _message -> false
            end)
 
-    assert :ok = Tackle.Runtime.cancel_turn(scope.root_agent_ref)
-
-    assert_receive {:tackle_turn_finished, ^session_id, ^second_turn, {:cancelled, _state}},
-                   2_000
+    # The settled tool result lets the model answer directly instead of
+    # reissuing the interrupted call, so the second turn completes on its own.
+    assert_receive {:tackle_turn_finished, ^session_id, ^second_turn, {:ok, _state}}, 2_000
 
     send(child_task, {:respond, "worker answer"})
 
