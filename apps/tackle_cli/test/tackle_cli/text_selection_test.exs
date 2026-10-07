@@ -5,7 +5,7 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
   alias ExRatatui.Event.{Key, Mouse}
   alias ExRatatui.Layout.Rect
   alias Tackle.CLI.{Native, TUI}
-  alias Tackle.CLI.TUI.{Browser, Conversation, Layout, State, TextSelection, Viewport}
+  alias Tackle.CLI.TUI.{Browser, Conversation, Layout, State, TextSelection, Theme, Viewport}
   alias Tackle.CLI.Widgets.{Browse, Input}
   alias Tackle.CLI.Widgets.Conversation, as: Widget
   alias Tackle.Lib.Message
@@ -208,12 +208,24 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
 
   test "large soft-wrapped extraction matches painted rows across batches" do
     source = String.duplicate("abcdefghij ", 8_000)
-    {cell, _} = Native.conversation_markdown(source, 80, Widget.style(%ExRatatui.Style{}))
+
+    {cell, _} =
+      Native.conversation_markdown(
+        source,
+        80,
+        Widget.style(%ExRatatui.Style{}),
+        markdown_styles()
+      )
+
     {native, height} = Native.conversation_new([cell], 80)
     text = Native.conversation_selection_text(native, {{0, 0}, {height - 1, 80}})
     assert is_binary(text)
     assert length(String.split(text, "\n")) == height
     assert String.replace(text, ~r/\s/u, "") == String.replace(source, " ", "")
+  end
+
+  defp markdown_styles do
+    Map.new(Theme.markdown_styles(), fn {element, style} -> {element, Widget.style(style)} end)
   end
 
   defp state(text) do

@@ -125,7 +125,7 @@ defmodule Tackle.CLI.TUI.UsageChart do
   def popup(%State{overlay: {:usage_chart, chart_state}, size: {width, height}}) do
     %Popup{
       content: content(chart_state, width, height),
-      block: Theme.panel_block(popup_title(chart_state.mode, width), :cyan),
+      block: Theme.panel_block(popup_title(chart_state.mode, width), :accent),
       percent_width: 90,
       percent_height: 80
     }

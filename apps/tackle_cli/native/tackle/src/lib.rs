@@ -2,15 +2,16 @@ mod browse;
 mod conversation;
 mod diff;
 mod input;
+mod markdown;
 mod selection;
 mod subagents;
 mod surface;
 mod tree;
 mod widgets;
 
-use std::io::IsTerminal;
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use rustler::{Atom, NifResult};
+use std::io::IsTerminal;
 
 mod atoms {
     rustler::atoms! { ok, invalid_size, label_too_long }

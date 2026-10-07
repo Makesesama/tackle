@@ -39,20 +39,23 @@ The logo pattern and palette live in `lib/tackle_cli/tui/glyph.ex`.
 ### Terminal colors
 
 The TUI supports light and dark palettes, including message surfaces, selection,
-errors, diffs, and syntax-highlighted code. It uses the background index from
-`COLORFGBG` when set, otherwise defaults to dark. Because not all terminals
-export that variable (and ANSI colors can be customized), you can override it:
+errors, diffs, and syntax-highlighted code. Before the first frame renders it
+asks the terminal for its background color with the standard OSC 11 query and
+picks the matching palette; terminals that do not answer fall back to the
+background index from `COLORFGBG` when set, otherwise to dark. Because the
+query is best-effort (and ANSI colors can be customized), you can override it:
 
 ```sh
 TACKLE_THEME=light mix tackle
 TACKLE_THEME=dark tackle
 ```
 
-Unset `TACKLE_THEME` or use `auto` to return to the heuristic. Unknown values
-also use the heuristic. Colors are selected for the launch environment; live
-terminal theme-change notifications and OSC background probing are not supported.
-Plain prose retains the terminal's default text/background colors; painted
-surfaces set both colors so an undetected light terminal still has readable text.
+Unset `TACKLE_THEME` or use `auto` to return to detection. Unknown values
+also fall back to detection. Colors are selected at launch; live terminal
+theme-change notifications are not supported, so a mid-session terminal
+theme change needs a restart. Plain prose retains the terminal's default
+text/background colors; painted surfaces set both colors so an undetected
+light terminal still has readable text.
 The jailed launchers run the CLI on the host, so these variables work there too.
 
 The wrapped binary is a **fixed distribution** with these default adapters
@@ -514,7 +517,11 @@ keeps prose off the terminal edge. Below four columns, message chrome yields to
 content. Reasoning uses muted text and italic previews rather than an accented
 heading.
 
-Assistant messages render as Markdown, including while streaming. Completed
+Assistant messages render as Markdown, including while streaming. Markdown
+element styles come from the same theme as the rest of the shell: headings are
+bold accent text without their `#` markers, inline code sits on the code
+surface, quotes read like reasoning text, and GitHub alert blocks use the
+theme's meaning colors. Completed
 answers (assistant content without tool calls, using the library's final-answer
 contract) get a quiet “Answer” heading; intermediate tool-call commentary does
 not. Below six columns the heading yields to content. Reasoning remains
@@ -787,9 +794,11 @@ See [native rendering findings](bench/conversation_native.md) for measurement
 boundaries and remaining optimization candidates.
 
 The custom input uses the existing Rust dependencies; the native conversation
-adds `tui-markdown` (also used by ExRatatui). Assistant fenced code, including
+adds `tui-markdown` (also used by ExRatatui), built without its default
+`highlight-code` feature. Assistant fenced code, including
 shell and Erlang, uses the shared code surface and ExRatatui syntax highlighting;
-other Markdown remains with `tui-markdown`. Both use the owned styled-row
+other Markdown remains with `tui-markdown`, styled by the theme's wire
+stylesheet. Both use the owned styled-row
 surface bridge; no resources or pointers are shared with ExRatatui's NIF.
 Attachments, history search, completions, selections, and Vim mode are not yet
 implemented.

@@ -143,7 +143,7 @@ defmodule Tackle.CLI.TUI.Menu do
 
     %Popup{
       content: content,
-      block: Theme.panel_block(title(kind, picker.query, length(items)), :cyan),
+      block: Theme.panel_block(title(kind, picker.query, length(items)), :accent),
       percent_width: 72,
       percent_height: 55
     }

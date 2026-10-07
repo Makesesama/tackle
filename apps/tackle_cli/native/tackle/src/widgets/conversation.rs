@@ -1,6 +1,7 @@
 //! Immutable history cells and a viewport over them. Like Codex's history cells,
 //! settled cells cache width-dependent layout; replacing the live tail does not
 //! parse or lay out settled Markdown again. No session or provider state lives here.
+use crate::markdown::ThemeMarkdown;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -28,9 +29,10 @@ struct MeasuredLine {
 }
 
 impl HistoryCell {
-    pub fn markdown(source: &str, width: u16, style: Style) -> Self {
+    pub fn markdown(source: &str, width: u16, style: Style, styles: &ThemeMarkdown) -> Self {
+        let options = tui_markdown::Options::new(styles.clone());
         Self::new(
-            tui_markdown::from_str(&sanitize(source)),
+            tui_markdown::from_str_with_options(&sanitize(source), &options),
             width,
             style,
             true,
@@ -45,13 +47,15 @@ impl HistoryCell {
         markdown: bool,
         style: Style,
         marker: Span<'static>,
+        styles: &ThemeMarkdown,
     ) -> Self {
         let width = width.max(1);
         let gutter = if width >= 6 { 3 } else { 0 };
         let right_padding = if width >= 6 { 2 } else { 0 };
         let source = sanitize(source);
         let text = if markdown {
-            tui_markdown::from_str(&source)
+            let options = tui_markdown::Options::new(styles.clone());
+            tui_markdown::from_str_with_options(&source, &options)
         } else {
             Text::from(source.split('\n').map(Line::from).collect::<Vec<_>>())
         };
@@ -86,12 +90,13 @@ impl HistoryCell {
         limit: Option<u16>,
         style: Style,
         marker: Span<'static>,
+        styles: &ThemeMarkdown,
     ) -> Self {
         let width = width.max(1);
         let measured_width = limit.map_or(width, |limit| {
             width.min(limit.max(1).saturating_add(if width >= 6 { 5 } else { 0 }))
         });
-        let mut cell = Self::message(source, measured_width, true, style, marker);
+        let mut cell = Self::message(source, measured_width, true, style, marker, styles);
         cell.right_padding += width - measured_width;
         cell.width = width;
         cell
@@ -493,6 +498,10 @@ mod tests {
         buffer.content.iter().map(|cell| cell.symbol()).collect()
     }
 
+    fn styles() -> ThemeMarkdown {
+        ThemeMarkdown::default()
+    }
+
     #[test]
     fn limited_prose_measures_and_paints_the_same_clipped_windows() {
         let source = "word ".repeat(100);
@@ -502,8 +511,16 @@ mod tests {
             Some(40),
             Style::default(),
             Span::raw("●"),
+            &styles(),
         ));
-        let expected = HistoryCell::message(&source, 45, true, Style::default(), Span::raw("●"));
+        let expected = HistoryCell::message(
+            &source,
+            45,
+            true,
+            Style::default(),
+            Span::raw("●"),
+            &styles(),
+        );
         assert_eq!(limited.width(), 120);
         assert_eq!(limited.height(), expected.height());
         let height = limited.height();
@@ -519,8 +536,22 @@ mod tests {
             }
         }
         for width in [1, 5, 6, 40] {
-            let a = HistoryCell::prose(&source, width, Some(80), Style::default(), Span::raw("●"));
-            let b = HistoryCell::message(&source, width, true, Style::default(), Span::raw("●"));
+            let a = HistoryCell::prose(
+                &source,
+                width,
+                Some(80),
+                Style::default(),
+                Span::raw("●"),
+                &styles(),
+            );
+            let b = HistoryCell::message(
+                &source,
+                width,
+                true,
+                Style::default(),
+                Span::raw("●"),
+                &styles(),
+            );
             assert_eq!(a.height(), b.height());
         }
     }
@@ -535,9 +566,16 @@ mod tests {
         ];
         for source in sources {
             for width in [1, 8, 20, 80] {
-                let cell = Arc::new(HistoryCell::markdown(source, width, Style::default()));
+                let cell = Arc::new(HistoryCell::markdown(
+                    source,
+                    width,
+                    Style::default(),
+                    &styles(),
+                ));
+                let options = tui_markdown::Options::new(styles());
                 let paragraph =
-                    Paragraph::new(tui_markdown::from_str(source)).wrap(Wrap { trim: true });
+                    Paragraph::new(tui_markdown::from_str_with_options(source, &options))
+                        .wrap(Wrap { trim: true });
                 assert_eq!(cell.height(), paragraph.line_count(width));
                 let conversation = Conversation::new(vec![cell]);
                 for offset in 0..=conversation.height {
@@ -561,7 +599,12 @@ mod tests {
         let source = (0..70_000)
             .map(|i| format!("**row {i}**  \n"))
             .collect::<String>();
-        let cell = Arc::new(HistoryCell::markdown(&source, 20, Style::default()));
+        let cell = Arc::new(HistoryCell::markdown(
+            &source,
+            20,
+            Style::default(),
+            &styles(),
+        ));
         let conversation = Conversation::new(vec![cell]);
         assert_eq!(conversation.height, 70_000);
         let buffer = paint(&conversation, 20, 2, 69_999);
@@ -579,6 +622,7 @@ mod tests {
             &source,
             1,
             Style::default(),
+            &styles(),
         ))]);
         assert_eq!(conversation.height, 65_537);
         let buffer = paint(&conversation, 1, 1, 65_536);
@@ -607,8 +651,13 @@ mod tests {
 
     #[test]
     fn empty_cells_and_zero_rectangles_are_safe() {
-        let empty = Arc::new(HistoryCell::markdown("", 10, Style::default()));
-        let body = Arc::new(HistoryCell::markdown("body", 10, Style::default()));
+        let empty = Arc::new(HistoryCell::markdown("", 10, Style::default(), &styles()));
+        let body = Arc::new(HistoryCell::markdown(
+            "body",
+            10,
+            Style::default(),
+            &styles(),
+        ));
         let conversation = Conversation::new(vec![empty.clone(), body, empty]);
         assert!(text(&paint(&conversation, 10, 1, 0)).contains("body"));
         assert!(text(&paint(&conversation, 10, 1, 1)).trim().is_empty());
@@ -626,6 +675,7 @@ mod tests {
                     markdown,
                     style,
                     Span::styled("●", Style::default().fg(Color::Cyan)),
+                    &styles(),
                 ));
                 let conversation = Conversation::new(vec![cell]);
                 let full = paint(&conversation, width, conversation.height as u16, 0);
@@ -666,6 +716,7 @@ mod tests {
             false,
             Style::default(),
             Span::raw("›"),
+            &styles(),
         ))]);
         let buffer = paint(&conversation, 10, 3, 0);
         let rows: Vec<String> = buffer

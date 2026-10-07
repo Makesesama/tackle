@@ -14,7 +14,11 @@ rustler = { version = "0.38", default-features = false, features = ["derive", "n
 # Line matching and intraline emphasis for edit cards. `inline` adds the
 # second-level refinement that marks the tokens that actually changed.
 similar = { version = "3.2", features = ["inline"] }
-tui-markdown = "0.3"
+# Markdown → ratatui Text for assistant prose, styled by the theme's wire
+# stylesheet. The default `highlight-code` feature (syntect, ansi-to-tui) is
+# off: CodeFences routes every fenced block to Lumis before prose renders,
+# so the crate's own highlighter is unreachable dead weight.
+tui-markdown = { version = "0.3", default-features = false }
 
 [build-dependencies]
 cc = "1"

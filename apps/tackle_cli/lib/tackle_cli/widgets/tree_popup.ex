@@ -2,9 +2,8 @@ defmodule Tackle.CLI.Widgets.TreePopup do
   @moduledoc false
 
   alias ExRatatui.Layout.Rect
-  alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
-  alias ExRatatui.Widgets.{Block, Clear, Paragraph}
+  alias ExRatatui.Widgets.{Clear, Paragraph}
   alias Tackle.CLI.TUI.Theme
   alias Tackle.CLI.Widgets.Tree
 
@@ -56,16 +55,7 @@ defmodule Tackle.CLI.Widgets.TreePopup do
 
     [
       {%Clear{}, panel},
-      {
-        %Block{
-          title: " Conversation tree ",
-          borders: [:all],
-          border_type: :rounded,
-          border_style: %Style{fg: :cyan},
-          title_style: Theme.style(:accent)
-        },
-        panel
-      },
+      {Theme.panel_block(" Conversation tree ", :accent), panel},
       {%Paragraph{text: [Line.new(search_text)]}, search},
       {%Tree{nodes: popup.nodes, selected: popup.selected}, tree},
       {%Paragraph{text: help_text}, help}

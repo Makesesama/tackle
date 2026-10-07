@@ -121,6 +121,75 @@ defmodule Tackle.CLI.TUI.ThemeRenderingTest do
     refute Enum.any?(List.flatten(rows), fn {_text, fg, _bg, _u, _m} -> fg == {4, 5, 6} end)
   end
 
+  test "markdown styles are the exact wire contract and follow the palette" do
+    keys = [
+      :heading,
+      :code,
+      :link,
+      :blockquote,
+      :meta,
+      :math,
+      :alert_note,
+      :alert_tip,
+      :alert_important,
+      :alert_warning,
+      :alert_caution,
+      :table_header,
+      :table_cell,
+      :table_border
+    ]
+
+    for mode <- [:light, :dark] do
+      System.put_env("TACKLE_THEME", Atom.to_string(mode))
+      styles = Theme.markdown_styles()
+      assert Enum.sort(Map.keys(styles)) == Enum.sort(keys)
+      assert Enum.all?(Map.values(styles), &is_struct(&1, ExRatatui.Style))
+      # Inline code shares the fenced-code surface in both palettes.
+      assert styles.code.bg == Theme.style(:code_surface, mode).bg
+    end
+
+    # The contract is palette-driven, so the two modes must disagree.
+    System.put_env("TACKLE_THEME", "light")
+    light = Theme.markdown_styles()
+    System.put_env("TACKLE_THEME", "dark")
+    dark = Theme.markdown_styles()
+    assert light != dark
+  end
+
+  test "markdown prose follows the theme instead of the renderer's defaults" do
+    for mode <- [:light, :dark] do
+      System.put_env("TACKLE_THEME", Atom.to_string(mode))
+      entry = %MessageView{kind: :assistant, content: "# Title\n\nsome `code` here"}
+      {cells, _} = Conversation.cached_cell(entry, 60, %{})
+      {scene, height} = Conversation.assemble(cells, 60)
+
+      {:ok, rows} =
+        Native.conversation_render(scene, 60, height, 0, [], Conversation.style(%Style{}))
+
+      painted = List.flatten(rows)
+
+      # Headings are bold accent text without the default cyan band or marker.
+      {_, heading_fg, heading_bg, _, heading_modifiers} =
+        Enum.find(painted, fn {text, _, _, _, _} -> text =~ "Title" end)
+
+      assert heading_fg == elem(Conversation.style(Theme.style(:accent_soft)), 0)
+      assert heading_bg == nil
+      assert Bitwise.band(heading_modifiers, 1) == 1
+      refute Enum.any?(painted, fn {text, _, _, _, _} -> text =~ "#" end)
+
+      # Inline code sits on the same surface as fenced code, not white on black.
+      {_, code_fg, code_bg, _, _} =
+        Enum.find(painted, fn {text, _, _, _, _} -> text == "code" end)
+
+      surface = Conversation.style(Theme.style(:code_surface))
+      assert code_fg == elem(surface, 0)
+      assert code_bg == elem(surface, 1)
+
+      # No default palette color leaks in: no cyan bands, no black code fills.
+      refute Enum.any?(painted, fn {_, _, bg, _, _} -> bg in [0, 6] end)
+    end
+  end
+
   defp paint_native(items, width) do
     {scene, height} = Conversation.assemble(items, width)
 

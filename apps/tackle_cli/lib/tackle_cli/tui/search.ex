@@ -13,7 +13,6 @@ defmodule Tackle.CLI.TUI.Search do
   intents here.
   """
 
-  alias ExRatatui.Style
   alias ExRatatui.Widgets.{Popup, TextInput}
   alias Tackle.CLI.TUI.{Conversation, State, Theme, Util}
 
@@ -79,9 +78,9 @@ defmodule Tackle.CLI.TUI.Search do
       content: %TextInput{
         state: search.input,
         placeholder: "Search retained transcript and tool output",
-        placeholder_style: %Style{fg: :dark_gray}
+        placeholder_style: Theme.style(:subtle)
       },
-      block: Theme.panel_block(title, :cyan),
+      block: Theme.panel_block(title, :accent),
       percent_width: 80,
       percent_height: 20
     }

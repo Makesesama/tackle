@@ -1,6 +1,8 @@
 //! Owned immutable resources: old scenes remain valid after a stream refresh.
 use crate::{
-    atoms, surface,
+    atoms,
+    markdown::{MarkdownWire, ThemeMarkdown},
+    surface,
     widgets::conversation::{sanitize, Conversation, HistoryCell},
     MAX_CELLS,
 };
@@ -21,7 +23,7 @@ impl rustler::Resource for CellResource {}
 #[rustler::resource_impl]
 impl rustler::Resource for ConversationResource {}
 
-#[derive(NifUntaggedEnum)]
+#[derive(NifUntaggedEnum, Clone, Copy)]
 pub(crate) enum WireColor {
     Index(u8),
     Rgb((u8, u8, u8)),
@@ -60,8 +62,10 @@ fn conversation_markdown(
     source: String,
     width: u16,
     base: WireStyle,
+    styles: MarkdownWire,
 ) -> NifResult<(ResourceArc<CellResource>, usize)> {
-    let cell = HistoryCell::markdown(&source, width, style(base)?);
+    let styles = ThemeMarkdown::from_wire(styles)?;
+    let cell = HistoryCell::markdown(&source, width, style(base)?, &styles);
     let height = cell.height();
     Ok((ResourceArc::new(CellResource(Arc::new(cell))), height))
 }
@@ -73,9 +77,11 @@ fn conversation_message(
     markdown: bool,
     base: WireStyle,
     marker: WireSpan,
+    styles: MarkdownWire,
 ) -> NifResult<(ResourceArc<CellResource>, usize)> {
+    let styles = ThemeMarkdown::from_wire(styles)?;
     let marker = Span::styled(sanitize(&marker.0).replace('\n', " "), style(marker.1)?);
-    let cell = HistoryCell::message(&source, width, markdown, style(base)?, marker);
+    let cell = HistoryCell::message(&source, width, markdown, style(base)?, marker, &styles);
     let height = cell.height();
     Ok((ResourceArc::new(CellResource(Arc::new(cell))), height))
 }
@@ -87,9 +93,11 @@ fn conversation_prose(
     prose_width: Option<u16>,
     base: WireStyle,
     marker: WireSpan,
+    styles: MarkdownWire,
 ) -> NifResult<(ResourceArc<CellResource>, usize)> {
+    let styles = ThemeMarkdown::from_wire(styles)?;
     let marker = Span::styled(sanitize(&marker.0).replace('\n', " "), style(marker.1)?);
-    let cell = HistoryCell::prose(&source, width, prose_width, style(base)?, marker);
+    let cell = HistoryCell::prose(&source, width, prose_width, style(base)?, marker, &styles);
     let height = cell.height();
     Ok((ResourceArc::new(CellResource(Arc::new(cell))), height))
 }

@@ -495,7 +495,7 @@ defmodule Tackle.CLI.TUI.FileSearch do
       }
 
       [
-        {Theme.panel_block(title(popup), :cyan), rect},
+        {Theme.panel_block(title(popup), :accent), rect},
         {content(popup), inner}
       ]
     end

@@ -85,7 +85,7 @@ defmodule Tackle.CLI.TUI.Help do
 
     %Popup{
       content: %Paragraph{text: Enum.join(lines, "\n"), style: Theme.style(:muted)},
-      block: Theme.panel_block(" Shortcuts · ↑/↓ scroll · ?/Esc close ", :cyan),
+      block: Theme.panel_block(" Shortcuts · ↑/↓ scroll · ?/Esc close ", :accent),
       percent_width: 100,
       percent_height: 100
     }

@@ -103,7 +103,7 @@ defmodule Tackle.CLI.TUI.Inspector do
 
     %Popup{
       content: %WidgetList{items: visible_items, scroll_offset: visible_offset},
-      block: Theme.panel_block(title, :cyan),
+      block: Theme.panel_block(title, :accent),
       percent_width: 90,
       percent_height: 80
     }

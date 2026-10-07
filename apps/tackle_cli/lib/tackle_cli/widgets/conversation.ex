@@ -47,7 +47,8 @@ defmodule Tackle.CLI.Widgets.Conversation do
         width,
         false,
         style(base),
-        {"›", style(Theme.style(:accent_soft))}
+        {"›", style(Theme.style(:accent_soft))},
+        markdown_styles()
       )
 
     [{%Cell{state: resource, style: base}, height}]
@@ -132,7 +133,8 @@ defmodule Tackle.CLI.Widgets.Conversation do
         width,
         prose_width,
         style(base),
-        {if(first?, do: marker, else: ""), style(Theme.style(:accent_soft))}
+        {if(first?, do: marker, else: ""), style(Theme.style(:accent_soft))},
+        markdown_styles()
       )
 
     {%Cell{state: resource, style: base}, height}
@@ -147,6 +149,12 @@ defmodule Tackle.CLI.Widgets.Conversation do
     marker = if first?, do: {marker, style(Theme.style(:accent_soft))}, else: nil
     {resource, height} = Native.conversation_code(rows, width, style(surface), marker, language)
     {%Cell{state: resource, style: surface}, height}
+  end
+
+  # The Markdown element styles cross the wire as one map per prose cell;
+  # the keys are the contract documented on Theme.markdown_styles/0.
+  defp markdown_styles do
+    Map.new(Theme.markdown_styles(), fn {element, style} -> {element, style(style)} end)
   end
 
   # Lumis highlights the whole blob in one pass — the same highlighter as the

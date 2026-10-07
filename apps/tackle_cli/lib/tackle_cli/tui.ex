@@ -96,6 +96,7 @@ defmodule Tackle.CLI.TUI do
     Session,
     State,
     Subagents,
+    TerminalBackground,
     TerminalTitle,
     Tree,
     UsageChart,
@@ -146,6 +147,12 @@ defmodule Tackle.CLI.TUI do
 
   @impl true
   def mount(opts) do
+    # Ask the terminal for its background before the first frame renders;
+    # test terminals have no controlling terminal to ask.
+    if not Keyword.has_key?(opts, :test_mode) do
+      TerminalBackground.detect_and_remember()
+    end
+
     # Test terminals have no graphics protocol. A caller may inject one for
     # deterministic scene tests without probing the real controlling TTY.
     protocol =

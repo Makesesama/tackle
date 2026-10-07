@@ -52,6 +52,9 @@ defmodule Tackle.CLI.MixProject do
       {:clipboard_ex, path: "../../packages/clipboard_ex"},
       {:optimus, "~> 0.6"},
       {:owl, "~> 0.13"},
+      # Not referenced directly: Owl declares it optional, and listing it here
+      # switches on its unicode-aware table padding (CJK alignment in
+      # `tackle sessions` and other non-TUI output).
       {:ucwidth, "~> 0.2"},
       {:ex_ratatui, "~> 0.15.0"},
       {:rustler, ">= 0.0.0"},

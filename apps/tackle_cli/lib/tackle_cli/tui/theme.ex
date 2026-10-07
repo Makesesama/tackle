@@ -7,9 +7,14 @@ defmodule Tackle.CLI.TUI.Theme do
   indexed colors so it is stable on true-color and 256-color terminals and
   degrades to the nearest named color elsewhere.
 
-  `TACKLE_THEME=light` or `dark` selects a palette explicitly. Otherwise the
-  final background index in `COLORFGBG` is used when available, falling back to
-  dark. This is a heuristic, not a terminal query. Surface roles always pair
+  `TACKLE_THEME=light` or `dark` selects a palette explicitly. Otherwise
+  the background the terminal reports to the OSC 11 query
+  (`Tackle.CLI.TUI.TerminalBackground`) is used when available, then the
+  final background index in `COLORFGBG`, falling back to dark. The query
+  asks the terminal directly, so it works where `COLORFGBG` is absent; the
+  index remains a heuristic for terminals that do not answer queries.
+
+  Surface roles always pair
   a foreground with their background, avoiding unreadable inherited text when
   the terminal's colors differ from the selected palette.
 
@@ -105,10 +110,10 @@ defmodule Tackle.CLI.TUI.Theme do
     success: %Style{fg: {:indexed, 28}},
     warning: %Style{fg: {:indexed, 94}},
     error: %Style{fg: {:indexed, 124}},
-    surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 254}},
-    surface_raised: %Style{fg: {:indexed, 235}, bg: {:indexed, 252}},
-    code_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 254}},
-    user_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 254}},
+    surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 255}},
+    surface_raised: %Style{fg: {:indexed, 235}, bg: {:indexed, 254}},
+    code_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 255}},
+    user_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 255}},
     selection_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 153}},
     error_surface: %Style{fg: {:indexed, 235}, bg: {:indexed, 224}},
     diff_add: %Style{fg: {:indexed, 28}},
@@ -124,16 +129,23 @@ defmodule Tackle.CLI.TUI.Theme do
 
   @type mode :: :light | :dark
 
-  @doc "Returns the palette selected by TACKLE_THEME and COLORFGBG."
+  @doc "Returns the palette selected by TACKLE_THEME, the terminal's reported background, and COLORFGBG."
   @spec mode() :: mode()
-  def mode, do: resolve(System.get_env("TACKLE_THEME"), System.get_env("COLORFGBG"))
+  def mode,
+    do: resolve(System.get_env("TACKLE_THEME"), System.get_env("COLORFGBG"), reported())
 
-  @doc "Resolves an explicit light/dark override, or the final COLORFGBG palette index."
-  @spec resolve(String.t() | nil, String.t() | nil) :: mode()
-  def resolve("light", _colorfgbg), do: :light
-  def resolve("dark", _colorfgbg), do: :dark
+  @doc """
+  Resolves the palette mode from an explicit override, a terminal-reported
+  background, and the `COLORFGBG` heuristic, in that order.
+  """
+  @spec resolve(String.t() | nil, String.t() | nil, mode() | nil) :: mode()
+  def resolve(theme, colorfgbg, reported \\ nil)
 
-  def resolve(_auto, colorfgbg) when is_binary(colorfgbg) do
+  def resolve("light", _colorfgbg, _reported), do: :light
+  def resolve("dark", _colorfgbg, _reported), do: :dark
+  def resolve(_auto, _colorfgbg, reported) when reported in [:light, :dark], do: reported
+
+  def resolve(_auto, colorfgbg, nil) when is_binary(colorfgbg) do
     case colorfgbg |> String.split(";") |> List.last() |> Integer.parse() do
       {index, ""} when index in 0..255 ->
         if light_background?(index), do: :light, else: :dark
@@ -143,20 +155,51 @@ defmodule Tackle.CLI.TUI.Theme do
     end
   end
 
-  def resolve(_auto, _colorfgbg), do: :dark
+  def resolve(_auto, _colorfgbg, nil), do: :dark
+
+  @doc """
+  Remembers a terminal-reported background mode for the lifetime of the VM.
+
+  `Tackle.CLI.TUI.TerminalBackground` calls this once, before the first
+  frame renders; the terminal's background does not change while the shell
+  runs.
+  """
+  @spec remember_background(mode()) :: :ok
+  def remember_background(mode) when mode in [:light, :dark] do
+    :persistent_term.put({__MODULE__, :background}, mode)
+    :ok
+  end
+
+  defp reported, do: :persistent_term.get({__MODULE__, :background}, nil)
+
+  @doc """
+  Returns whether an 8-bit RGB background reads as light.
+
+  Weighted luminance, shared by the indexed-color heuristic below and the
+  terminal's OSC 11 reply, so both detection paths classify one color the
+  same way.
+  """
+  @spec light_rgb?({non_neg_integer(), non_neg_integer(), non_neg_integer()}) :: boolean()
+  def light_rgb?({red, green, blue}), do: 299 * red + 587 * green + 114 * blue > 153_000
 
   # Standard ANSI backgrounds are themeable, so this is only a heuristic.
   # For the fixed 256-color cube and grayscale ramp, use weighted brightness.
   defp light_background?(index) when index < 16, do: index in [7, 15]
-  defp light_background?(index) when index >= 232, do: 8 + 10 * (index - 232) > 153
+
+  defp light_background?(index) when index >= 232 do
+    gray = 8 + 10 * (index - 232)
+    light_rgb?({gray, gray, gray})
+  end
 
   defp light_background?(index) do
     cube = index - 16
     levels = {0, 95, 135, 175, 215, 255}
-    r = elem(levels, div(cube, 36))
-    g = elem(levels, div(rem(cube, 36), 6))
-    b = elem(levels, rem(cube, 6))
-    299 * r + 587 * g + 114 * b > 153_000
+
+    light_rgb?({
+      elem(levels, div(cube, 36)),
+      elem(levels, div(rem(cube, 36), 6)),
+      elem(levels, rem(cube, 6))
+    })
   end
 
   @doc "Returns the semantic style for `tone`, optionally from an explicit palette."
@@ -166,26 +209,63 @@ defmodule Tackle.CLI.TUI.Theme do
   def style(tone, :dark), do: Map.get(@dark_styles, tone, %Style{})
 
   @doc """
+  Returns the Markdown element styles for the native prose renderer.
+
+  The keys are the wire contract of the Rust `MarkdownWire` map: the native
+  conversation widget turns each entry into a `tui_markdown` stylesheet, so
+  assistant prose follows the selected palette instead of the renderer's
+  own defaults (cyan heading bands, white-on-black code, green quotes).
+  Both sides must list exactly these keys.
+
+  The look stays minimal: headings are bold accent text without their `#`
+  markers, inline code sits on the same surface as fenced code, quotes read
+  like thinking text, and only meaning-carrying elements (alerts, links) get
+  color. Table borders and metadata recede to `:subtle`.
+  """
+  @spec markdown_styles() :: %{atom() => Style.t()}
+  def markdown_styles do
+    %{
+      heading: bold(style(:accent_soft)),
+      code: style(:code_surface),
+      link: underlined(style(:accent_soft)),
+      blockquote: italic(style(:muted)),
+      meta: style(:subtle),
+      math: italic(style(:accent_soft)),
+      alert_note: style(:accent_soft),
+      alert_tip: style(:success),
+      alert_important: bold(style(:accent_soft)),
+      alert_warning: style(:warning),
+      alert_caution: style(:error),
+      table_header: bold(style(:text)),
+      table_cell: style(:text),
+      table_border: style(:subtle)
+    }
+  end
+
+  @typedoc "The title meaning an overlay panel carries."
+  @type panel_tone :: :accent | :warning | :error
+
+  @doc """
   Builds the rounded panel chrome shared by every overlay.
 
-  Borders stay neutral. The existing color argument supplies a semantic title
-  accent, so confirmations retain their warning without a bright perimeter.
+  Borders stay neutral. The tone names the title's meaning: `:accent` for
+  ordinary overlays, `:warning` for confirmations, `:error` for failures.
+  Ordinary titles are bold muted text, so color stays reserved for meaning.
   """
-  @spec panel_block(String.t(), atom()) :: Block.t()
-  def panel_block(title, color) do
+  @spec panel_block(String.t(), panel_tone()) :: Block.t()
+  def panel_block(title, tone) do
     %Block{
       title: title,
       borders: [:all],
       border_type: :rounded,
       border_style: style(:subtle),
-      title_style: panel_title_style(color)
+      title_style: panel_title_style(tone)
     }
   end
 
-  defp panel_title_style(:cyan), do: style(:accent_soft)
-  defp panel_title_style(:yellow), do: style(:warning)
-  defp panel_title_style(:red), do: style(:error)
-  defp panel_title_style(color), do: %Style{fg: color}
+  defp panel_title_style(:accent), do: bold(style(:muted))
+  defp panel_title_style(:warning), do: bold(style(:warning))
+  defp panel_title_style(:error), do: bold(style(:error))
 
   @doc "Adds bold to a style without dropping its color or background."
   @spec bold(Style.t()) :: Style.t()
@@ -194,6 +274,11 @@ defmodule Tackle.CLI.TUI.Theme do
   @doc "Adds italic to a style without dropping its color or background."
   @spec italic(Style.t()) :: Style.t()
   def italic(%Style{} = style), do: %{style | modifiers: Enum.uniq([:italic | style.modifiers])}
+
+  @doc "Adds an underline to a style without dropping its color or background."
+  @spec underlined(Style.t()) :: Style.t()
+  def underlined(%Style{} = style),
+    do: %{style | modifiers: Enum.uniq([:underlined | style.modifiers])}
 
   @doc """
   Layers `override` over `base`, keeping base fields the override leaves unset.

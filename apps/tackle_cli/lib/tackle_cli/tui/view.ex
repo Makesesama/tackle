@@ -242,7 +242,7 @@ defmodule Tackle.CLI.TUI.View do
 
     %Popup{
       content: %Paragraph{text: text, style: Theme.style(:text)},
-      block: Theme.panel_block(" Confirm quit · Y/Enter quit · N/Esc cancel ", :yellow),
+      block: Theme.panel_block(" Confirm quit · Y/Enter quit · N/Esc cancel ", :warning),
       percent_width: 50,
       percent_height: 25
     }
@@ -260,7 +260,7 @@ defmodule Tackle.CLI.TUI.View do
 
     %Popup{
       content: %Paragraph{text: text, style: Theme.style(:text)},
-      block: Theme.panel_block(" Confirm new session · Y/Enter start · N/Esc cancel ", :yellow),
+      block: Theme.panel_block(" Confirm new session · Y/Enter start · N/Esc cancel ", :warning),
       percent_width: 50,
       percent_height: 25
     }

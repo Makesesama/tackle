@@ -205,7 +205,7 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
   test "native paint sanitizes direct callers, bounds buffers and rejects mixed widths" do
     style = Widget.style(%ExRatatui.Style{})
     source = "safe\e]52;c;secret\a\e[31m red\e[0m\tend\u009b31m!"
-    {cell, _} = Native.conversation_markdown(source, 30, style)
+    {cell, _} = Native.conversation_markdown(source, 30, style, markdown_styles())
     {native, _} = Native.conversation_new([cell], 30)
     {:ok, rows} = Native.conversation_render(native, 30, 2, 0, [], style)
     text = for row <- rows, {text, _, _, _, _} <- row, into: "", do: text
@@ -220,7 +220,10 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     end
 
     assert_raise ArgumentError, fn -> Native.conversation_new([cell], 20) end
-    assert_raise ArgumentError, fn -> Native.conversation_markdown(<<255>>, 20, style) end
+
+    assert_raise ArgumentError, fn ->
+      Native.conversation_markdown(<<255>>, 20, style, markdown_styles())
+    end
 
     assert_raise ArgumentError, fn ->
       Native.conversation_rows([{[], {nil, nil, nil, 32}}], 20)
@@ -259,6 +262,10 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     assert [%{entry: entry}] = Conversation.search(model, "red")
     assert MessageView.source(entry) == source
     refute paint(model) =~ "\e"
+  end
+
+  defp markdown_styles do
+    Map.new(Theme.markdown_styles(), fn {element, style} -> {element, Widget.style(style)} end)
   end
 
   defp paint(model) do
