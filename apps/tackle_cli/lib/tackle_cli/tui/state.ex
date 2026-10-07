@@ -41,6 +41,7 @@ defmodule Tackle.CLI.TUI.State do
           nil
           | {:help, map()}
           | {:picker, map()}
+          | {:resume, map()}
           | {:tree, map()}
           | {:file_search, FileSearch.popup()}
           | {:inspector, map()}
@@ -57,8 +58,12 @@ defmodule Tackle.CLI.TUI.State do
           agent_monitor: reference() | nil,
           scope_ref: term(),
           new_session: (map() -> {:ok, Scope.t()} | {:error, term()}) | nil,
-          list_recent_sessions: (-> {:ok, [map()]} | {:error, term()}) | nil,
+          list_recent_sessions:
+            (cursor :: term() ->
+               {:ok, %{sessions: [map()], next_cursor: term() | nil}} | {:error, term()})
+            | nil,
           resume_session: (String.t() -> {:ok, Scope.t()} | {:error, term()}) | nil,
+          inspect_session: (String.t() -> {:ok, map()} | {:error, term()}) | nil,
           recent_sessions: [map()],
           recent_sessions_ref: reference() | nil,
           owner: pid() | nil,
@@ -130,6 +135,7 @@ defmodule Tackle.CLI.TUI.State do
             new_session: nil,
             list_recent_sessions: nil,
             resume_session: nil,
+            inspect_session: nil,
             recent_sessions: [],
             recent_sessions_ref: nil,
             owner: nil,
@@ -206,6 +212,7 @@ defmodule Tackle.CLI.TUI.State do
         new_session: Keyword.get(opts, :new_session),
         list_recent_sessions: Keyword.get(opts, :list_recent_sessions),
         resume_session: Keyword.get(opts, :resume_session),
+        inspect_session: Keyword.get(opts, :inspect_session),
         owner: Keyword.get(opts, :owner),
         session_id: snapshot.session_id,
         session_title: snapshot.session_title,

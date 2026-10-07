@@ -20,6 +20,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     Notifications,
     Observations,
     RecentSessions,
+    Resume,
     State,
     Subagents,
     ToolView,
@@ -251,6 +252,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp route({:tui_recent_sessions_result, ref, result}, state),
     do: RecentSessions.apply_result(state, ref, result)
+
+  defp route({:tui_resume_page_result, ref, kind, result}, state),
+    do: Resume.apply_page_result(state, ref, kind, result)
+
+  defp route({:tui_resume_preview_result, ref, session_id, result}, state),
+    do: Resume.apply_preview_result(state, ref, session_id, result)
 
   defp route({:tui_file_index, ref, result}, state),
     do: FileSearch.apply_index(state, ref, result)

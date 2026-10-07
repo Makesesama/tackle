@@ -488,11 +488,13 @@ defmodule Tackle.CLI.TUITest do
         TUI.start(
           agent_ref: agent_ref,
           test_mode: {80, 24},
-          list_recent_sessions: fn ->
+          list_recent_sessions: fn _cursor ->
             send(test_pid, {:load_started, self()})
 
             receive do
-              :release -> {:ok, [%{session_id: "previous", title: "Previous"}]}
+              :release ->
+                {:ok,
+                 %{sessions: [%{session_id: "previous", title: "Previous"}], next_cursor: nil}}
             end
           end
         )
@@ -526,17 +528,23 @@ defmodule Tackle.CLI.TUITest do
     state = %{state | recent_sessions_ref: latest, recent_sessions: []}
 
     assert {:noreply, ^state, render?: false} =
-             RecentSessions.apply_result(state, first, {:ok, [%{session_id: "stale"}]})
+             RecentSessions.apply_result(
+               state,
+               first,
+               {:ok, %{sessions: [%{session_id: "stale"}]}}
+             )
 
     assert {:noreply, updated} =
              RecentSessions.apply_result(
                state,
                latest,
                {:ok,
-                [
-                  %{session_id: state.session_id},
-                  %{session_id: "new"}
-                ]}
+                %{
+                  sessions: [
+                    %{session_id: state.session_id},
+                    %{session_id: "new"}
+                  ]
+                }}
              )
 
     assert updated.recent_sessions == [%{session_id: "new"}]
@@ -546,7 +554,13 @@ defmodule Tackle.CLI.TUITest do
   test "new-session dashboard centers the logo and composer above recent sessions", %{tui: tui} do
     state = state(tui)
     sessions = for index <- 1..5, do: %{session_id: "session-#{index}", title: "Session #{index}"}
-    state = %{state | list_recent_sessions: fn -> {:ok, sessions} end, recent_sessions: sessions}
+
+    state = %{
+      state
+      | list_recent_sessions: fn _cursor -> {:ok, %{sessions: sessions, next_cursor: nil}} end,
+        recent_sessions: sessions
+    }
+
     scene = widgets(state)
 
     assert Enum.any?(scene, fn {widget, rect} ->
@@ -588,7 +602,11 @@ defmodule Tackle.CLI.TUITest do
       %{session_id: "third", title: nil, preview: nil}
     ]
 
-    state = %{state | list_recent_sessions: fn -> {:ok, sessions} end, recent_sessions: sessions}
+    state = %{
+      state
+      | list_recent_sessions: fn _cursor -> {:ok, %{sessions: sessions, next_cursor: nil}} end,
+        recent_sessions: sessions
+    }
 
     labels =
       state
@@ -641,7 +659,9 @@ defmodule Tackle.CLI.TUITest do
         TUI.start(
           agent_ref: agent_ref,
           test_mode: {80, 24},
-          list_recent_sessions: fn -> {:ok, [%{session_id: "previous", title: "Previous"}]} end,
+          list_recent_sessions: fn _cursor ->
+            {:ok, %{sessions: [%{session_id: "previous", title: "Previous"}], next_cursor: nil}}
+          end,
           resume_session: fn "previous" ->
             {:ok, %Scope{scope_ref: nil, root_agent_ref: replacement_ref}}
           end
@@ -1070,7 +1090,13 @@ defmodule Tackle.CLI.TUITest do
     tui: tui
   } do
     :sys.replace_state(tui, fn runtime ->
-      %{runtime | user_state: %{runtime.user_state | list_recent_sessions: fn -> {:ok, []} end}}
+      %{
+        runtime
+        | user_state: %{
+            runtime.user_state
+            | list_recent_sessions: fn _cursor -> {:ok, %{sessions: [], next_cursor: nil}} end
+          }
+      }
     end)
 
     assert Tackle.CLI.TUI.Dashboard.show?(state(tui))

@@ -90,6 +90,7 @@ defmodule Tackle.CLI.TUI do
     Help,
     Inspector,
     Menu,
+    Resume,
     RuntimeEvents,
     RecentSessions,
     Search,
@@ -401,6 +402,9 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_overlay(key, %{overlay: {:tree, _}} = state),
     do: Tree.handle(Keybinds.picker(key), state)
 
+  defp dispatch_overlay(key, %{overlay: {:resume, _}} = state),
+    do: Resume.handle(Keybinds.resume(key), state)
+
   # The file-mention popup floats above the composer without owning editing:
   # its own intents navigate and accept, everything else keeps typing.
   defp dispatch_overlay(key, %{overlay: {:file_search, _}} = state) do
@@ -479,6 +483,7 @@ defmodule Tackle.CLI.TUI do
   defp handle_paste(%{overlay: {:search, _}} = state, content), do: Search.paste(state, content)
   defp handle_paste(%{overlay: {:picker, _}} = state, content), do: Menu.paste(state, content)
   defp handle_paste(%{overlay: {:tree, _}} = state, content), do: Tree.paste(state, content)
+  defp handle_paste(%{overlay: {:resume, _}} = state, content), do: Resume.paste(state, content)
 
   # The transcript browser owns the keyboard, so a paste must not land in a
   # composer the user cannot see the cursor in.

@@ -1,5 +1,10 @@
 defmodule Tackle.CLI.TUI.RecentSessions do
-  @moduledoc "Asynchronously loads the dashboard's recent-session shortcuts."
+  @moduledoc """
+  Asynchronously loads the project's recent sessions.
+
+  One page feeds both the dashboard's recent-session shortcuts and the
+  `/resume` picker; the dashboard keeps only the first five.
+  """
 
   alias ExRatatui.Command
   alias Tackle.CLI.TUI.State
@@ -12,7 +17,7 @@ defmodule Tackle.CLI.TUI.RecentSessions do
     ref = make_ref()
     loader = state.list_recent_sessions
 
-    command = Command.async(fn -> loader.() end, &{:tui_recent_sessions_result, ref, &1})
+    command = Command.async(fn -> loader.(nil) end, &{:tui_recent_sessions_result, ref, &1})
 
     {%{state | recent_sessions: [], recent_sessions_ref: ref}, [command]}
   end
@@ -24,10 +29,8 @@ defmodule Tackle.CLI.TUI.RecentSessions do
       when is_reference(ref) do
     sessions =
       case result do
-        {:ok, sessions} when is_list(sessions) ->
-          sessions
-          |> Enum.reject(&(Map.get(&1, :session_id) == state.session_id))
-          |> Enum.take(5)
+        {:ok, %{sessions: sessions}} when is_list(sessions) ->
+          sessions |> Enum.reject(&(Map.get(&1, :session_id) == state.session_id))
 
         _other ->
           []

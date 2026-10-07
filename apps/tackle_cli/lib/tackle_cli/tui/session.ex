@@ -82,22 +82,39 @@ defmodule Tackle.CLI.TUI.Session do
         {:noreply, %{state | notice: "No recent session in slot #{index}"}}
 
       session ->
-        case state.resume_session.(session.session_id) do
-          {:ok, %Scope{} = scope} ->
-            adopt(state, scope)
+        resume_by_id(state, session.session_id)
+    end
+  end
 
-          {:error, reason} ->
-            {:noreply, %{state | error: Util.format_reason(reason)}}
+  @doc """
+  Resumes the saved session `session_id` through the frontend hook and adopts
+  the replacement scope.
 
-          other ->
-            {:noreply, %{state | error: Util.format_reason({:invalid_resume_session, other})}}
-        end
+  Callers gate availability (idle, empty draft); this function performs the
+  resume, reports a failure in the status row, and keeps the running session
+  untouched when the frontend refuses or crashes.
+  """
+  @spec resume_by_id(State.t(), String.t()) :: {:noreply, State.t()}
+  def resume_by_id(%State{} = state, session_id) do
+    case state.resume_session.(session_id) do
+      {:ok, %Scope{} = scope} ->
+        adopt(state, scope)
+
+      {:error, reason} ->
+        {:noreply, %{state | overlay: nil, error: Util.format_reason(reason)}}
+
+      other ->
+        {:noreply,
+         %{state | overlay: nil, error: Util.format_reason({:invalid_resume_session, other})}}
     end
   rescue
-    error -> {:noreply, %{state | error: Util.format_reason({:resume_session_failed, error})}}
+    error ->
+      {:noreply,
+       %{state | overlay: nil, error: Util.format_reason({:resume_session_failed, error})}}
   catch
     kind, reason ->
-      {:noreply, %{state | error: Util.format_reason({:resume_session_failed, kind, reason})}}
+      {:noreply,
+       %{state | overlay: nil, error: Util.format_reason({:resume_session_failed, kind, reason})}}
   end
 
   @doc """

@@ -276,6 +276,29 @@ defmodule Tackle.CLI.Keybinds do
   def picker(%Key{code: code, modifiers: []}) when is_binary(code), do: insert(code)
   def picker(%Key{}), do: :ignore
 
+  @doc """
+  Resolves a chord inside the `/resume` session picker.
+
+  Esc clears an active query first and closes the picker on the second press;
+  the right arrow (or Ctrl+E, Codex's binding) expands the selected session's
+  transcript preview and the left arrow collapses it.
+  """
+  @spec resume(Key.t()) :: intent
+  def resume(%Key{code: "esc"}), do: :cancel
+  def resume(%Key{code: "up"}), do: :previous
+  def resume(%Key{code: "p", modifiers: modifiers}) when is_ctrl(modifiers), do: :previous
+  def resume(%Key{code: "down"}), do: :next
+  def resume(%Key{code: "n", modifiers: modifiers}) when is_ctrl(modifiers), do: :next
+  def resume(%Key{code: "page_up"}), do: :page_up
+  def resume(%Key{code: "page_down"}), do: :page_down
+  def resume(%Key{code: "enter"}), do: :accept
+  def resume(%Key{code: "backspace"}), do: :backspace
+  def resume(%Key{code: "right"}), do: :expand
+  def resume(%Key{code: "left"}), do: :collapse
+  def resume(%Key{code: "e", modifiers: modifiers}) when is_ctrl(modifiers), do: :expand
+  def resume(%Key{code: code, modifiers: []}) when is_binary(code), do: insert(code)
+  def resume(%Key{}), do: :ignore
+
   # -- @ file mentions -----------------------------------------------------
 
   @doc """

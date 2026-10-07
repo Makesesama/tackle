@@ -19,6 +19,7 @@ defmodule Tackle.CLI.TUI.Help do
     "Ctrl+C        quit",
     "Alt+N         new session",
     "Alt+1–5      resume recent session (idle, empty draft)",
+    "/resume      fullscreen picker: search, preview, resume",
     "Ctrl+K        compact context",
     "Ctrl+V        paste text or clipboard image",
     "              (agent reads saved path; not attached)",

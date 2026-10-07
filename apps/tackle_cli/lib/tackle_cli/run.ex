@@ -63,7 +63,8 @@ defmodule Tackle.CLI.Run do
            models: models,
            new_session: new_session_fun(opts),
            list_recent_sessions: recent_sessions_fun(),
-           resume_session: resume_session_fun(opts)
+           resume_session: resume_session_fun(opts),
+           inspect_session: inspect_session_fun()
          ) do
       {:ok, session_id} ->
         print_resume_hint(session_id)
@@ -85,13 +86,20 @@ defmodule Tackle.CLI.Run do
     ])
   end
 
+  # One page feeds the dashboard shortcuts and the `/resume` picker; the
+  # picker walks the cursor for older pages.
   defp recent_sessions_fun do
-    fn ->
+    fn cursor ->
       with {:ok, ids} <- Storage.list_session_ids(cwd: project_dir()),
-           {:ok, page} <- Tackle.list_sessions(cwd: project_dir(), session_ids: ids, limit: 6) do
-        {:ok, page.sessions}
+           {:ok, page} <-
+             Tackle.list_sessions(cwd: project_dir(), session_ids: ids, limit: 50, cursor: cursor) do
+        {:ok, page}
       end
     end
+  end
+
+  defp inspect_session_fun do
+    fn session_id -> Tackle.inspect_session(session_id, cwd: project_dir()) end
   end
 
   defp resume_session_fun(opts) do

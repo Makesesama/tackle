@@ -32,6 +32,7 @@ defmodule Tackle.CLI.TUI.View do
     Layout,
     Menu,
     MessageView,
+    Resume,
     Search,
     State,
     StatusView,
@@ -228,6 +229,8 @@ defmodule Tackle.CLI.TUI.View do
 
   defp overlay_widget(%State{overlay: {:help, _}} = state), do: Help.popup(state)
   defp overlay_widget(%State{overlay: {:picker, _}} = state), do: Menu.popup(state)
+
+  defp overlay_widget(%State{overlay: {:resume, _}} = state), do: Resume.popup(state)
   defp overlay_widget(%State{overlay: {:tree, _}} = state), do: Tree.popup(state)
   defp overlay_widget(%State{overlay: {:inspector, _}} = state), do: Inspector.popup(state)
   defp overlay_widget(%State{overlay: {:search, _}} = state), do: Search.popup(state)
