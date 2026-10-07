@@ -31,7 +31,10 @@ let
       touch written-in-jail
       git status --short > /dev/null
       if touch .git/hooks/pre-commit 2> /dev/null; then exit 1; fi
-      if printf '[core]\n' >> .git/config 2> /dev/null; then exit 1; fi
+      # Redirect stderr before the failing write: bash reports a failed
+      # redirection to the still-original stderr, which would leak a
+      # confusing "Read-only file system" line into the jail log.
+      if printf '[core]\n' 2> /dev/null >> .git/config; then exit 1; fi
       if mv .git .git-moved 2> /dev/null; then exit 1; fi
 
       ketch --help > /dev/null
@@ -41,12 +44,17 @@ let
       test -S /nix/var/nix/daemon-socket/socket
       # No network, credentials, nixpkgs fetch, or model call. A unique name
       # forces a new output, checking visibility after the jail has started.
+      # The builder path reaches the expression as plain text, so it carries no
+      # derivation context: without storePath a sandboxed daemon (the NixOS
+      # default) does not mount it into the build sandbox. --impure only allows
+      # that builtin; --offline still forbids substituters.
       # shellcheck disable=SC2016
-      output=$(nix build --offline --no-link --print-out-paths --expr '
+      output=$(nix build --impure --offline --no-link --print-out-paths --expr '
+        let bash = builtins.storePath "${pkgs.bash}"; in
         derivation {
           name = "tackle-jail-smoke-'"$(date +%s%N)"'";
           system = "${pkgs.stdenv.hostPlatform.system}";
-          builder = "${pkgs.bash}/bin/bash";
+          builder = "''${bash}/bin/bash";
           args = [ "-c" "echo built-inside-jail > $out" ];
         }
       ')
@@ -99,7 +107,9 @@ pkgs.writeShellApplication {
   text = ''
     # Not under /tmp: the jail replaces /tmp anyway, which would hide a leak.
     work=$(mktemp -d -p "$PWD" .tackle-jail-smoke.XXXXXX)
-    trap 'rm -rf "$work"' EXIT
+    # The jail redirects its stderr to the log file inside $work, so a
+    # failure would otherwise be silent. Keep the work dir for diagnosis.
+    trap 'if [ "$?" -eq 0 ]; then rm -rf "$work"; else echo "smoke test failed; kept $work (exec-server log: $work/exec-server.log)" >&2; fi' EXIT
     mkdir -p "$work/home/.config/ketch" "$work/home/.tackle" "$work/project"
     export HOME="$work/home"
     touch "$HOME/host-only"
@@ -126,8 +136,16 @@ pkgs.writeShellApplication {
     elixir -pa ${tackleExec}/lib/erlang/lib/tackle_exec-0.1.0/ebin \
       ${client} ${lib.getExe execJail} "$log" "$HOME"
 
-    ${lib.getExe productionJail} --version
-    ${lib.getExe productionJail} --help > /dev/null
+    # The production CLI boots Tackle.Auth.Store on the host, which validates
+    # the auth file. The canary is deliberately invalid (it only exists to
+    # prove the jail cannot see it), so point the CLI at an empty Tackle home:
+    # a missing auth file is the normal credential-free state. Keep Burrito
+    # extraction out of the user's real ~/.tackle as well.
+    mkdir -p "$work/tackle-home" "$work/burrito"
+    TACKLE_HOME="$work/tackle-home" TACKLE_CLI_INSTALL_DIR="$work/burrito" \
+      ${lib.getExe productionJail} --version
+    TACKLE_HOME="$work/tackle-home" TACKLE_CLI_INSTALL_DIR="$work/burrito" \
+      ${lib.getExe productionJail} --help > /dev/null
     printf 'Production jailed CLI: OK\n'
   '';
 }
