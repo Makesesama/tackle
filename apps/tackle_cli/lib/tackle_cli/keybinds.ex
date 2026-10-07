@@ -104,7 +104,7 @@ defmodule Tackle.CLI.Keybinds do
   """
   @spec repeatable?(Key.t()) :: boolean()
   def repeatable?(%Key{code: code})
-      when code in ["?", "esc", "enter", "f1", "f2", "f3", "f4", "f5", "f6", "f7"],
+      when code in ["?", "esc", "enter", "tab", "f1", "f2", "f3", "f4", "f5", "f6", "f7"],
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
@@ -275,6 +275,30 @@ defmodule Tackle.CLI.Keybinds do
   def picker(%Key{code: "backspace"}), do: :backspace
   def picker(%Key{code: code, modifiers: []}) when is_binary(code), do: insert(code)
   def picker(%Key{}), do: :ignore
+
+  # -- @ file mentions -----------------------------------------------------
+
+  @doc """
+  Resolves a chord while the `@` file-mention popup is open.
+
+  The popup floats above the composer without taking over editing: arrows and
+  Ctrl+P/N move the selection, Enter or Tab accept it, Esc dismisses the popup
+  for the current token, and every other chord falls through to the composer
+  (`:composer`) so typing keeps refining the query.
+  """
+  @spec file_search(Key.t()) :: intent
+  def file_search(%Key{code: "up"}), do: :previous
+  def file_search(%Key{code: "down"}), do: :next
+
+  def file_search(%Key{code: "p", modifiers: modifiers}) when is_ctrl(modifiers),
+    do: :previous
+
+  def file_search(%Key{code: "n", modifiers: modifiers}) when is_ctrl(modifiers), do: :next
+
+  def file_search(%Key{code: "esc"}), do: :close
+  def file_search(%Key{code: "tab"}), do: :accept
+  def file_search(%Key{code: "enter", modifiers: []}), do: :accept
+  def file_search(%Key{}), do: :composer
 
   defp insert(code) do
     if String.length(code) == 1, do: {:insert, code}, else: :ignore

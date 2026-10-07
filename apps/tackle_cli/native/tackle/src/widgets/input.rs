@@ -84,6 +84,16 @@ fn is_whitespace(glyph: &Glyph<'_>) -> bool {
     glyph.symbol.chars().all(char::is_whitespace)
 }
 
+// Host-provided offsets may sit inside a multi-byte grapheme; walk back to the
+// nearest boundary so replace_range can never split one.
+fn floor_boundary(text: &str, pos: usize) -> usize {
+    let mut pos = pos.min(text.len());
+    while pos > 0 && !text.is_char_boundary(pos) {
+        pos -= 1;
+    }
+    pos
+}
+
 fn previous_word_start(glyphs: &[Glyph<'_>], cursor: usize) -> usize {
     let mut start = cursor;
     let mut seen_word = false;
@@ -200,6 +210,23 @@ impl Input {
 
     pub fn insert(&mut self, text: &str) {
         self.replace(self.draft.cursor, self.draft.cursor, text);
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.draft.cursor
+    }
+
+    /// Replaces a byte range with `text`, clamping offsets to char boundaries.
+    /// The host uses this to swap a composer token (an `@mention`) for its
+    /// completion; the caret lands after the inserted text.
+    pub fn replace_range(&mut self, start: usize, end: usize, text: &str) {
+        let len = self.draft.text.len();
+        let mut start = floor_boundary(&self.draft.text, start.min(len));
+        let mut end = floor_boundary(&self.draft.text, end.min(len));
+        if end < start {
+            std::mem::swap(&mut start, &mut end);
+        }
+        self.replace(start, end, text);
     }
 
     pub fn rows(&self, width: u16) -> usize {

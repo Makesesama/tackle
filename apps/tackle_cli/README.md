@@ -361,6 +361,7 @@ it because the agent keeps working.
 | --- | --- |
 | ? (empty draft or Browse) | Open the shortcut reference. Esc or ? closes it. In a non-empty draft, ? is inserted normally. |
 | Enter | Send the draft when idle. While a turn is active the draft is kept but **not queued**. |
+| @ (in the draft) | File mentions: typing `@` opens a fuzzy file-search popup above the input bar. Keep typing to filter, ↑/↓ (or Ctrl+P/N) to select, Enter or Tab to insert the file's full workspace-relative path in place of the token; Esc dismisses the popup for that token without clearing the draft. The workspace index is built once, asynchronously, skipping hidden, build, and dependency directories. |
 | Shift+Enter, Ctrl+Enter, Ctrl+J | Insert a newline. Ctrl+J is the reliable fallback because many terminals cannot distinguish Shift+Enter. |
 | ↑ / ↓ | ↑ recalls older prompts even with a non-empty draft; ↓ walks toward the newest prompt and restores the draft you were writing. Outside history browsing, ↓ moves the caret. |
 | Ctrl+P / Ctrl+N | Recall older/newer prompts from any draft. ↓/Ctrl+N past the newest prompt returns the draft you were writing. History is in-memory and capped at 100 prompts. |

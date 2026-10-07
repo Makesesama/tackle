@@ -13,6 +13,12 @@ defmodule Tackle.CLI.TUI do
       (`F3`), plus the output inspector and transcript search. Menus hold
       configuration; settings includes the persistent subagent-sidebar
       visibility preference.
+    * **The `@` file-mention popup** floats above the composer while the caret
+      is on an `@token`. It never takes over editing: typing keeps refining the
+      query, `↑`/`↓` (or Ctrl+P/N) move the selection, Enter or Tab insert the
+      selected file's full workspace-relative path in place of the token, and
+      Esc dismisses it for that token. The workspace index is built once,
+      asynchronously, with a bounded walk.
     * **The transcript browser** (`F4`) is a focus mode rather than an overlay.
       There is no popup, the composer stops accepting text, and the arrows move
       a highlighted entry so it can be copied (`y`, `a`) or inspected (`Enter`).
@@ -55,6 +61,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Browser` | transcript focus, selection, and copy |
   | `Tackle.CLI.TUI.Menu` | model, reasoning, and settings pickers |
   | `Tackle.CLI.TUI.Tree` | the `/tree` conversation picker and navigation |
+  | `Tackle.CLI.TUI.FileSearch` | the `@` file-mention popup and workspace index |
   | `Tackle.CLI.TUI.UsageChart` | durable usage loading, bucketing, and chart popup |
   | `Tackle.CLI.TUI.Search` | transcript search |
   | `Tackle.CLI.TUI.Inspector` | the scrollable tool-output inspector |
@@ -79,6 +86,7 @@ defmodule Tackle.CLI.TUI do
     Compaction,
     Composer,
     Conversation,
+    FileSearch,
     Help,
     Inspector,
     Menu,
@@ -190,10 +198,17 @@ defmodule Tackle.CLI.TUI do
   def handle_event(%Key{} = key, state) do
     key
     |> dispatch_key(%{state | notice: nil, queue_notice_at: nil})
+    |> sync_file_search()
     |> refresh_terminal_title()
   end
 
-  def handle_event(%Paste{content: content}, state), do: {:noreply, handle_paste(state, content)}
+  def handle_event(%Paste{content: content}, state) do
+    {updated, commands} = state |> handle_paste(content) |> FileSearch.sync()
+
+    if commands == [],
+      do: {:noreply, updated},
+      else: {:noreply, updated, commands: commands}
+  end
 
   # Focus is bookkeeping for the completion notifications; nothing on screen
   # depends on it, so the frame is not repainted.
@@ -270,6 +285,28 @@ defmodule Tackle.CLI.TUI do
     do: {:noreply, TerminalTitle.refresh(state), opts}
 
   defp refresh_terminal_title(other), do: other
+
+  # Every key event ends here, so the `@` file-mention popup follows the draft
+  # no matter which chord edited it. A popup appearing or disappearing must
+  # repaint even when the edit itself did not.
+  defp sync_file_search({:noreply, %State{} = state, opts}) when is_list(opts) do
+    {updated, commands} = FileSearch.sync(state)
+
+    opts = Keyword.merge(opts, commands: commands ++ Keyword.get(opts, :commands, []))
+    opts = if updated.overlay != state.overlay, do: Keyword.put(opts, :render?, true), else: opts
+
+    {:noreply, updated, opts}
+  end
+
+  defp sync_file_search({:noreply, %State{} = state}) do
+    {updated, commands} = FileSearch.sync(state)
+
+    if commands == [],
+      do: {:noreply, updated},
+      else: {:noreply, updated, commands: commands}
+  end
+
+  defp sync_file_search(other), do: other
 
   @impl true
   def subscriptions(state) do
@@ -356,6 +393,15 @@ defmodule Tackle.CLI.TUI do
 
   defp dispatch_overlay(key, %{overlay: {:tree, _}} = state),
     do: Tree.handle(Keybinds.picker(key), state)
+
+  # The file-mention popup floats above the composer without owning editing:
+  # its own intents navigate and accept, everything else keeps typing.
+  defp dispatch_overlay(key, %{overlay: {:file_search, _}} = state) do
+    case Keybinds.file_search(key) do
+      :composer -> dispatch_base(:composer, key, state)
+      intent -> FileSearch.handle(intent, state)
+    end
+  end
 
   defp dispatch_overlay(key, %{overlay: {:inspector, _}} = state),
     do: Inspector.handle(Keybinds.inspector(key), state)

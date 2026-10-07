@@ -26,6 +26,7 @@ defmodule Tackle.CLI.TUI.View do
     Browser,
     Conversation,
     Dashboard,
+    FileSearch,
     Help,
     Inspector,
     Layout,
@@ -66,7 +67,7 @@ defmodule Tackle.CLI.TUI.View do
       Dashboard.widgets(state, composer) ++
         status_widgets(regions.status, state, width) ++
         [{composer_widget(state), composer}] ++
-        overlay_widgets(state, width, height)
+        overlay_widgets(state, composer, width, height)
     else
       [
         {header_widget(state, width, is_nil(regions.status), regions.header), regions.header},
@@ -76,7 +77,7 @@ defmodule Tackle.CLI.TUI.View do
         sidebar_widgets(regions.sidebar, state) ++
         status_widgets(regions.status, state, width) ++
         [{composer_widget(state), regions.composer}] ++
-        overlay_widgets(state, width, height)
+        overlay_widgets(state, regions.composer, width, height)
     end
   end
 
@@ -214,9 +215,14 @@ defmodule Tackle.CLI.TUI.View do
 
   # -- overlays ------------------------------------------------------------
 
-  defp overlay_widgets(%State{overlay: nil}, _width, _height), do: []
+  defp overlay_widgets(%State{overlay: nil}, _composer, _width, _height), do: []
 
-  defp overlay_widgets(state, width, height) do
+  # The file-mention popup floats directly above the input bar instead of
+  # covering the conversation, so it keeps its own rectangle.
+  defp overlay_widgets(%State{overlay: {:file_search, _}} = state, composer, _width, _height),
+    do: FileSearch.widgets(state, composer)
+
+  defp overlay_widgets(state, _composer, width, height) do
     [{overlay_widget(state), %Rect{x: 0, y: 0, width: width, height: height}}]
   end
 

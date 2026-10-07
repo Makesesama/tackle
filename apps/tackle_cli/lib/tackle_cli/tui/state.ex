@@ -27,7 +27,7 @@ defmodule Tackle.CLI.TUI.State do
   """
 
   alias Tackle.CLI.Clipboard
-  alias Tackle.CLI.TUI.{Compaction, History, Preferences, Viewport}
+  alias Tackle.CLI.TUI.{Compaction, FileSearch, History, Preferences, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Message
@@ -42,6 +42,7 @@ defmodule Tackle.CLI.TUI.State do
           | {:help, map()}
           | {:picker, map()}
           | {:tree, map()}
+          | {:file_search, FileSearch.popup()}
           | {:inspector, map()}
           | {:search, map()}
           | {:usage_chart, map()}
@@ -86,6 +87,7 @@ defmodule Tackle.CLI.TUI.State do
           usage_timeline_cache: map(),
           overlay: overlay(),
           focus: focus(),
+          file_search: FileSearch.t(),
           subagent_selected: String.t() | nil,
           show_subagent_sidebar?: boolean(),
           prose_width: pos_integer() | nil,
@@ -151,6 +153,7 @@ defmodule Tackle.CLI.TUI.State do
             usage_timeline_cache: %{},
             overlay: nil,
             focus: :composer,
+            file_search: %FileSearch{},
             subagent_selected: nil,
             show_subagent_sidebar?: true,
             prose_width: nil,
@@ -324,6 +327,7 @@ defmodule Tackle.CLI.TUI.State do
         draft_empty?: true,
         overlay: nil,
         focus: :composer,
+        file_search: %FileSearch{},
         subagent_selected: nil,
         selected_entry: nil,
         browse_page: :transcript,

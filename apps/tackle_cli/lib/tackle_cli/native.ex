@@ -20,6 +20,10 @@ defmodule Tackle.CLI.Native do
   def input_insert_str(_state, _value), do: :erlang.nif_error(:nif_not_loaded)
   def input_handle_key(_state, _code, _modifiers, _width), do: :erlang.nif_error(:nif_not_loaded)
   def input_rows(_state, _width), do: :erlang.nif_error(:nif_not_loaded)
+  def input_cursor(_state), do: :erlang.nif_error(:nif_not_loaded)
+
+  def input_replace_range(_state, _start, _end, _text),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   def input_render(_state, _width, _height, _placeholder, _focused),
     do: :erlang.nif_error(:nif_not_loaded)

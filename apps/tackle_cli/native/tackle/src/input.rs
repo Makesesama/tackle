@@ -55,6 +55,22 @@ fn input_rows(resource: ResourceArc<InputResource>, width: u16) -> NifResult<usi
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn input_cursor(resource: ResourceArc<InputResource>) -> NifResult<usize> {
+    Ok(lock(&resource)?.cursor())
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn input_replace_range(
+    resource: ResourceArc<InputResource>,
+    start: usize,
+    end: usize,
+    text: String,
+) -> NifResult<Atom> {
+    lock(&resource)?.replace_range(start, end, &text);
+    Ok(atoms::ok())
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn input_render(
     resource: ResourceArc<InputResource>,
     width: u16,

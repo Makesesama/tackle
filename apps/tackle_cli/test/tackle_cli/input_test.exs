@@ -262,4 +262,21 @@ defmodule Tackle.CLI.Widgets.InputTest do
     assert_raise ArgumentError, fn -> Native.input_render(input, 1, 1, "\e", true) end
     assert_raise ArgumentError, fn -> Input.set_value(input, <<255>>) end
   end
+
+  test "cursor reports the caret and replace_range swaps a token in one edit" do
+    input = Input.new()
+    :ok = Input.set_value(input, "see @lib")
+    assert Input.cursor(input) == 8
+
+    # Mention completion: replace the whole @token with the selected path.
+    :ok = Input.replace_range(input, 4, 8, "lib/foo.ex ")
+    assert Input.get_value(input) == "see lib/foo.ex "
+    assert Input.cursor(input) == 15
+
+    # Offsets inside a multi-byte grapheme clamp to its boundary.
+    :ok = Input.set_value(input, "éé")
+    :ok = Input.replace_range(input, 1, 3, "x")
+    assert Input.get_value(input) == "xé"
+    assert Input.cursor(input) == 1
+  end
 end

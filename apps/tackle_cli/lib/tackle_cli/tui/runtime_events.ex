@@ -15,6 +15,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   alias Tackle.CLI.TUI.{
     Compaction,
+    FileSearch,
     MessageView,
     Notifications,
     Observations,
@@ -141,8 +142,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
             queue_notice_at: nil
         }
 
-        {:noreply,
-         state |> Viewport.update_draft() |> Viewport.relayout() |> Viewport.refresh([:turn])}
+        {state, commands} = state |> Viewport.update_draft() |> FileSearch.sync()
+
+        {:noreply, state |> Viewport.relayout() |> Viewport.refresh([:turn]), commands: commands}
 
       {:error, :not_queued} ->
         {:noreply, %{state | notice: "Message already delivered; cannot take it back"}}
@@ -232,7 +234,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
             outcome: nil
         }
 
-        {:noreply, state |> Tree.apply_outcome(outcome) |> Viewport.refresh()}
+        {state, commands} = state |> Tree.apply_outcome(outcome) |> FileSearch.sync()
+
+        {:noreply, state |> Viewport.refresh(), commands: commands}
 
       {:error, reason} ->
         operation_failed(state, reason)
@@ -247,6 +251,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp route({:tui_recent_sessions_result, ref, result}, state),
     do: RecentSessions.apply_result(state, ref, result)
+
+  defp route({:tui_file_index, ref, result}, state),
+    do: FileSearch.apply_index(state, ref, result)
 
   defp route({:tui_usage_timeline_result, ref, mode, session_id, result}, state),
     do: UsageChart.apply_result(state, ref, mode, session_id, result)
@@ -291,7 +298,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
          %State{session_id: session_id, pending_operation: nil} = state
        ) do
     state = %{state | agent_state: snapshot.agent_state, active_turn: snapshot.active_turn}
-    {:noreply, state |> Tree.apply_outcome(outcome) |> Viewport.refresh()}
+
+    {state, commands} = state |> Tree.apply_outcome(outcome) |> FileSearch.sync()
+
+    {:noreply, state |> Viewport.refresh(), commands: commands}
   end
 
   defp route({:tackle_session_navigated, _session_id, _snapshot, _outcome}, state),
@@ -801,8 +811,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         outcome: if(state.active_turn, do: state.outcome, else: :failed)
     }
 
-    state = state |> Viewport.update_draft() |> Viewport.relayout()
-    {:noreply, Viewport.refresh(state, [:pending, :error])}
+    {state, commands} = state |> Viewport.update_draft() |> FileSearch.sync()
+
+    {:noreply, state |> Viewport.relayout() |> Viewport.refresh([:pending, :error]),
+     commands: commands}
   end
 
   defp compaction_failed(state, reason) do

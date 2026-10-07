@@ -10,6 +10,8 @@ defmodule Tackle.CLI.TUI.Help do
     "Compose",
     "Enter         send draft",
     "Ctrl+J        newline",
+    "@             file mention: fuzzy search,",
+    "              ↑/↓ select, Enter/Tab insert path",
     "↑/↓           take back queued / prompt history",
     "Ctrl+P/N      prompt history",
     "Ctrl+B/F      move by word",

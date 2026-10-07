@@ -44,6 +44,24 @@ defmodule Tackle.CLI.Widgets.Input do
   @spec rows(reference(), non_neg_integer()) :: pos_integer()
   defdelegate rows(state, width), to: Native, as: :input_rows
 
+  @doc """
+  Returns the caret's byte offset into the draft.
+
+  Mention completions use it to find the `@token` under the caret.
+  """
+  @spec cursor(reference()) :: non_neg_integer()
+  defdelegate cursor(state), to: Native, as: :input_cursor
+
+  @doc """
+  Replaces the byte range `start..end` of the draft with `text` in one edit.
+
+  Offsets are clamped to the nearest character boundary at or before them, so
+  a host-computed range can never split a grapheme. The caret moves after the
+  inserted text.
+  """
+  @spec replace_range(reference(), non_neg_integer(), non_neg_integer(), String.t()) :: :ok
+  defdelegate replace_range(state, start, stop, text), to: Native, as: :input_replace_range
+
   @doc "Renders the native editor inside an optional ExRatatui block."
   @spec render(t(), Rect.t()) :: [{struct(), Rect.t()}]
   def render(%__MODULE__{} = widget, %Rect{} = rect) do
