@@ -6,7 +6,7 @@ defmodule Tackle.Executor do
   host and delegate filesystem and process primitives to an executor taken from
   the tool context:
 
-      context: %{cwd: "/work", executor: Tackle.Executor.Jailed.new(client)}
+      context: %{cwd: "/work", executor: Tackle.Executor.Jailed.new(client, workspace: "/work")}
 
   Without `:executor`, tools use `Tackle.Executor.Local`, which runs everything
   with the Tackle process's own permissions. `Tackle.Executor.Jailed` runs the
@@ -40,6 +40,9 @@ defmodule Tackle.Executor do
   @typedoc "Result of a byte-range read."
   @type read_result :: %{data: binary(), size: non_neg_integer(), eof: boolean()}
 
+  @typedoc "File metadata; `type` is `:regular`, `:directory`, `:symlink`, `:device`, or `:other`."
+  @type stat :: %{type: atom(), size: non_neg_integer(), mode: non_neg_integer()}
+
   @typedoc "Error reasons: POSIX atoms such as `:enoent`, executor atoms, or messages."
   @type reason :: atom() | String.t()
 
@@ -72,8 +75,23 @@ defmodule Tackle.Executor do
   @doc "Deletes a file."
   @callback delete(config :: term(), Path.t()) :: :ok | {:error, reason()}
 
+  @doc "Returns the type, size, and mode of a path, following symlinks."
+  @callback stat(config :: term(), Path.t()) :: {:ok, stat()} | {:error, reason()}
+
+  @doc "Lists the entry names of a directory, following symlinks."
+  @callback list(config :: term(), Path.t()) :: {:ok, [String.t()]} | {:error, reason()}
+
   @doc "Returns a directory for temporary files, as seen by the executor."
   @callback tmp_dir(config :: term()) :: Path.t()
+
+  @doc """
+  Returns the host directory the executor exposes at the same path, or `nil`
+  when it sees the host filesystem directly.
+
+  Host-side reads of project files inside this directory go through the
+  executor (see `Tackle.ProjectFiles`).
+  """
+  @callback workspace(config :: term()) :: Path.t() | nil
 
   @read_file_chunk 1_024 * 1_024
 
@@ -111,16 +129,38 @@ defmodule Tackle.Executor do
   @spec delete(t(), Path.t()) :: :ok | {:error, reason()}
   def delete({module, config}, path), do: module.delete(config, path)
 
+  @doc "See the `c:stat/2` callback."
+  @spec stat(t(), Path.t()) :: {:ok, stat()} | {:error, reason()}
+  def stat({module, config}, path), do: module.stat(config, path)
+
+  @doc "See the `c:list/2` callback."
+  @spec list(t(), Path.t()) :: {:ok, [String.t()]} | {:error, reason()}
+  def list({module, config}, path), do: module.list(config, path)
+
+  @doc "See the `c:workspace/1` callback."
+  @spec workspace(t()) :: Path.t() | nil
+  def workspace({module, config}), do: module.workspace(config)
+
   @doc "See the `c:tmp_dir/1` callback."
   @spec tmp_dir(t()) :: Path.t()
   def tmp_dir({module, config}), do: module.tmp_dir(config)
 
-  @doc "Reads a whole file in chunks."
-  @spec read_file(t(), Path.t()) :: {:ok, binary()} | {:error, reason()}
-  def read_file(executor, path), do: read_file(executor, path, 0, [])
+  @doc """
+  Reads a whole file in chunks.
 
-  defp read_file(executor, path, offset, chunks) do
+  With `max_bytes`, a file that turns out larger returns `{:error, :too_large}`
+  instead of being read further.
+  """
+  @spec read_file(t(), Path.t(), pos_integer() | :infinity) ::
+          {:ok, binary()} | {:error, reason()}
+  def read_file(executor, path, max_bytes \\ :infinity),
+    do: read_file(executor, path, max_bytes, 0, [])
+
+  defp read_file(executor, path, max_bytes, offset, chunks) do
     case read(executor, path, offset, @read_file_chunk) do
+      {:ok, %{data: data}} when max_bytes != :infinity and offset + byte_size(data) > max_bytes ->
+        {:error, :too_large}
+
       {:ok, %{data: data, eof: true}} ->
         {:ok, IO.iodata_to_binary(Enum.reverse([data | chunks]))}
 
@@ -128,7 +168,7 @@ defmodule Tackle.Executor do
         {:ok, IO.iodata_to_binary(Enum.reverse(chunks))}
 
       {:ok, %{data: data}} ->
-        read_file(executor, path, offset + byte_size(data), [data | chunks])
+        read_file(executor, path, max_bytes, offset + byte_size(data), [data | chunks])
 
       {:error, reason} ->
         {:error, reason}
@@ -138,7 +178,7 @@ defmodule Tackle.Executor do
   @doc "Formats an error reason for a model-facing message."
   @spec format_reason(reason()) :: String.t()
   def format_reason(reason) when is_binary(reason), do: reason
-  def format_reason(:too_large), do: "data is too large for the execution environment"
+  def format_reason(:too_large), do: "data is too large"
   def format_reason(:exec_server_down), do: "the execution environment is not available"
   def format_reason(:busy), do: "the execution environment is busy"
   def format_reason(:timeout), do: "the execution environment did not respond in time"

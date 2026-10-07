@@ -58,18 +58,27 @@ defmodule Tackle.CLI.ImageClipboardTest do
     end
   end
 
-  test "saves supported images in a private temporary directory" do
+  test "saves supported images to a new owner-only file" do
     bytes = <<137, 80, 78, 71, 13, 10, 26, 10, 0>>
     assert {:ok, path} = ImageClipboard.save(bytes)
+    on_exit(fn -> File.rm(path) end)
 
-    on_exit(fn ->
-      File.rm(path)
-      File.rmdir(Path.dirname(path))
-    end)
-
+    assert Path.dirname(path) == System.tmp_dir!()
+    assert Path.basename(path) =~ ~r/^tackle-image-[0-9a-f]{24}\.png$/
     assert File.read!(path) == bytes
     assert File.stat!(path).mode == 0o100600
-    assert File.stat!(Path.dirname(path)).mode == 0o40700
+  end
+
+  test "saves through the given executor" do
+    dir = Path.join(System.tmp_dir!(), "tackle-image-exec-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    bytes = <<"GIF89a", 1, 0>>
+    assert {:ok, path} = ImageClipboard.save(bytes, Tackle.CLI.TestExecutor.new(dir))
+    assert Path.dirname(path) == dir
+    assert String.ends_with?(path, ".gif")
+    assert File.read!(path) == bytes
   end
 
   test "rejects unsupported and oversized data without writing a file" do

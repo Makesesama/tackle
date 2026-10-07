@@ -46,7 +46,16 @@ defmodule Tackle.Executor.Local do
   def delete(_config, path), do: FileOps.delete(path)
 
   @impl true
+  def stat(_config, path), do: FileOps.stat(path)
+
+  @impl true
+  def list(_config, path), do: FileOps.list(path)
+
+  @impl true
   def tmp_dir(_config), do: System.tmp_dir!()
+
+  @impl true
+  def workspace(_config), do: nil
 
   defp close(port) do
     Port.close(port)

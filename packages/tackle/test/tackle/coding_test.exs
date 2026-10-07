@@ -8,6 +8,7 @@ defmodule Tackle.CodingTest do
   alias Tackle.Runtime
   alias Tackle.Runtime.{Handle, Outcome, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
+  alias Tackle.Test.FakeJail
   alias Tackle.Tools.{Bash, Read, Subagent, SubagentStatus, SubagentWait}
 
   defmodule CatalogTool do
@@ -137,6 +138,23 @@ defmodule Tackle.CodingTest do
                |> Keyword.delete(:available_adapters)
                |> Keyword.put(:catalog, catalog)
              )
+  end
+
+  test "an executor in the loader overrides reaches the root and every profile", %{
+    opts: opts,
+    cwd: cwd
+  } do
+    executor = FakeJail.new(cwd)
+    opts = Keyword.update!(opts, :overrides, &Keyword.put(&1, :context, %{executor: executor}))
+
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    assert spec.root_spec.config.context.executor == executor
+
+    for name <- Map.keys(spec.profiles) do
+      assert {:ok, profile} = ScopeSpec.resolve_profile(spec, name)
+      assert profile.config.context.executor == executor
+      assert profile.config.context.cwd == cwd
+    end
   end
 
   test "composes a default scout without changing generic defaults", %{opts: opts, cwd: cwd} do

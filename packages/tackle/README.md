@@ -126,10 +126,17 @@ The tools keep their logic on the host and send filesystem and process
 primitives to the executor in `context.executor` (see `Tackle.Executor`).
 Without one they use `Tackle.Executor.Local`. A host can start a
 `Tackle.Exec.Client` for a jailed exec-server and pass
-`Tackle.Executor.Jailed.new(client)` to run the same primitives inside the jail;
-the launcher should mount the workspace at the same path as on the host. The
-CLI does not offer this yet. Cancelling or timing out `bash` kills the
-command's whole process group.
+`Tackle.Executor.Jailed.new(client, workspace: path)` to run the same
+primitives inside the jail; the launcher must mount the workspace at the same
+path as on the host. Put the executor in the loader overrides
+(`overrides: [context: %{executor: executor}]`) so subagent profiles get it
+too; `Tackle.Config` rejects a malformed executor rather than falling back to
+the local one. With a jailed executor, `AGENTS.md`, skills, and project agent
+definitions inside the workspace are also read through the jail (see
+`Tackle.ProjectFiles`), so symlinks planted by jailed code cannot expose host
+files; those files are limited to 1 MiB. A custom executor must implement every
+`Tackle.Executor` callback, including `stat/2`, `list/2`, and `workspace/1`. Cancelling or timing out `bash` kills the command's whole process
+group.
 
 `bash` retains a bounded output tail and incrementally spills oversized output
 as sanitized UTF-8 to an exclusively created, mode-0600 temporary log in the

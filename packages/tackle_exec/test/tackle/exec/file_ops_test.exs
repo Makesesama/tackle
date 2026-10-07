@@ -49,6 +49,12 @@ defmodule Tackle.Exec.FileOpsTest do
     assert File.read!(path) == "ab"
   end
 
+  test "lists directories", %{dir: dir} do
+    File.write!(Path.join(dir, "file"), "x")
+    assert {:ok, ["file"]} = FileOps.list(dir)
+    assert {:error, :enotdir} = FileOps.list(Path.join(dir, "file"))
+  end
+
   test "deletes files but not directories", %{dir: dir} do
     path = Path.join(dir, "file")
     File.write!(path, "x")

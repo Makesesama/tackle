@@ -3,13 +3,14 @@
 `Tackle.Exec` connects a trusted host to an **exec-server** that runs inside a
 jail. The host keeps the agent loop, credentials, and tool logic. The jail
 runs the primitives that touch the workspace or spawn processes: commands,
-file reads, writes, appends, deletes, and stat calls.
+file reads, writes, appends, deletes, stat calls, and directory listings.
 
 This package implements phase 1 of the
 [exec-server plan](../../docs/EXEC_SERVER_PLAN.md): the protocol, the jail-side
 server, and the host-side client. It has no dependencies. The harness's
-`Tackle.Executor.Jailed` routes the built-in tools through it (phase 2); there
-is no jail launcher or CLI option yet.
+`Tackle.Executor.Jailed` routes the built-in tools through it, and the CLI
+uses it when `TACKLE_EXEC_LAUNCHER` is set. The repository's Bubblewrap
+launcher is `nix/packages/exec-jail.nix`.
 
 `Tackle.Exec.FileOps` and `Tackle.Exec.Command` hold the filesystem and process
 primitives. The server uses them inside the jail, and the harness's local
@@ -67,6 +68,9 @@ A production launcher must also:
   Bubblewrap's `--die-with-parent` and a PID namespace. Without a PID
   namespace, commands can outlive the exec-server.
 
+The client starts the launcher in its `:cd` directory (default: the current
+directory) with an environment reduced to `:keep_env`.
+
 ## Usage
 
 ```elixir
@@ -97,11 +101,13 @@ end
 :ok = Tackle.Exec.Client.write(client, "/work/new/b.txt", " world", mode: :append)
 {:ok, %{type: :regular, size: 11, mode: mode}} = Tackle.Exec.Client.stat(client, "/work/new/b.txt")
 :ok = Tackle.Exec.Client.delete(client, "/work/new/b.txt")
+{:ok, names} = Tackle.Exec.Client.list(client, "/work")
 ```
 
 `write/4` replaces the file in place by default. `mode: :append` appends, and
 `mode: :create` creates a new owner-only (0600) file and fails with `:eexist`
-if the path exists.
+if the path exists. `list/3` returns entry names; the client rejects names
+that are not a single path component.
 
 The returned reference is also a monitor of the client, so the stream always
 ends: with `:exit_status`, with `:error`, or with `:DOWN` if the client dies.

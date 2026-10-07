@@ -14,7 +14,7 @@ defmodule Tackle.Agents do
   """
 
   alias Tackle.Agents.Definition
-  alias Tackle.Paths
+  alias Tackle.{Executor, Paths, ProjectFiles}
   alias Tackle.Skills.Frontmatter
 
   @known_fields MapSet.new(
@@ -28,12 +28,13 @@ defmodule Tackle.Agents do
   @spec discover(keyword()) :: discovery()
   def discover(opts \\ []) do
     cwd = opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
+    files = ProjectFiles.new(executor: Keyword.get(opts, :executor))
     env = Keyword.get_lazy(opts, :env, &System.get_env/0)
     builtins = Keyword.get(opts, :builtins, [])
 
     sources =
       [{:builtin, builtins}] ++
-        user_source(env) ++ project_source(cwd)
+        user_source(env) ++ project_source(files, cwd)
 
     {definitions, warnings} =
       Enum.reduce(sources, {%{}, []}, fn
@@ -41,7 +42,7 @@ defmodule Tackle.Agents do
           merge_definitions(definitions, acc)
 
         {source, dir}, acc ->
-          load_directory(dir, source, acc)
+          load_directory(files, dir, source, acc)
       end)
 
     %{
@@ -81,39 +82,39 @@ defmodule Tackle.Agents do
     end
   end
 
-  defp project_source(cwd) do
-    case nearest_project_agents(cwd, git_root(cwd)) do
+  defp project_source(files, cwd) do
+    case nearest_project_agents(files, cwd, git_root(files, cwd)) do
       nil -> []
       dir -> [{:project, dir}]
     end
   end
 
-  defp nearest_project_agents(dir, boundary) do
+  defp nearest_project_agents(files, dir, boundary) do
     candidate = Path.join([dir, ".tackle", "agents"])
     parent = Path.dirname(dir)
 
     cond do
-      File.dir?(candidate) -> candidate
+      ProjectFiles.dir?(files, candidate) -> candidate
       dir == parent or dir == boundary -> nil
-      true -> nearest_project_agents(parent, boundary)
+      true -> nearest_project_agents(files, parent, boundary)
     end
   end
 
-  defp git_root(dir) do
+  defp git_root(files, dir) do
     parent = Path.dirname(dir)
 
     cond do
-      File.exists?(Path.join(dir, ".git")) -> dir
+      ProjectFiles.exists?(files, Path.join(dir, ".git")) -> dir
       dir == parent -> nil
-      true -> git_root(parent)
+      true -> git_root(files, parent)
     end
   end
 
-  defp load_directory(dir, source, {definitions, warnings}) do
-    dir
-    |> markdown_files()
+  defp load_directory(files, dir, source, {definitions, warnings}) do
+    files
+    |> markdown_files(dir)
     |> Enum.reduce({definitions, warnings}, fn path, {definitions, warnings} ->
-      case load_file(path, source) do
+      case load_file(files, path, source) do
         {:ok, definition} ->
           merge_definition(definition, source, path, definitions, warnings)
 
@@ -146,39 +147,37 @@ defmodule Tackle.Agents do
     end)
   end
 
-  defp markdown_files(dir) do
-    if File.dir?(dir), do: walk_markdown(dir), else: []
+  defp markdown_files(files, dir) do
+    if ProjectFiles.dir?(files, dir),
+      do: ProjectFiles.walk(files, dir, &markdown_entries(files, &1)),
+      else: []
   end
 
-  defp walk_markdown(dir) do
-    case File.ls(dir) do
+  # Bounded depth-first walk (see ProjectFiles.walk/3) over non-hidden entries.
+  defp markdown_entries(files, dir) do
+    case ProjectFiles.list(files, dir) do
       {:ok, entries} ->
         entries
-        |> Enum.sort()
         |> Enum.reject(&String.starts_with?(&1, "."))
-        |> Enum.flat_map(&walk_entry(dir, &1))
+        |> Enum.flat_map(&markdown_entry(files, dir, &1))
 
       {:error, _reason} ->
         []
     end
   end
 
-  defp walk_entry(dir, entry) do
+  defp markdown_entry(files, dir, entry) do
     path = Path.join(dir, entry)
 
     cond do
-      File.dir?(path) -> walk_markdown(path)
-      String.ends_with?(entry, ".md") and regular_file?(path) -> [path]
+      ProjectFiles.dir?(files, path) -> [{:dir, path}]
+      String.ends_with?(entry, ".md") and ProjectFiles.regular?(files, path) -> [{:file, path}]
       true -> []
     end
   end
 
-  defp regular_file?(path) do
-    match?({:ok, %File.Stat{type: :regular}}, File.stat(path))
-  end
-
-  defp load_file(path, source) do
-    with {:ok, contents} <- read(path),
+  defp load_file(files, path, source) do
+    with {:ok, contents} <- read(files, path),
          {:ok, document} <- Frontmatter.parse_document(contents),
          :ok <- validate_fields(document.frontmatter),
          {:ok, definition} <- build(path, source, document.frontmatter, document.body) do
@@ -192,13 +191,13 @@ defmodule Tackle.Agents do
     end
   end
 
-  defp read(path) do
-    case File.read(path) do
+  defp read(files, path) do
+    case ProjectFiles.read(files, path) do
       {:ok, contents} ->
         if String.valid?(contents), do: {:ok, contents}, else: {:error, "file is not valid UTF-8"}
 
       {:error, reason} ->
-        {:error, "could not be read (#{:file.format_error(reason)})"}
+        {:error, "could not be read (#{Executor.format_reason(reason)})"}
     end
   end
 

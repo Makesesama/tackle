@@ -362,7 +362,8 @@ defmodule Tackle.CLI.Run do
 
   defp start_scope(model, thinking, llm_stream, opts) do
     with {:ok, _apps} <- ensure_started(),
-         {:ok, overrides} <- overrides(model, thinking, llm_stream),
+         {:ok, executor} <- Tackle.CLI.Jail.ensure_started(),
+         {:ok, overrides} <- overrides(model, thinking, llm_stream, executor),
          {:ok, session} <- durable_session(opts),
          {:ok, mcp_tools} <- Tackle.CLI.MCP.Connections.tools(),
          {:ok, catalog} <- Tackle.CLI.Distribution.catalog(mcp_tools),
@@ -532,8 +533,11 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp overrides(model, thinking, llm_stream) do
+  # The executor travels in the loader overrides so the root agent and every
+  # subagent profile get it; Tackle.Coding builds each from the same overrides.
+  defp overrides(model, thinking, llm_stream, executor) do
     overrides = if model, do: [model: model], else: []
+    overrides = if executor, do: [context: %{executor: executor}] ++ overrides, else: overrides
     overrides = if llm_stream, do: Keyword.put(overrides, :llm_stream, true), else: overrides
 
     case thinking do
@@ -576,7 +580,8 @@ defmodule Tackle.CLI.Run do
   end
 
   defp error(reason) do
-    Owl.IO.puts(Owl.Data.tag("error: #{inspect(reason)}", :red), :stderr)
+    message = Tackle.CLI.Jail.format_error(reason) || inspect(reason)
+    Owl.IO.puts(Owl.Data.tag("error: #{message}", :red), :stderr)
     1
   end
 

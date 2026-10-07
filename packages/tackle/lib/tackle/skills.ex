@@ -22,7 +22,7 @@ defmodule Tackle.Skills do
   project skills win over more distant project skills and user skills.
   """
 
-  alias Tackle.Paths
+  alias Tackle.{Executor, Paths, ProjectFiles}
   alias Tackle.Skills.{Frontmatter, Skill}
 
   @skill_file "SKILL.md"
@@ -40,7 +40,8 @@ defmodule Tackle.Skills do
   @type discovery :: %{skills: [Skill.t()], warnings: [warning()]}
 
   @typedoc "`discover/1` options. `:cwd` selects the project directory."
-  @type discover_option :: {:cwd, Path.t()} | {:user_home, String.t() | nil}
+  @type discover_option ::
+          {:cwd, Path.t()} | {:user_home, String.t() | nil} | {:executor, Tackle.Executor.t()}
 
   @doc """
   Discovers skills from the project and user `.agents/skills` directories.
@@ -53,16 +54,19 @@ defmodule Tackle.Skills do
 
     * `:cwd` - working directory for project discovery, defaults to the current
       working directory;
-    * `:user_home` - override for `~`; `nil` disables user skill discovery.
+    * `:user_home` - override for `~`; `nil` disables user skill discovery;
+    * `:executor` - executor for files inside the working directory (see
+      `Tackle.ProjectFiles`), defaults to the local executor.
   """
   @spec discover([discover_option()]) :: discovery()
   def discover(opts \\ []) do
     cwd = opts |> Keyword.get(:cwd) |> resolve_cwd()
+    files = ProjectFiles.new(executor: Keyword.get(opts, :executor))
 
     {skills, warnings} =
-      (project_dirs(cwd) ++ global_dirs(opts))
-      |> Enum.flat_map(&skill_files/1)
-      |> Enum.reduce({[], []}, &load_file/2)
+      (project_dirs(files, cwd) ++ global_dirs(opts))
+      |> Enum.flat_map(&skill_files(files, &1))
+      |> Enum.reduce({[], []}, &load_file(files, &1, &2))
 
     skills
     |> :lists.reverse()
@@ -91,15 +95,15 @@ defmodule Tackle.Skills do
     end
   end
 
-  defp load_file(path, {skills, warnings}) do
-    case load_skill(path) do
+  defp load_file(files, path, {skills, warnings}) do
+    case load_skill(files, path) do
       {:ok, skill, file_warnings} -> {[skill | skills], warnings ++ file_warnings}
       {:error, file_warnings} -> {skills, warnings ++ file_warnings}
     end
   end
 
-  defp load_skill(path) do
-    with {:ok, contents} <- read(path),
+  defp load_skill(files, path) do
+    with {:ok, contents} <- read(files, path),
          {:ok, frontmatter} <- Frontmatter.parse(contents) do
       build(path, frontmatter)
     else
@@ -133,8 +137,8 @@ defmodule Tackle.Skills do
     end
   end
 
-  defp read(path) do
-    case File.read(path) do
+  defp read(files, path) do
+    case ProjectFiles.read(files, path) do
       {:ok, contents} ->
         if String.valid?(contents) do
           {:ok, contents}
@@ -143,7 +147,7 @@ defmodule Tackle.Skills do
         end
 
       {:error, reason} ->
-        {:error, warning(path, "could not be read (#{:file.format_error(reason)})")}
+        {:error, warning(path, "could not be read (#{Executor.format_reason(reason)})")}
     end
   end
 
@@ -218,9 +222,9 @@ defmodule Tackle.Skills do
 
   defp warning(path, message), do: %{path: path, message: message}
 
-  defp project_dirs(cwd) do
-    cwd
-    |> ancestors()
+  defp project_dirs(files, cwd) do
+    files
+    |> ancestors(cwd)
     |> Enum.map(&Path.join([&1, @agents_dir, @skills_dir]))
   end
 
@@ -231,8 +235,8 @@ defmodule Tackle.Skills do
     end
   end
 
-  defp ancestors(dir) do
-    collect_ancestors(dir, git_root(dir), [])
+  defp ancestors(files, dir) do
+    collect_ancestors(dir, git_root(files, dir), [])
   end
 
   defp collect_ancestors(dir, git_root, acc) do
@@ -246,31 +250,42 @@ defmodule Tackle.Skills do
     end
   end
 
-  defp git_root(dir) do
+  defp git_root(files, dir) do
     parent = Path.dirname(dir)
 
     cond do
-      File.exists?(Path.join(dir, ".git")) -> dir
+      ProjectFiles.exists?(files, Path.join(dir, ".git")) -> dir
       dir == parent -> nil
-      true -> git_root(parent)
+      true -> git_root(files, parent)
     end
   end
 
-  defp skill_files(dir) do
-    skill_file = Path.join(dir, @skill_file)
+  # A directory holding SKILL.md is a skill; otherwise its children are
+  # searched. The walk is bounded (see ProjectFiles.walk/3).
+  defp skill_files(files, dir) do
+    ProjectFiles.walk(files, dir, fn dir ->
+      skill_file = Path.join(dir, @skill_file)
 
-    cond do
-      file?(skill_file) -> [skill_file]
-      not File.dir?(dir) -> []
-      true -> dir |> children() |> Enum.flat_map(&skill_files/1)
-    end
+      cond do
+        ProjectFiles.regular?(files, skill_file) ->
+          [{:file, skill_file}]
+
+        not ProjectFiles.dir?(files, dir) ->
+          []
+
+        true ->
+          files
+          |> children(dir)
+          |> Enum.filter(&ProjectFiles.dir?(files, &1))
+          |> Enum.map(&{:dir, &1})
+      end
+    end)
   end
 
-  defp children(dir) do
-    case File.ls(dir) do
+  defp children(files, dir) do
+    case ProjectFiles.list(files, dir) do
       {:ok, entries} ->
         entries
-        |> Enum.sort()
         |> Enum.reject(&ignored?/1)
         |> Enum.map(&Path.join(dir, &1))
 
@@ -280,13 +295,6 @@ defmodule Tackle.Skills do
   end
 
   defp ignored?(entry), do: String.starts_with?(entry, ".") or entry in @ignored_entries
-
-  defp file?(path) do
-    case File.stat(path) do
-      {:ok, %File.Stat{type: :regular}} -> true
-      _other -> false
-    end
-  end
 
   defp render(skills, hint) do
     skill_lines =

@@ -63,6 +63,10 @@ defmodule Tackle.Exec.FileOps do
   @spec delete(Path.t()) :: :ok | {:error, atom()}
   def delete(path), do: File.rm(path)
 
+  @doc "Lists the entry names of a directory, following symlinks."
+  @spec list(Path.t()) :: {:ok, [String.t()]} | {:error, atom()}
+  def list(path), do: File.ls(path)
+
   @doc "Returns the type, size, and mode of a path, following symlinks."
   @spec stat(Path.t()) ::
           {:ok, %{type: atom(), size: non_neg_integer(), mode: non_neg_integer()}}

@@ -160,6 +160,9 @@ defmodule Tackle.Exec.Server do
   defp handle_request(state, {:stat, id, %{path: path}}),
     do: run_file_op(state, id, fn -> FileOps.stat(path) end)
 
+  defp handle_request(state, {:list, id, %{path: path}}),
+    do: run_file_op(state, id, fn -> FileOps.list(path) end)
+
   defp exec_output(state, id, data) do
     exec = Map.fetch!(state.execs, id)
 

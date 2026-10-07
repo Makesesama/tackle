@@ -89,8 +89,8 @@ and unfinished integrations:
 - [`packages/tackle_exec`](packages/tackle_exec/README.md) contains the
   exec-server protocol, jail-side server, and host client for running tool
   primitives in a jail (`Tackle.Exec.*`). The built-in tools reach it through
-  `Tackle.Executor.Jailed`; the CLI does not offer jailed execution yet (see the
-  [exec-server plan](docs/EXEC_SERVER_PLAN.md)).
+  `Tackle.Executor.Jailed`, and the CLI uses it when `TACKLE_EXEC_LAUNCHER` is
+  set (see [jailed execution](#jailed-execution-on-linux)).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the
   Phoenix integration and a runtime backend that preserves Store lifecycle
   hooks for root and delegated agents; it is not the intended CLI foundation.
@@ -177,53 +177,66 @@ The CLI keeps its terminal and provider dependencies outside the harness
 package. The harness's Mix task can still delegate to `apps/tackle_cli` when
 invoked from `packages/tackle`.
 
-### Sandboxed dogfooding on Linux
+### Jailed execution on Linux
 
-The development shell also provides `jailed-tackle`, a Bubblewrap launcher built
-with [`jailed-agents`](https://github.com/andersonjoseph/jailed-agents):
+Tackle can run the agent's commands and workspace file access in a Bubblewrap
+jail while the CLI itself stays on the host. The CLI keeps your credentials
+(`~/.tackle`), sessions, and host facilities such as the Wayland or X11
+clipboard; the jail sees the project directory, the Nix store, and nothing else
+from your home. The design is described in
+[`docs/EXEC_SERVER_PLAN.md`](docs/EXEC_SERVER_PLAN.md).
 
-```sh
-nix develop
-jailed-tackle
-```
+The CLI enables this when `TACKLE_EXEC_LAUNCHER` names a launcher. The Nix
+packages below set it for you. The launcher starts one jailed exec-server per
+CLI process with the project directory as the workspace (or
+`TACKLE_EXEC_WORKSPACE`, which must contain the current directory). Jailed mode
+fails closed: if the jail does not start, or if it can see `$TACKLE_HOME`,
+Tackle reports an error and never runs tools on the host instead. Comparing
+resolved paths, it refuses a workspace that contains your home directory,
+`$TACKLE_HOME` or anything it links to, or an enabled plugin project, and a
+workspace inside `$TACKLE_HOME`. The exec-server's standard error goes to
+`$TACKLE_HOME/logs/exec-server.log`.
 
-Run it from the repository root. In `jailed-tackle`, **Ctrl+V** in the
-composer asks a narrowly scoped host handler to read a PNG from the host
-clipboard and stages it in the jail. This does not expose the compositor socket
-or clipboard utilities to jailed tools, but **any code in the jail can invoke
-this host clipboard-read capability**. The host needs `wl-paste` (Wayland) or
-`xclip` (X11) installed and available on the launcher's `PATH`. This bridge
-accepts only PNG up to 5 MiB; other clipboard formats are not pasted in the
-jail. Some terminals send Ctrl+V as a bracketed text paste instead of a key;
-for those terminals, use the manual fallback below.
+The jail (`nix/packages/exec-jail.nix`):
 
-To stage an image without the key, copy a PNG on the host. The jail prints a
-per-launch session ID and a host command such as
-`tackle-clipboard-paste tackle-paste-XXXXXXXX`. From another **host** terminal,
-run `nix run .#tackle-clipboard-paste -- tackle-paste-XXXXXXXX`, substituting
-that ID. The image appears in the composer without Ctrl+V. You can bind this
-host command to a hotkey. Images are staged in a private per-launch host
-directory mounted read-only in the jail and removed when it exits; Tackle keeps
-a temporary copy until the CLI exits. Agent tools can read pasted images, and
-reading one can persist its contents in session history. Do not paste secrets
-you do not want the agent to see. This is not a boundary against other processes
-running as your host user.
+- mounts the workspace read-write at the same path. `.git` is mounted onto
+  itself so it cannot be replaced, `.git/config` and `.git/hooks` are
+  read-only, a linked worktree's `.git` file is read-only, and a planted
+  `.git/commondir` blocks the launch;
+- gives the jail a private `/tmp` and home, and a cleared environment;
+- unshares every namespace except the network, starts a new session, and dies
+  with the CLI;
+- provides common command-line tools and Ketch, with
+  `~/.config/ketch/config.json` mounted read-only when present. Any API keys
+  in that file are readable from the jail.
 
-The jail gives Tackle read-write access to the
-entire current working directory, to `~/.tackle`, and to the configured Ketch
-research client and its `~/.config/ketch/config.json` configuration.
-Network access is enabled for provider and research calls. Other home-directory
-contents and host control sockets are not mounted, and the host Nix daemon
-remains unavailable. Tackle can still
-modify or delete anything in the repository, including `.git`, so keep valuable
-work committed or backed up. The launcher is Linux-only because it relies on
-Bubblewrap and Linux namespaces.
+Tackle reads project guidance (`AGENTS.md`), skills, and project agent
+definitions inside the workspace through the jail, so a symlink that jailed code
+plants to a host file such as `~/.tackle/auth.json` resolves to nothing.
+Pasted images are staged in the jail's `/tmp` so the agent's `read` tool can
+open them.
+
+Not covered:
+
+- Workspace contents still run on the host when you build or open the project
+  there (`mix.exs`, dependencies, `.envrc`).
+- Host Git in a jailed workspace is narrowed, not safe: repositories that jailed
+  code creates, submodules under `.git/modules`, and nested `.git` directories
+  are writable, and a workspace without `.git` at launch gets no protection.
+  Inspect them before running Git on the host, or run Git in the jail.
+- The jail shares the host network namespace, so it can reach services on
+  localhost and abstract Unix sockets, such as an X11 display that trusts
+  local connections.
+- The jail can read and grow the shared exec-server log.
+- MCP servers and plugins configured for Tackle run on the host.
+
+The agent can modify or delete anything in the project, so keep valuable work
+committed or backed up. The launchers are Linux-only.
 
 ### Production jailed package on Linux
 
-`tackle-cli-jail` provides `bin/tackle`, wraps the production Burrito package,
-and runs from any project folder with Nix builds enabled. It is separate from
-the checkout-based `jailed-tackle` development launcher above:
+`tackle-cli-jail` provides `bin/tackle`: the production Burrito package on the
+host, with tools in the jail. Run it from any project folder:
 
 ```sh
 # From the Tackle repository root:
@@ -232,46 +245,59 @@ nix build .#tackle-cli-jail --out-link result-jailed
 ./result-jailed/bin/tackle
 ```
 
-The new package requires a multi-user Nix installation with the daemon socket at
-`/nix/var/nix/daemon-socket/socket`, `/etc/nix/nix.conf`, and working Bubblewrap
-user namespaces. It mounts the current directory and `~/.tackle` read-write,
-plus the same per-launch host image staging directory read-only; it does not
-mount a compositor socket. Burrito extracts into `~/.tackle/burrito/.burrito`. It does not
-require Mix to launch the CLI. Ketch is available on `PATH`,
-with `~/.config/ketch/config.json` mounted when present for research calls.
-`TACKLE_MODEL` and `TACKLE_THINKING` are forwarded; credentials come from
-`~/.tackle/auth.json`. This launcher fixes `TACKLE_HOME` to `~/.tackle`.
+It requires a multi-user Nix installation with the daemon socket at
+`/nix/var/nix/daemon-socket/socket`, `/etc/nix/nix.conf`, and working
+Bubblewrap user namespaces. The CLI binary lives in the read-only Nix store, so
+jailed code cannot change what runs on the host.
 
-**Nix access weakens isolation:** the whole host `/nix` tree is readable, including
-store paths containing source or configuration. The daemon socket is accessible,
-so the agent can request host builds and other daemon operations allowed for your
-user. A trusted Nix user has additional powers; this is not a boundary against a
-hostile agent. Network access is enabled, and project files (including `.git`)
-and Tackle state can be modified or deleted. Other home files, SSH credentials,
-and unrelated host control sockets are not mounted.
+**Nix access weakens isolation:** the whole host `/nix` tree is readable inside
+the jail, including store paths containing source or configuration, and the
+daemon socket is accessible, so the agent can request host builds and other
+daemon operations allowed for your user. **If you are in Nix's
+`trusted-users`, this is equivalent to root access.** Network access is
+enabled.
 
 Inside the jail, `nix build` and `nix develop --command ...` use the host daemon
 with flakes enabled. The full read-only store mount makes new build outputs and
-their symlink targets visible immediately, avoiding per-path closure enumeration
-and stale/GC'd cached-direnv references. Automatic sourcing of the launch shell's
-or nested cached direnv environments is **not implemented**; use `nix develop`
-explicitly. Host user Nix configuration, private-fetch credentials, and arbitrary
-devshell environment variables are not forwarded. Daemon-side build sandboxing
-continues to follow the host's Nix configuration.
+their symlink targets visible immediately. Automatic sourcing of direnv
+environments is **not implemented**; use `nix develop` explicitly. Host user
+Nix configuration, private-fetch credentials, and devshell environment
+variables are not forwarded. Daemon-side build sandboxing follows the host's
+Nix configuration.
 
-A credential-free host smoke test checks a real offline Nix build inside the
-jail, visibility of its new output, Ketch availability and its config mount,
-hidden home files, production environment, and the packaged CLI's informational commands:
+A credential-free host smoke test runs a probe under the same jail policy
+(hidden home and credentials, cleared environment, read-only Git settings,
+Ketch, an offline Nix build), drives the real exec-server through the protocol
+client, and checks the packaged CLI's informational commands:
 
 ```sh
 nix build .#tackle-cli-jail.tests.smoke --out-link result-jail-test
 ./result-jail-test/bin/test-jailed-tackle-cli
 ```
 
-Run this on the host, not inside the old development jail or a Nix build sandbox.
-Also open the actual jailed TUI and exit with Ctrl+C to check native startup.
-The jail wrapper is a Nix package, not a second portable single-file executable;
-keep `tackle-cli` for the unjailed, copyable Burrito artifact.
+Run this on the host, not inside a jail or a Nix build sandbox. Also open the
+jailed TUI, run a command, and exit with Ctrl+C to check startup end to end.
+The jail wrapper is a Nix package, not a portable single-file executable; keep
+`tackle-cli` for the unjailed, copyable Burrito artifact.
+
+### Jailed dogfooding from the checkout
+
+The development shell also provides `jailed-tackle`. Run it from the repository
+root:
+
+```sh
+nix develop
+jailed-tackle
+```
+
+It runs `mix tackle` from the checkout on the host, with a jail that mounts the
+repository root and provides the Elixir and Rust toolchains. The host Nix
+daemon is not available in this jail. Clipboard paste works directly.
+
+**The checkout is the trust boundary here.** Everything in it, including
+`_build`, `deps`, and `.nix-mix`, is writable from the jail, and the next
+`jailed-tackle` start compiles and runs it on the host. Review changes before
+restarting, or use `tackle-cli-jail` when that matters.
 
 ## Harness guide
 

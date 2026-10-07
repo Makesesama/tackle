@@ -30,6 +30,19 @@ defmodule Tackle.Plugins.LoaderTest do
              Loader.load(path: Path.join(root, "plugins.json"))
   end
 
+  test "project_paths lists enabled projects without loading them" do
+    root = temp_dir()
+    config = Path.join(root, "plugins.json")
+
+    assert {:ok, []} = Loader.project_paths(path: config)
+
+    write_config(root, [entry("/srv/plugin-a", "a", []), entry("/srv/plugin-b", "b", [])])
+    assert {:ok, ["/srv/plugin-a", "/srv/plugin-b"]} = Loader.project_paths(path: config)
+
+    write_config(root, [], 2)
+    assert {:error, {:invalid_plugin_config, _}} = Loader.project_paths(path: config)
+  end
+
   test "preflight rejects absent selected modules without adding paths" do
     root = temp_dir()
     project = Path.join(root, "plugin")

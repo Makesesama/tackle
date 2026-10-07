@@ -45,6 +45,20 @@ defmodule Tackle.Plugins.Loader do
 
   def load(opts), do: {:error, {:invalid_loader_options, opts}}
 
+  @doc """
+  Returns the project paths enabled in `plugins.json` without loading them.
+
+  Accepts the same `:path` and `:env` options as `load/1`.
+  """
+  @spec project_paths(keyword()) :: {:ok, [Path.t()]} | {:error, term()}
+  def project_paths(opts \\ []) do
+    with {:ok, path} <- config_path(opts),
+         {:ok, config} <- read_config(path),
+         {:ok, projects} <- validate_config(config) do
+      {:ok, Enum.map(projects, & &1.path)}
+    end
+  end
+
   defp config_path(opts) when is_list(opts) do
     if not Keyword.keyword?(opts) or Keyword.keys(opts) -- [:path, :env] != [] do
       {:error, {:invalid_loader_options, opts}}

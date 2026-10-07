@@ -15,8 +15,8 @@ defmodule Tackle.SystemPrompt do
   explicit errors so a session never starts with silently incomplete guidance.
   """
 
+  alias Tackle.{Executor, ProjectFiles, Skills}
   alias Tackle.Lib.SystemPrompt, as: PromptBuilder
-  alias Tackle.Skills
 
   @type build_option ::
           {:base, String.t() | nil}
@@ -24,6 +24,7 @@ defmodule Tackle.SystemPrompt do
           | {:home, Path.t()}
           | {:tools, [module()]}
           | {:skills, [Skills.Skill.t()]}
+          | {:executor, Executor.t()}
 
   @doc "Builds the effective system prompt for one configured session."
   @spec build([build_option()]) :: {:ok, String.t()} | {:error, term()}
@@ -32,10 +33,11 @@ defmodule Tackle.SystemPrompt do
          {:ok, cwd} <- fetch_path(opts, :cwd),
          {:ok, home} <- fetch_path(opts, :home),
          {:ok, tools} <- fetch_tools(opts),
-         {:ok, base} <- resolve_base(Keyword.get(opts, :base), home, tools),
-         {:ok, append} <- read_optional(Path.join(home, "APPEND_SYSTEM.md")),
+         files = ProjectFiles.new(executor: Keyword.get(opts, :executor)),
+         {:ok, base} <- resolve_base(files, Keyword.get(opts, :base), home, tools),
+         {:ok, append} <- read_optional(files, Path.join(home, "APPEND_SYSTEM.md")),
          {:ok, skills} <- fetch_skills(opts),
-         {:ok, context_files} <- load_context_files(cwd, home) do
+         {:ok, context_files} <- load_context_files(files, cwd, home) do
       prompt =
         PromptBuilder.new()
         |> PromptBuilder.add_raw(base)
@@ -76,17 +78,17 @@ defmodule Tackle.SystemPrompt do
     end
   end
 
-  defp resolve_base(base, _home, _tools) when is_binary(base), do: {:ok, base}
+  defp resolve_base(_files, base, _home, _tools) when is_binary(base), do: {:ok, base}
 
-  defp resolve_base(nil, home, tools) do
-    case read_optional(Path.join(home, "SYSTEM.md")) do
+  defp resolve_base(files, nil, home, tools) do
+    case read_optional(files, Path.join(home, "SYSTEM.md")) do
       {:ok, nil} -> {:ok, default(tools)}
       {:ok, prompt} -> {:ok, prompt}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp resolve_base(base, _home, _tools),
+  defp resolve_base(_files, base, _home, _tools),
     do: {:error, {:invalid_system_prompt_option, :base, base}}
 
   @doc "Returns the built-in coding prompt for a validated tool set."
@@ -139,7 +141,7 @@ defmodule Tackle.SystemPrompt do
     |> Enum.map(&elem(&1, 1))
   end
 
-  defp load_context_files(cwd, home) do
+  defp load_context_files(files, cwd, home) do
     paths =
       [
         Path.join(home, "AGENTS.md")
@@ -148,10 +150,10 @@ defmodule Tackle.SystemPrompt do
       |> Enum.uniq()
 
     paths
-    |> Enum.reduce_while({:ok, []}, fn path, {:ok, files} ->
-      case read_optional(path) do
-        {:ok, nil} -> {:cont, {:ok, files}}
-        {:ok, content} -> {:cont, {:ok, [%{path: path, content: content} | files]}}
+    |> Enum.reduce_while({:ok, []}, fn path, {:ok, loaded} ->
+      case read_optional(files, path) do
+        {:ok, nil} -> {:cont, {:ok, loaded}}
+        {:ok, content} -> {:cont, {:ok, [%{path: path, content: content} | loaded]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
@@ -209,17 +211,17 @@ defmodule Tackle.SystemPrompt do
     )
   end
 
-  defp read_optional(path) do
-    case File.stat(path) do
-      {:ok, %{type: :regular}} -> read_prompt_file(path)
-      {:ok, _stat} -> {:ok, nil}
+  defp read_optional(files, path) do
+    case ProjectFiles.type(files, path) do
+      {:ok, :regular} -> read_prompt_file(files, path)
+      {:ok, _type} -> {:ok, nil}
       {:error, :enoent} -> {:ok, nil}
       {:error, reason} -> {:error, {:system_prompt_file_unreadable, path, reason}}
     end
   end
 
-  defp read_prompt_file(path) do
-    case File.read(path) do
+  defp read_prompt_file(files, path) do
+    case ProjectFiles.read(files, path) do
       {:ok, content} -> validate_content(path, strip_bom(content))
       {:error, reason} -> {:error, {:system_prompt_file_unreadable, path, reason}}
     end

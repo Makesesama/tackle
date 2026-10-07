@@ -13,6 +13,7 @@ defmodule Tackle.Coding do
   alias Tackle.Agents.Default
   alias Tackle.Agents.Definition
   alias Tackle.Config
+  alias Tackle.Executor
   alias Tackle.Plugins.Catalog
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
@@ -152,6 +153,7 @@ defmodule Tackle.Coding do
   defp discover(config, loader_opts) do
     Agents.discover(
       cwd: config.context.cwd,
+      executor: Executor.from_context(config.context),
       env: Keyword.get_lazy(loader_opts, :env, &System.get_env/0),
       builtins: Default.definitions()
     )

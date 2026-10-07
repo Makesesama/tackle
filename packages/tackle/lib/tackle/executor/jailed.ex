@@ -7,7 +7,7 @@ defmodule Tackle.Executor.Jailed do
   primitives to it:
 
       {:ok, client} = Tackle.Exec.Client.start_link(launcher: launcher)
-      executor = Tackle.Executor.Jailed.new(client)
+      executor = Tackle.Executor.Jailed.new(client, workspace: workspace)
       context = %{cwd: workspace, executor: executor}
 
   Paths are interpreted inside the jail, so the launcher should mount the
@@ -26,11 +26,20 @@ defmodule Tackle.Executor.Jailed do
 
   ## Options
 
+    * `:workspace` - required host directory that the jail mounts at the same
+      path. Host-side reads of project files inside it go through the jail.
     * `:tmp_dir` - directory for temporary files inside the jail (default `"/tmp"`).
   """
   @spec new(GenServer.server(), keyword()) :: Tackle.Executor.t()
-  def new(client, opts \\ []) do
-    {__MODULE__, %{client: client, tmp_dir: Keyword.get(opts, :tmp_dir, "/tmp")}}
+  def new(client, opts) do
+    workspace =
+      case Keyword.fetch(opts, :workspace) do
+        {:ok, path} when is_binary(path) -> Path.expand(path)
+        _missing -> raise ArgumentError, "Tackle.Executor.Jailed.new/2 requires :workspace"
+      end
+
+    {__MODULE__,
+     %{client: client, workspace: workspace, tmp_dir: Keyword.get(opts, :tmp_dir, "/tmp")}}
   end
 
   @impl true
@@ -78,7 +87,16 @@ defmodule Tackle.Executor.Jailed do
   def delete(%{client: client}, path), do: Client.delete(client, path)
 
   @impl true
+  def stat(%{client: client}, path), do: Client.stat(client, path)
+
+  @impl true
+  def list(%{client: client}, path), do: Client.list(client, path)
+
+  @impl true
   def tmp_dir(%{tmp_dir: tmp_dir}), do: tmp_dir
+
+  @impl true
+  def workspace(%{workspace: workspace}), do: workspace
 
   # Wait for the killed command to finish so no stray messages reach the
   # caller later. If the client stops answering, give up and drop the monitor.

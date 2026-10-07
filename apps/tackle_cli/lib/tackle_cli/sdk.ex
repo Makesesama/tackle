@@ -9,7 +9,8 @@ defmodule Tackle.CLI.SDK do
 
   @spec run() :: non_neg_integer()
   def run do
-    with {:ok, catalog} <- Distribution.catalog() do
+    with {:ok, catalog} <- Distribution.catalog(),
+         {:ok, executor} <- Tackle.CLI.Jail.ensure_started() do
       adapters = Tackle.Plugins.Catalog.adapter_modules(catalog)
 
       # Standalone tools only: the subagent tools need a scoped runtime the
@@ -21,7 +22,7 @@ defmodule Tackle.CLI.SDK do
       case Tackle.SDK.run(
              adapters: adapters,
              tools: tools,
-             context: %{cwd: cwd()},
+             context: context(executor),
              llm_opts: [credential_store: Tackle.Auth.credential_store()]
            ) do
         :ok -> 0
@@ -37,6 +38,9 @@ defmodule Tackle.CLI.SDK do
     Application.get_env(:tackle_cli, :plugin_contributions, %{tools: [], adapters: [], hooks: []})
   end
 
+  defp context(nil), do: %{cwd: cwd()}
+  defp context(executor), do: %{cwd: cwd(), executor: executor}
+
   defp cwd do
     case File.cwd() do
       {:ok, cwd} -> cwd
@@ -45,7 +49,8 @@ defmodule Tackle.CLI.SDK do
   end
 
   defp error(reason) do
-    Owl.IO.puts(Owl.Data.tag("error: #{inspect(reason)}", :red), :stderr)
+    message = Tackle.CLI.Jail.format_error(reason) || inspect(reason)
+    Owl.IO.puts(Owl.Data.tag("error: #{message}", :red), :stderr)
     1
   end
 end

@@ -20,6 +20,7 @@ defmodule Tackle.Config do
   require Logger
 
   alias Tackle.Config.File, as: ConfigFile
+  alias Tackle.Executor
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
@@ -168,6 +169,7 @@ defmodule Tackle.Config do
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
          :ok <- validate_map(:context, Keyword.get(opts, :context, %{})),
+         :ok <- validate_executor(Keyword.get(opts, :context, %{})),
          :ok <- validate_iteration_limit(Keyword.get(opts, :max_iterations, :infinity)),
          :ok <- validate_keyword_option(:llm_opts, Keyword.get(opts, :llm_opts, [])),
          :ok <- validate_reserved_llm_options(Keyword.get(opts, :llm_opts, [])),
@@ -404,23 +406,25 @@ defmodule Tackle.Config do
 
   defp load_system_prompt(config, base, cwd, home, env) do
     context = Map.put(config.context, :cwd, cwd)
-    skills = discover_skills(cwd, env)
+    executor = Executor.from_context(context)
+    skills = discover_skills(cwd, env, executor)
 
     case SystemPrompt.build(
            base: base,
            cwd: cwd,
            home: home,
            tools: config.tools,
-           skills: skills
+           skills: skills,
+           executor: executor
          ) do
       {:ok, prompt} -> {:ok, %{config | context: context, system_prompt: prompt}}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp discover_skills(cwd, env) do
+  defp discover_skills(cwd, env, executor) do
     user_home = Map.get(env, "HOME") || Map.get(env, "USERPROFILE")
-    discovery = Tackle.Skills.discover(cwd: cwd, user_home: user_home)
+    discovery = Tackle.Skills.discover(cwd: cwd, user_home: user_home, executor: executor)
 
     Enum.each(discovery.warnings, fn %{path: path, message: message} ->
       Logger.warning("skipping or adjusting skill #{path}: #{message}")
@@ -591,6 +595,26 @@ defmodule Tackle.Config do
 
   defp validate_map(_name, value) when is_map(value), do: :ok
   defp validate_map(name, value), do: {:error, {:invalid_option, name, value}}
+
+  # Tools fall back to the local executor when `context.executor` is absent, so a
+  # malformed value must fail here rather than silently run unjailed.
+  defp validate_executor(%{executor: {module, _config}} = context) when is_atom(module) do
+    if executor_module?(module),
+      do: :ok,
+      else: {:error, {:invalid_option, :executor, context.executor}}
+  end
+
+  defp validate_executor(%{executor: executor}),
+    do: {:error, {:invalid_option, :executor, executor}}
+
+  defp validate_executor(_context), do: :ok
+
+  defp executor_module?(module) do
+    Code.ensure_loaded?(module) and
+      Enum.all?(Executor.behaviour_info(:callbacks), fn {name, arity} ->
+        function_exported?(module, name, arity)
+      end)
+  end
 
   defp validate_iteration_limit(:infinity), do: :ok
   defp validate_iteration_limit(value) when is_integer(value) and value > 0, do: :ok

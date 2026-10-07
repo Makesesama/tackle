@@ -14,6 +14,7 @@ defmodule Tackle.Exec.Protocol do
       {:write, id, %{path: binary, data: binary, mkdir_p: boolean, mode: :replace | :append | :create}}
       {:delete, id, %{path: binary}}
       {:stat, id, %{path: binary}}
+      {:list, id, %{path: binary}}
 
   ## Messages (jail to host)
 
@@ -84,6 +85,7 @@ defmodule Tackle.Exec.Protocol do
              }}
           | {:delete, id(), %{path: binary()}}
           | {:stat, id(), %{path: binary()}}
+          | {:list, id(), %{path: binary()}}
 
   @typedoc "Messages sent from the exec-server to the host."
   @type message ::
@@ -94,7 +96,7 @@ defmodule Tackle.Exec.Protocol do
           | {:error, id(), binary()}
 
   @typedoc "Operations that receive a single `:ok` or `:error` reply."
-  @type call_op :: :read | :write | :delete | :stat
+  @type call_op :: :read | :write | :delete | :stat | :list
 
   @doc "Returns the protocol version."
   @spec version() :: pos_integer()
@@ -175,6 +177,10 @@ defmodule Tackle.Exec.Protocol do
              size in 0..@max_file_size and is_integer(mode) and mode in 0..@max_mode,
       do: {:ok, result}
 
+  def parse_result(:list, _params, names) when is_list(names) do
+    if Enum.all?(names, &entry_name?/1), do: {:ok, names}, else: {:error, :invalid_result}
+  end
+
   def parse_result(_op, _params, _result), do: {:error, :invalid_result}
 
   @doc "Validates a request before sending it or after receiving it."
@@ -210,8 +216,9 @@ defmodule Tackle.Exec.Protocol do
   def parse_request({:delete, id, %{path: path} = params} = request) when map_size(params) == 1,
     do: if(id?(id) and path?(path), do: {:ok, request}, else: {:error, :invalid_request})
 
-  def parse_request({:stat, id, %{path: path} = params} = request) when map_size(params) == 1,
-    do: if(id?(id) and path?(path), do: {:ok, request}, else: {:error, :invalid_request})
+  def parse_request({op, id, %{path: path} = params} = request)
+      when op in [:stat, :list] and map_size(params) == 1,
+      do: if(id?(id) and path?(path), do: {:ok, request}, else: {:error, :invalid_request})
 
   def parse_request(_term), do: {:error, :invalid_request}
 
@@ -229,6 +236,13 @@ defmodule Tackle.Exec.Protocol do
   defp truncate(reason), do: binary_part(reason, 0, @max_error_bytes)
 
   defp id?(id), do: is_integer(id) and id > 0
+
+  # A directory entry is a single path component; anything else could make
+  # the host resolve a path outside the listed directory.
+  defp entry_name?(name) when is_binary(name) and name not in ["", ".", ".."],
+    do: not String.contains?(name, ["/", <<0>>])
+
+  defp entry_name?(_name), do: false
 
   defp argv?([_ | _] = argv), do: Enum.all?(argv, &arg?/1)
   defp argv?(_argv), do: false

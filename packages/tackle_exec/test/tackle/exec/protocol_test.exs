@@ -87,6 +87,17 @@ defmodule Tackle.Exec.ProtocolTest do
       assert {:error, :invalid_result} = Protocol.parse_result(:stat, %{}, fn -> :ok end)
     end
 
+    test "accepts only single path components in directory listings" do
+      assert {:ok, ["a", ".hidden", "b c"]} =
+               Protocol.parse_result(:list, %{}, ["a", ".hidden", "b c"])
+
+      assert {:ok, []} = Protocol.parse_result(:list, %{}, [])
+
+      for bad <- [["../x"], ["a/b"], [".."], ["."], [""], ["a\0"], [:a], "a"] do
+        assert {:error, :invalid_result} = Protocol.parse_result(:list, %{}, bad)
+      end
+    end
+
     test "rejects more data than requested and out-of-range integers" do
       assert {:error, :invalid_result} =
                Protocol.parse_result(:read, @read, %{data: "abcd", size: 4, eof: true})
@@ -117,7 +128,8 @@ defmodule Tackle.Exec.ProtocolTest do
             {:write, 1, %{path: "a", data: "", mkdir_p: false, mode: :append}},
             {:write, 1, %{path: "a", data: "", mkdir_p: false, mode: :create}},
             {:delete, 1, %{path: "a"}},
-            {:stat, 1, %{path: "a"}}
+            {:stat, 1, %{path: "a"}},
+            {:list, 1, %{path: "a"}}
           ] do
         assert {:ok, ^request} = Protocol.parse_request(request)
       end
@@ -148,7 +160,8 @@ defmodule Tackle.Exec.ProtocolTest do
             {:write, 1, %{path: "a", data: "", mkdir_p: true}},
             {:write, 1, %{path: "a", data: "", mkdir_p: true, mode: :truncate}},
             {:delete, 1, %{path: ""}},
-            {:stat, 1, %{path: "a\0"}}
+            {:stat, 1, %{path: "a\0"}},
+            {:list, 1, %{path: ""}}
           ] do
         assert {:error, :invalid_request} = Protocol.parse_request(request)
       end

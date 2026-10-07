@@ -20,9 +20,11 @@ defmodule Tackle.CLI.TUI.Composer do
 
   alias ExRatatui.Command
   alias ExRatatui.Event.Key
-  alias Tackle.CLI.TUI.{ClipboardPaste, History, Pastes, State, Tree, Viewport}
+  alias Tackle.CLI.ImageClipboard
+  alias Tackle.CLI.TUI.{History, Pastes, State, Tree, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
+  alias Tackle.{Executor, ProjectFiles}
 
   @doc """
   Applies a bracketed paste as one edit.
@@ -35,7 +37,7 @@ defmodule Tackle.CLI.TUI.Composer do
     content = content |> String.replace("\r\n", "\n") |> String.replace("\r", "")
 
     state =
-      case image_path_prompt(content) do
+      case image_path_prompt(state, content) do
         nil ->
           if Pastes.long_text?(content) do
             Pastes.insert(state, :text, content)
@@ -44,7 +46,7 @@ defmodule Tackle.CLI.TUI.Composer do
             state
           end
 
-        instruction ->
+        {state, instruction} ->
           Pastes.insert(state, :image, instruction)
       end
 
@@ -55,7 +57,7 @@ defmodule Tackle.CLI.TUI.Composer do
   @spec paste_image(State.t(), String.t()) :: State.t()
   def paste_image(%State{} = state, path) do
     state
-    |> Pastes.insert(:image, " Please use the read tool to inspect this image: #{path} ")
+    |> Pastes.insert(:image, image_instruction(path))
     |> settle_history()
     |> Viewport.update_draft()
     |> Viewport.relayout()
@@ -64,56 +66,70 @@ defmodule Tackle.CLI.TUI.Composer do
   # Some terminals paste images as file paths rather than clipboard bytes.
   # Only reinterpret a single existing, supported image path; arbitrary text
   # and multi-line pastes must keep their usual editing behavior.
-  defp image_path_prompt(content) do
+  @max_image_bytes 5 * 1024 * 1024
+
+  defp image_path_prompt(state, content) do
     path = String.trim(content)
 
-    if path != "" and not String.contains?(path, ["\n", "\r"]) and File.regular?(path) do
-      case File.stat(path) do
-        {:ok, %{size: size}} when size <= 5 * 1024 * 1024 ->
-          case File.read(path) do
-            {:ok, bytes} ->
-              case Tackle.CLI.ImageClipboard.image_extension(bytes) do
-                {:ok, _extension} ->
-                  " Please use the read tool to inspect this image: #{Path.expand(path)} "
+    if path != "" and not String.contains?(path, ["\n", "\r"]) do
+      path = Path.expand(path)
 
-                _ ->
-                  nil
-              end
-
-            _ ->
-              nil
-          end
-
-        _ ->
-          nil
-      end
+      if ProjectFiles.in_workspace?(ProjectFiles.new(executor: state.executor), path),
+        do: workspace_image(state, path),
+        else: host_image(state, path)
     end
   end
+
+  # Inside a jail's workspace the path is checked through the jail, which
+  # resolves symlinks in its own view, and passed on as it is. Reading it on
+  # the host could follow a symlink that jailed code planted to a host file.
+  defp workspace_image(state, path) do
+    with {:ok, %{type: :regular, size: size}} when size <= @max_image_bytes <-
+           Executor.stat(state.executor, path),
+         {:ok, %{data: head}} <- Executor.read(state.executor, path, 0, 16),
+         {:ok, _extension} <- ImageClipboard.image_extension(head) do
+      {state, image_instruction(path)}
+    else
+      _other -> nil
+    end
+  end
+
+  defp host_image(state, path) do
+    with true <- File.regular?(path),
+         {:ok, %{size: size}} when size <= @max_image_bytes <- File.stat(path),
+         {:ok, bytes} <- File.read(path),
+         {:ok, _extension} <- ImageClipboard.image_extension(bytes) do
+      image_reference(state, path, bytes)
+    else
+      _other -> nil
+    end
+  end
+
+  # The model opens images with its read tool, which runs through the
+  # session's executor. A jail sees only its workspace, so give it a staged
+  # copy instead of the host path.
+  defp image_reference(%State{executor: {Tackle.Executor.Local, _config}} = state, path, _bytes),
+    do: {state, image_instruction(path)}
+
+  defp image_reference(state, _path, bytes) do
+    case ImageClipboard.save(bytes, state.executor) do
+      {:ok, staged} ->
+        {%{state | image_paths: [staged | state.image_paths]}, image_instruction(staged)}
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  defp image_instruction(path), do: " Please use the read tool to inspect this image: #{path} "
 
   @doc "Pastes an image from the OS clipboard, or text when no image is available."
   @spec paste_clipboard(State.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
-  def paste_clipboard(%State{clipboard_paste_command: command} = state)
-      when is_binary(command) do
-    if state.clipboard_paste_pending do
-      {:noreply, %{state | notice: "Host clipboard paste already requested"}}
-    else
-      ref = make_ref()
-
-      {:noreply, %{state | clipboard_paste_pending: ref, notice: "Reading host clipboard…"},
-       commands: [
-         Command.async(
-           fn -> ClipboardPaste.request(command) end,
-           &{:host_clipboard_paste_result, ref, &1}
-         )
-       ]}
-    end
-  end
-
   def paste_clipboard(%State{} = state) do
     case state.clipboard_image_reader.() do
       {:ok, bytes} ->
-        case Tackle.CLI.ImageClipboard.save(bytes) do
+        case ImageClipboard.save(bytes, state.executor) do
           {:ok, path} ->
             {:noreply, paste_image(%{state | image_paths: [path | state.image_paths]}, path)}
 

@@ -52,9 +52,7 @@ also use the heuristic. Colors are selected for the launch environment; live
 terminal theme-change notifications and OSC background probing are not supported.
 Plain prose retains the terminal's default text/background colors; painted
 surfaces set both colors so an undetected light terminal still has readable text.
-The current jailed launchers do not forward these two environment variables;
-using the override through those launchers requires a separate jail configuration
-change.
+The jailed launchers run the CLI on the host, so these variables work there too.
 
 The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
 are compiled into it. It does not discover or load third-party plugins at
@@ -172,12 +170,15 @@ nix build .#tackle-cli
 ./result/bin/tackle --version
 ```
 
-On Linux, `nix build .#tackle-cli-jail` builds a separate Bubblewrap wrapper
-(`bin/tackle`)
-around this same production binary, with host-daemon Nix build support. See
-[production jailed package](../../README.md#production-jailed-package-on-linux)
-for permissions, requirements, and the credential-free host smoke test. The
-existing `jailed-tackle` command remains the development-checkout launcher.
+On Linux, `nix build .#tackle-cli-jail` builds a wrapper (`bin/tackle`) that
+runs this same production binary on the host and the agent's commands and
+workspace file access in a Bubblewrap jail, with host-daemon Nix build support.
+The wrapper sets `TACKLE_EXEC_LAUNCHER`; the CLI then starts the jailed
+exec-server on the first session and refuses to start sessions if the jail does
+not answer. See
+[jailed execution](../../README.md#jailed-execution-on-linux) for the jail
+policy, requirements, and the credential-free host smoke test. The
+`jailed-tackle` command is the development-checkout launcher.
 
 The release has two Rust NIFs: ExRatatui and Tackle's native widgets. The Nix
 package builds both from their locked sources with the target-specific Rust and
@@ -437,9 +438,10 @@ as `[text-1]`, with separate counters for each type. Enter expands the tokens
 before sending the full prompt to the agent. Smaller text pastes remain editable
 as ordinary text. Clipboard images need
 `wl-paste` (Wayland), `xclip` (X11), or `pngpaste` (macOS); text fallback on macOS
-uses `pbpaste`. The CLI saves clipboard images in a private temporary directory
+uses `pbpaste`. The CLI saves clipboard images as private (0600) temporary files
 until it exits and expands image tokens into paths with a request to use the
-`read` tool. Images
+`read` tool. When tools run in a jail, images are saved in the jail's `/tmp`,
+and a pasted image file path is copied there, so the agent can read them. Images
 are **not** directly attached to user messages; the agent must read the file,
 and those saved paths will not work after the CLI exits. Ctrl+U undoes and
 Ctrl+R redoes a full multiline paste. Undo and redo each retain at most 100

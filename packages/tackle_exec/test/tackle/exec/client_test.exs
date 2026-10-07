@@ -179,6 +179,16 @@ defmodule Tackle.Exec.ClientTest do
       assert {:ok, %{type: :directory}} = Client.stat(client, Path.dirname(path))
     end
 
+    test "lists directory entries", %{client: client, directory: dir} do
+      File.mkdir_p!(Path.join(dir, "sub"))
+      File.write!(Path.join(dir, "file"), "x")
+
+      assert {:ok, names} = Client.list(client, dir)
+      assert Enum.sort(names) == ["file", "sub"]
+      assert {:error, :enotdir} = Client.list(client, Path.join(dir, "file"))
+      assert {:error, :enoent} = Client.list(client, Path.join(dir, "missing"))
+    end
+
     test "returns POSIX errors as atoms", %{client: client, directory: dir} do
       assert {:error, :enoent} = Client.read(client, Path.join(dir, "missing"), 0, 1)
       assert {:error, :enoent} = Client.stat(client, Path.join(dir, "missing"))
@@ -265,6 +275,15 @@ defmodule Tackle.Exec.ClientTest do
       assert {:error, :exec_server_down} = Client.exec(client, ["true"], cwd: dir)
     end
 
+    test "starts the launcher in the requested directory", %{directory: dir} do
+      client = start_supervised!({Client, launcher: server_launcher(), cd: dir}, id: :cd)
+      assert {:ok, 0, output} = run(client, ["sh", "-c", "pwd"], cwd: dir)
+      assert output == dir <> "\n"
+
+      server_cwd = File.read_link!("/proc/#{:sys.get_state(client).os_pid}/cwd")
+      assert server_cwd == dir
+    end
+
     test "validates options" do
       Process.flag(:trap_exit, true)
 
@@ -273,7 +292,8 @@ defmodule Tackle.Exec.ClientTest do
             {[launcher: {"sh", [:bad]}], :launcher},
             {[launcher: server_launcher(), window: 0], :window},
             {[launcher: server_launcher(), max_frame: 100], :max_frame},
-            {[launcher: server_launcher(), keep_env: :all], :keep_env}
+            {[launcher: server_launcher(), keep_env: :all], :keep_env},
+            {[launcher: server_launcher(), cd: "/nonexistent-tackle-dir"], :cd}
           ] do
         assert {:error, {:shutdown, {:invalid_option, ^key}}} = Client.start_link(opts)
       end

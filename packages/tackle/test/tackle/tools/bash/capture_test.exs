@@ -77,7 +77,10 @@ defmodule Tackle.Tools.Bash.CaptureTest do
     defdelegate cancel(config, handle), to: Local
     defdelegate read(config, path, offset, length), to: Local
     defdelegate delete(config, path), to: Local
+    defdelegate stat(config, path), to: Local
+    defdelegate list(config, path), to: Local
     defdelegate tmp_dir(config), to: Local
+    defdelegate workspace(config), to: Local
 
     def write(config, path, data, opts) do
       if opts[:mode] == :append,

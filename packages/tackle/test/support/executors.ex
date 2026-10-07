@@ -20,7 +20,7 @@ defmodule Tackle.Test.Executors do
 
   def start_executor(%{executor_kind: :jailed}) do
     client = start_supervised!({Client, launcher: launcher()})
-    %{executor: Jailed.new(client, tmp_dir: System.tmp_dir!())}
+    %{executor: Jailed.new(client, workspace: "/", tmp_dir: System.tmp_dir!())}
   end
 
   # Keep the exec-server's standard error away from the test output, as a

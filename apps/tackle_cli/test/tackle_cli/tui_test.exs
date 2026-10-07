@@ -193,8 +193,6 @@ defmodule Tackle.CLI.TUITest do
          end,
          clipboard_image_reader: fn -> Agent.get(clipboard_agent, & &1) end,
          clipboard_text_reader: fn -> {:ok, "clipboard text"} end,
-         clipboard_paste_dir: nil,
-         clipboard_paste_command: nil,
          usage_timeline_loader: fn mode, session_id ->
            send(test_pid, {:usage_timeline_requested, mode, session_id})
            scope = if mode == :current, do: {:session, session_id}, else: :all
@@ -871,6 +869,69 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "enter")
     assert_receive {:submitted, prompt}
     assert prompt =~ "Please use the read tool to inspect this image: #{path}"
+  end
+
+  test "with a non-local executor, pasted images are staged where its tools can read them" do
+    staging =
+      Path.join(System.tmp_dir!(), "tackle-staging-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(staging)
+    on_exit(fn -> File.rm_rf!(staging) end)
+
+    image = <<137, 80, 78, 71, 13, 10, 26, 10, 0>>
+    host = Path.join(System.tmp_dir!(), "tackle-host-#{System.unique_integer([:positive])}.png")
+    File.write!(host, image)
+    on_exit(fn -> File.rm(host) end)
+
+    {id, tui} =
+      start_tui(
+        executor: Tackle.CLI.TestExecutor.new(staging),
+        clipboard_image_reader: fn -> {:ok, image} end
+      )
+
+    inject_key(tui, "v", ["ctrl"])
+    inject_paste(tui, host)
+    assert draft(tui) == "[image-1] [image-2]"
+
+    paths = state(tui).image_paths
+    assert length(paths) == 2
+    assert Enum.all?(paths, &(Path.dirname(&1) == staging and File.read!(&1) == image))
+
+    inject_key(tui, "enter")
+    assert_receive {:submitted, prompt}
+    refute prompt =~ host
+    assert Enum.all?(paths, &(prompt =~ &1))
+
+    stop_supervised!(id)
+    assert File.ls!(staging) == []
+  end
+
+  test "with a jail, an image path inside its workspace is checked through it, not staged" do
+    root = Path.join(System.tmp_dir!(), "tackle-ws-image-#{System.unique_integer([:positive])}")
+    staging = Path.join(root, "staging")
+    workspace = Path.join(root, "workspace")
+    File.mkdir_p!(staging)
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    image = Path.join(workspace, "shot.png")
+    File.write!(image, <<137, 80, 78, 71, 13, 10, 26, 10, 0>>)
+    not_image = Path.join(workspace, "notes.png")
+    File.write!(not_image, "plain text")
+
+    {_id, tui} = start_tui(executor: Tackle.CLI.TestExecutor.new(staging, workspace))
+
+    inject_paste(tui, not_image)
+    assert draft(tui) == not_image
+    inject_key(tui, "u", ["ctrl"])
+
+    inject_paste(tui, image)
+    assert draft(tui) == "[image-1]"
+    assert state(tui).image_paths == []
+    inject_key(tui, "enter")
+    assert_receive {:submitted, prompt}
+    assert prompt =~ "Please use the read tool to inspect this image: #{image}"
+    assert File.ls!(staging) == []
   end
 
   test "Ctrl+V pastes text when clipboard has no image", %{tui: tui} do
@@ -3109,6 +3170,31 @@ defmodule Tackle.CLI.TUITest do
 
     finish_turn(tui, [Message.user(prompt), Message.assistant(content: "ok")])
     await_state(tui, &is_nil(&1.active_turn))
+  end
+
+  # Starts an additional TUI with its own session stub and extra options.
+  defp start_tui(opts) do
+    test_pid = self()
+    agent_ref = AgentRef.new!(ID.generate(), ID.generate())
+    start_supervised!({SessionStub, {test_pid, agent_ref}}, id: make_ref())
+    id = make_ref()
+
+    tui =
+      start_supervised!(
+        {TUI,
+         [
+           agent_ref: agent_ref,
+           models: ["openai-codex/test-model"],
+           clipboard_writer: fn _content -> :ok end,
+           clipboard_text_reader: fn -> {:ok, ""} end,
+           name: nil,
+           test_mode: {80, 24}
+         ] ++ opts},
+        id: id
+      )
+
+    assert_receive {:subscribed, ^tui}
+    {id, tui}
   end
 
   defp draft(tui) do

@@ -80,10 +80,7 @@ defmodule Tackle.CLI.TUI.State do
           image_paths: [String.t()],
           paste_replacements: %{optional(String.t()) => String.t()},
           paste_counts: %{image: non_neg_integer(), text: non_neg_integer()},
-          clipboard_paste_dir: String.t() | nil,
-          clipboard_paste_command: String.t() | nil,
-          clipboard_paste_pending: reference() | nil,
-          clipboard_paste_last: String.t(),
+          executor: Tackle.Executor.t(),
           usage_timeline_loader: (:current | :all, String.t() | nil ->
                                     {:ok, term()} | {:error, term()}),
           usage_timeline_cache: map(),
@@ -149,10 +146,7 @@ defmodule Tackle.CLI.TUI.State do
             image_paths: [],
             paste_replacements: %{},
             paste_counts: %{image: 0, text: 0},
-            clipboard_paste_dir: nil,
-            clipboard_paste_command: nil,
-            clipboard_paste_pending: nil,
-            clipboard_paste_last: "",
+            executor: Tackle.Executor.local(),
             usage_timeline_loader: &__MODULE__.default_usage_timeline_loader/2,
             usage_timeline_cache: %{},
             overlay: nil,
@@ -223,14 +217,10 @@ defmodule Tackle.CLI.TUI.State do
           Keyword.get(opts, :clipboard_text_reader, &Tackle.CLI.ImageClipboard.read_text/0),
         clipboard_image_reader:
           Keyword.get(opts, :clipboard_image_reader, &Tackle.CLI.ImageClipboard.read/0),
-        clipboard_paste_dir:
-          Keyword.get(opts, :clipboard_paste_dir, System.get_env("TACKLE_CLIPBOARD_PASTE_DIR")),
-        clipboard_paste_command:
-          Keyword.get(
-            opts,
-            :clipboard_paste_command,
-            System.get_env("TACKLE_CLIPBOARD_PASTE_CMD")
-          ),
+        executor:
+          Keyword.get_lazy(opts, :executor, fn ->
+            Tackle.CLI.Jail.executor() || Tackle.Executor.local()
+          end),
         usage_timeline_loader:
           Keyword.get(opts, :usage_timeline_loader, &__MODULE__.default_usage_timeline_loader/2),
         stream: %Stream{coalesce?: is_nil(Keyword.get(opts, :test_mode))},

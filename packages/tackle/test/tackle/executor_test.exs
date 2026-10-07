@@ -167,8 +167,16 @@ defmodule Tackle.Executor.JailedTest do
   end
 
   test "tmp_dir is configurable" do
-    assert Executor.tmp_dir(Executor.Jailed.new(:client)) == "/tmp"
-    assert Executor.tmp_dir(Executor.Jailed.new(:client, tmp_dir: "/scratch")) == "/scratch"
+    assert Executor.tmp_dir(Executor.Jailed.new(:client, workspace: "/w")) == "/tmp"
+
+    assert Executor.tmp_dir(Executor.Jailed.new(:client, workspace: "/w", tmp_dir: "/scratch")) ==
+             "/scratch"
+  end
+
+  test "the workspace is required and reported" do
+    assert Executor.workspace(Executor.Jailed.new(:client, workspace: "/w/../work")) == "/work"
+    assert Executor.workspace(Executor.local()) == nil
+    assert_raise ArgumentError, fn -> Executor.Jailed.new(:client, []) end
   end
 
   test "format_reason covers POSIX, executor, and free-form reasons" do

@@ -95,6 +95,8 @@ defmodule Tackle.Exec.Client do
       in its mailbox (default 256 MiB). Exceeding it kills the client.
     * `:keep_env` - host environment variables passed to the launcher (default
       `["PATH", "LANG", "LC_ALL"]`). All others are unset.
+    * `:cd` - working directory of the launcher (default: the current
+      directory). Launchers typically mount it as the jailed workspace.
     * `:name` - optional process name.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -205,6 +207,12 @@ defmodule Tackle.Exec.Client do
     call(client, {:call, :stat, %{path: path}}, timeout)
   end
 
+  @doc "Lists the entry names of a directory inside the jail, following symlinks."
+  @spec list(GenServer.server(), String.t(), timeout()) :: {:ok, [String.t()]} | {:error, error()}
+  def list(client, path, timeout \\ @default_call_timeout) do
+    call(client, {:call, :list, %{path: path}}, timeout)
+  end
+
   defp call(client, request, timeout) do
     GenServer.call(client, request, timeout)
   catch
@@ -255,7 +263,8 @@ defmodule Tackle.Exec.Client do
       max_requests: Keyword.get(opts, :max_requests, @default_max_requests),
       handshake_timeout: Keyword.get(opts, :handshake_timeout, @default_handshake_timeout),
       max_heap_bytes: Keyword.get(opts, :max_heap_bytes, @default_max_heap_bytes),
-      keep_env: Keyword.get(opts, :keep_env, @default_keep_env)
+      keep_env: Keyword.get(opts, :keep_env, @default_keep_env),
+      cd: Keyword.get_lazy(opts, :cd, &File.cwd!/0)
     }
 
     integers = [:max_frame, :max_write, :window, :max_requests, :handshake_timeout]
@@ -276,6 +285,9 @@ defmodule Tackle.Exec.Client do
       not (is_list(config.keep_env) and Enum.all?(config.keep_env, &is_binary/1)) ->
         {:error, {:invalid_option, :keep_env}}
 
+      not (is_binary(config.cd) and File.dir?(config.cd)) ->
+        {:error, {:invalid_option, :cd}}
+
       true ->
         {:ok, config}
     end
@@ -288,7 +300,7 @@ defmodule Tackle.Exec.Client do
 
   defp positive_integer?(value), do: is_integer(value) and value > 0
 
-  defp open_launcher(%{launcher: {executable, args}, keep_env: keep_env}) do
+  defp open_launcher(%{launcher: {executable, args}, keep_env: keep_env, cd: cd}) do
     env =
       for {name, _value} <- System.get_env(), name not in keep_env do
         {String.to_charlist(name), false}
@@ -302,7 +314,8 @@ defmodule Tackle.Exec.Client do
         :use_stdio,
         :hide,
         {:args, args},
-        {:env, env}
+        {:env, env},
+        {:cd, cd}
       ])
 
     case Port.info(port, :os_pid) do

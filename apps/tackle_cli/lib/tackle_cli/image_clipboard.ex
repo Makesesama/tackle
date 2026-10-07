@@ -2,10 +2,13 @@ defmodule Tackle.CLI.ImageClipboard do
   @moduledoc """
   Reads a supported image from the OS clipboard and saves it for the CLI agent.
 
-  Images are deliberately represented in the prompt by a local path, not attached
-  to the submitted user message. The path is kept until the TUI exits so the
-  agent's `Tackle.Tools.Read` tool can open it during a later tool call.
+  Images are deliberately represented in the prompt by a path, not attached to
+  the submitted user message. They are saved through the session's executor so
+  the agent's `Tackle.Tools.Read` tool can open them, including inside a jail.
+  The file is kept until the TUI exits.
   """
+
+  alias Tackle.Executor
 
   @max_bytes 5 * 1024 * 1024
   @mime_types ["image/png", "image/jpeg", "image/gif", "image/webp"]
@@ -46,13 +49,15 @@ defmodule Tackle.CLI.ImageClipboard do
     end
   end
 
-  @doc "Validates image bytes and writes them under a private temporary directory."
-  @spec save(binary()) :: {:ok, String.t()} | {:error, term()}
-  def save(bytes) when is_binary(bytes) do
+  @doc """
+  Validates image bytes and writes them to a new owner-only file in the
+  executor's temporary directory.
+  """
+  @spec save(binary(), Executor.t()) :: {:ok, String.t()} | {:error, term()}
+  def save(bytes, executor \\ Executor.local()) when is_binary(bytes) do
     with :ok <- validate_size(bytes),
-         {:ok, extension} <- image_extension(bytes),
-         {:ok, path} <- write_private(bytes, extension) do
-      {:ok, path}
+         {:ok, extension} <- image_extension(bytes) do
+      write_private(executor, bytes, extension)
     end
   end
 
@@ -115,33 +120,14 @@ defmodule Tackle.CLI.ImageClipboard do
     error -> {:error, {:clipboard_command_failed, Exception.message(error)}}
   end
 
-  defp write_private(bytes, extension) do
-    directory =
-      Path.join(
-        System.tmp_dir!(),
-        "tackle-images-#{Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)}"
-      )
+  defp write_private(executor, bytes, extension) do
+    name =
+      "tackle-image-#{Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)}#{extension}"
 
-    with :ok <- File.mkdir(directory),
-         :ok <- File.chmod(directory, 0o700) do
-      path = Path.join(directory, "image#{extension}")
+    path = Path.join(Executor.tmp_dir(executor), name)
 
-      result =
-        with :ok <- File.write(path, bytes, [:exclusive, :binary]),
-             :ok <- File.chmod(path, 0o600) do
-          {:ok, path}
-        end
-
-      case result do
-        {:ok, _path} ->
-          result
-
-        {:error, reason} ->
-          File.rm(path)
-          File.rmdir(directory)
-          {:error, {:write_failed, reason}}
-      end
-    else
+    case Executor.write(executor, path, bytes, mode: :create) do
+      :ok -> {:ok, path}
       {:error, reason} -> {:error, {:write_failed, reason}}
     end
   end
