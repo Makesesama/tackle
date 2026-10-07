@@ -266,6 +266,30 @@ Persistent child conversations and reusable agents remain deferred. General
 runtime scopes and `Tackle.Tools.default/0` do not automatically gain subagent
 capability.
 
+### Scripted workflows (optional)
+
+The optional [`tackle_script`](../tackle_script/README.md) package adds
+`Tackle.Script.Tool`, a `run_script` tool whose argument is a sandboxed Lua
+workflow. A script drives the same delegated runs as `subagent`, so it inherits
+the scope's limits, admission rules, and cancellation:
+
+```elixir
+{:ok, spec} =
+  Tackle.Coding.scope_spec(
+    root_tools: [Tackle.Script.Tool],
+    overrides: [context: %{script_profiles: ["scout", "worker"]}]
+  )
+```
+
+`Tackle.Script.Tool` is not in `Tackle.Tools.default/0`; a host grants it as a
+root tool, exactly like any other trusted module. `:script_profiles` is host
+configuration that narrows the profiles a script may spawn — it can never widen
+what the scope allows — and without it the scope's own profiles decide. The tool
+then needs the same runtime handle and delegation grant as `subagent`, returns
+the script's returned values as its result, and cancels the script when the tool
+call ends. The harness itself only depends on `tackle_script` in its own test
+suite, which proves this wiring.
+
 ## Durable sessions
 
 A root scope can own one durable session journal. Add a

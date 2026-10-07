@@ -54,6 +54,286 @@ defmodule Tackle.ScriptTest do
     assert {:ok, ["first|second"]} = Script.await(ref, @script_timeout)
   end
 
+  test "a fan-out runs one agent per item and reports results in input order" do
+    scope = start_scope(profiles: %{"researcher" => agent_spec("researcher")})
+
+    script = """
+    local results = tackle.parallel({"alpha", "beta", "gamma"}, function(item, index)
+      return "researcher", index .. ":" .. item
+    end)
+    local out = {}
+    for i, result in ipairs(results) do
+      out[i] = result.index .. "/" .. result.status .. "/" .. result.text
+    end
+    return table.concat(out, " | ")
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+
+    assert {:ok, ["1/ok/1:alpha | 2/ok/2:beta | 3/ok/3:gamma"]} =
+             Script.await(ref, @script_timeout)
+  end
+
+  test "a fan-out defaults to the scope ceiling and reuses a freed slot" do
+    scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :manual)})
+
+    script = """
+    local results = tackle.parallel({"a", "b", "c", "d", "e"}, function(item, index)
+      return "worker", tostring(index)
+    end)
+    return #results
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+
+    # The default scope limits allow four children, so four runs may overlap.
+    called =
+      for _ <- 1..4 do
+        assert_receive {:agent_called, pid}, 2_000
+        pid
+      end
+
+    refute_receive {:agent_called, _fifth}, 150
+
+    [first | rest] = called
+    send(first, {:respond, "done"})
+    assert_receive {:agent_called, fifth}, 2_000
+
+    Enum.each(rest ++ [fifth], &send(&1, {:respond, "done"}))
+
+    assert {:ok, [5]} = Script.await(ref, @script_timeout)
+  end
+
+  test "a fan-out reuses the slot of any settled run, not only the oldest" do
+    scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :manual)})
+
+    script = """
+    local results = tackle.parallel({"a", "b", "c"}, function(item, index)
+      return "worker", tostring(index)
+    end, {limit = 2})
+    local statuses = {}
+    for i, result in ipairs(results) do statuses[i] = result.status end
+    return table.concat(statuses, ",")
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+
+    assert_receive {:agent_called, oldest}, 2_000
+    assert_receive {:agent_called, younger}, 2_000
+    refute_receive {:agent_called, _third}, 150
+
+    # The younger run settling is enough for the waiting item: the oldest is
+    # still working.
+    send(younger, {:respond, "younger"})
+    assert_receive {:agent_called, third}, 2_000
+    assert Process.alive?(oldest)
+
+    send(oldest, {:respond, "oldest"})
+    send(third, {:respond, "third"})
+
+    assert {:ok, ["ok,ok,ok"]} = Script.await(ref, @script_timeout)
+  end
+
+  test "a fan-out reports its item when the scope stays at capacity" do
+    limits = Runtime.Limits.new!(max_children_per_agent: 1, max_concurrent_turns: 8)
+
+    scope =
+      start_scope(
+        profiles: %{
+          "holder" => agent_spec("holder", mode: :block),
+          "worker" => agent_spec("worker")
+        },
+        limits: limits
+      )
+
+    # The holder occupies the scope's only child slot for the whole fan-out, so
+    # nothing the batch itself holds can free the capacity it needs.
+    script = """
+    local held = tackle.spawn("holder", "hold")
+    local results = tackle.parallel({"a"}, function(item) return "worker", item end)
+    tackle.cancel(held)
+    return results[1].status, results[1].text
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+
+    assert {:ok, [status, reason]} = Script.await(ref, @script_timeout)
+    assert status == "capacity"
+    assert reason =~ "max_children_per_agent"
+  end
+
+  test "a requested fan-out limit is clamped to the scope's own ceiling" do
+    limits = Runtime.Limits.new!(max_children_per_agent: 2, max_concurrent_turns: 8)
+
+    scope =
+      start_scope(
+        profiles: %{"worker" => agent_spec("worker", mode: :manual)},
+        limits: limits
+      )
+
+    script = """
+    local results = tackle.parallel({"a", "b", "c"}, function(item, index)
+      return "worker", tostring(index)
+    end, {limit = 5})
+    return #results
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+
+    assert_receive {:agent_called, first}, 2_000
+    assert_receive {:agent_called, second}, 2_000
+    refute_receive {:agent_called, _third}, 150
+
+    # Settling a run frees its child slot for the item still waiting, and the
+    # runtime's capacity refusal is waited out rather than reported.
+    send(first, {:respond, "one"})
+    assert_receive {:agent_called, third}, 2_000
+
+    send(second, {:respond, "two"})
+    send(third, {:respond, "three"})
+
+    assert {:ok, [3]} = Script.await(ref, @script_timeout)
+  end
+
+  test "a fan-out reports per-item failures instead of raising" do
+    scope =
+      start_scope(
+        profiles: %{
+          "worker" => agent_spec("worker", mode: :error),
+          "researcher" => agent_spec("researcher")
+        }
+      )
+
+    script = """
+    local results = tackle.parallel({"ok", "failed", "missing", "raised", "not a request"}, function(item)
+      if item == "failed" then return "worker", "go" end
+      if item == "missing" then return "nope", "go" end
+      if item == "raised" then error("callback exploded") end
+      if item == "not a request" then return {"profile"} end
+      return "researcher", "ask:" .. item
+    end)
+    local out = {}
+    for i, result in ipairs(results) do
+      out[i] = result.index .. "/" .. tostring(result.ok) .. "/" .. result.status
+    end
+    return table.concat(out, " | "), results[4].text, results[5].text
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+
+    assert {:ok, [summary, callback_error, bad_request]} = Script.await(ref, @script_timeout)
+
+    assert summary ==
+             "1/true/ok | 2/false/error | 3/false/spawn_error | 4/false/callback_error | " <>
+               "5/false/callback_error"
+
+    assert callback_error =~ "callback exploded"
+    assert bad_request =~ "expected two strings (profile, prompt), got (table)"
+  end
+
+  test "a fan-out hands each item to the callback untouched" do
+    scope = start_scope(profiles: %{"researcher" => agent_spec("researcher")})
+
+    script = """
+    local items = {{name = "alpha"}, {name = "beta"}}
+    local identity = 0
+    local results = tackle.parallel(items, function(item, index)
+      if item == items[index] then identity = identity + 1 end
+      return "researcher", item.name
+    end)
+    return identity, results[1].text, results[2].text
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, [2, "alpha", "beta"]} = Script.await(ref, @script_timeout)
+  end
+
+  test "an empty item sequence runs nothing and returns no results" do
+    scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :manual)})
+
+    script = """
+    local results = tackle.parallel({}, function(item) return "worker", item end)
+    return #results
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, [0]} = Script.await(ref, @script_timeout)
+    refute_received {:agent_called, _pid}
+  end
+
+  test "invalid fan-out arguments raise catchable Lua errors" do
+    scope = start_scope(profiles: %{})
+
+    script = """
+    local function rejects(fn)
+      local ok, err = pcall(fn)
+      if ok then return "accepted" end
+      return tostring(err)
+    end
+
+    local request = function() return "profile", "prompt" end
+
+    return rejects(function() tackle.parallel({alpha = 1}, request) end),
+           rejects(function() tackle.parallel({alpha = 1, "item"}, request) end),
+           rejects(function() tackle.parallel({[1] = "a", [3] = "c"}, request) end),
+           rejects(function() tackle.parallel("alpha", request) end),
+           rejects(function() tackle.parallel({"alpha"}, "not a function") end),
+           rejects(function() tackle.parallel({"alpha"}, request, {limit = 0}) end),
+           rejects(function() tackle.parallel({"alpha"}, request, {limits = 2}) end)
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+
+    assert {:ok, [keyed, mixed, holey, not_a_table, not_a_function, bad_limit, unknown_option]} =
+             Script.await(ref, @script_timeout)
+
+    assert keyed =~ "1..n sequence table"
+    assert mixed =~ "1..n sequence table"
+    assert holey =~ "1..n sequence table"
+    assert not_a_table =~ "1..n sequence table"
+    assert not_a_function =~ "requires a function"
+    assert bad_limit =~ "positive integer"
+    assert unknown_option =~ "unknown tackle.parallel options"
+  end
+
+  test "a nested fan-out inside a callback leaves the outer batch intact" do
+    scope = start_scope(profiles: %{"worker" => agent_spec("worker")})
+
+    script = """
+    local results = tackle.parallel({"a", "b"}, function(item)
+      if item == "a" then
+        local nested = tackle.parallel({"x"}, function() return "worker", "nested" end)
+        return "worker", "a:" .. nested[1].text
+      end
+      return "worker", "b:" .. item
+    end)
+    return results[1].status, results[1].text, results[2].status, results[2].text
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ["ok", "a:nested", "ok", "b:b"]} = Script.await(ref, @script_timeout)
+  end
+
+  test "cancelling a script cancels every run a fan-out started" do
+    scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :manual)})
+
+    script = """
+    return #tackle.parallel({"a", "b"}, function(item)
+      return "worker", item
+    end, {limit = 2})
+    """
+
+    assert {:ok, ref} = Script.run(handle(scope), script)
+
+    assert_receive {:agent_called, first}, 2_000
+    assert_receive {:agent_called, second}, 2_000
+
+    assert :ok = Script.cancel(ref, :user_cancelled)
+    assert {:error, {:cancelled, :user_cancelled}} = Script.await(ref, @script_timeout)
+
+    assert_eventually(fn -> not Process.alive?(first) and not Process.alive?(second) end)
+  end
+
   test "failed runs return outcome tables so scripts own the failure policy" do
     scope =
       start_scope(

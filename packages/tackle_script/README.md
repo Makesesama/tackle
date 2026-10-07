@@ -30,6 +30,8 @@ Scripts call the `tackle` table (`Tackle.Script.API`):
 * `tackle.await(run)` — blocks the script until the run settles and returns
   `{ok, status, text}`; expected failures are returned, never raised, so the
   script owns the failure policy;
+* `tackle.parallel(items, fn, opts)` — bounded fan-out: one delegated run per
+  item, at most `limit` in flight, one result table per item in input order;
 * `tackle.cancel(run, reason)` — cooperative cancellation of one run;
 * `tackle.log(message)` — progress reporting to the host's log callback.
 
@@ -49,8 +51,47 @@ end
 return review.text
 ```
 
-Fan-out is sequential Lua with overlapping runs, because `spawn` returns
-before the agent finishes:
+Fan-out is bounded and explicit. `tackle.parallel/2,3` calls a callback once
+per item and asks it for that item's `profile, prompt`:
+
+```lua
+local answers = tackle.parallel(pull_requests, function(pull, index)
+  return "reviewer", index .. ". Review " .. pull.title
+end, {limit = 3})
+
+for _, answer in ipairs(answers) do
+  if answer.ok then
+    tackle.log(answer.text)
+  end
+end
+```
+
+* At most `limit` runs are in flight, and a settled run hands its slot to the
+  next item immediately, so a slow run does not idle the whole fan-out.
+* `items` must be a sequence table numbered 1..n with no holes and no other
+  keys.
+* The limit defaults to the scope's concurrency ceiling — the smaller of its
+  `max_children_per_agent` and `max_concurrent_turns` limits — and is clamped
+  to it: a script cannot widen its own concurrency by asking for more.
+* Every item produces exactly one table in input order —
+  `{index = 2, ok = true, status = "ok", text = "..."}`. `status` is the run's
+  outcome status, or `"callback_error"` when the callback raised or returned
+  something other than two strings, `"spawn_error"` when the runtime refused
+  the spawn on policy (an unknown profile, a spawn-depth limit, delegation
+  not allowed), `"capacity"` when the scope stayed at its concurrency limit
+  for as long as the fan-out is willing to wait, and `"unavailable"` when a
+  settled run's outcome could not be collected.
+* The runtime refuses rather than queues at capacity, so a refusal is not
+  final: the fan-out waits briefly for a slot released a moment after its
+  settlement (or for one of its own runs to settle in the meantime) and retries.
+  It reports `"capacity"` only after roughly 250 ms without progress, so a
+  `"capacity"` item may well succeed in a later call.
+* Item failures are returned, never raised, and runs are never retried: a
+  retried agent run is a second paid model call that may answer differently.
+  The script decides what to do with a failed item.
+
+Overlapping spawns remain available directly when the script needs finer
+control:
 
 ```lua
 local a = tackle.spawn("researcher", "Topic A")
@@ -73,6 +114,51 @@ returns a stable `Tackle.Script.Ref`. `await/2` waits for the settled result:
 script errors, cancellation, and timeouts. `cancel/2` stops the script and
 its runs. Stopping the scope tears everything down.
 
+Two options narrow a script beyond its parent's grants. `:profiles` is an
+explicit allowlist of the profile names the script may spawn; without it, the
+scope's own trusted profiles decide. `:owner` is a PID whose lifetime the
+script shares, so a request that goes away does not leave delegated runs
+behind:
+
+```elixir
+{:ok, ref} =
+  Tackle.Script.run(handle, script,
+    profiles: ["scout", "worker"],
+    owner: task_pid
+  )
+```
+
+## Running a script from an agent
+
+`Tackle.Script.Tool` is the model-facing surface of the same runner: an opt-in
+`Tackle.Lib.Tool` named `run_script` that an agent calls with Lua source. The
+host grants it like any other trusted tool and, optionally, narrows the
+profiles scripts may spawn:
+
+```elixir
+{:ok, spec} =
+  Tackle.Coding.scope_spec(
+    root_tools: [Tackle.Script.Tool],
+    overrides: [context: %{script_profiles: ["scout", "worker"]}]
+  )
+```
+
+* The tool needs the same runtime handle and delegation grant as the `subagent`
+  tool; without either it returns a model-facing refusal instead of running.
+* `:script_profiles` is *host* configuration, never script input, and it can
+  only narrow what the scope already allows. Model-visible data can therefore
+  never widen delegation. Without it, the scope's trusted profiles decide — the
+  same set `subagent` can already name.
+* The values the script returns are the tool result; script errors, rejected
+  spawns, cancellations, and deadline timeouts are returned as readable
+  messages the agent can act on.
+* The tool call owns the script: the script is cancelled when the call ends
+  (including a cancelled turn, where the harness runs the tool body in its own
+  supervised process) and when it exceeds the session's `workflow_timeout`.
+* Script-spawned runs are not yet reported as `subagent_*` progress events, so a
+  long script is opaque to a frontend beyond its tool call; `tackle.log/1` falls
+  back to the host's `Logger`.
+
 ## Guarantees
 
 * **Sandboxed.** The pure-Elixir Lua 5.3 VM runs with the default sandbox: no
@@ -80,18 +166,26 @@ its runs. Stopping the scope tears everything down.
   deterministic instruction budget (default 1,000,000 VM instructions,
   overridable) stops spin loops that never await.
 * **Bounded.** The script runs under an absolute deadline (default: the
-  parent's `workflow_timeout` limit). Cancellation kills the script process
-  tree; the runtime cancels every run the script owns, however the script
-  ends.
+  parent's `workflow_timeout` limit). `tackle.parallel/3` keeps at most the
+  scope's concurrency ceiling in flight, clamped to the requested `limit`.
+  Cancellation kills the script process tree; the runtime cancels every run
+  the script owns, however the script ends.
 * **Authorized.** A script may only delegate as far as its parent may: the
   runner builds its handle from the parent agent's effective grants, exactly
-  like `Tackle.Runtime.start_workflow/4`.
-* **Fail-fast with policy hooks.** Rejected spawns raise catchable Lua
-  errors with source lines (`pcall`), while settled failures arrive as
-  outcome tables the script can branch on.
+  like `Tackle.Runtime.start_workflow/4`. An explicit `:profiles` allowlist can
+  only narrow that further, so a host can hand out scripted delegation without
+  handing out every profile the session has.
+* **Fail-fast with policy hooks.** Argument errors and rejected spawns raise
+  catchable Lua errors with source lines (`pcall`), while settled failures
+  arrive as outcome tables the script can branch on. `tackle.parallel` is the
+  one exception: argument errors raise, but a spawn the runtime refuses is
+  reported on the item it belongs to.
 
 ## Placement
 
-This package is optional; nothing in the harness, CLI, or web app depends on
-it. Hosts that want scripted flows add `:tackle_script` and call
-`Tackle.Script.run/3` with a handle from their own runtime integration.
+This package is optional; nothing in the harness, CLI, or web app depends on it
+at runtime. (The harness's own test suite has a test-only dependency, to prove
+that a real session can grant and run this tool.) Hosts that want scripted flows
+add `:tackle_script` and either call `Tackle.Script.run/3` with a handle from
+their own runtime integration, or grant `Tackle.Script.Tool` to a session's root
+agent.

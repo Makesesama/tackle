@@ -13,6 +13,11 @@ defmodule Tackle.Script.Server do
   cancellation stay responsive while the script is mid-flight. Delegated runs
   are requested by the worker, so the runtime cancels them automatically when
   the worker dies; a script therefore owns every run it spawns.
+
+  The server also owns the host's `:profiles` allowlist and optional `:owner`.
+  The allowlist travels to the API as script runtime context, where it bounds
+  every spawn. A terminated owner cancels the script exactly like a script
+  deadline would, so a script never outlives the request that started it.
   """
 
   use GenServer, restart: :temporary
@@ -30,6 +35,8 @@ defmodule Tackle.Script.Server do
           required(:script_ref) => Ref.t(),
           required(:handle) => Handle.t(),
           required(:script) => String.t(),
+          optional(:profiles) => [String.t()] | nil,
+          optional(:owner) => pid() | nil,
           optional(:timeout) => timeout(),
           optional(:max_instructions) => pos_integer() | :infinity,
           optional(:log) => (String.t() -> any()) | nil
@@ -73,6 +80,8 @@ defmodule Tackle.Script.Server do
       script_ref: arg.script_ref,
       handle: arg.handle,
       script: arg.script,
+      profiles: Map.get(arg, :profiles),
+      owner_monitor: monitor_owner(Map.get(arg, :owner)),
       timeout: Map.get(arg, :timeout, :infinity),
       max_instructions: Map.get(arg, :max_instructions) || @default_max_instructions,
       log: Map.get(arg, :log),
@@ -91,7 +100,10 @@ defmodule Tackle.Script.Server do
   @impl true
   def handle_continue(:start_worker, state) do
     server = self()
-    arg = Map.take(state, [:handle, :script, :max_instructions]) |> Map.put(:server, server)
+
+    arg =
+      Map.take(state, [:handle, :script, :profiles, :max_instructions])
+      |> Map.put(:server, server)
 
     worker =
       spawn_link(fn ->
@@ -129,6 +141,11 @@ defmodule Tackle.Script.Server do
     Process.send_after(self(), {:script_worker_down, reason}, 0)
     {:noreply, state}
   end
+
+  # A terminated owner means the request that started this script is gone, so
+  # the script and the runs it owns go with it.
+  def handle_info({:DOWN, monitor, :process, _pid, reason}, %{owner_monitor: monitor} = state),
+    do: {:noreply, cancel_script(state, {:owner_terminated, reason})}
 
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
     case Map.pop(state.awaiters, monitor) do
@@ -171,7 +188,11 @@ defmodule Tackle.Script.Server do
 
     lua =
       Lua.new(lua_opts)
-      |> Lua.put_private(:tackle_script, %{handle: arg.handle, server: arg.server})
+      |> Lua.put_private(:tackle_script, %{
+        handle: arg.handle,
+        server: arg.server,
+        profiles: Map.get(arg, :profiles)
+      })
       |> Lua.load_api(Script.API)
 
     {results, _lua} = Lua.eval!(lua, arg.script, source: "script")
@@ -190,6 +211,9 @@ defmodule Tackle.Script.Server do
   end
 
   # Lifecycle ----------------------------------------------------------------------
+
+  defp monitor_owner(nil), do: nil
+  defp monitor_owner(pid) when is_pid(pid), do: Process.monitor(pid)
 
   defp cancel_script(%{result: result} = state, _reason) when not is_nil(result), do: state
 
