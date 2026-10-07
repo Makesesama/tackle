@@ -3,6 +3,7 @@ mod conversation;
 mod diff;
 mod input;
 mod markdown;
+mod markdown_table;
 mod selection;
 mod subagents;
 mod surface;

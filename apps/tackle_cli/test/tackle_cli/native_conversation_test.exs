@@ -264,6 +264,57 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
     refute paint(model) =~ "\e"
   end
 
+  test "wide markdown tables reflow to the viewport instead of breaking their frame" do
+    style = Widget.style(%ExRatatui.Style{})
+
+    source =
+      "| Module | Role |\n|---|---|\n| Theme | The single source of truth |\n| Highlight | Adapter |"
+
+    {cell, _} = Native.conversation_markdown(source, 30, style, markdown_styles())
+    {native, _} = Native.conversation_new([cell], 30)
+    {:ok, rows} = Native.conversation_render(native, 30, 8, 0, [], style)
+    painted = for row <- rows, into: [], do: for({text, _, _, _, _} <- row, into: "", do: text)
+
+    assert painted == [
+             "┌───────────┬────────────────┐",
+             "│ Module    │ Role           │",
+             "├───────────┼────────────────┤",
+             "│ Theme     │ The single     │",
+             "│           │ source of      │",
+             "│           │ truth          │",
+             "│ Highlight │ Adapter        │",
+             "└───────────┴────────────────┘"
+           ]
+  end
+
+  test "conversation tables keep an intact frame inside the widget viewport" do
+    source = "| Module | Role |\n|---|---|\n| Theme | The single source of truth |"
+
+    model =
+      Conversation.new(%Rect{width: 30, height: 20})
+      |> Conversation.refresh(projection([Message.assistant(content: source)]))
+
+    rows = String.split(paint(model), "\n")
+    assert Enum.all?(rows, &(String.length(&1) <= 30))
+
+    # Every table row keeps the same vertical border columns: the frame was
+    # re-laid out, not wrapped mid-border.
+    table_rows = Enum.filter(rows, &String.contains?(&1, "│"))
+
+    borders =
+      MapSet.new(table_rows, fn row ->
+        row
+        |> String.graphemes()
+        |> Enum.with_index()
+        |> Enum.filter(fn {glyph, _} -> glyph == "│" end)
+        |> Enum.map(fn {_glyph, index} -> index end)
+        |> MapSet.new()
+      end)
+
+    assert MapSet.size(borders) == 1
+    assert Enum.any?(rows, &String.contains?(&1, "└"))
+  end
+
   defp markdown_styles do
     Map.new(Theme.markdown_styles(), fn {element, style} -> {element, Widget.style(style)} end)
   end

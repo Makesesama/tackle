@@ -31,8 +31,10 @@ struct MeasuredLine {
 impl HistoryCell {
     pub fn markdown(source: &str, width: u16, style: Style, styles: &ThemeMarkdown) -> Self {
         let options = tui_markdown::Options::new(styles.clone());
+        let source = sanitize(source);
+        let text = tui_markdown::from_str_with_options(&source, &options);
         Self::new(
-            tui_markdown::from_str_with_options(&sanitize(source), &options),
+            crate::markdown_table::fit(text, width, styles),
             width,
             style,
             true,
@@ -52,28 +54,25 @@ impl HistoryCell {
         let width = width.max(1);
         let gutter = if width >= 6 { 3 } else { 0 };
         let right_padding = if width >= 6 { 2 } else { 0 };
+        let content_width = width - gutter - right_padding;
         let source = sanitize(source);
         let text = if markdown {
             let options = tui_markdown::Options::new(styles.clone());
-            tui_markdown::from_str_with_options(&source, &options)
+            let text = tui_markdown::from_str_with_options(&source, &options);
+            crate::markdown_table::fit(text, content_width, styles)
         } else {
             Text::from(source.split('\n').map(Line::from).collect::<Vec<_>>())
         };
-        let mut cell = Self::new(text, width - gutter - right_padding, style, markdown);
+        let mut cell = Self::new(text, content_width, style, markdown);
         // Plain prompts preserve indentation and explicit newlines, but still
         // wrap by grapheme instead of clipping at the content edge.
         if !markdown {
             let rows: Vec<_> = cell
                 .lines
                 .into_iter()
-                .flat_map(|line| grapheme_wrap(line.line, width - gutter - right_padding))
+                .flat_map(|line| grapheme_wrap(line.line, content_width))
                 .collect();
-            cell = Self::new(
-                Text::from(rows),
-                width - gutter - right_padding,
-                style,
-                false,
-            );
+            cell = Self::new(Text::from(rows), content_width, style, false);
         }
         cell.width = width;
         cell.gutter = gutter;
@@ -553,6 +552,43 @@ mod tests {
                 &styles(),
             );
             assert_eq!(a.height(), b.height());
+        }
+    }
+
+    #[test]
+    fn markdown_tables_reflow_to_the_viewport_instead_of_wrapping_the_frame() {
+        let source = "| Module | Role |\n|---|---|\n| Theme | The single source of truth |";
+        let cell = Arc::new(HistoryCell::markdown(
+            source,
+            30,
+            Style::default(),
+            &styles(),
+        ));
+        let conversation = Conversation::new(vec![cell]);
+        let buffer = paint(&conversation, 30, conversation.height as u16, 0);
+        let rows: Vec<String> = buffer
+            .content
+            .chunks(30)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "┌────────┬───────────────────┐",
+                "│ Module │ Role              │",
+                "├────────┼───────────────────┤",
+                "│ Theme  │ The single source │",
+                "│        │ of truth          │",
+                "└────────┴───────────────────┘",
+            ]
+        );
+        // Reflowed tables are ordinary measured lines: every clipped window
+        // paints exactly the same cells as the full paint.
+        for offset in 0..conversation.height {
+            let clipped = paint(&conversation, 30, 1, offset);
+            for x in 0..30 {
+                assert_eq!(clipped[(x + 2, 3)], buffer[(x + 2, 3 + offset as u16)]);
+            }
         }
     }
 
