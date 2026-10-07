@@ -35,6 +35,19 @@ defmodule Tackle.CLI.TUI.Util do
   end
 
   @doc """
+  Floors a byte offset to the nearest preceding character boundary.
+
+  Caret offsets come from the native input widget; this keeps a host-computed
+  range from ever splitting a grapheme.
+  """
+  @spec floor_boundary(String.t(), non_neg_integer()) :: non_neg_integer()
+  def floor_boundary(text, position) do
+    if String.valid?(binary_part(text, 0, position)),
+      do: position,
+      else: floor_boundary(text, position - 1)
+  end
+
+  @doc """
   Copies `text` through the shell's clipboard writer.
 
   Returns the success notice when the native clipboard accepted the text, a

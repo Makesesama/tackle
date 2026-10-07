@@ -34,6 +34,7 @@ defmodule Tackle.CLI.TUI.View do
     MessageView,
     Resume,
     Search,
+    SlashCommands,
     State,
     StatusView,
     Subagents,
@@ -218,10 +219,13 @@ defmodule Tackle.CLI.TUI.View do
 
   defp overlay_widgets(%State{overlay: nil}, _composer, _width, _height), do: []
 
-  # The file-mention popup floats directly above the input bar instead of
-  # covering the conversation, so it keeps its own rectangle.
+  # The file-mention and command popups float directly above the input bar
+  # instead of covering the conversation, so they keep their own rectangles.
   defp overlay_widgets(%State{overlay: {:file_search, _}} = state, composer, _width, _height),
     do: FileSearch.widgets(state, composer)
+
+  defp overlay_widgets(%State{overlay: {:slash_commands, _}} = state, composer, _width, _height),
+    do: SlashCommands.widgets(state, composer)
 
   defp overlay_widgets(state, _composer, width, height) do
     [{overlay_widget(state), %Rect{x: 0, y: 0, width: width, height: height}}]

@@ -7,7 +7,7 @@ defmodule Tackle.CLI.FileSearchTest do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.{Block, List}
   alias Tackle.CLI.{Keybinds, TUI}
-  alias Tackle.CLI.TUI.{FileSearch, Viewport}
+  alias Tackle.CLI.TUI.{FileSearch, Theme, Viewport}
   alias Tackle.CLI.TUI.State, as: TuiState
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.State, as: LibState
@@ -273,12 +273,18 @@ defmodule Tackle.CLI.FileSearchTest do
     state = synced(draft: "@lib")
     composer = %Rect{x: 2, y: 20, width: 76, height: 3}
 
-    [{%Block{} = block, rect}, {%List{} = list, inner}] = FileSearch.widgets(state, composer)
+    [{%ExRatatui.Widgets.Clear{}, %Rect{}}, {%Block{} = block, rect}, {%List{} = list, inner}] =
+      FileSearch.widgets(state, composer)
 
     assert rect.x == 2
     assert rect.y + rect.height == composer.y
     assert rect.width == composer.width
     assert block.title =~ "Files"
+
+    # The popup floats over live transcript rows, so its panel must fill an
+    # opaque background or the text behind bleeds through the completion.
+    assert block.style == Theme.style(:surface_raised)
+
     assert list.items == ["lib/tackle_cli.ex", "lib/tackle_cli/tui.ex"]
     assert inner.x == rect.x + 1
     assert inner.width == rect.width - 2
@@ -294,17 +300,17 @@ defmodule Tackle.CLI.FileSearchTest do
     {state, _commands} = FileSearch.sync(state)
 
     assert [{%ExRatatui.Widgets.Paragraph{text: " Searching files…"}, %Rect{}}] =
-             tl(FileSearch.widgets(state, composer))
+             [Enum.at(FileSearch.widgets(state, composer), -1)]
 
     state = synced(draft: "@")
 
     assert [{%ExRatatui.Widgets.Paragraph{text: " Type to search files…"}, %Rect{}}] =
-             tl(FileSearch.widgets(state, composer))
+             [Enum.at(FileSearch.widgets(state, composer), -1)]
 
     state = synced(draft: "@zzz")
 
     assert [{%ExRatatui.Widgets.Paragraph{text: " No files match"}, %Rect{}}] =
-             tl(FileSearch.widgets(state, composer))
+             [Enum.at(FileSearch.widgets(state, composer), -1)]
   end
 
   # -- end-to-end key wiring -------------------------------------------------

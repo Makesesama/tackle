@@ -19,6 +19,13 @@ defmodule Tackle.CLI.TUI do
       selected file's full workspace-relative path in place of the token, and
       Esc dismisses it for that token. The workspace index is built once,
       asynchronously, with a bounded walk.
+    * **The `/` command popup** floats above the composer while the caret is
+      inside the leading `/name` fragment, listing the registered commands
+      with their descriptions. Typing refines the query, `↑`/`↓` (or
+      Ctrl+P/N) move the selection, Tab completes the selected name into the
+      draft, Enter runs the selected command, and Esc dismisses it for that
+      fragment. One registry backs both the popup and submission, so what the
+      popup offers is exactly what a submitted `/name` runs.
     * **The transcript browser** (`F4`) is a focus mode rather than an overlay.
       There is no popup, the composer stops accepting text, and the arrows move
       a highlighted entry so it can be copied (`y`, `a`) or inspected (`Enter`).
@@ -62,6 +69,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Menu` | model, reasoning, and settings pickers |
   | `Tackle.CLI.TUI.Tree` | the `/tree` conversation picker and navigation |
   | `Tackle.CLI.TUI.FileSearch` | the `@` file-mention popup and workspace index |
+  | `Tackle.CLI.TUI.SlashCommands` | the `/` command registry, popup, and dispatch |
   | `Tackle.CLI.TUI.UsageChart` | durable usage loading, bucketing, and chart popup |
   | `Tackle.CLI.TUI.Search` | transcript search |
   | `Tackle.CLI.TUI.Inspector` | the scrollable tool-output inspector |
@@ -95,6 +103,7 @@ defmodule Tackle.CLI.TUI do
     RecentSessions,
     Search,
     Session,
+    SlashCommands,
     State,
     Subagents,
     TerminalBackground,
@@ -206,12 +215,12 @@ defmodule Tackle.CLI.TUI do
   def handle_event(%Key{} = key, state) do
     key
     |> dispatch_key(%{state | notice: nil, queue_notice_at: nil})
-    |> sync_file_search()
+    |> sync_completions()
     |> refresh_terminal_title()
   end
 
   def handle_event(%Paste{content: content}, state) do
-    {updated, commands} = state |> handle_paste(content) |> FileSearch.sync()
+    {updated, commands, _changed?} = state |> handle_paste(content) |> sync_popups()
 
     if commands == [],
       do: {:noreply, updated},
@@ -294,27 +303,39 @@ defmodule Tackle.CLI.TUI do
 
   defp refresh_terminal_title(other), do: other
 
-  # Every key event ends here, so the `@` file-mention popup follows the draft
-  # no matter which chord edited it. A popup appearing or disappearing must
-  # repaint even when the edit itself did not.
-  defp sync_file_search({:noreply, %State{} = state, opts}) when is_list(opts) do
-    {updated, commands} = FileSearch.sync(state)
+  # Every key event ends here, so the `@` file-mention and `/` command popups
+  # follow the draft no matter which chord edited it. A popup appearing or
+  # disappearing must repaint even when the edit itself did not.
+  defp sync_completions({:noreply, %State{} = state, opts}) when is_list(opts) do
+    {updated, commands, changed?} = sync_popups(state)
 
     opts = Keyword.merge(opts, commands: commands ++ Keyword.get(opts, :commands, []))
-    opts = if updated.overlay != state.overlay, do: Keyword.put(opts, :render?, true), else: opts
+    opts = if changed?, do: Keyword.put(opts, :render?, true), else: opts
 
     {:noreply, updated, opts}
   end
 
-  defp sync_file_search({:noreply, %State{} = state}) do
-    {updated, commands} = FileSearch.sync(state)
+  defp sync_completions({:noreply, %State{} = state}) do
+    {updated, commands, _changed?} = sync_popups(state)
 
     if commands == [],
       do: {:noreply, updated},
       else: {:noreply, updated, commands: commands}
   end
 
-  defp sync_file_search(other), do: other
+  defp sync_completions(other), do: other
+
+  # The two inline completions are disjoint by construction — a leading
+  # `/name` fragment is never an `@token` — and each sync leaves a foreign
+  # overlay untouched, so they can run in sequence over the same draft.
+  defp sync_popups(%State{} = state) do
+    before = state.overlay
+
+    {state, file_commands} = FileSearch.sync(state)
+    {state, slash_commands} = SlashCommands.sync(state)
+
+    {state, file_commands ++ slash_commands, state.overlay != before}
+  end
 
   @impl true
   def subscriptions(state) do
@@ -411,6 +432,15 @@ defmodule Tackle.CLI.TUI do
     case Keybinds.file_search(key) do
       :composer -> dispatch_base(:composer, key, state)
       intent -> FileSearch.handle(intent, state)
+    end
+  end
+
+  # The command popup floats the same way: its own intents navigate,
+  # complete, and run; everything else keeps typing.
+  defp dispatch_overlay(key, %{overlay: {:slash_commands, _}} = state) do
+    case Keybinds.slash_commands(key) do
+      :composer -> dispatch_base(:composer, key, state)
+      intent -> SlashCommands.handle(intent, state)
     end
   end
 

@@ -32,7 +32,7 @@ defmodule Tackle.CLI.TUI.FileSearch do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.Paragraph
-  alias Tackle.CLI.TUI.{History, Theme, Util, Viewport}
+  alias Tackle.CLI.TUI.{CompletionPopup, History, Theme, Util, Viewport}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Executor
 
@@ -86,7 +86,7 @@ defmodule Tackle.CLI.TUI.FileSearch do
   @spec token(String.t(), non_neg_integer()) ::
           {non_neg_integer(), non_neg_integer(), String.t()} | nil
   def token(draft, cursor) when is_binary(draft) and is_integer(cursor) and cursor >= 0 do
-    cursor = floor_boundary(draft, min(cursor, byte_size(draft)))
+    cursor = Util.floor_boundary(draft, min(cursor, byte_size(draft)))
     line_start = line_start(draft, cursor)
     line_end = line_end(draft, cursor)
     line = binary_part(draft, line_start, line_end - line_start)
@@ -103,12 +103,6 @@ defmodule Tackle.CLI.TUI.FileSearch do
           nil
       end
     end
-  end
-
-  defp floor_boundary(text, position) do
-    if String.valid?(binary_part(text, 0, position)),
-      do: position,
-      else: floor_boundary(text, position - 1)
   end
 
   defp line_start(draft, cursor) do
@@ -468,36 +462,17 @@ defmodule Tackle.CLI.TUI.FileSearch do
   @doc """
   Builds the popup anchored directly above the composer's rectangle.
 
-  Returns `{widget, rect}` pairs: a panel block and the list or hint inside
-  it. The popup is skipped when the terminal is too short to fit it above the
-  input bar.
+  Returns `{widget, rect}` pairs: the shared chrome (a clear plus the panel
+  block) and the list or hint inside it. The popup is skipped when the
+  terminal is too short to fit it above the input bar. The chrome is shared
+  with the `/` command popup through `Tackle.CLI.TUI.CompletionPopup`, so
+  the two completions stay visually identical.
   """
   @spec widgets(Tackle.CLI.TUI.State.t(), Rect.t()) :: [{struct(), Rect.t()}]
   def widgets(%{overlay: {:file_search, popup}}, composer) do
-    rows = popup |> match_rows() |> max(1)
-    height = rows + 2
-
-    if composer.y < height do
-      []
-    else
-      rect = %Rect{
-        x: composer.x,
-        y: composer.y - height,
-        width: max(composer.width, 12),
-        height: height
-      }
-
-      inner = %Rect{
-        x: rect.x + 1,
-        y: rect.y + 1,
-        width: max(rect.width - 2, 0),
-        height: max(rect.height - 2, 0)
-      }
-
-      [
-        {Theme.panel_block(title(popup), :accent), rect},
-        {content(popup), inner}
-      ]
+    case CompletionPopup.anchor(title(popup), match_rows(popup) |> max(1), composer) do
+      :skip -> []
+      {chrome, inner} -> chrome ++ [{content(popup), inner}]
     end
   end
 

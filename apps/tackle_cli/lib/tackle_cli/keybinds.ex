@@ -38,6 +38,7 @@ defmodule Tackle.CLI.Keybinds do
           | :close
           | :refresh
           | :compact
+          | :complete
           | :composer
           | :confirm
           | :copy_arguments
@@ -322,6 +323,30 @@ defmodule Tackle.CLI.Keybinds do
   def file_search(%Key{code: "tab"}), do: :accept
   def file_search(%Key{code: "enter", modifiers: []}), do: :accept
   def file_search(%Key{}), do: :composer
+
+  @doc """
+  Resolves a chord while the `/` command popup is open.
+
+  Like the file-mention popup, the command popup floats above the composer
+  without taking over editing: arrows and Ctrl+P/N move the selection, Esc
+  dismisses the popup for the current name fragment, Tab completes the
+  selected name into the draft, Enter runs the selected command, and every
+  other chord falls through to the composer (`:composer`) so typing keeps
+  refining the query.
+  """
+  @spec slash_commands(Key.t()) :: intent
+  def slash_commands(%Key{code: "up"}), do: :previous
+  def slash_commands(%Key{code: "down"}), do: :next
+
+  def slash_commands(%Key{code: "p", modifiers: modifiers}) when is_ctrl(modifiers),
+    do: :previous
+
+  def slash_commands(%Key{code: "n", modifiers: modifiers}) when is_ctrl(modifiers), do: :next
+
+  def slash_commands(%Key{code: "esc"}), do: :close
+  def slash_commands(%Key{code: "tab"}), do: :complete
+  def slash_commands(%Key{code: "enter", modifiers: []}), do: :accept
+  def slash_commands(%Key{}), do: :composer
 
   defp insert(code) do
     if String.length(code) == 1, do: {:insert, code}, else: :ignore

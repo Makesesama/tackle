@@ -12,6 +12,8 @@ defmodule Tackle.CLI.TUI.Help do
     "Ctrl+J        newline",
     "@             file mention: fuzzy search,",
     "              ↑/↓ select, Enter/Tab insert path",
+    "/             command popup: filter, ↑/↓ select,",
+    "              Tab complete, Enter run",
     "↑/↓           take back queued / prompt history",
     "Ctrl+P/N      prompt history",
     "Ctrl+B/F      move by word",

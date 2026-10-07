@@ -267,6 +267,18 @@ defmodule Tackle.CLI.TUI.Theme do
   defp panel_title_style(:warning), do: bold(style(:warning))
   defp panel_title_style(:error), do: bold(style(:error))
 
+  @doc """
+  Builds the rounded panel chrome with an opaque surface fill.
+
+  Floating completions paint over live transcript content, so unlike the
+  fullscreen overlays — whose `ExRatatui.Widgets.Popup` clears the area
+  first — their panel must fill its own background or the rows behind bleed
+  through and merge with the popup's text.
+  """
+  @spec surface_panel_block(String.t(), panel_tone()) :: Block.t()
+  def surface_panel_block(title, tone),
+    do: %{panel_block(title, tone) | style: style(:surface_raised)}
+
   @doc "Adds bold to a style without dropping its color or background."
   @spec bold(Style.t()) :: Style.t()
   def bold(%Style{} = style), do: %{style | modifiers: Enum.uniq([:bold | style.modifiers])}

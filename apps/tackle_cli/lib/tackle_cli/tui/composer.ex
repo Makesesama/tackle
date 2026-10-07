@@ -21,7 +21,7 @@ defmodule Tackle.CLI.TUI.Composer do
   alias ExRatatui.Command
   alias ExRatatui.Event.Key
   alias Tackle.CLI.ImageClipboard
-  alias Tackle.CLI.TUI.{History, Pastes, Resume, State, Tree, Viewport}
+  alias Tackle.CLI.TUI.{History, Pastes, SlashCommands, State, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.{Executor, ProjectFiles}
@@ -255,12 +255,14 @@ defmodule Tackle.CLI.TUI.Composer do
   end
 
   @doc """
-  Submits the trimmed draft as the next turn, queues it at a safe boundary, or
-  runs a shell command.
+  Submits the trimmed draft as the next turn, queues it at a safe boundary,
+  or runs a slash command.
 
-  `/tree` opens the conversation-tree picker and `/resume` the saved-session
-  picker instead of sending a prompt. An empty draft does nothing. A rejected
-  submit reports the failure in the status row and restores the draft.
+  A draft that names a registered command runs it through
+  `SlashCommands.dispatch/2` — the same registry the `/` popup lists — instead
+  of sending a prompt; a command that cannot run now keeps the draft. An
+  empty draft does nothing. A rejected submit reports the failure in the
+  status row and restores the draft.
   """
   @spec submit(State.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
@@ -271,49 +273,20 @@ defmodule Tackle.CLI.TUI.Composer do
       state.pending_operation != nil ->
         {:noreply, %{state | notice: "Busy · submission pending; draft kept"}}
 
-      String.trim(raw_draft) == "/tree" and state.active_turn == nil ->
-        {:noreply, open_tree(state)}
-
-      String.trim(raw_draft) == "/resume" and state.active_turn == nil ->
-        open_resume(state)
-
       state.draft_empty? ->
         {:noreply, state, render?: false}
 
       true ->
-        submit_turn(state, raw_draft)
-    end
-  end
+        case SlashCommands.dispatch(state, raw_draft) do
+          :prompt ->
+            submit_turn(state, raw_draft)
 
-  defp open_tree(%State{} = state) do
-    {:noreply, opened} = Tree.open(state)
+          {:noreply, %State{}} = reply ->
+            reply
 
-    if match?({:tree, _}, opened.overlay) do
-      :ok = Input.set_value(opened.input, "")
-      opened |> Viewport.update_draft() |> Viewport.relayout()
-    else
-      # The picker did not open (no tree, empty tree); keep the draft intact.
-      opened
-    end
-  end
-
-  defp open_resume(%State{} = state) do
-    case Resume.open(state) do
-      {:noreply, opened} ->
-        {:noreply, cleared_draft(opened)}
-
-      {:noreply, opened, opts} when is_list(opts) ->
-        {:noreply, cleared_draft(opened), opts}
-    end
-  end
-
-  defp cleared_draft(%State{} = opened) do
-    if match?({:resume, _}, opened.overlay) do
-      :ok = Input.set_value(opened.input, "")
-      opened |> Viewport.update_draft() |> Viewport.relayout()
-    else
-      # The picker did not open (busy, none saved); keep the draft intact.
-      opened
+          {:noreply, %State{}, _opts} = reply ->
+            reply
+        end
     end
   end
 

@@ -27,7 +27,7 @@ defmodule Tackle.CLI.TUI.State do
   """
 
   alias Tackle.CLI.Clipboard
-  alias Tackle.CLI.TUI.{Compaction, FileSearch, History, Preferences, Viewport}
+  alias Tackle.CLI.TUI.{Compaction, FileSearch, History, Preferences, SlashCommands, Viewport}
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Message
@@ -44,6 +44,7 @@ defmodule Tackle.CLI.TUI.State do
           | {:resume, map()}
           | {:tree, map()}
           | {:file_search, FileSearch.popup()}
+          | {:slash_commands, SlashCommands.popup()}
           | {:inspector, map()}
           | {:search, map()}
           | {:usage_chart, map()}
@@ -94,6 +95,7 @@ defmodule Tackle.CLI.TUI.State do
           overlay: overlay(),
           focus: focus(),
           file_search: FileSearch.t(),
+          slash_commands: SlashCommands.t(),
           subagent_selected: String.t() | nil,
           show_subagent_sidebar?: boolean(),
           prose_width: pos_integer() | nil,
@@ -162,6 +164,7 @@ defmodule Tackle.CLI.TUI.State do
             overlay: nil,
             focus: :composer,
             file_search: %FileSearch{},
+            slash_commands: %SlashCommands{},
             subagent_selected: nil,
             show_subagent_sidebar?: true,
             prose_width: nil,
@@ -339,6 +342,7 @@ defmodule Tackle.CLI.TUI.State do
         overlay: nil,
         focus: :composer,
         file_search: %FileSearch{},
+        slash_commands: %SlashCommands{},
         subagent_selected: nil,
         selected_entry: nil,
         browse_page: :transcript,
