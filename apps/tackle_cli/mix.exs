@@ -29,6 +29,7 @@ defmodule Tackle.CLI.MixProject do
         :tackle_deepseek,
         :tackle_anthropic,
         :tackle_openrouter,
+        :tackle_ollama,
         :tackle_mcp,
         :tackle_sdk,
         :tackle
@@ -44,6 +45,7 @@ defmodule Tackle.CLI.MixProject do
       {:tackle_deepseek, path: "../../packages/tackle_deepseek"},
       {:tackle_anthropic, path: "../../packages/tackle_anthropic"},
       {:tackle_openrouter, path: "../../packages/tackle_openrouter"},
+      {:tackle_ollama, path: "../../packages/tackle_ollama"},
       {:tackle_mcp, path: "../../packages/tackle_mcp"},
       {:tackle_sdk, path: "../../packages/tackle_sdk"},
       {:optimus, "~> 0.6"},

@@ -39,6 +39,7 @@ let
       (projectFiles ../../packages/tackle_deepseek)
       (projectFiles ../../packages/tackle_anthropic)
       (projectFiles ../../packages/tackle_openrouter)
+      (projectFiles ../../packages/tackle_ollama)
       (projectFiles ../../packages/tackle_mcp)
       (projectFiles ../../packages/tackle_sdk)
       (projectFiles ../../apps/tackle_cli)
@@ -156,6 +157,7 @@ let
       tackle_openrouter = prev.tackle_openrouter.override {
         src = "${src}/packages/tackle_openrouter";
       };
+      tackle_ollama = prev.tackle_ollama.override { src = "${src}/packages/tackle_ollama"; };
       tackle_mcp = prev.tackle_mcp.override { src = "${src}/packages/tackle_mcp"; };
       tackle_sdk = prev.tackle_sdk.override { src = "${src}/packages/tackle_sdk"; };
       ex_ratatui = prev.ex_ratatui.override {
@@ -268,7 +270,9 @@ beamPackages.mixRelease {
     "$out/bin/tackle" --help > help.txt
     cat help.txt
     grep -F -- '--model' help.txt
-    "$out/bin/tackle" models
+    "$out/bin/tackle" models > models.txt
+    cat models.txt
+    grep -F 'ollama-cloud/gpt-oss:120b' models.txt
     runHook postInstallCheck
   '';
 

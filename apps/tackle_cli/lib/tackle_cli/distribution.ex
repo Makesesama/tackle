@@ -5,7 +5,8 @@ defmodule Tackle.CLI.Distribution do
     Tackle.Plugins.Codex,
     Tackle.Plugins.DeepSeek,
     Tackle.Plugins.Anthropic,
-    Tackle.Plugins.OpenRouter
+    Tackle.Plugins.OpenRouter,
+    Tackle.Plugins.Ollama
   ]
 
   @doc "Validates bundled adapters, default tools, and host-owned tool modules."

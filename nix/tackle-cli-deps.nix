@@ -705,6 +705,7 @@ let
             name = "tackle_exec";
 
             src = ../packages/tackle_exec;
+
           };
         in
         drv;
@@ -738,6 +739,23 @@ let
             beamDeps = [
               anubis_mcp
               finch
+              tackle_lib
+            ];
+          };
+        in
+        drv;
+
+      tackle_ollama =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_ollama";
+
+            src = ../packages/tackle_ollama;
+
+            beamDeps = [
+              req
               tackle_lib
             ];
           };

@@ -6,7 +6,8 @@ harness.
 This is a separate Mix project so CLI dependencies and presentation concerns stay
 out of the harness and `packages/tackle_lib`. The shipped CLI distribution
 bundles the first-party `packages/tackle_codex`, `packages/tackle_deepseek`,
-`packages/tackle_anthropic`, and `packages/tackle_openrouter` adapters,
+`packages/tackle_anthropic`, `packages/tackle_openrouter`, and
+`packages/tackle_ollama` adapters,
 configures them as available harness adapters, and then talks to the
 `:tackle` application for
 configuration, credential storage, scoped runtime ownership, and turn execution.
@@ -54,9 +55,26 @@ Plain prose retains the terminal's default text/background colors; painted
 surfaces set both colors so an undetected light terminal still has readable text.
 The jailed launchers run the CLI on the host, so these variables work there too.
 
-The wrapped binary is currently a **fixed distribution**: Codex and DeepSeek
-are compiled into it. It does not discover or load third-party plugins at
-runtime. That keeps packaging separate from the future plugin-loading design.
+The wrapped binary is a **fixed distribution** with these default adapters
+compiled into it. Additional trusted, separately precompiled plugins can be
+explicitly enabled at startup; see [plugin loading](../../docs/PLUGINS.md).
+
+### Ollama Cloud
+
+No local Ollama installation or extra plugin registration is needed. Create an
+[Ollama API key](https://ollama.com/settings/keys), then either export
+`OLLAMA_API_KEY` or run `tackle auth login ollama-cloud` to store it.
+
+```sh
+tackle --model ollama-cloud/gpt-oss:120b
+# From this Mix project:
+mix tackle --model ollama-cloud/gpt-oss:120b
+```
+
+Ollama Cloud models also appear in the model picker. Use the direct-cloud model
+ids without a `:cloud` suffix. Token usage is reported, but account usage and
+price estimates are not available by default. See the
+[provider README](../../packages/tackle_ollama/README.md) for models and options.
 
 ## SDK server (experimental)
 

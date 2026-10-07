@@ -229,6 +229,10 @@ defmodule Tackle.CLI.Output.Auth do
   def error_message(:missing_openrouter_api_key),
     do: "No OpenRouter API key is available. Run `tackle auth login openrouter`."
 
+  def error_message(:missing_ollama_api_key),
+    do:
+      "No Ollama Cloud API key is available. Run `tackle auth login ollama-cloud` or set OLLAMA_API_KEY."
+
   def error_message(:no_credentials), do: "No credentials are stored for this provider."
   def error_message(:timeout), do: "The provider request timed out."
   def error_message(:cancelled), do: "Authentication was cancelled."

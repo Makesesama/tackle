@@ -117,6 +117,13 @@ defmodule Tackle.CLI.Output.AuthTest do
     assert decoded["error"]["message"] =~ "not configured"
   end
 
+  test "missing Ollama credentials explain login and environment setup" do
+    rendered = plain(Auth.render_error(:missing_ollama_api_key, Output.new(color: :never)))
+    assert rendered =~ "tackle auth login ollama-cloud"
+    assert rendered =~ "OLLAMA_API_KEY"
+    refute rendered =~ "missing_ollama_api_key"
+  end
+
   test "empty auth collections retain useful output shapes" do
     assert plain(Auth.render_status([], Output.new(color: :never))) ==
              "No authentication providers are configured."

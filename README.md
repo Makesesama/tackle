@@ -108,6 +108,9 @@ and unfinished integrations:
   the OpenRouter provider adapter, which reaches many vendors' models through
   one API key (`openrouter/<vendor>/<model>`). The current app distributions
   bundle it.
+- [`packages/tackle_ollama`](packages/tackle_ollama/README.md) contains the
+  optional Ollama Cloud adapter (`ollama-cloud/<model>`), using `OLLAMA_API_KEY`.
+  Bundled by the CLI; other hosts can enable it as a separately compiled plugin.
 - [`packages/tackle_mcp`](packages/tackle_mcp/README.md) contains the optional
   Anubis-based MCP client plugin. Trusted host startup can connect STDIO or
   Streamable HTTP servers, discover their tools, and add the returned proxy
@@ -115,8 +118,8 @@ and unfinished integrations:
   tools only and is not bundled by the CLI.
 - [`apps/tackle_cli`](apps/tackle_cli/README.md) contains the default
   Optimus/ex_ratatui CLI entrypoint. Its Burrito release produces a fixed
-  distribution that bundles the first-party Codex, DeepSeek, Anthropic, and
-  OpenRouter plugins; the
+  distribution that bundles the first-party Codex, DeepSeek, Anthropic,
+  OpenRouter, and Ollama Cloud plugins; the
   harness loads explicitly enabled precompiled projects at startup, without
   automatically discovering projects. The frontend relies on the harness package
   for credentials, sessions, and turn execution. Its footer reports current
