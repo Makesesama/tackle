@@ -30,6 +30,8 @@ registration or local Ollama installation is required:
 # Either export OLLAMA_API_KEY or store a key interactively:
 tackle auth login ollama-cloud
 tackle --model ollama-cloud/gpt-oss:120b
+# Or use GLM-5.3 (no :cloud suffix):
+tackle --model ollama-cloud/glm-5.3
 ```
 
 From `apps/tackle_cli`, use `mix tackle` in place of `tackle`. Models also
@@ -82,7 +84,7 @@ host's default credential flows. No account usage callback is exposed.
 ## Models and metadata
 
 `models/0` returns a small, deterministic catalog: `gpt-oss:120b`,
-`gpt-oss:20b`, `kimi-k3`, and `deepseek-v4.1-flash`. These direct-cloud ids come
+`gpt-oss:20b`, `kimi-k3`, `deepseek-v4.1-flash`, and `glm-5.3`. These direct-cloud ids come
 from [Ollama's model listing](https://ollama.com/api/tags), not local
 `:cloud` aliases. Availability may change; no network discovery runs at startup.
 

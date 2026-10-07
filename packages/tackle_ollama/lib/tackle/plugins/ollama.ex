@@ -35,7 +35,7 @@ defmodule Tackle.Plugins.Ollama do
   @adapter_id "ollama-cloud"
   @default_base_url "https://ollama.com/v1"
 
-  @catalog_models ["gpt-oss:120b", "gpt-oss:20b", "kimi-k3", "deepseek-v4.1-flash"]
+  @catalog_models ["gpt-oss:120b", "gpt-oss:20b", "kimi-k3", "deepseek-v4.1-flash", "glm-5.3"]
 
   @impl true
   def adapter_id, do: @adapter_id

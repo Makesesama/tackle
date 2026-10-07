@@ -12,7 +12,8 @@ defmodule Tackle.Plugins.OllamaTest do
              "gpt-oss:120b",
              "gpt-oss:20b",
              "kimi-k3",
-             "deepseek-v4.1-flash"
+             "deepseek-v4.1-flash",
+             "glm-5.3"
            ]
 
     assert Ollama.model_info("gpt-oss:120b") == nil
@@ -25,6 +26,13 @@ defmodule Tackle.Plugins.OllamaTest do
     on_exit(fn -> Application.delete_env(:tackle_ollama, :models) end)
     assert Ollama.model_info("gpt-oss:120b") == %{context_window: 65_536}
     assert {:ok, %{model: "custom"}} = LLM.select([Ollama], "ollama-cloud/custom")
+  end
+
+  test "selects GLM-5.3 with its direct-cloud model id" do
+    assert {:ok, %{adapter: Ollama, model: "glm-5.3"}} =
+             LLM.select([Ollama], "ollama-cloud/glm-5.3")
+
+    assert Ollama.model_info("glm-5.3") == nil
   end
 
   test "projects a chat request and normalizes streamed usage" do
