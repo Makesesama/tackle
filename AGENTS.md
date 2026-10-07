@@ -50,6 +50,10 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd packages/tackle_mcp && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_mcp && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
+# Exec-server for jailed tool primitives (no dependencies)
+(cd packages/tackle_exec && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_exec && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
+
 # JSON-RPC stdio SDK server for non-BEAM clients
 (cd packages/tackle_sdk && mix deps.get)
 (cd packages/tackle_sdk && mix compile --warnings-as-errors && mix test)
@@ -113,6 +117,10 @@ Burrito, or lint commands for tooling that has not been wired up.
   `:tackle_lib`, not the harness package.
 - `packages/tackle_mcp/`: optional Anubis-based MCP client plugin that exposes
   discovered MCP tools through the provider-neutral tool contract.
+- `packages/tackle_exec/`: dependency-free exec-server (`Tackle.Exec.*`,
+  `:tackle_exec`). A host-side client drives a jailed server over a port with
+  length-prefixed Erlang terms and treats everything from the jail as hostile.
+  Phase 1 of `docs/EXEC_SERVER_PLAN.md`; built-in tools do not use it yet.
 - `packages/tackle_sdk/`: experimental JSON-RPC 2.0 over stdio server
   (`Tackle.SDK.*`, `:tackle_sdk`) that lets non-BEAM clients drive the
   `Tackle.Lib` agent loop. The wire contract is `packages/tackle_sdk/PROTOCOL.md`;
