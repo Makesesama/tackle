@@ -108,8 +108,10 @@ defmodule Tackle.CLI.TUI.Browser do
   @doc """
   Toggles focus between the composer and the transcript.
 
-  Entering the browser selects the newest transcript entry and scrolls to it.
-  An empty transcript opens Overview so system information is always available.
+  Entering the browser keeps a selection made from the composer (Alt+P/Alt+N)
+  when its entry is still on screen, and otherwise selects the newest
+  transcript entry; either way it scrolls the selection into view. An empty
+  transcript opens Overview so system information is always available.
   """
   @spec toggle_focus(State.t()) :: {:noreply, State.t()}
   def toggle_focus(%State{focus: :transcript} = state), do: leave_focus(state)
@@ -122,7 +124,17 @@ defmodule Tackle.CLI.TUI.Browser do
         {:noreply, select_page(state, :overview)}
 
       entries ->
-        selected = List.last(entries).id
+        # Adopt a selection made from the composer (Alt+P/Alt+N) when it is
+        # still on screen, so F4 continues where the chords left off.
+        selected =
+          case state.selected_entry do
+            nil ->
+              List.last(entries).id
+
+            id ->
+              if Enum.any?(entries, &(&1.id == id)), do: id, else: List.last(entries).id
+          end
+
         state = %{state | focus: :transcript, selected_entry: selected, notice: nil}
 
         state = %{
@@ -200,8 +212,8 @@ defmodule Tackle.CLI.TUI.Browser do
   def focused_entry(%State{} = state),
     do: Conversation.entry(state.conversation, state.selected_entry)
 
-  defp dispatch(:previous, state), do: {:noreply, move(state, -1)}
-  defp dispatch(:next, state), do: {:noreply, move(state, 1)}
+  defp dispatch(:previous, state), do: {:noreply, select(state, -1)}
+  defp dispatch(:next, state), do: {:noreply, select(state, 1)}
 
   defp dispatch(:page_up, state),
     do: Viewport.scroll_reply(state, Viewport.scroll(state, -Viewport.page_size(state)))
@@ -222,16 +234,7 @@ defmodule Tackle.CLI.TUI.Browser do
     end
   end
 
-  defp dispatch(:copy_source, state) do
-    case focused_entry(state) do
-      nil ->
-        {:noreply, %{state | notice: "Nothing to copy"}}
-
-      entry ->
-        notice = Util.copy_notice(state, MessageView.source_text(entry), "Copied full source")
-        {:noreply, %{state | notice: notice}}
-    end
-  end
+  defp dispatch(:copy_source, state), do: copy_selected(state)
 
   defp dispatch(:copy_transcript, state) do
     case Conversation.text(state.conversation) do
@@ -245,17 +248,63 @@ defmodule Tackle.CLI.TUI.Browser do
 
   defp dispatch(:ignore, state), do: {:noreply, state, render?: false}
 
-  # The selection stops at the ends instead of wrapping, so holding the key
-  # does not silently teleport from the newest entry back to the oldest.
-  defp move(%State{} = state, delta) do
+  @doc """
+  Copies the retained source of the selected entry.
+
+  Shared by the browser's `Y` chord and the composer's `Alt+W`, so both copy
+  the same highlighted entry. An action with no selection says so through the
+  notice instead of failing silently.
+  """
+  @spec copy_selected(State.t()) :: {:noreply, State.t()}
+  def copy_selected(%State{} = state) do
+    case focused_entry(state) do
+      nil ->
+        {:noreply, %{state | notice: "Nothing to copy"}}
+
+      entry ->
+        notice = Util.copy_notice(state, MessageView.source_text(entry), "Copied full source")
+        {:noreply, %{state | notice: notice}}
+    end
+  end
+
+  @doc """
+  Clears the transcript selection made from the composer.
+
+  `Esc` peels the selection away before the draft, so an accidental highlight
+  never costs typed text. A no-op when nothing is selected.
+  """
+  @spec clear_selection(State.t()) :: State.t()
+  def clear_selection(%State{selected_entry: nil} = state), do: state
+
+  def clear_selection(%State{} = state) do
+    previous = state.selected_entry
+
+    state
+    |> Map.put(:selected_entry, nil)
+    |> refresh_selection(previous, nil)
+  end
+
+  @doc """
+  Moves the transcript selection one entry up or down.
+
+  The selection stops at the ends instead of wrapping, so holding the key
+  does not silently teleport from the newest entry back to the oldest. The
+  composer's `Alt+P` (up) and `Alt+N` (down) reuse this without taking focus; a
+  first press with nothing highlighted selects the newest entry before stepping.
+  """
+  @spec select(State.t(), -1 | 1) :: State.t()
+  def select(%State{} = state, delta) do
     entries = Conversation.entries(state.conversation)
     count = length(entries)
 
     if count == 0 do
-      state
+      %{state | notice: "Nothing to select"}
     else
-      index = Enum.find_index(entries, &(&1.id == state.selected_entry)) || count - 1
-      selected = Enum.at(entries, Util.clamp(index + delta, 0, count - 1)).id
+      selected =
+        case Enum.find_index(entries, &(&1.id == state.selected_entry)) do
+          nil -> List.last(entries).id
+          index -> Enum.at(entries, Util.clamp(index + delta, 0, count - 1)).id
+        end
 
       state
       |> Map.put(:selected_entry, selected)

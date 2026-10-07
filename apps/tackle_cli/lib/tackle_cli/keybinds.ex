@@ -16,7 +16,7 @@ defmodule Tackle.CLI.Keybinds do
   Modifier lists arrive in ExRatatui's canonical order (`"shift"`, `"ctrl"`,
   `"alt"`, ...), which lets chords match on them literally:
 
-      defp composer(%Key{code: "n", modifiers: ["alt"]}), do: :new_session
+      defp composer(%Key{code: "w", modifiers: ["alt"]}), do: :copy_selected
 
   Bindings that should be live regardless of the modifier list's extras use the
   `is_ctrl` and `is_alt` guards.
@@ -43,6 +43,7 @@ defmodule Tackle.CLI.Keybinds do
           | :confirm
           | :copy_arguments
           | :copy_final_answer
+          | :copy_selected
           | :paste_clipboard
           | :copy_source
           | :copy_transcript
@@ -54,7 +55,6 @@ defmodule Tackle.CLI.Keybinds do
           | :inspect
           | :leave
           | :model_picker
-          | :new_session
           | {:resume_recent, pos_integer()}
           | :newline
           | :next
@@ -65,6 +65,8 @@ defmodule Tackle.CLI.Keybinds do
           | :scroll_end
           | :scroll_start
           | :search
+          | :select_previous
+          | :select_next
           | :settings_picker
           | :subagents
           | :submit
@@ -114,7 +116,7 @@ defmodule Tackle.CLI.Keybinds do
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
-      when is_alt(modifiers) and code in ["<", ">", "1", "2", "3", "4", "5"],
+      when is_alt(modifiers) and code in ["<", ">", "1", "2", "3", "4", "5", "w"],
       do: false
 
   def repeatable?(%Key{}), do: true
@@ -160,7 +162,18 @@ defmodule Tackle.CLI.Keybinds do
   # -- composer ------------------------------------------------------------
 
   defp composer(%Key{code: "esc"}), do: :escape
-  defp composer(%Key{code: "n", modifiers: modifiers}) when is_alt(modifiers), do: :new_session
+
+  # Alt+P and Alt+N step the transcript selection up and down without leaving
+  # the composer, and Alt+W copies the selected message. They reuse the browser
+  # selection, so the highlighted entry is the one Enter inspects after F4.
+  defp composer(%Key{code: "p", modifiers: modifiers}) when is_alt(modifiers),
+    do: :select_previous
+
+  defp composer(%Key{code: "n", modifiers: modifiers}) when is_alt(modifiers),
+    do: :select_next
+
+  defp composer(%Key{code: "w", modifiers: modifiers}) when is_alt(modifiers),
+    do: :copy_selected
 
   defp composer(%Key{code: "v", modifiers: modifiers}) when is_ctrl(modifiers),
     do: :paste_clipboard
@@ -205,6 +218,18 @@ defmodule Tackle.CLI.Keybinds do
   """
   @spec transcript(Key.t()) :: intent
   def transcript(%Key{code: "esc"}), do: :leave
+
+  # The composer's selection chords stay live here, so Alt+P, Alt+N, and Alt+W
+  # mean the same thing in both panes. They must match before the plain-key
+  # clauses below, which accept any modifier list.
+  def transcript(%Key{code: "p", modifiers: modifiers}) when is_alt(modifiers),
+    do: :previous
+
+  def transcript(%Key{code: "n", modifiers: modifiers}) when is_alt(modifiers), do: :next
+
+  def transcript(%Key{code: "w", modifiers: modifiers}) when is_alt(modifiers),
+    do: :copy_source
+
   def transcript(%Key{code: "up"}), do: :previous
   def transcript(%Key{code: "p"}), do: :previous
   def transcript(%Key{code: "down"}), do: :next

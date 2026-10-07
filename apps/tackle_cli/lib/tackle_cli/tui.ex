@@ -43,12 +43,17 @@ defmodule Tackle.CLI.TUI do
 
   While a turn is active the composer keeps accepting drafts; Enter queues
   them for the next safe boundary. Esc leaves the transcript browser, closes
-  overlays, clears a non-empty draft, then requests cancellation on a subsequent
+  overlays, clears a composer-made selection, clears a non-empty draft, then
+  requests cancellation on a subsequent
   press, and never exits while idle; Ctrl+C is
   the distinct quit action and asks for confirmation when a draft or active turn
   would be lost.
 
-  `Alt+N` starts a new session behind a yes/no confirmation. The frontend asks
+  `Alt+P` and `Alt+N` step the transcript selection up and down without
+  leaving the composer, and `Alt+W` copies the selected message; they reuse the
+  browser's selection, so the highlighted entry is the one the browser acts on.
+
+  `/new` starts a new session behind a yes/no confirmation. The frontend asks
   the harness for a fresh root scope, subscribes to its root agent, and stops
   the previous scope, so the shell, its configuration menus, and the terminal
   stay up.
@@ -474,7 +479,10 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base({:resume_recent, index}, _key, state),
     do: Session.resume_recent(state, index)
 
-  defp dispatch_base(:new_session, _key, state), do: Session.request_new(state)
+  defp dispatch_base(:select_previous, _key, state), do: {:noreply, Browser.select(state, -1)}
+  defp dispatch_base(:select_next, _key, state), do: {:noreply, Browser.select(state, 1)}
+  defp dispatch_base(:copy_selected, _key, state), do: Browser.copy_selected(state)
+
   defp dispatch_base(:compact, _key, state), do: Compaction.request(state)
   defp dispatch_base(:tree, _key, state), do: Tree.open(state)
   defp dispatch_base(:usage_chart, _key, state), do: UsageChart.open(state)
@@ -537,6 +545,11 @@ defmodule Tackle.CLI.TUI do
 
     {:noreply, %{state | notice: notice}}
   end
+
+  # Esc peels one layer per press: a composer-made selection first, then a
+  # non-empty draft, then cancellation.
+  defp escape(%State{selected_entry: selected} = state) when is_binary(selected),
+    do: {:noreply, Browser.clear_selection(state)}
 
   defp escape(state) do
     if Input.get_value(state.input) != "" do

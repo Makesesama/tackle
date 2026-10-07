@@ -85,7 +85,7 @@ defmodule Tackle.CLI.TUI.SlashCommands do
       idle_only?: true
     },
     %{name: "compact", description: "compact the context · Ctrl+K", action: :compact},
-    %{name: "new", description: "start a new session · Alt+N", action: :new_session},
+    %{name: "new", description: "start a new session", action: :new_session},
     %{name: "browse", description: "read the transcript · F4", action: :browse},
     %{name: "usage", description: "token usage chart · F6", action: :usage_chart},
     %{name: "tasks", description: "inspect subagent tasks · F7", action: :subagents},

@@ -368,9 +368,11 @@ it because the agent keeps working.
 | Shift+Enter, Ctrl+Enter, Ctrl+J | Insert a newline. Ctrl+J is the reliable fallback because many terminals cannot distinguish Shift+Enter. |
 | ↑ / ↓ | ↑ recalls older prompts even with a non-empty draft; ↓ walks toward the newest prompt and restores the draft you were writing. Outside history browsing, ↓ moves the caret. |
 | Ctrl+P / Ctrl+N | Recall older/newer prompts from any draft. ↓/Ctrl+N past the newest prompt returns the draft you were writing. History is in-memory and capped at 100 prompts. |
-| Esc | Close the open overlay first, then clear a non-empty draft; with an empty draft, request cancellation of the active turn. Esc never exits while idle. |
+| Esc | Close the open overlay first, then clear a composer-made message selection, then clear a non-empty draft; with an empty draft, request cancellation of the active turn. Esc never exits while idle. |
 | Ctrl+C | Quit. Confirms first when an unsent draft or an active turn would be lost; quits immediately when idle with an empty draft. |
-| Alt+N | Start a new session. Confirms first with a Y/N prompt; on confirm the current root scope stops (stopping an active turn with it) and a fresh session and scope start without restarting the shell. Durable history is not deleted—resume it later with `--resume`. |
+| Alt+P / Alt+N | Step the transcript selection up/down without leaving the composer. The first press selects the newest message; the selection stops at the ends instead of wrapping. The highlighted entry is the browser selection, so F4 continues from it and Enter there inspects it. |
+| Alt+W | Copy the selected message's full retained source to the clipboard. Reports "Nothing to copy" when nothing is selected. |
+| `/new` | Start a new session. Confirms first with a Y/N prompt; on confirm the current root scope stops (stopping an active turn with it) and a fresh session and scope start without restarting the shell. Durable history is not deleted—resume it later with `--resume`. |
 | Alt+1–5 | Resume one of the five recent sessions when idle with an empty draft. Ctrl+1–5 also works in terminals that report those chords distinctly. A failed resume keeps the current session open. |
 | F1 | Search-first model selector (idle only). Type to filter, ↑/↓ to select, Enter to apply, Esc to close. |
 | F2 | Reasoning-level selector (idle only). A reconfigure failure preserves the conversation and the draft. |

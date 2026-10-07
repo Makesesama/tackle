@@ -1515,7 +1515,8 @@ defmodule Tackle.CLI.TUITest do
     submit_prompt(tui, "remembered")
     first_session = state(tui).session_id
 
-    inject_key(tui, "n", ["alt"])
+    Enum.each(["/", "n", "e", "w"], &inject_key(tui, &1))
+    inject_key(tui, "enter")
     inject_key(tui, "y")
 
     replacement = await_state(tui, &(&1.session_id != first_session))
@@ -2690,6 +2691,75 @@ defmodule Tackle.CLI.TUITest do
     assert draft(tui) == "keep my draft"
   end
 
+  test "Alt+P and Alt+N select messages from the composer and Alt+W copies them",
+       %{tui: tui} do
+    _state =
+      settle_messages(tui, [
+        Message.user("question"),
+        Message.assistant(content: "Exact **Markdown** source"),
+        Message.tool_result("call-1", "read", "tool output")
+      ])
+
+    inject_key(tui, "w", ["alt"])
+    assert state(tui).notice == "Nothing to copy"
+
+    # The first press selects the newest entry without leaving the composer.
+    inject_key(tui, "p", ["alt"])
+    state = state(tui)
+    assert state.focus == :composer
+    assert state.selected_entry == "tool:call-1"
+
+    # Alt+P steps up, Alt+N steps back down, and neither wraps past the ends.
+    inject_key(tui, "p", ["alt"])
+    assert state(tui).selected_entry == "message:1:assistant"
+
+    inject_key(tui, "p", ["alt"])
+    assert state(tui).selected_entry == "message:0:user"
+
+    inject_key(tui, "p", ["alt"])
+    assert state(tui).selected_entry == "message:0:user"
+
+    inject_key(tui, "n", ["alt"])
+    assert state(tui).selected_entry == "message:1:assistant"
+
+    inject_key(tui, "w", ["alt"])
+    assert_receive {:copied, copied}
+    assert copied =~ "Exact **Markdown** source"
+    assert state(tui).notice == "Copied full source"
+
+    # Esc peels the selection away before the draft, one layer per press.
+    inject_paste(tui, "draft stays")
+    inject_key(tui, "esc")
+    state = state(tui)
+    assert state.selected_entry == nil
+    assert draft(tui) == "draft stays"
+
+    inject_key(tui, "esc")
+    assert state(tui).selected_entry == nil
+    assert draft(tui) == ""
+
+    # The selection is the browser's: F4 adopts it instead of resetting, and
+    # leaving the browser clears it without touching the draft.
+    inject_key(tui, "p", ["alt"])
+    inject_key(tui, "p", ["alt"])
+    inject_key(tui, "f4")
+    state = state(tui)
+    assert state.focus == :transcript
+    assert state.selected_entry == "message:1:assistant"
+
+    inject_key(tui, "esc")
+    state = state(tui)
+    assert state.focus == :composer
+    assert state.selected_entry == nil
+  end
+
+  test "Alt+P reports when the transcript has nothing to select", %{tui: tui} do
+    inject_key(tui, "p", ["alt"])
+
+    assert state(tui).notice == "Nothing to select"
+    refute_received {:copied, _}
+  end
+
   test "typing and pasting are inert while the transcript holds focus", %{tui: tui} do
     _state =
       settle_messages(tui, [Message.user("question"), Message.assistant(content: "answer")])
@@ -3079,7 +3149,8 @@ defmodule Tackle.CLI.TUITest do
     assert_receive {:subscribed, tui}
     first_session = state(tui).session_id
 
-    inject_key(tui, "n", ["alt"])
+    Enum.each(["/", "n", "e", "w"], &inject_key(tui, &1))
+    inject_key(tui, "enter")
     inject_key(tui, "y")
 
     replacement_session = await_state(tui, &(&1.session_id != first_session)).session_id
