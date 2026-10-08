@@ -1,7 +1,7 @@
-defmodule Tackle.Script.TestBackend do
+defmodule Tackle.Workflow.TestBackend do
   @moduledoc false
 
-  # Minimal `Tackle.Runtime.AgentBackend` for script tests. Each agent session
+  # Minimal `Tackle.Runtime.AgentBackend` for workflow tests. Each agent session
   # is a GenServer that answers a submitted prompt from its configuration,
   # without a provider or a real `Tackle.Lib` loop.
 
@@ -18,7 +18,7 @@ defmodule Tackle.Script.TestBackend do
 
   @impl true
   def child_spec(%AgentSpec{config: config}, %AgentContext{} = context) do
-    {Tackle.Script.TestAgent, {config, context}}
+    {Tackle.Workflow.TestAgent, {config, context}}
   end
 
   @impl true
@@ -42,7 +42,7 @@ defmodule Tackle.Script.TestBackend do
       )
 end
 
-defmodule Tackle.Script.TestAgent do
+defmodule Tackle.Workflow.TestAgent do
   @moduledoc false
 
   # One fake agent session. Turn modes:

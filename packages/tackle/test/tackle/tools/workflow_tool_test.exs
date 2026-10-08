@@ -1,7 +1,7 @@
-defmodule Tackle.Tools.ScriptToolTest do
+defmodule Tackle.Tools.WorkflowToolTest do
   @moduledoc false
 
-  # The script tool is optional: it lives in `tackle_script` and a host grants
+  # The workflow tool is optional: it lives in `tackle_workflow` and a host grants
   # it explicitly. These tests are the harness-side proof that the seam is
   # reachable: a real `Tackle.Coding` scope can hand the tool to its root agent,
   # and a durable session then runs a Lua workflow that delegates to the
@@ -12,26 +12,26 @@ defmodule Tackle.Tools.ScriptToolTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Coding
-  alias Tackle.Script.Tool, as: ScriptTool
+  alias Tackle.Workflow.Tool, as: WorkflowTool
 
   setup do
     home = tmp_home()
     {:ok, home: home}
   end
 
-  test "the script tool is opt-in, not part of the default tool set" do
-    refute ScriptTool in Tackle.Tools.default()
+  test "the workflow tool is opt-in, not part of the default tool set" do
+    refute WorkflowTool in Tackle.Tools.default()
   end
 
-  test "a coding scope grants the script tool and narrows the profiles scripts may spawn", ctx do
+  test "a coding scope grants the workflow tool and narrows the profiles it may spawn", ctx do
     assert {:ok, spec} =
              Coding.scope_spec(
                [
                  available_adapters: [Tackle.Test.Adapter],
-                 root_tools: [ScriptTool],
+                 root_tools: [WorkflowTool],
                  overrides: [
                    model: "test/echo",
-                   context: %{script_profiles: ["worker"]}
+                   context: %{workflow_profiles: ["worker"]}
                  ],
                  cwd: ctx.home,
                  env: %{"TACKLE_HOME" => ctx.home}
@@ -39,16 +39,16 @@ defmodule Tackle.Tools.ScriptToolTest do
                nil
              )
 
-    assert ScriptTool in spec.root_spec.config.tools
+    assert WorkflowTool in spec.root_spec.config.tools
     assert spec.root_spec.allow_delegation
-    assert spec.root_spec.config.context[:script_profiles] == ["worker"]
+    assert spec.root_spec.config.context[:workflow_profiles] == ["worker"]
     assert "worker" in Map.keys(spec.profiles)
   end
 
-  test "a durable session runs a scripted workflow and returns its answer", ctx do
+  test "a durable session runs a workflow and returns its answer", ctx do
     tool_call = %{
-      "id" => "call_script",
-      "name" => "run_script",
+      "id" => "call_workflow",
+      "name" => "run_workflow",
       "arguments" => %{
         "script" => """
         local findings = tackle.await(tackle.spawn("scout", "map the code paths"))
@@ -63,7 +63,7 @@ defmodule Tackle.Tools.ScriptToolTest do
         home: ctx.home,
         root: [
           allow_delegation: true,
-          tools: [ScriptTool],
+          tools: [WorkflowTool],
           mode: :tool_then_answer,
           llm_opts: [tool_call: tool_call, content: "final answer"]
         ],
@@ -80,11 +80,11 @@ defmodule Tackle.Tools.ScriptToolTest do
     assert session_id == snapshot.session_id
     assert Tackle.Lib.last_answer(state) == "final answer"
 
-    # The script's returned value is the tool result the model sees, and the
+    # The workflow's returned value is the tool result the model sees, and the
     # durable session recorded it next to the tool intent.
     assert "worker answer" in tool_results(state)
 
-    # The worker's step received the previous step's answer, so the script — not
+    # The worker's step received the previous step's answer, so the workflow — not
     # the root agent — composed the child prompts.
     assert "implement: scout finding" in sent_prompts()
 
@@ -96,10 +96,10 @@ defmodule Tackle.Tools.ScriptToolTest do
            )
   end
 
-  test "a session that narrows the allowlist refuses a profile the script may not spawn", ctx do
+  test "a session that narrows the allowlist refuses a profile the workflow may not spawn", ctx do
     tool_call = %{
-      "id" => "call_script",
-      "name" => "run_script",
+      "id" => "call_workflow",
+      "name" => "run_workflow",
       "arguments" => %{
         "script" => """
         local ok, err = pcall(function() tackle.spawn("worker", "go") end)
@@ -114,8 +114,8 @@ defmodule Tackle.Tools.ScriptToolTest do
         home: ctx.home,
         root: [
           allow_delegation: true,
-          tools: [ScriptTool],
-          context: %{script_profiles: ["scout"]},
+          tools: [WorkflowTool],
+          context: %{workflow_profiles: ["scout"]},
           mode: :tool_then_answer,
           llm_opts: [tool_call: tool_call, content: "final answer"]
         ],
@@ -132,13 +132,13 @@ defmodule Tackle.Tools.ScriptToolTest do
     assert Tackle.Lib.last_answer(state) == "final answer"
 
     assert [result] = tool_results(state)
-    assert result =~ ~s|profile "worker" is not allowlisted for scripts|
+    assert result =~ ~s|profile "worker" is not allowlisted for workflows|
   end
 
-  test "cancelling the turn cancels the script and the run it started", ctx do
+  test "cancelling the turn cancels the workflow and the run it started", ctx do
     tool_call = %{
-      "id" => "call_script",
-      "name" => "run_script",
+      "id" => "call_workflow",
+      "name" => "run_workflow",
       "arguments" => %{
         "script" => ~s|return tackle.await(tackle.spawn("worker", "go")).text|
       }
@@ -149,7 +149,7 @@ defmodule Tackle.Tools.ScriptToolTest do
         home: ctx.home,
         root: [
           allow_delegation: true,
-          tools: [ScriptTool],
+          tools: [WorkflowTool],
           mode: :tool_then_answer,
           llm_opts: [tool_call: tool_call, content: "final answer"]
         ],
@@ -159,13 +159,13 @@ defmodule Tackle.Tools.ScriptToolTest do
     {:ok, _snapshot} = Tackle.subscribe(scope.root_agent_ref)
     assert {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "run the workflow")
 
-    # The script is mid-flight: the run it spawned is blocked in its adapter.
+    # The workflow is mid-flight: the run it spawned is blocked in its adapter.
     run = await_child_call("go")
 
     assert :ok = Tackle.cancel(scope.root_agent_ref)
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:cancelled, _state}}, 5_000
 
-    # The tool call owns the script, so cancelling the turn cancels the script
+    # The tool call owns the workflow, so cancelling the turn cancels the workflow
     # and every run under it. Without that link the blocked run would idle for
     # its own 60-second window instead of ending promptly.
     assert_eventually(fn -> not Process.alive?(run) end)

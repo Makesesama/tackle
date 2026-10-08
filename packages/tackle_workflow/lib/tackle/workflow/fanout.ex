@@ -1,4 +1,4 @@
-defmodule Tackle.Script.Fanout do
+defmodule Tackle.Workflow.Fanout do
   @moduledoc """
   Bounded, work-conserving fan-out over delegated agent runs.
 
@@ -34,7 +34,7 @@ defmodule Tackle.Script.Fanout do
   reason `await/1` cannot report therefore fails the whole batch rather than
   hanging it — deliberately, so a broken handshake is loud. The wait for a
   settlement has no timeout of its own: runs settle within their own idle
-  window, and a batch is otherwise bounded by the script's deadline.
+  window, and a batch is otherwise bounded by the workflow's deadline.
   """
 
   alias Tackle.Runtime

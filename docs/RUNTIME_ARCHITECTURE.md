@@ -12,7 +12,7 @@ This document extends the package and harness boundaries in [`architecture-spec.
 2. Do not add a second loop implementation for subagents, scripted workflows, or fleets.
 3. Each agent has its own dedicated GenServer and `%Tackle.Lib.State{}`. An agent GenServer exists only for the lifetime of that agent and is never reset or reused for a different agent.
 4. Coding-harness subagents are initially ephemeral, delegated agents: “research this task and return a result.” Long-lived named agents and general-purpose autonomous inboxes are not an initial requirement.
-5. There is one workflow engine, and it is scripted: `packages/tackle_script` runs sandboxed Lua scripts whose `tackle.spawn/2` calls become ordinary delegated runs. A workflow is not implicitly an agent and needs no LLM unless a script explicitly launches one for a step. The runtime itself ships no workflow behaviour, module registry, or workflow DSL — see section 3.4.
+5. There is one workflow engine, and it is scripted: `packages/tackle_workflow` runs sandboxed Lua scripts whose `tackle.spawn/2` calls become ordinary delegated runs. A workflow is not implicitly an agent and needs no LLM unless a script explicitly launches one for a step. The runtime itself ships no workflow behaviour, module registry, or workflow DSL — see section 3.4.
 6. Fleets are lifecycle, membership, concurrency, and resource-policy boundaries. A fleet is not itself a workflow.
 7. Runtime communication initially uses correlated request/reply. General free-form agent chat, broadcast messaging, and durable mailboxes are deferred.
 8. Runtime entities are addressed through stable IDs and a Registry. PIDs are internal implementation details.
@@ -41,7 +41,7 @@ The first implementation uses these defaults:
 - A busy ephemeral child rejects additional work. General-purpose agent inboxes and queues are deferred.
 - Fleet concurrency overflow is rejected explicitly in the initial implementation rather than queued.
 - Scoped runtime processes are temporary. Lost in-memory state is not restarted or reconstructed.
-- Subagents, scripted workflows, scopes, and fleets belong to the optional `:tackle_runtime` package and its `:tackle_script` client. `Tackle.Lib` remains unaware of them. Hosts supply a `Tackle.Runtime.AgentBackend`; the root harness adapts `Tackle.Session`, while `Tackle.Phoenix` adapts `Runner`/`Store`. The runtime supplies one dedicated tool supervisor per agent.
+- Subagents, scripted workflows, scopes, and fleets belong to the optional `:tackle_runtime` package and its `:tackle_workflow` client. `Tackle.Lib` remains unaware of them. Hosts supply a `Tackle.Runtime.AgentBackend`; the root harness adapts `Tackle.Session`, while `Tackle.Phoenix` adapts `Runner`/`Store`. The runtime supplies one dedicated tool supervisor per agent.
 
 ## 2. Current foundation
 
@@ -131,7 +131,7 @@ Subagent configuration is explicit and trusted. A model may select among capabil
 ### 3.4 Scripted workflows
 
 The runtime has exactly one orchestration engine: a scripted workflow, run by
-`Tackle.Script` in `packages/tackle_script`. A script is sandboxed Lua whose
+`Tackle.Workflow` in `packages/tackle_workflow`. A script is sandboxed Lua whose
 `tackle.spawn/2` calls become ordinary delegated runs under the caller's scope,
 so allowlisted profiles, admission limits, spawn depth, structured cancellation,
 and timeouts apply unchanged. Lua is what makes sequential steps, conditional
@@ -142,7 +142,7 @@ An earlier host-defined workflow primitive (`Tackle.Runtime.Workflow`,
 `Tackle.Runtime.Workflow.Server`, `WorkflowRef`, `Runtime.start_workflow/4`,
 `await_workflow/2`) has been **removed**. It was a reactive
 `init/handle_result` coordinator, it had no production caller beyond tests and a
-benchmark, and it duplicated the script runner's process lifecycle. `Tackle.Script`
+benchmark, and it duplicated the script runner's process lifecycle. `Tackle.Workflow`
 is the replacement, and `Runtime.start_work/2` remains the seam for a host that
 needs to place some other trusted coordinator under the scope work supervisor.
 
@@ -503,7 +503,7 @@ If a model emits multiple individual subagent tool calls in one batch, those cal
 Do not build fleets by changing core tool execution policy. Parallel fan-out and aggregation that spans multiple turns, depends on intermediate results, or needs its own failure policy should still happen through either:
 
 1. an explicit batch orchestration tool that starts several child agents concurrently and awaits all results; or
-2. a scripted workflow (`tackle_script`) that starts concurrent child runs, collects correlated outcomes, and launches any aggregation step.
+2. a scripted workflow (`tackle_workflow`) that starts concurrent child runs, collects correlated outcomes, and launches any aggregation step.
 
 Substantial parallel orchestration belongs in scripted workflows. Concurrent tool execution is limited to one model-requested batch and keeps its concurrency policy explicit and host-owned.
 
@@ -868,9 +868,9 @@ the root harness. That primitive was built (`Tackle.Runtime.Workflow`,
 - its reactive `init/handle_result` callbacks could not express what scripts
   express directly, so both engines were being maintained.
 
-The shipped answer is `packages/tackle_script`: sandboxed Lua over the same
+The shipped answer is `packages/tackle_workflow`: sandboxed Lua over the same
 delegated-run primitive, with sequential steps, bounded fan-out
-(`tackle.parallel/3`), retries, and cancellation, plus an opt-in `run_script`
+(`tackle.parallel/3`), retries, and cancellation, plus an opt-in `run_workflow`
 tool and a test-verified harness seam. `Runtime.start_work/2` remains the
 runtime seam for a host that needs to place some other trusted coordinator
 under the scope work supervisor.
@@ -880,11 +880,11 @@ under the scope work supervisor.
 This task specified host-side `Runtime.request_many/3` and `Runtime.await_many/2`
 helpers for parallel fan-out. They were implemented and then removed as unused:
 the declarative request shape existed only for the workflow engine, no caller
-ever used them, and `Tackle.Script.Fanout` provides the bounded, work-conserving
+ever used them, and `Tackle.Workflow.Fanout` provides the bounded, work-conserving
 fan-out that scripts actually need, including capacity-aware retry.
 
 A host that needs a different fan-out policy builds it from
-`Runtime.request_agent/4` and `Runtime.await/2`, as `Tackle.Script.Fanout` does.
+`Runtime.request_agent/4` and `Runtime.await/2`, as `Tackle.Workflow.Fanout` does.
 
 Acceptance criteria:
 
@@ -974,7 +974,7 @@ contracts and identities
   → request/reply primitive
   → structured cancellation
   → subagent tool
-  → scripted workflows (`tackle_script`)
+  → scripted workflows (`tackle_workflow`)
   → recursive-delegation hardening
   → inspection and compatibility work
 ```
@@ -1028,7 +1028,7 @@ The following are intentionally deferred:
 - reconstruction after process or BEAM failure;
 - distributed process discovery and cross-node messaging;
 - a fleet containing several independent root-agent scopes;
-- durable workflow execution for `tackle_script` (script state and spawned runs are in-memory);
+- durable workflow execution for `tackle_workflow` (live workflow state and spawned runs are in-memory);
 - durable/replayable inboxes and queues;
 - long-lived named-agent semantics;
 - broadcast messaging;

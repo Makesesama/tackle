@@ -1,4 +1,4 @@
-defmodule Tackle.Script.Application do
+defmodule Tackle.Workflow.Application do
   @moduledoc false
 
   use Application
@@ -6,12 +6,12 @@ defmodule Tackle.Script.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      {Registry, keys: :unique, name: Tackle.Script.Registry}
+      {Registry, keys: :unique, name: Tackle.Workflow.Registry}
     ]
 
     Supervisor.start_link(children,
       strategy: :one_for_one,
-      name: Tackle.Script.Supervisor
+      name: Tackle.Workflow.Supervisor
     )
   end
 end

@@ -1,6 +1,6 @@
-# Tackle.Script
+# Tackle.Workflow
 
-`Tackle.Script` runs **Lua-scripted agent workflows** on top of
+`Tackle.Workflow` runs **Lua-scripted workflows** on top of
 [`Tackle.Runtime`](../tackle_runtime/README.md). A host — or an agent acting
 for a user — describes a flow ("scout, then plan, then implement, then
 review, then fix the review", or "spawn agents until the goal is done"), and
@@ -12,23 +12,23 @@ tackle_lib
     ↑
 tackle_runtime
     ↑
-tackle_script
+tackle_workflow
 ```
 
-Scripts are a *front-end* to the runtime's existing primitives: every
+Workflows are a *front-end* to the runtime's existing primitives: every
 `tackle.spawn` goes through the same allowlisted profiles, admission limits,
-spawn depth, and cancellation as the subagent tool. A script is deterministic,
+spawn depth, and cancellation as the subagent tool. A workflow is deterministic,
 auditable, and re-runnable in a way "the model orchestrates in its head" is not.
 
-## The script surface
+## The workflow surface
 
-Scripts call the `tackle` table (`Tackle.Script.API`):
+Workflows call the `tackle` table (`Tackle.Workflow.API`):
 
 * `tackle.spawn(profile, prompt)` — starts one delegated run and returns an
   opaque run handle immediately, so several spawns overlap;
-* `tackle.await(run)` — blocks the script until the run settles and returns
+* `tackle.await(run)` — blocks the workflow until the run settles and returns
   `{ok, status, text}`; expected failures are returned, never raised, so the
-  script owns the failure policy;
+  workflow owns the failure policy;
 * `tackle.parallel(items, fn, opts)` — bounded fan-out: one delegated run per
   item, at most `limit` in flight, one result table per item in input order;
 * `tackle.cancel(run, reason)` — cooperative cancellation of one run;
@@ -71,7 +71,7 @@ end
   keys.
 * The limit defaults to the scope's concurrency ceiling — the smaller of its
   `max_children_per_agent` and `max_concurrent_turns` limits — and is clamped
-  to it: a script cannot widen its own concurrency by asking for more.
+  to it: a workflow cannot widen its own concurrency by asking for more.
 * Every item produces exactly one table in input order —
   `{index = 2, ok = true, status = "ok", text = "..."}`. `status` is the run's
   outcome status, or `"callback_error"` when the callback raised or returned
@@ -87,9 +87,9 @@ end
   `"capacity"` item may well succeed in a later call.
 * Item failures are returned, never raised, and runs are never retried: a
   retried agent run is a second paid model call that may answer differently.
-  The script decides what to do with a failed item.
+  The workflow decides what to do with a failed item.
 
-Overlapping spawns remain available directly when the script needs finer
+Overlapping spawns remain available directly when the workflow needs finer
 control:
 
 ```lua
@@ -99,63 +99,63 @@ local first = tackle.await(a)
 local second = tackle.await(b)
 ```
 
-## Running a script
+## Running a workflow
 
 ```elixir
-{:ok, ref} = Tackle.Script.run(handle, script, timeout: :timer.minutes(10))
-Tackle.Script.await(ref, 30_000)
+{:ok, ref} = Tackle.Workflow.run(handle, script, timeout: :timer.minutes(10))
+Tackle.Workflow.await(ref, 30_000)
 #=> {:ok, ["final review text"]}
 ```
 
 `run/3` starts one temporary runner under the scope work supervisor and
-returns a stable `Tackle.Script.Ref`. `await/2` waits for the settled result:
-`{:ok, values}` — the values the script returned — or `{:error, reason}` for
-script errors, cancellation, and timeouts. `cancel/2` stops the script and
+returns a stable `Tackle.Workflow.Ref`. `await/2` waits for the settled result:
+`{:ok, values}` — the values the workflow returned — or `{:error, reason}` for
+workflow errors, cancellation, and timeouts. `cancel/2` stops the workflow and
 its runs. Stopping the scope tears everything down.
 
-Two options narrow a script beyond its parent's grants. `:profiles` is an
-explicit allowlist of the profile names the script may spawn; without it, the
+Two options narrow a workflow beyond its parent's grants. `:profiles` is an
+explicit allowlist of the profile names the workflow may spawn; without it, the
 scope's own trusted profiles decide. `:owner` is a PID whose lifetime the
-script shares, so a request that goes away does not leave delegated runs
+workflow shares, so a request that goes away does not leave delegated runs
 behind:
 
 ```elixir
 {:ok, ref} =
-  Tackle.Script.run(handle, script,
+  Tackle.Workflow.run(handle, script,
     profiles: ["scout", "worker"],
     owner: task_pid
   )
 ```
 
-## Running a script from an agent
+## Running a workflow from an agent
 
-`Tackle.Script.Tool` is the model-facing surface of the same runner: an opt-in
-`Tackle.Lib.Tool` named `run_script` that an agent calls with Lua source. The
+`Tackle.Workflow.Tool` is the model-facing surface of the same runner: an opt-in
+`Tackle.Lib.Tool` named `run_workflow` that an agent calls with Lua source. The
 host grants it like any other trusted tool and, optionally, narrows the
-profiles scripts may spawn:
+profiles workflows may spawn:
 
 ```elixir
 {:ok, spec} =
   Tackle.Coding.scope_spec(
-    root_tools: [Tackle.Script.Tool],
-    overrides: [context: %{script_profiles: ["scout", "worker"]}]
+    root_tools: [Tackle.Workflow.Tool],
+    overrides: [context: %{workflow_profiles: ["scout", "worker"]}]
   )
 ```
 
 * The tool needs the same runtime handle and delegation grant as the `subagent`
   tool; without either it returns a model-facing refusal instead of running.
-* `:script_profiles` is *host* configuration, never script input, and it can
+* `:workflow_profiles` is *host* configuration, never workflow input, and it can
   only narrow what the scope already allows. Model-visible data can therefore
   never widen delegation. Without it, the scope's trusted profiles decide — the
   same set `subagent` can already name.
-* The values the script returns are the tool result; script errors, rejected
+* The values the workflow returns are the tool result; workflow errors, rejected
   spawns, cancellations, and deadline timeouts are returned as readable
   messages the agent can act on.
-* The tool call owns the script: the script is cancelled when the call ends
+* The tool call owns the workflow: the workflow is cancelled when the call ends
   (including a cancelled turn, where the harness runs the tool body in its own
   supervised process) and when it exceeds the session's `workflow_timeout`.
-* Script-spawned runs are not yet reported as `subagent_*` progress events, so a
-  long script is opaque to a frontend beyond its tool call; `tackle.log/1` falls
+* Workflow-spawned runs are not yet reported as `subagent_*` progress events, so a
+  long workflow is opaque to a frontend beyond its tool call; `tackle.log/1` falls
   back to the host's `Logger`.
 
 ## Guarantees
@@ -164,19 +164,19 @@ profiles scripts may spawn:
   file system, no network, no `os.execute`, no `require`/`load`. A
   deterministic instruction budget (default 1,000,000 VM instructions,
   overridable) stops spin loops that never await.
-* **Bounded.** The script runs under an absolute deadline (default: the
+* **Bounded.** The workflow runs under an absolute deadline (default: the
   parent's `workflow_timeout` limit). `tackle.parallel/3` keeps at most the
   scope's concurrency ceiling in flight, clamped to the requested `limit`.
-  Cancellation kills the script process tree; the runtime cancels every run
-  the script owns, however the script ends.
-* **Authorized.** A script may only delegate as far as its parent may: the
+  Cancellation kills the workflow process tree; the runtime cancels every run
+  the workflow owns, however the workflow ends.
+* **Authorized.** A workflow may only delegate as far as its parent may: the
   runner builds its handle from the parent agent's effective grants, exactly
   as the subagent tool does. An explicit `:profiles` allowlist can
-  only narrow that further, so a host can hand out scripted delegation without
+  only narrow that further, so a host can hand out workflow delegation without
   handing out every profile the session has.
 * **Fail-fast with policy hooks.** Argument errors and rejected spawns raise
   catchable Lua errors with source lines (`pcall`), while settled failures
-  arrive as outcome tables the script can branch on. `tackle.parallel` is the
+  arrive as outcome tables the workflow can branch on. `tackle.parallel` is the
   one exception: argument errors raise, but a spawn the runtime refuses is
   reported on the item it belongs to.
 
@@ -185,6 +185,6 @@ profiles scripts may spawn:
 This package is optional; nothing in the harness, CLI, or web app depends on it
 at runtime. (The harness's own test suite has a test-only dependency, to prove
 that a real session can grant and run this tool.) Hosts that want scripted flows
-add `:tackle_script` and either call `Tackle.Script.run/3` with a handle from
-their own runtime integration, or grant `Tackle.Script.Tool` to a session's root
+add `:tackle_workflow` and either call `Tackle.Workflow.run/3` with a handle from
+their own runtime integration, or grant `Tackle.Workflow.Tool` to a session's root
 agent.

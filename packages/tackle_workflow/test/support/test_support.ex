@@ -1,10 +1,10 @@
-defmodule Tackle.Script.TestSupport do
+defmodule Tackle.Workflow.TestSupport do
   @moduledoc false
 
   import ExUnit.Assertions
 
   # Test helpers for scripted-workflow tests: a scope with the deterministic
-  # `Tackle.Script.TestBackend` and an authorized runtime handle.
+  # `Tackle.Workflow.TestBackend` and an authorized runtime handle.
 
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentSpec
@@ -40,7 +40,7 @@ defmodule Tackle.Script.TestSupport do
 
     spec =
       ScopeSpec.new!(
-        backend: Tackle.Script.TestBackend,
+        backend: Tackle.Workflow.TestBackend,
         root_spec: agent_spec("root", root_opts),
         limits: Keyword.get(opts, :limits, Limits.default()),
         profiles: Keyword.get(opts, :profiles, %{})

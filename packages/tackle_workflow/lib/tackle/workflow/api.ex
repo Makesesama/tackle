@@ -1,8 +1,8 @@
-defmodule Tackle.Script.API do
+defmodule Tackle.Workflow.API do
   @moduledoc """
   Lua API surface exposed to workflow scripts.
 
-  Scripts call these functions through the global `tackle` table:
+  Workflow scripts call these functions through the global `tackle` table:
 
       local run = tackle.spawn("scout", "Map the code paths for the change.")
       local outcome = tackle.await(run)
@@ -17,7 +17,7 @@ defmodule Tackle.Script.API do
   * `tackle.await(run)` blocks the script until the run settles and returns an
     outcome table with `ok`, `status`, and `text` fields. Expected failures
     (agent errors, cancellations, timeouts) are returned, never raised, so
-    scripts decide their own failure policy.
+    the workflow decides its own failure policy.
   * `tackle.parallel(items, fn, opts)` is bounded fan-out: it starts one
     delegated run per item and returns one result table per item, in input
     order. See below.
@@ -44,7 +44,7 @@ defmodule Tackle.Script.API do
   any in-flight run settles, so a slow run never holds a free slot. The limit
   defaults to the scope's concurrency ceiling — the smaller of its
   `max_children_per_agent` and `max_concurrent_turns` limits — and is clamped
-  to it, so a script cannot widen its own concurrency by asking for more.
+  to it, so a workflow cannot widen its own concurrency by asking for more.
 
   Every item produces exactly one table, in input order:
 
@@ -66,17 +66,17 @@ defmodule Tackle.Script.API do
   `text` carries the answer for a successful run and the reason otherwise.
   Item failures are returned, never raised, and runs are never retried: a
   retried agent run is a second paid model call that may answer differently.
-  The script decides what to do with a failed item.
+  The workflow decides what to do with a failed item.
 
   Argument errors raise catchable Lua errors carrying the script's source line,
-  so scripts can implement policy with `pcall`. `tackle.spawn` also raises when
+  so a workflow can implement policy with `pcall`. `tackle.spawn` also raises when
   the runtime refuses a run; `tackle.parallel` reports a refusal on the item it
   belongs to instead.
 
   ## Profile allowlist
 
-  A host may run a script with an explicit allowlist of profile names
-  (`Tackle.Script.run/3`'s `:profiles` option, which `Tackle.Script.Tool`
+  A host may run a workflow with an explicit allowlist of profile names
+  (`Tackle.Workflow.run/3`'s `:profiles` option, which `Tackle.Workflow.Tool`
   forwards from its session context). The allowlist bounds this API and nothing
   else: `tackle.spawn` raises, and `tackle.parallel` reports `spawn_error` on
   the item, for every profile outside it. Without an allowlist, the scope's own
@@ -90,7 +90,7 @@ defmodule Tackle.Script.API do
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.RunRef
-  alias Tackle.Script.Fanout
+  alias Tackle.Workflow.Fanout
 
   @parallel_helpers :parallel_helpers
   @parallel_options ["limit"]
@@ -196,7 +196,7 @@ defmodule Tackle.Script.API do
   @doc "Reports one progress message to the host's log callback."
   deflua log(message) when is_binary(message), state do
     %{server: server} = context!(state)
-    send(server, {:script_log, message})
+    send(server, {:workflow_log, message})
     {true, state}
   end
 
@@ -271,7 +271,7 @@ defmodule Tackle.Script.API do
     end
   end
 
-  # A script may not widen its own concurrency: the limits it inherited are the
+  # A workflow may not widen its own concurrency: the limits it inherited are the
   # ceiling for its fan-out too.
   defp parallel_ceiling(%Handle{limits: %Limits{} = limits}) do
     max(1, min(limits.max_children_per_agent, limits.max_concurrent_turns))
@@ -352,14 +352,14 @@ defmodule Tackle.Script.API do
   # Argument and context helpers --------------------------------------------------
 
   # `nil` means the host left the decision to the scope's trusted profile
-  # allowlist; a list is the host's explicit narrowing for scripts.
+  # allowlist; a list is the host's explicit narrowing for workflows.
   defp allowed_profile?(state, profile) do
     %{profiles: profiles} = context!(state)
     is_nil(profiles) or profile in profiles
   end
 
   defp profile_not_allowed(profile) do
-    "profile #{inspect(profile)} is not allowlisted for scripts"
+    "profile #{inspect(profile)} is not allowlisted for workflows"
   end
 
   defp run_ref!(state, run) do
@@ -370,9 +370,9 @@ defmodule Tackle.Script.API do
   end
 
   defp context!(state) do
-    case Lua.get_private(state, :tackle_script) do
+    case Lua.get_private(state, :tackle_workflow) do
       {:ok, context} -> context
-      :error -> runtime_exception!("script runtime context is unavailable")
+      :error -> runtime_exception!("workflow runtime context is unavailable")
     end
   end
 

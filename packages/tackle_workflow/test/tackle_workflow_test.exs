@@ -1,14 +1,14 @@
-defmodule Tackle.ScriptTest do
+defmodule Tackle.WorkflowTest do
   @moduledoc false
 
   use ExUnit.Case, async: false
 
-  import Tackle.Script.TestSupport
+  import Tackle.Workflow.TestSupport
 
   alias Tackle.Runtime
-  alias Tackle.Script
+  alias Tackle.Workflow
 
-  @script_timeout 5_000
+  @workflow_timeout 5_000
 
   test "a sequential flow feeds each outcome into the next request" do
     scope =
@@ -26,8 +26,8 @@ defmodule Tackle.ScriptTest do
     return tackle.await(tackle.spawn("worker", "implement: " .. plan.text)).text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
-    assert {:ok, ["implement: plan: map the code"]} = Script.await(ref, @script_timeout)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ["implement: plan: map the code"]} = Workflow.await(ref, @workflow_timeout)
   end
 
   test "spawned runs overlap and results correlate regardless of completion order" do
@@ -42,7 +42,7 @@ defmodule Tackle.ScriptTest do
     return first.text .. "|" .. second.text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
     assert_receive {:agent_called, first_agent}, 2_000
     assert_receive {:agent_called, second_agent}, 2_000
@@ -51,7 +51,7 @@ defmodule Tackle.ScriptTest do
     send(second_agent, {:respond, "second"})
     send(first_agent, {:respond, "first"})
 
-    assert {:ok, ["first|second"]} = Script.await(ref, @script_timeout)
+    assert {:ok, ["first|second"]} = Workflow.await(ref, @workflow_timeout)
   end
 
   test "a fan-out runs one agent per item and reports results in input order" do
@@ -68,10 +68,10 @@ defmodule Tackle.ScriptTest do
     return table.concat(out, " | ")
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
     assert {:ok, ["1/ok/1:alpha | 2/ok/2:beta | 3/ok/3:gamma"]} =
-             Script.await(ref, @script_timeout)
+             Workflow.await(ref, @workflow_timeout)
   end
 
   test "a fan-out defaults to the scope ceiling and reuses a freed slot" do
@@ -84,7 +84,7 @@ defmodule Tackle.ScriptTest do
     return #results
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
     # The default scope limits allow four children, so four runs may overlap.
     called =
@@ -101,7 +101,7 @@ defmodule Tackle.ScriptTest do
 
     Enum.each(rest ++ [fifth], &send(&1, {:respond, "done"}))
 
-    assert {:ok, [5]} = Script.await(ref, @script_timeout)
+    assert {:ok, [5]} = Workflow.await(ref, @workflow_timeout)
   end
 
   test "a fan-out reuses the slot of any settled run, not only the oldest" do
@@ -116,7 +116,7 @@ defmodule Tackle.ScriptTest do
     return table.concat(statuses, ",")
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
     assert_receive {:agent_called, oldest}, 2_000
     assert_receive {:agent_called, younger}, 2_000
@@ -131,7 +131,7 @@ defmodule Tackle.ScriptTest do
     send(oldest, {:respond, "oldest"})
     send(third, {:respond, "third"})
 
-    assert {:ok, ["ok,ok,ok"]} = Script.await(ref, @script_timeout)
+    assert {:ok, ["ok,ok,ok"]} = Workflow.await(ref, @workflow_timeout)
   end
 
   test "a fan-out reports its item when the scope stays at capacity" do
@@ -155,9 +155,9 @@ defmodule Tackle.ScriptTest do
     return results[1].status, results[1].text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
-    assert {:ok, [status, reason]} = Script.await(ref, @script_timeout)
+    assert {:ok, [status, reason]} = Workflow.await(ref, @workflow_timeout)
     assert status == "capacity"
     assert reason =~ "max_children_per_agent"
   end
@@ -178,7 +178,7 @@ defmodule Tackle.ScriptTest do
     return #results
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
     assert_receive {:agent_called, first}, 2_000
     assert_receive {:agent_called, second}, 2_000
@@ -192,7 +192,7 @@ defmodule Tackle.ScriptTest do
     send(second, {:respond, "two"})
     send(third, {:respond, "three"})
 
-    assert {:ok, [3]} = Script.await(ref, @script_timeout)
+    assert {:ok, [3]} = Workflow.await(ref, @workflow_timeout)
   end
 
   test "a fan-out reports per-item failures instead of raising" do
@@ -219,9 +219,9 @@ defmodule Tackle.ScriptTest do
     return table.concat(out, " | "), results[4].text, results[5].text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
-    assert {:ok, [summary, callback_error, bad_request]} = Script.await(ref, @script_timeout)
+    assert {:ok, [summary, callback_error, bad_request]} = Workflow.await(ref, @workflow_timeout)
 
     assert summary ==
              "1/true/ok | 2/false/error | 3/false/spawn_error | 4/false/callback_error | " <>
@@ -244,8 +244,8 @@ defmodule Tackle.ScriptTest do
     return identity, results[1].text, results[2].text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
-    assert {:ok, [2, "alpha", "beta"]} = Script.await(ref, @script_timeout)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, [2, "alpha", "beta"]} = Workflow.await(ref, @workflow_timeout)
   end
 
   test "an empty item sequence runs nothing and returns no results" do
@@ -256,8 +256,8 @@ defmodule Tackle.ScriptTest do
     return #results
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
-    assert {:ok, [0]} = Script.await(ref, @script_timeout)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, [0]} = Workflow.await(ref, @workflow_timeout)
     refute_received {:agent_called, _pid}
   end
 
@@ -282,10 +282,10 @@ defmodule Tackle.ScriptTest do
            rejects(function() tackle.parallel({"alpha"}, request, {limits = 2}) end)
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
     assert {:ok, [keyed, mixed, holey, not_a_table, not_a_function, bad_limit, unknown_option]} =
-             Script.await(ref, @script_timeout)
+             Workflow.await(ref, @workflow_timeout)
 
     assert keyed =~ "1..n sequence table"
     assert mixed =~ "1..n sequence table"
@@ -310,11 +310,11 @@ defmodule Tackle.ScriptTest do
     return results[1].status, results[1].text, results[2].status, results[2].text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
-    assert {:ok, ["ok", "a:nested", "ok", "b:b"]} = Script.await(ref, @script_timeout)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ["ok", "a:nested", "ok", "b:b"]} = Workflow.await(ref, @workflow_timeout)
   end
 
-  test "cancelling a script cancels every run a fan-out started" do
+  test "cancelling a workflow cancels every run a fan-out started" do
     scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :manual)})
 
     script = """
@@ -323,18 +323,18 @@ defmodule Tackle.ScriptTest do
     end, {limit = 2})
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
     assert_receive {:agent_called, first}, 2_000
     assert_receive {:agent_called, second}, 2_000
 
-    assert :ok = Script.cancel(ref, :user_cancelled)
-    assert {:error, {:cancelled, :user_cancelled}} = Script.await(ref, @script_timeout)
+    assert :ok = Workflow.cancel(ref, :user_cancelled)
+    assert {:error, {:cancelled, :user_cancelled}} = Workflow.await(ref, @workflow_timeout)
 
     assert_eventually(fn -> not Process.alive?(first) and not Process.alive?(second) end)
   end
 
-  test "failed runs return outcome tables so scripts own the failure policy" do
+  test "failed runs return outcome tables so workflows own the failure policy" do
     scope =
       start_scope(
         profiles: %{
@@ -351,8 +351,8 @@ defmodule Tackle.ScriptTest do
     return outcome.text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
-    assert {:ok, ["recovered from: error"]} = Script.await(ref, @script_timeout)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ["recovered from: error"]} = Workflow.await(ref, @workflow_timeout)
   end
 
   test "rejected spawns raise catchable Lua errors with source lines" do
@@ -368,22 +368,22 @@ defmodule Tackle.ScriptTest do
     return "not reached"
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
-    assert {:ok, [message]} = Script.await(ref, @script_timeout)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, [message]} = Workflow.await(ref, @workflow_timeout)
     assert message =~ "caught:"
     assert message =~ "unknown_profile"
   end
 
-  test "an uncaught script error settles with the failing source line" do
+  test "an uncaught error settles with the failing source line" do
     scope = start_scope(profiles: %{})
 
-    assert {:ok, ref} = Script.run(handle(scope), ~s|tackle.spawn("missing", "go")|)
+    assert {:ok, ref} = Workflow.run(handle(scope), ~s|tackle.spawn("missing", "go")|)
 
-    assert {:error, %{message: message}} = Script.await(ref, @script_timeout)
+    assert {:error, %{message: message}} = Workflow.await(ref, @workflow_timeout)
     assert message =~ "unknown_profile"
   end
 
-  test "cancelling a script cancels the worker and its outstanding runs" do
+  test "cancelling a workflow cancels the worker and its outstanding runs" do
     scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :block)})
 
     script = """
@@ -391,57 +391,57 @@ defmodule Tackle.ScriptTest do
     return tackle.await(run).text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
 
     assert_receive {:agent_called, agent_pid}, 2_000
 
-    assert :ok = Script.cancel(ref, :user_cancelled)
-    assert {:error, {:cancelled, :user_cancelled}} = Script.await(ref, @script_timeout)
+    assert :ok = Workflow.cancel(ref, :user_cancelled)
+    assert {:error, {:cancelled, :user_cancelled}} = Workflow.await(ref, @workflow_timeout)
 
     assert_eventually(fn -> not Process.alive?(agent_pid) end)
   end
 
-  test "the script deadline bounds a blocked flow" do
+  test "the workflow deadline bounds a blocked flow" do
     scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :block)})
 
     script = """
     return tackle.await(tackle.spawn("worker", "go")).text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script, timeout: 100)
-    assert {:error, {:cancelled, :script_timeout}} = Script.await(ref, @script_timeout)
+    assert {:ok, ref} = Workflow.run(handle(scope), script, timeout: 100)
+    assert {:error, {:cancelled, :workflow_timeout}} = Workflow.await(ref, @workflow_timeout)
   end
 
   test "the instruction budget stops spin loops that never await" do
     scope = start_scope(profiles: %{})
 
-    assert {:ok, ref} = Script.run(handle(scope), "while true do end", max_instructions: 10_000)
+    assert {:ok, ref} = Workflow.run(handle(scope), "while true do end", max_instructions: 10_000)
 
-    assert {:error, %{message: message}} = Script.await(ref, @script_timeout)
+    assert {:error, %{message: message}} = Workflow.await(ref, @workflow_timeout)
     assert message =~ "instruction budget exceeded"
   end
 
-  test "script syntax errors settle as compile errors" do
+  test "syntax errors settle as compile errors" do
     scope = start_scope(profiles: %{})
 
-    assert {:ok, ref} = Script.run(handle(scope), "local = broken")
-    assert {:error, {:script_compile_error, message}} = Script.await(ref, @script_timeout)
+    assert {:ok, ref} = Workflow.run(handle(scope), "local = broken")
+    assert {:error, {:workflow_compile_error, message}} = Workflow.await(ref, @workflow_timeout)
     assert message =~ "Failed to compile Lua"
   end
 
-  test "sandboxed stdlib functions are unavailable to scripts" do
+  test "sandboxed stdlib functions are unavailable in a workflow" do
     scope = start_scope(profiles: %{})
 
     script = """
     local ok, err = pcall(function()
-      os.execute("touch /tmp/tackle-script-escape")
+      os.execute("touch /tmp/tackle-workflow-escape")
     end)
     return ok
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
-    assert {:ok, [false]} = Script.await(ref, @script_timeout)
-    refute File.exists?("/tmp/tackle-script-escape")
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, [false]} = Workflow.await(ref, @workflow_timeout)
+    refute File.exists?("/tmp/tackle-workflow-escape")
   end
 
   test "progress logs reach the host's log callback" do
@@ -456,42 +456,42 @@ defmodule Tackle.ScriptTest do
     """
 
     assert {:ok, ref} =
-             Script.run(handle(scope), script,
+             Workflow.run(handle(scope), script,
                log: fn message -> send(test_pid, {:log, message}) end
              )
 
-    assert {:ok, ["go"]} = Script.await(ref, @script_timeout)
+    assert {:ok, ["go"]} = Workflow.await(ref, @workflow_timeout)
 
     assert_received {:log, "phase one"}
     assert_received {:log, "phase two: go"}
   end
 
-  test "a completed script releases its registry entry" do
+  test "a completed workflow releases its registry entry" do
     scope = start_scope(profiles: %{"worker" => agent_spec("worker")})
 
     script = """
     return tackle.await(tackle.spawn("worker", "go")).text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
-    assert {:ok, ["go"]} = Script.await(ref, @script_timeout)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ["go"]} = Workflow.await(ref, @workflow_timeout)
 
-    assert_eventually(fn -> Script.await(ref) == {:error, :not_found} end)
+    assert_eventually(fn -> Workflow.await(ref) == {:error, :not_found} end)
   end
 
-  test "stopping the scope tears down a running script and its runs" do
+  test "stopping the scope tears down a running workflow and its runs" do
     scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :block)})
 
     script = """
     return tackle.await(tackle.spawn("worker", "go")).text
     """
 
-    assert {:ok, ref} = Script.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
     assert_receive {:agent_called, agent_pid}, 2_000
 
     :ok = Runtime.stop_scope(scope.scope_ref)
 
     assert_eventually(fn -> not Process.alive?(agent_pid) end)
-    assert {:error, :not_found} = Script.await(ref)
+    assert {:error, :not_found} = Workflow.await(ref)
   end
 end

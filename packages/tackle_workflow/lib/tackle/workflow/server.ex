@@ -1,23 +1,23 @@
-defmodule Tackle.Script.Server do
+defmodule Tackle.Workflow.Server do
   @moduledoc """
-  Generic process that runs one Lua workflow script.
+  Generic process that runs one Lua workflow.
 
   The server owns the physical lifecycle: it starts one linked worker process
-  that evaluates the script, arms the deadline, routes progress logs, cancels
+  that evaluates the Lua source, arms the deadline, routes progress logs, cancels
   the worker on cancellation or timeout, and releases its registry entry when
   it stops. It is a temporary child of the scope work supervisor and is never
   restarted.
 
   The worker evaluates the script with the sandboxed `Lua` VM. `tackle.await/1`
-  blocks the worker — not this server — so `Tackle.Script.await/2` and
-  cancellation stay responsive while the script is mid-flight. Delegated runs
+  blocks the worker — not this server — so `Tackle.Workflow.await/2` and
+  cancellation stay responsive while the workflow is mid-flight. Delegated runs
   are requested by the worker, so the runtime cancels them automatically when
-  the worker dies; a script therefore owns every run it spawns.
+  the worker dies; a workflow therefore owns every run it spawns.
 
   The server also owns the host's `:profiles` allowlist and optional `:owner`.
-  The allowlist travels to the API as script runtime context, where it bounds
-  every spawn. A terminated owner cancels the script exactly like a script
-  deadline would, so a script never outlives the request that started it.
+  The allowlist travels to the API as workflow runtime context, where it bounds
+  every spawn. A terminated owner cancels the workflow exactly like its own
+  deadline would, so a workflow never outlives the request that started it.
   """
 
   use GenServer, restart: :temporary
@@ -25,14 +25,14 @@ defmodule Tackle.Script.Server do
   require Logger
 
   alias Tackle.Runtime.Handle
-  alias Tackle.Script
-  alias Tackle.Script.Ref
+  alias Tackle.Workflow
+  alias Tackle.Workflow.Ref
 
   @default_linger 500
   @default_max_instructions 1_000_000
 
   @type arg :: %{
-          required(:script_ref) => Ref.t(),
+          required(:workflow_ref) => Ref.t(),
           required(:handle) => Handle.t(),
           required(:script) => String.t(),
           optional(:profiles) => [String.t()] | nil,
@@ -44,14 +44,14 @@ defmodule Tackle.Script.Server do
 
   @doc false
   @spec start_link(arg()) :: GenServer.on_start()
-  def start_link(%{script_ref: %Ref{}} = arg) do
-    GenServer.start_link(__MODULE__, arg, name: via(arg.script_ref))
+  def start_link(%{workflow_ref: %Ref{}} = arg) do
+    GenServer.start_link(__MODULE__, arg, name: via(arg.workflow_ref))
   end
 
   @doc false
   def child_spec(arg) do
     %{
-      id: {__MODULE__, arg.script_ref.script_id},
+      id: {__MODULE__, arg.workflow_ref.workflow_id},
       start: {__MODULE__, :start_link, [arg]},
       restart: :temporary,
       shutdown: 5_000
@@ -59,16 +59,16 @@ defmodule Tackle.Script.Server do
   end
 
   @doc false
-  def via(%Ref{scope_id: scope_id, script_id: script_id}) do
-    {:via, Registry, {Tackle.Script.Registry, {scope_id, script_id}}}
+  def via(%Ref{scope_id: scope_id, workflow_id: workflow_id}) do
+    {:via, Registry, {Tackle.Workflow.Registry, {scope_id, workflow_id}}}
   end
 
-  @doc "Waits for the script's terminal result."
+  @doc "Waits for the workflow's terminal result."
   @spec await(GenServer.server(), timeout()) :: term()
   def await(server, timeout \\ :infinity),
     do: GenServer.call(server, {:await, timeout}, :infinity)
 
-  @doc "Requests cooperative cancellation of the script and its runs."
+  @doc "Requests cooperative cancellation of the workflow and its runs."
   @spec cancel(GenServer.server(), term()) :: :ok
   def cancel(server, reason \\ :cancelled), do: GenServer.cast(server, {:cancel, reason})
 
@@ -77,7 +77,7 @@ defmodule Tackle.Script.Server do
     Process.flag(:trap_exit, true)
 
     state = %{
-      script_ref: arg.script_ref,
+      workflow_ref: arg.workflow_ref,
       handle: arg.handle,
       script: arg.script,
       profiles: Map.get(arg, :profiles),
@@ -107,7 +107,7 @@ defmodule Tackle.Script.Server do
 
     worker =
       spawn_link(fn ->
-        send(server, {:script_finished, eval_script(arg)})
+        send(server, {:workflow_finished, eval_script(arg)})
       end)
 
     state = %{state | worker: worker, worker_monitor: Process.monitor(worker)}
@@ -124,12 +124,12 @@ defmodule Tackle.Script.Server do
   end
 
   @impl true
-  def handle_cast({:cancel, reason}, state), do: {:noreply, cancel_script(state, reason)}
+  def handle_cast({:cancel, reason}, state), do: {:noreply, cancel_workflow(state, reason)}
 
   @impl true
-  def handle_info({:script_finished, result}, state), do: {:noreply, settle(state, result)}
+  def handle_info({:workflow_finished, result}, state), do: {:noreply, settle(state, result)}
 
-  def handle_info({:script_log, message}, state) do
+  def handle_info({:workflow_log, message}, state) do
     log(state, message)
     {:noreply, state}
   end
@@ -138,14 +138,14 @@ defmodule Tackle.Script.Server do
     # A result message and the worker's DOWN have no delivery-order guarantee.
     # Defer the termination decision until any in-flight result in the current
     # mailbox has been processed.
-    Process.send_after(self(), {:script_worker_down, reason}, 0)
+    Process.send_after(self(), {:workflow_worker_down, reason}, 0)
     {:noreply, state}
   end
 
-  # A terminated owner means the request that started this script is gone, so
-  # the script and the runs it owns go with it.
+  # A terminated owner means the request that started this workflow is gone, so
+  # the workflow and the runs it owns go with it.
   def handle_info({:DOWN, monitor, :process, _pid, reason}, %{owner_monitor: monitor} = state),
-    do: {:noreply, cancel_script(state, {:owner_terminated, reason})}
+    do: {:noreply, cancel_workflow(state, {:owner_terminated, reason})}
 
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
     case Map.pop(state.awaiters, monitor) do
@@ -158,20 +158,20 @@ defmodule Tackle.Script.Server do
     end
   end
 
-  def handle_info({:script_worker_down, _reason}, %{result: result} = state)
+  def handle_info({:workflow_worker_down, _reason}, %{result: result} = state)
       when not is_nil(result),
       do: {:noreply, state}
 
-  def handle_info({:script_worker_down, reason}, state),
-    do: {:noreply, settle(state, {:error, {:script_worker_terminated, reason}})}
+  def handle_info({:workflow_worker_down, reason}, state),
+    do: {:noreply, settle(state, {:error, {:workflow_worker_terminated, reason}})}
 
-  def handle_info({:script_timeout, :deadline}, state),
-    do: {:noreply, cancel_script(state, :script_timeout)}
+  def handle_info({:workflow_timeout, :deadline}, state),
+    do: {:noreply, cancel_workflow(state, :workflow_timeout)}
 
-  def handle_info({:script_timeout, :await}, state),
-    do: {:noreply, settle(state, {:error, :script_timeout})}
+  def handle_info({:workflow_timeout, :await}, state),
+    do: {:noreply, settle(state, {:error, :workflow_timeout})}
 
-  def handle_info({:script_timeout, :linger}, state), do: {:stop, :normal, state}
+  def handle_info({:workflow_timeout, :linger}, state), do: {:stop, :normal, state}
 
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
@@ -188,26 +188,26 @@ defmodule Tackle.Script.Server do
 
     lua =
       Lua.new(lua_opts)
-      |> Lua.put_private(:tackle_script, %{
+      |> Lua.put_private(:tackle_workflow, %{
         handle: arg.handle,
         server: arg.server,
         profiles: Map.get(arg, :profiles)
       })
-      |> Lua.load_api(Script.API)
+      |> Lua.load_api(Workflow.API)
 
     {results, _lua} = Lua.eval!(lua, arg.script, source: "script")
     {:ok, results}
   rescue
     e in [Lua.CompilerException] ->
-      {:error, {:script_compile_error, Exception.message(e)}}
+      {:error, {:workflow_compile_error, Exception.message(e)}}
 
     e in [Lua.RuntimeException] ->
       {:error, %{message: Exception.message(e), line: e.line}}
 
     error ->
-      {:error, {:script_crashed, Exception.message(error)}}
+      {:error, {:workflow_crashed, Exception.message(error)}}
   catch
-    :exit, reason -> {:error, {:script_exit, reason}}
+    :exit, reason -> {:error, {:workflow_exit, reason}}
   end
 
   # Lifecycle ----------------------------------------------------------------------
@@ -215,9 +215,9 @@ defmodule Tackle.Script.Server do
   defp monitor_owner(nil), do: nil
   defp monitor_owner(pid) when is_pid(pid), do: Process.monitor(pid)
 
-  defp cancel_script(%{result: result} = state, _reason) when not is_nil(result), do: state
+  defp cancel_workflow(%{result: result} = state, _reason) when not is_nil(result), do: state
 
-  defp cancel_script(state, reason) do
+  defp cancel_workflow(state, reason) do
     kill_worker(state)
     settle(state, {:error, {:cancelled, reason}})
   end
@@ -232,7 +232,7 @@ defmodule Tackle.Script.Server do
       GenServer.reply(from, result)
     end)
 
-    linger = Process.send_after(self(), {:script_timeout, :linger}, @default_linger)
+    linger = Process.send_after(self(), {:workflow_timeout, :linger}, @default_linger)
     %{state | result: result, awaiters: %{}, linger_timer: linger}
   end
 
@@ -265,7 +265,7 @@ defmodule Tackle.Script.Server do
   defp arm_deadline(state) do
     case state.timeout do
       timeout when is_integer(timeout) and timeout > 0 ->
-        timer = Process.send_after(self(), {:script_timeout, :deadline}, timeout)
+        timer = Process.send_after(self(), {:workflow_timeout, :deadline}, timeout)
         %{state | deadline_timer: timer}
 
       _other ->
@@ -277,7 +277,7 @@ defmodule Tackle.Script.Server do
     do: state
 
   defp arm_await_timeout(state, timeout) when is_integer(timeout) and timeout > 0 do
-    timer = Process.send_after(self(), {:script_timeout, :await}, timeout)
+    timer = Process.send_after(self(), {:workflow_timeout, :await}, timeout)
     %{state | await_timer: timer}
   end
 
@@ -293,5 +293,5 @@ defmodule Tackle.Script.Server do
   end
 
   defp log(%{log: callback}, message) when is_function(callback, 1), do: callback.(message)
-  defp log(_state, message), do: Logger.info("[tackle_script] #{message}")
+  defp log(_state, message), do: Logger.info("[tackle_workflow] #{message}")
 end

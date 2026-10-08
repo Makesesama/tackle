@@ -37,8 +37,8 @@ defmodule Tackle.MixProject do
       {:tackle_exec, path: "../tackle_exec"},
       # Test-only: an optional host plugin, used to prove that a host can grant
       # its model-facing tool to a real harness session. The harness itself
-      # neither requires nor starts `tackle_script`.
-      {:tackle_script, path: "../tackle_script", only: :test},
+      # neither requires nor starts `tackle_workflow`.
+      {:tackle_workflow, path: "../tackle_workflow", only: :test},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},

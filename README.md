@@ -20,7 +20,7 @@ reusable library on its own or add scoped orchestration and integrations.
 | --- | --- |
 | A tool-using agent loop in your own process or application | [`tackle_lib`](packages/tackle_lib/README.md) (`Tackle.Lib.*`): provider-neutral messages, tools, hooks, and the `Tackle.Lib.LLM` adapter contract. |
 | Supervised agent scopes, subagents, or limits | [`tackle_runtime`](packages/tackle_runtime/README.md) (`Tackle.Runtime.*`) on top of `tackle_lib`. Your host supplies the agent backend and lifecycle policy. |
-| Scripted multi-agent flows ("scout, then plan, then review") | [`tackle_script`](packages/tackle_script/README.md) (`Tackle.Script.*`): sandboxed Lua scripts driving the runtime's delegated runs, plus an opt-in `run_script` tool for an agent. |
+| Scripted multi-agent flows ("scout, then plan, then review") | [`tackle_workflow`](packages/tackle_workflow/README.md) (`Tackle.Workflow.*`): sandboxed Lua workflows driving the runtime's delegated runs, plus an opt-in `run_workflow` tool for an agent. |
 | A ready-to-compose developer harness | [`tackle`](packages/tackle) (`Tackle.*`): configuration, coding tools, credentials, and a facade over the scoped runtime. See the [harness guide](packages/tackle/README.md). |
 | A Phoenix host integration | [`tackle_phoenix`](packages/tackle_phoenix/README.md): supervised turns, PubSub, and LiveView support. |
 | A terminal frontend | [`tackle_cli`](apps/tackle_cli/README.md): the CLI built on the harness, not an agent engine to embed. |

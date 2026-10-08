@@ -1,10 +1,10 @@
-defmodule Tackle.Script.Tool do
+defmodule Tackle.Workflow.Tool do
   @moduledoc """
-  Opt-in tool that runs one sandboxed Lua workflow script in the calling
+  Opt-in tool that runs one sandboxed Lua workflow in the calling
   agent's own scope.
 
-  The tool is the model-facing surface of `Tackle.Script`: the agent writes a
-  Lua workflow, and the script's `tackle.spawn/2` calls become ordinary
+  The tool is the model-facing surface of `Tackle.Workflow`: the agent writes a
+  Lua workflow, and its `tackle.spawn/2` calls become ordinary
   delegated runs under the same scope limits, admission rules, and
   cancellation as the subagent tool.
 
@@ -13,38 +13,38 @@ defmodule Tackle.Script.Tool do
 
     * the host must add this module to a session's tool list;
     * the running agent must carry a runtime handle with delegation granted;
-    * every profile the script names must be allowlisted — by the scope's
+    * every profile the workflow names must be allowlisted — by the scope's
       trusted profiles, and, when the host narrows it, by the session context.
 
-  A host grants the tool and, optionally, narrows the profiles scripts may
+  A host grants the tool and, optionally, narrows the profiles workflows may
   spawn through the session context:
 
       Tackle.Coding.scope_spec(
-        root_tools: [Tackle.Script.Tool],
-        overrides: [context: %{script_profiles: ["scout", "worker"]}]
+        root_tools: [Tackle.Workflow.Tool],
+        overrides: [context: %{workflow_profiles: ["scout", "worker"]}]
       )
 
-  `:script_profiles` is host configuration, never script input: model-visible
+  `:workflow_profiles` is host configuration, never workflow input: model-visible
   data can only name a profile from that list, and the list can only narrow
   what the scope already allows. Without it, the scope's own trusted profiles
-  decide, exactly as they do for `subagent`. `Tackle.Script.run/3` documents
+  decide, exactly as they do for `subagent`. `Tackle.Workflow.run/3` documents
   the underlying `:profiles` and `:owner` options.
 
-  The tool call owns the script's lifetime: the script is cancelled when the
+  The tool call owns the workflow's lifetime: the workflow is cancelled when the
   tool call ends, so a cancelled turn does not leave delegated runs behind. That
   holds where the tool body runs in its own supervised process, as the harness's
   concurrent tool policy does; a host that runs tools inline in the agent loop
-  should pass its own `:owner` through `Tackle.Script.run/3`. A script that
-  exceeds the session's `workflow_timeout` is cancelled too. The script's
+  should pass its own `:owner` through `Tackle.Workflow.run/3`. A workflow that
+  exceeds the session's `workflow_timeout` is cancelled too. The workflow's
   returned values are the tool result.
   """
 
   use Tackle.Lib.Tool
 
   alias Tackle.Runtime.Handle
-  alias Tackle.Script
+  alias Tackle.Workflow
 
-  tool_name("run_script")
+  tool_name("run_workflow")
 
   description(
     "Run a sandboxed Lua workflow that coordinates allowlisted subagent profiles. Use it " <>
@@ -55,20 +55,20 @@ defmodule Tackle.Script.Tool do
       "with `ok`, `status`, and `text`; `tackle.parallel(items, fn, opts)` to run one " <>
       "delegated agent per item with bounded concurrency, returning one result table per " <>
       "item in input order; `tackle.cancel(run, reason)` to cancel one run; and " <>
-      "`tackle.log(message)` to report progress. The values the script returns are the tool " <>
-      "result. A script can only spawn profiles this session allows scripts to use, and it " <>
+      "`tackle.log(message)` to report progress. The values the workflow returns are the tool " <>
+      "result. A workflow can only spawn profiles this session allows it to use, and it " <>
       "runs under this agent's limits and cancellation."
   )
 
   input do
     field(:script, :string,
       required: true,
-      description: "Lua source of the workflow script"
+      description: "Lua source of the workflow"
     )
 
     field(:timeout_ms, :integer,
       description:
-        "Optional absolute script deadline in milliseconds, bounded by the scope's workflow timeout"
+        "Optional absolute workflow deadline in milliseconds, bounded by the scope's workflow timeout"
     )
   end
 
@@ -76,14 +76,14 @@ defmodule Tackle.Script.Tool do
   def run(%{"script" => script} = args, context) when is_binary(script) do
     with {:ok, handle} <- fetch_handle(context),
          :ok <- ensure_delegation(handle),
-         {:ok, profiles} <- script_profiles(context),
+         {:ok, profiles} <- workflow_profiles(context),
          {:ok, timeout_opts} <- timeout_opts(args),
          {:ok, ref} <- start(handle, script, profiles, timeout_opts) do
       await(ref)
     end
   end
 
-  def run(_args, _context), do: {:error, "run_script requires a Lua script"}
+  def run(_args, _context), do: {:error, "run_workflow requires a Lua script"}
 
   @impl true
   def model_error(reason) when is_binary(reason), do: reason
@@ -94,35 +94,35 @@ defmodule Tackle.Script.Tool do
   defp fetch_handle(context) do
     case Handle.from_context(context) do
       %Handle{} = handle -> {:ok, handle}
-      nil -> {:error, "run_script is unavailable: this agent has no runtime handle"}
+      nil -> {:error, "run_workflow is unavailable: this agent has no runtime handle"}
     end
   end
 
   defp ensure_delegation(%Handle{allow_delegation: true}), do: :ok
 
   defp ensure_delegation(%Handle{}),
-    do: {:error, "run_script delegation is not permitted for this agent"}
+    do: {:error, "run_workflow delegation is not permitted for this agent"}
 
   # `nil` leaves the decision to the scope's own trusted profiles; a list
-  # narrows it for scripts only. The list is bounded host configuration, so a
+  # narrows it for workflows only. The list is bounded host configuration, so a
   # malformed one is reported rather than guessed at.
-  defp script_profiles(context) do
-    case Map.get(context, :script_profiles) do
+  defp workflow_profiles(context) do
+    case Map.get(context, :workflow_profiles) do
       nil ->
         {:ok, nil}
 
       names when is_list(names) ->
         if Enum.all?(names, &(is_binary(&1) and &1 != "")),
           do: {:ok, Enum.uniq(names)},
-          else: {:error, "script_profiles must be a list of profile names"}
+          else: {:error, "workflow_profiles must be a list of profile names"}
 
       other ->
-        {:error, "script_profiles must be a list of profile names, got: #{inspect(other)}"}
+        {:error, "workflow_profiles must be a list of profile names, got: #{inspect(other)}"}
     end
   end
 
-  # A script's deadline is the scope's own `workflow_timeout`. A model-supplied
-  # `timeout_ms` is only a request to finish sooner; `Tackle.Script.run/3`
+  # A workflow's deadline is the scope's own `workflow_timeout`. A model-supplied
+  # `timeout_ms` is only a request to finish sooner; `Tackle.Workflow.run/3`
   # clamps it against the inherited limit, so the option is omitted when the
   # agent asked for no particular deadline.
   defp timeout_opts(args) do
@@ -138,22 +138,22 @@ defmodule Tackle.Script.Tool do
   defp start(handle, script, profiles, timeout_opts) do
     opts = [profiles: profiles, owner: self()] ++ timeout_opts
 
-    case Script.run(handle, script, opts) do
+    case Workflow.run(handle, script, opts) do
       {:ok, ref} -> {:ok, ref}
-      {:error, reason} -> {:error, "could not start the script: #{describe(reason)}"}
+      {:error, reason} -> {:error, "could not start the workflow: #{describe(reason)}"}
     end
   end
 
-  # The script's own deadline settles it, so the tool waits without a second
+  # The workflow's own deadline settles it, so the tool waits without a second
   # timer of its own.
   defp await(ref) do
-    case Script.await(ref, :infinity) do
+    case Workflow.await(ref, :infinity) do
       {:ok, values} -> {:ok, format_values(values)}
-      {:error, reason} -> {:error, script_error(reason)}
+      {:error, reason} -> {:error, workflow_error(reason)}
     end
   end
 
-  defp format_values([]), do: "(the script returned no values)"
+  defp format_values([]), do: "(the workflow returned no values)"
 
   defp format_values(values) when is_list(values),
     do: Enum.map_join(values, "\n", &format_value/1)
@@ -165,31 +165,34 @@ defmodule Tackle.Script.Tool do
   defp format_value(nil), do: "nil"
   defp format_value(value), do: inspect(value)
 
-  defp script_error(%{message: message} = reason) do
+  defp workflow_error(%{message: message} = reason) do
     case Map.get(reason, :line) do
-      line when is_integer(line) -> "the script failed at line #{line}: #{message}"
-      _other -> "the script failed: #{message}"
+      line when is_integer(line) -> "the workflow failed at line #{line}: #{message}"
+      _other -> "the workflow failed: #{message}"
     end
   end
 
-  defp script_error({:script_compile_error, message}),
-    do: "the script does not compile: #{message}"
+  defp workflow_error({:workflow_compile_error, message}),
+    do: "the workflow does not compile: #{message}"
 
-  defp script_error({:cancelled, :script_timeout}), do: "the script exceeded its deadline"
-  defp script_error({:cancelled, reason}), do: "the script was cancelled (#{describe(reason)})"
-  defp script_error({:script_crashed, message}), do: "the script crashed: #{message}"
+  defp workflow_error({:cancelled, :workflow_timeout}), do: "the workflow exceeded its deadline"
 
-  defp script_error({:script_worker_terminated, reason}),
-    do: "the script terminated unexpectedly: #{describe(reason)}"
+  defp workflow_error({:cancelled, reason}),
+    do: "the workflow was cancelled (#{describe(reason)})"
 
-  defp script_error({:script_exit, reason}), do: "the script exited: #{describe(reason)}"
+  defp workflow_error({:workflow_crashed, message}), do: "the workflow crashed: #{message}"
 
-  defp script_error({:script_terminated, reason}),
-    do: "the script was stopped: #{describe(reason)}"
+  defp workflow_error({:workflow_worker_terminated, reason}),
+    do: "the workflow terminated unexpectedly: #{describe(reason)}"
 
-  defp script_error(:script_timeout), do: "the script exceeded its deadline"
-  defp script_error(:not_found), do: "the script is no longer running"
-  defp script_error(reason), do: "the script failed: #{describe(reason)}"
+  defp workflow_error({:workflow_exit, reason}), do: "the workflow exited: #{describe(reason)}"
+
+  defp workflow_error({:workflow_terminated, reason}),
+    do: "the workflow was stopped: #{describe(reason)}"
+
+  defp workflow_error(:workflow_timeout), do: "the workflow exceeded its deadline"
+  defp workflow_error(:not_found), do: "the workflow is no longer running"
+  defp workflow_error(reason), do: "the workflow failed: #{describe(reason)}"
 
   defp describe(reason) when is_binary(reason), do: reason
   defp describe(reason), do: inspect(reason)

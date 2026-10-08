@@ -7,7 +7,7 @@ defmodule Tackle.Runtime.Limits do
   the runtime level. The initial runtime rejects excess concurrency instead of
   queuing it. `run_timeout` bounds inactivity between child events, not total
   delegated runtime. `workflow_timeout` remains an absolute deadline for one
-  scripted workflow, which `Tackle.Script` clamps its own deadline to.
+  scripted workflow, which `Tackle.Workflow` clamps its own deadline to.
   """
 
   @default_run_timeout :timer.minutes(5)
