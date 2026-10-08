@@ -50,7 +50,7 @@ defmodule Tackle.Runtime.Outcome do
   Projects the outcome into a `Tackle.Lib`-style result tuple.
 
   Runtime failures and rejections become `{:error, reason}` so a parent tool or
-  workflow can report them without pretending the library loop failed.
+  caller can report them without pretending the library loop failed.
   """
   @spec to_lib_result(t()) ::
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()} | {:error, term()}

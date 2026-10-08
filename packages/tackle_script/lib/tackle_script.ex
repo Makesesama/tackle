@@ -191,7 +191,7 @@ defmodule Tackle.Script do
   defp timeout(value, _limits), do: {:error, {:invalid_script_option, :timeout, value}}
 
   # A script may only delegate as far as its parent may. The parent's snapshot
-  # carries the effective grants, exactly like `Runtime.start_workflow/4`.
+  # carries the effective grants the runner builds its handle from.
   defp authorized_handle(scope_ref, parent_ref) do
     case Runtime.agent_snapshot(parent_ref) do
       {:ok, snapshot} ->

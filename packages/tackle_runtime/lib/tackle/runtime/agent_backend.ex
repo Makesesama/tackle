@@ -2,7 +2,7 @@ defmodule Tackle.Runtime.AgentBackend do
   @moduledoc """
   Host adapter used by `Tackle.Runtime` to operate one concrete agent process.
 
-  The runtime owns scopes, admission, limits, cancellation, workflows, stable
+  The runtime owns scopes, admission, limits, cancellation, stable
   references, and per-agent tool supervision. A backend owns the host-specific
   turn lifecycle, including persistence, authorization, billing, and event
   delivery. Backend configuration in an `AgentSpec` is trusted host data.

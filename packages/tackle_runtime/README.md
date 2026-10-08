@@ -3,8 +3,8 @@
 `Tackle.Runtime` is the optional OTP orchestration layer above
 [`Tackle.Lib`](../tackle_lib/README.md). It provides scoped agent supervision,
 stable PID-free references, admission limits, cancellation, subagents,
-background runs, fan-out, and workflows without depending on Phoenix or the
-root developer harness.
+background runs, and fan-out without depending on Phoenix or the root developer
+harness.
 
 ```text
 tackle_lib
@@ -16,7 +16,7 @@ tackle   tackle_phoenix
 
 ## Performance benchmarks
 
-Repository-only Benchee suites cover delegated/workflow lifecycles, retained
+Repository-only Benchee suites cover delegated lifecycles, retained
 request memory, and synthetic streaming bursts. See the
 [benchmark guide](../../bench/README.md) for commands, saved baselines, and
 cross-process measurement limitations. Benchee is dev-only, not a runtime dependency.
@@ -29,7 +29,7 @@ The runtime owns:
 - per-agent tool `Task.Supervisor` processes;
 - concurrency, depth, and child limits;
 - delegated request/await/collect/cancel lifecycle;
-- workflow processes and generic subagent tools.
+- generic subagent tools.
 
 A host backend owns:
 
@@ -85,8 +85,8 @@ The subagent tool's `timeout_ms` override likewise sets an inactivity window.
 Backends must support `:subscribe` before `:submit` and deliver child events to
 the subscribing request, even when no caller event callback is provided.
 Subscription failure settles the request as a setup error; events are transient,
-not retained. Explicit `await/2` wait timeouts and workflow deadlines remain
-absolute and are separate from the delegated inactivity timer.
+not retained. Explicit `await/2` wait timeouts and `workflow_timeout` deadlines
+remain absolute and are separate from the delegated inactivity timer.
 
 ## Process layout
 
@@ -101,8 +101,8 @@ Tackle.AgentSupervisor
 ```
 
 Delegated agent subtrees are temporary children of the scope work supervisor.
-Stopping a scope terminates the root, descendants, requests, workflows, turn
-tasks, and tool tasks.
+Stopping a scope terminates the root, descendants, requests, trusted work
+children, turn tasks, and tool tasks.
 
 ## Deployment boundary
 

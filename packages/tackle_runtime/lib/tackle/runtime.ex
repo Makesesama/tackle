@@ -4,9 +4,8 @@ defmodule Tackle.Runtime do
 
   The runtime is a reusable orchestration layer above `Tackle.Lib`. It
   addresses everything by stable references (`Tackle.Runtime.ScopeRef`,
-  `AgentRef`, `WorkflowRef`, `RunRef`) and never requires callers to hold PIDs.
-  Concrete agent lifecycle and host policy are supplied through
-  `Tackle.Runtime.AgentBackend`.
+  `AgentRef`, `RunRef`) and never requires callers to hold PIDs. Concrete agent
+  lifecycle and host policy are supplied through `Tackle.Runtime.AgentBackend`.
 
   A scope is one root agent plus every descendant it creates and forms the
   runtime's physical cleanup and logical ownership boundary.
@@ -29,9 +28,6 @@ defmodule Tackle.Runtime do
   alias Tackle.Runtime.Scope
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
-  alias Tackle.Runtime.Workflow
-  alias Tackle.Runtime.Workflow.Server, as: WorkflowServer
-  alias Tackle.Runtime.WorkflowRef
 
   @doc """
   Starts one root-agent scope from a trusted `ScopeSpec`.
@@ -63,12 +59,7 @@ defmodule Tackle.Runtime do
   @spec scope_snapshot(ScopeRef.t()) :: {:ok, map()} | {:error, term()}
   def scope_snapshot(%ScopeRef{} = scope_ref) do
     with {:ok, coordinator} <- coordinator(scope_ref) do
-      snapshot =
-        coordinator
-        |> Coordinator.snapshot()
-        |> Map.put(:workflow_count, Registry.workflow_count(scope_ref))
-
-      {:ok, snapshot}
+      {:ok, Coordinator.snapshot(coordinator)}
     end
   end
 
@@ -225,7 +216,7 @@ defmodule Tackle.Runtime do
   def navigate(%AgentRef{}, _target, opts), do: {:error, {:invalid_navigation_options, opts}}
 
   @doc """
-  Requests one delegated run from an agent or workflow requester.
+  Requests one delegated run from an agent request source.
 
   `spec_or_profile` is either an allowlisted profile name (the model-visible
   form) or a trusted `AgentSpec`. The coordinator admits the child, a request
@@ -357,61 +348,6 @@ defmodule Tackle.Runtime do
   def run_agent_ref(%RunRef{} = run_ref), do: Request.agent_ref(run_ref)
 
   @doc """
-  Starts one host-defined workflow under the scope work supervisor.
-
-  The workflow's delegated runs are admitted as children of `parent`, so scope
-  limits, spawn depth, and cancellation apply unchanged. Returns a stable
-  `WorkflowRef` for `await_workflow/2`.
-  """
-  @spec start_workflow(Handle.t() | AgentRef.t(), module(), term(), keyword()) ::
-          {:ok, WorkflowRef.t()} | {:error, term()}
-  def start_workflow(parent, module, input, opts \\ []) when is_atom(module) do
-    with {:ok, scope_ref, parent_ref} <- resolve_requester(parent),
-         {:ok, coordinator} <- coordinator(scope_ref),
-         {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref),
-         {:ok, parent_snapshot} <- Coordinator.agent_snapshot(coordinator, parent_ref) do
-      limits = parent_snapshot.limits
-      workflow_ref = WorkflowRef.new!(scope_ref.scope_id, ID.generate())
-
-      handle =
-        Handle.new(scope_ref, parent_ref,
-          allow_delegation: parent_snapshot.allow_delegation,
-          limits: limits
-        )
-
-      arg = %{
-        workflow_ref: workflow_ref,
-        module: module,
-        input: input,
-        handle: handle,
-        work_supervisor: work_supervisor,
-        timeout: Keyword.get(opts, :timeout, limits.workflow_timeout)
-      }
-
-      case DynamicSupervisor.start_child(work_supervisor, WorkflowServer.child_spec(arg)) do
-        {:ok, _pid} -> {:ok, workflow_ref}
-        {:error, reason} -> {:error, {:workflow_start_failed, reason}}
-      end
-    end
-  end
-
-  @doc "Waits for a workflow's terminal result."
-  @spec await_workflow(WorkflowRef.t(), timeout()) :: term()
-  def await_workflow(%WorkflowRef{} = workflow_ref, timeout \\ :infinity) do
-    case Registry.workflow(workflow_ref) do
-      {:ok, server} ->
-        try do
-          WorkflowServer.await(server, timeout)
-        catch
-          :exit, reason -> {:error, {:workflow_terminated, reason}}
-        end
-
-      {:error, :not_found} ->
-        {:error, :not_found}
-    end
-  end
-
-  @doc """
   Starts one trusted work child under the scope work supervisor.
 
   The child is placed under the scope's work supervisor so scope teardown
@@ -427,38 +363,6 @@ defmodule Tackle.Runtime do
          {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref) do
       DynamicSupervisor.start_child(work_supervisor, child)
     end
-  end
-
-  @doc """
-  Launches several delegated runs and returns their correlated run references.
-
-  Requests are admitted one at a time so scope limits apply, but the runs start
-  as they are admitted and therefore overlap. Partial admission returns
-  `{:error, {:partial, admitted, reason}}` without cancelling the admitted runs;
-  callers decide the failure policy.
-  """
-  @spec request_many(Handle.t() | AgentRef.t(), [Workflow.request()], keyword()) ::
-          {:ok, [RunRef.t()]} | {:error, term()}
-  def request_many(requester, requests, opts \\ []) when is_list(requests) do
-    requests
-    |> Enum.reduce_while({:ok, []}, fn request, {:ok, acc} ->
-      {profile, prompt, request_opts} = Workflow.normalize_request(request)
-
-      case request_agent(requester, profile, prompt, Keyword.merge(opts, request_opts)) do
-        {:ok, run_ref} -> {:cont, {:ok, [run_ref | acc]}}
-        {:error, reason} -> {:halt, {:error, {:partial, Enum.reverse(acc), reason}}}
-      end
-    end)
-    |> case do
-      {:ok, refs} -> {:ok, Enum.reverse(refs)}
-      other -> other
-    end
-  end
-
-  @doc "Awaits several runs, preserving input order and correlation."
-  @spec await_many([RunRef.t()], timeout()) :: [{RunRef.t(), Outcome.t() | {:error, term()}}]
-  def await_many(run_refs, timeout \\ :infinity) when is_list(run_refs) do
-    Enum.map(run_refs, fn %RunRef{} = run_ref -> {run_ref, await(run_ref, timeout)} end)
   end
 
   @doc """
@@ -484,11 +388,6 @@ defmodule Tackle.Runtime do
         :exit, exit_reason -> {:error, {:request_terminated, exit_reason}}
       end
     end
-  end
-
-  def cancel(%WorkflowRef{} = workflow_ref, reason) do
-    with {:ok, server} <- Registry.workflow(workflow_ref),
-         do: WorkflowServer.cancel(server, reason)
   end
 
   @doc "Projects an outcome into a `Tackle.Lib`-style result."

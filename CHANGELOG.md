@@ -11,6 +11,11 @@ Notable changes to Tackle are recorded here. This repository contains separate M
 - Added `packages/tackle_openrouter`, an OpenRouter provider adapter (`openrouter/<vendor>/<model>`) with streamed reasoning and `reasoning_details` replay, automatic Anthropic prompt caching, session-sticky routing, and reported billing cost. The CLI and web distributions bundle it.
 - `config.json` accepts `provider_options`, adapter-keyed settings that the harness passes to adapters as the `:provider_options` LLM option (credential-like keys are rejected). The OpenRouter adapter reads per-model provider routing from it.
 
+### Removed
+
+- Removed the host-defined workflow primitive from `packages/tackle_runtime`: `Tackle.Runtime.Workflow` (`init/handle_result/handle_failure/handle_cancelled`), `Tackle.Runtime.Workflow.Server`, `Tackle.Runtime.WorkflowRef`, `Runtime.start_workflow/4`, `Runtime.await_workflow/2`, the `WorkflowRef` clause of `Runtime.cancel/2`, `Registry.workflow/1`, `Registry.workflow_count/1`, `WorkflowRef` entries in `Runtime.Ref`, and the `workflow_count` key of `Runtime.scope_snapshot/1`. Also removed the unused `Runtime.request_many/3` and `Runtime.await_many/2` batch helpers and the `workflow_start` benchmark. These were breaking changes to `Tackle.Runtime`, which had no caller outside its own tests and benchmark.
+- Scripted workflows in `packages/tackle_script` are now the only workflow engine. It drives the same delegated-run primitive, so scopes, limits, spawn depth, cancellation, and `workflow_timeout` are unaffected; hosts that need another trusted coordinator under a scope use `Runtime.start_work/2`, which is unchanged.
+
 ### Release preparation
 
 - The initial `0.1.0` release has not been tagged. Installation instructions, supported distribution paths, and release validation are still to be finalized.
@@ -18,6 +23,6 @@ Notable changes to Tackle are recorded here. This repository contains separate M
 ## Initial development (unreleased)
 
 - Split the reusable agent library into `packages/tackle_lib` (`:tackle_lib`, `Tackle.Lib.*`) and introduced `packages/tackle` for the developer harness. This is a breaking change for users of the former `:tackle` library identity: update package paths, module references, and application configuration to `:tackle_lib`.
-- Added `packages/tackle_runtime` for scoped OTP orchestration, including subagents and workflows.
+- Added `packages/tackle_runtime` for scoped OTP orchestration, including subagents.
 - Added the Codex provider adapter and optional DeepSeek adapter, plus separate MCP client, Anubis server bridge, and Phoenix integration packages.
 - Added the CLI and web applications. The CLI's Burrito build is a fixed distribution; loading third-party plugins into the binary is not yet supported. Neither app's presence implies a stable, published distribution.

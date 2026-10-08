@@ -6,12 +6,12 @@ writer, explicit `sync/1` barriers, validated replay with visible repair, fresh
 runtime reconstruction on resume with an explicit interruption-recovery gate, a
 rebuildable ETS/search catalog, self-contained forks, and trash-first deletion.
 Replay checkpoints, in-place schema migration, cross-BEAM writer fencing,
-durable workflows, encryption, compressed commits, retention policy, and
+durable scripted-workflow state, encryption, compressed commits, retention policy, and
 protocol export/import remain unimplemented; this document is the accepted
 target for them. The `Tackle.*` operations listed in section 11 are the
 implemented subset unless a passage explicitly labels them as deferred.
 
-Scope: saving and loading agent conversations, crash recovery after process or BEAM shutdown, local session discovery and search, schema evolution, and session forks. Durable workflows, distributed storage, and transparent reconstruction of the in-memory runtime process tree remain out of scope.
+Scope: saving and loading agent conversations, crash recovery after process or BEAM shutdown, local session discovery and search, schema evolution, and session forks. Durable scripted-workflow state, distributed storage, and transparent reconstruction of the in-memory runtime process tree remain out of scope.
 
 This document resolves the session-persistence decisions deferred by [`RUNTIME_ARCHITECTURE.md`](RUNTIME_ARCHITECTURE.md). It preserves that document's runtime boundaries: `Tackle.Lib` remains the provider-neutral loop, the root Tackle harness owns persistence and orchestration, and runtime references remain distinct from durable conversation identity.
 
@@ -98,7 +98,7 @@ The same durable session can be loaded into several runtime scopes over time, bu
 
 ### 3.2 Runtime scope and agent
 
-A runtime scope is the in-memory supervision and cancellation boundary defined by [`RUNTIME_ARCHITECTURE.md`](RUNTIME_ARCHITECTURE.md). Values such as `ScopeRef`, `AgentRef`, workflow IDs, PIDs, monitors, Tasks, cancellation signals, and request helpers are ephemeral.
+A runtime scope is the in-memory supervision and cancellation boundary defined by [`RUNTIME_ARCHITECTURE.md`](RUNTIME_ARCHITECTURE.md). Values such as `ScopeRef`, `AgentRef`, script IDs, PIDs, monitors, Tasks, cancellation signals, and request helpers are ephemeral.
 
 The identity relationship is:
 
@@ -791,7 +791,7 @@ Export is not allowed to expose credentials or unrestricted runtime context. Imp
 
 CloudEvents, AG-UI, ACP, and OpenTelemetry solve event interchange, client protocol, or observability concerns; none is adopted as the canonical on-disk schema.
 
-## 18. Ephemeral agents, workflows, and fleets
+## 18. Ephemeral agents, scripted workflows, and fleets
 
 The runtime architecture's initial delegated agents remain ephemeral:
 
@@ -806,7 +806,7 @@ That preserves the complete durable root conversation without creating one sessi
 
 A future explicit retained-child policy may give a subagent its own journal and record links between parent session, parent turn, child session, and child run. It must use the same session-journal contract rather than writing child state into a special fleet log.
 
-Runtime scope membership, live fleet accounting, workflow process state, pending requests, and cancellation trees are not reconstructed by loading a session. Durable workflows require a separate compatibility-sensitive architecture because replaying a conversation is not equivalent to safely replaying external workflow effects.
+Runtime scope membership, live fleet accounting, script process state, pending requests, and cancellation trees are not reconstructed by loading a session. Durable scripted workflows require a separate compatibility-sensitive architecture because replaying a conversation is not equivalent to safely replaying external workflow effects.
 
 ## 19. Security and privacy
 
@@ -900,7 +900,7 @@ Acceptance criteria:
 - unavailable recorded configuration returns a typed error;
 - clean sessions resume normally;
 - interrupted tool effects require explicit recovery; and
-- loading does not reconstruct old scopes, descendants, Tasks, or workflows.
+- loading does not reconstruct old scopes, descendants, Tasks, or script runs.
 
 ### Task 6: catalog, listing, and search
 
@@ -1021,7 +1021,7 @@ The following remain deferred until implementation evidence or a real consumer r
 - the exact public module and function names;
 - cross-BEAM advisory locking and distributed writer fencing;
 - distributed or replicated session storage;
-- durable workflow and fleet reconstruction;
+- durable scripted-workflow and fleet reconstruction;
 - retained long-lived subagent sessions;
 - checkpoint thresholds;
 - compressed ETF commit encoding;

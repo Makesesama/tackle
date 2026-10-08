@@ -5,6 +5,7 @@ defmodule Tackle.Runtime.StartWorkTest do
   use ExUnit.Case, async: false
 
   alias Tackle.Runtime
+  alias Tackle.Runtime.Bench
 
   test "start_work places a trusted child under the scope work supervisor" do
     scope = Bench.setup(Bench.input(10))

@@ -2,8 +2,9 @@ defmodule Tackle.AgentScope.WorkSupervisor do
   @moduledoc """
   Shared DynamicSupervisor for all descendant work in one root-agent scope.
 
-  It owns descendant agent sessions, workflows, request helpers, and turn tasks.
-  There is no supervisor per subagent or workflow: physical scope cleanup is
+  It owns descendant agent sessions, request helpers, turn tasks, and any
+  trusted work child a host starts through `Tackle.Runtime.start_work/2`.
+  There is no supervisor per subagent: physical scope cleanup is
   provided by the enclosing `Tackle.AgentScope`, while the scope coordinator
   records the logical ownership tree.
   """

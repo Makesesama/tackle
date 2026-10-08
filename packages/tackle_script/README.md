@@ -17,9 +17,8 @@ tackle_script
 
 Scripts are a *front-end* to the runtime's existing primitives: every
 `tackle.spawn` goes through the same allowlisted profiles, admission limits,
-spawn depth, and cancellation as the subagent tool and host-defined
-`Tackle.Runtime.Workflow` modules. A script is deterministic, auditable, and
-re-runnable in a way "the model orchestrates in its head" is not.
+spawn depth, and cancellation as the subagent tool. A script is deterministic,
+auditable, and re-runnable in a way "the model orchestrates in its head" is not.
 
 ## The script surface
 
@@ -172,7 +171,7 @@ profiles scripts may spawn:
   the script owns, however the script ends.
 * **Authorized.** A script may only delegate as far as its parent may: the
   runner builds its handle from the parent agent's effective grants, exactly
-  like `Tackle.Runtime.start_workflow/4`. An explicit `:profiles` allowlist can
+  as the subagent tool does. An explicit `:profiles` allowlist can
   only narrow that further, so a host can hand out scripted delegation without
   handing out every profile the session has.
 * **Fail-fast with policy hooks.** Argument errors and rejected spawns raise

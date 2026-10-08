@@ -54,7 +54,7 @@ Phoenix PubSub `~> 2.1`.
 | Concern | Owner |
 |---|---|
 | LLM loop, messages, tools, events | `Tackle.Lib` |
-| Optional scopes, subagents, limits, workflows | `Tackle.Runtime` |
+| Optional scopes, subagents, limits, fan-out | `Tackle.Runtime` |
 | Turn process, supervised task, cancellation token | `Tackle.Phoenix.Runner` |
 | PubSub topic and event/terminal broadcast | `Tackle.Phoenix.PubSub` |
 | Usage collection and terminal settlement ordering | `Tackle.Phoenix.Runner` |
@@ -132,7 +132,7 @@ process discovery.
 ### Optional scoped runtime and subagents
 
 Use `Tackle.Phoenix.RuntimeBackend` when a Phoenix/SaaS host needs the reusable
-scope, subagent, fan-out, or workflow layer. Build a trusted
+scope, subagent, or fan-out layer. Build a trusted
 `Tackle.Phoenix.RuntimeSpec` for the root and every allowlisted child profile,
 then create a `Tackle.Runtime.ScopeSpec` with
 `backend: Tackle.Phoenix.RuntimeBackend`.

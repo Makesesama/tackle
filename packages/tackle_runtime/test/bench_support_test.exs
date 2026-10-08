@@ -12,13 +12,6 @@ defmodule Tackle.Runtime.BenchSupportTest do
     assert {:error, :not_found} = Registry.scope(scope.scope_ref)
   end
 
-  test "workflow completes and tears down the scope" do
-    scope = Bench.setup(Bench.input(10))
-    result = Bench.workflow(scope)
-    assert :ok = Bench.finish_workflow(result)
-    assert {:error, :not_found} = Registry.scope(scope.scope_ref)
-  end
-
   test "streaming delivers the entire burst before await returns" do
     delivered = :atomics.new(1, [])
 

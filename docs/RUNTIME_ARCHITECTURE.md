@@ -1,28 +1,28 @@
-# Tackle runtime architecture for subagents, workflows, and fleets
+# Tackle runtime architecture for subagents, scripted workflows, and fleets
 
 Status: accepted architecture. The scoped runtime and its public facade are implemented; the concrete APIs recorded in section 5.1 describe the shipped behaviour. Boundaries and defaults are decisions rather than alternatives.
 
-Scope: in-memory execution, supervision, subagents, workflows, fleets, inter-agent communication, cancellation, and resource limits. Session persistence, recovery after BEAM shutdown, and distributed execution are explicitly out of scope for this stage.
+Scope: in-memory execution, supervision, subagents, scripted workflows, fleets, inter-agent communication, cancellation, and resource limits. Session persistence, recovery after BEAM shutdown, and distributed execution are explicitly out of scope for this stage.
 
 This document extends the package and harness boundaries in [`architecture-spec.md`](architecture-spec.md) and follows the host/runtime model described in [`../packages/tackle_lib/README.md`](../packages/tackle_lib/README.md). `Tackle.Lib` remains the provider-neutral loop. The root Tackle harness owns runtime composition and orchestration.
 
 ## 1. Agreed direction
 
 1. A subagent is an ordinary Tackle agent. It runs the same `Tackle.Lib` loop and uses the same adapter, tool, hook, prompt, state, event, and cancellation contracts as any other agent.
-2. Do not add a second loop implementation for subagents, workflows, or fleets.
+2. Do not add a second loop implementation for subagents, scripted workflows, or fleets.
 3. Each agent has its own dedicated GenServer and `%Tackle.Lib.State{}`. An agent GenServer exists only for the lifetime of that agent and is never reset or reused for a different agent.
 4. Coding-harness subagents are initially ephemeral, delegated agents: “research this task and return a result.” Long-lived named agents and general-purpose autonomous inboxes are not an initial requirement.
-5. Workflows are host-defined coordinators. They are not implicitly agents and do not need an LLM unless a workflow explicitly launches an agent for a step.
+5. There is one workflow engine, and it is scripted: `packages/tackle_script` runs sandboxed Lua scripts whose `tackle.spawn/2` calls become ordinary delegated runs. A workflow is not implicitly an agent and needs no LLM unless a script explicitly launches one for a step. The runtime itself ships no workflow behaviour, module registry, or workflow DSL — see section 3.4.
 6. Fleets are lifecycle, membership, concurrency, and resource-policy boundaries. A fleet is not itself a workflow.
 7. Runtime communication initially uses correlated request/reply. General free-form agent chat, broadcast messaging, and durable mailboxes are deferred.
 8. Runtime entities are addressed through stable IDs and a Registry. PIDs are internal implementation details.
-9. A single model tool batch may execute concurrently when the host opts in with `Tackle.Lib.Tool.Policy` `:concurrent`; the runtime supplies the per-session tool supervisor and the loop still commits results in call order. General parallel orchestration (fan-out, aggregation, fleets) belongs in workflows or explicit batch orchestration, not in a second agent loop.
+9. A single model tool batch may execute concurrently when the host opts in with `Tackle.Lib.Tool.Policy` `:concurrent`; the runtime supplies the per-session tool supervisor and the loop still commits results in call order. General parallel orchestration (fan-out, aggregation, fleets) belongs in scripted workflows or explicit host orchestration, not in a second agent loop.
 10. Parent-owned work follows structured cancellation: cancelling a parent
     cancels its attached descendants. A background subagent is explicitly detached
     from the launching turn, but remains owned by the parent session and root scope.
-11. Crashed in-memory agents and workflows are not silently restarted as if their state had survived. Crashes are reported as terminal runtime failures.
-12. Persistence is not required for this architecture. All agents, workflows, requests, and fleet state may disappear when their owning process or the BEAM terminates.
-13. Every top-level agent owns one physical execution scope. The root agent, all of its descendant agents, workflows, and active turn Tasks live in that scope.
+11. Crashed in-memory agents and orchestration processes are not silently restarted as if their state had survived. Crashes are reported as terminal runtime failures.
+12. Persistence is not required for this architecture. All agents, script runs, requests, and fleet state may disappear when their owning process or the BEAM terminates.
+13. Every top-level agent owns one physical execution scope. The root agent, all of its descendant agents, trusted work children, and active turn Tasks live in that scope.
 14. For the initial coding harness, one root-agent scope is one fleet. A separate fleet process above multiple independent root agents is deferred.
 15. Every agent receives a small execution supervisor for its backend process and dedicated tool `Task.Supervisor`. Descendant agent subtrees remain physical siblings under the root scope's work supervisor while the coordinator retains logical parent/child relationships.
 
@@ -32,7 +32,7 @@ The first implementation uses these defaults:
 
 - The CLI's primary agent is created in an explicit root-agent scope with an empty trusted profile allowlist.
 - A global DynamicSupervisor owns root-agent scopes; each root-agent scope physically owns one root backend agent subtree, one scope coordinator, and one DynamicSupervisor for descendant work.
-- The scope work supervisor owns delegated agent subtrees, workflows, request helpers, and supervised turn/awaiter Tasks. There is no separate scope per subagent or workflow.
+- The scope work supervisor owns delegated agent subtrees, trusted work children such as script runs, request helpers, and supervised turn/awaiter Tasks. There is no separate scope per subagent.
 - The scope coordinator enforces fleet limits and records logical ownership. It is a control-plane process and does not relay streaming token events.
 - Subagent configuration is selected from trusted named profiles resolved by the harness.
 - The subagent tool is opt-in initially rather than part of every agent's default tool set.
@@ -41,7 +41,7 @@ The first implementation uses these defaults:
 - A busy ephemeral child rejects additional work. General-purpose agent inboxes and queues are deferred.
 - Fleet concurrency overflow is rejected explicitly in the initial implementation rather than queued.
 - Scoped runtime processes are temporary. Lost in-memory state is not restarted or reconstructed.
-- Subagents, workflows, scopes, and fleets belong to the optional `:tackle_runtime` package. `Tackle.Lib` remains unaware of them. Hosts supply a `Tackle.Runtime.AgentBackend`; the root harness adapts `Tackle.Session`, while `Tackle.Phoenix` adapts `Runner`/`Store`. The runtime supplies one dedicated tool supervisor per agent.
+- Subagents, scripted workflows, scopes, and fleets belong to the optional `:tackle_runtime` package and its `:tackle_script` client. `Tackle.Lib` remains unaware of them. Hosts supply a `Tackle.Runtime.AgentBackend`; the root harness adapts `Tackle.Session`, while `Tackle.Phoenix` adapts `Runner`/`Store`. The runtime supplies one dedicated tool supervisor per agent.
 
 ## 2. Current foundation
 
@@ -83,7 +83,7 @@ An agent is one stateful conversation capable of running turns. Its GenServer ow
 - the active turn, if any;
 - cancellation ownership;
 - subscribers or correlated completion destinations;
-- its parent workflow/agent and fleet identity;
+- its parent agent and fleet identity;
 - a bounded request queue if queuing is introduced.
 
 Each agent process is dedicated to exactly one agent. When an ephemeral delegated agent returns its result and no further work belongs to it, the runtime stops that agent process. A later subagent request receives a new agent process and new state rather than recycling the old process.
@@ -96,7 +96,7 @@ A turn is one invocation of `Tackle.Lib.run/3` or `Tackle.Lib.continue/2`. It ha
 
 - a turn/run ID;
 - an owning agent ID;
-- an optional parent workflow and parent turn;
+- an optional parent turn;
 - a cancellation signal;
 - an event stream;
 - a terminal outcome;
@@ -128,19 +128,23 @@ parent requests delegated work
 
 Subagent configuration is explicit and trusted. A model may select among capabilities made available by the harness, but model-generated data must not name arbitrary modules, supervisor processes, or executable code.
 
-### 3.4 Workflow
+### 3.4 Scripted workflows
 
-A workflow is a deterministic host coordinator for agents and runs. It can implement:
+The runtime has exactly one orchestration engine: a scripted workflow, run by
+`Tackle.Script` in `packages/tackle_script`. A script is sandboxed Lua whose
+`tackle.spawn/2` calls become ordinary delegated runs under the caller's scope,
+so allowlisted profiles, admission limits, spawn depth, structured cancellation,
+and timeouts apply unchanged. Lua is what makes sequential steps, conditional
+retries, and result-driven loops expressible without inventing a DSL: the script
+blocks on `tackle.await/1` and continues with local state.
 
-- sequential steps, such as researcher → reviewer → writer;
-- parallel fan-out and aggregation;
-- conditional retries or escalation;
-- bounded debate or review patterns;
-- cancellation of outstanding descendants.
-
-A workflow owns workflow state, outstanding request references, accumulated results, and child ownership. It should initially be implemented as a regular GenServer. `:gen_statem` can be considered later if workflows acquire enough explicit states and transitions to justify it.
-
-There is no initial workflow DSL. Host-defined modules and explicit runtime calls are preferable to a speculative general workflow language.
+An earlier host-defined workflow primitive (`Tackle.Runtime.Workflow`,
+`Tackle.Runtime.Workflow.Server`, `WorkflowRef`, `Runtime.start_workflow/4`,
+`await_workflow/2`) has been **removed**. It was a reactive
+`init/handle_result` coordinator, it had no production caller beyond tests and a
+benchmark, and it duplicated the script runner's process lifecycle. `Tackle.Script`
+is the replacement, and `Runtime.start_work/2` remains the seam for a host that
+needs to place some other trusted coordinator under the scope work supervisor.
 
 ### 3.5 Root-agent scope and fleet
 
@@ -153,12 +157,12 @@ one root agent scope = one fleet
 The scope owns:
 
 - the root agent;
-- all descendant agents and workflows;
+- all descendant agents and trusted work children;
 - active supervised turn Tasks;
 - maximum active agents;
 - maximum concurrent turns;
 - spawn depth and fan-out limits;
-- workflow and run timeouts;
+- `workflow_timeout` and run timeouts;
 - attached-child cancellation;
 - fleet status and inspection data.
 
@@ -168,7 +172,7 @@ A scope or fleet does not run LLM loops and should not relay every streaming eve
 
 ## 4. Supervision architecture
 
-OTP supervision is responsible for process lifecycle, cleanup, and failure isolation. Supervisors do not coordinate workflow state, route every message, or enforce budgets themselves; those responsibilities belong to the scope coordinator and ordinary runtime modules.
+OTP supervision is responsible for process lifecycle, cleanup, and failure isolation. Supervisors do not coordinate orchestration state, route every message, or enforce budgets themselves; those responsibilities belong to the scope coordinator and ordinary runtime modules.
 
 The implemented reusable process tree is:
 
@@ -189,7 +193,7 @@ Tackle.Runtime.Supervisor
     │   ├── Runtime.AgentSupervisor         delegated agent subtree
     │   │   ├── Task.Supervisor             child tool execution
     │   │   └── host backend agent
-    │   ├── workflow processes
+    │   ├── trusted work children     script runs, host coordinators
     │   └── supervised turn/awaiter Tasks
     └── AgentScope B
         └── ...
@@ -199,9 +203,9 @@ Tackle.Runtime.Supervisor
 
 Each concrete agent runs under `Tackle.Runtime.AgentSupervisor`, which owns the agent's dedicated tool `Task.Supervisor` and one backend child. The backend child is `Tackle.Session` in the root harness and `Tackle.Phoenix.Runner` in Phoenix/SaaS hosts. This keeps supervision reusable while leaving persistence, authorization, billing, and host delivery semantics in adapters.
 
-`WorkSupervisor` accepts heterogeneous temporary child specifications. It owns descendant agent subtrees, workflows, request helpers, and turn/awaiter Tasks. There is exactly one tool supervisor per agent, so a child never shares tool tasks with its parent and subtree termination cleans up every in-flight tool task for that agent.
+`WorkSupervisor` accepts heterogeneous temporary child specifications. It owns descendant agent subtrees, trusted work children, request helpers, and turn/awaiter Tasks. There is exactly one tool supervisor per agent, so a child never shares tool tasks with its parent and subtree termination cleans up every in-flight tool task for that agent.
 
-Stopping one `AgentScope` physically terminates its root agent, all descendants, workflows, active turn Tasks, and request helpers. No global coordinator has to enumerate and individually terminate every member to clean up the root agent.
+Stopping one `AgentScope` physically terminates its root agent, all descendants, trusted work children, active turn Tasks, and request helpers. No global coordinator has to enumerate and individually terminate every member to clean up the root agent.
 
 ### 4.1 Physical and logical ownership
 
@@ -212,7 +216,7 @@ WorkSupervisor
 ├── researcher
 ├── reviewer
 ├── researcher's child
-└── workflow
+└── script run
 ```
 
 The scope coordinator separately records their logical relationships:
@@ -226,7 +230,7 @@ root
 
 Physical supervision provides complete scope cleanup. Logical ownership provides selective branch cancellation, spawn-depth calculation, child limits, cycle detection, authorization, and correlated result routing. It remains necessary even though every process is physically beneath the same root scope.
 
-No descendant agent receives a dedicated scope of its own. If a descendant is allowed to launch another agent, it asks the same root scope to start that agent under the shared `WorkSupervisor` and records itself as the logical parent. What every descendant does receive is a small per-session supervisor owning that agent's session and its tool `Task.Supervisor`; that pair is a single cleanup and failure unit, not a nested scope or workflow boundary.
+No descendant agent receives a dedicated scope of its own. If a descendant is allowed to launch another agent, it asks the same root scope to start that agent under the shared `WorkSupervisor` and records itself as the logical parent. What every descendant does receive is a small per-session supervisor owning that agent's session and its tool `Task.Supervisor`; that pair is a single cleanup and failure unit, not a nested scope or orchestration boundary.
 
 ### 4.2 Scope API
 
@@ -244,7 +248,7 @@ Normal callers use higher-level runtime operations instead:
 
 ```elixir
 Tackle.Runtime.request_agent(parent_ref, agent_spec, prompt)
-Tackle.Runtime.start_workflow(parent_ref, workflow_module, input)
+Tackle.Runtime.start_work(parent_ref, child_spec)
 Tackle.Runtime.cancel(runtime_ref)
 ```
 
@@ -259,7 +263,7 @@ The runtime is intentionally in memory. Restarting an agent or coordinator after
 - failure of a scope-critical process terminates the complete scope instead of reconstructing empty state;
 - each `Tackle.Runtime.AgentSupervisor` uses `:one_for_all` with no restart allowance: an exit of the backend agent or its tool supervisor tears the agent subtree down instead of reconstructing empty state;
 - a root backend or root tool-supervisor failure therefore terminates the complete scope, while a descendant backend or tool-supervisor failure is isolated to that descendant;
-- descendant agents, workflows, helpers, and Tasks are temporary dynamic children and are not restarted;
+- descendant agents, trusted work children, helpers, and Tasks are temporary dynamic children and are not restarted;
 - a descendant failure is reported to its requester and does not terminate unrelated sibling work;
 - normal `Tackle.Lib` errors and cancellation are terminal outcomes, not crashes;
 - Task crashes and process exits remain distinct runtime failures;
@@ -276,7 +280,6 @@ Runtime APIs should use stable references rather than public PIDs. The identity 
 ```text
 fleet_id
 agent_id
-workflow_id
 turn_id
 message_id
 correlation_id
@@ -296,7 +299,7 @@ The exact struct and names are deferred. The architectural rules are:
 - the Registry maps stable runtime references to live local processes;
 - callers do not retain raw PIDs as durable identity;
 - stale references produce explicit `:not_found` or terminated outcomes;
-- `Tackle.Lib.State.session_id` remains the conversation/provider-cache identity and need not represent fleet, workflow, or parentage;
+- `Tackle.Lib.State.session_id` remains the conversation/provider-cache identity and need not represent fleet or parentage;
 - events and terminal outcomes carry enough IDs to reject stale or unrelated deliveries.
 
 ### 5.1 Implemented public facade
@@ -361,8 +364,8 @@ The first communication primitive is correlated request/reply. A conceptual runt
 %Tackle.Runtime.Envelope{
   id: message_id,
   kind: :request | :reply | :signal,
-  from: agent_or_workflow_ref,
-  to: agent_or_workflow_ref,
+  from: agent_ref,
+  to: agent_ref,
   correlation_id: request_id,
   parent_turn_id: parent_turn_id,
   payload: payload
@@ -372,7 +375,7 @@ The first communication primitive is correlated request/reply. A conceptual runt
 The exact fields remain a proposal, but the distinctions are required:
 
 - **events** are observational and do not request new work;
-- **requests** ask an agent or workflow to perform work;
+- **requests** ask an agent to perform work;
 - **replies** settle one correlated request;
 - **signals** carry control operations such as cancellation.
 
@@ -383,7 +386,7 @@ Useful initial operations are conceptually:
 ```text
 request(agent, input) → run reference
 reply(request, result)
-cancel(run | workflow | fleet)
+cancel(run | fleet)
 ```
 
 In addition to correlated request/reply, `Runtime.tell/3` delivers text between
@@ -422,16 +425,16 @@ The routing boundary validates envelope shape, correlation, fleet membership, an
 
 The current interactive session rejects overlapping submissions with `:turn_in_progress`. That behavior should not silently change.
 
-Ephemeral subagents are normally dedicated to one delegated request, so they do not initially require general-purpose inboxes. If workflows later target an already-busy agent, the runtime may either:
+Ephemeral subagents are normally dedicated to one delegated request, so they do not initially require general-purpose inboxes. If model-facing orchestration later targets an already-busy agent, the runtime may either:
 
-1. reject the request and let the workflow decide whether to retry; or
+1. reject the request and let the orchestrator decide whether to retry; or
 2. enqueue it in a separately defined, bounded runtime request queue.
 
 If queuing is added, it must have explicit limits, cancellation behavior, and ordering. It should use a separate API rather than changing the semantics of the existing frontend-facing `submit/2` operation.
 
 ## 7. Connecting subagents to an agent turn
 
-Subagent orchestration belongs in the root Tackle harness, not in `Tackle.Lib`. `Tackle.Lib` remains unaware of fleets, parent/child relationships, and workflow policy.
+Subagent orchestration belongs in the root Tackle harness, not in `Tackle.Lib`. `Tackle.Lib` remains unaware of fleets, parent/child relationships, and orchestration policy.
 
 A parent agent can receive subagent capability through a host tool:
 
@@ -452,8 +455,7 @@ The tool can receive an opaque runtime handle through `Tackle.Lib.State.context`
 %{
   runtime: runtime_handle,
   fleet_id: fleet_id,
-  agent_id: agent_id,
-  workflow_id: workflow_id
+  agent_id: agent_id
 }
 ```
 
@@ -490,7 +492,7 @@ request_agent(parent, spec, prompt) → run reference
 await(run reference, timeout) → correlated outcome
 ```
 
-The subagent tool performs these operations back-to-back and therefore behaves synchronously from `Tackle.Lib`'s perspective. Workflows can retain several run references and await them independently, which provides one shared primitive for sequential and parallel orchestration independently of how `Tackle.Lib` executes an individual tool batch.
+The subagent tool performs these operations back-to-back and therefore behaves synchronously from `Tackle.Lib`'s perspective. A scripted workflow can retain several run references and await them independently, which provides one shared primitive for sequential and parallel orchestration independently of how `Tackle.Lib` executes an individual tool batch.
 
 ### 8.2 Parallel execution
 
@@ -501,9 +503,9 @@ If a model emits multiple individual subagent tool calls in one batch, those cal
 Do not build fleets by changing core tool execution policy. Parallel fan-out and aggregation that spans multiple turns, depends on intermediate results, or needs its own failure policy should still happen through either:
 
 1. an explicit batch orchestration tool that starts several child agents concurrently and awaits all results; or
-2. a host workflow that starts concurrent child runs, collects correlated outcomes, and launches any aggregation step.
+2. a scripted workflow (`tackle_script`) that starts concurrent child runs, collects correlated outcomes, and launches any aggregation step.
 
-Substantial parallel orchestration belongs in workflows. Concurrent tool execution is limited to one model-requested batch and keeps its concurrency policy explicit and host-owned.
+Substantial parallel orchestration belongs in scripted workflows. Concurrent tool execution is limited to one model-requested batch and keeps its concurrency policy explicit and host-owned.
 
 ## 9. Agent specifications and trusted configuration
 
@@ -535,14 +537,14 @@ Cancellation is hierarchical by default:
 
 ```text
 cancel fleet
-  → cancel workflows
+  → cancel trusted work children
   → cancel active agent turns
   → discard queued requests
   → stop owned ephemeral agents
 
-cancel workflow
+cancel script run
   → cancel outstanding runs
-  → stop agents exclusively owned by that workflow
+  → stop agents exclusively owned by that script
 
 cancel parent turn
   → cancel attached child runs
@@ -594,7 +596,7 @@ and deadlines, respectively.
 
 Token and monetary budgets may be added later using normalized usage, but they are not required to establish the in-memory process architecture.
 
-Limits must fail explicitly and predictably. A rejected spawn or request becomes a typed tool/workflow result; it must not crash the parent or silently exceed the configured boundary.
+Limits must fail explicitly and predictably. A rejected spawn or request becomes a typed tool result; it must not crash the parent or silently exceed the configured boundary.
 
 The runtime should also prevent obvious wait cycles. The initial ephemeral parent-to-child model naturally forms a tree; requests that would wait on an ancestor should be rejected rather than allowed to deadlock two single-turn agents.
 
@@ -605,10 +607,10 @@ Streaming events should follow the shortest useful route:
 ```text
 child turn Task
   → child AgentSession
-  → interested frontend/workflow subscriber
+  → interested frontend/orchestration subscriber
 ```
 
-The scope coordinator should observe lifecycle and terminal accounting events, not every token delta. A workflow normally needs correlated terminal outcomes and selected progress events rather than the full UI stream.
+The scope coordinator should observe lifecycle and terminal accounting events, not every token delta. An orchestration process normally needs correlated terminal outcomes and selected progress events rather than the full UI stream.
 
 Terminal result delivery must distinguish:
 
@@ -618,7 +620,7 @@ Terminal result delivery must distinguish:
 - turn Task crash;
 - agent process termination;
 - timeout;
-- fleet or workflow policy rejection.
+- fleet or orchestration policy rejection.
 
 A parent agent's child result normally returns through its waiting orchestration tool and becomes a linked tool result in the parent's transcript. It should not be injected into the parent conversation as an unrelated user or assistant message.
 
@@ -632,13 +634,12 @@ Define small root-harness types for:
 
 - root scope/fleet references;
 - agent references;
-- workflow references;
 - run references;
 - `AgentSpec`;
 - fleet limits;
 - terminal runtime outcomes.
 
-The identity model must carry the root scope, agent, workflow, run, parent, and correlation identifiers needed by routing and cancellation. Runtime references must not expose PIDs.
+The identity model must carry the root scope, agent, run, parent, and correlation identifiers needed by routing and cancellation. Runtime references must not expose PIDs.
 
 Candidate source locations are under `packages/tackle/lib/tackle/runtime/`; exact filenames are implementation details.
 
@@ -664,14 +665,14 @@ Tackle.AgentSupervisor
 
 Add `Tackle.Runtime.Registry` to the application tree. Register scopes and runtime entities by stable identity. Provide the minimal low-level operations to start and stop a root-agent scope and to start temporary work within it.
 
-The work supervisor must support descendant sessions, workflows, request helpers, and supervised turn Tasks. Root-scope shutdown must physically terminate all of them.
+The work supervisor must support descendant sessions, trusted work children, request helpers, and supervised turn Tasks. Root-scope shutdown must physically terminate all of them.
 
 Acceptance criteria:
 
 - Starting a root agent creates exactly one scope and one shared work supervisor.
 - Stopping a root reference terminates every process in that scope.
 - Two root agents are isolated in different scopes.
-- No supervisor is created for an individual subagent or workflow.
+- No supervisor is created for an individual subagent or trusted work child.
 - A critical root-session, coordinator, or work-supervisor crash tears down the scope without restarting empty state.
 - A temporary descendant crash does not terminate an unrelated sibling.
 - Registry entries disappear when their processes terminate.
@@ -681,7 +682,7 @@ Acceptance criteria:
 Keep `Tackle.Session` as the only stateful agent GenServer. Extend its start options and state with:
 
 - `AgentRef` and root scope reference;
-- optional logical parent agent, workflow, and run;
+- optional logical parent agent and run;
 - `:explicit` or `:ephemeral` lifetime;
 - a terminal result destination and correlation ID;
 - the scoped work-supervisor reference;
@@ -705,7 +706,7 @@ Acceptance criteria:
 
 Implement `ScopeCoordinator` as the fleet control plane for one root-agent scope. It records:
 
-- live agents, workflows, and runs;
+- live agents and runs;
 - logical parent/child relationships;
 - active-turn and child counts;
 - spawn depth;
@@ -740,7 +741,7 @@ Acceptance criteria:
 
 ### Task 5: correlated delegated request/reply
 
-Implement the shared primitive used by both tools and workflows. Conceptually:
+Implement the shared primitive used by tools and orchestration alike. Conceptually:
 
 ```elixir
 {:ok, run_ref} =
@@ -789,7 +790,7 @@ Implement cancellation across the logical ownership graph while retaining physic
 cancel root scope
   → stop the complete AgentScope
 
-cancel workflow or parent run
+cancel trusted work child or parent run
   → cancel its attached runs
   → stop its exclusively owned ephemeral agents
 
@@ -807,7 +808,7 @@ Acceptance criteria:
 - Scope shutdown terminates every scoped Task even during an active provider or tool operation.
 - A child cannot publish a stale success after its request was cancelled or timed out.
 - Repeated cancellation is idempotent.
-- Parent Task and workflow crashes trigger descendant cleanup.
+- Parent Task and trusted-work-child crashes trigger descendant cleanup.
 
 ### Task 7: opt-in subagent tool
 
@@ -855,36 +856,35 @@ root agent
   → parent loop continuation
 ```
 
-### Task 8: host-defined workflows
+### Task 8: scripted workflows (superseded)
 
-Add a small workflow process contract under the root harness. A workflow owns its state, outstanding run references, accumulated results, and failure policy. It uses the same request/reply primitive as the subagent tool.
+This task originally specified a host-defined workflow process contract inside
+the root harness. That primitive was built (`Tackle.Runtime.Workflow`,
+`Tackle.Runtime.Workflow.Server`, `WorkflowRef`, `Runtime.start_workflow/4`,
+`Runtime.await_workflow/2`) and then **removed**, because:
 
-The contract should support initialization, correlated result handling, failure handling, and cancellation. Begin with regular GenServers; do not introduce a workflow DSL or `:gen_statem` without demonstrated complexity.
+- it had no production caller — only its own test file and one benchmark;
+- it duplicated the process lifecycle of the script runner;
+- its reactive `init/handle_result` callbacks could not express what scripts
+  express directly, so both engines were being maintained.
 
-Add deterministic test workflows for:
+The shipped answer is `packages/tackle_script`: sandboxed Lua over the same
+delegated-run primitive, with sequential steps, bounded fan-out
+(`tackle.parallel/3`), retries, and cancellation, plus an opt-in `run_script`
+tool and a test-verified harness seam. `Runtime.start_work/2` remains the
+runtime seam for a host that needs to place some other trusted coordinator
+under the scope work supervisor.
 
-1. researcher → reviewer → writer;
-2. parallel researchers → aggregator.
+### Task 9: explicit parallel and batch orchestration (removed)
 
-Acceptance criteria:
+This task specified host-side `Runtime.request_many/3` and `Runtime.await_many/2`
+helpers for parallel fan-out. They were implemented and then removed as unused:
+the declarative request shape existed only for the workflow engine, no caller
+ever used them, and `Tackle.Script.Fanout` provides the bounded, work-conserving
+fan-out that scripts actually need, including capacity-aware retry.
 
-- Sequential outcomes feed later steps explicitly.
-- Parallel child runs actually overlap.
-- Results remain correctly correlated regardless of completion order.
-- Child failure follows explicit workflow policy.
-- Workflow cancellation cancels every outstanding attached run.
-- A completed or failed workflow terminates and releases scope accounting.
-
-### Task 9: explicit parallel and batch orchestration
-
-Provide host-side helpers for parallel fan-out across delegated runs. These orchestrate several agents over multiple turns; they are independent of how one `Tackle.Lib` tool batch executes. Conceptually:
-
-```elixir
-request_many(parent_ref, requests)
-await_many(run_refs, timeout)
-```
-
-A future batch tool may wrap these helpers, but workflows are the initial consumer.
+A host that needs a different fan-out policy builds it from
+`Runtime.request_agent/4` and `Runtime.await/2`, as `Tackle.Script.Fanout` does.
 
 Acceptance criteria:
 
@@ -922,10 +922,9 @@ Add PID-free inspection operations such as:
 ```elixir
 Tackle.Runtime.scope_snapshot(scope_ref)
 Tackle.Runtime.agent_snapshot(agent_ref)
-Tackle.Runtime.workflow_snapshot(workflow_ref)
 ```
 
-Snapshots should include status, logical ownership, active run, child and outstanding-request counts, limits, and cancellation state. Emit bounded lifecycle events or telemetry for scope, agent, run, workflow, cancellation, timeout, and admission-rejection transitions.
+Snapshots should include status, logical ownership, active run, child and outstanding-request counts, limits, and cancellation state. Emit bounded lifecycle events or telemetry for scope, agent, run, cancellation, timeout, and admission-rejection transitions.
 
 Do not include prompts, results, tool arguments, credentials, or unrestricted context in inspection metadata.
 
@@ -975,17 +974,16 @@ contracts and identities
   → request/reply primitive
   → structured cancellation
   → subagent tool
-  → workflows
-  → batch orchestration
+  → scripted workflows (`tackle_script`)
   → recursive-delegation hardening
   → inspection and compatibility work
 ```
 
-Workflows and model-visible tools must not implement private child-launch mechanisms; both wait for and reuse the shared request/reply primitive.
+Scripted workflows and model-visible tools must not implement private child-launch mechanisms; both wait for and reuse the shared request/reply primitive.
 
 ### 13.2 Testing priorities
 
-The highest-risk behavior should be tested before adding workflow convenience APIs:
+The highest-risk behavior should be tested before adding orchestration convenience APIs:
 
 1. terminal result setup versus a child that finishes immediately;
 2. scope shutdown during an active turn;
@@ -1007,16 +1005,16 @@ The runtime is correctly shaped when all of the following remain true:
 - `Tackle.Session` remains the single stateful agent GenServer; supervised Tasks execute turns.
 - Each top-level agent has one physical root scope, and that scope is the initial fleet boundary.
 - A root session, coordinator, and shared work supervisor are siblings under the scope Supervisor.
-- All descendants, workflows, helpers, and turn Tasks are temporary children within that root scope.
-- No supervisor is created for each subagent or workflow.
+- All descendants, trusted work children, helpers, and turn Tasks are temporary children within that root scope.
+- No supervisor is created for each subagent or trusted work child.
 - Physical supervision provides complete root-scope cleanup; logical ownership provides selective branch operations.
 - A dedicated ephemeral agent stops after its delegated task and is never reused for another agent.
-- Workflows coordinate agents but do not become a second loop implementation.
+- Scripted workflows coordinate agents but do not become a second loop implementation.
 - The scope coordinator enforces lifecycle and resource policy without becoming an event bottleneck.
 - Stable IDs and Registry lookup form the public in-memory addressing model.
 - Correlated request/reply is distinct from observational events.
-- Tools and workflows share the same request/reply runtime primitive.
-- Parallelism is explicit in workflow or batch orchestration.
+- Tools and scripted workflows share the same request/reply runtime primitive.
+- Parallelism is explicit in scripted workflow or batch orchestration.
 - Parent cancellation reaches attached descendants.
 - Recursive delegation is opt-in and bounded independently from per-agent loop iterations.
 - In-memory crashes are reported honestly rather than hidden by empty-state restarts.
@@ -1030,13 +1028,13 @@ The following are intentionally deferred:
 - reconstruction after process or BEAM failure;
 - distributed process discovery and cross-node messaging;
 - a fleet containing several independent root-agent scopes;
-- durable workflow execution;
+- durable workflow execution for `tackle_script` (script state and spawned runs are in-memory);
 - durable/replayable inboxes and queues;
 - long-lived named-agent semantics;
 - broadcast messaging;
-- a workflow DSL;
+- an Elixir workflow DSL above the scripted workflows;
 - detached background work outside the implemented logical-parent ownership policy;
 - token and monetary fleet budgets;
 - additional public API signatures and module names beyond the implemented scoped facade.
 
-These deferrals must not weaken the accepted in-memory boundaries: ordinary dedicated Tackle agents, one physical execution scope per root agent, host-owned workflows, scope-enforced limits, stable addressing, correlated request/reply, and structured cancellation.
+These deferrals must not weaken the accepted in-memory boundaries: ordinary dedicated Tackle agents, one physical execution scope per root agent, scripted workflows, scope-enforced limits, stable addressing, correlated request/reply, and structured cancellation.

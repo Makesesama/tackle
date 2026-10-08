@@ -11,7 +11,6 @@ defmodule Tackle.Runtime.ContractsTest do
   alias Tackle.Runtime.RunRef
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
-  alias Tackle.Runtime.WorkflowRef
 
   defmodule Adapter do
     @behaviour Tackle.Lib.LLM
@@ -44,17 +43,14 @@ defmodule Tackle.Runtime.ContractsTest do
     test "builds and validates every reference type" do
       scope_id = ID.generate()
       agent_id = ID.generate()
-      workflow_id = ID.generate()
       run_id = ID.generate()
 
       assert {:ok, %ScopeRef{scope_id: ^scope_id} = scope_ref} = ScopeRef.new(scope_id)
       assert {:ok, %AgentRef{} = agent_ref} = AgentRef.new(scope_id, agent_id)
-      assert {:ok, %WorkflowRef{} = workflow_ref} = WorkflowRef.new(scope_id, workflow_id)
       assert {:ok, %RunRef{} = run_ref} = RunRef.new(scope_id, run_id)
 
       assert Ref.valid?(scope_ref)
       assert Ref.valid?(agent_ref)
-      assert Ref.valid?(workflow_ref)
       assert Ref.valid?(run_ref)
       refute Ref.valid?(%{scope_id: scope_id})
       refute Ref.valid?("not-a-ref")
@@ -63,7 +59,6 @@ defmodule Tackle.Runtime.ContractsTest do
     test "rejects invalid identifiers with explicit errors" do
       assert {:error, {:invalid_scope_id, nil}} = ScopeRef.new(nil)
       assert {:error, {:invalid_agent_id, ""}} = AgentRef.new("scope", "")
-      assert {:error, {:invalid_workflow_id, 123}} = WorkflowRef.new("scope", 123)
       assert {:error, {:invalid_run_id, nil}} = RunRef.new("scope", nil)
     end
 
@@ -78,9 +73,6 @@ defmodule Tackle.Runtime.ContractsTest do
       assert Ref.scope_ref(agent_ref) == scope_ref
       assert Ref.registry_key(scope_ref) == {:scope, scope_id}
       assert Ref.registry_key(agent_ref) == {:agent, scope_id, agent_id}
-
-      assert Ref.registry_key(WorkflowRef.new!(scope_id, agent_id)) ==
-               {:workflow, scope_id, agent_id}
 
       assert Ref.registry_key(RunRef.new!(scope_id, agent_id)) == {:run, scope_id, agent_id}
     end

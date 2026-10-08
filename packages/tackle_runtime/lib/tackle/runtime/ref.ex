@@ -9,9 +9,8 @@ defmodule Tackle.Runtime.Ref do
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.RunRef
   alias Tackle.Runtime.ScopeRef
-  alias Tackle.Runtime.WorkflowRef
 
-  @type t :: ScopeRef.t() | AgentRef.t() | WorkflowRef.t() | RunRef.t()
+  @type t :: ScopeRef.t() | AgentRef.t() | RunRef.t()
 
   @doc "Returns the owning scope reference for any runtime reference."
   @spec scope_ref(t()) :: ScopeRef.t()
@@ -25,17 +24,14 @@ defmodule Tackle.Runtime.Ref do
   @doc """
   Returns the unique Registry key for a runtime reference.
 
-  Keys are stable tuples so scope, agent, workflow, and run registrations can
-  share one Registry without collisions.
+  Keys are stable tuples so scope, agent, and run registrations can share one
+  Registry without collisions.
   """
   @spec registry_key(t()) :: tuple()
   def registry_key(%ScopeRef{scope_id: scope_id}), do: {:scope, scope_id}
 
   def registry_key(%AgentRef{scope_id: scope_id, agent_id: agent_id}),
     do: {:agent, scope_id, agent_id}
-
-  def registry_key(%WorkflowRef{scope_id: scope_id, workflow_id: workflow_id}),
-    do: {:workflow, scope_id, workflow_id}
 
   def registry_key(%RunRef{scope_id: scope_id, run_id: run_id}),
     do: {:run, scope_id, run_id}
@@ -44,7 +40,6 @@ defmodule Tackle.Runtime.Ref do
   @spec valid?(term()) :: boolean()
   def valid?(%ScopeRef{} = ref), do: match?({:ok, _}, ScopeRef.new(ref))
   def valid?(%AgentRef{} = ref), do: match?({:ok, _}, AgentRef.new(ref))
-  def valid?(%WorkflowRef{} = ref), do: match?({:ok, _}, WorkflowRef.new(ref))
   def valid?(%RunRef{} = ref), do: match?({:ok, _}, RunRef.new(ref))
   def valid?(_value), do: false
 

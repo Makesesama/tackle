@@ -7,7 +7,7 @@ This document distinguishes implemented package boundaries from explicitly futur
 ## 1. Agreed decisions
 
 1. `packages/tackle` is the Tackle developer harness. Its implementation lives in `packages/tackle/lib/tackle`, with `packages/tackle/lib/tackle.ex` as its public facade.
-2. The harness owns configuration reading and plugin composition. Reusable scoped supervision, subagents, limits, and workflows live in `packages/tackle_runtime`; host-specific sessions, persistence, authorization, and billing remain in adapters.
+2. The harness owns configuration reading and plugin composition. Reusable scoped supervision, subagents, and limits live in `packages/tackle_runtime`; host-specific sessions, persistence, authorization, and billing remain in adapters.
 3. Rename the existing reusable library from `packages/tackle` to `packages/tackle_lib`, preserving its implementation and capabilities rather than replacing or copying its engine.
 4. Give the library the OTP application identity `:tackle_lib` and namespace `Tackle.Lib.*`. The harness retains `:tackle` and `Tackle.*`.
 5. The harness is frontend-agnostic. Build a CLI first; a future web frontend uses the same harness API and session lifecycle.
@@ -77,7 +77,7 @@ the provider-neutral `Tackle.Lib.Integrations.Registry` seam.
 
 Depends only on `tackle_lib` and owns scoped OTP supervision, stable references,
 admission limits, per-agent tool supervision, delegated requests, cancellation,
-fan-out, and workflows. Hosts implement `Tackle.Runtime.AgentBackend` so tenant,
+and fan-out. Hosts implement `Tackle.Runtime.AgentBackend` so tenant,
 persistence, billing, credentials, and local-session policy stay outside the
 runtime package.
 

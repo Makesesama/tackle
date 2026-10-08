@@ -18,7 +18,6 @@ From the repository root, fetch each project's dependencies once:
 (cd packages/tackle_lib && mix run bench/context.exs)
 (cd packages/tackle_lib && mix run bench/tools.exs)
 (cd packages/tackle_runtime && mix run bench/lifecycle.exs)
-(cd packages/tackle_runtime && mix run bench/workflow_start.exs)
 (cd packages/tackle_runtime && mix run bench/retained.exs)
 (cd packages/tackle_runtime && mix run bench/streaming.exs)
 ```
@@ -38,9 +37,8 @@ on unexpected results; runtime fixture lifecycle/cleanup also has ExUnit coverag
 | `tackle_lib/bench/history.exs` | One append to existing linear/tree/shortened-projection histories; context estimation with/without a recent usage checkpoint; provider projection. 10–10,000 messages. Fixtures are built outside timing. |
 | `tackle_lib/bench/context.exs` | Isolated context estimation with/without a recent checkpoint at 1,000–10,000 messages; allocations and reductions included. |
 | `tackle_lib/bench/tools.exs` | Full echo-tool settlement with keyword or nested JSON Schema output validation, plus isolated JSV build/validate costs. 1–100 output items. |
-| `tackle_runtime/bench/lifecycle.exs` | Full fresh-scope delegated lifecycle, plus one-child workflow start/await with untimed setup/cleanup. 10–10,000 returned messages. Also prints untimed retained Request process diagnostics. |
+| `tackle_runtime/bench/lifecycle.exs` | Full fresh-scope delegated lifecycle. 10–10,000 returned messages. Also prints untimed retained Request process diagnostics. |
 | `tackle_runtime/bench/streaming.exs` | Fresh scope → 0/100/1,000 event burst → awaited result → shutdown, with and without subscription. The unsubscribed backend produces no events. |
-| `tackle_runtime/bench/workflow_start.exs` | Start → awaited one-child workflow with 1/100/500 pending agents in a pre-populated fleet. Per-sample setup, reservation and cleanup are excluded from timing. |
 | `tackle_runtime/bench/retained.exs` | Untimed, post-GC retained Request and backend process bytes plus outcome/setup-config term words. Contrasts large results against large setup-only config. |
 
 These are different workloads, not interchangeable implementations: cross-job
@@ -53,12 +51,6 @@ History append measures one append at a given size, not building an entire histo
 Delegated runtime timings include scope startup, process/message copying, fake
 backend work, and synchronous cleanup. Requests are monitored through normal
 termination before stopping their scope to avoid measuring a shutdown race.
-The workflow job instead times only start → awaited result; scope setup and
-cleanup run in Benchee's untimed per-invocation hooks. Depending on when an
-awaiter registers, workflows can linger **500 ms after completion**. The cleanup
-hook waits for termination outside timing, so this scheduling-dependent retention
-cannot masquerade as execution overhead (it still increases suite wall time and
-reduces the number of samples collected; treat workflow p99 cautiously).
 Each sample gets a fresh scope, avoiding asynchronously released
 admission slots and accumulated results between iterations. Streaming includes
 an atomic counter to verify every event was delivered, not UI rendering or a
@@ -81,8 +73,8 @@ so results should not be extrapolated to shared large binaries or real providers
 ## Local before/after sample (synthetic)
 
 Linux / Ryzen 9 7900X / Elixir 1.20.4 / OTP 29.0.6, serial full runs
-with identical fixtures (saved under `/tmp/tackle-context-{before,after}.benchee`
-and `/tmp/tackle-workflow-{before,after}.benchee`). These files are local,
+with identical fixtures (saved under `/tmp/tackle-context-{before,after}.benchee`).
+These files are local,
 not checked in. Values below are medians; p99 is susceptible to scheduling
 noise. No-checkpoint profiling before editing (`mix profile.tprof --type memory`)
 identified per-message `String.length/2` as the largest allocation source;
@@ -93,9 +85,6 @@ and the second message traversal but retains Unicode-aware `String.length/1`.
 | --- | ---: | ---: | ---: | ---: |
 | Context, recent checkpoint / 10k | 290 µs | 15.4 µs | 0.53 → 0.153 MB | 30.36k → 0.33k |
 | Context, no checkpoint / 10k | 4.39 ms | 3.99 ms | 3.89 → 3.51 MB | 756.31k → 687.06k |
-| Workflow start + await / 1 pending agent | 174.32 µs | 145.16 µs | — | — |
-| Workflow start + await / 100 pending agents | 203.83 µs | 152.05 µs | — | — |
-| Workflow start + await / 500 pending agents | 358.02 µs | 151.95 µs | — | — |
 
 `bench/retained.exs` (untimed, after GC) reports a 10k-message Request
 at 6,665,304 bytes and its backend at 2,546,592 bytes; outcome term size

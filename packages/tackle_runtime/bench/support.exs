@@ -62,23 +62,12 @@ defmodule Tackle.Runtime.Bench.Backend do
   end
 end
 
-defmodule Tackle.Runtime.Bench.Workflow do
-  @moduledoc false
-  use Tackle.Runtime.Workflow
-
-  @impl true
-  def init(_input), do: {:ok, nil, [{"worker", "synthetic prompt"}]}
-
-  @impl true
-  def handle_result(_ref, outcome, state), do: {:stop, {:ok, outcome}, state}
-end
-
 defmodule Tackle.Runtime.Bench do
   @moduledoc false
   alias Tackle.Lib.{Message, State}
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentSpec, Outcome, ScopeSpec}
-  alias Tackle.Runtime.Bench.{Backend, Workflow}
+  alias Tackle.Runtime.Bench.Backend
 
   def input(count, events \\ 0) do
     messages =
@@ -127,26 +116,6 @@ defmodule Tackle.Runtime.Bench do
     %Outcome{status: :ok} = Runtime.await(run, 5_000)
     await_down(monitor)
     scope
-  end
-
-  def workflow(scope) do
-    {:ok, ref} = Runtime.start_workflow(scope.root_agent_ref, Workflow, nil)
-    {:ok, pid} = Tackle.Runtime.Registry.whereis(ref)
-    monitor = Process.monitor(pid)
-    {:ok, %Outcome{status: :ok}} = Runtime.await_workflow(ref, 5_000)
-    {scope, monitor}
-  catch
-    kind, reason ->
-      teardown(scope)
-      :erlang.raise(kind, reason, __STACKTRACE__)
-  end
-
-  def finish_workflow({scope, monitor}) do
-    try do
-      await_down(monitor)
-    after
-      :ok = teardown(scope)
-    end
   end
 
   def collect(scope, run, pid) do

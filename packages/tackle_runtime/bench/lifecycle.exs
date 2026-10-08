@@ -6,14 +6,11 @@ alias Tackle.Runtime.Bench
 inputs = Map.new([10, 100, 1_000, 10_000], &{"#{&1} messages", Bench.input(&1)})
 
 # Fresh scopes prevent asynchronously released admission slots or retained results
-# leaking between samples. The workflow uses untimed setup/cleanup hooks so its
-# scheduling-dependent post-completion linger cannot dominate execution timing.
+# leaking between samples.
 Tackle.Bench.run(
   %{
     "scope + launch + await + teardown" =>
-      &Bench.with_scope(&1, fn scope -> Bench.launch_await(scope) end),
-    "workflow / start + await (one child; cleanup excluded)" =>
-      {&Bench.workflow/1, before_each: &Bench.setup/1, after_each: &Bench.finish_workflow/1}
+      &Bench.with_scope(&1, fn scope -> Bench.launch_await(scope) end)
   },
   inputs: inputs,
   memory_time: 0,

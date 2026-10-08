@@ -7,8 +7,8 @@ defmodule Tackle.Runtime.Registry do
   automatically when their process terminates; lookups treat an entry whose
   process has already exited as not found.
 
-  Besides scope, coordinator, work-supervisor, agent, workflow, and run
-  registrations, the registry also holds each agent's per-session tool
+  Besides scope, coordinator, work-supervisor, agent, and run registrations,
+  the registry also holds each agent's per-session tool
   `Task.Supervisor` under `{:tool_supervisor, scope_id, agent_id}`. That is a
   process name keyed by agent reference, not a runtime reference of its own.
   """
@@ -97,20 +97,6 @@ defmodule Tackle.Runtime.Registry do
       [{_pid, backend}] when is_atom(backend) -> {:ok, backend}
       _other -> {:error, :not_found}
     end
-  end
-
-  @doc "Returns the workflow server pid for a workflow reference."
-  @spec workflow(Ref.t()) :: {:ok, pid()} | {:error, :not_found}
-  def workflow(ref), do: Registry.lookup(@name, Ref.registry_key(ref)) |> first()
-
-  @doc "Counts live workflows in one scope."
-  @spec workflow_count(Ref.t()) :: non_neg_integer()
-  def workflow_count(ref) do
-    scope_id = Ref.scope_id(ref)
-
-    @name
-    |> Registry.select([{{{:workflow, scope_id, :_}, :_, :_}, [], [true]}])
-    |> length()
   end
 
   # Registry removes a dead process's entries asynchronously, so a lookup can

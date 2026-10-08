@@ -11,7 +11,7 @@ This document has two goals:
 2. explain reusable host integration patterns for building an agent in another
    application.
 
-For scoped agents, subagents, and workflows, read
+For scoped agents and subagents, read
 [`../tackle_runtime/README.md`](../tackle_runtime/README.md). For Phoenix turns,
 PubSub, and LiveView stream support, also read
 [`../tackle_phoenix/README.md`](../tackle_phoenix/README.md).
@@ -50,9 +50,9 @@ no MCP dependency.
 |---|---|
 | CLI command, Oban job, test, or one synchronous turn | `tackle_lib` |
 | Your application already owns processes and persistence | `tackle_lib` |
-| Scoped agents, subagents, limits, and workflows | `tackle_lib` + `tackle_runtime` |
+| Scoped agents, subagents, and limits | `tackle_lib` + `tackle_runtime` |
 | Supervised background turns with cancellation and PubSub | `tackle_lib` + `tackle_phoenix` |
-| Phoenix subagents and workflows | `tackle_lib` + `tackle_runtime` + `tackle_phoenix` |
+| Phoenix subagents | `tackle_lib` + `tackle_runtime` + `tackle_phoenix` |
 | Incrementally rendered LiveView chat | `tackle_lib` + `tackle_phoenix` |
 | Expose the same tools through Anubis MCP | `tackle_anubis` (brings `tackle_lib`) |
 
