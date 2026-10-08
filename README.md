@@ -210,12 +210,19 @@ The jail (`nix/packages/exec-jail.nix`):
 - gives the jail a private `/tmp` and home, and a cleared environment;
 - unshares every namespace except the network, starts a new session, and dies
   with the CLI;
-- provides common command-line tools and Ketch, with
+- provides common command-line tools, Ketch, and Python 3 with `requests`,
+  PyYAML, Beautiful Soup, and `pip`, with
   `~/.config/ketch/config.json` mounted read-only when present. Any API keys
   in that file are readable from the jail;
 - reproduces the project's devshell when a cached nix-direnv one exists, so the
   agent finds the project toolchain (`mix`, `cargo`, `treefmt`) on `PATH`
   instead of searching the store for it.
+
+The agent's scripts run against that Python: `nix/packages/jail-python.nix` is
+the list both launchers install. The interpreter lives in the store, so
+`pip install` needs a virtualenv in the workspace, which persists, or `--user`,
+which lasts for the CLI process; `nix shell nixpkgs#python3Packages.<pkg>` also
+works while the store and daemon are mounted.
 
 Starting Tackle from a direnv-activated shell gives the jail the same devshell
 you have in that shell. The launcher runs on the host with the workspace as its

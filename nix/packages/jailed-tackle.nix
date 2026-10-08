@@ -22,6 +22,7 @@ let
     # is exposed explicitly instead.
     enableNix = false;
     extraPkgs = [
+      (pkgs.callPackage ./jail-python.nix { })
       pkgs.elixir
       pkgs.hex
       pkgs.beamPackages.rebar3

@@ -3,6 +3,9 @@
   mkExecJail,
   execJail,
   productionJail,
+  # The tools `tackle-cli-jail` puts on the agent's PATH, so the probes below
+  # run against the same jail the package ships.
+  jailTools,
 }:
 
 # Credential-free host smoke test for the production jail. Run it on a Linux
@@ -38,6 +41,7 @@ let
       if mv .git .git-moved 2> /dev/null; then exit 1; fi
 
       ketch --help > /dev/null
+      python3 -c 'import bs4, requests, yaml' > /dev/null
       test "$(cat "$HOME/.config/ketch/config.json")" = '{}'
 
       test "$NIX_REMOTE" = daemon
@@ -65,6 +69,7 @@ let
   probeJail = mkExecJail {
     name = "tackle-jail-probe";
     entry = probe;
+    extraPkgs = jailTools;
   };
 
   # Runs inside the jail with the same policy as the exec-server, in place of
@@ -113,6 +118,7 @@ let
     name = "tackle-jail-direnv-probe";
     entry = direnvProbe;
     inheritDirenv = true;
+    extraPkgs = jailTools;
   };
 
   # Drives the real exec-server through the protocol client, as the CLI does.

@@ -23,7 +23,15 @@ let
       // args
     );
 
-  execJail = mkExecJail { inheritDirenv = true; };
+  # Tools the agent's commands get besides the jail's common utilities. The
+  # smoke test builds its probes with the same list, so it verifies what this
+  # package actually ships.
+  jailTools = [ (pkgs.callPackage ./jail-python.nix { }) ];
+
+  execJail = mkExecJail {
+    inheritDirenv = true;
+    extraPkgs = jailTools;
+  };
 
   package = pkgs.writeShellApplication {
     name = "tackle";
@@ -40,7 +48,12 @@ package.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
     inherit execJail;
     tests.smoke = import ../tests/jailed-tackle-cli.nix {
-      inherit pkgs mkExecJail execJail;
+      inherit
+        pkgs
+        mkExecJail
+        execJail
+        jailTools
+        ;
       productionJail = package;
     };
   };
