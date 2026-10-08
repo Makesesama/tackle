@@ -29,8 +29,10 @@ defmodule Tackle.CLI.Jail do
   @client Tackle.CLI.Jail.Client
   @supervisor Tackle.CLI.Jail.Supervisor
   # HOME is needed by the launcher to set up the jail's private home; nothing
-  # else from the host environment reaches it.
-  @keep_env ~w(PATH HOME LANG LC_ALL TERM)
+  # else from the host environment reaches it. XDG_CACHE_HOME names the direnv
+  # cache the launcher reads to reproduce the project's devshell inside the
+  # jail; the launcher's environment is not the jail's, which starts cleared.
+  @keep_env ~w(PATH HOME LANG LC_ALL TERM XDG_CACHE_HOME)
   @ready_timeout 30_000
 
   @doc """

@@ -9,6 +9,10 @@
 # `tackle` on the host, with every command and workspace file access in a
 # Bubblewrap jail. The CLI keeps credentials (~/.tackle), sessions, and the
 # clipboard; the jail sees only the project directory and the Nix store.
+#
+# The jail also reproduces the project's cached nix-direnv devshell, so the
+# agent finds `mix`, `cargo`, and the rest of the toolchain on PATH rather than
+# searching the store for them. See jail-direnv.nix.
 let
   mkExecJail =
     args:
@@ -19,7 +23,7 @@ let
       // args
     );
 
-  execJail = mkExecJail { };
+  execJail = mkExecJail { inheritDirenv = true; };
 
   package = pkgs.writeShellApplication {
     name = "tackle";

@@ -67,6 +67,54 @@ let
     entry = probe;
   };
 
+  # Runs inside the jail with the same policy as the exec-server, in place of
+  # it. `$1` is `present` when a cached nix-direnv devshell exists for the
+  # workspace and `none` when it does not. Named `-entry` to keep its path
+  # distinct from the launcher of the same jail in the log.
+  direnvProbe = pkgs.writeShellApplication {
+    name = "tackle-jail-direnv-probe-entry";
+    text = ''
+      mode=$1
+      # The devshell describes the host environment; the jail keeps its locale.
+      test "$LANG" = C.UTF-8
+      test "$LC_ALL" = C.UTF-8
+      command -v jq > /dev/null
+
+      case "$mode" in
+        present)
+          # The launcher sourced the devshell cached for the workspace, and
+          # the jail kept its own tools and locale.
+          test "$TACKLE_DIRENV_CANARY" = launch
+          command -v hello > /dev/null
+          # Commands inherit it without re-sourcing anything.
+          test "$(bash -c 'echo "$TACKLE_DIRENV_CANARY"')" = launch
+          # A nested devshell is selected from the command's own directory.
+          test "$(bash -c 'cd sub && echo "$TACKLE_DIRENV_CANARY"')" = nested
+          test -n "$(bash -c 'cd sub && command -v jq')"
+          ;;
+        none)
+          # Nothing cached: the jail starts with its own environment only.
+          test -z "''${TACKLE_DIRENV_CANARY:-}"
+          test -z "''${TACKLE_DIRENV_RC_MAP:-}"
+          test -z "''${BASH_ENV:-}"
+          test "$(bash -c 'echo jailed')" = jailed
+          ;;
+        *)
+          echo "tackle-jail-direnv-probe: unknown mode $mode" >&2
+          exit 2
+          ;;
+      esac
+
+      printf 'Jail devshell inheritance: OK (%s)\n' "$mode"
+    '';
+  };
+  # The production launcher is built with `inheritDirenv = true`.
+  direnvProbeJail = mkExecJail {
+    name = "tackle-jail-direnv-probe";
+    entry = direnvProbe;
+    inheritDirenv = true;
+  };
+
   # Drives the real exec-server through the protocol client, as the CLI does.
   client = pkgs.writeText "tackle-exec-smoke.exs" ''
     [launcher, log, host_home] = System.argv()
@@ -132,6 +180,34 @@ pkgs.writeShellApplication {
     if ${lib.getExe probeJail} "$log" "$HOME"; then exit 1; fi
     rm .git/commondir
     printf 'Planted .git/commondir refused: OK\n'
+
+    # nix-direnv inheritance: the launcher finds the devshell cached for the
+    # workspace in the layout direnv's wiki recommends, and the one cached for
+    # a nested project in direnv's default layout, and the jail sources them.
+    project="$work/project"
+    export XDG_CACHE_HOME="$HOME/.cache"
+    hash=$(sha1sum <<< "$project")
+    slug="''${project//[^a-zA-Z0-9]/-}"
+    cache="$XDG_CACHE_HOME/direnv/layouts/''${hash:0:40}$slug"
+    mkdir -p "$cache" "$project/sub/.direnv"
+    cat > "$cache/flake-profile.rc" <<'EOF'
+    export TACKLE_DIRENV_CANARY=launch
+    export PATH="${pkgs.hello}/bin:''${PATH}"
+    export LANG=xx_XX.UTF-8
+    export LC_ALL=xx_XX.UTF-8
+    EOF
+    touch "$project/sub/.envrc"
+    cat > "$project/sub/.direnv/flake-profile.rc" <<'EOF'
+    export TACKLE_DIRENV_CANARY=nested
+    EOF
+
+    ${lib.getExe direnvProbeJail} "$log" present
+
+    # A devshell that is no longer cached is not required: the jail still
+    # starts, with its own environment only.
+    rm -rf "$XDG_CACHE_HOME/direnv" "$project/sub/.direnv"
+    ${lib.getExe direnvProbeJail} "$log" none
+    printf 'nix-direnv devshell inheritance: OK\n'
 
     elixir -pa ${tackleExec}/lib/erlang/lib/tackle_exec-0.1.0/ebin \
       ${client} ${lib.getExe execJail} "$log" "$HOME"

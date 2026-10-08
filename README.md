@@ -186,9 +186,9 @@ invoked from `packages/tackle`.
 Tackle can run the agent's commands and workspace file access in a Bubblewrap
 jail while the CLI itself stays on the host. The CLI keeps your credentials
 (`~/.tackle`), sessions, and host facilities such as the Wayland or X11
-clipboard; the jail sees the project directory, the Nix store, and nothing else
-from your home. The design is described in
-[`docs/EXEC_SERVER_PLAN.md`](docs/EXEC_SERVER_PLAN.md).
+clipboard; the jail sees the project directory, the Nix store, and the
+project's nix-direnv profile, and nothing else from your home. The design is
+described in [`docs/EXEC_SERVER_PLAN.md`](docs/EXEC_SERVER_PLAN.md).
 
 The CLI enables this when `TACKLE_EXEC_LAUNCHER` names a launcher. The Nix
 packages below set it for you. The launcher starts one jailed exec-server per
@@ -212,7 +212,25 @@ The jail (`nix/packages/exec-jail.nix`):
   with the CLI;
 - provides common command-line tools and Ketch, with
   `~/.config/ketch/config.json` mounted read-only when present. Any API keys
-  in that file are readable from the jail.
+  in that file are readable from the jail;
+- reproduces the project's devshell when a cached nix-direnv one exists, so the
+  agent finds the project toolchain (`mix`, `cargo`, `treefmt`) on `PATH`
+  instead of searching the store for it.
+
+Starting Tackle from a direnv-activated shell gives the jail the same devshell
+you have in that shell. The launcher runs on the host with the workspace as its
+working directory, so it looks up the cached `nix print-dev-env` profile that
+nix-direnv keeps for it, in `$XDG_CACHE_HOME/direnv/layouts` or the project's
+`.direnv`, and binds those profile rc files read-only. The jail then sources
+them: the workspace's devshell before the exec-server starts, and the devshell
+of a nested project whenever a command runs in it (`cd subdir && mix test`).
+Nothing happens when no devshell is cached, and the launcher's own tools and
+locale stay on `PATH` and in the environment. A cached profile describes the
+host environment, so this only works while the store is mounted (`enableNix`,
+on in `tackle-cli-jail`), and sourcing it runs the devshell's `shellHook`
+inside the jail, which is code `direnv allow` already runs for you on the host.
+Build a launcher with `inheritDirenv = false` to turn it off
+(`nix/packages/jail-direnv.nix`).
 
 Tackle reads project guidance (`AGENTS.md`), skills, and project agent
 definitions inside the workspace through the jail, so a symlink that jailed code
@@ -224,6 +242,10 @@ Not covered:
 
 - Workspace contents still run on the host when you build or open the project
   there (`mix.exs`, dependencies, `.envrc`).
+- The jail sources the cached devshell, so a devshell whose store paths were
+  garbage collected leaves dangling `PATH` entries until `direnv reload` on the
+  host. A devshell cached for a project directory reached through a different
+  textual path (a symlinked project root, for example) is not found.
 - Host Git in a jailed workspace is narrowed, not safe: repositories that jailed
   code creates, submodules under `.git/modules`, and nested `.git` directories
   are writable, and a workspace without `.git` at launch gets no protection.

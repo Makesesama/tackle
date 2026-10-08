@@ -51,6 +51,28 @@ defmodule Tackle.CLI.JailTest do
     assert File.exists?(Path.join(env["TACKLE_HOME"], "logs/exec-server.log"))
   end
 
+  test "passes the launcher the environment it needs and nothing else", %{
+    root: root,
+    workspace: workspace,
+    env: env
+  } do
+    dump = Path.join(root, "launcher-env")
+
+    with_env(%{"XDG_CACHE_HOME" => Path.join(root, "cache"), "TACKLE_TEST_SECRET" => "x"})
+
+    env = Map.put(env, "TACKLE_EXEC_LAUNCHER", launcher(root, dump_env: dump))
+
+    assert {:ok, _executor} =
+             Jail.ensure_started(env: env, cwd: workspace, verify_isolation: false)
+
+    # The launcher locates the project's direnv cache with XDG_CACHE_HOME; the
+    # rest of the host environment stays out.
+    vars = launcher_env(dump)
+    assert Map.fetch!(vars, "XDG_CACHE_HOME") == Path.join(root, "cache")
+    refute Map.has_key?(vars, "TACKLE_TEST_SECRET")
+    refute Map.has_key?(vars, "TACKLE_HOME")
+  end
+
   test "mounts TACKLE_EXEC_WORKSPACE when it contains the working directory", %{
     root: root,
     workspace: workspace,
@@ -236,21 +258,52 @@ defmodule Tackle.CLI.JailTest do
   end
 
   # Runs the real exec-server without Bubblewrap, honouring the launcher
-  # contract: the first argument is the log for standard error.
-  defp launcher(root) do
+  # contract: the first argument is the log for standard error. With
+  # `:dump_env`, the launcher records the environment the CLI passed it.
+  defp launcher(root, opts \\ []) do
     erl = System.find_executable("erl") || raise "erl was not found on PATH"
     elixir_ebin = Path.join(:code.lib_dir(:elixir), "ebin")
     exec_ebin = Path.join(:code.lib_dir(:tackle_exec), "ebin")
     path = Path.join(root, "launcher")
 
+    dump =
+      case Keyword.get(opts, :dump_env) do
+        nil -> ""
+        file -> "env > #{file}\n"
+      end
+
     File.write!(path, """
     #!/bin/sh
     exec 2>>"$1"
-    exec "#{erl}" -noshell -noinput -pa "#{elixir_ebin}" -pa "#{exec_ebin}" \\
+    #{dump}exec "#{erl}" -noshell -noinput -pa "#{elixir_ebin}" -pa "#{exec_ebin}" \\
       -s Elixir.Tackle.Exec.Server main
     """)
 
     File.chmod!(path, 0o755)
     path
+  end
+
+  # Sets host environment variables for one test and restores them after it.
+  defp with_env(vars) do
+    previous = Map.new(vars, fn {name, _value} -> {name, System.get_env(name)} end)
+
+    on_exit(fn ->
+      Enum.each(previous, fn
+        {name, nil} -> System.delete_env(name)
+        {name, value} -> System.put_env(name, value)
+      end)
+    end)
+
+    Enum.each(vars, fn {name, value} -> System.put_env(name, value) end)
+  end
+
+  defp launcher_env(dump) do
+    dump
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Map.new(fn line ->
+      [name, value] = String.split(line, "=", parts: 2)
+      {name, value}
+    end)
   end
 end

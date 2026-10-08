@@ -9,6 +9,10 @@
   # Mount /nix read-only and the host daemon socket, so `nix build` and
   # `nix develop` work inside the jail. This weakens isolation; see README.
   enableNix ? true,
+  # Reproduce the project's cached nix-direnv devshell inside the jail, so the
+  # agent finds the project toolchain on PATH. Requires enableNix: the cached
+  # devshell only names store paths. See jail-direnv.nix.
+  inheritDirenv ? false,
   extraJailOptions ? [ ],
   # The program run inside the jail; tests substitute a probe.
   entry ? pkgs.callPackage ./exec-server.nix { },
@@ -27,6 +31,7 @@
 let
   jail = jailed-agents.lib.${system}.internals.jail;
   ketch = pkgs.callPackage ./ketch.nix { };
+  direnv = import ./jail-direnv.nix { inherit pkgs jail; };
 
   # The utilities jailed-agents gives every agent.
   basePackages = with pkgs; [
@@ -116,5 +121,10 @@ jail name entry (
     (set-env "SSL_CERT_FILE" cacert)
   ]
   ++ lib.optionals enableNix nixAccess
+  ++ lib.optionals inheritDirenv (
+    assert lib.assertMsg enableNix
+      "exec-jail: inheritDirenv requires enableNix, because a cached devshell only names store paths";
+    direnv.combinators
+  )
   ++ extraJailOptions
 )

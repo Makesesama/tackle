@@ -196,7 +196,10 @@ runs this same production binary on the host and the agent's commands and
 workspace file access in a Bubblewrap jail, with host-daemon Nix build support.
 The wrapper sets `TACKLE_EXEC_LAUNCHER`; the CLI then starts the jailed
 exec-server on the first session and refuses to start sessions if the jail does
-not answer. See
+not answer. It passes the launcher only `PATH`, `HOME`, `LANG`, `LC_ALL`,
+`TERM`, and `XDG_CACHE_HOME` (`Tackle.CLI.Jail`), so the jail can inherit the
+project's cached nix-direnv devshell without exposing the rest of the host
+environment. See
 [jailed execution](../../README.md#jailed-execution-on-linux) for the jail
 policy, requirements, and the credential-free host smoke test. The
 `jailed-tackle` command is the development-checkout launcher.
