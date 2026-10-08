@@ -462,23 +462,34 @@ text or, if available, an image (PNG, JPEG, GIF, WebP, up to 5 MiB). A terminal
 that pastes an image as a file path is also supported. Images appear as
 `[Image #N]` labels in the composer; text pastes of at least 1,000 characters
 appear as `[Pasted Content N chars]`, with ` #2`, ` #3`, ... added for further
-pastes of the same size. Enter expands the labels before sending the full
-prompt to the agent, and the transcript previews the same labels. A label whose
-content was not retained — typed by hand, partly deleted, or left over from
-another session — and a prompt past the submission limit (1,048,576 characters)
-are reported in the status row, and the draft is kept instead of sending label
-text to the agent. A label is recognised by its count and brackets, so one
-edited past recognition is ordinary text and is sent as typed. Smaller text
-pastes remain editable as ordinary text. Clipboard images and text are read
-through the native
+pastes of the same size. Numbering runs across the session, so a label the shell
+inserted always names one paste. Enter expands the labels before sending the
+full prompt to the agent, and the transcript previews the same labels, naming
+the file an `[Image #N]` label points at when the paste was a path.
+
+A label is an editor *element*, not text that looks like one: it moves and
+deletes as one unit, paints in the accent color, and typing or deleting around
+it leaves it intact. Expansion walks the elements the editor reports, so a
+label-shaped phrase the user typed or partly deleted is ordinary prose and
+reaches the model exactly as typed — it is not a paste and does not reserve a
+label number. A label the editor holds whose payload the
+session no longer has, and a prompt past the submission limit (1,048,576
+characters), are reported in the status row, and the draft is kept instead of
+being sent. A failed submit, a recalled prompt, and a queued message taken back
+with Up restore the draft as it was written — labels and all — so resubmitting
+expands the same pastes. Smaller text pastes remain editable as ordinary text.
+Clipboard images and text are read through the native
 clipboard (`packages/clipboard_ex`); no external utilities are needed. The CLI
 saves clipboard images as private (0600) temporary PNG files
 until it exits and expands image labels into paths with a request to use the
 `read` tool. When tools run in a jail, images are saved in the jail's `/tmp`,
-and a pasted image file path is copied there, so the agent can read them. Images
+and a pasted image file path is copied there, so the agent can read them. A
+label keeps its payload for the session — undo can resurrect a deleted label —
+but only the labels the draft still holds are expanded. Images
 are **not** directly attached to user messages; the agent must read the file,
 and those saved paths will not work after the CLI exits. Ctrl+U undoes and
-Ctrl+R redoes a full multiline paste. Undo and redo each retain at most 100
+Ctrl+R redoes a full multiline paste, including the label it inserted. Undo and
+redo each retain at most 100
 snapshots / 8 MiB; a
 programmatic draft replacement resets both histories. Unknown modified chords
 (for example Alt+G) are ignored by the
@@ -783,6 +794,7 @@ process lifecycle, and everything else is a module that takes and returns
 | `Widgets.Input` / `native/tackle/src/widgets/input.rs` | native draft resource, editing, wrapping, and caret paint |
 | `Widgets.Subagents` / `native/tackle/src/widgets/subagents.rs` | native active-task sidebar, wrapping, clipping, and minimal chrome |
 | `TUI.Composer` | draft editing, submission, and history recall |
+| `TUI.Pastes` | long-paste and image labels, their retained payloads, and resolution into a prompt |
 | `TUI.History` | the in-memory prompt history and its browsing position |
 | `TUI.Browser` | unified Browse navigation, frozen pages, transcript selection and copy |
 | `Widgets.Browse` / `native/tackle/src/widgets/browse.rs` | native page tabs, document viewport and scroll bounds |

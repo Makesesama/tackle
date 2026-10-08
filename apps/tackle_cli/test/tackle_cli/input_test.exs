@@ -156,6 +156,9 @@ defmodule Tackle.CLI.Widgets.InputTest do
     |> Enum.find(fn {widget, _rect} -> match?(%Input{}, widget) end)
   end
 
+  # The wire style an unstyled surface uses: no color, no modifiers.
+  defp plain, do: {nil, nil, nil, 0}
+
   test "paste and grapheme edits are undoable; replacing the draft clears history" do
     input = Input.new()
     state = %State{input: input, conversation: Viewport.new_conversation(80, 24)}
@@ -176,24 +179,27 @@ defmodule Tackle.CLI.Widgets.InputTest do
   test "painting scrolls to the insertion cell, clips wide glyphs, and hides unfocused caret" do
     input = Input.new()
     :ok = Input.set_value(input, "abcd")
-    assert {:ok, rows} = Native.input_render(input, 4, 1, "", true)
+    assert {:ok, rows} = Native.input_render(input, 4, 1, "", true, plain())
     assert [{" ", nil, nil, nil, 64}, {"   ", nil, nil, nil, 0}] = hd(rows)
 
     assert {:ok, [[{"    ", nil, nil, nil, 0}]]} =
-             Native.input_render(input, 4, 1, "", false)
+             Native.input_render(input, 4, 1, "", false, plain())
 
     :ok = Input.set_value(input, "界")
     :ok = Input.handle_key(input, "home", [], 1)
-    assert {:ok, [[{"�", nil, nil, nil, 64}]]} = Native.input_render(input, 1, 1, "", true)
+
+    assert {:ok, [[{"�", nil, nil, nil, 64}]]} =
+             Native.input_render(input, 1, 1, "", true, plain())
+
     assert Input.get_value(input) == "界"
-    assert {:ok, []} = Native.input_render(input, 0, 0, "", true)
+    assert {:ok, []} = Native.input_render(input, 0, 0, "", true, plain())
   end
 
   test "controls are display-only replacements and placeholder paint is sanitized" do
     input = Input.new()
     source = "x\t\e[31m"
     :ok = Input.set_value(input, source)
-    assert {:ok, rows} = Native.input_render(input, 20, 1, "", false)
+    assert {:ok, rows} = Native.input_render(input, 20, 1, "", false, plain())
     painted = for row <- rows, {text, _, _, _, _} <- row, into: "", do: text
     assert painted =~ "x �[31m"
     refute painted =~ "\e"
@@ -256,10 +262,34 @@ defmodule Tackle.CLI.Widgets.InputTest do
     assert Input.get_value(input) == "one  βéta\nthree|  "
   end
 
+  test "a paste label is one element and paints in the style the composer gives it" do
+    input = Input.new()
+    :ok = Input.insert_str(input, "see ")
+    :ok = Input.insert_element(input, " ", "[Image #1]", 7)
+    :ok = Input.insert_str(input, " this")
+
+    assert Input.get_value(input) == "see  [Image #1] this"
+    assert Input.elements(input) == [{7, 5, 15}]
+
+    accent = {44, 44, 44, 0}
+    assert {:ok, [row]} = Native.input_render(input, 24, 1, "", false, accent)
+
+    assert [
+             {"see  ", nil, nil, nil, 0},
+             {"[Image #1]", 44, 44, 44, 0},
+             {" this    ", nil, nil, nil, 0}
+           ] = row
+
+    # Typing after it extends the prose, not the label.
+    :ok = Input.handle_key(input, "!", [], 20)
+    assert Input.elements(input) == [{7, 5, 15}]
+    assert Input.get_value(input) == "see  [Image #1] this!"
+  end
+
   test "the native boundary rejects oversized areas and control-bearing placeholders" do
     input = Input.new()
-    assert {:error, :invalid_size} = Native.input_render(input, 257, 256, "", true)
-    assert_raise ArgumentError, fn -> Native.input_render(input, 1, 1, "\e", true) end
+    assert {:error, :invalid_size} = Native.input_render(input, 257, 256, "", true, plain())
+    assert_raise ArgumentError, fn -> Native.input_render(input, 1, 1, "\e", true, plain()) end
     assert_raise ArgumentError, fn -> Input.set_value(input, <<255>>) end
   end
 

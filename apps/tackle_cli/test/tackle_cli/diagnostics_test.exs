@@ -3,7 +3,7 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
 
   alias ExRatatui.Event.{Key, Paste, Resize}
   alias Tackle.CLI.{Keybinds, TUI}
-  alias Tackle.CLI.TUI.{Diagnostics, Observations, RuntimeEvents, State, Viewport}
+  alias Tackle.CLI.TUI.{Diagnostics, Observations, Pastes, RuntimeEvents, State, Viewport}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.{Event, Message}
   alias Tackle.Lib.State, as: AgentState
@@ -91,7 +91,7 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
       | active_turn: nil,
         pending_prompt: "go",
         stream: %{state().stream | coalesce?: false},
-        pending_operation: %{ref: ref, kind: :submit, raw_draft: "go"}
+        pending_operation: %{ref: ref, kind: :submit, draft: Pastes.Draft.new("go")}
     }
 
     event = {:tackle_event, "session", "turn", Event.new(:message_delta, %{delta: "done"})}
@@ -123,7 +123,7 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
       state()
       | active_turn: nil,
         pending_prompt: "go",
-        pending_operation: %{ref: ref, kind: :submit, raw_draft: "go"}
+        pending_operation: %{ref: ref, kind: :submit, draft: Pastes.Draft.new("go")}
     }
 
     finished = {:tackle_turn_finished, "session", "turn", {:ok, agent}}

@@ -1,19 +1,29 @@
 defmodule Tackle.CLI.TUI.Pastes do
   @moduledoc """
   Keeps large pasted text and image instructions out of the composer while
-  retaining their contents for submission.
+  retaining their contents for submission and for transcript previews.
 
-  A collapsed paste is a label the composer inserts in place of the content:
+  A collapsed paste is a label the composer holds as an atomic element:
   `[Pasted Content N chars]` for text and `[Image #N]` for an image
-  instruction. The label carries the count that tells pastes apart, so the
-  composer and the transcript preview stay readable, while the full content is
-  retained per label in the session's TUI state.
+  instruction. Each label stands for one payload the session retains, keyed by
+  the id the editor stores next to the label's byte range.
 
-  `resolve/2` turns a draft into the prompt to send. A label-shaped span with
-  no retained content — typed by hand, partly deleted, or left over from another
-  session — is reported rather than expanded, so the agent never receives label
-  text in place of the paste it stands for. A label whose count and brackets are
-  gone is no longer recognisable as one, and is sent as ordinary text.
+  Identity is structural, not textual. `resolve/2` walks the elements the
+  editor reports and splices in the payload each id names, so label-shaped text
+  the user typed — or half-deleted by an edit — is ordinary prose the model
+  receives as written. A label an edit rewrote is no longer an element: it can
+  neither expand nor be mistaken for a paste.
+
+  A draft's text and elements travel together as a `Draft` (`draft/1`,
+  `restore/2`, `merge/2`), which is what lets a failed submission, recalled
+  prompt history, and a withdrawn queued message put back exactly what the user
+  had — label and payload — instead of flattening it into text. Labels are
+  numbered across the session, so a label in a transcript always names one
+  payload.
+
+  `collapse/2` is the transcript's view of the same payloads: it rewrites each
+  retained content back to the label that stands for it, and an image label
+  also names the file it points at when the paste gave a path.
   """
 
   alias Tackle.CLI.TUI.State
@@ -26,23 +36,44 @@ defmodule Tackle.CLI.TUI.Pastes do
   # measured after expansion.
   @max_prompt_chars 1_048_576
 
-  # A label this module inserts. Expansion only rewrites a complete label, so
-  # edited prose is never replaced by paste content. Further pastes of one size
-  # carry their number after the label.
-  @label ~r/\[Pasted Content \d+ chars\](?: #\d+)?|\[Image #\d+\]/
+  defmodule Draft do
+    @moduledoc """
+    A composer draft: its text plus the paste labels it holds as elements.
 
-  # A text label, complete or with something after its count cut short: the
-  # trailing word, a bracket, or a digit of the `#N` suffix further pastes of one
-  # size carry. The count is required in both forms, so prose that merely
-  # mentions pasting stays literal.
-  @text_label_candidate ~r/\[Pasted Content \d+[^\n\]]{0,10}\]?(?: #\d*)?|Pasted Content \d+[^\n\]]{0,10}\]/
+    `spans` are `{payload_id, byte_start, byte_stop}` into `text`, in order.
+    They are what `Tackle.CLI.Widgets.Input` re-attaches on `restore/2`.
+    """
 
-  # Likewise for an image label, which carries no suffix.
-  @image_label_candidate ~r/\[Image #\d*[^\n\]]{0,10}\]?|Image #\d+[^\n\]]{0,10}\]/
+    @typedoc "A retained payload id and the byte range its label occupies."
+    @type span :: {id :: non_neg_integer(), start :: non_neg_integer(), stop :: non_neg_integer()}
 
-  # Anything in a draft that could stand for a paste: `@label`, or what is left
-  # of one after an edit.
-  @label_candidate ~r/#{Regex.source(@text_label_candidate)}|#{Regex.source(@image_label_candidate)}/
+    @type t :: %__MODULE__{text: String.t(), spans: [span()]}
+
+    defstruct text: "", spans: []
+
+    @doc "A draft from its text and element spans."
+    @spec new(String.t(), [span()]) :: t()
+    def new(text \\ "", spans \\ []), do: %__MODULE__{text: text, spans: spans}
+  end
+
+  defmodule Paste do
+    @moduledoc """
+    One retained paste: the label that stands for it in the composer, the text
+    submission splices in its place, and the label a transcript preview shows.
+    """
+
+    @type kind :: :text | :image
+
+    @type t :: %__MODULE__{
+            id: non_neg_integer(),
+            kind: kind(),
+            label: String.t(),
+            content: String.t(),
+            display: String.t()
+          }
+
+    defstruct [:id, :kind, :label, :content, :display]
+  end
 
   @doc "Whether a text paste is large enough to collapse in the composer."
   @spec long_text?(String.t()) :: boolean()
@@ -52,39 +83,139 @@ defmodule Tackle.CLI.TUI.Pastes do
   @spec max_prompt_chars() :: pos_integer()
   def max_prompt_chars, do: @max_prompt_chars
 
-  @doc "Inserts a label for a paste and retains its full value for submission."
-  @spec insert(State.t(), :image | :text, String.t()) :: State.t()
-  def insert(%State{} = state, kind, content) when kind in [:image, :text] do
-    draft = Input.get_value(state.input)
-    label = next_label(draft, state.paste_replacements, kind, content)
-    prefix = if draft == "" or String.ends_with?(draft, [" ", "\n"]), do: "", else: " "
-    :ok = Input.insert_str(state.input, prefix <> label)
+  @doc """
+  Inserts a label for a paste and retains its full value for submission.
 
-    %{state | paste_replacements: Map.put(state.paste_replacements, label, content)}
+  `:source` names the file an image instruction points at — a path the user
+  pasted, not a temporary copy the shell staged — so transcript previews can
+  name it next to the label.
+  """
+  @spec insert(State.t(), :image | :text, String.t(), keyword()) :: State.t()
+  def insert(%State{} = state, kind, content, opts \\ []) when kind in [:image, :text] do
+    id = state.next_paste_id
+    label = next_label(state, kind, content)
+    prefix = label_prefix(Input.get_value(state.input))
+    :ok = Input.insert_element(state.input, prefix, label, id)
+
+    paste = %Paste{
+      id: id,
+      kind: kind,
+      label: label,
+      content: content,
+      display: display(kind, label, Keyword.get(opts, :source))
+    }
+
+    %{state | pastes: Map.put(state.pastes, id, paste), next_paste_id: id + 1}
   end
 
-  # Expands retained labels. Only `resolve/2` may use the result: a label it
-  # does not know is left in place here.
-  @spec expand(String.t(), State.t()) :: String.t()
-  defp expand(text, %State{} = state) when is_binary(text) do
-    replacements = replacements(state)
-    Regex.replace(@label, text, fn label -> Map.get(replacements, label, label) end)
+  @doc "The live draft: the composer's text together with its paste elements."
+  @spec draft(State.t()) :: Draft.t()
+  def draft(%State{input: input}) do
+    %Draft{text: Input.get_value(input), spans: Input.elements(input)}
+  end
+
+  @doc """
+  Loads a draft back into the composer, labels and all.
+
+  The payloads it names are the session's, so a draft restored after a failed
+  submission, a recall, or a withdrawal is the one the user wrote.
+
+  A span the editor refuses — only a draft whose text and spans disagree, which
+  is a bug rather than a user action — cannot stand for its payload any more, so
+  the label is dropped from the restored text along with it. A label must never
+  reach the model in place of the paste it names, and the notice says so.
+  """
+  @spec restore(State.t(), Draft.t()) :: State.t()
+  def restore(%State{input: input} = state, %Draft{text: text, spans: spans}) do
+    case Input.restore(input, text, spans) do
+      {:ok, ^spans} ->
+        state
+
+      {:ok, accepted} ->
+        {text, spans} = without_rejected(text, spans, accepted)
+        {:ok, _attached} = Input.restore(input, text, spans)
+        %{state | notice: "Paste labels could not be restored · draft kept"}
+    end
+  end
+
+  # Drops the spans the editor refused, and the label text that stood for them,
+  # keeping every other span addressable at its new offset. A refused span may
+  # describe more text than the draft holds, so its range is read against the
+  # text it actually names.
+  defp without_rejected(text, spans, accepted) do
+    accepted = MapSet.new(accepted)
+    size = byte_size(text)
+
+    {parts, kept, cursor, _dropped} =
+      Enum.reduce(spans, {[], [], 0, 0}, fn {id, start, stop} = span,
+                                            {parts, kept, cursor, dropped} ->
+        start = clamp(start, cursor, size)
+        stop = clamp(stop, start, size)
+        parts = [parts, binary_part(text, cursor, start - cursor)]
+
+        if MapSet.member?(accepted, span) do
+          {parts, [{id, start - dropped, stop - dropped} | kept], stop, dropped}
+        else
+          {parts, kept, stop, dropped + stop - start}
+        end
+      end)
+
+    body = IO.iodata_to_binary([parts, binary_part(text, cursor, size - cursor)])
+    {body, Enum.reverse(kept)}
+  end
+
+  defp clamp(value, low, high), do: value |> max(low) |> min(high)
+
+  @doc """
+  Trims a draft, keeping its labels addressable.
+
+  Returns `nil` for a draft that is only whitespace. Trimming only ever removes
+  whitespace outside the labels, so no span is cut apart.
+  """
+  @spec normalize(Draft.t()) :: Draft.t() | nil
+  def normalize(%Draft{text: text} = draft) do
+    case String.trim(text) do
+      "" ->
+        nil
+
+      trimmed ->
+        shift = byte_size(String.trim_leading(text)) - byte_size(text)
+        %Draft{text: trimmed, spans: shift_spans(draft.spans, shift, byte_size(trimmed))}
+    end
+  end
+
+  @doc """
+  Puts `older` above `newer`, the way a withdrawn queued message rejoins the
+  draft the user kept typing.
+  """
+  @spec merge(Draft.t(), Draft.t()) :: Draft.t()
+  def merge(%Draft{} = older, %Draft{} = newer) do
+    offset = byte_size(older.text)
+    gap = if older.text == "" or newer.text == "", do: "", else: "\n"
+
+    %Draft{
+      text: older.text <> gap <> newer.text,
+      spans: older.spans ++ shift_spans(newer.spans, offset + byte_size(gap), nil)
+    }
   end
 
   @doc """
   Resolves a draft into the prompt to send.
 
-  Returns `{:error, {:unresolved_pastes, labels}}` when the draft holds a
-  label-shaped span with no retained content, and `{:error, {:prompt_too_long,
-  chars}}` when the expanded prompt is longer than `max_prompt_chars/0`.
+  Splices in the content behind each of the draft's elements and measures the
+  result. Returns `{:error, {:missing_pastes, labels}}` when an element names a
+  payload the session no longer holds — the draft is then kept rather than sent
+  with a label standing in for its content — and `{:error,
+  {:prompt_too_long, chars}}` when the expanded prompt is past
+  `max_prompt_chars/0`.
   """
-  @spec resolve(String.t(), State.t()) ::
+  @spec resolve(Draft.t(), State.t()) ::
           {:ok, String.t()}
-          | {:error, {:unresolved_pastes, [String.t()]} | {:prompt_too_long, pos_integer()}}
-  def resolve(text, %State{} = state) when is_binary(text) do
-    case unresolved(text, replacements(state)) do
+          | {:error, {:missing_pastes, [String.t()]} | {:prompt_too_long, pos_integer()}}
+  def resolve(%Draft{} = draft, %State{} = state) do
+    case missing(draft, state) do
       [] ->
-        prompt = text |> expand(state) |> String.trim()
+        prompt = draft |> expand(state) |> String.trim()
         chars = String.length(prompt)
 
         if chars > @max_prompt_chars,
@@ -92,7 +223,7 @@ defmodule Tackle.CLI.TUI.Pastes do
           else: {:ok, prompt}
 
       labels ->
-        {:error, {:unresolved_pastes, labels}}
+        {:error, {:missing_pastes, labels}}
     end
   end
 
@@ -100,27 +231,53 @@ defmodule Tackle.CLI.TUI.Pastes do
   @spec collapse(String.t(), State.t()) :: String.t()
   def collapse(text, state) when is_binary(text) do
     state
-    |> replacements()
-    |> Enum.sort_by(fn {_label, value} -> -byte_size(value) end)
-    |> Enum.reduce(text, fn {label, value}, acc ->
-      if value == "" do
-        acc
-      else
-        acc
-        |> String.replace(value, label)
-        |> String.replace(String.trim(value), label)
-      end
+    |> pastes()
+    |> Map.values()
+    |> Enum.sort_by(& &1.id)
+    |> Enum.uniq_by(& &1.content)
+    |> Enum.reject(&(&1.content == ""))
+    |> Enum.sort_by(&(-byte_size(&1.content)))
+    |> Enum.reduce(text, fn paste, acc ->
+      acc
+      |> String.replace(paste.content, paste.display)
+      |> String.replace(String.trim(paste.content), paste.display)
     end)
   end
 
-  defp next_label(draft, replacements, :image, _content) do
-    used = used_labels(draft, replacements)
+  # The prompt to send: every element replaced by what its payload holds.
+  defp expand(%Draft{text: text, spans: []}, _state), do: text
+
+  defp expand(%Draft{text: text, spans: spans}, state) do
+    pastes = pastes(state)
+
+    {body, cursor} =
+      Enum.reduce(spans, {"", 0}, fn {id, start, stop}, {acc, cursor} ->
+        paste = Map.fetch!(pastes, id)
+        acc = acc <> binary_part(text, cursor, start - cursor) <> paste.content
+        {acc, stop}
+      end)
+
+    body <> binary_part(text, cursor, byte_size(text) - cursor)
+  end
+
+  # Elements whose payload the session does not hold. Their labels are what
+  # would otherwise reach the model as though they were the paste.
+  defp missing(%Draft{text: text, spans: spans}, state) do
+    pastes = pastes(state)
+
+    spans
+    |> Enum.reject(fn {id, _start, _stop} -> Map.has_key?(pastes, id) end)
+    |> Enum.map(fn {_id, start, stop} -> binary_part(text, start, stop - start) end)
+  end
+
+  defp next_label(state, :image, _content) do
+    used = used_labels(state)
     number = Enum.find(1..(MapSet.size(used) + 1), &(not MapSet.member?(used, image_label(&1))))
     image_label(number)
   end
 
-  defp next_label(draft, replacements, :text, content) do
-    used = used_labels(draft, replacements)
+  defp next_label(state, :text, content) do
+    used = used_labels(state)
     base = text_label(String.length(content))
 
     if MapSet.member?(used, base) do
@@ -133,14 +290,34 @@ defmodule Tackle.CLI.TUI.Pastes do
   defp image_label(number), do: "[Image ##{number}]"
   defp text_label(chars), do: "[Pasted Content #{chars} chars]"
 
+  # An image preview names the file it stands for; a text preview carries the
+  # size the label already reports.
+  defp display(:image, label, source) when is_binary(source) and source != "",
+    do: label <> " " <> Path.basename(source)
+
+  defp display(_kind, label, _source), do: label
+
+  # Labels are separated from the prose around them, but an empty draft and a
+  # draft that already ends in whitespace need no separator.
+  defp label_prefix(""), do: ""
+  defp label_prefix(draft), do: if(String.ends_with?(draft, [" ", "\n", "\t"]), do: "", else: " ")
+
   # Labels already spoken for, by the draft or by this session's retained
-  # contents, so a label is never reused for different content.
-  defp used_labels(draft, replacements) do
-    draft
-    |> then(&Regex.scan(@label, &1, capture: :first))
-    |> List.flatten()
-    |> MapSet.new()
-    |> MapSet.union(MapSet.new(Map.keys(replacements)))
+  # contents. Numbering runs across the session, so a label in a transcript
+  # always names the same payload.
+  defp used_labels(state) do
+    live =
+      state
+      |> draft()
+      |> labels()
+
+    archived = state |> pastes() |> Map.values() |> Enum.map(& &1.label)
+
+    MapSet.new(live ++ archived)
+  end
+
+  defp labels(%Draft{text: text, spans: spans}) do
+    Enum.map(spans, fn {_id, start, stop} -> binary_part(text, start, stop - start) end)
   end
 
   # Pastes of one size share a base label and are told apart by a suffix, the
@@ -160,17 +337,22 @@ defmodule Tackle.CLI.TUI.Pastes do
     end)
   end
 
-  # Label-shaped spans whose content the session no longer retains: a label
-  # typed by hand, one an edit left incomplete, or one from another session.
-  # Spans are compared whole, so a retained label is never a prefix of a
-  # fragment that escapes the check.
-  defp unresolved(text, replacements) do
-    text
-    |> then(&Regex.scan(@label_candidate, &1, capture: :first))
-    |> List.flatten()
-    |> Enum.uniq()
-    |> Enum.reject(&Map.has_key?(replacements, &1))
+  # Moves spans by `shift` bytes and drops the ones that no longer fit `limit`
+  # (`nil` while the caller still has to measure the text).
+  defp shift_spans(spans, shift, limit) do
+    Enum.flat_map(spans, fn {id, start, stop} ->
+      {start, stop} = {start + shift, stop + shift}
+
+      cond do
+        stop <= 0 -> []
+        is_integer(limit) and start >= limit -> []
+        true -> [{id, max(start, 0), maybe_min(stop, limit)}]
+      end
+    end)
   end
 
-  defp replacements(state) when is_map(state), do: Map.get(state, :paste_replacements, %{})
+  defp maybe_min(stop, nil), do: stop
+  defp maybe_min(stop, limit), do: min(stop, limit)
+
+  defp pastes(state) when is_map(state), do: Map.get(state, :pastes, %{})
 end

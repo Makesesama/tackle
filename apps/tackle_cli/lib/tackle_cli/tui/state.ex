@@ -96,7 +96,8 @@ defmodule Tackle.CLI.TUI.State do
           clipboard_text_reader: (-> {:ok, binary()} | {:error, term()}),
           clipboard_image_reader: (-> {:ok, binary()} | {:error, term()}),
           image_paths: [String.t()],
-          paste_replacements: %{optional(String.t()) => String.t()},
+          pastes: %{optional(non_neg_integer()) => Tackle.CLI.TUI.Pastes.Paste.t()},
+          next_paste_id: pos_integer(),
           executor: Tackle.Executor.t(),
           usage_timeline_loader: (:current | :all, String.t() | nil ->
                                     {:ok, term()} | {:error, term()}),
@@ -114,6 +115,7 @@ defmodule Tackle.CLI.TUI.State do
           browse_content: map() | nil,
           pending_prompt: String.t() | nil,
           queued_prompts: [String.t()],
+          queued_drafts: %{optional(String.t()) => Tackle.CLI.TUI.Pastes.Draft.t()},
           stream: Stream.t(),
           pending_operation: map() | nil,
           deferred_events: [term()],
@@ -166,7 +168,12 @@ defmodule Tackle.CLI.TUI.State do
             clipboard_text_reader: &Tackle.CLI.ImageClipboard.read_text/0,
             clipboard_image_reader: &Tackle.CLI.ImageClipboard.read/0,
             image_paths: [],
-            paste_replacements: %{},
+            # Retained paste payloads, by the id the composer's label carries.
+            # They outlive the draft that introduced them: undo can resurrect a
+            # deleted label, and a transcript preview needs every content the
+            # session ever collapsed.
+            pastes: %{},
+            next_paste_id: 1,
             executor: Tackle.Executor.local(),
             usage_timeline_loader: &__MODULE__.default_usage_timeline_loader/2,
             usage_timeline_cache: %{},
@@ -182,6 +189,9 @@ defmodule Tackle.CLI.TUI.State do
             browse_content: nil,
             pending_prompt: nil,
             queued_prompts: [],
+            # The draft behind each queued prompt, so taking one back restores
+            # the labels the user wrote instead of the expanded text.
+            queued_drafts: %{},
             stream: %Stream{},
             pending_operation: nil,
             deferred_events: [],
@@ -332,6 +342,7 @@ defmodule Tackle.CLI.TUI.State do
         history: History.leave_browsing(state.history),
         pending_prompt: nil,
         queued_prompts: [],
+        queued_drafts: %{},
         stream: Stream.reset(state.stream),
         pending_operation: nil,
         deferred_events: [],

@@ -213,7 +213,8 @@ defmodule Tackle.CLI.TUI.View do
       state: state.input,
       placeholder: composer_placeholder(state),
       focused: focused?,
-      block: block
+      block: block,
+      element_style: Theme.style(:accent_soft)
     }
   end
 

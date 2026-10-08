@@ -8,13 +8,16 @@ defmodule Tackle.CLI.TUI.Composer do
   `Viewport.update_draft/1` and `Viewport.relayout/1` so the growing input
   reserves exactly the rows it needs without re-measuring the transcript.
 
-  History recall reuses the same native load path: the recalled prompt is set
-  as the draft and the row count is left to `Viewport`. Up takes back the newest
+  History recall reuses the same native load path: the recalled draft is put
+  back with `Pastes.restore/2`, labels and their payloads included, and the row
+  count is left to `Viewport`. Up takes back the newest
   queued prompt from an empty composer, or recalls history while writing a draft;
   Down walks back toward that draft while browsing, or moves the cursor otherwise. Ctrl+P/Ctrl+N offer the same history
   navigation. Any edit ends recall, keeping the loaded text as the new draft.
 
-  A failed submit restores the exact draft so the user can retry or edit.
+  A failed submit restores the draft the operation carried — the text and the
+  paste labels it was written with — so the user can retry or edit it as it was.
+  A queued message keeps the same draft until it is delivered or taken back.
   Submissions during an active turn are queued for the next safe boundary.
   """
 
@@ -46,14 +49,14 @@ defmodule Tackle.CLI.TUI.Composer do
             state
           end
 
-        {state, instruction} ->
-          Pastes.insert(state, :image, instruction)
+        {state, image} ->
+          Pastes.insert(state, :image, image_instruction(image.path), source: image.name)
       end
 
     state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()
   end
 
-  @doc "Inserts a saved clipboard image as a compact token in the draft."
+  @doc "Inserts a saved clipboard image as a compact label in the draft."
   @spec paste_image(State.t(), String.t()) :: State.t()
   def paste_image(%State{} = state, path) do
     state
@@ -74,9 +77,20 @@ defmodule Tackle.CLI.TUI.Composer do
     if path != "" and not String.contains?(path, ["\n", "\r"]) do
       path = Path.expand(path)
 
-      if ProjectFiles.in_workspace?(ProjectFiles.new(executor: state.executor), path),
-        do: workspace_image(state, path),
-        else: host_image(state, path)
+      reference =
+        if ProjectFiles.in_workspace?(ProjectFiles.new(executor: state.executor), path),
+          do: workspace_image(state, path),
+          else: host_image(state, path)
+
+      case reference do
+        nil ->
+          nil
+
+        {state, readable} ->
+          # The instruction names the path the agent can read; the preview names
+          # the file the user pasted, even when the two differ (a staged copy).
+          {state, %{path: readable, name: Path.basename(path)}}
+      end
     end
   end
 
@@ -88,7 +102,7 @@ defmodule Tackle.CLI.TUI.Composer do
            Executor.stat(state.executor, path),
          {:ok, %{data: head}} <- Executor.read(state.executor, path, 0, 16),
          {:ok, _extension} <- ImageClipboard.image_extension(head) do
-      {state, image_instruction(path)}
+      {state, path}
     else
       _other -> nil
     end
@@ -109,12 +123,12 @@ defmodule Tackle.CLI.TUI.Composer do
   # session's executor. A jail sees only its workspace, so give it a staged
   # copy instead of the host path.
   defp image_reference(%State{executor: {Tackle.Executor.Local, _config}} = state, path, _bytes),
-    do: {state, image_instruction(path)}
+    do: {state, path}
 
   defp image_reference(state, _path, bytes) do
     case ImageClipboard.save(bytes, state.executor) do
       {:ok, staged} ->
-        {%{state | image_paths: [staged | state.image_paths]}, image_instruction(staged)}
+        {%{state | image_paths: [staged | state.image_paths]}, staged}
 
       {:error, _reason} ->
         nil
@@ -229,7 +243,7 @@ defmodule Tackle.CLI.TUI.Composer do
   def next(%State{} = state, key) do
     case History.next(state.history) do
       :none -> key(state, key)
-      {history, text} -> {:noreply, load(state, history, text)}
+      {history, draft} -> {:noreply, load(state, history, draft)}
     end
   end
 
@@ -252,14 +266,14 @@ defmodule Tackle.CLI.TUI.Composer do
   def history_next(%State{} = state) do
     case History.next(state.history) do
       :none -> {:noreply, state, render?: false}
-      {history, text} -> {:noreply, load(state, history, text)}
+      {history, draft} -> {:noreply, load(state, history, draft)}
     end
   end
 
   defp recall_previous(%State{} = state) do
-    case History.previous(state.history, draft(state)) do
+    case History.previous(state.history, Pastes.draft(state)) do
       :none -> {:noreply, state, render?: false}
-      {history, text} -> {:noreply, load(state, history, text)}
+      {history, draft} -> {:noreply, load(state, history, draft)}
     end
   end
 
@@ -271,9 +285,10 @@ defmodule Tackle.CLI.TUI.Composer do
   `SlashCommands.dispatch/2` — the same registry the `/` popup lists — instead
   of sending a prompt; a command that cannot run now keeps the draft. An
   empty draft does nothing. A rejected submit reports the failure in the
-  status row and restores the draft. So does a draft whose paste labels have no
-  retained content, or whose expanded prompt is past the submission limit:
-  `Pastes.resolve/2` refuses both rather than sending label text to the agent.
+  status row and restores the draft, labels included. So does a draft whose
+  paste labels have no retained content, or whose expanded prompt is past the
+  submission limit: `Pastes.resolve/2` refuses both rather than sending a
+  label to the agent in place of what it stands for.
   """
   @spec submit(State.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
@@ -290,7 +305,7 @@ defmodule Tackle.CLI.TUI.Composer do
       true ->
         case SlashCommands.dispatch(state, raw_draft) do
           :prompt ->
-            submit_turn(state, raw_draft)
+            submit_turn(state, Pastes.draft(state))
 
           {:noreply, %State{}} = reply ->
             reply
@@ -301,12 +316,12 @@ defmodule Tackle.CLI.TUI.Composer do
     end
   end
 
-  defp submit_turn(%State{} = state, raw_draft) do
-    case Pastes.resolve(raw_draft, state) do
+  defp submit_turn(%State{} = state, %Pastes.Draft{} = draft) do
+    case Pastes.resolve(draft, state) do
       {:ok, prompt} ->
-        start_turn(state, raw_draft, prompt)
+        start_turn(state, draft, prompt)
 
-      {:error, {:unresolved_pastes, labels}} ->
+      {:error, {:missing_pastes, labels}} ->
         {:noreply, %{state | notice: missing_paste_notice(labels)}}
 
       {:error, {:prompt_too_long, chars}} ->
@@ -332,7 +347,9 @@ defmodule Tackle.CLI.TUI.Composer do
   defp short_label(label) when byte_size(label) <= 24, do: label
   defp short_label(label), do: String.slice(label, 0, 21) <> "..."
 
-  defp start_turn(%State{} = state, raw_draft, prompt) do
+  # The submitted draft travels with the operation: a failed submit, and a
+  # queued message the user takes back, both restore it label for label.
+  defp start_turn(%State{} = state, %Pastes.Draft{} = draft, prompt) do
     ref = make_ref()
     agent_ref = state.agent_ref
 
@@ -343,11 +360,11 @@ defmodule Tackle.CLI.TUI.Composer do
       | pending_operation: %{
           ref: ref,
           kind: :submit,
-          raw_draft: raw_draft,
+          draft: draft,
           prompt: prompt,
           started_at_ms: System.monotonic_time(:millisecond)
         },
-        history: History.record(state.history, String.trim(raw_draft)),
+        history: History.record(state.history, Pastes.normalize(draft)),
         notice: nil
     }
 
@@ -389,11 +406,10 @@ defmodule Tackle.CLI.TUI.Composer do
     {:noreply, state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()}
   end
 
-  defp draft(%State{} = state), do: Input.get_value(state.input)
-
-  defp load(%State{} = state, history, text) do
-    :ok = Input.set_value(state.input, text)
-    %{state | history: history} |> Viewport.update_draft() |> Viewport.relayout()
+  defp load(%State{} = state, history, %Pastes.Draft{} = draft) do
+    %{Pastes.restore(state, draft) | history: history}
+    |> Viewport.update_draft()
+    |> Viewport.relayout()
   end
 
   # Editing, pasting, or inserting a newline turns a recalled prompt into a

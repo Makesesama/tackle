@@ -19,6 +19,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     MessageView,
     Notifications,
     Observations,
+    Pastes,
     RecentSessions,
     Resume,
     State,
@@ -104,6 +105,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           | pending_operation: nil,
             deferred_events: [],
             queued_prompts: state.queued_prompts ++ [operation.prompt],
+            queued_drafts: Map.put(state.queued_drafts, operation.prompt, operation.draft),
             notice: "Message queued for the next safe boundary",
             queue_notice_at: System.monotonic_time(:millisecond)
         }
@@ -126,10 +128,10 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     case result do
       :ok ->
-        # Preserve edits made while the withdrawal was in flight.
-        draft = Input.get_value(state.input)
-        restored = if draft == "", do: prompt, else: prompt <> "\n" <> draft
-        :ok = Input.set_value(state.input, restored)
+        # The queued message rejoins the composer as the draft it was written
+        # as — labels and all — above whatever the user kept typing.
+        draft = Pastes.merge(queued_draft(state, prompt), Pastes.draft(state))
+        state = Pastes.restore(state, draft)
 
         queued_prompts =
           state.queued_prompts
@@ -140,6 +142,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         state = %{
           state
           | queued_prompts: queued_prompts,
+            queued_drafts: Map.delete(state.queued_drafts, prompt),
             notice: "Queued message restored to composer",
             queue_notice_at: nil
         }
@@ -509,6 +512,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           state
           | stream: stream,
             queued_prompts: queued_prompts,
+            queued_drafts: Map.delete(state.queued_drafts, content),
             notice:
               if(queued_prompts == [] and state.queue_notice_at, do: nil, else: state.notice),
             queue_notice_at: if(queued_prompts == [], do: nil, else: state.queue_notice_at)
@@ -844,9 +848,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp submit_failed(state, operation, reason) do
-    if Input.get_value(state.input) == "" do
-      :ok = Input.set_value(state.input, operation.raw_draft)
-    end
+    state =
+      if Input.get_value(state.input) == "" do
+        Pastes.restore(state, operation.draft)
+      else
+        state
+      end
 
     state = %{
       state
@@ -1447,6 +1454,15 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp pop_queued_prompt([content | rest], content), do: rest
   defp pop_queued_prompt(prompts, _content), do: prompts
+
+  # A queued message is identified to the runtime by its expanded prompt, which
+  # is what the queue holds; only the composer needs the labels it was written
+  # with, and only until it is delivered or taken back. Two queued drafts that
+  # expand to the same prompt share this entry, so the second one to be taken
+  # back falls back to the expanded text it is already known by.
+  defp queued_draft(state, prompt) do
+    Map.get(state.queued_drafts, prompt, %Pastes.Draft{text: prompt})
+  end
 
   defp busy?(state) do
     not is_nil(state.active_turn) or not is_nil(state.pending_operation) or

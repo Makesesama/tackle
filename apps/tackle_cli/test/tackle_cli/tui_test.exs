@@ -104,7 +104,13 @@ defmodule Tackle.CLI.TUITest do
       if String.starts_with?(prompt, "fail") do
         {:reply, {:error, :rejected}, state}
       else
-        result = if prompt == "second draft", do: {:ok, :queued}, else: {:ok, "turn-1"}
+        result =
+          cond do
+            prompt == "second draft" -> {:ok, :queued}
+            String.starts_with?(prompt, "queued:") -> {:ok, :queued}
+            true -> {:ok, "turn-1"}
+          end
+
         queued = if result == {:ok, :queued}, do: state.queued ++ [prompt], else: state.queued
         {:reply, result, %{state | queued: queued}}
       end
@@ -1065,7 +1071,8 @@ defmodule Tackle.CLI.TUITest do
     assert submitted ==
              "summarize: #{String.trim_trailing(first)}  #{String.trim_trailing(second)}"
 
-    assert state(tui).history.entries == ["summarize: #{label} #{label} #2"]
+    assert state(tui).history.entries |> Enum.map(& &1.text) ==
+             ["summarize: #{label} #{label} #2"]
   end
 
   test "short pastes stay literal and long text labels survive failed submission", %{tui: tui} do
@@ -1079,42 +1086,83 @@ defmodule Tackle.CLI.TUITest do
     assert submitted == "fail #{String.trim_trailing(long)}"
     _state = await_state(tui, &is_nil(&1.pending_operation))
     assert draft(tui) == "fail #{label}"
+
+    # The restored label is a label again, not the text it looks like: the
+    # retried prompt carries the pasted content.
+    inject_key(tui, "enter")
+    assert_receive {:submitted, retried}
+    assert retried == submitted
   end
 
-  test "a paste label deleted by an edit keeps the draft instead of being sent", %{tui: tui} do
+  test "a whole paste label is one edit to delete, and its content goes with it", %{tui: tui} do
     long = String.duplicate("x", 1_100)
     inject_paste(tui, long)
     assert draft(tui) == "[Pasted Content 1100 chars]"
 
+    # The label is one element, so a single backspace removes all of it, and
+    # the content it stood for is no longer part of any submission.
     inject_key(tui, "backspace")
-    assert draft(tui) == "[Pasted Content 1100 chars"
-    inject_key(tui, "enter")
-
-    _state = await_state(tui, &(&1.notice =~ "Paste content missing"))
-    refute_receive {:submitted, _}, 50
+    assert draft(tui) == ""
     assert state(tui).pending_operation == nil
-    assert draft(tui) == "[Pasted Content 1100 chars"
+    refute_receive {:submitted, _}, 50
+
+    inject_key(tui, "enter")
+    refute_receive {:submitted, _}, 50
   end
 
-  test "a hand-typed image label keeps the draft and names itself in the status row", %{tui: tui} do
+  test "a hand-typed label is ordinary text, not a paste", %{tui: tui} do
     inject_paste(tui, "describe [Image #9]")
     inject_key(tui, "enter")
 
-    state = await_state(tui, &(&1.notice =~ "Paste content missing for [Image #9]"))
-    refute_receive {:submitted, _}, 50
-    assert status_text(state) =~ "Paste content missing"
-    assert draft(tui) == "describe [Image #9]"
+    assert_receive {:submitted, "describe [Image #9]"}
+    assert draft(tui) == ""
   end
 
-  test "refusing a draft reports every unresolved label and records no history", %{tui: tui} do
-    inject_paste(tui, "ask about [Image #9] and [Image #8]")
+  test "a label keeps the draft and names itself when its content is gone", %{tui: tui} do
+    image = <<137, 80, 78, 71, 13, 10, 26, 10, 0>>
+    path = Path.join(System.tmp_dir!(), "tackle-orphan-#{System.unique_integer([:positive])}.png")
+    File.write!(path, image)
+    on_exit(fn -> File.rm(path) end)
+
+    inject_paste(tui, path)
+    assert draft(tui) == "[Image #1]"
+
+    # Drop what the label stands for, the way a shell that outlived its
+    # payloads would.
+    drop_pastes(tui)
     inject_key(tui, "enter")
 
     state = await_state(tui, &(&1.notice =~ "Paste content missing"))
     refute_receive {:submitted, _}, 50
-    assert state.notice == "Paste content missing for [Image #9] and 1 more · draft kept"
+    assert status_text(state) =~ "Paste content missing"
     assert state.history.entries == []
-    assert draft(tui) == "ask about [Image #9] and [Image #8]"
+    assert draft(tui) == "[Image #1]"
+  end
+
+  test "a draft with two orphaned labels names one and counts the other", %{tui: tui} do
+    image = <<137, 80, 78, 71, 13, 10, 26, 10, 0>>
+
+    paths =
+      Enum.map(1..2, fn _ ->
+        path =
+          Path.join(System.tmp_dir!(), "tackle-orphan-#{System.unique_integer([:positive])}.png")
+
+        File.write!(path, image)
+        on_exit(fn -> File.rm(path) end)
+        path
+      end)
+
+    Enum.each(paths, &inject_paste(tui, &1))
+    assert draft(tui) == "[Image #1] [Image #2]"
+
+    drop_pastes(tui)
+    inject_key(tui, "enter")
+
+    state = await_state(tui, &(&1.notice =~ "Paste content missing"))
+    refute_receive {:submitted, _}, 50
+    assert state.notice =~ "Paste content missing for [Image #1] and 1 more · draft kept"
+    assert state.history.entries == []
+    assert draft(tui) == "[Image #1] [Image #2]"
   end
 
   test "a prompt past the character limit keeps the draft", %{tui: tui} do
@@ -1326,6 +1374,74 @@ defmodule Tackle.CLI.TUITest do
     assert draft(tui) == "second draft"
     assert restored.notice == "Queued message restored to composer"
     refute_receive {:submitted, "second draft"}, 20
+  end
+
+  test "a taken-back queued message comes back as the draft it was written as", %{tui: tui} do
+    inject_paste(tui, "first")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "first"}
+    await_state(tui, &(&1.active_turn != nil))
+
+    long = String.duplicate("x", 1_100)
+    label = "[Pasted Content 1100 chars]"
+    inject_paste(tui, "queued: ")
+    inject_paste(tui, long)
+    assert draft(tui) == "queued: #{label}"
+
+    inject_key(tui, "enter")
+    assert_receive {:submitted, submitted}
+    assert submitted == "queued: " <> long
+    await_state(tui, &(&1.queued_prompts == [submitted]))
+
+    inject_key(tui, "up")
+    assert_receive {:withdrawn, ^submitted}
+    restored = await_state(tui, &(&1.queued_prompts == []))
+    assert draft(tui) == "queued: #{label}"
+    assert restored.queued_drafts == %{}
+
+    # The label is a label again, so resubmitting sends the content it stands
+    # for rather than the label text.
+    inject_key(tui, "enter")
+    assert_receive {:submitted, resubmitted}
+    assert resubmitted == submitted
+  end
+
+  test "recalling a prompt that pasted text expands its label again", %{tui: tui} do
+    long = String.duplicate("y", 1_200)
+    label = "[Pasted Content 1200 chars]"
+    inject_paste(tui, "summarize ")
+    inject_paste(tui, long)
+    assert draft(tui) == "summarize #{label}"
+
+    inject_key(tui, "enter")
+    assert_receive {:submitted, submitted}
+    assert submitted == "summarize " <> String.trim(long)
+    await_state(tui, &is_nil(&1.pending_operation))
+
+    inject_key(tui, "up")
+    assert draft(tui) == "summarize #{label}"
+    inject_key(tui, "enter")
+    assert_receive {:submitted, resubmitted}
+    assert resubmitted == submitted
+  end
+
+  test "the transcript previews a pasted image with the file it names", %{tui: tui} do
+    image = <<137, 80, 78, 71, 13, 10, 26, 10, 0>>
+
+    path =
+      Path.join(System.tmp_dir!(), "tackle-preview-#{System.unique_integer([:positive])}.png")
+
+    File.write!(path, image)
+    on_exit(fn -> File.rm(path) end)
+
+    inject_paste(tui, path)
+    inject_key(tui, "enter")
+    assert_receive {:submitted, _prompt}
+
+    state = await_state(tui, &(&1.pending_prompt != nil))
+    [entry] = MessageView.section_entries(state, :pending)
+    assert entry.content == "[Image #1] #{Path.basename(path)}"
+    assert entry.source =~ "Please use the read tool to inspect this image: #{path}"
   end
 
   test "Up with a draft keeps the queued message and browses history", %{tui: tui} do
@@ -1583,7 +1699,7 @@ defmodule Tackle.CLI.TUITest do
     submit_prompt(tui, "same")
     submit_prompt(tui, "same")
 
-    assert state(tui).history.entries == ["same"]
+    assert state(tui).history.entries == [Pastes.Draft.new("same")]
   end
 
   test "history survives a new session", %{agent_ref: agent_ref} do
@@ -1613,7 +1729,7 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "y")
 
     replacement = await_state(tui, &(&1.session_id != first_session))
-    assert replacement.history.entries == ["remembered"]
+    assert replacement.history.entries == [Pastes.Draft.new("remembered")]
 
     inject_key(tui, "up")
     assert draft(tui) == "remembered"
@@ -3431,6 +3547,15 @@ defmodule Tackle.CLI.TUITest do
 
   defp draft(tui) do
     Input.get_value(state(tui).input)
+  end
+
+  # Forgets what the session's paste labels stand for, the way a shell that
+  # outlived its payloads would: the labels stay in the draft, their content is
+  # gone.
+  defp drop_pastes(tui) do
+    :sys.replace_state(tui, fn runtime ->
+      %{runtime | user_state: %{runtime.user_state | pastes: %{}}}
+    end)
   end
 
   defp settle_messages(tui, messages) do

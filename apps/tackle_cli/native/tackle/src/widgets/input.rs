@@ -1,6 +1,12 @@
 //! Tackle's editor core. The host owns submission and shortcut precedence.
 //! Byte offsets always fall on grapheme boundaries; one layout drives measure,
 //! vertical movement, scrolling and paint (including the final insertion cell).
+//!
+//! An *element* is a byte range the host inserted as one unit — a collapsed
+//! paste label. Elements are atomic: motion steps over one, an edit that
+//! touches one removes it whole, and paint gives it its own style. The host
+//! owns identity: an element carries the id it was inserted with, and only the
+//! host knows what that id stands for.
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -15,11 +21,30 @@ struct Draft {
     cursor: usize,
 }
 
+/// One host-inserted range, identified by the host's id for its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Element {
+    id: u64,
+    start: usize,
+    end: usize,
+}
+
+/// An element as the host sees it: `{id, byte_start, byte_end}`.
+pub type WireElement = (u64, usize, usize);
+
+/// A draft and its elements, as one undo step or one host restore.
+#[derive(Clone, Default)]
+struct Snapshot {
+    draft: Draft,
+    elements: Vec<Element>,
+}
+
 #[derive(Default)]
 pub struct Input {
     draft: Draft,
-    undo: VecDeque<Draft>,
-    redo: VecDeque<Draft>,
+    elements: Vec<Element>,
+    undo: VecDeque<Snapshot>,
+    redo: VecDeque<Snapshot>,
     preferred_column: Option<usize>,
     scroll: usize,
 }
@@ -164,13 +189,16 @@ fn layout(text: &str, width: u16) -> Layout<'_> {
 }
 
 // Bound retained snapshots by both edit count and bytes. A huge current draft
-// remains editable, but does not force an unbounded undo archive.
-fn remember(history: &mut VecDeque<Draft>, draft: Draft) {
+// remains editable, but does not force an unbounded undo archive. Elements are
+// part of a snapshot, so their (small) metadata counts against the budget too.
+fn remember(history: &mut VecDeque<Snapshot>, snapshot: Snapshot) {
     const BUDGET: usize = 8 * 1024 * 1024;
-    history.push_back(draft);
-    let mut bytes: usize = history.iter().map(|d| d.text.len()).sum();
+    let weigh =
+        |s: &Snapshot| s.draft.text.len() + s.elements.len() * std::mem::size_of::<Element>();
+    history.push_back(snapshot);
+    let mut bytes: usize = history.iter().map(weigh).sum();
     while history.len() > 100 || bytes > BUDGET {
-        bytes -= history.pop_front().unwrap().text.len();
+        bytes -= weigh(&history.pop_front().unwrap());
     }
 }
 
@@ -179,33 +207,182 @@ impl Input {
         &self.draft.text
     }
 
+    /// The host's ids for the current labels, with the byte range each spans.
+    pub fn elements(&self) -> Vec<WireElement> {
+        self.elements
+            .iter()
+            .map(|element| (element.id, element.start, element.end))
+            .collect()
+    }
+
     pub fn set(&mut self, text: String) {
         self.draft = Draft {
             cursor: text.len(),
             text,
         };
+        self.elements.clear();
         self.undo.clear();
         self.redo.clear();
         self.preferred_column = None;
         self.scroll = 0;
     }
 
-    fn replace(&mut self, start: usize, end: usize, text: &str) {
-        if start == end && text.is_empty() {
+    /// Replaces the draft and re-attaches the label spans the host recorded for
+    /// it, returning the spans it attached. A span that does not fit the
+    /// restored text — out of range, out of order, overlapping, or off a
+    /// grapheme boundary — is dropped rather than trusted, so a stale snapshot
+    /// can never produce a split label or a caret inside one. The host compares
+    /// what it asked for with what it got.
+    pub fn restore(&mut self, text: String, spans: &[WireElement]) -> Vec<WireElement> {
+        self.set(text);
+        let boundaries = self.boundaries();
+        let mut limit = 0;
+        for &(id, start, end) in spans {
+            let fits = start >= limit
+                && start < end
+                && end <= self.draft.text.len()
+                && boundaries.binary_search(&start).is_ok()
+                && boundaries.binary_search(&end).is_ok();
+            if fits {
+                self.elements.push(Element { id, start, end });
+                limit = end;
+            }
+        }
+        self.elements()
+    }
+
+    /// Inserts `prefix` and then `label` as one atomic element after it
+    /// (one undo step). The host's `id` identifies the retained payload.
+    pub fn insert_element(&mut self, prefix: &str, label: &str, id: u64) {
+        if label.is_empty() {
             return;
         }
-        remember(&mut self.undo, self.draft.clone());
+        let cursor = self.draft.cursor;
+        let (start, _end) = self.replace(cursor, cursor, &format!("{prefix}{label}"));
+        // The inserted text starts where the replacement actually landed, which
+        // is after the caret when the caret sat inside a label.
+        let start = start + prefix.len();
+        self.elements.push(Element {
+            id,
+            start,
+            end: start + label.len(),
+        });
+        self.elements.sort_unstable_by_key(|element| element.start);
+    }
+
+    /// Every byte offset an edit may land on: the start of each grapheme plus
+    /// the end of the draft.
+    fn boundaries(&self) -> Vec<usize> {
+        let mut boundaries: Vec<usize> = glyphs(&self.draft.text).iter().map(|g| g.start).collect();
+        boundaries.push(self.draft.text.len());
+        boundaries
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            draft: self.draft.clone(),
+            elements: self.elements.clone(),
+        }
+    }
+
+    fn apply(&mut self, snapshot: Snapshot) {
+        self.draft = snapshot.draft;
+        self.elements = snapshot.elements;
+        self.preferred_column = None;
+    }
+
+    fn undo_or_redo(&mut self, undo: bool) {
+        let snapshot = if undo {
+            self.undo.pop_back()
+        } else {
+            self.redo.pop_back()
+        };
+        let Some(snapshot) = snapshot else { return };
+        let current = Snapshot {
+            draft: self.draft.clone(),
+            elements: self.elements.clone(),
+        };
+        self.apply(snapshot);
+        remember(if undo { &mut self.redo } else { &mut self.undo }, current);
+    }
+
+    /// The label containing `pos` strictly inside its range, if any.
+    fn element_containing(&self, pos: usize) -> Option<&Element> {
+        self.elements
+            .iter()
+            .find(|element| element.start < pos && pos < element.end)
+    }
+
+    /// Snaps an arbitrary offset to the nearer edge of the label around it.
+    fn snap(&self, pos: usize) -> usize {
+        match self.element_containing(pos) {
+            Some(element) if pos - element.start <= element.end - pos => element.start,
+            Some(element) => element.end,
+            None => pos,
+        }
+    }
+
+    fn floor_element(&self, pos: usize) -> usize {
+        self.element_containing(pos)
+            .map_or(pos, |element| element.start)
+    }
+
+    fn ceil_element(&self, pos: usize) -> usize {
+        self.element_containing(pos)
+            .map_or(pos, |element| element.end)
+    }
+
+    /// Widens a replaced range so it can never split a label: a range that
+    /// touches one takes it whole, and an insertion inside one lands after it.
+    fn expand(&self, start: usize, end: usize) -> (usize, usize) {
+        if start == end {
+            return match self.element_containing(start) {
+                Some(element) => (element.end, element.end),
+                None => (start, end),
+            };
+        }
+        let mut start = start;
+        let mut end = end;
+        for element in &self.elements {
+            if element.start < end && start < element.end {
+                start = start.min(element.start);
+                end = end.max(element.end);
+            }
+        }
+        (start, end)
+    }
+
+    fn replace(&mut self, start: usize, end: usize, text: &str) -> (usize, usize) {
+        if start == end && text.is_empty() {
+            return (start, end);
+        }
+        let (start, end) = self.expand(start.min(end), start.max(end));
+        let previous = self.snapshot();
+        remember(&mut self.undo, previous);
         self.redo.clear();
         self.draft.text.replace_range(start..end, text);
+        let delta = text.len() as isize - (end - start) as isize;
+        self.elements.retain_mut(|element| {
+            if start <= element.start && element.end <= end {
+                return false;
+            }
+            if element.start >= end {
+                element.start = element.start.saturating_add_signed(delta);
+                element.end = element.end.saturating_add_signed(delta);
+            }
+            true
+        });
         let desired = start + text.len();
         // Inserting a combining mark or deleting a separator can merge clusters.
-        self.draft.cursor = glyphs(&self.draft.text)
+        let boundary = glyphs(&self.draft.text)
             .iter()
             .map(|g| g.start)
             .chain(std::iter::once(self.draft.text.len()))
             .find(|&byte| byte >= desired)
             .unwrap();
+        self.draft.cursor = self.ceil_element(boundary);
         self.preferred_column = None;
+        (start, end)
     }
 
     pub fn insert(&mut self, text: &str) {
@@ -239,15 +416,7 @@ impl Input {
         let plain = modifiers.is_empty();
         let shift = modifiers.len() == 1 && modifiers[0] == "shift";
         if ctrl && matches!(code, "u" | "r") {
-            let (from, to) = if code == "u" {
-                (&mut self.undo, &mut self.redo)
-            } else {
-                (&mut self.redo, &mut self.undo)
-            };
-            if let Some(draft) = from.pop_back() {
-                remember(to, std::mem::replace(&mut self.draft, draft));
-                self.preferred_column = None;
-            }
+            self.undo_or_redo(code == "u");
             return;
         }
         let action = match (code, ctrl, alt, plain) {
@@ -263,36 +432,67 @@ impl Input {
         };
         let glyphs = glyphs(self.value());
         let cursor = self.draft.cursor;
-        let previous = glyphs
+        // A label counts as one unit: the step before it lands on its start and
+        // the step after it on its end, so motion and deletion never split it.
+        let previous = self
+            .elements
             .iter()
-            .rev()
-            .find(|g| g.start < cursor)
-            .map_or(0, |g| g.start);
-        let next = glyphs
+            .find(|element| element.end == cursor)
+            .map_or_else(
+                || {
+                    glyphs
+                        .iter()
+                        .rev()
+                        .find(|g| g.start < cursor)
+                        .map_or(0, |g| g.start)
+                },
+                |element| element.start,
+            );
+        let next = self
+            .elements
             .iter()
-            .find(|g| g.start >= cursor)
-            .map_or(cursor, |g| g.end);
+            .find(|element| element.start == cursor)
+            .map_or_else(
+                || {
+                    glyphs
+                        .iter()
+                        .find(|g| g.start >= cursor)
+                        .map_or(cursor, |g| g.end)
+                },
+                |element| element.end,
+            );
         match action {
-            "left" => self.draft.cursor = previous,
-            "right" => self.draft.cursor = next,
-            "home" => self.draft.cursor = self.value()[..cursor].rfind('\n').map_or(0, |p| p + 1),
-            "end" => {
-                self.draft.cursor = self.value()[cursor..]
-                    .find('\n')
-                    .map_or(self.value().len(), |p| cursor + p)
+            "left" => self.draft.cursor = self.floor_element(previous),
+            "right" => self.draft.cursor = self.ceil_element(next),
+            "home" => {
+                self.draft.cursor =
+                    self.floor_element(self.value()[..cursor].rfind('\n').map_or(0, |p| p + 1))
             }
-            "word_left" => self.draft.cursor = previous_word_start(&glyphs, cursor),
-            "word_right" => self.draft.cursor = next_word_end(&glyphs, cursor),
+            "end" => {
+                self.draft.cursor = self.ceil_element(
+                    self.value()[cursor..]
+                        .find('\n')
+                        .map_or(self.value().len(), |p| cursor + p),
+                )
+            }
+            "word_left" => {
+                self.draft.cursor = self.floor_element(previous_word_start(&glyphs, cursor))
+            }
+            "word_right" => self.draft.cursor = self.ceil_element(next_word_end(&glyphs, cursor)),
             "backspace" => {
-                self.replace(previous, cursor, "");
+                self.replace(self.floor_element(previous), cursor, "");
                 return;
             }
             "delete" => {
-                self.replace(cursor, next, "");
+                self.replace(cursor, self.ceil_element(next), "");
                 return;
             }
             "word_backspace" => {
-                self.replace(previous_word_start(&glyphs, cursor), cursor, "");
+                self.replace(
+                    self.floor_element(previous_word_start(&glyphs, cursor)),
+                    cursor,
+                    "",
+                );
                 return;
             }
             "up" | "down" => {
@@ -310,7 +510,7 @@ impl Input {
                     .filter(|s| s.row == row)
                     .min_by_key(|s| s.col.abs_diff(col))
                     .unwrap();
-                self.draft.cursor = target.byte;
+                self.draft.cursor = self.snap(target.byte);
                 self.preferred_column = Some(col);
                 return;
             }
@@ -329,7 +529,14 @@ impl Input {
         self.preferred_column = None;
     }
 
-    pub fn render(&mut self, area: Rect, buffer: &mut Buffer, placeholder: &str, focused: bool) {
+    pub fn render(
+        &mut self,
+        area: Rect,
+        buffer: &mut Buffer,
+        placeholder: &str,
+        focused: bool,
+        element_style: Style,
+    ) {
         if area.is_empty() {
             return;
         }
@@ -356,11 +563,22 @@ impl Input {
                 } else {
                     g.symbol
                 };
+                // Labels carry the paste style, so a collapsed paste reads as
+                // one token rather than as prose the model wrote.
+                let style = if self
+                    .elements
+                    .iter()
+                    .any(|element| element.start <= g.start && g.start < element.end)
+                {
+                    element_style
+                } else {
+                    Style::new()
+                };
                 buffer.set_string(
                     area.x + *col as u16,
                     area.y + (*row - scroll) as u16,
                     symbol,
-                    Style::new(),
+                    style,
                 );
             }
         }
@@ -436,6 +654,124 @@ mod tests {
     }
 
     #[test]
+    fn an_element_moves_and_deletes_as_one_unit() {
+        let mut input = Input::default();
+        input.insert("see ");
+        input.insert_element(" ", "[P 1]", 7);
+        input.insert(" now");
+        assert_eq!(input.value(), "see  [P 1] now");
+        assert_eq!(input.elements(), vec![(7, 5, 10)]);
+
+        // Motion steps over the whole label in both directions.
+        key(&mut input, "left", 80);
+        assert_eq!(input.draft.cursor, 13);
+        key(&mut input, "left", 80);
+        assert_eq!(input.draft.cursor, 12);
+        key(&mut input, "left", 80);
+        assert_eq!(input.draft.cursor, 11);
+        key(&mut input, "left", 80);
+        assert_eq!(input.draft.cursor, 10);
+        key(&mut input, "left", 80);
+        assert_eq!(input.draft.cursor, 5);
+        key(&mut input, "right", 80);
+        assert_eq!(input.draft.cursor, 10);
+        key(&mut input, "right", 80);
+        assert_eq!(input.draft.cursor, 11);
+
+        // Word motion stops at the label's own words, so it is snapped out of
+        // the range rather than left inside it.
+        input.key("b", &["alt".into()], 80);
+        assert_eq!(input.draft.cursor, 5);
+
+        // Backspace from just after the label removes it whole and drops its id.
+        input.set("".into());
+        input.insert("see ");
+        input.insert_element("", "[P1]", 3);
+        assert_eq!(input.value(), "see [P1]");
+        key(&mut input, "backspace", 80);
+        assert_eq!(input.value(), "see ");
+        assert!(input.elements().is_empty());
+
+        // Undo brings back both the label text and its identity, so Delete from
+        // before it can remove the whole thing too.
+        input.key("u", &["ctrl".into()], 80);
+        assert_eq!(input.value(), "see [P1]");
+        assert_eq!(input.elements(), vec![(3, 4, 8)]);
+        key(&mut input, "left", 80);
+        assert_eq!(input.draft.cursor, 4);
+        key(&mut input, "delete", 80);
+        assert_eq!(input.value(), "see ");
+        assert!(input.elements().is_empty());
+    }
+
+    #[test]
+    fn editing_across_an_element_removes_it_whole() {
+        let mut input = Input::default();
+        input.restore("keep [Image #1] this".into(), &[(1, 5, 15)]);
+        assert_eq!(input.elements(), vec![(1, 5, 15)]);
+
+        // A host range that touches only part of the label takes all of it,
+        // and a later label is not dragged along.
+        input.restore("[one] middle [two]".into(), &[(1, 0, 5), (2, 13, 18)]);
+        input.replace_range(3, 5, "X");
+        assert_eq!(input.value(), "X middle [two]");
+        assert_eq!(input.elements(), vec![(2, 9, 14)]);
+
+        // Typing with the caret inside a label is impossible, so an insert at
+        // the caret always lands outside it.
+        input.restore("a [Image #1] b".into(), &[(1, 2, 12)]);
+        key(&mut input, "left", 80);
+        key(&mut input, "left", 80);
+        assert_eq!(input.draft.cursor, 12);
+        input.insert_element(" ", "[Image #2]", 2);
+        assert_eq!(input.value(), "a [Image #1] [Image #2] b");
+        assert_eq!(input.elements(), vec![(1, 2, 12), (2, 13, 23)]);
+    }
+
+    #[test]
+    fn restore_ignores_spans_that_do_not_fit_the_text() {
+        let mut input = Input::default();
+        let attached = input.restore(
+            "[one] x [two]".into(),
+            &[
+                (1, 0, 5),
+                (2, 3, 8), // overlaps the previous span
+                (3, 6, 6), // empty
+                (4, 6, 99),
+                (5, 8, 13),
+            ],
+        );
+        assert_eq!(input.value(), "[one] x [two]");
+        assert_eq!(input.elements(), vec![(1, 0, 5), (5, 8, 13)]);
+        assert_eq!(attached, vec![(1, 0, 5), (5, 8, 13)]);
+
+        // An edge inside a grapheme is not a place an element may begin or end,
+        // so it is dropped too: the caret and the paint both work in graphemes.
+        let attached = input.restore("e\u{301}x".into(), &[(6, 0, 2), (7, 0, 3)]);
+        assert_eq!(input.value(), "e\u{301}x");
+        assert_eq!(attached, vec![(7, 0, 3)]);
+        assert_eq!(input.elements(), vec![(7, 0, 3)]);
+
+        // Restoring clears the previous draft's elements rather than merging.
+        assert!(input.restore("[one]".into(), &[]).is_empty());
+        assert!(input.elements().is_empty());
+    }
+
+    #[test]
+    fn paint_styles_only_the_label() {
+        let mut input = Input::default();
+        input.set("a [Image #1]".into());
+        input.restore("a [Image #1]".into(), &[(1, 2, 12)]);
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buffer = Buffer::empty(area);
+        input.render(area, &mut buffer, "", false, Style::new().fg(Color::Cyan));
+        assert_eq!(buffer[(0, 0)].fg, Color::Reset);
+        assert_eq!(buffer[(2, 0)].fg, Color::Cyan);
+        assert_eq!(buffer[(11, 0)].fg, Color::Cyan);
+        assert_eq!(buffer[(12, 0)].fg, Color::Reset);
+    }
+
+    #[test]
     fn cursor_and_paint_agree_across_unicode_edits_and_resizes() {
         let samples = [
             "",
@@ -474,7 +810,7 @@ mod tests {
                     }
                     let area = Rect::new(0, 0, width, 2);
                     let mut buffer = Buffer::empty(area);
-                    input.render(area, &mut buffer, "", true);
+                    input.render(area, &mut buffer, "", true, Style::new());
                     assert!(crate::surface::lines(&buffer).is_ok());
                 }
             }
@@ -533,9 +869,12 @@ mod tests {
         let mut history = VecDeque::new();
         remember(
             &mut history,
-            Draft {
-                text: "x".repeat(8 * 1024 * 1024 + 1),
-                cursor: 0,
+            Snapshot {
+                draft: Draft {
+                    text: "x".repeat(8 * 1024 * 1024 + 1),
+                    cursor: 0,
+                },
+                elements: vec![],
             },
         );
         assert!(history.is_empty());
@@ -549,7 +888,7 @@ mod tests {
             for height in 0..4 {
                 let area = Rect::new(0, 0, width, height);
                 let mut buffer = Buffer::empty(area);
-                input.render(area, &mut buffer, "", true);
+                input.render(area, &mut buffer, "", true, Style::new());
                 assert!(crate::surface::lines(&buffer).is_ok());
             }
         }

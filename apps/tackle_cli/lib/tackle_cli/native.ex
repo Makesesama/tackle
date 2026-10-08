@@ -18,6 +18,9 @@ defmodule Tackle.CLI.Native do
   def input_get_value(_state), do: :erlang.nif_error(:nif_not_loaded)
   def input_set_value(_state, _value), do: :erlang.nif_error(:nif_not_loaded)
   def input_insert_str(_state, _value), do: :erlang.nif_error(:nif_not_loaded)
+  def input_insert_element(_state, _prefix, _label, _id), do: :erlang.nif_error(:nif_not_loaded)
+  def input_elements(_state), do: :erlang.nif_error(:nif_not_loaded)
+  def input_restore(_state, _text, _spans), do: :erlang.nif_error(:nif_not_loaded)
   def input_handle_key(_state, _code, _modifiers, _width), do: :erlang.nif_error(:nif_not_loaded)
   def input_rows(_state, _width), do: :erlang.nif_error(:nif_not_loaded)
   def input_cursor(_state), do: :erlang.nif_error(:nif_not_loaded)
@@ -25,7 +28,7 @@ defmodule Tackle.CLI.Native do
   def input_replace_range(_state, _start, _end, _text),
     do: :erlang.nif_error(:nif_not_loaded)
 
-  def input_render(_state, _width, _height, _placeholder, _focused),
+  def input_render(_state, _width, _height, _placeholder, _focused, _element_style),
     do: :erlang.nif_error(:nif_not_loaded)
 
   def browse_document(_source, _width, _style), do: :erlang.nif_error(:nif_not_loaded)
