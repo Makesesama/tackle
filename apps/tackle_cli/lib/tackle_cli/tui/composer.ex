@@ -271,7 +271,9 @@ defmodule Tackle.CLI.TUI.Composer do
   `SlashCommands.dispatch/2` — the same registry the `/` popup lists — instead
   of sending a prompt; a command that cannot run now keeps the draft. An
   empty draft does nothing. A rejected submit reports the failure in the
-  status row and restores the draft.
+  status row and restores the draft. So does a draft whose paste labels have no
+  retained content, or whose expanded prompt is past the submission limit:
+  `Pastes.resolve/2` refuses both rather than sending label text to the agent.
   """
   @spec submit(State.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
@@ -300,7 +302,37 @@ defmodule Tackle.CLI.TUI.Composer do
   end
 
   defp submit_turn(%State{} = state, raw_draft) do
-    prompt = raw_draft |> Pastes.expand(state) |> String.trim()
+    case Pastes.resolve(raw_draft, state) do
+      {:ok, prompt} ->
+        start_turn(state, raw_draft, prompt)
+
+      {:error, {:unresolved_pastes, labels}} ->
+        {:noreply, %{state | notice: missing_paste_notice(labels)}}
+
+      {:error, {:prompt_too_long, chars}} ->
+        notice =
+          "Prompt too long (#{chars} characters, limit #{Pastes.max_prompt_chars()}) · draft kept"
+
+        {:noreply, %{state | notice: notice}}
+    end
+  end
+
+  # A label the session cannot expand would otherwise reach the agent as its
+  # own text, so the draft is kept and the failure reported instead.
+  # The status row drops a segment that does not fit, so the notice names one
+  # label and counts the rest instead of listing them all.
+  defp missing_paste_notice([label]) do
+    "Paste content missing for #{short_label(label)} · draft kept"
+  end
+
+  defp missing_paste_notice([label | rest]) do
+    "Paste content missing for #{short_label(label)} and #{length(rest)} more · draft kept"
+  end
+
+  defp short_label(label) when byte_size(label) <= 24, do: label
+  defp short_label(label), do: String.slice(label, 0, 21) <> "..."
+
+  defp start_turn(%State{} = state, raw_draft, prompt) do
     ref = make_ref()
     agent_ref = state.agent_ref
 

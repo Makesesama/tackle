@@ -459,14 +459,21 @@ source.
 Bracketed paste lands as one edit and never submits. CRLF is normalized to `\n`;
 lone CR is dropped before the edit. In the composer, Ctrl+V pastes clipboard
 text or, if available, an image (PNG, JPEG, GIF, WebP, up to 5 MiB). A terminal
-that pastes an image as a file path is also supported. Images appear as numbered
-`[image-1]` tokens in the composer; text pastes of at least 1,000 bytes appear
-as `[text-1]`, with separate counters for each type. Enter expands the tokens
-before sending the full prompt to the agent. Smaller text pastes remain editable
-as ordinary text. Clipboard images and text are read through the native
+that pastes an image as a file path is also supported. Images appear as
+`[Image #N]` labels in the composer; text pastes of at least 1,000 characters
+appear as `[Pasted Content N chars]`, with ` #2`, ` #3`, ... added for further
+pastes of the same size. Enter expands the labels before sending the full
+prompt to the agent, and the transcript previews the same labels. A label whose
+content was not retained — typed by hand, partly deleted, or left over from
+another session — and a prompt past the submission limit (1,048,576 characters)
+are reported in the status row, and the draft is kept instead of sending label
+text to the agent. A label is recognised by its count and brackets, so one
+edited past recognition is ordinary text and is sent as typed. Smaller text
+pastes remain editable as ordinary text. Clipboard images and text are read
+through the native
 clipboard (`packages/clipboard_ex`); no external utilities are needed. The CLI
 saves clipboard images as private (0600) temporary PNG files
-until it exits and expands image tokens into paths with a request to use the
+until it exits and expands image labels into paths with a request to use the
 `read` tool. When tools run in a jail, images are saved in the jail's `/tmp`,
 and a pasted image file path is copied there, so the agent can read them. Images
 are **not** directly attached to user messages; the agent must read the file,

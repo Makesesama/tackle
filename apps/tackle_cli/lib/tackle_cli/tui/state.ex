@@ -97,7 +97,6 @@ defmodule Tackle.CLI.TUI.State do
           clipboard_image_reader: (-> {:ok, binary()} | {:error, term()}),
           image_paths: [String.t()],
           paste_replacements: %{optional(String.t()) => String.t()},
-          paste_counts: %{image: non_neg_integer(), text: non_neg_integer()},
           executor: Tackle.Executor.t(),
           usage_timeline_loader: (:current | :all, String.t() | nil ->
                                     {:ok, term()} | {:error, term()}),
@@ -168,7 +167,6 @@ defmodule Tackle.CLI.TUI.State do
             clipboard_image_reader: &Tackle.CLI.ImageClipboard.read/0,
             image_paths: [],
             paste_replacements: %{},
-            paste_counts: %{image: 0, text: 0},
             executor: Tackle.Executor.local(),
             usage_timeline_loader: &__MODULE__.default_usage_timeline_loader/2,
             usage_timeline_cache: %{},

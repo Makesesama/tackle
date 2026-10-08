@@ -14,6 +14,7 @@ defmodule Tackle.CLI.TUITest do
     Conversation,
     Layout,
     MessageView,
+    Pastes,
     Picker,
     RecentSessions,
     RuntimeEvents,
@@ -951,7 +952,7 @@ defmodule Tackle.CLI.TUITest do
     on_exit(fn -> File.rm(path) end)
 
     inject_paste(tui, path)
-    assert draft(tui) == "[image-1]"
+    assert draft(tui) == "[Image #1]"
     inject_key(tui, "enter")
     assert_receive {:submitted, prompt}
     assert prompt =~ "Please use the read tool to inspect this image: #{path}"
@@ -977,7 +978,7 @@ defmodule Tackle.CLI.TUITest do
 
     inject_key(tui, "v", ["ctrl"])
     inject_paste(tui, host)
-    assert draft(tui) == "[image-1] [image-2]"
+    assert draft(tui) == "[Image #1] [Image #2]"
 
     paths = state(tui).image_paths
     assert length(paths) == 2
@@ -1012,7 +1013,7 @@ defmodule Tackle.CLI.TUITest do
     inject_key(tui, "u", ["ctrl"])
 
     inject_paste(tui, image)
-    assert draft(tui) == "[image-1]"
+    assert draft(tui) == "[Image #1]"
     assert state(tui).image_paths == []
     inject_key(tui, "enter")
     assert_receive {:submitted, prompt}
@@ -1035,7 +1036,7 @@ defmodule Tackle.CLI.TUITest do
     inject_paste(tui, "describe")
     inject_key(tui, "v", ["ctrl"])
     prompt = draft(tui)
-    assert prompt == "describe [image-1]"
+    assert prompt == "describe [Image #1]"
     [path] = state(tui).image_paths
     assert File.read!(path) == image
     assert File.stat!(path).mode == 0o100600
@@ -1044,40 +1045,94 @@ defmodule Tackle.CLI.TUITest do
     assert submitted =~ "describe  Please use the read tool to inspect this image: #{path}"
   end
 
-  test "long pasted text uses numbered tokens but submits the full text", %{tui: tui} do
+  test "long pasted text uses labels but submits the full text", %{tui: tui} do
     first = String.duplicate("one ", 260)
     second = String.duplicate("two ", 260)
+    label = "[Pasted Content #{String.length(first)} chars]"
     inject_paste(tui, "summarize: ")
     inject_paste(tui, first)
     inject_paste(tui, second)
-    assert draft(tui) == "summarize: [text-1] [text-2]"
+    # Two pastes of one size are told apart by a suffix.
+    assert draft(tui) == "summarize: #{label} #{label} #2"
 
     inject_key(tui, "u", ["ctrl"])
-    assert draft(tui) == "summarize: [text-1]"
+    assert draft(tui) == "summarize: #{label}"
     inject_key(tui, "r", ["ctrl"])
-    assert draft(tui) == "summarize: [text-1] [text-2]"
+    assert draft(tui) == "summarize: #{label} #{label} #2"
     inject_key(tui, "enter")
     assert_receive {:submitted, submitted}
 
     assert submitted ==
              "summarize: #{String.trim_trailing(first)}  #{String.trim_trailing(second)}"
 
-    assert state(tui).history.entries == ["summarize: [text-1] [text-2]"]
+    assert state(tui).history.entries == ["summarize: #{label} #{label} #2"]
   end
 
-  test "short pastes stay literal and long text tokens survive failed submission", %{tui: tui} do
+  test "short pastes stay literal and long text labels survive failed submission", %{tui: tui} do
     long = String.duplicate("line\n", 220)
+    label = "[Pasted Content #{String.length(long)} chars]"
     inject_paste(tui, "fail ")
     inject_paste(tui, long)
-    assert draft(tui) == "fail [text-1]"
+    assert draft(tui) == "fail #{label}"
     inject_key(tui, "enter")
     assert_receive {:submitted, submitted}
     assert submitted == "fail #{String.trim_trailing(long)}"
     _state = await_state(tui, &is_nil(&1.pending_operation))
-    assert draft(tui) == "fail [text-1]"
+    assert draft(tui) == "fail #{label}"
   end
 
-  test "failed submit restores a paste token and a second image gets a new number", %{
+  test "a paste label deleted by an edit keeps the draft instead of being sent", %{tui: tui} do
+    long = String.duplicate("x", 1_100)
+    inject_paste(tui, long)
+    assert draft(tui) == "[Pasted Content 1100 chars]"
+
+    inject_key(tui, "backspace")
+    assert draft(tui) == "[Pasted Content 1100 chars"
+    inject_key(tui, "enter")
+
+    _state = await_state(tui, &(&1.notice =~ "Paste content missing"))
+    refute_receive {:submitted, _}, 50
+    assert state(tui).pending_operation == nil
+    assert draft(tui) == "[Pasted Content 1100 chars"
+  end
+
+  test "a hand-typed image label keeps the draft and names itself in the status row", %{tui: tui} do
+    inject_paste(tui, "describe [Image #9]")
+    inject_key(tui, "enter")
+
+    state = await_state(tui, &(&1.notice =~ "Paste content missing for [Image #9]"))
+    refute_receive {:submitted, _}, 50
+    assert status_text(state) =~ "Paste content missing"
+    assert draft(tui) == "describe [Image #9]"
+  end
+
+  test "refusing a draft reports every unresolved label and records no history", %{tui: tui} do
+    inject_paste(tui, "ask about [Image #9] and [Image #8]")
+    inject_key(tui, "enter")
+
+    state = await_state(tui, &(&1.notice =~ "Paste content missing"))
+    refute_receive {:submitted, _}, 50
+    assert state.notice == "Paste content missing for [Image #9] and 1 more · draft kept"
+    assert state.history.entries == []
+    assert draft(tui) == "ask about [Image #9] and [Image #8]"
+  end
+
+  test "a prompt past the character limit keeps the draft", %{tui: tui} do
+    paste = String.duplicate("x", 1_000_000)
+    label = "[Pasted Content #{String.length(paste)} chars]"
+    inject_paste(tui, paste)
+    inject_paste(tui, paste)
+    assert draft(tui) == "#{label} #{label} #2"
+
+    inject_key(tui, "enter")
+
+    state = await_state(tui, &(&1.notice =~ "Prompt too long"))
+    refute_receive {:submitted, _}, 50
+    assert state.notice =~ "limit #{Pastes.max_prompt_chars()}"
+    assert draft(tui) == "#{label} #{label} #2"
+  end
+
+  test "failed submit restores a paste label and a second image gets a new number", %{
     tui: tui,
     clipboard_agent: clipboard_agent
   } do
@@ -1086,7 +1141,7 @@ defmodule Tackle.CLI.TUITest do
     inject_paste(tui, "fail ")
     inject_key(tui, "v", ["ctrl"])
     inject_key(tui, "v", ["ctrl"])
-    assert draft(tui) == "fail [image-1] [image-2]"
+    assert draft(tui) == "fail [Image #1] [Image #2]"
     [second, first] = state(tui).image_paths
     assert first != second
     inject_key(tui, "enter")
@@ -1094,7 +1149,7 @@ defmodule Tackle.CLI.TUITest do
     assert submitted =~ first
     assert submitted =~ second
     _state = await_state(tui, &is_nil(&1.pending_operation))
-    assert draft(tui) == "fail [image-1] [image-2]"
+    assert draft(tui) == "fail [Image #1] [Image #2]"
   end
 
   test "failed image paste keeps the draft and reports an error", %{
