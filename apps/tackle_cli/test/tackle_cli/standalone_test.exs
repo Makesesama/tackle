@@ -75,8 +75,17 @@ defmodule Tackle.CLI.StandaloneTest do
     {:ok, dir: dir, boot_path: path}
   end
 
+  # `--version` reports the version Mix stamps into the application, which a
+  # distribution build generates per build; read it instead of pinning a
+  # literal, which would only match a checkout that never changed its stamp.
+  # Parsing it keeps the assertion below from passing on an empty string.
+  @app_version Application.spec(:tackle_cli, :vsn)
+               |> to_string()
+               |> Version.parse!()
+               |> Version.to_string()
+
   for {argv, expected, status} <- [
-        {["--version"], "Tackle developer harness 0.1.0", 0},
+        {["--version"], "Tackle developer harness #{@app_version}", 0},
         {["--help"], "Tackle developer harness", 0},
         {["models"], "codex/", 0},
         {["--not-a-tackle-option"], "unrecognized arguments", 1}

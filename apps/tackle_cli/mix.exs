@@ -2,11 +2,14 @@ defmodule Tackle.CLI.MixProject do
   use Mix.Project
 
   @app :tackle_cli
+  # Human-facing release version, bumped when a release is cut. Distribution
+  # builds add a development stamp to it; see `version/0`.
+  @base_version Path.join(__DIR__, "VERSION") |> File.read!() |> String.trim()
 
   def project do
     [
       app: @app,
-      version: "0.1.0",
+      version: version(),
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -20,6 +23,48 @@ defmodule Tackle.CLI.MixProject do
   # Test-only modules (the Lumis stand-in) compile with the test suite.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
+
+  # Burrito extracts the release into `.../<release>_erts-<erts>_<version>` and
+  # re-uses that extraction whenever the version is unchanged, so one version per
+  # release would keep running the previous payload after a rebuild. Every build
+  # therefore stamps its own version: the release version in `VERSION` plus a
+  # stamp for the build, or `TACKLE_VERSION` as a whole, which is how the Nix
+  # build sets it, its sandbox having no Git checkout to stamp from.
+  #
+  # Mix writes the version into `.app` only when its own inputs change, so a long
+  # lived build tree can report the stamp of an earlier compile; a fresh tree,
+  # which is what a distribution build is, reads it exactly.
+  defp version do
+    System.get_env("TACKLE_VERSION") || dev_version()
+  end
+
+  defp dev_version do
+    with revision when is_binary(revision) <- git(["rev-parse", "--short", "HEAD"]),
+         committed_at when is_binary(committed_at) <- git(["log", "-1", "--format=%ct"]),
+         true <- revision =~ ~r/\A[0-9a-f]+\z/ and committed_at =~ ~r/\A\d+\z/ do
+      # Only a successful, empty status means a clean tree; an unreadable one
+      # counts as dirty, because re-using a stale extraction is worse than
+      # extracting the payload again. Uncommitted changes have no timestamp of
+      # their own, so those builds are ordered by build time instead.
+      case git(["status", "--porcelain", "--untracked-files=normal"]) do
+        "" -> "#{@base_version}-dev.#{committed_at}+g#{revision}"
+        _dirty -> "#{@base_version}-dev.#{System.os_time(:second)}+g#{revision}.dirty"
+      end
+    else
+      # No commit to stamp from, or output the version format does not accept:
+      # the release version, rather than a stamp that Mix or Burrito rejects.
+      _no_stamp -> @base_version
+    end
+  end
+
+  defp git(args) do
+    with executable when is_binary(executable) <- System.find_executable("git"),
+         {output, 0} <- System.cmd(executable, args) do
+      String.trim(output)
+    else
+      _unavailable -> nil
+    end
+  end
 
   def application do
     [

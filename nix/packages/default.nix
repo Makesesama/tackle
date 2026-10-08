@@ -1,4 +1,13 @@
-{ pkgs, lib }:
+{
+  pkgs,
+  lib,
+  # Build identity of the checkout, supplied by flake.nix. Both are absent when
+  # Nix has no Git checkout, such as a `path:` flake input.
+  rev ? null,
+  lastModified ? 0,
+  # Exact application version, for a release that must not carry a build stamp.
+  releaseVersion ? null,
+}:
 let
   runtime = pkgs.callPackage ./burrito-runtime.nix { };
   beamPackages = runtime.beamPackages;
@@ -44,6 +53,9 @@ let
       (projectFiles ../../packages/tackle_sdk)
       (projectFiles ../../packages/clipboard_ex)
       (projectFiles ../../apps/tackle_cli)
+      # Listed unconditionally because `mix.exs` reads it: a source copy without it
+      # must fail at evaluation here, not inside the build.
+      (../../apps/tackle_cli + /VERSION)
       (lib.fileset.fileFilter (
         file:
         lib.any file.hasExt [
@@ -62,6 +74,41 @@ let
       ) ../../packages/clipboard_ex/native)
     ];
   };
+
+  # Burrito keys its extracted OTP release by application version and re-uses
+  # an existing extraction whenever that version is unchanged, so a rebuilt
+  # binary with a stale version silently runs the previous payload. Stamp every
+  # build, so each one extracts its own payload.
+  appVersion =
+    if releaseVersion != null then
+      releaseVersion
+    else
+      let
+        base = lib.trim (builtins.readFile ../../apps/tackle_cli/VERSION);
+        # Everything that shapes the payload: the sources `src` was built from,
+        # the recipe that builds them, the nixpkgs revision, and the target
+        # platform. Sources alone would ignore a recipe-only rebuild, which would
+        # then re-use the extraction of the build before it.
+        recipe = lib.fileset.toSource {
+          root = ../..;
+          fileset = lib.fileset.unions (
+            [
+              ../../nix
+              ../../flake.nix
+            ]
+            ++ lib.optional (builtins.pathExists ../../flake.lock) ../../flake.lock
+          );
+        };
+        inputs = toString src + toString recipe + toString pkgs.path + pkgs.stdenv.hostPlatform.system;
+        content = builtins.substring 0 12 (builtins.hashString "sha256" inputs);
+        revision = if rev == null then "src" else "g${rev}";
+        # The source timestamp orders builds of successive revisions, which is
+        # when Burrito removes the extraction it replaced. Rebuilds of one
+        # revision differ only in the content above, so they still extract their
+        # own payload, but neither extraction is removed.
+        stamp = if lastModified != null && lastModified > 0 then toString lastModified else "0";
+      in
+      "${base}-dev.${stamp}+${revision}.${content}";
 
   # Build NIFs separately using Cargo.lock's per-crate checksums. Mix compilation
   # then only installs these artifacts; Rustler never needs network access.
@@ -212,7 +259,7 @@ let
 in
 beamPackages.mixRelease {
   pname = "tackle-cli";
-  version = "0.1.0";
+  version = appVersion;
   inherit src;
   inherit mixNixDeps;
   # Dependencies are already compiled by Nix and linked into _build. The
@@ -233,6 +280,9 @@ beamPackages.mixRelease {
   env = {
     BURRITO_TARGET = target;
     TACKLE_MUSL_CC = "${toolchain.cc}/bin/cc";
+    # The build sandbox has no Git checkout, so the application version is
+    # decided here; `mix.exs` reads it for the project Burrito wraps.
+    TACKLE_VERSION = appVersion;
     CARGO_NET_OFFLINE = "true";
   };
   prePatch = ''
@@ -291,7 +341,7 @@ beamPackages.mixRelease {
     # flags after release boot and report its version instead of Tackle's.
     "$out/bin/tackle" --version > version.txt
     cat version.txt
-    grep -F 'Tackle developer harness 0.1.0' version.txt
+    grep -F 'Tackle developer harness ${appVersion}' version.txt
     "$out/bin/tackle" --help > help.txt
     cat help.txt
     grep -F -- '--model' help.txt

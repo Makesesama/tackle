@@ -79,7 +79,18 @@
           system,
         }:
         let
-          package = pkgs.callPackage ./nix/packages { };
+          # Burrito keys its extracted release by application version, so the
+          # CLI carries one of its own per build. These are the only Git identity
+          # data Nix keeps for the flake; a `path:` input has none, and the
+          # package then falls back to the content of the sources.
+          dirty = (self.dirtyRev or null) != null;
+          rev = if dirty then (self.dirtyShortRev or null) else (self.shortRev or null);
+          lastModified = if (self.lastModified or 0) == null then 0 else self.lastModified;
+          package = pkgs.callPackage ./nix/packages {
+            inherit rev lastModified;
+            # No exact version: stamp this build from the checkout.
+            releaseVersion = null;
+          };
         in
         {
           default = package;

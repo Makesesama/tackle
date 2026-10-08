@@ -441,9 +441,11 @@ defmodule Tackle.CLI.Parser do
     end
   end
 
+  # Fallback for a call made before the application is loaded; a release always
+  # carries its own version.
   defp version do
     case Application.spec(:tackle_cli, :vsn) do
-      nil -> "0.1.0"
+      nil -> "unknown"
       version -> List.to_string(version)
     end
   end

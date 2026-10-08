@@ -255,9 +255,39 @@ Smoke-test the non-interactive path before publishing:
 `--version`, `--help`, and `models` do not exercise every OTP NIF used by the
 TUI, so they are not sufficient on their own.
 
-The binary extracts its ordinary OTP release into Burrito's per-user cache on
-first run; use `./result/bin/tackle maintenance uninstall` when testing a
-rebuilt binary with the same application version.
+## Distribution versioning
+
+Burrito extracts the wrapped OTP release into a per-user directory keyed by the
+application version (`tackle_cli_erts-<erts>_<version>`) and re-uses an existing
+extraction whenever that version is unchanged, so a rebuild that keeps the
+version runs the payload of the build before it. `VERSION` holds the release
+version (`0.1.0`; bump it when cutting a release) and every build stamps one of
+its own on top of it:
+
+- `mix.exs` stamps the checkout: `0.1.0-dev.<commit time>+g<commit>`, or the
+  build time and a `.dirty` marker when the tree has uncommitted changes.
+- The Nix package has no Git checkout, so `flake.nix` passes the flake's Git
+  identity and the package hashes what shapes the payload: the CLI sources, the
+  `nix/` recipe and `flake.nix`, the nixpkgs revision, and the target platform.
+  That yields `0.1.0-dev.<commit time>+g<commit[-dirty]>.<hash>`, or
+  `0.1.0-dev.0+src.<hash>` where Nix has no Git identity at all, as for a `path:`
+  flake input. `VERSION` travels with the sources, so commit it: a Git-based
+  flake source does not carry untracked files.
+
+Each build extracts its own payload, and Burrito deletes an extraction once a
+build carries a higher version. Rebuilds of one revision carry the same stamp, so
+their extractions stay until a higher version arrives: the next commit, for a
+Git-based build, and never for one with no Git identity, whose stamp stays at
+`dev.0`.
+
+`TACKLE_VERSION` replaces the whole string and the Nix package takes
+`releaseVersion` for the same purpose: a local `mix release` stamps itself that
+way, and a release build pins the exact version it publishes. The version is the
+cache key, so pinning one that another payload already used re-uses that
+payload's extraction.
+
+`./result/bin/tackle maintenance directory` prints the extraction in use, and
+`maintenance uninstall` removes it.
 
 ## Usage during development
 
