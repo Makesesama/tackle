@@ -91,6 +91,7 @@ defmodule Tackle.CLI.TUI.State do
                                     | :ok
                                     | {:error, term()}),
           terminal_title: String.t() | nil,
+          herdr: Tackle.CLI.TUI.Herdr.t() | nil,
           notification_writer: (String.t() -> Tackle.CLI.Notifications.notify_result()),
           terminal_focused?: boolean(),
           clipboard_text_reader: (-> {:ok, binary()} | {:error, term()}),
@@ -163,6 +164,7 @@ defmodule Tackle.CLI.TUI.State do
             clipboard_writer: &Clipboard.copy/1,
             terminal_title_writer: &Tackle.CLI.TerminalTitle.write/1,
             terminal_title: nil,
+            herdr: nil,
             notification_writer: &Tackle.CLI.Notifications.write/1,
             terminal_focused?: true,
             clipboard_text_reader: &Tackle.CLI.ImageClipboard.read_text/0,

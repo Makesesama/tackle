@@ -10,6 +10,7 @@ Notable changes to Tackle are recorded here. This repository contains separate M
 - The CLI distribution now carries a version per build. Burrito re-uses its extracted OTP release whenever the application version is unchanged, so a rebuilt binary with `0.1.0` ran the previous payload and only `tackle maintenance uninstall` fixed it. `apps/tackle_cli/VERSION` now holds the release version and each build stamps it: `mix.exs` from the checkout, the Nix package from a hash of the CLI sources, the `nix/` recipe, the nixpkgs revision, and the target platform. `TACKLE_VERSION` (or `releaseVersion` for the Nix package) replaces the whole string, for a local `mix release` or a pinned release build.
 - Added `packages/tackle_openrouter`, an OpenRouter provider adapter (`openrouter/<vendor>/<model>`) with streamed reasoning and `reasoning_details` replay, automatic Anthropic prompt caching, session-sticky routing, and reported billing cost. The CLI and web distributions bundle it.
 - `config.json` accepts `provider_options`, adapter-keyed settings that the harness passes to adapters as the `:provider_options` LLM option (credential-like keys are rejected). The OpenRouter adapter reads per-model provider routing from it.
+- The interactive CLI reports itself to [Herdr](https://herdr.dev) when it runs in a Herdr pane: `idle`/`working` state for Herdr's sidebar, notifications, and `herdr agent wait`, plus `tackle --resume <session>` so Herdr can reopen the session after a server restart. One-shot `tackle run "prompt"` and `tackle sdk` do not report.
 
 ### Removed
 

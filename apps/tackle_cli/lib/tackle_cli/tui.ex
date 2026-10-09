@@ -80,6 +80,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Inspector` | the scrollable tool-output inspector |
   | `Tackle.CLI.TUI.Session` | root scope ownership and teardown |
   | `Tackle.CLI.TUI.TerminalTitle` | terminal window title synchronization |
+  | `Tackle.CLI.TUI.Herdr` | agent state and resume reports to a Herdr pane |
   | `Tackle.CLI.TUI.Notifications` | completion notifications while unfocused |
   | `Tackle.CLI.TUI.View` | the scene and ordinary widgets |
   | `Tackle.CLI.TUI.StatusView` | status row, metrics, and hints |
@@ -101,6 +102,7 @@ defmodule Tackle.CLI.TUI do
     Conversation,
     FileSearch,
     Help,
+    Herdr,
     Inspector,
     Menu,
     Resume,
@@ -188,8 +190,9 @@ defmodule Tackle.CLI.TUI do
     case State.new(opts) do
       {:ok, state} ->
         {state, commands} = RecentSessions.load(state)
+        state = %{state | herdr: Herdr.start(opts)}
 
-        {:ok, TerminalTitle.refresh(state),
+        {:ok, refresh_status(state),
          commands: commands,
          probe_image_protocol: not is_nil(image) and not Keyword.has_key?(opts, :test_mode)}
 
@@ -221,7 +224,7 @@ defmodule Tackle.CLI.TUI do
     key
     |> dispatch_key(%{state | notice: nil, queue_notice_at: nil})
     |> sync_completions()
-    |> refresh_terminal_title()
+    |> refresh_status()
   end
 
   def handle_event(%Paste{content: content}, state) do
@@ -296,17 +299,20 @@ defmodule Tackle.CLI.TUI do
   end
 
   def handle_info(message, state),
-    do: RuntimeEvents.handle(message, state) |> refresh_terminal_title()
+    do: RuntimeEvents.handle(message, state) |> refresh_status()
 
-  # The title tracks the session and its activity, which only change under key
-  # dispatch and runtime events; every other reply shape passes through.
-  defp refresh_terminal_title({:noreply, %State{} = state}),
-    do: {:noreply, TerminalTitle.refresh(state)}
+  # The terminal title and the Herdr pane track the session and its activity,
+  # which only change under key dispatch and runtime events; every other reply
+  # shape passes through.
+  defp refresh_status({:noreply, %State{} = state}),
+    do: {:noreply, refresh_status(state)}
 
-  defp refresh_terminal_title({:noreply, %State{} = state, opts}) when is_list(opts),
-    do: {:noreply, TerminalTitle.refresh(state), opts}
+  defp refresh_status({:noreply, %State{} = state, opts}) when is_list(opts),
+    do: {:noreply, refresh_status(state), opts}
 
-  defp refresh_terminal_title(other), do: other
+  defp refresh_status(%State{} = state), do: state |> TerminalTitle.refresh() |> Herdr.refresh()
+
+  defp refresh_status(other), do: other
 
   # Every key event ends here, so the `@` file-mention and `/` command popups
   # follow the draft no matter which chord edited it. A popup appearing or
@@ -355,6 +361,10 @@ defmodule Tackle.CLI.TUI do
   def terminate(_reason, state) do
     # The title is the shell's own decoration, so it leaves with the shell.
     TerminalTitle.clear(state)
+
+    # Releasing tells Herdr the agent left the pane, so it drops the state and
+    # the resume command instead of waiting to see the shell prompt return.
+    Herdr.release(state)
 
     # The shell owns whichever scope it is currently attached to, which is the
     # initial scope until a new session replaces it. Stopping it here keeps a

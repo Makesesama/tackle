@@ -420,6 +420,53 @@ defmodule Tackle.CLI.TUITest do
     assert {:ok, ^session_id} = Task.await(task)
   end
 
+  test "reports its state and resume command to Herdr and releases the pane on exit", %{
+    agent_ref: agent_ref
+  } do
+    test_pid = self()
+
+    sender = fn _config, request ->
+      send(test_pid, {:herdr, request["method"], request["params"]})
+      :ok
+    end
+
+    {:ok, reporter} =
+      Tackle.CLI.Herdr.Reporter.start_link(%{pane_id: "w1:p1", socket_path: "/unused"},
+        sender: sender
+      )
+
+    task =
+      Task.async(fn ->
+        TUI.start(agent_ref: agent_ref, test_mode: {80, 24}, herdr_reporter: reporter)
+      end)
+
+    assert_receive {:subscribed, tui}
+    session_id = state(tui).session_id
+
+    # A fresh session has nothing durable to resume yet.
+    assert_receive {:herdr, "pane.report_agent", %{"state" => "idle"} = idle}
+    refute Map.has_key?(idle, "resume_argv")
+
+    inject_paste(tui, "hi")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "hi"}
+
+    assert_receive {:herdr, "pane.report_agent",
+                    %{"state" => "working", "agent_session_id" => ^session_id} = working}
+
+    assert working["resume_argv"] == ["tackle", "--resume", session_id]
+
+    await_state(tui, &(&1.active_turn != nil))
+    finish_turn(tui, [Message.user("hi"), Message.assistant(content: "ok")])
+
+    assert_receive {:herdr, "pane.report_agent",
+                    %{"state" => "idle", "agent_session_id" => ^session_id}}
+
+    inject_key(tui, "c", ["ctrl"])
+    assert_receive {:herdr, "pane.release_agent", %{"pane_id" => "w1:p1"}}
+    assert {:ok, ^session_id} = Task.await(task)
+  end
+
   test "adopts a generated session title for the terminal title", %{tui: tui} do
     session_id = state(tui).session_id
 

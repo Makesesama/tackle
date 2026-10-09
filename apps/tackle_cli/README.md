@@ -393,6 +393,24 @@ inside tmux) and a terminal bell everywhere else. The notification body is a
 sanitized preview of the turn's response; queued follow-up prompts suppress
 it because the agent keeps working.
 
+Inside a [Herdr](https://herdr.dev) pane (`HERDR_ENV=1` with
+`HERDR_PANE_ID` and `HERDR_SOCKET_PATH` set) the shell reports itself as the
+`tackle` agent over Herdr's socket, so Herdr shows it as `working` while a
+turn runs and `idle` otherwise, notifies on completion, and supports
+`herdr agent wait`. Tackle has no approval prompts, so it never reports
+`blocked`. Once the session has a prompt, the report also carries
+`tackle --resume <session>`, which Herdr runs in the same pane after a server
+restart with the session's recorded model and reasoning level. A turn that
+the restart cut off is not abandoned for you: the pane shows the usual
+recovery message and you re-run with `--abandon` after reviewing it. Herdr
+runs the command with its own environment and `PATH`, so a `tackle` started
+with ad hoc variables (for example `TACKLE_EXEC_LAUNCHER`) comes back without
+them; use a wrapper named `tackle` on `PATH` to keep them. Quitting releases
+the pane. Reports run in the background and failures are
+ignored. Like Herdr's Pi integration, only the interactive shell reports:
+one-shot `tackle run "prompt"` and `tackle sdk` stay silent. Nothing needs to
+be installed in Herdr.
+
 ## Keys (experimental)
 
 | Key | Action |
