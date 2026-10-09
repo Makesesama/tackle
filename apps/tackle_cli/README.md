@@ -323,6 +323,36 @@ explicit, separate decision for a turn interrupted by the crash. A normal exit
 from the standalone binary shuts down OTP cleanly; abrupt termination (for
 example, `SIGKILL`) can still require repair on the next resume.
 
+### Diagnosing an unexpected shutdown
+
+`error: {:agent_down, :shutdown}` can mean the agent was shut down because its
+sibling journal failed; `:shutdown` is not the original failure reason. The TUI
+mutes console logging while it is active. Check `journal-failure.json` beside
+that session's `session.dlog` under `$TACKLE_HOME/sessions/` (default
+`~/.tackle/sessions/`). Reports contain no conversation payloads. A stall report
+includes its operation, stage, elapsed time, deadline, and stack frames; other
+journal failures include a failure category and the last stage/sequence before
+cleanup. Reporting is best-effort, so a missing file does not rule out a journal
+failure. Check `recorded_at`, since resuming retains earlier crash reports.
+
+A live session sync that takes more than the default 15 seconds pauses the
+agent and displays **Waiting for session storage**. The CLI remains responsive:
+you can edit your draft, inspect the conversation, and request cancellation.
+No new model/tool work passes its durability boundary until storage confirms
+the pending sync; the same commit is never appended twice. Progress resumes
+automatically, including in one-shot runs (their normal answer timeout is
+suspended during the storage wait). Cancellation also waits for durable
+settlement; already-running external effects cannot be rolled back. New
+submissions/configuration changes are rejected while storage is delayed.
+
+The watchdog still stops the scope for unknown append outcomes, actual storage
+errors, and bounded startup/cleanup failures. Its threshold is not a turn or
+idle-session timeout. A
+`disk_log_sup` `shutdown_error` printed as OTP exits describes teardown; by
+itself it does not identify what originally stopped the agent. Do not blindly
+retry tools: `--abandon` acknowledges that the interrupted turn's external
+effects may be uncertain, while keeping already committed conversation history.
+
 `--resume` without a session id continues the most recently updated durable
 session in the current project directory. Sessions are stored under
 `$TACKLE_HOME/sessions/--<encoded-absolute-path>--/` (slashes become dashes;

@@ -80,6 +80,12 @@ defmodule Tackle.CLI.TUITest do
     end
 
     @impl true
+    def handle_info(:storage_ready, state) do
+      GenServer.reply(state.pending_submit, {:ok, "turn-1"})
+      send(state.subscriber, {:tackle_storage, state.agent_state.session_id, :ready})
+      {:noreply, Map.delete(state, :pending_submit)}
+    end
+
     def handle_info({:set_session_title, title}, state) do
       {:noreply, %{state | session_title: title}}
     end
@@ -96,6 +102,17 @@ defmodule Tackle.CLI.TUITest do
       }
 
       {:reply, {:ok, snapshot}, %{state | subscriber: subscriber}}
+    end
+
+    def handle_call({:submit, prompt}, from, state)
+        when prompt in ["storage paused", "storage pending"] do
+      send(state.test_pid, {:submitted, prompt})
+
+      if prompt == "storage paused" do
+        send(state.subscriber, {:tackle_storage, state.agent_state.session_id, :delayed})
+      end
+
+      {:noreply, Map.put(state, :pending_submit, from)}
     end
 
     def handle_call({:submit, prompt}, _from, state) do
@@ -226,6 +243,64 @@ defmodule Tackle.CLI.TUITest do
 
     assert_receive {:subscribed, ^tui}
     %{agent_ref: agent_ref, tui: tui, clipboard_agent: clipboard_agent}
+  end
+
+  test "Esc reaches a paused beginning turn before submit returns", %{
+    tui: tui,
+    agent_ref: agent_ref
+  } do
+    inject_paste(tui, "storage paused")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "storage paused"}
+    waiting = await_state(tui, &(&1.storage == :delayed))
+    submit_ref = waiting.pending_operation.ref
+    inject_key(tui, "esc")
+    assert_receive :cancelled
+    waiting = state(tui)
+    assert waiting.pending_operation.ref == submit_ref
+    assert waiting.pending_operation.cancellation_requested?
+    assert waiting.storage == :delayed
+    {:ok, session} = Tackle.Runtime.session_pid(agent_ref)
+    send(session, :storage_ready)
+    ready = await_state(tui, &(&1.storage == :ready and &1.active_turn != nil))
+    assert ready.active_turn.id == "turn-1"
+    refute_receive :cancelled, 100
+  end
+
+  test "Esc before a delayed notification still cancels the pending begin exactly once", %{
+    tui: tui,
+    agent_ref: agent_ref
+  } do
+    inject_paste(tui, "storage pending")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "storage pending"}
+    inject_key(tui, "esc")
+    waiting = await_state(tui, & &1.pending_operation.cancellation_requested?)
+    refute_receive :cancelled, 20
+    send(tui, {:tackle_storage, waiting.session_id, :delayed})
+    assert_receive :cancelled
+    inject_key(tui, "esc")
+    send(tui, {:tackle_storage, waiting.session_id, :delayed})
+    {:ok, session} = Tackle.Runtime.session_pid(agent_ref)
+    send(session, :storage_ready)
+    await_state(tui, &(&1.storage == :ready and &1.active_turn != nil))
+    refute_receive :cancelled, 100
+  end
+
+  test "storage waiting survives input and ignores retired-session notifications", %{tui: tui} do
+    session_id = state(tui).session_id
+    send(tui, {:tackle_storage, session_id, :delayed})
+    waiting = await_state(tui, &(&1.storage == :delayed))
+    assert Tackle.CLI.TUI.StatusView.status_label(waiting) =~ "Waiting for session storage"
+    assert TUI.subscriptions(waiting) != []
+    inject_paste(tui, "draft while waiting")
+    assert Input.get_value(state(tui).input) == "draft while waiting"
+    assert state(tui).storage == :delayed
+    send(tui, {:tackle_storage, "retired-session", :ready})
+    assert state(tui).storage == :delayed
+    send(tui, {:tackle_storage, session_id, :ready})
+    ready = await_state(tui, &(&1.storage == :ready))
+    refute Tackle.CLI.TUI.StatusView.status_label(ready) =~ "Waiting for session storage"
   end
 
   # -- layout --------------------------------------------------------------

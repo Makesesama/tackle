@@ -22,6 +22,17 @@ defmodule Tackle.Lib.Loop do
   Tool execution always uses provider-native tool calls. If a prompt renderer
   returns a response schema, it is used only for structured non-tool responses.
 
+  ## Provider call gate
+
+  `run/3` and `continue/2` accept a `:before_provider_call` zero-arity callback.
+  It runs immediately before every provider `generate/2` or `stream/3` dispatch,
+  including retries, and before each compaction summarizer invocation. It must
+  return `:ok` or `{:error, reason}`. An error skips that dispatch and follows
+  the ordinary provider error path. Cancellation is
+  checked again after the callback, so a cancellation while it is blocked skips
+  the provider call. The callback is host policy; the library has no storage
+  knowledge.
+
   ## Append-only provider context
 
   Each generation receives the persisted user, assistant, and tool messages
@@ -66,6 +77,9 @@ defmodule Tackle.Lib.Loop do
       the state's configured id generator is used.
     * `:tool_supervisor` - Optional `Task.Supervisor` used when the state's tool policy is
       `:concurrent`. Ignored (and not required) for the default sequential policy.
+    * `:before_provider_call` - Optional zero-arity callback returning `:ok` or
+      `{:error, reason}`, invoked before every provider dispatch, including retries
+      and compaction summaries.
     * `:take_incoming_messages` - Optional zero-arity host callback returning
       `{:ok, [message]}` or `{:error, reason}`. Incoming text is appended as user
       messages immediately before the next provider call. The callback is polled
@@ -406,7 +420,11 @@ defmodule Tackle.Lib.Loop do
   end
 
   defp compaction_opts(_state, callbacks) do
-    [snapshot: snapshot(callbacks), event_callback: callbacks.event]
+    [
+      snapshot: snapshot(callbacks),
+      event_callback: callbacks.event,
+      before_provider_call: callbacks.before_provider_call
+    ]
     |> maybe_put_cancellation_signal(callbacks.cancellation_signal)
   end
 
@@ -443,25 +461,31 @@ defmodule Tackle.Lib.Loop do
       |> maybe_put_cancellation_signal(callbacks.cancellation_signal)
       |> Kernel.++(Policy.sanitize_llm_opts(snapshot.llm_opts))
 
-    if callbacks.llm_stream? do
-      pending_id = state.pending_assistant_id
+    with :ok <- Tackle.Lib.ProviderGate.await(callbacks.before_provider_call),
+         false <- cancelled?(callbacks) do
+      if callbacks.llm_stream? do
+        pending_id = state.pending_assistant_id
 
-      LLM.stream_with(
-        snapshot.llm || snapshot.llm_adapter,
-        response_schema,
-        generate_opts,
-        fn event ->
-          event
-          |> stamp_pending_id(pending_id)
-          |> then(&emit(callbacks, &1))
-        end
-      )
+        LLM.stream_with(
+          snapshot.llm || snapshot.llm_adapter,
+          response_schema,
+          generate_opts,
+          fn event ->
+            event
+            |> stamp_pending_id(pending_id)
+            |> then(&emit(callbacks, &1))
+          end
+        )
+      else
+        LLM.generate_with(
+          snapshot.llm || snapshot.llm_adapter,
+          response_schema,
+          generate_opts
+        )
+      end
     else
-      LLM.generate_with(
-        snapshot.llm || snapshot.llm_adapter,
-        response_schema,
-        generate_opts
-      )
+      {:error, _reason} = error -> error
+      true -> {:error, :cancelled}
     end
   end
 
@@ -755,22 +779,29 @@ defmodule Tackle.Lib.Loop do
   defp run_concurrent_batch(tool_calls, state, callbacks, supervisor) do
     case prepare_tool_batch(tool_calls, state, callbacks) do
       {:ok, jobs, state} ->
-        {settlements, outcome} =
-          Batch.run(
-            jobs,
-            supervisor,
-            &settle_tool_call/1,
-            &emit_tool_execution_end(&1, callbacks),
-            fn -> cancelled?(callbacks) end
-          )
+        if cancelled?(callbacks) do
+          {:cancelled, cancel_state(state, callbacks)}
+        else
+          {settlements, outcome} =
+            Batch.run(
+              jobs,
+              supervisor,
+              &settle_tool_call/1,
+              &emit_tool_execution_end(&1, callbacks),
+              fn -> cancelled?(callbacks) end
+            )
 
-        state = commit_tool_batch(jobs, settlements, state, callbacks)
+          state = commit_tool_batch(jobs, settlements, state, callbacks)
 
-        case {state.status, outcome} do
-          {:error, _status} -> {:error, state}
-          {_status, :cancelled} -> {:cancelled, cancel_state(state, callbacks)}
-          _other -> {:ok, state}
+          case {state.status, outcome} do
+            {:error, _status} -> {:error, state}
+            {_status, :cancelled} -> {:cancelled, cancel_state(state, callbacks)}
+            _other -> {:ok, state}
+          end
         end
+
+      {:cancelled, state} ->
+        {:cancelled, state}
 
       {:abort, state} ->
         {:error, state}
@@ -838,9 +869,9 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
-  defp continue_or_cancel({:abort, %State{} = state}, _callbacks) do
-    {:halt, state}
-  end
+  defp continue_or_cancel({status, %State{} = state}, _callbacks)
+       when status in [:abort, :cancelled],
+       do: {:halt, state}
 
   defp ensure_tool_call_id(%Call{id: id} = call, _state) when is_binary(id) and id != "",
     do: call
@@ -854,7 +885,11 @@ defmodule Tackle.Lib.Loop do
 
     case invoke_before_tool_call(state, tool_call, callbacks) do
       {:ok, state} ->
-        do_execute_single_tool(tool_call, state, callbacks)
+        if cancelled?(callbacks) do
+          {:cancelled, cancel_state(state, callbacks)}
+        else
+          do_execute_single_tool(tool_call, state, callbacks)
+        end
 
       {:error, reason} ->
         {:abort, State.set_error(state, "Hook aborted before tool call: #{inspect(reason)}")}
@@ -884,17 +919,11 @@ defmodule Tackle.Lib.Loop do
 
       case invoke_before_tool_call(acc_state, tool_call, callbacks) do
         {:ok, acc_state} ->
-          emit(
-            callbacks,
-            Event.new(:tool_start, %{
-              tool_call_id: tool_call.id,
-              name: tool_call.name,
-              arguments: tool_call.arguments
-            })
-          )
-
-          job = Map.put(execution_job(tool_call, acc_state, callbacks), :index, index)
-          {:cont, {:ok, [job | jobs], acc_state}}
+          if cancelled?(callbacks) do
+            {:halt, {:cancelled, cancel_state(acc_state, callbacks)}}
+          else
+            prepare_tool_job(tool_call, index, jobs, acc_state, callbacks)
+          end
 
         {:error, reason} ->
           {:halt,
@@ -904,8 +933,23 @@ defmodule Tackle.Lib.Loop do
     end)
     |> case do
       {:ok, jobs, state} -> {:ok, Enum.reverse(jobs), state}
+      {:cancelled, state} -> {:cancelled, state}
       {:abort, state} -> {:abort, state}
     end
+  end
+
+  defp prepare_tool_job(tool_call, index, jobs, acc_state, callbacks) do
+    emit(
+      callbacks,
+      Event.new(:tool_start, %{
+        tool_call_id: tool_call.id,
+        name: tool_call.name,
+        arguments: tool_call.arguments
+      })
+    )
+
+    job = Map.put(execution_job(tool_call, acc_state, callbacks), :index, index)
+    {:cont, {:ok, [job | jobs], acc_state}}
   end
 
   # Execution progress is transient and may arrive out of call order. Keep it
@@ -1163,7 +1207,8 @@ defmodule Tackle.Lib.Loop do
       cancellation_signal:
         Keyword.get(opts, :cancellation_signal) || Keyword.get(opts, :cancel_signal),
       tool_supervisor: Keyword.get(opts, :tool_supervisor),
-      take_incoming_messages: Keyword.get(opts, :take_incoming_messages)
+      take_incoming_messages: Keyword.get(opts, :take_incoming_messages),
+      before_provider_call: Keyword.get(opts, :before_provider_call)
     }
   end
 

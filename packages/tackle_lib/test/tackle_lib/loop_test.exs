@@ -69,6 +69,16 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
+  defmodule CancelBeforeToolHook do
+    @behaviour Tackle.Lib.Hook
+
+    @impl true
+    def before_tool_call(_state, _call, context) do
+      Cancellation.cancel(context.cancellation_signal, "cancelled in hook")
+      :ok
+    end
+  end
+
   defmodule NoCallAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -550,6 +560,77 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:event, %Event{type: :retry_scheduled}}
     assert_receive {:event, %Event{type: :retry_end, data: %{success?: false}}}
     assert_receive {:event, %Event{type: :turn_cancelled}}
+  end
+
+  test "provider callback gates every automatic retry and can reject dispatch" do
+    Application.put_env(:tackle_lib, :llm, AlwaysTransientAdapter)
+    Process.put(:test_pid, self())
+    Process.put(:gate_count, 0)
+
+    gate = fn ->
+      count = Process.get(:gate_count, 0)
+      Process.put(:gate_count, count + 1)
+      send(self(), {:provider_gate, count + 1})
+      :ok
+    end
+
+    assert {:error, _state} =
+             Loop.run(
+               State.new(model: "test/model", retry: [max_retries: 2, base_delay_ms: 0]),
+               "hello",
+               before_provider_call: gate
+             )
+
+    assert_receive {:provider_gate, 1}
+    assert_receive {:provider_gate, 2}
+    assert_receive {:provider_gate, 3}
+    assert Process.get(:gate_count) == 3
+    assert_receive :retry_call
+    assert_receive :retry_call
+    assert_receive :retry_call
+
+    Process.put(:gate_count, 0)
+
+    assert {:error, state} =
+             Loop.run(State.new(model: "test/model"), "hello",
+               before_provider_call: fn ->
+                 send(self(), :provider_rejected)
+                 {:error, :storage_paused}
+               end
+             )
+
+    assert state.error =~ "storage_paused"
+    assert_receive :provider_rejected
+    refute_receive :retry_call
+  end
+
+  test "cancellation while provider gate blocks prevents provider dispatch" do
+    Application.put_env(:tackle_lib, :llm, NoCallAdapter)
+    Process.put(:test_pid, self())
+    signal = Cancellation.new_signal()
+    test_pid = self()
+
+    on_exit(fn -> Cancellation.delete(signal) end)
+
+    task =
+      Task.async(fn ->
+        Process.put(:test_pid, test_pid)
+
+        Loop.run(State.new(model: "test/model"), "hello",
+          cancellation_signal: signal,
+          before_provider_call: fn ->
+            send(test_pid, :provider_gate_entered)
+            receive do: (:release_provider_gate -> :ok)
+          end
+        )
+      end)
+
+    assert_receive :provider_gate_entered
+    Cancellation.cancel(signal, "cancelled at gate")
+    send(task.pid, :release_provider_gate)
+    assert {:cancelled, state} = Task.await(task, 2_000)
+    assert state.error == "cancelled at gate"
+    refute_receive :llm_called
   end
 
   test "sends only persisted messages to the provider" do
@@ -1353,6 +1434,55 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:event, %Event{type: :status_change, data: %{status: :cancelled}}}
     assert_receive {:event, %Event{type: :turn_cancelled, data: %{reason: "stop requested"}}}
     refute_receive {:tool_execute, :second}, 20
+  end
+
+  test "cancellation during before_tool_call prevents sequential tool dispatch" do
+    Application.put_env(:tackle_lib, :llm, CancellingToolAdapter)
+    Process.put(:test_pid, self())
+    Process.put(:call_count, 0)
+    signal = Cancellation.new_signal()
+
+    state =
+      State.new(
+        model: "test/model",
+        tools: [CancelAfterTool, SecondTool],
+        hooks: [CancelBeforeToolHook],
+        context: %{test_pid: self(), cancellation_signal: signal}
+      )
+
+    assert {:cancelled, final_state} =
+             Loop.run(state, "tools", cancellation_signal: signal)
+
+    assert final_state.status == :cancelled
+    refute_receive {:tool_execute, _}
+
+    assert Enum.map(Enum.filter(final_state.messages, &(&1.role == :tool)), & &1.tool_call_id) ==
+             ["call_cancel", "call_second"]
+  end
+
+  test "cancellation during concurrent hook preparation prevents the whole batch dispatch" do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
+    signal = Cancellation.new_signal()
+    test_pid = self()
+
+    state =
+      State.new(
+        model: "test/model",
+        tools: [BlockingTool],
+        hooks: [CancelBeforeToolHook],
+        tool_policy: Policy.concurrent(),
+        context: %{test_pid: test_pid, cancellation_signal: signal}
+      )
+
+    assert {:cancelled, final_state} =
+             Loop.run(state, "tools", tool_supervisor: supervisor, cancellation_signal: signal)
+
+    assert final_state.status == :cancelled
+    refute_receive {:tool_entered, _, _}
+
+    assert Enum.map(Enum.filter(final_state.messages, &(&1.role == :tool)), & &1.tool_call_id) ==
+             ["c1", "c2"]
   end
 
   describe "hook integration" do

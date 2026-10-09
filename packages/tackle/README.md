@@ -322,20 +322,46 @@ next provider or tool effect, and the terminal event is synced before terminal
 outcomes are delivered. If a journal append, sync, or validation fails, the
 session stops instead of continuing with memory-only state.
 
-An independent watchdog bounds durable journal operations, startup replay, and
-termination cleanup to 15 seconds. Expiry kills the journal owner and stops its
-durable scope; it does not merely abandon the caller's request or retry the
-write. Trusted hosts can override the deadline in milliseconds using
-`storage: [journal_timeout: 30_000]` on `Tackle.Session.Spec`. Inspection calls
-retain their 60-second client deadline.
+An independent watchdog uses a 15-second threshold. A live `sync` that exceeds
+it pauses durable progress instead of killing the session. The original sync
+stays in flight with the same pending commit ID and sequence: it is neither
+re-appended nor retried. Successful completion resumes automatically. Session
+snapshots and cancellation remain responsive; subscribers receive
+`{:tackle_storage, session_id, :delayed | :ready}` and snapshots expose `storage`.
+Cancellation is cooperative and settlement still waits for storage; effects
+already running are not rolled back.
 
-A stall automatically captures the operation, stage, sequence, elapsed time,
+While delayed, new submissions and state-changing operations return
+`{:error, :storage_busy}` rather than retaining more input. The journal admits
+one outstanding request and at most 64 queued requests totaling 24 MiB of
+encoded request data; excess requests return `{:error, :journal_busy}`. Queued
+requests cannot append until the outstanding request completes. One-shot runtime
+launch/completion notices still enter the bounded inbox (128 deferred notices,
+32 ordinary messages, and 24 MiB of encoded entries in total), but cannot start
+a continuation while storage is pending.
+The harness gates every provider dispatch (including retries and compaction
+summaries) behind outstanding journal work. A title-model request also waits
+behind the durability barrier.
+
+Startup/replay, unknown append outcomes, post-sync projection/catalog stalls,
+and termination cleanup still have hard deadlines. Expiry there stops the
+scope and requires ordinary replay/recovery, not a blind retry. Actual storage
+errors also remain fail-closed. Trusted hosts can override the threshold in
+milliseconds with `storage: [journal_timeout: 30_000]` on `Tackle.Session.Spec`.
+Direct journal inspection retains its 60-second client deadline; Session
+snapshots do not wait for storage.
+
+A fatal stall automatically captures the operation, stage, sequence, elapsed time,
 queue length, and payload-free stack frames. The watchdog logs this diagnostic
 and makes a bounded, best-effort attempt to save `journal-failure.json` beside
 `session.dlog` with private file permissions, including when the TUI mutes console
-logging. If storage itself is stuck, saving that diagnostic may also fail; scope
-shutdown does not depend on it. Prompts, tool arguments, and conversation payloads
-are not included in the diagnostic.
+logging. Unexpected journal exits (including disk errors, rejected durable data,
+and writer-lock loss) also produce a report with a payload-free failure category
+and the last stage/sequence before cleanup. Normal shutdown does not create a
+failure report. Check `recorded_at`: a report from an earlier crash is retained
+when the session resumes. If storage itself is stuck, saving that diagnostic may
+also fail; scope shutdown does not depend on it. Prompts, tool arguments, and
+conversation payloads are not included in the diagnostic.
 
 Killing the owner cannot retract a write already dispatched to `:disk_log`.
 The commit outcome is therefore unknown until journal replay. Existing durable

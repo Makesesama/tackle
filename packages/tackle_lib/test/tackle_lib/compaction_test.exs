@@ -260,6 +260,99 @@ defmodule Tackle.Lib.CompactionTest do
       refute Process.get(:last_record)
     end
 
+    test "the provider gate is checked before every tightening pass" do
+      state =
+        state([user(3_000), assistant(3_000)],
+          config_opts: [max_passes: 2],
+          policy: [summary_max_tokens: 100, max_summary_tokens: 100]
+        )
+
+      gate = fn ->
+        Process.put(:gate_count, Process.get(:gate_count, 0) + 1)
+        :ok
+      end
+
+      assert {:ok, _, _} = Compaction.compact(state, :pressure, before_provider_call: gate)
+      assert Process.get(:gate_count) == 2
+      assert Process.get(:commit_count) == 2
+    end
+
+    test "a rejected provider gate prevents summarization and checkpoint commit" do
+      state = state([user(700), assistant(700)])
+
+      assert {:error, :storage_unavailable} =
+               Compaction.compact(state, :pressure,
+                 before_provider_call: fn -> {:error, :storage_unavailable} end
+               )
+
+      refute Process.get(:last_request)
+      refute Process.get(:last_record)
+    end
+
+    test "cancellation during the provider gate prevents summarizer dispatch" do
+      state = state([user(700), assistant(700)])
+      signal = Cancellation.new_signal()
+      on_exit(fn -> Cancellation.delete(signal) end)
+
+      assert {:cancelled, :user_cancelled} =
+               Compaction.compact(state, :pressure,
+                 cancellation_signal: signal,
+                 before_provider_call: fn -> Cancellation.cancel(signal, :user_cancelled) end
+               )
+
+      refute Process.get(:last_request)
+      refute Process.get(:last_record)
+    end
+
+    test "cancellation during a failing gate takes precedence over gate errors" do
+      Enum.each([:error, :raise], fn mode ->
+        state = state([user(700), assistant(700)])
+        signal = Cancellation.new_signal()
+        on_exit(fn -> Cancellation.delete(signal) end)
+
+        assert {:cancelled, :user_cancelled} =
+                 Compaction.compact(state, :pressure,
+                   cancellation_signal: signal,
+                   before_provider_call: fn ->
+                     Cancellation.cancel(signal, :user_cancelled)
+                     if mode == :error, do: {:error, :unavailable}, else: raise("unavailable")
+                   end
+                 )
+
+        refute Process.get(:last_request)
+        refute Process.get(:last_record)
+      end)
+    end
+
+    test "a cancelled second-pass gate preserves the previously committed checkpoint" do
+      state =
+        state([user(3_000), assistant(3_000)],
+          config_opts: [max_passes: 2],
+          policy: [summary_max_tokens: 100, max_summary_tokens: 100]
+        )
+
+      signal = Cancellation.new_signal()
+      on_exit(fn -> Cancellation.delete(signal) end)
+
+      assert {:cancelled, :user_cancelled, committed} =
+               Compaction.compact(state, :pressure,
+                 cancellation_signal: signal,
+                 before_provider_call: fn ->
+                   if Process.get(:commit_count, 0) == 0 do
+                     :ok
+                   else
+                     Cancellation.cancel(signal, :user_cancelled)
+                     {:error, :unavailable}
+                   end
+                 end
+               )
+
+      assert Process.get(:commit_count) == 1
+      assert [checkpoint | _] = committed.model_messages
+      assert checkpoint.id == Process.get(:last_record).compaction_id
+      assert committed.messages == state.messages
+    end
+
     test "cancellation during summarization does not commit a checkpoint" do
       state = state([user(700), assistant(700)])
       signal = Cancellation.new_signal()

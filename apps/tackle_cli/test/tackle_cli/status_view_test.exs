@@ -38,6 +38,20 @@ defmodule Tackle.CLI.TUI.StatusViewTest do
     |> Map.fetch!(:spans)
   end
 
+  test "durability waiting takes priority over activity, cancellation, and transient notices" do
+    state =
+      shell(
+        storage: :delayed,
+        activity: "thinking",
+        notice: nil,
+        pending_operation: %{kind: :cancel, started_at_ms: System.monotonic_time(:millisecond)}
+      )
+
+    assert status_text(state) =~ "Waiting for session storage"
+    refute status_text(state) =~ "cancelling"
+    assert status_text(%{state | storage: :ready}) =~ "cancelling"
+  end
+
   describe "elapsed clock" do
     test "rides with the working status" do
       started_at_ms = System.monotonic_time(:millisecond) - 72_000

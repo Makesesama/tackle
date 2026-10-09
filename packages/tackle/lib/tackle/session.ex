@@ -51,6 +51,7 @@ defmodule Tackle.Session do
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.Task, as: TurnTask
   alias Tackle.Session.Journal
+  alias Tackle.Session.Journal.Watchdog
   alias Tackle.Session.Loader
   alias Tackle.Session.Persistence
   alias Tackle.Session.Projection
@@ -61,6 +62,7 @@ defmodule Tackle.Session do
   @task_shutdown_timeout 1_000
   @max_inbox_messages 32
   @max_deferred_messages 128
+  @max_inbox_bytes 24 * 1024 * 1024
 
   @interrupted_tool_result "Error: Tool execution was interrupted before a result was recorded; the outcome is unknown."
 
@@ -119,7 +121,8 @@ defmodule Tackle.Session do
       :agent_ref,
       :scope_ref,
       :recovery,
-      session_title: nil
+      session_title: nil,
+      storage: :ready
     ]
 
     @type active_turn :: %{
@@ -142,7 +145,8 @@ defmodule Tackle.Session do
             agent_ref: AgentRef.t() | nil,
             scope_ref: ScopeRef.t() | nil,
             recovery: recovery() | nil,
-            session_title: String.t() | nil
+            session_title: String.t() | nil,
+            storage: :ready | :delayed
           }
   end
 
@@ -323,17 +327,30 @@ defmodule Tackle.Session do
         inbox_count: 0,
         inbox_wake_scheduled?: false,
         session_title: projection_title(journal),
-        title_task: nil
+        title_task: nil,
+        storage_task: nil,
+        storage_status: :ready
       }
 
       register_with_coordinator(state)
-      {:ok, state}
+      status = if journal, do: Watchdog.subscribe(journal, self()), else: :ready
+      {:ok, %{state | storage_status: status}}
     else
       {:error, reason} -> {:stop, reason}
     end
   end
 
   @impl true
+  def handle_call(operation, _from, state)
+      when (not is_nil(state.storage_task) or state.storage_status == :delayed) and
+             (operation in [:abandon_turn, :close] or
+                (is_tuple(operation) and elem(operation, 0) in [:compact, :navigate, :reconfigure])),
+      do: {:reply, {:error, :storage_busy}, state}
+
+  def handle_call({:submit, _input}, _from, %{storage_task: task} = state)
+      when not is_nil(task) or state.storage_status == :delayed,
+      do: {:reply, {:error, :storage_busy}, state}
+
   def handle_call({:submit, _input}, _from, %{recovery: recovery} = state)
       when not is_nil(recovery) do
     {:reply, {:error, {:recovery_required, recovery}}, state}
@@ -344,9 +361,16 @@ defmodule Tackle.Session do
     queue_user_message(state, input)
   end
 
-  def handle_call({:submit, input}, _from, state) do
-    start_turn(:run, input, state)
+  def handle_call({:submit, input}, from, state) do
+    start_turn(:run, input, state, from)
   end
+
+  def handle_call(
+        {:withdraw_queued, _content},
+        _from,
+        %{storage_task: %{kind: :begin_turn}} = state
+      ),
+      do: {:reply, {:error, :storage_busy}, state}
 
   def handle_call({:withdraw_queued, content}, _from, state) do
     entries = :queue.to_list(state.inbox)
@@ -370,6 +394,20 @@ defmodule Tackle.Session do
     end
   end
 
+  # Runtime notices are one-shot; retain them in the existing bounded inbox,
+  # but never start their continuation until storage is ready.
+  def handle_call({:deliver, %Envelope{kind: kind} = envelope}, _from, state)
+      when kind in [:completion, :launch] do
+    case Envelope.new(envelope.kind, envelope.from, envelope.message, envelope.origin) do
+      {:ok, _validated} -> enqueue_envelope(state, envelope)
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:deliver, %Envelope{}}, _from_call, state)
+      when not is_nil(state.storage_task) or state.storage_status == :delayed,
+      do: {:reply, {:error, :storage_busy}, state}
+
   def handle_call({:deliver, %Envelope{} = envelope}, _from_call, state) do
     case Envelope.new(envelope.kind, envelope.from, envelope.message, envelope.origin) do
       {:ok, _validated} -> enqueue_envelope(state, envelope)
@@ -384,30 +422,31 @@ defmodule Tackle.Session do
     {:reply, {:ok, Enum.map(envelopes, &envelope_content/1)}, state}
   end
 
-  def handle_call(:continue, _from, state) do
-    start_turn(:continue, nil, state)
+  def handle_call(:continue, _from, %{storage_task: task} = state)
+      when not is_nil(task) or state.storage_status == :delayed,
+      do: {:reply, {:error, :storage_busy}, state}
+
+  def handle_call(:continue, from, state) do
+    start_turn(:continue, nil, state, from)
   end
 
   def handle_call(:abandon_turn, _from, %{recovery: nil} = state) do
     {:reply, :ok, state}
   end
 
-  def handle_call(:abandon_turn, _from, %{journal: journal, recovery: recovery} = state)
+  def handle_call(:abandon_turn, from, %{journal: journal} = state)
       when not is_nil(journal) do
-    # The interrupted turn is settled first; the reopened journal no longer
-    # tracks it as active, so the synthetic results for its unresolved tool
-    # calls are committed through a dedicated repair turn afterwards.
-    with :ok <-
-           Journal.settle_turn(journal, "turn.abandoned", %{
-             "turn_id" => recovery.turn_id,
-             "reason" => "abandoned_by_frontend"
-           }),
-         {:ok, agent_state} <-
-           repair_interrupted_tool_results(journal, state.agent_state, state.config, nil) do
-      {:reply, :ok, %{state | recovery: nil, agent_state: agent_state}}
-    else
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
+    defer_storage(
+      state,
+      from,
+      fn -> persist_abandon(state) end,
+      fn state, result ->
+        case result do
+          {:ok, agent_state} -> {:reply, :ok, %{state | recovery: nil, agent_state: agent_state}}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+      end
+    )
   end
 
   def handle_call({:compact, _opts}, _from, %{active_turn: active_turn} = state)
@@ -420,7 +459,7 @@ defmodule Tackle.Session do
     {:reply, {:error, {:recovery_required, recovery}}, state}
   end
 
-  def handle_call({:compact, opts}, _from, state) do
+  def handle_call({:compact, opts}, from, state) do
     session_id = state.agent_state.session_id
     event_callback = fn event -> broadcast(state, {:tackle_compaction, session_id, event}) end
 
@@ -428,32 +467,14 @@ defmodule Tackle.Session do
       opts
       |> Keyword.take([:instructions])
       |> Keyword.put(:event_callback, event_callback)
+      |> Keyword.put(:before_provider_call, provider_gate(state))
 
-    case Compaction.compact(state.agent_state, :manual, compaction_opts) do
-      {:ok, agent_state, record} ->
-        state = %{state | agent_state: agent_state}
-        snapshot = build_snapshot(state)
-        broadcast(state, {:tackle_session_compacted, session_id, snapshot, record})
-        {:reply, {:ok, snapshot, record}, state}
-
-      {:error, reason, agent_state} ->
-        state = %{state | agent_state: agent_state}
-        snapshot = build_snapshot(state)
-        broadcast(state, {:tackle_session_compacted, session_id, snapshot, nil})
-        {:reply, {:error, reason}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-
-      {:cancelled, reason, agent_state} ->
-        state = %{state | agent_state: agent_state}
-        snapshot = build_snapshot(state)
-        broadcast(state, {:tackle_session_compacted, session_id, snapshot, nil})
-        {:reply, {:error, {:cancelled, reason}}, state}
-
-      {:cancelled, reason} ->
-        {:reply, {:error, {:cancelled, reason}}, state}
-    end
+    defer_storage(
+      state,
+      from,
+      fn -> Compaction.compact(state.agent_state, :manual, compaction_opts) end,
+      fn state, result -> finish_compaction(state, result, session_id) end
+    )
   end
 
   def handle_call(:cancel, _from, %{active_turn: nil} = state) do
@@ -474,26 +495,19 @@ defmodule Tackle.Session do
     {:reply, {:error, {:recovery_required, recovery}}, state}
   end
 
-  def handle_call({:navigate, target, opts}, _from, state) do
-    case Tackle.Lib.navigate(state.agent_state, target, opts) do
-      {:ok, agent_state, outcome} ->
-        state = %{state | agent_state: agent_state}
-        snapshot = build_snapshot(state)
-
-        broadcast(
-          state,
-          {:tackle_session_navigated, agent_state.session_id, snapshot, outcome}
-        )
-
-        {:reply, {:ok, snapshot, outcome}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+  def handle_call({:navigate, target, opts}, from, state) do
+    defer_storage(
+      state,
+      from,
+      fn -> Tackle.Lib.navigate(state.agent_state, target, opts) end,
+      &finish_navigation/2
+    )
   end
 
   def handle_call(:cancel, _from, state) do
-    Cancellation.cancel(state.active_turn.signal, :user_cancelled)
+    if state.active_turn.signal,
+      do: Cancellation.cancel(state.active_turn.signal, :user_cancelled)
+
     active_turn = %{state.active_turn | cancellation_requested?: true}
     {:reply, :ok, %{state | active_turn: active_turn}}
   end
@@ -503,20 +517,15 @@ defmodule Tackle.Session do
     {:reply, {:error, :turn_in_progress}, state}
   end
 
-  def handle_call({:reconfigure, opts}, _from, state) do
+  def handle_call({:reconfigure, opts}, from, state) do
     case Config.reconfigure(state.config, opts) do
       {:ok, config} ->
-        case persist_configuration(state, config) do
-          :ok ->
-            agent_state = apply_configuration(state.agent_state, config)
-            state = %{state | config: config, agent_state: agent_state}
-            snapshot = build_snapshot(state)
-            broadcast(state, {:tackle_session_reconfigured, snapshot.session_id, snapshot})
-            {:reply, {:ok, snapshot}, state}
-
-          {:error, reason} ->
-            {:stop, {:persistence_failed, reason}, {:error, reason}, state}
-        end
+        defer_storage(
+          state,
+          from,
+          fn -> persist_configuration(state, config) end,
+          &finish_reconfiguration(&1, &2, config)
+        )
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -546,14 +555,24 @@ defmodule Tackle.Session do
     {:reply, :ok, %{state | subscribers: drop_subscriber(state.subscribers, subscriber)}}
   end
 
-  def handle_call(:close, _from, state) do
-    case persist_close(state) do
-      :ok ->
-        broadcast(state, {:tackle_session_closed, state.agent_state.session_id})
-        {:stop, :normal, :ok, state}
+  def handle_call(:close, from, state) do
+    state = cancel_active_turn(state, :session_closed)
 
-      {:error, reason} ->
-        {:stop, {:persistence_failed, reason}, {:error, reason}, state}
+    result =
+      defer_storage(state, from, fn -> persist_close(state) end, fn state, result ->
+        case result do
+          :ok ->
+            broadcast(state, {:tackle_session_closed, state.agent_state.session_id})
+            {:stop, :normal, :ok, state}
+
+          {:error, reason} ->
+            {:stop, {:persistence_failed, reason}, {:error, reason}, state}
+        end
+      end)
+
+    case result do
+      {:noreply, state} -> {:noreply, put_in(state.storage_task.kind, :close)}
+      result -> result
     end
   end
 
@@ -567,6 +586,33 @@ defmodule Tackle.Session do
   end
 
   @impl true
+  def handle_info({ref, result}, %{storage_task: %{task: %{ref: ref}} = pending} = state) do
+    Process.demonitor(pending.task.monitor, [:flush])
+    state = %{state | storage_task: nil}
+
+    finish_storage_task(state, pending, result)
+  end
+
+  def handle_info(
+        {:DOWN, monitor, :process, _pid, reason},
+        %{storage_task: %{task: %{monitor: monitor}} = pending} = state
+      ) do
+    Process.demonitor(monitor, [:flush])
+
+    if Map.get(pending, :from),
+      do: GenServer.reply(pending.from, {:error, {:persistence_failed, reason}})
+
+    cleanup_active_turn(state.active_turn)
+    release_turn(state)
+    {:stop, {:persistence_failed, reason}, %{state | storage_task: nil, active_turn: nil}}
+  end
+
+  def handle_info({:tackle_storage, session_id, status}, state)
+      when session_id == state.agent_state.session_id and status in [:ready, :delayed] do
+    broadcast(state, {:tackle_storage, session_id, status})
+    {:noreply, schedule_inbox_wake(%{state | storage_status: status})}
+  end
+
   def handle_info(
         {:tackle_event, _turn_id,
          %Event{type: :subagent_progress, data: %{background: true}} = event},
@@ -588,10 +634,30 @@ defmodule Tackle.Session do
     )
 
     state = record_interrupted_tool_call(state, event)
-    {:noreply, maybe_generate_title(state, event)}
+    {:noreply, state}
+  end
+
+  def handle_info({:tackle_message_durable, session_id, %Message{} = message}, state)
+      when session_id == state.agent_state.session_id do
+    {:noreply, maybe_generate_title(state, Event.message_end(message))}
   end
 
   def handle_info({:tackle_event, _turn_id, %Event{}}, state), do: {:noreply, state}
+
+  # Close owns the terminal transition; a settling turn cannot replace its
+  # outstanding storage continuation or start another terminal commit.
+  def handle_info(
+        {ref, _result},
+        %{storage_task: %{kind: :close}, active_turn: %{task: %TurnTask{ref: ref}}} = state
+      ),
+      do: {:noreply, state}
+
+  def handle_info(
+        {:DOWN, monitor, :process, _pid, _reason},
+        %{storage_task: %{kind: :close}, active_turn: %{task: %TurnTask{monitor: monitor}}} =
+          state
+      ),
+      do: {:noreply, state}
 
   def handle_info(
         {ref, result},
@@ -602,39 +668,12 @@ defmodule Tackle.Session do
     release_turn(state)
 
     case result do
-      {outcome, %AgentState{} = agent_state}
-      when outcome in [:ok, :error, :cancelled] ->
-        case persist_terminal(state, result) do
-          :ok ->
-            state =
-              state
-              |> Map.put(:agent_state, agent_state)
-              |> Map.put(:active_turn, nil)
-              |> discard_reported_background_launches(active_turn, agent_state)
-
-            broadcast(
-              state,
-              {:tackle_turn_finished, agent_state.session_id, active_turn.id, result}
-            )
-
-            settle(state, result)
-
-          {:error, reason} ->
-            {:stop, {:persistence_failed, reason}, %{state | active_turn: nil}}
-        end
+      {outcome, %AgentState{} = agent_state} when outcome in [:ok, :error, :cancelled] ->
+        begin_terminal_persist(state, active_turn, result, agent_state)
 
       invalid_result ->
         reason = {:invalid_turn_result, invalid_result}
-
-        case persist_terminal(state, {:runtime_error, reason}) do
-          :ok ->
-            state = %{state | active_turn: nil}
-            broadcast_turn_failure(state, active_turn.id, reason)
-            settle(state, {:runtime_error, reason})
-
-          {:error, persist_reason} ->
-            {:stop, {:persistence_failed, persist_reason}, %{state | active_turn: nil}}
-        end
+        begin_terminal_persist(state, active_turn, {:runtime_error, reason}, state.agent_state)
     end
   end
 
@@ -645,16 +684,7 @@ defmodule Tackle.Session do
     Cancellation.delete(active_turn.signal)
     release_turn(state)
     terminate_tool_tasks(state)
-
-    case persist_terminal(state, {:runtime_error, reason}) do
-      :ok ->
-        state = %{state | active_turn: nil}
-        broadcast_turn_failure(state, active_turn.id, reason)
-        settle(state, {:runtime_error, reason})
-
-      {:error, persist_reason} ->
-        {:stop, {:persistence_failed, persist_reason}, %{state | active_turn: nil}}
-    end
+    begin_terminal_persist(state, active_turn, {:runtime_error, reason}, state.agent_state)
   end
 
   def handle_info({:runtime_cancel, reason}, state) do
@@ -682,11 +712,7 @@ defmodule Tackle.Session do
 
     case start_inbox_turn(state) do
       {:ok, turn_id, reason, state} ->
-        broadcast(
-          state,
-          {:tackle_turn_started, state.agent_state.session_id, turn_id, reason}
-        )
-
+        broadcast(state, {:tackle_turn_started, state.agent_state.session_id, turn_id, reason})
         {:noreply, state}
 
       {:skip, state} ->
@@ -710,50 +736,169 @@ defmodule Tackle.Session do
   def terminate(_reason, state) do
     cleanup_active_turn(state.active_turn)
     cleanup_title_task(state.title_task)
+    if state.storage_task, do: TurnTask.shutdown(state.storage_task.task, @task_shutdown_timeout)
     :ok
   end
 
-  defp start_turn(_operation, _input, %{recovery: recovery} = state)
-       when not is_nil(recovery) do
-    {:reply, {:error, {:recovery_required, recovery}}, state}
+  defp finish_storage_task(state, %{kind: :begin_turn} = pending, result),
+    do: finish_begin_turn(state, pending, result)
+
+  defp finish_storage_task(state, %{kind: :terminal} = pending, result),
+    do: finish_terminal_persistence(state, pending, result)
+
+  defp finish_storage_task(state, %{kind: kind} = pending, result)
+       when kind in [:operation, :close],
+       do: finish_storage_operation(pending.from, pending.complete.(state, result))
+
+  defp finish_begin_turn(state, pending, :ok) do
+    state = drop_reserved_inbox(state, pending.inbox_messages)
+    broadcast_inbox_drained(state, pending.inbox_messages)
+
+    if pending.reason do
+      broadcast(
+        state,
+        {:tackle_turn_started, state.agent_state.session_id, pending.turn_id, pending.reason}
+      )
+    end
+
+    case start_turn_task(state.work_supervisor, fn ->
+           run_operation(
+             pending.operation,
+             pending.agent_state,
+             pending.input,
+             pending.run_opts
+           )
+         end) do
+      {:ok, task} ->
+        active = %{state.active_turn | task: task, beginning?: false}
+        if pending.from, do: GenServer.reply(pending.from, {:ok, pending.turn_id})
+        {:noreply, %{state | active_turn: active}}
+
+      {:error, reason} ->
+        fail_begin_turn(state, pending, {:turn_task_failed, reason})
+    end
   end
 
-  defp start_turn(_operation, _input, %{active_turn: active_turn} = state)
-       when not is_nil(active_turn) do
-    {:reply, {:error, :turn_in_progress}, state}
+  defp finish_begin_turn(state, pending, {:error, reason}),
+    do: fail_begin_turn(state, pending, {:persistence_failed, reason})
+
+  defp fail_begin_turn(state, pending, reason) do
+    Cancellation.delete(pending.signal)
+    release_turn(state)
+    if pending.from, do: GenServer.reply(pending.from, {:error, reason})
+    {:noreply, %{state | active_turn: nil}}
   end
 
-  defp start_turn(operation, input, state) do
-    case acquire_turn(state) do
-      :ok ->
-        do_start_turn(operation, input, state)
+  defp finish_reconfiguration(state, :ok, config) do
+    agent_state = apply_configuration(state.agent_state, config)
+    state = %{state | config: config, agent_state: agent_state}
+    snapshot = build_snapshot(state)
+    broadcast(state, {:tackle_session_reconfigured, snapshot.session_id, snapshot})
+    {:reply, {:ok, snapshot}, state}
+  end
+
+  defp finish_reconfiguration(state, {:error, reason}, _config),
+    do: {:stop, {:persistence_failed, reason}, {:error, reason}, state}
+
+  defp finish_compaction(state, result, session_id) do
+    case result do
+      {:ok, agent_state, record} ->
+        state = %{state | agent_state: agent_state}
+        snapshot = build_snapshot(state)
+        broadcast(state, {:tackle_session_compacted, session_id, snapshot, record})
+        {:reply, {:ok, snapshot, record}, state}
+
+      {:error, reason, agent_state} ->
+        state = %{state | agent_state: agent_state}
+        snapshot = build_snapshot(state)
+        broadcast(state, {:tackle_session_compacted, session_id, snapshot, nil})
+        {:reply, {:error, reason}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+
+      {:cancelled, reason, agent_state} ->
+        state = %{state | agent_state: agent_state}
+        snapshot = build_snapshot(state)
+        broadcast(state, {:tackle_session_compacted, session_id, snapshot, nil})
+        {:reply, {:error, {:cancelled, reason}}, state}
+
+      {:cancelled, reason} ->
+        {:reply, {:error, {:cancelled, reason}}, state}
+    end
+  end
+
+  defp finish_navigation(state, result) do
+    case result do
+      {:ok, agent_state, outcome} ->
+        state = %{state | agent_state: agent_state}
+        snapshot = build_snapshot(state)
+
+        broadcast(
+          state,
+          {:tackle_session_navigated, agent_state.session_id, snapshot, outcome}
+        )
+
+        {:reply, {:ok, snapshot, outcome}, state}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
   end
 
-  defp do_start_turn(operation, input, state) do
-    signal = Cancellation.new_signal()
-    turn_id = state.config.id_generator.()
-    session_pid = self()
-    {agent_state, inbox_messages, projected_messages} = project_inbox(state)
-    run_opts = turn_opts(state, session_pid, turn_id, signal)
+  # One deferred operation retains one caller and one payload. Mutating
+  # admission is rejected until it completes; control calls stay responsive.
+  defp defer_storage(state, from, fun, complete) do
+    case start_turn_task(state.work_supervisor, fun) do
+      {:ok, task} ->
+        pending = %{kind: :operation, task: task, from: from, complete: complete}
+        {:noreply, %{state | storage_task: pending}}
 
-    with :ok <- begin_turn(state, operation, input, turn_id),
-         :ok <- persist_inbox_messages(state, agent_state, projected_messages) do
-      state = clear_inbox(state)
-      broadcast_inbox_drained(state, inbox_messages)
-      launch_turn(operation, input, state, agent_state, run_opts, signal, turn_id)
-    else
       {:error, reason} ->
-        Cancellation.delete(signal)
-        release_turn(state)
-        {:reply, {:error, {:persistence_failed, reason}}, state}
+        {:reply, {:error, {:storage_task_failed, reason}}, state}
     end
   end
 
-  defp launch_turn(operation, input, state, agent_state, run_opts, signal, turn_id) do
+  defp finish_storage_operation(from, {:reply, reply, state}) do
+    GenServer.reply(from, reply)
+    {:noreply, schedule_inbox_wake(state)}
+  end
+
+  defp finish_storage_operation(from, {:stop, reason, reply, state}) do
+    GenServer.reply(from, reply)
+    {:stop, reason, state}
+  end
+
+  defp start_turn(operation, input, state, from \\ nil)
+
+  defp start_turn(_operation, _input, %{recovery: recovery} = state, _from)
+       when not is_nil(recovery) do
+    {:reply, {:error, {:recovery_required, recovery}}, state}
+  end
+
+  defp start_turn(_operation, _input, %{active_turn: active_turn} = state, _from)
+       when not is_nil(active_turn) do
+    {:reply, {:error, :turn_in_progress}, state}
+  end
+
+  defp start_turn(operation, input, state, from) do
+    case acquire_turn(state) do
+      :ok ->
+        do_start_turn(operation, input, state, from)
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp do_start_turn(operation, input, %{journal: nil} = state, _from) do
+    signal = Cancellation.new_signal()
+    turn_id = state.config.id_generator.()
+    {agent_state, inbox_messages, _projected_messages} = project_inbox(state)
+    run_opts = turn_opts(state, self(), turn_id, signal)
+    state = clear_inbox(state)
+    broadcast_inbox_drained(state, inbox_messages)
+
     case start_turn_task(state.work_supervisor, fn ->
            run_operation(operation, agent_state, input, run_opts)
          end) do
@@ -776,6 +921,109 @@ defmodule Tackle.Session do
     end
   end
 
+  defp do_start_turn(operation, input, state, from) do
+    signal = Cancellation.new_signal()
+    turn_id = state.config.id_generator.()
+    session_pid = self()
+    {agent_state, inbox_messages, projected_messages} = project_inbox(state)
+    run_opts = turn_opts(state, session_pid, turn_id, signal)
+
+    case start_turn_task(state.work_supervisor, fn ->
+           persist_begin(state, operation, input, turn_id, agent_state, projected_messages)
+         end) do
+      {:ok, task} ->
+        active_turn = %{
+          id: turn_id,
+          operation: operation,
+          task: nil,
+          signal: signal,
+          initial_message_ids: MapSet.new(agent_state.messages, & &1.id),
+          cancellation_requested?: false,
+          beginning?: true
+        }
+
+        pending = %{
+          kind: :begin_turn,
+          from: from,
+          operation: operation,
+          input: input,
+          agent_state: agent_state,
+          inbox_messages: inbox_messages,
+          run_opts: run_opts,
+          signal: signal,
+          turn_id: turn_id,
+          task: task,
+          reason: if(is_nil(from), do: inbox_turn_reason(state))
+        }
+
+        {:noreply, %{state | active_turn: active_turn, storage_task: pending}}
+
+      {:error, reason} ->
+        Cancellation.delete(signal)
+        release_turn(state)
+        {:reply, {:error, {:storage_task_failed, reason}}, state}
+    end
+  end
+
+  defp begin_terminal_persist(%{journal: nil} = state, active_turn, result, agent_state) do
+    pending = %{
+      turn_id: active_turn.id,
+      result: result,
+      agent_state: agent_state,
+      active_turn: active_turn
+    }
+
+    finish_terminal_persistence(state, pending, :ok)
+  end
+
+  defp begin_terminal_persist(state, active_turn, result, agent_state) do
+    case start_turn_task(state.work_supervisor, fn ->
+           persist_terminal(state, result)
+         end) do
+      {:ok, task} ->
+        pending = %{
+          kind: :terminal,
+          task: task,
+          turn_id: active_turn.id,
+          result: result,
+          agent_state: agent_state,
+          active_turn: active_turn
+        }
+
+        # Cancellation has already been observed by the completed task. Retain
+        # the turn identity, but do not expose a deleted cancellation signal.
+        active_turn = %{active_turn | signal: nil}
+        {:noreply, %{state | storage_task: pending, active_turn: active_turn}}
+
+      {:error, reason} ->
+        {:stop, {:storage_task_failed, reason}, %{state | active_turn: nil}}
+    end
+  end
+
+  defp finish_terminal_persistence(state, pending, :ok) do
+    state = %{state | agent_state: pending.agent_state, active_turn: nil}
+
+    case pending.result do
+      {:runtime_error, reason} ->
+        broadcast_turn_failure(state, pending.turn_id, reason)
+        settle(state, pending.result)
+
+      result ->
+        state =
+          discard_reported_background_launches(state, pending.active_turn, pending.agent_state)
+
+        broadcast(
+          state,
+          {:tackle_turn_finished, pending.agent_state.session_id, pending.turn_id, result}
+        )
+
+        settle(state, result)
+    end
+  end
+
+  defp finish_terminal_persistence(state, _pending, reason),
+    do: {:stop, {:persistence_failed, reason}, %{state | active_turn: nil}}
+
   defp start_turn_task(work_supervisor, fun), do: TurnTask.start(work_supervisor, fun)
 
   defp run_operation(:run, agent_state, input, run_opts) do
@@ -794,12 +1042,16 @@ defmodule Tackle.Session do
         runtime_turn_id: turn_id
       },
       cancellation_signal: signal,
+      before_provider_call: provider_gate(state),
       turn_id: turn_id,
       llm_stream: state.config.llm_stream,
       take_incoming_messages: fn -> GenServer.call(session_pid, :take_incoming_messages) end,
       tool_supervisor: state.tool_supervisor
     ]
   end
+
+  defp provider_gate(%{journal: nil}), do: nil
+  defp provider_gate(%{journal: journal}), do: fn -> Journal.flush(journal) end
 
   defp acquire_turn(%{coordinator: coordinator, agent_ref: %AgentRef{} = agent_ref}) do
     Coordinator.acquire_turn(coordinator, agent_ref)
@@ -841,6 +1093,8 @@ defmodule Tackle.Session do
            lifetime: :explicit,
            recovery: nil,
            active_turn: nil,
+           storage_task: nil,
+           storage_status: :ready,
            inbox_wake_scheduled?: false
          } = state
        ) do
@@ -854,12 +1108,17 @@ defmodule Tackle.Session do
 
   defp schedule_inbox_wake(state), do: state
 
+  defp start_inbox_turn(state)
+       when not is_nil(state.storage_task) or state.storage_status == :delayed,
+       do: {:skip, state}
+
   defp start_inbox_turn(%{lifetime: :explicit, recovery: nil, active_turn: nil} = state) do
     if deliverable_inbox_pending?(state) do
       reason = inbox_turn_reason(state)
 
       case start_turn(:continue, nil, state) do
         {:reply, {:ok, turn_id}, state} -> {:ok, turn_id, reason, state}
+        {:noreply, state} -> {:skip, state}
         {:reply, {:error, _reason}, state} -> {:skip, state}
       end
     else
@@ -899,8 +1158,6 @@ defmodule Tackle.Session do
     {agent_state, envelopes, projected_messages}
   end
 
-  defp persist_inbox_messages(%{journal: nil}, _agent_state, _messages), do: :ok
-
   defp persist_inbox_messages(%{journal: journal}, agent_state, messages) do
     Enum.reduce_while(messages, :ok, fn message, :ok ->
       case Journal.append_message(journal, message, inbox_tree_parent(agent_state, message.id)) do
@@ -919,26 +1176,27 @@ defmodule Tackle.Session do
 
   defp inbox_tree_parent(%AgentState{}, _message_id), do: :none
 
+  defp drop_reserved_inbox(state, reserved) do
+    retained = :queue.to_list(state.inbox) -- reserved
+    %{state | inbox: :queue.from_list(retained), inbox_count: length(retained)}
+  end
+
   defp clear_inbox(state),
     do: %{state | inbox: :queue.new(), inbox_count: 0}
 
   defp queue_user_message(state, message) do
-    if ordinary_inbox_count(state) >= @max_inbox_messages do
+    entry = %{from: :user, message: message}
+
+    if ordinary_inbox_count(state) >= @max_inbox_messages or inbox_bytes_full?(state, entry) do
       {:reply, {:error, :inbox_full}, state}
     else
-      {:reply, {:ok, :queued}, enqueue(state, %{from: :user, message: message})}
+      {:reply, {:ok, :queued}, enqueue(state, entry)}
     end
   end
 
   defp enqueue_envelope(state, %Envelope{kind: kind} = envelope) do
-    cond do
-      kind == :message and ordinary_inbox_count(state) >= @max_inbox_messages ->
-        {:reply, {:error, :inbox_full}, state}
-
-      kind != :message and deferred_inbox_count(state) >= @max_deferred_messages ->
-        {:reply, {:error, :deferred_inbox_full}, state}
-
-      true ->
+    case inbox_capacity(state, envelope) do
+      :ok ->
         state = enqueue(state, envelope)
 
         state =
@@ -947,7 +1205,33 @@ defmodule Tackle.Session do
             else: schedule_inbox_wake(state)
 
         {:reply, :ok, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
+  end
+
+  defp inbox_capacity(state, %Envelope{kind: :message} = envelope) do
+    if ordinary_inbox_count(state) >= @max_inbox_messages or inbox_bytes_full?(state, envelope),
+      do: {:error, :inbox_full},
+      else: :ok
+  end
+
+  defp inbox_capacity(state, %Envelope{} = envelope) do
+    if deferred_inbox_count(state) >= @max_deferred_messages or inbox_bytes_full?(state, envelope),
+      do: {:error, :deferred_inbox_full},
+      else: :ok
+  end
+
+  defp inbox_bytes_full?(state, entry) do
+    bytes =
+      state.inbox
+      |> :queue.to_list()
+      |> Enum.reduce(:erlang.external_size(entry), fn queued, bytes ->
+        bytes + :erlang.external_size(queued)
+      end)
+
+    bytes > @max_inbox_bytes
   end
 
   defp ordinary_inbox_count(state) do
@@ -1088,7 +1372,7 @@ defmodule Tackle.Session do
   defp cancel_active_turn(%{active_turn: nil} = state, _reason), do: state
 
   defp cancel_active_turn(%{active_turn: active_turn} = state, reason) do
-    Cancellation.cancel(active_turn.signal, reason)
+    if active_turn.signal, do: Cancellation.cancel(active_turn.signal, reason)
     %{state | active_turn: %{active_turn | cancellation_requested?: true}}
   end
 
@@ -1233,7 +1517,8 @@ defmodule Tackle.Session do
     %{
       state
       | hooks: append(state.hooks, Persistence),
-        context: Map.put(state.context, :journal_required, true)
+        context:
+          state.context |> Map.put(:journal_required, true) |> Map.put(:session_owner, self())
     }
   end
 
@@ -1267,7 +1552,21 @@ defmodule Tackle.Session do
     Journal.configuration_changed(journal, config)
   end
 
-  defp begin_turn(%{journal: nil}, _operation, _input, _turn_id), do: :ok
+  defp persist_abandon(%{journal: journal, recovery: recovery} = state) do
+    with :ok <-
+           Journal.settle_turn(journal, "turn.abandoned", %{
+             "turn_id" => recovery.turn_id,
+             "reason" => "abandoned_by_frontend"
+           }) do
+      repair_interrupted_tool_results(journal, state.agent_state, state.config, nil)
+    end
+  end
+
+  defp persist_begin(state, operation, input, turn_id, agent_state, messages) do
+    with :ok <- begin_turn(state, operation, input, turn_id) do
+      persist_inbox_messages(state, agent_state, messages)
+    end
+  end
 
   defp begin_turn(%{journal: journal}, operation, input, turn_id) do
     case Journal.begin_turn(journal, operation, input, turn_id) do
@@ -1275,8 +1574,6 @@ defmodule Tackle.Session do
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp persist_terminal(%{journal: nil}, _result), do: :ok
 
   defp persist_terminal(%{journal: journal, active_turn: %{id: turn_id}}, result) do
     {type, data} = terminal_event(result)
@@ -1384,7 +1681,8 @@ defmodule Tackle.Session do
       agent_ref: state.agent_ref,
       scope_ref: state.scope_ref,
       recovery: state.recovery,
-      session_title: state.session_title
+      session_title: state.session_title,
+      storage: state.storage_status
     }
   end
 
@@ -1420,7 +1718,7 @@ defmodule Tackle.Session do
     llm_opts = title_llm_opts(state)
 
     case TurnTask.start(state.work_supervisor, fn ->
-           Title.generate(selection, user_message, llm_opts)
+           generate_and_persist_title(state.journal, selection, user_message, llm_opts)
          end) do
       {:ok, task} ->
         %{state | title_task: task}
@@ -1428,6 +1726,15 @@ defmodule Tackle.Session do
       {:error, reason} ->
         Logger.debug("session title task failed to start: #{inspect(reason)}")
         %{state | title_task: :done}
+    end
+  end
+
+  defp generate_and_persist_title(journal, selection, user_message, llm_opts) do
+    # A title is also a model effect: wait behind outstanding commits.
+    with :ok <- Journal.flush(journal),
+         {:ok, title} <- Title.generate(selection, user_message, llm_opts),
+         :ok <- Journal.metadata_changed(journal, %{"title" => title}) do
+      {:ok, title}
     end
   end
 
@@ -1448,21 +1755,9 @@ defmodule Tackle.Session do
   end
 
   defp apply_generated_title(state, {:ok, title}) do
-    case Journal.metadata_changed(state.journal, %{"title" => title}) do
-      :ok ->
-        state = %{state | session_title: title}
-
-        broadcast(
-          state,
-          {:tackle_session_title_changed, state.agent_state.session_id, title}
-        )
-
-        state
-
-      {:error, reason} ->
-        Logger.debug("session title commit failed: #{inspect(reason)}")
-        state
-    end
+    state = %{state | session_title: title}
+    broadcast(state, {:tackle_session_title_changed, state.agent_state.session_id, title})
+    state
   end
 
   defp apply_generated_title(state, {:error, reason}) do

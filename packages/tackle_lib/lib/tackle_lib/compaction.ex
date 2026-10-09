@@ -112,6 +112,10 @@ defmodule Tackle.Lib.Compaction do
   Returns `{:ok, state, record}`, `{:error, reason}`, or `{:cancelled, reason}`.
   When a later pass fails after a successful commit, returns
   `{:error | :cancelled, reason, committed_state}` instead.
+
+  The optional `:before_provider_call` zero-arity host gate returns `:ok` or
+  `{:error, reason}` and runs before each summarizer invocation. Cancellation
+  is rechecked after the gate, before summary generation.
   """
   @spec compact(State.t(), trigger(), keyword()) ::
           {:ok, State.t(), Record.t()}
@@ -235,6 +239,7 @@ defmodule Tackle.Lib.Compaction do
     ctx = context(state, opts)
 
     with :ok <- check_cancel(opts),
+         :ok <- await_provider(opts),
          {:ok, summary} <- summarize(state, config, resolved, ctx, plan, trigger, opts),
          :ok <- check_cancel(opts),
          :ok <- validate_summary(summary, plan, resolved),
@@ -490,6 +495,15 @@ defmodule Tackle.Lib.Compaction do
 
     #{summary}
     """
+  end
+
+  defp await_provider(opts) do
+    result = Tackle.Lib.ProviderGate.await(Keyword.get(opts, :before_provider_call))
+
+    case check_cancel(opts) do
+      :ok -> result
+      cancelled -> cancelled
+    end
   end
 
   defp check_cancel(opts) do

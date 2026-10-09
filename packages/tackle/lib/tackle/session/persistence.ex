@@ -33,9 +33,18 @@ defmodule Tackle.Session.Persistence do
 
   @impl true
   def after_message(%State{session_id: session_id} = state, %Message{} = message, context) do
-    persist(session_id, context, fn journal ->
-      Journal.append_message(journal, message, tree_parent(state, message.id))
-    end)
+    with :ok <-
+           persist(session_id, context, fn journal ->
+             Journal.append_message(journal, message, tree_parent(state, message.id))
+           end) do
+      # Live message_end precedes the hook. Title generation must wait for the
+      # specific user message's acknowledgment, not race it with a flush.
+      if message.role == :user and is_pid(context[:session_owner]) do
+        send(context.session_owner, {:tackle_message_durable, session_id, message})
+      end
+
+      :ok
+    end
   end
 
   @impl true

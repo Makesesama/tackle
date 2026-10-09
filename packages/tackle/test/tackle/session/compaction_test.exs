@@ -19,9 +19,19 @@ defmodule Tackle.Session.CompactionTest do
       end
 
       case Application.get_env(:tackle, :compaction_summary_result, :default) do
-        :default -> {:ok, default_summary()}
-        {:ok, summary} -> {:ok, summary}
-        {:error, reason} -> {:error, reason}
+        :default ->
+          {:ok, default_summary()}
+
+        :block ->
+          receive do
+            :release_compaction -> {:ok, default_summary()}
+          end
+
+        {:ok, summary} ->
+          {:ok, summary}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
 
@@ -204,6 +214,31 @@ defmodule Tackle.Session.CompactionTest do
     checkpoint = hd(projection.model_messages)
     assert checkpoint["role"] == "user"
     assert String.starts_with?(checkpoint["content"], Compaction.marker())
+  end
+
+  test "non-durable compaction also leaves Session controls responsive" do
+    scope = start_scope(root: root_opts())
+    {:ok, _snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, long_prompt())
+    assert_receive {:tackle_turn_finished, _, ^turn_id, _}, 5_000
+    flush_compaction_requests()
+    Application.put_env(:tackle, :compaction_summary_result, :block)
+    compact = Task.async(fn -> Tackle.compact(scope.root_agent_ref) end)
+    assert_receive {:compaction_request, _, _}, 5_000
+    assert {:ok, _} = Tackle.snapshot(scope.root_agent_ref)
+    assert :ok = Tackle.cancel(scope.root_agent_ref)
+    assert {:error, :storage_busy} = Tackle.submit(scope.root_agent_ref, "rejected")
+    {:ok, session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+    send(:sys.get_state(session).storage_task.task.pid, :release_compaction)
+    assert {:ok, _snapshot, _record} = Task.await(compact)
+  end
+
+  defp flush_compaction_requests do
+    receive do
+      {:compaction_request, _, _} -> flush_compaction_requests()
+    after
+      0 -> :ok
+    end
   end
 
   test "rejects manual compaction while a turn is active", ctx do

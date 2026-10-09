@@ -70,6 +70,15 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     do: {:noreply, state, render?: false}
 
   defp route(
+         {:tui_submit_cancel_result, ref, {:error, reason}},
+         %State{pending_operation: %{ref: ref, kind: :submit}} = state
+       ),
+       do: {:noreply, %{state | notice: "Cancellation failed: #{Util.format_reason(reason)}"}}
+
+  defp route({:tui_submit_cancel_result, _ref, _result}, state),
+    do: {:noreply, state, render?: false}
+
+  defp route(
          {:tui_operation_result, ref, :submit, result},
          %State{pending_operation: %{ref: ref, kind: :submit} = operation} = state
        ) do
@@ -800,6 +809,36 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     {:noreply, Viewport.refresh(state)}
   end
 
+  defp route(
+         {:tackle_storage, session_id, storage},
+         %State{session_id: session_id} = state
+       )
+       when storage in [:ready, :delayed] do
+    state = %{state | storage: storage}
+
+    case state.pending_operation do
+      %{kind: :submit, cancellation_requested?: true} = operation when storage == :delayed ->
+        if Map.get(operation, :cancellation_dispatched?, false) do
+          {:noreply, state}
+        else
+          agent_ref = state.agent_ref
+          ref = operation.ref
+
+          command =
+            Command.async(
+              fn -> Tackle.cancel(agent_ref) end,
+              &{:tui_submit_cancel_result, ref, &1}
+            )
+
+          operation = Map.put(operation, :cancellation_dispatched?, true)
+          {:noreply, %{state | pending_operation: operation}, commands: [command]}
+        end
+
+      _other ->
+        {:noreply, state}
+    end
+  end
+
   defp route({:tackle_session_closed, session_id}, %State{session_id: session_id} = state) do
     {:stop, state}
   end
@@ -839,7 +878,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp submit_started(state, operation, commands) do
-    if Map.get(operation, :cancellation_requested?, false) and state.active_turn != nil do
+    if Map.get(operation, :cancellation_requested?, false) and
+         not Map.get(operation, :cancellation_dispatched?, false) and state.active_turn != nil do
       {state, cancel_command} = cancel_command(%{state | activity: "cancelling"})
       {:noreply, state, commands: append(commands, cancel_command)}
     else
@@ -1465,7 +1505,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp busy?(state) do
-    not is_nil(state.active_turn) or not is_nil(state.pending_operation) or
+    state.storage == :delayed or not is_nil(state.active_turn) or
+      not is_nil(state.pending_operation) or
       Subagents.active?(state)
   end
 end

@@ -350,7 +350,7 @@ defmodule Tackle.CLI.TUI do
 
   @impl true
   def subscriptions(state) do
-    if state.active_turn != nil or state.pending_operation != nil do
+    if state.storage == :delayed or state.active_turn != nil or state.pending_operation != nil do
       [Subscription.interval(:tui_spinner, 80, {:tui_spinner_tick})]
     else
       []
@@ -574,10 +574,33 @@ defmodule Tackle.CLI.TUI do
   end
 
   defp escape_empty(%{pending_operation: %{kind: :submit} = operation} = state) do
-    operation = Map.put(operation, :cancellation_requested?, true)
+    agent_ref = state.agent_ref
+    ref = operation.ref
 
+    command =
+      Command.async(
+        fn -> Tackle.cancel(agent_ref) end,
+        &{:tui_submit_cancel_result, ref, &1}
+      )
+
+    dispatch? =
+      state.storage == :delayed and not Map.get(operation, :cancellation_dispatched?, false)
+
+    commands = if dispatch?, do: [command], else: []
+
+    operation =
+      operation
+      |> Map.put(:cancellation_requested?, true)
+      |> Map.put(
+        :cancellation_dispatched?,
+        dispatch? or Map.get(operation, :cancellation_dispatched?, false)
+      )
+
+    # Preserve the submit correlation while cancelling its already-admitted
+    # beginning turn. Waiting for submit to return could wait forever on sync.
     {:noreply,
-     %{state | pending_operation: operation, activity: "cancelling", notice: "Cancelling…"}}
+     %{state | pending_operation: operation, activity: "cancelling", notice: "Cancelling…"},
+     commands: commands}
   end
 
   defp escape_empty(%{pending_operation: %{kind: :compact}} = state) do

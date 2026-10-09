@@ -46,6 +46,12 @@ defmodule Tackle.CLI.Output.Progress do
     end
   end
 
+  @doc "Shows the session's durability wait without changing agent activity."
+  @spec storage(handle(), :ready | :delayed) :: handle()
+  def storage(:disabled, _status), do: :disabled
+  def storage(progress, :delayed), do: update(progress, "Waiting for session storage")
+  def storage(progress, :ready), do: update(progress, "Working…")
+
   @doc "Leaves one settled progress line and releases the command-local screen."
   @spec finish(handle(), {:ok, term()} | {:error, term()}) :: :ok
   def finish(:disabled, _result), do: :ok

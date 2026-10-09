@@ -14,6 +14,18 @@ defmodule Tackle.Session.JournalTest do
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
 
+  defmodule BlockingReportHandler do
+    def log(%{meta: %{mfa: {Watchdog, :report, 2}}}, %{config: test_pid}) do
+      send(test_pid, {:report_blocked, self()})
+
+      receive do
+        :unblock -> :ok
+      end
+    end
+
+    def log(_event, _config), do: :ok
+  end
+
   setup do
     home = tmp_home()
     {:ok, home: home, session_id: ID.generate()}
@@ -188,22 +200,131 @@ defmodule Tackle.Session.JournalTest do
       assert Bitwise.band(File.stat!(report).mode, 0o777) == 0o600
     end
 
-    test "stalled disk sync stops the owner without discarding earlier durable history", ctx do
-      {:ok, journal} = start_journal(ctx, journal_timeout: 250)
+    test "stalled disk sync pauses the owner and resumes without replay or retry", ctx do
+      {:ok, journal} = start_journal(ctx, journal_timeout: 100)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
       assert :ok = Journal.append_message(journal, Message.user("hello"))
+      assert :ready = Watchdog.subscribe(journal, self())
       log = {:tackle_session, ctx.session_id}
       assert :ok = :disk_log.block(log, true)
       ref = Process.monitor(journal)
 
-      assert {:error, {:journal_stalled, diagnostic}} = Journal.flush(journal)
-      assert diagnostic["stage"] == "sync"
-      assert_receive {:DOWN, ^ref, :process, ^journal, :killed}, 1_000
-      assert :disk_log.unblock(log) in [:ok, {:error, :no_such_log}]
-      # The log backend may finish work already dispatched before owner death.
-      # Reading validates durable history; no append is automatically retried.
-      assert {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
-      assert [%{"content" => "hello"}] = replay.projection.messages
+      try do
+        task = Task.async(fn -> Journal.flush(journal) end)
+        session_id = ctx.session_id
+        assert_receive {:tackle_storage, ^session_id, :delayed}, 1_000
+
+        [{watchdog, _}] =
+          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+
+        [request] = Map.keys(:sys.get_state(watchdog).pending)
+        Process.sleep(250)
+        assert Map.keys(:sys.get_state(watchdog).pending) == [request]
+        assert Task.yield(task, 20) == nil
+        refute_receive {:DOWN, ^ref, :process, ^journal, _}, 20
+        refute_receive {:tackle_storage, ^session_id, :delayed}, 20
+        assert :ok = :disk_log.unblock(log)
+        assert Task.await(task) == :ok
+        assert_receive {:tackle_storage, ^session_id, :ready}
+        assert {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+        assert [%{"content" => "hello"}] = replay.projection.messages
+        assert replay.last_seq == 3
+        {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
+        refute File.exists?(Path.join(Path.dirname(path), "journal-failure.json"))
+      after
+        :disk_log.unblock(log)
+        Process.demonitor(ref, [:flush])
+        stop_journal(journal)
+      end
+    end
+
+    test "paused admission is bounded and queued commits stay behind sync", ctx do
+      {:ok, journal} = start_journal(ctx, journal_timeout: 100)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      assert :ready = Watchdog.subscribe(journal, self())
+      log = {:tackle_session, ctx.session_id}
+      :ok = :disk_log.block(log, true)
+
+      try do
+        sync = Task.async(fn -> Journal.flush(journal) end)
+        session_id = ctx.session_id
+        assert_receive {:tackle_storage, ^session_id, :delayed}, 1_000
+
+        [{watchdog, _}] =
+          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+
+        tasks =
+          for n <- 1..64,
+              do:
+                Task.async(fn ->
+                  Journal.append_message(journal, Message.assistant(content: "answer #{n}"))
+                end)
+
+        assert eventually(fn -> :queue.len(:sys.get_state(watchdog).queued) == 64 end) == :ok
+        assert {:error, :journal_busy} = Journal.flush(journal)
+        assert map_size(:sys.get_state(watchdog).pending) == 1
+        assert :ok = :disk_log.unblock(log)
+        assert Task.await(sync) == :ok
+        assert Enum.all?(Task.await_many(tasks), &(&1 == :ok))
+        assert {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+        assert Enum.count_until(replay.projection.messages, 65) == 64
+        assert Enum.map(replay.commits, & &1["seq"]) == Enum.to_list(1..66)
+        assert Enum.count_until(Enum.uniq_by(replay.commits, & &1["commit_id"]), 67) == 66
+      after
+        :disk_log.unblock(log)
+        stop_journal(journal)
+      end
+    end
+
+    test "paused admission also bounds retained payload bytes", ctx do
+      {:ok, journal} = start_journal(ctx, journal_timeout: 100)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      assert :ready = Watchdog.subscribe(journal, self())
+      log = {:tackle_session, ctx.session_id}
+      :ok = :disk_log.block(log, true)
+
+      try do
+        sync = Task.async(fn -> Journal.flush(journal) end)
+        session_id = ctx.session_id
+        assert_receive {:tackle_storage, ^session_id, :delayed}, 1_000
+        oversized = Message.assistant(content: String.duplicate("x", 24 * 1024 * 1024))
+        assert {:error, :journal_busy} = Journal.append_message(journal, oversized)
+        assert :ok = :disk_log.unblock(log)
+        assert Task.await(sync) == :ok
+        assert {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+        assert replay.last_seq == 2
+      after
+        :disk_log.unblock(log)
+        stop_journal(journal)
+      end
+    end
+
+    test "writer-lock loss remains fatal during a recoverable sync pause", ctx do
+      {:ok, journal} = start_journal(ctx, journal_timeout: 100)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+
+      [{watchdog, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+
+      lock = :sys.get_state(watchdog).lock
+      assert is_port(lock.port)
+      assert :ready = Watchdog.subscribe(journal, self())
+      log = {:tackle_session, ctx.session_id}
+      :ok = :disk_log.block(log, true)
+
+      try do
+        sync = Task.async(fn -> Journal.flush(journal) end)
+        session_id = ctx.session_id
+        assert_receive {:tackle_storage, ^session_id, :delayed}, 1_000
+        Port.close(lock.port)
+        assert {:error, {:journal_failure, {:writer_lock_lost, _}}} = Task.await(sync)
+        diagnostic = await_failure_report(ctx)
+        assert diagnostic["failure"] == "journal_failure/writer_lock_lost"
+        assert diagnostic["stage"] == "sync"
+      after
+        :disk_log.unblock(log)
+        stop_journal(journal)
+      end
     end
 
     test "failure cleanup is bounded even when disk sync is blocked", ctx do
@@ -388,6 +509,103 @@ defmodule Tackle.Session.JournalTest do
     end
   end
 
+  describe "failure diagnostics" do
+    test "blocked reporting does not delay fallback lock cleanup", ctx do
+      old_path = System.get_env("PATH")
+      System.put_env("PATH", "")
+      handler = :tackle_test_blocked_journal_report
+      :ok = :logger.add_handler(handler, BlockingReportHandler, %{config: self()})
+
+      try do
+        {:ok, journal} = start_journal(ctx)
+        {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+
+        [{watchdog, _}] =
+          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+
+        ref = Process.monitor(watchdog)
+        {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
+        lock_path = Path.join(Path.dirname(path), "writer.lock")
+        assert File.exists?(lock_path)
+
+        Process.exit(journal, :kill)
+        assert_receive {:report_blocked, _reporter}, 1_000
+        assert eventually(fn -> not File.exists?(lock_path) end) == :ok
+        assert_receive {:DOWN, ^ref, :process, ^watchdog, :normal}, 3_000
+      after
+        :logger.remove_handler(handler)
+        if old_path, do: System.put_env("PATH", old_path), else: System.delete_env("PATH")
+      end
+    end
+
+    test "deeply nested exit reasons produce a bounded report", ctx do
+      owner =
+        spawn(fn ->
+          receive do
+            {:stop, reason} -> exit(reason)
+          end
+        end)
+
+      {:ok, watchdog} = Watchdog.start(owner, ctx.session_id, home: ctx.home)
+      Watchdog.ready(owner)
+      ref = Process.monitor(watchdog)
+      reason = Enum.reduce(1..10_000, :disk_full, fn _, acc -> {:journal_failure, acc} end)
+      send(owner, {:stop, reason})
+      assert_receive {:DOWN, ^ref, :process, ^watchdog, :normal}, 3_000
+      diagnostic = await_failure_report(ctx)
+      assert diagnostic["failure"] == "journal_failure/unexpected_owner_exit"
+      assert byte_size(JSON.encode!(diagnostic)) < 1_000
+    end
+
+    test "records disk failure even when no durable request is waiting", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      ref = Process.monitor(journal)
+      send(journal, {:disk_log, node(), :log, :full})
+      assert_receive {:DOWN, ^ref, :process, ^journal, {:journal_failure, :disk_full}}, 1_000
+
+      diagnostic = await_failure_report(ctx)
+      assert diagnostic["failure"] == "journal_failure/disk_full"
+      assert diagnostic["operation"] == "owner_exit"
+      assert diagnostic["sequence"] == 2
+    end
+
+    test "does not serialize arbitrary exit payloads", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      ref = Process.monitor(journal)
+      send(journal, {:EXIT, self(), {:unexpected, "PRIVATE PAYLOAD"}})
+      assert_receive {:DOWN, ^ref, :process, ^journal, {:unexpected, _}}, 1_000
+
+      diagnostic = await_failure_report(ctx)
+      assert diagnostic["failure"] == "unexpected_owner_exit"
+      refute inspect(diagnostic) =~ "PRIVATE PAYLOAD"
+    end
+
+    test "normal teardown does not create a failure report", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+
+      [{watchdog, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+
+      ref = Process.monitor(watchdog)
+      stop_journal(journal)
+      assert_receive {:DOWN, ^ref, :process, ^watchdog, :normal}, 3_000
+
+      {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
+      refute File.exists?(Path.join(Path.dirname(path), "journal-failure.json"))
+    end
+  end
+
+  defp await_failure_report(ctx) do
+    {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
+    report = Path.join(Path.dirname(path), "journal-failure.json")
+    assert eventually(fn -> File.exists?(report) end) == :ok
+    assert Bitwise.band(File.stat!(report).mode, 0o777) == 0o600
+    JSON.decode!(File.read!(report))
+  end
+
   describe "fail-closed behavior" do
     test "stops the owner when a message cannot be persisted", ctx do
       {:ok, journal} = start_journal(ctx)
@@ -400,6 +618,7 @@ defmodule Tackle.Session.JournalTest do
 
       ref = Process.monitor(journal)
       assert_receive {:DOWN, ^ref, :process, ^journal, _reason}, 1_000
+      assert await_failure_report(ctx)["failure"] == "journal_failure/invalid_message"
     end
   end
 

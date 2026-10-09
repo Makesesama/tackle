@@ -489,6 +489,29 @@ There is no initial user-configurable buffered durability mode. Agent provider a
 
 The implementation must propagate full-disk, permission, device, sync, and log-process failures. It must never suppress them to preserve apparent agent progress.
 
+### Slow live sync: pause and recover
+
+The harness watchdog treats its default 15-second deadline as a soft threshold
+only for a live `sync` stage. The journal keeps the original sync in flight and
+the pending commit ID/sequence unchanged; it never re-appends or issues a second
+sync on expiry. Durability hooks and queued writes remain behind that barrier.
+A successful reply resumes progress automatically. Storage errors, unknown
+append outcomes, startup/replay, post-sync work, and cleanup remain fail-closed
+with hard bounds and explicit crash recovery.
+
+Session-side durability waits run in supervised tasks with correlated
+continuations, leaving snapshots and cancellation responsive. A session
+broadcasts `{:tackle_storage, session_id, :delayed | :ready}` and exposes that
+status in its snapshot. While delayed it rejects new mutating admission with
+`:storage_busy`. One-shot runtime launch/completion notices remain admitted to
+the bounded inbox (128 deferred notices, 32 ordinary messages, 24 MiB total
+encoded entries); their continuation waits for storage readiness. The journal serializes dispatch and retains at most 64 queued
+requests / 24 MiB of encoded request data, returning `:journal_busy` at capacity.
+The CLI shows “Waiting for session storage”; its one-shot answer timeout does
+not expire during that wait. Cancellation requests are accepted, but terminal
+settlement still waits for durability. Already-running parallel effects are
+not rolled back.
+
 ### 9.1 Compaction durability barrier
 
 Checkpoint compaction is the one session operation that changes the

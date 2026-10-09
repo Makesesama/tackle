@@ -486,8 +486,13 @@ defmodule Tackle.CLI.Run do
 
     result =
       with {:ok, snapshot} <- Tackle.subscribe(agent_ref),
-           {:ok, turn_id} <- Tackle.submit(agent_ref, prompt) do
-        await_answer(snapshot.session_id, turn_id, progress)
+           {:ok, monitor} <- Tackle.monitor_agent(agent_ref) do
+        try do
+          task = Task.async(fn -> Tackle.submit(agent_ref, prompt) end)
+          await_submission(task, snapshot.session_id, monitor, progress, snapshot.storage)
+        after
+          Process.demonitor(monitor, [:flush])
+        end
       end
 
     Progress.finish(progress, result)
@@ -502,7 +507,30 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp await_answer(session_id, turn_id, progress) do
+  defp await_submission(task, session_id, monitor, progress, storage) do
+    receive do
+      {ref, {:ok, turn_id}} when ref == task.ref ->
+        Process.demonitor(task.ref, [:flush])
+        await_answer(session_id, turn_id, monitor, progress, storage)
+
+      {ref, {:error, reason}} when ref == task.ref ->
+        Process.demonitor(task.ref, [:flush])
+        {:error, reason}
+
+      {:tackle_storage, ^session_id, storage} ->
+        await_submission(task, session_id, monitor, Progress.storage(progress, storage), storage)
+
+      {:DOWN, ^monitor, :process, _pid, reason} ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, {:agent_down, reason}}
+    after
+      storage_timeout(storage) ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, :timeout}
+    end
+  end
+
+  defp await_answer(session_id, turn_id, monitor, progress, storage) do
     receive do
       {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, agent_state}} ->
         {:ok, Tackle.Lib.last_answer(agent_state) || ""}
@@ -516,12 +544,22 @@ defmodule Tackle.CLI.Run do
       {:tackle_turn_failed, ^session_id, ^turn_id, reason} ->
         {:error, reason}
 
+      {:tackle_storage, ^session_id, storage} ->
+        await_answer(session_id, turn_id, monitor, Progress.storage(progress, storage), storage)
+
+      {:DOWN, ^monitor, :process, _pid, reason} ->
+        {:error, {:agent_down, reason}}
+
       {:tackle_event, ^session_id, ^turn_id, event} ->
-        await_answer(session_id, turn_id, Progress.event(progress, event))
+        progress = if storage == :delayed, do: progress, else: Progress.event(progress, event)
+        await_answer(session_id, turn_id, monitor, progress, storage)
     after
-      @terminal_timeout -> {:error, :timeout}
+      storage_timeout(storage) -> {:error, :timeout}
     end
   end
+
+  defp storage_timeout(:delayed), do: :infinity
+  defp storage_timeout(:ready), do: @terminal_timeout
 
   @doc false
   @spec standalone?() :: boolean()

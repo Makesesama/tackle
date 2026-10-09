@@ -428,6 +428,27 @@ defmodule Tackle.Session.DurabilityTest do
     assert Journal.whereis(snapshot.session_id) == {:error, :not_found}
   end
 
+  test "journal diagnostics survive the supervised agent shutdown", ctx do
+    scope = start_durable_scope(home: ctx.home, root: [mode: :manual])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, monitor} = Tackle.monitor_agent(scope.root_agent_ref)
+    {:ok, _turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
+    assert_receive {:adapter_called, _pid, _model, _opts}, 5_000
+    {:ok, journal} = Journal.whereis(snapshot.session_id)
+
+    bad_message = Message.assistant(content: "hi", provider_state: %{"pid" => self()})
+    assert {:error, _reason} = Journal.append_message(journal, bad_message)
+    # The sibling session's monitor cannot reveal the journal's exit reason.
+    assert_receive {:DOWN, ^monitor, :process, _pid, :shutdown}, 1_000
+
+    {:ok, path} = Storage.journal_path(snapshot.session_id, home: ctx.home)
+    report = Path.join(Path.dirname(path), "journal-failure.json")
+    assert eventually(fn -> File.exists?(report) end) == :ok
+    diagnostic = JSON.decode!(File.read!(report))
+    assert diagnostic["failure"] == "journal_failure/invalid_message"
+    assert diagnostic["stage"] == "encode_message"
+  end
+
   defp commit_kind(%{"events" => [event | _rest]}) do
     case event["type"] do
       "session.created" ->

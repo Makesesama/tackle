@@ -3,8 +3,9 @@ defmodule Tackle.Session.TitleTest do
 
   import Tackle.Test.Runtime
 
-  alias Tackle.Lib.LLM
-  alias Tackle.Session.Reader
+  alias Tackle.Lib.{Event, LLM, Message, State}
+  alias Tackle.Runtime.ID
+  alias Tackle.Session.{Journal, Persistence, Reader}
   alias Tackle.Session.Title
 
   @title_instructions "Generate a concise, single-line task title"
@@ -110,6 +111,39 @@ defmodule Tackle.Session.TitleTest do
       assert opts[:tools] == []
 
       assert_receive {:tackle_session_title_changed, ^session_id, "Fix the login form"}, 5_000
+    end
+
+    test "live message events cannot race the specific durable acknowledgment", ctx do
+      session_id = ID.generate()
+      {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
+      {:ok, _} = Journal.begin_turn(journal, :continue, nil)
+      :ok = Journal.settle_turn(journal, "turn.completed", %{})
+      GenServer.stop(journal)
+
+      scope =
+        start_durable_scope(
+          home: ctx.home,
+          session: [session_id: session_id],
+          root: root_opts(llm_opts: [mode: :manual])
+        )
+
+      {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+      {:ok, turn_id} = Tackle.continue(scope.root_agent_ref)
+      assert_receive {:adapter_called, turn_task, _, _}, 5_000
+      {:ok, session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+      message = Message.user("Fix the login form")
+      # This is deliberately the pre-hook event ordering used by the loop.
+      send(session, {:tackle_event, turn_id, Event.message_end(message)})
+      refute_receive {:adapter_called, _, _, _}, 150
+      assert :sys.get_state(session).title_task == nil
+      state = State.add_message(snapshot.agent_state, message)
+      assert :ok = Persistence.after_message(state, message, state.context)
+      assert_receive {:adapter_called, title_task, _, opts}, 5_000
+      assert title_call?(opts)
+      send(title_task, {:respond, "Fix the login form"})
+      assert_receive {:tackle_session_title_changed, ^session_id, "Fix the login form"}, 5_000
+      send(turn_task, {:respond, "answer"})
+      assert_receive {:tackle_turn_finished, _, ^turn_id, _}, 5_000
     end
 
     test "commits the title while the turn is still running", ctx do

@@ -50,6 +50,7 @@ defmodule Tackle.CLI.TUI.StatusView do
     if busy?(state), do: "#{spinner(state.spinner_frame)} #{label}", else: label
   end
 
+  defp turn_label(%State{storage: :delayed}), do: "Waiting for session storage"
   defp turn_label(%State{pending_operation: %{kind: :reconfigure}}), do: "reconfiguring"
   defp turn_label(%State{pending_operation: %{kind: :compact}}), do: "compacting"
   defp turn_label(%State{pending_operation: %{kind: :cancel}}), do: "cancelling"
@@ -67,6 +68,7 @@ defmodule Tackle.CLI.TUI.StatusView do
   @spec status_style(State.t()) :: ExRatatui.Style.t()
   def status_style(state) do
     cond do
+      state.storage == :delayed -> Theme.style(:warning)
       is_binary(state.error) -> Theme.style(:error)
       state.active_turn != nil or state.pending_operation != nil -> Theme.style(:accent_soft)
       state.outcome == :cancelled -> Theme.style(:warning)
@@ -356,7 +358,10 @@ defmodule Tackle.CLI.TUI.StatusView do
 
   defp cost_indicator(%Usage{}), do: nil
 
-  defp busy?(state), do: not is_nil(state.active_turn) or not is_nil(state.pending_operation)
+  defp busy?(state),
+    do:
+      state.storage == :delayed or not is_nil(state.active_turn) or
+        not is_nil(state.pending_operation)
 
   defp spinner(frame), do: Enum.at(@spinner_frames, rem(frame, length(@spinner_frames)))
 

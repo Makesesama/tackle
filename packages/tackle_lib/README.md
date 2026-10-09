@@ -276,6 +276,7 @@ Run options:
 | `:event_callback` | Receives `%Tackle.Lib.Event{}` values |
 | `:llm_stream` | Uses adapter `stream/3`, with generate fallback |
 | `:cancellation_signal` | Cooperative cancellation handle |
+| `:before_provider_call` | Zero-arity provider dispatch gate; returns `:ok` or `{:error, reason}` |
 
 Results are always one of:
 
@@ -747,8 +748,15 @@ Tackle.Lib.Cancellation.cancel(signal, :user_cancelled)
 ```
 
 The loop checks cancellation before work, after LLM calls, and between tool
-calls. The adapter receives the signal in its opts and tools receive it in
-context. Long-running adapters and tools should check
+calls. It also rechecks after `:before_provider_call` and `before_tool_call` hooks,
+before provider or tool dispatch. The optional `before_provider_call: fn -> ... end`
+run option is called immediately before every `generate/2` or `stream/3` invocation,
+including automatic retries, and before each compaction summarizer invocation;
+return `:ok` to proceed or `{:error, reason}` to skip that dispatch. Standalone
+`Tackle.Lib.Compaction.compact/3` accepts the same gate option. A host can use
+this gate for provider-call readiness without adding storage policy to Tackle.Lib.
+The adapter receives the cancellation signal in its opts and tools receive it
+in context. Long-running adapters and tools should check
 `Tackle.Lib.Cancellation.cancelled?/1` and abort their own work.
 
 Cancellation is cooperative, not preemptive. Tackle.Lib cannot interrupt code that
