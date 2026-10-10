@@ -24,13 +24,17 @@ auditable, and re-runnable in a way "the model orchestrates in its head" is not.
 
 Workflows call the `tackle` table (`Tackle.Workflow.API`):
 
-* `tackle.spawn(profile, prompt)` — starts one delegated run and returns an
-  opaque run handle immediately, so several spawns overlap;
+* `tackle.spawn(profile, prompt, opts?)` — starts one delegated run and returns
+  an opaque run handle immediately, so several spawns overlap. The optional
+  `opts` table `{model = "provider/model"}` overrides the profile's model for
+  that run; the host resolves it only against models it already makes
+  available;
 * `tackle.await(run)` — blocks the workflow until the run settles and returns
   `{ok, status, text}`; expected failures are returned, never raised, so the
   workflow owns the failure policy;
 * `tackle.parallel(items, fn, opts)` — bounded fan-out: one delegated run per
   item, at most `limit` in flight, one result table per item in input order;
+  the callback returns `profile, prompt, opts?` with the same `opts` table;
 * `tackle.cancel(run, reason)` — cooperative cancellation of one run;
 * `tackle.log(message)` — progress reporting to the host's log callback.
 

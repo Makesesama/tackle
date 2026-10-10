@@ -62,11 +62,12 @@ defmodule Tackle.Workflow.Tool do
     "Run a sandboxed Lua workflow that coordinates allowlisted subagent profiles. Use it " <>
       "for multi-step delegation expressed as code instead of one tool call per step: " <>
       "sequential steps that feed each other, bounded fan-out over a list, and retries " <>
-      "driven by results. Call `tackle.spawn(profile, prompt)` to start one delegated run " <>
-      "and get its handle; `tackle.await(run)` to block until it settles and return a table " <>
+      "driven by results. Call `tackle.spawn(profile, prompt, opts?)` to start one delegated " <>
+      "run and get its handle, where the optional `opts` table `{model = \"provider/model\"}` " <>
+      "overrides the profile's model for that run; `tackle.await(run)` to block until it settles and return a table " <>
       "with `ok`, `status`, and `text`; `tackle.parallel(items, fn, opts)` to run one " <>
       "delegated agent per item with bounded concurrency, returning one result table per " <>
-      "item in input order; `tackle.cancel(run, reason)` to cancel one run; and " <>
+      "item in input order (the callback returns `profile, prompt, opts?`); `tackle.cancel(run, reason)` to cancel one run; and " <>
       "`tackle.log(message)` to report progress. The values the workflow returns are the tool " <>
       "result, one per line: a list table such as `{a, b}` gives one line per element, and " <>
       "any other table is rendered as JSON. A workflow can only spawn profiles this session allows it to use, and it " <>

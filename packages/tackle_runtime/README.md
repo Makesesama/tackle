@@ -73,6 +73,18 @@ The root harness provides `Tackle.Runtime.RootBackend` for `Tackle.Session`.
 root and child turn through `Tackle.Phoenix.Runner` and the host's
 `Tackle.Phoenix.Store` callbacks.
 
+## Per-request model selection
+
+`Tackle.Runtime.request_agent/4` accepts `model: "provider/model"` to override a
+child's model for one run; the subagent tool exposes it as its optional `model`
+argument. The runtime checks it is a non-empty string and passes it, after
+`prepare_child/2`, to the backend's optional `select_model/2` callback, which
+must resolve it only against the child's trusted configuration. Backends that
+do not implement `select_model/2` refuse such requests with
+`{:error, {:model_selection_unsupported, model}}` before admission.
+`Tackle.Runtime.RootBackend` implements it; `Tackle.Phoenix.RuntimeBackend`
+currently does not.
+
 ## Delegated inactivity timeouts
 
 Delegated requests have no total runtime cap. `AgentSpec.timeout`,

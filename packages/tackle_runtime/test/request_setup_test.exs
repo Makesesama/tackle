@@ -307,6 +307,38 @@ defmodule Tackle.Runtime.RequestSetupTest do
     assert :ok = Runtime.cancel(run_ref)
   end
 
+  test "model overrides are validated and need backend support before admission" do
+    root =
+      AgentSpec.new!(
+        name: "root",
+        config: %{mode: :root, test_pid: self()},
+        allow_delegation: true
+      )
+
+    child = AgentSpec.new!(name: "child", config: %{mode: :normal, test_pid: self()})
+    scope_spec = ScopeSpec.new!(backend: Backend, root_spec: root, profiles: %{"child" => child})
+    {:ok, scope} = Runtime.start_scope(scope_spec)
+    on_exit(fn -> Runtime.stop_scope(scope.scope_ref) end)
+
+    for {model, expected} <- [
+          {"provider/model", {:model_selection_unsupported, "provider/model"}},
+          {"", {:invalid_model, ""}},
+          {:atom, {:invalid_model, :atom}}
+        ] do
+      assert {:error, ^expected} =
+               Runtime.request_agent(scope.root_agent_ref, "child", "go", model: model)
+
+      assert {:ok, %{agent_count: 1}} = Runtime.scope_snapshot(scope.scope_ref)
+      refute_receive {:child_started, _pid}
+    end
+
+    assert {:ok, run_ref} =
+             Runtime.request_agent(scope.root_agent_ref, "child", "go", model: nil)
+
+    assert run_ref.model_ref == "test-model"
+    assert :ok = Runtime.cancel(run_ref)
+  end
+
   test "runtime operations preserve the backend failure contract" do
     for {mode, expected} <- [
           {:subscription_raise, {:error, {:agent_backend_failed, "backend crashed"}}},

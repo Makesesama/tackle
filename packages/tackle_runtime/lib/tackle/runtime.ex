@@ -236,6 +236,13 @@ defmodule Tackle.Runtime do
   returned run reference, so callers can display the actual child selection
   without racing its ephemeral session. Existing runs and profiles with
   `model_source: :configured` are unchanged.
+
+  `:model` optionally overrides the child's model for this one run with a
+  non-empty model reference such as `"provider/model"`. It is applied after
+  parent inheritance through the backend's `select_model/2` callback, which
+  resolves it against the child's trusted configuration; the profile's other
+  settings, including its thinking level, are kept. An unavailable model, or a
+  backend without `select_model/2`, fails the request before admission.
   """
   @spec request_agent(
           Handle.t() | AgentRef.t(),
@@ -247,12 +254,14 @@ defmodule Tackle.Runtime do
   def request_agent(requester, spec_or_profile, prompt, opts \\ [])
 
   def request_agent(requester, spec_or_profile, prompt, opts) when is_binary(prompt) do
-    with {:ok, scope_ref, parent_ref} <- resolve_requester(requester),
+    with {:ok, model} <- requested_model(opts),
+         {:ok, scope_ref, parent_ref} <- resolve_requester(requester),
          {:ok, coordinator} <- coordinator(scope_ref),
          {:ok, backend} <- Registry.backend(scope_ref),
          {:ok, spec} <- resolve_spec(coordinator, spec_or_profile),
          {:ok, parent_pid} <- Registry.whereis(parent_ref),
          {:ok, spec} <- AgentBackend.prepare_child(backend, spec, parent_pid),
+         {:ok, spec} <- AgentBackend.select_model(backend, spec, model),
          {:ok, work_supervisor} <- Registry.work_supervisor(scope_ref) do
       requester = request_owner(opts, parent_ref)
 
@@ -453,4 +462,14 @@ defmodule Tackle.Runtime do
   end
 
   defp resolve_spec(_coordinator, other), do: {:error, {:invalid_agent_spec, other}}
+
+  # A model override may come from model-generated input, so it is checked here
+  # and then resolved only by the backend against trusted configuration.
+  defp requested_model(opts) do
+    case Keyword.get(opts, :model) do
+      nil -> {:ok, nil}
+      model when is_binary(model) and model != "" -> {:ok, model}
+      other -> {:error, {:invalid_model, other}}
+    end
+  end
 end

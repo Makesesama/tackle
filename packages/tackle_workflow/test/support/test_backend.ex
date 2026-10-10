@@ -28,7 +28,13 @@ defmodule Tackle.Workflow.TestBackend do
   def call(_pid, operation, _args), do: {:error, {:unsupported_agent_operation, operation}}
 
   @impl true
-  def model_ref(_spec), do: "test/echo"
+  def select_model(%AgentSpec{config: config} = spec, "test/" <> _ = model),
+    do: {:ok, %{spec | config: Map.put(config, :model, model)}}
+
+  def select_model(_spec, model), do: {:error, {:unknown_model, model}}
+
+  @impl true
+  def model_ref(%AgentSpec{config: config}), do: Map.get(config, :model, "test/echo")
 
   @impl true
   def outcome({status, %State{} = state}, agent_ref) when status in [:ok, :error, :cancelled],

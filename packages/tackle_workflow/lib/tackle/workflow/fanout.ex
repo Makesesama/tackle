@@ -51,8 +51,12 @@ defmodule Tackle.Workflow.Fanout do
   @capacity_poll_ms 10
   @capacity_grace_ms 250
 
-  @typedoc "Profile and prompt of one item's delegated run."
-  @type request :: {String.t(), String.t()}
+  @typedoc """
+  Profile and prompt of one item's delegated run, optionally with extra
+  `Tackle.Runtime.request_agent/4` options for that item alone, such as
+  `model: "provider/model"`.
+  """
+  @type request :: {String.t(), String.t()} | {String.t(), String.t(), keyword()}
 
   @typedoc """
   Why one item has no outcome.
@@ -78,9 +82,9 @@ defmodule Tackle.Workflow.Fanout do
   @typedoc """
   Builds one item's request, threading the caller's accumulator.
 
-  Returns that item's `{profile, prompt}`, or `{:error, reason, acc}` where a
-  `{:spawn_error, reason}` refusal is reported as such instead of as a
-  malformed request.
+  Returns that item's `{profile, prompt}` or `{profile, prompt, opts}`, or
+  `{:error, reason, acc}` where a `{:spawn_error, reason}` refusal is reported
+  as such instead of as a malformed request.
   """
   @type request_builder(acc) ::
           (pos_integer(), acc -> {:ok, request(), acc} | {:error, term(), acc})
@@ -108,7 +112,7 @@ defmodule Tackle.Workflow.Fanout do
   Runs `count` items, at most `limit` at a time, and collects one result each.
 
   `build_request.(index, acc)` is called exactly once per item, in index order,
-  and returns that item's `{profile, prompt}`. Returns the item results in index
+  and returns that item's `t:request/0`. Returns the item results in index
   order together with the final accumulator. `t:option/0` lists the hooks a
   caller may pass to observe the batch.
   """
@@ -219,8 +223,12 @@ defmodule Tackle.Workflow.Fanout do
   # seeing one gives up for this item.
   defp capacity_grace, do: System.monotonic_time(:millisecond) + @capacity_grace_ms
 
-  defp admit(%{handle: handle, request_opts: request_opts}, {profile, prompt}) do
-    case Runtime.request_agent(handle, profile, prompt, request_opts.(profile)) do
+  defp admit(ctx, {profile, prompt}), do: admit(ctx, {profile, prompt, []})
+
+  defp admit(%{handle: handle, request_opts: request_opts}, {profile, prompt, item_opts}) do
+    opts = Keyword.merge(request_opts.(profile), item_opts)
+
+    case Runtime.request_agent(handle, profile, prompt, opts) do
       {:ok, %RunRef{} = run_ref} -> {:ok, run_ref}
       {:error, {:rejected, reason}} when reason in @capacity_reasons -> {:capacity, reason}
       {:error, reason} -> {:error, reason}

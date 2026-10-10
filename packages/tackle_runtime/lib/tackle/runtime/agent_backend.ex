@@ -51,11 +51,22 @@ defmodule Tackle.Runtime.AgentBackend do
   """
   @callback call(pid(), operation(), [term()]) :: term()
   @callback prepare_child(AgentSpec.t(), pid()) :: {:ok, AgentSpec.t()} | {:error, term()}
+  @doc """
+  Applies a per-request model selection to a prepared child spec.
+
+  `model` is a non-empty model reference, such as `"provider/model"`, that may
+  originate from model-generated tool input. The backend must resolve it only
+  against models its trusted configuration already makes available and return
+  an error for anything else. Backends that do not export this callback refuse
+  per-request model selection with `{:error, {:model_selection_unsupported,
+  model}}`.
+  """
+  @callback select_model(AgentSpec.t(), String.t()) :: {:ok, AgentSpec.t()} | {:error, term()}
   @callback model_ref(AgentSpec.t()) :: String.t() | nil
   @callback outcome(term(), AgentRef.t()) :: Outcome.t()
   @callback notify(pid(), term()) :: :ok | {:error, term()}
 
-  @optional_callbacks prepare_child: 2, model_ref: 1, outcome: 2, notify: 2
+  @optional_callbacks prepare_child: 2, select_model: 2, model_ref: 1, outcome: 2, notify: 2
 
   @doc false
   def validate_spec(backend, %AgentSpec{} = spec) when is_atom(backend) do
@@ -70,6 +81,21 @@ defmodule Tackle.Runtime.AgentBackend do
       backend.prepare_child(spec, parent)
     else
       {:ok, spec}
+    end
+  rescue
+    exception -> {:error, {:agent_backend_failed, Exception.message(exception)}}
+  catch
+    kind, reason -> {:error, {:agent_backend_failed, {kind, reason}}}
+  end
+
+  @doc false
+  def select_model(_backend, %AgentSpec{} = spec, nil), do: {:ok, spec}
+
+  def select_model(backend, %AgentSpec{} = spec, model) do
+    if function_exported?(backend, :select_model, 2) do
+      backend.select_model(spec, model)
+    else
+      {:error, {:model_selection_unsupported, model}}
     end
   rescue
     exception -> {:error, {:agent_backend_failed, Exception.message(exception)}}

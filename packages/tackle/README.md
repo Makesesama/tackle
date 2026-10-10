@@ -243,6 +243,15 @@ remain the child's trusted configuration; parent history and credentials are
 not copied. The selected model must be available through the child's configured
 adapters, otherwise the request fails before admitting a child.
 
+The requesting agent may also choose a model for one child run: the subagent
+tool takes an optional `model` argument (`"provider/model"`), and workflows pass
+`{model = "provider/model"}` as `tackle.spawn`'s third argument or a
+`tackle.parallel` callback's third return value. The requested model replaces
+the profile's configured or inherited model for that run only; the profile's
+thinking level, prompt, tools, and limits are kept. It is model-chosen input, so
+it resolves only against the child's configured adapters, exactly like a
+profile's `model` field, and an unavailable model fails before admission.
+
 This is the provider-neutral `AgentSpec.model_source: :parent` policy. Generic
 profiles default to `:configured` and keep their explicitly configured model;
 model-generated arguments cannot select or change this policy.

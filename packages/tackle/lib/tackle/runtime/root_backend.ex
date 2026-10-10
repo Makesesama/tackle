@@ -57,6 +57,13 @@ defmodule Tackle.Runtime.RootBackend do
   end
 
   @impl true
+  def select_model(%AgentSpec{config: %Config{} = config} = spec, model) do
+    with {:ok, config} <- Config.reconfigure(config, model: model) do
+      {:ok, %{spec | config: config}}
+    end
+  end
+
+  @impl true
   def model_ref(%AgentSpec{config: %Config{model_ref: model_ref}}), do: model_ref
 
   @impl true

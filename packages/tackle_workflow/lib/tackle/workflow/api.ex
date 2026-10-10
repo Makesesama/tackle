@@ -10,10 +10,10 @@ defmodule Tackle.Workflow.API do
         return outcome.text
       end
 
-  * `tackle.spawn(profile, prompt)` starts one delegated run through the same
-    allowlisted profiles, scope limits, and admission rules as the subagent
-    tool and host-defined workflows. It returns an opaque run handle
-    immediately, so several spawns overlap.
+  * `tackle.spawn(profile, prompt, opts?)` starts one delegated run through the
+    same allowlisted profiles, scope limits, and admission rules as the
+    subagent tool and host-defined workflows. It returns an opaque run handle
+    immediately, so several spawns overlap. See "Spawn options" for `opts`.
   * `tackle.await(run)` blocks the script until the run settles and returns an
     outcome table with `ok`, `status`, and `text` fields. Expected failures
     (agent errors, cancellations, timeouts) are returned, never raised, so
@@ -24,14 +24,33 @@ defmodule Tackle.Workflow.API do
   * `tackle.cancel(run, reason)` requests cooperative cancellation of one run.
   * `tackle.log(message)` reports progress to the host's log callback.
 
+  ## Spawn options
+
+  `opts` is an optional table. Its only key is `model`, a `"provider/model"`
+  reference that overrides the profile's model for that one run, exactly like
+  the subagent tool's `model` argument:
+
+      local run = tackle.spawn("scout", "Map the code paths.", {model = "provider/fast-model"})
+
+  The scope's backend resolves the model only against models its trusted
+  configuration already makes available; an unavailable model, or a host that
+  does not support model selection, refuses the spawn. Unknown keys and
+  non-string or empty models raise.
+
   ## Fan-out
 
   `tackle.parallel(items, fn, opts)` calls `fn(item, index)` once per item of
-  the `items` sequence and expects it to return that item's `profile, prompt`:
+  the `items` sequence and expects it to return that item's `profile, prompt`,
+  optionally followed by a spawn options table (see "Spawn options"):
 
       local answers = tackle.parallel(questions, function(question, index)
         return "researcher", index .. ". " .. question
       end, {limit = 3})
+
+      -- per-item model selection
+      tackle.parallel(files, function(file)
+        return "reviewer", "Review " .. file, {model = "provider/strong-model"}
+      end)
 
       for _, answer in ipairs(answers) do
         if answer.ok then
@@ -54,7 +73,7 @@ defmodule Tackle.Workflow.API do
   `"runtime_error"`, `"timeout"`, or `"rejected"` — or one of:
 
     * `"callback_error"` — `fn` raised, or returned something other than two
-      strings;
+      strings and an optional spawn options table;
     * `"spawn_error"` — the runtime refused the spawn for a policy reason, such
       as an unknown profile, a spawn-depth limit, or a scope that forbids
       delegation;
@@ -95,6 +114,7 @@ defmodule Tackle.Workflow.API do
 
   @parallel_helpers :parallel_helpers
   @parallel_options ["limit"]
+  @spawn_options ["model"]
 
   # Helpers `tackle.parallel/2,3` calls inside the VM. The item and its index
   # are read in Lua so the callback receives the value the script passed in:
@@ -136,27 +156,22 @@ defmodule Tackle.Workflow.API do
 
   @doc "Starts one delegated agent run and returns its opaque run handle."
   deflua spawn(profile, prompt) when is_binary(profile) and is_binary(prompt), state do
-    %{handle: %Handle{} = handle} = context!(state)
-
-    unless allowed_profile?(state, profile) do
-      runtime_exception!("spawn failed: " <> profile_not_allowed(profile))
-    end
-
-    on_event = observer(state)
-
-    case Runtime.request_agent(handle, profile, prompt, Progress.request_opts(on_event, profile)) do
-      {:ok, %RunRef{} = run_ref} ->
-        Progress.emit(on_event, Progress.run_started(run_ref, profile, prompt))
-        {encoded, state} = Lua.encode!(state, {:userdata, run_ref})
-        {encoded, state}
-
-      {:error, reason} ->
-        runtime_exception!("spawn failed: #{inspect(reason)}")
-    end
+    start_spawn(state, profile, prompt, [])
   end
 
   deflua spawn(_profile, _prompt), _state do
-    runtime_exception!("tackle.spawn(profile, prompt) requires two strings")
+    runtime_exception!("tackle.spawn(profile, prompt, opts?) requires two strings")
+  end
+
+  deflua spawn(profile, prompt, opts) when is_binary(profile) and is_binary(prompt), state do
+    case spawn_options(state, opts) do
+      {:ok, spawn_opts} -> start_spawn(state, profile, prompt, spawn_opts)
+      {:error, message} -> runtime_exception!(message)
+    end
+  end
+
+  deflua spawn(_profile, _prompt, _opts), _state do
+    runtime_exception!("tackle.spawn(profile, prompt, opts?) requires two strings")
   end
 
   @doc "Waits for one run and returns its outcome table."
@@ -214,6 +229,60 @@ defmodule Tackle.Workflow.API do
     runtime_exception!("tackle.log(message) requires a string")
   end
 
+  defp start_spawn(state, profile, prompt, spawn_opts) do
+    %{handle: %Handle{} = handle} = context!(state)
+
+    unless allowed_profile?(state, profile) do
+      spawn_error!("spawn failed: " <> profile_not_allowed(profile))
+    end
+
+    on_event = observer(state)
+    opts = Keyword.merge(Progress.request_opts(on_event, profile), spawn_opts)
+
+    case Runtime.request_agent(handle, profile, prompt, opts) do
+      {:ok, %RunRef{} = run_ref} ->
+        Progress.emit(on_event, Progress.run_started(run_ref, profile, prompt))
+        {encoded, state} = Lua.encode!(state, {:userdata, run_ref})
+        {encoded, state}
+
+      {:error, reason} ->
+        spawn_error!("spawn failed: #{inspect(reason)}")
+    end
+  end
+
+  # Decodes a spawn options table into `Tackle.Runtime.request_agent/4` options.
+  # The values are model-generated input; the runtime and backend validate the
+  # model itself against trusted configuration.
+  defp spawn_options(_state, nil), do: {:ok, []}
+
+  defp spawn_options(state, opts) do
+    if is_table(opts) do
+      options = state |> Lua.decode!(opts) |> Lua.Table.as_map()
+
+      case Map.keys(options) -- @spawn_options do
+        [] -> spawn_model(options)
+        unknown -> {:error, "unknown spawn options: #{format_keys(unknown)}"}
+      end
+    else
+      {:error, "spawn options must be a table, got #{type_name(opts)}"}
+    end
+  end
+
+  defp spawn_model(options) do
+    case Map.fetch(options, "model") do
+      :error ->
+        {:ok, []}
+
+      {:ok, model} when is_binary(model) and model != "" ->
+        {:ok, [model: model]}
+
+      {:ok, model} ->
+        {:error, "spawn option model must be a non-empty string, got #{inspect(model)}"}
+    end
+  end
+
+  defp format_keys(keys), do: keys |> Enum.sort() |> Enum.map_join(", ", &inspect/1)
+
   # Fan-out -----------------------------------------------------------------------
 
   defp run_parallel(items, callback, opts, state) do
@@ -249,7 +318,7 @@ defmodule Tackle.Workflow.API do
   defp fanout_observer(on_event, id) do
     [
       request_opts: &Progress.request_opts(on_event, &1),
-      on_started: fn index, run_ref, {profile, prompt} ->
+      on_started: fn index, run_ref, {profile, prompt, _opts} ->
         parallel = %{id: id, index: index}
         Progress.emit(on_event, Progress.run_started(run_ref, profile, prompt, parallel))
       end,
@@ -259,12 +328,12 @@ defmodule Tackle.Workflow.API do
     ]
   end
 
-  defp settled_event(_id, _index, {:ok, %Outcome{} = outcome}, {run_ref, {profile, _prompt}}),
+  defp settled_event(_id, _index, {:ok, %Outcome{} = outcome}, {run_ref, {profile, _, _}}),
     do: Progress.run_finished(run_ref, profile, outcome.status, Outcome.ok?(outcome))
 
   # A watcher that could not collect the outcome still settles the run it
   # watched; an admitted run has no other way to fail here.
-  defp settled_event(_id, _index, {:error, {:unavailable, _reason}}, {run_ref, {profile, _}}),
+  defp settled_event(_id, _index, {:error, {:unavailable, _reason}}, {run_ref, {profile, _, _}}),
     do: Progress.run_finished(run_ref, profile, :unavailable, false)
 
   defp settled_event(id, index, {:error, reason}, nil) do
@@ -281,17 +350,28 @@ defmodule Tackle.Workflow.API do
   defp item_request(state, callback, items, index) do
     case Lua.call_function(state, helper!(state, :apply), [callback, items, index]) do
       {:ok, [profile, prompt], state} when is_binary(profile) and is_binary(prompt) ->
-        if allowed_profile?(state, profile) do
-          {:ok, {profile, prompt}, state}
-        else
-          {:error, {:spawn_error, profile_not_allowed(profile)}, state}
-        end
+        item_spawn(state, profile, prompt, nil)
+
+      {:ok, [profile, prompt, opts], state} when is_binary(profile) and is_binary(prompt) ->
+        item_spawn(state, profile, prompt, opts)
 
       {:ok, results, state} ->
-        {:error, "expected two strings (profile, prompt), got #{describe(results)}", state}
+        {:error,
+         "expected two strings and an optional options table (profile, prompt, opts?), " <>
+           "got #{describe(results)}", state}
 
       {:error, exception, state} ->
         {:error, Exception.message(exception), state}
+    end
+  end
+
+  defp item_spawn(state, profile, prompt, opts) do
+    with {:ok, spawn_opts} <- spawn_options(state, opts),
+         true <- allowed_profile?(state, profile) do
+      {:ok, {profile, prompt, spawn_opts}, state}
+    else
+      {:error, message} -> {:error, message, state}
+      false -> {:error, {:spawn_error, profile_not_allowed(profile)}, state}
     end
   end
 
@@ -443,9 +523,13 @@ defmodule Tackle.Workflow.API do
 
   # The other API errors are raised in the `deflua` body they belong to, so
   # `runtime_exception!/1` can name it. These checks live in helpers, so the
-  # exception names `tackle.parallel(...)` explicitly.
+  # exception names `tackle.parallel(...)` or `tackle.spawn(...)` explicitly.
   defp parallel_error!(message) do
     raise Lua.RuntimeException, scope: ["tackle"], function: :parallel, message: message
+  end
+
+  defp spawn_error!(message) do
+    raise Lua.RuntimeException, scope: ["tackle"], function: :spawn, message: message
   end
 
   defp describe([]), do: "no values"

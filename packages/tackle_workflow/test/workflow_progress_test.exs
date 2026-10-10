@@ -50,6 +50,70 @@ defmodule Tackle.Workflow.ProgressTest do
     assert scout != worker
   end
 
+  test "spawn and fan-out items can choose the model of their run" do
+    scope = start_scope(profiles: %{"scout" => agent_spec("scout")})
+
+    script = """
+    local single = tackle.await(tackle.spawn("scout", "one", {model = "test/fast"}))
+    local default = tackle.await(tackle.spawn("scout", "two", nil))
+    local items = tackle.parallel({"a", "b"}, function(item)
+      if item == "a" then return "scout", item, {model = "test/strong"} end
+      return "scout", item
+    end)
+    return single.text, default.text, items[1].text, items[2].text
+    """
+
+    assert {:ok, ref} = Workflow.run(handle(scope), script, on_event: observe())
+    assert {:ok, ["one", "two", "a", "b"]} = Workflow.await(ref, @workflow_timeout)
+
+    models =
+      for %{type: :run_started, prompt: prompt, model: model} <- drain(),
+          into: %{},
+          do: {prompt, model}
+
+    assert models == %{
+             "one" => "test/fast",
+             "two" => "test/echo",
+             "a" => "test/strong",
+             "b" => "test/echo"
+           }
+  end
+
+  test "invalid or unavailable models are refused like other spawn failures" do
+    scope = start_scope(profiles: %{"scout" => agent_spec("scout")})
+
+    script = """
+    local function try(opts)
+      local ok, err = pcall(function() return tackle.spawn("scout", "go", opts) end)
+      return tostring(err)
+    end
+
+    local items = tackle.parallel({1, 2, 3}, function(item)
+      if item == 1 then return "scout", "x", {model = "other/model"} end
+      if item == 2 then return "scout", "x", {model = ""} end
+      return "scout", "x", {temperature = 1}
+    end)
+
+    return try({model = "other/model"}), try({model = 3}), try({colour = "red"}), try("test/x"),
+      items[1].status .. ": " .. items[1].text,
+      items[2].status .. ": " .. items[2].text,
+      items[3].status .. ": " .. items[3].text
+    """
+
+    assert {:ok, ref} = Workflow.run(handle(scope), script)
+
+    assert {:ok, [unavailable, bad_type, unknown_key, not_table, item1, item2, item3]} =
+             Workflow.await(ref, @workflow_timeout)
+
+    assert unavailable =~ "spawn failed: {:unknown_model, \"other/model\"}"
+    assert bad_type =~ "spawn option model must be a non-empty string, got 3"
+    assert unknown_key =~ "unknown spawn options: \"colour\""
+    assert not_table =~ "spawn options must be a table, got string"
+    assert item1 =~ "spawn_error: spawn failed: {:unknown_model, \"other/model\"}"
+    assert item2 =~ "callback_error: spawn option model must be a non-empty string"
+    assert item3 =~ "callback_error: unknown spawn options: \"temperature\""
+  end
+
   test "an observed workflow reports its logs as progress" do
     scope = start_scope(profiles: %{})
     test_pid = self()

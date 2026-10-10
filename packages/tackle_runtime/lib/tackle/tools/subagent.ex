@@ -16,8 +16,11 @@ defmodule Tackle.Tools.Subagent do
     * the running agent must carry a runtime handle with delegation granted;
     * the requested profile must be allowlisted in the scope spec.
 
-  Model-visible arguments can only name an allowlisted profile; they can never
-  name a module, widen limits, or address a process.
+  Model-visible arguments can only name an allowlisted profile and, optionally,
+  a `model` reference that overrides the profile's model for one run; they can
+  never name a module, widen limits, or address a process. The scope backend
+  resolves a requested model only against models its trusted configuration
+  already makes available (see `Tackle.Runtime.request_agent/4`).
   """
 
   use Tackle.Lib.Tool
@@ -46,6 +49,11 @@ defmodule Tackle.Tools.Subagent do
 
     field(:prompt, :string, required: true, description: "Self-contained task for the subagent")
 
+    field(:model, :string,
+      description:
+        "Optional provider/model reference (for example \"provider/model\") that overrides the profile's model for this run; it must be a model this session can already use"
+    )
+
     field(:background, :boolean,
       default: false,
       description: "Return immediately with a run id instead of waiting for completion"
@@ -63,6 +71,7 @@ defmodule Tackle.Tools.Subagent do
     with {:ok, handle} <- fetch_handle(context),
          :ok <- ensure_delegation(handle),
          {:ok, opts} <- timeout_opts(args, handle),
+         {:ok, opts} <- model_opts(opts, args),
          opts = put_callbacks(opts, context, args),
          opts = put_retention(opts, context, args),
          {:ok, run_ref} <- request(handle, profile, prompt, opts) do
@@ -100,6 +109,15 @@ defmodule Tackle.Tools.Subagent do
 
       _other ->
         {:error, "timeout_ms must be a positive integer"}
+    end
+  end
+
+  defp model_opts(opts, args) do
+    case Map.get(args, "model") do
+      nil -> {:ok, opts}
+      "" -> {:ok, opts}
+      model when is_binary(model) -> {:ok, Keyword.put(opts, :model, model)}
+      _other -> {:error, "model must be a provider/model string"}
     end
   end
 
@@ -185,12 +203,30 @@ defmodule Tackle.Tools.Subagent do
 
   defp request(handle, profile, prompt, opts) do
     case Runtime.request_agent(handle, profile, prompt, opts) do
-      {:ok, run_ref} -> {:ok, run_ref}
-      {:error, {:rejected, reason}} -> {:error, "subagent rejected: #{inspect(reason)}"}
-      {:error, {:unknown_profile, name}} -> {:error, "unknown subagent profile: #{name}"}
-      {:error, reason} -> {:error, "could not start subagent: #{inspect(reason)}"}
+      {:ok, run_ref} ->
+        {:ok, run_ref}
+
+      {:error, {:rejected, reason}} ->
+        {:error, "subagent rejected: #{inspect(reason)}"}
+
+      {:error, {:unknown_profile, name}} ->
+        {:error, "unknown subagent profile: #{name}"}
+
+      {:error, {:model_selection_unsupported, _model}} ->
+        {:error, model_unsupported()}
+
+      {:error, {:invalid_model, _model}} ->
+        {:error, "model must be a provider/model string"}
+
+      {:error, reason} ->
+        if Keyword.has_key?(opts, :model),
+          do: {:error, "could not start subagent with model #{opts[:model]}: #{inspect(reason)}"},
+          else: {:error, "could not start subagent: #{inspect(reason)}"}
     end
   end
+
+  defp model_unsupported,
+    do: "this host does not support choosing a subagent model; omit model to use the profile's"
 
   defp emit(context, type, run_ref, profile, outcome \\ nil) do
     case Map.get(context, :event_callback) do

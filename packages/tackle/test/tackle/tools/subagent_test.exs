@@ -46,6 +46,37 @@ defmodule Tackle.Tools.SubagentTest do
     assert_receive {:event, %{type: :subagent_finished}}, 2_000
   end
 
+  test "an optional model argument selects the child's model for one run" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{"worker" => agent_spec("worker", content: "worker answer")}
+      )
+
+    test_pid = self()
+
+    context = %{
+      runtime: handle(scope),
+      event_callback: fn event -> send(test_pid, {:event, event}) end
+    }
+
+    args = %{"profile" => "worker", "prompt" => "do work"}
+
+    assert {:ok, "worker answer"} = Subagent.run(Map.put(args, "model", "test/child"), context)
+    assert_receive {:adapter_called, _pid, "child", _opts}, 2_000
+    assert_receive {:event, %{type: :subagent_started, data: %{model: "test/child"}}}
+
+    assert {:ok, "worker answer"} = Subagent.run(Map.put(args, "model", ""), context)
+    assert_receive {:adapter_called, _pid, "echo", _opts}, 2_000
+
+    assert {:error, "model must be a provider/model string"} =
+             Subagent.run(Map.put(args, "model", 42), context)
+
+    assert {:error, message} = Subagent.run(Map.put(args, "model", "missing/model"), context)
+    assert message =~ "could not start subagent with model missing/model"
+    refute_received {:adapter_called, _pid, _model, _opts}
+  end
+
   test "rejects delegation when recursion is not granted" do
     scope =
       start_scope(

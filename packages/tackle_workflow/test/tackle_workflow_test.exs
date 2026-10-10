@@ -228,7 +228,9 @@ defmodule Tackle.WorkflowTest do
                "5/false/callback_error"
 
     assert callback_error =~ "callback exploded"
-    assert bad_request =~ "expected two strings (profile, prompt), got (table)"
+
+    assert bad_request =~
+             "expected two strings and an optional options table (profile, prompt, opts?), got (table)"
   end
 
   test "a fan-out hands each item to the callback untouched" do

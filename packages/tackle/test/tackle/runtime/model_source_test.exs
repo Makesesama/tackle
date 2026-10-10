@@ -73,6 +73,48 @@ defmodule Tackle.Runtime.ModelSourceTest do
     refute_received {:adapter_called, _pid, _model, _opts}
   end
 
+  test "a requested model overrides configured and inherited selections for one run" do
+    fixed = agent_spec("fixed", model: "test/echo", llm_opts: [reasoning_effort: "low"])
+    inherited = %{agent_spec("inherited") | model_source: :parent}
+
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{"fixed" => fixed, "inherited" => inherited}
+      )
+
+    assert {:ok, _snapshot} = Tackle.reconfigure(scope.root_agent_ref, thinking: "high")
+
+    for {profile, thinking} <- [{"fixed", "low"}, {"inherited", "high"}] do
+      assert {:ok, run} =
+               Runtime.request_agent(scope.root_agent_ref, profile, "inspect",
+                 model: "test/child"
+               )
+
+      assert run.model_ref == "test/child"
+      assert %Outcome{status: :ok, agent_state: state} = Runtime.await(run, 5_000)
+      assert state.llm.ref == "test/child"
+      assert Thinking.from_llm_opts(state.llm_opts) == thinking
+    end
+
+    assert {:ok, run} = Runtime.request_agent(scope.root_agent_ref, "fixed", "again")
+    assert %Outcome{status: :ok, agent_state: state} = Runtime.await(run, 5_000)
+    assert state.llm.ref == "test/echo"
+  end
+
+  test "an unavailable requested model fails before admitting a child" do
+    scope =
+      start_scope(root: [allow_delegation: true], profiles: %{"worker" => agent_spec("worker")})
+
+    assert {:error, _reason} =
+             Runtime.request_agent(scope.root_agent_ref, "worker", "inspect",
+               model: "missing/model"
+             )
+
+    assert {:ok, %{agent_count: 1}} = Runtime.scope_snapshot(scope.scope_ref)
+    refute_received {:adapter_called, _pid, _model, _opts}
+  end
+
   test "already running children keep their selection" do
     child = %{agent_spec("worker", mode: :manual) | model_source: :parent}
     scope = start_scope(root: [allow_delegation: true], profiles: %{"worker" => child})
