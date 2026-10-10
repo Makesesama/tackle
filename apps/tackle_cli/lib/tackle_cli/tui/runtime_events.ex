@@ -34,6 +34,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   alias Tackle.CLI.TUI.State.{Metrics, Stream}
   alias Tackle.CLI.Widgets.Input
+  alias Tackle.CLI.WorkflowScript
   alias Tackle.Lib.{ContextUsage, Event, Usage}
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Session.Snapshot
@@ -43,6 +44,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   @max_live_tool_input_bytes 50 * 1_024
   @max_live_tool_output_bytes 50 * 1_024
   @max_subagent_work_bytes 16 * 1_024
+  # Delegating tools whose cards carry a locally observed clock.
+  @timed_tools ["subagent", "run_workflow"]
 
   @doc "Handles one harness or shell-operation message."
   @spec handle(term(), State.t()) ::
@@ -1178,7 +1181,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   # Local observation time only: never persisted or presented as provider
   # latency. Ordered settlement may repeat execution completion; freeze once.
-  defp observe_tool_time(%{name: "subagent", status: status} = tool) do
+  defp observe_tool_time(%{name: name, status: status} = tool) when name in @timed_tools do
     now = System.monotonic_time(:millisecond)
 
     case {status, Map.get(tool, :started_at_ms), Map.get(tool, :finished_at_ms)} do
@@ -1200,7 +1203,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     tools =
       Enum.map(state.tool_activity, fn
-        %{name: "subagent", status: :running, started_at_ms: started} = tool ->
+        %{name: name, status: :running, started_at_ms: started} = tool
+        when name in @timed_tools ->
           Map.put(tool, :elapsed_ms, div(max(now - started, 0), 1_000) * 1_000)
 
         tool ->
@@ -1455,20 +1459,22 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   defp tool_activity_label(data, status) do
     name = value(data, :name) || value(data, :tool_name) || "tool"
 
-    profile =
-      if name == "subagent" do
-        args = ToolView.arguments(value(data, :arguments))
-
-        case value(args, :profile) do
-          profile when is_binary(profile) -> " · " <> profile
-          _ -> ""
-        end
-      else
-        ""
+    target =
+      case activity_target(name, ToolView.arguments(value(data, :arguments))) do
+        target when is_binary(target) and target != "" -> " · " <> target
+        _ -> ""
       end
 
-    "#{status} #{name}#{profile}" |> MessageView.sanitize()
+    "#{status} #{name}#{target}" |> MessageView.sanitize()
   end
+
+  defp activity_target("subagent", args), do: value(args, :profile)
+
+  defp activity_target("run_workflow", args) do
+    args |> value(:script) |> WorkflowScript.outline() |> WorkflowScript.summary()
+  end
+
+  defp activity_target(_name, _args), do: nil
 
   defp value(map, key) when is_map(map),
     do: Map.get(map, key) || Map.get(map, Atom.to_string(key))

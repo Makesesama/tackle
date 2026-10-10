@@ -383,6 +383,22 @@ let
         in
         drv;
 
+      lua =
+        let
+          version = "1.0.2";
+          drv = buildMix {
+            inherit version;
+            name = "lua";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "lua";
+              sha256 = "cf14ab77c27f1acf2fb933b82530bd728dab8a69e7a05757e21a3b49180d4690";
+            };
+          };
+        in
+        drv;
+
       lumis =
         let
           version = "0.8.0";
@@ -822,6 +838,23 @@ let
 
             beamDeps = [
               tackle_lib
+            ];
+          };
+        in
+        drv;
+
+      tackle_workflow =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_workflow";
+
+            src = ../packages/tackle_workflow;
+
+            beamDeps = [
+              lua
+              tackle_runtime
             ];
           };
         in

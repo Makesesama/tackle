@@ -9,6 +9,16 @@ defmodule Tackle.CLI.Distribution do
     Tackle.Plugins.Ollama
   ]
 
+  # Delegation tools bundled with the CLI distribution. `run_workflow` is the
+  # optional `tackle_workflow` plugin's model-facing tool; the CLI grants it to
+  # the root agent next to the subagent tools.
+  @bundled_tools [
+    Tackle.Tools.Subagent,
+    Tackle.Tools.SubagentStatus,
+    Tackle.Tools.SubagentWait,
+    Tackle.Workflow.Tool
+  ]
+
   @doc "Validates bundled adapters, default tools, and host-owned tool modules."
   @spec catalog([module()]) :: {:ok, Tackle.Plugins.Catalog.t()} | {:error, term()}
   def catalog(extra_tools \\ [])
@@ -28,10 +38,7 @@ defmodule Tackle.CLI.Distribution do
       tools:
         Enum.map(Tackle.Tools.default(), &%{module: &1, source: :tackle}) ++
           Enum.map(extra_tools, &%{module: &1, source: :cli_mcp}) ++
-          Enum.map(
-            [Tackle.Tools.Subagent, Tackle.Tools.SubagentStatus, Tackle.Tools.SubagentWait],
-            &%{module: &1, source: :tackle}
-          ) ++ contributions.tools,
+          Enum.map(bundled_tools(), &%{module: &1, source: :tackle}) ++ contributions.tools,
       hooks: contributions.hooks
     )
   end
@@ -39,6 +46,19 @@ defmodule Tackle.CLI.Distribution do
   def catalog(extra_tools), do: {:error, {:invalid_catalog_tools, extra_tools}}
 
   defp empty_contributions, do: %{adapters: [], tools: [], hooks: []}
+
+  @doc "Returns the delegation tools bundled with the CLI distribution."
+  @spec bundled_tools() :: [module()]
+  def bundled_tools, do: @bundled_tools
+
+  @doc """
+  Names of bundled catalog tools the CLI grants to the root agent.
+
+  The subagent tools are granted by `Tackle.Coding` itself; only the workflow
+  tool needs an explicit grant.
+  """
+  @spec root_tool_names() :: [String.t()]
+  def root_tool_names, do: [Tackle.Workflow.Tool.name()]
 
   @doc "Model references from the validated distribution catalog."
   @spec available_models() :: {:ok, [String.t()]} | {:error, term()}

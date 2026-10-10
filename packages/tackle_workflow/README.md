@@ -148,7 +148,13 @@ profiles workflows may spawn:
   only narrow what the scope already allows. Model-visible data can therefore
   never widen delegation. Without it, the scope's trusted profiles decide — the
   same set `subagent` can already name.
-* The values the workflow returns are the tool result; workflow errors, rejected
+* The values the workflow returns are the tool result, one per line. A sequence
+  table such as `return {a, b}` gives one line per element, like `return a, b`;
+  any other table — `{ok = true, text = "..."}`, or a table nested in a
+  sequence — is rendered as JSON. NaN becomes `null` inside JSON, keys that would
+  collide as JSON strings (`1` and `"1"`) fall back to Elixir's `inspect/1`, and
+  functions and userdata become `<function>` and `<userdata>` placeholders.
+* Workflow errors, rejected
   spawns, cancellations, and deadline timeouts are returned as readable
   messages the agent can act on.
 * The tool call owns the workflow: the workflow is cancelled when the call ends
@@ -182,9 +188,11 @@ profiles workflows may spawn:
 
 ## Placement
 
-This package is optional; nothing in the harness, CLI, or web app depends on it
-at runtime. (The harness's own test suite has a test-only dependency, to prove
-that a real session can grant and run this tool.) Hosts that want scripted flows
+This package is optional for hosts: neither the harness nor the web app depends
+on it at runtime. (The harness's own test suite has a test-only dependency, to
+prove that a real session can grant and run this tool.) The CLI bundles it and
+grants `run_workflow` to the root agent alongside the subagent tools; named
+profiles only get the tool by listing it explicitly. Hosts that want scripted flows
 add `:tackle_workflow` and either call `Tackle.Workflow.run/3` with a handle from
 their own runtime integration, or grant `Tackle.Workflow.Tool` to a session's root
 agent.

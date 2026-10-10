@@ -36,10 +36,15 @@ defmodule Tackle.Workflow.Tool do
   concurrent tool policy does; a host that runs tools inline in the agent loop
   should pass its own `:owner` through `Tackle.Workflow.run/3`. A workflow that
   exceeds the session's `workflow_timeout` is cancelled too. The workflow's
-  returned values are the tool result.
+  returned values are the tool result, one per line. A sequence table (keys
+  `1..n`) contributes one line per element; any other table, and a table nested
+  inside one, is rendered as JSON. Functions and userdata become `<function>`
+  and `<userdata>` placeholders.
   """
 
   use Tackle.Lib.Tool
+
+  require Lua.API
 
   alias Tackle.Runtime.Handle
   alias Tackle.Workflow
@@ -56,7 +61,8 @@ defmodule Tackle.Workflow.Tool do
       "delegated agent per item with bounded concurrency, returning one result table per " <>
       "item in input order; `tackle.cancel(run, reason)` to cancel one run; and " <>
       "`tackle.log(message)` to report progress. The values the workflow returns are the tool " <>
-      "result. A workflow can only spawn profiles this session allows it to use, and it " <>
+      "result, one per line: a list table such as `{a, b}` gives one line per element, and " <>
+      "any other table is rendered as JSON. A workflow can only spawn profiles this session allows it to use, and it " <>
       "runs under this agent's limits and cancellation."
   )
 
@@ -153,6 +159,16 @@ defmodule Tackle.Workflow.Tool do
     end
   end
 
+  # Result formatting ---------------------------------------------------------------
+  #
+  # The tool result is text for a model, so every returned value is rendered
+  # readably. Lua tables arrive decoded as `{key, value}` lists: a sequence (keys
+  # 1..n) reads like several return values, one element per line, and any other
+  # table — or a table nested inside one — is JSON. Values without a data
+  # representation, such as functions, become a short placeholder rather than
+  # the VM's internal terms, and a table JSON cannot hold losslessly keeps an
+  # `inspect/1` fallback instead of failing a workflow that already finished.
+
   defp format_values([]), do: "(the workflow returned no values)"
 
   defp format_values(values) when is_list(values),
@@ -160,10 +176,110 @@ defmodule Tackle.Workflow.Tool do
 
   defp format_values(other), do: format_value(other)
 
-  defp format_value(value) when is_binary(value), do: value
-  defp format_value(value) when is_number(value) or is_boolean(value), do: to_string(value)
-  defp format_value(nil), do: "nil"
-  defp format_value(value), do: inspect(value)
+  defp format_value(value) do
+    case sequence(value) do
+      {:ok, [_ | _] = elements} -> Enum.map_join(elements, "\n", &format_scalar/1)
+      _other -> format_scalar(value)
+    end
+  end
+
+  defp format_scalar(value) when is_binary(value), do: value
+  defp format_scalar(value) when is_number(value) or is_boolean(value), do: to_string(value)
+  defp format_scalar(nil), do: "nil"
+  # Luerl decodes NaN (`0/0`) to an atom; Lua itself prints it as `nan`.
+  defp format_scalar(:nan), do: "nan"
+
+  defp format_scalar(value) do
+    if table?(value) do
+      with {:ok, data} <- json_data(value),
+           {:ok, json} <- encode_json(data) do
+        json
+      else
+        _other -> inspect(value)
+      end
+    else
+      placeholder(value)
+    end
+  end
+
+  # Functions and userdata cross the eval boundary as display structs at the top
+  # level and as VM tag tuples inside tables; `Lua.unwrap/1` and the `Lua.API`
+  # guards classify both without matching VM internals. Neither means anything
+  # to a model beyond its kind.
+  defp placeholder(value), do: value |> Lua.unwrap() |> lua_kind()
+
+  defp lua_kind(value) when Lua.API.is_lua_func(value) or Lua.API.is_erl_func(value),
+    do: "<function>"
+
+  defp lua_kind(value) when Lua.API.is_userdata(value), do: "<userdata>"
+  defp lua_kind(_value), do: "<unsupported Lua value>"
+
+  # A decoded table is a list of `{key, value}` pairs; `{}` decodes to `[]`.
+  defp table?(value), do: is_list(value) and Enum.all?(value, &match?({_key, _value}, &1))
+
+  # Keys arrive sorted, so a sequence is exactly the keys 1..n in order.
+  defp sequence(value) do
+    if table?(value) and
+         value |> Enum.with_index(1) |> Enum.all?(fn {{key, _}, index} -> key === index end),
+       do: {:ok, Enum.map(value, fn {_key, element} -> element end)},
+       else: :error
+  end
+
+  defp json_data(value) when is_binary(value) or is_number(value) or is_boolean(value),
+    do: {:ok, value}
+
+  # JSON has no NaN; `null` is the conventional stand-in.
+  defp json_data(:nan), do: {:ok, nil}
+
+  defp json_data(value) do
+    if table?(value) do
+      case sequence(value) do
+        {:ok, elements} -> json_list(elements)
+        :error -> json_object(value)
+      end
+    else
+      {:ok, placeholder(value)}
+    end
+  end
+
+  defp json_list(elements) do
+    Enum.reduce_while(elements, {:ok, []}, fn element, {:ok, acc} ->
+      case json_data(element) do
+        {:ok, data} -> {:cont, {:ok, [data | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      :error -> :error
+    end
+  end
+
+  # JSON object keys are strings. Keys that collide once stringified (`1` and
+  # `"1"`) would silently drop a value, so such a table is not rendered as JSON.
+  defp json_object(pairs) do
+    Enum.reduce_while(pairs, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      with {:ok, name} <- json_key(key),
+           false <- Map.has_key?(acc, name),
+           {:ok, data} <- json_data(value) do
+        {:cont, {:ok, Map.put(acc, name, data)}}
+      else
+        _other -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp json_key(key) when is_binary(key), do: {:ok, key}
+  defp json_key(key) when is_number(key) or is_boolean(key), do: {:ok, to_string(key)}
+  defp json_key(_key), do: :error
+
+  # The data holds only strings, numbers, booleans, nil, lists, and maps, but Lua
+  # strings are bytes: text that is not valid UTF-8 cannot be JSON.
+  defp encode_json(data) do
+    {:ok, JSON.encode!(data)}
+  rescue
+    _error in ErlangError -> :error
+  end
 
   defp workflow_error(%{message: message} = reason) do
     case Map.get(reason, :line) do

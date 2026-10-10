@@ -7,7 +7,7 @@ defmodule Tackle.CLI.Application do
   # highlighted; warm the common ones in the background so the first edit card
   # of a session does not stall on it. Failures are logged by lumis, never
   # fatal, and any other language still loads on demand.
-  @highlight_languages ~w(elixir erlang heex markdown bash json yaml toml)
+  @highlight_languages ~w(elixir erlang heex markdown bash json yaml toml lua)
 
   @impl true
   def start(_type, _args) do
@@ -40,10 +40,8 @@ defmodule Tackle.CLI.Application do
         ) ++ contributions.adapters,
       tools:
         Enum.map(Tackle.Tools.default(), &%{module: &1, source: :tackle}) ++
-          Enum.map(
-            [Tackle.Tools.Subagent, Tackle.Tools.SubagentStatus, Tackle.Tools.SubagentWait],
-            &%{module: &1, source: :tackle}
-          ) ++ contributions.tools,
+          Enum.map(Tackle.CLI.Distribution.bundled_tools(), &%{module: &1, source: :tackle}) ++
+          contributions.tools,
       hooks: contributions.hooks
     )
   end

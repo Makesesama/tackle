@@ -238,6 +238,13 @@ defmodule Tackle.CLI.Output.Progress do
   defp target_candidate("edit", arguments), do: value(arguments, :path)
   defp target_candidate("subagent", arguments), do: value(arguments, :profile)
 
+  defp target_candidate("run_workflow", arguments) do
+    arguments
+    |> value(:script)
+    |> Tackle.CLI.WorkflowScript.outline()
+    |> Tackle.CLI.WorkflowScript.summary()
+  end
+
   defp target_candidate(_name, arguments),
     do: value(arguments, :path) || value(arguments, :command)
 

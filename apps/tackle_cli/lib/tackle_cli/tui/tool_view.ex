@@ -13,6 +13,11 @@ defmodule Tackle.CLI.TUI.ToolView do
   Subagents show their profile, assignment, live status, and locally observed
   elapsed time when available. Completed subagents show just the elapsed seconds
   instead of a completion label. Full arguments and findings stay in details.
+  Workflows (`run_workflow`) are headed by a static outline of the profiles their
+  Lua script names. While preparing or running they preview the highlighted
+  script, a completed workflow shows its result, and a failed one shows the
+  error with the script line it names. Details number every script line so a
+  `line N` error can be read against the source.
   Unknown tools retain a generic source fallback.
 
   Edit previews compare the submitted replacement strings, never files on disk.
@@ -47,9 +52,14 @@ defmodule Tackle.CLI.TUI.ToolView do
   alias ExRatatui.Style
   alias Tackle.CLI.Native
   alias Tackle.CLI.TUI.{Highlight, MessageView, Theme, ToolGroups}
+  alias Tackle.CLI.WorkflowScript
 
   @preview_rows 6
   @file_preview_rows 16
+  # A workflow preview is a glance at the plan, not the whole program.
+  @workflow_preview_rows 10
+  # Lumis picks the grammar from the extension.
+  @workflow_path "workflow.lua"
   @preview_replacements 2
   @preview_context 1
   @header_rows 2
@@ -266,6 +276,29 @@ defmodule Tackle.CLI.TUI.ToolView do
     end
   end
 
+  defp file_preview(
+         %{tool_name: "run_workflow", tool_status: status} = entry,
+         args,
+         width,
+         budget
+       )
+       when status in [:preparing, :requested, :running] do
+    case workflow_script(entry, args) do
+      nil ->
+        nil
+
+      script ->
+        label =
+          if status == :preparing,
+            do: "Script incoming (partial)",
+            else: workflow_label(script)
+
+        script
+        |> String.trim_trailing("\n")
+        |> text_preview(label, width, min(budget, @workflow_preview_rows), @workflow_path)
+    end
+  end
+
   defp file_preview(_entry, _args, _width, _budget), do: nil
 
   # Code previews are syntax-highlighted for the file's language when the
@@ -291,6 +324,13 @@ defmodule Tackle.CLI.TUI.ToolView do
     case Map.get(tokens, number) do
       nil -> body_row(Theme.style(:text), line)
       runs -> MessageView.row(Enum.map(runs, &token_span/1))
+    end
+  end
+
+  defp code_spans(line, number, tokens) do
+    case Map.get(tokens, number) do
+      nil -> [MessageView.span(line, Theme.style(:text))]
+      runs -> Enum.map(runs, &token_span/1)
     end
   end
 
@@ -485,10 +525,20 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     value =
       case name do
-        "subagent" -> get(args, :profile)
-        "bash" -> get(args, :command)
-        name when name in ["read", "edit", "write"] -> get(args, :path)
-        _ -> get(args, :path) || get(args, :command)
+        "subagent" ->
+          get(args, :profile)
+
+        "run_workflow" ->
+          args |> get(:script) |> WorkflowScript.outline() |> WorkflowScript.summary()
+
+        "bash" ->
+          get(args, :command)
+
+        name when name in ["read", "edit", "write"] ->
+          get(args, :path)
+
+        _ ->
+          get(args, :path) || get(args, :command)
       end
 
     if is_binary(value), do: value, else: ""
@@ -498,18 +548,6 @@ defmodule Tackle.CLI.TUI.ToolView do
     profile = target("subagent", args)
     profile = if profile == "", do: "unknown profile", else: profile
     status = entry.tool_status
-
-    elapsed =
-      case entry.tool_elapsed_ms do
-        ms when is_integer(ms) and ms >= 0 and status != :completed -> "  " <> elapsed_text(ms)
-        _ -> ""
-      end
-
-    completed_time =
-      case {status, entry.tool_elapsed_ms} do
-        {:completed, ms} when is_integer(ms) and ms >= 0 -> "  #{div(ms, 1_000)}s"
-        _ -> ""
-      end
 
     model =
       case Map.get(entry, :model) do
@@ -523,8 +561,42 @@ defmodule Tackle.CLI.TUI.ToolView do
         MessageView.span(subagent_status(status), status_style(status)),
         MessageView.span("subagent  ", Theme.style(:muted)),
         MessageView.span(profile, Theme.bold(Theme.style(:text))),
-        MessageView.span(model <> elapsed <> completed_time, Theme.style(:muted))
+        MessageView.span(
+          model <> elapsed_suffix(status, entry.tool_elapsed_ms),
+          Theme.style(:muted)
+        )
       ])
+    ]
+  end
+
+  defp header_rows(%{tool_name: "run_workflow"} = entry, args, _width) do
+    status = entry.tool_status
+
+    summary =
+      entry
+      |> workflow_script(args)
+      |> WorkflowScript.outline()
+      |> WorkflowScript.summary()
+
+    heading =
+      if summary == "" do
+        [MessageView.span("workflow", Theme.bold(Theme.style(:text)))]
+      else
+        [
+          MessageView.span("workflow  ", Theme.style(:muted)),
+          MessageView.span(summary, Theme.bold(Theme.style(:text)))
+        ]
+      end
+
+    [
+      MessageView.row(
+        [
+          MessageView.span(marker(status), marker_style(status)),
+          MessageView.span(subagent_status(status), status_style(status))
+        ] ++
+          heading ++
+          [MessageView.span(elapsed_suffix(status, entry.tool_elapsed_ms), Theme.style(:muted))]
+      )
     ]
   end
 
@@ -593,6 +665,32 @@ defmodule Tackle.CLI.TUI.ToolView do
     generic_rows(%{entry | tool_output: output}, args, :details)
   end
 
+  defp body_rows(
+         %{tool_name: "run_workflow", tool_status: :failed} = entry,
+         args,
+         :preview,
+         _width
+       ),
+       do: output_rows(entry, :preview) ++ workflow_error_rows(entry, args)
+
+  defp body_rows(%{tool_name: "run_workflow"} = entry, args, :preview, _width) do
+    summary =
+      case {entry.tool_status, workflow_script(entry, args)} do
+        {:preparing, nil} -> context_row("Script incoming")
+        {_status, nil} -> context_row("Script unavailable")
+        {_status, script} -> context_row(workflow_label(script))
+      end
+
+    [summary | output_rows(entry, :preview)]
+  end
+
+  defp body_rows(%{tool_name: "run_workflow"} = entry, args, :details, _width) do
+    case workflow_script(entry, args) do
+      nil -> generic_rows(entry, args, :details)
+      script -> workflow_rows(entry, args, script)
+    end
+  end
+
   defp body_rows(%{tool_name: "read", tool_status: :completed}, _args, :preview, _width),
     do: []
 
@@ -622,6 +720,73 @@ defmodule Tackle.CLI.TUI.ToolView do
   end
 
   defp subagent_work_rows(_entry), do: []
+
+  # Streamed input is raw JSON until the call is complete; read the script
+  # from its decodable prefix like edit and write previews do.
+  defp workflow_script(%{tool_arguments: raw}, %{"input" => raw}) when is_binary(raw),
+    do: partial_field(raw, "script")
+
+  defp workflow_script(_entry, args) do
+    case get(args, :script) do
+      script when is_binary(script) -> script
+      _ -> nil
+    end
+  end
+
+  # A trailing newline ends the last line; it does not start another.
+  defp script_lines(script), do: script |> String.trim_trailing("\n") |> String.split("\n")
+
+  defp workflow_label(script) do
+    count = length(script_lines(script))
+    "Lua workflow · #{count} " <> if(count == 1, do: "line", else: "lines")
+  end
+
+  defp workflow_rows(entry, args, script) do
+    lines = script_lines(script)
+    tokens = Highlight.lines(script, @workflow_path)
+    number_width = lines |> length() |> Integer.to_string() |> String.length()
+
+    timeout =
+      case get(args, :timeout_ms) do
+        ms when is_integer(ms) and ms > 0 ->
+          [context_row("Deadline: " <> elapsed_text(ms) <> " (bounded by the scope)")]
+
+        _ ->
+          []
+      end
+
+    [context_row(workflow_label(script))] ++
+      Enum.map(
+        Enum.with_index(lines, 1),
+        &numbered_code_row(&1, tokens, number_width, Theme.style(:subtle))
+      ) ++ timeout ++ result_rows(entry)
+  end
+
+  defp result_rows(%{tool_output: nil}), do: []
+
+  defp result_rows(entry) do
+    label = if entry.tool_status == :failed, do: "Error", else: "Result"
+    [context_row(label) | output_rows(entry, :details)]
+  end
+
+  # Workflow errors name the script line they failed at; show that line so the
+  # failure reads against its source without opening details.
+  defp workflow_error_rows(entry, args) do
+    with line when is_integer(line) <- WorkflowScript.error_line(entry.tool_output),
+         script when is_binary(script) <- workflow_script(entry, args),
+         source when is_binary(source) <- Enum.at(script_lines(script), line - 1) do
+      tokens = Highlight.lines(script, @workflow_path)
+      number_width = line |> Integer.to_string() |> String.length()
+      [numbered_code_row({source, line}, tokens, number_width, Theme.style(:error))]
+    else
+      _ -> []
+    end
+  end
+
+  defp numbered_code_row({line, number}, tokens, number_width, gutter_style) do
+    gutter = String.pad_leading(Integer.to_string(number), number_width) <> "  "
+    MessageView.row([MessageView.span(gutter, gutter_style) | code_spans(line, number, tokens)])
+  end
 
   defp generic_rows(entry, args, mode) do
     muted = Theme.style(:muted)
@@ -982,6 +1147,11 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp marker_style(:running), do: Theme.style(:accent_soft)
   defp marker_style(:completed), do: Theme.style(:subtle)
   defp marker_style(_), do: Theme.style(:muted)
+
+  # Live calls show a running clock; completed ones only whole seconds.
+  defp elapsed_suffix(:completed, ms) when is_integer(ms) and ms >= 0, do: "  #{div(ms, 1_000)}s"
+  defp elapsed_suffix(_status, ms) when is_integer(ms) and ms >= 0, do: "  " <> elapsed_text(ms)
+  defp elapsed_suffix(_status, _ms), do: ""
 
   defp elapsed_text(ms) do
     seconds = div(ms, 1_000)

@@ -47,6 +47,61 @@ defmodule Tackle.Workflow.ToolTest do
       assert {:ok, "(the workflow returned no values)"} = run_workflow(scope, "local _ = 1")
     end
 
+    test "renders a returned sequence table one element per line" do
+      scope = start_scope(profiles: %{"scout" => agent_spec("scout")})
+
+      script = """
+      local result = tackle.await(tackle.spawn("scout", "map the code"))
+      return {result.text, "second", 3, true}
+      """
+
+      assert {:ok, "map the code\nsecond\n3\ntrue"} = run_workflow(scope, script)
+      assert {:ok, "one\ntwo\nthree"} = run_workflow(scope, ~s|return {"one", "two"}, "three"|)
+    end
+
+    test "renders keyed and nested tables as JSON" do
+      scope = start_scope(profiles: %{})
+
+      assert {:ok, json} = run_workflow(scope, ~s|return {ok = true, text = "done", n = 2}|)
+      assert JSON.decode!(json) == %{"ok" => true, "text" => "done", "n" => 2}
+
+      # A table nested in a sequence stays one JSON value on its own line.
+      assert {:ok, "first\n" <> nested} =
+               run_workflow(scope, ~s|return {"first", {a = {1, 2}, [3] = "x"}}|)
+
+      assert JSON.decode!(nested) == %{"a" => [1, 2], "3" => "x"}
+
+      # A sparse table is not a sequence; its keys stay explicit.
+      assert {:ok, sparse} = run_workflow(scope, ~s|return {[1] = "a", [3] = "c"}|)
+      assert JSON.decode!(sparse) == %{"1" => "a", "3" => "c"}
+
+      assert {:ok, "[]"} = run_workflow(scope, "return {}")
+      assert {:ok, "[[1,2],[]]"} = run_workflow(scope, "return {{{1, 2}, {}}}")
+    end
+
+    test "keeps a readable fallback for values JSON cannot represent" do
+      scope = start_scope(profiles: %{})
+
+      assert {:ok, "nan"} = run_workflow(scope, "return 0/0")
+      assert {:ok, ~s|{"x":null}|} = run_workflow(scope, "return {x = 0/0}")
+
+      # Functions have no data representation; they never leak VM internals.
+      assert {:ok, "<function>"} = run_workflow(scope, "return function() end")
+      assert {:ok, ~s|{"f":"<function>"}|} = run_workflow(scope, "return {f = function() end}")
+      assert {:ok, ~s|["<function>","x"]|} = run_workflow(scope, ~s|return {{print, "x"}}|)
+
+      # Keys that collide once stringified would silently lose a value.
+      assert {:ok, colliding} =
+               run_workflow(scope, ~s|return {[1] = "int", ["1"] = "str", [2] = 0}|)
+
+      assert colliding =~ ~s|"int"|
+      assert colliding =~ ~s|"str"|
+
+      # Lua strings are bytes; invalid UTF-8 cannot be JSON.
+      assert {:ok, bytes} = run_workflow(scope, ~S|return {k = "\255"}|)
+      assert bytes =~ "<<255>>"
+    end
+
     test "reports a workflow error for a rejected spawn" do
       scope = start_scope(profiles: %{})
 

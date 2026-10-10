@@ -51,6 +51,7 @@ let
       (projectFiles ../../packages/tackle_ollama)
       (projectFiles ../../packages/tackle_mcp)
       (projectFiles ../../packages/tackle_sdk)
+      (projectFiles ../../packages/tackle_workflow)
       (projectFiles ../../packages/clipboard_ex)
       (projectFiles ../../apps/tackle_cli)
       # Listed unconditionally because `mix.exs` reads it: a source copy without it
@@ -220,6 +221,9 @@ let
       tackle_ollama = prev.tackle_ollama.override { src = "${src}/packages/tackle_ollama"; };
       tackle_mcp = prev.tackle_mcp.override { src = "${src}/packages/tackle_mcp"; };
       tackle_sdk = prev.tackle_sdk.override { src = "${src}/packages/tackle_sdk"; };
+      tackle_workflow = prev.tackle_workflow.override {
+        src = "${src}/packages/tackle_workflow";
+      };
       # Rustler would otherwise compile the crate with the GNU toolchain during
       # the Mix build; the musl NIF built above is installed instead.
       clipboard_ex = prev.clipboard_ex.override {

@@ -94,6 +94,8 @@ defmodule Tackle.CLI.MixProject do
       {:tackle_ollama, path: "../../packages/tackle_ollama"},
       {:tackle_mcp, path: "../../packages/tackle_mcp"},
       {:tackle_sdk, path: "../../packages/tackle_sdk"},
+      # Lua-scripted workflows; the CLI grants its `run_workflow` tool to the root.
+      {:tackle_workflow, path: "../../packages/tackle_workflow"},
       {:clipboard_ex, path: "../../packages/clipboard_ex"},
       {:optimus, "~> 0.6"},
       {:owl, "~> 0.13"},

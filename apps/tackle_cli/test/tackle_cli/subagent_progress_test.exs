@@ -63,6 +63,39 @@ defmodule Tackle.CLI.SubagentProgressTest do
     assert two.tool_status == :completed
   end
 
+  test "a running workflow keeps a local clock and an outlined activity label" do
+    state =
+      event(shell(), :tool_start, %{
+        tool_call_id: "wf",
+        name: "run_workflow",
+        arguments: %{"script" => ~s|return tackle.await(tackle.spawn("scout", "map")).text|}
+      })
+
+    assert state.activity == "running run_workflow · scout"
+
+    {:noreply, ticked} = RuntimeEvents.handle({:tui_spinner_tick}, age(state, "wf", 65_000))
+    [card] = cards(ticked)
+    assert card.tool_elapsed_ms >= 65_000
+    assert render_text(card) =~ "running  workflow  scout  1m 5s"
+
+    completed =
+      event(ticked, :tool_execution_end, %{
+        tool_call_id: "wf",
+        name: "run_workflow",
+        status: :completed,
+        result: "mapped"
+      })
+
+    [card] = cards(completed)
+    assert card.tool_status == :completed
+    duration = card.tool_elapsed_ms
+    assert duration >= 65_000
+
+    # A settled workflow's clock is frozen.
+    {:noreply, later} = RuntimeEvents.handle({:tui_spinner_tick}, age(completed, "wf", 90_000))
+    assert hd(cards(later)).tool_elapsed_ms == duration
+  end
+
   test "subagent start metadata adds the resolved model to the live card" do
     state = start(shell(), "one", "Inspect")
 

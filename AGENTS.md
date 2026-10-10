@@ -136,13 +136,16 @@ Burrito, or lint commands for tooling that has not been wired up.
   (`Tackle.Workflow.*`, `:tackle_workflow`) on top of `tackle_runtime`. A
   workflow is a sandboxed Lua script (`tackle.spawn/2`, `tackle.await/1`,
   `tackle.parallel/3`) whose delegated runs use the same primitives as
-  `subagent`; nothing else depends on this package.
+  `subagent`. The harness only depends on it in tests; the CLI bundles it and
+  grants its `run_workflow` tool to the root agent.
 - `packages/clipboard_ex/`: native clipboard package (`Clipboard.*`,
   `:clipboard_ex`): a Rustler NIF over Rust's `arboard` with tmux/OSC 52
   terminal fallbacks. The CLI uses it for copying and for image/text pasting.
 - `apps/tackle_cli/`: default Optimus/ex_ratatui terminal entrypoint. It is a
   separate Mix project that depends on the harness and bundles Codex as a
   distribution dependency; runtime adapter loading remains a harness concern.
+  It also bundles `tackle_workflow`; `Tackle.CLI.Distribution` lists the
+  bundled delegation tools and the catalog tools granted to the root agent.
 - `apps/tackle_web/`: Phoenix app with two surfaces on one
   `Tackle.Web.*` namespace. `/chat` is the ordinary Tackle agent as a chat
   conversation, driven through `Tackle.Phoenix.Runner` and backed by an

@@ -545,6 +545,139 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert text(ToolView.render(missing, 100)) =~ "Task unavailable"
   end
 
+  describe "run_workflow cards" do
+    @review_loop """
+    -- Review loop
+    local findings = tackle.await(tackle.spawn("scout", "Map the code paths."))
+    local plan = tackle.await(tackle.spawn("planner", "Plan: " .. findings.text))
+    local impl = tackle.await(tackle.spawn("worker", "Implement: " .. plan.text))
+    local review = tackle.await(tackle.spawn("reviewer", "Review the change."))
+    while not review.ok do
+      impl = tackle.await(tackle.spawn("worker", "Fix: " .. review.text))
+      review = tackle.await(tackle.spawn("reviewer", "Re-review."))
+    end
+    local answers = tackle.parallel(items, function(item)
+      return "scout", "Check " .. item
+    end)
+    return review.text
+    """
+
+    test "a running workflow outlines its profiles and previews a bounded script" do
+      entry = workflow_entry(:running, %{"script" => @review_loop}, elapsed_ms: 72_000)
+      output = text(ToolView.render(entry, 100))
+
+      assert output =~
+               "● running  workflow  scout → planner → worker → reviewer · fan-out  1m 12s"
+
+      assert output =~ "Lua workflow · 13 lines"
+      assert output =~ ~s(local findings = tackle.await(tackle.spawn("scout")
+      assert output =~ "Showing 10 of 13 lines"
+      refute output =~ "return review.text"
+      refute output =~ ~s("script")
+
+      assert ToolView.title("run_workflow", %{"script" => @review_loop}, :running) ==
+               "run_workflow  scout → planner → worker → reviewer · fan-out"
+    end
+
+    test "a completed workflow shows its result instead of the script" do
+      [entry] =
+        settled([
+          workflow_call(%{"script" => @review_loop}),
+          Message.tool_result("wf", "run_workflow", "Review passed.\nTwo notes remain.")
+        ])
+
+      output = text(ToolView.render(%{entry | tool_elapsed_ms: 95_000}, 100))
+      assert output =~ "  workflow  scout → planner → worker → reviewer · fan-out  95s"
+      assert output =~ "Lua workflow · 13 lines"
+      assert output =~ "Review passed.\n    Two notes remain."
+      refute output =~ "local findings"
+      refute output =~ "completed"
+      assert MessageView.full_text(entry) == "Review passed.\nTwo notes remain."
+      assert MessageView.search_text(entry) =~ "Re-review."
+    end
+
+    test "a failed workflow shows the error and the script line it names" do
+      [entry] =
+        settled([
+          workflow_call(%{"script" => @review_loop}),
+          Message.tool_result(
+            "wf",
+            "run_workflow",
+            "Error: the workflow failed at line 6: attempt to index a nil value"
+          )
+        ])
+
+      output = text(ToolView.render(entry, 100))
+      assert output =~ "✗ failed  workflow  scout"
+      assert output =~ "the workflow failed at line 6: attempt to index a nil value"
+      assert output =~ "6  while not review.ok do"
+      refute output =~ "local findings"
+
+      # An error without a line, or naming a line past the end, adds no source row.
+      for error <- ["the workflow exceeded its deadline", "the workflow failed at line 99: x"] do
+        [failed] =
+          settled([
+            workflow_call(%{"script" => @review_loop}),
+            Message.tool_result("wf", "run_workflow", "Error: " <> error)
+          ])
+
+        rows = failed |> ToolView.render(100) |> text() |> String.split("\n")
+        assert length(rows) == 2
+      end
+    end
+
+    test "details number every script line and keep the deadline and result" do
+      [entry] =
+        settled([
+          workflow_call(%{"script" => @review_loop, "timeout_ms" => 600_000}),
+          Message.tool_result("wf", "run_workflow", "final answer")
+        ])
+
+      details = text(MessageView.inspect_items(entry, 120))
+      assert details =~ " 1  -- Review loop"
+      assert details =~ "13  return review.text"
+      refute details =~ "14  "
+      assert details =~ "Deadline: 10m 0s (bounded by the scope)"
+      assert details =~ "Result\n    final answer"
+    end
+
+    test "streamed input previews the partial script without the JSON envelope" do
+      raw = ~S|{"script":"local a = tackle.spawn(\"scout\", \"x\")\nlocal b = tack|
+      entry = workflow_entry(:preparing, raw)
+      output = text(ToolView.render(entry, 100))
+
+      assert output =~ "◐ preparing  workflow  scout"
+      assert output =~ "Script incoming (partial)"
+      assert output =~ "local b = tack"
+      refute output =~ ~s({"script")
+
+      empty = text(ToolView.render(workflow_entry(:preparing, ~S|{"scr|), 100))
+      assert empty =~ "preparing  workflow"
+      assert empty =~ "Script incoming"
+    end
+
+    test "previews stay within the card width and never paint control sequences" do
+      script =
+        ~s(local r = tackle.spawn("scout\e]52;c;evil\a", ") <>
+          String.duplicate("界 trace ", 300) <> ~s("\)\nreturn r)
+
+      entry = workflow_entry(:running, %{"script" => script})
+
+      for width <- [1, 4, 8, 30, 80] do
+        items = ToolView.render(entry, width)
+        refute text(items) =~ "evil"
+
+        for {widget, _} <- items, row <- widget.text do
+          assert MessageView.display_width(plain(row)) <= width
+        end
+      end
+
+      missing = text(ToolView.render(workflow_entry(:running, %{}), 80))
+      assert missing =~ "running  workflow"
+      assert missing =~ "Script unavailable"
+    end
+  end
+
   test "a fourteen-line insertion stays complete and metadata does not spend code rows" do
     new = Enum.map_join(1..14, "\n", &"added #{&1}")
     entry = file_entry("edit", %{path: "a.ex", edits: [%{oldText: "old", newText: new}]})
@@ -663,6 +796,20 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
   defp file_entry(name, args) do
     [entry] = settled([Message.assistant(tool_calls: [%{id: name, name: name, arguments: args}])])
+    entry
+  end
+
+  defp workflow_call(args),
+    do: Message.assistant(tool_calls: [%{id: "wf", name: "run_workflow", arguments: args}])
+
+  defp workflow_entry(status, arguments, extra \\ []) do
+    tool =
+      Map.merge(
+        %{id: "wf", name: "run_workflow", status: status, arguments: arguments},
+        Map.new(extra)
+      )
+
+    [entry] = MessageView.section_entries(%{tool_activity: [tool]}, :tools)
     entry
   end
 

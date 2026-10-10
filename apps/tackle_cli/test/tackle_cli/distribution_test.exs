@@ -25,6 +25,44 @@ defmodule Tackle.CLI.DistributionTest do
              Tackle.Plugins.Catalog.resolve_tools(catalog, ["read"])
   end
 
+  test "the catalog bundles the workflow tool next to the subagent tools" do
+    assert {:ok, catalog} = Distribution.catalog()
+
+    assert {:ok, [%{module: Tackle.Workflow.Tool, source: :tackle}]} =
+             Tackle.Plugins.Catalog.resolve_tools(catalog, ["run_workflow"])
+
+    assert Distribution.root_tool_names() == ["run_workflow"]
+  end
+
+  test "the CLI's coding scope grants run_workflow to a delegating root agent" do
+    home = Path.join(System.tmp_dir!(), "tackle-cli-dist-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(home)
+    on_exit(fn -> File.rm_rf!(home) end)
+
+    assert {:ok, catalog} = Distribution.catalog()
+
+    assert {:ok, spec} =
+             Tackle.Coding.scope_spec(
+               [
+                 catalog: catalog,
+                 catalog_root_tools: Distribution.root_tool_names(),
+                 overrides: [model: "ollama-cloud/gpt-oss:20b"],
+                 cwd: home,
+                 env: %{"TACKLE_HOME" => home}
+               ],
+               nil
+             )
+
+    assert Tackle.Workflow.Tool in spec.root_spec.config.tools
+    assert Tackle.Tools.Subagent in spec.root_spec.config.tools
+    assert spec.root_spec.allow_delegation
+
+    # Profiles do not inherit the workflow tool unless they list it explicitly.
+    for {_name, profile} <- spec.profiles do
+      refute Tackle.Workflow.Tool in profile.config.tools
+    end
+  end
+
   test "bundles Codex, DeepSeek, Anthropic, OpenRouter, and Ollama Cloud as default adapters" do
     assert Distribution.default_adapters() == [
              Tackle.Plugins.Codex,

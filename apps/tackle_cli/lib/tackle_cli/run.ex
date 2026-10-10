@@ -381,7 +381,8 @@ defmodule Tackle.CLI.Run do
                catalog: catalog,
                overrides: overrides,
                catalog_root_tools:
-                 Enum.map(mcp_tools, & &1.name()) ++
+                 Tackle.CLI.Distribution.root_tool_names() ++
+                   Enum.map(mcp_tools, & &1.name()) ++
                    Enum.map(
                      Application.get_env(:tackle_cli, :plugin_contributions, %{tools: []}).tools,
                      & &1.module.name()

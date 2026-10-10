@@ -30,6 +30,16 @@ defmodule Tackle.CLI.Output.ProgressTest do
            ) == "Running bash · mix test…"
 
     assert Progress.event_label(
+             Event.new(:tool_start, %{
+               name: "run_workflow",
+               arguments: %{
+                 "script" =>
+                   ~s|local a = tackle.spawn("scout", "map")\nreturn tackle.spawn("worker", "fix")|
+               }
+             })
+           ) == "Running run_workflow · scout → worker…"
+
+    assert Progress.event_label(
              Event.new(:tool_execution_end, %{name: "bash", status: :completed})
            ) == "Completed bash"
 
