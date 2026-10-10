@@ -51,6 +51,11 @@ defmodule Tackle.Coding do
   replace built-in coding tools. The host owns the lifecycle of any contributed
   tools and their connections.
 
+  Skills, including `:builtin_skills` (see `Tackle.Config.load/1`), apply to
+  the root and every profile. Each agent is offered only the skills whose
+  required tools it has, so a skill for a root-only tool stays out of child
+  prompts; an agent offered any skill also gets the `load_skill` tool.
+
   Agent files are validated at startup. Invalid files, unknown tools, and model
   selections unavailable through the configured adapters are explicit errors.
   Children have unlimited loop iterations by default and a five-minute inactivity timeout.
@@ -254,7 +259,7 @@ defmodule Tackle.Coding do
 
   defp load_with_overrides(opts, overrides) do
     merged = opts |> Keyword.get(:overrides, []) |> Keyword.merge(overrides)
-    opts = Keyword.take(opts, [:available_adapters, :catalog, :cwd, :env])
+    opts = Keyword.take(opts, [:available_adapters, :builtin_skills, :catalog, :cwd, :env])
     Config.load(Keyword.put(opts, :overrides, merged))
   end
 

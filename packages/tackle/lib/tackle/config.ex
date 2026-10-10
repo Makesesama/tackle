@@ -30,10 +30,13 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
   alias Tackle.Plugins.Catalog
+  alias Tackle.Skills
+  alias Tackle.Skills.Skill
   alias Tackle.SystemPrompt
   alias Tackle.Thinking
+  alias Tackle.Tools.LoadSkill
 
-  @loader_option_keys [:available_adapters, :catalog, :cwd, :env, :overrides]
+  @loader_option_keys [:available_adapters, :builtin_skills, :catalog, :cwd, :env, :overrides]
   @reconfigure_option_keys [:model, :thinking]
 
   @tool_callbacks [{:name, 0}, {:description, 0}, {:parameters_schema, 0}, {:execute, 2}]
@@ -122,12 +125,22 @@ defmodule Tackle.Config do
   name or load modules. Tests and embedding hosts may supply an `:env` map;
   normal callers use the process environment. `:cwd` selects the working
   directory used for prompt discovery and built-in tools.
+
+  Discovered `.agents/skills` are offered to the session together with
+  `:builtin_skills`, a list of host-supplied skills from
+  `Tackle.Skills.builtin/2` (file skills override them by name). Only skills
+  whose required tools the session has are offered (`Tackle.Skills.available/2`).
+  When any skill is offered, the session is also granted
+  `Tackle.Tools.LoadSkill`, the single way the model loads a skill, and the
+  offered skills are placed in the session context under `:skills` for that
+  tool to serve.
   """
   @spec load(keyword()) :: {:ok, t()} | {:error, term()}
   def load(opts) when is_list(opts) do
     with :ok <- validate_keyword(opts),
          :ok <- validate_loader_options(opts),
          {:ok, adapters} <- fetch_available_adapters(opts),
+         {:ok, builtin_skills} <- fetch_builtin_skills(opts),
          {:ok, overrides} <- fetch_overrides(opts),
          {:ok, overrides} <- catalog_hooks(opts, overrides),
          {:ok, env} <- fetch_environment(opts),
@@ -143,7 +156,8 @@ defmodule Tackle.Config do
         Keyword.get(session_opts, :system_prompt),
         cwd,
         Path.dirname(config_path),
-        env
+        env,
+        builtin_skills
       )
     end
   end
@@ -424,27 +438,101 @@ defmodule Tackle.Config do
     if File.dir?(cwd), do: {:ok, cwd}, else: {:error, {:invalid_option, :cwd, cwd}}
   end
 
-  defp load_system_prompt(config, base, cwd, home, env) do
+  defp load_system_prompt(config, base, cwd, home, env, builtin_skills) do
     context = Map.put(config.context, :cwd, cwd)
     executor = Executor.from_context(context)
-    skills = discover_skills(cwd, env, executor)
 
-    case SystemPrompt.build(
-           base: base,
-           cwd: cwd,
-           home: home,
-           tools: config.tools,
-           skills: skills,
-           executor: executor
-         ) do
-      {:ok, prompt} -> {:ok, %{config | context: context, system_prompt: prompt}}
-      {:error, reason} -> {:error, reason}
+    skills =
+      cwd
+      |> discover_skills(env, executor, builtin_skills)
+      |> Skills.available(config.tools)
+
+    with {:ok, tools, context} <- grant_skills(config.tools, context, skills),
+         {:ok, prompt} <-
+           SystemPrompt.build(
+             base: base,
+             cwd: cwd,
+             home: home,
+             tools: tools,
+             skills: skills,
+             executor: executor
+           ) do
+      {:ok, %{config | tools: tools, context: context, system_prompt: prompt}}
     end
   end
 
-  defp discover_skills(cwd, env, executor) do
+  # Offering a skill also grants the tool that loads it, for file and built-in
+  # skills alike.
+  defp grant_skills(tools, context, skills) do
+    case Enum.reject(skills, & &1.disable_model_invocation) do
+      [] ->
+        {:ok, tools, context}
+
+      offered ->
+        with :ok <- ensure_load_skill_name_free(tools) do
+          {:ok, append_load_skill(tools), Map.put(context, :skills, offered)}
+        end
+    end
+  end
+
+  defp append_load_skill(tools) do
+    if LoadSkill in tools, do: tools, else: Enum.reverse([LoadSkill | Enum.reverse(tools)])
+  end
+
+  # The tool is granted after `validate_tools/1`, so a different tool with the
+  # same name must be reported here rather than when the session starts.
+  defp ensure_load_skill_name_free(tools) do
+    name = LoadSkill.name()
+
+    if Enum.any?(tools, &(&1 != LoadSkill and &1.name() == name)),
+      do: {:error, {:tool_name_conflict, name}},
+      else: :ok
+  end
+
+  defp fetch_builtin_skills(opts) do
+    skills = Keyword.get(opts, :builtin_skills, [])
+
+    cond do
+      not is_list(skills) or not Enum.all?(skills, &valid_builtin_skill?/1) ->
+        {:error, {:invalid_option, :builtin_skills, skills}}
+
+      length(Enum.uniq_by(skills, & &1.name)) != length(skills) ->
+        {:error, {:duplicate_builtin_skills, skills |> Enum.map(& &1.name) |> duplicates()}}
+
+      true ->
+        {:ok, skills}
+    end
+  end
+
+  # Built-in skills normally come from `Tackle.Skills.builtin/2`; this guards
+  # hand-built structs that would otherwise fail later, inside the session.
+  defp valid_builtin_skill?(%Skill{
+         source: :builtin,
+         name: name,
+         description: description,
+         content: content,
+         requires_tools: requires_tools
+       }) do
+    Enum.all?([name, description, content], &(is_binary(&1) and &1 != "")) and
+      is_list(requires_tools) and Enum.all?(requires_tools, &(is_binary(&1) and &1 != ""))
+  end
+
+  defp valid_builtin_skill?(_skill), do: false
+
+  defp duplicates(names) do
+    names |> Enum.frequencies() |> Enum.filter(&(elem(&1, 1) > 1)) |> Enum.map(&elem(&1, 0))
+  end
+
+  defp discover_skills(cwd, env, executor, builtins) do
     user_home = Map.get(env, "HOME") || Map.get(env, "USERPROFILE")
-    discovery = Tackle.Skills.discover(cwd: cwd, user_home: user_home, executor: executor)
+
+    discovery =
+      Skills.discover(
+        cwd: cwd,
+        user_home: user_home,
+        executor: executor,
+        builtins: builtins
+      )
 
     Enum.each(discovery.warnings, fn %{path: path, message: message} ->
       Logger.warning("skipping or adjusting skill #{path}: #{message}")

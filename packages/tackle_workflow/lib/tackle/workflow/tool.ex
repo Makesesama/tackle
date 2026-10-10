@@ -56,6 +56,12 @@ defmodule Tackle.Workflow.Tool do
   alias Tackle.Runtime.Handle
   alias Tackle.Workflow
 
+  # The guide lives under `lib/` rather than `priv/`: it is embedded at compile
+  # time, and the Nix source filter copies only `mix.exs`, `lib/`, and lock files.
+  @skill_path Path.join(__DIR__, "skill/SKILL.md")
+  @external_resource @skill_path
+  @skill_markdown File.read!(@skill_path)
+
   tool_name("run_workflow")
 
   description(
@@ -85,6 +91,19 @@ defmodule Tackle.Workflow.Tool do
         "Optional absolute workflow deadline in milliseconds, bounded by the scope's workflow timeout"
     )
   end
+
+  @doc """
+  Returns the `SKILL.md` guide for writing workflow scripts.
+
+  The guide covers patterns, sandbox limits, and pitfalls that do not fit
+  the tool description. The harness does not depend on this package, so the
+  text is a plain Agent Skills document. A host that grants this tool can pass
+  it to `Tackle.Skills.builtin/2` with `requires_tools: ["run_workflow"]`.
+  The text is embedded at compile time, so it is also available in escripts,
+  which have no `priv` directory.
+  """
+  @spec skill_markdown() :: String.t()
+  def skill_markdown, do: @skill_markdown
 
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def run(%{"script" => script} = args, context) when is_binary(script) do

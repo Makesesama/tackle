@@ -61,6 +61,21 @@ defmodule Tackle.CLI.Distribution do
   @spec root_tool_names() :: [String.t()]
   def root_tool_names, do: [Tackle.Workflow.Tool.name()]
 
+  @doc """
+  Built-in skills bundled with the CLI distribution.
+
+  The `run_workflow` guide is offered only to agents that have that tool.
+  """
+  @spec builtin_skills() :: {:ok, [Tackle.Skills.Skill.t()]} | {:error, term()}
+  def builtin_skills do
+    with {:ok, workflows} <-
+           Tackle.Skills.builtin(Tackle.Workflow.Tool.skill_markdown(),
+             requires_tools: [Tackle.Workflow.Tool.name()]
+           ) do
+      {:ok, [workflows]}
+    end
+  end
+
   @doc "Model references from the validated distribution catalog."
   @spec available_models() :: {:ok, [String.t()]} | {:error, term()}
   def available_models do

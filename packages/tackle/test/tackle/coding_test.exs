@@ -65,6 +65,51 @@ defmodule Tackle.CodingTest do
              Coding.scope_spec(Keyword.put(opts, :root_tools, ["Module.Name"]))
   end
 
+  test "built-in skills reach only agents that have their required tools", %{opts: opts} do
+    {:ok, skill} =
+      Tackle.Skills.builtin(
+        "---\nname: delegation-guide\ndescription: How to delegate.\n---\nSteps.",
+        requires_tools: [Subagent.name()]
+      )
+
+    assert {:ok, spec} = Coding.scope_spec(Keyword.put(opts, :builtin_skills, [skill]))
+
+    root = spec.root_spec.config
+    assert Tackle.Tools.LoadSkill in root.tools
+    assert root.context.skills == [skill]
+    assert root.system_prompt =~ "<name>delegation-guide</name>"
+
+    scout = spec.profiles["scout"].config
+    refute Tackle.Tools.LoadSkill in scout.tools
+    refute Map.has_key?(scout.context, :skills)
+    refute scout.system_prompt =~ "delegation-guide"
+  end
+
+  test "a profile that lists a skill's required tool is offered the built-in skill", %{
+    opts: opts,
+    cwd: cwd
+  } do
+    write_agent(
+      Path.join([cwd, ".tackle", "agents", "editor.md"]),
+      "editor",
+      "Edits files",
+      "Edit files.",
+      "tools: read, write\n"
+    )
+
+    {:ok, skill} =
+      Tackle.Skills.builtin("---\nname: write-guide\ndescription: How to write.\n---\nSteps.",
+        requires_tools: ["write"]
+      )
+
+    assert {:ok, spec} = Coding.scope_spec(Keyword.put(opts, :builtin_skills, [skill]))
+
+    editor = spec.profiles["editor"].config
+    assert Tackle.Tools.LoadSkill in editor.tools
+    assert editor.context.skills == [skill]
+    assert editor.system_prompt =~ "<name>write-guide</name>"
+  end
+
   test "catalog grants only selected root tools and profile names resolve from trusted tools", %{
     opts: opts,
     cwd: cwd

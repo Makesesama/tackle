@@ -192,6 +192,12 @@ profiles workflows may spawn:
 * The tool call owns the workflow: the workflow is cancelled when the call ends
   (including a cancelled turn, where the harness runs the tool body in its own
   supervised process) and when it exceeds the session's `workflow_timeout`.
+* `Tackle.Workflow.Tool.skill_markdown/0` returns a `SKILL.md` guide for
+  writing workflow scripts: patterns, sandbox limits, and pitfalls that do not
+  fit in the tool description. The text is embedded at compile time. A harness
+  host can offer it with
+  `Tackle.Skills.builtin(markdown, requires_tools: ["run_workflow"])`, so only
+  agents that have the tool see it. The CLI does this.
 * When the session context carries an `:event_callback`, the tool reports the
   workflow's progress as `:workflow_progress` events tagged with its
   `:tool_call_id` (see [Observing progress](#observing-progress)), so a frontend

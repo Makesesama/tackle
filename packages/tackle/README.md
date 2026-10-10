@@ -496,12 +496,28 @@ package is the developer harness, not the former library.
 `Tackle.Skills` discovers `SKILL.md` files in project `.agents/skills`
 directories from the working directory up to the Git root, and in
 `~/.agents/skills`. The system prompt includes only skill names, descriptions,
-and paths; the model loads the body with its file tool on demand. Project skills
-nearest the working directory take precedence. Missing descriptions, unreadable
-files, or malformed frontmatter cause a warning and the skill is skipped;
-invalid names or overlong descriptions warn but still load. Unlike subagent
-definitions under `$TACKLE_HOME/agents` and `.tackle/agents`, user skills live
-under `~/.agents/skills` **regardless of `TACKLE_HOME`**.
+and directories. The model loads a skill's instructions on demand with the
+`load_skill` tool (`Tackle.Tools.LoadSkill`), which every agent offered a skill
+is granted. The tool serves only offered skills, by name. The harness reads the
+file itself when the tool is called, through the same jail-aware routing as
+`AGENTS.md`, so user skills load even under a jailed executor. Files a skill
+references relative to its directory are still read with the agent's own
+tools. Project skills nearest the working directory take precedence. Missing
+descriptions, unreadable files, or malformed frontmatter cause a warning and
+the skill is skipped; invalid names or overlong descriptions warn but still
+load. Unlike subagent definitions under `$TACKLE_HOME/agents` and
+`.tackle/agents`, user skills live under `~/.agents/skills` **regardless of
+`TACKLE_HOME`**.
+
+A host can also ship built-in skills, such as a guide for a tool it bundles.
+`Tackle.Skills.builtin/2` builds one from `SKILL.md` text, optionally with
+`requires_tools:`, and `Tackle.Config.load/1` and `Tackle.Coding.scope_spec/2`
+accept the result as `:builtin_skills`. Each agent is offered only the skills
+whose required tools it has. Built-in skills keep their instructions in memory,
+so they work in escripts, which have no `priv` directory, and they must be
+self-contained. A file skill with the same name replaces the built-in one
+without a warning. The CLI uses this mechanism to offer the `tackle-workflows`
+guide to agents that have `run_workflow`.
 
 ## Configuration and credentials
 

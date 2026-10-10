@@ -375,10 +375,12 @@ defmodule Tackle.CLI.Run do
          {:ok, session} <- durable_session(opts),
          {:ok, mcp_tools} <- Tackle.CLI.MCP.Connections.tools(),
          {:ok, catalog} <- Tackle.CLI.Distribution.catalog(mcp_tools),
+         {:ok, builtin_skills} <- Tackle.CLI.Distribution.builtin_skills(),
          {:ok, scope_spec} <-
            Tackle.Coding.scope_spec(
              [
                catalog: catalog,
+               builtin_skills: builtin_skills,
                overrides: overrides,
                catalog_root_tools:
                  Tackle.CLI.Distribution.root_tool_names() ++

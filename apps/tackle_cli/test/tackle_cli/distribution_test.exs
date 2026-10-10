@@ -40,11 +40,13 @@ defmodule Tackle.CLI.DistributionTest do
     on_exit(fn -> File.rm_rf!(home) end)
 
     assert {:ok, catalog} = Distribution.catalog()
+    assert {:ok, builtin_skills} = Distribution.builtin_skills()
 
     assert {:ok, spec} =
              Tackle.Coding.scope_spec(
                [
                  catalog: catalog,
+                 builtin_skills: builtin_skills,
                  catalog_root_tools: Distribution.root_tool_names(),
                  overrides: [model: "ollama-cloud/gpt-oss:20b"],
                  cwd: home,
@@ -57,10 +59,32 @@ defmodule Tackle.CLI.DistributionTest do
     assert Tackle.Tools.Subagent in spec.root_spec.config.tools
     assert spec.root_spec.allow_delegation
 
-    # Profiles do not inherit the workflow tool unless they list it explicitly.
+    # The workflow guide is offered with the tool, through load_skill.
+    assert Tackle.Tools.LoadSkill in spec.root_spec.config.tools
+    assert spec.root_spec.config.system_prompt =~ "<name>tackle-workflows</name>"
+
+    assert {:ok, guide} =
+             Tackle.Tools.LoadSkill.run(
+               %{"name" => "tackle-workflows"},
+               spec.root_spec.config.context
+             )
+
+    assert guide =~ "tackle.parallel(items, fn, opts?)"
+
+    # Profiles do not inherit the workflow tool unless they list it explicitly,
+    # and so are not offered its guide either.
     for {_name, profile} <- spec.profiles do
       refute Tackle.Workflow.Tool in profile.config.tools
+      refute Tackle.Tools.LoadSkill in profile.config.tools
+      refute profile.config.system_prompt =~ "tackle-workflows"
     end
+  end
+
+  test "the bundled workflow guide is a valid built-in skill gated on run_workflow" do
+    assert {:ok, [skill]} = Distribution.builtin_skills()
+    assert skill.name == "tackle-workflows"
+    assert skill.source == :builtin
+    assert skill.requires_tools == ["run_workflow"]
   end
 
   test "bundles Codex, DeepSeek, Anthropic, OpenRouter, and Ollama Cloud as default adapters" do

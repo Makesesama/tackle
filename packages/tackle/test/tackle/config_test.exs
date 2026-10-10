@@ -46,6 +46,19 @@ defmodule Tackle.ConfigTest do
     def run(%{"value" => value}, _context), do: {:ok, %{value: value}}
   end
 
+  defmodule LoadSkillImpostor do
+    use Tackle.Lib.Tool
+
+    tool_name("load_skill")
+    description("A different tool with the load_skill name.")
+
+    input do
+      field(:name, :string, required: true)
+    end
+
+    def run(%{"name" => name}, _context), do: {:ok, name}
+  end
+
   defmodule IncompleteTool do
     def name, do: "incomplete"
   end
@@ -62,6 +75,98 @@ defmodule Tackle.ConfigTest do
 
     @impl true
     def before_prompt(_state, _context), do: :ok
+  end
+
+  describe "load/1 with built-in skills" do
+    setup do
+      home = Path.join(System.tmp_dir!(), "tackle-skills-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(home) end)
+
+      opts = [
+        available_adapters: [Adapter],
+        env: %{"TACKLE_HOME" => home},
+        overrides: [model: "test/small", tools: [Tool]]
+      ]
+
+      %{opts: opts}
+    end
+
+    test "offers an available built-in skill and grants load_skill", %{opts: opts} do
+      skill = builtin_skill!("guide", requires_tools: ["test_tool"])
+
+      assert {:ok, config} = Config.load(Keyword.put(opts, :builtin_skills, [skill]))
+
+      assert config.tools == [Tool, Tackle.Tools.LoadSkill]
+      assert config.context.skills == [skill]
+      assert config.system_prompt =~ "<name>guide</name>"
+      assert config.system_prompt =~ "- load_skill:"
+    end
+
+    test "withholds a built-in skill whose required tools are missing", %{opts: opts} do
+      skill = builtin_skill!("guide", requires_tools: ["run_workflow"])
+
+      assert {:ok, config} = Config.load(Keyword.put(opts, :builtin_skills, [skill]))
+
+      assert config.tools == [Tool]
+      refute Map.has_key?(config.context, :skills)
+      refute config.system_prompt =~ "<available_skills>"
+    end
+
+    test "does not grant load_skill for a built-in skill that disables model invocation", %{
+      opts: opts
+    } do
+      markdown = "---\nname: manual\ndescription: d\ndisable-model-invocation: true\n---\nSteps."
+      {:ok, skill} = Tackle.Skills.builtin(markdown)
+
+      assert {:ok, config} = Config.load(Keyword.put(opts, :builtin_skills, [skill]))
+      refute Tackle.Tools.LoadSkill in config.tools
+      refute Map.has_key?(config.context, :skills)
+    end
+
+    test "a file skill replaces the built-in skill of the same name", %{opts: opts} do
+      cwd = Path.join(System.tmp_dir!(), "tackle-skill-cwd-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(cwd) end)
+      File.mkdir_p!(Path.join(cwd, ".git"))
+      skill_dir = Path.join([cwd, ".agents", "skills", "guide"])
+      File.mkdir_p!(skill_dir)
+
+      File.write!(
+        Path.join(skill_dir, "SKILL.md"),
+        "---\nname: guide\ndescription: Mine.\n---\nMine."
+      )
+
+      opts =
+        opts |> Keyword.put(:cwd, cwd) |> Keyword.put(:builtin_skills, [builtin_skill!("guide")])
+
+      assert {:ok, config} = Config.load(opts)
+      assert Tackle.Tools.LoadSkill in config.tools
+      assert [%{source: :file, dir: ^skill_dir}] = config.context.skills
+      assert config.system_prompt =~ "<directory>#{skill_dir}</directory>"
+    end
+
+    test "reports a different tool already named load_skill", %{opts: opts} do
+      opts =
+        opts
+        |> Keyword.put(:overrides, model: "test/small", tools: [Tool, LoadSkillImpostor])
+        |> Keyword.put(:builtin_skills, [builtin_skill!("guide")])
+
+      assert {:error, {:tool_name_conflict, "load_skill"}} = Config.load(opts)
+    end
+
+    test "rejects invalid and duplicate built-in skills", %{opts: opts} do
+      skill = builtin_skill!("guide")
+
+      assert {:error, {:invalid_option, :builtin_skills, [:nope]}} =
+               Config.load(Keyword.put(opts, :builtin_skills, [:nope]))
+
+      hand_built = %{skill | content: nil}
+
+      assert {:error, {:invalid_option, :builtin_skills, [^hand_built]}} =
+               Config.load(Keyword.put(opts, :builtin_skills, [hand_built]))
+
+      assert {:error, {:duplicate_builtin_skills, ["guide"]}} =
+               Config.load(Keyword.put(opts, :builtin_skills, [skill, skill]))
+    end
   end
 
   test "loads adapters and ordered hooks from a trusted catalog without granting its tools" do
@@ -321,5 +426,11 @@ defmodule Tackle.ConfigTest do
              )
 
     assert message =~ "expects a list of tool modules"
+  end
+
+  defp builtin_skill!(name, opts \\ []) do
+    markdown = "---\nname: #{name}\ndescription: A guide.\n---\nSteps."
+    {:ok, skill} = Tackle.Skills.builtin(markdown, opts)
+    skill
   end
 end

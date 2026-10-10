@@ -179,6 +179,115 @@ defmodule Tackle.SkillsTest do
     end
   end
 
+  describe "builtin/2" do
+    test "builds a built-in skill from SKILL.md text" do
+      markdown = """
+      ---
+      name: guide
+      description: >
+        Explains
+        the tool.
+      ---
+
+      # Guide
+
+      Body text.
+      """
+
+      assert {:ok, skill} = Skills.builtin(markdown, requires_tools: ["tool_a"])
+
+      assert skill == %Skill{
+               name: "guide",
+               description: "Explains the tool.",
+               content: "# Guide\n\nBody text.",
+               source: :builtin,
+               requires_tools: ["tool_a"]
+             }
+    end
+
+    test "rejects invalid names, missing descriptions, and empty bodies" do
+      assert {:error, {:invalid_builtin_skill, {:name, "Bad Name"}}} =
+               Skills.builtin(skill_file("Bad Name", "d"))
+
+      assert {:error, {:invalid_builtin_skill, :description_required}} =
+               Skills.builtin("---\nname: guide\n---\nBody")
+
+      assert {:error, {:invalid_builtin_skill, :empty_body}} =
+               Skills.builtin("---\nname: guide\ndescription: d\n---\n\n")
+
+      assert {:error, {:invalid_builtin_skill, :unterminated_frontmatter}} =
+               Skills.builtin("---\nname: guide\n")
+
+      assert {:error, {:invalid_builtin_skill, {:requires_tools, [:read]}}} =
+               Skills.builtin(skill_file("guide", "d"), requires_tools: [:read])
+    end
+  end
+
+  describe "discover/1 with built-in skills" do
+    test "built-in skills rank after file skills", %{root: root} do
+      project = git_project(root)
+      write_skill(project, "local", skill_file("local", "A file skill."))
+      builtin = builtin!("bundled", "A built-in skill.")
+
+      assert %{skills: [%Skill{name: "local"}, ^builtin], warnings: []} =
+               Skills.discover(cwd: project, user_home: nil, builtins: [builtin])
+    end
+
+    test "a file skill replaces a built-in skill of the same name without a warning", %{
+      root: root
+    } do
+      project = git_project(root)
+      path = write_skill(project, "bundled", skill_file("bundled", "My override."))
+
+      assert %{skills: [%Skill{source: :file, path: ^path}], warnings: []} =
+               Skills.discover(
+                 cwd: project,
+                 user_home: nil,
+                 builtins: [builtin!("bundled", "Built in.")]
+               )
+    end
+  end
+
+  describe "load/2" do
+    test "returns a file skill's body without frontmatter", %{root: root} do
+      project = git_project(root)
+      write_skill(project, "lint", skill_file("lint", "Lint."))
+      %{skills: [skill]} = Skills.discover(cwd: project, user_home: nil)
+
+      assert Skills.load(skill) == {:ok, "body"}
+    end
+
+    test "returns a built-in skill's content" do
+      assert Skills.load(builtin!("bundled", "d")) == {:ok, "body"}
+    end
+
+    test "reports unreadable, non-UTF-8, and malformed files", %{root: root} do
+      path = Path.join(root, "SKILL.md")
+      skill = %Skill{name: "s", description: "d", path: path, dir: root}
+
+      assert {:error, :enoent} = Skills.load(skill)
+
+      File.write!(path, <<0xFF, 0xFE>>)
+      assert {:error, :invalid_utf8} = Skills.load(skill)
+
+      File.write!(path, "---\nname: s\n")
+      assert {:error, :unterminated_frontmatter} = Skills.load(skill)
+    end
+  end
+
+  describe "available/2" do
+    test "keeps skills whose required tools are all present" do
+      plain = builtin!("plain", "d")
+      needs_read = builtin!("needs-read", "d", requires_tools: ["read"])
+      needs_both = builtin!("needs-both", "d", requires_tools: ["read", "missing"])
+
+      assert Skills.available([plain, needs_read, needs_both], [Tackle.Tools.Read]) ==
+               [plain, needs_read]
+
+      assert Skills.available([plain, needs_read], ["bash"]) == [plain]
+    end
+  end
+
   describe "format_for_prompt/2" do
     test "renders visible skills as an available_skills block" do
       skill = %Skill{
@@ -193,19 +302,9 @@ defmodule Tackle.SkillsTest do
       assert prompt =~ "<available_skills>"
       assert prompt =~ "    <name>brave-search</name>"
       assert prompt =~ "    <description>Search &lt;the&gt; web &amp; more.</description>"
-      assert prompt =~ "    <location>/tmp/brave-search/SKILL.md</location>"
-    end
-
-    test "recommends the read tool when it is available" do
-      skill = %Skill{
-        name: "s",
-        description: "d",
-        path: "/tmp/s/SKILL.md",
-        dir: "/tmp/s"
-      }
-
-      prompt = Skills.format_for_prompt([skill], tools: [Tackle.Tools.Read])
-      assert prompt =~ "Use the read tool to load a skill's file"
+      assert prompt =~ "    <directory>/tmp/brave-search</directory>"
+      assert prompt =~ "Use the load_skill tool to load a skill's instructions"
+      assert prompt =~ "resolve it against the skill's directory"
     end
 
     test "omits skills that disable model invocation" do
@@ -218,6 +317,34 @@ defmodule Tackle.SkillsTest do
       }
 
       assert Skills.format_for_prompt([skill], tools: []) == ""
+    end
+
+    test "renders built-in skills without a directory" do
+      prompt = Skills.format_for_prompt([builtin!("bundled", "Built in.")], tools: [])
+
+      assert prompt =~ "    <name>bundled</name>"
+      assert prompt =~ "Use the load_skill tool to load a skill's instructions"
+      refute prompt =~ "<directory>"
+      refute prompt =~ "relative path"
+    end
+
+    test "omits skills whose required tools are missing" do
+      skill = builtin!("bundled", "Built in.", requires_tools: ["run_workflow"])
+
+      assert Skills.format_for_prompt([skill], tools: [Tackle.Tools.Read]) == ""
+      assert Skills.format_for_prompt([skill], tools: ["run_workflow"]) =~ "bundled"
+    end
+
+    test "renders file and built-in skills under one loading instruction" do
+      file = %Skill{name: "s", description: "d", path: "/tmp/s/SKILL.md", dir: "/tmp/s"}
+
+      prompt =
+        Skills.format_for_prompt([file, builtin!("bundled", "d")], tools: [Tackle.Tools.Read])
+
+      refute prompt =~ "read tool"
+      assert [_before, _after] = String.split(prompt, "load_skill")
+      assert prompt =~ "<directory>/tmp/s</directory>"
+      assert prompt =~ "<name>bundled</name>"
     end
 
     test "returns an empty string when there are no skills" do
@@ -261,6 +388,11 @@ defmodule Tackle.SkillsTest do
 
       assert frontmatter["description"] == nil
     end
+  end
+
+  defp builtin!(name, description, opts \\ []) do
+    {:ok, skill} = Skills.builtin(skill_file(name, description), opts)
+    skill
   end
 
   defp git_project(root) do

@@ -21,6 +21,25 @@ defmodule Tackle.Workflow.ToolTest do
     WorkflowTool.run(args, context)
   end
 
+  describe "the workflow skill guide" do
+    test "is an Agent Skills document named tackle-workflows" do
+      assert "---\nname: tackle-workflows\ndescription: " <> _rest = WorkflowTool.skill_markdown()
+    end
+
+    test "every Lua example compiles" do
+      examples =
+        ~r/```lua\n(.*?)```/s
+        |> Regex.scan(WorkflowTool.skill_markdown(), capture: :all_but_first)
+        |> List.flatten()
+
+      assert length(examples) >= 3
+
+      for example <- examples do
+        assert {:ok, _chunk} = Lua.parse_chunk(example), "does not compile:\n" <> example
+      end
+    end
+  end
+
   describe "the run_workflow tool" do
     test "is a valid Tackle tool" do
       assert WorkflowTool.name() == "run_workflow"
