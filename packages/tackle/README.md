@@ -262,6 +262,11 @@ default. A call with `background: true` returns a stable run ID immediately. The
 root-only `subagent_wait` tool blocks until that run finishes and consumes its
 retained outcome; `subagent_status` checks without blocking and consumes an
 already-complete outcome. Cancelling a wait leaves the background run available.
+The root-only `subagent_cancel` tool stops a run that is no longer needed: it
+cancels the child cooperatively, terminates it after a short grace period, and
+consumes the run without queuing a completion notice. A run that already
+finished is collected instead, so its result is returned rather than lost.
+Hosts can do the same through `Tackle.Runtime.cancel_run/3`.
 Every terminal outcome queues a notice in the root session's bounded inbox and
 automatically continues the root once its current turn is idle. That continuation
 is a normal model turn and contributes normal provider usage. Background work is

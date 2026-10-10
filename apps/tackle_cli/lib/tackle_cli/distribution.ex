@@ -16,6 +16,7 @@ defmodule Tackle.CLI.Distribution do
     Tackle.Tools.Subagent,
     Tackle.Tools.SubagentStatus,
     Tackle.Tools.SubagentWait,
+    Tackle.Tools.SubagentCancel,
     Tackle.Workflow.Tool
   ]
 

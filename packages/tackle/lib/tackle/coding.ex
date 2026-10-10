@@ -17,7 +17,7 @@ defmodule Tackle.Coding do
   alias Tackle.Plugins.Catalog
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
-  alias Tackle.Tools.{Subagent, SubagentStatus, SubagentWait}
+  alias Tackle.Tools.{Subagent, SubagentCancel, SubagentStatus, SubagentWait}
 
   @delegation """
   ## Delegation
@@ -29,7 +29,8 @@ defmodule Tackle.Coding do
   not perform that same assignment yourself. Continue only with clearly
   non-overlapping work, or call `subagent_wait` when there is nothing independent
   to do or the result is needed. Use `subagent_status` only to check or collect a
-  run without waiting. Any terminal background outcome automatically queues a
+  run without waiting, and `subagent_cancel` to stop a run that is no longer
+  needed. Any terminal background outcome automatically queues a
   notice; it joins the active turn at its next safe boundary, or starts a
   continuation when the parent is idle. Choose only from the configured profiles
   below and give the child a self-contained assignment with the relevant context
@@ -69,7 +70,7 @@ defmodule Tackle.Coding do
            Enum.uniq(
              config.tools ++
                Keyword.get(loader_opts, :root_tools, []) ++
-               catalog_tools ++ [Subagent, SubagentStatus, SubagentWait]
+               catalog_tools ++ [Subagent, SubagentStatus, SubagentWait, SubagentCancel]
            ),
          {:ok, profiles} <-
            build_profiles(discovery.definitions, config.tools, root_tools, loader_opts),
@@ -100,7 +101,8 @@ defmodule Tackle.Coding do
   defp catalog_tool_conflicts(catalog, opts, config) do
     selected =
       config.tools ++
-        Keyword.get(opts, :root_tools, []) ++ [Subagent, SubagentStatus, SubagentWait]
+        Keyword.get(opts, :root_tools, []) ++
+        [Subagent, SubagentStatus, SubagentWait, SubagentCancel]
 
     catalog_modules = MapSet.new(Enum.map(Catalog.tools(catalog), & &1.module))
     selected_names = Map.new(selected, &{&1.name(), &1})

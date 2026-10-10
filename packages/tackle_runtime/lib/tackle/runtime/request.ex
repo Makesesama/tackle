@@ -129,6 +129,21 @@ defmodule Tackle.Runtime.Request do
   @spec cancel(GenServer.server(), term()) :: :ok
   def cancel(request, reason \\ :cancelled), do: GenServer.call(request, {:cancel, reason})
 
+  @doc """
+  Cancels a run after validating its logical parent.
+
+  A completed run is consumed and its outcome returned as
+  `{:ok, {:completed, outcome}}`. A running run is cancelled cooperatively and
+  `{:ok, :cancelling}` is returned; the parent is not sent a completion
+  message for it, and its terminal outcome lingers briefly for `await/3`
+  instead of being retained until collected.
+  """
+  @spec cancel_owned(RunRef.t(), AgentRef.t(), term()) ::
+          {:ok, :cancelling | {:completed, Outcome.t()}} | {:error, term()}
+  def cancel_owned(%RunRef{} = run_ref, %AgentRef{} = owner, reason \\ :cancelled) do
+    call(run_ref, {:cancel, owner, reason})
+  end
+
   defp await_call(%RunRef{} = run_ref, message) do
     case Registry.whereis(run_ref) do
       {:ok, request} ->
@@ -178,6 +193,7 @@ defmodule Tackle.Runtime.Request do
       timeout: Map.get(arg, :timeout, :infinity),
       event_callback: Map.get(arg, :event_callback),
       completion_message: Map.get(arg, :completion_message),
+      deliver_completion: true,
       profile: Map.get(arg, :profile),
       retention: Map.get(arg, :retention, :linger),
       child: nil,
@@ -294,6 +310,24 @@ defmodule Tackle.Runtime.Request do
   def handle_call({:cancel, reason}, _from, state) do
     {:reply, :ok, cancel_child(state, reason)}
   end
+
+  def handle_call(
+        {:cancel, owner, _reason},
+        _from,
+        %{parent: %{agent_ref: owner}, outcome: %Outcome{} = outcome} = state
+      ) do
+    {:stop, :normal, {:ok, {:completed, outcome}}, cancel_timers(state)}
+  end
+
+  def handle_call({:cancel, owner, reason}, _from, %{parent: %{agent_ref: owner}} = state) do
+    # The owner asked for this cancellation, so it needs no completion notice,
+    # and the outcome need not be retained once the owner stops waiting.
+    state = %{state | deliver_completion: false, retention: :linger}
+    {:reply, {:ok, :cancelling}, cancel_child(state, reason)}
+  end
+
+  def handle_call({:cancel, _owner, _reason}, _from, state),
+    do: {:reply, {:error, :not_owner}, state}
 
   @impl true
   def handle_info(
@@ -560,11 +594,15 @@ defmodule Tackle.Runtime.Request do
     # Mailbox order from this request to the parent preserves that ordering.
     publish_completion(state, outcome)
 
-    with message when is_binary(message) <- callback.(run_ref, outcome),
+    with true <- state.deliver_completion,
+         message when is_binary(message) <- callback.(run_ref, outcome),
          {:ok, envelope} <- Envelope.new(:completion, run_ref.agent_ref, message),
          :ok <- Messaging.deliver(parent_ref, envelope) do
       :ok
     else
+      false ->
+        :ok
+
       error ->
         Logger.warning(
           "background completion delivery failed for #{run_ref.run_id}: #{inspect(error)}"

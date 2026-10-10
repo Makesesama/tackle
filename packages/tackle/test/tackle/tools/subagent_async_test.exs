@@ -49,7 +49,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
   alias Tackle.Lib.Event
   alias Tackle.Runtime.{Outcome, RunRef}
-  alias Tackle.Tools.{Subagent, SubagentStatus, SubagentWait}
+  alias Tackle.Tools.{Subagent, SubagentCancel, SubagentStatus, SubagentWait}
 
   test "background launch survives the tool caller and retains its result until collected" do
     scope =
@@ -575,6 +575,105 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
     assert message =~ "not found"
     :ok = Tackle.Runtime.cancel(run_ref)
+  end
+
+  test "parent cancel stops a running background run without a completion notice" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true, mode: :echo_messages],
+        profiles: %{"worker" => agent_spec("worker", mode: :block)}
+      )
+
+    {:ok, %{session_id: session_id}} = Tackle.Runtime.subscribe(scope.root_agent_ref)
+    handle = handle(scope)
+
+    assert {:ok, launch_message} =
+             Subagent.run(
+               %{"profile" => "worker", "prompt" => "do work", "background" => true},
+               %{runtime: handle}
+             )
+
+    [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
+    assert_receive {:adapter_called, _child_task, "echo", _opts}, 2_000
+    assert {:ok, :running} = run_status(scope, run_id)
+
+    assert {:ok, "Subagent #{run_id} was cancelled."} ==
+             SubagentCancel.run(%{"run_id" => run_id}, %{runtime: handle})
+
+    # Observers still see the terminal state, but the parent is not woken.
+    assert_receive {:tackle_event, ^session_id, nil,
+                    %Event{
+                      type: :subagent_finished,
+                      data: %{run_id: ^run_id, status: :cancelled}
+                    }},
+                   2_000
+
+    refute_receive {:tackle_turn_started, ^session_id, _turn_id, :background_notice}, 100
+
+    {:ok, parent} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+    assert Tackle.Session.inbox(parent) == []
+
+    assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert message =~ "already collected"
+
+    assert {:error, message} = SubagentCancel.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert message =~ "not found"
+  end
+
+  test "parent cancel collects a run that already finished" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{"worker" => agent_spec("worker", content: "worker answer")}
+      )
+
+    {:ok, run_ref} =
+      Tackle.Runtime.request_agent(scope.root_agent_ref, "worker", "go",
+        retention: :until_collected,
+        owner: :parent
+      )
+
+    assert_eventually(fn ->
+      match?({:ok, {:completed, %Outcome{status: :ok}}}, run_status(scope, run_ref.run_id))
+    end)
+
+    assert {:ok, result} =
+             SubagentCancel.run(%{"run_id" => run_ref.run_id}, %{runtime: handle(scope)})
+
+    assert result =~ "had already finished"
+    assert result =~ "worker answer"
+    assert {:error, :not_found} = run_status(scope, run_ref.run_id)
+  end
+
+  test "only the logical parent can cancel a background run" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{"worker" => agent_spec("worker", mode: :block)}
+      )
+
+    {:ok, run_ref} =
+      Tackle.Runtime.request_agent(scope.root_agent_ref, "worker", "go",
+        retention: :until_collected,
+        owner: :parent
+      )
+
+    assert {:error, :not_owner} = Tackle.Runtime.cancel_run(run_ref.agent_ref, run_ref)
+
+    other_scope = start_scope(root: [allow_delegation: true])
+
+    assert {:error, message} =
+             SubagentCancel.run(%{"run_id" => run_ref.run_id}, %{runtime: handle(other_scope)})
+
+    assert message =~ "not found"
+    assert {:ok, :running} = run_status(scope, run_ref.run_id)
+    :ok = Tackle.Runtime.cancel(run_ref)
+  end
+
+  test "parent cancel validates its context and run id" do
+    assert {:error, message} = SubagentCancel.run(%{"run_id" => "missing"}, %{})
+    assert message =~ "no runtime handle"
+    assert {:error, "subagent_cancel requires a run_id"} = SubagentCancel.run(%{}, %{})
   end
 
   defp run_status(scope, run_id) do

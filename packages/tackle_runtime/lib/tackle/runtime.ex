@@ -352,6 +352,21 @@ defmodule Tackle.Runtime do
   @spec collect(AgentRef.t(), RunRef.t()) :: Outcome.t() | {:error, term()}
   def collect(%AgentRef{} = owner, %RunRef{} = run_ref), do: Request.collect(run_ref, owner)
 
+  @doc """
+  Cancels a delegated run only when it belongs to `owner`.
+
+  Returns `{:ok, :cancelling}` once cooperative cancellation of a running run
+  was requested; use `await/3` to observe its terminal outcome. A run that had
+  already completed is consumed and returned as `{:ok, {:completed, outcome}}`.
+  Owner-requested cancellation does not deliver a completion message to the
+  owner. See `Tackle.Runtime.Request.cancel_owned/3`.
+  """
+  @spec cancel_run(AgentRef.t(), RunRef.t(), term()) ::
+          {:ok, :cancelling | {:completed, Outcome.t()}} | {:error, term()}
+  def cancel_run(%AgentRef{} = owner, %RunRef{} = run_ref, reason \\ :cancelled) do
+    Request.cancel_owned(run_ref, owner, reason)
+  end
+
   @doc "Returns the child agent reference associated with a live delegated run."
   @spec run_agent_ref(RunRef.t()) :: {:ok, AgentRef.t()} | {:error, term()}
   def run_agent_ref(%RunRef{} = run_ref), do: Request.agent_ref(run_ref)

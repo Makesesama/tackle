@@ -9,7 +9,7 @@ defmodule Tackle.CodingTest do
   alias Tackle.Runtime.{Handle, Outcome, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Test.FakeJail
-  alias Tackle.Tools.{Bash, Read, Subagent, SubagentStatus, SubagentWait}
+  alias Tackle.Tools.{Bash, Read, Subagent, SubagentCancel, SubagentStatus, SubagentWait}
 
   defmodule CatalogTool do
     use Tackle.Lib.Tool
@@ -163,6 +163,7 @@ defmodule Tackle.CodingTest do
     assert Subagent in spec.root_spec.config.tools
     assert SubagentStatus in spec.root_spec.config.tools
     assert SubagentWait in spec.root_spec.config.tools
+    assert SubagentCancel in spec.root_spec.config.tools
     refute Subagent in Tackle.Tools.default()
     refute SubagentWait in Tackle.Tools.default()
     assert Map.keys(spec.profiles) |> Enum.sort() == ["reviewer", "scout", "worker"]
@@ -191,6 +192,7 @@ defmodule Tackle.CodingTest do
     assert spec.root_spec.config.system_prompt =~ "Prefer foreground mode"
     assert spec.root_spec.config.system_prompt =~ "same assignment yourself"
     assert spec.root_spec.config.system_prompt =~ "call `subagent_wait`"
+    assert spec.root_spec.config.system_prompt =~ "`subagent_cancel` to stop a run"
     assert spec.root_spec.config.system_prompt =~ "keep a single writer"
     assert spec.profiles["reviewer"].config.tools == [Read, Bash]
     assert spec.profiles["worker"].config.tools == Tackle.Tools.default()
@@ -199,6 +201,7 @@ defmodule Tackle.CodingTest do
     refute scout.config.system_prompt =~ "## Delegation"
     assert spec.root_spec.config.system_prompt =~ "- subagent:"
     assert spec.root_spec.config.system_prompt =~ "- subagent_wait:"
+    assert spec.root_spec.config.system_prompt =~ "- subagent_cancel:"
     assert {:error, {:unknown_profile, "other"}} = ScopeSpec.resolve_profile(spec, "other")
   end
 
@@ -291,13 +294,22 @@ defmodule Tackle.CodingTest do
     assert lead.allow_delegation
     assert lead.config.tools == [Read, Subagent]
     refute SubagentWait in lead.config.tools
+    refute SubagentCancel in lead.config.tools
     assert spec.limits.max_spawn_depth == 2
   end
 
   test "preserves explicit prompts and narrower tools/iteration limits", %{opts: opts} do
     opts = update_overrides(opts, tools: [Read], max_iterations: 3, system_prompt: "Custom base")
     assert {:ok, spec} = Coding.scope_spec(opts)
-    assert spec.root_spec.config.tools == [Read, Subagent, SubagentStatus, SubagentWait]
+
+    assert spec.root_spec.config.tools == [
+             Read,
+             Subagent,
+             SubagentStatus,
+             SubagentWait,
+             SubagentCancel
+           ]
+
     assert spec.profiles["scout"].config.tools == [Read, Bash]
     assert spec.profiles["scout"].config.max_iterations == 3
     assert spec.profiles["scout"].config.system_prompt =~ "Scout assignment"
