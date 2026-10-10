@@ -26,6 +26,7 @@ defmodule Tackle.Workflow.Server do
 
   alias Tackle.Runtime.Handle
   alias Tackle.Workflow
+  alias Tackle.Workflow.Progress
   alias Tackle.Workflow.Ref
 
   @default_linger 500
@@ -39,7 +40,8 @@ defmodule Tackle.Workflow.Server do
           optional(:owner) => pid() | nil,
           optional(:timeout) => timeout(),
           optional(:max_instructions) => pos_integer() | :infinity,
-          optional(:log) => (String.t() -> any()) | nil
+          optional(:log) => (String.t() -> any()) | nil,
+          optional(:on_event) => Progress.callback()
         }
 
   @doc false
@@ -85,6 +87,7 @@ defmodule Tackle.Workflow.Server do
       timeout: Map.get(arg, :timeout, :infinity),
       max_instructions: Map.get(arg, :max_instructions) || @default_max_instructions,
       log: Map.get(arg, :log),
+      on_event: Map.get(arg, :on_event),
       worker: nil,
       worker_monitor: nil,
       result: nil,
@@ -102,7 +105,7 @@ defmodule Tackle.Workflow.Server do
     server = self()
 
     arg =
-      Map.take(state, [:handle, :script, :profiles, :max_instructions])
+      Map.take(state, [:handle, :script, :profiles, :max_instructions, :on_event])
       |> Map.put(:server, server)
 
     worker =
@@ -191,7 +194,8 @@ defmodule Tackle.Workflow.Server do
       |> Lua.put_private(:tackle_workflow, %{
         handle: arg.handle,
         server: arg.server,
-        profiles: Map.get(arg, :profiles)
+        profiles: Map.get(arg, :profiles),
+        on_event: Map.get(arg, :on_event)
       })
       |> Lua.load_api(Workflow.API)
 
@@ -292,6 +296,8 @@ defmodule Tackle.Workflow.Server do
     %{state | deadline_timer: nil, await_timer: nil}
   end
 
+  # An `:on_event` observer receives log messages from the worker itself, in
+  # order with its run events; this path is the `:log` callback or `Logger`.
   defp log(%{log: callback}, message) when is_function(callback, 1), do: callback.(message)
   defp log(_state, message), do: Logger.info("[tackle_workflow] #{message}")
 end

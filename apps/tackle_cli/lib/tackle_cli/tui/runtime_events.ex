@@ -25,6 +25,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     State,
     Subagents,
     ToolView,
+    WorkflowProgress,
     Tree,
     TurnTip,
     UsageChart,
@@ -654,6 +655,31 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     stream_reply(state)
   end
 
+  # Workflow progress belongs to the run_workflow card that started it. Events
+  # for any other call, or that change nothing visible, skip the redraw; the
+  # rest share the streaming frame, since every child agent's deltas land here.
+  defp route(
+         {:tackle_event, session_id, _turn_id, %Event{type: :workflow_progress, data: data}},
+         %State{session_id: session_id} = state
+       ) do
+    id = value(data, :tool_call_id)
+
+    case Enum.find(state.tool_activity, &match?(%{id: ^id, name: "run_workflow"}, &1)) do
+      nil ->
+        {:noreply, state, render?: false}
+
+      tool ->
+        previous = Map.get(tool, :workflow) || WorkflowProgress.new()
+        model = WorkflowProgress.apply(previous, data)
+
+        if model === previous do
+          {:noreply, state, render?: false}
+        else
+          state |> put_workflow(Map.put(tool, :workflow, model)) |> stream_reply()
+        end
+    end
+  end
+
   defp route(
          {:tackle_event, session_id, turn_id, %Event{type: :tool_start, data: data}},
          %State{session_id: session_id, active_turn: %{id: turn_id}} = state
@@ -1114,6 +1140,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp settle_tool(state, data, status, label) do
     state = put_tool_activity(state, data, status)
+    state = update_workflow_model(state, data)
     tool = find_tool(state.tool_activity, data)
 
     state = %{
@@ -1127,6 +1154,30 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     }
 
     {:noreply, state |> Subagents.reconcile() |> Viewport.refresh([:turn])}
+  end
+
+  # A settled call freezes its chart: runs it never awaited end without a
+  # guessed outcome, and late events no longer move it.
+  defp update_workflow_model(state, data) do
+    id = value(data, :tool_call_id)
+
+    tools =
+      Enum.map(state.tool_activity, fn
+        %{id: ^id, name: "run_workflow", workflow: %{} = model} = tool when is_binary(id) ->
+          Map.put(tool, :workflow, WorkflowProgress.settle(model))
+
+        tool ->
+          tool
+      end)
+
+    %{state | tool_activity: tools}
+  end
+
+  defp put_workflow(state, %{id: id} = tool) do
+    tools = Enum.map(state.tool_activity, &if(&1.id == id, do: tool, else: &1))
+    timeline = put_timeline_tool(state.stream.timeline, tool)
+
+    %{state | tool_activity: tools, stream: %{state.stream | timeline: timeline}}
   end
 
   defp put_timeline_tool(timeline, nil), do: timeline
@@ -1205,7 +1256,11 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       Enum.map(state.tool_activity, fn
         %{name: name, status: :running, started_at_ms: started} = tool
         when name in @timed_tools ->
-          Map.put(tool, :elapsed_ms, div(max(now - started, 0), 1_000) * 1_000)
+          tool = Map.put(tool, :elapsed_ms, div(max(now - started, 0), 1_000) * 1_000)
+
+          if name == "run_workflow" and is_map(tool[:workflow]),
+            do: Map.put(tool, :workflow, WorkflowProgress.refresh(tool.workflow, now)),
+            else: tool
 
         tool ->
           tool

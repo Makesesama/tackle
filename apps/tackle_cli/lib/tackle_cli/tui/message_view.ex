@@ -66,6 +66,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           tool_elapsed_ms: non_neg_integer() | nil,
           tool_group: [t()] | nil,
           subagent_work: String.t() | nil,
+          workflow_progress: map() | nil,
           subagent_output: String.t() | nil,
           final?: boolean(),
           prose_width: pos_integer() | nil,
@@ -87,6 +88,7 @@ defmodule Tackle.CLI.TUI.MessageView do
     :tool_elapsed_ms,
     :tool_group,
     :subagent_work,
+    :workflow_progress,
     :subagent_output,
     :prose_width,
     final?: false,
@@ -776,6 +778,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       tool_status: status,
       tool_elapsed_ms: value(tool, :elapsed_ms),
       subagent_work: value(tool, :subagent_work),
+      workflow_progress: value(tool, :workflow),
       subagent_output: value(tool, :subagent_output),
       style: style(:tool)
     )
@@ -832,6 +835,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       tool_elapsed_ms: Keyword.get(opts, :tool_elapsed_ms),
       tool_group: Keyword.get(opts, :tool_group),
       subagent_work: Keyword.get(opts, :subagent_work),
+      workflow_progress: Keyword.get(opts, :workflow_progress),
       subagent_output: Keyword.get(opts, :subagent_output),
       final?: Keyword.get(opts, :final?, false),
       prose_width: Keyword.get(opts, :prose_width),

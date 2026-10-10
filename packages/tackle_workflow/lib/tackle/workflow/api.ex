@@ -91,6 +91,7 @@ defmodule Tackle.Workflow.API do
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.RunRef
   alias Tackle.Workflow.Fanout
+  alias Tackle.Workflow.Progress
 
   @parallel_helpers :parallel_helpers
   @parallel_options ["limit"]
@@ -141,8 +142,11 @@ defmodule Tackle.Workflow.API do
       runtime_exception!("spawn failed: " <> profile_not_allowed(profile))
     end
 
-    case Runtime.request_agent(handle, profile, prompt) do
+    on_event = observer(state)
+
+    case Runtime.request_agent(handle, profile, prompt, Progress.request_opts(on_event, profile)) do
       {:ok, %RunRef{} = run_ref} ->
+        Progress.emit(on_event, Progress.run_started(run_ref, profile, prompt))
         {encoded, state} = Lua.encode!(state, {:userdata, run_ref})
         {encoded, state}
 
@@ -161,6 +165,11 @@ defmodule Tackle.Workflow.API do
 
     case Runtime.await(run_ref, :infinity) do
       %Outcome{} = outcome ->
+        Progress.emit(
+          observer(state),
+          Progress.run_finished(run_ref, nil, outcome.status, Outcome.ok?(outcome))
+        )
+
         {encoded, state} = Lua.encode!(state, outcome_table(outcome))
         {encoded, state}
 
@@ -196,6 +205,7 @@ defmodule Tackle.Workflow.API do
   @doc "Reports one progress message to the host's log callback."
   deflua log(message) when is_binary(message), state do
     %{server: server} = context!(state)
+    Progress.emit(observer(state), %{type: :log, message: message})
     send(server, {:workflow_log, message})
     {true, state}
   end
@@ -215,14 +225,55 @@ defmodule Tackle.Workflow.API do
 
     limit = parallel_limit!(state, handle, opts)
     {count, state} = item_count!(state, items)
+    on_event = observer(state)
+    id = Progress.parallel_id()
+    Progress.emit(on_event, %{type: :parallel_started, id: id, count: count, limit: limit})
 
     {results, state} =
-      Fanout.map(handle, count, limit, state, fn index, state ->
-        item_request(state, callback, items, index)
-      end)
+      Fanout.map(
+        handle,
+        count,
+        limit,
+        state,
+        fn index, state -> item_request(state, callback, items, index) end,
+        fanout_observer(on_event, id)
+      )
 
+    Progress.emit(on_event, %{type: :parallel_finished, id: id})
     {encoded, state} = Lua.encode!(state, Enum.map(results, &result_table/1))
     {encoded, state}
+  end
+
+  defp fanout_observer(nil, _id), do: []
+
+  defp fanout_observer(on_event, id) do
+    [
+      request_opts: &Progress.request_opts(on_event, &1),
+      on_started: fn index, run_ref, {profile, prompt} ->
+        parallel = %{id: id, index: index}
+        Progress.emit(on_event, Progress.run_started(run_ref, profile, prompt, parallel))
+      end,
+      on_settled: fn index, result, started ->
+        Progress.emit(on_event, settled_event(id, index, result, started))
+      end
+    ]
+  end
+
+  defp settled_event(_id, _index, {:ok, %Outcome{} = outcome}, {run_ref, {profile, _prompt}}),
+    do: Progress.run_finished(run_ref, profile, outcome.status, Outcome.ok?(outcome))
+
+  # A watcher that could not collect the outcome still settles the run it
+  # watched; an admitted run has no other way to fail here.
+  defp settled_event(_id, _index, {:error, {:unavailable, _reason}}, {run_ref, {profile, _}}),
+    do: Progress.run_finished(run_ref, profile, :unavailable, false)
+
+  defp settled_event(id, index, {:error, reason}, nil) do
+    %{
+      type: :item_failed,
+      parallel: %{id: id, index: index},
+      status: error_status(reason),
+      text: error_text(reason)
+    }
   end
 
   # Invokes the script's callback for one item. The item is passed through Lua
@@ -366,6 +417,13 @@ defmodule Tackle.Workflow.API do
     case Lua.decode!(state, run) do
       {:userdata, %RunRef{} = run_ref} -> run_ref
       _other -> runtime_exception!("expected a run handle returned by tackle.spawn")
+    end
+  end
+
+  defp observer(state) do
+    case Lua.get_private(state, :tackle_workflow) do
+      {:ok, %{on_event: on_event}} -> on_event
+      _other -> nil
     end
   end
 

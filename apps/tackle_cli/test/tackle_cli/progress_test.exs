@@ -47,6 +47,29 @@ defmodule Tackle.CLI.Output.ProgressTest do
              "bash failed"
   end
 
+  test "labels meaningful workflow progress and ignores child-event noise" do
+    assert Progress.event_label(
+             Event.new(:workflow_progress, %{kind: :run_started, profile: "scout"})
+           ) == "Running scout…"
+
+    assert Progress.event_label(
+             Event.new(:workflow_progress, %{
+               kind: :run_finished,
+               profile: "reviewer",
+               status: :ok
+             })
+           ) == "Finished reviewer (ok)"
+
+    assert Progress.event_label(
+             Event.new(:workflow_progress, %{kind: :item_failed, status: "capacity"})
+           ) == "Workflow item failed: capacity"
+
+    assert Progress.event_label(Event.new(:workflow_progress, %{kind: :log, message: "mapped"})) ==
+             "mapped"
+
+    assert Progress.event_label(Event.new(:workflow_progress, %{kind: :run_event})) == nil
+  end
+
   test "ignores events that do not improve progress" do
     assert Progress.event_label(Event.new(:usage, %{})) == nil
     assert Progress.event_label(Event.new(:status_change, %{status: :completed})) == nil

@@ -85,24 +85,47 @@ defmodule Tackle.Workflow.Fanout do
   @type request_builder(acc) ::
           (pos_integer(), acc -> {:ok, request(), acc} | {:error, term(), acc})
 
+  @typedoc """
+  Optional observation hooks for `map/6`. They observe the batch and cannot
+  change its results, but they run in the dispatcher and are not isolated: a
+  hook that raises fails the batch, so callers wrap anything fallible.
+
+    * `:request_opts` — `fn profile -> keyword end`, extra
+      `Tackle.Runtime.request_agent/4` options for one item's run, such as an
+      event callback;
+    * `:on_started` — `fn index, run_ref, request -> any end`, called when an
+      item's run is admitted;
+    * `:on_settled` — `fn index, result, started -> any end`, called once per
+      item when its result is recorded, where `started` is the item's
+      `{run_ref, request}` or `nil` when it never got a run.
+  """
+  @type option ::
+          {:request_opts, (String.t() -> keyword())}
+          | {:on_started, (pos_integer(), RunRef.t(), request() -> any())}
+          | {:on_settled, (pos_integer(), item_result(), {RunRef.t(), request()} | nil -> any())}
+
   @doc """
   Runs `count` items, at most `limit` at a time, and collects one result each.
 
   `build_request.(index, acc)` is called exactly once per item, in index order,
   and returns that item's `{profile, prompt}`. Returns the item results in index
-  order together with the final accumulator.
+  order together with the final accumulator. `t:option/0` lists the hooks a
+  caller may pass to observe the batch.
   """
-  @spec map(Handle.t(), non_neg_integer(), pos_integer(), acc, request_builder(acc)) ::
+  @spec map(Handle.t(), non_neg_integer(), pos_integer(), acc, request_builder(acc), [option()]) ::
           {[{pos_integer(), item_result()}], acc}
         when acc: term()
-  def map(%Handle{} = handle, count, limit, acc, build_request)
+  def map(%Handle{} = handle, count, limit, acc, build_request, opts \\ [])
       when is_integer(count) and count >= 0 and is_integer(limit) and limit >= 1 and
-             is_function(build_request, 2) do
+             is_function(build_request, 2) and is_list(opts) do
     ctx = %{
       handle: handle,
       count: count,
       limit: limit,
       build_request: build_request,
+      request_opts: Keyword.get(opts, :request_opts, fn _profile -> [] end),
+      on_started: Keyword.get(opts, :on_started, fn _index, _run_ref, _request -> :ok end),
+      on_settled: Keyword.get(opts, :on_settled, fn _index, _result, _started -> :ok end),
       ref: make_ref()
     }
 
@@ -121,8 +144,8 @@ defmodule Tackle.Workflow.Fanout do
 
     case ctx.build_request.(index, acc) do
       {:error, reason, acc} ->
-        result = {:error, item_error(reason)}
-        pump(index + 1, ctx, in_flight, Map.put(results, index, result), acc)
+        results = record(ctx, results, index, {:error, item_error(reason)}, nil)
+        pump(index + 1, ctx, in_flight, results, acc)
 
       {:ok, request, acc} ->
         dispatch(index, request, ctx, in_flight, results, acc)
@@ -138,16 +161,25 @@ defmodule Tackle.Workflow.Fanout do
   defp dispatch(index, request, ctx, in_flight, results, acc) do
     case await_capacity(request, ctx, in_flight, results, acc, capacity_grace()) do
       {:ok, run_ref, in_flight, results, acc} ->
-        start(index, run_ref, ctx, in_flight, results, acc)
+        start(index, run_ref, request, ctx, in_flight, results, acc)
 
       {:error, item_error, in_flight, results, acc} ->
-        pump(index + 1, ctx, in_flight, Map.put(results, index, {:error, item_error}), acc)
+        results = record(ctx, results, index, {:error, item_error}, nil)
+        pump(index + 1, ctx, in_flight, results, acc)
     end
   end
 
-  defp start(index, run_ref, ctx, in_flight, results, acc) do
+  defp start(index, run_ref, request, ctx, in_flight, results, acc) do
     watch(ctx.ref, index, run_ref)
-    pump(index + 1, ctx, Map.put(in_flight, index, true), results, acc)
+    ctx.on_started.(index, run_ref, request)
+    pump(index + 1, ctx, Map.put(in_flight, index, {run_ref, request}), results, acc)
+  end
+
+  # Every item's result is recorded exactly once, here, so an observer sees each
+  # item settle exactly once too.
+  defp record(ctx, results, index, result, started) do
+    ctx.on_settled.(index, result, started)
+    Map.put(results, index, result)
   end
 
   # Admits one item's run, waiting out the runtime's capacity refusals.
@@ -159,8 +191,8 @@ defmodule Tackle.Workflow.Fanout do
   # batch more patience — and retries. A batch that makes no progress for
   # `@capacity_grace_ms` reports the item instead of waiting forever, since
   # capacity a stalled batch cannot free may only clear much later.
-  defp await_capacity(request, %{handle: handle} = ctx, in_flight, results, acc, deadline) do
-    case admit(handle, request) do
+  defp await_capacity(request, ctx, in_flight, results, acc, deadline) do
+    case admit(ctx, request) do
       {:ok, run_ref} ->
         {:ok, run_ref, in_flight, results, acc}
 
@@ -187,16 +219,16 @@ defmodule Tackle.Workflow.Fanout do
   # seeing one gives up for this item.
   defp capacity_grace, do: System.monotonic_time(:millisecond) + @capacity_grace_ms
 
-  defp admit(handle, {profile, prompt}) do
-    case Runtime.request_agent(handle, profile, prompt) do
+  defp admit(%{handle: handle, request_opts: request_opts}, {profile, prompt}) do
+    case Runtime.request_agent(handle, profile, prompt, request_opts.(profile)) do
       {:ok, %RunRef{} = run_ref} -> {:ok, run_ref}
       {:error, {:rejected, reason}} when reason in @capacity_reasons -> {:capacity, reason}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  # Waits until the window has room for another run. `in_flight` holds the
-  # indices of the runs the window is currently spending.
+  # Waits until the window has room for another run. `in_flight` maps the
+  # indices of the runs the window is currently spending to their run and request.
   defp open_slot(%{limit: limit}, in_flight, results, acc) when map_size(in_flight) < limit,
     do: {in_flight, results, acc}
 
@@ -218,10 +250,11 @@ defmodule Tackle.Workflow.Fanout do
 
   # Gives the dispatcher a way out when no run settles: the caller decides what
   # to do with a window that stays empty.
-  defp settle_within(%{ref: ref}, in_flight, results, acc, timeout) do
+  defp settle_within(%{ref: ref} = ctx, in_flight, results, acc, timeout) do
     receive do
       {:fanout_settled, ^ref, index, result} ->
-        {:settled, Map.delete(in_flight, index), Map.put(results, index, result), acc}
+        {started, in_flight} = Map.pop(in_flight, index)
+        {:settled, in_flight, record(ctx, results, index, result, started), acc}
     after
       timeout -> :idle
     end

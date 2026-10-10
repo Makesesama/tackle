@@ -4,7 +4,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
   alias ExRatatui.CellSession
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Text.Line
-  alias Tackle.CLI.TUI.{MessageView, ToolView}
+  alias Tackle.CLI.TUI.{MessageView, ToolView, WorkflowProgress}
   alias Tackle.Lib.{Message, State}
 
   test "call and result form one card, preserving arguments and full output" do
@@ -624,6 +624,57 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         rows = failed |> ToolView.render(100) |> text() |> String.split("\n")
         assert length(rows) == 2
       end
+    end
+
+    test "live progress replaces the script preview with a flow chart" do
+      progress =
+        Enum.reduce(
+          [
+            %{kind: :run_started, run_id: "a", profile: "scout", prompt: "Map the code paths."},
+            %{kind: :run_finished, run_id: "a", status: :ok, ok: true},
+            %{kind: :parallel_started, id: 1, count: 2, limit: 2},
+            %{
+              kind: :run_started,
+              run_id: "b",
+              profile: "reviewer",
+              prompt: "Check one",
+              parallel: %{id: 1, index: 1}
+            }
+          ],
+          WorkflowProgress.new(),
+          &WorkflowProgress.apply(&2, &1, 0)
+        )
+
+      entry =
+        workflow_entry(:running, %{"script" => @review_loop},
+          elapsed_ms: 4_000,
+          workflow: progress
+        )
+
+      output = text(ToolView.render(entry, 100))
+      assert output =~ "● running  workflow  scout → planner → worker → reviewer · fan-out  4s"
+      assert output =~ "    ✓ scout  0s  Map the code paths.\n    │\n    ┬ parallel  0/2 done"
+      assert output =~ "    ├ ● reviewer  0s  Check one\n    └ ○ 1 queued"
+      refute output =~ "local findings"
+
+      # Narrow terminals clip each node instead of wrapping the chart.
+      narrow = entry |> ToolView.render(24) |> text() |> String.split("\n")
+      assert Enum.all?(narrow, &(MessageView.display_width(&1) <= 24))
+      assert Enum.any?(narrow, &(&1 =~ "┬ parallel"))
+
+      failed =
+        workflow_entry(:failed, %{"script" => @review_loop},
+          error: "Error: the workflow failed at line 6: boom",
+          workflow: WorkflowProgress.settle(progress, 0)
+        )
+
+      output = text(ToolView.render(failed, 100))
+      assert output =~ "✓ scout → ◌ reviewer"
+      assert output =~ "6  while not review.ok do"
+
+      details = text(MessageView.inspect_items(entry, 100))
+      assert details =~ "Progress\n    ✓ scout"
+      assert details =~ " 1  -- Review loop"
     end
 
     test "details number every script line and keep the deadline and result" do

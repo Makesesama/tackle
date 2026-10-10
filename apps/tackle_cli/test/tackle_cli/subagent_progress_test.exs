@@ -96,6 +96,90 @@ defmodule Tackle.CLI.SubagentProgressTest do
     assert hd(cards(later)).tool_elapsed_ms == duration
   end
 
+  test "workflow events project a live graph and freeze child clocks on tool settlement" do
+    state =
+      event(shell(), :tool_start, %{
+        tool_call_id: "wf",
+        name: "run_workflow",
+        arguments: %{"script" => "return tackle.spawn(\"scout\", \"map\")"}
+      })
+
+    state =
+      event(state, :workflow_progress, %{
+        kind: :run_event,
+        tool_call_id: "wf",
+        run_id: "r1",
+        profile: "scout",
+        event: Event.new(:tool_start, %{name: "read", arguments: %{"path" => "lib/foo.ex"}})
+      })
+
+    state =
+      event(state, :workflow_progress, %{
+        kind: :run_started,
+        tool_call_id: "wf",
+        run_id: "r1",
+        profile: "scout",
+        prompt: "Map paths",
+        model: "m",
+        parallel: nil
+      })
+
+    [card] = cards(state)
+    assert card.workflow_progress.runs["r1"].profile == "scout"
+    assert render_text(card) =~ "● scout  0s  Map paths · read lib/foo.ex"
+
+    # Progress for another call, or a delta that changes nothing, is not drawn.
+    assert {:noreply, ignored, render?: false} =
+             RuntimeEvents.handle(
+               {:tackle_event, "session", "turn",
+                Event.new(:workflow_progress, %{
+                  kind: :run_started,
+                  tool_call_id: "other",
+                  run_id: "x",
+                  profile: "p",
+                  prompt: "q"
+                })},
+               state
+             )
+
+    assert ignored.tool_activity == state.tool_activity
+
+    unchanged =
+      event(state, :workflow_progress, %{
+        kind: :run_event,
+        tool_call_id: "wf",
+        run_id: "r1",
+        event: Event.new(:tool_start, %{name: "read", arguments: %{"path" => "lib/foo.ex"}})
+      })
+
+    assert unchanged.tool_activity == state.tool_activity
+
+    state =
+      event(state, :tool_execution_end, %{
+        tool_call_id: "wf",
+        name: "run_workflow",
+        status: :completed,
+        result: "mapped"
+      })
+
+    [card] = cards(state)
+    assert card.workflow_progress.runs["r1"].status == :ended
+    # A settled card folds the chart into one chain above the result.
+    assert render_text(card) =~ "◌ scout"
+    assert MessageView.full_text(card) == "mapped"
+
+    late =
+      event(state, :workflow_progress, %{
+        kind: :run_finished,
+        tool_call_id: "wf",
+        run_id: "r1",
+        status: :ok,
+        ok: true
+      })
+
+    assert hd(cards(late)).workflow_progress.runs["r1"].status == :ended
+  end
+
   test "subagent start metadata adds the resolved model to the live card" do
     state = start(shell(), "one", "Inspect")
 
@@ -378,7 +462,7 @@ defmodule Tackle.CLI.SubagentProgressTest do
   test "foreign events are ignored and a completion without a start has no invented duration" do
     state = shell()
     foreign = {:tackle_event, "other", "turn", Event.new(:tool_start, %{name: "subagent"})}
-    assert {:noreply, ^state, render?: false} = RuntimeEvents.handle(foreign, state)
+    assert {:noreply, ignored, render?: false} = RuntimeEvents.handle(foreign, state)
 
     state =
       event(state, :tool_error, %{tool_call_id: "missing", name: "subagent", error: "rejected"})

@@ -31,6 +31,7 @@ defmodule Tackle.Lib.Event do
           | :subagent_started
           | :subagent_progress
           | :subagent_finished
+          | :workflow_progress
           | :usage
           | :status_change
           | :error

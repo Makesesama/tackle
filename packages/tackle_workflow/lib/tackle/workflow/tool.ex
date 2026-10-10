@@ -40,12 +40,19 @@ defmodule Tackle.Workflow.Tool do
   `1..n`) contributes one line per element; any other table, and a table nested
   inside one, is rendered as JSON. Functions and userdata become `<function>`
   and `<userdata>` placeholders.
+
+  When the session context carries an `:event_callback`, the tool reports the
+  workflow's progress while it runs as `:workflow_progress` events. Each
+  event's data is one `Tackle.Workflow.Progress` event with its `:type` moved
+  to `:kind`, plus the `:tool_call_id` of the call that started the workflow,
+  so a frontend can draw the runs a workflow started under its tool call.
   """
 
   use Tackle.Lib.Tool
 
   require Lua.API
 
+  alias Tackle.Lib.Event
   alias Tackle.Runtime.Handle
   alias Tackle.Workflow
 
@@ -84,7 +91,7 @@ defmodule Tackle.Workflow.Tool do
          :ok <- ensure_delegation(handle),
          {:ok, profiles} <- workflow_profiles(context),
          {:ok, timeout_opts} <- timeout_opts(args),
-         {:ok, ref} <- start(handle, script, profiles, timeout_opts) do
+         {:ok, ref} <- start(handle, script, profiles, timeout_opts ++ progress_opts(context)) do
       await(ref)
     end
   end
@@ -137,6 +144,28 @@ defmodule Tackle.Workflow.Tool do
       ms when is_integer(ms) and ms > 0 -> {:ok, [timeout: ms]}
       _other -> {:error, "timeout_ms must be a positive integer"}
     end
+  end
+
+  # Progress ----------------------------------------------------------------------
+
+  defp progress_opts(context) do
+    case Map.get(context, :event_callback) do
+      callback when is_function(callback, 1) ->
+        tool_call_id = Map.get(context, :tool_call_id)
+        [on_event: &callback.(progress_event(&1, tool_call_id))]
+
+      _other ->
+        []
+    end
+  end
+
+  defp progress_event(%{type: kind} = event, tool_call_id) do
+    data =
+      event
+      |> Map.delete(:type)
+      |> Map.merge(%{kind: kind, tool_call_id: tool_call_id})
+
+    Event.new(:workflow_progress, data)
   end
 
   # Run ---------------------------------------------------------------------------

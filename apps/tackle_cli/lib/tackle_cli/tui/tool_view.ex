@@ -13,11 +13,9 @@ defmodule Tackle.CLI.TUI.ToolView do
   Subagents show their profile, assignment, live status, and locally observed
   elapsed time when available. Completed subagents show just the elapsed seconds
   instead of a completion label. Full arguments and findings stay in details.
-  Workflows (`run_workflow`) are headed by a static outline of the profiles their
-  Lua script names. While preparing or running they preview the highlighted
-  script, a completed workflow shows its result, and a failed one shows the
-  error with the script line it names. Details number every script line so a
-  `line N` error can be read against the source.
+  Workflows (`run_workflow`) retain the static script outline until progress
+  arrives, then render a live vertical graph of delegated runs and fan-out.
+  Details show the full graph followed by numbered script and result.
   Unknown tools retain a generic source fallback.
 
   Edit previews compare the submitted replacement strings, never files on disk.
@@ -51,13 +49,15 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   alias ExRatatui.Style
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{Highlight, MessageView, Theme, ToolGroups}
+  alias Tackle.CLI.TUI.{Highlight, MessageView, Theme, ToolGroups, WorkflowProgress, WorkflowView}
   alias Tackle.CLI.WorkflowScript
 
   @preview_rows 6
   @file_preview_rows 16
   # A workflow preview is a glance at the plan, not the whole program.
   @workflow_preview_rows 10
+  # A live chart may use a little more: it is the card's main content.
+  @workflow_graph_rows 12
   # Lumis picks the grammar from the extension.
   @workflow_path "workflow.lua"
   @preview_replacements 2
@@ -283,11 +283,13 @@ defmodule Tackle.CLI.TUI.ToolView do
          budget
        )
        when status in [:preparing, :requested, :running] do
-    case workflow_script(entry, args) do
-      nil ->
-        nil
+    cond do
+      WorkflowProgress.started?(entry.workflow_progress) ->
+        entry.workflow_progress
+        |> WorkflowView.rows(content_width(width), :preview, min(budget, @workflow_graph_rows))
+        |> wrap_indented(width, 4)
 
-      script ->
+      script = workflow_script(entry, args) ->
         label =
           if status == :preparing,
             do: "Script incoming (partial)",
@@ -296,6 +298,9 @@ defmodule Tackle.CLI.TUI.ToolView do
         script
         |> String.trim_trailing("\n")
         |> text_preview(label, width, min(budget, @workflow_preview_rows), @workflow_path)
+
+      true ->
+        nil
     end
   end
 
@@ -671,7 +676,23 @@ defmodule Tackle.CLI.TUI.ToolView do
          :preview,
          _width
        ),
-       do: output_rows(entry, :preview) ++ workflow_error_rows(entry, args)
+       do:
+         workflow_chain_rows(entry) ++
+           output_rows(entry, :preview) ++ workflow_error_rows(entry, args)
+
+  # A settled workflow folds its chart into one line above the result.
+  defp body_rows(
+         %{
+           tool_name: "run_workflow",
+           tool_status: :completed,
+           workflow_progress: %{stages: [_ | _]}
+         } =
+           entry,
+         _args,
+         :preview,
+         _width
+       ),
+       do: workflow_chain_rows(entry) ++ output_rows(entry, :preview)
 
   defp body_rows(%{tool_name: "run_workflow"} = entry, args, :preview, _width) do
     summary =
@@ -684,10 +705,13 @@ defmodule Tackle.CLI.TUI.ToolView do
     [summary | output_rows(entry, :preview)]
   end
 
-  defp body_rows(%{tool_name: "run_workflow"} = entry, args, :details, _width) do
+  defp body_rows(%{tool_name: "run_workflow"} = entry, args, :details, width) do
     case workflow_script(entry, args) do
-      nil -> generic_rows(entry, args, :details)
-      script -> workflow_rows(entry, args, script)
+      nil ->
+        generic_rows(entry, args, :details)
+
+      script ->
+        workflow_graph_rows(entry, width) ++ workflow_rows(entry, args, script)
     end
   end
 
@@ -731,6 +755,18 @@ defmodule Tackle.CLI.TUI.ToolView do
       script when is_binary(script) -> script
       _ -> nil
     end
+  end
+
+  defp workflow_chain_rows(%{workflow_progress: model}) do
+    if WorkflowProgress.started?(model),
+      do: [context_row(WorkflowView.chain(model))],
+      else: []
+  end
+
+  defp workflow_graph_rows(%{workflow_progress: model}, width) do
+    if WorkflowProgress.started?(model),
+      do: [context_row("Progress") | WorkflowView.rows(model, content_width(width), :details)],
+      else: []
   end
 
   # A trailing newline ends the last line; it does not start another.

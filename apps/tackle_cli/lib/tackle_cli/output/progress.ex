@@ -112,6 +112,25 @@ defmodule Tackle.CLI.Output.Progress do
   def event_label(%Event{type: :subagent_progress, data: data}),
     do: activity_label(value(data, :activity))
 
+  def event_label(%Event{type: :workflow_progress, data: data}) do
+    case value(data, :kind) do
+      :run_started ->
+        "Running #{value(data, :profile) || "workflow run"}…"
+
+      :run_finished ->
+        "Finished #{value(data, :profile) || "workflow run"} (#{value(data, :status)})"
+
+      :item_failed ->
+        "Workflow item failed: #{value(data, :status)}"
+
+      :log ->
+        value(data, :message)
+
+      _ ->
+        nil
+    end
+  end
+
   def event_label(%Event{type: :compaction_start}), do: "Compacting context…"
   def event_label(%Event{type: :compaction_retry}), do: "Retrying compaction…"
   def event_label(%Event{type: :retry_start}), do: "Retrying provider request…"

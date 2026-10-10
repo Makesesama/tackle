@@ -95,7 +95,12 @@ defmodule Tackle.Workflow do
       model-facing tool passes the process serving the tool call, so a
       cancelled turn does not leave delegated runs behind.
     * `:log` — one-arity callback receiving `tackle.log/1` messages. Defaults
-      to `Logger`.
+      to `Logger`. An `:on_event` observer receives them as well.
+    * `:on_event` — one-arity callback receiving the workflow's progress as it
+      runs: the delegated runs it starts, their child agents' events, the
+      outcomes it observes, its `tackle.parallel` batches, and its log
+      messages. `Tackle.Workflow.Progress` documents each event. Progress is
+      presentation only; a failing callback never affects the workflow.
 
   `:profiles` and `:owner` are host options: they describe what the caller
   already decided, never what a workflow asked for.
@@ -107,6 +112,7 @@ defmodule Tackle.Workflow do
          {:ok, handle} <- authorized_handle(scope_ref, parent_ref),
          {:ok, profiles} <- profiles(Keyword.get(opts, :profiles)),
          {:ok, owner} <- owner(Keyword.get(opts, :owner)),
+         {:ok, on_event} <- on_event(Keyword.get(opts, :on_event)),
          {:ok, timeout} <- timeout(Keyword.get(opts, :timeout), handle.limits),
          {:ok, workflow_ref} <- WorkflowRef.new(scope_ref.scope_id, ID.generate()) do
       arg = %{
@@ -117,7 +123,8 @@ defmodule Tackle.Workflow do
         owner: owner,
         timeout: timeout,
         max_instructions: Keyword.get(opts, :max_instructions),
-        log: Keyword.get(opts, :log)
+        log: Keyword.get(opts, :log),
+        on_event: on_event
       }
 
       case Runtime.start_work(parent, Server.child_spec(arg)) do
@@ -182,6 +189,10 @@ defmodule Tackle.Workflow do
   defp owner(nil), do: {:ok, nil}
   defp owner(pid) when is_pid(pid), do: {:ok, pid}
   defp owner(value), do: {:error, {:invalid_workflow_option, :owner, value}}
+
+  defp on_event(nil), do: {:ok, nil}
+  defp on_event(callback) when is_function(callback, 1), do: {:ok, callback}
+  defp on_event(value), do: {:error, {:invalid_workflow_option, :on_event, value}}
 
   defp timeout(nil, %Limits{workflow_timeout: inherited}), do: {:ok, inherited}
   defp timeout(nil, nil), do: {:ok, :infinity}

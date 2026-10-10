@@ -127,6 +127,34 @@ behind:
   )
 ```
 
+## Observing progress
+
+`:on_event` is a one-arity callback that receives the workflow's progress while
+it runs, one plain map per event (`Tackle.Workflow.Progress` documents each):
+
+```elixir
+Tackle.Workflow.run(handle, script, on_event: fn event -> send(view, {:workflow, event}) end)
+```
+
+* `:run_started` / `:run_finished` — a delegated run was admitted (by
+  `tackle.spawn`, or as item `i` of a `tackle.parallel` batch), and the
+  workflow observed its outcome. A run the script never awaits reports no
+  outcome.
+* `:run_event` — one event from that run's child agent, such as a tool call.
+* `:parallel_started` / `:parallel_finished` / `:item_failed` — the bounds of a
+  batch, and items that ended without a run.
+* `:log` — a `tackle.log/1` message, in order with the run events.
+
+Events come from more than one process, so a run's child events can arrive
+before its `:run_started`; key runs by `:run_id`. Progress is presentation
+only: a callback that raises is logged and ignored, and an unobserved workflow
+does not subscribe to its runs' events at all.
+
+The CLI draws these events as a live flow chart in the `run_workflow` tool
+card: one node per run with its status, clock, and current activity, branches
+for overlapping runs and `tackle.parallel` batches (including queued and
+failed items), and the latest log line.
+
 ## Running a workflow from an agent
 
 `Tackle.Workflow.Tool` is the model-facing surface of the same runner: an opt-in
@@ -160,9 +188,11 @@ profiles workflows may spawn:
 * The tool call owns the workflow: the workflow is cancelled when the call ends
   (including a cancelled turn, where the harness runs the tool body in its own
   supervised process) and when it exceeds the session's `workflow_timeout`.
-* Workflow-spawned runs are not yet reported as `subagent_*` progress events, so a
-  long workflow is opaque to a frontend beyond its tool call; `tackle.log/1` falls
-  back to the host's `Logger`.
+* When the session context carries an `:event_callback`, the tool reports the
+  workflow's progress as `:workflow_progress` events tagged with its
+  `:tool_call_id` (see [Observing progress](#observing-progress)), so a frontend
+  can draw the runs under the tool call. `tackle.log/1` still goes to `Logger`
+  as well.
 
 ## Guarantees
 
