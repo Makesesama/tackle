@@ -8,6 +8,8 @@ defmodule Tackle.CLI.SubagentViewTest do
   alias Tackle.CLI.TUI.{
     Browser,
     Conversation,
+    Inspector,
+    MessageView,
     RuntimeEvents,
     State,
     SubagentTranscript,
@@ -163,6 +165,127 @@ defmodule Tackle.CLI.SubagentViewTest do
 
       {:noreply, opened} = Browser.handle(:inspect, browsing)
       assert {:subagent_view, %{run_id: "run-one"}} = opened.overlay
+    end
+
+    test "a waiting card opens the same live conversation as the sidebar, then shows findings" do
+      state = start_wait(running_child(), "run-one")
+      {:noreply, sidebar} = Subagents.focus(state)
+      {:noreply, sidebar} = Subagents.handle(:inspect, sidebar)
+
+      {:noreply, browsing} = Browser.toggle_focus(state)
+      {:noreply, waiting} = Browser.handle(:inspect, %{browsing | selected_entry: "tool:wait"})
+
+      assert {:subagent_view, %{run_id: "run-one", result_entry_id: "tool:wait"}} =
+               waiting.overlay
+
+      assert texts(waiting) == texts(sidebar)
+
+      waiting = progress(waiting, Event.new(:message_delta, %{delta: " and tests"}))
+      assert texts(waiting) == ["Inspect the parser", "Looking at files and tests"]
+
+      output = "Subagent run-one completed:\n\n# Findings\n\n**All tests passed**"
+
+      finished =
+        event(waiting, :tool_end, %{tool_call_id: "wait", name: "subagent_wait", result: output})
+
+      assert {:inspector, %{entry: %{tool_output: ^output}}} = finished.overlay
+      terminal = ExRatatui.init_test_terminal(80, 24)
+      :ok = ExRatatui.draw(terminal, View.scene(finished, nil))
+      painted = ExRatatui.get_buffer_content(terminal)
+      assert painted =~ "All tests passed"
+      refute painted =~ "**All tests passed**"
+      refute painted =~ "# Findings"
+
+      # Opening from the sidebar has no wait/result transition.
+      sidebar =
+        event(sidebar, :tool_end, %{tool_call_id: "wait", name: "subagent_wait", result: output})
+
+      assert {:subagent_view, %{result_entry_id: nil}} = sidebar.overlay
+    end
+
+    test "completed launch and wait cards show findings rather than the child history" do
+      for {name, id} <- [{"subagent", "one"}, {"subagent_wait", "wait"}] do
+        state = start_wait(running_child(), "run-one")
+        output = "## Findings\n\n**Done**"
+        state = event(state, :tool_end, %{tool_call_id: id, name: name, result: output})
+        {:noreply, browsing} = Browser.toggle_focus(state)
+
+        {:noreply, inspected} =
+          Browser.handle(:inspect, %{browsing | selected_entry: "tool:" <> id})
+
+        assert {:inspector, %{entry: %{tool_output: ^output}}} = inspected.overlay
+      end
+    end
+
+    test "long findings inspector retains a native scene and paints only its viewport" do
+      output =
+        Enum.map_join(1..150, "\n\n", &"**Finding #{&1}**") <>
+          "\n\n" <> String.duplicate("long prose ", 5000) <> "\n\n**Last finding**"
+
+      entry = %MessageView{
+        kind: :tool,
+        content: "subagent_wait",
+        tool_name: "subagent_wait",
+        tool_status: :completed,
+        tool_arguments: %{"run_id" => "run-one"},
+        tool_output: output
+      }
+
+      inspector = Inspector.build(shell(), entry)
+      assert is_reference(inspector.native)
+      assert inspector.items == []
+      assert inspector.content_height > 150
+      state = %{shell() | overlay: {:inspector, inspector}}
+
+      for offset <- [0, 63, 64, 65, inspector.content_height - inspector.viewport_height] do
+        scrolled = Inspector.scroll(state, offset)
+        popup = Inspector.popup(scrolled)
+        assert length(popup.content.text) <= inspector.viewport_height
+
+        text =
+          Enum.map_join(popup.content.text, "\n", fn row ->
+            Enum.map_join(row.spans, & &1.content)
+          end)
+
+        refute text =~ "**Finding"
+        if offset == 0, do: assert(text =~ "Finding 1")
+        if offset > 150, do: assert(text =~ "Last finding")
+      end
+
+      resized = Inspector.resize(%{Inspector.scroll(state, "end") | size: {40, 16}})
+      assert {:inspector, %{content_width: 34, entry: %{tool_output: ^output}}} = resized.overlay
+
+      copied = %{
+        resized
+        | clipboard_writer: fn text ->
+            send(self(), {:copied, text})
+            {:ok, :confirmed}
+          end
+      }
+
+      {:noreply, _copied} = Inspector.handle(:copy_source, copied)
+      assert_received {:copied, ^output}
+    end
+
+    test "unknown waits fall back to details and failed waits show the error" do
+      state = start_wait(shell(), "unknown")
+      {:noreply, browsing} = Browser.toggle_focus(state)
+      {:noreply, inspected} = Browser.handle(:inspect, %{browsing | selected_entry: "tool:wait"})
+      assert {:inspector, _} = inspected.overlay
+
+      state = start_wait(running_child(), "run-one")
+      {:noreply, browsing} = Browser.toggle_focus(state)
+      {:noreply, waiting} = Browser.handle(:inspect, %{browsing | selected_entry: "tool:wait"})
+
+      failed =
+        event(waiting, :tool_error, %{
+          tool_call_id: "wait",
+          name: "subagent_wait",
+          error: "Subagent timed out"
+        })
+
+      assert {:inspector, %{entry: %{tool_status: :failed, tool_output: "Subagent timed out"}}} =
+               failed.overlay
     end
 
     test "a subagent card without observed history falls back to the inspector" do
@@ -325,6 +448,14 @@ defmodule Tackle.CLI.SubagentViewTest do
       assert Keybinds.subagent_view(%Key{code: "x"}) == :ignore
     end
   end
+
+  defp start_wait(state, run_id),
+    do:
+      event(state, :tool_start, %{
+        tool_call_id: "wait",
+        name: "subagent_wait",
+        arguments: %{"run_id" => run_id}
+      })
 
   defp running_child do
     shell()

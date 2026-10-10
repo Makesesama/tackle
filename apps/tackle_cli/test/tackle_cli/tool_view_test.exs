@@ -473,6 +473,23 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert MessageView.search_text(entry) =~ "reading source"
   end
 
+  test "completed background launch cards still show child activity, not stale activity above findings" do
+    entry = %MessageView{
+      kind: :tool,
+      content: "subagent",
+      tool_name: "subagent",
+      tool_status: :completed,
+      tool_arguments: %{"profile" => "scout", "background" => true},
+      tool_output: "Started background subagent run-one.",
+      subagent_work: "Reading lib/tackle.ex"
+    }
+
+    assert text(ToolView.render(entry, 100)) =~ "Now: Reading lib/tackle.ex"
+
+    foreground = %{entry | tool_arguments: %{"profile" => "scout"}, tool_output: "# Findings"}
+    refute text(ToolView.render(foreground, 100)) =~ "Now:"
+  end
+
   test "live subagent elapsed time renders without inventing historical durations" do
     [entry] =
       MessageView.section_entries(
@@ -509,7 +526,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
              "completed"
   end
 
-  test "subagent previews are bounded, sanitized, and retain full assignments in details" do
+  test "subagent assignments stay bounded but findings render in full at every width" do
     args = %{
       "profile" => "scout\e]52;c;evil\a",
       "prompt" => String.duplicate("界 trace ", 500) <> "FINAL TASK"
@@ -521,14 +538,17 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
         Message.tool_result(
           "explore",
           "subagent",
-          String.duplicate("finding\n", 100) <> "FINAL FINDING"
+          String.duplicate("- finding\n", 100) <> "\nFINAL FINDING"
         )
       ])
 
     for width <- [1, 4, 8, 30, 80] do
       items = ToolView.render(entry, width)
-      assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 8
+      metadata = ToolView.render(entry, width, :preview, render_result?: false)
+      assert Enum.sum(Enum.map(metadata, &elem(&1, 1))) <= 8
+      assert Enum.sum(Enum.map(items, &elem(&1, 1))) > 100
       refute text(items) =~ "evil"
+      refute text(Enum.drop(items, length(metadata))) =~ "lines hidden"
 
       for {widget, _} <- items, row <- widget.text do
         assert MessageView.display_width(plain(row)) <= width
@@ -543,6 +563,69 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     [missing] = settled([Message.tool_result("orphan", "subagent", "retained findings")])
     assert text(ToolView.render(missing, 100)) =~ "unknown profile"
     assert text(ToolView.render(missing, 100)) =~ "Task unavailable"
+  end
+
+  test "delegated findings share Markdown rendering inline and in details, retaining raw source" do
+    answer =
+      "# Findings\n\n**Important** and `inline`\n\n- First\n- Second\n\n```elixir\nIO.puts(:ok)\n```\n\nLast finding\e]52;c;evil\a"
+
+    for name <- ["subagent", "subagent_wait", "subagent_status"] do
+      args =
+        if name == "subagent",
+          do: %{"profile" => "scout", "prompt" => "Inspect"},
+          else: %{"run_id" => "run-one"}
+
+      output =
+        if name == "subagent", do: answer, else: "Subagent run-one completed:\n\n" <> answer
+
+      [entry] =
+        settled([
+          Message.assistant(tool_calls: [%{id: "findings", name: name, arguments: args}]),
+          Message.tool_result("findings", name, output)
+        ])
+
+      for items <- [ToolView.render(entry, 80), MessageView.inspect_items(entry, 80)] do
+        painted = text(items)
+        assert painted =~ "Findings"
+        assert painted =~ "Important"
+        assert painted =~ "IO.puts(:ok)"
+        assert painted =~ "Last finding"
+        refute painted =~ "# Findings"
+        refute painted =~ "**Important**"
+        refute painted =~ "```"
+        refute painted =~ "Subagent run-one completed:"
+        refute painted =~ "evil"
+
+        assert Enum.any?(items, fn {widget, _} ->
+                 Enum.any?(widget.text, fn row ->
+                   Enum.any?(
+                     row.spans,
+                     &(&1.content =~ "Important" and :bold in &1.style.modifiers)
+                   )
+                 end)
+               end)
+      end
+
+      assert MessageView.full_text(entry) == output
+      assert MessageView.search_text(entry) =~ "Last finding"
+    end
+  end
+
+  test "background launch and running status are activity, not findings" do
+    for {name, args, output} <- [
+          {"subagent", %{"profile" => "scout", "background" => true},
+           "Started background subagent run-one."},
+          {"subagent_status", %{"run_id" => "run-one"}, "Subagent run-one is still running."}
+        ] do
+      [entry] =
+        settled([
+          Message.assistant(tool_calls: [%{id: "one", name: name, arguments: args}]),
+          Message.tool_result("one", name, output)
+        ])
+
+      assert ToolView.markdown_output(entry) == nil
+      assert text(ToolView.render(entry, 100)) =~ output
+    end
   end
 
   describe "run_workflow cards" do

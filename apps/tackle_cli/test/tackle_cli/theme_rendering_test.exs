@@ -190,6 +190,54 @@ defmodule Tackle.CLI.TUI.ThemeRenderingTest do
     end
   end
 
+  test "delegated findings reuse Markdown/code cells with highlighted fences in both palettes" do
+    for mode <- [:light, :dark] do
+      System.put_env("TACKLE_THEME", Atom.to_string(mode))
+      output = "# Findings\n\n**Important**\n\n```elixir\nIO.puts(:ok)\n```"
+
+      entry = %MessageView{
+        kind: :tool,
+        content: "subagent",
+        tool_name: "subagent",
+        tool_status: :completed,
+        tool_arguments: %{"profile" => "scout"},
+        tool_output: output
+      }
+
+      {items, cache} = Conversation.cached_cell(entry, 80, %{}, 16)
+      rows = items |> paint_native(80) |> List.flatten()
+
+      assert Enum.any?(rows, fn {text, _, _, _, bits} ->
+               text =~ "Important" and Bitwise.band(bits, 1) == 1
+             end)
+
+      color = if mode == :dark, do: {1, 2, 3}, else: {4, 5, 6}
+
+      assert Enum.any?(rows, fn {text, fg, bg, _, _} ->
+               text =~ "IO.puts" and fg == color and
+                 bg == elem(Conversation.style(Theme.style(:code_surface)), 1)
+             end)
+
+      refute Enum.any?(rows, fn {text, _, _, _, _} -> text =~ "```" or text =~ "# Findings" end)
+
+      # Changing only metadata must not reparse unchanged findings.
+      {_, next_cache} = Conversation.cached_cell(%{entry | tool_elapsed_ms: 2000}, 80, cache, 16)
+      assert next_cache == cache
+
+      details = MessageView.inspect_items(entry, 80)
+
+      assert Enum.any?(details, fn {widget, _} ->
+               Enum.any?(widget.text, fn row ->
+                 Enum.any?(
+                   row.spans,
+                   &(&1.content =~ "IO.puts" and
+                       &1.style.fg == {:rgb, elem(color, 0), elem(color, 1), elem(color, 2)})
+                 )
+               end)
+             end)
+    end
+  end
+
   defp paint_native(items, width) do
     {scene, height} = Conversation.assemble(items, width)
 

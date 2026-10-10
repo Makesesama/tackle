@@ -44,6 +44,38 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
            ]
   end
 
+  test "full delegated findings scroll as Markdown without losing source or stable selection" do
+    answer = "# Findings\n\n" <> Enum.map_join(1..100, "\n\n", &"**Finding #{&1}**")
+
+    for name <- ["subagent", "subagent_wait", "subagent_status"] do
+      args =
+        if name == "subagent",
+          do: %{"profile" => "scout", "prompt" => "Inspect"},
+          else: %{"run_id" => "run-one"}
+
+      state =
+        projection([
+          Message.assistant(tool_calls: [%{id: "one", name: name, arguments: args}]),
+          Message.tool_result("one", name, answer)
+        ])
+
+      model = Conversation.new(%Rect{width: 80, height: 12}) |> Conversation.refresh(state)
+      assert model.content_height > 100
+      assert paint(model) =~ "Finding 100"
+      refute paint(model) =~ "**Finding"
+      first = Conversation.scroll_to(model, :start)
+      assert paint(first) =~ "Finding 1"
+      assert MessageView.full_text(Conversation.entry(model, "tool:one")) == answer
+      assert Conversation.text(model) =~ answer
+
+      selected = Conversation.refresh(first, Map.put(state, :selected_entry, "tool:one"))
+      assert selected.native == first.native
+      resized = Conversation.resize(selected, %Rect{width: 20, height: 12})
+      assert resized.anchor == selected.anchor
+      assert MessageView.full_text(Conversation.entry(resized, "tool:one")) == answer
+    end
+  end
+
   test "native message gutters align wrapped prose and preserve plain prompt source" do
     source = "  **raw**\nnext\n"
 

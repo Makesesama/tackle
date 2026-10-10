@@ -54,6 +54,11 @@ defmodule Tackle.CLI.Widgets.Conversation do
     [{%Cell{state: resource, style: base}, height}]
   end
 
+  def cell(%MessageView{kind: :tool} = entry, width) do
+    {items, _cache} = cached_cell(entry, width, %{}, 16)
+    items
+  end
+
   def cell(%MessageView{} = entry, width) do
     entry |> MessageView.render_entry(width) |> Enum.map(&paragraph_cell(&1, width))
   end
@@ -115,16 +120,73 @@ defmodule Tackle.CLI.Widgets.Conversation do
   def cached_cell(%MessageView{} = entry, width, _previous), do: {cell(entry, width), %{}}
 
   @doc false
-  def cached_cell(%MessageView{kind: :tool} = entry, width, _previous, code_rows) do
+  def cached_cell(%MessageView{kind: :tool} = entry, width, previous, code_rows) do
     items =
       entry
-      |> ToolView.render(width, :preview, code_rows: code_rows)
+      |> ToolView.render(width, :preview, code_rows: code_rows, render_result?: false)
       |> Enum.map(&paragraph_cell(&1, width))
 
-    {items, %{}}
+    case ToolView.markdown_output(entry) do
+      nil ->
+        {items, %{}}
+
+      output ->
+        {result, cache} = cached_markdown(output, width, ToolView.result_style(entry), previous)
+        {items ++ result, cache}
+    end
   end
 
   def cached_cell(entry, width, previous, _code_rows), do: cached_cell(entry, width, previous)
+
+  @doc false
+  def findings_document(entry, width) do
+    header =
+      entry
+      |> ToolView.render(width, :details, render_result?: false)
+      |> Enum.map(&paragraph_cell(&1, width))
+
+    {result, _cache} =
+      cached_markdown(ToolView.markdown_output(entry), width, ToolView.result_style(entry), %{})
+
+    assemble(header ++ result, width)
+  end
+
+  # Standalone ToolView/MessageView callers need primitive widget items. The
+  # transcript and findings inspector retain native cells and paint only the
+  # viewport, rather than materializing all findings into Elixir rows.
+  @doc false
+  def markdown_items(content, width, base) do
+    {items, _cache} = cached_markdown(content, width, base, %{})
+    {scene, height} = assemble(items, width)
+
+    if height == 0 do
+      []
+    else
+      for offset <- Stream.iterate(0, &(&1 + 64)) |> Enum.take_while(&(&1 < height)),
+          rows = min(height - offset, 64) do
+        {:ok, paint} =
+          Native.conversation_render(scene, width, rows, offset, [], style(%Style{}))
+
+        [{paragraph, _rect}] = Surface.place(paint, %Rect{width: width, height: rows})
+        {paragraph, rows}
+      end
+    end
+  end
+
+  defp cached_markdown(content, width, base, previous) do
+    content
+    |> CodeFences.split()
+    |> Enum.map_reduce(%{}, fn segment, cache ->
+      key = {segment, width, base, Theme.mode()}
+
+      item =
+        Map.get_lazy(previous, key, fn ->
+          assistant_cell(segment, false, width, base, "", nil)
+        end)
+
+      {item, Map.put(cache, key, item)}
+    end)
+  end
 
   defp assistant_cell({:markdown, content}, first?, width, base, marker, prose_width) do
     {resource, height} =

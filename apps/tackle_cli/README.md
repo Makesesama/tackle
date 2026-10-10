@@ -175,13 +175,22 @@ and disappears when canonical history replaces live progress. It is not provider
 latency or durable timing. Cancellation of the parent clears live cards and
 shows the turn cancellation; it does not claim the child completed.
 
-Enter on a subagent card in F4 Browse (or on a task in the F7 sidebar) opens
-that child's full conversation: a read-only, full-screen view of its
+Returned subagent findings (`subagent`, `subagent_wait`, and `subagent_status`)
+render in full as Markdown, including highlighted fenced code, both inline and
+in the scrollable result inspector. Copy and search retain the original output.
+Enter on a completed result card in F4 Browse opens that inspector.
+
+Enter on a running subagent or `subagent_wait` card in F4 Browse (or on a task
+in the F7 sidebar) opens that child's full conversation: a read-only, full-screen view of its
 assignment, reasoning, prose, and tool calls, rendered like the main transcript
 and following the child live. It has no input bar; to stop a child that goes
 wrong, press Esc and ask the parent agent. ↑/↓, Page Up/Down, Home/End, and the
 wheel scroll; ←/→ steps to the previous/next subagent; Ctrl+T toggles reasoning;
-Y copies the transcript. The view is built from the child events this frontend
+Y copies the transcript. A conversation opened from `subagent_wait` switches
+to the formatted result inspector when the wait returns (including failures);
+sidebar conversations keep showing the full transcript. Background launch cards
+also open the conversation rather than treating the launch acknowledgment as
+findings. The view is built from the child events this frontend
 observed, so subagents from a resumed session (or a card whose child has not
 started yet) fall back to the ordinary inspector.
 
@@ -472,7 +481,7 @@ be installed in Herdr.
 | F1 | Search-first model selector (idle only). Type to filter, ↑/↓ to select, Enter to apply, Esc to close. |
 | F2 | Reasoning-level selector (idle only). A reconfigure failure preserves the conversation and the draft. |
 | F3 | Settings picker: toggle the subagent sidebar (saved to `$TACKLE_HOME/config.json`) or an 80-column assistant prose limit (session-local, off by default). Code and tools keep the available width. Copy source with Y in F4 instead. |
-| F4 | Unified Browse: Transcript, Overview, Prompt, Context, Tools, Events. ←/→ or Tab/Shift+Tab switches pages. Transcript ↑/↓ selects entries, Enter inspects (subagent cards open the child's conversation), Y copies source. Other pages scroll with ↑/↓, Page Up/Down, Home/End or wheel; R refreshes, Y copies. Esc/F4 returns to the draft. |
+| F4 | Unified Browse: Transcript, Overview, Prompt, Context, Tools, Events. ←/→ or Tab/Shift+Tab switches pages. Transcript ↑/↓ selects entries, Enter inspects (running subagent/wait cards open the child's conversation; returned findings open formatted results), Y copies source. Other pages scroll with ↑/↓, Page Up/Down, Home/End or wheel; R refreshes, Y copies. Esc/F4 returns to the draft. |
 | F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
 | F6 | Open cumulative settled token usage. Tab or ←/→ switches Current/This-week sessions, R reloads, Esc closes. |
 | Ctrl+B / Alt+B (input bar) | Move the caret backward by one whitespace-delimited word. |
@@ -678,7 +687,8 @@ output adds no body rows. Failures and unknown tools keep bounded diagnostic
 previews. Failed edits and writes show only the error,
 not a replacement/content preview; their inspector retains the submitted arguments as
 source. Completed subagents with a measured duration show just the elapsed
-seconds instead of a completion label. Other inline output keeps a bounded head/tail preview (including after
+seconds instead of a completion label. Delegated findings use full Markdown;
+other inline output keeps a bounded head/tail preview (including after
 wrapping), with hidden lines indicated. F4 browses entries: Y copies the full
 retained source and Enter opens scrollable details with the full output and
 arguments; its ←/→ keys browse tool cards.

@@ -3,8 +3,9 @@ defmodule Tackle.CLI.TUI.Inspector do
   The scrollable tool-output inspector.
 
   An inspector freezes one transcript entry's rendered detail into a flat row
-  list, measures it, and then scrolls that list inside a popup viewport. It
-  keeps the *complete* retained source, so the inline card can stay a bounded
+  list, or a native Markdown scene for delegated findings, and scrolls it
+  inside a popup viewport. Native scenes paint only visible rows. It keeps the
+  *complete* retained source, so ordinary inline cards can stay a bounded
   head/tail preview while the inspector and the copy actions expose everything
   the tool actually produced.
 
@@ -14,20 +15,27 @@ defmodule Tackle.CLI.TUI.Inspector do
   against the new terminal width while clamping the scroll offset.
   """
 
+  alias ExRatatui.Layout.Rect
+  alias ExRatatui.Style
   alias ExRatatui.Widgets.{Popup, WidgetList}
+  alias Tackle.CLI.Native
   alias Tackle.CLI.TUI.{Conversation, MessageView, State, Theme, ToolView, Util}
+  alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
+  alias Tackle.CLI.Widgets.Surface
 
   @doc "Builds a fresh inspector overlay entry for one transcript entry."
   @spec build(State.t(), MessageView.t()) :: map()
   def build(%State{} = state, entry) do
     {content_width, viewport_height} = metrics(state)
-    items = MessageView.inspect_items(entry, content_width)
+    {items, native, height} = document(entry, content_width)
 
     %{
       entry: entry,
       name: MessageView.sanitize(entry.tool_name || entry.label || "entry"),
       items: items,
-      content_height: content_height(items),
+      native: native,
+      content_width: content_width,
+      content_height: height,
       viewport_height: viewport_height,
       scroll_offset: 0,
       notice: nil
@@ -70,15 +78,17 @@ defmodule Tackle.CLI.TUI.Inspector do
   @spec resize(State.t()) :: State.t()
   def resize(%State{overlay: {:inspector, inspector}} = state) do
     {content_width, viewport_height} = metrics(state)
-    items = MessageView.inspect_items(inspector.entry, content_width)
-    max_offset = max(content_height(items) - viewport_height, 0)
+    {items, native, height} = document(inspector.entry, content_width)
+    max_offset = max(height - viewport_height, 0)
 
     overlay =
       {:inspector,
        %{
          inspector
          | items: items,
-           content_height: content_height(items),
+           native: native,
+           content_width: content_width,
+           content_height: height,
            viewport_height: viewport_height,
            scroll_offset: min(inspector.scroll_offset, max_offset)
        }}
@@ -89,9 +99,6 @@ defmodule Tackle.CLI.TUI.Inspector do
   @doc "Renders the open inspector as a popup."
   @spec popup(State.t()) :: Popup.t()
   def popup(%State{overlay: {:inspector, inspector}}) do
-    {visible_items, visible_offset} =
-      Conversation.slice(inspector.items, inspector.scroll_offset, inspector.viewport_height)
-
     title =
       case inspector.notice do
         nil ->
@@ -102,11 +109,47 @@ defmodule Tackle.CLI.TUI.Inspector do
       end
 
     %Popup{
-      content: %WidgetList{items: visible_items, scroll_offset: visible_offset},
+      content: content(inspector),
       block: Theme.panel_block(title, :accent),
       percent_width: 90,
       percent_height: 80
     }
+  end
+
+  defp document(entry, width) do
+    if ToolView.markdown_output(entry) do
+      {native, height} = NativeConversation.findings_document(entry, width)
+      {[], native, height}
+    else
+      items = MessageView.inspect_items(entry, width)
+      {items, nil, content_height(items)}
+    end
+  end
+
+  # Findings can be long. Keep their measured scene and cross the native
+  # boundary only for visible rows, including during resize and wait completion.
+  defp content(%{native: native} = inspector) when not is_nil(native) do
+    rect = %Rect{width: inspector.content_width, height: inspector.viewport_height}
+
+    {:ok, rows} =
+      Native.conversation_render(
+        native,
+        rect.width,
+        rect.height,
+        inspector.scroll_offset,
+        [],
+        NativeConversation.style(%Style{})
+      )
+
+    [{paragraph, _rect}] = Surface.place(rows, rect)
+    paragraph
+  end
+
+  defp content(inspector) do
+    {items, offset} =
+      Conversation.slice(inspector.items, inspector.scroll_offset, inspector.viewport_height)
+
+    %WidgetList{items: items, scroll_offset: offset}
   end
 
   defp dispatch(:close, state), do: {:noreply, %{state | overlay: nil}}

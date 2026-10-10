@@ -5,7 +5,8 @@ defmodule Tackle.CLI.TUI.Browser do
   `F4` enters Browse. Left/right or Tab switches between Transcript, Overview,
   Prompt, Context, Tools, and Events in the main pane. Typing stops without losing
   the composer draft. Transcript arrows select entries; Enter opens their inspector,
-  or a subagent's full conversation for subagent cards.
+  or the child's live conversation for running subagent/wait cards. Returned
+  findings open in the formatted result inspector.
   Other pages scroll with arrows and retain a frozen snapshot until R refreshes.
 
   Selecting an entry scrolls it into view and re-renders only the sections that
@@ -229,15 +230,21 @@ defmodule Tackle.CLI.TUI.Browser do
   defp dispatch(:search, state), do: Search.open(state)
   defp dispatch(:toggle_thinking, state), do: Viewport.toggle_thinking(state)
 
-  # Subagent cards open the child's conversation when its events were observed;
-  # everything else, including subagents from a resumed session, is inspected.
+  # Running delegation cards open the child's observed conversation. Findings
+  # and unobserved children (including resumed sessions) open in the inspector.
   defp dispatch(:inspect, state) do
     entry = focused_entry(state)
 
     case {entry, SubagentView.run_for_entry(state, entry)} do
-      {nil, _run_id} -> {:noreply, %{state | notice: "Nothing to inspect"}}
-      {_entry, run_id} when is_binary(run_id) -> SubagentView.open(state, run_id)
-      {entry, nil} -> {:noreply, %{state | overlay: {:inspector, Inspector.build(state, entry)}}}
+      {nil, _run_id} ->
+        {:noreply, %{state | notice: "Nothing to inspect"}}
+
+      {entry, run_id} when is_binary(run_id) ->
+        opts = if entry.tool_name == "subagent_wait", do: [result_entry_id: entry.id], else: []
+        SubagentView.open(state, run_id, opts)
+
+      {entry, nil} ->
+        {:noreply, %{state | overlay: {:inspector, Inspector.build(state, entry)}}}
     end
   end
 

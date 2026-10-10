@@ -12,7 +12,9 @@ defmodule Tackle.CLI.TUI.ToolView do
   submitted changes (details retain the submitted arguments as source).
   Subagents show their profile, assignment, live status, and locally observed
   elapsed time when available. Completed subagents show just the elapsed seconds
-  instead of a completion label. Full arguments and findings stay in details.
+  instead of a completion label. Canonical delegated findings render in full as
+  Markdown with highlighted code, inline and in details; assignment previews
+  stay bounded and full arguments stay in details.
   Workflows (`run_workflow`) retain the static script outline until progress
   arrives, then render a live vertical graph of delegated runs and fan-out.
   Details show the full graph followed by numbered script and result.
@@ -70,7 +72,7 @@ defmodule Tackle.CLI.TUI.ToolView do
     name <> if(target == "", do: "", else: "  " <> target)
   end
 
-  @doc "Renders a bounded inline card or retained details; `:code_rows` budgets edit/write preview rows."
+  @doc "Renders an inline card or retained details; delegated findings are unabridged, other previews bounded."
   @spec render(MessageView.t(), pos_integer(), :preview | :details, keyword()) ::
           [MessageView.widget_item()]
   def render(entry, width, mode \\ :preview, opts \\ [])
@@ -80,6 +82,13 @@ defmodule Tackle.CLI.TUI.ToolView do
       do: group_render(entry, members, width, mode)
 
   def render(entry, width, mode, opts) do
+    output = markdown_output(entry)
+
+    paint_entry =
+      if output,
+        do: %{entry | tool_output: nil, subagent_output: nil, subagent_work: nil},
+        else: entry
+
     args = arguments(entry.tool_arguments)
 
     header_args =
@@ -98,14 +107,48 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     body =
       if mode == :preview do
-        file_preview(entry, args, width, Keyword.get(opts, :code_rows, @file_preview_rows)) ||
-          compact_body(entry, args, mode, width)
+        file_preview(paint_entry, args, width, Keyword.get(opts, :code_rows, @file_preview_rows)) ||
+          compact_body(paint_entry, args, mode, width)
       else
-        compact_body(entry, args, mode, width)
+        compact_body(paint_entry, args, mode, width)
       end
 
-    MessageView.render_lines(header ++ body)
+    result =
+      if output && Keyword.get(opts, :render_result?, true),
+        do: Tackle.CLI.Widgets.Conversation.markdown_items(output, width, result_style(entry)),
+        else: []
+
+    MessageView.render_lines(header ++ body) ++ result
   end
+
+  @doc "Returns canonical delegated findings for full Markdown rendering, never live activity."
+  @spec markdown_output(MessageView.t()) :: String.t() | nil
+  def markdown_output(%{tool_name: name, tool_status: status, tool_output: output} = entry)
+      when name in ["subagent", "subagent_wait", "subagent_status"] and
+             status in [:completed, :failed] and is_binary(output) do
+    args = arguments(entry.tool_arguments)
+
+    cond do
+      name == "subagent" and get(args, :background) == true ->
+        nil
+
+      name == "subagent_status" and
+          output == "Subagent #{get(args, :run_id)} is still running." ->
+        nil
+
+      name in ["subagent_wait", "subagent_status"] and is_binary(get(args, :run_id)) ->
+        String.replace_prefix(output, "Subagent #{get(args, :run_id)} completed:\n\n", "")
+
+      true ->
+        output
+    end
+  end
+
+  def markdown_output(_entry), do: nil
+
+  @doc false
+  def result_style(%{tool_status: :failed}), do: Theme.style(:error)
+  def result_style(_entry), do: Theme.style(:text)
 
   @doc false
   @spec preview_code_rows(integer()) :: pos_integer()
@@ -533,6 +576,9 @@ defmodule Tackle.CLI.TUI.ToolView do
         "subagent" ->
           get(args, :profile)
 
+        name when name in ["subagent_wait", "subagent_status"] ->
+          get(args, :run_id)
+
         "run_workflow" ->
           args |> get(:script) |> WorkflowScript.outline() |> WorkflowScript.summary()
 
@@ -643,6 +689,15 @@ defmodule Tackle.CLI.TUI.ToolView do
   # Commands are often paragraphs long; reserve bold emphasis for file targets.
   defp target_style("bash"), do: Theme.style(:muted)
   defp target_style(_name), do: Theme.bold(Theme.style(:text))
+
+  defp body_rows(%{tool_name: "subagent_wait", tool_status: status}, _args, :preview, _width)
+       when status in [:requested, :running] do
+    [context_row("Waiting for subagent · F4 → Enter to follow its conversation")]
+  end
+
+  defp body_rows(%{tool_name: name} = entry, _args, :preview, _width)
+       when name in ["subagent_wait", "subagent_status"],
+       do: output_rows(entry, :preview)
 
   defp body_rows(%{tool_name: "subagent"} = entry, args, :preview, _width) do
     assignment =

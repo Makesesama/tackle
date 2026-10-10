@@ -2,8 +2,8 @@ defmodule Tackle.CLI.TUI.SubagentView do
   @moduledoc """
   A read-only, full-screen conversation for one delegated subagent.
 
-  Enter on a subagent card in the transcript (or on a task in the active-task
-  sidebar) opens the child's whole history: its assignment, reasoning, prose,
+  Enter on a running subagent/wait card in the transcript (or on a task in
+  the active-task sidebar) opens the child's whole history: its assignment, reasoning, prose,
   and every tool call, rendered by the same `Conversation` model as the main
   transcript. There is no composer, because a child never takes direct input;
   to stop a child that goes wrong, close the view and tell the parent agent.
@@ -12,7 +12,8 @@ defmodule Tackle.CLI.TUI.SubagentView do
   toggle, and follows the child live: `after_event/1` re-renders it whenever
   the parent's event projection changed the observed transcript (see
   `Tackle.CLI.TUI.SubagentTranscript`). `←`/`→` step through the other
-  subagents observed in this session.
+  subagents observed in this session. When opened from a wait card, the view
+  switches to that card's formatted result inspector once the wait returns.
   """
 
   alias ExRatatui.Layout.Rect
@@ -21,6 +22,7 @@ defmodule Tackle.CLI.TUI.SubagentView do
 
   alias Tackle.CLI.TUI.{
     Conversation,
+    Inspector,
     MessageView,
     State,
     SubagentTranscript,
@@ -34,6 +36,7 @@ defmodule Tackle.CLI.TUI.SubagentView do
           run_id: String.t(),
           conversation: Conversation.t(),
           source: map() | nil,
+          result_entry_id: String.t() | nil,
           thinking_expanded?: boolean(),
           notice: String.t() | nil
         }
@@ -43,16 +46,33 @@ defmodule Tackle.CLI.TUI.SubagentView do
   @doc """
   Returns the observed run behind a subagent card, or nil.
 
-  Cards resolve through their tool call id. A card whose child was never
+  Launch cards resolve through their tool call id; wait/status cards use their
+  run argument. Returned findings open in the inspector instead. A card whose child was never
   observed by this frontend (for example after resume) has no run.
   """
   @spec run_for_entry(State.t(), MessageView.t() | nil) :: String.t() | nil
-  def run_for_entry(%State{} = state, %MessageView{kind: :tool, tool_name: "subagent", id: id})
+  def run_for_entry(
+        %State{} = state,
+        %MessageView{kind: :tool, tool_name: "subagent", id: id} = entry
+      )
       when is_binary(id) do
-    case id do
-      "tool:" <> call_id -> run_for_call(state, call_id)
-      _other -> nil
+    # Findings open in the result inspector; the sidebar still opens history.
+    if is_nil(ToolView.markdown_output(entry)) do
+      case id do
+        "tool:" <> call_id -> run_for_call(state, call_id)
+        _other -> nil
+      end
     end
+  end
+
+  def run_for_entry(%State{} = state, %MessageView{kind: :tool, tool_name: name} = entry)
+      when name in ["subagent_wait", "subagent_status"] do
+    args = ToolView.arguments(entry.tool_arguments)
+    run_id = Map.get(args, "run_id") || Map.get(args, :run_id)
+
+    if is_nil(ToolView.markdown_output(entry)) and is_binary(run_id) and
+         Map.has_key?(state.subagents, run_id),
+       do: run_id
   end
 
   def run_for_entry(_state, _entry), do: nil
@@ -80,12 +100,13 @@ defmodule Tackle.CLI.TUI.SubagentView do
   # -- lifecycle -----------------------------------------------------------
 
   @doc "Opens the view on an observed run, following its newest output."
-  @spec open(State.t(), String.t()) :: {:noreply, State.t()}
-  def open(%State{} = state, run_id) when is_binary(run_id) do
+  @spec open(State.t(), String.t(), keyword()) :: {:noreply, State.t()}
+  def open(%State{} = state, run_id, opts \\ []) when is_binary(run_id) do
     view = %{
       run_id: run_id,
       conversation: Conversation.new(content_rect(state)),
       source: nil,
+      result_entry_id: Keyword.get(opts, :result_entry_id),
       thinking_expanded?: state.thinking_expanded?,
       notice: nil
     }
@@ -111,10 +132,21 @@ defmodule Tackle.CLI.TUI.SubagentView do
   @doc "Re-renders an open view when its observed transcript changed."
   @spec sync(State.t()) :: State.t()
   def sync(%State{overlay: {:subagent_view, view}} = state) do
-    # Equal terms short-circuit on identity, so an unchanged run costs one compare.
-    if source(state, view) == view.source,
-      do: state,
-      else: %{state | overlay: {:subagent_view, render(state, view)}}
+    result =
+      if view.result_entry_id,
+        do: Conversation.entry(state.conversation, view.result_entry_id)
+
+    cond do
+      result && ToolView.markdown_output(result) ->
+        %{state | overlay: {:inspector, Inspector.build(state, result)}}
+
+      # Equal terms short-circuit on identity, so an unchanged run costs one compare.
+      source(state, view) == view.source ->
+        state
+
+      true ->
+        %{state | overlay: {:subagent_view, render(state, view)}}
+    end
   end
 
   def sync(%State{} = state), do: state
