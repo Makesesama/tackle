@@ -23,6 +23,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     RecentSessions,
     Resume,
     State,
+    SubagentTranscript,
+    SubagentView,
     Subagents,
     ToolView,
     WorkflowProgress,
@@ -53,7 +55,11 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
           {:noreply, State.t()}
           | {:noreply, State.t(), keyword()}
           | {:stop, State.t()}
-  def handle(message, state), do: route(message, Observations.observe(message, state))
+  def handle(message, state) do
+    message
+    |> route(Observations.observe(message, state))
+    |> SubagentView.after_event()
+  end
 
   defp route({:tui_spinner_tick}, %State{} = state) do
     expired = expire_queue_notice(state)
@@ -1305,7 +1311,11 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     run_id = value(data, :run_id)
     child_event = value(data, :event) || value(data, :child_event)
     existing = Map.get(state.subagents, run_id, %{run_id: run_id})
-    updated = project_subagent_work(existing, child_event, data)
+
+    updated =
+      existing
+      |> project_subagent_work(child_event, data)
+      |> put_subagent_transcript(child_event, data)
 
     subagents =
       if is_binary(run_id), do: Map.put(state.subagents, run_id, updated), else: state.subagents
@@ -1330,6 +1340,21 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         stream: %{state.stream | timeline: timeline}
     }
   end
+
+  # The full child history behind the subagent view. Identity fields are only
+  # filled in when missing so progress that arrives before `subagent_started`
+  # can still be matched to its tool card.
+  defp put_subagent_transcript(existing, child_event, data) do
+    existing
+    |> Map.put(:transcript, SubagentTranscript.apply(Map.get(existing, :transcript), child_event))
+    |> put_new_value(:tool_call_id, value(data, :tool_call_id))
+    |> put_new_value(:agent_ref, value(data, :agent_ref))
+    |> put_new_value(:profile, value(data, :profile))
+    |> put_new_value(:model, value(data, :model))
+  end
+
+  defp put_new_value(map, _key, nil), do: map
+  defp put_new_value(map, key, value), do: Map.update(map, key, value, &(&1 || value))
 
   defp project_subagent_work(existing, %Event{type: type, data: event_data}, _data),
     do: project_subagent_event(existing, type, event_data)

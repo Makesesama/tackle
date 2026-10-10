@@ -112,6 +112,7 @@ defmodule Tackle.CLI.TUI do
     Session,
     SlashCommands,
     State,
+    SubagentView,
     Subagents,
     TerminalBackground,
     TerminalTitle,
@@ -259,6 +260,9 @@ defmodule Tackle.CLI.TUI do
     case state.overlay do
       {:inspector, _inspector} ->
         {:noreply, Inspector.scroll(state, delta)}
+
+      {:subagent_view, _view} ->
+        {:noreply, SubagentView.scroll(state, delta)}
 
       nil ->
         scroll_conversation(state, mouse, delta)
@@ -462,6 +466,9 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_overlay(key, %{overlay: {:inspector, _}} = state),
     do: Inspector.handle(Keybinds.inspector(key), state)
 
+  defp dispatch_overlay(key, %{overlay: {:subagent_view, _}} = state),
+    do: SubagentView.handle(Keybinds.subagent_view(key), state)
+
   defp dispatch_overlay(key, %{overlay: {:search, _}} = state),
     do: Search.handle(Keybinds.search(key), state)
 
@@ -647,6 +654,7 @@ defmodule Tackle.CLI.TUI do
   end
 
   defp resize_overlay(%{overlay: {:inspector, _inspector}} = state), do: Inspector.resize(state)
+  defp resize_overlay(%{overlay: {:subagent_view, _view}} = state), do: SubagentView.resize(state)
   defp resize_overlay(%{overlay: {:search, _search}} = state), do: Search.refresh(state)
   defp resize_overlay(state), do: state
 

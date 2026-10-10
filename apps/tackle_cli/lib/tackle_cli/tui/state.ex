@@ -56,6 +56,7 @@ defmodule Tackle.CLI.TUI.State do
           | {:file_search, FileSearch.popup()}
           | {:slash_commands, SlashCommands.popup()}
           | {:inspector, map()}
+          | {:subagent_view, Tackle.CLI.TUI.SubagentView.t()}
           | {:search, map()}
           | {:usage_chart, map()}
           | {:confirm_quit, map()}

@@ -44,7 +44,7 @@ defmodule Tackle.CLI.TUI.Help do
     "Browse (F4)",
     "↑/↓           select / scroll",
     "←/→ or Tab    switch page",
-    "Enter         inspect entry",
+    "Enter         inspect entry / open subagent",
     "Y / A         copy source / transcript",
     "Alt+N/P/W    same selection chords as the composer",
     "Ctrl+F        search transcript",
@@ -53,7 +53,14 @@ defmodule Tackle.CLI.TUI.Help do
     "",
     "Tasks (F7)",
     "↑/↓           select task",
-    "Enter         details",
+    "Enter         open subagent conversation",
+    "Esc           back",
+    "",
+    "Subagent conversation (read-only)",
+    "↑/↓ PgUp/PgDn scroll · Home/End oldest / latest",
+    "←/→           previous / next subagent",
+    "Ctrl+T        toggle thinking",
+    "Y             copy transcript",
     "Esc           back"
   ]
 

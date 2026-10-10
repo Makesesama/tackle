@@ -175,8 +175,20 @@ and disappears when canonical history replaces live progress. It is not provider
 latency or durable timing. Cancellation of the parent clears live cards and
 shows the turn cancellation; it does not claim the child completed.
 
+Enter on a subagent card in F4 Browse (or on a task in the F7 sidebar) opens
+that child's full conversation: a read-only, full-screen view of its
+assignment, reasoning, prose, and tool calls, rendered like the main transcript
+and following the child live. It has no input bar; to stop a child that goes
+wrong, press Esc and ask the parent agent. ↑/↓, Page Up/Down, Home/End, and the
+wheel scroll; ←/→ steps to the previous/next subagent; Ctrl+T toggles reasoning;
+Y copies the transcript. The view is built from the child events this frontend
+observed, so subagents from a resumed session (or a card whose child has not
+started yet) fall back to the ordinary inspector.
+
 Only returned findings are retained in the root journal; child transcripts and
-forwarded progress are ephemeral. Footer and chart usage totals exclude child
+forwarded progress are not persisted. The shell keeps each observed child's
+transcript in memory until the session is replaced, with each settled tool
+result capped at 64 KB. Footer and chart usage totals exclude child
 usage. See the harness guide's
 [default subagent documentation](../../packages/tackle/README.md#default-subagents) for details.
 
@@ -460,7 +472,7 @@ be installed in Herdr.
 | F1 | Search-first model selector (idle only). Type to filter, ↑/↓ to select, Enter to apply, Esc to close. |
 | F2 | Reasoning-level selector (idle only). A reconfigure failure preserves the conversation and the draft. |
 | F3 | Settings picker: toggle the subagent sidebar (saved to `$TACKLE_HOME/config.json`) or an 80-column assistant prose limit (session-local, off by default). Code and tools keep the available width. Copy source with Y in F4 instead. |
-| F4 | Unified Browse: Transcript, Overview, Prompt, Context, Tools, Events. ←/→ or Tab/Shift+Tab switches pages. Transcript ↑/↓ selects entries, Enter inspects, Y copies source. Other pages scroll with ↑/↓, Page Up/Down, Home/End or wheel; R refreshes, Y copies. Esc/F4 returns to the draft. |
+| F4 | Unified Browse: Transcript, Overview, Prompt, Context, Tools, Events. ←/→ or Tab/Shift+Tab switches pages. Transcript ↑/↓ selects entries, Enter inspects (subagent cards open the child's conversation), Y copies source. Other pages scroll with ↑/↓, Page Up/Down, Home/End or wheel; R refreshes, Y copies. Esc/F4 returns to the draft. |
 | F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
 | F6 | Open cumulative settled token usage. Tab or ←/→ switches Current/This-week sessions, R reloads, Esc closes. |
 | Ctrl+B / Alt+B (input bar) | Move the caret backward by one whitespace-delimited word. |
@@ -874,6 +886,7 @@ process lifecycle, and everything else is a module that takes and returns
 | `TUI.RuntimeEvents` | projecting harness events into state |
 | `Widgets.Input` / `native/tackle/src/widgets/input.rs` | native draft resource, editing, wrapping, and caret paint |
 | `Widgets.Subagents` / `native/tackle/src/widgets/subagents.rs` | native active-task sidebar, wrapping, clipping, and minimal chrome |
+| `TUI.SubagentTranscript` / `TUI.SubagentView` | projecting forwarded child events into a timeline; the read-only full-screen subagent conversation |
 | `TUI.Composer` | draft editing, submission, and history recall |
 | `TUI.Pastes` | long-paste and image labels, their retained payloads, and resolution into a prompt |
 | `TUI.History` | the in-memory prompt history and its browsing position |

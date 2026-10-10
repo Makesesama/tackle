@@ -10,8 +10,9 @@ defmodule Tackle.CLI.Keybinds do
 
   Each context gets its own resolver—`global/1` for chords that are live
   everywhere, then `base/2`, `transcript/1`, `confirm/1`, `picker/1`,
-  `inspector/1`, `search/1`, and `usage_chart/1`—and clauses are tried in order, so more
-  specific chords must be listed before their unmodified keys.
+  `inspector/1`, `subagent_view/1`, `search/1`, and `usage_chart/1`—and
+  clauses are tried in order, so more specific chords must be listed before
+  their unmodified keys.
 
   Modifier lists arrive in ExRatatui's canonical order (`"shift"`, `"ctrl"`,
   `"alt"`, ...), which lets chords match on them literally:
@@ -397,6 +398,29 @@ defmodule Tackle.CLI.Keybinds do
   def inspector(%Key{code: "a"}), do: :copy_arguments
   def inspector(%Key{code: "A"}), do: :copy_arguments
   def inspector(%Key{}), do: :ignore
+
+  # -- subagent view -------------------------------------------------------
+
+  @doc """
+  Resolves a chord inside the read-only subagent conversation.
+
+  Scrolling mirrors the transcript; `←`/`→` step to another subagent.
+  """
+  @spec subagent_view(Key.t()) :: intent
+  def subagent_view(%Key{code: "t", modifiers: modifiers}) when is_ctrl(modifiers),
+    do: :toggle_thinking
+
+  def subagent_view(%Key{code: code}) when code in ["esc", "q"], do: :close
+  def subagent_view(%Key{code: code}) when code in ["up", "k"], do: {:scroll, "up"}
+  def subagent_view(%Key{code: code}) when code in ["down", "j"], do: {:scroll, "down"}
+  def subagent_view(%Key{code: "page_up"}), do: {:scroll, "page_up"}
+  def subagent_view(%Key{code: "page_down"}), do: {:scroll, "page_down"}
+  def subagent_view(%Key{code: "home"}), do: {:scroll, "home"}
+  def subagent_view(%Key{code: "end"}), do: {:scroll, "end"}
+  def subagent_view(%Key{code: "left"}), do: {:adjacent, "left"}
+  def subagent_view(%Key{code: "right"}), do: {:adjacent, "right"}
+  def subagent_view(%Key{code: code}) when code in ["y", "Y"], do: :copy_transcript
+  def subagent_view(%Key{}), do: :ignore
 
   # -- usage chart ---------------------------------------------------------
 

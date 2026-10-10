@@ -5,11 +5,12 @@ defmodule Tackle.CLI.TUI.Subagents do
   The sidebar is not an overlay: it opens beside the transcript whenever at
   least one delegated child is running and closes on its own when the last one
   settles. `focus/1` moves the keyboard into it so a running task can be
-  selected and inspected, and `reconcile/1` keeps that selection valid while
-  children finish.
+  selected and inspected—Enter opens the child's full conversation in
+  `Tackle.CLI.TUI.SubagentView`—and `reconcile/1` keeps that selection valid
+  while children finish.
   """
 
-  alias Tackle.CLI.TUI.{Conversation, Inspector, State, Viewport}
+  alias Tackle.CLI.TUI.{Conversation, Inspector, State, SubagentView, Viewport}
 
   @doc "Whether any delegated child is currently running."
   @spec active?(State.t()) :: boolean()
@@ -124,9 +125,18 @@ defmodule Tackle.CLI.TUI.Subagents do
     end
   end
 
-  # Details reuse the existing inspector over the child's inline card, so the
-  # sidebar needs no second detail surface.
+  # Details open the child's full conversation when its events were observed,
+  # and otherwise fall back to the inspector over the child's inline card.
   defp inspect_selected(%State{} = state) do
+    task = Enum.find(tasks(state), &(&1.id == state.subagent_selected))
+
+    case SubagentView.run_for_task(state, task) do
+      run_id when is_binary(run_id) -> SubagentView.open(state, run_id)
+      nil -> inspect_card(state)
+    end
+  end
+
+  defp inspect_card(%State{} = state) do
     case Conversation.entry(state.conversation, "tool:#{state.subagent_selected}") do
       nil -> {:noreply, %{state | notice: "Task details unavailable"}}
       entry -> {:noreply, %{state | overlay: {:inspector, Inspector.build(state, entry)}}}

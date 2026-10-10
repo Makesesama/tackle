@@ -38,6 +38,7 @@ defmodule Tackle.CLI.TUI.View do
     SlashCommands,
     State,
     StatusView,
+    SubagentView,
     Subagents,
     Theme,
     Tree,
@@ -245,6 +246,11 @@ defmodule Tackle.CLI.TUI.View do
 
   defp overlay_widgets(%State{overlay: {:slash_commands, _}} = state, composer, _width, _height),
     do: SlashCommands.widgets(state, composer)
+
+  # The subagent conversation replaces the whole shell rather than floating
+  # in a popup, so it paints its own full-screen chrome.
+  defp overlay_widgets(%State{overlay: {:subagent_view, _}} = state, _composer, _width, _height),
+    do: SubagentView.widgets(state)
 
   defp overlay_widgets(state, _composer, width, height) do
     [{overlay_widget(state), %Rect{x: 0, y: 0, width: width, height: height}}]
