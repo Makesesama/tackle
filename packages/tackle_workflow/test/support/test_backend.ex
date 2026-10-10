@@ -59,8 +59,10 @@ defmodule Tackle.Workflow.TestAgent do
   #   `:block`        - notifies the test and waits for cancellation.
   #   `:error`        - settles with a library error outcome.
   #
-  # Terminal results are reported to the delegated request helper through the
-  # runtime's correlated terminal routing.
+  # A configured `:events` list is delivered to the subscriber before the turn
+  # settles, the way a real session forwards its loop events. Terminal results
+  # are reported to the delegated request helper through the runtime's
+  # correlated terminal routing.
 
   use GenServer
 
@@ -76,7 +78,7 @@ defmodule Tackle.Workflow.TestAgent do
   def init({config, %AgentContext{} = context}) do
     Process.flag(:trap_exit, true)
     :ok = AgentContext.register(context)
-    {:ok, %{config: config, context: context, turn: nil, turn_monitor: nil}}
+    {:ok, %{config: config, context: context, turn: nil, turn_monitor: nil, subscriber: nil}}
   end
 
   @impl true
@@ -94,7 +96,8 @@ defmodule Tackle.Workflow.TestAgent do
 
   def handle_call({:submit, _input}, _from, state), do: {:reply, {:error, :busy}, state}
 
-  def handle_call(:subscribe, _from, state), do: {:reply, {:ok, :subscribed}, state}
+  def handle_call(:subscribe, {pid, _tag}, state),
+    do: {:reply, {:ok, :subscribed}, %{state | subscriber: pid}}
 
   def handle_call({:cancel, reason}, _from, state) do
     state = stop_turn(state, reason)
@@ -103,6 +106,7 @@ defmodule Tackle.Workflow.TestAgent do
 
   @impl true
   def handle_info({:turn_done, result}, state) do
+    publish_events(state)
     state = report_terminal(state, result)
     {:noreply, %{state | turn: nil, turn_monitor: nil}}
   end
@@ -153,6 +157,16 @@ defmodule Tackle.Workflow.TestAgent do
         {:runtime_error, {:unknown_mode, other}}
     end
   end
+
+  # Events and the terminal result leave this process in order, as they do from
+  # a real session, so the subscriber sees every event before the settlement.
+  defp publish_events(%{subscriber: pid, config: config}) when is_pid(pid) do
+    for event <- Map.get(config, :events, []) do
+      send(pid, {:tackle_event, "test-session", "turn", event})
+    end
+  end
+
+  defp publish_events(_state), do: :ok
 
   defp answer(content), do: %State{messages: [Message.assistant(content: content)]}
 

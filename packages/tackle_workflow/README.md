@@ -30,12 +30,14 @@ Workflows call the `tackle` table (`Tackle.Workflow.API`):
   that run; the host resolves it only against models it already makes
   available;
 * `tackle.await(run)` — blocks the workflow until the run settles and returns
-  `{ok, status, text}`; expected failures are returned, never raised, so the
-  workflow owns the failure policy;
+  `{ok, status, text, tokens, tool_calls, failed_tool_calls}`; expected
+  failures are returned, never raised, so the workflow owns the failure policy;
 * `tackle.parallel(items, fn, opts)` — bounded fan-out: one delegated run per
   item, at most `limit` in flight, one result table per item in input order;
   the callback returns `profile, prompt, opts?` with the same `opts` table;
 * `tackle.cancel(run, reason)` — cooperative cancellation of one run;
+* `tackle.budget()` — the workflow's token accounting, `{used, limit,
+  remaining}` (see [Run facts and token budget](#run-facts-and-token-budget));
 * `tackle.log(message)` — progress reporting to the host's log callback.
 
 A review loop:
@@ -82,8 +84,11 @@ end
   something other than two strings, `"spawn_error"` when the runtime refused
   the spawn on policy (an unknown profile, a spawn-depth limit, delegation
   not allowed), `"capacity"` when the scope stayed at its concurrency limit
-  for as long as the fan-out is willing to wait, and `"unavailable"` when a
-  settled run's outcome could not be collected.
+  for as long as the fan-out is willing to wait, `"budget_exhausted"` when the
+  workflow's token budget was used up before the item started, and
+  `"unavailable"` when a settled run's outcome could not be collected. Every
+  item carries run facts, zeros for an item that never started a run, except
+  an `"unavailable"` item.
 * The runtime refuses rather than queues at capacity, so a refusal is not
   final: the fan-out waits briefly for a slot released a moment after its
   settlement (or for one of its own runs to settle in the meantime) and retries.
@@ -131,6 +136,46 @@ behind:
   )
 ```
 
+## Run facts and token budget
+
+Every outcome table carries facts the harness recorded while the run worked,
+counted from the run agent's own `:step_end`, `:usage`, `:tool_end`, and
+`:tool_error` events (`Tackle.Workflow.Meter`), not reported by the agent:
+
+* `tokens` — model tokens the run reported;
+* `tool_calls` — tool calls the run settled;
+* `failed_tool_calls` — how many of those failed.
+
+A workflow can check a run's claims against them: a round that says it made
+progress but called no tools changed nothing. Tokens are counted while runs
+work, including runs that fail, time out, or are never awaited. Delegation
+inside a run is not counted; it reports to that run, not to the workflow.
+
+`:token_budget` limits what all of one workflow's runs may spend together:
+
+```elixir
+{:ok, ref} = Tackle.Workflow.run(handle, script, token_budget: 500_000)
+```
+
+`tackle.budget()` returns `{used = n}`, plus `limit` and `remaining` under a
+budget. Once `used` reaches `limit`, `tackle.spawn` raises a catchable error and
+`tackle.parallel` reports `"budget_exhausted"` for items it has not started.
+Runs already in flight finish rather than being cut off mid-edit, so a workflow
+can overshoot by what those runs spend (with `tackle.parallel`, up to `limit`
+runs at once); scripts keep a reserve and stop starting new work before
+`remaining` reaches zero. A streaming model call reports usage more than once,
+so tokens are counted once per settled model call (`:step_end`).
+
+Facts and budget depend on the agent backend delivering a run's events before
+its terminal result, as `Tackle.Session` and the Phoenix runtime backend do.
+
+These are the pieces of a *goal loop*: a script that pursues one objective
+over many fresh worker rounds, stops as blocked when the facts show no
+progress, has an independent reviewer audit any claim of completion, and ends
+as `budget_limited` when an open-ended goal runs out of budget. The workflow
+skill guide (`lib/tackle/workflow/skill/SKILL.md`, "Goal loops") documents the
+pattern with a complete script that the test suite runs against fake agents.
+
 ## Observing progress
 
 `:on_event` is a one-arity callback that receives the workflow's progress while
@@ -152,7 +197,8 @@ Tackle.Workflow.run(handle, script, on_event: fn event -> send(view, {:workflow,
 Events come from more than one process, so a run's child events can arrive
 before its `:run_started`; key runs by `:run_id`. Progress is presentation
 only: a callback that raises is logged and ignored, and an unobserved workflow
-does not subscribe to its runs' events at all.
+forwards no run events (its runs' events still feed the workflow's own token
+and tool-call accounting).
 
 The CLI draws these events as a live flow chart in the `run_workflow` tool
 card: one node per run with its status, clock, and current activity, branches
@@ -180,6 +226,11 @@ profiles workflows may spawn:
   only narrow what the scope already allows. Model-visible data can therefore
   never widen delegation. Without it, the scope's trusted profiles decide — the
   same set `subagent` can already name.
+* `:workflow_token_budget` in the session context gives each workflow a token
+  budget. The tool's optional `token_budget` argument can only lower it;
+  without either, workflows have no token budget. The budget applies to each
+  `run_workflow` call separately, so it bounds one workflow, not a session's
+  total spend.
 * The values the workflow returns are the tool result, one per line. A sequence
   table such as `return {a, b}` gives one line per element, like `return a, b`;
   any other table — `{ok = true, text = "..."}`, or a table nested in a
@@ -211,7 +262,8 @@ profiles workflows may spawn:
   deterministic instruction budget (default 1,000,000 VM instructions,
   overridable) stops spin loops that never await.
 * **Bounded.** The workflow runs under an absolute deadline (default: the
-  parent's `workflow_timeout` limit). `tackle.parallel/3` keeps at most the
+  parent's `workflow_timeout` limit) and, optionally, a token budget that
+  refuses new runs once spent. `tackle.parallel/3` keeps at most the
   scope's concurrency ceiling in flight, clamped to the requested `limit`.
   Cancellation kills the workflow process tree; the runtime cancels every run
   the workflow owns, however the workflow ends.

@@ -15,14 +15,36 @@ defmodule Tackle.Workflow.API do
     subagent tool and host-defined workflows. It returns an opaque run handle
     immediately, so several spawns overlap. See "Spawn options" for `opts`.
   * `tackle.await(run)` blocks the script until the run settles and returns an
-    outcome table with `ok`, `status`, and `text` fields. Expected failures
-    (agent errors, cancellations, timeouts) are returned, never raised, so
-    the workflow decides its own failure policy.
+    outcome table with `ok`, `status`, and `text` fields, plus the run facts
+    described below. Expected failures (agent errors, cancellations, timeouts)
+    are returned, never raised, so the workflow decides its own failure policy.
   * `tackle.parallel(items, fn, opts)` is bounded fan-out: it starts one
     delegated run per item and returns one result table per item, in input
     order. See below.
   * `tackle.cancel(run, reason)` requests cooperative cancellation of one run.
+  * `tackle.budget()` returns the workflow's token accounting. See "Run facts
+    and token budget".
   * `tackle.log(message)` reports progress to the host's log callback.
+
+  ## Run facts and token budget
+
+  Every outcome table also carries facts the harness recorded while the run
+  worked, so a workflow can tell whether a run did anything without trusting
+  its answer:
+
+    * `tokens` — model tokens the run reported;
+    * `tool_calls` — tool calls the run settled;
+    * `failed_tool_calls` — how many of them failed.
+
+  `tackle.budget()` returns `{used = n}` with the tokens all of the workflow's
+  runs have reported so far, plus `limit` and `remaining` when the host gave
+  the workflow a token budget (`Tackle.Workflow.run/3`'s `:token_budget`).
+  Once `used` reaches `limit`, `tackle.spawn` raises and `tackle.parallel`
+  reports `"budget_exhausted"` for every item it has not started yet. Runs
+  already in flight finish, so a workflow can spend more than its budget by
+  what those runs use — with `tackle.parallel`, up to `limit` runs at once.
+  The budget belongs to one workflow: it limits starting runs, not a session's
+  total spend. `Tackle.Workflow.Meter` documents what is counted.
 
   ## Spawn options
 
@@ -67,7 +89,8 @@ defmodule Tackle.Workflow.API do
 
   Every item produces exactly one table, in input order:
 
-      { index = 2, ok = true, status = "ok", text = "..." }
+      { index = 2, ok = true, status = "ok", text = "...",
+        tokens = 1200, tool_calls = 3, failed_tool_calls = 0 }
 
   `status` is the run's outcome status — `"ok"`, `"error"`, `"cancelled"`,
   `"runtime_error"`, `"timeout"`, or `"rejected"` — or one of:
@@ -80,9 +103,13 @@ defmodule Tackle.Workflow.API do
     * `"capacity"` — the scope stayed at its concurrency limit for as long as
       `tackle.parallel` waits for its own runs to free capacity. Retrying the
       item in a later call may succeed;
+    * `"budget_exhausted"` — the workflow's token budget was used up before
+      the item started;
     * `"unavailable"` — a settled run's outcome could not be collected.
 
   `text` carries the answer for a successful run and the reason otherwise.
+  Every item carries run facts — zeros for an item that never started a run —
+  except an `"unavailable"` item, whose run's facts cannot be collected.
   Item failures are returned, never raised, and runs are never retried: a
   retried agent run is a second paid model call that may answer differently.
   The workflow decides what to do with a failed item.
@@ -110,6 +137,7 @@ defmodule Tackle.Workflow.API do
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.RunRef
   alias Tackle.Workflow.Fanout
+  alias Tackle.Workflow.Meter
   alias Tackle.Workflow.Progress
 
   @parallel_helpers :parallel_helpers
@@ -185,7 +213,8 @@ defmodule Tackle.Workflow.API do
           Progress.run_finished(run_ref, nil, outcome.status, Outcome.ok?(outcome))
         )
 
-        {encoded, state} = Lua.encode!(state, outcome_table(outcome))
+        facts = Meter.run_facts(meter!(state), run_ref.run_id)
+        {encoded, state} = Lua.encode!(state, outcome_table(outcome) |> Map.merge(facts))
         {encoded, state}
 
       {:error, reason} ->
@@ -217,6 +246,12 @@ defmodule Tackle.Workflow.API do
     end
   end
 
+  @doc "Returns the workflow's token accounting: `used`, and `limit` and `remaining`."
+  deflua budget(), state do
+    {encoded, state} = Lua.encode!(state, Meter.budget(meter!(state)))
+    {encoded, state}
+  end
+
   @doc "Reports one progress message to the host's log callback."
   deflua log(message) when is_binary(message), state do
     %{server: server} = context!(state)
@@ -236,8 +271,14 @@ defmodule Tackle.Workflow.API do
       spawn_error!("spawn failed: " <> profile_not_allowed(profile))
     end
 
+    meter = meter!(state)
+
+    if Meter.exhausted?(meter) do
+      spawn_error!("spawn failed: " <> budget_exhausted(meter))
+    end
+
     on_event = observer(state)
-    opts = Keyword.merge(Progress.request_opts(on_event, profile), spawn_opts)
+    opts = Keyword.merge(run_opts(meter, on_event, profile), spawn_opts)
 
     case Runtime.request_agent(handle, profile, prompt, opts) do
       {:ok, %RunRef{} = run_ref} ->
@@ -283,6 +324,23 @@ defmodule Tackle.Workflow.API do
 
   defp format_keys(keys), do: keys |> Enum.sort() |> Enum.map_join(", ", &inspect/1)
 
+  # Every run reports its child events to the workflow's meter, and to the host's
+  # observer when there is one.
+  defp run_opts(%Meter{} = meter, on_event, profile) do
+    forward = Keyword.get(Progress.request_opts(on_event, profile), :event_callback)
+
+    [
+      event_callback: fn run_ref, event ->
+        Meter.record(meter, run_ref.run_id, event)
+        if forward, do: forward.(run_ref, event)
+      end
+    ]
+  end
+
+  defp budget_exhausted(%Meter{token_budget: budget} = meter) do
+    "token budget exhausted (used #{Meter.tokens_used(meter)} of #{budget} tokens)"
+  end
+
   # Fan-out -----------------------------------------------------------------------
 
   defp run_parallel(items, callback, opts, state) do
@@ -295,6 +353,7 @@ defmodule Tackle.Workflow.API do
     limit = parallel_limit!(state, handle, opts)
     {count, state} = item_count!(state, items)
     on_event = observer(state)
+    meter = meter!(state)
     id = Progress.parallel_id()
     Progress.emit(on_event, %{type: :parallel_started, id: id, count: count, limit: limit})
 
@@ -305,11 +364,11 @@ defmodule Tackle.Workflow.API do
         limit,
         state,
         fn index, state -> item_request(state, callback, items, index) end,
-        fanout_observer(on_event, id)
+        [request_opts: &run_opts(meter, on_event, &1)] ++ fanout_observer(on_event, id)
       )
 
     Progress.emit(on_event, %{type: :parallel_finished, id: id})
-    {encoded, state} = Lua.encode!(state, Enum.map(results, &result_table/1))
+    {encoded, state} = Lua.encode!(state, Enum.map(results, &result_table(&1, meter)))
     {encoded, state}
   end
 
@@ -317,7 +376,6 @@ defmodule Tackle.Workflow.API do
 
   defp fanout_observer(on_event, id) do
     [
-      request_opts: &Progress.request_opts(on_event, &1),
       on_started: fn index, run_ref, {profile, prompt, _opts} ->
         parallel = %{id: id, index: index}
         Progress.emit(on_event, Progress.run_started(run_ref, profile, prompt, parallel))
@@ -366,12 +424,16 @@ defmodule Tackle.Workflow.API do
   end
 
   defp item_spawn(state, profile, prompt, opts) do
+    meter = meter!(state)
+
     with {:ok, spawn_opts} <- spawn_options(state, opts),
-         true <- allowed_profile?(state, profile) do
+         {:allowed, true} <- {:allowed, allowed_profile?(state, profile)},
+         {:budget, false} <- {:budget, Meter.exhausted?(meter)} do
       {:ok, {profile, prompt, spawn_opts}, state}
     else
       {:error, message} -> {:error, message, state}
-      false -> {:error, {:spawn_error, profile_not_allowed(profile)}, state}
+      {:allowed, false} -> {:error, {:spawn_error, profile_not_allowed(profile)}, state}
+      {:budget, true} -> {:error, {:budget_exhausted, budget_exhausted(meter)}, state}
     end
   end
 
@@ -442,28 +504,42 @@ defmodule Tackle.Workflow.API do
 
   # Result projection -------------------------------------------------------------
 
-  defp result_table({index, {:ok, %Outcome{} = outcome}}) do
-    outcome_table(outcome) |> Map.put("index", index)
+  defp result_table({index, {:ok, %Outcome{} = outcome}}, meter) do
+    outcome
+    |> outcome_table()
+    |> Map.merge(Meter.run_facts(meter, outcome.run_id))
+    |> Map.put("index", index)
   end
 
-  defp result_table({index, {:error, reason}}) do
+  defp result_table({index, {:error, reason}}, _meter) do
     %{
       "index" => index,
       "ok" => false,
       "status" => error_status(reason),
       "text" => error_text(reason)
     }
+    |> Map.merge(unstarted_facts(reason))
   end
+
+  # An item that never started a run spent nothing. An `unavailable` item did
+  # start one, but its run cannot be told apart, so it reports no facts at all
+  # rather than zeros that would be wrong.
+  defp unstarted_facts({:unavailable, _reason}), do: %{}
+
+  defp unstarted_facts(_reason),
+    do: %{"tokens" => 0, "tool_calls" => 0, "failed_tool_calls" => 0}
 
   defp error_status({:callback_error, _reason}), do: "callback_error"
   defp error_status({:spawn_error, _reason}), do: "spawn_error"
   defp error_status({:capacity, _reason}), do: "capacity"
   defp error_status({:unavailable, _reason}), do: "unavailable"
+  defp error_status({:budget_exhausted, _reason}), do: "budget_exhausted"
 
   defp error_text({:callback_error, reason}), do: reason_text(reason)
   defp error_text({:spawn_error, reason}), do: "spawn failed: #{reason_text(reason)}"
   defp error_text({:capacity, reason}), do: "spawn refused at capacity: #{reason_text(reason)}"
   defp error_text({:unavailable, reason}), do: "outcome unavailable: #{reason_text(reason)}"
+  defp error_text({:budget_exhausted, reason}), do: "spawn refused: #{reason_text(reason)}"
 
   defp reason_text(reason) when is_binary(reason), do: reason
   defp reason_text(reason), do: inspect(reason)
@@ -505,6 +581,11 @@ defmodule Tackle.Workflow.API do
       {:ok, %{on_event: on_event}} -> on_event
       _other -> nil
     end
+  end
+
+  defp meter!(state) do
+    %{meter: %Meter{} = meter} = context!(state)
+    meter
   end
 
   defp context!(state) do

@@ -23,7 +23,11 @@ defmodule Tackle.Workflow.TestSupport do
   end
 
   defp config(opts) do
-    base = %{mode: Keyword.get(opts, :mode, :echo_prompt), test_pid: self()}
+    base = %{
+      mode: Keyword.get(opts, :mode, :echo_prompt),
+      test_pid: self(),
+      events: Keyword.get(opts, :events, [])
+    }
 
     case Keyword.fetch(opts, :content) do
       {:ok, content} -> Map.put(base, :content, content)

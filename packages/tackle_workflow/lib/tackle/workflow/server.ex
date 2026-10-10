@@ -14,10 +14,12 @@ defmodule Tackle.Workflow.Server do
   are requested by the worker, so the runtime cancels them automatically when
   the worker dies; a workflow therefore owns every run it spawns.
 
-  The server also owns the host's `:profiles` allowlist and optional `:owner`.
-  The allowlist travels to the API as workflow runtime context, where it bounds
-  every spawn. A terminated owner cancels the workflow exactly like its own
-  deadline would, so a workflow never outlives the request that started it.
+  The server also owns the host's `:profiles` allowlist, optional
+  `:token_budget`, and optional `:owner`. The allowlist and budget travel to the
+  API as workflow runtime context, where they bound every spawn; the worker
+  creates the `Tackle.Workflow.Meter` that counts its runs' tokens. A
+  terminated owner cancels the workflow exactly like its own deadline would, so
+  a workflow never outlives the request that started it.
   """
 
   use GenServer, restart: :temporary
@@ -26,6 +28,7 @@ defmodule Tackle.Workflow.Server do
 
   alias Tackle.Runtime.Handle
   alias Tackle.Workflow
+  alias Tackle.Workflow.Meter
   alias Tackle.Workflow.Progress
   alias Tackle.Workflow.Ref
 
@@ -40,6 +43,7 @@ defmodule Tackle.Workflow.Server do
           optional(:owner) => pid() | nil,
           optional(:timeout) => timeout(),
           optional(:max_instructions) => pos_integer() | :infinity,
+          optional(:token_budget) => pos_integer() | nil,
           optional(:log) => (String.t() -> any()) | nil,
           optional(:on_event) => Progress.callback()
         }
@@ -86,6 +90,7 @@ defmodule Tackle.Workflow.Server do
       owner_monitor: monitor_owner(Map.get(arg, :owner)),
       timeout: Map.get(arg, :timeout, :infinity),
       max_instructions: Map.get(arg, :max_instructions) || @default_max_instructions,
+      token_budget: Map.get(arg, :token_budget),
       log: Map.get(arg, :log),
       on_event: Map.get(arg, :on_event),
       worker: nil,
@@ -105,7 +110,7 @@ defmodule Tackle.Workflow.Server do
     server = self()
 
     arg =
-      Map.take(state, [:handle, :script, :profiles, :max_instructions, :on_event])
+      Map.take(state, [:handle, :script, :profiles, :max_instructions, :token_budget, :on_event])
       |> Map.put(:server, server)
 
     worker =
@@ -195,7 +200,8 @@ defmodule Tackle.Workflow.Server do
         handle: arg.handle,
         server: arg.server,
         profiles: Map.get(arg, :profiles),
-        on_event: Map.get(arg, :on_event)
+        on_event: Map.get(arg, :on_event),
+        meter: Meter.new(Map.get(arg, :token_budget))
       })
       |> Lua.load_api(Workflow.API)
 

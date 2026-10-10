@@ -27,8 +27,15 @@ defmodule Tackle.Workflow.Tool do
   `:workflow_profiles` is host configuration, never workflow input: model-visible
   data can only name a profile from that list, and the list can only narrow
   what the scope already allows. Without it, the scope's own trusted profiles
-  decide, exactly as they do for `subagent`. `Tackle.Workflow.run/3` documents
-  the underlying `:profiles` and `:owner` options.
+  decide, exactly as they do for `subagent`.
+
+  A host may also give each workflow a token budget with
+  `:workflow_token_budget` in the session context; the model's optional
+  `token_budget` argument can only lower it. The budget applies to each
+  `run_workflow` call separately and stops it from starting runs once spent,
+  so it bounds one workflow, not a session's total spend.
+  `Tackle.Workflow.run/3` documents the underlying `:profiles`, `:token_budget`,
+  and `:owner` options.
 
   The tool call owns the workflow's lifetime: the workflow is cancelled when the
   tool call ends, so a cancelled turn does not leave delegated runs behind. That
@@ -71,9 +78,11 @@ defmodule Tackle.Workflow.Tool do
       "driven by results. Call `tackle.spawn(profile, prompt, opts?)` to start one delegated " <>
       "run and get its handle, where the optional `opts` table `{model = \"provider/model\"}` " <>
       "overrides the profile's model for that run; `tackle.await(run)` to block until it settles and return a table " <>
-      "with `ok`, `status`, and `text`; `tackle.parallel(items, fn, opts)` to run one " <>
+      "with `ok`, `status`, `text`, and the run's recorded `tokens`, `tool_calls`, and " <>
+      "`failed_tool_calls`; `tackle.parallel(items, fn, opts)` to run one " <>
       "delegated agent per item with bounded concurrency, returning one result table per " <>
-      "item in input order (the callback returns `profile, prompt, opts?`); `tackle.cancel(run, reason)` to cancel one run; and " <>
+      "item in input order (the callback returns `profile, prompt, opts?`); `tackle.cancel(run, reason)` to cancel one run; " <>
+      "`tackle.budget()` to read `used` tokens and, under a token budget, `limit` and `remaining`; and " <>
       "`tackle.log(message)` to report progress. The values the workflow returns are the tool " <>
       "result, one per line: a list table such as `{a, b}` gives one line per element, and " <>
       "any other table is rendered as JSON. A workflow can only spawn profiles this session allows it to use, and it " <>
@@ -89,6 +98,13 @@ defmodule Tackle.Workflow.Tool do
     field(:timeout_ms, :integer,
       description:
         "Optional absolute workflow deadline in milliseconds, bounded by the scope's workflow timeout"
+    )
+
+    field(:token_budget, :integer,
+      description:
+        "Optional number of model tokens all runs of the workflow may spend together. Set it " <>
+          "only when the user asked for a budget; it can only narrow the session's own " <>
+          "workflow token budget"
     )
   end
 
@@ -111,7 +127,9 @@ defmodule Tackle.Workflow.Tool do
          :ok <- ensure_delegation(handle),
          {:ok, profiles} <- workflow_profiles(context),
          {:ok, timeout_opts} <- timeout_opts(args),
-         {:ok, ref} <- start(handle, script, profiles, timeout_opts ++ progress_opts(context)) do
+         {:ok, budget_opts} <- budget_opts(args, context),
+         {:ok, ref} <-
+           start(handle, script, profiles, timeout_opts ++ budget_opts ++ progress_opts(context)) do
       await(ref)
     end
   end
@@ -165,6 +183,24 @@ defmodule Tackle.Workflow.Tool do
       _other -> {:error, "timeout_ms must be a positive integer"}
     end
   end
+
+  # The host's `:workflow_token_budget` is the ceiling for every workflow this
+  # session runs; a model-supplied `token_budget` may only lower it. Either may be
+  # absent, and a workflow without both has no budget.
+  defp budget_opts(args, context) do
+    with {:ok, host} <-
+           positive_integer(Map.get(context, :workflow_token_budget), "workflow_token_budget"),
+         {:ok, requested} <- positive_integer(Map.get(args, "token_budget"), "token_budget") do
+      case Enum.reject([host, requested], &is_nil/1) do
+        [] -> {:ok, []}
+        budgets -> {:ok, [token_budget: Enum.min(budgets)]}
+      end
+    end
+  end
+
+  defp positive_integer(nil, _name), do: {:ok, nil}
+  defp positive_integer(value, _name) when is_integer(value) and value > 0, do: {:ok, value}
+  defp positive_integer(_value, name), do: {:error, "#{name} must be a positive integer"}
 
   # Progress ----------------------------------------------------------------------
 

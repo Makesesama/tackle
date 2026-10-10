@@ -5,6 +5,7 @@ defmodule Tackle.Workflow.ToolTest do
 
   import Tackle.Workflow.TestSupport
 
+  alias Tackle.Lib.Event
   alias Tackle.Lib.Tool
   alias Tackle.Runtime
   alias Tackle.Workflow
@@ -37,6 +38,94 @@ defmodule Tackle.Workflow.ToolTest do
       for example <- examples do
         assert {:ok, _chunk} = Lua.parse_chunk(example), "does not compile:\n" <> example
       end
+    end
+  end
+
+  describe "the skill's goal loop example" do
+    # The guide is model-facing instructions, so its goal loop is run against fake
+    # profiles to keep its stop rules honest.
+    defp goal_loop do
+      [_, example] =
+        Regex.run(~r/## Goal loops.*?```lua\n(.*?)```/s, WorkflowTool.skill_markdown())
+
+      example
+    end
+
+    defp goal_result(scope, opts \\ []) do
+      opts = Keyword.put_new(opts, :log, fn _message -> :ok end)
+      {:ok, ref} = Workflow.run(handle(scope), goal_loop(), opts)
+      assert {:ok, [table]} = Workflow.await(ref, @workflow_timeout)
+      Map.new(table)
+    end
+
+    defp round_events(tokens) do
+      [Event.new(:step_end, %{iteration: 1, usage: %{total_tokens: tokens}}), tool_end()]
+    end
+
+    defp tool_end, do: Event.new(:tool_end, %{tool_call_id: "call", name: "bash"})
+
+    test "completes only after the independent audit agrees" do
+      scope =
+        start_scope(
+          profiles: %{
+            "worker" =>
+              agent_spec("worker",
+                mode: :content,
+                content: "Split parse/1.\nSTATUS: complete",
+                events: round_events(1_000)
+              ),
+            "reviewer" => agent_spec("reviewer", mode: :content, content: "ACHIEVED\nall met")
+          }
+        )
+
+      assert %{"status" => "complete", "rounds" => 1} = goal_result(scope)
+    end
+
+    test "stops as blocked after three rounds that called no tools" do
+      scope =
+        start_scope(
+          profiles: %{
+            "worker" =>
+              agent_spec("worker", mode: :content, content: "Did a lot.\nSTATUS: progress")
+          }
+        )
+
+      assert %{"status" => "blocked", "rounds" => 3} = goal_result(scope)
+    end
+
+    test "ends as budget_limited before a round could overrun the budget" do
+      scope =
+        start_scope(
+          profiles: %{
+            "worker" =>
+              agent_spec("worker",
+                mode: :content,
+                content: "Renamed modules.\nSTATUS: progress",
+                events: round_events(50_000)
+              )
+          }
+        )
+
+      assert %{"status" => "budget_limited", "rounds" => 1, "used" => 50_000} =
+               goal_result(scope, token_budget: 100_000)
+    end
+
+    test "does not crash when a completing round used up the budget before its audit" do
+      scope =
+        start_scope(
+          profiles: %{
+            "worker" =>
+              agent_spec("worker",
+                mode: :content,
+                content: "Done.\nSTATUS: complete",
+                events: round_events(120_000)
+              ),
+            "reviewer" => agent_spec("reviewer", mode: :content, content: "ACHIEVED")
+          }
+        )
+
+      assert %{"status" => "budget_limited", "rounds" => 1, "unaudited" => true} =
+               goal_result(scope, token_budget: 100_000)
     end
   end
 

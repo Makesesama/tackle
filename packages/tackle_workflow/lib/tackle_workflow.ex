@@ -85,6 +85,11 @@ defmodule Tackle.Workflow do
       already has.
     * `:max_instructions` — Lua VM instruction budget guarding against spin
       loops that never await. Defaults to `1_000_000`; `:infinity` disables it.
+    * `:token_budget` — positive number of model tokens the workflow's runs may
+      spend together. Once their reported usage reaches it, `tackle.spawn`
+      raises and `tackle.parallel` reports `"budget_exhausted"` for new items;
+      runs already in flight finish. Defaults to `nil`, no budget.
+      `Tackle.Workflow.Meter` documents what is counted.
     * `:profiles` — explicit allowlist of profile names the workflow may name in
       `tackle.spawn/2` and `tackle.parallel/3`. Defaults to `nil`, which
       delegates the decision to the scope's own trusted profile allowlist. An
@@ -102,8 +107,8 @@ defmodule Tackle.Workflow do
       messages. `Tackle.Workflow.Progress` documents each event. Progress is
       presentation only; a failing callback never affects the workflow.
 
-  `:profiles` and `:owner` are host options: they describe what the caller
-  already decided, never what a workflow asked for.
+  `:profiles`, `:token_budget`, and `:owner` are host options: they describe
+  what the caller already decided, never what a workflow asked for.
   """
   @spec run(Handle.t() | AgentRef.t(), String.t(), keyword()) ::
           {:ok, WorkflowRef.t()} | {:error, term()}
@@ -114,6 +119,7 @@ defmodule Tackle.Workflow do
          {:ok, owner} <- owner(Keyword.get(opts, :owner)),
          {:ok, on_event} <- on_event(Keyword.get(opts, :on_event)),
          {:ok, timeout} <- timeout(Keyword.get(opts, :timeout), handle.limits),
+         {:ok, token_budget} <- token_budget(Keyword.get(opts, :token_budget)),
          {:ok, workflow_ref} <- WorkflowRef.new(scope_ref.scope_id, ID.generate()) do
       arg = %{
         workflow_ref: workflow_ref,
@@ -123,6 +129,7 @@ defmodule Tackle.Workflow do
         owner: owner,
         timeout: timeout,
         max_instructions: Keyword.get(opts, :max_instructions),
+        token_budget: token_budget,
         log: Keyword.get(opts, :log),
         on_event: on_event
       }
@@ -193,6 +200,10 @@ defmodule Tackle.Workflow do
   defp on_event(nil), do: {:ok, nil}
   defp on_event(callback) when is_function(callback, 1), do: {:ok, callback}
   defp on_event(value), do: {:error, {:invalid_workflow_option, :on_event, value}}
+
+  defp token_budget(nil), do: {:ok, nil}
+  defp token_budget(budget) when is_integer(budget) and budget > 0, do: {:ok, budget}
+  defp token_budget(value), do: {:error, {:invalid_workflow_option, :token_budget, value}}
 
   defp timeout(nil, %Limits{workflow_timeout: inherited}), do: {:ok, inherited}
   defp timeout(nil, nil), do: {:ok, :infinity}

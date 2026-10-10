@@ -67,8 +67,8 @@ defmodule Tackle.Workflow.Progress do
   @doc """
   Runtime request options that stream a run's child events as `:run_event`s.
 
-  Returns `[]` when nobody observes, so an unobserved workflow does not
-  subscribe to its runs' events at all.
+  Returns `[]` when nobody observes, so an unobserved workflow forwards no run
+  events. `Tackle.Workflow.API` still meters every run's events.
   """
   @spec request_opts(callback(), String.t()) :: keyword()
   def request_opts(nil, _profile), do: []

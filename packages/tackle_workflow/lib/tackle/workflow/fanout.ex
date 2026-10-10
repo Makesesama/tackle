@@ -15,10 +15,11 @@ defmodule Tackle.Workflow.Fanout do
   refusing the item on policy, the runtime refusing the spawn, and an
   uncollectable outcome are all reported as `{:error, reason}` for that item,
   and the caller decides the failure policy. A callback that refuses an item on
-  policy returns `{:error, {:spawn_error, reason}, acc}` to say the item was
-  refused rather than malformed; any other error is reported as a malformed
-  request. Runs are never retried, and a run that settles is consumed exactly
-  once.
+  policy returns `{:error, {:spawn_error, reason}, acc}` — or
+  `{:error, {:budget_exhausted, reason}, acc}` when the caller's budget is used
+  up — to say the item was refused rather than malformed; any other error is
+  reported as a malformed request. Runs are never retried, and a run that
+  settles is consumed exactly once.
 
   The runtime refuses rather than queues when a scope is at capacity, and a
   settled run's child slot is released a moment after its outcome, so a refusal
@@ -69,22 +70,29 @@ defmodule Tackle.Workflow.Fanout do
       long as the batch was willing to wait for a free slot.
     * `{:unavailable, reason}` — the run settled but its outcome could not be
       collected.
+    * `{:budget_exhausted, reason}` — the callback refused the item because the
+      caller's budget is used up.
   """
   @type item_error ::
           {:callback_error, term()}
           | {:spawn_error, term()}
           | {:capacity, term()}
           | {:unavailable, term()}
+          | {:budget_exhausted, term()}
 
-  @typedoc "Terminal state of one item."
+  @typedoc """
+  Terminal state of one item. A collected outcome carries the `run_id` of the
+  run it settled, so a caller can correlate it with that run's events.
+  """
   @type item_result :: {:ok, Outcome.t()} | {:error, item_error()}
 
   @typedoc """
   Builds one item's request, threading the caller's accumulator.
 
   Returns that item's `{profile, prompt}` or `{profile, prompt, opts}`, or
-  `{:error, reason, acc}` where a `{:spawn_error, reason}` refusal is reported
-  as such instead of as a malformed request.
+  `{:error, reason, acc}` where a `{:spawn_error, reason}` or
+  `{:budget_exhausted, reason}` refusal is reported as such instead of as a
+  malformed request.
   """
   @type request_builder(acc) ::
           (pos_integer(), acc -> {:ok, request(), acc} | {:error, term(), acc})
@@ -159,6 +167,7 @@ defmodule Tackle.Workflow.Fanout do
   # A caller that already decided the item was refused on policy passes that
   # classification through; anything else is a malformed request.
   defp item_error({:spawn_error, _reason} = refusal), do: refusal
+  defp item_error({:budget_exhausted, _reason} = refusal), do: refusal
   defp item_error(reason), do: {:callback_error, reason}
 
   # Starts one item's run, or records why it could not start.
@@ -283,7 +292,7 @@ defmodule Tackle.Workflow.Fanout do
 
   defp await(%RunRef{} = run_ref) do
     case Runtime.await(run_ref, :infinity) do
-      %Outcome{} = outcome -> {:ok, outcome}
+      %Outcome{} = outcome -> {:ok, %{outcome | run_id: run_ref.run_id}}
       {:error, reason} -> {:error, {:unavailable, reason}}
     end
   rescue
