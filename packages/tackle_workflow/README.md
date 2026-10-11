@@ -238,11 +238,12 @@ profiles workflows may spawn:
   collide as JSON strings (`1` and `"1"`) fall back to Elixir's `inspect/1`, and
   functions and userdata become `<function>` and `<userdata>` placeholders.
 * Workflow errors, rejected
-  spawns, cancellations, and deadline timeouts are returned as readable
-  messages the agent can act on.
+  spawns, and cancellations are returned as readable messages the agent can
+  act on.
 * The tool call owns the workflow: the workflow is cancelled when the call ends
   (including a cancelled turn, where the harness runs the tool body in its own
-  supervised process) and when it exceeds the session's `workflow_timeout`.
+  supervised process). The tool sets no deadline: a workflow runs until it
+  finishes or is cancelled.
 * `Tackle.Workflow.Tool.skill_markdown/0` returns a `SKILL.md` guide for
   writing workflow scripts: patterns, sandbox limits, and pitfalls that do not
   fit in the tool description. The text is embedded at compile time. A harness
@@ -261,8 +262,8 @@ profiles workflows may spawn:
   file system, no network, no `os.execute`, no `require`/`load`. A
   deterministic instruction budget (default 1,000,000 VM instructions,
   overridable) stops spin loops that never await.
-* **Bounded.** The workflow runs under an absolute deadline (default: the
-  parent's `workflow_timeout` limit) and, optionally, a token budget that
+* **Bounded.** A workflow has no deadline by default; a host may pass an
+  explicit `:timeout` to `Tackle.Workflow.run/3`. An optional token budget
   refuses new runs once spent. `tackle.parallel/3` keeps at most the
   scope's concurrency ceiling in flight, clamped to the requested `limit`.
   Cancellation kills the workflow process tree; the runtime cancels every run

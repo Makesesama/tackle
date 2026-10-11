@@ -95,7 +95,6 @@ defmodule Tackle.Runtime.ContractsTest do
       assert limits.max_children_per_agent == 4
       assert limits.max_pending_requests == 0
       assert limits.run_timeout > 0
-      assert limits.workflow_timeout > 0
     end
 
     test "validates values and rejects unknown keys" do
@@ -105,6 +104,10 @@ defmodule Tackle.Runtime.ContractsTest do
                Limits.new(max_agents_per_fleet: 0)
 
       assert {:error, {:unknown_limits, [:nope]}} = Limits.new(nope: 1)
+
+      # Workflows have no runtime limit; the old deadline key is gone.
+      assert {:error, {:unknown_limits, [:workflow_timeout]}} =
+               Limits.new(workflow_timeout: 1_000)
     end
 
     test "inheritance never widens a child" do

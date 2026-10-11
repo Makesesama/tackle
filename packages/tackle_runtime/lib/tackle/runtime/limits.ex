@@ -6,12 +6,11 @@ defmodule Tackle.Runtime.Limits do
   limits bound recursive agent creation, concurrent work, and request waits at
   the runtime level. The initial runtime rejects excess concurrency instead of
   queuing it. `run_timeout` bounds inactivity between child events, not total
-  delegated runtime. `workflow_timeout` remains an absolute deadline for one
-  scripted workflow, which `Tackle.Workflow` clamps its own deadline to.
+  delegated runtime. There is no limit on a scope's total or per-workflow
+  runtime: long-running orchestration ends by finishing or by cancellation.
   """
 
   @default_run_timeout :timer.minutes(5)
-  @default_workflow_timeout :timer.minutes(10)
 
   @enforce_keys [:max_agents_per_fleet]
   defstruct max_agents_per_fleet: 16,
@@ -19,8 +18,7 @@ defmodule Tackle.Runtime.Limits do
             max_spawn_depth: 3,
             max_children_per_agent: 4,
             max_pending_requests: 0,
-            run_timeout: @default_run_timeout,
-            workflow_timeout: @default_workflow_timeout
+            run_timeout: @default_run_timeout
 
   @type timeout_ms :: pos_integer()
 
@@ -30,15 +28,13 @@ defmodule Tackle.Runtime.Limits do
           max_spawn_depth: non_neg_integer(),
           max_children_per_agent: non_neg_integer(),
           max_pending_requests: non_neg_integer(),
-          run_timeout: timeout_ms(),
-          workflow_timeout: timeout_ms()
+          run_timeout: timeout_ms()
         }
 
   @positive_keys [
     :max_agents_per_fleet,
     :max_concurrent_turns,
-    :run_timeout,
-    :workflow_timeout
+    :run_timeout
   ]
   @non_negative_keys [
     :max_spawn_depth,
@@ -91,8 +87,7 @@ defmodule Tackle.Runtime.Limits do
       max_spawn_depth: min(parent.max_spawn_depth, child.max_spawn_depth),
       max_children_per_agent: min(parent.max_children_per_agent, child.max_children_per_agent),
       max_pending_requests: min(parent.max_pending_requests, child.max_pending_requests),
-      run_timeout: min(parent.run_timeout, child.run_timeout),
-      workflow_timeout: min(parent.workflow_timeout, child.workflow_timeout)
+      run_timeout: min(parent.run_timeout, child.run_timeout)
     }
   end
 
@@ -102,8 +97,7 @@ defmodule Tackle.Runtime.Limits do
          :ok <- validate_non_negative(:max_spawn_depth, limits.max_spawn_depth),
          :ok <- validate_non_negative(:max_children_per_agent, limits.max_children_per_agent),
          :ok <- validate_non_negative(:max_pending_requests, limits.max_pending_requests),
-         :ok <- validate_positive(:run_timeout, limits.run_timeout),
-         :ok <- validate_positive(:workflow_timeout, limits.workflow_timeout) do
+         :ok <- validate_positive(:run_timeout, limits.run_timeout) do
       {:ok, limits}
     end
   end

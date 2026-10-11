@@ -41,8 +41,8 @@ defmodule Tackle.Workflow.Tool do
   tool call ends, so a cancelled turn does not leave delegated runs behind. That
   holds where the tool body runs in its own supervised process, as the harness's
   concurrent tool policy does; a host that runs tools inline in the agent loop
-  should pass its own `:owner` through `Tackle.Workflow.run/3`. A workflow that
-  exceeds the session's `workflow_timeout` is cancelled too. The workflow's
+  should pass its own `:owner` through `Tackle.Workflow.run/3`. The tool sets no
+  deadline: a workflow runs until it finishes or is cancelled. The workflow's
   returned values are the tool result, one per line. A sequence table (keys
   `1..n`) contributes one line per element; any other table, and a table nested
   inside one, is rendered as JSON. Functions and userdata become `<function>`
@@ -95,11 +95,6 @@ defmodule Tackle.Workflow.Tool do
       description: "Lua source of the workflow"
     )
 
-    field(:timeout_ms, :integer,
-      description:
-        "Optional absolute workflow deadline in milliseconds, bounded by the scope's workflow timeout"
-    )
-
     field(:token_budget, :integer,
       description:
         "Optional number of model tokens all runs of the workflow may spend together. Set it " <>
@@ -126,10 +121,8 @@ defmodule Tackle.Workflow.Tool do
     with {:ok, handle} <- fetch_handle(context),
          :ok <- ensure_delegation(handle),
          {:ok, profiles} <- workflow_profiles(context),
-         {:ok, timeout_opts} <- timeout_opts(args),
          {:ok, budget_opts} <- budget_opts(args, context),
-         {:ok, ref} <-
-           start(handle, script, profiles, timeout_opts ++ budget_opts ++ progress_opts(context)) do
+         {:ok, ref} <- start(handle, script, profiles, budget_opts ++ progress_opts(context)) do
       await(ref)
     end
   end
@@ -169,18 +162,6 @@ defmodule Tackle.Workflow.Tool do
 
       other ->
         {:error, "workflow_profiles must be a list of profile names, got: #{inspect(other)}"}
-    end
-  end
-
-  # A workflow's deadline is the scope's own `workflow_timeout`. A model-supplied
-  # `timeout_ms` is only a request to finish sooner; `Tackle.Workflow.run/3`
-  # clamps it against the inherited limit, so the option is omitted when the
-  # agent asked for no particular deadline.
-  defp timeout_opts(args) do
-    case Map.get(args, "timeout_ms") do
-      nil -> {:ok, []}
-      ms when is_integer(ms) and ms > 0 -> {:ok, [timeout: ms]}
-      _other -> {:error, "timeout_ms must be a positive integer"}
     end
   end
 
@@ -226,8 +207,8 @@ defmodule Tackle.Workflow.Tool do
 
   # Run ---------------------------------------------------------------------------
 
-  defp start(handle, script, profiles, timeout_opts) do
-    opts = [profiles: profiles, owner: self()] ++ timeout_opts
+  defp start(handle, script, profiles, extra_opts) do
+    opts = [profiles: profiles, owner: self()] ++ extra_opts
 
     case Workflow.run(handle, script, opts) do
       {:ok, ref} -> {:ok, ref}
@@ -235,8 +216,8 @@ defmodule Tackle.Workflow.Tool do
     end
   end
 
-  # The workflow's own deadline settles it, so the tool waits without a second
-  # timer of its own.
+  # A workflow has no deadline: it settles by finishing or by cancellation,
+  # including cancellation of this tool call, so the tool waits indefinitely.
   defp await(ref) do
     case Workflow.await(ref, :infinity) do
       {:ok, values} -> {:ok, format_values(values)}

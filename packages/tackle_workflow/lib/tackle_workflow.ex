@@ -65,7 +65,6 @@ defmodule Tackle.Workflow do
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Handle
   alias Tackle.Runtime.ID
-  alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Ref
   alias Tackle.Workflow.Ref, as: WorkflowRef
   alias Tackle.Workflow.Server
@@ -79,10 +78,9 @@ defmodule Tackle.Workflow do
 
   ## Options
 
-    * `:timeout` — absolute workflow deadline in milliseconds. Defaults to the
-      parent's inherited `workflow_timeout` limit, and is clamped to it: a
-      caller may shorten a workflow's deadline, never extend the one its parent
-      already has.
+    * `:timeout` — optional absolute workflow deadline in milliseconds, for
+      hosts that explicitly want one. Defaults to `:infinity`: a workflow runs
+      until it finishes or is cancelled.
     * `:max_instructions` — Lua VM instruction budget guarding against spin
       loops that never await. Defaults to `1_000_000`; `:infinity` disables it.
     * `:token_budget` — positive number of model tokens the workflow's runs may
@@ -118,7 +116,7 @@ defmodule Tackle.Workflow do
          {:ok, profiles} <- profiles(Keyword.get(opts, :profiles)),
          {:ok, owner} <- owner(Keyword.get(opts, :owner)),
          {:ok, on_event} <- on_event(Keyword.get(opts, :on_event)),
-         {:ok, timeout} <- timeout(Keyword.get(opts, :timeout), handle.limits),
+         {:ok, timeout} <- timeout(Keyword.get(opts, :timeout)),
          {:ok, token_budget} <- token_budget(Keyword.get(opts, :token_budget)),
          {:ok, workflow_ref} <- WorkflowRef.new(scope_ref.scope_id, ID.generate()) do
       arg = %{
@@ -205,18 +203,12 @@ defmodule Tackle.Workflow do
   defp token_budget(budget) when is_integer(budget) and budget > 0, do: {:ok, budget}
   defp token_budget(value), do: {:error, {:invalid_workflow_option, :token_budget, value}}
 
-  defp timeout(nil, %Limits{workflow_timeout: inherited}), do: {:ok, inherited}
-  defp timeout(nil, nil), do: {:ok, :infinity}
+  defp timeout(nil), do: {:ok, :infinity}
 
-  defp timeout(requested, limits)
-       when requested == :infinity or (is_integer(requested) and requested > 0) do
-    case limits do
-      %Limits{workflow_timeout: inherited} -> {:ok, min(requested, inherited)}
-      nil -> {:ok, requested}
-    end
-  end
+  defp timeout(timeout) when timeout == :infinity or (is_integer(timeout) and timeout > 0),
+    do: {:ok, timeout}
 
-  defp timeout(value, _limits), do: {:error, {:invalid_workflow_option, :timeout, value}}
+  defp timeout(value), do: {:error, {:invalid_workflow_option, :timeout, value}}
 
   # A workflow may only delegate as far as its parent may. The parent's snapshot
   # carries the effective grants the runner builds its handle from.

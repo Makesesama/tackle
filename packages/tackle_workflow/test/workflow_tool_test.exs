@@ -7,7 +7,6 @@ defmodule Tackle.Workflow.ToolTest do
 
   alias Tackle.Lib.Event
   alias Tackle.Lib.Tool
-  alias Tackle.Runtime
   alias Tackle.Workflow
   alias Tackle.Workflow.Tool, as: WorkflowTool
 
@@ -225,29 +224,21 @@ defmodule Tackle.Workflow.ToolTest do
       assert message =~ "does not compile"
     end
 
-    test "reports a workflow that exceeds its deadline" do
-      limits = Runtime.Limits.new!(workflow_timeout: 150)
-
-      scope =
-        start_scope(
-          profiles: %{"worker" => agent_spec("worker", mode: :block)},
-          limits: limits
-        )
-
+    test "sets no deadline: a slow run still settles the workflow" do
+      scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :manual)})
       script = ~s|return tackle.await(tackle.spawn("worker", "go")).text|
 
-      # `timeout_ms` may only narrow the scope's own workflow deadline.
-      assert {:error, message} =
-               run_workflow(scope, script, args: %{"timeout_ms" => 60_000})
+      task = Task.async(fn -> run_workflow(scope, script) end)
 
-      assert message == "the workflow exceeded its deadline"
+      assert_receive {:agent_called, agent}, 1_000
+      send(agent, {:respond, "done"})
+
+      assert {:ok, "done"} = Task.await(task, @workflow_timeout)
     end
 
-    test "reports a malformed timeout instead of guessing" do
-      scope = start_scope(profiles: %{})
-
-      assert {:error, message} = run_workflow(scope, "return 1", args: %{"timeout_ms" => 0})
-      assert message =~ "timeout_ms must be a positive integer"
+    test "offers the model no deadline argument" do
+      assert WorkflowTool.parameters_schema() |> Keyword.keys() |> Enum.sort() ==
+               [:script, :token_budget]
     end
   end
 
@@ -340,29 +331,18 @@ defmodule Tackle.Workflow.ToolTest do
   end
 
   describe "the workflow deadline" do
-    test "an explicit deadline may only narrow the inherited one" do
-      limits = Runtime.Limits.new!(workflow_timeout: 150)
-
-      scope =
-        start_scope(
-          profiles: %{"worker" => agent_spec("worker", mode: :block)},
-          limits: limits
-        )
-
+    test "is absent unless the host sets one explicitly" do
+      scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :manual)})
       script = ~s|return tackle.await(tackle.spawn("worker", "go")).text|
 
-      assert {:ok, wider} = Workflow.run(handle(scope), script, timeout: 60_000)
-      assert {:error, {:cancelled, :workflow_timeout}} = Workflow.await(wider, @workflow_timeout)
-
-      assert {:ok, unbounded} = Workflow.run(handle(scope), script, timeout: :infinity)
-
-      assert {:error, {:cancelled, :workflow_timeout}} =
-               Workflow.await(unbounded, @workflow_timeout)
+      assert {:ok, ref} = Workflow.run(handle(scope), script)
+      assert_receive {:agent_called, agent}, 1_000
+      send(agent, {:respond, "done"})
+      assert {:ok, ["done"]} = Workflow.await(ref, @workflow_timeout)
     end
 
-    test "defaults to the inherited deadline and rejects a malformed one" do
-      limits = Runtime.Limits.new!(workflow_timeout: 150)
-      scope = start_scope(profiles: %{}, limits: limits)
+    test "rejects a malformed explicit deadline" do
+      scope = start_scope(profiles: %{})
 
       assert {:error, {:invalid_workflow_option, :timeout, "1s"}} =
                Workflow.run(handle(scope), "return 1", timeout: "1s")
@@ -370,8 +350,7 @@ defmodule Tackle.Workflow.ToolTest do
       assert {:error, {:invalid_workflow_option, :timeout, 0}} =
                Workflow.run(handle(scope), "return 1", timeout: 0)
 
-      # Without the option the workflow takes the parent's own deadline.
-      assert {:ok, ref} = Workflow.run(handle(scope), "return 1")
+      assert {:ok, ref} = Workflow.run(handle(scope), "return 1", timeout: :infinity)
       assert {:ok, [1]} = Workflow.await(ref, @workflow_timeout)
     end
   end

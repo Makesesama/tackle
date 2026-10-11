@@ -162,7 +162,7 @@ The scope owns:
 - maximum active agents;
 - maximum concurrent turns;
 - spawn depth and fan-out limits;
-- `workflow_timeout` and run timeouts;
+- run inactivity timeouts;
 - attached-child cancellation;
 - fleet status and inspection data.
 
@@ -585,14 +585,13 @@ max_spawn_depth
 max_children_per_agent
 max_pending_requests
 run_timeout
-workflow_timeout
 ```
 
 `run_timeout` measures inactivity between child events rather than total delegated
 runtime. Each model step, streaming delta, or tool-progress event renews that
 window; foreground and background runs may exceed it in total duration.
-Explicit caller `await` timeouts and `workflow_timeout` remain absolute waits
-and deadlines, respectively.
+Explicit caller `await` timeouts remain absolute waits. Workflows have no
+runtime limit: they end by finishing or by cancellation.
 
 Token and monetary budgets may be added later using normalized usage, but they are not required to establish the in-memory process architecture.
 
@@ -725,7 +724,6 @@ max_spawn_depth
 max_children_per_agent
 max_pending_requests
 run_timeout
-workflow_timeout
 ```
 
 `max_pending_requests` may initially be zero beyond immediately admitted work because busy-agent queues are deferred.

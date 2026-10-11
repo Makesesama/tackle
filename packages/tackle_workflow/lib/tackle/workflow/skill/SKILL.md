@@ -61,8 +61,9 @@ need to read next:
   environment (`io`, `require`, `load` and the file, process and environment
   functions in `os` are blocked), so delegate that work to an agent. `string`, `table`, `math`, `utf8` and `pcall` are available. A script that loops without awaiting runs out of its
   instruction budget.
-- **Deadline.** The whole workflow runs under the session's workflow timeout.
-  `timeout_ms` can only make it shorter. Each run has its own timeout too.
+- **No deadline.** A workflow runs until it finishes or is cancelled. Each run
+  has an inactivity timeout: a run that reports no progress for that long is
+  stopped and settles with status `"timeout"`.
 - **Token budget.** Pass `token_budget` to `run_workflow` only when the user
   asked for one; the session may also set one. The budget covers the runs of
   this one workflow call. Once `tackle.budget().used` reaches the limit,

@@ -760,10 +760,10 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       assert details =~ " 1  -- Review loop"
     end
 
-    test "details number every script line and keep the deadline and result" do
+    test "details number every script line and keep the result" do
       [entry] =
         settled([
-          workflow_call(%{"script" => @review_loop, "timeout_ms" => 600_000}),
+          workflow_call(%{"script" => @review_loop}),
           Message.tool_result("wf", "run_workflow", "final answer")
         ])
 
@@ -771,7 +771,6 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       assert details =~ " 1  -- Review loop"
       assert details =~ "13  return review.text"
       refute details =~ "14  "
-      assert details =~ "Deadline: 10m 0s (bounded by the scope)"
       assert details =~ "Result\n    final answer"
     end
 

@@ -3,8 +3,8 @@ defmodule Tackle.Workflow.Server do
   Generic process that runs one Lua workflow.
 
   The server owns the physical lifecycle: it starts one linked worker process
-  that evaluates the Lua source, arms the deadline, routes progress logs, cancels
-  the worker on cancellation or timeout, and releases its registry entry when
+  that evaluates the Lua source, arms the host's optional deadline, routes
+  progress logs, cancels the worker on cancellation or timeout, and releases its registry entry when
   it stops. It is a temporary child of the scope work supervisor and is never
   restarted.
 
@@ -18,7 +18,7 @@ defmodule Tackle.Workflow.Server do
   `:token_budget`, and optional `:owner`. The allowlist and budget travel to the
   API as workflow runtime context, where they bound every spawn; the worker
   creates the `Tackle.Workflow.Meter` that counts its runs' tokens. A
-  terminated owner cancels the workflow exactly like its own deadline would, so
+  terminated owner cancels the workflow exactly like an explicit cancel would, so
   a workflow never outlives the request that started it.
   """
 

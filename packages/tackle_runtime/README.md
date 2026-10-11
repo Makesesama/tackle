@@ -97,8 +97,8 @@ The subagent tool's `timeout_ms` override likewise sets an inactivity window.
 Backends must support `:subscribe` before `:submit` and deliver child events to
 the subscribing request, even when no caller event callback is provided.
 Subscription failure settles the request as a setup error; events are transient,
-not retained. Explicit `await/2` wait timeouts and `workflow_timeout` deadlines
-remain absolute and are separate from the delegated inactivity timer.
+not retained. Explicit `await/2` wait timeouts remain absolute and are separate
+from the delegated inactivity timer. Workflows have no runtime limit.
 
 ## Process layout
 

@@ -35,7 +35,7 @@ defmodule Tackle.Workflow.Fanout do
   reason `await/1` cannot report therefore fails the whole batch rather than
   hanging it — deliberately, so a broken handshake is loud. The wait for a
   settlement has no timeout of its own: runs settle within their own idle
-  window, and a batch is otherwise bounded by the workflow's deadline.
+  window or when the workflow is cancelled.
   """
 
   alias Tackle.Runtime

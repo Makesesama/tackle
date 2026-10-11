@@ -766,7 +766,7 @@ defmodule Tackle.CLI.TUI.ToolView do
         generic_rows(entry, args, :details)
 
       script ->
-        workflow_graph_rows(entry, width) ++ workflow_rows(entry, args, script)
+        workflow_graph_rows(entry, width) ++ workflow_rows(entry, script)
     end
   end
 
@@ -832,25 +832,16 @@ defmodule Tackle.CLI.TUI.ToolView do
     "Lua workflow · #{count} " <> if(count == 1, do: "line", else: "lines")
   end
 
-  defp workflow_rows(entry, args, script) do
+  defp workflow_rows(entry, script) do
     lines = script_lines(script)
     tokens = Highlight.lines(script, @workflow_path)
     number_width = lines |> length() |> Integer.to_string() |> String.length()
-
-    timeout =
-      case get(args, :timeout_ms) do
-        ms when is_integer(ms) and ms > 0 ->
-          [context_row("Deadline: " <> elapsed_text(ms) <> " (bounded by the scope)")]
-
-        _ ->
-          []
-      end
 
     [context_row(workflow_label(script))] ++
       Enum.map(
         Enum.with_index(lines, 1),
         &numbered_code_row(&1, tokens, number_width, Theme.style(:subtle))
-      ) ++ timeout ++ result_rows(entry)
+      ) ++ result_rows(entry)
   end
 
   defp result_rows(%{tool_output: nil}), do: []
