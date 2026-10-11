@@ -39,6 +39,7 @@ defmodule Tackle.CLI.TUI.SlashCommands do
     Help,
     History,
     Menu,
+    Workflows,
     Resume,
     Session,
     Subagents,
@@ -89,6 +90,7 @@ defmodule Tackle.CLI.TUI.SlashCommands do
     %{name: "browse", description: "read the transcript · F4", action: :browse},
     %{name: "usage", description: "token usage chart · F6", action: :usage_chart},
     %{name: "tasks", description: "inspect subagent tasks · F7", action: :subagents},
+    %{name: "workflows", description: "run, edit, or create saved workflows", action: :workflows},
     %{name: "help", description: "shortcut reference · ?", action: :help}
   ]
 
@@ -197,6 +199,7 @@ defmodule Tackle.CLI.TUI.SlashCommands do
   defp action(:browse, state), do: Browser.toggle_focus(state)
   defp action(:usage_chart, state), do: UsageChart.open(state)
   defp action(:subagents, state), do: Subagents.focus(state)
+  defp action(:workflows, state), do: Workflows.open(state)
   defp action(:help, state), do: Help.open(state)
 
   # A command acted when it opened an overlay, moved focus, or started an

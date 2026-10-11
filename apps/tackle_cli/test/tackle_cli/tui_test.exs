@@ -3368,6 +3368,87 @@ defmodule Tackle.CLI.TUITest do
     refute_receive {:reconfigured, _}, 50
   end
 
+  test "/workflows routes keys and submits the selected workflow through the agent" do
+    {cwd, env} = workflow_locations()
+    File.write!(Path.join(cwd, ".tackle/workflows/review.lua"), "-- Review changes\nreturn 'ok'")
+    {_id, tui} = start_tui(cwd: cwd, env: env)
+
+    inject_paste(tui, "/workflows")
+    inject_key(tui, "enter")
+    assert {:workflows, _} = state(tui).overlay
+    assert draft(tui) == ""
+    assert popup_title(state(tui)) =~ "Ctrl+G edit"
+    inject_paste(tui, "rev")
+    assert {:workflows, %{picker: %{query: "rev"}}} = state(tui).overlay
+    inject_key(tui, "enter")
+    assert_receive {:submitted, ~s(Run the saved workflow "review".)}
+    await_state(tui, &(&1.active_turn != nil))
+    assert draft(tui) == ""
+    assert state(tui).overlay == nil
+
+    inject_paste(tui, "/workflows")
+    inject_key(tui, "enter")
+    inject_key(tui, "enter")
+    assert {:workflows, _} = state(tui).overlay
+    assert state(tui).notice =~ "idle"
+    refute_receive {:submitted, _}, 50
+  end
+
+  test "workflow activity ignores malformed and empty names", %{tui: tui} do
+    inject_paste(tui, "go")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "go"}
+    await_state(tui, &(&1.active_turn != nil))
+    session_id = state(tui).session_id
+
+    for name <- [1, %{}, ""] do
+      send(
+        tui,
+        {:tackle_event, session_id, "turn-1",
+         Event.new(:tool_start, %{
+           tool_call_id: "wf",
+           name: "run_workflow",
+           arguments: %{"workflow" => name, "script" => ~s|tackle.spawn("scout", "map")|}
+         })}
+      )
+
+      assert state(tui).activity == "running run_workflow · scout"
+    end
+  end
+
+  test "workflow editor injection edits Lua and completes the terminal repaint" do
+    {cwd, env} = workflow_locations()
+    path = Path.join(cwd, ".tackle/workflows/review.lua")
+    File.write!(path, "-- Review\nreturn 'old'")
+    test_pid = self()
+
+    editor = fn text ->
+      send(test_pid, {:workflow_editing, text})
+      {:ok, "-- Edited\nreturn 'new'"}
+    end
+
+    {_id, tui} = start_tui(cwd: cwd, env: env, workflow_editor: editor)
+    inject_paste(tui, "/workflows")
+    inject_key(tui, "enter")
+    inject_key(tui, "g", ["ctrl"])
+    assert_received {:workflow_editing, "-- Review\nreturn 'old'"}
+    assert File.read!(path) == "-- Edited\nreturn 'new'"
+    assert state(tui).notice == "Saved .tackle/workflows/review.lua"
+    refute state(tui).full_repaint?
+    assert {:workflows, _} = state(tui).overlay
+  end
+
+  test "test-mode workflow creation never launches a real editor" do
+    {cwd, env} = workflow_locations()
+    {_id, tui} = start_tui(cwd: cwd, env: env)
+    inject_paste(tui, "/workflows")
+    inject_key(tui, "enter")
+    Enum.each(String.graphemes("new-review"), &inject_key(tui, &1))
+    inject_key(tui, "enter")
+    assert state(tui).notice == "Set $VISUAL or $EDITOR to edit the workflow in an editor"
+    refute File.exists?(Path.join(cwd, ".tackle/workflows/new-review.lua"))
+  end
+
   # -- cancel and quit -----------------------------------------------------
 
   test "Esc clears an unsent draft and ends history browsing", %{tui: tui} do
@@ -3574,6 +3655,19 @@ defmodule Tackle.CLI.TUITest do
     Process.exit(caller, :kill)
 
     assert_receive {:DOWN, ^ref, :process, ^tui, :shutdown}
+  end
+
+  defp workflow_locations do
+    dir =
+      Path.join(System.tmp_dir!(), "tackle-tui-workflow-#{System.unique_integer([:positive])}")
+
+    cwd = Path.join(dir, "project")
+    home = Path.join(dir, "home")
+    File.mkdir_p!(Path.join(cwd, ".git"))
+    File.mkdir_p!(Path.join(cwd, ".tackle/workflows"))
+    File.mkdir_p!(home)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    {cwd, %{"TACKLE_HOME" => home}}
   end
 
   # -- helpers -------------------------------------------------------------

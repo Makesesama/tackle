@@ -72,6 +72,41 @@ defmodule Tackle.CLI.RunTest do
     end
   end
 
+  defmodule WorkflowAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "cli-workflow"
+
+    @impl true
+    def models, do: ["test"]
+
+    @impl true
+    def generate(_schema, opts) do
+      messages = Keyword.fetch!(opts, :messages)
+      current = messages |> Enum.reverse() |> Enum.take_while(&(&1.role != :user))
+      result = Enum.find(current, &(&1.role == :tool))
+
+      data =
+        if result do
+          %{"content" => result.content, "tool_calls" => []}
+        else
+          %{
+            "content" => nil,
+            "tool_calls" => [
+              %{
+                "id" => "saved-workflow",
+                "name" => "run_workflow",
+                "arguments" => %{"workflow" => "report"}
+              }
+            ]
+          }
+        end
+
+      {:ok, %{data: data, usage: nil, model: "test"}}
+    end
+  end
+
   defmodule AuthAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -173,6 +208,37 @@ defmodule Tackle.CLI.RunTest do
              stored.messages,
              &(&1["role"] == "tool" and &1["content"] =~ "scout fixture finding")
            )
+  end
+
+  test "saved workflow loader is wired into durable sessions and rebuilt on resume", %{home: home} do
+    Application.put_env(:tackle, :adapters, [WorkflowAdapter])
+    File.mkdir_p!(home)
+    File.write!(Path.join(home, "config.json"), ~s({"session_titles": false}))
+
+    File.cd!(home, fn ->
+      assert {:ok, path} =
+               Tackle.Workflows.create("report", "return 'first saved result'", cwd: home)
+
+      Enum.reduce(["first", "edited"], nil, fn version, resume ->
+        assert :ok = Tackle.Workflows.save(path, "return '#{version} saved result'", cwd: home)
+
+        output =
+          capture_io(fn ->
+            assert 0 ==
+                     Run.run(%{
+                       model: if(resume, do: nil, else: "cli-workflow/test"),
+                       thinking: nil,
+                       prompt: "Run report",
+                       resume: resume,
+                       abandon: false
+                     })
+          end)
+
+        assert output =~ "#{version} saved result"
+        [journal_path] = Path.wildcard(Path.join(home, "sessions/--*/*/session.dlog"))
+        journal_path |> Path.dirname() |> Path.basename()
+      end)
+    end)
   end
 
   test "resume automatically repairs an unclean journal", %{home: home} do

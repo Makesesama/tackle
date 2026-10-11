@@ -83,30 +83,9 @@ defmodule Tackle.Agents do
   end
 
   defp project_source(files, cwd) do
-    case nearest_project_agents(files, cwd, git_root(files, cwd)) do
+    case ProjectFiles.nearest_project_dir(files, cwd, ".tackle/agents") do
       nil -> []
       dir -> [{:project, dir}]
-    end
-  end
-
-  defp nearest_project_agents(files, dir, boundary) do
-    candidate = Path.join([dir, ".tackle", "agents"])
-    parent = Path.dirname(dir)
-
-    cond do
-      ProjectFiles.dir?(files, candidate) -> candidate
-      dir == parent or dir == boundary -> nil
-      true -> nearest_project_agents(files, parent, boundary)
-    end
-  end
-
-  defp git_root(files, dir) do
-    parent = Path.dirname(dir)
-
-    cond do
-      ProjectFiles.exists?(files, Path.join(dir, ".git")) -> dir
-      dir == parent -> nil
-      true -> git_root(files, parent)
     end
   end
 

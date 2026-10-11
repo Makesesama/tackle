@@ -283,9 +283,10 @@ capability.
 ### Scripted workflows (optional)
 
 The optional [`tackle_workflow`](../tackle_workflow/README.md) package adds
-`Tackle.Workflow.Tool`, a `run_workflow` tool whose argument is a sandboxed Lua
-workflow. A workflow drives the same delegated runs as `subagent`, so it inherits
-the scope's limits, admission rules, and cancellation:
+`Tackle.Workflow.Tool`, a `run_workflow` tool that takes either inline Lua
+(`script`) or a saved workflow name (`workflow`), but not both. A workflow drives
+the same delegated runs as `subagent`, so it inherits the scope's limits,
+admission rules, and cancellation:
 
 ```elixir
 {:ok, spec} =
@@ -303,6 +304,25 @@ then needs the same runtime handle and delegation grant as `subagent`, returns
 the workflow's values as its result, and cancels the workflow when the tool
 call ends. The harness itself only depends on `tackle_workflow` in its own test
 suite, which proves this wiring.
+
+Saved workflows are flat `<name>.lua` files in `$TACKLE_HOME/workflows` or the
+nearest project `.tackle/workflows` at or above cwd, stopping at the Git root.
+Project files override user files by name. Names use lowercase letters,
+numbers, and single hyphens. The first-line `-- description` comment describes
+the workflow; configuration belongs in locals at the top, not tool parameters.
+Use the normal file tools to co-author scripts and tell the user their path.
+Re-read before editing because the user may change them between turns; only run
+them when asked. There is no approval gate.
+
+`Tackle.Workflows` provides discovery, live fetching/loading, saving, exclusive
+project creation, and starter templates. Hosts enable named execution with:
+
+```elixir
+overrides: [context: %{workflow_loader: Tackle.Workflows.loader(cwd: cwd, executor: executor)}]
+```
+
+The CLI supplies this automatically. All workspace reads and writes use the
+session executor, including directory creation.
 
 ## Durable sessions
 

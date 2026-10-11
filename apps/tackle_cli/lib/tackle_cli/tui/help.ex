@@ -23,6 +23,7 @@ defmodule Tackle.CLI.TUI.Help do
     "Alt+1–5      resume recent session (idle, empty draft)",
     "/resume      fullscreen picker: search, preview, resume",
     "/new         start a new session",
+    "/workflows   Enter run · Ctrl+G edit · type to create",
     "Ctrl+K        compact context",
     "Ctrl+V        paste text or clipboard image",
     "              (agent reads saved path; not attached)",

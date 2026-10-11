@@ -3,6 +3,10 @@ defmodule Tackle.Workflow.Tool do
   Opt-in tool that runs one sandboxed Lua workflow in the calling
   agent's own scope.
 
+  Pass exactly one of `script` (inline Lua) or `workflow` (a saved name).
+  Saved names are resolved by the host's session-context `:workflow_loader`, a
+  one-argument function returning `{:ok, script}` or `{:error, reason}`.
+
   The tool is the model-facing surface of `Tackle.Workflow`: the agent writes a
   Lua workflow, and its `tackle.spawn/2` calls become ordinary
   delegated runs under the same scope limits, admission rules, and
@@ -72,7 +76,10 @@ defmodule Tackle.Workflow.Tool do
   tool_name("run_workflow")
 
   description(
-    "Run a sandboxed Lua workflow that coordinates allowlisted subagent profiles. Use it " <>
+    "Run a sandboxed Lua workflow that coordinates allowlisted subagent profiles. " <>
+      "Pass exactly one of `script` (Lua source) or `workflow` (a saved workflow name). " <>
+      "Saved workflows are files the host makes available by name; an unknown name error " <>
+      "lists the available ones. Use it " <>
       "for multi-step delegation expressed as code instead of one tool call per step: " <>
       "sequential steps that feed each other, bounded fan-out over a list, and retries " <>
       "driven by results. Call `tackle.spawn(profile, prompt, opts?)` to start one delegated " <>
@@ -90,10 +97,9 @@ defmodule Tackle.Workflow.Tool do
   )
 
   input do
-    field(:script, :string,
-      required: true,
-      description: "Lua source of the workflow"
-    )
+    field(:script, :string, description: "Lua source of the workflow")
+
+    field(:workflow, :string, description: "Name of a saved workflow to run instead of `script`")
 
     field(:token_budget, :integer,
       description:
@@ -117,8 +123,9 @@ defmodule Tackle.Workflow.Tool do
   def skill_markdown, do: @skill_markdown
 
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
-  def run(%{"script" => script} = args, context) when is_binary(script) do
-    with {:ok, handle} <- fetch_handle(context),
+  def run(args, context) when is_map(args) do
+    with {:ok, script} <- resolve_script(args, context),
+         {:ok, handle} <- fetch_handle(context),
          :ok <- ensure_delegation(handle),
          {:ok, profiles} <- workflow_profiles(context),
          {:ok, budget_opts} <- budget_opts(args, context),
@@ -127,7 +134,42 @@ defmodule Tackle.Workflow.Tool do
     end
   end
 
-  def run(_args, _context), do: {:error, "run_workflow requires a Lua script"}
+  def run(_args, _context),
+    do: {:error, "run_workflow requires exactly one of script or workflow"}
+
+  defp resolve_script(args, context) do
+    # Some providers send `null` for optional fields, so `nil` counts as absent.
+    case {Map.get(args, "script") != nil, Map.get(args, "workflow") != nil} do
+      {true, false} ->
+        case args["script"] do
+          script when is_binary(script) -> {:ok, script}
+          _other -> {:error, "script must be a Lua source string"}
+        end
+
+      {false, true} ->
+        case args["workflow"] do
+          name when is_binary(name) and name != "" -> load_workflow(name, context)
+          _other -> {:error, "workflow must be a non-empty saved workflow name"}
+        end
+
+      _other ->
+        {:error, "run_workflow requires exactly one of script or workflow"}
+    end
+  end
+
+  defp load_workflow(name, context) do
+    case Map.get(context, :workflow_loader) do
+      loader when is_function(loader, 1) ->
+        case loader.(name) do
+          {:ok, script} when is_binary(script) -> {:ok, script}
+          {:error, reason} -> {:error, describe(reason)}
+          _other -> {:error, "saved workflows are not available in this session"}
+        end
+
+      _other ->
+        {:error, "saved workflows are not available in this session"}
+    end
+  end
 
   @impl true
   def model_error(reason) when is_binary(reason), do: reason

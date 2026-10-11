@@ -316,6 +316,17 @@ defmodule Tackle.CLI.TUI.Composer do
     end
   end
 
+  @doc "Submits an ordinary prompt while idle, restoring that prompt if submission fails."
+  @spec submit_prompt(State.t(), String.t()) ::
+          {:noreply, State.t()} | {:noreply, State.t(), keyword()}
+  def submit_prompt(%State{} = state, prompt) when is_binary(prompt) do
+    if state.active_turn != nil or state.pending_operation != nil do
+      {:noreply, %{state | notice: "Saved workflows can run only when idle"}}
+    else
+      start_turn(state, Pastes.Draft.new(prompt), prompt)
+    end
+  end
+
   defp submit_turn(%State{} = state, %Pastes.Draft{} = draft) do
     case Pastes.resolve(draft, state) do
       {:ok, prompt} ->
@@ -353,7 +364,7 @@ defmodule Tackle.CLI.TUI.Composer do
     ref = make_ref()
     agent_ref = state.agent_ref
 
-    :ok = Input.set_value(state.input, "")
+    Input.set_value(state.input, "")
 
     state = %{
       state

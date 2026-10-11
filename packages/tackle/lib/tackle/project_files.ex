@@ -1,19 +1,19 @@
 defmodule Tackle.ProjectFiles do
   @moduledoc """
-  Host-side access to project files such as `AGENTS.md`, `.agents/skills`, and
-  `.tackle/agents`.
+  Host-side access to project files such as `AGENTS.md`, `.agents/skills`,
+  `.tackle/agents`, and saved workflows.
 
-  The harness reads these files itself, outside the agent's tools. With a jailed
+  The harness accesses these files itself, outside the agent's tools. With a jailed
   executor, jailed code can write anywhere in the workspace, so a path inside
   the workspace could be a symlink planted to a host file such as
-  `~/.tackle/auth.json`. Paths inside the workspace are therefore read through
+  `~/.tackle/auth.json`. Paths inside the workspace are therefore accessed through
   the session's executor: with `Tackle.Executor.Jailed` they resolve in the
   jail's view of the filesystem, where such host files do not exist.
 
   The workspace is the directory the executor mounts
   (`c:Tackle.Executor.workspace/1`), which may contain the agent's working
   directory. Paths outside it (its parent directories, `~/.agents`, and
-  `$TACKLE_HOME`) are not writable from the jail and are read locally.
+  `$TACKLE_HOME`) are not writable from the jail and are accessed locally.
   """
 
   alias Tackle.Executor
@@ -48,6 +48,50 @@ defmodule Tackle.ProjectFiles do
   @spec read(t(), Path.t()) :: {:ok, binary()} | {:error, Executor.reason()}
   def read(files, path),
     do: files |> executor_for(path) |> Executor.read_file(path, @max_file_bytes)
+
+  @doc """
+  Writes a file through the same routing as reads.
+
+  Options are executor write options: `:mode` (`:replace`, `:append`, or
+  exclusive `:create`) and `:mkdir_p` to create parent directories.
+  """
+  @spec write(t(), Path.t(), binary(), keyword()) :: :ok | {:error, Executor.reason()}
+  def write(files, path, data, opts \\ []),
+    do: files |> executor_for(path) |> Executor.write(path, data, opts)
+
+  @doc """
+  Finds the nearest existing project directory at or above `cwd`.
+
+  `relative_dir` is relative to each ancestor (for example `.tackle/agents`).
+  The search includes, but never passes, the nearest ancestor containing `.git`;
+  without one it stops at the filesystem root. All probes use this router.
+  """
+  @spec nearest_project_dir(t(), Path.t(), Path.t()) :: Path.t() | nil
+  def nearest_project_dir(files, cwd, relative_dir) do
+    cwd = Path.expand(cwd)
+    nearest_dir(files, cwd, relative_dir, git_root(files, cwd))
+  end
+
+  defp nearest_dir(files, dir, relative_dir, boundary) do
+    candidate = Path.join(dir, relative_dir)
+    parent = Path.dirname(dir)
+
+    cond do
+      dir?(files, candidate) -> candidate
+      dir == parent or dir == boundary -> nil
+      true -> nearest_dir(files, parent, relative_dir, boundary)
+    end
+  end
+
+  defp git_root(files, dir) do
+    parent = Path.dirname(dir)
+
+    cond do
+      exists?(files, Path.join(dir, ".git")) -> dir
+      dir == parent -> nil
+      true -> git_root(files, parent)
+    end
+  end
 
   @doc "Returns the type of a path, following symlinks."
   @spec type(t(), Path.t()) :: {:ok, atom()} | {:error, Executor.reason()}

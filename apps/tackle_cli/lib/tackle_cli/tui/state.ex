@@ -51,6 +51,7 @@ defmodule Tackle.CLI.TUI.State do
           nil
           | {:help, map()}
           | {:picker, map()}
+          | {:workflows, map()}
           | {:resume, map()}
           | {:tree, map()}
           | {:file_search, FileSearch.popup()}
@@ -98,6 +99,9 @@ defmodule Tackle.CLI.TUI.State do
           clipboard_text_reader: (-> {:ok, binary()} | {:error, term()}),
           clipboard_image_reader: (-> {:ok, binary()} | {:error, term()}),
           external_editor: Tackle.CLI.TUI.ExternalEditor.editor(),
+          workflow_editor: Tackle.CLI.TUI.ExternalEditor.editor(),
+          cwd: Path.t() | nil,
+          env: map() | nil,
           full_repaint?: boolean(),
           image_paths: [String.t()],
           pastes: %{optional(non_neg_integer()) => Tackle.CLI.TUI.Pastes.Paste.t()},
@@ -174,6 +178,9 @@ defmodule Tackle.CLI.TUI.State do
             clipboard_text_reader: &Tackle.CLI.ImageClipboard.read_text/0,
             clipboard_image_reader: &Tackle.CLI.ImageClipboard.read/0,
             external_editor: &Tackle.CLI.TUI.ExternalEditor.edit/1,
+            workflow_editor: &Tackle.CLI.TUI.ExternalEditor.edit_workflow/1,
+            cwd: nil,
+            env: nil,
             # Set while the terminal has just been handed back by an external
             # editor: the next frame is drawn blank so the one after repaints
             # every cell.
@@ -267,6 +274,9 @@ defmodule Tackle.CLI.TUI.State do
         clipboard_image_reader:
           Keyword.get(opts, :clipboard_image_reader, &Tackle.CLI.ImageClipboard.read/0),
         external_editor: external_editor(opts),
+        workflow_editor: editor(opts, :workflow_editor, extension: ".lua"),
+        cwd: Keyword.get_lazy(opts, :cwd, fn -> File.cwd!() |> Path.expand() end),
+        env: Keyword.get_lazy(opts, :env, &System.get_env/0),
         executor:
           Keyword.get_lazy(opts, :executor, fn ->
             Tackle.CLI.Jail.executor() || Tackle.Executor.local()
@@ -328,7 +338,11 @@ defmodule Tackle.CLI.TUI.State do
   # take over whichever terminal runs the tests; without an injected editor,
   # a test shell behaves as though none were configured.
   defp external_editor(opts) do
-    case Keyword.fetch(opts, :external_editor) do
+    editor(opts, :external_editor, [])
+  end
+
+  defp editor(opts, key, edit_opts) do
+    case Keyword.fetch(opts, key) do
       {:ok, editor} ->
         editor
 
@@ -336,7 +350,7 @@ defmodule Tackle.CLI.TUI.State do
         if Keyword.has_key?(opts, :test_mode) do
           fn _text -> {:error, :no_editor} end
         else
-          modes = Keyword.take(opts, [:mouse_capture, :focus_events])
+          modes = edit_opts ++ Keyword.take(opts, [:mouse_capture, :focus_events])
           &Tackle.CLI.TUI.ExternalEditor.edit(&1, modes)
         end
     end

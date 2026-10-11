@@ -308,6 +308,15 @@ defmodule Tackle.CLI.Keybinds do
   def picker(%Key{code: code, modifiers: []}) when is_binary(code), do: insert(code)
   def picker(%Key{}), do: :ignore
 
+  @doc "Resolves workflow-picker chords, including editing and Ctrl+P/N navigation."
+  @spec workflows(Key.t()) :: intent
+  def workflows(%Key{code: "g", modifiers: modifiers}) when is_ctrl(modifiers),
+    do: :external_editor
+
+  def workflows(%Key{code: "p", modifiers: modifiers}) when is_ctrl(modifiers), do: :previous
+  def workflows(%Key{code: "n", modifiers: modifiers}) when is_ctrl(modifiers), do: :next
+  def workflows(key), do: picker(key)
+
   @doc """
   Resolves a chord inside the `/resume` session picker.
 

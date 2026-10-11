@@ -12,7 +12,8 @@ defmodule Tackle.CLI.TUI.Picker do
   Filtering is fuzzy. An exact substring outranks a scattered subsequence, and a
   tighter match outranks a looser one, so a typed prefix keeps its item on top
   and clearing the query restores the authored order rather than a recency
-  order.
+  order. Optional `:trailing_items` are appended after filtering and ranking,
+  for actions such as creating a new entry that should never outrank a match.
 
   The query is a plain string rather than a text-input widget: menus are short,
   and this keeps query, filtering, and selection in one pure struct that tests
@@ -35,11 +36,12 @@ defmodule Tackle.CLI.TUI.Picker do
 
   @type t :: %__MODULE__{
           items: [item()],
+          trailing_items: [item()],
           query: String.t(),
           selected: non_neg_integer()
         }
 
-  defstruct items: [], query: "", selected: 0
+  defstruct items: [], trailing_items: [], query: "", selected: 0
 
   @doc "Builds a picker over `items`, optionally starting from a query."
   @spec new([item()], String.t()) :: t()
@@ -69,9 +71,10 @@ defmodule Tackle.CLI.TUI.Picker do
     %{picker | selected: clamp(picker.selected + delta, 0, max(count - 1, 0))}
   end
 
-  @doc "Returns the items matching the current query, in ranked order."
+  @doc "Returns ranked query matches followed by any unfiltered `trailing_items`."
   @spec filtered(t()) :: [item()]
-  def filtered(%__MODULE__{items: items, query: query}), do: filter(items, query)
+  def filtered(%__MODULE__{items: items, query: query, trailing_items: trailing}),
+    do: filter(items, query) ++ trailing
 
   @doc "Returns the highlighted item, or nil when nothing matches."
   @spec selected(t()) :: item() | nil

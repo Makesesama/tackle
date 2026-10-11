@@ -53,16 +53,26 @@ defmodule Tackle.CLI.TUI.ExternalEditor do
   def open(%State{} = state) do
     {text, labels} = Pastes.editable(Pastes.draft(state), state)
 
-    case state.external_editor.(text) do
+    run(state, text, state.external_editor, fn state, edited ->
+      draft = Pastes.reattach(String.trim_trailing(edited), labels)
+      Composer.replace(state, draft)
+    end)
+  end
+
+  @doc "Runs an injected editor with shared failure notices and terminal repaint."
+  @spec run(State.t(), String.t(), editor(), (State.t(), String.t() -> State.t()), String.t()) ::
+          {:noreply, State.t()} | {:noreply, State.t(), keyword()}
+  def run(state, text, editor, on_save, subject \\ "draft") do
+    case editor.(text) do
       {:ok, edited} ->
-        draft = Pastes.reattach(String.trim_trailing(edited), labels)
-        repaint(Composer.replace(state, draft))
+        repaint(on_save.(state, edited))
 
       {:error, :no_editor} ->
-        {:noreply, %{state | notice: "Set $VISUAL or $EDITOR to edit the draft in an editor"}}
+        {:noreply,
+         %{state | notice: "Set $VISUAL or $EDITOR to edit the #{subject} in an editor"}}
 
       {:error, reason} ->
-        repaint(%{state | notice: error_notice(reason)})
+        repaint(%{state | notice: error_notice(reason, subject)})
     end
   end
 
@@ -70,11 +80,13 @@ defmodule Tackle.CLI.TUI.ExternalEditor do
     {:noreply, %{state | full_repaint?: true}, commands: [Command.message(@repainted)]}
   end
 
-  defp error_notice({:exit_status, status}),
-    do: "Editor exited with status #{status} · draft kept"
+  defp error_notice({:exit_status, status}, subject),
+    do: "Editor exited with status #{status} · #{subject} kept"
 
-  defp error_notice(:invalid_utf8), do: "Edited text is not UTF-8 · draft kept"
-  defp error_notice(reason), do: "External editor failed: #{inspect(reason)} · draft kept"
+  defp error_notice(:invalid_utf8, subject), do: "Edited text is not UTF-8 · #{subject} kept"
+
+  defp error_notice(reason, subject),
+    do: "External editor failed: #{inspect(reason)} · #{subject} kept"
 
   @doc "Whether `message` ends the blank repaint frame."
   @spec repainted?(term()) :: boolean()
@@ -129,6 +141,10 @@ defmodule Tackle.CLI.TUI.ExternalEditor do
       result
     end
   end
+
+  @doc false
+  @spec edit_workflow(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def edit_workflow(text), do: edit(text, extension: ".lua")
 
   @doc """
   Runs `fun` with the terminal handed back to ordinary use.

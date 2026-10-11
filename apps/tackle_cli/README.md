@@ -36,6 +36,19 @@ header.
 
 The logo pattern and palette live in `lib/tackle_cli/tui/glyph.ex`.
 
+### Saved workflows
+
+Open `/workflows` to search saved Lua workflows in the nearest project
+`.tackle/workflows` or `$TACKLE_HOME/workflows` (project names override user
+names). Enter asks the agent to run the selected workflow when idle.
+Ctrl+G edits it in `$VISUAL` / `$EDITOR`, even during a turn.
+
+Type a new lowercase-hyphenated name and select `+ new workflow` to edit a
+starter script. The project file is created only after the editor succeeds
+and the template has changed; otherwise no file is created. Workflows take no
+parameters: edit Lua locals for configuration, or ask the agent to write a workflow.
+Esc closes the picker; arrows or Ctrl+P/N select rows.
+
 ### Terminal colors
 
 The TUI supports light and dark palettes, including message surfaces, selection,

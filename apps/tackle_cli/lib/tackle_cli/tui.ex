@@ -72,6 +72,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Diagnostics` | read-only diagnostic pages |
   | `Tackle.CLI.TUI.Observations` | bounded, correlated local event history |
   | `Tackle.CLI.TUI.Browser` | transcript focus, selection, and copy |
+  | `Tackle.CLI.TUI.Workflows` | `/workflows`: run, edit, and create saved Lua workflows |
   | `Tackle.CLI.TUI.Menu` | model, reasoning, and settings pickers |
   | `Tackle.CLI.TUI.Tree` | the `/tree` conversation picker and navigation |
   | `Tackle.CLI.TUI.FileSearch` | the `@` file-mention popup and workspace index |
@@ -107,6 +108,7 @@ defmodule Tackle.CLI.TUI do
     Herdr,
     Inspector,
     Menu,
+    Workflows,
     Resume,
     RuntimeEvents,
     RecentSessions,
@@ -446,6 +448,9 @@ defmodule Tackle.CLI.TUI do
     end
   end
 
+  defp dispatch_overlay(key, %{overlay: {:workflows, _}} = state),
+    do: Workflows.handle(Keybinds.workflows(key), state)
+
   defp dispatch_overlay(key, %{overlay: {:picker, _}} = state),
     do: Menu.handle(Keybinds.picker(key), state)
 
@@ -547,6 +552,10 @@ defmodule Tackle.CLI.TUI do
   # -- paste ---------------------------------------------------------------
 
   defp handle_paste(%{overlay: {:search, _}} = state, content), do: Search.paste(state, content)
+
+  defp handle_paste(%{overlay: {:workflows, _}} = state, content),
+    do: Workflows.paste(state, content)
+
   defp handle_paste(%{overlay: {:picker, _}} = state, content), do: Menu.paste(state, content)
   defp handle_paste(%{overlay: {:tree, _}} = state, content), do: Tree.paste(state, content)
   defp handle_paste(%{overlay: {:resume, _}} = state, content), do: Resume.paste(state, content)

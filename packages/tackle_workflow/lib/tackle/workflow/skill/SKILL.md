@@ -15,6 +15,21 @@ results.
 Don't use a workflow for one delegated task (call `subagent`) or for work you
 can do yourself.
 
+## Saved workflows
+
+Saved workflows are files the host makes available by name (in the Tackle CLI:
+`.tackle/workflows/<name>.lua` in the project or `$TACKLE_HOME/workflows/<name>.lua`
+for the user). If a name is unknown, the error lists the available ones.
+CLI names use lowercase letters, numbers, and single hyphens. A first-line
+`-- description` comment describes
+what the workflow does. Saved workflows take no parameters: configure values
+with locals at the top of the script.
+
+Run one with `run_workflow` and `workflow = "<name>"` instead of `script`.
+When co-authoring one with the user, write it with the file tools and tell the
+user its path. The user may edit it in their editor between turns, so re-read
+the file before changing it. Only run it when the user asks.
+
 ## API
 
 All functions live on the global `tackle` table.

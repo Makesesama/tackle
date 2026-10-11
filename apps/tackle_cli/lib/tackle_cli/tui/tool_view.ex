@@ -580,7 +580,8 @@ defmodule Tackle.CLI.TUI.ToolView do
           get(args, :run_id)
 
         "run_workflow" ->
-          args |> get(:script) |> WorkflowScript.outline() |> WorkflowScript.summary()
+          WorkflowScript.saved_name(get(args, :workflow)) ||
+            args |> get(:script) |> WorkflowScript.outline() |> WorkflowScript.summary()
 
         "bash" ->
           get(args, :command)
@@ -624,10 +625,11 @@ defmodule Tackle.CLI.TUI.ToolView do
     status = entry.tool_status
 
     summary =
-      entry
-      |> workflow_script(args)
-      |> WorkflowScript.outline()
-      |> WorkflowScript.summary()
+      workflow_name(entry, args) ||
+        entry
+        |> workflow_script(args)
+        |> WorkflowScript.outline()
+        |> WorkflowScript.summary()
 
     heading =
       if summary == "" do
@@ -751,10 +753,11 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp body_rows(%{tool_name: "run_workflow"} = entry, args, :preview, _width) do
     summary =
-      case {entry.tool_status, workflow_script(entry, args)} do
-        {:preparing, nil} -> context_row("Script incoming")
-        {_status, nil} -> context_row("Script unavailable")
-        {_status, script} -> context_row(workflow_label(script))
+      cond do
+        name = workflow_name(entry, args) -> context_row("Saved workflow · #{name}")
+        script = workflow_script(entry, args) -> context_row(workflow_label(script))
+        entry.tool_status == :preparing -> context_row("Script incoming")
+        true -> context_row("Script unavailable")
       end
 
     [summary | output_rows(entry, :preview)]
@@ -763,7 +766,7 @@ defmodule Tackle.CLI.TUI.ToolView do
   defp body_rows(%{tool_name: "run_workflow"} = entry, args, :details, width) do
     case workflow_script(entry, args) do
       nil ->
-        generic_rows(entry, args, :details)
+        workflow_graph_rows(entry, width) ++ generic_rows(entry, args, :details)
 
       script ->
         workflow_graph_rows(entry, width) ++ workflow_rows(entry, script)
@@ -799,6 +802,11 @@ defmodule Tackle.CLI.TUI.ToolView do
   end
 
   defp subagent_work_rows(_entry), do: []
+
+  defp workflow_name(%{tool_arguments: raw}, %{"input" => raw}) when is_binary(raw),
+    do: WorkflowScript.saved_name(partial_field(raw, "workflow"))
+
+  defp workflow_name(_entry, args), do: WorkflowScript.saved_name(get(args, :workflow))
 
   # Streamed input is raw JSON until the call is complete; read the script
   # from its decodable prefix like edit and write previews do.

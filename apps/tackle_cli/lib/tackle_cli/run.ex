@@ -586,7 +586,14 @@ defmodule Tackle.CLI.Run do
   # subagent profile get it; Tackle.Coding builds each from the same overrides.
   defp overrides(model, thinking, llm_stream, executor) do
     overrides = if model, do: [model: model], else: []
-    overrides = if executor, do: [context: %{executor: executor}] ++ overrides, else: overrides
+
+    context = %{
+      workflow_loader:
+        Tackle.Workflows.loader(cwd: project_dir(), executor: executor || Tackle.Executor.local())
+    }
+
+    context = if executor, do: Map.put(context, :executor, executor), else: context
+    overrides = Keyword.put(overrides, :context, context)
     overrides = if llm_stream, do: Keyword.put(overrides, :llm_stream, true), else: overrides
 
     case thinking do

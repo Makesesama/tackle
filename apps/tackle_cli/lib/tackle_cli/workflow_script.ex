@@ -21,6 +21,11 @@ defmodule Tackle.CLI.WorkflowScript do
   @typedoc "Profiles in order of first appearance, fan-out use, and source line count."
   @type outline :: %{profiles: [String.t()], fan_out?: boolean(), lines: pos_integer()}
 
+  @doc "Returns a displayable saved-workflow name, or nil for empty or non-string values."
+  @spec saved_name(term()) :: String.t() | nil
+  def saved_name(name) when is_binary(name) and name != "", do: name
+  def saved_name(_name), do: nil
+
   @doc "Outlines a workflow script; `nil` when there is no script to outline."
   @spec outline(term()) :: outline() | nil
   def outline(script) when is_binary(script) and script != "" do

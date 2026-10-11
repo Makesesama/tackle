@@ -645,6 +645,48 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     return review.text
     """
 
+    test "saved workflow cards show the name without claiming a missing script" do
+      for status <- [:requested, :running, :completed] do
+        entry = workflow_entry(status, %{"workflow" => "review-loop"})
+        output = text(ToolView.render(entry, 100))
+        assert output =~ "workflow  review-loop"
+        assert output =~ "Saved workflow · review-loop"
+        refute output =~ "Script unavailable"
+        refute output =~ "Lua workflow ·"
+      end
+
+      assert ToolView.title("run_workflow", %{"workflow" => "review-loop"}, :running) ==
+               "run_workflow  review-loop"
+    end
+
+    test "a streamed saved name appears in the header" do
+      entry = workflow_entry(:preparing, ~s({"workflow":"review-loop))
+      assert text(ToolView.render(entry, 100)) =~ "workflow  review-loop"
+    end
+
+    test "malformed and empty saved names do not crash or hide the script" do
+      for status <- [:preparing, :running, :completed, :failed], name <- [1, %{}, ""] do
+        args = %{"workflow" => name, "script" => "return 1"}
+        entry = workflow_entry(status, args)
+        output = text(ToolView.render(entry, 100))
+        if status in [:preparing, :running], do: assert(output =~ "return 1")
+        if status in [:running, :completed], do: assert(output =~ "Lua workflow · 1 line")
+        assert text(ToolView.render(entry, 100, :details)) =~ "return 1"
+        refute output =~ "Saved workflow"
+        assert ToolView.title("run_workflow", args, status) == "run_workflow"
+      end
+
+      for args <- [%{"workflow" => 1}, %{"workflow" => %{}}] do
+        assert text(ToolView.render(workflow_entry(:running, args), 100)) =~ "workflow"
+      end
+
+      raw = ~s({"workflow":"","script":"return 1)
+      output = text(ToolView.render(workflow_entry(:preparing, raw), 100))
+      assert output =~ "return 1"
+      assert output =~ "Script incoming (partial)"
+      refute output =~ "Saved workflow"
+    end
+
     test "a running workflow outlines its profiles and previews a bounded script" do
       entry = workflow_entry(:running, %{"script" => @review_loop}, elapsed_ms: 72_000)
       output = text(ToolView.render(entry, 100))
@@ -758,6 +800,13 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
       details = text(MessageView.inspect_items(entry, 100))
       assert details =~ "Progress\n    ✓ scout"
       assert details =~ " 1  -- Review loop"
+
+      saved = %{entry | tool_arguments: %{"workflow" => "review-loop"}}
+      saved_output = text(ToolView.render(saved, 100))
+      assert saved_output =~ "workflow  review-loop"
+      assert saved_output =~ "┬ parallel  0/2 done"
+      refute saved_output =~ "Script unavailable"
+      assert text(MessageView.inspect_items(saved, 100)) =~ "Progress\n    ✓ scout"
     end
 
     test "details number every script line and keep the result" do

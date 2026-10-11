@@ -1551,7 +1551,8 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   defp activity_target("subagent", args), do: value(args, :profile)
 
   defp activity_target("run_workflow", args) do
-    args |> value(:script) |> WorkflowScript.outline() |> WorkflowScript.summary()
+    WorkflowScript.saved_name(value(args, :workflow)) ||
+      args |> value(:script) |> WorkflowScript.outline() |> WorkflowScript.summary()
   end
 
   defp activity_target(_name, _args), do: nil

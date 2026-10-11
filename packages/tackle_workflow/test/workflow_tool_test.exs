@@ -21,9 +21,73 @@ defmodule Tackle.Workflow.ToolTest do
     WorkflowTool.run(args, context)
   end
 
+  describe "saved workflows" do
+    test "resolves a name with the host loader" do
+      scope = start_scope()
+
+      loader = fn name ->
+        assert name == "report"
+        {:ok, "return 'saved result'"}
+      end
+
+      assert {:ok, "saved result"} =
+               WorkflowTool.run(%{"workflow" => "report"}, %{
+                 runtime: handle(scope),
+                 workflow_loader: loader
+               })
+    end
+
+    test "treats a null source as absent" do
+      scope = start_scope()
+
+      assert {:ok, "saved"} =
+               WorkflowTool.run(%{"script" => nil, "workflow" => "report"}, %{
+                 runtime: handle(scope),
+                 workflow_loader: fn "report" -> {:ok, "return 'saved'"} end
+               })
+    end
+
+    test "requires exactly one source" do
+      for args <- [%{}, %{"script" => "return 1", "workflow" => "report"}] do
+        assert {:error, "run_workflow requires exactly one of script or workflow"} =
+                 WorkflowTool.run(args, %{})
+      end
+    end
+
+    test "missing or invalid host loader is unavailable, never taken from model input" do
+      for context <- [
+            %{},
+            %{workflow_loader: "bad"},
+            %{workflow_loader: fn -> :ok end},
+            %{workflow_loader: fn _ -> :bad end}
+          ] do
+        assert {:error, "saved workflows are not available in this session"} =
+                 WorkflowTool.run(
+                   %{"workflow" => "report", "workflow_loader" => fn _ -> {:ok, "return 1"} end},
+                   context
+                 )
+      end
+    end
+
+    test "passes loader errors through" do
+      assert {:error, "Unknown workflow. Available: report"} =
+               WorkflowTool.run(%{"workflow" => "missing"}, %{
+                 workflow_loader: fn _ -> {:error, "Unknown workflow. Available: report"} end
+               })
+    end
+  end
+
   describe "the workflow skill guide" do
     test "is an Agent Skills document named tackle-workflows" do
       assert "---\nname: tackle-workflows\ndescription: " <> _rest = WorkflowTool.skill_markdown()
+    end
+
+    test "saved workflow guidance leaves availability to the host" do
+      assert WorkflowTool.skill_markdown() =~ "files the host makes available by name"
+      assert WorkflowTool.skill_markdown() =~ "in the Tackle CLI:"
+      assert WorkflowTool.skill_markdown() =~ "the error lists the available ones"
+      assert WorkflowTool.description() =~ "files the host makes available by name"
+      assert WorkflowTool.description() =~ "lists the available ones"
     end
 
     test "every Lua example compiles" do
@@ -237,8 +301,10 @@ defmodule Tackle.Workflow.ToolTest do
     end
 
     test "offers the model no deadline argument" do
-      assert WorkflowTool.parameters_schema() |> Keyword.keys() |> Enum.sort() ==
-               [:script, :token_budget]
+      schema = WorkflowTool.parameters_schema()
+      assert schema |> Keyword.keys() |> Enum.sort() == [:script, :token_budget, :workflow]
+      refute Keyword.get(schema[:script], :required, false)
+      refute Keyword.get(schema[:workflow], :required, false)
     end
   end
 
@@ -321,12 +387,12 @@ defmodule Tackle.Workflow.ToolTest do
       assert message =~ "not permitted"
     end
 
-    test "requires a script argument" do
+    test "requires a script or saved workflow name" do
       scope = start_scope(profiles: %{})
       context = %{runtime: handle(scope)}
 
       assert {:error, message} = WorkflowTool.run(%{}, context)
-      assert message =~ "requires a Lua script"
+      assert message =~ "requires exactly one of script or workflow"
     end
   end
 

@@ -47,6 +47,33 @@ defmodule Tackle.CLI.Output.ProgressTest do
              "bash failed"
   end
 
+  test "saved workflow progress names the workflow" do
+    assert Progress.event_label(
+             Event.new(:tool_start, %{
+               name: "run_workflow",
+               arguments: %{"workflow" => "review-loop"}
+             })
+           ) == "Running run_workflow · review-loop…"
+  end
+
+  test "malformed and empty saved names fall back to the script outline" do
+    for name <- [1, %{}, ""] do
+      assert Progress.event_label(
+               Event.new(:tool_start, %{
+                 name: "run_workflow",
+                 arguments: %{"workflow" => name, "script" => ~s|tackle.spawn("scout", "map")|}
+               })
+             ) == "Running run_workflow · scout…"
+
+      assert Progress.event_label(
+               Event.new(:tool_start, %{
+                 name: "run_workflow",
+                 arguments: %{"workflow" => name, "script" => "return 1"}
+               })
+             ) == "Running run_workflow…"
+    end
+  end
+
   test "labels meaningful workflow progress and ignores child-event noise" do
     assert Progress.event_label(
              Event.new(:workflow_progress, %{kind: :run_started, profile: "scout"})

@@ -208,9 +208,12 @@ failed items), and the latest log line.
 ## Running a workflow from an agent
 
 `Tackle.Workflow.Tool` is the model-facing surface of the same runner: an opt-in
-`Tackle.Lib.Tool` named `run_workflow` that an agent calls with Lua source. The
-host grants it like any other trusted tool and, optionally, narrows the
-profiles workflows may spawn:
+`Tackle.Lib.Tool` named `run_workflow` that an agent calls with exactly one of
+`script` (Lua source) or `workflow` (a saved workflow name). Saved names require
+a host-supplied `:workflow_loader` in session context: `name -> {:ok, script} | {:error, reason}`.
+Saved scripts are self-contained and take no parameters; `token_budget` remains
+an optional execution budget. The host grants it like any other trusted tool
+and, optionally, narrows the profiles workflows may spawn:
 
 ```elixir
 {:ok, spec} =
