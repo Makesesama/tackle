@@ -191,6 +191,63 @@ defmodule Tackle.CLI.TUI.PastesTest do
              {:error, {:prompt_too_long, limit + 1}}
   end
 
+  test "editable text expands text pastes and keeps image labels for reattachment" do
+    long = String.duplicate("liné\n", 300)
+
+    state =
+      new_state()
+      |> tap(&Input.insert_str(&1.input, "intro"))
+      |> Pastes.insert(:text, long)
+      |> Pastes.insert(:image, " inspect /tmp/shot.png ")
+
+    {text, [{image_id, "[Image #1]", offset}]} = Pastes.editable(Pastes.draft(state), state)
+    assert text == "intro #{long} [Image #1]"
+    # Offsets are bytes into the expanded text, past multibyte content.
+    assert binary_part(text, offset, 10) == "[Image #1]"
+
+    # A moved label claims its new place; prose around it is left alone.
+    edited = "[Image #1] now first, then the rest"
+    draft = Pastes.reattach(edited, [{image_id, "[Image #1]", offset}])
+    assert draft == %Draft{text: edited, spans: [{image_id, 0, 10}]}
+
+    state = Pastes.restore(state, draft)
+
+    assert Pastes.resolve(Pastes.draft(state), state) ==
+             {:ok, "inspect /tmp/shot.png  now first, then the rest"}
+  end
+
+  test "a label whose payload is gone stays a label, so submission still refuses it" do
+    state = Pastes.insert(new_state(), :text, String.duplicate("x", 1_200))
+    state = %{state | pastes: %{}}
+
+    assert {"[Pasted Content 1200 chars]", [{_id, "[Pasted Content 1200 chars]", 0}]} =
+             Pastes.editable(Pastes.draft(state), state)
+  end
+
+  test "reattach claims the occurrence nearest each label and drops deleted ones" do
+    labels = [{1, "[Image #1]", 30}, {2, "[Image #2]", 0}, {3, "[Image #1]", 0}]
+    text = "[Image #2] [Image #1] [Image #1] [Image #1]"
+
+    assert Pastes.reattach(text, labels).spans == [{2, 0, 10}, {3, 11, 21}, {1, 33, 43}]
+
+    assert Pastes.reattach("no labels left", labels) == Draft.new("no labels left")
+    # Only labels the draft held come back; other label-shaped text is prose.
+    assert Pastes.reattach("[Image #9]", labels).spans == []
+  end
+
+  test "label text quoted inside an expanded paste does not take the real label's place" do
+    quoted = "the log said [Image #1] earlier\n" <> String.duplicate("x", 1_000)
+
+    state =
+      new_state()
+      |> Pastes.insert(:text, quoted)
+      |> Pastes.insert(:image, " inspect /tmp/shot.png ")
+
+    {text, labels} = Pastes.editable(Pastes.draft(state), state)
+    [{id, _label, offset}] = labels
+    assert %Draft{spans: [{^id, ^offset, _stop}]} = Pastes.reattach(text, labels)
+  end
+
   defp new_state do
     input = Input.new()
     %State{input: input}

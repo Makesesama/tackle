@@ -1346,6 +1346,78 @@ defmodule Tackle.CLI.TUITest do
     assert state(tui).draft_lines == 3
   end
 
+  test "Ctrl+G edits the draft externally, with text pastes expanded and images kept" do
+    test_pid = self()
+    long = String.duplicate("long ", 250)
+    image = <<137, 80, 78, 71, 13, 10, 26, 10, 0>>
+
+    editor = fn text ->
+      send(test_pid, {:editing, text})
+      {:ok, "rewritten [Image #1]\nsecond line\n\n"}
+    end
+
+    {_id, tui} =
+      start_tui(external_editor: editor, clipboard_image_reader: fn -> {:ok, image} end)
+
+    inject_paste(tui, "look: ")
+    inject_paste(tui, long)
+    inject_key(tui, "v", ["ctrl"])
+    assert draft(tui) == "look: [Pasted Content #{String.length(long)} chars] [Image #1]"
+
+    inject_key(tui, "g", ["ctrl"])
+    assert_received {:editing, "look: " <> rest}
+    assert rest == long <> " [Image #1]"
+
+    # Trailing whitespace is trimmed, the image label is an element again, and
+    # the blank repaint frame has already been followed by a real one.
+    state = state(tui)
+    assert draft(tui) == "rewritten [Image #1]\nsecond line"
+    assert [{_id, 10, 20}] = Input.elements(state.input)
+    assert state.draft_lines == 2
+    refute state.full_repaint?
+
+    [path] = state.image_paths
+    inject_key(tui, "enter")
+    assert_receive {:submitted, submitted}
+
+    assert submitted ==
+             "rewritten  Please use the read tool to inspect this image: #{path} \nsecond line"
+  end
+
+  test "an editor failure or a missing editor keeps the draft and says why" do
+    {_id, tui} = start_tui(external_editor: fn _text -> {:error, {:exit_status, 1}} end)
+    inject_paste(tui, "keep me")
+    inject_key(tui, "g", ["ctrl"])
+    state = state(tui)
+    assert draft(tui) == "keep me"
+    assert state.notice == "Editor exited with status 1 · draft kept"
+    refute state.full_repaint?
+
+    # Test shells have no editor of their own.
+    {_id, tui} = start_tui([])
+    inject_paste(tui, "keep me")
+    inject_key(tui, "g", ["ctrl"])
+    assert draft(tui) == "keep me"
+    assert state(tui).notice == "Set $VISUAL or $EDITOR to edit the draft in an editor"
+  end
+
+  test "after a terminal handoff the next frame is blank so the one after repaints fully" do
+    {_id, tui} = start_tui([])
+    state = %{state(tui) | full_repaint?: true}
+    frame = frame(state)
+
+    assert [{%ExRatatui.Widgets.Clear{}, %Rect{x: 0, y: 0, width: 80, height: 24}}] =
+             TUI.render(state, frame)
+
+    refute match?([{%ExRatatui.Widgets.Clear{}, _rect}], TUI.render(state(tui), frame))
+    assert Keybinds.base(%Key{code: "g", modifiers: ["ctrl"]}, :composer) == :external_editor
+
+    assert Keybinds.base(%Key{code: "g", modifiers: ["ctrl"]}, :transcript) ==
+             {:transcript, :ignore}
+
+    refute Keybinds.repeatable?(%Key{code: "g", modifiers: ["ctrl"]})
+  end
+
   test "dashboard keeps typed newlines visible until the landing surface runs out of room", %{
     tui: tui
   } do

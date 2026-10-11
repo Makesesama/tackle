@@ -227,6 +227,71 @@ defmodule Tackle.CLI.TUI.Pastes do
     end
   end
 
+  @doc """
+  The draft as text to edit outside the composer, and the labels it keeps.
+
+  A collapsed text paste is spliced back in, since the point of opening an
+  editor is to see and change the whole prompt. An image label stays as
+  written, because what it stands for is an instruction rather than prose;
+  so does a label whose payload is gone, which submission still has to refuse.
+  Each kept label comes with its byte offset in the returned text, which is
+  what `reattach/2` goes by.
+  """
+  @spec editable(Draft.t(), State.t()) :: {String.t(), [kept_label()]}
+  def editable(%Draft{text: text, spans: spans}, %State{} = state) do
+    pastes = pastes(state)
+
+    {parts, kept, cursor, _size} =
+      Enum.reduce(spans, {[], [], 0, 0}, fn {id, start, stop}, {parts, kept, cursor, size} ->
+        before = binary_part(text, cursor, start - cursor)
+        size = size + byte_size(before)
+        parts = [parts, before]
+
+        case Map.get(pastes, id) do
+          %Paste{kind: :text, content: content} ->
+            {[parts, content], kept, stop, size + byte_size(content)}
+
+          _image_or_missing ->
+            label = binary_part(text, start, stop - start)
+            {[parts, label], [{id, label, size} | kept], stop, size + byte_size(label)}
+        end
+      end)
+
+    body = IO.iodata_to_binary([parts, binary_part(text, cursor, byte_size(text) - cursor)])
+    {body, Enum.reverse(kept)}
+  end
+
+  @typedoc "A label `editable/2` kept: its payload id, its text, and its byte offset."
+  @type kept_label :: {id :: non_neg_integer(), label :: String.t(), offset :: non_neg_integer()}
+
+  @doc """
+  Turns edited text back into a draft, reattaching the labels `editable/2` kept.
+
+  Each kept label claims the unclaimed occurrence of its text nearest to where
+  it was, so a label the user moved still stands for its payload, and the same
+  text inside an expanded paste does not take its place. A label the user
+  deleted is simply gone. Only labels the draft held when it was handed out can
+  come back; other label-shaped text stays ordinary prose.
+  """
+  @spec reattach(String.t(), [kept_label()]) :: Draft.t()
+  def reattach(text, labels) when is_binary(text) and is_list(labels) do
+    {spans, _claimed} =
+      labels
+      |> Enum.reject(fn {_id, label, _offset} -> label == "" end)
+      |> Enum.reduce({[], MapSet.new()}, fn {id, label, offset}, {spans, claimed} ->
+        text
+        |> :binary.matches(label)
+        |> Enum.reject(fn {start, _length} -> MapSet.member?(claimed, start) end)
+        |> Enum.min_by(fn {start, _length} -> abs(start - offset) end, fn -> nil end)
+        |> case do
+          nil -> {spans, claimed}
+          {start, length} -> {[{id, start, start + length} | spans], MapSet.put(claimed, start)}
+        end
+      end)
+
+    Draft.new(text, Enum.sort_by(spans, fn {_id, start, _stop} -> start end))
+  end
+
   @doc "Collapses retained paste contents in transcript previews."
   @spec collapse(String.t(), State.t()) :: String.t()
   def collapse(text, state) when is_binary(text) do

@@ -49,6 +49,7 @@ defmodule Tackle.CLI.Keybinds do
           | :copy_source
           | :copy_transcript
           | :escape
+          | :external_editor
           | :help
           | :history_next
           | :history_previous
@@ -113,7 +114,7 @@ defmodule Tackle.CLI.Keybinds do
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
       when is_ctrl(modifiers) and
-             code in ["c", "o", "t", "j", "k", "v", "1", "2", "3", "4", "5"],
+             code in ["c", "g", "o", "t", "j", "k", "v", "1", "2", "3", "4", "5"],
       do: false
 
   def repeatable?(%Key{code: code, modifiers: modifiers})
@@ -180,6 +181,10 @@ defmodule Tackle.CLI.Keybinds do
     do: :paste_clipboard
 
   defp composer(%Key{code: "k", modifiers: modifiers}) when is_ctrl(modifiers), do: :compact
+
+  # Ctrl+G opens the draft in $VISUAL or $EDITOR, Codex's binding.
+  defp composer(%Key{code: "g", modifiers: modifiers}) when is_ctrl(modifiers),
+    do: :external_editor
 
   defp composer(%Key{code: "t", modifiers: modifiers}) when is_ctrl(modifiers),
     do: :toggle_thinking

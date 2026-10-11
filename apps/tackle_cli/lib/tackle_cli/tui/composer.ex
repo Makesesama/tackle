@@ -406,6 +406,21 @@ defmodule Tackle.CLI.TUI.Composer do
     {:noreply, state |> settle_history() |> Viewport.update_draft() |> Viewport.relayout()}
   end
 
+  @doc """
+  Replaces the whole draft, labels and all, as one edit.
+
+  For a draft rewritten outside the composer, such as in an external editor.
+  Like any edit, it ends history browsing.
+  """
+  @spec replace(State.t(), Pastes.Draft.t()) :: State.t()
+  def replace(%State{} = state, %Pastes.Draft{} = draft) do
+    state
+    |> Pastes.restore(draft)
+    |> settle_history()
+    |> Viewport.update_draft()
+    |> Viewport.relayout()
+  end
+
   defp load(%State{} = state, history, %Pastes.Draft{} = draft) do
     %{Pastes.restore(state, draft) | history: history}
     |> Viewport.update_draft()

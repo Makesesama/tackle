@@ -12,7 +12,8 @@ mod widgets;
 
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use rustler::{Atom, NifResult};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read};
+use std::process::{Command, Stdio};
 
 mod atoms {
     rustler::atoms! { ok, invalid_size, label_too_long }
@@ -69,6 +70,47 @@ fn diff_rows(
 #[rustler::nif]
 fn stdout_is_terminal() -> bool {
     std::io::stdout().is_terminal()
+}
+
+/// Runs `argv` on the process' own terminal and returns what it printed.
+///
+/// Erlang ports start children in a new session, which has no controlling
+/// terminal, so a terminal program that opens `/dev/tty` (Emacs, for one)
+/// cannot run from a port. A child spawned here stays in the BEAM's session
+/// and foreground process group, the way a shell would start it, with the
+/// terminal as its standard input and error.
+///
+/// Its standard output is a pipe, read until the child closes it, because
+/// the BEAM ignores `SIGCHLD`: exited children are reaped at once and their
+/// exit status cannot be waited for. A caller that needs the status has the
+/// child print it. Runs on a dirty I/O scheduler, because the read lasts as
+/// long as the program does.
+#[rustler::nif(schedule = "DirtyIo")]
+fn run_in_terminal(argv: Vec<String>) -> NifResult<(Atom, String)> {
+    let (program, args) = argv.split_first().ok_or(rustler::Error::BadArg)?;
+    let error = |error: std::io::Error| rustler::Error::Term(Box::new(error.to_string()));
+
+    let (mut reader, writer) = std::io::pipe().map_err(error)?;
+
+    // The command, and the pipe's write end with it, is dropped once the
+    // child has started, so the read below ends when the child exits.
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::inherit())
+        .stdout(writer)
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(error)?;
+
+    let mut output = String::new();
+    let read = reader.read_to_string(&mut output);
+
+    // Reaps the child where `SIGCHLD` is not ignored; under the BEAM there is
+    // nothing left to reap. Never blocks.
+    let _ = child.try_wait();
+
+    read.map_err(error)?;
+    Ok((atoms::ok(), output))
 }
 
 rustler::init!("Elixir.Tackle.CLI.Native");

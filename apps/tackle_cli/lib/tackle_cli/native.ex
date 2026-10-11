@@ -14,6 +14,11 @@ defmodule Tackle.CLI.Native do
   @spec stdout_is_terminal() :: boolean()
   def stdout_is_terminal, do: :erlang.nif_error(:nif_not_loaded)
 
+  # Runs argv in the BEAM's own session with the terminal as its stdin and
+  # stderr, and returns what it wrote to stdout once it exits.
+  @spec run_in_terminal([String.t()]) :: {:ok, String.t()} | {:error, String.t()}
+  def run_in_terminal(_argv), do: :erlang.nif_error(:nif_not_loaded)
+
   def input_new, do: :erlang.nif_error(:nif_not_loaded)
   def input_get_value(_state), do: :erlang.nif_error(:nif_not_loaded)
   def input_set_value(_state, _value), do: :erlang.nif_error(:nif_not_loaded)

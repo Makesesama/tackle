@@ -16,6 +16,7 @@ defmodule Tackle.CLI.TUI.Help do
     "              Tab complete, Enter run",
     "↑/↓           take back queued / prompt history",
     "Ctrl+P/N      prompt history",
+    "Ctrl+G        edit draft in $VISUAL / $EDITOR",
     "Ctrl+B/F      move by word",
     "Esc           clear selection / draft / cancel turn",
     "Ctrl+C        quit",

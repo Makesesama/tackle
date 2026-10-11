@@ -68,6 +68,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Viewport` | transcript/layout synchronization and scrolling |
   | `Tackle.CLI.TUI.RuntimeEvents` | projecting harness events into state |
   | `Tackle.CLI.TUI.Composer` | draft editing and submission |
+  | `Tackle.CLI.TUI.ExternalEditor` | editing the draft in `$VISUAL`/`$EDITOR` |
   | `Tackle.CLI.TUI.Diagnostics` | read-only diagnostic pages |
   | `Tackle.CLI.TUI.Observations` | bounded, correlated local event history |
   | `Tackle.CLI.TUI.Browser` | transcript focus, selection, and copy |
@@ -100,6 +101,7 @@ defmodule Tackle.CLI.TUI do
     Compaction,
     Composer,
     Conversation,
+    ExternalEditor,
     FileSearch,
     Help,
     Herdr,
@@ -210,6 +212,7 @@ defmodule Tackle.CLI.TUI do
   end
 
   @impl true
+  def render(%State{full_repaint?: true}, frame), do: ExternalEditor.blank(frame)
   def render(state, frame), do: View.scene(state, frame)
 
   @doc false
@@ -302,8 +305,15 @@ defmodule Tackle.CLI.TUI do
     {:noreply, updated, render?: updated != state}
   end
 
-  def handle_info(message, state),
-    do: RuntimeEvents.handle(message, state) |> refresh_status()
+  # An external editor reports the terminal's size when it gives the terminal
+  # back, because a resize while it ran never reached the shell's input poll.
+  def handle_info(%Resize{} = resize, state), do: handle_event(resize, state)
+
+  def handle_info(message, state) do
+    if ExternalEditor.repainted?(message),
+      do: {:noreply, %{state | full_repaint?: false}},
+      else: RuntimeEvents.handle(message, state) |> refresh_status()
+  end
 
   # The terminal title and the Herdr pane track the session and its activity,
   # which only change under key dispatch and runtime events; every other reply
@@ -501,6 +511,7 @@ defmodule Tackle.CLI.TUI do
   defp dispatch_base(:copy_selected, _key, state), do: Browser.copy_selected(state)
 
   defp dispatch_base(:compact, _key, state), do: Compaction.request(state)
+  defp dispatch_base(:external_editor, _key, state), do: ExternalEditor.open(state)
   defp dispatch_base(:tree, _key, state), do: Tree.open(state)
   defp dispatch_base(:usage_chart, _key, state), do: UsageChart.open(state)
   defp dispatch_base(:subagents, _key, state), do: Subagents.focus(state)
