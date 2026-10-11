@@ -771,7 +771,12 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
          %State{session_id: session_id, active_turn: %{id: turn_id}} = state
        )
        when outcome in [:ok, :error, :cancelled] do
-    state = state |> Compaction.settle(agent_state) |> UsageChart.invalidate_cache()
+    state =
+      state
+      |> Compaction.settle(agent_state)
+      |> UsageChart.invalidate_cache()
+      |> settle_interrupted_subagents()
+
     error = if outcome == :error, do: agent_state.error || "turn failed", else: nil
 
     # The notification reads the streamed response, so it must fire before the
@@ -805,7 +810,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
          {:tackle_turn_failed, session_id, turn_id, reason},
          %State{session_id: session_id, active_turn: %{id: turn_id}} = state
        ) do
-    state = Compaction.settle(state, state.agent_state)
+    state = state |> Compaction.settle(state.agent_state) |> settle_interrupted_subagents()
 
     state = %{
       state
@@ -1525,6 +1530,37 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       _other ->
         subagents
     end
+  end
+
+  # A foreground `subagent` call blocks its tool process until the child
+  # settles, so one still running when the turn ends was killed with the turn
+  # (cancellation or failure), and the runtime cancelled its child. Its
+  # `subagent_finished` event is never emitted, so settle the tracked child
+  # here. Background launches have already completed their tool call and keep
+  # running until their own `subagent_finished` arrives.
+  defp settle_interrupted_subagents(%State{} = state) do
+    interrupted =
+      for %{name: "subagent", status: :running} = tool <- state.tool_activity,
+          do: {Map.get(tool, :run_id), Map.get(tool, :id)}
+
+    subagents =
+      Map.new(state.subagents, fn {run_id, tracked} ->
+        if tracked[:status] == :running and interrupted_subagent?(tracked, interrupted),
+          do: {run_id, Map.put(tracked, :status, :cancelled)},
+          else: {run_id, tracked}
+      end)
+
+    %{state | subagents: subagents}
+  end
+
+  defp interrupted_subagent?(tracked, interrupted) do
+    run_id = Map.get(tracked, :run_id)
+    call_id = Map.get(tracked, :tool_call_id)
+
+    Enum.any?(interrupted, fn {tool_run_id, tool_call_id} ->
+      (is_binary(run_id) and run_id == tool_run_id) or
+        (is_binary(call_id) and call_id == tool_call_id)
+    end)
   end
 
   defp normalize_subagent_status(:ok), do: :completed

@@ -228,6 +228,66 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
       assert finished.conversation.rect.width == 80
     end
 
+    for outcome <- [:cancelled, :error] do
+      test "a foreground child leaves the sidebar when its turn settles as #{outcome}" do
+        state = shell() |> start("one", "Inspect") |> started("one", "run-one")
+
+        {:noreply, focused} = Subagents.focus(state)
+        assert focused.focus == :subagents
+
+        {:noreply, settled} =
+          RuntimeEvents.handle(
+            {:tackle_turn_finished, "session", "turn", {unquote(outcome), state.agent_state}},
+            focused
+          )
+
+        refute Subagents.active?(settled)
+        assert settled.subagents["run-one"].status == :cancelled
+        assert settled.focus == :composer
+        assert settled.conversation.rect.width == 80
+      end
+    end
+
+    test "a foreground child leaves the sidebar when its turn fails" do
+      state = shell() |> start("one", "Inspect") |> started("one", "run-one")
+
+      {:noreply, settled} =
+        RuntimeEvents.handle({:tackle_turn_failed, "session", "turn", :boom}, state)
+
+      refute Subagents.active?(settled)
+      assert settled.subagents["run-one"].status == :cancelled
+    end
+
+    test "cancelling a turn keeps an already launched background child" do
+      state =
+        shell()
+        |> start("bg", "Inspect")
+        |> started("bg", "run-bg")
+        |> start("fg", "Implement")
+        |> started("fg", "run-fg")
+
+      {:noreply, state} =
+        RuntimeEvents.handle(
+          {:tackle_event, "session", "turn",
+           Event.new(:tool_execution_end, %{
+             tool_call_id: "bg",
+             name: "subagent",
+             status: :completed,
+             result: "Started background subagent run-bg."
+           })},
+          state
+        )
+
+      {:noreply, settled} =
+        RuntimeEvents.handle(
+          {:tackle_turn_finished, "session", "turn", {:cancelled, state.agent_state}},
+          state
+        )
+
+      assert [%{run_id: "run-bg", status: :running}] = Subagents.tasks(settled)
+      assert settled.subagents["run-fg"].status == :cancelled
+    end
+
     test "focus without a running child only reports a notice" do
       {:noreply, state} = Subagents.focus(shell())
       assert state.focus == :composer
@@ -320,6 +380,23 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
            tool_call_id: id,
            name: "subagent",
            arguments: %{"profile" => "scout", "prompt" => prompt}
+         })},
+        state
+      )
+
+    state
+  end
+
+  defp started(state, id, run_id) do
+    {:noreply, state} =
+      RuntimeEvents.handle(
+        {:tackle_event, "session", "turn",
+         Event.new(:subagent_started, %{
+           tool_call_id: id,
+           run_id: run_id,
+           profile: "scout",
+           model: "test/scout",
+           status: :running
          })},
         state
       )
