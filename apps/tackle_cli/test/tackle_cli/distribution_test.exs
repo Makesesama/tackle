@@ -25,16 +25,19 @@ defmodule Tackle.CLI.DistributionTest do
              Tackle.Plugins.Catalog.resolve_tools(catalog, ["read"])
   end
 
-  test "the catalog bundles the workflow tool next to the subagent tools" do
+  test "the catalog bundles the workflow and review tools next to the subagent tools" do
     assert {:ok, catalog} = Distribution.catalog()
 
     assert {:ok, [%{module: Tackle.Workflow.Tool, source: :tackle}]} =
              Tackle.Plugins.Catalog.resolve_tools(catalog, ["run_workflow"])
 
-    assert Distribution.root_tool_names() == ["run_workflow"]
+    assert {:ok, [%{module: Tackle.Tools.Review, source: :tackle}]} =
+             Tackle.Plugins.Catalog.resolve_tools(catalog, ["review_changes"])
+
+    assert Distribution.root_tool_names() == ["run_workflow", "review_changes"]
   end
 
-  test "the CLI's coding scope grants run_workflow to a delegating root agent" do
+  test "the CLI's coding scope grants run_workflow and review_changes to a delegating root agent" do
     home = Path.join(System.tmp_dir!(), "tackle-cli-dist-#{System.unique_integer([:positive])}")
     File.mkdir_p!(home)
     on_exit(fn -> File.rm_rf!(home) end)
@@ -56,7 +59,12 @@ defmodule Tackle.CLI.DistributionTest do
              )
 
     assert Tackle.Workflow.Tool in spec.root_spec.config.tools
+    assert Tackle.Tools.Review in spec.root_spec.config.tools
     assert Tackle.Tools.Subagent in spec.root_spec.config.tools
+
+    # The review stages it delegates to are among the scope's profiles.
+    assert Map.has_key?(spec.profiles, "review-detector")
+    assert Map.has_key?(spec.profiles, "review-verifier")
     assert spec.root_spec.allow_delegation
 
     # The workflow guide is offered with the tool, through load_skill.
@@ -75,6 +83,7 @@ defmodule Tackle.CLI.DistributionTest do
     # and so are not offered its guide either.
     for {_name, profile} <- spec.profiles do
       refute Tackle.Workflow.Tool in profile.config.tools
+      refute Tackle.Tools.Review in profile.config.tools
       refute Tackle.Tools.LoadSkill in profile.config.tools
       refute profile.config.system_prompt =~ "tackle-workflows"
     end

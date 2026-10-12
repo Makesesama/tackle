@@ -60,6 +60,7 @@ defmodule Tackle.CLI.TUI.State do
           | {:subagent_view, Tackle.CLI.TUI.SubagentView.t()}
           | {:search, map()}
           | {:usage_chart, map()}
+          | {:review, map()}
           | {:confirm_quit, map()}
           | {:confirm_new_session, map()}
 
@@ -133,6 +134,7 @@ defmodule Tackle.CLI.TUI.State do
           observations: Tackle.CLI.TUI.Observations.t(),
           tool_activity: [map()],
           subagents: %{optional(String.t()) => map()},
+          review: Tackle.CLI.TUI.Review.t() | nil,
           storage: :ready | :delayed,
           activity: String.t() | nil,
           compactions: [map()],
@@ -219,6 +221,9 @@ defmodule Tackle.CLI.TUI.State do
             observations: %Tackle.CLI.TUI.Observations{},
             tool_activity: [],
             subagents: %{},
+            # The `/review` session, kept while its overlay is closed so
+            # `/findings` can reopen it.
+            review: nil,
             storage: :ready,
             activity: nil,
             compactions: [],
@@ -399,6 +404,7 @@ defmodule Tackle.CLI.TUI.State do
         observations: %Tackle.CLI.TUI.Observations{},
         tool_activity: [],
         subagents: %{},
+        review: Tackle.CLI.TUI.Review.discard(state.review),
         activity: nil,
         compactions: [],
         error: nil,

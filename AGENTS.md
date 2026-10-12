@@ -70,6 +70,12 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd packages/clipboard_ex && mix format --check-formatted)
 (cd packages/clipboard_ex/native/clipboard_ex && cargo fmt --check && cargo clippy)
 
+# Native read-only Git package (Rustler NIF over gitoxide; needs cargo and git)
+(cd packages/gix_ex && mix deps.get)
+(cd packages/gix_ex && mix compile --warnings-as-errors && mix test)
+(cd packages/gix_ex && mix format --check-formatted)
+(cd packages/gix_ex/native/gix_ex && cargo fmt --check && cargo clippy --all-targets && cargo test)
+
 # CLI app
 (cd apps/tackle_cli && mix deps.get)
 (cd apps/tackle_cli && mix compile --warnings-as-errors && mix test)
@@ -141,6 +147,10 @@ Burrito, or lint commands for tooling that has not been wired up.
 - `packages/clipboard_ex/`: native clipboard package (`Clipboard.*`,
   `:clipboard_ex`): a Rustler NIF over Rust's `arboard` with tmux/OSC 52
   terminal fallbacks. The CLI uses it for copying and for image/text pasting.
+- `packages/gix_ex/`: experimental read-only Git package (`GixEx.*`,
+  `:gix_ex`): a Rustler NIF over Rust's gitoxide that resolves revisions, walks
+  history, and returns diffs as data, without a `git` executable. Intended to
+  load changes for `tackle review`; nothing depends on it yet.
 - `apps/tackle_cli/`: default Optimus/ex_ratatui terminal entrypoint. It is a
   separate Mix project that depends on the harness and bundles Codex as a
   distribution dependency; runtime adapter loading remains a harness concern.

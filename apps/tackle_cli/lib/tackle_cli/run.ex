@@ -369,10 +369,27 @@ defmodule Tackle.CLI.Run do
   end
 
   defp start_scope(model, thinking, llm_stream, opts) do
+    case compose_scope(model, thinking, llm_stream, fn -> durable_session(opts) end) do
+      {:ok, scope, _scope_spec} -> {:ok, scope}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  # A scope for headless commands such as `tackle review`: composed like an
+  # interactive one (adapters, jail, MCP and plugin tools, agent profiles) but
+  # without a durable session. The scope spec is returned with it, since such a
+  # command passes the trusted profiles on. Stop it with `stop_scope/1`.
+  @spec start_ephemeral_scope(String.t() | nil, String.t() | nil) ::
+          {:ok, Tackle.Runtime.Scope.t(), Tackle.Runtime.ScopeSpec.t()} | {:error, term()}
+  def start_ephemeral_scope(model, thinking),
+    do: compose_scope(model, thinking, false, fn -> {:ok, nil} end)
+
+  defp compose_scope(model, thinking, llm_stream, session_fun) do
     with {:ok, _apps} <- ensure_started(),
          {:ok, executor} <- Tackle.CLI.Jail.ensure_started(),
          {:ok, overrides} <- overrides(model, thinking, llm_stream, executor),
-         {:ok, session} <- durable_session(opts),
+         {:ok, session} <- session_fun.(),
          {:ok, mcp_tools} <- Tackle.CLI.MCP.Connections.tools(),
          {:ok, catalog} <- Tackle.CLI.Distribution.catalog(mcp_tools),
          {:ok, builtin_skills} <- Tackle.CLI.Distribution.builtin_skills(),
@@ -393,7 +410,7 @@ defmodule Tackle.CLI.Run do
              session
            ),
          {:ok, scope} <- Tackle.start_scope(scope_spec) do
-      {:ok, scope}
+      {:ok, scope, scope_spec}
     else
       {:error, reason} -> {:error, reason}
       reason -> {:error, reason}
@@ -602,7 +619,9 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp stop_scope(scope_ref) do
+  @doc false
+  @spec stop_scope(Tackle.Runtime.ScopeRef.t()) :: :ok
+  def stop_scope(scope_ref) do
     Tackle.stop_scope(scope_ref)
     :ok
   catch

@@ -45,15 +45,21 @@ defmodule Tackle.Runtime.RootBackend do
   def prepare_child(%AgentSpec{model_source: :configured} = spec, _parent), do: {:ok, spec}
 
   def prepare_child(%AgentSpec{model_source: :parent} = spec, parent) do
-    state = Session.snapshot(parent).agent_state
-
-    with {:ok, config} <-
-           Config.reconfigure(spec.config,
-             model: state.llm.ref,
-             thinking: Tackle.Thinking.from_llm_opts(state.llm_opts)
-           ) do
+    with {:ok, config} <- inherit_model(spec.config, Session.snapshot(parent).agent_state) do
       {:ok, %{spec | config: config}}
     end
+  end
+
+  @doc false
+  # A `model_source: :parent` child runs on its parent's current model and
+  # thinking level. Shared with `Tackle.Review`, whose scorer follows the
+  # same policy without starting a run.
+  @spec inherit_model(Config.t(), Tackle.Lib.State.t()) :: {:ok, Config.t()} | {:error, term()}
+  def inherit_model(%Config{} = config, %Tackle.Lib.State{llm: llm, llm_opts: llm_opts}) do
+    Config.reconfigure(config,
+      model: llm.ref,
+      thinking: Tackle.Thinking.from_llm_opts(llm_opts)
+    )
   end
 
   @impl true

@@ -962,7 +962,8 @@ defmodule Tackle.CLI.TUITest do
     assert :ok =
              ExRatatui.draw(ExRatatui.init_test_terminal(30, 8), TUI.scene(opened, frame(opened)))
 
-    for _ <- 1..60, do: inject_key(tui, "down")
+    # Enough presses to reach the end of the reference from the top.
+    for _ <- 1..100, do: inject_key(tui, "down")
     scrolled = state(tui)
     assert {:help, %{offset: offset}} = scrolled.overlay
     assert offset > 0

@@ -41,6 +41,7 @@ defmodule Tackle.CLI.TUI.SlashCommands do
     Menu,
     Workflows,
     Resume,
+    Review,
     Session,
     Subagents,
     Theme,
@@ -91,6 +92,13 @@ defmodule Tackle.CLI.TUI.SlashCommands do
     %{name: "usage", description: "token usage chart · F6", action: :usage_chart},
     %{name: "tasks", description: "inspect subagent tasks · F7", action: :subagents},
     %{name: "workflows", description: "run, edit, or create saved workflows", action: :workflows},
+    %{
+      name: "review",
+      description: "review the change · [range | --staged]",
+      action: :review,
+      idle_only?: true
+    },
+    %{name: "findings", description: "reopen the last review's findings", action: :findings},
     %{name: "help", description: "shortcut reference · ?", action: :help}
   ]
 
@@ -153,10 +161,10 @@ defmodule Tackle.CLI.TUI.SlashCommands do
           :prompt | {:noreply, map()} | {:noreply, map(), keyword()}
   def dispatch(state, draft) do
     case parse(draft) do
-      {name, _args} ->
+      {name, args} ->
         case find(name) do
           nil -> :prompt
-          command -> execute(command, state)
+          command -> execute(command, state, args)
         end
 
       nil ->
@@ -164,17 +172,17 @@ defmodule Tackle.CLI.TUI.SlashCommands do
     end
   end
 
-  defp execute(command, state) do
+  defp execute(command, state, args) do
     if available?(command, state) do
-      run(command, state)
+      run(command, state, args)
     else
       {:noreply, %{state | notice: "/#{command.name} is available when idle · draft kept"}}
     end
   end
 
-  defp run(command, state) do
+  defp run(command, state, args) do
     {updated, opts} =
-      case action(command.action, state) do
+      case action(command.action, state, args) do
         {:noreply, updated} -> {updated, []}
         {:noreply, updated, opts} -> {updated, opts}
       end
@@ -188,7 +196,12 @@ defmodule Tackle.CLI.TUI.SlashCommands do
   end
 
   # One clause per action: an addition to the registry fails loudly here until
-  # it is given behaviour, instead of silently doing nothing.
+  # it is given behaviour, instead of silently doing nothing. Only `/review`
+  # takes arguments; the other commands ignore them.
+  defp action(:review, state, args), do: Review.start(state, args)
+  defp action(action, state, _args), do: action(action, state)
+
+  defp action(:findings, state), do: Review.reopen(state)
   defp action(:model_picker, state), do: Menu.open(:model, state)
   defp action(:thinking_picker, state), do: Menu.open(:thinking, state)
   defp action(:settings_picker, state), do: Menu.open(:settings, state)
@@ -356,7 +369,7 @@ defmodule Tackle.CLI.TUI.SlashCommands do
   def handle(:accept, %{overlay: {:slash_commands, popup}} = state) do
     case Enum.at(popup.matches, popup.selected) do
       nil -> Tackle.CLI.TUI.Composer.submit(state)
-      command -> execute(command, state)
+      command -> execute(command, state, "")
     end
   end
 

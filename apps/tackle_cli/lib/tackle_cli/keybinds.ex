@@ -10,7 +10,8 @@ defmodule Tackle.CLI.Keybinds do
 
   Each context gets its own resolver—`global/1` for chords that are live
   everywhere, then `base/2`, `transcript/1`, `confirm/1`, `picker/1`,
-  `inspector/1`, `subagent_view/1`, `search/1`, and `usage_chart/1`—and
+  `inspector/1`, `subagent_view/1`, `search/1`, `usage_chart/1`, and
+  `review/1`—and
   clauses are tried in order, so more specific chords must be listed before
   their unmodified keys.
 
@@ -446,6 +447,66 @@ defmodule Tackle.CLI.Keybinds do
   def usage_chart(%Key{code: "right"}), do: :toggle
   def usage_chart(%Key{code: code}) when code in ["r", "R"], do: :reload
   def usage_chart(%Key{}), do: :ignore
+
+  # -- review findings -----------------------------------------------------
+
+  @doc """
+  Resolves a chord inside the `/review` overlay.
+
+  `↑`/`↓` (or `k`/`j`) select a finding and PgUp/PgDn scroll its detail.
+  `u`, `n`, and `d` record feedback (useful, not useful, dismissed); `f`
+  sends the selected finding to the agent to fix and `F` every blocking
+  one; `r` re-reviews what changed since the review; `x` cancels a running
+  review; Esc closes the overlay.
+  """
+  @spec review(Key.t()) ::
+          :close
+          | :previous
+          | :next
+          | {:scroll, :up | :down}
+          | {:outcome, :useful | :not_useful | :dismissed}
+          | :fix
+          | :fix_blocking
+          | :rereview
+          | :cancel
+          | :ignore
+  def review(%Key{code: "esc"}), do: :close
+  def review(%Key{code: "up"}), do: :previous
+  def review(%Key{code: "down"}), do: :next
+  def review(%Key{code: "page_up"}), do: {:scroll, :up}
+  def review(%Key{code: "page_down"}), do: {:scroll, :down}
+
+  # Letters are matched without Ctrl or Alt so those chords never act on a
+  # finding by accident; `F` arrives as an uppercase code with or without
+  # an explicit Shift.
+  def review(%Key{code: "F", modifiers: modifiers}) when modifiers in [[], ["shift"]],
+    do: :fix_blocking
+
+  def review(%Key{code: "f", modifiers: ["shift"]}), do: :fix_blocking
+  def review(%Key{code: "k", modifiers: []}), do: :previous
+  def review(%Key{code: "j", modifiers: []}), do: :next
+  def review(%Key{code: "u", modifiers: []}), do: {:outcome, :useful}
+  def review(%Key{code: "n", modifiers: []}), do: {:outcome, :not_useful}
+  def review(%Key{code: "d", modifiers: []}), do: {:outcome, :dismissed}
+  def review(%Key{code: "f", modifiers: []}), do: :fix
+  def review(%Key{code: "r", modifiers: []}), do: :rereview
+  def review(%Key{code: "x", modifiers: []}), do: :cancel
+  def review(%Key{}), do: :ignore
+
+  @doc """
+  Whether a held key may repeat inside the `/review` overlay.
+
+  Only moving and scrolling repeat: a held `f` must not send a fix twice,
+  nor a held `u` record the same feedback again and again.
+  """
+  @spec review_repeatable?(Key.t()) :: boolean()
+  def review_repeatable?(%Key{} = key) do
+    case review(key) do
+      intent when intent in [:previous, :next] -> true
+      {:scroll, _direction} -> true
+      _other -> false
+    end
+  end
 
   # -- transcript search ---------------------------------------------------
 

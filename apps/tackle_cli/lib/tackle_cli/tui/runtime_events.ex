@@ -22,6 +22,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     Pastes,
     RecentSessions,
     Resume,
+    Review,
     State,
     SubagentTranscript,
     SubagentView,
@@ -284,6 +285,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp route({:tui_file_index, ref, result}, state),
     do: FileSearch.apply_index(state, ref, result)
+
+  defp route({:tui_review, ref, message}, state),
+    do: Review.apply(state, ref, message)
 
   defp route({:tui_usage_timeline_result, ref, mode, session_id, result}, state),
     do: UsageChart.apply_result(state, ref, mode, session_id, result)

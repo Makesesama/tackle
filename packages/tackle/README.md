@@ -157,7 +157,8 @@ harness's subagent composition.
 
 ### Configured subagents
 
-The coding harness includes `scout`, `reviewer`, and `worker` profiles and discovers additional
+The coding harness includes `scout`, `reviewer`, and `worker` profiles (plus the
+unadvertised code review stages described below) and discovers additional
 subagent definitions from Markdown files. User definitions live recursively
 under `$TACKLE_HOME/agents` (by default `~/.tackle/agents`); project definitions live under the nearest
 `.tackle/agents` directory at or above the configured working directory,
@@ -215,6 +216,23 @@ listed proactively.
 - `reviewer` performs read-only correctness, regression, and security review with
   `read` and `bash`;
 - `worker` performs implementation tasks with the harness's trusted coding tools.
+
+It also defines `review-detector` and `review-verifier`, the model stages of
+`Tackle.Review` (code review; experimental). They are not advertised to the
+root and carry the review output tools `report_findings` and `report_verdict`
+(`Tackle.Tools.review/0`), which only work in runs started by `Tackle.Review`.
+Projects can override their prompts with `.tackle/agents/review-detector.md`
+or `review-verifier.md`; an override must keep its output tool. Agent files may
+select these two tools by name even though the root does not have them.
+
+`Tackle.Tools.Review` (`review_changes`) is an opt-in tool that lets an agent
+review the current Git change with `Tackle.Review` and get back a compact list
+of findings to fix; a host grants it like `run_workflow` (the CLI grants it to
+the root agent). Reviews are recorded by `Tackle.Review.History` in
+`$TACKLE_HOME/review/<project-key>/` (`runs.jsonl`, `findings.jsonl`, private
+to the current user), where the project key is the Git repository root encoded
+with `Tackle.Paths.project_key/1`, as session storage encodes project
+directories. Findings dismissed there are not reported again.
 
 The former `explorer` profile is no longer built in. The root calls `subagent`
 with one of these profile names and a self-contained `prompt`. Each child has a

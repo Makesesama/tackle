@@ -13,11 +13,21 @@ defmodule Tackle.Tools do
   inside a jail.
   """
 
-  alias Tackle.Tools.{Bash, Edit, Read, Write}
+  alias Tackle.Tools.{Bash, Edit, Read, ReportFindings, ReportVerdict, Write}
 
   @doc "Returns the built-in tools enabled for a session unless explicitly overridden."
   @spec default() :: [module()]
   def default, do: [Read, Bash, Edit, Write]
+
+  @doc """
+  Returns the structured output tools of the code review profiles
+  (`review-detector`, `review-verifier`).
+
+  Agent profiles may select them by name; they are never part of the default
+  or root tool set, and they only work in runs started by `Tackle.Review`.
+  """
+  @spec review() :: [module()]
+  def review, do: [ReportFindings, ReportVerdict]
 
   @doc "Resolves names only from a trusted set of already-selected tool modules."
   @spec resolve_names([String.t()], [module()]) ::

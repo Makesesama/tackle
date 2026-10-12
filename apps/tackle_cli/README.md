@@ -110,6 +110,61 @@ live connections, so neither is on the SDK tool registry yet. Tools are
 server-side only in protocol version 1: clients select a subset of the
 registry per session but cannot supply their own.
 
+## Code review (experimental)
+
+`tackle review` (or `mix tackle review`) reviews a change with
+`Tackle.Review` and prints line-anchored findings:
+
+```sh
+tackle review                      # the branch since the default branch, uncommitted changes included
+tackle review --staged             # the index against HEAD
+tackle review main..HEAD           # two revisions; base...head starts at their merge base
+tackle review HEAD~3               # one revision against the working tree
+tackle review --profile quiet      # quiet, default, or assertive (thresholds and caps only)
+tackle review --samples 3          # detector runs per review unit
+tackle review --format json        # the whole result as JSON
+```
+
+It starts the same scope as an interactive run, without a durable session,
+so `--model`/`--thinking`, the jail, and project `.tackle/agents` overrides
+of `review-detector` and `review-verifier` apply. Rules come from the
+built-in set, `$TACKLE_HOME/review/rules`, and the nearest
+`.tackle/review/rules`. Progress is written to standard error one line per
+event; findings go to standard output, grouped into blocking and optional
+ones with severity, `path:line`, title, trigger, and rule. The exit status is
+`0` when no blocking finding is shown, `1` when one is (for CI and Git hooks),
+and `2` when the review could not run.
+
+Every review is recorded in a personal history under
+`$TACKLE_HOME/review/<project-key>/` (`runs.jsonl` and `findings.jsonl`,
+private to the current user), keyed by the Git repository root the same way
+sessions key project directories. Findings dismissed in that history are not
+reported again; findings merely shown before still are, so the exit status
+does not change because a review ran earlier. The interactive root agent can
+review its own work with the `review_changes` tool, which records the same
+history.
+
+In the TUI, `/review [RANGE | --staged]` runs the same review in the
+background, delegated from the root agent, so its detector and verifier runs
+appear in `/tasks` (F7). A full-screen overlay shows the progress, then the
+findings grouped into blocking and optional ones (severity, `path:line`,
+title, rule) with a detail pane holding the explanation, trigger, suggestion,
+and the highlighted code. Keys in the overlay:
+
+| Key | Action |
+|---|---|
+| `↑`/`↓`, `k`/`j` | select a finding; PgUp/PgDn scroll its detail |
+| `u` / `n` | mark useful / not useful |
+| `d` | dismiss; later reviews do not report it again |
+| `f` / `F` | send the finding / every blocking finding to the agent to fix |
+| `r` | re-review the files whose diff changed since the review |
+| `x` | cancel a running review |
+| `Esc` | close; a running review continues |
+
+Feedback and fix requests are recorded in the same history (`useful`,
+`not_useful`, `dismissed`, `fixed`). `/findings` reopens the overlay, for
+example after a fix turn, so `r` can check the fix.
+
 ## MCP connections (experimental)
 
 `mix tackle mcp add NAME --stdio COMMAND --arg ARG` adds a local server;

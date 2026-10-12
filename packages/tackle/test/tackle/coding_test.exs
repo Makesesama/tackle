@@ -9,7 +9,17 @@ defmodule Tackle.CodingTest do
   alias Tackle.Runtime.{Handle, Outcome, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Test.FakeJail
-  alias Tackle.Tools.{Bash, Read, Subagent, SubagentCancel, SubagentStatus, SubagentWait}
+
+  alias Tackle.Tools.{
+    Bash,
+    Read,
+    ReportFindings,
+    ReportVerdict,
+    Subagent,
+    SubagentCancel,
+    SubagentStatus,
+    SubagentWait
+  }
 
   defmodule CatalogTool do
     use Tackle.Lib.Tool
@@ -211,7 +221,10 @@ defmodule Tackle.CodingTest do
     assert SubagentCancel in spec.root_spec.config.tools
     refute Subagent in Tackle.Tools.default()
     refute SubagentWait in Tackle.Tools.default()
-    assert Map.keys(spec.profiles) |> Enum.sort() == ["reviewer", "scout", "worker"]
+
+    assert Map.keys(spec.profiles) |> Enum.sort() ==
+             ["review-detector", "review-verifier", "reviewer", "scout", "worker"]
+
     assert {:ok, scout} = ScopeSpec.resolve_profile(spec, "scout")
     assert scout.config.tools == [Read, Bash]
     refute scout.allow_delegation
@@ -248,6 +261,50 @@ defmodule Tackle.CodingTest do
     assert spec.root_spec.config.system_prompt =~ "- subagent_wait:"
     assert spec.root_spec.config.system_prompt =~ "- subagent_cancel:"
     assert {:error, {:unknown_profile, "other"}} = ScopeSpec.resolve_profile(spec, "other")
+  end
+
+  test "composes the review stages with their output tools without advertising them", %{
+    opts: opts
+  } do
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    assert {:ok, detector} = ScopeSpec.resolve_profile(spec, "review-detector")
+    assert {:ok, verifier} = ScopeSpec.resolve_profile(spec, "review-verifier")
+
+    assert detector.config.tools == [Read, Bash, ReportFindings]
+    assert verifier.config.tools == [Read, Bash, ReportVerdict]
+    assert detector.config.max_iterations == 40
+    assert detector.model_source == :parent
+    refute detector.allow_delegation
+    assert detector.config.system_prompt =~ "Review detector assignment"
+    assert verifier.config.system_prompt =~ "Call `report_verdict` as soon as you have decided"
+
+    refute spec.root_spec.config.system_prompt =~ "review-detector"
+    refute ReportFindings in spec.root_spec.config.tools
+    refute ReportVerdict in spec.root_spec.config.tools
+  end
+
+  test "a project profile overrides a review stage and may select review tools", %{
+    opts: opts,
+    cwd: cwd
+  } do
+    path = Path.join([cwd, ".tackle", "agents", "review-detector.md"])
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(path, """
+    ---
+    name: review-detector
+    description: Project detector
+    tools: read, report_findings
+    ---
+
+    Project detector prompt.
+    """)
+
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    assert {:ok, detector} = ScopeSpec.resolve_profile(spec, "review-detector")
+    assert detector.config.tools == [Read, ReportFindings]
+    assert detector.config.system_prompt =~ "Project detector prompt."
+    refute detector.config.system_prompt =~ "Review detector assignment"
   end
 
   test "loads project Markdown profiles with trusted tools and advertised descriptions", %{

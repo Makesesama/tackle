@@ -107,6 +107,83 @@ defmodule Tackle.CLI.ParserTest do
     assert error =~ "must be auto, always, or never"
   end
 
+  test "parses the review command with its defaults" do
+    assert {:ok,
+            {:review,
+             %{
+               range: nil,
+               staged: false,
+               profile: :default,
+               samples: 1,
+               format: :text,
+               model: nil,
+               thinking: nil
+             }}} = Parser.parse(["review"])
+  end
+
+  test "parses review range, profile, samples, format, and the global model options" do
+    assert {:ok,
+            {:review,
+             %{
+               range: "main..HEAD",
+               staged: false,
+               profile: :quiet,
+               samples: 3,
+               format: :json,
+               model: "openai-codex/gpt-5.6-sol",
+               thinking: "high"
+             }}} =
+             Parser.parse([
+               "review",
+               "main..HEAD",
+               "--profile",
+               "quiet",
+               "--samples",
+               "3",
+               "--format",
+               "json",
+               "--model",
+               "openai-codex/gpt-5.6-sol",
+               "--thinking",
+               "high"
+             ])
+
+    assert {:ok, {:review, %{profile: :assertive}}} =
+             Parser.parse(["review", "--profile", "assertive"])
+
+    assert {:ok, {:review, %{staged: true, range: nil}}} = Parser.parse(["review", "--staged"])
+  end
+
+  test "rejects --staged together with a review range" do
+    assert {:error, error} = Parser.parse(["review", "--staged", "HEAD~1"])
+    assert error =~ "--staged cannot be combined with a RANGE"
+  end
+
+  test "rejects invalid review options" do
+    assert {:error, error} = Parser.parse(["review", "--profile", "loud"])
+    assert error =~ "must be quiet, default, or assertive"
+
+    for samples <- ["0", "-1", "two", "1.5"] do
+      assert {:error, error} = Parser.parse(["review", "--samples", samples])
+      assert error =~ "must be a positive integer"
+    end
+
+    assert {:error, error} = Parser.parse(["review", "--format", "human"])
+    assert error =~ "must be text or json"
+
+    assert {:error, _error} = Parser.parse(["review", "a..b", "extra"])
+  end
+
+  test "documents the review command and its exit status" do
+    assert {:help, help} = Parser.parse(["help", "review"])
+    assert help =~ "Exits 1 when blocking findings are shown"
+    assert help =~ "--staged"
+    assert help =~ "--profile"
+    assert help =~ "--samples"
+    assert help =~ "--format"
+    assert help =~ "RANGE"
+  end
+
   test "parses model listing command" do
     assert {:ok, {:models, %{}}} = Parser.parse(["models"])
   end

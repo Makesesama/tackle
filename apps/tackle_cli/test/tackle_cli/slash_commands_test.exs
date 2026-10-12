@@ -107,7 +107,7 @@ defmodule Tackle.CLI.SlashCommandsTest do
     {:slash_commands, popup} = state.overlay
 
     assert popup.query == "re"
-    assert names(popup.matches) == ["resume"]
+    assert names(popup.matches) == ["resume", "review"]
     assert popup.selected == 0
 
     :ok = Input.insert_str(state.input, "sume ")

@@ -34,6 +34,9 @@ defmodule Tackle.CLI.TUI do
       within the same native Browse widget; R refreshes these frozen pages.
     * **Usage** (`F6`) is a modal chronological chart over settled durable
       token usage, switchable between the current session and all sessions.
+    * **Review** (`/review`) runs a code review of the current change in the
+      background and shows its progress, then its findings, in a full-screen
+      overlay with feedback and fix actions; `/findings` reopens it.
 
   The TUI owns presentation and input state while the root harness continues to
   own the scope and agent loop. It addresses the root agent through a
@@ -73,6 +76,7 @@ defmodule Tackle.CLI.TUI do
   | `Tackle.CLI.TUI.Observations` | bounded, correlated local event history |
   | `Tackle.CLI.TUI.Browser` | transcript focus, selection, and copy |
   | `Tackle.CLI.TUI.Workflows` | `/workflows`: run, edit, and create saved Lua workflows |
+  | `Tackle.CLI.TUI.Review` | `/review` and `/findings`: background code review and feedback |
   | `Tackle.CLI.TUI.Menu` | model, reasoning, and settings pickers |
   | `Tackle.CLI.TUI.Tree` | the `/tree` conversation picker and navigation |
   | `Tackle.CLI.TUI.FileSearch` | the `@` file-mention popup and workspace index |
@@ -110,6 +114,7 @@ defmodule Tackle.CLI.TUI do
     Menu,
     Workflows,
     Resume,
+    Review,
     RuntimeEvents,
     RecentSessions,
     Search,
@@ -395,6 +400,12 @@ defmodule Tackle.CLI.TUI do
 
   # -- key dispatch --------------------------------------------------------
 
+  defp dispatch_key(%Key{kind: "repeat"} = key, %{overlay: {:review, _}} = state) do
+    if Keybinds.review_repeatable?(key),
+      do: dispatch(key, state),
+      else: {:noreply, state, render?: false}
+  end
+
   defp dispatch_key(%Key{kind: "repeat"} = key, state) do
     if Keybinds.repeatable?(key),
       do: dispatch(key, state),
@@ -489,6 +500,9 @@ defmodule Tackle.CLI.TUI do
 
   defp dispatch_overlay(key, %{overlay: {:usage_chart, _}} = state),
     do: UsageChart.handle(Keybinds.usage_chart(key), state)
+
+  defp dispatch_overlay(key, %{overlay: {:review, _}} = state),
+    do: Review.handle(Keybinds.review(key), state)
 
   # Behaviour for each intent the binding table can return. Keeping one clause
   # per intent means an addition to `Keybinds` fails loudly here until it is

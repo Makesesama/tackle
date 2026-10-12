@@ -11,7 +11,9 @@ defmodule Tackle.Agents.Default do
   @agents [
     Tackle.Agents.Default.Scout,
     Tackle.Agents.Default.Reviewer,
-    Tackle.Agents.Default.Worker
+    Tackle.Agents.Default.Worker,
+    Tackle.Agents.Default.ReviewDetector,
+    Tackle.Agents.Default.ReviewVerifier
   ]
 
   @callback definition() :: Definition.t()

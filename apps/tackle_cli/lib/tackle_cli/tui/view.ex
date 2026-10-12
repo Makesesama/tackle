@@ -35,6 +35,7 @@ defmodule Tackle.CLI.TUI.View do
     Workflows,
     MessageView,
     Resume,
+    ReviewView,
     Search,
     SlashCommands,
     State,
@@ -252,6 +253,11 @@ defmodule Tackle.CLI.TUI.View do
   # in a popup, so it paints its own full-screen chrome.
   defp overlay_widgets(%State{overlay: {:subagent_view, _}} = state, _composer, _width, _height),
     do: SubagentView.widgets(state)
+
+  # The review overlay splits the screen into a findings list and a detail
+  # pane, so it also paints its own full-screen chrome.
+  defp overlay_widgets(%State{overlay: {:review, _}} = state, _composer, _width, _height),
+    do: ReviewView.widgets(state)
 
   defp overlay_widgets(state, _composer, width, height) do
     [{overlay_widget(state), %Rect{x: 0, y: 0, width: width, height: height}}]

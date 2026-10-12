@@ -10,14 +10,16 @@ defmodule Tackle.CLI.Distribution do
   ]
 
   # Delegation tools bundled with the CLI distribution. `run_workflow` is the
-  # optional `tackle_workflow` plugin's model-facing tool; the CLI grants it to
-  # the root agent next to the subagent tools.
+  # optional `tackle_workflow` plugin's model-facing tool and `review_changes`
+  # the harness's code review tool; the CLI grants both to the root agent next
+  # to the subagent tools.
   @bundled_tools [
     Tackle.Tools.Subagent,
     Tackle.Tools.SubagentStatus,
     Tackle.Tools.SubagentWait,
     Tackle.Tools.SubagentCancel,
-    Tackle.Workflow.Tool
+    Tackle.Workflow.Tool,
+    Tackle.Tools.Review
   ]
 
   @doc "Validates bundled adapters, default tools, and host-owned tool modules."
@@ -55,11 +57,11 @@ defmodule Tackle.CLI.Distribution do
   @doc """
   Names of bundled catalog tools the CLI grants to the root agent.
 
-  The subagent tools are granted by `Tackle.Coding` itself; only the workflow
-  tool needs an explicit grant.
+  The subagent tools are granted by `Tackle.Coding` itself; the workflow and
+  code review tools need an explicit grant.
   """
   @spec root_tool_names() :: [String.t()]
-  def root_tool_names, do: [Tackle.Workflow.Tool.name()]
+  def root_tool_names, do: [Tackle.Workflow.Tool.name(), Tackle.Tools.Review.name()]
 
   @doc """
   Built-in skills bundled with the CLI distribution.

@@ -30,6 +30,17 @@ defmodule Tackle.CLI.Parser do
           | {:mcp_status, String.t() | nil}
           | {:mcp_logout, String.t()}
           | {:sdk, %{}}
+          | {:review, review_options()}
+
+  @type review_options :: %{
+          model: String.t() | nil,
+          thinking: String.t() | nil,
+          range: String.t() | nil,
+          staged: boolean(),
+          profile: :quiet | :default | :assertive,
+          samples: pos_integer(),
+          format: :text | :json
+        }
 
   @type auth_options(provider) :: %{
           provider: provider,
@@ -131,6 +142,27 @@ defmodule Tackle.CLI.Parser do
     do: {:ok, {:mcp_logout, result.args.name}}
 
   defp parse_result({:ok, [:sdk], _result}, _parser), do: {:ok, {:sdk, %{}}}
+
+  defp parse_result({:ok, [:review], result}, _parser) do
+    range = Map.get(result.args, :range)
+    staged = Map.get(result.flags, :staged, false) == true
+
+    if staged and range != nil do
+      {:error, "--staged cannot be combined with a RANGE"}
+    else
+      {:ok,
+       {:review,
+        %{
+          model: Map.get(result.options, :model),
+          thinking: Map.get(result.options, :thinking),
+          range: range,
+          staged: staged,
+          profile: Map.get(result.options, :profile, :default),
+          samples: Map.get(result.options, :samples, 1),
+          format: Map.get(result.options, :format, :text)
+        }}}
+    end
+  end
 
   defp parse_result({:ok, [:auth], _result}, parser),
     do: {:help, format_help(parser, [:auth])}
@@ -308,6 +340,48 @@ defmodule Tackle.CLI.Parser do
           name: "sdk",
           about: "Serve the JSON-RPC stdio SDK protocol for non-BEAM clients"
         ],
+        review: [
+          name: "review",
+          about:
+            "Review a change (experimental). Exits 1 when blocking findings are shown, " <>
+              "2 when the review fails.",
+          args: [
+            range: [
+              value_name: "RANGE",
+              help:
+                "base..head, base...head, or one revision compared with the working tree " <>
+                  "(default: the branch since the default branch, including uncommitted changes)",
+              required: false,
+              parser: :string
+            ]
+          ],
+          flags: [
+            staged: [long: "--staged", help: "Review the index against HEAD"]
+          ],
+          options: [
+            profile: [
+              value_name: "PROFILE",
+              long: "--profile",
+              help: "Which findings to show: quiet, default, or assertive",
+              parser: &review_profile/1,
+              default: :default
+            ],
+            samples: [
+              value_name: "N",
+              long: "--samples",
+              help: "Detector runs per unit",
+              parser: &positive_integer/1,
+              default: 1
+            ],
+            format: [
+              value_name: "FORMAT",
+              long: "--format",
+              help: "Output format: text or json",
+              parser: &review_format/1,
+              default: :text
+            ]
+          ]
+        ],
         auth: [
           name: "auth",
           about: "Manage provider credentials",
@@ -371,6 +445,26 @@ defmodule Tackle.CLI.Parser do
     do: {:ok, String.to_existing_atom(value)}
 
   defp color_mode(_value), do: {:error, "must be auto, always, or never"}
+
+  @review_profiles %{"quiet" => :quiet, "default" => :default, "assertive" => :assertive}
+
+  defp review_profile(value) do
+    case Map.fetch(@review_profiles, value) do
+      {:ok, profile} -> {:ok, profile}
+      :error -> {:error, "must be quiet, default, or assertive"}
+    end
+  end
+
+  defp review_format("text"), do: {:ok, :text}
+  defp review_format("json"), do: {:ok, :json}
+  defp review_format(_value), do: {:error, "must be text or json"}
+
+  defp positive_integer(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer > 0 -> {:ok, integer}
+      _other -> {:error, "must be a positive integer"}
+    end
+  end
 
   defp auth_command(result, provider) do
     %{

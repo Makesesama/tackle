@@ -318,17 +318,8 @@ defmodule Tackle.Session.Storage do
     end
   end
 
-  defp project_root(root, cwd, _key) when is_binary(cwd) do
-    key =
-      "--" <>
-        (cwd
-         |> Path.expand()
-         |> String.trim_leading("/")
-         |> String.replace("-", "-2D")
-         |> String.replace("/", "-")) <> "--"
-
-    {:ok, Path.join(root, key)}
-  end
+  defp project_root(root, cwd, _key) when is_binary(cwd),
+    do: {:ok, Path.join(root, Tackle.Paths.project_key(cwd))}
 
   defp project_root(root, nil, key) when is_binary(key) do
     if String.starts_with?(key, "--") and String.ends_with?(key, "--") and

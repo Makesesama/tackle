@@ -2,11 +2,13 @@ defmodule Tackle.Coding do
   @moduledoc """
   Composition of a coding scope with declarative subagent profiles.
 
-  The built-in scout, reviewer, and worker profiles are joined by profiles
-  discovered from `$TACKLE_HOME/agents` and the nearest project
-  `.tackle/agents` directory.
+  The built-in scout, reviewer, and worker profiles, and the code review
+  stages `review-detector` and `review-verifier` (used by `Tackle.Review`,
+  not advertised to the root), are joined by profiles discovered from
+  `$TACKLE_HOME/agents` and the nearest project `.tackle/agents` directory.
   Project profiles override user profiles, which override built-ins. Profile
-  files may select only tools already available to the trusted root harness.
+  files may select only tools already available to the trusted root harness,
+  plus the review output tools of `Tackle.Tools.review/0`.
   """
 
   alias Tackle.Agents
@@ -210,7 +212,8 @@ defmodule Tackle.Coding do
   end
 
   defp profile_tools(%Definition{tools: names} = definition, _default_tools, trusted_tools) do
-    resolution_tools = Enum.uniq(trusted_tools ++ Tackle.Tools.default())
+    resolution_tools =
+      Enum.uniq(trusted_tools ++ Tackle.Tools.default() ++ Tackle.Tools.review())
 
     with {:ok, tools} <- Tackle.Tools.resolve_names(names, resolution_tools) do
       tools =
