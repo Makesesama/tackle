@@ -293,8 +293,8 @@ environment. See
 policy, requirements, and the credential-free host smoke test. The
 `jailed-tackle` command is the development-checkout launcher.
 
-The release has three Rust NIFs built from source: ExRatatui, Tackle's native
-widgets, and the native clipboard. The Nix
+The release has four Rust NIFs built from source: ExRatatui, Tackle's native
+widgets, the native clipboard, and gix_ex (the Git access behind `tackle review`). The Nix
 package builds both from their locked sources with the target-specific Rust and
 C toolchains, then assembles the release with the exact Erlang/OTP patch used by
 Burrito's precompiled ERTS. The resulting executable is `result/bin/tackle`.
@@ -309,7 +309,7 @@ beside the assembled release's glibc NIF. The wrapper then boots on musl but
 loads the glibc library and crashes.
 
 The Nix build has no network access, so it never downloads RustlerPrecompiled
-artifacts. The Tackle, ExRatatui, Lumis, and clipboard NIFs are compiled for the musl
+artifacts. The Tackle, ExRatatui, Lumis, clipboard, and gix_ex NIFs are compiled for the musl
 target in separate derivations from crates vendored via each `Cargo.lock`, then
 installed into the Mix dependencies with Rustler's `skip_compilation?`. Lumis
 still downloads tree-sitter parsers at runtime on first use.
@@ -323,7 +323,7 @@ BEAM Machine artifact on the same exact OTP patch.
 Direct `mix release` remains useful while developing release configuration, but
 it is not the distributable build: it uses the active shell's OTP and network
 ERTS resolution. On Linux it also requires `TARGET_ABI=musl` for ExRatatui and
-the Tackle and clipboard NIF musl variables supplied by the Nix development shell.
+the Tackle, clipboard, and gix_ex NIF musl variables supplied by the Nix development shell.
 `Tackle.CLI.Release.verify_linux_nifs/1`, wired between `:assemble` and
 `&Burrito.wrap/1`, rejects glibc Rust NIFs and the shared `libgcc_s.so.1`
 unwinder before wrapping.

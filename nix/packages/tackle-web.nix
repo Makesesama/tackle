@@ -30,6 +30,22 @@ let
       (projectFiles ../../packages/tackle_runtime)
       (projectFiles ../../packages/tackle_exec)
       (projectFiles ../../packages/tackle_phoenix)
+      # Provider adapters: path dependencies of the web app, so Mix requires
+      # their sources in the release build.
+      (projectFiles ../../packages/tackle_codex)
+      (projectFiles ../../packages/tackle_deepseek)
+      (projectFiles ../../packages/tackle_anthropic)
+      (projectFiles ../../packages/tackle_openrouter)
+      (projectFiles ../../packages/gix_ex)
+      # The gix_ex crate, including its .cargo/config.toml.
+      (lib.fileset.fileFilter (
+        file:
+        lib.any file.hasExt [
+          "rs"
+          "toml"
+          "lock"
+        ]
+      ) ../../packages/gix_ex/native)
       # Hand-written static files. priv/static/assets is produced by the asset
       # pipeline below and is deliberately not taken from the working tree.
       (web + /priv/static/favicon.ico)
@@ -87,6 +103,55 @@ let
       '';
     };
 
+  # The harness depends on gix_ex, a Rustler NIF compiled from source. Rustler
+  # would run cargo during the Mix build, which needs the network for crates.
+  # Build the crate here from the crates pinned in Cargo.lock, install it into
+  # the dependency's priv/native, and have Rustler skip compilation.
+  gixNif =
+    let
+      source = "${src}/packages/gix_ex/native/gix_ex";
+      vendor = pkgs.rustPlatform.importCargoLock { lockFile = "${source}/Cargo.lock"; };
+    in
+    pkgs.stdenv.mkDerivation {
+      pname = "gix_ex-nif";
+      version = "0.1.0";
+      src = source;
+
+      nativeBuildInputs = [
+        pkgs.cargo
+        pkgs.rustc
+      ];
+
+      dontConfigure = true;
+
+      buildPhase = ''
+        runHook preBuild
+        export HOME="$TMPDIR/home"
+        export CARGO_HOME="$TMPDIR/cargo"
+        mkdir -p "$CARGO_HOME"
+        # importCargoLock writes a relative cargo-vendor-dir, not @vendor@.
+        # Keep its registry/git mappings, but resolve crates from the store.
+        substitute ${vendor}/.cargo/config.toml "$CARGO_HOME/config.toml" \
+          --replace-fail 'directory = "cargo-vendor-dir"' 'directory = "${vendor}"'
+        cargo build --frozen --release
+        runHook postBuild
+      '';
+
+      installPhase = ''
+        runHook preInstall
+        mkdir -p "$out/lib"
+        cp target/release/libgix_ex.${
+          if pkgs.stdenv.hostPlatform.isDarwin then "dylib" else "so"
+        } "$out/lib/gix_ex.so"
+        runHook postInstall
+      '';
+    };
+
+  gixConfig = pkgs.writeTextDir "config.exs" ''
+    import Config
+    config :gix_ex, GixEx.Native, skip_compilation?: true
+  '';
+
   # deps_nix discards dependencies that set both `app: false` and `compile:
   # false` -- it special-cases :heroicons only -- so daisyUI never reaches the
   # generated file. The Tailwind config in assets/css/app.css resolves
@@ -124,6 +189,21 @@ let
       tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
       tackle_exec = prev.tackle_exec.override { src = "${src}/packages/tackle_exec"; };
       tackle_phoenix = prev.tackle_phoenix.override { src = "${src}/packages/tackle_phoenix"; };
+      tackle_codex = prev.tackle_codex.override { src = "${src}/packages/tackle_codex"; };
+      tackle_deepseek = prev.tackle_deepseek.override { src = "${src}/packages/tackle_deepseek"; };
+      tackle_anthropic = prev.tackle_anthropic.override { src = "${src}/packages/tackle_anthropic"; };
+      tackle_openrouter = prev.tackle_openrouter.override {
+        src = "${src}/packages/tackle_openrouter";
+      };
+      # Rustler loads `priv/native/gix_ex.so`, installed from the NIF built above.
+      gix_ex = prev.gix_ex.override {
+        src = "${src}/packages/gix_ex";
+        appConfigPath = gixConfig;
+        preConfigure = ''
+          mkdir -p priv/native
+          cp ${gixNif}/lib/gix_ex.so priv/native/
+        '';
+      };
       forcola = prev.forcola.overrideAttrs (old: {
         postPatch = (old.postPatch or "") + ''
           mkdir -p priv
@@ -188,9 +268,22 @@ beamPackages.mixRelease {
   pname = "tackle-web";
   version = "0.1.0";
   inherit src mixNixDeps;
+  # Dependencies are already compiled by Nix and linked into _build. The
+  # nixpkgs deps.compile hook would recompile path deps into read-only store
+  # paths, as in the CLI package.
+  dontMixDepsCompile = true;
 
   postUnpack = ''
     sourceRoot="$sourceRoot/apps/tackle_web"
+  '';
+  # gix_ex was compiled with the configuration above. The release validates
+  # compile-time configuration at boot (config/runtime.exs enables the config
+  # provider), so the release must carry the same value. Only the Nix build
+  # skips Rustler; normal Mix builds remain unchanged.
+  prePatch = ''
+    cat >> config/prod.exs <<'EOF'
+    config :gix_ex, GixEx.Native, skip_compilation?: true
+    EOF
   '';
 
   # mixRelease's build phase has already run `mix compile --no-deps-check`.
@@ -200,6 +293,10 @@ beamPackages.mixRelease {
   # `src` attribute (daisyui, heroicons) into deps/, which is what NODE_PATH and
   # the heroicons plugin read.
   postBuild = ''
+    # `app.config` evaluates config/runtime.exs, which requires a secret in
+    # prod. This placeholder only lets the asset tasks load the configuration;
+    # it is not written into the release, which reads its own at boot.
+    export SECRET_KEY_BASE="nix-build-placeholder-not-a-secret-nix-build-placeholder-not-a-secret"
     tailwind_path="$(mix do app.config --no-deps-check --no-compile, eval 'Tailwind.bin_path() |> IO.puts()')"
     esbuild_path="$(mix do app.config --no-deps-check --no-compile, eval 'Esbuild.bin_path() |> IO.puts()')"
 
@@ -212,7 +309,12 @@ beamPackages.mixRelease {
   # The release reads SECRET_KEY_BASE, PORT and PHX_SERVER from the environment
   # at boot (config/runtime.exs); nothing secret is embedded here.
   passthru = {
-    inherit mixNixDeps forcolaShim daisyui;
+    inherit
+      mixNixDeps
+      forcolaShim
+      gixNif
+      daisyui
+      ;
   };
 
   meta = {

@@ -53,6 +53,7 @@ let
       (projectFiles ../../packages/tackle_sdk)
       (projectFiles ../../packages/tackle_workflow)
       (projectFiles ../../packages/clipboard_ex)
+      (projectFiles ../../packages/gix_ex)
       (projectFiles ../../apps/tackle_cli)
       # Listed unconditionally because `mix.exs` reads it: a source copy without it
       # must fail at evaluation here, not inside the build.
@@ -73,6 +74,16 @@ let
           "lock"
         ]
       ) ../../packages/clipboard_ex/native)
+      # Includes the crate's .cargo/config.toml, whose musl rustflags disable
+      # crt-static for the cdylib.
+      (lib.fileset.fileFilter (
+        file:
+        lib.any file.hasExt [
+          "rs"
+          "toml"
+          "lock"
+        ]
+      ) ../../packages/gix_ex/native)
     ];
   };
 
@@ -186,6 +197,8 @@ let
   # Like the Tackle crate, clipboard_ex's build.rs shadows the shared unwinder
   # for the musl target, so no Nix-level shim is needed here.
   clipboardNif = native "clipboard_ex" "${src}/packages/clipboard_ex/native/clipboard_ex";
+  # gix_ex carries the same build.rs unwinder shim as clipboard_ex.
+  gixNif = native "gix_ex" "${src}/packages/gix_ex/native/gix_ex";
   exRatatuiNif = native "ex_ratatui" "${deps.ex_ratatui.src}/native/ex_ratatui";
   # Lumis, like ExRatatui, is a RustlerPrecompiled package. deps_nix's generic
   # workaround would have Rustler build it with a glibc toolchain during the Mix
@@ -204,6 +217,7 @@ let
     config :ex_ratatui, ExRatatui.Native, skip_compilation?: true
     config :lumis, Lumis.Native, skip_compilation?: true
     config :clipboard_ex, Clipboard.Native, skip_compilation?: true
+    config :gix_ex, GixEx.Native, skip_compilation?: true
   '';
   deps = pkgs.callPackage ../tackle-cli-deps.nix {
     inherit beamPackages;
@@ -233,6 +247,16 @@ let
         preConfigure = ''
           mkdir -p priv/native
           cp ${clipboardNif}/lib/clipboard_ex.so priv/native/
+        '';
+        preBuild = "";
+      };
+      gix_ex = prev.gix_ex.override {
+        src = "${src}/packages/gix_ex";
+        appConfigPath = nativeConfig;
+        nativeBuildInputs = [ ];
+        preConfigure = ''
+          mkdir -p priv/native
+          cp ${gixNif}/lib/gix_ex.so priv/native/
         '';
         preBuild = "";
       };

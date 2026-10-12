@@ -56,17 +56,17 @@ let
             (extendedPkgs.makeRustPlatform {
               inherit (fenix) cargo rustc;
             }).buildRustPackage
-            {
-              inherit env buildInputs;
-              pname = "${old.beamModuleName}-native";
-              version = old.version;
-              src = nativeDir;
-              cargoLock = {
-                lockFile = "${nativeDir}/Cargo.lock";
-              };
-              nativeBuildInputs = [ extendedPkgs.cmake ] ++ nativeBuildInputs;
-              doCheck = false;
-            }
+              {
+                inherit env buildInputs;
+                pname = "${old.beamModuleName}-native";
+                version = old.version;
+                src = nativeDir;
+                cargoLock = {
+                  lockFile = "${nativeDir}/Cargo.lock";
+                };
+                nativeBuildInputs = [ extendedPkgs.cmake ] ++ nativeBuildInputs;
+                doCheck = false;
+              }
           ).overrideAttrs
             rustlerPrecompiledOverrides.${old.beamModuleName} or { };
 
@@ -192,7 +192,7 @@ let
           drv = buildMix {
             inherit version;
             name = "abnf_parsec";
-            appConfigPath = ../config;
+            appConfigPath = ../../../config;
 
             src = fetchHex {
               inherit version;
@@ -223,13 +223,30 @@ let
         in
         drv;
 
+      jason =
+        let
+          version = "1.4.5";
+          drv = buildMix {
+            inherit version;
+            name = "jason";
+            appConfigPath = ../../../config;
+
+            src = fetchHex {
+              inherit version;
+              pkg = "jason";
+              sha256 = "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684";
+            };
+          };
+        in
+        drv;
+
       jsv =
         let
           version = "0.22.0";
           drv = buildMix {
             inherit version;
             name = "jsv";
-            appConfigPath = ../config;
+            appConfigPath = ../../../config;
 
             src = fetchHex {
               inherit version;
@@ -240,6 +257,7 @@ let
             beamDeps = [
               abnf_parsec
               idna
+              jason
               texture
             ];
           };
@@ -252,13 +270,34 @@ let
           drv = buildMix {
             inherit version;
             name = "nimble_parsec";
-            appConfigPath = ../config;
+            appConfigPath = ../../../config;
 
             src = fetchHex {
               inherit version;
               pkg = "nimble_parsec";
               sha256 = "4b21398942dda052b403bbe1da991ccd03a053668d147d53fb8c4e0efe09c973";
             };
+          };
+        in
+        drv;
+
+      rustler =
+        let
+          version = "0.38.0";
+          drv = buildMix {
+            inherit version;
+            name = "rustler";
+            appConfigPath = ../../../config;
+
+            src = fetchHex {
+              inherit version;
+              pkg = "rustler";
+              sha256 = "704c03c1bf66be12b031c5a389347b91c81c5cb819a24b068b0de36fe4a5652a";
+            };
+
+            beamDeps = [
+              jason
+            ];
           };
         in
         drv;
@@ -285,7 +324,7 @@ let
           drv = buildMix {
             inherit version;
             name = "texture";
-            appConfigPath = ../config;
+            appConfigPath = ../../../config;
 
             src = fetchHex {
               inherit version;

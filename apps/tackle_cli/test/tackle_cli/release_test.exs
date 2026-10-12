@@ -3,14 +3,15 @@ defmodule Tackle.CLI.ReleaseTest do
 
   alias Tackle.CLI.Release
 
-  # The load paths of the two bundled NIFs, in the shape Rustler exposes them.
+  # The load paths of the bundled NIFs, in the shape Rustler exposes them.
   # Tests pass them explicitly so a release-config change cannot quietly turn a
   # verification test into a no-op.
   defp source_libraries do
     [
       {:ex_ratatui, fn -> {:ex_ratatui, "priv/native/ex_ratatui"} end},
       {:tackle_cli, fn -> {:tackle_cli, "priv/native/tackle"} end},
-      {:clipboard_ex, fn -> {:clipboard_ex, "priv/native/clipboard_ex"} end}
+      {:clipboard_ex, fn -> {:clipboard_ex, "priv/native/clipboard_ex"} end},
+      {:gix_ex, fn -> {:gix_ex, "priv/native/gix_ex"} end}
     ]
   end
 
@@ -18,7 +19,8 @@ defmodule Tackle.CLI.ReleaseTest do
     [
       {:ex_ratatui, &ExRatatui.Native.load_from/0},
       {:tackle_cli, &Release.tackle_load_from/0},
-      {:clipboard_ex, &Release.clipboard_load_from/0}
+      {:clipboard_ex, &Release.clipboard_load_from/0},
+      {:gix_ex, &Release.gix_load_from/0}
     ]
   end
 
@@ -70,7 +72,8 @@ defmodule Tackle.CLI.ReleaseTest do
       libraries = [
         {:ex_ratatui, fn -> {:ex_ratatui, precompiled} end},
         {:tackle_cli, fn -> {:tackle_cli, "priv/native/tackle"} end},
-        {:clipboard_ex, fn -> {:clipboard_ex, "priv/native/clipboard_ex"} end}
+        {:clipboard_ex, fn -> {:clipboard_ex, "priv/native/clipboard_ex"} end},
+        {:gix_ex, fn -> {:gix_ex, "priv/native/gix_ex"} end}
       ]
 
       release = release_fixture("libc.so", libraries)

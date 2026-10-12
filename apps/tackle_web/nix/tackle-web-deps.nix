@@ -347,6 +347,22 @@ let
         in
         drv;
 
+      gix_ex =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "gix_ex";
+
+            src = ../../../packages/gix_ex;
+
+            beamDeps = [
+              rustler
+            ];
+          };
+        in
+        drv;
+
       heroicons = stdenv.mkDerivation {
         name = "heroicons";
         src = fetchFromGitHub {
@@ -814,6 +830,7 @@ let
               tackle_lib
               tackle_runtime
               tackle_exec
+              gix_ex
             ];
           };
         in
@@ -879,6 +896,7 @@ let
             name = "tackle_exec";
 
             src = ../../../packages/tackle_exec;
+
           };
         in
         drv;

@@ -143,6 +143,15 @@ defmodule Tackle.CLI.Parser do
 
   defp parse_result({:ok, [:sdk], _result}, _parser), do: {:ok, {:sdk, %{}}}
 
+  # RANGE is optional, so Optimus hands `--help` and unknown options to it.
+  # A Git revision never starts with `-`.
+  defp parse_result({:ok, [:review], %{args: %{range: help}}}, parser)
+       when help in ["--help", "-h"],
+       do: {:help, format_help(parser, [:review])}
+
+  defp parse_result({:ok, [:review], %{args: %{range: "-" <> _ = range}}}, _parser),
+    do: {:error, "unrecognized argument: #{inspect(range)}; see `tackle help review`"}
+
   defp parse_result({:ok, [:review], result}, _parser) do
     range = Map.get(result.args, :range)
     staged = Map.get(result.flags, :staged, false) == true

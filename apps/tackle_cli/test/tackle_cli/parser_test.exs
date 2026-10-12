@@ -174,6 +174,20 @@ defmodule Tackle.CLI.ParserTest do
     assert {:error, _error} = Parser.parse(["review", "a..b", "extra"])
   end
 
+  test "review --help and -h show the review help instead of naming a revision" do
+    for flag <- ["--help", "-h"] do
+      assert {:help, help} = Parser.parse(["review", flag])
+      assert help =~ "RANGE"
+      assert help =~ "--staged"
+    end
+  end
+
+  test "rejects a review range that looks like an option" do
+    assert {:error, error} = Parser.parse(["review", "--verbose"])
+    assert error =~ ~s(unrecognized argument: "--verbose")
+    assert error =~ "tackle help review"
+  end
+
   test "documents the review command and its exit status" do
     assert {:help, help} = Parser.parse(["help", "review"])
     assert help =~ "Exits 1 when blocking findings are shown"

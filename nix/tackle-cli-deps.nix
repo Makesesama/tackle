@@ -312,6 +312,22 @@ let
         in
         drv;
 
+      gix_ex =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "gix_ex";
+
+            src = ../packages/gix_ex;
+
+            beamDeps = [
+              rustler
+            ];
+          };
+        in
+        drv;
+
       hpax =
         let
           version = "1.1.0";
@@ -672,6 +688,7 @@ let
               tackle_lib
               tackle_runtime
               tackle_exec
+              gix_ex
             ];
           };
         in

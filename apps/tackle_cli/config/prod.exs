@@ -52,4 +52,6 @@ if triple = linux_musl_targets[System.get_env("BURRITO_TARGET")] do
   # The clipboard NIF rides in the same Burrito payload and needs the same
   # musl toolchain; its build.rs links the static unwinder via CC_<target>.
   config :clipboard_ex, Clipboard.Native, nif_opts
+  # So does the gix_ex NIF behind `tackle review`, with the same build.rs shim.
+  config :gix_ex, GixEx.Native, nif_opts
 end
