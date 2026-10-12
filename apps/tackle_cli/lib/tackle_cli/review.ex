@@ -3,7 +3,7 @@ defmodule Tackle.CLI.Review do
   The headless `tackle review` command.
 
   It composes the same coding scope as an interactive run, without a durable
-  session, loads the change from Git through the scope's executor, and runs
+  session, loads the change from Git (`Tackle.Review.Change`), and runs
   `Tackle.Review.run/2` from the root agent with the scope's trusted agent
   profiles. Progress goes to standard error line by line; the result goes to
   standard output as text or JSON.
@@ -68,8 +68,15 @@ defmodule Tackle.CLI.Review do
   def exit_status(%Result{}), do: 0
 
   defp review(scope, scope_spec, opts, output) do
-    executor = Executor.from_context(scope_spec.root_spec.config.context)
-    load_opts = [cwd: File.cwd!(), executor: executor, staged: opts.staged, range: opts.range]
+    # The change is read on the host, within the scope's (jail) workspace.
+    workspace = Executor.workspace(Executor.from_context(scope_spec.root_spec.config.context))
+
+    load_opts = [
+      cwd: File.cwd!(),
+      workspace: workspace,
+      staged: opts.staged,
+      range: opts.range
+    ]
 
     with {:ok, change} <- load_change(load_opts),
          {:ok, result} <- run_review(change, scope, scope_spec, opts) do

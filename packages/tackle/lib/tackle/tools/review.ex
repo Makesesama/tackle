@@ -3,8 +3,10 @@ defmodule Tackle.Tools.Review do
   Opt-in tool that reviews the current code change with `Tackle.Review`,
   so an agent can review its own work and then fix what was found.
 
-  The change is loaded from Git in the agent's working directory through
-  its executor (`Tackle.Review.Change`): by default the branch's changes
+  The change is loaded from Git in the agent's working directory
+  (`Tackle.Review.Change`, which reads the repository on the host even for
+  a jailed agent, limited to the agent's workspace; see its documentation):
+  by default the branch's changes
   against the default branch, committed or not; `staged` reviews the index;
   `range` a revision range. The result is a compact list of the shown
   findings, blocking first, with location, severity, trigger, explanation,
@@ -114,7 +116,7 @@ defmodule Tackle.Tools.Review do
   defp load_change(args, context) do
     opts = [
       cwd: cwd(context),
-      executor: Executor.from_context(context),
+      workspace: context |> Executor.from_context() |> Executor.workspace(),
       staged: Map.get(args, "staged") == true,
       range: Map.get(args, "range")
     ]

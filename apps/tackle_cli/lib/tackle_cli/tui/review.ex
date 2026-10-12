@@ -131,7 +131,7 @@ defmodule Tackle.CLI.TUI.Review do
   """
   @type request :: %{
           cwd: Path.t() | nil,
-          executor: Tackle.Executor.t(),
+          workspace: Path.t() | nil,
           env: map() | nil,
           range: String.t() | nil,
           staged: boolean(),
@@ -260,7 +260,7 @@ defmodule Tackle.CLI.TUI.Review do
 
     request = %{
       cwd: state.cwd,
-      executor: state.executor,
+      workspace: Tackle.Executor.workspace(state.executor),
       env: state.env,
       range: review.target.range,
       staged: review.target.staged,
@@ -346,7 +346,7 @@ defmodule Tackle.CLI.TUI.Review do
   defp load_change(request) do
     opts = [
       cwd: request.cwd,
-      executor: request.executor,
+      workspace: request.workspace,
       staged: request.staged,
       range: request.range
     ]
@@ -373,8 +373,8 @@ defmodule Tackle.CLI.TUI.Review do
 
   defp restrict(change, paths) do
     keep = MapSet.new(paths)
-    only = fn diff -> %{diff | files: Enum.filter(diff.files, &MapSet.member?(keep, &1.path))} end
-    %{change | diff: only.(change.diff), context_diff: only.(change.context_diff)}
+    files = Enum.filter(change.diff.files, &MapSet.member?(keep, &1.path))
+    %{change | diff: %{change.diff | files: files}}
   end
 
   # The stage profiles come from the shell's own scope, resolved when the

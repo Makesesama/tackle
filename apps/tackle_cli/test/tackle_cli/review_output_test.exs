@@ -19,8 +19,7 @@ defmodule Tackle.CLI.Output.ReviewTest do
         base_ref: "main",
         base_sha: String.duplicate("a", 40),
         head_sha: :worktree,
-        diff: diff,
-        context_diff: diff
+        diff: diff
       },
       overrides
     )

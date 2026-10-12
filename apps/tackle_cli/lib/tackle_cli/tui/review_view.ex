@@ -8,9 +8,10 @@ defmodule Tackle.CLI.TUI.ReviewView do
   (grouped into blocking and optional, each row `severity · path:line ·
   title · rule`, with the feedback given so far) and a detail pane for the
   selected finding: its explanation, trigger, suggestion, and the code it
-  points at, cut from the change's function-context diff and highlighted
-  with `Tackle.CLI.TUI.Highlight`. Wide terminals put the panes side by
-  side; narrow ones stack them.
+  points at, cut from the function around it
+  (`Tackle.Review.FunctionContext`) and highlighted with
+  `Tackle.CLI.TUI.Highlight`. Wide terminals put the panes side by side;
+  narrow ones stack them.
 
   Every row is clipped to its pane, so the overlay never wraps outside its
   frame. The bottom border carries the key hints, or the latest notice.
@@ -22,7 +23,7 @@ defmodule Tackle.CLI.TUI.ReviewView do
   alias ExRatatui.Widgets.Block.Title
   alias Tackle.CLI.Output.Review, as: ReviewOutput
   alias Tackle.CLI.TUI.{Highlight, MessageView, Review, ReviewProgress, State, Theme}
-  alias Tackle.Review.{Change, Finding}
+  alias Tackle.Review.{Change, Finding, FunctionContext}
 
   # Below this width the list and the detail pane are stacked.
   @side_by_side_width 100
@@ -521,19 +522,17 @@ defmodule Tackle.CLI.TUI.ReviewView do
   @doc """
   The diff lines around `location` in `change`, for the detail pane.
 
-  Lines come from the function-context diff when it has the file (falling
-  back to the plain diff), from #{@excerpt_context} lines before the range to
-  #{@excerpt_context} after it on the location's side, with the other side's
+  Lines come from the file's hunks expanded to their functions
+  (`Tackle.Review.FunctionContext.regions/1`), from #{@excerpt_context}
+  lines before the range to #{@excerpt_context} after it on the location's
+  side, with the other side's
   lines in between kept so a range over a replacement shows both. At most
   #{@max_excerpt_lines} lines are returned.
   """
   @spec excerpt(Change.t(), Finding.location()) :: [Tackle.Review.Diff.line()]
   def excerpt(%Change{} = change, %{path: path, side: side} = location) do
-    file =
-      Enum.find(change.context_diff.files, &(&1.path == path)) ||
-        Enum.find(change.diff.files, &(&1.path == path))
-
-    lines = if file, do: Enum.flat_map(file.hunks, & &1.lines), else: []
+    file = Enum.find(change.diff.files, &(&1.path == path))
+    lines = if file, do: file |> FunctionContext.regions() |> Enum.concat(), else: []
     first = location.start_line - @excerpt_context
     last = location.end_line + @excerpt_context
 

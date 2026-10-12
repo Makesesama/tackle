@@ -8,8 +8,9 @@ credentials, coding profiles, and durable root sessions. Bring adapter and tool
 modules in trusted application code; the [CLI](../../apps/tackle_cli/README.md)
 is one frontend, not a requirement for embedding the harness.
 
-This package requires Elixir `~> 1.20`. Within this checkout it uses sibling
-path dependencies. Plugin/project discovery and loading from configuration are
+This package requires Elixir `~> 1.20` and, to build the `gix_ex` NIF that code
+review uses to read Git repositories, a Rust toolchain (`cargo`). Within this
+checkout it uses sibling path dependencies. Plugin/project discovery and loading from configuration are
 not supported: adapter modules must already be part of the running application.
 
 ## Installation
@@ -233,6 +234,14 @@ the root agent). Reviews are recorded by `Tackle.Review.History` in
 to the current user), where the project key is the Git repository root encoded
 with `Tackle.Paths.project_key/1`, as session storage encodes project
 directories. Findings dismissed there are not reported again.
+
+Reviews read the change with [`gix_ex`](../gix_ex/README.md) (gitoxide)
+in the host process rather than with `git` through the session executor;
+`Tackle.Review.Change` documents why that is safe for a jailed session.
+`Tackle.Review.Units` shows each change inside its enclosing function, found by
+`Tackle.Review.FunctionContext` with Git's per-language function patterns
+(like `git diff -W` with `diff=<language>` attributes) and a JavaScript and
+TypeScript pattern of its own.
 
 The former `explorer` profile is no longer built in. The root calls `subagent`
 with one of these profile names and a self-contained `prompt`. Each child has a

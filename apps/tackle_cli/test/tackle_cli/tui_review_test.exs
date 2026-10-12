@@ -78,8 +78,7 @@ defmodule Tackle.CLI.TUI.ReviewTest do
       base_ref: "main",
       base_sha: "abc",
       head_sha: :worktree,
-      diff: diff,
-      context_diff: diff
+      diff: diff
     }
   end
 
@@ -716,11 +715,25 @@ defmodule Tackle.CLI.TUI.ReviewTest do
       refute_received {:loaded, _change, _history, _paths, _notes}
     end
 
+    test "does not look for the repository above the session's workspace", %{home: home} do
+      repo = git_repo(home)
+      workspace = Path.join(repo, "nested")
+      File.mkdir_p!(workspace)
+      parent = self()
+      request = %{request(workspace, home) | workspace: workspace}
+
+      # As for `git` in a jail that mounts only the workspace.
+      assert {:error, {:change, {:not_a_git_repository, ^workspace}}} =
+               Review.execute(request, &send(parent, &1))
+
+      refute_received {:loaded, _change, _history, _paths, _notes}
+    end
+
     test "a re-review of an unchanged change reports it loaded and skips the review", %{
       home: home
     } do
       repo = git_repo(home)
-      {:ok, previous} = Change.load(cwd: repo, executor: Tackle.Executor.local())
+      {:ok, previous} = Change.load(cwd: repo)
       parent = self()
 
       assert {:ok, :unchanged} =
@@ -734,7 +747,7 @@ defmodule Tackle.CLI.TUI.ReviewTest do
     defp request(cwd, home) do
       %{
         cwd: cwd,
-        executor: Tackle.Executor.local(),
+        workspace: nil,
         env: %{"TACKLE_HOME" => Path.join(home, "tackle-home")},
         range: nil,
         staged: false,

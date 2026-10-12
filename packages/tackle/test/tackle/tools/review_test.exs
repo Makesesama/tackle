@@ -6,6 +6,7 @@ defmodule Tackle.Tools.ReviewTest do
   import Tackle.Test.Runtime, only: [start_scope: 1, handle: 1, handle: 2, tmp_home: 0]
 
   alias Tackle.Config
+  alias Tackle.Executor.Jailed
   alias Tackle.Lib.Tool
   alias Tackle.Review.History
   alias Tackle.Runtime.AgentSpec
@@ -229,6 +230,20 @@ defmodule Tackle.Tools.ReviewTest do
     assert {:error, message} = review(%{}, Map.put(ctx.context, :cwd, outside))
     assert message =~ "is not inside a Git repository"
 
+    refute_received {:llm_call, _stage}
+  end
+
+  test "a jailed agent only reviews a repository inside its workspace", ctx do
+    workspace = Path.join(ctx.repo, "nested")
+    File.mkdir_p!(workspace)
+    # Loading never talks to the exec-server, so any client will do.
+    jailed = Jailed.new(self(), workspace: workspace)
+    context = %{ctx.context | cwd: workspace} |> Map.put(:executor, jailed)
+
+    # As for `git` in the jail, the repository around the workspace is not
+    # visible.
+    assert {:error, message} = review(%{}, context)
+    assert message == "Cannot load the change: #{workspace} is not inside a Git repository"
     refute_received {:llm_call, _stage}
   end
 

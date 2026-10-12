@@ -6,15 +6,18 @@ defmodule Tackle.Review.Units do
   diffs, so `split/2`:
 
     1. skips files that are not worth a line-by-line review: lock files,
-       vendored and dependency directories, generated code, binary files,
-       deleted files, files without textual changes (pure renames, mode
+       vendored and dependency directories, generated code, binary files
+       (including files above the change's size limit), deleted files,
+       unmerged files, files without textual changes (pure renames, mode
        changes), and files matching the caller's `:exclude` globs (see
        `Tackle.Review.Glob`);
-    2. expands each hunk to its enclosing function using the change's
-       function-context diff (`git diff -W`). When a function would add more
-       than `max(context_ratio × changed lines, min_context)` lines of
-       context, the hunk keeps only `fallback_context` lines around each
-       change instead;
+    2. expands each hunk to its enclosing function with
+       `Tackle.Review.FunctionContext`, which finds function lines in the
+       file's contents with language-aware patterns, as `git diff -W` does.
+       When a function would add more than
+       `max(context_ratio × changed lines, min_context)` lines of context,
+       the hunk keeps only `fallback_context` lines around each change
+       instead;
     3. packs the pieces of one file into units of at most
        `max_changed_lines` changed lines, splitting larger pieces;
     4. renders every unit with absolute line numbers: `[+ 42]` for an added
@@ -23,15 +26,11 @@ defmodule Tackle.Review.Units do
     5. adds one change-level unit, first, with the mode, commits, file list,
        statistics, and skipped files.
 
-  An empty change has no units.
-
-  Git's default function detection matches lines that start with a letter,
-  `_`, or `$`. For languages that indent definitions (such as Elixir, without
-  a `diff=elixir` attribute) a "function" can be a whole module, which the
-  context cap then reduces to the fallback context.
+  An empty change has no units. A file without contents (such as one parsed
+  from patch text) keeps its plain hunks.
   """
 
-  alias Tackle.Review.{Change, Diff, Glob}
+  alias Tackle.Review.{Change, Diff, FunctionContext, Glob}
 
   @builtin_excludes [
     lock_file: [
@@ -92,7 +91,14 @@ defmodule Tackle.Review.Units do
 
   @typedoc "Why a file was not split into code units."
   @type skip_reason ::
-          :excluded | :lock_file | :vendored | :generated | :binary | :deleted | :no_content
+          :excluded
+          | :lock_file
+          | :vendored
+          | :generated
+          | :binary
+          | :deleted
+          | :unmerged
+          | :no_content
 
   @typedoc "A file without code units."
   @type skipped :: %{path: String.t(), reason: skip_reason()}
@@ -132,14 +138,9 @@ defmodule Tackle.Review.Units do
 
     with {:ok, user_globs} <- Glob.compile_all(Keyword.get(opts, :exclude, [])) do
       excludes = [{:excluded, user_globs} | builtin_globs()]
-      context_files = Map.new(change.context_diff.files, &{{&1.old_path, &1.path}, &1})
 
       {code_units, skipped} =
-        Enum.reduce(
-          change.diff.files,
-          {[], []},
-          &add_file(&1, &2, excludes, context_files, config)
-        )
+        Enum.reduce(change.diff.files, {[], []}, &add_file(&1, &2, excludes, config))
 
       code_units = code_units |> Enum.reverse() |> List.flatten()
       skipped = Enum.reverse(skipped)
@@ -161,6 +162,7 @@ defmodule Tackle.Review.Units do
   def describe_skip(:generated), do: "generated code"
   def describe_skip(:binary), do: "binary file"
   def describe_skip(:deleted), do: "deleted file"
+  def describe_skip(:unmerged), do: "unmerged (merge conflict)"
   def describe_skip(:no_content), do: "no textual changes"
 
   defp config(opts) do
@@ -185,9 +187,9 @@ defmodule Tackle.Review.Units do
     end)
   end
 
-  defp add_file(file, {units, skipped}, excludes, context_files, config) do
+  defp add_file(file, {units, skipped}, excludes, config) do
     case skip_reason(file, excludes) do
-      nil -> {[file_units(file, context_files, config) | units], skipped}
+      nil -> {[file_units(file, config) | units], skipped}
       reason -> {units, [%{path: file.path, reason: reason} | skipped]}
     end
   end
@@ -199,6 +201,7 @@ defmodule Tackle.Review.Units do
       cond do
         file.binary -> :binary
         file.status == :deleted -> :deleted
+        file.status == :unmerged -> :unmerged
         file.hunks == [] -> :no_content
         true -> nil
       end
@@ -206,23 +209,15 @@ defmodule Tackle.Review.Units do
 
   ## Code units
 
-  defp file_units(file, context_files, config) do
+  defp file_units(file, config) do
     file
-    |> regions(Map.get(context_files, {file.old_path, file.path}))
+    |> FunctionContext.regions()
     |> Enum.flat_map(&fit_context(&1, config))
     |> Enum.flat_map(&split_segment(&1, config.max_changed_lines))
     |> pack(config.max_changed_lines)
     |> Enum.with_index(1)
     |> Enum.map(fn {segments, index} -> code_unit(file, segments, index) end)
   end
-
-  # Function-context hunks replace the plain ones only when they describe the
-  # same changes; otherwise the plain hunks are used as they are.
-  defp regions(file, %{additions: additions, deletions: deletions} = context_file)
-       when additions == file.additions and deletions == file.deletions,
-       do: Enum.map(context_file.hunks, & &1.lines)
-
-  defp regions(file, _context_file), do: Enum.map(file.hunks, & &1.lines)
 
   defp fit_context(lines, config) do
     changed = changed_count(lines)
@@ -455,6 +450,7 @@ defmodule Tackle.Review.Units do
         :modified -> "M"
         :renamed -> "R"
         :copied -> "C"
+        :unmerged -> "U"
       end
 
     path =

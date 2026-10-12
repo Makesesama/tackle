@@ -9,7 +9,6 @@ defmodule Tackle.Review.UnitsTest do
 
   defp change(diff_text, opts \\ []) do
     {:ok, diff} = Diff.parse(diff_text)
-    {:ok, context_diff} = Diff.parse(Keyword.get(opts, :context, diff_text))
 
     %Change{
       cwd: "/repo",
@@ -19,7 +18,6 @@ defmodule Tackle.Review.UnitsTest do
       base_sha: @base,
       head_sha: Keyword.get(opts, :head_sha, @head),
       diff: diff,
-      context_diff: context_diff,
       commits: Keyword.get(opts, :commits, [])
     }
   end
@@ -44,7 +42,15 @@ defmodule Tackle.Review.UnitsTest do
     """
   end
 
-  defp context_lines(range), do: Enum.map_join(range, "", &" ctx#{&1}\n")
+  # Commits `old`, writes `new` over it, and loads the change.
+  defp git_change(old, new) do
+    dir = GitRepo.init()
+    GitRepo.write(dir, old)
+    GitRepo.commit(dir, "base")
+    GitRepo.write(dir, new)
+    assert {:ok, change} = Change.load(cwd: dir)
+    change
+  end
 
   test "an empty change has no units" do
     assert split!(change("")) == %{units: [], skipped: []}
@@ -141,63 +147,91 @@ defmodule Tackle.Review.UnitsTest do
     end
   end
 
-  test "expands hunks to the enclosing function from the function-context diff" do
-    plain = """
-    --- a/a.c
-    +++ b/a.c
-    @@ -4,3 +4,3 @@ int f(void)
-     ctx4
-    -old
-    +new
-     ctx6
+  test "expands hunks to the enclosing function" do
+    old = """
+    defmodule Shop do
+      @moduledoc "A shop."
+
+      def total(items) do
+        items
+        |> Enum.map(& &1.price)
+        |> Enum.sum()
+      end
+
+      @doc "Applies a discount."
+      def discount(total, percent) do
+        rate = percent / 100
+        total - total * rate
+      end
+
+      def tax(total), do: total * 0.2
+    end
     """
 
-    context = """
-    --- a/a.c
-    +++ b/a.c
-    @@ -1,8 +1,8 @@
-    #{context_lines(1..4)}-old
-    +new
-    #{context_lines(6..8)}\
-    """
+    change =
+      git_change(%{"lib/shop.ex" => old}, %{
+        "lib/shop.ex" =>
+          String.replace(old, "rate = percent / 100", "rate = min(percent, 100) / 100")
+      })
 
-    assert [unit] = change(plain, context: context) |> split!() |> code_units()
-    assert unit.side_ranges == %{old: [1..8], new: [1..8]}
-    assert unit.rendered =~ "[  1] ctx1\n"
-    assert unit.rendered =~ "[  8] ctx8\n"
+    assert [unit] = change |> split!() |> code_units()
+
+    # The function with its documentation, not the whole module; as with
+    # `git diff -W`, the hunk's own context lines (blank here) stay.
+    assert unit.side_ranges == %{old: [9..15], new: [9..15]}
+
+    assert unit.rendered =~ """
+           [  10]   @doc "Applies a discount."
+           [  11]   def discount(total, percent) do
+           [- 12]     rate = percent / 100
+           [+ 12]     rate = min(percent, 100) / 100
+           [  13]     total - total * rate
+           [  14]   end
+           """
+
+    refute unit.rendered =~ "defmodule"
+    refute unit.rendered =~ "def tax"
   end
 
   test "falls back to nearby lines when the function is too large" do
     # One function of 100 lines with changes at lines 10 and 90.
-    context = """
-    --- a/big.c
-    +++ b/big.c
-    @@ -1,100 +1,100 @@
-    #{context_lines(1..9)}-old10
-    +new10
-    #{context_lines(11..89)}-old90
-    +new90
-    #{context_lines(91..100)}\
-    """
+    lines = ["int big(void)" | Enum.map(2..100, &"\tctx#{&1};")]
+    old = Enum.join(lines, "\n") <> "\n"
 
-    assert [unit] = context |> change() |> split!() |> code_units()
+    new =
+      lines
+      |> List.replace_at(9, "\tnew10;")
+      |> List.replace_at(89, "\tnew90;")
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+
+    change = git_change(%{"big.c" => old}, %{"big.c" => new})
+
+    assert [unit] = change |> split!() |> code_units()
 
     assert unit.side_ranges == %{old: [7..13, 87..93], new: [7..13, 87..93]}
     assert unit.changed_ranges == %{old: [10..10, 90..90], new: [10..10, 90..90]}
-    assert unit.rendered =~ "[  13] ctx13\n...\n[  87] ctx87\n"
+    assert unit.rendered =~ "[  13] \tctx13;\n...\n[  87] \tctx87;\n"
 
     # A larger allowance keeps the whole function.
-    assert [whole] = context |> change() |> split!(min_context: 100) |> code_units()
+    assert [whole] = change |> split!(min_context: 100) |> code_units()
 
     assert whole.side_ranges.new == [1..100]
   end
 
-  test "uses the plain hunks when the function-context diff does not match" do
-    plain = added_lines("a.ex", 4, 1)
-    context = added_lines("a.ex", 4, 2)
+  test "keeps the plain hunks of files without contents" do
+    diff = """
+    --- a/a.ex
+    +++ b/a.ex
+    @@ -10,3 +10,3 @@
+       def f do
+    -    1
+    +    2
+       end
+    """
 
-    assert [unit] = change(plain, context: context) |> split!() |> code_units()
-    assert unit.changed_ranges.new == [5..5]
+    assert [unit] = diff |> change() |> split!() |> code_units()
+    assert unit.side_ranges.new == [10..12]
   end
 
   test "splits large pieces into evenly sized units" do

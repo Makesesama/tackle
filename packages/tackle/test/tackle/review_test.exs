@@ -143,8 +143,7 @@ defmodule Tackle.ReviewTest do
       base_ref: "main",
       base_sha: String.duplicate("a", 40),
       head_sha: String.duplicate("b", 40),
-      diff: diff,
-      context_diff: diff
+      diff: diff
     }
   end
 

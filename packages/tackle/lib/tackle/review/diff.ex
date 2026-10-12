@@ -1,19 +1,28 @@
 defmodule Tackle.Review.Diff do
   @moduledoc """
-  Parses unified diff text, as produced by `git diff`, into files, hunks, and
-  numbered lines.
+  The diff of a change: files, hunks, and numbered lines.
+
+  This is the provider-neutral shape the review works on
+  (`Tackle.Review.Units`, `Tackle.Review.Finding`, and the frontends).
+  `Tackle.Review.Change` builds it from `GixEx` diffs; `parse/1` builds it
+  from unified diff text, as produced by `git diff`, for patches from other
+  sources and for test fixtures.
 
   Every line carries its kind and its absolute line numbers: removed lines
   have only an `old` number, added lines only a `new` number, and context
   lines both. A `\\ No newline at end of file` note is not a line of its own;
   it sets `no_newline: true` on the line it annotates.
 
-  Git's extended headers are understood: renames and copies (`rename from` /
-  `rename to`), new and deleted files, mode changes, and binary markers
-  (`Binary files ... differ` or `GIT binary patch`). Paths may be C-quoted, as
-  Git does for unusual characters. Plain `diff -u` output without a
-  `diff --git` line is accepted too. Text before the first file header, such as
-  warnings, is ignored.
+  A file may carry the full text of both of its sides (`old_content` and
+  `new_content`), which `Tackle.Review.FunctionContext` uses to show the
+  functions around each change. Parsed patch text has no contents.
+
+  `parse/1` understands Git's extended headers: renames and copies
+  (`rename from` / `rename to`), new and deleted files, mode changes, and
+  binary markers (`Binary files ... differ` or `GIT binary patch`). Paths may
+  be C-quoted, as Git does for unusual characters. Plain `diff -u` output
+  without a `diff --git` line is accepted too. Text before the first file
+  header, such as warnings, is ignored.
 
   Hunk bodies are consumed by the line counts in their `@@` header, so content
   that happens to look like a header (a removed `-- comment` line printed as
@@ -52,14 +61,19 @@ defmodule Tackle.Review.Diff do
           lines: [line()]
         }
 
-  @typedoc "How a file changed."
-  @type status :: :added | :deleted | :modified | :renamed | :copied
+  @typedoc """
+  How a file changed. An `:unmerged` file has a merge conflict in the index
+  and no hunks.
+  """
+  @type status :: :added | :deleted | :modified | :renamed | :copied | :unmerged
 
   @typedoc """
   One file of the diff.
 
   `path` is the new path, or the old path of a deleted file. `old_path` is
   `nil` for added files and equal to `path` for modified ones.
+  `old_content` and `new_content` are the full text of each side, or `nil`
+  when they were not loaded, the side does not exist, or the file is binary.
   """
   @type diff_file :: %{
           path: String.t(),
@@ -68,7 +82,9 @@ defmodule Tackle.Review.Diff do
           binary: boolean(),
           additions: non_neg_integer(),
           deletions: non_neg_integer(),
-          hunks: [hunk()]
+          hunks: [hunk()],
+          old_content: binary() | nil,
+          new_content: binary() | nil
         }
 
   @typedoc "A parsed diff."
@@ -80,7 +96,7 @@ defmodule Tackle.Review.Diff do
   @hunk_header ~r/\A@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)\z/
 
   @doc """
-  Parses unified diff text.
+  Parses unified diff text. The files have no contents.
 
   Empty text is an empty diff. Returns
   `{:error, {:malformed_diff, line_number, message}}` for an invalid hunk
@@ -188,7 +204,9 @@ defmodule Tackle.Review.Diff do
       binary: file.binary,
       additions: Enum.count(lines, &(&1.kind == :add)),
       deletions: Enum.count(lines, &(&1.kind == :remove)),
-      hunks: hunks
+      hunks: hunks,
+      old_content: nil,
+      new_content: nil
     }
   end
 

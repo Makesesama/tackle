@@ -19,19 +19,48 @@ defmodule Tackle.Review.Change do
   `origin/HEAD`, then the first of `main`, `master`, `origin/main`, and
   `origin/master` that exists.
 
-  Besides the parsed diff, a change holds the same diff with function context
-  (`git diff -W`), which `Tackle.Review.Units` uses to show whole functions,
-  and the commits between base and head (newest first, at most 100). Paths are relative to the repository root.
+  A change holds the diff, with the full text of both sides of every text
+  file, which `Tackle.Review.Units` uses to show whole functions (see
+  `Tackle.Review.FunctionContext`), and the commits between base and head
+  (newest first, at most 100). Paths are relative to the repository root.
+  Diffs follow `git diff --histogram` with rename detection.
 
-  Git runs through `Tackle.Review.Git`, hence through the configured executor.
+  ## Reading the repository
+
+  The repository is read in-process with `GixEx` (gitoxide), not with `git`
+  subprocesses, and not through the session's `Tackle.Executor`, so a
+  jailed session's review reads the workspace from the host. That is
+  acceptable because the repository is only read, and read defensively, as
+  it may have been written by an agent:
+
+    * `GixEx` opens it isolated: only the repository's own configuration is
+      read, and no program it configures runs (filters, `textconv`,
+      external diff drivers, hooks), so reading it cannot execute code;
+    * a repository whose working tree is configured elsewhere
+      (`core.worktree`) is refused, a tracked path below a symbolic link
+      counts as deleted, and files are opened without following links, so
+      reads stay inside the working tree;
+    * the jail mounts the workspace at the same path on the host, so the
+      session's working directory names the same checkout;
+    * `GixEx` follows the repository's own pointers (a `.git` file, a
+      `commondir` file, object alternates, and symbolic links inside the
+      Git directory), which a jailed agent could aim at a repository the
+      jail hides. A caller with a jailed executor therefore passes its
+      workspace as `:workspace`, and `Tackle.Review.Confinement` refuses a
+      repository that is not entirely inside it before anything is read;
+    * a file larger than `:max_file_bytes` is hashed as a stream and treated
+      as binary, which bounds the memory any one file takes.
+
+  Reading cannot be interrupted or given a timeout.
   """
 
-  alias Tackle.Review.{Diff, Git}
+  alias Tackle.Review.{Confinement, Diff}
 
   @max_commits 100
+  @default_max_file_bytes 4 * 1_024 * 1_024
   @branch_candidates ["main", "master", "origin/main", "origin/master"]
 
-  @enforce_keys [:cwd, :root, :mode, :base_sha, :head_sha, :diff, :context_diff]
+  @enforce_keys [:cwd, :root, :mode, :base_sha, :head_sha, :diff]
   defstruct [
     :cwd,
     :root,
@@ -40,7 +69,6 @@ defmodule Tackle.Review.Change do
     :base_sha,
     :head_sha,
     :diff,
-    :context_diff,
     commits: []
   ]
 
@@ -54,8 +82,10 @@ defmodule Tackle.Review.Change do
   A loaded change.
 
   `base_ref` is the name the base was derived from (the default branch, or
-  the range's base), or `nil` for staged changes. `head_sha` is a commit, or
-  `:worktree`/`:index` when the head is the working tree or the index.
+  the range's base), or `nil` for staged changes. `base_sha` is a commit, or
+  the empty tree for staged changes before the first commit. `head_sha` is a
+  commit, or `:worktree`/`:index` when the head is the working tree or the
+  index. The files of `diff` carry their contents.
   """
   @type t :: %__MODULE__{
           cwd: Path.t(),
@@ -65,24 +95,30 @@ defmodule Tackle.Review.Change do
           base_sha: String.t(),
           head_sha: String.t() | :worktree | :index,
           diff: Diff.t(),
-          context_diff: Diff.t(),
           commits: [commit()]
         }
 
   @typedoc """
   Load options: `:cwd` (default: the current directory), `:staged`,
-  `:range`, `:base` (the default branch for `:branch` mode), and the
-  `t:Tackle.Review.Git.option/0` options `:executor`, `:timeout`, and
-  `:max_bytes`.
+  `:range`, `:base` (the default branch for `:branch` mode),
+  `:workspace`, the jail workspace the repository must lie in (default:
+  none; see "Reading the repository"), and `:max_file_bytes`, the
+  size above which a file is treated as binary and not reviewed line by
+  line (default 4 MiB).
   """
   @type option ::
           {:cwd, Path.t()}
+          | {:workspace, Path.t() | nil}
           | {:staged, boolean()}
           | {:range, String.t()}
           | {:base, String.t()}
-          | Git.option()
+          | {:max_file_bytes, pos_integer()}
 
-  @typedoc "Why a change could not be loaded."
+  @typedoc """
+  Why a change could not be loaded. Other `GixEx` errors, such as a
+  repository without a working tree or with an external one, are passed
+  through.
+  """
   @type error ::
           {:not_a_git_repository, Path.t()}
           | :conflicting_options
@@ -90,8 +126,9 @@ defmodule Tackle.Review.Change do
           | {:unknown_revision, String.t()}
           | :no_default_branch
           | {:no_merge_base, String.t(), String.t()}
-          | Diff.error()
-          | Git.error()
+          | {:outside_workspace, Path.t(), Path.t()}
+          | {:unsafe_repository, Path.t()}
+          | GixEx.error()
 
   @doc """
   Loads the change selected by `opts` (see the module documentation).
@@ -101,24 +138,22 @@ defmodule Tackle.Review.Change do
   @spec load([option()]) :: {:ok, t()} | {:error, error()}
   def load(opts \\ []) do
     cwd = Path.expand(Keyword.get(opts, :cwd) || File.cwd!())
-    git_opts = Keyword.take(opts, [:executor, :timeout, :max_bytes])
+    max_file_bytes = Keyword.get(opts, :max_file_bytes, @default_max_file_bytes)
 
     with {:ok, mode} <- mode(opts),
-         {:ok, root} <- root(cwd, git_opts),
-         {:ok, target} <- target(mode, root, opts, git_opts),
-         {:ok, diff} <- diff(root, target, [], git_opts),
-         {:ok, context_diff} <- diff(root, target, ["--function-context"], git_opts),
-         {:ok, commits} <- commits(root, target, git_opts) do
+         {:ok, repo} <- open(cwd, Keyword.get(opts, :workspace)),
+         {:ok, target} <- target(mode, repo, opts),
+         {:ok, files} <- diff(repo, target, max_file_bytes),
+         {:ok, commits} <- commits(repo, target) do
       {:ok,
        %__MODULE__{
          cwd: cwd,
-         root: root,
+         root: repo.workdir,
          mode: target.mode,
          base_ref: target.base_ref,
          base_sha: target.base_sha,
          head_sha: target.head_sha,
-         diff: diff,
-         context_diff: context_diff,
+         diff: %Diff{files: files},
          commits: commits
        }}
     end
@@ -136,10 +171,12 @@ defmodule Tackle.Review.Change do
 
   def format_error({:no_merge_base, a, b}), do: "#{a} and #{b} have no common ancestor"
 
-  def format_error({:malformed_diff, line, message}),
-    do: "could not parse the diff at line #{line}: #{message}"
+  def format_error({:outside_workspace, _path, _workspace} = reason),
+    do: Confinement.format_error(reason)
 
-  def format_error(reason), do: Git.format_error(reason)
+  def format_error({:unsafe_repository, _path} = reason), do: Confinement.format_error(reason)
+
+  def format_error(reason), do: GixEx.format_error(reason)
 
   defp mode(opts) do
     case {Keyword.get(opts, :staged, false), Keyword.get(opts, :range)} do
@@ -171,164 +208,163 @@ defmodule Tackle.Review.Change do
   defp default_head(""), do: "HEAD"
   defp default_head(rev), do: rev
 
-  defp root(cwd, git_opts) do
-    case Git.run(cwd, ["rev-parse", "--show-toplevel"], git_opts) do
-      {:ok, output} ->
-        {:ok, String.trim_trailing(output, "\n")}
+  # In a jail, the repository is located and checked first, and opened only
+  # when `GixEx` finds the same one.
+  defp open(cwd, nil), do: open(cwd)
 
-      {:error, {:git_failed, _status, output}} = error ->
-        if output =~ "not a git repository",
-          do: {:error, {:not_a_git_repository, cwd}},
-          else: error
+  defp open(cwd, workspace) do
+    case Confinement.locate(cwd, workspace) do
+      {:ok, located} ->
+        with {:ok, repo} <- open(located.workdir), do: same_repository(repo, located, workspace)
+
+      {:error, :not_found} ->
+        {:error, {:not_a_git_repository, cwd}}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp target(:branch, root, opts, git_opts) do
-    with {:ok, head} <- resolve(root, "HEAD", git_opts),
-         {:ok, base_ref} <- default_branch(root, Keyword.get(opts, :base), git_opts),
-         {:ok, base} <- resolve(root, base_ref, git_opts),
-         {:ok, merge_base} <- merge_base(root, {base_ref, base}, {"HEAD", head}, git_opts) do
+  defp same_repository(repo, %{workdir: workdir, git_dir: git_dir}, workspace) do
+    if repo.workdir == workdir and repo.git_dir == git_dir,
+      do: {:ok, repo},
+      else: {:error, {:outside_workspace, repo.git_dir, Path.expand(workspace)}}
+  end
+
+  # A missing directory is reported like any other directory outside a
+  # repository; other failures (a bare repository, an external working
+  # tree) keep their reason.
+  defp open(cwd) do
+    case GixEx.open(cwd) do
+      {:ok, %GixEx.Repository{workdir: nil}} ->
+        {:error, :bare_repository}
+
+      {:ok, repo} ->
+        {:ok, repo}
+
+      {:error, :not_a_repository} ->
+        {:error, {:not_a_git_repository, cwd}}
+
+      {:error, reason} ->
+        if File.dir?(cwd), do: {:error, reason}, else: {:error, {:not_a_git_repository, cwd}}
+    end
+  end
+
+  defp target(:branch, repo, opts) do
+    with {:ok, head} <- GixEx.resolve(repo, "HEAD"),
+         {:ok, base_ref} <- default_branch(repo, Keyword.get(opts, :base)),
+         {:ok, base} <- GixEx.resolve(repo, base_ref),
+         {:ok, merge_base} <- merge_base(repo, {base_ref, base}, {"HEAD", head}) do
       {:ok, target(:branch, base_ref, merge_base, :worktree, {merge_base, head})}
     end
   end
 
-  defp target(:staged, root, _opts, git_opts) do
-    case resolve(root, "HEAD", git_opts) do
-      {:ok, head} ->
-        {:ok, target(:staged, nil, head, :index, nil)}
-
-      {:error, {:unknown_revision, _rev}} ->
-        with {:ok, empty_tree} <-
-               Git.run(root, ["hash-object", "-t", "tree", "/dev/null"], git_opts) do
-          {:ok, target(:staged, nil, String.trim(empty_tree), :index, nil)}
-        end
-
-      error ->
-        error
+  defp target(:staged, repo, _opts) do
+    case GixEx.resolve(repo, "HEAD") do
+      {:ok, head} -> {:ok, target(:staged, nil, head, :index, nil)}
+      {:error, {:unknown_revision, _rev}} -> {:ok, staged_before_first_commit(repo)}
+      error -> error
     end
   end
 
-  defp target({:range, :single, rev}, root, _opts, git_opts) do
-    with {:ok, base} <- resolve(root, rev, git_opts),
-         {:ok, head} <- resolve(root, "HEAD", git_opts) do
+  defp target({:range, :single, rev}, repo, _opts) do
+    with {:ok, base} <- GixEx.resolve(repo, rev),
+         {:ok, head} <- GixEx.resolve(repo, "HEAD") do
       {:ok, target(:range, rev, base, :worktree, {base, head})}
     end
   end
 
-  defp target({:range, kind, base_rev, head_rev}, root, _opts, git_opts) do
-    with {:ok, base} <- resolve(root, base_rev, git_opts),
-         {:ok, head} <- resolve(root, head_rev, git_opts),
-         {:ok, base} <- range_base(kind, root, {base_rev, base}, {head_rev, head}, git_opts) do
+  defp target({:range, kind, base_rev, head_rev}, repo, _opts) do
+    with {:ok, base} <- GixEx.resolve(repo, base_rev),
+         {:ok, head} <- GixEx.resolve(repo, head_rev),
+         {:ok, base} <- range_base(kind, repo, {base_rev, base}, {head_rev, head}) do
       {:ok, target(:range, base_rev, base, head, {base, head})}
     end
   end
 
   defp target(mode, base_ref, base_sha, head_sha, log_range) do
-    %{mode: mode, base_ref: base_ref, base_sha: base_sha, head_sha: head_sha, log: log_range}
+    %{
+      mode: mode,
+      base_ref: base_ref,
+      base_sha: base_sha,
+      from: base_sha,
+      head_sha: head_sha,
+      log: log_range
+    }
   end
 
-  defp range_base(:two_dot, _root, {_rev, base}, _head, _git_opts), do: {:ok, base}
+  # Without commits, the index is compared with the empty tree.
+  defp staged_before_first_commit(repo) do
+    %{target(:staged, nil, GixEx.empty_tree(repo), :index, nil) | from: :empty}
+  end
 
-  defp range_base(:symmetric, root, base, head, git_opts),
-    do: merge_base(root, base, head, git_opts)
+  defp range_base(:two_dot, _repo, {_rev, base}, _head), do: {:ok, base}
+  defp range_base(:symmetric, repo, base, head), do: merge_base(repo, base, head)
 
-  defp resolve(_root, "-" <> _ = rev, _git_opts), do: {:error, {:unknown_revision, rev}}
-
-  defp resolve(root, rev, git_opts) do
-    args = ["rev-parse", "--verify", "--quiet", "--end-of-options", rev <> "^{commit}"]
-
-    case Git.run(root, args, git_opts) do
-      {:ok, sha} -> {:ok, String.trim(sha)}
-      {:error, {:git_failed, _status, _output}} -> {:error, {:unknown_revision, rev}}
+  defp merge_base(repo, {base_rev, base}, {head_rev, head}) do
+    case GixEx.merge_base(repo, base, head) do
+      {:ok, sha} -> {:ok, sha}
+      {:error, :no_merge_base} -> {:error, {:no_merge_base, base_rev, head_rev}}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp merge_base(root, {base_rev, base}, {head_rev, head}, git_opts) do
-    case Git.run(root, ["merge-base", base, head], git_opts) do
-      {:ok, sha} -> {:ok, String.trim(sha)}
-      {:error, {:git_failed, 1, _output}} -> {:error, {:no_merge_base, base_rev, head_rev}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp default_branch(_repo, base) when is_binary(base), do: {:ok, base}
 
-  defp default_branch(_root, base, _git_opts) when is_binary(base), do: {:ok, base}
-
-  defp default_branch(root, nil, git_opts) do
+  defp default_branch(repo, nil) do
     remote_head =
-      case Git.run(
-             root,
-             ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
-             git_opts
-           ) do
-        {:ok, ref} -> [String.trim(ref)]
+      case GixEx.symbolic_ref(repo, "refs/remotes/origin/HEAD", short: true) do
+        {:ok, ref} -> [ref]
         {:error, _reason} -> []
       end
 
     Enum.find_value(remote_head ++ @branch_candidates, {:error, :no_default_branch}, fn ref ->
-      case resolve(root, ref, git_opts) do
+      case GixEx.resolve(repo, ref) do
         {:ok, _sha} -> {:ok, ref}
         {:error, _reason} -> nil
       end
     end)
   end
 
-  @diff_args [
-    "--no-color",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--no-relative",
-    "--find-renames",
-    "--unified=3",
-    "--src-prefix=a/",
-    "--dst-prefix=b/"
-  ]
+  defp diff(repo, target, max_file_bytes) do
+    opts = [contents: true, max_file_bytes: max_file_bytes]
 
-  defp diff(root, target, extra, git_opts) do
-    revisions =
-      case target.head_sha do
-        :worktree -> [target.base_sha]
-        :index -> ["--cached", target.base_sha]
-        head -> [target.base_sha, head]
-      end
-
-    with {:ok, text} <-
-           Git.diff(root, Enum.concat([@diff_args, extra, revisions, ["--"]]), git_opts) do
-      Diff.parse(text)
+    with {:ok, files} <- GixEx.diff(repo, target.from, target.head_sha, opts) do
+      {:ok, Enum.map(files, &file/1)}
     end
   end
 
-  defp commits(_root, %{log: nil}, _git_opts), do: {:ok, []}
-  defp commits(_root, %{log: {base, base}}, _git_opts), do: {:ok, []}
-
-  defp commits(root, %{log: {base, head}}, git_opts) do
-    args = [
-      "log",
-      "--no-color",
-      "--max-count=#{@max_commits}",
-      "--format=%H%x1f%s%x1f%b%x1e",
-      "#{base}..#{head}",
-      "--"
-    ]
-
-    with {:ok, output} <- Git.run(root, args, git_opts) do
-      {:ok, parse_commits(output)}
-    end
+  defp file(%GixEx.Diff.File{} = file) do
+    %{
+      path: file.path,
+      old_path: file.old_path,
+      status: file.status,
+      binary: file.binary,
+      additions: file.additions,
+      deletions: file.deletions,
+      hunks: Enum.map(file.hunks, &hunk/1),
+      old_content: file.old_content,
+      new_content: file.new_content
+    }
   end
 
-  defp parse_commits(output) do
-    output
-    |> String.split("\x1e")
-    |> Enum.map(&String.trim_leading(&1, "\n"))
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.flat_map(fn record ->
-      case String.split(record, "\x1f", parts: 3) do
-        [sha, subject, body] -> [%{sha: sha, subject: subject, body: String.trim(body)}]
-        _other -> []
-      end
-    end)
+  defp hunk(%GixEx.Diff.Hunk{} = hunk) do
+    hunk
+    |> Map.from_struct()
+    |> Map.update!(:lines, fn lines -> Enum.map(lines, &line/1) end)
+  end
+
+  defp line(line), do: Map.take(line, [:kind, :old, :new, :text, :no_newline])
+
+  defp commits(_repo, %{log: nil}), do: {:ok, []}
+  defp commits(_repo, %{log: {base, base}}), do: {:ok, []}
+
+  defp commits(repo, %{log: {base, head}}) do
+    with {:ok, commits} <- GixEx.commits(repo, base, head, limit: @max_commits) do
+      {:ok,
+       Enum.map(commits, fn commit ->
+         %{sha: commit.id, subject: commit.subject, body: String.trim(commit.body)}
+       end)}
+    end
   end
 end

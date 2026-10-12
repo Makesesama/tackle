@@ -37,6 +37,7 @@ defmodule Tackle.Review.DiffTest do
 
     assert %{path: "lib/a.ex", old_path: "lib/a.ex", status: :modified, binary: false} = file
     assert {file.additions, file.deletions} == {3, 1}
+    assert {file.old_content, file.new_content} == {nil, nil}
 
     assert [first, second] = file.hunks
     assert first.header == "@@ -1,3 +1,3 @@ defmodule A do"
