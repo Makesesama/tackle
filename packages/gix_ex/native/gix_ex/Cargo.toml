@@ -1,0 +1,26 @@
+[package]
+name = "gix_ex"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[build-dependencies]
+cc = "1"
+
+[dependencies]
+# Pure Rust, without network transports or worktree mutation: the bindings only
+# read repositories. `blob-diff` brings rename tracking and imara-diff, `index`
+# the staging area, `revision` rev-parse, merge-base and history walks.
+gix = { version = "0.89", default-features = false, features = [
+    "sha1",
+    "blob-diff",
+    "index",
+    "revision",
+    "max-performance-safe",
+] }
+# O_NOFOLLOW and O_NONBLOCK for reading working-tree files.
+libc = "0.2"
+rustler = { version = "0.38", default-features = false, features = ["derive", "nif_version_2_16"] }
