@@ -11,7 +11,8 @@ defmodule Tackle.Runtime.Registry do
   the registry also holds each agent's per-session tool
   `Task.Supervisor` under `{:tool_supervisor, scope_id, agent_id}` and, for
   agents with services, the service `Task.Supervisor` under
-  `{:service_tasks, scope_id, agent_id}`. Those are process names keyed by
+  `{:service_tasks, scope_id, agent_id}`, and named services under
+  `{:service, scope_id, agent_id, key}`. Those are process names keyed by
   agent reference, not runtime references of their own.
   """
 
@@ -98,6 +99,24 @@ defmodule Tackle.Runtime.Registry do
   @spec service_task_supervisor(AgentRef.t()) :: {:ok, pid()} | {:error, :not_found}
   def service_task_supervisor(%AgentRef{scope_id: scope_id, agent_id: agent_id}) do
     Registry.lookup(@name, {:service_tasks, scope_id, agent_id}) |> first()
+  end
+
+  @doc """
+  Returns the via name a backend service registers under for one agent.
+
+  `key` distinguishes services of the same agent (typically the service
+  module), so callers can tell whether a service is running for an agent
+  without holding its pid. The registration ends with the process.
+  """
+  @spec service_name(AgentRef.t(), term()) :: {:via, module(), {module(), tuple()}}
+  def service_name(%AgentRef{scope_id: scope_id, agent_id: agent_id}, key) do
+    {:via, Registry, {@name, {:service, scope_id, agent_id, key}}}
+  end
+
+  @doc "Returns the live pid of an agent's named service, or an explicit error."
+  @spec service(AgentRef.t(), term()) :: {:ok, pid()} | {:error, :not_found}
+  def service(%AgentRef{scope_id: scope_id, agent_id: agent_id}, key) do
+    Registry.lookup(@name, {:service, scope_id, agent_id, key}) |> first()
   end
 
   @doc "Returns the root agent reference registered for a scope."

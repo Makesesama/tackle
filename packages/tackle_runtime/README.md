@@ -143,6 +143,10 @@ subtree is still starting, after the backend process: a service's `init/1` may
 call the running agent (for example to subscribe before its first turn) but
 must not call the agent's supervisors.
 
+A service that others need to find can register under
+`Tackle.Runtime.Registry.service_name(agent_ref, key)`; `service/2` then
+answers whether it runs for that agent, without anyone holding its pid.
+
 Services act on their agent through the public runtime API. For example,
 `Tackle.Runtime.cancel_tool_call/3` stops one tool call of the agent's active
 turn through the backend's `:cancel_tool_call` operation, so the agent receives

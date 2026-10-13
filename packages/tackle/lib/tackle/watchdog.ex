@@ -43,9 +43,11 @@ defmodule Tackle.Watchdog do
   alias Tackle.Lib.{Event, Usage}
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
+  alias Tackle.Runtime.Registry
   alias Tackle.Watchdog.Digest
 
   @tool_name "bash"
+  @stop_prefix "Command stopped by watchdog after "
   @verdict "verdict"
   @stop_verdicts %{
     "waiting_for_input" => "likely waiting for interactive input",
@@ -73,7 +75,45 @@ defmodule Tackle.Watchdog do
   session's `:provider_options`).
   """
   @spec start_link([option()]) :: GenServer.on_start()
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def start_link(opts) do
+    agent_ref = Keyword.fetch!(opts, :agent_ref)
+    GenServer.start_link(__MODULE__, opts, name: Registry.service_name(agent_ref, __MODULE__))
+  end
+
+  @doc "Whether a watchdog is currently running for `agent_ref`."
+  @spec running?(AgentRef.t()) :: boolean()
+  def running?(%AgentRef{} = agent_ref),
+    do: match?({:ok, _pid}, Registry.service(agent_ref, __MODULE__))
+
+  @doc """
+  Whether the watchdog watches a tool call with this name and arguments.
+
+  Only `bash` calls are watched, and only without an explicit `timeout`: a
+  timeout already says how long the command may run.
+  """
+  @spec watches?(String.t() | nil, term()) :: boolean()
+  def watches?(@tool_name, arguments) when is_map(arguments) do
+    is_binary(argument(arguments, "command", :command)) and
+      is_nil(argument(arguments, "timeout", :timeout))
+  end
+
+  def watches?(_name, _arguments), do: false
+
+  @doc """
+  Whether a tool error reports a command stopped by the watchdog.
+
+  The stop message is the last line of the stopped command's error output.
+  """
+  @spec stopped?(term()) :: boolean()
+  def stopped?(text) when is_binary(text) do
+    text
+    |> String.trim_trailing()
+    |> String.split("\n")
+    |> List.last()
+    |> String.starts_with?(@stop_prefix)
+  end
+
+  def stopped?(_text), do: false
 
   @doc "The question asked of the decision model about one running command."
   @spec question() :: Question.t()
@@ -183,16 +223,13 @@ defmodule Tackle.Watchdog do
 
   # ── Tracking ──────────────────────────────────────────────────────────
 
-  defp observe(%Event{type: :tool_start, data: %{name: @tool_name} = data}, state) do
+  defp observe(%Event{type: :tool_start, data: %{name: name} = data}, state) do
     arguments = Map.get(data, :arguments) || %{}
+    id = Map.get(data, :tool_call_id)
 
-    case {Map.get(data, :tool_call_id), argument(arguments, "command", :command)} do
-      {id, command} when is_binary(id) and is_binary(command) ->
-        if explicit_timeout?(arguments), do: state, else: track(state, id, command)
-
-      _other ->
-        state
-    end
+    if is_binary(id) and watches?(name, arguments),
+      do: track(state, id, argument(arguments, "command", :command)),
+      else: state
   end
 
   defp observe(%Event{type: :tool_progress, data: %{tool_call_id: id, delta: delta}}, state)
@@ -218,14 +255,10 @@ defmodule Tackle.Watchdog do
     %{state | calls: Map.put(state.calls, id, call)}
   end
 
-  defp explicit_timeout?(arguments), do: not is_nil(argument(arguments, "timeout", :timeout))
-
   # Provider arguments are decoded JSON with string keys; accept atom keys from
   # hosts that build calls by hand.
-  defp argument(arguments, key, atom_key) when is_map(arguments),
+  defp argument(arguments, key, atom_key),
     do: Map.get(arguments, key, Map.get(arguments, atom_key))
-
-  defp argument(_arguments, _key, _atom_key), do: nil
 
   # ── Checks ────────────────────────────────────────────────────────────
 
@@ -335,7 +368,8 @@ defmodule Tackle.Watchdog do
   @doc false
   @spec stop_message(Digest.t(), String.t(), number(), integer()) :: String.t()
   def stop_message(%Digest{} = digest, choice, probability, now \\ now()) do
-    "Command stopped by watchdog after #{format_duration(Digest.elapsed_ms(digest, now))}: " <>
+    @stop_prefix <>
+      "#{format_duration(Digest.elapsed_ms(digest, now))}: " <>
       "#{Map.fetch!(@stop_verdicts, choice)} (p=#{format_probability(probability)}). " <>
       "If this is expected to run long, re-run it with an explicit timeout or in the background."
   end

@@ -63,6 +63,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           tool_arguments: term(),
           model: String.t() | nil,
           tool_status: atom() | nil,
+          tool_watched?: boolean(),
           tool_elapsed_ms: non_neg_integer() | nil,
           tool_group: [t()] | nil,
           subagent_work: String.t() | nil,
@@ -92,6 +93,7 @@ defmodule Tackle.CLI.TUI.MessageView do
     :subagent_output,
     :prose_width,
     final?: false,
+    tool_watched?: false,
     style: %Style{},
     collapsed?: false
   ]
@@ -200,7 +202,9 @@ defmodule Tackle.CLI.TUI.MessageView do
           state.compactions |> Enum.find(&(&1.id == id)) |> compaction_entry()
 
         {%{kind: :tool} = item, _index} ->
-          tool_entry(item, Map.get(item, :timeline_id, "tool:#{tool_id(item)}"))
+          item
+          |> Map.put(:watched?, watched?(state, item))
+          |> tool_entry(Map.get(item, :timeline_id, "tool:#{tool_id(item)}"))
       end)
 
     queued_entries =
@@ -289,6 +293,13 @@ defmodule Tackle.CLI.TUI.MessageView do
       collapsed?: is_binary(summary),
       style: if(data.status == :failed, do: Theme.style(:error), else: Theme.style(:accent_soft))
     )
+  end
+
+  # A live call is watched when the session runs a watchdog and the call is one
+  # it tracks; settled history never shows the marker.
+  defp watched?(state, item) do
+    Map.get(state, :watchdog?, false) and
+      Tackle.Watchdog.watches?(value(item, :name), value(item, :arguments))
   end
 
   defp live_text_id(:thinking, 0), do: "streaming:thinking"
@@ -776,6 +787,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       tool_arguments: arguments,
       model: value(tool, :model),
       tool_status: status,
+      tool_watched?: value(tool, :watched?) == true,
       tool_elapsed_ms: value(tool, :elapsed_ms),
       subagent_work: value(tool, :subagent_work),
       workflow_progress: value(tool, :workflow),
@@ -832,6 +844,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       tool_arguments: Keyword.get(opts, :tool_arguments),
       model: Keyword.get(opts, :model),
       tool_status: Keyword.get(opts, :tool_status),
+      tool_watched?: Keyword.get(opts, :tool_watched?, false),
       tool_elapsed_ms: Keyword.get(opts, :tool_elapsed_ms),
       tool_group: Keyword.get(opts, :tool_group),
       subagent_work: Keyword.get(opts, :subagent_work),

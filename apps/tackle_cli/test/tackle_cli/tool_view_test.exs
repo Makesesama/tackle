@@ -995,6 +995,70 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     entry
   end
 
+  describe "command watchdog" do
+    test "a running bash call the watchdog tracks shows the watched marker" do
+      watched = live_tool(%{"command" => "while true; do echo tick; sleep 1; done"}, true)
+      assert watched.tool_watched?
+      assert text(ToolView.render(watched, 100)) =~ "◉ running  bash  while true"
+
+      unwatched = live_tool(%{"command" => "make"}, false)
+      refute unwatched.tool_watched?
+      assert text(ToolView.render(unwatched, 100)) =~ "● running  bash  make"
+
+      # An explicit timeout means the watchdog leaves the call alone.
+      timed = live_tool(%{"command" => "make", "timeout" => 30}, true)
+      refute timed.tool_watched?
+      assert text(ToolView.render(timed, 100)) =~ "● running  bash  make"
+    end
+
+    test "a call the watchdog stopped shows the stopped marker, also from history" do
+      message =
+        "Error: tick\ntick\nCommand stopped by watchdog after 13s: likely infinite loop " <>
+          "(p=0.93). If this is expected to run long, re-run it with an explicit timeout " <>
+          "or in the background."
+
+      [stopped] =
+        settled([
+          Message.assistant(
+            tool_calls: [%{id: "w", name: "bash", arguments: %{"command" => "yes"}}]
+          ),
+          Message.tool_result("w", "bash", message)
+        ])
+
+      assert stopped.tool_status == :failed
+      output = text(ToolView.render(stopped, 100))
+      assert output =~ "⊘ stopped  bash  yes"
+      refute output =~ "failed"
+
+      [failed] =
+        settled([
+          Message.assistant(
+            tool_calls: [%{id: "f", name: "bash", arguments: %{"command" => "false"}}]
+          ),
+          Message.tool_result("f", "bash", "Error: Command exited with code 1")
+        ])
+
+      assert text(ToolView.render(failed, 100)) =~ "✗ failed  bash  false"
+    end
+  end
+
+  defp live_tool(arguments, watchdog?) do
+    tool = %{kind: :tool, id: "live", name: "bash", arguments: arguments, status: :running}
+
+    [entry] =
+      MessageView.section_entries(
+        %{
+          stream: %{timeline: [tool]},
+          thinking_expanded?: false,
+          compactions: [],
+          watchdog?: watchdog?
+        },
+        :turn
+      )
+
+    entry
+  end
+
   defp settled(messages),
     do:
       MessageView.section_entries(

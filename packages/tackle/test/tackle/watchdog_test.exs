@@ -6,6 +6,8 @@ defmodule Tackle.WatchdogTest do
 
   alias Tackle.Lib.Decision.{Answer, Result}
   alias Tackle.Runtime.Registry
+  alias Tackle.Watchdog
+  alias Tackle.Watchdog.Digest
 
   @judge :tackle_watchdog_test_judge
 
@@ -237,6 +239,36 @@ defmodule Tackle.WatchdogTest do
   test "agents without a watchdog config run no services" do
     scope = start_scope()
     assert Registry.service_task_supervisor(scope.root_agent_ref) == {:error, :not_found}
+    refute Watchdog.running?(scope.root_agent_ref)
+  end
+
+  test "running?/1 follows the watchdog process" do
+    scope = start_watched_scope()
+    assert Watchdog.running?(scope.root_agent_ref)
+
+    Tackle.Runtime.stop_scope(scope.scope_ref)
+    refute Watchdog.running?(scope.root_agent_ref)
+  end
+
+  test "watches?/2 selects bash calls without an explicit timeout" do
+    assert Watchdog.watches?("bash", %{"command" => "make"})
+    assert Watchdog.watches?("bash", %{command: "make"})
+    assert Watchdog.watches?("bash", %{"command" => "make", "timeout" => nil})
+    refute Watchdog.watches?("bash", %{"command" => "make", "timeout" => 30})
+    refute Watchdog.watches?("bash", %{})
+    refute Watchdog.watches?("bash", "{\"command\": \"make\"}")
+    refute Watchdog.watches?("read", %{"command" => "make"})
+  end
+
+  test "stopped?/1 recognizes the stop message as the last line of an error" do
+    digest = Digest.new("yes", 0)
+    message = Watchdog.stop_message(digest, "infinite_loop", 0.93, 61_000)
+
+    assert message =~ "after 1m01s: likely infinite loop (p=0.93)"
+    assert Watchdog.stopped?("Error: y\ny\n" <> message <> "\n")
+    refute Watchdog.stopped?(message <> "\nmore output")
+    refute Watchdog.stopped?("Error: Command aborted")
+    refute Watchdog.stopped?(nil)
   end
 
   test "delegated children get their own watchdog" do
@@ -303,17 +335,10 @@ defmodule Tackle.WatchdogTest do
   end
 
   defp watchdog_pid(agent_ref) do
-    with {:ok, task_supervisor} <- Registry.service_task_supervisor(agent_ref),
-         {:parent, service_supervisor} <- Process.info(task_supervisor, :parent) do
-      Enum.find_value(Supervisor.which_children(service_supervisor), fn
-        {Tackle.Watchdog, pid, _type, _modules} when is_pid(pid) -> pid
-        _child -> nil
-      end)
-    else
-      _missing -> nil
+    case Registry.service(agent_ref, Watchdog) do
+      {:ok, pid} -> pid
+      {:error, :not_found} -> nil
     end
-  catch
-    :exit, _reason -> nil
   end
 
   defp wait_for(fun, timeout \\ 2_000) do

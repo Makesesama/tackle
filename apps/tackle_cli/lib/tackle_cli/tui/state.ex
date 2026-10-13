@@ -117,6 +117,7 @@ defmodule Tackle.CLI.TUI.State do
           slash_commands: SlashCommands.t(),
           subagent_selected: String.t() | nil,
           show_subagent_sidebar?: boolean(),
+          watchdog?: boolean(),
           prose_width: pos_integer() | nil,
           selected_entry: String.t() | nil,
           browse_page:
@@ -203,6 +204,9 @@ defmodule Tackle.CLI.TUI.State do
             slash_commands: %SlashCommands{},
             subagent_selected: nil,
             show_subagent_sidebar?: true,
+            # Whether the session's command watchdog runs, so running bash
+            # cards can show that they are watched.
+            watchdog?: false,
             prose_width: nil,
             selected_entry: nil,
             browse_page: :transcript,
@@ -290,6 +294,7 @@ defmodule Tackle.CLI.TUI.State do
           Keyword.get(opts, :usage_timeline_loader, &__MODULE__.default_usage_timeline_loader/2),
         stream: %Stream{coalesce?: is_nil(Keyword.get(opts, :test_mode))},
         show_subagent_sidebar?: sidebar?,
+        watchdog?: watchdog_running?(agent_ref),
         size: {width, height},
         header_image: Keyword.get(opts, :header_image),
         conversation: Viewport.new_conversation(width, height)
@@ -385,6 +390,7 @@ defmodule Tackle.CLI.TUI.State do
       state
       | agent_ref: scope.root_agent_ref,
         agent_monitor: monitor,
+        watchdog?: watchdog_running?(scope.root_agent_ref),
         scope_ref: scope.scope_ref,
         session_id: snapshot.session_id,
         session_title: snapshot.session_title,
@@ -538,4 +544,10 @@ defmodule Tackle.CLI.TUI.State do
       {:error, _reason} -> {80, 24}
     end
   end
+
+  # Frontends and tests may adopt scopes without a root agent reference.
+  defp watchdog_running?(%Tackle.Runtime.AgentRef{} = agent_ref),
+    do: Tackle.Watchdog.running?(agent_ref)
+
+  defp watchdog_running?(_agent_ref), do: false
 end

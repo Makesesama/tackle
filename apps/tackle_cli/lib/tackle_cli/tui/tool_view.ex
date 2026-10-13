@@ -20,6 +20,11 @@ defmodule Tackle.CLI.TUI.ToolView do
   Details show the full graph followed by numbered script and result.
   Unknown tools retain a generic source fallback.
 
+  Bash calls the session's command watchdog (`Tackle.Watchdog`) is watching
+  show `◉` instead of the running dot; a call it stopped shows `⊘ stopped`
+  in the warning tone instead of `✗ failed`. The stop is recognized from the
+  watchdog's message in the error, so it survives a resume.
+
   Edit previews compare the submitted replacement strings, never files on disk.
   They are not authoritative file diffs; line numbers are relative to each
   replacement. `similar` matches the lines in Rust and marks the tokens that
@@ -657,11 +662,12 @@ defmodule Tackle.CLI.TUI.ToolView do
     name = entry.tool_name || "unknown"
     target = target(name, args)
     status = entry.tool_status
+    shown = watchdog_status(entry)
 
     state =
       if status == :completed,
         do: [],
-        else: [MessageView.span(status_text(status) <> "  ", status_style(status))]
+        else: [MessageView.span(status_text(shown) <> "  ", status_style(shown))]
 
     heading =
       if target == "" do
@@ -682,11 +688,20 @@ defmodule Tackle.CLI.TUI.ToolView do
 
     [
       MessageView.row(
-        [MessageView.span(marker(status), marker_style(status))] ++
+        [MessageView.span(marker(shown), marker_style(shown))] ++
           state ++ heading ++ summary
       )
     ]
   end
+
+  # The watchdog's view of a bash call refines the plain execution status.
+  defp watchdog_status(%{tool_status: :running, tool_watched?: true}), do: :watched
+
+  defp watchdog_status(%{tool_name: "bash", tool_status: :failed, tool_output: output}) do
+    if Tackle.Watchdog.stopped?(output), do: :stopped, else: :failed
+  end
+
+  defp watchdog_status(%{tool_status: status}), do: status
 
   # Commands are often paragraphs long; reserve bold emphasis for file targets.
   defp target_style("bash"), do: Theme.style(:muted)
@@ -1229,12 +1244,16 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp marker(:preparing), do: "◐ "
   defp marker(:running), do: "● "
+  defp marker(:watched), do: "◉ "
+  defp marker(:stopped), do: "⊘ "
   defp marker(:failed), do: "✗ "
   defp marker(_), do: "  "
 
   defp marker_style(:failed), do: Theme.style(:error)
   defp marker_style(:preparing), do: Theme.style(:accent_soft)
   defp marker_style(:running), do: Theme.style(:accent_soft)
+  defp marker_style(:watched), do: Theme.style(:accent_soft)
+  defp marker_style(:stopped), do: Theme.style(:warning)
   defp marker_style(:completed), do: Theme.style(:subtle)
   defp marker_style(_), do: Theme.style(:muted)
 
@@ -1253,12 +1272,16 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp status_text(:preparing), do: "preparing"
   defp status_text(:running), do: "running"
+  defp status_text(:watched), do: "running"
+  defp status_text(:stopped), do: "stopped"
   defp status_text(:failed), do: "failed"
   defp status_text(_), do: "requested"
 
   defp status_style(:preparing), do: Theme.style(:accent_soft)
   defp status_style(:failed), do: Theme.style(:error)
   defp status_style(:running), do: Theme.style(:accent_soft)
+  defp status_style(:watched), do: Theme.style(:accent_soft)
+  defp status_style(:stopped), do: Theme.style(:warning)
   defp status_style(_), do: Theme.style(:subtle)
 
   defp get(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))

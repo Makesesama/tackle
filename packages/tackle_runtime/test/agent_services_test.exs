@@ -178,6 +178,23 @@ defmodule Tackle.Runtime.AgentServicesTest do
     end
   end
 
+  test "named services are discoverable by agent reference while they run" do
+    agent_ref = %AgentRef{scope_id: "named-scope", agent_id: "named-agent"}
+    assert Registry.service(agent_ref, :probe) == {:error, :not_found}
+
+    {:ok, pid} =
+      Elixir.Agent.start(fn -> :ok end, name: Registry.service_name(agent_ref, :probe))
+
+    assert Registry.service(agent_ref, :probe) == {:ok, pid}
+    assert Registry.service(agent_ref, :other) == {:error, :not_found}
+
+    other_agent = %{agent_ref | agent_id: "other-agent"}
+    assert Registry.service(other_agent, :probe) == {:error, :not_found}
+
+    Elixir.Agent.stop(pid)
+    assert Registry.service(agent_ref, :probe) == {:error, :not_found}
+  end
+
   test "agents without services start no service supervisor" do
     for {backend, services} <- [{Backend, :none}, {PlainBackend, :one}] do
       scope = start_scope(services, backend)
