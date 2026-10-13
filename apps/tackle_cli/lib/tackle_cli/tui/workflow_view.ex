@@ -4,7 +4,8 @@ defmodule Tackle.CLI.TUI.WorkflowView do
 
   Stages read top to bottom, joined by `│`. A standalone run is one node row;
   overlapping runs and `tackle.parallel` batches open a branch (`┬`) with one
-  row per item (`├`/`└`):
+  row per item (`├`/`└`). A `tackle.classify` call is one `◆` node with its
+  label (or `classify`) and, once answered, each question's answer:
 
       ✓ scout  12s  Map the code paths
       │
@@ -13,6 +14,8 @@ defmodule Tackle.CLI.TUI.WorkflowView do
       ├ ● reviewer  14s  Review PR #13 · read lib/foo.ex
       └ ○ 1 queued
       │
+      ◆ review gate  1s  verdict revise 82% · tests no 75%
+      │
       ● worker  4s  Fix the findings
       ▸ phase two
 
@@ -20,7 +23,8 @@ defmodule Tackle.CLI.TUI.WorkflowView do
   preview fits a row budget: older stages collapse into one `⋯ N earlier steps`
   row and a large batch lists its running and failed items while counting the
   finished and queued ones. Details draw every stage, item, and kept log line.
-  `chain/1` is the one-line form for a settled card: `✓ scout → ✓ reviewer ×3`.
+  `chain/1` is the one-line form for a settled card:
+  `✓ scout → ✓ reviewer ×3 → ◆ gate revise`.
   """
 
   alias Tackle.CLI.TUI.{MessageView, Theme, WorkflowProgress}
@@ -61,27 +65,60 @@ defmodule Tackle.CLI.TUI.WorkflowView do
     omitted = if model.omitted > 0, do: ["⋯"], else: []
 
     links =
-      Enum.map(model.stages, fn stage ->
-        runs = stage |> stage_runs(model) |> Enum.reject(&is_nil/1)
-        failed = failed_items(stage)
-        profiles = runs |> Enum.map(&profile/1) |> Enum.uniq()
-        count = length(runs) + failed
+      Enum.map(model.stages, fn
+        %{kind: :decision, id: id} ->
+          decision_link(model.decisions[id])
 
-        name =
-          case profiles do
-            [one] -> one
-            [] -> "item"
-            many -> Enum.join(many, "+")
-          end
-
-        glyph(stage_status(runs, failed)) <>
-          " " <> name <> if(count > 1, do: " ×#{count}", else: "")
+        stage ->
+          run_link(stage, model)
       end)
 
     Enum.join(omitted ++ links, " → ")
   end
 
+  defp run_link(stage, model) do
+    runs = stage |> stage_runs(model) |> Enum.reject(&is_nil/1)
+    failed = failed_items(stage)
+    profiles = runs |> Enum.map(&profile/1) |> Enum.uniq()
+    count = length(runs) + failed
+
+    name =
+      case profiles do
+        [one] -> one
+        [] -> "item"
+        many -> Enum.join(many, "+")
+      end
+
+    glyph(stage_status(runs, failed)) <>
+      " " <> name <> if(count > 1, do: " ×#{count}", else: "")
+  end
+
+  # A settled decision with one answer names it, so the chain shows which way
+  # the workflow went.
+  defp decision_link(nil), do: "◆ classify"
+
+  defp decision_link(decision) do
+    answer =
+      case decision do
+        %{status: :completed, answers: answers} when map_size(answers) == 1 ->
+          [{name, answer}] = Map.to_list(answers)
+          answer_value(answer, question(decision, name))
+
+        _other ->
+          nil
+      end
+
+    glyph = if decision.status == :completed, do: "◆", else: glyph(decision.status)
+
+    MessageView.sanitize(
+      glyph <> " " <> decision_name(decision) <> if(answer, do: " " <> answer, else: "")
+    )
+  end
+
   # Stages ------------------------------------------------------------------------
+
+  defp stage_rows(%{kind: :decision, id: id}, model, _mode),
+    do: [decision_node(model.decisions[id])]
 
   defp stage_rows(%{kind: :runs, runs: [id]}, model, _mode), do: [run_node(model.runs[id])]
 
@@ -186,6 +223,118 @@ defmodule Tackle.CLI.TUI.WorkflowView do
     |> MessageView.row()
   end
 
+  defp decision_node(nil), do: MessageView.row([span("◆ ", :muted), span("classify", :muted)])
+
+  defp decision_node(decision) do
+    status = decision.status
+    glyph = if status == :completed, do: "◆", else: glyph(status)
+
+    [
+      span(glyph <> " ", glyph_style(status)),
+      span(decision_name(decision), Theme.bold(Theme.style(:text))),
+      span("  " <> elapsed(decision.elapsed_ms) <> outcome(decision), :muted)
+    ]
+    |> Kernel.++(decision_spans(decision))
+    |> MessageView.row()
+  end
+
+  # Asking (or cut short): what is asked. Answered: each answer. Failed: why.
+  defp decision_spans(%{status: status, questions: [_ | _] = questions})
+       when status in [:running, :ended],
+       do: [span("  " <> Enum.map_join(questions, ", ", &question_name/1), :subtle)]
+
+  defp decision_spans(%{status: :completed, answers: answers} = decision)
+       when is_map(answers) and map_size(answers) > 0 do
+    text =
+      answers
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map_join(" · ", fn {name, answer} ->
+        case answer_value(answer, question(decision, name)) do
+          nil -> to_string(name)
+          value -> "#{name} #{value}"
+        end
+      end)
+
+    [span("  " <> text, :accent_soft)]
+  end
+
+  defp decision_spans(%{status: :failed, text: text}) when is_binary(text) and text != "",
+    do: [span("  " <> first_line(text), :muted)]
+
+  defp decision_spans(_decision), do: []
+
+  defp decision_name(%{label: label}) when is_binary(label) and label != "",
+    do: first_line(label)
+
+  defp decision_name(_decision), do: "classify"
+
+  defp question(%{questions: questions}, name) when is_list(questions),
+    do: Enum.find(questions, &(field(&1, :name) == name))
+
+  defp question(_decision, _name), do: nil
+
+  defp question_name(question), do: to_string(field(question, :name) || "?")
+
+  # One answer as text: the choice, yes/no, or the score's level, each with its
+  # probability when the model reported one.
+  defp answer_value(answer, question) when is_map(answer) do
+    case field(answer, :type) do
+      "choice" ->
+        with_percent(text_value(field(answer, :choice)), field(answer, :probability))
+
+      "noul" ->
+        case field(answer, :noul) do
+          p when is_number(p) and p >= 0.5 -> with_percent("yes", p)
+          p when is_number(p) -> with_percent("no", 1 - p)
+          _other -> nil
+        end
+
+      "score" ->
+        score_value(field(answer, :score), field(question, :options))
+
+      _other ->
+        nil
+    end
+  end
+
+  defp answer_value(_answer, _question), do: nil
+
+  # Scores are 1-based; a whole score names its level, a weighted one shows
+  # where it falls on the scale.
+  defp score_value(score, levels) when is_number(score) and is_list(levels) and levels != [] do
+    index = round(score)
+
+    if score == index and index in 1..length(levels),
+      do: text_value(Enum.at(levels, index - 1)) || format_number(score),
+      else: "#{format_number(score)}/#{length(levels)}"
+  end
+
+  defp score_value(score, _levels) when is_number(score), do: format_number(score)
+  defp score_value(_score, _levels), do: nil
+
+  defp with_percent(nil, _probability), do: nil
+
+  # Adapters should report probabilities in 0..1; clamp so a stray value never
+  # reads as "120%".
+  defp with_percent(value, probability) when is_number(probability),
+    do: "#{value} #{round(min(max(probability, 0), 1) * 100)}%"
+
+  defp with_percent(value, _probability), do: value
+
+  defp text_value(value) when is_binary(value), do: first_line(value)
+  defp text_value(value) when is_number(value), do: format_number(value)
+  defp text_value(_value), do: nil
+
+  defp format_number(number) when is_integer(number), do: Integer.to_string(number)
+
+  defp format_number(number),
+    do: :erlang.float_to_binary(number * 1.0, decimals: 1) |> String.trim_trailing(".0")
+
+  defp first_line(text), do: text |> String.split("\n", trim: true) |> List.first("")
+
+  defp field(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+  defp field(_other, _key), do: nil
+
   defp prompt_spans(%{prompt: prompt}) when is_binary(prompt) and prompt != "" do
     case prompt |> String.split("\n", trim: true) |> Enum.map(&String.trim/1) do
       [first | _rest] when first != "" -> [span("  " <> first, :subtle)]
@@ -281,6 +430,7 @@ defmodule Tackle.CLI.TUI.WorkflowView do
   # Helpers -----------------------------------------------------------------------
 
   defp stage_runs(%{kind: :runs, runs: ids}, model), do: Enum.map(ids, &model.runs[&1])
+  defp stage_runs(%{kind: :decision}, _model), do: []
 
   defp stage_runs(%{items: items}, model),
     do: for({_index, {:run, id}} <- Enum.sort(items), do: model.runs[id])

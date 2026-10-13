@@ -136,8 +136,10 @@ defmodule Tackle.Workflow.API do
   `state` is a string or a table of strings, numbers, booleans, and tables.
   `questions` maps names to question specs, and the result's `answers` maps
   the same names to answers; `Tackle.Workflow.Classify` documents both. `opts`
-  is an optional table whose only key is `model`, a `"provider/model"` decision
-  model reference. Without it the host's default decision model answers.
+  is an optional table with two keys: `model`, a `"provider/model"` decision
+  model reference, and `label`, a short name for the call in the host's
+  progress view (`Tackle.Workflow.Progress`). Without `model` the host's
+  default decision model answers.
 
   The host grants decision models with `Tackle.Workflow.run/3`'s `:decisions`
   option (`Tackle.Workflow.Decisions`); a script can only select a model that
@@ -185,7 +187,7 @@ defmodule Tackle.Workflow.API do
   @parallel_helpers :parallel_helpers
   @parallel_options ["limit"]
   @spawn_options ["model"]
-  @classify_options ["model"]
+  @classify_options ["model", "label"]
 
   # Helpers `tackle.parallel/2,3` calls inside the VM. The item and its index
   # are read in Lua so the callback receives the value the script passed in:
@@ -608,7 +610,7 @@ defmodule Tackle.Workflow.API do
 
   defp run_classify(state, input, questions, opts) do
     decisions = decisions!(state)
-    model_ref = classify_model!(state, opts)
+    %{model: model_ref, label: label} = classify_opts!(state, opts)
     data = classify_arg!(Classify.state(decode_value(state, input)))
     questions = classify_arg!(Classify.questions(decode_value(state, questions)))
     %Selection{} = selection = select_decision!(decisions, model_ref)
@@ -625,6 +627,10 @@ defmodule Tackle.Workflow.API do
       classify_error!(budget_exhausted(meter))
     end
 
+    on_event = observer(state)
+    id = Progress.classify_id()
+    Progress.emit(on_event, Progress.classify_started(id, label, selection, questions))
+
     table =
       case Decisions.decide(decisions, selection, request) do
         {:ok, result} ->
@@ -635,6 +641,8 @@ defmodule Tackle.Workflow.API do
         {:error, reason} ->
           Classify.failure_table(reason)
       end
+
+    Progress.emit(on_event, Progress.classify_finished(id, label, table))
 
     {encoded, state} = Lua.encode!(state, table)
     {encoded, state}
@@ -651,9 +659,9 @@ defmodule Tackle.Workflow.API do
     end
   end
 
-  defp classify_model!(_state, nil), do: nil
+  defp classify_opts!(_state, nil), do: %{model: nil, label: nil}
 
-  defp classify_model!(state, opts) do
+  defp classify_opts!(state, opts) do
     unless is_table(opts) do
       classify_error!("classify options must be a table, got #{type_name(opts)}")
     end
@@ -665,15 +673,21 @@ defmodule Tackle.Workflow.API do
       unknown -> classify_error!("unknown classify options: #{format_keys(unknown)}")
     end
 
-    case Map.fetch(options, "model") do
+    %{model: classify_option!(options, "model"), label: classify_option!(options, "label")}
+  end
+
+  defp classify_option!(options, key) do
+    case Map.fetch(options, key) do
       :error ->
         nil
 
-      {:ok, model} when is_binary(model) and model != "" ->
-        model
+      {:ok, value} when is_binary(value) and value != "" ->
+        value
 
-      {:ok, model} ->
-        classify_error!("classify option model must be a non-empty string, got #{inspect(model)}")
+      {:ok, value} ->
+        classify_error!(
+          "classify option #{key} must be a non-empty string, got #{inspect(value)}"
+        )
     end
   end
 

@@ -198,7 +198,12 @@ Questions are `choice`, `noul` (yes/no), or `score`; `Tackle.Workflow.Classify`
 documents their specs and answer tables. The result is `{ok, status, model,
 tokens, answers}`; a model that cannot answer returns `ok = false` with the
 reason in `text`, and argument errors, an unknown model, or a session without
-decision models raise.
+decision models raise. `opts` may set `model` (below) and `label`, a short
+name for the call in the host's progress view:
+
+```lua
+local c = tackle.classify(review.text, questions, {label = "review gate"})
+```
 
 The host grants decision models with the `:decisions` option, a
 `Tackle.Workflow.Decisions` grant: trusted adapter modules, the options passed
@@ -237,6 +242,11 @@ Tackle.Workflow.run(handle, script, on_event: fn event -> send(view, {:workflow,
 * `:run_event` — one event from that run's child agent, such as a tool call.
 * `:parallel_started` / `:parallel_finished` / `:item_failed` — the bounds of a
   batch, and items that ended without a run.
+* `:classify_started` / `:classify_finished` — a `tackle.classify` call asked
+  its decision model (with its `label`, model, and questions), and settled
+  with the answers the script receives, probabilities included, or the
+  failure reason. Both come from the workflow worker, in that order; a call
+  that raises reports neither.
 * `:log` — a `tackle.log/1` message, in order with the run events.
 
 Events come from more than one process, so a run's child events can arrive
@@ -248,7 +258,8 @@ and tool-call accounting).
 The CLI draws these events as a live flow chart in the `run_workflow` tool
 card: one node per run with its status, clock, and current activity, branches
 for overlapping runs and `tackle.parallel` batches (including queued and
-failed items), and the latest log line.
+failed items), one node per classification with its label and answers, and
+the latest log line.
 
 ## Running a workflow from an agent
 

@@ -16,6 +16,57 @@ defmodule Tackle.CLI.WorkflowProgressTest do
 
   defp child(id, event), do: %{kind: :run_event, run_id: id, profile: "scout", event: event}
 
+  @questions [
+    %{name: "quality", type: :score, options: ["poor", "fair", "good"]},
+    %{name: "tests", type: :noul, options: nil},
+    %{name: "verdict", type: :choice, options: ["approve", "revise"]}
+  ]
+
+  defp classify_started(id, label \\ nil, questions \\ @questions),
+    do: %{
+      kind: :classify_started,
+      id: id,
+      label: label,
+      model: "local/judge",
+      local: true,
+      questions: questions
+    }
+
+  defp classify_finished(id, answers),
+    do: %{
+      kind: :classify_finished,
+      id: id,
+      label: nil,
+      ok: true,
+      status: :ok,
+      tokens: 0,
+      answers: answers,
+      text: nil
+    }
+
+  defp classify_failed(id, text),
+    do: %{
+      kind: :classify_finished,
+      id: id,
+      label: nil,
+      ok: false,
+      status: :error,
+      tokens: 0,
+      answers: nil,
+      text: text
+    }
+
+  @answers %{
+    "verdict" => %{
+      "type" => "choice",
+      "choice" => "revise",
+      "probability" => 0.82,
+      "probabilities" => %{"approve" => 0.18, "revise" => 0.82}
+    },
+    "tests" => %{"type" => "noul", "noul" => 0.25, "probabilities" => %{}},
+    "quality" => %{"type" => "score", "score" => 2, "probabilities" => %{1 => 0.2, 2 => 0.8}}
+  }
+
   defp text(rows), do: Enum.map(rows, fn row -> Enum.map_join(row.spans, & &1.content) end)
 
   describe "projection" do
@@ -159,6 +210,142 @@ defmodule Tackle.CLI.WorkflowProgressTest do
       assert Map.has_key?(model.runs, "r205")
       assert length(model.logs) == 20
       assert List.last(model.logs) == "log 205"
+    end
+  end
+
+  describe "classifications" do
+    test "a classification is its own stage, from asked to answered" do
+      model =
+        apply_all([
+          started("a", "scout", "map"),
+          classify_started(1, "gate"),
+          finished("a"),
+          started("b", "worker", "fix")
+        ])
+
+      assert [%{kind: :runs, runs: ["a"]}, %{kind: :decision, id: 1}, %{kind: :runs, runs: ["b"]}] =
+               model.stages
+
+      assert %{status: :running, label: "gate", model: "local/judge"} = model.decisions[1]
+
+      answered = WorkflowProgress.apply(model, classify_finished(1, @answers), 2_500)
+
+      assert %{status: :completed, outcome: :ok, answers: @answers, elapsed_ms: 2_000} =
+               answered.decisions[1]
+
+      assert WorkflowProgress.counts(answered).total == 2
+    end
+
+    test "failures keep their reason; unknown or repeated events change nothing" do
+      model = apply_all([classify_started(1), classify_failed(1, "classification failed: :busy")])
+
+      assert %{status: :failed, outcome: :error, text: "classification failed: :busy"} =
+               model.decisions[1]
+
+      assert WorkflowProgress.apply(model, classify_finished(1, @answers), 0) === model
+      assert WorkflowProgress.apply(model, classify_finished(9, @answers), 0) === model
+      assert WorkflowProgress.apply(model, classify_started(1), 0) === model
+      assert WorkflowProgress.apply(model, %{kind: :classify_started}, 0) === model
+    end
+
+    test "clocks advance while asking, and settling ends an unanswered classification" do
+      model = apply_all([classify_started(1)])
+
+      assert WorkflowProgress.refresh(model, 3_400).decisions[1].elapsed_ms == 3_000
+      assert WorkflowProgress.refresh(model, 400) === model
+
+      settled = WorkflowProgress.settle(model, 1_000)
+      assert %{status: :ended, elapsed_ms: 1_000} = settled.decisions[1]
+      assert WorkflowProgress.apply(settled, classify_finished(1, @answers), 0) === settled
+    end
+
+    test "old classification stages are evicted with their decisions" do
+      model =
+        apply_all(
+          Enum.flat_map(1..201, fn n -> [classify_started(n), classify_finished(n, @answers)] end)
+        )
+
+      assert model.omitted == 1
+      assert length(model.stages) == 200
+      refute Map.has_key?(model.decisions, 1)
+      assert map_size(model.decisions) == 200
+    end
+
+    test "the node shows the questions while asking and the answers once answered" do
+      asking = apply_all([classify_started(1, "review gate")])
+
+      assert text(WorkflowView.rows(asking, 80, :preview)) == [
+               "● review gate  0s  quality, tests, verdict"
+             ]
+
+      answered = WorkflowProgress.apply(asking, classify_finished(1, @answers), 1_000)
+
+      assert text(WorkflowView.rows(answered, 80, :preview)) == [
+               "◆ review gate  1s  quality fair · tests no 75% · verdict revise 82%"
+             ]
+
+      failed =
+        apply_all([classify_started(2), classify_failed(2, "classification failed: :busy\nmore")])
+
+      assert text(WorkflowView.rows(failed, 80, :details)) == [
+               "✗ classify  0s  error  classification failed: :busy"
+             ]
+
+      assert text(WorkflowView.rows(WorkflowProgress.settle(asking, 0), 80, :details)) == [
+               "◌ review gate  0s  ended  quality, tests, verdict"
+             ]
+    end
+
+    test "scores between levels show their place on the scale" do
+      answers = %{"quality" => %{"type" => "score", "score" => 2.4, "probabilities" => %{}}}
+      questions = [%{name: "quality", type: :score, options: ["poor", "fair", "good"]}]
+      model = apply_all([classify_started(1, nil, questions), classify_finished(1, answers)])
+
+      assert text(WorkflowView.rows(model, 80, :details)) == ["◆ classify  0s  quality 2.4/3"]
+    end
+
+    test "string keys, stray probabilities, and malformed answers are drawn safely" do
+      questions = [
+        %{"name" => "a", "type" => "noul", "options" => nil},
+        %{"name" => "b", "type" => "choice", "options" => ["x", "y"]}
+      ]
+
+      answers = %{
+        "a" => %{"type" => "noul", "noul" => 1.2},
+        "b" => %{"type" => "choice", "choice" => %{"bad" => 1}, "probability" => 0.5},
+        "c" => %{"type" => "noul", "noul" => -0.1},
+        "d" => "not a table"
+      }
+
+      model =
+        apply_all([
+          %{"kind" => :classify_started, "id" => 1, "label" => "gate\nsecond line"},
+          %{"kind" => :classify_finished, "id" => 1, "ok" => true, "answers" => answers}
+        ])
+
+      model = %{model | decisions: Map.update!(model.decisions, 1, &%{&1 | questions: questions})}
+
+      assert text(WorkflowView.rows(model, 80, :details)) == [
+               "◆ gate  0s  a yes 100% · b · c no 100% · d"
+             ]
+    end
+
+    test "the chain names a single answer and otherwise the classification" do
+      verdict = Map.take(@answers, ["verdict"])
+
+      model =
+        apply_all([
+          started("a", "rev", "review"),
+          finished("a"),
+          classify_started(1, "gate"),
+          classify_finished(1, verdict),
+          classify_started(2),
+          classify_finished(2, @answers),
+          classify_started(3)
+        ])
+
+      assert WorkflowView.chain(model) ==
+               "✓ rev → ◆ gate revise 82% → ◆ classify → ● classify"
     end
   end
 

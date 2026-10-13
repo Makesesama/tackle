@@ -26,18 +26,34 @@ defmodule Tackle.Workflow.Progress do
     * `%{type: :item_failed, parallel: %{id: id, index: i}, status: status,
       text: text}` — a batch item ended without a run (`"callback_error"`,
       `"spawn_error"`, `"capacity"`, or `"unavailable"`);
+    * `%{type: :classify_started, id: id, label: text | nil, model: ref, local: boolean,
+      questions: [%{name: name, type: :choice | :noul | :score, options: [text] | nil}]}`
+      — a `tackle.classify` call is asking its decision model. `options` are
+      the choice names (sorted) or the score levels (lowest first), `nil` for
+      `noul`; `label` is the script's `label` option;
+    * `%{type: :classify_finished, id: id, label: text | nil, ok: boolean,
+      status: :ok | :error | :cancelled, tokens: n, answers: %{name => answer} | nil,
+      text: text | nil}` — the call settled. `answers` holds the same answer
+      tables the script receives (string keys, see `Tackle.Workflow.Classify`),
+      probabilities included; `text` is the failure reason. A call cut short
+      by the workflow's cancellation reports no settlement;
     * `%{type: :log, message: text}` — a `tackle.log/1` message.
 
   Events are emitted from whichever process observed them — the workflow
   worker for its own calls, the runtime for child events — so a run's
   `:run_event`s may arrive before its `:run_started`. Consumers should key runs
-  by `:run_id` and tolerate either order.
+  by `:run_id` and tolerate either order. A classification runs in the
+  workflow worker, so its `:classify_started` always precedes its
+  `:classify_finished`; match them by `:id`. A classification that raises
+  (bad arguments, an unknown model, a spent budget) reports nothing.
 
   Progress is presentation, never control: a callback that raises or exits is
   logged and ignored, so an observer can never fail the workflow. Callbacks run
   synchronously in the emitting process, so they should be quick — sending a
   message, as `Tackle.Workflow.Tool` does, is the intended shape.
   """
+
+  alias Tackle.Lib.Decision.{Question, Selection}
 
   require Logger
 
@@ -108,4 +124,48 @@ defmodule Tackle.Workflow.Progress do
   @doc "A fresh identifier for one `tackle.parallel` batch."
   @spec parallel_id() :: pos_integer()
   def parallel_id, do: System.unique_integer([:positive, :monotonic])
+
+  @doc "A fresh identifier for one `tackle.classify` call."
+  @spec classify_id() :: pos_integer()
+  def classify_id, do: System.unique_integer([:positive, :monotonic])
+
+  @doc "Builds a `:classify_started` event for a classification about to be asked."
+  @spec classify_started(pos_integer(), String.t() | nil, Selection.t(), [Question.t()]) ::
+          event()
+  def classify_started(id, label, %Selection{} = selection, questions) do
+    %{
+      type: :classify_started,
+      id: id,
+      label: label,
+      model: selection.ref,
+      local: selection.local,
+      questions: Enum.map(questions, &question/1)
+    }
+  end
+
+  @doc "Builds a `:classify_finished` event from the table returned to the script."
+  @spec classify_finished(pos_integer(), String.t() | nil, map()) :: event()
+  def classify_finished(id, label, %{"ok" => ok?, "status" => status} = table) do
+    %{
+      type: :classify_finished,
+      id: id,
+      label: label,
+      ok: ok?,
+      status: classify_status(status),
+      tokens: Map.get(table, "tokens", 0),
+      answers: Map.get(table, "answers"),
+      text: Map.get(table, "text")
+    }
+  end
+
+  defp question(%Question{name: name, type: type, criteria: criteria}),
+    do: %{name: name, type: type, options: options(type, criteria)}
+
+  defp options(:choice, criteria) when is_map(criteria), do: criteria |> Map.keys() |> Enum.sort()
+  defp options(:score, levels) when is_list(levels), do: levels
+  defp options(_type, _criteria), do: nil
+
+  defp classify_status("ok"), do: :ok
+  defp classify_status("cancelled"), do: :cancelled
+  defp classify_status(_error), do: :error
 end

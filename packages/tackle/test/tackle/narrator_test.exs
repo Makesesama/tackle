@@ -248,6 +248,20 @@ defmodule Tackle.NarratorTest do
       send_event(narrator, workflow(:run_finished, "wf-run", %{ok: true, status: :ok}))
       assert :sys.get_state(narrator).runs == %{}
 
+      # Classifications are not runs: they are drawn by the frontend, not narrated.
+      classify = %{kind: :classify_started, id: 1, tool_call_id: "wf-call", label: "gate"}
+      send_event(narrator, Event.new(:workflow_progress, classify))
+
+      send_event(
+        narrator,
+        Event.new(
+          :workflow_progress,
+          %{classify | kind: :classify_finished} |> Map.put(:ok, true)
+        )
+      )
+
+      assert :sys.get_state(narrator).runs == %{}
+
       # Runs the workflow never awaited end with its tool call.
       send_event(narrator, workflow(:run_started, "wf-other", %{prompt: "x"}))
       assert Map.has_key?(:sys.get_state(narrator).runs, "wf-other")

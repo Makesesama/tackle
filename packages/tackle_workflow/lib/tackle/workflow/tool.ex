@@ -96,7 +96,7 @@ defmodule Tackle.Workflow.Tool do
       "item in input order (the callback returns `profile, prompt, opts?`); `tackle.cancel(run, reason)` to cancel one run; " <>
       "`tackle.classify(state, questions, opts?)` to ask a small decision model typed questions " <>
       "(`choice`, `noul` yes/no, or `score`) about a string or table, returning `ok` and per-question " <>
-      "`answers` without spending an agent run; " <>
+      "`answers` without spending an agent run (`opts` may set `model` and a `label` shown in progress); " <>
       "`tackle.budget()` to read `used` tokens and, under a token budget, `limit` and `remaining`; and " <>
       "`tackle.log(message)` to report progress. The values the workflow returns are the tool " <>
       "result, one per line: a list table such as `{a, b}` gives one line per element, and " <>

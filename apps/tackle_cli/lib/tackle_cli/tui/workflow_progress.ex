@@ -17,7 +17,10 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
       standalone `tackle.spawn` run, several standalone runs that overlapped
       (a run started while the previous stage still had one running), or one
       `tackle.parallel` batch with its items by index, including items that
-      never got a run;
+      never got a run, or one `tackle.classify` call;
+    * `decisions` — every visible `tackle.classify` call by id: its label,
+      model, questions, status (`:running`, `:completed`, `:failed`, or
+      `:ended`), clock, and the answers or failure text once it settled;
     * `logs` — the latest `tackle.log` messages.
 
   Events come from different processes, so a run's child events may precede
@@ -49,9 +52,22 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
           optional(:narrated_at_ms) => integer() | nil,
           optional(:placed?) => boolean()
         }
+  @type decision :: %{
+          required(:id) => term(),
+          required(:status) => status(),
+          required(:started_at_ms) => integer(),
+          required(:elapsed_ms) => non_neg_integer(),
+          optional(:label) => String.t() | nil,
+          optional(:model) => String.t() | nil,
+          optional(:questions) => [map()],
+          optional(:outcome) => atom() | nil,
+          optional(:answers) => map() | nil,
+          optional(:text) => String.t() | nil
+        }
   @type item :: {:run, String.t()} | {:failed, String.t(), String.t() | nil}
   @type stage ::
           %{kind: :runs, runs: [String.t()]}
+          | %{kind: :decision, id: term()}
           | %{
               kind: :parallel,
               id: term(),
@@ -61,6 +77,7 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
             }
   @type t :: %{
           runs: %{String.t() => run()},
+          decisions: %{term() => decision()},
           stages: [stage()],
           logs: [String.t()],
           omitted: non_neg_integer(),
@@ -69,7 +86,7 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
 
   @doc "An empty projection."
   @spec new() :: t()
-  def new, do: %{runs: %{}, stages: [], logs: [], omitted: 0, settled?: false}
+  def new, do: %{runs: %{}, decisions: %{}, stages: [], logs: [], omitted: 0, settled?: false}
 
   @doc "Whether the projection has anything to draw."
   @spec started?(t() | nil) :: boolean()
@@ -94,6 +111,8 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
       :run_finished -> finished(model, data, now)
       :parallel_started -> parallel_started(model, data)
       :item_failed -> item_failed(model, data)
+      :classify_started -> classify_started(model, data, now)
+      :classify_finished -> classify_finished(model, data, now)
       :log -> log(model, value(data, :message))
       _other -> model
     end
@@ -139,14 +158,26 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
           entry
       end)
 
-    if runs == model.runs, do: model, else: %{model | runs: runs}
+    decisions =
+      Map.new(model.decisions, fn
+        {id, %{status: :running} = decision} ->
+          {id, Map.put(decision, :elapsed_ms, elapsed(decision, now))}
+
+        entry ->
+          entry
+      end)
+
+    if runs == model.runs and decisions == model.decisions,
+      do: model,
+      else: %{model | runs: runs, decisions: decisions}
   end
 
   @doc """
   Freezes the projection when the tool call ends.
 
-  Runs the workflow never awaited carry no observed outcome, so they become
-  `:ended` rather than a guessed success or failure. Later events are ignored.
+  Runs the workflow never awaited, and classifications cut short by its end,
+  carry no observed outcome, so they become `:ended` rather than a guessed
+  success or failure. Later events are ignored.
   """
   @spec settle(t(), integer()) :: t()
   def settle(model, now \\ System.monotonic_time(:millisecond)) do
@@ -159,7 +190,16 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
           entry
       end)
 
-    %{model | runs: runs, settled?: true}
+    decisions =
+      Map.new(model.decisions, fn
+        {id, %{status: :running} = decision} ->
+          {id, %{decision | status: :ended, elapsed_ms: elapsed(decision, now)}}
+
+        entry ->
+          entry
+      end)
+
+    %{model | runs: runs, decisions: decisions, settled?: true}
   end
 
   @doc "Run counts by status, for headers and summaries."
@@ -259,6 +299,50 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
     end
   end
 
+  # A classification runs in the workflow worker, so its start always precedes
+  # its end; an end without a known start belongs to an evicted stage.
+  defp classify_started(model, data, now) do
+    id = value(data, :id)
+
+    if is_nil(id) or is_map_key(model.decisions, id) do
+      model
+    else
+      decision = %{
+        id: id,
+        status: :running,
+        started_at_ms: now,
+        elapsed_ms: 0,
+        label: value(data, :label),
+        model: value(data, :model),
+        questions: List.wrap(value(data, :questions))
+      }
+
+      %{model | decisions: Map.put(model.decisions, id, decision)}
+      |> push_stage(%{kind: :decision, id: id})
+    end
+  end
+
+  defp classify_finished(model, data, now) do
+    id = value(data, :id)
+
+    case Map.get(model.decisions, id) do
+      %{status: :running} = decision ->
+        decision =
+          Map.merge(decision, %{
+            status: if(value(data, :ok) == true, do: :completed, else: :failed),
+            elapsed_ms: elapsed(decision, now),
+            outcome: value(data, :status),
+            answers: value(data, :answers),
+            text: value(data, :text)
+          })
+
+        %{model | decisions: Map.put(model.decisions, id, decision)}
+
+      _unknown_or_settled ->
+        model
+    end
+  end
+
   defp log(model, message) when is_binary(message),
     do: %{model | logs: Enum.take(model.logs ++ [message], -@max_logs)}
 
@@ -300,6 +384,14 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
 
     if length(model.stages) > @max_stages, do: evict_oldest(model), else: model
   end
+
+  defp evict_oldest(%{stages: [%{kind: :decision, id: id} | rest]} = model),
+    do: %{
+      model
+      | stages: rest,
+        decisions: Map.delete(model.decisions, id),
+        omitted: model.omitted + 1
+    }
 
   defp evict_oldest(%{stages: [oldest | rest]} = model) do
     ids = stage_run_ids(oldest)

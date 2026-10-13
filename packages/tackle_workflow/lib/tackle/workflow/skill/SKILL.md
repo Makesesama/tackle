@@ -40,7 +40,7 @@ All functions live on the global `tackle` table.
 | `tackle.await(run)` | Blocks until the run settles and returns `{ok, status, text}`. A failed run is returned, not raised, so check `ok`. Only an invalid handle raises. |
 | `tackle.parallel(items, fn, opts?)` | Runs one agent per item, keeping at most `opts.limit` in flight. `fn(item, index)` returns `profile, prompt[, opts]`. Returns one table per item in input order: `{index, ok, status, text}`. |
 | `tackle.cancel(run, reason?)` | Asks one run to stop. |
-| `tackle.classify(state, questions, opts?)` | Asks a small decision model typed questions about `state` (a string or table) and returns `{ok, status, model, tokens, answers}`. Much cheaper than a run, but it only judges what you pass it: it cannot read files or call tools. `opts` may only be `{model = "provider/model"}`; without it the session's default decision model answers. Raises on bad questions, an unknown model, or a session without decision models. |
+| `tackle.classify(state, questions, opts?)` | Asks a small decision model typed questions about `state` (a string or table) and returns `{ok, status, model, tokens, answers}`. Much cheaper than a run, but it only judges what you pass it: it cannot read files or call tools. `opts` may set `model = "provider/model"` (without it the session's default decision model answers) and `label`, a short name the user sees for this decision in the progress chart. Raises on bad questions, an unknown model, or a session without decision models. |
 | `tackle.budget()` | Returns `{used, limit, remaining}`: tokens all runs (and cloud classifications) of this workflow have used so far. `limit` and `remaining` are `nil` when the workflow has no token budget. |
 | `tackle.log(message)` | Shows a progress line to the user. |
 
@@ -161,7 +161,7 @@ if not review.ok then return "review failed: " .. review.text end
 local c = tackle.classify(review.text, {
   verdict = {type = "choice", instructions = "Does this review approve the change?",
              criteria = {approve = "No blocking findings", revise = "At least one blocking finding"}}
-})
+}, {label = "review gate"})
 local verdict = c.ok and c.answers.verdict or nil
 if verdict and verdict.choice == "approve" and (verdict.probability or 0) >= 0.8 then
   return "approved"

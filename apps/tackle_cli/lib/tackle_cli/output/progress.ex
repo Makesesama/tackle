@@ -123,6 +123,12 @@ defmodule Tackle.CLI.Output.Progress do
       :item_failed ->
         "Workflow item failed: #{value(data, :status)}"
 
+      :classify_started ->
+        "Classifying #{value(data, :label) || "with #{value(data, :model) || "decision model"}"}…"
+
+      :classify_finished ->
+        classified_label(data)
+
       :log ->
         value(data, :message)
 
@@ -146,6 +152,49 @@ defmodule Tackle.CLI.Output.Progress do
 
   defp activity_label(activity) when is_binary(activity) and activity != "", do: activity
   defp activity_label(_activity), do: nil
+
+  defp classified_label(data) do
+    label = one_line(value(data, :label))
+    answers = value(data, :answers)
+
+    if value(data, :ok) == true and is_map(answers) and map_size(answers) > 0 do
+      "Classified#{if label, do: " " <> label}: " <>
+        (answers |> Enum.sort() |> Enum.map_join(", ", fn {q, a} -> "#{q}=#{answer(a)}" end))
+    else
+      reason =
+        one_line(value(data, :text)) || "classification #{value(data, :status) || "failed"}"
+
+      if label, do: "#{label}: #{reason}", else: reason
+    end
+  end
+
+  defp answer(answer) when is_map(answer) do
+    case {value(answer, :type), value(answer, :choice), value(answer, :noul),
+          value(answer, :score)} do
+      {"choice", choice, _noul, _score} when is_binary(choice) ->
+        one_line(choice) || "?"
+
+      {"noul", _choice, noul, _score} when is_number(noul) ->
+        if noul >= 0.5, do: "yes", else: "no"
+
+      {"score", _choice, _noul, score} when is_number(score) ->
+        to_string(score)
+
+      _other ->
+        "?"
+    end
+  end
+
+  defp answer(_answer), do: "?"
+
+  defp one_line(text) when is_binary(text) do
+    case String.split(text, "\n", trim: true) do
+      [first | _rest] -> first
+      [] -> nil
+    end
+  end
+
+  defp one_line(_text), do: nil
 
   defp start_spinner(screen, width) do
     progress = %__MODULE__{screen: screen, spinner_id: make_ref(), width: width}

@@ -97,6 +97,52 @@ defmodule Tackle.CLI.Output.ProgressTest do
     assert Progress.event_label(Event.new(:workflow_progress, %{kind: :run_event})) == nil
   end
 
+  test "labels classifications by their label, answers, or failure" do
+    started = %{kind: :classify_started, label: nil, model: "local/judge"}
+
+    assert Progress.event_label(Event.new(:workflow_progress, started)) ==
+             "Classifying with local/judge…"
+
+    assert Progress.event_label(Event.new(:workflow_progress, %{started | label: "gate"})) ==
+             "Classifying gate…"
+
+    answers = %{
+      "verdict" => %{"type" => "choice", "choice" => "revise"},
+      "tests" => %{"type" => "noul", "noul" => 0.25},
+      "quality" => %{"type" => "score", "score" => 2}
+    }
+
+    finished = %{kind: :classify_finished, label: "gate", ok: true, status: :ok, answers: answers}
+
+    assert Progress.event_label(Event.new(:workflow_progress, finished)) ==
+             "Classified gate: quality=2, tests=no, verdict=revise"
+
+    assert Progress.event_label(Event.new(:workflow_progress, %{finished | label: nil})) =~
+             "Classified: quality=2"
+
+    failed = %{finished | ok: false, status: :error, answers: nil}
+    failed = Map.put(failed, :text, "classification failed: :busy")
+
+    assert Progress.event_label(Event.new(:workflow_progress, failed)) ==
+             "gate: classification failed: :busy"
+
+    assert Progress.event_label(Event.new(:workflow_progress, %{failed | label: nil, text: nil})) ==
+             "classification error"
+
+    odd = %{
+      "verdict" => %{"type" => "choice", "choice" => %{"bad" => 1}},
+      "tests" => %{"type" => "noul"}
+    }
+
+    assert Progress.event_label(
+             Event.new(:workflow_progress, %{finished | label: "gate\nmore", answers: odd})
+           ) == "Classified gate: tests=?, verdict=?"
+
+    assert Progress.event_label(
+             Event.new(:workflow_progress, %{failed | text: "failed: boom\ntrace"})
+           ) == "gate: failed: boom"
+  end
+
   test "ignores events that do not improve progress" do
     assert Progress.event_label(Event.new(:usage, %{})) == nil
     assert Progress.event_label(Event.new(:status_change, %{status: :completed})) == nil

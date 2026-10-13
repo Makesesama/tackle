@@ -246,6 +246,163 @@ defmodule Tackle.Workflow.ClassifyTest do
     end
   end
 
+  describe "progress" do
+    defp observe(test_pid \\ self()), do: fn event -> send(test_pid, {:progress, event}) end
+
+    defp classify_events do
+      receive do
+        {:progress, %{type: type} = event} when type in [:classify_started, :classify_finished] ->
+          [event | classify_events()]
+
+        {:progress, _other} ->
+          classify_events()
+      after
+        0 -> []
+      end
+    end
+
+    test "a classification reports its start and its answers, labelled by the script" do
+      script = """
+      local c = tackle.classify("a review", {
+        verdict = {type = "choice", instructions = "Approve?", criteria = {"revise", "approve"}},
+        tests = {type = "noul", instructions = "Tests added?"},
+        quality = {type = "score", instructions = "Rate it.", criteria = {"poor", "fair", "good"}}
+      }, {model = "cloud/judge", label = "review gate"})
+      return c.ok
+      """
+
+      assert {:ok, [true]} = run(script, decisions: decisions(), on_event: observe())
+
+      assert [
+               %{
+                 type: :classify_started,
+                 id: id,
+                 label: "review gate",
+                 model: "cloud/judge",
+                 local: false,
+                 questions: [
+                   %{name: "quality", type: :score, options: ["poor", "fair", "good"]},
+                   %{name: "tests", type: :noul, options: nil},
+                   %{name: "verdict", type: :choice, options: ["approve", "revise"]}
+                 ]
+               },
+               %{
+                 type: :classify_finished,
+                 id: id,
+                 label: "review gate",
+                 ok: true,
+                 status: :ok,
+                 tokens: 25,
+                 text: nil,
+                 answers: %{
+                   "verdict" => %{
+                     "choice" => "approve",
+                     "probability" => 0.9,
+                     "probabilities" => %{"approve" => 0.9, "revise" => 0.1}
+                   },
+                   "tests" => %{"type" => "noul", "noul" => 0.25},
+                   "quality" => %{"score" => 2, "probabilities" => %{1 => 0.1, 2 => 0.7}}
+                 }
+               }
+             ] = classify_events()
+    end
+
+    test "a classification the model cannot answer reports its failure" do
+      script = "return tackle.classify('a review', #{@verdict}).status"
+
+      assert {:ok, ["error"]} =
+               run(script,
+                 decisions: decisions(options: [reply: {:error, :overloaded}]),
+                 on_event: observe()
+               )
+
+      assert [
+               %{type: :classify_started, id: id, label: nil, model: "local/judge", local: true},
+               %{
+                 type: :classify_finished,
+                 id: id,
+                 ok: false,
+                 status: :error,
+                 tokens: 0,
+                 answers: nil,
+                 text: "classification failed: :overloaded"
+               }
+             ] = classify_events()
+    end
+
+    test "each call gets its own id" do
+      script = """
+      tackle.classify('a', #{@verdict})
+      tackle.classify('b', #{@verdict})
+      """
+
+      assert {:ok, []} = run(script, decisions: decisions(), on_event: observe())
+
+      assert [
+               %{type: :classify_started, id: first},
+               %{type: :classify_finished, id: first},
+               %{type: :classify_started, id: second},
+               %{type: :classify_finished, id: second}
+             ] = classify_events()
+
+      assert first != second
+    end
+
+    test "a classification that raises reports nothing" do
+      script = """
+      local ok = pcall(tackle.classify, 'x', {v = {type = 'vote', instructions = 'x'}})
+      local spent = pcall(tackle.classify, 'x', #{@verdict}, {model = 'cloud/judge'})
+      local again = pcall(tackle.classify, 'x', #{@verdict}, {model = 'cloud/judge'})
+      return ok, spent, again
+      """
+
+      assert {:ok, [false, true, false]} =
+               run(script, decisions: decisions(), on_event: observe(), token_budget: 10)
+
+      assert [%{type: :classify_started}, %{type: :classify_finished, ok: true}] =
+               classify_events()
+    end
+
+    test "the label must be a non-empty string" do
+      for label <- ["''", "42", "{}"] do
+        script = """
+        local ok, err = pcall(tackle.classify, 'x', #{@verdict}, {label = #{label}})
+        return ok, err
+        """
+
+        assert {:ok, [false, message]} = run(script, decisions: decisions())
+        assert message =~ "classify option label must be a non-empty string"
+      end
+    end
+
+    test "the run_workflow tool forwards classifications as workflow_progress events" do
+      scope = start_scope()
+      test_pid = self()
+
+      context = %{
+        runtime: handle(scope),
+        tool_call_id: "call-1",
+        decisions: Map.new(decisions()),
+        event_callback: fn event -> send(test_pid, {:event, event}) end
+      }
+
+      script = "return tackle.classify('x', #{@verdict}, {label = 'gate'}).ok"
+      assert {:ok, "true"} = WorkflowTool.run(%{"script" => script}, context)
+
+      assert_received {:event,
+                       %Tackle.Lib.Event{
+                         type: :workflow_progress,
+                         data: %{kind: :classify_started, tool_call_id: "call-1", label: "gate"}
+                       }}
+
+      assert_received {:event,
+                       %Tackle.Lib.Event{
+                         type: :workflow_progress,
+                         data: %{kind: :classify_finished, tool_call_id: "call-1", ok: true}
+                       }}
+    end
+  end
+
   describe "errors" do
     test "a workflow without decision models raises" do
       assert {:error, %{message: message}} = run("return tackle.classify('x', #{@verdict})")
