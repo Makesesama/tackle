@@ -88,27 +88,10 @@ jail name entry (
         exit 2
       fi
 
-      # Git runs hooks and honours core.hooksPath, core.fsmonitor, and other
-      # settings from .git/config on the host. Mount .git onto itself so it
-      # cannot be renamed or replaced, create hooks and config on the host so
-      # jailed code cannot, and mount both read-only. This narrows, but does not
-      # remove, the risk of running host Git in a jailed workspace: nested
-      # repositories and submodules created in the jail are not covered.
-      if [[ -d .git && ! -L .git ]]; then
-        if [[ -L .git/hooks || -L .git/config || -e .git/commondir ]]; then
-          echo "tackle-exec-jail: unexpected .git/hooks, .git/config, or .git/commondir" >&2
-          exit 2
-        fi
-        mkdir -p .git/hooks
-        [[ -e .git/config ]] || : > .git/config
-        RUNTIME_ARGS+=(--bind "$workspace/.git" "$workspace/.git")
-        RUNTIME_ARGS+=(--ro-bind "$workspace/.git/hooks" "$workspace/.git/hooks")
-        RUNTIME_ARGS+=(--ro-bind "$workspace/.git/config" "$workspace/.git/config")
-      elif [[ -e .git ]]; then
-        # A linked worktree or submodule: its .git file names the real Git
-        # directory, which stays outside the jail.
-        RUNTIME_ARGS+=(--ro-bind "$workspace/.git" "$workspace/.git")
-      fi
+      # Keep host-executed Git settings out of the jail's reach, and mount a
+      # linked worktree's Git directories so Git works in it. See jail-git.sh.
+      ${builtins.readFile ./jail-git.sh}
+      tackle_jail_git_mounts "$workspace" "$home"
 
       # Ketch works without a configuration; expose only this file when present.
       RUNTIME_ARGS+=(--ro-bind-try "$HOME/.config/ketch/config.json" "$HOME/.config/ketch/config.json")

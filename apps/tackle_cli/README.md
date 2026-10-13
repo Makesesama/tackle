@@ -643,6 +643,19 @@ ignored. Like Herdr's Pi integration, only the interactive shell reports:
 one-shot `tackle run "prompt"` and `tackle sdk` stay silent. Nothing needs to
 be installed in Herdr.
 
+For parallel work, give each agent its own Herdr worktree workspace
+(`herdr worktree create`, or New worktree in the sidebar) and start `tackle`
+in it. Tackle manages no workspaces itself: sessions are listed per directory,
+so each worktree keeps its own, and Herdr resumes each in its own pane. With
+jailed execution, Git works in a linked worktree, except deleting or renaming
+refs, writing configuration, and `git gc`; the jail cannot create worktrees
+either, so create and remove them, and delete their branches, through Herdr
+or Git on the host.
+Reviews of a jailed linked worktree are refused for now, because its Git
+directory lies outside the jail's workspace (`Tackle.Review.Confinement`). A
+new worktree has no cached nix-direnv devshell until you `direnv allow` it on
+the host, so until then the jail lacks the project's toolchain.
+
 ## Keys (experimental)
 
 | Key | Action |

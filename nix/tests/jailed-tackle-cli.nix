@@ -38,7 +38,10 @@ let
       # redirection to the still-original stderr, which would leak a
       # confusing "Read-only file system" line into the jail log.
       if printf '[core]\n' 2> /dev/null >> .git/config; then exit 1; fi
+      if printf '[core]\n' 2> /dev/null >> .git/config.worktree; then exit 1; fi
       if mv .git .git-moved 2> /dev/null; then exit 1; fi
+      # Linked worktrees are created on the host.
+      if mkdir .git/worktrees/planted 2> /dev/null; then exit 1; fi
 
       ketch --help > /dev/null
       python3 -c 'import bs4, requests, yaml' > /dev/null
@@ -69,6 +72,55 @@ let
   probeJail = mkExecJail {
     name = "tackle-jail-probe";
     entry = probe;
+    extraPkgs = jailTools;
+  };
+
+  # Runs inside the jail from a linked worktree, as Herdr creates them, in
+  # place of the exec-server. `$1` is the main checkout.
+  worktreeProbe = pkgs.writeShellApplication {
+    name = "tackle-jail-worktree-probe";
+    text = ''
+      main=$1
+      # Git works: commits, branches, and stashes write objects, refs, and
+      # reflogs in the common Git directory.
+      git status --short > /dev/null
+      echo jailed > from-worktree
+      git add from-worktree
+      git -c user.name=jail -c user.email=jail@localhost commit --quiet -m 'from the jail'
+      git branch scratch
+      echo stashed >> from-worktree
+      git stash --quiet
+      git stash pop --quiet
+      git checkout --quiet -- from-worktree
+
+      # The main checkout's Git directory is mounted, its files are not.
+      test -d "$main/.git/objects"
+      test ! -e "$main/README"
+
+      # Everything else in the common directory is read-only: the main
+      # checkout's state and settings, other worktrees' metadata, and new
+      # entries such as commondir. Worktrees are created on the host.
+      if printf '[core]\n' 2> /dev/null >> "$main/.git/config"; then exit 1; fi
+      if touch "$main/.git/hooks/pre-commit" 2> /dev/null; then exit 1; fi
+      if printf x 2> /dev/null >> "$main/.git/HEAD"; then exit 1; fi
+      if printf x 2> /dev/null >> "$main/.git/index"; then exit 1; fi
+      if printf x 2> /dev/null > "$main/.git/commondir"; then exit 1; fi
+      if mkdir "$main/.git/worktrees/planted" 2> /dev/null; then exit 1; fi
+      # Deleting a ref takes packed-refs.lock in the common directory.
+      if git branch --quiet -d scratch 2> /dev/null; then exit 1; fi
+
+      # The worktree's own pointers and configuration are read-only.
+      gitdir=$(git rev-parse --absolute-git-dir)
+      if printf '[core]\n' 2> /dev/null >> "$gitdir/config.worktree"; then exit 1; fi
+      if printf x 2> /dev/null >> "$gitdir/commondir"; then exit 1; fi
+      if printf x 2> /dev/null >> "$gitdir/gitdir"; then exit 1; fi
+      if printf x 2> /dev/null >> .git; then exit 1; fi
+      printf 'Linked worktree: OK\n'
+    '';
+  };
+  worktreeProbeJail = mkExecJail {
+    name = "tackle-jail-worktree-probe";
+    entry = worktreeProbe;
     extraPkgs = jailTools;
   };
 
@@ -156,11 +208,13 @@ pkgs.writeShellApplication {
   runtimeInputs = [
     pkgs.coreutils
     pkgs.git
+    pkgs.gnugrep
     beamPackages.elixir
   ];
   text = ''
     # Not under /tmp: the jail replaces /tmp anyway, which would hide a leak.
-    work=$(mktemp -d -p "$PWD" .tackle-jail-smoke.XXXXXX)
+    # Resolved, since the jail mounts resolved paths.
+    work=$(mktemp -d -p "$(pwd -P)" .tackle-jail-smoke.XXXXXX)
     # The jail redirects its stderr to the log file inside $work, so a
     # failure would otherwise be silent. Keep the work dir for diagnosis.
     trap 'if [ "$?" -eq 0 ]; then rm -rf "$work"; else echo "smoke test failed; kept $work (exec-server log: $work/exec-server.log)" >&2; fi' EXIT
@@ -186,6 +240,41 @@ pkgs.writeShellApplication {
     if ${lib.getExe probeJail} "$log" "$HOME"; then exit 1; fi
     rm .git/commondir
     printf 'Planted .git/commondir refused: OK\n'
+
+    # Linked worktrees, as Herdr creates them, outside the main checkout:
+    # one with absolute pointers and one with relative ones.
+    printf 'main\n' > README
+    git add README
+    git -c user.name=host -c user.email=host@localhost commit --quiet -m init
+    git worktree add --quiet "$work/worktree"
+    git worktree add --quiet --relative-paths "$work/relative"
+    for tree in worktree relative; do
+      (cd "$work/$tree" && ${lib.getExe worktreeProbeJail} "$log" "$work/project")
+      test "$(git -C "$work/$tree" log -1 --format=%s)" = 'from the jail'
+      git -C "$work/$tree" branch --quiet -d scratch
+    done
+
+    # Refusals: a .git file aimed at another worktree's Git directory, a
+    # moved worktree, and a commondir planted in the common Git directory.
+    refused() {
+      local dir=$1 message=$2
+      : > "$log"
+      if (cd "$dir" && ${lib.getExe worktreeProbeJail} "$log" "$work/project"); then exit 1; fi
+      grep -qF -- "$message" "$log"
+    }
+    mkdir "$work/crafted"
+    printf 'gitdir: %s\n' "$work/project/.git/worktrees/worktree" > "$work/crafted/.git"
+    refused "$work/crafted" "crafted/.git; run 'git worktree repair'"
+    mv "$work/relative" "$work/moved"
+    refused "$work/moved" "moved/.git; run 'git worktree repair'"
+    mv "$work/moved" "$work/relative"
+    touch .git/commondir
+    refused "$work/worktree" "project/.git/commondir"
+    rm .git/commondir
+    mkdir "$work/linked"
+    ln -s "$work/project/.git" "$work/linked/.git"
+    refused "$work/linked" "refusing the symbolic link $work/linked/.git"
+    printf 'Crafted worktree pointers refused: OK\n'
 
     # nix-direnv inheritance: the launcher finds the devshell cached for the
     # workspace in the layout direnv's wiki recommends, and the one cached for

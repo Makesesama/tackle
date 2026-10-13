@@ -207,9 +207,23 @@ workspace inside `$TACKLE_HOME`. The exec-server's standard error goes to
 The jail (`nix/packages/exec-jail.nix`):
 
 - mounts the workspace read-write at the same path. `.git` is mounted onto
-  itself so it cannot be replaced, `.git/config` and `.git/hooks` are
-  read-only, a linked worktree's `.git` file is read-only, and a planted
-  `.git/commondir` blocks the launch;
+  itself so it cannot be replaced; `.git/config`, `.git/config.worktree`,
+  `.git/hooks`, and the linked worktrees' metadata in `.git/worktrees` are
+  read-only; and a planted `.git/commondir` blocks the launch;
+- makes Git work in a linked worktree (`git worktree add`, or a Herdr
+  worktree workspace). Its `.git` file and the pointers in its Git directory
+  are read-only. The main checkout's `.git` is mounted readable and
+  read-only apart from `objects`, `refs`, branch reflogs, and the rerere
+  cache, so commits, merges, rebases, stashes, fetches, and pushes work but
+  the main checkout's `HEAD`, index, and configuration cannot be changed; the
+  main checkout's files are not mounted. Anything that deletes or renames a
+  ref (`branch -d`/`-m`, `tag -d`, a pruning fetch, `stash drop`), writes
+  configuration (`push -u`, `branch -u`), or runs `git gc` needs the main
+  `.git` itself and fails in the jail; `git stash` prints such an error but
+  works. With rerere enabled, merges fail until `.git/rr-cache` exists. The
+  launcher refuses a worktree whose `.git` file and Git directory do not
+  point at each other; `git worktree repair` on the host fixes a moved one.
+  Create worktrees on the host: `git worktree add` fails in the jail;
 - gives the jail a private `/tmp` and home, and a cleared environment;
 - unshares every namespace except the network, starts a new session, and dies
   with the CLI;
@@ -259,6 +273,13 @@ Not covered:
 - Host Git in a jailed workspace is narrowed, not safe: repositories that jailed
   code creates, submodules under `.git/modules`, and nested `.git` directories
   are writable, and a workspace without `.git` at launch gets no protection.
+  Jailed code can plant a `commondir` in a writable `.git` directory, which the
+  next launch refuses but host Git follows, and rebase or cherry-pick state
+  whose `exec` lines a host `git rebase --continue` runs: abort a rebase you
+  did not start. Writable objects and refs let it add object alternates and
+  symbolic refs that host Git follows. In a linked worktree it can move any
+  branch, as Git in any worktree can, and with the reftable backend also the
+  main checkout's `HEAD`.
   Inspect them before running Git on the host, or run Git in the jail.
 - The jail shares the host network namespace, so it can reach services on
   localhost and abstract Unix sockets, such as an X11 display that trusts

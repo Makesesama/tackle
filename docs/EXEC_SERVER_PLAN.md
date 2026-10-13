@@ -184,7 +184,9 @@ with `:exec_server_down`.
 | Resource | Access |
 |---|---|
 | Workspace | read-write |
-| `.git/config`, `.git/hooks` | **read-only** |
+| `.git/config`, `.git/config.worktree`, `.git/hooks`, `.git/worktrees` | **read-only** |
+| Linked worktree: the main checkout's `.git` | **read-only**, except `objects`, `refs`, `logs/refs`, `rr-cache`, `reftable` |
+| Linked worktree: its own Git directory | read-write, except `commondir`, `gitdir`, `config.worktree` |
 | `/nix` store | read-only |
 | Nix daemon socket | enabled, as today |
 | Network | enabled by default, as today |
@@ -194,8 +196,10 @@ with `:exec_server_down`.
 | nix-direnv profile rc files of the project | read-only when cached |
 | `~/.tackle`, Wayland, D-Bus, ssh-agent | not mounted |
 
-The launcher creates `.git/hooks` on the host before binding it read-only, so
-the agent cannot create it inside the jail. Read-only `.git/config` blocks
+The launcher creates `.git/hooks`, `.git/worktrees`, and an empty
+`.git/config.worktree` on the host before binding them read-only, so the agent
+cannot create them inside the jail. Worktrees are created on the host, for
+example by Herdr. Read-only `.git/config` blocks
 `core.hooksPath`, `core.fsmonitor`, and similar settings that would execute on
 the host.
 
@@ -223,7 +227,8 @@ image file path is copied there the same way.
   switch that enabled it. It ran code inside the host BEAM and is incompatible
   with an unjailed core.
 - Network stays enabled by default, as today.
-- `.git/config` and `.git/hooks` are read-only in the jail.
+- `.git/config`, `.git/config.worktree`, `.git/hooks`, and `.git/worktrees`
+  are read-only in the jail.
 
 ## Residual risks
 
@@ -231,8 +236,8 @@ These risks exist today as well; this architecture does not change them.
 
 - Workspace contents can still execute on the host later: `mix.exs`,
   dependency code, `.envrc`, and similar files run when the user builds or
-  enters the project on the host. Submodule and worktree configuration under
-  `.git/modules` or `.git/worktrees` is not covered by the read-only binds.
+  enters the project on the host. Submodule configuration under
+  `.git/modules` is not covered by the read-only binds.
 - The Nix daemon socket allows host builds.
 - Command output is untrusted text; terminal escape sequences must be
   sanitized before the TUI renders them.
@@ -249,10 +254,27 @@ These are specific to the split:
   outside the executor's workspace directly; jailed code cannot write there.
   Project file reads are capped at 1 MiB and directory walks at 256
   directories, so a hostile jail cannot exhaust host memory through them.
-- Host Git in a jailed workspace: `.git` is bound onto itself, `.git/config`
-  and `.git/hooks` are read-only, a `.git` file is read-only, and a planted
-  `.git/commondir` blocks the launch. Repositories created in the jail,
-  `.git/modules`, and nested `.git` directories remain writable.
+- Host Git in a jailed workspace: `.git` is bound onto itself; `config`,
+  `config.worktree`, `hooks`, and `worktrees/` are read-only; a `.git` file is
+  read-only; and a planted `.git/commondir` blocks the launch. In a linked
+  worktree, after the launcher has checked that its `.git` file and Git
+  directory point at each other, the main checkout's `.git` is read-only
+  except the object store, refs, and branch reflogs, and the worktree's own
+  Git directory is writable except its pointers and `config.worktree`
+  (`nix/packages/jail-git.sh`). Those writable directories are bound through
+  file descriptors checked to be the directories the launcher inspected,
+  because a running jail of the main checkout can rename them. Deleting or
+  renaming refs, writing configuration, and `git gc` therefore fail in a
+  linked worktree's jail. Git follows a `commondir` file planted in a
+  writable Git directory; the next launch refuses it, but host Git outside
+  Tackle follows it until it is removed. Planted rebase or cherry-pick state
+  runs its `exec` lines when the user continues it on the host. Writable
+  objects and refs allow object alternates and symbolic refs that host Git
+  follows. Repositories created in the jail, submodules under the workspace's
+  own Git directory (`.git/modules`, or `modules` in a worktree's), and
+  nested `.git` directories remain writable. A linked worktree's jail can
+  move any branch, and with the reftable backend the main checkout's `HEAD`;
+  it can read the whole main `.git`, including its configuration.
 - The shared network namespace exposes localhost services and abstract Unix
   sockets (for example X11) to the jail.
 - With the Nix daemon enabled, a user in `trusted-users` effectively hands the
