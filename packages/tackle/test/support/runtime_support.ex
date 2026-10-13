@@ -207,7 +207,8 @@ defmodule Tackle.Test.Runtime do
         llm_opts: Keyword.merge(default_llm_opts, Keyword.get(opts, :llm_opts, [])),
         compaction: Keyword.get(opts, :compaction),
         session_titles: Keyword.get(opts, :session_titles),
-        watchdog: Keyword.get(opts, :watchdog)
+        watchdog: Keyword.get(opts, :watchdog),
+        narration: Keyword.get(opts, :narration)
       )
 
     config

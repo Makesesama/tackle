@@ -195,6 +195,11 @@ defmodule Tackle.CLI.TUI.WorkflowView do
 
   defp prompt_spans(_run), do: []
 
+  # The narrator's line, while fresh, stands in for the raw activity.
+  defp activity_spans(%{status: :running, narration: narration})
+       when is_binary(narration) and narration != "",
+       do: [span(" · " <> narration, :accent_soft)]
+
   defp activity_spans(%{status: :running, now: now}) when is_binary(now) and now != "",
     do: [span(" · " <> now, :accent_soft)]
 

@@ -713,6 +713,9 @@ events. Event types include:
 - `:message_start`, `:message_delta`, `:message_end`
 - `:tool_start`, `:tool_progress`, `:tool_execution_end`, `:tool_end`, `:tool_error`
 - host-defined lifecycle events such as `:subagent_started`, `:subagent_progress`, and `:subagent_finished`
+- host-defined auxiliary events such as `:narration`, whose data carries
+  `auxiliary: true`: they describe an agent without being its progress, so
+  hosts neither persist them nor count them as activity
 - `:usage`, `:status_change`, `:error`
 - `:retry_scheduled`, `:retry_start`, `:retry_end`
 - `:provider_event` for unrecognized provider data

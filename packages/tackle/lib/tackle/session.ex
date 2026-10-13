@@ -220,6 +220,25 @@ defmodule Tackle.Session do
     GenServer.cast(session, {:background_finished, run_ref, profile, outcome})
   end
 
+  @doc """
+  Publishes one auxiliary event to the session's subscribers.
+
+  Agent services such as `Tackle.Narrator` use this to report outside any
+  turn: the event is broadcast as `{:tackle_event, session_id, nil, event}`,
+  whether the session is idle or mid-turn, and is never persisted, projected
+  into the transcript, or counted as usage. Only auxiliary events
+  (`Tackle.Lib.Event.auxiliary?/1`) are accepted; anything else returns
+  `{:error, {:invalid_event, event}}` without reaching subscribers.
+  """
+  @spec publish_event(GenServer.server(), Event.t()) :: :ok | {:error, {:invalid_event, term()}}
+  def publish_event(session, %Event{} = event) do
+    if Event.auxiliary?(event),
+      do: GenServer.cast(session, {:publish_event, event}),
+      else: {:error, {:invalid_event, event}}
+  end
+
+  def publish_event(_session, event), do: {:error, {:invalid_event, event}}
+
   @doc "Returns queued in-scope messages awaiting the next turn."
   @spec inbox(GenServer.server()) :: [map()]
   def inbox(session), do: GenServer.call(session, :inbox)
@@ -622,6 +641,11 @@ defmodule Tackle.Session do
         state
       ) do
     publish_background_finished(state, run_ref, profile, outcome)
+    {:noreply, state}
+  end
+
+  def handle_cast({:publish_event, %Event{} = event}, state) do
+    broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
     {:noreply, state}
   end
 

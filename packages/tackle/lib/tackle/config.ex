@@ -20,6 +20,7 @@ defmodule Tackle.Config do
   require Logger
 
   alias Tackle.Config.File, as: ConfigFile
+  alias Tackle.Config.Narration
   alias Tackle.Config.SessionTitles
   alias Tackle.Config.Watchdog
   alias Tackle.Executor
@@ -73,7 +74,8 @@ defmodule Tackle.Config do
     :retry,
     :compaction,
     :session_titles,
-    :watchdog
+    :watchdog,
+    :narration
   ]
 
   @enforce_keys [:adapters, :model_ref, :llm]
@@ -94,7 +96,8 @@ defmodule Tackle.Config do
             retry: Retry.new!(),
             compaction: nil,
             session_titles: nil,
-            watchdog: nil
+            watchdog: nil,
+            narration: nil
 
   @type t :: %__MODULE__{
           adapters: [module()],
@@ -114,7 +117,8 @@ defmodule Tackle.Config do
           retry: Retry.t(),
           compaction: CompactionConfig.t() | nil,
           session_titles: SessionTitles.t() | nil,
-          watchdog: Watchdog.t() | nil
+          watchdog: Watchdog.t() | nil,
+          narration: Narration.t() | nil
         }
 
   @doc """
@@ -179,6 +183,8 @@ defmodule Tackle.Config do
   LLM option, so it survives model changes, and each adapter reads only its own
   entry. Like other LLM options, it must not contain credentials. Optional
   `:watchdog` enables the command watchdog; see `Tackle.Config.Watchdog`.
+  Optional `:narration` enables the narrator for delegated runs; see
+  `Tackle.Config.Narration`.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
@@ -192,6 +198,7 @@ defmodule Tackle.Config do
          {:ok, session_titles} <-
            resolve_session_titles(Keyword.get(opts, :session_titles), adapters),
          {:ok, watchdog} <- Watchdog.new(Keyword.get(opts, :watchdog), adapters),
+         {:ok, narration} <- Narration.new(Keyword.get(opts, :narration), adapters),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
@@ -230,7 +237,8 @@ defmodule Tackle.Config do
          retry: retry,
          compaction: compaction,
          session_titles: session_titles,
-         watchdog: watchdog
+         watchdog: watchdog,
+         narration: narration
        }}
     end
   end

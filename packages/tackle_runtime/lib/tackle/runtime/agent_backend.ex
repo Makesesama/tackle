@@ -39,6 +39,7 @@ defmodule Tackle.Runtime.AgentBackend do
           | :tree
           | :navigate
           | :cancel_tool_call
+          | :publish_event
 
   @callback validate_spec(AgentSpec.t()) :: :ok | {:error, term()}
   @callback child_spec(AgentSpec.t(), AgentContext.t()) :: Supervisor.child_spec()
@@ -62,6 +63,13 @@ defmodule Tackle.Runtime.AgentBackend do
   from `Tackle.Lib.Cancellation.for_call/2` with `reason`, so the tool reports
   an error and the turn continues. Backends without per-call cancellation
   return `{:error, {:unsupported_agent_operation, :cancel_tool_call}}`.
+
+  `:publish_event` receives `[event]`, an auxiliary `Tackle.Lib.Event`
+  (`data.auxiliary == true`) from an agent service, and delivers it to the
+  agent's subscribers outside any turn (the host's `{:tackle_event,
+  session_id, nil, event}` form) without persisting it or treating it as
+  activity. Backends without it return
+  `{:error, {:unsupported_agent_operation, :publish_event}}`.
   """
   @callback call(pid(), operation(), [term()]) :: term()
   @callback prepare_child(AgentSpec.t(), pid()) :: {:ok, AgentSpec.t()} | {:error, term()}

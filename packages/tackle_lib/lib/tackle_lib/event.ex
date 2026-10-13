@@ -9,6 +9,12 @@ defmodule Tackle.Lib.Event do
   Events are intentionally plain structs with a `:type` atom and `:data` map.
   This keeps the public API stable while still allowing new event types/data
   fields to be added over time.
+
+  Events whose data carries `auxiliary: true` describe an agent without being
+  its progress, for example a `:narration` status line
+  (`%{run_id: id, tool_call_id: id | nil, text: text, auxiliary: true}`)
+  published by a host service. Hosts must not persist them or count them as
+  activity.
   """
 
   alias Tackle.Lib.Message
@@ -32,6 +38,7 @@ defmodule Tackle.Lib.Event do
           | :subagent_progress
           | :subagent_finished
           | :workflow_progress
+          | :narration
           | :usage
           | :status_change
           | :error
@@ -68,6 +75,17 @@ defmodule Tackle.Lib.Event do
       metadata: Keyword.get(opts, :metadata, %{})
     }
   end
+
+  @doc """
+  Whether `event` is auxiliary: its data carries `auxiliary: true`.
+
+  Auxiliary events report on an agent without being its progress, so they are
+  neither persisted nor treated as activity (for example, they do not renew a
+  delegated run's inactivity timeout).
+  """
+  @spec auxiliary?(t()) :: boolean()
+  def auxiliary?(%__MODULE__{data: %{auxiliary: true}}), do: true
+  def auxiliary?(%__MODULE__{}), do: false
 
   @doc """
   Normalizes a provider/adapter stream event into a Tackle.Lib event.

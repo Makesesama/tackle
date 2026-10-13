@@ -34,6 +34,7 @@ defmodule Tackle.Runtime.RootBackend do
   def call(pid, :cancel_tool_call, [tool_call_id, reason]),
     do: Session.cancel_tool_call(pid, tool_call_id, reason)
 
+  def call(pid, :publish_event, [event]), do: Session.publish_event(pid, event)
   def call(pid, :subscribe, []), do: Session.subscribe(pid)
   def call(pid, :unsubscribe, []), do: Session.unsubscribe(pid)
   def call(pid, :snapshot, []), do: Session.snapshot(pid)
@@ -46,26 +47,46 @@ defmodule Tackle.Runtime.RootBackend do
   def call(_pid, operation, _args), do: {:error, {:unsupported_agent_operation, operation}}
 
   # Every session whose config enables the watchdog (root, subagent, or
-  # workflow child) gets its own, beside its session.
+  # workflow child) gets its own, beside its session. The narrator runs only
+  # beside the root session: it observes delegated runs through the progress
+  # the root forwards, so one narrator serves the whole scope.
   @impl true
-  def services(
-        %AgentSpec{config: %Config{watchdog: %Tackle.Config.Watchdog{} = settings} = config},
-        %AgentContext{} = context
-      ) do
+  def services(%AgentSpec{config: %Config{} = config}, %AgentContext{} = context) do
+    watchdog_service(config, context) ++ narrator_service(config, context)
+  end
+
+  def services(%AgentSpec{}, %AgentContext{}), do: []
+
+  defp watchdog_service(%Config{watchdog: %Tackle.Config.Watchdog{} = settings} = config, context) do
     [
       {Tackle.Watchdog,
        agent_ref: context.agent_ref,
        task_supervisor: context.service_task_supervisor,
        settings: settings,
-       decision_opts: decision_opts(config)}
+       decision_opts: provider_opts(config)}
     ]
   end
 
-  def services(%AgentSpec{}, %AgentContext{}), do: []
+  defp watchdog_service(_config, _context), do: []
+
+  defp narrator_service(
+         %Config{narration: %Tackle.Config.Narration{} = settings} = config,
+         %AgentContext{kind: :root, parent: nil} = context
+       ) do
+    [
+      {Tackle.Narrator,
+       agent_ref: context.agent_ref,
+       task_supervisor: context.service_task_supervisor,
+       settings: settings,
+       llm_opts: provider_opts(config)}
+    ]
+  end
+
+  defp narrator_service(_config, _context), do: []
 
   # Adapters such as the local Ollama one read their base URL from the
   # session's provider options.
-  defp decision_opts(%Config{llm_opts: llm_opts}) do
+  defp provider_opts(%Config{llm_opts: llm_opts}) do
     case Keyword.get(llm_opts, :provider_options) do
       nil -> []
       options -> [provider_options: options]

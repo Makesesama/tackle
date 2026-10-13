@@ -3,8 +3,10 @@ defmodule Tackle.CLI.Widgets.Subagents do
   Native sidebar for active delegated tasks.
 
   The widget receives the profile, model, assignment, current live work, and
-  locally observed elapsed time. Rust owns the compact task layout, wrapping,
-  and minimal sidebar chrome so the surface can evolve independently.
+  locally observed elapsed time. When the narrator (`Tackle.Narrator`) has
+  described a task, its narration replaces the live work line and is marked
+  as such, so Rust can set it apart. Rust owns the compact task layout,
+  wrapping, and minimal sidebar chrome so the surface can evolve independently.
   """
 
   alias ExRatatui.Layout.Rect
@@ -27,12 +29,15 @@ defmodule Tackle.CLI.Widgets.Subagents do
       for %{name: "subagent", status: :running} = task <- activity do
         args = ToolView.arguments(Map.get(task, :arguments))
 
+        narration = narration_text(Map.get(task, :narration))
+
         %{
           id: Map.get(task, :id),
           profile: value(args, :profile) || "subagent",
           model: value(task, :model),
           summary: summary(value(args, :prompt)),
-          work: work_text(Map.get(task, :subagent_work)),
+          work: narration || work_text(Map.get(task, :subagent_work)),
+          narrated?: narration != nil,
           elapsed: elapsed(task[:elapsed_ms])
         }
       end
@@ -69,7 +74,8 @@ defmodule Tackle.CLI.Widgets.Subagents do
       task.model |> model_text() |> MessageView.sanitize(),
       task.summary |> to_string() |> MessageView.sanitize(),
       task.work |> to_string() |> MessageView.sanitize(),
-      task.elapsed
+      task.elapsed,
+      Map.get(task, :narrated?, false)
     }
   end
 
@@ -95,6 +101,12 @@ defmodule Tackle.CLI.Widgets.Subagents do
 
   defp work_text(work) when is_binary(work) and work != "", do: work
   defp work_text(_work), do: "Starting…"
+
+  defp narration_text(text) when is_binary(text) do
+    if String.trim(text) == "", do: nil, else: text
+  end
+
+  defp narration_text(_text), do: nil
 
   defp elapsed(ms) when is_integer(ms) and ms >= 0 do
     seconds = div(ms, 1_000)

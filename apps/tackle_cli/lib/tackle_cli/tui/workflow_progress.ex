@@ -10,7 +10,9 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
     * `runs` — every visible delegated run by `run_id`: profile, prompt, status
       (`:running`, `:completed`, `:failed`, or `:ended` when the workflow ended
       without awaiting it), the raw outcome status, a locally observed clock,
-      and a short `now` line describing the child's current activity;
+      and a short `now` line describing the child's current activity, plus
+      the narrator's latest `narration` of that run (`narrate/4`), which is
+      shown instead of `now` while it is fresh;
     * `stages` — runs in the order the workflow started them. A stage is one
       standalone `tackle.spawn` run, several standalone runs that overlapped
       (a run started while the previous stage still had one running), or one
@@ -28,6 +30,9 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
   @max_stages 200
   @max_logs 20
   @max_now_bytes 200
+  # Three times the narrator's default interval: a narration that is not
+  # renewed stops hiding the live `now` activity underneath it.
+  @narration_ttl_ms 15_000
 
   @type status :: :running | :completed | :failed | :ended
   @type run :: %{
@@ -40,6 +45,8 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
           optional(:model) => String.t() | nil,
           optional(:outcome) => atom() | nil,
           optional(:now) => String.t() | nil,
+          optional(:narration) => String.t() | nil,
+          optional(:narrated_at_ms) => integer() | nil,
           optional(:placed?) => boolean()
         }
   @type item :: {:run, String.t()} | {:failed, String.t(), String.t() | nil}
@@ -92,13 +99,44 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
     end
   end
 
-  @doc "Advances running clocks in whole seconds; unchanged when no second ticked."
+  @doc """
+  Sets the narrator's status line for a running run.
+
+  Narration of an unknown, finished, or settled run is ignored, and an
+  unchanged line leaves the model untouched (`===`). The line is dropped by
+  `refresh/2` once it is #{div(@narration_ttl_ms, 1_000)} seconds old, so a
+  narrator that stopped answering never hides newer `now` activity.
+  """
+  @spec narrate(t(), String.t(), String.t(), integer()) :: t()
+  def narrate(model, run_id, text, now \\ System.monotonic_time(:millisecond))
+
+  def narrate(%{settled?: true} = model, _run_id, _text, _now), do: model
+
+  def narrate(model, run_id, text, now) when is_binary(text) and text != "" do
+    case Map.get(model.runs, run_id) do
+      %{status: :running, narration: ^text} = run ->
+        put_run(model, Map.put(run, :narrated_at_ms, now))
+
+      %{status: :running} = run ->
+        put_run(model, Map.merge(run, %{narration: bound(text), narrated_at_ms: now}))
+
+      _unknown_or_finished ->
+        model
+    end
+  end
+
+  def narrate(model, _run_id, _text, _now), do: model
+
+  @doc "Advances running clocks in whole seconds and expires stale narration; unchanged when nothing changed."
   @spec refresh(t(), integer()) :: t()
   def refresh(model, now \\ System.monotonic_time(:millisecond)) do
     runs =
       Map.new(model.runs, fn
-        {id, %{status: :running} = run} -> {id, %{run | elapsed_ms: elapsed(run, now)}}
-        entry -> entry
+        {id, %{status: :running} = run} ->
+          {id, run |> Map.put(:elapsed_ms, elapsed(run, now)) |> expire_narration(now)}
+
+        entry ->
+          entry
       end)
 
     if runs == model.runs, do: model, else: %{model | runs: runs}
@@ -115,7 +153,7 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
     runs =
       Map.new(model.runs, fn
         {id, %{status: :running} = run} ->
-          {id, %{run | status: :ended, elapsed_ms: elapsed(run, now)}}
+          {id, %{run | status: :ended, elapsed_ms: elapsed(run, now)} |> drop_narration()}
 
         entry ->
           entry
@@ -189,6 +227,7 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
         run
         |> Map.put(:outcome, value(data, :status))
         |> Map.put(:now, nil)
+        |> drop_narration()
         |> Map.update(:profile, value(data, :profile), &(&1 || value(data, :profile)))
 
       put_run(model, run)
@@ -276,6 +315,14 @@ defmodule Tackle.CLI.TUI.WorkflowProgress do
     do: %{run_id: id, status: :running, started_at_ms: now, elapsed_ms: 0, profile: profile}
 
   defp put_run(model, run), do: %{model | runs: Map.put(model.runs, run.run_id, run)}
+
+  defp expire_narration(%{narrated_at_ms: at} = run, now)
+       when is_integer(at) and now - at >= @narration_ttl_ms,
+       do: drop_narration(run)
+
+  defp expire_narration(run, _now), do: run
+
+  defp drop_narration(run), do: Map.drop(run, [:narration, :narrated_at_ms])
 
   defp elapsed(%{started_at_ms: started}, now) when is_integer(started),
     do: div(max(now - started, 0), 1_000) * 1_000

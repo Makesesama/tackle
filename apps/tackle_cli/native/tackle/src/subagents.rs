@@ -12,7 +12,9 @@ use crate::{
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use rustler::{Atom, Error, NifResult};
 
-type WireTask = (String, String, String, String, Option<String>);
+/// `(profile, model, assignment, work, elapsed, narrated)`: `narrated` marks a
+/// work line written by the narrator rather than derived from live events.
+type WireTask = (String, String, String, String, Option<String>, bool);
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn subagents_render(
@@ -32,7 +34,7 @@ fn subagents_render(
     let mut byte_count = 0usize;
     let tasks = tasks
         .into_iter()
-        .map(|(profile, model, assignment, work, elapsed)| {
+        .map(|(profile, model, assignment, work, elapsed, narrated)| {
             byte_count = byte_count
                 .saturating_add(profile.len())
                 .saturating_add(model.len())
@@ -45,6 +47,7 @@ fn subagents_render(
                 assignment: sanitize(&assignment).replace('\n', " "),
                 work: sanitize(&work).replace('\n', " "),
                 elapsed: elapsed.map(|value| sanitize(&value).replace('\n', " ")),
+                narrated,
             }
         })
         .collect::<Vec<_>>();

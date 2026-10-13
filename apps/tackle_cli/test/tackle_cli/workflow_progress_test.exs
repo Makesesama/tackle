@@ -102,6 +102,48 @@ defmodule Tackle.CLI.WorkflowProgressTest do
       assert WorkflowProgress.refresh(done, 9_000) === done
     end
 
+    test "narration replaces the activity of a running run until it expires" do
+      read = Event.new(:tool_start, %{name: "read", arguments: %{"path" => "a.ex"}})
+      model = apply_all([started("a", "scout", "map"), child("a", read)], 0)
+
+      narrated = WorkflowProgress.narrate(model, "a", "mapping the session code", 1_000)
+      assert narrated.runs["a"].narration == "mapping the session code"
+      assert narrated.runs["a"].now == "read a.ex"
+
+      # The same line only renews its age.
+      renewed = WorkflowProgress.narrate(narrated, "a", "mapping the session code", 2_000)
+      assert renewed.runs["a"].narrated_at_ms == 2_000
+
+      # Live activity keeps updating underneath.
+      grep = Event.new(:tool_start, %{name: "grep", arguments: %{"command" => "rg x"}})
+      updated = WorkflowProgress.apply(renewed, child("a", grep), 3_000)
+      assert updated.runs["a"].now == "grep rg x"
+      assert updated.runs["a"].narration == "mapping the session code"
+
+      kept = WorkflowProgress.refresh(updated, 16_999)
+      assert kept.runs["a"].narration == "mapping the session code"
+
+      expired = WorkflowProgress.refresh(updated, 17_000)
+      refute Map.has_key?(expired.runs["a"], :narration)
+      assert expired.runs["a"].now == "grep rg x"
+    end
+
+    test "narration of unknown, finished, or settled runs is ignored" do
+      model = apply_all([started("a", "scout", "map"), started("b", "w", "x"), finished("b")])
+
+      assert WorkflowProgress.narrate(model, "missing", "hello", 0) === model
+      assert WorkflowProgress.narrate(model, "b", "hello", 0) === model
+      assert WorkflowProgress.narrate(model, "a", "", 0) === model
+
+      narrated = WorkflowProgress.narrate(model, "a", "mapping", 0)
+      done = WorkflowProgress.apply(narrated, finished("a"), 1_000)
+      refute Map.has_key?(done.runs["a"], :narration)
+
+      settled = WorkflowProgress.settle(narrated, 1_000)
+      refute Map.has_key?(settled.runs["a"], :narration)
+      assert WorkflowProgress.narrate(settled, "a", "late", 2_000) === settled
+    end
+
     test "logs and stages are bounded; old stages leave with their runs" do
       events =
         Enum.flat_map(1..205, fn n ->
@@ -142,6 +184,21 @@ defmodule Tackle.CLI.WorkflowProgressTest do
                "├ ● reviewer  0s  Review two · read a.ex",
                "└ ○ 1 queued",
                "▸ reviewing"
+             ]
+    end
+
+    test "a fresh narration is drawn in place of the activity" do
+      read = Event.new(:tool_start, %{name: "read", arguments: %{"path" => "a.ex"}})
+      model = apply_all([started("a", "scout", "Map the code"), child("a", read)])
+
+      assert text(WorkflowView.rows(model, 80, :preview)) == [
+               "● scout  0s  Map the code · read a.ex"
+             ]
+
+      narrated = WorkflowProgress.narrate(model, "a", "mapping where titles live", 0)
+
+      assert text(WorkflowView.rows(narrated, 80, :preview)) == [
+               "● scout  0s  Map the code · mapping where titles live"
              ]
     end
 

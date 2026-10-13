@@ -148,6 +148,11 @@ a turn:
 `provider_event`, `compaction_start`, `compaction_end`, `compaction_retry`,
 `retry_scheduled`, `retry_start`, `retry_end`.
 
+Hosts built on sessions may also publish auxiliary events such as `narration`
+(`data.auxiliary` is `true`) outside any turn. This server drives the loop
+directly and does not run those services, so protocol version 1 never emits
+them; clients that see an unknown type ignore it as described below.
+
 The `data` payload is event-type specific. New event types and new `data`
 fields may be added in minor revisions; clients must ignore both.
 

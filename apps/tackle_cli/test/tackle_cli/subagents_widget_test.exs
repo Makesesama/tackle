@@ -32,6 +32,7 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
                  model: "test/scout",
                  summary: "Inspect the layout cache and report…",
                  work: "Starting…",
+                 narrated?: false,
                  elapsed: "12s"
                },
                %{
@@ -40,6 +41,7 @@ defmodule Tackle.CLI.SubagentsWidgetTest do
                  model: "test/worker",
                  summary: "Implement the widget",
                  work: "Starting…",
+                 narrated?: false,
                  elapsed: "1m 5s"
                }
              ]

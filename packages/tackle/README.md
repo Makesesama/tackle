@@ -613,6 +613,29 @@ such as `"ollama/tev1:4b"` (see `Tackle.Lib.Decision`):
 { "watchdog": { "model": "ollama/tev1:4b", "after_seconds": 60, "threshold": 0.85 } }
 ```
 
+An optional `narration` object enables the narrator (`Tackle.Narrator`), which
+is off by default because it calls a chat model of its own. Only the root
+session runs one, as a runtime service; it follows the delegated runs the root
+forwards (subagents and workflow children, counting nested runs toward their
+top-level run) and, for each run that has worked for `first_after_seconds`
+(default 5) and changed since its last line, asks the model for one short
+status line at most every `interval_seconds` (default 5) per run. One request
+is in flight at a time, the run narrated longest ago goes first, and only the
+newest state is sent. Lines are published to the root session's subscribers as
+auxiliary `:narration` events (`%{run_id, tool_call_id, text, auxiliary:
+true}`, with a `nil` turn id) through `Tackle.Runtime.publish_event/2` and
+`Tackle.Session.publish_event/2`; they are never persisted or added to the
+transcript. The root agent's own turn is not narrated. `model` is required —
+there is no fallback to the session model, which may be a paid remote one —
+and must be a chat model reference such as `"ollama/gemma4:12b"`. The request
+is tool-free with `reasoning_effort: :none` and `max_tokens: 60`, so the
+model's adapter should accept both. A failing model logs one warning and is
+retried with back-off; it never affects the agents:
+
+```json
+{ "narration": { "model": "ollama/gemma4:12b", "interval_seconds": 5, "first_after_seconds": 5 } }
+```
+
 Thinking may be
 `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; supported levels can vary
 by model. `TACKLE_THINKING` overrides the file in the same way that

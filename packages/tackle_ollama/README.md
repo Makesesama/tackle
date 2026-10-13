@@ -180,8 +180,9 @@ responses return `{:error, {:http_error, status, body}}`. `decide/2` honours
 `:receive_timeout` (default 60,000 ms, since a model may load on first use).
 
 The CLI bundles this adapter next to `ollama-cloud`. Its distribution config
-makes `ollama/tev1:4b` selectable as a decision model; it offers no local chat
-models unless `:models` is configured in the host's application environment
+makes `ollama/tev1:4b` selectable as a decision model (for the command
+watchdog) and `ollama/gemma4:12b` as a chat model (for narration); other local
+chat models need `:models` configured in the host's application environment
 (an adapter without configured models is accepted by the harness catalog).
 
 ## Validation

@@ -4,6 +4,15 @@ defmodule Tackle.Lib.EventTest do
   alias Tackle.Lib.Event
   alias Tackle.Lib.Usage
 
+  describe "auxiliary?/1" do
+    test "is true only for events whose data carries auxiliary: true" do
+      assert Event.auxiliary?(Event.new(:narration, %{text: "reading", auxiliary: true}))
+      refute Event.auxiliary?(Event.new(:narration, %{text: "reading"}))
+      refute Event.auxiliary?(Event.new(:narration, %{auxiliary: "yes"}))
+      refute Event.auxiliary?(Event.new(:tool_start))
+    end
+  end
+
   describe "normalize/2" do
     test "keeps Tackle.Lib events unchanged" do
       event = Event.new(:step_start, %{iteration: 1})

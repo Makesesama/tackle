@@ -153,6 +153,15 @@ turn through the backend's `:cancel_tool_call` operation, so the agent receives
 a tool error and continues. Backends without per-call cancellation return
 `{:error, {:unsupported_agent_operation, :cancel_tool_call}}`.
 
+`Tackle.Runtime.publish_event/2` lets a service report on its agent outside
+any turn, for example a `:narration` status line for a delegated run. It
+accepts only auxiliary events (`data.auxiliary == true`, see
+`Tackle.Lib.Event.auxiliary?/1`) and returns `{:error, {:invalid_event,
+event}}` for anything else. The backend's `:publish_event` operation delivers
+the event to the agent's subscribers as `{:tackle_event, session_id, nil,
+event}` and never persists it; backends without it return
+`{:error, {:unsupported_agent_operation, :publish_event}}`.
+
 ## Deployment boundary
 
 The built-in Registry and ownership model are node-local and in-memory. A

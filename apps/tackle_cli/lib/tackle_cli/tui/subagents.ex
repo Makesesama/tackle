@@ -102,6 +102,7 @@ defmodule Tackle.CLI.TUI.Subagents do
       arguments: Map.get(tracked, :arguments),
       model: Map.get(tracked, :model),
       subagent_work: Map.get(tracked, :work),
+      narration: Map.get(tracked, :narration),
       subagent_output: Map.get(tracked, :work_output),
       run_id: Map.get(tracked, :run_id),
       agent_ref: Map.get(tracked, :agent_ref),

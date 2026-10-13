@@ -145,14 +145,18 @@ defmodule Tackle.CLI.DistributionTest do
         else: Application.delete_env(:tackle_ollama, Tackle.Plugins.OllamaLocal)
     end)
 
-    # The distribution offers only the tev1 decision model by default.
+    # By default the distribution offers the tev1 decision model (watchdog)
+    # and one small chat model (narration).
     assert {:ok, models} = Distribution.available_models()
-    refute Enum.any?(models, &String.starts_with?(&1, "ollama/"))
+    assert Enum.filter(models, &String.starts_with?(&1, "ollama/")) == ["ollama/gemma4:12b"]
     assert {:ok, catalog} = Distribution.catalog()
     adapters = Tackle.Plugins.Catalog.adapter_modules(catalog)
 
     assert {:ok, %{adapter: Tackle.Plugins.OllamaLocal}} =
              Tackle.Lib.Decision.select(adapters, "ollama/tev1:4b")
+
+    assert {:ok, %{adapter: Tackle.Plugins.OllamaLocal}} =
+             Tackle.Lib.LLM.select(adapters, "ollama/gemma4:12b")
 
     Application.put_env(:tackle_ollama, Tackle.Plugins.OllamaLocal,
       models: ["qwen3:8b"],

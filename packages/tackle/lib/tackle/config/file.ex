@@ -11,7 +11,8 @@ defmodule Tackle.Config.File do
     "show_subagent_sidebar",
     "provider_options",
     "session_titles",
-    "watchdog"
+    "watchdog",
+    "narration"
   ]
 
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
@@ -44,8 +45,11 @@ defmodule Tackle.Config.File do
          {:ok, provider_opts} <- provider_options(path, config),
          {:ok, title_opts} <- session_titles_options(path, config),
          {:ok, watchdog_opts} <- watchdog_options(path, config),
+         {:ok, narration_opts} <- narration_options(path, config),
          :ok <- sidebar_option(path, config) do
-      {:ok, model_opts ++ thinking_opts ++ provider_opts ++ title_opts ++ watchdog_opts}
+      {:ok,
+       model_opts ++
+         thinking_opts ++ provider_opts ++ title_opts ++ watchdog_opts ++ narration_opts}
     end
   end
 
@@ -78,6 +82,40 @@ defmodule Tackle.Config.File do
 
       _unknown_fields ->
         {:error, {:invalid_config_field, path, "watchdog"}}
+    end
+  end
+
+  # The narrator is opt-in because it needs a chat model of its own: `false`
+  # and `null` leave it off; an object sets `model` (required canonical chat
+  # model reference) and optionally `enabled`, `interval_seconds`, and
+  # `first_after_seconds`. Values are validated by `Tackle.Config.Narration`.
+  @narration_fields %{
+    "enabled" => :enabled,
+    "model" => :model,
+    "interval_seconds" => :interval_seconds,
+    "first_after_seconds" => :first_after_seconds
+  }
+
+  defp narration_options(path, config) do
+    case Map.fetch(config, "narration") do
+      {:ok, false} -> {:ok, [narration: false]}
+      {:ok, nil} -> {:ok, []}
+      {:ok, %{} = narration} -> narration_fields(path, narration)
+      {:ok, _other} -> {:error, {:invalid_config_field, path, "narration"}}
+      :error -> {:ok, []}
+    end
+  end
+
+  defp narration_fields(path, narration) do
+    case Map.keys(narration) -- Map.keys(@narration_fields) do
+      [] ->
+        {:ok,
+         [
+           narration: Enum.map(narration, fn {key, value} -> {@narration_fields[key], value} end)
+         ]}
+
+      _unknown_fields ->
+        {:error, {:invalid_config_field, path, "narration"}}
     end
   end
 

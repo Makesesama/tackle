@@ -14,6 +14,8 @@ pub struct SubagentTask {
     pub assignment: String,
     pub work: String,
     pub elapsed: Option<String>,
+    /// The work line is a narration rather than raw live activity.
+    pub narrated: bool,
 }
 
 pub struct Subagents<'a> {
@@ -74,7 +76,12 @@ impl Widget for Subagents<'_> {
                 task.assignment.as_str(),
                 self.muted,
             )));
-            lines.push(Line::from(Span::styled(task.work.as_str(), self.accent)));
+            let work_style = if task.narrated {
+                self.accent.add_modifier(Modifier::ITALIC)
+            } else {
+                self.accent
+            };
+            lines.push(Line::from(Span::styled(task.work.as_str(), work_style)));
         }
 
         Paragraph::new(lines)
@@ -102,6 +109,7 @@ mod tests {
             assignment: "Inspect the layout".into(),
             work: "Reading runtime.ex".into(),
             elapsed: Some("12s".into()),
+            narrated: false,
         }];
         let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 5));
         Subagents {
@@ -119,5 +127,32 @@ mod tests {
         assert!(rendered(&buffer, 2).contains("openai-codex/gpt-5.5"));
         assert!(rendered(&buffer, 3).contains("Inspect the layout"));
         assert!(rendered(&buffer, 4).contains("Reading runtime.ex"));
+        assert!(!buffer[(1, 4)].modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn sets_a_narrated_work_line_apart() {
+        let tasks = vec![SubagentTask {
+            profile: "scout".into(),
+            model: "local/model".into(),
+            assignment: "Inspect the layout".into(),
+            work: "reading the layout tests".into(),
+            elapsed: None,
+            narrated: true,
+        }];
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 32, 5));
+        Subagents {
+            tasks: &tasks,
+            accent: Style::new().fg(Color::Cyan),
+            muted: Style::new().fg(Color::DarkGray),
+            text: Style::new().fg(Color::White),
+            selected: None,
+            spinner_frame: 0,
+        }
+        .render(buffer.area, &mut buffer);
+
+        assert!(rendered(&buffer, 4).contains("reading the layout tests"));
+        assert!(buffer[(1, 4)].modifier.contains(Modifier::ITALIC));
+        assert_eq!(buffer[(1, 4)].fg, Color::Cyan);
     }
 }

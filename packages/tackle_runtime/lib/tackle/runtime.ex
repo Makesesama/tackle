@@ -13,6 +13,7 @@ defmodule Tackle.Runtime do
 
   alias Tackle.AgentScope.Coordinator
   alias Tackle.AgentSupervisor
+  alias Tackle.Lib.Event
   alias Tackle.Runtime.AgentBackend
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.AgentSpec
@@ -127,6 +128,25 @@ defmodule Tackle.Runtime do
 
   def cancel_tool_call(%AgentRef{}, tool_call_id, _reason),
     do: {:error, {:invalid_tool_call_id, tool_call_id}}
+
+  @doc """
+  Publishes one auxiliary event to an agent's subscribers.
+
+  Agent services use this to report on their agent without being part of its
+  turn, for example a `:narration` status line. Only auxiliary events
+  (`Tackle.Lib.Event.auxiliary?/1`) are accepted; anything else returns
+  `{:error, {:invalid_event, event}}`. The backend delivers the event to
+  subscribers outside any turn and never persists it. Backends without the
+  operation return `{:error, {:unsupported_agent_operation, :publish_event}}`.
+  """
+  @spec publish_event(AgentRef.t(), Event.t()) :: :ok | {:error, term()}
+  def publish_event(%AgentRef{} = agent_ref, %Event{} = event) do
+    if Event.auxiliary?(event),
+      do: with_agent(agent_ref, :publish_event, [event]),
+      else: {:error, {:invalid_event, event}}
+  end
+
+  def publish_event(%AgentRef{}, event), do: {:error, {:invalid_event, event}}
 
   @doc """
   Explicitly abandons an interrupted durable turn for an agent.

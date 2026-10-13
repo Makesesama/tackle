@@ -3,6 +3,7 @@ defmodule Tackle.Runtime.AgentServicesTest do
 
   import ExUnit.CaptureLog
 
+  alias Tackle.Lib.Event
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentRef
@@ -27,6 +28,11 @@ defmodule Tackle.Runtime.AgentServicesTest do
     @impl true
     def handle_call({:cancel_tool_call, args}, _from, state) do
       send(state.test_pid, {:cancel_tool_call, args})
+      {:reply, :ok, state}
+    end
+
+    def handle_call({:publish_event, args}, _from, state) do
+      send(state.test_pid, {:publish_event, args})
       {:reply, :ok, state}
     end
 
@@ -84,6 +90,8 @@ defmodule Tackle.Runtime.AgentServicesTest do
 
     @impl true
     def call(pid, :cancel_tool_call, args), do: GenServer.call(pid, {:cancel_tool_call, args})
+
+    def call(pid, :publish_event, args), do: GenServer.call(pid, {:publish_event, args})
 
     def call(pid, operation, args) when operation in [:subscribe, :submit, :cancel],
       do: GenServer.call(pid, {operation, args})
@@ -276,6 +284,38 @@ defmodule Tackle.Runtime.AgentServicesTest do
 
     assert {:error, {:unsupported_agent_operation, :cancel_tool_call}} =
              Runtime.cancel_tool_call(scope.ref, "call-1", :stuck)
+  end
+
+  test "publish_event forwards auxiliary events to the agent backend" do
+    scope = start_scope(:none)
+    assert_receive {:agent_started, :root, _agent, _context}
+
+    event = Event.new(:narration, %{run_id: "run-1", text: "reading", auxiliary: true})
+    assert :ok = Runtime.publish_event(scope.ref, event)
+    assert_receive {:publish_event, [^event]}
+
+    assert {:error, :not_found} =
+             Runtime.publish_event(AgentRef.new!(scope.ref.scope_id, "missing"), event)
+  end
+
+  test "publish_event refuses events that are not auxiliary" do
+    scope = start_scope(:none)
+    assert_receive {:agent_started, :root, _agent, _context}
+
+    progress = Event.new(:narration, %{run_id: "run-1", text: "reading"})
+    assert {:error, {:invalid_event, ^progress}} = Runtime.publish_event(scope.ref, progress)
+    assert {:error, {:invalid_event, :nope}} = Runtime.publish_event(scope.ref, :nope)
+    refute_receive {:publish_event, _args}, 50
+  end
+
+  test "publish_event reports backends without it" do
+    scope = start_scope(:none, PlainBackend)
+    assert_receive {:agent_started, :root, _agent, _context}
+
+    event = Event.new(:narration, %{run_id: "run-1", text: "reading", auxiliary: true})
+
+    assert {:error, {:unsupported_agent_operation, :publish_event}} =
+             Runtime.publish_event(scope.ref, event)
   end
 
   defp start_scope(services, backend \\ Backend, profiles \\ %{}) do

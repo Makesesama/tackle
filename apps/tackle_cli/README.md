@@ -899,6 +899,28 @@ the agent, which keeps working. The adapter reaches Ollama at
 `http://localhost:11434/v1` unless `provider_options.ollama.base_url` says
 otherwise.
 
+### Narration
+
+The same local Ollama adapter offers the small chat model `ollama/gemma4:12b`,
+which can narrate delegated work: every few seconds it writes one short line
+such as "reading the session tests to find where titles are stored" for each
+running subagent and workflow child. It is off by default; pull the model
+(`ollama pull gemma4:12b`) and enable it in `$TACKLE_HOME/config.json`:
+
+```json
+{ "narration": { "model": "ollama/gemma4:12b" } }
+```
+
+A run is first narrated after 5 seconds (`first_after_seconds`) and at most
+every 5 seconds (`interval_seconds`) while it changes. The line replaces the
+live activity of the run's row in the task sidebar (in italics) and of its node
+in a running workflow's chart; a workflow node falls back to its live activity
+when no new line arrived for 15 seconds. The root agent's own turn is not
+narrated, and plain (non-TUI) output ignores narration. Any other configured
+chat model reference works too, but the narrator never falls back to the
+session model. A failing model is logged once and retried later; it never
+affects the agents.
+
 ### Conversation tree (`/tree`)
 
 Type `/tree` (or press F5) while idle to browse the session's conversation tree.

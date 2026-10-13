@@ -2,6 +2,7 @@ defmodule Tackle.Config.FileTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Config
+  alias Tackle.Config.Narration
 
   defmodule Adapter do
     @behaviour Tackle.Lib.LLM
@@ -409,6 +410,116 @@ defmodule Tackle.Config.FileTest do
 
     write_config(home, JSON.encode!(%{"watchdog" => %{"model" => "test/default"}}))
     assert {:error, {:unsupported_decision_adapter, "test"}} = load.()
+  end
+
+  test "narration is off by default and configurable through config.json", %{
+    home: home,
+    env: env
+  } do
+    overrides = [model: "test/default"]
+
+    assert {:ok, config} =
+             Config.load(available_adapters: [Adapter], env: env, overrides: overrides)
+
+    assert config.narration == nil
+
+    write_config(
+      home,
+      JSON.encode!(%{
+        "narration" => %{
+          "model" => "test/file",
+          "interval_seconds" => 3,
+          "first_after_seconds" => 2.5
+        }
+      })
+    )
+
+    assert {:ok, config} =
+             Config.load(available_adapters: [Adapter], env: env, overrides: overrides)
+
+    assert %Narration{
+             model_ref: "test/file",
+             interval_seconds: 3,
+             first_after_seconds: 2.5
+           } = config.narration
+
+    assert config.narration.selection.adapter == Adapter
+    assert config.narration.selection.model == "file"
+    assert Narration.interval_ms(config.narration) == 3_000
+    assert Narration.first_after_ms(config.narration) == 2_500
+
+    write_config(home, JSON.encode!(%{"narration" => %{"model" => "test/file"}}))
+
+    assert {:ok, config} =
+             Config.load(available_adapters: [Adapter], env: env, overrides: overrides)
+
+    assert %Narration{interval_seconds: 5, first_after_seconds: 5} =
+             config.narration
+
+    write_config(
+      home,
+      JSON.encode!(%{"narration" => %{"model" => "test/file", "enabled" => false}})
+    )
+
+    assert {:ok, config} =
+             Config.load(available_adapters: [Adapter], env: env, overrides: overrides)
+
+    assert config.narration == nil
+
+    for disabled <- [~s({"narration": false}), ~s({"narration": null})] do
+      write_config(home, disabled)
+
+      assert {:ok, config} =
+               Config.load(available_adapters: [Adapter], env: env, overrides: overrides)
+
+      assert config.narration == nil
+    end
+  end
+
+  test "invalid narration configuration returns errors", %{home: home, env: env} do
+    load = fn ->
+      Config.load(available_adapters: [Adapter], env: env, overrides: [model: "test/default"])
+    end
+
+    path = write_config(home, ~s({"narration": true}))
+    assert {:error, {:invalid_config_field, ^path, "narration"}} = load.()
+
+    write_config(home, JSON.encode!(%{"narration" => %{"model" => "test/file", "unknown" => 1}}))
+    assert {:error, {:invalid_config_field, ^path, "narration"}} = load.()
+
+    # The model is required: narration never falls back to the session model.
+    write_config(home, JSON.encode!(%{"narration" => %{}}))
+    assert {:error, {:invalid_option, :narration, model: nil}} = load.()
+
+    write_config(home, JSON.encode!(%{"narration" => %{"model" => ""}}))
+    assert {:error, {:invalid_option, :narration, model: ""}} = load.()
+
+    write_config(
+      home,
+      JSON.encode!(%{"narration" => %{"model" => "test/file", "interval_seconds" => 0}})
+    )
+
+    assert {:error, {:invalid_option, :narration, interval_seconds: 0}} = load.()
+
+    write_config(
+      home,
+      JSON.encode!(%{"narration" => %{"model" => "test/file", "first_after_seconds" => "5"}})
+    )
+
+    assert {:error, {:invalid_option, :narration, first_after_seconds: "5"}} = load.()
+
+    write_config(
+      home,
+      JSON.encode!(%{"narration" => %{"model" => "test/file", "enabled" => "yes"}})
+    )
+
+    assert {:error, {:invalid_option, :narration, enabled: "yes"}} = load.()
+
+    write_config(home, JSON.encode!(%{"narration" => %{"model" => "test/missing"}}))
+    assert {:error, {:unknown_model, "test/missing"}} = load.()
+
+    write_config(home, JSON.encode!(%{"narration" => %{"model" => "other/model"}}))
+    assert {:error, {:unknown_adapter, "other"}} = load.()
   end
 
   test "module-looking strings are data and are never converted to atoms", %{home: home, env: env} do

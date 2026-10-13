@@ -48,6 +48,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   @max_live_tool_input_bytes 50 * 1_024
   @max_live_tool_output_bytes 50 * 1_024
   @max_subagent_work_bytes 16 * 1_024
+  @max_narration_chars 200
   # Delegating tools whose cards carry a locally observed clock.
   @timed_tools ["subagent", "run_workflow"]
 
@@ -390,6 +391,19 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   defp route({:tackle_turn_started, _session_id, _turn_id, :background_notice}, state),
     do: {:noreply, state, render?: false}
 
+  # Narration is published by the root session's narrator outside any turn
+  # (always with a nil turn id), so it is routed before turn matching: it must
+  # never be mistaken for the first event of a pending submit.
+  defp route(
+         {:tackle_event, session_id, nil, %Event{type: :narration, data: data}},
+         %State{session_id: session_id} = state
+       ) do
+    case put_narration(state, data) do
+      ^state -> {:noreply, state, render?: false}
+      state -> stream_reply(state)
+    end
+  end
+
   # The session can emit from the new turn before the asynchronous submit
   # command reports its id. The event already carries that id, and only one turn
   # can be admitted for this pending submit, so install it immediately instead
@@ -653,7 +667,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
          {:tackle_event, session_id, _turn_id, %Event{type: :subagent_finished, data: data}},
          %State{session_id: session_id} = state
        ) do
+    state = clear_narration(state, data)
     state = %{state | subagents: put_subagent(state.subagents, data)}
+
     {:noreply, state |> Subagents.reconcile() |> Viewport.relayout()}
   end
 
@@ -1315,6 +1331,90 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
       {key, value}, activity -> Map.put(activity, key, value)
     end)
   end
+
+  # A narration line replaces the activity text of its run: a workflow child
+  # node when the narration names a run_workflow call that knows the run, and
+  # otherwise the running subagent's sidebar row. Unknown or settled runs are
+  # ignored, so a late narration never revives a finished row.
+  defp put_narration(state, data) do
+    run_id = value(data, :run_id)
+    text = narration_text(value(data, :text))
+    tool_call_id = value(data, :tool_call_id)
+
+    workflow =
+      Enum.find(state.tool_activity, fn tool ->
+        is_binary(tool_call_id) and tool.id == tool_call_id and tool.name == "run_workflow" and
+          is_map(tool[:workflow])
+      end)
+
+    cond do
+      not is_binary(run_id) or is_nil(text) ->
+        state
+
+      workflow != nil ->
+        model = WorkflowProgress.narrate(workflow.workflow, run_id, text)
+
+        if model === workflow.workflow,
+          do: state,
+          else: put_workflow(state, Map.put(workflow, :workflow, model))
+
+      true ->
+        put_subagent_narration(state, data, run_id, text)
+    end
+  end
+
+  # A run that already settled keeps no narration, even while its foreground
+  # tool card still waits for the call's end.
+  defp put_subagent_narration(state, data, run_id, text) do
+    case Map.fetch(state.subagents, run_id) do
+      {:ok, %{status: :running} = tracked} ->
+        subagents = Map.put(state.subagents, run_id, Map.put(tracked, :narration, text))
+        narrate_subagent_tools(%{state | subagents: subagents}, data, text)
+
+      {:ok, _settled} ->
+        state
+
+      :error ->
+        narrate_subagent_tools(state, data, text)
+    end
+  end
+
+  defp narrate_subagent_tools(state, data, text) do
+    tools =
+      Enum.map(state.tool_activity, fn tool ->
+        if Map.get(tool, :status) == :running and same_subagent_progress?(tool, data),
+          do: Map.put(tool, :narration, text),
+          else: tool
+      end)
+
+    %{state | tool_activity: tools}
+  end
+
+  defp clear_narration(state, data) do
+    run_id = value(data, :run_id)
+
+    subagents =
+      case Map.fetch(state.subagents, run_id) do
+        {:ok, tracked} -> Map.put(state.subagents, run_id, Map.delete(tracked, :narration))
+        :error -> state.subagents
+      end
+
+    tools =
+      Enum.map(state.tool_activity, fn tool ->
+        if same_subagent_progress?(tool, data), do: Map.delete(tool, :narration), else: tool
+      end)
+
+    %{state | subagents: subagents, tool_activity: tools}
+  end
+
+  defp narration_text(text) when is_binary(text) do
+    case String.valid?(text) && text |> MessageView.sanitize() |> String.split() |> Enum.join(" ") do
+      line when is_binary(line) and line != "" -> String.slice(line, 0, @max_narration_chars)
+      _invalid_or_blank -> nil
+    end
+  end
+
+  defp narration_text(_text), do: nil
 
   defp put_subagent_progress(state, data) do
     run_id = value(data, :run_id)
