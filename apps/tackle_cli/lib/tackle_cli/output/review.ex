@@ -247,18 +247,34 @@ defmodule Tackle.CLI.Output.Review do
 
   def cost_summary(_summary), do: nil
 
-  # One line per stage that ran, then the total wall time.
+  # One line per stage that ran, then the total of all stages.
   defp cost(summary, output) do
-    stages =
-      for stage <- [:detector, :verifier, :scorer],
-          stats = summary |> Map.get(:stages, %{}) |> Map.get(stage),
-          stats != nil,
-          do: ["\n", muted(output, "  #{stage}: " <> describe_stage(stage, stats))]
+    stages = Map.get(summary, :stages, %{})
 
-    case {stages, Map.get(summary, :duration_ms)} do
-      {[], _duration} -> []
-      {stages, duration} -> [["\n", muted(output, "Cost (#{duration(duration)}):")] | stages]
+    lines =
+      for stage <- [:detector, :verifier, :scorer],
+          stats = Map.get(stages, stage),
+          stats != nil,
+          do: "  #{stage}: " <> describe_stage(stage, stats)
+
+    case lines do
+      [] ->
+        []
+
+      lines ->
+        duration = duration(Map.get(summary, :duration_ms))
+
+        lines =
+          ["Cost (#{duration}):" | lines] ++ ["  total: " <> describe_total(stages, duration)]
+
+        Enum.map(lines, &["\n", muted(output, &1)])
     end
+  end
+
+  defp describe_total(stages, duration) do
+    runs = stages |> Map.values() |> Enum.map(& &1.runs) |> Enum.sum()
+    usage = stages |> Map.values() |> Enum.map(& &1.usage) |> Usage.aggregate()
+    "#{plural(runs, "model run")}, #{tokens(usage)}, #{duration}"
   end
 
   defp describe_stage(stage, stats) do

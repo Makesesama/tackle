@@ -198,6 +198,7 @@ defmodule Tackle.CLI.ReviewTest do
     assert stdout =~ ~r/detector: 2 runs, \d+ in, \d+ out, /
     assert stdout =~ ~r/verifier: 1 run, /
     assert stdout =~ ~r/scorer: 1 call, /
+    assert stdout =~ ~r/total: 4 model runs, \d+ in, \d+ out, /
 
     assert stderr =~ "Reviewing 2 units…"
     assert stderr =~ "Reviewed lib/a.ex#1"
