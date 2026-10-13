@@ -73,6 +73,7 @@ defmodule Tackle.Lib.Loop do
     * `:event_context` - Additional host context merged into tool execution context.
     * `:llm_stream` - When true, use the optional `stream/3` callback in `Tackle.Lib.LLM` if the adapter supports it.
     * `:cancellation_signal` - Optional `Tackle.Lib.Cancellation.Signal` checked between loop steps.
+      Tools receive the per-call child signal (`Tackle.Lib.Cancellation.for_call/2`).
     * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot. When omitted,
       the state's configured id generator is used.
     * `:tool_supervisor` - Optional `Task.Supervisor` used when the state's tool policy is
@@ -1005,11 +1006,16 @@ defmodule Tackle.Lib.Loop do
   defp execution_job(%Call{name: name} = call, state, callbacks) do
     # Preserve the task's exception telemetry and crash settlement if preparing
     # a call fails (for example, an invalid host execution context).
+    call_signal = Cancellation.for_call(callbacks.cancellation_signal, call.id)
+
     execution =
       try do
         case Registry.resolve(tool_registry(callbacks), call) do
-          {:ok, %{module: module}} -> {:ok, module, tool_context(state, callbacks, call)}
-          {:error, reason} -> {:error, reason}
+          {:ok, %{module: module}} ->
+            {:ok, module, tool_context(state, callbacks, call, call_signal)}
+
+          {:error, reason} ->
+            {:error, reason}
         end
       catch
         kind, reason -> {:raise, kind, reason, __STACKTRACE__}
@@ -1017,6 +1023,7 @@ defmodule Tackle.Lib.Loop do
 
     %{
       call: call,
+      call_signal: call_signal,
       execution: execution,
       telemetry_name: telemetry_tool_name(name, state.context),
       telemetry_adapter: get_in(state.context, [:telemetry, :adapter])
@@ -1025,8 +1032,16 @@ defmodule Tackle.Lib.Loop do
 
   # Runs one call's settle pipeline (execute, validate, telemetry).
   # Sequential execution calls this inline; concurrent execution calls it inside a
-  # supervised task. It never touches agent state or emits agent events.
-  defp settle_tool_call(%{
+  # supervised task. It never touches agent state or emits agent events. Once the
+  # call settles, its per-call cancellation record (if a host cancelled it) is no
+  # longer observed by anyone, so it is deleted.
+  defp settle_tool_call(%{call_signal: call_signal} = job) do
+    settle_tool_call_job(job)
+  after
+    Cancellation.delete(call_signal)
+  end
+
+  defp settle_tool_call_job(%{
          call: tool_call,
          execution: execution,
          telemetry_name: telemetry_name,
@@ -1217,13 +1232,16 @@ defmodule Tackle.Lib.Loop do
   defp maybe_put_cancellation_signal(opts, signal),
     do: Keyword.put(opts, :cancellation_signal, signal)
 
-  defp tool_context(%State{} = state, callbacks, %Call{} = tool_call) do
+  # Tools receive their call's child signal: it observes turn cancellation and
+  # can also be cancelled on its own to stop just this call. The loop's boundary
+  # checks keep using the turn signal.
+  defp tool_context(%State{} = state, callbacks, %Call{} = tool_call, call_signal) do
     context =
       state.context
       |> Map.merge(callbacks.event_context)
       |> Map.put(:tool_call_id, tool_call.id)
 
-    case callbacks.cancellation_signal do
+    case call_signal do
       nil -> context
       signal -> Map.put(context, :cancellation_signal, signal)
     end

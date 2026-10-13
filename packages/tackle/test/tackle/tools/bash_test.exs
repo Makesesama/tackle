@@ -144,6 +144,36 @@ defmodule Tackle.Tools.BashTest do
     assert File.read!(path) == String.duplicate("x", 60_000) <> "ready"
   end
 
+  test "a binary cancellation reason of a per-call signal is the stop message", %{
+    executor: executor
+  } do
+    turn = Cancellation.new_signal()
+    call = Cancellation.for_call(turn, "call-1")
+
+    on_exit(fn ->
+      Cancellation.delete(call)
+      Cancellation.delete(turn)
+    end)
+
+    parent = self()
+
+    task =
+      Task.async(fn ->
+        bash(executor, %{"command" => "printf ready; sleep 5"}, %{
+          cancellation_signal: call,
+          event_callback: fn event ->
+            if event.data.delta =~ "ready", do: send(parent, :ready)
+          end
+        })
+      end)
+
+    assert_receive :ready, 2_000
+    assert :ok = Cancellation.cancel(call, "Command stopped by watchdog: stalled")
+    assert {:error, output} = Task.await(task, 2_000)
+    assert String.ends_with?(output, "Command stopped by watchdog: stalled")
+    refute Cancellation.cancelled?(turn)
+  end
+
   test "callback failures after spilling clean up the command file", %{executor: executor} do
     parent = self()
 

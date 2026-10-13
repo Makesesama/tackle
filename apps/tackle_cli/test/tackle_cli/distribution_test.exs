@@ -96,13 +96,14 @@ defmodule Tackle.CLI.DistributionTest do
     assert skill.requires_tools == ["run_workflow"]
   end
 
-  test "bundles Codex, DeepSeek, Anthropic, OpenRouter, and Ollama Cloud as default adapters" do
+  test "bundles Codex, DeepSeek, Anthropic, OpenRouter, Ollama Cloud, and local Ollama as default adapters" do
     assert Distribution.default_adapters() == [
              Tackle.Plugins.Codex,
              Tackle.Plugins.DeepSeek,
              Tackle.Plugins.Anthropic,
              Tackle.Plugins.OpenRouter,
-             Tackle.Plugins.Ollama
+             Tackle.Plugins.Ollama,
+             Tackle.Plugins.OllamaLocal
            ]
   end
 
@@ -134,6 +135,37 @@ defmodule Tackle.CLI.DistributionTest do
              Tackle.Auth.Provider.usage("ollama-cloud", adapters: adapters)
   end
 
+  test "exposes the default local Ollama decision model and configured chat models" do
+    Application.delete_env(:tackle, :adapters)
+    previous = Application.get_env(:tackle_ollama, Tackle.Plugins.OllamaLocal)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:tackle_ollama, Tackle.Plugins.OllamaLocal, previous),
+        else: Application.delete_env(:tackle_ollama, Tackle.Plugins.OllamaLocal)
+    end)
+
+    # The distribution offers only the tev1 decision model by default.
+    assert {:ok, models} = Distribution.available_models()
+    refute Enum.any?(models, &String.starts_with?(&1, "ollama/"))
+    assert {:ok, catalog} = Distribution.catalog()
+    adapters = Tackle.Plugins.Catalog.adapter_modules(catalog)
+
+    assert {:ok, %{adapter: Tackle.Plugins.OllamaLocal}} =
+             Tackle.Lib.Decision.select(adapters, "ollama/tev1:4b")
+
+    Application.put_env(:tackle_ollama, Tackle.Plugins.OllamaLocal,
+      models: ["qwen3:8b"],
+      decision_models: ["tev1:4b"]
+    )
+
+    assert {:ok, models} = Distribution.available_models()
+    assert "ollama/qwen3:8b" in models
+
+    assert {:ok, %{adapter: Tackle.Plugins.OllamaLocal}} =
+             Tackle.Lib.LLM.select(adapters, "ollama/qwen3:8b")
+  end
+
   test "registers the bundled adapters with the harness" do
     Application.delete_env(:tackle, :adapters)
 
@@ -144,7 +176,8 @@ defmodule Tackle.CLI.DistributionTest do
              Tackle.Plugins.DeepSeek,
              Tackle.Plugins.Anthropic,
              Tackle.Plugins.OpenRouter,
-             Tackle.Plugins.Ollama
+             Tackle.Plugins.Ollama,
+             Tackle.Plugins.OllamaLocal
            ]
   end
 end

@@ -1,7 +1,15 @@
-# Tackle Ollama Cloud
+# Tackle Ollama
 
-Optional `Tackle.Lib.LLM` provider plugin, connecting directly to
-`https://ollama.com/v1/chat/completions`. No local Ollama installation is needed.
+Optional provider plugins for Ollama:
+
+- `Tackle.Plugins.Ollama` (adapter id `ollama-cloud`): a `Tackle.Lib.LLM`
+  adapter connecting directly to `https://ollama.com/v1/chat/completions`. No
+  local Ollama installation is needed.
+- `Tackle.Plugins.OllamaLocal` (adapter id `ollama`): a `Tackle.Lib.LLM` and
+  `Tackle.Lib.Decision` adapter for a local Ollama server, without an API key.
+  See [Local Ollama](#local-ollama).
+
+The sections before [Local Ollama](#local-ollama) describe the cloud adapter.
 
 ## Use in an Elixir host
 
@@ -121,6 +129,60 @@ Tool results are text-only in this adapter; image parts become an explicit
 omission note. Reasoning replay is restricted to this provider and model.
 Missing provider tool-call ids are synthesized uniquely per completion and kept
 stable across stream events and subsequent tool history.
+
+## Local Ollama
+
+`Tackle.Plugins.OllamaLocal` talks to a local (or self-hosted) Ollama server.
+It sends no API key or authorization header and never reads the
+`ollama-cloud` credentials. Chat uses the same Chat Completions transport as the
+cloud adapter (streaming, tools, JSON Schema responses, reasoning replay,
+cancellation); results report `provider: "ollama"`.
+
+Nothing is discovered from the server. Chat and decision models are selectable
+only when configured; entries are ids or `{id, model_info}` tuples:
+
+```elixir
+config :tackle_ollama, Tackle.Plugins.OllamaLocal,
+  base_url: "http://localhost:11434/v1",
+  models: ["qwen3:8b", {"gpt-oss:20b", %{context_window: 131_072}}],
+  decision_models: ["tev1:4b"]
+```
+
+```elixir
+{:ok, llm} = Tackle.Lib.LLM.select([Tackle.Plugins.OllamaLocal], "ollama/qwen3:8b")
+
+{:ok, decision} =
+  Tackle.Lib.Decision.select([Tackle.Plugins.OllamaLocal], "ollama/tev1:4b")
+
+question =
+  Tackle.Lib.Decision.Question.choice("verdict", "Is this command stuck?", %{
+    "progressing" => "Output is still advancing",
+    "stalled" => "No progress is being made"
+  })
+
+{:ok, result} = Tackle.Lib.Decision.decide(decision, "command: make test ...", [question], [])
+result.answers["verdict"].choice
+```
+
+The base URL (default `http://localhost:11434/v1`) is resolved per request:
+the `:base_url` option, then `provider_options` → `"ollama"` → `"base_url"`
+(for example from the harness `config.json` `"provider_options"` field), then
+the configured `:base_url`, then the default.
+
+Decisions use Ollama's [System One](https://docs.ollama.com/capabilities/decision)
+endpoint, `POST <base_url>/systemone`, with Ollama decision models such as
+`tev1:4b`. Requests are validated against the `Tackle.Lib.Decision` limits
+before sending. Every asked question must be answered with its own type;
+`choice` answers must name a known option, and a `score` without an explicit
+value is the probability-weighted average of its zero-based levels. Non-2xx
+responses return `{:error, {:http_error, status, body}}`. `decide/2` honours
+`:cancellation_signal` (an in-flight request is abandoned) and
+`:receive_timeout` (default 60,000 ms, since a model may load on first use).
+
+The CLI bundles this adapter next to `ollama-cloud`. Its distribution config
+makes `ollama/tev1:4b` selectable as a decision model; it offers no local chat
+models unless `:models` is configured in the host's application environment
+(an adapter without configured models is accepted by the harness catalog).
 
 ## Validation
 

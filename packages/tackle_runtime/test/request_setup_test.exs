@@ -219,6 +219,31 @@ defmodule Tackle.Runtime.RequestSetupTest do
     assert_receive {:DOWN, ^monitor, :process, ^child, _reason}, 2_000
   end
 
+  test "auxiliary events are forwarded but do not renew the idle window" do
+    test_pid = self()
+    callback = fn event -> send(test_pid, {:forwarded, event.type, event.data}) end
+    {_scope, run_ref, child, request} = start_idle_request(:until_collected, 200, callback)
+    original_timer = :sys.get_state(request).idle_timer
+
+    for message <- [
+          {:progress, Event.new(:status_change, %{auxiliary: true, notice: "watching"})},
+          {:raw,
+           {:tackle_event, "session", "turn", Event.new(:status_change, %{auxiliary: true})}}
+        ] do
+      Process.sleep(60)
+
+      case message do
+        {:progress, event} -> :ok = Backend.call(child, :progress, [event])
+        {:raw, raw} -> send(request, raw)
+      end
+
+      assert_receive {:forwarded, :status_change, %{auxiliary: true}}
+      assert :sys.get_state(request).idle_timer == original_timer
+    end
+
+    assert %{status: :timeout, reason: :run_timeout} = Runtime.await(run_ref, 2_000)
+  end
+
   test "stale idle timers and late progress cannot change a settled outcome" do
     {_scope, run_ref, child, request} = start_idle_request(:until_collected, 60_000)
     first_timer = :sys.get_state(request).idle_timer
@@ -242,7 +267,7 @@ defmodule Tackle.Runtime.RequestSetupTest do
     assert %{status: :ok} = Request.collect(run_ref)
   end
 
-  defp start_idle_request(retention, timeout) do
+  defp start_idle_request(retention, timeout, event_callback \\ nil) do
     root =
       AgentSpec.new!(
         name: "root",
@@ -258,7 +283,10 @@ defmodule Tackle.Runtime.RequestSetupTest do
     on_exit(fn -> Runtime.stop_scope(scope.scope_ref) end)
 
     {:ok, run_ref} =
-      Runtime.request_agent(scope.root_agent_ref, "child", "go", retention: retention)
+      Runtime.request_agent(scope.root_agent_ref, "child", "go",
+        retention: retention,
+        event_callback: event_callback
+      )
 
     assert_receive {:child_started, child}, 2_000
     {:ok, request} = Registry.whereis(run_ref)

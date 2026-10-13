@@ -5,6 +5,11 @@ defmodule Tackle.Runtime.AgentContext do
   Backends use `register/2` from their agent process during initialization. This
   binds the stable `AgentRef` to the live process and completes coordinator
   admission without exposing PIDs through the public runtime API.
+
+  `tool_supervisor` names the agent's tool `Task.Supervisor`.
+  `service_task_supervisor` names the `Task.Supervisor` of the agent's
+  `Tackle.Runtime.ServiceSupervisor` and is `nil` when the backend runs no
+  services for the agent.
   """
 
   alias Tackle.AgentScope.Coordinator
@@ -29,6 +34,7 @@ defmodule Tackle.Runtime.AgentContext do
     :coordinator,
     :work_supervisor,
     :tool_supervisor,
+    :service_task_supervisor,
     :lifetime,
     :allow_delegation,
     :limits,
@@ -45,6 +51,7 @@ defmodule Tackle.Runtime.AgentContext do
           coordinator: GenServer.server(),
           work_supervisor: GenServer.server(),
           tool_supervisor: Supervisor.supervisor() | nil,
+          service_task_supervisor: Supervisor.supervisor() | nil,
           lifetime: :explicit | :ephemeral,
           allow_delegation: boolean(),
           limits: Tackle.Runtime.Limits.t(),

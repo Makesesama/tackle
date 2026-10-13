@@ -27,6 +27,7 @@ The runtime owns:
 
 - root scopes and logical parent/child ownership;
 - per-agent tool `Task.Supervisor` processes;
+- per-agent service supervision for backend-provided services;
 - concurrency, depth, and child limits;
 - delegated request/await/collect/cancel lifecycle;
 - generic subagent tools.
@@ -92,6 +93,8 @@ Delegated requests have no total runtime cap. `AgentSpec.timeout`,
 interval without child events (five minutes by default). Model steps, streaming
 output, tool boundaries, and tool progress renew that interval for foreground
 and background runs. A silent model/tool call can still expire the idle window.
+Auxiliary events, whose data carries `auxiliary: true` (for example notices from
+agent services), are still forwarded but do not renew the interval.
 The subagent tool's `timeout_ms` override likewise sets an inactivity window.
 
 Backends must support `:subscribe` before `:submit` and deliver child events to
@@ -109,12 +112,39 @@ Tackle.AgentSupervisor
     ├── Coordinator
     └── Runtime.AgentSupervisor (root)
         ├── Task.Supervisor (tools)
-        └── host backend agent
+        ├── host backend agent
+        └── Runtime.ServiceSupervisor (only with services; temporary)
+            ├── Task.Supervisor (service tasks)
+            └── backend services
 ```
 
-Delegated agent subtrees are temporary children of the scope work supervisor.
-Stopping a scope terminates the root, descendants, requests, trusted work
-children, turn tasks, and tool tasks.
+Delegated agent subtrees are temporary children of the scope work supervisor
+and have the same layout. Stopping a scope terminates the root, descendants,
+requests, trusted work children, turn tasks, tool tasks, and agent services.
+
+## Agent services
+
+A backend may implement the optional `services/2` callback to run processes
+beside each agent, root and delegated alike, such as a monitor that watches the
+agent's tool calls. It receives the agent spec and `AgentContext` and returns
+child specs; `[]` (or not implementing the callback) starts nothing.
+
+Services run under a `Tackle.Runtime.ServiceSupervisor` appended after the
+backend process, so they start after and stop before the agent. Its first child
+is a `Task.Supervisor` named by
+`Tackle.Runtime.Registry.service_task_supervisor_name/1` and passed as
+`context.service_task_supervisor`, for short-lived asynchronous service work.
+Services restart `:one_for_one` up to three times in five seconds. The service
+supervisor is a `:temporary` child of the `:one_for_all` agent subtree, so a
+crashing service, a service exceeding that bound, a service that fails to start,
+or a raising `services/2` callback never stops the agent; the agent simply
+continues without the affected services.
+
+Services act on their agent through the public runtime API. For example,
+`Tackle.Runtime.cancel_tool_call/3` stops one tool call of the agent's active
+turn through the backend's `:cancel_tool_call` operation, so the agent receives
+a tool error and continues. Backends without per-call cancellation return
+`{:error, {:unsupported_agent_operation, :cancel_tool_call}}`.
 
 ## Deployment boundary
 

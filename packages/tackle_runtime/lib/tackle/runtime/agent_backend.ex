@@ -11,7 +11,14 @@ defmodule Tackle.Runtime.AgentBackend do
   agent identity, coordinator, work supervisor, and dedicated tool supervisor.
   The backend process must register its live agent PID through
   `Tackle.Runtime.AgentContext.register/2` during initialization.
+
+  The optional `services/2` callback returns per-agent service child specs,
+  such as monitors that observe the agent's turns. They run under a
+  `Tackle.Runtime.ServiceSupervisor` that starts after and stops before the
+  backend process; a crashing service never stops the agent.
   """
+
+  require Logger
 
   alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentRef
@@ -31,6 +38,7 @@ defmodule Tackle.Runtime.AgentBackend do
           | :compact
           | :tree
           | :navigate
+          | :cancel_tool_call
 
   @callback validate_spec(AgentSpec.t()) :: :ok | {:error, term()}
   @callback child_spec(AgentSpec.t(), AgentContext.t()) :: Supervisor.child_spec()
@@ -48,6 +56,12 @@ defmodule Tackle.Runtime.AgentBackend do
 
   Backends own capacity,
   projection, and wake-up policy; they must not acknowledge dropped messages.
+
+  `:cancel_tool_call` receives `[tool_call_id, reason]` and stops only that
+  call of the agent's active turn, typically by cancelling the per-call signal
+  from `Tackle.Lib.Cancellation.for_call/2` with `reason`, so the tool reports
+  an error and the turn continues. Backends without per-call cancellation
+  return `{:error, {:unsupported_agent_operation, :cancel_tool_call}}`.
   """
   @callback call(pid(), operation(), [term()]) :: term()
   @callback prepare_child(AgentSpec.t(), pid()) :: {:ok, AgentSpec.t()} | {:error, term()}
@@ -66,7 +80,29 @@ defmodule Tackle.Runtime.AgentBackend do
   @callback outcome(term(), AgentRef.t()) :: Outcome.t()
   @callback notify(pid(), term()) :: :ok | {:error, term()}
 
-  @optional_callbacks prepare_child: 2, select_model: 2, model_ref: 1, outcome: 2, notify: 2
+  @doc """
+  Returns child specs for services that run beside one agent.
+
+  Called once when the agent subtree starts, with the same context the backend
+  child receives. `context.service_task_supervisor` names a `Task.Supervisor`
+  that services may use for short-lived asynchronous work. Return `[]` to run
+  no services; no service supervisor is started then. Services are restarted
+  within a small bound and are dropped, without affecting the agent, once it
+  is exceeded.
+
+  Services are started while the agent's subtree is still starting, so a
+  service's `init/1` must stay short and must not call into the agent's
+  supervisors (that deadlocks). Work that talks to the agent, such as
+  subscribing to its session, belongs in `handle_continue/2` or a timer.
+  """
+  @callback services(AgentSpec.t(), AgentContext.t()) :: [Supervisor.child_spec()]
+
+  @optional_callbacks prepare_child: 2,
+                      select_model: 2,
+                      model_ref: 1,
+                      outcome: 2,
+                      notify: 2,
+                      services: 2
 
   @doc false
   def validate_spec(backend, %AgentSpec{} = spec) when is_atom(backend) do
@@ -116,6 +152,38 @@ defmodule Tackle.Runtime.AgentBackend do
     exception -> {:error, {:agent_backend_failed, Exception.message(exception)}}
   catch
     :exit, reason -> {:error, {:agent_unavailable, reason}}
+  end
+
+  @doc false
+  @spec services(module(), AgentSpec.t(), AgentContext.t()) :: [Supervisor.child_spec()]
+  def services(backend, %AgentSpec{} = spec, %AgentContext{} = context) do
+    if function_exported?(backend, :services, 2) do
+      case backend.services(spec, context) do
+        services when is_list(services) ->
+          services
+
+        other ->
+          log_services_failure(backend, context, {:invalid_services, other})
+          []
+      end
+    else
+      []
+    end
+  rescue
+    exception ->
+      log_services_failure(backend, context, Exception.message(exception))
+      []
+  catch
+    kind, reason ->
+      log_services_failure(backend, context, {kind, reason})
+      []
+  end
+
+  defp log_services_failure(backend, context, reason) do
+    Logger.error(
+      "agent backend #{inspect(backend)} failed to provide services for " <>
+        "#{inspect(context.agent_ref)}: #{inspect(reason)}; starting without services"
+    )
   end
 
   @doc false

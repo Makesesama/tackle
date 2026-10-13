@@ -61,11 +61,85 @@ defmodule Tackle.Lib.LoopTest do
     @impl true
     def parameters_schema, do: []
 
+    # Tools receive their call's child signal; cancelling its parent (the turn
+    # signal) cancels the whole run.
     @impl true
     def execute(_args, %{test_pid: test_pid, cancellation_signal: signal}) do
       send(test_pid, {:tool_execute, :cancel_after})
-      Cancellation.cancel(signal, "stop requested")
+      send(test_pid, {:tool_signal, signal})
+      Cancellation.cancel(signal.parent, "stop requested")
       {:ok, %{ok: true}}
+    end
+  end
+
+  defmodule StoppableTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "stoppable"
+
+    @impl true
+    def description, do: "Runs until released or until its call signal is cancelled."
+
+    @impl true
+    def parameters_schema do
+      [name: [type: :string, required: true]]
+    end
+
+    @impl true
+    def execute(args, %{test_pid: test_pid, tool_call_id: call_id, cancellation_signal: signal}) do
+      name = Map.fetch!(args, "name")
+      send(test_pid, {:tool_entered, name, call_id, signal, self()})
+      await_release_or_stop(name, signal, 400)
+    end
+
+    @impl true
+    def model_error(reason) when is_binary(reason), do: reason
+
+    defp await_release_or_stop(name, _signal, 0), do: {:ok, %{name: name, timed_out: true}}
+
+    defp await_release_or_stop(name, signal, attempts) do
+      case Cancellation.reason(signal) do
+        nil ->
+          receive do
+            {:release, ^name} -> {:ok, %{name: name}}
+          after
+            5 -> await_release_or_stop(name, signal, attempts - 1)
+          end
+
+        {:watchdog, message} ->
+          {:error, message}
+
+        reason ->
+          {:error, "stopped: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defmodule StoppableToolAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      case Process.get(:call_count, 0) do
+        0 ->
+          Process.put(:call_count, 1)
+
+          {:ok,
+           %{
+             data: %{
+               "tool_calls" => [
+                 %{"id" => "c1", "name" => "stoppable", "arguments" => %{"name" => "one"}},
+                 %{"id" => "c2", "name" => "stoppable", "arguments" => %{"name" => "two"}}
+               ]
+             },
+             usage: nil,
+             model: "test/model"
+           }}
+
+        _count ->
+          {:ok, %{data: %{"content" => "done"}, usage: nil, model: "test/model"}}
+      end
     end
   end
 
@@ -1411,6 +1485,8 @@ defmodule Tackle.Lib.LoopTest do
 
     assert_receive {:event, %Event{type: :tool_start, data: %{name: "cancel_after"}}}
     assert_receive {:tool_execute, :cancel_after}
+    assert_receive {:tool_signal, tool_signal}
+    assert tool_signal == Cancellation.for_call(signal, "call_cancel")
     assert_receive {:event, %Event{type: :tool_end, data: %{name: "cancel_after"}}}
 
     # The never-started second call is settled with a synthetic result so the
@@ -1434,6 +1510,119 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:event, %Event{type: :status_change, data: %{status: :cancelled}}}
     assert_receive {:event, %Event{type: :turn_cancelled, data: %{reason: "stop requested"}}}
     refute_receive {:tool_execute, :second}, 20
+  end
+
+  describe "per-call cancellation" do
+    setup do
+      Application.put_env(:tackle_lib, :llm, StoppableToolAdapter)
+      signal = Cancellation.new_signal()
+      on_exit(fn -> Cancellation.delete(signal) end)
+      %{signal: signal}
+    end
+
+    test "cancelling one sequential call stops only that call", %{signal: signal} do
+      test_pid = self()
+
+      state =
+        State.new(model: "test/model", tools: [StoppableTool], context: %{test_pid: test_pid})
+
+      run =
+        Task.async(fn ->
+          Loop.run(state, "run both",
+            cancellation_signal: signal,
+            event_callback: fn event -> send(test_pid, {:event, event}) end
+          )
+        end)
+
+      assert_receive {:tool_entered, "one", "c1", call_signal, _pid}, 2_000
+      assert call_signal == Cancellation.for_call(signal, "c1")
+      assert call_signal.parent == signal
+
+      Cancellation.cancel(call_signal, {:watchdog, "stopped by watchdog"})
+      refute Cancellation.cancelled?(signal)
+
+      assert_receive {:tool_entered, "two", "c2", second_signal, tool_pid}, 2_000
+      refute Cancellation.cancelled?(second_signal)
+      send(tool_pid, {:release, "two"})
+
+      assert {:ok, final_state} = Task.await(run, 5_000)
+      assert final_state.status == :completed
+
+      assert [first, second] = Enum.filter(final_state.messages, &(&1.role == :tool))
+      assert first.tool_call_id == "c1"
+      assert first.content =~ "stopped by watchdog"
+      assert second.tool_call_id == "c2"
+      assert JSON.decode!(second.content) == %{"name" => "two"}
+
+      assert_receive {:event,
+                      %Event{type: :tool_error, data: %{tool_call_id: "c1", name: "stoppable"}}}
+
+      # The loop deletes a settled call's cancellation record.
+      assert Cancellation.reason(call_signal) == nil
+    end
+
+    test "cancelling one concurrent call leaves the rest of the batch running",
+         %{signal: signal} do
+      {:ok, supervisor} = Task.Supervisor.start_link()
+      test_pid = self()
+
+      state =
+        State.new(
+          model: "test/model",
+          tools: [StoppableTool],
+          tool_policy: Policy.concurrent(),
+          context: %{test_pid: test_pid}
+        )
+
+      run =
+        Task.async(fn ->
+          Loop.run(state, "run both", tool_supervisor: supervisor, cancellation_signal: signal)
+        end)
+
+      assert_receive {:tool_entered, "one", "c1", first_signal, first_task}, 2_000
+      assert_receive {:tool_entered, "two", "c2", second_signal, _second_task}, 2_000
+      assert first_signal == Cancellation.for_call(signal, "c1")
+      assert second_signal == Cancellation.for_call(signal, "c2")
+
+      Cancellation.cancel(second_signal, :stop_two)
+      refute Cancellation.cancelled?(first_signal)
+      send(first_task, {:release, "one"})
+
+      assert {:ok, final_state} = Task.await(run, 5_000)
+      assert final_state.status == :completed
+      assert [first, second] = Enum.filter(final_state.messages, &(&1.role == :tool))
+      assert JSON.decode!(first.content) == %{"name" => "one"}
+      assert second.content =~ "stopped: :stop_two"
+      assert Cancellation.reason(second_signal) == nil
+    end
+
+    test "cancelling the turn signal still stops every call", %{signal: signal} do
+      {:ok, supervisor} = Task.Supervisor.start_link()
+      test_pid = self()
+
+      state =
+        State.new(
+          model: "test/model",
+          tools: [StoppableTool],
+          tool_policy: Policy.concurrent(),
+          context: %{test_pid: test_pid}
+        )
+
+      run =
+        Task.async(fn ->
+          Loop.run(state, "run both", tool_supervisor: supervisor, cancellation_signal: signal)
+        end)
+
+      assert_receive {:tool_entered, "one", "c1", first_signal, _first_task}, 2_000
+      assert_receive {:tool_entered, "two", "c2", second_signal, _second_task}, 2_000
+
+      Cancellation.cancel(signal, "stop turn")
+      assert Cancellation.reason(first_signal) == "stop turn"
+      assert Cancellation.reason(second_signal) == "stop turn"
+
+      assert {:cancelled, final_state} = Task.await(run, 5_000)
+      assert final_state.error == "stop turn"
+    end
   end
 
   test "cancellation during before_tool_call prevents sequential tool dispatch" do

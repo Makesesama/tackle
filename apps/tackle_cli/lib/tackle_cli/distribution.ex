@@ -6,7 +6,8 @@ defmodule Tackle.CLI.Distribution do
     Tackle.Plugins.DeepSeek,
     Tackle.Plugins.Anthropic,
     Tackle.Plugins.OpenRouter,
-    Tackle.Plugins.Ollama
+    Tackle.Plugins.Ollama,
+    Tackle.Plugins.OllamaLocal
   ]
 
   # Delegation tools bundled with the CLI distribution. `run_workflow` is the

@@ -118,11 +118,16 @@ defmodule Tackle.Tools.Bash do
 
   defp stop_reason(run) do
     cond do
-      cancelled?(run.signal) -> "Command aborted"
+      cancelled?(run.signal) -> cancel_message(Cancellation.reason(run.signal))
       timed_out?(run.deadline) -> "Command timed out"
       true -> nil
     end
   end
+
+  # A host that stops one call (for example a watchdog) explains why with a
+  # binary reason; other reasons are internal terms, not agent-facing text.
+  defp cancel_message(reason) when is_binary(reason) and reason != "", do: reason
+  defp cancel_message(_reason), do: "Command aborted"
 
   defp flush_pending(run, output, pending_utf8) do
     emit_progress(run.context, sanitize(pending_utf8))

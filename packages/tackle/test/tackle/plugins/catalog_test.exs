@@ -43,6 +43,20 @@ defmodule Tackle.Plugins.CatalogTest do
     def models, do: ["small"]
   end
 
+  defmodule UnconfiguredAdapter do
+    @behaviour Tackle.Lib.LLM
+    def adapter_id, do: "unconfigured"
+    def models, do: []
+    def generate(_, _), do: {:error, :unused}
+  end
+
+  defmodule InvalidModelsAdapter do
+    @behaviour Tackle.Lib.LLM
+    def adapter_id, do: "invalid-models"
+    def models, do: ["small", "small"]
+    def generate(_, _), do: {:error, :unused}
+  end
+
   defmodule DuplicateAdapter do
     @behaviour Tackle.Lib.LLM
     def adapter_id, do: "catalog-test"
@@ -115,9 +129,23 @@ defmodule Tackle.Plugins.CatalogTest do
              )
   end
 
+  test "accepts an adapter that has no configured models yet" do
+    assert {:ok, catalog} =
+             Catalog.new(
+               adapters: [entry(Adapter, :cli), entry(UnconfiguredAdapter, :cli)],
+               tools: [],
+               hooks: []
+             )
+
+    assert Catalog.adapter_modules(catalog) == [Adapter, UnconfiguredAdapter]
+  end
+
   test "rejects invalid adapter models, hook contracts, and malformed options" do
     assert {:error, {:invalid_plugin, :adapter, :bad, {:invalid_adapter_id, "Bad id"}}} =
              Catalog.new(adapters: [entry(InvalidAdapter, :bad)], tools: [], hooks: [])
+
+    assert {:error, {:invalid_plugin, :adapter, :dup, {:invalid_models, ["small", "small"]}}} =
+             Catalog.new(adapters: [entry(InvalidModelsAdapter, :dup)], tools: [], hooks: [])
 
     assert {:error, {:invalid_plugin, :hook, :empty, :no_hook_callbacks}} =
              Catalog.new(adapters: [], tools: [], hooks: [entry(EmptyHook, :empty)])

@@ -37,6 +37,19 @@ defmodule Tackle.Lib.LLMTest do
     end
   end
 
+  defmodule UnconfiguredAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "unconfigured"
+
+    @impl true
+    def models, do: []
+
+    @impl true
+    def generate(_schema, _opts), do: {:error, :unused}
+  end
+
   defmodule SelectableAdapterA do
     @behaviour Tackle.Lib.LLM
 
@@ -206,6 +219,14 @@ defmodule Tackle.Lib.LLMTest do
 
       assert {:error, {:unknown_model, "provider-a/missing"}} =
                LLM.select([SelectableAdapterA], "provider-a/missing")
+    end
+
+    test "an adapter without models selects nothing but does not block other adapters" do
+      assert {:error, {:unknown_model, "unconfigured/anything"}} =
+               LLM.select([UnconfiguredAdapter], "unconfigured/anything")
+
+      assert {:ok, %Selection{adapter: SelectableAdapterA}} =
+               LLM.select([UnconfiguredAdapter, SelectableAdapterA], "provider-a/shared")
     end
 
     test "rejects duplicate adapter ids" do

@@ -7,6 +7,7 @@ defmodule Tackle.Lib.LLM.Selection do
   `adapter_id/model` identifier for configuration and auditing.
   """
 
+  @required_callbacks [adapter_id: 0, models: 0, generate: 2]
   @adapter_id_pattern ~r/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/
 
   alias Tackle.Lib.LLM
@@ -26,7 +27,7 @@ defmodule Tackle.Lib.LLM.Selection do
   @spec resolve([module()], String.t()) :: {:ok, t()} | {:error, term()}
   def resolve(adapters, model_ref) when is_list(adapters) and is_binary(model_ref) do
     with {:ok, {adapter_id, model}} <- parse_model_ref(model_ref),
-         {:ok, adapter_index} <- index_adapters(adapters),
+         {:ok, adapter_index} <- index_adapters(adapters, @required_callbacks),
          {:ok, adapter} <- fetch_adapter(adapter_index, adapter_id),
          {:ok, models} <- adapter_models(adapter, adapter_id),
          :ok <- ensure_model(models, adapter_id, model),
@@ -44,7 +45,12 @@ defmodule Tackle.Lib.LLM.Selection do
 
   def resolve(_adapters, model_ref), do: {:error, {:invalid_model_ref, model_ref}}
 
-  defp parse_model_ref(model_ref) do
+  # The helpers below are shared with `Tackle.Lib.Decision.Selection` so both
+  # selections parse references and validate adapters identically.
+
+  @doc false
+  @spec parse_model_ref(String.t()) :: {:ok, {String.t(), String.t()}} | {:error, term()}
+  def parse_model_ref(model_ref) do
     case String.split(model_ref, "/", parts: 2) do
       [adapter_id, model] when model != "" ->
         if valid_adapter_id?(adapter_id) and model == String.trim(model) do
@@ -58,9 +64,12 @@ defmodule Tackle.Lib.LLM.Selection do
     end
   end
 
-  defp index_adapters(adapters) do
+  @doc false
+  @spec index_adapters([module()], keyword(non_neg_integer())) ::
+          {:ok, %{String.t() => module()}} | {:error, term()}
+  def index_adapters(adapters, required_callbacks) do
     Enum.reduce_while(adapters, {:ok, %{}}, fn adapter, {:ok, index} ->
-      with :ok <- validate_adapter(adapter),
+      with :ok <- validate_adapter(adapter, required_callbacks),
            {:ok, adapter_id} <- adapter_callback(adapter, :adapter_id),
            :ok <- validate_adapter_id(adapter_id),
            :ok <- ensure_unique_adapter_id(index, adapter_id) do
@@ -71,18 +80,18 @@ defmodule Tackle.Lib.LLM.Selection do
     end)
   end
 
-  defp validate_adapter(adapter) when is_atom(adapter) and not is_nil(adapter) do
+  defp validate_adapter(adapter, required_callbacks)
+       when is_atom(adapter) and not is_nil(adapter) do
     case Code.ensure_loaded(adapter) do
-      {:module, ^adapter} -> validate_callbacks(adapter)
+      {:module, ^adapter} -> validate_callbacks(adapter, required_callbacks)
       {:error, reason} -> {:error, {:invalid_adapter, adapter, {:not_loaded, reason}}}
     end
   end
 
-  defp validate_adapter(adapter), do: {:error, {:invalid_adapter, adapter, :not_a_module}}
+  defp validate_adapter(adapter, _required_callbacks),
+    do: {:error, {:invalid_adapter, adapter, :not_a_module}}
 
-  defp validate_callbacks(adapter) do
-    required_callbacks = [adapter_id: 0, models: 0, generate: 2]
-
+  defp validate_callbacks(adapter, required_callbacks) do
     case Enum.find(required_callbacks, fn {name, arity} ->
            not function_exported?(adapter, name, arity)
          end) do
@@ -91,7 +100,9 @@ defmodule Tackle.Lib.LLM.Selection do
     end
   end
 
-  defp adapter_callback(adapter, callback) do
+  @doc false
+  @spec adapter_callback(module(), atom()) :: {:ok, term()} | {:error, term()}
+  def adapter_callback(adapter, callback) do
     {:ok, apply(adapter, callback, [])}
   rescue
     exception ->
@@ -129,7 +140,9 @@ defmodule Tackle.Lib.LLM.Selection do
     end
   end
 
-  defp validate_models(models, adapter_id) when is_list(models) do
+  @doc false
+  @spec validate_models(term(), String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def validate_models(models, adapter_id) when is_list(models) do
     Enum.reduce_while(models, {:ok, MapSet.new()}, fn model, {:ok, seen} ->
       cond do
         not valid_model?(model) ->
@@ -148,7 +161,7 @@ defmodule Tackle.Lib.LLM.Selection do
     end
   end
 
-  defp validate_models(models, adapter_id),
+  def validate_models(models, adapter_id),
     do: {:error, {:invalid_models, adapter_id, models}}
 
   defp valid_model?(model),

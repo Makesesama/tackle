@@ -5,6 +5,7 @@ defmodule Tackle.Plugins.Ollama.SSE do
   # an optional empty-choices usage frame, and [DONE]. Tool ids may be absent.
 
   defstruct buffer: "",
+            provider: nil,
             id_prefix: nil,
             generated_indices: MapSet.new(),
             data_lines: [],
@@ -22,6 +23,7 @@ defmodule Tackle.Plugins.Ollama.SSE do
 
   @type t :: %__MODULE__{
           buffer: binary(),
+          provider: String.t(),
           id_prefix: String.t(),
           generated_indices: MapSet.t(),
           data_lines: [binary()],
@@ -38,13 +40,15 @@ defmodule Tackle.Plugins.Ollama.SSE do
           cancelled?: boolean()
         }
 
-  @provider "ollama-cloud"
-
-  @spec new() :: t()
-  def new do
+  # `provider` is the adapter id recorded in reasoning provider state and used
+  # as the prefix of synthesized tool-call ids.
+  @spec new(String.t()) :: t()
+  def new(provider \\ "ollama-cloud") when is_binary(provider) do
     %__MODULE__{
+      provider: provider,
       id_prefix:
-        "ollama-cloud-generated-" <>
+        provider <>
+          "-generated-" <>
           Base.encode16(:crypto.strong_rand_bytes(12), case: :lower) <> "-"
     }
   end
@@ -577,7 +581,7 @@ defmodule Tackle.Plugins.Ollama.SSE do
   defp provider_state(%__MODULE__{thinking: ""}, _model), do: nil
 
   defp provider_state(state, model) do
-    %{"provider" => @provider, "model" => model}
+    %{"provider" => state.provider, "model" => model}
     |> maybe_put("reasoning", present_string(state.thinking))
   end
 

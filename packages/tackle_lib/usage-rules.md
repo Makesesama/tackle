@@ -56,7 +56,9 @@ Tackle.Lib.last_answer(state)
 - `:llm_stream` — when `true`, uses the adapter's `stream/3` if implemented,
   falling back to `generate/2`.
 - `:cancellation_signal` — a `Tackle.Lib.Cancellation.Signal` checked between loop
-  steps and passed into tool context; adapters/tools should observe it and abort.
+  steps; adapters receive it and tools receive its per-call child
+  (`Tackle.Lib.Cancellation.for_call/2`), which a host can cancel to stop just
+  that call. Adapters/tools should observe it and abort.
 
 ## Defining tools
 

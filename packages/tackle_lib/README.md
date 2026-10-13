@@ -478,6 +478,49 @@ native keyword schema, `Tackle.Lib.Tool.Schema.JsonSchema.to_json_schema/1` prov
 the standard JSON Schema projection. `JsonSchema.validate_output/2` validates
 JSON Schema maps using JSV and Draft 2020-12.
 
+### Decision models
+
+`Tackle.Lib.Decision` is an optional contract for small decision models that
+answer typed questions about a state instead of chatting. An adapter may
+implement it next to `Tackle.Lib.LLM` (it still needs `adapter_id/0`):
+
+```elixir
+@callback decision_models() :: [String.t()]
+@callback decide(Tackle.Lib.Decision.Request.t(), opts :: keyword()) ::
+            {:ok, Tackle.Lib.Decision.Result.t()} | {:error, term()}
+```
+
+```elixir
+alias Tackle.Lib.Decision
+alias Tackle.Lib.Decision.Question
+
+{:ok, selection} = Decision.select(adapters, "ollama/tev1:4b")
+
+question =
+  Question.choice("verdict", "Is this command stuck?", %{
+    "progressing" => "Output is still advancing",
+    "infinite_loop" => "The same output repeats forever",
+    "stalled" => nil
+  })
+
+{:ok, %Decision.Result{answers: %{"verdict" => answer}}} =
+  Decision.decide(selection, %{"command" => "make test"}, [question],
+    receive_timeout: 10_000
+  )
+```
+
+Questions are `:choice` (option => description or `nil`, 2–24 options),
+`:noul` (yes/no with the probability of `true`; optional `"true"`/`"false"`
+descriptions), or `:score` (2–24 level descriptions, lowest first). Requests are
+validated before an adapter is called: 1–64 uniquely named questions, a
+non-empty binary/map/list state, and at most 64 KiB once encoded with
+`Tackle.Lib.Decision.Request.to_json_map/1`. `select/2` parses references like
+`Tackle.Lib.LLM.select/2`, accepts adapters without decision support in the
+list, and reports `{:unsupported_decision_adapter, id}` or
+`{:unknown_decision_model, ref}` explicitly. Adapters receive
+`:cancellation_signal`, `:provider_options`, and `:receive_timeout` in opts; the
+library itself performs no HTTP.
+
 ## Tool system
 
 ### Behaviour and DSL
@@ -614,8 +657,9 @@ list. Do not rely on provider options as the authorization boundary.
 ## Context and authorization
 
 `Tackle.Lib.State.context` is an opaque host map. Tackle.Lib passes it through hooks and
-to every tool. If a cancellation signal exists, the tool receives it under
-`:cancellation_signal` as well.
+to every tool. If a cancellation signal exists, the tool receives its call's
+child signal (`Tackle.Lib.Cancellation.for_call/2`) under `:cancellation_signal`
+as well.
 
 A useful host context shape is:
 
@@ -759,6 +803,16 @@ The adapter receives the cancellation signal in its opts and tools receive it
 in context. Long-running adapters and tools should check
 `Tackle.Lib.Cancellation.cancelled?/1` and abort their own work.
 
+Each tool's `:cancellation_signal` is a per-call child of the turn signal,
+derived with `Tackle.Lib.Cancellation.for_call(turn_signal, tool_call_id)`. A
+child reports its own reason first and otherwise its parent's, so cancelling the
+turn still stops every call, while a host (for example a watchdog) can cancel
+one child to stop only that call; the tool returns an error and the turn
+continues. Child ids are the deterministic `{parent_id, tool_call_id}`, so the
+host derives the same child from the turn signal it already holds. The loop
+deletes each child record after its call settles; hosts that cancel children
+should still delete them once the turn settles.
+
 Cancellation is cooperative, not preemptive. Tackle.Lib cannot interrupt code that
 ignores the signal. Delete signals after terminal settlement with
 `Tackle.Lib.Cancellation.delete/1`; `Tackle.Phoenix.Runner` manages this lifecycle
@@ -779,6 +833,8 @@ starts dependency applications; standalone scripts can use
 if the table is unavailable; they never create a replacement in the caller.
 Records are not durable across store owner or application restarts. Custom stores
 remain host-owned: the host is responsible for starting and supervising them.
+Store ids are references for turn signals and `{parent_id, tool_call_id}` tuples
+for per-call signals, so custom stores must accept any such term as a key.
 
 ## Prompts and structured non-tool responses
 
@@ -1174,6 +1230,7 @@ Start with these files:
 - `lib/tackle_lib/state.ex` and `lib/tackle_lib/message.ex` — in-memory model
 - `lib/tackle_lib/usage.ex`, `model_info.ex`, and `context_usage.ex` — session statistics
 - `lib/tackle_lib/llm.ex` — provider contract
+- `lib/tackle_lib/decision.ex` — optional decision-model contract
 - `lib/tackle_lib/tool.ex` and `lib/tackle_lib/tool/schema.ex` — tool contract
 - `lib/tackle_lib/hook.ex` and `lib/tackle_lib/event.ex` — extension/streaming seams
 - `lib/tackle_lib/cancellation.ex` — cooperative cancellation

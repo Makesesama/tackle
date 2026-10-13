@@ -24,6 +24,60 @@ defmodule Tackle.Plugins.Ollama.HTTP do
     kind, reason -> {:error, {:request_failed, {kind, reason}}}
   end
 
+  @cancel_poll_ms 50
+
+  @doc """
+  Sends a non-streaming request and returns the whole response.
+
+  `opts[:request]` replaces `Req.request/1` (tests inject it). With a
+  `:cancellation_signal` the request runs in a linked task that is killed once
+  the signal is cancelled, returning `{:error, :cancelled}`.
+  """
+  @spec request(keyword(), keyword()) :: {:ok, Req.Response.t() | map()} | {:error, term()}
+  def request(request_options, opts \\ []) do
+    request_fun = Keyword.get(opts, :request, &Req.request/1)
+
+    case Keyword.get(opts, :cancellation_signal) do
+      nil -> send_request(request_fun, request_options)
+      signal -> cancellable_request(request_fun, request_options, signal)
+    end
+  end
+
+  defp cancellable_request(request_fun, request_options, signal) do
+    task = Task.async(fn -> send_request(request_fun, request_options) end)
+    await_unless_cancelled(task, signal)
+  end
+
+  defp await_unless_cancelled(task, signal) do
+    case Task.yield(task, @cancel_poll_ms) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        {:error, {:request_failed, {:exit, reason}}}
+
+      nil ->
+        if Tackle.Lib.Cancellation.cancelled?(signal) do
+          Task.shutdown(task, :brutal_kill)
+          {:error, :cancelled}
+        else
+          await_unless_cancelled(task, signal)
+        end
+    end
+  end
+
+  defp send_request(request_fun, request_options) do
+    case request_fun.(request_options) do
+      {:ok, %{status: status} = response} when is_integer(status) -> {:ok, response}
+      {:error, reason} -> {:error, {:request_failed, reason}}
+      other -> {:error, {:invalid_http_response, other}}
+    end
+  rescue
+    exception -> {:error, {:request_failed, Exception.message(exception)}}
+  catch
+    kind, reason -> {:error, {:request_failed, {kind, reason}}}
+  end
+
   defp stream_request(request_options, initial_acc, callback, opts) do
     case Keyword.fetch(opts, :request) do
       {:ok, request_fun} ->

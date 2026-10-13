@@ -112,6 +112,23 @@ defmodule Tackle.Runtime do
   end
 
   @doc """
+  Requests cancellation of one tool call in an agent's active turn.
+
+  Only that call is stopped: its tool observes `reason` through its per-call
+  cancellation signal (see `Tackle.Lib.Cancellation.for_call/2`) and reports a
+  tool error, while the turn continues. Backends without per-call cancellation
+  return `{:error, {:unsupported_agent_operation, :cancel_tool_call}}`.
+  """
+  @spec cancel_tool_call(AgentRef.t(), String.t(), term()) :: :ok | {:error, term()}
+  def cancel_tool_call(%AgentRef{} = agent_ref, tool_call_id, reason)
+      when is_binary(tool_call_id) and tool_call_id != "" do
+    with_agent(agent_ref, :cancel_tool_call, [tool_call_id, reason])
+  end
+
+  def cancel_tool_call(%AgentRef{}, tool_call_id, _reason),
+    do: {:error, {:invalid_tool_call_id, tool_call_id}}
+
+  @doc """
   Explicitly abandons an interrupted durable turn for an agent.
 
   Resuming a session whose journal ends without a terminal turn event requires
@@ -223,8 +240,9 @@ defmodule Tackle.Runtime do
   helper installs correlated terminal routing, and a fresh ephemeral agent runs
   the delegated prompt. Returns a stable `RunRef` for `await/2`.
 
-  `:timeout` overrides the inactivity window, renewed on each child event; it
-  does not cap total run duration. Without an override, the window comes from
+  `:timeout` overrides the inactivity window, renewed on each child event
+  except auxiliary ones (`data.auxiliary == true`); it does not cap total run
+  duration. Without an override, the window comes from
   the agent spec, bounded by the scope's `run_timeout`. Explicit `await/2`
   timeouts still bound the caller's total wait.
 

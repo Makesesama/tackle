@@ -140,4 +140,82 @@ defmodule Tackle.Lib.CancellationTest do
     assert Cancellation.cancel(signal, :cancelled) == :ok
     assert Cancellation.reason(signal) == :cancelled
   end
+
+  describe "for_call/2" do
+    test "returns nil without a turn signal" do
+      assert Cancellation.for_call(nil, "call_1") == nil
+    end
+
+    test "derives a deterministic child that shares the parent's store" do
+      Application.put_env(:tackle_lib, :cancellation_store, AgentStore)
+      signal = Cancellation.new_signal()
+
+      child = Cancellation.for_call(signal, "call_1")
+
+      assert %Cancellation.Signal{id: {parent_id, "call_1"}, store: AgentStore} = child
+      assert parent_id == signal.id
+      assert child.parent == signal
+      assert Cancellation.for_call(signal, "call_1") == child
+      refute Cancellation.for_call(signal, "call_2") == child
+    end
+
+    test "child observes parent cancellation, but not the other way round" do
+      Application.delete_env(:tackle_lib, :cancellation_store)
+      signal = Cancellation.new_signal()
+      child = Cancellation.for_call(signal, "call_1")
+      sibling = Cancellation.for_call(signal, "call_2")
+
+      on_exit(fn ->
+        Enum.each([signal, child, sibling], &Cancellation.delete/1)
+      end)
+
+      assert Cancellation.cancel(child, {:watchdog, "stuck"}) == :ok
+      assert Cancellation.reason(child) == {:watchdog, "stuck"}
+      assert Cancellation.cancelled?(child)
+      refute Cancellation.cancelled?(signal)
+      refute Cancellation.cancelled?(sibling)
+
+      assert Cancellation.cancel(signal, :user_cancelled) == :ok
+      # The child's own reason wins; an uncancelled sibling inherits the parent's.
+      assert Cancellation.reason(child) == {:watchdog, "stuck"}
+      assert Cancellation.reason(sibling) == :user_cancelled
+
+      assert Cancellation.delete(child) == :ok
+      assert Cancellation.reason(child) == :user_cancelled
+      assert Cancellation.reason(signal) == :user_cancelled
+
+      assert Cancellation.delete(signal) == :ok
+      refute Cancellation.cancelled?(child)
+      refute Cancellation.cancelled?(sibling)
+    end
+
+    test "nested children fall back through every ancestor" do
+      Application.put_env(:tackle_lib, :cancellation_store, AgentStore)
+      signal = Cancellation.new_signal()
+      child = Cancellation.for_call(signal, "call_1")
+      grandchild = Cancellation.for_call(child, "inner")
+
+      assert grandchild.id == {child.id, "inner"}
+      refute Cancellation.cancelled?(grandchild)
+
+      Cancellation.cancel(signal, "stop")
+      assert Cancellation.reason(grandchild) == "stop"
+
+      Cancellation.cancel(child, "stop child")
+      assert Cancellation.reason(grandchild) == "stop child"
+    end
+
+    test "children of old signals keep the parent's original store" do
+      Application.put_env(:tackle_lib, :cancellation_store, AgentStore)
+      signal = Cancellation.new_signal()
+      Application.put_env(:tackle_lib, :cancellation_store, FailingStore)
+
+      child = Cancellation.for_call(signal, "call_1")
+
+      assert child.store == AgentStore
+      assert Cancellation.cancel(child, :stop) == :ok
+      assert Cancellation.reason(child) == :stop
+      assert Cancellation.delete(child) == :ok
+    end
+  end
 end

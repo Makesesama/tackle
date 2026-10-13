@@ -21,6 +21,8 @@ defmodule Tackle.Plugins.Ollama do
   environment variable. `login/1` prompts for a key through a
   `Tackle.Lib.Interaction` handle. No account usage API is exposed.
 
+  The Chat Completions transport is shared with `Tackle.Plugins.OllamaLocal`,
+  which talks to a local Ollama server under its own adapter identity.
   """
 
   @behaviour Tackle.Lib.LLM
@@ -112,22 +114,66 @@ defmodule Tackle.Plugins.Ollama do
     perform(schema, opts, event_callback)
   end
 
-  defp perform(schema, opts, event_callback) do
-    with :ok <- validate_model(opts),
+  defp perform(schema, opts, event_callback),
+    do: chat(cloud_profile(), schema, opts, event_callback)
+
+  defp cloud_profile do
+    %{
+      adapter_id: @adapter_id,
+      models: &models/0,
+      base_url: &Keyword.get(&1, :base_url, @default_base_url),
+      api_key: :required,
+      user_agent: "tackle-ollama-cloud"
+    }
+  end
+
+  @typedoc """
+  The provider identity a Chat Completions request runs under.
+
+    * `:adapter_id` - reported as the result `:provider`, used for reasoning
+      replay, generated tool-call ids, and the credential namespace.
+    * `:models` - returns the selectable adapter-local model ids.
+    * `:base_url` - resolves the OpenAI-compatible base URL from request options.
+    * `:api_key` - `:required` sends a bearer key; `:none` sends no
+      authorization header.
+    * `:user_agent` - user-agent product name; the package version is appended.
+  """
+  @type profile :: %{
+          adapter_id: String.t(),
+          models: (-> [String.t()]),
+          base_url: (keyword() -> String.t()),
+          api_key: :required | :none,
+          user_agent: String.t()
+        }
+
+  @doc false
+  # Shared Chat Completions entrypoint for the Ollama adapters in this package.
+  @spec chat(profile(), keyword() | map() | nil, keyword(), (map() -> any())) ::
+          {:ok, map()} | {:error, term()}
+  def chat(profile, schema, opts, event_callback) when is_function(event_callback, 1) do
+    with :ok <- validate_model(profile, opts),
          :ok <- not_cancelled(opts),
-         {:ok, api_key} <- api_key(opts),
-         {:ok, body} <- build_request_body(schema, opts),
-         {:ok, response} <- send_request(body, opts, api_key, event_callback),
+         {:ok, api_key} <- profile_api_key(profile, opts),
+         {:ok, body} <- build_request_body(profile, schema, opts),
+         {:ok, response} <- send_request(profile, body, opts, api_key, event_callback),
          :ok <- not_cancelled(opts),
          {:ok, result} <-
-           response_result(response, Keyword.fetch!(opts, :model), schema, event_callback) do
-      {:ok, Map.put(result, :provider, @adapter_id)}
+           response_result(
+             response,
+             {profile.adapter_id, Keyword.fetch!(opts, :model)},
+             schema,
+             event_callback
+           ) do
+      {:ok, Map.put(result, :provider, profile.adapter_id)}
     end
   end
 
-  defp send_request(body, opts, api_key, event_callback) do
+  defp profile_api_key(%{api_key: :required}, opts), do: api_key(opts)
+  defp profile_api_key(%{api_key: :none}, _opts), do: {:ok, nil}
+
+  defp send_request(profile, body, opts, api_key, event_callback) do
     signal = Keyword.get(opts, :cancellation_signal)
-    initial_parser = SSE.new()
+    initial_parser = SSE.new(profile.adapter_id)
 
     # Req streams body chunks of error responses too; those are collected as a
     # bounded raw body instead of being fed to the SSE parser.
@@ -147,8 +193,8 @@ defmodule Tackle.Plugins.Ollama do
     with {:ok, encoded} <- encode_body(body) do
       request_options = [
         method: :post,
-        url: endpoint_url(opts, "/chat/completions"),
-        headers: headers(api_key),
+        url: endpoint_url(profile.base_url.(opts), "/chat/completions"),
+        headers: headers(profile, api_key),
         body: encoded,
         raw: true,
         retry: false,
@@ -178,13 +224,14 @@ defmodule Tackle.Plugins.Ollama do
   defp bounded(body) when byte_size(body) <= @max_error_body_bytes, do: body
   defp bounded(body), do: binary_part(body, 0, @max_error_body_bytes)
 
-  defp response_result(%{status: status, body: body}, model, schema, event_callback)
+  # `identity` is the `{adapter_id, requested_model}` of the request.
+  defp response_result(%{status: status, body: body}, {adapter_id, model}, schema, event_callback)
        when status in 200..299 do
     parser =
       case body do
         %SSE{} = parser -> parser
-        body when is_binary(body) -> SSE.push(SSE.new(), body, event_callback)
-        _body -> SSE.new()
+        body when is_binary(body) -> SSE.push(SSE.new(adapter_id), body, event_callback)
+        _body -> SSE.new(adapter_id)
       end
       |> SSE.finish(event_callback)
 
@@ -201,7 +248,7 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  defp response_result(%{status: status, body: body}, _model, _schema, _event_callback) do
+  defp response_result(%{status: status, body: body}, _identity, _schema, _event_callback) do
     error_body = body |> raw_error_body() |> HTTP.error_body()
 
     case classify_overflow(status, error_body) do
@@ -267,11 +314,12 @@ defmodule Tackle.Plugins.Ollama do
   defp error_texts(body) when is_binary(body), do: [body]
   defp error_texts(_body), do: []
 
-  defp build_request_body(schema, opts) do
+  defp build_request_body(profile, schema, opts) do
     model = Keyword.fetch!(opts, :model)
+    replay = {profile.adapter_id, model}
 
     with {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
-         {:ok, messages} <- convert_messages(Keyword.get(opts, :messages, []), model),
+         {:ok, messages} <- convert_messages(Keyword.get(opts, :messages, []), replay),
          {:ok, response_format, schema_instruction} <- response_options(schema),
          {:ok, reasoning} <- reasoning_options(opts) do
       messages =
@@ -300,10 +348,11 @@ defmodule Tackle.Plugins.Ollama do
     KeyError -> {:error, :model_required}
   end
 
-  defp convert_messages(messages, model) when is_list(messages) do
+  # `replay` is the `{adapter_id, model}` whose reasoning may be replayed.
+  defp convert_messages(messages, replay) when is_list(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, converted} ->
-      case convert_message(message, model) do
+      case convert_message(message, replay) do
         {:ok, nil} -> {:cont, {:ok, converted}}
         {:ok, item} -> {:cont, {:ok, [item | converted]}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -323,15 +372,15 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  defp convert_messages(_messages, _model), do: {:error, :invalid_messages}
+  defp convert_messages(_messages, _replay), do: {:error, :invalid_messages}
 
-  defp convert_message(message, _model) when not is_map(message),
+  defp convert_message(message, _replay) when not is_map(message),
     do: {:error, :invalid_message}
 
-  defp convert_message(message, model) do
+  defp convert_message(message, replay) do
     case normalize_role(field(message, :role)) do
       :user -> text_message("user", field(message, :content))
-      :assistant -> assistant_message(message, model)
+      :assistant -> assistant_message(message, replay)
       :tool -> tool_message(message)
       role -> {:error, {:unsupported_message_role, role}}
     end
@@ -343,7 +392,7 @@ defmodule Tackle.Plugins.Ollama do
   defp text_message(_role, _content), do: {:error, :invalid_message_content}
 
   # Tool-call-only assistant turns have no text content.
-  defp assistant_message(message, model) do
+  defp assistant_message(message, replay) do
     content = field(message, :content)
     tool_calls = field(message, :tool_calls) |> List.wrap()
 
@@ -358,7 +407,7 @@ defmodule Tackle.Plugins.Ollama do
             "content" => if(empty_content?(content), do: nil, else: content)
           }
           |> maybe_put("tool_calls", non_empty(tool_calls))
-          |> put_replayed_reasoning(field(message, :provider_state), model)
+          |> put_replayed_reasoning(field(message, :provider_state), replay)
 
         {:ok, assistant}
       end
@@ -366,8 +415,9 @@ defmodule Tackle.Plugins.Ollama do
   end
 
   # Replay reasoning only for this adapter and the same requested model.
-  defp put_replayed_reasoning(assistant, provider_state, model) when is_map(provider_state) do
-    if field(provider_state, :provider) == @adapter_id and
+  defp put_replayed_reasoning(assistant, provider_state, {adapter_id, model})
+       when is_map(provider_state) do
+    if field(provider_state, :provider) == adapter_id and
          field(provider_state, :model) == model do
       case field(provider_state, :reasoning) do
         reasoning when is_binary(reasoning) ->
@@ -381,7 +431,7 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  defp put_replayed_reasoning(assistant, _provider_state, _model), do: assistant
+  defp put_replayed_reasoning(assistant, _provider_state, _replay), do: assistant
 
   defp tool_message(message) do
     call_id = field(message, :tool_call_id)
@@ -729,25 +779,31 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  defp headers(api_key) do
-    [
-      {"authorization", "Bearer #{api_key}"},
-      {"content-type", "application/json"},
-      {"accept", "text/event-stream"},
-      {"user-agent", user_agent()}
-    ]
+  defp headers(profile, api_key) do
+    authorization = if api_key, do: [{"authorization", "Bearer #{api_key}"}], else: []
+
+    authorization ++
+      [
+        {"content-type", "application/json"},
+        {"accept", "text/event-stream"},
+        {"user-agent", user_agent(profile.user_agent)}
+      ]
   end
 
-  defp endpoint_url(opts, path) do
-    base_url = Keyword.get(opts, :base_url, @default_base_url) |> String.trim_trailing("/")
+  @doc false
+  # Joins an OpenAI-compatible base URL and an endpoint path, accepting a base
+  # URL that already ends with the path.
+  @spec endpoint_url(String.t(), String.t()) :: String.t()
+  def endpoint_url(base_url, path) do
+    base_url = String.trim_trailing(base_url, "/")
 
     if String.ends_with?(base_url, path), do: base_url, else: base_url <> path
   end
 
-  defp validate_model(opts) do
+  defp validate_model(profile, opts) do
     case Keyword.fetch(opts, :model) do
       {:ok, model} when is_binary(model) ->
-        if model in models(), do: :ok, else: {:error, {:unsupported_model, model}}
+        if model in profile.models.(), do: :ok, else: {:error, {:unsupported_model, model}}
 
       {:ok, model} ->
         {:error, {:unsupported_model, model}}
@@ -804,9 +860,12 @@ defmodule Tackle.Plugins.Ollama do
   defp stringify_value(%{} = value), do: stringify_map_keys(value)
   defp stringify_value(value), do: value
 
-  defp user_agent do
+  @doc false
+  # `product/version` user agent for requests from this package.
+  @spec user_agent(String.t()) :: String.t()
+  def user_agent(product) do
     version = Application.spec(:tackle_ollama, :vsn) || ~c"0.1.0"
-    "tackle-ollama-cloud/#{List.to_string(version)}"
+    "#{product}/#{List.to_string(version)}"
   end
 
   defp non_empty([]), do: nil

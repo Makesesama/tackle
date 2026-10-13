@@ -128,7 +128,8 @@ defmodule Tackle.Session do
     @type active_turn :: %{
             required(:id) => String.t(),
             required(:operation) => :run | :continue,
-            required(:cancellation_requested?) => boolean()
+            required(:cancellation_requested?) => boolean(),
+            required(:cancelled_calls) => MapSet.t(String.t())
           }
 
     @type recovery :: %{
@@ -193,6 +194,20 @@ defmodule Tackle.Session do
   @doc "Requests cooperative cancellation of the active turn."
   @spec cancel(GenServer.server()) :: :ok
   def cancel(session), do: GenServer.call(session, :cancel)
+
+  @doc """
+  Requests cancellation of one tool call of the active turn.
+
+  Cancels the call's per-call signal (`Tackle.Lib.Cancellation.for_call/2`)
+  with `reason`, so only that tool stops and reports an error while the turn
+  continues. A binary `reason` is shown to the agent by tools such as `bash`.
+  Cancelling a call that has already finished, or one that never existed,
+  has no effect. Returns `{:error, :no_active_turn}` when the session is idle.
+  """
+  @spec cancel_tool_call(GenServer.server(), String.t(), term()) ::
+          :ok | {:error, :no_active_turn}
+  def cancel_tool_call(session, tool_call_id, reason) when is_binary(tool_call_id),
+    do: GenServer.call(session, {:cancel_tool_call, tool_call_id, reason})
 
   @doc "Queues an envelope for the next provider boundary or an idle agent's next turn."
   @spec deliver(GenServer.server(), Envelope.t()) :: :ok | {:error, term()}
@@ -512,6 +527,31 @@ defmodule Tackle.Session do
     {:reply, :ok, %{state | active_turn: active_turn}}
   end
 
+  def handle_call({:cancel_tool_call, _call_id, _reason}, _from, %{active_turn: nil} = state),
+    do: {:reply, {:error, :no_active_turn}, state}
+
+  # A settling turn has dropped its signal: every call has already finished.
+  def handle_call(
+        {:cancel_tool_call, _call_id, _reason},
+        _from,
+        %{active_turn: %{signal: nil}} = state
+      ),
+      do: {:reply, :ok, state}
+
+  # The cancelled id is remembered so its per-call record is deleted when the
+  # turn settles, even when the call had already finished or never existed.
+  def handle_call({:cancel_tool_call, call_id, reason}, _from, state) do
+    %{active_turn: active_turn} = state
+    active_turn.signal |> Cancellation.for_call(call_id) |> Cancellation.cancel(reason)
+
+    active_turn = %{
+      active_turn
+      | cancelled_calls: MapSet.put(active_turn.cancelled_calls, call_id)
+    }
+
+    {:reply, :ok, %{state | active_turn: active_turn}}
+  end
+
   def handle_call({:reconfigure, _opts}, _from, %{active_turn: active_turn} = state)
       when not is_nil(active_turn) do
     {:reply, {:error, :turn_in_progress}, state}
@@ -664,7 +704,7 @@ defmodule Tackle.Session do
         %{active_turn: %{task: %TurnTask{ref: ref}} = active_turn} = state
       ) do
     Process.demonitor(active_turn.task.monitor, [:flush])
-    Cancellation.delete(active_turn.signal)
+    delete_turn_signals(active_turn)
     release_turn(state)
 
     case result do
@@ -681,7 +721,7 @@ defmodule Tackle.Session do
         {:DOWN, monitor, :process, _pid, reason},
         %{active_turn: %{task: %TurnTask{monitor: monitor}} = active_turn} = state
       ) do
-    Cancellation.delete(active_turn.signal)
+    delete_turn_signals(active_turn)
     release_turn(state)
     terminate_tool_tasks(state)
     begin_terminal_persist(state, active_turn, {:runtime_error, reason}, state.agent_state)
@@ -783,7 +823,7 @@ defmodule Tackle.Session do
     do: fail_begin_turn(state, pending, {:persistence_failed, reason})
 
   defp fail_begin_turn(state, pending, reason) do
-    Cancellation.delete(pending.signal)
+    delete_turn_signals(%{state.active_turn | signal: pending.signal})
     release_turn(state)
     if pending.from, do: GenServer.reply(pending.from, {:error, reason})
     {:noreply, %{state | active_turn: nil}}
@@ -909,7 +949,8 @@ defmodule Tackle.Session do
           task: task,
           signal: signal,
           initial_message_ids: MapSet.new(agent_state.messages, & &1.id),
-          cancellation_requested?: false
+          cancellation_requested?: false,
+          cancelled_calls: MapSet.new()
         }
 
         {:reply, {:ok, turn_id}, %{state | active_turn: active_turn}}
@@ -939,6 +980,7 @@ defmodule Tackle.Session do
           signal: signal,
           initial_message_ids: MapSet.new(agent_state.messages, & &1.id),
           cancellation_requested?: false,
+          cancelled_calls: MapSet.new(),
           beginning?: true
         }
 
@@ -1824,8 +1866,21 @@ defmodule Tackle.Session do
   defp cleanup_active_turn(active_turn) do
     safe_cancellation(fn -> Cancellation.cancel(active_turn.signal, :session_closed) end)
     TurnTask.shutdown(active_turn.task, @task_shutdown_timeout)
-    safe_cancellation(fn -> Cancellation.delete(active_turn.signal) end)
+    safe_cancellation(fn -> delete_turn_signals(active_turn) end)
     :ok
+  end
+
+  # Per-call records exist only for calls a host cancelled through
+  # `cancel_tool_call/3`; the loop deletes them as calls settle, but a call
+  # killed mid-flight or cancelled after settling would otherwise leak one.
+  defp delete_turn_signals(%{signal: nil}), do: :ok
+
+  defp delete_turn_signals(%{signal: signal} = active_turn) do
+    active_turn
+    |> Map.get(:cancelled_calls, MapSet.new())
+    |> Enum.each(&(signal |> Cancellation.for_call(&1) |> Cancellation.delete()))
+
+    Cancellation.delete(signal)
   end
 
   defp cleanup_title_task(nil), do: :ok

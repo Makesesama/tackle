@@ -9,6 +9,8 @@ defmodule Tackle.Runtime.CancellationStore do
 
   It implements `Tackle.Lib.Cancellation.Store` and is selected through
   `config :tackle_lib, cancellation_store: Tackle.Runtime.CancellationStore`.
+  Keys are opaque signal ids: references for turn signals and
+  `{parent_id, tool_call_id}` tuples for per-call signals.
   """
 
   @behaviour Tackle.Lib.Cancellation.Store

@@ -167,7 +167,10 @@ defmodule Tackle.Plugins.Catalog do
     end
   end
 
-  defp valid_models?(models) when is_list(models) and models != [] do
+  # An empty list is valid: adapters whose models come only from host
+  # configuration (such as a local Ollama server) contribute no models until
+  # some are configured.
+  defp valid_models?(models) when is_list(models) do
     Enum.all?(models, &(is_binary(&1) and &1 != "" and &1 == String.trim(&1))) and
       length(Enum.uniq(models)) == length(models)
   end

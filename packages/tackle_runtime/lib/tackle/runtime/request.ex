@@ -16,7 +16,9 @@ defmodule Tackle.Runtime.Request do
   Foreground requests briefly linger after settlement for an awaiting caller.
   Background requests retain their outcome until it is collected, cancelled,
   or their owning scope stops. The run timeout measures inactivity, not total
-  duration: each child event renews the idle window. Child events remain
+  duration: each child event renews the idle window, except auxiliary events
+  whose data has `auxiliary: true` (for example service notices), which are
+  forwarded without proving progress. Child events remain
   transient and are forwarded only when an event callback was supplied; the
   correlated terminal outcome is still the request's only retained result.
   Explicit `await/2` timeouts still bound the caller's total wait.
@@ -334,13 +336,11 @@ defmodule Tackle.Runtime.Request do
         {:tackle_event, _session_id, _turn_id, %Event{} = event},
         state
       ) do
-    publish_child_event(state, event)
-    {:noreply, arm_idle_timeout(state)}
+    {:noreply, child_event(state, event)}
   end
 
   def handle_info({:tackle_runtime_event, %Event{} = event}, state) do
-    publish_child_event(state, event)
-    {:noreply, arm_idle_timeout(state)}
+    {:noreply, child_event(state, event)}
   end
 
   def handle_info({:tackle_runtime_terminal, run_id, result}, state) do
@@ -486,6 +486,18 @@ defmodule Tackle.Runtime.Request do
       {:error, reason} -> {:error, {:event_subscription_failed, reason}, state}
       other -> {:error, {:event_subscription_failed, {:invalid_result, other}}, state}
     end
+  end
+
+  # Auxiliary events report on the child without being child progress, so they
+  # must not keep a stalled run alive.
+  defp child_event(state, %Event{data: %{auxiliary: true}} = event) do
+    publish_child_event(state, event)
+    state
+  end
+
+  defp child_event(state, %Event{} = event) do
+    publish_child_event(state, event)
+    arm_idle_timeout(state)
   end
 
   defp publish_child_event(%{event_callback: callback, run_ref: run_ref}, %Event{} = event)
