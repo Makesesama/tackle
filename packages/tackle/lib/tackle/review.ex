@@ -916,7 +916,7 @@ defmodule Tackle.Review do
   end
 
   defp put_stage(state, stage, stats) do
-    %{state | stages: Map.put(state.stages, stage, stats), usages: state.usages ++ [stats.usage]}
+    %{state | stages: Map.put(state.stages, stage, stats), usages: [stats.usage | state.usages]}
   end
 
   ## History

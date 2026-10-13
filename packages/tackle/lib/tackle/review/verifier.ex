@@ -121,7 +121,7 @@ defmodule Tackle.Review.Verifier do
       intro(findings),
       entries,
       rules_section(findings, rules),
-      "The change around #{if length(findings) == 1, do: "it", else: "them"} " <>
+      "The change around #{if match?([_], findings), do: "it", else: "them"} " <>
         "(`[+ n]` added, `[- n]` removed, `[  n]` context):\n" <>
         "<unit id=\"#{unit.id}\">\n#{unit.rendered}</unit>",
       outro(findings)
@@ -173,7 +173,7 @@ defmodule Tackle.Review.Verifier do
         nil
 
       [_ | _] ->
-        intro = if length(findings) == 1, do: "It cites this rule:", else: "Cited rules:"
+        intro = if match?([_], findings), do: "It cites this rule:", else: "Cited rules:"
 
         Enum.join(
           [intro | Enum.map(cited, &"<rule id=\"#{&1.id}\">\n#{String.trim(&1.body)}\n</rule>")],

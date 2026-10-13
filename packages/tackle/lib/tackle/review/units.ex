@@ -143,13 +143,17 @@ defmodule Tackle.Review.Units do
   def validate_options(opts) when is_list(opts) do
     case Keyword.keys(opts) -- Keyword.keys(@defaults) do
       [] ->
-        Enum.find_value(opts, :ok, fn {key, value} ->
-          if valid_option?(key, value), do: nil, else: {:error, {:invalid_option, key, value}}
-        end)
+        find_invalid_option(opts)
 
       unknown ->
         {:error, {:unknown_options, Enum.uniq(unknown)}}
     end
+  end
+
+  defp find_invalid_option(opts) do
+    Enum.find_value(opts, :ok, fn {key, value} ->
+      if valid_option?(key, value), do: nil, else: {:error, {:invalid_option, key, value}}
+    end)
   end
 
   defp valid_option?(key, value), do: is_integer(value) and value >= minimum(key)

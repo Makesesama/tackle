@@ -130,7 +130,7 @@ defmodule Tackle.Review.ScorerTest do
       assert prompt =~ ~s|<comment id="C1" unit="lib/a.ex#1">\nlib/a.ex:3-3 (new side)|
       assert prompt =~ ~s(<comment id="C3" unit="lib/b.ex#1">)
       assert prompt =~ "verdict: confirmed"
-      assert length(String.split(prompt, ~s(<unit id="lib/a.ex#1">))) == 2
+      assert [_before, _after] = String.split(prompt, ~s(<unit id="lib/a.ex#1">))
       assert prompt =~ "[+ 9]   File.read!(path)"
     end
 

@@ -117,7 +117,7 @@ defmodule Tackle.Review.RankTest do
 
       candidates = for i <- 1..12, do: finding(title: "#{i}", confidence: i / 12)
       {kept, dropped} = Rank.preselect(candidates, :quiet)
-      assert length(kept) == 10
+      assert Enum.map(kept, & &1.title) == Enum.map(3..12, &Integer.to_string/1)
 
       assert Enum.map(dropped, fn {finding, :over_verify_limit} -> finding.title end) == [
                "1",
