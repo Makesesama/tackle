@@ -149,6 +149,31 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
     refute Enum.any?(synthesized_auth, &(&1["type"] == "thinking"))
   end
 
+  test "replays provider_state only for the provider that produced it" do
+    blocks = [%{"type" => "thinking", "thinking" => "why", "signature" => "sig"}]
+
+    message = %{
+      role: :assistant,
+      content: "answer",
+      provider_state: %{
+        "provider" => "claude-work",
+        "model" => @model,
+        "oauth" => true,
+        "content_blocks" => blocks
+      }
+    }
+
+    assert {:ok, [%{"content" => ^blocks}]} =
+             Convert.messages([message], @model, true, provider_id: "claude-work")
+
+    for opts <- [[provider_id: "claude-home"], []] do
+      assert {:ok, [%{"content" => synthesized}]} =
+               Convert.messages([message], @model, true, opts)
+
+      refute Enum.any?(synthesized, &(&1["type"] == "thinking"))
+    end
+  end
+
   test "keeps images in tool results" do
     messages = [
       %{

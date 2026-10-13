@@ -1,43 +1,44 @@
 defmodule Tackle.Lib.Decision.Selection do
   @moduledoc """
-  An immutable decision adapter and model selection.
+  An immutable decision provider and model selection.
 
   Selections are created through `Tackle.Lib.Decision.select/2`. The
   adapter-local `model` is sent in each request, while `ref` preserves the
-  canonical `adapter_id/model` identifier for configuration and auditing.
-  `local` is `true` when the adapter declares its decision models local through
-  the optional `Tackle.Lib.Decision.local?/0` callback.
+  canonical `provider_id/model` identifier for configuration and auditing.
+  `local` is `true` when the provider declares its decision models local
+  through the optional `Tackle.Lib.Decision.local?/1` or `local?/0` callback.
   """
 
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.LLM.Selection, as: LLMSelection
 
-  @enforce_keys [:adapter, :adapter_id, :model, :ref]
-  defstruct [:adapter, :adapter_id, :model, :ref, local: false]
+  @enforce_keys [:adapter, :provider_id, :model, :ref]
+  defstruct [:adapter, :provider_id, :model, :ref, provider_settings: %{}, local: false]
 
   @type t :: %__MODULE__{
           adapter: module(),
-          adapter_id: String.t(),
+          provider_id: String.t(),
+          provider_settings: Provider.settings(),
           model: String.t(),
           ref: String.t(),
           local: boolean()
         }
 
-  @decision_callbacks [decision_models: 0, decide: 2]
-
   @doc false
-  @spec resolve([module()], String.t()) :: {:ok, t()} | {:error, term()}
-  def resolve(adapters, model_ref) when is_list(adapters) and is_binary(model_ref) do
-    with {:ok, {adapter_id, model}} <- LLMSelection.parse_model_ref(model_ref),
-         {:ok, adapter_index} <- LLMSelection.index_adapters(adapters, adapter_id: 0),
-         {:ok, adapter} <- fetch_adapter(adapter_index, adapter_id),
-         :ok <- ensure_decision_adapter(adapter, adapter_id),
-         {:ok, models} <- decision_models(adapter, adapter_id),
+  @spec resolve([Provider.source()], String.t()) :: {:ok, t()} | {:error, term()}
+  def resolve(sources, model_ref) when is_list(sources) and is_binary(model_ref) do
+    with {:ok, {provider_id, model}} <- LLMSelection.parse_model_ref(model_ref),
+         {:ok, index} <- LLMSelection.index_providers(sources, &validate_loaded/1),
+         {:ok, provider} <- LLMSelection.fetch_provider(index, provider_id),
+         :ok <- ensure_decision_adapter(provider),
+         {:ok, models} <- Provider.decision_models(provider),
          :ok <- ensure_model(models, model_ref, model),
-         {:ok, local} <- local(adapter, adapter_id) do
+         {:ok, local} <- Provider.local?(provider) do
       {:ok,
        %__MODULE__{
-         adapter: adapter,
-         adapter_id: adapter_id,
+         adapter: provider.adapter,
+         provider_id: provider_id,
+         provider_settings: provider.settings,
          model: model,
          ref: model_ref,
          local: local
@@ -45,39 +46,25 @@ defmodule Tackle.Lib.Decision.Selection do
     end
   end
 
-  def resolve(_adapters, model_ref), do: {:error, {:invalid_model_ref, model_ref}}
+  def resolve(_sources, model_ref), do: {:error, {:invalid_model_ref, model_ref}}
 
-  defp fetch_adapter(adapter_index, adapter_id) do
-    case Map.fetch(adapter_index, adapter_id) do
-      {:ok, adapter} -> {:ok, adapter}
-      :error -> {:error, {:unknown_adapter, adapter_id}}
+  # Providers are expanded before validation, which already loads every
+  # adapter and requires `adapter_id/0`; non-decision adapters may be listed.
+  defp validate_loaded(adapter) do
+    case Code.ensure_loaded(adapter) do
+      {:module, ^adapter} -> :ok
+      {:error, reason} -> {:error, {:invalid_adapter, adapter, {:not_loaded, reason}}}
     end
   end
 
-  defp ensure_decision_adapter(adapter, adapter_id) do
-    if Enum.all?(@decision_callbacks, fn {name, arity} ->
-         function_exported?(adapter, name, arity)
-       end),
-       do: :ok,
-       else: {:error, {:unsupported_decision_adapter, adapter_id}}
-  end
+  defp ensure_decision_adapter(%Provider{adapter: adapter, id: id}) do
+    decides? = function_exported?(adapter, :decide, 2)
 
-  defp decision_models(adapter, adapter_id) do
-    with {:ok, models} <- LLMSelection.adapter_callback(adapter, :decision_models) do
-      LLMSelection.validate_models(models, adapter_id)
-    end
-  end
+    models? =
+      function_exported?(adapter, :decision_models, 1) or
+        function_exported?(adapter, :decision_models, 0)
 
-  defp local(adapter, adapter_id) do
-    if function_exported?(adapter, :local?, 0) do
-      case LLMSelection.adapter_callback(adapter, :local?) do
-        {:ok, local} when is_boolean(local) -> {:ok, local}
-        {:ok, other} -> {:error, {:invalid_local_flag, adapter_id, other}}
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      {:ok, false}
-    end
+    if decides? and models?, do: :ok, else: {:error, {:unsupported_decision_adapter, id}}
   end
 
   defp ensure_model(models, model_ref, model) do

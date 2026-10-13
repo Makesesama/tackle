@@ -1,12 +1,19 @@
 defmodule Tackle.Web.Providers do
   @moduledoc """
-  The provider adapters and models this web frontend can run.
+  The provider adapters, providers, and models this web frontend can run.
 
   Every assistant surface of the frontend selects from the same configured
   plugins, so this module is the one place that decides which adapter modules
-  exist and which `adapter/model` references they expose. The plugins are wired
-  exactly as any external plugin would be: each implements `Tackle.Lib.LLM`, and
-  the model reference the user picks decides which one runs.
+  exist and which `provider/model` references they expose. The plugins are
+  wired exactly as any external plugin would be: each implements
+  `Tackle.Lib.LLM`, and the model reference the user picks decides which
+  provider runs.
+
+  A provider (`Tackle.Lib.LLM.Provider`) is one configured instance of an
+  adapter, and its id is the model reference's prefix. Besides each adapter's
+  default providers (`openai-codex`, `deepseek`, ...), the harness offers
+  accounts recorded by `tackle auth login ADAPTER --as NAME` and the
+  `config.json` `"providers"` object; see `Tackle.Plugins.available_providers/1`.
 
     * `Tackle.Plugins.Codex` (`openai-codex/*`) authenticates with the ChatGPT
       session stored by `mix tackle auth`, and resends a request when the
@@ -85,7 +92,23 @@ defmodule Tackle.Web.Providers do
     end
   end
 
-  @doc "Every `adapter/model` reference the available adapters expose."
+  @doc """
+  The providers of the available adapters, accounts, and `config.json`.
+
+  Returns `[]` rather than raising when nothing is configured or the
+  configuration is invalid; `select/1` reports the reason.
+  """
+  @spec providers() :: [LLM.Provider.t()]
+  def providers do
+    case fetch_providers() do
+      {:ok, providers} -> providers
+      {:error, _reason} -> []
+    end
+  end
+
+  defp fetch_providers, do: Tackle.Plugins.available_providers(adapters: adapters())
+
+  @doc "Every `provider/model` reference the available providers expose."
   @spec models() :: [String.t()]
   def models do
     case Tackle.Plugins.available_model_refs(adapters: adapters()) do
@@ -98,7 +121,7 @@ defmodule Tackle.Web.Providers do
   The model used when a caller does not pick one.
 
   Configured with `config :tackle_web, :agent_model`, falling back to the first
-  model the adapters list.
+  model the providers list.
   """
   @spec default_model() :: String.t() | nil
   def default_model do
@@ -109,7 +132,7 @@ defmodule Tackle.Web.Providers do
   end
 
   @doc """
-  Resolves a canonical `adapter/model` reference against the available adapters.
+  Resolves a canonical `provider/model` reference against the available providers.
 
   `nil` selects `default_model/0`. With no adapters or no default model there is
   nothing to resolve, which is reported instead of retried.
@@ -122,5 +145,9 @@ defmodule Tackle.Web.Providers do
     end
   end
 
-  def select(model_ref) when is_binary(model_ref), do: LLM.select(adapters(), model_ref)
+  def select(model_ref) when is_binary(model_ref) do
+    with {:ok, providers} <- fetch_providers() do
+      LLM.select(providers, model_ref)
+    end
+  end
 end

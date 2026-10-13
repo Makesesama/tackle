@@ -328,7 +328,7 @@ defmodule Tackle.NarratorTest do
       scope =
         start_scope(
           root: [
-            adapters: [Tackle.Test.Adapter, Writer],
+            providers: [Tackle.Test.Adapter, Writer],
             allow_delegation: true,
             narration: [model: "narr/fake"]
           ],
@@ -336,7 +336,7 @@ defmodule Tackle.NarratorTest do
             "child" =>
               agent_spec("child",
                 mode: :manual,
-                adapters: [Tackle.Test.Adapter, Writer],
+                providers: [Tackle.Test.Adapter, Writer],
                 narration: [model: "narr/fake"]
               )
           }
@@ -371,7 +371,7 @@ defmodule Tackle.NarratorTest do
       scope =
         start_scope(
           root: [
-            adapters: [Tackle.Test.Adapter, Writer],
+            providers: [Tackle.Test.Adapter, Writer],
             allow_delegation: true,
             tools: [Tackle.Tools.Subagent],
             mode: :tool_then_answer,

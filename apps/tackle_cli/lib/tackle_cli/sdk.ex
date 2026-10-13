@@ -3,16 +3,14 @@ defmodule Tackle.CLI.SDK do
 
   # `tackle sdk` serves the Tackle SDK wire protocol (see
   # packages/tackle_sdk/PROTOCOL.md) on stdin/stdout so non-BEAM clients can
-  # drive the same adapters and tools as the terminal frontend.
+  # drive the same providers and tools as the terminal frontend.
 
   alias Tackle.CLI.Distribution
 
   @spec run() :: non_neg_integer()
   def run do
-    with {:ok, catalog} <- Distribution.catalog(),
+    with {:ok, providers} <- Distribution.available_providers(),
          {:ok, executor} <- Tackle.CLI.Jail.ensure_started() do
-      adapters = Tackle.Plugins.Catalog.adapter_modules(catalog)
-
       # Standalone tools only: the subagent tools need a scoped runtime the
       # plain SDK loop does not host, and MCP tools need live connections.
       tools =
@@ -20,7 +18,7 @@ defmodule Tackle.CLI.SDK do
           Enum.map(contributions().tools, & &1.module)
 
       case Tackle.SDK.run(
-             adapters: adapters,
+             providers: providers,
              tools: tools,
              context: context(executor),
              llm_opts: [credential_store: Tackle.Auth.credential_store()]

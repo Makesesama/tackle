@@ -103,6 +103,37 @@ defmodule Tackle.SDK.Test.RecordingLLM do
   end
 end
 
+defmodule Tackle.SDK.Test.LocalFirstLLM do
+  @moduledoc """
+  `Tackle.Lib.LLM` adapter whose first default provider offers no models, like
+  a local server with nothing configured, followed by one that does.
+  """
+
+  @behaviour Tackle.Lib.LLM
+
+  @impl true
+  def adapter_id, do: "local-first"
+
+  @impl true
+  def default_providers,
+    do: [{"local-first", %{}}, {"local-first-cloud", %{"models" => ["big"]}}]
+
+  @impl true
+  def models(settings), do: Map.get(settings, "models", [])
+
+  @impl true
+  def generate(_schema, opts) do
+    if pid = Keyword.get(opts, :test_pid), do: send(pid, {:generate_opts, opts})
+
+    {:ok,
+     %{
+       data: %{"content" => "recorded", "tool_calls" => []},
+       usage: nil,
+       model: "big"
+     }}
+  end
+end
+
 defmodule Tackle.SDK.Test.EchoTool do
   @moduledoc "Server-side test tool that echoes its `text` argument."
 

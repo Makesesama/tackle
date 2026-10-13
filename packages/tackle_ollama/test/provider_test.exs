@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
   use ExUnit.Case, async: false
 
   alias Tackle.Lib.{Cancellation, LLM, Usage}
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.Ollama
 
   defmodule Store do
@@ -74,7 +75,9 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
 
   test "missing or invalid credentials and failed stores never send a request" do
     request = fn _ -> flunk("unexpected HTTP request") end
-    assert {:error, :missing_ollama_api_key} = Ollama.generate(nil, opts(request))
+
+    assert {:error, {:missing_ollama_api_key, "ollama-cloud"}} =
+             Ollama.generate(nil, opts(request))
 
     assert {:error, {:credential_store_failed, :unavailable}} =
              Ollama.generate(
@@ -93,20 +96,134 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     end
   end
 
+  test "credentials are namespaced by provider id" do
+    {:ok, provider} =
+      Provider.new("ollama-work", Ollama, %{
+        "base_url" => "https://ollama.com/v1",
+        "api_key" => "required",
+        "models" => ["gpt-oss:120b"]
+      })
+
+    System.put_env("OLLAMA_API_KEY", "environment-key")
+    {:ok, selection} = LLM.select([Ollama, provider], "ollama-work/gpt-oss:120b")
+    parent = self()
+
+    request = fn options ->
+      send(parent, {:authorization, List.keyfind(options[:headers], "authorization", 0)})
+      {:ok, %{status: 200, body: completion()}}
+    end
+
+    store = {Store, {self(), {:ok, %{"key" => "work-key"}}}}
+
+    assert {:ok, result} =
+             LLM.generate_with(selection, nil,
+               messages: [%{role: :user, content: "hi"}],
+               credential_store: store,
+               request: request
+             )
+
+    assert result.provider == "ollama-work"
+    assert_received {:fetch, "ollama-work"}
+    assert_received {:authorization, {"authorization", "Bearer work-key"}}
+
+    # Only providers that name an environment variable read one.
+    assert {:error, {:missing_ollama_api_key, "ollama-work"}} =
+             LLM.generate_with(selection, nil,
+               messages: [%{role: :user, content: "hi"}],
+               credential_store: {Store, {self(), :error}},
+               request: fn _ -> flunk("unexpected HTTP request") end
+             )
+
+    custom_env = Map.put(selection.provider_settings, "api_key_env", "OLLAMA_WORK_KEY")
+    System.put_env("OLLAMA_WORK_KEY", "work-environment-key")
+    on_exit(fn -> System.delete_env("OLLAMA_WORK_KEY") end)
+
+    assert {:ok, _} =
+             LLM.generate_with(%{selection | provider_settings: custom_env}, nil,
+               messages: [%{role: :user, content: "hi"}],
+               request: request
+             )
+
+    assert_received {:authorization, {"authorization", "Bearer work-environment-key"}}
+
+    # An invalid "api_key" setting may hold a pasted key, so it is not echoed.
+    secret = "sk-pasted-by-mistake"
+
+    assert {:error, {:invalid_provider_settings, "ollama-work", {"api_key", :invalid}}} =
+             reason =
+             Ollama.generate(
+               nil,
+               opts(nil,
+                 provider_id: "ollama-work",
+                 provider_settings: %{"api_key" => secret, "models" => ["gpt-oss:120b"]}
+               )
+             )
+
+    refute inspect(reason) =~ secret
+
+    assert {:error, {:invalid_provider_settings, "ollama-work", {"api_key", :invalid}}} =
+             Ollama.status(
+               provider_id: "ollama-work",
+               provider_settings: %{"api_key" => secret}
+             )
+
+    # Malformed settings are not echoed either.
+    assert {:error, {:invalid_provider_settings, "ollama-work", :not_a_map}} =
+             Ollama.status(provider_id: "ollama-work", provider_settings: [api_key: secret])
+  end
+
   test "login uses a secret interaction prompt and propagates failures" do
+    cloud = [provider_id: "ollama-cloud"]
+
     assert {:ok, %{"api_key" => "prompt-key"}} =
-             Ollama.login(interaction: {Interaction, {self(), {:ok, " prompt-key "}}})
+             Ollama.login([interaction: {Interaction, {self(), {:ok, " prompt-key "}}}] ++ cloud)
 
     assert_received {:prompt, options}
     assert options[:secret]
 
     assert {:error, :empty_api_key} =
-             Ollama.login(interaction: {Interaction, {self(), {:ok, " "}}})
+             Ollama.login([interaction: {Interaction, {self(), {:ok, " "}}}] ++ cloud)
 
     assert {:error, :cancelled} =
-             Ollama.login(interaction: {Interaction, {self(), {:error, :cancelled}}})
+             Ollama.login([interaction: {Interaction, {self(), {:error, :cancelled}}}] ++ cloud)
 
-    assert {:error, :interaction_required} = Ollama.login([])
+    assert {:error, :interaction_required} = Ollama.login(cloud)
+  end
+
+  test "keyless providers need no login" do
+    interaction = {Interaction, {self(), {:ok, "key"}}}
+
+    assert {:error, {:login_not_required, "ollama"}} = Ollama.login(interaction: interaction)
+
+    assert {:error, {:login_not_required, "gpu-box"}} =
+             Ollama.login(
+               interaction: interaction,
+               provider_id: "gpu-box",
+               provider_settings: %{"api_key" => "none"}
+             )
+
+    refute_received {:prompt, _}
+    assert {:ok, :not_required} = Ollama.status([])
+    assert {:ok, :not_required} = Ollama.status(provider_id: "gpu-box", provider_settings: %{})
+  end
+
+  test "status reports stored, environment, and missing keys per provider" do
+    cloud = [provider_id: "ollama-cloud"]
+    stored = {Store, {self(), {:ok, %{"api_key" => "stored-key"}}}}
+
+    assert {:ok, :stored} = Ollama.status([credential_store: stored] ++ cloud)
+    assert_received {:fetch, "ollama-cloud"}
+
+    assert {:ok, :missing} = Ollama.status([credential_store: {Store, {self(), :error}}] ++ cloud)
+    System.put_env("OLLAMA_API_KEY", "environment-key")
+    assert {:ok, :stored} = Ollama.status([credential_store: {Store, {self(), :error}}] ++ cloud)
+
+    assert {:error, {:credential_store_failed, :unavailable}} =
+             Ollama.status([credential_store: {Store, {self(), {:error, :unavailable}}}] ++ cloud)
+
+    work = [provider_id: "ollama-work", provider_settings: %{"api_key" => "required"}]
+    assert {:ok, :missing} = Ollama.status([credential_store: {Store, {self(), :error}}] ++ work)
+    assert_received {:fetch, "ollama-work"}
   end
 
   test "native tools round-trip synthesized ids and reasoning only for matching provider/model" do
@@ -265,7 +382,12 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
   defp opts(request, extra \\ []),
     do:
       Keyword.merge(
-        [model: "gpt-oss:120b", messages: [%{role: :user, content: "hello"}], request: request],
+        [
+          provider_id: "ollama-cloud",
+          model: "gpt-oss:120b",
+          messages: [%{role: :user, content: "hello"}],
+          request: request
+        ],
         extra
       )
 

@@ -1,23 +1,47 @@
 defmodule Tackle.Auth.Store do
   @moduledoc """
-  Supervised, file-backed storage for opaque provider credentials.
+  Supervised, file-backed storage for opaque provider credentials and the
+  provider accounts created by `tackle auth login --as`.
 
   The file is plaintext JSON protected by directory mode `0700` and file mode
   `0600`; it is not encrypted. Mutations are serialized within one Tackle
   application and persisted by replacing `auth.json` atomically, so readers do
   not observe partial JSON. Power-loss durability after the rename, cross-VM
   locking, and operating-system keyrings are intentionally outside this store.
+
+  The file is a version 2 envelope. Credentials live under `"providers"`, keyed
+  by provider id; accounts live under `"accounts"`, mapping a provider id to
+  the adapter type that backs it and, when the account was created from a
+  provider id, that base provider:
+
+      {"version": 2,
+       "providers": {"codex-work": {...credentials...}},
+       "accounts": {"codex-work": {"adapter": "openai-codex"},
+                    "cloud2": {"adapter": "ollama", "base": "ollama-cloud"}}}
+
+  A version 1 file (credentials only) loads with no accounts and is rewritten
+  as version 2 on the next change.
   """
 
   use GenServer
 
   @behaviour Tackle.Lib.CredentialStore
 
-  @version 1
+  alias Tackle.Lib.LLM.Provider
+
+  @version 2
+  @readable_versions [1, 2]
   @directory_mode 0o700
   @file_mode 0o600
 
-  @type state :: %{path: Path.t(), providers: %{optional(String.t()) => map()}}
+  @type state :: %{
+          path: Path.t(),
+          providers: %{optional(String.t()) => map()},
+          accounts: %{optional(String.t()) => account()}
+        }
+
+  @typedoc ~S'An account record: `%{"adapter" => type_id}`, plus `"base" => provider_id` when set.'
+  @type account :: %{required(String.t()) => String.t()}
 
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -41,11 +65,25 @@ defmodule Tackle.Auth.Store do
   @spec status(GenServer.server(), String.t()) :: :stored | :missing | {:error, term()}
   def status(reference, namespace), do: GenServer.call(reference, {:status, namespace})
 
+  @doc false
+  @spec accounts(GenServer.server()) :: %{optional(String.t()) => account()}
+  def accounts(reference), do: GenServer.call(reference, :accounts)
+
+  @doc false
+  @spec put_account(GenServer.server(), String.t(), account()) :: :ok | {:error, term()}
+  def put_account(reference, provider_id, account),
+    do: GenServer.call(reference, {:put_account, provider_id, account})
+
+  @doc false
+  @spec delete_account(GenServer.server(), String.t()) :: :ok | {:error, term()}
+  def delete_account(reference, provider_id),
+    do: GenServer.call(reference, {:delete_account, provider_id})
+
   @impl true
   def init(opts) do
     with {:ok, path} <- fetch_path(opts),
-         {:ok, providers} <- load(path) do
-      {:ok, %{path: Path.expand(path), providers: providers}}
+         {:ok, {providers, accounts}} <- load(path) do
+      {:ok, %{path: Path.expand(path), providers: providers, accounts: accounts}}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -61,6 +99,36 @@ defmodule Tackle.Auth.Store do
     {:reply, reply, state}
   end
 
+  def handle_call(:accounts, _from, state), do: {:reply, state.accounts, state}
+
+  def handle_call({:put_account, provider_id, account}, _from, state) do
+    with {:ok, account} <- normalize_account(provider_id, account),
+         accounts = Map.put(state.accounts, provider_id, account),
+         :ok <- persist(state.path, state.providers, accounts) do
+      {:reply, :ok, %{state | accounts: accounts}}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:delete_account, provider_id}, _from, state) do
+    cond do
+      not Provider.valid_id?(provider_id) ->
+        {:reply, {:error, {:invalid_account, provider_id}}, state}
+
+      Map.has_key?(state.accounts, provider_id) ->
+        accounts = Map.delete(state.accounts, provider_id)
+
+        case persist(state.path, state.providers, accounts) do
+          :ok -> {:reply, :ok, %{state | accounts: accounts}}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+
+      true ->
+        {:reply, :ok, state}
+    end
+  end
+
   def handle_call({:status, namespace}, _from, state) do
     reply =
       with :ok <- validate_namespace(namespace) do
@@ -74,7 +142,7 @@ defmodule Tackle.Auth.Store do
     with :ok <- validate_namespace(namespace),
          {:ok, credentials} <- normalize_credentials(credentials),
          providers = Map.put(state.providers, namespace, credentials),
-         :ok <- persist(state.path, providers) do
+         :ok <- persist(state.path, providers, state.accounts) do
       {:reply, :ok, %{state | providers: providers}}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -91,7 +159,7 @@ defmodule Tackle.Auth.Store do
   defp delete_namespace(namespace, state) do
     if Map.has_key?(state.providers, namespace) do
       providers = Map.delete(state.providers, namespace)
-      delete_reply(persist(state.path, providers), providers, state)
+      delete_reply(persist(state.path, providers, state.accounts), providers, state)
     else
       {:reply, :ok, state}
     end
@@ -122,7 +190,7 @@ defmodule Tackle.Auth.Store do
         {:error, {:unsafe_auth_file, path, :not_regular}}
 
       {:error, :enoent} ->
-        {:ok, %{}}
+        {:ok, {%{}, %{}}}
 
       {:error, reason} ->
         {:error, {:auth_file_unreadable, path, reason}}
@@ -146,7 +214,7 @@ defmodule Tackle.Auth.Store do
   defp read_envelope(path) do
     with {:ok, contents} <- File.read(path),
          {:ok, envelope} <- decode_envelope(path, contents) do
-      {:ok, envelope["providers"]}
+      {:ok, {envelope["providers"], envelope_accounts(envelope)}}
     else
       {:error, reason} when reason in [:eacces, :eperm] ->
         {:error, {:auth_file_unreadable, path, reason}}
@@ -158,15 +226,11 @@ defmodule Tackle.Auth.Store do
 
   defp decode_envelope(path, contents) do
     case JSON.decode(contents) do
-      {:ok, %{"version" => @version, "providers" => providers} = envelope}
-      when is_map(providers) ->
-        if valid_providers?(providers) do
-          {:ok, envelope}
-        else
-          {:error, {:invalid_auth_file, path, :invalid_providers}}
-        end
+      {:ok, %{"version" => version, "providers" => providers} = envelope}
+      when version in @readable_versions and is_map(providers) ->
+        validate_envelope(path, envelope)
 
-      {:ok, %{"version" => version}} when version != @version ->
+      {:ok, %{"version" => version}} when version not in @readable_versions ->
         {:error, {:unsupported_auth_version, path, @version}}
 
       {:ok, _decoded} ->
@@ -176,6 +240,56 @@ defmodule Tackle.Auth.Store do
         {:error, {:malformed_auth_file, path}}
     end
   end
+
+  defp validate_envelope(path, envelope) do
+    cond do
+      not valid_providers?(envelope["providers"]) ->
+        {:error, {:invalid_auth_file, path, :invalid_providers}}
+
+      not valid_accounts?(envelope) ->
+        {:error, {:invalid_auth_file, path, :invalid_accounts}}
+
+      true ->
+        {:ok, envelope}
+    end
+  end
+
+  # Version 1 predates accounts; a version 2 file may omit them.
+  defp valid_accounts?(%{"version" => 1}), do: true
+
+  defp valid_accounts?(%{"accounts" => %{} = accounts}) do
+    Enum.all?(accounts, fn {provider_id, account} ->
+      match?({:ok, _account}, normalize_account(provider_id, account))
+    end)
+  end
+
+  defp valid_accounts?(%{"accounts" => _other}), do: false
+  defp valid_accounts?(_envelope), do: true
+
+  defp envelope_accounts(%{"version" => 1}), do: %{}
+
+  defp envelope_accounts(envelope) do
+    envelope
+    |> Map.get("accounts", %{})
+    |> Map.new(fn {provider_id, account} ->
+      {:ok, account} = normalize_account(provider_id, account)
+      {provider_id, account}
+    end)
+  end
+
+  # Keeps only the known keys; `"base"` is optional.
+  defp normalize_account(provider_id, %{"adapter" => adapter_id} = account) do
+    base = Map.get(account, "base")
+
+    if Provider.valid_id?(provider_id) and Provider.valid_id?(adapter_id) and
+         (is_nil(base) or Provider.valid_id?(base)) do
+      {:ok, Map.take(account, ["adapter", "base"])}
+    else
+      {:error, {:invalid_account, provider_id}}
+    end
+  end
+
+  defp normalize_account(provider_id, _account), do: {:error, {:invalid_account, provider_id}}
 
   defp valid_providers?(providers) do
     Enum.all?(providers, fn
@@ -204,8 +318,12 @@ defmodule Tackle.Auth.Store do
 
   defp normalize_credentials(_credentials), do: {:error, :invalid_credentials}
 
-  defp persist(path, providers) do
-    envelope = %{"version" => @version, "providers" => providers}
+  defp persist(path, providers, accounts) do
+    envelope = %{
+      "version" => @version,
+      "providers" => providers,
+      "accounts" => accounts
+    }
 
     with {:ok, encoded} <- encode_envelope(envelope),
          :ok <- ensure_private_directory(Path.dirname(path)),

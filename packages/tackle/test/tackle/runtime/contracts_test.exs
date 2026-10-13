@@ -216,7 +216,7 @@ defmodule Tackle.Runtime.ContractsTest do
   defp config do
     {:ok, config} =
       Config.new(
-        adapters: [Adapter],
+        providers: [Adapter],
         model: "contracts/test",
         tools: [],
         system_prompt: "system"

@@ -121,7 +121,7 @@ defmodule Tackle.Lib.DecisionTest do
       assert {:ok,
               %Selection{
                 adapter: FakeDecisionAdapter,
-                adapter_id: "fake-local",
+                provider_id: "fake-local",
                 model: "judge:4b",
                 ref: "fake-local/judge:4b"
               }} = Decision.select([ChatOnlyAdapter, FakeDecisionAdapter], "fake-local/judge:4b")
@@ -138,7 +138,7 @@ defmodule Tackle.Lib.DecisionTest do
       assert Decision.select(adapters, "no-slash") == {:error, {:invalid_model_ref, "no-slash"}}
       assert Decision.select(adapters, "Bad/x") == {:error, {:invalid_model_ref, "Bad/x"}}
       assert Decision.select(adapters, 42) == {:error, {:invalid_model_ref, 42}}
-      assert Decision.select(adapters, "missing/x") == {:error, {:unknown_adapter, "missing"}}
+      assert Decision.select(adapters, "missing/x") == {:error, {:unknown_provider, "missing"}}
 
       assert Decision.select(adapters, "chat-only/gpt") ==
                {:error, {:unsupported_decision_adapter, "chat-only"}}
@@ -151,7 +151,7 @@ defmodule Tackle.Lib.DecisionTest do
                [FakeDecisionAdapter, DuplicateDecisionAdapter],
                "fake-local/judge:4b"
              ) ==
-               {:error, {:duplicate_adapter_id, "fake-local"}}
+               {:error, {:duplicate_provider_id, "fake-local"}}
 
       assert Decision.select([BadModelsAdapter], "bad-models/dup") ==
                {:error, {:duplicate_model_id, "bad-models", "dup"}}

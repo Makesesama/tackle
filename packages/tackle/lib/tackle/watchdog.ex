@@ -71,8 +71,8 @@ defmodule Tackle.Watchdog do
 
   Options are `:agent_ref`, `:task_supervisor` (the agent's service
   `Task.Supervisor`), `:settings` (`Tackle.Config.Watchdog`), and
-  `:decision_opts`, passed to `Tackle.Lib.Decision.decide/4` (for example the
-  session's `:provider_options`).
+  `:decision_opts`, passed to `Tackle.Lib.Decision.decide/3` (for example a
+  `:receive_timeout`). The selection already carries its provider's settings.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts) do

@@ -206,20 +206,21 @@ local c = tackle.classify(review.text, questions, {label = "review gate"})
 ```
 
 The host grants decision models with the `:decisions` option, a
-`Tackle.Workflow.Decisions` grant: trusted adapter modules, the options passed
-to every decision call, and an optional default model. A script's
-`{model = "provider/model"}` can only select a model those adapters offer:
+`Tackle.Workflow.Decisions` grant: trusted providers (`Tackle.Lib.LLM.Provider`
+structs, or adapter modules standing for their default providers), the options
+passed to every decision call, and an optional default model. A script's
+`{model = "provider/model"}` can only select a model those providers offer:
 
 ```elixir
 Tackle.Workflow.run(handle, script,
-  decisions: [adapters: adapters, options: [receive_timeout: 10_000],
+  decisions: [providers: providers, options: [receive_timeout: 10_000],
               default_model: "ollama/tev1:4b"]
 )
 ```
 
 Classification tokens count against `:token_budget` like a run's, unless the
-selected adapter declares its decision models local
-(`Tackle.Lib.Decision.local?/0`, as the Ollama local adapter does): a local
+selected provider declares its decision models local
+(`Tackle.Lib.Decision.local?/1` or `local?/0`, as a local Ollama provider does): a local
 classification reports `tokens = 0`, never changes `tackle.budget()`, and still
 runs once the budget is spent. A remote one is refused like `tackle.spawn`
 when the budget is spent, and counts the tokens its adapter reports: a call
@@ -287,8 +288,8 @@ and, optionally, narrows the profiles workflows may spawn:
   same set `subagent` can already name.
 * `:decisions` in the session context grants `tackle.classify` its decision
   models (see [Classification](#classification)). The Tackle harness fills it
-  from the session's adapters, `provider_options`, and the `config.json`
-  `decision_model` default whenever an adapter offers decision models.
+  from the session's providers and the `config.json` `decision_model` default
+  whenever a provider offers decision models.
 * `:workflow_token_budget` in the session context gives each workflow a token
   budget. The tool's optional `token_budget` argument can only lower it;
   without either, workflows have no token budget. The budget applies to each

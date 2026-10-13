@@ -1,78 +1,245 @@
 defmodule Tackle.Plugins.Ollama do
   @moduledoc """
-  Ollama Chat Completions adapter for `Tackle.Lib.LLM`.
+  Ollama adapter for `Tackle.Lib.LLM` and `Tackle.Lib.Decision`.
 
-  The adapter sends provider-neutral Tackle messages and tools to Ollama's
-  OpenAI-compatible streaming endpoint. Select an Ollama Cloud model by its catalog id, without a `:cloud` suffix:
+  One adapter (type id `"ollama"`) backs every Ollama server: Ollama Cloud, a
+  local server, or any self-hosted one. Each is a `Tackle.Lib.LLM.Provider`
+  with its own settings. Chat goes to the OpenAI-compatible
+  `<base_url>/chat/completions` streaming endpoint; decisions go to Ollama's
+  System One endpoint, `<base_url>/systemone`.
 
-      {:ok, llm} = Tackle.Lib.LLM.select([Tackle.Plugins.Ollama], "ollama-cloud/gpt-oss:120b")
+  ## Default providers
 
-  `models/0` returns a small curated catalog. Hosts can
-  make further Ollama models selectable through application configuration:
+  A bare `Tackle.Plugins.Ollama` module stands for two providers:
 
-      config :tackle_ollama,
-        models: [
-          "gemma4:31b",
-          {"gpt-oss:120b", %{context_window: 131_072}}
-        ]
+    * `"ollama"`: a local server at `http://localhost:11434/v1`, no API key,
+      decision models declared local. It has no chat or decision models until
+      the host configures them.
+    * `"ollama-cloud"`: `https://ollama.com/v1` with a required API key and a
+      small curated model catalog (see `catalog_models/0`).
 
-  API keys may be supplied explicitly, through a host-owned
-  `Tackle.Lib.CredentialStore`, or through the `OLLAMA_API_KEY`
-  environment variable. `login/1` prompts for a key through a
-  `Tackle.Lib.Interaction` handle. No account usage API is exposed.
+  ```elixir
+  {:ok, cloud} = Tackle.Lib.LLM.select([Tackle.Plugins.Ollama], "ollama-cloud/gpt-oss:120b")
+  {:ok, local} = Tackle.Lib.LLM.select([Tackle.Plugins.Ollama], "ollama/qwen3:8b")
+  {:ok, decision} = Tackle.Lib.Decision.select([Tackle.Plugins.Ollama], "ollama/tev1:4b")
+  ```
 
-  The Chat Completions transport is shared with `Tackle.Plugins.OllamaLocal`,
-  which talks to a local Ollama server under its own adapter identity.
+  ## Settings
+
+  Provider settings are a JSON-compatible map with string keys:
+
+    * `"base_url"` - OpenAI-compatible base URL. Default
+      `"http://localhost:11434/v1"`.
+    * `"api_key"` - `"required"` sends a bearer key; `"none"` sends no
+      authorization header and never reads credentials. Default `"none"`.
+    * `"api_key_env"` - environment variable consulted for the key after the
+      credential store when `"api_key"` is `"required"`. Default: none, so a
+      custom provider never picks up another provider's key by accident.
+      `"ollama-cloud"` uses `"OLLAMA_API_KEY"`.
+    * `"models"` - selectable chat model ids. Default `[]`.
+    * `"decision_models"` - selectable decision model ids. Default `[]`.
+    * `"model_info"` - map of model id to `Tackle.Lib.ModelInfo` fields, for
+      example `%{"gpt-oss:20b" => %{"context_window" => 131_072}}`.
+      Default `%{}`, so limits and prices are unknown.
+    * `"local"` - whether decision models run on hardware the user controls,
+      so hosts may leave their usage out of token budgets. Default `false`.
+
+  Settings are not merged with the built-in defaults by this module: a
+  provider uses exactly the settings it is given. Malformed `"models"`,
+  `"decision_models"`, `"model_info"`, and `"local"` values are returned as-is
+  so selection reports them.
+
+  ## Application configuration
+
+  Hosts can adjust the default providers, or add more, by provider id. Each
+  entry is merged (one level, key by key) over the built-in settings of the
+  same id:
+
+      config :tackle_ollama, Tackle.Plugins.Ollama,
+        providers: %{
+          "ollama" => %{"models" => ["qwen3:8b"], "decision_models" => ["tev1:4b"]},
+          "ollama-cloud" => %{"model_info" => %{"gpt-oss:120b" => %{"context_window" => 131_072}}}
+        }
+
+  A `"models"` entry replaces the built-in list, including the cloud catalog.
+
+  ## Request options
+
+  Selections pass `:provider_id` and `:provider_settings`. Called directly
+  without `:provider_settings`, the adapter uses the default settings of
+  `:provider_id` (default `"ollama"`). The base URL is `opts[:base_url]`, then
+  the `"base_url"` setting, then the default. With `"api_key" => "required"`
+  the key is `opts[:api_key]`, then the credential store under the provider
+  id (`"api_key"` or `"key"`), then the `"api_key_env"` variable.
+  `login/1` prompts for a key through a `Tackle.Lib.Interaction` handle.
+
+  `decide/2` honours `:cancellation_signal` (an in-flight request is abandoned
+  and `{:error, :cancelled}` returned) and `:receive_timeout` (default 60,000
+  ms; a model may need to load on first use).
   """
 
   @behaviour Tackle.Lib.LLM
+  @behaviour Tackle.Lib.Decision
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
+  alias Tackle.Lib.Decision.{Answer, Question, Request, Result}
   alias Tackle.Lib.Interaction
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Ollama.HTTP
   alias Tackle.Plugins.Ollama.SSE
 
-  @adapter_id "ollama-cloud"
-  @default_base_url "https://ollama.com/v1"
+  @adapter_id "ollama"
+  @default_base_url "http://localhost:11434/v1"
+  @default_decision_timeout 60_000
 
   @catalog_models ["gpt-oss:120b", "gpt-oss:20b", "kimi-k3", "deepseek-v4.1-flash", "glm-5.3"]
 
-  @impl true
+  @builtin_providers [
+    {"ollama",
+     %{
+       "base_url" => "http://localhost:11434/v1",
+       "api_key" => "none",
+       "local" => true,
+       "models" => [],
+       "decision_models" => []
+     }},
+    {"ollama-cloud",
+     %{
+       "base_url" => "https://ollama.com/v1",
+       "api_key" => "required",
+       "api_key_env" => "OLLAMA_API_KEY",
+       "local" => false,
+       "models" => @catalog_models,
+       "decision_models" => []
+     }}
+  ]
+
+  @impl Tackle.Lib.LLM
   def adapter_id, do: @adapter_id
 
-  @impl true
-  def models, do: Enum.uniq(@catalog_models ++ Enum.map(configured_models(), &elem(&1, 0)))
+  @doc """
+  The curated Ollama Cloud model ids of the default `"ollama-cloud"` provider.
 
-  @impl true
-  def model_info(model) do
-    case List.keyfind(configured_models(), model, 0) do
-      {^model, info} -> info
-      nil -> nil
+  These direct-cloud ids come from Ollama's model listing, without a local
+  `:cloud` suffix. No network discovery runs.
+  """
+  @spec catalog_models() :: [String.t()]
+  def catalog_models, do: @catalog_models
+
+  @doc """
+  The built-in `"ollama"` and `"ollama-cloud"` providers, with application
+  configuration merged over them, followed by any further providers the
+  application configuration declares (sorted by id).
+
+  Raises `ArgumentError` when the application configuration is malformed.
+  """
+  @impl Tackle.Lib.LLM
+  def default_providers do
+    configured = configured_providers()
+    builtin_ids = Enum.map(@builtin_providers, &elem(&1, 0))
+
+    builtin =
+      Enum.map(@builtin_providers, fn {id, settings} ->
+        {id, merge_settings(settings, Map.get(configured, id))}
+      end)
+
+    extra =
+      configured
+      |> Map.drop(builtin_ids)
+      |> Enum.sort_by(&elem(&1, 0))
+
+    builtin ++ extra
+  end
+
+  defp merge_settings(settings, nil), do: settings
+  defp merge_settings(settings, %{} = overrides), do: Map.merge(settings, overrides)
+  # Kept as-is so `Tackle.Lib.LLM.Provider` reports invalid settings.
+  defp merge_settings(_settings, invalid), do: invalid
+
+  defp configured_providers do
+    config = Application.get_env(:tackle_ollama, __MODULE__, [])
+
+    unless Keyword.keyword?(config) do
+      raise ArgumentError,
+            "expected config :tackle_ollama, #{inspect(__MODULE__)} to be a keyword list, " <>
+              "got: #{inspect(config)}"
+    end
+
+    case Keyword.get(config, :providers, %{}) do
+      %{} = providers ->
+        providers
+
+      other ->
+        raise ArgumentError,
+              "expected config :tackle_ollama, #{inspect(__MODULE__)}, :providers to be a map " <>
+                "of provider id to settings, got: #{inspect(other)}"
     end
   end
 
-  # Entries are model ids or `{model_id, model_info}` tuples. Malformed entries
-  # are kept as-is so `Tackle.Lib.LLM.select/2` reports them instead of the
-  # adapter silently dropping them.
-  defp configured_models do
-    :tackle_ollama
-    |> Application.get_env(:models, [])
-    |> List.wrap()
-    |> Enum.map(fn
-      {model, info} -> {model, info}
-      model -> {model, nil}
-    end)
+  @impl Tackle.Lib.LLM
+  def models(settings) when is_map(settings), do: Map.get(settings, "models", [])
+
+  @impl Tackle.Lib.LLM
+  def model_info(model, settings) when is_map(settings) do
+    case Map.get(settings, "model_info") do
+      nil -> nil
+      %{} = info -> Map.get(info, model)
+      invalid -> invalid
+    end
   end
 
-  @impl true
+  @impl Tackle.Lib.Decision
+  def decision_models(settings) when is_map(settings),
+    do: Map.get(settings, "decision_models", [])
+
+  @impl Tackle.Lib.Decision
+  def local?(settings) when is_map(settings), do: Map.get(settings, "local", false)
+
+  @doc """
+  Prompts for an API key and returns it as credentials for the host to store.
+
+  Providers with `"api_key" => "none"` return
+  `{:error, {:login_not_required, provider_id}}`.
+  """
+  @impl Tackle.Lib.LLM
   def login(opts) do
-    with {:ok, interaction} <- interaction(opts),
+    with {:ok, provider} <- request_provider(opts),
+         {:ok, :required} <- api_key_mode(provider),
+         {:ok, interaction} <- interaction(opts),
          {:ok, api_key} <-
            Interaction.prompt(interaction, label: "Ollama API key", secret: true),
          {:ok, api_key} <- normalize_api_key(api_key) do
       {:ok, %{"api_key" => api_key}}
+    else
+      {:ok, :none} -> {:error, {:login_not_required, Provider.id(opts, @adapter_id)}}
+      other -> other
+    end
+  end
+
+  @doc """
+  Reports the provider's credential state.
+
+  `{:ok, :stored}` when a key is in the credential store or the `"api_key_env"`
+  variable, `{:ok, :missing}` otherwise, and `{:ok, :not_required}` for
+  providers with `"api_key" => "none"`.
+  """
+  @impl Tackle.Lib.LLM
+  def status(opts) do
+    with {:ok, provider} <- request_provider(opts),
+         {:ok, mode} <- api_key_mode(provider) do
+      case mode do
+        :none ->
+          {:ok, :not_required}
+
+        :required ->
+          case stored_or_environment_api_key(provider, opts) do
+            {:ok, _api_key} -> {:ok, :stored}
+            {:error, {:missing_ollama_api_key, _id}} -> {:ok, :missing}
+            {:error, reason} -> {:error, reason}
+          end
+      end
     end
   end
 
@@ -104,76 +271,84 @@ defmodule Tackle.Plugins.Ollama do
   # any request is built.
   defp header_safe?(value), do: value |> :binary.bin_to_list() |> Enum.all?(&(&1 in 0x21..0x7E))
 
-  @impl true
+  # The provider a request runs under: its id names the credential namespace,
+  # the reported `:provider`, and the reasoning-replay identity.
+  defp request_provider(opts) do
+    id = Provider.id(opts, @adapter_id)
+
+    case Keyword.get(opts, :provider_settings) do
+      %{} = settings -> {:ok, %Provider{id: id, adapter: __MODULE__, settings: settings}}
+      nil -> {:ok, %Provider{id: id, adapter: __MODULE__, settings: default_settings(id)}}
+      _invalid -> {:error, {:invalid_provider_settings, id, :not_a_map}}
+    end
+  end
+
+  defp default_settings(id) do
+    case List.keyfind(default_providers(), id, 0) do
+      {^id, %{} = settings} -> settings
+      _other -> %{}
+    end
+  end
+
+  defp api_key_mode(%Provider{id: id, settings: settings}) do
+    case Map.get(settings, "api_key", "none") do
+      "none" -> {:ok, :none}
+      "required" -> {:ok, :required}
+      # The value may be a key pasted in by mistake, so it is not echoed.
+      _invalid -> {:error, {:invalid_provider_settings, id, {"api_key", :invalid}}}
+    end
+  end
+
+  defp base_url(%Provider{id: id, settings: settings}, opts) do
+    case Keyword.fetch(opts, :base_url) do
+      {:ok, url} when is_binary(url) and url != "" ->
+        {:ok, url}
+
+      {:ok, invalid} ->
+        {:error, {:invalid_base_url, invalid}}
+
+      :error ->
+        case Map.get(settings, "base_url", @default_base_url) do
+          url when is_binary(url) and url != "" -> {:ok, url}
+          invalid -> {:error, {:invalid_provider_settings, id, {"base_url", invalid}}}
+        end
+    end
+  end
+
+  @impl Tackle.Lib.LLM
   def generate(schema, opts) do
-    perform(schema, opts, fn _event -> :ok end)
+    chat(schema, opts, fn _event -> :ok end)
   end
 
-  @impl true
+  @impl Tackle.Lib.LLM
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
-    perform(schema, opts, event_callback)
+    chat(schema, opts, event_callback)
   end
 
-  defp perform(schema, opts, event_callback),
-    do: chat(cloud_profile(), schema, opts, event_callback)
-
-  defp cloud_profile do
-    %{
-      adapter_id: @adapter_id,
-      models: &models/0,
-      base_url: &Keyword.get(&1, :base_url, @default_base_url),
-      api_key: :required,
-      user_agent: "tackle-ollama-cloud"
-    }
-  end
-
-  @typedoc """
-  The provider identity a Chat Completions request runs under.
-
-    * `:adapter_id` - reported as the result `:provider`, used for reasoning
-      replay, generated tool-call ids, and the credential namespace.
-    * `:models` - returns the selectable adapter-local model ids.
-    * `:base_url` - resolves the OpenAI-compatible base URL from request options.
-    * `:api_key` - `:required` sends a bearer key; `:none` sends no
-      authorization header.
-    * `:user_agent` - user-agent product name; the package version is appended.
-  """
-  @type profile :: %{
-          adapter_id: String.t(),
-          models: (-> [String.t()]),
-          base_url: (keyword() -> String.t()),
-          api_key: :required | :none,
-          user_agent: String.t()
-        }
-
-  @doc false
-  # Shared Chat Completions entrypoint for the Ollama adapters in this package.
-  @spec chat(profile(), keyword() | map() | nil, keyword(), (map() -> any())) ::
-          {:ok, map()} | {:error, term()}
-  def chat(profile, schema, opts, event_callback) when is_function(event_callback, 1) do
-    with :ok <- validate_model(profile, opts),
+  defp chat(schema, opts, event_callback) do
+    with {:ok, provider} <- request_provider(opts),
+         :ok <- validate_model(models(provider.settings), opts),
          :ok <- not_cancelled(opts),
-         {:ok, api_key} <- profile_api_key(profile, opts),
-         {:ok, body} <- build_request_body(profile, schema, opts),
-         {:ok, response} <- send_request(profile, body, opts, api_key, event_callback),
+         {:ok, base_url} <- base_url(provider, opts),
+         {:ok, api_key} <- api_key(provider, opts),
+         {:ok, body} <- build_request_body(provider, schema, opts),
+         {:ok, response} <-
+           send_request(provider.id, base_url, body, opts, api_key, event_callback),
          :ok <- not_cancelled(opts),
          {:ok, result} <-
            response_result(
              response,
-             {profile.adapter_id, Keyword.fetch!(opts, :model)},
+             {provider.id, Keyword.fetch!(opts, :model)},
              schema,
              event_callback
            ) do
-      {:ok, Map.put(result, :provider, profile.adapter_id)}
+      {:ok, Map.put(result, :provider, provider.id)}
     end
   end
 
-  defp profile_api_key(%{api_key: :required}, opts), do: api_key(opts)
-  defp profile_api_key(%{api_key: :none}, _opts), do: {:ok, nil}
-
-  defp send_request(profile, body, opts, api_key, event_callback) do
+  defp send_request(provider_id, base_url, body, opts, api_key, event_callback) do
     signal = Keyword.get(opts, :cancellation_signal)
-    initial_parser = SSE.new(profile.adapter_id)
+    initial_parser = SSE.new(provider_id)
 
     # Req streams body chunks of error responses too; those are collected as a
     # bounded raw body instead of being fed to the SSE parser.
@@ -193,8 +368,8 @@ defmodule Tackle.Plugins.Ollama do
     with {:ok, encoded} <- encode_body(body) do
       request_options = [
         method: :post,
-        url: endpoint_url(profile.base_url.(opts), "/chat/completions"),
-        headers: headers(profile, api_key),
+        url: endpoint_url(base_url, "/chat/completions"),
+        headers: headers(api_key, "text/event-stream"),
         body: encoded,
         raw: true,
         retry: false,
@@ -224,14 +399,19 @@ defmodule Tackle.Plugins.Ollama do
   defp bounded(body) when byte_size(body) <= @max_error_body_bytes, do: body
   defp bounded(body), do: binary_part(body, 0, @max_error_body_bytes)
 
-  # `identity` is the `{adapter_id, requested_model}` of the request.
-  defp response_result(%{status: status, body: body}, {adapter_id, model}, schema, event_callback)
+  # `identity` is the `{provider_id, requested_model}` of the request.
+  defp response_result(
+         %{status: status, body: body},
+         {provider_id, model},
+         schema,
+         event_callback
+       )
        when status in 200..299 do
     parser =
       case body do
         %SSE{} = parser -> parser
-        body when is_binary(body) -> SSE.push(SSE.new(adapter_id), body, event_callback)
-        _body -> SSE.new(adapter_id)
+        body when is_binary(body) -> SSE.push(SSE.new(provider_id), body, event_callback)
+        _body -> SSE.new(provider_id)
       end
       |> SSE.finish(event_callback)
 
@@ -314,9 +494,9 @@ defmodule Tackle.Plugins.Ollama do
   defp error_texts(body) when is_binary(body), do: [body]
   defp error_texts(_body), do: []
 
-  defp build_request_body(profile, schema, opts) do
+  defp build_request_body(provider, schema, opts) do
     model = Keyword.fetch!(opts, :model)
-    replay = {profile.adapter_id, model}
+    replay = {provider.id, model}
 
     with {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
          {:ok, messages} <- convert_messages(Keyword.get(opts, :messages, []), replay),
@@ -348,7 +528,7 @@ defmodule Tackle.Plugins.Ollama do
     KeyError -> {:error, :model_required}
   end
 
-  # `replay` is the `{adapter_id, model}` whose reasoning may be replayed.
+  # `replay` is the `{provider_id, model}` whose reasoning may be replayed.
   defp convert_messages(messages, replay) when is_list(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, converted} ->
@@ -414,10 +594,10 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  # Replay reasoning only for this adapter and the same requested model.
-  defp put_replayed_reasoning(assistant, provider_state, {adapter_id, model})
+  # Replay reasoning only for this provider and the same requested model.
+  defp put_replayed_reasoning(assistant, provider_state, {provider_id, model})
        when is_map(provider_state) do
-    if field(provider_state, :provider) == adapter_id and
+    if field(provider_state, :provider) == provider_id and
          field(provider_state, :model) == model do
       case field(provider_state, :reasoning) do
         reasoning when is_binary(reasoning) ->
@@ -720,27 +900,36 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  defp api_key(opts) do
-    case Keyword.get(opts, :api_key) do
-      api_key when is_binary(api_key) ->
-        if String.trim(api_key) == "",
-          do: stored_or_environment_api_key(opts),
-          else: normalize_api_key(api_key)
-
-      _missing ->
-        stored_or_environment_api_key(opts)
+  defp api_key(provider, opts) do
+    with {:ok, mode} <- api_key_mode(provider) do
+      case mode do
+        :none -> {:ok, nil}
+        :required -> required_api_key(provider, opts)
+      end
     end
   end
 
-  defp stored_or_environment_api_key(opts) do
+  defp required_api_key(provider, opts) do
+    case Keyword.get(opts, :api_key) do
+      api_key when is_binary(api_key) ->
+        if String.trim(api_key) == "",
+          do: stored_or_environment_api_key(provider, opts),
+          else: normalize_api_key(api_key)
+
+      _missing ->
+        stored_or_environment_api_key(provider, opts)
+    end
+  end
+
+  defp stored_or_environment_api_key(provider, opts) do
     case Keyword.fetch(opts, :credential_store) do
       {:ok, {module, _reference} = handle} when is_atom(module) ->
-        case CredentialStore.fetch(handle, @adapter_id) do
+        case CredentialStore.fetch(handle, provider.id) do
           {:ok, credentials} when is_map(credentials) ->
-            credential_api_key(credentials) || environment_api_key()
+            credential_api_key(credentials) || environment_api_key(provider)
 
           :error ->
-            environment_api_key()
+            environment_api_key(provider)
 
           {:error, reason} ->
             {:error, {:credential_store_failed, reason}}
@@ -753,7 +942,7 @@ defmodule Tackle.Plugins.Ollama do
         {:error, :invalid_credential_store}
 
       :error ->
-        environment_api_key()
+        environment_api_key(provider)
     end
   end
 
@@ -767,43 +956,52 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  defp environment_api_key do
-    case System.get_env("OLLAMA_API_KEY") do
-      api_key when is_binary(api_key) ->
-        if String.trim(api_key) == "",
-          do: {:error, :missing_ollama_api_key},
-          else: normalize_api_key(api_key)
-
+  defp environment_api_key(%Provider{id: id, settings: settings}) do
+    case Map.get(settings, "api_key_env") do
       nil ->
-        {:error, :missing_ollama_api_key}
+        {:error, {:missing_ollama_api_key, id}}
+
+      name when is_binary(name) and name != "" ->
+        case System.get_env(name) do
+          api_key when is_binary(api_key) ->
+            if String.trim(api_key) == "",
+              do: {:error, {:missing_ollama_api_key, id}},
+              else: normalize_api_key(api_key)
+
+          nil ->
+            {:error, {:missing_ollama_api_key, id}}
+        end
+
+      invalid ->
+        {:error, {:invalid_provider_settings, id, {"api_key_env", invalid}}}
     end
   end
 
-  defp headers(profile, api_key) do
+  defp headers(api_key, accept) do
     authorization = if api_key, do: [{"authorization", "Bearer #{api_key}"}], else: []
 
     authorization ++
       [
         {"content-type", "application/json"},
-        {"accept", "text/event-stream"},
-        {"user-agent", user_agent(profile.user_agent)}
+        {"accept", accept},
+        {"user-agent", user_agent()}
       ]
   end
 
-  @doc false
   # Joins an OpenAI-compatible base URL and an endpoint path, accepting a base
   # URL that already ends with the path.
-  @spec endpoint_url(String.t(), String.t()) :: String.t()
-  def endpoint_url(base_url, path) do
+  defp endpoint_url(base_url, path) do
     base_url = String.trim_trailing(base_url, "/")
 
     if String.ends_with?(base_url, path), do: base_url, else: base_url <> path
   end
 
-  defp validate_model(profile, opts) do
+  defp validate_model(models, opts) do
     case Keyword.fetch(opts, :model) do
       {:ok, model} when is_binary(model) ->
-        if model in profile.models.(), do: :ok, else: {:error, {:unsupported_model, model}}
+        if is_list(models) and model in models,
+          do: :ok,
+          else: {:error, {:unsupported_model, model}}
 
       {:ok, model} ->
         {:error, {:unsupported_model, model}}
@@ -812,6 +1010,172 @@ defmodule Tackle.Plugins.Ollama do
         {:error, :model_required}
     end
   end
+
+  @impl Tackle.Lib.Decision
+  def decide(%Request{} = request, opts) when is_list(opts) do
+    with :ok <- Request.validate(request),
+         {:ok, provider} <- request_provider(opts),
+         :ok <- validate_decision_model(provider, request.model),
+         :ok <- not_cancelled(opts),
+         {:ok, base_url} <- base_url(provider, opts),
+         {:ok, api_key} <- api_key(provider, opts),
+         {:ok, body} <- encode_decision_request(request),
+         {:ok, response} <- send_decision(base_url, api_key, body, opts),
+         :ok <- not_cancelled(opts) do
+      decision_result(response, request)
+    end
+  end
+
+  defp validate_decision_model(provider, model) do
+    models = decision_models(provider.settings)
+
+    if is_list(models) and model in models,
+      do: :ok,
+      else: {:error, {:unsupported_model, model}}
+  end
+
+  defp encode_decision_request(request) do
+    {:ok, request |> Request.to_json_map() |> JSON.encode!()}
+  rescue
+    exception -> {:error, {:invalid_request_body, Exception.message(exception)}}
+  end
+
+  defp send_decision(base_url, api_key, body, opts) do
+    [
+      method: :post,
+      url: endpoint_url(base_url, "/systemone"),
+      headers: headers(api_key, "application/json"),
+      body: body,
+      decode_body: false,
+      retry: false,
+      receive_timeout: Keyword.get(opts, :receive_timeout, @default_decision_timeout)
+    ]
+    |> HTTP.request(opts)
+  end
+
+  defp decision_result(%{status: status, body: body}, request) when status in 200..299 do
+    with {:ok, decoded} <- decode_success_body(body),
+         {:ok, answers} <- parse_answers(decoded["answers"], request.questions) do
+      model = if is_binary(decoded["model"]), do: decoded["model"], else: request.model
+      usage = if is_map(decoded["usage"]), do: decoded["usage"], else: nil
+      {:ok, %Result{model: model, answers: answers, usage: usage}}
+    end
+  end
+
+  defp decision_result(%{status: status, body: body}, _request),
+    do: {:error, {:http_error, status, decision_error_body(body)}}
+
+  defp decode_success_body(%{} = body), do: {:ok, body}
+
+  defp decode_success_body(body) when is_binary(body) do
+    case JSON.decode(body) do
+      {:ok, %{} = decoded} -> {:ok, decoded}
+      _invalid -> {:error, {:invalid_decision_response, :invalid_json}}
+    end
+  end
+
+  defp decode_success_body(_body), do: {:error, {:invalid_decision_response, :invalid_json}}
+
+  defp decision_error_body(body) when is_binary(body) do
+    bounded =
+      if byte_size(body) <= @max_error_body_bytes,
+        do: body,
+        else: binary_part(body, 0, @max_error_body_bytes)
+
+    case JSON.decode(bounded) do
+      {:ok, %{} = decoded} -> decoded
+      _other -> HTTP.error_body(bounded)
+    end
+  end
+
+  defp decision_error_body(body), do: HTTP.error_body(body)
+
+  # Every requested question must be answered with its own type; answers to
+  # questions that were not asked are ignored.
+  defp parse_answers(%{} = answers, questions) do
+    Enum.reduce_while(questions, {:ok, %{}}, fn question, {:ok, parsed} ->
+      case parse_answer(Map.get(answers, question.name), question) do
+        {:ok, answer} -> {:cont, {:ok, Map.put(parsed, question.name, answer)}}
+        {:error, detail} -> {:halt, {:error, {:invalid_decision_response, detail}}}
+      end
+    end)
+  end
+
+  defp parse_answers(_answers, _questions),
+    do: {:error, {:invalid_decision_response, :missing_answers}}
+
+  defp parse_answer(nil, %Question{name: name}), do: {:error, {:missing_answer, name}}
+
+  defp parse_answer(
+         %{"type" => "choice", "choice" => choice} = answer,
+         %Question{type: :choice} = q
+       )
+       when is_binary(choice) do
+    if Map.has_key?(q.criteria, choice) do
+      {:ok,
+       %Answer{
+         type: :choice,
+         choice: choice,
+         probabilities: probabilities(answer["probabilities"], & &1),
+         confidence: number_or_nil(answer["confidence"])
+       }}
+    else
+      {:error, {:unknown_choice, q.name, choice}}
+    end
+  end
+
+  defp parse_answer(%{"type" => "noul", "noul" => noul} = answer, %Question{type: :noul})
+       when is_number(noul) and noul >= 0 and noul <= 1 do
+    {:ok, %Answer{type: :noul, noul: noul / 1, confidence: number_or_nil(answer["confidence"])}}
+  end
+
+  defp parse_answer(%{"type" => "score"} = answer, %Question{type: :score} = q) do
+    probabilities = probabilities(answer["probabilities"], &level_key/1)
+
+    case answer["score"] || expected_level(probabilities) do
+      score when is_number(score) ->
+        {:ok,
+         %Answer{
+           type: :score,
+           score: score,
+           probabilities: probabilities,
+           confidence: number_or_nil(answer["confidence"])
+         }}
+
+      _missing ->
+        {:error, {:invalid_answer, q.name}}
+    end
+  end
+
+  defp parse_answer(_answer, %Question{name: name}), do: {:error, {:invalid_answer, name}}
+
+  defp probabilities(%{} = probabilities, key_fun) do
+    for {key, value} <- probabilities, is_number(value), into: %{}, do: {key_fun.(key), value}
+  end
+
+  defp probabilities(_probabilities, _key_fun), do: %{}
+
+  # Score levels are zero-based; level keys sent as "0", "1", ... become integers.
+  defp level_key(key) when is_binary(key) do
+    case Integer.parse(key) do
+      {level, ""} when level >= 0 -> level
+      _other -> key
+    end
+  end
+
+  defp level_key(key), do: key
+
+  # Ollama defines a score as the probability-weighted average of the levels.
+  defp expected_level(probabilities) do
+    levels = Enum.filter(probabilities, fn {level, _p} -> is_integer(level) end)
+
+    if levels == [],
+      do: nil,
+      else: Enum.reduce(levels, 0.0, fn {level, p}, sum -> sum + level * p end)
+  end
+
+  defp number_or_nil(value) when is_number(value), do: value
+  defp number_or_nil(_value), do: nil
 
   defp not_cancelled(opts) do
     if Cancellation.cancelled?(Keyword.get(opts, :cancellation_signal)),
@@ -860,12 +1224,10 @@ defmodule Tackle.Plugins.Ollama do
   defp stringify_value(%{} = value), do: stringify_map_keys(value)
   defp stringify_value(value), do: value
 
-  @doc false
-  # `product/version` user agent for requests from this package.
-  @spec user_agent(String.t()) :: String.t()
-  def user_agent(product) do
+  # `tackle-ollama/<version>` user agent for requests from this package.
+  defp user_agent do
     version = Application.spec(:tackle_ollama, :vsn) || ~c"0.1.0"
-    "#{product}/#{List.to_string(version)}"
+    "tackle-ollama/#{List.to_string(version)}"
   end
 
   defp non_empty([]), do: nil

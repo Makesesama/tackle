@@ -3,6 +3,7 @@ defmodule Tackle.Config.FileTest do
 
   alias Tackle.Config
   alias Tackle.Config.Narration
+  alias Tackle.Lib.LLM.Provider
 
   defmodule Adapter do
     @behaviour Tackle.Lib.LLM
@@ -35,6 +36,23 @@ defmodule Tackle.Config.FileTest do
 
     @impl Tackle.Lib.Decision
     def decide(_request, _opts), do: {:error, :not_used}
+  end
+
+  # One adapter backing several providers, each with its own model list.
+  defmodule InstanceAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "inst"
+
+    @impl true
+    def default_providers, do: [{"inst", %{"models" => ["base"], "region" => "eu"}}]
+
+    @impl true
+    def models(settings), do: Map.get(settings, "models", [])
+
+    @impl true
+    def generate(_schema, _opts), do: {:error, :not_used}
   end
 
   setup do
@@ -208,45 +226,81 @@ defmodule Tackle.Config.FileTest do
              Config.load(available_adapters: [Adapter], env: env)
   end
 
-  test "passes adapter-keyed provider options through as an LLM option", %{
+  test "config.json providers merge over adapter defaults and accounts", %{
     home: home,
     env: env
   } do
-    route = %{"only" => ["mistral/zdr"], "allow_fallbacks" => false}
-    options = %{"test" => %{"provider_routing" => %{"file" => route}}}
-
-    write_config(
-      home,
-      JSON.encode!(%{"model" => "test/file", "thinking" => "low", "provider_options" => options})
-    )
-
-    assert {:ok, config} = Config.load(available_adapters: [Adapter], env: env)
-    assert config.llm_opts[:provider_options] == options
-    assert config.llm_opts[:reasoning_effort] == "low"
-
-    # Switching models or thinking keeps the adapter settings.
-    assert {:ok, switched} = Config.reconfigure(config, model: "test/override", thinking: "off")
-    assert switched.llm_opts[:provider_options] == options
-  end
-
-  test "rejects malformed or secret-bearing provider options", %{home: home, env: env} do
-    for options <- [[1], "openrouter", %{"test" => "route"}] do
-      write_config(home, JSON.encode!(%{"model" => "test/file", "provider_options" => options}))
-
-      assert {:error, {:invalid_config_field, _path, "provider_options"}} =
-               Config.load(available_adapters: [Adapter], env: env)
-    end
-
     write_config(
       home,
       JSON.encode!(%{
-        "model" => "test/file",
-        "provider_options" => %{"test" => %{"api_key" => "secret"}}
+        "model" => "inst-gpu/big",
+        "providers" => %{
+          "inst" => %{"adapter" => "inst", "models" => ["base", "tuned"]},
+          "inst-gpu" => %{"adapter" => "inst", "models" => ["big"], "base_url" => "http://gpu"}
+        }
       })
     )
 
-    assert {:error, {:reserved_llm_option, "api_key"}} =
-             Config.load(available_adapters: [Adapter], env: env)
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter, InstanceAdapter],
+               accounts: %{
+                 "inst-gpu" => %{"adapter" => "inst"},
+                 "inst-work" => %{"adapter" => "inst", "base" => "inst"}
+               },
+               env: env
+             )
+
+    assert [
+             %Provider{id: "test", adapter: Adapter},
+             %Provider{id: "inst", adapter: InstanceAdapter} = inst,
+             %Provider{id: "inst-gpu", adapter: InstanceAdapter} = gpu,
+             %Provider{id: "inst-work", adapter: InstanceAdapter} = work
+           ] = config.providers
+
+    # Config settings merge over the default provider's settings.
+    assert inst.settings == %{"models" => ["base", "tuned"], "region" => "eu"}
+    assert gpu.settings == %{"models" => ["big"], "base_url" => "http://gpu"}
+    # An account inherits its base provider's merged settings.
+    assert work.settings == inst.settings
+
+    # The selection carries its provider's settings to the adapter.
+    assert config.llm.provider_id == "inst-gpu"
+    assert config.llm.provider_settings == gpu.settings
+    refute Keyword.has_key?(config.llm_opts, :provider_options)
+
+    assert {:ok, switched} = Config.reconfigure(config, model: "inst/tuned")
+    assert switched.llm.provider_settings == inst.settings
+  end
+
+  test "malformed providers in config.json return errors", %{home: home, env: env} do
+    load = fn -> Config.load(available_adapters: [Adapter, InstanceAdapter], env: env) end
+
+    for providers <- [[1], "inst", true] do
+      path = write_config(home, JSON.encode!(%{"providers" => providers}))
+      assert {:error, {:invalid_config_field, ^path, "providers"}} = load.()
+    end
+
+    for {id, entry} <- [
+          {"Bad Id", %{"adapter" => "inst"}},
+          {"inst-x", %{"models" => ["a"]}},
+          {"inst-x", %{"adapter" => 42}},
+          {"inst-x", "inst"}
+        ] do
+      path = write_config(home, JSON.encode!(%{"providers" => %{id => entry}}))
+      assert {:error, {:invalid_config_provider, ^path, ^id}} = load.()
+    end
+
+    # Providers of adapters this host lacks are skipped.
+    write_config(home, JSON.encode!(%{"providers" => %{"gpu" => %{"adapter" => "nope"}}}))
+    assert {:ok, config} = load.()
+    refute Enum.any?(config.providers, &(&1.id == "gpu"))
+
+    write_config(home, JSON.encode!(%{"providers" => %{"test" => %{"adapter" => "inst"}}}))
+    assert {:error, {:provider_adapter_conflict, "test"}} = load.()
+
+    path = write_config(home, JSON.encode!(%{"provider_options" => %{}}))
+    assert {:error, {:unknown_config_fields, ^path, ["provider_options"]}} = load.()
   end
 
   test "unknown fields and malformed JSON return errors", %{home: home, env: env} do
@@ -426,17 +480,27 @@ defmodule Tackle.Config.FileTest do
       home,
       JSON.encode!(%{
         "decision_model" => "judge/small",
-        "provider_options" => %{"judge" => %{"base_url" => "http://judge.local"}}
+        "providers" => %{"judge" => %{"adapter" => "judge", "base_url" => "http://judge.local"}}
       })
     )
 
     assert {:ok, config} = load.()
-    assert %Tackle.Lib.Decision.Selection{ref: "judge/small"} = config.decision_model
 
-    # Only adapters implementing the decision contract are granted.
+    assert %Tackle.Lib.Decision.Selection{
+             ref: "judge/small",
+             provider_settings: %{"base_url" => "http://judge.local"}
+           } = config.decision_model
+
+    # Only providers implementing the decision contract are granted.
     assert config.context.decisions == %{
-             adapters: [JudgeAdapter],
-             options: [provider_options: %{"judge" => %{"base_url" => "http://judge.local"}}],
+             providers: [
+               %Provider{
+                 id: "judge",
+                 adapter: JudgeAdapter,
+                 settings: %{"base_url" => "http://judge.local"}
+               }
+             ],
+             options: [],
              default_model: "judge/small"
            }
 
@@ -446,7 +510,7 @@ defmodule Tackle.Config.FileTest do
     assert config.decision_model == nil
 
     assert config.context.decisions == %{
-             adapters: [JudgeAdapter],
+             providers: [%Provider{id: "judge", adapter: JudgeAdapter, settings: %{}}],
              options: [],
              default_model: nil
            }
@@ -608,7 +672,7 @@ defmodule Tackle.Config.FileTest do
     assert {:error, {:unknown_model, "test/missing"}} = load.()
 
     write_config(home, JSON.encode!(%{"narration" => %{"model" => "other/model"}}))
-    assert {:error, {:unknown_adapter, "other"}} = load.()
+    assert {:error, {:unknown_provider, "other"}} = load.()
   end
 
   test "module-looking strings are data and are never converted to atoms", %{home: home, env: env} do

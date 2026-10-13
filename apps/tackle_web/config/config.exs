@@ -68,7 +68,7 @@ config :phoenix, :json_library, JSON
 config :tackle_web, highlight_theme: "github_light"
 
 # Model an assistant conversation runs when the user does not pick one, as a
-# canonical "adapter/model" reference built from the provider plugins' ids.
+# canonical "provider/model" reference built from the provider ids.
 # Requires credentials for that provider: `openai-codex/*` uses the ChatGPT
 # session stored by `mix tackle auth`, `deepseek/*` an API key,
 # `anthropic/*` a Claude Pro/Max session or an Anthropic API key, and
@@ -78,8 +78,10 @@ config :tackle_web, agent_model: "openai-codex/gpt-5.6-terra"
 # Provider adapters bundled with this frontend: the repo's plugin packages,
 # wired in the same way any external plugin would be. `Tackle.Web.Providers`
 # reads this list through `Tackle.Plugins`, and so does the chat: a conversation
-# can run any `adapter/model` reference these expose. Override the list per
-# deployment, or in tests, with `config :tackle_web, :agent_adapters`.
+# can run any `provider/model` reference of these adapters' providers, accounts
+# from `tackle auth login ADAPTER --as NAME`, or config.json "providers".
+# Override the list per deployment, or in tests, with
+# `config :tackle_web, :agent_adapters`.
 config :tackle,
   adapters: [
     Tackle.Plugins.Codex,

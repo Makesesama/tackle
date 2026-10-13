@@ -41,8 +41,10 @@ adapters as trusted code with `config :tackle, adapters: [MyAdapter]` (for
 example, in `config/config.exs`), or pass them explicitly to the loader.
 General extension-project discovery remains out of scope; configuration data
 and frontend arguments only select models declared by modules supplied by the
-distribution. If no model is configured, the harness picks the first model
-reference exposed by the configured adapters.
+distribution. Each adapter module is an adapter *type*; sessions select
+models from *providers*, configured instances of those adapters (see
+[Providers](#providers)). If no model is configured, the harness picks the
+first model reference exposed by the available providers.
 
 Execution is scoped. `Tackle.start_scope/1` starts one root agent plus every
 descendant it may create and returns a PID-free `Tackle.Runtime.Scope`:
@@ -613,19 +615,19 @@ such as `"ollama/tev1:4b"` (see `Tackle.Lib.Decision`):
 { "watchdog": { "model": "ollama/tev1:4b", "after_seconds": 60, "threshold": 0.85 } }
 ```
 
-Tools can use decision models too. When any session adapter implements
-`Tackle.Lib.Decision`, the session context carries `:decisions` (those
-adapters, the session's `provider_options`, and a default model), which the
-workflow tool hands to `tackle.classify`. An optional top-level
+Tools can use decision models too. When any session provider's adapter
+implements `Tackle.Lib.Decision`, the session context carries `:decisions`
+(those providers and a default model), which the workflow tool hands to
+`tackle.classify`. An optional top-level
 `decision_model` sets that default; without it scripts must name a model:
 
 ```json
 { "decision_model": "ollama/tev1:4b" }
 ```
 
-Classifications by a local decision model (an adapter whose `local?/0` is
-`true`, such as the Ollama local adapter) are not counted against workflow
-token budgets; a remote decision model's tokens are.
+Classifications by a local decision model (a provider whose adapter answers
+`true` from `local?/1` or `local?/0`, such as a local Ollama server) are not
+counted against workflow token budgets; a remote decision model's tokens are.
 
 An optional `narration` object enables the narrator (`Tackle.Narrator`), which
 is off by default because it calls a chat model of its own. Only the root
@@ -687,9 +689,83 @@ it supplies the built-in prompt but does not discover prompt files.
 }
 ```
 
-`Tackle.Auth` stores one opaque map per provider in `~/.tackle/auth.json` and
+### Providers
+
+A provider is one configured instance of an adapter: its id is the prefix of
+model references (`codex-work/gpt-5.5`) and the namespace of its credentials.
+One adapter can back several providers, each with its own settings and login.
+`Tackle.Plugins.available_providers/1` merges them from three sources, lowest
+precedence first:
+
+1. the default providers of each configured adapter (usually one, whose id is
+   the adapter's `adapter_id/0`);
+2. accounts created with `tackle auth login ID --as NAME`, recorded in
+   `auth.json`; and
+3. the `providers` object of `config.json`.
+
+Each `config.json` entry names an adapter type id under `adapter`; every other
+key is an opaque setting passed to the adapter as `:provider_settings`, never
+interpreted by the harness:
+
+```json
+{
+  "model": "ollama-gpu-box/gpt-oss:20b",
+  "providers": {
+    "codex-work":     { "adapter": "openai-codex" },
+    "ollama":         { "adapter": "ollama", "models": ["qwen3:8b"] },
+    "ollama-gpu-box": { "adapter": "ollama", "base_url": "http://gpu:11434/v1",
+                        "api_key": "none", "local": true, "models": ["gpt-oss:20b"] }
+  }
+}
+```
+
+An entry for an existing provider id must name the same adapter; its settings
+are merged over the earlier ones (here `ollama` gains a model list). An entry
+naming a different adapter than a default provider of that id fails with
+`{:provider_adapter_conflict, id}`; an entry without an `adapter` or with an
+invalid id is also an error. `config.json` and `auth.json` are shared by every
+host on the machine, so an entry naming an adapter type the running host does
+not include is skipped, and so is an account whose adapter is missing or whose
+id names a default or `config.json` provider of another adapter. A model
+reference always names a provider, never an adapter type. The former
+`provider_options` field is removed; declare settings under `providers`
+instead.
+
+`ID` in `tackle auth login ID --as NAME` is a provider id or an adapter type
+id. An account records its adapter type and, when `ID` was a provider id, that
+base provider: `"accounts": {"cloud2": {"adapter": "ollama", "base":
+"ollama-cloud"}}` (`Tackle.Auth.accounts/0`, `Tackle.Auth.put_account/2`). An
+account's settings are its base provider's merged settings (defaults plus
+`config.json`) without `"api_key_env"`, so a second account never silently
+uses the first one's environment key; an account created from an adapter type
+id, or whose base is gone, starts without settings. A `config.json` entry for
+the account's own id merges over that. `login --as` refuses a `NAME` already
+used by a provider or recorded account of another adapter, including an
+account for an adapter the running host lacks, with
+`{:provider_adapter_conflict, NAME}`, before the adapter's login runs; the
+account is recorded only after the login succeeded and its credentials were
+stored.
+
+`Tackle.Config.load/1` reads both sources itself (pass `:accounts` to supply
+the accounts explicitly), and `Tackle.Config.new/1` takes `:providers`:
+`Tackle.Lib.LLM.Provider` structs, or adapter modules standing for their
+default providers.
+
+### Credentials
+
+`Tackle.Auth` stores one opaque map per provider id in `~/.tackle/auth.json` and
 injects only a non-secret `Tackle.Lib.CredentialStore` handle into adapter
-options. Credential-shaped `llm_opts` keys (including nested token, API-key,
+options. `Tackle.Auth.Provider` runs an adapter's login, logout, status, and
+usage flows for one provider, passing the provider's id and settings to the
+adapter. `login(id, as: name)` creates the account `name` on the adapter that
+`id` names (a provider id or an adapter type id) and stores its credentials
+under `name`; a failed login leaves no account behind. Logging out of an
+account deletes its credentials and its record; logging out of a default or
+`config.json` provider deletes only its credentials. The file is a version 2
+envelope with credentials under `providers` and accounts under `accounts`
+(`{"codex-work": {"adapter": "openai-codex"}}`); a version 1 file loads with no
+accounts and is rewritten as version 2, so older binaries cannot read it after
+the next change. Credential-shaped `llm_opts` keys (including nested token, API-key,
 password, and authorization fields) are rejected; provider secrets belong only
 in the credential store. The file is plaintext protected by filesystem
 permissions (`0700` for the directory and `0600` for the file), not encryption.

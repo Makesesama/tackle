@@ -3,8 +3,8 @@ defmodule Tackle.Plugins.Codex do
   OpenAI Codex adapter for `Tackle.Lib.LLM`.
 
   The adapter uses ChatGPT subscription OAuth credentials stored under the
-  `"openai-codex"` credential namespace and sends provider-neutral Tackle
-  messages and tools to the Codex Responses endpoint. By default it attempts
+  provider's credential namespace and sends provider-neutral Tackle messages
+  and tools to the Codex Responses endpoint. By default it attempts
   connection-scoped WebSocket continuation and falls back to SSE before
   streaming begins. Pass `transport: :sse`, `:websocket`, or
   `:websocket_cached` to select an explicit transport.
@@ -14,6 +14,19 @@ defmodule Tackle.Plugins.Codex do
   user through a `Tackle.Lib.Interaction` handle supplied in `opts`. The
   underlying protocol helpers remain available through `Tackle.Plugins.Codex.OAuth`.
   `generate/2` and `stream/3` never prompt the user.
+
+  ## Providers
+
+  Several providers can share this adapter, such as two ChatGPT accounts
+  (`codex-work/gpt-5.5`, `codex-home/gpt-5.5`). The host passes the provider
+  as `opts[:provider_id]` and `opts[:provider_settings]`; without them the
+  adapter acts as the default `"openai-codex"` provider. The provider id is the
+  credential namespace, part of the refresh lock, the reported `:provider`, and
+  the origin stamped on replayable `:provider_state`, so one account's state is
+  never replayed to another.
+
+  Honoured settings: `"base_url"` (the ChatGPT backend base URL). An explicit
+  `:base_url` option wins over it.
   """
 
   @behaviour Tackle.Lib.LLM
@@ -21,6 +34,7 @@ defmodule Tackle.Plugins.Codex do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Interaction
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Codex.HTTP
   alias Tackle.Plugins.Codex.OAuth
@@ -102,6 +116,7 @@ defmodule Tackle.Plugins.Codex do
   @impl true
   def usage(opts) do
     with :ok <- not_cancelled(opts),
+         {:ok, opts} <- put_base_url(opts),
          {:ok, handle} <- credential_store(opts) do
       usage_request(handle, opts)
     end
@@ -199,6 +214,7 @@ defmodule Tackle.Plugins.Codex do
   defp perform(schema, opts, event_callback) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
+         {:ok, opts} <- put_base_url(opts),
          {:ok, handle} <- credential_store(opts),
          {:ok, credentials} <- fresh_credentials(handle, nil, opts),
          result <- request_once(schema, opts, credentials, event_callback) do
@@ -231,8 +247,19 @@ defmodule Tackle.Plugins.Codex do
            send_request(body, opts, auth.access_token, auth.account_id, event_callback),
          {:ok, result} <-
            response_result(response, Keyword.fetch!(opts, :model), schema, event_callback) do
-      {:ok, Map.put(result, :provider, @adapter_id)}
+      {:ok, stamp_provider(result, provider_id(opts))}
     end
+  end
+
+  # The parser stamps replayable state with the adapter type; the provider id
+  # replaces it so state is only ever replayed to the provider that produced it.
+  defp stamp_provider(result, provider_id) do
+    result
+    |> Map.put(:provider, provider_id)
+    |> Map.update(:provider_state, nil, fn
+      %{} = state -> Map.put(state, "provider", provider_id)
+      state -> state
+    end)
   end
 
   defp send_request(body, opts, access_token, account_id, event_callback) do
@@ -404,7 +431,11 @@ defmodule Tackle.Plugins.Codex do
 
   defp build_request_body(schema, opts) do
     with {:ok, input} <-
-           convert_messages(Keyword.get(opts, :messages, []), Keyword.fetch!(opts, :model)),
+           convert_messages(
+             Keyword.get(opts, :messages, []),
+             provider_id(opts),
+             Keyword.fetch!(opts, :model)
+           ),
          {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
          {:ok, text} <- text_options(schema, opts) do
       body =
@@ -430,11 +461,11 @@ defmodule Tackle.Plugins.Codex do
     KeyError -> {:error, :model_required}
   end
 
-  defp convert_messages(messages, model) when is_list(messages) do
+  defp convert_messages(messages, provider_id, model) when is_list(messages) do
     messages
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn {message, index}, {:ok, acc} ->
-      case convert_message(message, index, model) do
+      case convert_message(message, index, provider_id, model) do
         {:ok, items} -> {:cont, {:ok, acc ++ items}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -445,7 +476,7 @@ defmodule Tackle.Plugins.Codex do
     end)
   end
 
-  defp convert_messages(_messages, _model), do: {:error, :invalid_messages}
+  defp convert_messages(_messages, _provider_id, _model), do: {:error, :invalid_messages}
 
   # A cancelled turn can leave a committed assistant tool call without a tool
   # result. The Responses API rejects that history on the next prompt, so close
@@ -478,13 +509,13 @@ defmodule Tackle.Plugins.Codex do
     end)
   end
 
-  defp convert_message(message, _index, _model) when not is_map(message),
+  defp convert_message(message, _index, _provider_id, _model) when not is_map(message),
     do: {:error, :invalid_message}
 
-  defp convert_message(message, index, model) do
+  defp convert_message(message, index, provider_id, model) do
     case normalize_role(field(message, :role)) do
       :user -> {:ok, [input_message("user", field(message, :content) || "")]}
-      :assistant -> {:ok, assistant_items(message, index, model)}
+      :assistant -> {:ok, assistant_items(message, index, provider_id, model)}
       :tool -> tool_output(message)
       role -> {:error, {:unsupported_message_role, role}}
     end
@@ -499,8 +530,8 @@ defmodule Tackle.Plugins.Codex do
     %{"role" => role, "content" => [%{"type" => "input_text", "text" => content}]}
   end
 
-  defp assistant_items(message, index, model) do
-    case replay_items(field(message, :provider_state), model) do
+  defp assistant_items(message, index, provider_id, model) do
+    case replay_items(field(message, :provider_state), provider_id, model) do
       {:ok, items} -> items
       :error -> synthetic_assistant_items(message, index)
     end
@@ -533,19 +564,19 @@ defmodule Tackle.Plugins.Codex do
     content_items ++ calls
   end
 
-  defp replay_items(provider_state, model) when is_map(provider_state) do
+  defp replay_items(provider_state, provider_id, model) when is_map(provider_state) do
     provider = field(provider_state, :provider)
     state_model = field(provider_state, :model)
     output = field(provider_state, :output)
 
-    if provider == @adapter_id and state_model == model and is_list(output) and output != [] do
+    if provider == provider_id and state_model == model and is_list(output) and output != [] do
       {:ok, output}
     else
       :error
     end
   end
 
-  defp replay_items(_provider_state, _model), do: :error
+  defp replay_items(_provider_state, _provider_id, _model), do: :error
 
   defp function_call_item(call) do
     function = field(call, :function) || %{}
@@ -786,7 +817,7 @@ defmodule Tackle.Plugins.Codex do
   end
 
   defp fresh_credentials(handle, rejected_access_token, opts) do
-    with {:ok, credentials} <- fetch_credentials(handle) do
+    with {:ok, credentials} <- fetch_credentials(handle, provider_id(opts)) do
       if refresh_required?(credentials, rejected_access_token, opts) do
         refresh_locked(handle, rejected_access_token, opts)
       else
@@ -795,8 +826,10 @@ defmodule Tackle.Plugins.Codex do
     end
   end
 
+  # The lock is per store and provider, so refreshing one account never waits
+  # on (or races with) another account's refresh.
   defp refresh_locked(handle, rejected_access_token, opts) do
-    lock_id = {{__MODULE__, :credential_refresh, handle}, self()}
+    lock_id = {{__MODULE__, :credential_refresh, handle, provider_id(opts)}, self()}
 
     case :global.trans(lock_id, fn -> refresh_current(handle, rejected_access_token, opts) end) do
       {:aborted, reason} -> {:error, {:credential_refresh_lock_failed, reason}}
@@ -805,7 +838,7 @@ defmodule Tackle.Plugins.Codex do
   end
 
   defp refresh_current(handle, rejected_access_token, opts) do
-    with {:ok, current} <- fetch_credentials(handle) do
+    with {:ok, current} <- fetch_credentials(handle, provider_id(opts)) do
       refresh_or_return(current, handle, rejected_access_token, opts)
     end
   end
@@ -820,7 +853,7 @@ defmodule Tackle.Plugins.Codex do
 
   defp refresh_and_store(current, handle, opts) do
     with {:ok, refreshed} <- OAuth.refresh(current, oauth_opts(opts)),
-         :ok <- CredentialStore.put(handle, @adapter_id, refreshed) do
+         :ok <- CredentialStore.put(handle, provider_id(opts), refreshed) do
       {:ok, refreshed}
     end
   end
@@ -833,12 +866,28 @@ defmodule Tackle.Plugins.Codex do
     current_access_token == rejected_access_token
   end
 
-  defp fetch_credentials(handle) do
-    case CredentialStore.fetch(handle, @adapter_id) do
+  defp fetch_credentials(handle, provider_id) do
+    case CredentialStore.fetch(handle, provider_id) do
       {:ok, %{} = credentials} -> {:ok, credentials}
       :error -> {:error, :missing_codex_credentials}
       {:error, reason} -> {:error, {:credential_store_failed, reason}}
       _other -> {:error, :invalid_codex_credentials}
+    end
+  end
+
+  defp provider_id(opts), do: Provider.id(opts, @adapter_id)
+
+  # An explicit `:base_url` option wins over the provider's `"base_url"` setting.
+  defp put_base_url(opts) do
+    case Map.fetch(Provider.settings(opts), "base_url") do
+      {:ok, url} when is_binary(url) and url != "" ->
+        {:ok, Keyword.put_new(opts, :base_url, url)}
+
+      {:ok, other} ->
+        {:error, {:invalid_provider_setting, provider_id(opts), "base_url", other}}
+
+      :error ->
+        {:ok, opts}
     end
   end
 

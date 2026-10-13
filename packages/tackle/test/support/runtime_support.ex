@@ -198,7 +198,7 @@ defmodule Tackle.Test.Runtime do
 
     {:ok, config} =
       Config.new(
-        adapters: Keyword.get(opts, :adapters, [Tackle.Test.Adapter]),
+        providers: Keyword.get(opts, :providers, [Tackle.Test.Adapter]),
         model: Keyword.get(opts, :model, "test/echo"),
         tools: Keyword.get(opts, :tools, []),
         context: Keyword.get(opts, :context, %{}),

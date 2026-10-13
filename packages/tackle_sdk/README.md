@@ -33,17 +33,19 @@ end
 
 ## Usage
 
-The host embeds the server with its LLM adapters and tool registry:
+The host embeds the server with its LLM providers and tool registry. A
+provider is a `Tackle.Lib.LLM.Provider` struct, or an adapter module standing
+for its default providers:
 
 ```elixir
 Tackle.SDK.run(
-  adapters: [MyApp.CodexAdapter],
+  providers: [MyApp.CodexAdapter],
   tools: [MyApp.Tools.Search, MyApp.Tools.Fetch],
   llm_opts: [credential_store: MyApp.Auth.credential_store()]
 )
 ```
 
-Host-side options such as `:adapters`, `:tools`, `:context`, and `:llm_opts`
+Host-side options such as `:providers`, `:tools`, `:context`, and `:llm_opts`
 are server configuration; the wire protocol is unchanged. `:llm_opts` is
 merged into every session's LLM options, which is how hosts inject adapter
 handles such as a `:credential_store` (see `Tackle.Lib.CredentialStore`).
@@ -59,7 +61,7 @@ stdin):
 
 ```jsonc
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
-{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"model":"my-adapter/my-model"}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"model":"my-provider/my-model"}}
 {"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"<from response 2>","input":"hello"}}
 ```
 

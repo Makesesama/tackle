@@ -6,8 +6,7 @@ defmodule Tackle.CLI.Distribution do
     Tackle.Plugins.DeepSeek,
     Tackle.Plugins.Anthropic,
     Tackle.Plugins.OpenRouter,
-    Tackle.Plugins.Ollama,
-    Tackle.Plugins.OllamaLocal
+    Tackle.Plugins.Ollama
   ]
 
   # Delegation tools bundled with the CLI distribution. `run_workflow` is the
@@ -79,7 +78,23 @@ defmodule Tackle.CLI.Distribution do
     end
   end
 
-  @doc "Model references from the validated distribution catalog."
+  @doc """
+  Providers of the validated distribution catalog's adapters.
+
+  They include the adapters' default providers, accounts recorded by
+  `tackle auth login ADAPTER --as NAME`, and the `config.json` `"providers"`
+  object (see `Tackle.Plugins.available_providers/1`).
+  """
+  @spec available_providers() :: {:ok, [Tackle.Lib.LLM.Provider.t()]} | {:error, term()}
+  def available_providers do
+    with {:ok, catalog} <- catalog() do
+      Tackle.Plugins.available_providers(
+        adapters: Tackle.Plugins.Catalog.adapter_modules(catalog)
+      )
+    end
+  end
+
+  @doc "Model references offered by `available_providers/0`."
   @spec available_models() :: {:ok, [String.t()]} | {:error, term()}
   def available_models do
     with {:ok, catalog} <- catalog() do
@@ -87,6 +102,17 @@ defmodule Tackle.CLI.Distribution do
         adapters: Tackle.Plugins.Catalog.adapter_modules(catalog)
       )
     end
+  end
+
+  @doc """
+  Maps each provider id to its adapter type id, so frontends can label a
+  provider such as `codex-work` with the adapter (`openai-codex`) behind it.
+  """
+  @spec provider_adapters([Tackle.Lib.LLM.Provider.t()]) :: %{String.t() => String.t()}
+  def provider_adapters(providers) when is_list(providers) do
+    Map.new(providers, fn %Tackle.Lib.LLM.Provider{id: id, adapter: adapter} ->
+      {id, adapter.adapter_id()}
+    end)
   end
 
   @doc "Installs default CLI distribution contributions before the harness starts."

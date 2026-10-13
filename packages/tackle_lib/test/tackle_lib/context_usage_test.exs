@@ -143,7 +143,7 @@ defmodule Tackle.Lib.ContextUsageTest do
   defp selection(info) do
     %Selection{
       adapter: __MODULE__,
-      adapter_id: "test",
+      provider_id: "test",
       model: info.model,
       ref: "test/#{info.model}",
       model_info: info

@@ -7,14 +7,13 @@ defmodule Tackle.Plugins.Catalog do
   """
 
   alias Tackle.Lib.Hook
+  alias Tackle.Lib.LLM.Provider
 
   @enforce_keys [:adapters, :tools, :hooks]
   defstruct adapters: [], tools: [], hooks: []
 
   @type entry :: %{required(:module) => module(), required(:source) => term()}
   @type t :: %__MODULE__{adapters: [entry()], tools: [entry()], hooks: [entry()]}
-
-  @adapter_id_pattern ~r/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/
 
   @doc "Builds a catalog, validating each entry while retaining its source."
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
@@ -137,7 +136,7 @@ defmodule Tackle.Plugins.Catalog do
   defp validate_adapter(module, source) do
     with :ok <- required_callback(module, :generate, 2, source, :adapter),
          {:ok, id} <- callback(module, :adapter_id, 0, source, :adapter),
-         true <- is_binary(id) and Regex.match?(@adapter_id_pattern, id),
+         true <- Provider.valid_id?(id),
          :ok <- validate_adapter_models(module, source) do
       {:ok, id}
     else
@@ -153,17 +152,42 @@ defmodule Tackle.Plugins.Catalog do
     end
   end
 
+  # Adapters are deduplicated by type id; each of their default providers must
+  # offer a valid model list (`models/1` with the provider settings, or
+  # `models/0`).
   defp validate_adapter_models(module, source) do
-    case callback(module, :models, 0, source, :adapter) do
-      {:ok, models} ->
-        if valid_models?(models) do
-          :ok
-        else
-          entry_error(%{module: module, source: source}, :adapter, {:invalid_models, models})
-        end
+    entry = %{module: module, source: source}
 
-      error ->
-        error
+    case Provider.defaults(module) do
+      {:ok, providers} ->
+        validate_providers_models(providers, entry)
+
+      {:error, reason} ->
+        entry_error(entry, :adapter, reason)
+    end
+  end
+
+  defp validate_providers_models(providers, entry) do
+    Enum.reduce_while(providers, :ok, fn provider, :ok ->
+      case validate_provider_models(provider, entry) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_provider_models(provider, entry) do
+    case Provider.instance_call(provider, :models) do
+      {:ok, models} ->
+        if valid_models?(models),
+          do: :ok,
+          else: entry_error(entry, :adapter, {:invalid_models, models})
+
+      {:error, {:invalid_adapter, _module, {:missing_callback, _callback}}} ->
+        entry_error(entry, :adapter, {:missing_callback, {:models, 0}})
+
+      {:error, {:adapter_callback_failed, _module, function, detail}} ->
+        entry_error(entry, :adapter, {:callback_failed, function, detail})
     end
   end
 

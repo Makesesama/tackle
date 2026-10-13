@@ -12,9 +12,11 @@ credential persistence and frontend interaction.
 
 ## Authentication
 
-The adapter uses ChatGPT subscription OAuth credentials stored in the
-`"openai-codex"` credential namespace. OAuth interaction is separate from model
-requests: `generate/2` and `stream/3` never prompt or open a browser.
+The adapter uses ChatGPT subscription OAuth credentials stored under the
+provider's id in the host's credential store: `"openai-codex"` for the default
+provider, or the id of another provider on this adapter (see
+[Providers](#providers)). OAuth interaction is separate from model requests:
+`generate/2` and `stream/3` never prompt or open a browser.
 
 ### Device-code login
 
@@ -56,6 +58,36 @@ Credentials contain access and rotating refresh tokens. The adapter refreshes
 expiring credentials before requests, persists rotated tokens through the
 injected `Tackle.Lib.CredentialStore`, and retries one request after a `401`.
 
+## Providers
+
+`adapter_id/0` (`"openai-codex"`) names the adapter type. Several providers can
+share the adapter, for example two ChatGPT subscriptions selected as
+`codex-work/gpt-5.5` and `codex-home/gpt-5.5`:
+
+```elixir
+alias Tackle.Lib.LLM.Provider
+
+{:ok, work} = Provider.new("codex-work", Tackle.Plugins.Codex)
+{:ok, home} = Provider.new("codex-home", Tackle.Plugins.Codex)
+{:ok, selection} = Tackle.Lib.LLM.select([work, home], "codex-work/gpt-5.5")
+```
+
+The selection passes `:provider_id` and `:provider_settings` to the adapter, and
+hosts pass the same options to `login/1` and `usage/1`. Without them the
+adapter acts as the default `"openai-codex"` provider. The provider id is:
+
+- the credential namespace read, refreshed, and written back;
+- part of the credential refresh lock, so accounts refresh independently;
+- the reported `:provider` of each response;
+- the origin stamped on replayable `provider_state`, which is replayed only to
+  the same provider and model.
+
+Honoured provider settings:
+
+| Key | Meaning |
+| --- | --- |
+| `"base_url"` | ChatGPT backend base URL for responses and usage. An explicit `:base_url` option wins. |
+
 ## Using the adapter
 
 When the plugin is available to the host distribution:
@@ -91,7 +123,7 @@ that knows a session has ended can release its connection immediately with
 
 For stateless SSE continuations and full-context WebSocket recovery, the adapter
 stores the provider's opaque response output on the assistant message and replays
-it only for the same provider and model. Hosts that persist conversations must
+it only for the same provider id and model. Hosts that persist conversations must
 preserve `Tackle.Lib.Message.provider_state`.
 
 For prompt caching, Tackle.Lib supplies its stable session ID on every model

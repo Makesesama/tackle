@@ -5,7 +5,7 @@ defmodule Tackle.Plugins.Ollama.MixProject do
     [
       app: :tackle_ollama,
       version: "0.1.0",
-      description: "Ollama Cloud and local Ollama adapters for Tackle.Lib",
+      description: "Ollama adapter for Tackle.Lib: Ollama Cloud, local, and self-hosted servers",
       source_url: "https://github.com/Makesesama/tackle",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
       docs: [main: "readme", extras: ["README.md"]],

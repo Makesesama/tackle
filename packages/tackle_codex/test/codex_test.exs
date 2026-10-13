@@ -3,6 +3,7 @@ defmodule Tackle.Plugins.CodexTest do
 
   alias Tackle.Lib
   alias Tackle.Lib.{Cancellation, LLM, Loop, ModelInfo, Usage}
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.Codex
   alias Tackle.Plugins.Codex.SSE
 
@@ -1001,6 +1002,248 @@ defmodule Tackle.Plugins.CodexTest do
 
     assert {:error, {:http_error, 403, "no usage"}} =
              Codex.usage(credential_store: store, request: request)
+  end
+
+  describe "provider instances" do
+    setup do
+      agent =
+        start_supervised!(
+          {Agent,
+           fn ->
+             %{
+               "codex-work" =>
+                 oauth_credentials("work-access", "work-refresh", 4_000_000_000_000),
+               "codex-home" => oauth_credentials("home-access", "home-refresh", 4_000_000_000_000)
+             }
+           end},
+          id: {Agent, make_ref()}
+        )
+
+      {:ok, providers_store: {CredentialStore, agent}, agent: agent}
+    end
+
+    test "providers on one adapter use their own credentials", %{providers_store: store} do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:authorization, header(options, "authorization")})
+        completed_response(options, "ok")
+      end
+
+      {:ok, work} = Provider.new("codex-work", Codex)
+      {:ok, home} = Provider.new("codex-home", Codex)
+
+      opts = Keyword.delete(base_opts(store, request), :model)
+
+      assert {:ok, selection} = LLM.select([work, home], "codex-home/gpt-5.5")
+      assert {:ok, result} = LLM.generate_with(selection, nil, opts)
+      assert result.provider == "codex-home"
+      assert_receive {:authorization, "Bearer home-access"}
+
+      assert {:ok, selection} = LLM.select([work, home], "codex-work/gpt-5.5")
+      assert {:ok, result} = LLM.generate_with(selection, nil, opts)
+      assert result.provider == "codex-work"
+      assert_receive {:authorization, "Bearer work-access"}
+
+      missing = Keyword.put(base_opts(store, request), :provider_id, "openai-codex")
+      assert {:error, :missing_codex_credentials} = Codex.generate(nil, missing)
+    end
+
+    test "refresh reads and writes the provider's namespace", %{
+      providers_store: store,
+      agent: agent
+    } do
+      :ok =
+        CredentialStore.put(
+          agent,
+          "codex-work",
+          oauth_credentials("expired-work", "work-refresh", 1)
+        )
+
+      test_pid = self()
+      refreshed_access = jwt("work-account")
+
+      request = fn options ->
+        if String.ends_with?(options[:url], "/oauth/token") do
+          send(test_pid, {:refresh_token, options[:form][:refresh_token]})
+          token_response(refreshed_access, "rotated-work-refresh")
+        else
+          send(test_pid, {:authorization, header(options, "authorization")})
+          completed_response(options, "ok")
+        end
+      end
+
+      opts = base_opts(store, request) |> Keyword.put(:provider_id, "codex-work")
+
+      assert {:ok, %{provider: "codex-work"}} = Codex.generate(nil, opts)
+      assert_receive {:refresh_token, "work-refresh"}
+      assert_receive {:authorization, authorization}
+      assert authorization == "Bearer #{refreshed_access}"
+
+      stored = Agent.get(agent, & &1)
+      assert stored["codex-work"]["refresh_token"] == "rotated-work-refresh"
+      assert stored["codex-home"]["refresh_token"] == "home-refresh"
+      refute Map.has_key?(stored, "openai-codex")
+    end
+
+    test "refreshes of different providers do not share a lock", %{
+      providers_store: store,
+      agent: agent
+    } do
+      for {id, refresh} <- [{"codex-work", "work-refresh"}, {"codex-home", "home-refresh"}] do
+        :ok = CredentialStore.put(agent, id, oauth_credentials("expired", refresh, 1))
+      end
+
+      test_pid = self()
+
+      request = fn options ->
+        if String.ends_with?(options[:url], "/oauth/token") do
+          refresh = options[:form][:refresh_token]
+
+          if refresh == "work-refresh" do
+            send(test_pid, {:work_refresh_blocked, self()})
+
+            receive do
+              :release -> :ok
+            end
+          end
+
+          token_response(jwt(refresh), "rotated-" <> refresh)
+        else
+          completed_response(options, "ok")
+        end
+      end
+
+      work =
+        Task.async(fn ->
+          Codex.generate(nil, Keyword.put(base_opts(store, request), :provider_id, "codex-work"))
+        end)
+
+      assert_receive {:work_refresh_blocked, blocked}, 1_000
+
+      # The work refresh still holds its lock; the home refresh must not wait for it.
+      home =
+        Task.async(fn ->
+          Codex.generate(nil, Keyword.put(base_opts(store, request), :provider_id, "codex-home"))
+        end)
+
+      assert {:ok, %{provider: "codex-home"}} = Task.await(home, 1_000)
+
+      send(blocked, :release)
+      assert {:ok, %{provider: "codex-work"}} = Task.await(work, 1_000)
+
+      stored = Agent.get(agent, & &1)
+      assert stored["codex-work"]["refresh_token"] == "rotated-work-refresh"
+      assert stored["codex-home"]["refresh_token"] == "rotated-home-refresh"
+    end
+
+    test "stamps continuation state with the provider and replays it only there", %{
+      providers_store: store
+    } do
+      test_pid = self()
+
+      request = fn options ->
+        {:ok, body} = JSON.decode(options[:body])
+        send(test_pid, {:input, body["input"]})
+
+        streaming_response(options, [
+          sse(%{
+            "type" => "response.completed",
+            "response" => %{
+              "status" => "completed",
+              "output" => [
+                %{
+                  "type" => "message",
+                  "id" => "msg_work",
+                  "role" => "assistant",
+                  "status" => "completed",
+                  "content" => [%{"type" => "output_text", "text" => "hi"}]
+                }
+              ]
+            }
+          })
+        ])
+      end
+
+      work_opts = base_opts(store, request) |> Keyword.put(:provider_id, "codex-work")
+      assert {:ok, result} = Codex.generate(nil, work_opts)
+      assert result.provider_state["provider"] == "codex-work"
+      assert_receive {:input, _first_input}
+
+      messages = [
+        %{role: :user, content: "hello"},
+        %{role: :assistant, content: "hi", provider_state: result.provider_state},
+        %{role: :user, content: "again"}
+      ]
+
+      assert {:ok, _result} = Codex.generate(nil, Keyword.put(work_opts, :messages, messages))
+      assert_receive {:input, replayed}
+      assert Enum.any?(replayed, &(&1["id"] == "msg_work"))
+
+      home_opts =
+        base_opts(store, request)
+        |> Keyword.merge(provider_id: "codex-home", messages: messages)
+
+      assert {:ok, _result} = Codex.generate(nil, home_opts)
+      assert_receive {:input, synthesized}
+      refute Enum.any?(synthesized, &(&1["id"] == "msg_work"))
+      assert Enum.any?(synthesized, &(&1["id"] == "msg_tackle_1"))
+    end
+
+    test "honours the base_url setting unless :base_url is explicit", %{providers_store: store} do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:url, options[:url]})
+        completed_response(options, "ok")
+      end
+
+      opts =
+        base_opts(store, request)
+        |> Keyword.merge(
+          provider_id: "codex-work",
+          provider_settings: %{"base_url" => "https://proxy.test/backend-api/"}
+        )
+
+      assert {:ok, _result} = Codex.generate(nil, opts)
+      assert_receive {:url, "https://proxy.test/backend-api/codex/responses"}
+
+      explicit = Keyword.put(opts, :base_url, "https://explicit.test")
+      assert {:ok, _result} = Codex.generate(nil, explicit)
+      assert_receive {:url, "https://explicit.test/codex/responses"}
+
+      invalid = Keyword.put(opts, :provider_settings, %{"base_url" => 42})
+
+      assert {:error, {:invalid_provider_setting, "codex-work", "base_url", 42}} =
+               Codex.generate(nil, invalid)
+    end
+  end
+
+  defp completed_response(options, text) do
+    streaming_response(options, [
+      sse(%{
+        "type" => "response.completed",
+        "response" => %{
+          "status" => "completed",
+          "output" => [
+            %{"type" => "message", "content" => [%{"type" => "output_text", "text" => text}]}
+          ]
+        }
+      })
+    ])
+  end
+
+  defp token_response(access_token, refresh_token) do
+    {:ok,
+     %Req.Response{
+       status: 200,
+       body:
+         JSON.encode!(%{
+           "access_token" => access_token,
+           "refresh_token" => refresh_token,
+           "expires_in" => 3_600
+         })
+     }}
   end
 
   defp base_opts(store, request) do

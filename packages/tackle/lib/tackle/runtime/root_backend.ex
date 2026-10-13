@@ -57,41 +57,32 @@ defmodule Tackle.Runtime.RootBackend do
 
   def services(%AgentSpec{}, %AgentContext{}), do: []
 
-  defp watchdog_service(%Config{watchdog: %Tackle.Config.Watchdog{} = settings} = config, context) do
+  # Selections carry their provider's settings, so the services need no
+  # session options to reach their models.
+  defp watchdog_service(%Config{watchdog: %Tackle.Config.Watchdog{} = settings}, context) do
     [
       {Tackle.Watchdog,
        agent_ref: context.agent_ref,
        task_supervisor: context.service_task_supervisor,
-       settings: settings,
-       decision_opts: provider_opts(config)}
+       settings: settings}
     ]
   end
 
   defp watchdog_service(_config, _context), do: []
 
   defp narrator_service(
-         %Config{narration: %Tackle.Config.Narration{} = settings} = config,
+         %Config{narration: %Tackle.Config.Narration{} = settings},
          %AgentContext{kind: :root, parent: nil} = context
        ) do
     [
       {Tackle.Narrator,
        agent_ref: context.agent_ref,
        task_supervisor: context.service_task_supervisor,
-       settings: settings,
-       llm_opts: provider_opts(config)}
+       settings: settings}
     ]
   end
 
   defp narrator_service(_config, _context), do: []
-
-  # Adapters such as the local Ollama one read their base URL from the
-  # session's provider options.
-  defp provider_opts(%Config{llm_opts: llm_opts}) do
-    case Keyword.get(llm_opts, :provider_options) do
-      nil -> []
-      options -> [provider_options: options]
-    end
-  end
 
   @impl true
   def prepare_child(%AgentSpec{model_source: :configured} = spec, _parent), do: {:ok, spec}

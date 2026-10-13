@@ -279,7 +279,7 @@ defmodule Tackle.WatchdogTest do
           "child" =>
             agent_spec("child",
               mode: :manual,
-              adapters: [Tackle.Test.Adapter, Judge],
+              providers: [Tackle.Test.Adapter, Judge],
               watchdog: [model: "judge/fake"]
             )
         }
@@ -300,7 +300,7 @@ defmodule Tackle.WatchdogTest do
 
     start_scope(
       root: [
-        adapters: [Tackle.Test.Adapter, Judge],
+        providers: [Tackle.Test.Adapter, Judge],
         tools: [SlowBash],
         context: %{test_pid: self()},
         mode: :tools_then_answer,

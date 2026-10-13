@@ -3,7 +3,7 @@ defmodule Tackle.SDK do
   JSON-RPC over stdio SDK server for Tackle.
 
   `Tackle.SDK` lets non-BEAM clients drive a Tackle agent: the host embeds
-  the server (configured with its LLM adapters and tool registry), clients
+  the server (configured with its LLM providers and tool registry), clients
   spawn the host binary and speak newline-delimited JSON-RPC 2.0 over
   stdin/stdout. The wire contract is specified in `PROTOCOL.md`.
 
@@ -14,14 +14,14 @@ defmodule Tackle.SDK do
   ## Quick start
 
       Tackle.SDK.Server.run(
-        adapters: [MyApp.CodexAdapter],
+        providers: [MyApp.CodexAdapter],
         tools: [MyApp.Tools.Search, MyApp.Tools.Fetch]
       )
 
   A minimal client session (any language):
 
       {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
-      {"jsonrpc":"2.0","id":2,"method":"session/new","params":{"model":"my-adapter/my-model"}}
+      {"jsonrpc":"2.0","id":2,"method":"session/new","params":{"model":"my-provider/my-model"}}
       {"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"...","input":"hello"}}
       # ... "event" notifications stream back, then:
       {"jsonrpc":"2.0","method":"turn/end","params":{"turnId":"...","result":"ok"}}

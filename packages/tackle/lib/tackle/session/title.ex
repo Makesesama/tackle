@@ -33,8 +33,8 @@ defmodule Tackle.Session.Title do
   @doc """
   Generates one session title for `user_message` through `selection`.
 
-  `llm_opts` carries the session's provider options and credential store, the
-  same options the agent loop uses. A response that still contains tool calls
+  `llm_opts` carries the session's LLM options and credential store, the same
+  options the agent loop uses; the selection carries its provider's settings. A response that still contains tool calls
   is rejected; the model was asked for text only.
   """
   @spec generate(Selection.t(), String.t(), keyword()) ::

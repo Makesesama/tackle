@@ -17,11 +17,11 @@
 #               ages; shows what the model answers, without the harness.
 #   2. system - full runs: a scripted chat model makes the agent call the real
 #               `bash` tool, and the real watchdog (RootBackend services,
-#               Tackle.Watchdog, OllamaLocal) must stop the tick loop. A finite
-#               control command must NOT be stopped.
+#               Tackle.Watchdog, the local `ollama` provider) must stop the
+#               tick loop. A finite control command must NOT be stopped.
 #
 # Only the chat model is scripted. The decision adapter is a thin recorder that
-# delegates every call to Tackle.Plugins.OllamaLocal unchanged.
+# delegates every call to Tackle.Plugins.Ollama unchanged.
 
 model = System.get_env("WATCHDOG_MODEL", "tev1:4b")
 after_seconds = String.to_integer(System.get_env("WATCHDOG_AFTER", "10"))
@@ -30,9 +30,8 @@ runs = String.to_integer(System.get_env("WATCHDOG_RUNS", "3"))
 limit_ms = String.to_integer(System.get_env("WATCHDOG_LIMIT", "150")) * 1_000
 base_url = System.get_env("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
-Application.put_env(:tackle_ollama, Tackle.Plugins.OllamaLocal,
-  base_url: base_url,
-  decision_models: [model]
+Application.put_env(:tackle_ollama, Tackle.Plugins.Ollama,
+  providers: %{"ollama" => %{"base_url" => base_url, "decision_models" => [model]}}
 )
 
 {:ok, _apps} = Application.ensure_all_started(:tackle)
@@ -74,29 +73,35 @@ end
 
 defmodule WatchdogLive.Recorder do
   @moduledoc false
-  # Decision adapter with the local Ollama identity that records each call and
-  # delegates it unchanged to Tackle.Plugins.OllamaLocal.
+  # Decision adapter offering the local `ollama` provider of
+  # Tackle.Plugins.Ollama; it records each call and delegates it unchanged.
   @behaviour Tackle.Lib.LLM
   @behaviour Tackle.Lib.Decision
 
-  alias Tackle.Plugins.OllamaLocal
+  alias Tackle.Plugins.Ollama
 
   @impl Tackle.Lib.LLM
-  def adapter_id, do: OllamaLocal.adapter_id()
+  def adapter_id, do: Ollama.adapter_id()
 
   @impl Tackle.Lib.LLM
-  def models, do: []
+  def default_providers, do: Enum.filter(Ollama.default_providers(), &(elem(&1, 0) == "ollama"))
 
   @impl Tackle.Lib.LLM
-  def generate(schema, opts), do: OllamaLocal.generate(schema, opts)
+  def models(_settings), do: []
+
+  @impl Tackle.Lib.LLM
+  def generate(schema, opts), do: Ollama.generate(schema, opts)
 
   @impl Tackle.Lib.Decision
-  def decision_models, do: OllamaLocal.decision_models()
+  def decision_models(settings), do: Ollama.decision_models(settings)
+
+  @impl Tackle.Lib.Decision
+  def local?(settings), do: Ollama.local?(settings)
 
   @impl Tackle.Lib.Decision
   def decide(request, opts) do
     started = System.monotonic_time(:millisecond)
-    result = OllamaLocal.decide(request, opts)
+    result = Ollama.decide(request, opts)
     latency = System.monotonic_time(:millisecond) - started
 
     if pid = Process.whereis(:watchdog_live), do: send(pid, {:decision, request, result, latency})
@@ -177,7 +182,7 @@ defmodule WatchdogLive do
   defp run_once(command, opts) do
     {:ok, config} =
       Tackle.Config.new(
-        adapters: [WatchdogLive.Script, WatchdogLive.Recorder],
+        providers: [WatchdogLive.Script, WatchdogLive.Recorder],
         model: "script/bash",
         tools: [Tackle.Tools.Bash],
         system_prompt: "Benchmark agent.",

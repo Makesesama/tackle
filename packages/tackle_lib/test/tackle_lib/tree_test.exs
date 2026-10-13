@@ -368,7 +368,7 @@ defmodule Tackle.Lib.TreeTest do
 
       selection = %Selection{
         adapter: TreeAdapter,
-        adapter_id: "test",
+        provider_id: "test",
         model: "tree-model",
         ref: "test/tree-model",
         model_info: %ModelInfo{model: "tree-model", context_window: 100_000}

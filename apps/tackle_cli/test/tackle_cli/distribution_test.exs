@@ -2,6 +2,7 @@ defmodule Tackle.CLI.DistributionTest do
   use ExUnit.Case, async: false
 
   alias Tackle.CLI.Distribution
+  alias Tackle.Lib.LLM.Provider
 
   setup do
     previous_adapters = Application.get_env(:tackle, :adapters)
@@ -96,14 +97,13 @@ defmodule Tackle.CLI.DistributionTest do
     assert skill.requires_tools == ["run_workflow"]
   end
 
-  test "bundles Codex, DeepSeek, Anthropic, OpenRouter, Ollama Cloud, and local Ollama as default adapters" do
+  test "bundles Codex, DeepSeek, Anthropic, OpenRouter, and Ollama as default adapters" do
     assert Distribution.default_adapters() == [
              Tackle.Plugins.Codex,
              Tackle.Plugins.DeepSeek,
              Tackle.Plugins.Anthropic,
              Tackle.Plugins.OpenRouter,
-             Tackle.Plugins.Ollama,
-             Tackle.Plugins.OllamaLocal
+             Tackle.Plugins.Ollama
            ]
   end
 
@@ -121,28 +121,34 @@ defmodule Tackle.CLI.DistributionTest do
              Tackle.Lib.LLM.select(adapters, "ollama-cloud/gpt-oss:120b")
 
     assert selection.adapter == Tackle.Plugins.Ollama
+    assert selection.provider_id == "ollama-cloud"
     assert selection.model == "gpt-oss:120b"
 
-    assert {:ok, Tackle.Plugins.Ollama} =
+    assert {:ok, %Provider{id: "ollama-cloud", adapter: Tackle.Plugins.Ollama}} =
              Tackle.Auth.Provider.resolve("ollama-cloud", adapters: adapters)
 
     assert {:ok, providers} = Tackle.Auth.Provider.list(adapters: adapters)
     provider = Enum.find(providers, &(&1.id == "ollama-cloud"))
+    assert provider.adapter == "ollama"
+    assert provider.source == :default
     assert provider.capabilities.login
     refute provider.capabilities.usage
 
     assert {:error, {:unsupported_provider_flow, "ollama-cloud", :usage}} =
              Tackle.Auth.Provider.usage("ollama-cloud", adapters: adapters)
+
+    # The local server needs no key, so it reports no credential status.
+    assert {:ok, :not_required} = Tackle.Auth.Provider.status("ollama", adapters: adapters)
   end
 
   test "exposes the default local Ollama decision model and configured chat models" do
     Application.delete_env(:tackle, :adapters)
-    previous = Application.get_env(:tackle_ollama, Tackle.Plugins.OllamaLocal)
+    previous = Application.get_env(:tackle_ollama, Tackle.Plugins.Ollama)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:tackle_ollama, Tackle.Plugins.OllamaLocal, previous),
-        else: Application.delete_env(:tackle_ollama, Tackle.Plugins.OllamaLocal)
+        do: Application.put_env(:tackle_ollama, Tackle.Plugins.Ollama, previous),
+        else: Application.delete_env(:tackle_ollama, Tackle.Plugins.Ollama)
     end)
 
     # By default the distribution offers the tev1 decision model (watchdog)
@@ -152,22 +158,80 @@ defmodule Tackle.CLI.DistributionTest do
     assert {:ok, catalog} = Distribution.catalog()
     adapters = Tackle.Plugins.Catalog.adapter_modules(catalog)
 
-    assert {:ok, %{adapter: Tackle.Plugins.OllamaLocal}} =
+    assert {:ok, %{adapter: Tackle.Plugins.Ollama, provider_id: "ollama"} = decision} =
              Tackle.Lib.Decision.select(adapters, "ollama/tev1:4b")
 
-    assert {:ok, %{adapter: Tackle.Plugins.OllamaLocal}} =
+    assert decision.local
+
+    assert {:ok, %{adapter: Tackle.Plugins.Ollama, provider_id: "ollama"}} =
              Tackle.Lib.LLM.select(adapters, "ollama/gemma4:12b")
 
-    Application.put_env(:tackle_ollama, Tackle.Plugins.OllamaLocal,
-      models: ["qwen3:8b"],
-      decision_models: ["tev1:4b"]
+    Application.put_env(:tackle_ollama, Tackle.Plugins.Ollama,
+      providers: %{"ollama" => %{"models" => ["qwen3:8b"], "decision_models" => ["tev1:4b"]}}
     )
 
     assert {:ok, models} = Distribution.available_models()
     assert "ollama/qwen3:8b" in models
 
-    assert {:ok, %{adapter: Tackle.Plugins.OllamaLocal}} =
+    assert {:ok, %{adapter: Tackle.Plugins.Ollama}} =
              Tackle.Lib.LLM.select(adapters, "ollama/qwen3:8b")
+  end
+
+  test "offers models of recorded accounts and config.json providers" do
+    Application.delete_env(:tackle, :adapters)
+    home = Path.join(System.tmp_dir!(), "tackle-cli-dist-#{System.unique_integer([:positive])}")
+    previous_home = System.get_env("TACKLE_HOME")
+    File.mkdir_p!(home)
+
+    File.write!(
+      Path.join(home, "config.json"),
+      JSON.encode!(%{
+        "providers" => %{
+          "ollama-gpu-box" => %{
+            "adapter" => "ollama",
+            "base_url" => "http://gpu:11434/v1",
+            "local" => true,
+            "models" => ["gpt-oss:20b"]
+          }
+        }
+      })
+    )
+
+    System.put_env("TACKLE_HOME", home)
+    :ok = Tackle.Auth.put_account("codex-work", %{"adapter" => "openai-codex"})
+
+    :ok =
+      Tackle.Auth.put_account("cloud2", %{"adapter" => "ollama", "base" => "ollama-cloud"})
+
+    on_exit(fn ->
+      Tackle.Auth.delete_account("codex-work")
+      Tackle.Auth.delete_account("cloud2")
+      if previous_home, do: System.put_env("TACKLE_HOME", previous_home)
+      File.rm_rf!(home)
+    end)
+
+    assert {:ok, models} = Distribution.available_models()
+    assert "ollama-gpu-box/gpt-oss:20b" in models
+    assert Enum.any?(models, &String.starts_with?(&1, "codex-work/"))
+    assert Enum.any?(models, &String.starts_with?(&1, "openai-codex/"))
+
+    assert {:ok, providers} = Distribution.available_providers()
+
+    assert %{
+             "codex-work" => "openai-codex",
+             "openai-codex" => "openai-codex",
+             "ollama" => "ollama",
+             "ollama-gpu-box" => "ollama",
+             "cloud2" => "ollama"
+           } = Distribution.provider_adapters(providers)
+
+    # An account created from ollama-cloud inherits its settings, except the
+    # environment variable that holds ollama-cloud's own key.
+    cloud = Enum.find(providers, &(&1.id == "ollama-cloud"))
+    cloud2 = Enum.find(providers, &(&1.id == "cloud2"))
+    assert cloud2.settings == Map.delete(cloud.settings, "api_key_env")
+    assert cloud2.settings["api_key"] == "required"
+    assert ("cloud2/" <> hd(cloud.settings["models"])) in models
   end
 
   test "registers the bundled adapters with the harness" do
@@ -180,8 +244,7 @@ defmodule Tackle.CLI.DistributionTest do
              Tackle.Plugins.DeepSeek,
              Tackle.Plugins.Anthropic,
              Tackle.Plugins.OpenRouter,
-             Tackle.Plugins.Ollama,
-             Tackle.Plugins.OllamaLocal
+             Tackle.Plugins.Ollama
            ]
   end
 end

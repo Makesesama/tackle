@@ -6,17 +6,34 @@ defmodule Tackle.Plugins.Anthropic do
   Messages API. It supports two auth modes:
 
     * **Claude Pro/Max OAuth** — subscription credentials stored under the
-      `"anthropic"` credential namespace. OAuth requests carry the Claude Code
+      provider's credential namespace. OAuth requests carry the Claude Code
       billing/identity system blocks, betas, and user agent that Anthropic's
       classifier requires, and tool names are namespaced like MCP tools.
     * **API key** — passed explicitly, read from the credential store, or taken
-      from the `ANTHROPIC_API_KEY` environment variable.
+      from an environment variable: the provider's `"api_key_env"` setting, or
+      `ANTHROPIC_API_KEY` for the default `"anthropic"` provider only.
 
   Interactive login is exposed through the optional `login/1` callback and talks
   to the user through a `Tackle.Lib.Interaction` handle. `generate/2` and
   `stream/3` never prompt or open a browser; they refresh expiring OAuth
   credentials through the injected `Tackle.Lib.CredentialStore` and retry one
   request after a `401`.
+
+  ## Providers
+
+  Several providers can share this adapter, each with its own login. The host
+  passes the provider as `opts[:provider_id]` and `opts[:provider_settings]`;
+  without them the adapter acts as the default `"anthropic"` provider. The
+  provider id is the credential namespace, part of the refresh lock, the
+  reported `:provider`, and the origin stamped on replayable `:provider_state`.
+
+  Honoured settings: `"base_url"` (the Messages API base URL; an explicit
+  `:base_url` option wins over it) and `"api_key_env"` (the environment
+  variable consulted for an API key when none is stored). Only the default
+  `"anthropic"` provider falls back to `ANTHROPIC_API_KEY` without
+  `"api_key_env"`, so another provider never picks up its key by accident.
+  Without credentials, requests fail with
+  `{:error, {:missing_anthropic_credentials, provider_id}}`.
   """
 
   @behaviour Tackle.Lib.LLM
@@ -24,6 +41,7 @@ defmodule Tackle.Plugins.Anthropic do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Interaction
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Anthropic.Convert
   alias Tackle.Plugins.Anthropic.HTTP
@@ -137,7 +155,7 @@ defmodule Tackle.Plugins.Anthropic do
   end
 
   defp status_from_handle(handle, opts) do
-    case fetch_credentials(handle) do
+    case fetch_credentials(handle, provider_id(opts)) do
       {:ok, credentials} -> {:ok, credentials_status(credentials, opts)}
       :missing -> environment_status(opts)
       {:error, reason} -> {:error, reason}
@@ -156,7 +174,8 @@ defmodule Tackle.Plugins.Anthropic do
   defp environment_status(opts) do
     case environment_auth(opts) do
       {:ok, _auth} -> {:ok, :stored}
-      {:error, _reason} -> {:ok, :missing}
+      {:error, {:missing_anthropic_credentials, _provider_id}} -> {:ok, :missing}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -173,6 +192,7 @@ defmodule Tackle.Plugins.Anthropic do
   defp perform(schema, opts, event_callback) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
+         {:ok, opts} <- put_base_url(opts),
          {:ok, auth} <- resolve_auth(opts),
          result <- request_once(schema, opts, auth, event_callback) do
       retry_unauthorized(result, schema, opts, auth, event_callback)
@@ -186,7 +206,7 @@ defmodule Tackle.Plugins.Anthropic do
          %{type: :oauth, handle: handle, token: rejected},
          event_callback
        ) do
-    with {:ok, credentials} <- fetch_credentials(handle),
+    with {:ok, credentials} <- fetch_credentials(handle, provider_id(opts)),
          {:ok, credentials} <- maybe_refresh(handle, credentials, rejected, opts) do
       auth = oauth_auth(handle, credentials)
       request_once(schema, opts, auth, event_callback)
@@ -200,8 +220,19 @@ defmodule Tackle.Plugins.Anthropic do
          {:ok, response} <- send_request(body, opts, auth, event_callback),
          {:ok, result} <-
            response_result(response, Keyword.fetch!(opts, :model), schema, event_callback) do
-      {:ok, Map.put(result, :provider, @adapter_id)}
+      {:ok, stamp_provider(result, provider_id(opts))}
     end
+  end
+
+  # The parser stamps replayable state with the adapter type; the provider id
+  # replaces it so state is only ever replayed to the provider that produced it.
+  defp stamp_provider(result, provider_id) do
+    result
+    |> Map.put(:provider, provider_id)
+    |> Map.update(:provider_state, nil, fn
+      %{} = state -> Map.put(state, "provider", provider_id)
+      state -> state
+    end)
   end
 
   defp send_request(body, opts, auth, event_callback) do
@@ -482,7 +513,7 @@ defmodule Tackle.Plugins.Anthropic do
   end
 
   defp auth_from_store(handle, opts) do
-    case fetch_credentials(handle) do
+    case fetch_credentials(handle, provider_id(opts)) do
       {:ok, %{} = credentials} ->
         cond do
           OAuth.oauth_credentials?(credentials) ->
@@ -519,8 +550,10 @@ defmodule Tackle.Plugins.Anthropic do
     end
   end
 
+  # The lock is per store and provider, so refreshing one account never waits
+  # on (or races with) another account's refresh.
   defp refresh_locked(handle, rejected_access_token, opts) do
-    lock_id = {{__MODULE__, :credential_refresh, handle}, self()}
+    lock_id = {{__MODULE__, :credential_refresh, handle, provider_id(opts)}, self()}
 
     case :global.trans(lock_id, fn -> refresh_current(handle, rejected_access_token, opts) end) do
       {:aborted, reason} -> {:error, {:credential_refresh_lock_failed, reason}}
@@ -529,10 +562,12 @@ defmodule Tackle.Plugins.Anthropic do
   end
 
   defp refresh_current(handle, rejected_access_token, opts) do
-    with {:ok, current} <- fetch_credentials(handle) do
+    provider_id = provider_id(opts)
+
+    with {:ok, current} <- fetch_credentials(handle, provider_id) do
       if refresh_required?(current, rejected_access_token, opts) do
         with {:ok, refreshed} <- OAuth.refresh(current, oauth_opts(opts)),
-             :ok <- CredentialStore.put(handle, @adapter_id, refreshed) do
+             :ok <- CredentialStore.put(handle, provider_id, refreshed) do
           {:ok, refreshed}
         end
       else
@@ -549,12 +584,28 @@ defmodule Tackle.Plugins.Anthropic do
     current == rejected_access_token
   end
 
-  defp fetch_credentials(handle) do
-    case CredentialStore.fetch(handle, @adapter_id) do
+  defp fetch_credentials(handle, provider_id) do
+    case CredentialStore.fetch(handle, provider_id) do
       {:ok, %{} = credentials} -> {:ok, credentials}
       :error -> :missing
       {:error, reason} -> {:error, {:credential_store_failed, reason}}
       _other -> {:error, :invalid_anthropic_credentials}
+    end
+  end
+
+  defp provider_id(opts), do: Provider.id(opts, @adapter_id)
+
+  # An explicit `:base_url` option wins over the provider's `"base_url"` setting.
+  defp put_base_url(opts) do
+    case Map.fetch(Provider.settings(opts), "base_url") do
+      {:ok, url} when is_binary(url) and url != "" ->
+        {:ok, Keyword.put_new(opts, :base_url, url)}
+
+      {:ok, other} ->
+        {:error, {:invalid_provider_setting, provider_id(opts), "base_url", other}}
+
+      :error ->
+        {:ok, opts}
     end
   end
 
@@ -581,10 +632,28 @@ defmodule Tackle.Plugins.Anthropic do
         {:ok, %{type: :api_key, token: key}}
 
       :error ->
-        case System.get_env(@api_key_env) do
-          key when is_binary(key) and key != "" -> {:ok, %{type: :api_key, token: key}}
-          _missing -> {:error, :missing_anthropic_credentials}
+        with {:ok, name} <- api_key_env(opts) do
+          case name && System.get_env(name) do
+            key when is_binary(key) and key != "" -> {:ok, %{type: :api_key, token: key}}
+            _missing -> {:error, {:missing_anthropic_credentials, provider_id(opts)}}
+          end
         end
+    end
+  end
+
+  # The environment variable holding the provider's API key: its
+  # `"api_key_env"` setting, else `ANTHROPIC_API_KEY` for the default provider
+  # only, so another provider never picks up that key by accident.
+  defp api_key_env(opts) do
+    case Map.fetch(Provider.settings(opts), "api_key_env") do
+      {:ok, name} when is_binary(name) and name != "" ->
+        {:ok, name}
+
+      {:ok, other} ->
+        {:error, {:invalid_provider_setting, provider_id(opts), "api_key_env", other}}
+
+      :error ->
+        {:ok, if(provider_id(opts) == @adapter_id, do: @api_key_env)}
     end
   end
 

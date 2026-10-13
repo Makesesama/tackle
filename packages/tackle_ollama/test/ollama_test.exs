@@ -1,38 +1,227 @@
 defmodule Tackle.Plugins.OllamaTest do
   use ExUnit.Case, async: false
 
-  alias Tackle.Lib.LLM
+  alias Tackle.Lib.{Decision, LLM}
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.Ollama
   alias Tackle.Plugins.Ollama.SSE
 
-  test "catalog is local and metadata is host-configured" do
-    assert Ollama.adapter_id() == "ollama-cloud"
+  setup do
+    previous = Application.get_env(:tackle_ollama, Ollama)
 
-    assert Ollama.models() == [
-             "gpt-oss:120b",
-             "gpt-oss:20b",
-             "kimi-k3",
-             "deepseek-v4.1-flash",
-             "glm-5.3"
-           ]
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:tackle_ollama, Ollama, previous),
+        else: Application.delete_env(:tackle_ollama, Ollama)
+    end)
 
-    assert Ollama.model_info("gpt-oss:120b") == nil
-
-    Application.put_env(:tackle_ollama, :models, [
-      {"gpt-oss:120b", %{context_window: 65_536}},
-      "custom"
-    ])
-
-    on_exit(fn -> Application.delete_env(:tackle_ollama, :models) end)
-    assert Ollama.model_info("gpt-oss:120b") == %{context_window: 65_536}
-    assert {:ok, %{model: "custom"}} = LLM.select([Ollama], "ollama-cloud/custom")
+    Application.delete_env(:tackle_ollama, Ollama)
+    :ok
   end
 
-  test "selects GLM-5.3 with its direct-cloud model id" do
-    assert {:ok, %{adapter: Ollama, model: "glm-5.3"}} =
-             LLM.select([Ollama], "ollama-cloud/glm-5.3")
+  @catalog ["gpt-oss:120b", "gpt-oss:20b", "kimi-k3", "deepseek-v4.1-flash", "glm-5.3"]
 
-    assert Ollama.model_info("glm-5.3") == nil
+  describe "default providers" do
+    test "are a keyless local server and the keyed cloud catalog" do
+      assert Ollama.adapter_id() == "ollama"
+      assert Ollama.catalog_models() == @catalog
+
+      assert [{"ollama", local}, {"ollama-cloud", cloud}] = Ollama.default_providers()
+
+      assert %{
+               "base_url" => "http://localhost:11434/v1",
+               "api_key" => "none",
+               "local" => true,
+               "models" => [],
+               "decision_models" => []
+             } = local
+
+      assert %{
+               "base_url" => "https://ollama.com/v1",
+               "api_key" => "required",
+               "api_key_env" => "OLLAMA_API_KEY",
+               "local" => false,
+               "models" => @catalog
+             } = cloud
+
+      assert Ollama.model_info("gpt-oss:120b", cloud) == nil
+    end
+
+    test "resolve existing ollama and ollama-cloud refs" do
+      Application.put_env(:tackle_ollama, Ollama,
+        providers: %{"ollama" => %{"models" => ["qwen3:8b"]}}
+      )
+
+      assert {:ok, %LLM.Selection{adapter: Ollama, provider_id: "ollama", model: "qwen3:8b"}} =
+               LLM.select([Ollama], "ollama/qwen3:8b")
+
+      assert {:ok, %LLM.Selection{adapter: Ollama, provider_id: "ollama-cloud"} = cloud} =
+               LLM.select([Ollama], "ollama-cloud/glm-5.3")
+
+      assert cloud.model == "glm-5.3"
+      assert cloud.model_info == nil
+      assert cloud.provider_settings["api_key"] == "required"
+
+      assert {:error, {:unknown_model, "ollama/gpt-oss:120b"}} =
+               LLM.select([Ollama], "ollama/gpt-oss:120b")
+    end
+
+    test "merge application configuration by provider id and add new providers" do
+      Application.put_env(:tackle_ollama, Ollama,
+        providers: %{
+          "ollama-cloud" => %{
+            "models" => ["custom"],
+            "model_info" => %{"custom" => %{"context_window" => 65_536}}
+          },
+          "lab" => %{"base_url" => "http://lab:11434/v1", "models" => ["m"]}
+        }
+      )
+
+      assert [{"ollama", _}, {"ollama-cloud", cloud}, {"lab", lab}] = Ollama.default_providers()
+      assert cloud["models"] == ["custom"]
+      assert cloud["base_url"] == "https://ollama.com/v1"
+      assert lab == %{"base_url" => "http://lab:11434/v1", "models" => ["m"]}
+
+      assert {:ok, selection} = LLM.select([Ollama], "ollama-cloud/custom")
+      assert selection.model_info.context_window == 65_536
+
+      assert {:error, {:unknown_model, "ollama-cloud/gpt-oss:120b"}} =
+               LLM.select([Ollama], "ollama-cloud/gpt-oss:120b")
+
+      assert {:ok, %{provider_id: "lab"}} = LLM.select([Ollama], "lab/m")
+    end
+
+    test "malformed application configuration is reported" do
+      Application.put_env(:tackle_ollama, Ollama, providers: %{"ollama" => "bad"})
+
+      assert {:error, {:invalid_provider_settings, "ollama", "bad"}} =
+               LLM.select([Ollama], "ollama/x")
+
+      Application.put_env(:tackle_ollama, Ollama, providers: [])
+      assert_raise ArgumentError, ~r/:providers to be a map/, &Ollama.default_providers/0
+
+      assert {:error, {:adapter_callback_failed, Ollama, :default_providers, _}} =
+               LLM.select([Ollama], "ollama/x")
+    end
+  end
+
+  describe "custom providers" do
+    test "use their own base URL, models, and keyless transport" do
+      provider = gpu_box()
+      parent = self()
+
+      request = fn options ->
+        send(parent, {:request, options})
+        {:ok, %{status: 200, body: completion()}}
+      end
+
+      assert {:error, {:unknown_model, "gpu-box/gpt-oss:120b"}} =
+               LLM.select([Ollama, provider], "gpu-box/gpt-oss:120b")
+
+      assert {:ok, selection} = LLM.select([Ollama, provider], "gpu-box/gpt-oss:20b")
+      assert selection.model_info.context_window == 131_072
+
+      assert {:ok, result} =
+               LLM.generate_with(selection, nil,
+                 messages: [%{role: :user, content: "hi"}],
+                 api_key: "ignored",
+                 request: request
+               )
+
+      assert result.provider == "gpu-box"
+      assert result.usage.provider == "gpu-box"
+      assert result.provider_state == nil
+      assert_receive {:request, options}
+      assert options[:url] == "http://gpu:11434/v1/chat/completions"
+      refute List.keyfind(options[:headers], "authorization", 0)
+    end
+
+    test "with empty settings default to a keyless local URL without models" do
+      {:ok, bare} = Provider.new("bare", Ollama)
+      assert Ollama.models(bare.settings) == []
+      refute Ollama.local?(bare.settings)
+      assert {:error, {:unknown_model, "bare/x"}} = LLM.select([bare], "bare/x")
+    end
+
+    test "collide with default providers on the same id" do
+      {:ok, provider} = Provider.new("ollama", Ollama, %{"models" => ["x"]})
+
+      assert {:error, {:duplicate_provider_id, "ollama"}} =
+               LLM.select([Ollama, provider], "ollama/x")
+
+      assert {:ok, %{provider_settings: %{"models" => ["x"]}}} =
+               LLM.select([provider], "ollama/x")
+    end
+
+    test "decision selection locality follows each provider" do
+      Application.put_env(:tackle_ollama, Ollama,
+        providers: %{"ollama" => %{"decision_models" => ["tev1:4b"]}}
+      )
+
+      {:ok, remote} =
+        Provider.new("remote-box", Ollama, %{"decision_models" => ["tev1:4b"]})
+
+      {:ok, invalid} =
+        Provider.new("odd-box", Ollama, %{"decision_models" => ["tev1:4b"], "local" => "yes"})
+
+      providers = [Ollama, gpu_box(), remote, invalid]
+
+      assert {:ok, %Decision.Selection{provider_id: "ollama", local: true}} =
+               Decision.select(providers, "ollama/tev1:4b")
+
+      assert {:ok, %Decision.Selection{provider_id: "gpu-box", local: true}} =
+               Decision.select(providers, "gpu-box/tev1:4b")
+
+      assert {:ok, %Decision.Selection{provider_id: "remote-box", local: false}} =
+               Decision.select(providers, "remote-box/tev1:4b")
+
+      assert {:error, {:invalid_local_flag, "odd-box", "yes"}} =
+               Decision.select(providers, "odd-box/tev1:4b")
+
+      assert {:error, {:unknown_decision_model, "ollama-cloud/tev1:4b"}} =
+               Decision.select(providers, "ollama-cloud/tev1:4b")
+    end
+
+    test "keyed decisions send the provider's key to its own endpoint" do
+      {:ok, provider} =
+        Provider.new("hosted", Ollama, %{
+          "base_url" => "https://hosted.example/v1",
+          "api_key" => "required",
+          "decision_models" => ["tev1:4b"]
+        })
+
+      parent = self()
+      question = Decision.Question.noul("w", "Waiting?")
+
+      request = fn options ->
+        send(parent, {:request, options})
+
+        {:ok,
+         %{
+           status: 200,
+           body: JSON.encode!(%{"answers" => %{"w" => %{"type" => "noul", "noul" => 0.5}}})
+         }}
+      end
+
+      assert {:ok, selection} = Decision.select([provider], "hosted/tev1:4b")
+
+      assert {:ok, _result} =
+               Decision.decide(selection, "state", [question],
+                 api_key: "hosted-key",
+                 request: request
+               )
+
+      assert_receive {:request, options}
+      assert options[:url] == "https://hosted.example/v1/systemone"
+
+      assert List.keyfind(options[:headers], "authorization", 0) ==
+               {"authorization", "Bearer hosted-key"}
+
+      assert {:error, {:missing_ollama_api_key, "hosted"}} =
+               Decision.decide(selection, "state", [question],
+                 request: fn _ -> flunk("unexpected HTTP request") end
+               )
+    end
   end
 
   test "projects a chat request and normalizes streamed usage" do
@@ -72,8 +261,9 @@ defmodule Tackle.Plugins.OllamaTest do
       {:ok, response}
     end
 
+    {:ok, selection} = LLM.select([Ollama], "ollama-cloud/gpt-oss:120b")
+
     opts = [
-      model: "gpt-oss:120b",
       api_key: "  key-value  ",
       request: request,
       messages: [%{role: :user, content: "go"}],
@@ -88,7 +278,7 @@ defmodule Tackle.Plugins.OllamaTest do
     ]
 
     assert {:ok, result} =
-             LLM.generate_with(Ollama, [answer: [type: :string, required: true]], opts)
+             LLM.generate_with(selection, [answer: [type: :string, required: true]], opts)
 
     assert result.data == %{"answer" => "ok"}
     assert result.provider == "ollama-cloud"
@@ -110,14 +300,36 @@ defmodule Tackle.Plugins.OllamaTest do
   test "rejects unsafe keys and local-only model suffix" do
     request = fn _ -> flunk("unexpected HTTP request") end
 
+    cloud = [provider_id: "ollama-cloud", request: request]
+
     assert {:error, :invalid_api_key} =
-             Ollama.generate(nil, model: "gpt-oss:120b", api_key: "bad\nkey", request: request)
+             Ollama.generate(nil, [model: "gpt-oss:120b", api_key: "bad\nkey"] ++ cloud)
 
     assert {:error, {:unsupported_model, "gpt-oss:120b:cloud"}} =
-             Ollama.generate(nil, model: "gpt-oss:120b:cloud", api_key: "key", request: request)
+             Ollama.generate(nil, [model: "gpt-oss:120b:cloud", api_key: "key"] ++ cloud)
   end
 
   defp sse(event), do: "data: " <> JSON.encode!(event) <> "\n\n"
+
+  defp completion do
+    sse(%{"choices" => [%{"delta" => %{"content" => "ok"}, "finish_reason" => "stop"}]}) <>
+      sse(%{"choices" => [], "usage" => %{"prompt_tokens" => 2, "completion_tokens" => 1}}) <>
+      "data: [DONE]\n\n"
+  end
+
+  defp gpu_box do
+    {:ok, provider} =
+      Provider.new("gpu-box", Ollama, %{
+        "base_url" => "http://gpu:11434/v1",
+        "api_key" => "none",
+        "local" => true,
+        "models" => ["gpt-oss:20b"],
+        "model_info" => %{"gpt-oss:20b" => %{"context_window" => 131_072}},
+        "decision_models" => ["tev1:4b"]
+      })
+
+    provider
+  end
 
   test "synthesizes a stable tool id when Ollama omits it" do
     event = %{
@@ -142,6 +354,6 @@ defmodule Tackle.Plugins.OllamaTest do
     [call] = result.data["tool_calls"]
     assert_receive {:event, %{type: :tool_input_delta, tool_call_id: event_id}}
     assert event_id == call["id"]
-    assert String.starts_with?(call["id"], "ollama-cloud-generated-")
+    assert String.starts_with?(call["id"], "ollama-generated-")
   end
 end

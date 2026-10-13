@@ -7,7 +7,7 @@ defmodule Tackle.Config.Watchdog do
 
     * `:model` (required) - canonical decision model reference, such as
       `"ollama/tev1:4b"`, resolved eagerly through `Tackle.Lib.Decision.select/2`
-      against the session's adapters so an unknown model fails configuration.
+      against the session's providers so an unknown model fails configuration.
     * `:after_seconds` - how long a `bash` command runs before its first check
       (default 60). Later checks back off while the command looks healthy.
     * `:threshold` - minimum probability, in `(0, 1]`, of a stop verdict
@@ -45,38 +45,40 @@ defmodule Tackle.Config.Watchdog do
   @doc """
   Builds and validates a watchdog config from options.
 
-  `adapters` are the session's executable adapter modules; the decision model
+  `providers` are the session's providers (`Tackle.Lib.LLM.Provider` structs or
+  adapter modules standing for their default providers); the decision model
   is resolved against them.
   """
-  @spec new(keyword() | t() | false | nil, [module()]) :: {:ok, t() | nil} | {:error, term()}
-  def new(nil, _adapters), do: {:ok, nil}
-  def new(false, _adapters), do: {:ok, nil}
+  @spec new(keyword() | t() | false | nil, [Tackle.Lib.LLM.Provider.source()]) ::
+          {:ok, t() | nil} | {:error, term()}
+  def new(nil, _providers), do: {:ok, nil}
+  def new(false, _providers), do: {:ok, nil}
 
-  def new(%__MODULE__{} = config, adapters) do
+  def new(%__MODULE__{} = config, providers) do
     new(
       [model: config.model_ref, after_seconds: config.after_seconds, threshold: config.threshold],
-      adapters
+      providers
     )
   end
 
-  def new(opts, adapters) when is_list(opts) do
+  def new(opts, providers) when is_list(opts) do
     with :ok <- validate_keys(opts),
          {:ok, enabled} <- fetch_enabled(opts) do
-      if enabled, do: build(opts, adapters), else: {:ok, nil}
+      if enabled, do: build(opts, providers), else: {:ok, nil}
     end
   end
 
-  def new(other, _adapters), do: invalid(other)
+  def new(other, _providers), do: invalid(other)
 
   @doc "Returns the delay before a command's first check, in milliseconds."
   @spec after_ms(t()) :: pos_integer()
   def after_ms(%__MODULE__{after_seconds: seconds}), do: max(round(seconds * 1_000), 1)
 
-  defp build(opts, adapters) do
+  defp build(opts, providers) do
     with {:ok, model_ref} <- fetch_model(opts),
          {:ok, after_seconds} <- fetch_after_seconds(opts),
          {:ok, threshold} <- fetch_threshold(opts),
-         {:ok, selection} <- Decision.select(adapters, model_ref) do
+         {:ok, selection} <- Decision.select(providers, model_ref) do
       {:ok,
        %__MODULE__{
          model_ref: model_ref,

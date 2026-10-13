@@ -103,6 +103,26 @@ defmodule Tackle.CLI.TUI.ModulesTest do
              ] = Menu.items(:model, state)
     end
 
+    test "model rows label a provider with its adapter type when the two differ" do
+      state = %State{
+        agent_state: agent_state(),
+        models: ["openai-codex/test-model", "codex-work/test-model", "custom"],
+        provider_adapters: %{"openai-codex" => "openai-codex", "codex-work" => "openai-codex"}
+      }
+
+      assert [
+               %{secondary: "[openai-codex]", marker: "✓"},
+               %{
+                 id: "codex-work/test-model",
+                 primary: "test-model",
+                 secondary: "[codex-work · openai-codex]",
+                 marker: " ",
+                 search: "codex-work openai-codex codex-work/test-model test-model"
+               },
+               %{id: "custom", primary: "custom", secondary: nil}
+             ] = Menu.items(:model, state)
+    end
+
     test "reasoning rows describe each level and mark the current one" do
       state = %State{agent_state: agent_state()}
 
@@ -192,7 +212,7 @@ defmodule Tackle.CLI.TUI.ModulesTest do
   defp selection do
     %Selection{
       adapter: __MODULE__,
-      adapter_id: "openai-codex",
+      provider_id: "openai-codex",
       model: "test-model",
       ref: "openai-codex/test-model"
     }

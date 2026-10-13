@@ -59,7 +59,7 @@ defmodule Tackle.Coding do
   prompts; an agent offered any skill also gets the `load_skill` tool.
 
   Agent files are validated at startup. Invalid files, unknown tools, and model
-  selections unavailable through the configured adapters are explicit errors.
+  selections unavailable through the configured providers are explicit errors.
   Children have unlimited loop iterations by default and a five-minute inactivity timeout.
   Explicit root or profile iteration limits are still enforced. Scope limits
   allow the root plus four children.
@@ -262,7 +262,10 @@ defmodule Tackle.Coding do
 
   defp load_with_overrides(opts, overrides) do
     merged = opts |> Keyword.get(:overrides, []) |> Keyword.merge(overrides)
-    opts = Keyword.take(opts, [:available_adapters, :builtin_skills, :catalog, :cwd, :env])
+
+    opts =
+      Keyword.take(opts, [:accounts, :available_adapters, :builtin_skills, :catalog, :cwd, :env])
+
     Config.load(Keyword.put(opts, :overrides, merged))
   end
 

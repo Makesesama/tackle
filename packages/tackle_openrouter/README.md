@@ -60,11 +60,45 @@ state =
   )
 ```
 
-The API key is resolved in this order: `:api_key`, the adapter's `"openrouter"`
-credential-store namespace (`"api_key"` or `"key"`), then the
-`OPENROUTER_API_KEY` environment variable. `login/1` prompts for a key through
+The API key is resolved in this order: `:api_key`, the provider's
+credential-store namespace (`"api_key"` or `"key"`; `"openrouter"` for the
+default provider), then an environment variable: the provider's
+`"api_key_env"` setting, or `OPENROUTER_API_KEY` for the default `"openrouter"`
+provider only. A missing key is
+`{:error, {:missing_openrouter_api_key, provider_id}}`. `login/1` prompts for a key through
 a `Tackle.Lib.Interaction` handle, and `usage/1` returns the key's credit usage
 and limit from `GET /key`.
+
+## Providers
+
+`adapter_id/0` (`"openrouter"`) names the adapter type. Several providers can
+share the adapter, each with its own key and settings, for example
+`openrouter-work/z-ai/glm-5.3` and `openrouter-zdr/z-ai/glm-5.3`:
+
+```elixir
+alias Tackle.Lib.LLM.Provider
+
+{:ok, work} = Provider.new("openrouter-work", Tackle.Plugins.OpenRouter)
+
+{:ok, zdr} =
+  Provider.new("openrouter-zdr", Tackle.Plugins.OpenRouter, %{
+    "provider_routing" => %{"z-ai/glm-5.3" => %{"only" => ["mistral/zdr"], "zdr" => true}}
+  })
+```
+
+The selection passes `:provider_id` and `:provider_settings` to the adapter, and
+hosts pass the same options to `login/1` and `usage/1`. Without them the
+adapter acts as the default `"openrouter"` provider. The provider id is the
+credential namespace, the reported `:provider`, and the origin stamped on
+replayable reasoning state.
+
+Honoured provider settings:
+
+| Key | Meaning |
+| --- | --- |
+| `"provider_routing"` | Map of model id to route; see [Provider routing](#provider-routing). |
+| `"base_url"` | API base URL. An explicit `:base_url` option wins. |
+| `"api_key_env"` | Environment variable read for an API key when none is stored. Defaults to `OPENROUTER_API_KEY` for the `"openrouter"` provider and to none otherwise, so another provider never picks up that key by accident. |
 
 ## Options
 
@@ -106,14 +140,16 @@ Each route is sent as OpenRouter's
 whenever that model is used; models without a route keep the default load
 balancing.
 
-Tackle CLI users can set routes without rebuilding, under `provider_options` in
-`$TACKLE_HOME/config.json` (default `~/.tackle/config.json`). A route there
-replaces the application-config route for the same model:
+A provider's `"provider_routing"` setting replaces the application-config route
+for the same model; application-config routes remain the defaults for other
+models. Tackle CLI users set it without rebuilding, as a provider entry under
+`"providers"` in `$TACKLE_HOME/config.json` (default `~/.tackle/config.json`):
 
 ```json
 {
-  "provider_options": {
+  "providers": {
     "openrouter": {
+      "adapter": "openrouter",
       "provider_routing": {
         "z-ai/glm-5.3": {"only": ["mistral/zdr"], "allow_fallbacks": false, "zdr": true}
       }
@@ -121,6 +157,9 @@ replaces the application-config route for the same model:
   }
 }
 ```
+
+A `"provider_routing"` value that is not a map of routes returns
+`{:error, {:invalid_provider_routing, value}}`.
 
 Useful fields:
 
@@ -153,7 +192,7 @@ used for accounting either way.
   returned only after their identity and JSON-object arguments are validated.
 - **Reasoning.** Reasoning text is streamed as reasoning deltas. Structured
   `reasoning_details` (signatures, encrypted blocks) are kept as opaque provider
-  state and replayed on later turns only for the same adapter and model, which
+  state and replayed on later turns only for the same provider id and model, which
   some models require when continuing after tool calls.
 - **Caching.** For `anthropic/*` models the adapter sends a top-level
   `cache_control`, so OpenRouter places and advances the cache breakpoint

@@ -146,7 +146,7 @@ defmodule TackleTest do
 
   describe "public scoped facade" do
     test "starting a scope returns a PID-free handle" do
-      scope = start_scope(adapters: [AdapterA], model: "provider-a/shared")
+      scope = start_scope(providers: [AdapterA], model: "provider-a/shared")
 
       assert %Scope{scope_ref: %ScopeRef{}, root_agent_ref: %AgentRef{}} = scope
       refute inspect(scope) =~ "#PID"
@@ -154,7 +154,7 @@ defmodule TackleTest do
     end
 
     test "stale references return explicit errors instead of exiting callers" do
-      scope = start_scope(adapters: [AdapterA], model: "provider-a/shared")
+      scope = start_scope(providers: [AdapterA], model: "provider-a/shared")
       agent_ref = scope.root_agent_ref
 
       assert :ok = Tackle.stop_scope(scope.scope_ref)
@@ -172,7 +172,7 @@ defmodule TackleTest do
     end
 
     test "rejects an invalid delegation grant explicitly" do
-      {:ok, config} = Tackle.Config.new(adapters: [AdapterA], model: "provider-a/shared")
+      {:ok, config} = Tackle.Config.new(providers: [AdapterA], model: "provider-a/shared")
 
       assert {:error, {:invalid_allow_delegation, :yes}} =
                AgentSpec.new(name: "root", config: config, allow_delegation: :yes)
@@ -223,7 +223,7 @@ defmodule TackleTest do
   test "uses the harness turn id in the library snapshot" do
     scope =
       start_scope(
-        adapters: [ControlledAdapter],
+        providers: [ControlledAdapter],
         model: "controlled/test",
         hooks: [SnapshotTurnHook],
         context: %{test_pid: self()},
@@ -284,7 +284,7 @@ defmodule TackleTest do
   test "reconfigures model and thinking while preserving settled history" do
     scope =
       start_scope(
-        adapters: [AdapterA, AdapterB],
+        providers: [AdapterA, AdapterB],
         model: "provider-a/shared",
         llm_opts: [request_tag: "preserved"]
       )
@@ -407,7 +407,7 @@ defmodule TackleTest do
     :ok = Tackle.Auth.put(namespace, %{"access_token" => "initial-integration-token"})
     on_exit(fn -> Tackle.Auth.delete(namespace) end)
 
-    scope = start_scope(adapters: [CredentialAdapter], model: "credential-refresh/test")
+    scope = start_scope(providers: [CredentialAdapter], model: "credential-refresh/test")
     agent_ref = scope.root_agent_ref
 
     initial_snapshot = snapshot!(agent_ref)
@@ -430,8 +430,8 @@ defmodule TackleTest do
   end
 
   test "different scopes select different adapters without global configuration" do
-    scope_a = start_scope(adapters: [AdapterA, AdapterB], model: "provider-a/shared")
-    scope_b = start_scope(adapters: [AdapterA, AdapterB], model: "provider-b/shared")
+    scope_a = start_scope(providers: [AdapterA, AdapterB], model: "provider-a/shared")
+    scope_b = start_scope(providers: [AdapterA, AdapterB], model: "provider-b/shared")
 
     assert {:ok, _turn_a} = Tackle.submit(scope_a.root_agent_ref, "hello")
     assert {:ok, _turn_b} = Tackle.submit(scope_b.root_agent_ref, "hello")
@@ -450,7 +450,7 @@ defmodule TackleTest do
 
   defp start_controlled_scope do
     start_scope(
-      adapters: [ControlledAdapter],
+      providers: [ControlledAdapter],
       model: "controlled/test",
       llm_opts: [test_pid: self()]
     )

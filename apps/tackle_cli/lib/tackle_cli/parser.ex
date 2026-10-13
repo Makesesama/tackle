@@ -19,7 +19,7 @@ defmodule Tackle.CLI.Parser do
                color: :auto | :always | :never
              }}
           | {:models, %{}}
-          | {:auth_login, auth_options(String.t())}
+          | {:auth_login, login_options()}
           | {:auth_status, auth_options(String.t() | nil)}
           | {:auth_usage, auth_options(String.t() | nil)}
           | {:auth_logout, auth_options(String.t())}
@@ -45,6 +45,13 @@ defmodule Tackle.CLI.Parser do
 
   @type auth_options(provider) :: %{
           provider: provider,
+          format: :human | :plain | :json,
+          color: :auto | :always | :never
+        }
+
+  @type login_options :: %{
+          provider: String.t(),
+          as: String.t() | nil,
           format: :human | :plain | :json,
           color: :auto | :always | :never
         }
@@ -179,7 +186,12 @@ defmodule Tackle.CLI.Parser do
     do: {:help, format_help(parser, [:auth])}
 
   defp parse_result({:ok, [:auth, :login], result}, _parser),
-    do: {:ok, {:auth_login, auth_command(result, result.args.provider)}}
+    do:
+      {:ok,
+       {:auth_login,
+        result
+        |> auth_command(result.args.provider)
+        |> Map.put(:as, Map.get(result.options, :as))}}
 
   defp parse_result({:ok, [:auth, :status], result}, _parser),
     do: {:ok, {:auth_status, auth_command(result, Map.get(result.args, :provider))}}
@@ -216,7 +228,7 @@ defmodule Tackle.CLI.Parser do
           value_name: "MODEL",
           long: "--model",
           short: "-m",
-          help: "Canonical model reference selected from root harness adapters",
+          help: "Canonical model reference provider/model, such as openai-codex/gpt-5.5",
           parser: :string,
           global: true
         ],
@@ -263,7 +275,7 @@ defmodule Tackle.CLI.Parser do
         ],
         models: [
           name: "models",
-          about: "List models exposed by root harness adapter loading"
+          about: "List models of the configured providers"
         ],
         sessions: [
           name: "sessions",
@@ -437,12 +449,31 @@ defmodule Tackle.CLI.Parser do
           subcommands: [
             login: [
               name: "login",
-              about: "Authenticate with a provider",
-              args: [provider: provider_arg(required: true)]
+              about: "Authenticate with a provider, or add a named account with --as",
+              args: [
+                provider: [
+                  value_name: "PROVIDER",
+                  help:
+                    "Provider id such as openai-codex or ollama-cloud; with --as, " <>
+                      "also an adapter type id",
+                  required: true,
+                  parser: :string
+                ]
+              ],
+              options: [
+                as: [
+                  value_name: "NAME",
+                  long: "--as",
+                  help:
+                    "Log in as a new provider NAME on the same adapter, such as codex-work; " <>
+                      "its models are selected as NAME/model",
+                  parser: :string
+                ]
+              ]
             ],
             status: [
               name: "status",
-              about: "Show provider credential status",
+              about: "Show credential status of one provider, or list every provider",
               args: [provider: provider_arg(required: false)]
             ],
             usage: [
@@ -571,7 +602,7 @@ defmodule Tackle.CLI.Parser do
   defp provider_arg(opts) do
     [
       value_name: "PROVIDER",
-      help: "Adapter id such as openai-codex or deepseek",
+      help: "Provider id such as openai-codex, deepseek, or codex-work",
       required: Keyword.fetch!(opts, :required),
       parser: :string
     ]

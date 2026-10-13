@@ -7,7 +7,7 @@ defmodule Tackle.Config.SessionTitles do
   model reference such as `"openai-codex/gpt-5.5"` used for the
   title-generation call; when absent, the session's configured model is used.
 
-  The reference is resolved against the session's adapters eagerly so an
+  The reference is resolved against the session's providers eagerly so an
   unknown model fails configuration instead of the first turn. `Tackle.Config.new/1`
   treats an absent option as disabled; the harness loader (`Tackle.Config.load/1`)
   enables titles by default so explicit configuration can opt out.
@@ -28,22 +28,23 @@ defmodule Tackle.Config.SessionTitles do
   @doc """
   Builds and validates a session-titles config from options.
 
-  `adapters` are the session's executable adapter modules, used to resolve an
+  `providers` are the session's providers (`Tackle.Lib.LLM.Provider` structs or
+  adapter modules standing for their default providers), used to resolve an
   explicit `:model` reference into a selection.
   """
-  @spec new(keyword() | t() | false | nil, [module()]) ::
+  @spec new(keyword() | t() | false | nil, [Tackle.Lib.LLM.Provider.source()]) ::
           {:ok, t() | nil} | {:error, term()}
-  def new(nil, _adapters), do: {:ok, nil}
-  def new(false, _adapters), do: {:ok, nil}
+  def new(nil, _providers), do: {:ok, nil}
+  def new(false, _providers), do: {:ok, nil}
 
-  def new(%__MODULE__{} = config, adapters),
-    do: config |> config_options() |> new(adapters)
+  def new(%__MODULE__{} = config, providers),
+    do: config |> config_options() |> new(providers)
 
-  def new(opts, adapters) when is_list(opts) do
+  def new(opts, providers) when is_list(opts) do
     with :ok <- validate_options(opts),
          :ok <- validate_enabled(opts),
          {:ok, model_ref} <- fetch_model_ref(opts),
-         {:ok, selection} <- resolve_selection(model_ref, adapters) do
+         {:ok, selection} <- resolve_selection(model_ref, providers) do
       if Keyword.get(opts, :enabled, true) do
         {:ok, %__MODULE__{model_ref: model_ref, selection: selection}}
       else
@@ -52,7 +53,7 @@ defmodule Tackle.Config.SessionTitles do
     end
   end
 
-  def new(other, _adapters), do: {:error, {:invalid_option, :session_titles, other}}
+  def new(other, _providers), do: {:error, {:invalid_option, :session_titles, other}}
 
   defp config_options(%__MODULE__{model_ref: model_ref}), do: [model: model_ref]
 
@@ -79,7 +80,7 @@ defmodule Tackle.Config.SessionTitles do
     end
   end
 
-  defp resolve_selection(nil, _adapters), do: {:ok, nil}
+  defp resolve_selection(nil, _providers), do: {:ok, nil}
 
-  defp resolve_selection(model_ref, adapters), do: LLM.select(adapters, model_ref)
+  defp resolve_selection(model_ref, providers), do: LLM.select(providers, model_ref)
 end

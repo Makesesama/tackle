@@ -46,7 +46,7 @@ defmodule Tackle.Session.StoragePauseTest do
   end
 
   test "a provider retry waits behind outstanding storage even without another message" do
-    scope = configured_scope(adapters: [ManualRetryAdapter], retry: [base_delay_ms: 0])
+    scope = configured_scope(providers: [ManualRetryAdapter], retry: [base_delay_ms: 0])
     root = scope.root_agent_ref
     {:ok, snapshot} = Tackle.subscribe(root)
     {:ok, turn} = Tackle.submit(root, "seed")
@@ -475,7 +475,7 @@ defmodule Tackle.Session.StoragePauseTest do
     opts =
       Keyword.merge(
         [
-          adapters: [Adapter],
+          providers: [Adapter],
           model: "test/echo",
           system_prompt: "Test agent"
         ],

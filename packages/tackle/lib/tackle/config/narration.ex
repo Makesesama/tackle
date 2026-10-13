@@ -8,7 +8,7 @@ defmodule Tackle.Config.Narration do
 
     * `:model` (required) - canonical chat model reference, such as
       `"ollama/gemma4:12b"`, resolved eagerly through `Tackle.Lib.LLM.select/2`
-      against the session's adapters so an unknown model fails configuration.
+      against the session's providers so an unknown model fails configuration.
       There is no fallback to the session model, which may be a paid remote
       one.
     * `:interval_seconds` - minimum time between two narrations of the same
@@ -48,32 +48,34 @@ defmodule Tackle.Config.Narration do
   @doc """
   Builds and validates a narration config from options.
 
-  `adapters` are the session's executable adapter modules; the chat model is
+  `providers` are the session's providers (`Tackle.Lib.LLM.Provider` structs or
+  adapter modules standing for their default providers); the chat model is
   resolved against them.
   """
-  @spec new(keyword() | t() | false | nil, [module()]) :: {:ok, t() | nil} | {:error, term()}
-  def new(nil, _adapters), do: {:ok, nil}
-  def new(false, _adapters), do: {:ok, nil}
+  @spec new(keyword() | t() | false | nil, [Tackle.Lib.LLM.Provider.source()]) ::
+          {:ok, t() | nil} | {:error, term()}
+  def new(nil, _providers), do: {:ok, nil}
+  def new(false, _providers), do: {:ok, nil}
 
-  def new(%__MODULE__{} = config, adapters) do
+  def new(%__MODULE__{} = config, providers) do
     new(
       [
         model: config.model_ref,
         interval_seconds: config.interval_seconds,
         first_after_seconds: config.first_after_seconds
       ],
-      adapters
+      providers
     )
   end
 
-  def new(opts, adapters) when is_list(opts) do
+  def new(opts, providers) when is_list(opts) do
     with :ok <- validate_keys(opts),
          {:ok, enabled} <- fetch_enabled(opts) do
-      if enabled, do: build(opts, adapters), else: {:ok, nil}
+      if enabled, do: build(opts, providers), else: {:ok, nil}
     end
   end
 
-  def new(other, _adapters), do: invalid(other)
+  def new(other, _providers), do: invalid(other)
 
   @doc "Minimum time between two narrations of one run, in milliseconds."
   @spec interval_ms(t()) :: pos_integer()
@@ -85,12 +87,12 @@ defmodule Tackle.Config.Narration do
 
   defp to_ms(seconds), do: max(round(seconds * 1_000), 1)
 
-  defp build(opts, adapters) do
+  defp build(opts, providers) do
     with {:ok, model_ref} <- fetch_model(opts),
          {:ok, interval} <- fetch_seconds(opts, :interval_seconds, @default_interval_seconds),
          {:ok, first_after} <-
            fetch_seconds(opts, :first_after_seconds, @default_first_after_seconds),
-         {:ok, selection} <- LLM.select(adapters, model_ref) do
+         {:ok, selection} <- LLM.select(providers, model_ref) do
       {:ok,
        %__MODULE__{
          model_ref: model_ref,

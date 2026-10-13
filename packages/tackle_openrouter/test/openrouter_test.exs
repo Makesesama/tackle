@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
   use ExUnit.Case, async: false
 
   alias Tackle.Lib.{Cancellation, LLM, ModelInfo, Usage}
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.OpenRouter
 
   @model "openai/gpt-6-luna"
@@ -380,11 +381,159 @@ defmodule Tackle.Plugins.OpenRouterTest do
     for foreign <- [
           %{state | "model" => "anthropic/claude-opus-5.5"},
           %{state | "provider" => "anthropic"},
+          %{state | "provider" => "openrouter-work"},
           nil
         ] do
       assistant = run.(foreign)
       refute Map.has_key?(assistant, "reasoning")
       refute Map.has_key?(assistant, "reasoning_details")
+    end
+  end
+
+  describe "provider instances" do
+    setup %{store: {CredentialStore, agent}} do
+      Agent.update(agent, fn credentials ->
+        Map.merge(credentials, %{
+          "openrouter-work" => %{"api_key" => "work-key"},
+          "openrouter-home" => %{"api_key" => "home-key"}
+        })
+      end)
+    end
+
+    test "only the default provider falls back to OPENROUTER_API_KEY" do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:authorization, header(options, "authorization")})
+        streaming_response(options, [sse(chunk(@model, %{"content" => "ok"}, "stop")), done()])
+      end
+
+      empty = start_supervised!({Agent, fn -> %{} end}, id: {Agent, make_ref()})
+      opts = base_opts({CredentialStore, empty}, request)
+      work = Keyword.put(opts, :provider_id, "openrouter-work")
+
+      with_env(%{"OPENROUTER_API_KEY" => "default-key", "WORK_KEY" => "work-key"}, fn ->
+        assert {:ok, %{provider: "openrouter"}} = OpenRouter.generate(nil, opts)
+        assert_receive {:authorization, "Bearer default-key"}
+
+        assert {:error, {:missing_openrouter_api_key, "openrouter-work"}} =
+                 OpenRouter.generate(nil, work)
+
+        refute_received {:authorization, _header}
+
+        # A provider names its own variable with "api_key_env".
+        named = Keyword.put(work, :provider_settings, %{"api_key_env" => "WORK_KEY"})
+        assert {:ok, %{provider: "openrouter-work"}} = OpenRouter.generate(nil, named)
+        assert_receive {:authorization, "Bearer work-key"}
+
+        invalid = Keyword.put(work, :provider_settings, %{"api_key_env" => ""})
+
+        assert {:error, {:invalid_provider_setting, "openrouter-work", "api_key_env", ""}} =
+                 OpenRouter.generate(nil, invalid)
+      end)
+    end
+
+    test "providers on one adapter use their own API keys", %{store: store} do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:authorization, header(options, "authorization")})
+        streaming_response(options, [sse(chunk(@model, %{"content" => "ok"}, "stop")), done()])
+      end
+
+      {:ok, work} = Provider.new("openrouter-work", OpenRouter)
+      {:ok, home} = Provider.new("openrouter-home", OpenRouter)
+      opts = base_opts(store, request) |> Keyword.delete(:model)
+
+      assert {:ok, selection} = LLM.select([work, home], "openrouter-home/" <> @model)
+      assert {:ok, %{provider: "openrouter-home"}} = LLM.generate_with(selection, nil, opts)
+      assert_receive {:authorization, "Bearer home-key"}
+
+      assert {:ok, selection} = LLM.select([work, home], "openrouter-work/" <> @model)
+      assert {:ok, %{provider: "openrouter-work"}} = LLM.generate_with(selection, nil, opts)
+      assert_receive {:authorization, "Bearer work-key"}
+
+      key_request = fn options ->
+        send(test_pid, {:authorization, header(options, "authorization")})
+        {:ok, %Req.Response{status: 200, body: JSON.encode!(%{"data" => %{}})}}
+      end
+
+      assert {:ok, %{}} =
+               OpenRouter.usage(
+                 credential_store: store,
+                 request: key_request,
+                 provider_id: "openrouter-work"
+               )
+
+      assert_receive {:authorization, "Bearer work-key"}
+    end
+
+    test "stamps reasoning state with the provider id and replays it only there", %{
+      store: store
+    } do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:body, JSON.decode!(options[:body])})
+
+        streaming_response(options, [
+          sse(chunk(@claude, %{"reasoning" => "thought"})),
+          sse(chunk(@claude, %{"content" => "ok"}, "stop")),
+          done()
+        ])
+      end
+
+      work_opts =
+        base_opts(store, request)
+        |> Keyword.merge(model: @claude, provider_id: "openrouter-work")
+
+      assert {:ok, result} = OpenRouter.generate(nil, work_opts)
+      assert result.provider_state["provider"] == "openrouter-work"
+      assert_receive {:body, _first}
+
+      messages = [
+        %{role: :user, content: "go"},
+        %{role: :assistant, content: "ok", provider_state: result.provider_state},
+        %{role: :user, content: "again"}
+      ]
+
+      assert {:ok, _} = OpenRouter.generate(nil, Keyword.put(work_opts, :messages, messages))
+      assert_receive {:body, body}
+      assert %{"reasoning" => "thought"} = Enum.at(body["messages"], 1)
+
+      home_opts = Keyword.merge(work_opts, provider_id: "openrouter-home", messages: messages)
+      assert {:ok, _} = OpenRouter.generate(nil, home_opts)
+      assert_receive {:body, body}
+      refute Map.has_key?(Enum.at(body["messages"], 1), "reasoning")
+    end
+
+    test "honours the base_url setting unless :base_url is explicit", %{store: store} do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:url, options[:url]})
+        streaming_response(options, [sse(chunk(@model, %{"content" => "ok"}, "stop")), done()])
+      end
+
+      opts =
+        base_opts(store, request)
+        |> Keyword.merge(
+          provider_id: "openrouter-work",
+          provider_settings: %{"base_url" => "https://proxy.test/api/v1/"}
+        )
+
+      assert {:ok, _} = OpenRouter.generate(nil, opts)
+      assert_receive {:url, "https://proxy.test/api/v1/chat/completions"}
+
+      assert {:ok, _} =
+               OpenRouter.generate(nil, Keyword.put(opts, :base_url, "https://explicit.test"))
+
+      assert_receive {:url, "https://explicit.test/chat/completions"}
+
+      invalid = Keyword.put(opts, :provider_settings, %{"base_url" => nil})
+
+      assert {:error, {:invalid_provider_setting, "openrouter-work", "base_url", nil}} =
+               OpenRouter.generate(nil, invalid)
     end
   end
 
@@ -726,7 +875,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
     System.delete_env("OPENROUTER_API_KEY")
 
     try do
-      assert {:error, :missing_openrouter_api_key} =
+      assert {:error, {:missing_openrouter_api_key, "openrouter"}} =
                OpenRouter.generate(
                  nil,
                  base_opts(store, request) |> Keyword.delete(:credential_store)
@@ -929,31 +1078,37 @@ defmodule Tackle.Plugins.OpenRouterTest do
              }
     end
 
-    test "reads user routes from provider options over configured ones", %{store: store} do
+    test "reads user routes from provider settings over configured ones", %{store: store} do
       Application.put_env(:tackle_openrouter, :provider_routing, %{
-        "z-ai/glm-5.3" => %{only: ["z-ai"], sort: "price"}
+        "z-ai/glm-5.3" => %{only: ["z-ai"], sort: "price"},
+        @model => %{only: ["openai"]}
       })
 
-      user_options = %{
-        "openrouter" => %{
-          "provider_routing" => %{
-            "z-ai/glm-5.3" => %{"only" => ["mistral/zdr"], "allow_fallbacks" => false}
-          }
-        },
-        "other-adapter" => %{"ignored" => true}
+      settings = %{
+        "provider_routing" => %{
+          "z-ai/glm-5.3" => %{"only" => ["mistral/zdr"], "allow_fallbacks" => false}
+        }
       }
 
       opts =
         base_opts(store, capture_body(self(), "z-ai/glm-5.3"))
-        |> Keyword.merge(model: "z-ai/glm-5.3", provider_options: user_options)
+        |> Keyword.merge(model: "z-ai/glm-5.3", provider_settings: settings)
 
       assert {:ok, _} = OpenRouter.generate(nil, opts)
       assert_receive {:body, body}
       # The user's route replaces the configured one for that model.
       assert body["provider"] == %{"only" => ["mistral/zdr"], "allow_fallbacks" => false}
 
-      bad = Keyword.put(opts, :provider_options, %{"openrouter" => "mistral"})
-      assert {:error, {:invalid_provider_options, "mistral"}} = OpenRouter.generate(nil, bad)
+      # Configured routes stay the defaults for models the settings leave out.
+      other =
+        Keyword.merge(opts, model: @model, request: capture_body(self(), @model))
+
+      assert {:ok, _} = OpenRouter.generate(nil, other)
+      assert_receive {:body, body}
+      assert body["provider"] == %{"only" => ["openai"]}
+
+      bad = Keyword.put(opts, :provider_settings, %{"provider_routing" => "mistral"})
+      assert {:error, {:invalid_provider_routing, "mistral"}} = OpenRouter.generate(nil, bad)
     end
 
     test "rejects malformed routing configuration before requesting", %{store: store} do
@@ -1016,6 +1171,20 @@ defmodule Tackle.Plugins.OpenRouterTest do
 
       assert {:error, {:http_error, 401, "unauthorized"}} =
                OpenRouter.usage(credential_store: store, request: request)
+    end
+  end
+
+  defp with_env(vars, fun) do
+    previous = Map.new(vars, fn {name, _value} -> {name, System.get_env(name)} end)
+    System.put_env(vars)
+
+    try do
+      fun.()
+    after
+      Enum.each(previous, fn
+        {name, nil} -> System.delete_env(name)
+        {name, value} -> System.put_env(name, value)
+      end)
     end
   end
 

@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.AnthropicTest do
   use ExUnit.Case, async: false
 
   alias Tackle.Lib.{LLM, ModelInfo}
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.Anthropic
 
   defmodule CredentialStore do
@@ -340,6 +341,262 @@ defmodule Tackle.Plugins.AnthropicTest do
 
     empty = start_store(%{})
     assert {:ok, :missing} = Anthropic.status(credential_store: empty)
+  end
+
+  describe "provider instances" do
+    test "providers on one adapter use their own credentials and status" do
+      store =
+        start_store(%{
+          "claude-work" => oauth_credentials("sk-ant-oat-work", "work-refresh", future()),
+          "claude-home" => %{"type" => "api_key", "api_key" => "sk-ant-api03-home"}
+        })
+
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:request, options})
+        feed_chunks(options, [text_wire("ok")], 200)
+      end
+
+      {:ok, work} = Provider.new("claude-work", Anthropic)
+      {:ok, home} = Provider.new("claude-home", Anthropic)
+      opts = provider_opts(store, request) |> Keyword.delete(:model)
+
+      assert {:ok, selection} = LLM.select([work, home], "claude-work/claude-opus-5-5")
+      assert {:ok, %{provider: "claude-work"}} = LLM.generate_with(selection, nil, opts)
+      assert_receive {:request, work_options}
+      assert header(work_options, "authorization") == "Bearer sk-ant-oat-work"
+
+      assert {:ok, selection} = LLM.select([work, home], "claude-home/claude-opus-5-5")
+      assert {:ok, %{provider: "claude-home"}} = LLM.generate_with(selection, nil, opts)
+      assert_receive {:request, home_options}
+      assert header(home_options, "x-api-key") == "sk-ant-api03-home"
+
+      assert {:ok, :stored} =
+               Anthropic.status(credential_store: store, provider_id: "claude-work")
+
+      expired = start_store(%{"claude-home" => oauth_credentials("a", "r", 0)})
+
+      assert {:ok, :expired} =
+               Anthropic.status(credential_store: expired, provider_id: "claude-home")
+
+      assert {:ok, :stored} =
+               Anthropic.status(credential_store: store, provider_id: "claude-home")
+    end
+
+    test "refresh reads and writes the provider's namespace" do
+      {CredentialStore, agent} =
+        store =
+        start_store(%{
+          "claude-work" => oauth_credentials("sk-ant-oat-old", "work-refresh", 0),
+          "claude-home" => oauth_credentials("sk-ant-oat-home", "home-refresh", future())
+        })
+
+      test_pid = self()
+
+      request = fn options ->
+        if Keyword.has_key?(options, :into) do
+          send(test_pid, {:authorization, header(options, "authorization")})
+          feed_chunks(options, [text_wire("ok")], 200)
+        else
+          {:ok, body} = JSON.decode(options[:body])
+          send(test_pid, {:refresh_token, body["refresh_token"]})
+          token_response("sk-ant-oat-new", "work-refresh-2")
+        end
+      end
+
+      opts = provider_opts(store, request) |> Keyword.put(:provider_id, "claude-work")
+
+      assert {:ok, %{provider: "claude-work"}} = Anthropic.generate(nil, opts)
+      assert_receive {:refresh_token, "work-refresh"}
+      assert_receive {:authorization, "Bearer sk-ant-oat-new"}
+
+      stored = Agent.get(agent, & &1)
+      assert stored["claude-work"]["refresh_token"] == "work-refresh-2"
+      assert stored["claude-home"]["refresh_token"] == "home-refresh"
+      refute Map.has_key?(stored, "anthropic")
+    end
+
+    test "refreshes of different providers do not share a lock" do
+      {CredentialStore, agent} =
+        store =
+        start_store(%{
+          "claude-work" => oauth_credentials("work-old", "work-refresh", 0),
+          "claude-home" => oauth_credentials("home-old", "home-refresh", 0)
+        })
+
+      test_pid = self()
+
+      request = fn options ->
+        if Keyword.has_key?(options, :into) do
+          feed_chunks(options, [text_wire("ok")], 200)
+        else
+          {:ok, %{"refresh_token" => refresh}} = JSON.decode(options[:body])
+
+          if refresh == "work-refresh" do
+            send(test_pid, {:work_refresh_blocked, self()})
+
+            receive do
+              :release -> :ok
+            end
+          end
+
+          token_response("access-" <> refresh, "rotated-" <> refresh)
+        end
+      end
+
+      generate = fn id ->
+        Task.async(fn ->
+          Anthropic.generate(nil, Keyword.put(provider_opts(store, request), :provider_id, id))
+        end)
+      end
+
+      work = generate.("claude-work")
+      assert_receive {:work_refresh_blocked, blocked}, 1_000
+
+      # The work refresh still holds its lock; the home refresh must not wait for it.
+      assert {:ok, %{provider: "claude-home"}} = Task.await(generate.("claude-home"), 1_000)
+
+      send(blocked, :release)
+      assert {:ok, %{provider: "claude-work"}} = Task.await(work, 1_000)
+
+      stored = Agent.get(agent, & &1)
+      assert stored["claude-work"]["refresh_token"] == "rotated-work-refresh"
+      assert stored["claude-home"]["refresh_token"] == "rotated-home-refresh"
+    end
+
+    test "stamps continuation state with the provider id" do
+      request = fn options -> feed_chunks(options, [text_wire("ok")], 200) end
+
+      opts =
+        [api_key: "sk-ant-api03-test", provider_id: "claude-work"]
+        |> Keyword.merge(provider_opts(nil, request))
+        |> Keyword.delete(:credential_store)
+
+      assert {:ok, result} = Anthropic.generate(nil, opts)
+      assert result.provider == "claude-work"
+      assert result.provider_state["provider"] == "claude-work"
+    end
+
+    test "only the default provider falls back to ANTHROPIC_API_KEY" do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:request, header(options, "x-api-key")})
+        feed_chunks(options, [text_wire("ok")], 200)
+      end
+
+      opts = provider_opts(start_store(%{}), request)
+      work = Keyword.put(opts, :provider_id, "claude-work")
+
+      with_env(
+        %{"ANTHROPIC_API_KEY" => "sk-ant-api03-default", "WORK_KEY" => "sk-ant-api03-work"},
+        fn ->
+          assert {:ok, :stored} = Anthropic.status(opts)
+          assert {:ok, %{provider: "anthropic"}} = Anthropic.generate(nil, opts)
+          assert_receive {:request, "sk-ant-api03-default"}
+
+          assert {:ok, :missing} = Anthropic.status(work)
+
+          assert {:error, {:missing_anthropic_credentials, "claude-work"}} =
+                   Anthropic.generate(nil, work)
+
+          refute_received {:request, _key}
+
+          # A provider names its own variable with "api_key_env".
+          named = Keyword.put(work, :provider_settings, %{"api_key_env" => "WORK_KEY"})
+          assert {:ok, :stored} = Anthropic.status(named)
+          assert {:ok, %{provider: "claude-work"}} = Anthropic.generate(nil, named)
+          assert_receive {:request, "sk-ant-api03-work"}
+
+          invalid = Keyword.put(work, :provider_settings, %{"api_key_env" => 1})
+
+          assert {:error, {:invalid_provider_setting, "claude-work", "api_key_env", 1}} =
+                   Anthropic.status(invalid)
+        end
+      )
+    end
+
+    test "honours the base_url setting unless :base_url is explicit" do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:url, options[:url]})
+        feed_chunks(options, [text_wire("ok")], 200)
+      end
+
+      opts =
+        provider_opts(nil, request)
+        |> Keyword.delete(:credential_store)
+        |> Keyword.merge(
+          api_key: "sk-ant-api03-test",
+          provider_id: "claude-proxy",
+          provider_settings: %{"base_url" => "https://proxy.test/"}
+        )
+
+      assert {:ok, _result} = Anthropic.generate(nil, opts)
+      assert_receive {:url, "https://proxy.test/v1/messages"}
+
+      assert {:ok, _result} =
+               Anthropic.generate(nil, Keyword.put(opts, :base_url, "https://explicit.test"))
+
+      assert_receive {:url, "https://explicit.test/v1/messages"}
+
+      invalid = Keyword.put(opts, :provider_settings, %{"base_url" => ""})
+
+      assert {:error, {:invalid_provider_setting, "claude-proxy", "base_url", ""}} =
+               Anthropic.generate(nil, invalid)
+    end
+  end
+
+  defp with_env(vars, fun) do
+    previous = Map.new(vars, fn {name, _value} -> {name, System.get_env(name)} end)
+    System.put_env(vars)
+
+    try do
+      fun.()
+    after
+      Enum.each(previous, fn
+        {name, nil} -> System.delete_env(name)
+        {name, value} -> System.put_env(name, value)
+      end)
+    end
+  end
+
+  defp provider_opts(store, request) do
+    [
+      model: "claude-opus-5-5",
+      messages: [%{role: :user, content: "hello"}],
+      tools: [],
+      credential_store: store,
+      token_url: "https://token.test/v1/oauth/token",
+      request: request
+    ]
+  end
+
+  defp oauth_credentials(access_token, refresh_token, expires_at) do
+    %{
+      "type" => "oauth",
+      "access_token" => access_token,
+      "refresh_token" => refresh_token,
+      "expires_at" => expires_at
+    }
+  end
+
+  defp future, do: System.system_time(:millisecond) + 3_600_000
+
+  defp token_response(access_token, refresh_token) do
+    {:ok,
+     %Req.Response{
+       status: 200,
+       headers: %{},
+       body:
+         JSON.encode!(%{
+           "access_token" => access_token,
+           "refresh_token" => refresh_token,
+           "expires_in" => 3_600
+         })
+     }}
   end
 
   defp start_store(initial) do

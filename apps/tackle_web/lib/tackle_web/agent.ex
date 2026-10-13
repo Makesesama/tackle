@@ -72,7 +72,7 @@ defmodule Tackle.Web.Agent do
   @spec tools() :: [module()]
   def tools, do: @tools
 
-  @doc "Every `adapter/model` reference the assistant can run."
+  @doc "Every `provider/model` reference the assistant can run."
   @spec models() :: [String.t()]
   def models, do: Providers.models()
 
@@ -86,7 +86,7 @@ defmodule Tackle.Web.Agent do
   def default_model, do: Providers.default_model()
 
   @doc """
-  Resolves a canonical `adapter/model` reference against the available adapters.
+  Resolves a canonical `provider/model` reference against the available providers.
 
   `nil` selects `default_model/0`.
   """
@@ -109,7 +109,7 @@ defmodule Tackle.Web.Agent do
 
   ## Options
 
-    * `:model` — a canonical `adapter/model` reference; defaults to
+    * `:model` — a canonical `provider/model` reference; defaults to
       `default_model/0`.
     * `:messages` — messages to restore a previous conversation from.
   """

@@ -1,22 +1,29 @@
-defmodule Tackle.Plugins.OllamaLocalTest do
+defmodule Tackle.Plugins.Ollama.LocalProviderTest do
+  @moduledoc false
+  # The default local `"ollama"` provider: keyless chat and System One decisions.
   use ExUnit.Case, async: false
 
   alias Tackle.Lib.{Cancellation, Decision, LLM, Usage}
   alias Tackle.Lib.Decision.{Answer, Question, Result}
-  alias Tackle.Plugins.OllamaLocal
+  alias Tackle.Plugins.Ollama
 
   setup do
-    previous = Application.get_env(:tackle_ollama, OllamaLocal)
+    previous = Application.get_env(:tackle_ollama, Ollama)
 
-    Application.put_env(:tackle_ollama, OllamaLocal,
-      models: ["qwen3:8b", {"gpt-oss:20b", %{context_window: 131_072}}],
-      decision_models: ["tev1:4b", {"nimble", %{}}]
+    Application.put_env(:tackle_ollama, Ollama,
+      providers: %{
+        "ollama" => %{
+          "models" => ["qwen3:8b", "gpt-oss:20b"],
+          "model_info" => %{"gpt-oss:20b" => %{"context_window" => 131_072}},
+          "decision_models" => ["tev1:4b", "nimble"]
+        }
+      }
     )
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:tackle_ollama, OllamaLocal, previous),
-        else: Application.delete_env(:tackle_ollama, OllamaLocal)
+        do: Application.put_env(:tackle_ollama, Ollama, previous),
+        else: Application.delete_env(:tackle_ollama, Ollama)
     end)
 
     :ok
@@ -24,45 +31,61 @@ defmodule Tackle.Plugins.OllamaLocalTest do
 
   describe "models" do
     test "come only from configuration" do
-      assert OllamaLocal.adapter_id() == "ollama"
-      assert OllamaLocal.models() == ["qwen3:8b", "gpt-oss:20b"]
-      assert OllamaLocal.decision_models() == ["tev1:4b", "nimble"]
-      assert OllamaLocal.model_info("gpt-oss:20b") == %{context_window: 131_072}
-      assert OllamaLocal.model_info("qwen3:8b") == nil
+      settings = local_settings()
+      assert Ollama.models(settings) == ["qwen3:8b", "gpt-oss:20b"]
+      assert Ollama.decision_models(settings) == ["tev1:4b", "nimble"]
+      assert Ollama.model_info("gpt-oss:20b", settings) == %{"context_window" => 131_072}
+      assert Ollama.model_info("qwen3:8b", settings) == nil
 
-      Application.delete_env(:tackle_ollama, OllamaLocal)
-      assert OllamaLocal.models() == []
-      assert OllamaLocal.decision_models() == []
+      Application.delete_env(:tackle_ollama, Ollama)
+      assert Ollama.models(local_settings()) == []
+      assert Ollama.decision_models(local_settings()) == []
     end
 
     test "are selectable as chat and decision models" do
-      assert {:ok, %{adapter: OllamaLocal, model: "qwen3:8b"}} =
-               LLM.select([OllamaLocal], "ollama/qwen3:8b")
+      assert {:ok, %{adapter: Ollama, provider_id: "ollama", model: "gpt-oss:20b"} = selection} =
+               LLM.select([Ollama], "ollama/gpt-oss:20b")
 
-      assert {:ok, %Decision.Selection{adapter: OllamaLocal, model: "tev1:4b", local: true}} =
-               Decision.select([OllamaLocal], "ollama/tev1:4b")
+      assert selection.model_info.context_window == 131_072
+
+      assert {:ok, %Decision.Selection{adapter: Ollama, model: "tev1:4b", local: true}} =
+               Decision.select([Ollama], "ollama/tev1:4b")
 
       assert {:error, {:unknown_decision_model, "ollama/qwen3:8b"}} =
-               Decision.select([OllamaLocal], "ollama/qwen3:8b")
+               Decision.select([Ollama], "ollama/qwen3:8b")
     end
 
     test "malformed configured entries are reported by selection" do
-      Application.put_env(:tackle_ollama, OllamaLocal, models: [""], decision_models: [:bad])
+      Application.put_env(:tackle_ollama, Ollama,
+        providers: %{"ollama" => %{"models" => [""], "decision_models" => [:bad]}}
+      )
 
-      assert {:error, {:invalid_model_id, "ollama", ""}} =
-               LLM.select([OllamaLocal], "ollama/x")
+      assert {:error, {:invalid_model_id, "ollama", ""}} = LLM.select([Ollama], "ollama/x")
 
       assert {:error, {:invalid_model_id, "ollama", :bad}} =
-               Decision.select([OllamaLocal], "ollama/x")
+               Decision.select([Ollama], "ollama/x")
     end
 
-    test "coexist with the Ollama Cloud adapter" do
-      adapters = [Tackle.Plugins.Ollama, OllamaLocal]
-      assert {:ok, %{adapter: OllamaLocal}} = LLM.select(adapters, "ollama/qwen3:8b")
+    test "coexist with the default Ollama Cloud provider" do
+      assert {:ok, %{provider_id: "ollama"}} = LLM.select([Ollama], "ollama/qwen3:8b")
 
-      assert {:ok, %{adapter: Tackle.Plugins.Ollama}} =
-               LLM.select(adapters, "ollama-cloud/gpt-oss:120b")
+      assert {:ok, %{provider_id: "ollama-cloud"}} =
+               LLM.select([Ollama], "ollama-cloud/gpt-oss:120b")
     end
+  end
+
+  defmodule RecordingStore do
+    @behaviour Tackle.Lib.CredentialStore
+    @impl true
+    def fetch(pid, namespace) do
+      send(pid, {:fetch, namespace})
+      {:ok, %{"api_key" => "stored"}}
+    end
+
+    @impl true
+    def put(_ref, _namespace, _credentials), do: :ok
+    @impl true
+    def delete(_ref, _namespace), do: :ok
   end
 
   describe "chat" do
@@ -75,8 +98,7 @@ defmodule Tackle.Plugins.OllamaLocalTest do
       end
 
       assert {:ok, result} =
-               LLM.generate_with(OllamaLocal, nil,
-                 model: "qwen3:8b",
+               LLM.generate_with(selection("ollama/qwen3:8b"), nil,
                  messages: [%{role: :user, content: "hi"}],
                  request: request
                )
@@ -94,7 +116,7 @@ defmodule Tackle.Plugins.OllamaLocalTest do
                List.keyfind(options[:headers], "user-agent", 0)
     end
 
-    test "never reads Ollama Cloud credentials" do
+    test "never reads credentials" do
       previous = System.get_env("OLLAMA_API_KEY")
       System.put_env("OLLAMA_API_KEY", "cloud-key")
 
@@ -109,7 +131,12 @@ defmodule Tackle.Plugins.OllamaLocalTest do
         {:ok, %{status: 200, body: reasoning_completion()}}
       end
 
-      assert {:ok, _} = OllamaLocal.generate(nil, chat_opts(request))
+      store = {RecordingStore, self()}
+
+      assert {:ok, _} =
+               Ollama.generate(nil, chat_opts(request, api_key: "key", credential_store: store))
+
+      refute_received {:fetch, _}
       assert_received {:headers, headers}
       refute List.keyfind(headers, "authorization", 0)
     end
@@ -135,19 +162,19 @@ defmodule Tackle.Plugins.OllamaLocalTest do
       end
 
       assert {:ok, _} =
-               OllamaLocal.generate(nil, chat_opts(request, messages: messages.("ollama")))
+               Ollama.generate(nil, chat_opts(request, messages: messages.("ollama")))
 
       assert_receive {:body, %{"messages" => [_, assistant, _]}}
       assert assistant["reasoning"] == "r"
 
       assert {:ok, _} =
-               OllamaLocal.generate(nil, chat_opts(request, messages: messages.("ollama-cloud")))
+               Ollama.generate(nil, chat_opts(request, messages: messages.("ollama-cloud")))
 
       assert_receive {:body, %{"messages" => [_, assistant, _]}}
       refute Map.has_key?(assistant, "reasoning")
     end
 
-    test "resolves the base URL from options, provider options, then configuration" do
+    test "resolves the base URL from options, provider settings, then configuration" do
       parent = self()
 
       request = fn options ->
@@ -155,49 +182,49 @@ defmodule Tackle.Plugins.OllamaLocalTest do
         {:ok, %{status: 200, body: reasoning_completion()}}
       end
 
-      Application.put_env(
-        :tackle_ollama,
-        OllamaLocal,
-        Keyword.put(
-          Application.get_env(:tackle_ollama, OllamaLocal),
-          :base_url,
-          "http://gpu:11434/v1/"
-        )
+      Application.put_env(:tackle_ollama, Ollama,
+        providers: %{
+          "ollama" => %{"models" => ["qwen3:8b"], "base_url" => "http://gpu:11434/v1/"}
+        }
       )
 
-      assert {:ok, _} = OllamaLocal.generate(nil, chat_opts(request))
+      assert {:ok, _} = Ollama.generate(nil, chat_opts(request))
       assert_receive {:url, "http://gpu:11434/v1/chat/completions"}
 
-      provider_options = %{"ollama" => %{"base_url" => "http://box:1234/v1"}}
+      assert {:ok, _} = LLM.generate_with(selection("ollama/qwen3:8b"), nil, chat_opts(request))
+      assert_receive {:url, "http://gpu:11434/v1/chat/completions"}
+
+      settings = %{"base_url" => "http://box:1234/v1", "models" => ["qwen3:8b"]}
 
       assert {:ok, _} =
-               OllamaLocal.generate(nil, chat_opts(request, provider_options: provider_options))
+               Ollama.generate(nil, chat_opts(request, provider_settings: settings))
 
       assert_receive {:url, "http://box:1234/v1/chat/completions"}
 
       assert {:ok, _} =
-               OllamaLocal.generate(
+               Ollama.generate(
                  nil,
-                 chat_opts(request,
-                   provider_options: provider_options,
-                   base_url: "http://explicit/v1"
-                 )
+                 chat_opts(request, provider_settings: settings, base_url: "http://explicit/v1")
                )
 
       assert_receive {:url, "http://explicit/v1/chat/completions"}
 
-      for settings <- [%{"base_url" => 42}, "invalid"] do
-        assert {:error, {:invalid_provider_options, ^settings}} =
-                 OllamaLocal.generate(
-                   nil,
-                   chat_opts(request, provider_options: %{"ollama" => settings})
-                 )
-      end
+      assert {:error, {:invalid_provider_settings, "ollama", {"base_url", 42}}} =
+               Ollama.generate(
+                 nil,
+                 chat_opts(request, provider_settings: %{settings | "base_url" => 42})
+               )
+
+      assert {:error, {:invalid_provider_settings, "ollama", :not_a_map}} =
+               Ollama.generate(nil, chat_opts(request, provider_settings: "invalid"))
+
+      assert {:error, {:invalid_base_url, ""}} =
+               Ollama.generate(nil, chat_opts(request, base_url: ""))
 
       refute_received {:url, _}
     end
 
-    test "synthesizes missing tool-call ids under its own adapter id" do
+    test "synthesizes missing tool-call ids under its own provider id" do
       stream = fn _options, initial, callback ->
         wire =
           frame(%{
@@ -210,7 +237,7 @@ defmodule Tackle.Plugins.OllamaLocalTest do
         {:ok, %{status: 200}, parser}
       end
 
-      assert {:ok, result} = OllamaLocal.generate(nil, chat_opts(nil, stream: stream))
+      assert {:ok, result} = Ollama.generate(nil, chat_opts(nil, stream: stream))
       assert [%{"id" => "ollama-generated-" <> _}] = result.data["tool_calls"]
     end
 
@@ -218,7 +245,7 @@ defmodule Tackle.Plugins.OllamaLocalTest do
       request = fn _ -> flunk("unexpected HTTP request") end
 
       assert {:error, {:unsupported_model, "llama3"}} =
-               OllamaLocal.generate(nil, chat_opts(request, model: "llama3"))
+               Ollama.generate(nil, chat_opts(request, model: "llama3"))
     end
   end
 
@@ -256,7 +283,7 @@ defmodule Tackle.Plugins.OllamaLocalTest do
          }}
       end
 
-      assert {:ok, selection} = Decision.select([OllamaLocal], "ollama/tev1:4b")
+      assert {:ok, selection} = Decision.select([Ollama], "ollama/tev1:4b")
 
       assert {:ok, %Result{} = result} =
                Decision.decide(selection, %{"command" => "make"}, questions(),
@@ -355,12 +382,12 @@ defmodule Tackle.Plugins.OllamaLocalTest do
       [question | _] = questions()
 
       assert {:error, {:unsupported_model, "qwen3:8b"}} =
-               OllamaLocal.decide(Decision.Request.new("state", [question], "qwen3:8b"),
+               Ollama.decide(Decision.Request.new("state", [question], "qwen3:8b"),
                  request: request
                )
 
       assert {:error, {:invalid_decision_request, :empty_state}} =
-               OllamaLocal.decide(Decision.Request.new(" ", [question], "tev1:4b"),
+               Ollama.decide(Decision.Request.new(" ", [question], "tev1:4b"),
                  request: request
                )
     end
@@ -437,11 +464,21 @@ defmodule Tackle.Plugins.OllamaLocalTest do
           :gen_tcp.close(socket)
         end)
 
-      provider_options = %{"ollama" => %{"base_url" => "http://127.0.0.1:#{port}/v1"}}
+      {:ok, provider} =
+        Tackle.Lib.LLM.Provider.new("gpu-box", Ollama, %{
+          "base_url" => "http://127.0.0.1:#{port}/v1",
+          "decision_models" => ["tev1:4b"],
+          "local" => true
+        })
+
+      assert {:ok, selection} = Decision.select([provider], "gpu-box/tev1:4b")
 
       assert {:ok, %Result{answers: %{"waiting" => %Answer{noul: 0.9}}}} =
-               decide([Question.noul("waiting", "Waiting for input?")],
-                 provider_options: provider_options
+               Decision.decide(
+                 selection,
+                 "command output",
+                 [Question.noul("waiting", "Waiting for input?")],
+                 []
                )
 
       assert_received {:request, headers, body}
@@ -452,8 +489,18 @@ defmodule Tackle.Plugins.OllamaLocalTest do
     end
   end
 
+  defp selection(ref) do
+    {:ok, selection} = LLM.select([Ollama], ref)
+    selection
+  end
+
+  defp local_settings do
+    {"ollama", settings} = List.keyfind(Ollama.default_providers(), "ollama", 0)
+    settings
+  end
+
   defp decide(questions, opts) do
-    {:ok, selection} = Decision.select([OllamaLocal], "ollama/tev1:4b")
+    {:ok, selection} = Decision.select([Ollama], "ollama/tev1:4b")
     Decision.decide(selection, "command output", questions, opts)
   end
 

@@ -68,8 +68,8 @@ defmodule Tackle.Narrator do
 
   Options are `:agent_ref`, `:task_supervisor` (the agent's service
   `Task.Supervisor`), `:settings` (`Tackle.Config.Narration`), and `:llm_opts`,
-  merged into the model call (for example the session's `:provider_options`,
-  or a `:receive_timeout`).
+  merged into the model call (for example a `:receive_timeout`). The
+  selection already carries its provider's settings.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts) do

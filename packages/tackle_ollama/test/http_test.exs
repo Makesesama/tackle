@@ -39,6 +39,7 @@ defmodule Tackle.Plugins.Ollama.HTTPTest do
              Ollama.stream(
                nil,
                [
+                 provider_id: "ollama-cloud",
                  model: "gpt-oss:120b",
                  api_key: "fake",
                  base_url: "http://127.0.0.1:#{port}/v1",

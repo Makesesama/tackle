@@ -74,8 +74,9 @@ model and supported enablement schema, see [`docs/PLUGINS.md`](docs/PLUGINS.md).
 The framework packages and CLI are usable today, with the following boundaries
 and unfinished integrations:
 
-- [`packages/tackle`](packages/tackle/README.md) provides frontend-independent adapter/model
-  configuration, composes the reusable scoped runtime, a supervised credential store,
+- [`packages/tackle`](packages/tackle/README.md) provides frontend-independent provider/model
+  configuration (one adapter can back several providers, such as two Codex
+  accounts or a local and a cloud Ollama server), composes the reusable scoped runtime, a supervised credential store,
   and built-in `read`, `bash`, `edit`, and `write` developer tools
   under `Tackle.Tools.*`. It composes a coding system prompt with global and
   project `AGENTS.md` guidance, and discovers Agent Skills from `.agents/skills`
@@ -110,7 +111,9 @@ and unfinished integrations:
   one API key (`openrouter/<vendor>/<model>`). The current app distributions
   bundle it.
 - [`packages/tackle_ollama`](packages/tackle_ollama/README.md) contains the
-  optional Ollama Cloud adapter (`ollama-cloud/<model>`), using `OLLAMA_API_KEY`.
+  optional Ollama adapter: Ollama Cloud (`ollama-cloud/<model>`, using
+  `OLLAMA_API_KEY`), a keyless local server (`ollama/<model>`), and any
+  self-hosted server declared as a provider in `config.json`.
   Bundled by the CLI; other hosts can enable it as a separately compiled plugin.
 - [`packages/tackle_mcp`](packages/tackle_mcp/README.md) contains the optional
   Anubis-based MCP client plugin. Trusted host startup can connect STDIO or
@@ -120,7 +123,7 @@ and unfinished integrations:
 - [`apps/tackle_cli`](apps/tackle_cli/README.md) contains the default
   Optimus/ex_ratatui CLI entrypoint. Its Burrito release produces a fixed
   distribution that bundles the first-party Codex, DeepSeek, Anthropic,
-  OpenRouter, and Ollama Cloud plugins; the
+  OpenRouter, and Ollama plugins; the
   harness loads explicitly enabled precompiled projects at startup, without
   automatically discovering projects. The frontend relies on the harness package
   for credentials, sessions, and turn execution. Its footer reports current

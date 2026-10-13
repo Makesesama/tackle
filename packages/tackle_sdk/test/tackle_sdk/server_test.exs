@@ -9,9 +9,11 @@ defmodule Tackle.SDK.ServerTest do
 
   use ExUnit.Case, async: false
 
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.SDK.Server
   alias Tackle.SDK.Test.EchoTool
   alias Tackle.SDK.Test.FakeLLM
+  alias Tackle.SDK.Test.LocalFirstLLM
   alias Tackle.SDK.Test.RecordingLLM
   alias Tackle.SDK.Test.SlowLLM
 
@@ -105,7 +107,7 @@ defmodule Tackle.SDK.ServerTest do
       line =
         ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"sess-1","model":"fake/echo"}})
 
-      start([@init, line], adapters: [FakeLLM])
+      start([@init, line], providers: [FakeLLM])
 
       assert %{"result" => %{"sessionId" => "sess-1"}} = await_response(2)
       assert_receive {:run_result, :ok}
@@ -115,7 +117,7 @@ defmodule Tackle.SDK.ServerTest do
       line =
         ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"sess-1","model":"fake/echo"}})
 
-      start([@init, line, String.replace(line, ~s("id":2), ~s("id":3))], adapters: [FakeLLM])
+      start([@init, line, String.replace(line, ~s("id":2), ~s("id":3))], providers: [FakeLLM])
 
       assert %{"result" => %{"sessionId" => "sess-1"}} = await_response(2)
       assert %{"id" => 3, "error" => %{"code" => -32602}} = await_response(3)
@@ -129,7 +131,7 @@ defmodule Tackle.SDK.ServerTest do
           ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"model":"nope/nope"}}),
           ~s({"jsonrpc":"2.0","id":3,"method":"session/new","params":{"model":"fake/echo","tools":["missing"]}})
         ],
-        adapters: [FakeLLM],
+        providers: [FakeLLM],
         tools: [EchoTool]
       )
 
@@ -145,7 +147,7 @@ defmodule Tackle.SDK.ServerTest do
           ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"sess-1","model":"record/opts"}}),
           ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"sess-1","input":"hi"}})
         ],
-        adapters: [RecordingLLM],
+        providers: [RecordingLLM],
         llm_opts: [test_pid: self(), marker: "injected"]
       )
 
@@ -155,6 +157,76 @@ defmodule Tackle.SDK.ServerTest do
 
       assert_received {:generate_opts, opts}
       assert Keyword.get(opts, :marker) == "injected"
+      assert_receive {:run_result, :ok}
+    end
+
+    test "providers of one adapter are selected by provider id, the first by default" do
+      start(
+        [
+          @init,
+          ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"a"}}),
+          ~s({"jsonrpc":"2.0","id":3,"method":"session/new","params":{"sessionId":"b","model":"rec-b/opts"}}),
+          ~s({"jsonrpc":"2.0","id":4,"method":"session/new","params":{"model":"record/opts"}}),
+          ~s({"jsonrpc":"2.0","id":5,"method":"turn/start","params":{"sessionId":"a","input":"hi"}})
+        ],
+        providers: [
+          %Provider{id: "rec-a", adapter: RecordingLLM, settings: %{"region" => "a"}},
+          %Provider{id: "rec-b", adapter: RecordingLLM, settings: %{"region" => "b"}}
+        ],
+        llm_opts: [test_pid: self()]
+      )
+
+      assert %{"id" => 2, "result" => %{"sessionId" => "a"}} = await_response(2)
+      assert %{"id" => 3, "result" => %{"sessionId" => "b"}} = await_response(3)
+
+      # The adapter type id is not a provider here.
+      assert %{"id" => 4, "error" => %{"code" => -32602, "message" => message}} =
+               await_response(4)
+
+      assert message =~ "unknown_provider"
+
+      assert %{"id" => 5, "result" => %{"turnId" => _}} = await_response(5)
+      assert {:ok, _event_types, %{"result" => "ok"}} = collect_event_types(1_000)
+
+      assert_received {:generate_opts, opts}
+      assert opts[:provider_id] == "rec-a"
+      assert opts[:provider_settings] == %{"region" => "a"}
+      assert_receive {:run_result, :ok}
+    end
+
+    test "the default model comes from the first provider that offers one" do
+      start(
+        [
+          @init,
+          ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"a"}}),
+          ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"a","input":"hi"}})
+        ],
+        providers: [LocalFirstLLM],
+        llm_opts: [test_pid: self()]
+      )
+
+      assert %{"id" => 2, "result" => %{"sessionId" => "a"}} = await_response(2)
+      assert %{"id" => 3, "result" => %{"turnId" => _}} = await_response(3)
+      assert {:ok, _event_types, %{"result" => "ok"}} = collect_event_types(1_000)
+
+      assert_received {:generate_opts, opts}
+      assert opts[:provider_id] == "local-first-cloud"
+      assert opts[:model] == "big"
+      assert_receive {:run_result, :ok}
+    end
+
+    test "session/new without a model fails when no provider offers one" do
+      {:ok, local} = Provider.new("local-first", LocalFirstLLM)
+
+      start(
+        [@init, ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"a"}})],
+        providers: [local]
+      )
+
+      assert %{"id" => 2, "error" => %{"code" => -32602, "message" => message}} =
+               await_response(2)
+
+      assert message =~ "no configured provider advertises a model"
       assert_receive {:run_result, :ok}
     end
   end
@@ -167,7 +239,7 @@ defmodule Tackle.SDK.ServerTest do
           ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"sess-1","model":"fake/echo","tools":["echo"]}}),
           ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"sess-1","turnId":"turn-1","input":"hello"}})
         ],
-        adapters: [FakeLLM],
+        providers: [FakeLLM],
         tools: [EchoTool]
       )
 
@@ -191,7 +263,7 @@ defmodule Tackle.SDK.ServerTest do
           ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"sess-1","turnId":"turn-1","input":"hello"}}),
           ~s({"jsonrpc":"2.0","id":4,"method":"turn/cancel","params":{"turnId":"turn-1"}})
         ],
-        adapters: [SlowLLM]
+        providers: [SlowLLM]
       )
 
       assert %{"id" => 3, "result" => %{"turnId" => "turn-1"}} = await_response(3)
@@ -211,7 +283,7 @@ defmodule Tackle.SDK.ServerTest do
           ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"sess-1","turnId":"turn-1","input":"hello"}}),
           ~s({"jsonrpc":"2.0","id":4,"method":"turn/start","params":{"sessionId":"sess-1","turnId":"turn-2","input":"again"}})
         ],
-        adapters: [SlowLLM]
+        providers: [SlowLLM]
       )
 
       assert %{"id" => 3, "result" => %{"turnId" => "turn-1"}} = await_response(3)
@@ -228,7 +300,7 @@ defmodule Tackle.SDK.ServerTest do
           @init,
           ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"ghost","input":"hi"}})
         ],
-        adapters: [FakeLLM]
+        providers: [FakeLLM]
       )
 
       assert %{"id" => 3, "error" => %{"code" => -32602}} = await_response(3)
@@ -238,7 +310,7 @@ defmodule Tackle.SDK.ServerTest do
     test "turn/cancel on an unknown turn is rejected" do
       start(
         [@init, ~s({"jsonrpc":"2.0","id":4,"method":"turn/cancel","params":{"turnId":"ghost"}})],
-        adapters: [FakeLLM]
+        providers: [FakeLLM]
       )
 
       assert %{"id" => 4, "error" => %{"code" => -32602}} = await_response(4)

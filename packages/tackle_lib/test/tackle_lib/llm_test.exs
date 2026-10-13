@@ -199,7 +199,7 @@ defmodule Tackle.Lib.LLMTest do
       assert {:ok,
               %Selection{
                 adapter: SelectableAdapterA,
-                adapter_id: "provider-a",
+                provider_id: "provider-a",
                 model: "shared",
                 ref: "provider-a/shared"
               }} = LLM.select([SelectableAdapterA, SelectableAdapterB], "provider-a/shared")
@@ -214,7 +214,7 @@ defmodule Tackle.Lib.LLMTest do
       assert {:error, {:invalid_model_ref, "Provider A/shared"}} =
                LLM.select([SelectableAdapterA], "Provider A/shared")
 
-      assert {:error, {:unknown_adapter, "missing"}} =
+      assert {:error, {:unknown_provider, "missing"}} =
                LLM.select([SelectableAdapterA], "missing/shared")
 
       assert {:error, {:unknown_model, "provider-a/missing"}} =
@@ -230,7 +230,7 @@ defmodule Tackle.Lib.LLMTest do
     end
 
     test "rejects duplicate adapter ids" do
-      assert {:error, {:duplicate_adapter_id, "provider-a"}} =
+      assert {:error, {:duplicate_provider_id, "provider-a"}} =
                LLM.select([SelectableAdapterA, DuplicateAdapter], "provider-a/shared")
     end
 

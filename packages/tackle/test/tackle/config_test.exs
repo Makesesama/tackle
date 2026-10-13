@@ -2,6 +2,7 @@ defmodule Tackle.ConfigTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Config
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Retry
   alias Tackle.Lib.Tool.Policy
@@ -190,7 +191,7 @@ defmodule Tackle.ConfigTest do
                overrides: [model: "test/small"]
              )
 
-    assert config.adapters == [Adapter]
+    assert [%Provider{id: "test", adapter: Adapter, settings: %{}}] = config.providers
     assert config.hooks == [EarlierHook, CatalogHook]
     refute Tool in config.tools
 
@@ -204,7 +205,7 @@ defmodule Tackle.ConfigTest do
   test "resolves an explicit adapter and canonical model reference" do
     assert {:ok, config} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/family/nested",
                tools: [Tool],
                context: %{workspace: "/tmp/project"},
@@ -213,7 +214,7 @@ defmodule Tackle.ConfigTest do
 
     assert %Selection{
              adapter: Adapter,
-             adapter_id: "test",
+             provider_id: "test",
              model: "family/nested",
              ref: "test/family/nested"
            } = config.llm
@@ -231,12 +232,12 @@ defmodule Tackle.ConfigTest do
   end
 
   test "session titles are opt-in through new and resolve a dedicated model" do
-    assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small")
+    assert {:ok, config} = Config.new(providers: [Adapter], model: "test/small")
     assert config.session_titles == nil
 
     assert {:ok, config} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                session_titles: [model: "test/family/nested"]
              )
@@ -248,7 +249,7 @@ defmodule Tackle.ConfigTest do
 
     assert {:ok, config} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                session_titles: [enabled: false, model: "test/small"]
              )
@@ -259,26 +260,26 @@ defmodule Tackle.ConfigTest do
   test "session titles reject unknown options and unknown models" do
     assert {:error, {:invalid_option, :session_titles, [:unknown]}} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                session_titles: [unknown: true]
              )
 
     assert {:error, {:unknown_model, "test/missing"}} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                session_titles: [model: "test/missing"]
              )
 
     assert {:error, {:invalid_option, :session_titles, "yes"}} =
-             Config.new(adapters: [Adapter], model: "test/small", session_titles: "yes")
+             Config.new(providers: [Adapter], model: "test/small", session_titles: "yes")
   end
 
   test "reconfigures model and thinking without changing other session options" do
     assert {:ok, config} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                tools: [Tool],
                llm_opts: [request_tag: "keep"]
@@ -305,21 +306,21 @@ defmodule Tackle.ConfigTest do
   end
 
   test "uses the built-in developer tools by default and permits an explicit empty set" do
-    assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small")
+    assert {:ok, config} = Config.new(providers: [Adapter], model: "test/small")
     assert config.tools == Tackle.Tools.default()
 
-    assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small", tools: [])
+    assert {:ok, config} = Config.new(providers: [Adapter], model: "test/small", tools: [])
     assert config.tools == []
   end
 
   test "configures provider retry policy and passes it to agent state" do
-    assert {:ok, default} = Config.new(adapters: [Adapter], model: "test/small")
+    assert {:ok, default} = Config.new(providers: [Adapter], model: "test/small")
     assert default.retry == Retry.new!()
     assert Config.to_agent_state(default).retry == default.retry
 
     assert {:ok, configured} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                retry: [max_retries: 1, base_delay_ms: 10, max_delay_ms: 20]
              )
@@ -327,30 +328,30 @@ defmodule Tackle.ConfigTest do
     assert configured.retry == Retry.new!(max_retries: 1, base_delay_ms: 10, max_delay_ms: 20)
 
     assert {:ok, disabled} =
-             Config.new(adapters: [Adapter], model: "test/small", retry: false)
+             Config.new(providers: [Adapter], model: "test/small", retry: false)
 
     refute Config.to_agent_state(disabled).retry.enabled?
 
     assert {:error, {:invalid_retry_config, {:max_retries, -1}}} =
-             Config.new(adapters: [Adapter], model: "test/small", retry: [max_retries: -1])
+             Config.new(providers: [Adapter], model: "test/small", retry: [max_retries: -1])
   end
 
   test "uses unlimited iterations by default and accepts an explicit limit" do
-    assert {:ok, unlimited} = Config.new(adapters: [Adapter], model: "test/small")
+    assert {:ok, unlimited} = Config.new(providers: [Adapter], model: "test/small")
     assert unlimited.max_iterations == :infinity
     assert Config.to_agent_state(unlimited).max_iterations == :infinity
 
     assert {:ok, bounded} =
-             Config.new(adapters: [Adapter], model: "test/small", max_iterations: 25)
+             Config.new(providers: [Adapter], model: "test/small", max_iterations: 25)
 
     assert bounded.max_iterations == 25
 
     assert {:error, {:invalid_option, :max_iterations, 0}} =
-             Config.new(adapters: [Adapter], model: "test/small", max_iterations: 0)
+             Config.new(providers: [Adapter], model: "test/small", max_iterations: 0)
   end
 
   test "pins tool execution to concurrent and rejects a tool policy option" do
-    assert {:ok, config} = Config.new(adapters: [Adapter], model: "test/small")
+    assert {:ok, config} = Config.new(providers: [Adapter], model: "test/small")
     assert %Policy{execution_mode: :concurrent} = config.tool_policy
 
     state = Config.to_agent_state(config)
@@ -358,48 +359,48 @@ defmodule Tackle.ConfigTest do
 
     assert {:error, {:unknown_options, [:tool_policy]}} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                tool_policy: Policy.default()
              )
   end
 
   test "returns explicit validation errors" do
-    assert {:error, {:missing_option, :adapters}} = Config.new(model: "test/small")
+    assert {:error, {:missing_option, :providers}} = Config.new(model: "test/small")
 
     assert {:error, {:unknown_model, "test/missing"}} =
-             Config.new(adapters: [Adapter], model: "test/missing")
+             Config.new(providers: [Adapter], model: "test/missing")
 
     assert {:error, {:unknown_options, [:surprise]}} =
-             Config.new(adapters: [Adapter], model: "test/small", surprise: true)
+             Config.new(providers: [Adapter], model: "test/small", surprise: true)
 
     assert {:error, {:duplicate_option, :model}} =
-             Config.new(adapters: [Adapter], model: "test/small", model: "test/small")
+             Config.new(providers: [Adapter], model: "test/small", model: "test/small")
 
     assert {:error, {:duplicate_tool_name, "test_tool"}} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                tools: [Tool, DuplicateTool]
              )
 
     assert {:error, {:reserved_llm_option, :credential_store}} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                llm_opts: [credential_store: {:not, :allowed}]
              )
 
     assert {:error, {:reserved_llm_option, :access_token}} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                llm_opts: [access_token: "must-not-enter-config"]
              )
 
     assert {:error, {:reserved_llm_option, "api_key"}} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                llm_opts: [provider: %{"api_key" => "must-not-enter-config"}]
              )
@@ -408,7 +409,7 @@ defmodule Tackle.ConfigTest do
   test "rejects tool modules that do not implement the Tackle.Lib.Tool callbacks" do
     assert {:error, {:invalid_tools, message}} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                tools: [IncompleteTool]
              )
@@ -420,7 +421,7 @@ defmodule Tackle.ConfigTest do
   test "rejects non-module tool values" do
     assert {:error, {:invalid_tools, message}} =
              Config.new(
-               adapters: [Adapter],
+               providers: [Adapter],
                model: "test/small",
                tools: ["not a module"]
              )

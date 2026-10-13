@@ -37,7 +37,7 @@ defmodule Tackle.Web.ChatAgent do
     end
   end
 
-  @doc "Every `adapter/model` reference a conversation can run."
+  @doc "Every `provider/model` reference a conversation can run."
   @spec models() :: [String.t()]
   def models, do: Providers.models()
 
@@ -53,7 +53,7 @@ defmodule Tackle.Web.ChatAgent do
     * `:cwd` (required) — the directory the assistant reads and writes, and
       what `.`, `AGENTS.md` and the prompt's working-directory line resolve
       against.
-    * `:model` — a canonical `adapter/model` reference; `nil` selects
+    * `:model` — a canonical `provider/model` reference; `nil` selects
       `default_model/0`.
     * `:messages` — a stored transcript to resume from.
 

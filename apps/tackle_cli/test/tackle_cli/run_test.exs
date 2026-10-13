@@ -132,6 +132,25 @@ defmodule Tackle.CLI.RunTest do
     end
   end
 
+  defmodule KeylessAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "cli-keyless"
+
+    @impl true
+    def models, do: ["local"]
+
+    @impl true
+    def generate(_schema, _opts), do: {:error, :not_used}
+
+    @impl true
+    def login(opts), do: {:error, {:login_not_required, Keyword.fetch!(opts, :provider_id)}}
+
+    @impl true
+    def status(_opts), do: {:ok, :not_required}
+  end
+
   setup do
     home = Path.join(System.tmp_dir!(), "tackle-cli-run-#{System.unique_integer([:positive])}")
     previous_home = System.get_env("TACKLE_HOME")
@@ -437,6 +456,86 @@ defmodule Tackle.CLI.RunTest do
 
     assert output =~ "cli-test"
     assert output =~ "cli-auth"
+  end
+
+  test "auth login --as records a named account on the adapter and stores its login" do
+    Application.put_env(:tackle, :adapters, [AuthAdapter])
+
+    on_exit(fn ->
+      Tackle.Auth.delete("cli-auth-work")
+      Tackle.Auth.delete_account("cli-auth-work")
+    end)
+
+    output =
+      capture_io(fn ->
+        assert 0 == Run.auth_login(%{provider: "cli-auth", as: "cli-auth-work"})
+      end)
+
+    assert output =~ "Authenticated with cli-auth-work."
+    assert_receive {:auth_login, opts}
+    assert opts[:provider_id] == "cli-auth-work"
+    assert {:ok, %{"token" => "value"}} = Tackle.Auth.fetch("cli-auth-work")
+    # "cli-auth" is also the default provider's id, so it is the account's base.
+    assert Tackle.Auth.accounts()["cli-auth-work"] == %{
+             "adapter" => "cli-auth",
+             "base" => "cli-auth"
+           }
+
+    assert :missing == Tackle.Auth.status("cli-auth")
+
+    status_output =
+      capture_io(fn ->
+        assert 0 == Run.auth_status(%{provider: nil, format: :plain})
+      end)
+
+    assert status_output =~ "cli-auth\tcli-auth\tdefault\tmissing\tyes\tyes"
+    assert status_output =~ "cli-auth-work\tcli-auth\taccount\tstored\tyes\tyes"
+
+    assert {:ok, models} = Tackle.CLI.Distribution.available_models()
+    assert "cli-auth-work/auth-echo" in models
+  end
+
+  test "auth login --as rejects an invalid account name without recording it" do
+    Application.put_env(:tackle, :adapters, [AuthAdapter])
+
+    output =
+      capture_io(:stderr, fn ->
+        assert 1 == Run.auth_login(%{provider: "cli-auth", as: "Bad Name"})
+      end)
+
+    assert output =~ ~s("Bad Name" is not a valid provider name.)
+    refute output =~ "invalid_provider_id"
+    refute Map.has_key?(Tackle.Auth.accounts(), "Bad Name")
+  end
+
+  test "auth login --as refuses a name recorded for another adapter" do
+    Application.put_env(:tackle, :adapters, [AuthAdapter])
+    :ok = Tackle.Auth.put_account("cli-auth-taken", %{"adapter" => "not-installed"})
+    on_exit(fn -> Tackle.Auth.delete_account("cli-auth-taken") end)
+
+    output =
+      capture_io(:stderr, fn ->
+        assert 1 == Run.auth_login(%{provider: "cli-auth", as: "cli-auth-taken"})
+      end)
+
+    assert output =~ ~s(The name "cli-auth-taken" already belongs to a provider or account)
+    refute_received {:auth_login, _opts}
+    assert Tackle.Auth.accounts()["cli-auth-taken"] == %{"adapter" => "not-installed"}
+    assert :missing == Tackle.Auth.status("cli-auth-taken")
+  end
+
+  test "auth status reports keyless providers as not requiring credentials" do
+    Application.put_env(:tackle, :adapters, [KeylessAdapter])
+
+    output =
+      capture_io(fn -> assert 0 == Run.auth_status(%{provider: "cli-keyless"}) end)
+
+    assert output =~ "not required"
+
+    login_output =
+      capture_io(:stderr, fn -> assert 1 == Run.auth_login(%{provider: "cli-keyless"}) end)
+
+    assert login_output =~ ~s(Provider "cli-keyless" needs no login)
   end
 
   test "auth commands reject providers that are not configured" do

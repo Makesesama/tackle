@@ -9,7 +9,8 @@ defmodule Tackle.Plugins.Anthropic.OAuth do
   callback, so no local web server is required.
 
   Returned credentials are JSON-compatible maps suitable for a
-  `Tackle.Lib.CredentialStore` under the `"anthropic"` namespace.
+  `Tackle.Lib.CredentialStore` under the provider's id, which is `"anthropic"`
+  for the default provider.
   """
 
   alias Tackle.Lib.Cancellation

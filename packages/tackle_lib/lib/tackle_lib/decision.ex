@@ -8,8 +8,8 @@ defmodule Tackle.Lib.Decision do
   stuck?" without spending a full LLM turn.
 
   Adapters may implement this behaviour in addition to `Tackle.Lib.LLM`. They
-  must also export `adapter_id/0`, which prefixes their decision model
-  references just like chat model references:
+  must also export `adapter_id/0`. Decision model references are prefixed by a
+  provider id just like chat model references (see `Tackle.Lib.LLM.Provider`):
 
       {:ok, selection} = Tackle.Lib.Decision.select(adapters, "ollama/tev1:4b")
 
@@ -28,28 +28,31 @@ defmodule Tackle.Lib.Decision do
   ## Local adapters
 
   An adapter whose decision models run on hardware the user controls, such as
-  a self-hosted Ollama server, may export the optional `local?/0` callback
-  returning `true`. Its selections carry `local: true`, so a host can leave
-  their usage out of token budgets that bound paid spend. Adapters that do not
-  export it are treated as remote.
+  a self-hosted Ollama server, may export the optional `local?/1` (per provider
+  settings) or `local?/0` callback returning `true`. Its selections carry
+  `local: true`, so a host can leave their usage out of token budgets that
+  bound paid spend. Adapters that export neither are treated as remote.
 
   ## Options
 
-  `decide/3` passes its options to the adapter's `decide/2`. Adapters should
-  honour:
+  `decide/3` passes its options to the adapter's `decide/2`, adding the
+  selection's `:provider_id` and `:provider_settings`. Adapters should honour:
 
     * `:cancellation_signal` - a `Tackle.Lib.Cancellation.Signal`; abort the
       request and return `{:error, :cancelled}` when it is cancelled.
-    * `:provider_options` - adapter-specific options keyed by adapter id.
     * `:receive_timeout` - maximum milliseconds to wait for a response.
   """
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Decision.{Question, Request, Result, Selection}
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Usage
 
   @doc "The adapter-local decision model identifiers available for selection."
   @callback decision_models() :: [String.t()]
+
+  @doc "Like `decision_models/0`, for one provider's settings. Preferred when exported."
+  @callback decision_models(settings :: Provider.settings()) :: [String.t()]
 
   @doc """
   Answers every question of an already validated request.
@@ -66,20 +69,23 @@ defmodule Tackle.Lib.Decision do
   """
   @callback local?() :: boolean()
 
-  @optional_callbacks local?: 0
+  @doc "Like `local?/0`, for one provider's settings. Preferred when exported."
+  @callback local?(settings :: Provider.settings()) :: boolean()
+
+  @optional_callbacks decision_models: 0, decision_models: 1, local?: 0, local?: 1
 
   @doc """
-  Selects a decision adapter and model from a canonical `adapter_id/model` reference.
+  Selects a decision provider and model from a canonical `provider_id/model` reference.
 
-  References are parsed like `Tackle.Lib.LLM.select/2`. Every supplied adapter
-  must export `adapter_id/0` and ids must be unique; adapters without decision
-  support may be listed, but selecting one returns
-  `{:error, {:unsupported_decision_adapter, adapter_id}}`. A model missing from
-  `decision_models/0` returns `{:error, {:unknown_decision_model, ref}}`. The
-  selection's `local` flag comes from the adapter's optional `local?/0`; a
-  non-boolean answer returns `{:error, {:invalid_local_flag, adapter_id, value}}`.
+  Sources and references are handled like `Tackle.Lib.LLM.select/2`. Every
+  adapter must export `adapter_id/0` and provider ids must be unique; providers
+  without decision support may be listed, but selecting one returns
+  `{:error, {:unsupported_decision_adapter, provider_id}}`. A model missing from
+  the decision models returns `{:error, {:unknown_decision_model, ref}}`. The
+  selection's `local` flag comes from the optional `local?/1` or `local?/0`; a
+  non-boolean answer returns `{:error, {:invalid_local_flag, provider_id, value}}`.
   """
-  @spec select([module()], String.t()) :: {:ok, Selection.t()} | {:error, term()}
+  @spec select([Provider.source()], String.t()) :: {:ok, Selection.t()} | {:error, term()}
   defdelegate select(adapters, model_ref), to: Selection, as: :resolve
 
   @doc """
@@ -92,6 +98,11 @@ defmodule Tackle.Lib.Decision do
   @spec decide(Selection.t(), Request.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def decide(%Selection{} = selection, %Request{} = request, opts \\ []) when is_list(opts) do
     request = %{request | model: selection.model}
+
+    opts =
+      opts
+      |> Keyword.put(:provider_id, selection.provider_id)
+      |> Keyword.put(:provider_settings, selection.provider_settings)
 
     with :ok <- Request.validate(request),
          :ok <- ensure_not_cancelled(opts) do
@@ -118,7 +129,7 @@ defmodule Tackle.Lib.Decision do
 
   defp normalize_result({:ok, %Result{} = result}, %Selection{} = selection) do
     model = result.model || selection.model
-    usage = Usage.normalize(result.usage, model: model, provider: selection.adapter_id)
+    usage = Usage.normalize(result.usage, model: model, provider: selection.provider_id)
     {:ok, %{result | model: model, usage: usage}}
   end
 

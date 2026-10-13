@@ -34,9 +34,12 @@ state =
   )
 ```
 
-The API key is resolved in this order: `:api_key`, the adapter's
-`"deepseek"` credential-store namespace (`"api_key"` or `"key"`), then the
-`DEEPSEEK_API_KEY` environment variable. The bundled CLI can populate the store
+The API key is resolved in this order: `:api_key`, the provider's
+credential-store namespace (`"api_key"` or `"key"`; `"deepseek"` for the
+default provider), then an environment variable: the provider's
+`"api_key_env"` setting, or `DEEPSEEK_API_KEY` for the default `"deepseek"`
+provider only. A missing key is
+`{:error, {:missing_deepseek_api_key, provider_id}}`. The bundled CLI can populate the store
 with `mix tackle auth login deepseek`; depending on terminal support, its prompt
 may be visible. Supplying it explicitly or through a host-owned
 `Tackle.Lib.CredentialStore` is also supported.
@@ -50,9 +53,38 @@ after their identity and JSON-object arguments have been validated.
 For reasoning controls, pass `reasoning_effort: :low | :high | :max` (or
 `:none`/`:off` to disable thinking) in `:llm_opts`. Reasoning-capable models use
 DeepSeek's `thinking` plus `reasoning_effort` wire format. Prior reasoning is
-replayed only when opaque state belongs to this adapter and the same model.
+replayed only when opaque state belongs to the same provider id and model.
 Structured responses use DeepSeek's JSON-output mode and include the requested
 schema in the system instruction.
+
+## Providers
+
+`adapter_id/0` (`"deepseek"`) names the adapter type. Several providers can
+share the adapter, each with its own key and endpoint:
+
+```elixir
+alias Tackle.Lib.LLM.Provider
+
+{:ok, work} = Provider.new("deepseek-work", Tackle.Plugins.DeepSeek)
+
+{:ok, proxy} =
+  Provider.new("deepseek-proxy", Tackle.Plugins.DeepSeek, %{
+    "base_url" => "https://deepseek-proxy.example/v1"
+  })
+```
+
+The selection passes `:provider_id` and `:provider_settings` to the adapter, and
+hosts pass the same options to `login/1` and `usage/1`. Without them the
+adapter acts as the default `"deepseek"` provider. The provider id is the
+credential namespace, the reported `:provider`, and the origin stamped on
+replayable reasoning state.
+
+Honoured provider settings:
+
+| Key | Meaning |
+| --- | --- |
+| `"base_url"` | API base URL for chat completions and balance. An explicit `:base_url` option wins. |
+| `"api_key_env"` | Environment variable read for an API key when none is stored. Defaults to `DEEPSEEK_API_KEY` for the `"deepseek"` provider and to none otherwise, so another provider never picks up that key by accident. |
 
 ## Provider caching
 

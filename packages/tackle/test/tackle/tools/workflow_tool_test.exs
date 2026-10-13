@@ -152,7 +152,7 @@ defmodule Tackle.Tools.WorkflowToolTest do
         home: ctx.home,
         root: [
           allow_delegation: true,
-          adapters: [Tackle.Test.Adapter, LocalJudge],
+          providers: [Tackle.Test.Adapter, LocalJudge],
           decision_model: "judge/small",
           tools: [WorkflowTool],
           mode: :tool_then_answer,

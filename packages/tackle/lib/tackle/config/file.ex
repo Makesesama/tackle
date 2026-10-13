@@ -1,6 +1,7 @@
 defmodule Tackle.Config.File do
   @moduledoc false
 
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Thinking
 
   # The sidebar preference belongs to the CLI; the harness accepts and validates
@@ -9,7 +10,7 @@ defmodule Tackle.Config.File do
     "model",
     "thinking",
     "show_subagent_sidebar",
-    "provider_options",
+    "providers",
     "session_titles",
     "watchdog",
     "narration",
@@ -43,7 +44,7 @@ defmodule Tackle.Config.File do
   defp to_options(path, config) do
     with {:ok, model_opts} <- model_options(path, config),
          {:ok, thinking_opts} <- thinking_options(path, config),
-         {:ok, provider_opts} <- provider_options(path, config),
+         {:ok, provider_opts} <- providers_options(path, config),
          {:ok, title_opts} <- session_titles_options(path, config),
          {:ok, watchdog_opts} <- watchdog_options(path, config),
          {:ok, narration_opts} <- narration_options(path, config),
@@ -158,22 +159,29 @@ defmodule Tackle.Config.File do
     is_boolean(enabled) and (is_nil(model) or (is_binary(model) and model != ""))
   end
 
-  # Adapter-owned settings, keyed by adapter id. The harness only checks the
-  # shape; each adapter interprets its own entry.
-  defp provider_options(path, config) do
-    case Map.fetch(config, "provider_options") do
-      {:ok, options} ->
-        if adapter_settings?(options),
-          do: {:ok, [provider_options: options]},
-          else: {:error, {:invalid_config_field, path, "provider_options"}}
-
-      :error ->
-        {:ok, []}
+  # Configured provider instances, keyed by provider id. Each entry names an
+  # adapter type id under `"adapter"`; every other key is an opaque setting the
+  # adapter interprets. Adapter types are checked when providers are merged
+  # (`Tackle.Plugins.merge_providers/3`), since only the host knows them.
+  defp providers_options(path, config) do
+    case Map.fetch(config, "providers") do
+      {:ok, %{} = providers} -> validate_providers(path, providers)
+      {:ok, _other} -> {:error, {:invalid_config_field, path, "providers"}}
+      :error -> {:ok, []}
     end
   end
 
-  defp adapter_settings?(%{} = options), do: Enum.all?(Map.values(options), &is_map/1)
-  defp adapter_settings?(_options), do: false
+  defp validate_providers(path, providers) do
+    case Enum.find(providers, &(not valid_provider_entry?(&1))) do
+      nil -> {:ok, [providers: providers]}
+      {id, _entry} -> {:error, {:invalid_config_provider, path, id}}
+    end
+  end
+
+  defp valid_provider_entry?({id, %{"adapter" => adapter}}),
+    do: Provider.valid_id?(id) and Provider.valid_id?(adapter)
+
+  defp valid_provider_entry?(_entry), do: false
 
   defp sidebar_option(path, config) do
     case Map.fetch(config, "show_subagent_sidebar") do

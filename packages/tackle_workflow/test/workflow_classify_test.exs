@@ -6,6 +6,7 @@ defmodule Tackle.Workflow.ClassifyTest do
   import Tackle.Workflow.TestSupport
 
   alias Tackle.Lib.Decision.{Answer, Question, Request, Result}
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Workflow
   alias Tackle.Workflow.Decisions
   alias Tackle.Workflow.Tool, as: WorkflowTool
@@ -85,6 +86,23 @@ defmodule Tackle.Workflow.ClassifyTest do
     def local?, do: :maybe
   end
 
+  # One adapter backing several providers: settings choose models and locality.
+  defmodule InstanceJudge do
+    @moduledoc false
+    def adapter_id, do: "instance"
+    def decision_models(settings), do: Map.fetch!(settings, "models")
+    def local?(settings), do: Map.get(settings, "local", false)
+
+    def decide(request, opts) do
+      send(
+        Keyword.fetch!(opts, :test_pid),
+        {:provider, opts[:provider_id], opts[:provider_settings]}
+      )
+
+      Judge.answer(request, opts)
+    end
+  end
+
   defmodule ChatOnly do
     @moduledoc false
     def adapter_id, do: "chat"
@@ -97,7 +115,7 @@ defmodule Tackle.Workflow.ClassifyTest do
 
   defp decisions(opts \\ []) do
     [
-      adapters: [ChatOnly, LocalJudge, CloudJudge],
+      providers: [ChatOnly, LocalJudge, CloudJudge],
       options: Keyword.merge([test_pid: self()], Keyword.get(opts, :options, [])),
       default_model: Keyword.get(opts, :default_model, "local/judge")
     ]
@@ -418,6 +436,13 @@ defmodule Tackle.Workflow.ClassifyTest do
                ~s[decision model "cloud/missing" is not available (available: cloud/judge, local/judge)]
     end
 
+    test "a model of an unknown provider raises and lists the available ones" do
+      script = "return tackle.classify('x', #{@verdict}, {model = 'gone/judge'})"
+
+      assert {:error, %{message: message}} = run(script, decisions: decisions())
+      assert message =~ ~s[decision model "gone/judge" is not available (available: ]
+    end
+
     test "a missing model without a default raises" do
       grant = Keyword.put(decisions(), :default_model, nil)
 
@@ -428,7 +453,7 @@ defmodule Tackle.Workflow.ClassifyTest do
     end
 
     test "a misconfigured adapter is reported as such, not as an unknown model" do
-      grant = [adapters: [BadFlagJudge], default_model: nil]
+      grant = [providers: [BadFlagJudge], default_model: nil]
       script = "return tackle.classify('x', #{@verdict}, {model = 'bad/judge'})"
 
       assert {:error, %{message: message}} = run(script, decisions: grant)
@@ -486,7 +511,7 @@ defmodule Tackle.Workflow.ClassifyTest do
 
       assert {:error, {:unknown_decision_model, "local/missing"}} =
                Workflow.run(handle(scope), "return 1",
-                 decisions: [adapters: [LocalJudge], default_model: "local/missing"]
+                 decisions: [providers: [LocalJudge], default_model: "local/missing"]
                )
 
       assert {:error, {:invalid_workflow_option, :decisions, [unknown: [:model]]}} =
@@ -502,6 +527,43 @@ defmodule Tackle.Workflow.ClassifyTest do
       assert {:ok, %Decisions{} = grant} = Decisions.new(decisions())
       assert Decisions.available(grant) == ["cloud/judge", "local/judge"]
       assert {:ok, nil} = Decisions.new(nil)
+    end
+
+    test "providers of one adapter keep their own models, locality, and settings" do
+      home = %{"models" => ["small"], "local" => true}
+      cloud = %{"models" => ["large"]}
+
+      grant = [
+        providers: [
+          %Provider{id: "judge-home", adapter: InstanceJudge, settings: home},
+          %Provider{id: "judge-cloud", adapter: InstanceJudge, settings: cloud}
+        ],
+        options: [test_pid: self()],
+        default_model: "judge-home/small"
+      ]
+
+      assert {:ok, %Decisions{} = decisions} = Decisions.new(grant)
+      assert Decisions.available(decisions) == ["judge-cloud/large", "judge-home/small"]
+
+      assert {:ok, %{local: true, provider_id: "judge-home"}} = Decisions.select(decisions, nil)
+
+      assert {:ok, %{local: false, provider_id: "judge-cloud"}} =
+               Decisions.select(decisions, "judge-cloud/large")
+
+      assert {:error, {:unknown_decision_model, "judge-home/large"}} =
+               Decisions.select(decisions, "judge-home/large")
+
+      script = "return tackle.classify('x', #{@verdict}, {model = 'judge-cloud/large'}).tokens"
+      assert {:ok, [25]} = run(script, decisions: grant)
+      assert_receive {:provider, "judge-cloud", ^cloud}
+
+      assert {:error, {:duplicate_provider_id, "judge-home"}} =
+               Decisions.new(
+                 providers: [
+                   %Provider{id: "judge-home", adapter: InstanceJudge, settings: home},
+                   %Provider{id: "judge-home", adapter: InstanceJudge, settings: cloud}
+                 ]
+               )
     end
   end
 
@@ -521,7 +583,7 @@ defmodule Tackle.Workflow.ClassifyTest do
       assert {:error, "decisions are misconfigured: " <> _reason} =
                WorkflowTool.run(%{"script" => "return 1"}, %{
                  runtime: handle(scope),
-                 decisions: %{adapters: "nope"}
+                 decisions: %{providers: "nope"}
                })
     end
   end

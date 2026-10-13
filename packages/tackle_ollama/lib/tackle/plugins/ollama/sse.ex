@@ -40,10 +40,10 @@ defmodule Tackle.Plugins.Ollama.SSE do
           cancelled?: boolean()
         }
 
-  # `provider` is the adapter id recorded in reasoning provider state and used
+  # `provider` is the provider id recorded in reasoning provider state and used
   # as the prefix of synthesized tool-call ids.
   @spec new(String.t()) :: t()
-  def new(provider \\ "ollama-cloud") when is_binary(provider) do
+  def new(provider \\ "ollama") when is_binary(provider) do
     %__MODULE__{
       provider: provider,
       id_prefix:

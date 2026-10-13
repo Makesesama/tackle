@@ -593,7 +593,7 @@ defmodule Tackle.Lib.CompactionTest do
   defp selection do
     %LLM.Selection{
       adapter: OverflowAdapter,
-      adapter_id: "test",
+      provider_id: "test",
       model: "large",
       ref: "test/large",
       model_info: %ModelInfo{model: "large", context_window: 2_000, max_output_tokens: 100}

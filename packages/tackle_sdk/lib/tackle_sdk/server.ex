@@ -14,8 +14,10 @@ defmodule Tackle.SDK.Server do
 
   ## Options
 
-    * `:adapters` — list of `Tackle.Lib.LLM` adapter modules the client can
-      select models from (required for `session/new`).
+    * `:providers` — list of `Tackle.Lib.LLM.Provider` structs, or
+      `Tackle.Lib.LLM` adapter modules standing for their default providers,
+      the client can select `provider_id/model` references from (required for
+      `session/new`).
     * `:tools` — list of `Tackle.Lib.Tool` modules forming the server-side
       registry (default: `[]`).
     * `:input` — `:stdio` (default), an IO device, or a list of pre-fed lines
@@ -35,7 +37,7 @@ defmodule Tackle.SDK.Server do
   ## Example
 
       Tackle.SDK.Server.run(
-        adapters: [MyApp.CodexAdapter],
+        providers: [MyApp.CodexAdapter],
         tools: [MyApp.Tools.Search]
       )
   """
@@ -44,6 +46,7 @@ defmodule Tackle.SDK.Server do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.LLM
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Loop
   alias Tackle.Lib.State
   alias Tackle.Lib.Tool.Schema.JsonSchema
@@ -88,7 +91,7 @@ defmodule Tackle.SDK.Server do
     {:ok, task_sup} = Task.Supervisor.start_link()
 
     state = %{
-      adapters: Keyword.get(opts, :adapters, []),
+      providers: Keyword.get(opts, :providers, []),
       tools: Keyword.get(opts, :tools, []),
       input: Keyword.get(opts, :input, :stdio),
       output: Keyword.get(opts, :output, :stdio),
@@ -467,23 +470,36 @@ defmodule Tackle.SDK.Server do
         default_model(state)
 
       model when is_binary(model) ->
-        LLM.select(state.adapters, model)
+        LLM.select(state.providers, model)
 
       _ ->
-        {:error, "model must be a string of the form adapter_id/model"}
+        {:error, "model must be a string of the form provider_id/model"}
     end
   end
 
-  defp default_model(%{adapters: []}), do: {:error, "no LLM adapters configured on the server"}
+  defp default_model(%{providers: []}), do: {:error, "no LLM providers configured on the server"}
 
-  defp default_model(%{adapters: [adapter | _]}) do
-    model = adapter.models() |> List.first()
-
-    if model do
-      LLM.select([adapter], "#{adapter.adapter_id()}/#{model}")
-    else
-      {:error, "adapter #{adapter.adapter_id()} advertises no models"}
+  # The first provider that offers a model, so an adapter whose first
+  # default provider has none (such as a local server) still has a default.
+  defp default_model(%{providers: sources}) do
+    with {:ok, providers} <- Provider.expand(sources),
+         {:ok, ref} <- first_model_ref(providers) do
+      LLM.select(sources, ref)
     end
+  end
+
+  defp first_model_ref(providers) do
+    Enum.reduce_while(providers, {:error, "no configured provider advertises a model"}, fn
+      provider, error ->
+        # A provider struct does not load its adapter; models are read by callback.
+        Code.ensure_loaded(provider.adapter)
+
+        case Provider.models(provider) do
+          {:ok, [model | _]} -> {:halt, {:ok, "#{provider.id}/#{model}"}}
+          {:ok, []} -> {:cont, error}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+    end)
   end
 
   defp max_iterations(params) do

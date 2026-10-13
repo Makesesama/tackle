@@ -4,9 +4,24 @@ defmodule Tackle.Plugins.DeepSeek do
 
   The adapter sends provider-neutral Tackle messages and tools to DeepSeek's
   OpenAI-compatible streaming endpoint. API keys may be supplied explicitly,
-  through a host-owned `Tackle.Lib.CredentialStore`, or through the
-  `DEEPSEEK_API_KEY` environment variable. `login/1` prompts for a key through a
+  through a host-owned `Tackle.Lib.CredentialStore`, or through an environment
+  variable (see "Providers"). `login/1` prompts for a key through a
   `Tackle.Lib.Interaction` handle and `usage/1` reports the account balance.
+
+  ## Providers
+
+  Several providers can share this adapter, each with its own API key and
+  endpoint. The host passes the provider as `opts[:provider_id]` and
+  `opts[:provider_settings]`; without them the adapter acts as the default
+  `"deepseek"` provider. The provider id is the credential namespace, the
+  reported `:provider`, and the origin stamped on replayable `:provider_state`.
+
+  Honoured settings: `"base_url"` (the API base URL; an explicit `:base_url`
+  option wins over it) and `"api_key_env"` (the environment variable consulted
+  for an API key when none is stored). Only the default `"deepseek"` provider
+  falls back to `DEEPSEEK_API_KEY` without `"api_key_env"`, so another
+  provider never picks up its key by accident. Without a key, requests fail
+  with `{:error, {:missing_deepseek_api_key, provider_id}}`.
   """
 
   @behaviour Tackle.Lib.LLM
@@ -14,6 +29,7 @@ defmodule Tackle.Plugins.DeepSeek do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Interaction
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.DeepSeek.HTTP
   alias Tackle.Plugins.DeepSeek.SSE
@@ -79,6 +95,7 @@ defmodule Tackle.Plugins.DeepSeek do
   @impl true
   def usage(opts) do
     with :ok <- not_cancelled(opts),
+         {:ok, opts} <- put_base_url(opts),
          {:ok, api_key} <- api_key(opts) do
       balance_request(api_key, opts)
     end
@@ -155,13 +172,25 @@ defmodule Tackle.Plugins.DeepSeek do
   defp perform(schema, opts, event_callback) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
+         {:ok, opts} <- put_base_url(opts),
          {:ok, api_key} <- api_key(opts),
          {:ok, body} <- build_request_body(schema, opts),
          {:ok, response} <- send_request(body, opts, api_key, event_callback),
          {:ok, result} <-
            response_result(response, Keyword.fetch!(opts, :model), schema, event_callback) do
-      {:ok, Map.put(result, :provider, @adapter_id)}
+      {:ok, stamp_provider(result, provider_id(opts))}
     end
+  end
+
+  # The parser stamps replayable state with the adapter type; the provider id
+  # replaces it so state is only ever replayed to the provider that produced it.
+  defp stamp_provider(result, provider_id) do
+    result
+    |> Map.put(:provider, provider_id)
+    |> Map.update(:provider_state, nil, fn
+      %{} = state -> Map.put(state, "provider", provider_id)
+      state -> state
+    end)
   end
 
   defp send_request(body, opts, api_key, event_callback) do
@@ -248,7 +277,8 @@ defmodule Tackle.Plugins.DeepSeek do
     model = Keyword.fetch!(opts, :model)
 
     with {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
-         {:ok, messages} <- convert_messages(Keyword.get(opts, :messages, []), model),
+         {:ok, messages} <-
+           convert_messages(Keyword.get(opts, :messages, []), provider_id(opts), model),
          {:ok, response_format, schema_instruction} <- response_options(schema),
          {:ok, reasoning_options} <- reasoning_options(opts) do
       messages =
@@ -277,10 +307,10 @@ defmodule Tackle.Plugins.DeepSeek do
     KeyError -> {:error, :model_required}
   end
 
-  defp convert_messages(messages, model) when is_list(messages) do
+  defp convert_messages(messages, provider_id, model) when is_list(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, converted} ->
-      case convert_message(message, model) do
+      case convert_message(message, provider_id, model) do
         {:ok, nil} -> {:cont, {:ok, converted}}
         {:ok, item} -> {:cont, {:ok, [item | converted]}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -300,15 +330,15 @@ defmodule Tackle.Plugins.DeepSeek do
     end
   end
 
-  defp convert_messages(_messages, _model), do: {:error, :invalid_messages}
+  defp convert_messages(_messages, _provider_id, _model), do: {:error, :invalid_messages}
 
-  defp convert_message(message, _model) when not is_map(message),
+  defp convert_message(message, _provider_id, _model) when not is_map(message),
     do: {:error, :invalid_message}
 
-  defp convert_message(message, model) do
+  defp convert_message(message, provider_id, model) do
     case normalize_role(field(message, :role)) do
       :user -> text_message("user", field(message, :content))
-      :assistant -> assistant_message(message, model)
+      :assistant -> assistant_message(message, provider_id, model)
       :tool -> tool_message(message)
       role -> {:error, {:unsupported_message_role, role}}
     end
@@ -319,7 +349,7 @@ defmodule Tackle.Plugins.DeepSeek do
 
   defp text_message(_role, _content), do: {:error, :invalid_message_content}
 
-  defp assistant_message(message, model) do
+  defp assistant_message(message, provider_id, model) do
     content = field(message, :content)
     tool_calls = field(message, :tool_calls) |> List.wrap()
 
@@ -331,7 +361,7 @@ defmodule Tackle.Plugins.DeepSeek do
         assistant =
           %{"role" => "assistant", "content" => normalize_assistant_content(content)}
           |> maybe_put("tool_calls", non_empty(tool_calls))
-          |> maybe_put_reasoning_content(message, model)
+          |> maybe_put_reasoning_content(message, provider_id, model)
 
         {:ok, assistant}
       end
@@ -591,26 +621,29 @@ defmodule Tackle.Plugins.DeepSeek do
     if content == "", do: messages, else: [%{"role" => "system", "content" => content} | messages]
   end
 
-  defp maybe_put_reasoning_content(message, source, model) do
+  defp maybe_put_reasoning_content(message, source, provider_id, model) do
     if model in @reasoning_models do
-      reasoning_content = replay_reasoning_content(field(source, :provider_state), model)
+      reasoning_content =
+        replay_reasoning_content(field(source, :provider_state), provider_id, model)
+
       Map.put(message, "reasoning_content", reasoning_content || "")
     else
       message
     end
   end
 
-  defp replay_reasoning_content(provider_state, model) when is_map(provider_state) do
+  defp replay_reasoning_content(provider_state, provider_id, model)
+       when is_map(provider_state) do
     provider = field(provider_state, :provider)
     state_model = field(provider_state, :model)
     reasoning_content = field(provider_state, :reasoning_content)
 
-    if provider == @adapter_id and state_model == model and is_binary(reasoning_content),
+    if provider == provider_id and state_model == model and is_binary(reasoning_content),
       do: reasoning_content,
       else: nil
   end
 
-  defp replay_reasoning_content(_provider_state, _model), do: nil
+  defp replay_reasoning_content(_provider_state, _provider_id, _model), do: nil
 
   defp tool_choice(opts, tools) do
     case Keyword.fetch(opts, :tool_choice) do
@@ -650,12 +683,12 @@ defmodule Tackle.Plugins.DeepSeek do
   defp stored_or_environment_api_key(opts) do
     case Keyword.fetch(opts, :credential_store) do
       {:ok, {module, _reference} = handle} when is_atom(module) ->
-        case CredentialStore.fetch(handle, @adapter_id) do
+        case CredentialStore.fetch(handle, provider_id(opts)) do
           {:ok, credentials} when is_map(credentials) ->
-            credential_api_key(credentials) || environment_api_key()
+            credential_api_key(credentials) || environment_api_key(opts)
 
           :error ->
-            environment_api_key()
+            environment_api_key(opts)
 
           {:error, reason} ->
             {:error, {:credential_store_failed, reason}}
@@ -668,7 +701,7 @@ defmodule Tackle.Plugins.DeepSeek do
         {:error, :invalid_credential_store}
 
       :error ->
-        environment_api_key()
+        environment_api_key(opts)
     end
   end
 
@@ -679,10 +712,28 @@ defmodule Tackle.Plugins.DeepSeek do
     end
   end
 
-  defp environment_api_key do
-    case System.get_env("DEEPSEEK_API_KEY") do
-      api_key when is_binary(api_key) and api_key != "" -> {:ok, api_key}
-      _missing -> {:error, :missing_deepseek_api_key}
+  defp environment_api_key(opts) do
+    with {:ok, name} <- api_key_env(opts) do
+      case name && System.get_env(name) do
+        api_key when is_binary(api_key) and api_key != "" -> {:ok, api_key}
+        _missing -> {:error, {:missing_deepseek_api_key, provider_id(opts)}}
+      end
+    end
+  end
+
+  # The environment variable holding the provider's API key: its
+  # `"api_key_env"` setting, else `DEEPSEEK_API_KEY` for the default provider
+  # only, so another provider never picks up that key by accident.
+  defp api_key_env(opts) do
+    case Map.fetch(Provider.settings(opts), "api_key_env") do
+      {:ok, name} when is_binary(name) and name != "" ->
+        {:ok, name}
+
+      {:ok, other} ->
+        {:error, {:invalid_provider_setting, provider_id(opts), "api_key_env", other}}
+
+      :error ->
+        {:ok, if(provider_id(opts) == @adapter_id, do: "DEEPSEEK_API_KEY")}
     end
   end
 
@@ -693,6 +744,22 @@ defmodule Tackle.Plugins.DeepSeek do
       {"accept", "text/event-stream"},
       {"user-agent", user_agent()}
     ]
+  end
+
+  defp provider_id(opts), do: Provider.id(opts, @adapter_id)
+
+  # An explicit `:base_url` option wins over the provider's `"base_url"` setting.
+  defp put_base_url(opts) do
+    case Map.fetch(Provider.settings(opts), "base_url") do
+      {:ok, url} when is_binary(url) and url != "" ->
+        {:ok, Keyword.put_new(opts, :base_url, url)}
+
+      {:ok, other} ->
+        {:error, {:invalid_provider_setting, provider_id(opts), "base_url", other}}
+
+      :error ->
+        {:ok, opts}
+    end
   end
 
   defp chat_completions_url(opts) do

@@ -8,7 +8,8 @@ defmodule Tackle.Plugins.Codex.OAuth do
   by `begin_authorization/1` and pass the callback URL to `exchange_callback/3`.
 
   Returned credentials are JSON-compatible maps suitable for a
-  `Tackle.Lib.CredentialStore` under the `"openai-codex"` namespace.
+  `Tackle.Lib.CredentialStore` under the provider's id, which is
+  `"openai-codex"` for the default provider.
   """
 
   alias Tackle.Lib.Cancellation

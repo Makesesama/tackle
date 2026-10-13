@@ -29,7 +29,7 @@ defmodule Tackle.Plugins.Ollama.SSETest do
     assert result.data == %{"content" => "héllo", "thinking" => "think", "tool_calls" => []}
 
     assert result.provider_state == %{
-             "provider" => "ollama-cloud",
+             "provider" => "ollama",
              "model" => "m",
              "reasoning" => "think"
            }

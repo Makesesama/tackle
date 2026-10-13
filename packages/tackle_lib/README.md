@@ -122,8 +122,8 @@ config :tackle_lib, llm: MyApp.AI.TackleAdapter
 ```
 
 There is deliberately no built-in default adapter. A host that makes multiple
-adapters available should instead implement adapter metadata and select one per
-state:
+adapters available should instead implement adapter metadata and select a
+provider and model per state:
 
 ```elixir
 def adapter_id, do: "openai-codex"
@@ -138,9 +138,19 @@ def models, do: ["gpt-5.5", "gpt-5.5-mini"]
 state = Tackle.Lib.new(llm: llm)
 ```
 
-The canonical reference selects the adapter, while only the adapter-local model
-id (`"gpt-5.5"`) is passed as `opts[:model]`. Selection is explicit state, not
-application-global mutation, so concurrent sessions can use different adapters.
+A model reference is `provider_id/model`. The prefix always names a
+**provider**, a configured instance of an adapter; `adapter_id/0` only names the
+adapter type. A bare adapter module stands for its default providers, which is
+one provider whose id is `adapter_id/0` unless the adapter declares
+`default_providers/0`, so `"openai-codex/gpt-5.5"` above resolves to the Codex
+adapter's default provider.
+
+The selection passes only the adapter-local model id (`"gpt-5.5"`) as
+`opts[:model]`, plus the provider as `opts[:provider_id]` and
+`opts[:provider_settings]`. Selection is explicit state, not
+application-global mutation, so concurrent sessions can use different
+providers. See [Providers](#providers) for configuring several instances of
+one adapter.
 
 ### 2. Define a tool
 
@@ -332,6 +342,12 @@ Implement `Tackle.Lib.LLM`:
 @callback models() :: [String.t()]
 @callback model_info(model :: String.t()) :: Tackle.Lib.ModelInfo.t() | map() | nil
 
+# Optional: built-in providers and per-provider (instance-aware) metadata.
+@callback default_providers() :: [{provider_id :: String.t(), settings :: map()}]
+@callback models(settings :: map()) :: [String.t()]
+@callback model_info(model :: String.t(), settings :: map()) ::
+            Tackle.Lib.ModelInfo.t() | map() | nil
+
 @callback generate(schema :: keyword() | map() | nil, opts :: keyword()) ::
             {:ok, response} | {:error, term()}
 
@@ -345,10 +361,18 @@ Implement `Tackle.Lib.LLM`:
 @callback usage(opts :: keyword()) :: {:ok, report :: map()} | {:error, term()}
 ```
 
-`adapter_id/0` and `models/0` are required for adapters passed to
-`Tackle.Lib.LLM.select/2`. They remain optional for compatibility with a single
-adapter configured through `config :tackle_lib, :llm`. Adapter ids are lowercase
-letters, digits, and hyphens and must be unique in the supplied adapter list.
+`adapter_id/0` and either `models/1` or `models/0` are required for adapters
+passed to `Tackle.Lib.LLM.select/2`. They remain optional for compatibility
+with a single adapter configured through `config :tackle_lib, :llm`.
+`adapter_id/0` names the adapter type: lowercase letters, digits, and inner
+hyphens. It is also the id of the adapter's default provider unless the
+adapter exports `default_providers/0`, which returns a non-empty list of
+`{provider_id, settings}` tuples.
+
+The arity-1 instance callbacks `models/1`, `model_info/2`, and (for decision
+adapters) `decision_models/1` and `local?/1` receive the provider's settings
+and are preferred over their arity-0 counterparts when exported, so one adapter
+can expose different catalogs or locality per provider.
 
 `model_info/1` is optional. It may return a context window, maximum output token
 count, and adapter-owned price card. `Tackle.Lib.LLM.select/2` validates and
@@ -358,10 +382,59 @@ Price-card cost is marked estimated; a numeric provider-reported total remains
 authoritative.
 
 Hosts may inject a `{module, reference}` credential-store handle in
-`opts[:credential_store]`. Adapters access their own namespace with
-`Tackle.Lib.CredentialStore.fetch/2`, `put/3`, and `delete/2`. Tackle.Lib treats
+`opts[:credential_store]`. Adapters access the provider's namespace with
+`Tackle.Lib.CredentialStore.fetch/2`, `put/3`, and `delete/2`, using
+`Tackle.Lib.LLM.Provider.id(opts, adapter_id)` as the namespace so each provider
+keeps its own login; `Tackle.Lib.LLM.Provider.settings(opts)` reads the
+provider's settings (`%{}` when absent). Adapters that refresh credentials
+should include the provider id in any refresh lock. Tackle.Lib treats
 credential maps as opaque JSON-compatible data; OAuth flows, token schemas,
 refresh logic, and persistence remain outside the library.
+
+### Providers
+
+`Tackle.Lib.LLM.Provider` is a configured instance of an adapter:
+`%Provider{id: String.t(), adapter: module(), settings: map()}`. Several
+providers may share one adapter, each with its own id, settings, and
+credentials, such as two Codex subscriptions or a local and a remote server:
+
+```elixir
+alias Tackle.Lib.LLM.Provider
+
+{:ok, work} = Provider.new("codex-work", MyApp.AI.CodexAdapter)
+{:ok, home} = Provider.new("codex-home", MyApp.AI.CodexAdapter)
+
+{:ok, gpu} =
+  Provider.new("ollama-gpu", MyApp.AI.OllamaAdapter, %{"base_url" => "http://gpu:11434/v1"})
+
+{:ok, llm} =
+  Tackle.Lib.LLM.select([work, home, gpu, MyApp.AI.AnthropicAdapter], "codex-home/gpt-5.5")
+```
+
+- Provider ids are lowercase letters, digits, and inner hyphens, and must be
+  unique across the expanded list; a duplicate returns
+  `{:error, {:duplicate_provider_id, id}}` and an unknown prefix returns
+  `{:error, {:unknown_provider, id}}`. A prefix never falls back to an adapter
+  type id.
+- Settings are an opaque, JSON-compatible map with string keys. Tackle.Lib
+  never interprets them; each adapter documents the keys it honours.
+- `Provider.defaults/1` returns an adapter's default providers and
+  `Provider.expand/1` turns a mixed list of providers and adapter modules into
+  providers. `Provider.opts/1` returns the `:provider_id` and
+  `:provider_settings` adapter options for a provider.
+- `Tackle.Lib.LLM.Selection` and `Tackle.Lib.Decision.Selection` carry
+  `:adapter`, `:provider_id`, `:provider_settings`, `:model`, and `:ref`;
+  `Tackle.Lib.LLM.Selection.provider/1` rebuilds the `%Provider{}`. Responses
+  and normalized usage report the provider id as `:provider`.
+
+Breaking changes from adapter-keyed selection: `{:unknown_adapter, id}` is now
+`{:unknown_provider, id}`, `{:duplicate_adapter_id, id}` is now
+`{:duplicate_provider_id, id}`, selections no longer carry `:adapter_id`, and
+the `:provider_options` adapter option (settings keyed by adapter id) is
+removed; adapters read their own provider's `opts[:provider_settings]`
+instead. `{:unsupported_decision_adapter, provider_id}` and
+`{:invalid_local_flag, provider_id, value}` keep their names but now carry the
+provider id.
 
 ### Account flows
 
@@ -375,15 +448,15 @@ provider knowledge:
   `info/2`, `prompt/2`, `confirm/2`, and `progress/3` on it instead of depending
   on a terminal library.
 - `logout/1` revokes or removes credentials. When omitted, the host deletes the
-  credentials stored under `adapter_id/0`.
+  credentials stored under the provider id.
 - `status/1` reports credential state. When omitted, the host reads the
   credential store and returns `{:ok, :stored} | {:ok, :missing}`.
 - `usage/1` returns a host-renderable map (plan, balance, rate-limit windows).
   Adapters with no account endpoint omit it.
 
-The host resolves adapters by `adapter_id/0`, injects `:interaction`,
-`:credential_store`, and any supplied options, and stores the map returned by
-`login/1`. Example:
+The host resolves the provider, injects `:interaction`, `:credential_store`,
+`:provider_id`, `:provider_settings`, and any supplied options, and stores the
+map returned by `login/1` under the provider id. Example:
 
 ```elixir
 @impl true
@@ -468,7 +541,8 @@ persistence policy.
 `:provider_state` is optional opaque, non-secret continuation metadata needed by
 some stateless provider APIs. Tackle.Lib stores it on the assistant message and
 returns it in subsequent `opts[:messages]`; an adapter must replay it only when
-its embedded provider and model match the current request. Hosts that persist
+its embedded provider id and model match the current request, so state from
+one account is never replayed to another provider on the same adapter. Hosts that persist
 conversations must preserve this field.
 
 Provider adapters are also responsible for translating Tackle.Lib's normalized
@@ -486,6 +560,7 @@ implement it next to `Tackle.Lib.LLM` (it still needs `adapter_id/0`):
 
 ```elixir
 @callback decision_models() :: [String.t()]
+@callback decision_models(settings :: map()) :: [String.t()]  # optional, preferred
 @callback decide(Tackle.Lib.Decision.Request.t(), opts :: keyword()) ::
             {:ok, Tackle.Lib.Decision.Result.t()} | {:error, term()}
 ```
@@ -514,18 +589,22 @@ Questions are `:choice` (option => description or `nil`, 2–24 options),
 descriptions), or `:score` (2–24 level descriptions, lowest first). Requests are
 validated before an adapter is called: 1–64 uniquely named questions, a
 non-empty binary/map/list state, and at most 64 KiB once encoded with
-`Tackle.Lib.Decision.Request.to_json_map/1`. `select/2` parses references like
-`Tackle.Lib.LLM.select/2`, accepts adapters without decision support in the
-list, and reports `{:unsupported_decision_adapter, id}` or
-`{:unknown_decision_model, ref}` explicitly. Adapters receive
-`:cancellation_signal`, `:provider_options`, and `:receive_timeout` in opts; the
-library itself performs no HTTP.
+`Tackle.Lib.Decision.Request.to_json_map/1`. `select/2` accepts providers and
+adapter modules and parses `provider_id/model` references like
+`Tackle.Lib.LLM.select/2`. It accepts providers without decision support in the
+list, and reports `{:unsupported_decision_adapter, provider_id}`,
+`{:unknown_provider, provider_id}`, or `{:unknown_decision_model, ref}`
+explicitly. Adapters receive `:cancellation_signal`, `:receive_timeout`,
+`:provider_id`, and `:provider_settings` in opts; the library itself performs
+no HTTP.
 
 An adapter whose decision models run on hardware the user controls (such as a
-self-hosted Ollama server) may also export the optional `local?/0` callback
-returning `true`. Its selections then carry `local: true`, so hosts can leave
-their usage out of token budgets that bound paid spend; adapters without the
-callback are treated as remote.
+self-hosted Ollama server) may also export the optional `local?/1` (given the
+provider's settings, preferred) or `local?/0` callback returning `true`. Its
+selections then carry `local: true`, so hosts can leave their usage out of
+token budgets that bound paid spend; adapters without either callback are
+treated as remote. A non-boolean answer returns
+`{:error, {:invalid_local_flag, provider_id, value}}`.
 
 ## Tool system
 
@@ -1239,6 +1318,7 @@ Start with these files:
 - `lib/tackle_lib/state.ex` and `lib/tackle_lib/message.ex` — in-memory model
 - `lib/tackle_lib/usage.ex`, `model_info.ex`, and `context_usage.ex` — session statistics
 - `lib/tackle_lib/llm.ex` — provider contract
+- `lib/tackle_lib/llm/provider.ex` — configured adapter instances
 - `lib/tackle_lib/decision.ex` — optional decision-model contract
 - `lib/tackle_lib/tool.ex` and `lib/tackle_lib/tool/schema.ex` — tool contract
 - `lib/tackle_lib/hook.ex` and `lib/tackle_lib/event.ex` — extension/streaming seams

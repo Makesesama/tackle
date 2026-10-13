@@ -53,10 +53,11 @@ token usage of the latest `usage` event.
 | `etackle-delta-flush-interval` | `0.05` | Seconds to batch streamed text |
 
 The model is **pinned** because SDK protocol version 1 has no model
-discovery: `session/new` takes an `"adapter/model"` ref, but there is
-no way to list adapters or models over the wire. `etackle-model` is
+discovery: `session/new` takes a `"provider/model"` ref, but there is
+no way to list providers or models over the wire. `etackle-model` is
 set to `openai-codex/gpt-6.1-sol` for testing with the bundled Codex
-adapter.
+adapter; an account added with `tackle auth login openai-codex --as
+codex-work` is selected as `codex-work/gpt-6.1-sol`.
 
 ## Design
 

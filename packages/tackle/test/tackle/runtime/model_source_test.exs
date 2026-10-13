@@ -63,7 +63,7 @@ defmodule Tackle.Runtime.ModelSourceTest do
 
   test "unsupported parent model fails before admitting a child" do
     child = %{agent_spec("restricted") | model_source: :parent}
-    child = %{child | config: %{child.config | adapters: []}}
+    child = %{child | config: %{child.config | providers: []}}
     scope = start_scope(root: [allow_delegation: true], profiles: %{"restricted" => child})
 
     assert {:error, _reason} =

@@ -49,9 +49,9 @@ It must support the `sdk' subcommand."
   :type '(repeat string))
 
 (defcustom etackle-model "openai-codex/gpt-6.1-sol"
-  "Model ref (\"adapter/model\") used for new sessions.
+  "Model ref (\"provider/model\") used for new sessions.
 The SDK protocol has no model discovery yet, so this is pinned."
-  :type '(string :tag "adapter/model"))
+  :type '(string :tag "provider/model"))
 
 (defcustom etackle-system-prompt nil
   "Optional system prompt for new sessions."

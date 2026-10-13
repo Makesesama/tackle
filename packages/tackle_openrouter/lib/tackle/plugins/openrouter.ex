@@ -18,8 +18,8 @@ defmodule Tackle.Plugins.OpenRouter do
         ]
 
   API keys may be supplied explicitly, through a host-owned
-  `Tackle.Lib.CredentialStore`, or through the `OPENROUTER_API_KEY`
-  environment variable. `login/1` prompts for a key through a
+  `Tackle.Lib.CredentialStore`, or through an environment variable (see
+  "Providers"). `login/1` prompts for a key through a
   `Tackle.Lib.Interaction` handle and `usage/1` reports the key's credit usage
   and limit.
 
@@ -34,8 +34,26 @@ defmodule Tackle.Plugins.OpenRouter do
           "z-ai/glm-5.3" => [only: ["mistral/zdr"], allow_fallbacks: false, zdr: true]
         }
 
-  The per-request `:provider_preferences` option is merged over the model's
-  route, field by field.
+  The provider's `"provider_routing"` setting (a map of model id to route)
+  replaces the configured route for the same model, and the per-request
+  `:provider_preferences` option is merged over the model's route, field by
+  field.
+
+  ## Providers
+
+  Several providers can share this adapter, each with its own API key and
+  settings. The host passes the provider as `opts[:provider_id]` and
+  `opts[:provider_settings]`; without them the adapter acts as the default
+  `"openrouter"` provider. The provider id is the credential namespace, the
+  reported `:provider`, and the origin stamped on replayable `:provider_state`.
+
+  Honoured settings: `"provider_routing"`, `"base_url"` (the API base URL;
+  an explicit `:base_url` option wins over it), and `"api_key_env"` (the
+  environment variable consulted for an API key when none is stored). Only the
+  default `"openrouter"` provider falls back to `OPENROUTER_API_KEY` without
+  `"api_key_env"`, so another provider never picks up its key by accident.
+  Without a key, requests fail with
+  `{:error, {:missing_openrouter_api_key, provider_id}}`.
   """
 
   @behaviour Tackle.Lib.LLM
@@ -43,6 +61,7 @@ defmodule Tackle.Plugins.OpenRouter do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Interaction
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.OpenRouter.HTTP
   alias Tackle.Plugins.OpenRouter.SSE
@@ -131,6 +150,7 @@ defmodule Tackle.Plugins.OpenRouter do
   @impl true
   def usage(opts) do
     with :ok <- not_cancelled(opts),
+         {:ok, opts} <- put_base_url(opts),
          {:ok, api_key} <- api_key(opts) do
       key_request(api_key, opts)
     end
@@ -199,13 +219,25 @@ defmodule Tackle.Plugins.OpenRouter do
   defp perform(schema, opts, event_callback) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
+         {:ok, opts} <- put_base_url(opts),
          {:ok, api_key} <- api_key(opts),
          {:ok, body} <- build_request_body(schema, opts),
          {:ok, response} <- send_request(body, opts, api_key, event_callback),
          {:ok, result} <-
            response_result(response, Keyword.fetch!(opts, :model), schema, event_callback) do
-      {:ok, Map.put(result, :provider, @adapter_id)}
+      {:ok, stamp_provider(result, provider_id(opts))}
     end
+  end
+
+  # The parser stamps replayable state with the adapter type; the provider id
+  # replaces it so state is only ever replayed to the provider that produced it.
+  defp stamp_provider(result, provider_id) do
+    result
+    |> Map.put(:provider, provider_id)
+    |> Map.update(:provider_state, nil, fn
+      %{} = state -> Map.put(state, "provider", provider_id)
+      state -> state
+    end)
   end
 
   defp send_request(body, opts, api_key, event_callback) do
@@ -353,7 +385,8 @@ defmodule Tackle.Plugins.OpenRouter do
     model = Keyword.fetch!(opts, :model)
 
     with {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
-         {:ok, messages} <- convert_messages(Keyword.get(opts, :messages, []), model),
+         {:ok, messages} <-
+           convert_messages(Keyword.get(opts, :messages, []), provider_id(opts), model),
          {:ok, response_format, schema_instruction} <- response_options(schema),
          {:ok, reasoning} <- reasoning_options(opts),
          {:ok, provider} <- provider_preferences(opts, model),
@@ -387,10 +420,10 @@ defmodule Tackle.Plugins.OpenRouter do
     KeyError -> {:error, :model_required}
   end
 
-  defp convert_messages(messages, model) when is_list(messages) do
+  defp convert_messages(messages, provider_id, model) when is_list(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, converted} ->
-      case convert_message(message, model) do
+      case convert_message(message, provider_id, model) do
         {:ok, nil} -> {:cont, {:ok, converted}}
         {:ok, item} -> {:cont, {:ok, [item | converted]}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -410,15 +443,15 @@ defmodule Tackle.Plugins.OpenRouter do
     end
   end
 
-  defp convert_messages(_messages, _model), do: {:error, :invalid_messages}
+  defp convert_messages(_messages, _provider_id, _model), do: {:error, :invalid_messages}
 
-  defp convert_message(message, _model) when not is_map(message),
+  defp convert_message(message, _provider_id, _model) when not is_map(message),
     do: {:error, :invalid_message}
 
-  defp convert_message(message, model) do
+  defp convert_message(message, provider_id, model) do
     case normalize_role(field(message, :role)) do
       :user -> text_message("user", field(message, :content))
-      :assistant -> assistant_message(message, model)
+      :assistant -> assistant_message(message, provider_id, model)
       :tool -> tool_message(message)
       role -> {:error, {:unsupported_message_role, role}}
     end
@@ -431,7 +464,7 @@ defmodule Tackle.Plugins.OpenRouter do
 
   # Tool-call-only turns send `null` content: some upstreams (Anthropic among
   # them) reject an empty text block.
-  defp assistant_message(message, model) do
+  defp assistant_message(message, provider_id, model) do
     content = field(message, :content)
     tool_calls = field(message, :tool_calls) |> List.wrap()
 
@@ -446,19 +479,20 @@ defmodule Tackle.Plugins.OpenRouter do
             "content" => if(empty_content?(content), do: nil, else: content)
           }
           |> maybe_put("tool_calls", non_empty(tool_calls))
-          |> put_replayed_reasoning(field(message, :provider_state), model)
+          |> put_replayed_reasoning(field(message, :provider_state), provider_id, model)
 
         {:ok, assistant}
       end
     end
   end
 
-  # Reasoning is replayed only when the opaque state came from this adapter and
+  # Reasoning is replayed only when the opaque state came from this provider and
   # the same model. Structured `reasoning_details` carry signatures and
   # encrypted blocks some models require around tool calls, so they are
   # preferred over the plain-text `reasoning` field.
-  defp put_replayed_reasoning(assistant, provider_state, model) when is_map(provider_state) do
-    if field(provider_state, :provider) == @adapter_id and
+  defp put_replayed_reasoning(assistant, provider_state, provider_id, model)
+       when is_map(provider_state) do
+    if field(provider_state, :provider) == provider_id and
          field(provider_state, :model) == model do
       case {field(provider_state, :reasoning_details), field(provider_state, :reasoning)} do
         {[_ | _] = details, _reasoning} ->
@@ -475,7 +509,7 @@ defmodule Tackle.Plugins.OpenRouter do
     end
   end
 
-  defp put_replayed_reasoning(assistant, _provider_state, _model), do: assistant
+  defp put_replayed_reasoning(assistant, _provider_state, _provider_id, _model), do: assistant
 
   defp tool_message(message) do
     call_id = field(message, :tool_call_id)
@@ -790,14 +824,15 @@ defmodule Tackle.Plugins.OpenRouter do
   # Routing comes from three layers, later ones winning:
   #
   #   1. `config :tackle_openrouter, :provider_routing` (host/distribution);
-  #   2. the user's `provider_options` -> "openrouter" -> "provider_routing"
-  #      (`$TACKLE_HOME/config.json`), which replaces a model's route entirely;
+  #   2. the provider's `"provider_routing"` setting (for the Tackle CLI, from
+  #      `$TACKLE_HOME/config.json`), which replaces a model's route entirely;
   #   3. the request's `:provider_preferences`, merged over the route by field.
   defp provider_preferences(opts, model) do
     configured = Application.get_env(:tackle_openrouter, :provider_routing, %{})
 
     with {:ok, host_routes} <- routing_table(configured),
-         {:ok, user_routes} <- user_routing_table(opts),
+         {:ok, user_routes} <-
+           routing_table(Map.get(Provider.settings(opts), "provider_routing", %{})),
          route = Map.get(Map.merge(host_routes, user_routes), model),
          {:ok, per_model} <- routing_map(route, {:provider_routing, model}),
          {:ok, per_request} <-
@@ -806,19 +841,6 @@ defmodule Tackle.Plugins.OpenRouter do
         empty when map_size(empty) == 0 -> {:ok, nil}
         preferences -> {:ok, preferences}
       end
-    end
-  end
-
-  defp user_routing_table(opts) do
-    case Keyword.get(opts, :provider_options) do
-      %{@adapter_id => %{} = settings} ->
-        routing_table(Map.get(settings, "provider_routing", %{}))
-
-      %{@adapter_id => settings} ->
-        {:error, {:invalid_provider_options, settings}}
-
-      _none ->
-        {:ok, %{}}
     end
   end
 
@@ -882,12 +904,12 @@ defmodule Tackle.Plugins.OpenRouter do
   defp stored_or_environment_api_key(opts) do
     case Keyword.fetch(opts, :credential_store) do
       {:ok, {module, _reference} = handle} when is_atom(module) ->
-        case CredentialStore.fetch(handle, @adapter_id) do
+        case CredentialStore.fetch(handle, provider_id(opts)) do
           {:ok, credentials} when is_map(credentials) ->
-            credential_api_key(credentials) || environment_api_key()
+            credential_api_key(credentials) || environment_api_key(opts)
 
           :error ->
-            environment_api_key()
+            environment_api_key(opts)
 
           {:error, reason} ->
             {:error, {:credential_store_failed, reason}}
@@ -900,7 +922,7 @@ defmodule Tackle.Plugins.OpenRouter do
         {:error, :invalid_credential_store}
 
       :error ->
-        environment_api_key()
+        environment_api_key(opts)
     end
   end
 
@@ -914,15 +936,33 @@ defmodule Tackle.Plugins.OpenRouter do
     end
   end
 
-  defp environment_api_key do
-    case System.get_env("OPENROUTER_API_KEY") do
-      api_key when is_binary(api_key) ->
-        if String.trim(api_key) == "",
-          do: {:error, :missing_openrouter_api_key},
-          else: normalize_api_key(api_key)
+  defp environment_api_key(opts) do
+    with {:ok, name} <- api_key_env(opts) do
+      case name && System.get_env(name) do
+        api_key when is_binary(api_key) ->
+          if String.trim(api_key) == "",
+            do: {:error, {:missing_openrouter_api_key, provider_id(opts)}},
+            else: normalize_api_key(api_key)
 
-      nil ->
-        {:error, :missing_openrouter_api_key}
+        nil ->
+          {:error, {:missing_openrouter_api_key, provider_id(opts)}}
+      end
+    end
+  end
+
+  # The environment variable holding the provider's API key: its
+  # `"api_key_env"` setting, else `OPENROUTER_API_KEY` for the default provider
+  # only, so another provider never picks up that key by accident.
+  defp api_key_env(opts) do
+    case Map.fetch(Provider.settings(opts), "api_key_env") do
+      {:ok, name} when is_binary(name) and name != "" ->
+        {:ok, name}
+
+      {:ok, other} ->
+        {:error, {:invalid_provider_setting, provider_id(opts), "api_key_env", other}}
+
+      :error ->
+        {:ok, if(provider_id(opts) == @adapter_id, do: "OPENROUTER_API_KEY")}
     end
   end
 
@@ -943,6 +983,22 @@ defmodule Tackle.Plugins.OpenRouter do
     do: headers ++ [{name, value}]
 
   defp maybe_header(headers, _name, _value), do: headers
+
+  defp provider_id(opts), do: Provider.id(opts, @adapter_id)
+
+  # An explicit `:base_url` option wins over the provider's `"base_url"` setting.
+  defp put_base_url(opts) do
+    case Map.fetch(Provider.settings(opts), "base_url") do
+      {:ok, url} when is_binary(url) and url != "" ->
+        {:ok, Keyword.put_new(opts, :base_url, url)}
+
+      {:ok, other} ->
+        {:error, {:invalid_provider_setting, provider_id(opts), "base_url", other}}
+
+      :error ->
+        {:ok, opts}
+    end
+  end
 
   defp endpoint_url(opts, path) do
     base_url = Keyword.get(opts, :base_url, @default_base_url) |> String.trim_trailing("/")

@@ -705,7 +705,7 @@ defmodule Tackle.Workflow.API do
             available_models(decisions)
         )
 
-      {:error, {kind, _detail}} when kind in [:unknown_adapter, :unknown_decision_model] ->
+      {:error, {kind, _detail}} when kind in [:unknown_provider, :unknown_decision_model] ->
         classify_error!(
           "decision model #{inspect(model_ref)} is not available" <> available_models(decisions)
         )

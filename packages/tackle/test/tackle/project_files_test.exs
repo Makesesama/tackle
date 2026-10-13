@@ -155,7 +155,7 @@ defmodule Tackle.ProjectFilesTest do
     for executor <- [:jailed, {"Module", nil}, {Tackle.Test.NotAnExecutor, nil}, {String, nil}] do
       assert {:error, {:invalid_option, :executor, ^executor}} =
                Config.new(
-                 adapters: [Tackle.Test.Adapter],
+                 providers: [Tackle.Test.Adapter],
                  model: "test/echo",
                  context: %{executor: executor}
                )

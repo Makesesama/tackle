@@ -8,7 +8,7 @@ defmodule Tackle.Session.Loader do
   always starts a new runtime scope.
 
   When the recorded configuration cannot be resolved against the current
-  adapters, loading returns a typed `:configuration_required` error instead of
+  providers, loading returns a typed `:configuration_required` error instead of
   silently switching providers or models.
 
   ## Linear and branching sessions
@@ -35,7 +35,7 @@ defmodule Tackle.Session.Loader do
   `:override_config` (false by default) tells the loader the caller explicitly
   selected the supplied configuration, so the recorded selection is superseded
   and a configuration change must be persisted. Otherwise the recorded
-  selection is re-resolved through the current adapters.
+  selection is re-resolved through the current providers.
 
   `:tree` (false by default) requests branching support for a session whose
   journal predates tree enablement; the derived chain becomes the active tree.

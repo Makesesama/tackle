@@ -16,14 +16,22 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   does not discover projects or add code paths. `Tackle.Lib.LLM` is the adapter
   contract. `Tackle.Config.load/1` accepts `:available_adapters` from a host;
   neither CLI arguments nor the user config file may name adapter modules.
+- `Tackle.Plugins.available_providers/1` turns those adapters into providers
+  (`Tackle.Lib.LLM.Provider`), the configured instances that model references
+  name (`provider/model`): each adapter's default providers, accounts recorded
+  by `tackle auth login ADAPTER --as NAME`, and the `config.json` `"providers"`
+  object, whose entries name an already-available adapter type id and carry
+  opaque settings. Data declares providers; it still never names modules.
 - `Tackle.Config.new/1` accepts `:tools` and `:hooks` module lists from trusted
   code. It checks tool callbacks (`name/0`, `description/0`,
   `parameters_schema/0`, `execute/2`) and rejects duplicate tool names. Hooks
   are checked only for loadable modules; `Tackle.Lib.Hook` callbacks are
   optional, so a module without callbacks does nothing. The defaults come from
   `Tackle.Tools.default/0`.
-- `$TACKLE_HOME/config.json` currently accepts **only** `model` and `thinking`.
-  Environment settings select those values, not executable modules. Hosts can
+- `$TACKLE_HOME/config.json` selects `model`, `thinking`, and feature settings
+  (session titles, watchdog, narration) and may declare `providers` of
+  available adapters; it never names executable modules. Environment settings
+  select model and thinking, not executable modules. Hosts can
   pass trusted `Config.load(overrides: ...)` for tools and hooks; there is no
   user-file schema for either. `Config.reconfigure/2` changes only model and
   thinking on an idle session.

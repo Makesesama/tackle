@@ -68,7 +68,7 @@ Creates an agent session and returns its id.
 ```jsonc
 {"jsonrpc":"2.0","id":3,"method":"session/new","params":{
   "sessionId":"optional-client-chosen-id",   // default: server-generated UUID
-  "model":"adapter_id/model",                // default: first model of the first adapter
+  "model":"provider_id/model",               // default: first model of the first provider offering one
   "systemPrompt":"optional system prompt",
   "tools":["echo"],                          // default: all registered tools
   "maxIterations":10                         // optional, default: unlimited

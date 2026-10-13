@@ -7,7 +7,9 @@ defmodule Tackle.Config do
   `new/1`; it never resolves module names from file or environment data.
   A trusted host may supply a `Tackle.Plugins.Catalog` to `load/1` for
   prevalidated adapter and hook selection. Catalog tools require a separate
-  explicit grant by the host.
+  explicit grant by the host. Adapter modules are executable types; a session
+  selects models from providers (`Tackle.Lib.LLM.Provider`), configured
+  instances of those adapters (see `Tackle.Plugins`).
 
   Harness sessions always execute tools concurrently
   (`Tackle.Lib.Tool.Policy.concurrent/0`) under the session's own tool supervisor.
@@ -28,6 +30,7 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Decision
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Retry
   alias Tackle.Lib.Tool.Policy
@@ -39,7 +42,15 @@ defmodule Tackle.Config do
   alias Tackle.Thinking
   alias Tackle.Tools.LoadSkill
 
-  @loader_option_keys [:available_adapters, :builtin_skills, :catalog, :cwd, :env, :overrides]
+  @loader_option_keys [
+    :accounts,
+    :available_adapters,
+    :builtin_skills,
+    :catalog,
+    :cwd,
+    :env,
+    :overrides
+  ]
   @reconfigure_option_keys [:model, :thinking]
 
   @tool_callbacks [{:name, 0}, {:description, 0}, {:parameters_schema, 0}, {:execute, 2}]
@@ -58,7 +69,7 @@ defmodule Tackle.Config do
                              ])
 
   @option_keys [
-    :adapters,
+    :providers,
     :model,
     :tools,
     :hooks,
@@ -66,7 +77,6 @@ defmodule Tackle.Config do
     :context,
     :max_iterations,
     :thinking,
-    :provider_options,
     :llm_opts,
     :prompt_renderer,
     :prompt_renderer_opts,
@@ -80,8 +90,8 @@ defmodule Tackle.Config do
     :decision_model
   ]
 
-  @enforce_keys [:adapters, :model_ref, :llm]
-  defstruct adapters: [],
+  @enforce_keys [:providers, :model_ref, :llm]
+  defstruct providers: [],
             model_ref: nil,
             llm: nil,
             tools: [],
@@ -103,7 +113,7 @@ defmodule Tackle.Config do
             decision_model: nil
 
   @type t :: %__MODULE__{
-          adapters: [module()],
+          providers: [Provider.t()],
           model_ref: String.t(),
           llm: Selection.t(),
           tools: [module()],
@@ -133,9 +143,15 @@ defmodule Tackle.Config do
   harness distribution. Alternatively, a trusted host can supply `:catalog`
   to select its adapter and hook modules; specifying both adapter sources, or
   overriding catalog hooks, is an error. Catalog tools are not granted by this
-  option. Configuration data can select declared model references but cannot
-  name or load modules. Tests and embedding hosts may supply an `:env` map;
-  normal callers use the process environment. `:cwd` selects the working
+  option. Configuration data can select declared model references and declare
+  providers of those adapters (the `config.json` `"providers"` object) but
+  cannot name or load modules.
+
+  The session's providers are merged by `Tackle.Plugins.merge_providers/3`
+  from the adapters' default providers, the recorded accounts, and the
+  `config.json` providers. `:accounts` (`t:Tackle.Plugins.accounts/0`)
+  defaults to `Tackle.Auth.accounts/0`. Tests and embedding hosts may supply
+  an `:env` map; normal callers use the process environment. `:cwd` selects the working
   directory used for prompt discovery and built-in tools.
 
   Discovered `.agents/skills` are offered to the session together with
@@ -152,16 +168,20 @@ defmodule Tackle.Config do
     with :ok <- validate_keyword(opts),
          :ok <- validate_loader_options(opts),
          {:ok, adapters} <- fetch_available_adapters(opts),
+         {:ok, accounts} <- fetch_accounts(opts),
          {:ok, builtin_skills} <- fetch_builtin_skills(opts),
          {:ok, overrides} <- fetch_overrides(opts),
          {:ok, overrides} <- catalog_hooks(opts, overrides),
          {:ok, env} <- fetch_environment(opts),
          {:ok, config_path} <- Tackle.Paths.config_file(env: env),
          {:ok, file_opts} <- ConfigFile.load(config_path),
+         {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
+         {:ok, entries} <- Tackle.Plugins.merge_providers(adapters, accounts, declared),
+         providers = Enum.map(entries, & &1.provider),
          {:ok, env_opts} <- environment_options(env),
-         {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, adapters),
+         {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, providers),
          {:ok, session_opts} <- default_session_titles(session_opts),
-         {:ok, config} <- session_opts |> Keyword.put(:adapters, adapters) |> new(),
+         {:ok, config} <- session_opts |> Keyword.put(:providers, providers) |> new(),
          {:ok, cwd} <- fetch_cwd(opts, config.context) do
       load_system_prompt(
         config,
@@ -179,22 +199,22 @@ defmodule Tackle.Config do
   @doc """
   Resolves and validates explicit session configuration.
 
-  `:adapters` and a canonical `:model` reference such as
-  `"openai-codex/gpt-5.5"` are required. Optional `:thinking` is normalized into
-  adapter reasoning options. Optional `:provider_options` is a map of adapter id
-  to that adapter's settings (from the `"provider_options"` field of
-  `config.json`). It is passed to adapters unchanged as the `:provider_options`
-  LLM option, so it survives model changes, and each adapter reads only its own
-  entry. Like other LLM options, it must not contain credentials. Optional
-  `:watchdog` enables the command watchdog; see `Tackle.Config.Watchdog`.
+  `:providers` and a canonical `:model` reference such as
+  `"openai-codex/gpt-5.5"` are required. `:providers` lists
+  `Tackle.Lib.LLM.Provider` structs or adapter modules, which stand for their
+  default providers; the model reference's prefix names a provider id. Each
+  selection carries its provider's settings to the adapter, so they survive
+  model changes. Optional `:thinking` is normalized into adapter reasoning
+  options. Optional `:watchdog` enables the command watchdog; see
+  `Tackle.Config.Watchdog`.
   Optional `:narration` enables the narrator for delegated runs; see
   `Tackle.Config.Narration`.
 
   Optional `:decision_model` is the session's default decision model reference,
   such as `"ollama/tev1:4b"`, resolved eagerly through
-  `Tackle.Lib.Decision.select/2`. When any adapter offers decision models, the
-  session context gets `:decisions` — `%{adapters: decision_adapters, options:
-  [provider_options: ...], default_model: ref | nil}` — for tools that
+  `Tackle.Lib.Decision.select/2`. When any provider's adapter implements the
+  decision contract, the session context gets `:decisions` — `%{providers:
+  decision_providers, options: [], default_model: ref | nil}` — for tools that
   classify with them, such as the workflow tool's `tackle.classify`. A `:decisions`
   entry the host already put in `:context` is kept as given.
   """
@@ -203,16 +223,15 @@ defmodule Tackle.Config do
     with :ok <- validate_keyword(opts),
          :ok <- validate_known_options(opts),
          {:ok, opts} <- normalize_thinking_option(opts),
-         {:ok, opts} <- normalize_provider_options(opts),
-         {:ok, adapters} <- fetch_adapters(opts),
+         {:ok, providers} <- fetch_providers(opts),
          {:ok, model_ref} <- fetch_model_ref(opts),
-         {:ok, llm} <- LLM.select(adapters, model_ref),
+         {:ok, llm} <- LLM.select(providers, model_ref),
          {:ok, session_titles} <-
-           resolve_session_titles(Keyword.get(opts, :session_titles), adapters),
-         {:ok, watchdog} <- Watchdog.new(Keyword.get(opts, :watchdog), adapters),
-         {:ok, narration} <- Narration.new(Keyword.get(opts, :narration), adapters),
+           resolve_session_titles(Keyword.get(opts, :session_titles), providers),
+         {:ok, watchdog} <- Watchdog.new(Keyword.get(opts, :watchdog), providers),
+         {:ok, narration} <- Narration.new(Keyword.get(opts, :narration), providers),
          {:ok, decision_model} <-
-           resolve_decision_model(Keyword.get(opts, :decision_model), adapters),
+           resolve_decision_model(Keyword.get(opts, :decision_model), providers),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
@@ -233,7 +252,7 @@ defmodule Tackle.Config do
          {:ok, compaction} <- resolve_compaction(Keyword.get(opts, :compaction)) do
       {:ok,
        %__MODULE__{
-         adapters: adapters,
+         providers: providers,
          model_ref: model_ref,
          llm: llm,
          tools: tools,
@@ -243,7 +262,7 @@ defmodule Tackle.Config do
          context:
            opts
            |> Keyword.get(:context, %{})
-           |> put_decisions(adapters, decision_model, Keyword.get(opts, :llm_opts, [])),
+           |> put_decisions(providers, decision_model),
          max_iterations: Keyword.get(opts, :max_iterations, :infinity),
          tool_policy: Policy.concurrent(),
          llm_opts: Keyword.get(opts, :llm_opts, []),
@@ -269,7 +288,7 @@ defmodule Tackle.Config do
     with :ok <- validate_keyword(opts),
          :ok <- validate_reconfigure_options(opts),
          {:ok, model_ref} <- reconfigured_model_ref(config, opts),
-         {:ok, llm} <- LLM.select(config.adapters, model_ref),
+         {:ok, llm} <- LLM.select(config.providers, model_ref),
          {:ok, llm_opts} <- reconfigured_llm_opts(config.llm_opts, opts) do
       {:ok, %{config | model_ref: model_ref, llm: llm, llm_opts: llm_opts}}
     end
@@ -341,33 +360,6 @@ defmodule Tackle.Config do
     end
   end
 
-  defp normalize_provider_options(opts) do
-    case Keyword.pop(opts, :provider_options) do
-      {nil, opts} ->
-        {:ok, opts}
-
-      {%{} = options, opts} ->
-        llm_opts = Keyword.get(opts, :llm_opts, [])
-
-        cond do
-          not Enum.all?(options, &valid_provider_entry?/1) ->
-            {:error, {:invalid_option, :provider_options, options}}
-
-          not Keyword.keyword?(llm_opts) ->
-            {:error, {:invalid_option, :llm_opts, llm_opts}}
-
-          true ->
-            {:ok, Keyword.put(opts, :llm_opts, Keyword.put(llm_opts, :provider_options, options))}
-        end
-
-      {options, _opts} ->
-        {:error, {:invalid_option, :provider_options, options}}
-    end
-  end
-
-  defp valid_provider_entry?({adapter_id, settings}),
-    do: is_binary(adapter_id) and adapter_id != "" and is_map(settings)
-
   defp reconfigured_llm_opts(llm_opts, opts) do
     case Keyword.fetch(opts, :thinking) do
       {:ok, level} -> Thinking.put_llm_opts(llm_opts, level)
@@ -375,7 +367,7 @@ defmodule Tackle.Config do
     end
   end
 
-  defp default_missing_model(file_opts, env_opts, overrides, adapters) do
+  defp default_missing_model(file_opts, env_opts, overrides, providers) do
     session_opts =
       file_opts
       |> Keyword.merge(env_opts)
@@ -384,7 +376,7 @@ defmodule Tackle.Config do
     if Keyword.has_key?(session_opts, :model) do
       {:ok, session_opts}
     else
-      with {:ok, model_ref} <- Tackle.Plugins.default_model_ref(adapters) do
+      with {:ok, model_ref} <- Tackle.Plugins.default_model_ref(providers) do
         {:ok, Keyword.put(session_opts, :model, model_ref)}
       end
     end
@@ -414,6 +406,23 @@ defmodule Tackle.Config do
     end
   end
 
+  defp fetch_accounts(opts) do
+    case Keyword.fetch(opts, :accounts) do
+      {:ok, %{} = accounts} ->
+        {:ok, accounts}
+
+      {:ok, accounts} ->
+        {:error, {:invalid_option, :accounts, accounts}}
+
+      :error ->
+        try do
+          {:ok, Tackle.Auth.accounts()}
+        catch
+          :exit, reason -> {:error, {:accounts_unavailable, reason}}
+        end
+    end
+  end
+
   defp catalog_hooks(opts, overrides) do
     case Keyword.fetch(opts, :catalog) do
       {:ok, %Catalog{} = catalog} ->
@@ -436,8 +445,8 @@ defmodule Tackle.Config do
       not Keyword.keyword?(overrides) ->
         {:error, {:invalid_option, :overrides}}
 
-      Keyword.has_key?(overrides, :adapters) ->
-        {:error, {:reserved_override, :adapters}}
+      Keyword.has_key?(overrides, :providers) ->
+        {:error, {:reserved_override, :providers}}
 
       true ->
         {:ok, overrides}
@@ -629,11 +638,11 @@ defmodule Tackle.Config do
     end
   end
 
-  defp fetch_adapters(opts) do
-    case Keyword.fetch(opts, :adapters) do
-      {:ok, adapters} when is_list(adapters) and adapters != [] -> {:ok, adapters}
-      {:ok, adapters} -> {:error, {:invalid_option, :adapters, adapters}}
-      :error -> {:error, {:missing_option, :adapters}}
+  defp fetch_providers(opts) do
+    case Keyword.fetch(opts, :providers) do
+      {:ok, providers} when is_list(providers) and providers != [] -> Provider.expand(providers)
+      {:ok, providers} -> {:error, {:invalid_option, :providers, providers}}
+      :error -> {:error, {:missing_option, :providers}}
     end
   end
 
@@ -730,55 +739,50 @@ defmodule Tackle.Config do
   defp resolve_compaction(opts) when is_list(opts), do: CompactionConfig.new(opts)
   defp resolve_compaction(other), do: {:error, {:invalid_option, :compaction, other}}
 
-  defp resolve_session_titles(nil, _adapters), do: {:ok, nil}
-  defp resolve_session_titles(false, _adapters), do: {:ok, nil}
+  defp resolve_session_titles(nil, _providers), do: {:ok, nil}
+  defp resolve_session_titles(false, _providers), do: {:ok, nil}
 
-  defp resolve_session_titles(%SessionTitles{} = config, adapters),
-    do: SessionTitles.new(config, adapters)
+  defp resolve_session_titles(%SessionTitles{} = config, providers),
+    do: SessionTitles.new(config, providers)
 
-  defp resolve_session_titles(opts, adapters) when is_list(opts),
-    do: SessionTitles.new(opts, adapters)
+  defp resolve_session_titles(opts, providers) when is_list(opts),
+    do: SessionTitles.new(opts, providers)
 
-  defp resolve_session_titles(other, _adapters),
+  defp resolve_session_titles(other, _providers),
     do: {:error, {:invalid_option, :session_titles, other}}
 
-  defp resolve_decision_model(nil, _adapters), do: {:ok, nil}
+  defp resolve_decision_model(nil, _providers), do: {:ok, nil}
 
-  defp resolve_decision_model(model_ref, adapters) when is_binary(model_ref),
-    do: Decision.select(adapters, model_ref)
+  defp resolve_decision_model(model_ref, providers) when is_binary(model_ref),
+    do: Decision.select(providers, model_ref)
 
-  defp resolve_decision_model(other, _adapters),
+  defp resolve_decision_model(other, _providers),
     do: {:error, {:invalid_option, :decision_model, other}}
 
-  # Tools reach decision models only through the session context. Only adapters
-  # that implement the decision contract are granted, with the provider options
-  # adapters such as the local Ollama one read their base URL from.
-  defp put_decisions(%{decisions: _host_grant} = context, _adapters, _default, _llm_opts),
-    do: context
+  # Tools reach decision models only through the session context. Only
+  # providers whose adapter implements the decision contract are granted; each
+  # selection carries its provider's settings to the adapter.
+  defp put_decisions(%{decisions: _host_grant} = context, _providers, _default), do: context
 
-  defp put_decisions(context, adapters, default, llm_opts) do
-    case Enum.filter(adapters, &decision_adapter?/1) do
+  defp put_decisions(context, providers, default) do
+    case Enum.filter(providers, &decision_provider?/1) do
       [] ->
         context
 
-      decision_adapters ->
-        options =
-          case Keyword.get(llm_opts, :provider_options) do
-            nil -> []
-            provider_options -> [provider_options: provider_options]
-          end
-
+      decision_providers ->
         Map.put(context, :decisions, %{
-          adapters: decision_adapters,
-          options: options,
+          providers: decision_providers,
+          options: [],
           default_model: default && default.ref
         })
     end
   end
 
-  defp decision_adapter?(adapter),
-    do:
-      function_exported?(adapter, :decision_models, 0) and function_exported?(adapter, :decide, 2)
+  defp decision_provider?(%Provider{adapter: adapter}) do
+    function_exported?(adapter, :decide, 2) and
+      (function_exported?(adapter, :decision_models, 1) or
+         function_exported?(adapter, :decision_models, 0))
+  end
 
   defp validate_optional_string(_name, nil), do: :ok
   defp validate_optional_string(_name, value) when is_binary(value), do: :ok

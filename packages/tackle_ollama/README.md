@@ -1,33 +1,111 @@
 # Tackle Ollama
 
-Optional provider plugins for Ollama:
+Optional provider plugin for Ollama. `Tackle.Plugins.Ollama` (adapter type id
+`ollama`) implements `Tackle.Lib.LLM` and `Tackle.Lib.Decision` for any Ollama
+server: Ollama Cloud, a local server, or a self-hosted one. Each server is a
+provider (`Tackle.Lib.LLM.Provider`) with its own id, settings, and login.
 
-- `Tackle.Plugins.Ollama` (adapter id `ollama-cloud`): a `Tackle.Lib.LLM`
-  adapter connecting directly to `https://ollama.com/v1/chat/completions`. No
-  local Ollama installation is needed.
-- `Tackle.Plugins.OllamaLocal` (adapter id `ollama`): a `Tackle.Lib.LLM` and
-  `Tackle.Lib.Decision` adapter for a local Ollama server, without an API key.
-  See [Local Ollama](#local-ollama).
+The bare module stands for two default providers:
 
-The sections before [Local Ollama](#local-ollama) describe the cloud adapter.
+| Provider id    | Base URL                    | API key  | Models                          | Local |
+| -------------- | --------------------------- | -------- | ------------------------------- | ----- |
+| `ollama`       | `http://localhost:11434/v1` | none     | host-configured (none built in) | yes   |
+| `ollama-cloud` | `https://ollama.com/v1`     | required | curated catalog                 | no    |
+
+Model refs are `provider_id/model`, so `ollama/qwen3:8b` and
+`ollama-cloud/gpt-oss:120b` keep working, and Ollama Cloud keys stay in the
+`ollama-cloud` credential namespace.
+
+**Breaking:** `Tackle.Plugins.OllamaLocal` was removed and merged into
+`Tackle.Plugins.Ollama`. Its application configuration moved to the
+per-provider shape in [Application configuration](#application-configuration);
+`provider_options` is no longer read.
 
 ## Use in an Elixir host
 
 Add `{:tackle_ollama, path: "packages/tackle_ollama"}` to your Mix dependencies
 (adjust the path relative to your project), then set `OLLAMA_API_KEY` to an
-[Ollama API key](https://ollama.com/settings/keys).
+[Ollama API key](https://ollama.com/settings/keys) for Ollama Cloud.
 
 ```elixir
-{:ok, llm} =
-  Tackle.Lib.LLM.select([Tackle.Plugins.Ollama], "ollama-cloud/gpt-oss:120b")
+{:ok, llm} = Tackle.Lib.LLM.select([Tackle.Plugins.Ollama], "ollama-cloud/gpt-oss:120b")
 
 state = Tackle.Lib.new(llm: llm)
 ```
 
 A harness host can register it with `config :tackle, adapters:
 [Tackle.Plugins.Ollama]`. This replaces the host's adapter list; include any
-other adapters you want to keep. The library's compatibility default is
-`config :tackle_lib, llm: Tackle.Plugins.Ollama`; pass `model:` when generating.
+other adapters you want to keep.
+
+To use another server, pass a provider instead of (or next to) the module:
+
+```elixir
+{:ok, gpu_box} =
+  Tackle.Lib.LLM.Provider.new("gpu-box", Tackle.Plugins.Ollama, %{
+    "base_url" => "http://gpu:11434/v1",
+    "api_key" => "none",
+    "local" => true,
+    "models" => ["gpt-oss:20b"],
+    "decision_models" => ["tev1:4b"]
+  })
+
+{:ok, llm} = Tackle.Lib.LLM.select([Tackle.Plugins.Ollama, gpu_box], "gpu-box/gpt-oss:20b")
+```
+
+## Provider settings
+
+Settings are a JSON-compatible map with string keys, so they can also come
+from a host's configuration file. A provider uses exactly the settings it is
+given; missing keys take these defaults:
+
+| Key                 | Meaning                                                                                  | Default                     |
+| ------------------- | ---------------------------------------------------------------------------------------- | --------------------------- |
+| `"base_url"`        | OpenAI-compatible base URL                                                               | `http://localhost:11434/v1` |
+| `"api_key"`         | `"required"` sends a bearer key; `"none"` sends none and never reads credentials         | `"none"`                    |
+| `"api_key_env"`     | environment variable read for the key after the credential store                        | none                        |
+| `"models"`          | selectable chat model ids                                                                | `[]`                        |
+| `"decision_models"` | selectable decision model ids                                                            | `[]`                        |
+| `"model_info"`      | model id → `Tackle.Lib.ModelInfo` fields, e.g. `{"context_window": 131072}`              | `{}`                        |
+| `"local"`           | decision models run on hardware the user controls (hosts may skip them in token budgets) | `false`                     |
+
+The `ollama` default provider sets `"local": true`. The `ollama-cloud` default
+provider sets `"api_key": "required"`, `"api_key_env": "OLLAMA_API_KEY"`, and
+`"models"` to the catalog. Custom providers read no environment variable
+unless they name one, so a cloud key is never sent to another server by
+accident. `"local"` is not checked against the base URL.
+
+Malformed `"models"`, `"decision_models"`, `"model_info"`, and `"local"`
+values are reported by selection (for example
+`{:invalid_model_id, "ollama", ""}` or `{:invalid_local_flag, id, value}`). A
+non-string `"base_url"` returns
+`{:error, {:invalid_provider_settings, provider_id, {"base_url", value}}}`, and
+an unknown `"api_key"` returns
+`{:error, {:invalid_provider_settings, provider_id, {"api_key", :invalid}}}`
+(the value is not echoed, since it may be a key pasted in by mistake), before
+any request is sent. Settings that are not a map return
+`{:error, {:invalid_provider_settings, provider_id, :not_a_map}}`.
+
+## Application configuration
+
+Hosts adjust the default providers by provider id. Each entry merges key by key
+(one level) over the built-in settings of that id; entries with other ids add
+providers:
+
+```elixir
+config :tackle_ollama, Tackle.Plugins.Ollama,
+  providers: %{
+    "ollama" => %{"models" => ["gemma4:12b"], "decision_models" => ["tev1:4b"]},
+    "ollama-cloud" => %{
+      "model_info" => %{"gpt-oss:120b" => %{"context_window" => 131_072}}
+    }
+  }
+```
+
+`"models"` replaces the built-in list. To extend the cloud catalog, list the
+catalog ids as well (`Tackle.Plugins.Ollama.catalog_models/0`). Settings from a
+host's configuration file, such as the harness `config.json` `"providers"`,
+are merged over `default_providers/0` by the host, so they take precedence
+over application configuration.
 
 ## Use in the CLI
 
@@ -45,6 +123,11 @@ tackle --model ollama-cloud/glm-5.3
 From `apps/tackle_cli`, use `mix tackle` in place of `tackle`. Models also
 appear in the CLI model picker. Remove any separate Ollama entry from
 `plugins.json` when using the bundled adapter to avoid duplicate registration.
+
+The CLI's distribution config makes `ollama/tev1:4b` selectable as a decision
+model (for the command watchdog) and `ollama/gemma4:12b` as a chat model (for
+narration). Other local models need `"models"` configured for the `ollama`
+provider.
 
 ## Enable in another host
 
@@ -83,36 +166,45 @@ automatically.
 
 ## Authentication
 
-Key precedence: per-request `:api_key`, host-owned `Tackle.Lib.CredentialStore`
-in the `"ollama-cloud"` namespace (`"api_key"` or `"key"`), then
-`OLLAMA_API_KEY`. Keys are trimmed and validated before building a request.
-`login/1` returns credentials for the host to persist. Logout/status use the
-host's default credential flows. No account usage callback is exposed.
+Only providers with `"api_key": "required"` use a key. Precedence: the
+per-request `:api_key`, then the host-owned `Tackle.Lib.CredentialStore` under
+the provider id (`"api_key"` or `"key"`), then the `"api_key_env"` variable.
+Keys are trimmed and validated before building a request; a missing key is
+`{:error, {:missing_ollama_api_key, provider_id}}`.
+
+- `login/1` prompts for a key through a `Tackle.Lib.Interaction` handle and
+  returns credentials for the host to persist under the provider id. Keyless
+  providers return `{:error, {:login_not_required, provider_id}}`.
+- `status/1` returns `{:ok, :stored}` when the store or the environment
+  variable has a key, `{:ok, :missing}` otherwise, and `{:ok, :not_required}`
+  for keyless providers.
+- Logout uses the host's default flow (deleting the stored credentials). No
+  account usage callback is exposed.
+
+Called directly rather than through a selection, the adapter reads
+`:provider_id` (default `ollama`) and `:provider_settings`; without settings it
+uses the default settings for that id.
 
 ## Models and metadata
 
-`models/0` returns a small, deterministic catalog: `gpt-oss:120b`,
-`gpt-oss:20b`, `kimi-k3`, `deepseek-v4.1-flash`, and `glm-5.3`. These direct-cloud ids come
-from [Ollama's model listing](https://ollama.com/api/tags), not local
-`:cloud` aliases. Availability may change; no network discovery runs at startup.
-
-Hosts can add ids and supply metadata, including overrides for curated ids:
-
-```elixir
-config :tackle_ollama,
-  models: ["gemma4:31b", {"gpt-oss:120b", %{context_window: 131_072}}]
-```
+The `ollama-cloud` catalog is small and deterministic: `gpt-oss:120b`,
+`gpt-oss:20b`, `kimi-k3`, `deepseek-v4.1-flash`, and `glm-5.3`. These
+direct-cloud ids come from [Ollama's model listing](https://ollama.com/api/tags),
+not local `:cloud` aliases. Availability may change. Nothing is discovered
+from any server, at startup or later: local models are selectable only when
+configured.
 
 Limits and pricing are **unknown by default**, not zero-cost estimates.
-`model_info/1` returns only host-configured metadata. See `Tackle.Lib.ModelInfo`
-for the optional limits and price-card contract.
+`model_info/2` returns only the configured `"model_info"` entry. See
+`Tackle.Lib.ModelInfo` for the optional limits and price-card contract.
 
 ## Generation
 
 Supports streaming text/reasoning, native function tools, JSON Schema response
 formats, token usage, cancellation between chunks, and explicit context-overflow
-errors. Both `generate/2` and `stream/3` use SSE transport. Truncated streams and
-output-token exhaustion return errors rather than incomplete tool calls.
+errors. Both `generate/2` and `stream/3` use SSE transport to
+`<base_url>/chat/completions`. Truncated streams and output-token exhaustion
+return errors rather than incomplete tool calls.
 
 Standard options include `:model`, `:messages`, `:system`, `:tools`,
 `:temperature`, `:top_p`, `:max_tokens`, `:stop`, and `:cancellation_signal`.
@@ -121,38 +213,20 @@ Additional options:
 - `:reasoning_effort`: model-defined nonempty string or atom, forwarded to
   Ollama. `:off`/`:none` map to `"none"`; omitted means the model's default.
 - `:tool_choice`: OpenAI-compatible tool choice; defaults to `"auto"` with tools.
-- `:base_url`: override the OpenAI-compatible base URL (default
-  `https://ollama.com/v1`). Only use trusted endpoints; the key is sent there.
+- `:base_url`: overrides the provider's `"base_url"`. Only use trusted
+  endpoints; a required key is sent there.
 - `:receive_timeout`: defaults to 120,000 ms.
 
-Tool results are text-only in this adapter; image parts become an explicit
-omission note. Reasoning replay is restricted to this provider and model.
-Missing provider tool-call ids are synthesized uniquely per completion and kept
+Results and usage report the provider id as `:provider`. Tool results are
+text-only in this adapter; image parts become an explicit omission note.
+Reasoning is replayed only for the same provider id and model. Missing tool-call
+ids are synthesized as `<provider_id>-generated-...`, unique per completion and
 stable across stream events and subsequent tool history.
 
-## Local Ollama
-
-`Tackle.Plugins.OllamaLocal` talks to a local (or self-hosted) Ollama server.
-It sends no API key or authorization header and never reads the
-`ollama-cloud` credentials. Chat uses the same Chat Completions transport as the
-cloud adapter (streaming, tools, JSON Schema responses, reasoning replay,
-cancellation); results report `provider: "ollama"`.
-
-Nothing is discovered from the server. Chat and decision models are selectable
-only when configured; entries are ids or `{id, model_info}` tuples:
+## Decisions
 
 ```elixir
-config :tackle_ollama, Tackle.Plugins.OllamaLocal,
-  base_url: "http://localhost:11434/v1",
-  models: ["qwen3:8b", {"gpt-oss:20b", %{context_window: 131_072}}],
-  decision_models: ["tev1:4b"]
-```
-
-```elixir
-{:ok, llm} = Tackle.Lib.LLM.select([Tackle.Plugins.OllamaLocal], "ollama/qwen3:8b")
-
-{:ok, decision} =
-  Tackle.Lib.Decision.select([Tackle.Plugins.OllamaLocal], "ollama/tev1:4b")
+{:ok, decision} = Tackle.Lib.Decision.select([Tackle.Plugins.Ollama], "ollama/tev1:4b")
 
 question =
   Tackle.Lib.Decision.Question.choice("verdict", "Is this command stuck?", %{
@@ -164,29 +238,20 @@ question =
 result.answers["verdict"].choice
 ```
 
-The base URL (default `http://localhost:11434/v1`) is resolved per request:
-the `:base_url` option, then `provider_options` → `"ollama"` → `"base_url"`
-(for example from the harness `config.json` `"provider_options"` field), then
-the configured `:base_url`, then the default.
-
 Decisions use Ollama's [System One](https://docs.ollama.com/capabilities/decision)
-endpoint, `POST <base_url>/systemone`, with Ollama decision models such as
-`tev1:4b`. Requests are validated against the `Tackle.Lib.Decision` limits
-before sending. Every asked question must be answered with its own type;
+endpoint, `POST <base_url>/systemone`, with decision models such as `tev1:4b`
+listed in the provider's `"decision_models"`. The base URL and key follow the
+same rules as chat. Requests are validated against the `Tackle.Lib.Decision`
+limits before sending. Every asked question must be answered with its own type;
 `choice` answers must name a known option, and a `score` without an explicit
 value is the probability-weighted average of its zero-based levels. Non-2xx
 responses return `{:error, {:http_error, status, body}}`. `decide/2` honours
 `:cancellation_signal` (an in-flight request is abandoned) and
 `:receive_timeout` (default 60,000 ms, since a model may load on first use).
-The adapter declares its decision models local (`local?/0`), so hosts such as
-workflow `tackle.classify` leave their usage out of token budgets. That assumes
-the base URL reaches a self-hosted server; it is not checked.
 
-The CLI bundles this adapter next to `ollama-cloud`. Its distribution config
-makes `ollama/tev1:4b` selectable as a decision model (for the command
-watchdog) and `ollama/gemma4:12b` as a chat model (for narration); other local
-chat models need `:models` configured in the host's application environment
-(an adapter without configured models is accepted by the harness catalog).
+A selection's `local` flag comes from the provider's `"local"` setting, so
+hosts such as workflow `tackle.classify` leave usage of local providers out of
+token budgets.
 
 ## Validation
 

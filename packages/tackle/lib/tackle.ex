@@ -51,7 +51,7 @@ defmodule Tackle do
   @spec load_config(keyword()) :: {:ok, Config.t()} | {:error, term()}
   def load_config(opts \\ []) when is_list(opts), do: Config.load(opts)
 
-  @doc "Returns canonical model references available through configured adapters."
+  @doc "Returns canonical `provider_id/model` references of the available providers."
   @spec available_models() :: {:ok, [String.t()]} | {:error, term()}
   def available_models, do: Tackle.Plugins.available_model_refs()
 
@@ -149,7 +149,7 @@ defmodule Tackle do
   The scope spec supplies the trusted agent configuration; the session id
   selects the durable conversation. `opts` may carry `:repair`,
   `:override_config`, `:storage`, and `:cwd`. The recorded model is re-resolved
-  through the current adapters unless `:override_config` is set, in which case
+  through the current providers unless `:override_config` is set, in which case
   a durable configuration change is recorded.
   """
   @spec resume_session(String.t(), ScopeSpec.t(), keyword()) ::

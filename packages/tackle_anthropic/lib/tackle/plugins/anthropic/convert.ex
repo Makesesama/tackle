@@ -6,6 +6,7 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   # and the tool_use/tool_result pairing the API requires.
 
   alias Tackle.Lib.JSON
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Anthropic.Prompt
 
@@ -28,6 +29,7 @@ defmodule Tackle.Plugins.Anthropic.Convert do
           pending: [String.t()],
           tool_ids: %{optional(String.t()) => String.t()},
           used_ids: MapSet.t(String.t()),
+          provider_id: String.t(),
           model: String.t(),
           is_oauth: boolean(),
           error: term()
@@ -40,14 +42,18 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   message containing its matching `tool_result`. Orphan tool calls (for example
   after an aborted turn) are closed with a synthetic `"No result provided"`
   result, and consecutive tool results are merged into one user message.
+
+  Stored `provider_state` blocks are replayed only when they came from the same
+  provider (`opts[:provider_id]`, default `"anthropic"`), model, and auth mode.
   """
   @spec messages([map()], String.t(), boolean(), keyword()) :: {:ok, [map()]} | {:error, term()}
-  def messages(messages, model, is_oauth, _opts \\ []) when is_list(messages) do
+  def messages(messages, model, is_oauth, opts \\ []) when is_list(messages) do
     state = %{
       params: [],
       pending: [],
       tool_ids: %{},
       used_ids: MapSet.new(),
+      provider_id: Provider.id(opts, "anthropic"),
       model: model,
       is_oauth: is_oauth,
       error: nil
@@ -218,7 +224,7 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   end
 
   defp replayable?(provider_state, state) when is_map(provider_state) do
-    field(provider_state, :provider) == "anthropic" and
+    field(provider_state, :provider) == state.provider_id and
       field(provider_state, :model) == state.model and
       field(provider_state, :oauth) == state.is_oauth and
       is_list(field(provider_state, :content_blocks))

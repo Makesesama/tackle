@@ -134,7 +134,7 @@ defmodule Tackle.Tools.ReviewTest do
   defp stage_spec(name, tool) do
     {:ok, config} =
       Config.new(
-        adapters: [Adapter],
+        providers: [Adapter],
         model: "tool-review/fake",
         tools: [tool],
         system_prompt: "Review stage.",

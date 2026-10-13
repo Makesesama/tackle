@@ -92,6 +92,97 @@ ids without a `:cloud` suffix. Token usage is reported, but account usage and
 price estimates are not available by default. See the
 [provider README](../../packages/tackle_ollama/README.md) for models and options.
 
+### Providers and accounts
+
+A model reference is `provider/model`. A provider is one configured instance of
+an adapter, and its id is the reference's prefix and the credential namespace.
+Each bundled adapter has default providers named after it (`openai-codex`,
+`deepseek`, `anthropic`, `openrouter`); the Ollama adapter has two, `ollama`
+(a local server at `http://localhost:11434/v1`, no API key) and `ollama-cloud`.
+A prefix always names a provider, never an adapter type.
+
+Log in to the same adapter more than once with named accounts, for example two
+Codex subscriptions:
+
+```sh
+tackle auth login openai-codex --as codex-work
+tackle auth login openai-codex --as codex-personal
+tackle --model codex-work/gpt-5.5
+tackle auth logout codex-personal
+```
+
+`auth login PROVIDER --as NAME` adds provider `NAME` on the adapter that
+`PROVIDER` names (a provider id or an adapter type id) and stores its login
+under `NAME`. The account is recorded in `$TACKLE_HOME/auth.json` only after
+the login succeeded, next to its credentials, so it exists only while it is
+logged in: `auth logout NAME` deletes both. Names use lowercase letters,
+digits, and hyphens, and must not already belong to a provider or account of
+another adapter. `--as` takes no settings, and an account whose adapter this
+binary does not include is skipped.
+
+When `PROVIDER` is a provider id, the account inherits that provider's
+settings, except `"api_key_env"`. A second Ollama Cloud key, for example:
+
+```sh
+tackle auth login ollama-cloud --as cloud2
+tackle --model cloud2/gpt-oss:120b
+```
+
+`cloud2` uses the Ollama Cloud URL and model catalog with its own stored key;
+it does not read `OLLAMA_API_KEY`, which belongs to `ollama-cloud`. Only an
+adapter's default provider reads the adapter's standard API-key variable
+(`OLLAMA_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
+`DEEPSEEK_API_KEY`); another provider reads one only when its `config.json`
+entry names it under `"api_key_env"`.
+
+Providers with their own settings are declared in the `"providers"` object of
+`$TACKLE_HOME/config.json`. Each entry names its adapter type under
+`"adapter"`; every other key is a setting of that adapter (see the adapter
+READMEs, for example [Ollama](../../packages/tackle_ollama/README.md)):
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "adapter": "ollama",
+      "models": ["qwen3:8b", "gemma4:12b"],
+      "decision_models": ["tev1:4b"]
+    },
+    "ollama-gpu-box": {
+      "adapter": "ollama",
+      "base_url": "http://gpu-box:11434/v1",
+      "local": true,
+      "models": ["gpt-oss:20b"]
+    },
+    "ollama-team": {
+      "adapter": "ollama",
+      "base_url": "https://ollama.example.com/v1",
+      "api_key": "required",
+      "api_key_env": "TEAM_OLLAMA_API_KEY",
+      "models": ["gpt-oss:120b"]
+    }
+  }
+}
+```
+
+An entry for an existing provider id (a default provider or an account) merges
+its settings over that provider's, key by key, so a list such as `"models"`
+replaces the previous one: the `ollama` entry above keeps `gemma4:12b` and
+`tev1:4b`, which the CLI otherwise offers on that provider. Redeclaring a
+built-in provider id with a different adapter is a configuration error, while
+an entry naming an adapter this binary does not include is skipped (the file
+may be shared with other Tackle hosts). An account named like a built-in or
+configured provider of another adapter is skipped as well. `ollama-team` stores its key with
+`tackle auth login ollama-team` or reads it from `TEAM_OLLAMA_API_KEY`.
+
+`tackle auth status` lists every provider with its source (`built-in`,
+`account`, or `config`), credential status (`stored`, `missing`, or
+`not required` for keyless providers such as the local `ollama`), and
+supported auth flows; an `ADAPTER` column names the adapter type of providers
+whose id differs from it. `tackle models` lists every provider's model
+references, and the model picker (F1) labels such providers with their adapter,
+for example `[codex-work · openai-codex]`.
+
 ## SDK server (experimental)
 
 `tackle sdk` (or `mix tackle sdk`) serves the Tackle SDK wire protocol —
@@ -101,9 +192,10 @@ can spawn the tackle binary and drive agent sessions: `initialize`,
 notifications. The wire contract is specified in
 [`packages/tackle_sdk/PROTOCOL.md`](../../packages/tackle_sdk/PROTOCOL.md).
 
-The server exposes the same bundled adapters as the TUI (models are selected
-per session with the `adapter_id/model` reference, e.g.
-`openai-codex/gpt-5.6-sol`; provider credentials come from the same
+The server exposes the same providers as the TUI, including named accounts and
+`config.json` providers (models are selected per session with the
+`provider/model` reference, e.g. `openai-codex/gpt-5.6-sol` or
+`codex-work/gpt-5.6-sol`; provider credentials come from the same
 `tackle auth` store) and the standalone tools (`read`, `bash`,
 `edit`, `write`). Subagent tools need a scoped runtime and MCP tools need
 live connections, so neither is on the SDK tool registry yet. Tools are
@@ -412,6 +504,7 @@ mix tackle models
 mix tackle auth status
 mix tackle auth status deepseek
 mix tackle auth login openai-codex
+mix tackle auth login openai-codex --as codex-work
 mix tackle auth login deepseek
 mix tackle auth usage deepseek
 mix tackle auth logout deepseek
@@ -476,8 +569,8 @@ switched to, inside the shell is also recoverable. A session id directly after
 `--` (or comes before the flag).
 
 Provider login, logout, status, and usage are adapter-driven: the CLI resolves
-the adapter by its `adapter_id` and delegates, so any configured
-`Tackle.Lib.LLM` plugin works without CLI changes. One-shot `run` commands show
+the provider by its id among the available providers and delegates to its
+adapter, so any configured `Tackle.Lib.LLM` plugin works without CLI changes. One-shot `run` commands show
 compact event-driven progress on stderr when it is an interactive terminal; the
 final answer remains the only stdout result, and redirected/non-terminal runs
 stay free of progress and ANSI control sequences.
@@ -492,8 +585,9 @@ structured page including `next_cursor`; pass that value back through `--cursor`
 to retrieve the next page. Human output honors `--color auto|always|never` and
 `NO_COLOR`; plain and JSON output never contain ANSI sequences.
 
-`tackle auth status` uses the same borderless output policy and shows each
-provider's credential status and supported auth flows. `auth status` and `auth
+`tackle auth status` uses the same borderless output policy and lists each
+provider's adapter, source, credential status, and supported auth flows (see
+[Providers and accounts](#providers-and-accounts)). `auth status` and `auth
 usage` support `--format human|plain|json` and `--color auto|always|never`;
 plain and JSON modes are stable, ANSI-free machine output. Login and logout
 remain interactive and therefore require human output. Provider failures are
@@ -901,8 +995,8 @@ retitled, and a resumed session keeps its committed title.
 
 ### Command watchdog
 
-The CLI bundles a local Ollama adapter whose `ollama/tev1:4b` decision model
-can watch long-running `bash` commands and stop ones that loop forever, wait
+The CLI's default local `ollama` provider offers the `ollama/tev1:4b` decision
+model, which can watch long-running `bash` commands and stop ones that loop forever, wait
 for input, or stall. It is off by default; pull the model
 (`ollama pull tev1:4b`, Ollama 0.35 or later) and enable it in
 `$TACKLE_HOME/config.json`:
@@ -914,9 +1008,10 @@ for input, or stall. It is off by default; pull the model
 Commands are first checked after 60 seconds (`after_seconds`), and only a
 verdict with probability of at least 0.85 (`threshold`) stops one. Commands run
 with an explicit `timeout` are never checked. A stopped command reports why to
-the agent, which keeps working. The adapter reaches Ollama at
-`http://localhost:11434/v1` unless `provider_options.ollama.base_url` says
-otherwise.
+the agent, which keeps working. The provider reaches Ollama at
+`http://localhost:11434/v1` unless the `"base_url"` setting of the `ollama`
+provider in `config.json` says otherwise (see
+[Providers and accounts](#providers-and-accounts)).
 
 ### Workflow classification
 
@@ -935,7 +1030,7 @@ budget.
 
 ### Narration
 
-The same local Ollama adapter offers the small chat model `ollama/gemma4:12b`,
+The same local `ollama` provider offers the small chat model `ollama/gemma4:12b`,
 which can narrate delegated work: every few seconds it writes one short line
 such as "reading the session tests to find where titles are stored" for each
 running subagent and workflow child. It is off by default; pull the model

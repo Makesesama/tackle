@@ -63,7 +63,9 @@ defmodule Tackle.CLI.TUI.Menu do
   Returns the menu rows for `kind`.
 
   Model rows search `provider ref id`, so a provider-qualified query outranks a
-  proxy id such as `openrouter/openai/gpt-5`.
+  proxy id such as `openrouter/openai/gpt-5`. A provider whose id differs from
+  its adapter type, such as `codex-work` on `openai-codex`, is labelled with
+  both and also matches its adapter type.
   """
   @spec items(atom(), State.t()) :: [Picker.item()]
   def items(:model, %State{} = state) do
@@ -71,13 +73,14 @@ defmodule Tackle.CLI.TUI.Menu do
 
     Enum.map(state.models, fn ref ->
       {provider, id} = split_model_ref(ref)
+      adapter = provider_adapter(state.provider_adapters, provider)
 
       %{
         id: ref,
         primary: id,
-        secondary: provider && "[#{provider}]",
+        secondary: provider_label(provider, adapter),
         marker: current_marker(ref, current),
-        search: Enum.join(Enum.reject([provider, ref, id], &is_nil/1), " ")
+        search: Enum.join(Enum.reject([provider, adapter, ref, id], &is_nil/1), " ")
       }
     end)
   end
@@ -242,6 +245,20 @@ defmodule Tackle.CLI.TUI.Menu do
 
   defp current_marker(value, value), do: "✓"
   defp current_marker(_value, _current), do: " "
+
+  # The adapter type, only when it differs from the provider id.
+  defp provider_adapter(_adapters, nil), do: nil
+
+  defp provider_adapter(adapters, provider) do
+    case Map.get(adapters, provider) do
+      ^provider -> nil
+      adapter -> adapter
+    end
+  end
+
+  defp provider_label(nil, _adapter), do: nil
+  defp provider_label(provider, nil), do: "[#{provider}]"
+  defp provider_label(provider, adapter), do: "[#{provider} · #{adapter}]"
 
   defp split_model_ref(ref) do
     case String.split(ref, "/", parts: 2) do

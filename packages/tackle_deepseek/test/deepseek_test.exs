@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
   use ExUnit.Case, async: false
 
   alias Tackle.Lib.{Cancellation, LLM, ModelInfo, Usage}
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.DeepSeek
 
   defmodule CredentialStore do
@@ -657,7 +658,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       if previous, do: System.put_env("DEEPSEEK_API_KEY", previous)
     end)
 
-    assert {:error, :missing_deepseek_api_key} =
+    assert {:error, {:missing_deepseek_api_key, "deepseek"}} =
              DeepSeek.generate(nil, base_opts(empty_store, request))
   end
 
@@ -735,6 +736,172 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
     assert {:error, {:http_error, 401, "unauthorized"}} =
              DeepSeek.usage(credential_store: store, request: request)
+  end
+
+  describe "provider instances" do
+    setup %{store: {CredentialStore, agent}} do
+      Agent.update(agent, fn credentials ->
+        Map.merge(credentials, %{
+          "deepseek-work" => %{"api_key" => "work-key"},
+          "deepseek-home" => %{"api_key" => "home-key"}
+        })
+      end)
+    end
+
+    test "only the default provider falls back to DEEPSEEK_API_KEY" do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:authorization, header(options, "authorization")})
+        done_response(options, "deepseek-flash")
+      end
+
+      empty = start_supervised!({Agent, fn -> %{} end}, id: {Agent, make_ref()})
+      opts = base_opts({CredentialStore, empty}, request)
+      work = Keyword.put(opts, :provider_id, "deepseek-work")
+
+      with_env(%{"DEEPSEEK_API_KEY" => "default-key", "WORK_KEY" => "work-key"}, fn ->
+        assert {:ok, %{provider: "deepseek"}} = DeepSeek.generate(nil, opts)
+        assert_receive {:authorization, "Bearer default-key"}
+
+        assert {:error, {:missing_deepseek_api_key, "deepseek-work"}} =
+                 DeepSeek.generate(nil, work)
+
+        refute_received {:authorization, _header}
+
+        # A provider names its own variable with "api_key_env".
+        named = Keyword.put(work, :provider_settings, %{"api_key_env" => "WORK_KEY"})
+        assert {:ok, %{provider: "deepseek-work"}} = DeepSeek.generate(nil, named)
+        assert_receive {:authorization, "Bearer work-key"}
+
+        invalid = Keyword.put(work, :provider_settings, %{"api_key_env" => ""})
+
+        assert {:error, {:invalid_provider_setting, "deepseek-work", "api_key_env", ""}} =
+                 DeepSeek.generate(nil, invalid)
+      end)
+    end
+
+    test "providers on one adapter use their own API keys", %{store: store} do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:authorization, header(options, "authorization")})
+        done_response(options, "deepseek-flash")
+      end
+
+      {:ok, work} = Provider.new("deepseek-work", DeepSeek)
+      {:ok, home} = Provider.new("deepseek-home", DeepSeek)
+      opts = base_opts(store, request) |> Keyword.delete(:model)
+
+      assert {:ok, selection} = LLM.select([work, home], "deepseek-home/deepseek-flash")
+      assert {:ok, %{provider: "deepseek-home"}} = LLM.generate_with(selection, nil, opts)
+      assert_receive {:authorization, "Bearer home-key"}
+
+      assert {:ok, selection} = LLM.select([work, home], "deepseek-work/deepseek-flash")
+      assert {:ok, %{provider: "deepseek-work"}} = LLM.generate_with(selection, nil, opts)
+      assert_receive {:authorization, "Bearer work-key"}
+
+      balance_request = fn options ->
+        send(test_pid, {:authorization, header(options, "authorization")})
+        {:ok, %Req.Response{status: 200, body: JSON.encode!(%{"is_available" => true})}}
+      end
+
+      assert {:ok, %{"is_available" => true}} =
+               DeepSeek.usage(
+                 credential_store: store,
+                 request: balance_request,
+                 provider_id: "deepseek-work"
+               )
+
+      assert_receive {:authorization, "Bearer work-key"}
+    end
+
+    test "replays reasoning only for the provider that produced it", %{store: store} do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:body, JSON.decode!(options[:body])})
+        done_response(options, "deepseek-v4-pro")
+      end
+
+      messages = [
+        %{
+          role: :assistant,
+          content: "answer",
+          provider_state: %{
+            "provider" => "deepseek-work",
+            "model" => "deepseek-v4-pro",
+            "reasoning_content" => "work reasoning"
+          }
+        },
+        %{role: :user, content: "again"}
+      ]
+
+      opts =
+        base_opts(store, request)
+        |> Keyword.merge(model: "deepseek-v4-pro", messages: messages)
+
+      assert {:ok, _} = DeepSeek.generate(nil, Keyword.put(opts, :provider_id, "deepseek-work"))
+      assert_receive {:body, body}
+      assert [%{"reasoning_content" => "work reasoning"}, _user] = body["messages"]
+
+      assert {:ok, _} = DeepSeek.generate(nil, Keyword.put(opts, :provider_id, "deepseek-home"))
+      assert_receive {:body, body}
+      assert [%{"reasoning_content" => ""}, _user] = body["messages"]
+    end
+
+    test "honours the base_url setting unless :base_url is explicit", %{store: store} do
+      test_pid = self()
+
+      request = fn options ->
+        send(test_pid, {:url, options[:url]})
+        done_response(options, "deepseek-flash")
+      end
+
+      opts =
+        base_opts(store, request)
+        |> Keyword.merge(
+          provider_id: "deepseek-work",
+          provider_settings: %{"base_url" => "https://proxy.test/"}
+        )
+
+      assert {:ok, _} = DeepSeek.generate(nil, opts)
+      assert_receive {:url, "https://proxy.test/chat/completions"}
+
+      assert {:ok, _} =
+               DeepSeek.generate(nil, Keyword.put(opts, :base_url, "https://explicit.test"))
+
+      assert_receive {:url, "https://explicit.test/chat/completions"}
+
+      invalid = Keyword.put(opts, :provider_settings, %{"base_url" => 1})
+
+      assert {:error, {:invalid_provider_setting, "deepseek-work", "base_url", 1}} =
+               DeepSeek.generate(nil, invalid)
+    end
+  end
+
+  defp done_response(options, model) do
+    streaming_response(options, [
+      sse(%{
+        "model" => model,
+        "choices" => [%{"delta" => %{"content" => "done"}, "finish_reason" => "stop"}]
+      }),
+      "data: [DONE]\n\n"
+    ])
+  end
+
+  defp with_env(vars, fun) do
+    previous = Map.new(vars, fn {name, _value} -> {name, System.get_env(name)} end)
+    System.put_env(vars)
+
+    try do
+      fun.()
+    after
+      Enum.each(previous, fn
+        {name, nil} -> System.delete_env(name)
+        {name, value} -> System.put_env(name, value)
+      end)
+    end
   end
 
   defp base_opts(store, request) do

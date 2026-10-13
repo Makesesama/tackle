@@ -23,7 +23,7 @@ defmodule Tackle.Session.LoaderTest do
 
     {:ok, config} =
       Config.new(
-        adapters: [Adapter],
+        providers: [Adapter],
         model: "loader-test/model",
         tools: [],
         id_generator: fn ->

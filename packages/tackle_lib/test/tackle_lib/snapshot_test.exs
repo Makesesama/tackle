@@ -125,7 +125,7 @@ defmodule Tackle.Lib.SnapshotTest do
     test "freezes an explicit adapter and model selection" do
       selection = %Selection{
         adapter: ExplicitAdapter,
-        adapter_id: "explicit",
+        provider_id: "explicit",
         model: "model-a",
         ref: "explicit/model-a"
       }

@@ -47,6 +47,53 @@ defmodule Tackle.Web.ProvidersTest do
     assert {:error, {:unknown_model, "fake/nope"}} = Providers.select("fake/nope")
   end
 
+  test "a reference names a provider, not an adapter module" do
+    assert [%Tackle.Lib.LLM.Provider{id: "fake", adapter: FakeAdapter}] = Providers.providers()
+
+    assert {:ok, selection} = Providers.select("fake/echo")
+    assert selection.provider_id == "fake"
+
+    assert {:error, {:unknown_provider, "fake-work"}} = Providers.select("fake-work/echo")
+
+    assert Tackle.Web.ChatError.message({:unknown_provider, "fake-work"}) =~
+             "The provider fake-work is not configured."
+  end
+
+  test "config.json providers are offered and selectable", %{root: root} do
+    home = Path.join(root, "home")
+    File.mkdir_p!(home)
+
+    File.write!(
+      Path.join(home, "config.json"),
+      JSON.encode!(%{"providers" => %{"fake-work" => %{"adapter" => "fake"}}})
+    )
+
+    assert Enum.map(Providers.providers(), & &1.id) == ["fake", "fake-work"]
+    assert "fake-work/echo-2" in Providers.models()
+
+    assert {:ok, selection} = Providers.select("fake-work/echo-2")
+    assert selection.adapter == FakeAdapter
+    assert selection.provider_id == "fake-work"
+    assert selection.ref == "fake-work/echo-2"
+  end
+
+  test "an invalid provider configuration is reported by select", %{root: root} do
+    home = Path.join(root, "home")
+    File.mkdir_p!(home)
+
+    File.write!(
+      Path.join(home, "config.json"),
+      JSON.encode!(%{"providers" => %{"other" => %{"adapter" => "missing"}}})
+    )
+
+    assert Providers.providers() == []
+
+    assert {:error, {:unknown_provider_adapter, "other", "missing"} = reason} =
+             Providers.select("fake/echo")
+
+    assert Tackle.Web.ChatError.message(reason) =~ "names the adapter missing"
+  end
+
   describe "with nothing configured" do
     setup do
       previous = Application.get_env(:tackle, :adapters)

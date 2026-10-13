@@ -50,13 +50,49 @@ injected `Tackle.Lib.CredentialStore`, and retries one request after a `401`.
 
 ### API key
 
-Pass `api_key: "sk-ant-..."`, store one under the `"anthropic"` credential
-namespace, or set `ANTHROPIC_API_KEY`. API-key requests use `x-api-key` and send
+Pass `api_key: "sk-ant-..."`, store one under the provider's credential
+namespace (`"anthropic"` for the default provider), or set `ANTHROPIC_API_KEY`
+(default provider only; see [Providers](#providers)). API-key requests use `x-api-key` and send
 only the `interleaved-thinking-2025-05-14` beta.
 
 ```elixir
 {:ok, credentials} = Anthropic.login(auth: :api_key, interaction: interaction)
 ```
+
+## Providers
+
+`adapter_id/0` (`"anthropic"`) names the adapter type. Several providers can
+share the adapter, each with its own login, for example a Claude subscription
+and an API-key account selected as `claude-work/claude-opus-5-5` and
+`claude-api/claude-opus-5-5`:
+
+```elixir
+alias Tackle.Lib.LLM.Provider
+
+{:ok, work} = Provider.new("claude-work", Tackle.Plugins.Anthropic)
+{:ok, api} = Provider.new("claude-api", Tackle.Plugins.Anthropic)
+{:ok, selection} = Tackle.Lib.LLM.select([work, api], "claude-work/claude-opus-5-5")
+```
+
+The selection passes `:provider_id` and `:provider_settings` to the adapter, and
+hosts pass the same options to `login/1` and `status/1`. Without them the
+adapter acts as the default `"anthropic"` provider. The provider id is the
+credential namespace read, refreshed, and written back; part of the OAuth
+refresh lock, so accounts refresh independently; the reported `:provider`; and
+the origin stamped on replayable `provider_state`. Only the default
+`"anthropic"` provider falls back to `ANTHROPIC_API_KEY` when no credentials
+are stored; other providers read an environment variable only when they name
+one with `"api_key_env"`, so a key is never sent for another account by
+accident. Without credentials, requests fail with
+`{:error, {:missing_anthropic_credentials, provider_id}}`, and `status/1`
+reports `{:ok, :missing}`.
+
+Honoured provider settings:
+
+| Key | Meaning |
+| --- | --- |
+| `"base_url"` | Messages API base URL. An explicit `:base_url` option wins. |
+| `"api_key_env"` | Environment variable read for an API key when none is stored. Defaults to `ANTHROPIC_API_KEY` for the `"anthropic"` provider and to none otherwise. |
 
 ## Using the adapter
 
@@ -80,8 +116,8 @@ API's constraint.
 
 For stateless continuations, the adapter stores the assistant's raw content
 blocks (including thinking signatures and redacted thinking) on the assistant
-message's `provider_state` and replays them only for the same provider, model,
-and auth mode. Hosts that persist conversations must preserve
+message's `provider_state` and replays them only for the same provider id,
+model, and auth mode. Hosts that persist conversations must preserve
 `Tackle.Lib.Message.provider_state`.
 
 Context-window overflow is classified only from errors that name a token/context

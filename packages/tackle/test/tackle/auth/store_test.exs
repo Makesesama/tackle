@@ -42,7 +42,12 @@ defmodule Tackle.Auth.StoreTest do
     assert {:ok, %{"token" => "b"}} = Store.fetch(store, "provider-b")
 
     envelope = path |> File.read!() |> JSON.decode!()
-    assert envelope == %{"version" => 1, "providers" => %{"provider-b" => %{"token" => "b"}}}
+
+    assert envelope == %{
+             "version" => 2,
+             "providers" => %{"provider-b" => %{"token" => "b"}},
+             "accounts" => %{}
+           }
   end
 
   test "malformed files are actionable and never overwritten", %{home: home, path: path} do
@@ -58,9 +63,96 @@ defmodule Tackle.Auth.StoreTest do
 
   test "unsupported versions fail safely", %{home: home, path: path} do
     File.mkdir_p!(home)
-    File.write!(path, JSON.encode!(%{"version" => 2, "providers" => %{}}))
+    File.write!(path, JSON.encode!(%{"version" => 3, "providers" => %{}}))
 
-    assert {:error, {:unsupported_auth_version, ^path, 1}} = start_store_error(path)
+    assert {:error, {:unsupported_auth_version, ^path, 2}} = start_store_error(path)
+  end
+
+  test "a version 1 file loads with no accounts and is rewritten as version 2", %{
+    home: home,
+    path: path
+  } do
+    File.mkdir_p!(home)
+
+    File.write!(
+      path,
+      JSON.encode!(%{"version" => 1, "providers" => %{"openai-codex" => %{"token" => "v1"}}})
+    )
+
+    store = start_store(path)
+    assert {:ok, %{"token" => "v1"}} = Store.fetch(store, "openai-codex")
+    assert Store.accounts(store) == %{}
+
+    assert :ok = Store.put_account(store, "codex-work", %{"adapter" => "openai-codex"})
+
+    assert path |> File.read!() |> JSON.decode!() == %{
+             "version" => 2,
+             "providers" => %{"openai-codex" => %{"token" => "v1"}},
+             "accounts" => %{"codex-work" => %{"adapter" => "openai-codex"}}
+           }
+  end
+
+  test "accounts persist beside credentials and survive a restart", %{path: path} do
+    store = start_store(path)
+
+    assert :ok = Store.put(store, "codex-work", %{"token" => "work"})
+    assert :ok = Store.put_account(store, "codex-work", %{"adapter" => "openai-codex"})
+    assert :ok = Store.put_account(store, "codex-home", %{"adapter" => "openai-codex"})
+
+    # Only the known keys are kept.
+    assert :ok =
+             Store.put_account(store, "cloud2", %{
+               "adapter" => "ollama",
+               "base" => "ollama-cloud",
+               "extra" => true
+             })
+
+    assert :ok = Store.delete_account(store, "codex-home")
+    assert :ok = Store.delete_account(store, "never-recorded")
+
+    for {id, account} <- [
+          {"Bad Name", %{"adapter" => "openai-codex"}},
+          {"codex-x", %{"adapter" => ""}},
+          {"codex-x", %{"adapter" => "openai-codex", "base" => "Bad Base"}},
+          {"codex-x", "openai-codex"}
+        ] do
+      assert {:error, {:invalid_account, ^id}} = Store.put_account(store, id, account)
+    end
+
+    assert :ok = stop_supervised(Store)
+    store = start_store(path)
+
+    accounts = %{
+      "codex-work" => %{"adapter" => "openai-codex"},
+      "cloud2" => %{"adapter" => "ollama", "base" => "ollama-cloud"}
+    }
+
+    assert Store.accounts(store) == accounts
+    assert {:ok, %{"token" => "work"}} = Store.fetch(store, "codex-work")
+
+    # Deleting credentials keeps the account; the two are managed separately.
+    assert :ok = Store.delete(store, "codex-work")
+    assert Store.accounts(store) == accounts
+  end
+
+  test "malformed accounts are rejected without overwriting the file", %{
+    home: home,
+    path: path
+  } do
+    File.mkdir_p!(home)
+
+    for accounts <- [
+          [],
+          %{"codex-work" => "openai-codex"},
+          %{"Bad Id" => %{"adapter" => "a"}},
+          %{"codex-work" => %{"adapter" => "a", "base" => 1}}
+        ] do
+      contents = JSON.encode!(%{"version" => 2, "providers" => %{}, "accounts" => accounts})
+      File.write!(path, contents)
+
+      assert {:error, {:invalid_auth_file, ^path, :invalid_accounts}} = start_store_error(path)
+      assert File.read!(path) == contents
+    end
   end
 
   test "directory and file permissions are restricted", %{home: home, path: path} do
@@ -117,8 +209,9 @@ defmodule Tackle.Auth.StoreTest do
     assert {:ok, ^original} = Store.fetch(store, "openai-codex")
 
     assert File.read!(backup) |> JSON.decode!() == %{
-             "version" => 1,
-             "providers" => %{"openai-codex" => original}
+             "version" => 2,
+             "providers" => %{"openai-codex" => original},
+             "accounts" => %{}
            }
 
     assert File.read!(marker) == "keep"
@@ -138,7 +231,7 @@ defmodule Tackle.Auth.StoreTest do
     |> Enum.each(fn result -> assert {:ok, :ok} = result end)
 
     envelope = path |> File.read!() |> JSON.decode!()
-    assert envelope["version"] == 1
+    assert envelope["version"] == 2
     assert map_size(envelope["providers"]) == 40
     assert envelope["providers"]["provider-17"] == %{"generation" => 17}
   end

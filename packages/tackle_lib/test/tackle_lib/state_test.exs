@@ -88,7 +88,7 @@ defmodule Tackle.Lib.StateTest do
     test "accepts an explicit LLM selection and uses its adapter-local model" do
       selection = %Selection{
         adapter: ExampleAdapter,
-        adapter_id: "example",
+        provider_id: "example",
         model: "selected-model",
         ref: "example/selected-model"
       }

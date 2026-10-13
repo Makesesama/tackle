@@ -266,7 +266,7 @@ defmodule Tackle.ReviewTest do
   defp stage_spec(name, tool, script, opts \\ []) do
     {:ok, config} =
       Config.new(
-        adapters: [Adapter],
+        providers: [Adapter],
         model: "review/fake",
         tools: [tool],
         system_prompt: "Review stage.",
@@ -827,7 +827,7 @@ defmodule Tackle.ReviewTest do
 
     {:ok, root_config} =
       Config.new(
-        adapters: [Adapter],
+        providers: [Adapter],
         model: "review/fake",
         system_prompt: "Root.",
         llm_opts: [test_pid: self(), script: script]
@@ -1180,7 +1180,7 @@ defmodule Tackle.ReviewTest do
 
       {:ok, root_config} =
         Config.new(
-          adapters: [Adapter],
+          providers: [Adapter],
           model: "review/fake",
           thinking: "medium",
           system_prompt: "Root.",

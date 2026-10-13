@@ -51,16 +51,19 @@ defmodule Tackle.CLI.Run do
   end
 
   defp start_tui(scope, opts) do
-    case Distribution.available_models() do
-      {:ok, models} -> start_tui_session(scope, models, opts)
+    with {:ok, models} <- Distribution.available_models(),
+         {:ok, providers} <- Distribution.available_providers() do
+      start_tui_session(scope, models, Distribution.provider_adapters(providers), opts)
+    else
       {:error, reason} -> error(reason)
     end
   end
 
-  defp start_tui_session(scope, models, opts) do
+  defp start_tui_session(scope, models, provider_adapters, opts) do
     case TUI.start(
            agent_ref: scope.root_agent_ref,
            models: models,
+           provider_adapters: provider_adapters,
            new_session: new_session_fun(opts),
            list_recent_sessions: recent_sessions_fun(),
            resume_session: resume_session_fun(opts),
@@ -178,18 +181,24 @@ defmodule Tackle.CLI.Run do
     end
   end
 
+  # With `as: name`, the login creates the account `name` on the adapter that
+  # `provider` names (a provider id or adapter type id) and stores its
+  # credentials under `name`.
   @spec auth_login(%{
-          provider: String.t(),
-          format: Output.format(),
-          color: Output.color_mode()
+          required(:provider) => String.t(),
+          optional(:as) => String.t() | nil,
+          optional(:format) => Output.format(),
+          optional(:color) => Output.color_mode()
         }) :: non_neg_integer()
   def auth_login(%{provider: provider} = opts) do
     output = auth_output(opts)
+    login_opts = login_options(opts, output)
+    logged_in = Keyword.get(login_opts, :as, provider)
 
     with {:ok, _apps} <- ensure_started(),
          :ok <- ensure_human_format(output, :login),
-         :ok <- Provider.login(provider, interaction: Interaction.handle(output)) do
-      :login |> AuthOutput.render_action(provider, :ok, output) |> then(&Output.puts(output, &1))
+         :ok <- Provider.login(provider, login_opts) do
+      :login |> AuthOutput.render_action(logged_in, :ok, output) |> then(&Output.puts(output, &1))
       0
     else
       {:error, reason} -> auth_error(reason, output)
@@ -305,6 +314,13 @@ defmodule Tackle.CLI.Run do
     else
       {:error, reason} -> auth_error(reason, output)
       reason -> auth_error(reason, output)
+    end
+  end
+
+  defp login_options(opts, output) do
+    case Map.get(opts, :as) do
+      nil -> [interaction: Interaction.handle(output)]
+      name -> [as: name, interaction: Interaction.handle(output)]
     end
   end
 

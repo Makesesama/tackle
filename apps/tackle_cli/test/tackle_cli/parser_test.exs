@@ -251,7 +251,8 @@ defmodule Tackle.CLI.ParserTest do
   end
 
   test "parses auth commands" do
-    assert {:ok, {:auth_login, %{provider: "openai-codex", format: :human, color: :auto}}} =
+    assert {:ok,
+            {:auth_login, %{provider: "openai-codex", as: nil, format: :human, color: :auto}}} =
              Parser.parse(["auth", "login", "openai-codex"])
 
     assert {:ok, {:auth_status, %{provider: nil, format: :human, color: :auto}}} =
@@ -273,6 +274,22 @@ defmodule Tackle.CLI.ParserTest do
 
     assert {:ok, {:auth_logout, %{provider: "openai-codex", format: :plain, color: :auto}}} =
              Parser.parse(["auth", "logout", "openai-codex", "--format", "plain"])
+  end
+
+  test "parses auth login with a named account" do
+    assert {:ok, {:auth_login, %{provider: "openai-codex", as: "codex-work"}}} =
+             Parser.parse(["auth", "login", "openai-codex", "--as", "codex-work"])
+
+    assert {:ok, {:auth_login, %{provider: "openai-codex", as: "codex-work"}}} =
+             Parser.parse(["auth", "login", "--as", "codex-work", "openai-codex"])
+
+    assert {:error, error} = Parser.parse(["auth", "login", "openai-codex", "--as"])
+    assert error =~ "--as"
+
+    assert {:error, _error} = Parser.parse(["auth", "status", "--as", "codex-work"])
+
+    assert {:help, help} = Parser.parse(["help", "auth", "login"])
+    assert help =~ "--as"
   end
 
   test "rejects unsupported auth output options" do

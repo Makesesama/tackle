@@ -4,9 +4,10 @@ defmodule Tackle.CLI.Output.Auth do
   alias Tackle.CLI.Output
 
   @provider_width 24
-  @status_width 10
+  @adapter_width 16
+  @source_width 8
+  @status_width 12
   @flag_width 5
-  @table_breakpoint 48
 
   @type status_result :: {:ok, term()} | {:error, term()}
   @type status_entry :: %{provider: map(), result: status_result()}
@@ -66,28 +67,47 @@ defmodule Tackle.CLI.Output.Auth do
         Enum.join(
           [
             provider.id,
+            plain_field(Map.get(provider, :adapter) || ""),
+            source_value(provider),
             status_value(result),
-            supported_label(provider.capabilities.login),
+            supported_label(login?(provider, result)),
             supported_label(provider.capabilities.usage)
           ],
           "\t"
         )
       end)
 
-    Enum.join(["provider\tstatus\tlogin\tusage" | rows], "\n")
+    Enum.join(["provider\tadapter\tsource\tstatus\tlogin\tusage" | rows], "\n")
   end
 
   def render_status([], %Output{} = output) do
     Output.style(output, :muted, "No authentication providers are configured.")
   end
 
-  def render_status(entries, %Output{width: width} = output) when width < @table_breakpoint do
-    entries
-    |> Enum.map(&render_stacked_status(&1, output))
-    |> Enum.intersperse("\n")
+  def render_status(entries, %Output{} = output) do
+    columns = status_columns(entries)
+
+    if output.width < row_width(columns) do
+      entries
+      |> Enum.map(&render_stacked_status(&1, output))
+      |> Enum.intersperse("\n")
+    else
+      render_status_table(entries, columns, output)
+    end
   end
 
-  def render_status(entries, %Output{} = output) do
+  # The adapter column appears only when some provider's id differs from its
+  # adapter type, such as an account `codex-work` on `openai-codex`.
+  defp status_columns(entries) do
+    adapter_width =
+      if Enum.any?(entries, &(adapter_label(&1.provider) != nil)) do
+        entries
+        |> Enum.map(&Owl.Data.length(adapter_label(&1.provider) || ""))
+        |> Enum.max()
+        |> max(Owl.Data.length("ADAPTER"))
+        |> min(@adapter_width)
+      end
+
     provider_width =
       entries
       |> Enum.map(&Owl.Data.length(&1.provider.id))
@@ -95,26 +115,50 @@ defmodule Tackle.CLI.Output.Auth do
       |> max(Owl.Data.length("PROVIDER"))
       |> min(@provider_width)
 
+    [
+      {:provider, provider_width},
+      {:adapter, adapter_width},
+      {:source, @source_width},
+      {:status, @status_width},
+      {:login, @flag_width},
+      {:usage, @flag_width}
+    ]
+    |> Enum.reject(fn {_column, width} -> is_nil(width) end)
+  end
+
+  defp row_width(columns) do
+    widths = Enum.map(columns, &elem(&1, 1))
+    Enum.sum(widths) + 2 * (length(widths) - 1)
+  end
+
+  defp render_status_table(entries, columns, output) do
     header =
       status_row(
-        Output.style(output, :heading, "PROVIDER"),
-        Output.style(output, :heading, "STATUS"),
-        Output.style(output, :heading, "LOGIN"),
-        Output.style(output, :heading, "USAGE"),
-        provider_width
+        %{
+          provider: Output.style(output, :heading, "PROVIDER"),
+          adapter: Output.style(output, :heading, "ADAPTER"),
+          source: Output.style(output, :heading, "SOURCE"),
+          status: Output.style(output, :heading, "STATUS"),
+          login: Output.style(output, :heading, "LOGIN"),
+          usage: Output.style(output, :heading, "USAGE")
+        },
+        columns
       )
 
-    row_width = provider_width + @status_width + @flag_width * 2 + 6
-    divider = Output.style(output, :muted, String.duplicate("─", row_width))
+    divider = Output.style(output, :muted, String.duplicate("─", row_width(columns)))
 
     rows =
       Enum.map(entries, fn %{provider: provider, result: result} ->
         status_row(
-          provider.id,
-          style_status(output, result),
-          style_supported(output, provider.capabilities.login),
-          style_supported(output, provider.capabilities.usage),
-          provider_width
+          %{
+            provider: provider.id,
+            adapter: adapter_label(provider) || "",
+            source: Output.style(output, :muted, source_label(provider)),
+            status: style_status(output, result),
+            login: style_supported(output, login?(provider, result)),
+            usage: style_supported(output, provider.capabilities.usage)
+          },
+          columns
         )
       end)
 
@@ -203,6 +247,59 @@ defmodule Tackle.CLI.Output.Auth do
     "Provider #{inspect(provider)} does not support auth #{flow}."
   end
 
+  def error_message({:unknown_provider, provider}) do
+    "Provider #{inspect(provider)} is not configured."
+  end
+
+  def error_message({:login_not_required, provider}) do
+    "Provider #{inspect(provider)} needs no login; its models can be used without credentials."
+  end
+
+  def error_message({:invalid_provider_id, name}) do
+    "#{inspect(name)} is not a valid provider name. Use lowercase letters, digits, and " <>
+      "hyphens, starting and ending with a letter or digit."
+  end
+
+  def error_message({:duplicate_provider_id, provider}) do
+    "Provider #{inspect(provider)} is declared more than once."
+  end
+
+  def error_message({:provider_adapter_conflict, provider}) do
+    "The name #{inspect(provider)} already belongs to a provider or account of another " <>
+      "adapter. Choose another name for `--as`, or check the \"adapter\" of " <>
+      "#{inspect(provider)} in the \"providers\" object of config.json."
+  end
+
+  def error_message({:invalid_account, provider}) do
+    "The recorded account #{inspect(provider)} in auth.json is invalid."
+  end
+
+  def error_message({:duplicate_adapter_type, adapter}) do
+    "Two installed adapters share the adapter type #{inspect(adapter)}."
+  end
+
+  def error_message({:invalid_config_provider, path, provider}) do
+    "Provider #{inspect(provider)} in #{path} is invalid. Each entry needs a valid id and " <>
+      "an \"adapter\" naming an adapter type id."
+  end
+
+  def error_message({:invalid_provider_declaration, provider}) do
+    "Provider #{inspect(provider)} in config.json must name its adapter under \"adapter\"."
+  end
+
+  def error_message({:invalid_provider_setting, provider, key, _value}) do
+    "Provider #{inspect(provider)} has an invalid #{inspect(key)} setting."
+  end
+
+  def error_message({:invalid_provider_settings, provider, _detail}) do
+    "Provider #{inspect(provider)} has invalid settings."
+  end
+
+  def error_message({:accounts_unavailable, _detail}),
+    do: "The recorded provider accounts could not be read."
+
+  def error_message(:no_providers_configured), do: "No providers are configured."
+
   def error_message({:http_error, status, _body}) do
     "The provider returned HTTP #{status}."
   end
@@ -223,15 +320,17 @@ defmodule Tackle.CLI.Output.Auth do
   def error_message(:missing_codex_credentials),
     do: "No OpenAI Codex credentials are stored. Run `tackle auth login openai-codex`."
 
-  def error_message(:missing_deepseek_api_key),
-    do: "No DeepSeek API key is available. Run `tackle auth login deepseek`."
+  def error_message({:missing_anthropic_credentials, provider}),
+    do: missing_key("Anthropic credentials are", provider, "anthropic", "ANTHROPIC_API_KEY")
 
-  def error_message(:missing_openrouter_api_key),
-    do: "No OpenRouter API key is available. Run `tackle auth login openrouter`."
+  def error_message({:missing_deepseek_api_key, provider}),
+    do: missing_key("DeepSeek API key is", provider, "deepseek", "DEEPSEEK_API_KEY")
 
-  def error_message(:missing_ollama_api_key),
-    do:
-      "No Ollama Cloud API key is available. Run `tackle auth login ollama-cloud` or set OLLAMA_API_KEY."
+  def error_message({:missing_openrouter_api_key, provider}),
+    do: missing_key("OpenRouter API key is", provider, "openrouter", "OPENROUTER_API_KEY")
+
+  def error_message({:missing_ollama_api_key, provider}),
+    do: missing_key("Ollama API key is", provider, "ollama-cloud", "OLLAMA_API_KEY")
 
   def error_message(:no_credentials), do: "No credentials are stored for this provider."
   def error_message(:timeout), do: "The provider request timed out."
@@ -245,28 +344,76 @@ defmodule Tackle.CLI.Output.Auth do
     "Authentication failed (#{error_code(reason)})."
   end
 
+  # Only the adapter's default provider reads the adapter's standard
+  # environment variable; other providers name theirs with "api_key_env".
+  defp missing_key(what, provider, provider, env) do
+    "No #{what} available for provider #{inspect(provider)}. " <>
+      "Run `tackle auth login #{provider}` or set #{env}."
+  end
+
+  defp missing_key(what, provider, _default, _env) when is_binary(provider) do
+    "No #{what} available for provider #{inspect(provider)}. " <>
+      "Run `tackle auth login #{provider}`, or name an environment variable with its " <>
+      "\"api_key_env\" setting in config.json."
+  end
+
+  defp missing_key(what, _provider, _default, _env), do: "No #{what} available."
+
   defp render_stacked_status(%{provider: provider, result: result}, output) do
     [
       Output.style(output, :heading, provider.id),
+      case adapter_label(provider) do
+        nil -> []
+        adapter -> [" · ", adapter]
+      end,
       "\n  ",
       style_status(output, result),
       " · login ",
-      style_supported(output, provider.capabilities.login),
+      style_supported(output, login?(provider, result)),
       " · usage ",
-      style_supported(output, provider.capabilities.usage)
+      style_supported(output, provider.capabilities.usage),
+      case source_label(provider) do
+        "" -> []
+        source -> [" · ", Output.style(output, :muted, source)]
+      end
     ]
   end
 
-  defp status_row(provider, status, login, usage, provider_width) do
-    [
-      align(provider, provider_width),
-      "  ",
-      align(status, @status_width),
-      "  ",
-      align(login, @flag_width),
-      "  ",
-      align(usage, @flag_width)
-    ]
+  defp status_row(cells, columns) do
+    columns
+    |> Enum.map(fn {column, width} -> align(Map.fetch!(cells, column), width) end)
+    |> Enum.intersperse("  ")
+  end
+
+  # A keyless provider implements login only to say none is needed.
+  defp login?(_provider, {:ok, status}) when status in [:not_required, "not_required"],
+    do: false
+
+  defp login?(provider, _result), do: provider.capabilities.login
+
+  # The adapter type, only when it differs from the provider id.
+  defp adapter_label(provider) do
+    case Map.get(provider, :adapter) do
+      adapter when is_binary(adapter) and adapter != provider.id -> adapter
+      _same_or_unknown -> nil
+    end
+  end
+
+  defp source_label(provider) do
+    case Map.get(provider, :source) do
+      :default -> "built-in"
+      :account -> "account"
+      :config -> "config"
+      nil -> ""
+      other -> to_string(other)
+    end
+  end
+
+  defp source_value(provider) do
+    case Map.get(provider, :source) do
+      nil -> ""
+      source -> to_string(source)
+    end
   end
 
   defp align(value, width) do
@@ -279,6 +426,9 @@ defmodule Tackle.CLI.Output.Auth do
 
   defp style_status(output, {:ok, status}) when status in [:missing, "missing"],
     do: Output.style(output, :warning, "missing")
+
+  defp style_status(output, {:ok, status}) when status in [:not_required, "not_required"],
+    do: Output.style(output, :muted, "not required")
 
   defp style_status(output, {:ok, status}),
     do: Output.style(output, :warning, scalar(status))
@@ -358,9 +508,11 @@ defmodule Tackle.CLI.Output.Auth do
 
   defp json_status(%{provider: provider, result: result}) do
     base = %{
+      "adapter" => Map.get(provider, :adapter),
       "capabilities" => json_value(provider.capabilities),
       "models" => provider.models,
-      "provider" => provider.id
+      "provider" => provider.id,
+      "source" => json_value(Map.get(provider, :source))
     }
 
     case result do
@@ -393,8 +545,13 @@ defmodule Tackle.CLI.Output.Auth do
     " Available providers: " <> Enum.join(providers, ", ") <> "."
   end
 
-  defp error_code({code, _rest}) when is_atom(code), do: to_string(code)
-  defp error_code({code, _one, _two}) when is_atom(code), do: to_string(code)
+  defp error_code(reason) when is_tuple(reason) and tuple_size(reason) > 1 do
+    case elem(reason, 0) do
+      code when is_atom(code) -> to_string(code)
+      _other -> "auth_error"
+    end
+  end
+
   defp error_code(code) when is_atom(code), do: to_string(code)
   defp error_code(_reason), do: "auth_error"
 

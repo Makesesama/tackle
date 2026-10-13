@@ -7,10 +7,11 @@ defmodule Tackle.Lib.LLM do
   host application supplies an adapter that fulfils this contract. This is what
   makes Tackle.Lib provider-agnostic: swap the adapter, keep the loop.
 
-  ## Selecting an adapter and model
+  ## Selecting a provider and model
 
   Hosts that make multiple adapters available should give each adapter a stable
-  `adapter_id/0` and a `models/0` list, then resolve a canonical model reference:
+  `adapter_id/0` and a `models/0` list, then resolve a canonical
+  `provider_id/model` reference:
 
       {:ok, selection} =
         Tackle.Lib.LLM.select(
@@ -20,8 +21,14 @@ defmodule Tackle.Lib.LLM do
 
       state = Tackle.Lib.new(llm: selection)
 
+  A bare adapter module stands for its default providers (see
+  `Tackle.Lib.LLM.Provider`), so its `adapter_id/0` is usually also a provider
+  id. Hosts that configure several instances of one adapter pass
+  `%Tackle.Lib.LLM.Provider{}` structs instead.
+
   The selection is stored on agent state and frozen in the per-turn snapshot.
-  Its adapter-local model id is passed as `opts[:model]`, so separate states can
+  Its adapter-local model id is passed as `opts[:model]`, and the provider as
+  `opts[:provider_id]` and `opts[:provider_settings]`, so separate states can
   use different providers without changing application-global configuration.
 
   Callers may configure one default adapter under Tackle.Lib's application key:
@@ -39,7 +46,10 @@ defmodule Tackle.Lib.LLM do
   implement `login/1`, `logout/1`, `status/1`, and `usage/1`. Interactive work
   talks to the user through a `Tackle.Lib.Interaction` handle passed in `opts`,
   and credential access goes through `Tackle.Lib.CredentialStore`, keeping the
-  adapter independent of terminal rendering and host storage.
+  adapter independent of terminal rendering and host storage. Hosts pass the
+  provider's `:provider_id` and `:provider_settings` to these callbacks too;
+  adapters use the provider id as their credential namespace (see
+  `Tackle.Lib.LLM.Provider.id/2`) so each provider keeps its own login.
 
   ## The contract
 
@@ -54,7 +64,8 @@ defmodule Tackle.Lib.LLM do
     provider-native `tool_calls`, not through this schema.
   * `opts` — passthrough options. Tackle.Lib sets `:model`, `:session_id`,
     `:system`, `:messages`, `:temperature`, and `:strict_schema`, then appends
-    any host-supplied `llm_opts` from the agent state. Adapters may use the stable
+    any host-supplied `llm_opts` from the agent state. Selections add
+    `:provider_id` and `:provider_settings`. Adapters may use the stable
     `:session_id` for provider prompt-cache affinity.
 
   ### `opts[:messages]` — the structured message array (the contract)
@@ -85,6 +96,7 @@ defmodule Tackle.Lib.LLM do
 
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.Usage
@@ -109,14 +121,34 @@ defmodule Tackle.Lib.LLM do
           optional(:provider_state) => map() | nil
         }
 
-  @doc "A stable lowercase identifier used as the model-reference prefix."
+  @doc """
+  A stable lowercase identifier naming the adapter type.
+
+  It is also the id of the adapter's default provider unless the adapter
+  exports `default_providers/0`.
+  """
   @callback adapter_id() :: String.t()
+
+  @doc """
+  The adapter's built-in providers as `{provider_id, settings}` tuples.
+
+  Optional. Without it, a bare adapter module stands for one provider whose id
+  is `adapter_id/0` with empty settings.
+  """
+  @callback default_providers() :: [{String.t(), Provider.settings()}]
 
   @doc "The adapter-local model identifiers available for explicit selection."
   @callback models() :: [String.t()]
 
+  @doc "Like `models/0`, for one provider's settings. Preferred when exported."
+  @callback models(settings :: Provider.settings()) :: [String.t()]
+
   @doc "Optional adapter-owned limits and price card for one adapter-local model."
   @callback model_info(model :: String.t()) :: ModelInfo.t() | map() | nil
+
+  @doc "Like `model_info/1`, for one provider's settings. Preferred when exported."
+  @callback model_info(model :: String.t(), settings :: Provider.settings()) ::
+              ModelInfo.t() | map() | nil
 
   @callback generate(schema :: keyword() | nil, opts :: keyword()) ::
               {:ok, adapter_response()} | {:error, term()}
@@ -133,7 +165,7 @@ defmodule Tackle.Lib.LLM do
   The adapter owns the complete flow—device codes, browser hand-off, API-key
   prompts—and talks to the user through the `:interaction` handle in `opts`
   (see `Tackle.Lib.Interaction`). The returned map is opaque and JSON-compatible;
-  the host persists it under the adapter's `adapter_id/0` credential namespace and
+  the host persists it under the provider's id (`opts[:provider_id]`) and
   replays it to the adapter through a `:credential_store` handle.
 
   This callback is optional. Adapters whose credentials are supplied externally
@@ -146,7 +178,7 @@ defmodule Tackle.Lib.LLM do
   Removes or revokes the adapter's stored credentials.
 
   Optional. When an adapter omits `logout/1`, the host deletes the credentials
-  stored under `adapter_id/0`. Adapters that must call a provider revocation
+  stored under the provider id. Adapters that must call a provider revocation
   endpoint implement it and are then responsible for their own cleanup.
   """
   @callback logout(opts :: keyword()) :: :ok | {:error, term()}
@@ -171,8 +203,11 @@ defmodule Tackle.Lib.LLM do
   @callback usage(opts :: keyword()) :: {:ok, report :: map()} | {:error, term()}
 
   @optional_callbacks adapter_id: 0,
+                      default_providers: 0,
                       models: 0,
+                      models: 1,
                       model_info: 1,
+                      model_info: 2,
                       stream: 3,
                       login: 1,
                       logout: 1,
@@ -180,14 +215,16 @@ defmodule Tackle.Lib.LLM do
                       usage: 1
 
   @doc """
-  Selects an adapter and model from a canonical `adapter_id/model` reference.
+  Selects a provider and model from a canonical `provider_id/model` reference.
 
-  Adapter ids must be lowercase strings containing letters, digits, and hyphens.
-  The model portion may itself contain `/`; only the first slash separates the
-  adapter id. Every supplied adapter must export `generate/2`, `adapter_id/0`,
-  and `models/0`, and adapter ids must be unique.
+  `sources` are `Tackle.Lib.LLM.Provider` structs or adapter modules, which
+  stand for their default providers. Provider ids must be lowercase strings
+  containing letters, digits, and hyphens, and must be unique. The model
+  portion may itself contain `/`; only the first slash separates the provider
+  id. Every adapter must export `generate/2`, `adapter_id/0`, and `models/1` or
+  `models/0`.
   """
-  @spec select([module()], String.t()) :: {:ok, Selection.t()} | {:error, term()}
+  @spec select([Provider.source()], String.t()) :: {:ok, Selection.t()} | {:error, term()}
   defdelegate select(adapters, model_ref), to: Selection, as: :resolve
 
   @doc """
@@ -213,11 +250,21 @@ defmodule Tackle.Lib.LLM do
   @doc """
   Safely resolves and validates optional metadata for one adapter-local model.
 
-  Adapters without `model_info/1` return `{:ok, nil}`. Callback failures and
-  malformed metadata are returned explicitly so hosts never run with silently
-  invalid model limits or prices.
+  Accepts an adapter module or a provider; providers prefer `model_info/2`
+  with their settings. Adapters without `model_info` return `{:ok, nil}`.
+  Callback failures and malformed metadata are returned explicitly so hosts
+  never run with silently invalid model limits or prices.
   """
-  @spec model_info(module(), String.t()) :: {:ok, ModelInfo.t() | nil} | {:error, term()}
+  @spec model_info(module() | Provider.t(), String.t()) ::
+          {:ok, ModelInfo.t() | nil} | {:error, term()}
+  def model_info(%Provider{adapter: adapter} = provider, model)
+      when is_binary(model) and model != "" do
+    with :ok <- ensure_adapter_loaded(adapter),
+         {:ok, value} <- Provider.model_info(provider, model) do
+      ModelInfo.normalize(model, value)
+    end
+  end
+
   def model_info(adapter, model)
       when is_atom(adapter) and not is_nil(adapter) and is_binary(model) and model != "" do
     with :ok <- ensure_adapter_loaded(adapter),
@@ -280,9 +327,9 @@ defmodule Tackle.Lib.LLM do
     generate_with_context(
       selection.adapter,
       selection.model_info,
-      selection.adapter_id,
+      selection.provider_id,
       schema,
-      Keyword.put(opts, :model, selection.model)
+      selection_opts(selection, opts)
     )
   end
 
@@ -328,9 +375,9 @@ defmodule Tackle.Lib.LLM do
     stream_with_context(
       selection.adapter,
       selection.model_info,
-      selection.adapter_id,
+      selection.provider_id,
       schema,
-      Keyword.put(opts, :model, selection.model),
+      selection_opts(selection, opts),
       event_callback
     )
   end
@@ -350,6 +397,13 @@ defmodule Tackle.Lib.LLM do
   end
 
   def stream_with(nil, _schema, _opts, _event_callback), do: {:error, :missing_llm_adapter}
+
+  defp selection_opts(%Selection{} = selection, opts) do
+    opts
+    |> Keyword.put(:model, selection.model)
+    |> Keyword.put(:provider_id, selection.provider_id)
+    |> Keyword.put(:provider_settings, selection.provider_settings)
+  end
 
   defp generate_with_context(adapter, info, provider, schema, opts) do
     with {:ok, response} <- adapter.generate(schema, opts) do
