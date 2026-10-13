@@ -12,7 +12,8 @@ defmodule Tackle.Config.File do
     "provider_options",
     "session_titles",
     "watchdog",
-    "narration"
+    "narration",
+    "decision_model"
   ]
 
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
@@ -46,10 +47,12 @@ defmodule Tackle.Config.File do
          {:ok, title_opts} <- session_titles_options(path, config),
          {:ok, watchdog_opts} <- watchdog_options(path, config),
          {:ok, narration_opts} <- narration_options(path, config),
+         {:ok, decision_opts} <- decision_model_options(path, config),
          :ok <- sidebar_option(path, config) do
       {:ok,
        model_opts ++
-         thinking_opts ++ provider_opts ++ title_opts ++ watchdog_opts ++ narration_opts}
+         thinking_opts ++
+         provider_opts ++ title_opts ++ watchdog_opts ++ narration_opts ++ decision_opts}
     end
   end
 
@@ -177,6 +180,17 @@ defmodule Tackle.Config.File do
       {:ok, value} when is_boolean(value) -> :ok
       {:ok, _value} -> {:error, {:invalid_config_field, path, "show_subagent_sidebar"}}
       :error -> :ok
+    end
+  end
+
+  # The default decision model for classification (`tackle.classify` in
+  # workflows); `Tackle.Config` resolves it against the session's adapters.
+  defp decision_model_options(path, config) do
+    case Map.fetch(config, "decision_model") do
+      {:ok, model} when is_binary(model) and model != "" -> {:ok, [decision_model: model]}
+      {:ok, nil} -> {:ok, []}
+      {:ok, _model} -> {:error, {:invalid_config_field, path, "decision_model"}}
+      :error -> {:ok, []}
     end
   end
 

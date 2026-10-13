@@ -412,6 +412,95 @@ defmodule Tackle.Config.FileTest do
     assert {:error, {:unsupported_decision_adapter, "test"}} = load.()
   end
 
+  test "decision adapters are granted to tools with the config.json default model", %{
+    home: home,
+    env: env
+  } do
+    adapters = [Adapter, JudgeAdapter]
+
+    load = fn ->
+      Config.load(available_adapters: adapters, env: env, overrides: [model: "test/default"])
+    end
+
+    write_config(
+      home,
+      JSON.encode!(%{
+        "decision_model" => "judge/small",
+        "provider_options" => %{"judge" => %{"base_url" => "http://judge.local"}}
+      })
+    )
+
+    assert {:ok, config} = load.()
+    assert %Tackle.Lib.Decision.Selection{ref: "judge/small"} = config.decision_model
+
+    # Only adapters implementing the decision contract are granted.
+    assert config.context.decisions == %{
+             adapters: [JudgeAdapter],
+             options: [provider_options: %{"judge" => %{"base_url" => "http://judge.local"}}],
+             default_model: "judge/small"
+           }
+
+    # Without a default the adapters are still granted; scripts name a model.
+    write_config(home, ~s({"decision_model": null}))
+    assert {:ok, config} = load.()
+    assert config.decision_model == nil
+
+    assert config.context.decisions == %{
+             adapters: [JudgeAdapter],
+             options: [],
+             default_model: nil
+           }
+
+    # Sessions without decision adapters get no grant.
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter],
+               env: env,
+               overrides: [model: "test/default"]
+             )
+
+    refute Map.has_key?(config.context, :decisions)
+
+    # A host grant in the context is kept as given.
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: adapters,
+               env: env,
+               overrides: [model: "test/default", context: %{decisions: :host}]
+             )
+
+    assert config.context.decisions == :host
+
+    # ...so a host can withhold decision models from tools explicitly.
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: adapters,
+               env: env,
+               overrides: [model: "test/default", context: %{decisions: nil}]
+             )
+
+    assert config.context.decisions == nil
+  end
+
+  test "invalid decision model configuration returns errors", %{home: home, env: env} do
+    load = fn ->
+      Config.load(
+        available_adapters: [Adapter, JudgeAdapter],
+        env: env,
+        overrides: [model: "test/default"]
+      )
+    end
+
+    path = write_config(home, ~s({"decision_model": 42}))
+    assert {:error, {:invalid_config_field, ^path, "decision_model"}} = load.()
+
+    write_config(home, ~s({"decision_model": "judge/missing"}))
+    assert {:error, {:unknown_decision_model, "judge/missing"}} = load.()
+
+    write_config(home, ~s({"decision_model": "test/default"}))
+    assert {:error, {:unsupported_decision_adapter, "test"}} = load.()
+  end
+
   test "narration is off by default and configurable through config.json", %{
     home: home,
     env: env

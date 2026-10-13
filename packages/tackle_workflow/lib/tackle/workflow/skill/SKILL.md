@@ -40,12 +40,14 @@ All functions live on the global `tackle` table.
 | `tackle.await(run)` | Blocks until the run settles and returns `{ok, status, text}`. A failed run is returned, not raised, so check `ok`. Only an invalid handle raises. |
 | `tackle.parallel(items, fn, opts?)` | Runs one agent per item, keeping at most `opts.limit` in flight. `fn(item, index)` returns `profile, prompt[, opts]`. Returns one table per item in input order: `{index, ok, status, text}`. |
 | `tackle.cancel(run, reason?)` | Asks one run to stop. |
-| `tackle.budget()` | Returns `{used, limit, remaining}`: tokens all runs of this workflow have used so far. `limit` and `remaining` are `nil` when the workflow has no token budget. |
+| `tackle.classify(state, questions, opts?)` | Asks a small decision model typed questions about `state` (a string or table) and returns `{ok, status, model, tokens, answers}`. Much cheaper than a run, but it only judges what you pass it: it cannot read files or call tools. `opts` may only be `{model = "provider/model"}`; without it the session's default decision model answers. Raises on bad questions, an unknown model, or a session without decision models. |
+| `tackle.budget()` | Returns `{used, limit, remaining}`: tokens all runs (and cloud classifications) of this workflow have used so far. `limit` and `remaining` are `nil` when the workflow has no token budget. |
 | `tackle.log(message)` | Shows a progress line to the user. |
 
 - `text` holds the agent's answer when `ok` is true, and the failure reason when it is false.
 - Every outcome also has `tokens`, `tool_calls` and `failed_tool_calls`: what the run actually spent and did, recorded by the harness, not reported by the agent. Use them to check claims. A run that says it made progress but called no tools did not change anything. `tackle.parallel` items that never started report zeros; only `"unavailable"` items have no facts.
 - `status` is one of `"ok"`, `"error"`, `"cancelled"`, `"runtime_error"`, `"timeout"` or `"rejected"`. `tackle.parallel` can also report `"callback_error"`, `"spawn_error"`, `"capacity"` (no free slot; trying the item again later may work), `"budget_exhausted"` or `"unavailable"`.
+- `tackle.classify` questions map a name to `{type, instructions, criteria}`. `type = "choice"` picks one option: `criteria` maps option names to descriptions, or lists the names (2 to 24). `type = "noul"` answers yes/no: `criteria` is optional, `{["true"] = "...", ["false"] = "..."}`. `type = "score"` rates: `criteria` lists the levels, lowest first. `answers[name]` has `choice` and `probability`, `noul` (the probability of yes), or `score` (1-based, so `criteria[score]` is the level), plus `probabilities` and sometimes `confidence`. A failed call returns `ok = false` with the reason in `text`; check `ok` before reading `answers`.
 - `items` must be a plain list numbered 1..n. A `limit` above the session's concurrency ceiling is lowered to that ceiling.
 
 ## What the script returns
@@ -86,6 +88,9 @@ need to read next:
   `"budget_exhausted"`. Runs already started finish, so a run can overshoot:
   keep a reserve, stop starting rounds before `remaining` reaches zero, and
   check `remaining` before any follow-up spawn such as an audit.
+  `tackle.classify` on a local decision model costs no budget and reports
+  `tokens = 0`; a cloud decision model's tokens count like a run's, and a cloud
+  `tackle.classify` raises once the budget is spent.
 - **Failure policy.** Check `ok` after every `await`. Wrap `tackle.spawn` in
   `pcall` only when you have a real fallback.
 
@@ -146,8 +151,25 @@ return "not approved after 3 reviews; last implementation report:\n" .. impl.tex
 ```
 
 Ask runs for answers in a fixed format (a first-line verdict, a list) when the
-script has to branch on them. Lua's string matching is the only parser you
-have.
+script has to branch on them. When the answer is free text, classify it
+instead of parsing it:
+
+```lua
+local review = tackle.await(tackle.spawn("reviewer", "Review the uncommitted change."))
+if not review.ok then return "review failed: " .. review.text end
+
+local c = tackle.classify(review.text, {
+  verdict = {type = "choice", instructions = "Does this review approve the change?",
+             criteria = {approve = "No blocking findings", revise = "At least one blocking finding"}}
+})
+local verdict = c.ok and c.answers.verdict or nil
+if verdict and verdict.choice == "approve" and (verdict.probability or 0) >= 0.8 then
+  return "approved"
+end
+```
+
+Fall back to string matching or a stricter prompt when `ok` is false or the
+probability is low.
 
 ## Goal loops
 

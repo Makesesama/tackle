@@ -78,6 +78,28 @@ defmodule Tackle.Lib.DecisionTest do
     def decide(_request, _opts), do: {:error, :not_used}
   end
 
+  defmodule LocalDecisionAdapter do
+    @behaviour Tackle.Lib.Decision
+
+    def adapter_id, do: "local"
+
+    @impl true
+    def decision_models, do: ["judge"]
+
+    @impl true
+    def decide(_request, _opts), do: {:error, :not_used}
+
+    @impl true
+    def local?, do: true
+  end
+
+  defmodule BadLocalFlagAdapter do
+    def adapter_id, do: "bad-local"
+    def decision_models, do: ["judge"]
+    def decide(_request, _opts), do: {:error, :not_used}
+    def local?, do: :yes
+  end
+
   defp verdict_question do
     Question.choice("verdict", "Is the command stuck?", %{
       "progressing" => "Output still advances",
@@ -139,6 +161,18 @@ defmodule Tackle.Lib.DecisionTest do
 
       assert {:error, {:invalid_adapter, Nope.Missing, {:not_loaded, _}}} =
                Decision.select([Nope.Missing], "fake-local/judge:4b")
+    end
+
+    test "marks selections local only when the adapter declares it" do
+      assert {:ok, %Selection{local: true}} =
+               Decision.select([LocalDecisionAdapter], "local/judge")
+
+      # Adapters without `local?/0` are remote.
+      assert {:ok, %Selection{local: false}} =
+               Decision.select([FakeDecisionAdapter], "fake-local/judge:4b")
+
+      assert Decision.select([BadLocalFlagAdapter], "bad-local/judge") ==
+               {:error, {:invalid_local_flag, "bad-local", :yes}}
     end
   end
 

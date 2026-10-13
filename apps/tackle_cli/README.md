@@ -918,6 +918,21 @@ the agent, which keeps working. The adapter reaches Ollama at
 `http://localhost:11434/v1` unless `provider_options.ollama.base_url` says
 otherwise.
 
+### Workflow classification
+
+Workflows run by `run_workflow` can ask the same decision model typed
+questions with `tackle.classify`, for example to route on a reviewer's verdict
+instead of matching its first line. Set the default decision model in
+`$TACKLE_HOME/config.json`; a script can still name another one with
+`{model = "provider/model"}`:
+
+```json
+{ "decision_model": "ollama/tev1:4b" }
+```
+
+The local model's classifications are not counted against a workflow's token
+budget.
+
 ### Narration
 
 The same local Ollama adapter offers the small chat model `ollama/gemma4:12b`,

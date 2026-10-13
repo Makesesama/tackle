@@ -178,6 +178,9 @@ value is the probability-weighted average of its zero-based levels. Non-2xx
 responses return `{:error, {:http_error, status, body}}`. `decide/2` honours
 `:cancellation_signal` (an in-flight request is abandoned) and
 `:receive_timeout` (default 60,000 ms, since a model may load on first use).
+The adapter declares its decision models local (`local?/0`), so hosts such as
+workflow `tackle.classify` leave their usage out of token budgets. That assumes
+the base URL reaches a self-hosted server; it is not checked.
 
 The CLI bundles this adapter next to `ollama-cloud`. Its distribution config
 makes `ollama/tev1:4b` selectable as a decision model (for the command

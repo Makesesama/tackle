@@ -15,8 +15,9 @@ defmodule Tackle.Workflow.Server do
   the worker dies; a workflow therefore owns every run it spawns.
 
   The server also owns the host's `:profiles` allowlist, optional
-  `:token_budget`, and optional `:owner`. The allowlist and budget travel to the
-  API as workflow runtime context, where they bound every spawn; the worker
+  `:token_budget`, optional `:decisions` grant, and optional `:owner`. The
+  allowlist, budget, and grant travel to the API as workflow runtime context,
+  where they bound every spawn and classification; the worker
   creates the `Tackle.Workflow.Meter` that counts its runs' tokens. A
   terminated owner cancels the workflow exactly like an explicit cancel would, so
   a workflow never outlives the request that started it.
@@ -44,6 +45,7 @@ defmodule Tackle.Workflow.Server do
           optional(:timeout) => timeout(),
           optional(:max_instructions) => pos_integer() | :infinity,
           optional(:token_budget) => pos_integer() | nil,
+          optional(:decisions) => Tackle.Workflow.Decisions.t() | nil,
           optional(:log) => (String.t() -> any()) | nil,
           optional(:on_event) => Progress.callback()
         }
@@ -91,6 +93,7 @@ defmodule Tackle.Workflow.Server do
       timeout: Map.get(arg, :timeout, :infinity),
       max_instructions: Map.get(arg, :max_instructions) || @default_max_instructions,
       token_budget: Map.get(arg, :token_budget),
+      decisions: Map.get(arg, :decisions),
       log: Map.get(arg, :log),
       on_event: Map.get(arg, :on_event),
       worker: nil,
@@ -110,7 +113,15 @@ defmodule Tackle.Workflow.Server do
     server = self()
 
     arg =
-      Map.take(state, [:handle, :script, :profiles, :max_instructions, :token_budget, :on_event])
+      Map.take(state, [
+        :handle,
+        :script,
+        :profiles,
+        :max_instructions,
+        :token_budget,
+        :decisions,
+        :on_event
+      ])
       |> Map.put(:server, server)
 
     worker =
@@ -200,6 +211,7 @@ defmodule Tackle.Workflow.Server do
         handle: arg.handle,
         server: arg.server,
         profiles: Map.get(arg, :profiles),
+        decisions: Map.get(arg, :decisions),
         on_event: Map.get(arg, :on_event),
         meter: Meter.new(Map.get(arg, :token_budget))
       })

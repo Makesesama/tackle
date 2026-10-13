@@ -208,7 +208,8 @@ defmodule Tackle.Test.Runtime do
         compaction: Keyword.get(opts, :compaction),
         session_titles: Keyword.get(opts, :session_titles),
         watchdog: Keyword.get(opts, :watchdog),
-        narration: Keyword.get(opts, :narration)
+        narration: Keyword.get(opts, :narration),
+        decision_model: Keyword.get(opts, :decision_model)
       )
 
     config

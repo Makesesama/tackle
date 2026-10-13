@@ -14,6 +14,42 @@ defmodule Tackle.Tools.WorkflowToolTest do
   alias Tackle.Coding
   alias Tackle.Workflow.Tool, as: WorkflowTool
 
+  # A local decision adapter: its classifications spend no budgeted tokens.
+  # Session adapters implement the chat contract too, like the Ollama one.
+  defmodule LocalJudge do
+    @moduledoc false
+    @behaviour Tackle.Lib.LLM
+    @behaviour Tackle.Lib.Decision
+
+    alias Tackle.Lib.Decision.{Answer, Request, Result}
+
+    @impl Tackle.Lib.LLM
+    def adapter_id, do: "judge"
+
+    @impl Tackle.Lib.LLM
+    def models, do: []
+
+    @impl Tackle.Lib.LLM
+    def generate(_schema, _opts), do: {:error, :not_used}
+
+    @impl Tackle.Lib.Decision
+    def decision_models, do: ["small"]
+
+    @impl Tackle.Lib.Decision
+    def local?, do: true
+
+    @impl Tackle.Lib.Decision
+    def decide(%Request{} = request, _opts) do
+      answers =
+        Map.new(request.questions, fn question ->
+          {question.name,
+           %Answer{type: :choice, choice: "green", probabilities: %{"green" => 1.0}}}
+        end)
+
+      {:ok, %Result{answers: answers, usage: %{"total_tokens" => 50}}}
+    end
+  end
+
   setup do
     home = tmp_home()
     {:ok, home: home}
@@ -94,6 +130,41 @@ defmodule Tackle.Tools.WorkflowToolTest do
              stored.messages,
              &(&1["role"] == "tool" and &1["content"] == "worker answer")
            )
+  end
+
+  test "a session with a decision adapter classifies through the configured default model",
+       ctx do
+    tool_call = %{
+      "id" => "call_workflow",
+      "name" => "run_workflow",
+      "arguments" => %{
+        "script" => """
+        local c = tackle.classify("all 120 tests passed", {
+          build = {type = "choice", instructions = "Is the build green?", criteria = {"green", "red"}}
+        })
+        return c.model .. " " .. c.answers.build.choice .. " " .. c.tokens .. " " .. tackle.budget().used
+        """
+      }
+    }
+
+    scope =
+      start_durable_scope(
+        home: ctx.home,
+        root: [
+          allow_delegation: true,
+          adapters: [Tackle.Test.Adapter, LocalJudge],
+          decision_model: "judge/small",
+          tools: [WorkflowTool],
+          mode: :tool_then_answer,
+          llm_opts: [tool_call: tool_call, content: "final answer"]
+        ]
+      )
+
+    {:ok, _snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    assert {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "classify the build")
+
+    assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, state}}, 5_000
+    assert tool_results(state) == ["judge/small green 0 0"]
   end
 
   test "a session that narrows the allowlist refuses a profile the workflow may not spawn", ctx do

@@ -21,6 +21,12 @@ defmodule Tackle.Workflow.Meter do
   are not interrupted, so a workflow can overshoot its budget by what those
   runs spend.
 
+  `tackle.classify` adds the tokens of each classification by a remote
+  decision model to the workflow total with `add_usage/2`. A local decision
+  model (`Tackle.Lib.Decision.local?/0`) spends no budgeted tokens and is not
+  counted. Only reported usage is counted: a classification whose adapter
+  reports no usage, or that fails before the model answers, adds nothing.
+
   Only the runs a workflow starts are metered. Delegation inside those runs
   reports to its own parent, not to the workflow, so it is not counted.
 
@@ -96,6 +102,18 @@ defmodule Tackle.Workflow.Meter do
   end
 
   defp do_record(_meter, _run_id, _event), do: :ok
+
+  @doc """
+  Adds tokens spent outside any run, such as a classification, to the workflow
+  total and returns how many were added. Usage without a positive total adds
+  nothing.
+  """
+  @spec add_usage(t(), Usage.t() | map() | nil) :: non_neg_integer()
+  def add_usage(%__MODULE__{} = meter, usage) do
+    count = tokens(%{usage: usage})
+    increment(meter, @total, count)
+    count
+  end
 
   @doc "Total tokens the workflow's runs have reported so far."
   @spec tokens_used(t()) :: non_neg_integer()

@@ -39,7 +39,7 @@ defmodule Tackle.Plugins.OllamaLocalTest do
       assert {:ok, %{adapter: OllamaLocal, model: "qwen3:8b"}} =
                LLM.select([OllamaLocal], "ollama/qwen3:8b")
 
-      assert {:ok, %Decision.Selection{adapter: OllamaLocal, model: "tev1:4b"}} =
+      assert {:ok, %Decision.Selection{adapter: OllamaLocal, model: "tev1:4b", local: true}} =
                Decision.select([OllamaLocal], "ollama/tev1:4b")
 
       assert {:error, {:unknown_decision_model, "ollama/qwen3:8b"}} =

@@ -66,6 +66,7 @@ defmodule Tackle.Workflow do
   alias Tackle.Runtime.Handle
   alias Tackle.Runtime.ID
   alias Tackle.Runtime.Ref
+  alias Tackle.Workflow.Decisions
   alias Tackle.Workflow.Ref, as: WorkflowRef
   alias Tackle.Workflow.Server
 
@@ -93,6 +94,11 @@ defmodule Tackle.Workflow do
       delegates the decision to the scope's own trusted profile allowlist. An
       empty list allows a workflow to run but refuse every spawn, so a host can
       grant scripted workflows without granting delegation.
+    * `:decisions` — decision models `tackle.classify` may use: a
+      `Tackle.Workflow.Decisions` grant, or the map or keyword list
+      `Tackle.Workflow.Decisions.new/1` accepts. Defaults to `nil`, which
+      makes `tackle.classify` raise. A remote model's classification tokens
+      count against `:token_budget`; a local model's do not.
     * `:owner` — optional PID whose lifetime the workflow shares. When it
       terminates, the workflow and every run it started are cancelled. A
       model-facing tool passes the process serving the tool call, so a
@@ -105,7 +111,7 @@ defmodule Tackle.Workflow do
       messages. `Tackle.Workflow.Progress` documents each event. Progress is
       presentation only; a failing callback never affects the workflow.
 
-  `:profiles`, `:token_budget`, and `:owner` are host options: they describe
+  `:profiles`, `:token_budget`, `:decisions`, and `:owner` are host options: they describe
   what the caller already decided, never what a workflow asked for.
   """
   @spec run(Handle.t() | AgentRef.t(), String.t(), keyword()) ::
@@ -118,6 +124,7 @@ defmodule Tackle.Workflow do
          {:ok, on_event} <- on_event(Keyword.get(opts, :on_event)),
          {:ok, timeout} <- timeout(Keyword.get(opts, :timeout)),
          {:ok, token_budget} <- token_budget(Keyword.get(opts, :token_budget)),
+         {:ok, decisions} <- Decisions.new(Keyword.get(opts, :decisions)),
          {:ok, workflow_ref} <- WorkflowRef.new(scope_ref.scope_id, ID.generate()) do
       arg = %{
         workflow_ref: workflow_ref,
@@ -128,6 +135,7 @@ defmodule Tackle.Workflow do
         timeout: timeout,
         max_instructions: Keyword.get(opts, :max_instructions),
         token_budget: token_budget,
+        decisions: decisions,
         log: Keyword.get(opts, :log),
         on_event: on_event
       }

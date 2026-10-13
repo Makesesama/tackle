@@ -22,6 +22,8 @@ defmodule Tackle.Workflow.API do
     delegated run per item and returns one result table per item, in input
     order. See below.
   * `tackle.cancel(run, reason)` requests cooperative cancellation of one run.
+  * `tackle.classify(state, questions, opts?)` asks a host-granted decision
+    model typed questions about `state`. See "Classification".
   * `tackle.budget()` returns the workflow's token accounting. See "Run facts
     and token budget".
   * `tackle.log(message)` reports progress to the host's log callback.
@@ -37,9 +39,10 @@ defmodule Tackle.Workflow.API do
     * `failed_tool_calls` — how many of them failed.
 
   `tackle.budget()` returns `{used = n}` with the tokens all of the workflow's
-  runs have reported so far, plus `limit` and `remaining` when the host gave
-  the workflow a token budget (`Tackle.Workflow.run/3`'s `:token_budget`).
-  Once `used` reaches `limit`, `tackle.spawn` raises and `tackle.parallel`
+  runs and remote classifications have reported so far, plus `limit` and
+  `remaining` when the host gave the workflow a token budget
+  (`Tackle.Workflow.run/3`'s `:token_budget`). Once `used` reaches `limit`,
+  `tackle.spawn` and remote `tackle.classify` calls raise, and `tackle.parallel`
   reports `"budget_exhausted"` for every item it has not started yet. Runs
   already in flight finish, so a workflow can spend more than its budget by
   what those runs use — with `tackle.parallel`, up to `limit` runs at once.
@@ -119,6 +122,42 @@ defmodule Tackle.Workflow.API do
   the runtime refuses a run; `tackle.parallel` reports a refusal on the item it
   belongs to instead.
 
+  ## Classification
+
+  `tackle.classify(state, questions, opts?)` asks a small decision model typed
+  questions instead of spending a delegated agent run:
+
+      local result = tackle.classify(review.text, {
+        verdict = {type = "choice", instructions = "Does the review approve the change?",
+                   criteria = {approve = "No blocking findings", revise = "Blocking findings"}}
+      })
+      if result.ok and result.answers.verdict.choice == "approve" then ... end
+
+  `state` is a string or a table of strings, numbers, booleans, and tables.
+  `questions` maps names to question specs, and the result's `answers` maps
+  the same names to answers; `Tackle.Workflow.Classify` documents both. `opts`
+  is an optional table whose only key is `model`, a `"provider/model"` decision
+  model reference. Without it the host's default decision model answers.
+
+  The host grants decision models with `Tackle.Workflow.run/3`'s `:decisions`
+  option (`Tackle.Workflow.Decisions`); a script can only select a model that
+  grant offers. A successful call returns
+
+      { ok = true, status = "ok", model = "provider/model", tokens = 0,
+        answers = { verdict = { type = "choice", choice = "approve", ... } } }
+
+  When the model cannot answer, the call returns `ok = false`, `status`
+  `"error"` or `"cancelled"`, and the reason in `text`; it is never retried.
+  Argument errors, a session without decision models, an unknown model, and an
+  exhausted token budget raise catchable Lua errors, like `tackle.spawn`.
+
+  `tokens` is what the call added to the workflow's token usage. A local
+  decision model (`Tackle.Lib.Decision.local?/0`) spends no budgeted tokens, so
+  its calls report `0`, run even after the budget is spent, and never change
+  `tackle.budget()`. A remote model's tokens count like a run's, as far as its
+  adapter reports them: a call that fails before the model answers, or an
+  adapter that reports no usage, adds nothing.
+
   ## Profile allowlist
 
   A host may run a workflow with an explicit allowlist of profile names
@@ -131,11 +170,14 @@ defmodule Tackle.Workflow.API do
 
   use Lua.API, scope: "tackle"
 
+  alias Tackle.Lib.Decision.{Request, Selection}
   alias Tackle.Runtime
   alias Tackle.Runtime.Handle
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.RunRef
+  alias Tackle.Workflow.Classify
+  alias Tackle.Workflow.Decisions
   alias Tackle.Workflow.Fanout
   alias Tackle.Workflow.Meter
   alias Tackle.Workflow.Progress
@@ -143,6 +185,7 @@ defmodule Tackle.Workflow.API do
   @parallel_helpers :parallel_helpers
   @parallel_options ["limit"]
   @spawn_options ["model"]
+  @classify_options ["model"]
 
   # Helpers `tackle.parallel/2,3` calls inside the VM. The item and its index
   # are read in Lua so the callback receives the value the script passed in:
@@ -251,6 +294,11 @@ defmodule Tackle.Workflow.API do
     {encoded, state} = Lua.encode!(state, Meter.budget(meter!(state)))
     {encoded, state}
   end
+
+  @doc "Asks a host-granted decision model typed questions about a state."
+  deflua(classify(input, questions), state, do: run_classify(state, input, questions, nil))
+
+  deflua(classify(input, questions, opts), state, do: run_classify(state, input, questions, opts))
 
   @doc "Reports one progress message to the host's log callback."
   deflua log(message) when is_binary(message), state do
@@ -556,6 +604,131 @@ defmodule Tackle.Workflow.API do
 
   defp outcome_text(%Outcome{} = outcome), do: Outcome.message(outcome)
 
+  # Classification ----------------------------------------------------------------
+
+  defp run_classify(state, input, questions, opts) do
+    decisions = decisions!(state)
+    model_ref = classify_model!(state, opts)
+    data = classify_arg!(Classify.state(decode_value(state, input)))
+    questions = classify_arg!(Classify.questions(decode_value(state, questions)))
+    %Selection{} = selection = select_decision!(decisions, model_ref)
+    request = Request.new(data, questions, selection.model)
+
+    case Request.validate(request) do
+      :ok -> :ok
+      {:error, {:invalid_decision_request, detail}} -> classify_error!(request_error(detail))
+    end
+
+    meter = meter!(state)
+
+    if not selection.local and Meter.exhausted?(meter) do
+      classify_error!(budget_exhausted(meter))
+    end
+
+    table =
+      case Decisions.decide(decisions, selection, request) do
+        {:ok, result} ->
+          # Tokens are spent once the model answered, even if the answer is unusable.
+          tokens = if selection.local, do: 0, else: Meter.add_usage(meter, result.usage)
+          Classify.result_table(result, questions, selection, tokens)
+
+        {:error, reason} ->
+          Classify.failure_table(reason)
+      end
+
+    {encoded, state} = Lua.encode!(state, table)
+    {encoded, state}
+  end
+
+  defp decode_value(state, value) do
+    if is_table(value), do: Lua.decode!(state, value), else: value
+  end
+
+  defp decisions!(state) do
+    case context!(state) do
+      %{decisions: %Decisions{} = decisions} -> decisions
+      _other -> classify_error!("no decision models are available in this session")
+    end
+  end
+
+  defp classify_model!(_state, nil), do: nil
+
+  defp classify_model!(state, opts) do
+    unless is_table(opts) do
+      classify_error!("classify options must be a table, got #{type_name(opts)}")
+    end
+
+    options = state |> Lua.decode!(opts) |> Lua.Table.as_map()
+
+    case Map.keys(options) -- @classify_options do
+      [] -> :ok
+      unknown -> classify_error!("unknown classify options: #{format_keys(unknown)}")
+    end
+
+    case Map.fetch(options, "model") do
+      :error ->
+        nil
+
+      {:ok, model} when is_binary(model) and model != "" ->
+        model
+
+      {:ok, model} ->
+        classify_error!("classify option model must be a non-empty string, got #{inspect(model)}")
+    end
+  end
+
+  defp classify_arg!({:ok, value}), do: value
+  defp classify_arg!({:error, message}), do: classify_error!(message)
+
+  defp select_decision!(decisions, model_ref) do
+    case Decisions.select(decisions, model_ref) do
+      {:ok, selection} ->
+        selection
+
+      {:error, :no_model} ->
+        classify_error!(
+          "no default decision model is configured; pass {model = ...}" <>
+            available_models(decisions)
+        )
+
+      {:error, {kind, _detail}} when kind in [:unknown_adapter, :unknown_decision_model] ->
+        classify_error!(
+          "decision model #{inspect(model_ref)} is not available" <> available_models(decisions)
+        )
+
+      {:error, {:invalid_model_ref, _ref}} ->
+        classify_error!(
+          "decision model #{inspect(model_ref)} is not a \"provider/model\" reference" <>
+            available_models(decisions)
+        )
+
+      # A grant the host misconfigured, not a script mistake.
+      {:error, reason} ->
+        classify_error!(
+          "decision model #{inspect(model_ref || decisions.default_model)} " <>
+            "could not be selected: #{inspect(reason)}"
+        )
+    end
+  end
+
+  defp available_models(decisions) do
+    case Decisions.available(decisions) do
+      [] -> ""
+      refs -> " (available: #{Enum.join(refs, ", ")})"
+    end
+  end
+
+  defp request_error(:empty_state), do: "state must not be empty"
+  defp request_error(:invalid_state), do: "state must be JSON-compatible"
+
+  defp request_error({:question_count, count}),
+    do: "classify takes 1 to #{Request.max_questions()} questions, got #{count}"
+
+  defp request_error({:request_too_large, bytes}),
+    do: "the request is #{bytes} bytes; the limit is #{Request.max_encoded_bytes()}"
+
+  defp request_error(detail), do: "invalid classification request: #{inspect(detail)}"
+
   # Argument and context helpers --------------------------------------------------
 
   # `nil` means the host left the decision to the scope's trusted profile
@@ -611,6 +784,10 @@ defmodule Tackle.Workflow.API do
 
   defp spawn_error!(message) do
     raise Lua.RuntimeException, scope: ["tackle"], function: :spawn, message: message
+  end
+
+  defp classify_error!(message) do
+    raise Lua.RuntimeException, scope: ["tackle"], function: :classify, message: message
   end
 
   defp describe([]), do: "no values"

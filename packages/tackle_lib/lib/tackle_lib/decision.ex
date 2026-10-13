@@ -25,6 +25,14 @@ defmodule Tackle.Lib.Decision do
   This module is a pure contract: it validates requests and selections and
   normalizes results, while transport stays inside adapters.
 
+  ## Local adapters
+
+  An adapter whose decision models run on hardware the user controls, such as
+  a self-hosted Ollama server, may export the optional `local?/0` callback
+  returning `true`. Its selections carry `local: true`, so a host can leave
+  their usage out of token budgets that bound paid spend. Adapters that do not
+  export it are treated as remote.
+
   ## Options
 
   `decide/3` passes its options to the adapter's `decide/2`. Adapters should
@@ -52,13 +60,24 @@ defmodule Tackle.Lib.Decision do
   @callback decide(Request.t(), opts :: keyword()) :: {:ok, Result.t()} | {:error, term()}
 
   @doc """
+  Whether the adapter's decision models run locally, on hardware the user
+  controls, so their usage is not paid per token. Defaults to `false` when not
+  exported.
+  """
+  @callback local?() :: boolean()
+
+  @optional_callbacks local?: 0
+
+  @doc """
   Selects a decision adapter and model from a canonical `adapter_id/model` reference.
 
   References are parsed like `Tackle.Lib.LLM.select/2`. Every supplied adapter
   must export `adapter_id/0` and ids must be unique; adapters without decision
   support may be listed, but selecting one returns
   `{:error, {:unsupported_decision_adapter, adapter_id}}`. A model missing from
-  `decision_models/0` returns `{:error, {:unknown_decision_model, ref}}`.
+  `decision_models/0` returns `{:error, {:unknown_decision_model, ref}}`. The
+  selection's `local` flag comes from the adapter's optional `local?/0`; a
+  non-boolean answer returns `{:error, {:invalid_local_flag, adapter_id, value}}`.
   """
   @spec select([module()], String.t()) :: {:ok, Selection.t()} | {:error, term()}
   defdelegate select(adapters, model_ref), to: Selection, as: :resolve

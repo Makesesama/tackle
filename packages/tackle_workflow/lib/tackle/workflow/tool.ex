@@ -38,8 +38,12 @@ defmodule Tackle.Workflow.Tool do
   `token_budget` argument can only lower it. The budget applies to each
   `run_workflow` call separately and stops it from starting runs once spent,
   so it bounds one workflow, not a session's total spend.
+
+  `tackle.classify` uses the decision models the host grants under
+  `:decisions` in the session context (a `Tackle.Workflow.Decisions` grant or
+  the map it accepts). Without it, `tackle.classify` raises.
   `Tackle.Workflow.run/3` documents the underlying `:profiles`, `:token_budget`,
-  and `:owner` options.
+  `:decisions`, and `:owner` options.
 
   The tool call owns the workflow's lifetime: the workflow is cancelled when the
   tool call ends, so a cancelled turn does not leave delegated runs behind. That
@@ -66,6 +70,7 @@ defmodule Tackle.Workflow.Tool do
   alias Tackle.Lib.Event
   alias Tackle.Runtime.Handle
   alias Tackle.Workflow
+  alias Tackle.Workflow.Decisions
 
   # The guide lives under `lib/` rather than `priv/`: it is embedded at compile
   # time, and the Nix source filter copies only `mix.exs`, `lib/`, and lock files.
@@ -89,6 +94,9 @@ defmodule Tackle.Workflow.Tool do
       "`failed_tool_calls`; `tackle.parallel(items, fn, opts)` to run one " <>
       "delegated agent per item with bounded concurrency, returning one result table per " <>
       "item in input order (the callback returns `profile, prompt, opts?`); `tackle.cancel(run, reason)` to cancel one run; " <>
+      "`tackle.classify(state, questions, opts?)` to ask a small decision model typed questions " <>
+      "(`choice`, `noul` yes/no, or `score`) about a string or table, returning `ok` and per-question " <>
+      "`answers` without spending an agent run; " <>
       "`tackle.budget()` to read `used` tokens and, under a token budget, `limit` and `remaining`; and " <>
       "`tackle.log(message)` to report progress. The values the workflow returns are the tool " <>
       "result, one per line: a list table such as `{a, b}` gives one line per element, and " <>
@@ -129,7 +137,9 @@ defmodule Tackle.Workflow.Tool do
          :ok <- ensure_delegation(handle),
          {:ok, profiles} <- workflow_profiles(context),
          {:ok, budget_opts} <- budget_opts(args, context),
-         {:ok, ref} <- start(handle, script, profiles, budget_opts ++ progress_opts(context)) do
+         {:ok, decision_opts} <- decision_opts(context),
+         {:ok, ref} <-
+           start(handle, script, profiles, budget_opts ++ decision_opts ++ progress_opts(context)) do
       await(ref)
     end
   end
@@ -218,6 +228,17 @@ defmodule Tackle.Workflow.Tool do
         [] -> {:ok, []}
         budgets -> {:ok, [token_budget: Enum.min(budgets)]}
       end
+    end
+  end
+
+  # The decision models `tackle.classify` may use are host configuration in the
+  # session context (see `Tackle.Workflow.Decisions`); without them the API
+  # raises. A malformed grant is reported rather than silently dropped.
+  defp decision_opts(context) do
+    case Decisions.new(Map.get(context, :decisions)) do
+      {:ok, nil} -> {:ok, []}
+      {:ok, decisions} -> {:ok, [decisions: decisions]}
+      {:error, reason} -> {:error, "decisions are misconfigured: #{describe(reason)}"}
     end
   end
 

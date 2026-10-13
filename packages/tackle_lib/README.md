@@ -521,6 +521,12 @@ list, and reports `{:unsupported_decision_adapter, id}` or
 `:cancellation_signal`, `:provider_options`, and `:receive_timeout` in opts; the
 library itself performs no HTTP.
 
+An adapter whose decision models run on hardware the user controls (such as a
+self-hosted Ollama server) may also export the optional `local?/0` callback
+returning `true`. Its selections then carry `local: true`, so hosts can leave
+their usage out of token budgets that bound paid spend; adapters without the
+callback are treated as remote.
+
 ## Tool system
 
 ### Behaviour and DSL

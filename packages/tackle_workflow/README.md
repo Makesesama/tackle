@@ -36,6 +36,9 @@ Workflows call the `tackle` table (`Tackle.Workflow.API`):
   item, at most `limit` in flight, one result table per item in input order;
   the callback returns `profile, prompt, opts?` with the same `opts` table;
 * `tackle.cancel(run, reason)` — cooperative cancellation of one run;
+* `tackle.classify(state, questions, opts?)` — asks a host-granted decision
+  model typed questions about a string or table (see
+  [Classification](#classification));
 * `tackle.budget()` — the workflow's token accounting, `{used, limit,
   remaining}` (see [Run facts and token budget](#run-facts-and-token-budget));
 * `tackle.log(message)` — progress reporting to the host's log callback.
@@ -176,6 +179,48 @@ as `budget_limited` when an open-ended goal runs out of budget. The workflow
 skill guide (`lib/tackle/workflow/skill/SKILL.md`, "Goal loops") documents the
 pattern with a complete script that the test suite runs against fake agents.
 
+## Classification
+
+`tackle.classify(state, questions, opts?)` asks a small decision model
+(`Tackle.Lib.Decision`) typed questions about a state, for judgements too
+cheap to spend a delegated run on:
+
+```lua
+local c = tackle.classify(review.text, {
+  verdict = {type = "choice", instructions = "Does the review approve the change?",
+             criteria = {approve = "No blocking findings", revise = "Blocking findings"}},
+  tests = {type = "noul", instructions = "Does the review mention missing tests?"}
+})
+if c.ok and c.answers.verdict.choice == "approve" then ... end
+```
+
+Questions are `choice`, `noul` (yes/no), or `score`; `Tackle.Workflow.Classify`
+documents their specs and answer tables. The result is `{ok, status, model,
+tokens, answers}`; a model that cannot answer returns `ok = false` with the
+reason in `text`, and argument errors, an unknown model, or a session without
+decision models raise.
+
+The host grants decision models with the `:decisions` option, a
+`Tackle.Workflow.Decisions` grant: trusted adapter modules, the options passed
+to every decision call, and an optional default model. A script's
+`{model = "provider/model"}` can only select a model those adapters offer:
+
+```elixir
+Tackle.Workflow.run(handle, script,
+  decisions: [adapters: adapters, options: [receive_timeout: 10_000],
+              default_model: "ollama/tev1:4b"]
+)
+```
+
+Classification tokens count against `:token_budget` like a run's, unless the
+selected adapter declares its decision models local
+(`Tackle.Lib.Decision.local?/0`, as the Ollama local adapter does): a local
+classification reports `tokens = 0`, never changes `tackle.budget()`, and still
+runs once the budget is spent. A remote one is refused like `tackle.spawn`
+when the budget is spent, and counts the tokens its adapter reports: a call
+that fails before the model answers, or an adapter that reports no usage,
+adds nothing.
+
 ## Observing progress
 
 `:on_event` is a one-arity callback that receives the workflow's progress while
@@ -229,6 +274,10 @@ and, optionally, narrows the profiles workflows may spawn:
   only narrow what the scope already allows. Model-visible data can therefore
   never widen delegation. Without it, the scope's trusted profiles decide — the
   same set `subagent` can already name.
+* `:decisions` in the session context grants `tackle.classify` its decision
+  models (see [Classification](#classification)). The Tackle harness fills it
+  from the session's adapters, `provider_options`, and the `config.json`
+  `decision_model` default whenever an adapter offers decision models.
 * `:workflow_token_budget` in the session context gives each workflow a token
   budget. The tool's optional `token_budget` argument can only lower it;
   without either, workflows have no token budget. The budget applies to each

@@ -12,8 +12,8 @@ config :tackle_cli,
 
 # Local Ollama models are never discovered from the server. The CLI makes the
 # tev1 decision model selectable as `ollama/tev1:4b` (for the command
-# watchdog) and the small chat model `ollama/gemma4:12b` (for narration); other
-# chat models stay host-configured.
+# watchdog and workflow `tackle.classify`) and the small chat model
+# `ollama/gemma4:12b` (for narration); other chat models stay host-configured.
 config :tackle_ollama, Tackle.Plugins.OllamaLocal,
   models: ["gemma4:12b"],
   decision_models: ["tev1:4b"]

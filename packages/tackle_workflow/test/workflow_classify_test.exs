@@ -1,0 +1,371 @@
+defmodule Tackle.Workflow.ClassifyTest do
+  @moduledoc false
+
+  use ExUnit.Case, async: false
+
+  import Tackle.Workflow.TestSupport
+
+  alias Tackle.Lib.Decision.{Answer, Question, Request, Result}
+  alias Tackle.Workflow
+  alias Tackle.Workflow.Decisions
+  alias Tackle.Workflow.Tool, as: WorkflowTool
+
+  @workflow_timeout 5_000
+
+  # Answers every question deterministically and reports the request to the
+  # test process. `:reply` in the options replaces the answer.
+  defmodule Judge do
+    @moduledoc false
+
+    def answer(%Request{} = request, opts) do
+      if pid = Keyword.get(opts, :test_pid), do: send(pid, {:decide, request})
+
+      case Keyword.get(opts, :reply) do
+        nil -> {:ok, %Result{answers: Map.new(request.questions, &answer/1), usage: usage(opts)}}
+        :raise -> raise "judge exploded"
+        :throw -> throw(:judge_threw)
+        :exit -> exit(:judge_exited)
+        reply -> reply
+      end
+    end
+
+    defp usage(opts), do: Keyword.get(opts, :usage, %{"input_tokens" => 20, "output_tokens" => 5})
+
+    defp answer(%Question{name: name, type: :choice}) do
+      {name,
+       %Answer{
+         type: :choice,
+         choice: "approve",
+         probabilities: %{"approve" => 0.9, "revise" => 0.1},
+         confidence: 0.8
+       }}
+    end
+
+    defp answer(%Question{name: name, type: :noul}),
+      do: {name, %Answer{type: :noul, noul: 0.25}}
+
+    defp answer(%Question{name: name, type: :score}),
+      do: {name, %Answer{type: :score, score: 1, probabilities: %{0 => 0.1, 1 => 0.7, 2 => 0.2}}}
+  end
+
+  defmodule LocalJudge do
+    @moduledoc false
+    @behaviour Tackle.Lib.Decision
+
+    def adapter_id, do: "local"
+
+    @impl true
+    def decision_models, do: ["judge"]
+
+    @impl true
+    def decide(request, opts), do: Judge.answer(request, opts)
+
+    @impl true
+    def local?, do: true
+  end
+
+  defmodule CloudJudge do
+    @moduledoc false
+    @behaviour Tackle.Lib.Decision
+
+    def adapter_id, do: "cloud"
+
+    @impl true
+    def decision_models, do: ["judge"]
+
+    @impl true
+    def decide(request, opts), do: Judge.answer(request, opts)
+  end
+
+  defmodule BadFlagJudge do
+    @moduledoc false
+    def adapter_id, do: "bad"
+    def decision_models, do: ["judge"]
+    def decide(request, opts), do: Judge.answer(request, opts)
+    def local?, do: :maybe
+  end
+
+  defmodule ChatOnly do
+    @moduledoc false
+    def adapter_id, do: "chat"
+  end
+
+  @verdict """
+  {verdict = {type = "choice", instructions = "Does the review approve?",
+              criteria = {approve = "No blocking findings", revise = "Blocking findings"}}}
+  """
+
+  defp decisions(opts \\ []) do
+    [
+      adapters: [ChatOnly, LocalJudge, CloudJudge],
+      options: Keyword.merge([test_pid: self()], Keyword.get(opts, :options, [])),
+      default_model: Keyword.get(opts, :default_model, "local/judge")
+    ]
+  end
+
+  defp run(script, opts \\ []) do
+    scope = start_scope()
+
+    with {:ok, ref} <- Workflow.run(handle(scope), script, opts) do
+      Workflow.await(ref, @workflow_timeout)
+    end
+  end
+
+  describe "answers" do
+    test "translates every question type and reports the selected model" do
+      script = """
+      local c = tackle.classify({review = "looks good", files = {"a.ex", "b.ex"}}, {
+        verdict = {type = "choice", instructions = "Approve?", criteria = {"approve", "revise"}},
+        tests = {type = "noul", instructions = "Tests added?",
+                 criteria = {[true] = "Yes", ["false"] = "No"}},
+        quality = {type = "score", instructions = "Rate it.", criteria = {"poor", "fair", "good"}}
+      })
+      local v, t, q = c.answers.verdict, c.answers.tests, c.answers.quality
+      return c.ok, c.status, c.model, c.tokens, v.choice, v.probability, v.probabilities.revise,
+        v.confidence, t.noul, q.score, q.probabilities[1], q.probabilities[3]
+      """
+
+      assert {:ok, [true, "ok", "local/judge", 0, "approve", 0.9, 0.1, 0.8, 0.25, 2, 0.1, 0.2]} =
+               run(script, decisions: decisions())
+
+      assert_receive {:decide, %Request{} = request}
+      assert request.model == "judge"
+      assert request.state == %{"review" => "looks good", "files" => ["a.ex", "b.ex"]}
+      assert Enum.map(request.questions, & &1.name) == ["quality", "tests", "verdict"]
+
+      assert %{
+               "quality" => %Question{type: :score, criteria: ["poor", "fair", "good"]},
+               "tests" => %Question{type: :noul, criteria: %{"true" => "Yes", "false" => "No"}},
+               "verdict" => %Question{
+                 type: :choice,
+                 criteria: %{"approve" => nil, "revise" => nil}
+               }
+             } = Map.new(request.questions, &{&1.name, &1})
+    end
+
+    test "an explicit model selects among the granted adapters" do
+      script = """
+      local c = tackle.classify("a review", #{@verdict}, {model = "cloud/judge"})
+      return c.model, c.answers.verdict.choice
+      """
+
+      assert {:ok, ["cloud/judge", "approve"]} = run(script, decisions: decisions())
+      assert_receive {:decide, %Request{state: "a review", model: "judge"}}
+    end
+
+    test "a model that cannot answer returns a failure instead of raising" do
+      script = """
+      local c = tackle.classify("a review", #{@verdict})
+      return c.ok, c.status, c.text, c.tokens, c.answers
+      """
+
+      assert {:ok, [false, "error", "classification failed: :overloaded", 0, nil]} =
+               run(script, decisions: decisions(options: [reply: {:error, :overloaded}]))
+
+      assert {:ok, [false, "cancelled", "classification cancelled", 0, nil]} =
+               run(script, decisions: decisions(options: [reply: {:error, :cancelled}]))
+
+      assert {:ok, [false, "error", "classification failed: " <> text, 0, nil]} =
+               run(script, decisions: decisions(options: [reply: :raise]))
+
+      assert text =~ "judge exploded"
+
+      for reply <- [:throw, :exit] do
+        assert {:ok, [false, "error", "classification failed: " <> text, 0, nil]} =
+                 run(script, decisions: decisions(options: [reply: reply]))
+
+        assert text =~ "adapter_failed"
+      end
+    end
+
+    test "answers that do not match the questions are failures that still report spent tokens" do
+      script = """
+      local c = tackle.classify("a review", #{@verdict}, {model = "cloud/judge"})
+      return c.ok, c.status, c.text, c.tokens, tackle.budget().used
+      """
+
+      wrong_type = %Result{
+        answers: %{"verdict" => %Answer{type: :noul, noul: 0.5}},
+        usage: %{"total_tokens" => 7}
+      }
+
+      assert {:ok, [false, "error", text, 7, 7]} =
+               run(script, decisions: decisions(options: [reply: {:ok, wrong_type}]))
+
+      assert text =~ ~s(classification failed: {:invalid_answer, "verdict"})
+
+      missing = %Result{answers: %{}, usage: %{"total_tokens" => 3}}
+
+      assert {:ok, [false, "error", text, 3, 3]} =
+               run(script, decisions: decisions(options: [reply: {:ok, missing}]))
+
+      assert text =~ ~s({:missing_answer, "verdict"})
+    end
+
+    test "long lists keep their order" do
+      script = """
+      local items = {}
+      for i = 1, 40 do items[i] = "finding " .. i end
+      local c = tackle.classify({findings = items}, #{@verdict})
+      return c.ok
+      """
+
+      assert {:ok, [true]} = run(script, decisions: decisions())
+      assert_receive {:decide, %Request{state: %{"findings" => findings}}}
+      assert findings == Enum.map(1..40, &"finding #{&1}")
+    end
+  end
+
+  describe "token budget" do
+    test "remote classifications count against the budget and are refused once it is spent" do
+      script = """
+      local first = tackle.classify("a review", #{@verdict}, {model = "cloud/judge"})
+      local used = tackle.budget().used
+      local refused, err = pcall(tackle.classify, "a review", #{@verdict}, {model = "cloud/judge"})
+      local local_call = tackle.classify("a review", #{@verdict})
+      return first.tokens, used, refused, err, local_call.ok, local_call.tokens, tackle.budget().used
+      """
+
+      assert {:ok, [25, 25, false, err, true, 0, 25]} =
+               run(script, decisions: decisions(), token_budget: 10)
+
+      assert err =~ "token budget exhausted (used 25 of 10 tokens)"
+    end
+
+    test "local classifications never touch the budget" do
+      script = """
+      local c = tackle.classify("a review", #{@verdict})
+      return c.tokens, tackle.budget().used
+      """
+
+      assert {:ok, [0, 0]} =
+               run(script,
+                 decisions: decisions(options: [usage: %{"total_tokens" => 999}]),
+                 token_budget: 10
+               )
+    end
+  end
+
+  describe "errors" do
+    test "a workflow without decision models raises" do
+      assert {:error, %{message: message}} = run("return tackle.classify('x', #{@verdict})")
+      assert message =~ "no decision models are available in this session"
+    end
+
+    test "an unknown model raises and lists the available ones" do
+      script = "return tackle.classify('x', #{@verdict}, {model = 'cloud/missing'})"
+
+      assert {:error, %{message: message}} = run(script, decisions: decisions())
+
+      assert message =~
+               ~s[decision model "cloud/missing" is not available (available: cloud/judge, local/judge)]
+    end
+
+    test "a missing model without a default raises" do
+      grant = Keyword.put(decisions(), :default_model, nil)
+
+      assert {:error, %{message: message}} =
+               run("return tackle.classify('x', #{@verdict})", decisions: grant)
+
+      assert message =~ "no default decision model is configured; pass {model = ...}"
+    end
+
+    test "a misconfigured adapter is reported as such, not as an unknown model" do
+      grant = [adapters: [BadFlagJudge], default_model: nil]
+      script = "return tackle.classify('x', #{@verdict}, {model = 'bad/judge'})"
+
+      assert {:error, %{message: message}} = run(script, decisions: grant)
+
+      assert message =~
+               ~s(decision model "bad/judge" could not be selected: {:invalid_local_flag, "bad", :maybe})
+
+      assert {:error, %{message: message}} =
+               run("return tackle.classify('x', #{@verdict}, {model = 'nope'})",
+                 decisions: decisions()
+               )
+
+      assert message =~ ~s(decision model "nope" is not a "provider/model" reference)
+    end
+
+    test "malformed arguments raise catchable errors" do
+      cases = [
+        {"tackle.classify('x', {})", "questions must be a non-empty table"},
+        {"tackle.classify('x', {v = {type = 'vote', instructions = 'x'}})",
+         ~s(question "v" needs type "choice", "noul", or "score")},
+        {"tackle.classify('x', {v = {type = 'noul', instructions = 'x', extra = 1}})",
+         ~s(question "v" has unknown keys: "extra")},
+        {"tackle.classify('x', {v = {type = 'noul', instructions = ''}})",
+         ~s(question "v" needs non-empty instructions)},
+        {"tackle.classify('x', {v = {type = 'choice', instructions = 'x', criteria = {'only'}}})",
+         ~s(question "v" needs 2 to 24 options or levels, got 1)},
+        {"tackle.classify('x', {v = {type = 'choice', instructions = 'x', criteria = {" <>
+           Enum.map_join(1..40, ", ", &"'o#{&1}'") <> "}}})",
+         ~s(question "v" needs 2 to 24 options or levels, got 40)},
+        {"tackle.classify('x', {v = {type = 'score', instructions = 'x', criteria = {a = 'b'}}})",
+         "score criteria must be a list of levels"},
+        {"tackle.classify({}, {v = {type = 'noul', instructions = 'x'}})",
+         "state must not be empty"},
+        {"tackle.classify(42, {v = {type = 'noul', instructions = 'x'}})",
+         "state must be a string or a table"},
+        {"tackle.classify({f = print}, {v = {type = 'noul', instructions = 'x'}})",
+         "state must hold only strings"},
+        {"tackle.classify('x', {v = {type = 'noul', instructions = 'x'}}, {limit = 1})",
+         ~s(unknown classify options: "limit")},
+        {"tackle.classify('x', {v = {type = 'noul', instructions = 'x'}}, {model = ''})",
+         "classify option model must be a non-empty string"}
+      ]
+
+      for {call, expected} <- cases do
+        script = "local ok, err = pcall(function() return #{call} end) return ok, err"
+        assert {:ok, [false, message]} = run(script, decisions: decisions())
+        assert message =~ expected, "#{call}: #{message}"
+      end
+
+      refute_received {:decide, _request}
+    end
+
+    test "an invalid grant fails the workflow before it starts" do
+      scope = start_scope()
+
+      assert {:error, {:unknown_decision_model, "local/missing"}} =
+               Workflow.run(handle(scope), "return 1",
+                 decisions: [adapters: [LocalJudge], default_model: "local/missing"]
+               )
+
+      assert {:error, {:invalid_workflow_option, :decisions, [unknown: [:model]]}} =
+               Workflow.run(handle(scope), "return 1", decisions: [model: "local/judge"])
+
+      assert {:error, {:invalid_workflow_option, :decisions, "bad"}} =
+               Workflow.run(handle(scope), "return 1", decisions: "bad")
+    end
+  end
+
+  describe "grant" do
+    test "lists the decision models its adapters offer" do
+      assert {:ok, %Decisions{} = grant} = Decisions.new(decisions())
+      assert Decisions.available(grant) == ["cloud/judge", "local/judge"]
+      assert {:ok, nil} = Decisions.new(nil)
+    end
+  end
+
+  describe "run_workflow tool" do
+    test "takes the grant from the session context" do
+      scope = start_scope()
+
+      context = %{runtime: handle(scope), decisions: Map.new(decisions())}
+      script = "return tackle.classify('x', #{@verdict}).answers.verdict.choice"
+
+      assert {:ok, "approve"} = WorkflowTool.run(%{"script" => script}, context)
+    end
+
+    test "reports a malformed grant" do
+      scope = start_scope()
+
+      assert {:error, "decisions are misconfigured: " <> _reason} =
+               WorkflowTool.run(%{"script" => "return 1"}, %{
+                 runtime: handle(scope),
+                 decisions: %{adapters: "nope"}
+               })
+    end
+  end
+end

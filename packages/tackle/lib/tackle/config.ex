@@ -25,6 +25,7 @@ defmodule Tackle.Config do
   alias Tackle.Config.Watchdog
   alias Tackle.Executor
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
+  alias Tackle.Lib.Decision
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
@@ -75,7 +76,8 @@ defmodule Tackle.Config do
     :compaction,
     :session_titles,
     :watchdog,
-    :narration
+    :narration,
+    :decision_model
   ]
 
   @enforce_keys [:adapters, :model_ref, :llm]
@@ -97,7 +99,8 @@ defmodule Tackle.Config do
             compaction: nil,
             session_titles: nil,
             watchdog: nil,
-            narration: nil
+            narration: nil,
+            decision_model: nil
 
   @type t :: %__MODULE__{
           adapters: [module()],
@@ -118,7 +121,8 @@ defmodule Tackle.Config do
           compaction: CompactionConfig.t() | nil,
           session_titles: SessionTitles.t() | nil,
           watchdog: Watchdog.t() | nil,
-          narration: Narration.t() | nil
+          narration: Narration.t() | nil,
+          decision_model: Tackle.Lib.Decision.Selection.t() | nil
         }
 
   @doc """
@@ -185,6 +189,14 @@ defmodule Tackle.Config do
   `:watchdog` enables the command watchdog; see `Tackle.Config.Watchdog`.
   Optional `:narration` enables the narrator for delegated runs; see
   `Tackle.Config.Narration`.
+
+  Optional `:decision_model` is the session's default decision model reference,
+  such as `"ollama/tev1:4b"`, resolved eagerly through
+  `Tackle.Lib.Decision.select/2`. When any adapter offers decision models, the
+  session context gets `:decisions` — `%{adapters: decision_adapters, options:
+  [provider_options: ...], default_model: ref | nil}` — for tools that
+  classify with them, such as the workflow tool's `tackle.classify`. A `:decisions`
+  entry the host already put in `:context` is kept as given.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
@@ -199,6 +211,8 @@ defmodule Tackle.Config do
            resolve_session_titles(Keyword.get(opts, :session_titles), adapters),
          {:ok, watchdog} <- Watchdog.new(Keyword.get(opts, :watchdog), adapters),
          {:ok, narration} <- Narration.new(Keyword.get(opts, :narration), adapters),
+         {:ok, decision_model} <-
+           resolve_decision_model(Keyword.get(opts, :decision_model), adapters),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
@@ -226,7 +240,10 @@ defmodule Tackle.Config do
          hooks: hooks,
          system_prompt:
            Keyword.get_lazy(opts, :system_prompt, fn -> SystemPrompt.default(tools) end),
-         context: Keyword.get(opts, :context, %{}),
+         context:
+           opts
+           |> Keyword.get(:context, %{})
+           |> put_decisions(adapters, decision_model, Keyword.get(opts, :llm_opts, [])),
          max_iterations: Keyword.get(opts, :max_iterations, :infinity),
          tool_policy: Policy.concurrent(),
          llm_opts: Keyword.get(opts, :llm_opts, []),
@@ -238,7 +255,8 @@ defmodule Tackle.Config do
          compaction: compaction,
          session_titles: session_titles,
          watchdog: watchdog,
-         narration: narration
+         narration: narration,
+         decision_model: decision_model
        }}
     end
   end
@@ -723,6 +741,44 @@ defmodule Tackle.Config do
 
   defp resolve_session_titles(other, _adapters),
     do: {:error, {:invalid_option, :session_titles, other}}
+
+  defp resolve_decision_model(nil, _adapters), do: {:ok, nil}
+
+  defp resolve_decision_model(model_ref, adapters) when is_binary(model_ref),
+    do: Decision.select(adapters, model_ref)
+
+  defp resolve_decision_model(other, _adapters),
+    do: {:error, {:invalid_option, :decision_model, other}}
+
+  # Tools reach decision models only through the session context. Only adapters
+  # that implement the decision contract are granted, with the provider options
+  # adapters such as the local Ollama one read their base URL from.
+  defp put_decisions(%{decisions: _host_grant} = context, _adapters, _default, _llm_opts),
+    do: context
+
+  defp put_decisions(context, adapters, default, llm_opts) do
+    case Enum.filter(adapters, &decision_adapter?/1) do
+      [] ->
+        context
+
+      decision_adapters ->
+        options =
+          case Keyword.get(llm_opts, :provider_options) do
+            nil -> []
+            provider_options -> [provider_options: provider_options]
+          end
+
+        Map.put(context, :decisions, %{
+          adapters: decision_adapters,
+          options: options,
+          default_model: default && default.ref
+        })
+    end
+  end
+
+  defp decision_adapter?(adapter),
+    do:
+      function_exported?(adapter, :decision_models, 0) and function_exported?(adapter, :decide, 2)
 
   defp validate_optional_string(_name, nil), do: :ok
   defp validate_optional_string(_name, value) when is_binary(value), do: :ok

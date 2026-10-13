@@ -613,6 +613,20 @@ such as `"ollama/tev1:4b"` (see `Tackle.Lib.Decision`):
 { "watchdog": { "model": "ollama/tev1:4b", "after_seconds": 60, "threshold": 0.85 } }
 ```
 
+Tools can use decision models too. When any session adapter implements
+`Tackle.Lib.Decision`, the session context carries `:decisions` (those
+adapters, the session's `provider_options`, and a default model), which the
+workflow tool hands to `tackle.classify`. An optional top-level
+`decision_model` sets that default; without it scripts must name a model:
+
+```json
+{ "decision_model": "ollama/tev1:4b" }
+```
+
+Classifications by a local decision model (an adapter whose `local?/0` is
+`true`, such as the Ollama local adapter) are not counted against workflow
+token budgets; a remote decision model's tokens are.
+
 An optional `narration` object enables the narrator (`Tackle.Narrator`), which
 is off by default because it calls a chat model of its own. Only the root
 session runs one, as a runtime service; it follows the delegated runs the root

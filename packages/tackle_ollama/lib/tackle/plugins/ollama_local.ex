@@ -40,6 +40,11 @@ defmodule Tackle.Plugins.OllamaLocal do
   `decide/2` honours `:cancellation_signal` (an in-flight request is abandoned
   and `{:error, :cancelled}` returned) and `:receive_timeout` (default 60,000 ms;
   a model may need to load on first use).
+
+  The adapter declares its decision models local (`local?/0` is `true`): they
+  run on a server the user hosts, so hosts may leave their usage out of token
+  budgets. That assumes the base URL points at a self-hosted server; a base
+  URL that reaches a paid endpoint is still treated as local.
   """
 
   @behaviour Tackle.Lib.LLM
@@ -69,8 +74,11 @@ defmodule Tackle.Plugins.OllamaLocal do
     end
   end
 
-  @impl true
+  @impl Tackle.Lib.Decision
   def decision_models, do: configured_ids(:decision_models)
+
+  @impl Tackle.Lib.Decision
+  def local?, do: true
 
   @impl true
   def generate(schema, opts), do: chat(schema, opts, fn _event -> :ok end)

@@ -5,18 +5,21 @@ defmodule Tackle.Lib.Decision.Selection do
   Selections are created through `Tackle.Lib.Decision.select/2`. The
   adapter-local `model` is sent in each request, while `ref` preserves the
   canonical `adapter_id/model` identifier for configuration and auditing.
+  `local` is `true` when the adapter declares its decision models local through
+  the optional `Tackle.Lib.Decision.local?/0` callback.
   """
 
   alias Tackle.Lib.LLM.Selection, as: LLMSelection
 
   @enforce_keys [:adapter, :adapter_id, :model, :ref]
-  defstruct [:adapter, :adapter_id, :model, :ref]
+  defstruct [:adapter, :adapter_id, :model, :ref, local: false]
 
   @type t :: %__MODULE__{
           adapter: module(),
           adapter_id: String.t(),
           model: String.t(),
-          ref: String.t()
+          ref: String.t(),
+          local: boolean()
         }
 
   @decision_callbacks [decision_models: 0, decide: 2]
@@ -29,8 +32,16 @@ defmodule Tackle.Lib.Decision.Selection do
          {:ok, adapter} <- fetch_adapter(adapter_index, adapter_id),
          :ok <- ensure_decision_adapter(adapter, adapter_id),
          {:ok, models} <- decision_models(adapter, adapter_id),
-         :ok <- ensure_model(models, model_ref, model) do
-      {:ok, %__MODULE__{adapter: adapter, adapter_id: adapter_id, model: model, ref: model_ref}}
+         :ok <- ensure_model(models, model_ref, model),
+         {:ok, local} <- local(adapter, adapter_id) do
+      {:ok,
+       %__MODULE__{
+         adapter: adapter,
+         adapter_id: adapter_id,
+         model: model,
+         ref: model_ref,
+         local: local
+       }}
     end
   end
 
@@ -54,6 +65,18 @@ defmodule Tackle.Lib.Decision.Selection do
   defp decision_models(adapter, adapter_id) do
     with {:ok, models} <- LLMSelection.adapter_callback(adapter, :decision_models) do
       LLMSelection.validate_models(models, adapter_id)
+    end
+  end
+
+  defp local(adapter, adapter_id) do
+    if function_exported?(adapter, :local?, 0) do
+      case LLMSelection.adapter_callback(adapter, :local?) do
+        {:ok, local} when is_boolean(local) -> {:ok, local}
+        {:ok, other} -> {:error, {:invalid_local_flag, adapter_id, other}}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, false}
     end
   end
 
