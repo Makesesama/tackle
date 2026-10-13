@@ -346,12 +346,18 @@ defmodule Tackle.Workflow.Tool do
   # A decoded table is a list of `{key, value}` pairs; `{}` decodes to `[]`.
   defp table?(value), do: is_list(value) and Enum.all?(value, &match?({_key, _value}, &1))
 
-  # Keys arrive sorted, so a sequence is exactly the keys 1..n in order.
+  # Decoded keys are in map order, which is not sorted once a table has more
+  # than 32 keys, so sort before checking for exactly the keys 1..n.
   defp sequence(value) do
-    if table?(value) and
-         value |> Enum.with_index(1) |> Enum.all?(fn {{key, _}, index} -> key === index end),
-       do: {:ok, Enum.map(value, fn {_key, element} -> element end)},
-       else: :error
+    if table?(value) do
+      sorted = List.keysort(value, 0)
+
+      if sorted |> Enum.with_index(1) |> Enum.all?(fn {{key, _}, index} -> key === index end),
+        do: {:ok, Enum.map(sorted, fn {_key, element} -> element end)},
+        else: :error
+    else
+      :error
+    end
   end
 
   defp json_data(value) when is_binary(value) or is_number(value) or is_boolean(value),

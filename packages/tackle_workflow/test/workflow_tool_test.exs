@@ -230,6 +230,30 @@ defmodule Tackle.Workflow.ToolTest do
       assert {:ok, "one\ntwo\nthree"} = run_workflow(scope, ~s|return {"one", "two"}, "three"|)
     end
 
+    # Tables with more than 32 keys decode in hash order, not key order.
+    test "keeps long sequences in order, at the top level and nested in JSON" do
+      scope = start_scope(profiles: %{})
+
+      script = """
+      local items = {}
+      for i = 1, 40 do items[i] = "item " .. i end
+      return items
+      """
+
+      expected = Enum.map(1..40, &"item #{&1}")
+      assert {:ok, lines} = run_workflow(scope, script)
+      assert String.split(lines, "\n") == expected
+
+      script = """
+      local items = {}
+      for i = 1, 40 do items[i] = i end
+      return {items = items}
+      """
+
+      assert {:ok, json} = run_workflow(scope, script)
+      assert JSON.decode!(json) == %{"items" => Enum.to_list(1..40)}
+    end
+
     test "renders keyed and nested tables as JSON" do
       scope = start_scope(profiles: %{})
 
