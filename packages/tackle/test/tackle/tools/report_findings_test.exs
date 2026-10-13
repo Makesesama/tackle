@@ -70,6 +70,17 @@ defmodule Tackle.Tools.ReportFindingsTest do
     test "records valid findings" do
       assert {:ok, "Recorded 1 finding."} = tool(%{"findings" => [finding()]}, %{review: @review})
       assert {:ok, "Recorded no findings."} = tool(%{"findings" => []}, %{review: @review})
+
+      assert {:ok, "Recorded 1 finding." <> _} =
+               tool(%{"findings" => [finding()], "done" => true}, %{review: @review})
+    end
+
+    test "with done: false, asks for the rest of the review" do
+      assert {:ok, text} =
+               tool(%{"findings" => [finding()], "done" => false}, %{review: @review})
+
+      assert text =~ "Recorded 1 finding. Keep reviewing"
+      assert text =~ "without done: false"
     end
 
     test "returns the errors of rejected findings to the model" do
@@ -141,7 +152,30 @@ defmodule Tackle.Tools.ReportFindingsTest do
              ReportFindings.collect(messages, @review)
   end
 
-  test "reported?/2 is true only for an answered call the tool accepted" do
+  test "collect/2 counts a finding reported again once" do
+    report = fn id, findings, done ->
+      [
+        Message.assistant(
+          tool_calls: [
+            %Call{
+              id: id,
+              name: "report_findings",
+              arguments: %{"findings" => findings, "done" => done}
+            }
+          ]
+        ),
+        Message.tool_result(id, "report_findings", "Recorded.")
+      ]
+    end
+
+    second = finding(%{"title" => "Check the second case"})
+    messages = report.("1", [finding()], false) ++ report.("2", [finding(), second], true)
+
+    assert [%Finding{title: "Handle the error from File.read"}, %Finding{title: "Check" <> _}] =
+             ReportFindings.collect(messages, @review)
+  end
+
+  test "finished?/2 is true only for an answered last call the tool accepted" do
     invalid =
       finding(%{
         "location" => %{"path" => "lib/a.ex", "side" => "new", "start_line" => 1, "end_line" => 1}
@@ -153,24 +187,41 @@ defmodule Tackle.Tools.ReportFindingsTest do
       )
     end
 
-    refute ReportFindings.reported?([Message.user("review")], @review)
+    refute ReportFindings.finished?([Message.user("review")], @review)
 
     # Every finding invalid: the tool returned an error, nothing was recorded.
     rejected = [report.("1", [invalid]), Message.tool_result("1", "report_findings", "No...")]
-    refute ReportFindings.reported?(rejected, @review)
+    refute ReportFindings.finished?(rejected, @review)
 
     # Never answered.
-    refute ReportFindings.reported?([report.("2", [finding()])], @review)
+    refute ReportFindings.finished?([report.("2", [finding()])], @review)
 
     empty = [report.("3", []), Message.tool_result("3", "report_findings", "Recorded no...")]
-    assert ReportFindings.reported?(empty, @review)
+    assert ReportFindings.finished?(empty, @review)
 
     partial = [
       report.("4", [finding(), invalid]),
       Message.tool_result("4", "report_findings", "Recorded 1 finding.")
     ]
 
-    assert ReportFindings.reported?(rejected ++ partial, @review)
+    assert ReportFindings.finished?(rejected ++ partial, @review)
+
+    # Reports made while still reviewing do not finish the run.
+    progress = [
+      Message.assistant(
+        tool_calls: [
+          %Call{
+            id: "5",
+            name: "report_findings",
+            arguments: %{"findings" => [finding()], "done" => false}
+          }
+        ]
+      ),
+      Message.tool_result("5", "report_findings", "Recorded 1 finding.")
+    ]
+
+    refute ReportFindings.finished?(progress, @review)
+    assert ReportFindings.finished?(progress ++ empty, @review)
   end
 
   describe "report_verdict" do

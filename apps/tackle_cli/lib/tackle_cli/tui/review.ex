@@ -558,6 +558,10 @@ defmodule Tackle.CLI.TUI.Review do
     Enum.map(summary.failed_units, fn %{unit: unit, reason: reason} ->
       "Unit #{unit} was not reviewed: #{Tackle.Review.Delegation.format_error(reason)}"
     end) ++
+      Enum.map(summary.incomplete_units, fn %{unit: unit, reason: reason} ->
+        "Unit #{unit} was reviewed only in part " <>
+          "(#{Tackle.Review.Delegation.format_error(reason)}); its findings are kept"
+      end) ++
       if(known > 0, do: ["#{known} dismissed finding(s) not reported again"], else: []) ++
       summary.warnings
   end

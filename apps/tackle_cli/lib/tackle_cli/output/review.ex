@@ -175,6 +175,10 @@ defmodule Tackle.CLI.Output.Review do
       Enum.map(summary.failed_units, fn %{unit: unit, reason: reason} ->
         "Unit #{unit} was not reviewed: #{Delegation.format_error(reason)}"
       end) ++
+        Enum.map(summary.incomplete_units, fn %{unit: unit, reason: reason} ->
+          "Unit #{unit} was reviewed only in part (#{Delegation.format_error(reason)}); " <>
+            "the findings reported before are kept"
+        end) ++
         Enum.map(summary.verification_failures, fn %{reason: reason} ->
           "A finding could not be verified: #{Delegation.format_error(reason)}"
         end) ++
@@ -379,6 +383,9 @@ defmodule Tackle.CLI.Output.Review do
     }
   end
 
+  defp json_unit(%{unit: unit, reason: reason}),
+    do: %{"unit" => unit, "reason" => Delegation.format_error(reason)}
+
   defp json_summary(summary) do
     %{
       "profile" => to_string(summary.profile),
@@ -387,10 +394,8 @@ defmodule Tackle.CLI.Output.Review do
       "files" => summary.files,
       "skipped" =>
         Enum.map(summary.skipped, &%{"path" => &1.path, "reason" => to_string(&1.reason)}),
-      "failed_units" =>
-        Enum.map(summary.failed_units, fn %{unit: unit, reason: reason} ->
-          %{"unit" => unit, "reason" => Delegation.format_error(reason)}
-        end),
+      "failed_units" => Enum.map(summary.failed_units, &json_unit/1),
+      "incomplete_units" => Enum.map(summary.incomplete_units, &json_unit/1),
       "detected" => summary.detected,
       "candidates" => summary.candidates,
       "confirmed" => summary.confirmed,

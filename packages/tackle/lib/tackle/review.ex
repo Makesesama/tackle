@@ -82,7 +82,18 @@ defmodule Tackle.Review do
   Cancel the `:cancellation` signal (`Tackle.Lib.Cancellation`), or cancel
   the requester's branch or scope, and `run/2` returns `{:error, :cancelled}`
   after stopping the runs still in flight. Killing the calling process
-  cancels them as well.
+  cancels them as well. A single run cancelled on its own only fails that
+  run.
+
+  ## Failed runs
+
+  A failed run never invalidates the review. Detector runs report findings
+  as they confirm them, and whatever a run reported before it failed (an
+  agent error, the step limit, a timeout, a crash, or its own cancellation)
+  is kept: its unit is listed in `summary.incomplete_units` when the run had
+  not finished, and in `summary.failed_units` only when it reported
+  nothing. A verifier run that fails keeps the verdicts it reported; its
+  other findings stay uncertain.
   """
 
   alias Tackle.{Auth, Config, Executor}
@@ -233,11 +244,12 @@ defmodule Tackle.Review do
   Reviews a change (see the module documentation).
 
   Returns `{:ok, result}` even when some units or verifications failed;
-  `result.summary` lists them. Returns `{:error, reason}` for invalid
+  `result.summary` lists them, and the findings their runs reported before
+  failing are kept. Returns `{:error, reason}` for invalid
   options, a requester whose model a stage cannot inherit
   (`{:requester_model_unavailable, reason}`), an invalid `:exclude` glob,
-  cancellation (`:cancelled`), or when every unit failed
-  (`{:detection_failed, failures}`).
+  cancellation (`:cancelled`), or when every unit failed without reporting
+  a finding (`{:detection_failed, failures}`).
   """
   @spec run(Change.t(), [option()]) :: {:ok, Result.t()} | {:error, term()}
   def run(%Change{} = change, opts) when is_list(opts) do
@@ -587,6 +599,7 @@ defmodule Tackle.Review do
         filtered: flow.dropped,
         rejected: flow.rejected,
         failed_units: flow.failed_units,
+        incomplete_units: flow.incomplete_units,
         detected: flow.detected,
         candidates: flow.candidates,
         verified: flow.verified,
@@ -711,7 +724,7 @@ defmodule Tackle.Review do
     )
     |> case do
       {:error, reason} when reason != :cancelled ->
-        {:ok, %{samples: [], errors: [reason], runs: 0, usage: nil}}
+        {:ok, %{samples: [], incomplete: [], errors: [reason], runs: 0, usage: nil}}
 
       result ->
         result
@@ -958,13 +971,21 @@ defmodule Tackle.Review do
 
     reports = for {_units, {:ok, report}} <- detections, do: report
 
+    # Every sample stopped early, but what they reported is kept.
+    incomplete_units =
+      for {units, {:ok, %{incomplete: [reason | _] = incomplete, samples: samples}}} <-
+            detections,
+          length(incomplete) == length(samples),
+          unit <- units,
+          do: %{unit: unit.id, reason: reason}
+
     if Enum.all?(reports, &(&1.samples == [])) do
       {:error, {:detection_failed, failed_units}}
     else
       detector =
         stage_stats(
           Enum.sum_by(reports, & &1.runs),
-          Enum.sum_by(reports, &length(&1.errors)),
+          Enum.sum_by(reports, &(length(&1.errors) + length(&1.incomplete))),
           Enum.map(reports, & &1.usage),
           span_ms(flow, :detector)
         )
@@ -996,6 +1017,7 @@ defmodule Tackle.Review do
 
       result = %{
         failed_units: failed_units,
+        incomplete_units: incomplete_units,
         detected: flow.detected,
         candidates: length(flow.dispatched),
         dropped: dropped,
@@ -1200,6 +1222,7 @@ defmodule Tackle.Review do
       filtered: [],
       rejected: [],
       failed_units: [],
+      incomplete_units: [],
       detected: 0,
       candidates: 0,
       verified: [],
@@ -1226,6 +1249,7 @@ defmodule Tackle.Review do
       files: state.code_units |> Enum.map(& &1.path) |> Enum.uniq(),
       skipped: state.skipped,
       failed_units: outcome.failed_units,
+      incomplete_units: outcome.incomplete_units,
       detected: outcome.detected,
       candidates: outcome.candidates,
       confirmed: Enum.count(outcome.verified, &(&1.verdict == :confirmed)),

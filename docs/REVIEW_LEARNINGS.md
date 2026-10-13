@@ -1,8 +1,8 @@
 # Code review: learnings and optimization plan
 
-Status: **notes and plan**. Only the bash stdin fix and the diagnostic script
-described below are implemented. Everything under "Optimizations" is a
-proposal.
+Status: **notes and plan**. Only the bash stdin fix, the diagnostic script,
+and keeping the findings of failed runs (3.1) are implemented. Everything else
+under "Optimizations" is a proposal.
 
 This document records what we learned while debugging `review_changes` failing
 when the root agent invoked it. It also lists what the two traced runs tell us
@@ -92,6 +92,13 @@ Verifiers took 25–30 s each.
   carry its last non-auxiliary event, for example "timed out after bash `rg …`"
   or "timed out waiting for the model (step 4)". It should appear in the tool
   result, in `Result.summary.failed_units`, and in the TUI.
+- **Keep what failed runs reported (implemented).** Detectors report
+  findings incrementally (`report_findings` with `done: false`), and a run
+  that fails, times out, crashes, or is cancelled on its own keeps what it
+  reported: the delegation mirrors the run's finished messages from its
+  events, so even a timed-out run's transcript is available. Such units are
+  listed in `Result.summary.incomplete_units`; a run cancelled alone no
+  longer cancels the whole review.
 - **Retry failed units once, unbatched.** One hung or crashed run in a batch
   fails all its units. A failed batch should be split and its units retried
   once, individually, before they are reported as not reviewed. Notes should

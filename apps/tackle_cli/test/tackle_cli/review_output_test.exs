@@ -70,6 +70,7 @@ defmodule Tackle.CLI.Output.ReviewTest do
         files: ["lib/a.ex", "lib/b.ex"],
         skipped: [%{path: "mix.lock", reason: :lock_file}],
         failed_units: [],
+        incomplete_units: [],
         detected: 3,
         candidates: 2,
         confirmed: 1,
@@ -225,6 +226,7 @@ defmodule Tackle.CLI.Output.ReviewTest do
       summary =
         summary(%{
           failed_units: [%{unit: "lib/b.ex#1", reason: :timeout}],
+          incomplete_units: [%{unit: "lib/a.ex#1", reason: :run_cancelled}],
           verification_failures: [%{fingerprint: "fp", reason: {:agent_error, "step limit"}}],
           scoring_failures: [%{fingerprint: "fp", reason: :boom}],
           warnings: ["rules/x.md: unknown category"]
@@ -234,6 +236,7 @@ defmodule Tackle.CLI.Output.ReviewTest do
 
       assert rendered =~ "Notes"
       assert rendered =~ "Unit lib/b.ex#1 was not reviewed: timed out"
+      assert rendered =~ "Unit lib/a.ex#1 was reviewed only in part (cancelled)"
       assert rendered =~ "A finding could not be verified: agent failed: step limit"
       assert rendered =~ "A finding kept its detector confidence: :boom"
       assert rendered =~ "rules/x.md: unknown category"
@@ -303,6 +306,7 @@ defmodule Tackle.CLI.Output.ReviewTest do
       summary =
         summary(%{
           failed_units: [%{unit: "lib/b.ex#1", reason: :timeout}],
+          incomplete_units: [%{unit: "lib/a.ex#1", reason: :timeout}],
           verification_failures: [%{fingerprint: "fp", reason: {:runtime_error, :killed}}],
           scoring_failures: [%{fingerprint: "fp2", reason: {:error, "bad"}}]
         })
@@ -319,6 +323,7 @@ defmodule Tackle.CLI.Output.ReviewTest do
                "files" => ["lib/a.ex", "lib/b.ex"],
                "skipped" => [%{"path" => "mix.lock", "reason" => "lock_file"}],
                "failed_units" => [%{"unit" => "lib/b.ex#1", "reason" => "timed out"}],
+               "incomplete_units" => [%{"unit" => "lib/a.ex#1", "reason" => "timed out"}],
                "verification_failures" => [
                  %{"fingerprint" => "fp", "reason" => "agent crashed: :killed"}
                ],

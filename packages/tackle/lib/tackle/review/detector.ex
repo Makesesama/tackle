@@ -12,11 +12,14 @@ defmodule Tackle.Review.Detector do
   precision.
 
   Findings come back through the `report_findings` tool, which validates
-  them against the batch's changed lines (`Tackle.Tools.ReportFindings`). A
-  run that reported and then ended with an error, for example on the step
-  limit, keeps its findings. With more than one sample the batch is reviewed
-  that many times, one run after the other; the orchestrator counts a batch
-  as failed only when none of its samples succeeds.
+  them against the batch's changed lines (`Tackle.Tools.ReportFindings`).
+  Runs report findings as they confirm them, so a run that fails later, for
+  example on the step limit or a timeout, still keeps what it reported: a
+  run that failed after its last report counts as a complete sample, one
+  that failed earlier as an incomplete sample with the findings it had
+  reported. With more than one sample the batch is reviewed that many
+  times, one run after the other; the orchestrator counts a batch as failed
+  only when none of its samples reported anything or finished.
   """
 
   alias Tackle.Lib.Usage
@@ -49,12 +52,15 @@ defmodule Tackle.Review.Detector do
           | {:capacity_wait, non_neg_integer()}
 
   @typedoc """
-  The findings of each successful sample, in sample order; the errors of
-  the failed ones; how many runs were started; and the usage of every run,
-  failed ones included when their transcript was available.
+  The findings of each sample that finished or reported findings, in sample
+  order; why the incomplete ones among them stopped early; the errors of
+  the samples without findings that did not finish; how many runs were
+  started; and the usage of every run, failed ones included when their
+  transcript was available.
   """
   @type result :: %{
           samples: [[Finding.t()]],
+          incomplete: [Delegation.error()],
           errors: [Delegation.error()],
           runs: non_neg_integer(),
           usage: Usage.t()
@@ -78,7 +84,7 @@ defmodule Tackle.Review.Detector do
 
   Returns `{:ok, result}` even when every sample failed (`samples` is then
   empty and `errors` says why), so the usage of failed runs is not lost.
-  Returns `{:error, :cancelled}` as soon as a sample is cancelled.
+  Returns `{:error, :cancelled}` as soon as the requester is cancelled.
   """
   @spec run([Units.unit(), ...], [option()]) :: {:ok, result()} | {:error, :cancelled | term()}
   def run([_ | _] = units, opts) do
@@ -94,19 +100,19 @@ defmodule Tackle.Review.Detector do
 
     prompt = prompt(units, rules, review.allowed)
 
+    acc = %{samples: [], incomplete: [], usages: [], errors: []}
+
     with {:ok, spec} <- Delegation.put_review_context(Keyword.fetch!(opts, :spec), review) do
       opts
       |> Keyword.get(:samples, 1)
       |> then(&Enum.to_list(1..&1//1))
-      |> Enum.reduce_while(%{samples: [], usages: [], errors: []}, fn _sample, acc ->
+      |> Enum.reduce_while(acc, fn _sample, acc ->
         spec |> sample(prompt, review, opts) |> collect_sample(acc)
       end)
       |> finish()
     end
   end
 
-  # A run that reported and then failed (on the step limit, or in the model
-  # call after its report) has still reviewed the units: keep its findings.
   defp sample(spec, prompt, review, opts) do
     delegation_opts = Keyword.take(opts, [:model, :capacity_wait])
 
@@ -114,18 +120,40 @@ defmodule Tackle.Review.Detector do
       {:ok, state} ->
         {:ok, ReportFindings.collect(state.messages, review), Delegation.usage(state)}
 
-      {:error, reason, state} ->
-        if ReportFindings.reported?(state.messages, review),
-          do: {:ok, ReportFindings.collect(state.messages, review), Delegation.usage(state)},
-          else: {:error, reason, Delegation.usage(state)}
+      {:error, reason, messages} ->
+        failed_sample(reason, messages, review)
 
       {:error, reason} ->
         {:error, reason, nil}
     end
   end
 
+  # A run that recorded its last report and then failed (on the step limit,
+  # or in the model call after it) has reviewed the units. One that failed
+  # before has not, but the findings it already reported still count.
+  defp failed_sample(reason, messages, review) do
+    findings = ReportFindings.collect(messages, review)
+    usage = Delegation.usage(messages)
+
+    cond do
+      ReportFindings.finished?(messages, review) -> {:ok, findings, usage}
+      findings != [] -> {:incomplete, findings, reason, usage}
+      true -> {:error, reason, usage}
+    end
+  end
+
   defp collect_sample({:ok, findings, usage}, acc),
     do: {:cont, %{acc | samples: [findings | acc.samples], usages: [usage | acc.usages]}}
+
+  defp collect_sample({:incomplete, findings, reason, usage}, acc) do
+    {:cont,
+     %{
+       acc
+       | samples: [findings | acc.samples],
+         incomplete: [reason | acc.incomplete],
+         usages: [usage | acc.usages]
+     }}
+  end
 
   defp collect_sample({:error, :cancelled, _usage}, _acc), do: {:halt, :cancelled}
 
@@ -134,10 +162,11 @@ defmodule Tackle.Review.Detector do
 
   defp finish(:cancelled), do: {:error, :cancelled}
 
-  defp finish(%{samples: samples, usages: usages, errors: errors}) do
+  defp finish(%{samples: samples, incomplete: incomplete, usages: usages, errors: errors}) do
     {:ok,
      %{
        samples: Enum.reverse(samples),
+       incomplete: Enum.reverse(incomplete),
        errors: Enum.reverse(errors),
        runs: length(samples) + length(errors),
        usage: usages |> Enum.reject(&is_nil/1) |> Usage.aggregate()
@@ -182,11 +211,15 @@ defmodule Tackle.Review.Detector do
       "file with its surrounding function. Review every unit. " <> @line_format
   end
 
-  defp outro([_unit]), do: "Review the unit in both lanes, then call report_findings."
+  defp outro([_unit]) do
+    "Review the unit in both lanes. Report findings with report_findings as you confirm " <>
+      "them (done: false), and finish with a call without done: false."
+  end
 
   defp outro(_units) do
-    "Review the units in both lanes, then call report_findings once with the findings " <>
-      "of all units."
+    "Review the units in both lanes. Report findings of any unit with report_findings as " <>
+      "you confirm them (done: false), and finish with one call without done: false once " <>
+      "every unit is reviewed."
   end
 
   defp rules_section([]) do

@@ -42,8 +42,13 @@ defmodule Tackle.Agents.Default.ReviewDetector do
 
       Reporting:
 
-      - Call `report_findings` once with all findings of the unit, or with an empty
-        list when there are none.
+      - Report each finding with `report_findings` as soon as you are confident in
+        it, with `done: false` while you keep reviewing; group the findings you
+        confirm together instead of calling once per finding. What you reported is
+        kept even if your run is cut short, so do not hold findings back until the
+        end. Each call records only its own findings: never repeat recorded ones.
+      - Finish with one call without `done: false`, carrying the findings not yet
+        reported, or an empty list when there are none left.
       - A location must overlap changed lines: `side: "new"` with the numbers of
         `[+ n]` lines (nearby `[  n]` context lines may be included), or
         `side: "old"` with the numbers of removed `[- n]` lines. Keep it short.

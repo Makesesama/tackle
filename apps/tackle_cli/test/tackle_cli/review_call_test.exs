@@ -234,6 +234,7 @@ defmodule Tackle.CLI.TUI.ReviewCallTest do
         files: ["lib/a b.ex"],
         skipped: [],
         failed_units: [%{unit: "lib/a b.ex#1", reason: :timeout}],
+        incomplete_units: [],
         detected: 3,
         candidates: 3,
         confirmed: 2,

@@ -107,6 +107,7 @@ defmodule Tackle.CLI.TUI.ReviewTest do
       files: ["lib/a.ex", "lib/b.ex"],
       skipped: [],
       failed_units: [],
+      incomplete_units: [],
       detected: 2,
       candidates: 2,
       confirmed: 2,

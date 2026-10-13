@@ -56,11 +56,11 @@ defmodule Tackle.Review.Verifier do
   @doc """
   Verifies findings of one unit in a single run.
 
-  A verdict reported before the run ended with an error (for example on the
-  step limit) still counts. A finding without a verdict gets
+  A verdict reported before the run failed (for example on the step limit,
+  or by timing out) still counts. A finding without a verdict gets
   `{:error, :no_verdict}` when the run ended normally, or the run's
   `t:Tackle.Review.Delegation.error/0` otherwise. Returns
-  `{:error, :cancelled}` when the run was cancelled.
+  `{:error, :cancelled}` when the requester was cancelled.
   """
   @spec run([Finding.t(), ...], Units.unit(), [option()]) ::
           {:ok, result()} | {:error, :cancelled | term()}
@@ -73,10 +73,10 @@ defmodule Tackle.Review.Verifier do
     with {:ok, spec} <- Delegation.put_review_context(Keyword.fetch!(opts, :spec), review) do
       case Delegation.run(Keyword.fetch!(opts, :requester), spec, prompt, delegation_opts) do
         {:ok, state} ->
-          {:ok, result(state, ids, :no_verdict)}
+          {:ok, result(state.messages, ids, :no_verdict)}
 
-        {:error, reason, state} ->
-          {:ok, result(state, ids, reason)}
+        {:error, reason, messages} ->
+          {:ok, result(messages, ids, reason)}
 
         {:error, :cancelled} ->
           {:error, :cancelled}
@@ -89,8 +89,8 @@ defmodule Tackle.Review.Verifier do
 
   # A verdict recorded before the run failed still counts, so a rejected
   # finding stays rejected.
-  defp result(state, ids, missing) do
-    reports = ReportVerdict.collect(state.messages, ids)
+  defp result(messages, ids, missing) do
+    reports = ReportVerdict.collect(messages, ids)
 
     verdicts =
       Enum.map(ids, fn id ->
@@ -100,7 +100,7 @@ defmodule Tackle.Review.Verifier do
         end
       end)
 
-    %{verdicts: verdicts, usage: Delegation.usage(state)}
+    %{verdicts: verdicts, usage: Delegation.usage(messages)}
   end
 
   defp ids(findings), do: Enum.map(1..length(findings), &"F#{&1}")

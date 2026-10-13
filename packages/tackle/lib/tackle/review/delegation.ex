@@ -13,20 +13,29 @@ defmodule Tackle.Review.Delegation do
   The runtime refuses rather than queues work at capacity, so a capacity
   refusal is retried until `:capacity_wait` passes.
 
-  A run that ends with an error after doing useful work (for example on the
-  step limit, or when the model call after its report fails) still returns
-  its final state, so a stage can keep what the run reported.
+  A run that fails after doing useful work still returns its transcript, so
+  a stage can keep what the run reported: the final state's messages when
+  the run settled with one (an agent error such as the step limit, or the
+  run alone being cancelled), otherwise the messages the run had finished
+  when it timed out or crashed, mirrored from its events while it ran.
+
+  Only the cancellation of the requester (its branch or scope) cancels the
+  stage (`{:error, :cancelled}`); a run cancelled on its own is a failed run
+  (`:run_cancelled`) like any other.
   """
 
   alias Tackle.Config
-  alias Tackle.Lib.{State, Usage}
+  alias Tackle.Lib.{Event, Message, State, Usage}
   alias Tackle.Runtime
-  alias Tackle.Runtime.{AgentRef, AgentSpec, Handle, Outcome, RootBackend}
+  alias Tackle.Runtime.{AgentRef, AgentSpec, Handle, Outcome, Registry, RootBackend, ScopeRef}
 
   # Transient capacity refusals of `Tackle.AgentScope.Coordinator`.
   @capacity_reasons [:max_children_per_agent, :max_agents_per_fleet]
   @capacity_poll_ms 20
   @default_capacity_wait :timer.seconds(60)
+  # How long to wait for a settled run's request process to stop, while
+  # collecting the messages it mirrored last.
+  @mirror_grace_ms 5_000
 
   @typedoc "The agent the review's runs are delegated from."
   @type requester :: Handle.t() | AgentRef.t()
@@ -34,7 +43,9 @@ defmodule Tackle.Review.Delegation do
   @typedoc """
   Why a run produced no usable result:
 
-    * `:cancelled` - the run, its parent, or the scope was cancelled;
+    * `:cancelled` - the requester's branch or scope was cancelled, which
+      cancels the review;
+    * `:run_cancelled` - the run alone was cancelled;
     * `{:agent_error, message}` - the agent loop ended with an error;
     * `:timeout` - the run was inactive for too long;
     * `{:runtime_error, reason}` - the run crashed;
@@ -45,6 +56,7 @@ defmodule Tackle.Review.Delegation do
   """
   @type error ::
           :cancelled
+          | :run_cancelled
           | {:agent_error, String.t()}
           | :timeout
           | {:runtime_error, term()}
@@ -108,28 +120,39 @@ defmodule Tackle.Review.Delegation do
   Runs one delegated agent to completion and returns its final state.
 
   Blocks until the run settles. A run that settles normally returns
-  `{:ok, state}`. A run whose agent loop ended with an error returns
-  `{:error, {:agent_error, message}, state}` with its final state, whose
-  transcript may still hold what the run reported before the error. Every
-  other failure returns `{:error, reason}`; see `t:error/0`.
+  `{:ok, state}`. A run that started and then failed returns
+  `{:error, reason, messages}` with its transcript so far (see the module
+  documentation), which may still hold what the run reported before it
+  failed. `{:error, :cancelled}` means the requester was cancelled; a run
+  that could not start, or was refused, returns `{:error, reason}`. See
+  `t:error/0`.
   """
   @spec run(requester(), AgentSpec.t(), String.t(), [option()]) ::
           {:ok, State.t()}
-          | {:error, {:agent_error, String.t()}, State.t()}
+          | {:error, error(), [Message.t()]}
           | {:error, error()}
   def run(requester, %AgentSpec{} = spec, prompt, opts \\ []) when is_binary(prompt) do
-    request_opts = if model = Keyword.get(opts, :model), do: [model: model], else: []
+    mirror = make_ref()
+    model_opts = if model = Keyword.get(opts, :model), do: [model: model], else: []
+    request_opts = [event_callback: mirror_callback(self(), mirror)] ++ model_opts
     wait = Keyword.get(opts, :capacity_wait, @default_capacity_wait)
     deadline = System.monotonic_time(:millisecond) + wait
 
-    with {:ok, run_ref} <- request(requester, spec, prompt, request_opts, deadline) do
-      run_ref |> Runtime.await(:infinity) |> settle()
-    end
+    result =
+      with {:ok, run_ref} <- request(requester, spec, prompt, request_opts, deadline) do
+        monitor = monitor_request(run_ref)
+        outcome = Runtime.await(run_ref, :infinity)
+        settle(outcome, mirrored(mirror, monitor))
+      end
+
+    cancellation(result, requester)
   end
 
   @doc "Sums the token usage of a run's assistant messages."
-  @spec usage(State.t()) :: Usage.t()
-  def usage(%State{messages: messages}) do
+  @spec usage(State.t() | [Message.t()]) :: Usage.t()
+  def usage(%State{messages: messages}), do: usage(messages)
+
+  def usage(messages) when is_list(messages) do
     messages
     |> Enum.filter(&(&1.role == :assistant))
     |> Enum.map(& &1.token_usage)
@@ -139,6 +162,7 @@ defmodule Tackle.Review.Delegation do
   @doc "Describes a run error for people."
   @spec format_error(error()) :: String.t()
   def format_error(:cancelled), do: "cancelled"
+  def format_error(:run_cancelled), do: "cancelled"
   def format_error(:timeout), do: "timed out"
   def format_error({:agent_error, message}), do: "agent failed: #{message}"
   def format_error({:runtime_error, reason}), do: "agent crashed: #{inspect(reason)}"
@@ -177,16 +201,82 @@ defmodule Tackle.Review.Delegation do
   defp cancelled_refusal?({:scope_cancelled, _reason}), do: true
   defp cancelled_refusal?(_reason), do: false
 
-  defp settle(%Outcome{status: :ok, agent_state: %State{} = state}), do: {:ok, state}
-  defp settle(%Outcome{status: :cancelled}), do: {:error, :cancelled}
-  defp settle(%Outcome{status: :timeout}), do: {:error, :timeout}
+  # The request process calls this for each event of the run, in order. It
+  # stops once the run is collected, so every message it mirrored is in the
+  # caller's mailbox before its `:DOWN`.
+  defp mirror_callback(owner, mirror) do
+    fn
+      _run_ref, %Event{type: :message_end, data: %{message: %Message{role: role} = message}}
+      when role in [:assistant, :tool] ->
+        send(owner, {mirror, message})
 
-  defp settle(%Outcome{status: :error, agent_state: %State{} = state} = outcome),
-    do: {:error, {:agent_error, Outcome.message(outcome)}, state}
+      _run_ref, _event ->
+        :ok
+    end
+  end
 
-  defp settle(%Outcome{status: :runtime_error, reason: reason}),
-    do: {:error, {:runtime_error, reason}}
+  defp monitor_request(run_ref) do
+    case Registry.whereis(run_ref) do
+      {:ok, pid} -> Process.monitor(pid)
+      {:error, _reason} -> nil
+    end
+  end
 
-  defp settle(%Outcome{status: :rejected, reason: reason}), do: {:error, {:rejected, reason}}
-  defp settle({:error, reason}), do: {:error, {:unavailable, reason}}
+  defp mirrored(mirror, monitor, acc \\ []) do
+    receive do
+      {^mirror, message} ->
+        mirrored(mirror, monitor, [message | acc])
+
+      {:DOWN, ^monitor, :process, _pid, _reason} ->
+        transcript(acc)
+    after
+      if(monitor, do: @mirror_grace_ms, else: 0) ->
+        if monitor, do: Process.demonitor(monitor, [:flush])
+        transcript(acc)
+    end
+  end
+
+  defp transcript(reversed), do: reversed |> Enum.reverse() |> Enum.uniq_by(& &1.id)
+
+  defp settle(%Outcome{status: :ok, agent_state: %State{} = state}, _mirrored), do: {:ok, state}
+
+  defp settle(%Outcome{status: :cancelled, agent_state: %State{} = state}, _mirrored),
+    do: {:error, :run_cancelled, state.messages}
+
+  defp settle(%Outcome{status: :timeout}, mirrored), do: {:error, :timeout, mirrored}
+
+  defp settle(%Outcome{status: :error, agent_state: %State{} = state} = outcome, _mirrored),
+    do: {:error, {:agent_error, Outcome.message(outcome)}, state.messages}
+
+  defp settle(%Outcome{status: :runtime_error, reason: reason}, mirrored),
+    do: {:error, {:runtime_error, reason}, mirrored}
+
+  defp settle(%Outcome{status: :rejected, reason: reason}, _mirrored),
+    do: {:error, {:rejected, reason}}
+
+  defp settle({:error, reason}, mirrored), do: {:error, {:unavailable, reason}, mirrored}
+
+  # A run fails with its requester's branch or scope (cancelled, or stopped
+  # so that the run is torn down), or on its own. Only the former cancels
+  # the review. A run that settled normally, with an agent error, failed on
+  # its own.
+  defp cancellation({:ok, _state} = result, _requester), do: result
+  defp cancellation({:error, :cancelled} = result, _requester), do: result
+
+  defp cancellation({:error, {:agent_error, _message}, _messages} = result, _requester),
+    do: result
+
+  defp cancellation(result, requester) do
+    if requester_cancelled?(requester), do: {:error, :cancelled}, else: result
+  end
+
+  # An unreachable requester counts as cancelled: its scope is gone.
+  defp requester_cancelled?(requester) do
+    %AgentRef{scope_id: scope_id} = agent_ref = agent_ref(requester)
+
+    not (match?({:ok, %{cancelled: false}}, Runtime.agent_snapshot(agent_ref)) and
+           match?({:ok, %{cancelled: nil}}, Runtime.scope_snapshot(%ScopeRef{scope_id: scope_id})))
+  catch
+    :exit, _reason -> true
+  end
 end

@@ -67,6 +67,10 @@ defmodule Tackle.ReviewTest do
     defp reply({:findings, findings}, opts, _test_pid),
       do: tool_call("report_findings", %{"findings" => findings}, opts)
 
+    # Findings reported while the run keeps reviewing.
+    defp reply({:progress, findings}, opts, _test_pid),
+      do: tool_call("report_findings", %{"findings" => findings, "done" => false}, opts)
+
     # One verdict for every finding of the run.
     defp reply({:verdict, verdict, evidence}, opts, test_pid) do
       verdicts = for {id, _text} <- finding_blocks(opts), do: {id, verdict, evidence}
@@ -277,7 +281,7 @@ defmodule Tackle.ReviewTest do
     AgentSpec.new!(
       name: name,
       config: config,
-      timeout: 5_000,
+      timeout: Keyword.get(opts, :timeout, 5_000),
       model_source: Keyword.get(opts, :model_source, :configured)
     )
   end
@@ -574,6 +578,121 @@ defmodule Tackle.ReviewTest do
     end
   end
 
+  describe "a run that fails before its last report" do
+    # The detector of lib/a.ex reports the nil check while it keeps
+    # reviewing, then `after_report` decides how its run goes on.
+    defp progress_script(after_report) do
+      script(%{
+        findings: [nil_check()],
+        detector: fn
+          %{tool_results: []} = request ->
+            if unit?(request, "lib/a.ex#1"),
+              do: {:progress, [nil_check()]},
+              else: {:findings, []}
+
+          %{tool_results: [recorded]} = request ->
+            if unit?(request, "lib/a.ex#1") do
+              assert recorded =~ "Keep reviewing"
+              after_report
+            else
+              {:answer, "done"}
+            end
+        end
+      })
+    end
+
+    test "keeps the findings it reported and lists its unit as incomplete" do
+      assert {:ok, result} =
+               review(change(), progress_script({:error, :provider_down}),
+                 units: [pack_files: false]
+               )
+
+      assert [%Finding{title: "Guard against a missing key", verdict: :confirmed}] =
+               result.blocking
+
+      assert result.summary.failed_units == []
+
+      assert [%{unit: "lib/a.ex#1", reason: {:agent_error, _message}}] =
+               result.summary.incomplete_units
+
+      assert %{runs: 3, failed: 1} = result.summary.stages.detector
+    end
+
+    test "keeps the findings of a run that timed out" do
+      assert {:ok, result} =
+               review(change(), progress_script(:block),
+                 units: [pack_files: false],
+                 profile_opts: [detector: [timeout: 300]]
+               )
+
+      assert [%Finding{title: "Guard against a missing key", verdict: :confirmed}] =
+               result.blocking
+
+      assert [%{unit: "lib/a.ex#1", reason: :timeout}] = result.summary.incomplete_units
+      assert result.summary.failed_units == []
+    end
+
+    test "a run cancelled on its own keeps its findings and the review goes on" do
+      profiles = profiles(progress_script(:block))
+      scope = start_scope(root: [allow_delegation: true], profiles: profiles)
+      parent = self()
+
+      task =
+        Task.async(fn ->
+          Review.run(change(),
+            requester: handle(scope),
+            profiles: profiles,
+            rules: rules(),
+            units: [pack_files: false],
+            on_event: &send(parent, {:review_event, &1})
+          )
+        end)
+
+      # Once lib/a.ex's run has reported and the other units are done, only
+      # its blocked run is left.
+      await_call(:detector, &(unit?(&1, "lib/a.ex#1") and match?([_], &1.tool_results)))
+      assert :ok = eventually(fn -> match?([_], detector_agents(scope)) end)
+      [detector] = detector_agents(scope)
+      :ok = Tackle.Runtime.cancel(detector)
+
+      assert {:ok, result} = Task.await(task, 5_000)
+      assert [%Finding{title: "Guard against a missing key"}] = result.blocking
+      assert [%{unit: "lib/a.ex#1", reason: :run_cancelled}] = result.summary.incomplete_units
+      assert {:done, %Result{}} = List.last(events())
+    end
+
+    test "a verifier that times out keeps the verdicts it reported" do
+      script =
+        script(%{
+          findings: [nil_check()],
+          verifier: fn
+            %{tool_results: []} -> {:verdict, "rejected", "lib/a.ex:3 is only reached with :key."}
+            _request -> :block
+          end
+        })
+
+      assert {:ok, result} = review(change(), script, profile_opts: [verifier: [timeout: 300]])
+      assert result.blocking == [] and result.optional == []
+      assert [%{evidence: "lib/a.ex:3" <> _}] = result.rejected
+      assert %{rejected: 1, verification_failures: []} = result.summary
+    end
+  end
+
+  defp detector_agents(scope) do
+    {:ok, snapshot} = Tackle.Runtime.scope_snapshot(scope.scope_ref)
+
+    for {_id, %{name: "review-detector", ref: ref}} <- snapshot.agents, do: ref
+  end
+
+  defp await_call(stage, match?) do
+    receive do
+      {:llm_call, ^stage, request} ->
+        if match?.(request), do: request, else: await_call(stage, match?)
+    after
+      2_000 -> flunk("no matching #{stage} call")
+    end
+  end
+
   test "fails when every unit fails" do
     script = script(%{detector: fn _request -> {:error, :provider_down} end})
 
@@ -629,6 +748,28 @@ defmodule Tackle.ReviewTest do
 
     assert_receive {:llm_call, :detector, _request}, 2_000
     :ok = Tackle.Runtime.cancel(scope.root_agent_ref)
+
+    assert Task.await(task, 5_000) == {:error, :cancelled}
+    assert {:error, :cancelled} = List.last(events())
+  end
+
+  test "stopping the requester's scope cancels the review" do
+    profiles = profiles(script(%{detector: fn _request -> :block end}))
+    scope = start_scope(root: [allow_delegation: true], profiles: profiles)
+    parent = self()
+
+    task =
+      Task.async(fn ->
+        Review.run(change(),
+          requester: handle(scope),
+          profiles: profiles,
+          rules: [],
+          on_event: &send(parent, {:review_event, &1})
+        )
+      end)
+
+    assert_receive {:llm_call, :detector, _request}, 2_000
+    :ok = Tackle.Runtime.stop_scope(scope.scope_ref)
 
     assert Task.await(task, 5_000) == {:error, :cancelled}
     assert {:error, :cancelled} = List.last(events())

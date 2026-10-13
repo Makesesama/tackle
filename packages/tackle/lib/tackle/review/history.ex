@@ -371,6 +371,7 @@ defmodule Tackle.Review.History do
       "files" => summary.files,
       "skipped" => length(summary.skipped),
       "failed_units" => length(summary.failed_units),
+      "incomplete_units" => length(summary.incomplete_units),
       "detected" => summary.detected,
       "candidates" => summary.candidates,
       "confirmed" => summary.confirmed,

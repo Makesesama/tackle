@@ -35,7 +35,10 @@ defmodule Tackle.Review.Result do
     * `units` - how many units were reviewed (code units plus the
       change-level unit);
     * `files` - the reviewed paths; `skipped` - files not reviewed and why;
-    * `failed_units` - units whose detector runs all failed;
+    * `failed_units` - units whose detector runs all failed without
+      reporting anything;
+    * `incomplete_units` - units whose detector runs all stopped early
+      (`reason` says why) after reporting findings, which are kept;
     * `detected` - findings reported by the detector, before merging;
     * `candidates` - findings sent to the verifier;
     * `confirmed`, `uncertain`, `rejected` - verifier outcomes;
@@ -54,6 +57,7 @@ defmodule Tackle.Review.Result do
           files: [String.t()],
           skipped: [Units.skipped()],
           failed_units: [%{unit: String.t(), reason: term()}],
+          incomplete_units: [%{unit: String.t(), reason: term()}],
           detected: non_neg_integer(),
           candidates: non_neg_integer(),
           confirmed: non_neg_integer(),

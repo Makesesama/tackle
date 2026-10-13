@@ -3,6 +3,13 @@ defmodule Tackle.Tools.ReportFindings do
   Structured output tool of the `review-detector` profile: reports the
   findings of one review unit.
 
+  A run may report its findings in several calls: each call records the
+  findings it carries, and `done: false` says that the run is still
+  reviewing. Reporting findings as soon as they are confirmed means that a
+  run which later fails (on a timeout, the step limit, or a provider error)
+  still contributes what it found. The run's last call leaves `done` out or
+  sets it to `true`; `finished?/2` tells whether a run got that far.
+
   Each finding is validated with `Tackle.Review.Finding.from_input/2` (cited
   rules must apply to the unit) and its location with
   `Tackle.Review.Locations.check/2` (it must overlap a changed line of the
@@ -29,8 +36,11 @@ defmodule Tackle.Tools.ReportFindings do
   tool_name("report_findings")
 
   description("""
-  Report the findings of the review unit. Call it once with every finding, or with an \
-  empty list when there are none; call it again only to resend findings it rejected. \
+  Report findings of the review unit. Each call records the findings it carries; never \
+  repeat recorded ones. While you are still reviewing, report the findings you have \
+  confirmed with done set to false, so they are kept even if your run is interrupted. \
+  Finish with a call that leaves done out or sets it to true, carrying the remaining \
+  findings or an empty list. Resend only findings the tool rejected, corrected. \
   Each finding is an object with: title (imperative, at most 80 characters), category \
   (correctness, security, performance, maintainability, readability, testing), severity \
   (blocker, high, medium, low), blocking (true for a functional problem that must be fixed \
@@ -43,7 +53,15 @@ defmodule Tackle.Tools.ReportFindings do
   input do
     field(:findings, {:list, :map},
       required: true,
-      description: "Findings of this unit, at most #{@max_findings}; an empty list for none"
+      description:
+        "Findings of this unit not reported yet, at most #{@max_findings} per call; an " <>
+          "empty list for none"
+    )
+
+    field(:done, :boolean,
+      description:
+        "false when you are still reviewing and will report more; true (the default) for " <>
+          "your last report"
     )
   end
 
@@ -60,9 +78,9 @@ defmodule Tackle.Tools.ReportFindings do
         }
 
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
-  def run(%{"findings" => findings}, context) when is_list(findings) do
+  def run(%{"findings" => findings} = args, context) when is_list(findings) do
     with {:ok, review} <- review_context(context) do
-      respond(accept(findings, review))
+      findings |> accept(review) |> respond(Map.get(args, "done") != false)
     end
   end
 
@@ -108,40 +126,42 @@ defmodule Tackle.Tools.ReportFindings do
   Collects the findings recorded during a run from its transcript.
 
   Only `report_findings` calls that received a tool result count; their
-  arguments are validated again with `accept/2`, in transcript order.
+  arguments are validated again with `accept/2`, in transcript order. A
+  finding reported again unchanged counts once.
   """
   @spec collect([Tackle.Lib.Message.t()], review_context()) :: [Finding.t()]
   def collect(messages, review) when is_list(messages) do
+    for({_args, accepted} <- reports(messages, review), finding <- elem(accepted, 0), do: finding)
+    |> Enum.uniq()
+  end
+
+  @doc """
+  Returns whether the run recorded its last report: an answered
+  `report_findings` call without `done: false` that the tool accepted, even
+  one reporting no findings.
+
+  A run that ends with an error after such a call has still reviewed its
+  unit; one without it has not, though the findings it reported before
+  (`collect/2`) still count.
+  """
+  @spec finished?([Tackle.Lib.Message.t()], review_context()) :: boolean()
+  def finished?(messages, review) when is_list(messages) do
+    Enum.any?(reports(messages, review), fn {args, accepted} ->
+      Map.get(args, "done") != false and recorded?(accepted)
+    end)
+  end
+
+  # The validated arguments of every answered `report_findings` call, with
+  # what `accept/2` makes of their findings.
+  defp reports(messages, review) do
     answered = answered_call_ids(messages)
 
     for %{role: :assistant, tool_calls: calls} when is_list(calls) <- messages,
         call <- calls,
         call_field(call, :name) == "report_findings",
         MapSet.member?(answered, call_field(call, :id)),
-        {:ok, %{"findings" => findings}} <- [validate_args(call_field(call, :arguments))],
-        finding <- elem(accept(findings, review), 0),
-        do: finding
-  end
-
-  @doc """
-  Returns whether the run recorded a report: an answered `report_findings`
-  call that the tool accepted, even one reporting no findings.
-
-  A run that ends with an error after such a call has still reviewed its
-  unit; one without it has not.
-  """
-  @spec reported?([Tackle.Lib.Message.t()], review_context()) :: boolean()
-  def reported?(messages, review) when is_list(messages) do
-    answered = answered_call_ids(messages)
-
-    Enum.any?(
-      for %{role: :assistant, tool_calls: calls} when is_list(calls) <- messages,
-          call <- calls,
-          call_field(call, :name) == "report_findings",
-          MapSet.member?(answered, call_field(call, :id)),
-          {:ok, %{"findings" => findings}} <- [validate_args(call_field(call, :arguments))],
-          do: recorded?(accept(findings, review))
-    )
+        {:ok, %{"findings" => findings} = args} <- [validate_args(call_field(call, :arguments))],
+        do: {args, accept(findings, review)}
   end
 
   @doc false
@@ -185,25 +205,32 @@ defmodule Tackle.Tools.ReportFindings do
     end
   end
 
-  # Mirrors `respond/1`: the call succeeded unless every finding was invalid.
+  # Mirrors `respond/2`: the call succeeded unless every finding was invalid.
   defp recorded?({[], [_error | _rest]}), do: false
   defp recorded?({_accepted, _errors}), do: true
 
-  defp respond({[], []}), do: {:ok, "Recorded no findings."}
+  defp respond({[], []}, done?), do: {:ok, "Recorded no findings." <> next(done?)}
 
-  defp respond({[], errors}) do
+  defp respond({[], errors}, _done?) do
     {:error,
      "No findings were recorded. Fix these problems and call report_findings again with " <>
        "the corrected findings:\n" <> bullets(errors)}
   end
 
-  defp respond({accepted, []}), do: {:ok, "Recorded #{count(accepted)}."}
+  defp respond({accepted, []}, done?), do: {:ok, "Recorded #{count(accepted)}." <> next(done?)}
 
-  defp respond({accepted, errors}) do
+  defp respond({accepted, errors}, done?) do
     {:ok,
-     "Recorded #{count(accepted)}. The other findings were not recorded; fix these problems " <>
-       "and call report_findings again with only those findings:\n" <> bullets(errors)}
+     "Recorded #{count(accepted)}." <>
+       next(done?) <>
+       " The other findings were not recorded; fix these problems and call report_findings " <>
+       "again with only those findings:\n" <> bullets(errors)}
   end
+
+  defp next(true), do: ""
+
+  defp next(false),
+    do: " Keep reviewing; report further findings, and finish with a call without done: false."
 
   defp count([_one]), do: "1 finding"
   defp count(findings), do: "#{length(findings)} findings"

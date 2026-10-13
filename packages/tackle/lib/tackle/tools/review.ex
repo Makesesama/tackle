@@ -377,6 +377,10 @@ defmodule Tackle.Tools.Review do
     Enum.map(summary.failed_units, fn %{unit: unit, reason: reason} ->
       "Unit #{unit} was not reviewed: #{Delegation.format_error(reason)}"
     end) ++
+      Enum.map(summary.incomplete_units, fn %{unit: unit, reason: reason} ->
+        "Unit #{unit} was reviewed only in part (#{Delegation.format_error(reason)}); " <>
+          "the findings reported before are kept"
+      end) ++
       Enum.map(summary.verification_failures, fn %{reason: reason} ->
         "A finding could not be verified: #{Delegation.format_error(reason)}"
       end) ++

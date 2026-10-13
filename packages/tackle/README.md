@@ -228,6 +228,16 @@ Projects can override their prompts with `.tackle/agents/review-detector.md`
 or `review-verifier.md`; an override must keep its output tool. Agent files may
 select these two tools by name even though the root does not have them.
 
+A failed delegated run never invalidates a review. Detectors report findings
+with `report_findings` as they confirm them (`done: false`) and finish with a
+last call without it; a detector override should keep that instruction. When a
+run fails before its last report (an agent error, the step limit, a timeout, a
+crash, or the run alone being cancelled), the findings it already reported are
+still verified and ranked, and its unit is listed in
+`Result.summary.incomplete_units`. Units whose runs reported nothing are listed
+in `summary.failed_units`; only when every unit is in that list does the review
+fail. A verifier keeps the verdicts it reported before failing.
+
 `Tackle.Tools.Review` (`review_changes`) is an opt-in tool that lets an agent
 review the current Git change with `Tackle.Review` and get back a compact list
 of findings to fix; a host grants it like `run_workflow` (the CLI grants it to

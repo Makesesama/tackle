@@ -75,6 +75,7 @@ defmodule Tackle.Review.HistoryTest do
         files: ["lib/a.ex"],
         skipped: [],
         failed_units: [],
+        incomplete_units: [],
         detected: 3,
         candidates: 3,
         confirmed: length(blocking ++ optional),
