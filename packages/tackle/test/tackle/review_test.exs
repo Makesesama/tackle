@@ -329,6 +329,14 @@ defmodule Tackle.ReviewTest do
 
   defp index_of(events, fun), do: Enum.find_index(events, fun)
 
+  defp wait_until(fun, deadline \\ System.monotonic_time(:millisecond) + 2_000) do
+    cond do
+      fun.() -> :ok
+      System.monotonic_time(:millisecond) > deadline -> :timeout
+      true -> Process.sleep(10) && wait_until(fun, deadline)
+    end
+  end
+
   test "reviews a change: detects, verifies, scores, and ranks findings" do
     assert {:ok, %Result{} = result} = review(change(), script())
 
@@ -414,9 +422,18 @@ defmodule Tackle.ReviewTest do
     candidates = for {:candidate, finding} <- events, do: finding.title
     assert Enum.sort(candidates) == ["Guard against a missing key", "Rename f to increment"]
 
-    last_candidate = events |> Enum.with_index() |> Enum.filter(&match?({{:candidate, _}, _}, &1))
-    first_verdict = index_of(events, &match?({:verdict, _, _}, &1))
-    assert elem(List.last(last_candidate), 1) < first_verdict
+    # Each candidate is announced before its verdict.
+    for {:candidate, finding} <- events do
+      announced = index_of(events, &(&1 == {:candidate, finding}))
+
+      decided =
+        index_of(
+          events,
+          &match?({:verdict, fingerprint, _} when fingerprint == finding.fingerprint, &1)
+        )
+
+      assert announced < decided
+    end
 
     assert {:verdict, shown.fingerprint, :confirmed} in events
     [rejected] = result.rejected
@@ -878,6 +895,219 @@ defmodule Tackle.ReviewTest do
       assert [_, _] = first_calls
       assert Enum.all?(first_calls, &(&1.prompt =~ "Verify this candidate finding"))
       assert result.summary.stages.verifier.runs == 2
+    end
+
+    test "verification starts while other units are still being reviewed" do
+      {:ok, flag} = Agent.start_link(fn -> false end)
+
+      script =
+        script(%{
+          findings: [nil_check()],
+          detector: fn
+            %{tool_results: []} = request ->
+              cond do
+                unit?(request, "lib/a.ex#1") ->
+                  {:findings, [nil_check()]}
+
+                unit?(request, "change") ->
+                  # The change-level unit finishes only after a verifier ran.
+                  wait_until(fn -> Agent.get(flag, & &1) end)
+                  {:findings, []}
+              end
+
+            _request ->
+              {:answer, "done"}
+          end,
+          verifier: fn
+            %{tool_results: []} ->
+              Agent.update(flag, fn _ -> true end)
+              {:verdict, "confirmed", "lib/a.ex:3 reads map.key unguarded."}
+
+            _request ->
+              {:answer, "ok"}
+          end
+        })
+
+      assert {:ok, result} = review(change(), script, max_concurrency: 2)
+      assert [%Finding{verdict: :confirmed}] = result.blocking
+
+      events = events()
+      verdict = index_of(events, &match?({:verdict, _, :confirmed}, &1))
+      change_done = index_of(events, &(&1 == {:unit, "change", :done}))
+      assert verdict < change_done
+    end
+
+    test "candidates past the eager half of the limit wait for the end of detection" do
+      # The change-level unit runs first and reports both findings while the
+      # files' batch is still to come: verify_limit 2 verifies one of them
+      # eagerly; the other waits until detection ends and still gets the
+      # remaining slot, in a run of its own.
+      script =
+        script(%{
+          detector: fn
+            %{tool_results: []} = request ->
+              if unit?(request, "change"),
+                do: {:findings, [nil_check(), rename()]},
+                else: {:findings, []}
+
+            _request ->
+              {:answer, "done"}
+          end
+        })
+
+      assert {:ok, result} =
+               review(change(), script, verify_limit: 2, max_concurrency: 1, profile: :assertive)
+
+      assert result.summary.candidates == 2
+      assert result.summary.stages.verifier.runs == 2
+      assert result.dropped == []
+    end
+
+    test "a finding reported again while it is verified only adds support" do
+      script =
+        script(%{
+          detector: fn
+            %{tool_results: []} = request ->
+              if unit?(request, "lib/a.ex#1") or unit?(request, "change"),
+                do: {:findings, [nil_check()]},
+                else: {:findings, []}
+
+            _request ->
+              {:answer, "done"}
+          end
+        })
+
+      assert {:ok, result} = review(change(), script)
+      assert [%Finding{support: 2, verdict: :confirmed}] = result.blocking
+      assert result.summary.candidates == 1
+      assert [_] = Enum.filter(calls(:verifier), &(&1.tool_results == []))
+    end
+
+    test "a crashing verifier keeps its findings uncertain and the review going" do
+      script = script(%{findings: [nil_check()]})
+      profiles = profiles(script)
+      # A verifier spec whose context is not a map makes Verifier.run raise.
+      verifier = profiles["review-verifier"]
+      broken = %{verifier | config: %{verifier.config | context: nil}}
+
+      assert {:ok, result} =
+               review(change(), script,
+                 profiles: Map.put(profiles, "review-verifier", broken),
+                 profile: :assertive
+               )
+
+      assert [%Finding{verdict: :uncertain}] = result.blocking
+      assert [%{reason: {:crashed, _message}}] = result.summary.verification_failures
+      assert %{runs: 1, failed: 1} = result.summary.stages.verifier
+      assert calls(:verifier) == []
+    end
+
+    test "crashed detector batches are failed units" do
+      profiles = profiles(script())
+      detector = profiles["review-detector"]
+      broken = %{detector | config: %{detector.config | context: nil}}
+
+      assert {:error, {:detection_failed, failed}} =
+               review(change(), script(), profiles: Map.put(profiles, "review-detector", broken))
+
+      assert Enum.sort(Enum.map(failed, & &1.unit)) == ["change", "lib/a.ex#1", "lib/b.ex#1"]
+      assert Enum.all?(failed, &match?(%{reason: {:crashed, _message}}, &1))
+    end
+
+    test "a hidden finding becomes a candidate when a clearer report of it is visible" do
+      # Under :quiet, the change-level unit reports the problem as optional
+      # (hidden); the files' batch then reports it as blocking.
+      optional = finding(%{"blocking" => false, "confidence" => 0.6})
+
+      script =
+        script(%{
+          detector: fn
+            %{tool_results: []} = request ->
+              cond do
+                unit?(request, "change") -> {:findings, [optional]}
+                unit?(request, "lib/a.ex#1") -> {:findings, [nil_check()]}
+              end
+
+            _request ->
+              {:answer, "done"}
+          end
+        })
+
+      assert {:ok, result} = review(change(), script, profile: :quiet, max_concurrency: 1)
+      assert [%Finding{blocking: true, support: 2, verdict: :confirmed}] = result.blocking
+      assert result.dropped == []
+    end
+
+    test "a verdict applies to the clearest report of its problem" do
+      # The optional report is verified first; the clearer blocking report
+      # arrives while it is verified and is what the review shows.
+      optional = finding(%{"blocking" => false, "confidence" => 0.6})
+
+      script =
+        script(%{
+          detector: fn
+            %{tool_results: []} = request ->
+              cond do
+                unit?(request, "change") -> {:findings, [optional]}
+                unit?(request, "lib/a.ex#1") -> {:findings, [nil_check()]}
+              end
+
+            _request ->
+              {:answer, "done"}
+          end
+        })
+
+      assert {:ok, result} = review(change(), script, max_concurrency: 1)
+      assert [%Finding{blocking: true, support: 2, verdict: :confirmed}] = result.blocking
+      assert [verifier_call] = Enum.filter(calls(:verifier), &(&1.tool_results == []))
+      assert verifier_call.prompt =~ "Category: correctness; severity: high"
+    end
+
+    test "a filtered problem is dropped once, with its support" do
+      # Below the filter's confidence floor; the report tool accepts it.
+      doubtful = finding(%{"confidence" => 0.1})
+
+      script =
+        script(%{
+          detector: fn
+            %{tool_results: []} = request ->
+              if unit?(request, "lib/a.ex#1"), do: {:findings, [doubtful]}, else: {:findings, []}
+
+            _request ->
+              {:answer, "done"}
+          end
+        })
+
+      assert {:ok, result} = review(change(), script, samples: 2)
+      assert result.summary.candidates == 0
+      assert result.summary.detected == 2
+
+      assert [%{reason: :low_confidence, finding: %Finding{support: 2}}] = result.dropped
+    end
+
+    test "verify_limit 1 verifies the best candidate, not the first one found" do
+      script =
+        script(%{
+          detector: fn
+            %{tool_results: []} = request ->
+              cond do
+                unit?(request, "change") -> {:findings, [rename()]}
+                unit?(request, "lib/a.ex#1") -> {:findings, [nil_check()]}
+              end
+
+            _request ->
+              {:answer, "done"}
+          end
+        })
+
+      assert {:ok, result} =
+               review(change(), script, verify_limit: 1, max_concurrency: 1, profile: :assertive)
+
+      assert result.summary.candidates == 1
+      assert [%Finding{title: "Guard against a missing key"}] = result.blocking
+
+      assert [%{finding: %Finding{title: "Rename f to increment"}, reason: :over_verify_limit}] =
+               result.dropped
     end
 
     test "a verifier run without some verdicts keeps those findings uncertain" do

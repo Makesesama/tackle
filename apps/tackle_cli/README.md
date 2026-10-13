@@ -125,6 +125,25 @@ tackle review --samples 3          # detector runs per review unit
 tackle review --format json        # the whole result as JSON
 ```
 
+Each review ends with its cost: the runs, tokens (input including cached
+input, output including reasoning), and wall time of the detector,
+verifier, and scorer stages, and their total. Detection and verification
+overlap, so the stage times add up to more than the total. The cost and
+the settings below are also in the JSON output and the review history, so
+settings can be compared on real changes:
+
+```sh
+tackle review --unit-lines 300               # changed lines per detector run (default 150)
+tackle review --no-pack-files                # one detector run per file unit, never several files
+tackle review --verify-batch 1               # candidates per verifier run (default 4)
+tackle review --verify-limit 10              # most candidates verified (default: twice the profile's cap)
+tackle review --score-batch 5                # findings per scorer call (default 10)
+tackle review --stage-thinking detector=medium,verifier=low,scorer=low
+```
+
+Smaller units and batches are more focused but cost more runs. Stages
+without `--stage-thinking` use the session's thinking level.
+
 It starts the same scope as an interactive run, without a durable session,
 so `--model`/`--thinking`, the jail, and project `.tackle/agents` overrides
 of `review-detector` and `review-verifier` apply. Rules come from the

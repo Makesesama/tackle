@@ -6,9 +6,23 @@ defmodule Tackle.Review do
   batch of units or of candidates at a time:
 
       Units.split ─► Units.batch ─► Rules.resolve ─► Detector (samples × batch)
-        ─► Cluster.merge ─► Filter.deterministic ─► Rank.preselect
+        ─► Cluster ─► Filter.deterministic + visible lanes + verify limit
         ─► Verifier (per batch of a unit's candidates) ─► Scorer (per batch)
         ─► Rank.select ─► Result ─► History.record_run
+
+  Detection and verification overlap: detector and verifier runs share one
+  bounded work queue, and a finished detector batch's new candidates are
+  verified while other batches are still being reviewed. Findings are
+  merged into clusters (`Tackle.Review.Cluster.same?/2`) that keep their
+  clearest finding; the filters and the profile's lanes
+  (`Tackle.Review.Rank.visible?/2`) are checked on that finding whenever a
+  cluster changes before it is verified, and a finding matching a cluster
+  being verified only adds support. While detection runs, candidates are
+  verified until half of the verification limit (`:verify_limit`) is used;
+  later ones wait until detection ends and compete for the remaining slots
+  by score, so whenever there are no more candidates than the limit, every
+  one is verified. A verdict applies to its cluster's clearest finding.
+  Scoring starts once every verdict is in.
 
   The detector and verifier stages are delegated runs of the
   `review-detector` and `review-verifier` profiles (see
@@ -28,7 +42,9 @@ defmodule Tackle.Review do
   cost of a review. The options `:units`, `:verify_batch`, `:verify_limit`,
   `:score_batch`, and `:thinking` trade quality for cost, and
   `result.summary.stages` reports each stage's runs, token usage (including
-  cached tokens), and wall time, so settings can be compared.
+  cached tokens), and wall time from its first run's start to its last
+  run's end (detection and verification overlap, so these spans add up to
+  more than `summary.duration_ms`), so settings can be compared.
 
   The stage configurations are resolved once, when the review starts: a
   profile that inherits its model (`model_source: :parent`) gets the
@@ -53,8 +69,8 @@ defmodule Tackle.Review do
 
     * `{:started, %{units: n}}` - before any model call;
     * `{:unit, id, :started | :done | {:failed, reason}}` - per review unit;
-    * `{:candidate, finding}` - a merged, filtered finding sent to the
-      verifier;
+    * `{:candidate, finding}` - a filtered candidate sent to the verifier,
+      possibly while other units are still being reviewed;
     * `{:verdict, fingerprint, :confirmed | :rejected | :uncertain}` - per
       candidate; a failed verification counts as `:uncertain`;
     * `{:done, result}` or `{:error, reason}` - last.
@@ -164,9 +180,10 @@ defmodule Tackle.Review do
       `:max_changed_lines` changed lines (`Tackle.Review.Units.batch/2`);
     * `:verify_batch` - candidates of one unit verified per verifier run
       (default #{@default_verify_batch}; 1 verifies each alone);
-    * `:verify_limit` - how many candidates at most are verified, the best
-      by detector confidence (default: `Tackle.Review.Rank.verify_limit/1`
-      of the profile);
+    * `:verify_limit` - how many candidates at most are verified: the first
+      half as they are found, the rest the best of the remaining ones by
+      detector confidence (default: `Tackle.Review.Rank.verify_limit/1` of
+      the profile);
     * `:score_batch` - findings scored per scorer call (default
       #{@default_score_batch});
     * `:shared_cache_key` - share one prompt cache key per stage across the
@@ -561,21 +578,19 @@ defmodule Tackle.Review do
     {rules, warnings} = rules(state.change, ctx)
     state = %{state | warnings: state.warnings ++ warnings}
 
-    with {:ok, detection, state} <- detect(state, rules, ctx),
-         {candidates, filtered} <- candidates(detection.groups, state, rules, ctx),
-         {:ok, verification, state} <- verify(candidates, state, rules, ctx),
-         {:ok, scoring, state} <- score(verification.verified, state, rules, ctx) do
+    with {:ok, flow, state} <- detect_and_verify(state, rules, ctx),
+         {:ok, scoring, state} <- score(flow.verified, state, rules, ctx) do
       selection = Rank.select(scoring.scored, ctx.profile, samples: ctx.samples)
 
       outcome = %{
         selection: selection,
-        filtered: filtered,
-        rejected: verification.rejected,
-        failed_units: detection.failed,
-        detected: detection.detected,
-        candidates: length(candidates),
-        verified: verification.verified,
-        verification_failures: verification.failures,
+        filtered: flow.dropped,
+        rejected: flow.rejected,
+        failed_units: flow.failed_units,
+        detected: flow.detected,
+        candidates: flow.candidates,
+        verified: flow.verified,
+        verification_failures: flow.verification_failures,
         scoring_failures: scoring.failures
       }
 
@@ -598,59 +613,75 @@ defmodule Tackle.Review do
   defp format_warning(%{path: nil, message: message}), do: message
   defp format_warning(%{path: path, message: message}), do: "#{path}: #{message}"
 
-  ## Detection
+  ## Detection and verification
+  #
+  # Detector and verifier runs share one work queue (`Pool.run/5`), so the
+  # findings of a finished detector batch are verified while other batches
+  # are still being reviewed. Findings are fingerprinted and merged into
+  # clusters (`Cluster.same?/2`); a cluster keeps its clearest finding and
+  # the samples that reported it. Each time a cluster that is not yet
+  # verified changes, its clearest finding is checked again: the
+  # deterministic filters and the profile's lanes decide whether it is a
+  # candidate. A candidate is verified right away while detection runs and
+  # fewer than half of the verification limit are used; later ones are held
+  # until detection ends and then compete for the remaining slots by rank.
+  # With no more candidates than the limit, every one is verified, as
+  # without streaming. A verified cluster's verdict applies to its clearest
+  # finding at the end, as it did when clusters were merged before
+  # verification.
 
-  defp detect(state, rules, ctx) do
+  defp detect_and_verify(state, rules, ctx) do
     paths = Enum.map(state.change.diff.files, & &1.path)
 
     jobs =
       state.units
       |> batches(ctx.units)
       |> Enum.map(fn units ->
-        resolutions = Enum.map(units, &Rules.resolve(rules, &1, paths: paths))
-        {units, resolutions}
+        {:detect, units, Enum.map(units, &Rules.resolve(rules, &1, paths: paths))}
       end)
 
     warnings =
       jobs
-      |> Enum.flat_map(fn {_units, resolutions} -> Enum.flat_map(resolutions, & &1.warnings) end)
+      |> Enum.flat_map(fn {:detect, _units, resolutions} ->
+        Enum.flat_map(resolutions, & &1.warnings)
+      end)
       |> Enum.map(&format_warning/1)
       |> Enum.uniq()
 
-    run = fn {units, resolutions} ->
-      units
-      |> Detector.run(
-        [
-          requester: ctx.requester,
-          spec: ctx.detector,
-          rules: resolutions |> Enum.flat_map(& &1.rules) |> Enum.uniq_by(& &1.id),
-          index: state.index,
-          samples: ctx.samples
-        ] ++ ctx.run_opts
-      )
-      |> case do
-        {:error, reason} when reason != :cancelled ->
-          {:ok, %{samples: [], errors: [reason], runs: 0, usage: nil}}
+    state = %{state | warnings: state.warnings ++ warnings}
+    limit = ctx.verify_limit || Rank.verify_limit(ctx.profile)
 
-        result ->
-          result
-      end
-    end
+    flow = %{
+      detecting: length(jobs),
+      detections: [],
+      detected: 0,
+      samples: 0,
+      clusters: %{},
+      dispatched: [],
+      limit: limit,
+      eager: div(limit, 2),
+      verdicts: %{},
+      verifications: [],
+      spans: %{}
+    }
 
-    pool_opts = [
+    env = %{
+      state: state,
+      ctx: ctx,
+      rules: rules,
+      rules_by_id: Map.new(rules, &{&1.id, &1}),
+      lines: lines_by_path(state.code_units)
+    }
+
+    opts = [
       cancellation: ctx.signal,
       cancelled?: &match?({:error, :cancelled}, &1),
-      on_start: fn {units, _resolutions} ->
-        Enum.each(units, &emit(ctx, {:unit, &1.id, :started}))
-      end,
-      on_result: fn {units, _resolutions}, result ->
-        Enum.each(units, &emit(ctx, unit_event(&1, result)))
-      end
+      on_start: &flow_started(&1, &2, env),
+      on_result: &flow_result(&1, &2, &3, env)
     ]
 
-    with {:ok, results, duration} <-
-           timed(fn -> Pool.map(jobs, ctx.concurrency, run, pool_opts) end) do
-      detection(jobs, results, duration, %{state | warnings: state.warnings ++ warnings})
+    with {:ok, flow} <- Pool.run(jobs, ctx.concurrency, &run_job(&1, env), flow, opts) do
+      finish_flow(flow, state)
     end
   end
 
@@ -667,43 +698,328 @@ defmodule Tackle.Review do
     Units.batch(units, max)
   end
 
+  defp run_job({:detect, units, resolutions}, env) do
+    units
+    |> Detector.run(
+      [
+        requester: env.ctx.requester,
+        spec: env.ctx.detector,
+        rules: resolutions |> Enum.flat_map(& &1.rules) |> Enum.uniq_by(& &1.id),
+        index: env.state.index,
+        samples: env.ctx.samples
+      ] ++ env.ctx.run_opts
+    )
+    |> case do
+      {:error, reason} when reason != :cancelled ->
+        {:ok, %{samples: [], errors: [reason], runs: 0, usage: nil}}
+
+      result ->
+        result
+    end
+  end
+
+  defp run_job({:verify, _ids, findings, unit}, env) do
+    findings
+    |> Verifier.run(
+      unit,
+      [requester: env.ctx.requester, spec: env.ctx.verifier, rules: env.rules_by_id] ++
+        env.ctx.run_opts
+    )
+    |> case do
+      {:error, reason} when reason != :cancelled ->
+        {:ok, %{verdicts: Enum.map(findings, fn _finding -> {:error, reason} end), usage: nil}}
+
+      result ->
+        result
+    end
+  end
+
+  defp flow_started({:detect, units, _resolutions} = job, flow, env) do
+    Enum.each(units, &emit(env.ctx, {:unit, &1.id, :started}))
+    span(flow, job, :start)
+  end
+
+  defp flow_started(job, flow, _env), do: span(flow, job, :start)
+
+  defp flow_result(_job, {:error, :cancelled}, flow, _env), do: {[], flow}
+
+  defp flow_result({:detect, units, _resolutions} = job, result, flow, env) do
+    Enum.each(units, &emit(env.ctx, unit_event(&1, result)))
+
+    flow =
+      %{span(flow, job, :finish) | detecting: flow.detecting - 1}
+      |> Map.update!(:detections, &[{units, result} | &1])
+
+    {flow, touched} =
+      case result do
+        {:ok, %{samples: samples}} -> Enum.reduce(samples, {flow, []}, &add_sample(&1, &2, env))
+        _failed -> {flow, []}
+      end
+
+    {dispatch, flow} = admit(touched |> Enum.reverse() |> Enum.uniq(), flow, env)
+    {release, flow} = if flow.detecting == 0, do: release(flow, env), else: {[], flow}
+    verify_jobs(dispatch ++ release, flow, env)
+  end
+
+  defp flow_result({:verify, ids, findings, _unit} = job, result, flow, env) do
+    # A crashed run decides nothing: its findings stay uncertain.
+    report =
+      case result do
+        {:ok, report} -> report
+        {:error, reason} -> %{verdicts: Enum.map(ids, fn _id -> {:error, reason} end), usage: nil}
+      end
+
+    findings
+    |> Enum.zip(report.verdicts)
+    |> Enum.each(fn {finding, verdict} ->
+      emit(env.ctx, {:verdict, finding.fingerprint, applied_verdict(verdict)})
+    end)
+
+    verdicts = ids |> Enum.zip(report.verdicts) |> Map.new()
+
+    flow =
+      %{span(flow, job, :finish) | verdicts: Map.merge(flow.verdicts, verdicts)}
+      |> Map.update!(:verifications, &[report | &1])
+
+    {[], flow}
+  end
+
   defp unit_event(unit, {:ok, %{samples: [_ | _]}}), do: {:unit, unit.id, :done}
   defp unit_event(unit, {:ok, %{errors: [reason | _]}}), do: {:unit, unit.id, {:failed, reason}}
   defp unit_event(unit, {:error, reason}), do: {:unit, unit.id, {:failed, reason}}
 
-  defp detection(jobs, results, duration, state) do
-    outcomes = Enum.zip(jobs, results)
+  # The first start and last finish of each stage's runs.
+  defp span(flow, job, edge) do
+    stage = if elem(job, 0) == :detect, do: :detector, else: :verifier
+    now = System.monotonic_time(:millisecond)
+    span = flow.spans |> Map.get(stage, {now, now}) |> extend_span(edge, now)
+    %{flow | spans: Map.put(flow.spans, stage, span)}
+  end
 
-    failed =
-      for {{units, _resolutions}, {:ok, %{samples: [], errors: [reason | _]}}} <- outcomes,
+  defp extend_span(span, :start, _now), do: span
+  defp extend_span({first, last}, :finish, now), do: {first, max(last, now)}
+
+  # Adds one detector sample's findings to the clusters; returns the ids of
+  # the clusters it created or changed.
+  defp add_sample(findings, {flow, touched}, env) do
+    findings = Enum.map(findings, &fingerprint(&1, env.lines))
+    sample = flow.samples
+    flow = %{flow | detected: flow.detected + length(findings), samples: sample + 1}
+    Enum.reduce(findings, {flow, touched}, &add_finding(&1, &2, sample))
+  end
+
+  defp add_finding(finding, {flow, touched}, sample) do
+    match = Enum.find(cluster_ids(flow), &Cluster.same?(flow.clusters[&1].finding, finding))
+
+    case match do
+      nil ->
+        id = map_size(flow.clusters)
+        cluster = %{finding: finding, samples: MapSet.new([sample]), status: :new, sent: nil}
+        {%{flow | clusters: Map.put(flow.clusters, id, cluster)}, [id | touched]}
+
+      id ->
+        flow =
+          update_in(flow.clusters[id], fn cluster ->
+            %{
+              cluster
+              | finding: Cluster.clearer(cluster.finding, finding),
+                samples: MapSet.put(cluster.samples, sample)
+            }
+          end)
+
+        {flow, [id | touched]}
+    end
+  end
+
+  # Checks created or changed clusters that are not verified yet: a
+  # candidate is dispatched while detection runs and the eager share of the
+  # limit is not used up, otherwise held; a cluster the filters or the
+  # profile's lanes reject waits, as a later finding may make it clearer.
+  defp admit(ids, flow, env) do
+    {dispatch, flow} = Enum.reduce(ids, {[], flow}, &admit_cluster(&1, &2, env))
+    {Enum.reverse(dispatch), flow}
+  end
+
+  defp admit_cluster(id, {dispatch, flow}, env) do
+    eligibility =
+      if flow.clusters[id].status == :dispatched,
+        do: :dispatched,
+        else: eligibility(cluster_finding(flow, id), env)
+
+    cond do
+      eligibility == :dispatched ->
+        {dispatch, flow}
+
+      eligibility != :ok ->
+        {:error, reason} = eligibility
+        {dispatch, put_status(flow, id, {:rejected, reason})}
+
+      flow.detecting > 0 and length(flow.dispatched) < flow.eager ->
+        {[id | dispatch], dispatched(flow, id)}
+
+      true ->
+        {dispatch, put_status(flow, id, :held)}
+    end
+  end
+
+  defp eligibility(finding, env) do
+    filtered =
+      Filter.deterministic([finding],
+        changed: env.state.index,
+        rules: env.rules,
+        known_fingerprints: env.ctx.known
+      )
+
+    case filtered do
+      {[_finding], []} ->
+        if Rank.visible?(finding, env.ctx.profile), do: :ok, else: {:error, :hidden_lane}
+
+      {[], [{_finding, reason}]} ->
+        {:error, reason}
+    end
+  end
+
+  # Once detection is over, the held candidates compete for the remaining
+  # slots by score, ties in order of discovery.
+  defp release(flow, env) do
+    held = Enum.filter(cluster_ids(flow), &(flow.clusters[&1].status == :held))
+    remaining = max(flow.limit - length(flow.dispatched), 0)
+
+    {kept, over} =
+      held
+      |> Enum.with_index()
+      |> Enum.sort_by(fn {id, index} ->
+        {-Rank.score(cluster_finding(flow, id), env.ctx.samples), index}
+      end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.split(remaining)
+
+    kept = MapSet.new(kept)
+    flow = Enum.reduce(over, flow, &put_status(&2, &1, {:rejected, :over_verify_limit}))
+    dispatch = Enum.filter(held, &MapSet.member?(kept, &1))
+    {dispatch, Enum.reduce(dispatch, flow, &dispatched(&2, &1))}
+  end
+
+  # Cluster ids count up from 0 in order of discovery.
+  defp cluster_ids(flow), do: Enum.to_list(0..(map_size(flow.clusters) - 1)//1)
+
+  defp cluster_finding(flow, id) do
+    cluster = Map.fetch!(flow.clusters, id)
+    %{cluster.finding | support: MapSet.size(cluster.samples)}
+  end
+
+  defp put_status(flow, id, status),
+    do: update_in(flow.clusters[id], &%{&1 | status: status})
+
+  # The finding sent to the verifier is kept for the verdict's evidence.
+  defp dispatched(flow, id) do
+    sent = cluster_finding(flow, id)
+    flow = update_in(flow.clusters[id], &%{&1 | status: :dispatched, sent: sent})
+    %{flow | dispatched: [id | flow.dispatched]}
+  end
+
+  # Verifier jobs for dispatched clusters: a unit's candidates share runs
+  # of at most `verify_batch` findings.
+  defp verify_jobs(ids, flow, env) do
+    entries =
+      Enum.map(ids, fn id ->
+        finding = flow.clusters[id].sent
+        {id, finding, home_unit(finding, env.state)}
+      end)
+
+    by_unit = Enum.group_by(entries, fn {_id, _finding, unit} -> unit.id end)
+
+    jobs =
+      entries
+      |> Enum.map(fn {_id, _finding, unit} -> unit.id end)
+      |> Enum.uniq()
+      |> Enum.flat_map(fn unit_id ->
+        by_unit
+        |> Map.fetch!(unit_id)
+        |> Enum.chunk_every(env.ctx.verify_batch)
+        |> Enum.map(fn [{_id, _finding, unit} | _] = chunk ->
+          {:verify, Enum.map(chunk, &elem(&1, 0)), Enum.map(chunk, &elem(&1, 1)), unit}
+        end)
+      end)
+
+    Enum.each(entries, fn {_id, finding, _unit} -> emit(env.ctx, {:candidate, finding}) end)
+    {jobs, flow}
+  end
+
+  defp finish_flow(flow, state) do
+    detections = Enum.reverse(flow.detections)
+
+    failed_units =
+      for {units, result} <- detections,
+          reason = detection_failure(result),
+          reason != nil,
           unit <- units,
           do: %{unit: unit.id, reason: reason}
 
-    successes = for {_job, {:ok, %{samples: [_ | _]} = result}} <- outcomes, do: result
-    reports = for {_job, {:ok, result}} <- outcomes, do: result
+    reports = for {_units, {:ok, report}} <- detections, do: report
 
-    stats =
-      stage_stats(
-        Enum.sum_by(reports, & &1.runs),
-        Enum.sum_by(reports, &length(&1.errors)),
-        Enum.map(reports, & &1.usage),
-        duration
-      )
-
-    state = put_stage(state, :detector, stats)
-
-    if successes == [] do
-      {:error, {:detection_failed, failed}}
+    if Enum.all?(reports, &(&1.samples == [])) do
+      {:error, {:detection_failed, failed_units}}
     else
-      lines = lines_by_path(state.code_units)
+      detector =
+        stage_stats(
+          Enum.sum_by(reports, & &1.runs),
+          Enum.sum_by(reports, &length(&1.errors)),
+          Enum.map(reports, & &1.usage),
+          span_ms(flow, :detector)
+        )
 
-      groups =
-        for result <- successes,
-            findings <- result.samples,
-            do: Enum.map(findings, &fingerprint(&1, lines))
+      verifier =
+        stage_stats(
+          length(flow.verifications),
+          Enum.count(flow.verifications, fn report ->
+            Enum.all?(report.verdicts, &match?({:error, _}, &1))
+          end),
+          Enum.map(flow.verifications, & &1.usage),
+          span_ms(flow, :verifier)
+        )
 
-      detected = groups |> Enum.map(&length/1) |> Enum.sum()
-      {:ok, %{groups: groups, failed: failed, detected: detected}, state}
+      # Ordered by location, so the result does not depend on which run
+      # finished first.
+      acc =
+        flow.dispatched
+        |> Enum.map(fn id ->
+          {cluster_finding(flow, id), flow.clusters[id].sent, Map.get(flow.verdicts, id)}
+        end)
+        |> Enum.sort_by(fn {finding, _sent, _verdict} -> location_key(finding) end)
+        |> Enum.reduce(%{verified: [], rejected: [], failures: []}, &add_verdict/2)
+
+      dropped =
+        for id <- cluster_ids(flow),
+            {:rejected, reason} <- [flow.clusters[id].status],
+            do: {cluster_finding(flow, id), reason}
+
+      result = %{
+        failed_units: failed_units,
+        detected: flow.detected,
+        candidates: length(flow.dispatched),
+        dropped: dropped,
+        verified: Enum.reverse(acc.verified),
+        rejected: Enum.reverse(acc.rejected),
+        verification_failures: Enum.reverse(acc.failures)
+      }
+
+      state = state |> put_stage(:detector, detector) |> put_stage(:verifier, verifier)
+      {:ok, result, state}
+    end
+  end
+
+  defp detection_failure({:ok, %{samples: [], errors: [reason | _]}}), do: reason
+  defp detection_failure({:error, reason}), do: reason
+  defp detection_failure(_result), do: nil
+
+  defp location_key(%Finding{location: location, fingerprint: fingerprint}),
+    do: {location.path, location.side, location.start_line, location.end_line, fingerprint}
+
+  defp span_ms(flow, stage) do
+    case Map.get(flow.spans, stage) do
+      {first, last} -> last - first
+      nil -> 0
     end
   end
 
@@ -722,104 +1038,26 @@ defmodule Tackle.Review do
     Finding.put_fingerprint(finding, excerpt)
   end
 
-  # Merged and filtered candidates, minus those the profile could never
-  # show; only the kept ones are announced and verified.
-  defp candidates(groups, state, rules, ctx) do
-    {filtered, dropped} =
-      groups
-      |> Cluster.merge()
-      |> Filter.deterministic(changed: state.index, rules: rules, known_fingerprints: ctx.known)
-
-    {candidates, preselected} =
-      Rank.preselect(filtered, ctx.profile, samples: ctx.samples, limit: ctx.verify_limit)
-
-    Enum.each(candidates, &emit(ctx, {:candidate, &1}))
-    {candidates, dropped ++ preselected}
-  end
-
-  ## Verification
-
-  defp verify(candidates, state, rules, ctx) do
-    rules_by_id = Map.new(rules, &{&1.id, &1})
-
-    # Candidates of one unit share the code a verifier reads.
-    batches =
-      candidates
-      |> Enum.group_by(&home_unit(&1, state).id)
-      |> Enum.sort_by(fn {_id, [first | _]} -> Enum.find_index(candidates, &(&1 == first)) end)
-      |> Enum.flat_map(fn {_id, findings} -> Enum.chunk_every(findings, ctx.verify_batch) end)
-
-    run = fn [first | _] = findings ->
-      findings
-      |> Verifier.run(
-        home_unit(first, state),
-        [requester: ctx.requester, spec: ctx.verifier, rules: rules_by_id] ++ ctx.run_opts
-      )
-      |> case do
-        {:error, reason} when reason != :cancelled ->
-          {:ok, %{verdicts: Enum.map(findings, fn _finding -> {:error, reason} end), usage: nil}}
-
-        result ->
-          result
-      end
-    end
-
-    pool_opts = [
-      cancellation: ctx.signal,
-      cancelled?: &match?({:error, :cancelled}, &1),
-      on_result: fn
-        _findings, {:error, :cancelled} ->
-          :ok
-
-        findings, {:ok, result} ->
-          findings
-          |> Enum.zip(result.verdicts)
-          |> Enum.each(fn {finding, verdict} ->
-            emit(ctx, {:verdict, finding.fingerprint, applied_verdict(verdict)})
-          end)
-      end
-    ]
-
-    with {:ok, results, duration} <-
-           timed(fn -> Pool.map(batches, ctx.concurrency, run, pool_opts) end) do
-      reports = for {:ok, report} <- results, do: report
-
-      acc =
-        batches
-        |> Enum.zip(results)
-        |> Enum.flat_map(fn {findings, {:ok, report}} -> Enum.zip(findings, report.verdicts) end)
-        |> Enum.reduce(%{verified: [], rejected: [], failures: []}, &add_verdict/2)
-
-      verification = %{
-        verified: Enum.reverse(acc.verified),
-        rejected: Enum.reverse(acc.rejected),
-        failures: Enum.reverse(acc.failures)
-      }
-
-      stats =
-        stage_stats(
-          length(batches),
-          Enum.count(reports, fn report ->
-            Enum.all?(report.verdicts, &match?({:error, _}, &1))
-          end),
-          Enum.map(reports, & &1.usage),
-          duration
-        )
-
-      {:ok, verification, put_stage(state, :verifier, stats)}
-    end
-  end
-
   defp applied_verdict({:ok, %{verdict: verdict}}), do: verdict
   defp applied_verdict({:error, _reason}), do: :uncertain
 
-  defp add_verdict({finding, {:ok, %{verdict: :rejected} = report}}, acc),
-    do: %{acc | rejected: [%{finding: finding, evidence: report.evidence} | acc.rejected]}
+  # A verdict applies to the cluster's clearest finding; a rejection keeps
+  # the finding the verifier saw, which its evidence is about.
+  defp add_verdict({finding, sent, {:ok, %{verdict: :rejected} = report}}, acc) do
+    rejected = %{sent | support: finding.support}
+    %{acc | rejected: [%{finding: rejected, evidence: report.evidence} | acc.rejected]}
+  end
 
-  defp add_verdict({finding, {:ok, report}}, acc),
+  defp add_verdict({finding, _sent, {:ok, report}}, acc),
     do: %{acc | verified: [%{finding | verdict: report.verdict} | acc.verified]}
 
-  defp add_verdict({finding, {:error, reason}}, acc) do
+  defp add_verdict({finding, _sent, failure}, acc) do
+    reason =
+      case failure do
+        {:error, reason} -> reason
+        nil -> :no_verdict
+      end
+
     %{
       acc
       | verified: [%{finding | verdict: :uncertain} | acc.verified],

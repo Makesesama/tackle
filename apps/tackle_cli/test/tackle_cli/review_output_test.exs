@@ -141,6 +141,54 @@ defmodule Tackle.CLI.Output.ReviewTest do
       assert rendered =~ "Skipped: mix.lock (lock file)"
     end
 
+    test "ends with the cost of each stage and the total, counting cached input" do
+      usage = fn input, cached, output, reasoning ->
+        %Usage{
+          input_tokens: input,
+          cache_read_tokens: cached,
+          output_tokens: output,
+          reasoning_tokens: reasoning
+        }
+      end
+
+      stages = %{
+        detector: %{
+          runs: 3,
+          failed: 1,
+          usage: usage.(52_300, 325_600, 4_500, 2_500),
+          duration_ms: 56_000
+        },
+        verifier: %{
+          runs: 3,
+          failed: 0,
+          usage: usage.(35_500, 97_300, 1_800, nil),
+          duration_ms: 40_000
+        },
+        scorer: %{runs: 1, failed: 0, usage: usage.(1_800, nil, 238, 201), duration_ms: 9_600}
+      }
+
+      summary = summary(%{stages: stages, duration_ms: 105_000})
+      rendered = text(ReviewOutput.render(result(summary: summary), change(), text_output()))
+
+      assert rendered =~ "Cost (1m 45s):"
+
+      assert rendered =~
+               "  detector: 3 runs (1 failed), 377.9k in (325.6k cached, 86%), " <>
+                 "4.5k out (2.5k reasoning), 56.0s"
+
+      assert rendered =~ "  verifier: 3 runs, 132.8k in (97.3k cached, 73%), 1.8k out, 40.0s"
+      assert rendered =~ "  scorer: 1 call, 1.8k in, 238 out (201 reasoning), 9.6s"
+
+      assert rendered =~
+               "  total: 7 model runs, 512.5k in (422.9k cached, 83%), " <>
+                 "6.5k out (2.7k reasoning), 1m 45s"
+
+      assert ReviewOutput.cost_summary(summary) ==
+               "7 model runs, 519.0k tokens (422.9k cached), 1m 45s"
+
+      assert ReviewOutput.cost_summary(summary(%{})) == nil
+    end
+
     test "reports a clean review and an empty change" do
       clean = result(blocking: [], optional: [], summary: summary(%{verdict: :clean}))
       rendered = text(ReviewOutput.render(clean, change(mode: :staged), text_output()))

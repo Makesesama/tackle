@@ -94,36 +94,14 @@ defmodule Tackle.Review.RankTest do
     assert Enum.count(assertive.dropped, &match?({_, :over_cap}, &1)) == 10
   end
 
-  describe "preselect/3" do
-    test "drops hidden lanes and keeps the best candidates up to the limit, in order" do
-      a = finding(title: "a", confidence: 0.5, verdict: nil)
-      b = finding(title: "b", confidence: 0.9, verdict: nil)
-      optional = finding(title: "optional", blocking: false, verdict: nil)
-      c = finding(title: "c", confidence: 0.7, verdict: nil)
+  test "visible?/2 and verify_limit/1" do
+    optional = finding(blocking: false)
 
-      assert {[^a, ^b, ^c], [{^optional, :hidden_lane}]} =
-               Rank.preselect([a, b, optional, c], :quiet)
-
-      assert {[^b, ^c], [{^optional, :hidden_lane}, {^a, :over_verify_limit}]} =
-               Rank.preselect([a, b, optional, c], :quiet, limit: 2)
-
-      assert {[^b, ^optional], [{^a, :over_verify_limit}, {^c, :over_verify_limit}]} =
-               Rank.preselect([a, b, optional, c], :assertive, limit: 2)
-    end
-
-    test "the default limit is twice the profile's cap" do
-      assert Rank.verify_limit(:quiet) == 10
-      assert Rank.verify_limit(:default) == 30
-
-      candidates = for i <- 1..12, do: finding(title: "#{i}", confidence: i / 12)
-      {kept, dropped} = Rank.preselect(candidates, :quiet)
-      assert Enum.map(kept, & &1.title) == Enum.map(3..12, &Integer.to_string/1)
-
-      assert Enum.map(dropped, fn {finding, :over_verify_limit} -> finding.title end) == [
-               "1",
-               "2"
-             ]
-    end
+    assert Rank.visible?(finding([]), :quiet)
+    refute Rank.visible?(optional, :quiet)
+    assert Rank.visible?(optional, :default)
+    assert Rank.verify_limit(:quiet) == 10
+    assert Rank.verify_limit(:default) == 30
   end
 
   test "profiles and thresholds" do

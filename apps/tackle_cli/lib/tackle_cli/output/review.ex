@@ -226,14 +226,15 @@ defmodule Tackle.CLI.Output.Review do
 
   @doc """
   Describes a review's total cost in one short phrase, such as
-  `"12 runs, 340.2k tokens (210.0k cached), 3m 5s"`, or `nil` when the
-  summary has no stage statistics.
+  `"12 model runs, 340.2k tokens (210.0k cached), 3m 5s"`, or `nil` when the
+  summary has no stage statistics. Tokens count all input (uncached,
+  cached, and cache writes) and output.
   """
   @spec cost_summary(map()) :: String.t() | nil
   def cost_summary(%{stages: stages} = summary) when map_size(stages) > 0 do
     runs = stages |> Map.values() |> Enum.map(& &1.runs) |> Enum.sum()
     usage = stages |> Map.values() |> Enum.map(& &1.usage) |> Usage.aggregate()
-    total = (usage.input_tokens || 0) + (usage.output_tokens || 0)
+    total = prompt_tokens(usage) + (usage.output_tokens || 0)
 
     cached =
       case usage.cache_read_tokens do
@@ -246,6 +247,12 @@ defmodule Tackle.CLI.Output.Review do
   end
 
   def cost_summary(_summary), do: nil
+
+  # `Tackle.Lib.Usage` keeps uncached input, cache reads, and cache writes
+  # in separate buckets; together they are the prompt.
+  defp prompt_tokens(%Usage{} = usage),
+    do:
+      (usage.input_tokens || 0) + (usage.cache_read_tokens || 0) + (usage.cache_write_tokens || 0)
 
   # One line per stage that ran, then the total of all stages.
   defp cost(summary, output) do
@@ -285,10 +292,15 @@ defmodule Tackle.CLI.Output.Review do
   end
 
   defp tokens(%Usage{} = usage) do
+    prompt = prompt_tokens(usage)
+
     cached =
       case usage.cache_read_tokens do
-        cached when is_integer(cached) and cached > 0 -> " (#{count(cached)} cached)"
-        _none -> ""
+        cached when is_integer(cached) and cached > 0 ->
+          " (#{count(cached)} cached, #{round(cached * 100 / prompt)}%)"
+
+        _none ->
+          ""
       end
 
     reasoning =
@@ -300,7 +312,7 @@ defmodule Tackle.CLI.Output.Review do
           ""
       end
 
-    "#{count(usage.input_tokens || 0)} in#{cached}, " <>
+    "#{count(prompt)} in#{cached}, " <>
       "#{count(usage.output_tokens || 0)} out#{reasoning}"
   end
 

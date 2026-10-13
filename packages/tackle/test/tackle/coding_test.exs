@@ -234,9 +234,9 @@ defmodule Tackle.CodingTest do
     assert scout.config.model_ref == spec.root_spec.config.model_ref
     assert scout.config.context.cwd == cwd
     assert scout.timeout == 300_000
-    assert spec.limits.max_agents_per_fleet == 3
-    assert spec.limits.max_concurrent_turns == 3
-    assert spec.limits.max_children_per_agent == 2
+    assert spec.limits.max_agents_per_fleet == 5
+    assert spec.limits.max_concurrent_turns == 5
+    assert spec.limits.max_children_per_agent == 4
     assert spec.limits.max_spawn_depth == 1
 
     for config <- [spec.root_spec.config, scout.config] do
@@ -464,18 +464,26 @@ defmodule Tackle.CodingTest do
 
   test "limits reject excess children and children cannot delegate", %{opts: opts} do
     scope = start_coding_scope(update_overrides(opts, llm_opts: [mode: :block]))
-    assert {:ok, first} = Runtime.request_agent(scope.root_agent_ref, "scout", "first")
-    assert {:ok, second} = Runtime.request_agent(scope.root_agent_ref, "scout", "second")
+
+    children =
+      for prompt <- ~w(first second third fourth) do
+        assert {:ok, run} = Runtime.request_agent(scope.root_agent_ref, "scout", prompt)
+        run
+      end
 
     assert {:error, {:rejected, :max_children_per_agent}} =
-             Runtime.request_agent(scope.root_agent_ref, "scout", "third")
+             Runtime.request_agent(scope.root_agent_ref, "scout", "fifth")
+
+    [first | _rest] = children
 
     assert {:error, {:rejected, :delegation_not_allowed}} =
              Runtime.request_agent(first.agent_ref, "scout", "nested")
 
     assert :ok = Tackle.stop_scope(scope.scope_ref)
-    assert Runtime.session_pid(first.agent_ref) == {:error, :not_found}
-    assert Runtime.session_pid(second.agent_ref) == {:error, :not_found}
+
+    for child <- children do
+      assert Runtime.session_pid(child.agent_ref) == {:error, :not_found}
+    end
   end
 
   test "cancelling a parent turn cleans up its scout", %{opts: opts} do

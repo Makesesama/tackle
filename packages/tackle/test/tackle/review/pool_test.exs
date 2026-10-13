@@ -71,4 +71,78 @@ defmodule Tackle.Review.PoolTest do
   test "an empty batch returns no results" do
     assert {:ok, []} = Pool.map([], 3, & &1)
   end
+
+  describe "run/5" do
+    test "enqueues jobs from results and threads the accumulator through the callbacks" do
+      fun = fn
+        {:double, n} -> n * 2
+        {:square, n} -> n * n
+      end
+
+      on_result = fn
+        {:double, n}, result, acc when n < 3 ->
+          {[{:square, result}], [{:double, n, result} | acc]}
+
+        job, result, acc ->
+          {[], [{job, result} | acc]}
+      end
+
+      assert {:ok, acc} =
+               Pool.run([{:double, 1}, {:double, 2}, {:double, 3}], 2, fun, [],
+                 on_start: fn job, acc -> [{:started, job} | acc] end,
+                 on_result: on_result
+               )
+
+      assert {:double, 1, 2} in acc
+      assert {{:square, 2}, 4} in acc
+      assert {{:square, 4}, 16} in acc
+      assert {{:double, 3}, 6} in acc
+      assert {:started, {:square, 4}} in acc
+      assert Enum.count(acc, &match?({:started, _job}, &1)) == 5
+    end
+
+    test "starts enqueued jobs after the ones already queued" do
+      parent = self()
+
+      on_result = fn
+        :first, _result, acc -> {[:enqueued], acc}
+        _job, _result, acc -> {[], acc}
+      end
+
+      assert {:ok, :acc} =
+               Pool.run([:first, :second], 1, & &1, :acc,
+                 on_start: fn job, acc ->
+                   send(parent, {:started, job})
+                   acc
+                 end,
+                 on_result: on_result
+               )
+
+      started = for _job <- 1..3, do: assert_receive({:started, job}) && job
+      assert started == [:first, :second, :enqueued]
+      refute_received {:started, _job}
+    end
+
+    test "a cancelling result stops the queue and ignores the jobs it would enqueue" do
+      parent = self()
+
+      on_result = fn job, result, acc ->
+        send(parent, {:result, job, result})
+        {[:never], acc}
+      end
+
+      assert {:error, :cancelled} =
+               Pool.run([:stop], 1, fn :stop -> {:error, :cancelled} end, nil,
+                 cancelled?: &match?({:error, :cancelled}, &1),
+                 on_start: fn job, acc ->
+                   send(parent, {:started, job})
+                   acc
+                 end,
+                 on_result: on_result
+               )
+
+      assert_received {:result, :stop, {:error, :cancelled}}
+      refute_received {:started, :never}
+    end
+  end
 end

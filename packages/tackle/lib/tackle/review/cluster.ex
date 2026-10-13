@@ -48,7 +48,12 @@ defmodule Tackle.Review.Cluster do
     end
   end
 
-  defp clearer(current, candidate) do
+  @doc """
+  Returns the clearer of two findings of one cluster: the one with the
+  higher confidence, then the shorter body; `current` on a tie.
+  """
+  @spec clearer(Finding.t(), Finding.t()) :: Finding.t()
+  def clearer(%Finding{} = current, %Finding{} = candidate) do
     if rank(candidate) > rank(current), do: candidate, else: current
   end
 
