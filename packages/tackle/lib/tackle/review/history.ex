@@ -20,7 +20,10 @@ defmodule Tackle.Review.History do
   `record_run/4` appends a run line with what was reviewed (change mode,
   base and head), the profile and samples, summary counts, digests of the
   rules and stage prompts in effect (to compare runs across prompt and rule
-  changes), and token usage. It also appends one `shown` event per shown
+  changes), the cost settings (unit size, batching, per-stage models and
+  thinking levels), the runs, token usage, and wall time of each stage, and
+  the total token usage and wall time, so the cost and quality of settings
+  can be compared across runs. It also appends one `shown` event per shown
   finding and one `rejected` event per finding the verifier rejected, so
   the rejection rate can be inspected later.
 
@@ -167,6 +170,9 @@ defmodule Tackle.Review.History do
       "profile" => Atom.to_string(result.summary.profile),
       "samples" => result.summary.samples,
       "summary" => summary(result.summary),
+      "settings" => settings(Map.get(result.summary, :settings)),
+      "stages" => stages(Map.get(result.summary, :stages, %{})),
+      "duration_ms" => Map.get(result.summary, :duration_ms),
       "rules" => opts |> Keyword.get(:rules, []) |> Enum.map(&rule/1),
       "prompts" => opts |> Keyword.get(:prompts, %{}) |> Map.new(fn {k, v} -> {k, digest(v)} end),
       "usage" => usage(result.usage)
@@ -376,6 +382,32 @@ defmodule Tackle.Review.History do
       "optional" => summary.optional,
       "verdict" => Atom.to_string(summary.verdict)
     }
+  end
+
+  defp settings(nil), do: nil
+
+  defp settings(settings) do
+    Map.new(settings, fn {key, value} -> {Atom.to_string(key), json_value(value)} end)
+  end
+
+  defp json_value(value) when is_map(value),
+    do: Map.new(value, fn {key, inner} -> {to_string(key), json_value(inner)} end)
+
+  defp json_value(value) when is_atom(value) and value not in [nil, true, false],
+    do: Atom.to_string(value)
+
+  defp json_value(value), do: value
+
+  defp stages(stages) do
+    Map.new(stages, fn {stage, stats} ->
+      {Atom.to_string(stage),
+       %{
+         "runs" => stats.runs,
+         "failed" => stats.failed,
+         "duration_ms" => stats.duration_ms,
+         "usage" => usage(stats.usage)
+       }}
+    end)
   end
 
   defp rule(%Rule{} = rule) do

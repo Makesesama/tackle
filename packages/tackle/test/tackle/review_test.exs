@@ -43,7 +43,9 @@ defmodule Tackle.ReviewTest do
       request = %{
         prompt: prompt,
         tool_results: for(%{role: :tool, content: content} <- messages, do: content),
-        model: Keyword.fetch!(opts, :model)
+        model: Keyword.fetch!(opts, :model),
+        reasoning_effort: Keyword.get(opts, :reasoning_effort),
+        prompt_cache_key: Keyword.get(opts, :prompt_cache_key)
       }
 
       stage =
@@ -65,14 +67,30 @@ defmodule Tackle.ReviewTest do
     defp reply({:findings, findings}, opts, _test_pid),
       do: tool_call("report_findings", %{"findings" => findings}, opts)
 
-    defp reply({:verdict, verdict, evidence}, opts, _test_pid),
-      do: tool_call("report_verdict", %{"verdict" => verdict, "evidence" => evidence}, opts)
+    # One verdict for every finding of the run.
+    defp reply({:verdict, verdict, evidence}, opts, test_pid) do
+      verdicts = for {id, _text} <- finding_blocks(opts), do: {id, verdict, evidence}
+      reply({:verdicts, verdicts}, opts, test_pid)
+    end
+
+    defp reply({:verdicts, verdicts}, opts, _test_pid) do
+      calls =
+        Enum.map(verdicts, fn {id, verdict, evidence} ->
+          call("report_verdict", %{"finding" => id, "verdict" => verdict, "evidence" => evidence})
+        end)
+
+      response(%{"content" => nil, "tool_calls" => calls}, opts)
+    end
 
     defp reply({:answer, text}, opts, _test_pid),
       do: response(%{"content" => text, "tool_calls" => []}, opts)
 
-    defp reply({:confidence, value}, opts, _test_pid),
-      do: response(%{"confidence" => value}, opts)
+    # The same confidence for every comment of the batch.
+    defp reply({:confidence, value}, opts, _test_pid) do
+      ids = Regex.scan(~r/<comment id="(C\d+)"/, user_prompt(opts), capture: :all_but_first)
+      scores = for [id] <- ids, do: %{"id" => id, "confidence" => value}
+      response(%{"scores" => scores}, opts)
+    end
 
     defp reply({:error, reason}, _opts, _test_pid), do: {:error, reason}
 
@@ -85,14 +103,35 @@ defmodule Tackle.ReviewTest do
       end
     end
 
-    defp tool_call(name, arguments, opts) do
-      call = %{
+    defp tool_call(name, arguments, opts),
+      do: response(%{"content" => nil, "tool_calls" => [call(name, arguments)]}, opts)
+
+    defp call(name, arguments),
+      do: %{
         "id" => "call-#{System.unique_integer([:positive])}",
         "name" => name,
         "arguments" => arguments
       }
 
-      response(%{"content" => nil, "tool_calls" => [call]}, opts)
+    @doc false
+    def finding_blocks(%{prompt: prompt}), do: blocks(prompt)
+    def finding_blocks(opts) when is_list(opts), do: blocks(user_prompt(opts))
+
+    defp blocks(prompt) do
+      for [id, text] <-
+            Regex.scan(~r/<finding id="(F\d+)">(.*?)<\/finding>/s, prompt,
+              capture: :all_but_first
+            ),
+          do: {id, text}
+    end
+
+    defp user_prompt(opts) do
+      opts
+      |> Keyword.get(:messages, [])
+      |> Enum.find_value("", fn
+        %{role: :user, content: content} -> content
+        _other -> nil
+      end)
     end
 
     defp response(data, opts) do
@@ -207,9 +246,12 @@ defmodule Tackle.ReviewTest do
       end,
       verifier: fn
         %{tool_results: []} = request ->
-          if request.prompt =~ "Guard against",
-            do: {:verdict, "confirmed", "lib/a.ex:3 reads map.key unguarded."},
-            else: {:verdict, "rejected", "Naming is not a defect."}
+          {:verdicts,
+           for {id, text} <- Adapter.finding_blocks(request) do
+             if text =~ "Guard against",
+               do: {id, "confirmed", "lib/a.ex:3 reads map.key unguarded."},
+               else: {id, "rejected", "Naming is not a defect."}
+           end}
 
         _request ->
           {:answer, "ok"}
@@ -321,9 +363,20 @@ defmodule Tackle.ReviewTest do
              scoring_failures: []
            } = result.summary
 
-    # 3 units × 2 detector calls, 2 candidates × 2 verifier calls, 1 scorer call.
-    assert result.usage.input_tokens == 110
-    assert result.usage.output_tokens == 55
+    # The small units of both files share one detector run: 2 detector runs
+    # × 2 calls; both candidates are in lib/a.ex#1, so 1 verifier run × 2
+    # calls; 1 scorer call for the confirmed finding.
+    assert result.usage.input_tokens == 70
+    assert result.usage.output_tokens == 35
+
+    assert %{
+             detector: %{runs: 2, failed: 0, usage: %{input_tokens: 40}, duration_ms: detecting},
+             verifier: %{runs: 1, failed: 0, usage: %{input_tokens: 20}},
+             scorer: %{runs: 1, failed: 0, usage: %{input_tokens: 10}}
+           } = result.summary.stages
+
+    assert is_integer(detecting) and detecting >= 0
+    assert result.summary.duration_ms >= detecting
 
     detector_calls = Enum.filter(calls(:detector), &(&1.tool_results == []))
     [detector_call] = Enum.filter(detector_calls, &unit?(&1, "lib/a.ex#1"))
@@ -340,7 +393,12 @@ defmodule Tackle.ReviewTest do
 
     verifier_calls = Enum.filter(calls(:verifier), &(&1.tool_results == []))
     nil_check_call = Enum.find(verifier_calls, &(&1.prompt =~ "Guard against"))
-    assert nil_check_call.prompt =~ "It cites this rule:\n<rule id=\"missing-nil-check\">"
+    # Both candidates are in lib/a.ex#1, so one run verifies them together.
+    assert [_] = verifier_calls
+    assert nil_check_call.prompt =~ "Verify these 2 candidate findings"
+    assert nil_check_call.prompt =~ "<finding id=\"F1\">\nTitle: Guard against a missing key"
+    assert nil_check_call.prompt =~ "<finding id=\"F2\">\nTitle: Rename f to increment"
+    assert nil_check_call.prompt =~ "Cited rules:\n<rule id=\"missing-nil-check\">"
     assert nil_check_call.prompt =~ "Location: lib/a.ex:3-3 (new side)"
 
     events = events()
@@ -413,9 +471,10 @@ defmodule Tackle.ReviewTest do
         end
       })
 
-    assert {:ok, result} = review(change(), script)
+    assert {:ok, result} = review(change(), script, units: [pack_files: false])
     assert [%Finding{title: "Guard against a missing key"}] = result.blocking
     assert [%{unit: "lib/b.ex#1", reason: {:agent_error, _message}}] = result.summary.failed_units
+    assert %{runs: 3, failed: 1} = result.summary.stages.detector
 
     events = events()
     assert Enum.any?(events, &match?({:unit, "lib/b.ex#1", {:failed, {:agent_error, _}}}, &1))
@@ -463,7 +522,10 @@ defmodule Tackle.ReviewTest do
         })
 
       assert {:ok, result} =
-               review(change(), script, profile_opts: [detector: [max_iterations: 1]])
+               review(change(), script,
+                 units: [pack_files: false],
+                 profile_opts: [detector: [max_iterations: 1]]
+               )
 
       assert [%Finding{title: "Guard against a missing key"}] = result.blocking
       assert result.summary.detected == 1
@@ -621,7 +683,15 @@ defmodule Tackle.ReviewTest do
       assert %{"blocking" => 1, "rejected" => 1, "candidates" => 2} = run["summary"]
       assert [%{"id" => "missing-nil-check", "status" => "active"}] = run["rules"]
       assert Map.keys(run["prompts"]) == ["review-detector", "review-verifier"]
-      assert run["usage"]["input_tokens"] == 110
+      assert run["usage"]["input_tokens"] == 70
+      assert %{"runs" => 2, "usage" => %{"input_tokens" => 40}} = run["stages"]["detector"]
+      assert %{"runs" => 1} = run["stages"]["verifier"]
+      assert is_integer(run["duration_ms"])
+
+      assert %{"max_changed_lines" => 150, "pack_files" => true, "verify_batch" => 4} =
+               run["settings"]
+
+      assert run["settings"]["models"]["detector"] == "review/fake"
 
       assert {:ok, events} = History.finding_events(history)
 
@@ -716,8 +786,9 @@ defmodule Tackle.ReviewTest do
     assert [%Finding{support: 2, confidence: 0.7}] = result.blocking
     assert result.summary.detected == 2
 
+    # 2 samples of 2 batches: the change-level unit and both files' units.
     first_calls = Enum.filter(calls(:detector), &(&1.tool_results == []))
-    assert [_, _, _, _, _, _] = first_calls
+    assert [_, _, _, _] = first_calls
     assert calls(:scorer) == []
   end
 
@@ -770,6 +841,157 @@ defmodule Tackle.ReviewTest do
     assert Enum.all?(calls(:detector), &(&1.model == "other"))
     assert Enum.all?(calls(:verifier), &(&1.model == "fake"))
     assert [%{model: "fake"}] = calls(:scorer)
+  end
+
+  describe "cost controls" do
+    test "the quiet profile does not verify or score findings it would hide" do
+      assert {:ok, result} = review(change(), script(), profile: :quiet)
+
+      # Only the blocking nil check is verified; the optional rename is
+      # dropped before verification.
+      assert [%Finding{title: "Guard against a missing key"}] = result.blocking
+      assert [_] = Enum.filter(calls(:verifier), &(&1.tool_results == []))
+      refute Enum.any?(calls(:verifier), &(&1.prompt =~ "Rename f"))
+
+      assert [%{finding: %Finding{title: "Rename f to increment"}, reason: :hidden_lane}] =
+               result.dropped
+
+      assert result.summary.candidates == 1
+    end
+
+    test "verify_limit keeps the best candidates by detector confidence" do
+      assert {:ok, result} = review(change(), script(), verify_limit: 1)
+
+      assert [%{finding: %Finding{title: "Rename f to increment"}, reason: :over_verify_limit}] =
+               result.dropped
+
+      assert result.summary.candidates == 1
+      refute Enum.any?(calls(:verifier), &(&1.prompt =~ "Rename f"))
+    end
+
+    test "verify_batch 1 verifies each candidate in its own run" do
+      assert {:ok, result} = review(change(), script(), verify_batch: 1)
+      assert [%Finding{verdict: :confirmed}] = result.blocking
+      assert [_] = result.rejected
+
+      first_calls = Enum.filter(calls(:verifier), &(&1.tool_results == []))
+      assert [_, _] = first_calls
+      assert Enum.all?(first_calls, &(&1.prompt =~ "Verify this candidate finding"))
+      assert result.summary.stages.verifier.runs == 2
+    end
+
+    test "a verifier run without some verdicts keeps those findings uncertain" do
+      script =
+        script(%{
+          verifier: fn
+            %{tool_results: []} -> {:verdicts, [{"F1", "confirmed", "lib/a.ex:3 is unguarded."}]}
+            _request -> {:answer, "ok"}
+          end
+        })
+
+      assert {:ok, result} = review(change(), script, profile: :assertive)
+      assert %{confirmed: 1, uncertain: 1} = result.summary
+      assert [%{reason: :no_verdict}] = result.summary.verification_failures
+    end
+
+    test "score_batch bounds the findings per scorer call" do
+      script =
+        script(%{
+          verifier: fn
+            %{tool_results: []} -> {:verdict, "confirmed", "lib/a.ex:2-3 changed."}
+            _request -> {:answer, "ok"}
+          end
+        })
+
+      assert {:ok, result} = review(change(), script, profile: :assertive)
+      assert [_] = calls(:scorer)
+      assert result.summary.stages.scorer.runs == 1
+
+      assert {:ok, result} = review(change(), script, profile: :assertive, score_batch: 1)
+      assert [_, _] = calls(:scorer)
+      assert result.summary.stages.scorer.runs == 2
+    end
+
+    test "units sizing and packing are configurable" do
+      assert {:ok, result} = review(change(), script(), units: [pack_files: false])
+      assert result.summary.stages.detector.runs == 3
+
+      assert {:ok, result} = review(change(), script(), units: [max_changed_lines: 2])
+      # lib/a.ex (3 changed lines) is split into units of 2 and 1 lines; the
+      # second one shares a run with lib/b.ex (1 line).
+      assert result.summary.units == 4
+      assert result.summary.stages.detector.runs == 3
+      assert %{max_changed_lines: 2, pack_files: true} = result.summary.settings
+    end
+
+    test "per-stage thinking levels apply to the runs and the scorer" do
+      assert {:ok, result} =
+               review(change(), script(), thinking: [detector: "low", verifier: "high"])
+
+      assert Enum.all?(calls(:detector), &(&1.reasoning_effort == "low"))
+      assert Enum.all?(calls(:verifier), &(&1.reasoning_effort == "high"))
+      # The scorer follows the verifier unless it has its own level.
+      assert [%{reasoning_effort: "high"}] = calls(:scorer)
+
+      assert %{
+               thinking: %{detector: "low", verifier: "high", scorer: "high"},
+               models: %{detector: "review/fake", verifier: "review/fake", scorer: "review/fake"}
+             } = result.summary.settings
+
+      assert {:ok, _result} = review(change(), script(), thinking: [scorer: "off"])
+      assert Enum.all?(calls(:detector), &(&1.reasoning_effort == nil))
+      assert [%{reasoning_effort: nil}] = calls(:scorer)
+    end
+
+    test "the requester's thinking level is inherited unless the stage sets its own" do
+      script = script(%{findings: [nil_check()]})
+      inherit = [model_source: :parent]
+      profiles = profiles(script, detector: inherit, verifier: inherit)
+
+      {:ok, root_config} =
+        Config.new(
+          adapters: [Adapter],
+          model: "review/fake",
+          thinking: "medium",
+          system_prompt: "Root.",
+          llm_opts: [test_pid: self(), script: script]
+        )
+
+      spec =
+        ScopeSpec.new!(
+          root_spec: AgentSpec.new!(name: "root", config: root_config, allow_delegation: true),
+          profiles: profiles
+        )
+
+      {:ok, scope} = Tackle.Runtime.start_scope(spec)
+      on_exit(fn -> Tackle.Test.Runtime.stop_scope(scope.scope_ref) end)
+      opts = [requester: scope.root_agent_ref, profiles: profiles, rules: rules()]
+
+      assert {:ok, _result} = Review.run(change(), [thinking: [detector: "minimal"]] ++ opts)
+      assert Enum.all?(calls(:detector), &(&1.reasoning_effort == "minimal"))
+      assert Enum.all?(calls(:verifier), &(&1.reasoning_effort == "medium"))
+      assert [%{reasoning_effort: "medium"}] = calls(:scorer)
+    end
+
+    test "the runs of a stage share one prompt cache key per review" do
+      assert {:ok, _result} = review(change(), script())
+
+      [detector_key] = calls(:detector) |> Enum.map(& &1.prompt_cache_key) |> Enum.uniq()
+      [verifier_key] = calls(:verifier) |> Enum.map(& &1.prompt_cache_key) |> Enum.uniq()
+      [%{prompt_cache_key: scorer_key}] = calls(:scorer)
+
+      assert detector_key =~ ~r/^tackle-review-.+-detector$/
+      assert verifier_key =~ ~r/^tackle-review-.+-verifier$/
+      assert scorer_key =~ ~r/^tackle-review-.+-scorer$/
+      assert byte_size(detector_key) <= 64
+
+      assert {:ok, _result} = review(change(), script())
+      refute detector_key in Enum.map(calls(:detector), & &1.prompt_cache_key)
+      _rest = calls(:verifier) ++ calls(:scorer)
+
+      assert {:ok, _result} = review(change(), script(), shared_cache_key: false)
+      assert Enum.all?(calls(:detector) ++ calls(:scorer), &(&1.prompt_cache_key == nil))
+    end
   end
 
   test "a failing scorer keeps the detector's confidence" do
@@ -852,6 +1074,23 @@ defmodule Tackle.ReviewTest do
 
       assert {:error, {:invalid_glob, _, _}} =
                Review.run(change(), [exclude: ["["], rules: []] ++ base)
+
+      assert {:error, {:invalid_option, :thinking, [detector: "huge"]}} =
+               Review.run(change(), [thinking: [detector: "huge"]] ++ base)
+
+      assert {:error, {:invalid_option, :units, {:invalid_option, :max_changed_lines, 0}}} =
+               Review.run(change(), [units: [max_changed_lines: 0]] ++ base)
+
+      assert {:error, {:invalid_option, :units, {:unknown_options, [:size]}}} =
+               Review.run(change(), [units: [size: 3]] ++ base)
+
+      assert {:error, {:invalid_option, :units, {:pack_files, "yes"}}} =
+               Review.run(change(), [units: [pack_files: "yes"]] ++ base)
+
+      for {key, value} <- [verify_batch: 0, verify_limit: 0, score_batch: -1, shared_cache_key: 1] do
+        assert {:error, {:invalid_option, ^key, ^value}} =
+                 Review.run(change(), [{key, value}] ++ base)
+      end
 
       refute_received {:llm_call, _stage, _request}
     end

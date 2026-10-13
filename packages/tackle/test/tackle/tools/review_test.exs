@@ -51,7 +51,9 @@ defmodule Tackle.Tools.ReviewTest do
     defp stage(nil, "Verify" <> _rest), do: :verifier
     defp stage(nil, prompt), do: if(prompt =~ "<unit id=", do: :detector, else: :root)
 
-    defp data(:scorer, _answered?, _prompt), do: %{"confidence" => 0.9}
+    defp data(:scorer, _answered?, _prompt),
+      do: %{"scores" => [%{"id" => "C1", "confidence" => 0.9}]}
+
     defp data(_stage, true, _prompt), do: %{"content" => "Done.", "tool_calls" => []}
 
     defp data(:detector, false, prompt),
@@ -87,7 +89,11 @@ defmodule Tackle.Tools.ReviewTest do
     end
 
     defp verdict,
-      do: %{"verdict" => "confirmed", "evidence" => "lib/a.ex:3 reads map.key unguarded."}
+      do: %{
+        "finding" => "F1",
+        "verdict" => "confirmed",
+        "evidence" => "lib/a.ex:3 reads map.key unguarded."
+      }
 
     defp call(name, arguments) do
       %{

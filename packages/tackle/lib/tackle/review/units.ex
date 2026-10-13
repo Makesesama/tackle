@@ -28,6 +28,11 @@ defmodule Tackle.Review.Units do
 
   An empty change has no units. A file without contents (such as one parsed
   from patch text) keeps its plain hunks.
+
+  Unit size trades quality for cost: every unit is reviewed by its own
+  delegated run, which reads the surrounding code again, so smaller units
+  are more focused but cost more runs. `batch/2` groups small units of
+  several files into one detector run without merging them.
   """
 
   alias Tackle.Review.{Change, Diff, FunctionContext, Glob}
@@ -61,7 +66,7 @@ defmodule Tackle.Review.Units do
     ]
   ]
 
-  @defaults [max_changed_lines: 50, context_ratio: 4, min_context: 20, fallback_context: 3]
+  @defaults [max_changed_lines: 150, context_ratio: 4, min_context: 20, fallback_context: 3]
   @max_commit_body 1_000
 
   @typedoc "Line ranges per side of the diff."
@@ -110,7 +115,7 @@ defmodule Tackle.Review.Units do
   Split options:
 
     * `:exclude` - extra globs of files to skip (default `[]`);
-    * `:max_changed_lines` - changed lines per unit (default 50);
+    * `:max_changed_lines` - changed lines per unit (default 150);
     * `:context_ratio` - context allowed per changed line before a function
       is not shown whole (default 4);
     * `:min_context` - context always allowed for a whole function
@@ -124,6 +129,59 @@ defmodule Tackle.Review.Units do
           | {:context_ratio, non_neg_integer()}
           | {:min_context, non_neg_integer()}
           | {:fallback_context, non_neg_integer()}
+
+  @doc "Returns the default sizing options of `split/2`."
+  @spec defaults() :: keyword(non_neg_integer())
+  def defaults, do: @defaults
+
+  @doc """
+  Validates the sizing options of `split/2` (all but `:exclude`) without
+  raising.
+  """
+  @spec validate_options(keyword()) ::
+          :ok | {:error, {:unknown_options, [atom()]} | {:invalid_option, atom(), term()}}
+  def validate_options(opts) when is_list(opts) do
+    case Keyword.keys(opts) -- Keyword.keys(@defaults) do
+      [] ->
+        Enum.find_value(opts, :ok, fn {key, value} ->
+          if valid_option?(key, value), do: nil, else: {:error, {:invalid_option, key, value}}
+        end)
+
+      unknown ->
+        {:error, {:unknown_options, Enum.uniq(unknown)}}
+    end
+  end
+
+  defp valid_option?(key, value), do: is_integer(value) and value >= minimum(key)
+
+  defp minimum(:max_changed_lines), do: 1
+  defp minimum(_key), do: 0
+
+  @doc """
+  Groups code units into batches of at most `max_changed_lines` changed
+  lines, keeping diff order, so a change of many small files needs fewer
+  detector runs. Units are never split or merged; a unit larger than the
+  budget forms its own batch. The change-level unit is always alone.
+  """
+  @spec batch([unit()], pos_integer()) :: [[unit(), ...]]
+  def batch(units, max_changed_lines)
+      when is_list(units) and is_integer(max_changed_lines) and max_changed_lines > 0 do
+    {batches, current, _count} =
+      Enum.reduce(units, {[], [], 0}, fn
+        %{kind: :change} = unit, {batches, current, _count} ->
+          {[[unit] | close(current, batches)], [], 0}
+
+        unit, {batches, current, count} ->
+          if current != [] and count + unit.changed_lines > max_changed_lines,
+            do: {close(current, batches), [unit], unit.changed_lines},
+            else: {batches, [unit | current], count + unit.changed_lines}
+      end)
+
+    current |> close(batches) |> Enum.reverse()
+  end
+
+  defp close([], batches), do: batches
+  defp close(current, batches), do: [Enum.reverse(current) | batches]
 
   @doc """
   Builds the review units of a change (see the module documentation).
@@ -168,11 +226,10 @@ defmodule Tackle.Review.Units do
   defp config(opts) do
     Map.new(@defaults, fn {key, default} ->
       value = Keyword.get(opts, key, default)
-      minimum = if key == :max_changed_lines, do: 1, else: 0
 
-      unless is_integer(value) and value >= minimum do
+      unless valid_option?(key, value) do
         raise ArgumentError,
-              "#{inspect(key)} must be an integer >= #{minimum}, got: #{inspect(value)}"
+              "#{inspect(key)} must be an integer >= #{minimum(key)}, got: #{inspect(value)}"
       end
 
       {key, value}

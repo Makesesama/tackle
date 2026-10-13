@@ -39,7 +39,8 @@ defmodule Tackle.CLI.Parser do
           staged: boolean(),
           profile: :quiet | :default | :assertive,
           samples: pos_integer(),
-          format: :text | :json
+          format: :text | :json,
+          tuning: keyword()
         }
 
   @type auth_options(provider) :: %{
@@ -168,7 +169,8 @@ defmodule Tackle.CLI.Parser do
           staged: staged,
           profile: Map.get(result.options, :profile, :default),
           samples: Map.get(result.options, :samples, 1),
-          format: Map.get(result.options, :format, :text)
+          format: Map.get(result.options, :format, :text),
+          tuning: review_tuning(result)
         }}}
     end
   end
@@ -365,7 +367,11 @@ defmodule Tackle.CLI.Parser do
             ]
           ],
           flags: [
-            staged: [long: "--staged", help: "Review the index against HEAD"]
+            staged: [long: "--staged", help: "Review the index against HEAD"],
+            no_pack_files: [
+              long: "--no-pack-files",
+              help: "Review each file's units in their own detector runs"
+            ]
           ],
           options: [
             profile: [
@@ -388,6 +394,39 @@ defmodule Tackle.CLI.Parser do
               help: "Output format: text or json",
               parser: &review_format/1,
               default: :text
+            ],
+            unit_lines: [
+              value_name: "N",
+              long: "--unit-lines",
+              help:
+                "Changed lines per detector run (default 150); smaller is more focused but costlier",
+              parser: &positive_integer/1
+            ],
+            verify_batch: [
+              value_name: "N",
+              long: "--verify-batch",
+              help: "Candidates of one unit verified per verifier run (default 4)",
+              parser: &positive_integer/1
+            ],
+            verify_limit: [
+              value_name: "N",
+              long: "--verify-limit",
+              help: "Most candidates to verify, best first (default: twice the profile's cap)",
+              parser: &positive_integer/1
+            ],
+            score_batch: [
+              value_name: "N",
+              long: "--score-batch",
+              help: "Findings scored per scorer call (default 10)",
+              parser: &positive_integer/1
+            ],
+            stage_thinking: [
+              value_name: "STAGE=LEVEL,...",
+              long: "--stage-thinking",
+              help:
+                "Thinking levels of review stages (detector, verifier, scorer), such as " <>
+                  "detector=medium,verifier=low; others use the session's level",
+              parser: &stage_thinking/1
             ]
           ]
         ],
@@ -461,6 +500,52 @@ defmodule Tackle.CLI.Parser do
     case Map.fetch(@review_profiles, value) do
       {:ok, profile} -> {:ok, profile}
       :error -> {:error, "must be quiet, default, or assertive"}
+    end
+  end
+
+  # Cost/quality settings passed to `Tackle.Review.run/2` only when given,
+  # so the review's own defaults apply otherwise.
+  defp review_tuning(result) do
+    units =
+      [max_changed_lines: Map.get(result.options, :unit_lines)]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> then(fn units ->
+        if Map.get(result.flags, :no_pack_files) == true,
+          do: units ++ [pack_files: false],
+          else: units
+      end)
+
+    [
+      units: if(units == [], do: nil, else: units),
+      verify_batch: Map.get(result.options, :verify_batch),
+      verify_limit: Map.get(result.options, :verify_limit),
+      score_batch: Map.get(result.options, :score_batch),
+      thinking: Map.get(result.options, :stage_thinking)
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  @review_stages %{"detector" => :detector, "verifier" => :verifier, "scorer" => :scorer}
+
+  defp stage_thinking(value) do
+    value
+    |> String.split(",", trim: true)
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+      with [stage, level] <- entry |> String.split("=", parts: 2) |> Enum.map(&String.trim/1),
+           {:ok, stage} <- Map.fetch(@review_stages, stage),
+           :ok <- Tackle.Thinking.validate(level) do
+        {:cont, {:ok, acc ++ [{stage, level}]}}
+      else
+        _invalid ->
+          {:halt,
+           {:error,
+            "must be STAGE=LEVEL pairs with stages detector, verifier, or scorer and levels " <>
+              Enum.join(Tackle.Thinking.levels(), ", ")}}
+      end
+    end)
+    |> case do
+      {:ok, []} -> {:error, "must name at least one STAGE=LEVEL pair"}
+      result -> result
     end
   end
 

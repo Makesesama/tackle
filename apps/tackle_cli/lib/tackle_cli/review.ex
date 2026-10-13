@@ -37,6 +37,7 @@ defmodule Tackle.CLI.Review do
           required(:profile) => :quiet | :default | :assertive,
           required(:samples) => pos_integer(),
           required(:format) => :text | :json,
+          optional(:tuning) => keyword(),
           optional(:progress_device) => IO.device()
         }
 
@@ -102,14 +103,15 @@ defmodule Tackle.CLI.Review do
     tag = make_ref()
     device = Map.get(opts, :progress_device, :stderr)
 
-    review_opts = [
-      requester: scope.root_agent_ref,
-      profiles: scope_spec.profiles,
-      profile: opts.profile,
-      samples: opts.samples,
-      history: history(change, device),
-      on_event: &send(parent, {tag, &1})
-    ]
+    review_opts =
+      [
+        requester: scope.root_agent_ref,
+        profiles: scope_spec.profiles,
+        profile: opts.profile,
+        samples: opts.samples,
+        history: history(change, device),
+        on_event: &send(parent, {tag, &1})
+      ] ++ Map.get(opts, :tuning, [])
 
     task = Task.async(fn -> Review.run(change, review_opts) end)
     await_review(task, tag, ReviewProgress.new(), device)

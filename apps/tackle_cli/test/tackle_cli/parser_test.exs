@@ -154,6 +154,45 @@ defmodule Tackle.CLI.ParserTest do
     assert {:ok, {:review, %{staged: true, range: nil}}} = Parser.parse(["review", "--staged"])
   end
 
+  test "parses review cost settings into tuning options" do
+    assert {:ok, {:review, %{tuning: []}}} = Parser.parse(["review"])
+
+    assert {:ok,
+            {:review,
+             %{
+               tuning: [
+                 units: [max_changed_lines: 300, pack_files: false],
+                 verify_batch: 2,
+                 verify_limit: 8,
+                 score_batch: 5,
+                 thinking: [detector: "medium", scorer: "off"]
+               ]
+             }}} =
+             Parser.parse([
+               "review",
+               "--unit-lines",
+               "300",
+               "--no-pack-files",
+               "--verify-batch",
+               "2",
+               "--verify-limit",
+               "8",
+               "--score-batch",
+               "5",
+               "--stage-thinking",
+               "detector=medium, scorer=off"
+             ])
+
+    assert {:ok, {:review, %{tuning: [units: [pack_files: false]]}}} =
+             Parser.parse(["review", "--no-pack-files"])
+
+    for value <- ["writer=low", "detector=huge", "detector", ","] do
+      assert {:error, _message} = Parser.parse(["review", "--stage-thinking", value])
+    end
+
+    assert {:error, _message} = Parser.parse(["review", "--unit-lines", "0"])
+  end
+
   test "rejects --staged together with a review range" do
     assert {:error, error} = Parser.parse(["review", "--staged", "HEAD~1"])
     assert error =~ "--staged cannot be combined with a RANGE"

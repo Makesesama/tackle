@@ -1,19 +1,22 @@
 defmodule Tackle.Review.Detector do
   @moduledoc """
-  Detector stage: one delegated `review-detector` run per review unit and
-  sample.
+  Detector stage: one delegated `review-detector` run per batch of review
+  units and sample.
 
-  The prompt has two lanes: the rule lane checks the rules that apply to the
-  unit (`Tackle.Review.Rules.resolve/3`) and cites their ids, the defect lane
-  looks for defects no rule covers. It is deliberately recall-biased; the
-  filter, verifier, scorer, and ranking stages provide precision.
+  A batch is either the change-level unit alone or one or more code units
+  (`Tackle.Review.Units.batch/2`), so a change of many small files needs few
+  runs. The prompt has two lanes: the rule lane checks the rules that apply
+  to the units (`Tackle.Review.Rules.resolve/3`) and cites their ids, the
+  defect lane looks for defects no rule covers. It is deliberately
+  recall-biased; the filter, verifier, scorer, and ranking stages provide
+  precision.
 
   Findings come back through the `report_findings` tool, which validates
-  them against the unit (`Tackle.Tools.ReportFindings`). A run that reported
-  and then ended with an error, for example on the step limit, keeps its
-  findings. With more than one sample the unit is reviewed that many times,
-  one run after the other; a unit fails only when none of its samples
-  succeeds.
+  them against the batch's changed lines (`Tackle.Tools.ReportFindings`). A
+  run that reported and then ended with an error, for example on the step
+  limit, keeps its findings. With more than one sample the batch is reviewed
+  that many times, one run after the other; the orchestrator counts a batch
+  as failed only when none of its samples succeeds.
   """
 
   alias Tackle.Lib.Usage
@@ -29,12 +32,10 @@ defmodule Tackle.Review.Detector do
 
     * `:requester` (required) - the agent the run is delegated from;
     * `:spec` (required) - the `review-detector` profile spec;
-    * `:rules` - the rules that apply to the unit (default `[]`);
-    * `:allowed` (required) - the lines findings may point at
-      (`Tackle.Review.Locations.for_unit/2`);
-    * `:index` - every changed line of the change, shown in the change-level
-      unit's prompt (default: `:allowed`);
-    * `:samples` - how many times to review the unit (default 1);
+    * `:rules` - the rules that apply to the units (default `[]`);
+    * `:index` - every changed line of the change, which the change-level
+      unit's findings may point at (required for the change-level unit);
+    * `:samples` - how many times to review the units (default 1);
     * `:model` - a model reference overriding the profile's model;
     * `:capacity_wait` - see `Tackle.Review.Delegation`.
   """
@@ -42,38 +43,56 @@ defmodule Tackle.Review.Detector do
           {:requester, Delegation.requester()}
           | {:spec, AgentSpec.t()}
           | {:rules, [Rule.t()]}
-          | {:allowed, Locations.t()}
           | {:index, Locations.t()}
           | {:samples, pos_integer()}
           | {:model, String.t() | nil}
           | {:capacity_wait, non_neg_integer()}
 
-  @typedoc "The findings of each successful sample, in sample order, and their usage."
-  @type result :: %{samples: [[Finding.t()]], usage: Usage.t(), errors: [Delegation.error()]}
+  @typedoc """
+  The findings of each successful sample, in sample order; the errors of
+  the failed ones; how many runs were started; and the usage of every run,
+  failed ones included when their transcript was available.
+  """
+  @type result :: %{
+          samples: [[Finding.t()]],
+          errors: [Delegation.error()],
+          runs: non_neg_integer(),
+          usage: Usage.t()
+        }
 
   @doc "Returns the name of the detector profile."
   @spec profile() :: String.t()
   def profile, do: @profile
 
   @doc """
-  Reviews one unit and returns the findings of every successful sample.
-
-  Returns `{:error, reason}` with the first sample's error when no sample
-  succeeds, and `{:error, :cancelled}` as soon as a sample is cancelled.
+  Returns the lines the findings of a batch may point at: the changes of
+  its code units, or every changed line in `index` for the change-level
+  unit.
   """
-  @spec run(Units.unit(), [option()]) :: {:ok, result()} | {:error, Delegation.error() | term()}
-  def run(unit, opts) do
+  @spec allowed([Units.unit(), ...], Locations.t()) :: Locations.t()
+  def allowed([%{kind: :change} = unit], index), do: Locations.for_unit(unit, index)
+  def allowed(units, _index), do: Locations.index(units)
+
+  @doc """
+  Reviews a batch of units and returns the findings of every sample.
+
+  Returns `{:ok, result}` even when every sample failed (`samples` is then
+  empty and `errors` says why), so the usage of failed runs is not lost.
+  Returns `{:error, :cancelled}` as soon as a sample is cancelled.
+  """
+  @spec run([Units.unit(), ...], [option()]) :: {:ok, result()} | {:error, :cancelled | term()}
+  def run([_ | _] = units, opts) do
     rules = Keyword.get(opts, :rules, [])
-    allowed = Keyword.fetch!(opts, :allowed)
+    index = Keyword.get(opts, :index, %{})
 
     review = %{
       stage: :detector,
-      unit_id: unit.id,
-      allowed: allowed,
+      unit_id: Enum.map_join(units, ",", & &1.id),
+      allowed: allowed(units, index),
       rule_ids: Enum.map(rules, & &1.id)
     }
 
-    prompt = prompt(unit, rules, Keyword.get(opts, :index, allowed))
+    prompt = prompt(units, rules, review.allowed)
 
     with {:ok, spec} <- Delegation.put_review_context(Keyword.fetch!(opts, :spec), review) do
       opts
@@ -87,7 +106,7 @@ defmodule Tackle.Review.Detector do
   end
 
   # A run that reported and then failed (on the step limit, or in the model
-  # call after its report) has still reviewed the unit: keep its findings.
+  # call after its report) has still reviewed the units: keep its findings.
   defp sample(spec, prompt, review, opts) do
     delegation_opts = Keyword.take(opts, [:model, :capacity_wait])
 
@@ -98,60 +117,54 @@ defmodule Tackle.Review.Detector do
       {:error, reason, state} ->
         if ReportFindings.reported?(state.messages, review),
           do: {:ok, ReportFindings.collect(state.messages, review), Delegation.usage(state)},
-          else: {:error, reason}
+          else: {:error, reason, Delegation.usage(state)}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, reason, nil}
     end
   end
 
   defp collect_sample({:ok, findings, usage}, acc),
     do: {:cont, %{acc | samples: [findings | acc.samples], usages: [usage | acc.usages]}}
 
-  defp collect_sample({:error, :cancelled}, _acc), do: {:halt, :cancelled}
+  defp collect_sample({:error, :cancelled, _usage}, _acc), do: {:halt, :cancelled}
 
-  defp collect_sample({:error, reason}, acc),
-    do: {:cont, %{acc | errors: [reason | acc.errors]}}
+  defp collect_sample({:error, reason, usage}, acc),
+    do: {:cont, %{acc | errors: [reason | acc.errors], usages: [usage | acc.usages]}}
 
   defp finish(:cancelled), do: {:error, :cancelled}
-
-  defp finish(%{samples: [], errors: errors}), do: {:error, List.last(errors)}
 
   defp finish(%{samples: samples, usages: usages, errors: errors}) do
     {:ok,
      %{
        samples: Enum.reverse(samples),
-       usage: Usage.aggregate(usages),
-       errors: Enum.reverse(errors)
+       errors: Enum.reverse(errors),
+       runs: length(samples) + length(errors),
+       usage: usages |> Enum.reject(&is_nil/1) |> Usage.aggregate()
      }}
   end
 
   @doc """
-  Builds the detector prompt for a unit: its rules, its rendered diff, and
-  the lines its findings may point at. `index` lists every changed line of
-  the change for the change-level unit.
+  Builds the detector prompt for a batch of units: their rules, their
+  rendered diffs, and the lines their findings may point at (`allowed/2`).
   """
-  @spec prompt(Units.unit(), [Rule.t()], Locations.t()) :: String.t()
-  def prompt(unit, rules, index) do
+  @spec prompt([Units.unit(), ...], [Rule.t()], Locations.t()) :: String.t()
+  def prompt(units, rules, allowed) do
     [
-      intro(unit),
+      intro(units),
       rules_section(rules),
-      "<unit id=\"#{unit.id}\">\n#{unit.rendered}</unit>",
-      "Changed lines your findings may point at:\n" <>
-        Locations.describe(Locations.for_unit(unit, index)),
-      "Review the unit in both lanes, then call report_findings."
+      Enum.map_join(units, "\n\n", &"<unit id=\"#{&1.id}\">\n#{&1.rendered}</unit>"),
+      "Changed lines your findings may point at:\n" <> Locations.describe(allowed),
+      outro(units)
     ]
     |> Enum.join("\n\n")
   end
 
-  defp intro(%{kind: :code} = unit) do
-    "Review unit #{unit.id} of a code change: changed code of #{unit.path} with its " <>
-      "surrounding function. Lines are shown as `[+ n]` (added, new numbering), " <>
-      "`[- n]` (removed, old numbering), and `[  n]` (unchanged context). Read other " <>
-      "code when you need it to judge the change."
-  end
+  @line_format "Lines are shown as `[+ n]` (added, new numbering), `[- n]` (removed, old " <>
+                 "numbering), and `[  n]` (unchanged context). Read other code when you need " <>
+                 "it to judge the change."
 
-  defp intro(%{kind: :change}) do
+  defp intro([%{kind: :change}]) do
     "Review the change as a whole. The other units cover each file's hunks; this " <>
       "change-level unit is for problems single hunks hide: a changed signature, return " <>
       "shape, or behaviour whose callers or tests were not updated, inconsistent changes " <>
@@ -159,8 +172,25 @@ defmodule Tackle.Review.Detector do
       "files you need. Point every finding at changed lines of the file it concerns."
   end
 
+  defp intro([%{kind: :code} = unit]) do
+    "Review unit #{unit.id} of a code change: changed code of #{unit.path} with its " <>
+      "surrounding function. " <> @line_format
+  end
+
+  defp intro(units) do
+    "Review these #{length(units)} units of a code change, each the changed code of one " <>
+      "file with its surrounding function. Review every unit. " <> @line_format
+  end
+
+  defp outro([_unit]), do: "Review the unit in both lanes, then call report_findings."
+
+  defp outro(_units) do
+    "Review the units in both lanes, then call report_findings once with the findings " <>
+      "of all units."
+  end
+
   defp rules_section([]) do
-    "No rules apply to this unit: use the defect lane only and set rule_id to null."
+    "No rules apply here: use the defect lane only and set rule_id to null."
   end
 
   defp rules_section(rules) do
@@ -170,7 +200,7 @@ defmodule Tackle.Review.Detector do
           String.trim(rule.body) <> "\n</rule>"
       end)
 
-    "Rules for this unit. Rule-lane findings cite the rule's id as rule_id and use its " <>
+    "Rules to check. Rule-lane findings cite the rule's id as rule_id and use its " <>
       "category; its severity is a default you may lower or raise for the case at hand.\n" <>
       "<rules>\n#{entries}\n</rules>"
   end

@@ -219,9 +219,85 @@ defmodule Tackle.CLI.Output.Review do
       verdict(summary.verdict, output),
       ["\n", muted(output, reviewed)],
       ["\n", muted(output, counts)],
-      skipped
+      skipped,
+      cost(summary, output)
     ]
   end
+
+  @doc """
+  Describes a review's total cost in one short phrase, such as
+  `"12 runs, 340.2k tokens (210.0k cached), 3m 5s"`, or `nil` when the
+  summary has no stage statistics.
+  """
+  @spec cost_summary(map()) :: String.t() | nil
+  def cost_summary(%{stages: stages} = summary) when map_size(stages) > 0 do
+    runs = stages |> Map.values() |> Enum.map(& &1.runs) |> Enum.sum()
+    usage = stages |> Map.values() |> Enum.map(& &1.usage) |> Usage.aggregate()
+    total = (usage.input_tokens || 0) + (usage.output_tokens || 0)
+
+    cached =
+      case usage.cache_read_tokens do
+        cached when is_integer(cached) and cached > 0 -> " (#{count(cached)} cached)"
+        _none -> ""
+      end
+
+    "#{plural(runs, "model run")}, #{count(total)} tokens#{cached}, " <>
+      duration(Map.get(summary, :duration_ms))
+  end
+
+  def cost_summary(_summary), do: nil
+
+  # One line per stage that ran, then the total wall time.
+  defp cost(summary, output) do
+    stages =
+      for stage <- [:detector, :verifier, :scorer],
+          stats = summary |> Map.get(:stages, %{}) |> Map.get(stage),
+          stats != nil,
+          do: ["\n", muted(output, "  #{stage}: " <> describe_stage(stage, stats))]
+
+    case {stages, Map.get(summary, :duration_ms)} do
+      {[], _duration} -> []
+      {stages, duration} -> [["\n", muted(output, "Cost (#{duration(duration)}):")] | stages]
+    end
+  end
+
+  defp describe_stage(stage, stats) do
+    noun = if stage == :scorer, do: "call", else: "run"
+    failed = if stats.failed > 0, do: " (#{stats.failed} failed)", else: ""
+
+    "#{plural(stats.runs, noun)}#{failed}, #{tokens(stats.usage)}, #{duration(stats.duration_ms)}"
+  end
+
+  defp tokens(%Usage{} = usage) do
+    cached =
+      case usage.cache_read_tokens do
+        cached when is_integer(cached) and cached > 0 -> " (#{count(cached)} cached)"
+        _none -> ""
+      end
+
+    reasoning =
+      case usage.reasoning_tokens do
+        reasoning when is_integer(reasoning) and reasoning > 0 ->
+          " (#{count(reasoning)} reasoning)"
+
+        _none ->
+          ""
+      end
+
+    "#{count(usage.input_tokens || 0)} in#{cached}, " <>
+      "#{count(usage.output_tokens || 0)} out#{reasoning}"
+  end
+
+  defp tokens(_usage), do: "no usage reported"
+
+  defp count(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
+  defp count(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
+  defp count(n), do: Integer.to_string(n)
+
+  defp duration(nil), do: "?"
+  defp duration(ms) when ms < 1_000, do: "#{ms}ms"
+  defp duration(ms) when ms < 60_000, do: "#{Float.round(ms / 1_000, 1)}s"
+  defp duration(ms), do: "#{div(ms, 60_000)}m #{rem(div(ms, 1_000), 60)}s"
 
   defp verdict(:blocking, output), do: Output.style(output, :danger, "Blocking findings found.")
   defp verdict(:optional, output), do: Output.style(output, :warning, "Only optional findings.")
@@ -283,8 +359,35 @@ defmodule Tackle.CLI.Output.Review do
       "blocking" => summary.blocking,
       "optional" => summary.optional,
       "verdict" => to_string(summary.verdict),
-      "warnings" => summary.warnings
+      "warnings" => summary.warnings,
+      "settings" => json_settings(Map.get(summary, :settings)),
+      "stages" => json_stages(Map.get(summary, :stages, %{})),
+      "duration_ms" => Map.get(summary, :duration_ms)
     }
+  end
+
+  defp json_settings(nil), do: nil
+
+  defp json_settings(settings) do
+    Map.new(settings, fn
+      {key, value} when is_map(value) ->
+        {to_string(key), Map.new(value, fn {stage, inner} -> {to_string(stage), inner} end)}
+
+      {key, value} ->
+        {to_string(key), value}
+    end)
+  end
+
+  defp json_stages(stages) do
+    Map.new(stages, fn {stage, stats} ->
+      {to_string(stage),
+       %{
+         "runs" => stats.runs,
+         "failed" => stats.failed,
+         "duration_ms" => stats.duration_ms,
+         "usage" => json_usage(stats.usage)
+       }}
+    end)
   end
 
   defp json_failure(%{fingerprint: fingerprint, reason: reason}),

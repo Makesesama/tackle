@@ -16,6 +16,11 @@ defmodule Tackle.Review.Rank do
   | `:assertive` | confidence ≥ 0.3 | confidence ≥ 0.3 | 50 |
 
   The cap applies to the whole change; blocking findings are kept first.
+
+  Verification and scoring cost a model run per finding batch, so
+  `preselect/3` drops candidates before them that the profile could never
+  show: those of a hidden lane, and those beyond a verification limit
+  (default twice the cap) when ranked by the detector's confidence.
   """
 
   alias Tackle.Review.Finding
@@ -56,7 +61,7 @@ defmodule Tackle.Review.Rank do
   uncertain where the profile wants confirmed findings, its confidence is
   below the threshold, or the cap was reached.
   """
-  @type reason :: :hidden_lane | :uncertain | :below_threshold | :over_cap
+  @type reason :: :hidden_lane | :uncertain | :below_threshold | :over_cap | :over_verify_limit
 
   @typedoc "Shown findings by lane, best first, and the others with their reasons."
   @type selection :: %{
@@ -81,6 +86,53 @@ defmodule Tackle.Review.Rank do
   def score(%Finding{} = finding, samples \\ 1) when is_integer(samples) and samples > 0 do
     support_factor = min((1 + finding.support) / (1 + samples), 1.0)
     Map.fetch!(@severity_weights, finding.severity) * finding.confidence * support_factor
+  end
+
+  @doc """
+  Returns how many candidates `preselect/3` keeps by default under a
+  profile: twice its cap.
+  """
+  @spec verify_limit(profile()) :: pos_integer()
+  def verify_limit(profile) when profile in @profiles, do: 2 * thresholds(profile).cap
+
+  @doc """
+  Drops candidates before verification that the profile cannot show: those
+  of a hidden lane (`:hidden_lane`), and, ranked by `score/2` with the
+  detector's confidence, those beyond `limit:` (`:over_verify_limit`,
+  default `verify_limit/1`). Returns the kept candidates in their original
+  order and the dropped ones with their reasons. Accepts `samples:` for
+  `score/2`.
+  """
+  @spec preselect([Finding.t()], profile(), keyword()) ::
+          {[Finding.t()], [{Finding.t(), reason()}]}
+  def preselect(candidates, profile, opts \\ []) when is_list(candidates) do
+    thresholds = thresholds(profile)
+    samples = Keyword.get(opts, :samples, 1)
+    limit = Keyword.get(opts, :limit) || verify_limit(profile)
+
+    {visible, hidden} =
+      Enum.split_with(candidates, fn finding ->
+        lane = if finding.blocking, do: thresholds.blocking, else: thresholds.optional
+        lane != nil
+      end)
+
+    over_limit =
+      visible
+      |> Enum.with_index()
+      |> Enum.sort_by(fn {finding, index} -> {-score(finding, samples), index} end)
+      |> Enum.drop(limit)
+      |> MapSet.new(fn {_finding, index} -> index end)
+
+    {kept, over} =
+      visible
+      |> Enum.with_index()
+      |> Enum.split_with(fn {_finding, index} -> not MapSet.member?(over_limit, index) end)
+
+    dropped =
+      Enum.map(hidden, &{&1, :hidden_lane}) ++
+        Enum.map(over, fn {finding, _index} -> {finding, :over_verify_limit} end)
+
+    {Enum.map(kept, &elem(&1, 0)), dropped}
   end
 
   @doc """

@@ -36,7 +36,7 @@ defmodule Tackle.CLI.ReviewTest do
 
       data =
         case {stage, answered?} do
-          {:scorer, _answered?} -> %{"confidence" => 0.9}
+          {:scorer, _answered?} -> %{"scores" => [%{"id" => "C1", "confidence" => 0.9}]}
           {_stage, true} -> %{"content" => "Done.", "tool_calls" => []}
           {:detector, false} -> report(prompt)
           {:verifier, false} -> verdict()
@@ -87,6 +87,7 @@ defmodule Tackle.CLI.ReviewTest do
 
     defp verdict do
       tool_call("report_verdict", %{
+        "finding" => "F1",
         "verdict" => "confirmed",
         "evidence" => "lib/a.ex:3 reads map.key without a check."
       })
@@ -193,6 +194,10 @@ defmodule Tackle.CLI.ReviewTest do
     assert stdout =~ "Rule: missing-nil-check"
     assert stdout =~ "Blocking findings found."
     assert stdout =~ "changes since main"
+    assert stdout =~ ~r/Cost \(.+\):/
+    assert stdout =~ ~r/detector: 2 runs, \d+ in, \d+ out, /
+    assert stdout =~ ~r/verifier: 1 run, /
+    assert stdout =~ ~r/scorer: 1 call, /
 
     assert stderr =~ "Reviewing 2 units…"
     assert stderr =~ "Reviewed lib/a.ex#1"
@@ -237,6 +242,12 @@ defmodule Tackle.CLI.ReviewTest do
     assert json["summary"]["profile"] == "assertive"
     assert json["summary"]["files"] == ["lib/a.ex"]
     assert json["usage"]["input_tokens"] > 0
+
+    assert %{"runs" => 2, "failed" => 0, "usage" => %{"input_tokens" => _}} =
+             json["summary"]["stages"]["detector"]
+
+    assert is_integer(json["summary"]["duration_ms"])
+    assert %{"max_changed_lines" => 150, "pack_files" => true} = json["summary"]["settings"]
   end
 
   test "records history and does not report dismissed findings again", %{repo: repo, home: home} do

@@ -175,28 +175,56 @@ defmodule Tackle.Tools.ReportFindingsTest do
 
   describe "report_verdict" do
     test "parses verdicts and reports problems" do
-      assert {:ok, %{verdict: :confirmed, evidence: "lib/a.ex:11 ignores it."}} =
-               ReportVerdict.parse(%{
-                 "verdict" => "confirmed",
-                 "evidence" => " lib/a.ex:11 ignores it. "
-               })
+      assert {:ok, %{finding: "F2", verdict: :confirmed, evidence: "lib/a.ex:11 ignores it."}} =
+               ReportVerdict.parse(
+                 %{
+                   "finding" => "F2",
+                   "verdict" => "confirmed",
+                   "evidence" => " lib/a.ex:11 ignores it. "
+                 },
+                 ["F1", "F2"]
+               )
+
+      assert {:error, "finding: must be one of F1, F2"} =
+               ReportVerdict.parse(
+                 %{"finding" => "F3", "verdict" => "confirmed", "evidence" => "x"},
+                 ["F1", "F2"]
+               )
 
       assert {:error, "verdict: must be one of confirmed, rejected, uncertain"} =
-               ReportVerdict.parse(%{"verdict" => "maybe", "evidence" => "x"})
+               ReportVerdict.parse(
+                 %{"finding" => "F1", "verdict" => "maybe", "evidence" => "x"},
+                 ["F1"]
+               )
 
       assert {:error, "evidence: must not be empty"} =
-               ReportVerdict.parse(%{"verdict" => "rejected", "evidence" => "  "})
+               ReportVerdict.parse(
+                 %{"finding" => "F1", "verdict" => "rejected", "evidence" => "  "},
+                 ["F1"]
+               )
+
+      assert {:error, "report_verdict requires a finding, a verdict, and evidence"} =
+               ReportVerdict.parse(%{"verdict" => "rejected", "evidence" => "x"}, ["F1"])
     end
 
     test "only works in a verifier run" do
-      args = %{"verdict" => "confirmed", "evidence" => "lib/a.ex:11"}
+      args = %{"finding" => "F1", "verdict" => "confirmed", "evidence" => "lib/a.ex:11"}
 
       assert {:ok, text} =
                Tool.execute_tool_call(ReportVerdict, args, %{
-                 review: %{stage: :verifier}
+                 review: %{stage: :verifier, finding_ids: ["F1"]}
                })
 
       assert text =~ "Verdict recorded: confirmed"
+      assert text =~ "do not call report_verdict again"
+
+      assert {:ok, text} =
+               Tool.execute_tool_call(ReportVerdict, args, %{
+                 review: %{stage: :verifier, finding_ids: ["F1", "F2"]}
+               })
+
+      assert text =~ "Verdict on F1 recorded: confirmed"
+      assert text =~ "Go on with the findings you have not decided yet"
 
       assert {:error, text} =
                Tool.execute_tool_call(ReportVerdict, args, %{review: @review})
@@ -204,42 +232,41 @@ defmodule Tackle.Tools.ReportFindingsTest do
       assert text =~ "only available in review verifier runs"
     end
 
-    test "collect/1 returns the first answered valid verdict" do
+    test "collect/2 returns the first answered valid verdict of each finding" do
+      call = fn id, finding, verdict, evidence ->
+        Message.assistant(
+          tool_calls: [
+            %Call{
+              id: id,
+              name: "report_verdict",
+              arguments: %{"finding" => finding, "verdict" => verdict, "evidence" => evidence}
+            }
+          ]
+        )
+      end
+
       messages = [
-        Message.assistant(
-          tool_calls: [
-            %Call{
-              id: "1",
-              name: "report_verdict",
-              arguments: %{"verdict" => "nope", "evidence" => "x"}
-            }
-          ]
-        ),
+        call.("1", "F1", "nope", "x"),
         Message.tool_result("1", "report_verdict", "Error: verdict"),
-        Message.assistant(
-          tool_calls: [
-            %Call{
-              id: "2",
-              name: "report_verdict",
-              arguments: %{"verdict" => "rejected", "evidence" => "a:1"}
-            }
-          ]
-        ),
+        call.("2", "F1", "rejected", "a:1"),
         Message.tool_result("2", "report_verdict", "Verdict recorded"),
-        Message.assistant(
-          tool_calls: [
-            %Call{
-              id: "3",
-              name: "report_verdict",
-              arguments: %{"verdict" => "confirmed", "evidence" => "b:2"}
-            }
-          ]
-        ),
-        Message.tool_result("3", "report_verdict", "Verdict recorded")
+        call.("3", "F1", "confirmed", "b:2"),
+        Message.tool_result("3", "report_verdict", "Verdict recorded"),
+        call.("4", "F2", "uncertain", "c:3"),
+        Message.tool_result("4", "report_verdict", "Verdict recorded"),
+        call.("5", "F3", "confirmed", "d:4"),
+        Message.tool_result("5", "report_verdict", "Error: finding"),
+        # Never answered, so it does not count.
+        call.("6", "F2", "confirmed", "e:5")
       ]
 
-      assert {:ok, %{verdict: :rejected, evidence: "a:1"}} = ReportVerdict.collect(messages)
-      assert :error = ReportVerdict.collect(Enum.take(messages, 2))
+      assert %{
+               "F1" => %{verdict: :rejected, evidence: "a:1"},
+               "F2" => %{verdict: :uncertain, evidence: "c:3"}
+             } = verdicts = ReportVerdict.collect(messages, ["F1", "F2"])
+
+      assert map_size(verdicts) == 2
+      assert ReportVerdict.collect(Enum.take(messages, 2), ["F1"]) == %{}
     end
   end
 end

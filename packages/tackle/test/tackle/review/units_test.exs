@@ -235,7 +235,10 @@ defmodule Tackle.Review.UnitsTest do
   end
 
   test "splits large pieces into evenly sized units" do
-    result = split!(change(added_lines("lib/big.ex", 0, 120)))
+    assert [%{changed_lines: 120}] =
+             change(added_lines("lib/big.ex", 0, 120)) |> split!() |> code_units()
+
+    result = split!(change(added_lines("lib/big.ex", 0, 120)), max_changed_lines: 50)
 
     assert [first, second, third] = code_units(result)
 
@@ -253,6 +256,37 @@ defmodule Tackle.Review.UnitsTest do
              change(added_lines("lib/big.ex", 0, 120))
              |> split!(max_changed_lines: 60)
              |> code_units()
+  end
+
+  describe "batch/2" do
+    test "groups code units of several files up to the budget, keeping diff order" do
+      units = [
+        %{id: "change", kind: :change, changed_lines: 500},
+        %{id: "a#1", kind: :code, changed_lines: 30},
+        %{id: "b#1", kind: :code, changed_lines: 50},
+        %{id: "c#1", kind: :code, changed_lines: 30},
+        %{id: "d#1", kind: :code, changed_lines: 200},
+        %{id: "e#1", kind: :code, changed_lines: 10}
+      ]
+
+      assert units |> Units.batch(100) |> Enum.map(fn batch -> Enum.map(batch, & &1.id) end) ==
+               [["change"], ["a#1", "b#1"], ["c#1"], ["d#1"], ["e#1"]]
+
+      assert units |> Units.batch(1) |> length() == 6
+      assert Units.batch([], 100) == []
+    end
+  end
+
+  test "validate_options/1 checks sizing options without raising" do
+    assert :ok = Units.validate_options(max_changed_lines: 200, min_context: 0)
+
+    assert {:error, {:invalid_option, :max_changed_lines, 0}} =
+             Units.validate_options(max_changed_lines: 0)
+
+    assert {:error, {:invalid_option, :context_ratio, "4"}} =
+             Units.validate_options(context_ratio: "4")
+
+    assert {:error, {:unknown_options, [:exclude]}} = Units.validate_options(exclude: [])
   end
 
   test "packs small pieces of one file into a unit up to the cap" do

@@ -457,7 +457,7 @@ defmodule Tackle.CLI.TUI.Review do
         scroll: 0
     }
 
-    {review, "Review finished: #{counts(review)}"}
+    {review, "Review finished: #{counts(review)}#{cost(result.summary)}"}
   end
 
   defp finish(%__MODULE__{mode: :rereview} = review, {:ok, %Result{} = result}) do
@@ -483,7 +483,9 @@ defmodule Tackle.CLI.TUI.Review do
 
     files = length(review.touched)
     noun = if files == 1, do: "file", else: "files"
-    {clamp(review), "Re-reviewed #{files} changed #{noun}: #{counts(review)}"}
+
+    {clamp(review),
+     "Re-reviewed #{files} changed #{noun}: #{counts(review)}#{cost(result.summary)}"}
   end
 
   defp finish(%__MODULE__{} = review, {:ok, :unchanged}) do
@@ -512,6 +514,13 @@ defmodule Tackle.CLI.TUI.Review do
 
   defp merge(old, new, keep?),
     do: old |> Enum.filter(keep?) |> Kernel.++(new) |> Enum.uniq_by(& &1.fingerprint)
+
+  defp cost(summary) do
+    case ReviewOutput.cost_summary(summary) do
+      nil -> ""
+      cost -> " · " <> cost
+    end
+  end
 
   defp counts(review),
     do: "#{length(review.blocking)} blocking, #{length(review.optional)} optional"
