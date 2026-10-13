@@ -2,69 +2,228 @@ defmodule Tackle.CLI.TUI.ReviewView do
   @moduledoc """
   Draws the `/review` overlay over the whole screen.
 
-  While the review runs it shows `Tackle.CLI.TUI.ReviewProgress` as a short
-  flow: the units being reviewed, then the candidates waiting for or
-  carrying a verdict. Once findings exist the overlay splits into a list
-  (grouped into blocking and optional, each row `severity · path:line ·
-  title · rule`, with the feedback given so far) and a detail pane for the
-  selected finding: its explanation, trigger, suggestion, and the code it
-  points at, cut from the function around it
-  (`Tackle.Review.FunctionContext`) and highlighted with
+  The frame holds a header, a body, and a footer:
+
+    * the **header** carries a verdict badge (`REVIEWING`, `✗ 2 BLOCKING`,
+      `✓ CLEAN`, ...), what is reviewed with its diff size, the elapsed
+      time while the review runs or its cost once it finished, and below
+      them either the tabs (`Findings` / `Summary`) with a count per
+      severity, or the pipeline stepper while the review runs;
+    * the **body** is the live dashboard while the review runs without
+      findings (`Tackle.CLI.TUI.ReviewDashboard`), the findings once there
+      are some, or the summary page (`ReviewDashboard.summary_rows/2`) for
+      the `Summary` tab and for a review that ended without findings;
+    * the **footer** carries the latest notice, or the key hints that fit,
+      dropped whole by priority when the screen is narrow.
+
+  The findings body splits into a list, grouped into blocking and optional
+  with two rows per finding (a severity badge and the title, then the
+  location, category, and rule), and a detail pane for the selected
+  finding: its facts, a confidence meter, the explanation, trigger,
+  suggested fix, and the code it points at, cut from the function around
+  it (`Tackle.Review.FunctionContext`) and highlighted with
   `Tackle.CLI.TUI.Highlight`. Wide terminals put the panes side by side;
-  narrow ones stack them.
+  narrow ones stack them. A pane longer than its space shows how much is
+  left, and `max_scroll/1` bounds the scroll so it never runs past the end.
 
   Every row is clipped to its pane, so the overlay never wraps outside its
-  frame. The bottom border carries the key hints, or the latest notice.
+  frame.
   """
 
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
   alias ExRatatui.Widgets.{Clear, Paragraph}
-  alias ExRatatui.Widgets.Block.Title
   alias Tackle.CLI.Output.Review, as: ReviewOutput
-  alias Tackle.CLI.TUI.{Highlight, MessageView, Review, ReviewProgress, State, Theme}
+  alias Tackle.CLI.TUI.{Highlight, KeyHint, MessageView, Review, ReviewDashboard}
+  alias Tackle.CLI.TUI.{ReviewProgress, State, Theme}
   alias Tackle.Review.{Change, Finding, FunctionContext}
+
+  import Tackle.CLI.TUI.ReviewRows
 
   # Below this width the list and the detail pane are stacked.
   @side_by_side_width 100
   # Lines of code shown around a finding's range.
   @excerpt_context 3
   @max_excerpt_lines 40
-  @severity_width 7
+  @confidence_width 10
+  # Columns before a finding's title in the list: marker and badge.
+  @list_indent 2 + 7 + 1
+
+  @typedoc "What the body shows."
+  @type body :: :empty | :dashboard | :findings | :summary
 
   @doc "Paints the overlay over the whole screen."
   @spec widgets(State.t()) :: [{struct(), Rect.t()}]
   def widgets(%State{size: {width, height}} = state) do
     screen = %Rect{x: 0, y: 0, width: width, height: height}
-    review = state.review
-
-    block = %{
-      Theme.panel_block(title(review), :accent)
-      | titles: [%Title{content: hints(state), position: :bottom, style: Theme.style(:subtle)}]
-    }
-
-    inner = %Rect{
-      x: 1,
-      y: 1,
-      width: max(width - 2, 0),
-      height: max(height - 2, 0)
-    }
+    block = Theme.panel_block(" Review ", :accent)
+    layout = layout(state)
 
     content =
-      if inner.width > 2 and inner.height > 0,
-        do: Enum.filter(body(review, inner), fn {_widget, rect} -> visible?(rect) end),
-        else: []
+      if layout.inner.width > 2 and layout.inner.height > 0 do
+        {body, max_scroll} = body(state, layout)
+
+        (header(state, layout) ++ body ++ footer(state, layout, max_scroll))
+        |> Enum.filter(fn {_widget, rect} -> visible?(rect) end)
+      else
+        []
+      end
 
     [{%Clear{}, screen}, {block, screen}] ++ content
   end
 
-  # -- chrome -----------------------------------------------------------------
+  @doc """
+  The furthest the current pane can scroll: the detail pane for findings,
+  the summary page for the summary. `Tackle.CLI.TUI.Review` clamps its
+  scroll to it.
+  """
+  @spec max_scroll(State.t()) :: non_neg_integer()
+  def max_scroll(%State{review: %Review{} = review} = state) do
+    layout = layout(state)
 
-  defp title(nil), do: " Review "
+    {rows, height} =
+      case body_kind(review) do
+        :findings ->
+          {_list, detail} = panes(layout.body)
+          {all_detail_rows(review, detail.width), detail.height}
 
-  defp title(%Review{} = review) do
-    parts = ["Review", describe_target(review), status_text(review)]
-    " " <> Enum.join(Enum.reject(parts, &(&1 in [nil, ""])), " · ") <> " "
+        :summary ->
+          {ReviewDashboard.summary_rows(review, layout.body.width), layout.body.height}
+
+        _other ->
+          {[], layout.body.height}
+      end
+
+    scroll_limit(length(rows), height)
+  end
+
+  def max_scroll(%State{}), do: 0
+
+  # How many of `count` rows fit `height` when the last row may be needed
+  # for the scroll indicator: all of them, or all but the indicator's row.
+  # A single row has no room for the indicator.
+  defp visible_rows(count, height) when count <= height, do: count
+  defp visible_rows(_count, height) when height <= 1, do: max(height, 0)
+  defp visible_rows(_count, height), do: height - 1
+
+  defp scroll_limit(_count, height) when height <= 0, do: 0
+  defp scroll_limit(count, height), do: count - visible_rows(count, height)
+
+  @doc "What the body of the overlay shows for `review`."
+  @spec body_kind(Review.t() | nil) :: body()
+  def body_kind(nil), do: :empty
+
+  def body_kind(%Review{} = review) do
+    findings? = Review.findings(review) != []
+
+    cond do
+      review.tab == :summary and (findings? or not Review.running?(review)) -> :summary
+      findings? -> :findings
+      Review.running?(review) -> :dashboard
+      true -> :summary
+    end
+  end
+
+  # -- layout -------------------------------------------------------------------
+
+  defp layout(%State{size: {width, height}, review: review}) do
+    inner = %Rect{x: 1, y: 1, width: max(width - 2, 0), height: max(height - 2, 0)}
+
+    header_rows =
+      cond do
+        inner.height >= 10 and nav?(review) -> 3
+        inner.height >= 10 -> 2
+        inner.height >= 5 -> 1
+        true -> 0
+      end
+
+    footer_rows = if inner.height >= 4, do: 1, else: 0
+    body_height = max(inner.height - header_rows - footer_rows, 0)
+
+    %{
+      inner: inner,
+      header: %{inner | height: header_rows},
+      body: %{inner | y: inner.y + header_rows, height: body_height},
+      footer: %{inner | y: inner.y + header_rows + body_height, height: footer_rows}
+    }
+  end
+
+  defp panes(rect) do
+    if rect.width >= @side_by_side_width do
+      list_width = div(rect.width * 42, 100)
+      list = %{rect | width: list_width}
+      detail = %{rect | x: rect.x + list_width + 3, width: max(rect.width - list_width - 3, 1)}
+      {list, detail}
+    else
+      list_height = max(div(rect.height * 2, 5), 3) |> min(rect.height)
+      list = %{rect | height: list_height}
+
+      detail = %{
+        rect
+        | y: rect.y + list_height + 1,
+          height: max(rect.height - list_height - 1, 0)
+      }
+
+      {list, detail}
+    end
+  end
+
+  defp visible?(%Rect{width: width, height: height}), do: width > 0 and height > 0
+
+  defp text_widget(rows), do: %Paragraph{text: rows, style: Theme.style(:text)}
+
+  # -- header -------------------------------------------------------------------
+
+  defp header(_state, %{header: %Rect{height: 0}}), do: []
+
+  defp header(%State{review: review, spinner_frame: frame}, %{header: rect}) do
+    width = rect.width
+
+    first =
+      split_row(
+        [status_badge(review, frame), span(" ", :text)] ++ target_spans(review),
+        timing_spans(review),
+        width
+      )
+
+    nav =
+      if rect.height >= 3,
+        do: [split_row(nav_spans(review, frame), severity_spans(review), width)],
+        else: []
+
+    rule = if rect.height >= 2, do: [muted_row(String.duplicate("─", width))], else: []
+    rows = [first | nav] ++ rule
+
+    [{text_widget(Enum.map(rows, &fit(&1, width))), rect}]
+  end
+
+  defp status_badge(nil, _frame), do: badge("REVIEW", :accent)
+
+  defp status_badge(%Review{status: :loading}, frame),
+    do: badge(glyph(:running, frame) <> " LOADING", :accent)
+
+  defp status_badge(%Review{status: :running, mode: :rereview}, frame),
+    do: badge(glyph(:running, frame) <> " RE-REVIEWING", :accent)
+
+  defp status_badge(%Review{status: :running}, frame),
+    do: badge(glyph(:running, frame) <> " REVIEWING", :accent)
+
+  defp status_badge(%Review{status: :cancelling}, _frame), do: badge("CANCELLING", :warning)
+  defp status_badge(%Review{status: :failed}, _frame), do: badge("✗ FAILED", :error)
+  defp status_badge(%Review{status: :cancelled}, _frame), do: badge("CANCELLED", :muted)
+
+  defp status_badge(%Review{blocking: [_ | _] = blocking}, _frame),
+    do: badge("✗ #{length(blocking)} BLOCKING", :error)
+
+  defp status_badge(%Review{optional: [_ | _] = optional}, _frame),
+    do: badge("● #{length(optional)} OPTIONAL", :warning)
+
+  defp status_badge(%Review{}, _frame), do: badge("✓ CLEAN", :success)
+
+  defp target_spans(nil), do: [span("No review in this session", :muted)]
+
+  defp target_spans(%Review{} = review) do
+    [span(describe_target(review), bold(:text))] ++ diff_stat_spans(review.change)
   end
 
   defp describe_target(%Review{target: %{staged: true}}), do: "staged changes"
@@ -75,436 +234,448 @@ defmodule Tackle.CLI.TUI.ReviewView do
 
   defp describe_target(%Review{}), do: "branch changes"
 
-  defp status_text(%Review{status: :loading}), do: "loading the change"
-  defp status_text(%Review{status: :cancelling}), do: "cancelling"
-  defp status_text(%Review{status: :running, mode: :rereview}), do: "re-reviewing"
-  defp status_text(%Review{status: :running}), do: "reviewing"
-  defp status_text(%Review{status: :failed}), do: "failed"
-  defp status_text(%Review{status: :cancelled}), do: "cancelled"
+  defp diff_stat_spans(%Change{diff: %{files: files}}) do
+    additions = files |> Enum.map(&Map.get(&1, :additions, 0)) |> Enum.sum()
+    deletions = files |> Enum.map(&Map.get(&1, :deletions, 0)) |> Enum.sum()
 
-  defp status_text(%Review{} = review),
-    do: "#{length(review.blocking)} blocking · #{length(review.optional)} optional"
+    [
+      span("  " <> plural(length(files), "file"), :muted),
+      span(" +#{additions}", :success),
+      span(" −#{deletions}", :error)
+    ]
+  end
 
-  defp hints(%State{notice: notice}) when is_binary(notice), do: " #{notice} · Esc close "
-  defp hints(%State{review: nil}), do: " Esc close "
+  defp diff_stat_spans(_change), do: []
 
-  defp hints(%State{review: review}) do
-    cond do
-      Review.running?(review) and Review.findings(review) == [] ->
-        " x cancel · Esc close (keeps running) "
+  defp timing_spans(%Review{started_at: started_at} = review) when is_integer(started_at) do
+    if Review.running?(review) do
+      elapsed = System.monotonic_time(:millisecond) - started_at
+      progress = if Review.findings(review) != [], do: rereview_progress(review), else: []
+      progress ++ [span("⏱ " <> clock(max(elapsed, 0)), :subtle)]
+    else
+      finished_spans(review)
+    end
+  end
 
-      Review.running?(review) ->
-        " ↑/↓ select · u/n useful · d dismiss · x cancel · Esc close "
+  defp timing_spans(%Review{} = review), do: finished_spans(review)
+  defp timing_spans(nil), do: []
 
-      Review.findings(review) == [] ->
-        " #{rereview_hint(review)}Esc close "
+  defp finished_spans(%Review{summary: summary}) when is_map(summary) do
+    case ReviewOutput.cost_summary(summary) do
+      nil -> []
+      cost -> [span(cost, :subtle)]
+    end
+  end
 
-      true ->
-        " ↑/↓ select · PgUp/PgDn detail · u/n useful/not · d dismiss · f fix · " <>
-          "F fix blocking · #{rereview_hint(review)}Esc close "
+  defp finished_spans(_review), do: []
+
+  # A re-review keeps its findings on screen, so its progress rides in the
+  # header instead of the dashboard.
+  defp rereview_progress(%Review{status: :loading}), do: [span("loading  ", :muted)]
+
+  defp rereview_progress(%Review{progress: progress} = review) do
+    counts = ReviewProgress.counts(progress)
+    files = plural(length(review.touched || []), "file")
+
+    units =
+      if counts.total, do: " · #{counts.done + counts.failed}/#{counts.total} units", else: ""
+
+    [span("#{files}#{units}  ", :muted)]
+  end
+
+  # Whether the header has a second row: the tabs, or the stepper.
+  defp nav?(review), do: nav_spans(review, 0) != []
+
+  defp nav_spans(nil, _frame), do: []
+
+  defp nav_spans(%Review{} = review, frame) do
+    case body_kind(review) do
+      :dashboard ->
+        ReviewDashboard.stepper(review.status, review.progress, frame)
+
+      kind ->
+        if Review.findings(review) != [] do
+          count = length(Review.findings(review))
+
+          [
+            tab("Findings #{count}", kind == :findings),
+            span(" ", :text),
+            tab("Summary", kind == :summary)
+          ]
+        else
+          []
+        end
+    end
+  end
+
+  defp tab(label, true), do: span(" #{label} ", Theme.bold(Theme.style(:selection_surface)))
+  defp tab(label, false), do: span(" #{label} ", :muted)
+
+  defp severity_spans(nil), do: []
+
+  defp severity_spans(%Review{} = review) do
+    counts = review |> Review.findings() |> Enum.frequencies_by(& &1.severity)
+
+    severities()
+    |> Enum.filter(&Map.has_key?(counts, &1))
+    |> Enum.map(fn severity ->
+      [span("● ", severity_tone(severity)), span("#{counts[severity]} #{severity}", :muted)]
+    end)
+    |> Enum.intersperse([span("  ", :text)])
+    |> Enum.concat()
+  end
+
+  # -- footer -------------------------------------------------------------------
+
+  defp footer(_state, %{footer: %Rect{height: 0}}, _max_scroll), do: []
+
+  defp footer(%State{notice: notice}, %{footer: rect}, _max_scroll) when is_binary(notice) do
+    row = MessageView.row([span("● ", :accent), span(notice, :text)])
+    [{text_widget([fit(row, rect.width)]), rect}]
+  end
+
+  defp footer(%State{} = state, %{footer: rect}, max_scroll) do
+    hints = state.review |> hints(max_scroll > 0) |> fitting_hints(rect.width)
+    [{text_widget([MessageView.row(KeyHint.row_spans(hints))]), rect}]
+  end
+
+  @doc """
+  The key hints for `review`, as `{priority, hint}` pairs in display
+  order; a lower priority survives a narrower screen. `scrollable?` says
+  whether the shown pane can scroll.
+  """
+  @spec hints(Review.t() | nil, boolean()) :: [{non_neg_integer(), KeyHint.hint()}]
+  def hints(nil, _scrollable?), do: [{0, {"Esc", "close"}}]
+
+  def hints(%Review{} = review, scrollable?) do
+    running? = Review.running?(review)
+    scroll = if scrollable?, do: [{4, {"PgUp/PgDn", "scroll"}}], else: []
+    cancel = if running?, do: [{1, {"x", "cancel"}}], else: []
+
+    case body_kind(review) do
+      :dashboard ->
+        [{1, {"x", "cancel"}}, {0, {"Esc", "close (keeps running)"}}]
+
+      :findings ->
+        [
+          {0, {"↑↓", "select"}}
+        ] ++
+          scroll ++
+          [
+            {2, {"Tab", "summary"}},
+            {1, {"f", "fix"}},
+            {3, {"F", "fix blocking"}},
+            {5, {"u/n", "useful/not"}},
+            {5, {"d", "dismiss"}}
+          ] ++
+          rereview_hint(review) ++
+          cancel ++
+          [{0, {"Esc", "close"}}]
+
+      :summary ->
+        tab = if Review.findings(review) != [], do: [{1, {"Tab", "findings"}}], else: []
+
+        tab ++
+          scroll ++
+          rereview_hint(review) ++
+          cancel ++
+          [{0, {"Esc", "close"}}]
     end
   end
 
   # `r` is offered only once a review finished; a cancelled or failed one
   # never reviewed its change.
   defp rereview_hint(review),
-    do: if(Review.rereviewable?(review), do: "r re-review · ", else: "")
+    do: if(Review.rereviewable?(review), do: [{2, {"r", "re-review"}}], else: [])
 
-  # -- body -------------------------------------------------------------------
+  defp fitting_hints(prioritized, width) do
+    levels = prioritized |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> Enum.sort(:desc)
 
-  defp body(nil, rect), do: [{text_widget([muted_row("No review in this session.")]), rect}]
+    candidates =
+      Enum.map(levels, fn level ->
+        for {priority, hint} <- prioritized, priority <= level, do: hint
+      end) ++ [[]]
 
-  defp body(%Review{} = review, rect) do
-    findings = Review.findings(review)
+    KeyHint.first_fitting(candidates, width)
+  end
+
+  # -- body ---------------------------------------------------------------------
+
+  # The body's widgets, and how far its scrolling pane can scroll.
+  defp body(%State{review: review} = state, %{body: rect}) do
+    case body_kind(review) do
+      :empty ->
+        {[{text_widget([muted_row("Start one with /review [RANGE | --staged].")]), rect}], 0}
+
+      :dashboard ->
+        {ReviewDashboard.widgets(review, rect, state.spinner_frame), 0}
+
+      :summary ->
+        rows = ReviewDashboard.summary_rows(review, rect.width)
+
+        {[{text_widget(window(rows, review.scroll, rect.height, rect.width)), rect}],
+         scroll_limit(length(rows), rect.height)}
+
+      :findings ->
+        findings_panes(review, rect)
+    end
+  end
+
+  defp findings_panes(review, rect) do
+    {list, detail} = panes(rect)
+    rows = all_detail_rows(review, detail.width)
+
+    separator =
+      if rect.width >= @side_by_side_width do
+        rule = %{rect | x: rect.x + list.width + 1, width: 1}
+        {text_widget(List.duplicate(muted_row("│"), rect.height)), rule}
+      else
+        rule = %{rect | y: rect.y + list.height, height: min(1, rect.height - list.height)}
+        {text_widget([muted_row(String.duplicate("─", rect.width))]), rule}
+      end
+
+    widgets = [
+      {text_widget(list_rows(review, list.width, list.height)), list},
+      separator,
+      {text_widget(window(rows, review.scroll, detail.height, detail.width)), detail}
+    ]
+
+    {widgets, scroll_limit(length(rows), detail.height)}
+  end
+
+  # Shows the rows from `scroll` that fit `height`. When they do not all
+  # fit, the last row says how much is left, or that the end is reached.
+  defp window(rows, scroll, height, width) do
+    count = length(rows)
+    visible = visible_rows(count, height)
 
     cond do
-      findings != [] and Review.running?(review) ->
-        {status, rest} = split_top(rect, 1)
-        [{text_widget(progress_line(review, status.width)), status} | panes(review, rest)]
+      height <= 0 ->
+        []
 
-      findings != [] ->
-        panes(review, rect)
+      count <= height ->
+        rows
 
-      Review.running?(review) ->
-        [{text_widget(progress_rows(review, rect.width, rect.height)), rect}]
+      visible == height ->
+        rows |> Enum.drop(min(scroll, count - visible)) |> Enum.take(visible)
 
       true ->
-        [{text_widget(outcome_rows(review, rect.width)), rect}]
+        offset = min(scroll, count - visible)
+        below = count - visible - offset
+
+        indicator =
+          if below > 0,
+            do: "↓ #{plural(below, "more line")} · PgDn",
+            else: "↑ end · PgUp scrolls back"
+
+        (rows |> Enum.drop(offset) |> Enum.take(visible)) ++
+          [fit(MessageView.row([span(indicator, :subtle)]), width)]
     end
   end
 
-  defp split_top(rect, rows) do
-    rows = min(rows, rect.height)
-
-    {%{rect | height: rows}, %{rect | y: rect.y + rows, height: max(rect.height - rows, 0)}}
-  end
-
-  defp panes(review, rect) do
-    if rect.width >= @side_by_side_width do
-      list_width = div(rect.width * 45, 100)
-      list = %{rect | width: list_width}
-      rule = %{rect | x: rect.x + list_width, width: 1}
-      detail = %{rect | x: rect.x + list_width + 2, width: max(rect.width - list_width - 2, 1)}
-
-      [
-        {text_widget(list_rows(review, list.width, list.height)), list},
-        {text_widget(List.duplicate(muted_row("│"), rect.height)), rule},
-        {text_widget(detail_rows(review, detail.width, detail.height)), detail}
-      ]
-    else
-      list_height = max(div(rect.height * 2, 5), 3) |> min(rect.height)
-      list = %{rect | height: list_height}
-      rule = %{rect | y: rect.y + list_height, height: min(1, rect.height - list_height)}
-
-      detail = %{
-        rect
-        | y: rect.y + list_height + 1,
-          height: max(rect.height - list_height - 1, 0)
-      }
-
-      [
-        {text_widget(list_rows(review, list.width, list.height)), list},
-        {text_widget([muted_row(String.duplicate("─", rect.width))]), rule},
-        {text_widget(detail_rows(review, detail.width, detail.height)), detail}
-      ]
-    end
-  end
-
-  defp visible?(%Rect{width: width, height: height}), do: width > 0 and height > 0
-
-  defp text_widget(rows), do: %Paragraph{text: rows, style: Theme.style(:text)}
-
-  # -- progress ---------------------------------------------------------------
-
-  defp progress_line(review, width) do
-    counts = ReviewProgress.counts(review.progress)
-    files = length(review.touched || [])
-
-    label =
-      case review.status do
-        :loading -> "Loading the change…"
-        :cancelling -> "Cancelling the review…"
-        _running -> "Re-reviewing #{plural(files, "changed file")} · #{unit_counts(counts)}"
-      end
-
-    [fit(MessageView.row([span("● ", :accent_soft), span(label, :muted)]), width)]
-  end
-
-  @doc false
-  @spec progress_rows(Review.t(), pos_integer(), non_neg_integer()) :: [MessageView.row()]
-  def progress_rows(%Review{} = review, width, height) do
-    rows =
-      case {review.status, ReviewProgress.phase(review.progress)} do
-        {:loading, _phase} ->
-          [node_row(:running, "Loading the change from Git…")]
-
-        {_status, :starting} ->
-          [node_row(:running, "Splitting the change into review units…")]
-
-        _other ->
-          unit_rows(review.progress, height) ++ candidate_rows(review.progress, height)
-      end
-
-    rows =
-      if review.status == :cancelling,
-        do: rows ++ [muted_row(""), node_row(:failed, "Cancelling the review…")],
-        else: rows
-
-    (rows ++ note_rows(review.notes))
-    |> Enum.take(max(height, 0))
-    |> Enum.map(&fit(&1, width))
-  end
-
-  defp unit_rows(progress, height) do
-    counts = ReviewProgress.counts(progress)
-    status = if counts.done + counts.failed < (progress.total || 0), do: :running, else: :done
-
-    head =
-      node_row(status, "Detecting", unit_counts(counts) <> failed_suffix(counts.failed))
-
-    # A long list keeps the units that need attention (running or failed)
-    # and counts the rest, so a large change stays a handful of rows.
-    budget = max(div(height, 2) - 1, 1)
-
-    listed =
-      if length(progress.units) <= budget,
-        do: progress.units,
-        else: progress.units |> Enum.reject(&match?({_id, :done}, &1)) |> Enum.take(budget)
-
-    hidden = length(progress.units) - length(listed)
-
-    rows =
-      Enum.map(listed, fn {id, status} ->
-        branch_row(unit_glyph(status), unit_label(id, status))
-      end) ++
-        if(hidden > 0, do: [branch_row(:done, "#{hidden} more")], else: [])
-
-    [head | rows]
-  end
-
-  defp candidate_rows(%ReviewProgress{candidates: []}, _height), do: []
-
-  defp candidate_rows(progress, height) do
-    counts = ReviewProgress.counts(progress)
-    status = if counts.verifying > 0, do: :running, else: :done
-
-    details =
-      ["#{counts.candidates - counts.verifying}/#{plural(counts.candidates, "candidate")}"] ++
-        Enum.flat_map([confirmed: "confirmed", rejected: "rejected", uncertain: "unverified"], fn
-          {key, label} -> if counts[key] > 0, do: ["#{counts[key]} #{label}"], else: []
-        end)
-
-    budget = max(div(height, 2) - 2, 1)
-
-    rows =
-      progress.candidates
-      |> Enum.take(-budget)
-      |> Enum.map(fn candidate ->
-        branch_row(verdict_glyph(candidate.verdict), candidate_label(candidate))
-      end)
-
-    [muted_row(""), node_row(status, "Verifying", Enum.join(details, " · ")) | rows]
-  end
-
-  defp unit_counts(%{total: total, done: done, failed: failed}) do
-    "#{done + failed}/#{plural(total || 0, "unit")}"
-  end
-
-  defp failed_suffix(0), do: ""
-  defp failed_suffix(failed), do: " · #{failed} failed"
-
-  defp unit_glyph(:running), do: :running
-  defp unit_glyph(:done), do: :done
-  defp unit_glyph({:failed, _reason}), do: :failed
-
-  defp unit_label("change", status), do: unit_label("the change overview", status)
-
-  defp unit_label(id, {:failed, reason}),
-    do: "#{id}  failed: #{first_line(Tackle.Review.Delegation.format_error(reason))}"
-
-  defp unit_label(id, _status), do: id
-
-  defp verdict_glyph(nil), do: :running
-  defp verdict_glyph(:confirmed), do: :done
-  defp verdict_glyph(:rejected), do: :failed
-  defp verdict_glyph(:uncertain), do: :ended
-
-  defp candidate_label(%{finding: %Finding{} = finding, verdict: verdict}) do
-    suffix =
-      case verdict do
-        :rejected -> "  rejected"
-        :uncertain -> "  unverified"
-        _other -> ""
-      end
-
-    "#{ReviewOutput.location(finding.location)}  #{finding.title}#{suffix}"
-  end
-
-  defp candidate_label(%{fingerprint: fingerprint}), do: fingerprint
-
-  defp node_row(status, label, details \\ nil) do
-    spans = [span(glyph(status) <> " ", glyph_style(status)), span(label, :text)]
-    spans = if details, do: spans ++ [span("  " <> details, :muted)], else: spans
-    MessageView.row(spans)
-  end
-
-  defp branch_row(status, label) do
-    MessageView.row([
-      span("  ", :muted),
-      span(glyph(status) <> " ", glyph_style(status)),
-      span(label, :muted)
-    ])
-  end
-
-  defp glyph(:done), do: "✓"
-  defp glyph(:failed), do: "✗"
-  defp glyph(:running), do: "●"
-  defp glyph(_ended), do: "◌"
-
-  defp glyph_style(:done), do: :success
-  defp glyph_style(:failed), do: :error
-  defp glyph_style(:running), do: :accent_soft
-  defp glyph_style(_ended), do: :muted
-
-  # -- finished without findings ----------------------------------------------
-
-  defp outcome_rows(%Review{status: status, error: error} = review, width)
-       when status in [:failed, :cancelled] do
-    ([MessageView.row([span(error || "The review failed.", :error)])] ++ note_rows(review.notes))
-    |> Enum.map(&fit(&1, width))
-  end
-
-  defp outcome_rows(%Review{} = review, width) do
-    headline =
-      case review.summary do
-        %{units: 0} -> "Nothing to review in this change."
-        _summary -> "No findings."
-      end
-
-    ([MessageView.row([span(headline, :success)])] ++
-       summary_rows(review.summary) ++ note_rows(review.notes))
-    |> Enum.map(&fit(&1, width))
-  end
-
-  defp summary_rows(%{units: units} = summary) when units > 0 do
-    [
-      muted_row(""),
-      muted_row(
-        "Reviewed #{plural(length(summary.files), "file")} in #{plural(units, "unit")} · " <>
-          "#{plural(summary.candidates, "candidate")}, #{summary.rejected} rejected"
-      )
-    ]
-  end
-
-  defp summary_rows(_summary), do: []
-
-  defp note_rows([]), do: []
-
-  defp note_rows(notes),
-    do:
-      [muted_row(""), MessageView.row([span("Notes", :warning)])] ++
-        Enum.map(notes, &muted_row("  " <> &1))
-
-  # -- list -------------------------------------------------------------------
+  # -- list ---------------------------------------------------------------------
 
   @doc false
   @spec list_rows(Review.t(), pos_integer(), non_neg_integer()) :: [MessageView.row()]
   def list_rows(%Review{} = review, width, height) do
-    entries =
-      group_entries("Blocking", review.blocking, 0) ++
-        group_entries("Optional", review.optional, length(review.blocking))
+    rows =
+      group_rows("Blocking", :error, review.blocking, 0, review, width) ++
+        group_rows("Optional", :warning, review.optional, length(review.blocking), review, width)
 
+    # Scroll so the selected finding's last row is visible.
     selected = review.selected
-    selected_row = Enum.find_index(entries, &match?({:finding, ^selected, _finding}, &1)) || 0
-    offset = if selected_row < height, do: 0, else: selected_row - height + 1
 
-    entries
+    last =
+      rows
+      |> Enum.with_index()
+      |> Enum.reduce(0, fn {{index, _row}, row}, last ->
+        if index == selected, do: row, else: last
+      end)
+
+    offset = if last < height, do: 0, else: last - height + 1
+
+    rows
     |> Enum.drop(offset)
     |> Enum.take(max(height, 0))
-    |> Enum.map(&entry_row(&1, review, width))
+    |> Enum.map(&elem(&1, 1))
   end
 
-  defp group_entries(_label, [], _first), do: []
+  defp group_rows(_label, _tone, [], _first, _review, _width), do: []
 
-  defp group_entries(label, findings, first) do
-    rows =
+  defp group_rows(label, tone, findings, first, review, width) do
+    spacer = if first > 0, do: [{nil, blank()}], else: []
+    count = length(findings)
+    title = String.upcase(label)
+
+    rule =
+      String.duplicate("─", max(width - String.length(title) - String.length("#{count}") - 3, 0))
+
+    heading =
+      MessageView.row([span(title, bold(tone)), span(" #{count} ", :muted), span(rule, :subtle)])
+
+    entries =
       findings
       |> Enum.with_index(first)
-      |> Enum.map(fn {finding, index} -> {:finding, index, finding} end)
+      |> Enum.flat_map(fn {finding, index} ->
+        Enum.map(finding_entry(finding, index, review, width), &{index, &1})
+      end)
 
-    [{:heading, "#{label} (#{length(findings)})"} | rows]
+    spacer ++ [{nil, fit(heading, width)} | entries]
   end
 
-  defp entry_row({:heading, text}, _review, width),
-    do: fit(MessageView.row([span(text, Theme.bold(Theme.style(:accent_soft)))]), width)
-
-  defp entry_row({:finding, index, finding}, review, width) do
+  defp finding_entry(%Finding{} = finding, index, review, width) do
     selected? = index == review.selected
     outcome = Map.get(review.outcomes, finding.fingerprint)
+    marker = if selected?, do: span("▌ ", :accent), else: span("  ", :text)
 
-    spans =
-      [
-        span(if(selected?, do: "› ", else: "  "), :accent),
-        span(severity_label(finding.severity), severity_style(finding.severity)),
-        span(ReviewOutput.location(finding.location) <> "  ", :accent_soft),
-        span(finding.title, if(outcome == :dismissed, do: :muted, else: :text))
-      ] ++
-        if(finding.rule_id, do: [span("  " <> finding.rule_id, :subtle)], else: []) ++
-        outcome_spans(outcome)
+    title_style =
+      cond do
+        outcome == :dismissed -> %{Theme.style(:muted) | modifiers: [:crossed_out]}
+        selected? -> bold(:text)
+        true -> Theme.style(:text)
+      end
 
-    row = fit(MessageView.row(spans), width)
+    meta =
+      [ReviewOutput.location(finding.location), to_string(finding.category), finding.rule_id]
+      |> Enum.reject(&is_nil/1)
+
+    [location | details] = meta
+
+    first =
+      MessageView.row(
+        [marker, severity_badge(finding.severity), span(" " <> finding.title, title_style)] ++
+          outcome_spans(outcome)
+      )
+
+    second =
+      MessageView.row([
+        marker,
+        span(String.duplicate(" ", @list_indent - 2), :text),
+        span(location, :accent_soft),
+        span(Enum.map_join(details, "", &("  " <> &1)), :subtle)
+      ])
+
+    rows = Enum.map([first, second], &fit(&1, width))
 
     if selected?,
-      do: pad(%{row | style: Theme.style(:selection_surface)}, width),
-      else: row
+      do: Enum.map(rows, &pad(%{&1 | style: Theme.style(:selection_surface)}, width)),
+      else: rows
   end
 
   defp outcome_spans(nil), do: []
   defp outcome_spans(:useful), do: [span("  ✓ useful", :success)]
   defp outcome_spans(:not_useful), do: [span("  ✗ not useful", :warning)]
   defp outcome_spans(:dismissed), do: [span("  dismissed", :muted)]
-  defp outcome_spans(:fixed), do: [span("  fix requested", :accent_soft)]
+  defp outcome_spans(:fixed), do: [span("  ⚒ fix requested", :accent_soft)]
 
-  defp severity_label(severity),
-    do: severity |> to_string() |> String.upcase() |> String.pad_trailing(@severity_width)
-
-  defp severity_style(severity) when severity in [:blocker, :high], do: :error
-  defp severity_style(:medium), do: :warning
-  defp severity_style(_severity), do: :muted
-
-  # -- detail -----------------------------------------------------------------
+  # -- detail -------------------------------------------------------------------
 
   @doc false
   @spec detail_rows(Review.t(), pos_integer(), non_neg_integer()) :: [MessageView.row()]
-  def detail_rows(%Review{} = review, width, height) do
+  def detail_rows(%Review{} = review, width, height),
+    do: review |> all_detail_rows(width) |> window(review.scroll, height, width)
+
+  defp all_detail_rows(review, width) do
     case Review.selected(review) do
-      nil ->
-        []
-
-      finding ->
-        rows = MessageView.wrap_rows(finding_rows(finding, review.change), max(width, 1))
-        last = max(length(rows) - height, 0)
-
-        rows
-        |> Enum.drop(min(review.scroll, last))
-        |> Enum.take(max(height, 0))
+      nil -> []
+      finding -> MessageView.wrap_rows(finding_rows(finding, review, width), max(width, 1))
     end
   end
 
-  defp finding_rows(%Finding{} = finding, change) do
+  defp finding_rows(%Finding{} = finding, review, width) do
+    position = "#{review.selected + 1}/#{length(Review.findings(review))}"
+
+    [
+      split_row(
+        [severity_badge(finding.severity), span(" " <> facts(finding), :muted)],
+        [span(position, :subtle)],
+        width
+      ),
+      blank(),
+      MessageView.row([span(finding.title, bold(:text))]),
+      MessageView.row(
+        [span(ReviewOutput.location(finding.location), :accent_soft)] ++
+          if(finding.rule_id, do: [span("  rule " <> finding.rule_id, :subtle)], else: [])
+      ),
+      confidence_row(finding)
+    ] ++
+      feedback_rows(Map.get(review.outcomes, finding.fingerprint)) ++
+      section("Why", text_rows(finding.body), width) ++
+      section("Trigger", text_rows(finding.trigger), width) ++
+      section("Suggested fix", suggestion_rows(finding, width), width) ++
+      section(code_heading(finding), code_rows(review.change, finding), width)
+  end
+
+  defp facts(%Finding{} = finding) do
     verdict =
       case finding.verdict do
-        :confirmed -> "confirmed"
-        :uncertain -> "unverified"
+        :confirmed -> "✓ confirmed"
+        :uncertain -> "? unverified"
         nil -> nil
       end
 
-    facts =
-      [
-        to_string(finding.severity),
-        to_string(finding.category),
-        finding.rule_id && "rule #{finding.rule_id}",
-        if(finding.blocking, do: "blocking", else: "optional"),
-        verdict,
-        "confidence #{:erlang.float_to_binary(finding.confidence / 1, decimals: 2)}"
-      ]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.join(" · ")
-
     [
-      MessageView.row([span(finding.title, Theme.bold(Theme.style(:text)))]),
-      MessageView.row([span(facts, :muted)]),
-      MessageView.row([span(ReviewOutput.location(finding.location), :accent_soft)]),
-      muted_row("")
-    ] ++
-      text_rows(finding.body, :text) ++
-      section("Trigger", text_rows(finding.trigger, :text)) ++
-      section("Suggestion", suggestion_rows(finding)) ++
-      section("Code", code_rows(change, finding))
+      to_string(finding.category),
+      if(finding.blocking, do: "blocking", else: "optional"),
+      verdict,
+      if(finding.support > 1, do: "seen #{finding.support}×")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
   end
 
-  defp section(_heading, []), do: []
+  defp confidence_row(%Finding{confidence: confidence}) do
+    value = round(confidence * 100)
 
-  defp section(heading, rows),
-    do:
-      [muted_row(""), MessageView.row([span(heading, Theme.bold(Theme.style(:accent_soft)))])] ++
-        rows
+    tone =
+      cond do
+        value >= 75 -> :success
+        value >= 50 -> :warning
+        true -> :error
+      end
 
-  defp text_rows(text, style) do
+    MessageView.row(
+      [span("confidence ", :muted)] ++
+        bar(value, 100, @confidence_width, tone) ++ [span(" #{value}%", :muted)]
+    )
+  end
+
+  defp feedback_rows(nil), do: []
+
+  defp feedback_rows(outcome),
+    do: [MessageView.row([span("feedback ", :muted) | outcome_spans(outcome) |> trim_first()])]
+
+  defp trim_first([first | rest]),
+    do: [%{first | content: String.trim_leading(first.content)} | rest]
+
+  defp code_heading(%Finding{location: %{path: path}}), do: "Code · " <> Path.basename(path)
+
+  defp section(_heading, [], _width), do: []
+  defp section(heading, rows, width), do: [blank(), heading(heading, width) | rows]
+
+  defp text_rows(nil), do: []
+
+  defp text_rows(text) do
     text
+    |> String.trim()
     |> String.split("\n")
-    |> Enum.map(&MessageView.row([span(&1, style)]))
+    |> Enum.map(&MessageView.row([span(&1, :text)]))
   end
 
-  defp suggestion_rows(%Finding{suggestion: nil}), do: []
+  defp suggestion_rows(%Finding{suggestion: nil}, _width), do: []
 
-  defp suggestion_rows(%Finding{suggestion: suggestion, location: location}) do
+  defp suggestion_rows(%Finding{suggestion: suggestion, location: location}, width) do
     tokens = Highlight.lines(suggestion, location.path)
+    surface = Theme.style(:code_surface)
 
     suggestion
+    |> String.trim_trailing()
     |> String.split("\n")
     |> Enum.with_index(1)
-    |> Enum.map(fn {line, number} -> MessageView.row(code_spans(line, number, tokens)) end)
+    |> Enum.map(fn {line, number} ->
+      MessageView.row([span(" ", surface) | code_spans(line, number, tokens)], surface)
+      |> pad(width)
+    end)
   end
 
   defp code_rows(nil, _finding), do: []
@@ -610,59 +781,4 @@ defmodule Tackle.CLI.TUI.ReviewView do
   defp diff_style(:ctx), do: Theme.style(:diff_context)
 
   defp digits(number), do: number |> to_string() |> String.length() |> max(1)
-
-  # -- helpers ----------------------------------------------------------------
-
-  defp muted_row(text), do: MessageView.row([span(text, :muted)])
-
-  defp span(text, style) when is_atom(style), do: MessageView.span(text, Theme.style(style))
-  defp span(text, %Style{} = style), do: MessageView.span(text, style)
-
-  # Clips a row to `width` cells, ending a cut row with an ellipsis.
-  defp fit(%{spans: spans} = row, width) do
-    if spans |> Enum.map(&MessageView.display_width(&1.content)) |> Enum.sum() <= width do
-      row
-    else
-      {kept, _used} =
-        Enum.reduce_while(spans, {[], 0}, fn span, {kept, used} ->
-          room = width - 1 - used
-          size = MessageView.display_width(span.content)
-
-          cond do
-            room <= 0 -> {:halt, {kept, used}}
-            size <= room -> {:cont, {[span | kept], used + size}}
-            true -> {:halt, {[%{span | content: clip(span.content, room)} | kept], width - 1}}
-          end
-        end)
-
-      %{row | spans: Enum.reverse(kept) ++ [MessageView.span("…", Theme.style(:subtle))]}
-    end
-  end
-
-  defp clip(text, room) do
-    text
-    |> String.graphemes()
-    |> Enum.reduce_while({"", 0}, fn grapheme, {acc, used} ->
-      size = MessageView.display_width(grapheme)
-
-      if used + size <= room,
-        do: {:cont, {acc <> grapheme, used + size}},
-        else: {:halt, {acc, used}}
-    end)
-    |> elem(0)
-  end
-
-  # Pads a row to the full width so its surface style paints the whole line.
-  defp pad(%{spans: spans} = row, width) do
-    used = spans |> Enum.map(&MessageView.display_width(&1.content)) |> Enum.sum()
-
-    if used < width,
-      do: %{row | spans: spans ++ [MessageView.span(String.duplicate(" ", width - used))]},
-      else: row
-  end
-
-  defp first_line(text), do: text |> String.split("\n", parts: 2) |> hd()
-
-  defp plural(1, noun), do: "1 #{noun}"
-  defp plural(count, noun), do: "#{count} #{noun}s"
 end

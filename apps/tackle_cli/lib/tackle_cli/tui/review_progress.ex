@@ -25,7 +25,31 @@ defmodule Tackle.CLI.TUI.ReviewProgress do
 
   @type unit_status :: :running | :done | {:failed, term()}
   @type verdict :: :confirmed | :rejected | :uncertain | nil
-  @type candidate :: %{fingerprint: String.t(), finding: Finding.t() | nil, verdict: verdict()}
+  @typedoc """
+  A candidate's finding: the full `Tackle.Review.Finding`, or the compact
+  map `review_changes` reports (`fingerprint`, `title`, `severity`,
+  `category`, `location`), or `nil` when only its verdict was seen.
+  """
+  @type candidate_finding ::
+          Finding.t()
+          | %{
+              required(:fingerprint) => String.t(),
+              required(:title) => String.t(),
+              required(:severity) => Finding.severity(),
+              required(:location) => Finding.location(),
+              optional(atom()) => term()
+            }
+
+  @typedoc """
+  What `apply/2` folds: a `Tackle.Review` event, or one whose candidate is
+  the compact map `review_changes` reports.
+  """
+  @type event :: Tackle.Review.event() | {:candidate, candidate_finding()}
+  @type candidate :: %{
+          fingerprint: String.t(),
+          finding: candidate_finding() | nil,
+          verdict: verdict()
+        }
   @type phase :: :starting | :detecting | :verifying | :ranking
 
   @type t :: %__MODULE__{
@@ -47,7 +71,7 @@ defmodule Tackle.CLI.TUI.ReviewProgress do
   Returns the model unchanged (`===`) for events it does not project, such
   as `{:done, result}`, so callers can skip a redraw.
   """
-  @spec apply(t(), Tackle.Review.event()) :: t()
+  @spec apply(t(), event()) :: t()
   def apply(%__MODULE__{} = model, {:started, %{units: units}}) when is_integer(units),
     do: %{model | total: units}
 
@@ -60,7 +84,7 @@ defmodule Tackle.CLI.TUI.ReviewProgress do
   def apply(%__MODULE__{} = model, {:unit, id, {:failed, _reason} = failed}) when is_binary(id),
     do: %{model | units: put_unit(model.units, id, failed)}
 
-  def apply(%__MODULE__{} = model, {:candidate, %Finding{fingerprint: fingerprint} = finding})
+  def apply(%__MODULE__{} = model, {:candidate, %{fingerprint: fingerprint} = finding})
       when is_binary(fingerprint) do
     put_candidate(model, %{fingerprint: fingerprint, finding: finding, verdict: nil})
   end

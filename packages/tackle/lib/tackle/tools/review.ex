@@ -33,12 +33,38 @@ defmodule Tackle.Tools.Review do
   `Tackle.Review.History.open/2` (default `[]`, the process's
   `TACKLE_HOME`). When history is unavailable the review still runs and the
   result says so.
+
+  ## Progress
+
+  When the session context carries an `:event_callback`, the tool reports
+  the review while it runs as `:tool_progress` events whose data holds the
+  call's `:tool_call_id`, `name: "review_changes"`, and a `:review` map
+  with a `:kind` (instead of the textual `:delta` other tools stream):
+
+    * `:loaded` - `target` (what is reviewed), `files`, `additions`,
+      `deletions`, and `profile`, once the change is loaded;
+    * `:started` - `units`, how many review units the change splits into;
+    * `:unit` - `unit` id and `status` (`:started`, `:done`, `:failed`,
+      the latter with an `error` text);
+    * `:candidate` - a `finding` sent to the verifier: `fingerprint`,
+      `title`, `severity`, `category`, and `location`;
+    * `:verdict` - the candidate's `fingerprint` and `verdict`;
+    * `:done` - the `summary` counts: `units`, `files`, `candidates`,
+      `confirmed`, `uncertain`, `rejected`, `blocking`, `optional`, and
+      `duration_ms`.
+
+  The data is plain maps of strings, numbers, and atoms, so frontends can
+  forward it as JSON. The result text stays the model-facing contract;
+  frontends may read its finding lines
+  (`N. path:line [severity, category, rule ID] title`) to draw a settled
+  call.
   """
 
   use Tackle.Lib.Tool
 
   alias Tackle.AgentScope.Coordinator
   alias Tackle.Executor
+  alias Tackle.Lib.Event
   alias Tackle.Review
   alias Tackle.Review.{Change, Delegation, Detector, Finding, History, Result, Verifier}
   alias Tackle.Runtime.{Handle, Registry}
@@ -80,16 +106,20 @@ defmodule Tackle.Tools.Review do
          :ok <- ensure_delegation(handle),
          {:ok, change} <- load_change(args, context) do
       {history, notes} = history(change, context)
+      profile = Map.get(args, "profile") || "default"
+      report = reporter(context)
+      report.(loaded(change, profile))
 
       opts = [
         requester: handle,
         profiles: profiles(handle),
-        profile: Map.fetch!(@profiles, Map.get(args, "profile") || "default"),
-        history: history
+        profile: Map.fetch!(@profiles, profile),
+        history: history,
+        on_event: &report_event(report, &1)
       ]
 
       case Review.run(change, opts) do
-        {:ok, result} -> {:ok, render(result, change, notes)}
+        {:ok, result} -> {:ok, format_result(result, change, notes)}
         {:error, reason} -> {:error, "The review failed: " <> describe_error(reason)}
       end
     end
@@ -165,6 +195,90 @@ defmodule Tackle.Tools.Review do
     end
   end
 
+  ## Progress
+
+  defp reporter(context) do
+    case Map.get(context, :event_callback) do
+      callback when is_function(callback, 1) ->
+        tool_call_id = Map.get(context, :tool_call_id)
+
+        fn review ->
+          callback.(
+            Event.new(:tool_progress, %{
+              tool_call_id: tool_call_id,
+              name: "review_changes",
+              review: review
+            })
+          )
+        end
+
+      _other ->
+        fn _review -> :ok end
+    end
+  end
+
+  defp loaded(%Change{} = change, profile) do
+    files = change.diff.files
+
+    %{
+      kind: :loaded,
+      target: describe_change(change),
+      files: length(files),
+      additions: files |> Enum.map(& &1.additions) |> Enum.sum(),
+      deletions: files |> Enum.map(& &1.deletions) |> Enum.sum(),
+      profile: profile
+    }
+  end
+
+  defp report_event(report, event) do
+    case progress(event) do
+      nil -> :ok
+      review -> report.(review)
+    end
+  end
+
+  defp progress({:started, %{units: units}}), do: %{kind: :started, units: units}
+
+  defp progress({:unit, id, {:failed, reason}}),
+    do: %{kind: :unit, unit: id, status: :failed, error: Delegation.format_error(reason)}
+
+  defp progress({:unit, id, status}) when status in [:started, :done],
+    do: %{kind: :unit, unit: id, status: status}
+
+  defp progress({:candidate, %Finding{} = finding}) do
+    %{
+      kind: :candidate,
+      finding: %{
+        fingerprint: finding.fingerprint,
+        title: finding.title,
+        severity: finding.severity,
+        category: finding.category,
+        location: Map.take(finding.location, [:path, :side, :start_line, :end_line])
+      }
+    }
+  end
+
+  defp progress({:verdict, fingerprint, verdict}),
+    do: %{kind: :verdict, fingerprint: fingerprint, verdict: verdict}
+
+  defp progress({:done, %Result{summary: summary}}) do
+    counts =
+      Map.take(summary, [
+        :units,
+        :candidates,
+        :confirmed,
+        :uncertain,
+        :rejected,
+        :blocking,
+        :optional,
+        :duration_ms
+      ])
+
+    %{kind: :done, summary: Map.put(counts, :files, length(summary.files))}
+  end
+
+  defp progress(_event), do: nil
+
   ## Errors
 
   defp describe_error(:cancelled), do: "the review was cancelled"
@@ -189,7 +303,14 @@ defmodule Tackle.Tools.Review do
 
   ## Output
 
-  defp render(%Result{} = result, change, notes) do
+  @doc """
+  The tool's result text for `result`: a headline, the blocking and
+  optional findings with their details, and `notes` followed by the
+  review's own notes. Frontends parse its headline and finding lines to
+  draw a settled call (see the moduledoc's Progress section).
+  """
+  @spec format_result(Result.t(), Change.t(), [String.t()]) :: String.t()
+  def format_result(%Result{} = result, %Change{} = change, notes) when is_list(notes) do
     summary = result.summary
 
     header =

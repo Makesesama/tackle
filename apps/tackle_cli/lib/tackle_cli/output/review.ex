@@ -256,25 +256,39 @@ defmodule Tackle.CLI.Output.Review do
 
   # One line per stage that ran, then the total of all stages.
   defp cost(summary, output) do
-    stages = Map.get(summary, :stages, %{})
-
-    lines =
-      for stage <- [:detector, :verifier, :scorer],
-          stats = Map.get(stages, stage),
-          stats != nil,
-          do: "  #{stage}: " <> describe_stage(stage, stats)
-
-    case lines do
+    case stage_costs(summary) do
       [] ->
         []
 
-      lines ->
+      costs ->
         duration = duration(Map.get(summary, :duration_ms))
+        lines = Enum.map(costs, fn {label, text} -> "  #{label}: " <> text end)
+        Enum.map(["Cost (#{duration}):" | lines], &["\n", muted(output, &1)])
+    end
+  end
 
-        lines =
-          ["Cost (#{duration}):" | lines] ++ ["  total: " <> describe_total(stages, duration)]
+  @doc """
+  Describes a review's cost per stage that ran, then in total, as
+  `{label, text}` pairs such as `{"detector", "3 runs, 12.0k in, 1.2k out, 8.1s"}`.
+  Empty when the summary has no stage statistics.
+  """
+  @spec stage_costs(map()) :: [{String.t(), String.t()}]
+  def stage_costs(summary) when is_map(summary) do
+    stages = Map.get(summary, :stages, %{})
 
-        Enum.map(lines, &["\n", muted(output, &1)])
+    costs =
+      for stage <- [:detector, :verifier, :scorer],
+          stats = Map.get(stages, stage),
+          stats != nil,
+          do: {to_string(stage), describe_stage(stage, stats)}
+
+    case costs do
+      [] ->
+        []
+
+      costs ->
+        duration = duration(Map.get(summary, :duration_ms))
+        costs ++ [{"total", describe_total(stages, duration)}]
     end
   end
 

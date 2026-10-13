@@ -18,6 +18,11 @@ defmodule Tackle.CLI.TUI.ToolView do
   Workflows (`run_workflow`) retain the static script outline until progress
   arrives, then render a live vertical graph of delegated runs and fan-out.
   Details show the full graph followed by numbered script and result.
+  Reviews (`review_changes`) name what they review in the header, show the
+  pipeline, progress bars, and live candidates while running, and the
+  outcome with one row per finding once settled
+  (`Tackle.CLI.TUI.ReviewCallView`); details add the full progress above
+  the result text.
   Unknown tools retain a generic source fallback.
 
   Bash calls the session's command watchdog (`Tackle.Watchdog`) is watching
@@ -56,7 +61,8 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   alias ExRatatui.Style
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{Highlight, MessageView, Theme, ToolGroups, WorkflowProgress, WorkflowView}
+  alias Tackle.CLI.TUI.{Highlight, MessageView, ReviewCallView, Theme, ToolGroups}
+  alias Tackle.CLI.TUI.{WorkflowProgress, WorkflowView}
   alias Tackle.CLI.WorkflowScript
 
   @preview_rows 6
@@ -65,6 +71,8 @@ defmodule Tackle.CLI.TUI.ToolView do
   @workflow_preview_rows 10
   # A live chart may use a little more: it is the card's main content.
   @workflow_graph_rows 12
+  # A review card: the pipeline and progress, then candidates or findings.
+  @review_rows 10
   # Lumis picks the grammar from the extension.
   @workflow_path "workflow.lua"
   @preview_replacements 2
@@ -350,6 +358,19 @@ defmodule Tackle.CLI.TUI.ToolView do
       true ->
         nil
     end
+  end
+
+  defp file_preview(%{tool_name: "review_changes"} = entry, _args, width, budget) do
+    rows =
+      ReviewCallView.preview(
+        entry.review_call,
+        entry.tool_status,
+        entry.tool_output,
+        content_width(width),
+        min(budget, @review_rows)
+      )
+
+    if rows, do: wrap_indented(rows, width, 4)
   end
 
   defp file_preview(_entry, _args, _width, _budget), do: nil
@@ -658,6 +679,30 @@ defmodule Tackle.CLI.TUI.ToolView do
     ]
   end
 
+  defp header_rows(%{tool_name: "review_changes"} = entry, args, _width) do
+    status = entry.tool_status
+    target = ReviewCallView.target(entry.review_call, entry.tool_output, args)
+
+    profile =
+      case get(args, :profile) do
+        profile when is_binary(profile) and profile != "" -> "  #{profile} profile"
+        _default -> ""
+      end
+
+    [
+      MessageView.row([
+        MessageView.span(marker(status), marker_style(status)),
+        MessageView.span(subagent_status(status), status_style(status)),
+        MessageView.span("review  ", Theme.style(:muted)),
+        MessageView.span(target, Theme.bold(Theme.style(:text))),
+        MessageView.span(
+          profile <> elapsed_suffix(status, entry.tool_elapsed_ms),
+          Theme.style(:muted)
+        )
+      ])
+    ]
+  end
+
   defp header_rows(entry, args, _width) do
     name = entry.tool_name || "unknown"
     target = target(name, args)
@@ -785,6 +830,13 @@ defmodule Tackle.CLI.TUI.ToolView do
 
       script ->
         workflow_graph_rows(entry, width) ++ workflow_rows(entry, script)
+    end
+  end
+
+  defp body_rows(%{tool_name: "review_changes"} = entry, args, :details, width) do
+    case ReviewCallView.details(entry.review_call, content_width(width)) do
+      [] -> generic_rows(entry, args, :details)
+      rows -> [context_row("Progress") | rows] ++ generic_rows(entry, args, :details)
     end
   end
 

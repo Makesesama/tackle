@@ -15,6 +15,11 @@ defmodule Tackle.CLI.TUI.Review do
 
   In the overlay:
 
+    * `↑`/`↓` (or `k`/`j`) select a finding, `g`/`G` (or Home/End) jump to
+      the first/last one, and PgUp/PgDn page through the detail pane;
+    * `Tab` switches between the findings and the summary page (outcome,
+      verification funnel, files, cost, and notes), where the arrows
+      scroll;
     * `u` / `n` mark the selected finding useful / not useful;
     * `d` dismisses it, so later reviews do not report it again;
     * `f` sends it to the chat agent as a prompt to fix it, `F` sends every
@@ -43,7 +48,7 @@ defmodule Tackle.CLI.TUI.Review do
   alias ExRatatui.Command
   alias Tackle.AgentScope.Coordinator
   alias Tackle.CLI.Output.Review, as: ReviewOutput
-  alias Tackle.CLI.TUI.{Composer, ReviewProgress, State}
+  alias Tackle.CLI.TUI.{Composer, ReviewProgress, ReviewView, State}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Cancellation
   alias Tackle.Review.{Change, Detector, Finding, History, Result, Verifier}
@@ -75,7 +80,11 @@ defmodule Tackle.CLI.TUI.Review do
       re-review loaded; `touched` the paths it re-reviews;
     * `blocking` / `optional` are the shown findings and `outcomes` the
       latest feedback per fingerprint;
-    * `selected` indexes `findings/1` and `scroll` the detail pane.
+    * `selected` indexes `findings/1` and `scroll` the shown pane (the
+      detail pane, or the summary page);
+    * `tab` is the page the overlay shows once there are findings;
+    * `started_at` is when the current run started (monotonic
+      milliseconds), for the elapsed time.
   """
   @type t :: %__MODULE__{
           ref: reference() | nil,
@@ -95,7 +104,9 @@ defmodule Tackle.CLI.TUI.Review do
           notes: [String.t()],
           error: String.t() | nil,
           selected: non_neg_integer(),
-          scroll: non_neg_integer()
+          scroll: non_neg_integer(),
+          tab: :findings | :summary,
+          started_at: integer() | nil
         }
 
   defstruct ref: nil,
@@ -115,7 +126,9 @@ defmodule Tackle.CLI.TUI.Review do
             notes: [],
             error: nil,
             selected: 0,
-            scroll: 0
+            scroll: 0,
+            tab: :findings,
+            started_at: nil
 
   @typedoc "A message the background command sends to the shell."
   @type message ::
@@ -146,7 +159,11 @@ defmodule Tackle.CLI.TUI.Review do
           :close
           | :previous
           | :next
+          | :first
+          | :last
+          | :switch_tab
           | {:scroll, :up | :down}
+          | {:page, :up | :down}
           | {:outcome, :useful | :not_useful | :dismissed}
           | :fix
           | :fix_blocking
@@ -237,6 +254,15 @@ defmodule Tackle.CLI.TUI.Review do
   def running?(_review), do: false
 
   @doc """
+  Whether the review overlay is open on a running review, so the shell
+  ticks its spinners and elapsed time. A review behind a closed overlay
+  does not keep the shell redrawing.
+  """
+  @spec animating?(State.t()) :: boolean()
+  def animating?(%State{overlay: {:review, _view}, review: review}), do: running?(review)
+  def animating?(%State{}), do: false
+
+  @doc """
   Whether `r` can re-review: only after a review finished, so the
   previously reviewed change actually produced findings. A cancelled or
   failed review never reviewed its change; it needs a new `/review`.
@@ -284,7 +310,8 @@ defmodule Tackle.CLI.TUI.Review do
         progress: ReviewProgress.new(),
         next_change: nil,
         touched: nil,
-        error: nil
+        error: nil,
+        started_at: System.monotonic_time(:millisecond)
     }
 
     {:noreply, %{state | review: review, overlay: {:review, %{}}}, commands: [command]}
@@ -548,17 +575,40 @@ defmodule Tackle.CLI.TUI.Review do
 
   def handle(_intent, %State{review: nil} = state), do: {:noreply, %{state | overlay: nil}}
 
+  # On the summary page there is nothing to select; the arrows scroll it.
   def handle(direction, %State{review: review} = state) when direction in [:previous, :next] do
-    count = length(findings(review))
-    delta = if direction == :previous, do: -1, else: 1
-    selected = if count == 0, do: 0, else: Integer.mod(review.selected + delta, count)
-    {:noreply, %{state | review: %{review | selected: selected, scroll: 0}}}
+    if ReviewView.body_kind(review) == :summary do
+      handle({:scroll, if(direction == :previous, do: :up, else: :down)}, state)
+    else
+      count = length(findings(review))
+      delta = if direction == :previous, do: -1, else: 1
+      selected = if count == 0, do: 0, else: Integer.mod(review.selected + delta, count)
+      {:noreply, %{state | review: %{review | selected: selected, scroll: 0}}}
+    end
   end
 
-  def handle({:scroll, direction}, %State{review: review} = state) do
-    scroll = if direction == :up, do: max(review.scroll - 1, 0), else: review.scroll + 1
-    {:noreply, %{state | review: %{review | scroll: scroll}}}
+  def handle(edge, %State{review: review} = state) when edge in [:first, :last] do
+    if ReviewView.body_kind(review) == :summary do
+      scroll = if edge == :first, do: 0, else: ReviewView.max_scroll(state)
+      {:noreply, %{state | review: %{review | scroll: scroll}}}
+    else
+      count = length(findings(review))
+      selected = if edge == :first, do: 0, else: max(count - 1, 0)
+      {:noreply, %{state | review: %{review | selected: selected, scroll: 0}}}
+    end
   end
+
+  def handle(:switch_tab, %State{review: review} = state) do
+    if findings(review) == [] do
+      {:noreply, state, render?: false}
+    else
+      tab = if review.tab == :summary, do: :findings, else: :summary
+      {:noreply, %{state | review: %{review | tab: tab, scroll: 0}}}
+    end
+  end
+
+  def handle({:scroll, direction}, state), do: scroll(state, direction, 1)
+  def handle({:page, direction}, state), do: scroll(state, direction, page(state))
 
   def handle({:outcome, outcome}, %State{review: review} = state) do
     case selected(review) do
@@ -643,6 +693,20 @@ defmodule Tackle.CLI.TUI.Review do
     do: "Fix requested for #{length(many)} findings · /findings reopens the review"
 
   defp busy?(state), do: state.active_turn != nil or state.pending_operation != nil
+
+  # Scrolls the shown pane by `lines`, never past its end
+  # (`Tackle.CLI.TUI.ReviewView.max_scroll/1`).
+  defp scroll(%State{review: review} = state, direction, lines) do
+    wanted = if direction == :up, do: review.scroll - lines, else: review.scroll + lines
+    scroll = wanted |> max(0) |> min(ReviewView.max_scroll(state))
+
+    if scroll == review.scroll,
+      do: {:noreply, state, render?: false},
+      else: {:noreply, %{state | review: %{review | scroll: scroll}}}
+  end
+
+  # A page is half the screen, so the reader keeps their place.
+  defp page(%State{size: {_width, height}}), do: max(div(height, 2), 1)
 
   # Writes the outcome of every finding to the history and remembers it for
   # the list. Returns the notice suffix when the history did not take it.

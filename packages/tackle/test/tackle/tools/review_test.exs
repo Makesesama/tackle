@@ -167,6 +167,65 @@ defmodule Tackle.Tools.ReviewTest do
     assert_received {:llm_call, :verifier}
   end
 
+  test "reports the review's progress as structured tool progress", ctx do
+    test_pid = self()
+
+    context =
+      Map.merge(ctx.context, %{
+        tool_call_id: "call-1",
+        event_callback: &send(test_pid, {:progress, &1})
+      })
+
+    assert {:ok, _text} = review(%{"profile" => "quiet"}, context)
+
+    reviews = collect_progress([])
+    assert Enum.all?(reviews, &is_map/1)
+
+    assert [
+             %{
+               kind: :loaded,
+               target: "changes since main",
+               files: 1,
+               additions: 1,
+               deletions: 0,
+               profile: "quiet"
+             },
+             %{kind: :started, units: units} | _rest
+           ] = reviews
+
+    assert units > 0
+    assert %{kind: :unit, status: :started} = Enum.find(reviews, &(&1.kind == :unit))
+    assert Enum.any?(reviews, &match?(%{kind: :unit, unit: "lib/a.ex#1", status: :done}, &1))
+
+    assert %{
+             finding: %{
+               fingerprint: fingerprint,
+               title: "Guard against a missing key",
+               severity: :high,
+               category: :correctness,
+               location: %{path: "lib/a.ex", side: :new, start_line: 3, end_line: 3}
+             }
+           } = Enum.find(reviews, &(&1.kind == :candidate))
+
+    assert %{verdict: :confirmed} = Enum.find(reviews, &(&1[:fingerprint] == fingerprint))
+
+    assert %{kind: :done, summary: %{files: 1, blocking: 1, optional: 0, candidates: 1}} =
+             List.last(reviews)
+
+    # The data is plain enough to forward as JSON.
+    assert is_binary(JSON.encode!(reviews))
+  end
+
+  defp collect_progress(acc) do
+    receive do
+      {:progress, %Tackle.Lib.Event{type: :tool_progress, data: data}} ->
+        assert %{tool_call_id: "call-1", name: "review_changes", review: review} = data
+        collect_progress([review | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   test "records history in the repository's key and skips dismissed findings", ctx do
     assert {:ok, _text} = review(%{}, ctx.context)
 

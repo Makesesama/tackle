@@ -23,6 +23,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     RecentSessions,
     Resume,
     Review,
+    ReviewCall,
     State,
     SubagentTranscript,
     SubagentView,
@@ -50,7 +51,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   @max_subagent_work_bytes 16 * 1_024
   @max_narration_chars 200
   # Delegating tools whose cards carry a locally observed clock.
-  @timed_tools ["subagent", "run_workflow"]
+  @timed_tools ["subagent", "run_workflow", "review_changes"]
 
   @doc "Handles one harness or shell-operation message."
   @spec handle(term(), State.t()) ::
@@ -66,11 +67,17 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   defp route({:tui_spinner_tick}, %State{} = state) do
     expired = expire_queue_notice(state)
 
-    if busy?(expired) do
-      state = %{expired | spinner_frame: expired.spinner_frame + 1}
-      {:noreply, state |> refresh_subagent_clocks() |> activate_turn_tip()}
-    else
-      {:noreply, expired, render?: expired != state}
+    cond do
+      busy?(expired) ->
+        state = %{expired | spinner_frame: expired.spinner_frame + 1}
+        {:noreply, state |> refresh_subagent_clocks() |> activate_turn_tip()}
+
+      # The review overlay animates its spinners and elapsed time on its own.
+      Review.animating?(expired) ->
+        {:noreply, %{expired | spinner_frame: expired.spinner_frame + 1}}
+
+      true ->
+        {:noreply, expired, render?: expired != state}
     end
   end
 
@@ -701,7 +708,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         if model === previous do
           {:noreply, state, render?: false}
         else
-          state |> put_workflow(Map.put(tool, :workflow, model)) |> stream_reply()
+          state |> replace_tool(Map.put(tool, :workflow, model)) |> stream_reply()
         end
     end
   end
@@ -1148,7 +1155,33 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
+  # `review_changes` reports structured progress (`Tackle.Tools.Review`)
+  # rather than output text; it is folded into the call's review model.
   defp put_tool_progress(state, data) do
+    case {value(data, :name), value(data, :review)} do
+      {"review_changes", %{} = review} -> put_review_progress(state, data, review)
+      _text -> put_tool_output(state, data)
+    end
+  end
+
+  defp put_review_progress(state, data, review) do
+    id = value(data, :tool_call_id)
+
+    case Enum.find(state.tool_activity, &match?(%{id: ^id, name: "review_changes"}, &1)) do
+      nil ->
+        state
+
+      tool ->
+        previous = Map.get(tool, :review) || ReviewCall.new()
+        model = ReviewCall.apply(previous, review)
+
+        if model === previous,
+          do: state,
+          else: replace_tool(state, Map.put(tool, :review, model))
+    end
+  end
+
+  defp put_tool_output(state, data) do
     id = value(data, :tool_call_id)
     name = value(data, :name) || value(data, :tool_name) || "unknown"
     delta = value(data, :delta) || value(data, :output) || ""
@@ -1204,7 +1237,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     %{state | tool_activity: tools}
   end
 
-  defp put_workflow(state, %{id: id} = tool) do
+  defp replace_tool(state, %{id: id} = tool) do
     tools = Enum.map(state.tool_activity, &if(&1.id == id, do: tool, else: &1))
     timeline = put_timeline_tool(state.stream.timeline, tool)
 
@@ -1356,7 +1389,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
         if model === workflow.workflow,
           do: state,
-          else: put_workflow(state, Map.put(workflow, :workflow, model))
+          else: replace_tool(state, Map.put(workflow, :workflow, model))
 
       true ->
         put_subagent_narration(state, data, run_id, text)
@@ -1494,10 +1527,16 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp project_subagent_event(existing, :tool_progress, data) do
-    delta = value(data, :delta) || value(data, :output) || ""
-    delta = if is_binary(delta), do: delta, else: ""
-    phase = {:tool, value(data, :tool_call_id) || value(data, :name) || "tool"}
-    put_subagent_activity(existing, delta, phase, nil)
+    case value(data, :delta) || value(data, :output) do
+      delta when is_binary(delta) ->
+        phase = {:tool, value(data, :tool_call_id) || value(data, :name) || "tool"}
+        put_subagent_activity(existing, delta, phase, nil)
+
+      # Structured progress (`review_changes`) has no text to show as the
+      # child's activity; keep the `Running …` line.
+      _structured ->
+        existing
+    end
   end
 
   defp project_subagent_event(existing, type, data)

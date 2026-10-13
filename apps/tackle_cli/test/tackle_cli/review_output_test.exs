@@ -187,6 +187,15 @@ defmodule Tackle.CLI.Output.ReviewTest do
                "7 model runs, 519.0k tokens (422.9k cached), 1m 45s"
 
       assert ReviewOutput.cost_summary(summary(%{})) == nil
+
+      assert [
+               {"detector", "3 runs (1 failed), " <> _detector},
+               {"verifier", _verifier},
+               {"scorer", "1 call, " <> _scorer},
+               {"total", "7 model runs, " <> _total}
+             ] = ReviewOutput.stage_costs(summary)
+
+      assert ReviewOutput.stage_costs(summary(%{})) == []
     end
 
     test "reports a clean review and an empty change" do

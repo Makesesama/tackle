@@ -326,8 +326,14 @@ defmodule Tackle.CLI.TUI.ReviewTest do
     assert Keybinds.review(key("k")) == :previous
     assert Keybinds.review(key("down")) == :next
     assert Keybinds.review(key("j")) == :next
-    assert Keybinds.review(key("page_up")) == {:scroll, :up}
-    assert Keybinds.review(key("page_down")) == {:scroll, :down}
+    assert Keybinds.review(key("page_up")) == {:page, :up}
+    assert Keybinds.review(key("page_down")) == {:page, :down}
+    assert Keybinds.review(key("home")) == :first
+    assert Keybinds.review(key("g")) == :first
+    assert Keybinds.review(key("end")) == :last
+    assert Keybinds.review(key("G")) == :last
+    assert Keybinds.review(key("g", ["shift"])) == :last
+    assert Keybinds.review(key("tab")) == :switch_tab
     assert Keybinds.review(key("u")) == {:outcome, :useful}
     assert Keybinds.review(key("n")) == {:outcome, :not_useful}
     assert Keybinds.review(key("d")) == {:outcome, :dismissed}
@@ -342,6 +348,7 @@ defmodule Tackle.CLI.TUI.ReviewTest do
 
     assert Keybinds.review_repeatable?(key("down"))
     assert Keybinds.review_repeatable?(key("page_down"))
+    refute Keybinds.review_repeatable?(key("tab"))
     refute Keybinds.review_repeatable?(key("f"))
     refute Keybinds.review_repeatable?(key("u"))
   end
@@ -387,7 +394,7 @@ defmodule Tackle.CLI.TUI.ReviewTest do
 
   describe "overlay intents" do
     test "selection wraps and resets the detail scroll", %{history: history} do
-      state = open(%{done_review(history) | scroll: 4})
+      state = open(%{done_review(history) | scroll: 4}, size: {80, 24})
 
       {:noreply, state} = Review.handle(:previous, state)
       assert state.review.selected == 1
@@ -400,6 +407,106 @@ defmodule Tackle.CLI.TUI.ReviewTest do
       {:noreply, state} = Review.handle({:scroll, :down}, state)
       {:noreply, state} = Review.handle({:scroll, :up}, state)
       assert state.review.scroll == 1
+    end
+
+    test "g and G jump to the first and last finding", %{history: history} do
+      state = open(%{done_review(history) | scroll: 2})
+
+      {:noreply, state} = Review.handle(:last, state)
+      assert state.review.selected == 1
+      assert state.review.scroll == 0
+
+      {:noreply, state} = Review.handle(:first, state)
+      assert state.review.selected == 0
+    end
+
+    test "scrolling stops at the end of the detail pane", %{history: history} do
+      state = open(done_review(history), size: {80, 24})
+      max = ReviewView.max_scroll(state)
+      assert max > 0
+
+      {:noreply, state} = Review.handle({:page, :down}, state)
+      {:noreply, state} = Review.handle({:page, :down}, state)
+      assert state.review.scroll == max
+      assert {:noreply, _same, render?: false} = Review.handle({:scroll, :down}, state)
+
+      {:noreply, state} = Review.handle({:page, :up}, state)
+      {:noreply, state} = Review.handle({:page, :up}, state)
+      assert state.review.scroll == 0
+      assert {:noreply, _same, render?: false} = Review.handle({:scroll, :up}, state)
+
+      # A detail that fits never scrolls.
+      roomy = open(done_review(history), size: {140, 60})
+      assert ReviewView.max_scroll(roomy) == 0
+      assert {:noreply, _same, render?: false} = Review.handle({:page, :down}, roomy)
+    end
+
+    test "Tab switches between the findings and the summary", %{history: history} do
+      state = open(%{done_review(history) | scroll: 3})
+
+      {:noreply, state} = Review.handle(:switch_tab, state)
+      assert state.review.tab == :summary
+      assert state.review.scroll == 0
+      assert ReviewView.body_kind(state.review) == :summary
+
+      # The arrows scroll the summary instead of moving the selection.
+      small = %{state | size: {80, 16}}
+      {:noreply, scrolled} = Review.handle(:next, small)
+      assert scrolled.review.selected == 0
+      assert scrolled.review.scroll == 1
+
+      {:noreply, state} = Review.handle(:switch_tab, state)
+      assert state.review.tab == :findings
+      assert ReviewView.body_kind(state.review) == :findings
+
+      # Without findings the summary is all there is.
+      clean = open(done_review(history, blocking: [], optional: []))
+      assert {:noreply, _same, render?: false} = Review.handle(:switch_tab, clean)
+      assert ReviewView.body_kind(clean.review) == :summary
+    end
+
+    test "g and G scroll the summary to its top and end", %{history: history} do
+      state = open(%{done_review(history) | tab: :summary}, size: {80, 16})
+      max = ReviewView.max_scroll(state)
+      assert max > 0
+
+      {:noreply, state} = Review.handle(:last, state)
+      assert state.review.scroll == max
+      assert state.review.selected == 0
+
+      {:noreply, state} = Review.handle(:first, state)
+      assert state.review.scroll == 0
+    end
+
+    test "a collapsed detail pane offers no scrolling", %{history: history} do
+      state = open(done_review(history), size: {40, 8})
+      assert ReviewView.max_scroll(state) == 0
+      assert {:noreply, _same, render?: false} = Review.handle({:page, :down}, state)
+      refute overlay_text(state) =~ "PgUp/PgDn"
+    end
+
+    test "the spinner ticks while only the review overlay animates" do
+      running = %Review{status: :running, started_at: System.monotonic_time(:millisecond)}
+      state = open(running)
+
+      assert {:noreply, ticked} = Tackle.CLI.TUI.RuntimeEvents.handle({:tui_spinner_tick}, state)
+      assert ticked.spinner_frame == state.spinner_frame + 1
+
+      closed = base_state(review: running)
+
+      assert {:noreply, ^closed, render?: false} =
+               Tackle.CLI.TUI.RuntimeEvents.handle({:tui_spinner_tick}, closed)
+    end
+
+    test "the overlay animates only while it shows a running review", %{history: history} do
+      running = %Review{status: :running, started_at: System.monotonic_time(:millisecond)}
+
+      assert Review.animating?(open(running))
+      refute Review.animating?(base_state(review: running))
+      refute Review.animating?(open(done_review(history)))
+
+      assert [_spinner] = TUI.subscriptions(open(running))
+      assert [] = TUI.subscriptions(base_state(review: running))
     end
 
     test "feedback is recorded in the history and shown on the finding", %{history: history} do
@@ -797,10 +904,13 @@ defmodule Tackle.CLI.TUI.ReviewTest do
       rows = review |> ReviewView.list_rows(80, 10) |> Enum.map(&row_text/1)
 
       assert [
-               "Blocking (1)",
-               "› HIGH   lib/a.ex:3  Handle the read failure  unhandled-error  ✓ useful" <> _pad,
-               "Optional (1)",
-               "  LOW    lib/b.ex:2  Name the error"
+               "BLOCKING 1 ─" <> _rule,
+               "▌  HIGH   Handle the read failure  ✓ useful" <> _pad,
+               "▌         lib/a.ex:3  correctness  unhandled-error" <> _pad2,
+               "",
+               "OPTIONAL 1 ─" <> _rule2,
+               "   LOW    Name the error",
+               "          lib/b.ex:2  correctness"
              ] = rows
     end
 
@@ -810,7 +920,7 @@ defmodule Tackle.CLI.TUI.ReviewTest do
 
       rows = review |> ReviewView.list_rows(80, 3) |> Enum.map(&row_text/1)
       assert length(rows) == 3
-      assert List.last(rows) =~ "› "
+      assert List.last(rows) =~ ~r/^▌ +lib\/a\.ex:6/u
     end
 
     test "the detail pane shows the explanation, trigger, suggestion, and code", %{
@@ -822,12 +932,15 @@ defmodule Tackle.CLI.TUI.ReviewTest do
         |> ReviewView.detail_rows(100, 60)
         |> Enum.map_join("\n", &row_text/1)
 
+      assert text =~ ~r/^ HIGH   correctness · blocking · ✓ confirmed +1\/2$/mu
       assert text =~ "Handle the read failure"
-      assert text =~ "high · correctness · rule unhandled-error · blocking · confirmed"
+      assert text =~ "lib/a.ex:3  rule unhandled-error"
+      assert text =~ "confidence ━━━━━━━━── 80%"
+      assert text =~ "▎Why ─"
       assert text =~ "File.read!/1 raises"
-      assert text =~ "Trigger\nthe file does not exist"
-      assert text =~ "Suggestion\nFile.read(x)"
-      assert text =~ "Code\n"
+      assert text =~ ~r/▎Trigger ─+\nthe file does not exist/u
+      assert text =~ ~r/▎Suggested fix ─+\n File.read\(x\)/u
+      assert text =~ "▎Code · a.ex ─"
       assert text =~ "▌3 +     File.read!(x)"
       assert text =~ " 2 +   def run(x) do"
     end
@@ -840,6 +953,16 @@ defmodule Tackle.CLI.TUI.ReviewTest do
 
       missing = %{finding.location | path: "nope.ex"}
       assert ReviewView.excerpt(change(), missing) == []
+    end
+
+    test "the detail pane says how much is left when it does not fit", %{history: history} do
+      review = done_review(history)
+      rows = review |> ReviewView.detail_rows(100, 8) |> Enum.map(&row_text/1)
+      assert length(rows) == 8
+      assert List.last(rows) =~ ~r/^↓ \d+ more lines · PgDn$/u
+
+      at_end = %{review | scroll: 100} |> ReviewView.detail_rows(100, 8) |> Enum.map(&row_text/1)
+      assert List.last(at_end) == "↑ end · PgUp scrolls back"
     end
 
     test "progress shows units and candidates with their verdicts" do
@@ -856,18 +979,153 @@ defmodule Tackle.CLI.TUI.ReviewTest do
         ]
         |> Enum.reduce(ReviewProgress.new(), &ReviewProgress.apply(&2, &1))
 
-      review = %Review{status: :running, progress: progress}
-      text = review |> ReviewView.progress_rows(100, 20) |> Enum.map_join("\n", &row_text/1)
+      review = %Review{
+        status: :running,
+        progress: progress,
+        change: change(),
+        started_at: System.monotonic_time(:millisecond) - 65_000
+      }
 
-      assert text =~ "● Detecting  2/3 units · 1 failed"
-      assert text =~ "✓ the change overview"
-      assert text =~ "✗ lib/a.ex#1  failed:"
-      assert text =~ "● lib/b.ex#1"
-      assert text =~ "✓ Verifying  1/1 candidate · 1 rejected"
-      assert text =~ "✗ lib/a.ex:3  Handle the read failure  rejected"
+      text = overlay_text(open(review, size: {120, 30}))
 
-      loading = %Review{status: :loading} |> ReviewView.progress_rows(80, 5)
-      assert Enum.map(loading, &row_text/1) == ["● Loading the change from Git…"]
+      assert text =~ ~r/REVIEWING  changes since main  2 files \+4 −2 +⏱ 1m 0[5-9]s/u
+      assert text =~ ~r/✓ Load ── . Detect 2\/3 ── ◌ Verify 1\/1 ── ◌ Rank/u
+      assert text =~ ~r/Detecting  ━+─+  2\/3 units · 1 failed/u
+      assert text =~ ~r/Verifying  ━+  1\/1 candidate · 1 rejected/u
+      assert text =~ "✓ change overview"
+      assert text =~ "✗ lib/a.ex #1  failed:"
+      assert text =~ ~r/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] lib\/b\.ex #1/u
+      assert text =~ "✗  HIGH   Handle the read failure  lib/a.ex:3"
+      assert text =~ "x cancel · Esc close (keeps running)"
+
+      # Narrow screens stack the units over the candidates.
+      narrow = overlay_text(open(review, size: {70, 30}))
+      assert narrow =~ "▎Units"
+      assert narrow =~ "▎Candidates"
+
+      loading = overlay_text(open(%Review{status: :loading}, size: {80, 16}))
+      assert loading =~ "LOADING"
+      assert loading =~ "Loading the change…"
+      assert loading =~ ~r/. Load ── ◌ Detect ── ◌ Verify ── ◌ Rank/u
+    end
+
+    test "the header carries the verdict, the target, and the counts", %{history: history} do
+      text = overlay_text(open(done_review(history)))
+      assert text =~ "✗ 1 BLOCKING  changes since main  2 files +4 −2"
+      assert text =~ ~r/ Findings 2 +Summary +● 1 high  ● 1 low/u
+
+      optional = overlay_text(open(done_review(history, blocking: [])))
+      assert optional =~ "● 1 OPTIONAL"
+
+      clean = overlay_text(open(done_review(history, blocking: [], optional: [])))
+      assert clean =~ "✓ CLEAN"
+      refute clean =~ "Findings"
+
+      failed = overlay_text(open(%Review{status: :failed, error: "boom"}))
+      assert failed =~ "✗ FAILED"
+      assert failed =~ "✗ boom"
+    end
+
+    test "the summary shows the outcome, funnel, files, cost, and notes", %{history: history} do
+      stats = %{
+        runs: 2,
+        failed: 0,
+        usage: %Tackle.Lib.Usage{input_tokens: 1_000},
+        duration_ms: 900
+      }
+
+      review = %{
+        done_review(history)
+        | tab: :summary,
+          notes: ["a note"],
+          summary: Map.merge(summary([1], [2]), %{stages: %{detector: stats}, duration_ms: 900})
+      }
+
+      text = overlay_text(open(review, size: {120, 50}))
+      assert text =~ "✗ 1 blocking · 1 optional findings"
+      assert text =~ "reviewed 2 files in 3 units · default profile"
+      assert text =~ ~r/detected +━+ +2/u
+      assert text =~ ~r/shown +━+ +2/u
+      assert text =~ "lib/a.ex  +3 −1  HIGH 1"
+      assert text =~ "lib/b.ex  +1 −1  LOW 1"
+      assert text =~ ~r/detector +2 runs, 1.0k in, 0 out, 900ms/
+      assert text =~ "• a note"
+      assert text =~ "Tab findings"
+
+      # A failed review never marks its files clean.
+      failed = overlay_text(open(%Review{status: :failed, error: "boom", change: change()}))
+      assert failed =~ ~r/lib\/a\.ex  \+3 −1 *│/u
+      refute failed =~ "✓ CLEAN"
+    end
+
+    test "after a re-review the summary says which numbers are the last run's", %{
+      history: history
+    } do
+      review = %{
+        done_review(history)
+        | mode: :rereview,
+          tab: :summary,
+          summary: %{summary([], []) | units: 0, files: []}
+      }
+
+      text = overlay_text(open(review, size: {120, 40}))
+      assert text =~ "✗ 1 blocking · 1 optional findings"
+      refute text =~ "Nothing to review"
+
+      rerun = %{review | summary: summary([], [])}
+      text = overlay_text(open(rerun, size: {120, 40}))
+      assert text =~ "last run re-reviewed 2 files in 3 units"
+      assert text =~ "▎Funnel · last re-review"
+
+      # While it runs, the summary keeps its clean marks and offers to cancel.
+      running = %{
+        rerun
+        | status: :running,
+          optional: [],
+          touched: ["lib/a.ex"],
+          started_at: System.monotonic_time(:millisecond)
+      }
+
+      text = overlay_text(open(running, size: {120, 40}))
+      assert text =~ "RE-REVIEWING"
+      assert text =~ ~r/lib\/b\.ex  \+1 −1  ✓/u
+      assert text =~ "x cancel"
+    end
+
+    test "the dashboard shows notes and counts hidden units honestly" do
+      progress =
+        Enum.reduce(
+          1..10,
+          ReviewProgress.apply(ReviewProgress.new(), {:started, %{units: 12}}),
+          fn n, acc ->
+            ReviewProgress.apply(acc, {:unit, "f#{n}", :started})
+          end
+        )
+
+      rows = Tackle.CLI.TUI.ReviewDashboard.unit_rows(progress, 60, 6, 0) |> Enum.map(&row_text/1)
+      assert Enum.any?(rows, &(&1 =~ "more running or failed"))
+      refute Enum.any?(rows, &(&1 =~ "more finished"))
+      assert List.last(rows) == "  ◌ 2 queued"
+
+      review = %Review{
+        status: :running,
+        progress: progress,
+        notes: ["Review history is unavailable: nope"]
+      }
+
+      assert overlay_text(open(review)) =~ "! Review history is unavailable: nope"
+    end
+
+    test "key hints are dropped whole on narrow screens", %{history: history} do
+      wide = overlay_text(open(done_review(history), size: {140, 40}))
+      assert wide =~ "↑↓ select · Tab summary · f fix · F fix blocking · u/n useful/not"
+
+      narrow = open(done_review(history), size: {40, 40})
+      footer = narrow |> overlay_text() |> String.split("\n") |> Enum.at(-2)
+      assert footer =~ ~r/^│↑↓ select · f fix · Esc close +│$/u
+
+      noticed = overlay_text(%{narrow | notice: "Marked useful"})
+      assert noticed =~ "● Marked useful"
     end
 
     test "every state draws without errors, wide and narrow", %{history: history} do

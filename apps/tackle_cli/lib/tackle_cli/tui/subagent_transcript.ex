@@ -18,6 +18,7 @@ defmodule Tackle.CLI.TUI.SubagentTranscript do
   after the child ran has no transcript to show.
   """
 
+  alias Tackle.CLI.TUI.ReviewCall
   alias Tackle.Lib.{Event, Message}
 
   @max_live_tool_output_bytes 50 * 1_024
@@ -147,6 +148,10 @@ defmodule Tackle.CLI.TUI.SubagentTranscript do
       _late when is_map(current) and current.status in [:completed, :failed] ->
         transcript
 
+      # `review_changes` reports structured progress instead of text.
+      nil when is_map(current) and current.name == "review_changes" ->
+        project_review(transcript, current, value(data, :review))
+
       delta when is_binary(delta) and delta != "" ->
         output = append_bounded(value(current, :result), delta, @max_live_tool_output_bytes)
         put_tool(transcript, %{id: id, name: tool_name(data), status: :running, result: output})
@@ -260,6 +265,17 @@ defmodule Tackle.CLI.TUI.SubagentTranscript do
 
     put_timeline(transcript, timeline)
   end
+
+  defp project_review(transcript, current, %{} = review) do
+    previous = Map.get(current, :review) || ReviewCall.new()
+    model = ReviewCall.apply(previous, review)
+
+    if model === previous,
+      do: transcript,
+      else: put_tool(transcript, %{id: current.id, review: model})
+  end
+
+  defp project_review(transcript, _current, _review), do: transcript
 
   defp find_tool(timeline, id), do: Enum.find(timeline, &same_tool?(&1, id))
 

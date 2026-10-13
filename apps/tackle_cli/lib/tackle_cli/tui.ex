@@ -371,7 +371,8 @@ defmodule Tackle.CLI.TUI do
 
   @impl true
   def subscriptions(state) do
-    if state.storage == :delayed or state.active_turn != nil or state.pending_operation != nil do
+    if state.storage == :delayed or state.active_turn != nil or state.pending_operation != nil or
+         Review.animating?(state) do
       [Subscription.interval(:tui_spinner, 80, {:tui_spinner_tick})]
     else
       []

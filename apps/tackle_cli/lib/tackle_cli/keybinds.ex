@@ -453,7 +453,9 @@ defmodule Tackle.CLI.Keybinds do
   @doc """
   Resolves a chord inside the `/review` overlay.
 
-  `↑`/`↓` (or `k`/`j`) select a finding and PgUp/PgDn scroll its detail.
+  `↑`/`↓` (or `k`/`j`) select a finding, `g`/`G` (or Home/End) jump to the
+  first/last one, PgUp/PgDn page through its detail, and Tab switches
+  between the findings and the summary.
   `u`, `n`, and `d` record feedback (useful, not useful, dismissed); `f`
   sends the selected finding to the agent to fix and `F` every blocking
   one; `r` re-reviews what changed since the review; `x` cancels a running
@@ -463,7 +465,10 @@ defmodule Tackle.CLI.Keybinds do
           :close
           | :previous
           | :next
-          | {:scroll, :up | :down}
+          | :first
+          | :last
+          | :switch_tab
+          | {:page, :up | :down}
           | {:outcome, :useful | :not_useful | :dismissed}
           | :fix
           | :fix_blocking
@@ -473,8 +478,11 @@ defmodule Tackle.CLI.Keybinds do
   def review(%Key{code: "esc"}), do: :close
   def review(%Key{code: "up"}), do: :previous
   def review(%Key{code: "down"}), do: :next
-  def review(%Key{code: "page_up"}), do: {:scroll, :up}
-  def review(%Key{code: "page_down"}), do: {:scroll, :down}
+  def review(%Key{code: "page_up"}), do: {:page, :up}
+  def review(%Key{code: "page_down"}), do: {:page, :down}
+  def review(%Key{code: "home"}), do: :first
+  def review(%Key{code: "end"}), do: :last
+  def review(%Key{code: "tab", modifiers: []}), do: :switch_tab
 
   # Letters are matched without Ctrl or Alt so those chords never act on a
   # finding by accident; `F` arrives as an uppercase code with or without
@@ -483,6 +491,12 @@ defmodule Tackle.CLI.Keybinds do
     do: :fix_blocking
 
   def review(%Key{code: "f", modifiers: ["shift"]}), do: :fix_blocking
+
+  def review(%Key{code: "G", modifiers: modifiers}) when modifiers in [[], ["shift"]],
+    do: :last
+
+  def review(%Key{code: "g", modifiers: ["shift"]}), do: :last
+  def review(%Key{code: "g", modifiers: []}), do: :first
   def review(%Key{code: "k", modifiers: []}), do: :previous
   def review(%Key{code: "j", modifiers: []}), do: :next
   def review(%Key{code: "u", modifiers: []}), do: {:outcome, :useful}
@@ -503,7 +517,8 @@ defmodule Tackle.CLI.Keybinds do
   def review_repeatable?(%Key{} = key) do
     case review(key) do
       intent when intent in [:previous, :next] -> true
-      {:scroll, _direction} -> true
+      intent when intent in [:first, :last] -> true
+      {:page, _direction} -> true
       _other -> false
     end
   end

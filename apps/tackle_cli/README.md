@@ -257,14 +257,22 @@ history.
 
 In the TUI, `/review [RANGE | --staged]` runs the same review in the
 background, delegated from the root agent, so its detector and verifier runs
-appear in `/tasks` (F7). A full-screen overlay shows the progress, then the
-findings grouped into blocking and optional ones (severity, `path:line`,
-title, rule) with a detail pane holding the explanation, trigger, suggestion,
-and the highlighted code. Keys in the overlay:
+appear in `/tasks` (F7). A full-screen overlay opens with a header showing
+the verdict, the reviewed change and its size, and the elapsed time or the
+cost. While the review runs, it shows the pipeline stages, progress bars, and
+the units next to a live feed of candidates and their verdicts. Once there are
+findings, it lists them grouped into blocking and optional ones (severity
+badge, title, `path:line`, category, rule), with a detail pane holding the
+explanation, confidence, trigger, suggested fix, and the highlighted code. The
+`Summary` tab shows the outcome, the verification funnel, the changed files
+with their findings, the cost of each stage, and notes. Keys in the overlay:
 
 | Key | Action |
 |---|---|
-| `↑`/`↓`, `k`/`j` | select a finding; PgUp/PgDn scroll its detail |
+| `↑`/`↓`, `k`/`j` | select a finding (scroll the summary) |
+| `g`/`G`, Home/End | first / last finding (top / end of the summary) |
+| PgUp/PgDn | page through the detail or the summary |
+| `Tab` | switch between the findings and the summary |
 | `u` / `n` | mark useful / not useful |
 | `d` | dismiss; later reviews do not report it again |
 | `f` / `F` | send the finding / every blocking finding to the agent to fix |
