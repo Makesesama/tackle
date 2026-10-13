@@ -216,6 +216,24 @@ defmodule Tackle.Tools.BashTest do
              bash(executor, %{"command" => "shopt -q login_shell && exit 1; printf quiet"}, %{})
   end
 
+  # `rg PATTERN` without a path, `cat`, or `read` would otherwise wait on the
+  # executor's open stdin pipe forever.
+  test "commands read an empty standard input instead of waiting", %{executor: executor} do
+    assert {:ok, "empty\n"} =
+             bash(
+               executor,
+               %{"command" => "cat; read -r line || echo empty", "timeout" => 5},
+               %{}
+             )
+  end
+
+  test "error line numbers match the command's own lines", %{executor: executor} do
+    assert {:error, message} =
+             bash(executor, %{"command" => "true\nnot-a-command-xyz"}, %{})
+
+    assert message =~ "line 2: not-a-command-xyz"
+  end
+
   defp bash(executor, args, context), do: Bash.run(args, Map.put(context, :executor, executor))
 
   defp collect_progress(events) do

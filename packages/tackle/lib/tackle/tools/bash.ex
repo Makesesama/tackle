@@ -44,8 +44,13 @@ defmodule Tackle.Tools.Bash do
   defp validate_timeout(timeout) when is_number(timeout) and timeout > 0, do: :ok
   defp validate_timeout(_timeout), do: {:error, "timeout must be a positive number of seconds"}
 
+  # Commands are non-interactive, so their standard input is `/dev/null`. The
+  # executor's port keeps stdin open as a pipe that nobody writes to; a
+  # command that reads it, such as `rg PATTERN` without a path, would wait
+  # forever. The redirect shares the command's first line, so Bash's line
+  # numbers in error messages still match the command.
   defp execute(executor, command, cwd, timeout, context) do
-    case Executor.exec(executor, ["bash", "-c", command], cwd: cwd) do
+    case Executor.exec(executor, ["bash", "-c", "exec </dev/null; " <> command], cwd: cwd) do
       {:ok, handle} ->
         run = %{
           executor: executor,

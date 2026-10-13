@@ -396,10 +396,13 @@ defmodule Tackle.CLI.Run do
   # interactive one (adapters, jail, MCP and plugin tools, agent profiles) but
   # without a durable session. The scope spec is returned with it, since such a
   # command passes the trusted profiles on. Stop it with `stop_scope/1`.
-  @spec start_ephemeral_scope(String.t() | nil, String.t() | nil) ::
+  # `llm_stream: true` streams model output as the interactive shell does;
+  # headless commands leave it off.
+  @spec start_ephemeral_scope(String.t() | nil, String.t() | nil, keyword()) ::
           {:ok, Tackle.Runtime.Scope.t(), Tackle.Runtime.ScopeSpec.t()} | {:error, term()}
-  def start_ephemeral_scope(model, thinking),
-    do: compose_scope(model, thinking, false, fn -> {:ok, nil} end)
+  def start_ephemeral_scope(model, thinking, opts \\ []),
+    do:
+      compose_scope(model, thinking, Keyword.get(opts, :llm_stream, false), fn -> {:ok, nil} end)
 
   defp compose_scope(model, thinking, llm_stream, session_fun) do
     with {:ok, _apps} <- ensure_started(),
