@@ -54,10 +54,31 @@ defmodule Tackle.Watchdog.DigestTest do
     assert Digest.repetition(["a", "a", "a"]) == 0.0
   end
 
+  test "collapses repeated lines and keeps the model's tail small" do
+    digest =
+      Enum.reduce(1..500, Digest.new("yes", 0), fn i, digest ->
+        Digest.append(digest, "y\n", i)
+      end)
+
+    tail = Digest.state(digest, 1_000)["output_tail"]
+    assert tail =~ "y\n[previous line repeated "
+    assert byte_size(tail) < 100
+
+    noisy =
+      Enum.reduce(1..100, Digest.new("gen", 0), fn i, digest ->
+        Digest.append(digest, "unique line #{i} #{String.duplicate("ü", 20)}\n", i)
+      end)
+
+    tail = Digest.state(noisy, 1_000)["output_tail"]
+    assert byte_size(tail) <= 800
+    assert String.valid?(tail)
+    assert tail =~ "unique line 100"
+  end
+
   test "long commands are truncated" do
     command = String.duplicate("x", 3_000)
     state = command |> Digest.new(0) |> Digest.state(1)
-    assert byte_size(state["command"]) < 3_000
+    assert byte_size(state["command"]) <= 404
     assert String.ends_with?(state["command"], "…")
   end
 end

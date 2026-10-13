@@ -8,10 +8,16 @@ defmodule Tackle.Watchdog.Digest do
   small JSON-compatible map: elapsed time, output rate, silence, how repetitive
   the recent output is, and the cleaned output tail. Times are monotonic
   milliseconds supplied by the caller.
+
+  Local decision models accept only a couple of thousand tokens and never
+  truncate input, so the state stays small: the command is cut to 400 bytes,
+  runs of identical lines are collapsed, and only the last 800 bytes of the
+  cleaned tail are sent.
   """
 
   @tail_bytes 4096
-  @command_bytes 2048
+  @state_tail_bytes 800
+  @command_bytes 400
   @repetition_lines 64
   @min_repetition_lines 4
   @ansi ~r/\e\[[0-?]*[ -\/]*[@-~]|\e\][^\a\e]*(?:\a|\e\\)/
@@ -62,7 +68,7 @@ defmodule Tackle.Watchdog.Digest do
       "output_bytes_per_second" => rate(digest.bytes, elapsed_seconds),
       "seconds_since_last_output" => silence(digest, now, elapsed_seconds),
       "output_repetition" => repetition(lines),
-      "output_tail" => Enum.join(lines, "\n")
+      "output_tail" => lines |> collapse_repeats() |> Enum.join("\n") |> last_bytes()
     }
   end
 
@@ -99,6 +105,25 @@ defmodule Tackle.Watchdog.Digest do
     |> Enum.map(fn line ->
       line |> String.trim_trailing("\r") |> String.split("\r") |> List.last()
     end)
+  end
+
+  # `yes`-style output would otherwise fill the tail with one line; the
+  # repetition itself is what the model needs to see.
+  defp collapse_repeats(lines) do
+    lines
+    |> Enum.chunk_by(& &1)
+    |> Enum.flat_map(fn
+      [line] -> [line]
+      [line | rest] -> [line, "[previous line repeated #{length(rest)} more times]"]
+    end)
+  end
+
+  defp last_bytes(text) when byte_size(text) <= @state_tail_bytes, do: text
+
+  defp last_bytes(text) do
+    text
+    |> binary_part(byte_size(text) - @state_tail_bytes, @state_tail_bytes)
+    |> drop_partial_character()
   end
 
   defp rate(_bytes, elapsed_seconds) when elapsed_seconds <= 0, do: 0.0

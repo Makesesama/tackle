@@ -80,17 +80,21 @@ defmodule Tackle.Watchdog do
   def question do
     Question.choice(
       @verdict,
-      "A coding agent ran this shell command and is waiting for it to finish. " <>
-        "Judge from its runtime and recent output whether it is still doing useful work.",
+      "A coding agent ran this shell command in the foreground and is blocked until it exits. " <>
+        "Judge from its runtime and recent output whether it will finish on its own.",
       %{
         "progressing" =>
-          "Still making progress toward finishing, such as advancing build, test, or download output.",
+          "Doing finite work that is advancing toward completion, such as build, test, " <>
+            "install, or download output.",
         "long_running_service" =>
-          "A server, watcher, or daemon that is expected to keep running until stopped.",
+          "An intentionally started server, watcher, or daemon that waits for requests or " <>
+            "file changes and never exits by itself.",
         "waiting_for_input" =>
-          "Blocked on interactive input such as a prompt, pager, editor, or confirmation.",
-        "infinite_loop" => "Repeating the same work or output without getting closer to done.",
-        "stalled" => "No longer making progress and unlikely to finish, for example hung."
+          "Blocked on interactive input such as a prompt, menu, pager, editor, or confirmation.",
+        "infinite_loop" =>
+          "A loop that repeats the same output or retries the same action forever without " <>
+            "getting closer to done.",
+        "stalled" => "Hung: no output for a long time and no sign of progress."
       }
     )
   end
