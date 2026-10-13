@@ -880,6 +880,25 @@ Set `"session_titles": false` to disable generation. A session that already
 carries an explicit title (through `Tackle.Session.Spec`'s `:title`) is never
 retitled, and a resumed session keeps its committed title.
 
+### Command watchdog
+
+The CLI bundles a local Ollama adapter whose `ollama/tev1:4b` decision model
+can watch long-running `bash` commands and stop ones that loop forever, wait
+for input, or stall. It is off by default; pull the model
+(`ollama pull tev1:4b`, Ollama 0.35 or later) and enable it in
+`$TACKLE_HOME/config.json`:
+
+```json
+{ "watchdog": { "model": "ollama/tev1:4b" } }
+```
+
+Commands are first checked after 60 seconds (`after_seconds`), and only a
+verdict with probability of at least 0.85 (`threshold`) stops one. Commands run
+with an explicit `timeout` are never checked. A stopped command reports why to
+the agent, which keeps working. The adapter reaches Ollama at
+`http://localhost:11434/v1` unless `provider_options.ollama.base_url` says
+otherwise.
+
 ### Conversation tree (`/tree`)
 
 Type `/tree` (or press F5) while idle to browse the session's conversation tree.

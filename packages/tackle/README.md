@@ -595,7 +595,25 @@ title call, defaulting to the session's configured model:
 ```
 
 `Tackle.Config.new/1` treats an absent `session_titles` option as disabled, so
-embedding hosts opt into the extra LLM call explicitly. Thinking may be
+embedding hosts opt into the extra LLM call explicitly.
+
+An optional `watchdog` object enables the command watchdog (`Tackle.Watchdog`),
+which is off by default because it needs a local decision model. Every session
+(root, subagent, and workflow child) then runs one beside it as a runtime
+service. It watches `bash` calls without an explicit `timeout`; after
+`after_seconds` (default 60) it asks the decision model whether the command is
+progressing, a long-running service, waiting for input, in an infinite loop, or
+stalled, and backs off exponentially while it looks healthy. A stop verdict with
+probability at or above `threshold` (default 0.85) stops just that call; the
+agent receives the reason as the command's error and continues. A failing
+decision model never stops anything. `model` is a decision model reference
+such as `"ollama/tev1:4b"` (see `Tackle.Lib.Decision`):
+
+```json
+{ "watchdog": { "model": "ollama/tev1:4b", "after_seconds": 60, "threshold": 0.85 } }
+```
+
+Thinking may be
 `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; supported levels can vary
 by model. `TACKLE_THINKING` overrides the file in the same way that
 `TACKLE_MODEL` overrides `model`. Adapter modules are always supplied as

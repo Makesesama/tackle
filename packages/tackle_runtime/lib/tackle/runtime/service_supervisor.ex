@@ -17,7 +17,7 @@ defmodule Tackle.Runtime.ServiceSupervisor do
   that fails to start is logged and skipped rather than preventing the agent
   from starting. Each start runs inside the starting agent subtree, so
   service `init/1` callbacks must be quick and must not call the agent's
-  supervisors; defer agent interaction to `handle_continue/2`.
+  supervisors; calling the already running agent process is safe.
   """
 
   use Supervisor

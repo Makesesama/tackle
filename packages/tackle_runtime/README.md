@@ -138,7 +138,10 @@ Services restart `:one_for_one` up to three times in five seconds. The service
 supervisor is a `:temporary` child of the `:one_for_all` agent subtree, so a
 crashing service, a service exceeding that bound, a service that fails to start,
 or a raising `services/2` callback never stops the agent; the agent simply
-continues without the affected services.
+continues without the affected services. Services start while the agent
+subtree is still starting, after the backend process: a service's `init/1` may
+call the running agent (for example to subscribe before its first turn) but
+must not call the agent's supervisors.
 
 Services act on their agent through the public runtime API. For example,
 `Tackle.Runtime.cancel_tool_call/3` stops one tool call of the agent's active

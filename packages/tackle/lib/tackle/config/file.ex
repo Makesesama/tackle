@@ -10,7 +10,8 @@ defmodule Tackle.Config.File do
     "thinking",
     "show_subagent_sidebar",
     "provider_options",
-    "session_titles"
+    "session_titles",
+    "watchdog"
   ]
 
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
@@ -42,8 +43,41 @@ defmodule Tackle.Config.File do
          {:ok, thinking_opts} <- thinking_options(path, config),
          {:ok, provider_opts} <- provider_options(path, config),
          {:ok, title_opts} <- session_titles_options(path, config),
+         {:ok, watchdog_opts} <- watchdog_options(path, config),
          :ok <- sidebar_option(path, config) do
-      {:ok, model_opts ++ thinking_opts ++ provider_opts ++ title_opts}
+      {:ok, model_opts ++ thinking_opts ++ provider_opts ++ title_opts ++ watchdog_opts}
+    end
+  end
+
+  # The command watchdog is opt-in because it needs a decision model: `false`
+  # and `null` leave it off; an object sets `model` (required canonical decision
+  # model reference) and optionally `enabled`, `after_seconds`, and `threshold`.
+  # Values are validated by `Tackle.Config.Watchdog`.
+  @watchdog_fields %{
+    "enabled" => :enabled,
+    "model" => :model,
+    "after_seconds" => :after_seconds,
+    "threshold" => :threshold
+  }
+
+  defp watchdog_options(path, config) do
+    case Map.fetch(config, "watchdog") do
+      {:ok, false} -> {:ok, [watchdog: false]}
+      {:ok, nil} -> {:ok, []}
+      {:ok, %{} = watchdog} -> watchdog_fields(path, watchdog)
+      {:ok, _other} -> {:error, {:invalid_config_field, path, "watchdog"}}
+      :error -> {:ok, []}
+    end
+  end
+
+  defp watchdog_fields(path, watchdog) do
+    case Map.keys(watchdog) -- Map.keys(@watchdog_fields) do
+      [] ->
+        {:ok,
+         [watchdog: Enum.map(watchdog, fn {key, value} -> {@watchdog_fields[key], value} end)]}
+
+      _unknown_fields ->
+        {:error, {:invalid_config_field, path, "watchdog"}}
     end
   end
 

@@ -45,6 +45,33 @@ defmodule Tackle.Runtime.RootBackend do
   def call(pid, :navigate, [target, opts]), do: Session.navigate(pid, target, opts)
   def call(_pid, operation, _args), do: {:error, {:unsupported_agent_operation, operation}}
 
+  # Every session whose config enables the watchdog (root, subagent, or
+  # workflow child) gets its own, beside its session.
+  @impl true
+  def services(
+        %AgentSpec{config: %Config{watchdog: %Tackle.Config.Watchdog{} = settings} = config},
+        %AgentContext{} = context
+      ) do
+    [
+      {Tackle.Watchdog,
+       agent_ref: context.agent_ref,
+       task_supervisor: context.service_task_supervisor,
+       settings: settings,
+       decision_opts: decision_opts(config)}
+    ]
+  end
+
+  def services(%AgentSpec{}, %AgentContext{}), do: []
+
+  # Adapters such as the local Ollama one read their base URL from the
+  # session's provider options.
+  defp decision_opts(%Config{llm_opts: llm_opts}) do
+    case Keyword.get(llm_opts, :provider_options) do
+      nil -> []
+      options -> [provider_options: options]
+    end
+  end
+
   @impl true
   def prepare_child(%AgentSpec{model_source: :configured} = spec, _parent), do: {:ok, spec}
 

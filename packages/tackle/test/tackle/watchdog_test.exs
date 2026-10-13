@@ -1,0 +1,338 @@
+defmodule Tackle.WatchdogTest do
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureLog
+  import Tackle.Test.Runtime
+
+  alias Tackle.Lib.Decision.{Answer, Result}
+  alias Tackle.Runtime.Registry
+
+  @judge :tackle_watchdog_test_judge
+
+  defmodule Judge do
+    @moduledoc false
+    # Decision adapter driven by the test process registered as the judge.
+    @behaviour Tackle.Lib.LLM
+    @behaviour Tackle.Lib.Decision
+
+    @impl Tackle.Lib.LLM
+    def adapter_id, do: "judge"
+
+    @impl Tackle.Lib.LLM
+    def models, do: []
+
+    @impl Tackle.Lib.LLM
+    def generate(_schema, _opts), do: {:error, :not_a_chat_model}
+
+    @impl Tackle.Lib.Decision
+    def decision_models, do: ["fake"]
+
+    @impl Tackle.Lib.Decision
+    def decide(request, _opts) do
+      send(:tackle_watchdog_test_judge, {:judge_called, self(), request, now()})
+
+      receive do
+        {:judge_reply, reply} -> reply
+      after
+        5_000 -> {:error, :no_reply}
+      end
+    end
+
+    defp now, do: System.monotonic_time(:millisecond)
+  end
+
+  defmodule SlowBash do
+    @moduledoc false
+    # Stands in for `bash`: runs until released and reports its per-call
+    # cancellation reason the way the real tool does.
+    @behaviour Tackle.Lib.Tool
+
+    alias Tackle.Lib.{Cancellation, Event}
+
+    @impl true
+    def name, do: "bash"
+
+    @impl true
+    def description, do: "Fake slow command."
+
+    @impl true
+    def parameters_schema,
+      do: [command: [type: :string, required: true], timeout: [type: :float]]
+
+    @impl true
+    def execute(%{"command" => command}, context) do
+      send(Map.fetch!(context, :test_pid), {:bash_started, command, self()})
+      emit(context, "line 1\n")
+      await(Map.get(context, :cancellation_signal), context)
+    end
+
+    @impl true
+    def model_error(reason) when is_binary(reason), do: reason
+    def model_error(_reason), do: nil
+
+    defp await(signal, context) do
+      receive do
+        :release ->
+          {:ok, "done"}
+      after
+        10 ->
+          case Cancellation.reason(signal) do
+            nil -> await(signal, context)
+            reason when is_binary(reason) -> {:error, reason}
+            reason -> {:error, inspect(reason)}
+          end
+      end
+    end
+
+    defp emit(context, delta) do
+      callback = Map.fetch!(context, :event_callback)
+
+      callback.(
+        Event.new(:tool_progress, %{
+          tool_call_id: Map.get(context, :tool_call_id),
+          name: "bash",
+          delta: delta
+        })
+      )
+    end
+  end
+
+  setup do
+    Process.register(self(), @judge)
+    :ok
+  end
+
+  test "stops a call when a stop verdict reaches the threshold" do
+    scope = start_watched_scope()
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+
+    assert_receive {:bash_started, "yes", _tool}, 5_000
+    assert_receive {:judge_called, judge, request, _at}, 2_000
+    assert request.state["command"] == "yes"
+    assert request.state["output_tail"] =~ "line 1"
+    assert [%{name: "verdict", type: :choice}] = request.questions
+
+    send(judge, {:judge_reply, verdict("infinite_loop", 0.93)})
+
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, state}}, 5_000
+    content = tool_content(state, "w1")
+    assert content =~ "Command stopped by watchdog after 0s: likely infinite loop (p=0.93)."
+    assert content =~ "re-run it with an explicit timeout"
+  end
+
+  test "backs off while the command is progressing and never stops it" do
+    scope = start_watched_scope()
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+
+    assert_receive {:bash_started, "yes", tool}, 5_000
+
+    times =
+      for _check <- 1..3 do
+        assert_receive {:judge_called, judge, _request, at}, 2_000
+        send(judge, {:judge_reply, verdict("progressing", 0.99)})
+        at
+      end
+
+    [first, second, third] = times
+    assert second - first >= 90
+    assert third - second >= 180
+
+    send(tool, :release)
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, state}}, 5_000
+    assert tool_content(state, "w1") == "done"
+  end
+
+  test "an uncertain stop verdict does not stop the call" do
+    scope = start_watched_scope()
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+
+    assert_receive {:bash_started, "yes", tool}, 5_000
+    assert_receive {:judge_called, judge, _request, _at}, 2_000
+    send(judge, {:judge_reply, verdict("stalled", 0.6)})
+
+    # Re-checked at the same interval rather than backed off.
+    assert_receive {:judge_called, judge, _request, _at}, 2_000
+    send(judge, {:judge_reply, verdict("progressing", 0.9)})
+
+    send(tool, :release)
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, state}}, 5_000
+    assert tool_content(state, "w1") == "done"
+  end
+
+  test "skips calls with an explicit timeout" do
+    scope = start_watched_scope(arguments: %{"command" => "make", "timeout" => 30})
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+
+    assert_receive {:bash_started, "make", tool}, 5_000
+    refute_receive {:judge_called, _judge, _request, _at}, 300
+
+    send(tool, :release)
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
+  end
+
+  test "a failing decision model stops nothing, warns once, and keeps watching" do
+    scope = start_watched_scope()
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+
+    log =
+      capture_log(fn ->
+        {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+        assert_receive {:bash_started, "yes", tool}, 5_000
+
+        for _check <- 1..2 do
+          assert_receive {:judge_called, judge, _request, _at}, 2_000
+          send(judge, {:judge_reply, {:error, :unreachable}})
+        end
+
+        assert_receive {:judge_called, judge, _request, _at}, 2_000
+        send(judge, {:judge_reply, {:ok, %{not: :a_result}}})
+
+        send(tool, :release)
+        assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, state}}, 5_000
+        assert tool_content(state, "w1") == "done"
+      end)
+
+    # Exactly one warning: splitting on it yields the text before and after.
+    assert [_before, _after] = String.split(log, "watchdog decision model judge/fake failed")
+  end
+
+  test "retries its subscription after a restart in the middle of a turn" do
+    scope = start_watched_scope(arguments: %{"command" => "make", "timeout" => 30})
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    watchdog = watchdog_pid(scope.root_agent_ref)
+    assert :sys.get_state(watchdog).subscribed?
+
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+    assert_receive {:bash_started, "make", tool}, 5_000
+
+    Process.exit(watchdog, :kill)
+
+    restarted =
+      wait_for(fn ->
+        case watchdog_pid(scope.root_agent_ref) do
+          pid when is_pid(pid) and pid != watchdog -> pid
+          _other -> nil
+        end
+      end)
+
+    refute :sys.get_state(restarted).subscribed?
+
+    send(tool, :release)
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
+
+    assert wait_for(fn -> :sys.get_state(restarted).subscribed? end, 3_000)
+    assert {:ok, _session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+  end
+
+  test "agents without a watchdog config run no services" do
+    scope = start_scope()
+    assert Registry.service_task_supervisor(scope.root_agent_ref) == {:error, :not_found}
+  end
+
+  test "delegated children get their own watchdog" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{
+          "child" =>
+            agent_spec("child",
+              mode: :manual,
+              adapters: [Tackle.Test.Adapter, Judge],
+              watchdog: [model: "judge/fake"]
+            )
+        }
+      )
+
+    {:ok, run_ref} = Tackle.Runtime.request_agent(scope.root_agent_ref, "child", "work")
+
+    assert wait_for(fn ->
+             match?({:ok, _pid}, Registry.service_task_supervisor(run_ref.agent_ref))
+           end)
+
+    assert is_pid(watchdog_pid(run_ref.agent_ref))
+    assert Registry.service_task_supervisor(scope.root_agent_ref) == {:error, :not_found}
+  end
+
+  defp start_watched_scope(opts \\ []) do
+    arguments = Keyword.get(opts, :arguments, %{"command" => "yes"})
+
+    start_scope(
+      root: [
+        adapters: [Tackle.Test.Adapter, Judge],
+        tools: [SlowBash],
+        context: %{test_pid: self()},
+        mode: :tools_then_answer,
+        llm_opts: [
+          tool_calls: [%{"id" => "w1", "name" => "bash", "arguments" => arguments}],
+          content: "finished"
+        ],
+        watchdog: [model: "judge/fake", after_seconds: 0.05, threshold: 0.85]
+      ]
+    )
+  end
+
+  defp verdict(choice, probability) do
+    {:ok,
+     %Result{
+       model: "fake",
+       answers: %{
+         "verdict" => %Answer{
+           type: :choice,
+           choice: choice,
+           probabilities: %{choice => probability}
+         }
+       },
+       usage: %{input_tokens: 10, output_tokens: 1}
+     }}
+  end
+
+  defp tool_content(state, call_id) do
+    state.messages
+    |> Enum.find(&(&1.role == :tool and &1.tool_call_id == call_id))
+    |> Map.fetch!(:content)
+  end
+
+  defp watchdog_pid(agent_ref) do
+    with {:ok, task_supervisor} <- Registry.service_task_supervisor(agent_ref),
+         {:parent, service_supervisor} <- Process.info(task_supervisor, :parent) do
+      Enum.find_value(Supervisor.which_children(service_supervisor), fn
+        {Tackle.Watchdog, pid, _type, _modules} when is_pid(pid) -> pid
+        _child -> nil
+      end)
+    else
+      _missing -> nil
+    end
+  catch
+    :exit, _reason -> nil
+  end
+
+  defp wait_for(fun, timeout \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for(fun, deadline)
+  end
+
+  defp do_wait_for(fun, deadline) do
+    case fun.() do
+      result when result not in [nil, false] ->
+        result
+
+      _falsy ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(10)
+          do_wait_for(fun, deadline)
+        else
+          nil
+        end
+    end
+  end
+end

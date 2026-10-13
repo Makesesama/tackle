@@ -16,6 +16,26 @@ defmodule Tackle.Config.FileTest do
     def generate(_schema, _opts), do: {:error, :not_used}
   end
 
+  defmodule JudgeAdapter do
+    @behaviour Tackle.Lib.LLM
+    @behaviour Tackle.Lib.Decision
+
+    @impl Tackle.Lib.LLM
+    def adapter_id, do: "judge"
+
+    @impl Tackle.Lib.LLM
+    def models, do: []
+
+    @impl Tackle.Lib.LLM
+    def generate(_schema, _opts), do: {:error, :not_used}
+
+    @impl Tackle.Lib.Decision
+    def decision_models, do: ["small"]
+
+    @impl Tackle.Lib.Decision
+    def decide(_request, _opts), do: {:error, :not_used}
+  end
+
   setup do
     home = Path.join(System.tmp_dir!(), "tackle-config-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(home) end)
@@ -307,6 +327,88 @@ defmodule Tackle.Config.FileTest do
 
     assert {:error, {:unknown_model, "test/missing"}} =
              Config.load(available_adapters: [Adapter], env: env)
+  end
+
+  test "the watchdog is off by default and configurable through config.json", %{
+    home: home,
+    env: env
+  } do
+    adapters = [Adapter, JudgeAdapter]
+    overrides = [model: "test/default"]
+
+    assert {:ok, config} =
+             Config.load(available_adapters: adapters, env: env, overrides: overrides)
+
+    assert config.watchdog == nil
+
+    write_config(
+      home,
+      JSON.encode!(%{
+        "watchdog" => %{"model" => "judge/small", "after_seconds" => 30, "threshold" => 0.9}
+      })
+    )
+
+    assert {:ok, config} =
+             Config.load(available_adapters: adapters, env: env, overrides: overrides)
+
+    assert %Tackle.Config.Watchdog{model_ref: "judge/small", after_seconds: 30, threshold: 0.9} =
+             config.watchdog
+
+    assert config.watchdog.selection.adapter == JudgeAdapter
+
+    write_config(
+      home,
+      JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "enabled" => false}})
+    )
+
+    assert {:ok, config} =
+             Config.load(available_adapters: adapters, env: env, overrides: overrides)
+
+    assert config.watchdog == nil
+
+    write_config(home, ~s({"watchdog": false}))
+
+    assert {:ok, config} =
+             Config.load(available_adapters: adapters, env: env, overrides: overrides)
+
+    assert config.watchdog == nil
+  end
+
+  test "invalid watchdog configuration returns errors", %{home: home, env: env} do
+    adapters = [Adapter, JudgeAdapter]
+
+    load = fn ->
+      Config.load(available_adapters: adapters, env: env, overrides: [model: "test/default"])
+    end
+
+    path = write_config(home, ~s({"watchdog": true}))
+    assert {:error, {:invalid_config_field, ^path, "watchdog"}} = load.()
+
+    write_config(home, JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "unknown" => 1}}))
+    assert {:error, {:invalid_config_field, ^path, "watchdog"}} = load.()
+
+    write_config(home, JSON.encode!(%{"watchdog" => %{}}))
+    assert {:error, {:invalid_option, :watchdog, model: nil}} = load.()
+
+    write_config(
+      home,
+      JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "threshold" => 1.5}})
+    )
+
+    assert {:error, {:invalid_option, :watchdog, threshold: 1.5}} = load.()
+
+    write_config(
+      home,
+      JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "after_seconds" => 0}})
+    )
+
+    assert {:error, {:invalid_option, :watchdog, after_seconds: 0}} = load.()
+
+    write_config(home, JSON.encode!(%{"watchdog" => %{"model" => "judge/missing"}}))
+    assert {:error, {:unknown_decision_model, "judge/missing"}} = load.()
+
+    write_config(home, JSON.encode!(%{"watchdog" => %{"model" => "test/default"}}))
+    assert {:error, {:unsupported_decision_adapter, "test"}} = load.()
   end
 
   test "module-looking strings are data and are never converted to atoms", %{home: home, env: env} do

@@ -198,7 +198,7 @@ defmodule Tackle.Test.Runtime do
 
     {:ok, config} =
       Config.new(
-        adapters: [Tackle.Test.Adapter],
+        adapters: Keyword.get(opts, :adapters, [Tackle.Test.Adapter]),
         model: Keyword.get(opts, :model, "test/echo"),
         tools: Keyword.get(opts, :tools, []),
         context: Keyword.get(opts, :context, %{}),
@@ -206,7 +206,8 @@ defmodule Tackle.Test.Runtime do
         max_iterations: Keyword.get(opts, :max_iterations, 5),
         llm_opts: Keyword.merge(default_llm_opts, Keyword.get(opts, :llm_opts, [])),
         compaction: Keyword.get(opts, :compaction),
-        session_titles: Keyword.get(opts, :session_titles)
+        session_titles: Keyword.get(opts, :session_titles),
+        watchdog: Keyword.get(opts, :watchdog)
       )
 
     config

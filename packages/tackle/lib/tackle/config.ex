@@ -21,6 +21,7 @@ defmodule Tackle.Config do
 
   alias Tackle.Config.File, as: ConfigFile
   alias Tackle.Config.SessionTitles
+  alias Tackle.Config.Watchdog
   alias Tackle.Executor
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.ID
@@ -71,7 +72,8 @@ defmodule Tackle.Config do
     :llm_stream,
     :retry,
     :compaction,
-    :session_titles
+    :session_titles,
+    :watchdog
   ]
 
   @enforce_keys [:adapters, :model_ref, :llm]
@@ -91,7 +93,8 @@ defmodule Tackle.Config do
             llm_stream: false,
             retry: Retry.new!(),
             compaction: nil,
-            session_titles: nil
+            session_titles: nil,
+            watchdog: nil
 
   @type t :: %__MODULE__{
           adapters: [module()],
@@ -110,7 +113,8 @@ defmodule Tackle.Config do
           llm_stream: boolean(),
           retry: Retry.t(),
           compaction: CompactionConfig.t() | nil,
-          session_titles: SessionTitles.t() | nil
+          session_titles: SessionTitles.t() | nil,
+          watchdog: Watchdog.t() | nil
         }
 
   @doc """
@@ -173,7 +177,8 @@ defmodule Tackle.Config do
   to that adapter's settings (from the `"provider_options"` field of
   `config.json`). It is passed to adapters unchanged as the `:provider_options`
   LLM option, so it survives model changes, and each adapter reads only its own
-  entry. Like other LLM options, it must not contain credentials.
+  entry. Like other LLM options, it must not contain credentials. Optional
+  `:watchdog` enables the command watchdog; see `Tackle.Config.Watchdog`.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
@@ -186,6 +191,7 @@ defmodule Tackle.Config do
          {:ok, llm} <- LLM.select(adapters, model_ref),
          {:ok, session_titles} <-
            resolve_session_titles(Keyword.get(opts, :session_titles), adapters),
+         {:ok, watchdog} <- Watchdog.new(Keyword.get(opts, :watchdog), adapters),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
@@ -223,7 +229,8 @@ defmodule Tackle.Config do
          llm_stream: Keyword.get(opts, :llm_stream, false),
          retry: retry,
          compaction: compaction,
-         session_titles: session_titles
+         session_titles: session_titles,
+         watchdog: watchdog
        }}
     end
   end

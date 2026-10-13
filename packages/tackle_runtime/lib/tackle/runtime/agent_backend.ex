@@ -90,10 +90,10 @@ defmodule Tackle.Runtime.AgentBackend do
   within a small bound and are dropped, without affecting the agent, once it
   is exceeded.
 
-  Services are started while the agent's subtree is still starting, so a
-  service's `init/1` must stay short and must not call into the agent's
-  supervisors (that deadlocks). Work that talks to the agent, such as
-  subscribing to its session, belongs in `handle_continue/2` or a timer.
+  Services are started while the agent's subtree is still starting, after the
+  backend process. A service's `init/1` must stay short and must not call the
+  agent's supervisors (that deadlocks), but it may call the already running
+  agent, for example to subscribe before the agent's first turn begins.
   """
   @callback services(AgentSpec.t(), AgentContext.t()) :: [Supervisor.child_spec()]
 
