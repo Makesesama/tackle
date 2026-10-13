@@ -186,7 +186,7 @@ fn conversation_render(
         .0
         .widget(offset, &selected, style(selection)?)
         .render(area, &mut buffer);
-    crate::selection::highlight(&mut buffer, area, offset, text_selection);
+    crate::selection::highlight(&mut buffer, area, offset, text_selection, &resource.0);
     let lines = surface::lines(&buffer).map_err(|reason| Error::Term(Box::new(reason)))?;
     Ok((atoms::ok(), lines))
 }

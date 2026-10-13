@@ -205,6 +205,13 @@ impl HistoryCell {
         self.width
     }
 
+    /// Half-open columns holding content, excluding the marker gutter and
+    /// right padding that chrome a message but are not part of its text.
+    pub fn content_columns(&self) -> (u16, u16) {
+        let right = self.width.saturating_sub(self.right_padding);
+        (self.gutter.min(right), right)
+    }
+
     fn render(&self, offset: usize, area: Rect, buffer: &mut Buffer) {
         buffer.set_style(area, self.style);
         if offset == 0 && self.gutter > 0 {
@@ -318,6 +325,26 @@ impl Conversation {
         let mut sections = self.sections.clone();
         sections[index] = Arc::new(Section::new(cells));
         Some(Self::compose(sections))
+    }
+
+    /// Content columns of the cell painted at document `row`, or `None` past
+    /// the end. Empty sections and cells share their successor's top, so the
+    /// last entry starting at or before `row` is the one that contains it.
+    pub fn content_columns(&self, row: usize) -> Option<(u16, u16)> {
+        if row >= self.height {
+            return None;
+        }
+        let section_index = self
+            .tops
+            .partition_point(|top| *top <= row)
+            .checked_sub(1)?;
+        let section = &self.sections[section_index];
+        let local = row - self.tops[section_index];
+        let cell_index = section
+            .tops
+            .partition_point(|top| *top <= local)
+            .checked_sub(1)?;
+        Some(section.cells[cell_index].content_columns())
     }
 
     pub fn widget(

@@ -44,7 +44,16 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
     state = state |> gesture("down", 5, 0, 100) |> gesture("up", 5, 0, 110)
     assert_received {:copied, "hello"}
     state |> gesture("down", 5, 0, 200) |> gesture("up", 5, 0, 210)
-    assert_received {:copied, "›  hello world"}
+    assert_received {:copied, "hello world"}
+  end
+
+  test "multi-row selections copy message text without gutters, markers or padding" do
+    state("first\n  indented\nlast")
+    |> gesture("down", 0, 0)
+    |> gesture("drag", 39, 2)
+    |> gesture("up", 39, 2)
+
+    assert_received {:copied, "first\n  indented\nlast"}
   end
 
   test "scrolling extends an active drag, retains released selection, ignores stale timers" do

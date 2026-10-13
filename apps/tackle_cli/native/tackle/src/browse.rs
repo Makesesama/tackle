@@ -65,7 +65,7 @@ fn browse_render(
     let height = body_height(height);
     let body = Rect::new(0, area.height - height, width, height);
     let offset = scroll(offset, resource.0.height, height, 0);
-    crate::selection::highlight(&mut buffer, body, offset, text_selection);
+    crate::selection::highlight(&mut buffer, body, offset, text_selection, &resource.0);
     let rows = surface::lines(&buffer).map_err(|reason| Error::Term(Box::new(reason)))?;
     Ok((atoms::ok(), rows))
 }

@@ -1,6 +1,8 @@
 //! Screen-cell selection uses the same painted buffer as the transcript, including
 //! wide graphemes. Coordinates are document rows and terminal columns, half-open.
-use crate::{conversation::ConversationResource, MAX_CELLS};
+//! Message gutters (markers) and right padding are chrome: they are neither
+//! highlighted nor copied, so a selection yields the message's own text.
+use crate::{conversation::ConversationResource, widgets::conversation::Conversation, MAX_CELLS};
 use ratatui::{
     buffer::{Buffer, CellWidth},
     layout::Rect,
@@ -73,9 +75,14 @@ fn conversation_selection_text(
             .render(area, &mut buffer);
         for local_y in 0..height {
             let y = offset + usize::from(local_y);
+            let (left, right) = content_columns(&resource.0, y);
             let mut text = String::new();
             for (x, width, symbol) in cells(&buffer, local_y) {
-                if (y, x.saturating_add(width)) > start && (y, x) < end {
+                if x >= left
+                    && x.saturating_add(width) <= right
+                    && (y, x.saturating_add(width)) > start
+                    && (y, x) < end
+                {
                     text.push_str(&symbol);
                 }
             }
@@ -86,17 +93,33 @@ fn conversation_selection_text(
     Ok(rows.join("\n"))
 }
 
-pub fn highlight(buffer: &mut Buffer, body: Rect, offset: usize, range: Option<Range>) {
+/// Columns of `row` that selection may cover; rows past the end have none.
+fn content_columns(conversation: &Conversation, row: usize) -> (u16, u16) {
+    conversation.content_columns(row).unwrap_or((0, 0))
+}
+
+pub fn highlight(
+    buffer: &mut Buffer,
+    body: Rect,
+    offset: usize,
+    range: Option<Range>,
+    conversation: &Conversation,
+) {
     let Some((start, end)) = range else {
         return;
     };
     for y in body.top()..body.bottom() {
         let row = offset.saturating_add(usize::from(y - body.y));
+        let (left, right) = content_columns(conversation, row);
         let mut x = body.left();
         while x < body.right() {
             let width = buffer[(x, y)].cell_width().max(1);
             let col = x - body.x;
-            if (row, col.saturating_add(width)) > start && (row, col) < end {
+            if col >= left
+                && col.saturating_add(width) <= right
+                && (row, col.saturating_add(width)) > start
+                && (row, col) < end
+            {
                 // Reverse each glyph's own colours, preserving syntax styling.
                 buffer[(x, y)].set_style(Style::default().add_modifier(Modifier::REVERSED));
             }
@@ -108,6 +131,37 @@ pub fn highlight(buffer: &mut Buffer, body: Rect, offset: usize, range: Option<R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{markdown::ThemeMarkdown, widgets::conversation::HistoryCell};
+    use ratatui::text::{Line, Span};
+    use std::sync::Arc;
+
+    fn rows(count: usize, width: u16) -> Conversation {
+        let lines = (0..count).map(|_| Line::from("")).collect();
+        Conversation::new(vec![Arc::new(HistoryCell::rows(lines, width))])
+    }
+
+    fn message(source: &str, width: u16) -> Conversation {
+        Conversation::new(vec![Arc::new(HistoryCell::message(
+            source,
+            width,
+            false,
+            Style::default(),
+            Span::raw("›"),
+            &ThemeMarkdown::default(),
+        ))])
+    }
+
+    fn painted(conversation: &Conversation, width: u16, range: Range) -> Buffer {
+        let height = conversation.height as u16;
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+        conversation
+            .widget(0, &[], Style::default())
+            .render(buffer.area, &mut buffer);
+        let area = buffer.area;
+        highlight(&mut buffer, area, 0, Some(range), conversation);
+        buffer
+    }
+
     #[test]
     fn selection_and_extraction_share_wide_cell_boundaries() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 1));
@@ -119,9 +173,51 @@ mod tests {
             Rect::new(0, 0, 8, 1),
             4,
             Some(((4, 1), (4, 3))),
+            &rows(5, 8),
         );
         assert!(buffer[(0, 0)].modifier.contains(Modifier::REVERSED));
         assert!(buffer[(2, 0)].modifier.contains(Modifier::REVERSED));
         assert!(!buffer[(3, 0)].modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn message_gutters_and_padding_are_never_highlighted() {
+        let conversation = message("first\n  second", 12);
+        let buffer = painted(&conversation, 12, ((0, 0), (1, 12)));
+        for y in 0..2 {
+            for x in 0..12 {
+                let chrome = !(3..10).contains(&x);
+                assert_eq!(
+                    buffer[(x, y)].modifier.contains(Modifier::REVERSED),
+                    !chrome,
+                    "cell ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn content_columns_follow_cells_across_sections_and_empty_entries() {
+        let cell = |source: &str| {
+            Arc::new(HistoryCell::message(
+                source,
+                12,
+                false,
+                Style::default(),
+                Span::raw("●"),
+                &ThemeMarkdown::default(),
+            ))
+        };
+        let plain = Arc::new(HistoryCell::plain("plain", 12, Style::default()));
+        let empty = Arc::new(HistoryCell::rows(vec![], 12));
+        let conversation = Conversation::from_sections(vec![
+            vec![],
+            vec![cell("a\nb"), empty.clone()],
+            vec![empty, plain],
+        ]);
+        assert_eq!(conversation.content_columns(0), Some((3, 10)));
+        assert_eq!(conversation.content_columns(1), Some((3, 10)));
+        assert_eq!(conversation.content_columns(2), Some((0, 12)));
+        assert_eq!(conversation.content_columns(3), None);
     }
 }

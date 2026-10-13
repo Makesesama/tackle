@@ -2,9 +2,11 @@ defmodule Tackle.CLI.TUI.TextSelection do
   @moduledoc """
   Mouse selection of painted transcript cells, separate from Browse entry focus.
 
-  Copy uses rendered text (including visible gutters and wrapping), not hidden
-  source. Endpoints are document rows and terminal columns; native hit testing
-  keeps wide and combining graphemes intact. Changed layout/content at or before
+  Copy uses rendered text (including wrapping), not hidden source. Message
+  gutters, markers and right padding are chrome: they are neither highlighted
+  nor copied, so a multi-row selection does not gain leading indentation.
+  Endpoints are document rows and terminal columns; native hit testing keeps
+  wide and combining graphemes intact. Changed layout/content at or before
   the selection clears it rather than copying a different passage.
   """
 

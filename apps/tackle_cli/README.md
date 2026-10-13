@@ -982,7 +982,8 @@ Mouse capture supports transcript text selection as well as wheel scrolling:
 
 Selection works in the conversation and Browse's Transcript page, not overlays,
 other Browse pages, or the composer. It copies painted text, including wrapping
-and visible gutters, and trims trailing spaces per row. Existing source-copy
+but excluding message gutters, markers and padding (which are not highlighted
+either), and trims trailing spaces per row. Existing source-copy
 commands still copy complete retained source. Selection survives scrolling and
 updates below the selected cells; width changes or changes at/before selected
 cells clear it to avoid copying a different passage. Large selections are
