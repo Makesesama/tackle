@@ -333,13 +333,23 @@ defmodule Tackle.CLI.ParserTest do
 
     assert {:ok, {:mcp_approve, "docs"}} = Parser.parse(["mcp", "approve", "docs"])
 
-    assert {:ok, {:mcp_login, %{name: "docs", client_id: nil, client_secret: nil}}} =
+    assert {:ok,
+            {:mcp_login, %{name: "docs", client_id: nil, client_secret: nil, redirect_uri: nil}}} =
              Parser.parse(["mcp", "auth", "login", "docs"])
 
-    assert {:ok, {:mcp_login, %{name: "docs", client_id: "registered", client_secret: nil}}} =
+    assert {:ok,
+            {:mcp_login,
+             %{name: "docs", client_id: "registered", client_secret: nil, redirect_uri: nil}}} =
              Parser.parse(["mcp", "auth", "login", "docs", "--client-id", "registered"])
 
-    assert {:ok, {:mcp_login, %{name: "docs", client_id: "registered", client_secret: "shh"}}} =
+    assert {:ok,
+            {:mcp_login,
+             %{
+               name: "docs",
+               client_id: "registered",
+               client_secret: "shh",
+               redirect_uri: "http://localhost:8080/callback"
+             }}} =
              Parser.parse([
                "mcp",
                "auth",
@@ -348,7 +358,9 @@ defmodule Tackle.CLI.ParserTest do
                "--client-id",
                "registered",
                "--client-secret",
-               "shh"
+               "shh",
+               "--redirect-uri",
+               "http://localhost:8080/callback"
              ])
 
     assert {:ok, {:mcp_status, nil}} = Parser.parse(["mcp", "auth", "status"])

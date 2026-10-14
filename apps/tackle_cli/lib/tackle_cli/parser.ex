@@ -28,7 +28,12 @@ defmodule Tackle.CLI.Parser do
           | {:mcp_remove, %{name: String.t(), project: boolean()}}
           | {:mcp_approve, String.t()}
           | {:mcp_login,
-             %{name: String.t(), client_id: String.t() | nil, client_secret: String.t() | nil}}
+             %{
+               name: String.t(),
+               client_id: String.t() | nil,
+               client_secret: String.t() | nil,
+               redirect_uri: String.t() | nil
+             }}
           | {:mcp_status, String.t() | nil}
           | {:mcp_logout, String.t()}
           | {:sdk, %{}}
@@ -154,7 +159,8 @@ defmodule Tackle.CLI.Parser do
         %{
           name: result.args.name,
           client_id: Map.get(result.options, :client_id),
-          client_secret: Map.get(result.options, :client_secret)
+          client_secret: Map.get(result.options, :client_secret),
+          redirect_uri: Map.get(result.options, :redirect_uri)
         }}}
 
   defp parse_result({:ok, [:mcp, :auth, :status], result}, _parser),
@@ -383,6 +389,13 @@ defmodule Tackle.CLI.Parser do
                       value_name: "SECRET",
                       help:
                         "Client secret for --client-id; prefer TACKLE_MCP_CLIENT_SECRET to keep it out of shell history",
+                      parser: :string
+                    ],
+                    redirect_uri: [
+                      long: "--redirect-uri",
+                      value_name: "URI",
+                      help:
+                        "Exact loopback callback registered with the app, e.g. http://localhost:8080/callback",
                       parser: :string
                     ]
                   ]

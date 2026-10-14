@@ -378,8 +378,11 @@ and `mcp auth logout NAME` inspect/delete them. By default the authorization
 server must support dynamic client registration; otherwise login fails with
 `:client_registration_unavailable`. For such servers (for example Asana's V2
 endpoint), register an OAuth app with the provider and pass `mcp auth login
-NAME --client-id ID`. The callback is `http://127.0.0.1:PORT/callback` on a
-random port, so the app's redirect must accept any loopback port (RFC 8252). Confidential clients also need their secret: set
+NAME --client-id ID`. By default the callback is
+`http://127.0.0.1:PORT/callback` on a random port. Providers that require an
+exact redirect match (Asana does) need `--redirect-uri URI`: register an http
+loopback URL with an explicit port, such as `http://localhost:8080/callback`,
+and pass the identical string. The CLI listens on that host, port, and path. Confidential clients also need their secret: set
 `TACKLE_MCP_CLIENT_SECRET` (preferred, keeps it out of shell history and process
 listings) or pass `--client-secret SECRET`. The secret is only used together
 with `--client-id` and is stored with the server's credentials for token

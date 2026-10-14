@@ -200,16 +200,54 @@ defmodule Tackle.CLI.MCP do
 
   def login(%{name: name} = opts) do
     with {:ok, client} <- client_credentials(opts),
+         {:ok, target} <- redirect_target(Map.get(opts, :redirect_uri)),
          {:ok, _} <- ensure_started(),
          {:ok, servers} <- servers(),
          {:ok, %{"transport" => "http", "url" => url}} <- fetch_server(servers, name),
-         {:ok, listener} <-
-           :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}, reuseaddr: true]),
-         result <- authorize(name, url, listener, client) do
+         {:ok, listener} <- listen(target),
+         result <- authorize(name, url, listener, target, client) do
       result
     else
       {:ok, _} -> fail({:error, :mcp_oauth_requires_http})
       error -> fail(error)
+    end
+  end
+
+  # Without `--redirect-uri` the callback listens on a random loopback port,
+  # which only works with servers that register clients dynamically or accept
+  # any loopback port (RFC 8252). Pre-registered apps often require an exact
+  # match, so `--redirect-uri` fixes the URL and the listener follows it.
+  @doc false
+  def redirect_target(value) when value in [nil, ""],
+    do: {:ok, %{uri: nil, ip: {127, 0, 0, 1}, family: :inet, port: 0, path: "/callback"}}
+
+  def redirect_target(value) when is_binary(value) do
+    uri = URI.parse(value)
+
+    with "http" <- uri.scheme,
+         {:ok, family, ip} <- loopback_address(uri.host),
+         port when is_integer(port) and port in 1..65_535 <- uri.port,
+         nil <- uri.query,
+         nil <- uri.fragment,
+         nil <- uri.userinfo do
+      path = if uri.path in [nil, ""], do: "/", else: uri.path
+      {:ok, %{uri: value, ip: ip, family: family, port: port, path: path}}
+    else
+      _ -> {:error, :invalid_redirect_uri}
+    end
+  end
+
+  defp loopback_address("127.0.0.1"), do: {:ok, :inet, {127, 0, 0, 1}}
+  defp loopback_address("localhost"), do: {:ok, :inet, {127, 0, 0, 1}}
+  defp loopback_address("::1"), do: {:ok, :inet6, {0, 0, 0, 0, 0, 0, 0, 1}}
+  defp loopback_address(_), do: :error
+
+  defp listen(target) do
+    options = [:binary, target.family, active: false, ip: target.ip, reuseaddr: true]
+
+    case :gen_tcp.listen(target.port, options) do
+      {:ok, listener} -> {:ok, listener}
+      {:error, reason} -> {:error, {:redirect_listen_failed, target.port, reason}}
     end
   end
 
@@ -238,10 +276,10 @@ defmodule Tackle.CLI.MCP do
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value
 
-  defp authorize(name, url, listener, client) do
+  defp authorize(name, url, listener, target, client) do
     try do
       {:ok, {_ip, port}} = :inet.sockname(listener)
-      redirect = "http://127.0.0.1:#{port}/callback"
+      redirect = target.uri || "http://127.0.0.1:#{port}#{target.path}"
 
       with {:ok, flow} <-
              OAuth.begin(
@@ -249,7 +287,7 @@ defmodule Tackle.CLI.MCP do
                [redirect_uri: redirect, finch_name: Tackle.CLI.MCP.Finch] ++ client
              ),
            :ok <- announce(flow.authorization_url),
-           {:ok, state, code, socket} <- callback(listener, flow.state),
+           {:ok, state, code, socket} <- callback(listener, target.path, flow.state),
            result <- OAuth.complete(flow, state, code: code),
            :ok <- respond(socket, result),
            {:ok, credentials} <- result,
@@ -273,12 +311,13 @@ defmodule Tackle.CLI.MCP do
     :ok
   end
 
-  defp callback(listener, expected) do
+  defp callback(listener, path, expected) do
     deadline = System.monotonic_time(:millisecond) + 120_000
-    wait_callback(listener, expected, deadline)
+    request_line = ~r/\AGET #{Regex.escape(path)}\?([^ ]+) HTTP\/1\.[01]\r\n/
+    wait_callback(listener, request_line, expected, deadline)
   end
 
-  defp wait_callback(listener, expected, deadline) do
+  defp wait_callback(listener, request_line, expected, deadline) do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     if remaining <= 0 do
@@ -288,7 +327,7 @@ defmodule Tackle.CLI.MCP do
         {:ok, socket} ->
           case :gen_tcp.recv(socket, 0, min(5_000, remaining)) do
             {:ok, line} ->
-              case Regex.run(~r/\AGET \/callback\?([^ ]+) HTTP\/1\.[01]\r\n/, line) do
+              case Regex.run(request_line, line) do
                 [_, query] ->
                   params = URI.decode_query(query)
 
@@ -298,17 +337,17 @@ defmodule Tackle.CLI.MCP do
 
                     _ ->
                       respond(socket, {:error, :invalid_oauth_callback})
-                      wait_callback(listener, expected, deadline)
+                      wait_callback(listener, request_line, expected, deadline)
                   end
 
                 _ ->
                   respond(socket, {:error, :invalid_oauth_callback})
-                  wait_callback(listener, expected, deadline)
+                  wait_callback(listener, request_line, expected, deadline)
               end
 
             _ ->
               :gen_tcp.close(socket)
-              wait_callback(listener, expected, deadline)
+              wait_callback(listener, request_line, expected, deadline)
           end
 
         error ->
@@ -361,6 +400,25 @@ defmodule Tackle.CLI.MCP do
       "MCP error: the authorization server does not support (or rejected) dynamic client " <>
         "registration. Register an OAuth app with the provider, then retry with " <>
         "--client-id ID (and #{@client_secret_env} or --client-secret if it issued a secret).",
+      :stderr
+    )
+
+    1
+  end
+
+  defp fail({:error, :invalid_redirect_uri}) do
+    Owl.IO.puts(
+      "MCP error: --redirect-uri must be an http loopback URL with a port and no query, " <>
+        "such as http://localhost:8080/callback",
+      :stderr
+    )
+
+    1
+  end
+
+  defp fail({:error, {:redirect_listen_failed, port, reason}}) do
+    Owl.IO.puts(
+      "MCP error: cannot listen for the OAuth callback on port #{port}: #{:inet.format_error(reason)}",
       :stderr
     )
 
