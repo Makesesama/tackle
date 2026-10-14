@@ -226,6 +226,26 @@ defmodule Tackle.Tools.ReviewTest do
     end
   end
 
+  test "uses the session's configured profile unless the model picks one", ctx do
+    test_pid = self()
+
+    context =
+      Map.merge(ctx.context, %{
+        tool_call_id: "call-1",
+        event_callback: &send(test_pid, {:progress, &1}),
+        review_settings: %Tackle.Config.Review{profile: :assertive}
+      })
+
+    assert {:ok, _text} = review(%{}, context)
+    assert [%{kind: :loaded, profile: "assertive"} | _rest] = collect_progress([])
+
+    assert {:ok, _text} = review(%{"profile" => "quiet"}, context)
+    assert [%{kind: :loaded, profile: "quiet"} | _rest] = collect_progress([])
+
+    assert {:ok, _text} = review(%{}, Map.delete(context, :review_settings))
+    assert [%{kind: :loaded, profile: "default"} | _rest] = collect_progress([])
+  end
+
   test "records history in the repository's key and skips dismissed findings", ctx do
     assert {:ok, _text} = review(%{}, ctx.context)
 

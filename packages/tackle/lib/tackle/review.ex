@@ -49,7 +49,8 @@ defmodule Tackle.Review do
   The stage configurations are resolved once, when the review starts: a
   profile that inherits its model (`model_source: :parent`) gets the
   requester's current model and thinking level, then `:models` and
-  `:thinking` apply. With `:shared_cache_key` (default `true`), all runs of
+  `:thinking` apply, the latter on top of the requester session's review
+  settings (`Tackle.Config.Review`). With `:shared_cache_key` (default `true`), all runs of
   a stage share one prompt cache key (the `:prompt_cache_key` LLM option),
   so providers that route cached prompts by key can reuse the stage's common
   prompt prefix across runs.
@@ -97,6 +98,7 @@ defmodule Tackle.Review do
   """
 
   alias Tackle.{Auth, Config, Executor}
+  alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Lib.{Cancellation, Usage}
 
   alias Tackle.Review.{
@@ -131,6 +133,8 @@ defmodule Tackle.Review do
     :exclude,
     :models,
     :thinking,
+    :max_steps,
+    :default_rules,
     :units,
     :verify_batch,
     :verify_limit,
@@ -161,6 +165,12 @@ defmodule Tackle.Review do
   @typedoc """
   Options:
 
+  `:profile`, `:models`, `:thinking`, `:max_steps`, and `:default_rules`
+  default to the requester session's review settings
+  (`Tackle.Config.Review`, the `review` object of `config.json`). For the
+  per-stage maps, a stage given here replaces its setting, and a stage set
+  to `nil` falls back to the profile's or inherited value.
+
     * `:requester` (required) - the agent the review's runs are delegated
       from: a `Tackle.Runtime.Handle` or `Tackle.Runtime.AgentRef` whose
       agent may delegate;
@@ -171,6 +181,8 @@ defmodule Tackle.Review do
     * `:rules` - the rules to apply, of any status (default: discovered with
       `Tackle.Review.Rules.discover/1` from the change's directory, through
       the detector profile's executor);
+    * `:default_rules` - the ids of the built-in rules discovery keeps, or
+      `nil` for all of them (default); ignored with `:rules`;
     * `:profile` - `:quiet`, `:default` (default), or `:assertive`
       (see `Tackle.Review.Rank`);
     * `:samples` - detector runs per batch of units (default 1);
@@ -183,6 +195,8 @@ defmodule Tackle.Review do
     * `:thinking` - per-stage thinking levels (`Tackle.Thinking.levels/0`)
       overriding the profiles' or inherited ones, with the same keys; the
       scorer otherwise uses the verifier's;
+    * `:max_steps` - step limits (model calls per run) of the `:detector`
+      and `:verifier` runs, replacing their profiles' limits;
     * `:units` - unit sizing: the sizing options of
       `Tackle.Review.Units.split/2` (`:max_changed_lines`, default
       #{Keyword.fetch!(Units.defaults(), :max_changed_lines)}, `:context_ratio`, `:min_context`,
@@ -227,6 +241,8 @@ defmodule Tackle.Review do
           | {:exclude, [String.t()]}
           | {:models, map() | keyword()}
           | {:thinking, map() | keyword()}
+          | {:max_steps, map() | keyword()}
+          | {:default_rules, [String.t()] | nil}
           | {:units, keyword()}
           | {:verify_batch, pos_integer()}
           | {:verify_limit, pos_integer() | nil}
@@ -246,8 +262,11 @@ defmodule Tackle.Review do
   Returns `{:ok, result}` even when some units or verifications failed;
   `result.summary` lists them, and the findings their runs reported before
   failing are kept. Returns `{:error, reason}` for invalid
-  options, a requester whose model a stage cannot inherit
-  (`{:requester_model_unavailable, reason}`), an invalid `:exclude` glob,
+  options, a requester whose session cannot be read
+  (`{:requester_unavailable, reason}`) or whose model a stage cannot inherit
+  (`{:requester_model_unavailable, reason}`), invalid review settings in the
+  requester's context (`{:invalid_review_settings, value}`), an invalid
+  `:exclude` glob,
   cancellation (`:cancelled`), or when every unit failed without reporting
   a finding (`{:detection_failed, failures}`).
   """
@@ -276,16 +295,25 @@ defmodule Tackle.Review do
   defp prepare(opts) do
     with :ok <- known_options(opts),
          {:ok, requester} <- requester(Keyword.get(opts, :requester)),
+         {:ok, settings} <- Delegation.requester_settings(requester),
+         settings = settings || %ReviewSettings{},
          {:ok, profiles} <- fetch_option(opts, :profiles, &is_map/1),
          {:ok, detector} <- stage_spec(profiles, Detector.profile(), ReportFindings),
          {:ok, verifier} <- stage_spec(profiles, Verifier.profile(), ReportVerdict),
-         {:ok, profile} <- option(opts, :profile, :default, &(&1 in Rank.profiles())),
+         {:ok, profile} <-
+           option(opts, :profile, settings.profile || :default, &(&1 in Rank.profiles())),
          {:ok, samples} <- option(opts, :samples, 1, &positive_integer?/1),
          {:ok, concurrency} <-
            option(opts, :max_concurrency, default_concurrency(requester), &positive_integer?/1),
          {:ok, exclude} <- option(opts, :exclude, [], &string_list?/1),
          {:ok, models} <- models(Keyword.get(opts, :models, %{})),
+         models = Map.merge(settings.models, models),
          {:ok, thinking} <- thinking(Keyword.get(opts, :thinking, %{})),
+         thinking = Map.merge(settings.thinking, thinking),
+         {:ok, max_steps} <- max_steps(Keyword.get(opts, :max_steps, %{})),
+         max_steps = Map.merge(settings.max_steps, max_steps),
+         {:ok, default_rules} <-
+           option(opts, :default_rules, settings.default_rules, &default_rules?/1),
          {:ok, units} <- units(Keyword.get(opts, :units, [])),
          {:ok, verify_batch} <-
            option(opts, :verify_batch, @default_verify_batch, &positive_integer?/1),
@@ -297,8 +325,10 @@ defmodule Tackle.Review do
          cache_keys = cache_keys(shared_cache_key),
          {:ok, detector} <-
            pin_stage(requester, detector, :detector, models, thinking, cache_keys),
+         detector = limit_steps(detector, max_steps[:detector]),
          {:ok, verifier} <-
            pin_stage(requester, verifier, :verifier, models, thinking, cache_keys),
+         verifier = limit_steps(verifier, max_steps[:verifier]),
          {:ok, scorer} <-
            scorer(Keyword.get(opts, :scorer, Scorer.LLM), verifier, models, thinking, cache_keys),
          {:ok, rules} <- option(opts, :rules, nil, &rule_list?/1),
@@ -331,6 +361,7 @@ defmodule Tackle.Review do
          score_batch: score_batch,
          scorer: scorer,
          rules: rules,
+         default_rules: default_rules,
          known: MapSet.new(known),
          history: history,
          skip_outcomes: skip_outcomes,
@@ -442,6 +473,28 @@ defmodule Tackle.Review do
 
   defp valid_thinking?(_entry), do: false
 
+  defp max_steps(steps) when is_list(steps) or is_map(steps) do
+    if Enum.all?(steps, &valid_steps?/1),
+      do: {:ok, Map.new(steps)},
+      else: {:error, {:invalid_option, :max_steps, steps}}
+  end
+
+  defp max_steps(steps), do: {:error, {:invalid_option, :max_steps, steps}}
+
+  defp valid_steps?({stage, steps}),
+    do:
+      stage in ReviewSettings.step_stages() and
+        (is_nil(steps) or (is_integer(steps) and steps > 0))
+
+  defp valid_steps?(_entry), do: false
+
+  defp default_rules?(ids), do: is_nil(ids) or string_list?(ids)
+
+  defp limit_steps(spec, nil), do: spec
+
+  defp limit_steps(%AgentSpec{config: config} = spec, steps),
+    do: %{spec | config: %{config | max_iterations: steps}}
+
   defp units(units) when is_list(units) do
     {pack_files, sizing} = Keyword.pop(units, :pack_files, true)
 
@@ -499,7 +552,9 @@ defmodule Tackle.Review do
       score_batch: score_batch,
       shared_cache_key: shared_cache_key,
       models: Map.new(stages, fn {stage, config} -> {stage, stage_model(config)} end),
-      thinking: Map.new(stages, fn {stage, config} -> {stage, stage_thinking(config)} end)
+      thinking: Map.new(stages, fn {stage, config} -> {stage, stage_thinking(config)} end),
+      max_steps:
+        for({stage, %Config{max_iterations: steps}} <- stages, into: %{}, do: {stage, steps})
     }
   end
 
@@ -615,7 +670,14 @@ defmodule Tackle.Review do
     case ctx.rules do
       nil ->
         executor = Executor.from_context(ctx.detector.config.context)
-        discovery = Rules.discover(cwd: change.cwd, executor: executor)
+
+        discovery =
+          Rules.discover(
+            cwd: change.cwd,
+            executor: executor,
+            builtin_rules: ctx.default_rules || :all
+          )
+
         {discovery.rules, Enum.map(discovery.warnings, &format_warning/1)}
 
       rules ->

@@ -23,6 +23,7 @@ defmodule Tackle.Config do
 
   alias Tackle.Config.File, as: ConfigFile
   alias Tackle.Config.Narration
+  alias Tackle.Config.Review
   alias Tackle.Config.SessionTitles
   alias Tackle.Config.Watchdog
   alias Tackle.Executor
@@ -49,6 +50,7 @@ defmodule Tackle.Config do
     :catalog,
     :cwd,
     :env,
+    :instructions,
     :overrides
   ]
   @reconfigure_option_keys [:model, :thinking]
@@ -87,7 +89,8 @@ defmodule Tackle.Config do
     :session_titles,
     :watchdog,
     :narration,
-    :decision_model
+    :decision_model,
+    :review
   ]
 
   @enforce_keys [:providers, :model_ref, :llm]
@@ -110,7 +113,8 @@ defmodule Tackle.Config do
             session_titles: nil,
             watchdog: nil,
             narration: nil,
-            decision_model: nil
+            decision_model: nil,
+            review: nil
 
   @type t :: %__MODULE__{
           providers: [Provider.t()],
@@ -132,7 +136,8 @@ defmodule Tackle.Config do
           session_titles: SessionTitles.t() | nil,
           watchdog: Watchdog.t() | nil,
           narration: Narration.t() | nil,
-          decision_model: Tackle.Lib.Decision.Selection.t() | nil
+          decision_model: Tackle.Lib.Decision.Selection.t() | nil,
+          review: Review.t() | nil
         }
 
   @doc """
@@ -162,6 +167,12 @@ defmodule Tackle.Config do
   `Tackle.Tools.LoadSkill`, the single way the model loads a skill, and the
   offered skills are placed in the session context under `:skills` for that
   tool to serve.
+
+  `instructions: false` (default `true`) leaves the instruction files
+  (`APPEND_SYSTEM.md`, `AGENTS.md`) and skills out of the session: the
+  system prompt is only the base prompt and the working directory, and no
+  skill or `load_skill` tool is offered. `Tackle.Coding` uses it for
+  profiles that set `instructions: false`, such as the code review stages.
   """
   @spec load(keyword()) :: {:ok, t()} | {:error, term()}
   def load(opts) when is_list(opts) do
@@ -170,6 +181,7 @@ defmodule Tackle.Config do
          {:ok, adapters} <- fetch_available_adapters(opts),
          {:ok, accounts} <- fetch_accounts(opts),
          {:ok, builtin_skills} <- fetch_builtin_skills(opts),
+         {:ok, instructions} <- fetch_instructions(opts),
          {:ok, overrides} <- fetch_overrides(opts),
          {:ok, overrides} <- catalog_hooks(opts, overrides),
          {:ok, env} <- fetch_environment(opts),
@@ -189,7 +201,8 @@ defmodule Tackle.Config do
         cwd,
         Path.dirname(config_path),
         env,
-        builtin_skills
+        builtin_skills,
+        instructions
       )
     end
   end
@@ -217,6 +230,12 @@ defmodule Tackle.Config do
   decision_providers, options: [], default_model: ref | nil}` — for tools that
   classify with them, such as the workflow tool's `tackle.classify`. A `:decisions`
   entry the host already put in `:context` is kept as given.
+
+  Optional `:review` sets defaults for code reviews requested from the
+  session: per-stage models, thinking levels, and step limits, which findings
+  to show, and which built-in rules apply; see `Tackle.Config.Review`.
+  The session context gets them under `:review_settings`, unless the host
+  already put a `:review_settings` entry there.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
@@ -232,6 +251,7 @@ defmodule Tackle.Config do
          {:ok, narration} <- Narration.new(Keyword.get(opts, :narration), providers),
          {:ok, decision_model} <-
            resolve_decision_model(Keyword.get(opts, :decision_model), providers),
+         {:ok, review} <- Review.new(Keyword.get(opts, :review), providers),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
@@ -262,7 +282,8 @@ defmodule Tackle.Config do
          context:
            opts
            |> Keyword.get(:context, %{})
-           |> put_decisions(providers, decision_model),
+           |> put_decisions(providers, decision_model)
+           |> put_review(review),
          max_iterations: Keyword.get(opts, :max_iterations, :infinity),
          tool_policy: Policy.concurrent(),
          llm_opts: Keyword.get(opts, :llm_opts, []),
@@ -275,7 +296,8 @@ defmodule Tackle.Config do
          session_titles: session_titles,
          watchdog: watchdog,
          narration: narration,
-         decision_model: decision_model
+         decision_model: decision_model,
+         review: review
        }}
     end
   end
@@ -480,14 +502,15 @@ defmodule Tackle.Config do
     if File.dir?(cwd), do: {:ok, cwd}, else: {:error, {:invalid_option, :cwd, cwd}}
   end
 
-  defp load_system_prompt(config, base, cwd, home, env, builtin_skills) do
+  defp load_system_prompt(config, base, cwd, home, env, builtin_skills, instructions) do
     context = Map.put(config.context, :cwd, cwd)
     executor = Executor.from_context(context)
 
     skills =
-      cwd
-      |> discover_skills(env, executor, builtin_skills)
-      |> Skills.available(config.tools)
+      if instructions,
+        do:
+          cwd |> discover_skills(env, executor, builtin_skills) |> Skills.available(config.tools),
+        else: []
 
     with {:ok, tools, context} <- grant_skills(config.tools, context, skills),
          {:ok, prompt} <-
@@ -497,7 +520,8 @@ defmodule Tackle.Config do
              home: home,
              tools: tools,
              skills: skills,
-             executor: executor
+             executor: executor,
+             instructions: instructions
            ) do
       {:ok, %{config | tools: tools, context: context, system_prompt: prompt}}
     end
@@ -529,6 +553,13 @@ defmodule Tackle.Config do
     if Enum.any?(tools, &(&1 != LoadSkill and &1.name() == name)),
       do: {:error, {:tool_name_conflict, name}},
       else: :ok
+  end
+
+  defp fetch_instructions(opts) do
+    case Keyword.get(opts, :instructions, true) do
+      instructions when is_boolean(instructions) -> {:ok, instructions}
+      other -> {:error, {:invalid_option, :instructions, other}}
+    end
   end
 
   defp fetch_builtin_skills(opts) do
@@ -777,6 +808,10 @@ defmodule Tackle.Config do
         })
     end
   end
+
+  defp put_review(context, nil), do: context
+  defp put_review(%{review_settings: _host_settings} = context, _review), do: context
+  defp put_review(context, %Review{} = review), do: Map.put(context, :review_settings, review)
 
   defp decision_provider?(%Provider{adapter: adapter}) do
     function_exported?(adapter, :decide, 2) and

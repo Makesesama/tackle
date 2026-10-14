@@ -63,6 +63,7 @@ defmodule Tackle.Tools.Review do
   use Tackle.Lib.Tool
 
   alias Tackle.AgentScope.Coordinator
+  alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Executor
   alias Tackle.Lib.Event
   alias Tackle.Review
@@ -96,7 +97,7 @@ defmodule Tackle.Tools.Review do
       enum: Map.keys(@profiles) |> Enum.sort(),
       description:
         "quiet: blocking findings only; default: blocking and confident optional findings; " <>
-          "assertive: everything plausible"
+          "assertive: everything plausible. Omit to use the configured default"
     )
   end
 
@@ -106,14 +107,14 @@ defmodule Tackle.Tools.Review do
          :ok <- ensure_delegation(handle),
          {:ok, change} <- load_change(args, context) do
       {history, notes} = history(change, context)
-      profile = Map.get(args, "profile") || "default"
+      profile = profile(args, context)
       report = reporter(context)
-      report.(loaded(change, profile))
+      report.(loaded(change, Atom.to_string(profile)))
 
       opts = [
         requester: handle,
         profiles: profiles(handle),
-        profile: Map.fetch!(@profiles, profile),
+        profile: profile,
         history: history,
         on_event: &report_event(report, &1)
       ]
@@ -156,6 +157,14 @@ defmodule Tackle.Tools.Review do
       {:error, reason} -> {:error, "Cannot load the change: " <> Change.format_error(reason)}
     end
   end
+
+  # The model's choice, then the session's review settings, then `:default`.
+  defp profile(args, context) do
+    Map.get(@profiles, Map.get(args, "profile")) || configured_profile(context) || :default
+  end
+
+  defp configured_profile(%{review_settings: %ReviewSettings{profile: profile}}), do: profile
+  defp configured_profile(_context), do: nil
 
   defp cwd(%{cwd: cwd}) when is_binary(cwd), do: cwd
   defp cwd(%{"cwd" => cwd}) when is_binary(cwd), do: cwd

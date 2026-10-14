@@ -57,6 +57,9 @@ defmodule Tackle.Coding do
   the root and every profile. Each agent is offered only the skills whose
   required tools it has, so a skill for a root-only tool stays out of child
   prompts; an agent offered any skill also gets the `load_skill` tool.
+  Profiles with `instructions: false` (`Tackle.Agents.Definition`), such as
+  the built-in review stages, get neither skills nor the instruction files:
+  their system prompt is their own prompt and the working directory.
 
   Agent files are validated at startup. Invalid files, unknown tools, and model
   selections unavailable through the configured providers are explicit errors.
@@ -240,10 +243,12 @@ defmodule Tackle.Coding do
       |> maybe_put(:model, definition.model)
       |> maybe_put(:thinking, definition.thinking)
 
-    load_with_overrides(loader_opts, profile_overrides)
+    load_with_overrides(loader_opts, profile_overrides, instructions: definition.instructions)
   end
 
-  defp parent_system_prompt(%Definition{source: :builtin}, loader_opts) do
+  # A built-in profile also gets a host's explicit system prompt, unless it
+  # opted out of instructions.
+  defp parent_system_prompt(%Definition{source: :builtin, instructions: true}, loader_opts) do
     loader_opts |> Keyword.get(:overrides, []) |> Keyword.get(:system_prompt)
   end
 
@@ -260,13 +265,13 @@ defmodule Tackle.Coding do
     end
   end
 
-  defp load_with_overrides(opts, overrides) do
+  defp load_with_overrides(opts, overrides, loader_opts \\ []) do
     merged = opts |> Keyword.get(:overrides, []) |> Keyword.merge(overrides)
 
     opts =
       Keyword.take(opts, [:accounts, :available_adapters, :builtin_skills, :catalog, :cwd, :env])
 
-    Config.load(Keyword.put(opts, :overrides, merged))
+    Config.load(opts |> Keyword.merge(loader_opts) |> Keyword.put(:overrides, merged))
   end
 
   defp maybe_put(opts, _key, nil), do: opts

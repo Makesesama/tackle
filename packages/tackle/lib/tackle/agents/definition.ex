@@ -4,6 +4,11 @@ defmodule Tackle.Agents.Definition do
 
   Definitions contain names and scalar policy only. Executable modules are
   resolved later from capabilities already supplied by the trusted harness.
+
+  `instructions` (default `true`) gives the profile the harness instruction
+  files (`APPEND_SYSTEM.md`, `AGENTS.md`) and skills; with `false` its system
+  prompt is only its own prompt and the working directory, and it gets no
+  `load_skill` tool.
   """
 
   @enforce_keys [:name, :description, :prompt, :source]
@@ -19,7 +24,8 @@ defmodule Tackle.Agents.Definition do
     timeout: :timer.minutes(5),
     max_iterations: :infinity,
     advertise: false,
-    allow_delegation: false
+    allow_delegation: false,
+    instructions: true
   ]
 
   @type source :: :builtin | :user | :project
@@ -36,6 +42,7 @@ defmodule Tackle.Agents.Definition do
           timeout: pos_integer(),
           max_iterations: pos_integer() | :infinity,
           advertise: boolean(),
-          allow_delegation: boolean()
+          allow_delegation: boolean(),
+          instructions: boolean()
         }
 end

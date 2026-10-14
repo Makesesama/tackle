@@ -66,7 +66,8 @@ defmodule Tackle.Agents.Default.ReviewDetector do
       tools: ["read", "bash", "report_findings"],
       max_iterations: 40,
       advertise: false,
-      allow_delegation: false
+      allow_delegation: false,
+      instructions: false
     }
   end
 end

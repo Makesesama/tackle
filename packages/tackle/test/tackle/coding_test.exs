@@ -264,7 +264,8 @@ defmodule Tackle.CodingTest do
   end
 
   test "composes the review stages with their output tools without advertising them", %{
-    opts: opts
+    opts: opts,
+    cwd: cwd
   } do
     assert {:ok, spec} = Coding.scope_spec(opts)
     assert {:ok, detector} = ScopeSpec.resolve_profile(spec, "review-detector")
@@ -278,9 +279,76 @@ defmodule Tackle.CodingTest do
     assert detector.config.system_prompt =~ "Review detector assignment"
     assert verifier.config.system_prompt =~ "Call `report_verdict` as soon as you have decided"
 
+    # The stages run with only their assignment and the working directory.
+    for stage <- [detector, verifier] do
+      refute stage.config.system_prompt =~ "Project guidance: preserve tests."
+      refute stage.config.system_prompt =~ "Global guidance: cite sources."
+      assert stage.config.system_prompt =~ "Current working directory: #{cwd}"
+    end
+
     refute spec.root_spec.config.system_prompt =~ "review-detector"
     refute ReportFindings in spec.root_spec.config.tools
     refute ReportVerdict in spec.root_spec.config.tools
+  end
+
+  test "review stages get no skills, and a host's system prompt stays out of them", %{
+    opts: opts
+  } do
+    {:ok, skill} =
+      Tackle.Skills.builtin("---\nname: read-guide\ndescription: How to read.\n---\nSteps.",
+        requires_tools: ["read"]
+      )
+
+    opts =
+      opts
+      |> Keyword.put(:builtin_skills, [skill])
+      |> Keyword.update!(:overrides, &Keyword.put(&1, :system_prompt, "Host prompt."))
+
+    assert {:ok, spec} = Coding.scope_spec(opts)
+
+    scout = spec.profiles["scout"].config
+    assert Tackle.Tools.LoadSkill in scout.tools
+    assert scout.system_prompt =~ "Host prompt."
+
+    for name <- ["review-detector", "review-verifier"] do
+      config = spec.profiles[name].config
+      refute Tackle.Tools.LoadSkill in config.tools
+      refute Map.has_key?(config.context, :skills)
+      refute config.system_prompt =~ "read-guide"
+      refute config.system_prompt =~ "Host prompt."
+    end
+
+    assert spec.profiles["review-verifier"].config.tools == [Read, Bash, ReportVerdict]
+  end
+
+  test "a profile file opts out of instructions with `instructions: false`", %{
+    opts: opts,
+    cwd: cwd
+  } do
+    write_agent(
+      Path.join([cwd, ".tackle", "agents", "review-verifier.md"]),
+      "review-verifier",
+      "Project verifier",
+      "Project verifier prompt.",
+      "tools: read, report_verdict\ninstructions: false\n"
+    )
+
+    write_agent(
+      Path.join([cwd, ".tackle", "agents", "helper.md"]),
+      "helper",
+      "Helps",
+      "Help.",
+      "tools: read\n"
+    )
+
+    assert {:ok, spec} = Coding.scope_spec(opts)
+
+    verifier = spec.profiles["review-verifier"].config
+
+    assert verifier.system_prompt ==
+             "Project verifier prompt.\n\nCurrent working directory: #{cwd}\n"
+
+    assert spec.profiles["helper"].config.system_prompt =~ "Project guidance: preserve tests."
   end
 
   test "a project profile overrides a review stage and may select review tools", %{

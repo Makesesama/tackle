@@ -42,7 +42,8 @@ defmodule Tackle.Agents.Default.ReviewVerifier do
       tools: ["read", "bash", "report_verdict"],
       max_iterations: 25,
       advertise: false,
-      allow_delegation: false
+      allow_delegation: false,
+      instructions: false
     }
   end
 end

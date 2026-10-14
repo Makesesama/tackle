@@ -14,7 +14,8 @@ defmodule Tackle.Config.File do
     "session_titles",
     "watchdog",
     "narration",
-    "decision_model"
+    "decision_model",
+    "review"
   ]
 
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
@@ -49,11 +50,13 @@ defmodule Tackle.Config.File do
          {:ok, watchdog_opts} <- watchdog_options(path, config),
          {:ok, narration_opts} <- narration_options(path, config),
          {:ok, decision_opts} <- decision_model_options(path, config),
+         {:ok, review_opts} <- review_options(path, config),
          :ok <- sidebar_option(path, config) do
       {:ok,
        model_opts ++
          thinking_opts ++
-         provider_opts ++ title_opts ++ watchdog_opts ++ narration_opts ++ decision_opts}
+         provider_opts ++
+         title_opts ++ watchdog_opts ++ narration_opts ++ decision_opts ++ review_opts}
     end
   end
 
@@ -120,6 +123,86 @@ defmodule Tackle.Config.File do
 
       _unknown_fields ->
         {:error, {:invalid_config_field, path, "narration"}}
+    end
+  end
+
+  # Code review defaults (`Tackle.Config.Review`): optional `thinking` and
+  # `models` objects keyed by the stages `detector`, `verifier`, and `scorer`,
+  # a `max_steps` object keyed by `detector` and `verifier`, a `profile`
+  # (`quiet`, `default`, or `assertive`), and `default_rules`, a list of
+  # built-in rule ids. Names are mapped here so file data never creates atoms;
+  # values are validated by `Tackle.Config.Review`.
+  @review_stages Map.new(Tackle.Config.Review.stages(), &{Atom.to_string(&1), &1})
+  @review_profiles %{"quiet" => :quiet, "default" => :default, "assertive" => :assertive}
+  @review_fields ~w(thinking models profile max_steps default_rules)
+
+  defp review_options(path, config) do
+    case Map.fetch(config, "review") do
+      {:ok, nil} -> {:ok, []}
+      {:ok, %{} = review} -> review_fields(path, review)
+      {:ok, _other} -> {:error, {:invalid_config_field, path, "review"}}
+      :error -> {:ok, []}
+    end
+  end
+
+  defp review_fields(path, review) do
+    with [] <- Map.keys(review) -- @review_fields,
+         {:ok, opts} <- review_values(review) do
+      {:ok, [review: opts]}
+    else
+      _invalid -> {:error, {:invalid_config_field, path, "review"}}
+    end
+  end
+
+  defp review_values(review) do
+    Enum.reduce_while(review, {:ok, []}, fn {key, value}, {:ok, acc} ->
+      case review_value(key, value) do
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, option} -> {:cont, {:ok, [option | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp review_value(_key, nil), do: {:ok, nil}
+
+  defp review_value("thinking", %{} = thinking) do
+    stage_values(thinking, fn level -> Thinking.validate(level) == :ok end, :thinking)
+  end
+
+  defp review_value("models", %{} = models) do
+    stage_values(models, &(is_binary(&1) and &1 != ""), :models)
+  end
+
+  defp review_value("max_steps", %{} = steps) do
+    stage_values(steps, &(is_integer(&1) and &1 > 0), :max_steps)
+  end
+
+  defp review_value("profile", profile) do
+    case Map.fetch(@review_profiles, profile) do
+      {:ok, profile} -> {:ok, {:profile, profile}}
+      :error -> :error
+    end
+  end
+
+  defp review_value("default_rules", ids) when is_list(ids) do
+    if Enum.all?(ids, &is_binary/1), do: {:ok, {:default_rules, ids}}, else: :error
+  end
+
+  defp review_value(_key, _value), do: :error
+
+  defp stage_values(values, valid?, key) do
+    Enum.reduce_while(values, {:ok, %{}}, fn {stage, value}, {:ok, acc} ->
+      with {:ok, stage} <- Map.fetch(@review_stages, stage),
+           true <- valid?.(value) do
+        {:cont, {:ok, Map.put(acc, stage, value)}}
+      else
+        _invalid -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, map} -> {:ok, {key, map}}
+      :error -> :error
     end
   end
 

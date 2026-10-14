@@ -20,6 +20,12 @@ defmodule Tackle.Bench.ReviewEval.Variant do
   Nothing in the harness changes: the variants are transformations of the
   scope's profiles, so a variant that wins is a recipe for new defaults,
   not the defaults themselves.
+
+  The built-in review stages are lean by default (`instructions: false`),
+  so `lean` now runs the same prompts as `baseline`, and `lean-agents` adds
+  the AGENTS.md files back. Results recorded before that change have a
+  full-prompt baseline. A `review.thinking` setting in `config.json` also
+  applies to every variant that does not set its own thinking levels.
   """
 
   alias Tackle.Agents.Default.{ReviewDetector, ReviewVerifier}

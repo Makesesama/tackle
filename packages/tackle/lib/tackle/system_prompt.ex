@@ -11,6 +11,10 @@ defmodule Tackle.SystemPrompt do
     4. available Agent Skills from `.agents/skills`, when present; and
     5. the current working directory.
 
+  With `instructions: false`, steps 2 and 3 are skipped and their files are
+  not read, so the prompt holds only the base, the given skills, and the
+  working directory.
+
   Missing optional files are ignored. Unreadable or invalid UTF-8 files return
   explicit errors so a session never starts with silently incomplete guidance.
   """
@@ -25,6 +29,7 @@ defmodule Tackle.SystemPrompt do
           | {:tools, [module()]}
           | {:skills, [Skills.Skill.t()]}
           | {:executor, Executor.t()}
+          | {:instructions, boolean()}
 
   @doc "Builds the effective system prompt for one configured session."
   @spec build([build_option()]) :: {:ok, String.t()} | {:error, term()}
@@ -34,10 +39,10 @@ defmodule Tackle.SystemPrompt do
          {:ok, home} <- fetch_path(opts, :home),
          {:ok, tools} <- fetch_tools(opts),
          files = ProjectFiles.new(executor: Keyword.get(opts, :executor)),
+         {:ok, instructions} <- fetch_instructions(opts),
          {:ok, base} <- resolve_base(files, Keyword.get(opts, :base), home, tools),
-         {:ok, append} <- read_optional(files, Path.join(home, "APPEND_SYSTEM.md")),
          {:ok, skills} <- fetch_skills(opts),
-         {:ok, context_files} <- load_context_files(files, cwd, home) do
+         {:ok, append, context_files} <- load_instructions(instructions, files, cwd, home) do
       prompt =
         PromptBuilder.new()
         |> PromptBuilder.add_raw(base)
@@ -68,6 +73,22 @@ defmodule Tackle.SystemPrompt do
     case Keyword.get(opts, :tools, []) do
       tools when is_list(tools) -> {:ok, tools}
       tools -> {:error, {:invalid_system_prompt_option, :tools, tools}}
+    end
+  end
+
+  defp fetch_instructions(opts) do
+    case Keyword.get(opts, :instructions, true) do
+      instructions when is_boolean(instructions) -> {:ok, instructions}
+      other -> {:error, {:invalid_system_prompt_option, :instructions, other}}
+    end
+  end
+
+  defp load_instructions(false, _files, _cwd, _home), do: {:ok, nil, []}
+
+  defp load_instructions(true, files, cwd, home) do
+    with {:ok, append} <- read_optional(files, Path.join(home, "APPEND_SYSTEM.md")),
+         {:ok, context_files} <- load_context_files(files, cwd, home) do
+      {:ok, append, context_files}
     end
   end
 

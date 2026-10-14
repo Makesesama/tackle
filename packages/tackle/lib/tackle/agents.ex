@@ -18,7 +18,7 @@ defmodule Tackle.Agents do
   alias Tackle.Skills.Frontmatter
 
   @known_fields MapSet.new(
-                  ~w(name description tools model thinking timeoutMs maxIterations advertise allowDelegation)
+                  ~w(name description tools model thinking timeoutMs maxIterations advertise allowDelegation instructions)
                 )
   @name_pattern ~r/^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
@@ -201,6 +201,7 @@ defmodule Tackle.Agents do
          {:ok, max_iterations} <- positive_integer(frontmatter, "maxIterations", :infinity),
          {:ok, advertise} <- boolean(frontmatter, "advertise", false),
          {:ok, allow_delegation} <- boolean(frontmatter, "allowDelegation", false),
+         {:ok, instructions} <- boolean(frontmatter, "instructions", true),
          :ok <- nonempty_prompt(body) do
       {:ok,
        %Definition{
@@ -215,7 +216,8 @@ defmodule Tackle.Agents do
          timeout: timeout,
          max_iterations: max_iterations,
          advertise: advertise,
-         allow_delegation: allow_delegation
+         allow_delegation: allow_delegation,
+         instructions: instructions
        }}
     end
   end

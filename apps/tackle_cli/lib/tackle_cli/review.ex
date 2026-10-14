@@ -34,7 +34,7 @@ defmodule Tackle.CLI.Review do
           required(:thinking) => String.t() | nil,
           required(:range) => String.t() | nil,
           required(:staged) => boolean(),
-          required(:profile) => :quiet | :default | :assertive,
+          required(:profile) => :quiet | :default | :assertive | nil,
           required(:samples) => pos_integer(),
           required(:format) => :text | :json,
           optional(:tuning) => keyword(),
@@ -107,15 +107,18 @@ defmodule Tackle.CLI.Review do
       [
         requester: scope.root_agent_ref,
         profiles: scope_spec.profiles,
-        profile: opts.profile,
         samples: opts.samples,
         history: history(change, device),
         on_event: &send(parent, {tag, &1})
-      ] ++ Map.get(opts, :tuning, [])
+      ] ++ profile_option(opts.profile) ++ Map.get(opts, :tuning, [])
 
     task = Task.async(fn -> Review.run(change, review_opts) end)
     await_review(task, tag, ReviewProgress.new(), device)
   end
+
+  # Without `--profile`, the review applies the configured one.
+  defp profile_option(nil), do: []
+  defp profile_option(profile), do: [profile: profile]
 
   # History is an aid: without it the review still runs.
   defp history(change, device) do

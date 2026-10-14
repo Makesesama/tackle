@@ -25,6 +25,7 @@ defmodule Tackle.Review.Delegation do
   """
 
   alias Tackle.Config
+  alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Lib.{Event, Message, State, Usage}
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, AgentSpec, Handle, Outcome, Registry, RootBackend, ScopeRef}
@@ -87,6 +88,31 @@ defmodule Tackle.Review.Delegation do
 
   def put_review_context(%AgentSpec{name: name}, _review),
     do: {:error, {:unsupported_agent_config, name}}
+
+  @doc """
+  Returns the review settings of the requester's session
+  (`Tackle.Config.Review`, under `:review_settings` in its context), or
+  `nil` when it has none.
+  """
+  @spec requester_settings(requester()) ::
+          {:ok, ReviewSettings.t() | nil}
+          | {:error, {:requester_unavailable, term()} | {:invalid_review_settings, term()}}
+  def requester_settings(requester) do
+    case Runtime.session_snapshot(agent_ref(requester)) do
+      {:ok, %{agent_state: %State{context: context}}} ->
+        case Map.get(context, :review_settings) do
+          nil -> {:ok, nil}
+          %ReviewSettings{} = settings -> {:ok, settings}
+          other -> {:error, {:invalid_review_settings, other}}
+        end
+
+      {:error, reason} ->
+        {:error, {:requester_unavailable, reason}}
+
+      other ->
+        {:error, {:requester_unavailable, other}}
+    end
+  end
 
   @doc """
   Returns the configuration a run of `spec` requested from `requester`

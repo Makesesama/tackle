@@ -651,7 +651,10 @@ defmodule Tackle.Bench.ReviewEvalTest do
 
     test "reviews each case with each variant and records the results", ctx do
       out = Path.join(ctx.base, "results.jsonl")
-      {:ok, variants} = Variant.select(Variant.builtin(), ["baseline", "single-call", "lean"])
+
+      {:ok, variants} =
+        Variant.select(Variant.builtin(), ["baseline", "single-call", "lean-agents"])
+
       cwd = File.cwd!()
 
       assert {:ok, records} =
@@ -666,7 +669,7 @@ defmodule Tackle.Bench.ReviewEvalTest do
                )
 
       assert File.cwd!() == cwd
-      assert Enum.map(records, & &1["variant"]) == ["baseline", "single-call", "lean"]
+      assert Enum.map(records, & &1["variant"]) == ["baseline", "single-call", "lean-agents"]
 
       for record <- records do
         assert %{"status" => "ok", "case" => "seed-key", "repeat" => 1} = record
@@ -676,12 +679,13 @@ defmodule Tackle.Bench.ReviewEvalTest do
         assert [%{"title" => "Guard against a missing key"}] = record["result"]["blocking"]
       end
 
-      [baseline, single, lean] = records
+      [baseline, single, agents] = records
       assert "read" in baseline["profiles"]["detector"]["tools"]
       assert single["profiles"]["detector"]["tools"] == ["report_findings"]
       assert single["profiles"]["detector"]["max_iterations"] == 3
 
-      assert lean["profiles"]["detector"]["system_prompt_bytes"] <
+      # The default stages are lean; lean-agents adds the AGENTS.md files back.
+      assert agents["profiles"]["detector"]["system_prompt_bytes"] >
                baseline["profiles"]["detector"]["system_prompt_bytes"]
 
       assert out |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1) ==
@@ -734,7 +738,7 @@ defmodule Tackle.Bench.ReviewEvalTest do
     end
 
     test "a crashing review is a failed run, and the next run still happens", ctx do
-      {:ok, variants} = Variant.select(Variant.builtin(), ["baseline", "lean"])
+      {:ok, variants} = Variant.select(Variant.builtin(), ["lean-agents", "baseline"])
       cwd = File.cwd!()
 
       run_review = fn change, opts ->
@@ -757,9 +761,9 @@ defmodule Tackle.Bench.ReviewEvalTest do
 
       assert File.cwd!() == cwd
       by_variant = Map.new(records, &{&1["variant"], &1})
-      assert %{"status" => "error", "error" => "crashed: " <> reason} = by_variant["baseline"]
+      assert %{"status" => "error", "error" => "crashed: " <> reason} = by_variant["lean-agents"]
       assert reason =~ "boom"
-      assert %{"status" => "ok"} = by_variant["lean"]
+      assert %{"status" => "ok"} = by_variant["baseline"]
       refute File.exists?(Path.join([ctx.base, "work", Case.checkout_name(ctx.case)]))
     end
 

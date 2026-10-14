@@ -113,7 +113,7 @@ defmodule Tackle.CLI.ParserTest do
              %{
                range: nil,
                staged: false,
-               profile: :default,
+               profile: nil,
                samples: 1,
                format: :text,
                model: nil,

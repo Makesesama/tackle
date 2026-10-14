@@ -189,7 +189,7 @@ references. Do not edit files.
 
 `name` and `description` are required, as is a non-empty prompt body. Supported
 optional fields are `tools`, `model`, `thinking`, `timeoutMs`, `maxIterations`,
-`advertise`, and `allowDelegation`. Tool lists may be comma-separated, a simple
+`advertise`, `allowDelegation`, and `instructions`. Tool lists may be comma-separated, a simple
 `[read, bash]` list, or an indented `- read` block list. Unknown fields, invalid
 values, duplicate definitions within one source, unavailable models, and tools
 not already available to the harness package fail startup explicitly.
@@ -205,7 +205,10 @@ the child use the requesting parent's current model and thinking selection;
 setting `model` pins the configured selection. A `thinking` override requires an
 explicit `model`. `allowDelegation` independently grants the child the subagent
 tool and raises the coding scope's spawn-depth ceiling to one nested generation;
-all other inherited fleet limits remain authoritative.
+all other inherited fleet limits remain authoritative. `instructions: false`
+(default `true`) gives the profile a lean system prompt: only its own prompt and
+the working directory, without `APPEND_SYSTEM.md`, `AGENTS.md` files, skills, or
+the `load_skill` tool.
 
 Advertised profiles are included in the root prompt with their descriptions.
 Profiles that omit `advertise: true` remain callable by exact name but are not
@@ -224,9 +227,14 @@ It also defines `review-detector` and `review-verifier`, the model stages of
 `Tackle.Review` (code review; experimental). They are not advertised to the
 root and carry the review output tools `report_findings` and `report_verdict`
 (`Tackle.Tools.review/0`), which only work in runs started by `Tackle.Review`.
-Projects can override their prompts with `.tackle/agents/review-detector.md`
-or `review-verifier.md`; an override must keep its output tool. Agent files may
-select these two tools by name even though the root does not have them.
+Both run with `instructions: false`, so their system prompt is only their
+assignment and the working directory. `AGENTS.md` guides agent loops and chats,
+not reviews: a convention a review should enforce is a review rule
+(`Tackle.Review.Rules`, such as `.tackle/review/rules/no-jason.md`). Projects can override their prompts with
+`.tackle/agents/review-detector.md` or `review-verifier.md`; an override must
+keep its output tool, and should set `instructions: false` to stay lean. Agent
+files may select these two tools by name even though the root does not have
+them.
 
 A failed delegated run never invalidates a review. Detectors report findings
 with `report_findings` as they confirm them (`done: false`) and finish with a
@@ -634,6 +642,36 @@ implements `Tackle.Lib.Decision`, the session context carries `:decisions`
 ```json
 { "decision_model": "ollama/tev1:4b" }
 ```
+
+An optional `review` object sets defaults for code reviews (`Tackle.Review`)
+requested from the session, such as through the `review_changes` tool or
+`tackle review` (`Tackle.Config.Review`). Every field is optional:
+
+- `thinking` and `models` give the `detector`, `verifier`, and `scorer` stages
+  their own thinking levels and canonical model references; stages left out
+  use the profile's or the requesting session's model and level;
+- `max_steps` sets the `detector` and `verifier` step limits (model calls per
+  run), replacing their profiles' `maxIterations`;
+- `profile` is the default display level: `quiet`, `default`, or `assertive`;
+- `default_rules` lists the built-in rules to apply; without it all apply, and
+  `[]` applies none. User and project rules apply either way.
+
+A review's own options (`Tackle.Review.run/2`, CLI flags, or the tool's
+`profile` argument) override these, per stage for the stage objects:
+
+```json
+{
+  "review": {
+    "profile": "quiet",
+    "models": { "verifier": "openai-codex/gpt-5.5-codex-mini" },
+    "thinking": { "detector": "low", "verifier": "low" },
+    "max_steps": { "verifier": 6 },
+    "default_rules": ["unhandled-error", "injection", "secret-exposure"]
+  }
+}
+```
+
+Unknown models and rule ids fail configuration.
 
 Classifications by a local decision model (a provider whose adapter answers
 `true` from `local?/1` or `local?/0`, such as a local Ollama server) are not

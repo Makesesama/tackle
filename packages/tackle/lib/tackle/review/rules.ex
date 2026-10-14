@@ -123,6 +123,8 @@ defmodule Tackle.Review.Rules do
     * `:env` - environment for `TACKLE_HOME` (default: the process's);
     * `:builtin_dir` - directory to read instead of the embedded built-in
       rules, or `nil` for no built-in rules (default: the embedded rules);
+    * `:builtin_rules` - `:all` (default) or the ids of the built-in rules
+      to keep; user and project rules are kept whatever their id;
     * `:max_rule_bytes` - largest accepted rule body (default 4,096).
   """
   @type discover_option ::
@@ -130,6 +132,7 @@ defmodule Tackle.Review.Rules do
           | {:executor, Executor.t() | nil}
           | {:env, %{optional(String.t()) => String.t()}}
           | {:builtin_dir, Path.t() | nil}
+          | {:builtin_rules, :all | [String.t()]}
           | {:max_rule_bytes, pos_integer()}
 
   @typedoc """
@@ -153,6 +156,19 @@ defmodule Tackle.Review.Rules do
   """
   @spec builtin_files() :: [{String.t(), String.t()}]
   def builtin_files, do: @builtin_files
+
+  @doc "Returns the ids of the embedded built-in rules, sorted."
+  @spec builtin_ids() :: [String.t()]
+  def builtin_ids do
+    @builtin_files
+    |> Enum.flat_map(fn {name, contents} ->
+      case parse(contents, Path.join(@builtin_label, name), :builtin) do
+        {:ok, rule} -> [rule.id]
+        {:error, _message} -> []
+      end
+    end)
+    |> Enum.sort()
+  end
 
   # Recompiles when a built-in rule file is added or removed; edits to
   # existing files are tracked by `@external_resource`.
@@ -180,16 +196,20 @@ defmodule Tackle.Review.Rules do
   def discover(opts \\ []) do
     files = ProjectFiles.new(opts)
     max_bytes = positive_option(opts, :max_rule_bytes, @default_max_rule_bytes)
+    keep_builtin = Keyword.get(opts, :builtin_rules, :all)
 
     {rules, warnings} =
       opts
       |> sources(files)
       |> Enum.reduce({%{}, []}, fn
         {:builtin, :embedded}, acc ->
-          load_embedded(max_bytes, acc)
+          load_embedded(max_bytes, acc) |> select_builtin(keep_builtin)
 
-        {source, dir, reader, required?}, acc ->
-          load_directory(reader, dir, source, required?, max_bytes, acc)
+        {:builtin, _dir, _reader, _required?} = source, acc ->
+          load_source(source, max_bytes, acc) |> select_builtin(keep_builtin)
+
+        source, acc ->
+          load_source(source, max_bytes, acc)
       end)
 
     %{rules: rules |> Map.values() |> Enum.sort_by(& &1.id), warnings: Enum.reverse(warnings)}
@@ -309,6 +329,15 @@ defmodule Tackle.Review.Rules do
         {rules, [%{path: dir, message: message} | warnings]}
     end
   end
+
+  defp load_source({source, dir, reader, required?}, max_bytes, acc),
+    do: load_directory(reader, dir, source, required?, max_bytes, acc)
+
+  # Built-in rules load first, so only built-in rules are in the map here.
+  defp select_builtin(acc, :all), do: acc
+
+  defp select_builtin({rules, warnings}, ids) when is_list(ids),
+    do: {Map.take(rules, ids), warnings}
 
   defp load_embedded(max_bytes, {rules, warnings}) do
     {builtin_rules, warnings} =

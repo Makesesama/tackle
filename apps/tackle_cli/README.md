@@ -233,8 +233,50 @@ tackle review --score-batch 5                # findings per scorer call (default
 tackle review --stage-thinking detector=medium,verifier=low,scorer=low
 ```
 
-Smaller units and batches are more focused but cost more runs. Stages
-without `--stage-thinking` use the session's thinking level.
+Smaller units and batches are more focused but cost more runs.
+
+Defaults for every review, including `/review` in the TUI and the
+`review_changes` tool, go in the `review` object of
+`$TACKLE_HOME/config.json`: per-stage `models` and `thinking` (`detector`,
+`verifier`, `scorer`), per-stage step limits `max_steps` (`detector`,
+`verifier`), the display `profile`, and `default_rules`, the built-in rules
+to apply (all when left out). `--profile` and `--stage-thinking` override
+them; stages left out use the session's model and thinking level:
+
+```json
+{
+  "review": {
+    "profile": "quiet",
+    "models": { "verifier": "openai-codex/gpt-5.5-codex-mini" },
+    "thinking": { "detector": "low", "verifier": "low" },
+    "max_steps": { "verifier": 6 },
+    "default_rules": ["unhandled-error", "injection", "secret-exposure"]
+  }
+}
+```
+
+The built-in rules are `boundary-condition`, `broken-contract`,
+`concurrency-hazard`, `injection`, `missing-nil-check`,
+`missing-test-for-behaviour-change`, `resource-leak`, `secret-exposure`, and
+`unhandled-error`.
+
+The detector and verifier run with only their assignment and the working
+directory as system prompt: `AGENTS.md` files, `APPEND_SYSTEM.md`, and skills
+are left out to keep every run cheap. `AGENTS.md` guides agent loops and
+chats; reviews check rules. To have reviews enforce a project convention,
+write it as a rule:
+
+```markdown
+---
+id: no-jason
+category: maintainability
+severity: medium
+applies_to: ["**/*.ex", "**/*.exs"]
+---
+Use Elixir's standard-library `JSON` module; never Jason or another JSON library.
+```
+
+saved as `.tackle/review/rules/no-jason.md`.
 
 It starts the same scope as an interactive run, without a durable session,
 so `--model`/`--thinking`, the jail, and project `.tackle/agents` overrides

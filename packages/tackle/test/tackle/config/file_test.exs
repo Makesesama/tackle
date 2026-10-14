@@ -172,6 +172,41 @@ defmodule Tackle.Config.FileTest do
     assert config.system_prompt =~ "<description>Demonstrates skills.</description>"
   end
 
+  test "instructions: false leaves instruction files and skills out", %{home: home, env: env} do
+    cwd = Path.join(home, "lean-workspace")
+    File.mkdir_p!(Path.join(cwd, ".git"))
+    File.write!(Path.join(home, "APPEND_SYSTEM.md"), "Global addition.")
+    File.write!(Path.join(cwd, "AGENTS.md"), "Workspace instructions.")
+    skill_dir = Path.join([cwd, ".agents", "skills", "demo"])
+    File.mkdir_p!(skill_dir)
+
+    File.write!(
+      Path.join(skill_dir, "SKILL.md"),
+      "---\nname: demo\ndescription: Demonstrates skills.\n---\nbody\n"
+    )
+
+    load = fn instructions ->
+      Config.load(
+        available_adapters: [Adapter],
+        cwd: cwd,
+        env: env,
+        instructions: instructions,
+        overrides: [model: "test/default", system_prompt: "Assignment."]
+      )
+    end
+
+    assert {:ok, full} = load.(true)
+    assert full.system_prompt =~ "Workspace instructions."
+    assert Tackle.Tools.LoadSkill in full.tools
+
+    assert {:ok, lean} = load.(false)
+    assert lean.system_prompt == "Assignment.\n\nCurrent working directory: #{cwd}\n"
+    refute Tackle.Tools.LoadSkill in lean.tools
+    refute Map.has_key?(lean.context, :skills)
+
+    assert {:error, {:invalid_option, :instructions, "no"}} = load.("no")
+  end
+
   test "environment overrides the file", %{home: home, env: env} do
     write_config(home, ~s({"model":"test/file","thinking":"low"}))
 
@@ -563,6 +598,86 @@ defmodule Tackle.Config.FileTest do
 
     write_config(home, ~s({"decision_model": "test/default"}))
     assert {:error, {:unsupported_decision_adapter, "test"}} = load.()
+  end
+
+  test "review settings are configurable through config.json", %{home: home, env: env} do
+    load = fn ->
+      Config.load(available_adapters: [Adapter], env: env, overrides: [model: "test/default"])
+    end
+
+    assert {:ok, config} = load.()
+    assert config.review == nil
+    refute Map.has_key?(config.context, :review_settings)
+
+    write_config(home, ~s({"review": {"thinking": {"detector": "low", "scorer": "off"}}}))
+    assert {:ok, config} = load.()
+    review = %Tackle.Config.Review{thinking: %{detector: "low", scorer: "off"}}
+    assert config.review == review
+    assert config.context.review_settings == review
+
+    write_config(home, ~s({
+      "review": {
+        "profile": "quiet",
+        "models": {"verifier": "test/file"},
+        "thinking": {"verifier": "low"},
+        "max_steps": {"detector": 12, "verifier": 6},
+        "default_rules": ["injection", "unhandled-error"]
+      }
+    }))
+
+    assert {:ok, config} = load.()
+
+    assert config.review == %Tackle.Config.Review{
+             profile: :quiet,
+             models: %{verifier: "test/file"},
+             thinking: %{verifier: "low"},
+             max_steps: %{detector: 12, verifier: 6},
+             default_rules: ["injection", "unhandled-error"]
+           }
+
+    write_config(home, ~s({"review": {"profile": null, "default_rules": null}}))
+    assert {:ok, %{review: %Tackle.Config.Review{profile: nil, default_rules: nil}}} = load.()
+
+    write_config(home, ~s({"review": {}}))
+    assert {:ok, %{review: %Tackle.Config.Review{thinking: thinking}}} = load.()
+    assert thinking == %{}
+
+    write_config(home, ~s({"review": null}))
+    assert {:ok, %{review: nil}} = load.()
+  end
+
+  test "invalid review configuration returns errors", %{home: home, env: env} do
+    load = fn ->
+      Config.load(available_adapters: [Adapter], env: env, overrides: [model: "test/default"])
+    end
+
+    for review <- [
+          ~s("low"),
+          ~s({"samples": 3}),
+          ~s({"thinking": "low"}),
+          ~s({"thinking": {"planner": "low"}}),
+          ~s({"thinking": {"detector": "huge"}}),
+          ~s({"thinking": {"detector": null}}),
+          ~s({"models": {"verifier": ""}}),
+          ~s({"profile": "loud"}),
+          ~s({"max_steps": {"detector": 0}}),
+          ~s({"max_steps": {"detector": "6"}}),
+          ~s({"default_rules": "injection"}),
+          ~s({"default_rules": [1]})
+        ] do
+      path = write_config(home, ~s({"review": #{review}}))
+      assert {:error, {:invalid_config_field, ^path, "review"}} = load.(), review
+    end
+
+    # Values the file format allows but the settings reject.
+    write_config(home, ~s({"review": {"max_steps": {"scorer": 3}}}))
+    assert {:error, {:invalid_option, :review, _}} = load.()
+
+    write_config(home, ~s({"review": {"default_rules": ["no-jason"]}}))
+    assert {:error, {:unknown_default_rules, ["no-jason"]}} = load.()
+
+    write_config(home, ~s({"review": {"models": {"verifier": "test/missing"}}}))
+    assert {:error, _unknown_model} = load.()
   end
 
   test "narration is off by default and configurable through config.json", %{

@@ -37,7 +37,7 @@ defmodule Tackle.CLI.Parser do
           thinking: String.t() | nil,
           range: String.t() | nil,
           staged: boolean(),
-          profile: :quiet | :default | :assertive,
+          profile: :quiet | :default | :assertive | nil,
           samples: pos_integer(),
           format: :text | :json,
           tuning: keyword()
@@ -174,7 +174,7 @@ defmodule Tackle.CLI.Parser do
           thinking: Map.get(result.options, :thinking),
           range: range,
           staged: staged,
-          profile: Map.get(result.options, :profile, :default),
+          profile: Map.get(result.options, :profile),
           samples: Map.get(result.options, :samples, 1),
           format: Map.get(result.options, :format, :text),
           tuning: review_tuning(result)
@@ -389,9 +389,10 @@ defmodule Tackle.CLI.Parser do
             profile: [
               value_name: "PROFILE",
               long: "--profile",
-              help: "Which findings to show: quiet, default, or assertive",
-              parser: &review_profile/1,
-              default: :default
+              help:
+                "Which findings to show: quiet, default, or assertive " <>
+                  "(default: config.json's review.profile, else default)",
+              parser: &review_profile/1
             ],
             samples: [
               value_name: "N",
@@ -437,7 +438,8 @@ defmodule Tackle.CLI.Parser do
               long: "--stage-thinking",
               help:
                 "Thinking levels of review stages (detector, verifier, scorer), such as " <>
-                  "detector=medium,verifier=low; others use the session's level",
+                  "detector=medium,verifier=low; others use config.json's review.thinking, " <>
+                  "then the session's level",
               parser: &stage_thinking/1
             ]
           ]

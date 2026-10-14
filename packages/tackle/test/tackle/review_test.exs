@@ -1344,6 +1344,128 @@ defmodule Tackle.ReviewTest do
       assert [%{reasoning_effort: "medium"}] = calls(:scorer)
     end
 
+    test "the requester session's review settings set stage thinking levels" do
+      script = script(%{findings: [nil_check()]})
+      inherit = [model_source: :parent]
+      profiles = profiles(script, detector: inherit, verifier: inherit)
+
+      {:ok, root_config} =
+        Config.new(
+          providers: [Adapter],
+          model: "review/fake",
+          thinking: "medium",
+          system_prompt: "Root.",
+          llm_opts: [test_pid: self(), script: script],
+          review: [thinking: [detector: "low", scorer: "high"]]
+        )
+
+      spec =
+        ScopeSpec.new!(
+          root_spec: AgentSpec.new!(name: "root", config: root_config, allow_delegation: true),
+          profiles: profiles
+        )
+
+      {:ok, scope} = Tackle.Runtime.start_scope(spec)
+      on_exit(fn -> Tackle.Test.Runtime.stop_scope(scope.scope_ref) end)
+      opts = [requester: scope.root_agent_ref, profiles: profiles, rules: rules()]
+
+      assert {:ok, result} = Review.run(change(), opts)
+      assert Enum.all?(calls(:detector), &(&1.reasoning_effort == "low"))
+      assert Enum.all?(calls(:verifier), &(&1.reasoning_effort == "medium"))
+      assert [%{reasoning_effort: "high"}] = calls(:scorer)
+
+      assert %{detector: "low", verifier: "medium", scorer: "high"} =
+               result.summary.settings.thinking
+
+      # The option replaces a stage's setting; `nil` falls back to the
+      # inherited level.
+      assert {:ok, _result} =
+               Review.run(change(), [thinking: [detector: "minimal", scorer: nil]] ++ opts)
+
+      assert Enum.all?(calls(:detector), &(&1.reasoning_effort == "minimal"))
+      assert [%{reasoning_effort: "medium"}] = calls(:scorer)
+    end
+
+    test "the requester session's settings set profile, models, step limits, and rules" do
+      script = script(%{findings: [nil_check()]})
+      profiles = profiles(script)
+
+      {:ok, root_config} =
+        Config.new(
+          providers: [Adapter],
+          model: "review/fake",
+          system_prompt: "Root.",
+          llm_opts: [test_pid: self(), script: script],
+          review: [
+            profile: :assertive,
+            models: [verifier: "review/other"],
+            max_steps: [detector: 3, verifier: 2],
+            default_rules: ["missing-nil-check"]
+          ]
+        )
+
+      spec =
+        ScopeSpec.new!(
+          root_spec: AgentSpec.new!(name: "root", config: root_config, allow_delegation: true),
+          profiles: profiles
+        )
+
+      {:ok, scope} = Tackle.Runtime.start_scope(spec)
+      on_exit(fn -> Tackle.Test.Runtime.stop_scope(scope.scope_ref) end)
+      # Without `:rules`, the rules are discovered, built-in ones included.
+      opts = [requester: scope.root_agent_ref, profiles: profiles]
+
+      assert {:ok, result} = Review.run(change(), opts)
+      assert result.summary.profile == :assertive
+      assert Enum.all?(calls(:verifier), &(&1.model == "other"))
+
+      assert %{max_steps: %{detector: 3, verifier: 2}, models: %{verifier: "review/other"}} =
+               result.summary.settings
+
+      detector_prompts = Enum.map_join(calls(:detector), "\n", & &1.prompt)
+      assert detector_prompts =~ ~s(<rule id="missing-nil-check")
+      refute detector_prompts =~ ~s(<rule id="injection")
+
+      # Options override the settings; a stage set to nil keeps its profile's limit.
+      assert {:ok, result} =
+               Review.run(
+                 change(),
+                 [profile: :quiet, max_steps: [detector: nil], default_rules: []] ++ opts
+               )
+
+      assert result.summary.profile == :quiet
+      assert %{max_steps: %{detector: 6, verifier: 2}} = result.summary.settings
+      refute Enum.map_join(calls(:detector), "\n", & &1.prompt) =~ "<rule id="
+    end
+
+    test "a requester without a session fails before any run" do
+      script = script()
+      profiles = profiles(script)
+
+      {:ok, root_config} =
+        Config.new(
+          providers: [Adapter],
+          model: "review/fake",
+          system_prompt: "Root.",
+          llm_opts: [test_pid: self(), script: script]
+        )
+
+      spec =
+        ScopeSpec.new!(
+          root_spec: AgentSpec.new!(name: "root", config: root_config, allow_delegation: true),
+          profiles: profiles
+        )
+
+      {:ok, scope} = Tackle.Runtime.start_scope(spec)
+      requester = scope.root_agent_ref
+      Tackle.Test.Runtime.stop_scope(scope.scope_ref)
+
+      assert {:error, {:requester_unavailable, _reason}} =
+               Review.run(change(), requester: requester, profiles: profiles, rules: rules())
+
+      assert calls(:detector) == []
+    end
+
     test "the runs of a stage share one prompt cache key per review" do
       assert {:ok, _result} = review(change(), script())
 
@@ -1448,6 +1570,15 @@ defmodule Tackle.ReviewTest do
 
       assert {:error, {:invalid_option, :thinking, [detector: "huge"]}} =
                Review.run(change(), [thinking: [detector: "huge"]] ++ base)
+
+      assert {:error, {:invalid_option, :max_steps, [scorer: 2]}} =
+               Review.run(change(), [max_steps: [scorer: 2]] ++ base)
+
+      assert {:error, {:invalid_option, :max_steps, [detector: 0]}} =
+               Review.run(change(), [max_steps: [detector: 0]] ++ base)
+
+      assert {:error, {:invalid_option, :default_rules, "injection"}} =
+               Review.run(change(), [default_rules: "injection"] ++ base)
 
       assert {:error, {:invalid_option, :units, {:invalid_option, :max_changed_lines, 0}}} =
                Review.run(change(), [units: [max_changed_lines: 0]] ++ base)

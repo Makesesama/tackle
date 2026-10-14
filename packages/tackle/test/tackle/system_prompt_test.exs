@@ -47,6 +47,29 @@ defmodule Tackle.SystemPromptTest do
     refute prompt =~ "Use read"
   end
 
+  test "instructions: false skips APPEND_SYSTEM.md and AGENTS.md files", %{
+    cwd: cwd,
+    home: home,
+    project: project
+  } do
+    File.write!(Path.join(home, "APPEND_SYSTEM.md"), "Global extra guidance.")
+    File.write!(Path.join(project, "AGENTS.md"), "Project guidance.")
+
+    assert {:ok, prompt} =
+             SystemPrompt.build(
+               base: "Assignment.",
+               cwd: cwd,
+               home: home,
+               tools: [],
+               instructions: false
+             )
+
+    assert prompt == "Assignment.\n\nCurrent working directory: #{cwd}\n"
+
+    assert {:error, {:invalid_system_prompt_option, :instructions, "no"}} =
+             SystemPrompt.build(cwd: cwd, home: home, instructions: "no")
+  end
+
   test "layers global additions before global and ancestor AGENTS.md files", %{
     cwd: cwd,
     home: home,

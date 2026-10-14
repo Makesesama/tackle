@@ -98,6 +98,32 @@ defmodule Tackle.Review.RulesTest do
       assert %Rule{source: :builtin} = by_id(rules)["secret-exposure"]
     end
 
+    test "builtin_rules keeps only the listed built-in rules", %{
+      opts: opts,
+      project: project,
+      root: root
+    } do
+      assert Rules.builtin_ids() == @builtin_rules |> Map.keys() |> Enum.sort()
+
+      put(project, "own.md", rule("project-only"))
+      put(project, "inj.md", rule("injection", severity: "low"))
+      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), env: %{"TACKLE_HOME" => root})
+
+      ids = fn keep ->
+        opts |> Keyword.put(:builtin_rules, keep) |> Rules.discover() |> Map.fetch!(:rules)
+      end
+
+      assert Enum.map(ids.(["secret-exposure"]), &{&1.id, &1.source}) == [
+               {"injection", :project},
+               {"project-only", :project},
+               {"secret-exposure", :builtin}
+             ]
+
+      # User and project rules stay, even with an id of a dropped built-in rule.
+      assert Enum.map(ids.([]), & &1.id) == ["injection", "project-only"]
+      assert length(ids.(:all)) == map_size(@builtin_rules) + 1
+    end
+
     test "ship the MVP set as active, language-agnostic rules with examples", %{
       opts: opts,
       root: root
