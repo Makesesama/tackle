@@ -2912,9 +2912,10 @@ defmodule Tackle.CLI.TUITest do
 
     failed_state = state(tui)
     assert failed_state.activity == "failed bash"
-    assert conversation_text(failed_state) =~ "✗ failed  bash"
+    assert conversation_text(failed_state) =~ "✗ failed  $ bash"
     assert conversation_text(failed_state) =~ "failed"
-    assert conversation_text(failed_state) =~ "  command exited with status 1"
+    assert conversation_text(failed_state) =~ "  │ command exited with status 1"
+    assert conversation_text(failed_state) =~ "  └ failed · "
   end
 
   test "renders settled tool calls and results with stable ids", %{tui: tui} do

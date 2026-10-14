@@ -6,8 +6,16 @@ defmodule Tackle.CLI.TUI.ToolView do
   markers accompany a prominent path or subdued command. Preview rows use a four-cell
   hanging indent. Completed calls omit redundant status text;
   running, requested and failed calls stay explicit. Successful reads collapse
-  to a tool/path header; successful Bash output shows at most two clipped tail
-  lines.
+  to a tool/path header.
+
+  Bash cards read like a shell prompt: the directory of a leading `cd <dir> &&`
+  in a subtle tone, an accent `$`, and the command painted in theme tones
+  (`Tackle.CLI.TUI.BashView`); multi-line commands show their first line and
+  a `+N lines` count, and a command past three rows ends in `…`. Output runs
+  along a `│` rail, dedented as a block: successful calls show a two-line tail
+  with a count of the lines above, failures keep both ends. A footer that is
+  always present closes the card with `└`: `✓` and the locally observed time,
+  or on failure the exit code lifted out of the output.
   Full retained output stays in details. Failed edits/writes show the error instead of
   submitted changes (details retain the submitted arguments as source).
   Subagents show their profile, assignment, live status, and locally observed
@@ -61,7 +69,7 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   alias ExRatatui.Style
   alias Tackle.CLI.Native
-  alias Tackle.CLI.TUI.{Highlight, MessageView, ReviewCallView, Theme, ToolGroups}
+  alias Tackle.CLI.TUI.{BashView, Highlight, MessageView, ReviewCallView, Theme, ToolGroups}
   alias Tackle.CLI.TUI.{WorkflowProgress, WorkflowView}
   alias Tackle.CLI.WorkflowScript
 
@@ -78,6 +86,8 @@ defmodule Tackle.CLI.TUI.ToolView do
   @preview_replacements 2
   @preview_context 1
   @header_rows 2
+  # Commands get one more row than other titles: they are the card's content.
+  @bash_header_rows 3
 
   @doc "A compact, source-independent title for a tool call."
   def title(name, arguments, _status) do
@@ -113,17 +123,31 @@ defmodule Tackle.CLI.TUI.ToolView do
       end
 
     header =
-      entry
-      |> header_rows(header_args, width)
-      |> wrap_indented(width, 4, true)
-      |> Enum.take(@header_rows)
+      if entry.tool_name == "bash" do
+        bash_header(entry, args, width)
+      else
+        entry
+        |> header_rows(header_args, width)
+        |> wrap_indented(width, 4, true)
+        |> Enum.take(@header_rows)
+      end
 
     body =
-      if mode == :preview do
-        file_preview(paint_entry, args, width, Keyword.get(opts, :code_rows, @file_preview_rows)) ||
+      cond do
+        entry.tool_name == "bash" ->
+          bash_body(paint_entry, args, mode, width)
+
+        mode == :preview ->
+          file_preview(
+            paint_entry,
+            args,
+            width,
+            Keyword.get(opts, :code_rows, @file_preview_rows)
+          ) ||
+            compact_body(paint_entry, args, mode, width)
+
+        true ->
           compact_body(paint_entry, args, mode, width)
-      else
-        compact_body(paint_entry, args, mode, width)
       end
 
     result =
@@ -720,7 +744,7 @@ defmodule Tackle.CLI.TUI.ToolView do
       else
         [
           MessageView.span(name <> "  ", Theme.style(:muted)),
-          MessageView.span(target, target_style(name))
+          MessageView.span(target, Theme.bold(Theme.style(:text)))
         ]
       end
 
@@ -748,9 +772,244 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp watchdog_status(%{tool_status: status}), do: status
 
-  # Commands are often paragraphs long; reserve bold emphasis for file targets.
-  defp target_style("bash"), do: Theme.style(:muted)
-  defp target_style(_name), do: Theme.bold(Theme.style(:text))
+  ## Bash
+
+  # A prompt line: status (unless completed), the directory peeled from a
+  # leading `cd`, an accent `$` and the command's first line painted as code.
+  # Wraps align under the command, two cells in, so they never line up with
+  # output; a command longer than the row budget ends in an explicit `…`.
+  defp bash_header(entry, args, width) do
+    rows = bash_prompt_rows(entry, args, width)
+
+    if length(rows) > @bash_header_rows do
+      {kept, [last]} = rows |> Enum.take(@bash_header_rows) |> Enum.split(-1)
+      kept ++ [ellipsize(last, width)]
+    else
+      rows
+    end
+  end
+
+  # The uncapped prompt rows; the header shows at most `@bash_header_rows`.
+  defp bash_prompt_rows(entry, args, width) do
+    shown = watchdog_status(entry)
+
+    status =
+      if entry.tool_status == :completed,
+        do: [],
+        else: [
+          MessageView.span(marker(shown), marker_style(shown)),
+          MessageView.span(status_text(shown) <> "  ", status_style(shown))
+        ]
+
+    {dir, command} =
+      case bash_command(entry, args) do
+        command when is_binary(command) -> BashView.split_cwd(command)
+        nil -> {nil, ""}
+      end
+
+    cwd = if dir, do: [MessageView.span(dir <> " ", Theme.style(:subtle))], else: []
+    prompt = [MessageView.span("$ ", Theme.style(:accent))]
+
+    command_spans =
+      case BashView.line_spans(command) do
+        [[]] ->
+          [MessageView.span("bash", Theme.style(:muted))]
+
+        [first] ->
+          first
+
+        [first | more] ->
+          count = length(more)
+
+          first ++
+            [MessageView.span("  +#{count} " <> plural(count, "line"), Theme.style(:subtle))]
+      end
+
+    wrap_indented([MessageView.row(status ++ cwd ++ prompt ++ command_spans)], width, 2, true)
+  end
+
+  # Streamed arguments are raw JSON until the call is complete.
+  defp bash_command(%{tool_arguments: raw}, %{"input" => raw}) when is_binary(raw),
+    do: partial_field(raw, "command")
+
+  defp bash_command(_entry, args) do
+    case get(args, :command) do
+      command when is_binary(command) -> command
+      _ -> nil
+    end
+  end
+
+  # Make room for a trailing `…` on a row that already fits the width.
+  defp ellipsize(row, width) do
+    excess = MessageView.display_width(plain_text(row)) + 1 - width
+    spans = row.spans |> Enum.reverse() |> drop_cells(excess) |> Enum.reverse()
+    %{row | spans: spans ++ [MessageView.span("…", Theme.style(:subtle))]}
+  end
+
+  defp drop_cells(spans, excess) when excess <= 0, do: spans
+  defp drop_cells([], _excess), do: []
+
+  defp drop_cells([span | rest], excess) do
+    case String.graphemes(span.content) do
+      [] ->
+        drop_cells(rest, excess)
+
+      graphemes ->
+        {kept, [last]} = Enum.split(graphemes, -1)
+        span = %{span | content: Enum.join(kept)}
+        drop_cells([span | rest], excess - MessageView.display_width(last))
+    end
+  end
+
+  defp plain_text(row), do: Enum.map_join(row.spans, & &1.content)
+
+  # The card is a bracket: the prompt opens it, output runs along a `│` rail,
+  # and a footer that is always present closes it with `└`. Successful calls
+  # show a two-line tail and say how much is above it; failures keep both
+  # ends. Shown lines lose the indentation they share, so indented source in
+  # the output does not drift away from the rail.
+  defp bash_body(%{tool_status: status} = entry, _args, :preview, width)
+       when status in [:running, :completed, :failed] do
+    shown = watchdog_status(entry)
+
+    {output, code} =
+      if status == :failed,
+        do: BashView.outcome(entry.tool_output),
+        else: {entry.tool_output || "", nil}
+
+    tone =
+      case shown do
+        :failed -> :error
+        :stopped -> :warning
+        _ -> :muted
+      end
+
+    lines = BashView.output_lines(output)
+    count = length(lines)
+
+    {head, hint, tail} =
+      cond do
+        status == :failed and count > 4 ->
+          {Enum.take(lines, 2), "… #{count - 4} more " <> plural(count - 4, "line"),
+           Enum.take(lines, -2)}
+
+        status != :failed and count > 2 ->
+          {[], "… #{count - 2} " <> plural(count - 2, "line") <> " above", Enum.take(lines, -2)}
+
+        true ->
+          {lines, nil, []}
+      end
+
+    {head, tail} = BashView.dedent(head, tail)
+    line = &[MessageView.span(&1, Theme.style(tone))]
+    hint = if hint, do: [[MessageView.span(hint, Theme.style(:subtle))]], else: []
+
+    rail(Enum.map(head, line) ++ hint ++ Enum.map(tail, line), bash_footer(entry, code), width)
+  end
+
+  defp bash_body(_entry, _args, :preview, _width), do: []
+
+  # Details print the whole submitted command, then every output line as the
+  # tool returned it.
+  defp bash_body(entry, args, :details, width) do
+    # The header already shows a command that fits; repeat only one it cut.
+    command =
+      case bash_command(entry, args) do
+        command when is_binary(command) ->
+          lines = BashView.line_spans(command)
+
+          if length(lines) > 1 or
+               length(bash_prompt_rows(entry, args, width)) > @bash_header_rows,
+             do: [context_row("Command") | Enum.map(lines, &MessageView.row/1)],
+             else: []
+
+        nil ->
+          []
+      end
+
+    timeout =
+      case get(args, :timeout) do
+        seconds when is_number(seconds) -> [context_row("Timeout: #{seconds}s")]
+        _ -> []
+      end
+
+    output =
+      if is_binary(entry.tool_output),
+        do: [context_row("Output") | output_rows(entry, :details)],
+        else: []
+
+    code = if entry.tool_status == :failed, do: elem(BashView.outcome(entry.tool_output), 1)
+    footer = MessageView.row(bash_footer(entry, code))
+
+    wrap_indented(command ++ timeout ++ output ++ [footer], width, 4)
+  end
+
+  # The closing row: `✓` and the time once a call succeeded, the exit code and
+  # time when it failed, the running clock while it runs. A call without an
+  # observed time (resumed sessions) still closes with its outcome.
+  defp bash_footer(entry, code) do
+    time =
+      case entry.tool_elapsed_ms do
+        ms when is_integer(ms) and ms >= 0 ->
+          [MessageView.span(BashView.elapsed(ms, entry.tool_status), Theme.style(:subtle))]
+
+        _ ->
+          []
+      end
+
+    outcome =
+      case {entry.tool_status, watchdog_status(entry)} do
+        {:completed, _} ->
+          [MessageView.span("✓", Theme.style(:success))]
+
+        {:failed, _} when is_integer(code) and code != 0 ->
+          [MessageView.span("exit #{code}", Theme.style(:error))]
+
+        {:failed, shown} ->
+          [MessageView.span(status_text(shown), status_style(shown))]
+
+        {_running, shown} when time == [] ->
+          [MessageView.span(status_text(shown), Theme.style(:subtle))]
+
+        _running ->
+          []
+      end
+
+    case {outcome, time} do
+      {[], time} -> time
+      {outcome, []} -> outcome
+      {[%{content: "✓"}] = check, time} -> check ++ [MessageView.span(" ")] ++ time
+      {outcome, time} -> outcome ++ [MessageView.span(" · ", Theme.style(:subtle))] ++ time
+    end
+  end
+
+  # Output rows run along a `│` rail under the prompt and the footer closes it
+  # with `└`, so the card's end is visible. Each row is clipped to one line.
+  # Narrow terminals drop the rail rather than the content.
+  defp rail(rows, footer, width) when width > 5 do
+    rail =
+      Enum.map(
+        rows,
+        &[MessageView.span("  │ ", Theme.style(:subtle)) | clip_spans(&1, width - 4)]
+      )
+
+    close = [MessageView.span("  └ ", Theme.style(:subtle)) | clip_spans(footer, width - 4)]
+    Enum.map(rail ++ [close], &MessageView.row/1)
+  end
+
+  defp rail(rows, footer, width),
+    do: Enum.map(rows ++ [footer], &MessageView.row(clip_spans(&1, width)))
+
+  defp clip_spans(spans, width) do
+    text = Enum.map_join(spans, & &1.content)
+
+    if MessageView.display_width(text) <= width,
+      do: spans,
+      else: [%{hd(spans) | content: clip_width(text, width)}]
+  end
+
+  defp plural(1, noun), do: noun
+  defp plural(_count, noun), do: noun <> "s"
 
   defp body_rows(%{tool_name: "subagent_wait", tool_status: status}, _args, :preview, _width)
        when status in [:requested, :running] do
@@ -842,10 +1101,6 @@ defmodule Tackle.CLI.TUI.ToolView do
 
   defp body_rows(%{tool_name: "read", tool_status: :completed}, _args, :preview, _width),
     do: []
-
-  defp body_rows(%{tool_name: "bash", tool_status: status} = entry, _args, :preview, width)
-       when status in [:running, :completed],
-       do: bash_preview(entry.tool_output, width)
 
   defp body_rows(%{tool_name: name, tool_status: :failed} = entry, _args, :preview, _width)
        when name in ["edit", "write"],
@@ -957,23 +1212,6 @@ defmodule Tackle.CLI.TUI.ToolView do
       end
 
     argument_rows ++ output_rows(entry, mode)
-  end
-
-  # Successful shell output is a two-line tail, not a wrapped wall of logs.
-  # Clip only paint; the inspector, search and copy keep the original output.
-  defp bash_preview(nil, _width), do: []
-
-  defp bash_preview(output, width) do
-    content_width = if width > 5, do: width - 4, else: max(width, 1)
-
-    lines =
-      output
-      |> MessageView.sanitize()
-      |> String.split("\n", trim: false)
-      |> Enum.reject(&(String.trim(&1) == ""))
-
-    tail = Enum.take(lines, -2)
-    Enum.map(tail, &body_row(Theme.style(:muted), clip_width(&1, content_width)))
   end
 
   defp clip_width(text, width) do

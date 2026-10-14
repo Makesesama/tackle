@@ -135,6 +135,7 @@ defmodule Tackle.CLI.TUI.State do
           metrics: Metrics.t(),
           observations: Tackle.CLI.TUI.Observations.t(),
           tool_activity: [map()],
+          tool_times: %{optional(String.t()) => non_neg_integer()},
           subagents: %{optional(String.t()) => map()},
           review: Tackle.CLI.TUI.Review.t() | nil,
           storage: :ready | :delayed,
@@ -226,6 +227,9 @@ defmodule Tackle.CLI.TUI.State do
             metrics: %Metrics{},
             observations: %Tackle.CLI.TUI.Observations{},
             tool_activity: [],
+            # Locally observed durations of finished calls, by call id. Kept
+            # for the session (never persisted) so settled cards show them.
+            tool_times: %{},
             subagents: %{},
             # The `/review` session, kept while its overlay is closed so
             # `/findings` can reopen it.
@@ -412,6 +416,7 @@ defmodule Tackle.CLI.TUI.State do
         metrics: %Metrics{latest_usage: latest_usage(snapshot.agent_state)},
         observations: %Tackle.CLI.TUI.Observations{},
         tool_activity: [],
+        tool_times: %{},
         subagents: %{},
         review: Tackle.CLI.TUI.Review.discard(state.review),
         activity: nil,

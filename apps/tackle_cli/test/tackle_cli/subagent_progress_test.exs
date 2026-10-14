@@ -63,6 +63,47 @@ defmodule Tackle.CLI.SubagentProgressTest do
     assert two.tool_status == :completed
   end
 
+  test "a bash call keeps its observed time after the turn settles" do
+    args = %{"command" => "mix test"}
+
+    state =
+      event(shell(), :tool_start, %{tool_call_id: "sh", name: "bash", arguments: args})
+
+    {:noreply, ticked} = RuntimeEvents.handle({:tui_spinner_tick}, age(state, "sh", 3_000))
+    [card] = cards(ticked)
+    assert render_text(card) =~ "└ 3s"
+
+    completed =
+      event(ticked, :tool_execution_end, %{
+        tool_call_id: "sh",
+        name: "bash",
+        status: :completed,
+        result: "Result: 30 passed"
+      })
+
+    duration = hd(cards(completed)).tool_elapsed_ms
+    assert duration >= 3_000
+    assert completed.tool_times == %{"sh" => duration}
+
+    agent_state = %AgentState{
+      messages: [
+        Message.assistant(tool_calls: [%{id: "sh", name: "bash", arguments: args}]),
+        Message.tool_result("sh", "bash", "Result: 30 passed")
+      ]
+    }
+
+    {:noreply, settled} =
+      RuntimeEvents.handle(
+        {:tackle_turn_finished, "session", "turn", {:ok, agent_state}},
+        completed
+      )
+
+    assert settled.tool_activity == []
+    [card] = cards(settled)
+    assert card.tool_elapsed_ms == duration
+    assert render_text(card) =~ "Result: 30 passed"
+  end
+
   test "a running workflow keeps a local clock and an outlined activity label" do
     state =
       event(shell(), :tool_start, %{

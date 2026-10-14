@@ -303,11 +303,11 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert Enum.all?(row.spans, &is_nil(&1.style.bg))
   end
 
-  test "tool cards use a borderless tool-first header and indented muted output" do
+  test "bash cards read as a prompt with output along a rail closed by a footer" do
     [entry] =
       settled([
         Message.assistant(
-          tool_calls: [%{id: "r", name: "bash", arguments: %{"command" => "cat a.ex"}}]
+          tool_calls: [%{id: "r", name: "bash", arguments: %{"command" => "make all"}}]
         ),
         Message.tool_result("r", "bash", "line one")
       ])
@@ -325,14 +325,23 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     body = Enum.filter(cells, &(&1.row == 1))
 
     assert Enum.all?(header ++ body, &(&1.bg == :reset))
-    assert Enum.find(header, &(&1.symbol == "c")).modifiers == []
-    assert Enum.find(header, &(&1.symbol == "c")).fg == {:indexed, 246}
+    prompt = Enum.find(header, &(&1.symbol == "$"))
+    assert prompt.col == 0
+    assert prompt.fg == {:indexed, 110}
+    # The command name takes the prompt's accent; arguments the text tone,
+    # distinct from muted output.
+    assert Enum.find(header, &(&1.symbol == "m")).fg == {:indexed, 110}
+    assert Enum.find(header, &(&1.symbol == "l")).fg == :reset
+    assert Enum.find(header, &(&1.symbol == "m")).modifiers == []
+    assert Enum.find(body, &(&1.symbol == "│")).col == 2
     assert Enum.find(body, &(&1.symbol == "l")).col == 4
+    footer = Enum.filter(cells, &(&1.row == 2))
+    assert Enum.find(footer, &(&1.symbol == "└")).col == 2
+    assert Enum.find(footer, &(&1.symbol == "✓")).fg == {:indexed, 114}
     assert Enum.find(body, &(&1.symbol == "l")).fg == {:indexed, 246}
-    refute Enum.any?(body, &(&1.symbol in ["▌", "│"]))
 
     heading = header |> Enum.sort_by(& &1.col) |> Enum.map_join(& &1.symbol)
-    assert heading =~ "  bash  cat a.ex"
+    assert String.trim_trailing(heading) == "$ make all"
     refute heading =~ "completed"
   end
 
@@ -390,7 +399,9 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
     for width <- [1, 4, 8, 30, 80] do
       items = ToolView.render(entry, width)
-      assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 5
+      # At most three prompt rows (narrow terminals wrap `$ bash`), the
+      # omission hint, the two tail lines and the footer.
+      assert Enum.sum(Enum.map(items, &elem(&1, 1))) <= 7
 
       for {widget, _} <- items, row <- widget.text do
         assert MessageView.display_width(plain(row)) <= width
@@ -403,12 +414,13 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     refute preview =~ "F4 details"
     refute preview =~ "build started"
     refute preview =~ "output clipped"
-    refute preview =~ "lines hidden"
+    assert preview =~ "  │ … 1 line above"
+    assert String.ends_with?(preview, "  └ ✓")
     assert MessageView.full_text(entry) == output
     assert text(MessageView.inspect_items(entry, 80)) =~ "build started"
 
     [empty] = settled([Message.tool_result("b", "bash", "\n\n")])
-    assert text(ToolView.render(empty, 80)) == "  bash"
+    assert text(ToolView.render(empty, 80)) == "$ bash\n  └ ✓"
   end
 
   test "subagents show profile, assignment, explicit outcomes and retained findings" do
@@ -999,16 +1011,16 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     test "a running bash call the watchdog tracks shows the watched marker" do
       watched = live_tool(%{"command" => "while true; do echo tick; sleep 1; done"}, true)
       assert watched.tool_watched?
-      assert text(ToolView.render(watched, 100)) =~ "◉ running  bash  while true"
+      assert text(ToolView.render(watched, 100)) =~ "◉ running  $ while true"
 
       unwatched = live_tool(%{"command" => "make"}, false)
       refute unwatched.tool_watched?
-      assert text(ToolView.render(unwatched, 100)) =~ "● running  bash  make"
+      assert text(ToolView.render(unwatched, 100)) =~ "● running  $ make"
 
       # An explicit timeout means the watchdog leaves the call alone.
       timed = live_tool(%{"command" => "make", "timeout" => 30}, true)
       refute timed.tool_watched?
-      assert text(ToolView.render(timed, 100)) =~ "● running  bash  make"
+      assert text(ToolView.render(timed, 100)) =~ "● running  $ make"
     end
 
     test "a call the watchdog stopped shows the stopped marker, also from history" do
@@ -1027,7 +1039,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
 
       assert stopped.tool_status == :failed
       output = text(ToolView.render(stopped, 100))
-      assert output =~ "⊘ stopped  bash  yes"
+      assert output =~ "⊘ stopped  $ yes"
       refute output =~ "failed"
 
       [failed] =
@@ -1038,8 +1050,128 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
           Message.tool_result("f", "bash", "Error: Command exited with code 1")
         ])
 
-      assert text(ToolView.render(failed, 100)) =~ "✗ failed  bash  false"
+      assert text(ToolView.render(failed, 100)) =~ "✗ failed  $ false"
     end
+  end
+
+  describe "bash cards" do
+    test "a leading cd becomes the prompt's directory" do
+      for {command, heading} <- [
+            {"cd apps/tackle_cli && mix test", "apps/tackle_cli $ mix test"},
+            {"cd 'my dir' && ls", "my dir $ ls"},
+            {"cd lib; ls", "lib $ ls"},
+            # Only a `cd` that precedes the command is peeled.
+            {"cd lib || ls", "$ cd lib || ls"},
+            {"cd lib && ", "$ cd lib && "}
+          ] do
+        assert text(ToolView.render(bash(command, "ok"), 80)) =~ heading
+      end
+
+      # Copy and details keep the submitted command.
+      entry = bash("cd apps/tackle_cli && mix test", "ok")
+      assert MessageView.search_text(entry) =~ "cd apps/tackle_cli && mix test"
+    end
+
+    test "multi-line commands show their first line and a line count" do
+      command = "python3 - <<'EOF'\nprint(1)\nprint(2)\nEOF"
+      entry = bash(command, "1\n2")
+      [heading | _] = entry |> ToolView.render(80) |> text() |> String.split("\n")
+      assert heading == "$ python3 - <<'EOF'  +3 lines"
+
+      details = entry |> MessageView.inspect_items(80) |> text()
+      assert details =~ "Command"
+      assert details =~ "print(2)"
+      assert details =~ "Output"
+
+      # A short command is not repeated below its header.
+      refute bash("ls", "a") |> MessageView.inspect_items(80) |> text() =~ "Command"
+    end
+
+    test "a long command wraps under itself and ends in an explicit ellipsis" do
+      command = Enum.map_join(1..40, " && ", &"echo step#{&1}")
+      rows = bash(command, "done") |> ToolView.render(40) |> text() |> String.split("\n")
+      {header, body} = Enum.split(rows, 3)
+
+      assert String.starts_with?(Enum.at(header, 0), "$ echo step1")
+      # Wraps sit two cells in, under the command rather than the output.
+      assert Enum.all?(tl(header), &String.starts_with?(&1, "  "))
+      refute Enum.any?(tl(header), &String.starts_with?(&1, "    "))
+      assert String.ends_with?(List.last(header), "…")
+      assert Enum.all?(header, &(MessageView.display_width(&1) <= 40))
+      assert body == ["  │ done", "  └ ✓"]
+    end
+
+    test "failures show the exit code as status and keep both ends of the output" do
+      output =
+        "Error: " <>
+          Enum.map_join(1..8, "\n", &"err #{&1}") <> "\n\nCommand exited with code 2"
+
+      preview = bash("make", output, false, elapsed_ms: 412) |> ToolView.render(80) |> text()
+
+      assert preview =~ "✗ failed  $ make"
+
+      assert preview =~
+               "  │ err 1\n  │ err 2\n  │ … 4 more lines\n  │ err 7\n  │ err 8\n  └ exit 2 · 0.4s"
+
+      refute preview =~ "Command exited"
+      refute preview =~ "Error:"
+    end
+
+    test "settled and running calls show their observed time" do
+      settled = bash("mix test", "Result: 30 passed", true, elapsed_ms: 12_400)
+      assert text(ToolView.render(settled, 80)) == "$ mix test\n  │ Result: 30 passed\n  └ ✓ 12s"
+
+      quiet = bash("mkdir tmp", "(no output)", true, elapsed_ms: 80)
+      assert text(ToolView.render(quiet, 80)) =~ "  │ (no output)\n  └ ✓ 0.0s"
+
+      running = live_tool(%{"command" => "make"}, false)
+      running = %{running | tool_elapsed_ms: 3_000, tool_output: nil}
+      assert text(ToolView.render(running, 80)) == "● running  $ make\n  └ 3s"
+
+      # Without an observed time (a resumed session) the footer still closes
+      # the card with its outcome.
+      assert text(ToolView.render(bash("ls", "a"), 80)) == "$ ls\n  │ a\n  └ ✓"
+      assert text(ToolView.render(bash("make", "boom", false), 80)) =~ "  │ boom\n  └ failed"
+
+      clock = %{running | tool_elapsed_ms: nil}
+      assert text(ToolView.render(clock, 80)) == "● running  $ make\n  └ running"
+    end
+
+    test "shown output loses the indentation its lines share" do
+      output = "  def a do\n    :ok\n  end"
+      preview = bash("sed -n 1,3p a.ex", output) |> ToolView.render(80) |> text()
+      assert preview =~ "  │ … 1 line above\n  │   :ok\n  │ end\n"
+      assert MessageView.full_text(bash("sed", output)) == output
+    end
+  end
+
+  # A settled bash call; `elapsed_ms` stands for the session's observed time.
+  defp bash(command, output, completed? \\ true, opts \\ []) do
+    [entry] =
+      MessageView.section_entries(
+        %{
+          agent_state: %State{
+            messages: [
+              Message.assistant(
+                tool_calls: [%{id: "b", name: "bash", arguments: %{"command" => command}}]
+              ),
+              Message.tool_result(
+                "b",
+                "bash",
+                if(completed? or String.starts_with?(output, "Error:"),
+                  do: output,
+                  else: "Error: " <> output
+                )
+              )
+            ]
+          },
+          tool_times: Map.new(Keyword.take(opts, [:elapsed_ms]), fn {_, ms} -> {"b", ms} end),
+          thinking_expanded?: false
+        },
+        :settled
+      )
+
+    entry
   end
 
   defp live_tool(arguments, watchdog?) do

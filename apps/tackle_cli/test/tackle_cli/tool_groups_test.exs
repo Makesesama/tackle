@@ -397,7 +397,7 @@ defmodule Tackle.CLI.TUI.ToolGroupsTest do
       details = group |> MessageView.inspect_items(100) |> text()
       assert details =~ "read  lib/a.ex"
       assert details =~ "full a output"
-      assert details =~ "bash  ls packages"
+      assert details =~ "$ ls packages"
       assert details =~ "full b output"
     end
 

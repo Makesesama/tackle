@@ -126,6 +126,7 @@ defmodule Tackle.CLI.TUI.MessageView do
       |> MapSet.new()
 
     cards = Enum.filter(Map.get(state, :compactions, []), &is_nil(&1.turn_id))
+    times = Map.get(state, :tool_times, %{})
 
     groups =
       messages
@@ -141,7 +142,7 @@ defmodule Tackle.CLI.TUI.MessageView do
             (message.tool_calls || [])
             |> Enum.with_index()
             |> Enum.map(fn {call, call_index} ->
-              build_call_entry(call, call_index, results, index)
+              build_call_entry(call, call_index, results, index, times)
             end)
 
           prose ++ calls
@@ -308,7 +309,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   defp live_text_id(:assistant, 0), do: "streaming:response"
   defp live_text_id(kind, index), do: "streaming:#{kind}:#{index}"
 
-  defp build_call_entry(call, call_index, results, index) do
+  defp build_call_entry(call, call_index, results, index, times) do
     id = value(call, :id)
     result = Map.get(results, id)
 
@@ -317,7 +318,8 @@ defmodule Tackle.CLI.TUI.MessageView do
         name: value(call, :name),
         arguments: value(call, :arguments),
         status: result_status(result),
-        result: if(result, do: result.content)
+        result: if(result, do: result.content),
+        elapsed_ms: if(result && is_binary(id), do: Map.get(times, id))
       },
       if(is_binary(id), do: "tool:#{id}", else: "message:#{index}:call:#{call_index}")
     )
@@ -683,7 +685,7 @@ defmodule Tackle.CLI.TUI.MessageView do
     thinking ++ content
   end
 
-  defp message_entries(%Message{role: :tool} = message, index, _state) do
+  defp message_entries(%Message{role: :tool} = message, index, state) do
     failed? =
       is_binary(message.content) and
         String.starts_with?(String.trim_leading(message.content), "Error:")
@@ -701,7 +703,8 @@ defmodule Tackle.CLI.TUI.MessageView do
           name: message.tool_name || "unknown",
           status: status,
           result: if(failed?, do: nil, else: message.content),
-          error: if(failed?, do: message.content, else: nil)
+          error: if(failed?, do: message.content, else: nil),
+          elapsed_ms: state |> Map.get(:tool_times, %{}) |> Map.get(message.tool_call_id)
         },
         id
       )

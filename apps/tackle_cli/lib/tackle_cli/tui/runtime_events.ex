@@ -50,8 +50,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   @max_live_tool_output_bytes 50 * 1_024
   @max_subagent_work_bytes 16 * 1_024
   @max_narration_chars 200
-  # Delegating tools whose cards carry a locally observed clock.
-  @timed_tools ["subagent", "run_workflow", "review_changes"]
+  # Tools whose cards carry a locally observed clock: delegating tools and
+  # shell commands.
+  @timed_tools ["subagent", "run_workflow", "review_changes", "bash"]
 
   @doc "Handles one harness or shell-operation message."
   @spec handle(term(), State.t()) ::
@@ -1282,17 +1283,25 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     case Enum.find_index(state.tool_activity, &same_tool?(&1, id, name)) do
       nil ->
-        %{state | tool_activity: append(state.tool_activity, observe_tool_time(updates))}
+        tool = observe_tool_time(updates)
+        %{state | tool_activity: append(state.tool_activity, tool)} |> remember_tool_time(tool)
 
       index ->
-        tool_activity =
-          List.update_at(state.tool_activity, index, fn tool ->
-            tool |> merge_tool_activity(updates) |> observe_tool_time()
-          end)
+        tool = state.tool_activity |> Enum.at(index) |> merge_tool_activity(updates)
+        tool = observe_tool_time(tool)
 
-        %{state | tool_activity: tool_activity}
+        %{state | tool_activity: List.replace_at(state.tool_activity, index, tool)}
+        |> remember_tool_time(tool)
     end
   end
+
+  # Settled cards are rebuilt from messages once the turn ends; keep each
+  # finished call's observed time so they can still show it.
+  defp remember_tool_time(state, %{id: id, finished_at_ms: finished, elapsed_ms: ms})
+       when is_binary(id) and is_integer(finished) and is_integer(ms),
+       do: %{state | tool_times: Map.put(state.tool_times, id, ms)}
+
+  defp remember_tool_time(state, _tool), do: state
 
   # Local observation time only: never persisted or presented as provider
   # latency. Ordered settlement may repeat execution completion; freeze once.
