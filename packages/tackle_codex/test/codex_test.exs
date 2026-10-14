@@ -180,6 +180,13 @@ defmodule Tackle.Plugins.CodexTest do
             description: "Search documents",
             input_schema: [query: [type: :string, required: true, description: "Query"]],
             definition_id: "ignored-by-provider"
+          },
+          %{
+            name: "recolor",
+            description: "Recolor a project",
+            input_schema: [
+              %{name: "color", type: "string", nullable: true, enum: ["red", nil]}
+            ]
           }
         ]
       )
@@ -231,8 +238,13 @@ defmodule Tackle.Plugins.CodexTest do
              &(&1["type"] == "function_call_output" and &1["call_id"] == "call-old")
            )
 
-    assert [%{"name" => "search", "parameters" => parameters}] = body["tools"]
+    assert [%{"name" => "search", "parameters" => parameters}, recolor] = body["tools"]
     assert parameters["required"] == ["query"]
+
+    assert recolor["parameters"]["properties"]["color"] == %{
+             "type" => ["string", "null"],
+             "enum" => ["red", nil]
+           }
   end
 
   test "closes dangling tool calls left by a cancelled turn", %{store: store} do

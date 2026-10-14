@@ -700,6 +700,7 @@ defmodule Tackle.Plugins.OpenRouter do
             definition
             |> field(:type)
             |> normalized_type_schema()
+            |> maybe_nullable(field(definition, :nullable))
             |> maybe_put("description", field(definition, :description))
             |> maybe_put("default", field(definition, :default))
             |> maybe_put("enum", field(definition, :enum))
@@ -715,6 +716,9 @@ defmodule Tackle.Plugins.OpenRouter do
       %{"type" => "object", "properties" => properties, "required" => required}
     end
   end
+
+  defp maybe_nullable(schema, true), do: Map.update!(schema, "type", &[&1, "null"])
+  defp maybe_nullable(schema, _nullable), do: schema
 
   defp normalized_type_schema(type) when type in [:string, "string"], do: %{"type" => "string"}
   defp normalized_type_schema(type) when type in [:integer, "integer"], do: %{"type" => "integer"}

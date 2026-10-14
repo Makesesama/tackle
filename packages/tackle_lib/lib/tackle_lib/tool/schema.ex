@@ -10,6 +10,10 @@ defmodule Tackle.Lib.Tool.Schema do
   The canonical normalized argument map uses **string keys** because tool calls
   commonly arrive from JSON providers with string-keyed arguments. Host adapters
   that prefer atoms can convert after this boundary.
+
+  Fields may opt into `nullable: true` to accept and preserve explicit `nil`
+  values. This is independent of `required: true`, which still requires the key
+  to be present. Enums on nullable fields must include `nil` to allow it.
   """
 
   @type primitive_type :: :string | :integer | :float | :boolean | :map
@@ -113,7 +117,8 @@ defmodule Tackle.Lib.Tool.Schema do
         required: Keyword.get(opts, :required, false),
         description: Keyword.get(opts, :description),
         default: Keyword.get(opts, :default),
-        enum: Keyword.get(opts, :enum)
+        enum: Keyword.get(opts, :enum),
+        nullable: Keyword.get(opts, :nullable)
       }
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Map.new()
@@ -164,7 +169,14 @@ defmodule Tackle.Lib.Tool.Schema do
     end
   end
 
-  defp coerce_value(nil, _type, _opts), do: :drop
+  defp coerce_value(nil, _type, opts) do
+    if Keyword.get(opts, :nullable) == true do
+      with :ok <- validate_enum(nil, opts), do: {:ok, nil}
+    else
+      :drop
+    end
+  end
+
   defp coerce_value("", _type, _opts), do: :drop
 
   defp coerce_value(value, type, opts) do

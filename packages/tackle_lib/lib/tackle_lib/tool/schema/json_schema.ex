@@ -90,10 +90,14 @@ defmodule Tackle.Lib.Tool.Schema.JsonSchema do
 
     %{}
     |> Map.merge(type_json_schema(type))
+    |> maybe_nullable(Keyword.get(opts, :nullable, false))
     |> maybe_put("description", Keyword.get(opts, :description))
     |> maybe_put("default", Keyword.get(opts, :default))
     |> maybe_put("enum", Keyword.get(opts, :enum))
   end
+
+  defp maybe_nullable(schema, true), do: Map.update!(schema, "type", &[&1, "null"])
+  defp maybe_nullable(schema, _nullable), do: schema
 
   defp type_json_schema(:string), do: %{"type" => "string"}
   defp type_json_schema(:integer), do: %{"type" => "integer"}

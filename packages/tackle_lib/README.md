@@ -632,9 +632,13 @@ Supported schema types are:
 - `{:list, inner_type}`
 - `{:array, inner_type}`
 
-Field options include `:required`, `:default`, `:description`, and `:enum`.
-Integer, float, and boolean strings are coerced where unambiguous. Empty values
-are treated as absent. Tackle.Lib never creates atoms from provider/user keys.
+Field options include `:required`, `:default`, `:description`, `:enum`, and
+`:nullable`. Integer, float, and boolean strings are coerced where unambiguous.
+Empty values are treated as absent, except that `nullable: true` accepts and
+preserves an explicit `nil` (JSON `null`); an enum on such a field must include
+`nil` to allow it. Adapters that project schemas to JSON Schema advertise these
+fields with a `[type, "null"]` type. Tackle.Lib never creates atoms from
+provider/user keys.
 
 ### Settlement and errors
 

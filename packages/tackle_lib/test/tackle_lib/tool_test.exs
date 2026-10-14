@@ -539,6 +539,34 @@ defmodule Tackle.Lib.ToolTest do
            } = JsonSchema.to_json_schema(EchoTool.parameters_schema())
   end
 
+  test "nullable fields preserve explicit nil and project to JSON Schema" do
+    schema = [
+      color: [type: :string, nullable: true, enum: ["red", nil]],
+      note: [type: :string, required: true, nullable: true],
+      plain: [type: :string]
+    ]
+
+    assert {:ok, %{"color" => nil, "note" => nil}} =
+             Schema.validate(schema, %{"color" => nil, "note" => nil, "plain" => nil})
+
+    assert {:error, [%{field: "note", message: "is required"}]} =
+             Schema.validate(schema, %{})
+
+    assert {:error, [%{field: "color"}]} =
+             Schema.validate([color: [type: :string, nullable: true, enum: ["red"]]], %{
+               "color" => nil
+             })
+
+    assert [%{name: "color", nullable: true} | _] = Schema.normalize_schema(schema)
+
+    assert %{
+             "properties" => %{
+               "color" => %{"type" => ["string", "null"], "enum" => ["red", nil]},
+               "plain" => %{"type" => "string"}
+             }
+           } = JsonSchema.to_json_schema(schema)
+  end
+
   test "JsonSchema validates output with JSV" do
     schema = %{
       "type" => "object",

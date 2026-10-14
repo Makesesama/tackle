@@ -117,7 +117,11 @@ values in general Tackle session configuration.
 MCP uses JSON Schema while Tackle's current tool contract uses a smaller keyword
 schema. The plugin conservatively projects top-level object properties and
 preserves primitive/object/array types, required fields, descriptions, defaults,
-and enums. Nested object constraints remain server-validated. Unions, references,
+and enums. Nested object constraints remain server-validated. A property that is
+a single supported type or `null` (`anyOf`/`oneOf` with a bare `{"type": "null"}`
+branch, or a two-element type array such as `["string", "null"]`) becomes a
+`nullable: true` field, so an explicit `null` is preserved and forwarded to the
+server. Other unions, references,
 missing or unknown property types, and other schemas that cannot be represented
 faithfully are rejected during discovery rather than advertised inaccurately.
 MCP output schemas are retained as opaque metadata; Anubis validates advertised
