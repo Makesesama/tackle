@@ -194,6 +194,42 @@ defmodule Tackle.Bench.ReviewEval.Runner do
     end)
   end
 
+  @lock_file ".review-eval.lock"
+
+  @doc """
+  Runs `fun` while holding `workdir` for this run: creates the directory and
+  a lock file in it, and returns `{:error, {:workdir_in_use, lock}}` without
+  calling `fun` when another run holds it. Two runs sharing a workdir would
+  replace each other's case checkouts (and their commits) mid-run.
+
+  The lock is released when `fun` returns or raises. A run killed outright
+  leaves it behind; the error names the file to delete.
+  """
+  @spec with_workdir(Path.t(), (-> result)) :: result | {:error, {:workdir_in_use, Path.t()}}
+        when result: term()
+  def with_workdir(workdir, fun) when is_function(fun, 0) do
+    File.mkdir_p!(workdir)
+    lock = Path.join(workdir, @lock_file)
+
+    case File.open(lock, [:write, :exclusive]) do
+      {:ok, io} ->
+        IO.write(io, System.pid())
+        File.close(io)
+
+        try do
+          fun.()
+        after
+          File.rm(lock)
+        end
+
+      {:error, :eexist} ->
+        {:error, {:workdir_in_use, lock}}
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "create lock", path: lock
+    end
+  end
+
   @doc false
   @spec rotate(list(), non_neg_integer()) :: list()
   def rotate([], _by), do: []

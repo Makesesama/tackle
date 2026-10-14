@@ -1,0 +1,28 @@
+{
+  "commit": "6b94d91a4d46e14692aa57db4228eea8cf6f48f1",
+  "description": "Cross-file process bug (GenServer self-call through an indirection). The seed makes `Projection.metadata/1` look up the parent session's title with `Tackle.Session.Catalog.get/1`. Only projection.ex changes; what makes it wrong is in catalog.ex: the catalog itself calls `Projection.metadata/1` (through `summary_for/1`) while it rebuilds its index inside its own `handle_continue(:rebuild)` and `handle_call({:rebuild, _})`.",
+  "edits": [
+    {
+      "find": "      parent_session_id: parent_session_id(projection)\n    }\n  end\n",
+      "path": "packages/tackle/lib/tackle/session/projection.ex",
+      "replace": "      parent_session_id: parent_session_id(projection),\n      parent_title: parent_title(projection)\n    }\n  end\n\n  # Listings show which session a sub-session was branched from.\n  defp parent_title(projection) do\n    with id when is_binary(id) <- parent_session_id(projection),\n         {:ok, %{title: title}} <- Tackle.Session.Catalog.get(id) do\n      title\n    else\n      _other -> nil\n    end\n  end\n"
+    }
+  ],
+  "id": "deep-catalog-self-call",
+  "issues": [
+    {
+      "also": [
+        {
+          "anchor": "      parent_title: parent_title(projection)",
+          "lines": 1,
+          "path": "packages/tackle/lib/tackle/session/projection.ex"
+        }
+      ],
+      "anchor": "         {:ok, %{title: title}} <- Tackle.Session.Catalog.get(id) do",
+      "description": "Tackle.Session.Catalog rebuilds its index inside its own callbacks (handle_continue(:rebuild) at startup, handle_call({:rebuild, _})): the per-session index tasks call summary_for/1 -> Projection.metadata/1, which now makes a GenServer.call back to the catalog. The catalog is blocked waiting for those tasks, so the call is never answered: every sub-session indexed from its journal stalls until the task is killed after rebuild_session_timeout (2 s) and is then skipped, so sub-sessions vanish from the catalog after a restart or reindex. Session journals also call Projection.metadata/1 on every summary, so they now block on (and exit with) a busy or absent catalog.",
+      "id": "catalog-calls-itself",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/session/projection.ex"
+    }
+  ]
+}

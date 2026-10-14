@@ -542,6 +542,21 @@ defmodule Tackle.Bench.ReviewEvalTest do
     end
   end
 
+  describe "Variant follow-ups of combined" do
+    test "combined-no-tests only adds the no-test-claims rule to the detector" do
+      variants = Variant.builtin()
+      combined = Enum.find(variants, &(&1.name == "combined"))
+      no_tests = Enum.find(variants, &(&1.name == "combined-no-tests"))
+
+      assert {:lean, prompt} = no_tests.detector.prompt
+      assert prompt =~ Variant.single_call_prompt()
+      assert prompt =~ "do not report missing, insufficient, or\nuntested behaviour"
+      assert Map.delete(no_tests.detector, :prompt) == Map.delete(combined.detector, :prompt)
+      assert no_tests.verifier == combined.verifier
+      assert no_tests.review_opts == combined.review_opts
+    end
+  end
+
   describe "Report" do
     defp record(variant, kase, found, tokens, status \\ "ok") do
       %{
@@ -791,6 +806,24 @@ defmodule Tackle.Bench.ReviewEvalTest do
       assert %{"status" => "error", "error" => "gave up after 0s"} = record
       assert_received {:review_pid, pid}
       refute Process.alive?(pid)
+    end
+
+    test "with_workdir lets only one run use a workdir at a time", %{base: base} do
+      workdir = Path.join(base, "locked")
+
+      assert :inner_done =
+               Runner.with_workdir(workdir, fn ->
+                 assert {:error, {:workdir_in_use, lock}} =
+                          Runner.with_workdir(workdir, fn -> flunk("ran twice") end)
+
+                 assert File.exists?(lock)
+                 :inner_done
+               end)
+
+      # Released afterwards, also when the run raises.
+      assert_raise RuntimeError, fn -> Runner.with_workdir(workdir, fn -> raise "boom" end) end
+      assert Runner.with_workdir(workdir, fn -> :again end) == :again
+      assert File.ls!(workdir) == []
     end
 
     test "rotates the variant order between cases and repeats" do

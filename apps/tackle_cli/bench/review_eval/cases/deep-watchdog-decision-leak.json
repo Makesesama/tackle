@@ -1,0 +1,22 @@
+{
+  "commit": "638e3dc41813b16100c37caa661cb183f3f5eab0",
+  "description": "Task timeout leak. The seed replaces the watchdog's `Task.shutdown(inflight.task, :brutal_kill)` on a decision timeout with `Process.demonitor(inflight.task.ref, [:flush])`, which looks like the usual cleanup of an abandoned task but only stops listening to it. The task (started with Task.Supervisor.async_nolink in start_decision/3) keeps running, and since the timeout clears the in-flight decision, the next check starts another one.",
+  "edits": [
+    {
+      "find": "    Task.shutdown(inflight.task, :brutal_kill)\n    state = state |> settle(inflight) |> decided(inflight.call_id, {:error, :timeout})",
+      "path": "packages/tackle/lib/tackle/watchdog.ex",
+      "replace": "    Process.demonitor(inflight.task.ref, [:flush])\n    state = state |> settle(inflight) |> decided(inflight.call_id, {:error, :timeout})"
+    }
+  ],
+  "id": "deep-watchdog-decision-leak",
+  "issues": [
+    {
+      "also": [],
+      "anchor": "    Process.demonitor(inflight.task.ref, [:flush])",
+      "description": "On a decision timeout the watchdog only demonitors the decision task instead of shutting it down. The task keeps running under the task supervisor (a hung decision-model request is never cut), its late reply is silently dropped, and because settle/2 clears the in-flight decision, the next check starts another request, so a stalled decision model accumulates concurrent requests that are never used.",
+      "id": "timed-out-decision-keeps-running",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/watchdog.ex"
+    }
+  ]
+}

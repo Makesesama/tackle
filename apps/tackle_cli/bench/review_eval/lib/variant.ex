@@ -24,7 +24,10 @@ defmodule Tackle.Bench.ReviewEval.Variant do
   The built-in review stages are lean by default (`instructions: false`),
   so `lean` now runs the same prompts as `baseline`, and `lean-agents` adds
   the AGENTS.md files back. Results recorded before that change have a
-  full-prompt baseline. A `review.thinking` setting in `config.json` also
+  full-prompt baseline. Since the step limits became 6 for both stages (with
+  the detector told its budget), `baseline` is what was measured as
+  `capped-detector` minus its `low` thinking, and `low-thinking` is that
+  variant exactly; results recorded before have a 40/25-step baseline. A `review.thinking` setting in `config.json` also
   applies to every variant that does not set its own thinking levels.
   """
 
@@ -92,6 +95,15 @@ defmodule Tackle.Bench.ReviewEval.Variant do
   After reporting, answer with the single word: done.
   """
 
+  # Added to the single-call detector's prompt by `combined-no-tests`: the
+  # detector sees no test files, so its "no tests shown" findings were almost
+  # all rejected by the verifier, at the cost of a verifier run each.
+  @no_test_claims """
+
+  You cannot see the test files, so do not report missing, insufficient, or
+  untested behaviour: tests are out of scope for you.
+  """
+
   @doc "The prompt of the single-call detector (no tools but `report_findings`)."
   @spec single_call_prompt() :: String.t()
   def single_call_prompt, do: @single_call
@@ -114,6 +126,9 @@ defmodule Tackle.Bench.ReviewEval.Variant do
       tools: ~w(report_findings),
       max_iterations: 3
     }
+
+    cheap_verifier = Map.put(lean_verifier, :max_iterations, 6)
+    low_thinking = [thinking: %{detector: "low", verifier: "low"}]
 
     variants = [
       %__MODULE__{name: "baseline", description: "current defaults"},
@@ -154,8 +169,15 @@ defmodule Tackle.Bench.ReviewEval.Variant do
         name: "combined",
         description: "A1+A2+A3+A4: single-call detector, lean verifier (6 steps), thinking low",
         detector: single_call,
-        verifier: Map.put(lean_verifier, :max_iterations, 6),
-        review_opts: [thinking: %{detector: "low", verifier: "low"}]
+        verifier: cheap_verifier,
+        review_opts: low_thinking
+      },
+      %__MODULE__{
+        name: "combined-no-tests",
+        description: "combined, and the single-call detector does not claim missing tests",
+        detector: %{single_call | prompt: {:lean, @single_call <> @no_test_claims}},
+        verifier: cheap_verifier,
+        review_opts: low_thinking
       }
     ]
 

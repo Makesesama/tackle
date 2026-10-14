@@ -1,0 +1,28 @@
+{
+  "commit": "d5b7c1d0fbd2a7b51e5abd6852e02329e45b763f",
+  "description": "Concurrency bug (non-atomic ETS read-modify-write). The seed replaces the workflow meter's atomic `:ets.update_counter/4` with a lookup followed by an insert. Locally it reads as a simplification; what makes it wrong is that the meter's table is written by every delegated run's runtime request process at once (meter.ex moduledoc, and how api.ex wires `Meter.record/3` into each run's event callback), and all of them add to the shared workflow total.",
+  "edits": [
+    {
+      "find": "  defp increment(%__MODULE__{table: table}, key, count) do\n    :ets.update_counter(table, key, {2, count}, {key, 0})\n    :ok\n  end",
+      "path": "packages/tackle_workflow/lib/tackle/workflow/meter.ex",
+      "replace": "  defp increment(%__MODULE__{table: table} = meter, key, count) do\n    :ets.insert(table, {key, read(meter, key) + count})\n    :ok\n  end"
+    }
+  ],
+  "id": "deep-meter-lost-update",
+  "issues": [
+    {
+      "also": [
+        {
+          "anchor": "  defp increment(%__MODULE__{table: table} = meter, key, count) do",
+          "lines": 1,
+          "path": "packages/tackle_workflow/lib/tackle/workflow/meter.ex"
+        }
+      ],
+      "anchor": "    :ets.insert(table, {key, read(meter, key) + count})",
+      "description": "increment/3 reads the counter and writes the sum in two ETS operations. Parallel runs record their events in their own request processes and all add to the shared workflow total (and add_usage/2 adds from the workflow process), so two increments that read the same value lose one of the updates. The total undercounts, and the token budget lets workflows overspend.",
+      "id": "racy-counter",
+      "lines": 1,
+      "path": "packages/tackle_workflow/lib/tackle/workflow/meter.ex"
+    }
+  ]
+}

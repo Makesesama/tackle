@@ -30,7 +30,8 @@
 #   --limit SECONDS      give up on one review after this long (default 1800)
 #   --slack N            lines of tolerance when matching (default 3)
 #   --out FILE           JSON Lines results (default: a new file in the tmp dir)
-#   --workdir DIR        where case checkouts go (default: <tmp>/tackle-review-eval)
+#   --workdir DIR        where case checkouts go (default: a new directory per run
+#                        under <tmp>/tackle-review-eval); two runs cannot share one
 #   --keep-worktrees     do not remove the case checkouts afterwards
 #   --summarize FILE     only print the tables of an existing results file
 #
@@ -109,7 +110,9 @@ defmodule ReviewEval.Script do
     repo = git_toplevel()
     cases_dir = Keyword.get(opts, :cases, Path.join(__DIR__, "review_eval/cases"))
     tmp = Path.join(System.tmp_dir!(), "tackle-review-eval")
-    workdir = Keyword.get(opts, :workdir, Path.join(tmp, "worktrees"))
+    stamp = DateTime.utc_now() |> DateTime.to_iso8601(:basic) |> String.replace(~r/[^0-9TZ]/, "")
+    default_workdir = Path.join(tmp, "worktrees-#{stamp}-#{System.pid()}")
+    workdir = Keyword.get(opts, :workdir, default_workdir)
 
     with {:ok, cases} <- Case.load_dir(cases_dir),
          {:ok, cases} <- select_cases(cases, Keyword.get_values(opts, :case)),
@@ -131,11 +134,29 @@ defmodule ReviewEval.Script do
             if(opts[:concurrency], do: [max_concurrency: opts[:concurrency]], else: [])
       ]
 
-      if opts[:check], do: check(runner_opts), else: bench(runner_opts, opts, tmp)
+      result =
+        Runner.with_workdir(workdir, fn ->
+          if opts[:check], do: check(runner_opts), else: bench(runner_opts, opts, tmp, stamp)
+        end)
+
+      # A per-run directory is left behind only when it still holds checkouts.
+      if workdir == default_workdir, do: File.rmdir(workdir)
+      finish(result)
     else
       {:error, reason} -> fail("review_eval: #{inspect(reason)}")
     end
   end
+
+  # `check/1` and `bench/4` return instead of halting, so the workdir lock is
+  # released first.
+  defp finish(:ok), do: :ok
+  defp finish({:halt, status}), do: System.halt(status)
+
+  defp finish({:error, {:workdir_in_use, lock}}),
+    do:
+      fail("review_eval: another run is using #{Path.dirname(lock)} (delete #{lock} if none is)")
+
+  defp finish({:error, reason}), do: fail("review_eval: #{inspect(reason)}")
 
   defp check(runner_opts) do
     case Runner.check(runner_opts) do
@@ -152,15 +173,14 @@ defmodule ReviewEval.Script do
             do: IO.puts("    NOT ON CHANGED LINES: #{Enum.join(d.uncovered, ", ")}")
         end)
 
-        if Enum.any?(descriptions, &(&1.uncovered != [])), do: System.halt(1)
+        if Enum.any?(descriptions, &(&1.uncovered != [])), do: {:halt, 1}, else: :ok
 
       {:error, reason} ->
-        fail("review_eval: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 
-  defp bench(runner_opts, opts, tmp) do
-    stamp = DateTime.utc_now() |> DateTime.to_iso8601(:basic) |> String.replace(~r/[^0-9TZ]/, "")
+  defp bench(runner_opts, opts, tmp, stamp) do
     out = Keyword.get(opts, :out, Path.join(tmp, "results-#{stamp}.jsonl"))
     IO.puts(:stderr, "results: #{out}")
 
@@ -170,7 +190,7 @@ defmodule ReviewEval.Script do
         IO.puts("\nresults: #{out}")
 
       {:error, reason} ->
-        fail("review_eval: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 

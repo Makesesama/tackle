@@ -56,14 +56,15 @@ can analyse it again later without paying for another run.
 
 | name | change |
 |---|---|
-| `baseline` | current defaults |
-| `steps` | A2: step limits detector 10 (default 40), verifier 6 (default 25) |
+| `baseline` | current defaults: lean prompts (`instructions: false`), 6 steps for detector and verifier, the detector told its step budget |
+| `steps` | A2: step limits detector 10, verifier 6 (the defaults were 40 and 25 when this was added; both are 6 now) |
 | `lean` | A3: system prompt is only the assignment and the working directory: no AGENTS.md, no skills (and no skill tool) |
 | `lean-agents` | A3: assignment plus AGENTS.md, no skills |
-| `low-thinking` | A4: thinking `low` for detector and verifier (the scorer follows the verifier) |
+| `low-thinking` | A4: thinking `low` for detector and verifier (the scorer follows the verifier); with the current defaults this is the configuration that was measured as `capped-detector` |
 | `single-call` | A1: detector without tools except `report_findings`, at most 3 steps, judging only from the unit's rendered diff and function context; verifier unchanged |
 | `single-call-agents` | A1 with AGENTS.md in the detector prompt |
 | `combined` | A1 + lean verifier with 6 steps + thinking low |
+| `combined-no-tests` | `combined`, and the tool-less detector is told not to claim missing tests (it cannot see them) |
 | `cheap-detector` | A4: detector on `--cheap-model REF` (only with that flag) |
 
 `low-thinking` only differs from `baseline` when the root model (`--model`
@@ -99,8 +100,12 @@ hold the model and thinking level every stage actually used.
 
 `bench/review_eval/cases/*.json`. The format is documented in
 `Tackle.Bench.ReviewEval.Case`. `seed-*` cases inject one bug into lines a
-real commit added. `hist-*` cases review a real commit whose bug a later
-commit fixed (named in the description). Run `--check` after adding or
+real commit added. `multi-*` cases seed several independent bugs into one
+commit. `deep-*` cases seed one bug whose cause is not visible in the diff:
+it depends on process boundaries or concurrency explained elsewhere (another
+file, or the module's documentation), so they show what a shallow or
+tool-less detector gives up. `hist-*` cases review a real commit whose bug a
+later commit fixed (named in the description). Run `--check` after adding or
 editing a case: it prepares every case, prints its size (units and detector
 runs at the default unit size), and fails when an issue is not on a changed
 line, since no finding could point there.
