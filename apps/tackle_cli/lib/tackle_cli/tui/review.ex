@@ -552,8 +552,9 @@ defmodule Tackle.CLI.TUI.Review do
   defp counts(review),
     do: "#{length(review.blocking)} blocking, #{length(review.optional)} optional"
 
-  defp result_notes(%Result{summary: summary, dropped: dropped}) do
+  defp result_notes(%Result{summary: summary, dropped: dropped} = result) do
     known = Enum.count(dropped, &(&1.reason == :known))
+    hidden = length(Result.hidden(result))
 
     Enum.map(summary.failed_units, fn %{unit: unit, reason: reason} ->
       "Unit #{unit} was not reviewed: #{Tackle.Review.Delegation.format_error(reason)}"
@@ -563,6 +564,10 @@ defmodule Tackle.CLI.TUI.Review do
           "(#{Tackle.Review.Delegation.format_error(reason)}); its findings are kept"
       end) ++
       if(known > 0, do: ["#{known} dismissed finding(s) not reported again"], else: []) ++
+      if(hidden > 0,
+        do: ["#{hidden} verified finding(s) not shown under the #{summary.profile} profile"],
+        else: []
+      ) ++
       summary.warnings
   end
 

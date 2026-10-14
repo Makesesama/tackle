@@ -10,7 +10,12 @@ defmodule Tackle.Tools.Review do
   against the default branch, committed or not; `staged` reviews the index;
   `range` a revision range. The result is a compact list of the shown
   findings, blocking first, with location, severity, trigger, explanation,
-  and suggestion.
+  and suggestion. Verified findings the review profile's thresholds or cap
+  keep out of that list (`Tackle.Review.Result.hidden/1`) follow in a
+  short `Verified but not shown under the <profile> profile:` section,
+  one `- ` line each with the reason and an indented trigger (at most
+  ten), so a verdict the review reported while running never
+  disappears without a trace.
 
   The review's detector and verifier runs are delegated from the calling
   agent, like `Tackle.Tools.Subagent`, so the tool needs:
@@ -68,11 +73,13 @@ defmodule Tackle.Tools.Review do
   alias Tackle.Executor
   alias Tackle.Lib.Event
   alias Tackle.Review
-  alias Tackle.Review.{Change, Delegation, Detector, Finding, History, Result, Verifier}
+  alias Tackle.Review.{Change, Delegation, Detector, Finding, History, Rank, Result, Verifier}
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, Ref, Registry}
 
   @profiles %{"quiet" => :quiet, "default" => :default, "assertive" => :assertive}
+  @hidden_limit 10
+  @hidden_heading "Verified but not shown under the"
 
   tool_name("review_changes")
 
@@ -346,6 +353,7 @@ defmodule Tackle.Tools.Review do
       header,
       group("Blocking", result.blocking, 1),
       group("Optional", result.optional, length(result.blocking) + 1),
+      hidden_section(Result.hidden(result), summary.profile),
       notes_section(notes ++ result_notes(result))
     ]
 
@@ -392,8 +400,49 @@ defmodule Tackle.Tools.Review do
     "#{path}:#{lines}#{suffix}"
   end
 
+  # Verified findings the profile's thresholds or cap kept out of the
+  # lists above. Listing them keeps the result consistent with the verdicts
+  # the review reported while it ran, and lets the agent judge them.
+  defp hidden_section([], _profile), do: nil
+
+  defp hidden_section(hidden, profile) do
+    {listed, rest} = Enum.split(hidden, @hidden_limit)
+
+    lines =
+      Enum.map(listed, fn %{finding: finding, reason: reason} ->
+        "- #{location(finding.location)} [#{finding.severity}, #{finding.category}] " <>
+          "#{finding.title} (#{hidden_reason(finding, reason, profile)})\n" <>
+          indent("Trigger: " <> finding.trigger)
+      end)
+
+    more = if rest == [], do: [], else: ["- … and #{length(rest)} more"]
+    Enum.join([@hidden_heading <> " #{profile} profile:" | lines ++ more], "\n")
+  end
+
+  defp hidden_reason(finding, :below_threshold, profile) do
+    lane = if finding.blocking, do: :blocking, else: :optional
+    %{min_confidence: min} = Map.fetch!(Rank.thresholds(profile), lane)
+
+    "#{finding.verdict}, confidence #{decimal(finding.confidence)} below " <>
+      "the #{lane} threshold #{decimal(min)}"
+  end
+
+  defp hidden_reason(_finding, :uncertain, _profile),
+    do: "unverified; the profile shows only confirmed findings in this lane"
+
+  defp hidden_reason(finding, :over_cap, profile),
+    do: "#{finding.verdict}, over the cap of #{Rank.thresholds(profile).cap} findings"
+
+  defp hidden_reason(_finding, :hidden_lane, _profile),
+    do: "the profile hides optional findings"
+
+  defp hidden_reason(finding, reason, _profile), do: "#{finding.verdict}, #{reason}"
+
+  defp decimal(number), do: :erlang.float_to_binary(number / 1, decimals: 2)
+
   defp result_notes(%Result{summary: summary, dropped: dropped}) do
     known = Enum.count(dropped, &(&1.reason == :known))
+    scoring_failures = Map.get(summary, :scoring_failures, [])
 
     Enum.map(summary.failed_units, fn %{unit: unit, reason: reason} ->
       "Unit #{unit} was not reviewed: #{Delegation.format_error(reason)}"
@@ -405,8 +454,18 @@ defmodule Tackle.Tools.Review do
       Enum.map(summary.verification_failures, fn %{reason: reason} ->
         "A finding could not be verified: #{Delegation.format_error(reason)}"
       end) ++
+      scoring_notes(scoring_failures) ++
       if(known > 0, do: ["#{plural(known, "dismissed finding")} not reported again."], else: []) ++
       summary.warnings
+  end
+
+  defp scoring_notes([]), do: []
+
+  defp scoring_notes([%{reason: reason} | _rest] = failures) do
+    [
+      "#{plural(length(failures), "finding")} could not be scored and kept the " <>
+        "detector's confidence: #{reason |> Delegation.format_error() |> String.slice(0, 200)}"
+    ]
   end
 
   defp notes_section([]), do: nil

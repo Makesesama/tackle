@@ -16,8 +16,9 @@ defmodule Tackle.Tools.ReviewTest do
   defmodule Adapter do
     @moduledoc false
     # Scripted review stages: the detector reports one finding for lib/a.ex,
-    # the verifier confirms it, and the scorer answers 0.9. A root agent
-    # calls review_changes once and then answers.
+    # the verifier confirms it, and the scorer answers 0.9 (or the stage's
+    # `:score` option). A root agent calls review_changes once and then
+    # answers.
 
     @behaviour Tackle.Lib.LLM
 
@@ -42,7 +43,7 @@ defmodule Tackle.Tools.ReviewTest do
 
       {:ok,
        %{
-         data: data(stage, answered?, prompt),
+         data: data(stage, answered?, prompt, opts),
          usage: %{input_tokens: 10, output_tokens: 5},
          model: "fake"
        }}
@@ -63,16 +64,16 @@ defmodule Tackle.Tools.ReviewTest do
     defp stage(nil, "Verify" <> _rest), do: :verifier
     defp stage(nil, prompt), do: if(prompt =~ "<unit id=", do: :detector, else: :root)
 
-    defp data(:scorer, _answered?, _prompt),
-      do: %{"scores" => [%{"id" => "C1", "confidence" => 0.9}]}
+    defp data(:scorer, _answered?, _prompt, opts),
+      do: %{"scores" => [%{"id" => "C1", "confidence" => Keyword.get(opts, :score, 0.9)}]}
 
-    defp data(_stage, true, _prompt), do: %{"content" => "Done.", "tool_calls" => []}
+    defp data(_stage, true, _prompt, _opts), do: %{"content" => "Done.", "tool_calls" => []}
 
-    defp data(:detector, false, prompt),
+    defp data(:detector, false, prompt, _opts),
       do: call("report_findings", %{"findings" => findings(prompt)})
 
-    defp data(:verifier, false, _prompt), do: call("report_verdict", verdict())
-    defp data(:root, false, _prompt), do: call("review_changes", %{})
+    defp data(:verifier, false, _prompt, _opts), do: call("report_verdict", verdict())
+    defp data(:root, false, _prompt, _opts), do: call("review_changes", %{})
 
     defp findings(prompt) do
       if prompt =~ ~s(<unit id="lib/a.ex#1">) do
@@ -177,6 +178,34 @@ defmodule Tackle.Tools.ReviewTest do
     refute text =~ "Notes:"
     assert_received {:llm_call, :detector}
     assert_received {:llm_call, :verifier}
+  end
+
+  # Regression: a confirmed finding the profile's threshold hides used to
+  # vanish from the result, though the progress reported it as confirmed.
+  test "lists verified findings the profile does not show, with the reason", ctx do
+    profiles = %{
+      "review-detector" => stage_spec("review-detector", ReportFindings),
+      "review-verifier" => stage_spec("review-verifier", ReportVerdict, score: 0.3)
+    }
+
+    scope = start_scope(root: [allow_delegation: true], profiles: profiles)
+    context = %{ctx.context | runtime: scope.root_agent_ref}
+
+    assert {:ok, text} = review(%{}, context)
+    assert text =~ "0 blocking, 0 optional finding(s)."
+
+    assert text =~
+             "Verified but not shown under the default profile:\n" <>
+               "- lib/a.ex:3 [high, correctness] Guard against a missing key " <>
+               "(confirmed, confidence 0.30 below the blocking threshold 0.50)\n" <>
+               "   Trigger: g/1 is called with a map without :key"
+
+    refute text =~ "Blocking:"
+
+    # The assertive profile's threshold lets it through.
+    assert {:ok, text} = review(%{"profile" => "assertive"}, context)
+    assert text =~ "1 blocking, 0 optional finding(s)."
+    refute text =~ "Verified but not shown"
   end
 
   test "keeps as many runs in flight as the agent may have children", ctx do

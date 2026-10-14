@@ -15,14 +15,14 @@ defmodule Tackle.CLI.TUI.BashViewTest do
 
   test "absolute directories read relative to the working directory" do
     cwd = File.cwd!()
-    assert BashView.split_cwd("cd #{cwd}/lib/x; ls") == {"lib/x", "ls"}
+    assert BashView.split_cwd(~s(cd "#{cwd}/lib/x"; ls)) == {"lib/x", "ls"}
     # The current directory adds nothing: every command already runs there.
-    assert BashView.split_cwd("cd #{cwd} && ls") == {nil, "ls"}
+    assert BashView.split_cwd(~s(cd "#{cwd}" && ls)) == {nil, "ls"}
     assert BashView.split_cwd("cd /elsewhere && ls") == {"/elsewhere", "ls"}
 
     if home = System.user_home() do
       unless String.starts_with?(cwd, home <> "/elsewhere") do
-        assert BashView.split_cwd("cd #{home}/elsewhere && ls") == {"~/elsewhere", "ls"}
+        assert BashView.split_cwd(~s(cd "#{home}/elsewhere" && ls)) == {"~/elsewhere", "ls"}
       end
     end
   end

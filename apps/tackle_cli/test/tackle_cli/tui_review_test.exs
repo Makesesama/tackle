@@ -290,6 +290,23 @@ defmodule Tackle.CLI.TUI.ReviewTest do
       assert state.notice == "Review finished: 1 blocking, 0 optional"
     end
 
+    test "verified findings the profile hid are noted", %{state: state, ref: ref} do
+      {:noreply, state} = Review.apply(state, ref, {:loaded, change(), nil, nil, []})
+      hidden = %{finding("lib/a.ex", 3) | verdict: :confirmed}
+      filtered = %{finding("lib/b.ex", 2) | verdict: nil}
+
+      result = %{
+        result([], [])
+        | dropped: [
+            %{finding: hidden, reason: :below_threshold},
+            %{finding: filtered, reason: :not_on_changed_lines}
+          ]
+      }
+
+      {:noreply, state} = Review.apply(state, ref, {:finished, {:ok, result}})
+      assert "1 verified finding(s) not shown under the default profile" in state.review.notes
+    end
+
     test "a review that finishes behind a closed overlay points at /findings", %{
       state: state,
       ref: ref

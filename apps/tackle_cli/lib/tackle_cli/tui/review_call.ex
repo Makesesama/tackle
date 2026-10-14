@@ -52,14 +52,16 @@ defmodule Tackle.CLI.TUI.ReviewCall do
 
   @typedoc """
   A parsed `review_changes` result: the reviewed `target` and file count
-  (`nil` when nothing was reviewed), the blocking and optional counts, the
-  findings in result order, and the notes.
+  (`nil` when nothing was reviewed), the blocking and optional counts, how
+  many verified findings the profile did not show (`hidden`), the findings
+  in result order, and the notes.
   """
   @type result :: %{
           target: String.t() | nil,
           files: non_neg_integer() | nil,
           blocking: non_neg_integer(),
           optional: non_neg_integer(),
+          hidden: non_neg_integer(),
           findings: [finding()],
           notes: [String.t()]
         }
@@ -155,7 +157,7 @@ defmodule Tackle.CLI.TUI.ReviewCall do
   it is not one (an error, or a format this shell does not know).
 
       iex> Tackle.CLI.TUI.ReviewCall.parse_result("Nothing to review in staged changes.")
-      %{target: "staged changes", files: nil, blocking: 0, optional: 0, findings: [], notes: []}
+      %{target: "staged changes", files: nil, blocking: 0, optional: 0, hidden: 0, findings: [], notes: []}
   """
   @spec parse_result(String.t() | nil) :: result() | nil
   def parse_result(text) when is_binary(text) do
@@ -183,21 +185,33 @@ defmodule Tackle.CLI.TUI.ReviewCall do
           files: String.to_integer(files),
           blocking: String.to_integer(blocking),
           optional: String.to_integer(optional),
+          hidden: 0,
           findings: [],
           notes: []
         }
 
       match = Regex.run(@nothing, line) ->
         [_line, target] = match
-        %{target: target, files: nil, blocking: 0, optional: 0, findings: [], notes: []}
+
+        %{
+          target: target,
+          files: nil,
+          blocking: 0,
+          optional: 0,
+          hidden: 0,
+          findings: [],
+          notes: []
+        }
 
       true ->
         nil
     end
   end
 
-  # Sections are `Blocking:`, `Optional:`, and `Notes:`; finding lines are
-  # numbered, their details indented below them.
+  # Sections are `Blocking:`, `Optional:`, the verified findings the
+  # profile did not show, and `Notes:`; finding lines are numbered (`- ` for
+  # hidden ones), their details indented below them. A hidden section's
+  # `- … and N more` line counts N.
   defp body(lines, result) do
     {result, _section} =
       Enum.reduce(lines, {result, nil}, fn line, {result, section} ->
@@ -211,6 +225,15 @@ defmodule Tackle.CLI.TUI.ReviewCall do
           {"Notes:", _section} ->
             {result, :notes}
 
+          {"Verified but not shown under the " <> _profile, _section} ->
+            {result, :hidden}
+
+          {"- … and " <> more, :hidden} ->
+            {%{result | hidden: result.hidden + more_count(more)}, :hidden}
+
+          {"- " <> _finding, :hidden} ->
+            {%{result | hidden: result.hidden + 1}, :hidden}
+
           {"- " <> note, :notes} ->
             {%{result | notes: [note | result.notes]}, :notes}
 
@@ -223,6 +246,13 @@ defmodule Tackle.CLI.TUI.ReviewCall do
       end)
 
     %{result | findings: Enum.reverse(result.findings), notes: Enum.reverse(result.notes)}
+  end
+
+  defp more_count(text) do
+    case Integer.parse(text) do
+      {count, _rest} when count > 0 -> count
+      _other -> 0
+    end
   end
 
   defp finding(result, line, group) do

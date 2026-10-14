@@ -84,6 +84,19 @@ defmodule Tackle.Review.Result do
   @spec findings(t()) :: [Finding.t()]
   def findings(%__MODULE__{blocking: blocking, optional: optional}), do: blocking ++ optional
 
+  @doc """
+  Returns the verified findings the profile did not show, in rank order, with
+  why (`Tackle.Review.Rank`): below its confidence threshold, uncertain
+  where it wants confirmed findings, over its cap, or in a lane it hides.
+
+  These passed verification (confirmed or uncertain), unlike the
+  candidates a deterministic filter dropped, which were never verified.
+  """
+  @spec hidden(t()) :: [%{finding: Finding.t(), reason: Rank.reason()}]
+  def hidden(%__MODULE__{dropped: dropped}) do
+    Enum.filter(dropped, &(&1.finding.verdict in [:confirmed, :uncertain]))
+  end
+
   @doc "Returns the overall verdict for the shown findings."
   @spec verdict([Finding.t()], [Finding.t()]) :: verdict()
   def verdict([_ | _], _optional), do: :blocking

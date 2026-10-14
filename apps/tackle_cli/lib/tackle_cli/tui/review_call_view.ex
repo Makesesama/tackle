@@ -7,9 +7,10 @@ defmodule Tackle.CLI.TUI.ReviewCallView do
   bar for the units and one for the verified candidates, and the latest
   candidates with their verdicts, the same pieces the `/review` overlay
   uses (`Tackle.CLI.TUI.ReviewDashboard`). Once it finished, the card
-  shows the outcome with the review's size and the findings, one row
-  each: a severity badge, the title, and the location. Details add the
-  full progress above the result text.
+  shows the outcome with the review's size, how many verified findings
+  the review profile did not show, and the findings, one row each: a
+  severity badge, the title, and the location. Details add the full
+  progress above the result text, which lists the hidden findings.
 
   Transcript cards do not animate, so running steps show a still `●`.
   """
@@ -152,6 +153,10 @@ defmodule Tackle.CLI.TUI.ReviewCallView do
         result.optional > 0 ->
           {"●", "#{plural(result.optional, "optional finding")}", :warning}
 
+        # Verified findings below the profile's bar: not a clean result.
+        hidden(result) > 0 ->
+          {"●", "No findings shown", :warning}
+
         incomplete?(result) ->
           {"●", "No findings, but the review was incomplete", :warning}
 
@@ -163,9 +168,21 @@ defmodule Tackle.CLI.TUI.ReviewCallView do
       end
 
     MessageView.row(
-      [span(glyph <> " ", tone), span(text, bold(tone))] ++ stats_spans(result, model)
+      [span(glyph <> " ", tone), span(text, bold(tone))] ++
+        hidden_spans(result) ++ stats_spans(result, model)
     )
   end
+
+  # Verified findings the review profile kept out of the list; the result
+  # text (details) lists them.
+  defp hidden_spans(result) do
+    case hidden(result) do
+      0 -> []
+      count -> [span(" · #{count} verified, hidden by the profile", :warning)]
+    end
+  end
+
+  defp hidden(result), do: Map.get(result, :hidden, 0)
 
   defp stats_spans(%{files: nil}, _model), do: []
 

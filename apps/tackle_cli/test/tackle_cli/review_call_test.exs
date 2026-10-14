@@ -248,17 +248,53 @@ defmodule Tackle.CLI.TUI.ReviewCallTest do
         warnings: []
       }
 
-      result = %Result{blocking: blocking, optional: optional, summary: summary}
+      # Ranked out after verification (listed), and filtered before it (not).
+      hidden = finding.("Close the file", severity: :medium, blocking: false)
+      filtered = finding.("Off the diff", verdict: nil)
+
+      dropped = [
+        %{finding: filtered, reason: :not_on_changed_lines},
+        %{finding: %{hidden | confidence: 0.62}, reason: :below_threshold}
+      ]
+
+      summary = %{summary | scoring_failures: [%{fingerprint: "x", reason: :timeout}]}
+
+      result = %Result{
+        blocking: blocking,
+        optional: optional,
+        dropped: dropped,
+        summary: summary
+      }
+
       text = Tackle.Tools.Review.format_result(result, change, ["History is off"])
+
+      assert text =~
+               "Verified but not shown under the default profile:\n" <>
+                 "- lib/a b.ex:2 [medium, correctness] Close the file " <>
+                 "(confirmed, confidence 0.62 below the optional threshold 0.80)\n" <>
+                 "   Trigger: x is missing\n\nNotes:"
+
+      refute text =~ "Off the diff"
 
       assert %{
                target: "changes since main",
                files: 1,
                blocking: 1,
                optional: 2,
+               hidden: 1,
                findings: [first, second, third],
-               notes: ["History is off", "Unit lib/a b.ex#1 was not reviewed: " <> _reason]
+               notes: [
+                 "History is off",
+                 "Unit lib/a b.ex#1 was not reviewed: " <> _reason,
+                 "1 finding could not be scored and kept the detector's confidence: timed out"
+               ]
              } = ReviewCall.parse_result(text)
+
+      many = for n <- 1..12, do: %{finding: %{hidden | title: "H#{n}"}, reason: :over_cap}
+      text = Tackle.Tools.Review.format_result(%{result | dropped: many}, change, [])
+      assert text =~ "(confirmed, over the cap of 15 findings)"
+      assert text =~ "- … and 2 more"
+      assert %{hidden: 12, findings: [_, _, _]} = ReviewCall.parse_result(text)
 
       assert %{group: :blocking, location: "lib/a b.ex:2", title: "Handle [the] read failure"} =
                first
@@ -342,6 +378,36 @@ defmodule Tackle.CLI.TUI.ReviewCallTest do
       assert text =~ "Finding 1 "
       refute text =~ "Finding 15"
       assert text =~ ~r/… \d+ more findings · details show all/u
+    end
+
+    test "verified findings the profile hid are counted, not shown as clean" do
+      hidden =
+        "Verified but not shown under the default profile:\n" <>
+          "- lib/a.ex:3 [medium, correctness] Treat <<< apart (confirmed, confidence 0.62 " <>
+          "below the optional threshold 0.80)\n   Trigger: cat <<< word\n" <>
+          "- lib/a.ex:9 [low, testing] Add a test (confirmed, confidence 0.5 below " <>
+          "the optional threshold 0.80)\n   Trigger: always"
+
+      output =
+        "Reviewed 2 files (changes since main): 0 blocking, 0 optional finding(s).\n\n" <>
+          hidden
+
+      text = render(entry(:completed, nil, output))
+
+      assert text =~
+               "● No findings shown · 2 verified, hidden by the profile  2 files reviewed"
+
+      refute text =~ "✓"
+      refute text =~ "Treat <<< apart"
+
+      shown =
+        "Reviewed 2 files (changes since main): 1 blocking, 0 optional finding(s).\n\n" <>
+          "Blocking:\n1. lib/a.ex:1 [high, correctness] Quote the cwd\n   Trigger: t\n   b\n\n" <>
+          hidden
+
+      text = render(entry(:completed, nil, shown))
+      assert text =~ "✗ 1 blocking · 0 optional · 2 verified, hidden by the profile"
+      assert text =~ " HIGH   Quote the cwd  lib/a.ex:1"
     end
 
     test "clean and empty reviews say so" do
