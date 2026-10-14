@@ -147,6 +147,7 @@ then pass the callback's `state` and `code` to `complete/3`:
   redirect_uri: "http://localhost:49152/callback",
   finch_name: MyApp.MCPFinch,
   client_id: "registered-client", # optional; DCR is used if omitted
+  client_secret: "secret",         # optional; for a confidential client_id
   scope: "tools")
 
 # Open flow.authorization_url in a browser and receive callback parameters.

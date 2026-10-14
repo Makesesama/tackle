@@ -333,11 +333,23 @@ defmodule Tackle.CLI.ParserTest do
 
     assert {:ok, {:mcp_approve, "docs"}} = Parser.parse(["mcp", "approve", "docs"])
 
-    assert {:ok, {:mcp_login, %{name: "docs", client_id: nil}}} =
+    assert {:ok, {:mcp_login, %{name: "docs", client_id: nil, client_secret: nil}}} =
              Parser.parse(["mcp", "auth", "login", "docs"])
 
-    assert {:ok, {:mcp_login, %{name: "docs", client_id: "registered"}}} =
+    assert {:ok, {:mcp_login, %{name: "docs", client_id: "registered", client_secret: nil}}} =
              Parser.parse(["mcp", "auth", "login", "docs", "--client-id", "registered"])
+
+    assert {:ok, {:mcp_login, %{name: "docs", client_id: "registered", client_secret: "shh"}}} =
+             Parser.parse([
+               "mcp",
+               "auth",
+               "login",
+               "docs",
+               "--client-id",
+               "registered",
+               "--client-secret",
+               "shh"
+             ])
 
     assert {:ok, {:mcp_status, nil}} = Parser.parse(["mcp", "auth", "status"])
     assert {:ok, {:mcp_logout, "docs"}} = Parser.parse(["mcp", "auth", "logout", "docs"])

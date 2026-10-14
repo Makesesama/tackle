@@ -196,13 +196,16 @@ defmodule Tackle.CLI.MCP do
     end
   end
 
-  def login(%{name: name, client_id: client_id}) do
-    with {:ok, _} <- ensure_started(),
+  @client_secret_env "TACKLE_MCP_CLIENT_SECRET"
+
+  def login(%{name: name} = opts) do
+    with {:ok, client} <- client_credentials(opts),
+         {:ok, _} <- ensure_started(),
          {:ok, servers} <- servers(),
          {:ok, %{"transport" => "http", "url" => url}} <- fetch_server(servers, name),
          {:ok, listener} <-
            :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}, reuseaddr: true]),
-         result <- authorize(name, url, listener, client_id) do
+         result <- authorize(name, url, listener, client) do
       result
     else
       {:ok, _} -> fail({:error, :mcp_oauth_requires_http})
@@ -210,16 +213,40 @@ defmodule Tackle.CLI.MCP do
     end
   end
 
-  defp authorize(name, url, listener, client_id) do
+  # A pre-registered client may be confidential, so its secret comes from
+  # `--client-secret` or, to keep it out of argv and shell history, the
+  # environment. Without `--client-id` the flow uses dynamic registration, which
+  # issues its own credentials, so an explicit secret there is a usage error.
+  @doc false
+  def client_credentials(opts) do
+    client_id = blank_to_nil(Map.get(opts, :client_id))
+    flag_secret = blank_to_nil(Map.get(opts, :client_secret))
+
+    cond do
+      is_nil(client_id) and not is_nil(flag_secret) ->
+        {:error, :client_secret_requires_client_id}
+
+      is_nil(client_id) ->
+        {:ok, [client_id: nil, client_secret: nil]}
+
+      true ->
+        secret = flag_secret || blank_to_nil(System.get_env(@client_secret_env))
+        {:ok, [client_id: client_id, client_secret: secret]}
+    end
+  end
+
+  defp blank_to_nil(value) when value in [nil, ""], do: nil
+  defp blank_to_nil(value), do: value
+
+  defp authorize(name, url, listener, client) do
     try do
       {:ok, {_ip, port}} = :inet.sockname(listener)
       redirect = "http://127.0.0.1:#{port}/callback"
 
       with {:ok, flow} <-
-             OAuth.begin(url,
-               redirect_uri: redirect,
-               finch_name: Tackle.CLI.MCP.Finch,
-               client_id: client_id
+             OAuth.begin(
+               url,
+               [redirect_uri: redirect, finch_name: Tackle.CLI.MCP.Finch] ++ client
              ),
            :ok <- announce(flow.authorization_url),
            {:ok, state, code, socket} <- callback(listener, flow.state),
@@ -327,6 +354,22 @@ defmodule Tackle.CLI.MCP do
     else
       Application.ensure_all_started(:tackle_cli)
     end
+  end
+
+  defp fail({:error, :client_registration_unavailable}) do
+    Owl.IO.puts(
+      "MCP error: the authorization server does not support (or rejected) dynamic client " <>
+        "registration. Register an OAuth app with the provider, then retry with " <>
+        "--client-id ID (and #{@client_secret_env} or --client-secret if it issued a secret).",
+      :stderr
+    )
+
+    1
+  end
+
+  defp fail({:error, :client_secret_requires_client_id}) do
+    Owl.IO.puts("MCP error: --client-secret requires --client-id", :stderr)
+    1
   end
 
   defp fail(reason) do

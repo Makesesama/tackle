@@ -231,4 +231,55 @@ defmodule Tackle.CLI.MCPTest do
       assert {:ok, nil} = Config.list_project(cwd: Path.join(root, "work"))
     end
   end
+
+  describe "login client credentials" do
+    setup do
+      previous = System.get_env("TACKLE_MCP_CLIENT_SECRET")
+      System.delete_env("TACKLE_MCP_CLIENT_SECRET")
+
+      on_exit(fn ->
+        if previous,
+          do: System.put_env("TACKLE_MCP_CLIENT_SECRET", previous),
+          else: System.delete_env("TACKLE_MCP_CLIENT_SECRET")
+      end)
+    end
+
+    test "uses dynamic registration without a client id" do
+      assert {:ok, [client_id: nil, client_secret: nil]} =
+               MCP.client_credentials(%{client_id: nil, client_secret: nil})
+
+      System.put_env("TACKLE_MCP_CLIENT_SECRET", "ignored")
+
+      assert {:ok, [client_id: nil, client_secret: nil]} =
+               MCP.client_credentials(%{client_id: "", client_secret: ""})
+    end
+
+    test "passes a pre-registered client id with its secret" do
+      assert {:ok, [client_id: "app", client_secret: nil]} =
+               MCP.client_credentials(%{client_id: "app", client_secret: nil})
+
+      assert {:ok, [client_id: "app", client_secret: "flag"]} =
+               MCP.client_credentials(%{client_id: "app", client_secret: "flag"})
+
+      System.put_env("TACKLE_MCP_CLIENT_SECRET", "env")
+
+      assert {:ok, [client_id: "app", client_secret: "env"]} =
+               MCP.client_credentials(%{client_id: "app", client_secret: nil})
+
+      assert {:ok, [client_id: "app", client_secret: "flag"]} =
+               MCP.client_credentials(%{client_id: "app", client_secret: "flag"})
+    end
+
+    test "rejects a secret without a client id before starting the flow" do
+      assert {:error, :client_secret_requires_client_id} =
+               MCP.client_credentials(%{client_id: nil, client_secret: "secret"})
+
+      stderr =
+        capture_io(:stderr, fn ->
+          assert 1 == MCP.login(%{name: "docs", client_id: nil, client_secret: "secret"})
+        end)
+
+      assert stderr =~ "--client-secret requires --client-id"
+    end
+  end
 end

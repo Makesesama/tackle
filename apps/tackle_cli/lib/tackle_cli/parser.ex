@@ -27,7 +27,8 @@ defmodule Tackle.CLI.Parser do
           | {:mcp_add, map()}
           | {:mcp_remove, %{name: String.t(), project: boolean()}}
           | {:mcp_approve, String.t()}
-          | {:mcp_login, %{name: String.t(), client_id: String.t() | nil}}
+          | {:mcp_login,
+             %{name: String.t(), client_id: String.t() | nil, client_secret: String.t() | nil}}
           | {:mcp_status, String.t() | nil}
           | {:mcp_logout, String.t()}
           | {:sdk, %{}}
@@ -149,7 +150,12 @@ defmodule Tackle.CLI.Parser do
   defp parse_result({:ok, [:mcp, :auth, :login], result}, _parser),
     do:
       {:ok,
-       {:mcp_login, %{name: result.args.name, client_id: Map.get(result.options, :client_id)}}}
+       {:mcp_login,
+        %{
+          name: result.args.name,
+          client_id: Map.get(result.options, :client_id),
+          client_secret: Map.get(result.options, :client_secret)
+        }}}
 
   defp parse_result({:ok, [:mcp, :auth, :status], result}, _parser),
     do: {:ok, {:mcp_status, Map.get(result.args, :name)}}
@@ -365,7 +371,21 @@ defmodule Tackle.CLI.Parser do
                   name: "login",
                   about: "Authorize an HTTP server",
                   args: [name: [value_name: "NAME", required: true, parser: :string]],
-                  options: [client_id: [long: "--client-id", value_name: "ID", parser: :string]]
+                  options: [
+                    client_id: [
+                      long: "--client-id",
+                      value_name: "ID",
+                      help: "Pre-registered OAuth client ID (skips dynamic registration)",
+                      parser: :string
+                    ],
+                    client_secret: [
+                      long: "--client-secret",
+                      value_name: "SECRET",
+                      help:
+                        "Client secret for --client-id; prefer TACKLE_MCP_CLIENT_SECRET to keep it out of shell history",
+                      parser: :string
+                    ]
+                  ]
                 ],
                 status: [
                   name: "status",

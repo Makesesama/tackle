@@ -67,6 +67,62 @@ defmodule Tackle.Plugins.MCP.OAuthTest do
     assert credentials.client_id == "client"
   end
 
+  test "uses a pre-registered confidential client when registration is unavailable" do
+    parent = self()
+
+    request = fn method, url, _headers, body, _opts ->
+      send(parent, {:request, method, url, body})
+
+      cond do
+        url == "https://mcp.example/mcp" ->
+          {:ok, %{status: 401, headers: [], body: ""}}
+
+        url == "https://mcp.example/.well-known/oauth-protected-resource/mcp" ->
+          {:ok, %{status: 200, body: ~s({"authorization_servers":["https://auth.example"]})}}
+
+        url == "https://auth.example/.well-known/oauth-authorization-server" ->
+          {:ok,
+           %{
+             status: 200,
+             body:
+               ~s({"authorization_endpoint":"https://auth.example/authorize","token_endpoint":"https://auth.example/token"})
+           }}
+
+        url == "https://auth.example/token" ->
+          {:ok,
+           %{
+             status: 200,
+             body: ~s({"access_token":"token","token_type":"Bearer","refresh_token":"refresh"})
+           }}
+      end
+    end
+
+    opts = [redirect_uri: "http://localhost:1234/callback", request: request]
+
+    assert {:error, :client_registration_unavailable} =
+             OAuth.begin("https://mcp.example/mcp", opts)
+
+    {:ok, flow} =
+      OAuth.begin(
+        "https://mcp.example/mcp",
+        opts ++ [client_id: "app", client_secret: "app-secret"]
+      )
+
+    query = flow.authorization_url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+    assert query["client_id"] == "app"
+    refute Map.has_key?(query, "client_secret")
+
+    assert {:ok, credentials} = OAuth.complete(flow, flow.state, code: "code")
+    assert credentials.client_id == "app"
+    assert credentials.client_secret == "app-secret"
+
+    assert_received {:request, :post, "https://auth.example/token", body}
+    params = URI.decode_query(body)
+    assert params["client_id"] == "app"
+    assert params["client_secret"] == "app-secret"
+    assert params["grant_type"] == "authorization_code"
+  end
+
   test "rejects numeric token type on refresh" do
     request = fn :post, _, _, _, _ ->
       {:ok, %{status: 200, body: ~s({"access_token":"bad","token_type":42})}}

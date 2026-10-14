@@ -375,9 +375,15 @@ project.
 prints a browser authorization URL and waits on a loopback callback. Credentials
 are stored in `$TACKLE_HOME/auth.json` under `mcp:NAME`; `mcp auth status`
 and `mcp auth logout NAME` inspect/delete them. By default the authorization
-server must support dynamic client registration; use `mcp auth login NAME
---client-id ID` for a pre-registered public client. The flow prints the
-browser URL but does not open the browser itself.
+server must support dynamic client registration; otherwise login fails with
+`:client_registration_unavailable`. For such servers (for example Asana's V2
+endpoint), register an OAuth app with the provider and pass `mcp auth login
+NAME --client-id ID`. The callback is `http://127.0.0.1:PORT/callback` on a
+random port, so the app's redirect must accept any loopback port (RFC 8252). Confidential clients also need their secret: set
+`TACKLE_MCP_CLIENT_SECRET` (preferred, keeps it out of shell history and process
+listings) or pass `--client-secret SECRET`. The secret is only used together
+with `--client-id` and is stored with the server's credentials for token
+refresh. The flow prints the browser URL but does not open the browser itself.
 
 Authenticated HTTP servers use the stored OAuth bearer token when establishing
 an Anubis connection. The CLI refreshes expiring tokens before connecting and
