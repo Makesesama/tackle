@@ -14,7 +14,8 @@
 #   --mode tool   `review_changes` is called directly with the root agent's own
 #                 tool context, without a root turn
 #   --mode cli    `Tackle.Review.run/2` from the root agent ref, as `tackle
-#                 review` and `/review` do (concurrency 2 unless --concurrency)
+#                 review` and `/review` do (concurrency: the root agent's
+#                 max_children_per_agent unless --concurrency)
 #
 # Options:
 #   --range RANGE        revision range (default: the branch's changes)

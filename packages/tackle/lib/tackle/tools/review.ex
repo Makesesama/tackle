@@ -21,7 +21,8 @@ defmodule Tackle.Tools.Review do
       scope's trusted profiles (as `Tackle.Coding` provides them).
 
   The runs count against the agent's child limit, which is also how many
-  the review keeps in flight, and stop when the tool call ends.
+  the review keeps in flight (see `Tackle.Review`), and stop when the tool
+  call ends.
 
   ## History
 
@@ -69,7 +70,7 @@ defmodule Tackle.Tools.Review do
   alias Tackle.Review
   alias Tackle.Review.{Change, Delegation, Detector, Finding, History, Result, Verifier}
   alias Tackle.Runtime
-  alias Tackle.Runtime.{AgentRef, Limits, Ref, Registry}
+  alias Tackle.Runtime.{AgentRef, Ref, Registry}
 
   @profiles %{"quiet" => :quiet, "default" => :default, "assertive" => :assertive}
 
@@ -105,21 +106,20 @@ defmodule Tackle.Tools.Review do
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def run(args, context) when is_map(args) and is_map(context) do
     with {:ok, agent_ref} <- fetch_agent_ref(context),
-         {:ok, limits} <- delegation_limits(agent_ref),
+         :ok <- ensure_delegation(agent_ref),
          {:ok, change} <- load_change(args, context) do
       {history, notes} = history(change, context)
       profile = profile(args, context)
       report = reporter(context)
       report.(loaded(change, Atom.to_string(profile)))
 
-      opts =
-        [
-          requester: agent_ref,
-          profiles: profiles(agent_ref),
-          profile: profile,
-          history: history,
-          on_event: &report_event(report, &1)
-        ] ++ concurrency(limits)
+      opts = [
+        requester: agent_ref,
+        profiles: profiles(agent_ref),
+        profile: profile,
+        history: history,
+        on_event: &report_event(report, &1)
+      ]
 
       case Review.run(change, opts) do
         {:ok, result} -> {:ok, format_result(result, change, notes)}
@@ -141,10 +141,10 @@ defmodule Tackle.Tools.Review do
     end
   end
 
-  defp delegation_limits(agent_ref) do
+  defp ensure_delegation(agent_ref) do
     case Runtime.delegation_limits(agent_ref) do
-      {:ok, limits} ->
-        {:ok, limits}
+      {:ok, _limits} ->
+        :ok
 
       {:error, :delegation_not_allowed} ->
         {:error, "review_changes needs delegation, which is not permitted for this agent"}
@@ -153,11 +153,6 @@ defmodule Tackle.Tools.Review do
         {:error, "review_changes is unavailable: #{inspect(reason)}"}
     end
   end
-
-  # As many runs in flight as the agent may have children; without a usable
-  # limit the review keeps its own default.
-  defp concurrency(%Limits{max_children_per_agent: max}) when max > 0, do: [max_concurrency: max]
-  defp concurrency(%Limits{}), do: []
 
   defp load_change(args, context) do
     opts = [

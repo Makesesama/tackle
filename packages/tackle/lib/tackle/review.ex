@@ -120,7 +120,8 @@ defmodule Tackle.Review do
   }
 
   alias Tackle.Review.Rules.Rule
-  alias Tackle.Runtime.{AgentRef, AgentSpec}
+  alias Tackle.Runtime
+  alias Tackle.Runtime.{AgentRef, AgentSpec, Limits}
   alias Tackle.Tools.{ReportFindings, ReportVerdict}
 
   @option_keys [
@@ -185,8 +186,9 @@ defmodule Tackle.Review do
     * `:profile` - `:quiet`, `:default` (default), or `:assertive`
       (see `Tackle.Review.Rank`);
     * `:samples` - detector runs per batch of units (default 1);
-    * `:max_concurrency` - runs in flight at once (default
-      #{@default_concurrency});
+    * `:max_concurrency` - runs in flight at once (default: the requester's
+      `max_children_per_agent`, the most its scope admits at once, or
+      #{@default_concurrency} when that limit cannot be read);
     * `:exclude` - extra globs of files not to review (default `[]`);
     * `:models` - per-stage model references overriding the profiles'
       models, as a map or keyword list with `:detector`, `:verifier`, and
@@ -303,7 +305,7 @@ defmodule Tackle.Review do
            option(opts, :profile, settings.profile || :default, &(&1 in Rank.profiles())),
          {:ok, samples} <- option(opts, :samples, 1, &positive_integer?/1),
          {:ok, concurrency} <-
-           option(opts, :max_concurrency, @default_concurrency, &positive_integer?/1),
+           option(opts, :max_concurrency, default_concurrency(requester), &positive_integer?/1),
          {:ok, exclude} <- option(opts, :exclude, [], &string_list?/1),
          {:ok, models} <- models(Keyword.get(opts, :models, %{})),
          models = Map.merge(settings.models, models),
@@ -382,6 +384,15 @@ defmodule Tackle.Review do
   defp requester(%AgentRef{} = agent_ref), do: {:ok, agent_ref}
   defp requester(nil), do: {:error, {:missing_option, :requester}}
   defp requester(other), do: {:error, {:invalid_option, :requester, other}}
+
+  # The scope admits at most this many children of the requester at once, so a
+  # review defaults to keeping exactly that many runs in flight.
+  defp default_concurrency(requester) do
+    case Runtime.agent_snapshot(requester) do
+      {:ok, %{limits: %Limits{max_children_per_agent: max}}} when max > 0 -> max
+      _other -> @default_concurrency
+    end
+  end
 
   defp fetch_option(opts, key, valid?) do
     case Keyword.fetch(opts, key) do

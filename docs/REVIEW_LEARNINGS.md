@@ -120,12 +120,11 @@ Verifiers took 25–30 s each.
     request helper.
   - If they can't, have the loop emit a periodic non-auxiliary heartbeat while
     a model request is in flight.
-- **Unify concurrency.** The `review_changes` tool passes its agent's
-  `max_children_per_agent` (4 by default) as `:max_concurrency`, while
-  `tackle review` and `/review` use `Tackle.Review`'s default of 2. So the
-  agent tool and the CLI behave differently for no stated reason. Pick one
-  policy and document it, ideally configurable per host. See
-  [`tasks/agent-ref-cleanup.md`](../tasks/agent-ref-cleanup.md).
+- **Unify concurrency (done).** `Tackle.Review` now defaults
+  `:max_concurrency` to the requester's `max_children_per_agent` (4 in
+  sessions), so the agent tool, `tackle review`, and `/review` keep the same
+  number of runs in flight. Hosts set it through the scope's `Limits`, or per
+  review with `:max_concurrency`. Before, the CLI and TUI ran 2 at once.
 
 ### 3.2 Detector focus, time, and cost
 

@@ -9,7 +9,7 @@ defmodule Tackle.ReviewTest do
   alias Tackle.Lib.Cancellation
   alias Tackle.Review
   alias Tackle.Review.{Change, Detector, Diff, Finding, History, Result, Rules}
-  alias Tackle.Runtime.{AgentSpec, ScopeSpec}
+  alias Tackle.Runtime.{AgentSpec, Limits, ScopeSpec}
   alias Tackle.Test.Gauge
   alias Tackle.Tools.{ReportFindings, ReportVerdict}
 
@@ -298,8 +298,9 @@ defmodule Tackle.ReviewTest do
 
   defp review(change, script, opts \\ []) do
     {profile_opts, opts} = Keyword.pop(opts, :profile_opts, [])
+    {limits, opts} = Keyword.pop(opts, :limits, Limits.default())
     profiles = profiles(script, profile_opts)
-    scope = start_scope(root: [allow_delegation: true], profiles: profiles)
+    scope = start_scope(root: [allow_delegation: true], profiles: profiles, limits: limits)
     test_pid = self()
 
     opts =
@@ -1552,15 +1553,14 @@ defmodule Tackle.ReviewTest do
   end
 
   describe "options" do
-    test "an agent reference requester runs two runs at once by default" do
-      # The scope admits 4 children per agent, so 2 is the review's own default.
+    test "keeps as many runs in flight as the requester may have children" do
       {:ok, gauge} = Gauge.start_link()
 
       script =
         script(%{
           detector: fn
             %{tool_results: []} ->
-              Gauge.hold(gauge, 2)
+              Gauge.hold(gauge, 3)
               {:findings, []}
 
             _request ->
@@ -1582,8 +1582,12 @@ defmodule Tackle.ReviewTest do
           """
         end)
 
-      assert {:ok, %Result{}} = review(change(diff), script, units: [max_changed_lines: 1])
-      assert Gauge.peak(gauge) == 2
+      limits = Limits.new!(max_children_per_agent: 3, max_agents_per_fleet: 16)
+
+      assert {:ok, %Result{}} =
+               review(change(diff), script, units: [max_changed_lines: 1], limits: limits)
+
+      assert Gauge.peak(gauge) == 3
     end
 
     test "are validated before anything runs" do

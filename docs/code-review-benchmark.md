@@ -69,6 +69,11 @@ user's configuration, credentials, and models. For each case it:
 Each variant then reviews the same range from an ephemeral scope composed the
 way `tackle review` composes it.
 
+The recorded runs passed `--concurrency 4`. At the time, `tackle review` and
+`/review` defaulted to 2 runs in flight and only the `review_changes` tool used
+4. Since 2026-10-14 every entry point defaults to the requester's
+`max_children_per_agent` (4 in sessions), so the timings now match all of them.
+
 A finding **matches** a seeded bug when it points at the new side of the
 same file and its lines overlap the bug's lines within 3 lines of slack. A
 case may list other acceptable places, such as the crash site. Testing
