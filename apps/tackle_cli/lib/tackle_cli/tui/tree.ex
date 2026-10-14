@@ -1,21 +1,36 @@
 defmodule Tackle.CLI.TUI.Tree do
   @moduledoc """
-  The conversation-tree picker: `/tree`.
+  The conversation-tree screen: `/tree`.
 
-  A tree browser is a search-first `Picker` over the session's settled history,
-  rendered with branch indentation and an active-position marker. Independent
-  root histories begin at the left edge (the synthetic start row adds no fork);
-  real forks within a history retain their connectors. Selecting a
-  user message moves to its parent and offers that message back to the composer
-  as a draft, so submitting the edit creates a sibling branch. Selecting any
-  other entry moves to it; selecting the start row returns to the empty
-  conversation before the first message.
+  A full-screen, search-first browser over the session's settled history, laid
+  out like the `/resume` screen and drawn like a Git graph. Every user prompt
+  is a `●` node on a vertical rail; the reply (and, in the all-entries view, the
+  tool steps) that follow it hang beneath the prompt as body lines. Forks
+  branch off with `├─●` / `└─●`, so even a linear history reads as a tree, and
+  the active path is highlighted while other branches are dimmed.
 
-  The picker is idle-only and knows the safety rule: an entry whose tool batch is
-  incomplete is shown as *inspect only* and cannot be selected for execution.
-  Navigation is asynchronous, so the shell stays responsive; the runtime
-  validates, persists, and then reports the committed destination, which this
-  module installs together with the rebuilt transcript.
+  Tab cycles three views:
+
+    * `:default` — user messages, assistant replies, and compaction checkpoints.
+      A reply's tool calls are folded into a short summary on its row.
+    * `:user` — user messages only.
+    * `:all` — every entry, with tool rows showing their main argument.
+
+  Hidden entries keep the structure intact: every visible row hangs off its
+  nearest visible ancestor. The current position is always visible.
+
+  The screen is idle-only and knows the safety rule: an entry whose tool batch
+  is incomplete is never a navigation target. The filtered views omit such
+  entries; the all-entries view shows them dimmed as *inspect only*, and the
+  cursor skips them.
+
+  Selecting a user message moves to its parent and offers that message back to
+  the composer as a draft, so submitting the edit creates a sibling branch.
+  Selecting any other entry moves to it; selecting the start row returns to the
+  empty conversation before the first message. Navigation is asynchronous, so
+  the shell stays responsive; the runtime validates, persists, and then reports
+  the committed destination, which this module installs together with the
+  rebuilt transcript.
 
   Navigation does not undo workspace changes, and it never silently overwrites a
   draft the user is writing: an untouched composer receives the selected user
@@ -24,15 +39,45 @@ defmodule Tackle.CLI.TUI.Tree do
 
   alias ExRatatui.Command
   alias Tackle.CLI.TUI.{Compaction, Picker, State, Util, Viewport}
-  alias Tackle.CLI.Widgets.{Input, TreePopup}
+  alias Tackle.CLI.Widgets.{Input, TreeScreen}
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tree, as: ConversationTree
 
   @root_id :conversation_root
   @unsafe_id :unsafe_entry
+  @views [:default, :user, :all]
+  @preview_width 200
+  @argument_width 60
+  @argument_keys ~w(path file_path command pattern query url)a
+
+  @typedoc "Which entries the screen shows."
+  @type view :: :default | :user | :all
+
+  @typedoc """
+  One screen row.
+
+  Besides the `Picker.item()` fields, a row carries its graph `:prefix` (rails
+  and connectors), a node `:glyph` (nil for body lines under a prompt), its
+  `:kind`, its `:entry_id`, and whether it is on the active path, the current
+  position, or an unsafe (inspect-only) entry.
+  """
+  @type row :: %{
+          required(:id) => term(),
+          required(:entry_id) => String.t() | nil,
+          required(:kind) => :root | :user | :reply | :assistant | :tool | :compaction | :entry,
+          required(:primary) => String.t(),
+          required(:secondary) => String.t() | nil,
+          required(:search) => String.t(),
+          required(:prefix) => String.t(),
+          required(:glyph) => String.t() | nil,
+          required(:active?) => boolean(),
+          required(:current?) => boolean(),
+          required(:unsafe?) => boolean(),
+          optional(:marker) => String.t() | nil
+        }
 
   @doc """
-  Opens the conversation-tree picker when the shell is idle.
+  Opens the conversation-tree screen when the shell is idle.
 
   Reports a notice instead when a turn is active, another operation is pending,
   or the session has no tree.
@@ -51,217 +96,239 @@ defmodule Tackle.CLI.TUI.Tree do
   end
 
   def open(%State{} = state) do
-    if ConversationTree.empty?(state.agent_state.tree) do
+    tree = state.agent_state.tree
+
+    if ConversationTree.empty?(tree) do
       {:noreply, %{state | notice: "The conversation tree is empty"}}
     else
       picker =
-        state.agent_state.tree
-        |> items()
+        tree
+        |> items(:default)
         |> Picker.new()
-        |> select_active()
+        |> select_entry(tree, ConversationTree.active_id(tree))
 
-      {:noreply, %{state | overlay: {:tree, %{picker: picker}}}}
+      overlay = %{picker: picker, view: :default, scroll_top: 0}
+      {:noreply, scroll(%{state | overlay: {:tree, overlay}})}
     end
   end
 
-  @doc "Handles one resolved tree-picker intent."
+  @doc "Handles one resolved tree-screen intent."
   @spec handle(atom() | tuple(), State.t()) ::
           {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def handle(intent, %State{} = state), do: dispatch(intent, state)
 
-  @doc "Applies a bracketed paste to the picker query."
+  @doc "Applies a bracketed paste to the search query."
   @spec paste(State.t(), String.t()) :: State.t()
   def paste(%State{overlay: {:tree, %{picker: picker}}} = state, content) do
-    query = picker.query <> String.replace(content, ~r/\s+/u, " ")
-    %{state | overlay: {:tree, %{picker: Picker.new(picker.items, query)}}}
+    requery(state, picker.query <> String.replace(content, ~r/\s+/u, " "))
   end
 
-  @doc "Builds the picker rows for a tree in branch order."
-  @spec items(ConversationTree.t()) :: [Picker.item()]
-  def items(%ConversationTree{} = tree) do
-    active = ConversationTree.active_id(tree)
-    active_path = tree |> ConversationTree.active_path() |> MapSet.new(& &1.id)
+  @doc "Keeps the selection visible after the terminal is resized."
+  @spec resize(State.t()) :: State.t()
+  def resize(%State{overlay: {:tree, _tree}} = state), do: scroll(state)
 
-    root = %{
-      id: @root_id,
-      primary: "Start of conversation",
-      secondary: if(is_nil(active), do: "current position", else: nil),
-      marker: marker(active, nil),
-      search: "start root beginning empty conversation",
-      depth: 0,
-      connector?: false,
-      last?: true,
-      ancestor_continues: [],
-      active?: is_nil(active),
-      unsafe?: false
+  @doc """
+  Builds the rows for one view of a tree, in graph order.
+
+  The first row is the synthetic start of the conversation. The active branch
+  is listed first at every fork.
+  """
+  @spec items(ConversationTree.t(), view()) :: [row()]
+  def items(%ConversationTree{} = tree, view \\ :default) when view in @views do
+    active = ConversationTree.active_id(tree)
+
+    context = %{
+      tree: tree,
+      view: view,
+      active: active,
+      active_path: tree |> ConversationTree.active_path() |> MapSet.new(& &1.id),
+      calls: tool_calls_by_id(tree)
     }
 
-    roots =
-      tree
-      |> ConversationTree.roots()
-      |> Enum.sort_by(fn entry -> if subtree_active?(tree, entry, active), do: 0, else: 1 end)
+    forest = visible_forest(context)
+    root = %{head: :root, body: [], children: children(context, forest, nil)}
+    layout(context, forest, root, [], nil)
+  end
 
-    multiple_roots? = match?([_, _ | _], roots)
+  @doc "Builds the full-screen widget for the open tree screen."
+  @spec popup(State.t()) :: TreeScreen.t()
+  def popup(%State{overlay: {:tree, %{picker: picker, view: view, scroll_top: top}}}) do
+    rows = filtered(picker)
+
+    %TreeScreen{
+      rows: rows,
+      selected: Util.clamp(picker.selected, 0, max(length(rows) - 1, 0)),
+      scroll_top: top,
+      query: picker.query,
+      view: view
+    }
+  end
+
+  # -- visible structure -----------------------------------------------------
+
+  # Maps each visible parent id (nil for the top level) to its visible children
+  # in tree order. A child is `{entry, hidden, resumable?}`, where `hidden`
+  # lists the entries between it and its visible parent, oldest first.
+  defp visible_forest(context) do
+    context.tree
+    |> ConversationTree.roots()
+    |> Enum.reduce(%{}, &collect(context, &1, nil, [], &2))
+    |> Map.new(fn {parent, children} -> {parent, Enum.reverse(children)} end)
+  end
+
+  defp collect(context, entry, parent, hidden, forest) do
+    resumable? = ConversationTree.resumable?(context.tree, entry.id)
+
+    {parent, hidden, forest} =
+      if visible?(context, entry, resumable?) do
+        node = {entry, Enum.reverse(hidden), resumable?}
+        {entry.id, [], Map.update(forest, parent, [node], &[node | &1])}
+      else
+        {parent, [entry | hidden], forest}
+      end
+
+    context.tree
+    |> ConversationTree.children(entry.id)
+    |> Enum.reduce(forest, &collect(context, &1, parent, hidden, &2))
+  end
+
+  defp visible?(%{active: id}, %{id: id}, _resumable?), do: true
+  defp visible?(%{view: :all}, _entry, _resumable?), do: true
+  defp visible?(_context, _entry, false), do: false
+  defp visible?(%{view: :user}, entry, true), do: user_message?(entry)
+
+  defp visible?(%{view: :default}, entry, true),
+    do: user_message?(entry) or reply?(entry) or entry.kind == :compaction
+
+  defp user_message?(%{kind: :message, message: %Message{role: :user}}), do: true
+  defp user_message?(_entry), do: false
+
+  defp reply?(%{kind: :message, message: %Message{role: :assistant, content: content}}),
+    do: is_binary(content) and String.trim(content) != ""
+
+  defp reply?(_entry), do: false
+
+  # -- graph layout ----------------------------------------------------------
+
+  # Visible children of `parent_id`, the branch holding the current position
+  # first, each grouped into a unit.
+  defp children(context, forest, parent_id) do
+    forest
+    |> Map.get(parent_id, [])
+    |> Enum.sort_by(fn {entry, _hidden, _resumable?} ->
+      if MapSet.member?(context.active_path, entry.id), do: 0, else: 1
+    end)
+    |> Enum.map(&unit(context, forest, &1))
+  end
+
+  # A unit is one graph node: a head entry plus the straight run of non-user
+  # entries after it (the reply, or the tool steps and reply), drawn as body
+  # lines. It ends at a fork or at the next user message.
+  defp unit(context, forest, {entry, _hidden, _resumable?} = head) do
+    {body, last_id} = absorb(forest, entry.id, [])
+    %{head: head, body: body, children: children(context, forest, last_id)}
+  end
+
+  defp absorb(forest, id, body) do
+    case Map.get(forest, id, []) do
+      [{entry, _hidden, _resumable?} = node] ->
+        if user_message?(entry) or entry.kind == :compaction,
+          do: {Enum.reverse(body), id},
+          else: absorb(forest, entry.id, [node | body])
+
+      _none_or_fork ->
+        {Enum.reverse(body), id}
+    end
+  end
+
+  # `rails` holds one flag per indentation level: whether a vertical rail runs
+  # past this unit's rows at that level. `connector` is `:mid` or `:last` when
+  # the unit is one branch of a fork, which draws `├─` or `└─` on its head row.
+  defp layout(context, forest, unit, rails, connector) do
+    head_prefix = head_prefix(rails, connector)
+    body_prefix = rail_cells(rails) <> if(unit.children == [], do: "  ", else: "│ ")
 
     rows =
-      roots
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {entry, index} ->
-        walk(
-          tree,
-          entry,
-          if(multiple_roots?, do: 1, else: 0),
-          multiple_roots?,
-          index == length(roots) - 1,
-          %{},
-          active,
-          active_path
-        )
-      end)
-
-    # Multiple histories share only a synthetic root, not a conversation entry.
-    # Like pi, suppress that virtual fork and shift its entire forest left.
-    rows = if multiple_roots?, do: Enum.map(rows, &without_virtual_root/1), else: rows
-
-    [root | rows]
-  end
-
-  defp without_virtual_root(item) do
-    %{
-      item
-      | depth: item.depth - 1,
-        connector?: item.connector? and item.depth > 1,
-        ancestor_continues: tl(item.ancestor_continues)
-    }
-  end
-
-  @doc "Renders the open tree picker with a native tree viewport."
-  @spec popup(State.t()) :: TreePopup.t()
-  def popup(%State{overlay: {:tree, %{picker: picker}}}) do
-    items = filtered(picker)
-
-    %TreePopup{
-      nodes: Enum.map(items, &tree_node/1),
-      selected: Util.clamp(picker.selected, 0, max(length(items) - 1, 0)),
-      query: picker.query,
-      count: length(items)
-    }
-  end
-
-  defp walk(
-         tree,
-         entry,
-         depth,
-         connector?,
-         last?,
-         ancestors,
-         active,
-         active_path
-       ) do
-    children =
-      tree
-      |> ConversationTree.children(entry.id)
-      |> Enum.sort_by(fn child -> if subtree_active?(tree, child, active), do: 0, else: 1 end)
-
-    multiple_children? = match?([_, _ | _], children)
-
-    child_depth =
-      cond do
-        multiple_children? -> depth + 1
-        connector? and depth > 0 -> depth + 1
-        true -> depth
-      end
-
-    child_ancestors =
-      if connector? do
-        put_gutter(ancestors, depth - 1, not last?)
-      else
-        ancestors
-      end
+      [row(context, unit.head, head_prefix, true)] ++
+        Enum.map(unit.body, &row(context, &1, body_prefix, false))
 
     child_rows =
-      children
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {child, index} ->
-        walk(
-          tree,
-          child,
-          child_depth,
-          multiple_children?,
-          index == length(children) - 1,
-          child_ancestors,
-          active,
-          active_path
-        )
-      end)
+      case unit.children do
+        [] ->
+          []
 
-    [
-      row(tree, entry, depth, connector?, last?, ancestors, active, active_path)
-      | child_rows
-    ]
+        [child] ->
+          layout(context, forest, child, rails, nil)
+
+        branches ->
+          last = length(branches) - 1
+
+          branches
+          |> Enum.with_index()
+          |> Enum.flat_map(fn {child, index} ->
+            connector = if index == last, do: :last, else: :mid
+            layout(context, forest, child, rails ++ [index != last], connector)
+          end)
+      end
+
+    rows ++ child_rows
   end
 
-  defp row(tree, entry, depth, connector?, last?, ancestors, active, active_path) do
-    resumable? = ConversationTree.resumable?(tree, entry.id)
+  defp head_prefix(rails, nil), do: rail_cells(rails)
+
+  defp head_prefix(rails, connector),
+    do: rail_cells(Enum.drop(rails, -1)) <> if(connector == :mid, do: "├─", else: "└─")
+
+  defp rail_cells(rails), do: Enum.map_join(rails, &if(&1, do: "│ ", else: "  "))
+
+  defp row(context, :root, prefix, true) do
+    current? = is_nil(context.active)
+
+    %{
+      id: @root_id,
+      entry_id: nil,
+      kind: :root,
+      primary: "Start of conversation",
+      secondary: if(current?, do: "current"),
+      search: "start of conversation",
+      prefix: prefix,
+      glyph: "○",
+      marker: nil,
+      active?: true,
+      current?: current?,
+      unsafe?: false
+    }
+  end
+
+  defp row(context, {entry, hidden, resumable?}, prefix, head?) do
+    current? = entry.id == context.active
 
     %{
       id: target(entry, resumable?),
-      primary: label(entry),
-      secondary: secondary(entry, resumable?),
-      marker: marker(active, entry.id),
-      search: search_text(entry),
-      depth: depth,
-      connector?: connector?,
-      last?: last?,
-      ancestor_continues: gutters(ancestors, depth),
-      active?: MapSet.member?(active_path, entry.id),
+      entry_id: entry.id,
+      kind: kind(entry),
+      primary: label(entry, context.calls),
+      secondary: secondary(context.view, entry, hidden, resumable?, current?),
+      search: search_text(entry, context.calls),
+      prefix: prefix,
+      glyph: if(head?, do: glyph(entry)),
+      marker: nil,
+      active?: MapSet.member?(context.active_path, entry.id),
+      current?: current?,
       unsafe?: not resumable?
     }
   end
 
-  defp tree_node(item) do
-    %{
-      text: display_label(item),
-      secondary:
-        if(item.marker == "●", do: current_position(item.secondary), else: item.secondary),
-      depth: item.depth,
-      connector?: item.connector?,
-      last?: item.last?,
-      ancestor_continues: item.ancestor_continues,
-      active?: item.active?,
-      unsafe?: item.unsafe?
-    }
-  end
+  defp kind(%{kind: :compaction}), do: :compaction
+  defp kind(%{kind: :message, message: %Message{role: :user}}), do: :user
+  defp kind(%{kind: :message, message: %Message{role: :tool}}), do: :tool
+  defp kind(%{kind: :message} = entry), do: if(reply?(entry), do: :reply, else: :assistant)
+  defp kind(_entry), do: :entry
 
-  defp current_position(nil), do: "current position"
-  defp current_position("current position"), do: "current position"
-  defp current_position(secondary), do: "current position · " <> secondary
+  defp glyph(%{kind: :compaction}), do: "≡"
+  defp glyph(entry), do: if(user_message?(entry), do: "●", else: "◇")
 
-  defp display_label(%{id: @root_id, primary: primary}), do: "↩  " <> primary
-  defp display_label(%{primary: primary}), do: primary
-
-  defp select_active(%Picker{items: items} = picker) do
-    selected = Enum.find_index(items, &(&1.marker == "●")) || 0
-    %{picker | selected: selected}
-  end
-
-  defp gutters(_ancestors, 0), do: []
-
-  defp gutters(ancestors, depth) do
-    Enum.map(0..(depth - 1), &Map.get(ancestors, &1, false))
-  end
-
-  defp put_gutter(ancestors, position, continues?) when position >= 0,
-    do: Map.put(ancestors, position, continues?)
-
-  defp put_gutter(ancestors, _position, _continues?), do: ancestors
-
-  defp subtree_active?(_tree, _entry, nil), do: false
-
-  defp subtree_active?(tree, entry, active) do
-    entry.id == active ||
-      Enum.any?(ConversationTree.children(tree, entry.id), &subtree_active?(tree, &1, active))
-  end
+  # -- selection -------------------------------------------------------------
 
   defp filtered(%Picker{query: "", items: items}), do: items
 
@@ -274,75 +341,290 @@ defmodule Tackle.CLI.TUI.Tree do
     picker |> filtered() |> Enum.at(picker.selected)
   end
 
+  # Selects the row for `entry_id`, or the row of its nearest visible ancestor
+  # when the current view hides it, falling back to the start row.
+  defp select_entry(%Picker{} = picker, tree, entry_id) do
+    rows = filtered(picker)
+
+    candidates =
+      tree
+      |> ConversationTree.ancestry(entry_id)
+      |> Enum.reverse()
+      |> Enum.map(& &1.id)
+
+    index =
+      Enum.find_value(candidates, fn id ->
+        Enum.find_index(rows, &(&1.entry_id == id and not &1.unsafe?))
+      end) || Enum.find_index(rows, &(&1.id == @root_id)) || 0
+
+    settle(%{picker | selected: index})
+  end
+
+  # After a query change, selects the best-ranked selectable match; the rows
+  # themselves stay in graph order so the structure remains readable.
+  defp select_best(%Picker{query: query} = picker) do
+    best = picker.items |> Picker.filter(query) |> Enum.find(&(not &1.unsafe?))
+    index = if best, do: Enum.find_index(filtered(picker), &(&1 == best)), else: 0
+    settle(%{picker | selected: index})
+  end
+
+  # Moves by `delta` rows, skipping inspect-only rows in the direction of travel.
+  # The selection stays put when no selectable row lies in that direction.
+  defp move(%Picker{} = picker, delta) do
+    rows = picker |> filtered() |> List.to_tuple()
+    direction = if delta < 0, do: -1, else: 1
+    target = Util.clamp(picker.selected + delta, 0, max(tuple_size(rows) - 1, 0))
+
+    case next_selectable(rows, target, direction) || next_selectable(rows, target, -direction) do
+      nil -> picker
+      index -> %{picker | selected: index}
+    end
+  end
+
+  # Keeps the cursor off inspect-only rows after the row list changes.
+  defp settle(%Picker{} = picker) do
+    rows = picker |> filtered() |> List.to_tuple()
+    selected = Util.clamp(picker.selected, 0, max(tuple_size(rows) - 1, 0))
+
+    index =
+      next_selectable(rows, selected, 1) || next_selectable(rows, selected, -1) || selected
+
+    %{picker | selected: index}
+  end
+
+  defp next_selectable(rows, index, _direction) when index < 0 or index >= tuple_size(rows),
+    do: nil
+
+  defp next_selectable(rows, index, direction) do
+    if elem(rows, index).unsafe?,
+      do: next_selectable(rows, index + direction, direction),
+      else: index
+  end
+
+  # Rebuilds the rows for another view, keeping the selection on the same
+  # entry, or on its nearest visible ancestor.
+  defp rebuild(state, view) do
+    {:tree, %{picker: picker} = overlay} = state.overlay
+    tree = state.agent_state.tree
+
+    picker =
+      tree
+      |> items(view)
+      |> Picker.new(picker.query)
+      |> select_entry(tree, selected_entry_id(picker, tree))
+
+    scroll(%{state | overlay: {:tree, %{overlay | picker: picker, view: view}}})
+  end
+
+  # Applies a new search query over the same rows. A non-empty query selects
+  # its best match; clearing it returns to the entry that was selected.
+  defp requery(state, query) do
+    {:tree, %{picker: picker} = overlay} = state.overlay
+    tree = state.agent_state.tree
+    entry_id = selected_entry_id(picker, tree)
+    picker = Picker.new(picker.items, query)
+
+    picker =
+      if query == "", do: select_entry(picker, tree, entry_id), else: select_best(picker)
+
+    scroll(%{state | overlay: {:tree, %{overlay | picker: picker}}})
+  end
+
+  defp selected_entry_id(picker, tree) do
+    case selected_item(picker) do
+      nil -> ConversationTree.active_id(tree)
+      item -> item.entry_id
+    end
+  end
+
+  defp cycle_view(state, step) do
+    {:tree, %{view: view}} = state.overlay
+    index = Enum.find_index(@views, &(&1 == view))
+
+    rebuild(state, Enum.at(@views, rem(index + step + length(@views), length(@views))))
+  end
+
+  defp page(state), do: max(TreeScreen.list_height(state.size) - 1, 1)
+
+  # Keeps the selected row inside the visible list window.
+  defp scroll(%State{overlay: {:tree, %{picker: picker} = overlay}} = state) do
+    count = length(filtered(picker))
+    height = TreeScreen.list_height(state.size)
+    top = TreeScreen.scroll_top(overlay.scroll_top, picker.selected, count, height)
+    %{state | overlay: {:tree, %{overlay | scroll_top: top}}}
+  end
+
+  defp update_picker(%State{overlay: {:tree, %{picker: picker} = overlay}} = state, fun),
+    do: scroll(%{state | overlay: {:tree, %{overlay | picker: fun.(picker)}}})
+
+  # -- row text --------------------------------------------------------------
+
   # An incomplete tool batch is inspectable but not selectable: navigating there
   # would replay a tool or fabricate a result, which the runtime must never do.
   defp target(_entry, false), do: @unsafe_id
   defp target(%{kind: :message, message: %Message{role: :user, id: id}}, true), do: {:edit, id}
   defp target(%{id: id}, true), do: {:entry, id}
 
-  defp label(%{kind: :message, message: %Message{role: :user} = message}),
-    do: "user: " <> preview(message.content)
+  defp label(%{kind: :message, message: %Message{role: :user} = message}, _calls),
+    do: preview(message.content)
 
-  defp label(%{kind: :message, message: %Message{role: :assistant} = message}) do
-    content =
-      case message.content do
-        content when is_binary(content) and content != "" -> preview(content)
-        _other -> if message.tool_calls in [nil, []], do: "(reasoning)", else: "(tool calls)"
-      end
+  defp label(%{kind: :message, message: %Message{role: :assistant} = message}, _calls) do
+    cond do
+      is_binary(message.content) and String.trim(message.content) != "" ->
+        preview(message.content)
 
-    "assistant: " <> content
+      message.tool_calls in [nil, []] ->
+        "(reasoning)"
+
+      true ->
+        "→ " <> Enum.map_join(message.tool_calls, ", ", &call_name/1)
+    end
   end
 
-  defp label(%{kind: :message, message: %Message{role: :tool} = message}),
-    do: "[#{message.tool_name || "tool"} result]"
+  defp label(%{kind: :message, message: %Message{role: :tool} = message}, calls),
+    do: tool_summary(message, calls)
 
-  defp label(%{kind: :compaction, compaction: compaction}),
-    do: "[context compacted · #{length(compaction.shadowed_message_ids)} messages]"
+  defp label(%{kind: :compaction, compaction: compaction}, _calls),
+    do: "context compacted · #{length(compaction.shadowed_message_ids)} messages"
 
-  defp label(_entry), do: "entry"
+  defp label(_entry, _calls), do: "entry"
 
-  defp secondary(_entry, false), do: "inspect only · incomplete tool batch"
-  defp secondary(%{kind: :compaction}, true), do: "context checkpoint"
-  defp secondary(_entry, true), do: nil
+  defp secondary(view, entry, hidden, resumable?, current?) do
+    [
+      if(not resumable?, do: "inspect only"),
+      if(view == :default and reply?(entry), do: tools_used(hidden)),
+      if(current?, do: "current")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, " · ")
+    end
+  end
 
-  defp marker(active, active) when not is_nil(active), do: "●"
-  defp marker(nil, nil), do: "●"
-  defp marker(_active, _id), do: " "
+  # Summarizes the tool calls folded away before a reply: "3 tools: read, edit".
+  defp tools_used(hidden) do
+    names =
+      Enum.flat_map(hidden, fn
+        %{kind: :message, message: %Message{role: :assistant, tool_calls: [_ | _] = calls}} ->
+          Enum.map(calls, &call_name/1)
 
-  defp search_text(%{kind: :message, message: %Message{} = message}) do
+        _entry ->
+          []
+      end)
+
+    case names do
+      [] ->
+        nil
+
+      names ->
+        count = length(names)
+        unique = Enum.uniq(names)
+        shown = Enum.take(unique, 3)
+        more = if length(unique) > 3, do: " +#{length(unique) - 3}", else: ""
+        noun = if count == 1, do: "tool", else: "tools"
+        "#{count} #{noun}: #{Enum.join(shown, ", ")}#{more}"
+    end
+  end
+
+  defp tool_summary(%Message{} = message, calls) do
+    name = message.tool_name || "tool"
+
+    case calls |> Map.get(message.tool_call_id) |> call_argument() do
+      nil -> name
+      argument -> name <> " " <> argument
+    end
+  end
+
+  defp tool_calls_by_id(tree) do
+    tree
+    |> ConversationTree.enumerate()
+    |> Enum.flat_map(fn
+      %{kind: :message, message: %Message{tool_calls: [_ | _] = calls}} -> calls
+      _entry -> []
+    end)
+    |> Enum.flat_map(fn call ->
+      case call_field(call, :id) do
+        id when is_binary(id) -> [{id, call}]
+        _other -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp call_name(call), do: call_field(call, :name) || "tool"
+
+  defp call_argument(nil), do: nil
+
+  defp call_argument(call) do
+    arguments = call_field(call, :arguments)
+
+    if is_map(arguments) do
+      Enum.find_value(@argument_keys, fn key ->
+        case Map.get(arguments, key) || Map.get(arguments, Atom.to_string(key)) do
+          value when is_binary(value) and value != "" -> format_argument(key, value)
+          _other -> nil
+        end
+      end)
+    end
+  end
+
+  defp format_argument(key, value) when key in [:path, :file_path],
+    do: value |> Path.relative_to_cwd() |> Util.truncate(@argument_width)
+
+  defp format_argument(_key, value), do: value |> one_line() |> Util.truncate(@argument_width)
+
+  defp call_field(call, key) when is_map(call),
+    do: Map.get(call, key) || Map.get(call, Atom.to_string(key))
+
+  defp call_field(_call, _key), do: nil
+
+  defp search_text(%{kind: :message, message: %Message{role: :tool} = message}, calls) do
+    Enum.join(Enum.reject([tool_summary(message, calls), message.content], &is_nil/1), " ")
+  end
+
+  defp search_text(%{kind: :message, message: %Message{} = message}, _calls) do
     Enum.join(Enum.reject([message.content, message.thinking, message.tool_name], &is_nil/1), " ")
   end
 
-  defp search_text(%{kind: :compaction, compaction: compaction}) do
+  defp search_text(%{kind: :compaction, compaction: compaction}, _calls) do
     Tackle.Lib.Compaction.checkpoint_body(compaction.summary_message) || "context compacted"
   end
 
-  defp search_text(_entry), do: ""
+  defp search_text(_entry, _calls), do: ""
 
   defp preview(nil), do: ""
-  defp preview(text), do: text |> String.split("\n", parts: 2) |> hd() |> Util.truncate(60)
+  defp preview(text), do: text |> one_line() |> Util.truncate(@preview_width)
+
+  defp one_line(text), do: text |> String.replace(~r/\s+/u, " ") |> String.trim()
+
+  # -- intents ---------------------------------------------------------------
 
   defp dispatch(:close, state), do: {:noreply, %{state | overlay: nil}}
 
-  defp dispatch(:previous, state) do
-    {:tree, %{picker: picker}} = state.overlay
-    {:noreply, %{state | overlay: {:tree, %{picker: Picker.move(picker, -1)}}}}
-  end
+  # Esc clears an active search first, like the resume screen, then closes.
+  defp dispatch(:cancel, %State{overlay: {:tree, %{picker: %{query: ""}}}} = state),
+    do: dispatch(:close, state)
 
-  defp dispatch(:next, state) do
-    {:tree, %{picker: picker}} = state.overlay
-    {:noreply, %{state | overlay: {:tree, %{picker: Picker.move(picker, 1)}}}}
-  end
+  defp dispatch(:cancel, state), do: {:noreply, requery(state, "")}
 
-  defp dispatch(:backspace, state) do
-    {:tree, %{picker: picker}} = state.overlay
-    {:noreply, %{state | overlay: {:tree, %{picker: Picker.backspace(picker)}}}}
-  end
+  defp dispatch(:previous, state), do: {:noreply, update_picker(state, &move(&1, -1))}
+  defp dispatch(:next, state), do: {:noreply, update_picker(state, &move(&1, 1))}
 
-  defp dispatch({:insert, text}, state) do
-    {:tree, %{picker: picker}} = state.overlay
-    {:noreply, %{state | overlay: {:tree, %{picker: Picker.insert(picker, text)}}}}
-  end
+  defp dispatch(:page_up, state),
+    do: {:noreply, update_picker(state, &move(&1, -page(state)))}
+
+  defp dispatch(:page_down, state),
+    do: {:noreply, update_picker(state, &move(&1, page(state)))}
+
+  defp dispatch(:next_view, state), do: {:noreply, cycle_view(state, 1)}
+  defp dispatch(:previous_view, state), do: {:noreply, cycle_view(state, -1)}
+
+  defp dispatch(:backspace, %State{overlay: {:tree, %{picker: picker}}} = state),
+    do: {:noreply, requery(state, Picker.backspace(picker).query)}
+
+  defp dispatch({:insert, text}, %State{overlay: {:tree, %{picker: picker}}} = state),
+    do: {:noreply, requery(state, Picker.insert(picker, text).query)}
 
   defp dispatch(:accept, state) do
     {:tree, %{picker: picker}} = state.overlay

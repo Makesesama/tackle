@@ -5,7 +5,7 @@ defmodule Tackle.CLI.TreeTest do
   alias Tackle.CLI.Keybinds
   alias Tackle.CLI.TUI.{Composer, Picker, Tree, Viewport}
   alias Tackle.CLI.TUI.State, as: TuiState
-  alias Tackle.CLI.Widgets.Input
+  alias Tackle.CLI.Widgets.{Input, TreeScreen}
   alias Tackle.Lib.{Message, State}
   alias Tackle.Lib.Tree, as: ConversationTree
 
@@ -52,6 +52,66 @@ defmodule Tackle.CLI.TreeTest do
     tree
   end
 
+  # user → assistant (text + two tool calls) → two results → reply, then a
+  # sibling reply forked from the first tool result, which is inspect only.
+  defp tree_with_tool_turn do
+    {:ok, tree, _} =
+      ConversationTree.append_message(ConversationTree.new(), Message.user("read the docs"))
+
+    {:ok, tree, _} =
+      ConversationTree.append_message(
+        tree,
+        Message.assistant(
+          content: "Let me look",
+          tool_calls: [
+            %{id: "call_1", name: "read", arguments: %{"path" => "README.md"}},
+            %{id: "call_2", name: "bash", arguments: %{"command" => "ls -la"}}
+          ]
+        )
+      )
+
+    {:ok, tree, first} =
+      ConversationTree.append_message(tree, Message.tool_result("call_1", "read", "# Readme"))
+
+    {:ok, tree, _} =
+      ConversationTree.append_message(tree, Message.tool_result("call_2", "bash", "total 0"))
+
+    {:ok, tree, _} =
+      ConversationTree.append_message(tree, Message.assistant(content: "It is a harness"))
+
+    {tree, first}
+  end
+
+  defp overlay_state(tree, view) do
+    state = base_state(agent_state: %{State.new() | tree: tree})
+    {:noreply, state} = Tree.open(state)
+    if view == :default, do: state, else: cycle_to(state, view)
+  end
+
+  defp cycle_to(%{overlay: {:tree, %{view: view}}} = state, view), do: state
+
+  defp cycle_to(state, view) do
+    {:noreply, state} = Tree.handle(:next_view, state)
+    cycle_to(state, view)
+  end
+
+  defp rows(%{overlay: {:tree, %{picker: picker}}}), do: Picker.filtered(picker)
+
+  defp graph(items),
+    do: Enum.map(items, &(&1.prefix <> if(&1.glyph, do: &1.glyph <> " ", else: "") <> &1.primary))
+
+  defp render_text(%TreeScreen{} = screen, width, height) do
+    area = %ExRatatui.Layout.Rect{x: 0, y: 0, width: width, height: height}
+
+    for {%ExRatatui.Widgets.Paragraph{text: lines}, _rect} <- TreeScreen.render(screen, area),
+        line <- List.wrap(lines) do
+      Enum.map_join(line.spans, & &1.content)
+    end
+  end
+
+  defp selected_row(%{overlay: {:tree, %{picker: picker}}}),
+    do: picker |> Picker.filtered() |> Enum.at(picker.selected)
+
   defp selectable(picker, predicate) do
     index = picker |> Picker.filtered() |> Enum.find_index(predicate)
     Picker.move(picker, index || 0)
@@ -62,94 +122,53 @@ defmodule Tackle.CLI.TreeTest do
     refute Keybinds.repeatable?(%Key{code: "f5", modifiers: []})
   end
 
-  test "items project branch structure, active path, and edit targets" do
-    tree = tree_with_branches()
-    items = Tree.items(tree)
-
-    assert hd(items).id == :conversation_root
-    labels = Enum.map(items, & &1.primary)
-
-    assert Enum.any?(labels, &String.contains?(&1, "investigate"))
-    assert Enum.any?(labels, &String.contains?(&1, "try B"))
-
-    assert Enum.all?(items, &(length(&1.ancestor_continues) == &1.depth))
-    assert Enum.count(items, & &1.active?) == 2
-
-    # The active leaf is marked and user messages target edits.
-    active = Enum.find(items, &(&1.marker == "●"))
-    assert active.id == {:entry, ConversationTree.active_id(tree)}
-
-    edit = Enum.find(items, &match?({:edit, _}, &1.id))
-    assert match?({:edit, _}, edit.id)
-  end
-
-  test "multiple root histories start at the left edge without a virtual fork" do
-    tree = tree_with_branches()
-    items = Tree.items(tree)
-
-    assert Enum.map(tl(items), &{&1.depth, &1.connector?, &1.ancestor_continues}) == [
-             {0, false, []},
-             {1, false, [false]},
-             {0, false, []},
-             {1, false, [false]}
-           ]
-
-    {:noreply, state} = Tree.open(base_state(agent_state: %{State.new() | tree: tree}))
-    popup = Tree.popup(state)
-    area = %ExRatatui.Layout.Rect{x: 0, y: 0, width: 80, height: 10}
-
-    [{%ExRatatui.Widgets.Paragraph{text: lines}, ^area}] =
-      Tackle.CLI.Widgets.Tree.render(
-        %Tackle.CLI.Widgets.Tree{nodes: popup.nodes, selected: popup.selected},
-        area
-      )
-
-    text = Enum.map(lines, fn line -> Enum.map_join(line.spans, & &1.content) end)
-    assert Enum.at(text, 1) =~ "  ┬ • user: try B"
-    assert Enum.at(text, 2) =~ "› └─ • assistant: result B"
-    assert Enum.at(text, 3) =~ "  ┬ user: investigate"
-    assert Enum.at(text, 4) =~ "  └─ assistant: two approaches"
-    refute Enum.any?(text, &String.contains?(&1, "├"))
-  end
-
-  test "real forks inside multiple root histories retain their connectors" do
+  test "rows lay out a git-style graph with forks, active path, and edit targets" do
     {:ok, tree, root} =
       ConversationTree.append_message(ConversationTree.new(), Message.user("shared"))
 
-    {:ok, tree, first} =
-      ConversationTree.append_message(tree, Message.assistant(content: "first"))
+    {:ok, tree, reply} =
+      ConversationTree.append_message(tree, Message.assistant(content: "answer"))
 
-    {:ok, tree} = ConversationTree.move(tree, root.id)
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("A"))
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.assistant(content: "answer A"))
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("A2"))
+    {:ok, tree} = ConversationTree.move(tree, reply.id)
+    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("B"))
+    {:ok, tree, b} = ConversationTree.append_message(tree, Message.assistant(content: "answer B"))
 
-    {:ok, tree, second} =
-      ConversationTree.append_message(tree, Message.assistant(content: "second"))
+    items = Tree.items(tree)
 
-    {:ok, tree} = ConversationTree.move(tree, nil)
-    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("other root"))
+    assert graph(items) == [
+             "○ Start of conversation",
+             "● shared",
+             "│ answer",
+             "├─● B",
+             "│   answer B",
+             "└─● A",
+             "  │ answer A",
+             "  ● A2"
+           ]
 
-    by_id = Map.new(Tree.items(tree), &{&1.id, &1})
-    assert by_id[{:edit, root.id}].depth == 0
-    refute by_id[{:edit, root.id}].connector?
-
-    for entry <- [first, second] do
-      assert by_id[{:entry, entry.id}].depth == 1
-      assert by_id[{:entry, entry.id}].connector?
-      assert by_id[{:entry, entry.id}].ancestor_continues == [false]
-    end
+    assert Enum.map(items, & &1.active?) == [true, true, true, true, true, false, false, false]
+    assert Enum.find(items, & &1.current?).id == {:entry, b.id}
+    assert Enum.at(items, 1).id == {:edit, root.id}
+    assert Enum.at(items, 1).kind == :user
+    assert Enum.at(items, 2).kind == :reply
   end
 
-  test "popup uses the native tree surface" do
-    state = base_state(agent_state: %{State.new() | tree: tree_with_branches()})
-    assert {:noreply, state} = Tree.open(state)
-    assert %Tackle.CLI.Widgets.TreePopup{nodes: nodes, count: count} = Tree.popup(state)
-    assert count == length(nodes)
-    assert Enum.any?(nodes, &String.starts_with?(&1.text, "user: "))
-    popup = Tree.popup(state)
-    assert Enum.at(nodes, popup.selected).secondary == "current position"
-    assert hd(nodes).secondary == nil
+  test "independent root histories fork from the start row" do
+    items = Tree.items(tree_with_branches())
+
+    assert graph(items) == [
+             "○ Start of conversation",
+             "├─● try B",
+             "│   result B",
+             "└─● investigate",
+             "    two approaches"
+           ]
   end
 
-  test "linear history stays flat and opens on the active leaf" do
+  test "linear history keeps a continuous rail and opens on the active leaf" do
     {:ok, tree, _} =
       ConversationTree.append_message(ConversationTree.new(), Message.user("first"))
 
@@ -157,63 +176,75 @@ defmodule Tackle.CLI.TreeTest do
       ConversationTree.append_message(tree, Message.assistant(content: "second"))
 
     {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("third"))
-    items = Tree.items(tree)
-    messages = tl(items)
 
-    assert Enum.all?(messages, &(&1.depth == 0 and not &1.connector?))
+    assert graph(Tree.items(tree)) == [
+             "○ Start of conversation",
+             "● first",
+             "│ second",
+             "● third"
+           ]
 
     state = base_state(agent_state: %{State.new() | tree: tree})
     assert {:noreply, %{overlay: {:tree, %{picker: picker}}}} = Tree.open(state)
     assert Picker.selected(picker).id == {:edit, ConversationTree.active_id(tree)}
   end
 
-  test "only actual sibling paths receive branch connectors" do
-    {:ok, tree, root} =
-      ConversationTree.append_message(ConversationTree.new(), Message.user("root"))
+  test "the screen paints the header, view tabs, graph rows, selection, and hints" do
+    state = %{
+      base_state(agent_state: %{State.new() | tree: tree_with_branches()})
+      | size: {80, 20}
+    }
 
-    {:ok, tree, first} =
-      ConversationTree.append_message(tree, Message.assistant(content: "first branch"))
+    {:noreply, state} = Tree.open(state)
 
-    {:ok, tree} = ConversationTree.move(tree, root.id)
+    assert %TreeScreen{view: :default} = screen = Tree.popup(state)
+    text = render_text(screen, 80, 20)
 
-    {:ok, tree, second} =
-      ConversationTree.append_message(tree, Message.assistant(content: "second branch"))
-
-    items = Tree.items(tree)
-    by_id = Map.new(items, &{&1.id, &1})
-
-    refute by_id[{:edit, root.id}].connector?
-    assert by_id[{:entry, first.id}].connector?
-    assert by_id[{:entry, second.id}].connector?
+    assert hd(text) =~ "Conversation tree"
+    assert hd(text) =~ "messages  user only  all entries"
+    assert Enum.any?(text, &(&1 =~ "Type to search  ·  5 entries"))
+    assert Enum.any?(text, &(&1 =~ ~r/^ › │   result B\s+current $/))
+    assert Enum.any?(text, &(&1 =~ "├─● try B"))
+    assert Enum.any?(text, &(&1 =~ "3 / 5"))
+    assert List.last(text) =~ "Enter stay here"
+    assert List.last(text) =~ "Tab view"
   end
 
-  test "native rendering joins forks with visible rails on both sibling paths" do
-    {:ok, tree, root} =
-      ConversationTree.append_message(ConversationTree.new(), Message.user("shared"))
+  test "the hint names what Enter does for the selected row" do
+    state = %{
+      base_state(agent_state: %{State.new() | tree: tree_with_branches()})
+      | size: {80, 20}
+    }
 
-    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("A"))
-    {:ok, tree, _} = ConversationTree.append_message(tree, Message.assistant(content: "answer A"))
-    {:ok, tree} = ConversationTree.move(tree, root.id)
-    {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("B"))
-    {:ok, tree, _} = ConversationTree.append_message(tree, Message.assistant(content: "answer B"))
-
-    state = base_state(agent_state: %{State.new() | tree: tree})
     {:noreply, state} = Tree.open(state)
-    popup = Tree.popup(state)
-    area = %ExRatatui.Layout.Rect{x: 0, y: 0, width: 80, height: 10}
+    {:noreply, state} = Tree.handle(:previous, state)
+    assert state |> Tree.popup() |> render_text(80, 20) |> List.last() =~ "Enter edit from here"
 
-    [{%ExRatatui.Widgets.Paragraph{text: lines}, ^area}] =
-      Tackle.CLI.Widgets.Tree.render(
-        %Tackle.CLI.Widgets.Tree{nodes: popup.nodes, selected: popup.selected},
-        area
-      )
+    {:noreply, state} = Tree.handle(:previous, state)
+    assert state |> Tree.popup() |> render_text(80, 20) |> List.last() =~ "Enter start over"
+  end
 
-    text = Enum.map(lines, fn line -> Enum.map_join(line.spans, & &1.content) end)
-    assert Enum.at(text, 1) =~ "┬ • user: shared"
-    assert Enum.at(text, 2) =~ "├──┬ • user: B"
-    assert Enum.at(text, 3) =~ "› │  └─ • assistant: answer B"
-    assert Enum.at(text, 4) =~ "└──┬ user: A"
-    assert Enum.at(text, 5) =~ "   └─ assistant: answer A"
+  test "the list scrolls to keep the selection visible" do
+    tree =
+      Enum.reduce(1..30, ConversationTree.new(), fn index, tree ->
+        {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("prompt #{index}"))
+        tree
+      end)
+
+    state = %{base_state(agent_state: %{State.new() | tree: tree}) | size: {80, 12}}
+    {:noreply, state} = Tree.open(state)
+    text = state |> Tree.popup() |> render_text(80, 12)
+    assert Enum.any?(text, &(&1 =~ "› ● prompt 30"))
+    refute Enum.any?(text, &(&1 =~ "Start of conversation"))
+
+    state =
+      Enum.reduce(1..7, state, fn _, state ->
+        {:noreply, state} = Tree.handle(:page_up, state)
+        state
+      end)
+
+    text = state |> Tree.popup() |> render_text(80, 12)
+    assert Enum.any?(text, &(&1 =~ "› ○ Start of conversation"))
   end
 
   test "an incomplete tool batch is inspect only" do
@@ -326,5 +357,192 @@ defmodule Tackle.CLI.TreeTest do
     assert {:noreply, %{overlay: nil, notice: notice}} = Composer.submit(state)
     assert notice =~ "no conversation tree"
     assert Input.get_value(state.input) == "/tree"
+  end
+
+  describe "views" do
+    test "Tab and Shift+Tab resolve to view cycling in the tree picker" do
+      assert Keybinds.tree(%Key{code: "tab", modifiers: []}) == :next_view
+      assert Keybinds.tree(%Key{code: "tab", modifiers: ["shift"]}) == :previous_view
+      assert Keybinds.tree(%Key{code: "back_tab", modifiers: []}) == :previous_view
+      assert Keybinds.tree(%Key{code: "down", modifiers: []}) == :next
+      assert Keybinds.tree(%Key{code: "x", modifiers: []}) == {:insert, "x"}
+      assert Keybinds.tree(%Key{code: "esc", modifiers: []}) == :cancel
+      assert Keybinds.tree(%Key{code: "page_down", modifiers: []}) == :page_down
+    end
+
+    test "the default view folds tool steps into the reply and hides unsafe entries" do
+      {tree, _first} = tree_with_tool_turn()
+      items = Tree.items(tree, :default)
+
+      assert graph(items) == [
+               "○ Start of conversation",
+               "● read the docs",
+               "  It is a harness"
+             ]
+
+      reply = List.last(items)
+      assert reply.secondary == "2 tools: read, bash · current"
+      refute Enum.any?(items, & &1.unsafe?)
+    end
+
+    test "the user view shows only user messages and the current position" do
+      {tree, _first} = tree_with_tool_turn()
+      items = Tree.items(tree, :user)
+
+      assert Enum.map(items, & &1.primary) == [
+               "Start of conversation",
+               "read the docs",
+               "It is a harness"
+             ]
+
+      {:ok, tree} = ConversationTree.move(tree, nil)
+
+      assert Enum.map(Tree.items(tree, :user), & &1.primary) == [
+               "Start of conversation",
+               "read the docs"
+             ]
+    end
+
+    test "the all view labels tool rows with their main argument and marks unsafe rows" do
+      {tree, _first} = tree_with_tool_turn()
+      items = Tree.items(tree, :all)
+
+      assert Enum.map(items, &{&1.prefix <> (&1.glyph || "") <> &1.primary, &1.unsafe?}) == [
+               {"○Start of conversation", false},
+               {"●read the docs", false},
+               {"  Let me look", true},
+               {"  read README.md", true},
+               {"  bash ls -la", false},
+               {"  It is a harness", false}
+             ]
+
+      assert Enum.at(items, 2).secondary == "inspect only"
+      assert Enum.at(items, 3).id == :unsafe_entry
+      assert Enum.at(items, 4).id == {:entry, Enum.at(items, 4).entry_id}
+    end
+
+    test "the cursor skips inspect-only rows in the all view" do
+      {tree, _first} = tree_with_tool_turn()
+      state = overlay_state(tree, :all)
+
+      assert selected_row(state).primary == "It is a harness"
+      {:noreply, state} = Tree.handle(:previous, state)
+      assert selected_row(state).primary == "bash ls -la"
+      {:noreply, state} = Tree.handle(:previous, state)
+      assert selected_row(state).primary == "read the docs"
+      {:noreply, state} = Tree.handle(:next, state)
+      assert selected_row(state).primary == "bash ls -la"
+    end
+
+    test "a query that lands on an inspect-only row settles on a selectable one" do
+      {tree, _first} = tree_with_tool_turn()
+      state = overlay_state(tree, :all)
+
+      {:noreply, state} = Tree.handle({:insert, "look"}, state)
+      assert [%{unsafe?: true}] = rows(state)
+      assert {:noreply, %{notice: notice}} = Tree.handle(:accept, state)
+      assert notice =~ "Unsafe"
+
+      {:noreply, state} = Tree.handle(:backspace, state)
+      {:noreply, state} = Tree.handle(:backspace, state)
+      {:noreply, state} = Tree.handle(:backspace, state)
+      {:noreply, state} = Tree.handle(:backspace, state)
+      refute selected_row(state).unsafe?
+    end
+
+    test "a query selects its best match while rows keep graph order" do
+      {tree, _first} = tree_with_tool_turn()
+      state = overlay_state(tree, :default)
+
+      {:noreply, state} = Tree.handle({:insert, "harness"}, state)
+      assert selected_row(state).primary == "It is a harness"
+
+      {:noreply, state} = Tree.handle(:cancel, state)
+      assert selected_row(state).primary == "It is a harness"
+      assert length(rows(state)) == 3
+    end
+
+    test "opening on an unsafe current entry selects its nearest safe ancestor" do
+      {:ok, tree, user} =
+        ConversationTree.append_message(ConversationTree.new(), Message.user("run the test"))
+
+      {:ok, tree, _} = ConversationTree.append_message(tree, Message.assistant(content: "done"))
+      {:ok, tree} = ConversationTree.move(tree, user.id)
+
+      {:ok, tree, _} =
+        ConversationTree.append_message(
+          tree,
+          Message.assistant(tool_calls: [%{id: "call_1", name: "bash", arguments: %{}}])
+        )
+
+      state = overlay_state(tree, :default)
+      assert selected_row(state).id == {:edit, user.id}
+    end
+
+    test "a resize keeps the selection visible" do
+      tree =
+        Enum.reduce(1..30, ConversationTree.new(), fn index, tree ->
+          {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("prompt #{index}"))
+          tree
+        end)
+
+      state = %{base_state(agent_state: %{State.new() | tree: tree}) | size: {80, 40}}
+      {:noreply, state} = Tree.open(state)
+      state = Tree.resize(%{state | size: {80, 12}})
+      text = state |> Tree.popup() |> render_text(80, 12)
+      assert Enum.any?(text, &(&1 =~ "› ● prompt 30"))
+    end
+
+    test "Esc clears an active search before closing" do
+      {tree, _first} = tree_with_tool_turn()
+      state = overlay_state(tree, :default)
+      {:noreply, state} = Tree.handle({:insert, "docs"}, state)
+      assert [%{primary: "read the docs"}] = rows(state)
+
+      {:noreply, state} = Tree.handle(:cancel, state)
+      assert {:tree, %{picker: %{query: ""}}} = state.overlay
+      assert selected_row(state).primary == "read the docs"
+
+      assert {:noreply, %{overlay: nil}} = Tree.handle(:cancel, state)
+    end
+
+    test "cycling views keeps the selection on the nearest visible entry" do
+      {tree, _first} = tree_with_tool_turn()
+      state = overlay_state(tree, :all)
+      {:noreply, state} = Tree.handle(:previous, state)
+      assert selected_row(state).primary == "bash ls -la"
+
+      {:noreply, state} = Tree.handle(:previous_view, state)
+      assert {:tree, %{view: :user}} = state.overlay
+      assert selected_row(state).primary == "read the docs"
+
+      {:noreply, state} = Tree.handle(:previous_view, state)
+      assert {:tree, %{view: :default}} = state.overlay
+      assert selected_row(state).primary == "read the docs"
+
+      assert %TreeScreen{view: :default} = Tree.popup(state)
+    end
+
+    test "branches forked inside hidden tool steps stay connected to their visible parent" do
+      {tree, first} = tree_with_tool_turn()
+      {:ok, tree} = ConversationTree.move(tree, first.id)
+
+      {:ok, tree, _} =
+        ConversationTree.append_message(tree, Message.tool_result("call_2", "bash", "retry"))
+
+      {:ok, tree, _} = ConversationTree.append_message(tree, Message.assistant(content: "Other"))
+
+      items = Tree.items(tree, :default)
+
+      assert graph(items) == [
+               "○ Start of conversation",
+               "● read the docs",
+               "├─◇ Other",
+               "└─◇ It is a harness"
+             ]
+
+      assert Enum.at(items, 2).active?
+      refute Enum.at(items, 3).active?
+    end
   end
 end

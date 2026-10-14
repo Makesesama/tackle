@@ -467,7 +467,7 @@ defmodule Tackle.CLI.TUI do
     do: Menu.handle(Keybinds.picker(key), state)
 
   defp dispatch_overlay(key, %{overlay: {:tree, _}} = state),
-    do: Tree.handle(Keybinds.picker(key), state)
+    do: Tree.handle(Keybinds.tree(key), state)
 
   defp dispatch_overlay(key, %{overlay: {:resume, _}} = state),
     do: Resume.handle(Keybinds.resume(key), state)
@@ -691,6 +691,7 @@ defmodule Tackle.CLI.TUI do
   defp resize_overlay(%{overlay: {:inspector, _inspector}} = state), do: Inspector.resize(state)
   defp resize_overlay(%{overlay: {:subagent_view, _view}} = state), do: SubagentView.resize(state)
   defp resize_overlay(%{overlay: {:search, _search}} = state), do: Search.refresh(state)
+  defp resize_overlay(%{overlay: {:tree, _tree}} = state), do: Tree.resize(state)
   defp resize_overlay(state), do: state
 
   # -- app lifecycle -------------------------------------------------------

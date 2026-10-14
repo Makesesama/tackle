@@ -732,7 +732,7 @@ the host, so until then the jail lacks the project's toolchain.
 | F2 | Reasoning-level selector (idle only). A reconfigure failure preserves the conversation and the draft. |
 | F3 | Settings picker: toggle the subagent sidebar (saved to `$TACKLE_HOME/config.json`) or an 80-column assistant prose limit (session-local, off by default). Code and tools keep the available width. Copy source with Y in F4 instead. |
 | F4 | Unified Browse: Transcript, Overview, Prompt, Context, Tools, Events. ←/→ or Tab/Shift+Tab switches pages. Transcript ↑/↓ selects entries, Enter inspects (running subagent/wait cards open the child's conversation; returned findings open formatted results), Y copies source. Other pages scroll with ↑/↓, Page Up/Down, Home/End or wheel; R refreshes, Y copies. Esc/F4 returns to the draft. |
-| F5, `/tree` | Open the conversation-tree picker (idle only). Search, ↑/↓, Enter to move; Esc closes. |
+| F5, `/tree` | Open the full-screen conversation tree (idle only). Type to search, ↑/↓ or Page Up/Down to move, Enter to go there, Tab/Shift+Tab to switch view; Esc clears the search, then closes. |
 | F6 | Open cumulative settled token usage. Tab or ←/→ switches Current/This-week sessions, R reloads, Esc closes. |
 | Ctrl+B / Alt+B (input bar) | Move the caret backward by one whitespace-delimited word. |
 | Ctrl+F / Alt+F (input bar) | Move the caret forward by one whitespace-delimited word. |
@@ -1121,12 +1121,31 @@ affects the agents.
 ### Conversation tree (`/tree`)
 
 Type `/tree` (or press F5) while idle to browse the session's conversation tree.
-The picker is search-first: type to filter, ↑/↓ to move, Enter to select, Esc to
-close without changing the conversation or the draft.
+The full-screen browser is laid out like `/resume` and is search-first: type to
+filter, ↑/↓ or Page Up/Down to move, Enter to select. Esc clears the search, then
+closes without changing the conversation or the draft. The footer shows your
+position and what Enter will do for the selected row.
 
-Rows are drawn with branch indentation, and the active position is marked. Rows
-whose tool batch is incomplete are labeled *inspect only* and cannot be selected,
-because navigating there would replay a tool or fabricate a result.
+The tree is drawn like a Git graph. Each user prompt is a `●` node on a vertical
+rail, and its reply hangs beneath it; forks branch off with `├─●` and `└─●`. The
+active path is highlighted, other branches are dimmed, and the current position
+is labeled. Tab and Shift+Tab cycle three views:
+
+- **messages** (default): user messages, assistant replies, and compaction
+  checkpoints. A reply's tool calls are folded into a short summary such as
+  `2 tools: read, bash`.
+- **user only**: just the user messages.
+- **all entries**: every entry, with tool steps listed under their prompt and
+  showing their main argument (`read README.md`).
+
+Hidden entries never break the structure: each row hangs off its nearest visible
+ancestor. The current position is always visible, and switching views keeps the
+selection on the same entry or its nearest visible ancestor.
+
+Rows whose tool batch is incomplete can never be selected, because navigating
+there would replay a tool or fabricate a result. The messages and user-only views
+leave them out; the all-entries view shows them dimmed as *inspect only*, and the
+cursor skips them.
 
 Selecting a user message moves to its parent and, when the composer is untouched,
 fills it with that message; submitting the edit then creates a sibling branch.
@@ -1135,8 +1154,8 @@ conversation before the first message. An existing non-empty draft is never
 overwritten by a selected message; the notice says the draft was kept.
 
 Navigation is committed before it is installed, so the selected position is
-restored on `--resume` even when you exit without sending another prompt. The
-picker states plainly that navigation does not undo workspace changes.
+restored on `--resume` even when you exit without sending another prompt.
+Navigation does not undo workspace changes; the notice after each move says so.
 
 ## Experimental limitations
 

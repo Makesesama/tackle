@@ -61,9 +61,11 @@ defmodule Tackle.CLI.Keybinds do
           | {:resume_recent, pos_integer()}
           | :newline
           | :next
+          | :next_view
           | :page_down
           | :page_up
           | :previous
+          | :previous_view
           | :quit
           | :scroll_end
           | :scroll_start
@@ -308,6 +310,25 @@ defmodule Tackle.CLI.Keybinds do
   def picker(%Key{code: "backspace"}), do: :backspace
   def picker(%Key{code: code, modifiers: []}) when is_binary(code), do: insert(code)
   def picker(%Key{}), do: :ignore
+
+  @doc """
+  Resolves a chord inside the `/tree` picker.
+
+  Tab and Shift+Tab cycle the entry filter; Ctrl+P/N move like the arrows and
+  Page Up/Down move a screen at a time. Esc clears an active search before it
+  closes, like the resume screen; everything else behaves as in the shared
+  picker.
+  """
+  @spec tree(Key.t()) :: intent
+  def tree(%Key{code: "esc"}), do: :cancel
+  def tree(%Key{code: "page_up"}), do: :page_up
+  def tree(%Key{code: "page_down"}), do: :page_down
+  def tree(%Key{code: "tab", modifiers: ["shift"]}), do: :previous_view
+  def tree(%Key{code: "back_tab"}), do: :previous_view
+  def tree(%Key{code: "tab"}), do: :next_view
+  def tree(%Key{code: "p", modifiers: modifiers}) when is_ctrl(modifiers), do: :previous
+  def tree(%Key{code: "n", modifiers: modifiers}) when is_ctrl(modifiers), do: :next
+  def tree(key), do: picker(key)
 
   @doc "Resolves workflow-picker chords, including editing and Ctrl+P/N navigation."
   @spec workflows(Key.t()) :: intent
