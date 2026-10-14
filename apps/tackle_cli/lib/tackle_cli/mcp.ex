@@ -5,10 +5,10 @@ defmodule Tackle.CLI.MCP do
   alias Tackle.Plugins.MCP.OAuth
 
   def list do
-    with {:ok, servers} <- Config.list() do
-      Enum.each(Enum.sort(servers), fn {name, definition} ->
+    with {:ok, entries} <- entries() do
+      Enum.each(entries, fn entry ->
         Owl.IO.puts(
-          "#{name}\t#{definition["transport"]}\t#{definition["url"] || definition["command"]}"
+          "#{entry.name}\t#{entry.definition["transport"]}\t#{target(entry)}\t#{scope_label(entry)}"
         )
       end)
 
@@ -18,7 +18,28 @@ defmodule Tackle.CLI.MCP do
     end
   end
 
-  def add(%{name: name, stdio: command, http: url, args: args}) do
+  defp target(%{definition: %{"url" => url}}), do: url
+
+  defp target(%{definition: %{"command" => command, "args" => args}}),
+    do: Enum.map_join([command | args], " ", &quote_arg/1)
+
+  defp quote_arg(arg) do
+    if Regex.match?(~r/\A[A-Za-z0-9_@%+=:,.\/-]+\z/, arg), do: arg, else: inspect(arg)
+  end
+
+  defp scope_label(%{scope: :user}), do: "user"
+  defp scope_label(%{scope: :project, approved: true}), do: "project"
+  defp scope_label(%{scope: :project}), do: "project (not approved)"
+
+  # All entries; a broken project layer is reported and the user layer listed.
+  defp entries do
+    with {:ok, entries, warning} <- Config.effective_or_user() do
+      if warning, do: Owl.IO.puts(warning, :stderr)
+      {:ok, entries}
+    end
+  end
+
+  def add(%{name: name, stdio: command, http: url, args: args} = opts) do
     definition =
       cond do
         is_binary(command) and is_nil(url) ->
@@ -31,6 +52,12 @@ defmodule Tackle.CLI.MCP do
           nil
       end
 
+    if Map.get(opts, :project, false),
+      do: add_project(name, definition),
+      else: add_user(name, definition)
+  end
+
+  defp add_user(name, definition) do
     case Config.put(name, definition) do
       :ok ->
         Owl.IO.puts("Added MCP server #{name}")
@@ -40,6 +67,31 @@ defmodule Tackle.CLI.MCP do
         fail(error)
     end
   end
+
+  # The user adding a project server has seen its definition, so it is approved.
+  defp add_project(name, definition) do
+    with {:ok, path} <- Config.put_project(name, definition),
+         :ok <- Config.approve(path, name, definition) do
+      Owl.IO.puts("Added project MCP server #{name} to #{path}")
+      0
+    else
+      error -> fail(error)
+    end
+  end
+
+  def remove(%{name: name, project: true}) do
+    with {:ok, path} <- Config.remove_project(name),
+         :ok <- Config.revoke(path, name),
+         {:ok, _} <- ensure_started(),
+         :ok <- Tackle.CLI.MCP.Connections.invalidate(name) do
+      Owl.IO.puts("Removed project MCP server #{name} from #{path}")
+      0
+    else
+      error -> fail(error)
+    end
+  end
+
+  def remove(%{name: name}), do: remove(name)
 
   def remove(name) do
     with {:ok, _} <- ensure_started(),
@@ -55,9 +107,53 @@ defmodule Tackle.CLI.MCP do
     end
   end
 
+  @doc false
+  # Approves the current project definition of NAME after showing it. Approval
+  # is bound to the exact definition, so editing it requires approving again.
+  # `confirm` is injectable for tests.
+  def approve(name, confirm \\ &Owl.IO.confirm(message: &1)) do
+    with {:ok, entries} <- Config.effective(),
+         {:ok, entry} <- fetch_project_entry(entries, name),
+         :ok <- confirm_approval(entry, confirm),
+         :ok <- Config.approve(entry.path, name, entry.definition) do
+      Owl.IO.puts("Approved project MCP server #{name}")
+      0
+    else
+      error -> fail(error)
+    end
+  end
+
+  defp confirm_approval(entry, confirm) do
+    Owl.IO.puts("Project MCP server #{entry.name} from #{entry.path}:\n#{describe(entry)}")
+
+    if confirm.("Approve it? Its command runs on your machine with your permissions."),
+      do: :ok,
+      else: {:error, :aborted}
+  end
+
+  defp fetch_project_entry(entries, name) do
+    case Enum.find(entries, &(&1.name == name and &1.scope == :project)) do
+      nil -> {:error, :mcp_project_server_missing}
+      entry -> {:ok, entry}
+    end
+  end
+
+  defp describe(%{definition: %{"transport" => "http"}} = entry), do: "  http #{target(entry)}"
+
+  defp describe(%{spec: spec} = entry),
+    do:
+      "  #{target(entry)}\n  (runs in #{spec["cwd"]}; it may execute files from this repository)"
+
+  # Servers that may connect: user servers and approved project servers.
+  defp servers do
+    with {:ok, entries} <- entries() do
+      {:ok, for(entry <- entries, entry.approved, into: %{}, do: {entry.name, entry.spec})}
+    end
+  end
+
   def status(name) do
     with {:ok, _} <- ensure_started(),
-         {:ok, servers} <- Config.list() do
+         {:ok, servers} <- servers() do
       servers = if name, do: Map.take(servers, [name]), else: servers
 
       if name && servers == %{},
@@ -89,7 +185,7 @@ defmodule Tackle.CLI.MCP do
 
   def logout(name) do
     with {:ok, _} <- ensure_started(),
-         {:ok, servers} <- Config.list(),
+         {:ok, servers} <- servers(),
          {:ok, _} <- fetch_server(servers, name),
          :ok <- Tackle.Auth.delete(namespace(name)),
          :ok <- Tackle.CLI.MCP.Connections.invalidate(name) do
@@ -102,7 +198,7 @@ defmodule Tackle.CLI.MCP do
 
   def login(%{name: name, client_id: client_id}) do
     with {:ok, _} <- ensure_started(),
-         {:ok, servers} <- Config.list(),
+         {:ok, servers} <- servers(),
          {:ok, %{"transport" => "http", "url" => url}} <- fetch_server(servers, name),
          {:ok, listener} <-
            :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}, reuseaddr: true]),

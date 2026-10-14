@@ -14,9 +14,16 @@ defmodule Tackle.CLI.MCP.Connections do
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
-  @doc "Connects configured servers once per CLI process and returns root-only tool modules."
-  def tools do
-    GenServer.call(__MODULE__, :tools, 120_000)
+  @doc """
+  Connects the effective user and approved project servers for `opts[:cwd]`
+  and returns root-only tool modules.
+
+  `opts[:executor]` routes project file reads through the session executor.
+  Unapproved project servers and an unreadable project layer are skipped with
+  a warning; the user layer still connects.
+  """
+  def tools(opts \\ []) do
+    GenServer.call(__MODULE__, {:tools, opts}, 120_000)
   catch
     :exit, {:timeout, _} ->
       Logger.warning("MCP discovery timed out; MCP tools disabled for this run")
@@ -28,24 +35,24 @@ defmodule Tackle.CLI.MCP.Connections do
 
   @impl true
   def handle_call({:invalidate, name}, _from, state) do
-    case Map.pop(state, name) do
-      {nil, rest} -> {:reply, :ok, rest}
-      {entry, rest} -> {:reply, MCP.disconnect(entry.connection), rest}
+    case Map.pop(state.servers, name) do
+      {nil, _rest} -> {:reply, :ok, state}
+      {entry, rest} -> {:reply, MCP.disconnect(entry.connection), %{state | servers: rest}}
     end
   end
 
   @impl true
-  def handle_call(:tools, _from, state) do
-    case Config.list() do
+  def handle_call({:tools, opts}, _from, state) do
+    case enabled_definitions(opts, true) do
       {:ok, definitions} ->
-        {connections, enabled} = reconcile(Enum.sort(definitions), state)
+        {connections, enabled} = reconcile(definitions, state.servers)
 
         tools =
           Enum.flat_map(enabled, fn name ->
             MCP.tools(connections[name].connection)
           end)
 
-        {:reply, {:ok, tools}, connections}
+        {:reply, {:ok, tools}, %{state | servers: connections, opts: opts}}
 
       error ->
         {:reply, error, state}
@@ -55,17 +62,17 @@ defmodule Tackle.CLI.MCP.Connections do
   @impl true
   def init(_) do
     schedule_refresh()
-    {:ok, %{}}
+    {:ok, %{servers: %{}, opts: []}}
   end
 
   @impl true
   def handle_info(:refresh, state) do
-    state =
-      case Config.list() do
+    servers =
+      case enabled_definitions(state.opts, false) do
         {:ok, definitions} ->
           names = MapSet.new(definitions, fn {name, _} -> name end)
 
-          Enum.reduce(state, state, fn {name, entry}, acc ->
+          Enum.reduce(state.servers, state.servers, fn {name, entry}, acc ->
             cond do
               not MapSet.member?(names, name) ->
                 MCP.disconnect(entry.connection)
@@ -90,16 +97,54 @@ defmodule Tackle.CLI.MCP.Connections do
           end)
 
         _ ->
-          state
+          state.servers
       end
 
     schedule_refresh()
-    {:noreply, state}
+    {:noreply, %{state | servers: servers}}
+  end
+
+  # Sorted `{name, spec}` pairs for user servers and approved project servers.
+  # When building a run (`run? = true`), a broken project layer is skipped with
+  # a warning so user servers still connect. The background refresh instead
+  # keeps its current connections until the project layer reads again.
+  # Project STDIO servers are blocked when the session runs in a jail.
+  defp enabled_definitions(opts, run?) do
+    opts = Keyword.put(opts, :jailed, not is_nil(Keyword.get(opts, :executor)))
+
+    result =
+      if run?,
+        do: Config.effective_or_user(opts),
+        else: with({:ok, entries} <- Config.effective(opts), do: {:ok, entries, nil})
+
+    with {:ok, entries, warning} <- result do
+      if warning, do: Logger.warning(warning)
+
+      if run? do
+        Enum.each(entries, fn entry -> unless entry.approved, do: warn_disabled(entry) end)
+      end
+
+      {:ok, for(entry <- entries, entry.approved, do: {entry.name, entry.spec})}
+    end
+  end
+
+  defp warn_disabled(%{blocked: :jailed} = entry) do
+    Logger.warning(
+      "Project MCP server #{entry.name} in #{entry.path} is disabled in jailed mode: " <>
+        "it would run on the host from files the jailed agent can change"
+    )
+  end
+
+  defp warn_disabled(entry) do
+    Logger.warning(
+      "Project MCP server #{entry.name} in #{entry.path} is not approved; " <>
+        "run `tackle mcp approve #{entry.name}` to enable it"
+    )
   end
 
   @impl true
   def terminate(_reason, state) do
-    Enum.each(state, fn {_name, entry} -> MCP.disconnect(entry.connection) end)
+    Enum.each(state.servers, fn {_name, entry} -> MCP.disconnect(entry.connection) end)
   end
 
   defp schedule_refresh, do: Process.send_after(self(), :refresh, @refresh_interval)
@@ -202,7 +247,9 @@ defmodule Tackle.CLI.MCP.Connections do
   end
 
   defp connect(name, %{"transport" => "stdio", "command" => command, "args" => args} = definition) do
-    case MCP.connect(server_name: name, transport: {:stdio, command: command, args: args}) do
+    transport = stdio_transport(command, args, definition)
+
+    case MCP.connect(server_name: name, transport: {:stdio, transport}) do
       {:ok, connection} ->
         {:ok, %{connection: connection, definition: definition, expires_at: nil}}
 
@@ -234,6 +281,19 @@ defmodule Tackle.CLI.MCP.Connections do
       error -> error
     end
   end
+
+  # Project servers run in the project root; a relative command path such as
+  # `./bin/server` resolves against it rather than the CLI's working directory.
+  defp stdio_transport(command, args, %{"cwd" => cwd}) do
+    command =
+      if Path.type(command) == :relative and String.contains?(command, "/"),
+        do: Path.expand(command, cwd),
+        else: command
+
+    [command: command, args: args, cwd: cwd]
+  end
+
+  defp stdio_transport(command, args, _definition), do: [command: command, args: args]
 
   defp check_resource(%{"resource" => url}, url), do: :ok
   defp check_resource(_, _), do: {:error, :mcp_credentials_for_different_resource}

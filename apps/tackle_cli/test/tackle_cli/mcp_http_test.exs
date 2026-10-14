@@ -92,7 +92,7 @@ defmodule Tackle.CLI.MCPHTTPTest do
       })
 
     :sys.replace_state(Connections, fn state ->
-      update_in(state, [name, :expires_at], fn _ -> System.system_time(:second) + 1 end)
+      update_in(state, [:servers, name, :expires_at], fn _ -> System.system_time(:second) + 1 end)
     end)
 
     assert {:ok, []} = Connections.tools()
@@ -134,7 +134,7 @@ defmodule Tackle.CLI.MCPHTTPTest do
       })
 
     :sys.replace_state(Connections, fn state ->
-      update_in(state, [name, :expires_at], fn _ -> System.system_time(:second) + 1 end)
+      update_in(state, [:servers, name, :expires_at], fn _ -> System.system_time(:second) + 1 end)
     end)
 
     send(Connections, :refresh)
@@ -148,6 +148,70 @@ defmodule Tackle.CLI.MCPHTTPTest do
 
     assert {:ok, "updated"} = tool.execute(%{"value" => "updated"}, %{})
     assert_receive {:mcp_request, "renewed", "tools/call"}
+  end
+
+  test "connects project servers only after their exact definition is approved", %{url: url} do
+    project =
+      Path.join(System.tmp_dir!(), "tackle-mcp-project-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf!(project) end)
+    File.mkdir_p!(Path.join(project, ".git"))
+    File.mkdir_p!(Path.join(project, ".tackle"))
+    name = "proj#{System.unique_integer([:positive])}"
+    on_exit(fn -> Connections.invalidate(name) end)
+    mcp_json = Path.join(project, ".tackle/mcp.json")
+    definition = %{"transport" => "http", "url" => url}
+
+    File.write!(
+      mcp_json,
+      JSON.encode!(%{"version" => 1, "servers" => %{name => definition}})
+    )
+
+    :ok = Tackle.Auth.put("mcp:#{name}", %{"resource" => url, "access_token" => "initial"})
+    project_tool? = fn tools -> Enum.any?(tools, &(&1.name() == "mcp__#{name}__echo")) end
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, tools} = Connections.tools(cwd: Path.join(project, "sub"))
+        refute project_tool?.(tools)
+      end)
+
+    assert log =~ "tackle mcp approve #{name}"
+
+    :ok = Config.approve(mcp_json, name, definition)
+    assert {:ok, tools} = Connections.tools(cwd: project)
+    assert project_tool?.(tools)
+
+    # Any edit to the committed definition needs a fresh approval.
+    File.write!(
+      mcp_json,
+      JSON.encode!(%{
+        "version" => 1,
+        "servers" => %{name => %{"transport" => "http", "url" => url <> "/other"}}
+      })
+    )
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      assert {:ok, tools} = Connections.tools(cwd: project)
+      refute project_tool?.(tools)
+    end)
+  end
+
+  test "an invalid project file does not hide user servers", %{name: name} do
+    project =
+      Path.join(System.tmp_dir!(), "tackle-mcp-project-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf!(project) end)
+    File.mkdir_p!(Path.join(project, ".tackle"))
+    File.write!(Path.join(project, ".tackle/mcp.json"), "not json")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, tools} = Connections.tools(cwd: project)
+        assert Enum.any?(tools, &(&1.name() == "mcp__#{name}__echo"))
+      end)
+
+    assert log =~ "Ignoring project MCP servers"
   end
 
   defp assert_eventually(fun, retries \\ 100)

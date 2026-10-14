@@ -343,6 +343,34 @@ server fails to connect or refresh, its tools are omitted from new runs; other
 servers remain available and the CLI logs a warning. The server is retried on
 later runs (or after its credentials are fixed).
 
+### Project servers
+
+A project can declare servers in `.tackle/mcp.json` (same
+`{"version": 1, "servers": {...}}` format) in the nearest `.tackle` directory at
+or above the working directory, stopping at the Git root. A project definition
+replaces a user definition with the same name; definitions are not merged.
+Project STDIO servers run on the host with the project root as their working
+directory, and a relative command such as `./bin/server` resolves against it.
+
+Because a cloned repository could otherwise make Tackle launch arbitrary host
+commands, a project server only connects after you approve it:
+
+```sh
+mix tackle mcp list              # shows `project (not approved)` entries
+mix tackle mcp approve NAME      # prints and approves the current definition
+```
+
+Approvals are stored in `$TACKLE_HOME/mcp-approvals.json`, keyed by the project
+file path, the server name, and a SHA-256 fingerprint of the definition, so any
+edit to the definition (or a copy of the file in another checkout) needs a new
+approval. Unapproved servers are skipped with a warning that names the approve
+command. `mix tackle mcp add NAME ... --project` writes the definition to the
+project file (the Git root's `.tackle/mcp.json` if none exists yet) and approves
+it; `mix tackle mcp remove NAME --project` removes it and its approval. An
+invalid project file is skipped with a warning; user servers still connect.
+Credentials remain per server name in `$TACKLE_HOME/auth.json`, never in the
+project.
+
 `mix tackle mcp auth login NAME` discovers the HTTP server's OAuth endpoints,
 prints a browser authorization URL and waits on a loopback callback. Credentials
 are stored in `$TACKLE_HOME/auth.json` under `mcp:NAME`; `mcp auth status`

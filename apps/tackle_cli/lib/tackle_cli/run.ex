@@ -409,7 +409,7 @@ defmodule Tackle.CLI.Run do
          {:ok, executor} <- Tackle.CLI.Jail.ensure_started(),
          {:ok, overrides} <- overrides(model, thinking, llm_stream, executor),
          {:ok, session} <- session_fun.(),
-         {:ok, mcp_tools} <- Tackle.CLI.MCP.Connections.tools(),
+         {:ok, mcp_tools} <- Tackle.CLI.MCP.Connections.tools(executor: executor),
          {:ok, catalog} <- Tackle.CLI.Distribution.catalog(mcp_tools),
          {:ok, builtin_skills} <- Tackle.CLI.Distribution.builtin_skills(),
          {:ok, scope_spec} <-

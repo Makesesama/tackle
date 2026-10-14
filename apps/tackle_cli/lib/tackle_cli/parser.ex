@@ -25,7 +25,8 @@ defmodule Tackle.CLI.Parser do
           | {:auth_logout, auth_options(String.t())}
           | {:mcp_list, %{}}
           | {:mcp_add, map()}
-          | {:mcp_remove, String.t()}
+          | {:mcp_remove, %{name: String.t(), project: boolean()}}
+          | {:mcp_approve, String.t()}
           | {:mcp_login, %{name: String.t(), client_id: String.t() | nil}}
           | {:mcp_status, String.t() | nil}
           | {:mcp_logout, String.t()}
@@ -128,12 +129,19 @@ defmodule Tackle.CLI.Parser do
         name: result.args.name,
         stdio: Map.get(result.options, :stdio),
         http: Map.get(result.options, :http),
-        args: Map.get(result.options, :arg, [])
+        args: Map.get(result.options, :arg, []),
+        project: Map.get(result.flags, :project, false) == true
       }}}
   end
 
   defp parse_result({:ok, [:mcp, :remove], result}, _parser),
-    do: {:ok, {:mcp_remove, result.args.name}}
+    do:
+      {:ok,
+       {:mcp_remove,
+        %{name: result.args.name, project: Map.get(result.flags, :project, false) == true}}}
+
+  defp parse_result({:ok, [:mcp, :approve], result}, _parser),
+    do: {:ok, {:mcp_approve, result.args.name}}
 
   defp parse_result({:ok, [:mcp, :auth], _result}, parser),
     do: {:help, format_help(parser, [:mcp, :auth])}
@@ -328,11 +336,25 @@ defmodule Tackle.CLI.Parser do
                 stdio: [long: "--stdio", value_name: "COMMAND", parser: :string],
                 http: [long: "--http", value_name: "URL", parser: :string],
                 arg: [long: "--arg", value_name: "ARG", parser: :string, multiple: true]
+              ],
+              flags: [
+                project: [
+                  long: "--project",
+                  help: "Add to the project's .tackle/mcp.json and approve it"
+                ]
               ]
             ],
             remove: [
               name: "remove",
               about: "Remove a server definition",
+              args: [name: [value_name: "NAME", required: true, parser: :string]],
+              flags: [
+                project: [long: "--project", help: "Remove from the project's .tackle/mcp.json"]
+              ]
+            ],
+            approve: [
+              name: "approve",
+              about: "Approve a project server from .tackle/mcp.json",
               args: [name: [value_name: "NAME", required: true, parser: :string]]
             ],
             auth: [

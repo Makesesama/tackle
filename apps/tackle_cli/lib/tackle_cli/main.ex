@@ -38,7 +38,8 @@ defmodule Tackle.CLI.Main do
 
   defp dispatch({:mcp_list, _}), do: MCPCommands.list()
   defp dispatch({:mcp_add, opts}), do: MCPCommands.add(opts)
-  defp dispatch({:mcp_remove, name}), do: MCPCommands.remove(name)
+  defp dispatch({:mcp_remove, opts}), do: MCPCommands.remove(opts)
+  defp dispatch({:mcp_approve, name}), do: MCPCommands.approve(name)
   defp dispatch({:mcp_login, name}), do: MCPCommands.login(name)
   defp dispatch({:mcp_status, name}), do: MCPCommands.status(name)
   defp dispatch({:mcp_logout, name}), do: MCPCommands.logout(name)

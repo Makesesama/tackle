@@ -322,7 +322,16 @@ defmodule Tackle.CLI.ParserTest do
                "server"
              ])
 
-    assert {:ok, {:mcp_remove, "docs"}} = Parser.parse(["mcp", "remove", "docs"])
+    assert {:ok, {:mcp_remove, %{name: "docs", project: false}}} =
+             Parser.parse(["mcp", "remove", "docs"])
+
+    assert {:ok, {:mcp_remove, %{name: "docs", project: true}}} =
+             Parser.parse(["mcp", "remove", "docs", "--project"])
+
+    assert {:ok, {:mcp_add, %{name: "docs", project: true}}} =
+             Parser.parse(["mcp", "add", "docs", "--http", "https://x.test/mcp", "--project"])
+
+    assert {:ok, {:mcp_approve, "docs"}} = Parser.parse(["mcp", "approve", "docs"])
 
     assert {:ok, {:mcp_login, %{name: "docs", client_id: nil}}} =
              Parser.parse(["mcp", "auth", "login", "docs"])
