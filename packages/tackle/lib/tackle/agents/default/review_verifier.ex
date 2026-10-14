@@ -40,7 +40,7 @@ defmodule Tackle.Agents.Default.ReviewVerifier do
       """,
       source: :builtin,
       tools: ["read", "bash", "report_verdict"],
-      max_iterations: 25,
+      max_iterations: 6,
       advertise: false,
       allow_delegation: false,
       instructions: false

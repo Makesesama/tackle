@@ -8,7 +8,7 @@ defmodule Tackle.ReviewTest do
   alias Tackle.Config
   alias Tackle.Lib.Cancellation
   alias Tackle.Review
-  alias Tackle.Review.{Change, Diff, Finding, History, Result, Rules}
+  alias Tackle.Review.{Change, Detector, Diff, Finding, History, Result, Rules}
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Tools.{ReportFindings, ReportVerdict}
 
@@ -1312,6 +1312,29 @@ defmodule Tackle.ReviewTest do
       assert {:ok, _result} = review(change(), script(), thinking: [scorer: "off"])
       assert Enum.all?(calls(:detector), &(&1.reasoning_effort == nil))
       assert [%{reasoning_effort: nil}] = calls(:scorer)
+    end
+
+    test "detector runs are told their step budget" do
+      assert {:ok, _result} = review(change(), script(), max_steps: [detector: 4])
+      detector_calls = calls(:detector)
+      assert detector_calls != []
+      assert Enum.all?(detector_calls, &(&1.prompt =~ "You have at most 3 rounds of tool calls"))
+      refute Enum.any?(calls(:verifier), &(&1.prompt =~ "rounds of tool calls"))
+
+      config = %Config{providers: [], model_ref: "review/fake", llm: nil}
+
+      spec = fn steps, tools ->
+        %AgentSpec{name: "d", config: %{config | max_iterations: steps, tools: tools}}
+      end
+
+      reading = [Tackle.Tools.Read, ReportFindings]
+      assert Detector.step_budget(spec.(2, reading)) =~ "at most 1 round of tool calls"
+      assert Detector.step_budget(spec.(1, reading)) =~ "at most 1 round of tool calls"
+      assert Detector.step_budget(spec.(6, reading)) =~ "Read only the code"
+      assert Detector.step_budget(spec.(:infinity, reading)) == nil
+
+      # A detector without reading tools is only told its budget.
+      refute Detector.step_budget(spec.(3, [ReportFindings])) =~ "Read only"
     end
 
     test "the requester's thinking level is inherited unless the stage sets its own" do

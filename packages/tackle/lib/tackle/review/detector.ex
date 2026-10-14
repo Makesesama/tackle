@@ -20,6 +20,12 @@ defmodule Tackle.Review.Detector do
   reported. With more than one sample the batch is reviewed that many
   times, one run after the other; the orchestrator counts a batch as failed
   only when none of its samples reported anything or finished.
+
+  When the profile's step limit is finite, the prompt tells the run its
+  budget (`step_budget/1`): the rounds of tool calls it has left for reading
+  and reporting. A small limit with that instruction keeps a detector's
+  reads to what its findings depend on, which costs a fraction of an open
+  exploration and still finds bugs whose cause is in another file.
   """
 
   alias Tackle.Lib.Usage
@@ -98,11 +104,16 @@ defmodule Tackle.Review.Detector do
       rule_ids: Enum.map(rules, & &1.id)
     }
 
-    prompt = prompt(units, rules, review.allowed)
+    spec = Keyword.fetch!(opts, :spec)
+
+    prompt =
+      [prompt(units, rules, review.allowed), step_budget(spec)]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n\n")
 
     acc = %{samples: [], incomplete: [], usages: [], errors: []}
 
-    with {:ok, spec} <- Delegation.put_review_context(Keyword.fetch!(opts, :spec), review) do
+    with {:ok, spec} <- Delegation.put_review_context(spec, review) do
       opts
       |> Keyword.get(:samples, 1)
       |> then(&Enum.to_list(1..&1//1))
@@ -188,6 +199,34 @@ defmodule Tackle.Review.Detector do
     ]
     |> Enum.join("\n\n")
   end
+
+  @doc """
+  The instruction that tells a detector run its step budget, or `nil` for a
+  profile without a step limit. One step is one model call, and the last one
+  answers, so a limit of `n` leaves `n - 1` rounds of tool calls. A profile
+  with tools besides `report_findings` is also told to spend them on the
+  code its findings depend on.
+  """
+  @spec step_budget(AgentSpec.t()) :: String.t() | nil
+  def step_budget(%AgentSpec{config: %{max_iterations: steps, tools: tools}})
+      when is_integer(steps) and steps > 0 do
+    rounds = max(steps - 1, 1)
+
+    budget =
+      "You have at most #{rounds} #{if rounds == 1, do: "round", else: "rounds"} of tool " <>
+        "calls, including your reports."
+
+    if Enum.any?(tools, &(&1 != ReportFindings)) do
+      budget <>
+        " Read only the code a suspected finding depends on (callers, callees, the " <>
+        "definitions it uses), make the reads of one round in parallel, and report every " <>
+        "finding before your rounds run out."
+    else
+      budget
+    end
+  end
+
+  def step_budget(_spec), do: nil
 
   @line_format "Lines are shown as `[+ n]` (added, new numbering), `[- n]` (removed, old " <>
                  "numbering), and `[  n]` (unchanged context). Read other code when you need " <>

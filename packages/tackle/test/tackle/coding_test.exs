@@ -273,7 +273,8 @@ defmodule Tackle.CodingTest do
 
     assert detector.config.tools == [Read, Bash, ReportFindings]
     assert verifier.config.tools == [Read, Bash, ReportVerdict]
-    assert detector.config.max_iterations == 40
+    assert detector.config.max_iterations == 6
+    assert verifier.config.max_iterations == 6
     assert detector.model_source == :parent
     refute detector.allow_delegation
     assert detector.config.system_prompt =~ "Review detector assignment"

@@ -230,7 +230,12 @@ root and carry the review output tools `report_findings` and `report_verdict`
 Both run with `instructions: false`, so their system prompt is only their
 assignment and the working directory. `AGENTS.md` guides agent loops and chats,
 not reviews: a convention a review should enforce is a review rule
-(`Tackle.Review.Rules`, such as `.tackle/review/rules/no-jason.md`). Projects can override their prompts with
+(`Tackle.Review.Rules`, such as `.tackle/review/rules/no-jason.md`). Both are
+limited to 6 steps (model calls per run), and each detector run is told its
+budget of tool-call rounds and to read only the code a suspected finding
+depends on; this keeps reviews cheap and still finds bugs whose cause lies in
+another file. `review.max_steps` in `config.json` changes the limits, and the
+budget follows. Projects can override their prompts with
 `.tackle/agents/review-detector.md` or `review-verifier.md`; an override must
 keep its output tool, and should set `instructions: false` to stay lean. Agent
 files may select these two tools by name even though the root does not have

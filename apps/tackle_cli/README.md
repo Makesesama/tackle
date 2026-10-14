@@ -239,7 +239,7 @@ Defaults for every review, including `/review` in the TUI and the
 `review_changes` tool, go in the `review` object of
 `$TACKLE_HOME/config.json`: per-stage `models` and `thinking` (`detector`,
 `verifier`, `scorer`), per-stage step limits `max_steps` (`detector`,
-`verifier`), the display `profile`, and `default_rules`, the built-in rules
+`verifier`, both 6 by default), the display `profile`, and `default_rules`, the built-in rules
 to apply (all when left out). `--profile` and `--stage-thinking` override
 them; stages left out use the session's model and thinking level:
 
@@ -249,11 +249,16 @@ them; stages left out use the session's model and thinking level:
     "profile": "quiet",
     "models": { "verifier": "openai-codex/gpt-5.5-codex-mini" },
     "thinking": { "detector": "low", "verifier": "low" },
-    "max_steps": { "verifier": 6 },
+    "max_steps": { "detector": 10 },
     "default_rules": ["unhandled-error", "injection", "secret-exposure"]
   }
 }
 ```
+
+With the default step limits and `low` thinking for the detector and verifier
+(as above), the review benchmark (`bench/review_eval`) found the same bugs as
+the earlier defaults (40 and 25 steps, `high` thinking) for about a third of
+the cost.
 
 The built-in rules are `boundary-condition`, `broken-contract`,
 `concurrency-hazard`, `injection`, `missing-nil-check`,

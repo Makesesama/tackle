@@ -1,16 +1,11 @@
 {
   "commit": "8715e3479e80f26006a2dc5a521151e72e2de3b9",
-  "description": "Settles interrupted tool calls with synthetic results so stopped durable sessions can resume, and seeds 4 independent defects across the repair, journal, and message-resolution paths it adds.",
+  "description": "Settles interrupted tool calls with synthetic results so stopped durable sessions can resume, and seeds 3 independent defects across the repair, journal, and message-resolution paths it adds. (A fourth seed, a swallowed persistence error in the repair, was removed: a failed journal append stops the journal, so the repair fails later anyway and does not report success as its issue claimed.)",
   "edits": [
     {
       "find": "      {:reply, :ok, %{state | recovery: nil, agent_state: agent_state}}",
       "path": "packages/tackle/lib/tackle/session.ex",
       "replace": "      {:reply, :ok, %{state | agent_state: agent_state}}"
-    },
-    {
-      "find": "      case Persistence.after_message(acc, message, acc.context) do\n        :ok -> {:cont, {:ok, acc}}\n        {:error, reason} -> {:halt, {:error, reason}}\n      end",
-      "path": "packages/tackle/lib/tackle/session.ex",
-      "replace": "      case Persistence.after_message(acc, message, acc.context) do\n        :ok -> {:cont, {:ok, acc}}\n        {:error, _reason} -> {:cont, {:ok, acc}}\n      end"
     },
     {
       "find": "      when operation in [:run, :continue, :repair] and is_binary(turn_id) do",
@@ -30,20 +25,6 @@
       "anchor": "{:reply, :ok, %{state | agent_state: agent_state}}",
       "description": "Abandoning a turn no longer clears `recovery`, so the session keeps replying `{:error, {:recovery_required, ...}}` to every later submit and a stopped session still cannot be resumed.",
       "id": "abandon-recovery-not-cleared",
-      "lines": 1,
-      "path": "packages/tackle/lib/tackle/session.ex"
-    },
-    {
-      "also": [
-        {
-          "anchor": "case Persistence.after_message(acc, message, acc.context) do",
-          "lines": 1,
-          "path": "packages/tackle/lib/tackle/session.ex"
-        }
-      ],
-      "anchor": "{:error, _reason} -> {:cont, {:ok, acc}}",
-      "description": "A failed journal commit for a synthetic tool result is treated as success, so the repair reports `{:ok, agent_state}` while the durable transcript never records the settled call/result pairs.",
-      "id": "repair-swallows-persistence-error",
       "lines": 1,
       "path": "packages/tackle/lib/tackle/session.ex"
     },
