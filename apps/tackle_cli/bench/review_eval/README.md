@@ -4,7 +4,9 @@
 (`Tackle.Review.run/2`) with your configuration, credentials, and models, and
 each review costs what a normal `tackle review` of the same range costs. It
 compares review configurations ("variants") by cost (tokens, runs, wall
-time) and quality (known issues found).
+time) and quality (known issues found). What it has shown so far, and the
+review defaults chosen from it, is in
+[`docs/code-review-benchmark.md`](../../../../docs/code-review-benchmark.md).
 
 ```sh
 cd apps/tackle_cli

@@ -1,7 +1,9 @@
 # Code review: learnings and optimization plan
 
 Status: **notes and plan**. Only the bash stdin fix, the diagnostic script,
-and keeping the findings of failed runs (3.1) are implemented. Everything else
+and keeping the findings of failed runs (3.1) are implemented, plus the
+evaluation set (3.3), whose results set the current review defaults (see
+[`code-review-benchmark.md`](code-review-benchmark.md)). Everything else
 under "Optimizations" is a proposal.
 
 This document records what we learned while debugging `review_changes` failing
@@ -175,7 +177,9 @@ Verifiers took 25–30 s each.
   in this repository, reviewed N times each, would turn "feels better" into
   recall and precision numbers. The repository's `Tackle.Review.History`
   already stores outcomes (useful, not useful, dismissed, fixed) that can serve
-  as precision labels over time.
+  as precision labels over time. *Implemented* as
+  `apps/tackle_cli/bench/review_eval`; findings in
+  [`code-review-benchmark.md`](code-review-benchmark.md).
 - **Range reviews read the working tree.** For `HEAD~1..HEAD` the detectors ran
   `git status` and saw unrelated local modifications, and they read files from
   the working tree. When the working tree differs from the reviewed head,
