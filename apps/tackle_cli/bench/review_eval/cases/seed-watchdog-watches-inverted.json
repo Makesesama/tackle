@@ -1,0 +1,21 @@
+{
+  "commit": "638e3dc41813b16100c37caa661cb183f3f5eab0",
+  "description": "`Tackle.Watchdog.watches?/2` decides which tool calls the watchdog tracks (bash calls without an explicit `timeout`); the predicate is injected with an inverted timeout test.",
+  "edits": [
+    {
+      "find": "      is_nil(argument(arguments, \"timeout\", :timeout))",
+      "path": "packages/tackle/lib/tackle/watchdog.ex",
+      "replace": "      not is_nil(argument(arguments, \"timeout\", :timeout))"
+    }
+  ],
+  "id": "seed-watchdog-watches-inverted",
+  "issues": [
+    {
+      "anchor": "not is_nil(argument(arguments, \"timeout\", :timeout))",
+      "description": "The condition is inverted: `watches?/2` now requires an explicit `timeout` instead of rejecting one, contradicting its own doc and the moduledoc, so the watchdog tracks exactly the bash calls it is meant to skip and skips the ones it must watch.",
+      "id": "inverted-condition",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/watchdog.ex"
+    }
+  ]
+}

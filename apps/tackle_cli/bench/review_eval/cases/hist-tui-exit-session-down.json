@@ -1,0 +1,14 @@
+{
+  "commit": "3986437b3c9d758462ed80ba443db378aa996e18",
+  "description": "Historical: the TUI calls `exit/1` when its monitored session goes down, so a controlled session shutdown crashes the terminal app instead of stopping it and reporting the failure. The code was later reworked (9b65826 renamed the reason to `:agent_down`) and the behaviour fixed in a502e4f (\"fix: subagent crashes when stopping session\").",
+  "id": "hist-tui-exit-session-down",
+  "issues": [
+    {
+      "anchor": "exit({:session_down, reason})",
+      "description": "The `:DOWN` handler for the session exits the TUI process with `{:session_down, reason}`, crashing the app (and its terminal state) on any session stop instead of shutting down cleanly and reporting the error.",
+      "id": "exit-on-session-down",
+      "lines": 1,
+      "path": "frontends/tackle_cli/lib/tackle_cli/tui.ex"
+    }
+  ]
+}

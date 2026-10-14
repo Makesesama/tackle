@@ -1,0 +1,67 @@
+{
+  "commit": "1f06c66da2b496d1ecf3ed23bea5768ad762c06e",
+  "description": "Adds native clipboard support to the CLI (the :clipboard_ex dependency, RGBA-to-PNG encoding in Tackle.CLI.ImageClipboard, Tackle.CLI.Clipboard.copy/1 behind the TUI copy notices); 4 independent bugs are seeded into lines it added.",
+  "edits": [
+    {
+      "find": "      {:error, :content_not_available} ->\n        {:error, :no_image_in_clipboard}\n\n      {:error, reason} ->\n        {:error, reason}",
+      "path": "apps/tackle_cli/lib/tackle_cli/image_clipboard.ex",
+      "replace": "      {:error, _reason} ->\n        {:error, :no_image_in_clipboard}"
+    },
+    {
+      "find": "  def copy(text) when is_binary(text), do: Clipboard.copy(text, timeout: @native_timeout)",
+      "path": "apps/tackle_cli/lib/tackle_cli/clipboard.ex",
+      "replace": "  def copy(text) when is_binary(text) do\n    Clipboard.copy(text, timeout: @native_timeout, terminal: :never)\n  end"
+    },
+    {
+      "find": "      {:ok, :requested} -> \"#{success_notice} · unconfirmed (terminal copy)\"",
+      "path": "apps/tackle_cli/lib/tackle_cli/tui/util.ex",
+      "replace": "      {:ok, :requested} -> success_notice"
+    },
+    {
+      "find": "      {:clipboard_ex, path: \"../../packages/clipboard_ex\"},",
+      "path": "apps/tackle_cli/mix.exs",
+      "replace": "      {:clipboard_ex, path: \"../../packages/clipboard_ex\", only: :dev},"
+    }
+  ],
+  "id": "multi-native-clipboard",
+  "issues": [
+    {
+      "also": [],
+      "anchor": "      {:error, _reason} ->\n        {:error, :no_image_in_clipboard}",
+      "description": "read/1 collapses every Clipboard.read_image/0 failure into {:error, :no_image_in_clipboard}, so the composer cannot tell a broken clipboard (:clipboard_not_supported, :timeout, {:owner_exit, _}) from an empty one and silently pastes text instead of reporting the failure.",
+      "id": "swallowed-clipboard-error",
+      "lines": 2,
+      "path": "apps/tackle_cli/lib/tackle_cli/image_clipboard.ex"
+    },
+    {
+      "also": [],
+      "anchor": "  def copy(text) when is_binary(text) do\n    Clipboard.copy(text, timeout: @native_timeout, terminal: :never)",
+      "description": "copy/1 passes terminal: :never, so the tmux/OSC 52 fallback its own moduledoc promises is never used: in a tmux, SSH or jailed session the text goes to the clipboard of the machine running the CLI and the documented {:ok, :requested} result is unreachable.",
+      "id": "terminal-fallback-disabled",
+      "lines": 2,
+      "path": "apps/tackle_cli/lib/tackle_cli/clipboard.ex"
+    },
+    {
+      "also": [],
+      "anchor": "      {:ok, :requested} -> success_notice",
+      "description": "copy_notice/3 maps {:ok, :requested} (only the terminal was asked, so the copy is unconfirmed) to the plain success notice, contradicting its doc and telling the user a terminal-only copy definitely happened.",
+      "id": "unconfirmed-copy-as-success",
+      "lines": 1,
+      "path": "apps/tackle_cli/lib/tackle_cli/tui/util.ex"
+    },
+    {
+      "also": [
+        {
+          "anchor": "        :clipboard_ex,",
+          "lines": 1,
+          "path": "apps/tackle_cli/mix.exs"
+        }
+      ],
+      "anchor": "      {:clipboard_ex, path: \"../../packages/clipboard_ex\", only: :dev},",
+      "description": "The new :clipboard_ex dependency is marked only: :dev although the app is listed in extra_applications and the CLI calls Clipboard.* at runtime, so the dependency is missing in test and prod builds.",
+      "id": "dev-only-clipboard-dep",
+      "lines": 1,
+      "path": "apps/tackle_cli/mix.exs"
+    }
+  ]
+}

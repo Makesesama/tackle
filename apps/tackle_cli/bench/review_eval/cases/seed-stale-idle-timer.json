@@ -1,0 +1,21 @@
+{
+  "commit": "c24b2fa4877d41d4615c536855beaaa358657e95",
+  "description": "`Tackle.Runtime.Request` rearms its idle timer on every child event; the timeout clause only settles for the current timer (`%{idle_timer: timer}`). The seed drops that match, so a stale timer message settles the run as timed out.",
+  "edits": [
+    {
+      "find": "  def handle_info({:timeout, timer, {:request_timeout, :idle}}, %{idle_timer: timer} = state)\n      when not is_nil(timer) do",
+      "path": "packages/tackle_runtime/lib/tackle/runtime/request.ex",
+      "replace": "  def handle_info({:timeout, _timer, {:request_timeout, :idle}}, state) do"
+    }
+  ],
+  "id": "seed-stale-idle-timer",
+  "issues": [
+    {
+      "anchor": "def handle_info({:timeout, _timer, {:request_timeout, :idle}}, state) do",
+      "description": "The idle-timeout clause accepts any timer, including one that fired before it was cancelled and rearmed (its message is already in the mailbox), so an active run is settled as timed out right after a child event renewed its window.",
+      "id": "stale-timer",
+      "lines": 1,
+      "path": "packages/tackle_runtime/lib/tackle/runtime/request.ex"
+    }
+  ]
+}

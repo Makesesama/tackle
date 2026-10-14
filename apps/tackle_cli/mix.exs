@@ -20,8 +20,9 @@ defmodule Tackle.CLI.MixProject do
     ]
   end
 
-  # Test-only modules (the Lumis stand-in) compile with the test suite.
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  # Test-only modules (the Lumis stand-in) compile with the test suite, as do
+  # the review benchmark's modules (bench/review_eval), so they are tested.
+  defp elixirc_paths(:test), do: ["lib", "test/support", "bench/review_eval/lib"]
   defp elixirc_paths(_), do: ["lib"]
 
   # Burrito extracts the release into `.../<release>_erts-<erts>_<version>` and

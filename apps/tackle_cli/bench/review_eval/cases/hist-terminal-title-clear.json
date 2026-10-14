@@ -1,0 +1,26 @@
+{
+  "commit": "a86b6f315b2c0610ab7af4c7672a1c26ceea50e2",
+  "description": "Historical (fixed in d23c6d4, \"fix: terminal title crash\"): `Tackle.CLI.TerminalTitle.clear/0` returns `emit/1`'s `{:ok, :applied}` although its spec promises `:ok`, so the TUI's `case writer.(nil) do :ok -> ... end` raises CaseClauseError when the title is cleared on exit.",
+  "id": "hist-terminal-title-clear",
+  "issues": [
+    {
+      "also": [
+        {
+          "anchor": "case state.terminal_title_writer.(nil) do",
+          "lines": 2,
+          "path": "apps/tackle_cli/lib/tackle_cli/tui/terminal_title.ex"
+        },
+        {
+          "anchor": "  defp emit(sequence) do\n    IO.binwrite(:stdio, sequence)\n    {:ok, :applied}",
+          "lines": 3,
+          "path": "apps/tackle_cli/lib/tackle_cli/terminal_title.ex"
+        }
+      ],
+      "anchor": "if Native.stdout_is_terminal(), do: osc0(\"\") |> emit(), else: :ok",
+      "description": "`clear/0` returns `{:ok, :applied}` from `emit/1` on a terminal, not the `:ok` its spec promises, so `TUI.TerminalTitle.clear/1` (`case writer.(nil) do :ok -> ...`) crashes with a CaseClauseError when the title is cleared on exit. A finding at the crash site or at `emit/1` counts too.",
+      "id": "clear-return-value",
+      "lines": 1,
+      "path": "apps/tackle_cli/lib/tackle_cli/terminal_title.ex"
+    }
+  ]
+}

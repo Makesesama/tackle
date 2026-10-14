@@ -1,0 +1,21 @@
+{
+  "commit": "8715e3479e80f26006a2dc5a521151e72e2de3b9",
+  "description": "In `Tackle.Lib.Messages.unresolved_tool_calls/1` (used by the loop's interrupted-batch settling and by session resume repair), the tool-result clause filters completed calls by comparing the call's `name` with the result's `tool_call_id`, so already-answered calls are never cleared and duplicate synthetic results are appended for them.",
+  "edits": [
+    {
+      "find": "Enum.reject(pending, &(&1.id == id))",
+      "path": "packages/tackle_lib/lib/tackle_lib/messages.ex",
+      "replace": "Enum.reject(pending, &(&1.name == id))"
+    }
+  ],
+  "id": "seed-unresolved-result-match",
+  "issues": [
+    {
+      "anchor": "Enum.reject(pending, &(&1.name == id))",
+      "description": "The tool-result branch rejects pending calls with `&1.name == id` instead of `&1.id == id`, so tool results never clear their calls and already-answered calls are treated as unresolved (duplicate synthetic tool results, corrupted history).",
+      "id": "wrong-field",
+      "lines": 1,
+      "path": "packages/tackle_lib/lib/tackle_lib/messages.ex"
+    }
+  ]
+}

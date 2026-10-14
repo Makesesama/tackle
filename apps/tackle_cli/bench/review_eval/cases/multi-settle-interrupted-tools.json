@@ -1,0 +1,79 @@
+{
+  "commit": "8715e3479e80f26006a2dc5a521151e72e2de3b9",
+  "description": "Settles interrupted tool calls with synthetic results so stopped durable sessions can resume, and seeds 4 independent defects across the repair, journal, and message-resolution paths it adds.",
+  "edits": [
+    {
+      "find": "      {:reply, :ok, %{state | recovery: nil, agent_state: agent_state}}",
+      "path": "packages/tackle/lib/tackle/session.ex",
+      "replace": "      {:reply, :ok, %{state | agent_state: agent_state}}"
+    },
+    {
+      "find": "      case Persistence.after_message(acc, message, acc.context) do\n        :ok -> {:cont, {:ok, acc}}\n        {:error, reason} -> {:halt, {:error, reason}}\n      end",
+      "path": "packages/tackle/lib/tackle/session.ex",
+      "replace": "      case Persistence.after_message(acc, message, acc.context) do\n        :ok -> {:cont, {:ok, acc}}\n        {:error, _reason} -> {:cont, {:ok, acc}}\n      end"
+    },
+    {
+      "find": "      when operation in [:run, :continue, :repair] and is_binary(turn_id) do",
+      "path": "packages/tackle/lib/tackle/session/journal.ex",
+      "replace": "      when operation in [:run, :repair] and is_binary(turn_id) do"
+    },
+    {
+      "find": "    do: Map.get(call, key) || Map.get(call, Atom.to_string(key))",
+      "path": "packages/tackle_lib/lib/tackle_lib/messages.ex",
+      "replace": "    do: Map.get(call, Atom.to_string(key))"
+    }
+  ],
+  "id": "multi-settle-interrupted-tools",
+  "issues": [
+    {
+      "also": [],
+      "anchor": "{:reply, :ok, %{state | agent_state: agent_state}}",
+      "description": "Abandoning a turn no longer clears `recovery`, so the session keeps replying `{:error, {:recovery_required, ...}}` to every later submit and a stopped session still cannot be resumed.",
+      "id": "abandon-recovery-not-cleared",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/session.ex"
+    },
+    {
+      "also": [
+        {
+          "anchor": "case Persistence.after_message(acc, message, acc.context) do",
+          "lines": 1,
+          "path": "packages/tackle/lib/tackle/session.ex"
+        }
+      ],
+      "anchor": "{:error, _reason} -> {:cont, {:ok, acc}}",
+      "description": "A failed journal commit for a synthetic tool result is treated as success, so the repair reports `{:ok, agent_state}` while the durable transcript never records the settled call/result pairs.",
+      "id": "repair-swallows-persistence-error",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/session.ex"
+    },
+    {
+      "also": [
+        {
+          "anchor": "@spec begin_turn(GenServer.server(), :run | :continue | :repair, String.t() | nil, String.t()) ::",
+          "lines": 1,
+          "path": "packages/tackle/lib/tackle/session/journal.ex"
+        }
+      ],
+      "anchor": "when operation in [:run, :repair] and is_binary(turn_id) do",
+      "description": "`begin_turn/4` no longer accepts `:continue`, so the continue path used to resume an interrupted session raises a FunctionClauseError instead of appending `turn.started`.",
+      "id": "begin-turn-drops-continue",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/session/journal.ex"
+    },
+    {
+      "also": [
+        {
+          "anchor": "defp tool_call_field(call, key) when is_map(call),",
+          "lines": 1,
+          "path": "packages/tackle_lib/lib/tackle_lib/messages.ex"
+        }
+      ],
+      "anchor": "do: Map.get(call, Atom.to_string(key))",
+      "description": "Tool calls held as plain maps are only looked up by string key, so the `:id`/`:name` maps that durable history is decoded into are dropped as invalid and unresolved tool calls are never reported for a resumed session.",
+      "id": "tool-call-field-string-keys-only",
+      "lines": 1,
+      "path": "packages/tackle_lib/lib/tackle_lib/messages.ex"
+    }
+  ]
+}

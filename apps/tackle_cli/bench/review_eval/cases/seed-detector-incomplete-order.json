@@ -1,0 +1,21 @@
+{
+  "commit": "7ffadf2d13a434bbf5c7c77aded1fa49a84e9132",
+  "description": "`Tackle.Review.Detector.failed_sample/3` classifies a failed detector run: finished runs count as complete samples, runs that failed earlier as incomplete ones. The two cond branches are swapped.",
+  "edits": [
+    {
+      "find": "      ReportFindings.finished?(messages, review) -> {:ok, findings, usage}\n      findings != [] -> {:incomplete, findings, reason, usage}",
+      "path": "packages/tackle/lib/tackle/review/detector.ex",
+      "replace": "      findings != [] -> {:incomplete, findings, reason, usage}\n      ReportFindings.finished?(messages, review) -> {:ok, findings, usage}"
+    }
+  ],
+  "id": "seed-detector-incomplete-order",
+  "issues": [
+    {
+      "anchor": "      findings != [] -> {:incomplete, findings, reason, usage}\n      ReportFindings.finished?(messages, review) -> {:ok, findings, usage}",
+      "description": "`findings != []` is tested before `ReportFindings.finished?/2`, so a run that recorded its last report and then failed is reported as an incomplete sample (and its unit listed in `incomplete_units`) instead of a completed one, contradicting the moduledoc.",
+      "id": "cond-order",
+      "lines": 2,
+      "path": "packages/tackle/lib/tackle/review/detector.ex"
+    }
+  ]
+}

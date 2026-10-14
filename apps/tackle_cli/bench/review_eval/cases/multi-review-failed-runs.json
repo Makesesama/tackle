@@ -1,0 +1,79 @@
+{
+  "commit": "7ffadf2d13a434bbf5c7c77aded1fa49a84e9132",
+  "description": "Delivers a review even when a unit's delegated run fails, keeping what failed runs reported (mirrored transcripts, incomplete units, incremental report_findings), with 4 bugs seeded in that added behaviour.",
+  "edits": [
+    {
+      "find": "  defp settle(%Outcome{status: :timeout}, mirrored), do: {:error, :timeout, mirrored}",
+      "path": "packages/tackle/lib/tackle/review/delegation.ex",
+      "replace": "  defp settle(%Outcome{status: :timeout}, _mirrored), do: {:error, :timeout}"
+    },
+    {
+      "find": "      for {units, {:ok, %{incomplete: [reason | _] = incomplete, samples: samples}}} <-\n            detections,\n          length(incomplete) == length(samples),",
+      "path": "packages/tackle/lib/tackle/review.ex",
+      "replace": "      for {units, {:ok, %{incomplete: [reason | _] = incomplete}}} <-\n            detections,\n          length(incomplete) > 0,"
+    },
+    {
+      "find": "      findings |> accept(review) |> respond(Map.get(args, \"done\") != false)",
+      "path": "packages/tackle/lib/tackle/tools/report_findings.ex",
+      "replace": "      findings |> accept(review) |> respond(Map.get(args, \"done\") == true)"
+    },
+    {
+      "find": "        {:error, reason, messages} ->\n          {:ok, result(messages, ids, reason)}",
+      "path": "packages/tackle/lib/tackle/review/verifier.ex",
+      "replace": "        {:error, _reason, messages} ->\n          {:ok, result(messages, ids, :no_verdict)}"
+    }
+  ],
+  "id": "multi-review-failed-runs",
+  "issues": [
+    {
+      "also": [
+        {
+          "anchor": "{:error, reason, messages} ->\n        failed_sample(reason, messages, review)",
+          "lines": 2,
+          "path": "packages/tackle/lib/tackle/review/detector.ex"
+        }
+      ],
+      "anchor": "defp settle(%Outcome{status: :timeout}, _mirrored), do: {:error, :timeout}",
+      "description": "A timed-out run returns only {:error, :timeout} instead of {:error, :timeout, messages}, so the findings or verdicts it reported before the timeout are dropped and its unit is reported as failed rather than incomplete.",
+      "id": "timeout-loses-transcript",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/review/delegation.ex"
+    },
+    {
+      "also": [
+        {
+          "anchor": "defp collect_sample({:incomplete, findings, reason, usage}, acc) do",
+          "lines": 1,
+          "path": "packages/tackle/lib/tackle/review/detector.ex"
+        }
+      ],
+      "anchor": "length(incomplete) > 0,",
+      "description": "The incomplete-unit filter tests length(incomplete) > 0 instead of comparing with the number of samples, so a batch whose other samples completed is still listed as only partly reviewed.",
+      "id": "incomplete-unit-boundary",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/review.ex"
+    },
+    {
+      "also": [
+        {
+          "anchor": "Map.get(args, \"done\") != false and recorded?(accepted)",
+          "lines": 1,
+          "path": "packages/tackle/lib/tackle/tools/report_findings.ex"
+        }
+      ],
+      "anchor": "respond(Map.get(args, \"done\") == true)",
+      "description": "The done flag of a report_findings call is read as == true, so a finishing call that leaves done out (the documented default) is answered with the keep-reviewing message instead of closing the review.",
+      "id": "done-default-not-finished",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/tools/report_findings.ex"
+    },
+    {
+      "also": [],
+      "anchor": "{:error, _reason, messages} ->\n          {:ok, result(messages, ids, :no_verdict)}",
+      "description": "A verifier run that failed records its unreported findings as {:error, :no_verdict} instead of the run's own error, so a timeout, crash, or step limit is reported to the caller as a missing verdict.",
+      "id": "verifier-wrong-missing-reason",
+      "lines": 2,
+      "path": "packages/tackle/lib/tackle/review/verifier.ex"
+    }
+  ]
+}

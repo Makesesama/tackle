@@ -1,0 +1,65 @@
+{
+  "commit": "638e3dc41813b16100c37caa661cb183f3f5eab0",
+  "description": "Adds the command watchdog's TUI icons (Watchdog.watches?/2, Watchdog.stopped?/1, a registry name/lookup pair for named services, and the watched/stopped markers in the tool view); 3 independent bugs are seeded into its added lines.",
+  "edits": [
+    {
+      "find": "    |> List.last()",
+      "path": "packages/tackle/lib/tackle/watchdog.ex",
+      "replace": "    |> List.first()"
+    },
+    {
+      "find": "    Registry.lookup(@name, {:service, scope_id, agent_id, key}) |> first()",
+      "path": "packages/tackle_runtime/lib/tackle/runtime/registry.ex",
+      "replace": "    Registry.lookup(@name, {:service, agent_id, scope_id, key}) |> first()"
+    },
+    {
+      "find": "    Map.get(state, :watchdog?, false) and\n      Tackle.Watchdog.watches?(value(item, :name), value(item, :arguments))",
+      "path": "apps/tackle_cli/lib/tackle_cli/tui/message_view.ex",
+      "replace": "    Map.get(state, :watchdog?, false) or\n      Tackle.Watchdog.watches?(value(item, :name), value(item, :arguments))"
+    }
+  ],
+  "id": "multi-watchdog-icons",
+  "issues": [
+    {
+      "also": [],
+      "anchor": "    |> List.first()",
+      "description": "Watchdog.stopped?/1 inspects the first line of the error text instead of its last line, so a command the watchdog stopped (whose stop message is the final line) is never recognized and the tool view keeps showing the failed marker.",
+      "id": "stopped-last-line",
+      "lines": 1,
+      "path": "packages/tackle/lib/tackle/watchdog.ex"
+    },
+    {
+      "also": [
+        {
+          "anchor": "    {:via, Registry, {@name, {:service, scope_id, agent_id, key}}}",
+          "lines": 1,
+          "path": "packages/tackle_runtime/lib/tackle/runtime/registry.ex"
+        },
+        {
+          "anchor": "    do: match?({:ok, _pid}, Registry.service(agent_ref, __MODULE__))",
+          "lines": 1,
+          "path": "packages/tackle/lib/tackle/watchdog.ex"
+        }
+      ],
+      "anchor": "    Registry.lookup(@name, {:service, agent_id, scope_id, key}) |> first()",
+      "description": "Registry.service/2 looks a service up under {:service, agent_id, scope_id, key}, but service_name/2 registers under scope_id first, so no named service is ever found and the CLI never marks a running call as watched.",
+      "id": "service-lookup-key",
+      "lines": 1,
+      "path": "packages/tackle_runtime/lib/tackle/runtime/registry.ex"
+    },
+    {
+      "also": [
+        {
+          "anchor": "  defp watchdog_status(%{tool_status: :running, tool_watched?: true}), do: :watched",
+          "lines": 1,
+          "path": "apps/tackle_cli/lib/tackle_cli/tui/tool_view.ex"
+        }
+      ],
+      "anchor": "    Map.get(state, :watchdog?, false) or\n      Tackle.Watchdog.watches?(value(item, :name), value(item, :arguments))",
+      "description": "MessageView.watched?/2 uses or instead of and, so every live tool call is marked as watched whenever a watchdog runs, contradicting the comment above it and Watchdog.watches?/2.",
+      "id": "watched-any-call",
+      "lines": 2,
+      "path": "apps/tackle_cli/lib/tackle_cli/tui/message_view.ex"
+    }
+  ]
+}

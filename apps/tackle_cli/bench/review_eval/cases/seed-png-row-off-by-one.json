@@ -1,0 +1,21 @@
+{
+  "commit": "1f06c66da2b496d1ecf3ed23bea5768ad762c06e",
+  "description": "`Tackle.CLI.ImageClipboard.encode_png/3` builds one filter-0 scanline per image row; the row range is injected with an off-by-one upper bound.",
+  "edits": [
+    {
+      "find": "        for row <- 0..(height - 1), into: <<>> do",
+      "path": "apps/tackle_cli/lib/tackle_cli/image_clipboard.ex",
+      "replace": "        for row <- 0..height, into: <<>> do"
+    }
+  ],
+  "id": "seed-png-row-off-by-one",
+  "issues": [
+    {
+      "anchor": "for row <- 0..height, into: <<>> do",
+      "description": "The range `0..height` runs one row past the buffer (it must be `0..(height - 1)`), so `:binary.part/3` raises `ArgumentError` on the extra row instead of `encode_png/3` returning `{:error, :invalid_image}`, crashing clipboard image reads.",
+      "id": "off-by-one",
+      "lines": 1,
+      "path": "apps/tackle_cli/lib/tackle_cli/image_clipboard.ex"
+    }
+  ]
+}
