@@ -21,6 +21,10 @@ defmodule Tackle.Review.Detector do
   times, one run after the other; the orchestrator counts a batch as failed
   only when none of its samples reported anything or finished.
 
+  A run is stopped as soon as its last report recorded every finding it
+  carried (`Tackle.Tools.ReportFindings.complete?/2`), instead of waiting
+  for the closing answer the model would write next.
+
   When the profile's step limit is finite, the prompt tells the run its
   budget (`step_budget/1`): the rounds of tool calls it has left for reading
   and reporting. A small limit with that instruction keeps a detector's
@@ -125,7 +129,9 @@ defmodule Tackle.Review.Detector do
   end
 
   defp sample(spec, prompt, review, opts) do
-    delegation_opts = Keyword.take(opts, [:model, :capacity_wait])
+    delegation_opts =
+      [done?: &ReportFindings.complete?(&1, review)] ++
+        Keyword.take(opts, [:model, :capacity_wait])
 
     case Delegation.run(Keyword.fetch!(opts, :requester), spec, prompt, delegation_opts) do
       {:ok, state} ->

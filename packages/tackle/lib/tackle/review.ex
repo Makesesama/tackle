@@ -44,7 +44,10 @@ defmodule Tackle.Review do
   `result.summary.stages` reports each stage's runs, token usage (including
   cached tokens), and wall time from its first run's start to its last
   run's end (detection and verification overlap, so these spans add up to
-  more than `summary.duration_ms`), so settings can be compared.
+  more than `summary.duration_ms`), so settings can be compared. Detector
+  and verifier runs are stopped once they have reported everything, rather
+  than spending a model call on a closing answer
+  (`Tackle.Review.Delegation`, `:done?`).
 
   The stage configurations are resolved once, when the review starts: a
   profile that inherits its model (`model_source: :parent`) gets the

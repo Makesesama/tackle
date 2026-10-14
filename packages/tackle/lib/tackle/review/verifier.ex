@@ -8,6 +8,8 @@ defmodule Tackle.Review.Verifier do
   anything (conclusion-first verification is faster and more precise than
   reasoning-first). Findings of one unit share the code the verifier has to
   read, so batching them saves runs; the orchestrator bounds the batch size.
+  A run is stopped once every finding has its verdict, before the
+  explanation that would follow.
   `rejected` findings are dropped by the orchestrator; `confirmed` and
   `uncertain` ones go on to scoring and ranking.
   """
@@ -68,7 +70,11 @@ defmodule Tackle.Review.Verifier do
     ids = ids(findings)
     review = %{stage: :verifier, finding_ids: ids, unit_id: unit.id}
     prompt = prompt(findings, unit, Keyword.get(opts, :rules, %{}))
-    delegation_opts = Keyword.take(opts, [:model, :capacity_wait])
+
+    # Every finding has its verdict: what the model would write next is the
+    # explanation, which nothing reads.
+    done? = fn messages -> map_size(ReportVerdict.collect(messages, ids)) == length(ids) end
+    delegation_opts = [done?: done?] ++ Keyword.take(opts, [:model, :capacity_wait])
 
     with {:ok, spec} <- Delegation.put_review_context(Keyword.fetch!(opts, :spec), review) do
       case Delegation.run(Keyword.fetch!(opts, :requester), spec, prompt, delegation_opts) do

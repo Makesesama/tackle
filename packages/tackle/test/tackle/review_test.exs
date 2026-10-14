@@ -246,8 +246,10 @@ defmodule Tackle.ReviewTest do
         %{tool_results: []} = request ->
           if unit?(request, "lib/a.ex#1"), do: {:findings, findings}, else: {:findings, []}
 
+        # A run is stopped once it has reported everything, so the closing
+        # answer it would write next is never needed.
         _request ->
-          {:answer, "done"}
+          :block
       end,
       verifier: fn
         %{tool_results: []} = request ->
@@ -259,7 +261,7 @@ defmodule Tackle.ReviewTest do
            end}
 
         _request ->
-          {:answer, "ok"}
+          :block
       end,
       scorer: fn _request -> {:confidence, 0.9} end
     }
@@ -378,14 +380,15 @@ defmodule Tackle.ReviewTest do
            } = result.summary
 
     # The small units of both files share one detector run: 2 detector runs
-    # × 2 calls; both candidates are in lib/a.ex#1, so 1 verifier run × 2
-    # calls; 1 scorer call for the confirmed finding.
-    assert result.usage.input_tokens == 70
-    assert result.usage.output_tokens == 35
+    # × 1 call, as each run is stopped after its report; both candidates are
+    # in lib/a.ex#1, so 1 verifier run × 1 call; 1 scorer call for the
+    # confirmed finding.
+    assert result.usage.input_tokens == 40
+    assert result.usage.output_tokens == 20
 
     assert %{
-             detector: %{runs: 2, failed: 0, usage: %{input_tokens: 40}, duration_ms: detecting},
-             verifier: %{runs: 1, failed: 0, usage: %{input_tokens: 20}},
+             detector: %{runs: 2, failed: 0, usage: %{input_tokens: 20}, duration_ms: detecting},
+             verifier: %{runs: 1, failed: 0, usage: %{input_tokens: 10}},
              scorer: %{runs: 1, failed: 0, usage: %{input_tokens: 10}}
            } = result.summary.stages
 
@@ -444,6 +447,71 @@ defmodule Tackle.ReviewTest do
     assert {:verdict, shown.fingerprint, :confirmed} in events
     [rejected] = result.rejected
     assert {:verdict, rejected.finding.fingerprint, :rejected} in events
+  end
+
+  describe "a run that has reported everything" do
+    test "is stopped instead of waiting for its closing answer" do
+      # The default script blocks every run after its report; without the
+      # stop, the runs would only end on these timeouts.
+      slow = [timeout: 20_000]
+
+      {micros, {:ok, result}} =
+        :timer.tc(fn ->
+          review(change(), script(), profile_opts: [detector: slow, verifier: slow])
+        end)
+
+      assert micros < 10_000_000
+
+      assert [%Finding{title: "Guard against a missing key", verdict: :confirmed}] =
+               result.blocking
+
+      assert [%{finding: %Finding{title: "Rename f to increment"}}] = result.rejected
+
+      assert %{failed_units: [], incomplete_units: [], verification_failures: []} =
+               result.summary
+
+      assert %{detector: %{runs: 2, failed: 0}, verifier: %{runs: 1, failed: 0}} =
+               result.summary.stages
+    end
+
+    test "is not stopped while its last report has findings to correct" do
+      misplaced = %{rename() | "location" => location(10, 10)}
+
+      script =
+        script(%{
+          detector: fn
+            %{tool_results: []} = request ->
+              if unit?(request, "lib/a.ex#1"),
+                do: {:findings, [nil_check(), misplaced]},
+                else: {:findings, []}
+
+            %{tool_results: [error]} = request ->
+              if unit?(request, "lib/a.ex#1") do
+                assert error =~ "Recorded 1 finding"
+                {:findings, [rename()]}
+              else
+                :block
+              end
+
+            _request ->
+              :block
+          end
+        })
+
+      slow = [timeout: 20_000]
+
+      {micros, {:ok, result}} =
+        :timer.tc(fn ->
+          review(change(), script, profile_opts: [detector: slow, verifier: slow])
+        end)
+
+      assert micros < 10_000_000
+      assert result.summary.detected == 2
+      assert result.summary.incomplete_units == []
+
+      assert ["Guard against a missing key", "Rename f to increment"] =
+               for({:candidate, finding} <- events(), do: finding.title) |> Enum.sort()
+    end
   end
 
   test "an invalid location is returned to the model, and the corrected finding counts" do
@@ -664,19 +732,30 @@ defmodule Tackle.ReviewTest do
     end
 
     test "a verifier that times out keeps the verdicts it reported" do
+      # Only the nil check gets a verdict, so the run is not stopped and
+      # times out.
       script =
         script(%{
-          findings: [nil_check()],
           verifier: fn
-            %{tool_results: []} -> {:verdict, "rejected", "lib/a.ex:3 is only reached with :key."}
-            _request -> :block
+            %{tool_results: []} = request ->
+              {id, _text} =
+                Enum.find(Adapter.finding_blocks(request), &(elem(&1, 1) =~ "Guard against"))
+
+              {:verdicts, [{id, "rejected", "lib/a.ex:3 is only reached with :key."}]}
+
+            _request ->
+              :block
           end
         })
 
       assert {:ok, result} = review(change(), script, profile_opts: [verifier: [timeout: 300]])
       assert result.blocking == [] and result.optional == []
-      assert [%{evidence: "lib/a.ex:3" <> _}] = result.rejected
-      assert %{rejected: 1, verification_failures: []} = result.summary
+
+      assert [%{finding: %Finding{title: "Guard against" <> _}, evidence: "lib/a.ex:3" <> _}] =
+               result.rejected
+
+      assert %{rejected: 1, uncertain: 1, verification_failures: [%{reason: :timeout}]} =
+               result.summary
     end
   end
 
@@ -843,8 +922,8 @@ defmodule Tackle.ReviewTest do
       assert %{"blocking" => 1, "rejected" => 1, "candidates" => 2} = run["summary"]
       assert [%{"id" => "missing-nil-check", "status" => "active"}] = run["rules"]
       assert Map.keys(run["prompts"]) == ["review-detector", "review-verifier"]
-      assert run["usage"]["input_tokens"] == 70
-      assert %{"runs" => 2, "usage" => %{"input_tokens" => 40}} = run["stages"]["detector"]
+      assert run["usage"]["input_tokens"] == 40
+      assert %{"runs" => 2, "usage" => %{"input_tokens" => 20}} = run["stages"]["detector"]
       assert %{"runs" => 1} = run["stages"]["verifier"]
       assert is_integer(run["duration_ms"])
 

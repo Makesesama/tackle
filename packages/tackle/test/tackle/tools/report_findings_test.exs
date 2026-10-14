@@ -224,6 +224,50 @@ defmodule Tackle.Tools.ReportFindingsTest do
     assert ReportFindings.finished?(progress ++ empty, @review)
   end
 
+  test "complete?/2 is true when the latest answered report is the last one and fully recorded" do
+    invalid =
+      finding(%{
+        "location" => %{"path" => "lib/a.ex", "side" => "new", "start_line" => 1, "end_line" => 1}
+      })
+
+    report = fn id, findings, args ->
+      [
+        Message.assistant(
+          tool_calls: [
+            %Call{
+              id: id,
+              name: "report_findings",
+              arguments: Map.merge(%{"findings" => findings}, args)
+            }
+          ]
+        ),
+        Message.tool_result(id, "report_findings", "Recorded.")
+      ]
+    end
+
+    refute ReportFindings.complete?([Message.user("review")], @review)
+    assert ReportFindings.complete?(report.("1", [finding()], %{}), @review)
+    assert ReportFindings.complete?(report.("2", [], %{"done" => true}), @review)
+
+    # Still reviewing.
+    progress = report.("3", [finding()], %{"done" => false})
+    refute ReportFindings.complete?(progress, @review)
+    assert ReportFindings.complete?(progress ++ report.("4", [], %{}), @review)
+
+    # The last report had an invalid finding the run was asked to correct;
+    # finished?/2 already counts the run as having reviewed its unit.
+    partial = report.("5", [finding(), invalid], %{})
+    assert ReportFindings.finished?(partial, @review)
+    refute ReportFindings.complete?(partial, @review)
+    assert ReportFindings.complete?(partial ++ report.("6", [finding()], %{}), @review)
+
+    # A report that is not answered yet does not count.
+    [unanswered, _result] = report.("7", [], %{})
+    finished = progress ++ report.("4", [], %{})
+    assert ReportFindings.complete?(Enum.concat([finished, [unanswered]]), @review)
+    refute ReportFindings.complete?(Enum.concat([progress, [unanswered]]), @review)
+  end
+
   describe "report_verdict" do
     test "parses verdicts and reports problems" do
       assert {:ok, %{finding: "F2", verdict: :confirmed, evidence: "lib/a.ex:11 ignores it."}} =

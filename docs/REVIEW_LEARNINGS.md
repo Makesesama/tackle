@@ -1,8 +1,9 @@
 # Code review: learnings and optimization plan
 
 Status: **notes and plan**. Only the bash stdin fix, the diagnostic script,
-and keeping the findings of failed runs (3.1) are implemented, plus the
-evaluation set (3.3), whose results set the current review defaults (see
+keeping the findings of failed runs (3.1), and stopping runs after their
+last report (3.2) are implemented, plus the evaluation set (3.3), whose
+results set the current review defaults (see
 [`code-review-benchmark.md`](code-review-benchmark.md)). Everything else
 under "Optimizations" is a proposal.
 
@@ -128,6 +129,17 @@ Verifiers took 25–30 s each.
 
 ### 3.2 Detector focus, time, and cost
 
+- **Runs end with a model call nobody reads (implemented).** After its last
+  `report_findings` or `report_verdict` call, every run made one more model
+  call to write a closing line: 3.3 to 9.1 s from the last report to the end
+  of the run in the traced runs (median about 4 s for detectors and 5 s for
+  verifiers). The last detector and its verifier are on the critical path,
+  so this cost about 10 s per review, plus one full-context model call per
+  run. `Tackle.Review.Delegation` now stops a run once it has reported
+  everything: a detector whose last report recorded every finding it carried
+  (`ReportFindings.complete?/2`), a verifier with a verdict for every
+  finding. Such runs show up as cancelled among the scope's tasks. The saving
+  is estimated from the traces, not yet measured with the benchmark.
 - **Detectors leave the change.** In run 1, 17 of 41 bash calls used the
   network (`ketch search`, `ketch scrape`, `curl` of git's source on GitHub).
   Detectors also read `/nix/store` in both runs. That costs time, tokens, and

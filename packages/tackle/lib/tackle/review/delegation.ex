@@ -22,6 +22,17 @@ defmodule Tackle.Review.Delegation do
   Only the cancellation of the requester (its branch or scope) cancels the
   stage (`{:error, :cancelled}`); a run cancelled on its own is a failed run
   (`:run_cancelled`) like any other.
+
+  ## Stopping a run that has reported everything
+
+  A stage's run has done its work once its output tool recorded its last
+  report. The model call the loop then makes to close the turn adds a few
+  seconds and a full prompt to every run without changing what the run
+  reported. With `:done?`, the caller checks
+  the run's transcript as it arrives, after each tool result; once the
+  predicate holds, the run is stopped (`Tackle.Runtime.cancel_run/3`, as its
+  owner) and returns `{:ok, state}` like a run that settled normally. The
+  run then shows up as cancelled among the scope's tasks.
   """
 
   alias Tackle.Config
@@ -70,9 +81,17 @@ defmodule Tackle.Review.Delegation do
 
     * `:model` - a `"provider/model"` reference overriding the profile's model;
     * `:capacity_wait` - how long to retry capacity refusals, in milliseconds
-      (default 60 seconds).
+      (default 60 seconds);
+    * `:done?` - `fn messages -> boolean end`, called with the run's
+      finished messages so far, in order, after each tool result; when it
+      returns `true` the run has nothing left to do and is stopped (see
+      "Stopping a run that has reported everything"). It runs in the
+      calling process and must not raise.
   """
-  @type option :: {:model, String.t() | nil} | {:capacity_wait, non_neg_integer()}
+  @type option ::
+          {:model, String.t() | nil}
+          | {:capacity_wait, non_neg_integer()}
+          | {:done?, ([Message.t()] -> boolean())}
 
   @doc """
   Returns `spec` with `review` stored under `:review` in its session context.
@@ -145,8 +164,8 @@ defmodule Tackle.Review.Delegation do
   @doc """
   Runs one delegated agent to completion and returns its final state.
 
-  Blocks until the run settles. A run that settles normally returns
-  `{:ok, state}`. A run that started and then failed returns
+  Blocks until the run settles. A run that settles normally, or that was
+  stopped because `:done?` held, returns `{:ok, state}`. A run that started and then failed returns
   `{:error, reason, messages}` with its transcript so far (see the module
   documentation), which may still hold what the run reported before it
   failed. `{:error, :cancelled}` means the requester was cancelled; a run
@@ -167,8 +186,9 @@ defmodule Tackle.Review.Delegation do
     result =
       with {:ok, run_ref} <- request(requester, spec, prompt, request_opts, deadline) do
         monitor = monitor_request(run_ref)
-        outcome = Runtime.await(run_ref, :infinity)
-        settle(outcome, mirrored(mirror, monitor))
+        follow = %{requester: requester, run_ref: run_ref, mirror: mirror}
+        {outcome, seen, stopped?} = follow(follow, Keyword.get(opts, :done?))
+        settle(outcome, mirrored(mirror, monitor, seen), stopped?)
       end
 
     cancellation(result, requester)
@@ -245,7 +265,55 @@ defmodule Tackle.Review.Delegation do
     end
   end
 
-  defp mirrored(mirror, monitor, acc \\ []) do
+  # Awaits the run's outcome. With a `done?` predicate, the run's mirrored
+  # messages are collected while it runs and checked after each tool result,
+  # and the run is stopped once the predicate holds. Returns the outcome, the
+  # messages seen so far (newest first), and whether the run was stopped.
+  defp follow(follow, nil), do: {Runtime.await(follow.run_ref, :infinity), [], false}
+
+  defp follow(follow, done?) do
+    # `Runtime.await/2` turns exits into error tuples, so the waiter does not
+    # crash.
+    waiter = Task.async(fn -> Runtime.await(follow.run_ref, :infinity) end)
+    follow = Map.merge(follow, %{done?: done?, waiter: waiter.ref})
+    await_outcome(follow, [], nil)
+  end
+
+  defp await_outcome(follow, seen, stop) do
+    mirror = follow.mirror
+    waiter = follow.waiter
+
+    receive do
+      {^mirror, message} ->
+        seen = [message | seen]
+        await_outcome(follow, seen, stop || stop_when_done(follow, message, seen))
+
+      {^waiter, outcome} ->
+        Process.demonitor(waiter, [:flush])
+        {stop_outcome(outcome, stop), seen, stop != nil}
+    end
+  end
+
+  defp stop_when_done(follow, %Message{role: :tool}, seen) do
+    if follow.done?.(transcript(seen)) do
+      case Runtime.cancel_run(follow.requester, follow.run_ref, :review_complete) do
+        {:ok, :cancelling} -> :cancelling
+        {:ok, {:completed, outcome}} -> {:completed, outcome}
+        # The run settled and was collected in between; its outcome reaches
+        # the waiter.
+        {:error, _reason} -> nil
+      end
+    end
+  end
+
+  defp stop_when_done(_follow, _message, _seen), do: nil
+
+  # Stopping a run that had already settled consumes its outcome, so the
+  # waiter may find the run gone.
+  defp stop_outcome({:error, _reason}, {:completed, outcome}), do: outcome
+  defp stop_outcome(outcome, _stop), do: outcome
+
+  defp mirrored(mirror, monitor, acc) do
     receive do
       {^mirror, message} ->
         mirrored(mirror, monitor, [message | acc])
@@ -261,7 +329,14 @@ defmodule Tackle.Review.Delegation do
 
   defp transcript(reversed), do: reversed |> Enum.reverse() |> Enum.uniq_by(& &1.id)
 
-  defp settle(%Outcome{status: :ok, agent_state: %State{} = state}, _mirrored), do: {:ok, state}
+  defp settle(%Outcome{status: :ok, agent_state: %State{} = state}, _mirrored, _stopped?),
+    do: {:ok, state}
+
+  # Stopped once it had nothing left to do: the run is complete.
+  defp settle(%Outcome{status: :cancelled, agent_state: %State{} = state}, _mirrored, true),
+    do: {:ok, state}
+
+  defp settle(outcome, mirrored, _stopped?), do: settle(outcome, mirrored)
 
   defp settle(%Outcome{status: :cancelled, agent_state: %State{} = state}, _mirrored),
     do: {:error, :run_cancelled, state.messages}

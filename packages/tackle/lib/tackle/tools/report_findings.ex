@@ -151,6 +151,23 @@ defmodule Tackle.Tools.ReportFindings do
     end)
   end
 
+  @doc """
+  Returns whether the run has nothing left to report: its latest answered
+  `report_findings` call is its last one (without `done: false`) and the
+  tool accepted every finding it carried.
+
+  A last call with invalid findings is not complete, as the run was asked to
+  correct and report them again. `Tackle.Review.Detector` stops a run once
+  this holds (`Tackle.Review.Delegation`, `:done?`).
+  """
+  @spec complete?([Tackle.Lib.Message.t()], review_context()) :: boolean()
+  def complete?(messages, review) when is_list(messages) do
+    case List.last(reports(messages, review)) do
+      {args, {_accepted, []}} -> Map.get(args, "done") != false
+      _other -> false
+    end
+  end
+
   # The validated arguments of every answered `report_findings` call, with
   # what `accept/2` makes of their findings.
   defp reports(messages, review) do
