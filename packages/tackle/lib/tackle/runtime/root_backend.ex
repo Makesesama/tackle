@@ -139,8 +139,6 @@ defmodule Tackle.Runtime.RootBackend do
       scope_ref: context.scope_ref,
       agent_ref: context.agent_ref,
       lifetime: context.lifetime,
-      allow_delegation: context.allow_delegation,
-      limits: context.limits,
       coordinator: context.coordinator,
       work_supervisor: context.work_supervisor,
       tool_supervisor: context.tool_supervisor,

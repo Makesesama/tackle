@@ -39,7 +39,7 @@ defmodule Tackle.Workflow.Fanout do
   """
 
   alias Tackle.Runtime
-  alias Tackle.Runtime.Handle
+  alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.RunRef
 
@@ -124,14 +124,14 @@ defmodule Tackle.Workflow.Fanout do
   order together with the final accumulator. `t:option/0` lists the hooks a
   caller may pass to observe the batch.
   """
-  @spec map(Handle.t(), non_neg_integer(), pos_integer(), acc, request_builder(acc), [option()]) ::
+  @spec map(AgentRef.t(), non_neg_integer(), pos_integer(), acc, request_builder(acc), [option()]) ::
           {[{pos_integer(), item_result()}], acc}
         when acc: term()
-  def map(%Handle{} = handle, count, limit, acc, build_request, opts \\ [])
+  def map(%AgentRef{} = parent, count, limit, acc, build_request, opts \\ [])
       when is_integer(count) and count >= 0 and is_integer(limit) and limit >= 1 and
              is_function(build_request, 2) and is_list(opts) do
     ctx = %{
-      handle: handle,
+      parent: parent,
       count: count,
       limit: limit,
       build_request: build_request,
@@ -234,10 +234,10 @@ defmodule Tackle.Workflow.Fanout do
 
   defp admit(ctx, {profile, prompt}), do: admit(ctx, {profile, prompt, []})
 
-  defp admit(%{handle: handle, request_opts: request_opts}, {profile, prompt, item_opts}) do
+  defp admit(%{parent: parent, request_opts: request_opts}, {profile, prompt, item_opts}) do
     opts = Keyword.merge(request_opts.(profile), item_opts)
 
-    case Runtime.request_agent(handle, profile, prompt, opts) do
+    case Runtime.request_agent(parent, profile, prompt, opts) do
       {:ok, %RunRef{} = run_ref} -> {:ok, run_ref}
       {:error, {:rejected, reason}} when reason in @capacity_reasons -> {:capacity, reason}
       {:error, reason} -> {:error, reason}

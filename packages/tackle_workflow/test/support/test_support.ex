@@ -4,11 +4,10 @@ defmodule Tackle.Workflow.TestSupport do
   import ExUnit.Assertions
 
   # Test helpers for scripted-workflow tests: a scope with the deterministic
-  # `Tackle.Workflow.TestBackend` and an authorized runtime handle.
+  # `Tackle.Workflow.TestBackend` whose root agent may delegate by default.
 
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentSpec
-  alias Tackle.Runtime.Handle
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.ScopeSpec
 
@@ -59,14 +58,6 @@ defmodule Tackle.Workflow.TestSupport do
     Runtime.stop_scope(scope_ref)
   catch
     :exit, _reason -> :ok
-  end
-
-  @doc "Builds an authorized runtime handle for a started scope."
-  def handle(scope, opts \\ []) do
-    Handle.new(scope.scope_ref, scope.root_agent_ref,
-      allow_delegation: Keyword.get(opts, :allow_delegation, true),
-      limits: Keyword.get(opts, :limits)
-    )
   end
 
   @doc "Waits until `fun` returns a truthy value."

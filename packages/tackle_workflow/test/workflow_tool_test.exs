@@ -13,10 +13,10 @@ defmodule Tackle.Workflow.ToolTest do
   @workflow_timeout 5_000
 
   # Runs the tool the way a session does: a script argument, plus the host's
-  # context (the runtime handle and optional workflow configuration).
+  # context (the agent's runtime reference and optional workflow configuration).
   defp run_workflow(scope, script, opts \\ []) do
     args = Map.merge(%{"script" => script}, Keyword.get(opts, :args, %{}))
-    context = opts |> Keyword.get(:context, %{}) |> Map.put_new(:runtime, handle(scope))
+    context = opts |> Keyword.get(:context, %{}) |> Map.put_new(:runtime, scope.root_agent_ref)
 
     WorkflowTool.run(args, context)
   end
@@ -32,7 +32,7 @@ defmodule Tackle.Workflow.ToolTest do
 
       assert {:ok, "saved result"} =
                WorkflowTool.run(%{"workflow" => "report"}, %{
-                 runtime: handle(scope),
+                 runtime: scope.root_agent_ref,
                  workflow_loader: loader
                })
     end
@@ -42,7 +42,7 @@ defmodule Tackle.Workflow.ToolTest do
 
       assert {:ok, "saved"} =
                WorkflowTool.run(%{"script" => nil, "workflow" => "report"}, %{
-                 runtime: handle(scope),
+                 runtime: scope.root_agent_ref,
                  workflow_loader: fn "report" -> {:ok, "return 'saved'"} end
                })
     end
@@ -116,7 +116,7 @@ defmodule Tackle.Workflow.ToolTest do
 
     defp goal_result(scope, opts \\ []) do
       opts = Keyword.put_new(opts, :log, fn _message -> :ok end)
-      {:ok, ref} = Workflow.run(handle(scope), goal_loop(), opts)
+      {:ok, ref} = Workflow.run(scope.root_agent_ref, goal_loop(), opts)
       assert {:ok, [table]} = Workflow.await(ref, @workflow_timeout)
       Map.new(table)
     end
@@ -398,22 +398,36 @@ defmodule Tackle.Workflow.ToolTest do
   end
 
   describe "the tool's permission checks" do
-    test "refuses to run without a runtime handle" do
+    test "refuses to run without a runtime reference" do
       assert {:error, message} = WorkflowTool.run(%{"script" => "return 1"}, %{})
-      assert message =~ "no runtime handle"
+      assert message =~ "no runtime reference"
     end
 
     test "refuses to run when the agent may not delegate" do
-      scope = start_scope(profiles: %{"worker" => agent_spec("worker")})
-      context = %{runtime: handle(scope, allow_delegation: false)}
+      scope =
+        start_scope(
+          root: [allow_delegation: false],
+          profiles: %{"worker" => agent_spec("worker")}
+        )
+
+      context = %{runtime: scope.root_agent_ref}
 
       assert {:error, message} = WorkflowTool.run(%{"script" => "return 1"}, context)
       assert message =~ "not permitted"
     end
 
+    test "refuses a parent that is not an agent reference" do
+      scope = start_scope(profiles: %{})
+
+      assert {:error, {:invalid_requester, :nobody}} = Workflow.run(:nobody, "return 1")
+
+      assert {:error, {:invalid_requester, %{agent_ref: _}}} =
+               Workflow.run(%{agent_ref: scope.root_agent_ref}, "return 1")
+    end
+
     test "requires a script or saved workflow name" do
       scope = start_scope(profiles: %{})
-      context = %{runtime: handle(scope)}
+      context = %{runtime: scope.root_agent_ref}
 
       assert {:error, message} = WorkflowTool.run(%{}, context)
       assert message =~ "requires exactly one of script or workflow"
@@ -425,7 +439,7 @@ defmodule Tackle.Workflow.ToolTest do
       scope = start_scope(profiles: %{"worker" => agent_spec("worker", mode: :manual)})
       script = ~s|return tackle.await(tackle.spawn("worker", "go")).text|
 
-      assert {:ok, ref} = Workflow.run(handle(scope), script)
+      assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
       assert_receive {:agent_called, agent}, 1_000
       send(agent, {:respond, "done"})
       assert {:ok, ["done"]} = Workflow.await(ref, @workflow_timeout)
@@ -435,12 +449,12 @@ defmodule Tackle.Workflow.ToolTest do
       scope = start_scope(profiles: %{})
 
       assert {:error, {:invalid_workflow_option, :timeout, "1s"}} =
-               Workflow.run(handle(scope), "return 1", timeout: "1s")
+               Workflow.run(scope.root_agent_ref, "return 1", timeout: "1s")
 
       assert {:error, {:invalid_workflow_option, :timeout, 0}} =
-               Workflow.run(handle(scope), "return 1", timeout: 0)
+               Workflow.run(scope.root_agent_ref, "return 1", timeout: 0)
 
-      assert {:ok, ref} = Workflow.run(handle(scope), "return 1", timeout: :infinity)
+      assert {:ok, ref} = Workflow.run(scope.root_agent_ref, "return 1", timeout: :infinity)
       assert {:ok, [1]} = Workflow.await(ref, @workflow_timeout)
     end
   end
@@ -457,7 +471,7 @@ defmodule Tackle.Workflow.ToolTest do
       return results[1].status, results[1].text, results[2].status, results[2].text
       """
 
-      assert {:ok, ref} = Workflow.run(handle(scope), script, profiles: ["scout"])
+      assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script, profiles: ["scout"])
 
       assert {:ok, ["ok", "ask:scout", "spawn_error", reason]} =
                Workflow.await(ref, @workflow_timeout)
@@ -473,7 +487,7 @@ defmodule Tackle.Workflow.ToolTest do
       return ok, tostring(err)
       """
 
-      assert {:ok, ref} = Workflow.run(handle(scope), script, profiles: ["scout"])
+      assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script, profiles: ["scout"])
       assert {:ok, [false, message]} = Workflow.await(ref, @workflow_timeout)
       assert message =~ "not allowlisted"
     end
@@ -483,7 +497,7 @@ defmodule Tackle.Workflow.ToolTest do
 
       script = ~s|return tackle.await(tackle.spawn("worker", "go")).text|
 
-      assert {:ok, ref} = Workflow.run(handle(scope), script, profiles: [])
+      assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script, profiles: [])
 
       assert {:error, %{message: message}} = Workflow.await(ref, @workflow_timeout)
       assert message =~ "not allowlisted"
@@ -493,10 +507,10 @@ defmodule Tackle.Workflow.ToolTest do
       scope = start_scope(profiles: %{})
 
       assert {:error, {:invalid_workflow_option, :profiles, "worker"}} =
-               Workflow.run(handle(scope), "return 1", profiles: "worker")
+               Workflow.run(scope.root_agent_ref, "return 1", profiles: "worker")
 
       assert {:error, {:invalid_workflow_option, :profiles, ["worker", ""]}} =
-               Workflow.run(handle(scope), "return 1", profiles: ["worker", ""])
+               Workflow.run(scope.root_agent_ref, "return 1", profiles: ["worker", ""])
     end
   end
 
@@ -508,7 +522,7 @@ defmodule Tackle.Workflow.ToolTest do
       owner =
         spawn(fn ->
           script = ~s|return tackle.await(tackle.spawn("worker", "go")).text|
-          {:ok, ref} = Workflow.run(handle(scope), script, owner: self())
+          {:ok, ref} = Workflow.run(scope.root_agent_ref, script, owner: self())
           send(test_pid, {:workflow_started, ref})
           Process.sleep(:infinity)
         end)
@@ -527,7 +541,7 @@ defmodule Tackle.Workflow.ToolTest do
       scope = start_scope(profiles: %{})
 
       assert {:error, {:invalid_workflow_option, :owner, :nobody}} =
-               Workflow.run(handle(scope), "return 1", owner: :nobody)
+               Workflow.run(scope.root_agent_ref, "return 1", owner: :nobody)
     end
   end
 end

@@ -26,7 +26,7 @@ defmodule Tackle.WorkflowTest do
     return tackle.await(tackle.spawn("worker", "implement: " .. plan.text)).text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
     assert {:ok, ["implement: plan: map the code"]} = Workflow.await(ref, @workflow_timeout)
   end
 
@@ -42,7 +42,7 @@ defmodule Tackle.WorkflowTest do
     return first.text .. "|" .. second.text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert_receive {:agent_called, first_agent}, 2_000
     assert_receive {:agent_called, second_agent}, 2_000
@@ -68,7 +68,7 @@ defmodule Tackle.WorkflowTest do
     return table.concat(out, " | ")
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert {:ok, ["1/ok/1:alpha | 2/ok/2:beta | 3/ok/3:gamma"]} =
              Workflow.await(ref, @workflow_timeout)
@@ -84,7 +84,7 @@ defmodule Tackle.WorkflowTest do
     return #results
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     # The default scope limits allow four children, so four runs may overlap.
     called =
@@ -116,7 +116,7 @@ defmodule Tackle.WorkflowTest do
     return table.concat(statuses, ",")
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert_receive {:agent_called, oldest}, 2_000
     assert_receive {:agent_called, younger}, 2_000
@@ -155,7 +155,7 @@ defmodule Tackle.WorkflowTest do
     return results[1].status, results[1].text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert {:ok, [status, reason]} = Workflow.await(ref, @workflow_timeout)
     assert status == "capacity"
@@ -178,7 +178,7 @@ defmodule Tackle.WorkflowTest do
     return #results
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert_receive {:agent_called, first}, 2_000
     assert_receive {:agent_called, second}, 2_000
@@ -219,7 +219,7 @@ defmodule Tackle.WorkflowTest do
     return table.concat(out, " | "), results[4].text, results[5].text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert {:ok, [summary, callback_error, bad_request]} = Workflow.await(ref, @workflow_timeout)
 
@@ -246,7 +246,7 @@ defmodule Tackle.WorkflowTest do
     return identity, results[1].text, results[2].text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
     assert {:ok, [2, "alpha", "beta"]} = Workflow.await(ref, @workflow_timeout)
   end
 
@@ -258,7 +258,7 @@ defmodule Tackle.WorkflowTest do
     return #results
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
     assert {:ok, [0]} = Workflow.await(ref, @workflow_timeout)
     refute_received {:agent_called, _pid}
   end
@@ -284,7 +284,7 @@ defmodule Tackle.WorkflowTest do
            rejects(function() tackle.parallel({"alpha"}, request, {limits = 2}) end)
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert {:ok, [keyed, mixed, holey, not_a_table, not_a_function, bad_limit, unknown_option]} =
              Workflow.await(ref, @workflow_timeout)
@@ -312,7 +312,7 @@ defmodule Tackle.WorkflowTest do
     return results[1].status, results[1].text, results[2].status, results[2].text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
     assert {:ok, ["ok", "a:nested", "ok", "b:b"]} = Workflow.await(ref, @workflow_timeout)
   end
 
@@ -325,7 +325,7 @@ defmodule Tackle.WorkflowTest do
     end, {limit = 2})
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert_receive {:agent_called, first}, 2_000
     assert_receive {:agent_called, second}, 2_000
@@ -353,7 +353,7 @@ defmodule Tackle.WorkflowTest do
     return outcome.text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
     assert {:ok, ["recovered from: error"]} = Workflow.await(ref, @workflow_timeout)
   end
 
@@ -370,7 +370,7 @@ defmodule Tackle.WorkflowTest do
     return "not reached"
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
     assert {:ok, [message]} = Workflow.await(ref, @workflow_timeout)
     assert message =~ "caught:"
     assert message =~ "unknown_profile"
@@ -379,7 +379,7 @@ defmodule Tackle.WorkflowTest do
   test "an uncaught error settles with the failing source line" do
     scope = start_scope(profiles: %{})
 
-    assert {:ok, ref} = Workflow.run(handle(scope), ~s|tackle.spawn("missing", "go")|)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, ~s|tackle.spawn("missing", "go")|)
 
     assert {:error, %{message: message}} = Workflow.await(ref, @workflow_timeout)
     assert message =~ "unknown_profile"
@@ -393,7 +393,7 @@ defmodule Tackle.WorkflowTest do
     return tackle.await(run).text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert_receive {:agent_called, agent_pid}, 2_000
 
@@ -410,14 +410,15 @@ defmodule Tackle.WorkflowTest do
     return tackle.await(tackle.spawn("worker", "go")).text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script, timeout: 100)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script, timeout: 100)
     assert {:error, {:cancelled, :workflow_timeout}} = Workflow.await(ref, @workflow_timeout)
   end
 
   test "the instruction budget stops spin loops that never await" do
     scope = start_scope(profiles: %{})
 
-    assert {:ok, ref} = Workflow.run(handle(scope), "while true do end", max_instructions: 10_000)
+    assert {:ok, ref} =
+             Workflow.run(scope.root_agent_ref, "while true do end", max_instructions: 10_000)
 
     assert {:error, %{message: message}} = Workflow.await(ref, @workflow_timeout)
     assert message =~ "instruction budget exceeded"
@@ -426,7 +427,7 @@ defmodule Tackle.WorkflowTest do
   test "syntax errors settle as compile errors" do
     scope = start_scope(profiles: %{})
 
-    assert {:ok, ref} = Workflow.run(handle(scope), "local = broken")
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, "local = broken")
     assert {:error, {:workflow_compile_error, message}} = Workflow.await(ref, @workflow_timeout)
     assert message =~ "Failed to compile Lua"
   end
@@ -441,7 +442,7 @@ defmodule Tackle.WorkflowTest do
     return ok
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
     assert {:ok, [false]} = Workflow.await(ref, @workflow_timeout)
     refute File.exists?("/tmp/tackle-workflow-escape")
   end
@@ -458,7 +459,7 @@ defmodule Tackle.WorkflowTest do
     """
 
     assert {:ok, ref} =
-             Workflow.run(handle(scope), script,
+             Workflow.run(scope.root_agent_ref, script,
                log: fn message -> send(test_pid, {:log, message}) end
              )
 
@@ -475,7 +476,7 @@ defmodule Tackle.WorkflowTest do
     return tackle.await(tackle.spawn("worker", "go")).text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
     assert {:ok, ["go"]} = Workflow.await(ref, @workflow_timeout)
 
     assert_eventually(fn -> Workflow.await(ref) == {:error, :not_found} end)
@@ -488,7 +489,7 @@ defmodule Tackle.WorkflowTest do
     return tackle.await(tackle.spawn("worker", "go")).text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
     assert_receive {:agent_called, agent_pid}, 2_000
 
     :ok = Runtime.stop_scope(scope.scope_ref)

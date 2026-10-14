@@ -4,6 +4,8 @@ defmodule Tackle.Runtime.CapabilityTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Lib.Message
+  alias Tackle.Runtime
+  alias Tackle.Runtime.Limits
   alias Tackle.Tools.Subagent
 
   test "the subagent tool is never part of the default tool set" do
@@ -27,7 +29,7 @@ defmodule Tackle.Runtime.CapabilityTest do
     assert {:ok, "worker answer"} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "do work"},
-               %{runtime: handle(authorized)}
+               %{runtime: authorized.root_agent_ref}
              )
 
     unauthorized =
@@ -39,7 +41,7 @@ defmodule Tackle.Runtime.CapabilityTest do
     assert {:error, message} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "do work"},
-               %{runtime: handle(unauthorized, allow_delegation: false)}
+               %{runtime: unauthorized.root_agent_ref}
              )
 
     assert message =~ "not permitted"
@@ -49,10 +51,42 @@ defmodule Tackle.Runtime.CapabilityTest do
     assert {:error, message} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "do work"},
-               %{runtime: handle(profileless)}
+               %{runtime: profileless.root_agent_ref}
              )
 
     assert message =~ "unknown subagent profile"
+  end
+
+  test "a child agent's tools see the grant the coordinator gave it" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{
+          "worker" => agent_spec("worker", mode: :block),
+          "lead" => agent_spec("lead", mode: :block, allow_delegation: true)
+        }
+      )
+
+    {:ok, worker} = Runtime.request_agent(scope.root_agent_ref, "worker", "wait")
+    {:ok, lead} = Runtime.request_agent(scope.root_agent_ref, "lead", "wait")
+
+    # A profile without delegation stays without it under a delegating parent.
+    assert {:error, :delegation_not_allowed} = Runtime.delegation_limits(worker.agent_ref)
+
+    assert {:error, message} =
+             Subagent.run(
+               %{"profile" => "worker", "prompt" => "do work"},
+               %{runtime: worker.agent_ref}
+             )
+
+    assert message =~ "not permitted"
+
+    # A delegating profile under a delegating parent gets the scope's limits.
+    assert {:ok, %Limits{} = limits} = Runtime.delegation_limits(lead.agent_ref)
+    assert {:ok, %{limits: ^limits}} = Runtime.scope_snapshot(scope.scope_ref)
+
+    Runtime.cancel(worker)
+    Runtime.cancel(lead)
   end
 
   test "the loop reports the subagent tool as unknown when the agent config omits it" do

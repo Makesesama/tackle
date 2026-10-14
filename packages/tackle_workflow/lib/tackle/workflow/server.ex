@@ -27,7 +27,8 @@ defmodule Tackle.Workflow.Server do
 
   require Logger
 
-  alias Tackle.Runtime.Handle
+  alias Tackle.Runtime.AgentRef
+  alias Tackle.Runtime.Limits
   alias Tackle.Workflow
   alias Tackle.Workflow.Meter
   alias Tackle.Workflow.Progress
@@ -38,7 +39,8 @@ defmodule Tackle.Workflow.Server do
 
   @type arg :: %{
           required(:workflow_ref) => Ref.t(),
-          required(:handle) => Handle.t(),
+          required(:parent) => AgentRef.t(),
+          required(:limits) => Limits.t(),
           required(:script) => String.t(),
           optional(:profiles) => [String.t()] | nil,
           optional(:owner) => pid() | nil,
@@ -86,7 +88,8 @@ defmodule Tackle.Workflow.Server do
 
     state = %{
       workflow_ref: arg.workflow_ref,
-      handle: arg.handle,
+      parent: arg.parent,
+      limits: arg.limits,
       script: arg.script,
       profiles: Map.get(arg, :profiles),
       owner_monitor: monitor_owner(Map.get(arg, :owner)),
@@ -114,7 +117,8 @@ defmodule Tackle.Workflow.Server do
 
     arg =
       Map.take(state, [
-        :handle,
+        :parent,
+        :limits,
         :script,
         :profiles,
         :max_instructions,
@@ -208,7 +212,8 @@ defmodule Tackle.Workflow.Server do
     lua =
       Lua.new(lua_opts)
       |> Lua.put_private(:tackle_workflow, %{
-        handle: arg.handle,
+        parent: arg.parent,
+        limits: arg.limits,
         server: arg.server,
         profiles: Map.get(arg, :profiles),
         decisions: Map.get(arg, :decisions),

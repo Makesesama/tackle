@@ -16,12 +16,12 @@ defmodule Tackle.Tools.Review do
   agent, like `Tackle.Tools.Subagent`, so the tool needs:
 
     * the host to add this module to the agent's tools;
-    * a runtime handle with delegation granted;
+    * delegation granted to the agent by its scope;
     * the `review-detector` and `review-verifier` profiles among the
       scope's trusted profiles (as `Tackle.Coding` provides them).
 
-  The runs count against the agent's child limit and stop when the tool
-  call ends.
+  The runs count against the agent's child limit, which is also how many
+  the review keeps in flight, and stop when the tool call ends.
 
   ## History
 
@@ -68,7 +68,8 @@ defmodule Tackle.Tools.Review do
   alias Tackle.Lib.Event
   alias Tackle.Review
   alias Tackle.Review.{Change, Delegation, Detector, Finding, History, Result, Verifier}
-  alias Tackle.Runtime.{Handle, Registry}
+  alias Tackle.Runtime
+  alias Tackle.Runtime.{AgentRef, Limits, Ref, Registry}
 
   @profiles %{"quiet" => :quiet, "default" => :default, "assertive" => :assertive}
 
@@ -103,21 +104,22 @@ defmodule Tackle.Tools.Review do
 
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def run(args, context) when is_map(args) and is_map(context) do
-    with {:ok, handle} <- fetch_handle(context),
-         :ok <- ensure_delegation(handle),
+    with {:ok, agent_ref} <- fetch_agent_ref(context),
+         {:ok, limits} <- delegation_limits(agent_ref),
          {:ok, change} <- load_change(args, context) do
       {history, notes} = history(change, context)
       profile = profile(args, context)
       report = reporter(context)
       report.(loaded(change, Atom.to_string(profile)))
 
-      opts = [
-        requester: handle,
-        profiles: profiles(handle),
-        profile: profile,
-        history: history,
-        on_event: &report_event(report, &1)
-      ]
+      opts =
+        [
+          requester: agent_ref,
+          profiles: profiles(agent_ref),
+          profile: profile,
+          history: history,
+          on_event: &report_event(report, &1)
+        ] ++ concurrency(limits)
 
       case Review.run(change, opts) do
         {:ok, result} -> {:ok, format_result(result, change, notes)}
@@ -132,17 +134,30 @@ defmodule Tackle.Tools.Review do
 
   ## Setup
 
-  defp fetch_handle(context) do
-    case Handle.from_context(context) do
-      %Handle{} = handle -> {:ok, handle}
-      nil -> {:error, "review_changes is unavailable: this agent has no runtime handle"}
+  defp fetch_agent_ref(context) do
+    case AgentRef.from_context(context) do
+      %AgentRef{} = agent_ref -> {:ok, agent_ref}
+      nil -> {:error, "review_changes is unavailable: this agent has no runtime reference"}
     end
   end
 
-  defp ensure_delegation(%Handle{allow_delegation: true}), do: :ok
+  defp delegation_limits(agent_ref) do
+    case Runtime.delegation_limits(agent_ref) do
+      {:ok, limits} ->
+        {:ok, limits}
 
-  defp ensure_delegation(%Handle{}),
-    do: {:error, "review_changes needs delegation, which is not permitted for this agent"}
+      {:error, :delegation_not_allowed} ->
+        {:error, "review_changes needs delegation, which is not permitted for this agent"}
+
+      {:error, reason} ->
+        {:error, "review_changes is unavailable: #{inspect(reason)}"}
+    end
+  end
+
+  # As many runs in flight as the agent may have children; without a usable
+  # limit the review keeps its own default.
+  defp concurrency(%Limits{max_children_per_agent: max}) when max > 0, do: [max_concurrency: max]
+  defp concurrency(%Limits{}), do: []
 
   defp load_change(args, context) do
     opts = [
@@ -172,7 +187,9 @@ defmodule Tackle.Tools.Review do
 
   # The stage profiles come from the agent's own scope, resolved when the
   # review starts, so the tool can only use what the scope already allows.
-  defp profiles(%Handle{scope_ref: scope_ref}) do
+  defp profiles(agent_ref) do
+    scope_ref = Ref.scope_ref(agent_ref)
+
     Map.new([Detector.profile(), Verifier.profile()], fn name ->
       {name, fn -> resolve_profile(scope_ref, name) end}
     end)

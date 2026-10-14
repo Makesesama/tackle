@@ -114,7 +114,7 @@ local second = tackle.await(b)
 ## Running a workflow
 
 ```elixir
-{:ok, ref} = Tackle.Workflow.run(handle, script, timeout: :timer.minutes(10))
+{:ok, ref} = Tackle.Workflow.run(agent_ref, script, timeout: :timer.minutes(10))
 Tackle.Workflow.await(ref, 30_000)
 #=> {:ok, ["final review text"]}
 ```
@@ -133,7 +133,7 @@ behind:
 
 ```elixir
 {:ok, ref} =
-  Tackle.Workflow.run(handle, script,
+  Tackle.Workflow.run(agent_ref, script,
     profiles: ["scout", "worker"],
     owner: task_pid
   )
@@ -157,7 +157,7 @@ inside a run is not counted; it reports to that run, not to the workflow.
 `:token_budget` limits what all of one workflow's runs may spend together:
 
 ```elixir
-{:ok, ref} = Tackle.Workflow.run(handle, script, token_budget: 500_000)
+{:ok, ref} = Tackle.Workflow.run(agent_ref, script, token_budget: 500_000)
 ```
 
 `tackle.budget()` returns `{used = n}`, plus `limit` and `remaining` under a
@@ -212,7 +212,7 @@ passed to every decision call, and an optional default model. A script's
 `{model = "provider/model"}` can only select a model those providers offer:
 
 ```elixir
-Tackle.Workflow.run(handle, script,
+Tackle.Workflow.run(agent_ref, script,
   decisions: [providers: providers, options: [receive_timeout: 10_000],
               default_model: "ollama/tev1:4b"]
 )
@@ -233,7 +233,7 @@ adds nothing.
 it runs, one plain map per event (`Tackle.Workflow.Progress` documents each):
 
 ```elixir
-Tackle.Workflow.run(handle, script, on_event: fn event -> send(view, {:workflow, event}) end)
+Tackle.Workflow.run(agent_ref, script, on_event: fn event -> send(view, {:workflow, event}) end)
 ```
 
 * `:run_started` / `:run_finished` — a delegated run was admitted (by
@@ -280,8 +280,9 @@ and, optionally, narrows the profiles workflows may spawn:
   )
 ```
 
-* The tool needs the same runtime handle and delegation grant as the `subagent`
-  tool; without either it returns a model-facing refusal instead of running.
+* The tool needs the same runtime reference and delegation grant as the
+  `subagent` tool; without either it returns a model-facing refusal instead of
+  running.
 * `:workflow_profiles` is *host* configuration, never workflow input, and it can
   only narrow what the scope already allows. Model-visible data can therefore
   never widen delegation. Without it, the scope's trusted profiles decide — the
@@ -332,9 +333,10 @@ and, optionally, narrows the profiles workflows may spawn:
   scope's concurrency ceiling in flight, clamped to the requested `limit`.
   Cancellation kills the workflow process tree; the runtime cancels every run
   the workflow owns, however the workflow ends.
-* **Authorized.** A workflow may only delegate as far as its parent may: the
-  runner builds its handle from the parent agent's effective grants, exactly
-  as the subagent tool does. An explicit `:profiles` allowlist can
+* **Authorized.** A workflow may only delegate as far as its parent may: its
+  runs are requested as children of the parent agent, so the scope coordinator
+  applies that agent's grants and limits, exactly as for the subagent tool.
+  An explicit `:profiles` allowlist can
   only narrow that further, so a host can hand out workflow delegation without
   handing out every profile the session has.
 * **Fail-fast with policy hooks.** Argument errors and rejected spawns raise
@@ -350,6 +352,6 @@ on it at runtime. (The harness's own test suite has a test-only dependency, to
 prove that a real session can grant and run this tool.) The CLI bundles it and
 grants `run_workflow` to the root agent alongside the subagent tools; named
 profiles only get the tool by listing it explicitly. Hosts that want scripted flows
-add `:tackle_workflow` and either call `Tackle.Workflow.run/3` with a handle from
-their own runtime integration, or grant `Tackle.Workflow.Tool` to a session's root
-agent.
+add `:tackle_workflow` and either call `Tackle.Workflow.run/3` with an agent's
+`Tackle.Runtime.AgentRef` from their own runtime integration, or grant
+`Tackle.Workflow.Tool` to a session's root agent.

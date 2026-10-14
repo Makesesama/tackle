@@ -22,7 +22,7 @@ defmodule Tackle.Workflow do
       return review.text
       \"\"\"
 
-      {:ok, ref} = Tackle.Workflow.run(handle, script)
+      {:ok, ref} = Tackle.Workflow.run(agent_ref, script)
       Tackle.Workflow.await(ref)
 
   Because `tackle.spawn/2` returns immediately and `tackle.await/1` blocks only
@@ -63,9 +63,7 @@ defmodule Tackle.Workflow do
 
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
-  alias Tackle.Runtime.Handle
   alias Tackle.Runtime.ID
-  alias Tackle.Runtime.Ref
   alias Tackle.Workflow.Decisions
   alias Tackle.Workflow.Ref, as: WorkflowRef
   alias Tackle.Workflow.Server
@@ -114,21 +112,23 @@ defmodule Tackle.Workflow do
   `:profiles`, `:token_budget`, `:decisions`, and `:owner` are host options: they describe
   what the caller already decided, never what a workflow asked for.
   """
-  @spec run(Handle.t() | AgentRef.t(), String.t(), keyword()) ::
+  @spec run(AgentRef.t(), String.t(), keyword()) ::
           {:ok, WorkflowRef.t()} | {:error, term()}
-  def run(parent, script, opts \\ []) when is_binary(script) do
-    with {:ok, scope_ref, parent_ref} <- resolve_requester(parent),
-         {:ok, handle} <- authorized_handle(scope_ref, parent_ref),
+  def run(parent, script, opts \\ [])
+
+  def run(%AgentRef{} = parent, script, opts) when is_binary(script) do
+    with {:ok, limits} <- parent_limits(parent),
          {:ok, profiles} <- profiles(Keyword.get(opts, :profiles)),
          {:ok, owner} <- owner(Keyword.get(opts, :owner)),
          {:ok, on_event} <- on_event(Keyword.get(opts, :on_event)),
          {:ok, timeout} <- timeout(Keyword.get(opts, :timeout)),
          {:ok, token_budget} <- token_budget(Keyword.get(opts, :token_budget)),
          {:ok, decisions} <- Decisions.new(Keyword.get(opts, :decisions)),
-         {:ok, workflow_ref} <- WorkflowRef.new(scope_ref.scope_id, ID.generate()) do
+         {:ok, workflow_ref} <- WorkflowRef.new(parent.scope_id, ID.generate()) do
       arg = %{
         workflow_ref: workflow_ref,
-        handle: handle,
+        parent: parent,
+        limits: limits,
         script: script,
         profiles: profiles,
         owner: owner,
@@ -146,6 +146,9 @@ defmodule Tackle.Workflow do
       end
     end
   end
+
+  def run(parent, script, _opts) when is_binary(script),
+    do: {:error, {:invalid_requester, parent}}
 
   @doc "Waits for a workflow's terminal result."
   @spec await(WorkflowRef.t(), timeout()) :: term()
@@ -181,14 +184,6 @@ defmodule Tackle.Workflow do
     end
   end
 
-  defp resolve_requester(%Handle{scope_ref: scope_ref, agent_ref: agent_ref}),
-    do: {:ok, scope_ref, agent_ref}
-
-  defp resolve_requester(%AgentRef{} = agent_ref),
-    do: {:ok, Ref.scope_ref(agent_ref), agent_ref}
-
-  defp resolve_requester(other), do: {:error, {:invalid_requester, other}}
-
   defp profiles(nil), do: {:ok, nil}
 
   defp profiles(names) when is_list(names) do
@@ -218,21 +213,13 @@ defmodule Tackle.Workflow do
 
   defp timeout(value), do: {:error, {:invalid_workflow_option, :timeout, value}}
 
-  # A workflow may only delegate as far as its parent may. The parent's snapshot
-  # carries the effective grants the runner builds its handle from.
-  defp authorized_handle(scope_ref, parent_ref) do
-    case Runtime.agent_snapshot(parent_ref) do
-      {:ok, snapshot} ->
-        handle =
-          Handle.new(scope_ref, parent_ref,
-            allow_delegation: snapshot.allow_delegation,
-            limits: snapshot.limits
-          )
-
-        {:ok, handle}
-
-      {:error, reason} ->
-        {:error, reason}
+  # A workflow may only fan out as far as its parent may: the parent's snapshot
+  # carries the effective limits. Delegation itself is left to the coordinator,
+  # which refuses each spawn of a parent without it.
+  defp parent_limits(parent) do
+    case Runtime.agent_snapshot(parent) do
+      {:ok, %{limits: limits}} -> {:ok, limits}
+      {:error, reason} -> {:error, reason}
     end
   end
 end

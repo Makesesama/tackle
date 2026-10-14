@@ -13,7 +13,7 @@ defmodule Tackle.Tools.Subagent do
   Delegation is opt-in and permissioned:
 
     * the host must add this module to a session's tool list;
-    * the running agent must carry a runtime handle with delegation granted;
+    * the running agent's scope must grant it delegation;
     * the requested profile must be allowlisted in the scope spec.
 
   Model-visible arguments can only name an allowlisted profile and, optionally,
@@ -27,7 +27,8 @@ defmodule Tackle.Tools.Subagent do
 
   alias Tackle.Lib.Event
   alias Tackle.Runtime
-  alias Tackle.Runtime.Handle
+  alias Tackle.Runtime.AgentRef
+  alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
 
   tool_name("subagent")
@@ -68,13 +69,13 @@ defmodule Tackle.Tools.Subagent do
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def run(%{"profile" => profile, "prompt" => prompt} = args, context)
       when is_binary(profile) and is_binary(prompt) do
-    with {:ok, handle} <- fetch_handle(context),
-         :ok <- ensure_delegation(handle),
-         {:ok, opts} <- timeout_opts(args, handle),
+    with {:ok, agent_ref} <- fetch_agent_ref(context),
+         {:ok, limits} <- delegation_limits(agent_ref),
+         {:ok, opts} <- timeout_opts(args, limits),
          {:ok, opts} <- model_opts(opts, args),
          opts = put_callbacks(opts, context, args),
          opts = put_retention(opts, context, args),
-         {:ok, run_ref} <- request(handle, profile, prompt, opts) do
+         {:ok, run_ref} <- request(agent_ref, profile, prompt, opts) do
       emit(context, :subagent_started, run_ref, profile)
       finish(args, run_ref, profile, context)
     end
@@ -86,25 +87,32 @@ defmodule Tackle.Tools.Subagent do
   def model_error(reason) when is_binary(reason), do: reason
   def model_error(_reason), do: nil
 
-  defp fetch_handle(context) do
-    case Handle.from_context(context) do
-      %Handle{} = handle -> {:ok, handle}
-      nil -> {:error, "subagent is unavailable: this agent has no runtime handle"}
+  defp fetch_agent_ref(context) do
+    case AgentRef.from_context(context) do
+      %AgentRef{} = agent_ref -> {:ok, agent_ref}
+      nil -> {:error, "subagent is unavailable: this agent has no runtime reference"}
     end
   end
 
-  defp ensure_delegation(%Handle{allow_delegation: true}), do: :ok
+  defp delegation_limits(agent_ref) do
+    case Runtime.delegation_limits(agent_ref) do
+      {:ok, limits} ->
+        {:ok, limits}
 
-  defp ensure_delegation(%Handle{}),
-    do: {:error, "subagent delegation is not permitted for this agent"}
+      {:error, :delegation_not_allowed} ->
+        {:error, "subagent delegation is not permitted for this agent"}
 
-  defp timeout_opts(args, %Handle{limits: limits}) do
+      {:error, reason} ->
+        {:error, "subagent is unavailable: #{inspect(reason)}"}
+    end
+  end
+
+  defp timeout_opts(args, %Limits{run_timeout: max}) do
     case Map.get(args, "timeout_ms") do
       nil ->
         {:ok, []}
 
       ms when is_integer(ms) and ms > 0 ->
-        max = if limits, do: limits.run_timeout, else: ms
         {:ok, [timeout: min(ms, max)]}
 
       _other ->
@@ -201,8 +209,8 @@ defmodule Tackle.Tools.Subagent do
       "Use subagent_status to collect its result."
   end
 
-  defp request(handle, profile, prompt, opts) do
-    case Runtime.request_agent(handle, profile, prompt, opts) do
+  defp request(agent_ref, profile, prompt, opts) do
+    case Runtime.request_agent(agent_ref, profile, prompt, opts) do
       {:ok, run_ref} ->
         {:ok, run_ref}
 

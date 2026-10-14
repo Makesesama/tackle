@@ -70,7 +70,7 @@ defmodule Tackle.CLI.TUI.State do
   @type t :: %__MODULE__{
           agent_ref: Tackle.Runtime.AgentRef.t() | nil,
           agent_monitor: reference() | nil,
-          scope_ref: term(),
+          scope_ref: Tackle.Runtime.ScopeRef.t() | nil,
           new_session: (map() -> {:ok, Scope.t()} | {:error, term()}) | nil,
           list_recent_sessions:
             (cursor :: term() ->

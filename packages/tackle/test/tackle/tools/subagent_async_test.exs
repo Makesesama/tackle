@@ -59,14 +59,14 @@ defmodule Tackle.Tools.SubagentAsyncTest do
       )
 
     parent = self()
-    handle = handle(scope)
+    agent_ref = scope.root_agent_ref
 
     caller =
       spawn(fn ->
         result =
           Subagent.run(
             %{"profile" => "worker", "prompt" => "do work", "background" => true},
-            %{runtime: handle, event_callback: &send(parent, {:event, &1})}
+            %{runtime: agent_ref, event_callback: &send(parent, {:event, &1})}
           )
 
         send(parent, {:launched, result})
@@ -90,7 +90,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
                    2_000
 
     assert {:ok, "Subagent " <> status} =
-             SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
+             SubagentStatus.run(%{"run_id" => run_id}, %{runtime: agent_ref})
 
     assert status =~ "still running"
 
@@ -101,10 +101,10 @@ defmodule Tackle.Tools.SubagentAsyncTest do
       match?({:ok, {:completed, %Outcome{status: :ok}}}, run_status(scope, run_id))
     end)
 
-    assert {:ok, collected} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert {:ok, collected} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: agent_ref})
     assert collected =~ "worker answer"
 
-    assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: agent_ref})
     assert message =~ "already collected"
   end
 
@@ -115,19 +115,19 @@ defmodule Tackle.Tools.SubagentAsyncTest do
         profiles: %{"worker" => agent_spec("worker", mode: :manual)}
       )
 
-    handle = handle(scope)
+    agent_ref = scope.root_agent_ref
 
     assert {:ok, launch_message} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "do work", "background" => true},
-               %{runtime: handle}
+               %{runtime: agent_ref}
              )
 
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
     assert_receive {:adapter_called, child_task, "echo", _opts}, 2_000
 
     waiter =
-      Task.async(fn -> SubagentWait.run(%{"run_id" => run_id}, %{runtime: handle}) end)
+      Task.async(fn -> SubagentWait.run(%{"run_id" => run_id}, %{runtime: agent_ref}) end)
 
     refute Task.yield(waiter, 20)
     send(child_task, {:respond, "worker answer"})
@@ -136,7 +136,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert result =~ "Subagent #{run_id} completed"
     assert result =~ "worker answer"
 
-    assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: agent_ref})
     assert message =~ "already collected"
   end
 
@@ -147,19 +147,19 @@ defmodule Tackle.Tools.SubagentAsyncTest do
         profiles: %{"worker" => agent_spec("worker", mode: :manual)}
       )
 
-    handle = handle(scope)
+    agent_ref = scope.root_agent_ref
 
     assert {:ok, launch_message} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "do work", "background" => true},
-               %{runtime: handle}
+               %{runtime: agent_ref}
              )
 
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
     assert_receive {:adapter_called, child_task, "echo", _opts}, 2_000
 
     waiter =
-      Task.async(fn -> SubagentWait.run(%{"run_id" => run_id}, %{runtime: handle}) end)
+      Task.async(fn -> SubagentWait.run(%{"run_id" => run_id}, %{runtime: agent_ref}) end)
 
     refute Task.yield(waiter, 20)
     assert nil == Task.shutdown(waiter, :brutal_kill)
@@ -171,7 +171,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
       match?({:ok, {:completed, %Outcome{status: :ok}}}, run_status(scope, run_id))
     end)
 
-    assert {:ok, result} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert {:ok, result} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: agent_ref})
     assert result =~ "worker answer"
   end
 
@@ -194,7 +194,9 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     other_scope = start_scope(root: [allow_delegation: true])
 
     assert {:error, message} =
-             SubagentWait.run(%{"run_id" => run_ref.run_id}, %{runtime: handle(other_scope)})
+             SubagentWait.run(%{"run_id" => run_ref.run_id}, %{
+               runtime: other_scope.root_agent_ref
+             })
 
     assert message =~ "not found"
     :ok = Tackle.Runtime.cancel(run_ref)
@@ -202,7 +204,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
   test "parent wait validates its context and run id" do
     assert {:error, message} = SubagentWait.run(%{"run_id" => "missing"}, %{})
-    assert message =~ "no runtime handle"
+    assert message =~ "no runtime reference"
     assert {:error, "subagent_wait requires a run_id"} = SubagentWait.run(%{}, %{})
   end
 
@@ -395,7 +397,9 @@ defmodule Tackle.Tools.SubagentAsyncTest do
       match?({:ok, {:completed, %Outcome{status: :ok}}}, run_status(scope, run_id))
     end)
 
-    assert {:ok, result} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle(scope)})
+    assert {:ok, result} =
+             SubagentStatus.run(%{"run_id" => run_id}, %{runtime: scope.root_agent_ref})
+
     assert result =~ "worker answer"
   end
 
@@ -411,7 +415,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert {:ok, launch_message} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "do work", "background" => true},
-               %{runtime: handle(scope), event_callback: fn _event -> :ok end}
+               %{runtime: scope.root_agent_ref, event_callback: fn _event -> :ok end}
              )
 
     assert launch_message =~ "You will be notified"
@@ -456,7 +460,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
           extra_args
         )
 
-      assert {:ok, launch_message} = Subagent.run(args, %{runtime: handle(scope)})
+      assert {:ok, launch_message} = Subagent.run(args, %{runtime: scope.root_agent_ref})
       [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
 
       assert_receive {:tackle_event, ^session_id, nil,
@@ -490,7 +494,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert {:ok, launch_message} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "do work", "background" => true},
-               %{runtime: handle(scope)}
+               %{runtime: scope.root_agent_ref}
              )
 
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
@@ -527,7 +531,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert {:ok, launch_message} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "do work", "background" => true},
-               %{runtime: handle(scope), event_callback: fn _event -> :ok end}
+               %{runtime: scope.root_agent_ref, event_callback: fn _event -> :ok end}
              )
 
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
@@ -568,10 +572,10 @@ defmodule Tackle.Tools.SubagentAsyncTest do
       )
 
     other_scope = start_scope(root: [allow_delegation: true])
-    other_handle = handle(other_scope)
+    other_ref = other_scope.root_agent_ref
 
     assert {:error, message} =
-             SubagentStatus.run(%{"run_id" => run_ref.run_id}, %{runtime: other_handle})
+             SubagentStatus.run(%{"run_id" => run_ref.run_id}, %{runtime: other_ref})
 
     assert message =~ "not found"
     :ok = Tackle.Runtime.cancel(run_ref)
@@ -585,12 +589,12 @@ defmodule Tackle.Tools.SubagentAsyncTest do
       )
 
     {:ok, %{session_id: session_id}} = Tackle.Runtime.subscribe(scope.root_agent_ref)
-    handle = handle(scope)
+    agent_ref = scope.root_agent_ref
 
     assert {:ok, launch_message} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "do work", "background" => true},
-               %{runtime: handle}
+               %{runtime: agent_ref}
              )
 
     [run_id] = Regex.run(~r/subagent ([^.]*)\./, launch_message, capture: :all_but_first)
@@ -598,7 +602,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert {:ok, :running} = run_status(scope, run_id)
 
     assert {:ok, "Subagent #{run_id} was cancelled."} ==
-             SubagentCancel.run(%{"run_id" => run_id}, %{runtime: handle})
+             SubagentCancel.run(%{"run_id" => run_id}, %{runtime: agent_ref})
 
     # Observers still see the terminal state, but the parent is not woken.
     assert_receive {:tackle_event, ^session_id, nil,
@@ -613,10 +617,10 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     {:ok, parent} = Tackle.Runtime.session_pid(scope.root_agent_ref)
     assert Tackle.Session.inbox(parent) == []
 
-    assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert {:error, message} = SubagentStatus.run(%{"run_id" => run_id}, %{runtime: agent_ref})
     assert message =~ "already collected"
 
-    assert {:error, message} = SubagentCancel.run(%{"run_id" => run_id}, %{runtime: handle})
+    assert {:error, message} = SubagentCancel.run(%{"run_id" => run_id}, %{runtime: agent_ref})
     assert message =~ "not found"
   end
 
@@ -638,7 +642,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     end)
 
     assert {:ok, result} =
-             SubagentCancel.run(%{"run_id" => run_ref.run_id}, %{runtime: handle(scope)})
+             SubagentCancel.run(%{"run_id" => run_ref.run_id}, %{runtime: scope.root_agent_ref})
 
     assert result =~ "had already finished"
     assert result =~ "worker answer"
@@ -663,7 +667,9 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     other_scope = start_scope(root: [allow_delegation: true])
 
     assert {:error, message} =
-             SubagentCancel.run(%{"run_id" => run_ref.run_id}, %{runtime: handle(other_scope)})
+             SubagentCancel.run(%{"run_id" => run_ref.run_id}, %{
+               runtime: other_scope.root_agent_ref
+             })
 
     assert message =~ "not found"
     assert {:ok, :running} = run_status(scope, run_ref.run_id)
@@ -672,7 +678,7 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
   test "parent cancel validates its context and run id" do
     assert {:error, message} = SubagentCancel.run(%{"run_id" => "missing"}, %{})
-    assert message =~ "no runtime handle"
+    assert message =~ "no runtime reference"
     assert {:error, "subagent_cancel requires a run_id"} = SubagentCancel.run(%{}, %{})
   end
 

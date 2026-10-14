@@ -3,13 +3,14 @@ defmodule Tackle.ReviewTest do
 
   @moduletag :capture_log
 
-  import Tackle.Test.Runtime, only: [start_scope: 1, handle: 1, eventually: 1]
+  import Tackle.Test.Runtime, only: [start_scope: 1, eventually: 1]
 
   alias Tackle.Config
   alias Tackle.Lib.Cancellation
   alias Tackle.Review
   alias Tackle.Review.{Change, Detector, Diff, Finding, History, Result, Rules}
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
+  alias Tackle.Test.Gauge
   alias Tackle.Tools.{ReportFindings, ReportVerdict}
 
   defmodule Adapter do
@@ -304,7 +305,7 @@ defmodule Tackle.ReviewTest do
     opts =
       Keyword.merge(
         [
-          requester: handle(scope),
+          requester: scope.root_agent_ref,
           profiles: profiles,
           rules: rules(),
           on_event: &send(test_pid, {:review_event, &1})
@@ -640,7 +641,7 @@ defmodule Tackle.ReviewTest do
       task =
         Task.async(fn ->
           Review.run(change(),
-            requester: handle(scope),
+            requester: scope.root_agent_ref,
             profiles: profiles,
             rules: rules(),
             units: [pack_files: false],
@@ -710,7 +711,7 @@ defmodule Tackle.ReviewTest do
     task =
       Task.async(fn ->
         Review.run(change(),
-          requester: handle(scope),
+          requester: scope.root_agent_ref,
           profiles: profiles,
           rules: [],
           cancellation: signal,
@@ -739,7 +740,7 @@ defmodule Tackle.ReviewTest do
     task =
       Task.async(fn ->
         Review.run(change(),
-          requester: handle(scope),
+          requester: scope.root_agent_ref,
           profiles: profiles,
           rules: [],
           on_event: &send(parent, {:review_event, &1})
@@ -761,7 +762,7 @@ defmodule Tackle.ReviewTest do
     task =
       Task.async(fn ->
         Review.run(change(),
-          requester: handle(scope),
+          requester: scope.root_agent_ref,
           profiles: profiles,
           rules: [],
           on_event: &send(parent, {:review_event, &1})
@@ -925,7 +926,7 @@ defmodule Tackle.ReviewTest do
     test "options are validated", %{history: history} do
       profiles = profiles(script())
       scope = start_scope(root: [allow_delegation: true], profiles: profiles)
-      base = [requester: handle(scope), profiles: profiles]
+      base = [requester: scope.root_agent_ref, profiles: profiles]
 
       assert {:error, {:invalid_option, :history, "/repo"}} =
                Review.run(change(), [history: "/repo"] ++ base)
@@ -1551,10 +1552,44 @@ defmodule Tackle.ReviewTest do
   end
 
   describe "options" do
+    test "an agent reference requester runs two runs at once by default" do
+      # The scope admits 4 children per agent, so 2 is the review's own default.
+      {:ok, gauge} = Gauge.start_link()
+
+      script =
+        script(%{
+          detector: fn
+            %{tool_results: []} ->
+              Gauge.hold(gauge, 2)
+              {:findings, []}
+
+            _request ->
+              {:answer, "done"}
+          end
+        })
+
+      # Six one-line files, each its own batch: six detector runs to schedule.
+      diff =
+        Enum.map_join(1..6, fn index ->
+          """
+          diff --git a/lib/f#{index}.ex b/lib/f#{index}.ex
+          --- a/lib/f#{index}.ex
+          +++ b/lib/f#{index}.ex
+          @@ -1,2 +1,3 @@
+           defmodule F#{index} do
+          +  def f, do: #{index}
+           end
+          """
+        end)
+
+      assert {:ok, %Result{}} = review(change(diff), script, units: [max_changed_lines: 1])
+      assert Gauge.peak(gauge) == 2
+    end
+
     test "are validated before anything runs" do
       profiles = profiles(script())
       scope = start_scope(root: [allow_delegation: true], profiles: profiles)
-      base = [requester: handle(scope), profiles: profiles]
+      base = [requester: scope.root_agent_ref, profiles: profiles]
 
       assert {:error, {:missing_option, :requester}} =
                Review.run(change(), Keyword.delete(base, :requester))

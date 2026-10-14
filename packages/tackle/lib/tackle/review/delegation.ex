@@ -28,7 +28,7 @@ defmodule Tackle.Review.Delegation do
   alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Lib.{Event, Message, State, Usage}
   alias Tackle.Runtime
-  alias Tackle.Runtime.{AgentRef, AgentSpec, Handle, Outcome, Registry, RootBackend, ScopeRef}
+  alias Tackle.Runtime.{AgentRef, AgentSpec, Outcome, Registry, RootBackend, ScopeRef}
 
   # Transient capacity refusals of `Tackle.AgentScope.Coordinator`.
   @capacity_reasons [:max_children_per_agent, :max_agents_per_fleet]
@@ -39,7 +39,7 @@ defmodule Tackle.Review.Delegation do
   @mirror_grace_ms 5_000
 
   @typedoc "The agent the review's runs are delegated from."
-  @type requester :: Handle.t() | AgentRef.t()
+  @type requester :: AgentRef.t()
 
   @typedoc """
   Why a run produced no usable result:
@@ -98,7 +98,7 @@ defmodule Tackle.Review.Delegation do
           {:ok, ReviewSettings.t() | nil}
           | {:error, {:requester_unavailable, term()} | {:invalid_review_settings, term()}}
   def requester_settings(requester) do
-    case Runtime.session_snapshot(agent_ref(requester)) do
+    case Runtime.session_snapshot(requester) do
       {:ok, %{agent_state: %State{context: context}}} ->
         case Map.get(context, :review_settings) do
           nil -> {:ok, nil}
@@ -128,7 +128,7 @@ defmodule Tackle.Review.Delegation do
              {:requester_model_unavailable, term()} | {:unsupported_agent_config, String.t()}}
   def base_config(requester, %AgentSpec{config: %Config{} = config, model_source: :parent}) do
     with {:ok, %{agent_state: %State{} = state}} <-
-           Runtime.session_snapshot(agent_ref(requester)),
+           Runtime.session_snapshot(requester),
          {:ok, config} <- RootBackend.inherit_model(config, state) do
       {:ok, config}
     else
@@ -220,9 +220,6 @@ defmodule Tackle.Review.Delegation do
     end
   end
 
-  defp agent_ref(%Handle{agent_ref: agent_ref}), do: agent_ref
-  defp agent_ref(%AgentRef{} = agent_ref), do: agent_ref
-
   defp cancelled_refusal?(:cancelled), do: true
   defp cancelled_refusal?({:scope_cancelled, _reason}), do: true
   defp cancelled_refusal?(_reason), do: false
@@ -297,10 +294,8 @@ defmodule Tackle.Review.Delegation do
   end
 
   # An unreachable requester counts as cancelled: its scope is gone.
-  defp requester_cancelled?(requester) do
-    %AgentRef{scope_id: scope_id} = agent_ref = agent_ref(requester)
-
-    not (match?({:ok, %{cancelled: false}}, Runtime.agent_snapshot(agent_ref)) and
+  defp requester_cancelled?(%AgentRef{scope_id: scope_id} = requester) do
+    not (match?({:ok, %{cancelled: false}}, Runtime.agent_snapshot(requester)) and
            match?({:ok, %{cancelled: nil}}, Runtime.scope_snapshot(%ScopeRef{scope_id: scope_id})))
   catch
     :exit, _reason -> true

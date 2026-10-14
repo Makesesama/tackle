@@ -6,7 +6,7 @@ defmodule Tackle.CodingTest do
   alias Tackle.Coding
   alias Tackle.Plugins.Catalog
   alias Tackle.Runtime
-  alias Tackle.Runtime.{Handle, Outcome, ScopeSpec}
+  alias Tackle.Runtime.{AgentRef, Outcome, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Test.FakeJail
 
@@ -504,7 +504,7 @@ defmodule Tackle.CodingTest do
     assert {:ok, run} = Runtime.request_agent(scope.root_agent_ref, "scout", "inspect files")
     assert %Outcome{status: :ok, agent_state: child} = Runtime.await(run, 5_000)
     assert Tackle.Lib.last_answer(child) == "answer"
-    assert child.context.runtime.allow_delegation == false
+    assert child.context.runtime == run.agent_ref
     assert Enum.any?(child.messages, &(&1.content == "inspect files"))
     refute Enum.any?(child.messages, &(&1.content == "private parent context"))
     assert :ok = eventually(fn -> Runtime.session_pid(run.agent_ref) == {:error, :not_found} end)
@@ -513,7 +513,7 @@ defmodule Tackle.CodingTest do
   test "scout failures and timeouts reach the calling tool", %{opts: opts} do
     scope = start_coding_scope(update_overrides(opts, llm_opts: [mode: :error]))
     {:ok, snapshot} = Tackle.snapshot(scope.root_agent_ref)
-    context = %{runtime: Handle.from_context(snapshot.agent_state.context)}
+    context = %{runtime: AgentRef.from_context(snapshot.agent_state.context)}
 
     assert {:error, message} =
              Subagent.run(%{"profile" => "scout", "prompt" => "inspect"}, context)

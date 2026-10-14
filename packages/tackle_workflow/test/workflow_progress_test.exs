@@ -34,7 +34,7 @@ defmodule Tackle.Workflow.ProgressTest do
     return tackle.await(tackle.spawn("worker", "do: " .. findings.text)).text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script, on_event: observe())
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script, on_event: observe())
     assert {:ok, ["do: map"]} = Workflow.await(ref, @workflow_timeout)
 
     events = drain()
@@ -63,7 +63,7 @@ defmodule Tackle.Workflow.ProgressTest do
     return single.text, default.text, items[1].text, items[2].text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script, on_event: observe())
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script, on_event: observe())
     assert {:ok, ["one", "two", "a", "b"]} = Workflow.await(ref, @workflow_timeout)
 
     models =
@@ -100,7 +100,7 @@ defmodule Tackle.Workflow.ProgressTest do
       items[3].status .. ": " .. items[3].text
     """
 
-    assert {:ok, ref} = Workflow.run(handle(scope), script)
+    assert {:ok, ref} = Workflow.run(scope.root_agent_ref, script)
 
     assert {:ok, [unavailable, bad_type, unknown_key, not_table, item1, item2, item3]} =
              Workflow.await(ref, @workflow_timeout)
@@ -119,7 +119,7 @@ defmodule Tackle.Workflow.ProgressTest do
     test_pid = self()
 
     assert {:ok, ref} =
-             Workflow.run(handle(scope), ~s|tackle.log("noted")|,
+             Workflow.run(scope.root_agent_ref, ~s|tackle.log("noted")|,
                on_event: observe(),
                log: fn message -> send(test_pid, {:log, message}) end
              )
@@ -141,7 +141,7 @@ defmodule Tackle.Workflow.ProgressTest do
     """
 
     assert {:ok, ref} =
-             Workflow.run(handle(scope), script,
+             Workflow.run(scope.root_agent_ref, script,
                profiles: ["researcher"],
                on_event: observe()
              )
@@ -179,7 +179,9 @@ defmodule Tackle.Workflow.ProgressTest do
     log =
       capture_log(fn ->
         assert {:ok, ref} =
-                 Workflow.run(handle(scope), script, on_event: fn _event -> raise "boom" end)
+                 Workflow.run(scope.root_agent_ref, script,
+                   on_event: fn _event -> raise "boom" end
+                 )
 
         assert {:ok, ["go"]} = Workflow.await(ref, @workflow_timeout)
       end)
@@ -191,7 +193,7 @@ defmodule Tackle.Workflow.ProgressTest do
     scope = start_scope(profiles: %{})
 
     assert {:error, {:invalid_workflow_option, :on_event, :nope}} =
-             Workflow.run(handle(scope), "return 1", on_event: :nope)
+             Workflow.run(scope.root_agent_ref, "return 1", on_event: :nope)
   end
 
   test "child events are forwarded as run events only when observed" do
@@ -212,7 +214,7 @@ defmodule Tackle.Workflow.ProgressTest do
     test_pid = self()
 
     context = %{
-      runtime: handle(scope),
+      runtime: scope.root_agent_ref,
       tool_call_id: "call-1",
       event_callback: fn event -> send(test_pid, {:event, event}) end
     }

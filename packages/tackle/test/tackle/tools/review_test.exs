@@ -3,14 +3,14 @@ defmodule Tackle.Tools.ReviewTest do
 
   @moduletag :capture_log
 
-  import Tackle.Test.Runtime, only: [start_scope: 1, handle: 1, handle: 2, tmp_home: 0]
+  import Tackle.Test.Runtime, only: [start_scope: 1, tmp_home: 0]
 
   alias Tackle.Config
   alias Tackle.Executor.Jailed
   alias Tackle.Lib.Tool
   alias Tackle.Review.History
-  alias Tackle.Runtime.AgentSpec
-  alias Tackle.Test.GitRepo
+  alias Tackle.Runtime.{AgentSpec, Limits}
+  alias Tackle.Test.{Gauge, GitRepo}
   alias Tackle.Tools.{ReportFindings, ReportVerdict}
 
   defmodule Adapter do
@@ -38,6 +38,7 @@ defmodule Tackle.Tools.ReviewTest do
       stage = stage(schema, prompt)
 
       send(Keyword.fetch!(opts, :test_pid), {:llm_call, stage})
+      hold(stage, answered?, opts)
 
       {:ok,
        %{
@@ -46,6 +47,17 @@ defmodule Tackle.Tools.ReviewTest do
          model: "fake"
        }}
     end
+
+    # A detector run with a gauge stays in flight so a test can see how many
+    # run at once.
+    defp hold(:detector, false, opts) do
+      case Keyword.fetch(opts, :gauge) do
+        {:ok, {gauge, expected}} -> Gauge.hold(gauge, expected)
+        :error -> :ok
+      end
+    end
+
+    defp hold(_stage, _answered?, _opts), do: :ok
 
     defp stage(schema, _prompt) when schema != nil, do: :scorer
     defp stage(nil, "Verify" <> _rest), do: :verifier
@@ -127,11 +139,11 @@ defmodule Tackle.Tools.ReviewTest do
     scope = start_scope(root: [allow_delegation: true], profiles: profiles)
     home = tmp_home()
 
-    context = %{runtime: handle(scope), cwd: repo, review_history: [home: home]}
+    context = %{runtime: scope.root_agent_ref, cwd: repo, review_history: [home: home]}
     {:ok, repo: repo, scope: scope, home: home, context: context}
   end
 
-  defp stage_spec(name, tool) do
+  defp stage_spec(name, tool, llm_opts \\ []) do
     {:ok, config} =
       Config.new(
         providers: [Adapter],
@@ -139,7 +151,7 @@ defmodule Tackle.Tools.ReviewTest do
         tools: [tool],
         system_prompt: "Review stage.",
         max_iterations: 6,
-        llm_opts: [test_pid: self()]
+        llm_opts: [test_pid: self()] ++ llm_opts
       )
 
     AgentSpec.new!(name: name, config: config, timeout: 5_000)
@@ -165,6 +177,36 @@ defmodule Tackle.Tools.ReviewTest do
     refute text =~ "Notes:"
     assert_received {:llm_call, :detector}
     assert_received {:llm_call, :verifier}
+  end
+
+  test "keeps as many runs in flight as the agent may have children", ctx do
+    {:ok, gauge} = Gauge.start_link()
+
+    # Six files of 100 changed lines each are six batches: six detector runs.
+    GitRepo.write(
+      ctx.repo,
+      Map.new(1..6, fn index ->
+        body = Enum.map_join(1..100, fn line -> "  def f#{line}, do: #{index}\n" end)
+        {"lib/f#{index}.ex", "defmodule F#{index} do\n" <> body <> "end\n"}
+      end)
+    )
+
+    GitRepo.commit(ctx.repo, "six files")
+
+    profiles = %{
+      "review-detector" => stage_spec("review-detector", ReportFindings, gauge: {gauge, 3}),
+      "review-verifier" => stage_spec("review-verifier", ReportVerdict)
+    }
+
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: profiles,
+        limits: Limits.new!(max_children_per_agent: 3, max_agents_per_fleet: 16)
+      )
+
+    assert {:ok, _text} = review(%{}, %{ctx.context | runtime: scope.root_agent_ref})
+    assert Gauge.peak(gauge) == 3
   end
 
   test "reports the review's progress as structured tool progress", ctx do
@@ -332,13 +374,15 @@ defmodule Tackle.Tools.ReviewTest do
     refute_received {:llm_call, _stage}
   end
 
-  test "requires a runtime handle that may delegate", ctx do
+  test "requires a runtime reference to an agent that may delegate", ctx do
     assert {:error, message} = review(%{}, Map.delete(ctx.context, :runtime))
-    assert message =~ "no runtime handle"
+    assert message =~ "no runtime reference"
 
-    no_delegation = handle(ctx.scope, allow_delegation: false)
+    no_delegation = start_scope(root: [allow_delegation: false], profiles: %{})
 
-    assert {:error, message} = review(%{}, %{ctx.context | runtime: no_delegation})
+    assert {:error, message} =
+             review(%{}, %{ctx.context | runtime: no_delegation.root_agent_ref})
+
     assert message =~ "delegation"
     refute_received {:llm_call, _stage}
   end
@@ -376,7 +420,7 @@ defmodule Tackle.Tools.ReviewTest do
   test "fails clearly when the scope lacks the review profiles", ctx do
     scope = start_scope(root: [allow_delegation: true], profiles: %{})
 
-    assert {:error, message} = review(%{}, %{ctx.context | runtime: handle(scope)})
+    assert {:error, message} = review(%{}, %{ctx.context | runtime: scope.root_agent_ref})
 
     assert message ==
              "The review failed: the review-detector agent profile is not available in this session"

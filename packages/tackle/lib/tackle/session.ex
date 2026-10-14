@@ -43,8 +43,6 @@ defmodule Tackle.Session do
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Envelope
-  alias Tackle.Runtime.Handle
-  alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Registry
   alias Tackle.Runtime.RunRef
@@ -1448,16 +1446,12 @@ defmodule Tackle.Session do
     %{agent_state | llm: config.llm, model: config.llm.model, llm_opts: llm_opts}
   end
 
-  defp put_runtime_context(agent_state, %ScopeRef{} = scope_ref, %AgentRef{} = agent_ref, opts) do
-    handle =
-      Handle.new(scope_ref, agent_ref,
-        allow_delegation: Keyword.get(opts, :allow_delegation, false),
-        limits: Keyword.get(opts, :limits, Limits.default())
-      )
-
+  # Tools find the agent they act for under `:runtime` (`AgentRef.from_context/1`);
+  # the scope coordinator owns what that agent may do.
+  defp put_runtime_context(agent_state, %ScopeRef{}, %AgentRef{} = agent_ref, opts) do
     context =
       agent_state.context
-      |> Map.put(:runtime, handle)
+      |> Map.put(:runtime, agent_ref)
       |> Map.merge(Keyword.get(opts, :context_overrides, %{}))
 
     %{agent_state | context: context}

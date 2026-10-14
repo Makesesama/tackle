@@ -148,8 +148,8 @@ defmodule Tackle.CLI.TUI.Review do
           env: map() | nil,
           range: String.t() | nil,
           staged: boolean(),
-          requester: term(),
-          scope_ref: term(),
+          requester: Tackle.Runtime.AgentRef.t() | nil,
+          scope_ref: Tackle.Runtime.ScopeRef.t() | nil,
           signal: Cancellation.signal(),
           previous: Change.t() | nil
         }

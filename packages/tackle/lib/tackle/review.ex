@@ -120,7 +120,7 @@ defmodule Tackle.Review do
   }
 
   alias Tackle.Review.Rules.Rule
-  alias Tackle.Runtime.{AgentRef, AgentSpec, Handle}
+  alias Tackle.Runtime.{AgentRef, AgentSpec}
   alias Tackle.Tools.{ReportFindings, ReportVerdict}
 
   @option_keys [
@@ -171,9 +171,8 @@ defmodule Tackle.Review do
   per-stage maps, a stage given here replaces its setting, and a stage set
   to `nil` falls back to the profile's or inherited value.
 
-    * `:requester` (required) - the agent the review's runs are delegated
-      from: a `Tackle.Runtime.Handle` or `Tackle.Runtime.AgentRef` whose
-      agent may delegate;
+    * `:requester` (required) - the `Tackle.Runtime.AgentRef` of the agent
+      the review's runs are delegated from, which must be allowed to delegate;
     * `:profiles` (required) - trusted profiles by name, as in
       `Tackle.Runtime.ScopeSpec` (specs or resolver functions); must contain
       `review-detector` with the `report_findings` tool and `review-verifier`
@@ -186,8 +185,8 @@ defmodule Tackle.Review do
     * `:profile` - `:quiet`, `:default` (default), or `:assertive`
       (see `Tackle.Review.Rank`);
     * `:samples` - detector runs per batch of units (default 1);
-    * `:max_concurrency` - runs in flight at once (default: the requester
-      handle's `max_children_per_agent`, otherwise #{@default_concurrency});
+    * `:max_concurrency` - runs in flight at once (default
+      #{@default_concurrency});
     * `:exclude` - extra globs of files not to review (default `[]`);
     * `:models` - per-stage model references overriding the profiles'
       models, as a map or keyword list with `:detector`, `:verifier`, and
@@ -304,7 +303,7 @@ defmodule Tackle.Review do
            option(opts, :profile, settings.profile || :default, &(&1 in Rank.profiles())),
          {:ok, samples} <- option(opts, :samples, 1, &positive_integer?/1),
          {:ok, concurrency} <-
-           option(opts, :max_concurrency, default_concurrency(requester), &positive_integer?/1),
+           option(opts, :max_concurrency, @default_concurrency, &positive_integer?/1),
          {:ok, exclude} <- option(opts, :exclude, [], &string_list?/1),
          {:ok, models} <- models(Keyword.get(opts, :models, %{})),
          models = Map.merge(settings.models, models),
@@ -380,7 +379,6 @@ defmodule Tackle.Review do
     end
   end
 
-  defp requester(%Handle{} = handle), do: {:ok, handle}
   defp requester(%AgentRef{} = agent_ref), do: {:ok, agent_ref}
   defp requester(nil), do: {:error, {:missing_option, :requester}}
   defp requester(other), do: {:error, {:invalid_option, :requester, other}}
@@ -410,9 +408,6 @@ defmodule Tackle.Review do
 
   defp rule_list?(value),
     do: is_nil(value) or (is_list(value) and Enum.all?(value, &is_struct(&1, Rule)))
-
-  defp default_concurrency(%Handle{limits: %{max_children_per_agent: max}}) when max > 0, do: max
-  defp default_concurrency(_requester), do: @default_concurrency
 
   defp stage_spec(profiles, name, tool) do
     with {:ok, spec} <- resolve_profile(profiles, name) do

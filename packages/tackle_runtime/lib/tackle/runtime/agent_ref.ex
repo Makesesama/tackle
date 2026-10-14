@@ -4,6 +4,12 @@ defmodule Tackle.Runtime.AgentRef do
 
   An agent reference never exposes a PID. `scope_id` identifies the owning
   fleet/scope and `agent_id` identifies the dedicated agent process.
+
+  The harness puts each scoped agent's own reference into its
+  `Tackle.Lib.State.context` under `:runtime`, so its tools know which agent
+  they act for (`from_context/1`). A reference names an agent; it grants
+  nothing. The scope coordinator decides what that agent may do whenever it
+  requests work (see `Tackle.Runtime.delegation_limits/1`).
   """
 
   alias Tackle.Runtime.ID
@@ -37,6 +43,12 @@ defmodule Tackle.Runtime.AgentRef do
       {:error, reason} -> raise ArgumentError, "invalid agent reference: #{inspect(reason)}"
     end
   end
+
+  @doc "Returns the agent reference stored in an agent context, if any."
+  @spec from_context(map() | nil) :: t() | nil
+  def from_context(%{runtime: %__MODULE__{} = ref}), do: ref
+  def from_context(%{"runtime" => %__MODULE__{} = ref}), do: ref
+  def from_context(_context), do: nil
 
   defp validate(%__MODULE__{scope_id: scope_id, agent_id: agent_id}) do
     new(scope_id, agent_id)

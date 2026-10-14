@@ -16,7 +16,7 @@ defmodule Tackle.Workflow.Tool do
   permissioned:
 
     * the host must add this module to a session's tool list;
-    * the running agent must carry a runtime handle with delegation granted;
+    * the running agent's scope must grant it delegation;
     * every profile the workflow names must be allowlisted — by the scope's
       trusted profiles, and, when the host narrows it, by the session context.
 
@@ -68,7 +68,8 @@ defmodule Tackle.Workflow.Tool do
   require Lua.API
 
   alias Tackle.Lib.Event
-  alias Tackle.Runtime.Handle
+  alias Tackle.Runtime
+  alias Tackle.Runtime.AgentRef
   alias Tackle.Workflow
   alias Tackle.Workflow.Decisions
 
@@ -133,13 +134,18 @@ defmodule Tackle.Workflow.Tool do
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def run(args, context) when is_map(args) do
     with {:ok, script} <- resolve_script(args, context),
-         {:ok, handle} <- fetch_handle(context),
-         :ok <- ensure_delegation(handle),
+         {:ok, agent_ref} <- fetch_agent_ref(context),
+         :ok <- ensure_delegation(agent_ref),
          {:ok, profiles} <- workflow_profiles(context),
          {:ok, budget_opts} <- budget_opts(args, context),
          {:ok, decision_opts} <- decision_opts(context),
          {:ok, ref} <-
-           start(handle, script, profiles, budget_opts ++ decision_opts ++ progress_opts(context)) do
+           start(
+             agent_ref,
+             script,
+             profiles,
+             budget_opts ++ decision_opts ++ progress_opts(context)
+           ) do
       await(ref)
     end
   end
@@ -187,17 +193,25 @@ defmodule Tackle.Workflow.Tool do
 
   # Host configuration ------------------------------------------------------------
 
-  defp fetch_handle(context) do
-    case Handle.from_context(context) do
-      %Handle{} = handle -> {:ok, handle}
-      nil -> {:error, "run_workflow is unavailable: this agent has no runtime handle"}
+  defp fetch_agent_ref(context) do
+    case AgentRef.from_context(context) do
+      %AgentRef{} = agent_ref -> {:ok, agent_ref}
+      nil -> {:error, "run_workflow is unavailable: this agent has no runtime reference"}
     end
   end
 
-  defp ensure_delegation(%Handle{allow_delegation: true}), do: :ok
+  defp ensure_delegation(agent_ref) do
+    case Runtime.delegation_limits(agent_ref) do
+      {:ok, _limits} ->
+        :ok
 
-  defp ensure_delegation(%Handle{}),
-    do: {:error, "run_workflow delegation is not permitted for this agent"}
+      {:error, :delegation_not_allowed} ->
+        {:error, "run_workflow delegation is not permitted for this agent"}
+
+      {:error, reason} ->
+        {:error, "run_workflow is unavailable: #{inspect(reason)}"}
+    end
+  end
 
   # `nil` leaves the decision to the scope's own trusted profiles; a list
   # narrows it for workflows only. The list is bounded host configuration, so a
@@ -270,10 +284,10 @@ defmodule Tackle.Workflow.Tool do
 
   # Run ---------------------------------------------------------------------------
 
-  defp start(handle, script, profiles, extra_opts) do
+  defp start(agent_ref, script, profiles, extra_opts) do
     opts = [profiles: profiles, owner: self()] ++ extra_opts
 
-    case Workflow.run(handle, script, opts) do
+    case Workflow.run(agent_ref, script, opts) do
       {:ok, ref} -> {:ok, ref}
       {:error, reason} -> {:error, "could not start the workflow: #{describe(reason)}"}
     end

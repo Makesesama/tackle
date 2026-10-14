@@ -39,7 +39,7 @@ defmodule Tackle.Runtime.ModelSourceTest do
     assert Tackle.Lib.last_answer(state) == "answer"
     assert state.context.child
     assert state.tools == [Tackle.Tools.Read]
-    refute state.context.runtime.allow_delegation
+    assert state.context.runtime == run.agent_ref
 
     assert {:ok, _snapshot} = Tackle.reconfigure(scope.root_agent_ref, thinking: "off")
     assert {:ok, run} = Runtime.request_agent(scope.root_agent_ref, "worker", "again")

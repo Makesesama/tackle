@@ -352,7 +352,7 @@ admission rules, and cancellation:
 root tool, exactly like any other trusted module. `:workflow_profiles` is host
 configuration that narrows the profiles a workflow may spawn — it can never widen
 what the scope allows — and without it the scope's own profiles decide. The tool
-then needs the same runtime handle and delegation grant as `subagent`, returns
+then needs the same runtime reference and delegation grant as `subagent`, returns
 the workflow's values as its result, and cancels the workflow when the tool
 call ends. The harness itself only depends on `tackle_workflow` in its own test
 suite, which proves this wiring.

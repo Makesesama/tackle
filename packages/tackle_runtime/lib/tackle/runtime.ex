@@ -18,8 +18,8 @@ defmodule Tackle.Runtime do
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.Envelope
-  alias Tackle.Runtime.Handle
   alias Tackle.Runtime.ID
+  alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Messaging
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Ref
@@ -69,6 +69,26 @@ defmodule Tackle.Runtime do
   def agent_snapshot(%AgentRef{} = agent_ref) do
     with {:ok, coordinator} <- coordinator(agent_ref) do
       Coordinator.agent_snapshot(coordinator, agent_ref)
+    end
+  end
+
+  @doc """
+  Returns the limits an agent delegates under, if it may delegate at all.
+
+  Delegation permission and limits belong to the scope coordinator, which
+  re-checks both whenever a run is requested. This lets callers such as
+  delegating tools refuse early with their own message, and size their work
+  by the same limits. Returns `{:error, :delegation_not_allowed}` for an agent
+  without delegation, or the `agent_snapshot/1` error for an unknown one. Like
+  `agent_snapshot/1`, it exits if the scope stops during the call.
+  """
+  @spec delegation_limits(AgentRef.t()) ::
+          {:ok, Limits.t()} | {:error, :delegation_not_allowed | term()}
+  def delegation_limits(%AgentRef{} = agent_ref) do
+    case agent_snapshot(agent_ref) do
+      {:ok, %{allow_delegation: true, limits: limits}} -> {:ok, limits}
+      {:ok, %{allow_delegation: false}} -> {:error, :delegation_not_allowed}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -228,7 +248,7 @@ defmodule Tackle.Runtime do
 
   Returns `{:ok, nil}` when the agent has branching disabled and the
   `Tackle.Lib.Tree` otherwise. The tree is a pure value, so the caller never
-  receives a journal PID or a runtime handle.
+  receives a journal PID or a session process.
   """
   @spec tree(AgentRef.t()) :: {:ok, Tackle.Lib.Tree.t() | nil} | {:error, term()}
   def tree(%AgentRef{} = agent_ref) do
@@ -282,12 +302,7 @@ defmodule Tackle.Runtime do
   settings, including its thinking level, are kept. An unavailable model, or a
   backend without `select_model/2`, fails the request before admission.
   """
-  @spec request_agent(
-          Handle.t() | AgentRef.t(),
-          String.t() | AgentSpec.t(),
-          String.t(),
-          keyword()
-        ) ::
+  @spec request_agent(AgentRef.t(), String.t() | AgentSpec.t(), String.t(), keyword()) ::
           {:ok, RunRef.t()} | {:error, term()}
   def request_agent(requester, spec_or_profile, prompt, opts \\ [])
 
@@ -418,7 +433,7 @@ defmodule Tackle.Runtime do
   references, await, and cancellation policy on top of it; script runners are
   one example. Returns the supervisor's child start result including the PID.
   """
-  @spec start_work(Handle.t() | AgentRef.t(), Supervisor.child_spec() | {module(), term()}) ::
+  @spec start_work(AgentRef.t(), Supervisor.child_spec() | {module(), term()}) ::
           DynamicSupervisor.on_start_child()
   def start_work(parent, child) do
     with {:ok, scope_ref, _parent_ref} <- resolve_requester(parent),
@@ -480,10 +495,6 @@ defmodule Tackle.Runtime do
           _other -> {:error, :not_found}
         end
     end
-  end
-
-  defp resolve_requester(%Handle{scope_ref: scope_ref, agent_ref: agent_ref}) do
-    {:ok, scope_ref, agent_ref}
   end
 
   defp resolve_requester(%AgentRef{} = agent_ref) do

@@ -449,17 +449,13 @@ parent Tackle.Lib loop
   → parent Tackle.Lib loop continues
 ```
 
-The tool can receive an opaque runtime handle through `Tackle.Lib.State.context`, for example:
+The tool finds the agent it acts for in `Tackle.Lib.State.context`: the harness stores the agent's own PID-free `Tackle.Runtime.AgentRef` there, read with `Tackle.Runtime.AgentRef.from_context/1`:
 
 ```elixir
-%{
-  runtime: runtime_handle,
-  fleet_id: fleet_id,
-  agent_id: agent_id
-}
+%{runtime: %Tackle.Runtime.AgentRef{scope_id: scope_id, agent_id: agent_id}}
 ```
 
-The handle should expose only authorized runtime operations and limits. Model-visible arguments must not include raw PIDs, supervisor names, arbitrary module names, or unrestricted child configuration.
+The reference names the agent; it grants nothing. Delegation permission and limits stay with the scope coordinator, which checks them on every request; a tool that wants to refuse early or size its work reads them with `Tackle.Runtime.delegation_limits/1`. Model-visible arguments must not include raw PIDs, supervisor names, arbitrary module names, or unrestricted child configuration.
 
 This preserves the boundary described in `packages/tackle_lib/README.md`: parent/child orchestration is a host capability built with tools and runtime state; it is not part of the provider-neutral agent loop.
 
@@ -817,7 +813,7 @@ profile: trusted profile name
 task: delegated prompt
 ```
 
-The tool receives an opaque runtime handle through `Tackle.Lib.State.context`, resolves the selected profile through a trusted host allowlist, calls `request_agent`, awaits the result, and returns the child's answer or typed failure as the parent's linked tool result.
+The tool reads its agent's `AgentRef` from `Tackle.Lib.State.context`, resolves the selected profile through a trusted host allowlist, calls `request_agent`, awaits the result, and returns the child's answer or typed failure as the parent's linked tool result.
 
 The tool is not part of `Tackle.Tools.default/0` initially. The coding root also
 receives `Tackle.Tools.SubagentWait` and `Tackle.Tools.SubagentStatus`: setting

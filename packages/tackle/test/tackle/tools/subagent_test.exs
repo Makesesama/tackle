@@ -4,6 +4,7 @@ defmodule Tackle.Tools.SubagentTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Lib.Event
+  alias Tackle.Runtime.Limits
   alias Tackle.Tools.Subagent
 
   test "the subagent tool is opt-in, not part of the default tool set" do
@@ -17,9 +18,13 @@ defmodule Tackle.Tools.SubagentTest do
         profiles: %{"worker" => agent_spec("worker", content: "worker answer")}
       )
 
-    handle = handle(scope)
+    agent_ref = scope.root_agent_ref
     test_pid = self()
-    context = %{runtime: handle, event_callback: fn event -> send(test_pid, {:event, event}) end}
+
+    context = %{
+      runtime: agent_ref,
+      event_callback: fn event -> send(test_pid, {:event, event}) end
+    }
 
     assert {:ok, "worker answer"} =
              Subagent.run(%{"profile" => "worker", "prompt" => "do work"}, context)
@@ -56,7 +61,7 @@ defmodule Tackle.Tools.SubagentTest do
     test_pid = self()
 
     context = %{
-      runtime: handle(scope),
+      runtime: scope.root_agent_ref,
       event_callback: fn event -> send(test_pid, {:event, event}) end
     }
 
@@ -84,7 +89,7 @@ defmodule Tackle.Tools.SubagentTest do
         profiles: %{"worker" => agent_spec("worker")}
       )
 
-    context = %{runtime: handle(scope, allow_delegation: false)}
+    context = %{runtime: scope.root_agent_ref}
 
     assert {:error, message} =
              Subagent.run(%{"profile" => "worker", "prompt" => "do work"}, context)
@@ -94,7 +99,7 @@ defmodule Tackle.Tools.SubagentTest do
 
   test "rejects unknown profiles by name" do
     scope = start_scope(root: [allow_delegation: true])
-    context = %{runtime: handle(scope)}
+    context = %{runtime: scope.root_agent_ref}
 
     assert {:error, message} =
              Subagent.run(%{"profile" => "ghost", "prompt" => "do work"}, context)
@@ -102,11 +107,25 @@ defmodule Tackle.Tools.SubagentTest do
     assert message =~ "unknown subagent profile"
   end
 
-  test "rejects a missing runtime handle" do
+  test "bounds a requested timeout by the scope's run timeout" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        limits: Limits.new!(max_agents_per_fleet: 16, run_timeout: 50),
+        profiles: %{"worker" => agent_spec("worker", mode: :block)}
+      )
+
+    args = %{"profile" => "worker", "prompt" => "wait", "timeout_ms" => 60_000}
+    task = Task.async(fn -> Subagent.run(args, %{runtime: scope.root_agent_ref}) end)
+
+    assert {:error, "subagent timed out"} = Task.await(task, 5_000)
+  end
+
+  test "rejects a missing runtime reference" do
     assert {:error, message} =
              Subagent.run(%{"profile" => "worker", "prompt" => "go"}, %{})
 
-    assert message =~ "no runtime handle"
+    assert message =~ "no runtime reference"
   end
 
   test "an agent can call the subagent tool through the loop" do
@@ -203,12 +222,12 @@ defmodule Tackle.Tools.SubagentTest do
         profiles: %{"worker" => agent_spec("worker", mode: :error)}
       )
 
-    handle = handle(scope)
+    agent_ref = scope.root_agent_ref
 
     assert {:error, message} =
              Subagent.run(
                %{"profile" => "worker", "prompt" => "go"},
-               %{runtime: handle}
+               %{runtime: agent_ref}
              )
 
     assert message =~ "subagent failed"

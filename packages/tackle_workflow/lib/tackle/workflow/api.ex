@@ -174,7 +174,7 @@ defmodule Tackle.Workflow.API do
 
   alias Tackle.Lib.Decision.{Request, Selection}
   alias Tackle.Runtime
-  alias Tackle.Runtime.Handle
+  alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.RunRef
@@ -315,7 +315,7 @@ defmodule Tackle.Workflow.API do
   end
 
   defp start_spawn(state, profile, prompt, spawn_opts) do
-    %{handle: %Handle{} = handle} = context!(state)
+    %{parent: %AgentRef{} = parent} = context!(state)
 
     unless allowed_profile?(state, profile) do
       spawn_error!("spawn failed: " <> profile_not_allowed(profile))
@@ -330,7 +330,7 @@ defmodule Tackle.Workflow.API do
     on_event = observer(state)
     opts = Keyword.merge(run_opts(meter, on_event, profile), spawn_opts)
 
-    case Runtime.request_agent(handle, profile, prompt, opts) do
+    case Runtime.request_agent(parent, profile, prompt, opts) do
       {:ok, %RunRef{} = run_ref} ->
         Progress.emit(on_event, Progress.run_started(run_ref, profile, prompt))
         {encoded, state} = Lua.encode!(state, {:userdata, run_ref})
@@ -394,13 +394,13 @@ defmodule Tackle.Workflow.API do
   # Fan-out -----------------------------------------------------------------------
 
   defp run_parallel(items, callback, opts, state) do
-    %{handle: %Handle{} = handle} = context!(state)
+    %{parent: %AgentRef{} = parent, limits: %Limits{} = limits} = context!(state)
 
     unless is_lua_func(callback) or is_erl_func(callback) do
       parallel_error!("tackle.parallel(items, fn, opts?) requires a function")
     end
 
-    limit = parallel_limit!(state, handle, opts)
+    limit = parallel_limit!(state, limits, opts)
     {count, state} = item_count!(state, items)
     on_event = observer(state)
     meter = meter!(state)
@@ -409,7 +409,7 @@ defmodule Tackle.Workflow.API do
 
     {results, state} =
       Fanout.map(
-        handle,
+        parent,
         count,
         limit,
         state,
@@ -507,22 +507,18 @@ defmodule Tackle.Workflow.API do
     end
   end
 
-  defp parallel_limit!(state, %Handle{} = handle, opts) do
+  defp parallel_limit!(state, %Limits{} = limits, opts) do
     case requested_limit!(state, opts) do
-      nil -> parallel_ceiling(handle)
-      limit -> min(limit, parallel_ceiling(handle))
+      nil -> parallel_ceiling(limits)
+      limit -> min(limit, parallel_ceiling(limits))
     end
   end
 
   # A workflow may not widen its own concurrency: the limits it inherited are the
   # ceiling for its fan-out too.
-  defp parallel_ceiling(%Handle{limits: %Limits{} = limits}) do
+  defp parallel_ceiling(%Limits{} = limits) do
     max(1, min(limits.max_children_per_agent, limits.max_concurrent_turns))
   end
-
-  # A handle without limits carries no ceiling to honour, so serialize rather
-  # than guess a concurrency.
-  defp parallel_ceiling(%Handle{}), do: 1
 
   defp requested_limit!(_state, nil), do: nil
 

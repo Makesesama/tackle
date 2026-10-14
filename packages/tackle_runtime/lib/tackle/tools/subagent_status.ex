@@ -9,7 +9,7 @@ defmodule Tackle.Tools.SubagentStatus do
   use Tackle.Lib.Tool
 
   alias Tackle.Runtime
-  alias Tackle.Runtime.Handle
+  alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.RunRef
 
@@ -26,10 +26,9 @@ defmodule Tackle.Tools.SubagentStatus do
 
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def run(%{"run_id" => run_id}, context) when is_binary(run_id) do
-    with {:ok, handle} <- fetch_handle(context),
-         {:ok, run_ref} <- run_ref(handle, run_id),
-         :ok <- ensure_owned(handle, run_ref) do
-      status(run_ref, handle.agent_ref)
+    with {:ok, agent_ref} <- fetch_agent_ref(context),
+         {:ok, run_ref} <- RunRef.new(agent_ref.scope_id, run_id) do
+      status(run_ref, agent_ref)
     end
   end
 
@@ -39,18 +38,12 @@ defmodule Tackle.Tools.SubagentStatus do
   def model_error(reason) when is_binary(reason), do: reason
   def model_error(_reason), do: nil
 
-  defp fetch_handle(context) do
-    case Handle.from_context(context) do
-      %Handle{} = handle -> {:ok, handle}
-      nil -> {:error, "subagent status is unavailable: this agent has no runtime handle"}
+  defp fetch_agent_ref(context) do
+    case AgentRef.from_context(context) do
+      %AgentRef{} = agent_ref -> {:ok, agent_ref}
+      nil -> {:error, "subagent status is unavailable: this agent has no runtime reference"}
     end
   end
-
-  defp run_ref(%Handle{scope_ref: scope_ref}, run_id) do
-    RunRef.new(scope_ref.scope_id, run_id)
-  end
-
-  defp ensure_owned(%Handle{}, _run_ref), do: :ok
 
   defp status(run_ref, owner) do
     case Runtime.run_status(owner, run_ref) do

@@ -23,7 +23,7 @@ defmodule Tackle.Workflow.MeterTest do
   defp tool_error, do: Event.new(:tool_error, %{tool_call_id: "call", name: "bash"})
 
   defp run(scope, script, opts \\ []) do
-    {:ok, ref} = Workflow.run(handle(scope), script, opts)
+    {:ok, ref} = Workflow.run(scope.root_agent_ref, script, opts)
     Workflow.await(ref, @workflow_timeout)
   end
 
@@ -189,7 +189,7 @@ defmodule Tackle.Workflow.MeterTest do
 
       for budget <- [0, -1, 1.5, "100"] do
         assert {:error, {:invalid_workflow_option, :token_budget, ^budget}} =
-                 Workflow.run(handle(scope), "return 1", token_budget: budget)
+                 Workflow.run(scope.root_agent_ref, "return 1", token_budget: budget)
       end
     end
   end
@@ -197,7 +197,7 @@ defmodule Tackle.Workflow.MeterTest do
   describe "the run_workflow tool budget" do
     defp run_tool(scope, script, opts) do
       args = Map.merge(%{"script" => script}, Keyword.get(opts, :args, %{}))
-      context = opts |> Keyword.get(:context, %{}) |> Map.put_new(:runtime, handle(scope))
+      context = opts |> Keyword.get(:context, %{}) |> Map.put_new(:runtime, scope.root_agent_ref)
       WorkflowTool.run(args, context)
     end
 

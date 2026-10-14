@@ -124,7 +124,7 @@ defmodule Tackle.Workflow.ClassifyTest do
   defp run(script, opts \\ []) do
     scope = start_scope()
 
-    with {:ok, ref} <- Workflow.run(handle(scope), script, opts) do
+    with {:ok, ref} <- Workflow.run(scope.root_agent_ref, script, opts) do
       Workflow.await(ref, @workflow_timeout)
     end
   end
@@ -398,7 +398,7 @@ defmodule Tackle.Workflow.ClassifyTest do
       test_pid = self()
 
       context = %{
-        runtime: handle(scope),
+        runtime: scope.root_agent_ref,
         tool_call_id: "call-1",
         decisions: Map.new(decisions()),
         event_callback: fn event -> send(test_pid, {:event, event}) end
@@ -510,15 +510,15 @@ defmodule Tackle.Workflow.ClassifyTest do
       scope = start_scope()
 
       assert {:error, {:unknown_decision_model, "local/missing"}} =
-               Workflow.run(handle(scope), "return 1",
+               Workflow.run(scope.root_agent_ref, "return 1",
                  decisions: [providers: [LocalJudge], default_model: "local/missing"]
                )
 
       assert {:error, {:invalid_workflow_option, :decisions, [unknown: [:model]]}} =
-               Workflow.run(handle(scope), "return 1", decisions: [model: "local/judge"])
+               Workflow.run(scope.root_agent_ref, "return 1", decisions: [model: "local/judge"])
 
       assert {:error, {:invalid_workflow_option, :decisions, "bad"}} =
-               Workflow.run(handle(scope), "return 1", decisions: "bad")
+               Workflow.run(scope.root_agent_ref, "return 1", decisions: "bad")
     end
   end
 
@@ -571,7 +571,7 @@ defmodule Tackle.Workflow.ClassifyTest do
     test "takes the grant from the session context" do
       scope = start_scope()
 
-      context = %{runtime: handle(scope), decisions: Map.new(decisions())}
+      context = %{runtime: scope.root_agent_ref, decisions: Map.new(decisions())}
       script = "return tackle.classify('x', #{@verdict}).answers.verdict.choice"
 
       assert {:ok, "approve"} = WorkflowTool.run(%{"script" => script}, context)
@@ -582,7 +582,7 @@ defmodule Tackle.Workflow.ClassifyTest do
 
       assert {:error, "decisions are misconfigured: " <> _reason} =
                WorkflowTool.run(%{"script" => "return 1"}, %{
-                 runtime: handle(scope),
+                 runtime: scope.root_agent_ref,
                  decisions: %{providers: "nope"}
                })
     end
