@@ -225,6 +225,10 @@ The jail (`nix/packages/exec-jail.nix`):
   point at each other; `git worktree repair` on the host fixes a moved one.
   Create worktrees on the host: `git worktree add` fails in the jail;
 - gives the jail a private `/tmp` and home, and a cleared environment;
+- does not mount the host's Git configuration: Git in the jail reads the
+  `gitConfig` built into the launcher (`/etc/tackle/gitconfig`, read-only) as
+  its global configuration, so set the commit identity there (see
+  [Home Manager](#home-manager-module)) or the agent cannot commit;
 - unshares every namespace except the network, starts a new session, and dies
   with the CLI;
 - provides common command-line tools, Ketch, and Python 3 with `requests`,
@@ -336,6 +340,65 @@ Run this on the host, not inside a jail or a Nix build sandbox. Also open the
 jailed TUI, run a command, and exit with Ctrl+C to check startup end to end.
 The jail wrapper is a Nix package, not a portable single-file executable; keep
 `tackle-cli` for the unjailed, copyable Burrito artifact.
+
+Git in the jail has no identity unless the package is built with one, so the
+agent cannot commit. `gitConfig` takes `lib.generators.toGitINI` attributes
+and becomes Git's global configuration in the jail; repository configuration
+still wins. The file is in the store and readable by every local user.
+
+```nix
+tackle.packages.${system}.tackle-cli-jail.override {
+  gitConfig.user = {
+    name = "Ada Lovelace";
+    email = "ada@example.com";
+  };
+}
+```
+
+### Home Manager module
+
+The flake exports a Home Manager module as `homeModules.default` (also
+`homeManagerModules.default`). It installs `tackle-cli-jail` on Linux and
+`tackle-cli` elsewhere, writes `~/.tackle/config.json`, and builds the jail
+with a Git commit identity:
+
+```nix
+# flake.nix
+inputs.tackle.url = "github:Makesesama/tackle";
+
+# Home Manager configuration
+{ inputs, config, ... }:
+{
+  imports = [ inputs.tackle.homeModules.default ];
+
+  programs.tackle = {
+    enable = true;
+    settings = {
+      model = "openai-codex/gpt-5.5";
+      thinking = "medium";
+    };
+    git = {
+      name = "Ada Lovelace";
+      email = "ada@example.com";
+      # Or reuse your host identity:
+      # name = config.programs.git.settings.user.name;
+    };
+  };
+}
+```
+
+`settings` holds the fields of
+[`config.json`](packages/tackle/README.md#configuration-and-credentials).
+When it is not empty, activation replaces `~/.tackle/config.json` with a
+regular copy (mode 0600), not a link into the store: the CLI saves preferences
+such as the subagent sidebar toggle by renaming a new file over it and refuses
+a symbolic link. Those saved preferences last until the next activation. With
+empty `settings` the module leaves the file alone. It does not follow a custom
+`TACKLE_HOME`, and it never writes `auth.json`; log in with the CLI as usual.
+`git.name` and `git.email` need the jail, so on other platforms the module
+rejects them. A custom `package` must accept `override { gitConfig = ...; }`,
+as `tackle-cli-jail` does. On NixOS, use it through Home Manager's NixOS
+module.
 
 ### Jailed dogfooding from the checkout
 

@@ -43,6 +43,13 @@ let
       # Linked worktrees are created on the host.
       if mkdir .git/worktrees/planted 2> /dev/null; then exit 1; fi
 
+      # The configured Git identity commits, and jailed code cannot change it.
+      test "$(git config --global user.name)" = 'Tackle Smoke'
+      git commit --quiet --allow-empty -m 'identity from the jail'
+      test "$(git log -1 --format='%an <%ae> %cn <%ce>')" = \
+        'Tackle Smoke <smoke@tackle.invalid> Tackle Smoke <smoke@tackle.invalid>'
+      if git config --global smoke.planted yes 2> /dev/null; then exit 1; fi
+
       ketch --help > /dev/null
       python3 -c 'import bs4, requests, yaml' > /dev/null
       test "$(cat "$HOME/.config/ketch/config.json")" = '{}'
@@ -73,6 +80,10 @@ let
     name = "tackle-jail-probe";
     entry = probe;
     extraPkgs = jailTools;
+    gitConfig.user = {
+      name = "Tackle Smoke";
+      email = "smoke@tackle.invalid";
+    };
   };
 
   # Runs inside the jail from a linked worktree, as Herdr creates them, in

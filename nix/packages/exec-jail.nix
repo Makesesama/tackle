@@ -13,6 +13,13 @@
   # agent finds the project toolchain on PATH. Requires enableNix: the cached
   # devshell only names store paths. See jail-direnv.nix.
   inheritDirenv ? false,
+  # Git configuration for commands in the jail, as `lib.generators.toGitINI`
+  # attributes, such as the commit identity:
+  #   { user = { name = "Ada Lovelace"; email = "ada@example.com"; }; }
+  # The jail's home is private and the host's Git configuration is not
+  # mounted, so without this Git in the jail has no identity and cannot commit.
+  # It is a read-only file in the store, readable by every local user.
+  gitConfig ? { },
   extraJailOptions ? [ ],
   # The program run inside the jail; tests substitute a probe.
   entry ? pkgs.callPackage ./exec-server.nix { },
@@ -65,6 +72,14 @@ let
     (set-env "NIX_CONFIG" "experimental-features = nix-command flakes")
     (set-env "NIX_SSL_CERT_FILE" cacert)
   ];
+
+  # Git's global configuration in the jail. Repository configuration still
+  # takes precedence, as on the host; jailed code cannot change the file.
+  gitConfigPath = "/etc/tackle/gitconfig";
+  gitAccess = with jail.combinators; [
+    (write-text gitConfigPath (lib.generators.toGitINI gitConfig))
+    (set-env "GIT_CONFIG_GLOBAL" gitConfigPath)
+  ];
 in
 jail name entry (
   with jail.combinators;
@@ -104,6 +119,7 @@ jail name entry (
     (set-env "SSL_CERT_FILE" cacert)
   ]
   ++ lib.optionals enableNix nixAccess
+  ++ lib.optionals (gitConfig != { }) gitAccess
   ++ lib.optionals inheritDirenv (
     assert lib.assertMsg enableNix
       "exec-jail: inheritDirenv requires enableNix, because a cached devshell only names store paths";

@@ -4,6 +4,12 @@
   jailed-agents,
   system,
   tackle-cli,
+  # Git configuration for the agent's commands; see exec-jail.nix. Set the
+  # commit identity here, since the jail does not see the host's:
+  #   tackle-cli-jail.override {
+  #     gitConfig.user = { name = "Ada Lovelace"; email = "ada@example.com"; };
+  #   }
+  gitConfig ? { },
 }:
 
 # `tackle` on the host, with every command and workspace file access in a
@@ -31,6 +37,7 @@ let
   execJail = mkExecJail {
     inheritDirenv = true;
     extraPkgs = jailTools;
+    inherit gitConfig;
   };
 
   package = pkgs.writeShellApplication {

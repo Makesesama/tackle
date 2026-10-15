@@ -73,6 +73,13 @@
       );
     in
     {
+      # Home Manager module: `programs.tackle`. See nix/modules/home-manager.nix.
+      homeModules = {
+        tackle = import ./nix/modules/home-manager.nix self;
+        default = self.homeModules.tackle;
+      };
+      homeManagerModules = self.homeModules;
+
       packages = forAllSystems (
         {
           pkgs,
