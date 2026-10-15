@@ -40,7 +40,8 @@ defmodule Tackle.Review.History do
       the user through `record_outcome/4`; may carry a `"note"`.
 
   `fingerprints/2` reads back the fingerprints with given events, which
-  `Tackle.Review.run/2` uses to skip dismissed (or already shown) findings.
+  `Tackle.LocalReview` passes to `Tackle.Review.run/2` as
+  `:known_fingerprints` to skip dismissed (or already shown) findings.
 
   Lines are appended with one write each. A line that cannot be decoded,
   such as a partial line left by a crash, is skipped when reading.
@@ -49,7 +50,6 @@ defmodule Tackle.Review.History do
   alias Tackle.Lib.Usage
   alias Tackle.Paths
   alias Tackle.Review.{Change, Finding, Result}
-  alias Tackle.Review.Rules.Rule
   alias Tackle.Runtime.ID
   alias Tackle.Session.Storage
 
@@ -97,15 +97,6 @@ defmodule Tackle.Review.History do
           | {:env, %{optional(String.t()) => String.t()}}
           | {:user_home, String.t() | nil}
 
-  @typedoc """
-  Options of `record_run/4`:
-
-    * `:rules` - the rules the review applied, of any status (default `[]`);
-    * `:prompts` - the stage prompts by profile name (default `%{}`); only
-      their digests are stored.
-  """
-  @type run_option :: {:rules, [Rule.t()]} | {:prompts, %{optional(String.t()) => String.t()}}
-
   @typedoc "Options of `record_outcome/4`: `:run_id` and a free-text `:note`."
   @type outcome_option :: {:run_id, String.t()} | {:note, String.t()}
 
@@ -148,11 +139,11 @@ defmodule Tackle.Review.History do
   Records a finished review: a run line, then a `shown` event for every
   shown finding and a `rejected` event for every rejected one.
 
-  Returns the new run's id. See `t:run_option/0`.
+  The rules and stage prompts in effect are recorded by the digests in the
+  result's summary (see `Tackle.Review.Result`). Returns the new run's id.
   """
-  @spec record_run(t(), Change.t(), Result.t(), [run_option()]) ::
-          {:ok, String.t()} | {:error, term()}
-  def record_run(%__MODULE__{} = history, %Change{} = change, %Result{} = result, opts \\ []) do
+  @spec record_run(t(), Change.t(), Result.t()) :: {:ok, String.t()} | {:error, term()}
+  def record_run(%__MODULE__{} = history, %Change{} = change, %Result{} = result) do
     id = ID.generate()
     at = now()
 
@@ -173,8 +164,8 @@ defmodule Tackle.Review.History do
       "settings" => settings(Map.get(result.summary, :settings)),
       "stages" => stages(Map.get(result.summary, :stages, %{})),
       "duration_ms" => Map.get(result.summary, :duration_ms),
-      "rules" => opts |> Keyword.get(:rules, []) |> Enum.map(&rule/1),
-      "prompts" => opts |> Keyword.get(:prompts, %{}) |> Map.new(fn {k, v} -> {k, digest(v)} end),
+      "rules" => result.summary |> Map.get(:rules, []) |> Enum.map(&rule/1),
+      "prompts" => Map.get(result.summary, :prompts, %{}),
       "usage" => usage(result.usage)
     }
 
@@ -411,29 +402,14 @@ defmodule Tackle.Review.History do
     end)
   end
 
-  defp rule(%Rule{} = rule) do
-    content = [
-      rule.id,
-      to_string(rule.status),
-      to_string(rule.category),
-      to_string(rule.severity),
-      Enum.join(rule.applies_to, "\n"),
-      rule.body || ""
-    ]
-
+  defp rule(%{id: id, source: source, status: status, digest: digest}) do
     %{
-      "id" => rule.id,
-      "source" => Atom.to_string(rule.source),
-      "status" => Atom.to_string(rule.status),
-      "digest" => digest(Enum.join(content, <<0>>))
+      "id" => id,
+      "source" => Atom.to_string(source),
+      "status" => Atom.to_string(status),
+      "digest" => digest
     }
   end
-
-  defp digest(text) when is_binary(text) do
-    :sha256 |> :crypto.hash(text) |> binary_part(0, 8) |> Base.encode16(case: :lower)
-  end
-
-  defp digest(_other), do: nil
 
   defp usage(%Usage{} = usage) do
     usage

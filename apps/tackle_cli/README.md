@@ -256,9 +256,10 @@ them; stages left out use the session's model and thinking level:
 ```
 
 With the default step limits and `low` thinking for the detector and verifier
-(as above), the review benchmark (`bench/review_eval`) found the same bugs as
-the earlier defaults (40 and 25 steps, `high` thinking) for about a third of
-the cost.
+(as above), the review benchmark (see
+[`docs/code-review-benchmark.md`](../../docs/code-review-benchmark.md)) found
+the same bugs as the earlier defaults (40 and 25 steps, `high` thinking) for
+about a third of the cost.
 
 The built-in rules are `boundary-condition`, `broken-contract`,
 `concurrency-hazard`, `injection`, `missing-nil-check`,

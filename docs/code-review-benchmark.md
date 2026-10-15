@@ -10,7 +10,10 @@ and explains why we chose them. Related documents:
 - [`REVIEW_LEARNINGS.md`](REVIEW_LEARNINGS.md): what traced production
   reviews showed before this benchmark existed.
 - [`apps/tackle_cli/bench/review_eval/README.md`](../apps/tackle_cli/bench/review_eval/README.md):
-  how to run the benchmark.
+  the benchmark cases. The runner was removed when the review moved toward
+  its own package ([`REVIEW_PACKAGE_PLAN.md`](REVIEW_PACKAGE_PLAN.md)); the
+  commands below need it from Git history (last at `a32552d`) until it is
+  rewritten as standalone scripts.
 
 ## Summary
 

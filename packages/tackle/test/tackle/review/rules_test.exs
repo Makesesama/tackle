@@ -124,6 +124,17 @@ defmodule Tackle.Review.RulesTest do
       assert length(ids.(:all)) == map_size(@builtin_rules) + 1
     end
 
+    test "builtin/1 returns them without reading any files" do
+      assert %{rules: rules, warnings: []} = Rules.builtin()
+      assert Enum.map(rules, & &1.id) == Rules.builtin_ids()
+      assert Enum.all?(rules, &(&1.source == :builtin))
+
+      assert %{rules: [%{id: "injection"}], warnings: []} = Rules.builtin(["injection"])
+      assert %{rules: []} = Rules.builtin([])
+      # Unknown ids select nothing, as in discovery.
+      assert %{rules: []} = Rules.builtin(["no-such-rule"])
+    end
+
     test "ship the MVP set as active, language-agnostic rules with examples", %{
       opts: opts,
       root: root

@@ -6,7 +6,10 @@ defmodule Tackle.ReviewTest do
   import Tackle.Test.Runtime, only: [start_scope: 1, eventually: 1]
 
   alias Tackle.Config
+  alias Tackle.Config.Review, as: ReviewSettings
+  alias Tackle.Executor
   alias Tackle.Lib.Cancellation
+  alias Tackle.LocalReview
   alias Tackle.Review
   alias Tackle.Review.{Change, Detector, Diff, Finding, History, Result, Rules}
   alias Tackle.Runtime.{AgentSpec, Limits, ScopeSpec}
@@ -298,7 +301,9 @@ defmodule Tackle.ReviewTest do
     }
   end
 
+  # `:runner` is `Tackle.Review` (default) or `Tackle.LocalReview`.
   defp review(change, script, opts \\ []) do
+    {runner, opts} = Keyword.pop(opts, :runner, Review)
     {profile_opts, opts} = Keyword.pop(opts, :profile_opts, [])
     {limits, opts} = Keyword.pop(opts, :limits, Limits.default())
     profiles = profiles(script, profile_opts)
@@ -316,8 +321,11 @@ defmodule Tackle.ReviewTest do
         opts
       )
 
-    Review.run(change, opts)
+    runner.run(change, opts)
   end
+
+  defp local_review(change, script, opts),
+    do: review(change, script, [runner: LocalReview] ++ opts)
 
   defp events do
     receive do
@@ -906,14 +914,61 @@ defmodule Tackle.ReviewTest do
     assert calls(:verifier) == []
   end
 
-  describe "history" do
+  test "the result carries digests of the rules and stage prompts in effect" do
+    assert {:ok, result} = review(change(), script())
+
+    assert [%{id: "missing-nil-check", source: :project, status: :active, digest: digest}] =
+             result.summary.rules
+
+    assert digest =~ ~r/^[0-9a-f]{16}$/
+    assert %{"review-detector" => prompt, "review-verifier" => prompt} = result.summary.prompts
+    assert prompt =~ ~r/^[0-9a-f]{16}$/
+
+    # A changed rule or prompt changes its digest.
+    [rule] = rules()
+
+    changed_prompt = fn spec ->
+      %{spec | config: %{spec.config | system_prompt: "Another prompt."}}
+    end
+
+    assert {:ok, changed} =
+             review(change(), script(),
+               rules: [%{rule | body: rule.body <> " Always."}],
+               profiles:
+                 script()
+                 |> profiles()
+                 |> Map.update!("review-detector", changed_prompt)
+             )
+
+    assert [%{digest: changed_digest}] = changed.summary.rules
+    refute changed_digest == digest
+    assert changed.summary.prompts["review-detector"] != prompt
+    assert changed.summary.prompts["review-verifier"] == prompt
+
+    # Nothing to review: no rules are in effect.
+    assert {:ok, empty} = review(%{change() | diff: %Diff{files: []}}, script())
+    assert empty.summary.rules == []
+  end
+
+  test "host warnings come first in the summary" do
+    {:ok, oversized} =
+      Rules.parse(@rule <> String.duplicate("x", 17_000), "big.md", :project)
+
+    assert {:ok, result} =
+             review(change(), script(), warnings: ["from the host"], rules: [oversized])
+
+    assert ["from the host", resolution | _] = result.summary.warnings
+    assert resolution =~ "rule missing-nil-check was not applied"
+  end
+
+  describe "Tackle.LocalReview history" do
     setup do
       {:ok, history} = History.open("/repo", home: Tackle.Test.Runtime.tmp_home())
       {:ok, history: history}
     end
 
     test "records the run with its shown and rejected findings", %{history: history} do
-      assert {:ok, result} = review(change(), script(), history: history)
+      assert {:ok, result} = local_review(change(), script(), history: history)
       [shown] = result.blocking
       [%{finding: rejected}] = result.rejected
       assert result.summary.warnings == []
@@ -942,17 +997,17 @@ defmodule Tackle.ReviewTest do
 
     test "dismissed findings are not reported again", %{history: history} do
       script = script(%{findings: [nil_check()]})
-      assert {:ok, first} = review(change(), script, history: history)
+      assert {:ok, first} = local_review(change(), script, history: history)
       [%Finding{fingerprint: fingerprint}] = first.blocking
 
       # Shown findings are reported again by default.
-      assert {:ok, again} = review(change(), script, history: history)
+      assert {:ok, again} = local_review(change(), script, history: history)
       assert [%Finding{fingerprint: ^fingerprint}] = again.blocking
 
       :ok = History.record_outcome(history, fingerprint, :dismissed)
       _ = calls(:verifier)
 
-      assert {:ok, third} = review(change(), script, history: history)
+      assert {:ok, third} = local_review(change(), script, history: history)
       assert third.blocking == []
       assert [%{reason: :known, finding: %Finding{fingerprint: ^fingerprint}}] = third.dropped
       assert calls(:verifier) == []
@@ -968,9 +1023,9 @@ defmodule Tackle.ReviewTest do
     } do
       script = script(%{findings: [nil_check()]})
       opts = [history: history, skip_outcomes: [:shown, :dismissed]]
-      assert {:ok, %Result{blocking: [_shown]}} = review(change(), script, opts)
+      assert {:ok, %Result{blocking: [_shown]}} = local_review(change(), script, opts)
 
-      assert {:ok, second} = review(change(), script, opts)
+      assert {:ok, second} = local_review(change(), script, opts)
       assert second.blocking == []
       assert [%{reason: :known}] = second.dropped
       assert second.summary.verdict == :clean
@@ -983,7 +1038,7 @@ defmodule Tackle.ReviewTest do
       {:ok, history} = History.open("/repo", home: blocked)
 
       assert {:ok, result} =
-               review(change(), script(%{findings: [nil_check()]}), history: history)
+               local_review(change(), script(%{findings: [nil_check()]}), history: history)
 
       assert [%Finding{}] = result.blocking
       # Its home is a file: neither reading nor writing works.
@@ -995,7 +1050,7 @@ defmodule Tackle.ReviewTest do
       File.mkdir_p!(History.findings_path(unreadable))
 
       assert {:ok, result} =
-               review(change(), script(%{findings: [nil_check()]}), history: unreadable)
+               local_review(change(), script(%{findings: [nil_check()]}), history: unreadable)
 
       assert [%Finding{}] = result.blocking
       assert [read_warning, write_warning] = result.summary.warnings
@@ -1009,10 +1064,17 @@ defmodule Tackle.ReviewTest do
       base = [requester: scope.root_agent_ref, profiles: profiles]
 
       assert {:error, {:invalid_option, :history, "/repo"}} =
-               Review.run(change(), [history: "/repo"] ++ base)
+               LocalReview.run(change(), [history: "/repo"] ++ base)
 
       assert {:error, {:invalid_option, :skip_outcomes, [:great]}} =
-               Review.run(change(), [history: history, skip_outcomes: [:great]] ++ base)
+               LocalReview.run(change(), [history: history, skip_outcomes: [:great]] ++ base)
+
+      # Rules are discovered through the session executor, so one is needed.
+      assert {:error, {:missing_option, :executor}} = LocalReview.run(change(), base)
+
+      # The history is local; the review itself does not accept it.
+      assert {:error, {:unknown_options, [:history]}} =
+               Review.run(change(), [history: history, rules: []] ++ base)
 
       refute_received {:llm_call, _stage, _request}
     end
@@ -1473,7 +1535,7 @@ defmodule Tackle.ReviewTest do
       on_exit(fn -> Tackle.Test.Runtime.stop_scope(scope.scope_ref) end)
       opts = [requester: scope.root_agent_ref, profiles: profiles, rules: rules()]
 
-      assert {:ok, result} = Review.run(change(), opts)
+      assert {:ok, result} = LocalReview.run(change(), opts)
       assert Enum.all?(calls(:detector), &(&1.reasoning_effort == "low"))
       assert Enum.all?(calls(:verifier), &(&1.reasoning_effort == "medium"))
       assert [%{reasoning_effort: "high"}] = calls(:scorer)
@@ -1484,10 +1546,46 @@ defmodule Tackle.ReviewTest do
       # The option replaces a stage's setting; `nil` falls back to the
       # inherited level.
       assert {:ok, _result} =
-               Review.run(change(), [thinking: [detector: "minimal", scorer: nil]] ++ opts)
+               LocalReview.run(change(), [thinking: [detector: "minimal", scorer: nil]] ++ opts)
 
       assert Enum.all?(calls(:detector), &(&1.reasoning_effort == "minimal"))
       assert [%{reasoning_effort: "medium"}] = calls(:scorer)
+    end
+
+    test "settings set profile, models, step limits, and the built-in rules" do
+      script = script(%{findings: [nil_check()]})
+
+      {:ok, settings} =
+        ReviewSettings.new(
+          [
+            profile: :assertive,
+            models: [verifier: "review/other"],
+            max_steps: [detector: 3, verifier: 2],
+            default_rules: ["missing-nil-check"]
+          ],
+          [Adapter]
+        )
+
+      assert {:ok, result} = review(change(), script, settings: settings)
+      assert result.summary.profile == :assertive
+      assert Enum.all?(calls(:verifier), &(&1.model == "other"))
+
+      assert %{max_steps: %{detector: 3, verifier: 2}, models: %{verifier: "review/other"}} =
+               result.summary.settings
+
+      # Options override the settings.
+      assert {:ok, result} = review(change(), script, settings: settings, profile: :quiet)
+      assert result.summary.profile == :quiet
+      _ = calls(:detector)
+
+      # Without rules, the built-in rules apply, as many as the settings select.
+      {:ok, injection_only} = ReviewSettings.new([default_rules: ["injection"]], [Adapter])
+      assert {:ok, result} = review(change(), script, rules: nil, settings: injection_only)
+      assert [%{id: "injection", source: :builtin}] = result.summary.rules
+      assert Enum.map_join(calls(:detector), "\n", & &1.prompt) =~ ~s(<rule id="injection")
+
+      assert {:ok, result} = review(change(), script, rules: nil)
+      assert length(result.summary.rules) == length(Rules.builtin_ids())
     end
 
     test "the requester session's settings set profile, models, step limits, and rules" do
@@ -1517,9 +1615,9 @@ defmodule Tackle.ReviewTest do
       {:ok, scope} = Tackle.Runtime.start_scope(spec)
       on_exit(fn -> Tackle.Test.Runtime.stop_scope(scope.scope_ref) end)
       # Without `:rules`, the rules are discovered, built-in ones included.
-      opts = [requester: scope.root_agent_ref, profiles: profiles]
+      opts = [requester: scope.root_agent_ref, profiles: profiles, executor: Executor.local()]
 
-      assert {:ok, result} = Review.run(change(), opts)
+      assert {:ok, result} = LocalReview.run(change(), opts)
       assert result.summary.profile == :assertive
       assert Enum.all?(calls(:verifier), &(&1.model == "other"))
 
@@ -1532,7 +1630,7 @@ defmodule Tackle.ReviewTest do
 
       # Options override the settings; a stage set to nil keeps its profile's limit.
       assert {:ok, result} =
-               Review.run(
+               LocalReview.run(
                  change(),
                  [profile: :quiet, max_steps: [detector: nil], default_rules: []] ++ opts
                )
@@ -1566,6 +1664,14 @@ defmodule Tackle.ReviewTest do
 
       assert {:error, {:requester_unavailable, _reason}} =
                Review.run(change(), requester: requester, profiles: profiles, rules: rules())
+
+      # Reading its settings fails first.
+      assert {:error, {:requester_unavailable, _reason}} =
+               LocalReview.run(change(),
+                 requester: requester,
+                 profiles: profiles,
+                 executor: Executor.local()
+               )
 
       assert calls(:detector) == []
     end

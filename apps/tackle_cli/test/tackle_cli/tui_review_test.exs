@@ -873,6 +873,7 @@ defmodule Tackle.CLI.TUI.ReviewTest do
       %{
         cwd: cwd,
         workspace: nil,
+        executor: Tackle.Executor.local(),
         env: %{"TACKLE_HOME" => Path.join(home, "tackle-home")},
         range: nil,
         staged: false,

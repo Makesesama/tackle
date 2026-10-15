@@ -1,7 +1,10 @@
 defmodule Tackle.Tools.Review do
   @moduledoc """
   Opt-in tool that reviews the current code change with `Tackle.Review`,
-  so an agent can review its own work and then fix what was found.
+  so an agent can review its own work and then fix what was found. It runs
+  the review through `Tackle.LocalReview`, so the session's review settings,
+  the user's and project's rules (read through the session executor), and
+  the history apply.
 
   The change is loaded from Git in the agent's working directory
   (`Tackle.Review.Change`, which reads the repository on the host even for
@@ -72,7 +75,7 @@ defmodule Tackle.Tools.Review do
   alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Executor
   alias Tackle.Lib.Event
-  alias Tackle.Review
+  alias Tackle.LocalReview
   alias Tackle.Review.{Change, Delegation, Detector, Finding, History, Rank, Result, Verifier}
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, Ref, Registry}
@@ -124,11 +127,12 @@ defmodule Tackle.Tools.Review do
         requester: agent_ref,
         profiles: profiles(agent_ref),
         profile: profile,
+        executor: Executor.from_context(context),
         history: history,
         on_event: &report_event(report, &1)
       ]
 
-      case Review.run(change, opts) do
+      case LocalReview.run(change, opts) do
         {:ok, result} -> {:ok, format_result(result, change, notes)}
         {:error, reason} -> {:error, "The review failed: " <> describe_error(reason)}
       end

@@ -3,7 +3,7 @@ defmodule Tackle.CLI.TUI.Review do
   `/review`: code review from the shell, with a findings overlay.
 
   `/review [RANGE | --staged]` loads the change from Git and runs
-  `Tackle.Review.run/2` in a background command, so the shell stays
+  `Tackle.LocalReview.run/2` in a background command, so the shell stays
   responsive. The review's detector and verifier runs are delegated from
   the root agent with the scope's own `review-detector` and
   `review-verifier` profiles, so they appear in `/tasks` (F7) like any
@@ -32,9 +32,10 @@ defmodule Tackle.CLI.TUI.Review do
 
   Every feedback action (`u`, `n`, `d`, and the fixes, recorded as `fixed`)
   is appended to the repository's `Tackle.Review.History`, and every review
-  run is recorded there by `Tackle.Review.run/2`. History is an aid: when it
-  cannot be opened or written the review still works and the overlay says
-  feedback was not saved.
+  run is recorded there by `Tackle.LocalReview`, which also applies the
+  session's review settings and the user's and project's rules. History is
+  an aid: when it cannot be opened or written the review still works and
+  the overlay says feedback was not saved.
 
   `/findings` reopens the overlay after it was closed, for example after a
   fix turn, so `r` can check the fix.
@@ -51,6 +52,7 @@ defmodule Tackle.CLI.TUI.Review do
   alias Tackle.CLI.TUI.{Composer, ReviewProgress, ReviewView, State}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Cancellation
+  alias Tackle.LocalReview
   alias Tackle.Review.{Change, Detector, Finding, History, Result, Verifier}
   alias Tackle.Runtime.Registry
 
@@ -145,6 +147,7 @@ defmodule Tackle.CLI.TUI.Review do
   @type request :: %{
           cwd: Path.t() | nil,
           workspace: Path.t() | nil,
+          executor: Tackle.Executor.t(),
           env: map() | nil,
           range: String.t() | nil,
           staged: boolean(),
@@ -287,6 +290,7 @@ defmodule Tackle.CLI.TUI.Review do
     request = %{
       cwd: state.cwd,
       workspace: Tackle.Executor.workspace(state.executor),
+      executor: state.executor,
       env: state.env,
       range: review.target.range,
       staged: review.target.staged,
@@ -346,15 +350,17 @@ defmodule Tackle.CLI.TUI.Review do
           {:ok, :unchanged}
 
         paths ->
-          opts = [
-            requester: request.requester,
-            profiles: profiles(request.scope_ref),
-            history: history,
-            cancellation: request.signal,
-            on_event: &notify.({:event, &1})
-          ]
+          opts =
+            [
+              requester: request.requester,
+              profiles: profiles(request.scope_ref),
+              executor: request.executor,
+              history: history,
+              cancellation: request.signal,
+              on_event: &notify.({:event, &1})
+            ] ++ if(is_map(request.env), do: [env: request.env], else: [])
 
-          Tackle.Review.run(restrict(change, paths), opts)
+          LocalReview.run(restrict(change, paths), opts)
       end
     end
   end

@@ -190,8 +190,8 @@ Verifiers took 25–30 s each.
   recall and precision numbers. The repository's `Tackle.Review.History`
   already stores outcomes (useful, not useful, dismissed, fixed) that can serve
   as precision labels over time. *Implemented* as
-  `apps/tackle_cli/bench/review_eval`; findings in
-  [`code-review-benchmark.md`](code-review-benchmark.md).
+  `apps/tackle_cli/bench/review_eval` (the runner is now removed; its cases
+  remain); findings in [`code-review-benchmark.md`](code-review-benchmark.md).
 - **Range reviews read the working tree.** For `HEAD~1..HEAD` the detectors ran
   `git status` and saw unrelated local modifications, and they read files from
   the working tree. When the working tree differs from the reviewed head,
@@ -227,9 +227,10 @@ Verifiers took 25–30 s each.
 
 ### 3.5 Diagnostics
 
-`apps/tackle_cli/bench/review_repro.exs` reproduces a review with the
-interactive shell's composition and traces every delegated run, without
-modifying the harness:
+`apps/tackle_cli/bench/review_repro.exs` reproduced a review with the
+interactive shell's composition and traced every delegated run, without
+modifying the harness. It was removed with the benchmark runner (last at
+`a32552d` in Git history):
 
 ```sh
 cd apps/tackle_cli

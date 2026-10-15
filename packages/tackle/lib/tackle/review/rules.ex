@@ -186,6 +186,24 @@ defmodule Tackle.Review.Rules do
   end
 
   @doc """
+  Returns the embedded built-in rules, without reading any files.
+
+  `ids` is `:all` or the ids of the built-in rules to keep, as
+  `:builtin_rules` in `discover/1`. Every rule is returned regardless of
+  status, sorted by id, with the same warnings discovery would report for
+  them.
+  """
+  @spec builtin(:all | [String.t()]) :: discovery()
+  def builtin(ids \\ :all) when ids == :all or is_list(ids) do
+    {rules, warnings} =
+      @default_max_rule_bytes
+      |> load_embedded({%{}, []})
+      |> select_builtin(ids)
+
+    %{rules: rules |> Map.values() |> Enum.sort_by(& &1.id), warnings: Enum.reverse(warnings)}
+  end
+
+  @doc """
   Discovers rules from all sources (see the module documentation).
 
   Returns every rule regardless of status, so later stages can tell

@@ -4,17 +4,8 @@ defmodule Tackle.Review.HistoryTest do
   import Tackle.Test.Runtime, only: [tmp_home: 0]
 
   alias Tackle.Lib.Usage
-  alias Tackle.Review.{Change, Diff, Finding, History, Result, Rules}
+  alias Tackle.Review.{Change, Diff, Finding, History, Result}
   alias Tackle.Session.Storage
-
-  @rule """
-  ---
-  id: missing-nil-check
-  category: correctness
-  severity: high
-  ---
-  Values that can be absent are checked before use.
-  """
 
   setup do
     home = tmp_home()
@@ -137,16 +128,19 @@ defmodule Tackle.Review.HistoryTest do
     shown = finding("Guard against a missing key")
     optional = finding("Rename f", %{"blocking" => false, "severity" => "low"})
     rejected = finding("Check the list for emptiness")
-    {:ok, rule} = Rules.parse(@rule, "missing-nil-check.md", :project)
 
-    assert {:ok, run_id} =
-             History.record_run(
-               ctx.history,
-               change(),
-               result([shown], [optional], [rejected]),
-               rules: [rule],
-               prompts: %{"review-detector" => "Find bugs.", "review-verifier" => "Verify."}
-             )
+    result =
+      update_in(
+        result([shown], [optional], [rejected]).summary,
+        &Map.merge(&1, %{
+          rules: [
+            %{id: "missing-nil-check", source: :project, status: :active, digest: "0123abcd"}
+          ],
+          prompts: %{"review-detector" => "aaaa1111", "review-verifier" => "bbbb2222"}
+        })
+      )
+
+    assert {:ok, run_id} = History.record_run(ctx.history, change(), result)
 
     assert {:ok, [run]} = History.runs(ctx.history)
     assert run["id"] == run_id
@@ -167,13 +161,16 @@ defmodule Tackle.Review.HistoryTest do
     assert %{"blocking" => 1, "optional" => 1, "rejected" => 1, "verdict" => "blocking"} =
              run["summary"]
 
-    assert [%{"id" => "missing-nil-check", "source" => "project", "status" => "active"} = r] =
-             run["rules"]
+    assert run["rules"] == [
+             %{
+               "id" => "missing-nil-check",
+               "source" => "project",
+               "status" => "active",
+               "digest" => "0123abcd"
+             }
+           ]
 
-    assert r["digest"] =~ ~r/^[0-9a-f]{16}$/
-    assert %{"review-detector" => d, "review-verifier" => v} = run["prompts"]
-    assert d =~ ~r/^[0-9a-f]{16}$/ and d != v
-    refute File.read!(History.runs_path(ctx.history)) =~ "Find bugs."
+    assert run["prompts"] == %{"review-detector" => "aaaa1111", "review-verifier" => "bbbb2222"}
     assert run["usage"] == %{"input_tokens" => 100, "output_tokens" => 20, "total_tokens" => 120}
 
     assert {:ok, [first, second, third]} = History.finding_events(ctx.history)
@@ -210,20 +207,11 @@ defmodule Tackle.Review.HistoryTest do
     assert shown_fps == MapSet.new([shown.fingerprint, optional.fingerprint])
   end
 
-  test "a changed rule or prompt changes its digest", ctx do
-    {:ok, rule} = Rules.parse(@rule, "missing-nil-check.md", :project)
-    changed = %{rule | body: rule.body <> " Always."}
-    empty = result([], [], [])
-
-    {:ok, _} =
-      History.record_run(ctx.history, change(), empty, rules: [rule], prompts: %{"p" => "a"})
-
-    {:ok, _} =
-      History.record_run(ctx.history, change(), empty, rules: [changed], prompts: %{"p" => "b"})
-
-    {:ok, [one, two]} = History.runs(ctx.history)
-    refute hd(one["rules"])["digest"] == hd(two["rules"])["digest"]
-    refute one["prompts"]["p"] == two["prompts"]["p"]
+  test "a result without digests records no rules or prompts", ctx do
+    {:ok, _} = History.record_run(ctx.history, change(), result([], [], []))
+    {:ok, [run]} = History.runs(ctx.history)
+    assert run["rules"] == []
+    assert run["prompts"] == %{}
     # A run without findings writes no finding events.
     assert {:ok, []} = History.finding_events(ctx.history)
   end

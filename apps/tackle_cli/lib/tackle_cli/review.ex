@@ -4,9 +4,9 @@ defmodule Tackle.CLI.Review do
 
   It composes the same coding scope as an interactive run, without a durable
   session, loads the change from Git (`Tackle.Review.Change`), and runs
-  `Tackle.Review.run/2` from the root agent with the scope's trusted agent
-  profiles. Progress goes to standard error line by line; the result goes to
-  standard output as text or JSON.
+  it through `Tackle.LocalReview` from the root agent with the scope's
+  trusted agent profiles. Progress goes to standard error line by line; the
+  result goes to standard output as text or JSON.
 
   Each review is recorded in the repository's `Tackle.Review.History` under
   `TACKLE_HOME`, and findings dismissed there are not reported again.
@@ -22,7 +22,7 @@ defmodule Tackle.CLI.Review do
   alias Tackle.CLI.Output.ReviewProgress
   alias Tackle.CLI.Run
   alias Tackle.Executor
-  alias Tackle.Review
+  alias Tackle.LocalReview
   alias Tackle.Review.{Change, History, Result}
 
   @blocking_status 1
@@ -69,8 +69,10 @@ defmodule Tackle.CLI.Review do
   def exit_status(%Result{}), do: 0
 
   defp review(scope, scope_spec, opts, output) do
-    # The change is read on the host, within the scope's (jail) workspace.
-    workspace = Executor.workspace(Executor.from_context(scope_spec.root_spec.config.context))
+    # The change is read on the host, within the scope's (jail) workspace;
+    # project rules are read through the scope's executor.
+    workspace_executor = Executor.from_context(scope_spec.root_spec.config.context)
+    workspace = Executor.workspace(workspace_executor)
 
     load_opts = [
       cwd: File.cwd!(),
@@ -80,7 +82,7 @@ defmodule Tackle.CLI.Review do
     ]
 
     with {:ok, change} <- load_change(load_opts),
-         {:ok, result} <- run_review(change, scope, scope_spec, opts) do
+         {:ok, result} <- run_review(change, scope, scope_spec, workspace_executor, opts) do
       Output.puts(output, ReviewOutput.render(result, change, output))
       exit_status(result)
     else
@@ -98,7 +100,7 @@ defmodule Tackle.CLI.Review do
   # The review runs in a task so this process can print each event as it
   # arrives while keeping the progress state. Events are sent before the
   # task replies, so all of them are printed before the result.
-  defp run_review(change, scope, scope_spec, opts) do
+  defp run_review(change, scope, scope_spec, executor, opts) do
     parent = self()
     tag = make_ref()
     device = Map.get(opts, :progress_device, :stderr)
@@ -108,11 +110,12 @@ defmodule Tackle.CLI.Review do
         requester: scope.root_agent_ref,
         profiles: scope_spec.profiles,
         samples: opts.samples,
+        executor: executor,
         history: history(change, device),
         on_event: &send(parent, {tag, &1})
       ] ++ profile_option(opts.profile) ++ Map.get(opts, :tuning, [])
 
-    task = Task.async(fn -> Review.run(change, review_opts) end)
+    task = Task.async(fn -> LocalReview.run(change, review_opts) end)
     await_review(task, tag, ReviewProgress.new(), device)
   end
 

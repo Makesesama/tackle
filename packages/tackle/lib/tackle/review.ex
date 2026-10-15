@@ -58,14 +58,14 @@ defmodule Tackle.Review do
   so providers that route cached prompts by key can reuse the stage's common
   prompt prefix across runs.
 
-  ## History
+  ## Storage
 
-  With `:history` (a `Tackle.Review.History`), findings whose fingerprints
-  have one of the `:skip_outcomes` events recorded are not reported again
-  (dropped as `:known`), and the finished run is recorded with its shown and
-  rejected findings. History is an aid, not a requirement: when it cannot
-  be read or written, the review still runs and `result.summary.warnings`
-  says why.
+  The review stores nothing. Findings the host already knows about, such
+  as dismissed ones, come in as `:known_fingerprints` and are dropped as
+  `:known`; the host records the returned `Tackle.Review.Result`, whose
+  summary also carries the digests of the rules and stage prompts in
+  effect (`rules` and `prompts`), so runs can be compared across rule and
+  prompt changes. Rules and settings come in as options as well.
 
   ## Events
 
@@ -100,7 +100,7 @@ defmodule Tackle.Review do
   other findings stay uncertain.
   """
 
-  alias Tackle.{Auth, Config, Executor}
+  alias Tackle.{Auth, Config}
   alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Lib.{Cancellation, Usage}
 
@@ -111,7 +111,6 @@ defmodule Tackle.Review do
     Detector,
     Filter,
     Finding,
-    History,
     Locations,
     Pool,
     Rank,
@@ -146,8 +145,8 @@ defmodule Tackle.Review do
     :shared_cache_key,
     :scorer,
     :known_fingerprints,
-    :history,
-    :skip_outcomes,
+    :settings,
+    :warnings,
     :on_event,
     :cancellation,
     :capacity_wait
@@ -170,10 +169,10 @@ defmodule Tackle.Review do
   Options:
 
   `:profile`, `:models`, `:thinking`, `:max_steps`, and `:default_rules`
-  default to the requester session's review settings
-  (`Tackle.Config.Review`, the `review` object of `config.json`). For the
-  per-stage maps, a stage given here replaces its setting, and a stage set
-  to `nil` falls back to the profile's or inherited value.
+  default to `:settings` (`Tackle.Config.Review`, the `review` object of
+  `config.json`). For the per-stage maps, a stage given here replaces its
+  setting, and a stage set to `nil` falls back to the profile's or
+  inherited value.
 
     * `:requester` (required) - the `Tackle.Runtime.AgentRef` of the agent
       the review's runs are delegated from, which must be allowed to delegate;
@@ -181,11 +180,13 @@ defmodule Tackle.Review do
       `Tackle.Runtime.ScopeSpec` (specs or resolver functions); must contain
       `review-detector` with the `report_findings` tool and `review-verifier`
       with the `report_verdict` tool;
-    * `:rules` - the rules to apply, of any status (default: discovered with
-      `Tackle.Review.Rules.discover/1` from the change's directory, through
-      the detector profile's executor);
-    * `:default_rules` - the ids of the built-in rules discovery keeps, or
-      `nil` for all of them (default); ignored with `:rules`;
+    * `:rules` - the rules to apply, of any status (default: the built-in
+      rules, `Tackle.Review.Rules.builtin/1`);
+    * `:default_rules` - the ids of the built-in rules to apply when
+      `:rules` is not given, or `nil` for all of them (default); ignored
+      with `:rules`;
+    * `:settings` - a `Tackle.Config.Review` with the defaults above
+      (default: none);
     * `:profile` - `:quiet`, `:default` (default), or `:assertive`
       (see `Tackle.Review.Rank`);
     * `:samples` - detector runs per batch of units (default 1);
@@ -225,11 +226,9 @@ defmodule Tackle.Review do
       profile's own; then `models[:verifier]`, then `models[:scorer]`;
     * `:known_fingerprints` - fingerprints of findings not to report again,
       such as dismissed ones (default none);
-    * `:history` - a `Tackle.Review.History` to skip known findings with
-      and to record the run in (default `nil`, no history);
-    * `:skip_outcomes` - the history events whose findings are not reported
-      again (default `[:dismissed]`); add `:shown` for an incremental review
-      that reports only findings not shown before;
+    * `:warnings` - the host's warnings to report in
+      `result.summary.warnings` before the review's own, such as rule files
+      it could not read (default `[]`);
     * `:on_event` - `fn event -> any end` (see the module documentation);
     * `:cancellation` - a `Tackle.Lib.Cancellation` signal;
     * `:capacity_wait` - how long a run waits for a free slot, in
@@ -254,8 +253,8 @@ defmodule Tackle.Review do
           | {:shared_cache_key, boolean()}
           | {:scorer, module() | nil}
           | {:known_fingerprints, Enumerable.t()}
-          | {:history, History.t() | nil}
-          | {:skip_outcomes, [History.event()]}
+          | {:settings, ReviewSettings.t() | nil}
+          | {:warnings, [String.t()]}
           | {:on_event, (event() -> any())}
           | {:cancellation, Cancellation.signal() | nil}
           | {:capacity_wait, non_neg_integer()}
@@ -268,9 +267,7 @@ defmodule Tackle.Review do
   failing are kept. Returns `{:error, reason}` for invalid
   options, a requester whose session cannot be read
   (`{:requester_unavailable, reason}`) or whose model a stage cannot inherit
-  (`{:requester_model_unavailable, reason}`), invalid review settings in the
-  requester's context (`{:invalid_review_settings, value}`), an invalid
-  `:exclude` glob,
+  (`{:requester_model_unavailable, reason}`), an invalid `:exclude` glob,
   cancellation (`:cancelled`), or when every unit failed without reporting
   a finding (`{:detection_failed, failures}`).
   """
@@ -281,9 +278,9 @@ defmodule Tackle.Review do
     with {:ok, ctx} <- prepare(opts) do
       ctx = Map.put(ctx, :started, started)
 
-      case review(change, history_known(ctx)) do
+      case review(change, ctx) do
         {:ok, result, rules} ->
-          result = record(result, change, rules, ctx)
+          result = put_digests(result, rules, ctx)
           emit(ctx, {:done, result})
           {:ok, result}
 
@@ -299,7 +296,8 @@ defmodule Tackle.Review do
   defp prepare(opts) do
     with :ok <- known_options(opts),
          {:ok, requester} <- requester(Keyword.get(opts, :requester)),
-         {:ok, settings} <- Delegation.requester_settings(requester),
+         :ok <- ensure_requester(requester),
+         {:ok, settings} <- option(opts, :settings, nil, &settings?/1),
          settings = settings || %ReviewSettings{},
          {:ok, profiles} <- fetch_option(opts, :profiles, &is_map/1),
          {:ok, detector} <- stage_spec(profiles, Detector.profile(), ReportFindings),
@@ -337,8 +335,7 @@ defmodule Tackle.Review do
            scorer(Keyword.get(opts, :scorer, Scorer.LLM), verifier, models, thinking, cache_keys),
          {:ok, rules} <- option(opts, :rules, nil, &rule_list?/1),
          {:ok, known} <- option(opts, :known_fingerprints, [], &Enumerable.impl_for/1),
-         {:ok, history} <- option(opts, :history, nil, &(is_nil(&1) or is_struct(&1, History))),
-         {:ok, skip_outcomes} <- option(opts, :skip_outcomes, [:dismissed], &events?/1),
+         {:ok, warnings} <- option(opts, :warnings, [], &string_list?/1),
          {:ok, on_event} <- option(opts, :on_event, fn _event -> :ok end, &is_function(&1, 1)),
          {:ok, signal} <-
            option(opts, :cancellation, nil, &(is_nil(&1) or is_struct(&1, Cancellation.Signal))),
@@ -367,9 +364,7 @@ defmodule Tackle.Review do
          rules: rules,
          default_rules: default_rules,
          known: MapSet.new(known),
-         history: history,
-         skip_outcomes: skip_outcomes,
-         warnings: [],
+         warnings: warnings,
          on_event: on_event,
          signal: signal,
          run_opts: if(capacity_wait, do: [capacity_wait: capacity_wait], else: [])
@@ -387,6 +382,15 @@ defmodule Tackle.Review do
   defp requester(%AgentRef{} = agent_ref), do: {:ok, agent_ref}
   defp requester(nil), do: {:error, {:missing_option, :requester}}
   defp requester(other), do: {:error, {:invalid_option, :requester, other}}
+
+  # A requester that is gone fails here, before any run, rather than as a
+  # refused run per unit.
+  defp ensure_requester(requester) do
+    case Runtime.session_snapshot(requester) do
+      {:ok, _snapshot} -> :ok
+      {:error, reason} -> {:error, {:requester_unavailable, reason}}
+    end
+  end
 
   # The scope admits at most this many children of the requester at once, so a
   # review defaults to keeping exactly that many runs in flight.
@@ -418,7 +422,7 @@ defmodule Tackle.Review do
   defp positive_integer?(value), do: is_integer(value) and value > 0
   defp non_negative_integer?(value), do: is_integer(value) and value >= 0
   defp string_list?(value), do: is_list(value) and Enum.all?(value, &is_binary/1)
-  defp events?(value), do: is_list(value) and Enum.all?(value, &(&1 in History.events()))
+  defp settings?(value), do: is_nil(value) or is_struct(value, ReviewSettings)
 
   defp rule_list?(value),
     do: is_nil(value) or (is_list(value) and Enum.all?(value, &is_struct(&1, Rule)))
@@ -651,7 +655,7 @@ defmodule Tackle.Review do
   end
 
   defp pipeline(state, ctx) do
-    {rules, warnings} = rules(state.change, ctx)
+    {rules, warnings} = rules(ctx)
     state = %{state | warnings: state.warnings ++ warnings}
 
     with {:ok, flow, state} <- detect_and_verify(state, rules, ctx),
@@ -675,19 +679,11 @@ defmodule Tackle.Review do
     end
   end
 
-  defp rules(change, ctx) do
+  defp rules(ctx) do
     case ctx.rules do
       nil ->
-        executor = Executor.from_context(ctx.detector.config.context)
-
-        discovery =
-          Rules.discover(
-            cwd: change.cwd,
-            executor: executor,
-            builtin_rules: ctx.default_rules || :all
-          )
-
-        {discovery.rules, Enum.map(discovery.warnings, &format_warning/1)}
+        builtin = Rules.builtin(ctx.default_rules || :all)
+        {builtin.rules, Enum.map(builtin.warnings, &format_warning/1)}
 
       rules ->
         {rules, []}
@@ -1250,40 +1246,49 @@ defmodule Tackle.Review do
     %{state | stages: Map.put(state.stages, stage, stats), usages: [stats.usage | state.usages]}
   end
 
-  ## History
+  ## Digests
 
-  defp history_known(%{history: nil} = ctx), do: ctx
-
-  defp history_known(%{history: history} = ctx) do
-    case History.fingerprints(history, ctx.skip_outcomes) do
-      {:ok, fingerprints} ->
-        %{ctx | known: MapSet.union(ctx.known, fingerprints)}
-
-      {:error, reason} ->
-        warning = "review history could not be read: #{History.format_error(reason)}"
-        %{ctx | warnings: append_warning(ctx.warnings, warning)}
-    end
-  end
-
-  defp record(result, _change, _rules, %{history: nil}), do: result
-
-  defp record(result, change, rules, ctx) do
+  # What was in effect, for comparing runs across rule and prompt changes:
+  # each rule's id, source, status, and a digest of its content, and a
+  # digest of each stage's system prompt by profile name. Only digests are
+  # kept, so the result does not carry the prompts themselves.
+  defp put_digests(result, rules, ctx) do
     prompts = %{
-      ctx.detector.name => ctx.detector.config.system_prompt,
-      ctx.verifier.name => ctx.verifier.config.system_prompt
+      ctx.detector.name => digest(ctx.detector.config.system_prompt),
+      ctx.verifier.name => digest(ctx.verifier.config.system_prompt)
     }
 
-    case History.record_run(ctx.history, change, result, rules: rules, prompts: prompts) do
-      {:ok, _run_id} ->
-        result
+    summary =
+      result.summary
+      |> Map.put(:rules, Enum.map(rules, &rule_digest/1))
+      |> Map.put(:prompts, prompts)
 
-      {:error, reason} ->
-        warning = "review history could not be written: #{History.format_error(reason)}"
-        update_in(result.summary.warnings, &append_warning(&1, warning))
-    end
+    %{result | summary: summary}
   end
 
-  defp append_warning(warnings, warning), do: Enum.reverse([warning | Enum.reverse(warnings)])
+  defp rule_digest(%Rule{} = rule) do
+    content = [
+      rule.id,
+      to_string(rule.status),
+      to_string(rule.category),
+      to_string(rule.severity),
+      Enum.join(rule.applies_to, "\n"),
+      rule.body || ""
+    ]
+
+    %{
+      id: rule.id,
+      source: rule.source,
+      status: rule.status,
+      digest: digest(Enum.join(content, <<0>>))
+    }
+  end
+
+  defp digest(text) when is_binary(text) do
+    :sha256 |> :crypto.hash(text) |> binary_part(0, 8) |> Base.encode16(case: :lower)
+  end
+
+  defp digest(_other), do: nil
 
   ## Result
 

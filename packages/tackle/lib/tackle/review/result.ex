@@ -48,7 +48,12 @@ defmodule Tackle.Review.Result do
       because the scorer failed;
     * `blocking` and `optional` - how many findings are shown;
     * `verdict` - see `t:verdict/0`;
-    * `warnings` - rule discovery and resolution warnings.
+    * `warnings` - the host's warnings (`:warnings`) and rule resolution
+      warnings;
+    * `rules` - the rules in effect, of any status, each with its `id`,
+      `source`, `status`, and a `digest` of its content (empty when the
+      change had nothing to review);
+    * `prompts` - a digest of each stage's system prompt by profile name.
   """
   @type summary :: %{
           profile: Rank.profile(),
@@ -68,7 +73,17 @@ defmodule Tackle.Review.Result do
           blocking: non_neg_integer(),
           optional: non_neg_integer(),
           verdict: verdict(),
-          warnings: [String.t()]
+          warnings: [String.t()],
+          rules: [rule_digest()],
+          prompts: %{optional(String.t()) => String.t() | nil}
+        }
+
+  @typedoc "A rule in effect, identified by a digest of its content."
+  @type rule_digest :: %{
+          id: String.t(),
+          source: Tackle.Review.Rules.Rule.source(),
+          status: :active | :suppressed | :retired,
+          digest: String.t()
         }
 
   @type t :: %__MODULE__{
