@@ -102,7 +102,6 @@
         {
           default = package;
           tackle-cli = package;
-          tackle-web = pkgs.callPackage ./nix/packages/tackle-web.nix { };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           jailed-tackle = mkJailedTackle { inherit pkgs system; };
@@ -197,8 +196,6 @@
               pkgs.cargo
               pkgs.rustc
               pkgs.rustfmt
-              pkgs.tailwindcss_4
-              pkgs.esbuild
             ];
             shellHook = ciShellHook;
           };

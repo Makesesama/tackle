@@ -172,7 +172,7 @@ Ollama.
 
 ## Later, not in this plan
 
-- Narration for the review surfaces (`Tackle.Web.AgentActivity`, the
+- Narration for review progress (the
   "narrator" item under review UX in `todos.md`).
 - A final summary line when a run ends.
 - A scope-wide gate if the watchdog and narrator share one Ollama and contend.

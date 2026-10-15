@@ -13,11 +13,6 @@
 /apps/*/_build/
 /apps/*/deps/
 
-# tackle_web compiles assets with esbuild/tailwind into priv/static/assets.
-/apps/tackle_web/priv/static/assets/
-/apps/tackle_web/priv/static/cache_manifest.json
-/apps/tackle_web/assets/node_modules/
-
 # Where third-party dependencies like ExDoc output generated docs.
 /doc/
 /packages/*/doc/

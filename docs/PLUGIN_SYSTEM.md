@@ -48,10 +48,7 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   MCP client starts connections separately and passes discovered tool modules
   as `:root_tools` into `Tackle.Coding.scope_spec/2`; children opt in by name.
   MCP server failures are handled by that integration, not by a general plugin
-  loader. The web chat host selects bundled adapters through
-  `Tackle.Web.Providers` and calls `Config.load/1` directly. It does **not**
-  currently use `Tackle.Coding`'s profile/root-tool composition or CLI MCP
-  connections. These are distinct hosts, not yet one shared catalog pipeline.
+  loader.
 
 - `Tackle.Plugins.Catalog.new/1` (in `packages/tackle`) now validates explicit
   `%{module: ..., source: ...}` entries for adapters, tools, and hooks, keeps
@@ -70,14 +67,10 @@ Tackle accepts trusted modules **already available to the running BEAM**:
 - The CLI now assembles a catalog of its configured adapters, built-in tools,
   delegation tools, and connected MCP tools for new coding scopes. MCP modules
   are granted explicitly to the root; subagent profiles still opt in by name.
-  The web chat host also validates its adapters and built-in tools through a
-  catalog before `Config.load/1`, but retains its distinct session lifecycle:
-  it has no `Tackle.Coding` profiles or CLI MCP connections.
 
 Source entry points: `packages/tackle/lib/tackle/{plugins,config,coding,tools}.ex`,
 `packages/tackle/lib/tackle/config/file.ex`,
-`apps/tackle_cli/lib/tackle_cli/{distribution,run}.ex`, and
-`apps/tackle_web/lib/tackle_web/{providers,chat_agent}.ex`. The public behaviour
+`apps/tackle_cli/lib/tackle_cli/{distribution,run}.ex`. The public behaviour
 contracts are in `packages/tackle_lib/lib/tackle_lib/{llm,tool,hook}.ex`.
 
 ## Implemented: enabled-project loading and remaining host work
@@ -86,16 +79,15 @@ contracts are in `packages/tackle_lib/lib/tackle_lib/{llm,tool,hook}.ex`.
 applications and selected modules without invoking Mix or evaluating `mix.exs`.
 It checks module ownership, duplicate application/module identities, and missing
 application dependencies before adding code paths; then starts selected OTP
-applications and validates selected contributions through the catalog. CLI and
-web start synchronously and fail when enabled projects are invalid. Each host
-merges selected contributions into its validated catalog. CLI grants selected
-tools to the root, while web chat does not automatically grant selected tools.
+applications and validates selected contributions through the catalog. The CLI
+starts synchronously and fails when enabled projects are invalid. It
+merges selected contributions into its validated catalog and grants selected
+tools to the root.
 More comprehensive compatibility checks and real executable-path tests remain.
 
 `packages/tackle` owns catalog validation and project loading.
-Neither `tackle_lib` nor `tackle_runtime` should discover plugins. Both CLI
-coding scopes and web chat now use a trusted catalog, but their host-specific
-composition and lifecycles remain separate. An embedding application can
+Neither `tackle_lib` nor `tackle_runtime` should discover plugins. CLI coding
+scopes use a trusted catalog. An embedding application can
 continue to provide modules and use `Tackle.Config.new/1` without opting into
 the catalog or loader.
 
@@ -192,9 +184,8 @@ not implied by adding the initial loader.
    built-in versus catalog conflicts. Check that child allowlists cannot
    resolve names outside the trusted set and root-only tools stay root-only.
 2. Expand integration tests through actual `Config.load/1`,
-   `Coding.scope_spec/2`, and CLI/web host paths—not only catalog unit tests.
-   Preserve embedding hosts that pass module lists directly; the web chat uses
-   a catalog but intentionally does not share CLI coding profiles or MCP.
+   `Coding.scope_spec/2`, and CLI host paths—not only catalog unit tests.
+   Preserve embedding hosts that pass module lists directly.
 3. Loader tests with a separately built Mix fixture and dependency/OTP app:
    missing builds, incompatible or conflicting identities, startup failure,
    no implicit compilation, and repeat startup in a fresh BEAM. Exercise the

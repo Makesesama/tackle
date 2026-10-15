@@ -156,7 +156,7 @@ The provider list is merged from three sources, lowest precedence first:
   type.
 - Call sites switch from adapter lists to provider lists: `Tackle.Config`,
   session loader, `Runtime.RootBackend`, narrator, watchdog,
-  `tackle_workflow` decisions, `tackle_sdk` server, `Tackle.Web.Providers`,
+  `tackle_workflow` decisions, `tackle_sdk` server,
   `Tackle.CLI.Distribution`. `tackle_phoenix` needs checking.
 
 ### 5. Login as a named account

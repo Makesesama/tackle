@@ -20,7 +20,6 @@ The library namespace migration and the later repository restructuring preserve 
 ```text
 apps/
   tackle_cli/                    # CLI entrypoint and terminal presentation
-  tackle_web/                    # Phoenix web application
 
 packages/
   tackle/                        # :tackle — developer harness and composition
@@ -56,7 +55,6 @@ Proposed component identities:
 | Codex plugin | `:tackle_codex` | `Tackle.Plugins.Codex.*` |
 | Developer tools | `:tackle_dev_tools` | `Tackle.Plugins.DevTools.*` |
 | CLI | `:tackle_cli` | `Tackle.CLI.*` |
-| Future web frontend | `:tackle_web` | `Tackle.Web.*` |
 
 ## 3. Responsibility and dependency boundaries
 

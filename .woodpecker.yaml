@@ -105,15 +105,3 @@ steps:
           cargo fmt --manifest-path native/tackle/Cargo.toml --check
           mix escript.build
         '
-  - name: tackle_web
-    image: bash
-    commands:
-      - |
-        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
-          cd apps/tackle_web
-          mix deps.get --check-locked
-          mix compile --warnings-as-errors
-          mix test
-          mix format --check-formatted
-          mix assets.build
-        '

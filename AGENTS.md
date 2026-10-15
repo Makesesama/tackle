@@ -86,12 +86,6 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd apps/etackle && emacs -Q --batch -L . -l test/etackle-test.el \
     -f ert-run-tests-batch-and-exit)
 
-# Web app (Phoenix; assets need the dev shell's tailwindcss/esbuild)
-(cd apps/tackle_web && mix deps.get)
-(cd apps/tackle_web && mix compile --warnings-as-errors && mix test)
-(cd apps/tackle_web && mix format --check-formatted)
-(cd apps/tackle_web && mix assets.build)
-
 # Inspect changes before handing off
 git status --short
 git diff --check
@@ -156,14 +150,6 @@ Burrito, or lint commands for tooling that has not been wired up.
   distribution dependency; runtime adapter loading remains a harness concern.
   It also bundles `tackle_workflow`; `Tackle.CLI.Distribution` lists the
   bundled delegation tools and the catalog tools granted to the root agent.
-- `apps/tackle_web/`: Phoenix app with two surfaces on one
-  `Tackle.Web.*` namespace. `/chat` is the ordinary Tackle agent as a chat
-  conversation, driven through `Tackle.Phoenix.Runner` and backed by an
-  in-memory conversation store; `/` and `/pulls/...` are the diff and pull
-  request review surfaces with the review assistant. It depends on the root
-  harness, both provider plugins, and `packages/tackle_phoenix`; the review
-  surfaces are documented by their module docs, and the mix project is separate
-  from the harness.
 - `apps/etackle/`: Emacs client for the Tackle SDK wire protocol
   (`packages/tackle_sdk/PROTOCOL.md`), speaking ndjson JSON-RPC over stdio to
   `tackle sdk`. Plain Emacs Lisp (Emacs 28.1+), not a Mix project; see its
