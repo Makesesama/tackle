@@ -31,6 +31,9 @@ defmodule Tackle.Tools.LoadSkill do
     field(:name, :string, required: true, description: "Name of the skill to load")
   end
 
+  @impl true
+  def effect, do: :read_only
+
   @spec run(map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def run(%{"name" => name}, context) when is_binary(name) do
     skills = offered_skills(context)

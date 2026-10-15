@@ -83,7 +83,17 @@ defmodule Tackle.Lib.Tool do
   @doc "Optional projection of an expected failure into a safe model-facing diagnostic."
   @callback model_error(reason :: term()) :: String.t() | nil
 
-  @optional_callbacks output_schema: 0, description_metadata: 0, model_error: 1
+  @doc """
+  Optional declaration of the tool's effects outside the agent.
+
+  `:read_only` declares that the tool only observes (for example, reading a
+  file) and that running it again cannot change anything. The loop does not run
+  the host's `:before_tool_execution` gate for a step whose calls are all
+  read-only. Tools without this callback are `:external`.
+  """
+  @callback effect() :: :read_only | :external
+
+  @optional_callbacks output_schema: 0, description_metadata: 0, model_error: 1, effect: 0
 
   @doc """
   Defines a Tackle.Lib tool with the canonical DSL.
@@ -249,6 +259,14 @@ defmodule Tackle.Lib.Tool do
     if function_exported?(tool_module, :output_schema, 0),
       do: tool_module.output_schema(),
       else: nil
+  end
+
+  @doc "Returns a tool module's declared effect; `:external` unless it declares `:read_only`."
+  @spec effect(module()) :: :read_only | :external
+  def effect(tool_module) do
+    if function_exported?(tool_module, :effect, 0) and tool_module.effect() == :read_only,
+      do: :read_only,
+      else: :external
   end
 
   @doc """

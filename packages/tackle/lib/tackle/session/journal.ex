@@ -8,6 +8,24 @@ defmodule Tackle.Session.Journal do
   API to the session and its internal persistence hook. Callers never open or
   write the journal file directly.
 
+  ## Write-behind appends
+
+  Loop-driven facts (`append_message/4` and `tool_started/3` with
+  `sync: false`), `turn.started`, and terminal events are validated,
+  sequenced, and appended in order, but not synced. `:disk_log` hands them to
+  the OS within about two seconds, after which they survive an application
+  crash; only power loss or a kernel crash can lose them. They become durable
+  at the next sync: any synced commit or `flush/1` covers everything appended
+  before it, so one sync settles a whole batch.
+  The host calls `await_durable/1` before effects that must not happen without
+  a durable record (tools with external effects). A crash can lose the
+  appended-but-unsynced tail; replay then sees a consistent prefix, and a tool
+  intent without a durable result is reported as uncertain. Unlike `flush/1`,
+  `await_durable/1` does not touch the disk when nothing is unsynced.
+  `await_idle/1` waits behind earlier requests (for example a stalled sync)
+  without syncing. The derived catalog is updated at sync points and when a
+  turn settles.
+
   Durable operations are guarded by an independent watchdog. A missed deadline
   stops the owner and its durable scope rather than abandoning a request while
   execution continues. The commit outcome may be unknown: replay is required
@@ -46,6 +64,7 @@ defmodule Tackle.Session.Journal do
           name: tuple() | nil,
           lock: Tackle.Session.Storage.Lock.t() | nil,
           next_seq: pos_integer() | nil,
+          synced_seq: non_neg_integer() | nil,
           projection: Projection.t() | nil,
           active_turn: turn() | nil,
           recovered: map() | nil,
@@ -96,11 +115,11 @@ defmodule Tackle.Session.Journal do
   end
 
   @doc """
-  Appends and syncs `turn.started` before the turn task may begin.
+  Appends `turn.started` (write-behind) before the turn task may begin.
 
   The caller mints the turn id so library events, terminal outcomes, and
-  durable commits all correlate on one identifier. Returns the turn id after
-  the commit is durable.
+  durable commits all correlate on one identifier. Returns the turn id once
+  the commit is appended; it becomes durable at the next sync.
   """
   @spec begin_turn(GenServer.server(), :run | :continue | :repair, String.t() | nil, String.t()) ::
           {:ok, String.t()} | {:error, term()}
@@ -109,14 +128,27 @@ defmodule Tackle.Session.Journal do
     durable_call(journal, {:begin_turn, operation, input, turn_id})
   end
 
-  @doc "Persists a settled message on the current turn."
-  @spec append_message(GenServer.server(), Message.t(), term()) :: :ok | {:error, term()}
-  def append_message(journal, %Message{} = message, parent \\ :none),
-    do: durable_call(journal, {:append_message, message, parent})
+  @doc """
+  Persists a settled message on the current turn.
 
-  @doc "Persists tool execution intent before the tool is invoked."
-  @spec tool_started(GenServer.server(), map()) :: :ok | {:error, term()}
-  def tool_started(journal, call), do: durable_call(journal, {:tool_started, call})
+  By default the commit is synced before this returns. With `sync: false` it is
+  appended in order and becomes durable at the next sync or `flush/1`; see
+  "Write-behind appends".
+  """
+  @spec append_message(GenServer.server(), Message.t(), term(), keyword()) ::
+          :ok | {:error, term()}
+  def append_message(journal, %Message{} = message, parent \\ :none, opts \\ []),
+    do: durable_call(journal, {:append_message, message, parent, sync?(opts)})
+
+  @doc """
+  Persists tool execution intent before the tool is invoked.
+
+  Accepts `sync: false` like `append_message/4`. The caller must then call
+  `await_durable/1` before the tool runs.
+  """
+  @spec tool_started(GenServer.server(), map(), keyword()) :: :ok | {:error, term()}
+  def tool_started(journal, call, opts \\ []),
+    do: durable_call(journal, {:tool_started, call, sync?(opts)})
 
   @doc """
   Persists one durable compaction replacement.
@@ -129,7 +161,7 @@ defmodule Tackle.Session.Journal do
   @spec context_compacted(GenServer.server(), map()) :: :ok | {:error, term()}
   def context_compacted(journal, data), do: durable_call(journal, {:context_compacted, data})
 
-  @doc "Settles the active turn with a terminal event."
+  @doc "Settles the active turn with a terminal event (write-behind)."
   @spec settle_turn(GenServer.server(), atom(), map()) :: :ok | {:error, term()}
   def settle_turn(journal, type, data \\ %{}),
     do: durable_call(journal, {:settle_turn, type, data})
@@ -167,9 +199,29 @@ defmodule Tackle.Session.Journal do
   @spec close_journal(GenServer.server()) :: :ok | {:error, term()}
   def close_journal(journal), do: durable_call(journal, :close_journal)
 
-  @doc "Runs an explicit durability barrier over already-appended commits."
+  @doc "Runs an explicit durability barrier: always syncs the journal."
   @spec flush(GenServer.server()) :: :ok | {:error, term()}
   def flush(journal), do: durable_call(journal, :flush)
+
+  @doc """
+  Returns once every appended commit is durable.
+
+  Syncs only when a write-behind commit is still unsynced; otherwise it returns
+  `:ok` without touching the disk. Requests are serialized, so it also waits
+  behind any sync already in progress.
+  """
+  @spec await_durable(GenServer.server()) :: :ok | {:error, term()}
+  def await_durable(journal), do: durable_call(journal, :await_durable)
+
+  @doc """
+  Returns once every journal request admitted before this one has completed.
+
+  It never syncs. A caller uses it to stay behind a busy or paused journal, so
+  it makes no progress while storage is stalled, and to observe a failed
+  journal as an error.
+  """
+  @spec await_idle(GenServer.server()) :: :ok | {:error, term()}
+  def await_idle(journal), do: durable_call(journal, :await_idle)
 
   @doc """
   Returns the journal's durable projection.
@@ -270,6 +322,7 @@ defmodule Tackle.Session.Journal do
       name: nil,
       lock: nil,
       next_seq: nil,
+      synced_seq: nil,
       projection: nil,
       active_turn: nil,
       recovered: nil,
@@ -321,10 +374,16 @@ defmodule Tackle.Session.Journal do
             "started_at" => now()
           })
 
-        case commit(state, [event], turn_id) do
+        # Write-behind: the turn becomes durable with the first external tool
+        # gate or a later sync. A turn lost to power loss has caused no external
+        # effect yet, so it simply did not happen.
+        case commit(state, [event], turn_id, false) do
           {:ok, state, _seq} ->
             turn = %{turn_id: turn_id, operation: operation}
-            {:reply, {:ok, turn_id}, %{state | active_turn: turn}}
+            state = %{state | active_turn: turn}
+            # No sync happens here, so show the running turn in the catalog now.
+            record_catalog(state, state.next_seq - 1)
+            {:reply, {:ok, turn_id}, state}
 
           {:error, reason} ->
             fail(state, reason)
@@ -345,12 +404,12 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  def handle_call({:append_message, %Message{} = message, parent}, _from, state) do
+  def handle_call({:append_message, %Message{} = message, parent, sync?}, _from, state) do
     Watchdog.stage(self(), :encode_message, state.next_seq)
 
     with %{turn_id: turn_id} <- state.active_turn,
          {:ok, event} <- message_event(message, parent),
-         {:ok, state, _seq} <- commit(state, [event], turn_id) do
+         {:ok, state, _seq} <- commit(state, [event], turn_id, sync?) do
       {:reply, :ok, state}
     else
       nil ->
@@ -361,10 +420,10 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  def handle_call({:tool_started, call}, _from, state) do
+  def handle_call({:tool_started, call, sync?}, _from, state) do
     with %{turn_id: turn_id} <- state.active_turn,
          {:ok, event} <- tool_event(call),
-         {:ok, state, _seq} <- commit(state, [event], turn_id) do
+         {:ok, state, _seq} <- commit(state, [event], turn_id, sync?) do
       {:reply, :ok, state}
     else
       nil ->
@@ -420,9 +479,16 @@ defmodule Tackle.Session.Journal do
   def handle_call({:settle_turn, type, data}, _from, state) do
     case settle_event(state, type, data) do
       {:ok, event, turn_id} ->
-        case commit(state, [event], turn_id) do
-          {:ok, state, _seq} -> {:reply, :ok, %{state | active_turn: nil}}
-          {:error, reason} -> fail(state, reason)
+        # Write-behind: the OS writes the settled turn back on its own schedule,
+        # so an app crash keeps it; only power loss can lose the last turns.
+        case commit(state, [event], turn_id, false) do
+          {:ok, state, seq} ->
+            state = %{state | active_turn: nil}
+            record_catalog(state, seq)
+            {:reply, :ok, state}
+
+          {:error, reason} ->
+            fail(state, reason)
         end
 
       {:error, reason} ->
@@ -481,13 +547,15 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  def handle_call(:flush, _from, %{materialized?: false} = state), do: {:reply, :ok, state}
+  def handle_call(barrier, _from, %{materialized?: false} = state)
+      when barrier in [:flush, :await_durable, :await_idle],
+      do: {:reply, :ok, state}
 
-  def handle_call(:flush, _from, state) do
-    Watchdog.stage(self(), :sync, state.next_seq)
+  def handle_call(:await_idle, _from, state), do: {:reply, :ok, state}
 
-    case Reader.sync(state.name) do
-      :ok -> {:reply, :ok, state}
+  def handle_call(barrier, _from, state) when barrier in [:flush, :await_durable] do
+    case sync_appended(state, barrier == :flush) do
+      {:ok, state} -> {:reply, :ok, state}
       {:error, reason} -> fail(state, reason)
     end
   end
@@ -569,6 +637,7 @@ defmodule Tackle.Session.Journal do
       name: opened.name,
       lock: lock,
       next_seq: nil,
+      synced_seq: nil,
       projection: nil,
       active_turn: nil,
       recovered: nil,
@@ -638,9 +707,9 @@ defmodule Tackle.Session.Journal do
         "tree" => Keyword.get(opts, :tree, false)
       })
 
-    with :ok <- stage(:append_header, 0, fn -> Reader.log(state.name, header) end),
-         :ok <- stage(:sync_header, 0, fn -> Reader.sync(state.name) end) do
-      state = %{state | projection: Projection.new(header), next_seq: 1}
+    # The synced `session.created` commit also makes the header durable.
+    with :ok <- stage(:append_header, 0, fn -> Reader.log(state.name, header) end) do
+      state = %{state | projection: Projection.new(header), next_seq: 1, synced_seq: 0}
 
       case commit(state, [created], nil) do
         {:ok, state, _seq} -> {:ok, state}
@@ -650,7 +719,13 @@ defmodule Tackle.Session.Journal do
   end
 
   defp initialize(%{projection: %Projection{} = projection, recovered: recovered}, state, _opts) do
-    state = %{state | projection: projection, next_seq: projection.last_seq + 1}
+    # Everything replayed was read back from the file, so it is the durable base.
+    state = %{
+      state
+      | projection: projection,
+        next_seq: projection.last_seq + 1,
+        synced_seq: projection.last_seq
+    }
 
     case recovered do
       nil ->
@@ -667,7 +742,7 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  defp commit(state, events, turn_id) do
+  defp commit(state, events, turn_id, sync? \\ true) do
     seq = state.next_seq
 
     commit =
@@ -681,16 +756,42 @@ defmodule Tackle.Session.Journal do
       )
 
     with :ok <- stage(:validate, seq, fn -> commit_validation(commit) end),
-         :ok <- stage(:append, seq, fn -> Reader.log(state.name, commit) end),
-         :ok <- stage(:sync, seq, fn -> Reader.sync(state.name) end) do
+         :ok <- stage(:append, seq, fn -> Reader.log(state.name, commit) end) do
       projection =
         stage(:projection, seq, fn -> Projection.apply_commit(state.projection, commit) end)
 
       next = %{state | projection: projection, next_seq: seq + 1}
-      stage(:catalog, seq, fn -> Catalog.record(build_summary(next)) end)
-      {:ok, next, seq}
+
+      with {:ok, next} <- maybe_sync(next, sync?), do: {:ok, next, seq}
     end
   end
+
+  defp maybe_sync(state, true), do: sync_appended(state)
+  defp maybe_sync(state, false), do: {:ok, state}
+
+  # One sync covers every commit appended before it. The catalog is a derived
+  # projection of durable history, so it is refreshed only when a sync made new
+  # commits durable.
+  defp sync_appended(state, force? \\ false)
+
+  defp sync_appended(%{synced_seq: synced, next_seq: next} = state, false)
+       when synced >= next - 1,
+       do: {:ok, state}
+
+  defp sync_appended(state, _force?) do
+    last_seq = state.next_seq - 1
+
+    with :ok <- stage(:sync, last_seq, fn -> Reader.sync(state.name) end) do
+      newly_durable? = state.synced_seq < last_seq
+      state = %{state | synced_seq: last_seq}
+
+      if newly_durable?, do: record_catalog(state, last_seq)
+      {:ok, state}
+    end
+  end
+
+  defp record_catalog(state, seq),
+    do: stage(:catalog, seq, fn -> Catalog.record(build_summary(state)) end)
 
   defp commit_validation(commit) do
     with :ok <- Log.validate_commit(commit, commit["session_id"], commit["seq"]) do
@@ -765,15 +866,14 @@ defmodule Tackle.Session.Journal do
     end
   end
 
+  # The live summary carries no search text: building it costs O(session), so
+  # the catalog builds it only when a search needs it. `journal_path` lets the
+  # catalog find this session's file later.
   defp build_summary(state) do
-    projection = state.projection
-
-    metadata =
-      projection
-      |> Map.put(:status, live_status(state))
-      |> Projection.metadata()
-
-    Map.put(metadata, :search_text, Projection.search_text(projection))
+    state.projection
+    |> Map.put(:status, live_status(state))
+    |> Projection.metadata()
+    |> Map.put(:journal_path, state.path)
   end
 
   defp live_status(%{active_turn: nil} = state), do: state.projection.status
@@ -792,13 +892,22 @@ defmodule Tackle.Session.Journal do
       "schema_version" => 1,
       "session_id" => state.session_id,
       "last_indexed_seq" => state.projection.last_seq,
-      "summary" => Catalog.encode_summary(build_summary(state))
+      # Written once, when the owner stops, so the next startup can index
+      # without replaying the journal.
+      "summary" =>
+        state
+        |> build_summary()
+        |> Map.delete(:journal_path)
+        |> Map.put(:search_text, Projection.search_text(state.projection))
+        |> Catalog.encode_summary()
     }
 
     {:ok, :erlang.term_to_binary(payload, [:compressed])}
   rescue
     _error -> {:error, :summary_encode_failed}
   end
+
+  defp sync?(opts), do: Keyword.get(opts, :sync, true) != false
 
   defp state_active_turn_id(%{active_turn: %{turn_id: turn_id}}), do: turn_id
   defp state_active_turn_id(_state), do: nil

@@ -1674,6 +1674,222 @@ defmodule Tackle.Lib.LoopTest do
              ["c1", "c2"]
   end
 
+  describe "tool execution gate" do
+    defmodule ReadOnlyFirstTool do
+      @behaviour Tackle.Lib.Tool
+
+      @impl true
+      def name, do: "first"
+
+      @impl true
+      def description, do: "Read-only first tool."
+
+      @impl true
+      def parameters_schema, do: []
+
+      @impl true
+      def effect, do: :read_only
+
+      @impl true
+      def execute(_args, %{test_pid: test_pid}) do
+        send(test_pid, {:tool_execute, :first})
+        {:ok, %{ok: true}}
+      end
+    end
+
+    defmodule ReadOnlySecondTool do
+      @behaviour Tackle.Lib.Tool
+
+      @impl true
+      def name, do: "second"
+
+      @impl true
+      def description, do: "Read-only second tool."
+
+      @impl true
+      def parameters_schema, do: []
+
+      @impl true
+      def effect, do: :read_only
+
+      @impl true
+      def execute(_args, %{test_pid: test_pid}) do
+        send(test_pid, {:tool_execute, :second})
+        {:ok, %{ok: true}}
+      end
+    end
+
+    defmodule RecordToolCallHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def before_tool_call(_state, call, context) do
+        send(context.test_pid, {:before_tool_call, call.id})
+        :ok
+      end
+    end
+
+    setup do
+      Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
+      Process.put(:call_count, 0)
+      test_pid = self()
+      gate = fn -> send(test_pid, :tool_gate) && :ok end
+      {:ok, gate: gate}
+    end
+
+    defp gate_state(opts \\ []) do
+      State.new(
+        Keyword.merge(
+          [
+            model: "test/model",
+            tools: [FirstTool, SecondTool],
+            hooks: [RecordToolCallHook],
+            context: %{test_pid: self()}
+          ],
+          opts
+        )
+      )
+    end
+
+    defp drain_gate_trace(acc \\ []) do
+      receive do
+        {:before_tool_call, id} -> drain_gate_trace([{:hook, id} | acc])
+        :tool_gate -> drain_gate_trace([:gate | acc])
+        {:tool_execute, name} -> drain_gate_trace([{:tool, name} | acc])
+      after
+        0 -> Enum.reverse(acc)
+      end
+    end
+
+    test "sequential policy passes the gate after each accepted call and before it runs", ctx do
+      assert {:ok, _state} = Loop.run(gate_state(), "tools", before_tool_execution: ctx.gate)
+
+      assert drain_gate_trace() == [
+               {:hook, "call_first"},
+               :gate,
+               {:tool, :first},
+               {:hook, "call_second"},
+               :gate,
+               {:tool, :second}
+             ]
+    end
+
+    test "concurrent policy passes the gate once, after every hook and before any tool", ctx do
+      {:ok, supervisor} = Task.Supervisor.start_link()
+
+      assert {:ok, _state} =
+               Loop.run(gate_state(tool_policy: Policy.concurrent()), "tools",
+                 tool_supervisor: supervisor,
+                 before_tool_execution: ctx.gate
+               )
+
+      assert [{:hook, "call_first"}, {:hook, "call_second"}, :gate | tools] =
+               drain_gate_trace()
+
+      assert Enum.sort(tools) == [{:tool, :first}, {:tool, :second}]
+    end
+
+    test "a failing gate aborts the step before any tool runs" do
+      {:ok, supervisor} = Task.Supervisor.start_link()
+
+      for policy <- [Policy.default(), Policy.concurrent()] do
+        Process.put(:call_count, 0)
+
+        assert {:error, state} =
+                 Loop.run(gate_state(tool_policy: policy), "tools",
+                   tool_supervisor: supervisor,
+                   before_tool_execution: fn -> {:error, :storage_failed} end
+                 )
+
+        assert state.error =~ "Tool execution gate failed"
+        assert state.error =~ "storage_failed"
+        refute_received {:tool_execute, _}
+      end
+    end
+
+    test "read-only calls skip the gate; one external call in a batch needs it", ctx do
+      {:ok, supervisor} = Task.Supervisor.start_link()
+
+      for policy <- [Policy.default(), Policy.concurrent()] do
+        Process.put(:call_count, 0)
+        state = gate_state(tools: [ReadOnlyFirstTool, ReadOnlySecondTool], tool_policy: policy)
+
+        assert {:ok, _state} =
+                 Loop.run(state, "tools",
+                   tool_supervisor: supervisor,
+                   before_tool_execution: ctx.gate
+                 )
+
+        refute :gate in drain_gate_trace()
+      end
+
+      Process.put(:call_count, 0)
+
+      state =
+        gate_state(tools: [ReadOnlyFirstTool, SecondTool], tool_policy: Policy.concurrent())
+
+      assert {:ok, _state} =
+               Loop.run(state, "tools",
+                 tool_supervisor: supervisor,
+                 before_tool_execution: ctx.gate
+               )
+
+      assert Enum.count(drain_gate_trace(), &(&1 == :gate)) == 1
+
+      # Sequentially, only the external call is gated.
+      Process.put(:call_count, 0)
+      state = gate_state(tools: [ReadOnlyFirstTool, SecondTool])
+      assert {:ok, _state} = Loop.run(state, "tools", before_tool_execution: ctx.gate)
+
+      assert drain_gate_trace() == [
+               {:hook, "call_first"},
+               {:tool, :first},
+               {:hook, "call_second"},
+               :gate,
+               {:tool, :second}
+             ]
+    end
+
+    test "cancellation while the gate blocks prevents tool dispatch" do
+      {:ok, supervisor} = Task.Supervisor.start_link()
+      test_pid = self()
+
+      for policy <- [Policy.default(), Policy.concurrent()] do
+        signal = Cancellation.new_signal()
+        on_exit(fn -> Cancellation.delete(signal) end)
+
+        task =
+          Task.async(fn ->
+            Process.put(:call_count, 0)
+
+            Loop.run(gate_state(tool_policy: policy, context: %{test_pid: test_pid}), "tools",
+              tool_supervisor: supervisor,
+              cancellation_signal: signal,
+              before_tool_execution: fn ->
+                send(test_pid, :tool_gate_entered)
+                receive do: (:release_tool_gate -> :ok)
+              end
+            )
+          end)
+
+        assert_receive :tool_gate_entered
+        Cancellation.cancel(signal, "cancelled at tool gate")
+        send(task.pid, :release_tool_gate)
+        assert {:cancelled, state} = Task.await(task, 2_000)
+        assert state.error == "cancelled at tool gate"
+        refute_received {:tool_execute, _}
+      end
+    end
+
+    test "a raising gate is reported as a gate failure" do
+      assert {:error, state} =
+               Loop.run(gate_state(), "tools", before_tool_execution: fn -> raise "boom" end)
+
+      assert state.error =~ "before_tool_execution_failed"
+      refute_received {:tool_execute, _}
+    end
+  end
+
   describe "hook integration" do
     defmodule HookLoggingTool do
       @behaviour Tackle.Lib.Tool

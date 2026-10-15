@@ -26,7 +26,7 @@ defmodule Tackle.Session.TreeTest do
     assert Tree.entry(tree, assistant.id).parent_id == user.id
     assert Tree.active_id(tree) == assistant.id
 
-    {:ok, projection} = Reader.projection(snapshot.session_id, home: ctx.home)
+    {:ok, projection} = read_projection(snapshot.session_id, home: ctx.home)
     assert projection.tree_enabled?
     assert Enum.map(projection.messages, & &1["content"]) == ["hello", "hello back"]
   end
@@ -119,7 +119,7 @@ defmodule Tackle.Session.TreeTest do
     session_id = snapshot.session_id
     stop_scope(scope.scope_ref)
 
-    {:ok, projection} = Reader.projection(session_id, home: ctx.home)
+    {:ok, projection} = read_projection(session_id, home: ctx.home)
     refute projection.tree_enabled?
 
     resumed =
@@ -133,7 +133,7 @@ defmodule Tackle.Session.TreeTest do
     tree = resumed_snapshot.agent_state.tree
     assert [_, _] = Tree.transcript(tree)
 
-    {:ok, projection} = Reader.projection(session_id, home: ctx.home)
+    {:ok, projection} = read_projection(session_id, home: ctx.home)
     assert projection.tree_enabled?
 
     [user | _rest] = Tree.transcript(tree)
@@ -160,7 +160,7 @@ defmodule Tackle.Session.TreeTest do
     stop_scope(scope.scope_ref)
 
     {:ok, forked_id} = Tackle.fork_session(session_id, home: ctx.home)
-    assert {:ok, projection} = Reader.projection(forked_id, home: ctx.home)
+    assert {:ok, projection} = read_projection(forked_id, home: ctx.home)
 
     assert projection.tree_enabled?
     assert [user, assistant] = Tree.enumerate(projection.tree)
@@ -176,7 +176,7 @@ defmodule Tackle.Session.TreeTest do
     session_id = snapshot.session_id
     stop_scope(scope.scope_ref)
 
-    {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    {:ok, replay} = read_journal(session_id, home: ctx.home)
 
     assert {:ok, _} =
              Tree.restore(

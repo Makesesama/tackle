@@ -21,11 +21,13 @@ defmodule Tackle.Session.Store do
   Reads and projects a session without creating an agent scope.
 
   Returns the durable conversation data, recovery status, and uncertain tool
-  executions. It never returns runtime handles.
+  executions. It never returns runtime handles. A live session is flushed
+  first, so the file includes its write-behind tail.
   """
   @spec inspect_session(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def inspect_session(session_id, opts \\ []) do
-    with {:ok, replay} <- Reader.read(session_id, opts) do
+    with :ok <- flush_live(session_id),
+         {:ok, replay} <- Reader.read(session_id, opts) do
       projection = replay.projection
 
       {:ok,
@@ -123,16 +125,35 @@ defmodule Tackle.Session.Store do
     end
   end
 
+  # Best-effort barrier before reading a live session's file: it writes the
+  # write-behind tail to the file, and costs nothing when everything is already
+  # synced. A journal that is shutting down syncs and closes its file itself,
+  # and a failed one has nothing more to write, so the file is read as it is.
+  defp flush_live(session_id) do
+    with {:ok, journal} <- Journal.whereis(session_id),
+         {:error, reason} <- Journal.await_durable(journal) do
+      case reason do
+        {:journal_unavailable, _reason} -> :ok
+        {:journal_failure, _reason} -> :ok
+        other -> {:error, other}
+      end
+    else
+      _ok_or_not_found -> :ok
+    end
+  end
+
   @doc """
   Materializes a new self-contained session from validated parent history.
 
   The child journal records its lineage in the header and a `session.forked`
-  event, then copies the parent's validated commits up to `:seq`. The child can
+  event, then copies the parent's validated commits up to `:seq`. A live parent
+  is flushed first, so its write-behind tail is included. The child can
   be loaded after the parent is deleted: lineage is for navigation, not replay.
   """
   @spec fork(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def fork(source_session_id, opts \\ []) do
     with :ok <- Storage.validate_session_id(source_session_id),
+         :ok <- flush_live(source_session_id),
          {:ok, replay} <- Reader.read(source_session_id, opts),
          {:ok, selected, parent_seq} <- select_commits(replay.commits, opts),
          new_id = Keyword.get(opts, :session_id) || ID.generate(),

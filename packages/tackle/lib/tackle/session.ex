@@ -699,7 +699,7 @@ defmodule Tackle.Session do
     {:noreply, state}
   end
 
-  def handle_info({:tackle_message_durable, session_id, %Message{} = message}, state)
+  def handle_info({:tackle_message_appended, session_id, %Message{} = message}, state)
       when session_id == state.agent_state.session_id do
     {:noreply, maybe_generate_title(state, Event.message_end(message))}
   end
@@ -1107,6 +1107,7 @@ defmodule Tackle.Session do
       },
       cancellation_signal: signal,
       before_provider_call: provider_gate(state),
+      before_tool_execution: tool_gate(state),
       turn_id: turn_id,
       llm_stream: state.config.llm_stream,
       take_incoming_messages: fn -> GenServer.call(session_pid, :take_incoming_messages) end,
@@ -1114,8 +1115,18 @@ defmodule Tackle.Session do
     ]
   end
 
+  # The persistence hook appends write-behind. A provider call does not need a
+  # durable record first (a crash only means calling again), but it must not run
+  # ahead of a stalled or failed journal, so it waits behind earlier requests
+  # without syncing.
   defp provider_gate(%{journal: nil}), do: nil
-  defp provider_gate(%{journal: journal}), do: fn -> Journal.flush(journal) end
+  defp provider_gate(%{journal: journal}), do: fn -> Journal.await_idle(journal) end
+
+  # Tool intent (and everything before it) must be durable before a tool with
+  # external effects runs, so recovery can report it as uncertain after a crash.
+  # The loop skips this gate for read-only tools.
+  defp tool_gate(%{journal: nil}), do: nil
+  defp tool_gate(%{journal: journal}), do: fn -> Journal.await_durable(journal) end
 
   defp acquire_turn(%{coordinator: coordinator, agent_ref: %AgentRef{} = agent_ref}) do
     Coordinator.acquire_turn(coordinator, agent_ref)
@@ -1224,7 +1235,13 @@ defmodule Tackle.Session do
 
   defp persist_inbox_messages(%{journal: journal}, agent_state, messages) do
     Enum.reduce_while(messages, :ok, fn message, :ok ->
-      case Journal.append_message(journal, message, inbox_tree_parent(agent_state, message.id)) do
+      # Write-behind like loop messages: durable at the next sync point.
+      case Journal.append_message(
+             journal,
+             message,
+             inbox_tree_parent(agent_state, message.id),
+             sync: false
+           ) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -1791,7 +1808,7 @@ defmodule Tackle.Session do
 
   defp generate_and_persist_title(journal, selection, user_message, llm_opts) do
     # A title is also a model effect: wait behind outstanding commits.
-    with :ok <- Journal.flush(journal),
+    with :ok <- Journal.await_idle(journal),
          {:ok, title} <- Title.generate(selection, user_message, llm_opts),
          :ok <- Journal.metadata_changed(journal, %{"title" => title}) do
       {:ok, title}

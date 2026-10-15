@@ -31,6 +31,11 @@ defmodule Tackle.Tools.Read do
     field(:limit, :integer, description: "Maximum number of text lines to read (text files only)")
   end
 
+  # Reading changes nothing, so a durable session need not sync the tool intent
+  # before it runs.
+  @impl true
+  def effect, do: :read_only
+
   @spec run(map(), map()) :: {:ok, String.t() | Content.t()} | {:error, String.t()}
   def run(%{"path" => path} = args, context) do
     offset = Map.get(args, "offset", 1)

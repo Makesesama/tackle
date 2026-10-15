@@ -88,6 +88,8 @@ defmodule Tackle.Session.JournalTest do
       assert {:ok, status} = Journal.status(journal)
       assert status.last_seq == 6
 
+      # turn.started and the terminal event are write-behind.
+      assert :ok = Journal.flush(journal)
       {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
 
       assert [
@@ -120,6 +122,7 @@ defmodule Tackle.Session.JournalTest do
       :ok = Journal.settle_turn(journal, "turn.completed", %{})
 
       {:ok, live} = Journal.projection(journal)
+      assert :ok = Journal.flush(journal)
       {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
 
       assert replay.projection.messages == live.messages
@@ -146,6 +149,111 @@ defmodule Tackle.Session.JournalTest do
       assert {:ok, _turn_id} = Journal.begin_turn(journal, :continue, nil)
       assert {:ok, status} = Journal.status(journal)
       assert status.last_seq == 6
+    end
+  end
+
+  describe "write-behind appends" do
+    test "are appended in order and become durable at the next await_durable", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      assert :ok = Journal.append_message(journal, Message.user("hello"), :none, sync: false)
+
+      assert :ok =
+               Journal.tool_started(journal, %{id: "call-1", name: "read", arguments: %{}},
+                 sync: false
+               )
+
+      assert {:ok, %{last_seq: 4}} = Journal.status(journal)
+      log = {:tackle_session, ctx.session_id}
+      :ok = :disk_log.block(log, true)
+
+      try do
+        task = Task.async(fn -> Journal.await_durable(journal) end)
+        # Unsynced commits exist, so the barrier must wait for the disk.
+        assert Task.yield(task, 200) == nil
+        :ok = :disk_log.unblock(log)
+        assert Task.await(task) == :ok
+      after
+        :disk_log.unblock(log)
+      end
+
+      assert {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+      assert [%{"content" => "hello"}] = replay.projection.messages
+      assert replay.last_seq == 4
+      stop_journal(journal)
+    end
+
+    test "one sync covers every commit appended before it", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      :ok = trace_syncs(journal)
+
+      for n <- 1..5 do
+        message = Message.assistant(content: "answer #{n}")
+        assert :ok = Journal.append_message(journal, message, :none, sync: false)
+      end
+
+      assert collect_syncs(journal) == 0
+      assert :ok = Journal.await_durable(journal)
+      assert collect_syncs(journal) == 1
+      stop_journal(journal)
+    end
+
+    test "await_durable does not touch the disk when nothing is unsynced", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      # turn.started is write-behind; make it durable first.
+      assert :ok = Journal.await_durable(journal)
+      log = {:tackle_session, ctx.session_id}
+      :ok = :disk_log.block(log, true)
+
+      try do
+        task = Task.async(fn -> Journal.await_durable(journal) end)
+        assert Task.yield(task, 1_000) == {:ok, :ok}
+      after
+        :disk_log.unblock(log)
+      end
+
+      stop_journal(journal)
+    end
+
+    test "await_idle never syncs but waits behind a stalled sync", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      :ok = trace_syncs(journal)
+      assert :ok = Journal.append_message(journal, Message.user("hello"), :none, sync: false)
+      assert :ok = Journal.await_idle(journal)
+      assert collect_syncs(journal) == 0
+
+      [{watchdog, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+
+      log = {:tackle_session, ctx.session_id}
+      :ok = :disk_log.block(log, true)
+
+      try do
+        sync = Task.async(fn -> Journal.flush(journal) end)
+        assert eventually(fn -> :sys.get_state(watchdog).stage == :sync end) == :ok
+        idle = Task.async(fn -> Journal.await_idle(journal) end)
+        assert Task.yield(idle, 200) == nil
+        :ok = :disk_log.unblock(log)
+        assert Task.await(sync) == :ok
+        assert Task.await(idle) == :ok
+      after
+        :disk_log.unblock(log)
+      end
+
+      stop_journal(journal)
+    end
+
+    test "flush still syncs when nothing is unsynced", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      assert :ok = Journal.await_durable(journal)
+      :ok = trace_syncs(journal)
+      assert :ok = Journal.flush(journal)
+      assert collect_syncs(journal) == 1
+      stop_journal(journal)
     end
   end
 
@@ -762,7 +870,8 @@ defmodule Tackle.Session.JournalTest do
              {:messages, messages} = Process.info(journal, :messages)
 
              Enum.any?(messages, fn
-               {:"$gen_call", _from, {:append_message, %Message{id: ^message_id}, _parent}} ->
+               {:"$gen_call", _from,
+                {:append_message, %Message{id: ^message_id}, _parent, _sync?}} ->
                  true
 
                _other ->

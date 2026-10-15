@@ -273,6 +273,24 @@ defmodule Tackle.Lib.ToolTest do
     end
   end
 
+  defmodule ReadOnlyEffectTool do
+    use Tackle.Lib.Tool
+
+    tool_name("peek")
+    description("Reads without changing anything.")
+
+    @impl true
+    def effect, do: :read_only
+
+    def run(_args, _context), do: {:ok, %{}}
+  end
+
+  test "effect/1 is :external unless a tool declares :read_only" do
+    assert Tool.effect(ReadOnlyEffectTool) == :read_only
+    assert Tool.effect(EchoTool) == :external
+    assert Tool.effect(DSLSearchTool) == :external
+  end
+
   test "definition/1 exposes provider-neutral tool metadata" do
     assert %{
              name: "echo",

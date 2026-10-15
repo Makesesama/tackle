@@ -4,6 +4,8 @@ defmodule Tackle.Session.CatalogTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Session.Catalog
+  alias Tackle.Session.Catalog.Entry
+  alias Tackle.Session.Journal
   alias Tackle.Session.Storage
 
   setup do
@@ -51,6 +53,40 @@ defmodule Tackle.Session.CatalogTest do
     refute Map.has_key?(entry, :search_text)
 
     assert {:ok, %{sessions: []}} = Tackle.search_sessions(secret)
+  end
+
+  test "builds a live session's search text only when searching", ctx do
+    marker = "WOMBAT#{System.unique_integer([:positive])}"
+    scope = start_durable_scope(home: ctx.home, root: [content: "answer"])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "look for #{marker} please")
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
+
+    # Journal commits index metadata only; the text is not built per commit.
+    assert eventually(fn -> match?({:ok, _}, Catalog.get(session_id)) end) == :ok
+    assert %Entry{search_text: nil} = catalog_entry(session_id)
+
+    assert {:ok, %{sessions: [%{session_id: ^session_id}]}} = Tackle.search_sessions(marker)
+    assert eventually(fn -> is_binary(catalog_entry(session_id).search_text) end) == :ok
+
+    # A later turn replaces the cached text, so new words are found too.
+    next = "KOALA#{System.unique_integer([:positive])}"
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "then #{next}")
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
+    assert {:ok, %{sessions: [%{session_id: ^session_id}]}} = Tackle.search_sessions(next)
+  end
+
+  test "searches a session closed in this run from its file", ctx do
+    marker = "PLATYPUS#{System.unique_integer([:positive])}"
+    session_id = create_session(ctx, cwd: unique_cwd(ctx, "closed"), title: marker <> " title")
+    assert {:error, :not_found} = Journal.whereis(session_id)
+    assert %Entry{search_text: nil, journal_path: path} = catalog_entry(session_id)
+    assert is_binary(path)
+
+    # The first user message ("hello from <title>") is only in the file.
+    assert {:ok, %{sessions: [%{session_id: ^session_id}]}} =
+             Tackle.search_sessions("hello from #{marker}")
   end
 
   test "paginates with a stable cursor", ctx do
@@ -146,6 +182,11 @@ defmodule Tackle.Session.CatalogTest do
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
     stop_scope(scope.scope_ref)
     snapshot.session_id
+  end
+
+  defp catalog_entry(session_id) do
+    [{^session_id, entry}] = :ets.lookup(Catalog, session_id)
+    entry
   end
 
   defp unique_cwd(ctx, label) do

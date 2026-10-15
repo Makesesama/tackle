@@ -33,13 +33,37 @@ defmodule Tackle.Session.DurabilityTest do
              %{"role" => "assistant", "content" => "hello back"}
            ] = result.messages
 
-    {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    {:ok, replay} = read_journal(session_id, home: ctx.home)
 
     assert [:session_created, :turn_started, :user, :assistant, :turn_completed] =
              Enum.map(replay.commits, &commit_kind/1)
   end
 
-  test "persists tool intent before execution and the result before the next request", ctx do
+  test "an answer-only turn never syncs, and inspect_session still sees it", ctx do
+    scope = start_durable_scope(home: ctx.home, root: [content: "hello back"])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, journal} = Journal.whereis(snapshot.session_id)
+    {:ok, first} = Tackle.submit(scope.root_agent_ref, "first")
+    assert_receive {:tackle_turn_finished, _session_id, ^first, {:ok, _state}}, 5_000
+
+    :ok = trace_syncs(journal)
+    {:ok, second} = Tackle.submit(scope.root_agent_ref, "second")
+    assert_receive {:tackle_turn_finished, _session_id, ^second, {:ok, _state}}, 5_000
+    assert collect_syncs(journal) == 0
+
+    # Reading a live session flushes its write-behind tail first.
+    assert {:ok, result} = Tackle.inspect_session(snapshot.session_id, home: ctx.home)
+    assert result.status == :clean
+
+    assert Enum.map(result.messages, & &1["content"]) == [
+             "first",
+             "hello back",
+             "second",
+             "hello back"
+           ]
+  end
+
+  test "persists a read-only tool's intent and result in order without a tool sync", ctx do
     path = Path.join(ctx.home, "tool-input.txt")
     File.write!(path, "tool output")
 
@@ -60,10 +84,17 @@ defmodule Tackle.Session.DurabilityTest do
       )
 
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, journal} = Journal.whereis(snapshot.session_id)
+    :ok = trace_syncs(journal)
     {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "read the file")
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
-    {:ok, replay} = Reader.read(snapshot.session_id, home: ctx.home)
+    # Only session.created syncs. turn.started and turn.completed are
+    # write-behind, `read` is read-only (no tool gate sync), and provider calls
+    # never sync.
+    assert collect_syncs(journal) == 1
+
+    {:ok, replay} = read_journal(snapshot.session_id, home: ctx.home)
     kinds = Enum.map(replay.commits, &commit_kind/1)
 
     intent_index = Enum.find_index(kinds, &(&1 == :tool_started))
@@ -73,6 +104,66 @@ defmodule Tackle.Session.DurabilityTest do
     assert is_integer(result_index)
     assert intent_index < result_index
     assert List.last(kinds) == :turn_completed
+  end
+
+  test "an external tool batch's intent is on disk before any tool runs, with one sync", ctx do
+    tool_calls =
+      for name <- ["one", "two", "three"],
+          do: %{"id" => "call-#{name}", "name" => "blocking", "arguments" => %{"name" => name}}
+
+    scope =
+      start_durable_scope(
+        home: ctx.home,
+        root: [
+          tools: [Tackle.Test.BlockingTool],
+          context: %{test_pid: self()},
+          mode: :tools_then_answer,
+          llm_opts: [tool_calls: tool_calls, content: "done"]
+        ]
+      )
+
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, journal} = Journal.whereis(snapshot.session_id)
+    :ok = trace_syncs(journal)
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "use the tools")
+
+    entered =
+      for _call <- tool_calls do
+        assert_receive {:tool_entered, name, pid}, 5_000
+        {name, pid}
+      end
+
+    # Read the file through a separate handle while the tools are running.
+    {:ok, replay} = Reader.read(snapshot.session_id, home: ctx.home)
+    kinds = Enum.map(replay.commits, &commit_kind/1)
+    assert Enum.count(kinds, &(&1 == :tool_started)) == 3
+    assert :assistant in kinds
+
+    for {name, pid} <- entered, do: send(pid, {:release, name})
+
+    assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
+
+    # Materialization (session.created) and the tool gate. turn.started and
+    # turn.completed are write-behind and provider calls never sync. Originally
+    # every one of the 12 commits synced, plus a sync before each provider call.
+    assert collect_syncs(journal) == 2
+
+    {:ok, replay} = read_journal(snapshot.session_id, home: ctx.home)
+
+    assert [
+             :session_created,
+             :turn_started,
+             :user,
+             :assistant,
+             :tool_started,
+             :tool_started,
+             :tool_started,
+             :tool_result,
+             :tool_result,
+             :tool_result,
+             :assistant,
+             :turn_completed
+           ] = Enum.map(replay.commits, &commit_kind/1)
   end
 
   test "resumes a session with stable ids and history", ctx do
@@ -192,7 +283,7 @@ defmodule Tackle.Session.DurabilityTest do
 
     assert settled.content =~ "interrupted"
 
-    {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    {:ok, replay} = read_journal(session_id, home: ctx.home)
     assert Enum.any?(Enum.map(replay.commits, &commit_kind/1), &(&1 == :tool_result))
 
     assert {:ok, _turn_id} = Tackle.submit(scope.root_agent_ref, "next")
@@ -242,7 +333,7 @@ defmodule Tackle.Session.DurabilityTest do
 
     assert settled.content =~ "interrupted"
 
-    {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    {:ok, replay} = read_journal(session_id, home: ctx.home)
     assert Enum.any?(Enum.map(replay.commits, &commit_kind/1), &(&1 == :tool_result))
 
     {:ok, _snapshot} = Tackle.subscribe(scope.root_agent_ref)
@@ -275,7 +366,7 @@ defmodule Tackle.Session.DurabilityTest do
         root: [model: "test/child", content: "answer"]
       )
 
-    {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    {:ok, replay} = read_journal(session_id, home: ctx.home)
 
     assert Enum.any?(replay.commits, fn commit ->
              Enum.any?(commit["events"], fn event ->
@@ -352,7 +443,7 @@ defmodule Tackle.Session.DurabilityTest do
     {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
     assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
 
-    {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    {:ok, replay} = read_journal(session_id, home: ctx.home)
     created = Enum.find(replay.commits, &(&1["seq"] == 1))
 
     assert [%{"type" => "session.created", "data" => %{"model_ref" => "test/child"}}] =
@@ -374,7 +465,8 @@ defmodule Tackle.Session.DurabilityTest do
                {:messages, messages} = Process.info(journal, :messages)
 
                Enum.any?(messages, fn
-                 {:"$gen_call", _from, {:append_message, %Message{role: :assistant}, _parent}} ->
+                 {:"$gen_call", _from,
+                  {:append_message, %Message{role: :assistant}, _parent, _sync?}} ->
                    true
 
                  _other ->

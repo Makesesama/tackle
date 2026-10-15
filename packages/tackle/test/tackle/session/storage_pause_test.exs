@@ -101,7 +101,7 @@ defmodule Tackle.Session.StoragePauseTest do
       assert Task.await(sync) == :ok
       assert_receive {:tackle_turn_finished, _, ^turn, {:cancelled, _}}, 5_000
       refute_receive {:tool_entered, _, _}, 100
-      {:ok, replay} = Reader.read(snapshot.session_id, home: scope.home)
+      {:ok, replay} = read_journal(snapshot.session_id, home: scope.home)
       assert Enum.count(replay.commits, &event?(&1, "tool.execution_started")) == 1
       assert Enum.count(replay.projection.messages, &(&1["role"] == "tool")) == 1
     after
@@ -133,7 +133,7 @@ defmodule Tackle.Session.StoragePauseTest do
       assert_storage(snapshot.session_id, :ready)
       {:ok, next} = Tackle.submit(root, "next")
       assert_receive {:tackle_turn_finished, _, ^next, {:ok, _}}, 5_000
-      {:ok, replay} = Reader.read(snapshot.session_id, home: scope.home)
+      {:ok, replay} = read_journal(snapshot.session_id, home: scope.home)
       assert Enum.count(replay.commits, &event?(&1, "turn.started")) == 2
       assert Enum.count(replay.projection.messages, &(&1["content"] == "next")) == 1
     after
@@ -178,7 +178,7 @@ defmodule Tackle.Session.StoragePauseTest do
     end
   end
 
-  test "settled tool results wait for durability before another provider effect" do
+  test "settled tool results wait behind a stalled journal before another provider effect" do
     call = %{id: "call-1", name: "blocking", arguments: %{name: "first"}}
 
     scope =
@@ -211,7 +211,7 @@ defmodule Tackle.Session.StoragePauseTest do
       assert_receive {:adapter_called, _, _, _}, 5_000
       assert_receive {:tackle_turn_finished, _, ^turn, {:ok, _}}, 5_000
       refute_receive {:tool_entered, _, _}, 20
-      {:ok, replay} = Reader.read(snapshot.session_id, home: scope.home)
+      {:ok, replay} = read_journal(snapshot.session_id, home: scope.home)
       assert Enum.count(replay.commits, &event?(&1, "tool.execution_started")) == 1
       assert Enum.count(replay.projection.messages, &(&1["role"] == "tool")) == 1
       assert Enum.map(replay.commits, & &1["seq"]) == Enum.to_list(1..replay.last_seq)
@@ -308,7 +308,7 @@ defmodule Tackle.Session.StoragePauseTest do
       send(notice_task, {:respond, "two"})
       assert_receive {:tackle_turn_finished, _, ^turn, _}, 5_000
       assert [] = Session.inbox(session)
-      {:ok, replay} = Reader.read(snapshot.session_id, home: scope.home)
+      {:ok, replay} = read_journal(snapshot.session_id, home: scope.home)
 
       assert Enum.count(
                replay.projection.messages,
@@ -404,7 +404,7 @@ defmodule Tackle.Session.StoragePauseTest do
       assert Task.await(close) == :ok
       assert_receive {:tackle_session_closed, session_id}, 5_000
       assert session_id == snapshot.session_id
-      {:ok, replay} = Reader.read(session_id, home: scope.home)
+      {:ok, replay} = read_journal(session_id, home: scope.home)
       assert Enum.count(replay.commits, &event?(&1, "session.closed")) == 1
       assert replay.projection.closed_at != nil
     after
@@ -437,7 +437,7 @@ defmodule Tackle.Session.StoragePauseTest do
       :ok = :disk_log.unblock(log)
       assert Task.await(sync) == :ok
       assert_receive {:tackle_turn_failed, _, ^turn, :killed}, 5_000
-      {:ok, replay} = Reader.read(snapshot.session_id, home: scope.home)
+      {:ok, replay} = read_journal(snapshot.session_id, home: scope.home)
       assert Enum.count(replay.commits, &event?(&1, "turn.crashed")) == 1
     after
       :disk_log.unblock(log)

@@ -8,10 +8,18 @@ defmodule Tackle.Session.Persistence do
     * `before_tool_call/3` persists `tool.execution_started` before the tool is
       invoked.
 
+  Both hooks append write-behind (`sync: false`): the commit is validated,
+  sequenced, and appended in order without waiting for the disk. The session's
+  `:before_tool_execution` gate (`Journal.await_durable/1`) makes everything
+  appended so far durable before a tool with external effects runs; read-only
+  tools skip it. Turn start and terminal settlement are write-behind too.
+
   The loop emits live events before the hook completes; those events remain
-  observational. The durability guarantee is that a settled message is
-  committed before the loop performs the next provider or tool effect, and that
-  terminal completion is not announced before the terminal commit is synced.
+  observational. Guarantee: tool intent is durable before an external tool
+  runs. Unsynced commits reach the OS within about two seconds, so an
+  application crash keeps them; power loss can lose the unsynced tail,
+  including whole recent turns. Replay then sees a consistent prefix, and an
+  external tool whose result was lost is reported as uncertain.
 
   The hook is provider-neutral and storage-free: it resolves the session's
   journal by session id and is a no-op for sessions without one, so the same
@@ -35,12 +43,12 @@ defmodule Tackle.Session.Persistence do
   def after_message(%State{session_id: session_id} = state, %Message{} = message, context) do
     with :ok <-
            persist(session_id, context, fn journal ->
-             Journal.append_message(journal, message, tree_parent(state, message.id))
+             Journal.append_message(journal, message, tree_parent(state, message.id), sync: false)
            end) do
-      # Live message_end precedes the hook. Title generation must wait for the
-      # specific user message's acknowledgment, not race it with a flush.
+      # Live message_end precedes the hook. Title generation must wait until
+      # this user message is appended, not race it.
       if message.role == :user and is_pid(context[:session_owner]) do
-        send(context.session_owner, {:tackle_message_durable, session_id, message})
+        send(context.session_owner, {:tackle_message_appended, session_id, message})
       end
 
       :ok
@@ -49,7 +57,7 @@ defmodule Tackle.Session.Persistence do
 
   @impl true
   def before_tool_call(%State{session_id: session_id}, call, context) do
-    persist(session_id, context, &Journal.tool_started(&1, call))
+    persist(session_id, context, &Journal.tool_started(&1, call, sync: false))
   end
 
   defp persist(session_id, context, fun) do

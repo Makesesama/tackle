@@ -33,6 +33,19 @@ defmodule Tackle.Lib.Loop do
   the provider call. The callback is host policy; the library has no storage
   knowledge.
 
+  ## Tool execution gate
+
+  `run/3` and `continue/2` also accept a `:before_tool_execution` zero-arity
+  callback with the same contract. It runs after the `before_tool_call` hooks
+  have accepted a call, and before any of those tools execute: once per
+  concurrent batch, or once per call under the sequential policy. It is skipped
+  when every call it would cover is read-only (`Tackle.Lib.Tool.effect/1`) or
+  will not run because its tool cannot be resolved. A host that records tool
+  intent without waiting in `before_tool_call` uses it as a single barrier
+  before the effects. An error aborts the step like a rejecting
+  `before_tool_call` hook, and no tool runs. Cancellation is checked again after
+  the callback.
+
   ## Append-only provider context
 
   Each generation receives the persisted user, assistant, and tool messages
@@ -81,6 +94,9 @@ defmodule Tackle.Lib.Loop do
     * `:before_provider_call` - Optional zero-arity callback returning `:ok` or
       `{:error, reason}`, invoked before every provider dispatch, including retries
       and compaction summaries.
+    * `:before_tool_execution` - Optional zero-arity callback returning `:ok` or
+      `{:error, reason}`, invoked after `before_tool_call` hooks accept a call
+      and before the accepted tools execute (see "Tool execution gate").
     * `:take_incoming_messages` - Optional zero-arity host callback returning
       `{:ok, [message]}` or `{:error, reason}`. Incoming text is appended as user
       messages immediately before the next provider call. The callback is polled
@@ -780,25 +796,14 @@ defmodule Tackle.Lib.Loop do
   defp run_concurrent_batch(tool_calls, state, callbacks, supervisor) do
     case prepare_tool_batch(tool_calls, state, callbacks) do
       {:ok, jobs, state} ->
-        if cancelled?(callbacks) do
-          {:cancelled, cancel_state(state, callbacks)}
-        else
-          {settlements, outcome} =
-            Batch.run(
-              jobs,
-              supervisor,
-              &settle_tool_call/1,
-              &emit_tool_execution_end(&1, callbacks),
-              fn -> cancelled?(callbacks) end
-            )
+        case await_tool_gate(Enum.map(jobs, & &1.call), callbacks) do
+          :ok ->
+            run_tool_jobs(jobs, state, callbacks, supervisor)
 
-          state = commit_tool_batch(jobs, settlements, state, callbacks)
-
-          case {state.status, outcome} do
-            {:error, _status} -> {:error, state}
-            {_status, :cancelled} -> {:cancelled, cancel_state(state, callbacks)}
-            _other -> {:ok, state}
-          end
+          {:error, reason} ->
+            # No job ran, so no settlement will delete the per-call signals.
+            Enum.each(jobs, &Cancellation.delete(&1.call_signal))
+            {:error, tool_gate_error(state, reason)}
         end
 
       {:cancelled, state} ->
@@ -806,6 +811,30 @@ defmodule Tackle.Lib.Loop do
 
       {:abort, state} ->
         {:error, state}
+    end
+  end
+
+  defp run_tool_jobs(jobs, state, callbacks, supervisor) do
+    if cancelled?(callbacks) do
+      Enum.each(jobs, &Cancellation.delete(&1.call_signal))
+      {:cancelled, cancel_state(state, callbacks)}
+    else
+      {settlements, outcome} =
+        Batch.run(
+          jobs,
+          supervisor,
+          &settle_tool_call/1,
+          &emit_tool_execution_end(&1, callbacks),
+          fn -> cancelled?(callbacks) end
+        )
+
+      state = commit_tool_batch(jobs, settlements, state, callbacks)
+
+      case {state.status, outcome} do
+        {:error, _status} -> {:error, state}
+        {_status, :cancelled} -> {:cancelled, cancel_state(state, callbacks)}
+        _other -> {:ok, state}
+      end
     end
   end
 
@@ -884,18 +913,41 @@ defmodule Tackle.Lib.Loop do
     tool_call_id = tool_call.id || generate_call_id(state)
     tool_call = %{tool_call | id: tool_call_id}
 
-    case invoke_before_tool_call(state, tool_call, callbacks) do
-      {:ok, state} ->
-        if cancelled?(callbacks) do
-          {:cancelled, cancel_state(state, callbacks)}
-        else
-          do_execute_single_tool(tool_call, state, callbacks)
-        end
-
-      {:error, reason} ->
+    with {:hook, {:ok, state}} <- {:hook, invoke_before_tool_call(state, tool_call, callbacks)},
+         {:gate, :ok, _state} <- {:gate, await_tool_gate([tool_call], callbacks), state} do
+      if cancelled?(callbacks) do
+        {:cancelled, cancel_state(state, callbacks)}
+      else
+        do_execute_single_tool(tool_call, state, callbacks)
+      end
+    else
+      {:hook, {:error, reason}} ->
         {:abort, State.set_error(state, "Hook aborted before tool call: #{inspect(reason)}")}
+
+      {:gate, {:error, reason}, state} ->
+        {:abort, tool_gate_error(state, reason)}
     end
   end
+
+  defp await_tool_gate(calls, callbacks) do
+    if Enum.any?(calls, &external_effect?(&1, callbacks)),
+      do: Tackle.Lib.ProviderGate.await(callbacks.before_tool_execution, :before_tool_execution),
+      else: :ok
+  end
+
+  # A call whose tool cannot be resolved never runs, so it has no effect to
+  # guard. Anything the loop cannot classify is treated as external.
+  defp external_effect?(%Call{} = call, callbacks) do
+    case Registry.resolve(tool_registry(callbacks), call) do
+      {:ok, %{module: module}} -> Tool.effect(module) == :external
+      {:error, _reason} -> false
+    end
+  catch
+    _kind, _reason -> true
+  end
+
+  defp tool_gate_error(state, reason),
+    do: State.set_error(state, "Tool execution gate failed: #{inspect(reason)}")
 
   defp do_execute_single_tool(%Call{name: name, arguments: args} = tool_call, state, callbacks) do
     emit(
@@ -1223,7 +1275,8 @@ defmodule Tackle.Lib.Loop do
         Keyword.get(opts, :cancellation_signal) || Keyword.get(opts, :cancel_signal),
       tool_supervisor: Keyword.get(opts, :tool_supervisor),
       take_incoming_messages: Keyword.get(opts, :take_incoming_messages),
-      before_provider_call: Keyword.get(opts, :before_provider_call)
+      before_provider_call: Keyword.get(opts, :before_provider_call),
+      before_tool_execution: Keyword.get(opts, :before_tool_execution)
     }
   end
 

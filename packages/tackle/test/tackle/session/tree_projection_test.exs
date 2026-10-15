@@ -95,7 +95,7 @@ defmodule Tackle.Session.TreeProjectionTest do
 
     assert Tree.active_id(projection.tree) == "a1"
     assert :erts_debug.same(messages, projection.messages)
-    assert :erts_debug.same(search_text, Projection.search_text(projection))
+    assert Projection.search_text(projection) == search_text
     assert Enum.map(projection.model_messages, & &1["id"]) == ["u1", "a1"]
   end
 

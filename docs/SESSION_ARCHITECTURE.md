@@ -23,7 +23,7 @@ This document resolves the session-persistence decisions deferred by [`RUNTIME_A
 4. Each logged item is one self-contained, versioned Tackle commit. A commit contains one or more related domain events and one monotonic session sequence number.
 5. `%Tackle.Lib.State{}` is not serialized. The durable schema contains only deliberate conversation data and audit metadata represented as plain values.
 6. Saving is continuous. There is no ordinary user-visible “save the current struct” operation. Explicit flushing exists only as a durability barrier.
-7. Tackle calls `:disk_log.sync/1` at semantic commit boundaries before allowing later external effects or announcing terminal completion.
+7. Tackle calls `:disk_log.sync/1` before a tool with external effects runs. Turn boundaries, messages, and tool intents are appended write-behind: they reach the OS within about two seconds (surviving an application crash) and become durable at the next sync. Power loss can lose the last turns; that trade is deliberate (section 9).
 8. One supervised journal owner serializes every write to one session. A session journal has at most one writable owner.
 9. A journal failure is fatal to further durable execution of that session. Tackle fails closed rather than continuing with memory-only state after persistence has failed.
 10. Loading replays durable conversation data into a fresh, trusted runtime configuration. It never restores PIDs, Tasks, runtime references, credential handles, executable modules, or stale process state.
@@ -396,10 +396,10 @@ Saving is integrated at semantic boundaries using the root session and an intern
 
 For `submit`:
 
-1. `Tackle.Session` asks the journal to append and sync `turn.started`, including the raw submitted input for audit and recovery diagnostics. For a new session this first commit also materializes the journal: the owner acquires ownership, opens the log, and writes the header and `session.created` first.
-2. Only after that succeeds does the session start the supervised turn Task.
+1. `Tackle.Session` asks the journal to append `turn.started` (write-behind), including the raw submitted input for audit and recovery diagnostics. For a new session this first commit also materializes the journal: the owner acquires ownership, opens the log, and writes and syncs the header and `session.created` first.
+2. Only after the append succeeds does the session start the supervised turn Task.
 3. `Tackle.Lib.Loop` constructs and settles the user message.
-4. The internal `after_message` hook appends and syncs `message.appended` before the loop performs the first provider request.
+4. The internal `after_message` hook appends `message.appended` write-behind. It becomes durable at the next sync point (an external tool's gate or the terminal event); the provider request does not wait for it.
 5. If persistence fails, the hook aborts the turn and the session does not continue in memory-only mode.
 
 The settled user message, rather than the raw input in `turn.started`, is the conversation projection. A crash before that message commits leaves an interrupted attempt but does not fabricate a message during replay.
@@ -408,7 +408,7 @@ The settled user message, rather than the raw input in `turn.started`, is the co
 
 For `continue`:
 
-1. the session appends and syncs `turn.started` with operation `continue`;
+1. the session appends `turn.started` (write-behind) with operation `continue`;
 2. the Task starts only after the commit succeeds; and
 3. the loop proceeds using the existing durable conversation.
 
@@ -416,9 +416,9 @@ For `continue`:
 
 The existing hook lifecycle provides the required boundaries:
 
-- `after_message` persists a settled assistant or tool message;
-- `before_tool_call` persists and syncs `tool.execution_started` before invoking the tool; and
-- a settled tool-result message is persisted and synced before the next provider request.
+- `after_message` appends a settled assistant or tool message;
+- `before_tool_call` appends `tool.execution_started`, and the loop's `:before_tool_execution` gate syncs every intent of the step (and the assistant message before it) before a tool with external effects is invoked. Tools that declare `effect/0 :: :read_only` (`read`, `load_skill`) skip the gate; and
+- a settled tool-result message is appended write-behind and becomes durable at the next sync point.
 
 This creates an honest recovery distinction:
 
@@ -432,11 +432,11 @@ tool.execution_started without a later tool message
 
 Tackle must never automatically repeat an uncertain tool execution merely because its result is absent.
 
-Library streaming events can reach a live subscriber before the persistence hook completes. They remain observational. The durability guarantee is that a settled message is committed before the loop performs the next provider or tool effect, and that terminal completion is not announced before the terminal journal commit is synced.
+Library streaming events can reach a live subscriber before the persistence hook completes. They remain observational. The durability guarantee is that tool intent is committed before a tool with external effects runs. Terminal completion is announced once the terminal event is appended, not synced. Power loss can lose the unsynced tail: settled messages, tool results, and whole recent turns since the last sync. Replay then sees a consistent prefix; an external tool whose result was lost appears as an uncertain `tool.execution_started`, and the provider calls of the interrupted turn are simply made again on retry.
 
 ### 8.4 Terminal settlement
 
-After the turn Task settles or crashes, `Tackle.Session` appends the corresponding terminal event and syncs it before:
+After the turn Task settles or crashes, `Tackle.Session` appends the corresponding terminal event (write-behind, not synced) before:
 
 - replacing the session's settled in-memory state;
 - broadcasting `:tackle_turn_finished` or `:tackle_turn_failed`;
@@ -483,7 +483,49 @@ semantic commit
   → acknowledge success
 ```
 
-There is no initial user-configurable buffered durability mode. Agent provider and tool operations are normally much slower than a local sync, and a single safety-first contract is simpler to explain and test.
+There is no user-configurable buffered durability mode. Compaction, navigation, configuration, metadata, recovery, and close commits follow the policy above. `turn.started`, terminal events, and loop-written messages and tool intents are write-behind, as described next.
+
+### Write-behind loop commits
+
+Messages and tool intents written by the loop's persistence hook are appended
+write-behind: validated, sequenced, and passed to `:disk_log.log/2` in order,
+without a sync. `turn.started` and the terminal event are appended the same
+way. Because the log is ordered, one sync makes every earlier commit durable.
+The session syncs only where an irreversible effect depends on it:
+
+```text
+:before_tool_execution gate       Journal.await_durable/1 before external tools run
+:before_provider_call gate        Journal.await_idle/1: waits behind a busy or
+                                  stalled journal, never syncs
+turn.started, terminal event      appended, not synced
+```
+
+Unsynced commits are not only in memory. `:disk_log` writes its cache to the
+file within about two seconds (or at 64 KB), after which the OS holds them and
+writes them back on its own schedule (ext4 commits every few seconds), so an
+application or VM crash keeps them. Only power loss or a kernel crash can lose
+that tail, and losing the last turns is acceptable: they are cheap to redo, and
+no external tool has run on unsynced facts. A turn that completed without any
+external tool is therefore never synced on its own. Readers of a live
+session's file (`inspect_session`, fork) flush the journal first. Orderly close
+syncs before releasing the file.
+
+A provider call needs no durable record first: after a crash the turn is
+interrupted and retrying it only repeats provider calls. It still waits behind
+the journal so the loop does not run ahead of stalled or failed storage.
+Read-only tools (`Tackle.Lib.Tool.effect/1`) skip the tool gate, because
+running them again after a crash changes nothing.
+
+What a crash can lose is the unsynced tail. Because the log is ordered, a
+durable tool result implies its durable intent, and a durable intent implies
+the assistant message that requested it, so replay always sees a consistent
+prefix. Under the harness's concurrent tool policy a step with external tools
+costs one sync for all of its intents (the sequential policy runs the gate per
+external call). This keeps disk wear low: each sync rewrites the log's tail
+block and forces a filesystem journal commit. `await_durable/1` does not touch
+the disk when nothing is unsynced; `Journal.flush/1` stays an explicit barrier
+that always syncs. The derived catalog is refreshed when a sync makes new
+commits durable, not on every append.
 
 `sync/1` is the strongest durability operation provided by OTP, not a promise that every filesystem, device controller, or virtualized disk honors physical persistence perfectly. Tackle reports its guarantee as successful completion of the OTP/file sync boundary.
 
@@ -698,6 +740,14 @@ It excludes by default:
 
 This reduces accidental secret exposure and index size. The durable journal can still retain conversation fields required for exact continuation.
 
+Search text is built lazily, not per commit, because its cost grows with the
+session. A live journal records summaries without it. A text search builds the
+missing text for each candidate in the searching process, from the live
+journal's projection or by replaying the session's file, and caches it on the
+catalog entry until the session's next indexed commit. Startup indexing takes
+it from summary sidecars (written once when a journal owner stops) or from the
+replay it already performs.
+
 ### 12.3 Rebuild behavior
 
 Derived catalog data may use atomically replaced ETF sidecars to avoid replaying every complete journal during normal startup. Each sidecar includes its schema version, session ID, and projected sequence.
@@ -905,10 +955,14 @@ Add the journal as a critical child for durable root scopes and attach the inter
 
 Acceptance criteria:
 
-- turn start is durable before its Task begins;
-- each settled message is durable before the next provider or tool effect;
-- tool intent is durable before tool execution;
-- terminal settlement is durable before terminal delivery;
+- turn start is durable before its Task begins (since relaxed: appended
+  write-behind; see section 9);
+- each settled message is durable before the next provider or tool effect
+  (since relaxed: messages are durable at the next sync point; see section 9);
+- tool intent is durable before tool execution (external tools; read-only tools
+  skip the sync);
+- terminal settlement is durable before terminal delivery (since relaxed:
+  appended write-behind before delivery; see section 9);
 - persistence failure aborts rather than degrading to memory-only execution; and
 - ephemeral scopes continue to work without a journal.
 

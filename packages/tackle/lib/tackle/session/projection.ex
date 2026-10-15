@@ -65,7 +65,6 @@ defmodule Tackle.Session.Projection do
             tree: nil,
             messages: [],
             model_messages: [],
-            search_text: nil,
             compactions: [],
             turns: %{},
             active_turn: nil,
@@ -92,7 +91,6 @@ defmodule Tackle.Session.Projection do
           tree: Tree.t(),
           messages: [map()],
           model_messages: [map()],
-          search_text: String.t() | nil,
           compactions: [map()],
           turns: %{optional(String.t()) => turn()},
           active_turn: turn() | nil,
@@ -150,14 +148,7 @@ defmodule Tackle.Session.Projection do
   @doc false
   @spec refresh(t()) :: t()
   def refresh(%__MODULE__{tree: tree} = projection) do
-    messages = plain_messages(tree)
-
-    %{
-      projection
-      | messages: messages,
-        model_messages: plain_model_messages(tree),
-        search_text: build_search_text(%{projection | messages: messages})
-    }
+    %{projection | messages: plain_messages(tree), model_messages: plain_model_messages(tree)}
   end
 
   @doc "Returns the projection's derived recovery status."
@@ -214,14 +205,12 @@ defmodule Tackle.Session.Projection do
   tool output are excluded by default to bound index size and accidental secret
   exposure. Search covers the complete archive, so switching branches never
   removes results.
+
+  It is built on demand, when a session is searched or its summary sidecar is
+  written, never per commit: its cost grows with the session.
   """
   @spec search_text(t()) :: String.t()
-  def search_text(%__MODULE__{search_text: search_text}) when is_binary(search_text),
-    do: search_text
-
-  def search_text(%__MODULE__{} = projection), do: build_search_text(projection)
-
-  defp build_search_text(%__MODULE__{} = projection) do
+  def search_text(%__MODULE__{} = projection) do
     parts =
       [
         projection.title,
@@ -439,20 +428,7 @@ defmodule Tackle.Session.Projection do
         plain_model_messages(projection.tree)
       end
 
-    search_text = append_search_text(projection, message)
-
-    %{
-      projection
-      | messages: append(projection.messages, plain),
-        model_messages: model_messages,
-        search_text: search_text
-    }
-  end
-
-  defp apply_live_event(%{"type" => type} = event, projection)
-       when type in ["session.created", "session.metadata_changed"] do
-    projection = apply_event(event, projection)
-    %{projection | search_text: build_search_text(projection)}
+    %{projection | messages: append(projection.messages, plain), model_messages: model_messages}
   end
 
   defp apply_live_event(%{"type" => type} = event, projection)
@@ -462,16 +438,6 @@ defmodule Tackle.Session.Projection do
   end
 
   defp apply_live_event(event, projection), do: apply_event(event, projection)
-
-  defp append_search_text(projection, %Message{role: role, content: content})
-       when role in [:user, :assistant] and is_binary(content) and content != "" do
-    append_search_part(search_text(projection), content)
-  end
-
-  defp append_search_text(projection, _message), do: search_text(projection)
-
-  defp append_search_part("", part), do: part
-  defp append_search_part(text, part), do: text <> "\n" <> part
 
   defp append_message(%__MODULE__{tree: tree} = projection, message, parent_id) do
     case Tree.append_message(tree, message, parent_id: parent_id) do

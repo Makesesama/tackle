@@ -175,7 +175,10 @@ defmodule Tackle.Test.Runtime do
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.ScopeSpec
+  alias Tackle.Session.Journal
+  alias Tackle.Session.Reader
   alias Tackle.Session.Spec, as: SessionSpec
+  alias Tackle.Session.Store
 
   @doc "Builds a trusted agent spec using the deterministic test adapter."
   def agent_spec(name, opts \\ []) do
@@ -288,4 +291,66 @@ defmodule Tackle.Test.Runtime do
   end
 
   def eventually(_fun, 0), do: :timeout
+
+  @doc """
+  Reads a session journal file after flushing its live owner, if any.
+
+  Write-behind commits can sit in `:disk_log`'s cache for a moment, so a test
+  that inspects the file of a live session must flush it first.
+  """
+  def read_journal(session_id, opts) do
+    flush_live(session_id)
+    Reader.read(session_id, opts)
+  end
+
+  @doc "Like `read_journal/2`, but returns the replayed projection."
+  def read_projection(session_id, opts) do
+    flush_live(session_id)
+    Reader.projection(session_id, opts)
+  end
+
+  # A journal that is shutting down syncs and closes its file on its own.
+  defp flush_live(session_id) do
+    case Store.flush(session_id) do
+      :ok -> :ok
+      {:error, {:journal_unavailable, _reason}} -> :ok
+    end
+  end
+
+  @doc """
+  Starts counting the disk syncs a journal owner performs.
+
+  Traces `Tackle.Session.Reader.sync/1` calls made by `journal` and delivers
+  them to the calling test process. Collect them with `collect_syncs/1`.
+  """
+  def trace_syncs(journal) when is_pid(journal) do
+    :erlang.trace_pattern({Reader, :sync, 1}, true, [:global])
+    1 = :erlang.trace(journal, true, [:call])
+
+    ExUnit.Callbacks.on_exit(fn ->
+      :erlang.trace_pattern({Reader, :sync, 1}, false, [:global])
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Returns the number of traced journal syncs received so far.
+
+  A status call to the journal is a round trip, so every sync the owner made
+  before it has already been traced.
+  """
+  def collect_syncs(journal) do
+    {:ok, _status} = Journal.status(journal)
+    count_syncs(journal, 0)
+  end
+
+  defp count_syncs(journal, count) do
+    receive do
+      {:trace, ^journal, :call, {Reader, :sync, _args}} ->
+        count_syncs(journal, count + 1)
+    after
+      50 -> count
+    end
+  end
 end

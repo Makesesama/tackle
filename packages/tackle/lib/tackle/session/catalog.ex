@@ -12,11 +12,19 @@ defmodule Tackle.Session.Catalog do
   assistant message text, `cwd`, and explicit tags. It excludes reasoning,
   provider continuation state, tool arguments, and tool output to bound index
   size and accidental secret exposure.
+
+  Search text is built lazily. Live journals record summaries without it,
+  because building it costs time proportional to the whole session. A text
+  search builds the missing text for each candidate, from the live journal's
+  projection or by replaying the session's file, in the searching process, and
+  caches it on the entry until the session's next indexed commit. Startup
+  indexing takes it from summary sidecars or the replay it already does.
   """
 
   use GenServer
 
   alias Tackle.Session.Catalog.Entry
+  alias Tackle.Session.Journal
   alias Tackle.Session.Projection
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
@@ -24,6 +32,7 @@ defmodule Tackle.Session.Catalog do
   @table __MODULE__
   @summary_schema_version 1
   @rebuild_session_timeout 2_000
+  @search_text_timeout 5_000
 
   @type filters :: %{
           optional(:text) => String.t() | nil,
@@ -88,15 +97,20 @@ defmodule Tackle.Session.Catalog do
   @spec list(filters() | keyword()) ::
           {:ok, %{sessions: [Entry.t()], next_cursor: String.t() | nil}}
   def list(filters \\ %{}) do
-    GenServer.call(__MODULE__, {:list, normalize_filters(filters)})
+    filters = normalize_filters(filters)
+
+    # Metadata filters run in the catalog, ordered after earlier `record/1`
+    # casts. Text matching may build search text, so it runs in the caller.
+    with {:ok, entries} <- GenServer.call(__MODULE__, {:candidates, filters}) do
+      {:ok, entries |> filter_text(Map.get(filters, :text)) |> paginate(filters)}
+    end
   end
 
   @doc "Searches session summaries using the default indexed fields."
   @spec search(String.t(), filters() | keyword()) ::
           {:ok, %{sessions: [Entry.t()], next_cursor: String.t() | nil}}
   def search(query, filters \\ %{}) when is_binary(query) do
-    filters = filters |> normalize_filters() |> Map.put(:text, query)
-    GenServer.call(__MODULE__, {:list, filters})
+    filters |> normalize_filters() |> Map.put(:text, query) |> list()
   end
 
   @doc """
@@ -136,7 +150,7 @@ defmodule Tackle.Session.Catalog do
       preview: data["preview"],
       last_indexed_seq: data["last_indexed_seq"] || 0,
       parent_session_id: data["parent_session_id"],
-      search_text: data["search_text"] || ""
+      search_text: data["search_text"]
     }
   end
 
@@ -166,6 +180,20 @@ defmodule Tackle.Session.Catalog do
     {:noreply, state}
   end
 
+  # A search built this text from the session at `seq`. Keep it only while the
+  # entry still describes that commit; a newer record replaces it with nil.
+  def handle_cast({:cache_search_text, session_id, seq, text}, state) do
+    case :ets.lookup(state.table, session_id) do
+      [{^session_id, %Entry{last_indexed_seq: ^seq, search_text: nil} = entry}] ->
+        insert(state.table, %{entry | search_text: text})
+
+      _other ->
+        :ok
+    end
+
+    {:noreply, state}
+  end
+
   def handle_cast({:forget, session_id}, state) do
     :ets.delete(state.table, session_id)
     {:noreply, state}
@@ -179,9 +207,9 @@ defmodule Tackle.Session.Catalog do
     end
   end
 
-  def handle_call({:list, filters}, _from, state) do
+  def handle_call({:candidates, filters}, _from, state) do
     entries = state.table |> :ets.tab2list() |> Enum.map(fn {_id, entry} -> entry end)
-    {:reply, {:ok, paginate(filter(entries, filters), filters)}, state}
+    {:reply, {:ok, filter(entries, filters)}, state}
   end
 
   def handle_call({:rebuild, opts}, _from, state) do
@@ -219,7 +247,8 @@ defmodule Tackle.Session.Catalog do
       {:ok, %{"last_indexed_seq" => last_seq} = sidecar} ->
         case Reader.last_seq(session_id, opts) do
           {:ok, ^last_seq} ->
-            insert(table, decode_summary(sidecar["summary"] || %{"session_id" => session_id}))
+            entry = decode_summary(sidecar["summary"] || %{"session_id" => session_id})
+            insert(table, %{entry | journal_path: journal_path(session_id, opts)})
             :ok
 
           _other ->
@@ -233,8 +262,16 @@ defmodule Tackle.Session.Catalog do
 
   defp index_from_journal(table, session_id, opts) do
     with {:ok, projection} <- Reader.projection(session_id, opts) do
-      insert(table, to_entry(summary_for(projection)))
+      entry = to_entry(summary_for(projection))
+      insert(table, %{entry | journal_path: journal_path(session_id, opts)})
       :ok
+    end
+  end
+
+  defp journal_path(session_id, opts) do
+    case Storage.journal_path(session_id, opts) do
+      {:ok, path} -> path
+      {:error, _reason} -> nil
     end
   end
 
@@ -282,7 +319,8 @@ defmodule Tackle.Session.Catalog do
       preview: fetch_value(summary, :preview),
       last_indexed_seq: fetch_value(summary, :last_indexed_seq, 0),
       parent_session_id: fetch_value(summary, :parent_session_id),
-      search_text: fetch_value(summary, :search_text, "")
+      search_text: fetch_value(summary, :search_text),
+      journal_path: fetch_value(summary, :journal_path)
     }
   end
 
@@ -298,8 +336,7 @@ defmodule Tackle.Session.Catalog do
   end
 
   defp matches_filters?(entry, filters) do
-    matches_text?(entry, Map.get(filters, :text)) and
-      matches_field?(entry.cwd, Map.get(filters, :cwd)) and
+    matches_field?(entry.cwd, Map.get(filters, :cwd)) and
       matches_session_ids?(entry.session_id, Map.get(filters, :session_ids)) and
       matches_field?(entry.status, Map.get(filters, :status)) and
       matches_field?(entry.model, Map.get(filters, :model)) and
@@ -312,16 +349,76 @@ defmodule Tackle.Session.Catalog do
   defp matches_session_ids?(_session_id, nil), do: true
   defp matches_session_ids?(session_id, ids), do: session_id in ids
 
-  defp matches_text?(_entry, nil), do: true
-  defp matches_text?(_entry, ""), do: true
+  defp filter_text(entries, nil), do: entries
+  defp filter_text(entries, ""), do: entries
 
-  defp matches_text?(entry, text) do
-    haystack = String.downcase(entry.search_text || "")
-    needle = String.downcase(text)
+  defp filter_text(entries, text) do
+    case text |> String.downcase() |> String.split(~r/\s+/, trim: true) do
+      [] -> entries
+      needles -> match_text(entries, needles)
+    end
+  end
 
-    needle
-    |> String.split(~r/\s+/, trim: true)
-    |> Enum.all?(&String.contains?(haystack, &1))
+  # A session whose text cannot be built in time (a stalled live journal, a
+  # very large file) is matched on its title, cwd, and tags only.
+  defp match_text(entries, needles) do
+    entries
+    |> Task.async_stream(&search_text/1,
+      max_concurrency: System.schedulers_online(),
+      timeout: @search_text_timeout,
+      on_timeout: :kill_task
+    )
+    |> Enum.zip(entries)
+    |> Enum.flat_map(fn
+      {{:ok, haystack}, entry} ->
+        haystack = String.downcase(haystack)
+        if Enum.all?(needles, &String.contains?(haystack, &1)), do: [entry], else: []
+
+      {_timed_out, entry} ->
+        if matches_metadata?(entry, needles), do: [entry], else: []
+    end)
+  end
+
+  defp matches_metadata?(entry, needles) do
+    haystack = entry |> metadata_text() |> String.downcase()
+    Enum.all?(needles, &String.contains?(haystack, &1))
+  end
+
+  defp search_text(%Entry{search_text: text}) when is_binary(text), do: text
+
+  defp search_text(%Entry{} = entry) do
+    case session_projection(entry) do
+      {:ok, projection} ->
+        text = Projection.search_text(projection)
+
+        GenServer.cast(
+          __MODULE__,
+          {:cache_search_text, entry.session_id, projection.last_seq, text}
+        )
+
+        text
+
+      _unavailable ->
+        metadata_text(entry)
+    end
+  end
+
+  # A live session is read from its journal owner, which also holds unsynced
+  # commits; any other from its file.
+  defp session_projection(%Entry{session_id: session_id, journal_path: path}) do
+    case Journal.whereis(session_id) do
+      {:ok, journal} -> Journal.projection(journal)
+      {:error, :not_found} when is_binary(path) -> Reader.projection(session_id, path: path)
+      {:error, :not_found} -> {:error, :no_journal_path}
+    end
+  catch
+    :exit, reason -> {:error, {:journal_unavailable, reason}}
+  end
+
+  defp metadata_text(%Entry{} = entry) do
+    [entry.title, entry.cwd, Enum.join(entry.tags, " ")]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join("\n")
   end
 
   defp paginate(entries, filters) do

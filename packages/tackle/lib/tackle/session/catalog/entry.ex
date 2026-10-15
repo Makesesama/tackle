@@ -3,7 +3,9 @@ defmodule Tackle.Session.Catalog.Entry do
   One bounded, searchable session summary held by the derived catalog.
 
   A result carries metadata rather than a full transcript. The internal
-  `:search_text` field is used for matching but is never returned to frontends.
+  `:search_text` field is used for matching and is `nil` until a search builds
+  it; `:journal_path` locates the session's file for that. Neither is returned
+  to frontends.
   """
 
   @enforce_keys [:session_id]
@@ -19,7 +21,8 @@ defmodule Tackle.Session.Catalog.Entry do
             preview: nil,
             last_indexed_seq: 0,
             parent_session_id: nil,
-            search_text: ""
+            search_text: nil,
+            journal_path: nil
 
   @type t :: %__MODULE__{
           session_id: String.t(),
@@ -34,7 +37,8 @@ defmodule Tackle.Session.Catalog.Entry do
           preview: String.t() | nil,
           last_indexed_seq: non_neg_integer(),
           parent_session_id: String.t() | nil,
-          search_text: String.t()
+          search_text: String.t() | nil,
+          journal_path: String.t() | nil
         }
 
   @public_fields [
