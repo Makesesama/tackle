@@ -2,6 +2,7 @@ defmodule Tackle.Config.ProjectFileTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Config
+  alias Tackle.Lib.Thinking
   alias Tackle.Test.FakeJail
 
   defmodule Adapter do
@@ -52,7 +53,7 @@ defmodule Tackle.Config.ProjectFileTest do
 
     assert {:ok, config} = load(ctx)
     assert config.model_ref == "test/project"
-    assert Tackle.Thinking.from_llm_opts(config.llm_opts) == "low"
+    assert Thinking.from_llm_opts(config.llm_opts) == "low"
 
     assert {:ok, config} =
              load(%{ctx | env: Map.put(ctx.env, "TACKLE_MODEL", "test/environment")})
@@ -72,7 +73,7 @@ defmodule Tackle.Config.ProjectFileTest do
     write(project(ctx.cwd), ~s({"thinking": "high"}))
     assert {:ok, config} = load(ctx)
     assert config.model_ref == "test/user"
-    assert Tackle.Thinking.from_llm_opts(config.llm_opts) == "high"
+    assert Thinking.from_llm_opts(config.llm_opts) == "high"
   end
 
   test "objects merge recursively; project values replace user values", ctx do

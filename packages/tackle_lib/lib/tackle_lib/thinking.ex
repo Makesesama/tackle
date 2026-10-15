@@ -1,6 +1,6 @@
-defmodule Tackle.Thinking do
+defmodule Tackle.Lib.Thinking do
   @moduledoc """
-  Provider-neutral thinking levels exposed by the harness and its frontends.
+  Provider-neutral thinking levels, shared by hosts, frontends, and adapters.
 
   Adapters may ignore the resulting `:reasoning_effort` option when they do not
   support configurable reasoning. `"off"` removes reasoning options instead of

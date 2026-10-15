@@ -1,12 +1,13 @@
-defmodule Tackle.Skills.Frontmatter do
-  @moduledoc false
+defmodule Tackle.Lib.Frontmatter do
+  @moduledoc """
+  A deliberately small parser for the YAML front matter of Markdown files,
+  such as agent skills (`SKILL.md`), agent definitions, and review rules.
 
-  # A deliberately small YAML subset parser for `SKILL.md` frontmatter. The
-  # Agent Skills specification only needs flat `key: value` entries, quoted
-  # scalars, and block scalars, so the harness avoids a full YAML dependency.
-  #
-  # Unknown keys are preserved so callers can decide what to use. A document
-  # without a leading `---` fence has no frontmatter and parses to an empty map.
+  These files only need flat `key: value` entries, quoted scalars, and block
+  scalars, so a full YAML dependency is avoided. Unknown keys are preserved
+  so callers can decide what to use. A document without a leading `---`
+  fence has no front matter and parses to an empty map.
+  """
 
   @type error_reason :: :unterminated_frontmatter | :malformed_frontmatter
   @type parsed :: {:ok, map()} | {:error, error_reason()}
@@ -15,6 +16,7 @@ defmodule Tackle.Skills.Frontmatter do
   @key_regex ~r/^([A-Za-z0-9_.-]+):[ \t]?(.*)$/
   @block_regex ~r/^[|>][+-]?\d*$/
 
+  @doc "Parses the front matter of `contents`."
   @spec parse(String.t()) :: parsed()
   def parse(contents) when is_binary(contents) do
     with {:ok, document} <- parse_document(contents) do
@@ -22,7 +24,7 @@ defmodule Tackle.Skills.Frontmatter do
     end
   end
 
-  @doc false
+  @doc "Parses `contents` into its front matter and the body after it."
   @spec parse_document(String.t()) :: {:ok, document()} | {:error, error_reason()}
   def parse_document(contents) when is_binary(contents) do
     contents = contents |> strip_bom() |> normalize_newlines()

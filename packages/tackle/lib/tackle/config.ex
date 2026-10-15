@@ -34,6 +34,7 @@ defmodule Tackle.Config do
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Retry
+  alias Tackle.Lib.Thinking
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
   alias Tackle.Plugins.Catalog
@@ -41,7 +42,6 @@ defmodule Tackle.Config do
   alias Tackle.Skills
   alias Tackle.Skills.Skill
   alias Tackle.SystemPrompt
-  alias Tackle.Thinking
   alias Tackle.Tools.LoadSkill
 
   @loader_option_keys [

@@ -3,7 +3,7 @@ defmodule Tackle.Config.Review do
   Session defaults for code reviews (`Tackle.Review`).
 
     * `:thinking` - review stages (`:detector`, `:verifier`, `:scorer`) to
-      thinking levels (`Tackle.Thinking.levels/0`);
+      thinking levels (`Tackle.Lib.Thinking.levels/0`);
     * `:models` - the same stages to canonical model references such as
       `"openai-codex/gpt-5.5"`, resolved against the session's providers;
     * `:profile` - which findings to show: `:quiet`, `:default`, or
@@ -33,8 +33,8 @@ defmodule Tackle.Config.Review do
   """
 
   alias Tackle.Lib.LLM
+  alias Tackle.Lib.Thinking
   alias Tackle.Review.{Rank, Rules}
-  alias Tackle.Thinking
 
   defstruct thinking: %{}, models: %{}, profile: nil, max_steps: %{}, default_rules: nil
 

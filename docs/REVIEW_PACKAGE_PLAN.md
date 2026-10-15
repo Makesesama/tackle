@@ -1,6 +1,6 @@
 # Review package plan: `packages/tackle_review`
 
-**Status: phase 1 is implemented; phases 2 to 5 are a plan.** The review
+**Status: phases 1 and 2 are implemented; phases 3 to 5 are a plan.** The review
 pipeline still lives in `packages/tackle` (`Tackle.Review.*`); see
 [`code-review-plan.md`](code-review-plan.md) for how it works.
 
@@ -79,26 +79,27 @@ not use the harness for review at all.
 
 ### `packages/tackle_runtime`
 
-New optional `Tackle.Runtime.AgentBackend` callbacks, exposed through
-`Tackle.Runtime` so that callers never see the config type:
+Optional `Tackle.Runtime.AgentBackend` callbacks (implemented in phase 2),
+exposed through `Tackle.Runtime` so that callers never see the config type:
 
-- `configure(spec, opts)` with `:model`, `:thinking`, `:max_steps`,
-  `:context` (merged into the session context), and `:llm_opts` (merged, for
-  `:prompt_cache_key`);
-- `describe(spec)` returning the model reference, thinking level, step
-  limit, and system prompt, which the result records;
-- `llm(spec)` returning the model client and its options with credentials
-  resolved, for the scorer's direct model call (replaces
-  `Auth.credential_store/0` in the pipeline);
-- resolving a `model_source: :parent` spec against the requester before a
-  run starts, as `prepare_child/2` does when the run starts (today
-  `Delegation.base_config/2` calls `RootBackend.inherit_model/2`).
+- `configure/2` (`Tackle.Runtime.configure_spec/3`) with `:model`,
+  `:thinking`, `:max_steps`, `:context` (merged into the session context),
+  and `:llm_opts` (merged, for `:prompt_cache_key`);
+- `describe/1` (`Tackle.Runtime.describe_spec/2`) returning the model
+  reference, thinking level, step limit, system prompt, and tool names;
+- `llm/1` (`Tackle.Runtime.spec_llm/2`) returning the model client and its
+  options with credentials resolved, for the scorer's direct model call;
+- `Tackle.Runtime.prepare_spec/2`, which resolves a `model_source: :parent`
+  spec against the requester before a run starts, through the existing
+  `prepare_child/2`.
 
-The final names follow the existing backend conventions. A backend that does
-not implement them returns `{:error, :unsupported}`, and the review fails
-with a clear error instead of crashing.
+A backend without a callback returns
+`{:error, {:unsupported_backend_callback, name}}`, and the review fails with
+`{:unsupported_agent_config, profile, reason}` before any run.
 
 ### `packages/tackle_lib`
+
+Implemented in phase 2:
 
 - `Tackle.Thinking` moves to `Tackle.Lib.Thinking`. It is provider-neutral and
   only holds the level vocabulary and the `:reasoning_effort` mapping.
@@ -158,10 +159,14 @@ only changes file paths and module names.
    through the session executor, and reads and writes the history; the
    `review_changes` tool, `tackle review`, and the TUI use it. The review
    benchmark code is removed (see "Breaking changes").
-2. **Runtime contract.** Add the backend callbacks to `tackle_runtime`,
-   implement them in `RootBackend`, and switch `Tackle.Review` and
-   `Tackle.Review.Delegation` from `%Tackle.Config{}` to them. Move `Thinking`
-   and `Frontmatter` to `tackle_lib`.
+2. **Runtime contract.** *Implemented.* The backend callbacks above are in
+   `tackle_runtime` and implemented by `RootBackend`; `Tackle.Review`,
+   `Tackle.Review.Delegation`, and the detector and verifier use them and no
+   longer read `%Tackle.Config{}` or `Tackle.Auth`. `Thinking` and
+   `Frontmatter` are in `tackle_lib`. What the pipeline still takes from the
+   harness is `Tackle.Config.Review` (settings, phase 3), rule discovery in
+   `Tackle.Review.Rules` (phase 3), and the output tools under
+   `Tackle.Tools` (phase 4).
 3. **Stages and rules.** Export the stage profiles as data, split rule
    parsing and merging from discovery, and add reading rules from a commit.
 4. **Move.** Create `packages/tackle_review`, move the modules and their

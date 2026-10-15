@@ -2,7 +2,7 @@ defmodule Tackle.Config.File do
   @moduledoc false
 
   alias Tackle.Lib.LLM.Provider
-  alias Tackle.Thinking
+  alias Tackle.Lib.Thinking
 
   # The sidebar preference belongs to the CLI; the harness accepts and validates
   # the field without carrying presentation state into a session configuration.

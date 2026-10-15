@@ -661,14 +661,14 @@ defmodule Tackle.CLI.Parser do
     |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
       with [stage, level] <- entry |> String.split("=", parts: 2) |> Enum.map(&String.trim/1),
            {:ok, stage} <- Map.fetch(@review_stages, stage),
-           :ok <- Tackle.Thinking.validate(level) do
+           :ok <- Tackle.Lib.Thinking.validate(level) do
         {:cont, {:ok, acc ++ [{stage, level}]}}
       else
         _invalid ->
           {:halt,
            {:error,
             "must be STAGE=LEVEL pairs with stages detector, verifier, or scorer and levels " <>
-              Enum.join(Tackle.Thinking.levels(), ", ")}}
+              Enum.join(Tackle.Lib.Thinking.levels(), ", ")}}
       end
     end)
     |> case do

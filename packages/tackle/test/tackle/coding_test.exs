@@ -4,6 +4,7 @@ defmodule Tackle.CodingTest do
   import Tackle.Test.Runtime, only: [tmp_home: 0, eventually: 1]
 
   alias Tackle.Coding
+  alias Tackle.Lib.Thinking
   alias Tackle.Plugins.Catalog
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, Outcome, ScopeSpec}
@@ -453,7 +454,7 @@ defmodule Tackle.CodingTest do
     scout = spec.profiles["scout"]
     assert scout.config.model_ref == "test/child"
     assert scout.model_source == :configured
-    assert Tackle.Thinking.from_llm_opts(scout.config.llm_opts) == "low"
+    assert Thinking.from_llm_opts(scout.config.llm_opts) == "low"
     assert spec.root_spec.config.model_ref == "test/echo"
     assert spec.profiles["reviewer"].model_source == :parent
     refute Map.has_key?(spec.profiles, "absent")
@@ -642,7 +643,7 @@ defmodule Tackle.CodingTest do
     {:ok, run} = Runtime.request_agent(resumed.root_agent_ref, "scout", "inspect")
     assert %Outcome{status: :ok, agent_state: child} = Runtime.await(run, 5_000)
     assert child.llm.ref == "test/child"
-    assert Tackle.Thinking.from_llm_opts(child.llm_opts) == "high"
+    assert Thinking.from_llm_opts(child.llm_opts) == "high"
     refute Enum.any?(child.messages, &(&1.content == "record selection"))
   end
 

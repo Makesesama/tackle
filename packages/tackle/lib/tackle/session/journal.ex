@@ -41,6 +41,7 @@ defmodule Tackle.Session.Journal do
 
   alias Tackle.Config
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Thinking
   alias Tackle.Lib.Tree.Change
   alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
@@ -52,7 +53,6 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
   alias Tackle.Session.Storage.Lock
-  alias Tackle.Thinking
 
   @registry Tackle.Session.JournalRegistry
   @call_timeout 60_000

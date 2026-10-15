@@ -3,7 +3,9 @@ defmodule Tackle.Runtime.RootBackend do
 
   @behaviour Tackle.Runtime.AgentBackend
 
+  alias Tackle.Auth
   alias Tackle.Config
+  alias Tackle.Lib.Thinking
   alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.Outcome
@@ -93,15 +95,12 @@ defmodule Tackle.Runtime.RootBackend do
     end
   end
 
-  @doc false
   # A `model_source: :parent` child runs on its parent's current model and
-  # thinking level. Shared with `Tackle.Review`, whose scorer follows the
-  # same policy without starting a run.
-  @spec inherit_model(Config.t(), Tackle.Lib.State.t()) :: {:ok, Config.t()} | {:error, term()}
-  def inherit_model(%Config{} = config, %Tackle.Lib.State{llm: llm, llm_opts: llm_opts}) do
+  # thinking level.
+  defp inherit_model(%Config{} = config, %Tackle.Lib.State{llm: llm, llm_opts: llm_opts}) do
     Config.reconfigure(config,
       model: llm.ref,
-      thinking: Tackle.Thinking.from_llm_opts(llm_opts)
+      thinking: Thinking.from_llm_opts(llm_opts)
     )
   end
 
@@ -114,6 +113,62 @@ defmodule Tackle.Runtime.RootBackend do
 
   @impl true
   def model_ref(%AgentSpec{config: %Config{model_ref: model_ref}}), do: model_ref
+
+  # Model and thinking level are resolved against the configuration's own
+  # providers, as for a session's `/model`.
+  @impl true
+  def configure(%AgentSpec{config: %Config{} = config} = spec, opts) do
+    opts
+    |> Enum.reduce_while({:ok, config}, fn option, {:ok, config} ->
+      case configure_option(config, option) do
+        {:ok, config} -> {:cont, {:ok, config}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, config} -> {:ok, %{spec | config: config}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def configure(%AgentSpec{config: config}, _opts), do: {:error, {:invalid_agent_config, config}}
+
+  defp configure_option(config, {:model, model}), do: Config.reconfigure(config, model: model)
+
+  defp configure_option(config, {:thinking, level}),
+    do: Config.reconfigure(config, thinking: level)
+
+  defp configure_option(config, {:max_steps, steps}) when is_integer(steps) and steps > 0,
+    do: {:ok, %{config | max_iterations: steps}}
+
+  defp configure_option(config, {:context, context}) when is_map(context),
+    do: {:ok, %{config | context: Map.merge(config.context, context)}}
+
+  defp configure_option(config, {:llm_opts, llm_opts}) when is_list(llm_opts),
+    do: {:ok, %{config | llm_opts: Keyword.merge(config.llm_opts, llm_opts)}}
+
+  defp configure_option(_config, {key, value}), do: {:error, {:invalid_option, key, value}}
+
+  @impl true
+  def describe(%AgentSpec{config: %Config{} = config}) do
+    %{
+      model: config.model_ref,
+      thinking: Thinking.from_llm_opts(config.llm_opts),
+      max_steps: if(is_integer(config.max_iterations), do: config.max_iterations),
+      system_prompt: config.system_prompt,
+      tools: Enum.map(config.tools, & &1.name())
+    }
+  end
+
+  # A direct model call outside a session reads credentials from the same
+  # store sessions use.
+  @impl true
+  def llm(%AgentSpec{config: %Config{llm: llm, llm_opts: llm_opts}}) do
+    {:ok,
+     %{llm: llm, llm_opts: Keyword.put(llm_opts, :credential_store, Auth.credential_store())}}
+  end
+
+  def llm(%AgentSpec{config: config}), do: {:error, {:invalid_agent_config, config}}
 
   @impl true
   def outcome(%Outcome{} = outcome, _agent_ref), do: outcome

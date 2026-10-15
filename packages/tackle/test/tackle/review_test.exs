@@ -1267,10 +1267,11 @@ defmodule Tackle.ReviewTest do
       assert [_] = Enum.filter(calls(:verifier), &(&1.tool_results == []))
     end
 
-    test "a crashing verifier keeps its findings uncertain and the review going" do
+    test "a verifier that cannot start keeps its findings uncertain and the review going" do
       script = script(%{findings: [nil_check()]})
       profiles = profiles(script)
-      # A verifier spec whose context is not a map makes Verifier.run raise.
+      # The backend cannot set the per-run context of a spec whose context is
+      # not a map (a raising job is covered by Tackle.Review.PoolTest).
       verifier = profiles["review-verifier"]
       broken = %{verifier | config: %{verifier.config | context: nil}}
 
@@ -1281,12 +1282,15 @@ defmodule Tackle.ReviewTest do
                )
 
       assert [%Finding{verdict: :uncertain}] = result.blocking
-      assert [%{reason: {:crashed, _message}}] = result.summary.verification_failures
+
+      assert [%{reason: {:agent_backend_failed, _message}}] =
+               result.summary.verification_failures
+
       assert %{runs: 1, failed: 1} = result.summary.stages.verifier
       assert calls(:verifier) == []
     end
 
-    test "crashed detector batches are failed units" do
+    test "detector batches that cannot start are failed units" do
       profiles = profiles(script())
       detector = profiles["review-detector"]
       broken = %{detector | config: %{detector.config | context: nil}}
@@ -1295,7 +1299,7 @@ defmodule Tackle.ReviewTest do
                review(change(), script(), profiles: Map.put(profiles, "review-detector", broken))
 
       assert Enum.sort(Enum.map(failed, & &1.unit)) == ["change", "lib/a.ex#1", "lib/b.ex#1"]
-      assert Enum.all?(failed, &match?(%{reason: {:crashed, _message}}, &1))
+      assert Enum.all?(failed, &match?(%{reason: {:agent_backend_failed, _message}}, &1))
     end
 
     test "a hidden finding becomes a candidate when a clearer report of it is visible" do
@@ -1464,20 +1468,17 @@ defmodule Tackle.ReviewTest do
       assert Enum.all?(detector_calls, &(&1.prompt =~ "You have at most 3 rounds of tool calls"))
       refute Enum.any?(calls(:verifier), &(&1.prompt =~ "rounds of tool calls"))
 
-      config = %Config{providers: [], model_ref: "review/fake", llm: nil}
+      description = fn steps, tools -> %{max_steps: steps, tools: tools} end
 
-      spec = fn steps, tools ->
-        %AgentSpec{name: "d", config: %{config | max_iterations: steps, tools: tools}}
-      end
-
-      reading = [Tackle.Tools.Read, ReportFindings]
-      assert Detector.step_budget(spec.(2, reading)) =~ "at most 1 round of tool calls"
-      assert Detector.step_budget(spec.(1, reading)) =~ "at most 1 round of tool calls"
-      assert Detector.step_budget(spec.(6, reading)) =~ "Read only the code"
-      assert Detector.step_budget(spec.(:infinity, reading)) == nil
+      reading = ["read", "report_findings"]
+      assert Detector.step_budget(description.(2, reading)) =~ "at most 1 round of tool calls"
+      assert Detector.step_budget(description.(1, reading)) =~ "at most 1 round of tool calls"
+      assert Detector.step_budget(description.(6, reading)) =~ "Read only the code"
+      assert Detector.step_budget(description.(nil, reading)) == nil
+      assert Detector.step_budget(nil) == nil
 
       # A detector without reading tools is only told its budget.
-      refute Detector.step_budget(spec.(3, [ReportFindings])) =~ "Read only"
+      refute Detector.step_budget(description.(3, ["report_findings"])) =~ "Read only"
     end
 
     test "the requester's thinking level is inherited unless the stage sets its own" do

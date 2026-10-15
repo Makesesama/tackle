@@ -35,10 +35,9 @@ defmodule Tackle.Review.Delegation do
   run then shows up as cancelled among the scope's tasks.
   """
 
-  alias Tackle.Config
   alias Tackle.Lib.{Event, Message, State, Usage}
   alias Tackle.Runtime
-  alias Tackle.Runtime.{AgentRef, AgentSpec, Outcome, Registry, RootBackend, ScopeRef}
+  alias Tackle.Runtime.{AgentRef, AgentSpec, Outcome, Registry, ScopeRef}
 
   # Transient capacity refusals of `Tackle.AgentScope.Coordinator`.
   @capacity_reasons [:max_children_per_agent, :max_agents_per_fleet]
@@ -93,47 +92,15 @@ defmodule Tackle.Review.Delegation do
           | {:done?, ([Message.t()] -> boolean())}
 
   @doc """
-  Returns `spec` with `review` stored under `:review` in its session context.
-
-  Only harness configurations (`Tackle.Config`) are supported.
+  Returns `spec` with `review` stored under `:review` in its session
+  context, set through the backend of `requester`'s scope
+  (`Tackle.Runtime.configure_spec/3`).
   """
-  @spec put_review_context(AgentSpec.t(), map()) ::
-          {:ok, AgentSpec.t()} | {:error, {:unsupported_agent_config, String.t()}}
-  def put_review_context(%AgentSpec{config: %Config{} = config} = spec, review)
-      when is_map(review) do
-    {:ok, %{spec | config: %{config | context: Map.put(config.context, :review, review)}}}
+  @spec put_review_context(requester(), AgentSpec.t(), map()) ::
+          {:ok, AgentSpec.t()} | {:error, term()}
+  def put_review_context(requester, %AgentSpec{} = spec, review) when is_map(review) do
+    Runtime.configure_spec(requester, spec, context: %{review: review})
   end
-
-  def put_review_context(%AgentSpec{name: name}, _review),
-    do: {:error, {:unsupported_agent_config, name}}
-
-  @doc """
-  Returns the configuration a run of `spec` requested from `requester`
-  starts with, before any `:model` override, without starting a run.
-
-  A profile that inherits its model (`model_source: :parent`) runs on the
-  requester's current model and thinking level, as `Tackle.Runtime` applies
-  them when a run starts; any other profile keeps its own configuration.
-  """
-  @spec base_config(requester(), AgentSpec.t()) ::
-          {:ok, Config.t()}
-          | {:error,
-             {:requester_model_unavailable, term()} | {:unsupported_agent_config, String.t()}}
-  def base_config(requester, %AgentSpec{config: %Config{} = config, model_source: :parent}) do
-    with {:ok, %{agent_state: %State{} = state}} <-
-           Runtime.session_snapshot(requester),
-         {:ok, config} <- RootBackend.inherit_model(config, state) do
-      {:ok, config}
-    else
-      {:error, reason} -> {:error, {:requester_model_unavailable, reason}}
-      other -> {:error, {:requester_model_unavailable, other}}
-    end
-  end
-
-  def base_config(_requester, %AgentSpec{config: %Config{} = config}), do: {:ok, config}
-
-  def base_config(_requester, %AgentSpec{name: name}),
-    do: {:error, {:unsupported_agent_config, name}}
 
   @doc """
   Runs one delegated agent to completion and returns its final state.

@@ -185,7 +185,7 @@ defmodule Tackle.CLI.TUITest do
       llm_opts =
         case Keyword.fetch(opts, :thinking) do
           {:ok, level} ->
-            {:ok, updated} = Tackle.Thinking.put_llm_opts(state.agent_state.llm_opts, level)
+            {:ok, updated} = Tackle.Lib.Thinking.put_llm_opts(state.agent_state.llm_opts, level)
             updated
 
           :error ->
@@ -2047,10 +2047,10 @@ defmodule Tackle.CLI.TUITest do
     assert_receive {:reconfigured, [thinking: "minimal"]}
 
     state =
-      await_state(tui, &(Tackle.Thinking.from_llm_opts(&1.agent_state.llm_opts) == "minimal"))
+      await_state(tui, &(Tackle.Lib.Thinking.from_llm_opts(&1.agent_state.llm_opts) == "minimal"))
 
     assert state.overlay == nil
-    assert Tackle.Thinking.from_llm_opts(state.agent_state.llm_opts) == "minimal"
+    assert Tackle.Lib.Thinking.from_llm_opts(state.agent_state.llm_opts) == "minimal"
     assert header_text(state) =~ "thinking minimal"
   end
 

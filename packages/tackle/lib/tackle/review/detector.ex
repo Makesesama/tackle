@@ -35,7 +35,7 @@ defmodule Tackle.Review.Detector do
   alias Tackle.Lib.Usage
   alias Tackle.Review.{Delegation, Finding, Locations, Units}
   alias Tackle.Review.Rules.Rule
-  alias Tackle.Runtime.AgentSpec
+  alias Tackle.Runtime.{AgentBackend, AgentSpec}
   alias Tackle.Tools.ReportFindings
 
   @profile "review-detector"
@@ -45,6 +45,9 @@ defmodule Tackle.Review.Detector do
 
     * `:requester` (required) - the agent the run is delegated from;
     * `:spec` (required) - the `review-detector` profile spec;
+    * `:description` - the spec's description
+      (`Tackle.Runtime.describe_spec/2`), for the step budget (default:
+      none, so the run is not told one);
     * `:rules` - the rules that apply to the units (default `[]`);
     * `:index` - every changed line of the change, which the change-level
       unit's findings may point at (required for the change-level unit);
@@ -55,6 +58,7 @@ defmodule Tackle.Review.Detector do
   @type option ::
           {:requester, Delegation.requester()}
           | {:spec, AgentSpec.t()}
+          | {:description, AgentBackend.description()}
           | {:rules, [Rule.t()]}
           | {:index, Locations.t()}
           | {:samples, pos_integer()}
@@ -109,15 +113,16 @@ defmodule Tackle.Review.Detector do
     }
 
     spec = Keyword.fetch!(opts, :spec)
+    requester = Keyword.fetch!(opts, :requester)
 
     prompt =
-      [prompt(units, rules, review.allowed), step_budget(spec)]
+      [prompt(units, rules, review.allowed), step_budget(Keyword.get(opts, :description))]
       |> Enum.reject(&is_nil/1)
       |> Enum.join("\n\n")
 
     acc = %{samples: [], incomplete: [], usages: [], errors: []}
 
-    with {:ok, spec} <- Delegation.put_review_context(spec, review) do
+    with {:ok, spec} <- Delegation.put_review_context(requester, spec, review) do
       opts
       |> Keyword.get(:samples, 1)
       |> then(&Enum.to_list(1..&1//1))
@@ -208,21 +213,21 @@ defmodule Tackle.Review.Detector do
 
   @doc """
   The instruction that tells a detector run its step budget, or `nil` for a
-  profile without a step limit. One step is one model call, and the last one
-  answers, so a limit of `n` leaves `n - 1` rounds of tool calls. A profile
-  with tools besides `report_findings` is also told to spend them on the
-  code its findings depend on.
+  profile without a step limit, from the profile's description
+  (`Tackle.Runtime.describe_spec/2`). One step is one model call, and the
+  last one answers, so a limit of `n` leaves `n - 1` rounds of tool calls. A
+  profile with tools besides `report_findings` is also told to spend them on
+  the code its findings depend on.
   """
-  @spec step_budget(AgentSpec.t()) :: String.t() | nil
-  def step_budget(%AgentSpec{config: %{max_iterations: steps, tools: tools}})
-      when is_integer(steps) and steps > 0 do
+  @spec step_budget(AgentBackend.description() | nil) :: String.t() | nil
+  def step_budget(%{max_steps: steps, tools: tools}) when is_integer(steps) and steps > 0 do
     rounds = max(steps - 1, 1)
 
     budget =
       "You have at most #{rounds} #{if rounds == 1, do: "round", else: "rounds"} of tool " <>
         "calls, including your reports."
 
-    if Enum.any?(tools, &(&1 != ReportFindings)) do
+    if Enum.any?(tools, &(&1 != ReportFindings.name())) do
       budget <>
         " Read only the code a suspected finding depends on (callers, callees, the " <>
         "definitions it uses), make the reads of one round in parallel, and report every " <>
@@ -232,7 +237,7 @@ defmodule Tackle.Review.Detector do
     end
   end
 
-  def step_budget(_spec), do: nil
+  def step_budget(_description), do: nil
 
   @line_format "Lines are shown as `[+ n]` (added, new numbering), `[- n]` (removed, old " <>
                  "numbering), and `[  n]` (unchanged context). Read other code when you need " <>

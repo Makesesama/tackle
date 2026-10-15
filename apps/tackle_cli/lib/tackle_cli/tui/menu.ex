@@ -21,7 +21,7 @@ defmodule Tackle.CLI.TUI.Menu do
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Paragraph, Popup}
   alias Tackle.CLI.TUI.{Picker, Preferences, State, Subagents, Theme, Util, Viewport}
-  alias Tackle.Thinking
+  alias Tackle.Lib.Thinking
 
   @doc """
   Opens a menu of `kind` when the shell is idle.

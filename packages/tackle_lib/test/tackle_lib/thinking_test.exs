@@ -1,7 +1,7 @@
-defmodule Tackle.ThinkingTest do
+defmodule Tackle.Lib.ThinkingTest do
   use ExUnit.Case, async: true
 
-  alias Tackle.Thinking
+  alias Tackle.Lib.Thinking
 
   test "levels include max above xhigh" do
     assert Thinking.levels() == ["off", "minimal", "low", "medium", "high", "xhigh", "max"]

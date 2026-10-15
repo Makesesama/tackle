@@ -15,7 +15,7 @@ defmodule Tackle.Agents do
 
   alias Tackle.Agents.Definition
   alias Tackle.{Executor, Paths, ProjectFiles}
-  alias Tackle.Skills.Frontmatter
+  alias Tackle.Lib.Frontmatter
 
   @known_fields MapSet.new(
                   ~w(name description tools model thinking timeoutMs maxIterations advertise allowDelegation instructions)

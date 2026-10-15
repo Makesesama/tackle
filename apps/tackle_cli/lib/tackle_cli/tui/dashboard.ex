@@ -8,7 +8,7 @@ defmodule Tackle.CLI.TUI.Dashboard do
   alias ExRatatui.Style
   alias ExRatatui.Widgets.Paragraph
   alias Tackle.CLI.TUI.{Glyph, Layout, MessageView, State, Theme, Util}
-  alias Tackle.Thinking
+  alias Tackle.Lib.Thinking
 
   @recent_label_width 32
 

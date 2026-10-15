@@ -86,6 +86,29 @@ do not implement `select_model/2` refuse such requests with
 `Tackle.Runtime.RootBackend` implements it; `Tackle.Phoenix.RuntimeBackend`
 currently does not.
 
+## Configuring trusted specs
+
+Code review runs trusted profiles with another model, thinking level, step
+limit, or per-run context, without knowing the backend's configuration type.
+Backends opt in with three optional callbacks, which the runtime exposes for
+the backend of a requester's scope:
+
+- `configure/2` (`Tackle.Runtime.configure_spec/3`) applies `:model`,
+  `:thinking`, `:max_steps`, `:context` (merged into the session context), and
+  `:llm_opts` (merged into the adapter options), resolving models only against
+  the spec's trusted configuration;
+- `describe/1` (`Tackle.Runtime.describe_spec/2`) reports the model, thinking
+  level, step limit, system prompt, and tool names;
+- `llm/1` (`Tackle.Runtime.spec_llm/2`) returns the model client and its
+  options, credentials included, for a direct model call outside a run.
+
+`Tackle.Runtime.prepare_spec/2` applies `prepare_child/2` to a spec without
+starting a run. Backends without a callback return
+`{:error, {:unsupported_backend_callback, name}}`, and a raising callback
+returns `{:error, {:agent_backend_failed, message}}`.
+`Tackle.Runtime.RootBackend` implements all three;
+`Tackle.Phoenix.RuntimeBackend` currently does not.
+
 ## Delegated inactivity timeouts
 
 Delegated requests have no total runtime cap. `AgentSpec.timeout`,

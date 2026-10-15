@@ -85,6 +85,66 @@ defmodule Tackle.Runtime.AgentBackend do
   """
   @callback select_model(AgentSpec.t(), String.t()) :: {:ok, AgentSpec.t()} | {:error, term()}
   @callback model_ref(AgentSpec.t()) :: String.t() | nil
+
+  @typedoc """
+  A change to a trusted spec's configuration (see `c:configure/2`):
+
+    * `:model` - a model reference, such as `"provider/model"`, resolved like
+      `c:select_model/2` against the models the configuration makes available;
+    * `:thinking` - a provider-neutral thinking level
+      (`Tackle.Lib.Thinking.levels/0`);
+    * `:max_steps` - the most model calls one run makes;
+    * `:context` - entries merged into the session context, which tools read;
+    * `:llm_opts` - options merged into the adapter options, such as
+      `:prompt_cache_key`.
+  """
+  @type configure_option ::
+          {:model, String.t()}
+          | {:thinking, String.t()}
+          | {:max_steps, pos_integer()}
+          | {:context, map()}
+          | {:llm_opts, keyword()}
+
+  @typedoc """
+  What a spec's configuration runs with (see `c:describe/1`); `nil` when it
+  is not set.
+  """
+  @type description :: %{
+          model: String.t() | nil,
+          thinking: String.t() | nil,
+          max_steps: pos_integer() | nil,
+          system_prompt: String.t() | nil,
+          tools: [String.t()]
+        }
+
+  @typedoc "A model client and the options to call it with, credentials included."
+  @type llm :: %{llm: term(), llm_opts: keyword()}
+
+  @doc """
+  Applies `opts` (see `t:configure_option/0`) to a trusted spec's
+  configuration, in order, and returns the spec.
+
+  Callers such as code review use it to run a profile with another model,
+  thinking level, step limit, or per-run context without knowing the
+  backend's configuration type. Like `c:select_model/2`, a model must
+  resolve against the configuration's own providers; anything else is an
+  error.
+  """
+  @callback configure(AgentSpec.t(), [configure_option()]) ::
+              {:ok, AgentSpec.t()} | {:error, term()}
+
+  @doc """
+  Describes what a spec's configuration runs with: model reference, thinking
+  level, step limit, system prompt, and tool names.
+  """
+  @callback describe(AgentSpec.t()) :: description()
+
+  @doc """
+  Returns the model client of a spec's configuration and the options to call
+  it with directly (`Tackle.Lib.LLM`), outside an agent run, credentials
+  included.
+  """
+  @callback llm(AgentSpec.t()) :: {:ok, llm()} | {:error, term()}
   @callback outcome(term(), AgentRef.t()) :: Outcome.t()
   @callback notify(pid(), term()) :: :ok | {:error, term()}
 
@@ -108,6 +168,9 @@ defmodule Tackle.Runtime.AgentBackend do
   @optional_callbacks prepare_child: 2,
                       select_model: 2,
                       model_ref: 1,
+                      configure: 2,
+                      describe: 1,
+                      llm: 1,
                       outcome: 2,
                       notify: 2,
                       services: 2
@@ -197,6 +260,51 @@ defmodule Tackle.Runtime.AgentBackend do
   @doc false
   def model_ref(backend, %AgentSpec{} = spec) do
     if function_exported?(backend, :model_ref, 1), do: backend.model_ref(spec)
+  end
+
+  @configure_keys [:model, :thinking, :max_steps, :context, :llm_opts]
+
+  @doc false
+  def configure(backend, %AgentSpec{} = spec, opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, {:invalid_configure_options, opts}}
+
+      (unknown = Keyword.keys(opts) -- @configure_keys) != [] ->
+        {:error, {:invalid_configure_options, Enum.uniq(unknown)}}
+
+      opts == [] ->
+        {:ok, spec}
+
+      true ->
+        optional(backend, :configure, [spec, opts])
+    end
+  end
+
+  @doc false
+  def describe(backend, %AgentSpec{} = spec) do
+    case optional(backend, :describe, [spec]) do
+      {:error, reason} -> {:error, reason}
+      description when is_map(description) -> {:ok, description}
+      other -> {:error, {:invalid_backend_description, other}}
+    end
+  end
+
+  @doc false
+  def llm(backend, %AgentSpec{} = spec), do: optional(backend, :llm, [spec])
+
+  # Optional spec callbacks: an unsupported one is an error, and a failing
+  # one never takes the caller down.
+  defp optional(backend, name, args) do
+    if function_exported?(backend, name, length(args)) do
+      apply(backend, name, args)
+    else
+      {:error, {:unsupported_backend_callback, name}}
+    end
+  rescue
+    exception -> {:error, {:agent_backend_failed, Exception.message(exception)}}
+  catch
+    kind, reason -> {:error, {:agent_backend_failed, {kind, reason}}}
   end
 
   @doc false

@@ -73,8 +73,8 @@ defmodule Tackle.CLI.Output.Review do
   def format_error({:missing_tool, name, tool}),
     do: "the agent profile #{name} must keep the #{tool} tool"
 
-  def format_error({:unsupported_agent_config, name}),
-    do: "the agent profile #{name} has an unsupported configuration"
+  def format_error({:unsupported_agent_config, name, reason}),
+    do: "the agent profile #{name} has an unsupported configuration: #{inspect(reason)}"
 
   def format_error({:invalid_profile, name, _value}),
     do: "the agent profile #{name} could not be loaded"

@@ -33,6 +33,16 @@ defmodule Tackle.Review do
   project's `.tackle/agents/review-detector.md` overrides the built-in
   prompt like any other profile.
 
+  The review never reads a spec's configuration itself. It works through
+  the backend of the requester's scope (`Tackle.Runtime.AgentBackend`):
+  `Tackle.Runtime.describe_spec/2` reports a stage's model, thinking level,
+  step limit, prompt, and tools; `Tackle.Runtime.configure_spec/3` sets a
+  stage's model, thinking level, step limit, cache key, and per-run
+  context; and `Tackle.Runtime.spec_llm/2` gives the scorer its model.
+  Any host whose backend implements those callbacks can run reviews; for
+  any other backend the review fails with
+  `{:unsupported_agent_config, profile, reason}` before any run.
+
   The scorer (`Tackle.Review.Scorer`) recalibrates each verified finding's
   confidence; `Tackle.Review.Rank` applies the profile's thresholds and cap.
 
@@ -51,12 +61,12 @@ defmodule Tackle.Review do
 
   The stage configurations are resolved once, when the review starts: a
   profile that inherits its model (`model_source: :parent`) gets the
-  requester's current model and thinking level, then `:models` and
-  `:thinking` apply, the latter on top of the requester session's review
-  settings (`Tackle.Config.Review`). With `:shared_cache_key` (default `true`), all runs of
-  a stage share one prompt cache key (the `:prompt_cache_key` LLM option),
-  so providers that route cached prompts by key can reuse the stage's common
-  prompt prefix across runs.
+  requester's current model and thinking level
+  (`Tackle.Runtime.prepare_spec/2`), then `:models`, `:thinking`, and
+  `:max_steps` apply, on top of `:settings`. With `:shared_cache_key`
+  (default `true`), all runs of a stage share one prompt cache key (the
+  `:prompt_cache_key` LLM option), so providers that route cached prompts by
+  key can reuse the stage's common prompt prefix across runs.
 
   ## Storage
 
@@ -100,9 +110,8 @@ defmodule Tackle.Review do
   other findings stay uncertain.
   """
 
-  alias Tackle.{Auth, Config}
   alias Tackle.Config.Review, as: ReviewSettings
-  alias Tackle.Lib.{Cancellation, Usage}
+  alias Tackle.Lib.{Cancellation, Thinking, Usage}
 
   alias Tackle.Review.{
     Change,
@@ -197,7 +206,7 @@ defmodule Tackle.Review do
     * `:models` - per-stage model references overriding the profiles'
       models, as a map or keyword list with `:detector`, `:verifier`, and
       `:scorer` keys;
-    * `:thinking` - per-stage thinking levels (`Tackle.Thinking.levels/0`)
+    * `:thinking` - per-stage thinking levels (`Tackle.Lib.Thinking.levels/0`)
       overriding the profiles' or inherited ones, with the same keys; the
       scorer otherwise uses the verifier's;
     * `:max_steps` - step limits (model calls per run) of the `:detector`
@@ -300,8 +309,8 @@ defmodule Tackle.Review do
          {:ok, settings} <- option(opts, :settings, nil, &settings?/1),
          settings = settings || %ReviewSettings{},
          {:ok, profiles} <- fetch_option(opts, :profiles, &is_map/1),
-         {:ok, detector} <- stage_spec(profiles, Detector.profile(), ReportFindings),
-         {:ok, verifier} <- stage_spec(profiles, Verifier.profile(), ReportVerdict),
+         {:ok, detector} <- stage_spec(requester, profiles, Detector.profile(), ReportFindings),
+         {:ok, verifier} <- stage_spec(requester, profiles, Verifier.profile(), ReportVerdict),
          {:ok, profile} <-
            option(opts, :profile, settings.profile || :default, &(&1 in Rank.profiles())),
          {:ok, samples} <- option(opts, :samples, 1, &positive_integer?/1),
@@ -325,14 +334,17 @@ defmodule Tackle.Review do
            option(opts, :score_batch, @default_score_batch, &positive_integer?/1),
          {:ok, shared_cache_key} <- option(opts, :shared_cache_key, true, &is_boolean/1),
          cache_keys = cache_keys(shared_cache_key),
-         {:ok, detector} <-
-           pin_stage(requester, detector, :detector, models, thinking, cache_keys),
-         detector = limit_steps(detector, max_steps[:detector]),
-         {:ok, verifier} <-
-           pin_stage(requester, verifier, :verifier, models, thinking, cache_keys),
-         verifier = limit_steps(verifier, max_steps[:verifier]),
+         stage_opts = %{
+           models: models,
+           thinking: thinking,
+           max_steps: max_steps,
+           cache_keys: cache_keys
+         },
+         {:ok, detector} <- pin_stage(requester, detector, :detector, stage_opts),
+         {:ok, verifier} <- pin_stage(requester, verifier, :verifier, stage_opts),
+         {:ok, descriptions} <- describe_stages(requester, detector: detector, verifier: verifier),
          {:ok, scorer} <-
-           scorer(Keyword.get(opts, :scorer, Scorer.LLM), verifier, models, thinking, cache_keys),
+           scorer(Keyword.get(opts, :scorer, Scorer.LLM), requester, verifier, stage_opts),
          {:ok, rules} <- option(opts, :rules, nil, &rule_list?/1),
          {:ok, known} <- option(opts, :known_fingerprints, [], &Enumerable.impl_for/1),
          {:ok, warnings} <- option(opts, :warnings, [], &string_list?/1),
@@ -346,17 +358,22 @@ defmodule Tackle.Review do
          requester: requester,
          detector: detector,
          verifier: verifier,
+         descriptions: descriptions,
          profile: profile,
          samples: samples,
          concurrency: concurrency,
          exclude: exclude,
          units: units,
          settings:
-           settings(units, verify_batch, verify_limit, score_batch, shared_cache_key, [
-             {:detector, detector.config},
-             {:verifier, verifier.config},
-             {:scorer, scorer}
-           ]),
+           settings(
+             units,
+             verify_batch,
+             verify_limit,
+             score_batch,
+             shared_cache_key,
+             descriptions,
+             scorer
+           ),
          verify_batch: verify_batch,
          verify_limit: verify_limit,
          score_batch: score_batch,
@@ -427,19 +444,32 @@ defmodule Tackle.Review do
   defp rule_list?(value),
     do: is_nil(value) or (is_list(value) and Enum.all?(value, &is_struct(&1, Rule)))
 
-  defp stage_spec(profiles, name, tool) do
-    with {:ok, spec} <- resolve_profile(profiles, name) do
-      check_stage_tool(spec, name, tool)
+  defp stage_spec(requester, profiles, name, tool) do
+    with {:ok, spec} <- resolve_profile(profiles, name),
+         {:ok, description} <- describe(requester, spec, name) do
+      if tool.name() in description.tools,
+        do: {:ok, spec},
+        else: {:error, {:missing_tool, name, tool.name()}}
     end
   end
 
-  defp check_stage_tool(%AgentSpec{config: %Config{tools: tools}} = spec, name, tool) do
-    if tool in tools,
-      do: {:ok, spec},
-      else: {:error, {:missing_tool, name, tool.name()}}
+  # A backend that cannot describe or configure a spec cannot run a review
+  # stage with it.
+  defp describe(requester, spec, name) do
+    case Runtime.describe_spec(requester, spec) do
+      {:ok, description} -> {:ok, description}
+      {:error, reason} -> {:error, {:unsupported_agent_config, name, reason}}
+    end
   end
 
-  defp check_stage_tool(_spec, name, _tool), do: {:error, {:unsupported_agent_config, name}}
+  defp describe_stages(requester, stages) do
+    Enum.reduce_while(stages, {:ok, %{}}, fn {stage, spec}, {:ok, acc} ->
+      case describe(requester, spec, spec.name) do
+        {:ok, description} -> {:cont, {:ok, Map.put(acc, stage, description)}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
 
   defp resolve_profile(profiles, name) do
     case Map.get(profiles, name) do
@@ -482,7 +512,7 @@ defmodule Tackle.Review do
   defp thinking(thinking), do: {:error, {:invalid_option, :thinking, thinking}}
 
   defp valid_thinking?({stage, level}),
-    do: stage in @stages and (is_nil(level) or level in Tackle.Thinking.levels())
+    do: stage in @stages and (is_nil(level) or level in Thinking.levels())
 
   defp valid_thinking?(_entry), do: false
 
@@ -502,11 +532,6 @@ defmodule Tackle.Review do
   defp valid_steps?(_entry), do: false
 
   defp default_rules?(ids), do: is_nil(ids) or string_list?(ids)
-
-  defp limit_steps(spec, nil), do: spec
-
-  defp limit_steps(%AgentSpec{config: config} = spec, steps),
-    do: %{spec | config: %{config | max_iterations: steps}}
 
   defp units(units) when is_list(units) do
     {pack_files, sizing} = Keyword.pop(units, :pack_files, true)
@@ -537,21 +562,58 @@ defmodule Tackle.Review do
     Map.new(@stages, &{&1, "tackle-review-#{id}-#{&1}"})
   end
 
-  # Resolves a stage's configuration once: the requester's model and
-  # thinking level for an inheriting profile, then the per-stage model and
-  # thinking level, then the shared cache key. The pinned spec no longer
-  # inherits, so every run of the stage uses the same configuration.
-  defp pin_stage(requester, spec, stage, models, thinking, cache_keys) do
-    with {:ok, config} <- Delegation.base_config(requester, spec),
-         {:ok, config} <- select_model(config, stage, models[stage]),
-         {:ok, config} <- select_thinking(config, stage, thinking[stage]) do
-      config = %{config | llm_opts: put_cache_key(config.llm_opts, cache_keys[stage])}
-      {:ok, %{spec | config: config, model_source: :configured}}
+  # Resolves a stage's configuration once, through the runtime backend: the
+  # requester's model and thinking level for an inheriting profile, then the
+  # per-stage model, thinking level, and step limit, then the shared cache
+  # key. The pinned spec no longer inherits, so every run of the stage uses
+  # the same configuration.
+  defp pin_stage(requester, spec, stage, stage_opts) do
+    with {:ok, spec} <- inherit(requester, spec),
+         {:ok, spec} <- select(requester, spec, :models, stage, stage_opts.models[stage]),
+         {:ok, spec} <- select(requester, spec, :thinking, stage, stage_opts.thinking[stage]),
+         {:ok, spec} <- select(requester, spec, :max_steps, stage, stage_opts.max_steps[stage]),
+         {:ok, spec} <- put_cache_key(requester, spec, stage_opts.cache_keys[stage]) do
+      {:ok, %{spec | model_source: :configured}}
     end
   end
 
+  defp inherit(requester, %AgentSpec{model_source: :parent} = spec) do
+    case Runtime.prepare_spec(requester, spec) do
+      {:ok, spec} -> {:ok, spec}
+      {:error, reason} -> {:error, {:requester_model_unavailable, reason}}
+    end
+  end
+
+  defp inherit(_requester, spec), do: {:ok, spec}
+
+  @configure_keys %{models: :model, thinking: :thinking, max_steps: :max_steps}
+
+  # Applies one per-stage setting, as the runtime applies a run's `:model`
+  # (the profile's other settings are kept). `nil` keeps the profile's.
+  defp select(_requester, spec, _option, _stage, nil), do: {:ok, spec}
+
+  defp select(requester, spec, option, stage, value) do
+    case Runtime.configure_spec(requester, spec, [{@configure_keys[option], value}]) do
+      {:ok, spec} -> {:ok, spec}
+      {:error, reason} -> {:error, {:invalid_option, option, {stage, value, reason}}}
+    end
+  end
+
+  defp put_cache_key(_requester, spec, nil), do: {:ok, spec}
+
+  defp put_cache_key(requester, spec, key),
+    do: Runtime.configure_spec(requester, spec, llm_opts: [prompt_cache_key: key])
+
   # The settings that decide a review's cost, recorded with its result.
-  defp settings(units, verify_batch, verify_limit, score_batch, shared_cache_key, stages) do
+  defp settings(
+         units,
+         verify_batch,
+         verify_limit,
+         score_batch,
+         shared_cache_key,
+         descriptions,
+         scorer
+       ) do
     sizing = Keyword.merge(Units.defaults(), units.sizing)
 
     %{
@@ -564,68 +626,61 @@ defmodule Tackle.Review do
       verify_limit: verify_limit,
       score_batch: score_batch,
       shared_cache_key: shared_cache_key,
-      models: Map.new(stages, fn {stage, config} -> {stage, stage_model(config)} end),
-      thinking: Map.new(stages, fn {stage, config} -> {stage, stage_thinking(config)} end),
+      models:
+        descriptions
+        |> Map.new(fn {stage, description} -> {stage, description.model} end)
+        |> Map.put(:scorer, scorer_model(scorer)),
+      thinking:
+        descriptions
+        |> Map.new(fn {stage, description} -> {stage, description.thinking} end)
+        |> Map.put(:scorer, scorer_thinking(scorer)),
       max_steps:
-        for({stage, %Config{max_iterations: steps}} <- stages, into: %{}, do: {stage, steps})
+        Map.new(descriptions, fn {stage, description} -> {stage, description.max_steps} end)
     }
   end
 
-  defp stage_model(%Config{model_ref: model_ref}), do: model_ref
-  defp stage_model(%{llm: %{ref: ref}}), do: ref
-  defp stage_model(_none), do: nil
+  defp scorer_model(%{llm: %{ref: ref}}), do: ref
+  defp scorer_model(_none), do: nil
 
-  defp stage_thinking(%{llm_opts: llm_opts}), do: Tackle.Thinking.from_llm_opts(llm_opts)
-  defp stage_thinking(_none), do: nil
+  defp scorer_thinking(%{llm_opts: llm_opts}), do: Thinking.from_llm_opts(llm_opts)
+  defp scorer_thinking(_none), do: nil
 
-  defp put_cache_key(llm_opts, nil), do: llm_opts
-  defp put_cache_key(llm_opts, key), do: Keyword.put(llm_opts, :prompt_cache_key, key)
+  defp scorer(nil, _requester, _verifier, _stage_opts), do: {:ok, nil}
 
-  defp scorer(nil, _verifier, _models, _thinking, _cache_keys), do: {:ok, nil}
-
-  # The scorer uses the verifier's resolved model and thinking level unless
-  # the scorer stage overrides them.
-  defp scorer(module, verifier, models, thinking, cache_keys) when is_atom(module) do
+  # The scorer calls the verifier's resolved model directly, with its
+  # thinking level, unless the scorer stage overrides them, and its own
+  # cache key.
+  defp scorer(module, requester, verifier, stage_opts) when is_atom(module) do
     with :ok <- ensure_scorer(module),
-         {:ok, config} <- select_model(verifier.config, :scorer, models[:scorer]),
-         {:ok, config} <- select_thinking(config, :scorer, thinking[:scorer]) do
+         {:ok, spec} <- select(requester, verifier, :models, :scorer, stage_opts.models[:scorer]),
+         {:ok, spec} <-
+           select(requester, spec, :thinking, :scorer, stage_opts.thinking[:scorer]),
+         {:ok, %{llm: llm, llm_opts: llm_opts}} <- scorer_llm(requester, spec) do
       llm_opts =
-        config.llm_opts
-        |> Keyword.delete(:prompt_cache_key)
-        |> put_cache_key(cache_keys[:scorer])
-        |> Keyword.put(:credential_store, Auth.credential_store())
+        case stage_opts.cache_keys[:scorer] do
+          nil -> Keyword.delete(llm_opts, :prompt_cache_key)
+          key -> Keyword.put(llm_opts, :prompt_cache_key, key)
+        end
 
-      {:ok, %{module: module, llm: config.llm, llm_opts: llm_opts}}
+      {:ok, %{module: module, llm: llm, llm_opts: llm_opts}}
     end
   end
 
-  defp scorer(other, _verifier, _models, _thinking, _cache_keys),
+  defp scorer(other, _requester, _verifier, _stage_opts),
     do: {:error, {:invalid_option, :scorer, other}}
+
+  defp scorer_llm(requester, spec) do
+    case Runtime.spec_llm(requester, spec) do
+      {:ok, %{llm: _llm, llm_opts: llm_opts} = llm} when is_list(llm_opts) -> {:ok, llm}
+      {:error, reason} -> {:error, {:unsupported_agent_config, spec.name, reason}}
+      other -> {:error, {:unsupported_agent_config, spec.name, other}}
+    end
+  end
 
   defp ensure_scorer(module) do
     if Code.ensure_loaded?(module) and function_exported?(module, :score, 2),
       do: :ok,
       else: {:error, {:invalid_option, :scorer, module}}
-  end
-
-  # Applies a per-stage model on top of a stage configuration, as the
-  # runtime applies a run's `:model` (the profile's thinking level is kept).
-  defp select_model(config, _stage, nil), do: {:ok, config}
-
-  defp select_model(config, stage, model) do
-    case Config.reconfigure(config, model: model) do
-      {:ok, config} -> {:ok, config}
-      {:error, reason} -> {:error, {:invalid_option, :models, {stage, model, reason}}}
-    end
-  end
-
-  defp select_thinking(config, _stage, nil), do: {:ok, config}
-
-  defp select_thinking(config, stage, level) do
-    case Config.reconfigure(config, thinking: level) do
-      {:ok, config} -> {:ok, config}
-      {:error, reason} -> {:error, {:invalid_option, :thinking, {stage, level, reason}}}
-    end
   end
 
   ## Pipeline
@@ -784,6 +839,7 @@ defmodule Tackle.Review do
       [
         requester: env.ctx.requester,
         spec: env.ctx.detector,
+        description: env.ctx.descriptions.detector,
         rules: resolutions |> Enum.flat_map(& &1.rules) |> Enum.uniq_by(& &1.id),
         index: env.state.index,
         samples: env.ctx.samples
@@ -1254,8 +1310,8 @@ defmodule Tackle.Review do
   # kept, so the result does not carry the prompts themselves.
   defp put_digests(result, rules, ctx) do
     prompts = %{
-      ctx.detector.name => digest(ctx.detector.config.system_prompt),
-      ctx.verifier.name => digest(ctx.verifier.config.system_prompt)
+      ctx.detector.name => digest(ctx.descriptions.detector.system_prompt),
+      ctx.verifier.name => digest(ctx.descriptions.verifier.system_prompt)
     }
 
     summary =

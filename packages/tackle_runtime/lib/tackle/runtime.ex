@@ -209,6 +209,64 @@ defmodule Tackle.Runtime do
     end
   end
 
+  @doc """
+  Prepares a trusted spec to run as a child of `requester`, as
+  `request_agent/4` does before admission, without starting it.
+
+  A spec with `model_source: :parent` gets the requester's current model
+  and thinking level (the backend's `prepare_child/2`); other specs are
+  returned unchanged. The returned spec keeps its `model_source`, so a
+  caller that wants to keep the resolved model sets it to `:configured`.
+  """
+  @spec prepare_spec(AgentRef.t(), AgentSpec.t()) :: {:ok, AgentSpec.t()} | {:error, term()}
+  def prepare_spec(%AgentRef{} = requester, %AgentSpec{} = spec) do
+    with {:ok, pid} <- Registry.whereis(requester),
+         {:ok, backend} <- backend(requester) do
+      AgentBackend.prepare_child(backend, spec, pid)
+    end
+  end
+
+  @doc """
+  Changes a trusted spec's configuration through the backend of
+  `requester`'s scope (`c:Tackle.Runtime.AgentBackend.configure/2`), for
+  example to run a profile with another model or step limit.
+
+  Returns `{:error, {:unsupported_backend_callback, :configure}}` when the
+  backend does not support it, and `{:error, {:invalid_configure_options,
+  options}}` for unknown options.
+  """
+  @spec configure_spec(AgentRef.t(), AgentSpec.t(), [AgentBackend.configure_option()]) ::
+          {:ok, AgentSpec.t()} | {:error, term()}
+  def configure_spec(%AgentRef{} = requester, %AgentSpec{} = spec, opts) do
+    with {:ok, backend} <- backend(requester) do
+      AgentBackend.configure(backend, spec, opts)
+    end
+  end
+
+  @doc """
+  Describes what a trusted spec runs with, through the backend of
+  `requester`'s scope (`c:Tackle.Runtime.AgentBackend.describe/1`).
+  """
+  @spec describe_spec(AgentRef.t(), AgentSpec.t()) ::
+          {:ok, AgentBackend.description()} | {:error, term()}
+  def describe_spec(%AgentRef{} = requester, %AgentSpec{} = spec) do
+    with {:ok, backend} <- backend(requester) do
+      AgentBackend.describe(backend, spec)
+    end
+  end
+
+  @doc """
+  Returns the model client of a trusted spec and the options to call it
+  with directly, outside an agent run, through the backend of `requester`'s
+  scope (`c:Tackle.Runtime.AgentBackend.llm/1`).
+  """
+  @spec spec_llm(AgentRef.t(), AgentSpec.t()) :: {:ok, AgentBackend.llm()} | {:error, term()}
+  def spec_llm(%AgentRef{} = requester, %AgentSpec{} = spec) do
+    with {:ok, backend} <- backend(requester) do
+      AgentBackend.llm(backend, spec)
+    end
+  end
+
   @doc "Delivers text to an in-scope agent's bounded inbox (at the next provider boundary when busy)."
   @spec tell(AgentRef.t(), AgentRef.t(), String.t()) :: :ok | {:error, term()}
   def tell(%AgentRef{} = from, %AgentRef{} = to, message) when is_binary(message) do

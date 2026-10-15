@@ -3,9 +3,9 @@ defmodule Tackle.Runtime.ModelSourceTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Lib.Thinking
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentSpec, Outcome}
-  alias Tackle.Thinking
 
   test "model source is trusted, validated, and configured by default" do
     assert agent_spec("worker").model_source == :configured

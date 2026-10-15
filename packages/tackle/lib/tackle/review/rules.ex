@@ -57,8 +57,8 @@ defmodule Tackle.Review.Rules do
   """
 
   alias Tackle.{Executor, Paths, ProjectFiles}
+  alias Tackle.Lib.Frontmatter
   alias Tackle.Review.{Finding, Glob}
-  alias Tackle.Skills.Frontmatter
 
   defmodule Rule do
     @moduledoc "One review rule. See `Tackle.Review.Rules` for the file format."

@@ -76,8 +76,11 @@ defmodule Tackle.Review.Verifier do
     done? = fn messages -> map_size(ReportVerdict.collect(messages, ids)) == length(ids) end
     delegation_opts = [done?: done?] ++ Keyword.take(opts, [:model, :capacity_wait])
 
-    with {:ok, spec} <- Delegation.put_review_context(Keyword.fetch!(opts, :spec), review) do
-      case Delegation.run(Keyword.fetch!(opts, :requester), spec, prompt, delegation_opts) do
+    requester = Keyword.fetch!(opts, :requester)
+
+    with {:ok, spec} <-
+           Delegation.put_review_context(requester, Keyword.fetch!(opts, :spec), review) do
+      case Delegation.run(requester, spec, prompt, delegation_opts) do
         {:ok, state} ->
           {:ok, result(state.messages, ids, :no_verdict)}
 

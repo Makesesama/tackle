@@ -17,7 +17,7 @@ defmodule Tackle.CLI.TUI.Session do
   alias Tackle.CLI.TUI.{RecentSessions, ResumeConfirm, State, Util}
   alias Tackle.Runtime.Scope
   alias Tackle.Session.Snapshot
-  alias Tackle.Thinking
+  alias Tackle.Lib.Thinking
 
   @doc """
   Asks for confirmation before starting a new session.

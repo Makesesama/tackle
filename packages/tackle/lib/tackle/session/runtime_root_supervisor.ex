@@ -4,6 +4,7 @@ defmodule Tackle.Session.RuntimeRootSupervisor do
   use Supervisor
 
   alias Tackle.Config
+  alias Tackle.Lib.Thinking
   alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.RootBackend
   alias Tackle.Session.Spec, as: SessionSpec
@@ -45,7 +46,7 @@ defmodule Tackle.Session.RuntimeRootSupervisor do
       title: session.title,
       tags: session.tags,
       model_ref: session.model_ref || config.model_ref,
-      thinking: session.thinking || Tackle.Thinking.from_llm_opts(config.llm_opts),
+      thinking: session.thinking || Thinking.from_llm_opts(config.llm_opts),
       tree: session.tree
     ]
 

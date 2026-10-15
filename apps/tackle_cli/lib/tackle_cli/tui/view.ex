@@ -49,7 +49,7 @@ defmodule Tackle.CLI.TUI.View do
     Viewport
   }
 
-  alias Tackle.Thinking
+  alias Tackle.Lib.Thinking
 
   @doc """
   Builds the complete scene for a frame as `{widget, rect}` pairs.
