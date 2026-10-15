@@ -18,6 +18,7 @@ defmodule Tackle.Session.Reader do
   the recovered-item and bad-byte counts so the session can be marked recovered.
   """
 
+  alias Tackle.Session.Compression
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
   alias Tackle.Session.Storage
@@ -44,14 +45,21 @@ defmodule Tackle.Session.Reader do
   Reads and validates a session journal without creating a writable owner.
 
   Read-only replay works on an uncleanly closed journal and never repairs it.
+  A compressed journal is replayed from a temporary decompressed copy.
   Callers receive a classified projection or an explicit error describing the
   first invalid commit.
   """
   @spec read(String.t(), keyword()) :: {:ok, replay()} | {:error, term()}
   def read(session_id, opts \\ []) do
-    with {:ok, path} <- journal_path(session_id, opts),
-         :ok <- validate_journal_file(path) do
-      case open(session_id, path, :read_only) do
+    with {:ok, path} <- journal_path(session_id, opts) do
+      Compression.with_readable(path, &read_file(session_id, &1, path))
+    end
+  end
+
+  # `readable` may be a decompressed copy; errors name the journal itself.
+  defp read_file(session_id, readable, path) do
+    with :ok <- validate_journal_file(readable) do
+      case open(session_id, readable, :read_only) do
         {:ok, name} ->
           try do
             fold(name, session_id, path)

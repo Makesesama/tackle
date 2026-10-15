@@ -35,6 +35,7 @@ defmodule Tackle.CLI.TUI.View do
     Workflows,
     MessageView,
     Resume,
+    ResumeConfirm,
     ReviewView,
     Search,
     SlashCommands,
@@ -285,6 +286,40 @@ defmodule Tackle.CLI.TUI.View do
       block: Theme.panel_block(" Confirm quit · Y/Enter quit · N/Esc cancel ", :warning),
       percent_width: 50,
       percent_height: 25
+    }
+  end
+
+  defp overlay_widget(%State{overlay: {:confirm_resume, _confirm}} = state) do
+    %Popup{
+      content: %Paragraph{text: ResumeConfirm.text(state), style: Theme.style(:text), wrap: true},
+      block: Theme.panel_block(" Confirm resume · Y/Enter resume · N/Esc cancel ", :warning),
+      percent_width: 60,
+      percent_height: 35
+    }
+  end
+
+  defp overlay_widget(%State{overlay: {:confirm_archive, confirm}}) do
+    title =
+      case confirm.title do
+        title when is_binary(title) and title != "" ->
+          title = title |> MessageView.sanitize() |> String.split("\n", parts: 2) |> hd()
+          " \"#{Tackle.CLI.TUI.Util.truncate(title, 48)}\""
+
+        _untitled ->
+          ""
+      end
+
+    text =
+      " Archive this session#{title}?\n\n" <>
+        " A new session starts. The archived one leaves /resume and the\n" <>
+        " dashboard, and stays restorable from /resume (Tab) or with\n" <>
+        " `tackle unarchive`."
+
+    %Popup{
+      content: %Paragraph{text: text, style: Theme.style(:text), wrap: true},
+      block: Theme.panel_block(" Confirm archive · Y/Enter archive · N/Esc cancel ", :warning),
+      percent_width: 60,
+      percent_height: 30
     }
   end
 

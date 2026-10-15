@@ -34,6 +34,7 @@ defmodule Tackle.CLI.Keybinds do
   """
   @type intent ::
           :accept
+          | :archive
           | :backspace
           | :browse
           | :cancel
@@ -77,6 +78,7 @@ defmodule Tackle.CLI.Keybinds do
           | :submit
           | :thinking_picker
           | :toggle_thinking
+          | :toggle_view
           | :tree
           | :unbound
           | :usage_chart
@@ -344,7 +346,9 @@ defmodule Tackle.CLI.Keybinds do
 
   Esc clears an active query first and closes the picker on the second press;
   the right arrow (or Ctrl+E, Codex's binding) expands the selected session's
-  transcript preview and the left arrow collapses it.
+  transcript preview and the left arrow collapses it. Tab switches between
+  active and archived sessions, and Ctrl+A (Codex's binding) archives the
+  selected session, or restores it in the archived view.
   """
   @spec resume(Key.t()) :: intent
   def resume(%Key{code: "esc"}), do: :cancel
@@ -359,6 +363,9 @@ defmodule Tackle.CLI.Keybinds do
   def resume(%Key{code: "right"}), do: :expand
   def resume(%Key{code: "left"}), do: :collapse
   def resume(%Key{code: "e", modifiers: modifiers}) when is_ctrl(modifiers), do: :expand
+  def resume(%Key{code: "a", modifiers: modifiers}) when is_ctrl(modifiers), do: :archive
+  def resume(%Key{code: "tab", modifiers: []}), do: :toggle_view
+  def resume(%Key{code: "back_tab"}), do: :toggle_view
   def resume(%Key{code: code, modifiers: []}) when is_binary(code), do: insert(code)
   def resume(%Key{}), do: :ignore
 

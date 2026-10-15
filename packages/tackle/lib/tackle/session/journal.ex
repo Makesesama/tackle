@@ -45,6 +45,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
   alias Tackle.Session.Codec
+  alias Tackle.Session.Compression
   alias Tackle.Session.Journal.Watchdog
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
@@ -287,7 +288,7 @@ defmodule Tackle.Session.Journal do
   # catalog entry is created until there is real work to persist. An existing
   # journal is opened and validated eagerly so resume never fabricates history.
   defp open_or_defer(session_id, path, opts) do
-    if File.exists?(path) do
+    if File.exists?(path) or File.exists?(Storage.compressed_path(path)) do
       open_existing(session_id, opts)
     else
       {:ok, deferred_state(session_id, path, opts)}
@@ -303,7 +304,7 @@ defmodule Tackle.Session.Journal do
       Watchdog.lock(self(), lock)
       Watchdog.stage(self(), :open_replay)
 
-      case Reader.open_writable(session_id, Keyword.put(opts, :repair, repair?)) do
+      case open_writable(session_id, Keyword.put(opts, :repair, repair?)) do
         {:ok, opened} ->
           build_state(session_id, lock, opened, opts)
 
@@ -312,6 +313,15 @@ defmodule Tackle.Session.Journal do
           Watchdog.lock(self(), nil)
           {:error, {:journal_open_failed, session_id, reason}}
       end
+    end
+  end
+
+  # Runs under the writer lock: an idle journal stored compressed is restored
+  # to a plain journal before the owner opens it.
+  defp open_writable(session_id, opts) do
+    with {:ok, path} <- Storage.journal_path(session_id, opts),
+         :ok <- Compression.restore(path) do
+      Reader.open_writable(session_id, opts)
     end
   end
 
@@ -341,7 +351,7 @@ defmodule Tackle.Session.Journal do
         Watchdog.lock(self(), lock)
         Watchdog.stage(self(), :open_replay)
 
-        case Reader.open_writable(state.session_id, state.open_opts) do
+        case open_writable(state.session_id, state.open_opts) do
           {:ok, opened} ->
             build_state(state.session_id, lock, opened, state.open_opts)
 

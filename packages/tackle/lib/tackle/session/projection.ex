@@ -43,8 +43,10 @@ defmodule Tackle.Session.Projection do
   """
 
   alias Tackle.Lib.Compaction.Record
+  alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tree
+  alias Tackle.Lib.Usage
   alias Tackle.Session.Codec
   alias Tackle.Session.Compaction
   alias Tackle.Session.ProjectionError
@@ -176,7 +178,12 @@ defmodule Tackle.Session.Projection do
     |> Enum.flat_map(fn turn -> Map.get(turn, :pending_tools, []) end)
   end
 
-  @doc "Returns the durable metadata summary for catalog and listing."
+  @doc """
+  Returns the durable metadata summary for catalog and listing.
+
+  `:context_tokens` estimates the context the next request would send, so a
+  frontend can warn before reopening a session whose provider cache expired.
+  """
   @spec metadata(t()) :: map()
   def metadata(%__MODULE__{} = projection) do
     %{
@@ -191,10 +198,48 @@ defmodule Tackle.Session.Projection do
       message_count: length(projection.messages),
       model_message_count: length(projection.model_messages),
       compaction_count: length(projection.compactions),
+      context_tokens: context_tokens(projection),
       preview: preview(projection),
       last_indexed_seq: projection.last_seq,
       parent_session_id: parent_session_id(projection)
     }
+  end
+
+  @doc """
+  Estimates the tokens of the active model context, or `nil` when it is empty.
+
+  Mirrors `Tackle.Lib.ContextUsage`: the latest assistant usage on the model
+  projection is the checkpoint, and messages after it are estimated at four
+  characters per token. Without a checkpoint the whole projection is
+  estimated. The system prompt and tool definitions are not part of the
+  durable projection, so the estimate excludes them.
+  """
+  @spec context_tokens(t()) :: non_neg_integer() | nil
+  def context_tokens(%__MODULE__{model_messages: []}), do: nil
+
+  def context_tokens(%__MODULE__{model_messages: messages}) do
+    estimate_since_checkpoint(Enum.reverse(messages), 0)
+  end
+
+  defp estimate_since_checkpoint([], trailing), do: trailing
+
+  defp estimate_since_checkpoint([data | rest], trailing) do
+    case Codec.decode_message(data) do
+      {:ok, %Message{role: :assistant, token_usage: usage} = message} ->
+        case Usage.context_tokens(usage) do
+          tokens when is_integer(tokens) and tokens > 0 ->
+            tokens + trailing
+
+          _none ->
+            estimate_since_checkpoint(rest, trailing + ContextUsage.estimate_message(message))
+        end
+
+      {:ok, %Message{} = message} ->
+        estimate_since_checkpoint(rest, trailing + ContextUsage.estimate_message(message))
+
+      {:error, _reason} ->
+        estimate_since_checkpoint(rest, trailing)
+    end
   end
 
   @doc """

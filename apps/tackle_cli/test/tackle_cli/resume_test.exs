@@ -58,6 +58,11 @@ defmodule Tackle.CLI.ResumeTest do
     ]
   end
 
+  # Sessions updated just now resume without the expired-cache prompt.
+  defp fresh_sessions do
+    Enum.map(saved_sessions(), &%{&1 | updated_at: iso_hours_ago(0)})
+  end
+
   defp iso_hours_ago(hours) do
     DateTime.utc_now() |> DateTime.add(-hours * 3600) |> DateTime.to_iso8601()
   end
@@ -427,7 +432,7 @@ defmodule Tackle.CLI.ResumeTest do
   test "accept resumes the selected session through the frontend hook" do
     state =
       base_state(
-        recent_sessions: saved_sessions(),
+        recent_sessions: fresh_sessions(),
         resume_session: fn id ->
           send(self(), {:resume_requested, id})
           {:error, "cannot adopt"}
@@ -445,7 +450,7 @@ defmodule Tackle.CLI.ResumeTest do
   test "a crashing resume hook is reported without taking down the shell" do
     state =
       base_state(
-        recent_sessions: saved_sessions(),
+        recent_sessions: fresh_sessions(),
         resume_session: fn _id -> raise "boom" end
       )
 

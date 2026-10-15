@@ -59,7 +59,9 @@ defmodule Tackle.CLI.TUI do
   `/new` starts a new session behind a yes/no confirmation. The frontend asks
   the harness for a fresh root scope, subscribes to its root agent, and stops
   the previous scope, so the shell, its configuration menus, and the terminal
-  stay up.
+  stay up. `/archive` does the same and then archives the previous session.
+  Resuming a session whose provider cache has likely expired asks first (see
+  `Tackle.CLI.TUI.ResumeConfirm`).
 
   This module is the coordinator: it owns the ExRatatui callbacks, the key
   table routing, and the process lifecycle. Each surface has its own module
@@ -114,6 +116,7 @@ defmodule Tackle.CLI.TUI do
     Menu,
     Workflows,
     Resume,
+    ResumeConfirm,
     Review,
     RuntimeEvents,
     RecentSessions,
@@ -459,6 +462,17 @@ defmodule Tackle.CLI.TUI do
       :ignore -> {:noreply, state, render?: false}
     end
   end
+
+  defp dispatch_overlay(key, %{overlay: {:confirm_archive, _}} = state) do
+    case Keybinds.confirm(key) do
+      :confirm -> Session.archive_current(state)
+      :cancel -> {:noreply, %{state | overlay: nil}}
+      :ignore -> {:noreply, state, render?: false}
+    end
+  end
+
+  defp dispatch_overlay(key, %{overlay: {:confirm_resume, _}} = state),
+    do: ResumeConfirm.handle(Keybinds.confirm(key), state)
 
   defp dispatch_overlay(key, %{overlay: {:workflows, _}} = state),
     do: Workflows.handle(Keybinds.workflows(key), state)

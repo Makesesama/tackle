@@ -22,6 +22,7 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     Pastes,
     RecentSessions,
     Resume,
+    ResumeConfirm,
     Review,
     ReviewCall,
     State,
@@ -291,6 +292,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
   defp route({:tui_resume_preview_result, ref, session_id, result}, state),
     do: Resume.apply_preview_result(state, ref, session_id, result)
+
+  defp route({:tui_resume_estimate_result, ref, session_id, result}, state),
+    do: ResumeConfirm.apply_estimate(state, ref, session_id, result)
 
   defp route({:tui_file_index, ref, result}, state),
     do: FileSearch.apply_index(state, ref, result)

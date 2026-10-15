@@ -14,15 +14,21 @@ defmodule Tackle.CLI.TUI.Resume do
   remembered id finds its session.
 
   Selecting a row resumes that session through the frontend's resume hook,
-  which stops the current scope only after the replacement is running. The
-  picker is idle-only.
+  which stops the current scope only after the replacement is running. A
+  session whose provider prompt cache has likely expired asks first, showing
+  its estimated context size (`Tackle.CLI.TUI.ResumeConfirm`). The picker is
+  idle-only.
+
+  Tab switches to the project's archived sessions and back. Ctrl+A archives
+  the selected session, or restores it in the archived view; selecting an
+  archived session restores it and resumes it.
 
   Not ported from Codex: cross-project filtering (the resume hook is bound to
-  the current project), archive/fork actions, sort keys, and density toggles.
+  the current project), fork actions, sort keys, and density toggles.
   """
 
   alias ExRatatui.Command
-  alias Tackle.CLI.TUI.{MessageView, Picker, Session, State, Util}
+  alias Tackle.CLI.TUI.{MessageView, Picker, RecentSessions, ResumeConfirm, State, Util}
   alias Tackle.CLI.Widgets.ResumeScreen
 
   @load_near_end 3
@@ -33,6 +39,7 @@ defmodule Tackle.CLI.TUI.Resume do
 
   @typedoc "The overlay value while the picker is open."
   @type t :: %{
+          view: :active | :archived,
           picker: Picker.t(),
           sessions: [map()],
           cursor: term() | nil,
@@ -72,6 +79,7 @@ defmodule Tackle.CLI.TUI.Resume do
 
   def open(%State{} = state) do
     resume = %{
+      view: :active,
       picker: Picker.new(items(state.recent_sessions)),
       sessions: state.recent_sessions,
       cursor: nil,
@@ -197,6 +205,7 @@ defmodule Tackle.CLI.TUI.Resume do
       scroll_top: resume.scroll_top,
       query: resume.picker.query,
       count: length(rows),
+      archived?: resume.view == :archived,
       loading?: resume.loading?,
       error: resume.error
     }
@@ -291,7 +300,38 @@ defmodule Tackle.CLI.TUI.Resume do
   defp dispatch(:accept, %State{overlay: {:resume, resume}} = state) do
     case Picker.selected(resume.picker) do
       nil -> {:noreply, state, render?: false}
-      %{id: session_id} -> Session.resume_by_id(state, session_id)
+      %{session: session} -> ResumeConfirm.request(state, session)
+    end
+  end
+
+  defp dispatch(:toggle_view, %State{list_archived_sessions: nil} = state),
+    do: {:noreply, %{state | notice: "Archived sessions are unavailable in this frontend"}}
+
+  defp dispatch(:toggle_view, %State{overlay: {:resume, resume}} = state) do
+    {view, sessions} =
+      case resume.view do
+        :active -> {:archived, []}
+        :archived -> {:active, state.recent_sessions}
+      end
+
+    resume = %{
+      resume
+      | view: view,
+        sessions: sessions,
+        picker: Picker.new(items(sessions), resume.picker.query),
+        cursor: nil,
+        expanded: nil,
+        scroll_top: 0,
+        error: nil
+    }
+
+    request_page(%{state | overlay: {:resume, resume}}, :first)
+  end
+
+  defp dispatch(:archive, %State{overlay: {:resume, resume}} = state) do
+    case Picker.selected(resume.picker) do
+      nil -> {:noreply, state, render?: false}
+      %{id: session_id} -> toggle_archived(state, resume, session_id)
     end
   end
 
@@ -322,6 +362,61 @@ defmodule Tackle.CLI.TUI.Resume do
   end
 
   defp dispatch(:ignore, state), do: {:noreply, state, render?: false}
+
+  # Archiving moves the session out of the listed view; the dashboard's recent
+  # sessions are reloaded because the session may be one of them.
+  defp toggle_archived(state, resume, session_id) do
+    {hook, done} =
+      case resume.view do
+        :active -> {state.archive_session, "Archived session"}
+        :archived -> {state.unarchive_session, "Restored session"}
+      end
+
+    case run_hook(hook, session_id) do
+      :ok ->
+        sessions = Enum.reject(resume.sessions, &(Map.get(&1, :session_id) == session_id))
+        resume = %{resume | sessions: sessions, expanded: nil, error: nil}
+        resume = %{resume | picker: rebuilt_picker(resume)}
+        state = %{state | overlay: {:resume, resume}, notice: done} |> sync_scroll()
+        {state, commands} = RecentSessions.load(state)
+        {:noreply, state, commands: commands ++ load_more_commands(state)}
+
+      {:error, reason} ->
+        resume = %{resume | error: archive_error(resume.view, reason)}
+        {:noreply, %{state | overlay: {:resume, resume}}}
+    end
+  end
+
+  defp run_hook(nil, _session_id), do: {:error, :unavailable}
+
+  defp run_hook(hook, session_id) do
+    case hook.(session_id) do
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+      other -> {:error, other}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp archive_error(view, reason) do
+    verb = if view == :active, do: "archive", else: "restore"
+
+    detail =
+      case reason do
+        :unavailable -> "unavailable in this frontend"
+        :session_active -> "the session is open"
+        {:session_in_use, _owner} -> "the session is open in another Tackle process"
+        :session_in_use -> "the session is open in another Tackle process"
+        {:session_exists, _id} -> "an active session with this id exists"
+        {:session_not_found, _id} -> "the session no longer exists"
+        other -> Util.format_reason(other)
+      end
+
+    "Could not #{verb}: #{detail}"
+  end
 
   # Expanding or collapsing changes the selected row's height, so the window
   # must re-anchor; otherwise the next move starts from a stale scroll top.
@@ -421,7 +516,13 @@ defmodule Tackle.CLI.TUI.Resume do
 
   defp request_page(%State{overlay: {:resume, resume}} = state, kind) do
     ref = make_ref()
-    loader = state.list_recent_sessions
+
+    loader =
+      case resume.view do
+        :active -> state.list_recent_sessions
+        :archived -> state.list_archived_sessions
+      end
+
     cursor = if kind == :first, do: nil, else: resume.cursor
 
     command =

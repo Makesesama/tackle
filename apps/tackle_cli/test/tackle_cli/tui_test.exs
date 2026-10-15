@@ -779,7 +779,7 @@ defmodule Tackle.CLI.TUITest do
         runtime
         | user_state: %{
             runtime.user_state
-            | recent_sessions: [%{session_id: "previous"}],
+            | recent_sessions: [%{session_id: "previous", updated_at: fresh_timestamp()}],
               resume_session: fn id ->
                 send(self(), {:resume_attempt, id})
                 {:error, :unavailable}
@@ -804,13 +804,16 @@ defmodule Tackle.CLI.TUITest do
     Process.unlink(replacement)
     send(replacement, {:set_session_title, "Adopted title"})
 
+    # A just-updated session resumes without the expired-cache prompt.
+    previous = %{session_id: "previous", title: "Previous", updated_at: fresh_timestamp()}
+
     task =
       Task.async(fn ->
         TUI.start(
           agent_ref: agent_ref,
           test_mode: {80, 24},
           list_recent_sessions: fn _cursor ->
-            {:ok, %{sessions: [%{session_id: "previous", title: "Previous"}], next_cursor: nil}}
+            {:ok, %{sessions: [previous], next_cursor: nil}}
           end,
           resume_session: fn "previous" ->
             {:ok, %Scope{scope_ref: nil, root_agent_ref: replacement_ref}}
@@ -831,7 +834,7 @@ defmodule Tackle.CLI.TUITest do
     assert resumed.session_id != first.session_id
     assert resumed.session_title == "Adopted title"
     assert resumed.terminal_title =~ "Adopted title"
-    assert resumed.recent_sessions == [%{session_id: "previous", title: "Previous"}]
+    assert resumed.recent_sessions == [previous]
 
     inject_key(tui, "c", ["ctrl"])
     session_id = resumed.session_id
@@ -1932,6 +1935,46 @@ defmodule Tackle.CLI.TUITest do
     # The recalled prompt is now the draft, so quitting asks for confirmation.
     inject_key(tui, "c", ["ctrl"])
     inject_key(tui, "y")
+    assert {:ok, _session} = Task.await(task)
+  end
+
+  test "/archive starts a new session and archives the previous one", %{agent_ref: agent_ref} do
+    test_pid = self()
+    replacement_ref = AgentRef.new!(ID.generate(), ID.generate())
+    {:ok, replacement} = SessionStub.start_link({test_pid, replacement_ref})
+    Process.unlink(replacement)
+
+    task =
+      Task.async(fn ->
+        TUI.start(
+          agent_ref: agent_ref,
+          models: ["openai-codex/test-model"],
+          test_mode: {80, 24},
+          new_session: fn _overrides ->
+            {:ok, %Scope{scope_ref: nil, root_agent_ref: replacement_ref}}
+          end,
+          archive_session: fn id ->
+            send(test_pid, {:archive_requested, id})
+            :ok
+          end
+        )
+      end)
+
+    assert_receive {:subscribed, tui}
+    submit_prompt(tui, "worth keeping")
+    first_session = state(tui).session_id
+
+    Enum.each(String.graphemes("/archive"), &inject_key(tui, &1))
+    inject_key(tui, "enter")
+    assert {:confirm_archive, %{session_id: ^first_session}} = state(tui).overlay
+    inject_key(tui, "y")
+
+    replacement = await_state(tui, &(&1.session_id != first_session))
+    assert_receive {:archive_requested, ^first_session}
+    assert replacement.notice =~ "Archived the previous session"
+    assert replacement.error == nil
+
+    inject_key(tui, "c", ["ctrl"])
     assert {:ok, _session} = Task.await(task)
   end
 
@@ -3916,4 +3959,6 @@ defmodule Tackle.CLI.TUITest do
     |> Enum.chunk_every(2, 1, :discard)
     |> Enum.each(fn [above, below] -> assert above.y + above.height <= below.y end)
   end
+
+  defp fresh_timestamp, do: DateTime.utc_now() |> DateTime.to_iso8601()
 end

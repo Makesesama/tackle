@@ -27,6 +27,7 @@ defmodule Tackle do
   alias Tackle.Runtime.Scope
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
+  alias Tackle.Session.Compression
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Session.Store
 
@@ -175,7 +176,12 @@ defmodule Tackle do
           {:ok, Tackle.Session.UsageTimeline.t()} | {:error, term()}
   def all_usage_timeline(opts \\ []), do: Store.all_usage_timeline(opts)
 
-  @doc "Lists durable sessions with stable cursor pagination."
+  @doc """
+  Lists durable sessions with stable cursor pagination.
+
+  Archived sessions are excluded unless the `:archived` filter is `true`
+  (archived only) or `:all`.
+  """
   @spec list_sessions(map() | keyword()) :: {:ok, map()} | {:error, term()}
   def list_sessions(filters \\ %{}), do: Store.list(filters)
 
@@ -190,6 +196,28 @@ defmodule Tackle do
   @doc "Materializes a new self-contained session from validated parent history."
   @spec fork_session(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def fork_session(session_id, opts \\ []), do: Store.fork(session_id, opts)
+
+  @doc """
+  Archives an inactive session: it leaves the default listing but stays
+  readable and restorable. See `Tackle.Session.Store.archive/2`.
+  """
+  @spec archive_session(String.t(), keyword()) :: :ok | {:error, term()}
+  def archive_session(session_id, opts \\ []), do: Store.archive(session_id, opts)
+
+  @doc "Restores an archived session to the active sessions."
+  @spec unarchive_session(String.t(), keyword()) :: :ok | {:error, term()}
+  def unarchive_session(session_id, opts \\ []), do: Store.unarchive(session_id, opts)
+
+  @doc """
+  Compresses idle session journals and recovery copies in the background-safe
+  way described in `Tackle.Session.Compression.compress_idle/1`.
+
+  Compressed sessions stay listable, readable, and resumable. Hosts call this
+  periodically, for example when a frontend starts; frequent calls return
+  `{:ok, :recently_run}`.
+  """
+  @spec compress_idle_sessions(keyword()) :: {:ok, map() | :recently_run} | {:error, term()}
+  def compress_idle_sessions(opts \\ []), do: Compression.compress_idle(opts)
 
   @doc "Moves an inactive session into the trash and removes it from the catalog."
   @spec delete_session(String.t(), keyword()) :: :ok | {:error, term()}

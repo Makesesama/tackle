@@ -14,6 +14,10 @@ test_home =
 System.put_env("TACKLE_HOME", test_home)
 config :tackle, auth_file: Path.join(test_home, "auth.json")
 
+# Tests that open the TUI through `Run` should not start background
+# journal compression passes.
+config :tackle_cli, compress_idle_sessions: false
+
 # Tests drive the TUI through `test_mode`, so there is no interactive terminal
 # to hand off to crossterm's reader. Once a local-transport app has run in the
 # suite the BEAM's `:user_drv_reader` exists but cannot ack the handoff, and

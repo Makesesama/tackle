@@ -88,6 +88,12 @@ defmodule Tackle.CLI.TUI.SlashCommands do
     },
     %{name: "compact", description: "compact the context · Ctrl+K", action: :compact},
     %{name: "new", description: "start a new session", action: :new_session},
+    %{
+      name: "archive",
+      description: "archive this session and start a new one",
+      action: :archive_session,
+      idle_only?: true
+    },
     %{name: "browse", description: "read the transcript · F4", action: :browse},
     %{name: "usage", description: "token usage chart · F6", action: :usage_chart},
     %{name: "tasks", description: "inspect subagent tasks · F7", action: :subagents},
@@ -209,6 +215,7 @@ defmodule Tackle.CLI.TUI.SlashCommands do
   defp action(:tree, state), do: Tree.open(state)
   defp action(:compact, state), do: Compaction.request(state)
   defp action(:new_session, state), do: Session.request_new(state)
+  defp action(:archive_session, state), do: Session.request_archive(state)
   defp action(:browse, state), do: Browser.toggle_focus(state)
   defp action(:usage_chart, state), do: UsageChart.open(state)
   defp action(:subagents, state), do: Subagents.focus(state)

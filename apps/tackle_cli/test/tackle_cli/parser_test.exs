@@ -70,10 +70,26 @@ defmodule Tackle.CLI.ParserTest do
              Parser.parse(["run", "--", "--resume"])
   end
 
+  test "parses archive and unarchive commands" do
+    assert {:ok, {:archive, "session-1"}} = Parser.parse(["archive", "session-1"])
+    assert {:ok, {:unarchive, "session-1"}} = Parser.parse(["unarchive", "session-1"])
+    assert {:error, _missing} = Parser.parse(["archive"])
+  end
+
   test "parses session listing and search command" do
     assert {:ok,
-            {:sessions, %{query: nil, limit: nil, cursor: nil, format: :human, color: :auto}}} =
+            {:sessions,
+             %{
+               query: nil,
+               limit: nil,
+               cursor: nil,
+               archived: false,
+               format: :human,
+               color: :auto
+             }}} =
              Parser.parse(["sessions"])
+
+    assert {:ok, {:sessions, %{archived: true}}} = Parser.parse(["sessions", "--archived"])
 
     assert {:ok,
             {:sessions,

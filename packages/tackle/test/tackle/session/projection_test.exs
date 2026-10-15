@@ -190,6 +190,39 @@ defmodule Tackle.Session.ProjectionTest do
     assert metadata.message_count == 0
     assert metadata.model_message_count == 0
     assert metadata.compaction_count == 0
+    assert metadata.context_tokens == nil
+  end
+
+  test "context tokens use the latest assistant usage plus an estimate of later messages" do
+    answer = %{
+      message("a1", :assistant, "hi")
+      | token_usage: %Tackle.Lib.Usage{total_tokens: 1_000}
+    }
+
+    projection =
+      Projection.new(header())
+      |> Projection.apply_commit(commit(1, [message_event(message("u1", :user, "hello"))]))
+      |> Projection.apply_commit(commit(2, [message_event(answer)]))
+
+    assert Projection.metadata(projection).context_tokens == 1_000
+
+    projection =
+      Projection.apply_commit(
+        projection,
+        commit(3, [message_event(message("u2", :user, String.duplicate("x", 400)))])
+      )
+
+    assert Projection.context_tokens(projection) == 1_100
+  end
+
+  test "context tokens are estimated from text without a usage checkpoint" do
+    projection =
+      Projection.new(header())
+      |> Projection.apply_commit(
+        commit(1, [message_event(message("u1", :user, String.duplicate("x", 80)))])
+      )
+
+    assert Projection.context_tokens(projection) == 20
   end
 
   test "a durable tool result resolves its pending tool start" do

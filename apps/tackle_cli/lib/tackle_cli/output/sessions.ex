@@ -208,6 +208,8 @@ defmodule Tackle.CLI.Output.Sessions do
 
   defp json_session(session) do
     %{
+      "archived" => Map.get(session, :archived, false),
+      "context_tokens" => Map.get(session, :context_tokens),
       "created_at" => session.created_at,
       "cwd" => session.cwd,
       "last_indexed_seq" => session.last_indexed_seq,

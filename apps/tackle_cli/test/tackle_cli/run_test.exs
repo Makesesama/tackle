@@ -426,6 +426,88 @@ defmodule Tackle.CLI.RunTest do
     refute completed_prompt?(legacy, "not continued", home, nil)
   end
 
+  test "archive and unarchive move a session out of the listing and back", %{home: home} do
+    {:ok, _apps} = Application.ensure_all_started(:tackle)
+    session_id = seed_session(home, "archivable", cwd: home)
+
+    list = fn archived? ->
+      File.cd!(home, fn ->
+        capture_io(fn ->
+          assert 0 ==
+                   Run.sessions(%{
+                     query: nil,
+                     limit: nil,
+                     cursor: nil,
+                     archived: archived?,
+                     format: :plain,
+                     color: :never
+                   })
+        end)
+      end)
+    end
+
+    assert list.(false) =~ session_id
+    refute list.(true) =~ session_id
+
+    archived = File.cd!(home, fn -> capture_io(fn -> assert 0 == Run.archive(session_id) end) end)
+    assert archived =~ "Archived session #{session_id}"
+    refute list.(false) =~ session_id
+    assert list.(true) =~ session_id
+
+    denied =
+      File.cd!(home, fn ->
+        capture_io(:stderr, fn ->
+          assert 1 ==
+                   Run.run(%{
+                     model: nil,
+                     thinking: nil,
+                     prompt: "while archived",
+                     resume: session_id,
+                     abandon: false
+                   })
+        end)
+      end)
+
+    assert denied =~ "session #{session_id} is archived"
+    assert denied =~ "tackle unarchive #{session_id}"
+
+    again =
+      File.cd!(home, fn -> capture_io(:stderr, fn -> assert 1 == Run.archive(session_id) end) end)
+
+    assert again =~ "no session #{session_id} in this project"
+
+    restored =
+      File.cd!(home, fn -> capture_io(fn -> assert 0 == Run.unarchive(session_id) end) end)
+
+    assert restored =~ "Restored session #{session_id}"
+    assert list.(false) =~ session_id
+    refute list.(true) =~ session_id
+  end
+
+  test "resume restores a compressed journal", %{home: home} do
+    {:ok, _apps} = Application.ensure_all_started(:tackle)
+    session_id = seed_session(home, "compressed", cwd: home)
+    {:ok, path} = Storage.journal_path(session_id, home: home, cwd: home)
+    assert {:ok, _plain, _compressed} = Tackle.Session.Compression.compress_file(path)
+    refute File.exists?(path)
+
+    File.cd!(home, fn ->
+      capture_io(fn ->
+        assert 0 ==
+                 Run.run(%{
+                   model: nil,
+                   thinking: nil,
+                   prompt: "after compression",
+                   resume: session_id,
+                   abandon: false
+                 })
+      end)
+    end)
+
+    assert File.regular?(path)
+    assert completed_prompt?(session_id, "after compression", home)
+  end
+
   test "auth commands dispatch to the resolved adapter" do
     Application.put_env(:tackle, :adapters, [AuthAdapter])
     on_exit(fn -> Tackle.Auth.delete("cli-auth") end)

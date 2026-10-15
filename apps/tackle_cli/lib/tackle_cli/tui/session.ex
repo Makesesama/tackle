@@ -14,7 +14,7 @@ defmodule Tackle.CLI.TUI.Session do
   and it is also what guarantees a swapped-in scope cannot outlive the process.
   """
 
-  alias Tackle.CLI.TUI.{RecentSessions, State, Util}
+  alias Tackle.CLI.TUI.{RecentSessions, ResumeConfirm, State, Util}
   alias Tackle.Runtime.Scope
   alias Tackle.Session.Snapshot
   alias Tackle.Thinking
@@ -38,7 +38,7 @@ defmodule Tackle.CLI.TUI.Session do
   end
 
   @doc "Starts the replacement session, carrying the current model and reasoning level over as overrides."
-  @spec start_new(State.t()) :: {:noreply, State.t()}
+  @spec start_new(State.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def start_new(%State{} = state) do
     overrides = %{
       model: State.model_ref(state.agent_state),
@@ -58,8 +58,77 @@ defmodule Tackle.CLI.TUI.Session do
     end
   end
 
-  @doc "Resumes a recent session by its one-based slot."
-  @spec resume_recent(State.t(), pos_integer()) :: {:noreply, State.t()}
+  @doc """
+  Asks for confirmation before archiving the current session.
+
+  A live session cannot be archived, so confirming first moves the shell to a
+  new session, which closes the current one, and then archives it. A session
+  with no saved history has nothing to archive.
+  """
+  @spec request_archive(State.t()) :: {:noreply, State.t()}
+  def request_archive(%State{new_session: nil} = state),
+    do: {:noreply, %{state | notice: "Archiving is unavailable in this frontend"}}
+
+  def request_archive(%State{archive_session: nil} = state),
+    do: {:noreply, %{state | notice: "Archiving is unavailable in this frontend"}}
+
+  def request_archive(%State{agent_state: %{messages: []}} = state),
+    do: {:noreply, %{state | notice: "Nothing to archive yet"}}
+
+  def request_archive(%State{} = state) do
+    confirm = %{session_id: state.session_id, title: state.session_title}
+    {:noreply, %{state | overlay: {:confirm_archive, confirm}}}
+  end
+
+  @doc """
+  Starts a new session and archives the one the shell was attached to.
+
+  When the new session cannot start, nothing is archived. When archiving fails
+  afterwards, the new session stays and the failure is reported; the previous
+  session remains resumable.
+  """
+  @spec archive_current(State.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
+  def archive_current(%State{overlay: {:confirm_archive, %{session_id: session_id}}} = state) do
+    case start_new(state) do
+      {:noreply, %State{session_id: new_id} = new_state, opts} when new_id != session_id ->
+        {:noreply, archived(new_state, session_id), opts}
+
+      {:noreply, %State{session_id: new_id} = new_state} when new_id != session_id ->
+        {:noreply, archived(new_state, session_id)}
+
+      failed ->
+        failed
+    end
+  end
+
+  # Runs before the new session's recent-sessions reload, so the archived
+  # session never shows up in the dashboard.
+  defp archived(%State{} = state, session_id) do
+    case state.archive_session.(session_id) do
+      :ok ->
+        %{state | notice: "Archived the previous session · /resume, then Tab, lists archives"}
+
+      {:error, reason} ->
+        %{state | error: Util.format_reason({:archive_failed, session_id, reason})}
+
+      other ->
+        %{state | error: Util.format_reason({:archive_failed, session_id, other})}
+    end
+  rescue
+    error -> %{state | error: Util.format_reason({:archive_failed, session_id, error})}
+  catch
+    :exit, reason ->
+      %{state | error: Util.format_reason({:archive_failed, session_id, {:exit, reason}})}
+  end
+
+  @doc """
+  Resumes a recent session by its one-based slot.
+
+  A session whose provider cache has likely expired asks first; see
+  `Tackle.CLI.TUI.ResumeConfirm`.
+  """
+  @spec resume_recent(State.t(), pos_integer()) ::
+          {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def resume_recent(%State{} = state, index) do
     cond do
       state.active_turn != nil or state.pending_operation != nil ->
@@ -82,7 +151,7 @@ defmodule Tackle.CLI.TUI.Session do
         {:noreply, %{state | notice: "No recent session in slot #{index}"}}
 
       session ->
-        resume_by_id(state, session.session_id)
+        ResumeConfirm.request(state, session)
     end
   end
 
@@ -94,7 +163,8 @@ defmodule Tackle.CLI.TUI.Session do
   resume, reports a failure in the status row, and keeps the running session
   untouched when the frontend refuses or crashes.
   """
-  @spec resume_by_id(State.t(), String.t()) :: {:noreply, State.t()}
+  @spec resume_by_id(State.t(), String.t()) ::
+          {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def resume_by_id(%State{} = state, session_id) do
     case state.resume_session.(session_id) do
       {:ok, %Scope{} = scope} ->
@@ -123,7 +193,7 @@ defmodule Tackle.CLI.TUI.Session do
   The old scope is retired only after the replacement has been subscribed and
   monitored, so a failure here cannot take down the session the user is in.
   """
-  @spec adopt(State.t(), Scope.t()) :: {:noreply, State.t()}
+  @spec adopt(State.t(), Scope.t()) :: {:noreply, State.t()} | {:noreply, State.t(), keyword()}
   def adopt(%State{} = state, %Scope{} = scope) do
     with {:ok, %Snapshot{} = snapshot} <- Tackle.subscribe(scope.root_agent_ref),
          {:ok, monitor} <- Tackle.monitor_agent(scope.root_agent_ref) do

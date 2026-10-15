@@ -19,6 +19,9 @@ defmodule Tackle.Session.Catalog do
   projection or by replaying the session's file, in the searching process, and
   caches it on the entry until the session's next indexed commit. Startup
   indexing takes it from summary sidecars or the replay it already does.
+
+  Archived sessions are indexed too, marked `archived: true`. Listing excludes
+  them unless the `:archived` filter is `true` (archived only) or `:all`.
   """
 
   use GenServer
@@ -41,6 +44,7 @@ defmodule Tackle.Session.Catalog do
           optional(:status) => atom() | String.t() | nil,
           optional(:model) => String.t() | nil,
           optional(:tags) => [String.t()],
+          optional(:archived) => boolean() | :all,
           optional(:limit) => pos_integer() | nil,
           optional(:cursor) => String.t() | nil
         }
@@ -150,6 +154,8 @@ defmodule Tackle.Session.Catalog do
       preview: data["preview"],
       last_indexed_seq: data["last_indexed_seq"] || 0,
       parent_session_id: data["parent_session_id"],
+      archived: data["archived"] == true,
+      context_tokens: data["context_tokens"],
       search_text: data["search_text"]
     }
   end
@@ -242,17 +248,17 @@ defmodule Tackle.Session.Catalog do
     end)
   end
 
+  # A compressed journal never changes and compression brought its sidecar up
+  # to date, so the sidecar is used without decompressing the journal.
   defp index_session(table, session_id, opts) do
     case read_sidecar(session_id, opts) do
       {:ok, %{"last_indexed_seq" => last_seq} = sidecar} ->
-        case Reader.last_seq(session_id, opts) do
-          {:ok, ^last_seq} ->
-            entry = decode_summary(sidecar["summary"] || %{"session_id" => session_id})
-            insert(table, %{entry | journal_path: journal_path(session_id, opts)})
-            :ok
-
-          _other ->
-            index_from_journal(table, session_id, opts)
+        if compressed?(session_id, opts) or Reader.last_seq(session_id, opts) == {:ok, last_seq} do
+          entry = decode_summary(sidecar["summary"] || %{"session_id" => session_id})
+          insert(table, located(entry, session_id, opts))
+          :ok
+        else
+          index_from_journal(table, session_id, opts)
         end
 
       _other ->
@@ -260,12 +266,28 @@ defmodule Tackle.Session.Catalog do
     end
   end
 
+  defp compressed?(session_id, opts) do
+    case Storage.journal_path(session_id, opts) do
+      {:ok, path} -> not File.exists?(path) and File.regular?(Storage.compressed_path(path))
+      {:error, _reason} -> false
+    end
+  end
+
   defp index_from_journal(table, session_id, opts) do
     with {:ok, projection} <- Reader.projection(session_id, opts) do
       entry = to_entry(summary_for(projection))
-      insert(table, %{entry | journal_path: journal_path(session_id, opts)})
+      insert(table, located(entry, session_id, opts))
       :ok
     end
+  end
+
+  # The location, not the summary, decides whether a session is archived.
+  defp located(entry, session_id, opts) do
+    %{
+      entry
+      | journal_path: journal_path(session_id, opts),
+        archived: Keyword.get(opts, :archived, false) == true
+    }
   end
 
   defp journal_path(session_id, opts) do
@@ -276,8 +298,17 @@ defmodule Tackle.Session.Catalog do
   end
 
   defp read_sidecar(session_id, opts) do
-    with {:ok, path} <- Storage.summary_path(session_id, opts),
-         {:ok, %File.Stat{type: :regular}} <- File.stat(path),
+    case Storage.summary_path(session_id, opts) do
+      {:ok, path} -> read_sidecar_file(path, session_id)
+      {:error, _reason} -> :error
+    end
+  end
+
+  @doc false
+  # Reads and validates one summary sidecar file.
+  @spec read_sidecar_file(String.t(), String.t()) :: {:ok, map()} | :error
+  def read_sidecar_file(path, session_id) do
+    with {:ok, %File.Stat{type: :regular}} <- File.stat(path),
          {:ok, binary} <- File.read(path),
          {:ok, payload} <- decode_sidecar(binary),
          true <- payload["schema_version"] == @summary_schema_version,
@@ -286,6 +317,21 @@ defmodule Tackle.Session.Catalog do
     else
       _other -> :error
     end
+  end
+
+  @doc false
+  # Encodes the summary sidecar for a replayed projection, in the format the
+  # journal writes when its owner stops.
+  @spec sidecar(Projection.t()) :: binary()
+  def sidecar(%Projection{} = projection) do
+    payload = %{
+      "schema_version" => @summary_schema_version,
+      "session_id" => projection.session_id,
+      "last_indexed_seq" => projection.last_seq,
+      "summary" => projection |> summary_for() |> encode_summary()
+    }
+
+    :erlang.term_to_binary(payload, [:compressed])
   end
 
   defp decode_sidecar(binary) do
@@ -319,6 +365,8 @@ defmodule Tackle.Session.Catalog do
       preview: fetch_value(summary, :preview),
       last_indexed_seq: fetch_value(summary, :last_indexed_seq, 0),
       parent_session_id: fetch_value(summary, :parent_session_id),
+      archived: fetch_value(summary, :archived, false) == true,
+      context_tokens: fetch_value(summary, :context_tokens),
       search_text: fetch_value(summary, :search_text),
       journal_path: fetch_value(summary, :journal_path)
     }
@@ -336,12 +384,18 @@ defmodule Tackle.Session.Catalog do
   end
 
   defp matches_filters?(entry, filters) do
-    matches_field?(entry.cwd, Map.get(filters, :cwd)) and
+    matches_archived?(entry.archived, Map.get(filters, :archived, false)) and
+      matches_field?(entry.cwd, Map.get(filters, :cwd)) and
       matches_session_ids?(entry.session_id, Map.get(filters, :session_ids)) and
       matches_field?(entry.status, Map.get(filters, :status)) and
       matches_field?(entry.model, Map.get(filters, :model)) and
       Enum.all?(Map.get(filters, :tags) || [], &(&1 in entry.tags))
   end
+
+  defp matches_archived?(_archived, :all), do: true
+  defp matches_archived?(archived, expected) when is_boolean(expected), do: archived == expected
+  defp matches_archived?(archived, nil), do: archived == false
+  defp matches_archived?(archived, expected), do: archived == expected
 
   defp matches_field?(_value, nil), do: true
   defp matches_field?(value, expected), do: value == expected

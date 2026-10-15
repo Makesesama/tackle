@@ -79,6 +79,80 @@ defmodule Tackle.Session.StoreTest do
              Tackle.delete_session(session_id, home: ctx.home, cwd: session_cwd(session_id))
   end
 
+  test "archives a session out of the default listing and restores it", ctx do
+    {session_id, scope} = create_session(ctx)
+    stop_scope(scope.scope_ref)
+    cwd = session_cwd(session_id)
+    opts = [home: ctx.home, cwd: cwd]
+
+    assert :ok = Tackle.archive_session(session_id, opts)
+
+    assert {:ok, %{archived: true}} = Catalog.get(session_id)
+    assert {:ok, %{sessions: []}} = Tackle.list_sessions(cwd: cwd)
+
+    assert {:ok, %{sessions: [%{session_id: ^session_id, archived: true}]}} =
+             Tackle.list_sessions(cwd: cwd, archived: true)
+
+    assert {:ok, %{sessions: [_]}} = Tackle.list_sessions(cwd: cwd, archived: :all)
+    assert {:ok, [^session_id]} = Storage.list_session_ids(Keyword.put(opts, :archived, true))
+    assert {:ok, []} = Storage.list_session_ids(opts)
+
+    # Archived sessions stay readable and survive a catalog rebuild.
+    assert {:ok, %{messages: [_ | _]}} =
+             Tackle.inspect_session(session_id, Keyword.put(opts, :archived, true))
+
+    Catalog.rebuild(home: ctx.home)
+    assert {:ok, %{archived: true}} = Catalog.get(session_id)
+
+    assert {:error, {:session_not_found, ^session_id}} =
+             Tackle.archive_session(session_id, opts)
+
+    assert :ok = Tackle.unarchive_session(session_id, opts)
+    assert {:ok, %{archived: false}} = Catalog.get(session_id)
+
+    assert {:ok, %{sessions: [%{session_id: ^session_id, archived: false}]}} =
+             Tackle.list_sessions(cwd: cwd)
+
+    assert {:error, {:session_not_found, ^session_id}} =
+             Tackle.unarchive_session(session_id, opts)
+  end
+
+  test "an unarchived session can be resumed", ctx do
+    {session_id, scope} = create_session(ctx)
+    stop_scope(scope.scope_ref)
+    cwd = session_cwd(session_id)
+
+    assert :ok = Tackle.archive_session(session_id, home: ctx.home, cwd: cwd)
+    assert :ok = Tackle.unarchive_session(session_id, home: ctx.home, cwd: cwd)
+
+    resumed =
+      start_durable_scope(
+        home: ctx.home,
+        session: [session_id: session_id, cwd: cwd],
+        root: [content: "again"]
+      )
+
+    {:ok, snapshot} = Tackle.subscribe(resumed.root_agent_ref)
+    assert snapshot.session_id == session_id
+    stop_scope(resumed.scope_ref)
+  end
+
+  test "refuses to archive an active session", ctx do
+    {session_id, _scope} = create_session(ctx)
+
+    assert {:error, :session_active} =
+             Tackle.archive_session(session_id, home: ctx.home, cwd: session_cwd(session_id))
+
+    assert {:ok, %{archived: false}} = Catalog.get(session_id)
+  end
+
+  test "catalog entries carry an estimated context size", ctx do
+    {session_id, scope} = create_usage_session(ctx, 4_321)
+    stop_scope(scope.scope_ref)
+
+    assert {:ok, %{context_tokens: 4_321}} = Catalog.get(session_id)
+  end
+
   test "flush_session is a durability barrier for live and unknown sessions", ctx do
     {session_id, _scope} = create_session(ctx)
     assert :ok = Tackle.flush_session(session_id)

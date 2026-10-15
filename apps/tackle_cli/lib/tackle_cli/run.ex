@@ -60,14 +60,19 @@ defmodule Tackle.CLI.Run do
   end
 
   defp start_tui_session(scope, models, provider_adapters, opts) do
+    compress_idle_sessions()
+
     case TUI.start(
            agent_ref: scope.root_agent_ref,
            models: models,
            provider_adapters: provider_adapters,
            new_session: new_session_fun(opts),
            list_recent_sessions: recent_sessions_fun(),
+           list_archived_sessions: archived_sessions_fun(),
            resume_session: resume_session_fun(opts),
-           inspect_session: inspect_session_fun()
+           inspect_session: inspect_session_fun(),
+           archive_session: &Tackle.archive_session(&1, cwd: project_dir()),
+           unarchive_session: &Tackle.unarchive_session(&1, cwd: project_dir())
          ) do
       {:ok, session_id} ->
         print_resume_hint(session_id)
@@ -76,6 +81,17 @@ defmodule Tackle.CLI.Run do
       {:error, reason} ->
         error(reason)
     end
+  end
+
+  # Idle journals are compressed in the background while the shell runs. The
+  # pass is rate-limited by the harness, and a pass cut short when the shell
+  # exits leaves every journal intact (compression replaces files atomically).
+  defp compress_idle_sessions do
+    if Application.get_env(:tackle_cli, :compress_idle_sessions, true) do
+      {:ok, _pid} = Task.start(fn -> Tackle.compress_idle_sessions() end)
+    end
+
+    :ok
   end
 
   # The shell reports the session it was attached to when it exits, which can
@@ -97,6 +113,20 @@ defmodule Tackle.CLI.Run do
            {:ok, page} <-
              Tackle.list_sessions(cwd: project_dir(), session_ids: ids, limit: 50, cursor: cursor) do
         {:ok, page}
+      end
+    end
+  end
+
+  defp archived_sessions_fun do
+    fn cursor ->
+      with {:ok, ids} <- Storage.list_session_ids(cwd: project_dir(), archived: true) do
+        Tackle.list_sessions(
+          cwd: project_dir(),
+          session_ids: ids,
+          archived: true,
+          limit: 50,
+          cursor: cursor
+        )
       end
     end
   end
@@ -153,12 +183,15 @@ defmodule Tackle.CLI.Run do
           query: String.t() | nil,
           limit: pos_integer() | nil,
           cursor: String.t() | nil,
+          archived: boolean(),
           format: Output.format(),
           color: Output.color_mode()
         }) :: non_neg_integer()
   def sessions(%{query: query, limit: limit, cursor: cursor} = opts) do
+    archived? = Map.get(opts, :archived, false)
+
     with {:ok, _apps} <- ensure_started(),
-         {:ok, filters} <- scoped_session_filters(limit, cursor),
+         {:ok, filters} <- scoped_session_filters(limit, cursor, archived?),
          {:ok, page} <- list_sessions(query, filters) do
       output = Output.new(format: opts.format, color: opts.color)
       page |> SessionsOutput.render(query, output) |> then(&Output.puts(output, &1))
@@ -166,6 +199,36 @@ defmodule Tackle.CLI.Run do
     else
       {:error, reason} -> error(reason)
       reason -> error(reason)
+    end
+  end
+
+  @doc false
+  @spec archive(String.t()) :: non_neg_integer()
+  def archive(session_id) do
+    with {:ok, _apps} <- ensure_started(),
+         :ok <- Tackle.archive_session(session_id, cwd: project_dir()) do
+      Owl.IO.puts(["Archived session ", session_id])
+      0
+    else
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  @doc false
+  @spec unarchive(String.t()) :: non_neg_integer()
+  def unarchive(session_id) do
+    with {:ok, _apps} <- ensure_started(),
+         :ok <- Tackle.unarchive_session(session_id, cwd: project_dir()) do
+      Owl.IO.puts([
+        "Restored session ",
+        session_id,
+        " · resume it with tackle --resume ",
+        session_id
+      ])
+
+      0
+    else
+      {:error, reason} -> error(reason)
     end
   end
 
@@ -465,9 +528,19 @@ defmodule Tackle.CLI.Run do
 
   defp resolve_resume(nil), do: {:ok, nil}
 
+  # An idle journal may be stored compressed; resuming restores it.
   defp resolve_resume(session_id) do
-    with {:ok, path} <- Storage.journal_path(session_id, cwd: project_dir()) do
-      if File.regular?(path), do: {:ok, session_id}, else: {:error, :no_sessions}
+    with :ok <- Storage.validate_session_id(session_id) do
+      cond do
+        Storage.journal_exists?(session_id, cwd: project_dir()) ->
+          {:ok, session_id}
+
+        Storage.journal_exists?(session_id, cwd: project_dir(), archived: true) ->
+          {:error, {:session_archived, session_id}}
+
+        true ->
+          {:error, :no_sessions}
+      end
     end
   end
 
@@ -490,10 +563,10 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp scoped_session_filters(limit, cursor) do
-    with {:ok, ids} <- Storage.list_session_ids(cwd: project_dir()),
+  defp scoped_session_filters(limit, cursor, archived?) do
+    with {:ok, ids} <- Storage.list_session_ids(cwd: project_dir(), archived: archived?),
          {:ok, filters} <- session_filters(limit, cursor) do
-      {:ok, Map.put(filters, :session_ids, ids)}
+      {:ok, Map.merge(filters, %{session_ids: ids, archived: archived?})}
     end
   end
 
@@ -674,10 +747,28 @@ defmodule Tackle.CLI.Run do
   end
 
   defp error(reason) do
-    message = Tackle.CLI.Jail.format_error(reason) || inspect(reason)
+    message =
+      Tackle.CLI.Jail.format_error(reason) || session_error(reason) || inspect(reason)
+
     Owl.IO.puts(Owl.Data.tag("error: #{message}", :red), :stderr)
     1
   end
+
+  defp session_error({:session_archived, id}),
+    do: "session #{id} is archived. Restore it with `tackle unarchive #{id}`."
+
+  defp session_error({:session_not_found, id}), do: "no session #{id} in this project"
+  defp session_error({:session_exists, id}), do: "an active session #{id} already exists"
+  defp session_error(:session_active), do: "the session is open in this process"
+
+  defp session_error({:session_in_use, owner}),
+    do: "the session is open in another Tackle process (pid #{owner_pid(owner)})"
+
+  defp session_error(:session_in_use), do: "the session is open in another Tackle process"
+  defp session_error(_reason), do: nil
+
+  defp owner_pid(%{"pid" => pid}), do: pid
+  defp owner_pid(_owner), do: "unknown"
 
   defp print_uncertain_tools([]), do: :ok
 

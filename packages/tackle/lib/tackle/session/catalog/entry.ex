@@ -6,6 +6,12 @@ defmodule Tackle.Session.Catalog.Entry do
   `:search_text` field is used for matching and is `nil` until a search builds
   it; `:journal_path` locates the session's file for that. Neither is returned
   to frontends.
+
+  `:archived` reflects where the session lives: an archived session is listed
+  only when a listing asks for archived sessions. `:context_tokens` is the
+  estimated size of the session's model context (see
+  `Tackle.Session.Projection.context_tokens/1`); it is `nil` for summaries
+  written before the field existed.
   """
 
   @enforce_keys [:session_id]
@@ -21,6 +27,8 @@ defmodule Tackle.Session.Catalog.Entry do
             preview: nil,
             last_indexed_seq: 0,
             parent_session_id: nil,
+            archived: false,
+            context_tokens: nil,
             search_text: nil,
             journal_path: nil
 
@@ -37,6 +45,8 @@ defmodule Tackle.Session.Catalog.Entry do
           preview: String.t() | nil,
           last_indexed_seq: non_neg_integer(),
           parent_session_id: String.t() | nil,
+          archived: boolean(),
+          context_tokens: non_neg_integer() | nil,
           search_text: String.t() | nil,
           journal_path: String.t() | nil
         }
@@ -53,7 +63,9 @@ defmodule Tackle.Session.Catalog.Entry do
     :message_count,
     :preview,
     :last_indexed_seq,
-    :parent_session_id
+    :parent_session_id,
+    :archived,
+    :context_tokens
   ]
 
   @doc "Returns the frontend-facing projection of an entry."

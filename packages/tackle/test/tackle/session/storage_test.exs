@@ -56,6 +56,85 @@ defmodule Tackle.Session.StorageTest do
     assert lock.owner["started_at"] > 0
   end
 
+  test "archived paths mirror the active layout under sessions/archive", ctx do
+    cwd = "/home/user/project"
+
+    assert {:ok, active} = Storage.session_dir(ctx.session_id, home: ctx.home, cwd: cwd)
+
+    assert {:ok, archived} =
+             Storage.session_dir(ctx.session_id, home: ctx.home, cwd: cwd, archived: true)
+
+    assert archived ==
+             Path.join([
+               ctx.home,
+               "sessions",
+               "archive",
+               Path.relative_to(active, Path.join(ctx.home, "sessions"))
+             ])
+
+    assert {:error, {:invalid_archived, "yes"}} =
+             Storage.session_dir(ctx.session_id, home: ctx.home, archived: "yes")
+  end
+
+  test "moves a session into the archive and back", ctx do
+    cwd = Path.join(ctx.home, "project")
+    active = [home: ctx.home, cwd: cwd]
+    archived = Keyword.put(active, :archived, true)
+    {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, active)
+    File.write!(Path.join(dir, "session.dlog"), "journal")
+
+    assert {:ok, archived_dir} = Storage.move_session(ctx.session_id, active, archived)
+    refute File.exists?(dir)
+    assert File.read!(Path.join(archived_dir, "session.dlog")) == "journal"
+    assert {:ok, []} = Storage.list_session_ids(active)
+    assert {:ok, [ctx.session_id]} == Storage.list_session_ids(archived)
+    assert {:ok, [{id, location}]} = Storage.list_session_locations(home: ctx.home)
+    assert id == ctx.session_id
+    assert location[:archived] == true
+
+    # The writer lock was released at the new location.
+    assert {:ok, lock} = Storage.acquire_lock(ctx.session_id, archived)
+    Storage.release_lock(lock)
+
+    assert {:ok, ^dir} = Storage.move_session(ctx.session_id, archived, active)
+    assert {:ok, [ctx.session_id]} == Storage.list_session_ids(active)
+  end
+
+  test "refuses to move a missing session or onto an existing one", ctx do
+    active = [home: ctx.home]
+    archived = [home: ctx.home, archived: true]
+
+    assert {:error, {:session_not_found, _id}} =
+             Storage.move_session(ctx.session_id, active, archived)
+
+    {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, active)
+    File.write!(Path.join(dir, "session.dlog"), "journal")
+    {:ok, _empty} = Storage.ensure_session_dir(ctx.session_id, archived)
+
+    assert {:error, {:session_exists, _id}} =
+             Storage.move_session(ctx.session_id, active, archived)
+
+    assert File.exists?(Path.join(dir, "session.dlog"))
+  end
+
+  test "refuses to move a session whose writer lock is held", ctx do
+    {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
+    File.write!(Path.join(dir, "session.dlog"), "journal")
+    {:ok, lock} = Storage.acquire_lock(ctx.session_id, home: ctx.home)
+
+    try do
+      assert {:error, {:session_in_use, _owner}} =
+               Storage.move_session(ctx.session_id, [home: ctx.home],
+                 home: ctx.home,
+                 archived: true
+               )
+
+      assert File.dir?(dir)
+    after
+      Storage.release_lock(lock)
+    end
+  end
+
   test "writes sidecar files atomically", ctx do
     {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
     path = Path.join(dir, "summary.etf")

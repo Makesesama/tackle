@@ -34,15 +34,25 @@ defmodule Tackle.Session.Storage.Lock do
 
   Returns `{:error, {:session_in_use, owner}}` when another live process owns
   the session. Use `force: true` only when the caller has independently
-  established exclusive ownership.
+  established exclusive ownership. With `reclaim: false`, a stale fallback
+  lock is reported as in use instead of reclaimed: two processes reclaiming
+  the same stale lock at once can both believe they own it, which background
+  work must not risk.
   """
   @spec acquire(String.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def acquire(dir, opts \\ []) do
     path = Path.join(dir, @lock_file)
 
     case advisory_lock_executables() do
-      {:ok, flock, shell} -> acquire_advisory(path, flock, shell)
-      :error -> acquire_pid_lock(path, Keyword.get(opts, :force, false))
+      {:ok, flock, shell} ->
+        acquire_advisory(path, flock, shell)
+
+      :error ->
+        acquire_pid_lock(
+          path,
+          Keyword.get(opts, :force, false),
+          Keyword.get(opts, :reclaim, true)
+        )
     end
   end
 
@@ -181,13 +191,14 @@ defmodule Tackle.Session.Storage.Lock do
     end
   end
 
-  defp acquire_pid_lock(path, force?) do
+  defp acquire_pid_lock(path, force?, reclaim?) do
     case read_owner(path) do
       {:ok, owner} ->
         cond do
           force? -> reclaim(path)
           live_owner?(owner) -> {:error, {:session_in_use, owner}}
-          true -> reclaim(path)
+          reclaim? -> reclaim(path)
+          true -> {:error, {:session_in_use, owner}}
         end
 
       :error ->

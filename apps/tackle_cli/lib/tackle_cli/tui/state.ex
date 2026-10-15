@@ -63,6 +63,8 @@ defmodule Tackle.CLI.TUI.State do
           | {:review, map()}
           | {:confirm_quit, map()}
           | {:confirm_new_session, map()}
+          | {:confirm_resume, map()}
+          | {:confirm_archive, map()}
 
   @typedoc "Which pane owns the keyboard."
   @type focus :: :composer | :transcript | :subagents
@@ -76,8 +78,14 @@ defmodule Tackle.CLI.TUI.State do
             (cursor :: term() ->
                {:ok, %{sessions: [map()], next_cursor: term() | nil}} | {:error, term()})
             | nil,
+          list_archived_sessions:
+            (cursor :: term() ->
+               {:ok, %{sessions: [map()], next_cursor: term() | nil}} | {:error, term()})
+            | nil,
           resume_session: (String.t() -> {:ok, Scope.t()} | {:error, term()}) | nil,
           inspect_session: (String.t() -> {:ok, map()} | {:error, term()}) | nil,
+          archive_session: (String.t() -> :ok | {:error, term()}) | nil,
+          unarchive_session: (String.t() -> :ok | {:error, term()}) | nil,
           recent_sessions: [map()],
           recent_sessions_ref: reference() | nil,
           owner: pid() | nil,
@@ -162,8 +170,11 @@ defmodule Tackle.CLI.TUI.State do
             scope_ref: nil,
             new_session: nil,
             list_recent_sessions: nil,
+            list_archived_sessions: nil,
             resume_session: nil,
             inspect_session: nil,
+            archive_session: nil,
+            unarchive_session: nil,
             recent_sessions: [],
             recent_sessions_ref: nil,
             owner: nil,
@@ -268,8 +279,11 @@ defmodule Tackle.CLI.TUI.State do
         scope_ref: snapshot.scope_ref,
         new_session: Keyword.get(opts, :new_session),
         list_recent_sessions: Keyword.get(opts, :list_recent_sessions),
+        list_archived_sessions: Keyword.get(opts, :list_archived_sessions),
         resume_session: Keyword.get(opts, :resume_session),
         inspect_session: Keyword.get(opts, :inspect_session),
+        archive_session: Keyword.get(opts, :archive_session),
+        unarchive_session: Keyword.get(opts, :unarchive_session),
         owner: Keyword.get(opts, :owner),
         session_id: snapshot.session_id,
         session_title: snapshot.session_title,

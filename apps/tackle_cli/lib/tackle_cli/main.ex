@@ -47,6 +47,8 @@ defmodule Tackle.CLI.Main do
   defp dispatch({:sdk, %{}}), do: SDK.run()
   defp dispatch({:review, opts}), do: Review.run(opts)
   defp dispatch({:sessions, opts}), do: Run.sessions(opts)
+  defp dispatch({:archive, session_id}), do: Run.archive(session_id)
+  defp dispatch({:unarchive, session_id}), do: Run.unarchive(session_id)
   defp dispatch({:models, %{}}), do: Run.models()
   defp dispatch({:auth_login, opts}), do: Run.auth_login(opts)
   defp dispatch({:auth_status, opts}), do: Run.auth_status(opts)

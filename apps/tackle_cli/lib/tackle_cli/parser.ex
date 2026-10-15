@@ -15,9 +15,12 @@ defmodule Tackle.CLI.Parser do
                query: String.t() | nil,
                limit: pos_integer() | nil,
                cursor: String.t() | nil,
+               archived: boolean(),
                format: :human | :plain | :json,
                color: :auto | :always | :never
              }}
+          | {:archive, String.t()}
+          | {:unarchive, String.t()}
           | {:models, %{}}
           | {:auth_login, login_options()}
           | {:auth_status, auth_options(String.t() | nil)}
@@ -118,10 +121,17 @@ defmodule Tackle.CLI.Parser do
         query: Map.get(result.options, :query),
         limit: Map.get(result.options, :limit),
         cursor: Map.get(result.options, :cursor),
+        archived: Map.get(result.flags, :archived, false) == true,
         format: Map.get(result.options, :format, :human),
         color: Map.get(result.options, :color, :auto)
       }}}
   end
+
+  defp parse_result({:ok, [:archive], result}, _parser),
+    do: {:ok, {:archive, result.args.session}}
+
+  defp parse_result({:ok, [:unarchive], result}, _parser),
+    do: {:ok, {:unarchive, result.args.session}}
 
   defp parse_result({:ok, [:mcp], _result}, parser),
     do: {:help, format_help(parser, [:mcp])}
@@ -293,6 +303,30 @@ defmodule Tackle.CLI.Parser do
             ]
           ]
         ],
+        archive: [
+          name: "archive",
+          about: "Archive a saved session of this project",
+          args: [
+            session: [
+              value_name: "SESSION",
+              help: "Session id, as listed by `tackle sessions`",
+              required: true,
+              parser: :string
+            ]
+          ]
+        ],
+        unarchive: [
+          name: "unarchive",
+          about: "Restore an archived session of this project",
+          args: [
+            session: [
+              value_name: "SESSION",
+              help: "Session id, as listed by `tackle sessions --archived`",
+              required: true,
+              parser: :string
+            ]
+          ]
+        ],
         models: [
           name: "models",
           about: "List models of the configured providers"
@@ -300,6 +334,12 @@ defmodule Tackle.CLI.Parser do
         sessions: [
           name: "sessions",
           about: "List or search durable sessions",
+          flags: [
+            archived: [
+              long: "--archived",
+              help: "List archived sessions instead of active ones"
+            ]
+          ],
           options: [
             query: [
               value_name: "TEXT",

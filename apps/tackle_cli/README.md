@@ -660,6 +660,33 @@ switched to, inside the shell is also recoverable. A session id directly after
 `--resume` always wins, so a one-shot prompt for a valueless `--resume` follows
 `--` (or comes before the flag).
 
+#### Archiving and reopening old sessions
+
+Archiving hides a session from `/resume`, the dashboard, `tackle sessions`, and
+`--resume` without deleting it, like Codex's archive. `tackle archive SESSION_ID`
+and `tackle unarchive SESSION_ID` move a session of the current project in and
+out of the archive, and `tackle sessions --archived` lists archived sessions.
+In the TUI, `/archive` starts a new session and archives the previous one, and
+in the `/resume` picker Ctrl+A archives the selected session, Tab switches to
+the archived sessions, and Ctrl+A or Enter there restores one (Enter also
+resumes it). Archived sessions live under `$TACKLE_HOME/sessions/archive/`, in
+the same project directories; a session open in any Tackle process cannot be
+archived. `--resume` of an archived session fails with a hint to unarchive it.
+
+Journals idle for a week are compressed with zstd (`session.dlog.zst`, usually
+about 3× smaller) by a background pass the TUI starts at most every six hours;
+recovery copies are compressed too. Compressed sessions list, preview, search,
+and resume like any other: resuming restores the plain journal first.
+
+Provider prompt caches expire after minutes of inactivity (at most about an
+hour), so the first request after reopening an older session re-sends its whole
+context at the uncached input price. Resuming from the picker or the Alt+1–5
+shortcuts therefore asks for confirmation when the session was last active more
+than an hour ago, showing its age, message count, and estimated context size,
+plus an input-cost estimate when it uses the current model and that model has a
+price card. Sessions under 10k estimated context tokens resume without asking.
+`--resume` on the command line does not ask.
+
 Provider login, logout, status, and usage are adapter-driven: the CLI resolves
 the provider by its id among the available providers and delegates to its
 adapter, so any configured `Tackle.Lib.LLM` plugin works without CLI changes. One-shot `run` commands show
@@ -674,7 +701,7 @@ width-aware human layout. Narrow terminals switch to stacked summaries instead
 of dropping or abbreviating session IDs. Use `--limit N` to request more rows,
 `--format plain` for stable tab-separated output, or `--format json` for a
 structured page including `next_cursor`; pass that value back through `--cursor`
-to retrieve the next page. Human output honors `--color auto|always|never` and
+to retrieve the next page. `--archived` lists archived sessions instead. Human output honors `--color auto|always|never` and
 `NO_COLOR`; plain and JSON output never contain ANSI sequences.
 
 `tackle auth status` uses the same borderless output policy and lists each

@@ -1,11 +1,14 @@
 defmodule Tackle.Session.Store do
   @moduledoc """
-  High-level durable session operations: inspect, list, search, fork, delete.
+  High-level durable session operations: inspect, list, search, fork, archive,
+  and delete.
 
   These operations read journals and derived catalog data. They never expose
   the journal process or `:disk_log` name, and they never mutate a live journal.
-  A fork creates a new self-contained journal; deletion renames a complete
-  session directory into `sessions/trash/` before removing it from the catalog.
+  A fork creates a new self-contained journal; archiving renames a complete
+  session directory into `sessions/archive/` and marks it archived in the
+  catalog; deletion renames it into `sessions/trash/` before removing it from
+  the catalog.
   """
 
   alias Tackle.Runtime.ID
@@ -191,6 +194,86 @@ defmodule Tackle.Session.Store do
 
       {:error, :not_found} ->
         trash(session_id, opts)
+    end
+  end
+
+  @doc """
+  Archives an inactive session.
+
+  The session directory moves into `sessions/archive/`, keeping its project
+  directory, and the catalog lists it only when archived sessions are
+  requested. The journal is untouched, so an archived session can still be
+  inspected with `archived: true` and restored with `unarchive/2`. A session
+  that is live in this node is refused with `{:error, :session_active}`; one
+  owned by another process with `{:error, {:session_in_use, owner}}`.
+  """
+  @spec archive(String.t(), keyword()) :: :ok | {:error, term()}
+  def archive(session_id, opts \\ []), do: relocate(session_id, opts, true)
+
+  @doc """
+  Restores an archived session to the active sessions.
+
+  Fails with `{:error, {:session_exists, session_id}}` when an active session
+  with the same id exists, and `{:error, {:session_not_found, session_id}}`
+  when no archived copy does.
+  """
+  @spec unarchive(String.t(), keyword()) :: :ok | {:error, term()}
+  def unarchive(session_id, opts \\ []), do: relocate(session_id, opts, false)
+
+  defp relocate(session_id, opts, archived?) do
+    opts = Keyword.delete(opts, :archived)
+    from = Keyword.put(opts, :archived, not archived?)
+    to = Keyword.put(opts, :archived, archived?)
+
+    with :ok <- Storage.validate_session_id(session_id),
+         :ok <- ensure_inactive(session_id),
+         {:ok, dir} <- Storage.move_session(session_id, from, to) do
+      reindex(session_id, to, Path.join(dir, "session.dlog"))
+    end
+  end
+
+  # Like `Catalog.record/1`, tolerate a catalog that is not running: it is a
+  # rebuildable projection, not part of the move.
+  defp catalog_entry(session_id) do
+    if Process.whereis(Catalog), do: Catalog.get(session_id), else: {:error, :no_catalog}
+  catch
+    :exit, _reason -> {:error, :no_catalog}
+  end
+
+  defp ensure_inactive(session_id) do
+    case Journal.whereis(session_id) do
+      {:ok, journal} when is_pid(journal) ->
+        if Process.alive?(journal), do: {:error, :session_active}, else: :ok
+
+      {:error, :not_found} ->
+        :ok
+    end
+  end
+
+  # The summary is location-independent, so a cataloged session only needs its
+  # new location; an unindexed one is read from its new location.
+  defp reindex(session_id, location, journal_path) do
+    archived = Keyword.fetch!(location, :archived)
+
+    summary =
+      case catalog_entry(session_id) do
+        {:ok, entry} ->
+          {:ok, entry}
+
+        {:error, _not_indexed} ->
+          with {:ok, projection} <- Reader.projection(session_id, location),
+               do: {:ok, summary_map(projection)}
+      end
+
+    case summary do
+      {:ok, summary} ->
+        summary
+        |> Map.merge(%{archived: archived, journal_path: journal_path})
+        |> Catalog.record()
+
+      {:error, _reason} ->
+        # The move succeeded; a stale catalog is rebuilt from the journal.
+        :ok
     end
   end
 

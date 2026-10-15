@@ -18,6 +18,7 @@ defmodule Tackle.CLI.Widgets.ResumeScreen do
             scroll_top: 0,
             query: "",
             count: 0,
+            archived?: false,
             loading?: false,
             error: nil
 
@@ -37,6 +38,7 @@ defmodule Tackle.CLI.Widgets.ResumeScreen do
           scroll_top: non_neg_integer(),
           query: String.t(),
           count: non_neg_integer(),
+          archived?: boolean(),
           loading?: boolean(),
           error: String.t() | nil
         }
@@ -94,7 +96,7 @@ defmodule Tackle.CLI.Widgets.ResumeScreen do
 
     [
       {%Clear{}, area},
-      {header_widget(), header},
+      {header_widget(screen), header},
       {search_widget(screen, search.width), search},
       {list_widget(screen, list), list},
       {footer_widget(screen, footer, list), footer}
@@ -223,9 +225,11 @@ defmodule Tackle.CLI.Widgets.ResumeScreen do
 
   # -- chrome ----------------------------------------------------------------
 
-  defp header_widget do
-    title = Span.new(" Resume a previous session", style: Theme.bold(Theme.style(:text)))
-    %Paragraph{text: [Line.new([title])]}
+  defp header_widget(%__MODULE__{archived?: archived?}) do
+    text = if archived?, do: " Archived sessions", else: " Resume a previous session"
+    title = Span.new(text, style: Theme.bold(Theme.style(:text)))
+    tab = if archived?, do: "  ·  Tab: active", else: "  ·  Tab: archived"
+    %Paragraph{text: [Line.new([title, Span.new(tab, style: Theme.style(:subtle))])]}
   end
 
   defp search_widget(%__MODULE__{error: error}, width) when is_binary(error) do
@@ -271,12 +275,13 @@ defmodule Tackle.CLI.Widgets.ResumeScreen do
     [Line.new([Span.new(" Loading sessions…", style: Theme.italic(Theme.style(:muted)))])]
   end
 
-  defp empty_lines(%__MODULE__{}) do
-    [
-      Line.new([
-        Span.new(" No saved sessions in this project", style: Theme.italic(Theme.style(:muted)))
-      ])
-    ]
+  defp empty_lines(%__MODULE__{archived?: archived?}) do
+    text =
+      if archived?,
+        do: " No archived sessions in this project",
+        else: " No saved sessions in this project"
+
+    [Line.new([Span.new(text, style: Theme.italic(Theme.style(:muted)))])]
   end
 
   defp visible_lines(screen, win, width, height) do
@@ -488,18 +493,20 @@ defmodule Tackle.CLI.Widgets.ResumeScreen do
     end
   end
 
-  defp hints(%__MODULE__{query: query}, 0) do
+  defp hints(%__MODULE__{query: query, archived?: archived?}, 0) do
     [
-      {"Enter", "resume"},
+      {"Enter", if(archived?, do: "restore & resume", else: "resume")},
       {"Esc", if(query == "", do: "close", else: "clear search")},
       {"Ctrl+C", "quit"}
     ]
   end
 
-  defp hints(_screen, 1) do
+  defp hints(%__MODULE__{archived?: archived?}, 1) do
     [
       {"↑/↓", "browse"},
       {"→", "preview"},
+      {"Ctrl+A", if(archived?, do: "restore", else: "archive")},
+      {"Tab", if(archived?, do: "active", else: "archived")},
       {"type", "filter"}
     ]
   end

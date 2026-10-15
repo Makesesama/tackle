@@ -8,17 +8,29 @@ defmodule Tackle.Session.Storage do
       └── sessions/
           ├── catalog/       derived global data
           ├── trash/         recoverable deletions
+          ├── archive/       archived sessions, mirroring the layout below
           ├── <session-id>/      legacy sessions without a project
           └── --home-user-project--/
               └── <session-id>/
-                  ├── session.dlog
+                  ├── session.dlog       or session.dlog.zst once idle
                   ├── summary.etf
                   ├── checkpoint.etf
                   └── recovery/
 
   The journal is the only required durable file. Summaries, checkpoints, and
   catalog data are disposable projections that can always be removed and
-  rebuilt. Directories are private to the current user and files are created
+  rebuilt.
+
+  A journal idle for a while is stored compressed as `session.dlog.zst` (see
+  `Tackle.Session.Compression`). When both forms exist, the plain journal is
+  authoritative.
+
+  Archiving moves a complete session directory under `archive/`, keeping its
+  project directory, so the session leaves the active listing but stays
+  readable. Pass `archived: true` to any path function to address the archived
+  copy instead of the active one.
+
+  Directories are private to the current user and files are created
   with restrictive permissions because internal repair and ordinary chunk
   decoding can decode ETF terms.
   """
@@ -26,11 +38,13 @@ defmodule Tackle.Session.Storage do
   alias Tackle.Session.Storage.Lock
 
   @journal_file "session.dlog"
+  @compressed_suffix ".zst"
   @summary_file "summary.etf"
   @checkpoint_file "checkpoint.etf"
   @recovery_dir "recovery"
   @sessions_dir "sessions"
   @trash_dir "trash"
+  @archive_dir "archive"
   @catalog_dir "catalog"
 
   @dir_mode 0o700
@@ -38,6 +52,13 @@ defmodule Tackle.Session.Storage do
   @session_id ~r/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
   @type root_opts :: [{:home, String.t()} | {:env, map()}]
+
+  @typedoc """
+  Location options shared by the path functions: `:home`/`:env` select
+  `TACKLE_HOME`, `:cwd` or `:project_key` select the project directory, and
+  `archived: true` selects the archive instead of the active sessions.
+  """
+  @type location_opts :: keyword()
 
   @doc "Returns the sessions root under `TACKLE_HOME`."
   @spec sessions_root(keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -51,6 +72,12 @@ defmodule Tackle.Session.Storage do
   @spec trash_root(keyword()) :: {:ok, String.t()} | {:error, term()}
   def trash_root(opts \\ []) do
     with {:ok, root} <- sessions_root(opts), do: {:ok, Path.join(root, @trash_dir)}
+  end
+
+  @doc "Returns `$TACKLE_HOME/sessions/archive`."
+  @spec archive_root(keyword()) :: {:ok, String.t()} | {:error, term()}
+  def archive_root(opts \\ []) do
+    with {:ok, root} <- sessions_root(opts), do: {:ok, Path.join(root, @archive_dir)}
   end
 
   @doc "Returns `$TACKLE_HOME/sessions/catalog`."
@@ -72,6 +99,22 @@ defmodule Tackle.Session.Storage do
   @spec journal_path(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def journal_path(session_id, opts \\ []) do
     with {:ok, dir} <- session_dir(session_id, opts), do: {:ok, Path.join(dir, @journal_file)}
+  end
+
+  @doc "Returns the compressed form of a journal path: `session.dlog.zst`."
+  @spec compressed_path(String.t()) :: String.t()
+  def compressed_path(journal_path), do: journal_path <> @compressed_suffix
+
+  @doc """
+  Whether a session has a journal, plain or compressed, at the selected
+  location.
+  """
+  @spec journal_exists?(String.t(), keyword()) :: boolean()
+  def journal_exists?(session_id, opts \\ []) do
+    case journal_path(session_id, opts) do
+      {:ok, path} -> File.regular?(path) or File.regular?(compressed_path(path))
+      {:error, _reason} -> false
+    end
   end
 
   @doc "Returns the derived summary sidecar path for one session."
@@ -141,7 +184,28 @@ defmodule Tackle.Session.Storage do
   @spec acquire_lock(String.t(), keyword()) :: {:ok, Lock.t()} | {:error, term()}
   def acquire_lock(session_id, opts \\ []) do
     with {:ok, dir} <- ensure_session_dir(session_id, opts) do
-      Lock.acquire(dir, opts)
+      acquire_waiting(dir, opts)
+    end
+  end
+
+  # Background maintenance in this OS process (compressing an idle journal)
+  # holds a session's lock only for a moment, so a conflict with our own OS
+  # process is waited out briefly; other owners are reported at once.
+  @lock_wait_attempts 20
+  @lock_wait_interval 100
+
+  defp acquire_waiting(dir, opts, attempt \\ 1) do
+    case Lock.acquire(dir, opts) do
+      {:error, {:session_in_use, %{"pid" => pid}}} = busy ->
+        if pid == System.pid() and attempt < @lock_wait_attempts do
+          Process.sleep(@lock_wait_interval)
+          acquire_waiting(dir, opts, attempt + 1)
+        else
+          busy
+        end
+
+      result ->
+        result
     end
   end
 
@@ -157,12 +221,28 @@ defmodule Tackle.Session.Storage do
     end
   end
 
-  @doc "Lists legacy and project session locations for catalog rebuilds."
+  @doc """
+  Lists legacy and project session locations for catalog rebuilds.
+
+  Active sessions come first, then archived ones; an archived location carries
+  `archived: true`, so passing it back to a path function addresses the
+  archived copy.
+  """
   @spec list_session_locations(keyword()) :: {:ok, [{String.t(), keyword()}]} | {:error, term()}
   def list_session_locations(opts \\ []) do
+    location_opts = Keyword.drop(opts, [:cwd, :project_key, :archived])
+
     with {:ok, root} <- sessions_root(opts),
-         location_opts = Keyword.drop(opts, [:cwd, :project_key]),
-         {:ok, legacy} <- list_session_ids_in(root),
+         {:ok, archive} <- archive_root(opts),
+         {:ok, active} <- list_locations_in(root, location_opts),
+         {:ok, archived} <-
+           list_locations_in(archive, Keyword.put(location_opts, :archived, true)) do
+      {:ok, active ++ archived}
+    end
+  end
+
+  defp list_locations_in(root, location_opts) do
+    with {:ok, legacy} <- list_session_ids_in(root),
          {:ok, entries} <- list_entries(root) do
       Enum.reduce_while(entries, {:ok, Enum.map(legacy, &{&1, location_opts})}, fn entry,
                                                                                    {:ok, acc} ->
@@ -198,7 +278,7 @@ defmodule Tackle.Session.Storage do
       {:ok, entries} ->
         ids =
           entries
-          |> Enum.reject(&(&1 in [@trash_dir, @catalog_dir]))
+          |> Enum.reject(&(&1 in [@trash_dir, @catalog_dir, @archive_dir]))
           |> Enum.filter(&(validate_session_id(&1) == :ok and File.dir?(Path.join(root, &1))))
           |> Enum.sort()
 
@@ -213,20 +293,85 @@ defmodule Tackle.Session.Storage do
   Moves a complete session directory into `sessions/trash/`.
 
   Renaming first prevents a partial multi-file deletion from leaving a session
-  that still appears live. The operation is refused for an active session.
+  that still appears live. The move takes the session's writer lock, so a
+  session owned by a live process, or being compressed, is not moved from
+  under it.
   """
   @spec trash_session(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def trash_session(session_id, opts \\ []) do
     with {:ok, dir} <- session_dir(session_id, opts),
+         :ok <- ensure_dir(session_id, dir),
          {:ok, trash} <- trash_root(opts),
-         :ok <- ensure_private_dir(trash) do
+         :ok <- ensure_private_dir(trash),
+         {:ok, lock} <- acquire_waiting(dir, []) do
       destination = Path.join(trash, "#{session_id}-#{System.system_time(:millisecond)}")
 
       case File.rename(dir, destination) do
-        :ok -> {:ok, destination}
-        {:error, reason} -> {:error, {:trash_failed, session_id, reason}}
+        :ok ->
+          release_lock(%{lock | path: Lock.path(destination)})
+          {:ok, destination}
+
+        {:error, reason} ->
+          release_lock(lock)
+          {:error, {:trash_failed, session_id, reason}}
       end
     end
+  end
+
+  defp ensure_dir(session_id, dir) do
+    if File.dir?(dir), do: :ok, else: {:error, {:trash_failed, session_id, :enoent}}
+  end
+
+  @doc """
+  Moves an inactive session between two locations, such as into the archive.
+
+  `from` and `to` are location options (see `t:location_opts/0`). The session
+  must have a journal at `from` and nothing at `to`. The move takes the
+  session's writer lock first, so a session owned by any live process,
+  including another Tackle instance, is refused with
+  `{:error, {:session_in_use, owner}}`. Returns the new session directory.
+  """
+  @spec move_session(String.t(), location_opts(), location_opts()) ::
+          {:ok, String.t()} | {:error, term()}
+  def move_session(session_id, from, to) do
+    with {:ok, source} <- session_dir(session_id, from),
+         {:ok, destination} <- session_dir(session_id, to),
+         :ok <- ensure_journal(session_id, source),
+         :ok <- ensure_private_dir(Path.dirname(destination)),
+         {:ok, lock} <- acquire_waiting(source, []) do
+      # Checked under the lock, so a concurrent move of this session cannot
+      # pass the check before this one renames.
+      with :ok <- ensure_absent(session_id, destination),
+           :ok <- rename_session(session_id, source, destination) do
+        # The lock file moved with the directory; release it there.
+        release_lock(%{lock | path: Lock.path(destination)})
+        {:ok, destination}
+      else
+        {:error, reason} ->
+          release_lock(lock)
+          {:error, reason}
+      end
+    end
+  end
+
+  defp rename_session(session_id, source, destination) do
+    case File.rename(source, destination) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:move_failed, session_id, reason}}
+    end
+  end
+
+  defp ensure_journal(session_id, dir) do
+    path = Path.join(dir, @journal_file)
+
+    if File.regular?(path) or File.regular?(compressed_path(path)),
+      do: :ok,
+      else: {:error, {:session_not_found, session_id}}
+  end
+
+  # A rename over an empty directory succeeds on POSIX, so check explicitly.
+  defp ensure_absent(session_id, dir) do
+    if File.exists?(dir), do: {:error, {:session_exists, session_id}}, else: :ok
   end
 
   @doc """
@@ -254,13 +399,19 @@ defmodule Tackle.Session.Storage do
 
   The content is written to a temporary sibling, synced, and renamed into
   place. Derived sidecars use this so readers only ever observe a complete file.
+  The directory is not synced (the BEAM cannot open one); journaling
+  filesystems persist the rename before later metadata changes.
+
+  Missing parent directories are created unless `create_dir: false` is given;
+  background work passes it so a write never recreates a session directory
+  that was moved or deleted meanwhile.
   """
-  @spec atomic_write(String.t(), iodata()) :: :ok | {:error, term()}
-  def atomic_write(path, content) do
+  @spec atomic_write(String.t(), iodata(), keyword()) :: :ok | {:error, term()}
+  def atomic_write(path, content, opts \\ []) do
     temp = path <> ".tmp-#{System.unique_integer([:positive])}"
     dir = Path.dirname(path)
 
-    with :ok <- ensure_private_dir(dir),
+    with :ok <- if(Keyword.get(opts, :create_dir, true), do: ensure_private_dir(dir), else: :ok),
          :ok <- write_file(temp, content),
          :ok <- sync_file(temp),
          :ok <- rename(temp, path) do
@@ -313,8 +464,16 @@ defmodule Tackle.Session.Storage do
 
   # The enclosing dashes distinguish project directories from legacy session ids.
   defp project_root(opts) do
-    with {:ok, root} <- sessions_root(opts) do
+    with {:ok, root} <- location_root(opts) do
       project_root(root, Keyword.get(opts, :cwd), Keyword.get(opts, :project_key))
+    end
+  end
+
+  defp location_root(opts) do
+    case Keyword.get(opts, :archived, false) do
+      true -> archive_root(opts)
+      false -> sessions_root(opts)
+      other -> {:error, {:invalid_archived, other}}
     end
   end
 
