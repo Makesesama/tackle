@@ -15,32 +15,68 @@ defmodule Tackle.Config.File do
     "watchdog",
     "narration",
     "decision_model",
-    "review"
+    "review",
+    "agents"
   ]
 
+  # A project file comes from the repository, so it may only choose among what
+  # the user already configured: it cannot declare providers (which carry base
+  # URLs and credential settings), and the CLI-only display preference stays
+  # with the user.
+  @project_fields @known_fields -- ["providers", "show_subagent_sidebar"]
+
+  @doc "Loads the user configuration file; a missing file is empty."
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
   def load(path) when is_binary(path) do
+    with {:ok, config} <- read_user(path), do: to_options(path, config)
+  end
+
+  @doc """
+  Loads the user configuration file layered under a project file's contents.
+
+  The project file may use every field except `providers` and
+  `show_subagent_sidebar`. Each file is validated on its own; then JSON objects
+  merge recursively, with project values replacing user values.
+  """
+  @spec load(Path.t(), {Path.t(), binary()} | nil) :: {:ok, keyword()} | {:error, term()}
+  def load(user_path, nil), do: load(user_path)
+
+  def load(user_path, {project_path, contents}) when is_binary(user_path) do
+    with {:ok, user} <- read_user(user_path),
+         {:ok, _opts} <- to_options(user_path, user),
+         {:ok, project} <- decode(project_path, contents, @project_fields),
+         {:ok, _opts} <- to_options(project_path, project) do
+      to_options(project_path, deep_merge(user, project))
+    end
+  end
+
+  defp read_user(path) do
     case File.read(path) do
-      {:ok, contents} -> decode(path, contents)
-      {:error, :enoent} -> {:ok, []}
+      {:ok, contents} -> decode(path, contents, @known_fields)
+      {:error, :enoent} -> {:ok, %{}}
       {:error, reason} -> {:error, {:config_file_unreadable, path, reason}}
     end
   end
 
-  defp decode(path, contents) do
+  defp decode(path, contents, known_fields) do
     case JSON.decode(contents) do
-      {:ok, %{} = config} -> validate_fields(path, config)
+      {:ok, %{} = config} -> validate_fields(path, config, known_fields)
       {:ok, _other} -> {:error, {:invalid_config_file, path, :expected_object}}
       {:error, _reason} -> {:error, {:malformed_config_file, path}}
     end
   end
 
-  defp validate_fields(path, config) do
-    case Map.keys(config) -- @known_fields do
-      [] -> to_options(path, config)
+  defp validate_fields(path, config, known_fields) do
+    case Map.keys(config) -- known_fields do
+      [] -> {:ok, config}
       fields -> {:error, {:unknown_config_fields, path, Enum.sort(fields)}}
     end
   end
+
+  defp deep_merge(%{} = base, %{} = override),
+    do: Map.merge(base, override, fn _key, left, right -> deep_merge(left, right) end)
+
+  defp deep_merge(_base, override), do: override
 
   defp to_options(path, config) do
     with {:ok, model_opts} <- model_options(path, config),
@@ -51,14 +87,53 @@ defmodule Tackle.Config.File do
          {:ok, narration_opts} <- narration_options(path, config),
          {:ok, decision_opts} <- decision_model_options(path, config),
          {:ok, review_opts} <- review_options(path, config),
+         {:ok, agent_opts} <- agents_options(path, config),
          :ok <- sidebar_option(path, config) do
       {:ok,
        model_opts ++
          thinking_opts ++
          provider_opts ++
-         title_opts ++ watchdog_opts ++ narration_opts ++ decision_opts ++ review_opts}
+         title_opts ++
+         watchdog_opts ++ narration_opts ++ decision_opts ++ review_opts ++ agent_opts}
     end
   end
+
+  # Per-profile subagent settings keyed by profile name: each entry may set
+  # `model` (canonical model reference) and `thinking`. Names are kept as
+  # strings; values are validated by `Tackle.Config`.
+  @agent_fields %{"model" => :model, "thinking" => :thinking}
+
+  defp agents_options(path, config) do
+    case Map.fetch(config, "agents") do
+      {:ok, nil} -> {:ok, []}
+      {:ok, %{} = agents} -> agents_entries(path, agents)
+      {:ok, _other} -> {:error, {:invalid_config_field, path, "agents"}}
+      :error -> {:ok, []}
+    end
+  end
+
+  defp agents_entries(path, agents) do
+    Enum.reduce_while(agents, {:ok, %{}}, fn {name, entry}, {:ok, acc} ->
+      case agent_settings(entry) do
+        {:ok, settings} -> {:cont, {:ok, Map.put(acc, name, settings)}}
+        :error -> {:halt, {:error, {:invalid_config_agent, path, name}}}
+      end
+    end)
+    |> case do
+      {:ok, agents} -> {:ok, [agents: agents]}
+      error -> error
+    end
+  end
+
+  defp agent_settings(%{} = entry) do
+    if Map.keys(entry) -- Map.keys(@agent_fields) == [] do
+      {:ok, for({key, value} <- entry, value != nil, into: %{}, do: {@agent_fields[key], value})}
+    else
+      :error
+    end
+  end
+
+  defp agent_settings(_entry), do: :error
 
   # The command watchdog is opt-in because it needs a decision model: `false`
   # and `null` leave it off; an object sets `model` (required canonical decision

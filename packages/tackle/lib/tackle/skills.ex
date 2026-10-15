@@ -392,7 +392,7 @@ defmodule Tackle.Skills do
   end
 
   defp ancestors(files, dir) do
-    collect_ancestors(dir, git_root(files, dir), [])
+    collect_ancestors(dir, ProjectFiles.git_root(files, dir), [])
   end
 
   defp collect_ancestors(dir, git_root, acc) do
@@ -403,16 +403,6 @@ defmodule Tackle.Skills do
       dir == parent -> :lists.reverse(acc)
       git_root != nil and dir == git_root -> :lists.reverse(acc)
       true -> collect_ancestors(parent, git_root, acc)
-    end
-  end
-
-  defp git_root(files, dir) do
-    parent = Path.dirname(dir)
-
-    cond do
-      ProjectFiles.exists?(files, Path.join(dir, ".git")) -> dir
-      dir == parent -> nil
-      true -> git_root(files, parent)
     end
   end
 

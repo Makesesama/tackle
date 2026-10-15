@@ -596,10 +596,36 @@ guide to agents that have `run_workflow`.
 `Tackle.Config.load/1` applies this precedence:
 
 ```text
-built-in defaults < ~/.tackle/config.json < TACKLE_MODEL/TACKLE_THINKING < explicit overrides
+built-in defaults < ~/.tackle/config.json < .tackle/config.json < TACKLE_MODEL/TACKLE_THINKING < explicit overrides
 ```
 
 `TACKLE_HOME` changes the directory containing `config.json` and `auth.json`.
+
+A project can carry its own `.tackle/config.json`. The harness uses the nearest
+one at or above the working directory, stopping at the Git root (as for
+`.tackle/agents`), and reads it through the session executor like `AGENTS.md`.
+It accepts the same fields as the user file except `providers` and
+`show_subagent_sidebar`: a repository chooses among the providers and accounts
+you configured but cannot declare its own, which could send your credentials
+to another endpoint. Each file is validated on its own; JSON objects then merge
+recursively, so a project can change one review stage or one agent setting and
+keep the rest of your user configuration. A project value of `null` clears the
+user value. For example:
+
+```json
+{
+  "model": "openai-codex/gpt-5.5",
+  "thinking": "medium",
+  "agents": { "scout": { "model": "openai-codex/gpt-5.5-codex-mini", "thinking": "low" } },
+  "review": { "profile": "quiet" }
+}
+```
+
+An optional `agents` object, in either file, sets subagent profiles' `model`
+and `thinking` by profile name, replacing the values from the profile's
+Markdown definition (built-in, user, or project). A profile given a model runs
+on it instead of following the root's current model. Names without a
+discovered profile are ignored, but their models must still be available.
 The configuration file accepts `model` and `thinking` harness fields and the
 CLI-only boolean `show_subagent_sidebar` (default `true`), which does not affect
 agent sessions. It also accepts a `session_titles` object configuring automatic

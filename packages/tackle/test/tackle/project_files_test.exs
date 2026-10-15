@@ -151,6 +151,49 @@ defmodule Tackle.ProjectFilesTest do
     end
   end
 
+  describe "project bounds" do
+    test "git_root finds the nearest repository, through the router", %{workspace: workspace} do
+      nested = Path.join(workspace, "apps/cli")
+      File.mkdir_p!(nested)
+      files = ProjectFiles.new(executor: FakeJail.new(workspace, self()))
+
+      assert ProjectFiles.git_root(files, nested) == nil
+      File.mkdir_p!(Path.join(workspace, ".git"))
+      assert ProjectFiles.git_root(files, Path.join(nested, "..")) == workspace
+      assert_received {:fake_jail, :stat, _path}
+    end
+
+    test "nearest_project_file stops at the Git root", %{root: root, workspace: workspace} do
+      nested = Path.join(workspace, "apps/cli")
+      File.mkdir_p!(nested)
+      File.mkdir_p!(Path.join(root, ".tackle"))
+      File.write!(Path.join(root, ".tackle/config.json"), "{}")
+      files = ProjectFiles.new()
+
+      assert ProjectFiles.nearest_project_file(files, nested, ".tackle/config.json") ==
+               Path.join(root, ".tackle/config.json")
+
+      assert ProjectFiles.nearest_project_dir(files, nested, ".tackle") ==
+               Path.join(root, ".tackle")
+
+      File.mkdir_p!(Path.join(workspace, ".git"))
+      assert ProjectFiles.nearest_project_file(files, nested, ".tackle/config.json") == nil
+    end
+
+    test "same_dir? compares expanded paths and file identity", %{
+      root: root,
+      workspace: workspace
+    } do
+      link = Path.join(root, "link")
+      File.ln_s!(workspace, link)
+
+      assert ProjectFiles.same_dir?(workspace, Path.join(workspace, "../workspace"))
+      assert ProjectFiles.same_dir?(link, workspace)
+      refute ProjectFiles.same_dir?(root, workspace)
+      refute ProjectFiles.same_dir?(Path.join(root, "missing"), Path.join(root, "absent"))
+    end
+  end
+
   test "Config rejects a malformed executor instead of falling back to local" do
     for executor <- [:jailed, {"Module", nil}, {Tackle.Test.NotAnExecutor, nil}, {String, nil}] do
       assert {:error, {:invalid_option, :executor, ^executor}} =

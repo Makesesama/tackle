@@ -37,6 +37,7 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
   alias Tackle.Plugins.Catalog
+  alias Tackle.ProjectFiles
   alias Tackle.Skills
   alias Tackle.Skills.Skill
   alias Tackle.SystemPrompt
@@ -90,9 +91,12 @@ defmodule Tackle.Config do
     :watchdog,
     :narration,
     :decision_model,
-    :review
+    :review,
+    :agents
   ]
 
+  @project_config_file ".tackle/config.json"
+  @agent_setting_keys [:model, :thinking]
   @enforce_keys [:providers, :model_ref, :llm]
   defstruct providers: [],
             model_ref: nil,
@@ -114,7 +118,8 @@ defmodule Tackle.Config do
             watchdog: nil,
             narration: nil,
             decision_model: nil,
-            review: nil
+            review: nil,
+            agents: %{}
 
   @type t :: %__MODULE__{
           providers: [Provider.t()],
@@ -137,12 +142,25 @@ defmodule Tackle.Config do
           watchdog: Watchdog.t() | nil,
           narration: Narration.t() | nil,
           decision_model: Tackle.Lib.Decision.Selection.t() | nil,
-          review: Review.t() | nil
+          review: Review.t() | nil,
+          agents: %{optional(String.t()) => agent_settings()}
         }
 
+  @typedoc """
+  Settings that replace a subagent profile's own `model` and `thinking`; see
+  `Tackle.Coding`.
+  """
+  @type agent_settings :: %{optional(:model) => String.t(), optional(:thinking) => String.t()}
+
   @doc """
-  Loads session configuration from defaults, `config.json`, environment, and
-  explicit overrides, in that order.
+  Loads session configuration from defaults, `config.json`, the project's
+  `.tackle/config.json`, environment, and explicit overrides, in that order.
+
+  The project file is the nearest `.tackle/config.json` at or above the working
+  directory, stopping at the Git root (`Tackle.ProjectFiles`). It is read
+  through the session executor, layered over `$TACKLE_HOME/config.json` with
+  JSON objects merged recursively, and may not declare `providers`: it selects
+  models and settings among the providers the user configured.
 
   The supplied `:available_adapters` are executable modules chosen by the
   harness distribution. Alternatively, a trusted host can supply `:catalog`
@@ -185,16 +203,17 @@ defmodule Tackle.Config do
          {:ok, overrides} <- fetch_overrides(opts),
          {:ok, overrides} <- catalog_hooks(opts, overrides),
          {:ok, env} <- fetch_environment(opts),
+         {:ok, cwd} <- fetch_cwd(opts, Keyword.get(overrides, :context, %{})),
          {:ok, config_path} <- Tackle.Paths.config_file(env: env),
-         {:ok, file_opts} <- ConfigFile.load(config_path),
+         {:ok, project_file} <- read_project_config(cwd, overrides, config_path),
+         {:ok, file_opts} <- ConfigFile.load(config_path, project_file),
          {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
          {:ok, entries} <- Tackle.Plugins.merge_providers(adapters, accounts, declared),
          providers = Enum.map(entries, & &1.provider),
          {:ok, env_opts} <- environment_options(env),
          {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, providers),
          {:ok, session_opts} <- default_session_titles(session_opts),
-         {:ok, config} <- session_opts |> Keyword.put(:providers, providers) |> new(),
-         {:ok, cwd} <- fetch_cwd(opts, config.context) do
+         {:ok, config} <- session_opts |> Keyword.put(:providers, providers) |> new() do
       load_system_prompt(
         config,
         Keyword.get(session_opts, :system_prompt),
@@ -236,6 +255,11 @@ defmodule Tackle.Config do
   to show, and which built-in rules apply; see `Tackle.Config.Review`.
   The session context gets them under `:review_settings`, unless the host
   already put a `:review_settings` entry there.
+
+  Optional `:agents` maps subagent profile names to `t:agent_settings/0`,
+  which `Tackle.Coding` applies over the profiles' own `model` and `thinking`.
+  Model references are resolved eagerly, so unavailable models are errors even
+  for profile names that no discovered profile uses.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
@@ -252,6 +276,7 @@ defmodule Tackle.Config do
          {:ok, decision_model} <-
            resolve_decision_model(Keyword.get(opts, :decision_model), providers),
          {:ok, review} <- Review.new(Keyword.get(opts, :review), providers),
+         :ok <- validate_agents(Keyword.get(opts, :agents, %{}), providers),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
@@ -297,7 +322,8 @@ defmodule Tackle.Config do
          watchdog: watchdog,
          narration: narration,
          decision_model: decision_model,
-         review: review
+         review: review,
+         agents: Keyword.get(opts, :agents, %{})
        }}
     end
   end
@@ -500,6 +526,31 @@ defmodule Tackle.Config do
 
   defp validate_cwd(cwd) do
     if File.dir?(cwd), do: {:ok, cwd}, else: {:error, {:invalid_option, :cwd, cwd}}
+  end
+
+  # The project file lives in the workspace, so it is read through the session
+  # executor like `AGENTS.md`. Outside any Git repository the search can reach
+  # `$TACKLE_HOME` itself, whose config.json is the user file, not a project.
+  defp read_project_config(cwd, overrides, user_path) do
+    files =
+      ProjectFiles.new(executor: overrides |> Keyword.get(:context) |> Executor.from_context())
+
+    case ProjectFiles.nearest_project_file(files, cwd, @project_config_file) do
+      nil ->
+        {:ok, nil}
+
+      path ->
+        if ProjectFiles.same_dir?(Path.dirname(path), Path.dirname(user_path)),
+          do: {:ok, nil},
+          else: read_project_file(files, path)
+    end
+  end
+
+  defp read_project_file(files, path) do
+    case ProjectFiles.read(files, path) do
+      {:ok, contents} -> {:ok, {path, contents}}
+      {:error, reason} -> {:error, {:config_file_unreadable, path, reason}}
+    end
   end
 
   defp load_system_prompt(config, base, cwd, home, env, builtin_skills, instructions) do
@@ -789,6 +840,44 @@ defmodule Tackle.Config do
 
   defp resolve_decision_model(other, _providers),
     do: {:error, {:invalid_option, :decision_model, other}}
+
+  defp validate_agents(agents, providers) when is_map(agents) do
+    Enum.reduce_while(agents, :ok, fn {name, settings}, :ok ->
+      case validate_agent_settings(name, settings, providers) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:invalid_agent_settings, name, reason}}}
+      end
+    end)
+  end
+
+  defp validate_agents(agents, _providers), do: {:error, {:invalid_option, :agents, agents}}
+
+  defp validate_agent_settings(name, settings, providers) do
+    cond do
+      not is_binary(name) or name == "" ->
+        {:error, :invalid_name}
+
+      not is_map(settings) or Map.keys(settings) -- @agent_setting_keys != [] ->
+        {:error, {:invalid_settings, settings}}
+
+      true ->
+        with :ok <- validate_agent_model(settings, providers) do
+          validate_agent_thinking(settings)
+        end
+    end
+  end
+
+  defp validate_agent_model(%{model: model_ref}, providers) when is_binary(model_ref) do
+    with {:ok, _selection} <- LLM.select(providers, model_ref), do: :ok
+  end
+
+  defp validate_agent_model(%{model: model_ref}, _providers),
+    do: {:error, {:invalid_option, :model, model_ref}}
+
+  defp validate_agent_model(_settings, _providers), do: :ok
+
+  defp validate_agent_thinking(%{thinking: level}), do: Thinking.validate(level)
+  defp validate_agent_thinking(_settings), do: :ok
 
   # Tools reach decision models only through the session context. Only
   # providers whose adapter implements the decision contract are granted; each

@@ -6,7 +6,10 @@ defmodule Tackle.Coding do
   stages `review-detector` and `review-verifier` (used by `Tackle.Review`,
   not advertised to the root), are joined by profiles discovered from
   `$TACKLE_HOME/agents` and the nearest project `.tackle/agents` directory.
-  Project profiles override user profiles, which override built-ins. Profile
+  Project profiles override user profiles, which override built-ins. The
+  `agents` object of `config.json` or the project's `.tackle/config.json`
+  (`Tackle.Config`) then replaces a profile's `model` and `thinking` by name;
+  names without a discovered profile are ignored. Profile
   files may select only tools already available to the trusted root harness,
   plus the review output tools of `Tackle.Tools.review/0`.
   """
@@ -83,7 +86,9 @@ defmodule Tackle.Coding do
                catalog_tools ++ [Subagent, SubagentStatus, SubagentWait, SubagentCancel]
            ),
          {:ok, profiles} <-
-           build_profiles(discovery.definitions, config.tools, root_tools, loader_opts),
+           discovery.definitions
+           |> Enum.map(&apply_agent_settings(&1, config.agents))
+           |> build_profiles(config.tools, root_tools, loader_opts),
          {:ok, root_config} <- root_config(discovery.definitions, root_tools, loader_opts),
          {:ok, root_spec} <-
            AgentSpec.new(
@@ -175,6 +180,18 @@ defmodule Tackle.Coding do
 
   defp validate_discovery(%{warnings: warnings}) do
     {:error, {:invalid_agent_definitions, warnings}}
+  end
+
+  # `config.json` `agents` settings replace a profile's own model and thinking,
+  # so a user or project can retarget a profile without copying its file.
+  defp apply_agent_settings(%Definition{name: name} = definition, agents) do
+    settings = Map.get(agents, name, %{})
+
+    %{
+      definition
+      | model: Map.get(settings, :model, definition.model),
+        thinking: Map.get(settings, :thinking, definition.thinking)
+    }
   end
 
   defp build_profiles(definitions, default_tools, trusted_tools, loader_opts) do

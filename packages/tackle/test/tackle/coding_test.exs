@@ -434,6 +434,31 @@ defmodule Tackle.CodingTest do
     refute shared.config.system_prompt =~ "User prompt"
   end
 
+  test "config.json agents settings replace a profile's model and thinking", %{
+    opts: opts,
+    cwd: cwd
+  } do
+    home = opts[:env]["TACKLE_HOME"]
+    File.write!(Path.join(home, "config.json"), ~s({"agents": {"scout": {"thinking": "low"}}}))
+    File.mkdir_p!(Path.join(cwd, ".git"))
+
+    File.mkdir_p!(Path.join(cwd, ".tackle"))
+
+    File.write!(
+      Path.join([cwd, ".tackle", "config.json"]),
+      ~s({"agents": {"scout": {"model": "test/child"}, "absent": {"model": "test/child"}}})
+    )
+
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    scout = spec.profiles["scout"]
+    assert scout.config.model_ref == "test/child"
+    assert scout.model_source == :configured
+    assert Tackle.Thinking.from_llm_opts(scout.config.llm_opts) == "low"
+    assert spec.root_spec.config.model_ref == "test/echo"
+    assert spec.profiles["reviewer"].model_source == :parent
+    refute Map.has_key?(spec.profiles, "absent")
+  end
+
   test "invalid profile files and unavailable tools fail startup", %{opts: opts, cwd: cwd} do
     path = Path.join([cwd, ".tackle", "agents", "bad.md"])
     write_agent(path, "bad", "Bad profile", "Prompt", "tools: invented\n")

@@ -1,7 +1,7 @@
 defmodule Tackle.ProjectFiles do
   @moduledoc """
   Host-side access to project files such as `AGENTS.md`, `.agents/skills`,
-  `.tackle/agents`, and saved workflows.
+  `.tackle/agents`, `.tackle/config.json`, and saved workflows.
 
   The harness accesses these files itself, outside the agent's tools. With a jailed
   executor, jailed code can write anywhere in the workspace, so a path inside
@@ -67,30 +67,70 @@ defmodule Tackle.ProjectFiles do
   without one it stops at the filesystem root. All probes use this router.
   """
   @spec nearest_project_dir(t(), Path.t(), Path.t()) :: Path.t() | nil
-  def nearest_project_dir(files, cwd, relative_dir) do
+  def nearest_project_dir(files, cwd, relative_dir),
+    do: nearest_project_path(files, cwd, relative_dir, &dir?/2)
+
+  @doc """
+  Finds the nearest existing regular file at `relative_path` at or above `cwd`
+  (for example `.tackle/config.json`), with the same search bounds as
+  `nearest_project_dir/3`.
+  """
+  @spec nearest_project_file(t(), Path.t(), Path.t()) :: Path.t() | nil
+  def nearest_project_file(files, cwd, relative_path),
+    do: nearest_project_path(files, cwd, relative_path, &regular?/2)
+
+  defp nearest_project_path(files, cwd, relative_path, found?) do
     cwd = Path.expand(cwd)
-    nearest_dir(files, cwd, relative_dir, git_root(files, cwd))
+    nearest_path(files, cwd, relative_path, found?, git_root(files, cwd))
   end
 
-  defp nearest_dir(files, dir, relative_dir, boundary) do
-    candidate = Path.join(dir, relative_dir)
+  defp nearest_path(files, dir, relative_path, found?, boundary) do
+    candidate = Path.join(dir, relative_path)
     parent = Path.dirname(dir)
 
     cond do
-      dir?(files, candidate) -> candidate
+      found?.(files, candidate) -> candidate
       dir == parent or dir == boundary -> nil
-      true -> nearest_dir(files, parent, relative_dir, boundary)
+      true -> nearest_path(files, parent, relative_path, found?, boundary)
     end
   end
 
-  defp git_root(files, dir) do
+  @doc """
+  Returns the nearest directory at or above `dir` containing `.git`, or `nil`
+  outside a Git repository. All probes use this router.
+  """
+  @spec git_root(t(), Path.t()) :: Path.t() | nil
+  def git_root(files, dir), do: find_git_root(files, Path.expand(dir))
+
+  defp find_git_root(files, dir) do
     parent = Path.dirname(dir)
 
     cond do
       exists?(files, Path.join(dir, ".git")) -> dir
       dir == parent -> nil
-      true -> git_root(files, parent)
+      true -> find_git_root(files, parent)
     end
+  end
+
+  @doc """
+  Returns whether two paths name the same directory, by expanded path or by
+  file identity on the host.
+
+  Outside a Git repository the project search can reach `$TACKLE_HOME` itself
+  (`~/.tackle`), whose files are the user's, not a project's. Comparing
+  identity as well as text also recognises a symlinked home directory
+  (`/home` -> `/var/home`).
+  """
+  @spec same_dir?(Path.t(), Path.t()) :: boolean()
+  def same_dir?(a, b) do
+    Path.expand(a) == Path.expand(b) or
+      case {File.stat(a), File.stat(b)} do
+        {{:ok, x}, {:ok, y}} ->
+          {x.major_device, x.minor_device, x.inode} == {y.major_device, y.minor_device, y.inode}
+
+        _ ->
+          false
+      end
   end
 
   @doc "Returns the type of a path, following symlinks."

@@ -88,34 +88,11 @@ defmodule Tackle.CLI.MCP.Config do
     with {:ok, home} <- Tackle.Paths.home() do
       dir =
         ProjectFiles.nearest_project_dir(files, cwd, ".tackle") ||
-          Path.join(git_root(files, cwd) || cwd, ".tackle")
+          Path.join(ProjectFiles.git_root(files, cwd) || cwd, ".tackle")
 
-      if same_dir?(dir, home),
+      if ProjectFiles.same_dir?(dir, home),
         do: :none,
         else: {:ok, %{path: Path.join(dir, "mcp.json"), root: Path.dirname(dir), files: files}}
-    end
-  end
-
-  # Compares by identity as well as by text, so a symlinked home directory
-  # (`/home` -> `/var/home`) is still recognised as `$TACKLE_HOME`.
-  defp same_dir?(a, b) do
-    Path.expand(a) == Path.expand(b) or
-      case {File.stat(a), File.stat(b)} do
-        {{:ok, x}, {:ok, y}} ->
-          {x.major_device, x.minor_device, x.inode} == {y.major_device, y.minor_device, y.inode}
-
-        _ ->
-          false
-      end
-  end
-
-  defp git_root(files, dir) do
-    parent = Path.dirname(dir)
-
-    cond do
-      ProjectFiles.exists?(files, Path.join(dir, ".git")) -> dir
-      dir == parent -> nil
-      true -> git_root(files, parent)
     end
   end
 

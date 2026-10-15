@@ -406,7 +406,10 @@ from `$TACKLE_HOME/agents/**/*.md` and the nearest project
 `.tackle/agents/**/*.md` directory. Project definitions override user and
 built-in definitions by name. Definitions configure the agent prompt, trusted
 tool subset, model/thinking, timeout, iteration bound, advertisement, and
-optional bounded delegation. See the harness guide's
+optional bounded delegation. To change only a profile's model or thinking
+level, set it under `agents` in `$TACKLE_HOME/config.json` or the project's
+`.tackle/config.json`, for example
+`{"agents": {"worker": {"model": "openai-codex/gpt-5.5"}}}`. See the harness guide's
 [configured subagent documentation](../../packages/tackle/README.md#configured-subagents) for
 the file format and security boundaries.
 
