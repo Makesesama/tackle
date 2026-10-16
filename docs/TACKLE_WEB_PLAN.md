@@ -1,7 +1,8 @@
 # tackle_web plan: forge review bot
 
-**Status: plan; phase 1 (the app skeleton and its packaging, §8) is
-implemented in `apps/tackle_web` and `nix/`, the rest is not.** This document is a handoff: it should be enough to start without the conversation
+**Status: plan; phases 1 (the app skeleton and its packaging) and 2
+(forges and webhooks) of §8 are implemented in `apps/tackle_web` and
+`nix/`, the rest is not.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -166,7 +167,8 @@ place and passes the result to `Tackle.Review.run/2`.
 
 - `ReviewRequest`: `repository`, `pull_number`, `head_sha`, `base_sha`,
   `base_ref`, `head_is_fork`, `trigger` (`:command` | `:opened` | `:pushed`),
-  `profile` (the command's, or nil), `requested_by` (forge login), `status`
+  `profile` (the profile the review uses, resolved when the request is
+  made: the command's, or the repository's), `requested_by` (forge login), `status`
   (`:pending` | `:running` | `:reviewed` | `:posted` | `:failed` |
   `:skipped`), `error`, `forge_review_id` (when posted). `:reviewed` means
   the run and its findings are stored but not yet posted, so a retry posts
@@ -232,9 +234,20 @@ exists so a later Gitea module does not touch the rest of the app.
   existing review by the app whose body contains `marker`, for idempotent
   posting (§7.5.1).
 - `bot_login(forge_app)` → the login the app comments as. GitHub:
-  `"<slug>[bot]"`, with the slug from `GET /app`, cached in memory.
+  `"<slug>[bot]"`, with the slug from `GET /app`, cached in memory. Not
+  needed to ignore the app's own comments (§7.7); add it with posting
+  (phase 5) only if `find_review` needs it.
 - `feedback(installation, repo, number)` → resolved threads, replies, and
-  reactions on our comments (phase 6).
+  reactions on our comments (phase 7).
+
+Phase 2 implemented `verify_webhook/3`, `pull_request/4`, and
+`can_trigger?/4` (the forge app is the first argument of the API calls) in
+`Tackle.Web.Forge`, with `Tackle.Web.Forge.Event` as the forge-neutral
+form of a delivery; the other callbacks are added with their phases. An
+event about a repository also records its installation when it is new:
+a GitHub App installation belongs to one account, which owns every
+repository it covers, so the repository's owner is the installation's
+account.
 
 **GitHub implementation**: a GitHub App installed on the company
 organisation. App JWT (RS256, `iat`/`exp` ≤ 10 minutes, `iss` = app id)
@@ -472,7 +485,8 @@ same head twice; the posting step is idempotent on its own (§7.5.1).
   posted again; mention it as still present in the body instead.
 
 **Idempotent posting.** The body carries a hidden marker,
-`<!-- tackle-review:<request id> -->`. Before posting, `find_review/4`
+`<!-- tackle-review:<run id> -->` (the run's, not the request's: a request
+that runs again posts a new review). Before posting, `find_review/4`
 looks for a review by the app with that marker; when one exists (an earlier
 attempt posted, then failed before recording it, or the response was lost),
 record its id and set `:posted` instead of posting again.
@@ -519,8 +533,13 @@ Two ways to start a review, as other review bots offer them:
   optionally followed by a profile (`quiet`, `default`, `assertive`), from a
   user with write access → upsert a `ReviewRequest` (`trigger: :command`)
   for the pull request's current head. Works on any enabled repository,
-  whatever its `auto_review`, and on forks and drafts. Ignore comments by the
-  app's own bot user (`bot_login/1`, §7.1) and edited comments.
+  whatever its `auto_review`, and on forks and drafts. Ignore edited
+  comments and comments by bots (the author's type), which covers the
+  app's own without an API call. The comment carries no head SHA, and
+  the write-access check is an API call, so the webhook only queues a
+  `Tackle.Web.Triggers.CommandJob` (Oban queue `forge`), which checks the
+  permission, reads the pull request's current head, and makes the
+  request.
 - **Automatic review of new pull requests.** With `auto_review: :on_open`,
   `pull_request` `opened`, `reopened`, and `ready_for_review` → a request
   (`trigger: :opened`). With `:on_open_and_push`, also `synchronize` (new
@@ -538,9 +557,12 @@ repositories.
 Limits:
 
 - the uniqueness of (repository, pull request, head SHA) makes redelivered
-  webhooks and a command after an automatic review of the same head no-ops
-  (a command with a different profile on the same head may re-run; decide in
-  phase 2 and document it);
+  webhooks and a command after an automatic review of the same head no-ops.
+  Decided in phase 2: a head's request runs again when a command asks for
+  it after it failed or was skipped, or after it was posted with a
+  different profile, and when an automatic trigger (a pull request
+  reopened) finds it skipped;
+- closing a pull request skips its pending requests;
 - a newer head supersedes pending requests for older heads of the same pull
   request (mark them `:skipped`), so a burst of pushes reviews only the last;
   their already enqueued jobs end at the status check (§7.5). A review

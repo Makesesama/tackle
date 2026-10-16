@@ -130,7 +130,7 @@
               credo = {
                 enable = true;
                 package = pkgs.elixir;
-                entry = "${pkgs.bash}/bin/bash -c 'cd packages/tackle && mix credo --strict && cd ../tackle_review && mix credo --strict && cd ../tackle_tools && mix credo --strict && cd ../../apps/tackle_web && exec mix credo --strict'";
+                entry = "${pkgs.bash}/bin/bash -c 'cd packages/tackle && mix credo --strict && cd ../tackle_review && mix credo --strict && cd ../tackle_tools && mix credo --strict && cd ../../apps/tackle_web && mix format --check-formatted && exec mix credo --strict'";
                 pass_filenames = false;
               };
               # dialyzer.enable = true;

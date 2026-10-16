@@ -8,6 +8,11 @@
     enable = true;
     package = pkgs.elixir;
   };
+  # Formatted with its own .formatter.exs, which imports the formatter
+  # settings of Ash, Phoenix, and Plug and runs Spark's plugin; the
+  # repository-level formatter would add parentheses to every DSL call. The
+  # credo pre-commit hook checks it with `mix format --check-formatted`.
+  settings.formatter.mix-format.excludes = [ "apps/tackle_web/**" ];
 
   programs.nixfmt = {
     enable = true;

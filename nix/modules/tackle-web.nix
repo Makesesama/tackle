@@ -31,6 +31,71 @@ let
 
   # "/var/lib/x/" and "/var/lib/x" name the same directory.
   dir = path: lib.removeSuffix "/" path;
+
+  # The environment config/runtime.exs reads, besides the secrets in
+  # `environmentFile`.
+  serviceEnvironment = {
+    LISTEN_ADDRESS = cfg.listenAddress;
+    PORT = toString cfg.port;
+    TACKLE_WEB_URL = cfg.url;
+    TACKLE_WEB_STATE_DIR = cfg.stateDir;
+    HOME = cfg.homeDir;
+    LANG = "C.UTF-8";
+    # The release's own temporary files; the store copy is read-only.
+    RELEASE_TMP = "/run/tackle-web";
+    # One node, no Erlang distribution: nothing listens for other nodes,
+    # so the fixed cookie (the package ships none) protects nothing.
+    RELEASE_DISTRIBUTION = "none";
+    RELEASE_COOKIE = "tackle-web-no-distribution";
+  }
+  // lib.optionalAttrs cfg.database.createLocally {
+    TACKLE_WEB_DATABASE_SOCKET_DIR = "/run/postgresql";
+    TACKLE_WEB_DATABASE = database;
+    TACKLE_WEB_DATABASE_USER = user;
+  };
+
+  # `tackle-web-release eval "..."` runs the release's commands as the
+  # service user with the service's environment and secrets, beside the
+  # running service, for tasks such as
+  # `Tackle.Web.Release.configure_github_app()`. It runs them as a transient
+  # systemd unit, so systemd reads `environmentFile` exactly as it does for
+  # the service. The caller's TACKLE_WEB_GITHUB_* variables are passed on.
+  releaseCommand = pkgs.writeShellApplication {
+    name = "tackle-web-release";
+    runtimeInputs = [
+      pkgs.coreutils
+      config.systemd.package
+    ];
+    text = ''
+      if [[ "$(id -u)" != 0 ]]; then
+        echo "tackle-web-release: run as root; it starts a unit as ${user}" >&2
+        exit 1
+      fi
+
+      # `--setenv=NAME` takes the value from this environment.
+      passed=()
+      for name in "''${!TACKLE_WEB_GITHUB_@}"; do
+        passed+=("--setenv=$name")
+      done
+
+      exec systemd-run --quiet --collect --wait --pipe \
+        --service-type=exec \
+        --uid=${user} --gid=${user} \
+        --property=EnvironmentFile=${lib.escapeShellArg cfg.environmentFile} \
+        --property=WorkingDirectory=${lib.escapeShellArg cfg.homeDir} \
+        --property=RuntimeDirectory=tackle-web-release \
+        ${
+          lib.concatStringsSep " " (
+            lib.mapAttrsToList (name: value: "--setenv=${lib.escapeShellArg "${name}=${value}"}") (
+              serviceEnvironment // { RELEASE_TMP = "/run/tackle-web-release"; }
+            )
+          )
+        } \
+        "''${passed[@]}" \
+        ${cfg.package}/bin/tackle_web "$@"
+    '';
+  };
+
   # Peer authentication maps the system user to the database role of the same
   # name, and `ensureDBOwnership` needs a database of that name too.
   database = user;
@@ -127,6 +192,8 @@ in
       }
     ];
 
+    environment.systemPackages = [ releaseCommand ];
+
     users.users.${user} = {
       isSystemUser = true;
       group = user;
@@ -159,25 +226,7 @@ in
       after = [ "network-online.target" ] ++ lib.optional cfg.database.createLocally "postgresql.target";
       requires = lib.optional cfg.database.createLocally "postgresql.target";
 
-      environment = {
-        LISTEN_ADDRESS = cfg.listenAddress;
-        PORT = toString cfg.port;
-        TACKLE_WEB_URL = cfg.url;
-        TACKLE_WEB_STATE_DIR = cfg.stateDir;
-        HOME = cfg.homeDir;
-        LANG = "C.UTF-8";
-        # The release's own temporary files; the store copy is read-only.
-        RELEASE_TMP = "/run/tackle-web";
-        # One node, no Erlang distribution: nothing listens for other nodes,
-        # so the fixed cookie (the package ships none) protects nothing.
-        RELEASE_DISTRIBUTION = "none";
-        RELEASE_COOKIE = "tackle-web-no-distribution";
-      }
-      // lib.optionalAttrs cfg.database.createLocally {
-        TACKLE_WEB_DATABASE_SOCKET_DIR = "/run/postgresql";
-        TACKLE_WEB_DATABASE = database;
-        TACKLE_WEB_DATABASE_USER = user;
-      };
+      environment = serviceEnvironment;
 
       serviceConfig = {
         Type = "exec";

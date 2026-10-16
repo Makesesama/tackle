@@ -8,5 +8,6 @@ defmodule Tackle.Web.Reviews do
   use Ash.Domain, otp_app: :tackle_web
 
   resources do
+    resource Tackle.Web.Reviews.ReviewRequest
   end
 end

@@ -39,7 +39,9 @@ config :tackle_web, Tackle.Web.Endpoint,
   render_errors: [formats: [json: Tackle.Web.ErrorJSON], layout: false],
   pubsub_server: Tackle.Web.PubSub
 
-# Reviews run one or two at a time (docs/TACKLE_WEB_PLAN.md §7.5). Lifeline
+# Reviews run one or two at a time (docs/TACKLE_WEB_PLAN.md §7.5); `forge`
+# runs the forge API calls that webhooks must not wait for, such as review
+# commands' permission checks. Lifeline
 # retries jobs orphaned by a crash or restart; the review job then decides
 # from the request's status what is left to do. Lifeline cannot tell an
 # orphaned job from a slow one, so `rescue_after` must stay longer than the
@@ -47,7 +49,7 @@ config :tackle_web, Tackle.Web.Endpoint,
 config :tackle_web, Oban,
   engine: Oban.Engines.Basic,
   repo: Tackle.Web.Repo,
-  queues: [reviews: 1],
+  queues: [reviews: 1, forge: 5],
   plugins: [
     {Oban.Plugins.Lifeline, rescue_after: :timer.minutes(30)},
     {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7}

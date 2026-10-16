@@ -189,9 +189,9 @@ Burrito, or lint commands for tooling that has not been wired up.
   bundled delegation tools and the catalog tools granted to the root agent.
 - `apps/tackle_web/`: Phoenix/Ash web app (`Tackle.Web.*`, `:tackle_web`)
   that will review forge pull requests with `tackle_review`; built in phases
-  from `docs/TACKLE_WEB_PLAN.md`, currently the skeleton. It depends on the
-  packages, not the harness, and keeps Ash, Oban, Cloak, and PostgreSQL to
-  itself. Its tests need a PostgreSQL server (see its README). Packaged as
+  from `docs/TACKLE_WEB_PLAN.md`, currently through phase 2 (forges and
+  webhooks). It depends on the packages, not the harness, and keeps Ash,
+  Oban, Cloak, and PostgreSQL to itself. Its tests need a PostgreSQL server (see its README). Packaged as
   `.#tackle-web` (`nix/packages/tackle-web.nix`) and run by the NixOS
   module `nixosModules.tackle-web` (`nix/modules/tackle-web.nix`).
 - `apps/etackle/`: Emacs client for the Tackle SDK wire protocol

@@ -11,6 +11,7 @@ defmodule Tackle.Web.Application do
       Tackle.Web.Vault,
       Tackle.Web.Repo,
       {Oban, oban_config()},
+      Tackle.Web.Forge.GitHub.TokenCache,
       {Phoenix.PubSub, name: Tackle.Web.PubSub},
       Endpoint
     ]

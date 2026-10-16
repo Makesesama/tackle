@@ -8,5 +8,8 @@ defmodule Tackle.Web.Forges do
   use Ash.Domain, otp_app: :tackle_web
 
   resources do
+    resource Tackle.Web.Forges.ForgeApp
+    resource Tackle.Web.Forges.Installation
+    resource Tackle.Web.Forges.Repository
   end
 end

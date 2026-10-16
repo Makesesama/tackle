@@ -1,12 +1,13 @@
 # tackle_web
 
-**Status: phase 1 of [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
+**Status: phases 1 and 2 of [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
-findings to the forge. So far it is only the skeleton: a Phoenix endpoint
-with a health check, the PostgreSQL repository, the Cloak vault, Oban, and
-the empty Ash domains, packaged for Nix with a NixOS module. It cannot
-review anything yet; the plan lists what each phase adds.
+findings to the forge. So far it receives GitHub webhooks: it keeps track
+of the GitHub App's installations and repositories, and turns pull request
+events and `/tackle review` commands into review requests according to
+each repository's settings. Nothing runs those requests yet (phase 4); the
+plan lists what each phase adds.
 
 OTP application `:tackle_web`, namespace `Tackle.Web.*`. It depends on the
 packages (`tackle_lib`, `tackle_runtime`, `tackle_review`, `tackle_tools`,
@@ -123,8 +124,71 @@ reverse proxy in front of it. Erlang distribution is off. The user's home
 directory (`stateDir`, `/var/lib/tackle-web`), which later phases need for
 the review jail.
 
-The VM test starts the service with PostgreSQL and checks its health
+`tackle-web-release` (installed by the module) runs the release's
+commands beside the running service, as a transient systemd unit with the
+service's user, environment, and `environmentFile`; run it as root. It
+passes on the caller's `TACKLE_WEB_GITHUB_*` variables and nothing else:
+
+```sh
+sudo tackle-web-release eval "Tackle.Web.Release.migrate()"
+```
+
+The VM test starts the service with PostgreSQL, checks its health, stores
+a GitHub App through `tackle-web-release`, and delivers a signed webhook
 (needs KVM): `nix build .#checks.x86_64-linux.tackle-web-vm`.
+
+## Connecting a GitHub App
+
+Reviews run as a GitHub App that you create for your organisation
+(Settings → Developer settings → GitHub Apps → New GitHub App):
+
+- **Webhook URL:** `<TACKLE_WEB_URL>/webhooks/github`, with a random
+  webhook secret (`openssl rand -hex 32`).
+- **Repository permissions:** Metadata read, Contents read, Pull requests
+  read and write, Issues read (only to receive comments on pull requests).
+- **Organisation permissions:** Members read (for sign-in, later).
+- **Events:** Pull request, Issue comment. Installation events are always
+  delivered.
+
+Generate a private key for the App, then store the App in tackle_web.
+Secrets are read from files, so they stay out of the process list and
+shell history, and are stored encrypted. The command runs as the
+`tackle-web` user, which must be able to read the files; remove them
+afterwards:
+
+```sh
+sudo install -d -m 0700 -o tackle-web /var/lib/tackle-web-home/setup
+sudo install -m 0400 -o tackle-web app.private-key.pem webhook-secret \
+  /var/lib/tackle-web-home/setup/
+sudo TACKLE_WEB_GITHUB_APP_ID=123456 \
+  TACKLE_WEB_GITHUB_PRIVATE_KEY_FILE=/var/lib/tackle-web-home/setup/app.private-key.pem \
+  TACKLE_WEB_GITHUB_WEBHOOK_SECRET_FILE=/var/lib/tackle-web-home/setup/webhook-secret \
+  tackle-web-release eval "Tackle.Web.Release.configure_github_app()"
+sudo rm -r /var/lib/tackle-web-home/setup
+```
+
+`TACKLE_WEB_GITHUB_CLIENT_ID` and `TACKLE_WEB_GITHUB_CLIENT_SECRET_FILE`
+(for sign-in, later) are optional. Running the command again replaces the
+stored App. Until it has run, webhooks are answered with 503.
+
+Then install the App on the organisation. Its repositories are recorded as
+the installation and repository events arrive, disabled by default. Until
+the admin pages exist (phase 6), repository settings are changed in the
+database or with `Tackle.Web.Forges.Repository.configure/2`, and the
+installation's defaults with `Tackle.Web.Forges.Installation.set_defaults/2`.
+
+What happens with a pull request (`Tackle.Web.Triggers`):
+
+- `/tackle review [quiet|default|assertive]` in a comment, from someone with
+  write access, requests a review of the current head in any enabled
+  repository.
+- Repositories with `auto_review: :on_open` request one when a pull
+  request is opened, reopened, or ready for review; `:on_open_and_push`
+  also for every new head. Drafts and forks only with `auto_review_drafts`
+  and `auto_review_forks`.
+- A head is requested once. A command asks again after a failure, or for a
+  posted review with another profile. A new head skips the pending requests
+  for older ones; closing a pull request skips its pending requests.
 
 ## JSON
 

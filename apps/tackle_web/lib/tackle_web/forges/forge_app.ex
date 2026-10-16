@@ -1,0 +1,97 @@
+defmodule Tackle.Web.Forges.ForgeApp do
+  @moduledoc """
+  The app's integration with one forge: for GitHub, the GitHub App the
+  reviews run as (docs/TACKLE_WEB_PLAN.md §7.1). One row per forge.
+
+  The private key, webhook secret, and OAuth client secret are encrypted
+  with `Tackle.Web.Vault` (AshCloak) and sensitive. Actions accept them as
+  arguments; reading them back needs an explicit load of the matching
+  calculation (`:private_key`, `:webhook_secret`, `:client_secret`), which
+  only the forge modules do.
+  """
+
+  use Ash.Resource,
+    otp_app: :tackle_web,
+    domain: Tackle.Web.Forges,
+    data_layer: AshPostgres.DataLayer,
+    extensions: [AshCloak]
+
+  postgres do
+    table "forge_apps"
+    repo Tackle.Web.Repo
+  end
+
+  cloak do
+    vault Tackle.Web.Vault
+    attributes [:private_key, :webhook_secret, :client_secret]
+  end
+
+  code_interface do
+    define :configure, args: [:forge]
+    define :get, action: :read, get_by: [:forge], not_found_error?: false
+  end
+
+  actions do
+    defaults [:read]
+
+    # Creates the forge's row or replaces its settings and secrets.
+    create :configure do
+      accept [:forge, :app_id, :client_id, :private_key, :webhook_secret, :client_secret]
+      upsert? true
+      upsert_identity :unique_forge
+
+      upsert_fields [
+        :app_id,
+        :client_id,
+        :encrypted_private_key,
+        :encrypted_webhook_secret,
+        :encrypted_client_secret,
+        :updated_at
+      ]
+    end
+  end
+
+  attributes do
+    uuid_primary_key :id
+
+    attribute :forge, :atom do
+      allow_nil? false
+      public? true
+      constraints one_of: [:github]
+    end
+
+    # GitHub: the App ID, the `iss` of the app's JWTs.
+    attribute :app_id, :string do
+      allow_nil? false
+      public? true
+    end
+
+    # GitHub: the App's OAuth client id, for sign-in (phase 6).
+    attribute :client_id, :string do
+      public? true
+    end
+
+    # PEM; signs the app's JWTs.
+    attribute :private_key, :string do
+      allow_nil? false
+      sensitive? true
+    end
+
+    # Signs webhook deliveries (X-Hub-Signature-256).
+    attribute :webhook_secret, :string do
+      allow_nil? false
+      sensitive? true
+    end
+
+    # The App's OAuth client secret, for sign-in (phase 6).
+    attribute :client_secret, :string do
+      sensitive? true
+    end
+
+    timestamps()
+  end
+
+  identities do
+    identity :unique_forge, [:forge]
+  end
+end

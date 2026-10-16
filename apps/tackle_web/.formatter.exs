@@ -7,7 +7,8 @@
     :ash_phoenix,
     :ecto,
     :ecto_sql,
-    :phoenix
+    :phoenix,
+    :plug
   ],
   subdirectories: ["priv/*/migrations"],
   plugins: [Spark.Formatter],
