@@ -15,20 +15,29 @@ package `packages/tackle`.
 
 ## Development
 
-Inside `nix develop` (which provides PostgreSQL), from this directory:
+Development and tests use a PostgreSQL server (16 or later) on
+`localhost:5432` as `postgres`/`postgres`, and create the `tackle_web_dev`
+and `tackle_web_test` databases themselves. The standard `PGHOST`,
+`PGPORT`, `PGUSER`, and `PGPASSWORD` variables point them elsewhere. From
+this directory, inside `nix develop`:
 
 ```sh
-bash scripts/db.sh start    # local cluster in .postgres/, Unix socket only
 mix setup                   # deps.get, create the database, migrate
 mix phx.server              # http://127.0.0.1:4000/health
 mix test                    # creates and migrates the test database first
+```
+
+Without such a server, `scripts/db.sh` runs a throwaway cluster from the
+dev shell's PostgreSQL in `.postgres/`, on a Unix socket only:
+
+```sh
+bash scripts/db.sh start
+export TACKLE_WEB_PGHOST=$PWD/.postgres   # as the script prints
 bash scripts/db.sh stop
 ```
 
-The cluster trusts local connections as `postgres` and listens on no TCP
-port. Set `TACKLE_WEB_PGHOST` to use another socket directory, for both the
-script and the app. If `idna` or another rebar3 dependency fails to build,
-set `MIX_REBAR3=$(which rebar3)`.
+If `idna` or another rebar3 dependency fails to build, set
+`MIX_REBAR3=$(which rebar3)`.
 
 Checks, as for the other projects:
 

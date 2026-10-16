@@ -1,11 +1,9 @@
 import Config
 
-# The local cluster from `scripts/db.sh start`, or TACKLE_WEB_PGHOST. The
-# MIX_TEST_PARTITION suffix keeps partitioned test runs apart.
+# The connection is set in config/config.exs (localhost:5432 by default).
+# The MIX_TEST_PARTITION suffix keeps partitioned test runs apart.
 config :tackle_web, Tackle.Web.Repo,
-  username: "postgres",
   database: "tackle_web_test#{System.get_env("MIX_TEST_PARTITION")}",
-  socket_dir: System.get_env("TACKLE_WEB_PGHOST", Path.expand("../.postgres", __DIR__)),
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 

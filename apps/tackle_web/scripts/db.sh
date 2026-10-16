@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# A PostgreSQL cluster for development and tests, under apps/tackle_web/.postgres.
+# A PostgreSQL cluster for development and tests, under apps/tackle_web/.postgres,
+# for when no server runs on localhost:5432 (the default in config/config.exs).
 #
 #   scripts/db.sh start    initialise (first time) and start the cluster
 #   scripts/db.sh stop     stop it
 #   scripts/db.sh status   report whether it runs
 #
 # The cluster listens only on a Unix socket in that directory (no TCP port)
-# and trusts local connections as the `postgres` user, which is what
-# config/dev.exs and config/test.exs expect. Needs `initdb` and `pg_ctl` on
-# PATH, as the Nix development shell provides. TACKLE_WEB_PGHOST chooses
-# another directory.
+# and trusts local connections as the `postgres` user. Point the app at it
+# with `export TACKLE_WEB_PGHOST=<that directory>`, as `start` prints; the
+# script uses the same variable to choose another directory. Needs `initdb`
+# and `pg_ctl` on PATH, as the Nix development shell provides.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -36,6 +37,7 @@ case ${1:-} in
       pg_ctl start --pgdata="$data" --log="$dir/postgres.log" --wait \
         --options="-c listen_addresses='' -k '$dir'"
     fi
+    echo "db.sh: use it with: export TACKLE_WEB_PGHOST=$dir"
     ;;
   stop)
     if pg_ctl status --pgdata="$data" > /dev/null 2>&1; then

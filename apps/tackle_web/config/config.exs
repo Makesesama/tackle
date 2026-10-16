@@ -11,6 +11,28 @@ config :tackle_web,
 
 config :tackle_web, Tackle.Web.Repo, migration_timestamps: [type: :utc_datetime_usec]
 
+# Development and tests connect to a PostgreSQL server on localhost:5432 as
+# postgres/postgres; the standard PGHOST, PGPORT, PGUSER, and PGPASSWORD
+# override that. TACKLE_WEB_PGHOST instead selects the Unix socket directory
+# of a cluster from scripts/db.sh. Production is configured in runtime.exs.
+if config_env() in [:dev, :test] do
+  connection =
+    case System.get_env("TACKLE_WEB_PGHOST") do
+      nil ->
+        [
+          hostname: System.get_env("PGHOST", "localhost"),
+          port: String.to_integer(System.get_env("PGPORT", "5432")),
+          username: System.get_env("PGUSER", "postgres"),
+          password: System.get_env("PGPASSWORD", "postgres")
+        ]
+
+      socket_dir ->
+        [socket_dir: socket_dir, username: "postgres"]
+    end
+
+  config :tackle_web, Tackle.Web.Repo, connection
+end
+
 config :tackle_web, Tackle.Web.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],

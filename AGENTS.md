@@ -96,8 +96,8 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd apps/tackle_cli && mix format --check-formatted)
 (cd apps/tackle_cli && mix escript.build)
 
-# Web review app (needs PostgreSQL from the dev shell and MIX_REBAR3)
-(cd apps/tackle_web && bash scripts/db.sh start)
+# Web review app (PostgreSQL on localhost:5432 as postgres/postgres, or PG*
+# variables, or scripts/db.sh; see its README; needs MIX_REBAR3)
 (cd apps/tackle_web && mix deps.get)
 (cd apps/tackle_web && mix compile --warnings-as-errors && mix test)
 (cd apps/tackle_web && mix format --check-formatted && mix credo --strict)
@@ -187,7 +187,7 @@ Burrito, or lint commands for tooling that has not been wired up.
   that will review forge pull requests with `tackle_review`; built in phases
   from `docs/TACKLE_WEB_PLAN.md`, currently the skeleton. It depends on the
   packages, not the harness, and keeps Ash, Oban, Cloak, and PostgreSQL to
-  itself. Its tests need the local cluster from `scripts/db.sh`.
+  itself. Its tests need a PostgreSQL server (see its README).
 - `apps/etackle/`: Emacs client for the Tackle SDK wire protocol
   (`packages/tackle_sdk/PROTOCOL.md`), speaking ndjson JSON-RPC over stdio to
   `tackle sdk`. Plain Emacs Lisp (Emacs 28.1+), not a Mix project; see its

@@ -1,11 +1,8 @@
 import Config
 
-# The local cluster from `scripts/db.sh start`: Unix socket only, trust
-# authentication, under this directory. TACKLE_WEB_PGHOST points elsewhere.
+# The connection is set in config/config.exs (localhost:5432 by default).
 config :tackle_web, Tackle.Web.Repo,
-  username: "postgres",
   database: "tackle_web_dev",
-  socket_dir: System.get_env("TACKLE_WEB_PGHOST", Path.expand("../.postgres", __DIR__)),
   show_sensitive_data_on_connection_error: true,
   stacktrace: true,
   pool_size: 10
