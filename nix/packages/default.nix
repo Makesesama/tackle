@@ -54,6 +54,7 @@ let
       (projectFiles ../../packages/tackle_workflow)
       (projectFiles ../../packages/clipboard_ex)
       (projectFiles ../../packages/gix_ex)
+      (projectFiles ../../packages/yaml_frontmatter)
       (projectFiles ../../apps/tackle_cli)
       # Listed unconditionally because `mix.exs` reads it: a source copy without it
       # must fail at evaluation here, not inside the build.
@@ -226,6 +227,9 @@ let
       tackle_lib = prev.tackle_lib.override { src = "${src}/packages/tackle_lib"; };
       tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
       tackle_exec = prev.tackle_exec.override { src = "${src}/packages/tackle_exec"; };
+      yaml_frontmatter = prev.yaml_frontmatter.override {
+        src = "${src}/packages/yaml_frontmatter";
+      };
       tackle_codex = prev.tackle_codex.override { src = "${src}/packages/tackle_codex"; };
       tackle_deepseek = prev.tackle_deepseek.override { src = "${src}/packages/tackle_deepseek"; };
       tackle_anthropic = prev.tackle_anthropic.override { src = "${src}/packages/tackle_anthropic"; };

@@ -689,6 +689,7 @@ let
               tackle_runtime
               tackle_exec
               gix_ex
+              yaml_frontmatter
             ];
           };
         in
@@ -941,6 +942,19 @@ let
               pkg = "ucwidth";
               sha256 = "c1efd1798b8eeb11fb2bec3cafa3dd9c0c3647bee020543f0340b996177355bf";
             };
+          };
+        in
+        drv;
+
+      yaml_frontmatter =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "yaml_frontmatter";
+
+            src = ../packages/yaml_frontmatter;
+
           };
         in
         drv;

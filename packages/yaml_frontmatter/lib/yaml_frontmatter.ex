@@ -1,10 +1,11 @@
-defmodule Tackle.Lib.Frontmatter do
+defmodule YamlFrontmatter do
   @moduledoc """
   A deliberately small parser for the YAML front matter of Markdown files,
-  such as agent skills (`SKILL.md`), agent definitions, and review rules.
+  such as `SKILL.md` files, agent definitions, or rule files.
 
-  These files only need flat `key: value` entries, quoted scalars, and block
-  scalars, so a full YAML dependency is avoided. Unknown keys are preserved
+  It supports what such files need, flat `key: value` entries, quoted
+  scalars, booleans, flow lists, comments, and block scalars, rather than
+  full YAML, so it has no dependencies. Unknown keys are preserved
   so callers can decide what to use. A document without a leading `---`
   fence has no front matter and parses to an empty map.
   """

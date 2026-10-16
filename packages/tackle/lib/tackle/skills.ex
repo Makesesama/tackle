@@ -37,9 +37,9 @@ defmodule Tackle.Skills do
   """
 
   alias Tackle.{Executor, Paths, ProjectFiles}
-  alias Tackle.Lib.Frontmatter
   alias Tackle.Skills.Skill
   alias Tackle.Tools.LoadSkill
+  alias YamlFrontmatter, as: Frontmatter
 
   @skill_file "SKILL.md"
   @agents_dir ".agents"

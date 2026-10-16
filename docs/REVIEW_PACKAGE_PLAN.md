@@ -74,8 +74,9 @@ not use the harness for review at all.
 - `Tackle.Review.Tools.ReportFindings` and `Tackle.Review.Tools.ReportVerdict`
   (from `Tackle.Tools.*`): already plain `Tackle.Lib.Tool`s that read their run
   data from the session context.
-- Dependencies: `tackle_lib`, `tackle_runtime`, `gix_ex`. The `gix_ex`
-  dependency moves out of the harness, which gets it through this package.
+- Dependencies: `tackle_lib`, `tackle_runtime`, `gix_ex`, `yaml_frontmatter`.
+  The `gix_ex` dependency moves out of the harness, which gets it through this
+  package.
 
 ### `packages/tackle_runtime`
 
@@ -103,8 +104,15 @@ Implemented in phase 2:
 
 - `Tackle.Thinking` moves to `Tackle.Lib.Thinking`. It is provider-neutral and
   only holds the level vocabulary and the `:reasoning_effort` mapping.
-- `Tackle.Skills.Frontmatter` moves to `Tackle.Lib.Frontmatter`, shared by
-  harness skills and agent definitions and by review rules.
+- (`Tackle.Skills.Frontmatter` first moved here as `Tackle.Lib.Frontmatter`;
+  see `packages/yaml_frontmatter` below.)
+
+### `packages/yaml_frontmatter`
+
+Implemented after phase 2: the Markdown front matter parser, formerly
+`Tackle.Skills.Frontmatter`, as the dependency-free `YamlFrontmatter`. Skills,
+agent definitions, and review rules all read their front matter with it, so
+`tackle_review` depends on it rather than on skills code or `tackle_lib`.
 
 ### `packages/tackle` (harness)
 
@@ -162,8 +170,8 @@ only changes file paths and module names.
 2. **Runtime contract.** *Implemented.* The backend callbacks above are in
    `tackle_runtime` and implemented by `RootBackend`; `Tackle.Review`,
    `Tackle.Review.Delegation`, and the detector and verifier use them and no
-   longer read `%Tackle.Config{}` or `Tackle.Auth`. `Thinking` and
-   `Frontmatter` are in `tackle_lib`. What the pipeline still takes from the
+   longer read `%Tackle.Config{}` or `Tackle.Auth`. `Thinking` moved to
+   `tackle_lib`, and `Frontmatter` to `packages/yaml_frontmatter`. What the pipeline still takes from the
    harness is `Tackle.Config.Review` (settings, phase 3), rule discovery in
    `Tackle.Review.Rules` (phase 3), and the output tools under
    `Tackle.Tools` (phase 4).
@@ -183,7 +191,7 @@ only changes file paths and module names.
   `Tackle.Tools.{ReportFindings,ReportVerdict}` →
   `Tackle.Review.Tools.*`; `Tackle.Review.History` → harness namespace;
   `Tackle.Thinking` → `Tackle.Lib.Thinking`;
-  `Tackle.Skills.Frontmatter` → `Tackle.Lib.Frontmatter`.
+  `Tackle.Skills.Frontmatter` → `YamlFrontmatter` (`packages/yaml_frontmatter`).
 - `Review.run/2` options: `:history` and `:skip_outcomes` are removed (use
   `:known_fingerprints`, or `Tackle.LocalReview`); `:settings` and
   `:warnings` are new, and without `:rules` only the built-in rules apply.

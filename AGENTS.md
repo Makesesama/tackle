@@ -76,6 +76,10 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd packages/gix_ex && mix format --check-formatted)
 (cd packages/gix_ex/native/gix_ex && cargo fmt --check && cargo clippy --all-targets && cargo test)
 
+# YAML front matter parser (no dependencies)
+(cd packages/yaml_frontmatter && mix compile --warnings-as-errors && mix test)
+(cd packages/yaml_frontmatter && mix format --check-formatted)
+
 # CLI app
 (cd apps/tackle_cli && mix deps.get)
 (cd apps/tackle_cli && mix compile --warnings-as-errors && mix test)
@@ -145,6 +149,9 @@ Burrito, or lint commands for tooling that has not been wired up.
   `:gix_ex`): a Rustler NIF over Rust's gitoxide that resolves revisions, walks
   history, and returns diffs as data, without a `git` executable. Intended to
   load changes for `tackle review`; nothing depends on it yet.
+- `packages/yaml_frontmatter/`: dependency-free parser for the YAML front
+  matter of Markdown files (`YamlFrontmatter`, `:yaml_frontmatter`). The
+  harness reads skills, agent definitions, and review rules with it.
 - `apps/tackle_cli/`: default Optimus/ex_ratatui terminal entrypoint. It is a
   separate Mix project that depends on the harness and bundles Codex as a
   distribution dependency; runtime adapter loading remains a harness concern.
