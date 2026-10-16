@@ -1,7 +1,7 @@
 # tackle_web plan: forge review bot
 
-**Status: plan. Nothing in `apps/tackle_web` is implemented yet.** This
-document is a handoff: it should be enough to start without the conversation
+**Status: plan; phase 1a (the app skeleton, §8) is implemented in
+`apps/tackle_web`, the rest is not.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -151,18 +151,29 @@ instead of rewriting tables.
   `auto_review_drafts` (default false), `profile`
   (`:quiet` | `:default` | `:assertive`), `settings` (the JSON form of
   `Tackle.Review.Settings`, validated with `Settings.from_json/1` and
-  `Settings.new/2`), `daily_token_budget`. Identity on (`installation`,
-  `external_id`).
+  `Settings.new/2`; a `profile` key is rejected there, `profile` above is
+  the only place for it), `daily_token_budget`. Identity on
+  (`installation`, `external_id`).
+
+**Precedence.** Profile: the command's (`ReviewRequest.profile`), then
+`Repository.profile`. Models and thinking levels, per stage: the
+repository's `settings`, then `ReviewDefaults`. Step limits and default
+rules: the repository's `settings`, then the stage profiles' and
+`tackle_review`'s defaults. `Tackle.Web.ReviewJob` resolves these in one
+place and passes the result to `Tackle.Review.run/2`.
 
 **Reviews**
 
 - `ReviewRequest`: `repository`, `pull_number`, `head_sha`, `base_sha`,
   `base_ref`, `head_is_fork`, `trigger` (`:command` | `:opened` | `:pushed`),
-  `requested_by` (forge login), `status` (`:pending` | `:running` |
-  `:posted` | `:failed` | `:skipped`), `error`. Identity on (`repository`,
-  `pull_number`, `head_sha`): webhook redeliveries and repeated commands
-  upsert instead of reviewing twice. AshOban trigger on `status == :pending`
-  runs the `:run` action (§7.5).
+  `profile` (the command's, or nil), `requested_by` (forge login), `status`
+  (`:pending` | `:running` | `:reviewed` | `:posted` | `:failed` |
+  `:skipped`), `error`, `forge_review_id` (when posted). `:reviewed` means
+  the run and its findings are stored but not yet posted, so a retry posts
+  without reviewing again (§7.5). Identity on (`repository`, `pull_number`,
+  `head_sha`): webhook redeliveries and repeated commands upsert instead of
+  reviewing twice. AshOban trigger on `status in [:pending, :running,
+  :reviewed]` runs the `:run` action (§7.5).
 - `ReviewRun`: `request`, `summary` (map: the `Tackle.Review.Result`
   summary, including stages, usage, settings, and the `rules`/`prompts`
   digests), `usage` (token totals for budgets), `duration_ms`,
@@ -207,12 +218,21 @@ exists so a later Gitea module does not touch the rest of the app.
 - `verify_webhook(conn_or_raw, headers, forge_app)` → `{:ok, event}` with
   type, delivery id, and decoded payload, or an error. GitHub:
   `X-Hub-Signature-256` HMAC-SHA256 over the raw body, compared in constant
-  time (`Plug.Crypto.secure_compare/2`). Read the raw body before parsing.
+  time (`Plug.Crypto.secure_compare/2`). `Plug.Parsers` consumes the body,
+  so the webhook route keeps the raw bytes: a `:body_reader` that stores
+  them for that path only, or the route placed before the parsers. Bound
+  the body size (GitHub caps payloads at 25 MB).
 - `pull_request(installation, repo, number)` → title, author, base/head refs
   and SHAs, fork flag, state.
 - `can_trigger?(installation, repo, login)` → write access or higher.
 - `clone_auth(installation, repo)` → clone URL and a short-lived credential.
-- `post_review(installation, repo, number, head_sha, body, comments)`.
+- `post_review(installation, repo, number, head_sha, body, comments)` →
+  the forge's review id.
+- `find_review(installation, repo, number, marker)` → the id of an
+  existing review by the app whose body contains `marker`, for idempotent
+  posting (§7.5.1).
+- `bot_login(forge_app)` → the login the app comments as. GitHub:
+  `"<slug>[bot]"`, with the slug from `GET /app`, cached in memory.
 - `feedback(installation, repo, number)` → resolved threads, replies, and
   reactions on our comments (phase 6).
 
@@ -277,7 +297,11 @@ provider id, and re-reads the credentials inside the lock. Therefore:
 
 The Cloak key comes from the environment (`TACKLE_WEB_CLOAK_KEY`, base64,
 32 bytes) set by the NixOS module's environment file; support Cloak's key
-rotation (a list of ciphers with tags) from the start.
+rotation (a list of ciphers with tags) from the start. (Implemented in
+`Tackle.Web.Vault`: retired keys in `TACKLE_WEB_CLOAK_RETIRED_KEYS`, tags
+from key fingerprints. Cloak 1.1 returns `{:ok, :error}` for an AES-GCM
+ciphertext that fails authentication; the vault turns that into an error,
+which AshCloak's `decrypt!` then raises.)
 
 ### 7.3 Agent backend
 
@@ -308,48 +332,130 @@ Test the app's backend with the same scripted-adapter approach as
 `Tackle.Web.Checkout`, all Git through `System.cmd("git", ...)` with a
 clean environment: `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
 `GIT_TERMINAL_PROMPT=0`, `-c core.hooksPath=/dev/null`,
-`-c protocol.file.allow=never`; credentials per command through
-`-c http.extraHeader=Authorization: ...` (or `GIT_ASKPASS`), never in a
-remote URL or the repository's config.
+`-c protocol.file.allow=never`.
 
-1. One bare clone per repository under `<state>/repos/<installation>/<repo>`.
+**Credentials** go into the command's environment, never onto its command
+line (any local user can read `/proc/<pid>/cmdline`, but not another
+user's environment), into a remote URL, or into the repository's config:
+`GIT_CONFIG_COUNT=1`,
+`GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader`,
+`GIT_CONFIG_VALUE_0=Authorization: Basic <base64("x-access-token:" <> token)>`
+(GitHub's form for installation tokens over HTTPS). Only commands that
+talk to the remote get them; tests assert that no argument contains the
+token.
+
+1. One bare clone per repository under `<state>/repos/<installation>/<repo>`,
+   with full history: a shallow clone can lack the merge base the change
+   needs.
 2. Fetch the base branch and the PR head (`refs/pull/N/head` on GitHub) to
    the requested SHAs.
 3. A detached worktree of `head_sha` under `<state>/worktrees/<request id>`,
-   removed after the run (also on failure; sweep leftovers at start).
+   removed after the run (also on failure; at start, sweep leftover
+   worktrees and run `git worktree prune`).
 4. The change: `Tackle.Review.Change.load(cwd: worktree, workspace:
-   worktree, range: "#{base_sha}...#{head_sha}")`.
+   state_dir, range: "#{base_sha}...#{head_sha}")`.
+
+**Workspace for `Change.load`.** `Tackle.Review.Confinement` refuses a
+repository whose working tree, Git directory, or common directory lies
+outside `:workspace`. A worktree of a bare clone has its Git directory in
+the clone (`<state>/repos/.../worktrees/<id>`), so passing the worktree is
+refused with `{:outside_workspace, ...}`; pass the state directory, which
+contains both. Confinement compares paths as given, so resolve the state
+directory (no symbolic links) once at start and build every path from it.
+
+**Concurrency.** Steps 1 to 3 and the worktree removal change the shared
+bare clone (refs, `worktrees/`, Git's lock files), so two reviews of one
+repository must not run them at once. Hold a per-repository lock around
+them. A Postgres advisory lock would hold a pooled database connection for
+the length of a fetch, so use a lock outside the database instead:
+`:global.trans/3` on `{Tackle.Web.Checkout, repository_id}`, which also
+covers more than one node. The review itself runs outside the lock: a later
+fetch only adds objects and moves refs, which does not change a worktree at
+a fixed SHA.
+
+**Host Git and the jail.** The host runs Git on the clone and the worktree
+again after a review (the next fetch, the worktree removal). That is only
+safe because the jail cannot write to either (§7.8): Git honours
+configuration, hooks, alternates, and worktree metadata found there, so a
+writable mount would let jailed code reach the server through host Git.
 
 ### 7.5 Review job
 
 `ReviewRequest`'s AshOban trigger runs the `:run` action, which calls
 `Tackle.Web.ReviewJob.run/1` (plain Elixir). Oban queue `reviews` with
 concurrency 1 to 2, a timeout, and limited retries (`:failed` with the error
-after the last attempt).
+after the last attempt). Add `Oban.Plugins.Lifeline` so jobs orphaned by a
+crash or restart are retried.
+
+Enqueueing: AshOban schedules triggers from a cron scheduler that polls
+(by default every minute). After upserting a request, call
+`AshOban.run_trigger/2` so the review starts at once; the scheduler stays
+as the safety net.
+
+**One job per request at a time.** The immediate enqueue, the scheduler,
+and Lifeline can each enqueue a job for the same request, so:
+
+- make the trigger's jobs unique on the request id across the `available`,
+  `scheduled`, `executing`, and `retryable` states;
+- the job claims the request before any work: a transaction that takes a
+  Postgres advisory lock on the request id (`pg_try_advisory_xact_lock`)
+  and re-reads the status; a job that cannot take the lock, or finds the
+  request already claimed by a live attempt, returns without work. Record
+  the claiming attempt on the request, so a crashed attempt's `:running` is
+  told apart from a live one;
+- Lifeline cannot tell an orphaned job from a slow one: its `rescue_after`
+  must be longer than the review job's timeout, or a long review is started
+  a second time while it still runs.
+
+Posting relies on this too: the marker lookup in §7.5.1 is not atomic, and
+only the claim keeps two attempts from both finding no review and both
+posting.
+
+The job starts from the request's current status, so retries and stale
+jobs are safe:
+
+- `:pending` or `:running` (an earlier attempt crashed or timed out): run
+  steps 1 to 8 from the start, with a fresh worktree;
+- `:reviewed`: the run is stored; only post (step 8);
+- `:posted`, `:failed`, `:skipped`: return without work. A request
+  superseded by a newer head (§7.7) may still have a job enqueued; this is
+  where it ends.
 
 1. Check the repository is enabled and within its daily token budget
-   (sum of today's `ReviewRun.usage`); else `:skipped` with a reason.
+   (sum of today's `ReviewRun.usage`); else `:skipped` with a reason. Set
+   `:running`.
 2. Checkout (§7.4).
 3. Rules from the **base** commit, so a pull request cannot change the
    rules it is reviewed against:
    `{:ok, files} = Tackle.Review.Rules.read_tree(worktree_or_clone, base_sha)`,
    `Rules.load([{:project, files}], builtin_rules: ...)`; turn load warnings
    into `:warnings`.
-4. Settings: `Tackle.Review.Settings.new(opts, providers)` from the
-   repository's settings.
+4. Settings: validate again at run time, `Settings.from_json/1` and then
+   `Tackle.Review.Settings.new(opts, providers)` against the providers
+   enabled **now**, merged with `ReviewDefaults` by the precedence of §6.
+   Settings were valid when saved, but a provider disabled or a default
+   changed since then must fail the request with a readable reason, not
+   crash the job.
 5. A scope on `Tackle.Web.AgentBackend`: a root agent that never runs a
    turn (allow delegation), and the two stage profiles built from
    `Tackle.Review.Stages.detector/0` and `verifier/0`: tools
    `Tackle.Tools.Read`, `Tackle.Tools.Bash`, and
    `Tackle.Review.Tools.ReportFindings` / `ReportVerdict`; context
    `%{cwd: worktree, executor: jailed_executor}`; step limit from
-   `max_steps`; models from the defaults and settings.
+   `max_steps`. Each stage profile gets its resolved model, so nothing
+   depends on inheritance; the root still gets a valid model (the
+   verifier's), because the scorer and any inheriting profile read the
+   requester's.
 6. `Tackle.Review.run(change, requester: root, profiles: ..., rules: ...,
    settings: ..., profile: ..., known_fingerprints: dismissed,
    warnings: ..., on_event: ...)`; events update the request for the UI.
-7. Store the `ReviewRun` and `Finding`s (shown, rejected, and
-   `Result.hidden/1`).
-8. Post (§7.5.1), set `:posted`, stop the scope, remove the worktree.
+7. In one transaction, store the `ReviewRun` and `Finding`s (shown,
+   rejected, and `Result.hidden/1`) and set `:reviewed`. Stop the scope and
+   remove the worktree (under the repository lock, §7.4).
+8. Post (§7.5.1), store the forge's review id, and set `:posted`.
+
+Storing before posting keeps a retry from reviewing (and paying for) the
+same head twice; the posting step is idempotent on its own (§7.5.1).
 
 #### 7.5.1 Posting
 
@@ -364,6 +470,24 @@ after the last attempt).
   first, and says which profile and how many units were reviewed;
 - a fingerprint already posted on this pull request (any earlier run) is not
   posted again; mention it as still present in the body instead.
+
+**Idempotent posting.** The body carries a hidden marker,
+`<!-- tackle-review:<request id> -->`. Before posting, `find_review/4`
+looks for a review by the app with that marker; when one exists (an earlier
+attempt posted, then failed before recording it, or the response was lost),
+record its id and set `:posted` instead of posting again.
+
+**Model output is untrusted.** Finding text was written by a model that
+read the pull request, so a prompt injection can choose what the bot posts
+under its name. The formatter therefore:
+
+- neutralises `@` mentions (users and teams) and closing keywords such as
+  `fixes #123`, so a finding cannot notify people or close issues;
+- escapes HTML and puts code (excerpts, suggestions) in fenced blocks whose
+  fence is longer than any backtick run inside;
+- caps each finding's text and the number of line comments (the rest are
+  listed in the body), and keeps the body under GitHub's 65,536 characters,
+  saying what was cut.
 
 Keep the comment text format in one module, separate from the GitHub API
 calls, so a later forge reuses it.
@@ -382,6 +506,12 @@ console). Protect forms with Phoenix's CSRF tokens.
 
 ### 7.7 Triggers and limits
 
+**Webhook handling stays short**: verify the signature, upsert the
+installation, repository, or request, enqueue (§7.5), and answer 2xx.
+GitHub waits 10 seconds and does not redeliver a failed delivery by
+itself, so no forge or model calls happen in the request; pull request
+details the payload lacks are fetched by the job.
+
 Two ways to start a review, as other review bots offer them:
 
 - **Command.** `issue_comment` (`created`) on a pull request (the issue
@@ -390,7 +520,7 @@ Two ways to start a review, as other review bots offer them:
   user with write access → upsert a `ReviewRequest` (`trigger: :command`)
   for the pull request's current head. Works on any enabled repository,
   whatever its `auto_review`, and on forks and drafts. Ignore comments by the
-  app's own bot user and edited comments.
+  app's own bot user (`bot_login/1`, §7.1) and edited comments.
 - **Automatic review of new pull requests.** With `auto_review: :on_open`,
   `pull_request` `opened`, `reopened`, and `ready_for_review` → a request
   (`trigger: :opened`). With `:on_open_and_push`, also `synchronize` (new
@@ -413,29 +543,71 @@ Limits:
   phase 2 and document it);
 - a newer head supersedes pending requests for older heads of the same pull
   request (mark them `:skipped`), so a burst of pushes reviews only the last;
+  their already enqueued jobs end at the status check (§7.5). A review
+  already running for an older head finishes;
 - a daily token budget per repository; Oban concurrency caps parallel
   reviews.
 
 ### 7.8 Jail for untrusted code
 
 Pull requests are untrusted, including prompt injection aimed at the review
-agents. The review agents' `read` and `bash` run through
-`Tackle.Executor.Jailed` with a `Tackle.Exec.Client` on a dedicated
-launcher, `tackle-review-jail`, a variant of `nix/packages/exec-jail.nix`:
+agents. The threat to defend against is a pull request that gets code run
+in the jail (an agent told to run it through `bash`) and uses it to
+compromise the server or later reviews. The review agents' `read` and
+`bash` run through `Tackle.Executor.Jailed` with a `Tackle.Exec.Client` on
+a dedicated launcher, `tackle-review-jail`, a variant of
+`nix/packages/exec-jail.nix`:
 
-- **no network** (the existing `exec-jail` keeps the network namespace);
-- **no `/nix` mount or Nix daemon** beyond the tool closure (the existing one
-  mounts `/nix` and the daemon socket with `enableNix`);
-- the worktree mounted **read-only**; no state directory, credentials, or
-  service environment.
+- **no network** (the existing `exec-jail` always keeps the network
+  namespace);
+- **no `/nix` mount or Nix daemon** beyond the tool closure:
+  `enableNix = false`, an option that already exists;
+- **nothing writable from the host**: the worktree and every Git
+  directory the launcher mounts are read-only (below);
+- no state directory beyond the worktree's Git data, no credentials, no
+  service environment; `GIT_OPTIONAL_LOCKS=0` in the jail, so read-only
+  commands such as `git status` do not try to write the index. A private
+  `/tmp` stays writable for tools that need scratch space; it is discarded
+  with the jail.
 
-Add options to `exec-jail.nix` (for example `network ? true`,
-`readOnlyWorkspace ? false`) rather than copying it, and a package
-`tackle-review-jail`. Bubblewrap needs unprivileged user namespaces: the
-NixOS module's systemd hardening must not set `RestrictNamespaces` to forbid
-`user`. One exec client per review run, started with the worktree as its
-working directory; see `apps/tackle_cli/lib/tackle_cli/jail.ex` for how the
-CLI starts one and fails closed. Never fall back to the local executor.
+**Read-only Git mounts.** The worktree is a linked worktree of the bare
+clone, and the launcher mounts the Git data it needs through
+`nix/packages/jail-git.sh`. For Herdr worktrees that script mounts the
+worktree's Git directory and the common directory's `objects`, `refs`,
+`logs/refs`, `rr-cache`, and `reftable` **writable**, and creates missing
+`logs/refs` and `config.worktree` on the host, so commits work in the jail.
+Here the common directory is the bare clone that later reviews of the
+repository and the host's own Git read (§7.4). Writable, it would let
+jailed code plant objects, refs, symbolic refs, alternates, or worktree
+metadata that outlive the run: poisoning later reviews' code and rules, or
+reaching the server through host Git. With `readOnlyWorkspace`, the
+launcher therefore:
+
+- binds the worktree, the worktree's Git directory, and the whole common
+  directory with `--ro-bind`, and binds nothing writable;
+- creates nothing on the host (no `mkdir`, no empty `config.worktree`);
+  entries that do not exist are not mounted;
+- keeps every existing check (pointer validation, no symbolic links, no
+  planted `commondir`), which still matter because they run on the host.
+
+The bare clone holds the repository's other refs, including other pull
+requests' heads (`refs/pull/*`); anyone with read access to the repository
+can see those on the forge, so mounting them is accepted.
+
+Add options to `exec-jail.nix` (`network ? true`, `readOnlyWorkspace ?
+false`, passed through to `jail-git.sh`) rather than copying it, and a
+package `tackle-review-jail`. Bubblewrap needs unprivileged user
+namespaces: the NixOS module's systemd hardening must not set
+`RestrictNamespaces` to forbid `user`. One exec client per review run,
+started with the worktree as its working directory; see
+`apps/tackle_cli/lib/tackle_cli/jail.ex` for how the CLI starts one and
+fails closed. Never fall back to the local executor.
+
+Like the CLI, check the jail before the first run and fail closed: from
+inside it, writing to the worktree, to the clone's `objects` and `refs`,
+and to the worktree's Git directory must fail, a network connection must
+fail, and the state directory outside the clone must not be visible. A
+launcher test (beside the existing `nix/tests/`) asserts the same.
 
 ### 7.9 Web interface
 
@@ -479,8 +651,24 @@ forms there.
   authentication over the Unix socket), and migrations on start
   (`Tackle.Web.Release.migrate/0`). Forge app secrets are entered in the UI
   and stored encrypted, not in Nix.
+- TLS ends at the operator's reverse proxy. When the sign-in pages land
+  (phase 6), production sets `force_ssl` with
+  `rewrite_on: [:x_forwarded_proto]` and HSTS for an `https`
+  `TACKLE_WEB_URL`, and session cookies are `secure`.
+- The service user's `HOME` must not be the state directory or any other
+  ancestor of `<state>/worktrees` or `<state>/repos`: jail.nix's base
+  permissions mount `--tmpfs ~`, which can cover the worktree and clone
+  mounts beneath it, and `exec-jail.nix` refuses a workspace or common Git
+  directory that contains the home directory. The home must be writable,
+  as jail.nix keeps its runtime data in `~/.local/share/jail.nix`. Use a
+  separate directory such as `/var/lib/tackle-web-home`, and cover it in
+  the VM test.
 - A NixOS VM test (`nix/tests/`) that starts the service with Postgres and
-  checks the health endpoint, when phase 1 lands.
+  checks the health endpoint, when phase 1b lands.
+- CI: Woodpecker runs on its local backend without service containers, so
+  the `tackle_web` step starts its own throwaway Postgres (`initdb` and
+  `pg_ctl` on a Unix socket in a temporary directory) and stops it at the
+  end, like the dev shell script.
 
 ## 8. Phases
 
@@ -490,28 +678,37 @@ Each phase ends with `mix compile --warnings-as-errors`, `mix format
 (`Req.Test`) and fake model adapters, need no network or credentials, and
 use Postgres with the Ecto sandbox. Commit per phase.
 
-1. **Skeleton.** Mix project, Phoenix endpoint and router, AshPostgres repo,
-   the Cloak vault, Oban, a health endpoint, the empty Ash domains, config
-   for dev/test/prod (runtime config from the environment). Dev shell:
-   `pkgs.postgresql` and a script to start a local cluster under the
-   project directory. Woodpecker job (needs a Postgres in CI), pre-commit
-   credo hook entry, `AGENTS.md` (commands, repo map, the Jason rule
-   wording), README. Nix package and the NixOS module skeleton with the VM
-   test.
+1. **Skeleton**, in two commits:
+   - **1a, the app.** Mix project, Phoenix endpoint and router, AshPostgres
+     repo, the Cloak vault, Oban (with Lifeline), a health endpoint, the
+     empty Ash domains, config for dev/test/prod (runtime config from the
+     environment). Dev shell: `pkgs.postgresql` and a script to start a
+     local cluster under the project directory. Pre-commit credo hook
+     entry, `AGENTS.md` (commands, repo map, the Jason rule wording),
+     README.
+   - **1b, packaging.** Nix package (`deps.nix` alias), the NixOS module
+     skeleton (§7.10, including the separate `HOME`) with the VM test, and
+     the Woodpecker step with its own Postgres.
 2. **Forges and webhooks.** `ForgeApp`, `Installation`, `Repository`;
    `Tackle.Web.Forge` and `Forge.GitHub` (JWT, installation tokens, webhook
-   verification); `POST /webhooks/github`; installation and repository sync
-   from `installation*` events (new repositories take the installation's
-   defaults); the command and automatic-review rules of §7.7 creating
-   `ReviewRequest`s.
+   verification with the raw body, `bot_login/1`); `POST /webhooks/github`,
+   which only verifies, upserts, and enqueues; installation and repository
+   sync from `installation*` events (new repositories take the
+   installation's defaults); the command and automatic-review rules of §7.7
+   creating `ReviewRequest`s.
 3. **Models and agent backend.** `Provider` and `ReviewDefaults`,
    `Tackle.Web.CredentialStore`, the OpenRouter key action and the Codex
    device-code login, `Tackle.Web.AgentBackend` with tests that run a whole
    review on it with a scripted adapter (no real provider calls).
-4. **Review job.** `Checkout`, the review jail (`exec-jail.nix` options,
-   `tackle-review-jail`), `ReviewJob` with the AshOban trigger, storing
-   `ReviewRun` and `Finding`s.
-5. **Posting.** `Posting`, idempotent per fingerprint.
+4. **Review job.** `Checkout` (credentials in the environment, the
+   per-repository lock, the state directory as the confinement workspace),
+   the review jail (`exec-jail.nix` and `jail-git.sh` options,
+   `tackle-review-jail`, the fail-closed check and the launcher test that
+   writes and network access fail), `ReviewJob` with the AshOban trigger,
+   the status-driven restart rules, and storing `ReviewRun` and `Finding`s
+   before posting.
+5. **Posting.** `Posting`, idempotent per request (the hidden marker) and
+   per fingerprint, with the output sanitising of §7.5.1.
 6. **Interface and sign-in.** OAuth sign-in, AshAdmin behind it with the
    resources' `admin` sections and policies (§7.9).
 7. **Feedback.** Resolved threads and reactions → `FindingOutcome`s;
