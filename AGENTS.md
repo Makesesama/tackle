@@ -96,6 +96,12 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd apps/tackle_cli && mix format --check-formatted)
 (cd apps/tackle_cli && mix escript.build)
 
+# Web review app (needs PostgreSQL from the dev shell and MIX_REBAR3)
+(cd apps/tackle_web && bash scripts/db.sh start)
+(cd apps/tackle_web && mix deps.get)
+(cd apps/tackle_web && mix compile --warnings-as-errors && mix test)
+(cd apps/tackle_web && mix format --check-formatted && mix credo --strict)
+
 # Emacs client (Elisp; needs an Emacs in the dev shell or PATH)
 (cd apps/etackle && emacs -Q --batch -L . -l test/etackle-test.el \
     -f ert-run-tests-batch-and-exit)
@@ -177,6 +183,11 @@ Burrito, or lint commands for tooling that has not been wired up.
   distribution dependency; runtime adapter loading remains a harness concern.
   It also bundles `tackle_workflow`; `Tackle.CLI.Distribution` lists the
   bundled delegation tools and the catalog tools granted to the root agent.
+- `apps/tackle_web/`: Phoenix/Ash web app (`Tackle.Web.*`, `:tackle_web`)
+  that will review forge pull requests with `tackle_review`; built in phases
+  from `docs/TACKLE_WEB_PLAN.md`, currently the skeleton. It depends on the
+  packages, not the harness, and keeps Ash, Oban, Cloak, and PostgreSQL to
+  itself. Its tests need the local cluster from `scripts/db.sh`.
 - `apps/etackle/`: Emacs client for the Tackle SDK wire protocol
   (`packages/tackle_sdk/PROTOCOL.md`), speaking ndjson JSON-RPC over stdio to
   `tackle sdk`. Plain Emacs Lisp (Emacs 28.1+), not a Mix project; see its
@@ -226,7 +237,9 @@ provider-specific translation inside adapters.
 
 Always use Elixir's standard-library `JSON` module for JSON encoding and
 decoding. Never use Jason or another third-party JSON library, and do not add
-one as a dependency.
+one as a dependency. The one exception is transitive: `apps/tackle_web`'s
+frameworks (Ash, Oban, Postgrex, Cloak) pull in Jason, which is accepted;
+our code there still uses `JSON`, and Jason is never listed in a `mix.exs`.
 
 Example of a deterministic test adapter using the existing `Tackle.Lib.LLM`
 contract (not a production provider implementation):

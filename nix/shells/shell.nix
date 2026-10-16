@@ -51,6 +51,9 @@ pkgs.mkShell {
     pkgs.xz
     pkgs.zig_0_16
 
+    # apps/tackle_web's local database (apps/tackle_web/scripts/db.sh)
+    pkgs.postgresql
+
     # Development tools
     pkgs.rustfmt
     pkgs.clippy
