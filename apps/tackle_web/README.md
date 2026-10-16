@@ -1,6 +1,6 @@
 # tackle_web
 
-**Status: phases 1–6 of
+**Status: phases 1–6 and 6b (web-only setup) of
 [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
@@ -9,9 +9,11 @@ of the GitHub App's installations and repositories, and turns pull request
 events and `/tackle review` commands into review requests according to
 each repository's settings. It also stores model providers and encrypted
 credentials, resolves review defaults, and has an ephemeral agent backend tested
-with whole scripted reviews. Members of the installed organisation sign in with
-GitHub; admins manage repositories, providers, and review defaults in AshAdmin
-and connect Codex on a device-login page. Queued reviews now run in the
+with whole scripted reviews. Setup is done in the browser: it registers and
+installs the GitHub App and makes the operator the first admin. Members of the
+installed organisation sign in with GitHub; admins manage repositories,
+providers, review defaults, and other admins in AshAdmin and connect Codex on a
+device-login page. Queued reviews now run in the
 read-only jail, with base-commit rules and
 explicit model settings, store their runs/findings at `:reviewed`, then post a
 sanitized GitHub COMMENT review and transition to `:posted`. Posting retries use
@@ -183,50 +185,60 @@ It exercises the production exec-server launcher, read-only Git operations,
 network and state isolation, hidden Nix store data/daemon, unchanged host Git
 data, and refusal of crafted Git pointers and symlinks.
 
-## Connecting a GitHub App
+## Setting up (in the browser)
 
-Reviews run as a GitHub App that you create for your organisation
-(Settings → Developer settings → GitHub Apps → New GitHub App):
+After deploying, everything is done in the browser at `<TACKLE_WEB_URL>/setup`
+(`Tackle.Web.SetupController`, rules in `Tackle.Web.Setup`); no secret is
+copied by hand.
 
-- **Webhook URL:** `<TACKLE_WEB_URL>/webhooks/github`, with a random
-  webhook secret (`openssl rand -hex 32`).
-- **Callback URL:** `<TACKLE_WEB_URL>/auth/github/callback`, for sign-in.
-  Leave "Request user authorization (OAuth) during installation" off, and
-  keep "Expire user authorization tokens" on.
-- **Repository permissions:** Metadata read, Contents read, Pull requests
-  read and write, Issues read (only to receive comments on pull requests).
-- **Organisation permissions:** Members read (to check sign-ins).
-- **Events:** Pull request, Issue comment. Installation events are always
-  delivered.
+1. **Unlock setup.** While setup is incomplete (no GitHub App stored, or no
+   admin), the server logs a one-time **setup token** at start:
 
-Generate a private key for the App, then store the App in tackle_web.
-Secrets are read from files, so they stay out of the process list and
-shell history, and are stored encrypted. The command runs as the
-`tackle-web` user, which must be able to read the files; remove them
-afterwards:
+   ```sh
+   journalctl -u tackle-web | grep 'setup token'
+   ```
+
+   It lives in memory only; a restart makes a new one, and it stops working
+   once setup is complete. Entering it unlocks setup for that browser for an
+   hour. Without it, nobody who reaches a fresh server can register their own
+   App and become its admin.
+2. **Create the GitHub App.** Name it and, optionally, give the organisation
+   to own it (empty: your personal account). GitHub's App manifest flow
+   registers it with everything preset: webhook URL
+   `<TACKLE_WEB_URL>/webhooks/github` and its events (pull request, issue
+   comment), the sign-in callback, private, and the permissions (Metadata,
+   Contents read; Pull requests write; Issues read; organisation Members
+   read). GitHub sends the browser back with a one-time code, and the App id,
+   client id and secret, webhook secret, and private key go straight into the
+   encrypted database.
+3. **Install it** on the organisation (or account) whose pull requests it
+   reviews. GitHub returns to `/setup/github/installed`; the installation is
+   confirmed with GitHub and recorded with its repositories (disabled by
+   default). "Sync from GitHub" does the same if that redirect was missed.
+4. **Sign in with GitHub** from the same browser: that makes you the first
+   admin. Setup is then complete and `/setup` closes.
+
+Then enable repositories in the administration, or turn on "review every pull
+request" for the whole installation there (see below). Admins install the App
+on further accounts and re-sync installations from the start page.
+
+**Locally** (`TACKLE_WEB_URL` on `localhost`) GitHub cannot deliver webhooks,
+so the App is registered without one: installations come from the install
+redirect and the sync button, and reviews do not start by themselves. A tunnel
+URL as `TACKLE_WEB_URL` gets webhooks as in production. In development the
+token is in the `mix phx.server` output.
+
+**Recovery from the console.** `Tackle.Web.Release.configure_github_app/0`
+stores an App from files (`TACKLE_WEB_GITHUB_APP_ID`, `…_CLIENT_ID`, and the
+`…_PRIVATE_KEY_FILE`, `…_WEBHOOK_SECRET_FILE`, `…_CLIENT_SECRET_FILE` paths),
+replacing the stored one; `set_admin/2` grants or revokes admin by login:
 
 ```sh
-sudo install -d -m 0700 -o tackle-web /var/lib/tackle-web-home/setup
-sudo install -m 0400 -o tackle-web app.private-key.pem webhook-secret \
-  /var/lib/tackle-web-home/setup/
-sudo TACKLE_WEB_GITHUB_APP_ID=123456 \
-  TACKLE_WEB_GITHUB_PRIVATE_KEY_FILE=/var/lib/tackle-web-home/setup/app.private-key.pem \
-  TACKLE_WEB_GITHUB_WEBHOOK_SECRET_FILE=/var/lib/tackle-web-home/setup/webhook-secret \
-  tackle-web-release eval "Tackle.Web.Release.configure_github_app()"
-sudo rm -r /var/lib/tackle-web-home/setup
+sudo tackle-web-release eval 'Tackle.Web.Release.set_admin("octocat")'
 ```
 
-`TACKLE_WEB_GITHUB_CLIENT_ID` and `TACKLE_WEB_GITHUB_CLIENT_SECRET_FILE`
-(the App's client id and a generated client secret) are needed for sign-in;
-without them `/auth/github` answers 503. Running the command again replaces
-the stored App, so pass all of them each time. Until it has run, webhooks
-are answered with 503.
-
-Then install the App on the organisation. Its repositories are recorded as
-the installation and repository events arrive, disabled by default. Sign in
-(the first person to sign in becomes an admin) and enable repositories in
-the administration, or turn on "review every pull request" for the whole
-installation there (see below).
+Until an App is stored, webhooks are answered with 503 and `/auth/github` with
+503.
 
 What happens with a pull request (`Tackle.Web.Triggers`):
 
@@ -256,14 +268,10 @@ the session is renewed and holds only the user id and sign-in time. Nobody can
 sign in before the App is installed. Failures show a fixed message; GitHub's
 details are only logged by kind.
 
-The first user to sign in becomes an **admin**. Others are granted it from the
-console, never in the browser (case-insensitive login; the user must have signed
-in once):
-
-```sh
-sudo tackle-web-release eval 'Tackle.Web.Release.set_admin("octocat")'
-sudo tackle-web-release eval 'Tackle.Web.Release.set_admin("octocat", false)'
-```
+The first **admin** is whoever signs in from the browser that unlocked setup
+(above); signing in never makes anyone admin otherwise. Admins grant and
+revoke it for others in the administration (User, `set_admin`); the last admin
+cannot be removed, there or from the console.
 
 Sessions are a signed and encrypted cookie (`SameSite=Lax`, `HttpOnly`) that
 lasts seven days; the user is read from the database on every request and
@@ -283,10 +291,12 @@ to `/codex-login`. What it offers:
 | Repository | read; `configure` (enabled, automatic review, forks/drafts, profile, settings JSON, daily budget); `apply_installation_defaults` |
 | Provider | read; `register`, `configure`, `set_credentials` (OpenRouter API key, write-only) |
 | ReviewDefaults | read; `configure` (replaces the single row) |
-| ForgeApp, ReviewRequest, ReviewRun, Finding, User | read only |
+| User | read; `set_admin` (never the last admin) |
+| ForgeApp, ReviewRequest, ReviewRun, Finding | read only |
 
-Not in the browser: the GitHub App's settings and secrets (the release command
-above), granting admin, paid reruns and posting retries (console, see below).
+The GitHub App itself is created in setup; replacing or rotating its secrets is
+not in the browser yet (the recovery command above). Paid reruns and posting
+retries stay console actions (see below).
 
 **Authorisation.** Every domain authorises when an actor is given
 (`authorize :when_requested`): the web interface always passes the signed-in

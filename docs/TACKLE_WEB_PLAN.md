@@ -4,8 +4,8 @@
 `nix/`: skeleton/packaging, forges/webhooks, models/agent backend, jailed review
 jobs with stored runs/findings, retry-safe sanitized GitHub posting
 (`:reviewed` → `:posted`), and GitHub sign-in with AshAdmin and the Codex
-device-login page behind admin policies. Phase 7 (feedback) is not
-implemented.** This document is a handoff: it should be enough to start without the conversation
+device-login page behind admin policies, and web-only setup (phase 6b,
+§7.11). Phase 7 (feedback) is not implemented.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -588,17 +588,18 @@ session; `/auth/github/callback` checks `state`, exchanges the code with
 **renew the session** (`configure_session(renew: true)`) before storing the
 user id. Logout drops the session. All admin pages require a signed-in
 user; settings changes require `admin` (the first user, or set in the
-console). Protect forms with Phoenix's CSRF tokens.
+console; phase 6b replaces both with the setup claim and the admin
+interface, §7.11). Protect forms with Phoenix's CSRF tokens.
 
 **Implemented in phase 6** (`Tackle.Web.SignIn`, `AuthController`, `Auth`,
 `Accounts.User`). Membership comes from the forge for every sign-in: an
 organisation member (installation token), or the user account an installation
 is on, compared by account id from `GET /app/installations/{id}` rather than
 by the stored login; only active installations count. The user's access token
-is revoked after `/user` is read. "First user" is decided under an advisory
-lock. The session holds the user id and sign-in time (seven days); the user is
-re-read on every request and mount. Admins are granted with
-`Tackle.Web.Release.set_admin/2`.
+is revoked after `/user` is read. The session holds the user id and sign-in
+time (seven days); the user is re-read on every request and mount. Phase 6b
+replaced "the first user is admin" and console-only granting: the first admin
+claims it from the unlocked setup session, and admins manage admins (§7.11).
 
 ### 7.7 Triggers and limits
 
@@ -752,8 +753,8 @@ connect parameters, and events, so its live session runs a hook
 (`Auth.pin_admin_actor/2`) that pins the signed-in admin with authorisation on
 before every `handle_params` and event and drops the actor/authorisation/tenant
 events. AshCloak's `on_decrypt` refuses decryption with an actor. The forge
-app's secrets stay a release command (a PEM key does not fit a password
-field); reruns and posting retries stay console actions. Policies need a SAT
+app is registered by setup's manifest flow (§7.11), never typed into a form;
+reruns and posting retries stay console actions. Policies need a SAT
 solver: `simple_sat` (pure Elixir).
 
 ### 7.10 Deployment
@@ -795,6 +796,62 @@ solver: `simple_sat` (pure Elixir).
   the `tackle_web` step starts its own throwaway Postgres (`initdb` and
   `pg_ctl` on a Unix socket in a temporary directory) and stops it at the
   end, like the dev shell script.
+
+### 7.11 Web-only setup (phase 6b)
+
+**Goal:** after deployment (§7.10: the NixOS module, `SECRET_KEY_BASE`,
+`TACKLE_WEB_CLOAK_KEY`, `TACKLE_WEB_URL`), everything is done in the browser:
+creating and storing the GitHub App, installing it, recording installations
+and repositories, the first admin, and granting admin to others. No secret is
+copied by hand. The release commands (`configure_github_app/0`,
+`set_admin/2`) stay, for recovery only.
+
+Decisions (taken after phase 6; implemented in phase 6b):
+
+- **Bootstrap with a logged setup token.** Setup is *incomplete* while no
+  GitHub App is stored or no user is an admin. While it is incomplete, the
+  server generates a random token at boot (`Tackle.Web.Setup`), keeps it in
+  memory only (never in the database or a file), and logs it with the setup
+  URL (`journalctl -u tackle-web`); a restart makes a new one. `/setup` asks
+  for it (a POST, compared in constant time) and marks that browser's session
+  as unlocked for a bounded time. Without the token, nobody who reaches a
+  fresh server can register their own App and become its admin. When setup
+  is complete the token stops working and `/setup` leads to the start page.
+- **The setup browser becomes the first admin.** Signing in from an unlocked
+  session claims admin, under the advisory lock, only while no admin exists.
+  This replaces "the first user to sign in becomes admin" (§7.6), which let
+  any organisation member race the operator.
+- **GitHub App manifest flow.** From the unlocked session, `/setup` builds a
+  manifest (name, homepage, webhook URL and events, callback URL
+  `/auth/github/callback`, redirect URL `/setup/github/callback`, setup URL
+  `/setup/github/installed`, `public: false`, the §7.1 permissions) and posts
+  it to `https://github.com/settings/apps/new` or
+  `https://github.com/organizations/<org>/settings/apps/new` with a one-time
+  `state` from the session. GitHub creates the App and redirects back with a
+  code; `POST /app-manifests/{code}/conversions` (unauthenticated, within one
+  hour) returns the App id, client id and secret, webhook secret, and private
+  key, which are stored encrypted (a create that fails if an App exists). The
+  browser then goes to the App's installation page. All of this is behind
+  `Tackle.Web.Forge` callbacks.
+- **Webhooks on a loopback URL.** GitHub cannot deliver to `localhost`, so a
+  `TACKLE_WEB_URL` on a loopback host (development) registers the App
+  without a webhook and with a locally generated webhook secret; installations
+  and repositories then come from the setup URL and the sync below. A tunnel
+  URL as `TACKLE_WEB_URL` gets webhooks as in production.
+- **Installations without webhooks.** The setup URL's `installation_id` can
+  be forged, so it is only a hint: the installation is confirmed with the
+  App's JWT (`GET /app/installations/{id}`) and recorded with its
+  repositories (`GET /installation/repositories`), with the same upsert rules
+  as webhooks, and only for an unlocked setup session or a signed-in admin.
+  A **Sync from GitHub** button (admins) reconciles everything: every
+  installation of the App (`GET /app/installations`) with its status and
+  repositories; installations GitHub no longer lists become `:removed` and
+  repositories no longer listed are deactivated. It covers missed webhooks.
+- **Admins manage admins.** `User.set_admin` is an admin action in the admin
+  interface; it refuses to remove the last admin.
+
+Not in phase 6b: replacing or rotating the App's secrets from the browser
+(delete and re-run setup, or the release command), and Gitea (§11).
 
 ## 8. Phases
 
@@ -842,6 +899,9 @@ use Postgres with the Ecto sandbox. Commit per phase.
    with the resources' `admin` sections and policies (§7.9), the Codex login
    page, and the installation's "apply defaults to existing repositories"
    option (§7.7).
+   - **6b. Web-only setup. Implemented** (§7.11): setup token, admin claim,
+     manifest flow, setup URL and sync, admin management in the browser
+     (`Tackle.Web.Setup`, `SetupController`, `ForgeSync`).
 7. **Feedback.** Resolved threads and reactions → `FindingOutcome`s;
    outcomes → known fingerprints.
 

@@ -5,7 +5,8 @@ defmodule Tackle.Web.Router do
 
   Browser routes have a session, CSRF protection, and `:current_user`
   (`Tackle.Web.Auth`). Sign-in is our own OAuth flow through the forge app
-  (`Tackle.Web.AuthController`). AshAdmin (`/admin`) and the Codex login
+  (`Tackle.Web.AuthController`); `/setup` registers and installs that app
+  (`Tackle.Web.SetupController`). AshAdmin (`/admin`) and the Codex login
   page require an admin, on the HTTP request and again on every LiveView
   mount; AshAdmin runs its actions as that admin, so the resources'
   policies decide what it may do.
@@ -48,6 +49,16 @@ defmodule Tackle.Web.Router do
     get "/auth/:forge", AuthController, :request
     get "/auth/:forge/callback", AuthController, :callback
     post "/sign-out", AuthController, :sign_out
+
+    # First-run setup and GitHub App installation (Tackle.Web.Setup); each
+    # action checks the setup session or an admin itself.
+    get "/setup", SetupController, :show
+    post "/setup/unlock", SetupController, :unlock
+    post "/setup/github", SetupController, :register
+    get "/setup/github/callback", SetupController, :registered
+    get "/setup/github/install", SetupController, :install
+    get "/setup/github/installed", SetupController, :installed
+    post "/setup/sync", SetupController, :sync
   end
 
   scope "/", Tackle.Web do

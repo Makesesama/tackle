@@ -16,6 +16,9 @@ config :tackle_web, Tackle.Web.Vault, key: "TEkLj/WCtz0rTpH6DDgn2+udfkiVk+Sk3ywb
 
 config :tackle_web, Oban, testing: :manual
 
+# The setup token is read from Tackle.Web.Setup.token/0, not the log.
+config :tackle_web, announce_setup: false
+
 # Forge API calls go to Req.Test stubs; nothing reaches GitHub.
 config :tackle_web, Tackle.Web.Forge.GitHub,
   api_url: "https://api.github.test",

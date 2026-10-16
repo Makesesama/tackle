@@ -430,6 +430,213 @@ defmodule Tackle.Web.Forge.GitHub do
     end
   end
 
+  ## Registration and installations (web setup)
+
+  # What the app needs (§7.1). `members` is the organisation permission for
+  # checking sign-ins.
+  @permissions %{
+    "metadata" => "read",
+    "contents" => "read",
+    "pull_requests" => "write",
+    "issues" => "read",
+    "members" => "read"
+  }
+  @events ["pull_request", "issue_comment"]
+
+  @impl Tackle.Web.Forge
+  def registration_form(base_url, state, opts) when is_binary(base_url) and is_binary(state) do
+    owner = Keyword.get(opts, :owner)
+
+    with {:ok, path} <- registration_path(owner) do
+      manifest =
+        %{
+          "name" => Keyword.get(opts, :name, "tackle"),
+          "url" => base_url,
+          "redirect_url" => base_url <> "/setup/github/callback",
+          "callback_urls" => [base_url <> "/auth/github/callback"],
+          "setup_url" => base_url <> "/setup/github/installed",
+          "setup_on_update" => true,
+          "public" => false,
+          "request_oauth_on_install" => false,
+          "default_permissions" => @permissions
+        }
+        |> Map.merge(webhook_manifest(base_url, Keyword.get(opts, :webhook?, true)))
+
+      {:ok,
+       %{
+         action: web_url() <> path <> "?" <> URI.encode_query(%{"state" => state}),
+         fields: [{"manifest", JSON.encode!(manifest)}]
+       }}
+    end
+  end
+
+  defp registration_path(nil), do: {:ok, "/settings/apps/new"}
+  defp registration_path(""), do: {:ok, "/settings/apps/new"}
+
+  defp registration_path(owner) do
+    if valid_clone_owner?(owner),
+      do: {:ok, "/organizations/#{owner}/settings/apps/new"},
+      else: {:error, :invalid_owner}
+  end
+
+  # Without a webhook there are no events to subscribe to either.
+  defp webhook_manifest(base_url, true) do
+    %{
+      "hook_attributes" => %{"url" => base_url <> "/webhooks/github", "active" => true},
+      "default_events" => @events
+    }
+  end
+
+  defp webhook_manifest(_base_url, false), do: %{}
+
+  # The code is the credential: the endpoint takes no authentication.
+  @impl Tackle.Web.Forge
+  def complete_registration(code) when is_binary(code) and code != "" do
+    path = "/app-manifests/#{segment(code)}/conversions"
+
+    with {:ok, body} <- request(:post, path, :none, retry: false, redirect: false) do
+      registration(body)
+    end
+  end
+
+  defp registration(
+         %{
+           "id" => id,
+           "client_id" => client_id,
+           "client_secret" => client_secret,
+           "pem" => pem,
+           "html_url" => html_url
+         } = app
+       )
+       when is_integer(id) and is_binary(client_id) and is_binary(client_secret) and
+              is_binary(pem) and is_binary(html_url) do
+    {:ok,
+     %{
+       app_id: Integer.to_string(id),
+       client_id: client_id,
+       client_secret: client_secret,
+       private_key: pem,
+       webhook_secret: if(is_binary(app["webhook_secret"]), do: app["webhook_secret"]),
+       install_url: html_url <> "/installations/new"
+     }}
+  end
+
+  defp registration(_body), do: {:error, {:github, :unexpected_response, "/app-manifests"}}
+
+  @impl Tackle.Web.Forge
+  def install_url(%ForgeApp{} = forge_app) do
+    with {:ok, jwt} <- app_jwt(forge_app) do
+      case request(:get, "/app", jwt) do
+        {:ok, %{"html_url" => html_url}} when is_binary(html_url) ->
+          {:ok, html_url <> "/installations/new"}
+
+        {:ok, _other} ->
+          {:error, {:github, :unexpected_response, "/app"}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @impl Tackle.Web.Forge
+  def installations(%ForgeApp{} = forge_app) do
+    with {:ok, jwt} <- app_jwt(forge_app),
+         {:ok, installations} <-
+           paginate_with(
+             &request(:get, "/app/installations", jwt, params: &1),
+             "/app/installations",
+             &installation_item/1,
+             &list_items/1
+           ) do
+      collect(installations, &listed_snapshot(forge_app, &1))
+    end
+  end
+
+  # In a full listing, an installation whose repositories cannot be read
+  # (revoked or suspended since it was listed) does not fail the others: its
+  # repositories are reported as unknown, which leaves them as they are.
+  defp listed_snapshot(forge_app, item) do
+    case snapshot(forge_app, item) do
+      {:ok, snapshot} ->
+        {:ok, snapshot}
+
+      {:error, reason} ->
+        Logger.warning(
+          "could not read the repositories of GitHub installation " <>
+            "#{item.installation.external_id}: #{inspect(error_kind(reason))}"
+        )
+
+        {:ok, Map.put(item, :repositories, nil)}
+    end
+  end
+
+  defp error_kind({:github, status, _detail}), do: {:github, status}
+  defp error_kind(reason) when is_atom(reason), do: reason
+  defp error_kind(_reason), do: :unexpected
+
+  @impl Tackle.Web.Forge
+  def installation(%ForgeApp{} = forge_app, external_id) when is_binary(external_id) do
+    path = "/app/installations/#{segment(external_id)}"
+
+    with {:ok, jwt} <- app_jwt(forge_app),
+         {:ok, body} <- found(request(:get, path, jwt)) do
+      case installation_item(body) do
+        {:ok, item} -> snapshot(forge_app, item)
+        :error -> {:error, {:github, :unexpected_response, path}}
+      end
+    end
+  end
+
+  defp found({:error, {:github, 404, _message}}), do: {:error, :not_found}
+  defp found(result), do: result
+
+  defp installation_item(%{"id" => id, "account" => %{"login" => login}} = item)
+       when is_integer(id) and is_binary(login) do
+    status = if is_nil(item["suspended_at"]), do: :active, else: :suspended
+    {:ok, %{installation: %{external_id: Integer.to_string(id), account: login}, status: status}}
+  end
+
+  defp installation_item(_item), do: :error
+
+  # A suspended installation cannot get a token, so its repositories are
+  # unknown rather than empty.
+  defp snapshot(_forge_app, %{status: :suspended} = item),
+    do: {:ok, Map.put(item, :repositories, nil)}
+
+  defp snapshot(forge_app, %{installation: installation} = item) do
+    fetch =
+      &installation_request(forge_app, installation, :get, "/installation/repositories",
+        params: &1
+      )
+
+    with {:ok, repositories} <-
+           paginate_with(
+             fetch,
+             "/installation/repositories",
+             &repository/1,
+             &wrapped_repositories/1
+           ) do
+      {:ok, Map.put(item, :repositories, repositories)}
+    end
+  end
+
+  defp wrapped_repositories(%{"repositories" => list}) when is_list(list), do: {:ok, list}
+  defp wrapped_repositories(_body), do: :error
+
+  defp collect(items, fun) do
+    Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
+      case fun.(item) do
+        {:ok, result} -> {:cont, {:ok, [result | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, results} -> {:ok, Enum.reverse(results)}
+      error -> error
+    end
+  end
+
   ## API
 
   @doc "Canonical public GitHub HTTPS URL; never accepts a caller-supplied remote."
@@ -673,39 +880,48 @@ defmodule Tackle.Web.Forge.GitHub do
   # shorter page is the last. Any malformed page or item fails the whole
   # read, and so does a list longer than `@max_pages` pages, rather than
   # answering from part of it.
-  defp paginate(forge_app, installation, path, parse, page \\ 1, acc \\ [])
+  defp paginate(forge_app, installation, path, parse) do
+    fetch = &installation_request(forge_app, installation, :get, path, params: &1)
+    paginate_with(fetch, path, parse, &list_items/1)
+  end
 
-  defp paginate(forge_app, installation, path, parse, page, acc) do
-    params = [per_page: @per_page, page: page]
+  # `fetch` reads one page given its query parameters; `items` finds the
+  # page's list in its body (some endpoints wrap it in an object).
+  defp paginate_with(fetch, path, parse, items, page \\ 1, acc \\ []) do
+    with {:ok, body} <- fetch.(per_page: @per_page, page: page) do
+      case items.(body) do
+        # One empty sentinel page distinguishes exactly @max_pages full pages
+        # from an over-limit list. Never accept or accumulate beyond the cap.
+        {:ok, []} ->
+          {:ok, Enum.reverse(acc)}
 
-    case installation_request(forge_app, installation, :get, path, params: params) do
-      # One empty sentinel page distinguishes exactly @max_pages full pages
-      # from an over-limit list. Never accept or accumulate beyond the cap.
-      {:ok, []} ->
-        {:ok, Enum.reverse(acc)}
+        {:ok, [_ | _]} when page > @max_pages ->
+          {:error, {:github, :too_many_pages, path}}
 
-      {:ok, [_ | _]} when page > @max_pages ->
-        {:error, {:github, :too_many_pages, path}}
+        {:ok, list} ->
+          next_page(list, fetch, path, parse, items, page, acc)
 
-      {:ok, items} when is_list(items) ->
-        case parse_items(items, parse) do
-          {:ok, parsed} when length(items) < @per_page ->
-            {:ok, acc |> Enum.reverse() |> Enum.concat(parsed)}
-
-          {:ok, parsed} ->
-            paginate(forge_app, installation, path, parse, page + 1, Enum.reverse(parsed, acc))
-
-          :error ->
-            {:error, {:github, :unexpected_response, path}}
-        end
-
-      {:ok, _other} ->
-        {:error, {:github, :unexpected_response, path}}
-
-      {:error, reason} ->
-        {:error, reason}
+        :error ->
+          {:error, {:github, :unexpected_response, path}}
+      end
     end
   end
+
+  defp next_page(list, fetch, path, parse, items, page, acc) do
+    case parse_items(list, parse) do
+      {:ok, parsed} when length(list) < @per_page ->
+        {:ok, acc |> Enum.reverse() |> Enum.concat(parsed)}
+
+      {:ok, parsed} ->
+        paginate_with(fetch, path, parse, items, page + 1, Enum.reverse(parsed, acc))
+
+      :error ->
+        {:error, {:github, :unexpected_response, path}}
+    end
+  end
+
+  defp list_items(list) when is_list(list), do: {:ok, list}
+  defp list_items(_body), do: :error
 
   defp parse_items(items, parse) do
     Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
@@ -805,7 +1021,8 @@ defmodule Tackle.Web.Forge.GitHub do
   # `opts`: `:body`, an encoded JSON body; `:params`, query parameters; and
   # `:retry` and `:redirect`. They are applied after the configured `:req_options`, so
   # configuration cannot turn a mutation's protections off. `credential` is
-  # a bearer token, or `{:basic, id, secret}` for the OAuth client's own calls.
+  # a bearer token, `{:basic, id, secret}` for the OAuth client's own calls,
+  # or `:none`.
   defp request(method, path, credential, opts \\ []) do
     {body, opts} = Keyword.pop(opts, :body)
 
@@ -819,10 +1036,9 @@ defmodule Tackle.Web.Forge.GitHub do
       headers:
         [
           {"accept", "application/vnd.github+json"},
-          {"authorization", authorization(credential)},
           {"x-github-api-version", @api_version},
           {"user-agent", "tackle-web"}
-        ] ++ content_type,
+        ] ++ authorization_header(credential) ++ content_type,
       # Oban retries failed jobs; a retrying request would hold the job.
       retry: false,
       receive_timeout: 15_000
@@ -848,6 +1064,9 @@ defmodule Tackle.Web.Forge.GitHub do
 
   defp authorization({:basic, id, secret}), do: "Basic " <> Base.encode64(id <> ":" <> secret)
   defp authorization(token) when is_binary(token), do: "Bearer " <> token
+
+  defp authorization_header(:none), do: []
+  defp authorization_header(credential), do: [{"authorization", authorization(credential)}]
 
   defp config(key, default),
     do: :tackle_web |> Application.get_env(__MODULE__, []) |> Keyword.get(key, default)

@@ -42,11 +42,19 @@ defmodule Tackle.Web.Forges.ForgeApp do
 
   code_interface do
     define :configure, args: [:forge]
+    define :register, args: [:forge]
     define :get, action: :read, get_by: [:forge], not_found_error?: false
   end
 
   actions do
     defaults [:read]
+
+    # Web setup (Tackle.Web.Setup): stores a newly registered app. Unlike
+    # :configure it never replaces one, so two setups racing cannot
+    # overwrite each other's secrets.
+    create :register do
+      accept [:forge, :app_id, :client_id, :private_key, :webhook_secret, :client_secret]
+    end
 
     # Creates the forge's row or replaces its settings and secrets.
     create :configure do

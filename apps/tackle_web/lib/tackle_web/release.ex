@@ -33,8 +33,8 @@ defmodule Tackle.Web.Release do
 
   @doc """
   Stores the GitHub App's settings and secrets, replacing earlier ones.
-  This is how the App is configured: the admin interface shows it read-only,
-  and sign-in needs it first. Reads:
+  For recovery or scripted deployments: `/setup` registers the App from the
+  browser (`Tackle.Web.SetupController`), which is the normal way. Reads:
 
     * `TACKLE_WEB_GITHUB_APP_ID` - the App ID;
     * `TACKLE_WEB_GITHUB_CLIENT_ID` - the App's client id (optional, but
@@ -67,9 +67,10 @@ defmodule Tackle.Web.Release do
 
   @doc """
   Grants (or, with `false`, revokes) admin rights to the GitHub user with
-  `login` (case-insensitive), who must have signed in once. The first user
-  to sign in is an admin already; there is no way to grant it in the web
-  interface. Takes effect on the user's next request.
+  `login` (case-insensitive), who must have signed in once. For recovery:
+  admins normally do this in the admin interface, and the first admin comes
+  from setup (`Tackle.Web.Setup`). The last admin cannot be revoked. Takes
+  effect on the user's next request.
   """
   @spec set_admin(String.t(), boolean()) :: :ok
   def set_admin(login, admin? \\ true) when is_binary(login) and is_boolean(admin?) do
@@ -96,9 +97,7 @@ defmodule Tackle.Web.Release do
     |> Ash.read!()
     |> case do
       [user] ->
-        User.set_admin!(user, admin?)
-        verb = if admin?, do: "is now", else: "is no longer"
-        {:ok, "#{user.login} #{verb} an admin."}
+        update_user_admin(user, admin?)
 
       [] ->
         {:error, "no user #{inspect(login)} has signed in yet"}
@@ -107,6 +106,17 @@ defmodule Tackle.Web.Release do
         {:error,
          "#{inspect(login)} matches several users (#{Enum.map_join(users, ", ", & &1.external_id)}); " <>
            "set the admin flag by id in a console"}
+    end
+  end
+
+  defp update_user_admin(user, admin?) do
+    case User.set_admin(user, admin?) do
+      {:ok, user} ->
+        verb = if admin?, do: "is now", else: "is no longer"
+        {:ok, "#{user.login} #{verb} an admin."}
+
+      {:error, error} ->
+        {:error, Exception.message(error)}
     end
   end
 

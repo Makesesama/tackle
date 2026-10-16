@@ -5,9 +5,11 @@ defmodule Tackle.Web.Accounts.User do
   of an account the forge app is installed on; later sign-ins update the
   login and name.
 
-  `admin` may change settings. The first user to sign in becomes an admin;
-  others are granted it from the console (`Tackle.Web.Release.set_admin/2`),
-  never through the web interface.
+  `admin` may change settings. The first admin is whoever signs in from the
+  browser that unlocked setup (`Tackle.Web.Setup`, `claim_admin`); admins
+  grant and revoke it for others in the admin interface (`:set_admin`), which
+  never removes the last admin. `Tackle.Web.Release.set_admin/2` is the
+  console's recovery path.
   """
 
   use Ash.Resource,
@@ -25,7 +27,7 @@ defmodule Tackle.Web.Accounts.User do
   admin do
     table_columns [:login, :name, :admin, :forge, :last_signed_in_at]
     create_actions []
-    update_actions []
+    update_actions [:set_admin]
     destroy_actions []
   end
 
@@ -39,25 +41,36 @@ defmodule Tackle.Web.Accounts.User do
     defaults [:read]
 
     # From a verified forge sign-in: records the user, or updates their login
-    # and name. `admin` is only decided on insert (see FirstUserAdmin).
+    # and name. It never changes `admin`, except for a setup claim.
     create :sign_in do
       accept [:forge, :external_id, :login, :name]
       upsert? true
       upsert_identity :unique_external_id
       upsert_fields [:login, :name, :last_signed_in_at, :updated_at]
+
+      argument :claim_admin, :boolean do
+        allow_nil? false
+        default false
+      end
+
       change set_attribute(:last_signed_in_at, &DateTime.utc_now/0)
-      change Tackle.Web.Accounts.User.FirstUserAdmin
+      change Tackle.Web.Accounts.User.ClaimAdmin
     end
 
-    # Console only: no policy allows it for a signed-in actor.
     update :set_admin do
       accept [:admin]
+      require_atomic? false
+      change Tackle.Web.Accounts.User.KeepAnAdmin
     end
   end
 
   policies do
     policy action_type(:read) do
       authorize_if {Tackle.Web.Accounts.Check, role: :user}
+    end
+
+    policy action(:set_admin) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
     end
   end
 

@@ -1,7 +1,7 @@
 # NixOS VM test for services.tackle-web: the release starts as its own user
 # against a local PostgreSQL over peer authentication, runs its migrations,
-# answers its health check, serves the sign-in page with the admin pages
-# behind it, stores a GitHub App through
+# answers its health check, offers browser setup with a logged setup token and
+# keeps the admin pages behind sign-in, stores a GitHub App through
 # `tackle-web-release`, and accepts that App's signed webhooks.
 #
 #   nix build .#checks.x86_64-linux.tackle-web-vm
@@ -55,8 +55,10 @@ self: {
           machine.succeed(psql("select count(*) from schema_migrations") + f" | grep -x {shipped}")
           machine.succeed(psql("select 1 from oban_jobs limit 1"))
 
-      with subtest("serves the sign-in page and keeps admin pages behind sign-in"):
-          machine.succeed("curl -sf http://127.0.0.1:4000/ | grep -F 'Sign in with GitHub'")
+      with subtest("offers browser setup with a logged token, and keeps admin pages behind sign-in"):
+          machine.succeed("curl -sf http://127.0.0.1:4000/ | grep -F 'set up tackle'")
+          machine.succeed("curl -sf http://127.0.0.1:4000/setup | grep -F 'Unlock setup'")
+          machine.wait_until_succeeds("journalctl -u tackle-web | grep -F 'setup token'")
           for path in ["/admin", "/codex-login"]:
               status = machine.succeed(
                   f"curl -s -o /dev/null -w '%{{http_code}}' http://127.0.0.1:4000{path}"

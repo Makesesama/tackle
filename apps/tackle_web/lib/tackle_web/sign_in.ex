@@ -42,15 +42,19 @@ defmodule Tackle.Web.SignIn do
   @doc """
   Finishes a sign-in with the code from the forge's redirect. Upstream
   errors are logged without their details and reported as one of `t:error/0`.
+
+  `claim_admin: true` (only for a browser that unlocked setup,
+  `Tackle.Web.Setup`) makes the user an admin if nobody is one yet.
   """
-  @spec complete(atom(), String.t(), String.t()) :: {:ok, User.t()} | {:error, error()}
-  def complete(forge, code, redirect_uri) do
+  @spec complete(atom(), String.t(), String.t(), keyword()) ::
+          {:ok, User.t()} | {:error, error()}
+  def complete(forge, code, redirect_uri, opts \\ []) do
     module = Forge.module(forge)
 
     with {:ok, forge_app} <- forge_app(forge),
          {:ok, forge_user} <- forge_user(module, forge_app, code, redirect_uri),
          :ok <- check_member(module, forge, forge_app, forge_user) do
-      record_user(forge, forge_user)
+      record_user(forge, forge_user, Keyword.get(opts, :claim_admin, false))
     end
   end
 
@@ -106,12 +110,13 @@ defmodule Tackle.Web.SignIn do
     end
   end
 
-  defp record_user(forge, forge_user) do
+  defp record_user(forge, forge_user, claim_admin?) do
     case User.sign_in(%{
            forge: forge,
            external_id: forge_user.external_id,
            login: forge_user.login,
-           name: forge_user.name
+           name: forge_user.name,
+           claim_admin: claim_admin?
          }) do
       {:ok, user} -> {:ok, user}
       {:error, error} -> raise Ash.Error.to_error_class(error)

@@ -124,6 +124,7 @@ defmodule Tackle.Web.AdminTest do
                Auth.pin_admin_actor(:params, expired)
 
       socket = admin_socket(admin)
+      admin!()
       User.set_admin!(admin, false)
 
       assert {:halt, %Socket{redirected: {:redirect, %{to: "/"}}}} =

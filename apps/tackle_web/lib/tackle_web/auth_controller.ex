@@ -8,6 +8,8 @@ defmodule Tackle.Web.AuthController do
     * `GET /auth/github/callback` checks `state` (once: it is dropped
       whatever happens), finishes the sign-in with `Tackle.Web.SignIn`, and
       stores the user in a renewed session (`Tackle.Web.Auth.put_user/2`);
+      from a browser that unlocked setup, the user claims admin if nobody
+      is one yet (`Tackle.Web.Setup`);
     * `POST /sign-out` drops the session.
 
   Failures are shown as a fixed message per kind; upstream details are not.
@@ -15,7 +17,7 @@ defmodule Tackle.Web.AuthController do
 
   use Phoenix.Controller, formats: [:html]
 
-  alias Tackle.Web.{Auth, AuthHTML, Endpoint, SignIn}
+  alias Tackle.Web.{Auth, AuthHTML, Endpoint, Setup, SignIn}
 
   @forges %{"github" => :github}
 
@@ -38,7 +40,9 @@ defmodule Tackle.Web.AuthController do
     with {:ok, forge} <- forge(name),
          :ok <- check_state(expected, name, params["state"]),
          {:ok, code} <- code(params),
-         {:ok, user} <- SignIn.complete(forge, code, redirect_uri(name)) do
+         claim_admin? = Setup.unlocked?(get_session(conn, :setup_unlocked_at)),
+         {:ok, user} <-
+           SignIn.complete(forge, code, redirect_uri(name), claim_admin: claim_admin?) do
       conn
       |> Auth.put_user(user)
       |> redirect(to: "/")

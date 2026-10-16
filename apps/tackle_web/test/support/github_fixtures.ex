@@ -139,6 +139,32 @@ defmodule Tackle.Web.GitHubFixtures do
     }
   end
 
+  ## API responses (for Req.Test stubs)
+
+  @doc "Answers GitHub's paginated `GET /app/installations`: `items` on page 1."
+  def installations_page(conn, items) do
+    conn = Plug.Conn.fetch_query_params(conn)
+    Req.Test.json(conn, if(conn.query_params["page"] == "1", do: items, else: []))
+  end
+
+  @doc "Answers `GET /app/installations/:id` from `items`; 404 for another id."
+  def installation_response(conn, items, id) do
+    case Enum.find(items, &(Integer.to_string(&1["id"]) == id)) do
+      nil -> conn |> Plug.Conn.put_status(404) |> Req.Test.json(%{"message" => "Not Found"})
+      item -> Req.Test.json(conn, item)
+    end
+  end
+
+  @doc "Answers `GET /installation/repositories` with `{id, name}` repositories of `owner`."
+  def repositories_response(conn, owner, repos) do
+    repositories =
+      Enum.map(repos, fn {id, name} ->
+        %{"id" => id, "name" => name, "owner" => %{"login" => owner}}
+      end)
+
+    Req.Test.json(conn, %{"total_count" => length(repositories), "repositories" => repositories})
+  end
+
   @doc "A 40-character hex SHA derived from `seed`."
   def sha(seed), do: :crypto.hash(:sha, seed) |> Base.encode16(case: :lower)
 

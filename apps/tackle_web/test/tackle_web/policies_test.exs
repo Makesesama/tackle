@@ -151,6 +151,7 @@ defmodule Tackle.Web.PoliciesTest do
     stale_admin = admin
     stale_user = user
 
+    admin!()
     User.set_admin!(admin, false)
 
     assert {:error, %Ash.Error.Forbidden{}} =

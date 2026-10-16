@@ -5,7 +5,7 @@ defmodule Tackle.Web.AuthControllerTest do
   import Tackle.Web.GitHubFixtures
 
   alias Tackle.Web.Accounts.User
-  alias Tackle.Web.{Auth, Repo}
+  alias Tackle.Web.{Auth, Repo, Setup}
   alias Tackle.Web.Forge.GitHub
   alias Tackle.Web.Forges.Installation
 
@@ -75,13 +75,41 @@ defmodule Tackle.Web.AuthControllerTest do
     assert redirected_to(conn, 302) == "/"
 
     user_id = get_session(conn, :user_id)
-    assert %User{login: "octocat", external_id: "583231", admin: true} = Ash.get!(User, user_id)
+    assert %User{login: "octocat", external_id: "583231", admin: false} = Ash.get!(User, user_id)
     assert get_session(conn, :planted) == nil
     assert get_session(conn, :oauth_state) == nil
     assert conn.private.plug_session_info == :renew
 
     page = get(recycle(conn), "/")
-    assert html_response(page, 200) =~ "Signed in as <strong>octocat</strong> (admin)"
+    assert html_response(page, 200) =~ "Signed in as <strong>octocat</strong>."
+  end
+
+  test "signing in from a browser that unlocked setup claims admin, once", %{
+    conn: conn,
+    installation: installation
+  } do
+    stub_github(installation)
+
+    conn =
+      Plug.Test.init_test_session(conn, %{"setup_unlocked_at" => System.os_time(:second)})
+
+    {conn, state} = start_sign_in(conn)
+    conn = get(recycle(conn), "/auth/github/callback", %{"code" => "c0de", "state" => state})
+
+    assert %User{admin: true} = Ash.get!(User, get_session(conn, :user_id))
+    # The renewed session no longer holds the unlock.
+    assert get_session(conn, :setup_unlocked_at) == nil
+  end
+
+  test "an expired setup unlock claims nothing", %{conn: conn, installation: installation} do
+    stub_github(installation)
+    expired = System.os_time(:second) - Setup.unlock_ttl() - 1
+    conn = Plug.Test.init_test_session(conn, %{"setup_unlocked_at" => expired})
+
+    {conn, state} = start_sign_in(conn)
+    conn = get(recycle(conn), "/auth/github/callback", %{"code" => "c0de", "state" => state})
+
+    assert %User{admin: false} = Ash.get!(User, get_session(conn, :user_id))
   end
 
   test "the state is checked, and works once", %{conn: conn, installation: installation} do

@@ -157,4 +157,62 @@ defmodule Tackle.Web.Forge do
   @doc "The forge module for a forge."
   @spec module(atom()) :: module()
   def module(:github), do: Tackle.Web.Forge.GitHub
+
+  ## Web setup (docs/TACKLE_WEB_PLAN.md §7.11)
+
+  @typedoc """
+  A form the browser posts to the forge to register the app: the forge
+  creates it and redirects to `base_url` + `/setup/<forge>/callback` with a
+  code and `state`.
+  """
+  @type registration_form :: %{action: String.t(), fields: [{String.t(), String.t()}]}
+
+  @typedoc """
+  A registered app's settings and secrets, as `ForgeApp` stores them, and
+  where to install it. `webhook_secret` is nil when the app was registered
+  without a webhook.
+  """
+  @type registration :: %{
+          app_id: String.t(),
+          client_id: String.t(),
+          client_secret: String.t(),
+          private_key: String.t(),
+          webhook_secret: String.t() | nil,
+          install_url: String.t()
+        }
+
+  @typedoc """
+  One installation of the app, as the forge reports it. `repositories` is
+  nil when they cannot be read (a suspended installation).
+  """
+  @type installation_snapshot :: %{
+          installation: Event.installation(),
+          status: :active | :suspended,
+          repositories: [Event.repository()] | nil
+        }
+
+  @doc """
+  The form that registers the app on the forge. `opts`: `:name` (the
+  suggested name), `:owner` (an organisation to register it under; the
+  signed-in user's account otherwise), and `:webhook?` (false registers it
+  without a webhook, for a URL the forge cannot reach).
+  """
+  @callback registration_form(base_url :: String.t(), state :: String.t(), keyword()) ::
+              {:ok, registration_form()} | {:error, :invalid_owner}
+
+  @doc "Exchanges the code from the forge's registration redirect, once."
+  @callback complete_registration(code :: String.t()) :: {:ok, registration()} | {:error, term()}
+
+  @doc "Where to install the registered app on (another) account."
+  @callback install_url(ForgeApp.t()) :: {:ok, String.t()} | {:error, term()}
+
+  @doc "Every installation of the app, with its repositories."
+  @callback installations(ForgeApp.t()) :: {:ok, [installation_snapshot()]} | {:error, term()}
+
+  @doc """
+  One installation of the app by the forge's id, with its repositories;
+  `{:error, :not_found}` when it is not this app's.
+  """
+  @callback installation(ForgeApp.t(), external_id :: String.t()) ::
+              {:ok, installation_snapshot()} | {:error, term()}
 end

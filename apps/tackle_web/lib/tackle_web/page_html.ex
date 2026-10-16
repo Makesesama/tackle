@@ -5,11 +5,17 @@ defmodule Tackle.Web.PageHTML do
 
   import Phoenix.Controller, only: [get_csrf_token: 0]
 
+  alias Tackle.Web.{Setup, SetupHTML}
+
   def home(assigns) do
     ~H"""
     <main>
       <h1>tackle</h1>
       <p>Reviews pull requests of the repositories the GitHub App is installed on.</p>
+
+      <p :if={!Setup.complete?(@setup)}>
+        Not set up yet: <a href="/setup">set up tackle</a> with the setup token from the server log.
+      </p>
 
       <%= if @current_user do %>
         <p>
@@ -19,13 +25,18 @@ defmodule Tackle.Web.PageHTML do
         <ul :if={@current_user.admin}>
           <li><a href="/admin">Administration</a>: repositories, providers, reviews</li>
           <li><a href="/codex-login">Connect an OpenAI Codex provider</a></li>
+          <li><a href="/setup/github/install">Install the GitHub App on another account</a></li>
+          <li>
+            <SetupHTML.sync_button />
+            to record installations and repositories that webhooks missed
+          </li>
         </ul>
         <p :if={!@current_user.admin}>
-          Only admins can change settings. An admin can grant it from the server's console.
+          Only admins can change settings; an admin can make you one in the administration.
         </p>
         <.sign_out />
       <% else %>
-        <p><a class="button" href="/auth/github">Sign in with GitHub</a></p>
+        <p :if={@setup.forge_app}><a class="button" href="/auth/github">Sign in with GitHub</a></p>
       <% end %>
     </main>
     """

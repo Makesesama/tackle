@@ -64,6 +64,10 @@ config :tackle_web, Oban,
 # Our code encodes and decodes JSON with the standard library's `JSON`.
 config :phoenix, :json_library, JSON
 
+# Request logs leave out the setup token, OAuth and registration codes, and
+# their `state` (Tackle.Web.SetupController, Tackle.Web.AuthController).
+config :phoenix, :filter_parameters, ["password", "token", "code", "state", "secret"]
+
 import_config "ash.exs"
 
 config :spark,

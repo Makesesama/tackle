@@ -41,3 +41,19 @@ button:disabled {
 label {
   margin-right: 1rem;
 }
+
+form.inline {
+  display: inline;
+}
+
+.steps li {
+  margin-bottom: 1rem;
+}
+
+.steps li.done {
+  color: #57606a;
+}
+
+.error {
+  color: #cf222e;
+}
