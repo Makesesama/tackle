@@ -88,8 +88,8 @@ defmodule Tackle.Executor do
   Returns the host directory the executor exposes at the same path, or `nil`
   when it sees the host filesystem directly.
 
-  Host-side reads of project files inside this directory go through the
-  executor (see `Tackle.ProjectFiles`).
+  Host-side reads of project files inside this directory should go through
+  the executor, as the harness's `Tackle.ProjectFiles` does.
   """
   @callback workspace(config :: term()) :: Path.t() | nil
 

@@ -120,7 +120,9 @@ filesystem and operating-system permissions and are not a sandbox. `Tackle.Lib` 
 ## Built-in tools
 
 `Tackle.Tools.default/0` supplies `read`, `bash`, `edit`, and `write` to
-configured agents.
+configured agents. They and their executors live in
+[`tackle_tools`](../tackle_tools/README.md), so other hosts can use them
+without the harness.
 Embedding hosts can supply a trusted `:tools` list instead; set
 `context: %{cwd: path}` to choose the filesystem tools' working directory.
 By default, tools run with the Tackle process's filesystem and OS permissions,

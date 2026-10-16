@@ -30,6 +30,11 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd packages/tackle_runtime && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_runtime && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
+# Coding tools and executors (MIX_REBAR3 from the dev shell)
+(cd packages/tackle_tools && mix deps.get)
+(cd packages/tackle_tools && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_tools && mix format --check-formatted)
+
 # Code review (needs cargo for gix_ex, and MIX_REBAR3 from the dev shell)
 (cd packages/tackle_review && mix deps.get)
 (cd packages/tackle_review && mix compile --warnings-as-errors && mix test)
@@ -119,6 +124,10 @@ Burrito, or lint commands for tooling that has not been wired up.
   including scopes, stable refs, admission limits, per-agent tool supervision,
   subagents, and workflows. Hosts provide an agent backend for their lifecycle
   and persistence policy.
+- `packages/tackle_tools/`: the coding tools `read`, `bash`, `edit`, and
+  `write` (`Tackle.Tools.*`) and their executors (`Tackle.Executor.Local`,
+  `Tackle.Executor.Jailed`), on `tackle_lib` and `tackle_exec` only, so hosts
+  other than the harness can use them. The harness's default tools.
 - `packages/tackle_review/`: code review (`Tackle.Review.*`, `:tackle_review`)
   on `tackle_runtime`, `gix_ex`, and `yaml_frontmatter`. It stores nothing and
   does not depend on the harness; hosts pass in rules, settings, and known

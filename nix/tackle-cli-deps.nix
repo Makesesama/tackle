@@ -687,7 +687,7 @@ let
             beamDeps = [
               tackle_lib
               tackle_runtime
-              tackle_exec
+              tackle_tools
               tackle_review
               yaml_frontmatter
             ];
@@ -875,6 +875,23 @@ let
 
             beamDeps = [
               tackle_lib
+            ];
+          };
+        in
+        drv;
+
+      tackle_tools =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_tools";
+
+            src = ../packages/tackle_tools;
+
+            beamDeps = [
+              tackle_lib
+              tackle_exec
             ];
           };
         in

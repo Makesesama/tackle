@@ -34,7 +34,7 @@ defmodule Tackle.MixProject do
       {:deps_nix, "~> 3.0", only: :dev},
       {:tackle_lib, path: "../tackle_lib"},
       {:tackle_runtime, path: "../tackle_runtime"},
-      {:tackle_exec, path: "../tackle_exec"},
+      {:tackle_tools, path: "../tackle_tools"},
       {:tackle_review, path: "../tackle_review"},
       {:yaml_frontmatter, path: "../yaml_frontmatter"},
       # Test-only: an optional host plugin, used to prove that a host can grant

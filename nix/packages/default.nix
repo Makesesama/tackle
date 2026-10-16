@@ -55,6 +55,7 @@ let
       (projectFiles ../../packages/clipboard_ex)
       (projectFiles ../../packages/gix_ex)
       (projectFiles ../../packages/tackle_review)
+      (projectFiles ../../packages/tackle_tools)
       (projectFiles ../../packages/yaml_frontmatter)
       (projectFiles ../../apps/tackle_cli)
       # Listed unconditionally because `mix.exs` reads it: a source copy without it
@@ -229,6 +230,7 @@ let
       tackle_runtime = prev.tackle_runtime.override { src = "${src}/packages/tackle_runtime"; };
       tackle_exec = prev.tackle_exec.override { src = "${src}/packages/tackle_exec"; };
       tackle_review = prev.tackle_review.override { src = "${src}/packages/tackle_review"; };
+      tackle_tools = prev.tackle_tools.override { src = "${src}/packages/tackle_tools"; };
       yaml_frontmatter = prev.yaml_frontmatter.override {
         src = "${src}/packages/yaml_frontmatter";
       };

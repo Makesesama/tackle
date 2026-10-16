@@ -61,6 +61,7 @@ build, or sandbox.
 | --- | --- |
 | `packages/tackle_lib` | Framework-free, provider- and frontend-independent agent loop (`Tackle.Lib`). |
 | `packages/tackle_runtime` | Reusable scoped OTP orchestration (`Tackle.Runtime`). |
+| `packages/tackle_tools` | Coding tools (`read`, `bash`, `edit`, `write`) and their local and jailed executors. |
 | `packages/tackle_review` | Code review on the runtime (`Tackle.Review`), without storage or harness code. |
 | `packages/tackle` | Developer-harness composition, configuration, and built-in tools (`Tackle`). |
 | Plugin packages | Provider adapters and optional integrations, using explicit contracts. |
@@ -90,6 +91,9 @@ and unfinished integrations:
 - [`packages/tackle_runtime`](packages/tackle_runtime/README.md) contains the
   reusable scoped OTP runtime: supervision, limits, subagents, and fan-out
   (`Tackle.Runtime.*`).
+- [`packages/tackle_tools`](packages/tackle_tools/README.md) contains the
+  coding tools and their local and jailed executors (`Tackle.Tools.Read`,
+  `Bash`, `Edit`, `Write`, `Tackle.Executor.*`), usable by any host.
 - [`packages/tackle_review`](packages/tackle_review/README.md) contains code
   review (`Tackle.Review.*`) on the runtime. The harness uses it through
   `Tackle.LocalReview`, which adds the local settings, rules, and history.

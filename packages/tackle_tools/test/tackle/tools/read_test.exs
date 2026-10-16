@@ -1,5 +1,5 @@
 defmodule Tackle.Tools.ReadTest do
-  alias Tackle.Test.Executors
+  alias Tackle.Tools.Test.Executors
 
   use ExUnit.Case, async: true, parameterize: Executors.parameters()
 

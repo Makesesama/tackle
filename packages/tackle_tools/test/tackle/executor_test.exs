@@ -1,5 +1,5 @@
 defmodule Tackle.ExecutorTest do
-  alias Tackle.Test.Executors
+  alias Tackle.Tools.Test.Executors
 
   use ExUnit.Case, async: true, parameterize: Executors.parameters()
 
@@ -134,8 +134,8 @@ defmodule Tackle.Executor.JailedTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Executor
-  alias Tackle.Test.Executors
   alias Tackle.Tools.{Bash, Read}
+  alias Tackle.Tools.Test.Executors
 
   setup do
     %{executor: executor} = Executors.start_executor(%{executor_kind: :jailed})
