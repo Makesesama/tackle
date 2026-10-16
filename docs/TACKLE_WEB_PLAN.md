@@ -1,223 +1,548 @@
 # tackle_web plan: forge review bot
 
-**Status: plan. Nothing here is implemented.** It builds on
-[`REVIEW_PACKAGE_PLAN.md`](REVIEW_PACKAGE_PLAN.md) (phases 1 to 4, done).
+**Status: plan. Nothing in `apps/tackle_web` is implemented yet.** This
+document is a handoff: it should be enough to start without the conversation
+that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
-## Goal
+## 1. Goal
 
 A web application, `apps/tackle_web`, that reviews pull requests of a
 company's repositories with `packages/tackle_review` and posts the findings
-as a review on the pull request. It runs on one NixOS server, for one
-company. GitHub comes first; Gitea later; a chat with a coding agent, like
-the harness's, later still. Nothing in it should block a hosted, multi-tenant
-version, but tenancy, billing, and sign-up are not built.
+as a review on the pull request.
 
-The name reuses `apps/tackle_web`, removed in `c6c9e84`; nothing from that
-app is reused.
+- One company, one NixOS server on the local network. Nothing should block a
+  later hosted, multi-tenant version, but tenancy, billing, and sign-up are
+  not built.
+- GitHub only for the MVP. Gitea is deferred and not part of the MVP; the
+  forge behaviour (§7.1) keeps it a new module later, but nothing
+  Gitea-specific is built now.
+- No chat feature for now.
 
-## Decisions taken
+The name reuses `apps/tackle_web`, deleted in `c6c9e84` (an unrelated,
+unmaintained Phoenix app); nothing from it is reused.
 
-- **PostgreSQL** with Ecto (`ecto_sql`, `postgrex`).
-- **NixOS** hosting on a local server: a package and a NixOS module in this
-  flake.
-- **App name** `apps/tackle_web`, OTP application `:tackle_web`, namespace
-  `Tackle.Web.*`, so a later chat feature fits the name.
-- **Forge-neutral core**: GitHub and later Gitea are implementations of one
-  `Tackle.Web.Forge` behaviour; nothing outside a forge module knows the
-  forge's API.
+## 2. Decisions taken
 
-## Shape
+| Topic | Decision |
+|---|---|
+| Database | PostgreSQL |
+| Application framework | **Ash** for the data model, actions, and admin: `ash`, `ash_postgres`, `ash_oban`, `ash_cloak`, `ash_phoenix`, `ash_admin` (≥ 1.3.2). Not for the core review flow, which stays plain Elixir modules. |
+| Admin UI | **AshAdmin** for managing resources instead of hand-built CRUD pages (§7.9). |
+| Model providers | **OpenRouter** (`packages/tackle_openrouter`, `Tackle.Plugins.OpenRouter`, API key) and **OpenAI Codex** (`packages/tackle_codex`, `Tackle.Plugins.Codex`, ChatGPT OAuth through the device-code flow) are bundled. They are the only adapters the app accepts (§7.2). |
+| Job queue | **Oban**, driven through AshOban |
+| Secrets in the database | **Cloak** vault through AshCloak, cipher `Cloak.Ciphers.AES.GCM` (authenticated; Cloak's AES-CTR cipher has a high-severity advisory, do not use it). Applies to provider credentials and to forge integration secrets. |
+| Web | Phoenix with LiveView, Bandit |
+| HTTP client | `req` |
+| Harness | **`tackle_web` does not depend on `packages/tackle`.** See §4. |
+| `packages/tackle_phoenix` | Not used. |
+| Sign-in | Not ash_authentication; a small GitHub OAuth flow of our own (§7.6). ash_authentication only covers sign-in, not repository access, and has a long advisory history (session fixation, OAuth identity linking to the wrong account in its GitHub strategy). |
+| JSON | Our code uses Elixir's standard `JSON` module only. Jason as a **transitive** dependency (Ash, Oban, Cloak, Ecto pull it in) is accepted; do not add it directly. Update the JSON rule in `AGENTS.md` to say so in phase 1. |
+| Hosting | NixOS; a Nix package and a NixOS module in this flake. Making the server reachable for forge webhooks (reverse proxy, tunnel) is the operator's job. |
+
+Verified before handoff: `ash` 3.36, `ash_postgres` 2.14, `ash_oban` 0.10,
+`ash_cloak` 0.4, `ash_phoenix` 2.3, `ash_admin` 1.3.2, `oban` 2.24, and
+`cloak` 1.1 resolve and compile on this repository's toolchain (Elixir
+1.20.4, OTP 29). `ash_admin` must be at least 1.3.2: the 0.x line has open
+advisories, including a high-severity stored XSS. An
+AshCloak attribute with the AES-GCM cipher stores ciphertext and decrypts on
+read. Ash requires `config :ash, default_string_length_count: :codepoints`.
+Dependencies emit Elixir 1.20 type-checker warnings while compiling; they do
+not affect `--warnings-as-errors` for our own code.
+
+## 3. Repository state at handoff
+
+Recent commits that this plan builds on (see `docs/REVIEW_PACKAGE_PLAN.md`):
+
+- `packages/tackle_review` (`Tackle.Review.*`): code review on
+  `tackle_runtime`, without harness code or storage.
+- `packages/tackle_tools` (`Tackle.Tools.{Read,Bash,Edit,Write}`,
+  `Tackle.Executor.{Local,Jailed}`): the coding tools and executors, on
+  `tackle_lib` and `tackle_exec` only.
+- `packages/yaml_frontmatter`, `packages/gix_ex` (with `GixEx.read_dir/4`).
+- `tackle_runtime`'s `AgentBackend` has optional `configure/2`,
+  `describe/1`, and `llm/1` callbacks that reviews require.
+
+## 4. Architecture
 
 ```
-tackle_lib ◄── tackle_runtime ◄── tackle_review
-    ▲                ▲                 ▲
-tackle_tools         │                 │
-    ▲                │                 │
-    └──────────── tackle_web ──────────┘   Phoenix, Ecto/Postgres, forges
+tackle_lib ◄── tackle_runtime ◄── tackle_review (+ gix_ex, yaml_frontmatter)
+    ▲               ▲                  ▲
+tackle_tools        │                  │
+(+ tackle_exec)     │                  │
+    ▲               │                  │
+    └────────── tackle_web ────────────┘
+                Phoenix · Ash/AshPostgres · Oban · Cloak · req
+                + tackle_openrouter, tackle_codex
 ```
 
-`tackle_web` does **not** depend on the harness (`packages/tackle`). The
-harness is built for a local agent: `config.json` and `TACKLE_HOME`, file
-sessions and journals, a file credential store, agent and skill discovery,
-`AGENTS.md`, and `Tackle.Session` as its agent process. None of that maps to
-a server with Postgres.
+Why not the harness: `packages/tackle` is built for a local agent:
+`config.json` and `TACKLE_HOME`, file sessions and journals, a file
+credential store, agent/skill/`AGENTS.md` discovery, and `Tackle.Session` as
+its agent process. None of that maps to a server with Postgres. Everything
+the app needs is in the packages above:
 
-What the app uses instead:
+| Need | From |
+|---|---|
+| Scopes, admission, limits, delegation, cancellation, supervision | `tackle_runtime` |
+| The agent process itself | **the app's own backend** (§7.3) |
+| Providers and model selection | `Tackle.Lib.LLM.Provider`, `Tackle.Lib.LLM.select/2` |
+| Credentials for adapters | the app's `Tackle.Lib.CredentialStore` on Postgres (§7.2) |
+| Thinking levels | `Tackle.Lib.Thinking` |
+| `read`, `bash`, jailed execution | `tackle_tools`, `tackle_exec` |
+| Review stages, rules, settings, pipeline | `tackle_review` |
 
-- `tackle_runtime` for scopes, admission, limits, delegation, and
-  cancellation. Its supervision tree leaves one slot to the host: the agent
-  process, provided by an `AgentBackend`. **The app implements its own
-  backend** (`Tackle.Web.AgentBackend`): one process per agent that runs
-  `Tackle.Lib` turns, emits events, and keeps what it must in Postgres, and
-  that implements the review's spec callbacks (`configure/2`, `describe/1`,
-  `llm/1`). This is where a local and a web host differ; the harness's
-  equivalent is `Tackle.Session`. A later chat extends the same backend with
-  persisted conversations.
-- `tackle_tools` (extracted from the harness, done) for `read` and `bash`
-  and the jailed executor.
-- `tackle_lib` for providers (`Tackle.Lib.LLM.Provider`) and credentials:
-  the app implements `Tackle.Lib.CredentialStore` on Postgres.
-- `tackle_review` for reviews, with stage specs built from
-  `Tackle.Review.Stages`, rules read from the base commit, settings and known
-  findings from the database, and the result recorded by the app.
+`tackle_runtime` supervises scopes and agents, but leaves the agent process
+to the host: `Tackle.Runtime.AgentSupervisor` starts whatever
+`backend.child_spec/2` returns. That process is what differs between a
+local host (the harness's `Tackle.Session`) and this app.
 
-## Components
+Ash is confined to `apps/tackle_web`. The packages stay framework-free.
 
-### Forge contract
+## 5. Application layout
 
-`Tackle.Web.Forge` (behaviour), first implemented by `Tackle.Web.Forge.GitHub`:
+OTP application `:tackle_web`, namespace `Tackle.Web.*` (as the CLI uses
+`Tackle.CLI.*`). A separate Mix project under `apps/tackle_web`, with path
+dependencies on the packages, like `apps/tackle_cli`. Phoenix is written by
+hand or with `mix phx.new --no-...` trimmed down; no Tailwind/esbuild build
+step at first (Phoenix and LiveView ship their JavaScript; styling is plain
+CSS), so the Nix build stays simple.
 
-- verify and decode a webhook (signature check, event type, delivery id);
-- the pull request: number, title, author, base and head refs and SHAs,
-  whether the head is a fork;
-- whether a user may trigger a review (write access to the repository);
-- fetch credentials for one repository (a short-lived token) and its clone URL;
-- post a review: one summary and line comments on the diff;
-- read feedback on posted comments (resolved threads, replies, reactions).
+Suggested modules:
 
-GitHub access is a **GitHub App** installed on the company organisation:
-an app JWT signed with its private key (RS256 through OTP's `:public_key`,
-no JWT dependency), short-lived installation tokens, and webhooks with an
-HMAC secret (`:crypto`). Tokens stay in the host process and are never
-written to disk or given to a jail.
+```
+Tackle.Web.Application
+Tackle.Web.Repo                       AshPostgres repo
+Tackle.Web.Vault                      Cloak vault (AES.GCM, key from env)
+Tackle.Web.Endpoint / Router / *Live  Phoenix
+Tackle.Web.Forges        (Ash domain) Installation, Repository
+Tackle.Web.Reviews       (Ash domain) ReviewRequest, ReviewRun, Finding, FindingOutcome
+Tackle.Web.Models        (Ash domain) Provider (+ encrypted credentials)
+Tackle.Web.Accounts      (Ash domain) User (sign-in)
+Tackle.Web.Forge                      behaviour (§7.1)
+Tackle.Web.Forge.GitHub               GitHub App client, webhooks, posting
+Tackle.Web.AgentBackend               runtime backend (§7.3)
+Tackle.Web.CredentialStore            Tackle.Lib.CredentialStore on Postgres
+Tackle.Web.Checkout                   clones and worktrees (§7.4)
+Tackle.Web.ReviewJob                  runs one review request (§7.5)
+Tackle.Web.Posting                    findings → forge review (§7.5)
+```
 
-### Data (Ecto)
+## 6. Data model (Ash resources on AshPostgres)
 
-- `forge_installations` - forge, external id, account; tokens are not stored.
-- `repositories` - installation, owner/name, enabled, trigger mode
-  (`command` or `auto`), review profile, settings (the JSON form of
-  `Tackle.Review.Settings`).
-- `review_requests` - repository, pull request, head SHA, base SHA, trigger,
-  requester, status; unique on (repository, pull request, head SHA) so
-  redelivered webhooks and repeated commands do not review twice.
-- `review_runs` - request, the `Result` summary (counts, stages, usage,
-  rule and prompt digests, settings), timing, error.
-- `findings` - run, fingerprint, the finding, shown/rejected, the forge
-  comment id when posted.
-- `finding_outcomes` - fingerprint, repository, outcome (`dismissed`,
-  `fixed`, `useful`, `not_useful`), source (forge feedback or admin), time.
-  The dismissed fingerprints of a repository are the next review's
+All timestamps UTC. Every row hangs off an installation, so a later
+multi-tenant version adds an account above it (Ash attribute multitenancy)
+instead of rewriting tables.
+
+**Forges**
+
+- `Installation`: `forge` (`:github` for now), `external_id`, `account`
+  (org/user login), `review_new_repositories` (default false) and
+  `default_auto_review` (default `:off`, see `Repository.auto_review`): the
+  defaults a repository gets when it is added to the installation, so "review
+  every pull request in the organisation" is one setting. Identity on
+  (`forge`, `external_id`).
+- `ForgeApp`: the integration's secrets per forge. GitHub: `app_id`,
+  `client_id`, and the encrypted (AshCloak) `private_key`,
+  `webhook_secret`, and `client_secret`. One row per forge.
+- `Repository`: `installation`, `owner`, `name`, `external_id`, `enabled`
+  (default: the installation's `review_new_repositories`), `auto_review`
+  (`:off` | `:on_open` | `:on_open_and_push`, default: the installation's
+  `default_auto_review`), `auto_review_forks` (default false),
+  `auto_review_drafts` (default false), `profile`
+  (`:quiet` | `:default` | `:assertive`), `settings` (the JSON form of
+  `Tackle.Review.Settings`, validated with `Settings.from_json/1` and
+  `Settings.new/2`), `daily_token_budget`. Identity on (`installation`,
+  `external_id`).
+
+**Reviews**
+
+- `ReviewRequest`: `repository`, `pull_number`, `head_sha`, `base_sha`,
+  `base_ref`, `head_is_fork`, `trigger` (`:command` | `:opened` | `:pushed`),
+  `requested_by` (forge login), `status` (`:pending` | `:running` |
+  `:posted` | `:failed` | `:skipped`), `error`. Identity on (`repository`,
+  `pull_number`, `head_sha`): webhook redeliveries and repeated commands
+  upsert instead of reviewing twice. AshOban trigger on `status == :pending`
+  runs the `:run` action (§7.5).
+- `ReviewRun`: `request`, `summary` (map: the `Tackle.Review.Result`
+  summary, including stages, usage, settings, and the `rules`/`prompts`
+  digests), `usage` (token totals for budgets), `duration_ms`,
+  `verdict`.
+- `Finding`: `run`, `fingerprint`, `state` (`:shown` | `:rejected` |
+  `:hidden`), the finding fields (title, category, severity, blocking,
+  confidence, rule_id, path, side, start_line, end_line, trigger, body,
+  suggestion), `evidence` (rejected), `forge_comment_id` (when posted).
+- `FindingOutcome`: `repository`, `fingerprint`, `outcome` (`:dismissed` |
+  `:fixed` | `:useful` | `:not_useful`), `source` (`:forge` | `:admin`),
+  `by`, `note`. A repository's dismissed fingerprints are the next review's
   `:known_fingerprints`.
 
-Every row hangs off an installation, so a later multi-tenant version adds
-an account above it rather than rewriting the tables.
+**Models**
 
-### Review job
+- `Provider`: `id` (as `Tackle.Lib.LLM.Provider` ids: lowercase, hyphens;
+  for example `openrouter`, `openai-codex`), `adapter` (an atom attribute
+  constrained to `:openrouter | :codex`, mapped in code to
+  `Tackle.Plugins.OpenRouter` / `Tackle.Plugins.Codex`; never a module name
+  from input), `settings` map (passed as the adapter's provider settings, for
+  example OpenRouter's `"provider_routing"`), encrypted `credentials` map
+  (opaque to us), `enabled`.
+- `ReviewDefaults` (one row): the model reference per stage (`detector`,
+  `verifier`, `scorer`, for example `"openrouter/<vendor>/<model>"` or
+  `"openai-codex/<model>"`) and thinking levels. **Required**: reviews do
+  not run, and say why, until the detector and verifier models are set and
+  resolve against the enabled providers. There is no implicit default model.
 
-A queue of `review_requests` with a small worker pool (concurrency 1 or 2
-at first) and a daily token budget per repository:
+**Accounts**
 
-1. **Fetch.** One bare clone per repository under the state directory;
-   fetch the base branch and the pull request's head
-   (`refs/pull/N/head` on GitHub) with the installation token passed per
-   command, never stored in Git's configuration. Git runs with
-   `GIT_CONFIG_NOSYSTEM`, an empty global configuration, and hooks disabled.
-2. **Worktree.** A detached worktree of the head SHA for this run, removed
-   afterwards. It is the jail's workspace.
-3. **Rules and settings.** `Tackle.Review.Rules.read_tree/3` at the **base**
-   SHA, loaded with `Rules.load/2`, so a pull request cannot change the rules
-   it is reviewed against; settings from the repository row.
-4. **Scope.** A scope on the app's backend whose root only requests runs,
-   and the two stage specs from `Tackle.Review.Stages` with `read`, `bash`,
-   and the output tools, on a jailed executor (`Tackle.Executor.Jailed`) for
-   the worktree.
-5. **Review.** `Tackle.Review.run/2` on the change `base...head`, with the
-   repository's known fingerprints; progress events update the request's
-   status for the UI.
-6. **Record and post.** Store the run and findings, then post one review:
-   findings on lines of the diff as line comments, the rest and the summary
-   in the review body. A fingerprint already posted on this pull request is
-   not posted again.
+- `User`: `forge`, `external_id`, `login`, `name`, `admin` flag. Created on
+  first sign-in by a member of an installed organisation.
 
-### Jail for untrusted code
+## 7. Components
 
-Pull requests are untrusted input, including prompt injection aimed at the
-agents. The review jail is a variant of `nix/packages/exec-jail.nix`:
+### 7.1 Forge contract
 
-- **no network** and **no Nix daemon or `/nix` mount** beyond the tool
-  closure (the CLI's jail keeps both);
-- the worktree mounted **read-only**; no credentials, no state directory,
-  no environment from the service;
-- review agents get only `read`, read-only `bash`, and the output tools.
+`Tackle.Web.Forge` behaviour, so nothing outside a forge module knows a
+forge's API. Only `Forge.GitHub` is implemented for the MVP; the behaviour
+exists so a later Gitea module does not touch the rest of the app.
 
-This needs two new options in `exec-jail.nix` (network and read-only
-workspace) and a `tackle-review-jail` package. `bubblewrap` needs
-unprivileged user namespaces; the NixOS module must not forbid them in the
-service's systemd hardening.
+- `verify_webhook(conn_or_raw, headers, forge_app)` → `{:ok, event}` with
+  type, delivery id, and decoded payload, or an error. GitHub:
+  `X-Hub-Signature-256` HMAC-SHA256 over the raw body, compared in constant
+  time (`Plug.Crypto.secure_compare/2`). Read the raw body before parsing.
+- `pull_request(installation, repo, number)` → title, author, base/head refs
+  and SHAs, fork flag, state.
+- `can_trigger?(installation, repo, login)` → write access or higher.
+- `clone_auth(installation, repo)` → clone URL and a short-lived credential.
+- `post_review(installation, repo, number, head_sha, body, comments)`.
+- `feedback(installation, repo, number)` → resolved threads, replies, and
+  reactions on our comments (phase 6).
 
-### Triggers and limits
+**GitHub implementation**: a GitHub App installed on the company
+organisation. App JWT (RS256, `iat`/`exp` ≤ 10 minutes, `iss` = app id)
+signed with `:public_key` from the private key; installation access tokens
+from `POST /app/installations/{id}/access_tokens`, cached in memory until
+shortly before expiry, never written to disk or the database, never passed
+to a jail. Use `req`; test with `Req.Test` stubs.
 
-- `/tackle review` in a pull request comment, from a user with write access.
-- Automatic review of opened and updated pull requests, off by default per
-  repository.
-- Pull requests from forks are only reviewed on a command.
-- A per-repository daily token budget, from `result.usage`.
+**App permissions** (checked against GitHub's REST and webhook
+documentation). On GitHub every pull request is also an issue: comments in a
+pull request's conversation are issue comments, delivered as `issue_comment`,
+which a GitHub App only receives with the "Issues" permission, even with full
+"Pull requests" access. Line comments on the diff are a separate kind
+(`pull_request_review_comment`).
 
-### Web interface
+| Permission | Level | Why |
+|---|---|---|
+| Metadata (repository) | read | always granted; covers "Get repository permissions for a user", the write-access check for a command's author |
+| Contents (repository) | read | clone and fetch the repository and pull request refs |
+| Pull requests (repository) | write | read pull requests; "Create a review for a pull request" requires write; `pull_request`, `pull_request_review_comment`, and `pull_request_review_thread` events |
+| Issues (repository) | read | only to receive `issue_comment`, the `/tackle review` command |
+| Members (organisation) | read | "Check organization membership for a user" at sign-in |
 
-Phoenix with LiveView, without a JavaScript build step at first (Phoenix
-and LiveView ship their JavaScript in their packages; styling is plain CSS).
+Webhook events to subscribe to: `pull_request`, `issue_comment`, and later
+`pull_request_review_thread` (phase 6). `installation` and
+`installation_repositories` are delivered without a permission.
 
-- `POST /webhooks/:forge` - webhook endpoint.
-- Sign-in with the forge (GitHub OAuth through the same app), allowed for
-  members of the installed organisation only.
-- Pages: installations and repositories (enable, trigger mode, profile,
-  settings), review runs (status, findings, cost), and a finding's outcome.
+### 7.2 Providers and credentials
 
-### Deployment
+`Tackle.Web.CredentialStore` implements `Tackle.Lib.CredentialStore`
+(`fetch/2`, `put/3`, `delete/2`, keyed by provider id) on the `Provider`
+resource's encrypted `credentials`. Adapters receive the handle in their LLM
+options as `:credential_store`. Providers are built with
+`Tackle.Lib.LLM.Provider.new/3` from the enabled rows and passed to the
+agent backend and to `Tackle.Review.Settings.new/2`.
 
-- `nix/packages/tackle-web.nix`: a Mix release of the app.
-- `nixosModules.tackle-web`: `services.tackle-web` with a dedicated user, a
-  state directory (clones and worktrees), an environment file for
-  secrets (app id, private key path, webhook secret, OAuth client secret,
-  `SECRET_KEY_BASE`), the database URL, the listen address, and the review
-  jail. PostgreSQL through `services.postgresql`
-  (`ensureDatabases`/`ensureUsers`), migrations on start.
-- The server must be reachable by the forge's webhooks (for example through
-  a reverse proxy or tunnel); this plan does not set that up.
+**OpenRouter** (`Tackle.Plugins.OpenRouter`): credentials are
+`%{"api_key" => key}`, entered through a `:set_credentials` action. The
+adapter falls back to the `OPENROUTER_API_KEY` environment variable for the
+default `openrouter` provider when nothing is stored; the service must not
+set it, so the database stays the only source.
 
-## Phases
+**OpenAI Codex** (`Tackle.Plugins.Codex`): a ChatGPT subscription login.
+Use the **device-code flow**
+(`Tackle.Plugins.Codex.OAuth.request_device_code/1`, then
+`complete_device_code/2`), not the redirect flow, whose redirect URI is
+`http://localhost:1455/auth/callback`. A small LiveView page (AshAdmin
+cannot do this) shows the user code and verification URL, waits for
+completion in a task, and stores the returned credentials. The adapter
+refreshes expired tokens itself and writes them back with `put/3`. It
+serialises refreshes with a `:global` lock keyed on the store handle and the
+provider id, and re-reads the credentials inside the lock. Therefore:
 
-Each phase ends with the app compiling with `--warnings-as-errors`,
-formatted, credo-clean, and tested; tests use fake forges and fake model
-adapters and need no network or credentials, but do need a Postgres
-(the dev shell gets one).
+- use one **stable handle** for all runs,
+  `{Tackle.Web.CredentialStore, :default}`, never a per-run reference, or
+  the lock does not serialise concurrent reviews and a rotated refresh token
+  can be lost;
+- `fetch/2` reads the database every time (no cache), and `put/3` writes in
+  a transaction.
 
-0. **Extraction.** *Done:* `packages/tackle_tools` holds the coding tools
-   and executors, so the app needs nothing from the harness.
-1. **Skeleton.** Phoenix app, Ecto repository and the first migrations,
-   health endpoint, dev shell Postgres, CI job, Nix package and a NixOS
-   module that starts it.
-2. **Forge and webhooks.** `Tackle.Web.Forge`, GitHub App authentication,
-   the webhook endpoint with signature checks, installations and
-   repositories kept in sync, and the trigger rules.
-3. **Review job.** The app's agent backend, provider configuration and the
-   Postgres credential store, clones and worktrees, the review jail
-   (`exec-jail.nix` options, `tackle-review-jail`), scope composition,
-   `Tackle.Review.run/2`, and storing runs and findings.
-4. **Posting.** Mapping findings to review comments and the summary, and
-   not posting a finding twice.
-5. **Interface.** Sign-in, repository settings, runs and findings.
-6. **Feedback.** Forge feedback and admin actions become outcomes, and
-   outcomes become known fingerprints.
+The Cloak key comes from the environment (`TACKLE_WEB_CLOAK_KEY`, base64,
+32 bytes) set by the NixOS module's environment file; support Cloak's key
+rotation (a list of ciphers with tags) from the start.
 
-## Dependencies to approve
+### 7.3 Agent backend
 
-Phoenix (`phoenix`, `phoenix_live_view`, `phoenix_html`, `bandit`),
-Ecto (`ecto_sql`, `postgrex`), and `req` for forge HTTP (already used by
-the provider adapters). JWT, HMAC, and JSON use OTP and Elixir's standard
-library. Whether to add **Oban** for the job queue is an open question
-below.
+`Tackle.Web.AgentBackend` implements `Tackle.Runtime.AgentBackend`:
 
-## Open questions
+- Spec config: a struct with providers, the selected `Tackle.Lib.LLM`
+  selection and model reference, tools, system prompt, context, adapter
+  options (including `:credential_store`), and step limit.
+- One process per agent that runs one `Tackle.Lib.run/3` turn at a time in a
+  task, forwards the loop's events to subscribers as
+  `{:tackle_runtime_event, event}`, reports a delegated run's outcome to
+  `context.terminal`, cancels through a `Tackle.Lib.Cancellation` signal on
+  `:cancel` and `{:runtime_cancel, reason}`, and answers `:snapshot` with
+  `%{agent_state: state}`.
+- `prepare_child/2`, `select_model/2`, `model_ref/1`, and the review
+  callbacks `configure/2`, `describe/1`, `llm/1`, `outcome/2`.
+- Nothing is persisted for review runs; the review result is what is kept.
 
-1. **Job queue:** Oban (Postgres-backed, retries, uniqueness, a known
-   quantity) or a small queue of our own on the `review_requests` table?
-2. **Model credentials on the server:** a provider with an API key in the
-   environment file (Anthropic, OpenRouter), or a Codex login stored in the
-   Postgres credential store (the login flow is in `tackle_codex`)?
-3. **Sign-in:** forge OAuth as above, or leave authentication to a reverse
-   proxy on the local network for now?
-4. **`packages/tackle_phoenix`:** unused by this plan; its `Runner` and
-   `Store` may serve the later chat, or the app's own backend may. Keep it
-   until the chat is planned?
+**Reference implementation**: `packages/tackle_review/test/support/backend.ex`
+is exactly this backend, minus credentials, and the review test suite runs
+whole reviews on it. Start from it; the harness's
+`Tackle.Runtime.RootBackend` shows the same callbacks on `%Tackle.Config{}`.
+Test the app's backend with the same scripted-adapter approach as
+`packages/tackle_review/test/tackle/review_test.exs`.
+
+### 7.4 Checkouts
+
+`Tackle.Web.Checkout`, all Git through `System.cmd("git", ...)` with a
+clean environment: `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+`GIT_TERMINAL_PROMPT=0`, `-c core.hooksPath=/dev/null`,
+`-c protocol.file.allow=never`; credentials per command through
+`-c http.extraHeader=Authorization: ...` (or `GIT_ASKPASS`), never in a
+remote URL or the repository's config.
+
+1. One bare clone per repository under `<state>/repos/<installation>/<repo>`.
+2. Fetch the base branch and the PR head (`refs/pull/N/head` on GitHub) to
+   the requested SHAs.
+3. A detached worktree of `head_sha` under `<state>/worktrees/<request id>`,
+   removed after the run (also on failure; sweep leftovers at start).
+4. The change: `Tackle.Review.Change.load(cwd: worktree, workspace:
+   worktree, range: "#{base_sha}...#{head_sha}")`.
+
+### 7.5 Review job
+
+`ReviewRequest`'s AshOban trigger runs the `:run` action, which calls
+`Tackle.Web.ReviewJob.run/1` (plain Elixir). Oban queue `reviews` with
+concurrency 1 to 2, a timeout, and limited retries (`:failed` with the error
+after the last attempt).
+
+1. Check the repository is enabled and within its daily token budget
+   (sum of today's `ReviewRun.usage`); else `:skipped` with a reason.
+2. Checkout (§7.4).
+3. Rules from the **base** commit, so a pull request cannot change the
+   rules it is reviewed against:
+   `{:ok, files} = Tackle.Review.Rules.read_tree(worktree_or_clone, base_sha)`,
+   `Rules.load([{:project, files}], builtin_rules: ...)`; turn load warnings
+   into `:warnings`.
+4. Settings: `Tackle.Review.Settings.new(opts, providers)` from the
+   repository's settings.
+5. A scope on `Tackle.Web.AgentBackend`: a root agent that never runs a
+   turn (allow delegation), and the two stage profiles built from
+   `Tackle.Review.Stages.detector/0` and `verifier/0`: tools
+   `Tackle.Tools.Read`, `Tackle.Tools.Bash`, and
+   `Tackle.Review.Tools.ReportFindings` / `ReportVerdict`; context
+   `%{cwd: worktree, executor: jailed_executor}`; step limit from
+   `max_steps`; models from the defaults and settings.
+6. `Tackle.Review.run(change, requester: root, profiles: ..., rules: ...,
+   settings: ..., profile: ..., known_fingerprints: dismissed,
+   warnings: ..., on_event: ...)`; events update the request for the UI.
+7. Store the `ReviewRun` and `Finding`s (shown, rejected, and
+   `Result.hidden/1`).
+8. Post (§7.5.1), set `:posted`, stop the scope, remove the worktree.
+
+#### 7.5.1 Posting
+
+`Tackle.Web.Posting` builds one review (`event: COMMENT`):
+
+- a finding whose location lies on lines of the diff becomes a line comment
+  (`path`, `side` `RIGHT` for `:new`/`LEFT` for `:old`, `line` = end line,
+  `start_line` when the range spans lines; GitHub requires both ends in the
+  same hunk, otherwise comment on the end line only);
+- other findings go into the review body;
+- the body leads with the verdict and counts, lists blocking findings
+  first, and says which profile and how many units were reviewed;
+- a fingerprint already posted on this pull request (any earlier run) is not
+  posted again; mention it as still present in the body instead.
+
+Keep the comment text format in one module, separate from the GitHub API
+calls, so a later forge reuses it.
+
+### 7.6 Sign-in and authorisation
+
+Our own GitHub OAuth web flow through the same GitHub App's client id and
+secret: `/auth/github` redirects with a random `state` stored in the
+session; `/auth/github/callback` checks `state`, exchanges the code with
+`req`, reads `/user`, and checks membership of an installed organisation
+(`GET /orgs/{org}/members/{login}` with an installation token). Then
+**renew the session** (`configure_session(renew: true)`) before storing the
+user id. Logout drops the session. All admin pages require a signed-in
+user; settings changes require `admin` (the first user, or set in the
+console). Protect forms with Phoenix's CSRF tokens.
+
+### 7.7 Triggers and limits
+
+Two ways to start a review, as other review bots offer them:
+
+- **Command.** `issue_comment` (`created`) on a pull request (the issue
+  payload has a `pull_request` key) whose body starts with `/tackle review`,
+  optionally followed by a profile (`quiet`, `default`, `assertive`), from a
+  user with write access → upsert a `ReviewRequest` (`trigger: :command`)
+  for the pull request's current head. Works on any enabled repository,
+  whatever its `auto_review`, and on forks and drafts. Ignore comments by the
+  app's own bot user and edited comments.
+- **Automatic review of new pull requests.** With `auto_review: :on_open`,
+  `pull_request` `opened`, `reopened`, and `ready_for_review` → a request
+  (`trigger: :opened`). With `:on_open_and_push`, also `synchronize` (new
+  commits) → a request (`trigger: :pushed`) for the new head; findings
+  already posted on the pull request are not posted again (§7.5.1), so a
+  push review only adds what is new. Drafts are skipped unless
+  `auto_review_drafts`, and reviewed when they become ready. Fork heads are
+  skipped unless `auto_review_forks`.
+
+Turning on "review every pull request" for the organisation:
+`review_new_repositories` and `default_auto_review: :on_open` on the
+installation, plus a bulk action that applies them to the existing
+repositories.
+
+Limits:
+
+- the uniqueness of (repository, pull request, head SHA) makes redelivered
+  webhooks and a command after an automatic review of the same head no-ops
+  (a command with a different profile on the same head may re-run; decide in
+  phase 2 and document it);
+- a newer head supersedes pending requests for older heads of the same pull
+  request (mark them `:skipped`), so a burst of pushes reviews only the last;
+- a daily token budget per repository; Oban concurrency caps parallel
+  reviews.
+
+### 7.8 Jail for untrusted code
+
+Pull requests are untrusted, including prompt injection aimed at the review
+agents. The review agents' `read` and `bash` run through
+`Tackle.Executor.Jailed` with a `Tackle.Exec.Client` on a dedicated
+launcher, `tackle-review-jail`, a variant of `nix/packages/exec-jail.nix`:
+
+- **no network** (the existing `exec-jail` keeps the network namespace);
+- **no `/nix` mount or Nix daemon** beyond the tool closure (the existing one
+  mounts `/nix` and the daemon socket with `enableNix`);
+- the worktree mounted **read-only**; no state directory, credentials, or
+  service environment.
+
+Add options to `exec-jail.nix` (for example `network ? true`,
+`readOnlyWorkspace ? false`) rather than copying it, and a package
+`tackle-review-jail`. Bubblewrap needs unprivileged user namespaces: the
+NixOS module's systemd hardening must not set `RestrictNamespaces` to forbid
+`user`. One exec client per review run, started with the worktree as its
+working directory; see `apps/tackle_cli/lib/tackle_cli/jail.ex` for how the
+CLI starts one and fails closed. Never fall back to the local executor.
+
+### 7.9 Web interface
+
+**AshAdmin**, mounted at `/admin` (`ash_admin "/admin"` in the router),
+covers managing the resources: installations and repositories (enable,
+automatic review, profile, settings, daily budget), providers, review
+requests and runs with their findings, and finding outcomes. Configure
+each resource's `admin` section (actor, table columns, which actions
+appear), and expose only the actions an operator should use.
+
+Rules for it:
+
+- The `/admin` scope sits behind the sign-in pipeline and requires an
+  `admin` user; AshAdmin runs actions as that user (set the actor), and the
+  resources' policies decide what is allowed.
+- Every secret attribute (forge private key, webhook and client secrets,
+  provider credentials) is `sensitive?: true` and never listed in
+  `show_sensitive_fields`, so AshAdmin redacts it. Secrets are written
+  through dedicated actions (for example `:set_credentials`) that accept
+  them as arguments and never read them back.
+- Validation lives in the resources' actions (settings through
+  `Tackle.Review.Settings.from_json/1` and `new/2`, provider ids and adapter
+  allowlist), so AshAdmin and any later page enforce the same rules.
+
+Custom LiveView pages only where AshAdmin does not fit: the sign-in page,
+the Codex device-code login (§7.2), and, if useful, a review run view that
+shows its findings next to the diff lines and the run's cost. Use AshPhoenix
+forms there.
+
+### 7.10 Deployment
+
+- `nix/packages/tackle-web.nix`: a Mix release of `apps/tackle_web`
+  (dependencies through `deps_nix` like the CLI: add a `deps.nix` alias in
+  its `mix.exs` that writes `nix/tackle-web-deps.nix`).
+- `nixosModules.tackle-web` in `flake.nix`: `services.tackle-web` with
+  `enable`, `package`, `listenAddress`/`port`, `stateDir`
+  (`/var/lib/tackle-web`), `environmentFile` (secrets:
+  `SECRET_KEY_BASE`, `TACKLE_WEB_CLOAK_KEY`, `DATABASE_URL` if not local),
+  `reviewJail` (the launcher package), a dedicated user, PostgreSQL through
+  `services.postgresql` (`ensureDatabases`/`ensureUsers`, peer
+  authentication over the Unix socket), and migrations on start
+  (`Tackle.Web.Release.migrate/0`). Forge app secrets are entered in the UI
+  and stored encrypted, not in Nix.
+- A NixOS VM test (`nix/tests/`) that starts the service with Postgres and
+  checks the health endpoint, when phase 1 lands.
+
+## 8. Phases
+
+Each phase ends with `mix compile --warnings-as-errors`, `mix format
+--check-formatted`, `mix credo --strict`, and `mix test` passing for
+`apps/tackle_web` and every package it touches; tests use fake forges
+(`Req.Test`) and fake model adapters, need no network or credentials, and
+use Postgres with the Ecto sandbox. Commit per phase.
+
+1. **Skeleton.** Mix project, Phoenix endpoint and router, AshPostgres repo,
+   the Cloak vault, Oban, a health endpoint, the empty Ash domains, config
+   for dev/test/prod (runtime config from the environment). Dev shell:
+   `pkgs.postgresql` and a script to start a local cluster under the
+   project directory. Woodpecker job (needs a Postgres in CI), pre-commit
+   credo hook entry, `AGENTS.md` (commands, repo map, the Jason rule
+   wording), README. Nix package and the NixOS module skeleton with the VM
+   test.
+2. **Forges and webhooks.** `ForgeApp`, `Installation`, `Repository`;
+   `Tackle.Web.Forge` and `Forge.GitHub` (JWT, installation tokens, webhook
+   verification); `POST /webhooks/github`; installation and repository sync
+   from `installation*` events (new repositories take the installation's
+   defaults); the command and automatic-review rules of §7.7 creating
+   `ReviewRequest`s.
+3. **Models and agent backend.** `Provider` and `ReviewDefaults`,
+   `Tackle.Web.CredentialStore`, the OpenRouter key action and the Codex
+   device-code login, `Tackle.Web.AgentBackend` with tests that run a whole
+   review on it with a scripted adapter (no real provider calls).
+4. **Review job.** `Checkout`, the review jail (`exec-jail.nix` options,
+   `tackle-review-jail`), `ReviewJob` with the AshOban trigger, storing
+   `ReviewRun` and `Finding`s.
+5. **Posting.** `Posting`, idempotent per fingerprint.
+6. **Interface and sign-in.** OAuth sign-in, AshAdmin behind it with the
+   resources' `admin` sections and policies (§7.9).
+7. **Feedback.** Resolved threads and reactions → `FindingOutcome`s;
+   outcomes → known fingerprints.
+
+## 9. Environment notes for the next agent
+
+- Use `nix develop`. In some shells `tackle_lib`'s rebar3 dependencies
+  (`idna` and others) fail to build with the `rebar3` that Mix downloads into
+  `.nix-mix`; set `MIX_REBAR3=$(which rebar3)` to use the dev shell's.
+- `gix_ex` builds a Rust NIF (`cargo`); the first compile takes a while.
+- After changing dependencies of the CLI (and later the web app), regenerate
+  the Nix dependency files (`mix deps.nix` in the app) and run
+  `nix fmt -- <file>` on the result; check with
+  `nix eval .#packages.<system>.<package>.drvPath`. New files must be
+  `git add`ed before the flake sees them.
+- The pre-commit hook runs credo for `packages/tackle`,
+  `packages/tackle_review`, and `packages/tackle_tools` (`flake.nix`); add
+  the app there.
+- Untracked files in the working tree (`docs/code-review-plan.md`, review
+  benchmark cases, logs) belong to the user; leave them alone.
+
+## 10. Open points
+
+- Which models to set as the review defaults; an operator setting, not code
+  (§6, `ReviewDefaults`).
+
+## 11. Deferred, not in the MVP
+
+- **Gitea**: a `Forge.Gitea` module with a bot user and an encrypted access
+  token, OAuth2 for sign-in, webhook HMAC, and Gitea's pull review API.
+- Chat with a coding agent: would extend `Tackle.Web.AgentBackend` with
+  persisted conversations.
+- Multi-tenancy, billing, and sign-up.
