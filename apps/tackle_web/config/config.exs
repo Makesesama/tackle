@@ -56,11 +56,7 @@ config :tackle_web, Oban,
 # Our code encodes and decodes JSON with the standard library's `JSON`.
 config :phoenix, :json_library, JSON
 
-config :ash,
-  default_string_length_count: :codepoints,
-  include_embedded_source_by_default?: false,
-  default_page_type: :keyset,
-  policies: [no_filter_static_forbidden_reads?: false]
+import_config "ash.exs"
 
 config :spark,
   formatter: [

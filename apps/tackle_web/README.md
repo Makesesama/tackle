@@ -1,12 +1,12 @@
 # tackle_web
 
-**Status: phase 1a of [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
+**Status: phase 1 of [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
 findings to the forge. So far it is only the skeleton: a Phoenix endpoint
 with a health check, the PostgreSQL repository, the Cloak vault, Oban, and
-the empty Ash domains. It cannot review anything yet; the plan lists what
-each phase adds.
+the empty Ash domains, packaged for Nix with a NixOS module. It cannot
+review anything yet; the plan lists what each phase adds.
 
 OTP application `:tackle_web`, namespace `Tackle.Web.*`. It depends on the
 packages (`tackle_lib`, `tackle_runtime`, `tackle_review`, `tackle_tools`,
@@ -80,6 +80,51 @@ app and stored encrypted.
 
 Run migrations in a release with
 `bin/tackle_web eval "Tackle.Web.Release.migrate()"`.
+
+## Nix package and NixOS module
+
+`nix build .#tackle-web` builds the release (`nix/packages/tackle-web.nix`)
+from `nix/tackle-web-deps.nix`. After changing dependencies, regenerate that
+file and check that the package still builds:
+
+```sh
+mix deps.nix                     # in this directory
+nix fmt -- ../../nix/tackle-web-deps.nix
+nix build ../..#tackle-web
+```
+
+The dependencies are compiled without the app's `config/`, except for
+`config/ash.exs`, which every dependency is compiled with: Ash reads those
+settings at compile time, and a release refuses to boot when they differ
+from the app's. Keep Ash's settings there and nothing else.
+
+The flake's `nixosModules.tackle-web` runs it:
+
+```nix
+{
+  imports = [ tackle.nixosModules.tackle-web ];
+  services.tackle-web = {
+    enable = true;
+    url = "https://review.example.com";
+    # SECRET_KEY_BASE=... and TACKLE_WEB_CLOAK_KEY=..., outside the store
+    environmentFile = "/run/secrets/tackle-web.env";
+  };
+}
+```
+
+It runs the release as the `tackle-web` system user, creates a local
+PostgreSQL database `tackle-web` reached over the Unix socket with peer
+authentication (`database.createLocally`, on by default; otherwise put a
+`DATABASE_URL` in the environment file), runs migrations before every
+start, and listens on `127.0.0.1:4000` (`listenAddress`, `port`). TLS and
+making the app reachable for forge webhooks are up to you, for example a
+reverse proxy in front of it. Erlang distribution is off. The user's home
+(`homeDir`, `/var/lib/tackle-web-home`) is kept apart from the state
+directory (`stateDir`, `/var/lib/tackle-web`), which later phases need for
+the review jail.
+
+The VM test starts the service with PostgreSQL and checks its health
+(needs KVM): `nix build .#checks.x86_64-linux.tackle-web-vm`.
 
 ## JSON
 

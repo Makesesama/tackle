@@ -101,6 +101,10 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd apps/tackle_web && mix deps.get)
 (cd apps/tackle_web && mix compile --warnings-as-errors && mix test)
 (cd apps/tackle_web && mix format --check-formatted && mix credo --strict)
+# After dependency changes: regenerate and build the Nix package; VM test (KVM)
+(cd apps/tackle_web && mix deps.nix) && nix fmt -- nix/tackle-web-deps.nix
+nix build .#tackle-web
+nix build .#checks.x86_64-linux.tackle-web-vm
 
 # Emacs client (Elisp; needs an Emacs in the dev shell or PATH)
 (cd apps/etackle && emacs -Q --batch -L . -l test/etackle-test.el \
@@ -187,7 +191,9 @@ Burrito, or lint commands for tooling that has not been wired up.
   that will review forge pull requests with `tackle_review`; built in phases
   from `docs/TACKLE_WEB_PLAN.md`, currently the skeleton. It depends on the
   packages, not the harness, and keeps Ash, Oban, Cloak, and PostgreSQL to
-  itself. Its tests need a PostgreSQL server (see its README).
+  itself. Its tests need a PostgreSQL server (see its README). Packaged as
+  `.#tackle-web` (`nix/packages/tackle-web.nix`) and run by the NixOS
+  module `nixosModules.tackle-web` (`nix/modules/tackle-web.nix`).
 - `apps/etackle/`: Emacs client for the Tackle SDK wire protocol
   (`packages/tackle_sdk/PROTOCOL.md`), speaking ndjson JSON-RPC over stdio to
   `tackle sdk`. Plain Emacs Lisp (Emacs 28.1+), not a Mix project; see its

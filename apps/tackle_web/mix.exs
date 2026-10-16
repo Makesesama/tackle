@@ -59,6 +59,8 @@ defmodule Tackle.Web.MixProject do
 
       # Spark's formatter plugin and the Ash code generators need it.
       {:sourceror, "~> 1.7", only: [:dev, :test]},
+      # Generates nix/tackle-web-deps.nix; see the "deps.nix" alias below.
+      {:deps_nix, "~> 3.0", only: :dev},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false}
     ]
@@ -69,7 +71,13 @@ defmodule Tackle.Web.MixProject do
       setup: ["deps.get", "ash.setup"],
       "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ash.setup --quiet", "test"]
+      test: ["ash.setup --quiet", "test"],
+      # As for the CLI: --include-paths keeps the path dependencies (the
+      # packages) in the generated file, and --no-app-config stops every
+      # dependency from being rebuilt whenever config/ changes.
+      "deps.nix": [
+        "deps.nix --include-paths --no-app-config --output ../../nix/tackle-web-deps.nix"
+      ]
     ]
   end
 

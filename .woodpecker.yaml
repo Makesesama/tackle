@@ -127,3 +127,25 @@ steps:
           cargo fmt --manifest-path native/tackle/Cargo.toml --check
           mix escript.build
         '
+  - name: tackle_web
+    image: bash
+    commands:
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd apps/tackle_web
+          # A throwaway PostgreSQL cluster on a Unix socket, stopped on exit.
+          export TACKLE_WEB_PGHOST=$(mktemp -d)
+          trap "bash scripts/db.sh stop" EXIT
+          bash scripts/db.sh start
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted
+          mix credo --strict
+        '
+  - name: tackle_web_package
+    image: bash
+    commands:
+      # Keeps the release building from nix/tackle-web-deps.nix; regenerate
+      # that file with `mix deps.nix` in apps/tackle_web after dependency changes.
+      - nix --extra-experimental-features 'nix-command flakes' build .#tackle-web --no-link

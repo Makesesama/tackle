@@ -1,7 +1,7 @@
 # tackle_web plan: forge review bot
 
-**Status: plan; phase 1a (the app skeleton, §8) is implemented in
-`apps/tackle_web`, the rest is not.** This document is a handoff: it should be enough to start without the conversation
+**Status: plan; phase 1 (the app skeleton and its packaging, §8) is
+implemented in `apps/tackle_web` and `nix/`, the rest is not.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -650,7 +650,12 @@ forms there.
   `services.postgresql` (`ensureDatabases`/`ensureUsers`, peer
   authentication over the Unix socket), and migrations on start
   (`Tackle.Web.Release.migrate/0`). Forge app secrets are entered in the UI
-  and stored encrypted, not in Nix.
+  and stored encrypted, not in Nix. (Phase 1b implemented all of this
+  except `reviewJail`, which arrives with the jail in phase 4, and added
+  `url`, `homeDir`, and `database.createLocally`. The release runs without
+  Erlang distribution. Dependencies are compiled with the app's
+  `config/ash.exs`, because Ash reads it at compile time and a release
+  refuses to boot when compile-time and runtime values differ.)
 - TLS ends at the operator's reverse proxy. When the sign-in pages land
   (phase 6), production sets `force_ssl` with
   `rewrite_on: [:x_forwarded_proto]` and HSTS for an `https`

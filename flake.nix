@@ -80,6 +80,9 @@
       };
       homeManagerModules = self.homeModules;
 
+      # NixOS module: `services.tackle-web`. See nix/modules/tackle-web.nix.
+      nixosModules.tackle-web = import ./nix/modules/tackle-web.nix self;
+
       packages = forAllSystems (
         {
           pkgs,
@@ -102,6 +105,7 @@
         {
           default = package;
           tackle-cli = package;
+          tackle-web = pkgs.callPackage ./nix/packages/tackle-web.nix { };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           jailed-tackle = mkJailedTackle { inherit pkgs system; };
@@ -116,7 +120,10 @@
           pkgs,
           system,
         }:
-        {
+        pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          tackle-web-vm = pkgs.testers.runNixOSTest (import ./nix/tests/tackle-web.nix self);
+        }
+        // {
           pre-commit-check = inputs.pre-commit-hooks.lib.${system}.run {
             src = ./.;
             hooks = {
@@ -196,6 +203,8 @@
               pkgs.cargo
               pkgs.rustc
               pkgs.rustfmt
+              # apps/tackle_web's tests run against a throwaway cluster.
+              pkgs.postgresql
             ];
             shellHook = ciShellHook;
           };
