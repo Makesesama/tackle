@@ -1,13 +1,17 @@
 # tackle_web
 
-**Status: phases 1 and 2 of [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
+**Status: phases 1–3 of
+[`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
 findings to the forge. So far it receives GitHub webhooks: it keeps track
 of the GitHub App's installations and repositories, and turns pull request
 events and `/tackle review` commands into review requests according to
-each repository's settings. Nothing runs those requests yet (phase 4); the
-plan lists what each phase adds.
+each repository's settings. It also stores model providers and encrypted
+credentials, resolves review defaults, and has an ephemeral agent backend tested
+with whole scripted reviews. Codex device login has a server service and an
+unmounted page awaiting phase 6's authentication. Nothing runs queued review
+requests yet (phase 4); the plan lists what each phase adds.
 
 OTP application `:tackle_web`, namespace `Tackle.Web.*`. It depends on the
 packages (`tackle_lib`, `tackle_runtime`, `tackle_review`, `tackle_tools`,
@@ -189,6 +193,101 @@ What happens with a pull request (`Tackle.Web.Triggers`):
 - A head is requested once. A command asks again after a failure, or for a
   posted review with another profile. A new head skips the pending requests
   for older ones; closing a pull request skips its pending requests.
+
+## Models and credentials (phase 3)
+
+`Tackle.Web.Models.Provider` registers an adapter instance with
+`register(id, adapter, attrs)`: ids use lowercase letters/digits and inner
+hyphens, and adapters are **only** `:openrouter` or `:codex`. Several ids
+can use the same adapter. New providers are disabled; `configure/2` changes
+`settings` (an opaque string-keyed JSON map) and `enabled`, not id, adapter,
+or credentials. `Models.enabled_providers/0` builds `Tackle.Lib.LLM.Provider`
+instances without loading secrets.
+
+Provider credentials are encrypted with AshCloak and the existing AES-GCM
+vault. Normal resource reads leave `credentials` unloaded and sensitive.
+OpenRouter's `Provider.set_credentials(provider, api_key)` accepts a nonempty
+key and stores `%{"api_key" => key}`; it rejects Codex providers. **Do not set
+`OPENROUTER_API_KEY` in the service environment**: that adapter's fallback for
+the default `openrouter` id would bypass database-only configuration.
+
+`Tackle.Web.CredentialStore.handle/0` is always
+`{Tackle.Web.CredentialStore, :default}`. Pass that same value as the
+backend/adapter's `:credential_store` for every run, so Codex's refresh lock
+serialises refresh-token rotation. `fetch/2` reads Postgres afresh, `put/3`
+writes transactionally, and `delete/2` removes only credentials. Missing or
+cleared credentials return `:error`; writes to missing providers return
+`{:error, {:unknown_provider, id}}`; deletion is idempotent. Disabled providers
+keep their credentials. JSON-compatible credential maps are opaque to the
+store; adapter token refreshes can write them back through the same handle.
+
+`Tackle.Web.Models.ReviewDefaults.configure/1` replaces the singleton's
+`models` and `thinking` maps, keyed by stage strings (`"detector"`,
+`"verifier"`, `"scorer"`). Partial defaults can be saved, but there is **no
+implicit model** and a review cannot resolve until detector and verifier are
+set, in defaults or repository settings. For example, after registering and
+enabling the Codex provider (trusted server console, not a public endpoint):
+
+```elixir
+alias Tackle.Web.Models.{Provider, ReviewDefaults}
+Provider.register!("openai-codex", :codex, %{enabled: true})
+ReviewDefaults.configure!(%{
+  models: %{
+    "detector" => "openai-codex/gpt-6.1-sol",
+    "verifier" => "openai-codex/gpt-6.1-sol"
+  },
+  thinking: %{"detector" => "low", "verifier" => "medium"}
+})
+```
+
+`Models.resolve_settings(repository.settings, resolved_profile)` returns
+`{:ok, %Tackle.Review.Settings{}}` or an error, including
+`{:missing_review_models, stages}`. Repository model/thinking entries override
+defaults **per stage**; step limits and default rules remain repository/review
+choices, and profile is passed separately. The scorer model is optional and
+inherits the requester's when absent. Repository and default settings validate
+model references against enabled providers when saved and again at resolution;
+disabling a provider can therefore make an existing configuration fail with an
+explicit error. This checks adapter catalogs, not live subscription access or
+whether credentials are present.
+
+### Codex device login: server service and unmounted page
+
+`Tackle.Web.Models.CodexDevice.request(provider_id, opts)` verifies the provider
+uses Codex and calls `Tackle.Plugins.Codex.OAuth.request_device_code/1`. It returns
+`{:ok, %{provider_id: id, device: device}}`; display only `device.user_code` and
+`device.verification_uri`. Run `CodexDevice.complete(flow, opts)` in a task: it
+polls and exchanges the code, then writes credentials to that provider's
+encrypted database row. Success returns `:ok`, never tokens; errors leave
+existing credentials intact. Options are trusted server OAuth options, never
+request parameters. A disconnected page's async task exits with the LiveView.
+
+**Credential management is not exposed over HTTP.** `CodexLoginLive` contains
+the small async device-code UI but is deliberately **unmounted**, and its
+`mount/3` also fails closed. Sessions, a LiveView socket, and browser assets
+have not been wired up. Phase 6 must add those, CSRF protection, and admin
+policies for resource actions; only then mount the page behind an authenticated
+admin `on_mount` guard (on both disconnected and connected mounts), replacing
+the fail-closed mount with that actor check and initial `status: :ready`,
+`device: nil` assigns. Do not trust client-supplied session flags or expose
+these trusted server actions through unauthenticated AshAdmin. Raw OAuth errors
+are not displayed because upstream responses may contain secrets.
+
+### Agent backend
+
+`Tackle.Web.AgentBackend` implements `Tackle.Runtime.AgentBackend` directly on
+`Tackle.Lib`, without local harness configuration, sessions or persistence.
+`config/1` takes explicit `providers` and `model`, plus `tools`, `system_prompt`,
+`context`, `llm_opts`, `thinking` and `max_steps`. It always installs
+`CredentialStore.handle/0` in adapter options. Put the resulting config in an
+`AgentSpec` and choose this backend in the `ScopeSpec`.
+
+The backend supports review configuration callbacks, model/thinking inheritance,
+streaming subscriptions, snapshots, and one turn at a time. Cancellation is
+cooperative; stopping an agent also stops its linked turn task. Scopes, tools,
+executor selection and teardown remain the caller's responsibility. The backend
+does not default to a local executor: phase 4 will supply the review jail and
+job orchestration. Tests use scripted adapters, not provider credentials.
 
 ## JSON
 

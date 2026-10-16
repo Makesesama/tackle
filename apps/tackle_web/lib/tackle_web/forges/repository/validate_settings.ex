@@ -3,15 +3,15 @@ defmodule Tackle.Web.Forges.Repository.ValidateSettings do
   Validates a repository's `settings`: the JSON form of
   `Tackle.Review.Settings` with string keys (`Settings.from_json/1`),
   without `profile` (the repository's `profile` attribute is the only place
-  for it), and accepted by `Settings.new/2` apart from model references.
+  for it), and accepted by `Settings.new/2` against enabled providers.
 
-  Model references are checked against the enabled providers when a review
-  runs, since providers can change after the settings are saved.
+  Models are also rechecked when a review runs, since providers can change.
   """
 
   use Ash.Resource.Validation
 
   alias Tackle.Review.Settings
+  alias Tackle.Web.Models
 
   @impl Ash.Resource.Validation
   def validate(changeset, _opts, _context) do
@@ -29,7 +29,8 @@ defmodule Tackle.Web.Forges.Repository.ValidateSettings do
   def check(settings) when is_map(settings) do
     with :ok <- no_profile(settings),
          {:ok, opts} <- from_json(settings),
-         {:ok, _settings} <- Settings.new(Keyword.delete(opts, :models), []) do
+         {:ok, providers} <- Models.enabled_providers(),
+         {:ok, _settings} <- Settings.new(opts, providers) do
       :ok
     else
       {:error, message} when is_binary(message) -> {:error, message}

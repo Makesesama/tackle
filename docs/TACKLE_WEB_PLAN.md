@@ -1,8 +1,10 @@
 # tackle_web plan: forge review bot
 
-**Status: plan; phases 1 (the app skeleton and its packaging) and 2
-(forges and webhooks) of §8 are implemented in `apps/tackle_web` and
-`nix/`, the rest is not.** This document is a handoff: it should be enough to start without the conversation
+**Status: phases 1–3 of §8 are implemented in `apps/tackle_web` and
+`nix/`: skeleton/packaging, forges/webhooks, and models/agent backend.
+The Codex device-login service and page exist, but the page is unmounted
+and fails closed until phase 6 supplies admin authentication and browser
+wiring. Review jobs and later phases are not implemented.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -316,6 +318,16 @@ from key fingerprints. Cloak 1.1 returns `{:ok, :error}` for an AES-GCM
 ciphertext that fails authentication; the vault turns that into an error,
 which AshCloak's `decrypt!` then raises.)
 
+Phase 3 implements these resources under `Tackle.Web.Models`, with a stable
+`CredentialStore.handle/0`. `Models.enabled_providers/0` builds the enabled
+instances without secrets; `Models.resolve_settings/2` merges repository
+models/thinking over `ReviewDefaults` per stage and requires detector/verifier
+models. Both saved settings and runtime resolution validate against enabled
+providers. There is no implicit model. `Models.CodexDevice.request/2` and
+`complete/2` implement the trusted device-login service; `CodexLoginLive` is
+intentionally unmounted and rejects all mounts until phase 6. See the app
+README for console configuration and the remaining UI wiring.
+
 ### 7.3 Agent backend
 
 `Tackle.Web.AgentBackend` implements `Tackle.Runtime.AgentBackend`:
@@ -339,6 +351,13 @@ whole reviews on it. Start from it; the harness's
 `Tackle.Runtime.RootBackend` shows the same callbacks on `%Tackle.Config{}`.
 Test the app's backend with the same scripted-adapter approach as
 `packages/tackle_review/test/tackle/review_test.exs`.
+
+Implemented in phase 3: `AgentBackend.config/1` accepts explicit providers,
+model, tools, context, adapter options, thinking and `max_steps`. It installs
+the stable database credential handle, forwards streaming events, monitors
+subscribers, and owns a linked turn task which is stopped with the agent.
+Tests exercise a full detector/verifier/scorer review plus inheritance,
+cancellation, step limits, provider/task failures and scope cleanup.
 
 ### 7.4 Checkouts
 

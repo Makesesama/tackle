@@ -6,6 +6,7 @@ defmodule Tackle.Web.ForgesTest do
   alias Ash.Resource.Info
   alias Tackle.Web.Forges.{ForgeApp, Installation, Repository}
   alias Tackle.Web.Forges.Repository.ValidateSettings
+  alias Tackle.Web.Models.Provider
   alias Tackle.Web.Repo
 
   describe "ForgeApp" do
@@ -101,10 +102,12 @@ defmodule Tackle.Web.ForgesTest do
     test "accepts review settings in their JSON form" do
       repository = repository!(installation!())
 
+      Provider.register!("openrouter", :openrouter, %{enabled: true})
+
       settings = %{
         "thinking" => %{"detector" => "low"},
         "max_steps" => %{"verifier" => 4},
-        "models" => %{"detector" => "openrouter/vendor/model"},
+        "models" => %{"detector" => "openrouter/openai/gpt-6.1-sol"},
         "default_rules" => ["injection"]
       }
 
@@ -116,6 +119,7 @@ defmodule Tackle.Web.ForgesTest do
 
       for {settings, message} <- [
             {%{"profile" => "quiet"}, "set the profile with the repository's profile"},
+            {%{"models" => %{"detector" => "missing/gpt-6.1-sol"}}, "invalid review settings"},
             {%{"colour" => "blue"}, "is not valid review settings"},
             {%{"thinking" => %{"detector" => "enormous"}}, "is not valid review settings"},
             {%{"max_steps" => %{"detector" => 0}}, "is not valid review settings"},
