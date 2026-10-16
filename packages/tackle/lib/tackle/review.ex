@@ -110,7 +110,6 @@ defmodule Tackle.Review do
   other findings stay uncertain.
   """
 
-  alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Lib.{Cancellation, Thinking, Usage}
 
   alias Tackle.Review.{
@@ -131,6 +130,7 @@ defmodule Tackle.Review do
   }
 
   alias Tackle.Review.Rules.Rule
+  alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, AgentSpec, Limits}
   alias Tackle.Tools.{ReportFindings, ReportVerdict}
@@ -178,7 +178,7 @@ defmodule Tackle.Review do
   Options:
 
   `:profile`, `:models`, `:thinking`, `:max_steps`, and `:default_rules`
-  default to `:settings` (`Tackle.Config.Review`, the `review` object of
+  default to `:settings` (`Tackle.Review.Settings`, the `review` object of
   `config.json`). For the per-stage maps, a stage given here replaces its
   setting, and a stage set to `nil` falls back to the profile's or
   inherited value.
@@ -194,7 +194,7 @@ defmodule Tackle.Review do
     * `:default_rules` - the ids of the built-in rules to apply when
       `:rules` is not given, or `nil` for all of them (default); ignored
       with `:rules`;
-    * `:settings` - a `Tackle.Config.Review` with the defaults above
+    * `:settings` - a `Tackle.Review.Settings` with the defaults above
       (default: none);
     * `:profile` - `:quiet`, `:default` (default), or `:assertive`
       (see `Tackle.Review.Rank`);

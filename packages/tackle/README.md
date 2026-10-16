@@ -676,7 +676,7 @@ implements `Tackle.Lib.Decision`, the session context carries `:decisions`
 
 An optional `review` object sets defaults for code reviews (`Tackle.Review`)
 requested from the session, such as through the `review_changes` tool or
-`tackle review` (`Tackle.Config.Review`). Every field is optional:
+`tackle review` (`Tackle.Review.Settings`). Every field is optional:
 
 - `thinking` and `models` give the `detector`, `verifier`, and `scorer` stages
   their own thinking levels and canonical model references; stages left out

@@ -37,6 +37,7 @@ end
 | `empty_tree/1` | the empty tree id |
 | `commits/4` | `log BASE..HEAD`, with `%s` and `%b` |
 | `diff/4` | `diff FROM TO`, `diff --cached FROM`, `diff FROM` |
+| `read_dir/4` | `ls-tree REV DIR` with `cat-file blob` for each file |
 
 `diff/4` compares a revision or the empty tree with a revision, the empty
 tree, the index (`:index`), or the tracked files of the working tree
@@ -44,6 +45,11 @@ tree, the index (`:index`), or the tracked files of the working tree
 every hunk line carries its kind and absolute old and new line numbers. With
 `contents: true`, each file also carries the full text of both sides, which is
 what a caller needs to find enclosing functions itself.
+
+`read_dir/4` lists the regular and executable files directly in a directory
+as they are at a revision, with their contents (none for files over
+`:max_file_bytes`), from the object database, so a repository's configuration
+can be read at a commit without a checkout.
 
 ## Fidelity
 

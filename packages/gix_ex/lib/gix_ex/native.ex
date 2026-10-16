@@ -32,4 +32,8 @@ defmodule GixEx.Native do
   @spec diff(repo(), side(), side(), map()) ::
           {:ok, [GixEx.Diff.File.t()]} | {:error, GixEx.error()}
   def diff(_repo, _from, _to, _options), do: :erlang.nif_error(:nif_not_loaded)
+
+  @spec read_dir(repo(), String.t(), String.t(), pos_integer()) ::
+          {:ok, [{binary(), binary() | nil}]} | {:error, GixEx.error()}
+  def read_dir(_repo, _rev, _dir, _max_bytes), do: :erlang.nif_error(:nif_not_loaded)
 end

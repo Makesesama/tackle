@@ -1,6 +1,6 @@
 # Review package plan: `packages/tackle_review`
 
-**Status: phases 1 and 2 are implemented; phases 3 to 5 are a plan.** The review
+**Status: phases 1 to 3 are implemented; phases 4 and 5 are a plan.** The review
 pipeline still lives in `packages/tackle` (`Tackle.Review.*`); see
 [`code-review-plan.md`](code-review-plan.md) for how it works.
 
@@ -22,7 +22,7 @@ The host loads and stores those values.
 | Known findings | `Review.run` read them from `History` | input: `:known_fingerprints`, fingerprints dropped as `:known` |
 | Recording a run | `Review.run` wrote `History` | output: the `Result`, with rule and prompt digests; the host records it |
 | Rules | discovered from `TACKLE_HOME` and `.tackle/review/rules` through the executor | input: `:rules`, parsed rules (default: the built-in rules); the package provides the parser, the built-in rules, and precedence merging |
-| Settings | read from the requester's session context (`:review_settings`) | input: `:settings` (`Tackle.Review.Settings`, today `Tackle.Config.Review`) |
+| Settings | read from the requester's session context (`:review_settings`) | input: `:settings` (`Tackle.Review.Settings`) |
 | Change | loaded from the working tree | input: a `Change`, loaded from a working tree or from two commits in a clone (both through `gix_ex`) |
 | Model, thinking, and step limit per stage | edits `%Tackle.Config{}` directly | through the runtime's `AgentBackend` (see below); the only call into the host during a run |
 
@@ -61,16 +61,19 @@ not use the harness for review at all.
   `Units`, `FunctionContext`, `Finding`, `Cluster`, `Filter`, `Rank`,
   `Scorer`, `Result`, `Locations`, `Confinement`, `Glob`, `Pool`, `Detector`,
   `Verifier`, `Delegation`).
-- `Tackle.Review.Rules`: parsing, built-in rules (compiled in), precedence
-  merging, and resolving rules per unit, without file discovery. A
-  `from_tree/3` that reads `.tackle/review/rules` at a commit through `gix_ex`,
-  so a host without a working tree (the bot) can read a repository's rules.
-- `Tackle.Review.Settings` (from `Tackle.Config.Review`): the settings struct
-  and its validation, including parsing the JSON form of `config.json`'s
-  `review` object, so every host accepts the same format.
-- `Tackle.Review.Stages`: the `review-detector` and `review-verifier` profiles
-  as plain data (name, description, prompt, tool names, step limit). Hosts
-  build their own agent specs from it.
+- `Tackle.Review.Rules` (phase 3): parsing, built-in rules (compiled in),
+  `load/2` (precedence merging of the files a host read, by source), and
+  resolving rules per unit, without file discovery. `read_tree/3` reads
+  `.tackle/review/rules` at a commit through `gix_ex` (`GixEx.read_dir/4`,
+  added for it), so a host without a working tree (the bot) can read a
+  repository's rules.
+- `Tackle.Review.Settings` (phase 3, from `Tackle.Config.Review`): the
+  settings struct and its validation, including `from_json/1` for the JSON
+  form of `config.json`'s `review` object, so every host accepts the same
+  format.
+- `Tackle.Review.Stages` (phase 3): the `review-detector` and
+  `review-verifier` profiles as plain data (name, description, prompt, tool
+  names, step limit). Hosts build their own agent specs from it.
 - `Tackle.Review.Tools.ReportFindings` and `Tackle.Review.Tools.ReportVerdict`
   (from `Tackle.Tools.*`): already plain `Tackle.Lib.Tool`s that read their run
   data from the session context.
@@ -128,7 +131,8 @@ review call it.
   harness namespace, for example `Tackle.ReviewHistory`), with the same
   JSONL format under `$TACKLE_HOME/review/`.
 - Rule discovery from `$TACKLE_HOME/review/rules` and `.tackle/review/rules`
-  through the executor, parsed with `Tackle.Review.Rules`.
+  through the executor (`Tackle.LocalReview.Rules`, phase 3), loaded with
+  `Tackle.Review.Rules.load/2`.
 - `config.json`'s `review` object, validated by `Tackle.Review.Settings`.
 - `Tackle.Agents.Default` builds the two stage definitions from
   `Tackle.Review.Stages`, so `.tackle/agents/review-*.md` overrides keep
@@ -171,12 +175,17 @@ only changes file paths and module names.
    `tackle_runtime` and implemented by `RootBackend`; `Tackle.Review`,
    `Tackle.Review.Delegation`, and the detector and verifier use them and no
    longer read `%Tackle.Config{}` or `Tackle.Auth`. `Thinking` moved to
-   `tackle_lib`, and `Frontmatter` to `packages/yaml_frontmatter`. What the pipeline still takes from the
-   harness is `Tackle.Config.Review` (settings, phase 3), rule discovery in
-   `Tackle.Review.Rules` (phase 3), and the output tools under
-   `Tackle.Tools` (phase 4).
-3. **Stages and rules.** Export the stage profiles as data, split rule
-   parsing and merging from discovery, and add reading rules from a commit.
+   `tackle_lib`, and `Frontmatter` to `packages/yaml_frontmatter`.
+3. **Stages and rules.** *Implemented.* `Tackle.Review.Stages` holds the
+   stage profiles as data, and `Tackle.Agents.Default` builds its two
+   definitions from it (the `Tackle.Agents.Default.ReviewDetector` and
+   `ReviewVerifier` modules are gone). `Tackle.Config.Review` is now
+   `Tackle.Review.Settings`, with `from_json/1` taking over the JSON parsing
+   from `Tackle.Config.File`. `Tackle.Review.Rules` lost `discover/1` to the
+   harness's `Tackle.LocalReview.Rules` and gained `load/2`, `project_dir/0`,
+   and `read_tree/3`, backed by the new `GixEx.read_dir/4`. The pipeline now
+   uses no harness module except the output tools under `Tackle.Tools` and
+   `Tackle.Review.History`, both handled in phase 4.
 4. **Move.** Create `packages/tackle_review`, move the modules and their
    tests (with a copy of the Git test helper), make the harness depend on
    it, and remove `gix_ex` from the harness. Regenerate the Nix dependency
@@ -188,6 +197,8 @@ only changes file paths and module names.
 ## Breaking changes
 
 - `Tackle.Config.Review` → `Tackle.Review.Settings`;
+  `Tackle.Review.Rules.discover/1` → `Tackle.LocalReview.Rules.discover/1`;
+  `Tackle.Agents.Default.ReviewDetector`/`ReviewVerifier` → `Tackle.Review.Stages`;
   `Tackle.Tools.{ReportFindings,ReportVerdict}` →
   `Tackle.Review.Tools.*`; `Tackle.Review.History` → harness namespace;
   `Tackle.Thinking` → `Tackle.Lib.Thinking`;

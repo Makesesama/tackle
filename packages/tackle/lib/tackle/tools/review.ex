@@ -72,11 +72,11 @@ defmodule Tackle.Tools.Review do
   use Tackle.Lib.Tool
 
   alias Tackle.AgentScope.Coordinator
-  alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Executor
   alias Tackle.Lib.Event
   alias Tackle.LocalReview
   alias Tackle.Review.{Change, Delegation, Detector, Finding, History, Rank, Result, Verifier}
+  alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, Ref, Registry}
 

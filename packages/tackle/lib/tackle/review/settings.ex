@@ -1,6 +1,6 @@
-defmodule Tackle.Config.Review do
+defmodule Tackle.Review.Settings do
   @moduledoc """
-  Session defaults for code reviews (`Tackle.Review`).
+  Defaults for code reviews, passed to `Tackle.Review.run/2` as `:settings`.
 
     * `:thinking` - review stages (`:detector`, `:verifier`, `:scorer`) to
       thinking levels (`Tackle.Lib.Thinking.levels/0`);
@@ -14,12 +14,13 @@ defmodule Tackle.Config.Review do
       (`Tackle.Review.Rules.builtin_ids/0`); `nil` applies all of them and
       `[]` none. User and project rules apply either way.
 
-  `Tackle.Config.new/1` puts the settings in the session context under
-  `:review_settings`, and `Tackle.Review.run/2` applies them to reviews
-  requested from that session; its own options override them, per stage
-  for the stage maps. Unset settings keep the review's defaults.
+  `Tackle.Review.run/2`'s own options override them, per stage for the
+  stage maps. Unset settings keep the review's defaults. A host stores them
+  however it likes; the harness reads them from the `review` object of
+  `config.json` and keeps them in the session context under
+  `:review_settings` (see `Tackle.LocalReview`).
 
-  In `config.json`:
+  The JSON form, which `from_json/1` converts into options for `new/2`:
 
       {
         "review": {
@@ -48,8 +49,36 @@ defmodule Tackle.Config.Review do
         }
 
   @stages [:detector, :verifier, :scorer]
+  @json_stages Map.new(@stages, &{Atom.to_string(&1), &1})
   @step_stages [:detector, :verifier]
   @option_keys [:thinking, :models, :profile, :max_steps, :default_rules]
+
+  @review_profiles %{"quiet" => :quiet, "default" => :default, "assertive" => :assertive}
+  @json_fields ~w(thinking models profile max_steps default_rules)
+
+  @doc """
+  Converts the JSON form of the settings (the `review` object of
+  `config.json`, decoded) into options for `new/2`.
+
+  The object may have `thinking`, `models`, and `max_steps` objects keyed by
+  the stages `detector`, `verifier`, and `scorer`, a `profile` (`quiet`,
+  `default`, or `assertive`), and `default_rules`, a list of built-in rule
+  ids; `null` values are ignored. Names are mapped without creating atoms.
+  Returns `:error` for unknown fields or values of the wrong shape; `new/2`
+  checks the rest: that only `detector` and `verifier` have step limits,
+  that models are available, and that rule ids exist.
+  """
+  @spec from_json(term()) :: {:ok, keyword()} | :error
+  def from_json(%{} = review) do
+    with [] <- Map.keys(review) -- @json_fields,
+         {:ok, opts} <- json_values(review) do
+      {:ok, opts}
+    else
+      _invalid -> :error
+    end
+  end
+
+  def from_json(_other), do: :error
 
   @doc "The review stages thinking levels and models may name."
   @spec stages() :: [stage()]
@@ -150,4 +179,63 @@ defmodule Tackle.Config.Review do
   defp default_rules(ids), do: invalid(default_rules: ids)
 
   defp invalid(detail), do: {:error, {:invalid_option, :review, detail}}
+
+  ## JSON
+
+  defp json_values(review) do
+    Enum.reduce_while(review, {:ok, []}, fn {key, value}, {:ok, acc} ->
+      case json_value(key, value) do
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, option} -> {:cont, {:ok, [option | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp json_value(_key, nil), do: {:ok, nil}
+
+  defp json_value("thinking", %{} = thinking) do
+    stage_values(
+      thinking,
+      @json_stages,
+      fn level -> Thinking.validate(level) == :ok end,
+      :thinking
+    )
+  end
+
+  defp json_value("models", %{} = models) do
+    stage_values(models, @json_stages, &(is_binary(&1) and &1 != ""), :models)
+  end
+
+  defp json_value("max_steps", %{} = steps) do
+    stage_values(steps, @json_stages, &(is_integer(&1) and &1 > 0), :max_steps)
+  end
+
+  defp json_value("profile", profile) do
+    case Map.fetch(@review_profiles, profile) do
+      {:ok, profile} -> {:ok, {:profile, profile}}
+      :error -> :error
+    end
+  end
+
+  defp json_value("default_rules", ids) when is_list(ids) do
+    if Enum.all?(ids, &is_binary/1), do: {:ok, {:default_rules, ids}}, else: :error
+  end
+
+  defp json_value(_key, _value), do: :error
+
+  defp stage_values(values, stages, valid?, key) do
+    Enum.reduce_while(values, {:ok, %{}}, fn {stage, value}, {:ok, acc} ->
+      with {:ok, stage} <- Map.fetch(stages, stage),
+           true <- valid?.(value) do
+        {:cont, {:ok, Map.put(acc, stage, value)}}
+      else
+        _invalid -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, map} -> {:ok, {key, map}}
+      :error -> :error
+    end
+  end
 end

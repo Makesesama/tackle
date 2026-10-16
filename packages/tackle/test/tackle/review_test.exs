@@ -6,12 +6,12 @@ defmodule Tackle.ReviewTest do
   import Tackle.Test.Runtime, only: [start_scope: 1, eventually: 1]
 
   alias Tackle.Config
-  alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Executor
   alias Tackle.Lib.Cancellation
   alias Tackle.LocalReview
   alias Tackle.Review
   alias Tackle.Review.{Change, Detector, Diff, Finding, History, Result, Rules}
+  alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Runtime.{AgentSpec, Limits, ScopeSpec}
   alias Tackle.Test.Gauge
   alias Tackle.Tools.{ReportFindings, ReportVerdict}

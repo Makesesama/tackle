@@ -168,6 +168,56 @@ defmodule GixExTest do
     end
   end
 
+  describe "read_dir/4" do
+    test "reads the files of a directory as they are at a revision", %{dir: dir} do
+      write!(dir, "rules/a.md", "first\n")
+      write!(dir, "rules/nested/c.md", "nested\n")
+      write!(dir, "top.txt", "top\n")
+      first = commit!(dir, "first")
+      write!(dir, "rules/a.md", "changed\n")
+      write!(dir, "rules/b.md", "new\n")
+      commit!(dir, "second")
+      # The working tree does not matter.
+      write!(dir, "rules/a.md", "uncommitted\n")
+      {:ok, repo} = GixEx.open(dir)
+
+      assert GixEx.read_dir(repo, first, "rules") == {:ok, [{"a.md", "first\n"}]}
+
+      assert GixEx.read_dir(repo, "HEAD", "/rules/") ==
+               {:ok, [{"a.md", "changed\n"}, {"b.md", "new\n"}]}
+
+      assert GixEx.read_dir(repo, "HEAD", "rules/nested") == {:ok, [{"c.md", "nested\n"}]}
+      assert GixEx.read_dir(repo, "HEAD", "") == {:ok, [{"top.txt", "top\n"}]}
+      # A tree revision works too.
+      assert GixEx.read_dir(repo, "HEAD^{tree}", "rules/nested") == {:ok, [{"c.md", "nested\n"}]}
+    end
+
+    test "lists nothing for a missing directory or a file", %{dir: dir} do
+      write!(dir, "top.txt", "top\n")
+      commit!(dir, "first")
+      {:ok, repo} = GixEx.open(dir)
+
+      assert GixEx.read_dir(repo, "HEAD", "missing") == {:ok, []}
+      assert GixEx.read_dir(repo, "HEAD", "top.txt") == {:ok, []}
+      assert GixEx.read_dir(repo, "nope", "") == {:error, {:unknown_revision, "nope"}}
+    end
+
+    test "skips symbolic links and leaves large files unread", %{dir: dir} do
+      write!(dir, "rules/big.md", String.duplicate("x", 100))
+      write!(dir, "rules/small.md", "small\n")
+      File.ln_s!("small.md", Path.join(dir, "rules/link.md"))
+      commit!(dir, "first")
+      {:ok, repo} = GixEx.open(dir)
+
+      assert GixEx.read_dir(repo, "HEAD", "rules", max_file_bytes: 10) ==
+               {:ok, [{"big.md", nil}, {"small.md", "small\n"}]}
+
+      assert_raise ArgumentError, fn ->
+        GixEx.read_dir(repo, "HEAD", "rules", max_file_bytes: 0)
+      end
+    end
+  end
+
   test "format_error/1 describes every reason" do
     for reason <- [
           :not_a_repository,

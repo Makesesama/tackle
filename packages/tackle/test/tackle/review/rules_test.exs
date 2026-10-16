@@ -3,44 +3,6 @@ defmodule Tackle.Review.RulesTest do
 
   alias Tackle.Review.Rules
   alias Tackle.Review.Rules.Rule
-  alias Tackle.Test.FakeJail
-
-  @builtin_rules %{
-    "unhandled-error" => {:correctness, :high},
-    "missing-nil-check" => {:correctness, :high},
-    "boundary-condition" => {:correctness, :medium},
-    "broken-contract" => {:correctness, :high},
-    "resource-leak" => {:correctness, :medium},
-    "concurrency-hazard" => {:correctness, :high},
-    "injection" => {:security, :blocker},
-    "secret-exposure" => {:security, :blocker},
-    "missing-test-for-behaviour-change" => {:testing, :low}
-  }
-
-  setup do
-    root = Path.join(System.tmp_dir!(), "tackle-rules-#{System.unique_integer([:positive])}")
-    cwd = Path.join(root, "project")
-    home = Path.join(root, "home")
-    builtin = Path.join(root, "builtin")
-    File.mkdir_p!(Path.join(cwd, ".git"))
-    File.mkdir_p!(builtin)
-    on_exit(fn -> File.rm_rf!(root) end)
-
-    %{
-      root: root,
-      cwd: cwd,
-      home: home,
-      builtin: builtin,
-      user: Path.join(home, "review/rules"),
-      project: Path.join(cwd, ".tackle/review/rules"),
-      opts: [cwd: cwd, env: %{"TACKLE_HOME" => home}, builtin_dir: builtin]
-    }
-  end
-
-  defp put(dir, name, contents) do
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, name), contents)
-  end
 
   defp rule(id, opts \\ []) do
     front =
@@ -66,65 +28,8 @@ defmodule Tackle.Review.RulesTest do
   defp unreadable(key),
     do: "#{key} has no readable value; close lists with ] and quote values that start with [ or {"
 
-  defp by_id(rules), do: Map.new(rules, &{&1.id, &1})
-
-  describe "built-in rules" do
-    test "are embedded, so discovery needs no priv directory", %{opts: opts, root: root} do
-      # Release and escript builds may lack `priv/`; nothing may depend on it.
-      refute File.exists?(Application.app_dir(:tackle, "priv/review/rules"))
-
-      assert Enum.map(Rules.builtin_files(), &elem(&1, 0)) ==
-               @builtin_rules |> Map.keys() |> Enum.map(&(&1 <> ".md")) |> Enum.sort()
-
-      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), env: %{"TACKLE_HOME" => root})
-      assert %{rules: rules, warnings: []} = Rules.discover(opts)
-      assert Enum.map(rules, & &1.id) == @builtin_rules |> Map.keys() |> Enum.sort()
-
-      for rule <- rules do
-        assert rule.path == "builtin:review/rules/#{rule.id}.md"
-        refute File.exists?(rule.path)
-      end
-    end
-
-    test "are overridden by user and project rules", %{opts: opts, project: project} do
-      put(project, "off.md", "---\nid: injection\nstatus: suppressed\n---\n")
-      put(project, "nil.md", rule("missing-nil-check", severity: "low"))
-
-      rules = opts |> Keyword.delete(:builtin_dir) |> Rules.discover() |> Map.fetch!(:rules)
-
-      assert %Rule{status: :suppressed, source: :project} = by_id(rules)["injection"]
-
-      assert %Rule{severity: :low, source: :project} = by_id(rules)["missing-nil-check"]
-      assert %Rule{source: :builtin} = by_id(rules)["secret-exposure"]
-    end
-
-    test "builtin_rules keeps only the listed built-in rules", %{
-      opts: opts,
-      project: project,
-      root: root
-    } do
-      assert Rules.builtin_ids() == @builtin_rules |> Map.keys() |> Enum.sort()
-
-      put(project, "own.md", rule("project-only"))
-      put(project, "inj.md", rule("injection", severity: "low"))
-      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), env: %{"TACKLE_HOME" => root})
-
-      ids = fn keep ->
-        opts |> Keyword.put(:builtin_rules, keep) |> Rules.discover() |> Map.fetch!(:rules)
-      end
-
-      assert Enum.map(ids.(["secret-exposure"]), &{&1.id, &1.source}) == [
-               {"injection", :project},
-               {"project-only", :project},
-               {"secret-exposure", :builtin}
-             ]
-
-      # User and project rules stay, even with an id of a dropped built-in rule.
-      assert Enum.map(ids.([]), & &1.id) == ["injection", "project-only"]
-      assert length(ids.(:all)) == map_size(@builtin_rules) + 1
-    end
-
-    test "builtin/1 returns them without reading any files" do
+  describe "load/2" do
+    test "builtin/1 returns the embedded rules without reading any files" do
       assert %{rules: rules, warnings: []} = Rules.builtin()
       assert Enum.map(rules, & &1.id) == Rules.builtin_ids()
       assert Enum.all?(rules, &(&1.source == :builtin))
@@ -135,119 +40,106 @@ defmodule Tackle.Review.RulesTest do
       assert %{rules: []} = Rules.builtin(["no-such-rule"])
     end
 
-    test "ship the MVP set as active, language-agnostic rules with examples", %{
-      opts: opts,
-      root: root
-    } do
-      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), env: %{"TACKLE_HOME" => root})
-      assert %{rules: rules, warnings: []} = Rules.discover(opts)
+    test "merges sources by precedence and keeps the first id within a source" do
+      sources = [
+        {:user, [{"/u/a.md", {:ok, rule("shared", severity: "low")}}]},
+        {:project,
+         [
+           {"/p/a.md", {:ok, rule("shared", severity: "high")}},
+           {"/p/b.md", {:ok, rule("shared", severity: "blocker")}},
+           {"/p/notes.txt", {:ok, "not a rule"}}
+         ]}
+      ]
 
-      assert Map.new(rules, &{&1.id, {&1.category, &1.severity}}) == @builtin_rules
+      assert %{rules: [%Rule{id: "shared", severity: :high, source: :project}], warnings: [w]} =
+               Rules.load(sources, builtin: false)
 
-      for rule <- rules do
-        assert rule.source == :builtin
-        assert rule.status == :active
-        assert rule.applies_to == ["**/*"]
-        assert Path.basename(rule.path) == rule.id <> ".md"
-        assert rule.body =~ ~r/^## Bad$/m
-        assert rule.body =~ ~r/^## Good$/m
-        assert byte_size(rule.body) <= 1_024
-      end
+      assert w == %{path: "/p/b.md", message: "rule id shared is already defined in /p/a.md"}
+    end
+
+    test "turns read errors into warnings and applies the size limit" do
+      sources = [
+        {:project,
+         [
+           {"/p", {:error, "could not list rule directory (eacces)"}},
+           {"/p/big.md", {:ok, rule("big", body: String.duplicate("x", 200))}},
+           {"/p/ok.md", {:ok, rule("ok")}}
+         ]}
+      ]
+
+      assert %{rules: [%Rule{id: "ok"}], warnings: [listing, size]} =
+               Rules.load(sources, builtin: false, max_rule_bytes: 100)
+
+      assert listing == %{path: "/p", message: "could not list rule directory (eacces)"}
+      assert size.path == "/p/big.md"
+      assert size.message =~ "the limit is 100"
+    end
+
+    test "selects built-in rules, embedded or the host's own" do
+      ids = fn discovery -> Enum.map(discovery.rules, &{&1.id, &1.source}) end
+      project = {:project, [{"/p/inj.md", {:ok, rule("injection", severity: "low")}}]}
+
+      assert ids.(Rules.load([project], builtin_rules: ["secret-exposure"])) == [
+               {"injection", :project},
+               {"secret-exposure", :builtin}
+             ]
+
+      host_builtin = {:builtin, [{"/b/a.md", {:ok, rule("a")}}, {"/b/b.md", {:ok, rule("b")}}]}
+
+      assert ids.(Rules.load([host_builtin], builtin: false, builtin_rules: ["b"])) == [
+               {"b", :builtin}
+             ]
     end
   end
 
-  describe "discover/1" do
-    test "later sources override earlier ones by id", %{opts: opts} = ctx do
-      put(ctx.builtin, "a.md", rule("shared", severity: "low"))
-      put(ctx.builtin, "b.md", rule("builtin-only"))
-      put(ctx.user, "shared.md", rule("shared", severity: "medium"))
-      put(ctx.user, "user-only.md", rule("user-only"))
-      put(ctx.project, "other-name.md", rule("shared", severity: "high"))
-      put(ctx.project, "builtin-off.md", "---\nid: builtin-only\nstatus: suppressed\n---\n")
+  describe "read_tree/3" do
+    alias Tackle.Test.GitRepo
 
-      assert %{rules: rules, warnings: []} = Rules.discover(opts)
-      assert Enum.map(rules, & &1.id) == ["builtin-only", "shared", "user-only"]
-      rules = by_id(rules)
+    test "reads the project's rule files at a revision, not from the working tree" do
+      dir = GitRepo.init("rules")
+      GitRepo.write(dir, %{".tackle/review/rules/a.md" => rule("base-rule"), "lib/a.ex" => ""})
+      base = GitRepo.commit(dir, "base")
 
-      assert %Rule{source: :project, severity: :high} = rules["shared"]
-      assert rules["shared"].path == Path.join(ctx.project, "other-name.md")
-      assert %Rule{source: :user, status: :active} = rules["user-only"]
+      GitRepo.write(dir, %{
+        ".tackle/review/rules/a.md" => rule("head-rule"),
+        ".tackle/review/rules/readme.txt" => "ignored"
+      })
 
-      assert %Rule{source: :project, status: :suppressed, category: nil, body: ""} =
-               rules["builtin-only"]
+      GitRepo.commit(dir, "head")
+      GitRepo.write(dir, %{".tackle/review/rules/a.md" => rule("uncommitted")})
+
+      assert {:ok, [{".tackle/review/rules/a.md", {:ok, contents}}]} = Rules.read_tree(dir, base)
+
+      assert %{rules: [%Rule{id: "base-rule"}]} =
+               Rules.load([{:project, [{".tackle/review/rules/a.md", {:ok, contents}}]}],
+                 builtin: false
+               )
+
+      assert {:ok, [{_path, {:ok, head}}]} = Rules.read_tree(dir, "HEAD")
+      assert head =~ "id: head-rule"
     end
 
-    test "uses the nearest project directory and stops at the Git root", ctx do
-      put(Path.join(ctx.root, ".tackle/review/rules"), "outside.md", rule("outside"))
-      assert Rules.discover(ctx.opts).rules == []
+    test "reports large files and unknown revisions" do
+      dir = GitRepo.init("rules")
 
-      put(ctx.project, "parent.md", rule("parent"))
-      child = Path.join(ctx.cwd, "lib/deep")
-      File.mkdir_p!(child)
-      child_opts = Keyword.put(ctx.opts, :cwd, child)
-      assert [%Rule{id: "parent"}] = Rules.discover(child_opts).rules
+      GitRepo.write(dir, %{
+        ".tackle/review/rules/big.md" => rule("big", body: String.duplicate("x", 3_000))
+      })
 
-      put(Path.join(child, ".tackle/review/rules"), "child.md", rule("child"))
-      assert [%Rule{id: "child"}] = Rules.discover(child_opts).rules
-    end
+      GitRepo.commit(dir, "base")
 
-    test "reads flat Markdown files only", %{opts: opts, project: project} do
-      put(project, "notes.txt", rule("text"))
-      put(Path.join(project, "nested"), "nested.md", rule("nested"))
-      put(project, "kept.md", rule("kept"))
-      assert %{rules: [%Rule{id: "kept"}], warnings: []} = Rules.discover(opts)
-    end
+      assert {:ok, [{_path, {:error, message}}]} =
+               Rules.read_tree(dir, "HEAD", max_rule_bytes: 100)
 
-    test "skips invalid files with warnings", %{opts: opts, project: project} do
-      put(project, "a-ok.md", rule("ok"))
-      put(project, "b-duplicate.md", rule("ok"))
-      put(project, "c-invalid.md", "---\nid: Not Valid\n---\nBody")
-      put(project, "d-binary.md", <<0xFF, 0xFE>>)
-      put(project, "e-large.md", rule("large", body: String.duplicate("x", 101)))
+      assert message =~ "larger than"
 
-      assert %{rules: [%Rule{id: "ok"} = ok], warnings: warnings} =
-               Rules.discover(Keyword.put(opts, :max_rule_bytes, 100))
+      # A revision without rule files has none.
+      GitRepo.write(dir, %{"lib/a.ex" => ""})
+      File.rm_rf!(Path.join(dir, ".tackle"))
+      GitRepo.commit(dir, "no rules")
+      assert {:ok, []} = Rules.read_tree(dir, "HEAD")
 
-      assert ok.path == Path.join(project, "a-ok.md")
-
-      assert [
-               {"b-duplicate.md", duplicate},
-               {"c-invalid.md", "id must use lowercase letters, numbers, and single hyphens"},
-               {"d-binary.md", "file is not valid UTF-8"},
-               {"e-large.md", "rule body is 101 bytes; the limit is 100"}
-             ] = Enum.map(warnings, &{Path.basename(&1.path), &1.message})
-
-      assert duplicate =~ "rule id ok is already defined in"
-    end
-
-    test "warns when the built-in directory is missing", %{opts: opts, root: root} do
-      missing = Path.join(root, "missing")
-
-      assert %{rules: [], warnings: [warning]} =
-               Rules.discover(Keyword.put(opts, :builtin_dir, missing))
-
-      assert warning.path == missing
-      assert warning.message =~ "could not list rule directory"
-
-      assert %{rules: [], warnings: []} = Rules.discover(Keyword.put(opts, :builtin_dir, nil))
-    end
-
-    test "does not follow workspace symlinks to host files under a jail", ctx do
-      secret = Path.join(ctx.home, "secret.md")
-      put(ctx.home, "secret.md", rule("secret"))
-      File.mkdir_p!(ctx.project)
-      File.ln_s!(secret, Path.join(ctx.project, "leak.md"))
-
-      assert Rules.discover(ctx.opts).rules |> Enum.map(& &1.id) == ["secret"]
-
-      opts = Keyword.put(ctx.opts, :executor, FakeJail.new(ctx.cwd))
-      assert Rules.discover(opts).rules == []
-    end
-
-    test "rejects invalid size options", %{opts: opts} do
-      assert_raise ArgumentError, ~r/:max_rule_bytes must be a positive integer/, fn ->
-        Rules.discover(Keyword.put(opts, :max_rule_bytes, 0))
-      end
+      assert {:error, {:unknown_revision, "nope"}} = Rules.read_tree(dir, "nope")
     end
   end
 

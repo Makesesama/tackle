@@ -304,7 +304,7 @@ defmodule Tackle.Tools.ReviewTest do
       Map.merge(ctx.context, %{
         tool_call_id: "call-1",
         event_callback: &send(test_pid, {:progress, &1}),
-        review_settings: %Tackle.Config.Review{profile: :assertive}
+        review_settings: %Tackle.Review.Settings{profile: :assertive}
       })
 
     assert {:ok, _text} = review(%{}, context)

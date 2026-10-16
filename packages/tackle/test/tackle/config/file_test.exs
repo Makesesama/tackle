@@ -611,7 +611,7 @@ defmodule Tackle.Config.FileTest do
 
     write_config(home, ~s({"review": {"thinking": {"detector": "low", "scorer": "off"}}}))
     assert {:ok, config} = load.()
-    review = %Tackle.Config.Review{thinking: %{detector: "low", scorer: "off"}}
+    review = %Tackle.Review.Settings{thinking: %{detector: "low", scorer: "off"}}
     assert config.review == review
     assert config.context.review_settings == review
 
@@ -627,7 +627,7 @@ defmodule Tackle.Config.FileTest do
 
     assert {:ok, config} = load.()
 
-    assert config.review == %Tackle.Config.Review{
+    assert config.review == %Tackle.Review.Settings{
              profile: :quiet,
              models: %{verifier: "test/file"},
              thinking: %{verifier: "low"},
@@ -636,10 +636,10 @@ defmodule Tackle.Config.FileTest do
            }
 
     write_config(home, ~s({"review": {"profile": null, "default_rules": null}}))
-    assert {:ok, %{review: %Tackle.Config.Review{profile: nil, default_rules: nil}}} = load.()
+    assert {:ok, %{review: %Tackle.Review.Settings{profile: nil, default_rules: nil}}} = load.()
 
     write_config(home, ~s({"review": {}}))
-    assert {:ok, %{review: %Tackle.Config.Review{thinking: thinking}}} = load.()
+    assert {:ok, %{review: %Tackle.Review.Settings{thinking: thinking}}} = load.()
     assert thinking == %{}
 
     write_config(home, ~s({"review": null}))

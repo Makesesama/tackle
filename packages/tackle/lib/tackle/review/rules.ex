@@ -1,21 +1,18 @@
 defmodule Tackle.Review.Rules do
   @moduledoc """
-  Discovers review rules and resolves the ones that apply to a review unit.
+  Parses, merges, and resolves review rules.
 
-  Rules are Markdown files with front matter, read flat from three
-  directories, lowest to highest precedence:
-
-    1. the built-in rules, embedded in this module at compile time from
-       `lib/tackle/review/builtin_rules` (see `builtin_files/0`);
-    2. `$TACKLE_HOME/review/rules`;
-    3. the nearest `.tackle/review/rules` at or above the working directory,
-       stopping at the Git root.
+  Rules are Markdown files with front matter. This module reads no files of
+  its own except the built-in rules, embedded in it at compile time from
+  `lib/tackle/review/builtin_rules` (see `builtin_files/0`). The host reads
+  the other rule files and passes their contents to `load/2`, by source,
+  lowest to highest precedence: typically the user's rules, then the
+  project's (`project_dir/0` in the repository). `read_tree/3` reads a
+  project's rule files from a commit instead of a checkout.
 
   A later source replaces an earlier rule with the same `id`, so a project
   can rewrite a built-in rule or turn it off with `status: suppressed`.
-  Non-Markdown files and subdirectories are ignored; invalid files are
-  skipped with a warning. Files in the workspace are read through the
-  session executor (see `Tackle.ProjectFiles`).
+  Invalid files are skipped with a warning.
 
   The built-in rules are compiled into the module rather than read from
   `priv/`, so every distribution (Mix, escript, and the Nix-built release,
@@ -51,12 +48,11 @@ defmodule Tackle.Review.Rules do
   ## Size caps
 
   Rules end up in every unit's prompt, so their size is bounded: a rule whose
-  body exceeds `:max_rule_bytes` is skipped at discovery, and `resolve/3`
+  body exceeds `:max_rule_bytes` is skipped by `load/2`, and `resolve/3`
   keeps at most `:max_unit_bytes` of rule bodies per unit, preferring higher
   severities and more specific sources. Both report warnings.
   """
 
-  alias Tackle.{Executor, Paths, ProjectFiles}
   alias Tackle.Review.{Finding, Glob}
   alias YamlFrontmatter, as: Frontmatter
 
@@ -92,7 +88,7 @@ defmodule Tackle.Review.Rules do
   @known_fields ~w(id category severity applies_to status)
   @statuses [:active, :suppressed, :retired]
   @id_pattern ~r/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
-  @relative_dir "review/rules"
+  @project_dir ".tackle/review/rules"
 
   # Embedded at compile time; see the module documentation.
   @builtin_source_dir Path.join(__DIR__, "builtin_rules")
@@ -103,7 +99,7 @@ defmodule Tackle.Review.Rules do
                  |> Enum.map(&Path.join(@builtin_source_dir, &1))
   for path <- @builtin_paths, do: @external_resource(path)
   @builtin_files Enum.map(@builtin_paths, &{Path.basename(&1), File.read!(&1)})
-  @builtin_label "builtin:" <> @relative_dir
+  @builtin_label "builtin:review/rules"
 
   @default_max_rule_bytes 4_096
   @default_max_unit_bytes 16_384
@@ -112,26 +108,29 @@ defmodule Tackle.Review.Rules do
   @typedoc "A skipped file, unreadable directory, or dropped rule."
   @type warning :: %{path: Path.t() | nil, message: String.t()}
 
-  @typedoc "All discovered rules, whatever their status, sorted by id, and warnings."
+  @typedoc "All loaded rules, whatever their status, sorted by id, and warnings."
   @type discovery :: %{rules: [Rule.t()], warnings: [warning()]}
 
   @typedoc """
-  Discovery options:
+  The files of one source: each file's path (for messages and `Rule.path`)
+  and its contents, or `{:error, message}` when the host could not read it,
+  which becomes a warning. A host that could not list a directory passes
+  the directory with an error the same way.
+  """
+  @type source_files :: [{Path.t(), {:ok, String.t()} | {:error, String.t()}}]
 
-    * `:cwd` - working directory for the project search (default: current);
-    * `:executor` - session executor for workspace files (default: local);
-    * `:env` - environment for `TACKLE_HOME` (default: the process's);
-    * `:builtin_dir` - directory to read instead of the embedded built-in
-      rules, or `nil` for no built-in rules (default: the embedded rules);
-    * `:builtin_rules` - `:all` (default) or the ids of the built-in rules
-      to keep; user and project rules are kept whatever their id;
+  @typedoc """
+  Options of `load/2`:
+
+    * `:builtin` - `:embedded` (default) loads the embedded built-in rules
+      before the given sources; `false` loads none, for a host that passes
+      its own `:builtin` source;
+    * `:builtin_rules` - `:all` (default) or the ids of the built-in rules to
+      keep; rules of other sources are kept whatever their id;
     * `:max_rule_bytes` - largest accepted rule body (default 4,096).
   """
-  @type discover_option ::
-          {:cwd, Path.t()}
-          | {:executor, Executor.t() | nil}
-          | {:env, %{optional(String.t()) => String.t()}}
-          | {:builtin_dir, Path.t() | nil}
+  @type load_option ::
+          {:builtin, :embedded | false}
           | {:builtin_rules, :all | [String.t()]}
           | {:max_rule_bytes, pos_integer()}
 
@@ -151,7 +150,7 @@ defmodule Tackle.Review.Rules do
   Returns the embedded built-in rule files as `{file_name, contents}` pairs,
   sorted by file name.
 
-  Discovery labels their rules with the path `"#{@builtin_label}/<file_name>"`,
+  `load/2` labels their rules with the path `"#{@builtin_label}/<file_name>"`,
   which does not exist on disk.
   """
   @spec builtin_files() :: [{String.t(), String.t()}]
@@ -186,51 +185,78 @@ defmodule Tackle.Review.Rules do
   end
 
   @doc """
-  Returns the embedded built-in rules, without reading any files.
-
-  `ids` is `:all` or the ids of the built-in rules to keep, as
-  `:builtin_rules` in `discover/1`. Every rule is returned regardless of
-  status, sorted by id, with the same warnings discovery would report for
-  them.
+  Returns the embedded built-in rules: `load([], builtin_rules: ids)`.
   """
   @spec builtin(:all | [String.t()]) :: discovery()
-  def builtin(ids \\ :all) when ids == :all or is_list(ids) do
+  def builtin(ids \\ :all) when ids == :all or is_list(ids), do: load([], builtin_rules: ids)
+
+  @doc """
+  The directory, relative to a repository's root, that holds its rules.
+  """
+  @spec project_dir() :: String.t()
+  def project_dir, do: @project_dir
+
+  @doc """
+  Loads rules from the embedded built-in rules and `sources`, a list of
+  `{source, files}` (see `t:source_files/0`) from lowest to highest
+  precedence. See `t:load_option/0`.
+
+  Only files ending in `.md` are read. A rule replaces a rule with the same
+  id from an earlier source; within one source, the first file that defines
+  an id wins and later ones are warnings. Returns every rule regardless of
+  status, sorted by id, so later stages can tell suppressed rules from
+  unknown ones.
+  """
+  @spec load([{Rule.source(), source_files()}], [load_option()]) :: discovery()
+  def load(sources, opts \\ []) when is_list(sources) and is_list(opts) do
+    max_bytes = positive_option(opts, :max_rule_bytes, @default_max_rule_bytes)
+    keep_builtin = Keyword.get(opts, :builtin_rules, :all)
+
+    embedded =
+      case Keyword.get(opts, :builtin, :embedded) do
+        :embedded -> [{:builtin, embedded_files()}]
+        false -> []
+      end
+
     {rules, warnings} =
-      @default_max_rule_bytes
-      |> load_embedded({%{}, []})
-      |> select_builtin(ids)
+      Enum.reduce(embedded ++ sources, {%{}, []}, fn {source, files}, {rules, warnings} ->
+        {source_rules, warnings} = load_source(source, files, max_bytes, warnings)
+        {Map.merge(rules, select_builtin(source, source_rules, keep_builtin)), warnings}
+      end)
 
     %{rules: rules |> Map.values() |> Enum.sort_by(& &1.id), warnings: Enum.reverse(warnings)}
   end
 
   @doc """
-  Discovers rules from all sources (see the module documentation).
+  Reads a project's rule files (`project_dir/0`) as they are at the
+  revision `rev` of the repository at `root`, for `load/2` as the
+  `:project` source. Reads the object database, not the working tree, so
+  a pull request can be reviewed against the rules of its base.
 
-  Returns every rule regardless of status, so later stages can tell
-  suppressed rules from unknown ones. A missing `:builtin_dir` is a
-  warning; missing user and project directories are not.
+  A file larger than `:max_rule_bytes` (default 4,096) is not read and is a
+  warning. Returns `{:error, reason}` (`t:GixEx.error/0`) when the
+  repository cannot be opened or `rev` cannot be resolved.
   """
-  @spec discover([discover_option()]) :: discovery()
-  def discover(opts \\ []) do
-    files = ProjectFiles.new(opts)
+  @spec read_tree(Path.t(), String.t(), max_rule_bytes: pos_integer()) ::
+          {:ok, source_files()} | {:error, GixEx.error()}
+  def read_tree(root, rev, opts \\ []) when is_binary(root) and is_binary(rev) do
     max_bytes = positive_option(opts, :max_rule_bytes, @default_max_rule_bytes)
-    keep_builtin = Keyword.get(opts, :builtin_rules, :all)
 
-    {rules, warnings} =
-      opts
-      |> sources(files)
-      |> Enum.reduce({%{}, []}, fn
-        {:builtin, :embedded}, acc ->
-          load_embedded(max_bytes, acc) |> select_builtin(keep_builtin)
+    # The front matter and the closing fence fit in another few bytes.
+    with {:ok, repo} <- GixEx.open(root),
+         {:ok, entries} <-
+           GixEx.read_dir(repo, rev, @project_dir, max_file_bytes: max_bytes + 1_024) do
+      {:ok,
+       for {name, contents} <- Enum.sort(entries), String.ends_with?(name, ".md") do
+         path = Path.join(@project_dir, name)
 
-        {:builtin, _dir, _reader, _required?} = source, acc ->
-          load_source(source, max_bytes, acc) |> select_builtin(keep_builtin)
-
-        source, acc ->
-          load_source(source, max_bytes, acc)
-      end)
-
-    %{rules: rules |> Map.values() |> Enum.sort_by(& &1.id), warnings: Enum.reverse(warnings)}
+         cond do
+           is_nil(contents) -> {path, {:error, "file is larger than #{max_bytes + 1_024} bytes"}}
+           String.valid?(contents) -> {path, {:ok, contents}}
+           true -> {path, {:error, "file is not valid UTF-8"}}
+         end
+       end}
+    end
   end
 
   @doc """
@@ -293,102 +319,33 @@ defmodule Tackle.Review.Rules do
     %{rules: Enum.reverse(kept), dropped: dropped, warnings: warnings}
   end
 
-  ## Discovery
+  ## Loading
 
-  defp sources(opts, files) do
-    cwd = opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
-    env = Keyword.get_lazy(opts, :env, &System.get_env/0)
+  defp embedded_files do
+    Enum.map(@builtin_files, fn {name, contents} ->
+      {Path.join(@builtin_label, name), {:ok, contents}}
+    end)
+  end
 
-    builtin =
-      case Keyword.fetch(opts, :builtin_dir) do
-        :error ->
-          [{:builtin, :embedded}]
-
-        {:ok, nil} ->
-          []
-
-        # A replacement built-in directory is a host directory, not workspace files.
-        {:ok, dir} ->
-          [{:builtin, Path.expand(dir), ProjectFiles.new(executor: Executor.local()), true}]
+  defp load_source(source, files, max_bytes, warnings) do
+    files
+    |> Enum.filter(fn {path, read} -> markdown?(path) or match?({:error, _message}, read) end)
+    |> Enum.reduce({%{}, warnings}, fn {path, read}, {rules, warnings} ->
+      with {:ok, contents} <- read,
+           {:ok, rule} <- parse(contents, path, source),
+           :ok <- within_size(rule, max_bytes),
+           :ok <- unique(rule, rules) do
+        {Map.put(rules, rule.id, rule), warnings}
+      else
+        {:error, message} -> {rules, [%{path: path, message: message} | warnings]}
       end
-
-    user =
-      case Paths.home(env: env) do
-        {:ok, home} -> [{:user, Path.join(home, @relative_dir), files, false}]
-        {:error, _reason} -> []
-      end
-
-    project =
-      case ProjectFiles.nearest_project_dir(files, cwd, Path.join(".tackle", @relative_dir)) do
-        nil -> []
-        dir -> [{:project, dir, files, false}]
-      end
-
-    builtin ++ user ++ project
+    end)
   end
 
-  defp load_directory(files, dir, source, required?, max_bytes, {rules, warnings} = acc) do
-    case ProjectFiles.list(files, dir) do
-      {:ok, entries} ->
-        {source_rules, warnings} =
-          entries
-          |> Enum.filter(&String.ends_with?(&1, ".md"))
-          |> Enum.map(&Path.join(dir, &1))
-          |> Enum.filter(&ProjectFiles.regular?(files, &1))
-          |> Enum.reduce({%{}, warnings}, &load_file(files, &1, source, max_bytes, &2))
+  defp markdown?(path), do: String.ends_with?(path, ".md")
 
-        {Map.merge(rules, source_rules), warnings}
-
-      {:error, :enoent} when not required? ->
-        acc
-
-      {:error, reason} ->
-        message = "could not list rule directory (#{Executor.format_reason(reason)})"
-        {rules, [%{path: dir, message: message} | warnings]}
-    end
-  end
-
-  defp load_source({source, dir, reader, required?}, max_bytes, acc),
-    do: load_directory(reader, dir, source, required?, max_bytes, acc)
-
-  # Built-in rules load first, so only built-in rules are in the map here.
-  defp select_builtin(acc, :all), do: acc
-
-  defp select_builtin({rules, warnings}, ids) when is_list(ids),
-    do: {Map.take(rules, ids), warnings}
-
-  defp load_embedded(max_bytes, {rules, warnings}) do
-    {builtin_rules, warnings} =
-      Enum.reduce(@builtin_files, {%{}, warnings}, fn {name, contents}, acc ->
-        add_rule({:ok, contents}, Path.join(@builtin_label, name), :builtin, max_bytes, acc)
-      end)
-
-    {Map.merge(rules, builtin_rules), warnings}
-  end
-
-  defp load_file(files, path, source, max_bytes, acc),
-    do: add_rule(read(files, path), path, source, max_bytes, acc)
-
-  defp add_rule(read_result, path, source, max_bytes, {rules, warnings}) do
-    with {:ok, contents} <- read_result,
-         {:ok, rule} <- parse(contents, path, source),
-         :ok <- within_size(rule, max_bytes),
-         :ok <- unique(rule, rules) do
-      {Map.put(rules, rule.id, rule), warnings}
-    else
-      {:error, message} -> {rules, [%{path: path, message: message} | warnings]}
-    end
-  end
-
-  defp read(files, path) do
-    case ProjectFiles.read(files, path) do
-      {:ok, contents} ->
-        if String.valid?(contents), do: {:ok, contents}, else: {:error, "file is not valid UTF-8"}
-
-      {:error, reason} ->
-        {:error, "could not be read (#{Executor.format_reason(reason)})"}
-    end
-  end
+  defp select_builtin(:builtin, rules, ids) when is_list(ids), do: Map.take(rules, ids)
+  defp select_builtin(_source, rules, _ids), do: rules
 
   defp within_size(%Rule{body: body}, max_bytes) do
     if byte_size(body) <= max_bytes,

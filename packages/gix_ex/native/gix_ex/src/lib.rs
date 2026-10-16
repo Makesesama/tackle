@@ -171,6 +171,57 @@ fn empty_tree(repo: ResourceArc<Repo>) -> String {
     ObjectId::empty_tree(repo.local().object_hash()).to_string()
 }
 
+/// Lists the files directly in the directory `dir` (a `/`-separated path from
+/// the tree root, empty for the root) at revision `rev`, with their contents;
+/// a file larger than `max_bytes` has none (`None`). Only regular and
+/// executable files are listed, not subdirectories, symbolic links, or
+/// submodules. A path that does not name a directory at `rev` lists nothing.
+#[rustler::nif(schedule = "DirtyIo")]
+fn read_dir(
+    repo: ResourceArc<Repo>,
+    rev: String,
+    dir: String,
+    max_bytes: u64,
+) -> Result<Vec<(Bytes, Option<Bytes>)>, Error> {
+    let repo = repo.local();
+    let root = repo
+        .find_tree(tree_of(&repo, &Side::Rev(rev))?)
+        .map_err(git)?;
+    let dir = dir.trim_matches('/');
+
+    let tree = if dir.is_empty() {
+        root
+    } else {
+        match root.lookup_entry_by_path(dir).map_err(git)? {
+            Some(entry) if entry.mode().is_tree() => {
+                repo.find_tree(entry.object_id()).map_err(git)?
+            }
+            _ => return Ok(Vec::new()),
+        }
+    };
+
+    let mut files = Vec::new();
+    for entry in tree.iter() {
+        let entry = entry.map_err(git)?;
+        if !matches!(
+            entry.mode().kind(),
+            EntryKind::Blob | EntryKind::BlobExecutable
+        ) {
+            continue;
+        }
+
+        let id = entry.object_id();
+        let contents = if repo.find_header(id).map_err(git)?.size() > max_bytes {
+            None
+        } else {
+            Some(Bytes(repo.find_blob(id).map_err(git)?.take_data()))
+        };
+        files.push((Bytes::from(entry.filename().as_bytes()), contents));
+    }
+
+    Ok(files)
+}
+
 #[rustler::nif(schedule = "DirtyIo")]
 fn commits(
     repo: ResourceArc<Repo>,

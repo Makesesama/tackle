@@ -8,9 +8,9 @@ defmodule Tackle.LocalReview do
   locally:
 
     * **settings** - the requester session's review settings
-      (`Tackle.Config.Review`, the `review` object of `config.json`, under
+      (`Tackle.Review.Settings`, the `review` object of `config.json`, under
       `:review_settings` in its context), unless `:settings` is given;
-    * **rules** - discovered with `Tackle.Review.Rules.discover/1` from
+    * **rules** - discovered with `Tackle.LocalReview.Rules.discover/1` from
       `$TACKLE_HOME/review/rules` and the nearest `.tackle/review/rules` at or
       above the change's directory, read through `:executor`, unless
       `:rules` is given. `:default_rules` (or the settings' `default_rules`)
@@ -27,11 +27,12 @@ defmodule Tackle.LocalReview do
   about writing the history is only in the returned result.
   """
 
-  alias Tackle.Config.Review, as: ReviewSettings
   alias Tackle.Executor
   alias Tackle.Lib.State
+  alias Tackle.LocalReview.Rules, as: RuleDiscovery
   alias Tackle.Review
-  alias Tackle.Review.{Change, History, Result, Rules}
+  alias Tackle.Review.{Change, History, Result}
+  alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
 
@@ -94,7 +95,7 @@ defmodule Tackle.LocalReview do
 
   @doc """
   Returns the review settings of the requester's session
-  (`Tackle.Config.Review`, under `:review_settings` in its context), or
+  (`Tackle.Review.Settings`, under `:review_settings` in its context), or
   `nil` when it has none.
   """
   @spec requester_settings(AgentRef.t()) ::
@@ -153,7 +154,7 @@ defmodule Tackle.LocalReview do
         with {:ok, executor} <- executor(local),
              {:ok, builtin_rules} <- builtin_rules(opts, settings) do
           discovery =
-            Rules.discover(
+            RuleDiscovery.discover(
               [cwd: change.cwd, executor: executor, builtin_rules: builtin_rules] ++
                 Keyword.take(local, [:env])
             )

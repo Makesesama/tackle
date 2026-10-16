@@ -174,6 +174,35 @@ defmodule GixEx do
     Native.diff(ref, side(from, [:empty]), side(to, [:empty, :index, :worktree]), options(opts))
   end
 
+  @doc """
+  Reads the files directly in the directory `dir` at the revision `rev`
+  (anything `git rev-parse` accepts that names a commit or tree), from the
+  repository's object database, without a working tree.
+
+  `dir` is a `/`-separated path from the repository root; `""` is the root.
+  Returns `{name, contents}` pairs in tree order, where `contents` is `nil`
+  for a file larger than `:max_file_bytes` (default 16 MiB). Only regular and
+  executable files are listed, not subdirectories, symbolic links, or
+  submodules. A `dir` that does not name a directory at `rev` lists no files.
+
+  Use it to read a repository's configuration as it is at a commit, for
+  example a pull request's base, rather than as a checkout has it.
+  """
+  @spec read_dir(Repository.t(), String.t(), String.t(), max_file_bytes: pos_integer()) ::
+          {:ok, [{binary(), binary() | nil}]} | {:error, error()}
+  def read_dir(%Repository{ref: ref}, rev, dir, opts \\ [])
+      when is_binary(rev) and is_binary(dir) do
+    opts = Keyword.validate!(opts, max_file_bytes: @default_max_file_bytes)
+    max_bytes = Keyword.fetch!(opts, :max_file_bytes)
+
+    unless is_integer(max_bytes) and max_bytes > 0 do
+      raise ArgumentError,
+            "expected :max_file_bytes to be a positive integer, got: #{inspect(max_bytes)}"
+    end
+
+    Native.read_dir(ref, rev, dir, max_bytes)
+  end
+
   @doc "Formats an error for people."
   @spec format_error(error()) :: String.t()
   def format_error(:not_a_repository), do: "not a git repository"

@@ -23,7 +23,6 @@ defmodule Tackle.Config do
 
   alias Tackle.Config.File, as: ConfigFile
   alias Tackle.Config.Narration
-  alias Tackle.Config.Review
   alias Tackle.Config.SessionTitles
   alias Tackle.Config.Watchdog
   alias Tackle.Executor
@@ -39,6 +38,7 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
   alias Tackle.Plugins.Catalog
   alias Tackle.ProjectFiles
+  alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Skills
   alias Tackle.Skills.Skill
   alias Tackle.SystemPrompt
@@ -142,7 +142,7 @@ defmodule Tackle.Config do
           watchdog: Watchdog.t() | nil,
           narration: Narration.t() | nil,
           decision_model: Tackle.Lib.Decision.Selection.t() | nil,
-          review: Review.t() | nil,
+          review: ReviewSettings.t() | nil,
           agents: %{optional(String.t()) => agent_settings()}
         }
 
@@ -252,7 +252,7 @@ defmodule Tackle.Config do
 
   Optional `:review` sets defaults for code reviews requested from the
   session: per-stage models, thinking levels, and step limits, which findings
-  to show, and which built-in rules apply; see `Tackle.Config.Review`.
+  to show, and which built-in rules apply; see `Tackle.Review.Settings`.
   The session context gets them under `:review_settings`, unless the host
   already put a `:review_settings` entry there.
 
@@ -275,7 +275,7 @@ defmodule Tackle.Config do
          {:ok, narration} <- Narration.new(Keyword.get(opts, :narration), providers),
          {:ok, decision_model} <-
            resolve_decision_model(Keyword.get(opts, :decision_model), providers),
-         {:ok, review} <- Review.new(Keyword.get(opts, :review), providers),
+         {:ok, review} <- ReviewSettings.new(Keyword.get(opts, :review), providers),
          :ok <- validate_agents(Keyword.get(opts, :agents, %{}), providers),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
@@ -900,7 +900,9 @@ defmodule Tackle.Config do
 
   defp put_review(context, nil), do: context
   defp put_review(%{review_settings: _host_settings} = context, _review), do: context
-  defp put_review(context, %Review{} = review), do: Map.put(context, :review_settings, review)
+
+  defp put_review(context, %ReviewSettings{} = review),
+    do: Map.put(context, :review_settings, review)
 
   defp decision_provider?(%Provider{adapter: adapter}) do
     function_exported?(adapter, :decide, 2) and
