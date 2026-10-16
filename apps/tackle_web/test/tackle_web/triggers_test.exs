@@ -51,11 +51,14 @@ defmodule Tackle.Web.TriggersTest do
 
       assert request.head_sha == sha("head")
       assert request.base_ref == "main"
+      assert_enqueued(worker: ReviewRequest.RunWorker, args: %{primary_key: %{id: request.id}})
 
       for action <- [:reopened, :ready_for_review] do
         assert {:ok, :exists, _request} =
                  Triggers.pull_request(repository, action, pull_request(), "octocat")
       end
+
+      assert [_one_job] = all_enqueued(worker: ReviewRequest.RunWorker)
 
       new_head = pull_request(%{head_sha: sha("next")})
 
@@ -220,7 +223,7 @@ defmodule Tackle.Web.TriggersTest do
       assert id == request.id
     end
 
-    test "a command reruns a failed or skipped head, and a posted one with another profile" do
+    test "a command reruns failed/skipped heads and reviewed/posted heads with another profile" do
       repository = repository_with(%{})
       {:ok, :created, request} = Triggers.command(repository, pull_request(), nil, "ada")
 
@@ -231,13 +234,18 @@ defmodule Tackle.Web.TriggersTest do
                  Triggers.command(repository, pull_request(), nil, "bob")
       end
 
-      set_status(request, :posted)
+      for {status, current, next} <- [
+            {:reviewed, :default, :assertive},
+            {:posted, :assertive, :quiet}
+          ] do
+        set_status(request, status)
 
-      assert {:ok, :exists, _request} =
-               Triggers.command(repository, pull_request(), :default, "bob")
+        assert {:ok, :exists, _request} =
+                 Triggers.command(repository, pull_request(), current, "bob")
 
-      assert {:ok, :rerun, %{profile: :assertive, status: :pending}} =
-               Triggers.command(repository, pull_request(), :assertive, "bob")
+        assert {:ok, :rerun, %{profile: ^next, status: :pending}} =
+                 Triggers.command(repository, pull_request(), next, "bob")
+      end
 
       assert [_one] = requests(repository)
     end
@@ -274,8 +282,7 @@ defmodule Tackle.Web.TriggersTest do
     end
   end
 
-  # The statuses after :pending are set by the review job (phase 4), which
-  # has no action yet; set them directly.
+  # These trigger tests bypass the worker to inspect terminal rerun policy.
   defp set_status(request, status) do
     Repo.query!("update review_requests set status = $1 where id = $2", [
       Atom.to_string(status),

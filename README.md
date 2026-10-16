@@ -26,7 +26,7 @@ reusable library on its own or add scoped orchestration and integrations.
 | A Phoenix host integration | [`tackle_phoenix`](packages/tackle_phoenix/README.md): supervised turns, PubSub, and LiveView support. |
 | A terminal frontend | [`tackle_cli`](apps/tackle_cli/README.md): the CLI built on the harness, not an agent engine to embed. |
 | An Emacs frontend | [`etackle`](apps/etackle/README.md): the first client for the Tackle SDK, driving `tackle sdk` over its stdio JSON-RPC protocol. |
-| A pull request review bot (in progress) | [`tackle_web`](apps/tackle_web/README.md): a Phoenix/Ash app that will review forge pull requests with `tackle_review`; receives GitHub webhooks and records review requests, with encrypted model credentials and a tested agent backend (phases 1–3 of [the plan](docs/TACKLE_WEB_PLAN.md)); job execution is next. |
+| A pull request review bot (in progress) | [`tackle_web`](apps/tackle_web/README.md): a Phoenix/Ash app that will review forge pull requests with `tackle_review`; receives GitHub webhooks and runs jailed reviews, storing runs and findings (phases 1–4 of [the plan](docs/TACKLE_WEB_PLAN.md)); forge posting is next. |
 
 Implement a `Tackle.Lib.LLM` adapter for your provider, supply
 `Tackle.Lib.Tool` modules for your capabilities, and choose which runtime and

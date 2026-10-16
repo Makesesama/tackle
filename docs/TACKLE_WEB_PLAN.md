@@ -1,10 +1,11 @@
 # tackle_web plan: forge review bot
 
-**Status: phases 1–3 of §8 are implemented in `apps/tackle_web` and
-`nix/`: skeleton/packaging, forges/webhooks, and models/agent backend.
+**Status: phases 1–4 of §8 are implemented in `apps/tackle_web` and
+`nix/`: skeleton/packaging, forges/webhooks, models/agent backend, and jailed review
+jobs with stored runs/findings (ending at `:reviewed`).
 The Codex device-login service and page exist, but the page is unmounted
 and fails closed until phase 6 supplies admin authentication and browser
-wiring. Review jobs and later phases are not implemented.** This document is a handoff: it should be enough to start without the conversation
+wiring. Forge posting and phases 5–7 are not implemented.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -176,8 +177,10 @@ place and passes the result to `Tackle.Review.run/2`.
   the run and its findings are stored but not yet posted, so a retry posts
   without reviewing again (§7.5). Identity on (`repository`, `pull_number`,
   `head_sha`): webhook redeliveries and repeated commands upsert instead of
-  reviewing twice. AshOban trigger on `status in [:pending, :running,
-  :reviewed]` runs the `:run` action (§7.5).
+  reviewing twice. AshOban trigger on `status in [:pending, :running]` runs the `:run`
+  action (§7.5). Phase 5 must add posting of stored `:reviewed` runs without
+  another review. `claimed_job_id`/`claimed_attempt` fence a running attempt;
+  manual reruns clear them and retain historical runs.
 - `ReviewRun`: `request`, `summary` (map: the `Tackle.Review.Result`
   summary, including stages, usage, settings, and the `rules`/`prompts`
   digests), `usage` (token totals for budgets), `duration_ms`,
@@ -185,7 +188,8 @@ place and passes the result to `Tackle.Review.run/2`.
 - `Finding`: `run`, `fingerprint`, `state` (`:shown` | `:rejected` |
   `:hidden`), the finding fields (title, category, severity, blocking,
   confidence, rule_id, path, side, start_line, end_line, trigger, body,
-  suggestion), `evidence` (rejected), `forge_comment_id` (when posted).
+  suggestion), `support`, `verdict`, `evidence` (rejected), `hidden_reason`
+  (verified but hidden), `forge_comment_id` (when posted).
 - `FindingOutcome`: `repository`, `fingerprint`, `outcome` (`:dismissed` |
   `:fixed` | `:useful` | `:not_useful`), `source` (`:forge` | `:admin`),
   `by`, `note`. A repository's dismissed fingerprints are the next review's
@@ -400,8 +404,11 @@ bare clone (refs, `worktrees/`, Git's lock files), so two reviews of one
 repository must not run them at once. Hold a per-repository lock around
 them. A Postgres advisory lock would hold a pooled database connection for
 the length of a fetch, so use a lock outside the database instead:
-`:global.trans/3` on `{Tackle.Web.Checkout, repository_id}`, which also
-covers more than one node. The review itself runs outside the lock: a later
+`:global.trans({{Checkout, repo_id}, self()}, fn -> ... end)` (with
+`Checkout` aliased to `Tackle.Web.Checkout`), which also covers more than one
+connected node. The outer tuple separates the shared lock identity from the
+requesting process identity; omitting it does not serialize callers correctly.
+The review itself runs outside the lock: a later
 fetch only adds objects and moves refs, which does not change a worktree at
 a fixed SHA.
 
@@ -412,6 +419,14 @@ configuration, hooks, alternates, and worktree metadata found there, so a
 writable mount would let jailed code reach the server through host Git.
 
 ### 7.5 Review job
+
+**Phase 4 implementation:** `ReviewJob` now runs steps 1–7 and stops at
+`:reviewed`. The trigger deliberately excludes reviewed requests; step 8 and
+the reviewed → posting retry branch below are **phase 5 plans**, not working
+code. Immediate enqueue and the cron safety net are wired up. The timeout is
+20 minutes, max attempts three, Lifeline rescue after 30 minutes. See the app
+README's [review jobs](../apps/tackle_web/README.md#review-jobs-and-stored-results-phase-4)
+for public entry points and failure/lifecycle semantics.
 
 `ReviewRequest`'s AshOban trigger runs the `:run` action, which calls
 `Tackle.Web.ReviewJob.run/1` (plain Elixir). Oban queue `reviews` with
@@ -447,11 +462,23 @@ The job starts from the request's current status, so retries and stale
 jobs are safe:
 
 - `:pending` or `:running` (an earlier attempt crashed or timed out): run
-  steps 1 to 8 from the start, with a fresh worktree;
-- `:reviewed`: the run is stored; only post (step 8);
+  steps 1–7 (and step 8 once phase 5 exists), with a fresh worktree;
+- `:reviewed`: phase 4 returns without work; phase 5 will only post (step 8);
 - `:posted`, `:failed`, `:skipped`: return without work. A request
   superseded by a newer head (§7.7) may still have a job enqueued; this is
   where it ends.
+
+**Crash/timeout fencing (implemented).** The normal final-error action sets
+`:failed`, but an Oban timeout or process death bypasses it. A subsequent
+scheduler job checks the recorded owner in `oban_jobs`: discarded, cancelled,
+completed-without-a-result or pruned/missing owners fail the request without
+starting another review cycle. An executing same attempt is a no-op; only a
+larger attempt of the same owner job may reclaim a running request. Writes
+check the owner and actual executing attempt under short row locks. Runtime
+scopes do not follow an Oban caller automatically: the per-run lifecycle owner
+monitors that caller, serializes acquisition, and holds a preallocated scope
+reference before starting it, then tears down scope → jail → checkout on death.
+Startup/periodic sweeps conservatively preserve live leases and executing jobs.
 
 1. Check the repository is enabled and within its daily token budget
    (sum of today's `ReviewRun.usage`); else `:skipped` with a reason. Set
@@ -461,7 +488,7 @@ jobs are safe:
    rules it is reviewed against:
    `{:ok, files} = Tackle.Review.Rules.read_tree(worktree_or_clone, base_sha)`,
    `Rules.load([{:project, files}], builtin_rules: ...)`; turn load warnings
-   into `:warnings`.
+   into strings for `:warnings`.
 4. Settings: validate again at run time, `Settings.from_json/1` and then
    `Tackle.Review.Settings.new(opts, providers)` against the providers
    enabled **now**, merged with `ReviewDefaults` by the precedence of §6.
@@ -480,7 +507,8 @@ jobs are safe:
    requester's.
 6. `Tackle.Review.run(change, requester: root, profiles: ..., rules: ...,
    settings: ..., profile: ..., known_fingerprints: dismissed,
-   warnings: ..., on_event: ...)`; events update the request for the UI.
+   warnings: ..., on_event: ...)`; phase 4 stores running/reviewed/error
+   progress. Finer-grained UI event progress remains later interface work.
 7. In one transaction, store the `ReviewRun` and `Finding`s (shown,
    rejected, and `Result.hidden/1`) and set `:reviewed`. Stop the scope and
    remove the worktree (under the repository lock, §7.4).
@@ -752,7 +780,9 @@ use Postgres with the Ecto sandbox. Commit per phase.
    `tackle-review-jail`, the fail-closed check and the launcher test that
    writes and network access fail), `ReviewJob` with the AshOban trigger,
    the status-driven restart rules, and storing `ReviewRun` and `Finding`s
-   before posting.
+   before posting. **Implemented, ending at `:reviewed`**: fenced atomic
+   persistence, runtime settings revalidation, base rules, monitored acquisition/
+   teardown, startup/periodic sweeps and exhausted-owner reconciliation.
 5. **Posting.** `Posting`, idempotent per request (the hidden marker) and
    per fingerprint, with the output sanitising of §7.5.1.
 6. **Interface and sign-in.** OAuth sign-in, AshAdmin behind it with the

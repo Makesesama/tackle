@@ -1,7 +1,9 @@
 # Git mounts for the exec-jail launcher (exec-jail.nix). Sourced by the
 # launcher, which runs on the host before the jail starts; it only appends
 # Bubblewrap arguments to RUNTIME_ARGS and creates empty Git files and
-# directories on the host.
+# directories on the host in the default readwrite mode. The readonly mode
+# keeps all validations but binds every Git directory read-only and creates
+# nothing on the host.
 #
 # Git runs hooks and honours core.hooksPath, core.fsmonitor, and other
 # settings from its configuration on the host, so jailed code must not be able
@@ -80,10 +82,15 @@ _tackle_git_no_commondir() {
 # linked worktree of the repository, so their metadata under worktrees/ is
 # read-only too; worktrees are created on the host.
 _tackle_git_main_checkout() {
-  local git_dir=$1 entry
+  local git_dir=$1 mode=$2 entry
 
   _tackle_git_no_links "$git_dir"/{hooks,config,config.worktree,worktrees}
   _tackle_git_no_commondir "$git_dir"
+
+  if [[ "$mode" == readonly ]]; then
+    RUNTIME_ARGS+=(--ro-bind "$git_dir" "$git_dir")
+    return
+  fi
 
   mkdir -p "$git_dir/hooks" "$git_dir/worktrees"
   [[ -e "$git_dir/config" ]] || : > "$git_dir/config"
@@ -114,7 +121,7 @@ _tackle_git_main_checkout() {
 # before anything is mounted, so a .git file aimed at another repository's
 # worktree is refused.
 _tackle_git_linked_worktree() {
-  local workspace=$1 home=$2 git_dir=$3 common target entry
+  local workspace=$1 home=$2 git_dir=$3 mode=$4 common target entry
 
   common=$(dirname "$(dirname "$git_dir")")
   if [[ "$(basename "$(dirname "$git_dir")")" != worktrees ]]; then
@@ -144,6 +151,11 @@ _tackle_git_linked_worktree() {
     _tackle_git_refuse "$common is not a Git directory"
   fi
 
+  if [[ "$mode" == readonly ]]; then
+    RUNTIME_ARGS+=(--ro-bind "$common" "$common" --ro-bind "$git_dir" "$git_dir")
+    return
+  fi
+
   # Branch reflogs need logs/refs. Create it from inside the resolved logs
   # directory, so a symbolic link swapped in is not followed.
   if [[ ! -d "$common/logs/refs" ]]; then
@@ -169,12 +181,14 @@ _tackle_git_linked_worktree() {
 # Appends the Git mounts for the workspace `$1`, the resolved current
 # directory, given the resolved home directory `$2`.
 tackle_jail_git_mounts() {
-  local workspace=$1 home=$2 dot_git=$1/.git line git_dir
+  local workspace=$1 home=$2 mode=${3:-readwrite} dot_git=$1/.git line git_dir
+
+  [[ "$mode" == readonly || "$mode" == readwrite ]] || _tackle_git_refuse "invalid Git mount mode"
 
   if [[ -L "$dot_git" ]]; then
     _tackle_git_refuse "refusing the symbolic link $dot_git"
   elif [[ -d "$dot_git" ]]; then
-    _tackle_git_main_checkout "$dot_git"
+    _tackle_git_main_checkout "$dot_git" "$mode"
   elif [[ -f "$dot_git" ]]; then
     # The .git file itself is read-only, so jailed code cannot repoint it.
     RUNTIME_ARGS+=(--ro-bind "$dot_git" "$dot_git")
@@ -183,7 +197,7 @@ tackle_jail_git_mounts() {
     if [[ "$line" == "gitdir: "* ]] &&
       git_dir=$(_tackle_git_resolve "$workspace" "${line#gitdir: }") &&
       [[ -e "$git_dir/commondir" || -L "$git_dir/commondir" ]]; then
-      _tackle_git_linked_worktree "$workspace" "$home" "$git_dir"
+      _tackle_git_linked_worktree "$workspace" "$home" "$git_dir" "$mode"
     fi
     # Otherwise a submodule or something else: its Git directory stays
     # outside the jail, and Git does not work in it.

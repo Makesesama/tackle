@@ -1,6 +1,6 @@
 # tackle_web
 
-**Status: phases 1–3 of
+**Status: phases 1–4 of
 [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
@@ -10,8 +10,11 @@ events and `/tackle review` commands into review requests according to
 each repository's settings. It also stores model providers and encrypted
 credentials, resolves review defaults, and has an ephemeral agent backend tested
 with whole scripted reviews. Codex device login has a server service and an
-unmounted page awaiting phase 6's authentication. Nothing runs queued review
-requests yet (phase 4); the plan lists what each phase adds.
+unmounted page awaiting phase 6's authentication. Queued reviews now run in the
+read-only jail, with base-commit rules and
+explicit model settings, and store their runs/findings at `:reviewed`. Forge
+posting (phase 5) is not implemented; reviewed requests are not automatically
+scheduled again. The plan lists what each later phase adds.
 
 OTP application `:tackle_web`, namespace `Tackle.Web.*`. It depends on the
 packages (`tackle_lib`, `tackle_runtime`, `tackle_review`, `tackle_tools`,
@@ -72,6 +75,8 @@ review every generated migration before committing it.
 | `POOL_SIZE` | `10` | database connections |
 | `LISTEN_ADDRESS` | `127.0.0.1` | IP address to listen on |
 | `PORT` | `4000` | port to listen on |
+| `TACKLE_WEB_REVIEW_JAIL` | unset (reviews fail closed) | absolute path to the `tackle-review-jail` exec-server launcher |
+| `TACKLE_WEB_STATE_DIR` | `/var/lib/tackle-web` | repository clones and per-run worktrees; separate from `HOME` |
 | `TACKLE_WEB_URL` | `http://localhost:4000` | the public URL, as the forge and browsers reach the app |
 
 Generate a Cloak key with `head -c 32 /dev/urandom | base64`. Losing it
@@ -125,8 +130,10 @@ start, and listens on `127.0.0.1:4000` (`listenAddress`, `port`). TLS and
 making the app reachable for forge webhooks are up to you, for example a
 reverse proxy in front of it. Erlang distribution is off. The user's home
 (`homeDir`, `/var/lib/tackle-web-home`) is kept apart from the state
-directory (`stateDir`, `/var/lib/tackle-web`), which later phases need for
-the review jail.
+directory (`stateDir`, `/var/lib/tackle-web`). `reviewJail` defaults to the
+flake's `tackle-review-jail` package and sets `TACKLE_WEB_REVIEW_JAIL`. The
+service permits Bubblewrap's unprivileged user namespaces; the host must also
+allow them. Do not add a systemd namespace restriction that forbids `user`.
 
 `tackle-web-release` (installed by the module) runs the release's
 commands beside the running service, as a transient systemd unit with the
@@ -140,6 +147,40 @@ sudo tackle-web-release eval "Tackle.Web.Release.migrate()"
 The VM test starts the service with PostgreSQL, checks its health, stores
 a GitHub App through `tackle-web-release`, and delivers a signed webhook
 (needs KVM): `nix build .#checks.x86_64-linux.tackle-web-vm`.
+
+## Review jail
+
+`nix build .#tackle-review-jail` builds the dedicated Linux launcher. It uses
+read-only mounts for the worktree, its Git directory and the bare clone; it
+creates no Git files on the host. It has no network, host Nix daemon or store
+access beyond its tool closure, host Ketch configuration, credentials or service
+environment. Its home and `/tmp` are private scratch space. Git reads use
+`GIT_OPTIONAL_LOCKS=0`. This is distinct from the CLI's writable, networked jail.
+
+`Tackle.Web.ReviewJail.start(%{worktree: absolute_path, clone: bare_clone_path,
+state_dir: state_path})` starts a fresh client and probes write protection,
+network isolation (against a temporary host loopback listener), and state
+visibility on every launch. Paths must be resolved, disjoint clone/worktree
+paths beneath the state directory, without symlink components. The worktree
+must be a linked worktree of that clone. It returns `{:ok, handle}` with
+`handle.client` and `handle.executor`, or a redacted error. Missing configuration
+or failed probes never select a local executor. Pass `handle.executor` to the
+review tools; call `ReviewJail.stop(handle)` in an `after` block after stopping
+agents. Clients are not restarted without verification. Jailed stderr is
+sent to `/dev/null`, not the application's logs.
+
+Run the credential-free security smoke test on a Linux host (not inside a Nix
+build sandbox; it needs user namespaces), from a writable directory outside
+`/tmp`:
+
+```sh
+nix build .#tackle-review-jail.tests.smoke
+./result/bin/test-tackle-review-jail
+```
+
+It exercises the production exec-server launcher, read-only Git operations,
+network and state isolation, hidden Nix store data/daemon, unchanged host Git
+data, and refusal of crafted Git pointers and symlinks.
 
 ## Connecting a GitHub App
 
@@ -286,8 +327,8 @@ The backend supports review configuration callbacks, model/thinking inheritance,
 streaming subscriptions, snapshots, and one turn at a time. Cancellation is
 cooperative; stopping an agent also stops its linked turn task. Scopes, tools,
 executor selection and teardown remain the caller's responsibility. The backend
-does not default to a local executor: phase 4 will supply the review jail and
-job orchestration. Tests use scripted adapters, not provider credentials.
+does not default to a local executor: `ReviewJob` supplies the review jail and
+owns the run lifecycle. Tests use scripted adapters, not provider credentials.
 
 ## JSON
 
@@ -295,3 +336,123 @@ Our code uses Elixir's standard `JSON` module, as everywhere in this
 repository; Phoenix is configured to use it too. Ash, Oban, Postgrex, and
 Cloak pull in Jason as a transitive dependency, which is accepted; do not
 add it to `mix.exs` or call it.
+
+## Checkout (phase 4 slice)
+
+`Tackle.Web.Checkout.prepare(request)` accepts a review request (a struct or
+atom-keyed map with `id`, `repository_id`, `base_sha`, `head_sha`, `base_ref`,
+`pull_number`, `head_is_fork`). It loads the repository, installation and forge
+app, returning `{:ok, handle}` or `{:error, sanitized_atom}`. The handle has
+absolute, symlink-free `worktree`, `clone`, `state_dir`, and the three IDs.
+Pass it directly to `ReviewJail.start/1`; pass `state_dir` as the review change's
+confinement workspace. After stopping agents and the jail, call
+`Checkout.cleanup(handle)` in an `after` block (idempotent). Keep the process
+that prepared it alive until cleanup; another process cannot clean its live
+lease. Only Git mutations hold the repository lock; model execution must not.
+
+Clones have full bare history under `repos/<installation UUID>/<repository
+UUID>`. A fetch updates the base branch and `refs/pull/N/head` from the base
+repository, including fork PRs. Missing requested SHAs are fetched explicitly
+by SHA, including heads no longer reachable after a force push. Both must be
+available commit objects; the detached worktree uses the exact requested head.
+New clones are validated in a staging directory before atomic publication.
+Retries discard abandoned staging data and stale Git lock files only after
+waiting for cancelled Git processes to stop; existing caches with worktrees
+are never replaced. Invalid existing caches with worktree metadata or checkout
+manifests are preserved for operator inspection. Invalid IDs, SHAs, refs, noncanonical URLs and symlink
+components fail closed. The state directory must already be an absolute,
+resolved path (symlinks are rejected, not silently followed).
+
+`Forge.clone_auth(app, installation, repository)` returns
+`{:ok, %{url: canonical_https_url, authorization: sensitive_header}}`.
+GitHub uses its cached short-lived installation token. Only clone/fetch receive
+that header via command-scoped `GIT_CONFIG_COUNT`/`extraHeader`; no credentials
+enter URLs, argv, config, returned handles, Git errors or the jail. Git starts
+with inherited environment variables explicitly removed, system/global config
+and hooks disabled, file transport and redirects forbidden, and credential
+helpers disabled. System TLS trust uses `/etc/ssl/certs/ca-certificates.crt`
+when available, never inherited CA overrides. Host Git requires Bash (with
+`wait -n -p`), util-linux `setsid`/`flock`, and coreutils on PATH (provided by the
+NixOS module). A pipe-watching guardian sends TERM then bounded KILL to Git's
+entire process group on its 120-second command timeout or caller cancellation.
+A repository OS lock remains held through teardown, preventing a new owner
+from recovering metadata while old Git processes are still writing.
+Git output is discarded
+except for an internal bounded exact-SHA check and is never returned or logged.
+
+`Checkout.sweep()` is the startup stale-worktree API. It removes only worktrees
+with valid service-written manifests under `checkouts/<request UUID>`, then
+prunes that shared clone under the same repository lock. Lease registration,
+liveness checks and removal share that lock. Global process leases protect live
+checkouts across connected nodes. The default database liveness
+check additionally preserves **all** worktrees while any Oban job in the
+`reviews` queue is `executing`, even if its request is not `running`; conversely,
+a `running` status left after a crash is not evidence of a live job. Database
+errors fail closed. Unknown/malformed manifests and unrecorded worktrees are
+left untouched for operator inspection, and clones are never swept away.
+
+`ReviewJob.Sweeper` runs after Repo starts and before Oban consumers start,
+and repeats every minute, including after Lifeline recovers abandoned jobs.
+Missing databases/tables during migration tasks do not prevent startup: sweep
+fails closed and tries later. An executing job left by a crash conservatively
+delays cleanup until recovery.
+Do not run two disconnected nodes against the same state directory: global
+locks and leases require connected BEAM nodes and one shared path namespace.
+The state tree is host-owned and must never be writable by reviews or other
+untrusted host processes; symlink checks are not a race-proof substitute for
+that ownership boundary.
+
+
+## Review jobs and stored results (phase 4)
+
+`Triggers` immediately enqueues `ReviewRequest`'s AshOban `:run` trigger inside
+its upsert transaction. The minute scheduler is a safety net. Jobs are unique
+on their worker/request primary key while queued, executing or retryable. The
+`reviews` queue currently runs one job at a time; each has three attempts and a
+20-minute timeout. Lifeline's 30-minute rescue threshold must remain longer
+than that timeout.
+
+`ReviewJob.run(%{request_id: uuid, job: oban_job})` is plain Elixir. The manual
+Ash action extracts the **actual** job from `changeset.context.ash_oban.job`.
+A short advisory-lock/row-lock transaction verifies its persisted executing
+attempt and records `claimed_job_id`/`claimed_attempt`. A duplicate live attempt
+does no work; a larger attempt of that same job can reclaim an abandoned run.
+No database connection or Git mutation lock spans model calls. Disabled or
+inaccessible repositories/installations and exhausted UTC-day token budgets
+are skipped before checkout. Runtime model resolution checks defaults and
+currently enabled providers again; displayed failures are sanitized.
+
+Each run loads `base...head` with the state directory as confinement workspace,
+reads rules from the **base commit**, and passes warnings to the result. Its
+root never runs a turn; detector/verifier agents have explicit models, prompts,
+step limits and only Read, Bash and their reporting tools. Every tool uses the
+verified jailed executor. There is no local fallback or harness configuration.
+Known fingerprints are empty until phase 7 supplies outcomes.
+
+An unlinked, monitored per-run lifecycle owner prepares the checkout, starts the
+jail and starts a preallocated runtime scope. It keeps the checkout lease alive
+until cleanup. On normal completion, failures, caller termination or Oban timeout,
+it stops the scope, then jail, then checkout. Serializing acquisition in that
+owner prevents caller death between resource creation and registration from
+orphaning globally supervised agents. Failed cleanup is revisited by the sweep.
+
+One fenced transaction creates `ReviewRun`, creates shown/rejected findings
+and `Result.hidden/1` (not unverified deterministic drops), and sets `:reviewed`.
+Summary/usage maps recursively normalize nested structs, atoms and failure
+terms for standard-library JSON; unsupported values are replaced, not inspected.
+Findings retain support/verdict, rejection evidence and structured hidden reasons.
+Budgets sum normalized total tokens of this repository's stored runs in the UTC
+calendar day; failed attempts without a stored result have no usage to count.
+This is a pre-run threshold, not a hard in-flight token cap.
+
+Normal failures remain `:running` for Oban retries; AshOban's final-error action
+sets `:failed`. Timeouts/killed processes bypass that action: the next scheduled
+job detects a discarded, cancelled, completed-without-result or missing owner
+and marks the request failed **without another paid three-attempt cycle**.
+`:reviewed`, `:posted`, `:failed` and `:skipped` are terminal no-ops. A trusted
+manual `ReviewRequest.rerun/2` clears ownership and returns a finished request to
+pending, retaining all previous runs/findings. Posting remains phase 5.
+
+Tests use fake models and trusted checkout/jail seams, not live provider calls;
+the separate checkout and jail tests cover their fail-closed boundaries. These
+options belong only to trusted host code, never HTTP inputs or persisted settings.

@@ -10,6 +10,7 @@ defmodule Tackle.Web.Application do
     children = [
       Tackle.Web.Vault,
       Tackle.Web.Repo,
+      Tackle.Web.ReviewJob.Sweeper,
       {Oban, oban_config()},
       Tackle.Web.Forge.GitHub.TokenCache,
       {Phoenix.PubSub, name: Tackle.Web.PubSub},

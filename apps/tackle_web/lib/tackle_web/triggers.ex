@@ -146,7 +146,8 @@ defmodule Tackle.Web.Triggers do
     Ash.transact(ReviewRequest, fn ->
       with {:ok, outcome, request} <-
              upsert(repository, pull_request, trigger, profile, requested_by),
-           :ok <- supersede(outcome, repository, pull_request) do
+           :ok <- supersede(outcome, repository, pull_request),
+           {:ok, _job} <- enqueue(request) do
         {outcome, request}
       end
     end)
@@ -155,6 +156,11 @@ defmodule Tackle.Web.Triggers do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp enqueue(%{status: status} = request) when status in [:pending, :running],
+    do: {:ok, AshOban.run_trigger(request, :run)}
+
+  defp enqueue(_request), do: {:ok, nil}
 
   defp upsert(repository, pull_request, trigger, profile, requested_by) do
     case ReviewRequest.get_head(repository.id, pull_request.number, pull_request.head_sha) do
@@ -195,7 +201,10 @@ defmodule Tackle.Web.Triggers do
   end
 
   defp rerun?(%{status: status}, :command, _profile) when status in [:failed, :skipped], do: true
-  defp rerun?(%{status: :posted, profile: used}, :command, profile), do: used != profile
+
+  defp rerun?(%{status: status, profile: used}, :command, profile)
+       when status in [:reviewed, :posted], do: used != profile
+
   defp rerun?(%{status: :skipped}, _automatic, _profile), do: true
   defp rerun?(_request, _trigger, _profile), do: false
 

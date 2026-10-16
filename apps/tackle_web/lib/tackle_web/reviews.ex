@@ -9,5 +9,7 @@ defmodule Tackle.Web.Reviews do
 
   resources do
     resource Tackle.Web.Reviews.ReviewRequest
+    resource Tackle.Web.Reviews.ReviewRun
+    resource Tackle.Web.Reviews.Finding
   end
 end

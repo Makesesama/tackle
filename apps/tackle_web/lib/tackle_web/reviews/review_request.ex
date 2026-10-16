@@ -9,13 +9,14 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
   `profile` is the profile the review uses, resolved when the request is
   made: the command's, or the repository's.
 
-  The review job that runs `:pending` requests arrives in phase 4.
+  Queued jobs finish at `:reviewed`; posting is a separate, later phase.
   """
 
   use Ash.Resource,
     otp_app: :tackle_web,
     domain: Tackle.Web.Reviews,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    extensions: [AshOban]
 
   require Ash.Query
 
@@ -27,6 +28,30 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
 
     references do
       reference :repository, on_delete: :delete
+    end
+  end
+
+  oban do
+    triggers do
+      trigger :run do
+        scheduler_module_name Tackle.Web.Reviews.ReviewRequest.RunScheduler
+        worker_module_name Tackle.Web.Reviews.ReviewRequest.RunWorker
+        action :run
+        queue :reviews
+        where expr(status in [:pending, :running])
+        lock_for_update? false
+        max_attempts 3
+        timeout 1_200_000
+        on_error :run_failed
+        on_error_fails_job? true
+
+        worker_opts unique: [
+                      fields: [:worker, :args],
+                      keys: [:primary_key],
+                      states: [:available, :scheduled, :executing, :retryable],
+                      period: :infinity
+                    ]
+      end
     end
   end
 
@@ -65,19 +90,42 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
       upsert_fields []
     end
 
+    update :run do
+      accept []
+      transaction? false
+      require_atomic? false
+      manual Tackle.Web.ReviewJob.Run
+    end
+
+    update :run_failed do
+      accept []
+      argument :error, :term
+      transaction? false
+      require_atomic? false
+      manual Tackle.Web.ReviewJob.Failed
+    end
+
+    # Internal, fenced by ReviewJob.Store's short transactions.
+    update :record_progress do
+      accept [:status, :error, :claimed_job_id, :claimed_attempt]
+      require_atomic? false
+    end
+
     # Runs a finished request again (see Tackle.Web.Triggers). The status
     # check is part of the update, so a request another delivery or the
     # review job changed since it was read is not reset.
     update :rerun do
       accept [:trigger, :profile, :requested_by]
 
-      validate attribute_in(:status, [:failed, :skipped, :posted]) do
+      validate attribute_in(:status, [:failed, :skipped, :reviewed, :posted]) do
         message "only a finished request can run again"
       end
 
       change set_attribute(:status, :pending)
       change set_attribute(:error, nil)
       change set_attribute(:forge_review_id, nil)
+      change set_attribute(:claimed_job_id, nil)
+      change set_attribute(:claimed_attempt, nil)
     end
 
     update :skip do
@@ -161,6 +209,9 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
     attribute :forge_review_id, :string do
       public? true
     end
+
+    attribute :claimed_job_id, :integer
+    attribute :claimed_attempt, :integer
 
     timestamps()
   end

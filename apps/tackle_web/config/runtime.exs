@@ -1,5 +1,9 @@
 import Config
 
+config :tackle_web,
+  review_jail: System.get_env("TACKLE_WEB_REVIEW_JAIL"),
+  state_dir: System.get_env("TACKLE_WEB_STATE_DIR", "/var/lib/tackle-web")
+
 # Production settings from the environment. The NixOS module sets them; the
 # secrets (SECRET_KEY_BASE, TACKLE_WEB_CLOAK_KEY, a DATABASE_URL with a
 # password) come from its environment file. Forge and provider secrets are

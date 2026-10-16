@@ -51,6 +51,7 @@ config :tackle_web, Oban,
   repo: Tackle.Web.Repo,
   queues: [reviews: 1, forge: 5],
   plugins: [
+    {Oban.Plugins.Cron, crontab: []},
     {Oban.Plugins.Lifeline, rescue_after: :timer.minutes(30)},
     {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7}
   ]

@@ -39,6 +39,7 @@ let
     PORT = toString cfg.port;
     TACKLE_WEB_URL = cfg.url;
     TACKLE_WEB_STATE_DIR = cfg.stateDir;
+    TACKLE_WEB_REVIEW_JAIL = lib.getExe cfg.reviewJail;
     HOME = cfg.homeDir;
     LANG = "C.UTF-8";
     # The release's own temporary files; the store copy is read-only.
@@ -111,6 +112,13 @@ in
           or (throw "services.tackle-web: the Tackle flake has no package for ${pkgs.stdenv.hostPlatform.system}");
       defaultText = lib.literalExpression "tackle.packages.\${system}.tackle-web";
       description = "The tackle_web release to run.";
+    };
+
+    reviewJail = mkOption {
+      type = types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.tackle-review-jail;
+      defaultText = lib.literalExpression "tackle.packages.\${system}.tackle-review-jail";
+      description = "Read-only, network-isolated exec-server launcher for each review run.";
     };
 
     listenAddress = mkOption {
@@ -226,6 +234,13 @@ in
       after = [ "network-online.target" ] ++ lib.optional cfg.database.createLocally "postgresql.target";
       requires = lib.optional cfg.database.createLocally "postgresql.target";
 
+      # Host checkout uses a scrubbed environment and resolves these explicitly.
+      path = [
+        pkgs.bash
+        pkgs.git
+        pkgs.util-linux
+        pkgs.coreutils
+      ];
       environment = serviceEnvironment;
 
       serviceConfig = {
@@ -240,9 +255,17 @@ in
         RuntimeDirectory = "tackle-web";
         UMask = "0077";
 
-        # Hardening. Two settings are deliberately absent: RestrictNamespaces
-        # (the review jail, Bubblewrap, needs unprivileged user namespaces),
-        # and MemoryDenyWriteExecute (the BEAM's JIT writes executable code).
+        # MemoryDenyWriteExecute is deliberately absent: the BEAM JIT writes executable code.
+        # Explicitly allow the namespace types Bubblewrap creates, including user.
+        RestrictNamespaces = [
+          "user"
+          "mnt"
+          "pid"
+          "net"
+          "ipc"
+          "uts"
+          "cgroup"
+        ];
         NoNewPrivileges = true;
         CapabilityBoundingSet = "";
         ProtectSystem = "strict";

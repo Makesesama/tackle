@@ -265,6 +265,42 @@ defmodule Tackle.Web.Forge.GitHub do
 
   ## API
 
+  @doc "Canonical public GitHub HTTPS URL; never accepts a caller-supplied remote."
+  @spec clone_url(map()) :: {:ok, String.t()} | {:error, :invalid_clone_url}
+  def clone_url(%{owner: owner, name: name}) do
+    if valid_clone_owner?(owner) and valid_clone_name?(name) do
+      {:ok, "https://github.com/#{owner}/#{name}.git"}
+    else
+      {:error, :invalid_clone_url}
+    end
+  end
+
+  def clone_url(_repository), do: {:error, :invalid_clone_url}
+
+  defp valid_clone_owner?(value) do
+    is_binary(value) and byte_size(value) in 1..39 and
+      Regex.match?(~r/\A[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\z/, value)
+  end
+
+  defp valid_clone_name?(value) do
+    is_binary(value) and byte_size(value) in 1..100 and
+      Regex.match?(~r/\A[A-Za-z0-9_.-]+\z/, value) and
+      value not in [".", ".."] and not String.ends_with?(value, ".git")
+  end
+
+  @impl Tackle.Web.Forge
+  def clone_auth(forge_app, installation, repository) do
+    with {:ok, url} <- clone_url(repository),
+         {:ok, token} <- installation_token(forge_app, installation) do
+      {:ok, %{url: url, authorization: "Basic " <> Base.encode64("x-access-token:" <> token)}}
+    else
+      {:error, :invalid_clone_url} = error -> error
+      _error -> {:error, :clone_auth_failed}
+    end
+  rescue
+    _error -> {:error, :clone_auth_failed}
+  end
+
   @impl Tackle.Web.Forge
   def pull_request(forge_app, installation, repository, number)
       when is_integer(number) and number > 0 do

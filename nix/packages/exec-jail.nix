@@ -6,6 +6,9 @@
   name ? "tackle-exec-jail",
   # Tools available to the agent's commands, besides the common utilities.
   extraPkgs ? [ ],
+  # Review runs must neither reach the network nor mutate shared Git data.
+  network ? true,
+  readOnlyWorkspace ? false,
   # Mount /nix read-only and the host daemon socket, so `nix build` and
   # `nix develop` work inside the jail. This weakens isolation; see README.
   enableNix ? true,
@@ -28,12 +31,12 @@
 # Launcher for the jailed exec-server (Tackle.Exec.Server). The Tackle CLI
 # runs on the host and starts this once per process (TACKLE_EXEC_LAUNCHER):
 #
-#   cwd:   the workspace, mounted read-write at the same path
+#   cwd:   the workspace, mounted at the same path (read-write by default)
 #   $1:    a host log file for the jail's standard error
 #   stdio: the exec-server protocol
 #
 # Only primitives run here; credentials, sessions, and the clipboard stay on
-# the host. Bubblewrap unshares every namespace except the network, starts a
+# the host. Bubblewrap unshares every namespace (except network by default), starts a
 # new session, clears the environment, and dies with the CLI.
 let
   jail = jailed-agents.lib.${system}.internals.jail;
@@ -84,8 +87,6 @@ in
 jail name entry (
   with jail.combinators;
   [
-    network
-    mount-cwd
     (add-runtime ''
       # Keep the jail's diagnostics, and anything jailed code writes to the
       # inherited standard error, away from the host terminal.
@@ -106,10 +107,13 @@ jail name entry (
       # Keep host-executed Git settings out of the jail's reach, and mount a
       # linked worktree's Git directories so Git works in it. See jail-git.sh.
       ${builtins.readFile ./jail-git.sh}
-      tackle_jail_git_mounts "$workspace" "$home"
+      RUNTIME_ARGS+=(${if readOnlyWorkspace then "--ro-bind" else "--bind"} "$workspace" "$workspace")
+      tackle_jail_git_mounts "$workspace" "$home" ${if readOnlyWorkspace then "readonly" else "readwrite"}
 
       # Ketch works without a configuration; expose only this file when present.
-      RUNTIME_ARGS+=(--ro-bind-try "$HOME/.config/ketch/config.json" "$HOME/.config/ketch/config.json")
+      ${lib.optionalString (!readOnlyWorkspace) ''
+        RUNTIME_ARGS+=(--ro-bind-try "$HOME/.config/ketch/config.json" "$HOME/.config/ketch/config.json")
+      ''}
     '')
     (add-pkg-deps (basePackages ++ [ ketch ] ++ extraPkgs))
     # The jail does not mount the host locale archive. C.UTF-8 is built into
@@ -118,6 +122,8 @@ jail name entry (
     (set-env "LC_ALL" "C.UTF-8")
     (set-env "SSL_CERT_FILE" cacert)
   ]
+  ++ lib.optional network jail.combinators.network
+  ++ lib.optional readOnlyWorkspace (set-env "GIT_OPTIONAL_LOCKS" "0")
   ++ lib.optionals enableNix nixAccess
   ++ lib.optionals (gitConfig != { }) gitAccess
   ++ lib.optionals inheritDirenv (

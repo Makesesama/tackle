@@ -4,8 +4,8 @@ defmodule Tackle.Web.Forge do
   nothing outside a forge module knows a forge's API or payloads. Only
   `Tackle.Web.Forge.GitHub` implements it.
 
-  Callbacks are added as the phases need them: cloning (phase 4), posting
-  (phase 5), and feedback (phase 7) are not here yet.
+  Callbacks are added as the phases need them: posting (phase 5) and
+  feedback (phase 7) are not here yet.
   """
 
   alias Tackle.Web.Forge.Event
@@ -34,6 +34,14 @@ defmodule Tackle.Web.Forge do
               ForgeApp.t()
             ) ::
               {:ok, Event.t()} | {:error, :invalid_signature | :invalid_payload}
+
+  @doc """
+  Returns a canonical HTTPS clone URL and a short-lived HTTP authorization
+  header. The header is sensitive: use only in a remote Git command's
+  environment, never in argv, persisted config, logs, or a review jail.
+  """
+  @callback clone_auth(ForgeApp.t(), Installation.t(), Repository.t()) ::
+              {:ok, %{url: String.t(), authorization: String.t()}} | {:error, term()}
 
   @doc "Reads a pull request's current state."
   @callback pull_request(ForgeApp.t(), Installation.t(), Repository.t(), pos_integer()) ::

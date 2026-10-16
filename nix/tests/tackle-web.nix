@@ -35,6 +35,8 @@ self: {
     { nodes, ... }:
     let
       package = nodes.machine.services.tackle-web.package;
+      reviewLauncher = nodes.machine.systemd.services.tackle-web.environment.TACKLE_WEB_REVIEW_JAIL;
+      checkoutPath = nodes.machine.systemd.services.tackle-web.environment.PATH;
     in
     ''
       machine.wait_for_unit("tackle-web.service")
@@ -58,6 +60,20 @@ self: {
           machine.succeed("test \"$(stat -c %U /var/lib/tackle-web-home)\" = tackle-web")
           pid = machine.succeed("systemctl show tackle-web -p MainPID --value").strip()
           machine.succeed(f"tr '\\0' '\\n' < /proc/{pid}/environ | grep -x HOME=/var/lib/tackle-web-home")
+
+      with subtest("configures the review launcher and permits user namespaces"):
+          machine.succeed(f"tr '\\0' '\\n' < /proc/{pid}/environ | grep -x TACKLE_WEB_REVIEW_JAIL=${reviewLauncher}")
+          machine.succeed(f"tr '\\0' '\\n' < /proc/{pid}/environ | grep -x TACKLE_WEB_STATE_DIR=/var/lib/tackle-web")
+          machine.succeed("systemctl show tackle-web -p RestrictNamespaces --value | grep -E '(^no$|(^| )user( |$))'")
+          machine.succeed("test -x ${reviewLauncher}")
+
+      with subtest("host checkout executables and system TLS trust are available"):
+          machine.succeed(f"tr '\\0' '\\n' < /proc/{pid}/environ | grep -Fx 'PATH=${checkoutPath}'")
+          machine.succeed("env -i PATH=${checkoutPath} bash -c 'command -v git; command -v setsid; command -v flock'")
+          machine.succeed("env -i PATH=${checkoutPath} bash -c 'git --version && setsid --version && flock --version'")
+          # Checkout.Git ignores caller CA overrides and Git system config,
+          # explicitly using this NixOS system trust path instead.
+          machine.succeed("test -s /etc/ssl/certs/ca-certificates.crt")
 
       with subtest("listens on the configured address only, with no Erlang distribution"):
           # The BEAM's only listening socket is the HTTP port: no distribution

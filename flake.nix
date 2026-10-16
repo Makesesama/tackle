@@ -108,6 +108,9 @@
           tackle-web = pkgs.callPackage ./nix/packages/tackle-web.nix { };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          tackle-review-jail = pkgs.callPackage ./nix/packages/review-jail.nix {
+            inherit jailed-agents system;
+          };
           jailed-tackle = mkJailedTackle { inherit pkgs system; };
           tackle-cli-jail = pkgs.callPackage ./nix/packages/jailed-tackle-cli.nix {
             inherit jailed-agents system;
