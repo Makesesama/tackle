@@ -36,8 +36,13 @@ end
 config :tackle_web, Tackle.Web.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],
-  render_errors: [formats: [json: Tackle.Web.ErrorJSON], layout: false],
-  pubsub_server: Tackle.Web.PubSub
+  render_errors: [
+    formats: [json: Tackle.Web.ErrorJSON, html: Tackle.Web.ErrorHTML],
+    layout: false
+  ],
+  pubsub_server: Tackle.Web.PubSub,
+  # Signs LiveView tokens with keys derived from SECRET_KEY_BASE; not secret.
+  live_view: [signing_salt: "BzkNGThMDKFvl2FG"]
 
 # Reviews run one or two at a time (docs/TACKLE_WEB_PLAN.md §7.5); `forge`
 # runs the forge API calls that webhooks must not wait for, such as review
@@ -68,6 +73,7 @@ config :spark,
       section_order: [
         :postgres,
         :resource,
+        :admin,
         :code_interface,
         :actions,
         :policies,
@@ -83,7 +89,9 @@ config :spark,
         :identities
       ]
     ],
-    "Ash.Domain": [section_order: [:resources, :policies, :authorization, :domain, :execution]]
+    "Ash.Domain": [
+      section_order: [:admin, :resources, :policies, :authorization, :domain, :execution]
+    ]
   ]
 
 config :logger, :default_formatter,

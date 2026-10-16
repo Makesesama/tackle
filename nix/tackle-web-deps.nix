@@ -227,10 +227,39 @@ let
               jason
               plug
               reactor
+              simple_sat
               spark
               splode
               stream_data
               telemetry
+            ];
+          };
+        in
+        drv;
+
+      ash_admin =
+        let
+          version = "1.3.2";
+          drv = buildMix {
+            inherit version;
+            name = "ash_admin";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "ash_admin";
+              sha256 = "a20070df9008ebdbc9987eb5f3a517a361b39dddd598801373d4712a415d41af";
+            };
+
+            beamDeps = [
+              ash
+              ash_phoenix
+              cinder
+              gettext
+              jason
+              phoenix
+              phoenix_html
+              phoenix_live_view
+              phoenix_view
             ];
           };
         in
@@ -375,6 +404,29 @@ let
         in
         drv;
 
+      cinder =
+        let
+          version = "0.17.0";
+          drv = buildMix {
+            inherit version;
+            name = "cinder";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "cinder";
+              sha256 = "2e8454b8852013c23cef6027e1aa1cdc5b3ebd2259d4fd9e8ede553e1d9ba3e6";
+            };
+
+            beamDeps = [
+              ash
+              ash_phoenix
+              gettext
+              phoenix_live_view
+            ];
+          };
+        in
+        drv;
+
       cloak =
         let
           version = "1.1.4";
@@ -409,6 +461,7 @@ let
             };
 
             beamDeps = [
+              simple_sat
               stream_data
             ];
           };
@@ -513,6 +566,22 @@ let
         in
         drv;
 
+      expo =
+        let
+          version = "1.1.1";
+          drv = buildMix {
+            inherit version;
+            name = "expo";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "expo";
+              sha256 = "5fb308b9cb359ae200b7e23d37c76978673aa1b06e2b3075d814ce12c5811640";
+            };
+          };
+        in
+        drv;
+
       finch =
         let
           version = "0.24.0";
@@ -532,6 +601,26 @@ let
               nimble_options
               nimble_pool
               telemetry
+            ];
+          };
+        in
+        drv;
+
+      gettext =
+        let
+          version = "1.0.2";
+          drv = buildMix {
+            inherit version;
+            name = "gettext";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "gettext";
+              sha256 = "eab805501886802071ad290714515c8c4a17196ea76e5afc9d06ca85fb1bfeb3";
+            };
+
+            beamDeps = [
+              expo
             ];
           };
         in
@@ -806,6 +895,7 @@ let
               jason
               phoenix_pubsub
               phoenix_template
+              phoenix_view
               plug
               plug_crypto
               telemetry
@@ -849,6 +939,7 @@ let
               phoenix
               phoenix_html
               phoenix_template
+              phoenix_view
               plug
               telemetry
             ];
@@ -887,6 +978,27 @@ let
 
             beamDeps = [
               phoenix_html
+            ];
+          };
+        in
+        drv;
+
+      phoenix_view =
+        let
+          version = "2.0.4";
+          drv = buildMix {
+            inherit version;
+            name = "phoenix_view";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "phoenix_view";
+              sha256 = "4e992022ce14f31fe57335db27a28154afcc94e9983266835bb3040243eb620b";
+            };
+
+            beamDeps = [
+              phoenix_html
+              phoenix_template
             ];
           };
         in
@@ -1033,6 +1145,22 @@ let
               inherit version;
               pkg = "server_sent_events";
               sha256 = "8e164db8e295a2d869a8faafbf4a1eeaa749b62fe93f66271adff6394d93ce15";
+            };
+          };
+        in
+        drv;
+
+      simple_sat =
+        let
+          version = "0.1.4";
+          drv = buildMix {
+            inherit version;
+            name = "simple_sat";
+
+            src = fetchHex {
+              inherit version;
+              pkg = "simple_sat";
+              sha256 = "3569b68e346a5fd7154b8d14173ff8bcc829f2eb7b088c30c3f42a383443930b";
             };
           };
         in

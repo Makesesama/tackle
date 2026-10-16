@@ -57,6 +57,26 @@ if config_env() == :prod do
     url: [host: public_url.host, port: public_url.port, scheme: public_url.scheme],
     secret_key_base: fetch!.("SECRET_KEY_BASE")
 
+  # Behind a TLS-terminating reverse proxy (an https TACKLE_WEB_URL): redirect
+  # plain HTTP to HTTPS, send HSTS, and keep the session cookie to HTTPS. The
+  # proxy must set X-Forwarded-Proto (and overwrite one from the client).
+  # Health checks, and requests to the loopback addresses, stay on HTTP.
+  if public_url.scheme == "https" do
+    https_host =
+      if public_url.port == 443,
+        do: public_url.host,
+        else: "#{public_url.host}:#{public_url.port}"
+
+    config :tackle_web,
+      secure_cookies: true,
+      force_ssl: [
+        rewrite_on: [:x_forwarded_proto],
+        hsts: true,
+        host: https_host,
+        exclude: [hosts: ["localhost", "127.0.0.1"], paths: ["/health"]]
+      ]
+  end
+
   # The current key encrypts; retired keys (comma-separated) only decrypt
   # what was written before a rotation. See Tackle.Web.Vault.
   config :tackle_web, Tackle.Web.Vault,

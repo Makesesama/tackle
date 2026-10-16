@@ -3,7 +3,9 @@ defmodule Tackle.Web.Reviews.Finding do
   use Ash.Resource,
     otp_app: :tackle_web,
     domain: Tackle.Web.Reviews,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshAdmin.Resource]
 
   postgres do
     table "findings"
@@ -14,6 +16,13 @@ defmodule Tackle.Web.Reviews.Finding do
     end
   end
 
+  admin do
+    table_columns [:state, :severity, :blocking, :title, :path, :start_line, :fingerprint]
+    create_actions []
+    update_actions []
+    destroy_actions []
+  end
+
   actions do
     defaults [:read, create: :*]
 
@@ -21,6 +30,12 @@ defmodule Tackle.Web.Reviews.Finding do
     update :record_comment do
       accept [:forge_comment_id]
       require_atomic? false
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :user}
     end
   end
 

@@ -5,15 +5,24 @@ defmodule Tackle.Web.Models do
   providers both when saved and when resolved for a run.
   """
 
-  use Ash.Domain, otp_app: :tackle_web
+  use Ash.Domain, otp_app: :tackle_web, extensions: [AshAdmin.Domain]
 
   alias Tackle.Lib.LLM.Provider, as: LLMProvider
   alias Tackle.Review.Settings
   alias Tackle.Web.Models.{Provider, ReviewDefaults}
 
+  admin do
+    show? true
+  end
+
   resources do
     resource Provider
     resource ReviewDefaults
+  end
+
+  # Authorise when an actor is given; see Tackle.Web.Accounts.
+  authorization do
+    authorize :when_requested
   end
 
   @doc "Builds provider instances from enabled rows, without loading secrets."

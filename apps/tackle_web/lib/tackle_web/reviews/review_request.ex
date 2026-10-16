@@ -21,7 +21,8 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
     otp_app: :tackle_web,
     domain: Tackle.Web.Reviews,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshOban]
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshOban, AshAdmin.Resource]
 
   require Ash.Query
 
@@ -58,6 +59,25 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
                     ]
       end
     end
+  end
+
+  # Read-only in the admin interface: reruns and posting retries stay
+  # console actions (see the app's README).
+  admin do
+    table_columns [
+      :repository_id,
+      :pull_number,
+      :head_sha,
+      :trigger,
+      :profile,
+      :status,
+      :error,
+      :updated_at
+    ]
+
+    create_actions []
+    update_actions []
+    destroy_actions []
   end
 
   code_interface do
@@ -146,6 +166,17 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
 
       change set_attribute(:status, :skipped)
       change set_attribute(:error, arg(:reason))
+    end
+  end
+
+  policies do
+    # AshOban's scheduler and workers authorise without an actor.
+    bypass AshOban.Checks.AshObanInteraction do
+      authorize_if always()
+    end
+
+    policy action_type(:read) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :user}
     end
   end
 

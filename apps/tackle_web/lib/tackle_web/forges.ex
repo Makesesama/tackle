@@ -5,11 +5,20 @@ defmodule Tackle.Web.Forges do
   settings (docs/TACKLE_WEB_PLAN.md §6).
   """
 
-  use Ash.Domain, otp_app: :tackle_web
+  use Ash.Domain, otp_app: :tackle_web, extensions: [AshAdmin.Domain]
+
+  admin do
+    show? true
+  end
 
   resources do
     resource Tackle.Web.Forges.ForgeApp
     resource Tackle.Web.Forges.Installation
     resource Tackle.Web.Forges.Repository
+  end
+
+  # Authorise when an actor is given; see Tackle.Web.Accounts.
+  authorization do
+    authorize :when_requested
   end
 end

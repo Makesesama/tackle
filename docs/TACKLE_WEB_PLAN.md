@@ -1,12 +1,11 @@
 # tackle_web plan: forge review bot
 
-**Status: phases 1–5 of §8 are implemented in `apps/tackle_web` and
+**Status: phases 1–6 of §8 are implemented in `apps/tackle_web` and
 `nix/`: skeleton/packaging, forges/webhooks, models/agent backend, jailed review
-jobs with stored runs/findings, and retry-safe sanitized GitHub posting
-(`:reviewed` → `:posted`).
-The Codex device-login service and page exist, but the page is unmounted
-and fails closed until phase 6 supplies admin authentication and browser
-wiring. Phases 6–7 are not implemented.** This document is a handoff: it should be enough to start without the conversation
+jobs with stored runs/findings, retry-safe sanitized GitHub posting
+(`:reviewed` → `:posted`), and GitHub sign-in with AshAdmin and the Codex
+device-login page behind admin policies. Phase 7 (feedback) is not
+implemented.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -246,6 +245,9 @@ exists so a later Gitea module does not touch the rest of the app.
   (phase 5) only if `find_review` needs it.
 - `feedback(installation, repo, number)` → resolved threads, replies, and
   reactions on our comments (phase 7).
+- Sign-in (phase 6): `authorize_url(forge_app, state, redirect_uri)`,
+  `sign_in(forge_app, code, redirect_uri)` → the account (id, login, name),
+  and `member?(forge_app, installation, user)` (§7.6).
 
 Phase 2 implemented `verify_webhook/3`, `pull_request/4`, and
 `can_trigger?/4` (the forge app is the first argument of the API calls) in
@@ -329,9 +331,9 @@ instances without secrets; `Models.resolve_settings/2` merges repository
 models/thinking over `ReviewDefaults` per stage and requires detector/verifier
 models. Both saved settings and runtime resolution validate against enabled
 providers. There is no implicit model. `Models.CodexDevice.request/2` and
-`complete/2` implement the trusted device-login service; `CodexLoginLive` is
-intentionally unmounted and rejects all mounts until phase 6. See the app
-README for console configuration and the remaining UI wiring.
+`complete/2` implement the trusted device-login service. Phase 6 mounts
+`CodexLoginLive` at `/codex-login` behind the admin guards (§7.6). See the app
+README for console configuration.
 
 ### 7.3 Agent backend
 
@@ -588,6 +590,16 @@ user id. Logout drops the session. All admin pages require a signed-in
 user; settings changes require `admin` (the first user, or set in the
 console). Protect forms with Phoenix's CSRF tokens.
 
+**Implemented in phase 6** (`Tackle.Web.SignIn`, `AuthController`, `Auth`,
+`Accounts.User`). Membership comes from the forge for every sign-in: an
+organisation member (installation token), or the user account an installation
+is on, compared by account id from `GET /app/installations/{id}` rather than
+by the stored login; only active installations count. The user's access token
+is revoked after `/user` is read. "First user" is decided under an advisory
+lock. The session holds the user id and sign-in time (seven days); the user is
+re-read on every request and mount. Admins are granted with
+`Tackle.Web.Release.set_admin/2`.
+
 ### 7.7 Triggers and limits
 
 **Webhook handling stays short**: verify the signature, upsert the
@@ -729,6 +741,21 @@ the Codex device-code login (§7.2), and, if useful, a review run view that
 shows its findings next to the diff lines and the run's cost. Use AshPhoenix
 forms there.
 
+**Implemented in phase 6.** Every domain uses `authorize :when_requested`:
+calls with an actor (the web interface) are authorised, calls without one
+are trusted server code; AshOban's authorised calls pass through
+`AshOban.Checks.AshObanInteraction`. Policies allow reads to signed-in users
+and only the listed admin actions to admins, re-reading the user
+(`Accounts.Check`); internal actions are refused to every actor. AshAdmin
+derives its actor and "authorizing" flag from browser-controlled cookies,
+connect parameters, and events, so its live session runs a hook
+(`Auth.pin_admin_actor/2`) that pins the signed-in admin with authorisation on
+before every `handle_params` and event and drops the actor/authorisation/tenant
+events. AshCloak's `on_decrypt` refuses decryption with an actor. The forge
+app's secrets stay a release command (a PEM key does not fit a password
+field); reruns and posting retries stay console actions. Policies need a SAT
+solver: `simple_sat` (pure Elixir).
+
 ### 7.10 Deployment
 
 - `nix/packages/tackle-web.nix`: a Mix release of `apps/tackle_web`
@@ -751,7 +778,9 @@ forms there.
 - TLS ends at the operator's reverse proxy. When the sign-in pages land
   (phase 6), production sets `force_ssl` with
   `rewrite_on: [:x_forwarded_proto]` and HSTS for an `https`
-  `TACKLE_WEB_URL`, and session cookies are `secure`.
+  `TACKLE_WEB_URL`, and session cookies are `secure`. (Implemented in
+  phase 6 as runtime settings read by the endpoint, since Phoenix's
+  `:force_ssl` is compile-time; `/health` and loopback hosts are excluded.)
 - The service user's `HOME` must not be the state directory or any other
   ancestor of `<state>/worktrees` or `<state>/repos`: jail.nix's base
   permissions mount `--tmpfs ~`, which can cover the worktree and clone
@@ -809,8 +838,10 @@ use Postgres with the Ecto sandbox. Commit per phase.
 5. **Posting. Implemented.** `Posting`, idempotent per run (the hidden marker)
    and per fingerprint, with the output sanitising of §7.5.1, fenced persistence
    of review/comment IDs, and posting-only retries from stored results.
-6. **Interface and sign-in.** OAuth sign-in, AshAdmin behind it with the
-   resources' `admin` sections and policies (§7.9).
+6. **Interface and sign-in. Implemented.** OAuth sign-in, AshAdmin behind it
+   with the resources' `admin` sections and policies (§7.9), the Codex login
+   page, and the installation's "apply defaults to existing repositories"
+   option (§7.7).
 7. **Feedback.** Resolved threads and reactions → `FindingOutcome`s;
    outcomes → known fingerprints.
 

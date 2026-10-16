@@ -18,7 +18,9 @@ defmodule Tackle.Web.Forges.Repository do
   use Ash.Resource,
     otp_app: :tackle_web,
     domain: Tackle.Web.Forges,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshAdmin.Resource]
 
   alias Tackle.Web.Forges.{AutoReview, Installation}
 
@@ -29,6 +31,23 @@ defmodule Tackle.Web.Forges.Repository do
     references do
       reference :installation, on_delete: :delete
     end
+  end
+
+  admin do
+    table_columns [
+      :owner,
+      :name,
+      :active,
+      :enabled,
+      :auto_review,
+      :profile,
+      :daily_token_budget,
+      :installation_id
+    ]
+
+    create_actions []
+    update_actions [:configure, :apply_installation_defaults]
+    destroy_actions []
   end
 
   code_interface do
@@ -82,6 +101,16 @@ defmodule Tackle.Web.Forges.Repository do
       accept []
       require_atomic? false
       change Tackle.Web.Forges.Repository.InstallationDefaults
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+    end
+
+    policy action([:configure, :apply_installation_defaults]) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
     end
   end
 

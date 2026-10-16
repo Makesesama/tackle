@@ -7,18 +7,40 @@ defmodule Tackle.Web.Forges.Installation do
 
   Rows are kept when the app is uninstalled (`status: :removed`), so the
   review history stays.
+
+  Admins change the defaults with `:set_defaults`; with
+  `apply_to_repositories: true` it also resets every existing repository of
+  the installation to them, which turns on "review every pull request in the
+  organisation" in one step (§7.7).
   """
 
   use Ash.Resource,
     otp_app: :tackle_web,
     domain: Tackle.Web.Forges,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshAdmin.Resource]
 
   alias Tackle.Web.Forges.Repository
 
   postgres do
     table "installations"
     repo Tackle.Web.Repo
+  end
+
+  admin do
+    table_columns [
+      :account,
+      :forge,
+      :status,
+      :review_new_repositories,
+      :default_auto_review,
+      :updated_at
+    ]
+
+    create_actions []
+    update_actions [:set_defaults]
+    destroy_actions []
   end
 
   code_interface do
@@ -41,6 +63,26 @@ defmodule Tackle.Web.Forges.Installation do
 
     update :set_defaults do
       accept [:review_new_repositories, :default_auto_review]
+      require_atomic? false
+
+      # Also reset the installation's existing repositories to the new
+      # defaults, as `Repository.apply_installation_defaults` does for one.
+      argument :apply_to_repositories, :boolean do
+        allow_nil? false
+        default false
+      end
+
+      change Tackle.Web.Forges.Installation.ApplyDefaults
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+    end
+
+    policy action(:set_defaults) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
     end
   end
 

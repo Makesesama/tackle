@@ -1,6 +1,6 @@
 # tackle_web
 
-**Status: phases 1–5 of
+**Status: phases 1–6 of
 [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
@@ -9,8 +9,9 @@ of the GitHub App's installations and repositories, and turns pull request
 events and `/tackle review` commands into review requests according to
 each repository's settings. It also stores model providers and encrypted
 credentials, resolves review defaults, and has an ephemeral agent backend tested
-with whole scripted reviews. Codex device login has a server service and an
-unmounted page awaiting phase 6's authentication. Queued reviews now run in the
+with whole scripted reviews. Members of the installed organisation sign in with
+GitHub; admins manage repositories, providers, and review defaults in AshAdmin
+and connect Codex on a device-login page. Queued reviews now run in the
 read-only jail, with base-commit rules and
 explicit model settings, store their runs/findings at `:reviewed`, then post a
 sanitized GitHub COMMENT review and transition to `:posted`. Posting retries use
@@ -31,7 +32,7 @@ this directory, inside `nix develop`:
 
 ```sh
 mix setup                   # deps.get, create the database, migrate
-mix phx.server              # http://127.0.0.1:4000/health
+mix phx.server              # http://127.0.0.1:4000 (and /health)
 mix test                    # creates and migrates the test database first
 ```
 
@@ -77,7 +78,7 @@ review every generated migration before committing it.
 | `PORT` | `4000` | port to listen on |
 | `TACKLE_WEB_REVIEW_JAIL` | unset (reviews fail closed) | absolute path to the `tackle-review-jail` exec-server launcher |
 | `TACKLE_WEB_STATE_DIR` | `/var/lib/tackle-web` | repository clones and per-run worktrees; separate from `HOME` |
-| `TACKLE_WEB_URL` | `http://localhost:4000` | the public URL, as the forge and browsers reach the app |
+| `TACKLE_WEB_URL` | `http://localhost:4000` | the public URL, as the forge and browsers reach the app; an `https` URL turns on HTTPS redirects, HSTS, and secure cookies (see [sign-in](#sign-in-and-administration-phase-6)) |
 
 Generate a Cloak key with `head -c 32 /dev/urandom | base64`. Losing it
 loses every stored secret (forge app secrets, provider credentials); they
@@ -189,9 +190,12 @@ Reviews run as a GitHub App that you create for your organisation
 
 - **Webhook URL:** `<TACKLE_WEB_URL>/webhooks/github`, with a random
   webhook secret (`openssl rand -hex 32`).
+- **Callback URL:** `<TACKLE_WEB_URL>/auth/github/callback`, for sign-in.
+  Leave "Request user authorization (OAuth) during installation" off, and
+  keep "Expire user authorization tokens" on.
 - **Repository permissions:** Metadata read, Contents read, Pull requests
   read and write, Issues read (only to receive comments on pull requests).
-- **Organisation permissions:** Members read (for sign-in, later).
+- **Organisation permissions:** Members read (to check sign-ins).
 - **Events:** Pull request, Issue comment. Installation events are always
   delivered.
 
@@ -213,14 +217,16 @@ sudo rm -r /var/lib/tackle-web-home/setup
 ```
 
 `TACKLE_WEB_GITHUB_CLIENT_ID` and `TACKLE_WEB_GITHUB_CLIENT_SECRET_FILE`
-(for sign-in, later) are optional. Running the command again replaces the
-stored App. Until it has run, webhooks are answered with 503.
+(the App's client id and a generated client secret) are needed for sign-in;
+without them `/auth/github` answers 503. Running the command again replaces
+the stored App, so pass all of them each time. Until it has run, webhooks
+are answered with 503.
 
 Then install the App on the organisation. Its repositories are recorded as
-the installation and repository events arrive, disabled by default. Until
-the admin pages exist (phase 6), repository settings are changed in the
-database or with `Tackle.Web.Forges.Repository.configure/2`, and the
-installation's defaults with `Tackle.Web.Forges.Installation.set_defaults/2`.
+the installation and repository events arrive, disabled by default. Sign in
+(the first person to sign in becomes an admin) and enable repositories in
+the administration, or turn on "review every pull request" for the whole
+installation there (see below).
 
 What happens with a pull request (`Tackle.Web.Triggers`):
 
@@ -235,6 +241,74 @@ What happens with a pull request (`Tackle.Web.Triggers`):
   posted review with another profile. After a posting failure, a command with the
   same profile retries only posting, using the stored run. A new head skips the pending requests
   for older ones; closing a pull request skips its pending requests.
+
+## Sign-in and administration (phase 6)
+
+**Sign-in** is our own OAuth web flow through the GitHub App's client
+(`Tackle.Web.AuthController`, `Tackle.Web.SignIn`), not a library:
+`/auth/github` stores a random one-time `state` in the session and sends the
+browser to GitHub; `/auth/github/callback` checks it, exchanges the code, reads
+`/user`, revokes the user's token (best effort; it is never stored), and admits
+the account only if it belongs to an **active installation's account**: a member
+of the organisation (asked with an installation token, Members read), or the
+user account the App is installed on (compared by account id, not login). Then
+the session is renewed and holds only the user id and sign-in time. Nobody can
+sign in before the App is installed. Failures show a fixed message; GitHub's
+details are only logged by kind.
+
+The first user to sign in becomes an **admin**. Others are granted it from the
+console, never in the browser (case-insensitive login; the user must have signed
+in once):
+
+```sh
+sudo tackle-web-release eval 'Tackle.Web.Release.set_admin("octocat")'
+sudo tackle-web-release eval 'Tackle.Web.Release.set_admin("octocat", false)'
+```
+
+Sessions are a signed and encrypted cookie (`SameSite=Lax`, `HttpOnly`) that
+lasts seven days; the user is read from the database on every request and
+mount, so deleting a user row or revoking admin takes effect at once. Forms use
+Phoenix's CSRF tokens; sign-out is a `POST /sign-out`. With an `https`
+`TACKLE_WEB_URL`, plain HTTP is redirected to it, HSTS is sent, and the cookie
+is `Secure`. The reverse proxy must set `X-Forwarded-Proto` (overwriting any the
+client sent); `/health` and requests to `localhost`/`127.0.0.1` stay on HTTP.
+
+**Administration** is AshAdmin at `/admin`, for admins only (anyone else is sent
+to the start page, or gets 403 when signed in). The start page links to it and
+to `/codex-login`. What it offers:
+
+| Resource | In the admin interface |
+|---|---|
+| Installation | read; `set_defaults` (with `apply_to_repositories` to reset every existing repository to the new defaults: "review every pull request") |
+| Repository | read; `configure` (enabled, automatic review, forks/drafts, profile, settings JSON, daily budget); `apply_installation_defaults` |
+| Provider | read; `register`, `configure`, `set_credentials` (OpenRouter API key, write-only) |
+| ReviewDefaults | read; `configure` (replaces the single row) |
+| ForgeApp, ReviewRequest, ReviewRun, Finding, User | read only |
+
+Not in the browser: the GitHub App's settings and secrets (the release command
+above), granting admin, paid reruns and posting retries (console, see below).
+
+**Authorisation.** Every domain authorises when an actor is given
+(`authorize :when_requested`): the web interface always passes the signed-in
+user, and the resources' policies decide. Reads need a signed-in user; the
+actions in the table need an admin; every other action (webhook syncs, the
+review job's internal writes, credential storage, reruns) is refused to any
+actor. Policies re-read the user (`Tackle.Web.Accounts.Check`) rather than trust
+the actor a page holds. Calls without an actor are trusted server code (jobs,
+webhooks, the console); AshOban's own authorised calls pass through a bypass.
+
+AshAdmin normally lets the browser choose the actor and switch authorisation
+off (cookies, connect parameters, sidebar events). Here its LiveView runs behind
+`{Tackle.Web.Auth, :admin_ui}`, which re-reads the admin and pins the actor to
+them with authorisation on before every `handle_params` and event, and ignores
+the actor, authorisation and tenant events. No resource is an AshAdmin actor, so
+there is no actor picker.
+
+**Secrets** are `sensitive?` and never in `show_sensitive_fields`, and no
+decrypting calculation is shown. AshCloak's `on_decrypt` refuses decryption
+whenever an actor is present (`Tackle.Web.Vault.authorize_decrypt/4`), so the
+web interface cannot read a secret back even by loading it; only server code
+does. AshAdmin's show pages list the stored ciphertext columns, redacted.
 
 ## Models and credentials (phase 3)
 
@@ -267,8 +341,8 @@ store; adapter token refreshes can write them back through the same handle.
 `models` and `thinking` maps, keyed by stage strings (`"detector"`,
 `"verifier"`, `"scorer"`). Partial defaults can be saved, but there is **no
 implicit model** and a review cannot resolve until detector and verifier are
-set, in defaults or repository settings. For example, after registering and
-enabling the Codex provider (trusted server console, not a public endpoint):
+set, in defaults or repository settings. Admins do this in the administration (`/admin`, Models); the same from the
+trusted server console, after registering and enabling the Codex provider:
 
 ```elixir
 alias Tackle.Web.Models.{Provider, ReviewDefaults}
@@ -293,7 +367,7 @@ disabling a provider can therefore make an existing configuration fail with an
 explicit error. This checks adapter catalogs, not live subscription access or
 whether credentials are present.
 
-### Codex device login: server service and unmounted page
+### Codex device login
 
 `Tackle.Web.Models.CodexDevice.request(provider_id, opts)` verifies the provider
 uses Codex and calls `Tackle.Plugins.Codex.OAuth.request_device_code/1`. It returns
@@ -304,16 +378,12 @@ encrypted database row. Success returns `:ok`, never tokens; errors leave
 existing credentials intact. Options are trusted server OAuth options, never
 request parameters. A disconnected page's async task exits with the LiveView.
 
-**Credential management is not exposed over HTTP.** `CodexLoginLive` contains
-the small async device-code UI but is deliberately **unmounted**, and its
-`mount/3` also fails closed. Sessions, a LiveView socket, and browser assets
-have not been wired up. Phase 6 must add those, CSRF protection, and admin
-policies for resource actions; only then mount the page behind an authenticated
-admin `on_mount` guard (on both disconnected and connected mounts), replacing
-the fail-closed mount with that actor check and initial `status: :ready`,
-`device: nil` assigns. Do not trust client-supplied session flags or expose
-these trusted server actions through unauthenticated AshAdmin. Raw OAuth errors
-are not displayed because upstream responses may contain secrets.
+`/codex-login` (`CodexLoginLive`) is that flow's page, for admins only: register
+a provider with adapter `codex` in the administration, open the page, pick it,
+and enter the shown code at the verification URL. The router requires an admin
+for the request, the `{Tackle.Web.Auth, :require_admin}` hook again on the HTTP
+and the connected mount, and the page re-reads the user before it starts a login.
+Raw OAuth errors are not displayed because upstream responses may contain secrets.
 
 ### Agent backend
 
@@ -504,7 +574,7 @@ subsequent reads; the database and forge cannot share a transaction.
 Posting failures retain `:reviewed` for Oban retries. Exhausted/cancelled jobs
 become `:failed` with a fixed, redacted posting error, rather than creating
 endless new retry cycles. After repairing access or configuration, use the
-trusted console (there is no unauthenticated HTTP/admin action):
+trusted console (there is no browser or admin action for it):
 
 ```elixir
 Tackle.Web.Posting.retry(request_id)

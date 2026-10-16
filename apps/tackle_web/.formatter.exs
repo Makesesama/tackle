@@ -5,9 +5,11 @@
     :ash_oban,
     :ash_cloak,
     :ash_phoenix,
+    :ash_admin,
     :ecto,
     :ecto_sql,
     :phoenix,
+    :phoenix_live_view,
     :plug
   ],
   subdirectories: ["priv/*/migrations"],

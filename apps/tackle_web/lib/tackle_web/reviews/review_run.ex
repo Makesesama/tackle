@@ -3,7 +3,9 @@ defmodule Tackle.Web.Reviews.ReviewRun do
   use Ash.Resource,
     otp_app: :tackle_web,
     domain: Tackle.Web.Reviews,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshAdmin.Resource]
 
   postgres do
     table "review_runs"
@@ -14,6 +16,13 @@ defmodule Tackle.Web.Reviews.ReviewRun do
     end
   end
 
+  admin do
+    table_columns [:request_id, :verdict, :duration_ms, :inserted_at]
+    create_actions []
+    update_actions []
+    destroy_actions []
+  end
+
   actions do
     defaults [:read, create: [:request_id, :summary, :usage, :duration_ms, :verdict]]
 
@@ -22,6 +31,12 @@ defmodule Tackle.Web.Reviews.ReviewRun do
     update :record_posting do
       accept [:summary]
       require_atomic? false
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :user}
     end
   end
 

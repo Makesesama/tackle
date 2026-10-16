@@ -10,11 +10,15 @@ defmodule Tackle.Web.Forge.GitHub do
   before it expires. Tokens never reach the database, the disk, or a jail.
 
   Configuration, under `config :tackle_web, Tackle.Web.Forge.GitHub`:
-  `:api_url` (default `"https://api.github.com"`) and `:req_options`,
-  extra `Req` options (tests route requests to `Req.Test` with them).
+  `:api_url` (default `"https://api.github.com"`), `:web_url` (default
+  `"https://github.com"`, where browsers sign in and OAuth codes are
+  exchanged), and `:req_options`, extra `Req` options (tests route requests
+  to `Req.Test` with them).
   """
 
   @behaviour Tackle.Web.Forge
+
+  require Logger
 
   alias Tackle.Web.Forge.Event
   alias Tackle.Web.Forge.GitHub.TokenCache
@@ -265,6 +269,166 @@ defmodule Tackle.Web.Forge.GitHub do
   end
 
   defp comment(_issue, _comment), do: :error
+
+  ## Sign-in
+
+  # The App's OAuth web flow ("user access tokens"): GitHub Apps have no
+  # scopes, so the token can only read the user's public profile here.
+
+  @impl Tackle.Web.Forge
+  def authorize_url(%ForgeApp{} = forge_app, state, redirect_uri)
+      when is_binary(state) and state != "" and is_binary(redirect_uri) do
+    with {:ok, client_id, _client_secret} <- oauth_client(forge_app) do
+      query =
+        URI.encode_query(%{
+          "client_id" => client_id,
+          "redirect_uri" => redirect_uri,
+          "state" => state,
+          "allow_signup" => "false"
+        })
+
+      {:ok, web_url() <> "/login/oauth/authorize?" <> query}
+    end
+  end
+
+  @impl Tackle.Web.Forge
+  def sign_in(%ForgeApp{} = forge_app, code, redirect_uri)
+      when is_binary(code) and is_binary(redirect_uri) do
+    with {:ok, client_id, client_secret} <- oauth_client(forge_app),
+         {:ok, token} <- exchange_code(client_id, client_secret, code, redirect_uri) do
+      result = signed_in_user(token)
+      revoke_user_token(client_id, client_secret, token)
+      result
+    end
+  end
+
+  defp oauth_client(forge_app) do
+    client_id = forge_app.client_id
+    client_secret = secret(forge_app, :client_secret)
+
+    if is_binary(client_id) and client_id != "" and is_binary(client_secret) and
+         client_secret != "",
+       do: {:ok, client_id, client_secret},
+       else: {:error, :sign_in_not_configured}
+  end
+
+  # GitHub answers 200 for a rejected code too, with an `error` field. Only
+  # that error code is kept: descriptions are not needed and not logged.
+  defp exchange_code(client_id, client_secret, code, redirect_uri) do
+    body =
+      JSON.encode!(%{
+        "client_id" => client_id,
+        "client_secret" => client_secret,
+        "code" => code,
+        "redirect_uri" => redirect_uri
+      })
+
+    [
+      method: :post,
+      base_url: web_url(),
+      url: "/login/oauth/access_token",
+      headers: [
+        {"accept", "application/json"},
+        {"content-type", "application/json"},
+        {"user-agent", "tackle-web"}
+      ],
+      receive_timeout: 15_000
+    ]
+    |> Keyword.merge(config(:req_options, []))
+    |> Keyword.merge(body: body, retry: false, redirect: false)
+    |> Req.request()
+    |> case do
+      {:ok, %Req.Response{status: 200, body: %{"access_token" => token}}}
+      when is_binary(token) and token != "" ->
+        {:ok, token}
+
+      {:ok, %Req.Response{status: 200, body: %{"error" => error}}} when is_binary(error) ->
+        {:error, {:github, :oauth, error}}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, {:github, status, nil}}
+
+      {:error, exception} ->
+        {:error, {:github, :transport, Exception.message(exception)}}
+    end
+  end
+
+  defp signed_in_user(token) do
+    case request(:get, "/user", token) do
+      {:ok, %{"id" => id, "login" => login} = user}
+      when is_integer(id) and id > 0 and is_binary(login) and login != "" ->
+        name = if is_binary(user["name"]) and user["name"] != "", do: user["name"]
+        {:ok, %{external_id: Integer.to_string(id), login: login, name: name}}
+
+      {:ok, _other} ->
+        {:error, {:github, :unexpected_response, "/user"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # The token is not needed after reading the user; revoking it keeps a
+  # leaked token (logs of a proxy, say) from being useful. Failing to revoke
+  # does not fail the sign-in: the token expires by itself.
+  defp revoke_user_token(client_id, client_secret, token) do
+    path = "/applications/#{segment(client_id)}/token"
+
+    case request(:delete, path, {:basic, client_id, client_secret},
+           body: JSON.encode!(%{"access_token" => token}),
+           redirect: false
+         ) do
+      {:ok, _body} ->
+        :ok
+
+      {:error, {:github, status, _message}} ->
+        Logger.warning("could not revoke a GitHub sign-in token: #{inspect(status)}")
+    end
+  end
+
+  @impl Tackle.Web.Forge
+  def member?(%ForgeApp{} = forge_app, installation, %{external_id: user_id, login: login})
+      when is_binary(user_id) and is_binary(login) do
+    with {:ok, account} <- installation_account(forge_app, installation) do
+      case account do
+        %{type: "Organization", login: org} -> org_member?(forge_app, installation, org, login)
+        %{type: "User", id: id} -> {:ok, id == user_id}
+        # Enterprise installations have no members to check this way.
+        _other -> {:ok, false}
+      end
+    end
+  end
+
+  defp installation_account(forge_app, installation) do
+    path = "/app/installations/#{segment(installation.external_id)}"
+
+    with {:ok, jwt} <- app_jwt(forge_app) do
+      case request(:get, path, jwt) do
+        {:ok, %{"account" => %{"login" => login, "id" => id} = account}}
+        when is_binary(login) and is_integer(id) ->
+          {:ok, %{login: login, id: Integer.to_string(id), type: account["type"]}}
+
+        {:ok, _other} ->
+          {:error, {:github, :unexpected_response, path}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  # 204 for a member, 404 for anyone else. GitHub answers 302 when the
+  # requester cannot see the membership list; an installation token with
+  # Members: read can, so a redirect only means "not verified".
+  defp org_member?(forge_app, installation, org, login) do
+    path = "/orgs/#{segment(org)}/members/#{segment(login)}"
+
+    case installation_request(forge_app, installation, :get, path, redirect: false) do
+      {:ok, _body} -> {:ok, true}
+      {:error, {:github, status, _message}} when status in [302, 404] -> {:ok, false}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   ## API
 
@@ -640,9 +804,9 @@ defmodule Tackle.Web.Forge.GitHub do
 
   # `opts`: `:body`, an encoded JSON body; `:params`, query parameters; and
   # `:retry` and `:redirect`. They are applied after the configured `:req_options`, so
-  # configuration cannot turn a mutation's protections off.
-  defp request(method, path, token, opts \\ []) do
-    config = Application.get_env(:tackle_web, __MODULE__, [])
+  # configuration cannot turn a mutation's protections off. `credential` is
+  # a bearer token, or `{:basic, id, secret}` for the OAuth client's own calls.
+  defp request(method, path, credential, opts \\ []) do
     {body, opts} = Keyword.pop(opts, :body)
 
     content_type =
@@ -650,12 +814,12 @@ defmodule Tackle.Web.Forge.GitHub do
 
     [
       method: method,
-      base_url: Keyword.get(config, :api_url, "https://api.github.com"),
+      base_url: config(:api_url, "https://api.github.com"),
       url: path,
       headers:
         [
           {"accept", "application/vnd.github+json"},
-          {"authorization", "Bearer " <> token},
+          {"authorization", authorization(credential)},
           {"x-github-api-version", @api_version},
           {"user-agent", "tackle-web"}
         ] ++ content_type,
@@ -663,7 +827,7 @@ defmodule Tackle.Web.Forge.GitHub do
       retry: false,
       receive_timeout: 15_000
     ]
-    |> Keyword.merge(Keyword.get(config, :req_options, []))
+    |> Keyword.merge(config(:req_options, []))
     |> Keyword.merge(Keyword.take(opts, [:params, :retry, :redirect]))
     |> then(fn options -> if body, do: Keyword.put(options, :body, body), else: options end)
     |> Req.request()
@@ -681,6 +845,14 @@ defmodule Tackle.Web.Forge.GitHub do
 
   defp error_message(%{"message" => message}) when is_binary(message), do: message
   defp error_message(_body), do: nil
+
+  defp authorization({:basic, id, secret}), do: "Basic " <> Base.encode64(id <> ":" <> secret)
+  defp authorization(token) when is_binary(token), do: "Bearer " <> token
+
+  defp config(key, default),
+    do: :tackle_web |> Application.get_env(__MODULE__, []) |> Keyword.get(key, default)
+
+  defp web_url, do: config(:web_url, "https://github.com")
 
   defp segment(value), do: URI.encode(to_string(value), &URI.char_unreserved?/1)
 

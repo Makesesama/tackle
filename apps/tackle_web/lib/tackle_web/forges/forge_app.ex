@@ -7,14 +7,20 @@ defmodule Tackle.Web.Forges.ForgeApp do
   with `Tackle.Web.Vault` (AshCloak) and sensitive. Actions accept them as
   arguments; reading them back needs an explicit load of the matching
   calculation (`:private_key`, `:webhook_secret`, `:client_secret`), which
-  only the forge modules do.
+  only the forge modules do; a load with an actor is refused
+  (`Tackle.Web.Vault.authorize_decrypt/4`).
+
+  The admin interface shows the row read-only. Its secrets are set with
+  `Tackle.Web.Release.configure_github_app/0`, which reads them from files:
+  a multi-line PEM key does not fit a password field.
   """
 
   use Ash.Resource,
     otp_app: :tackle_web,
     domain: Tackle.Web.Forges,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshCloak]
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshCloak, AshAdmin.Resource]
 
   postgres do
     table "forge_apps"
@@ -24,6 +30,14 @@ defmodule Tackle.Web.Forges.ForgeApp do
   cloak do
     vault Tackle.Web.Vault
     attributes [:private_key, :webhook_secret, :client_secret]
+    on_decrypt {Tackle.Web.Vault, :authorize_decrypt, []}
+  end
+
+  admin do
+    table_columns [:forge, :app_id, :client_id, :updated_at]
+    create_actions []
+    update_actions []
+    destroy_actions []
   end
 
   code_interface do
@@ -51,6 +65,12 @@ defmodule Tackle.Web.Forges.ForgeApp do
     end
   end
 
+  policies do
+    policy action_type(:read) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+    end
+  end
+
   attributes do
     uuid_primary_key :id
 
@@ -66,7 +86,7 @@ defmodule Tackle.Web.Forges.ForgeApp do
       public? true
     end
 
-    # GitHub: the App's OAuth client id, for sign-in (phase 6).
+    # GitHub: the App's OAuth client id, for sign-in.
     attribute :client_id, :string do
       public? true
     end
@@ -83,7 +103,7 @@ defmodule Tackle.Web.Forges.ForgeApp do
       sensitive? true
     end
 
-    # The App's OAuth client secret, for sign-in (phase 6).
+    # The App's OAuth client secret, for sign-in.
     attribute :client_secret, :string do
       sensitive? true
     end

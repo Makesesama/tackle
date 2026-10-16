@@ -4,15 +4,20 @@ defmodule Tackle.Web.Models.Provider do
   enablement can change without replacing credentials. Secrets are only loaded
   explicitly by `Tackle.Web.CredentialStore`, never by normal reads.
 
-  These are trusted server actions, not an authorisation boundary. Do not expose
-  them through a router or AshAdmin before phase 6's admin policies exist.
+  Admins use `:register`, `:configure`, and `:set_credentials` (an OpenRouter
+  API key, write-only) in the admin interface; the policies allow nothing else
+  to a signed-in actor. `:store_credentials` is the credential store's
+  internal seam, and decryption with an actor is refused
+  (`Tackle.Web.Vault.authorize_decrypt/4`). Codex credentials come from the
+  device login page (`Tackle.Web.CodexLoginLive`).
   """
 
   use Ash.Resource,
     otp_app: :tackle_web,
     domain: Tackle.Web.Models,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshCloak]
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshCloak, AshAdmin.Resource]
 
   postgres do
     table "providers"
@@ -22,6 +27,14 @@ defmodule Tackle.Web.Models.Provider do
   cloak do
     vault Tackle.Web.Vault
     attributes [:credentials]
+    on_decrypt {Tackle.Web.Vault, :authorize_decrypt, []}
+  end
+
+  admin do
+    table_columns [:id, :adapter, :enabled, :updated_at]
+    create_actions [:register]
+    update_actions [:configure, :set_credentials]
+    destroy_actions []
   end
 
   code_interface do
@@ -67,6 +80,16 @@ defmodule Tackle.Web.Models.Provider do
     update :store_credentials do
       accept [:credentials]
       require_atomic? false
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+    end
+
+    policy action([:register, :configure, :set_credentials]) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
     end
   end
 

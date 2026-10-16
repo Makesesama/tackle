@@ -9,7 +9,9 @@ defmodule Tackle.Web.Models.ReviewDefaults do
   use Ash.Resource,
     otp_app: :tackle_web,
     domain: Tackle.Web.Models,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshAdmin.Resource]
 
   postgres do
     table "review_defaults"
@@ -18,6 +20,15 @@ defmodule Tackle.Web.Models.ReviewDefaults do
     check_constraints do
       check_constraint :id, "review_defaults_singleton", check: "id = 1"
     end
+  end
+
+  # `:configure` is an upsert of the single row: the admin interface offers
+  # it as the create action, which also replaces existing defaults.
+  admin do
+    table_columns [:models, :thinking, :updated_at]
+    create_actions [:configure]
+    update_actions []
+    destroy_actions []
   end
 
   code_interface do
@@ -32,6 +43,16 @@ defmodule Tackle.Web.Models.ReviewDefaults do
       accept [:models, :thinking]
       upsert? true
       upsert_fields [:models, :thinking, :updated_at]
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+    end
+
+    policy action(:configure) do
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
     end
   end
 

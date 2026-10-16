@@ -44,6 +44,10 @@ defmodule Tackle.Web.MixProject do
       {:ash_oban, "~> 0.10"},
       {:ash_cloak, "~> 0.4"},
       {:ash_phoenix, "~> 2.3"},
+      # The admin UI (docs/TACKLE_WEB_PLAN.md §7.9); 0.x and earlier 1.x have advisories.
+      {:ash_admin, "~> 1.3 and >= 1.3.2"},
+      # Ash policies need a SAT solver; this one is pure Elixir (no NIF).
+      {:simple_sat, "~> 0.1"},
       {:oban, "~> 2.24"},
       {:cloak, "~> 1.1"},
       {:ecto_sql, "~> 3.13"},

@@ -19,6 +19,7 @@ config :tackle_web, Oban, testing: :manual
 # Forge API calls go to Req.Test stubs; nothing reaches GitHub.
 config :tackle_web, Tackle.Web.Forge.GitHub,
   api_url: "https://api.github.test",
+  web_url: "https://github.test",
   req_options: [plug: {Req.Test, Tackle.Web.Forge.GitHub}]
 
 config :ash, disable_async?: true

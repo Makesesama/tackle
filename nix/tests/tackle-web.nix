@@ -1,6 +1,7 @@
 # NixOS VM test for services.tackle-web: the release starts as its own user
 # against a local PostgreSQL over peer authentication, runs its migrations,
-# answers its health check, stores a GitHub App through
+# answers its health check, serves the sign-in page with the admin pages
+# behind it, stores a GitHub App through
 # `tackle-web-release`, and accepts that App's signed webhooks.
 #
 #   nix build .#checks.x86_64-linux.tackle-web-vm
@@ -53,6 +54,18 @@ self: {
           ).strip()
           machine.succeed(psql("select count(*) from schema_migrations") + f" | grep -x {shipped}")
           machine.succeed(psql("select 1 from oban_jobs limit 1"))
+
+      with subtest("serves the sign-in page and keeps admin pages behind sign-in"):
+          machine.succeed("curl -sf http://127.0.0.1:4000/ | grep -F 'Sign in with GitHub'")
+          for path in ["/admin", "/codex-login"]:
+              status = machine.succeed(
+                  f"curl -s -o /dev/null -w '%{{http_code}}' http://127.0.0.1:4000{path}"
+              ).strip()
+              assert status == "302", f"{path}: {status}"
+          # The LiveView client is served from its package inside the release.
+          machine.succeed(
+              "curl -sf -o /dev/null http://127.0.0.1:4000/vendor/phoenix_live_view/phoenix_live_view.min.js"
+          )
 
       with subtest("runs as its own user, with HOME outside the state directory"):
           machine.succeed("systemctl show tackle-web -p User | grep -x User=tackle-web")

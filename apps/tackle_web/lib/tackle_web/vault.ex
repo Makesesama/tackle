@@ -29,6 +29,8 @@ defmodule Tackle.Web.Vault do
 
   use Cloak.Vault, otp_app: :tackle_web
 
+  alias Ash.Error.Forbidden.ForbiddenField
+
   @key_bytes 32
 
   defmodule DecryptionError do
@@ -49,6 +51,20 @@ defmodule Tackle.Web.Vault do
       {:ok, plaintext} -> plaintext
       {:error, error} -> raise error
     end
+  end
+
+  @doc """
+  AshCloak's `on_decrypt` hook for every encrypted attribute: decryption is
+  for trusted server code only (forge clients, the credential store), which
+  loads secrets without an actor. A load with an actor comes from the web
+  interface, which must never read a secret back, so it is refused.
+  """
+  @spec authorize_decrypt(module(), [Ash.Resource.record()], atom(), map()) ::
+          :ok | {:error, Exception.t()}
+  def authorize_decrypt(resource, _records, field, context) do
+    if is_nil(Map.get(context, :actor)),
+      do: :ok,
+      else: {:error, ForbiddenField.exception(resource: resource, field: field)}
   end
 
   # AES-GCM returns `:error` as the "plaintext" when the tag does not match,

@@ -5,7 +5,8 @@ defmodule Tackle.Web.Forge do
   `Tackle.Web.Forge.GitHub` implements it.
 
   Callbacks are added as the phases need them: feedback (phase 7) is not
-  here yet. Ids the forge assigns (reviews, comments) are strings, whatever
+  here yet. Sign-in (§7.6) uses the forge app's OAuth client:
+  `c:authorize_url/3`, `c:sign_in/3`, and `c:member?/3`. Ids the forge assigns (reviews, comments) are strings, whatever
   the forge's own representation, so callers never depend on it.
   """
 
@@ -39,6 +40,12 @@ defmodule Tackle.Web.Forge do
           optional(:start_line) => pos_integer() | nil,
           required(:body) => String.t()
         }
+
+  @typedoc """
+  A forge account that signed in: the forge's id for it (stable across
+  renames), its login, and its display name.
+  """
+  @type user :: %{external_id: String.t(), login: String.t(), name: String.t() | nil}
 
   @typedoc "A line comment as posted on the forge, with the forge's id for it."
   @type posted_comment :: %{id: String.t(), body: String.t()}
@@ -122,6 +129,30 @@ defmodule Tackle.Web.Forge do
   @doc "Every file a pull request changes, with its diff when the forge has one."
   @callback pull_request_files(ForgeApp.t(), Installation.t(), Repository.t(), pos_integer()) ::
               {:ok, [pull_request_file()]} | {:error, term()}
+
+  @doc """
+  The URL to send a browser to for signing in with the forge app's OAuth
+  client. `state` is the caller's one-time value, returned to `redirect_uri`
+  with the code. Fails when the forge app has no OAuth client configured.
+  """
+  @callback authorize_url(ForgeApp.t(), state :: String.t(), redirect_uri :: String.t()) ::
+              {:ok, String.t()} | {:error, :sign_in_not_configured}
+
+  @doc """
+  Exchanges the code from the forge's redirect for the account that signed
+  in. The user's access token is used for that read only, then revoked on a
+  best-effort basis; it is never returned or stored.
+  """
+  @callback sign_in(ForgeApp.t(), code :: String.t(), redirect_uri :: String.t()) ::
+              {:ok, user()} | {:error, term()}
+
+  @doc """
+  Whether `user` belongs to the account the installation is on: a member of
+  the organisation, or the user account itself. Asks the forge, not the
+  stored installation, so renamed accounts cannot be confused.
+  """
+  @callback member?(ForgeApp.t(), Installation.t(), user()) ::
+              {:ok, boolean()} | {:error, term()}
 
   @doc "The forge module for a forge."
   @spec module(atom()) :: module()

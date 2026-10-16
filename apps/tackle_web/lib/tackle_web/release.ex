@@ -4,11 +4,15 @@ defmodule Tackle.Web.Release do
 
       bin/tackle_web eval "Tackle.Web.Release.migrate()"
       bin/tackle_web eval "Tackle.Web.Release.configure_github_app()"
+      bin/tackle_web eval 'Tackle.Web.Release.set_admin("octocat")'
 
   They run in their own VM, beside a running service, and start only what
   they need (the repository and the vault), not the web server.
   """
 
+  require Ash.Query
+
+  alias Tackle.Web.Accounts.User
   alias Tackle.Web.Forges.ForgeApp
   alias Tackle.Web.{Repo, Vault}
 
@@ -29,17 +33,18 @@ defmodule Tackle.Web.Release do
 
   @doc """
   Stores the GitHub App's settings and secrets, replacing earlier ones.
-  Until the admin pages exist, this is how the app is configured. Reads:
+  This is how the App is configured: the admin interface shows it read-only,
+  and sign-in needs it first. Reads:
 
     * `TACKLE_WEB_GITHUB_APP_ID` - the App ID;
-    * `TACKLE_WEB_GITHUB_CLIENT_ID` - the App's client id (optional until
-      sign-in exists);
+    * `TACKLE_WEB_GITHUB_CLIENT_ID` - the App's client id (optional, but
+      needed for sign-in);
     * `TACKLE_WEB_GITHUB_PRIVATE_KEY_FILE` - a file with the App's private
       key (PEM);
     * `TACKLE_WEB_GITHUB_WEBHOOK_SECRET_FILE` - a file with the webhook
       secret;
     * `TACKLE_WEB_GITHUB_CLIENT_SECRET_FILE` - a file with the client secret
-      (optional).
+      (optional, but needed for sign-in).
 
   Secrets are read from files so they stay out of process listings and
   shell history; they are stored encrypted with the vault's current key.
@@ -58,6 +63,51 @@ defmodule Tackle.Web.Release do
       end)
 
     IO.puts("Stored the GitHub App #{params.app_id}.")
+  end
+
+  @doc """
+  Grants (or, with `false`, revokes) admin rights to the GitHub user with
+  `login` (case-insensitive), who must have signed in once. The first user
+  to sign in is an admin already; there is no way to grant it in the web
+  interface. Takes effect on the user's next request.
+  """
+  @spec set_admin(String.t(), boolean()) :: :ok
+  def set_admin(login, admin? \\ true) when is_binary(login) and is_boolean(admin?) do
+    :ok = Application.ensure_loaded(@app)
+
+    {:ok, result, _apps} =
+      Ecto.Migrator.with_repo(Repo, fn _repo ->
+        {:ok, _apps} = Application.ensure_all_started(:ash)
+        update_admin(:github, login, admin?)
+      end)
+
+    message = raise_on_error(result)
+    IO.puts(message)
+  end
+
+  @doc false
+  # Finds the user by login and sets the flag; separate for tests.
+  @spec update_admin(atom(), String.t(), boolean()) :: {:ok, String.t()} | {:error, String.t()}
+  def update_admin(forge, login, admin?) do
+    lower = String.downcase(login)
+
+    User
+    |> Ash.Query.filter(forge == ^forge and string_downcase(login) == ^lower)
+    |> Ash.read!()
+    |> case do
+      [user] ->
+        User.set_admin!(user, admin?)
+        verb = if admin?, do: "is now", else: "is no longer"
+        {:ok, "#{user.login} #{verb} an admin."}
+
+      [] ->
+        {:error, "no user #{inspect(login)} has signed in yet"}
+
+      users ->
+        {:error,
+         "#{inspect(login)} matches several users (#{Enum.map_join(users, ", ", & &1.external_id)}); " <>
+           "set the admin flag by id in a console"}
+    end
   end
 
   @doc false

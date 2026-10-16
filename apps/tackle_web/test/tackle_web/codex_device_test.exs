@@ -118,11 +118,14 @@ defmodule Tackle.Web.CodexDeviceTest do
     assert Store.fetch(CredentialStore.handle(), "work") == {:ok, credentials}
   end
 
-  test "page is unmounted and fails closed until admin authentication exists" do
-    refute Enum.any?(Phoenix.Router.routes(Tackle.Web.Router), &(&1.plug == CodexLoginLive))
+  test "page is routed only behind the admin guards" do
+    info = Phoenix.Router.route_info(Tackle.Web.Router, "GET", "/codex-login", "localhost")
 
-    assert {:error, :admin_authentication_not_implemented} =
-             CodexLoginLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    assert info.plug_opts == CodexLoginLive
+    assert info.pipe_through == [:browser, :admin]
+
+    {CodexLoginLive, _action, _opts, %{extra: %{on_mount: hooks}}} = info.phoenix_live_view
+    assert Enum.map(hooks, & &1.id) == [{Tackle.Web.Auth, :require_admin}]
   end
 
   test "page does not display upstream error details or completed device codes" do
