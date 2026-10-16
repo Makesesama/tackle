@@ -28,7 +28,9 @@ defmodule Tackle.Review.MixProject do
       {:tackle_lib, path: "../tackle_lib"},
       {:tackle_runtime, path: "../tackle_runtime"},
       {:gix_ex, path: "../gix_ex"},
-      {:yaml_frontmatter, path: "../yaml_frontmatter"}
+      {:yaml_frontmatter, path: "../yaml_frontmatter"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false}
     ]
   end
 end

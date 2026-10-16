@@ -131,9 +131,9 @@ defmodule Tackle.Review do
 
   alias Tackle.Review.Rules.Rule
   alias Tackle.Review.Settings, as: ReviewSettings
+  alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, AgentSpec, Limits}
-  alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
 
   @option_keys [
     :requester,

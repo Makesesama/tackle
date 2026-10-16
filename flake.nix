@@ -123,7 +123,7 @@
               credo = {
                 enable = true;
                 package = pkgs.elixir;
-                entry = "${pkgs.bash}/bin/bash -c 'cd packages/tackle && exec mix credo --strict'";
+                entry = "${pkgs.bash}/bin/bash -c 'cd packages/tackle && mix credo --strict && cd ../tackle_review && exec mix credo --strict'";
                 pass_filenames = false;
               };
               # dialyzer.enable = true;

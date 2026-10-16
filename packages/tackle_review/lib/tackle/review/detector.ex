@@ -35,8 +35,8 @@ defmodule Tackle.Review.Detector do
   alias Tackle.Lib.Usage
   alias Tackle.Review.{Delegation, Finding, Locations, Units}
   alias Tackle.Review.Rules.Rule
-  alias Tackle.Runtime.{AgentBackend, AgentSpec}
   alias Tackle.Review.Tools.ReportFindings
+  alias Tackle.Runtime.{AgentBackend, AgentSpec}
 
   @profile "review-detector"
 

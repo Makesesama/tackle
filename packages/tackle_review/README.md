@@ -54,6 +54,7 @@ dependencies need the dev shell's `rebar3` (`MIX_REBAR3`):
 mix deps.get
 mix compile --warnings-as-errors && mix test
 mix format --check-formatted
+mix credo --strict   # also run by the repository's pre-commit hook
 ```
 
 Tests use fake adapters and the test backend; they need no credentials or
