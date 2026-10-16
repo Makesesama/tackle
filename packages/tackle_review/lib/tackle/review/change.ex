@@ -28,8 +28,9 @@ defmodule Tackle.Review.Change do
   ## Reading the repository
 
   The repository is read in-process with `GixEx` (gitoxide), not with `git`
-  subprocesses, and not through the session's `Tackle.Executor`, so a
-  jailed session's review reads the workspace from the host. That is
+  subprocesses, and not through the host's tool executor (in the harness,
+  `Tackle.Executor`), so a jailed session's review reads the workspace from
+  the host. That is
   acceptable because the repository is only read, and read defensively, as
   it may have been written by an agent:
 

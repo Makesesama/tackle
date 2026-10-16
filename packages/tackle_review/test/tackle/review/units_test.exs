@@ -2,7 +2,7 @@ defmodule Tackle.Review.UnitsTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Review.{Change, Diff, Units}
-  alias Tackle.Test.GitRepo
+  alias Tackle.Review.Test.GitRepo
 
   @base String.duplicate("a", 40)
   @head String.duplicate("b", 40)

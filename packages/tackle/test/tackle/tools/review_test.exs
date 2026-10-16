@@ -8,10 +8,10 @@ defmodule Tackle.Tools.ReviewTest do
   alias Tackle.Config
   alias Tackle.Executor.Jailed
   alias Tackle.Lib.Tool
-  alias Tackle.Review.History
+  alias Tackle.LocalReview.History
+  alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
   alias Tackle.Runtime.{AgentSpec, Limits}
   alias Tackle.Test.{Gauge, GitRepo}
-  alias Tackle.Tools.{ReportFindings, ReportVerdict}
 
   defmodule Adapter do
     @moduledoc false

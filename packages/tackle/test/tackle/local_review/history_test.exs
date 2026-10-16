@@ -1,10 +1,11 @@
-defmodule Tackle.Review.HistoryTest do
+defmodule Tackle.LocalReview.HistoryTest do
   use ExUnit.Case, async: true
 
   import Tackle.Test.Runtime, only: [tmp_home: 0]
 
   alias Tackle.Lib.Usage
-  alias Tackle.Review.{Change, Diff, Finding, History, Result}
+  alias Tackle.LocalReview.History
+  alias Tackle.Review.{Change, Diff, Finding, Result}
   alias Tackle.Session.Storage
 
   setup do

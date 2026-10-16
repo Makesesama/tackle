@@ -2,7 +2,7 @@ defmodule Tackle.Review.StagesTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Review.{Detector, Stages, Verifier}
-  alias Tackle.Tools.{ReportFindings, ReportVerdict}
+  alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
 
   test "the stages are the profiles the review runs, with their output tools" do
     assert [detector, verifier] = Stages.all()

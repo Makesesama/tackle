@@ -1,7 +1,7 @@
 # Review package plan: `packages/tackle_review`
 
-**Status: phases 1 to 3 are implemented; phases 4 and 5 are a plan.** The review
-pipeline still lives in `packages/tackle` (`Tackle.Review.*`); see
+**Status: phases 1 to 4 are implemented; phase 5 is a plan.** The review
+pipeline lives in `packages/tackle_review` (`Tackle.Review.*`); see
 [`code-review-plan.md`](code-review-plan.md) for how it works.
 
 ## Goal
@@ -186,11 +186,19 @@ only changes file paths and module names.
    and `read_tree/3`, backed by the new `GixEx.read_dir/4`. The pipeline now
    uses no harness module except the output tools under `Tackle.Tools` and
    `Tackle.Review.History`, both handled in phase 4.
-4. **Move.** Create `packages/tackle_review`, move the modules and their
-   tests (with a copy of the Git test helper), make the harness depend on
-   it, and remove `gix_ex` from the harness. Regenerate the Nix dependency
-   files, add the package to `nix/packages/default.nix`, add a Woodpecker
-   job, and update `AGENTS.md`, the READMEs, and `code-review-plan.md`.
+4. **Move.** *Implemented.* `packages/tackle_review` holds the pipeline,
+   `Settings`, `Stages`, `Rules`, the built-in rules, and the output tools
+   (now `Tackle.Review.Tools.ReportFindings` and `ReportVerdict`), with
+   their tests; it depends on `tackle_lib`, `tackle_runtime`, `gix_ex`, and
+   `yaml_frontmatter`, and the harness depends on it instead of `gix_ex`.
+   The history is `Tackle.LocalReview.History` in the harness. The package's
+   end-to-end tests run on `test/support/backend.ex`, a backend that runs
+   `Tackle.Lib` loops directly, so they prove a host other than the harness
+   can run reviews; the harness keeps the tests of `Tackle.LocalReview` and
+   of reviews in a coding scope. The Nix dependency files are regenerated,
+   the package is in `nix/packages/default.nix`, and Woodpecker has a
+   `tackle_review` job. (`code-review-plan.md` is not tracked yet and is left
+   as it is.)
 5. **GitHub review bot**, a separate plan: a new app on `tackle_runtime` and
    `tackle_review` with its own backend and database.
 
@@ -200,7 +208,8 @@ only changes file paths and module names.
   `Tackle.Review.Rules.discover/1` → `Tackle.LocalReview.Rules.discover/1`;
   `Tackle.Agents.Default.ReviewDetector`/`ReviewVerifier` → `Tackle.Review.Stages`;
   `Tackle.Tools.{ReportFindings,ReportVerdict}` →
-  `Tackle.Review.Tools.*`; `Tackle.Review.History` → harness namespace;
+  `Tackle.Review.Tools.*`; `Tackle.Review.History` →
+  `Tackle.LocalReview.History`;
   `Tackle.Thinking` → `Tackle.Lib.Thinking`;
   `Tackle.Skills.Frontmatter` → `YamlFrontmatter` (`packages/yaml_frontmatter`).
 - `Review.run/2` options: `:history` and `:skip_outcomes` are removed (use

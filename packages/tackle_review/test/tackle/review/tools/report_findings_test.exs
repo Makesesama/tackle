@@ -1,11 +1,11 @@
-defmodule Tackle.Tools.ReportFindingsTest do
+defmodule Tackle.Review.Tools.ReportFindingsTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Call
   alias Tackle.Review.Finding
-  alias Tackle.Tools.{ReportFindings, ReportVerdict}
+  alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
 
   @review %{
     stage: :detector,

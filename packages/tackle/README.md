@@ -9,7 +9,8 @@ modules in trusted application code; the [CLI](../../apps/tackle_cli/README.md)
 is one frontend, not a requirement for embedding the harness.
 
 This package requires Elixir `~> 1.20` and, to build the `gix_ex` NIF that code
-review uses to read Git repositories, a Rust toolchain (`cargo`). Within this
+review ([`tackle_review`](../tackle_review/README.md)) uses to read Git
+repositories, a Rust toolchain (`cargo`). Within this
 checkout it uses sibling path dependencies. Plugin/project discovery and loading from configuration are
 not supported: adapter modules must already be part of the running application.
 
@@ -224,9 +225,11 @@ listed proactively.
 - `worker` performs implementation tasks with the harness's trusted coding tools.
 
 It also defines `review-detector` and `review-verifier`, the model stages of
-`Tackle.Review` (code review; experimental). They are not advertised to the
-root and carry the review output tools `report_findings` and `report_verdict`
-(`Tackle.Tools.review/0`), which only work in runs started by `Tackle.Review`.
+`Tackle.Review` (code review; experimental, in
+[`tackle_review`](../tackle_review/README.md)), from `Tackle.Review.Stages`.
+They are not advertised to the root and carry the review output tools
+`report_findings` and `report_verdict` (`Tackle.Tools.review/0`), which only
+work in runs started by `Tackle.Review`.
 Both run with `instructions: false`, so their system prompt is only their
 assignment and the working directory. `AGENTS.md` guides agent loops and chats,
 not reviews: a convention a review should enforce is a review rule
@@ -254,7 +257,10 @@ fail. A verifier keeps the verdicts it reported before failing.
 `Tackle.Tools.Review` (`review_changes`) is an opt-in tool that lets an agent
 review the current Git change with `Tackle.Review` and get back a compact list
 of findings to fix; a host grants it like `run_workflow` (the CLI grants it to
-the root agent). Reviews are recorded by `Tackle.Review.History` in
+the root agent). It runs the review through `Tackle.LocalReview`, which adds
+the session's review settings, the user's and project's rules
+(`Tackle.LocalReview.Rules`), and the history. Reviews are recorded by
+`Tackle.LocalReview.History` in
 `$TACKLE_HOME/review/<project-key>/` (`runs.jsonl`, `findings.jsonl`, private
 to the current user), where the project key is the Git repository root encoded
 with `Tackle.Paths.project_key/1`, as session storage encodes project

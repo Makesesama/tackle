@@ -1,4 +1,4 @@
-defmodule Tackle.Tools.ReportFindings do
+defmodule Tackle.Review.Tools.ReportFindings do
   @moduledoc """
   Structured output tool of the `review-detector` profile: reports the
   findings of one review unit.

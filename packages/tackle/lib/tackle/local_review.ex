@@ -16,7 +16,7 @@ defmodule Tackle.LocalReview do
       `:rules` is given. `:default_rules` (or the settings' `default_rules`)
       selects the built-in rules; discovery warnings are reported in
       `result.summary.warnings`;
-    * **history** - with `:history` (a `Tackle.Review.History`), findings
+    * **history** - with `:history` (a `Tackle.LocalReview.History`), findings
       with one of the `:skip_outcomes` events recorded are not reported
       again, and the finished run is recorded with its shown and rejected
       findings.
@@ -29,9 +29,10 @@ defmodule Tackle.LocalReview do
 
   alias Tackle.Executor
   alias Tackle.Lib.State
+  alias Tackle.LocalReview.History
   alias Tackle.LocalReview.Rules, as: RuleDiscovery
   alias Tackle.Review
-  alias Tackle.Review.{Change, History, Result}
+  alias Tackle.Review.{Change, Result}
   alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
@@ -45,7 +46,7 @@ defmodule Tackle.LocalReview do
       required unless `:rules` is given;
     * `:env` - environment for `TACKLE_HOME` when discovering rules
       (default: the process's);
-    * `:history` - a `Tackle.Review.History` to skip known findings with
+    * `:history` - a `Tackle.LocalReview.History` to skip known findings with
       and to record the run in (default `nil`, no history);
     * `:skip_outcomes` - the history events whose findings are not reported
       again (default `[:dismissed]`); add `:shown` for an incremental review

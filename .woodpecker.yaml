@@ -80,6 +80,17 @@ steps:
           mix test
           mix format --check-formatted mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
         '
+  - name: tackle_review
+    image: bash
+    commands:
+      - |
+        nix --extra-experimental-features 'nix-command flakes' develop .#ci --command bash -euc '
+          cd packages/tackle_review
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+          mix test
+          mix format --check-formatted
+        '
   - name: tackle
     image: bash
     commands:

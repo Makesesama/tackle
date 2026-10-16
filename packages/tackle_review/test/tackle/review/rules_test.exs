@@ -93,7 +93,7 @@ defmodule Tackle.Review.RulesTest do
   end
 
   describe "read_tree/3" do
-    alias Tackle.Test.GitRepo
+    alias Tackle.Review.Test.GitRepo
 
     test "reads the project's rule files at a revision, not from the working tree" do
       dir = GitRepo.init("rules")

@@ -2,7 +2,7 @@ defmodule Tackle.Review.ChangeTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Review.Change
-  alias Tackle.Test.GitRepo
+  alias Tackle.Review.Test.GitRepo
 
   defp load(opts), do: Change.load(opts)
 

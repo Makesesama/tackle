@@ -1,4 +1,4 @@
-defmodule Tackle.Tools.ReportVerdict do
+defmodule Tackle.Review.Tools.ReportVerdict do
   @moduledoc """
   Structured output tool of the `review-verifier` profile: reports the
   verdict on one candidate finding, before any explanation.
@@ -18,7 +18,7 @@ defmodule Tackle.Tools.ReportVerdict do
 
   use Tackle.Lib.Tool
 
-  alias Tackle.Tools.ReportFindings
+  alias Tackle.Review.Tools.ReportFindings
 
   @verdict_atoms %{"confirmed" => :confirmed, "rejected" => :rejected, "uncertain" => :uncertain}
   @verdicts Map.keys(@verdict_atoms) |> Enum.sort()

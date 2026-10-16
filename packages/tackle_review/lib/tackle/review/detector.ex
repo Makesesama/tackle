@@ -12,7 +12,7 @@ defmodule Tackle.Review.Detector do
   precision.
 
   Findings come back through the `report_findings` tool, which validates
-  them against the batch's changed lines (`Tackle.Tools.ReportFindings`).
+  them against the batch's changed lines (`Tackle.Review.Tools.ReportFindings`).
   Runs report findings as they confirm them, so a run that fails later, for
   example on the step limit or a timeout, still keeps what it reported: a
   run that failed after its last report counts as a complete sample, one
@@ -22,7 +22,7 @@ defmodule Tackle.Review.Detector do
   only when none of its samples reported anything or finished.
 
   A run is stopped as soon as its last report recorded every finding it
-  carried (`Tackle.Tools.ReportFindings.complete?/2`), instead of waiting
+  carried (`Tackle.Review.Tools.ReportFindings.complete?/2`), instead of waiting
   for the closing answer the model would write next.
 
   When the profile's step limit is finite, the prompt tells the run its
@@ -36,7 +36,7 @@ defmodule Tackle.Review.Detector do
   alias Tackle.Review.{Delegation, Finding, Locations, Units}
   alias Tackle.Review.Rules.Rule
   alias Tackle.Runtime.{AgentBackend, AgentSpec}
-  alias Tackle.Tools.ReportFindings
+  alias Tackle.Review.Tools.ReportFindings
 
   @profile "review-detector"
 

@@ -258,25 +258,25 @@ defmodule Tackle.CLI.ReviewTest do
     assert status == 1
 
     root = repo |> git(["rev-parse", "--show-toplevel"]) |> String.trim()
-    {:ok, history} = Tackle.Review.History.open(root, home: home)
+    {:ok, history} = Tackle.LocalReview.History.open(root, home: home)
     assert history.dir == Path.join([home, "review", Tackle.Paths.project_key(root)])
-    assert {:ok, [run]} = Tackle.Review.History.runs(history)
+    assert {:ok, [run]} = Tackle.LocalReview.History.runs(history)
     assert run["summary"]["blocking"] == 1
 
     assert {:ok, [%{"event" => "shown", "fingerprint" => fingerprint}]} =
-             Tackle.Review.History.finding_events(history)
+             Tackle.LocalReview.History.finding_events(history)
 
     # A finding shown before is reported again; the exit status does not change.
     assert {1, _stdout, _stderr} = review(Path.join(repo, "lib"), opts())
 
-    :ok = Tackle.Review.History.record_outcome(history, fingerprint, :dismissed)
+    :ok = Tackle.LocalReview.History.record_outcome(history, fingerprint, :dismissed)
 
     {status, stdout, _stderr} = review(repo, opts(%{format: :json}))
     assert status == 0
     json = JSON.decode!(stdout)
     assert json["blocking"] == []
     assert [%{"reason" => "known"}] = json["dropped"]
-    assert {:ok, runs} = Tackle.Review.History.runs(history)
+    assert {:ok, runs} = Tackle.LocalReview.History.runs(history)
     assert length(runs) == 3
   end
 

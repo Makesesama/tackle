@@ -1,4 +1,4 @@
-defmodule Tackle.Review.History do
+defmodule Tackle.LocalReview.History do
   @moduledoc """
   Personal, append-only history of code reviews and their findings.
 

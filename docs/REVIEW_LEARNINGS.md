@@ -187,7 +187,7 @@ Verifiers took 25–30 s each.
   - Expose it, or tie it to the profile (`assertive` → 2).
 - **Build an evaluation set.** A handful of commits with known, seeded defects
   in this repository, reviewed N times each, would turn "feels better" into
-  recall and precision numbers. The repository's `Tackle.Review.History`
+  recall and precision numbers. The repository's `Tackle.LocalReview.History`
   already stores outcomes (useful, not useful, dismissed, fixed) that can serve
   as precision labels over time. *Implemented* as
   `apps/tackle_cli/bench/review_eval` (the runner is now removed; its cases

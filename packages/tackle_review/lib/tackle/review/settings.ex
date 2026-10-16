@@ -18,7 +18,7 @@ defmodule Tackle.Review.Settings do
   stage maps. Unset settings keep the review's defaults. A host stores them
   however it likes; the harness reads them from the `review` object of
   `config.json` and keeps them in the session context under
-  `:review_settings` (see `Tackle.LocalReview`).
+  `:review_settings` (see `Tackle.LocalReview` in `packages/tackle`).
 
   The JSON form, which `from_json/1` converts into options for `new/2`:
 

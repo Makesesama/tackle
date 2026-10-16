@@ -2,7 +2,7 @@ defmodule Tackle.Review.FunctionContextTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Review.{Change, Diff, FunctionContext}
-  alias Tackle.Test.GitRepo
+  alias Tackle.Review.Test.GitRepo
 
   doctest FunctionContext
 

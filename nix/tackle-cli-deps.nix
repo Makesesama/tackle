@@ -688,7 +688,7 @@ let
               tackle_lib
               tackle_runtime
               tackle_exec
-              gix_ex
+              tackle_review
               yaml_frontmatter
             ];
           };
@@ -824,6 +824,25 @@ let
             beamDeps = [
               req
               tackle_lib
+            ];
+          };
+        in
+        drv;
+
+      tackle_review =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_review";
+
+            src = ../packages/tackle_review;
+
+            beamDeps = [
+              tackle_lib
+              tackle_runtime
+              gix_ex
+              yaml_frontmatter
             ];
           };
         in

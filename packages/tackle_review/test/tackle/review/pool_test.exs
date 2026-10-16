@@ -118,7 +118,12 @@ defmodule Tackle.Review.PoolTest do
                  on_result: on_result
                )
 
-      started = for _job <- 1..3, do: assert_receive({:started, job}) && job
+      started =
+        for _job <- 1..3 do
+          assert_receive {:started, job}
+          job
+        end
+
       assert started == [:first, :second, :enqueued]
       refute_received {:started, _job}
     end

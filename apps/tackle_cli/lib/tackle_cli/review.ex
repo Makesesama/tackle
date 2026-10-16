@@ -8,7 +8,7 @@ defmodule Tackle.CLI.Review do
   trusted agent profiles. Progress goes to standard error line by line; the
   result goes to standard output as text or JSON.
 
-  Each review is recorded in the repository's `Tackle.Review.History` under
+  Each review is recorded in the repository's `Tackle.LocalReview.History` under
   `TACKLE_HOME`, and findings dismissed there are not reported again.
   Findings shown by an earlier review are reported again, so the exit status
   always reflects every blocking finding that has not been dismissed.
@@ -23,7 +23,8 @@ defmodule Tackle.CLI.Review do
   alias Tackle.CLI.Run
   alias Tackle.Executor
   alias Tackle.LocalReview
-  alias Tackle.Review.{Change, History, Result}
+  alias Tackle.LocalReview.History
+  alias Tackle.Review.{Change, Result}
 
   @blocking_status 1
   @failure_status 2

@@ -30,6 +30,11 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd packages/tackle_runtime && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_runtime && mix format --check-formatted 'mix.exs' 'lib/**/*.{ex,exs}' 'test/**/*.{ex,exs}')
 
+# Code review (needs cargo for gix_ex, and MIX_REBAR3 from the dev shell)
+(cd packages/tackle_review && mix deps.get)
+(cd packages/tackle_review && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_review && mix format --check-formatted)
+
 # Anubis MCP bridge: only when affected
 (cd packages/tackle_anubis && mix deps.get)
 (cd packages/tackle_anubis && mix compile --warnings-as-errors && mix test)
@@ -114,6 +119,12 @@ Burrito, or lint commands for tooling that has not been wired up.
   including scopes, stable refs, admission limits, per-agent tool supervision,
   subagents, and workflows. Hosts provide an agent backend for their lifecycle
   and persistence policy.
+- `packages/tackle_review/`: code review (`Tackle.Review.*`, `:tackle_review`)
+  on `tackle_runtime`, `gix_ex`, and `yaml_frontmatter`. It stores nothing and
+  does not depend on the harness; hosts pass in rules, settings, and known
+  findings, and their runtime backend implements the spec callbacks
+  (`configure/2`, `describe/1`, `llm/1`). The harness depends on it and adds
+  local settings, rules, and history in `Tackle.LocalReview`.
 - `packages/tackle_phoenix/`: existing Phoenix LiveView (`~> 1.1.33`) and
   PubSub (`~> 2.1`) integration, with its own Mix project and tests. It includes
   a runtime backend that keeps delegated turns inside the host Store lifecycle.
@@ -147,8 +158,8 @@ Burrito, or lint commands for tooling that has not been wired up.
   terminal fallbacks. The CLI uses it for copying and for image/text pasting.
 - `packages/gix_ex/`: experimental read-only Git package (`GixEx.*`,
   `:gix_ex`): a Rustler NIF over Rust's gitoxide that resolves revisions, walks
-  history, and returns diffs as data, without a `git` executable. Intended to
-  load changes for `tackle review`; nothing depends on it yet.
+  history, reads directories at a revision, and returns diffs as data, without
+  a `git` executable. `tackle_review` loads changes and rules with it.
 - `packages/yaml_frontmatter/`: dependency-free parser for the YAML front
   matter of Markdown files (`YamlFrontmatter`, `:yaml_frontmatter`). The
   harness reads skills, agent definitions, and review rules with it.

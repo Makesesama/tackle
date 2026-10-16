@@ -26,7 +26,7 @@ defmodule Tackle.Review do
 
   The detector and verifier stages are delegated runs of the
   `review-detector` and `review-verifier` profiles (see
-  `Tackle.Agents.Default`), requested from `:requester` through
+  `Tackle.Review.Stages`), requested from `:requester` through
   `Tackle.Runtime`. The runtime scope therefore supplies concurrency limits
   and cancellation, and the runs appear among the scope's tasks. Profiles
   are trusted specs, normally the scope's own (`ScopeSpec.profiles`), so a
@@ -133,7 +133,7 @@ defmodule Tackle.Review do
   alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, AgentSpec, Limits}
-  alias Tackle.Tools.{ReportFindings, ReportVerdict}
+  alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
 
   @option_keys [
     :requester,

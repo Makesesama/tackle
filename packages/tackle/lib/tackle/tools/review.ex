@@ -34,12 +34,12 @@ defmodule Tackle.Tools.Review do
 
   ## History
 
-  Each review is recorded in the repository's `Tackle.Review.History`, and
+  Each review is recorded in the repository's `Tackle.LocalReview.History`, and
   findings the user dismissed are not reported again. Findings shown
   earlier are reported again, so a second review after a fix shows what is
   still wrong. Hosts configure history through the session context's
   `:review_history`: `false` disables it, a keyword list is passed to
-  `Tackle.Review.History.open/2` (default `[]`, the process's
+  `Tackle.LocalReview.History.open/2` (default `[]`, the process's
   `TACKLE_HOME`). When history is unavailable the review still runs and the
   result says so.
 
@@ -75,7 +75,8 @@ defmodule Tackle.Tools.Review do
   alias Tackle.Executor
   alias Tackle.Lib.Event
   alias Tackle.LocalReview
-  alias Tackle.Review.{Change, Delegation, Detector, Finding, History, Rank, Result, Verifier}
+  alias Tackle.LocalReview.History
+  alias Tackle.Review.{Change, Delegation, Detector, Finding, Rank, Result, Verifier}
   alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, Ref, Registry}

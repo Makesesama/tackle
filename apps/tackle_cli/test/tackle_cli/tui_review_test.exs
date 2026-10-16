@@ -11,7 +11,8 @@ defmodule Tackle.CLI.TUI.ReviewTest do
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.State, as: LibState
-  alias Tackle.Review.{Change, Diff, Finding, History, Result}
+  alias Tackle.LocalReview.History
+  alias Tackle.Review.{Change, Diff, Finding, Result}
 
   doctest Tackle.CLI.TUI.Review
 

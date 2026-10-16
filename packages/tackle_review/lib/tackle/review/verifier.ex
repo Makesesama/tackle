@@ -18,7 +18,7 @@ defmodule Tackle.Review.Verifier do
   alias Tackle.Review.{Delegation, Finding, Units}
   alias Tackle.Review.Rules.Rule
   alias Tackle.Runtime.AgentSpec
-  alias Tackle.Tools.ReportVerdict
+  alias Tackle.Review.Tools.ReportVerdict
 
   @profile "review-verifier"
 

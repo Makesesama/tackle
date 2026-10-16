@@ -21,6 +21,7 @@ reusable library on its own or add scoped orchestration and integrations.
 | A tool-using agent loop in your own process or application | [`tackle_lib`](packages/tackle_lib/README.md) (`Tackle.Lib.*`): provider-neutral messages, tools, hooks, and the `Tackle.Lib.LLM` adapter contract. |
 | Supervised agent scopes, subagents, or limits | [`tackle_runtime`](packages/tackle_runtime/README.md) (`Tackle.Runtime.*`) on top of `tackle_lib`. Your host supplies the agent backend and lifecycle policy. |
 | Scripted multi-agent flows ("scout, then plan, then review") | [`tackle_workflow`](packages/tackle_workflow/README.md) (`Tackle.Workflow.*`): sandboxed Lua workflows driving the runtime's delegated runs, plus an opt-in `run_workflow` tool for an agent. |
+| Code review of a change, in your own host | [`tackle_review`](packages/tackle_review/README.md) (`Tackle.Review.*`): ranked, line-anchored findings from detector and verifier agents on the runtime. It stores nothing; your host passes in rules, settings, and known findings. |
 | A ready-to-compose developer harness | [`tackle`](packages/tackle) (`Tackle.*`): configuration, coding tools, credentials, and a facade over the scoped runtime. See the [harness guide](packages/tackle/README.md). |
 | A Phoenix host integration | [`tackle_phoenix`](packages/tackle_phoenix/README.md): supervised turns, PubSub, and LiveView support. |
 | A terminal frontend | [`tackle_cli`](apps/tackle_cli/README.md): the CLI built on the harness, not an agent engine to embed. |
@@ -60,6 +61,7 @@ build, or sandbox.
 | --- | --- |
 | `packages/tackle_lib` | Framework-free, provider- and frontend-independent agent loop (`Tackle.Lib`). |
 | `packages/tackle_runtime` | Reusable scoped OTP orchestration (`Tackle.Runtime`). |
+| `packages/tackle_review` | Code review on the runtime (`Tackle.Review`), without storage or harness code. |
 | `packages/tackle` | Developer-harness composition, configuration, and built-in tools (`Tackle`). |
 | Plugin packages | Provider adapters and optional integrations, using explicit contracts. |
 | `apps/tackle_cli` | Terminal interaction and fixed Burrito distribution; no duplicate agent loop. |
@@ -88,6 +90,9 @@ and unfinished integrations:
 - [`packages/tackle_runtime`](packages/tackle_runtime/README.md) contains the
   reusable scoped OTP runtime: supervision, limits, subagents, and fan-out
   (`Tackle.Runtime.*`).
+- [`packages/tackle_review`](packages/tackle_review/README.md) contains code
+  review (`Tackle.Review.*`) on the runtime. The harness uses it through
+  `Tackle.LocalReview`, which adds the local settings, rules, and history.
 - [`packages/tackle_exec`](packages/tackle_exec/README.md) contains the
   exec-server protocol, jail-side server, and host client for running tool
   primitives in a jail (`Tackle.Exec.*`). The built-in tools reach it through

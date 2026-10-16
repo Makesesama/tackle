@@ -31,7 +31,7 @@ defmodule Tackle.CLI.TUI.Review do
       review continues in the background.
 
   Every feedback action (`u`, `n`, `d`, and the fixes, recorded as `fixed`)
-  is appended to the repository's `Tackle.Review.History`, and every review
+  is appended to the repository's `Tackle.LocalReview.History`, and every review
   run is recorded there by `Tackle.LocalReview`, which also applies the
   session's review settings and the user's and project's rules. History is
   an aid: when it cannot be opened or written the review still works and
@@ -53,7 +53,8 @@ defmodule Tackle.CLI.TUI.Review do
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.Cancellation
   alias Tackle.LocalReview
-  alias Tackle.Review.{Change, Detector, Finding, History, Result, Verifier}
+  alias Tackle.LocalReview.History
+  alias Tackle.Review.{Change, Detector, Finding, Result, Verifier}
   alias Tackle.Runtime.Registry
 
   @usage "Usage: /review [RANGE | --staged]"

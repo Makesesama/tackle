@@ -6,8 +6,8 @@ defmodule Tackle.Review.Stages do
   `Tackle.Review.run/2` requires a `review-detector` and a `review-verifier`
   profile (`:profiles`); a host builds them from `detector/0` and
   `verifier/0`, and may let users override them. The harness does so in
-  `Tackle.Agents.Default`, so a project's `.tackle/agents/review-detector.md`
-  replaces the built-in prompt.
+  `Tackle.Agents.Default` (in `packages/tackle`), so a project's
+  `.tackle/agents/review-detector.md` replaces the built-in prompt.
 
   Each stage has:
 

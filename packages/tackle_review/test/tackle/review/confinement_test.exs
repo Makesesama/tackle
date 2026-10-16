@@ -2,7 +2,7 @@ defmodule Tackle.Review.ConfinementTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Review.Confinement
-  alias Tackle.Test.GitRepo
+  alias Tackle.Review.Test.GitRepo
 
   # A committed repository standing for the jail's workspace.
   defp workspace do

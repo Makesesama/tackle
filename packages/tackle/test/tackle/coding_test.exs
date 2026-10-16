@@ -6,6 +6,7 @@ defmodule Tackle.CodingTest do
   alias Tackle.Coding
   alias Tackle.Lib.Thinking
   alias Tackle.Plugins.Catalog
+  alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentRef, Outcome, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
@@ -14,8 +15,6 @@ defmodule Tackle.CodingTest do
   alias Tackle.Tools.{
     Bash,
     Read,
-    ReportFindings,
-    ReportVerdict,
     Subagent,
     SubagentCancel,
     SubagentStatus,

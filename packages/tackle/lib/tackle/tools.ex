@@ -13,7 +13,8 @@ defmodule Tackle.Tools do
   inside a jail.
   """
 
-  alias Tackle.Tools.{Bash, Edit, Read, ReportFindings, ReportVerdict, Write}
+  alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
+  alias Tackle.Tools.{Bash, Edit, Read, Write}
 
   @doc "Returns the built-in tools enabled for a session unless explicitly overridden."
   @spec default() :: [module()]
