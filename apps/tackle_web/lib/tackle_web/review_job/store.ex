@@ -9,8 +9,20 @@ defmodule Tackle.Web.ReviewJob.Store do
   alias Tackle.Web.ReviewJob.JSON, as: ReviewJSON
   alias Tackle.Web.Reviews.{Finding, ReviewRequest, ReviewRun}
 
-  @terminal [:reviewed, :posted, :failed, :skipped]
+  require Ash.Query
 
+  @terminal [:posted, :failed, :skipped]
+  @active_jobs ["available", "scheduled", "executing", "retryable"]
+  @posting_error "forge posting failed; retry posting to use the stored review"
+
+  # Final posting failures store this exact, fixed text (never forge data), so
+  # retry_posting/1 can tell them from review failures, which cost tokens again.
+  @doc false
+  def posting_error, do: @posting_error
+
+  # Returns {:ok, {:claimed, request, repo}} for a paid review,
+  # {:ok, {:post, request, repo}} for posting an already stored review, or
+  # {:ok, :noop}.
   def claim(id, job) do
     Repo.transaction(fn ->
       with true <- advisory_lock(id),
@@ -44,7 +56,37 @@ defmodule Tackle.Web.ReviewJob.Store do
     end
   end
 
+  # Posting reuses the stored run: no models, no budget. A live or retryable
+  # other job (or a duplicate of this attempt) owns it; an owner that ended
+  # without posting (missing, or completed in a crash gap) hands over, while an
+  # exhausted/cancelled one fails instead of starting retries over.
+  defp claim_owner(%{status: :reviewed} = request, job) do
+    owner = if request.claimed_job_id, do: Repo.get(Oban.Job, request.claimed_job_id)
+
+    cond do
+      owner == nil or owner.state == "completed" ->
+        admit_post(request, job)
+
+      owner.id == job.id and job.attempt > request.claimed_attempt ->
+        admit_post(request, job)
+
+      owner.state in ["discarded", "cancelled"] ->
+        update(request, %{status: :failed, error: @posting_error})
+        :noop
+
+      true ->
+        :noop
+    end
+  end
+
   defp claim_owner(request, job), do: admit(request, job)
+
+  defp admit_post(request, job) do
+    request =
+      update(request, %{error: nil, claimed_job_id: job.id, claimed_attempt: job.attempt})
+
+    {:post, request, Ash.get!(Repository, request.repository_id, load: [:installation])}
+  end
 
   defp admit(request, job) do
     repo = Ash.get!(Repository, request.repository_id, load: [:installation])
@@ -97,7 +139,7 @@ defmodule Tackle.Web.ReviewJob.Store do
     Repo.transaction(fn ->
       request = locked_request(id)
 
-      if owned?(request, job) and executing?(job) do
+      if request.status == :running and owned?(request, job) and executing?(job) do
         run =
           Ash.create!(ReviewRun, %{
             request_id: id,
@@ -116,24 +158,199 @@ defmodule Tackle.Web.ReviewJob.Store do
     end)
   end
 
-  def attempt_failed(id, job, message), do: record_failure(id, job, message, :running)
+  # A failed posting attempt keeps the stored review (:reviewed) so the next
+  # attempt only posts; the final one fails with the fixed posting error.
+  def attempt_failed(id, job, message), do: record_failure(id, job, message, false)
 
-  def failed(id, job, message), do: record_failure(id, job, message, failure_status(job))
+  def failed(id, job, message), do: record_failure(id, job, message, final?(job))
 
-  defp record_failure(id, job, message, status) do
+  defp record_failure(id, job, message, final?) do
     Repo.transaction(fn ->
       request = locked_request(id)
 
       if owned?(request, job) and executing?(job) do
-        update(request, %{status: status, error: message})
+        update(request, failure(request.status, message, final?))
       end
 
       :ok
     end)
   end
 
-  defp failure_status(%{attempt: attempt, max_attempts: max}) when attempt >= max, do: :failed
-  defp failure_status(_job), do: :running
+  defp failure(:reviewed, _message, true), do: %{status: :failed, error: @posting_error}
+  defp failure(:reviewed, message, false), do: %{error: message}
+  defp failure(:running, message, true), do: %{status: :failed, error: message}
+  defp failure(:running, message, false), do: %{error: message}
+
+  defp final?(%{attempt: attempt, max_attempts: max}), do: attempt >= max
+
+  @doc """
+  The request, its latest run (with findings), and its repository (with
+  installation), when `job` is the executing owner of the reviewed request.
+  Only reads; no forge calls happen while the lock is held.
+  """
+  def posting_snapshot(id, job) do
+    Repo.transaction(fn ->
+      with {:ok, request} <- posting_owner(id, job),
+           %ReviewRun{} = run <- latest_run(id) do
+        %{
+          request: request,
+          run: Ash.load!(run, findings: Ash.Query.sort(Finding, inserted_at: :asc, id: :asc)),
+          repository: Ash.get!(Repository, request.repository_id, load: [:installation])
+        }
+      else
+        _stale -> Repo.rollback(:stale)
+      end
+    end)
+  end
+
+  @doc """
+  Freezes the review to post for `run_id` in its summary's `"posting"` entry
+  (string keys, as JSON) and returns it. A run already prepared is returned
+  as stored, unchanged, so every attempt posts the same review.
+  """
+  def prepare_posting(id, job, run_id, %{body: body, comments: comments, fingerprints: prints})
+      when is_binary(body) and is_list(comments) and is_list(prints) do
+    Repo.transaction(fn ->
+      with {:ok, _request} <- posting_owner(id, job),
+           %ReviewRun{id: ^run_id} = run <- latest_run(id) do
+        freeze_posting(run, %{body: body, comments: comments, fingerprints: prints})
+      else
+        _stale -> Repo.rollback(:stale)
+      end
+    end)
+  end
+
+  def prepare_posting(_id, _job, _run_id, _payload), do: {:error, :invalid_payload}
+
+  defp freeze_posting(%{summary: %{"posting" => %{"body" => _} = posting}}, _payload),
+    do: Map.take(posting, ["body", "comments", "fingerprints"])
+
+  defp freeze_posting(run, payload) do
+    posting = ReviewJSON.safe(payload)
+    record_posting(run, Map.put(run.summary, "posting", posting))
+    posting
+  end
+
+  @doc """
+  Records a posted review in one transaction: the run's prepared `"posting"`
+  entry gains `"review_id"` and `"comment_ids"` (fingerprint => comment id),
+  shown findings of the run get their `forge_comment_id`, and the request
+  becomes `:posted` with `forge_review_id`.
+  """
+  def posted(id, job, run_id, review_id, comment_ids)
+      when is_binary(review_id) and is_map(comment_ids) do
+    if Enum.all?(comment_ids, fn {print, comment} -> is_binary(print) and is_binary(comment) end),
+      do: record_posted(id, job, run_id, review_id, comment_ids),
+      else: {:error, :invalid_payload}
+  end
+
+  def posted(_id, _job, _run_id, _review_id, _comment_ids), do: {:error, :invalid_payload}
+
+  defp record_posted(id, job, run_id, review_id, comment_ids) do
+    Repo.transaction(fn ->
+      with {:ok, request} <- posting_owner(id, job),
+           %ReviewRun{id: ^run_id, summary: %{"posting" => %{"body" => _} = posting} = summary} =
+             run <- latest_run(id) do
+        comment_ids = ReviewJSON.safe(comment_ids)
+        posting = Map.merge(posting, %{"review_id" => review_id, "comment_ids" => comment_ids})
+        record_posting(run, Map.put(summary, "posting", posting))
+        record_comments(run.id, comment_ids)
+        update(request, %{status: :posted, error: nil, forge_review_id: review_id})
+        :ok
+      else
+        _stale -> Repo.rollback(:stale)
+      end
+    end)
+  end
+
+  @doc """
+  Posts a request's stored review again without reviewing it again: a
+  `:reviewed` request no job is working on, or one that failed with exactly
+  `posting_error/0`. The request returns to `:reviewed` without its claim and
+  a job is enqueued in the same transaction. Other requests are not touched.
+  """
+  def retry_posting(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, id} -> reset_posting(id)
+      :error -> {:error, :not_retryable}
+    end
+  end
+
+  defp reset_posting(id) do
+    Repo.transaction(fn ->
+      blocking_advisory_lock(id)
+
+      with %ReviewRequest{} = request <- locked_request(id, false),
+           true <- posting_retryable?(request) do
+        request =
+          update(request, %{
+            status: :reviewed,
+            error: nil,
+            claimed_job_id: nil,
+            claimed_attempt: nil
+          })
+
+        AshOban.run_trigger(request, :run)
+        request
+      else
+        _not_retryable -> Repo.rollback(:not_retryable)
+      end
+    end)
+  end
+
+  defp posting_retryable?(%{status: :failed, error: @posting_error}), do: true
+
+  defp posting_retryable?(%{status: :reviewed, claimed_job_id: nil}), do: true
+
+  defp posting_retryable?(%{status: :reviewed, claimed_job_id: job_id}) do
+    case Repo.get(Oban.Job, job_id) do
+      %Oban.Job{state: state} when state in @active_jobs -> false
+      _ended -> true
+    end
+  end
+
+  defp posting_retryable?(_request), do: false
+
+  # A deleted request is as stale as one another job or a rerun took over.
+  defp posting_owner(id, job) do
+    case locked_request(id, false) do
+      %ReviewRequest{status: :reviewed} = request ->
+        if owned?(request, job) and executing?(job), do: {:ok, request}, else: :stale
+
+      _gone_or_changed ->
+        :stale
+    end
+  end
+
+  # Deterministic even when runs share a timestamp.
+  defp latest_run(id) do
+    ReviewRun
+    |> Ash.Query.filter(request_id == ^id)
+    |> Ash.Query.sort(inserted_at: :desc, id: :desc)
+    |> Ash.Query.limit(1)
+    |> Ash.read_one!()
+  end
+
+  defp record_posting(run, summary) do
+    run |> Ash.Changeset.for_update(:record_posting, %{summary: summary}) |> Ash.update!()
+  end
+
+  defp record_comments(_run_id, comment_ids) when map_size(comment_ids) == 0, do: :ok
+
+  defp record_comments(run_id, comment_ids) do
+    fingerprints = Map.keys(comment_ids)
+
+    Finding
+    |> Ash.Query.filter(run_id == ^run_id and state == :shown and fingerprint in ^fingerprints)
+    |> Ash.read!()
+    |> Enum.each(fn finding ->
+      finding
+      |> Ash.Changeset.for_update(:record_comment, %{
+        forge_comment_id: Map.fetch!(comment_ids, finding.fingerprint)
+      })
+      |> Ash.update!()
+    end)
+  end
 
   defp store_findings(run_id, result) do
     Enum.each(Result.findings(result), &store_finding(run_id, &1, :shown, %{}))
@@ -165,9 +382,11 @@ defmodule Tackle.Web.ReviewJob.Store do
     request |> Ash.Changeset.for_update(:record_progress, attrs) |> Ash.update!()
   end
 
+  # Callers that may only act on one status (complete: :running, posting:
+  # :reviewed) check it as well.
   defp owned?(request, job),
     do:
-      request.status == :running and
+      request.status in [:running, :reviewed] and
         request.claimed_job_id == job.id and request.claimed_attempt == job.attempt
 
   defp executing?(job) do
@@ -180,14 +399,24 @@ defmodule Tackle.Web.ReviewJob.Store do
   end
 
   defp advisory_lock(id) do
-    <<key::signed-64, _rest::binary>> = :crypto.hash(:sha256, "tackle-web/review/" <> id)
-    %{rows: [[locked]]} = Repo.query!("SELECT pg_try_advisory_xact_lock($1)", [key])
+    %{rows: [[locked]]} = Repo.query!("SELECT pg_try_advisory_xact_lock($1)", [lock_key(id)])
     locked
   end
 
-  defp locked_request(id) do
+  defp blocking_advisory_lock(id),
+    do: Repo.query!("SELECT pg_advisory_xact_lock($1)", [lock_key(id)])
+
+  defp lock_key(id) do
+    <<key::signed-64, _rest::binary>> = :crypto.hash(:sha256, "tackle-web/review/" <> id)
+    key
+  end
+
+  defp locked_request(id, must_exist? \\ true) do
     {:ok, uuid} = Ecto.UUID.dump(id)
     Repo.query!("SELECT id FROM review_requests WHERE id = $1 FOR UPDATE", [uuid])
-    Ash.get!(ReviewRequest, id)
+
+    if must_exist?,
+      do: Ash.get!(ReviewRequest, id),
+      else: Ash.get!(ReviewRequest, id, not_found_error?: false)
   end
 end

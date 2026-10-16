@@ -33,6 +33,8 @@ defmodule Tackle.Web.Triggers do
 
   alias Tackle.Web.Command
   alias Tackle.Web.Forges.Repository
+  alias Tackle.Web.Posting
+  alias Tackle.Web.ReviewJob.Store
   alias Tackle.Web.Reviews.ReviewRequest
   alias Tackle.Web.Triggers.CommandJob
 
@@ -168,9 +170,16 @@ defmodule Tackle.Web.Triggers do
         create(repository, pull_request, trigger, profile, requested_by)
 
       {:ok, existing} ->
-        if rerun?(existing, trigger, profile),
-          do: rerun(existing, trigger, profile, requested_by),
-          else: {:ok, :exists, existing}
+        cond do
+          retry_posting?(existing, trigger, profile) ->
+            retry_posting(existing)
+
+          rerun?(existing, trigger, profile) ->
+            rerun(existing, trigger, profile, requested_by)
+
+          true ->
+            {:ok, :exists, existing}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -199,6 +208,15 @@ defmodule Tackle.Web.Triggers do
 
     with {:ok, request} <- ReviewRequest.request(attributes), do: {:ok, :created, request}
   end
+
+  defp retry_posting(existing) do
+    with {:ok, request} <- Posting.retry(existing.id), do: {:ok, :exists, request}
+  end
+
+  defp retry_posting?(%{status: :failed, profile: profile, error: error}, :command, profile),
+    do: error == Store.posting_error()
+
+  defp retry_posting?(_request, _trigger, _profile), do: false
 
   defp rerun?(%{status: status}, :command, _profile) when status in [:failed, :skipped], do: true
 

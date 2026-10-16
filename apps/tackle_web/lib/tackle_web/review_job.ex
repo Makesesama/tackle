@@ -1,13 +1,21 @@
 defmodule Tackle.Web.ReviewJob do
   @moduledoc """
-  Runs a claimed Oban attempt through the review pipeline, ending at `:reviewed`.
-  Posting is deliberately not part of this worker. Duplicate/terminal attempts
-  return without Git or model calls. All database locks are short-lived.
+  Runs a claimed Oban attempt through the review pipeline to `:reviewed`,
+  then posts the stored review. Posting happens after the review's checkout,
+  jail, and agents are torn down, from the freshly read request. An attempt
+  that claims an already `:reviewed` request only posts: no checkout, models,
+  or token budget. Duplicate/terminal attempts return without Git, model, or
+  forge calls. All database locks are short-lived.
+
+  A failed posting keeps the request `:reviewed` for the job's next attempt;
+  the final one fails with `Tackle.Web.ReviewJob.Store.posting_error/0`.
 
   `run/1` takes `%{request_id: uuid, job: %Oban.Job{}}`. Optional `:opts` are
   trusted host test seams (`:models`, `:checkout`, `:checkout_opts`, `:jail`,
-  `:llm_opts`), never
-  request parameters or application-configurable local executor fallbacks.
+  `:llm_opts`, `:posting`), never request parameters or
+  application-configurable local executor fallbacks. `:posting` defaults to
+  `Tackle.Web.Posting` and is called as `post(request, repository, job, opts)`,
+  returning `:ok` or `{:error, message}` with a fixed, safe message.
   """
 
   alias Tackle.Review
@@ -15,14 +23,24 @@ defmodule Tackle.Web.ReviewJob do
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Tools.{Bash, Read}
-  alias Tackle.Web.{AgentBackend, Models}
+  alias Tackle.Web.{AgentBackend, Models, Posting}
   alias Tackle.Web.ReviewJob.{Lifecycle, Store}
+  alias Tackle.Web.Reviews.ReviewRequest
 
   @spec run(map()) :: :ok | {:error, String.t()}
   def run(%{request_id: id, job: %Oban.Job{} = job} = input) do
     case Store.claim(id, job) do
       {:ok, {:claimed, request, repository}} ->
-        execute(request, repository, job, Map.get(input, :opts, []))
+        opts = Map.get(input, :opts, [])
+
+        case execute(request, repository, job, opts) do
+          :ok -> post_reviewed(request.id, repository, job, opts)
+          :stale -> :ok
+          {:error, message} -> {:error, message}
+        end
+
+      {:ok, {:post, request, repository}} ->
+        post(request, repository, job, Map.get(input, :opts, []))
 
       {:ok, :noop} ->
         :ok
@@ -32,6 +50,8 @@ defmodule Tackle.Web.ReviewJob do
     end
   end
 
+  # :ok when this attempt stored the run, :stale when it lost ownership (and
+  # must not post), or an error after recording the failed attempt.
   defp execute(request, repository, job, opts) do
     started = System.monotonic_time(:millisecond)
     {:ok, owner} = Lifecycle.start(self(), opts)
@@ -40,14 +60,14 @@ defmodule Tackle.Web.ReviewJob do
       try do
         with {:ok, result} <- review(owner, request, repository, opts),
              :ok <- Lifecycle.check(owner),
-             {:ok, _stored} <-
+             {:ok, stored} <-
                Store.complete(
                  request.id,
                  job,
                  result,
                  System.monotonic_time(:millisecond) - started
                ) do
-          :ok
+          stored
         else
           {:error, reason} -> {:error, failure(reason)}
         end
@@ -65,8 +85,39 @@ defmodule Tackle.Web.ReviewJob do
         Store.attempt_failed(request.id, job, message)
         {:error, message}
 
-      :ok ->
-        :ok
+      stored ->
+        stored
+    end
+  end
+
+  # The review's resources are stopped by now; post what was stored.
+  defp post_reviewed(id, repository, job, opts) do
+    case Ash.get(ReviewRequest, id, not_found_error?: false) do
+      {:ok, %ReviewRequest{status: :reviewed} = request} -> post(request, repository, job, opts)
+      {:ok, _changed} -> :ok
+      {:error, _reason} -> {:error, Store.posting_error()}
+    end
+  end
+
+  defp post(request, repository, job, opts) do
+    posting = Keyword.get(opts, :posting, Posting)
+
+    result =
+      try do
+        case posting.post(request, repository, job, opts) do
+          :ok -> :ok
+          {:error, message} when is_binary(message) -> {:error, message}
+          _other -> {:error, Store.posting_error()}
+        end
+      rescue
+        _error -> {:error, Store.posting_error()}
+      catch
+        :exit, _reason -> {:error, Store.posting_error()}
+      end
+
+    with {:error, message} <- result do
+      Store.attempt_failed(request.id, job, message)
+      {:error, message}
     end
   end
 

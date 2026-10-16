@@ -343,4 +343,307 @@ defmodule Tackle.Web.Forge.GitHubTest do
       end)
     end
   end
+
+  describe "posting API" do
+    setup %{forge_app: forge_app} do
+      Req.Test.verify_on_exit!()
+      installation = %{external_id: to_string(unique_id()), account: "acme"}
+      repository = %{owner: "acme", name: "widgets"}
+      {:ok, forge_app: forge_app, installation: installation, repository: repository}
+    end
+
+    test "post_review sends one COMMENT review at the head and returns its id", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      stub_token("ghs_test")
+      head = sha("head")
+
+      Req.Test.expect(GitHub, fn conn ->
+        assert conn.method == "POST"
+        assert conn.request_path == "/repos/acme/widgets/pulls/7/reviews"
+        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer ghs_test"]
+        assert Plug.Conn.get_req_header(conn, "content-type") == ["application/json"]
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+
+        assert JSON.decode!(raw) == %{
+                 "event" => "COMMENT",
+                 "commit_id" => head,
+                 "body" => "Summary <!-- tackle-review:1 -->",
+                 "comments" => [
+                   %{"path" => "lib/a.ex", "side" => "RIGHT", "line" => 3, "body" => "one"},
+                   %{
+                     "path" => "lib/b.ex",
+                     "side" => "LEFT",
+                     "line" => 9,
+                     "start_line" => 7,
+                     "start_side" => "LEFT",
+                     "body" => "two"
+                   }
+                 ]
+               }
+
+        conn |> Plug.Conn.put_status(200) |> Req.Test.json(%{"id" => 80, "state" => "COMMENTED"})
+      end)
+
+      comments = [
+        %{path: "lib/a.ex", side: :new, line: 3, start_line: nil, body: "one"},
+        %{path: "lib/b.ex", side: :old, line: 9, start_line: 7, body: "two"}
+      ]
+
+      assert GitHub.post_review(
+               forge_app,
+               installation,
+               repository,
+               7,
+               head,
+               "Summary <!-- tackle-review:1 -->",
+               comments
+             ) == {:ok, "80"}
+    end
+
+    test "post_review rejects invalid input before any request", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      post = &GitHub.post_review(forge_app, installation, repository, 7, &1, &2, &3)
+      comment = %{path: "a", side: :new, line: 3, body: "x"}
+
+      assert post.("main", "b", []) == {:error, :invalid_head_sha}
+      assert post.(sha("h"), nil, []) == {:error, :invalid_body}
+      assert post.(sha("h"), "b", :none) == {:error, :invalid_comments}
+
+      for invalid <- [
+            %{comment | side: :right},
+            %{comment | line: 0},
+            %{comment | path: ""},
+            Map.put(comment, :start_line, 3),
+            Map.put(comment, :start_line, 5),
+            Map.delete(comment, :body)
+          ] do
+        assert post.(sha("h"), "b", [comment, invalid]) == {:error, {:invalid_comment, 1}}
+      end
+    end
+
+    test "post_review neither follows redirects nor retries", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      stub_token("ghs_test")
+
+      Req.Test.expect(GitHub, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("location", "https://elsewhere.test/reviews")
+        |> Plug.Conn.send_resp(307, "")
+      end)
+
+      assert {:error, {:github, 307, _message}} =
+               GitHub.post_review(forge_app, installation, repository, 7, sha("h"), "b", [])
+
+      Req.Test.expect(GitHub, fn conn ->
+        conn |> Plug.Conn.put_status(502) |> Req.Test.json(%{"message" => "Bad Gateway"})
+      end)
+
+      assert GitHub.post_review(forge_app, installation, repository, 7, sha("h"), "b", []) ==
+               {:error, {:github, 502, "Bad Gateway"}}
+    end
+
+    test "post_review fails on a response without a review id", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      stub_token("ghs_test")
+
+      for body <- [%{"state" => "COMMENTED"}, %{"id" => "80"}, [%{"id" => 80}]] do
+        Req.Test.expect(GitHub, &Req.Test.json(&1, body))
+
+        assert GitHub.post_review(forge_app, installation, repository, 7, sha("h"), "b", []) ==
+                 {:error, {:github, :unexpected_response, "/repos/acme/widgets/pulls/7/reviews"}}
+      end
+    end
+
+    test "find_review reads every page and matches only the app's own reviews", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      marker = "<!-- tackle-review:42 -->"
+      stub_app("tackle")
+      stub_token("ghs_test")
+
+      first_page =
+        [
+          review(1, "tackle", "Bot", "an older run <!-- tackle-review:41 -->"),
+          review(2, "mallory", "User", "copied " <> marker),
+          review(3, "other", "Bot", marker),
+          %{"id" => 4, "user" => nil, "body" => marker},
+          review(5, "tackle", "Bot", nil)
+        ] ++ for(id <- 6..100, do: review(id, "ada", "User", "looks good"))
+
+      expect_page("/repos/acme/widgets/pulls/7/reviews", 1, first_page)
+
+      expect_page("/repos/acme/widgets/pulls/7/reviews", 2, [
+        review(101, "tackle", "Bot", "Verdict\n" <> marker),
+        review(102, "tackle", "Bot", marker)
+      ])
+
+      assert GitHub.find_review(forge_app, installation, repository, 7, marker) == {:ok, "101"}
+    end
+
+    test "find_review answers nil when no review carries the marker", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      stub_app("tackle")
+      stub_token("ghs_test")
+
+      expect_page("/repos/acme/widgets/pulls/7/reviews", 1, [
+        review(1, "tackle", "Bot", "<!-- tackle-review:1 -->")
+      ])
+
+      assert GitHub.find_review(
+               forge_app,
+               installation,
+               repository,
+               7,
+               "<!-- tackle-review:2 -->"
+             ) == {:ok, nil}
+    end
+
+    test "find_review fails closed on malformed responses", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      path = "/repos/acme/widgets/pulls/7/reviews"
+      # Cache the token, so each lookup reads the app and then the reviews.
+      stub_token("ghs_test")
+      assert {:ok, "ghs_test"} = GitHub.installation_token(forge_app, installation)
+
+      for page <- [
+            %{"reviews" => []},
+            [%{"user" => %{"login" => "tackle[bot]"}, "body" => "m"}],
+            [%{"id" => "1", "user" => nil, "body" => "m"}],
+            [%{"id" => 1, "user" => "tackle[bot]", "body" => "m"}],
+            [%{"id" => 1, "user" => nil, "body" => 5}]
+          ] do
+        stub_app("tackle")
+        expect_page(path, 1, page)
+
+        assert GitHub.find_review(forge_app, installation, repository, 7, "m") ==
+                 {:error, {:github, :unexpected_response, path}}
+      end
+
+      # A malformed later page fails the whole lookup.
+      stub_app("tackle")
+      expect_page(path, 1, for(id <- 1..100, do: review(id, "ada", "User", "m")))
+      expect_page(path, 2, [:oops])
+
+      assert GitHub.find_review(forge_app, installation, repository, 7, "m") ==
+               {:error, {:github, :unexpected_response, path}}
+
+      Req.Test.expect(GitHub, &Req.Test.json(&1, %{"id" => 1}))
+
+      assert GitHub.find_review(forge_app, installation, repository, 7, "m") ==
+               {:error, {:github, :unexpected_response, "/app"}}
+    end
+
+    test "list reads are bounded", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      path = "/repos/acme/widgets/pulls/7/files"
+      stub_token("ghs_test")
+      full_page = for n <- 1..100, do: %{"filename" => "f#{n}", "patch" => "@@"}
+
+      Req.Test.expect(GitHub, 101, fn conn ->
+        assert conn.request_path == path
+        Req.Test.json(conn, full_page)
+      end)
+
+      assert GitHub.pull_request_files(forge_app, installation, repository, 7) ==
+               {:error, {:github, :too_many_pages, path}}
+    end
+
+    test "an exactly full final page at the limit is accepted", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      path = "/repos/acme/widgets/pulls/7/files"
+      stub_token("ghs_test")
+      full_page = for n <- 1..100, do: %{"filename" => "f#{n}"}
+      Req.Test.expect(GitHub, 100, &Req.Test.json(&1, full_page))
+      expect_page(path, 101, [])
+
+      assert {:ok, files} = GitHub.pull_request_files(forge_app, installation, repository, 7)
+      assert Enum.count(files) == 10_000
+    end
+
+    test "review_comments lists a review's comments across pages", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      path = "/repos/acme/widgets/pulls/7/reviews/80/comments"
+      stub_token("ghs_test")
+
+      expect_page(
+        path,
+        1,
+        for(id <- 1..100, do: %{"id" => id, "body" => "c#{id}", "path" => "a"})
+      )
+
+      expect_page(path, 2, [%{"id" => 101, "body" => "c101"}])
+
+      assert {:ok, comments} =
+               GitHub.review_comments(forge_app, installation, repository, 7, "80")
+
+      assert comments == for(id <- 1..101, do: %{id: to_string(id), body: "c#{id}"})
+    end
+
+    test "review_comments rejects a bad id and malformed comments", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+
+      for review_id <- ["", "0", "8/../9", "80?x=1", 80] do
+        assert GitHub.review_comments(forge_app, installation, repository, 7, review_id) ==
+                 {:error, :invalid_review_id}
+      end
+
+      path = "/repos/acme/widgets/pulls/7/reviews/80/comments"
+      stub_token("ghs_test")
+      expect_page(path, 1, [%{"id" => 1, "body" => nil}])
+
+      assert GitHub.review_comments(forge_app, installation, repository, 7, "80") ==
+               {:error, {:github, :unexpected_response, path}}
+    end
+
+    test "pull_request_files lists every file with its patch", context do
+      %{forge_app: forge_app, installation: installation, repository: repository} = context
+      path = "/repos/acme/widgets/pulls/7/files"
+      stub_token("ghs_test")
+
+      expect_page(path, 1, for(n <- 1..100, do: %{"filename" => "f#{n}", "patch" => "@@ #{n}"}))
+
+      expect_page(path, 2, [
+        %{"filename" => "image.png", "status" => "added"},
+        %{"filename" => "big.txt", "patch" => nil}
+      ])
+
+      assert {:ok, files} = GitHub.pull_request_files(forge_app, installation, repository, 7)
+
+      assert files ==
+               for(n <- 1..100, do: %{path: "f#{n}", patch: "@@ #{n}"}) ++
+                 [%{path: "image.png", patch: nil}, %{path: "big.txt", patch: nil}]
+
+      for page <- [%{}, [%{"patch" => "@@"}], [%{"filename" => "a", "patch" => 1}]] do
+        expect_page(path, 1, page)
+
+        assert GitHub.pull_request_files(forge_app, installation, repository, 7) ==
+                 {:error, {:github, :unexpected_response, path}}
+      end
+    end
+
+    defp stub_app(slug) do
+      Req.Test.expect(GitHub, fn conn ->
+        assert conn.method == "GET"
+        assert conn.request_path == "/app"
+        assert ["Bearer " <> jwt] = Plug.Conn.get_req_header(conn, "authorization")
+        assert [_header, _claims, _signature] = String.split(jwt, ".")
+        Req.Test.json(conn, %{"id" => 4242, "slug" => slug})
+      end)
+    end
+
+    defp expect_page(path, page, body) do
+      Req.Test.expect(GitHub, fn conn ->
+        assert conn.method == "GET"
+        assert conn.request_path == path
+        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer ghs_test"]
+        conn = Plug.Conn.fetch_query_params(conn)
+        assert conn.query_params == %{"per_page" => "100", "page" => to_string(page)}
+        Req.Test.json(conn, body)
+      end)
+    end
+
+    defp review(id, login, type, body) do
+      bot_login = if type == "Bot", do: login <> "[bot]", else: login
+      %{"id" => id, "user" => %{"login" => bot_login, "type" => type}, "body" => body}
+    end
+  end
 end

@@ -16,6 +16,13 @@ defmodule Tackle.Web.Reviews.ReviewRun do
 
   actions do
     defaults [:read, create: [:request_id, :summary, :usage, :duration_ms, :verdict]]
+
+    # Internal: the posted review frozen in the summary, written only by
+    # Tackle.Web.ReviewJob.Store's short transactions.
+    update :record_posting do
+      accept [:summary]
+      require_atomic? false
+    end
   end
 
   attributes do

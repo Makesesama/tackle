@@ -24,6 +24,9 @@ defmodule Tackle.Web.Forge.GitHub do
   # GitHub accepts at most ten minutes; `iat` is backdated for clock skew.
   @jwt_backdate 60
   @jwt_lifetime 540
+  # List reads: GitHub's largest page, and a bound on how many are read.
+  @per_page 100
+  @max_pages 100
 
   ## Webhooks
 
@@ -330,6 +333,229 @@ defmodule Tackle.Web.Forge.GitHub do
     end
   end
 
+  ## Posting
+
+  @impl Tackle.Web.Forge
+  def post_review(forge_app, installation, repository, number, head_sha, body, comments)
+      when is_integer(number) and number > 0 do
+    path = pulls_path(repository, number) <> "/reviews"
+
+    with :ok <- check_sha(head_sha),
+         :ok <- check_text(body),
+         {:ok, comments} <- review_comments_payload(comments) do
+      payload =
+        JSON.encode!(%{
+          "event" => "COMMENT",
+          "commit_id" => head_sha,
+          "body" => body,
+          "comments" => comments
+        })
+
+      # A mutation is sent once: no retries and no redirects, which could
+      # repeat it or send it elsewhere.
+      case installation_request(forge_app, installation, :post, path,
+             body: payload,
+             retry: false,
+             redirect: false
+           ) do
+        {:ok, %{"id" => id}} when is_integer(id) and id > 0 -> {:ok, Integer.to_string(id)}
+        {:ok, _other} -> {:error, {:github, :unexpected_response, path}}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp check_sha(sha) do
+    if is_binary(sha) and Regex.match?(~r/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/, sha),
+      do: :ok,
+      else: {:error, :invalid_head_sha}
+  end
+
+  defp check_text(body), do: if(is_binary(body), do: :ok, else: {:error, :invalid_body})
+
+  # An invalid comment is named by its index: its text is model output and
+  # does not belong in an error that may be stored or logged.
+  defp review_comments_payload(comments) when is_list(comments) do
+    comments
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {comment, index}, {:ok, acc} ->
+      case review_comment_payload(comment) do
+        {:ok, payload} -> {:cont, {:ok, [payload | acc]}}
+        :error -> {:halt, {:error, {:invalid_comment, index}}}
+      end
+    end)
+    |> case do
+      {:ok, payloads} -> {:ok, Enum.reverse(payloads)}
+      error -> error
+    end
+  end
+
+  defp review_comments_payload(_comments), do: {:error, :invalid_comments}
+
+  defp review_comment_payload(%{path: path, side: side, line: line, body: body} = comment)
+       when is_binary(path) and path != "" and is_integer(line) and line > 0 and
+              is_binary(body) do
+    with {:ok, github_side} <- github_side(side),
+         {:ok, start} <- start_line(Map.get(comment, :start_line), line, github_side) do
+      {:ok,
+       Map.merge(
+         %{"path" => path, "side" => github_side, "line" => line, "body" => body},
+         start
+       )}
+    end
+  end
+
+  defp review_comment_payload(_comment), do: :error
+
+  defp github_side(:new), do: {:ok, "RIGHT"}
+  defp github_side(:old), do: {:ok, "LEFT"}
+  defp github_side(_side), do: :error
+
+  defp start_line(nil, _line, _side), do: {:ok, %{}}
+
+  defp start_line(start, line, side) when is_integer(start) and start > 0 and start < line,
+    do: {:ok, %{"start_line" => start, "start_side" => side}}
+
+  defp start_line(_start, _line, _side), do: :error
+
+  @impl Tackle.Web.Forge
+  def find_review(forge_app, installation, repository, number, marker)
+      when is_integer(number) and number > 0 and is_binary(marker) and marker != "" do
+    path = pulls_path(repository, number) <> "/reviews"
+
+    with {:ok, bot_login} <- bot_login(forge_app),
+         {:ok, reviews} <- paginate(forge_app, installation, path, &review/1) do
+      {:ok,
+       Enum.find_value(reviews, fn review ->
+         if review.login == bot_login and review.bot? and is_binary(review.body) and
+              String.contains?(review.body, marker),
+            do: review.id
+       end)}
+    end
+  end
+
+  # A deleted account's reviews have no user: they are nobody's, not ours.
+  defp review(%{"id" => id} = review) when is_integer(id) and id > 0 do
+    with {:ok, body} <- optional_string(review, "body") do
+      case Map.get(review, "user") do
+        %{"login" => login} = user when is_binary(login) ->
+          {:ok,
+           %{id: Integer.to_string(id), body: body, login: login, bot?: user["type"] == "Bot"}}
+
+        nil ->
+          {:ok, %{id: Integer.to_string(id), body: body, login: nil, bot?: false}}
+
+        _malformed ->
+          :error
+      end
+    end
+  end
+
+  defp review(_review), do: :error
+
+  # The app's own reviews are by its bot user, `<slug>[bot]`; `[bot]` cannot
+  # appear in other accounts' logins.
+  defp bot_login(forge_app) do
+    with {:ok, jwt} <- app_jwt(forge_app) do
+      case request(:get, "/app", jwt) do
+        {:ok, %{"slug" => slug}} when is_binary(slug) and slug != "" -> {:ok, slug <> "[bot]"}
+        {:ok, _other} -> {:error, {:github, :unexpected_response, "/app"}}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl Tackle.Web.Forge
+  def review_comments(forge_app, installation, repository, number, review_id)
+      when is_integer(number) and number > 0 do
+    if is_binary(review_id) and Regex.match?(~r/\A[1-9][0-9]*\z/, review_id) do
+      path = pulls_path(repository, number) <> "/reviews/#{review_id}/comments"
+      paginate(forge_app, installation, path, &posted_comment/1)
+    else
+      {:error, :invalid_review_id}
+    end
+  end
+
+  defp posted_comment(%{"id" => id, "body" => body})
+       when is_integer(id) and id > 0 and is_binary(body),
+       do: {:ok, %{id: Integer.to_string(id), body: body}}
+
+  defp posted_comment(_comment), do: :error
+
+  @impl Tackle.Web.Forge
+  def pull_request_files(forge_app, installation, repository, number)
+      when is_integer(number) and number > 0 do
+    path = pulls_path(repository, number) <> "/files"
+    paginate(forge_app, installation, path, &pull_request_file/1)
+  end
+
+  defp pull_request_file(%{"filename" => path} = file) when is_binary(path) and path != "" do
+    with {:ok, patch} <- optional_string(file, "patch"), do: {:ok, %{path: path, patch: patch}}
+  end
+
+  defp pull_request_file(_file), do: :error
+
+  defp optional_string(map, key) do
+    case Map.get(map, key) do
+      value when is_binary(value) or is_nil(value) -> {:ok, value}
+      _other -> :error
+    end
+  end
+
+  defp pulls_path(repository, number),
+    do: "/repos/#{segment(repository.owner)}/#{segment(repository.name)}/pulls/#{number}"
+
+  # Reads every page of a list at a fixed path, `@per_page` items each; a
+  # shorter page is the last. Any malformed page or item fails the whole
+  # read, and so does a list longer than `@max_pages` pages, rather than
+  # answering from part of it.
+  defp paginate(forge_app, installation, path, parse, page \\ 1, acc \\ [])
+
+  defp paginate(forge_app, installation, path, parse, page, acc) do
+    params = [per_page: @per_page, page: page]
+
+    case installation_request(forge_app, installation, :get, path, params: params) do
+      # One empty sentinel page distinguishes exactly @max_pages full pages
+      # from an over-limit list. Never accept or accumulate beyond the cap.
+      {:ok, []} ->
+        {:ok, Enum.reverse(acc)}
+
+      {:ok, [_ | _]} when page > @max_pages ->
+        {:error, {:github, :too_many_pages, path}}
+
+      {:ok, items} when is_list(items) ->
+        case parse_items(items, parse) do
+          {:ok, parsed} when length(items) < @per_page ->
+            {:ok, acc |> Enum.reverse() |> Enum.concat(parsed)}
+
+          {:ok, parsed} ->
+            paginate(forge_app, installation, path, parse, page + 1, Enum.reverse(parsed, acc))
+
+          :error ->
+            {:error, {:github, :unexpected_response, path}}
+        end
+
+      {:ok, _other} ->
+        {:error, {:github, :unexpected_response, path}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp parse_items(items, parse) do
+    Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
+      case parse.(item) do
+        {:ok, parsed} -> {:cont, {:ok, [parsed | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, parsed} -> {:ok, Enum.reverse(parsed)}
+      :error -> :error
+    end
+  end
+
   @doc """
   An installation access token for `installation`, from the cache or
   fetched with the app's JWT.
@@ -399,9 +625,9 @@ defmodule Tackle.Web.Forge.GitHub do
 
   # A token the API rejects (revoked, or the installation changed) is
   # dropped from the cache; the caller's retry fetches a new one.
-  defp installation_request(forge_app, installation, method, path) do
+  defp installation_request(forge_app, installation, method, path, opts \\ []) do
     with {:ok, token} <- installation_token(forge_app, installation) do
-      case request(method, path, token) do
+      case request(method, path, token, opts) do
         {:error, {:github, 401, _message}} = error ->
           TokenCache.delete(token_key(forge_app, installation))
           error
@@ -412,24 +638,34 @@ defmodule Tackle.Web.Forge.GitHub do
     end
   end
 
-  defp request(method, path, token) do
+  # `opts`: `:body`, an encoded JSON body; `:params`, query parameters; and
+  # `:retry` and `:redirect`. They are applied after the configured `:req_options`, so
+  # configuration cannot turn a mutation's protections off.
+  defp request(method, path, token, opts \\ []) do
     config = Application.get_env(:tackle_web, __MODULE__, [])
+    {body, opts} = Keyword.pop(opts, :body)
+
+    content_type =
+      if body, do: [{"content-type", "application/json"}], else: []
 
     [
       method: method,
       base_url: Keyword.get(config, :api_url, "https://api.github.com"),
       url: path,
-      headers: [
-        {"accept", "application/vnd.github+json"},
-        {"authorization", "Bearer " <> token},
-        {"x-github-api-version", @api_version},
-        {"user-agent", "tackle-web"}
-      ],
+      headers:
+        [
+          {"accept", "application/vnd.github+json"},
+          {"authorization", "Bearer " <> token},
+          {"x-github-api-version", @api_version},
+          {"user-agent", "tackle-web"}
+        ] ++ content_type,
       # Oban retries failed jobs; a retrying request would hold the job.
       retry: false,
       receive_timeout: 15_000
     ]
     |> Keyword.merge(Keyword.get(config, :req_options, []))
+    |> Keyword.merge(Keyword.take(opts, [:params, :retry, :redirect]))
+    |> then(fn options -> if body, do: Keyword.put(options, :body, body), else: options end)
     |> Req.request()
     |> case do
       {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->

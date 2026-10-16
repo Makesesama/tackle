@@ -1,6 +1,6 @@
 # tackle_web
 
-**Status: phases 1–4 of
+**Status: phases 1–5 of
 [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
@@ -12,9 +12,9 @@ credentials, resolves review defaults, and has an ephemeral agent backend tested
 with whole scripted reviews. Codex device login has a server service and an
 unmounted page awaiting phase 6's authentication. Queued reviews now run in the
 read-only jail, with base-commit rules and
-explicit model settings, and store their runs/findings at `:reviewed`. Forge
-posting (phase 5) is not implemented; reviewed requests are not automatically
-scheduled again. The plan lists what each later phase adds.
+explicit model settings, store their runs/findings at `:reviewed`, then post a
+sanitized GitHub COMMENT review and transition to `:posted`. Posting retries use
+the stored run without model calls. The plan lists what each later phase adds.
 
 OTP application `:tackle_web`, namespace `Tackle.Web.*`. It depends on the
 packages (`tackle_lib`, `tackle_runtime`, `tackle_review`, `tackle_tools`,
@@ -231,8 +231,9 @@ What happens with a pull request (`Tackle.Web.Triggers`):
   request is opened, reopened, or ready for review; `:on_open_and_push`
   also for every new head. Drafts and forks only with `auto_review_drafts`
   and `auto_review_forks`.
-- A head is requested once. A command asks again after a failure, or for a
-  posted review with another profile. A new head skips the pending requests
+- A head is requested once. A command asks again after a review failure, or for a
+  posted review with another profile. After a posting failure, a command with the
+  same profile retries only posting, using the stored run. A new head skips the pending requests
   for older ones; closing a pull request skips its pending requests.
 
 ## Models and credentials (phase 3)
@@ -449,10 +450,73 @@ Normal failures remain `:running` for Oban retries; AshOban's final-error action
 sets `:failed`. Timeouts/killed processes bypass that action: the next scheduled
 job detects a discarded, cancelled, completed-without-result or missing owner
 and marks the request failed **without another paid three-attempt cycle**.
-`:reviewed`, `:posted`, `:failed` and `:skipped` are terminal no-ops. A trusted
-manual `ReviewRequest.rerun/2` clears ownership and returns a finished request to
-pending, retaining all previous runs/findings. Posting remains phase 5.
+`:posted`, `:failed` and `:skipped` are terminal no-ops. `:reviewed` attempts only
+post. A trusted manual `ReviewRequest.rerun/2` clears ownership and returns a
+finished request to pending, retaining all previous runs/findings; this explicitly
+requests a new paid review, unlike the posting-only retry below.
 
 Tests use fake models and trusted checkout/jail seams, not live provider calls;
 the separate checkout and jail tests cover their fail-closed boundaries. These
 options belong only to trusted host code, never HTTP inputs or persisted settings.
+
+## Forge posting (phase 5)
+
+After storing the result, `ReviewJob` tears down agents, jail and checkout,
+then calls `Posting`. Posting an existing `:reviewed` request requires no model,
+checkout, jail, or token-budget admission. Disabled/inactive repositories or
+installations stop posting without deleting the paid result.
+
+`Posting.Format` builds forge-neutral text and locations. Only shown findings
+are posted. Findings on the diff become line comments (new/RIGHT or old/LEFT;
+multiline only within one hunk); others go in the review body. The current PR's
+base/head are checked before and after reading diff files. A changed revision,
+missing patch, truncated hunk or omitted file falls back to the body; the review
+is always pinned to the stored head. The header gives verdict, counts, profile
+and units. Previously posted fingerprints are mentioned as still present, not
+posted again, including findings that previously appeared only in a review body.
+
+Model text is plain escaped prose: HTML/entities and Markdown links/images are
+escaped, mentions and issue-closing syntax neutralized. Suggestions use code
+fences longer than embedded fences. Code may contain inserted zero-width spaces
+at mention/closing syntax; inspect it before copying. Text fields are capped,
+line comments limited to 25, and the body bounded below 60,000 bytes, with
+notices for omissions. Omitted findings are not marked as already posted.
+
+The sanitized payload is frozen in the run's `summary["posting"]` before POST.
+Its body starts with `<!-- tackle-review:<run UUID> -->`; line comments carry
+`<!-- tackle-finding:<fingerprint> -->`. GitHub lookup checks the app bot's
+identity and paginates reviews; comment recovery also paginates. Every retry
+looks up the run marker before creating a review, including after a lost POST
+response or failed comment-ID lookup. POST is never automatically retried or
+redirected. Review ID, comment IDs and posted fingerprints are persisted in a
+single fenced transaction, along with `:posted`; run metadata survives request
+reruns. Only shown inline findings receive `forge_comment_id`.
+
+A per-PR lock serializes posting across heads on this node and connected BEAM
+nodes; disconnected application nodes sharing a database are unsupported.
+No database connection is held during HTTP. An unresolved prepared posting
+blocks later runs of the PR until it is recovered or explicitly superseded by a
+paid rerun. If a previous run's response was lost, later runs check its marker
+before deciding which fingerprints are already posted. GitHub has no atomic
+idempotency-key API: marker recovery assumes accepted reviews are visible to
+subsequent reads; the database and forge cannot share a transaction.
+
+Posting failures retain `:reviewed` for Oban retries. Exhausted/cancelled jobs
+become `:failed` with a fixed, redacted posting error, rather than creating
+endless new retry cycles. After repairing access or configuration, use the
+trusted console (there is no unauthenticated HTTP/admin action):
+
+```elixir
+Tackle.Web.Posting.retry(request_id)
+```
+
+This restores `:reviewed` and enqueues posting of the same run. It rejects review
+failures and live posting attempts. `/tackle review` with the same profile after
+a posting failure does the same; a different profile or explicit
+`ReviewRequest.rerun/2` asks for a new paid review. The minute scheduler remains a
+safety net if immediate enqueue merges with an ending job.
+
+**Deployment:** no schema/dependency change is required. Existing `:reviewed`
+requests become eligible for posting on the next scheduler tick. Configure the
+GitHub App's Pull requests write permission before deploying; disable repository
+reviewing to pause side effects while preparing the rollout.

@@ -35,6 +35,38 @@ defmodule Tackle.Web.ReviewJobTest do
     end
   end
 
+  # Posts through the Store the way Tackle.Web.Posting does, without a forge.
+  defmodule FakePosting do
+    @moduledoc false
+    def post(request, repository, job, opts) do
+      send(opts[:posting_test], {:posting, request, repository, job, self()})
+      if opts[:posting_block], do: receive(do: (:continue -> :ok))
+
+      case Keyword.get(opts, :posting_result, :store) do
+        :store -> store(request, job)
+        :raise -> raise "private-forge-sentinel"
+        result -> result
+      end
+    end
+
+    defp store(request, job) do
+      {:ok, %{run: run}} = Store.posting_snapshot(request.id, job)
+      shown = Enum.filter(run.findings, &(&1.state == :shown))
+
+      {:ok, payload} =
+        Store.prepare_posting(request.id, job, run.id, %{
+          body: "<!-- tackle-review:#{run.id} -->",
+          comments:
+            Enum.map(shown, &%{path: &1.path, side: &1.side, line: &1.end_line, body: &1.title}),
+          fingerprints: Enum.map(shown, & &1.fingerprint)
+        })
+
+      ids = Map.new(payload["fingerprints"], &{&1, "comment-" <> &1})
+      {:ok, :ok} = Store.posted(request.id, job, run.id, "review-1", ids)
+      :ok
+    end
+  end
+
   defmodule FakeCheckout do
     @moduledoc false
     def prepare(request, _opts \\ []) do
@@ -175,6 +207,8 @@ defmodule Tackle.Web.ReviewJobTest do
        models: FakeModels,
        checkout: FakeCheckout,
        jail: FakeJail,
+       posting: FakePosting,
+       posting_test: self(),
        llm_opts: [test_pid: self(), script: &script/2]
      ]}
   end
@@ -184,7 +218,7 @@ defmodule Tackle.Web.ReviewJobTest do
     job = job!()
     assert :ok = run(c, job)
 
-    assert %{status: :reviewed, claimed_job_id: id, claimed_attempt: 1} =
+    assert %{status: :posted, forge_review_id: "review-1", claimed_job_id: id, claimed_attempt: 1} =
              Ash.get!(ReviewRequest, c.request.id)
 
     assert id == job.id
@@ -216,7 +250,7 @@ defmodule Tackle.Web.ReviewJobTest do
 
     opts = Keyword.put(c.opts, :llm_opts, test_pid: self(), script: script)
     assert :ok = run(%{c | opts: opts}, job!())
-    assert Ash.get!(ReviewRequest, c.request.id).status == :reviewed
+    assert Ash.get!(ReviewRequest, c.request.id).status == :posted
     assert [stored] = Ash.read!(ReviewRun)
 
     assert [%{"fingerprint" => _, "reason" => "review stage failed"}] =
@@ -387,7 +421,7 @@ defmodule Tackle.Web.ReviewJobTest do
   end
 
   test "all terminal statuses are no-ops", c do
-    for status <- [:reviewed, :posted, :failed, :skipped] do
+    for status <- [:posted, :failed, :skipped] do
       Repo.query!("UPDATE review_requests SET status = $1 WHERE id = $2", [
         Atom.to_string(status),
         Ecto.UUID.dump!(c.request.id)
@@ -397,6 +431,7 @@ defmodule Tackle.Web.ReviewJobTest do
     end
 
     refute_received {:prepared, _}
+    refute_received {:posting, _, _, _, _}
     assert Ash.read!(ReviewRun) == []
   end
 
@@ -560,7 +595,7 @@ defmodule Tackle.Web.ReviewJobTest do
     opts = Keyword.merge(c.opts, jail: ErrorCleanupJail, checkout_opts: [cleanup_failure: :raise])
     job = job!()
     assert :ok = run(%{c | opts: opts}, job)
-    assert Ash.get!(ReviewRequest, c.request.id).status == :reviewed
+    assert Ash.get!(ReviewRequest, c.request.id).status == :posted
     assert [_stored] = Ash.read!(ReviewRun)
     model_calls()
     assert :ok = run(%{c | opts: opts}, job)
@@ -699,6 +734,366 @@ defmodule Tackle.Web.ReviewJobTest do
              run(%{c | opts: Keyword.put(c.opts, :models, Models)}, job!(3))
 
     refute_received {:prepared, _}
+  end
+
+  describe "posting" do
+    test "posts after the review's resources are torn down, from the fresh reviewed request",
+         c do
+      opts = Keyword.put(c.opts, :posting_block, true)
+      job = job!()
+      task = Task.async(fn -> run(%{c | opts: opts}, job) end)
+      assert_receive {:posting, request, repository, ^job, caller}, 10_000
+      assert_received {:prepared, owner}
+      assert_received {:jailed, jail}
+      assert_received {:checkout_cleaned, ^owner}
+      assert_received :jail_cleaned
+      refute Process.alive?(owner)
+      refute Process.alive?(jail)
+      assert %{status: :reviewed, claimed_job_id: id, claimed_attempt: 1} = request
+      assert id == job.id
+      assert repository.id == c.repository.id
+      send(caller, :continue)
+      assert :ok = Task.await(task, 10_000)
+
+      assert %{status: :posted, forge_review_id: "review-1", error: nil} =
+               Ash.get!(ReviewRequest, c.request.id)
+
+      assert [run] = Ash.read!(ReviewRun)
+
+      assert [%{state: :shown, fingerprint: print, forge_comment_id: comment}] =
+               Ash.read!(StoredFinding)
+
+      assert comment == "comment-" <> print
+
+      assert %{"review_id" => "review-1", "comment_ids" => %{^print => ^comment}} =
+               run.summary["posting"]
+    end
+
+    test "a stale completion stores nothing and does not post", c do
+      id = Ecto.UUID.dump!(c.request.id)
+
+      script = fn schema, opts ->
+        # Another attempt takes the request over while this one reviews.
+        Repo.query!("UPDATE review_requests SET claimed_attempt = 99 WHERE id = $1", [id])
+        script(schema, opts)
+      end
+
+      opts = Keyword.put(c.opts, :llm_opts, test_pid: self(), script: script)
+      assert :ok = run(%{c | opts: opts}, job!())
+      assert_received {:checkout_cleaned, _owner}
+      refute_received {:posting, _, _, _, _}
+      assert Ash.read!(ReviewRun) == []
+      assert %{status: :running, claimed_attempt: 99} = Ash.get!(ReviewRequest, c.request.id)
+    end
+
+    test "a failed posting keeps the review; the next attempt posts it without models", c do
+      opts = Keyword.put(c.opts, :posting_result, {:error, "forge posting failed"})
+      job = job!()
+      assert {:error, "forge posting failed"} = run(%{c | opts: opts}, job)
+
+      assert %{status: :reviewed, error: "forge posting failed"} =
+               Ash.get!(ReviewRequest, c.request.id)
+
+      assert [_run] = Ash.read!(ReviewRun)
+      model_calls()
+      assert_received {:prepared, _owner}
+
+      # Production models would fail: the posting attempt must not use them.
+      opts = Keyword.merge(c.opts, models: Models, checkout: nil, jail: nil)
+      next = retry!(job)
+      assert :ok = run(%{c | opts: opts}, next)
+      assert_received {:posting, %{status: :reviewed, claimed_attempt: 2}, _repo, ^next, _caller}
+      refute_received {:prepared, _}
+      refute_received {:model_call, _, _, _}
+      assert [_run] = Ash.read!(ReviewRun)
+
+      assert %{status: :posted, error: nil, claimed_attempt: 2} =
+               Ash.get!(ReviewRequest, c.request.id)
+    end
+
+    test "posting exceptions and invalid results are reported with the fixed posting error", c do
+      for result <- [:raise, :unexpected] do
+        request = reset_reviewed!(c)
+        opts = Keyword.put(c.opts, :posting_result, result)
+        message = Store.posting_error()
+        assert {:error, ^message} = run(%{c | opts: opts, request: request}, job!(3))
+        assert %{status: :failed, error: ^message} = Ash.get!(ReviewRequest, c.request.id)
+      end
+    end
+
+    test "the final posting failure fails with the fixed error, and only that is retryable",
+         c do
+      opts = Keyword.put(c.opts, :posting_result, {:error, "forge posting failed"})
+      assert {:error, _} = run(%{c | opts: opts}, job!(3))
+      assert_received {:posting, _, _, _, _}
+      error = Store.posting_error()
+      assert %{status: :failed, error: ^error} = Ash.get!(ReviewRequest, c.request.id)
+      model_calls()
+
+      # Failed requests are not scheduled and do not post.
+      assert :ok = run(c, job!())
+      refute_received {:posting, _, _, _, _}
+
+      assert {:ok, %{status: :reviewed, error: nil, claimed_job_id: nil, claimed_attempt: nil}} =
+               Store.retry_posting(c.request.id)
+
+      assert_enqueued(worker: ReviewRequest.RunWorker, args: %{primary_key: %{id: c.request.id}})
+      opts = Keyword.merge(c.opts, models: Models, checkout: nil, jail: nil)
+      assert :ok = run(%{c | opts: opts}, job!())
+      refute_received {:model_call, _, _, _}
+      assert [_run] = Ash.read!(ReviewRun)
+      assert %{status: :posted} = Ash.get!(ReviewRequest, c.request.id)
+      assert {:error, :not_retryable} = Store.retry_posting(c.request.id)
+    end
+
+    test "retry_posting rejects review failures, other statuses and live owners", c do
+      assert {:error, :not_retryable} = Store.retry_posting(c.request.id)
+      assert {:error, :not_retryable} = Store.retry_posting(Ecto.UUID.generate())
+      assert {:error, :not_retryable} = Store.retry_posting("not-a-uuid")
+
+      set_status(c.request, :failed, "review models are required for: detector")
+      assert {:error, :not_retryable} = Store.retry_posting(c.request.id)
+      set_status(c.request, :running, nil)
+      assert {:error, :not_retryable} = Store.retry_posting(c.request.id)
+      set_status(c.request, :pending, nil)
+
+      job = reviewed!(c)
+
+      for state <- ["executing", "retryable", "available", "scheduled"] do
+        set_job_state(job, state)
+        assert {:error, :not_retryable} = Store.retry_posting(c.request.id)
+      end
+
+      assert %{status: :reviewed, claimed_job_id: id} = Ash.get!(ReviewRequest, c.request.id)
+      assert id == job.id
+      # Nothing but the owner itself was enqueued.
+      assert [%{id: ^id}] = Repo.all(Oban.Job)
+
+      for state <- ["completed", "discarded", "cancelled"] do
+        set_job_state(job, state)
+
+        Repo.query!("UPDATE review_requests SET claimed_job_id = $1 WHERE id = $2", [
+          job.id,
+          Ecto.UUID.dump!(c.request.id)
+        ])
+
+        assert {:ok, %{status: :reviewed, claimed_job_id: nil}} =
+                 Store.retry_posting(c.request.id)
+      end
+    end
+
+    test "reviewed claims admit only ended owners or the owner's next attempt", c do
+      job = reviewed!(c)
+      assert {:ok, :noop} = Store.claim(c.request.id, job)
+      assert {:ok, :noop} = Store.claim(c.request.id, job!())
+      job = set_job_state(job, "retryable")
+      assert {:ok, :noop} = Store.claim(c.request.id, job!())
+      next = retry!(job)
+      assert {:ok, {:post, request, repository}} = Store.claim(c.request.id, next)
+      assert %{status: :reviewed, claimed_attempt: 2, error: nil} = request
+      assert repository.installation.status == :active
+      assert {:ok, :noop} = Store.claim(c.request.id, next)
+
+      set_job_state(next, "completed")
+      other = job!()
+
+      assert {:ok, {:post, %{claimed_job_id: id, claimed_attempt: 1}, _}} =
+               Store.claim(c.request.id, other)
+
+      assert id == other.id
+      Repo.delete!(other)
+      assert {:ok, {:post, %{claimed_job_id: id}, _}} = Store.claim(c.request.id, last = job!())
+      assert id == last.id
+      assert [_run] = Ash.read!(ReviewRun)
+    end
+
+    test "an exhausted or cancelled posting owner fails instead of starting over", c do
+      for state <- ["discarded", "cancelled"] do
+        request = reset_reviewed!(c)
+        owner = job!(3)
+        assert {:ok, {:post, _, _}} = Store.claim(request.id, owner)
+        # Timeout/process death bypasses AshOban's on_error.
+        set_job_state(owner, state)
+        assert :ok = run(c, job!())
+        refute_received {:posting, _, _, _, _}
+        error = Store.posting_error()
+        assert %{status: :failed, error: ^error} = Ash.get!(ReviewRequest, request.id)
+      end
+    end
+
+    test "review failures keep their own errors", c do
+      opts = Keyword.put(c.opts, :models, Models)
+      assert {:error, message} = run(%{c | opts: opts}, job!(3))
+      assert message =~ "models are required"
+      assert %{status: :failed, error: ^message} = Ash.get!(ReviewRequest, c.request.id)
+      assert {:error, :not_retryable} = Store.retry_posting(c.request.id)
+    end
+
+    test "the scheduler includes reviewed requests and excludes failed ones", c do
+      reviewed!(c)
+      Repo.delete_all(Oban.Job)
+      assert :ok = ReviewRequest.RunScheduler.perform(%Oban.Job{args: %{}})
+      assert_enqueued(worker: ReviewRequest.RunWorker, args: %{primary_key: %{id: c.request.id}})
+      Repo.delete_all(Oban.Job)
+      set_status(c.request, :failed, Store.posting_error())
+      assert :ok = ReviewRequest.RunScheduler.perform(%Oban.Job{args: %{}})
+      refute_enqueued(worker: ReviewRequest.RunWorker)
+    end
+
+    test "the snapshot is the owner's latest run with findings and the loaded repository", c do
+      job = reviewed!(c)
+      assert {:error, :stale} = Store.posting_snapshot(c.request.id, job!())
+      assert {:error, :stale} = Store.posting_snapshot(Ecto.UUID.generate(), job)
+
+      older =
+        Ash.create!(ReviewRun, %{
+          request_id: c.request.id,
+          summary: %{"older" => true},
+          usage: %{},
+          duration_ms: 1,
+          verdict: :clean
+        })
+
+      Repo.query!(
+        "UPDATE review_runs SET inserted_at = inserted_at - interval '1 hour' WHERE id = $1",
+        [Ecto.UUID.dump!(older.id)]
+      )
+
+      assert {:ok, %{request: request, run: run, repository: repository}} =
+               Store.posting_snapshot(c.request.id, job)
+
+      assert request.status == :reviewed
+      assert run.id != older.id
+      assert Enum.map(run.findings, & &1.state) |> Enum.sort() == [:hidden, :rejected, :shown]
+      assert repository.installation.status == :active
+
+      # Equal timestamps are ordered by id.
+      [_first, second] = Enum.sort([run.id, older.id])
+
+      Repo.query!("UPDATE review_runs SET inserted_at = $1", [~N[2026-01-01 00:00:00]])
+      assert {:ok, %{run: %{id: ^second}}} = Store.posting_snapshot(c.request.id, job)
+
+      job = set_job_state(job, "retryable")
+      assert {:error, :stale} = Store.posting_snapshot(c.request.id, job)
+      set_job_state(job, "executing")
+      set_status(c.request, :posted, nil)
+      assert {:error, :stale} = Store.posting_snapshot(c.request.id, job)
+    end
+
+    test "prepare_posting freezes a JSON payload once; posted records it atomically", c do
+      job = reviewed!(c)
+      {:ok, %{run: run}} = Store.posting_snapshot(c.request.id, job)
+      assert {:error, :stale} = Store.posted(c.request.id, job, run.id, "review-9", %{})
+
+      assert {:error, :stale} =
+               Store.prepare_posting(c.request.id, job, Ecto.UUID.generate(), payload())
+
+      assert {:error, :stale} = Store.prepare_posting(c.request.id, job!(), run.id, payload())
+      assert {:error, :invalid_payload} = Store.prepare_posting(c.request.id, job, run.id, %{})
+
+      frozen = %{
+        "body" => "review body",
+        "comments" => [
+          %{
+            "path" => "lib/a.ex",
+            "side" => "new",
+            "line" => 2,
+            "start_line" => nil,
+            "body" => "x"
+          }
+        ],
+        "fingerprints" => ["shown", "body-only"]
+      }
+
+      assert {:ok, ^frozen} = Store.prepare_posting(c.request.id, job, run.id, payload())
+      changed = %{payload() | body: "changed", fingerprints: []}
+      assert {:ok, ^frozen} = Store.prepare_posting(c.request.id, job, run.id, changed)
+      assert Ash.get!(ReviewRun, run.id).summary["posting"] == frozen
+      assert Ash.get!(ReviewRun, run.id).summary["verdict"] == "blocking"
+
+      assert {:error, :stale} =
+               Store.posted(c.request.id, job!(), run.id, "review-9", %{"shown" => "c-1"})
+
+      assert {:error, :invalid_payload} =
+               Store.posted(c.request.id, job, run.id, "review-9", %{"shown" => 1})
+
+      refute Ash.get!(ReviewRun, run.id).summary["posting"]["review_id"]
+
+      assert {:ok, :ok} =
+               Store.posted(c.request.id, job, run.id, "review-9", %{"shown" => "c-1"})
+
+      assert %{status: :posted, forge_review_id: "review-9", error: nil} =
+               Ash.get!(ReviewRequest, c.request.id)
+
+      posting = Ash.get!(ReviewRun, run.id).summary["posting"]
+
+      assert posting ==
+               Map.merge(frozen, %{
+                 "review_id" => "review-9",
+                 "comment_ids" => %{"shown" => "c-1"}
+               })
+
+      comments = Map.new(Ash.read!(StoredFinding), &{&1.state, &1.forge_comment_id})
+      assert comments == %{shown: "c-1", rejected: nil, hidden: nil}
+
+      assert {:error, :stale} =
+               Store.posted(c.request.id, job, run.id, "review-10", %{"shown" => "c-2"})
+
+      # A rerun is a new paid review; the posted run keeps its metadata.
+      rerun = ReviewRequest.rerun!(Ash.get!(ReviewRequest, c.request.id), %{trigger: :command})
+      assert rerun.forge_review_id == nil
+      assert Ash.get!(ReviewRun, run.id).summary["posting"] == posting
+    end
+  end
+
+  defp payload do
+    %{
+      body: "review body",
+      comments: [%{path: "lib/a.ex", side: :new, line: 2, start_line: nil, body: "x"}],
+      fingerprints: ["shown", "body-only"]
+    }
+  end
+
+  # Stores a review with shown, rejected (same fingerprint), and hidden
+  # findings, leaving `job` the executing owner of the :reviewed request.
+  defp reviewed!(c, job \\ nil) do
+    job = job || job!()
+    assert {:ok, {:claimed, _, _}} = Store.claim(c.request.id, job)
+    rejected = finding("shown")
+
+    result = %Result{
+      blocking: [finding("shown")],
+      rejected: [%{finding: %{rejected | title: "rejected"}, evidence: "safe"}],
+      dropped: [%{finding: finding("hidden"), reason: {:below_threshold, 0.8}}],
+      summary: %{verdict: :blocking}
+    }
+
+    assert {:ok, :ok} = Store.complete(c.request.id, job, result, 1)
+    job
+  end
+
+  # Resets the request to an unclaimed :reviewed request with one stored run.
+  defp reset_reviewed!(c) do
+    request = Ash.get!(ReviewRequest, c.request.id)
+
+    if Ash.read!(ReviewRun) == [] do
+      reviewed!(%{c | request: request})
+    end
+
+    Repo.query!(
+      "UPDATE review_requests SET status = 'reviewed', error = NULL, claimed_job_id = NULL, claimed_attempt = NULL WHERE id = $1",
+      [Ecto.UUID.dump!(c.request.id)]
+    )
+
+    Ash.get!(ReviewRequest, c.request.id)
+  end
+
+  defp set_status(request, status, error) do
+    Repo.query!("UPDATE review_requests SET status = $1, error = $2 WHERE id = $3", [
+      Atom.to_string(status),
+      error,
+      Ecto.UUID.dump!(request.id)
+    ])
   end
 
   defp run(c, job) do

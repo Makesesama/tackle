@@ -1,11 +1,12 @@
 # tackle_web plan: forge review bot
 
-**Status: phases 1–4 of §8 are implemented in `apps/tackle_web` and
-`nix/`: skeleton/packaging, forges/webhooks, models/agent backend, and jailed review
-jobs with stored runs/findings (ending at `:reviewed`).
+**Status: phases 1–5 of §8 are implemented in `apps/tackle_web` and
+`nix/`: skeleton/packaging, forges/webhooks, models/agent backend, jailed review
+jobs with stored runs/findings, and retry-safe sanitized GitHub posting
+(`:reviewed` → `:posted`).
 The Codex device-login service and page exist, but the page is unmounted
 and fails closed until phase 6 supplies admin authentication and browser
-wiring. Forge posting and phases 5–7 are not implemented.** This document is a handoff: it should be enough to start without the conversation
+wiring. Phases 6–7 are not implemented.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -178,8 +179,8 @@ place and passes the result to `Tackle.Review.run/2`.
   without reviewing again (§7.5). Identity on (`repository`, `pull_number`,
   `head_sha`): webhook redeliveries and repeated commands upsert instead of
   reviewing twice. AshOban trigger on `status in [:pending, :running]` runs the `:run`
-  action (§7.5). Phase 5 must add posting of stored `:reviewed` runs without
-  another review. `claimed_job_id`/`claimed_attempt` fence a running attempt;
+  action (§7.5); the trigger also includes `:reviewed` to retry posting stored
+  runs without another review. `claimed_job_id`/`claimed_attempt` fence a running attempt;
   manual reruns clear them and retain historical runs.
 - `ReviewRun`: `request`, `summary` (map: the `Tackle.Review.Result`
   summary, including stages, usage, settings, and the `rules`/`prompts`
@@ -420,10 +421,10 @@ writable mount would let jailed code reach the server through host Git.
 
 ### 7.5 Review job
 
-**Phase 4 implementation:** `ReviewJob` now runs steps 1–7 and stops at
-`:reviewed`. The trigger deliberately excludes reviewed requests; step 8 and
-the reviewed → posting retry branch below are **phase 5 plans**, not working
-code. Immediate enqueue and the cron safety net are wired up. The timeout is
+**Phases 4–5 implementation:** `ReviewJob` runs steps 1–7, tears down review
+resources, then posts the stored result (step 8). The trigger includes reviewed
+requests; that branch only posts, without model calls, checkout or budget
+admission. Immediate enqueue and the cron safety net are wired up. The timeout is
 20 minutes, max attempts three, Lifeline rescue after 30 minutes. See the app
 README's [review jobs](../apps/tackle_web/README.md#review-jobs-and-stored-results-phase-4)
 for public entry points and failure/lifecycle semantics.
@@ -462,8 +463,8 @@ The job starts from the request's current status, so retries and stale
 jobs are safe:
 
 - `:pending` or `:running` (an earlier attempt crashed or timed out): run
-  steps 1–7 (and step 8 once phase 5 exists), with a fresh worktree;
-- `:reviewed`: phase 4 returns without work; phase 5 will only post (step 8);
+  steps 1–8, with a fresh worktree for reviewing;
+- `:reviewed`: only post the stored run (step 8);
 - `:posted`, `:failed`, `:skipped`: return without work. A request
   superseded by a newer head (§7.7) may still have a job enqueued; this is
   where it ends.
@@ -531,9 +532,31 @@ same head twice; the posting step is idempotent on its own (§7.5.1).
 - a fingerprint already posted on this pull request (any earlier run) is not
   posted again; mention it as still present in the body instead.
 
+**Implemented in phase 5:** `Posting` orchestrates forge calls and
+`Posting.Format` owns pure formatting. The sanitized payload is frozen before
+POST in `ReviewRun.summary["posting"]`; that entry also retains posted
+fingerprints, review ID and comment IDs across request reruns. Only entries
+actually included (body or inline) count for deduplication. Diff files come from
+the forge, with matching base/head reads before and after; mismatches fall back
+to body-only posting. No checkout is needed for retries. Posting is additionally
+serialized per PR across connected nodes so different heads cannot race
+fingerprint lookup; disconnected hosts sharing a database are unsupported.
+Unresolved prepared postings are reconciled before later runs; an absent marker
+blocks later posting until retry or explicit paid rerun abandons that intent.
+GitHub has no atomic idempotency-key API: recovery assumes accepted reviews
+are visible to later marker reads.
+
+Posting errors preserve `:reviewed` for the owning job's retries; exhaustion or
+cancellation becomes `:failed` with a fixed posting error. `Posting.retry/1`
+restores `:reviewed` and enqueues only posting. A same-profile command after a
+posting failure also retries posting; explicit rerun/different-profile commands
+still request a paid review. Disabled integrations fail posting without losing
+stored results. Deployment makes existing reviewed requests scheduler-eligible.
+See the app README's [posting guide](../apps/tackle_web/README.md#forge-posting-phase-5).
+
 **Idempotent posting.** The body carries a hidden marker,
 `<!-- tackle-review:<run id> -->` (the run's, not the request's: a request
-that runs again posts a new review). Before posting, `find_review/4`
+that runs again posts a new review). Before posting, `find_review/5`
 looks for a review by the app with that marker; when one exists (an earlier
 attempt posted, then failed before recording it, or the response was lost),
 record its id and set `:posted` instead of posting again.
@@ -780,11 +803,12 @@ use Postgres with the Ecto sandbox. Commit per phase.
    `tackle-review-jail`, the fail-closed check and the launcher test that
    writes and network access fail), `ReviewJob` with the AshOban trigger,
    the status-driven restart rules, and storing `ReviewRun` and `Finding`s
-   before posting. **Implemented, ending at `:reviewed`**: fenced atomic
+   before posting. **Implemented**: fenced atomic
    persistence, runtime settings revalidation, base rules, monitored acquisition/
    teardown, startup/periodic sweeps and exhausted-owner reconciliation.
-5. **Posting.** `Posting`, idempotent per request (the hidden marker) and
-   per fingerprint, with the output sanitising of §7.5.1.
+5. **Posting. Implemented.** `Posting`, idempotent per run (the hidden marker)
+   and per fingerprint, with the output sanitising of §7.5.1, fenced persistence
+   of review/comment IDs, and posting-only retries from stored results.
 6. **Interface and sign-in.** OAuth sign-in, AshAdmin behind it with the
    resources' `admin` sections and policies (§7.9).
 7. **Feedback.** Resolved threads and reactions → `FindingOutcome`s;

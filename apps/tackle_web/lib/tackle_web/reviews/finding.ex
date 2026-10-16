@@ -16,6 +16,12 @@ defmodule Tackle.Web.Reviews.Finding do
 
   actions do
     defaults [:read, create: :*]
+
+    # Internal: written by Tackle.Web.ReviewJob.Store when a review is posted.
+    update :record_comment do
+      accept [:forge_comment_id]
+      require_atomic? false
+    end
   end
 
   attributes do

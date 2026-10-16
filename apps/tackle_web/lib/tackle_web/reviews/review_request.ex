@@ -9,7 +9,12 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
   `profile` is the profile the review uses, resolved when the request is
   made: the command's, or the repository's.
 
-  Queued jobs finish at `:reviewed`; posting is a separate, later phase.
+  A queued job reviews the request (`:running`), stores the run
+  (`:reviewed`), and posts it (`:posted`). A `:reviewed` request stays
+  scheduled, so a failed posting is retried from the stored run without
+  reviewing again; when its attempts are exhausted it fails with
+  `Tackle.Web.ReviewJob.Store.posting_error/0`, which
+  `Tackle.Web.ReviewJob.Store.retry_posting/1` resets.
   """
 
   use Ash.Resource,
@@ -38,7 +43,7 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
         worker_module_name Tackle.Web.Reviews.ReviewRequest.RunWorker
         action :run
         queue :reviews
-        where expr(status in [:pending, :running])
+        where expr(status in [:pending, :running, :reviewed])
         lock_for_update? false
         max_attempts 3
         timeout 1_200_000
@@ -107,7 +112,7 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
 
     # Internal, fenced by ReviewJob.Store's short transactions.
     update :record_progress do
-      accept [:status, :error, :claimed_job_id, :claimed_attempt]
+      accept [:status, :error, :forge_review_id, :claimed_job_id, :claimed_attempt]
       require_atomic? false
     end
 
