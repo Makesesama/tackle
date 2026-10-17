@@ -82,6 +82,42 @@ defmodule Tackle.Web.WebhookPlugTest do
       assert Enum.all?(repositories, &(&1.active and not &1.enabled and &1.auto_review == :off))
     end
 
+    test "the user who installed the app owns it; later events do not change the owner", %{
+      conn: conn
+    } do
+      payload =
+        installation_payload("created", 505, "acme", [{31, "one"}],
+          sender: {7, "octocat"},
+          account_type: "Organization",
+          account_id: 99
+        )
+
+      deliver(conn, "installation", payload)
+
+      assert %{owner_external_id: "7", owner_login: "octocat"} =
+               Installation.get_external!(:github, "505")
+
+      # A later created event, or another event with a different sender, keeps the owner.
+      deliver(build_conn(), "installation", put_in(payload, ["sender", "id"], 8))
+
+      for action <- ["suspend", "unsuspend"] do
+        other =
+          installation_payload(action, 505, "acme", [],
+            sender: {8, "mallory"},
+            account_type: "Organization",
+            account_id: 99
+          )
+
+        deliver(build_conn(), "installation", other)
+      end
+
+      assert %{owner_external_id: "7"} = Installation.get_external!(:github, "505")
+
+      # An installation without a sender stays unowned.
+      deliver(build_conn(), "installation", installation_payload("created", 506, "acme", []))
+      assert %{owner_external_id: nil} = Installation.get_external!(:github, "506")
+    end
+
     test "uninstalling marks the installation removed and its repositories inactive", %{
       conn: conn
     } do

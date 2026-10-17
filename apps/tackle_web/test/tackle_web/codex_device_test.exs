@@ -1,6 +1,8 @@
 defmodule Tackle.Web.CodexDeviceTest do
   use Tackle.Web.DataCase, async: true
 
+  import Tackle.Web.AccountsFixtures
+
   alias Tackle.Lib.CredentialStore, as: Store
   alias Tackle.Web.{CodexLoginLive, CredentialStore}
   alias Tackle.Web.Models.{CodexDevice, Provider}
@@ -18,9 +20,20 @@ defmodule Tackle.Web.CodexDeviceTest do
     end
   end
 
-  test "device login saves returned credentials in the correct namespace, not in its result" do
-    Provider.register!("work", :codex)
-    Provider.register!("home", :codex)
+  setup do
+    owner = user!()
+    %{owner: owner, handle: CredentialStore.handle(owner.id)}
+  end
+
+  defp register!(owner, name, adapter),
+    do: Provider.register!(name, adapter, %{owner_id: owner.id})
+
+  test "device login saves returned credentials in the correct namespace, not in its result",
+       %{owner: owner, handle: handle} do
+    register!(owner, "work", :codex)
+    register!(owner, "home", :codex)
+    other = user!()
+    register!(other, "work", :codex)
     device = %{user_code: "ABCD", verification_uri: "https://example.test/device"}
     credentials = %{"access_token" => "secret", "refresh_token" => "refresh"}
 
@@ -31,29 +44,34 @@ defmodule Tackle.Web.CodexDeviceTest do
       complete_result: {:ok, credentials}
     ]
 
-    assert {:ok, flow} = CodexDevice.request("work", opts)
-    assert flow == %{provider_id: "work", device: device}
+    assert {:ok, flow} = CodexDevice.request(owner.id, "work", opts)
+    assert flow == %{owner_id: owner.id, provider: "work", device: device}
     assert_received :requested
     assert CodexDevice.complete(flow, opts) == :ok
     assert_received {:completed, ^device}
-    assert Store.fetch(CredentialStore.handle(), "work") == {:ok, credentials}
-    assert Store.fetch(CredentialStore.handle(), "home") == :error
+    assert Store.fetch(handle, "work") == {:ok, credentials}
+    assert Store.fetch(handle, "home") == :error
+    assert Store.fetch(CredentialStore.handle(other.id), "work") == :error
   end
 
-  test "request failures, timeout/denial and invalid providers do not overwrite credentials" do
-    Provider.register!("work", :codex)
-    Provider.register!("router", :openrouter)
-    handle = CredentialStore.handle()
+  test "request failures, timeout/denial and invalid providers do not overwrite credentials",
+       %{owner: owner, handle: handle} do
+    register!(owner, "work", :codex)
+    register!(owner, "router", :openrouter)
+    register!(user!(), "elsewhere", :codex)
     :ok = Store.put(handle, "work", %{"refresh_token" => "existing"})
     opts = [oauth_module: OAuth, test_pid: self(), request_result: {:error, :unavailable}]
-    assert {:error, :unavailable} = CodexDevice.request("work", opts)
-    assert {:error, :not_a_codex_provider} = CodexDevice.request("router", opts)
-    assert {:error, {:unknown_provider, "missing"}} = CodexDevice.request("missing", opts)
+    assert {:error, :unavailable} = CodexDevice.request(owner.id, "work", opts)
+    assert {:error, :not_a_codex_provider} = CodexDevice.request(owner.id, "router", opts)
+
+    for name <- ["missing", "elsewhere"] do
+      assert {:error, {:unknown_provider, ^name}} = CodexDevice.request(owner.id, name, opts)
+    end
 
     for reason <- [:device_code_expired, :access_denied, :cancelled] do
       assert {:error, ^reason} =
                CodexDevice.complete(
-                 %{provider_id: "work", device: %{}},
+                 %{owner_id: owner.id, provider: "work", device: %{}},
                  Keyword.put(opts, :complete_result, {:error, reason})
                )
 
@@ -61,8 +79,9 @@ defmodule Tackle.Web.CodexDeviceTest do
     end
   end
 
-  test "real OAuth helper exchanges a fake device code and persists tokens, propagating expiry" do
-    Provider.register!("work", :codex)
+  test "real OAuth helper exchanges a fake device code and persists tokens, propagating expiry",
+       %{owner: owner, handle: handle} do
+    register!(owner, "work", :codex)
 
     claims =
       JSON.encode!(%{"https://api.openai.com/auth" => %{"chatgpt_account_id" => "account"}})
@@ -103,11 +122,11 @@ defmodule Tackle.Web.CodexDeviceTest do
     end
 
     opts = [request: request, now: 1000, device_timeout_ms: 60_000]
-    assert {:ok, flow} = CodexDevice.request("work", opts)
+    assert {:ok, flow} = CodexDevice.request(owner.id, "work", opts)
     assert flow.device.verification_uri == "https://auth.openai.com/codex/device"
     assert flow.device.user_code == "CODE"
     assert CodexDevice.complete(flow, opts) == :ok
-    assert {:ok, credentials} = Store.fetch(CredentialStore.handle(), "work")
+    assert {:ok, credentials} = Store.fetch(handle, "work")
     assert credentials["access_token"] == access_token
     assert credentials["refresh_token"] == "rotating"
     assert credentials["account_id"] == "account"
@@ -115,17 +134,17 @@ defmodule Tackle.Web.CodexDeviceTest do
     assert {:error, :device_code_expired} =
              CodexDevice.complete(flow, Keyword.put(opts, :now, 61_000))
 
-    assert Store.fetch(CredentialStore.handle(), "work") == {:ok, credentials}
+    assert Store.fetch(handle, "work") == {:ok, credentials}
   end
 
-  test "page is routed only behind the admin guards" do
+  test "page is routed only behind the signed-in user guards" do
     info = Phoenix.Router.route_info(Tackle.Web.Router, "GET", "/codex-login", "localhost")
 
     assert info.plug_opts == CodexLoginLive
-    assert info.pipe_through == [:browser, :admin]
+    assert info.pipe_through == [:browser, :user]
 
     {CodexLoginLive, _action, _opts, %{extra: %{on_mount: hooks}}} = info.phoenix_live_view
-    assert Enum.map(hooks, & &1.id) == [{Tackle.Web.Auth, :require_admin}]
+    assert Enum.map(hooks, & &1.id) == [{Tackle.Web.Auth, :require_user}]
   end
 
   test "page does not display upstream error details or completed device codes" do

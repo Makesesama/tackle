@@ -47,6 +47,12 @@ defmodule Tackle.Web.Forge do
   """
   @type user :: %{external_id: String.t(), login: String.t(), name: String.t() | nil}
 
+  @typedoc """
+  A forge account as an installation's owner: the forge's id and login,
+  with no display name.
+  """
+  @type account :: %{external_id: String.t(), login: String.t()}
+
   @typedoc "A line comment as posted on the forge, with the forge's id for it."
   @type posted_comment :: %{id: String.t(), body: String.t()}
 
@@ -153,6 +159,15 @@ defmodule Tackle.Web.Forge do
   """
   @callback member?(ForgeApp.t(), Installation.t(), user()) ::
               {:ok, boolean()} | {:error, term()}
+
+  @doc """
+  The forge user with `login`, as `t:user/0` with the forge's canonical
+  login; `{:error, :not_found}` when there is no such user (organisations and
+  bots are not users). Asked with the installation's credentials, for access
+  grants (docs/TACKLE_WEB_PLAN.md §7.12).
+  """
+  @callback user(ForgeApp.t(), Installation.t(), login :: String.t()) ::
+              {:ok, user()} | {:error, :not_found | term()}
 
   @doc "The forge module for a forge."
   @spec module(atom()) :: module()

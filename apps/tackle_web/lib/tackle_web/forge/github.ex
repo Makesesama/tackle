@@ -96,7 +96,7 @@ defmodule Tackle.Web.Forge.GitHub do
        %Event{
          type: :installation,
          action: action,
-         installation: installation,
+         installation: installer(installation, action, payload["sender"]),
          repositories: repositories
        }}
     else
@@ -183,11 +183,32 @@ defmodule Tackle.Web.Forge.GitHub do
   defp installation_action("unsuspend"), do: {:ok, :unsuspended}
   defp installation_action(other), do: {:ignore, other}
 
-  defp installation(%{"id" => id, "account" => %{"login" => login}})
+  defp installation(%{"id" => id, "account" => %{"login" => login} = account})
        when is_integer(id) and is_binary(login),
-       do: {:ok, %{external_id: Integer.to_string(id), account: login}}
+       do:
+         {:ok, %{external_id: Integer.to_string(id), account: login, owner: user_owner(account)}}
 
   defp installation(_other), do: :error
+
+  # The user who installed the app owns it (docs/TACKLE_WEB_PLAN.md §7.12):
+  # the sender of the signed `created` event. Other events only name the
+  # owner of an installation on a user account.
+  defp installer(installation, :created, %{"type" => "User"} = sender) do
+    case user_owner(sender) do
+      nil -> installation
+      owner -> %{installation | owner: owner}
+    end
+  end
+
+  defp installer(installation, _action, _sender), do: installation
+
+  # A user account owns an installation on it; an organisation's owner is
+  # not known from the account.
+  defp user_owner(%{"type" => "User", "id" => id, "login" => login})
+       when is_integer(id) and id > 0 and is_binary(login) and login != "",
+       do: %{external_id: Integer.to_string(id), login: login}
+
+  defp user_owner(_account), do: nil
 
   # Events about a repository carry only the installation's id. A GitHub
   # App installation belongs to one account, which owns every repository it
@@ -430,6 +451,31 @@ defmodule Tackle.Web.Forge.GitHub do
     end
   end
 
+  # Logins follow GitHub's rules for account names, so a login never
+  # reaches the API as anything but one path segment.
+  @impl Tackle.Web.Forge
+  def user(%ForgeApp{} = forge_app, installation, login) when is_binary(login) do
+    if valid_clone_owner?(login) do
+      forge_app
+      |> installation_request(installation, :get, "/users/#{segment(login)}")
+      |> forge_user()
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp forge_user({:ok, %{"type" => "User"} = user}) do
+    case user_owner(user) do
+      nil -> {:error, {:github, :unexpected_response, "/users"}}
+      account -> {:ok, Map.put(account, :name, nil)}
+    end
+  end
+
+  defp forge_user({:ok, %{"type" => _other}}), do: {:error, :not_found}
+  defp forge_user({:ok, _other}), do: {:error, {:github, :unexpected_response, "/users"}}
+  defp forge_user({:error, {:github, 404, _message}}), do: {:error, :not_found}
+  defp forge_user({:error, reason}), do: {:error, reason}
+
   ## Registration and installations (web setup)
 
   # What the app needs (§7.1). `members` is the organisation permission for
@@ -456,7 +502,8 @@ defmodule Tackle.Web.Forge.GitHub do
           "callback_urls" => [base_url <> "/auth/github/callback"],
           "setup_url" => base_url <> "/setup/github/installed",
           "setup_on_update" => true,
-          "public" => false,
+          # Public, so users can install it on their own accounts (§7.12).
+          "public" => true,
           "request_oauth_on_install" => false,
           "default_permissions" => @permissions
         }
@@ -591,10 +638,19 @@ defmodule Tackle.Web.Forge.GitHub do
   defp found({:error, {:github, 404, _message}}), do: {:error, :not_found}
   defp found(result), do: result
 
-  defp installation_item(%{"id" => id, "account" => %{"login" => login}} = item)
+  defp installation_item(%{"id" => id, "account" => %{"login" => login} = account} = item)
        when is_integer(id) and is_binary(login) do
     status = if is_nil(item["suspended_at"]), do: :active, else: :suspended
-    {:ok, %{installation: %{external_id: Integer.to_string(id), account: login}, status: status}}
+
+    {:ok,
+     %{
+       installation: %{
+         external_id: Integer.to_string(id),
+         account: login,
+         owner: user_owner(account)
+       },
+       status: status
+     }}
   end
 
   defp installation_item(_item), do: :error

@@ -22,7 +22,17 @@ defmodule Tackle.Web.Forge.Event do
     * `:ignored` - anything else; `reason` says what it was.
   """
 
-  @type installation :: %{external_id: String.t(), account: String.t() | nil}
+  @typedoc """
+  An installation as an event or a sync names it. `owner` is the account
+  the forge says owns it, when it says so: the user who installed it (an
+  `installation` `created` event's sender), or a user account the app is
+  installed on. Absent or nil otherwise (docs/TACKLE_WEB_PLAN.md §7.12).
+  """
+  @type installation :: %{
+          required(:external_id) => String.t(),
+          required(:account) => String.t() | nil,
+          optional(:owner) => Tackle.Web.Forge.account() | nil
+        }
   @type repository :: %{external_id: String.t(), owner: String.t(), name: String.t()}
   @type comment :: %{
           pull_number: pos_integer(),

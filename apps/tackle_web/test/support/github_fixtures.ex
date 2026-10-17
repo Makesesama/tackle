@@ -4,7 +4,7 @@ defmodule Tackle.Web.GitHubFixtures do
   shaped like GitHub's webhook deliveries, and their signatures.
   """
 
-  alias Tackle.Web.Forges.{ForgeApp, Installation, Repository}
+  alias Tackle.Web.Forges.{Access, ForgeApp, Installation, Repository}
 
   @webhook_secret "test-webhook-secret"
 
@@ -52,9 +52,19 @@ defmodule Tackle.Web.GitHubFixtures do
 
   def unique_id, do: System.unique_integer([:positive, :monotonic]) + 1_000_000
 
+  @doc """
+  An active installation. `:owner` (a user) records its owner; other
+  attributes are its review defaults.
+  """
   def installation!(attrs \\ %{}) do
     installation =
       Installation.sync!(:github, to_string(unique_id()), attrs[:account] || "acme", :active)
+
+    installation =
+      case attrs[:owner] do
+        nil -> installation
+        owner -> Installation.record_owner!(installation, owner.external_id, owner.login)
+      end
 
     case Map.take(attrs, [:review_new_repositories, :default_auto_review]) do
       defaults when map_size(defaults) == 0 -> installation
@@ -70,6 +80,46 @@ defmodule Tackle.Web.GitHubFixtures do
       if settings == %{}, do: repository, else: Repository.configure!(repository, settings)
 
     %{repository | installation: installation}
+  end
+
+  @doc """
+  Stubs GitHub's installation tokens and its user lookup
+  (`GET /users/:login`), which answers for `users` and 404 for anyone else.
+  Replaces the test's other GitHub stubs.
+  """
+  def stub_users(users) do
+    expires_at = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+    by_login = Map.new(users, &{&1.login, &1})
+
+    Req.Test.stub(Tackle.Web.Forge.GitHub, fn conn ->
+      case {conn.method, conn.request_path} do
+        {"POST", "/app/installations/" <> _rest} ->
+          Req.Test.json(conn, %{"token" => "ghs_test", "expires_at" => expires_at})
+
+        {"GET", "/users/" <> login} ->
+          user_response(conn, Map.get(by_login, login))
+      end
+    end)
+  end
+
+  defp user_response(conn, nil),
+    do: conn |> Plug.Conn.put_status(404) |> Req.Test.json(%{"message" => "Not Found"})
+
+  defp user_response(conn, user) do
+    Req.Test.json(conn, %{
+      "id" => String.to_integer(user.external_id),
+      "login" => user.login,
+      "type" => "User"
+    })
+  end
+
+  @doc """
+  Grants `user` read access to `installation` (to `repository` alone when
+  given), as trusted code, through `stub_users/1`. Needs a forge app.
+  """
+  def grant!(installation, user, repository \\ nil) do
+    stub_users([user])
+    Access.grant!(installation.id, user.login, %{repository_id: repository && repository.id})
   end
 
   ## Payloads
@@ -128,15 +178,32 @@ defmodule Tackle.Web.GitHubFixtures do
     }
   end
 
-  def installation_payload(action, installation_id, account, repositories) do
-    %{
+  @doc """
+  An `installation` or `installation_repositories` delivery. `opts`:
+  `:sender`, a `{id, login}` user who sent it; `:account_type` and
+  `:account_id`, the account's type and id (left out by default).
+  """
+  def installation_payload(action, installation_id, account, repositories, opts \\ []) do
+    account_fields =
+      Map.reject(
+        %{"login" => account, "type" => opts[:account_type], "id" => opts[:account_id]},
+        fn {_key, value} -> is_nil(value) end
+      )
+
+    sender =
+      case opts[:sender] do
+        {id, login} -> %{"sender" => %{"id" => id, "login" => login, "type" => "User"}}
+        nil -> %{}
+      end
+
+    Map.merge(sender, %{
       "action" => action,
-      "installation" => %{"id" => installation_id, "account" => %{"login" => account}},
+      "installation" => %{"id" => installation_id, "account" => account_fields},
       "repositories" =>
         Enum.map(repositories, fn {id, name} ->
           %{"id" => id, "name" => name, "full_name" => "#{account}/#{name}"}
         end)
-    }
+    })
   end
 
   ## API responses (for Req.Test stubs)

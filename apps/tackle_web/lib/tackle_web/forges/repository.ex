@@ -13,6 +13,10 @@ defmodule Tackle.Web.Forges.Repository do
   `Tackle.Review.Settings.from_json/1` takes it) without `profile`, which is
   the `profile` attribute. See `Tackle.Web.Forges.Repository.ValidateSettings`
   for what is checked when it is written.
+
+  Admins, the installation's owner, and users holding a grant on the
+  installation or the repository (`Tackle.Web.Forges.Access`) can read it;
+  admins and the owner configure it (docs/TACKLE_WEB_PLAN.md §7.12).
   """
 
   use Ash.Resource,
@@ -22,7 +26,8 @@ defmodule Tackle.Web.Forges.Repository do
     authorizers: [Ash.Policy.Authorizer],
     extensions: [AshAdmin.Resource]
 
-  alias Tackle.Web.Forges.{AutoReview, Installation}
+  alias Tackle.Web.Accounts.Check
+  alias Tackle.Web.Forges.{Access, AccessCheck, AutoReview, Installation}
 
   postgres do
     table "repositories"
@@ -106,11 +111,15 @@ defmodule Tackle.Web.Forges.Repository do
 
   policies do
     policy action_type(:read) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if {Check, role: :admin}
+      forbid_unless {Check, role: :user}
+      authorize_if {AccessCheck, at: :repository}
     end
 
     policy action([:configure, :apply_installation_defaults]) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
+      authorize_if {Check, role: :admin}
+      forbid_unless {Check, role: :user}
+      authorize_if {AccessCheck, at: :repository, role: :owner}
     end
   end
 
@@ -197,6 +206,12 @@ defmodule Tackle.Web.Forges.Repository do
   relationships do
     belongs_to :installation, Installation do
       allow_nil? false
+      public? true
+    end
+
+    # Grants on this repository alone; grants on the whole installation are
+    # the installation's.
+    has_many :accesses, Access do
       public? true
     end
   end

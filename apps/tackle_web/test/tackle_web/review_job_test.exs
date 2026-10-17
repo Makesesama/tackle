@@ -2,6 +2,7 @@ defmodule Tackle.Web.ReviewJobTest do
   use Tackle.Web.DataCase, async: false
   use Oban.Testing, repo: Tackle.Web.Repo
 
+  import Tackle.Web.AccountsFixtures
   import Tackle.Web.GitHubFixtures
 
   alias Tackle.Executor.Jailed
@@ -21,9 +22,9 @@ defmodule Tackle.Web.ReviewJobTest do
 
   defmodule FakeModels do
     @moduledoc false
-    def enabled_providers, do: {:ok, [ReviewAdapter]}
+    def enabled_providers(_owner_id), do: {:ok, [ReviewAdapter]}
 
-    def resolve_settings(_settings, profile) do
+    def resolve_settings(_owner_id, _settings, profile) do
       Settings.new(
         [
           profile: profile,
@@ -180,7 +181,8 @@ defmodule Tackle.Web.ReviewJobTest do
     git!(worktree, ["add", "."])
     git!(worktree, ["commit", "-m", "head"])
     head = git!(worktree, ["rev-parse", "HEAD"]) |> String.trim()
-    repository = repository!(installation!(), %{enabled: true})
+    owner = user!()
+    repository = repository!(installation!(%{owner: owner}), %{enabled: true})
 
     request =
       ReviewRequest.request!(%{
@@ -203,6 +205,7 @@ defmodule Tackle.Web.ReviewJobTest do
     {:ok,
      request: request,
      repository: repository,
+     owner: owner,
      opts: [
        models: FakeModels,
        checkout: FakeCheckout,
@@ -448,15 +451,54 @@ defmodule Tackle.Web.ReviewJobTest do
   end
 
   test "saved defaults are revalidated against providers enabled now", c do
-    provider = Provider.register!("test-codex", :codex, %{enabled: true})
+    provider = Provider.register!("test-codex", :codex, %{enabled: true, owner_id: c.owner.id})
     model = "test-codex/" <> hd(Codex.models())
-    ReviewDefaults.configure!(%{models: %{"detector" => model, "verifier" => model}})
+
+    ReviewDefaults.configure!(%{
+      user_id: c.owner.id,
+      models: %{"detector" => model, "verifier" => model}
+    })
+
     Provider.configure!(provider, %{enabled: false})
 
     assert {:error, "review model provider is not enabled"} =
              run(%{c | opts: Keyword.put(c.opts, :models, Models)}, job!(3))
 
     assert Ash.get!(ReviewRequest, c.request.id).status == :failed
+    refute_received {:prepared, _}
+  end
+
+  test "reviews use the installation owner's providers and need an owner who signed in", c do
+    # Another user's providers and defaults are not the owner's.
+    other = user!()
+    Provider.register!("test-codex", :codex, %{enabled: true, owner_id: other.id})
+    model = "test-codex/" <> hd(Codex.models())
+
+    ReviewDefaults.configure!(%{
+      user_id: other.id,
+      models: %{"detector" => model, "verifier" => model}
+    })
+
+    opts = Keyword.put(c.opts, :models, Models)
+    assert {:error, message} = run(%{c | opts: opts}, job!(3))
+    assert message =~ "models are required"
+
+    installation = c.repository.installation
+
+    for {owner_id, expected} <- [
+          {nil, "the installation has no owner; an admin can set one"},
+          {"424242", "the installation's owner has not signed in to tackle yet"}
+        ] do
+      Repo.query!("UPDATE installations SET owner_external_id = $1 WHERE id = $2", [
+        owner_id,
+        Ecto.UUID.dump!(installation.id)
+      ])
+
+      request = ReviewRequest.rerun!(Ash.get!(ReviewRequest, c.request.id), %{})
+      assert request.status == :pending
+      assert {:error, ^expected} = run(c, job!(3))
+    end
+
     refute_received {:prepared, _}
   end
 
@@ -608,7 +650,13 @@ defmodule Tackle.Web.ReviewJobTest do
     on_exit(fn -> Process.exit(caller, :kill) end)
     {:ok, owner} = Lifecycle.start(caller, c.opts)
     %{scope: ref} = :sys.get_state(owner)
-    {:ok, config} = AgentBackend.config(providers: [ReviewAdapter], model: "scripted/verifier")
+
+    {:ok, config} =
+      AgentBackend.config(
+        providers: [ReviewAdapter],
+        owner_id: c.owner.id,
+        model: "scripted/verifier"
+      )
 
     spec =
       ScopeSpec.new!(
@@ -709,10 +757,11 @@ defmodule Tackle.Web.ReviewJobTest do
   end
 
   test "changed invalid default model fails readably before checkout", c do
-    Provider.register!("test-codex", :codex, %{enabled: true})
+    Provider.register!("test-codex", :codex, %{enabled: true, owner_id: c.owner.id})
     # Simulate an earlier catalog/default value no longer available now.
     defaults =
       ReviewDefaults.configure!(%{
+        user_id: c.owner.id,
         models: %{
           "detector" => "test-codex/" <> hd(Codex.models()),
           "verifier" => "test-codex/" <> hd(Codex.models())
@@ -720,13 +769,13 @@ defmodule Tackle.Web.ReviewJobTest do
       })
 
     Repo.query!(
-      "UPDATE review_defaults SET models = $1 WHERE id = $2",
+      "UPDATE review_defaults SET models = $1 WHERE user_id = $2",
       [
         %{
           "detector" => "test-codex/no-longer-available",
           "verifier" => "test-codex/no-longer-available"
         },
-        defaults.id
+        Ecto.UUID.dump!(defaults.user_id)
       ]
     )
 

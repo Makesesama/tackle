@@ -126,8 +126,8 @@ defmodule Tackle.Web.SetupHTML do
     <main>
       <h1>Installed</h1>
       <p>
-        GitHub reports the installation to tackle by itself. An admin can also sync it from the
-        start page.
+        GitHub reports the installation to tackle by itself. Sign in to see it; an admin can
+        also sync it from the start page.
       </p>
       <p><a href="/">Start page</a></p>
     </main>

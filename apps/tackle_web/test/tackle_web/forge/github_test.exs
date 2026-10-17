@@ -184,7 +184,7 @@ defmodule Tackle.Web.Forge.GitHubTest do
       assert {:ok, %Event{type: :installation, action: :created} = event} =
                GitHub.parse_event("installation", created)
 
-      assert event.installation == %{external_id: "11", account: "acme"}
+      assert event.installation == %{external_id: "11", account: "acme", owner: nil}
 
       assert event.repositories == [
                %{external_id: "1", owner: "acme", name: "one"},
@@ -217,6 +217,48 @@ defmodule Tackle.Web.Forge.GitHubTest do
 
       assert {:ok, %Event{type: :repositories_removed, repositories: [%{owner: "acme"}]}} =
                GitHub.parse_event("installation_repositories", removed)
+    end
+
+    test "an installation's owner: the sender who created it, or a user account itself" do
+      by_sender =
+        installation_payload("created", 11, "acme", [],
+          sender: {7, "octocat"},
+          account_type: "Organization",
+          account_id: 99
+        )
+
+      assert {:ok, %Event{installation: %{owner: %{external_id: "7", login: "octocat"}}}} =
+               GitHub.parse_event("installation", by_sender)
+
+      # Only the event that created the installation names who installed it.
+      for action <- ["deleted", "suspend", "unsuspend"] do
+        payload =
+          installation_payload(action, 11, "acme", [],
+            sender: {7, "octocat"},
+            account_type: "Organization",
+            account_id: 99
+          )
+
+        assert {:ok, %Event{installation: %{owner: nil}}} =
+                 GitHub.parse_event("installation", payload)
+      end
+
+      on_user =
+        installation_payload("suspend", 12, "octocat", [],
+          sender: {8, "someone"},
+          account_type: "User",
+          account_id: 7
+        )
+
+      assert {:ok, %Event{installation: %{owner: %{external_id: "7", login: "octocat"}}}} =
+               GitHub.parse_event("installation", on_user)
+
+      # A bot or malformed sender names nobody.
+      bot =
+        by_sender
+        |> put_in(["sender", "type"], "Bot")
+
+      assert {:ok, %Event{installation: %{owner: nil}}} = GitHub.parse_event("installation", bot)
     end
 
     test "other events are ignored" do

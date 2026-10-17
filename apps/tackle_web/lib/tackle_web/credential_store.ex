@@ -1,22 +1,26 @@
 defmodule Tackle.Web.CredentialStore do
   @moduledoc """
-  Database credential store for adapters. Always use `handle/0`, including across
-  concurrent runs: Codex's refresh lock is keyed on this stable handle. Fetch
-  reads the database every time, and writes use a transaction, without a cache.
-  Missing providers are never created by credential writes; deleting credentials
-  of a missing provider is idempotent. Disabled providers retain their credentials.
+  Database credential store for adapters, per provider owner
+  (docs/TACKLE_WEB_PLAN.md §7.2, §7.12). A handle names one user's
+  providers, and ids are provider names, as in model references. Always use
+  `handle/1`, including across concurrent runs: Codex's refresh lock is keyed
+  on this stable handle. Fetch reads the database every time, and writes use
+  a transaction, without a cache. Missing providers are never created by
+  credential writes; deleting credentials of a missing provider is
+  idempotent. Disabled providers retain their credentials.
   """
   @behaviour Tackle.Lib.CredentialStore
 
   alias Tackle.Web.Models.Provider
   alias Tackle.Web.Repo
 
-  @spec handle() :: Tackle.Lib.CredentialStore.handle()
-  def handle, do: {__MODULE__, :default}
+  @doc "The stable handle for the providers of the user `owner_id`."
+  @spec handle(Ecto.UUID.t()) :: Tackle.Lib.CredentialStore.handle()
+  def handle(owner_id) when is_binary(owner_id), do: {__MODULE__, owner_id}
 
   @impl true
-  def fetch(:default, id) do
-    with {:ok, provider} <- Provider.get(id) do
+  def fetch(owner_id, name) do
+    with {:ok, provider} <- Provider.get_named(owner_id, name) do
       read_credentials(provider)
     end
   end
@@ -30,31 +34,32 @@ defmodule Tackle.Web.CredentialStore do
   end
 
   @impl true
-  def put(:default, id, credentials) when is_map(credentials), do: write(id, credentials, false)
+  def put(owner_id, name, credentials) when is_map(credentials),
+    do: write(owner_id, name, credentials, false)
 
   @impl true
-  def delete(:default, id), do: write(id, nil, true)
+  def delete(owner_id, name), do: write(owner_id, name, nil, true)
 
-  defp write(id, credentials, deleting?) do
-    case Repo.transaction(fn -> write_in_transaction(id, credentials, deleting?) end) do
+  defp write(owner_id, name, credentials, deleting?) do
+    case Repo.transaction(fn -> write_in_transaction(owner_id, name, credentials, deleting?) end) do
       {:ok, :ok} -> :ok
       {:error, error} -> {:error, error}
     end
   end
 
-  defp write_in_transaction(id, credentials, deleting?) do
-    with {:ok, provider} <- Provider.get(id),
-         :ok <- update_credentials(provider, id, credentials, deleting?) do
+  defp write_in_transaction(owner_id, name, credentials, deleting?) do
+    with {:ok, provider} <- Provider.get_named(owner_id, name),
+         :ok <- update_credentials(provider, name, credentials, deleting?) do
       :ok
     else
       {:error, error} -> Repo.rollback(error)
     end
   end
 
-  defp update_credentials(nil, _id, _credentials, true), do: :ok
-  defp update_credentials(nil, id, _credentials, false), do: {:error, {:unknown_provider, id}}
+  defp update_credentials(nil, _name, _credentials, true), do: :ok
+  defp update_credentials(nil, name, _credentials, false), do: {:error, {:unknown_provider, name}}
 
-  defp update_credentials(provider, _id, credentials, _deleting?) do
+  defp update_credentials(provider, _name, credentials, _deleting?) do
     case Provider.store_credentials(provider, credentials) do
       {:ok, _provider} -> :ok
       {:error, error} -> {:error, error}

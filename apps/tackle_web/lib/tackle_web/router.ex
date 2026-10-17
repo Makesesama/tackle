@@ -6,17 +6,17 @@ defmodule Tackle.Web.Router do
   Browser routes have a session, CSRF protection, and `:current_user`
   (`Tackle.Web.Auth`). Sign-in is our own OAuth flow through the forge app
   (`Tackle.Web.AuthController`); `/setup` registers and installs that app
-  (`Tackle.Web.SetupController`). AshAdmin (`/admin`) and the Codex login
-  page require an admin, on the HTTP request and again on every LiveView
-  mount; AshAdmin runs its actions as that admin, so the resources'
-  policies decide what it may do.
+  (`Tackle.Web.SetupController`). The Codex login page requires a signed-in
+  user, and AshAdmin (`/admin`) an admin, on the HTTP request and again on
+  every LiveView mount; both run their actions as that user, so the
+  resources' policies decide what they may do.
   """
 
   use Phoenix.Router
 
   import AshAdmin.Router
   import Phoenix.LiveView.Router
-  import Tackle.Web.Auth, only: [fetch_current_user: 2, require_admin: 2]
+  import Tackle.Web.Auth, only: [fetch_current_user: 2, require_admin: 2, require_user: 2]
 
   pipeline :api do
     plug :accepts, ["json"]
@@ -30,6 +30,10 @@ defmodule Tackle.Web.Router do
     plug :protect_from_forgery
     plug :put_secure_browser_headers
     plug :fetch_current_user
+  end
+
+  pipeline :user do
+    plug :require_user
   end
 
   pipeline :admin do
@@ -62,9 +66,9 @@ defmodule Tackle.Web.Router do
   end
 
   scope "/", Tackle.Web do
-    pipe_through [:browser, :admin]
+    pipe_through [:browser, :user]
 
-    live_session :admin, on_mount: [{Tackle.Web.Auth, :require_admin}] do
+    live_session :user, on_mount: [{Tackle.Web.Auth, :require_user}] do
       live "/codex-login", CodexLoginLive
     end
   end

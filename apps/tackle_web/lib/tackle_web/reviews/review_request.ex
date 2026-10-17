@@ -175,8 +175,12 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
       authorize_if always()
     end
 
+    # Admins, and whoever may read the repository (docs/TACKLE_WEB_PLAN.md
+    # §7.12).
     policy action_type(:read) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
+      forbid_unless {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if {Tackle.Web.Forges.AccessCheck, at: :repository, path: [:repository]}
     end
   end
 

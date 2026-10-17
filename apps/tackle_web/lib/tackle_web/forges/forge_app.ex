@@ -73,9 +73,11 @@ defmodule Tackle.Web.Forges.ForgeApp do
     end
   end
 
+  # Only admins read it (in the admin interface): with a public App, anyone
+  # who installs it can sign in (docs/TACKLE_WEB_PLAN.md §7.12).
   policies do
     policy action_type(:read) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
     end
   end
 

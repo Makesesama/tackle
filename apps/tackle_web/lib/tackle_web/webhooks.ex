@@ -1,7 +1,8 @@
 defmodule Tackle.Web.Webhooks do
   @moduledoc """
   Acts on verified forge events (`Tackle.Web.Forge.Event`): keeps
-  installations and repositories in step with the forge, and hands pull
+  installations (with the owner the forge names, docs/TACKLE_WEB_PLAN.md
+  §7.12) and repositories in step with the forge, and hands pull
   request and comment events to `Tackle.Web.Triggers`.
 
   Everything here is database work: forge API calls happen in jobs, so a
@@ -98,7 +99,10 @@ defmodule Tackle.Web.Webhooks do
   end
 
   defp sync_installation(forge, installation, status) do
-    Installation.sync(forge, installation.external_id, installation.account, status)
+    with {:ok, record} <-
+           Installation.sync(forge, installation.external_id, installation.account, status) do
+      Installation.put_owner(record, Map.get(installation, :owner))
+    end
   end
 
   defp sync_repositories(installation, repositories) do

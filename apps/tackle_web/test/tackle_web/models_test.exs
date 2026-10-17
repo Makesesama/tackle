@@ -1,6 +1,8 @@
 defmodule Tackle.Web.ModelsTest do
   use Tackle.Web.DataCase, async: true
 
+  import Tackle.Web.AccountsFixtures
+
   alias Ash.Resource.Info
   alias Tackle.Lib.CredentialStore, as: Store
   alias Tackle.Web.{CredentialStore, Models, Repo}
@@ -8,36 +10,60 @@ defmodule Tackle.Web.ModelsTest do
 
   @model "openai-codex/gpt-6.1-sol"
 
-  test "provider ids and adapters are constrained, settings are JSON, credentials are not accepted by configure" do
-    for id <- ["Bad", "-bad", "bad-", "a/b", "a b"] do
-      assert {:error, _error} = Provider.register(id, :codex)
-    end
-
-    assert {:error, _error} = Provider.register("custom", :unknown)
-    assert {:error, _error} = Provider.register("custom", :codex, %{settings: %{atom: true}})
-    provider = Provider.register!("custom", :codex)
-    assert {:error, _error} = Provider.configure(provider, %{credentials: %{"token" => "no"}})
-    assert {:error, _error} = Provider.configure(provider, %{adapter: :openrouter})
+  setup do
+    %{owner: user!()}
   end
 
-  test "enabled providers use the allowlist, preserve settings and do not load secrets" do
-    Provider.register!("disabled", :codex)
+  # Trusted registration for `owner`, as the console would do it.
+  defp register!(owner, name, adapter, attrs \\ %{}),
+    do: Provider.register!(name, adapter, Map.put(attrs, :owner_id, owner.id))
 
-    Provider.register!("router", :openrouter, %{
+  defp defaults!(owner, attrs), do: ReviewDefaults.configure!(Map.put(attrs, :user_id, owner.id))
+  defp defaults(owner, attrs), do: ReviewDefaults.configure(Map.put(attrs, :user_id, owner.id))
+
+  test "provider names and adapters are constrained, settings are JSON, credentials are not accepted by configure",
+       %{owner: owner} do
+    for name <- ["Bad", "-bad", "bad-", "a/b", "a b"] do
+      assert {:error, _error} = Provider.register(name, :codex, %{owner_id: owner.id})
+    end
+
+    assert {:error, _error} = Provider.register("custom", :unknown, %{owner_id: owner.id})
+
+    assert {:error, _error} =
+             Provider.register("custom", :codex, %{owner_id: owner.id, settings: %{atom: true}})
+
+    assert {:error, _error} = Provider.register("custom", :codex)
+    provider = register!(owner, "custom", :codex)
+    assert {:error, _error} = Provider.configure(provider, %{credentials: %{"token" => "no"}})
+    assert {:error, _error} = Provider.configure(provider, %{adapter: :openrouter})
+    assert {:error, _error} = Provider.configure(provider, %{name: "other"})
+    assert {:error, _error} = Provider.register("custom", :codex, %{owner_id: owner.id})
+    assert %Provider{name: "custom"} = register!(user!(), "custom", :codex)
+  end
+
+  test "enabled providers use the allowlist, preserve settings, belong to one owner, and do not load secrets",
+       %{owner: owner} do
+    register!(owner, "disabled", :codex)
+
+    register!(owner, "router", :openrouter, %{
       enabled: true,
       settings: %{"provider_routing" => %{"order" => ["test"]}}
     })
 
-    assert {:ok, [provider]} = Models.enabled_providers()
+    register!(user!(), "other", :codex, %{enabled: true})
+
+    assert {:ok, [provider]} = Models.enabled_providers(owner.id)
     assert provider.id == "router"
     assert provider.adapter == Tackle.Plugins.OpenRouter
     assert provider.settings == %{"provider_routing" => %{"order" => ["test"]}}
+    assert Models.enabled_providers(nil) == {:ok, []}
   end
 
-  test "OpenRouter key action encrypts and redacts secrets, and refuses Codex or empty keys" do
-    provider = Provider.register!("router", :openrouter)
+  test "OpenRouter key action encrypts and redacts secrets, and refuses Codex or empty keys",
+       %{owner: owner} do
+    provider = register!(owner, "router", :openrouter)
     Provider.set_credentials!(provider, "private-api-key")
-    assert {:ok, read} = Provider.get("router")
+    assert {:ok, read} = Provider.get(provider.id)
     assert %Ash.NotLoaded{} = read.credentials
     assert Info.field(Provider, :credentials).sensitive?
 
@@ -48,69 +74,80 @@ defmodule Tackle.Web.ModelsTest do
     {:ok, %{rows: [[ciphertext]]}} =
       Repo.query(
         "select encrypted_credentials from providers where id = $1",
-        ["router"]
+        [Ecto.UUID.dump!(provider.id)]
       )
 
     refute String.contains?(ciphertext, "private-api-key")
 
-    assert Store.fetch(CredentialStore.handle(), "router") ==
+    assert Store.fetch(CredentialStore.handle(owner.id), "router") ==
              {:ok, %{"api_key" => "private-api-key"}}
 
+    assert Store.fetch(CredentialStore.handle(user!().id), "router") == :error
     assert {:error, _error} = Provider.set_credentials(provider, "   ")
-    codex = Provider.register!("codex", :codex)
+    codex = register!(owner, "codex", :codex)
     assert {:error, _error} = Provider.set_credentials(codex, "key")
   end
 
-  test "stable DB handle reads fresh credentials; put/delete are transactional and never create providers" do
-    handle = CredentialStore.handle()
-    assert handle == {CredentialStore, :default}
+  test "stable DB handle reads fresh credentials; put/delete are transactional and never create providers",
+       %{owner: owner} do
+    handle = CredentialStore.handle(owner.id)
+    assert handle == {CredentialStore, owner.id}
     assert Store.fetch(handle, "missing") == :error
     assert Store.put(handle, "missing", %{}) == {:error, {:unknown_provider, "missing"}}
     assert Store.delete(handle, "missing") == :ok
-    provider = Provider.register!("codex", :codex)
-    assert Store.fetch(handle, provider.id) == :error
-    assert Store.put(handle, provider.id, %{"refresh_token" => "old"}) == :ok
+    register!(owner, "codex", :codex)
+    assert Store.fetch(handle, "codex") == :error
+    assert Store.put(handle, "codex", %{"refresh_token" => "old"}) == :ok
 
-    assert Store.put(CredentialStore.handle(), provider.id, %{"refresh_token" => "rotated"}) ==
-             :ok
+    fresh = CredentialStore.handle(owner.id)
+    assert Store.put(fresh, "codex", %{"refresh_token" => "rotated"}) == :ok
 
-    assert Store.fetch(handle, provider.id) == {:ok, %{"refresh_token" => "rotated"}}
+    other = CredentialStore.handle(user!().id)
+    assert Store.fetch(other, "codex") == :error
+
+    assert Store.put(other, "codex", %{"refresh_token" => "other"}) ==
+             {:error, {:unknown_provider, "codex"}}
+
+    assert Store.fetch(handle, "codex") == {:ok, %{"refresh_token" => "rotated"}}
 
     for invalid <- [%{"not-json" => self()}, %{"invalid-utf8" => <<255>>}, %{atom: "key"}] do
-      assert {:error, _error} = Store.put(handle, provider.id, invalid)
+      assert {:error, _error} = Store.put(handle, "codex", invalid)
     end
 
-    assert Store.fetch(handle, provider.id) == {:ok, %{"refresh_token" => "rotated"}}
+    assert Store.fetch(handle, "codex") == {:ok, %{"refresh_token" => "rotated"}}
 
     assert {:error, :test_rollback} =
              Repo.transaction(fn ->
-               :ok = Store.put(handle, provider.id, %{"refresh_token" => "rolled-back"})
+               :ok = Store.put(handle, "codex", %{"refresh_token" => "rolled-back"})
                Repo.rollback(:test_rollback)
              end)
 
-    assert Store.fetch(handle, provider.id) == {:ok, %{"refresh_token" => "rotated"}}
-    assert Store.delete(handle, provider.id) == :ok
-    assert Store.delete(handle, provider.id) == :ok
-    assert Store.fetch(handle, provider.id) == :error
+    assert Store.fetch(handle, "codex") == {:ok, %{"refresh_token" => "rotated"}}
+    assert Store.delete(handle, "codex") == :ok
+    assert Store.delete(handle, "codex") == :ok
+    assert Store.fetch(handle, "codex") == :error
   end
 
-  test "metadata updates cannot overwrite a refreshed credential, and empty maps remain stored" do
-    stale = Provider.register!("codex", :codex)
-    :ok = Store.put(CredentialStore.handle(), stale.id, %{"refresh_token" => "fresh"})
+  test "metadata updates cannot overwrite a refreshed credential, and empty maps remain stored",
+       %{owner: owner} do
+    handle = CredentialStore.handle(owner.id)
+    stale = register!(owner, "codex", :codex)
+    :ok = Store.put(handle, "codex", %{"refresh_token" => "fresh"})
     Provider.configure!(stale, %{enabled: true, settings: %{"option" => true}})
-    assert Store.fetch(CredentialStore.handle(), stale.id) == {:ok, %{"refresh_token" => "fresh"}}
+    assert Store.fetch(handle, "codex") == {:ok, %{"refresh_token" => "fresh"}}
     Provider.store_credentials!(stale, %{})
-    assert Store.fetch(CredentialStore.handle(), stale.id) == {:ok, %{}}
+    assert Store.fetch(handle, "codex") == {:ok, %{}}
     {:ok, read} = Provider.get(stale.id)
     assert read.settings == %{"option" => true}
     assert read.enabled
   end
 
-  test "repository stage models can supply all required models without a default row" do
-    Provider.register!("openai-codex", :codex, %{enabled: true})
+  test "repository stage models can supply all required models without a default row",
+       %{owner: owner} do
+    register!(owner, "openai-codex", :codex, %{enabled: true})
 
     assert {:ok, settings} =
-             Models.resolve_settings(%{
+             Models.resolve_settings(owner.id, %{
                "models" => %{"detector" => @model, "verifier" => @model, "scorer" => @model}
              })
 
@@ -119,23 +156,35 @@ defmodule Tackle.Web.ModelsTest do
     assert settings.max_steps == %{}
   end
 
-  test "no implicit models; defaults are a singleton, with repository per-stage precedence" do
-    assert {:error, {:missing_review_models, [:detector, :verifier]}} = Models.resolve_settings()
-    Provider.register!("openai-codex", :codex, %{enabled: true})
-    first = ReviewDefaults.configure!(%{models: %{"detector" => @model}})
-    assert {:error, {:missing_review_models, [:verifier]}} = Models.resolve_settings()
+  test "no implicit models; defaults are one row per user, with repository per-stage precedence",
+       %{owner: owner} do
+    assert {:error, {:missing_review_models, [:detector, :verifier]}} =
+             Models.resolve_settings(owner.id)
+
+    register!(owner, "openai-codex", :codex, %{enabled: true})
+    first = defaults!(owner, %{models: %{"detector" => @model}})
+    assert {:error, {:missing_review_models, [:verifier]}} = Models.resolve_settings(owner.id)
 
     second =
-      ReviewDefaults.configure!(%{
+      defaults!(owner, %{
         models: %{"detector" => @model, "verifier" => @model},
         thinking: %{"detector" => "low", "verifier" => "medium"}
       })
 
-    assert second.id == first.id
+    assert second.user_id == first.user_id
     assert [_defaults] = Ash.read!(ReviewDefaults)
+
+    # Another user's defaults and providers are their own.
+    other = user!()
+
+    assert {:error, {:missing_review_models, [:detector, :verifier]}} =
+             Models.resolve_settings(other.id)
+
+    assert {:error, _error} = defaults(other, %{models: %{"detector" => @model}})
 
     assert {:ok, settings} =
              Models.resolve_settings(
+               owner.id,
                %{
                  "models" => %{"verifier" => "openai-codex/gpt-6-sol"},
                  "thinking" => %{"verifier" => "high"},
@@ -152,22 +201,24 @@ defmodule Tackle.Web.ModelsTest do
     assert settings.default_rules == []
   end
 
-  test "validates settings on save and again after provider disablement" do
-    provider = Provider.register!("openai-codex", :codex, %{enabled: true})
+  test "validates settings on save and again after provider disablement", %{owner: owner} do
+    provider = register!(owner, "openai-codex", :codex, %{enabled: true})
 
     for attrs <- [
           %{models: %{"detector" => "openai-codex/no-such-model"}},
           %{models: %{"unknown" => @model}},
           %{thinking: %{"scorer" => "impossible"}}
         ] do
-      assert {:error, _error} = ReviewDefaults.configure(attrs)
+      assert {:error, _error} = defaults(owner, attrs)
     end
 
-    ReviewDefaults.configure!(%{models: %{"detector" => @model, "verifier" => @model}})
-    assert {:ok, _settings} = Models.resolve_settings()
+    defaults!(owner, %{models: %{"detector" => @model, "verifier" => @model}})
+    assert {:ok, _settings} = Models.resolve_settings(owner.id)
     Provider.configure!(provider, %{enabled: false})
-    assert {:error, _reason} = Models.resolve_settings()
-    assert {:error, _error} = ReviewDefaults.configure(%{models: %{"detector" => @model}})
-    assert {:error, :profile_must_be_separate} = Models.resolve_settings(%{"profile" => "quiet"})
+    assert {:error, _reason} = Models.resolve_settings(owner.id)
+    assert {:error, _error} = defaults(owner, %{models: %{"detector" => @model}})
+
+    assert {:error, :profile_must_be_separate} =
+             Models.resolve_settings(owner.id, %{"profile" => "quiet"})
   end
 end

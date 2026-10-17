@@ -222,6 +222,34 @@ defmodule Tackle.Web.SetupTest do
     assert %User{admin: false} = Ash.get!(User, user.id)
   end
 
+  test "signed-in users install the App; the redirect records it, never its owner", %{
+    conn: conn
+  } do
+    installation_id = to_string(unique_id())
+    stub_github(installation_id)
+    forge_app!()
+    admin!()
+    user = user!()
+    conn = sign_in(conn, user)
+
+    home = html_response(get(conn, "/"), 200)
+    assert home =~ ~s(href="/setup/github/install")
+    refute home =~ ~s(action="/setup/sync")
+
+    assert redirected_to(get(conn, "/setup/github/install"), 302) ==
+             "https://github.test/apps/tackle-acme/installations/new"
+
+    installed = get(conn, "/setup/github/installed", %{"installation_id" => installation_id})
+    assert redirected_to(installed, 302) == "/"
+
+    # The browser's redirect cannot say who installed it (§7.12).
+    assert %{account: "acme", owner_external_id: nil} =
+             Installation.get_external!(:github, installation_id)
+
+    page = get(conn, "/setup/github/installed", %{"installation_id" => "999"})
+    assert html_response(page, 404) =~ "does not know that installation"
+  end
+
   defp stub_installations_list(installation_id) do
     expires_at = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
 

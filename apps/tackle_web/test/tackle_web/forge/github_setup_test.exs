@@ -24,7 +24,7 @@ defmodule Tackle.Web.Forge.GitHubSetupTest do
                "callback_urls" => [@base <> "/auth/github/callback"],
                "setup_url" => @base <> "/setup/github/installed",
                "setup_on_update" => true,
-               "public" => false,
+               "public" => true,
                "request_oauth_on_install" => false,
                "default_permissions" => %{
                  "metadata" => "read",
@@ -150,8 +150,16 @@ defmodule Tackle.Web.Forge.GitHubSetupTest do
 
       stub_installations(
         [
-          %{"id" => active, "account" => %{"login" => "acme"}, "suspended_at" => nil},
-          %{"id" => suspended, "account" => %{"login" => "other"}, "suspended_at" => "2026-01-01"}
+          %{
+            "id" => active,
+            "account" => %{"login" => "acme", "type" => "Organization", "id" => 5},
+            "suspended_at" => nil
+          },
+          %{
+            "id" => suspended,
+            "account" => %{"login" => "other", "type" => "User", "id" => 6},
+            "suspended_at" => "2026-01-01"
+          }
         ],
         [repo(1, "widgets"), repo(2, "gadgets")]
       )
@@ -159,7 +167,11 @@ defmodule Tackle.Web.Forge.GitHubSetupTest do
       assert {:ok, [first, second]} = GitHub.installations(forge_app)
 
       assert first == %{
-               installation: %{external_id: Integer.to_string(active), account: "acme"},
+               installation: %{
+                 external_id: Integer.to_string(active),
+                 account: "acme",
+                 owner: nil
+               },
                status: :active,
                repositories: [
                  %{external_id: "1", owner: "acme", name: "widgets"},
@@ -167,7 +179,12 @@ defmodule Tackle.Web.Forge.GitHubSetupTest do
                ]
              }
 
-      assert %{status: :suspended, repositories: nil} = second
+      # A user account owns the installation on it.
+      assert %{
+               status: :suspended,
+               repositories: nil,
+               installation: %{owner: %{external_id: "6", login: "other"}}
+             } = second
     end
 
     test "reads one installation, and only this app's", %{forge_app: forge_app} do

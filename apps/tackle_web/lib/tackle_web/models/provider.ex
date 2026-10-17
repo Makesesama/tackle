@@ -1,15 +1,22 @@
 defmodule Tackle.Web.Models.Provider do
   @moduledoc """
-  An allowlisted adapter instance. Id and adapter are immutable; settings and
-  enablement can change without replacing credentials. Secrets are only loaded
-  explicitly by `Tackle.Web.CredentialStore`, never by normal reads.
+  An allowlisted adapter instance owned by a user (docs/TACKLE_WEB_PLAN.md
+  §7.12). `name` is the `Tackle.Lib.LLM.Provider` id that model references
+  start with (`openrouter/...`); it is unique per owner, so every user can
+  have an `openrouter` provider. Reviews of an installation's repositories
+  use only its owner's enabled providers. Name, owner, and adapter are
+  immutable; settings and enablement can change without replacing
+  credentials. Secrets are only loaded explicitly by
+  `Tackle.Web.CredentialStore`, never by normal reads.
 
-  Admins use `:register`, `:configure`, and `:set_credentials` (an OpenRouter
-  API key, write-only) in the admin interface; the policies allow nothing else
-  to a signed-in actor. `:store_credentials` is the credential store's
-  internal seam, and decryption with an actor is refused
-  (`Tackle.Web.Vault.authorize_decrypt/4`). Codex credentials come from the
-  device login page (`Tackle.Web.CodexLoginLive`).
+  Signed-in users `:register` providers for themselves, and `:configure`
+  and `:set_credentials` (an OpenRouter API key, write-only) their own;
+  admins can read every provider but not change other users' ones.
+  `:store_credentials` is the credential store's internal seam, and
+  decryption with an actor is refused (`Tackle.Web.Vault.authorize_decrypt/4`).
+  Codex credentials come from the device login page
+  (`Tackle.Web.CodexLoginLive`). Trusted code without an actor passes
+  `owner_id` to `:register`.
   """
 
   use Ash.Resource,
@@ -22,6 +29,10 @@ defmodule Tackle.Web.Models.Provider do
   postgres do
     table "providers"
     repo Tackle.Web.Repo
+
+    references do
+      reference :owner, on_delete: :delete
+    end
   end
 
   cloak do
@@ -31,15 +42,16 @@ defmodule Tackle.Web.Models.Provider do
   end
 
   admin do
-    table_columns [:id, :adapter, :enabled, :updated_at]
+    table_columns [:name, :owner_id, :adapter, :enabled, :updated_at]
     create_actions [:register]
     update_actions [:configure, :set_credentials]
     destroy_actions []
   end
 
   code_interface do
-    define :register, args: [:id, :adapter]
+    define :register, args: [:name, :adapter]
     define :get, action: :read, get_by: [:id], not_found_error?: false
+    define :get_named, action: :read, get_by: [:owner_id, :name], not_found_error?: false
     define :configure
     define :set_credentials, args: [:api_key]
     define :store_credentials, args: [:credentials]
@@ -49,7 +61,8 @@ defmodule Tackle.Web.Models.Provider do
     defaults [:read]
 
     create :register do
-      accept [:id, :adapter, :settings, :enabled]
+      accept [:name, :owner_id, :adapter, :settings, :enabled]
+      change {Tackle.Web.Accounts.ActorOwns, attribute: :owner_id}
     end
 
     update :configure do
@@ -85,11 +98,19 @@ defmodule Tackle.Web.Models.Provider do
 
   policies do
     policy action_type(:read) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
+      forbid_unless {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if expr(owner_id == ^actor(:id))
     end
 
-    policy action([:register, :configure, :set_credentials]) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
+    policy action(:register) do
+      forbid_unless {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if relating_to_actor(:owner)
+    end
+
+    policy action([:configure, :set_credentials]) do
+      forbid_unless {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if expr(owner_id == ^actor(:id))
     end
   end
 
@@ -98,8 +119,9 @@ defmodule Tackle.Web.Models.Provider do
   end
 
   attributes do
-    attribute :id, :string do
-      primary_key? true
+    uuid_primary_key :id
+
+    attribute :name, :string do
       allow_nil? false
       public? true
     end
@@ -127,5 +149,16 @@ defmodule Tackle.Web.Models.Provider do
     end
 
     timestamps()
+  end
+
+  relationships do
+    belongs_to :owner, Tackle.Web.Accounts.User do
+      allow_nil? false
+      public? true
+    end
+  end
+
+  identities do
+    identity :unique_name, [:owner_id, :name]
   end
 end

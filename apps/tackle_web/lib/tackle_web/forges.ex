@@ -2,7 +2,8 @@ defmodule Tackle.Web.Forges do
   @moduledoc """
   Forge integrations and what they cover: installations of the app on a
   forge account and their repositories, with each repository's review
-  settings (docs/TACKLE_WEB_PLAN.md §6).
+  settings (docs/TACKLE_WEB_PLAN.md §6), and who may read them
+  (`Tackle.Web.Forges.Access`, §7.12).
   """
 
   use Ash.Domain, otp_app: :tackle_web, extensions: [AshAdmin.Domain]
@@ -15,6 +16,7 @@ defmodule Tackle.Web.Forges do
     resource Tackle.Web.Forges.ForgeApp
     resource Tackle.Web.Forges.Installation
     resource Tackle.Web.Forges.Repository
+    resource Tackle.Web.Forges.Access
   end
 
   # Authorise when an actor is given; see Tackle.Web.Accounts.

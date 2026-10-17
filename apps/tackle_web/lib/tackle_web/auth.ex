@@ -9,8 +9,11 @@ defmodule Tackle.Web.Auth do
   once. A sign-in lasts at most `max_age/0`.
 
   Plugs, for the router: `fetch_current_user/2` (assigns `:current_user`,
-  or nil) and `require_admin/2`. LiveView hooks, through `on_mount/4`:
+  or nil), `require_user/2`, and `require_admin/2`. LiveView hooks, through
+  `on_mount/4`:
 
+    * `:require_user` - the page needs a signed-in user, checked on both the
+      HTTP and the connected mount;
     * `:require_admin` - the page needs a signed-in admin, checked on both
       the HTTP and the connected mount;
     * `:admin_ui` - the same for AshAdmin, which additionally pins the actor
@@ -70,6 +73,18 @@ defmodule Tackle.Web.Auth do
   end
 
   @doc """
+  Plug: sends anonymous visitors to the start page, which offers sign-in.
+  Needs `fetch_current_user/2` first.
+  """
+  @spec require_user(Plug.Conn.t(), term()) :: Plug.Conn.t()
+  def require_user(conn, _opts) do
+    case conn.assigns[:current_user] do
+      %User{} -> conn
+      nil -> conn |> redirect(to: "/") |> halt()
+    end
+  end
+
+  @doc """
   Plug: halts unless the current user (see `fetch_current_user/2`) is an
   admin. Anonymous visitors are sent to the start page, which offers
   sign-in; signed-in users who are not admins get a 403.
@@ -92,6 +107,13 @@ defmodule Tackle.Web.Auth do
   end
 
   @doc "LiveView `on_mount` hooks; see the module documentation."
+  def on_mount(:require_user, _params, session, socket) do
+    case user_from_session(session) do
+      {:ok, user} -> {:cont, assign_user(socket, user, session)}
+      :error -> {:halt, LiveView.redirect(socket, to: "/")}
+    end
+  end
+
   def on_mount(:require_admin, _params, session, socket) do
     case admin_from_session(session) do
       {:ok, user} -> {:cont, assign_admin(socket, user, session)}
@@ -169,7 +191,21 @@ defmodule Tackle.Web.Auth do
 
   def current_admin(_socket), do: :error
 
-  defp assign_admin(socket, user, session) do
+  @doc """
+  The user a mounted LiveView (see `on_mount/4`) belongs to, read again:
+  `:error` once the user is gone or the sign-in is older than `max_age/0`.
+  Long-lived pages check it before acting, as with `current_admin/1`.
+  """
+  @spec current_user(LiveView.Socket.t()) :: {:ok, User.t()} | :error
+  def current_user(%{assigns: %{current_user: %User{id: id}, signed_in_at: signed_in_at}}) do
+    user_from_session(%{"user_id" => id, "signed_in_at" => signed_in_at})
+  end
+
+  def current_user(_socket), do: :error
+
+  defp assign_admin(socket, user, session), do: assign_user(socket, user, session)
+
+  defp assign_user(socket, user, session) do
     Phoenix.Component.assign(socket,
       current_user: user,
       signed_in_at: Map.fetch!(session, "signed_in_at")

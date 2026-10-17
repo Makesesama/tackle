@@ -22,18 +22,20 @@ defmodule Tackle.Web.PageHTML do
           Signed in as <strong>{@current_user.login}</strong>{if @current_user.admin,
             do: " (admin)"}.
         </p>
+        <ul>
+          <li>
+            <a href="/setup/github/install">Install the GitHub App</a>
+            on your account or organisation; you own what you install
+          </li>
+          <li><a href="/codex-login">Connect one of your OpenAI Codex providers</a></li>
+        </ul>
         <ul :if={@current_user.admin}>
           <li><a href="/admin">Administration</a>: repositories, providers, reviews</li>
-          <li><a href="/codex-login">Connect an OpenAI Codex provider</a></li>
-          <li><a href="/setup/github/install">Install the GitHub App on another account</a></li>
           <li>
             <SetupHTML.sync_button />
             to record installations and repositories that webhooks missed
           </li>
         </ul>
-        <p :if={!@current_user.admin}>
-          Only admins can change settings; an admin can make you one in the administration.
-        </p>
         <.sign_out />
       <% else %>
         <p :if={@setup.forge_app}><a class="button" href="/auth/github">Sign in with GitHub</a></p>

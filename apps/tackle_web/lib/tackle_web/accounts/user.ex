@@ -34,6 +34,12 @@ defmodule Tackle.Web.Accounts.User do
   code_interface do
     define :sign_in
     define :get, action: :read, get_by: [:id], not_found_error?: false
+
+    define :get_external,
+      action: :read,
+      get_by: [:forge, :external_id],
+      not_found_error?: false
+
     define :set_admin, args: [:admin]
   end
 
@@ -65,8 +71,12 @@ defmodule Tackle.Web.Accounts.User do
   end
 
   policies do
+    # Users read themselves; admins read everyone (docs/TACKLE_WEB_PLAN.md
+    # §7.12).
     policy action_type(:read) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
+      forbid_unless {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if expr(id == ^actor(:id))
     end
 
     policy action(:set_admin) do

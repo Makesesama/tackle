@@ -3,8 +3,8 @@ defmodule Tackle.Web.AgentBackend do
   Ephemeral review agents on `Tackle.Runtime`, without the local harness.
 
   Build trusted specs with `config/1`, using providers from
-  `Tackle.Web.Models.enabled_providers/0`. Every spec carries the stable database
-  credential-store handle. The host supplies tools and executor context; this
+  `Tackle.Web.Models.enabled_providers/1` of one owner. Every spec carries
+  that owner's stable database credential-store handle. The host supplies tools and executor context; this
   backend neither chooses an executor nor persists conversations.
 
   Each agent owns one linked turn task at a time. Events go to monitored
@@ -21,9 +21,10 @@ defmodule Tackle.Web.AgentBackend do
 
   defmodule Config do
     @moduledoc "Trusted, in-memory configuration of a review agent."
-    @enforce_keys [:providers, :model_ref, :llm]
+    @enforce_keys [:providers, :model_ref, :llm, :credential_store]
     defstruct [
       :providers,
+      :credential_store,
       :model_ref,
       :llm,
       tools: [],
@@ -35,6 +36,7 @@ defmodule Tackle.Web.AgentBackend do
 
     @type t :: %__MODULE__{
             providers: [Tackle.Lib.LLM.Provider.source()],
+            credential_store: Tackle.Lib.CredentialStore.handle(),
             model_ref: String.t(),
             llm: term(),
             tools: [module()],
@@ -46,26 +48,30 @@ defmodule Tackle.Web.AgentBackend do
   end
 
   @doc """
-  Builds a configuration from `:providers`, `:model`, and optionally
-  `:tools`, `:system_prompt`, `:context`, `:llm_opts`, `:thinking`, and
-  `:max_steps`. The model must resolve against the supplied providers; there
-  is no implicit model. Adapter options always use the shared database store.
+  Builds a configuration from `:providers`, `:owner_id` (the user the
+  providers belong to), `:model`, and optionally `:tools`, `:system_prompt`,
+  `:context`, `:llm_opts`, `:thinking`, and `:max_steps`. The model must
+  resolve against the supplied providers; there is no implicit model.
+  Adapter options always use the owner's database store
+  (`Tackle.Web.CredentialStore.handle/1`).
   """
   @spec config(keyword()) :: {:ok, Config.t()} | {:error, term()}
   def config(opts) do
     providers = Keyword.fetch!(opts, :providers)
+    store = CredentialStore.handle(Keyword.fetch!(opts, :owner_id))
 
     with {:ok, llm} <- LLM.select(providers, Keyword.fetch!(opts, :model)),
          {:ok, llm_opts} <-
            thinking(Keyword.get(opts, :llm_opts, []), Keyword.get(opts, :thinking)) do
       config = %Config{
         providers: providers,
+        credential_store: store,
         model_ref: llm.ref,
         llm: llm,
         tools: Keyword.get(opts, :tools, []),
         system_prompt: Keyword.get(opts, :system_prompt, ""),
         context: Keyword.get(opts, :context, %{}),
-        llm_opts: Keyword.put(llm_opts, :credential_store, CredentialStore.handle()),
+        llm_opts: Keyword.put(llm_opts, :credential_store, store),
         max_steps: Keyword.get(opts, :max_steps)
       }
 
@@ -152,7 +158,7 @@ defmodule Tackle.Web.AgentBackend do
       llm_opts =
         config.llm_opts
         |> Keyword.merge(opts)
-        |> Keyword.put(:credential_store, CredentialStore.handle())
+        |> Keyword.put(:credential_store, config.credential_store)
 
       {:ok, %{config | llm_opts: llm_opts}}
     else

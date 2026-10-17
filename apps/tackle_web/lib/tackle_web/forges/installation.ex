@@ -8,7 +8,14 @@ defmodule Tackle.Web.Forges.Installation do
   Rows are kept when the app is uninstalled (`status: :removed`), so the
   review history stays.
 
-  Admins change the defaults with `:set_defaults`; with
+  Its owner (§7.12) is the forge user who installed the app, by the forge's
+  user id (`owner_external_id`; `owner_login` is for display). Forge events
+  and syncs record it once, through `:record_owner`, and never change it;
+  admins can set it with `:set_owner`. The owner, and users holding a
+  `Tackle.Web.Forges.Access` grant, can read the installation; reviews of
+  an installation without an owner do not run.
+
+  The owner and admins change the defaults with `:set_defaults`; with
   `apply_to_repositories: true` it also resets every existing repository of
   the installation to them, which turns on "review every pull request in the
   organisation" in one step (§7.7).
@@ -21,7 +28,8 @@ defmodule Tackle.Web.Forges.Installation do
     authorizers: [Ash.Policy.Authorizer],
     extensions: [AshAdmin.Resource]
 
-  alias Tackle.Web.Forges.Repository
+  alias Tackle.Web.Accounts.{Check, User}
+  alias Tackle.Web.Forges.{Access, AccessCheck, Repository}
 
   postgres do
     table "installations"
@@ -31,6 +39,7 @@ defmodule Tackle.Web.Forges.Installation do
   admin do
     table_columns [
       :account,
+      :owner_login,
       :forge,
       :status,
       :review_new_repositories,
@@ -39,7 +48,7 @@ defmodule Tackle.Web.Forges.Installation do
     ]
 
     create_actions []
-    update_actions [:set_defaults]
+    update_actions [:set_defaults, :set_owner]
     destroy_actions []
   end
 
@@ -47,6 +56,8 @@ defmodule Tackle.Web.Forges.Installation do
     define :sync, args: [:forge, :external_id, :account, :status]
     define :get_external, action: :read, get_by: [:forge, :external_id], not_found_error?: false
     define :set_defaults
+    define :record_owner, args: [:owner_external_id, :owner_login]
+    define :set_owner, args: [:user_id]
   end
 
   actions do
@@ -74,15 +85,51 @@ defmodule Tackle.Web.Forges.Installation do
 
       change Tackle.Web.Forges.Installation.ApplyDefaults
     end
+
+    # Internal, from forge events and syncs: the first owner the forge
+    # names. An installation that has one keeps it.
+    update :record_owner do
+      accept [:owner_external_id, :owner_login]
+      require_atomic? false
+
+      validate present([:owner_external_id, :owner_login])
+
+      validate fn changeset, _context ->
+        if is_nil(changeset.data.owner_external_id),
+          do: :ok,
+          else: {:error, field: :owner_external_id, message: "the installation has an owner"}
+      end
+    end
+
+    # For admins: makes a user who signed in the owner, for an organisation
+    # installation the forge did not name an owner for.
+    update :set_owner do
+      accept []
+      require_atomic? false
+
+      argument :user_id, :uuid do
+        allow_nil? false
+      end
+
+      change Tackle.Web.Forges.Installation.SetOwner
+    end
   end
 
   policies do
     policy action_type(:read) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if {Check, role: :admin}
+      forbid_unless {Check, role: :user}
+      authorize_if {AccessCheck, at: :installation}
     end
 
     policy action(:set_defaults) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
+      authorize_if {Check, role: :admin}
+      forbid_unless {Check, role: :user}
+      authorize_if {AccessCheck, at: :installation, role: :owner}
+    end
+
+    policy action(:set_owner) do
+      authorize_if {Check, role: :admin}
     end
   end
 
@@ -114,6 +161,16 @@ defmodule Tackle.Web.Forges.Installation do
       constraints one_of: [:active, :suspended, :removed]
     end
 
+    # The forge's id for the user who installed the app, and their login
+    # when it was recorded.
+    attribute :owner_external_id, :string do
+      public? true
+    end
+
+    attribute :owner_login, :string do
+      public? true
+    end
+
     # Whether a repository added to the installation is enabled for reviews.
     attribute :review_new_repositories, :boolean do
       allow_nil? false
@@ -135,9 +192,46 @@ defmodule Tackle.Web.Forges.Installation do
     has_many :repositories, Repository do
       public? true
     end
+
+    has_many :accesses, Access do
+      public? true
+    end
   end
 
   identities do
     identity :unique_external_id, [:forge, :external_id]
+  end
+
+  @doc """
+  Records `owner` (`t:Tackle.Web.Forge.account/0`, from a forge event or
+  sync) on an installation that has no owner yet; otherwise, or with no
+  owner, returns the installation as it is.
+  """
+  @spec put_owner(t(), Tackle.Web.Forge.account() | nil) :: {:ok, t()} | {:error, term()}
+  def put_owner(%__MODULE__{owner_external_id: nil} = installation, %{
+        external_id: external_id,
+        login: login
+      }),
+      do: record_owner(installation, external_id, login)
+
+  def put_owner(%__MODULE__{} = installation, _owner), do: {:ok, installation}
+
+  @doc """
+  Whose providers and review defaults the installation's reviews use: the
+  owner, once they have signed in. `{:error, :installation_has_no_owner}`
+  when no owner is recorded, `{:error, :owner_not_signed_in}` before the
+  owner's first sign-in. A trusted read.
+  """
+  @spec owner(t()) ::
+          {:ok, User.t()}
+          | {:error, :installation_has_no_owner | :owner_not_signed_in | term()}
+  def owner(%__MODULE__{owner_external_id: nil}), do: {:error, :installation_has_no_owner}
+
+  def owner(%__MODULE__{forge: forge, owner_external_id: external_id}) do
+    case User.get_external(forge, external_id) do
+      {:ok, nil} -> {:error, :owner_not_signed_in}
+      {:ok, user} -> {:ok, user}
+      {:error, reason} -> {:error, reason}
+    end
   end
 end

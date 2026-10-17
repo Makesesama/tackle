@@ -1,8 +1,9 @@
 defmodule Tackle.Web.Models do
   @moduledoc """
-  Database-backed providers and review defaults. Only the bundled OpenRouter
-  and Codex adapters can be selected. Settings are revalidated against enabled
-  providers both when saved and when resolved for a run.
+  Database-backed providers and review defaults, owned by users
+  (docs/TACKLE_WEB_PLAN.md §7.12). Only the bundled OpenRouter and Codex
+  adapters can be selected. Settings are revalidated against the owner's
+  enabled providers both when saved and when resolved for a run.
   """
 
   use Ash.Domain, otp_app: :tackle_web, extensions: [AshAdmin.Domain]
@@ -25,16 +26,27 @@ defmodule Tackle.Web.Models do
     authorize :when_requested
   end
 
-  @doc "Builds provider instances from enabled rows, without loading secrets."
-  @spec enabled_providers() :: {:ok, [LLMProvider.t()]} | {:error, term()}
-  def enabled_providers do
+  @typedoc "The id of the user whose providers and defaults are used."
+  @type owner_id :: Ecto.UUID.t()
+
+  @doc """
+  Builds provider instances from the owner's enabled rows, without loading
+  secrets. A nil owner (an installation without one) has no providers.
+  """
+  @spec enabled_providers(owner_id() | nil) :: {:ok, [LLMProvider.t()]} | {:error, term()}
+  def enabled_providers(nil), do: {:ok, []}
+
+  def enabled_providers(owner_id) do
     require Ash.Query
 
     with {:ok, rows} <-
-           Provider |> Ash.Query.filter(enabled == true) |> Ash.Query.sort(:id) |> Ash.read() do
+           Provider
+           |> Ash.Query.filter(owner_id == ^owner_id and enabled == true)
+           |> Ash.Query.sort(:name)
+           |> Ash.read() do
       providers =
         Enum.map(rows, fn row ->
-          {:ok, provider} = LLMProvider.new(row.id, adapter(row.adapter), row.settings)
+          {:ok, provider} = LLMProvider.new(row.name, adapter(row.adapter), row.settings)
           provider
         end)
 
@@ -47,26 +59,30 @@ defmodule Tackle.Web.Models do
   def adapter(:openrouter), do: Tackle.Plugins.OpenRouter
   def adapter(:codex), do: Tackle.Plugins.Codex
 
-  @doc "Validates repository/default JSON settings against providers enabled now. Profile is separate."
-  @spec validate_settings(term()) :: {:ok, Settings.t()} | {:error, term()}
-  def validate_settings(json) do
+  @doc """
+  Validates repository/default JSON settings against the owner's providers
+  enabled now. Profile is separate.
+  """
+  @spec validate_settings(owner_id() | nil, term()) :: {:ok, Settings.t()} | {:error, term()}
+  def validate_settings(owner_id, json) do
     with {:ok, opts} <- settings_options(json),
-         {:ok, providers} <- enabled_providers() do
+         {:ok, providers} <- enabled_providers(owner_id) do
       Settings.new(opts, providers)
     end
   end
 
   @doc """
-  Resolves repository JSON over the singleton defaults, per stage, then checks
-  required detector/verifier models. Returns ready-to-run review settings.
-  The request/repository's separately resolved profile is passed explicitly.
-  A scorer model is optional (the review inherits the requester's model).
+  Resolves repository JSON over the owner's defaults, per stage, then checks
+  required detector/verifier models against the owner's enabled providers.
+  Returns ready-to-run review settings. The request/repository's separately
+  resolved profile is passed explicitly. A scorer model is optional (the
+  review inherits the requester's model).
   """
-  @spec resolve_settings(map(), atom()) :: {:ok, Settings.t()} | {:error, term()}
-  def resolve_settings(repository_settings \\ %{}, profile \\ :default) do
+  @spec resolve_settings(owner_id(), map(), atom()) :: {:ok, Settings.t()} | {:error, term()}
+  def resolve_settings(owner_id, repository_settings \\ %{}, profile \\ :default) do
     with {:ok, opts} <- settings_options(repository_settings),
-         {:ok, providers} <- enabled_providers(),
-         {:ok, defaults} <- ReviewDefaults.get(),
+         {:ok, providers} <- enabled_providers(owner_id),
+         {:ok, defaults} <- ReviewDefaults.get(owner_id),
          opts = merge_defaults(opts, defaults),
          :ok <- required_models(Keyword.fetch!(opts, :models)) do
       Settings.new(Keyword.put(opts, :profile, profile), providers)

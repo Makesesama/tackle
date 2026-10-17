@@ -1,6 +1,6 @@
 # tackle_web
 
-**Status: phases 1–6 and 6b (web-only setup) of
+**Status: phases 1–7 (7: ownership and access) and 6b (web-only setup) of
 [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
@@ -10,9 +10,11 @@ events and `/tackle review` commands into review requests according to
 each repository's settings. It also stores model providers and encrypted
 credentials, resolves review defaults, and has an ephemeral agent backend tested
 with whole scripted reviews. Setup is done in the browser: it registers and
-installs the GitHub App and makes the operator the first admin. Members of the
-installed organisation sign in with GitHub; admins manage repositories,
-providers, review defaults, and other admins in AshAdmin and connect Codex on a
+installs the GitHub App and makes the operator the first admin. Users install
+the App on their own accounts and own those installations: they decide who else
+may see their repositories and reviews, and their reviews use their own
+providers and review defaults ([ownership](#ownership-and-access-phase-7)).
+Admins see and manage everything in AshAdmin; users connect Codex on a
 device-login page. Queued reviews now run in the
 read-only jail, with base-commit rules and
 explicit model settings, store their runs/findings at `:reviewed`, then post a
@@ -206,7 +208,8 @@ copied by hand.
    to own it (empty: your personal account). GitHub's App manifest flow
    registers it with everything preset: webhook URL
    `<TACKLE_WEB_URL>/webhooks/github` and its events (pull request, issue
-   comment), the sign-in callback, private, and the permissions (Metadata,
+   comment), the sign-in callback, public (so users can install it on their
+   own accounts), and the permissions (Metadata,
    Contents read; Pull requests write; Issues read; organisation Members
    read). GitHub sends the browser back with a one-time code, and the App id,
    client id and secret, webhook secret, and private key go straight into the
@@ -219,8 +222,13 @@ copied by hand.
    admin. Setup is then complete and `/setup` closes.
 
 Then enable repositories in the administration, or turn on "review every pull
-request" for the whole installation there (see below). Admins install the App
-on further accounts and re-sync installations from the start page.
+request" for the whole installation there (see below). Any signed-in user
+installs the App on further accounts from the start page; admins re-sync
+installations there.
+
+An App created before phase 7 is private, so only its own account can install
+it: make it public in the App's GitHub settings (Advanced, "Make public") to
+let users install it on theirs.
 
 **Locally** (`TACKLE_WEB_URL` on `localhost`) GitHub cannot deliver webhooks,
 so the App is registered without one: installations come from the install
@@ -261,9 +269,11 @@ What happens with a pull request (`Tackle.Web.Triggers`):
 `/auth/github` stores a random one-time `state` in the session and sends the
 browser to GitHub; `/auth/github/callback` checks it, exchanges the code, reads
 `/user`, revokes the user's token (best effort; it is never stored), and admits
-the account only if it belongs to an **active installation's account**: a member
-of the organisation (asked with an installation token, Members read), or the
-user account the App is installed on (compared by account id, not login). Then
+the account only if it **owns or holds a grant on an active installation**
+(checked in the database, see [ownership](#ownership-and-access-phase-7)), or
+else belongs to an **active installation's account**: a member of the
+organisation (asked with an installation token, Members read), or the user
+account the App is installed on (compared by account id, not login). Then
 the session is renewed and holds only the user id and sign-in time. Nobody can
 sign in before the App is installed. Failures show a fixed message; GitHub's
 details are only logged by kind.
@@ -282,15 +292,17 @@ is `Secure`. The reverse proxy must set `X-Forwarded-Proto` (overwriting any the
 client sent); `/health` and requests to `localhost`/`127.0.0.1` stay on HTTP.
 
 **Administration** is AshAdmin at `/admin`, for admins only (anyone else is sent
-to the start page, or gets 403 when signed in). The start page links to it and
-to `/codex-login`. What it offers:
+to the start page, or gets 403 when signed in). Admins read every record there.
+The start page links to it; every signed-in user gets the install link and
+`/codex-login`. What it offers:
 
 | Resource | In the admin interface |
 |---|---|
-| Installation | read; `set_defaults` (with `apply_to_repositories` to reset every existing repository to the new defaults: "review every pull request") |
+| Installation | read; `set_defaults` (with `apply_to_repositories` to reset every existing repository to the new defaults: "review every pull request"); `set_owner` (a user id) |
 | Repository | read; `configure` (enabled, automatic review, forks/drafts, profile, settings JSON, daily budget); `apply_installation_defaults` |
-| Provider | read; `register`, `configure`, `set_credentials` (OpenRouter API key, write-only) |
-| ReviewDefaults | read; `configure` (replaces the single row) |
+| Access | read; `revoke` |
+| Provider | read every user's; `register` (for the admin), and `configure`, `set_credentials` (OpenRouter API key, write-only) on the admin's own |
+| ReviewDefaults | read every user's; `configure` (the admin's own row) |
 | User | read; `set_admin` (never the last admin) |
 | ForgeApp, ReviewRequest, ReviewRun, Finding | read only |
 
@@ -300,10 +312,11 @@ retries stay console actions (see below).
 
 **Authorisation.** Every domain authorises when an actor is given
 (`authorize :when_requested`): the web interface always passes the signed-in
-user, and the resources' policies decide. Reads need a signed-in user; the
-actions in the table need an admin; every other action (webhook syncs, the
-review job's internal writes, credential storage, reruns) is refused to any
-actor. Policies re-read the user (`Tackle.Web.Accounts.Check`) rather than trust
+user, and the resources' policies decide. Admins read everything; other users
+read what they own or were granted (below). The actions in the table need an
+admin, or the owner where the ownership section says so; every other action
+(webhook syncs, recording owners, the review job's internal writes, credential
+storage, reruns) is refused to any actor. Policies re-read the user (`Tackle.Web.Accounts.Check`) rather than trust
 the actor a page holds. Calls without an actor are trusted server code (jobs,
 webhooks, the console); AshOban's own authorised calls pass through a bypass.
 
@@ -320,15 +333,65 @@ whenever an actor is present (`Tackle.Web.Vault.authorize_decrypt/4`), so the
 web interface cannot read a secret back even by loading it; only server code
 does. AshAdmin's show pages list the stored ciphertext columns, redacted.
 
+## Ownership and access (phase 7)
+
+Every installation belongs to the GitHub user who installed the App
+(`Installation.owner_external_id`, the forge's user id, and `owner_login`;
+plan §7.12). It comes from the signed `installation` `created` webhook's
+sender, or, for an installation on a user account, from that account (in
+webhooks and in syncs). It is recorded once and never changed by GitHub
+events; GitHub's API does not say who installed an organisation's App, so an
+organisation installation recorded without the webhook (a loopback URL, a missed
+delivery, or before phase 7) has no owner until an admin sets one
+(`Installation.set_owner`, by user id, in the administration). The setup
+redirect, which the browser controls, never sets an owner.
+
+| Who | Can |
+|---|---|
+| the owner | read the installation, its repositories, and their requests, runs, and findings; `Repository.configure`, `apply_installation_defaults`; `Installation.set_defaults`; grant and revoke access |
+| a grantee | read the repositories granted, with their requests, runs, and findings |
+| anyone signed in | register and change their own providers and review defaults; install the App |
+| admins | everything above to read; the admin actions in the table above |
+
+**Grants** (`Tackle.Web.Forges.Access`) are made by the owner for a GitHub
+login, on the whole installation (including repositories added later) or on one
+repository. `Access.grant(installation_id, login, %{repository_id: ...}, actor:
+owner)` resolves the login to GitHub's user id first (`GET /users/{login}` with
+the installation's token), so a grant works before the grantee signs in and
+survives renames; granting again is a no-op. The owner and admins
+`Access.revoke` it, which takes effect at the next read. There is no page for
+grants yet (phase 8); use the console:
+
+```elixir
+alias Tackle.Web.Accounts.User
+alias Tackle.Web.Forges.{Access, Installation}
+owner = User.get_external!(:github, "<owner's GitHub id>")
+installation = Installation.get_external!(:github, "<installation id>")
+Access.grant!(installation.id, "octocat", %{}, actor: owner)
+```
+
+**Reviews use the owner's models.** `Tackle.Web.ReviewJob` resolves the
+installation's owner (`Installation.owner/1`) and uses only that user's enabled
+providers and review defaults; a review of an installation without an owner, or
+whose owner has not signed in yet, fails with a message that says so.
+
+Migration `add_ownership_and_access` gives the existing providers and defaults
+row to the oldest admin (provider ids become their names, so model references
+keep working), and installations to the signed-in user whose login is the
+installation's account, otherwise to the oldest admin. It refuses to run while
+providers or defaults exist and nobody is an admin.
+
 ## Models and credentials (phase 3)
 
-`Tackle.Web.Models.Provider` registers an adapter instance with
-`register(id, adapter, attrs)`: ids use lowercase letters/digits and inner
-hyphens, and adapters are **only** `:openrouter` or `:codex`. Several ids
-can use the same adapter. New providers are disabled; `configure/2` changes
-`settings` (an opaque string-keyed JSON map) and `enabled`, not id, adapter,
-or credentials. `Models.enabled_providers/0` builds `Tackle.Lib.LLM.Provider`
-instances without loading secrets.
+`Tackle.Web.Models.Provider` registers an adapter instance owned by a user with
+`register(name, adapter, attrs)`: with a signed-in actor the owner is the
+actor; trusted code passes `owner_id` in `attrs`. Names use lowercase
+letters/digits and inner hyphens, are unique per owner, and are what model
+references start with; adapters are **only** `:openrouter` or `:codex`. Several
+names can use the same adapter. New providers are disabled; `configure/2`
+changes `settings` (an opaque string-keyed JSON map) and `enabled`, not name,
+owner, adapter, or credentials. `Models.enabled_providers(owner_id)` builds
+`Tackle.Lib.LLM.Provider` instances of one owner without loading secrets.
 
 Provider credentials are encrypted with AshCloak and the existing AES-GCM
 vault. Normal resource reads leave `credentials` unloaded and sensitive.
@@ -337,27 +400,31 @@ key and stores `%{"api_key" => key}`; it rejects Codex providers. **Do not set
 `OPENROUTER_API_KEY` in the service environment**: that adapter's fallback for
 the default `openrouter` id would bypass database-only configuration.
 
-`Tackle.Web.CredentialStore.handle/0` is always
-`{Tackle.Web.CredentialStore, :default}`. Pass that same value as the
-backend/adapter's `:credential_store` for every run, so Codex's refresh lock
-serialises refresh-token rotation. `fetch/2` reads Postgres afresh, `put/3`
+`Tackle.Web.CredentialStore.handle(owner_id)` is
+`{Tackle.Web.CredentialStore, owner_id}`, and ids in it are provider names.
+Pass the owner's handle as the backend/adapter's `:credential_store` for every
+run, so Codex's refresh lock serialises refresh-token rotation. `fetch/2` reads Postgres afresh, `put/3`
 writes transactionally, and `delete/2` removes only credentials. Missing or
 cleared credentials return `:error`; writes to missing providers return
-`{:error, {:unknown_provider, id}}`; deletion is idempotent. Disabled providers
+`{:error, {:unknown_provider, name}}`; deletion is idempotent. Disabled providers
 keep their credentials. JSON-compatible credential maps are opaque to the
 store; adapter token refreshes can write them back through the same handle.
 
-`Tackle.Web.Models.ReviewDefaults.configure/1` replaces the singleton's
-`models` and `thinking` maps, keyed by stage strings (`"detector"`,
+`Tackle.Web.Models.ReviewDefaults.configure/1` replaces a user's row's
+`models` and `thinking` maps (the actor's, or `user_id` from trusted code), keyed by stage strings (`"detector"`,
 `"verifier"`, `"scorer"`). Partial defaults can be saved, but there is **no
 implicit model** and a review cannot resolve until detector and verifier are
-set, in defaults or repository settings. Admins do this in the administration (`/admin`, Models); the same from the
-trusted server console, after registering and enabling the Codex provider:
+set, in defaults or repository settings. Admins do this for themselves in the
+administration (`/admin`, Models); until the user pages (phase 8), the same for
+any user from the trusted server console:
 
 ```elixir
+alias Tackle.Web.Accounts.User
 alias Tackle.Web.Models.{Provider, ReviewDefaults}
-Provider.register!("openai-codex", :codex, %{enabled: true})
+owner = User.get_external!(:github, "<GitHub user id>")
+Provider.register!("openai-codex", :codex, %{enabled: true, owner_id: owner.id})
 ReviewDefaults.configure!(%{
+  user_id: owner.id,
   models: %{
     "detector" => "openai-codex/gpt-6.1-sol",
     "verifier" => "openai-codex/gpt-6.1-sol"
@@ -366,42 +433,45 @@ ReviewDefaults.configure!(%{
 })
 ```
 
-`Models.resolve_settings(repository.settings, resolved_profile)` returns
+`Models.resolve_settings(owner_id, repository.settings, resolved_profile)` returns
 `{:ok, %Tackle.Review.Settings{}}` or an error, including
 `{:missing_review_models, stages}`. Repository model/thinking entries override
 defaults **per stage**; step limits and default rules remain repository/review
 choices, and profile is passed separately. The scorer model is optional and
 inherits the requester's when absent. Repository and default settings validate
-model references against enabled providers when saved and again at resolution;
+model references against the owner's enabled providers when saved and again at resolution;
 disabling a provider can therefore make an existing configuration fail with an
 explicit error. This checks adapter catalogs, not live subscription access or
 whether credentials are present.
 
 ### Codex device login
 
-`Tackle.Web.Models.CodexDevice.request(provider_id, opts)` verifies the provider
-uses Codex and calls `Tackle.Plugins.Codex.OAuth.request_device_code/1`. It returns
-`{:ok, %{provider_id: id, device: device}}`; display only `device.user_code` and
+`Tackle.Web.Models.CodexDevice.request(owner_id, name, opts)` verifies the
+owner's provider uses Codex and calls
+`Tackle.Plugins.Codex.OAuth.request_device_code/1`. It returns
+`{:ok, %{owner_id: owner_id, provider: name, device: device}}`; display only `device.user_code` and
 `device.verification_uri`. Run `CodexDevice.complete(flow, opts)` in a task: it
 polls and exchanges the code, then writes credentials to that provider's
 encrypted database row. Success returns `:ok`, never tokens; errors leave
 existing credentials intact. Options are trusted server OAuth options, never
 request parameters. A disconnected page's async task exits with the LiveView.
 
-`/codex-login` (`CodexLoginLive`) is that flow's page, for admins only: register
-a provider with adapter `codex` in the administration, open the page, pick it,
-and enter the shown code at the verification URL. The router requires an admin
-for the request, the `{Tackle.Web.Auth, :require_admin}` hook again on the HTTP
-and the connected mount, and the page re-reads the user before it starts a login.
+`/codex-login` (`CodexLoginLive`) is that flow's page, for any signed-in user and
+their own providers only: register a provider with adapter `codex`, open the
+page, pick it, and enter the shown code at the verification URL. The router
+requires a user for the request, the `{Tackle.Web.Auth, :require_user}` hook
+again on the HTTP and the connected mount, and the page re-reads the user and
+names the provider by that user's id before it starts a login.
 Raw OAuth errors are not displayed because upstream responses may contain secrets.
 
 ### Agent backend
 
 `Tackle.Web.AgentBackend` implements `Tackle.Runtime.AgentBackend` directly on
 `Tackle.Lib`, without local harness configuration, sessions or persistence.
-`config/1` takes explicit `providers` and `model`, plus `tools`, `system_prompt`,
-`context`, `llm_opts`, `thinking` and `max_steps`. It always installs
-`CredentialStore.handle/0` in adapter options. Put the resulting config in an
+`config/1` takes explicit `providers`, `owner_id` (whose providers they are) and
+`model`, plus `tools`, `system_prompt`, `context`, `llm_opts`, `thinking` and
+`max_steps`. It always installs the owner's `CredentialStore.handle/1` in
+adapter options. Put the resulting config in an
 `AgentSpec` and choose this backend in the `ScopeSpec`.
 
 The backend supports review configuration callbacks, model/thinking inheritance,

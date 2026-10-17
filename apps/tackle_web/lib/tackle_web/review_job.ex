@@ -11,9 +11,10 @@ defmodule Tackle.Web.ReviewJob do
   the final one fails with `Tackle.Web.ReviewJob.Store.posting_error/0`.
 
   `run/1` takes `%{request_id: uuid, job: %Oban.Job{}}`. Optional `:opts` are
-  trusted host test seams (`:models`, `:checkout`, `:checkout_opts`, `:jail`,
-  `:llm_opts`, `:posting`), never request parameters or
-  application-configurable local executor fallbacks. `:posting` defaults to
+  trusted host test seams (`:models`, called as `enabled_providers(owner_id)`
+  and `resolve_settings(owner_id, settings, profile)`; `:checkout`,
+  `:checkout_opts`, `:jail`, `:llm_opts`, `:posting`), never request
+  parameters or application-configurable local executor fallbacks. `:posting` defaults to
   `Tackle.Web.Posting` and is called as `post(request, repository, job, opts)`,
   returning `:ok` or `{:error, message}` with a fixed, safe message.
   """
@@ -24,6 +25,7 @@ defmodule Tackle.Web.ReviewJob do
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Tools.{Bash, Read}
   alias Tackle.Web.{AgentBackend, Models, Posting}
+  alias Tackle.Web.Forges.Installation
   alias Tackle.Web.ReviewJob.{Lifecycle, Store}
   alias Tackle.Web.Reviews.ReviewRequest
 
@@ -124,8 +126,12 @@ defmodule Tackle.Web.ReviewJob do
   defp review(owner, request, repository, opts) do
     models = Keyword.get(opts, :models, Models)
 
-    with {:ok, providers} <- models.enabled_providers(),
-         {:ok, settings} <- models.resolve_settings(repository.settings, request.profile),
+    # The installation's owner pays: their providers and review defaults
+    # (docs/TACKLE_WEB_PLAN.md §7.12).
+    with {:ok, %{id: owner_id}} <- Installation.owner(repository.installation),
+         {:ok, providers} <- models.enabled_providers(owner_id),
+         {:ok, settings} <-
+           models.resolve_settings(owner_id, repository.settings, request.profile),
          {:ok, checkout} <- Lifecycle.prepare(owner, request),
          {:ok, jail} <- Lifecycle.jail(owner, checkout),
          {:ok, change} <-
@@ -137,7 +143,7 @@ defmodule Tackle.Web.ReviewJob do
          {:ok, files} <- Rules.read_tree(checkout.worktree, request.base_sha),
          discovery =
            Rules.load([{:project, files}], builtin_rules: settings.default_rules || :all),
-         {:ok, spec} <- scope_spec(providers, settings, checkout, jail, opts),
+         {:ok, spec} <- scope_spec({owner_id, providers}, settings, checkout, jail, opts),
          {:ok, scope} <- Lifecycle.scope(owner, spec) do
       Review.run(change,
         requester: scope.root_agent_ref,
@@ -151,9 +157,15 @@ defmodule Tackle.Web.ReviewJob do
     end
   end
 
-  defp scope_spec(providers, settings, checkout, jail, opts) do
+  defp scope_spec({owner_id, providers}, settings, checkout, jail, opts) do
     context = %{cwd: checkout.worktree, executor: jail.executor}
-    common = [providers: providers, context: context, llm_opts: Keyword.get(opts, :llm_opts, [])]
+
+    common = [
+      providers: providers,
+      owner_id: owner_id,
+      context: context,
+      llm_opts: Keyword.get(opts, :llm_opts, [])
+    ]
 
     with {:ok, root} <-
            agent("root", settings.models.verifier, common,
@@ -195,6 +207,12 @@ defmodule Tackle.Web.ReviewJob do
   # provider response bodies, Git stderr, or arbitrary exceptions into the UI.
   defp failure({:missing_review_models, stages}),
     do: "review models are required for: " <> Enum.map_join(stages, ", ", &Atom.to_string/1)
+
+  defp failure(:installation_has_no_owner),
+    do: "the installation has no owner; an admin can set one"
+
+  defp failure(:owner_not_signed_in),
+    do: "the installation's owner has not signed in to tackle yet"
 
   defp failure(:review_runtime_stopped), do: "review runtime stopped"
   defp failure(:review_jail_not_configured), do: "review jail is not configured"

@@ -13,10 +13,13 @@ defmodule Tackle.Web.SetupController do
        confirms the installation with GitHub and records it;
     5. signing in from this session makes the user the first admin.
 
-  After setup, admins use `GET /setup/github/install` (install the App on
-  another account) and `POST /setup/sync` (sync installations and
-  repositories from GitHub). Both, and recording an installation, need an
-  unlocked setup session or a signed-in admin.
+  After setup, any signed-in user uses `GET /setup/github/install` to install
+  the App on their own account (docs/TACKLE_WEB_PLAN.md §7.12), and GitHub's
+  redirect back records the installation for them, as for setup. The owner
+  comes from GitHub (the `installation` webhook, or the user account the App
+  is on), never from this redirect. Admins use `POST /setup/sync` (sync
+  installations and repositories from GitHub). Each needs an unlocked setup
+  session, or a signed-in user (admin for the sync).
   """
 
   use Phoenix.Controller, formats: [:html]
@@ -93,7 +96,7 @@ defmodule Tackle.Web.SetupController do
   end
 
   def install(conn, _params) do
-    with :ok <- require_setup_or_admin(conn),
+    with :ok <- require_setup_or_user(conn),
          {:ok, forge_app} <- forge_app(),
          {:ok, url} <- install_url(forge_app) do
       redirect(conn, external: url)
@@ -105,7 +108,7 @@ defmodule Tackle.Web.SetupController do
   # `installation_id` comes from the browser, so it is only a hint: the
   # sync asks GitHub whether it is this App's installation.
   def installed(conn, params) do
-    with :ok <- require_setup_or_admin(conn),
+    with :ok <- require_setup_or_user(conn),
          {:ok, id} <- installation_id(params),
          {:ok, _summary} <- sync(fn -> ForgeSync.sync_installation(@forge, id) end) do
       redirect(conn, to: next_page())
@@ -128,6 +131,13 @@ defmodule Tackle.Web.SetupController do
 
   defp require_unlocked(conn),
     do: if(unlocked?(conn), do: :ok, else: {:error, :forbidden})
+
+  defp require_setup_or_user(conn) do
+    case conn.assigns[:current_user] do
+      %User{} -> :ok
+      _other -> require_unlocked(conn)
+    end
+  end
 
   defp require_setup_or_admin(conn) do
     case conn.assigns[:current_user] do

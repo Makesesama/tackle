@@ -1,9 +1,15 @@
 defmodule Tackle.Web.Models.ReviewDefaults do
   @moduledoc """
-  One server-wide row of stage model references and thinking levels, in the
-  JSON shape of `Tackle.Review.Settings`. Partial configuration can be saved;
-  `Tackle.Web.Models.resolve_settings/2` refuses to run without detector and
-  verifier models. No model is implicitly selected.
+  A user's stage model references and thinking levels, in the JSON shape of
+  `Tackle.Review.Settings`: one row per user (docs/TACKLE_WEB_PLAN.md
+  §7.12). Reviews of an installation's repositories use its owner's
+  defaults, validated against the owner's enabled providers. Partial
+  configuration can be saved; `Tackle.Web.Models.resolve_settings/3` refuses
+  to run without detector and verifier models. No model is implicitly
+  selected.
+
+  Users configure and read their own defaults; admins read everyone's.
+  Trusted code without an actor passes `user_id`.
   """
 
   use Ash.Resource,
@@ -17,15 +23,15 @@ defmodule Tackle.Web.Models.ReviewDefaults do
     table "review_defaults"
     repo Tackle.Web.Repo
 
-    check_constraints do
-      check_constraint :id, "review_defaults_singleton", check: "id = 1"
+    references do
+      reference :user, on_delete: :delete
     end
   end
 
-  # `:configure` is an upsert of the single row: the admin interface offers
+  # `:configure` is an upsert of the user's row: the admin interface offers
   # it as the create action, which also replaces existing defaults.
   admin do
-    table_columns [:models, :thinking, :updated_at]
+    table_columns [:user_id, :models, :thinking, :updated_at]
     create_actions [:configure]
     update_actions []
     destroy_actions []
@@ -33,26 +39,30 @@ defmodule Tackle.Web.Models.ReviewDefaults do
 
   code_interface do
     define :configure
-    define :get, action: :read, get?: true, not_found_error?: false
+    define :get, action: :read, get_by: [:user_id], not_found_error?: false
   end
 
   actions do
     defaults [:read]
 
     create :configure do
-      accept [:models, :thinking]
+      accept [:user_id, :models, :thinking]
       upsert? true
       upsert_fields [:models, :thinking, :updated_at]
+      change {Tackle.Web.Accounts.ActorOwns, attribute: :user_id}
     end
   end
 
   policies do
     policy action_type(:read) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
+      forbid_unless {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if expr(user_id == ^actor(:id))
     end
 
     policy action(:configure) do
-      authorize_if {Tackle.Web.Accounts.Check, role: :admin}
+      forbid_unless {Tackle.Web.Accounts.Check, role: :user}
+      authorize_if relating_to_actor(:user)
     end
   end
 
@@ -61,13 +71,6 @@ defmodule Tackle.Web.Models.ReviewDefaults do
   end
 
   attributes do
-    attribute :id, :integer do
-      primary_key? true
-      allow_nil? false
-      default 1
-      constraints min: 1, max: 1
-    end
-
     attribute :models, :map do
       public? true
       allow_nil? false
@@ -81,5 +84,13 @@ defmodule Tackle.Web.Models.ReviewDefaults do
     end
 
     timestamps()
+  end
+
+  relationships do
+    belongs_to :user, Tackle.Web.Accounts.User do
+      primary_key? true
+      allow_nil? false
+      public? true
+    end
   end
 end

@@ -5,6 +5,7 @@ defmodule Tackle.Web.SignInTest do
 
   alias Tackle.Web.Accounts.User
   alias Tackle.Web.Forge.GitHub
+  alias Tackle.Web.Forges.Installation
   alias Tackle.Web.{Repo, SignIn}
 
   @moduletag :capture_log
@@ -77,6 +78,27 @@ defmodule Tackle.Web.SignInTest do
 
     assert SignIn.complete(:github, "code", @redirect_uri) == {:error, :membership_unverified}
     assert Ash.read!(User) == []
+  end
+
+  test "an installation's owner or grantee signs in without a membership check" do
+    octocat = %{external_id: "7", login: "octocat"}
+    refusing = installation!(%{account: "acme"})
+
+    # Owners and grantees of removed installations do not count.
+    removed = installation!(%{account: "gone", owner: octocat})
+    Installation.sync!(:github, removed.external_id, "gone", :removed)
+    stub_github([{refusing, "acme", 404}, {removed, "gone", 404}])
+    assert SignIn.complete(:github, "code", @redirect_uri) == {:error, :not_a_member}
+
+    owned = installation!(%{account: "octo-org", owner: octocat})
+    stub_github([{refusing, "acme", 404}, {owned, "octo-org", 404}])
+    assert {:ok, %User{login: "octocat"}} = SignIn.complete(:github, "code", @redirect_uri)
+
+    Installation.sync!(:github, owned.external_id, "octo-org", :removed)
+    granting = installation!(%{account: "partner"})
+    grant!(granting, octocat)
+    stub_github([{refusing, "acme", 404}, {granting, "partner", 404}])
+    assert {:ok, %User{login: "octocat"}} = SignIn.complete(:github, "code", @redirect_uri)
   end
 
   test "a rejected code is reported without GitHub's details" do

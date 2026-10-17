@@ -11,7 +11,7 @@ defmodule Tackle.Web.Models.ValidateDefaults do
       "thinking" => Ash.Changeset.get_attribute(changeset, :thinking)
     }
 
-    case Models.validate_settings(json) do
+    case Models.validate_settings(Ash.Changeset.get_attribute(changeset, :user_id), json) do
       {:ok, _settings} ->
         :ok
 

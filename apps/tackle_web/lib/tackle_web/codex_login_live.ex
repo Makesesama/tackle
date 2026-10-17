@@ -1,16 +1,18 @@
 defmodule Tackle.Web.CodexLoginLive do
   @moduledoc """
-  `/codex-login`: connects an OpenAI Codex provider through the device-code
-  flow (docs/TACKLE_WEB_PLAN.md §7.2), which AshAdmin cannot do.
+  `/codex-login`: connects one of the signed-in user's OpenAI Codex
+  providers through the device-code flow (docs/TACKLE_WEB_PLAN.md §7.2,
+  §7.12), which AshAdmin cannot do.
 
-  Only admins reach it: the router requires one for the HTTP request, the
-  `{Tackle.Web.Auth, :require_admin}` hook again on both the HTTP and the
-  connected mount, and starting a login re-reads the user
-  (`Tackle.Web.Auth.current_admin/1`), so an admin flag revoked, or a sign-in
-  expired, since the page opened stops it. `Tackle.Web.Models.CodexDevice`
-  stores the credentials directly; the page only shows the user code and the
-  verification URL. Device polling runs as a LiveView async task, which is
-  cancelled when the page process exits.
+  Any signed-in user reaches it, for their own providers only: the router
+  requires a user for the HTTP request, the `{Tackle.Web.Auth,
+  :require_user}` hook again on both the HTTP and the connected mount, and
+  starting a login re-reads the user (`Tackle.Web.Auth.current_user/1`) and
+  names the provider by that user's id, so a sign-in expired since the page
+  opened stops it and another user's provider cannot be chosen.
+  `Tackle.Web.Models.CodexDevice` stores the credentials directly; the page
+  only shows the user code and the verification URL. Device polling runs as
+  a LiveView async task, which is cancelled when the page process exits.
   """
 
   use Phoenix.LiveView
@@ -27,24 +29,26 @@ defmodule Tackle.Web.CodexLoginLive do
      |> assign(:page_title, "Codex login")
      |> assign(:status, :ready)
      |> assign(:device, nil)
-     |> assign(:providers, codex_providers())}
+     |> assign(:providers, codex_providers(socket.assigns.current_user))}
   end
 
   @impl true
   def handle_event("login", _params, %{assigns: %{status: status}} = socket)
       when status in [:requesting, :waiting], do: {:noreply, socket}
 
-  def handle_event("login", %{"provider_id" => id}, socket) when is_binary(id) do
-    if still_admin?(socket) do
-      socket =
-        socket
-        |> assign(:status, :requesting)
-        |> assign(:device, nil)
-        |> start_async(:request_code, fn -> CodexDevice.request(id) end)
+  def handle_event("login", %{"provider" => name}, socket) when is_binary(name) do
+    case Auth.current_user(socket) do
+      {:ok, user} ->
+        socket =
+          socket
+          |> assign(:status, :requesting)
+          |> assign(:device, nil)
+          |> start_async(:request_code, fn -> CodexDevice.request(user.id, name) end)
 
-      {:noreply, socket}
-    else
-      {:noreply, redirect(socket, to: "/")}
+        {:noreply, socket}
+
+      :error ->
+        {:noreply, redirect(socket, to: "/")}
     end
   end
 
@@ -68,15 +72,13 @@ defmodule Tackle.Web.CodexLoginLive do
     {:noreply, socket |> assign(:device, nil) |> assign(:status, :failed)}
   end
 
-  defp still_admin?(socket), do: match?({:ok, _admin}, Auth.current_admin(socket))
-
-  # Trusted read: the page is admin-only, and the ids are not secret.
-  defp codex_providers do
+  # The user's own Codex providers, read as the user.
+  defp codex_providers(user) do
     Provider
-    |> Ash.Query.filter(adapter == :codex)
-    |> Ash.Query.sort(:id)
-    |> Ash.read!()
-    |> Enum.map(& &1.id)
+    |> Ash.Query.filter(adapter == :codex and owner_id == ^user.id)
+    |> Ash.Query.sort(:name)
+    |> Ash.read!(actor: user)
+    |> Enum.map(& &1.name)
   end
 
   @impl true
@@ -85,17 +87,17 @@ defmodule Tackle.Web.CodexLoginLive do
     <main>
       <h1>Codex login</h1>
       <p>
-        Signs a ChatGPT subscription in for an OpenAI Codex provider. Register the provider
-        (adapter <code>codex</code>) in the <a href="/admin">administration</a> first.
+        Signs a ChatGPT subscription in for one of your OpenAI Codex providers (adapter
+        <code>codex</code>).
       </p>
       <%= if @providers == [] do %>
-        <p>There is no Codex provider yet.</p>
+        <p>You have no Codex provider yet.</p>
       <% else %>
         <form phx-submit="login">
           <label>
             Provider
-            <select name="provider_id">
-              <option :for={id <- @providers} value={id}>{id}</option>
+            <select name="provider">
+              <option :for={name <- @providers} value={name}>{name}</option>
             </select>
           </label>
           <button disabled={@status in [:requesting, :waiting]}>Connect Codex</button>

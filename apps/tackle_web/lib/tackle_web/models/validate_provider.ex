@@ -7,13 +7,13 @@ defmodule Tackle.Web.Models.ValidateProvider do
 
   @impl true
   def validate(changeset, _opts, _context) do
-    id = Ash.Changeset.get_attribute(changeset, :id)
+    name = Ash.Changeset.get_attribute(changeset, :name)
     settings = Ash.Changeset.get_attribute(changeset, :settings)
     credentials = Ash.Changeset.get_argument(changeset, :credentials)
 
     cond do
-      not Provider.valid_id?(id) ->
-        {:error, field: :id, message: "must be lowercase letters, digits and inner hyphens"}
+      not Provider.valid_id?(name) ->
+        {:error, field: :name, message: "must be lowercase letters, digits and inner hyphens"}
 
       not Models.json_value?(settings) ->
         {:error, field: :settings, message: "must contain only JSON values with string keys"}

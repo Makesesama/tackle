@@ -8,7 +8,8 @@ defmodule Tackle.Web.ForgeSync do
   The forge is read first; the database is written afterwards in one
   transaction, with the same rules as `Tackle.Web.Webhooks`: new
   repositories take their installation's defaults, existing ones keep their
-  settings, and repositories the app can no longer access are deactivated,
+  settings, an installation without an owner gets the one the forge names
+  (only for user accounts, §7.12), and repositories the app can no longer access are deactivated,
   never deleted. Only records not updated since the forge was read are
   deactivated or removed, so a webhook that arrives meanwhile is not undone
   by the older snapshot.
@@ -79,7 +80,8 @@ defmodule Tackle.Web.ForgeSync do
 
   defp apply_snapshot(forge, %{installation: installation, status: status} = snapshot, read_at) do
     with {:ok, record} <-
-           Installation.sync(forge, installation.external_id, installation.account, status) do
+           Installation.sync(forge, installation.external_id, installation.account, status),
+         {:ok, record} <- Installation.put_owner(record, Map.get(installation, :owner)) do
       sync_repositories(record, snapshot.repositories, read_at)
     end
   end

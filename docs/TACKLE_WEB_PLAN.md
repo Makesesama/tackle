@@ -4,8 +4,9 @@
 `nix/`: skeleton/packaging, forges/webhooks, models/agent backend, jailed review
 jobs with stored runs/findings, retry-safe sanitized GitHub posting
 (`:reviewed` → `:posted`), and GitHub sign-in with AshAdmin and the Codex
-device-login page behind admin policies, and web-only setup (phase 6b,
-§7.11). Phase 7 (feedback) is not implemented.** This document is a handoff: it should be enough to start without the conversation
+device-login page behind admin policies, web-only setup (phase 6b, §7.11),
+and ownership and access (phase 7, §7.12). Phases 8 (user frontend) and 9
+(feedback) are not implemented.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -16,7 +17,9 @@ as a review on the pull request.
 
 - One company, one NixOS server on the local network. Nothing should block a
   later hosted, multi-tenant version, but tenancy, billing, and sign-up are
-  not built.
+  not built. From phase 7, users install the App on their own accounts and
+  own what they install (§7.12); that is ownership inside one server, not
+  tenancy.
 - GitHub only for the MVP. Gitea is deferred and not part of the MVP; the
   forge behaviour (§7.1) keeps it a new module later, but nothing
   Gitea-specific is built now.
@@ -135,7 +138,9 @@ Tackle.Web.Posting                    findings → forge review (§7.5)
 
 All timestamps UTC. Every row hangs off an installation, so a later
 multi-tenant version adds an account above it (Ash attribute multitenancy)
-instead of rewriting tables.
+instead of rewriting tables. Phase 7 adds installation owners, access
+grants, user-owned providers, and per-user review defaults (§7.12); the
+list below describes the resources before that phase.
 
 **Forges**
 
@@ -313,7 +318,8 @@ provider id, and re-reads the credentials inside the lock. Therefore:
 - use one **stable handle** for all runs,
   `{Tackle.Web.CredentialStore, :default}`, never a per-run reference, or
   the lock does not serialise concurrent reviews and a rotated refresh token
-  can be lost;
+  can be lost (phase 7 makes it one stable handle per provider owner,
+  `{Tackle.Web.CredentialStore, owner_id}`, §7.12);
 - `fetch/2` reads the database every time (no cache), and `put/3` writes in
   a transaction.
 
@@ -600,6 +606,8 @@ is revoked after `/user` is read. The session holds the user id and sign-in
 time (seven days); the user is re-read on every request and mount. Phase 6b
 replaced "the first user is admin" and console-only granting: the first admin
 claims it from the unlocked setup session, and admins manage admins (§7.11).
+Phase 7 also admits installation owners and grantees, checked in the database
+before asking the forge, and scopes every read to them (§7.12).
 
 ### 7.7 Triggers and limits
 
@@ -824,7 +832,8 @@ Decisions (taken after phase 6; implemented in phase 6b):
 - **GitHub App manifest flow.** From the unlocked session, `/setup` builds a
   manifest (name, homepage, webhook URL and events, callback URL
   `/auth/github/callback`, redirect URL `/setup/github/callback`, setup URL
-  `/setup/github/installed`, `public: false`, the §7.1 permissions) and posts
+  `/setup/github/installed`, `public: false` (`true` from phase 7, §7.12),
+  the §7.1 permissions) and posts
   it to `https://github.com/settings/apps/new` or
   `https://github.com/organizations/<org>/settings/apps/new` with a one-time
   `state` from the session. GitHub creates the App and redirects back with a
@@ -852,6 +861,106 @@ Decisions (taken after phase 6; implemented in phase 6b):
 
 Not in phase 6b: replacing or rotating the App's secrets from the browser
 (delete and re-run setup, or the release command), and Gitea (§11).
+
+### 7.12 Ownership and access (phase 7)
+
+**Goal:** every installation belongs to the user who installed the App.
+That owner decides which other users may see its repositories and reviews,
+configures them, and pays for their reviews with their own providers and
+review defaults. Normal users install the App on their own accounts
+themselves. Admins keep AshAdmin as the operator's tool and see everything
+there. Until phase 7, every signed-in user reads every repository and review,
+and providers and review defaults are shared by the whole server.
+
+Decisions:
+
+- **Installing is self-service.** Any signed-in user gets an "Install on
+  GitHub" link (`/setup/github/install`, today admin-only). GitHub only lets
+  other accounts install an App that is **public**: new registrations use
+  `public: true` in the manifest (§7.11), and an existing App is switched in
+  its GitHub settings (README). The setup URL (`/setup/github/installed`)
+  syncs the installation for any signed-in user. As now, the sync confirms
+  the id with the App's JWT; it never assigns an owner from the browser.
+- **The owner is the GitHub user who installed the App.** The
+  `installation` `created` webhook is signed by GitHub, and its `sender` is
+  stored as `Installation.owner_external_id` (the forge's user id) with
+  `owner_login` for display. Matching is by forge user id, so it survives
+  renames and works before the owner first signs in. For an installation on
+  a user account, the account itself is the owner, and syncs set that from
+  `GET /app/installations/{id}` (the account's type and id). For an
+  organisation, GitHub's API does not say who installed it, so syncs never
+  set or change the owner there. An organisation installation without an
+  owner (missed webhooks, a loopback development URL, or recorded before
+  phase 7) is visible only to admins and runs no reviews until an admin
+  sets its owner in AshAdmin (`Installation.set_owner`, choosing a user).
+  Reinstalling makes a new installation id, and so a new owner.
+- **Access grants.** A new resource, `Forges.Access`: `installation`,
+  `repository` (nil for every repository of the installation, including
+  later ones), `forge_user_id`, `login` (as entered, for display), and
+  `granted_by` (a user). It has one unique index per scope: whole
+  installation, or one repository. Owners add a grant by GitHub login; a new
+  `Tackle.Web.Forge` callback resolves the login to the user id
+  (`GET /users/{login}`). A grant gives read access only. Deleting it
+  revokes access at once, because policies are checked on every read and
+  LiveViews re-read on every event.
+- **Who may do what.**
+
+  | Actor | Installations, repositories, reviews | Settings | Grants | Providers, review defaults |
+  |---|---|---|---|---|
+  | owner | read their installations | `Repository.configure`, `Installation.set_defaults` | create, delete, read | their own |
+  | grantee | read granted repositories and their requests, runs, findings | none | read their own | their own |
+  | other signed-in user | nothing | none | none | their own |
+  | admin (AshAdmin) | read everything | as now, plus `set_owner` | read, delete | read rows, never secrets |
+
+  Users read only themselves; admins read every user. Grant lists show the
+  stored login, not other users' rows. Read policies use filter checks
+  (one shared expression for "owns or is granted", following
+  `repository.installation`), combined with `Accounts.Check` so that a user
+  deleted since the page loaded is still refused.
+- **Providers belong to users.** `Provider` gets a UUID primary key, a
+  required `owner` (a user), and `name`, which is the `Tackle.Lib.LLM.Provider`
+  id used in model references (`openrouter/...`). Names are unique per owner,
+  so every user can have an `openrouter` provider. `ReviewDefaults` becomes
+  one row per user. A repository's reviews resolve against the enabled
+  providers and the defaults of its installation's owner only:
+  `Models.enabled_providers(owner)` and `Models.resolve_settings(owner,
+  settings, profile)`. `Repository.ValidateSettings` validates against those
+  same providers. A request whose installation has no owner fails with a
+  readable error. The credential store handle becomes
+  `{Tackle.Web.CredentialStore, owner_id}`, and `fetch/2`, `put/3`, and
+  `delete/2` look up by owner and name. The handle is still stable per owner,
+  so Codex's refresh lock still serialises concurrent reviews (§7.2). The
+  Codex device login works on the signed-in user's own providers and no
+  longer needs an admin. Secret handling is unchanged: write-only actions,
+  and decryption only without an actor.
+- **Sign-in.** The membership rule of §7.6 stays (a member of an account
+  with an active installation). Users who own an installation, or hold a
+  grant on an active one, may also sign in; this is checked locally first,
+  without an API call. With a public App, anyone can install it on their own
+  account and so sign in. Without an owner or a grant they see only their
+  own providers and defaults.
+- **Migration of existing data.** Existing providers and the defaults row
+  go to the oldest admin, and provider names keep the old ids, so stored
+  model references keep working. Installations on user accounts get that
+  account as owner. Organisation installations get the oldest admin, who
+  installed them through setup. Existing users keep their admin flag.
+
+**Implemented in phase 7.** `Forges.AccessCheck` is the shared policy filter
+(owner, or owner and grantees, from an installation or a repository, through
+a to-one path for requests, runs, and findings); `Forges.Access` with
+`Access.Resolve` (the forge lookup, before the transaction) and
+`Access.OwnerCheck`; `Installation.record_owner` (internal, only while
+unowned, through `Installation.put_owner/2` from webhooks and syncs),
+`set_owner` (admins), and `owner/1`; `Accounts.ActorOwns` for providers and
+defaults; `Forge.user/3`; `Auth.require_user`. The forge app record is
+readable by admins only. Migration `add_ownership_and_access`.
+
+Not in phase 7: roles above read access (letting a grantee configure or
+rerun), owners transferring ownership themselves (admins can), granting
+GitHub teams or collaborators automatically, admin approval of new
+installations, and the user-facing pages (phase 8, §8). Until phase 8,
+owners manage grants, settings, and providers through code interfaces and
+tests only.
 
 ## 8. Phases
 
@@ -902,7 +1011,22 @@ use Postgres with the Ecto sandbox. Commit per phase.
    - **6b. Web-only setup. Implemented** (§7.11): setup token, admin claim,
      manifest flow, setup URL and sync, admin management in the browser
      (`Tackle.Web.Setup`, `SetupController`, `ForgeSync`).
-7. **Feedback.** Resolved threads and reactions → `FindingOutcome`s;
+7. **Ownership and access** (§7.12). **Implemented.** `Installation` owner from the
+   `installation` webhook's sender (or the user account), `set_owner`,
+   `Forges.Access` grants with a forge login lookup, owner/grantee/admin
+   policies on every forge and review resource, user-owned `Provider`s and
+   per-user `ReviewDefaults` used through the installation's owner, the
+   per-owner credential store handle, self-service install and Codex login,
+   the extended sign-in check, and the data migration. Tests cover each role's
+   reads and writes, through both code interfaces and AshAdmin's pinned actor.
+8. **User frontend.** LiveView pages with the tackle logo
+   (`docs/assets/tackle-logo.svg`) and a minimal, hand-written stylesheet
+   (no bundler): a dashboard of the installations and repositories the user
+   owns or is granted, with each one's latest review status; a repository's
+   review history; a run's findings; and owner pages for repository
+   settings, access grants, providers (OpenRouter key, Codex login), and
+   review defaults. AshAdmin stays the admin tool.
+9. **Feedback.** Resolved threads and reactions → `FindingOutcome`s;
    outcomes → known fingerprints.
 
 ## 9. Environment notes for the next agent

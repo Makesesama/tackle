@@ -14,7 +14,8 @@ defmodule Tackle.Web.ForgeSyncTest do
     :ok
   end
 
-  # GitHub's view: `installations` as `{id, account, suspended?, repos}`.
+  # GitHub's view: `installations` as `{id, account, suspended?, repos}`,
+  # where `account` is a login or GitHub's account object.
   defp stub_github(installations) do
     expires_at = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
 
@@ -22,7 +23,7 @@ defmodule Tackle.Web.ForgeSyncTest do
       Enum.map(installations, fn {id, account, suspended?, _repos} ->
         %{
           "id" => String.to_integer(id),
-          "account" => %{"login" => account},
+          "account" => if(is_map(account), do: account, else: %{"login" => account}),
           "suspended_at" => if(suspended?, do: "2026-01-01T00:00:00Z")
         }
       end)
@@ -42,10 +43,13 @@ defmodule Tackle.Web.ForgeSyncTest do
         {"GET", "/installation/repositories"} ->
           ["Bearer ghs_" <> id] = Plug.Conn.get_req_header(conn, "authorization")
           {_id, account, _suspended?, repos} = List.keyfind(installations, id, 0)
-          repositories_response(conn, account, repos)
+          repositories_response(conn, login(account), repos)
       end
     end)
   end
+
+  defp login(%{"login" => login}), do: login
+  defp login(login), do: login
 
   test "records new installations and repositories with the installation's defaults" do
     id = to_string(unique_id())
@@ -163,5 +167,25 @@ defmodule Tackle.Web.ForgeSyncTest do
     assert %{status: :active} = Ash.get!(Installation, other.id)
 
     assert ForgeSync.sync_installation(:github, "424242") == {:error, :not_found}
+  end
+
+  test "a user account owns the installation on it; an organisation's owner is kept" do
+    on_user = to_string(unique_id())
+    on_org = to_string(unique_id())
+    user = %{"login" => "octocat", "type" => "User", "id" => 7}
+    org = %{"login" => "acme", "type" => "Organization", "id" => 8}
+    stub_github([{on_user, user, false, []}, {on_org, org, false, []}])
+
+    assert {:ok, _summary} = ForgeSync.sync_all(:github)
+
+    assert %{owner_external_id: "7", owner_login: "octocat"} =
+             Installation.get_external!(:github, on_user)
+
+    assert %{owner_external_id: nil} = Installation.get_external!(:github, on_org)
+
+    # An owner recorded before (from the webhook, or by an admin) stays.
+    Installation.get_external!(:github, on_org) |> Installation.record_owner!("9", "ada")
+    assert {:ok, _summary} = ForgeSync.sync_all(:github)
+    assert %{owner_external_id: "9"} = Installation.get_external!(:github, on_org)
   end
 end

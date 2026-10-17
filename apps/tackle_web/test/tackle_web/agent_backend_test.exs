@@ -11,6 +11,8 @@ defmodule Tackle.Web.AgentBackendTest do
 
   @moduletag :capture_log
 
+  @owner_id "00000000-0000-4000-8000-000000000001"
+
   test "spec callbacks select models, merge context/options, validate limits and keep the stable store" do
     spec = spec("agent", fn _, opts -> ReviewAdapter.answer(opts) end, context: %{cwd: "/repo"})
 
@@ -33,7 +35,7 @@ defmodule Tackle.Web.AgentBackendTest do
              AgentBackend.describe(configured)
 
     assert {:ok, client} = AgentBackend.llm(configured)
-    assert client.llm_opts[:credential_store] == CredentialStore.handle()
+    assert client.llm_opts[:credential_store] == CredentialStore.handle(@owner_id)
     assert client.llm_opts[:prompt_cache_key] == "review"
     assert client.llm_opts[:test_pid] == self()
     assert {:error, _reason} = AgentBackend.select_model(spec, "unconfigured/model")
@@ -84,7 +86,7 @@ defmodule Tackle.Web.AgentBackendTest do
     calls = calls()
 
     assert Enum.all?(calls, fn {_schema, opts} ->
-             opts[:credential_store] == CredentialStore.handle()
+             opts[:credential_store] == CredentialStore.handle(@owner_id)
            end)
 
     assert Enum.any?(calls, fn {schema, opts} -> schema != nil and opts[:model] == "scorer" end)
@@ -212,6 +214,7 @@ defmodule Tackle.Web.AgentBackendTest do
         Keyword.merge(
           [
             providers: [ReviewAdapter],
+            owner_id: @owner_id,
             model: "scripted/detector",
             system_prompt: "Review.",
             max_steps: 6,

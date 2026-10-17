@@ -179,4 +179,55 @@ defmodule Tackle.Web.Forge.GitHubSignInTest do
       assert GitHub.member?(forge_app, i, %{external_id: "2", login: "ada"}) == {:ok, false}
     end
   end
+
+  describe "user/3" do
+    setup do
+      {:ok, installation: installation!(%{account: "acme"})}
+    end
+
+    defp stub_user(status, body) do
+      expires_at = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+
+      Req.Test.stub(GitHub, fn conn ->
+        case {conn.method, conn.request_path} do
+          {"POST", "/app/installations/" <> _rest} ->
+            Req.Test.json(conn, %{"token" => "ghs_test", "expires_at" => expires_at})
+
+          {"GET", "/users/" <> _login} ->
+            conn |> Plug.Conn.put_status(status) |> Req.Test.json(body)
+        end
+      end)
+    end
+
+    test "resolves a login to the user's id and canonical login", %{
+      forge_app: forge_app,
+      installation: i
+    } do
+      stub_user(200, %{"id" => 42, "login" => "Ada", "type" => "User"})
+
+      assert GitHub.user(forge_app, i, "ada") ==
+               {:ok, %{external_id: "42", login: "Ada", name: nil}}
+    end
+
+    test "organisations, bots, unknown and invalid logins are not users", %{
+      forge_app: forge_app,
+      installation: i
+    } do
+      stub_user(200, %{"id" => 5, "login" => "acme", "type" => "Organization"})
+      assert GitHub.user(forge_app, i, "acme") == {:error, :not_found}
+
+      stub_user(200, %{"id" => 6, "login" => "bot", "type" => "Bot"})
+      assert GitHub.user(forge_app, i, "bot") == {:error, :not_found}
+
+      stub_user(404, %{"message" => "Not Found"})
+      assert GitHub.user(forge_app, i, "nobody") == {:error, :not_found}
+
+      stub_user(500, %{"message" => "boom"})
+      assert {:error, {:github, 500, _message}} = GitHub.user(forge_app, i, "ada")
+
+      for login <- ["", "a/b", "../users", "-ada", String.duplicate("a", 40)] do
+        assert GitHub.user(forge_app, i, login) == {:error, :not_found}
+      end
+    end
+  end
 end

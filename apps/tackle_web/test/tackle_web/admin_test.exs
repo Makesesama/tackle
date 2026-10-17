@@ -5,7 +5,7 @@ defmodule Tackle.Web.AdminTest do
 
   alias Phoenix.LiveView.Socket
   alias Tackle.Web.Accounts.User
-  alias Tackle.Web.Auth
+  alias Tackle.Web.{Auth, CodexLoginLive}
   alias Tackle.Web.Models.Provider
 
   describe "/admin" do
@@ -54,20 +54,50 @@ defmodule Tackle.Web.AdminTest do
   end
 
   describe "/codex-login" do
-    test "is for admins only and lists the Codex providers", %{conn: conn} do
-      Provider.register!("openai-codex", :codex)
-      Provider.register!("openrouter", :openrouter)
+    test "is for signed-in users and lists only their own Codex providers", %{conn: conn} do
+      user = user!()
+      Provider.register!("openai-codex", :codex, %{owner_id: user.id})
+      Provider.register!("openrouter", :openrouter, %{owner_id: user.id})
+      Provider.register!("someone-elses", :codex, %{owner_id: admin!().id})
 
       assert redirected_to(get(conn, "/codex-login"), 302) == "/"
-      assert response(conn |> sign_in(user!()) |> get("/codex-login"), 403)
 
-      html = conn |> sign_in(admin!()) |> get("/codex-login") |> html_response(200)
+      html = conn |> sign_in(user) |> get("/codex-login") |> html_response(200)
       assert html =~ ~s(<option value="openai-codex">)
       refute html =~ ~s(<option value="openrouter">)
+      refute html =~ "someone-elses"
+    end
+
+    test "starting a login names the provider by the signed-in user, read again" do
+      user = user!()
+
+      socket =
+        Phoenix.Component.assign(%Socket{}, %{
+          current_user: user,
+          signed_in_at: System.os_time(:second) - Auth.max_age() - 1,
+          status: :ready
+        })
+
+      assert {:noreply, %Socket{redirected: {:redirect, %{to: "/"}}}} =
+               CodexLoginLive.handle_event("login", %{"provider" => "openai-codex"}, socket)
     end
   end
 
   describe "on_mount hooks" do
+    test ":require_user checks the session's user on every mount" do
+      user = user!()
+      now = System.os_time(:second)
+
+      assert {:cont, socket} = Auth.on_mount(:require_user, %{}, session(user, now), %Socket{})
+      assert socket.assigns.current_user.id == user.id
+      assert {:ok, %User{}} = Auth.current_user(socket)
+
+      for session <- [%{}, session(user, now - Auth.max_age() - 1), %{"user_id" => user.id}] do
+        assert {:halt, %Socket{redirected: {:redirect, %{to: "/"}}}} =
+                 Auth.on_mount(:require_user, %{}, session, %Socket{})
+      end
+    end
+
     test ":require_admin checks the session's user on every mount" do
       admin = admin!()
       user = user!()

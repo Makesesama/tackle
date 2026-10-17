@@ -1,6 +1,7 @@
 defmodule Tackle.Web.ForgesTest do
   use Tackle.Web.DataCase, async: true
 
+  import Tackle.Web.AccountsFixtures
   import Tackle.Web.GitHubFixtures
 
   alias Ash.Resource.Info
@@ -99,10 +100,11 @@ defmodule Tackle.Web.ForgesTest do
   end
 
   describe "repository settings" do
-    test "accepts review settings in their JSON form" do
-      repository = repository!(installation!())
-
-      Provider.register!("openrouter", :openrouter, %{enabled: true})
+    test "accepts review settings in their JSON form, with the owner's providers" do
+      owner = user!()
+      repository = repository!(installation!(%{owner: owner}))
+      unowned = repository!(installation!())
+      Provider.register!("openrouter", :openrouter, %{enabled: true, owner_id: owner.id})
 
       settings = %{
         "thinking" => %{"detector" => "low"},
@@ -112,6 +114,10 @@ defmodule Tackle.Web.ForgesTest do
       }
 
       assert %{settings: ^settings} = Repository.configure!(repository, %{settings: settings})
+
+      # Without an owner who signed in, there are no providers to name.
+      assert {:error, error} = Repository.configure(unowned, %{settings: settings})
+      assert Exception.message(error) =~ "invalid review settings"
     end
 
     test "rejects profile, unknown fields, and invalid values" do
@@ -131,9 +137,9 @@ defmodule Tackle.Web.ForgesTest do
       end
     end
 
-    test "check/1 rejects what is not an object" do
-      assert ValidateSettings.check([]) == {:error, "must be a JSON object"}
-      assert ValidateSettings.check(%{}) == :ok
+    test "check/2 rejects what is not an object" do
+      assert ValidateSettings.check(nil, []) == {:error, "must be a JSON object"}
+      assert ValidateSettings.check(nil, %{}) == :ok
     end
   end
 end

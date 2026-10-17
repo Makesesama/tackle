@@ -6,9 +6,12 @@ defmodule Tackle.Web.SignIn do
     1. `authorize_url/3` builds the forge's sign-in URL for a random,
        one-time `state` that the caller keeps in the session;
     2. `complete/3` exchanges the code from the forge's redirect for the
-       forge account, checks that it belongs to an account the app is
-       installed on (an organisation member, or the user account itself),
-       and records the `Tackle.Web.Accounts.User`.
+       forge account, checks that it may sign in, and records the
+       `Tackle.Web.Accounts.User`. It may when it owns an active
+       installation or holds an access grant on one (checked locally,
+       docs/TACKLE_WEB_PLAN.md §7.12), or else when the forge confirms it
+       belongs to an account the app is installed on (an organisation
+       member, or the user account itself).
 
   Nobody can sign in before the app is installed somewhere. The forge's
   access token for the user is only used to read the account; nothing of it
@@ -53,7 +56,7 @@ defmodule Tackle.Web.SignIn do
 
     with {:ok, forge_app} <- forge_app(forge),
          {:ok, forge_user} <- forge_user(module, forge_app, code, redirect_uri),
-         :ok <- check_member(module, forge, forge_app, forge_user) do
+         :ok <- check_allowed(module, forge, forge_app, forge_user) do
       record_user(forge, forge_user, Keyword.get(opts, :claim_admin, false))
     end
   end
@@ -78,6 +81,21 @@ defmodule Tackle.Web.SignIn do
         Logger.warning("sign-in: the forge rejected the code: #{describe(reason)}")
         {:error, :forge_rejected}
     end
+  end
+
+  defp check_allowed(module, forge, forge_app, forge_user) do
+    if owner_or_grantee?(forge, forge_user.external_id),
+      do: :ok,
+      else: check_member(module, forge, forge_app, forge_user)
+  end
+
+  defp owner_or_grantee?(forge, user_id) do
+    Installation
+    |> Ash.Query.filter(
+      forge == ^forge and status == :active and
+        (owner_external_id == ^user_id or exists(accesses, forge_user_id == ^user_id))
+    )
+    |> Ash.exists?()
   end
 
   # Installations are tried in turn; one that confirms membership is enough.
