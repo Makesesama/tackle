@@ -2,7 +2,9 @@
 # against a local PostgreSQL over peer authentication, runs its migrations,
 # answers its health check, offers browser setup with a logged setup token and
 # keeps the admin pages behind sign-in, stores a GitHub App through
-# `tackle-web-release`, and accepts that App's signed webhooks.
+# `tackle-web-release`, and accepts that App's signed webhooks. It also runs
+# the review jail's launcher as the service user, with a probe inside instead
+# of the exec-server, to check what jailed code can reach on a real host.
 #
 #   nix build .#checks.x86_64-linux.tackle-web-vm
 #
@@ -18,8 +20,36 @@ self: {
 
       virtualisation.memorySize = 2048;
 
-      # To generate the test App's key and sign the test delivery.
-      environment.systemPackages = [ pkgs.openssl ];
+      # To generate the test App's key and sign the test delivery; and the
+      # review jail's launcher around a probe, `tackle-review-jail-probe`,
+      # which exits nonzero if jailed code can reach any of these.
+      environment.systemPackages = [
+        pkgs.openssl
+        (self.packages.${pkgs.stdenv.hostPlatform.system}.tackle-review-jail.withEntry (
+          pkgs.writeShellApplication {
+            name = "review-jail-probe";
+            text = ''
+              # The host's database socket, secrets, and processes are out of reach.
+              test ! -e /run/postgresql
+              test ! -e /var/lib/postgresql
+              test ! -e /etc/tackle-web.env
+              test ! -e "$HOME/host-only"
+              for proc in /proc/[0-9]*; do
+                case "$(cat "$proc/comm" 2>/dev/null)" in
+                  beam.smp | postgres) exit 1 ;;
+                esac
+              done
+              # Its resource limits (nix/packages/review-jail.nix).
+              test "$(cat /proc/self/oom_score_adj)" = 1000
+              test "$(ulimit -H -f)" = 262144
+              for dir in /tmp "$HOME" /dev/shm; do
+                test "$(df -B1 --output=size "$dir" | tail -n 1 | tr -d ' ')" = 268435456
+              done
+              echo "review jail probe: OK"
+            '';
+          }
+        ))
+      ];
 
       environment.etc."tackle-web.env".text = ''
         SECRET_KEY_BASE=vm-test-secret-key-base-vm-test-secret-key-base-vm-test-secret-key-base
@@ -81,6 +111,24 @@ self: {
           machine.succeed(f"tr '\\0' '\\n' < /proc/{pid}/environ | grep -x TACKLE_WEB_STATE_DIR=/var/lib/tackle-web")
           machine.succeed("systemctl show tackle-web -p RestrictNamespaces --value | grep -E '(^no$|(^| )user( |$))'")
           machine.succeed("test -x ${reviewLauncher}")
+
+      with subtest("bounds the service's memory and tasks; an OOM kill does not stop it"):
+          machine.succeed("systemctl show tackle-web -p MemoryMax --value | grep -x 4294967296")
+          machine.succeed("systemctl show tackle-web -p TasksMax --value | grep -x 2048")
+          machine.succeed("systemctl show tackle-web -p OOMPolicy --value | grep -x continue")
+
+      with subtest("the review jail hides the database socket and host processes"):
+          # Peer authentication admits any process of the service user that
+          # reaches this socket, so it must not be visible in the jail.
+          machine.succeed("runuser -u tackle-web -- test -S /run/postgresql/.s.PGSQL.5432")
+          machine.succeed("install -d -o tackle-web -g tackle-web -m 0750 /var/lib/tackle-web/vm-probe")
+          # The jail's home is private: this host file must not show through.
+          machine.succeed("runuser -u tackle-web -- touch /var/lib/tackle-web-home/host-only")
+          machine.succeed(
+              "cd /var/lib/tackle-web/vm-probe && "
+              "runuser -u tackle-web -- env HOME=/var/lib/tackle-web-home "
+              "tackle-review-jail-probe /dev/null | grep -Fx 'review jail probe: OK'"
+          )
 
       with subtest("host checkout executables and system TLS trust are available"):
           machine.succeed(f"tr '\\0' '\\n' < /proc/{pid}/environ | grep -Fx 'PATH=${checkoutPath}'")

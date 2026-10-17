@@ -24,6 +24,17 @@
   # It is a read-only file in the store, readable by every local user.
   gitConfig ? { },
   extraJailOptions ? [ ],
+  # Resource limits on everything in the jail, against runaway or hostile
+  # commands; an unset attribute keeps the host's default:
+  #   tmpfsSize:   bytes for each private tmpfs (/tmp, the home, /dev/shm),
+  #                which otherwise may grow to half the host's memory
+  #   fileSize:    bytes for any one file written (RLIMIT_FSIZE)
+  #   oomScoreAdj: -1000..1000; 1000 makes the jail's processes the
+  #                kernel's first choice when memory runs out, before the
+  #                host process that started it
+  # Memory as a whole and the number of tasks are bounded by the caller's
+  # cgroup (the service's MemoryMax and TasksMax), not here.
+  limits ? { },
   # The program run inside the jail; tests substitute a probe.
   entry ? pkgs.callPackage ./exec-server.nix { },
 }:
@@ -83,10 +94,35 @@ let
     (write-text gitConfigPath (lib.generators.toGitINI gitConfig))
     (set-env "GIT_CONFIG_GLOBAL" gitConfigPath)
   ];
+
+  # First among the runtime arguments: later mounts below /tmp or the home,
+  # such as a workspace, must stay on top of these.
+  limitsRuntime = ''
+    ${lib.optionalString (limits ? oomScoreAdj) ''
+      echo ${toString limits.oomScoreAdj} > /proc/self/oom_score_adj
+    ''}
+    ${lib.optionalString (limits ? fileSize) ''
+      # Bash counts in 1024-byte blocks; soft and hard, so the jail cannot raise it.
+      ulimit -f ${toString (limits.fileSize / 1024)}
+    ''}
+    ${lib.optionalString (limits ? tmpfsSize) ''
+      # Remounts the base tmpfs mounts, which have no size, with one.
+      for dir in /tmp "$HOME" /dev/shm; do
+        RUNTIME_ARGS+=(--size ${toString limits.tmpfsSize} --tmpfs "$dir")
+      done
+    ''}
+  '';
+  unknownLimits = lib.subtractLists [
+    "tmpfsSize"
+    "fileSize"
+    "oomScoreAdj"
+  ] (lib.attrNames limits);
 in
+assert lib.assertMsg (unknownLimits == [ ]) "exec-jail: unknown limits: ${toString unknownLimits}";
 jail name entry (
   with jail.combinators;
-  [
+  lib.optional (limits != { }) (add-runtime limitsRuntime)
+  ++ [
     (add-runtime ''
       # Keep the jail's diagnostics, and anything jailed code writes to the
       # inherited standard error, away from the host terminal.

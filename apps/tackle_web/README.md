@@ -172,12 +172,24 @@ authentication (`database.createLocally`, on by default; otherwise put a
 `DATABASE_URL` in the environment file), runs migrations before every
 start, and listens on `127.0.0.1:4000` (`listenAddress`, `port`). TLS and
 making the app reachable for forge webhooks are up to you, for example a
-reverse proxy in front of it. Erlang distribution is off. The user's home
-(`homeDir`, `/var/lib/tackle-web-home`) is kept apart from the state
-directory (`stateDir`, `/var/lib/tackle-web`). `reviewJail` defaults to the
+reverse proxy in front of it ([below](#reverse-proxy)). Erlang distribution
+is off. The user's home (`homeDir`, `/var/lib/tackle-web-home`) is kept
+apart from the state directory (`stateDir`, `/var/lib/tackle-web`).
+`reviewJail` defaults to the
 flake's `tackle-review-jail` package and sets `TACKLE_WEB_REVIEW_JAIL`. The
 service permits Bubblewrap's unprivileged user namespaces; the host must also
 allow them. Do not add a systemd namespace restriction that forbids `user`.
+
+`limits` bounds the whole service, review jails included, so a runaway or
+hostile command in a review cannot exhaust the host: `limits.memory`
+(`MemoryMax`, default `"4G"`; raise it for large repositories, whose clones
+need more), `limits.tasks` (`TasksMax`, default 2048), and `limits.cpuQuota`
+(`CPUQuota`, unset by default, such as `"200%"`). `null` lifts a limit. The
+review jail raises its processes' OOM score, so they are killed first when
+memory runs out, and `OOMPolicy=continue` keeps the service running when
+they are. Reviews run one at a time per node (the `reviews` Oban queue).
+Nothing bounds the disk space clones take in `stateDir`; put it on its own
+file system or quota if that matters.
 
 `tackle-web-release` (installed by the module) runs the release's
 commands beside the running service, as a transient systemd unit with the
@@ -188,9 +200,43 @@ passes on the caller's `TACKLE_WEB_GITHUB_*` variables and nothing else:
 sudo tackle-web-release eval "Tackle.Web.Release.migrate()"
 ```
 
-The VM test starts the service with PostgreSQL, checks its health, stores
-a GitHub App through `tackle-web-release`, and delivers a signed webhook
-(needs KVM): `nix build .#checks.x86_64-linux.tackle-web-vm`.
+The VM test starts the service with PostgreSQL, checks its health and
+limits, stores a GitHub App through `tackle-web-release`, delivers a signed
+webhook, and runs the review jail's launcher as the service user with a
+probe inside, which must not see the database socket, the environment file,
+the home directory, or the host's processes (needs KVM):
+`nix build .#checks.x86_64-linux.tackle-web-vm`.
+
+### Reverse proxy
+
+The app trusts its reverse proxy for a few things, and leaves others to it:
+
+- **Forwarded headers.** Set `X-Forwarded-Proto` to the scheme the client
+  used, overwriting any it sent, and `Host` to the host of
+  `TACKLE_WEB_URL` (or refuse other hosts): an `https` `TACKLE_WEB_URL`
+  redirects plain HTTP by `X-Forwarded-Proto`, and leaves requests whose
+  `Host` is `localhost` or `127.0.0.1` on HTTP.
+- **Body size.** `POST /webhooks/<forge>` must hold a body in memory before
+  it can check the signature, so it refuses bodies over 5 MB, by
+  `Content-Length` before reading anything. Limit request bodies in the
+  proxy to that or less (other routes accept 1 MB).
+- **Rate limits.** The app has none. Limit requests per client, at least on
+  `/webhooks/`, `/setup/`, and `/auth/`.
+
+For example, with nginx:
+
+```nginx
+location / {
+  proxy_pass http://127.0.0.1:4000;
+  proxy_set_header Host review.example.com;   # the host of TACKLE_WEB_URL
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_http_version 1.1;               # LiveView's websocket
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+  client_max_body_size 5m;
+  limit_req zone=tackle burst=20;       # limit_req_zone $binary_remote_addr zone=tackle:10m rate=5r/s;
+}
+```
 
 ## Review jail
 
@@ -198,7 +244,9 @@ a GitHub App through `tackle-web-release`, and delivers a signed webhook
 read-only mounts for the worktree, its Git directory and the bare clone; it
 creates no Git files on the host. It has no network, host Nix daemon or store
 access beyond its tool closure, host Ketch configuration, credentials or service
-environment. Its home and `/tmp` are private scratch space. Git reads use
+environment. Its home, `/tmp`, and `/dev/shm` are private scratch space of
+256 MiB each, no file it writes may exceed 256 MiB, and its processes are
+the first the kernel kills when the service runs out of memory. Git reads use
 `GIT_OPTIONAL_LOCKS=0`. This is distinct from the CLI's writable, networked jail.
 
 `Tackle.Web.ReviewJail.start(%{worktree: absolute_path, clone: bare_clone_path,
@@ -223,8 +271,9 @@ nix build .#tackle-review-jail.tests.smoke
 ```
 
 It exercises the production exec-server launcher, read-only Git operations,
-network and state isolation, hidden Nix store data/daemon, unchanged host Git
-data, and refusal of crafted Git pointers and symlinks.
+network and state isolation, hidden Nix store data/daemon, the resource
+limits, unchanged host Git data, and refusal of crafted Git pointers and
+symlinks.
 
 ## Setting up (in the browser)
 

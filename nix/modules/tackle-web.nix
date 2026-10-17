@@ -175,6 +175,43 @@ in
       '';
     };
 
+    limits = {
+      memory = mkOption {
+        type = types.nullOr types.str;
+        default = "4G";
+        example = "8G";
+        description = ''
+          Memory for the whole service (systemd's `MemoryMax`): the app,
+          its Git processes, and every review jail, including what jailed
+          commands write to their private tmpfs mounts. Raise it for large
+          repositories, whose clones need more. Jailed processes are killed
+          first when it runs out, and the service keeps running. `null`
+          leaves memory unbounded.
+        '';
+      };
+
+      tasks = mkOption {
+        type = types.nullOr types.ints.positive;
+        default = 2048;
+        description = ''
+          Processes and threads of the whole service (systemd's
+          `TasksMax`), so a fork bomb in a review jail cannot exhaust the
+          host's. It counts the app's own threads and a jail's, which grow
+          with the number of CPUs. `null` keeps systemd's default.
+        '';
+      };
+
+      cpuQuota = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "200%";
+        description = ''
+          CPU time of the whole service (systemd's `CPUQuota`), as a
+          percentage of one CPU. `null` leaves it unbounded.
+        '';
+      };
+    };
+
     database.createLocally = mkOption {
       type = types.bool;
       default = true;
@@ -254,6 +291,15 @@ in
         RestartSec = 5;
         RuntimeDirectory = "tackle-web";
         UMask = "0077";
+
+        # Bounds against runaway or hostile review commands (see `limits`).
+        # The review jail raises its processes' OOM score, so the kernel
+        # kills them first when MemoryMax is reached; the service must then
+        # keep running instead of being stopped by systemd's default policy.
+        MemoryMax = lib.mkIf (cfg.limits.memory != null) cfg.limits.memory;
+        TasksMax = lib.mkIf (cfg.limits.tasks != null) cfg.limits.tasks;
+        CPUQuota = lib.mkIf (cfg.limits.cpuQuota != null) cfg.limits.cpuQuota;
+        OOMPolicy = "continue";
 
         # MemoryDenyWriteExecute is deliberately absent: the BEAM JIT writes executable code.
         # Explicitly allow the namespace types Bubblewrap creates, including user.

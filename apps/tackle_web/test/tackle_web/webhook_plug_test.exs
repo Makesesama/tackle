@@ -221,6 +221,24 @@ defmodule Tackle.Web.WebhookPlugTest do
                json_response(deliver(build_conn(), "issue_comment", bot), 200)
     end
 
+    test "refuses an oversized body, also when only its length says so", %{conn: conn} do
+      payload = %{"zen" => String.duplicate("x", 5_000_001)}
+      body = JSON.encode!(payload)
+      oversized = deliver(conn, "ping", payload, body: body)
+      assert json_response(oversized, 413) == %{"status" => "too large"}
+
+      # Refused from the header alone: the small body is never read.
+      small = JSON.encode!(%{"zen" => "x"})
+
+      declared =
+        deliver(build_conn(), "ping", nil,
+          body: small,
+          headers: [{"content-length", "5000001"} | headers("ping", small)]
+        )
+
+      assert json_response(declared, 413) == %{"status" => "too large"}
+    end
+
     test "other routes still parse their bodies", %{conn: conn} do
       assert json_response(get(conn, "/health"), 200)
 

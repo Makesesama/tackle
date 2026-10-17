@@ -30,6 +30,18 @@ let
       test ! -e /nix/var/nix/db/db.sqlite
       test ! -e "$2/credentials"
       test ! -e "$HOME/.config/ketch/config.json"
+      test ! -e /run/postgresql
+      test ! -e /var/lib/postgresql
+      # Resource limits (review-jail.nix): the kernel prefers the jail when
+      # memory runs out, files and private tmpfs mounts are bounded, and
+      # jailed code cannot raise the file size limit.
+      test "$(cat /proc/self/oom_score_adj)" = 1000
+      test "$(ulimit -f)" = 262144
+      test "$(ulimit -H -f)" = 262144
+      if (ulimit -f unlimited) 2>/dev/null; then exit 1; fi
+      for dir in /tmp "$HOME" /dev/shm; do
+        test "$(df -B1 --output=size "$dir" | tail -n 1 | tr -d ' ')" = 268435456
+      done
       git status --short >/dev/null
       test -n "$(git rev-parse HEAD)"
       gitdir=$(git rev-parse --absolute-git-dir)
