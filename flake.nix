@@ -155,6 +155,7 @@
           preCommitCheck = self.checks.${system}.pre-commit-check;
           jailedTackle =
             if pkgs.stdenv.hostPlatform.isLinux then mkJailedTackle { inherit pkgs system; } else null;
+          reviewJail = self.packages.${system}.tackle-review-jail or null;
 
           projectShellHook = ''
             # Keep Mix and Hex state in the checkout so commands do not depend
@@ -190,7 +191,12 @@
         {
           # Development shell with all tools
           default = pkgs.callPackage ./nix/shells/shell.nix {
-            inherit preCommitCheck commonShellHook jailedTackle;
+            inherit
+              preCommitCheck
+              commonShellHook
+              jailedTackle
+              reviewJail
+              ;
           };
 
           # Lean, non-interactive shell used by the Woodpecker local backend.

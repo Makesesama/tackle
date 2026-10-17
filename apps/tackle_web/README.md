@@ -58,7 +58,10 @@ If `idna` or another rebar3 dependency fails to build, set
 `MIX_REBAR3=$(which rebar3)`.
 
 **Reviewing locally.** Reviews clone into `.state/` here (`TACKLE_WEB_STATE_DIR`)
-and run only in the review jail, so start the server with the jail's launcher:
+and run only in the review jail. On Linux the repository's dev shell (`nix
+develop` or direnv) builds the jail and sets `TACKLE_WEB_REVIEW_JAIL` unless it
+is already set, so `iex -S mix phx.server` is enough. Outside the dev shell,
+point it at the launcher yourself:
 
 ```sh
 nix build .#tackle-review-jail -o /tmp/tackle-review-jail   # from the repository root

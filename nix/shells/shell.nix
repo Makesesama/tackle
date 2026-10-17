@@ -3,6 +3,7 @@
   commonShellHook,
   preCommitCheck,
   jailedTackle ? null,
+  reviewJail ? null,
 }:
 
 let
@@ -34,6 +35,11 @@ let
     export TACKLE_MUSL_CARGO=${muslRust}/bin/cargo
     export TACKLE_MUSL_RUSTC=${muslRust}/bin/rustc
   '';
+  # apps/tackle_web runs reviews only in this jail (config/runtime.exs). An
+  # explicitly set TACKLE_WEB_REVIEW_JAIL still wins.
+  reviewJailEnv = pkgs.lib.optionalString (reviewJail != null) ''
+    export TACKLE_WEB_REVIEW_JAIL=''${TACKLE_WEB_REVIEW_JAIL:-${pkgs.lib.getExe reviewJail}}
+  '';
 in
 pkgs.mkShell {
   buildInputs = preCommitCheck.enabledPackages;
@@ -62,5 +68,5 @@ pkgs.mkShell {
   ]
   ++ platformPackages
   ++ pkgs.lib.optional (jailedTackle != null) jailedTackle;
-  shellHook = commonShellHook + muslToolchainEnv;
+  shellHook = commonShellHook + muslToolchainEnv + reviewJailEnv;
 }
