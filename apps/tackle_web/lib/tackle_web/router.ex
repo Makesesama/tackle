@@ -6,8 +6,9 @@ defmodule Tackle.Web.Router do
   Browser routes have a session, CSRF protection, and `:current_user`
   (`Tackle.Web.Auth`). Sign-in is our own OAuth flow through the forge app
   (`Tackle.Web.AuthController`); `/setup` registers and installs that app
-  (`Tackle.Web.SetupController`). The Codex login page requires a signed-in
-  user, and AshAdmin (`/admin`) an admin, on the HTTP request and again on
+  (`Tackle.Web.SetupController`). The user pages (repositories, reviews,
+  installations, models, and the Codex login) require a signed-in user, and
+  AshAdmin (`/admin`) an admin, on the HTTP request and again on
   every LiveView mount; both run their actions as that user, so the
   resources' policies decide what they may do.
   """
@@ -68,7 +69,14 @@ defmodule Tackle.Web.Router do
   scope "/", Tackle.Web do
     pipe_through [:browser, :user]
 
-    live_session :user, on_mount: [{Tackle.Web.Auth, :require_user}] do
+    live_session :user,
+      on_mount: [{Tackle.Web.Auth, :require_user}],
+      layout: {Tackle.Web.Layouts, :app} do
+      live "/repos", ReposLive
+      live "/repos/:id", RepositoryLive
+      live "/reviews/:id", ReviewLive
+      live "/installations/:id", InstallationLive
+      live "/settings", SettingsLive
       live "/codex-login", CodexLoginLive
     end
   end

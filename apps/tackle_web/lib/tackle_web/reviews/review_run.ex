@@ -60,7 +60,15 @@ defmodule Tackle.Web.Reviews.ReviewRun do
   end
 
   relationships do
-    belongs_to :request, Tackle.Web.Reviews.ReviewRequest, allow_nil?: false
-    has_many :findings, Tackle.Web.Reviews.Finding, destination_attribute: :run_id
+    belongs_to :request, Tackle.Web.Reviews.ReviewRequest, allow_nil?: false, public?: true
+    has_many :findings, Tackle.Web.Reviews.Finding, destination_attribute: :run_id, public?: true
+  end
+
+  aggregates do
+    # The findings posted on the forge.
+    count :shown_findings, :findings do
+      filter expr(state == :shown)
+      public? true
+    end
   end
 end

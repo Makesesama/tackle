@@ -80,8 +80,10 @@ defmodule Tackle.Web.AuthControllerTest do
     assert get_session(conn, :oauth_state) == nil
     assert conn.private.plug_session_info == :renew
 
-    page = get(recycle(conn), "/")
-    assert html_response(page, 200) =~ "Signed in as <strong>octocat</strong>."
+    # Signed in, the start page leads to the repositories, with the login on top.
+    assert redirected_to(get(recycle(conn), "/"), 302) == "/repos"
+    page = get(recycle(conn), "/repos")
+    assert html_response(page, 200) =~ "octocat"
   end
 
   test "signing in from a browser that unlocked setup claims admin, once", %{
@@ -179,7 +181,7 @@ defmodule Tackle.Web.AuthControllerTest do
       post(conn, "/sign-out")
     end
 
-    page = get(conn, "/")
+    page = get(conn, "/repos")
 
     [token] =
       Regex.run(~r/name="_csrf_token" value="([^"]+)"/, html_response(page, 200),

@@ -19,6 +19,8 @@ defmodule Tackle.Web.CodexLoginLive do
 
   require Ash.Query
 
+  import Tackle.Web.UI, only: [page_header: 1]
+
   alias Tackle.Web.Auth
   alias Tackle.Web.Models.{CodexDevice, Provider}
 
@@ -84,32 +86,45 @@ defmodule Tackle.Web.CodexLoginLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <main>
-      <h1>Codex login</h1>
-      <p>
-        Signs a ChatGPT subscription in for one of your OpenAI Codex providers (adapter
-        <code>codex</code>).
-      </p>
+    <.page_header title="Connect OpenAI Codex">
+      <:subtitle>
+        <a href="/settings">Models</a>
+        · signs a ChatGPT subscription in for one of your OpenAI Codex providers
+      </:subtitle>
+    </.page_header>
+
+    <section class="card">
       <%= if @providers == [] do %>
-        <p>You have no Codex provider yet.</p>
+        <p>
+          You have no OpenAI Codex provider yet. <a href="/settings">Add one</a>
+          (kind <em>OpenAI Codex</em>) first.
+        </p>
       <% else %>
-        <form phx-submit="login">
-          <label>
-            Provider
-            <select name="provider">
+        <form phx-submit="login" class="inline-form">
+          <div class="field">
+            <label for="provider">Provider</label>
+            <select id="provider" name="provider">
               <option :for={name <- @providers} value={name}>{name}</option>
             </select>
-          </label>
-          <button disabled={@status in [:requesting, :waiting]}>Connect Codex</button>
+          </div>
+          <button disabled={@status in [:requesting, :waiting]}>Connect</button>
         </form>
       <% end %>
-      <p :if={@device}>
-        Open <a href={@device.verification_uri} rel="noreferrer">{@device.verification_uri}</a>
-        and enter <strong>{@device.user_code}</strong>.
-      </p>
-      <p>Status: {@status}</p>
-      <p><a href="/">Back to the start page</a></p>
-    </main>
+
+      <div :if={@device} class="device">
+        <p>
+          Open <a href={@device.verification_uri} rel="noreferrer">{@device.verification_uri}</a>
+          and enter this code:
+        </p>
+        <p class="code">{@device.user_code}</p>
+      </div>
+      <p :if={@status != :ready} class={"notice notice-#{@status}"}>{status_text(@status)}</p>
+    </section>
     """
   end
+
+  defp status_text(:requesting), do: "Asking OpenAI for a code…"
+  defp status_text(:waiting), do: "Waiting for you to enter the code…"
+  defp status_text(:complete), do: "Connected. Enable the provider on the Models page to use it."
+  defp status_text(:failed), do: "The login did not complete. Please try again."
 end

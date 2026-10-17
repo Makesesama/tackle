@@ -209,6 +209,17 @@ defmodule Tackle.Web.Forges.Repository do
       public? true
     end
 
+    has_many :requests, Tackle.Web.Reviews.ReviewRequest do
+      public? true
+    end
+
+    # The most recently changed review request, for the overview.
+    has_one :latest_request, Tackle.Web.Reviews.ReviewRequest do
+      from_many? true
+      sort updated_at: :desc
+      public? true
+    end
+
     # Grants on this repository alone; grants on the whole installation are
     # the installation's.
     has_many :accesses, Access do

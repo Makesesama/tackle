@@ -201,6 +201,7 @@ defmodule Tackle.Web.Triggers do
       base_sha: pull_request.base_sha,
       base_ref: pull_request.base_ref,
       head_is_fork: pull_request.head_is_fork,
+      title: Map.get(pull_request, :title),
       trigger: trigger,
       profile: profile,
       requested_by: requested_by

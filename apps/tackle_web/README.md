@@ -1,7 +1,7 @@
 # tackle_web
 
-**Status: phases 1–7 (7: ownership and access) and 6b (web-only setup) of
-[`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
+**Status: phases 1–8 (7: ownership and access, 8: user pages) and 6b
+(web-only setup) of [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
 findings to the forge. So far it receives GitHub webhooks: it keeps track
@@ -14,8 +14,10 @@ installs the GitHub App and makes the operator the first admin. Users install
 the App on their own accounts and own those installations: they decide who else
 may see their repositories and reviews, and their reviews use their own
 providers and review defaults ([ownership](#ownership-and-access-phase-7)).
-Admins see and manage everything in AshAdmin; users connect Codex on a
-device-login page. Queued reviews now run in the
+Signed-in users have their own [pages](#user-pages-phase-8): their
+repositories with the status of each review, the findings of a review, and,
+for what they own, settings, access, and model providers. Admins see and
+manage everything in AshAdmin. Queued reviews now run in the
 read-only jail, with base-commit rules and
 explicit model settings, store their runs/findings at `:reviewed`, then post a
 sanitized GitHub COMMENT review and transition to `:posted`. Posting retries use
@@ -359,8 +361,9 @@ repository. `Access.grant(installation_id, login, %{repository_id: ...}, actor:
 owner)` resolves the login to GitHub's user id first (`GET /users/{login}` with
 the installation's token), so a grant works before the grantee signs in and
 survives renames; granting again is a no-op. The owner and admins
-`Access.revoke` it, which takes effect at the next read. There is no page for
-grants yet (phase 8); use the console:
+`Access.revoke` it, which takes effect at the next read. Owners manage grants on
+the repository and installation pages ([user pages](#user-pages-phase-8)), or
+from the console:
 
 ```elixir
 alias Tackle.Web.Accounts.User
@@ -380,6 +383,34 @@ row to the oldest admin (provider ids become their names, so model references
 keep working), and installations to the signed-in user whose login is the
 installation's account, otherwise to the oldest admin. It refuses to run while
 providers or defaults exist and nobody is an admin.
+
+## User pages (phase 8)
+
+LiveView pages for every signed-in user, under the top bar with the logo
+(`Tackle.Web.Layouts`, components in `Tackle.Web.UI`, plain CSS in
+`priv/static/assets/app.css` with a dark scheme, no asset build):
+
+| Page | What it shows |
+|---|---|
+| `/` | the start page: what tackle is and "Sign in with GitHub"; signed-in users go on to `/repos` |
+| `/repos` (`ReposLive`) | the installations and repositories the user owns or was granted, each with its latest review; "Install on GitHub"; admins also get "Sync from GitHub" |
+| `/repos/:id` (`RepositoryLive`) | the repository's latest 50 review requests with status, verdict, and posted findings; for the owner, its review settings and who has access |
+| `/reviews/:id` (`ReviewLive`) | one request's latest run: status, verdict, duration, tokens, and its findings (posted, verified but hidden, rejected) as plain text |
+| `/installations/:id` (`InstallationLive`) | its repositories; for the owner, the defaults for new repositories and access to all of them |
+| `/settings` (`SettingsLive`) | the user's providers (add, enable, store an OpenRouter key) and review defaults |
+| `/codex-login` | connects one of the user's Codex providers |
+
+The lists show only what the user owns or was granted, admins included
+(`Forges.AccessCheck.visible/2`); every read and write runs with the user as
+the actor, so the policies decide, and pages re-read the user before every
+event and refresh, so an expired sign-in stops an open page. Status pages
+refresh every ten seconds while connected. Pull request titles are stored with
+review requests (from the webhook or the pull request read by a command) for
+these pages. Finding text comes from the models and is never rendered as HTML.
+
+The page tests render over HTTP and call the pages' events directly;
+`Phoenix.LiveViewTest` would need the `lazy_html` package, which is not a
+dependency.
 
 ## Models and credentials (phase 3)
 

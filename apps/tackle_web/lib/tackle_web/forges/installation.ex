@@ -216,6 +216,17 @@ defmodule Tackle.Web.Forges.Installation do
 
   def put_owner(%__MODULE__{} = installation, _owner), do: {:ok, installation}
 
+  @doc "Whether `user` is the installation's owner, compared by forge and forge user id."
+  @spec owned_by?(t(), User.t() | nil) :: boolean()
+  def owned_by?(%__MODULE__{forge: forge, owner_external_id: id}, %User{
+        forge: forge,
+        external_id: id
+      })
+      when is_binary(id),
+      do: true
+
+  def owned_by?(_installation, _user), do: false
+
   @doc """
   Whose providers and review defaults the installation's reviews use: the
   owner, once they have signed in. `{:error, :installation_has_no_owner}`

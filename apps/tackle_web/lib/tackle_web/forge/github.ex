@@ -266,11 +266,16 @@ defmodule Tackle.Web.Forge.GitHub do
        base_sha: base_sha,
        base_ref: base_ref,
        head_is_fork: fork?(head, base),
-       author: get_in(pull_request, ["user", "login"])
+       author: get_in(pull_request, ["user", "login"]),
+       title: title(pull_request["title"])
      }}
   end
 
   defp pull_request_data(_other), do: :error
+
+  # Shown on the pages: a string, bounded.
+  defp title(title) when is_binary(title), do: String.slice(title, 0, 300)
+  defp title(_title), do: nil
 
   # A head repository that no longer exists (a deleted fork) is a fork too.
   defp fork?(%{"repo" => %{"id" => head_id}}, %{"repo" => %{"id" => base_id}}),
@@ -692,6 +697,16 @@ defmodule Tackle.Web.Forge.GitHub do
       error -> error
     end
   end
+
+  ## Browser URLs
+
+  @impl Tackle.Web.Forge
+  def repository_url(repository),
+    do: "#{web_url()}/#{segment(repository.owner)}/#{segment(repository.name)}"
+
+  @impl Tackle.Web.Forge
+  def pull_request_url(repository, number) when is_integer(number) and number > 0,
+    do: "#{repository_url(repository)}/pull/#{number}"
 
   ## API
 

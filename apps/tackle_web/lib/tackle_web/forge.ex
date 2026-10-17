@@ -22,7 +22,8 @@ defmodule Tackle.Web.Forge do
           base_sha: String.t(),
           base_ref: String.t(),
           head_is_fork: boolean(),
-          author: String.t() | nil
+          author: String.t() | nil,
+          title: String.t() | nil
         }
 
   @typedoc """
@@ -168,6 +169,12 @@ defmodule Tackle.Web.Forge do
   """
   @callback user(ForgeApp.t(), Installation.t(), login :: String.t()) ::
               {:ok, user()} | {:error, :not_found | term()}
+
+  @doc "The browser URL of a repository on the forge."
+  @callback repository_url(Repository.t()) :: String.t()
+
+  @doc "The browser URL of a pull request on the forge."
+  @callback pull_request_url(Repository.t(), pos_integer()) :: String.t()
 
   @doc "The forge module for a forge."
   @spec module(atom()) :: module()

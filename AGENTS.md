@@ -192,8 +192,9 @@ Burrito, or lint commands for tooling that has not been wired up.
   from `docs/TACKLE_WEB_PLAN.md`, currently through phase 7 (jailed review jobs,
   stored runs/findings, retry-safe sanitized GitHub posting to `:posted`,
   GitHub sign-in with AshAdmin behind admin policies, browser-only setup of
-  the GitHub App via `/setup`, and installation owners with access grants and
-  user-owned providers).
+  the GitHub App via `/setup`, installation owners with access grants and
+  user-owned providers, and the user pages: repositories, reviews, and model
+  settings).
   It depends on the packages, not the harness, and keeps Ash,
   Oban, Cloak, and PostgreSQL to itself. Its tests need a PostgreSQL server (see its README). Packaged as
   `.#tackle-web` (`nix/packages/tackle-web.nix`) and run by the NixOS

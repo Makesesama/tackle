@@ -1,0 +1,138 @@
+defmodule Tackle.Web.InstallationLive do
+  @moduledoc """
+  `/installations/:id`: an installation's repositories and, for its owner,
+  the defaults new repositories get and who else may see them
+  (`Tackle.Web.GrantsComponent`).
+  """
+
+  use Phoenix.LiveView
+
+  require Ash.Query
+
+  import Tackle.Web.Live
+  import Tackle.Web.UI
+
+  alias Tackle.Web.Forges.{AccessCheck, Installation, Repository}
+
+  @impl true
+  def mount(%{"id" => id}, _session, socket) do
+    case get(Installation, id, socket.assigns.current_user) do
+      nil ->
+        not_found(socket)
+
+      installation ->
+        {:ok,
+         socket |> assign(:page_title, installation.account) |> assign_installation(installation)}
+    end
+  end
+
+  # Only the owner's page has the form.
+  @impl true
+  def handle_event("save", _params, %{assigns: %{form: nil}} = socket), do: {:noreply, socket}
+
+  def handle_event("save", %{"form" => params}, socket) do
+    with_user(socket, fn socket ->
+      case AshPhoenix.Form.submit(socket.assigns.form, params: params) do
+        {:ok, installation} ->
+          socket |> put_flash(:info, "Defaults saved.") |> assign_installation(installation)
+
+        {:error, form} ->
+          assign(socket, :form, to_form(form))
+      end
+    end)
+  end
+
+  defp assign_installation(socket, installation) do
+    user = socket.assigns.current_user
+    owner? = Installation.owned_by?(installation, user)
+
+    repositories =
+      Repository
+      |> Ash.Query.filter(installation_id == ^installation.id and active == true)
+      |> Ash.Query.do_filter(AccessCheck.visible(user, at: :repository))
+      |> Ash.Query.sort(:name)
+      |> Ash.read!(actor: user)
+
+    form =
+      if owner? do
+        installation
+        |> AshPhoenix.Form.for_update(:set_defaults, actor: user)
+        |> to_form()
+      end
+
+    assign(socket,
+      installation: installation,
+      owner?: owner?,
+      repositories: repositories,
+      form: form
+    )
+  end
+
+  @impl true
+  def render(assigns) do
+    ~H"""
+    <.page_header title={@installation.account}>
+      <:subtitle>
+        <a href="/repos">Repositories</a>
+        · installed by {@installation.owner_login || "an unknown user"}
+        <span :if={@installation.status != :active}>· {@installation.status}</span>
+      </:subtitle>
+    </.page_header>
+
+    <section class="card">
+      <div class="card-header"><h2>Repositories</h2></div>
+      <p :if={@repositories == []} class="muted">No repositories.</p>
+      <table :if={@repositories != []} class="list">
+        <tbody>
+          <tr :for={repository <- @repositories}>
+            <td><a class="strong" href={"/repos/#{repository.id}"}>{repository.name}</a></td>
+            <td class="right muted small">
+              {if repository.enabled,
+                do: auto_review_label(repository.auto_review),
+                else: "Reviews off"}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section :if={@owner?} class="card">
+      <div class="card-header"><h2>Defaults for new repositories</h2></div>
+      <.form for={@form} phx-submit="save">
+        <.input
+          field={@form[:review_new_repositories]}
+          type="checkbox"
+          label="Review pull requests of new repositories"
+        />
+        <.input
+          field={@form[:default_auto_review]}
+          type="select"
+          label="Review automatically"
+          options={[
+            {"No, only on /tackle review", "off"},
+            {"New pull requests", "on_open"},
+            {"New pull requests and every push", "on_open_and_push"}
+          ]}
+        />
+        <.input
+          field={@form[:apply_to_repositories]}
+          type="checkbox"
+          label="Also apply to every existing repository"
+          help="Overwrites each repository's review and automatic review setting."
+        />
+        <button type="submit">Save</button>
+      </.form>
+    </section>
+
+    <.live_component
+      :if={@owner?}
+      module={Tackle.Web.GrantsComponent}
+      id="grants"
+      installation={@installation}
+      repository={nil}
+      current_user={@current_user}
+      signed_in_at={@signed_in_at}
+    />
+    """
+  end
+end

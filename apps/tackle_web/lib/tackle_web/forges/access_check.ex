@@ -34,8 +34,15 @@ defmodule Tackle.Web.Forges.AccessCheck do
   end
 
   @impl Ash.Policy.FilterCheck
-  def filter(%User{forge: forge, external_id: user_id}, _context, opts)
-      when is_binary(user_id) do
+  def filter(actor, _context, opts), do: visible(actor, opts)
+
+  @doc """
+  The check's filter for `user`, with the check's options, for queries that
+  want only what a user owns or was granted (the policies also let admins
+  read everything).
+  """
+  @spec visible(User.t() | term(), keyword()) :: Ash.Expr.t()
+  def visible(%User{forge: forge, external_id: user_id}, opts) when is_binary(user_id) do
     expression =
       expression(Keyword.fetch!(opts, :at), Keyword.get(opts, :role, :reader), forge, user_id)
 
@@ -47,7 +54,7 @@ defmodule Tackle.Web.Forges.AccessCheck do
     end
   end
 
-  def filter(_actor, _context, _opts), do: expr(false)
+  def visible(_actor, _opts), do: expr(false)
 
   defp expression(:installation, :owner, forge, user_id),
     do: expr(forge == ^forge and owner_external_id == ^user_id)

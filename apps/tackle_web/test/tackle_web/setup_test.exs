@@ -204,7 +204,7 @@ defmodule Tackle.Web.SetupTest do
     admin = admin!()
     conn = sign_in(conn, admin)
 
-    home = html_response(get(conn, "/"), 200)
+    home = html_response(get(conn, "/repos"), 200)
     assert home =~ "/setup/github/install"
     assert home =~ ~s(action="/setup/sync")
     refute home =~ "Not set up yet"
@@ -232,7 +232,7 @@ defmodule Tackle.Web.SetupTest do
     user = user!()
     conn = sign_in(conn, user)
 
-    home = html_response(get(conn, "/"), 200)
+    home = html_response(get(conn, "/repos"), 200)
     assert home =~ ~s(href="/setup/github/install")
     refute home =~ ~s(action="/setup/sync")
 

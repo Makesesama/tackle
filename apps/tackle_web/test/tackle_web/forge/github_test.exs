@@ -114,7 +114,8 @@ defmodule Tackle.Web.Forge.GitHubTest do
                base_sha: sha("base"),
                base_ref: "main",
                head_is_fork: false,
-               author: "octocat"
+               author: "octocat",
+               title: "Add widgets"
              }
     end
 

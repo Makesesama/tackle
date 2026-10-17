@@ -1,7 +1,7 @@
 defmodule Tackle.Web.Endpoint do
   @moduledoc """
   The HTTP endpoint: forge webhooks, the health check, and the signed-in
-  pages (sign-in, AshAdmin, Codex login) with their session and LiveView
+  pages (sign-in, the user pages, AshAdmin) with their session and LiveView
   socket.
 
   Two settings are read at runtime rather than compiled in, so a release
@@ -50,7 +50,7 @@ defmodule Tackle.Web.Endpoint do
   plug Plug.Static,
     at: "/assets",
     from: {:tackle_web, "priv/static/assets"},
-    only: ~w(app.css app.js)
+    only: ~w(app.css app.js logo.svg)
 
   plug Plug.Static,
     at: "/vendor/phoenix",

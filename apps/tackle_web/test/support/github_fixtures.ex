@@ -140,6 +140,7 @@ defmodule Tackle.Web.GitHubFixtures do
       Map.merge(
         %{
           "number" => 7,
+          "title" => "Add widgets",
           "state" => "open",
           "draft" => false,
           "user" => %{"login" => "octocat"},

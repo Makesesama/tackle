@@ -103,6 +103,7 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
         :base_sha,
         :base_ref,
         :head_is_fork,
+        :title,
         :trigger,
         :profile,
         :requested_by
@@ -209,6 +210,11 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
       public? true
     end
 
+    # The pull request's title when it was requested, for the pages.
+    attribute :title, :string do
+      public? true
+    end
+
     # Whether the head comes from another repository (a fork).
     attribute :head_is_fork, :boolean do
       allow_nil? false
@@ -259,6 +265,19 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
   relationships do
     belongs_to :repository, Repository do
       allow_nil? false
+      public? true
+    end
+
+    has_many :runs, Tackle.Web.Reviews.ReviewRun do
+      destination_attribute :request_id
+      public? true
+    end
+
+    # The newest run: reruns keep the earlier ones.
+    has_one :latest_run, Tackle.Web.Reviews.ReviewRun do
+      destination_attribute :request_id
+      from_many? true
+      sort inserted_at: :desc
       public? true
     end
   end

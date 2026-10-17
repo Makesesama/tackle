@@ -5,8 +5,8 @@
 jobs with stored runs/findings, retry-safe sanitized GitHub posting
 (`:reviewed` → `:posted`), and GitHub sign-in with AshAdmin and the Codex
 device-login page behind admin policies, web-only setup (phase 6b, §7.11),
-and ownership and access (phase 7, §7.12). Phases 8 (user frontend) and 9
-(feedback) are not implemented.** This document is a handoff: it should be enough to start without the conversation
+ownership and access (phase 7, §7.12), and the user pages (phase 8). Phase 9
+(feedback) is not implemented.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -1025,7 +1025,13 @@ use Postgres with the Ecto sandbox. Commit per phase.
    owns or is granted, with each one's latest review status; a repository's
    review history; a run's findings; and owner pages for repository
    settings, access grants, providers (OpenRouter key, Codex login), and
-   review defaults. AshAdmin stays the admin tool.
+   review defaults. AshAdmin stays the admin tool. **Implemented**: LiveViews
+   `ReposLive`, `RepositoryLive`, `ReviewLive`, `InstallationLive`,
+   `SettingsLive`, and `GrantsComponent` in one `live_session` behind
+   `Auth.require_user`, refreshing every ten seconds while connected (a
+   timer, not PubSub: the review job's writes run inside its own Repo
+   transactions); pull request titles on review requests; lists filtered with
+   `Forges.AccessCheck.visible/2` so admins see only their own there too.
 9. **Feedback.** Resolved threads and reactions → `FindingOutcome`s;
    outcomes → known fingerprints.
 

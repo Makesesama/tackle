@@ -164,7 +164,7 @@ defmodule Tackle.Web.SetupHTML do
     ~H"""
     <form action="/setup/sync" method="post" class="inline">
       <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
-      <button type="submit">{@label}</button>
+      <button type="submit" class="secondary">{@label}</button>
     </form>
     """
   end

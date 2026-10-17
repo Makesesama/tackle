@@ -3,54 +3,28 @@ defmodule Tackle.Web.PageHTML do
 
   use Phoenix.Component
 
-  import Phoenix.Controller, only: [get_csrf_token: 0]
+  import Tackle.Web.UI, only: [logo: 1]
 
-  alias Tackle.Web.{Setup, SetupHTML}
+  alias Tackle.Web.Setup
 
   def home(assigns) do
     ~H"""
-    <main>
+    <main class="landing">
+      <.logo class="hero-logo" />
       <h1>tackle</h1>
-      <p>Reviews pull requests of the repositories the GitHub App is installed on.</p>
+      <p class="lead">Reviews your pull requests, and posts what it finds on GitHub.</p>
 
-      <p :if={!Setup.complete?(@setup)}>
+      <p :if={!Setup.complete?(@setup)} class="notice">
         Not set up yet: <a href="/setup">set up tackle</a> with the setup token from the server log.
       </p>
 
-      <%= if @current_user do %>
-        <p>
-          Signed in as <strong>{@current_user.login}</strong>{if @current_user.admin,
-            do: " (admin)"}.
-        </p>
-        <ul>
-          <li>
-            <a href="/setup/github/install">Install the GitHub App</a>
-            on your account or organisation; you own what you install
-          </li>
-          <li><a href="/codex-login">Connect one of your OpenAI Codex providers</a></li>
-        </ul>
-        <ul :if={@current_user.admin}>
-          <li><a href="/admin">Administration</a>: repositories, providers, reviews</li>
-          <li>
-            <SetupHTML.sync_button />
-            to record installations and repositories that webhooks missed
-          </li>
-        </ul>
-        <.sign_out />
-      <% else %>
-        <p :if={@setup.forge_app}><a class="button" href="/auth/github">Sign in with GitHub</a></p>
-      <% end %>
+      <p :if={@setup.forge_app}>
+        <a class="button large" href="/auth/github">Sign in with GitHub</a>
+      </p>
+      <p :if={@setup.forge_app} class="muted small">
+        Sign in to install it on your repositories, or to see the ones shared with you.
+      </p>
     </main>
-    """
-  end
-
-  @doc "The sign-out button: a CSRF-protected POST."
-  def sign_out(assigns) do
-    ~H"""
-    <form action="/sign-out" method="post">
-      <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
-      <button type="submit">Sign out</button>
-    </form>
     """
   end
 end
