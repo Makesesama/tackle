@@ -13,6 +13,7 @@ let
         network = false;
         readOnlyWorkspace = true;
         enableNix = false;
+        restrictSockets = true;
         # A review's commands are read-only searches; the service's cgroup
         # bounds memory and tasks as a whole (nix/modules/tackle-web.nix).
         limits = {

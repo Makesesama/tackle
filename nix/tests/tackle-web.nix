@@ -2,15 +2,18 @@
 # against a local PostgreSQL over peer authentication, runs its migrations,
 # answers its health check, offers browser setup with a logged setup token and
 # keeps the admin pages behind sign-in, stores a GitHub App through
-# `tackle-web-release`, and accepts that App's signed webhooks. It also runs
-# the review jail's launcher as the service user, with a probe inside instead
-# of the exec-server, to check what jailed code can reach on a real host.
+# `tackle-web-release`, and accepts that App's signed webhooks. It also starts
+# the review jail under the service's own sandbox: once with a probe inside
+# instead of the exec-server, to check what jailed code can reach on a real
+# host, and once through the release's Tackle.Web.ReviewJail.
 #
 #   nix build .#checks.x86_64-linux.tackle-web-vm
 #
 # The secrets are fixed test values; a real host keeps them in a file outside
 # the store.
-self: {
+self:
+{ lib, ... }:
+{
   name = "tackle-web";
 
   nodes.machine =
@@ -28,17 +31,25 @@ self: {
         (self.packages.${pkgs.stdenv.hostPlatform.system}.tackle-review-jail.withEntry (
           pkgs.writeShellApplication {
             name = "review-jail-probe";
+            runtimeInputs = [ (pkgs.callPackage ./try-socket.nix { }) ];
             text = ''
               # The host's database socket, secrets, and processes are out of reach.
               test ! -e /run/postgresql
               test ! -e /var/lib/postgresql
               test ! -e /etc/tackle-web.env
+              test -z "''${SECRET_KEY_BASE:-}"
               test ! -e "$HOME/host-only"
               for proc in /proc/[0-9]*; do
                 case "$(cat "$proc/comm" 2>/dev/null)" in
                   beam.smp | postgres) exit 1 ;;
                 esac
               done
+              # The service allows netlink for Bubblewrap; the jail's own
+              # filter refuses it (exit status 2: EAFNOSUPPORT).
+              try-socket unix
+              status=0
+              try-socket netlink 2>/dev/null || status=$?
+              test "$status" = 2
               # Its resource limits (nix/packages/review-jail.nix).
               test "$(cat /proc/self/oom_score_adj)" = 1000
               test "$(ulimit -H -f)" = 262144
@@ -50,6 +61,34 @@ self: {
           }
         ))
       ];
+
+      # Starts and checks a review jail the way a review does, for the
+      # release's `eval` (see the subtest below).
+      environment.etc."tackle-web-jail-check.exs".text = ''
+        alias Tackle.Executor
+        alias Tackle.Web.ReviewJail
+
+        state = "/var/lib/tackle-web"
+        tree = Path.join(state, "vm-jail/tree")
+        checkout = %{worktree: tree, clone: Path.join(state, "vm-jail/clone"), state_dir: state}
+        {:ok, handle} = ReviewJail.start(checkout)
+
+        try do
+          {:ok, ref} = Executor.exec(handle.executor, ["git", "rev-parse", "HEAD"], cwd: tree)
+
+          await = fn await, output ->
+            case Executor.await(handle.executor, ref, 10_000) do
+              {:data, data} -> await.(await, output <> data)
+              {:exit_status, 0} -> output
+              other -> raise "git in the review jail failed: #{inspect(other)}"
+            end
+          end
+
+          IO.puts("review jail HEAD: " <> String.trim(await.(await, "")))
+        after
+          :ok = ReviewJail.stop(handle)
+        end
+      '';
 
       environment.etc."tackle-web.env".text = ''
         SECRET_KEY_BASE=vm-test-secret-key-base-vm-test-secret-key-base-vm-test-secret-key-base
@@ -66,6 +105,42 @@ self: {
     { nodes, ... }:
     let
       package = nodes.machine.services.tackle-web.package;
+      service = nodes.machine.systemd.services.tackle-web;
+
+      # Runs a command as the service user in a transient unit with the
+      # service's sandbox, limits, environment, and environment file, read
+      # from the configuration, so the jail is tested under what reviews get.
+      sandbox = lib.removeAttrs service.serviceConfig [
+        "Type"
+        "User"
+        "Group"
+        "ExecStart"
+        "ExecStartPre"
+        "Restart"
+        "RestartSec"
+        "RuntimeDirectory"
+      ];
+      propertyValue =
+        value:
+        if lib.isList value then
+          lib.concatStringsSep " " value
+        else if lib.isBool value then
+          lib.boolToString value
+        else
+          toString value;
+      inSandbox = lib.concatStringsSep " " (
+        [
+          "systemd-run --quiet --wait --pipe --collect --service-type=exec"
+          "--uid=tackle-web --gid=tackle-web"
+          "--property=RuntimeDirectory=tackle-web-check"
+        ]
+        ++ lib.mapAttrsToList (
+          name: value: lib.escapeShellArg "--property=${name}=${propertyValue value}"
+        ) sandbox
+        ++ lib.mapAttrsToList (name: value: lib.escapeShellArg "--setenv=${name}=${value}") (
+          service.environment // { RELEASE_TMP = "/run/tackle-web-check"; }
+        )
+      );
       reviewLauncher = nodes.machine.systemd.services.tackle-web.environment.TACKLE_WEB_REVIEW_JAIL;
       checkoutPath = nodes.machine.systemd.services.tackle-web.environment.PATH;
     in
@@ -117,7 +192,7 @@ self: {
           machine.succeed("systemctl show tackle-web -p TasksMax --value | grep -x 2048")
           machine.succeed("systemctl show tackle-web -p OOMPolicy --value | grep -x continue")
 
-      with subtest("the review jail hides the database socket and host processes"):
+      with subtest("the review jail starts in the service's sandbox and hides the host"):
           # Peer authentication admits any process of the service user that
           # reaches this socket, so it must not be visible in the jail.
           machine.succeed("runuser -u tackle-web -- test -S /run/postgresql/.s.PGSQL.5432")
@@ -125,9 +200,26 @@ self: {
           # The jail's home is private: this host file must not show through.
           machine.succeed("runuser -u tackle-web -- touch /var/lib/tackle-web-home/host-only")
           machine.succeed(
-              "cd /var/lib/tackle-web/vm-probe && "
-              "runuser -u tackle-web -- env HOME=/var/lib/tackle-web-home "
-              "tackle-review-jail-probe /dev/null | grep -Fx 'review jail probe: OK'"
+              "${inSandbox} --property=WorkingDirectory=/var/lib/tackle-web/vm-probe "
+              "/run/current-system/sw/bin/tackle-review-jail-probe /dev/null | grep -Fx 'review jail probe: OK'"
+          )
+
+      with subtest("the release starts and verifies a review jail in the service's sandbox"):
+          machine.succeed(
+              "runuser -u tackle-web -- env HOME=/var/lib/tackle-web-home PATH=${checkoutPath} sh -c '"
+              "set -e; cd /var/lib/tackle-web && mkdir vm-jail && cd vm-jail && "
+              "git init --quiet --bare clone && "
+              "head=$(git --git-dir=clone -c user.name=vm -c user.email=vm@localhost "
+              "commit-tree $(git --git-dir=clone mktree </dev/null) -m init) && "
+              "git --git-dir=clone update-ref refs/heads/main $head && "
+              "git --git-dir=clone worktree add --quiet --detach $PWD/tree main && "
+              "echo $head > head'"
+          )
+          head = machine.succeed("cat /var/lib/tackle-web/vm-jail/head").strip()
+          machine.succeed(
+              "${inSandbox} --property=WorkingDirectory=/var/lib/tackle-web-home "
+              "${package}/bin/tackle_web eval 'Code.eval_file(\"/etc/tackle-web-jail-check.exs\")' "
+              f"| grep -Fx 'review jail HEAD: {head}'"
           )
 
       with subtest("host checkout executables and system TLS trust are available"):

@@ -81,6 +81,22 @@ let
     name = "review-jail-pointer-test";
     entry = probe;
   };
+  # Netlink sockets work for unfiltered unprivileged code, so a refusal with
+  # EAFNOSUPPORT (exit status 2) shows the jail's socket filter.
+  socketJail = mkReviewJail {
+    name = "review-jail-socket-test";
+    entry = pkgs.writeShellApplication {
+      name = "review-jail-socket-probe";
+      runtimeInputs = [ (pkgs.callPackage ./try-socket.nix { }) ];
+      text = ''
+        try-socket unix
+        try-socket inet
+        status=0
+        try-socket netlink 2>/dev/null || status=$?
+        test "$status" = 2
+      '';
+    };
+  };
 in
 pkgs.writeShellApplication {
   name = "test-tackle-review-jail";
@@ -153,5 +169,8 @@ pkgs.writeShellApplication {
     ln -s git-pointer "$tree/.git"
     refused "$tree" 'symbolic link'
     printf 'Read-only Git pointer validation: OK\n'
+
+    (cd "$main" && ${lib.getExe socketJail} "$work/socket.log")
+    printf 'Socket families: OK\n'
   '';
 }

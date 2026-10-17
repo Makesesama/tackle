@@ -35,6 +35,12 @@
   # Memory as a whole and the number of tasks are bounded by the caller's
   # cgroup (the service's MemoryMax and TasksMax), not here.
   limits ? { },
+  # Let jailed code create Unix, IPv4, and IPv6 sockets only; other address
+  # families, such as netlink, fail with EAFNOSUPPORT (jail-socket-filter.c).
+  # Bubblewrap applies the filter after it has set up the jail, so it can
+  # still use netlink to bring up the private loopback interface. A systemd
+  # service that runs the launcher must allow AF_NETLINK for that reason.
+  restrictSockets ? false,
   # The program run inside the jail; tests substitute a probe.
   entry ? pkgs.callPackage ./exec-server.nix { },
 }:
@@ -160,6 +166,9 @@ jail name entry (
   ]
   ++ lib.optional network jail.combinators.network
   ++ lib.optional readOnlyWorkspace (set-env "GIT_OPTIONAL_LOCKS" "0")
+  ++ lib.optional restrictSockets (
+    jail.combinators.add-seccomp (pkgs.callPackage ./jail-socket-filter.nix { })
+  )
   ++ lib.optionals enableNix nixAccess
   ++ lib.optionals (gitConfig != { }) gitAccess
   ++ lib.optionals inheritDirenv (

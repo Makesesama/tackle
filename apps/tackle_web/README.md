@@ -178,7 +178,29 @@ apart from the state directory (`stateDir`, `/var/lib/tackle-web`).
 `reviewJail` defaults to the
 flake's `tackle-review-jail` package and sets `TACKLE_WEB_REVIEW_JAIL`. The
 service permits Bubblewrap's unprivileged user namespaces; the host must also
-allow them. Do not add a systemd namespace restriction that forbids `user`.
+allow them (`security.allowUserNamespaces`, the default). Do not add a systemd
+namespace restriction that forbids `user`.
+
+Every review starts Bubblewrap inside the service's systemd sandbox, which
+rules out a few settings there (the module explains each): netlink sockets
+are allowed, because Bubblewrap brings up the jail's loopback interface
+with one, and `ProtectKernelTunables`/`ProtectKernelLogs` are off, because
+their mounts over `/proc` make the kernel refuse the jail its own `/proc`.
+The service has no root and no capabilities, so the kernel refuses it
+writes to `/proc/sys` and the kernel log either way, and
+`SystemCallFilter=~syslog` keeps the rest of `ProtectKernelLogs`. Jailed
+code gets no netlink: the review jail's seccomp filter allows Unix, IPv4,
+and IPv6 sockets only. Changing the sandbox can break reviews (they fail
+closed); the VM test starts a jail under the configured settings.
+
+With `database.createLocally` the app shares the host's PostgreSQL server,
+which must be version 16 or later; the module asserts that. NixOS picks the
+version by `system.stateVersion`, so hosts from before 24.11 need
+`services.postgresql.package` set (upgrading a cluster with other
+services' data needs a migration), or `database.createLocally = false` and
+a `DATABASE_URL`. It relies on NixOS's default `local all all peer` rule;
+keep it if you override `services.postgresql.authentication`. Change
+`port` if another service uses 4000.
 
 `limits` bounds the whole service, review jails included, so a runaway or
 hostile command in a review cannot exhaust the host: `limits.memory`
@@ -201,10 +223,13 @@ sudo tackle-web-release eval "Tackle.Web.Release.migrate()"
 ```
 
 The VM test starts the service with PostgreSQL, checks its health and
-limits, stores a GitHub App through `tackle-web-release`, delivers a signed
-webhook, and runs the review jail's launcher as the service user with a
-probe inside, which must not see the database socket, the environment file,
-the home directory, or the host's processes (needs KVM):
+limits, stores a GitHub App through `tackle-web-release`, and delivers a
+signed webhook. It also starts review jails under the service's own sandbox
+and environment (read from the configuration): one with a probe inside,
+which must not see the database socket, the environment file and its
+secrets, the home directory, or the host's processes, nor open netlink
+sockets; and one through the release's `Tackle.Web.ReviewJail`, which runs
+its own checks and Git in the jail (needs KVM):
 `nix build .#checks.x86_64-linux.tackle-web-vm`.
 
 ### Reverse proxy
@@ -238,13 +263,41 @@ location / {
 }
 ```
 
+or with the NixOS nginx module (`recommendedProxySettings` sets `Host` from
+the request, so make this the only virtual host that answers that name, and
+refuse unknown names in a default virtual host):
+
+```nix
+services.nginx = {
+  enable = true;
+  recommendedProxySettings = true;      # Host, X-Forwarded-Proto, ...
+  appendHttpConfig = ''
+    limit_req_zone $binary_remote_addr zone=tackle:10m rate=5r/s;
+  '';
+  virtualHosts."review.example.com" = {
+    forceSSL = true;
+    enableACME = true;
+    locations."/" = {
+      proxyPass = "http://127.0.0.1:4000";
+      proxyWebsockets = true;           # LiveView
+      extraConfig = ''
+        client_max_body_size 5m;
+        limit_req zone=tackle burst=20;
+      '';
+    };
+  };
+};
+```
+
 ## Review jail
 
 `nix build .#tackle-review-jail` builds the dedicated Linux launcher. It uses
 read-only mounts for the worktree, its Git directory and the bare clone; it
 creates no Git files on the host. It has no network, host Nix daemon or store
 access beyond its tool closure, host Ketch configuration, credentials or service
-environment. Its home, `/tmp`, and `/dev/shm` are private scratch space of
+environment, and it can open Unix, IPv4, and IPv6 sockets only (a seccomp
+filter, `nix/packages/jail-socket-filter.c`, refuses netlink and every
+other address family). Its home, `/tmp`, and `/dev/shm` are private scratch space of
 256 MiB each, no file it writes may exceed 256 MiB, and its processes are
 the first the kernel kills when the service runs out of memory. Git reads use
 `GIT_OPTIONAL_LOCKS=0`. This is distinct from the CLI's writable, networked jail.
@@ -272,8 +325,8 @@ nix build .#tackle-review-jail.tests.smoke
 
 It exercises the production exec-server launcher, read-only Git operations,
 network and state isolation, hidden Nix store data/daemon, the resource
-limits, unchanged host Git data, and refusal of crafted Git pointers and
-symlinks.
+limits and socket filter, unchanged host Git data, and refusal of crafted
+Git pointers and symlinks.
 
 ## Setting up (in the browser)
 

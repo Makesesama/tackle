@@ -100,6 +100,11 @@ let
   # Peer authentication maps the system user to the database role of the same
   # name, and `ensureDBOwnership` needs a database of that name too.
   database = user;
+
+  # Newer NixOS reaches postgresql.target once the databases and roles exist;
+  # older releases have only the service, which does that in its postStart.
+  postgresqlUnit =
+    if config.systemd.targets ? postgresql then "postgresql.target" else "postgresql.service";
 in
 {
   options.services.tackle-web = {
@@ -235,6 +240,21 @@ in
           lib.hasPrefix "/" cfg.environmentFile && !(lib.hasPrefix "/nix/store/" cfg.environmentFile);
         message = "services.tackle-web: environmentFile must be an absolute path outside the Nix store";
       }
+      {
+        # Tackle.Web.Repo.min_pg_version. NixOS picks PostgreSQL's version
+        # by system.stateVersion: hosts from before 24.11 get 15 or older.
+        assertion =
+          !cfg.database.createLocally || lib.versionAtLeast config.services.postgresql.package.version "16";
+        message = ''
+          services.tackle-web needs PostgreSQL 16 or later, but
+          services.postgresql.package is ${config.services.postgresql.package.version}.
+          Set services.postgresql.package to pkgs.postgresql_16 or later
+          (upgrading an existing cluster's major version needs its data
+          migrated, see the NixOS manual), or set
+          services.tackle-web.database.createLocally = false and point
+          DATABASE_URL at another server.
+        '';
+      }
     ];
 
     environment.systemPackages = [ releaseCommand ];
@@ -268,8 +288,8 @@ in
       description = "Tackle pull request review app";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
-      after = [ "network-online.target" ] ++ lib.optional cfg.database.createLocally "postgresql.target";
-      requires = lib.optional cfg.database.createLocally "postgresql.target";
+      after = [ "network-online.target" ] ++ lib.optional cfg.database.createLocally postgresqlUnit;
+      requires = lib.optional cfg.database.createLocally postgresqlUnit;
 
       # Host checkout uses a scrubbed environment and resolves these explicitly.
       path = [
@@ -301,7 +321,23 @@ in
         CPUQuota = lib.mkIf (cfg.limits.cpuQuota != null) cfg.limits.cpuQuota;
         OOMPolicy = "continue";
 
-        # MemoryDenyWriteExecute is deliberately absent: the BEAM JIT writes executable code.
+        # Sandboxing. Every review runs Bubblewrap (the review jail) inside
+        # this sandbox, which rules out a few settings; the VM test starts
+        # the jail under these exact settings (nix/tests/tackle-web.nix).
+        #
+        #  * MemoryDenyWriteExecute: the BEAM JIT writes executable code.
+        #  * ProtectKernelTunables, ProtectKernelLogs: they mount over parts
+        #    of /proc, and the kernel then refuses the jail a /proc of its
+        #    own. The service runs without root or capabilities, so the
+        #    kernel already refuses it writes to /proc/sys and reads of
+        #    /proc/kmsg; SystemCallFilter keeps ProtectKernelLogs' syslog(2)
+        #    ban.
+        #  * AF_NETLINK must be allowed: Bubblewrap brings up the jail's
+        #    loopback interface over netlink. Without CAP_NET_ADMIN the app
+        #    can only read network state with it. The jail's own seccomp
+        #    filter takes netlink away again from the code that runs in it
+        #    (`restrictSockets`, nix/packages/jail-socket-filter.c).
+        #
         # Explicitly allow the namespace types Bubblewrap creates, including user.
         RestrictNamespaces = [
           "user"
@@ -324,9 +360,7 @@ in
         PrivateDevices = true;
         ProtectClock = true;
         ProtectHostname = true;
-        ProtectKernelLogs = true;
         ProtectKernelModules = true;
-        ProtectKernelTunables = true;
         ProtectControlGroups = true;
         ProtectProc = "invisible";
         LockPersonality = true;
@@ -336,7 +370,10 @@ in
           "AF_UNIX"
           "AF_INET"
           "AF_INET6"
+          "AF_NETLINK"
         ];
+        SystemCallFilter = [ "~syslog" ];
+        SystemCallErrorNumber = "EPERM";
         SystemCallArchitectures = "native";
       };
     };
