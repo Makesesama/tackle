@@ -17,7 +17,7 @@ defmodule Tackle.Web.PoliciesTest do
   alias Tackle.Web.Forges.{Access, ForgeApp, Installation, Repository}
   alias Tackle.Web.Models.{Provider, ReviewDefaults}
   alias Tackle.Web.Repo
-  alias Tackle.Web.Reviews.{Finding, ReviewRequest, ReviewRun}
+  alias Tackle.Web.Reviews.{Dismissal, Finding, ReviewRequest, ReviewRun}
 
   setup do
     forge_app!()
@@ -383,6 +383,45 @@ defmodule Tackle.Web.PoliciesTest do
 
       assert {:error, %Ash.Error.Forbidden{}} =
                Access.grant(repository.installation_id, user.login, %{}, actor: other_owner)
+    end
+  end
+
+  describe "dismissals" do
+    test "the owner dismisses (as themselves, from the web) and restores; grantees read", %{
+      admin: admin,
+      owner: owner,
+      user: user,
+      installation: installation,
+      repository: repository
+    } do
+      grant!(installation, user)
+
+      for actor <- [user, admin, user!()] do
+        assert {:error, %Ash.Error.Forbidden{}} =
+                 Dismissal.dismiss(repository.id, "fp", %{source: :forge, by: "x"}, actor: actor)
+      end
+
+      # Source and login are the actor's, whatever is given.
+      assert {:ok, %{source: :web, by: by} = dismissal} =
+               Dismissal.dismiss(repository.id, "fp", %{source: :forge, by: "someone"},
+                 actor: owner
+               )
+
+      assert by == owner.login
+      assert ids(Dismissal, user) == [dismissal.id]
+      assert ids(Dismissal, user!()) == []
+      assert {:error, %Ash.Error.Forbidden{}} = Dismissal.restore(dismissal, actor: user)
+      assert :ok = Dismissal.restore(dismissal, actor: owner)
+
+      again = Dismissal.dismiss!(repository.id, "fp", %{source: :forge, by: "ada"})
+      assert :ok = Dismissal.restore(again, actor: admin)
+    end
+
+    test "an owner cannot dismiss in another owner's repository", %{owner: owner} do
+      foreign = repository!(installation!(%{owner: user!()}))
+
+      assert {:error, %Ash.Error.Forbidden{}} =
+               Dismissal.dismiss(foreign.id, "fp", %{}, actor: owner)
     end
   end
 

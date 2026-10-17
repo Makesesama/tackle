@@ -170,6 +170,25 @@ defmodule Tackle.Web.Forge do
   @callback user(ForgeApp.t(), Installation.t(), login :: String.t()) ::
               {:ok, user()} | {:error, :not_found | term()}
 
+  @typedoc "A posted line comment's reactions: thumbs up and thumbs down."
+  @type comment_reactions :: %{
+          id: String.t(),
+          up: non_neg_integer(),
+          down: non_neg_integer()
+        }
+
+  @doc """
+  The reactions on every line comment of a pull request
+  (docs/TACKLE_WEB_PLAN.md §7.13). Counts only: the forge's reactions say
+  nothing about who may decide.
+  """
+  @callback review_comment_reactions(
+              ForgeApp.t(),
+              Installation.t(),
+              Repository.t(),
+              number :: pos_integer()
+            ) :: {:ok, [comment_reactions()]} | {:error, term()}
+
   @doc "The browser URL of a repository on the forge."
   @callback repository_url(Repository.t()) :: String.t()
 

@@ -88,7 +88,7 @@ defmodule Tackle.Web.Forges.Access do
 
     policy action(:grant) do
       forbid_unless {Check, role: :user}
-      authorize_if Tackle.Web.Forges.Access.OwnerCheck
+      authorize_if {Tackle.Web.Forges.OwnerCheck, attribute: :installation_id}
     end
 
     policy action(:revoke) do

@@ -34,7 +34,7 @@ defmodule Tackle.Web.Forge.GitHubSetupTest do
                  "members" => "read"
                },
                "hook_attributes" => %{"url" => @base <> "/webhooks/github", "active" => true},
-               "default_events" => ["pull_request", "issue_comment"]
+               "default_events" => ["pull_request", "issue_comment", "pull_request_review_thread"]
              }
     end
 

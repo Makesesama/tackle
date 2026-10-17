@@ -2,8 +2,9 @@ defmodule Tackle.Web.Webhooks do
   @moduledoc """
   Acts on verified forge events (`Tackle.Web.Forge.Event`): keeps
   installations (with the owner the forge names, docs/TACKLE_WEB_PLAN.md
-  §7.12) and repositories in step with the forge, and hands pull
-  request and comment events to `Tackle.Web.Triggers`.
+  §7.12) and repositories in step with the forge, hands pull request and
+  comment events to `Tackle.Web.Triggers`, and review threads and new pull
+  request heads to `Tackle.Web.Feedback` (§7.13).
 
   Everything here is database work: forge API calls happen in jobs, so a
   webhook is answered well within the forge's timeout
@@ -13,10 +14,11 @@ defmodule Tackle.Web.Webhooks do
   """
 
   require Ash.Query
+  require Logger
 
+  alias Tackle.Web.{Feedback, Triggers}
   alias Tackle.Web.Forge.Event
   alias Tackle.Web.Forges.{Installation, Repository}
-  alias Tackle.Web.Triggers
 
   @resources [Installation, Repository]
 
@@ -64,7 +66,14 @@ defmodule Tackle.Web.Webhooks do
     with {:ok, repository} <- sync_repository(forge, event),
          {:ok, outcome, _request} <-
            Triggers.pull_request(repository, event.action, event.pull_request, event.sender) do
+      reactions(repository, event)
       {:ok, outcome}
+    end
+  end
+
+  def handle(forge, %Event{type: :review_thread} = event) do
+    with {:ok, repository} <- sync_repository(forge, event) do
+      Feedback.queue_thread(repository, event.action, event.thread, event.sender)
     end
   end
 
@@ -74,6 +83,18 @@ defmodule Tackle.Web.Webhooks do
       {:ok, outcome}
     end
   end
+
+  # A new head or a closed pull request is when people have reacted to the
+  # last review's comments (§7.13). Best effort: the trigger above already
+  # did its work, so a failure here only loses one reading of reactions.
+  defp reactions(repository, %Event{action: action, pull_request: pull_request})
+       when action in [:synchronize, :closed] do
+    with {:error, reason} <- Feedback.queue_reactions(repository, pull_request.number) do
+      Logger.warning("could not queue reading reactions: #{inspect(reason)}")
+    end
+  end
+
+  defp reactions(_repository, _event), do: :ok
 
   # Only installation events change an installation's status. Other events
   # record an installation they name for the first time as active.

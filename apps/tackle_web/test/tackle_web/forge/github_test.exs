@@ -262,6 +262,32 @@ defmodule Tackle.Web.Forge.GitHubTest do
       assert {:ok, %Event{installation: %{owner: nil}}} = GitHub.parse_event("installation", bot)
     end
 
+    test "review threads: the pull request and the ids of its comments", %{
+      installation: installation,
+      repository: repository
+    } do
+      payload = %{
+        "action" => "unresolved",
+        "installation" => %{"id" => String.to_integer(installation.external_id)},
+        "repository" => repository_payload(repository),
+        "pull_request" => %{"number" => 7},
+        "thread" => %{"comments" => [%{"id" => 31}, %{"id" => "x"}, %{"id" => 32}]},
+        "sender" => %{"login" => "ada", "type" => "User"}
+      }
+
+      assert {:ok, %Event{type: :review_thread, action: :unresolved, sender: "ada"} = event} =
+               GitHub.parse_event("pull_request_review_thread", payload)
+
+      assert event.thread == %{pull_number: 7, comment_ids: ["31", "32"]}
+      assert event.repository.name == "widgets"
+
+      assert GitHub.parse_event("pull_request_review_thread", Map.delete(payload, "thread")) ==
+               :error
+
+      assert {:ok, %Event{type: :ignored}} =
+               GitHub.parse_event("pull_request_review_thread", %{payload | "action" => "created"})
+    end
+
     test "other events are ignored" do
       assert {:ok, %Event{type: :ignored}} = GitHub.parse_event("push", %{})
       assert {:ok, %Event{type: :ignored}} = GitHub.parse_event(nil, %{})

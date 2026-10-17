@@ -5,8 +5,8 @@
 jobs with stored runs/findings, retry-safe sanitized GitHub posting
 (`:reviewed` → `:posted`), and GitHub sign-in with AshAdmin and the Codex
 device-login page behind admin policies, web-only setup (phase 6b, §7.11),
-ownership and access (phase 7, §7.12), and the user pages (phase 8). Phase 9
-(feedback) is not implemented.** This document is a handoff: it should be enough to start without the conversation
+ownership and access (phase 7, §7.12), the user pages (phase 8), and
+feedback (phase 9, §7.13): every phase of §8 is implemented.** This document is a handoff: it should be enough to start without the conversation
 that produced it. Read [`AGENTS.md`](../AGENTS.md) first; its rules apply.
 
 ## 1. Goal
@@ -122,7 +122,7 @@ Tackle.Web.Repo                       AshPostgres repo
 Tackle.Web.Vault                      Cloak vault (AES.GCM, key from env)
 Tackle.Web.Endpoint / Router / *Live  Phoenix
 Tackle.Web.Forges        (Ash domain) Installation, Repository
-Tackle.Web.Reviews       (Ash domain) ReviewRequest, ReviewRun, Finding, FindingOutcome
+Tackle.Web.Reviews       (Ash domain) ReviewRequest, ReviewRun, Finding, Dismissal (§7.13)
 Tackle.Web.Models        (Ash domain) Provider (+ encrypted credentials)
 Tackle.Web.Accounts      (Ash domain) User (sign-in)
 Tackle.Web.Forge                      behaviour (§7.1)
@@ -195,10 +195,11 @@ place and passes the result to `Tackle.Review.run/2`.
   confidence, rule_id, path, side, start_line, end_line, trigger, body,
   suggestion), `support`, `verdict`, `evidence` (rejected), `hidden_reason`
   (verified but hidden), `forge_comment_id` (when posted).
-- `FindingOutcome`: `repository`, `fingerprint`, `outcome` (`:dismissed` |
-  `:fixed` | `:useful` | `:not_useful`), `source` (`:forge` | `:admin`),
-  `by`, `note`. A repository's dismissed fingerprints are the next review's
-  `:known_fingerprints`.
+- `FindingOutcome` (as first sketched; phase 9 built `Dismissal` and
+  reaction counts on `Finding` instead, §7.13): `repository`, `fingerprint`,
+  `outcome` (`:dismissed` | `:fixed` | `:useful` | `:not_useful`), `source`
+  (`:forge` | `:admin`), `by`, `note`. A repository's dismissed fingerprints
+  are the next review's `:known_fingerprints`.
 
 **Models**
 
@@ -949,7 +950,7 @@ Decisions:
 (owner, or owner and grantees, from an installation or a repository, through
 a to-one path for requests, runs, and findings); `Forges.Access` with
 `Access.Resolve` (the forge lookup, before the transaction) and
-`Access.OwnerCheck`; `Installation.record_owner` (internal, only while
+`Forges.OwnerCheck`; `Installation.record_owner` (internal, only while
 unowned, through `Installation.put_owner/2` from webhooks and syncs),
 `set_owner` (admins), and `owner/1`; `Accounts.ActorOwns` for providers and
 defaults; `Forge.user/3`; `Auth.require_user`. The forge app record is
@@ -961,6 +962,54 @@ GitHub teams or collaborators automatically, admin approval of new
 installations, and the user-facing pages (phase 8, §8). Until phase 8,
 owners manage grants, settings, and providers through code interfaces and
 tests only.
+
+### 7.13 Feedback (phase 9)
+
+**Goal:** what people do with the posted findings reaches tackle. A finding
+someone with write access dismissed is not reported again in that
+repository, and reactions show which findings people found useful.
+
+Decisions (taken at phase 9; they replace the `FindingOutcome` sketch of §6):
+
+- **Dismissals** (`Reviews.Dismissal`): one row per repository and
+  fingerprint, with `source` (`:forge` or `:web`), `by` (a login), the pull
+  request and the finding's title for display. Every review of the
+  repository passes the dismissed fingerprints to `Tackle.Review.run/2` as
+  `:known_fingerprints`, so they are dropped like the plan's "dismissed
+  fingerprints" (§7.5 step 6).
+- **Resolving a thread dismisses.** GitHub sends `pull_request_review_thread`
+  (`resolved` / `unresolved`) with the thread's comments. A thread counts
+  only when one of its comment ids is a comment tackle posted in that
+  repository (`Finding.forge_comment_id`), never by a marker in a body that
+  anyone can write. Resolving needs write access on GitHub, but a pull
+  request's author can resolve threads on their own pull request too, so the
+  sender's write access is checked (as for commands, §7.7) before anything
+  is recorded: otherwise a pull request could hide a finding from later
+  reviews by resolving it. `unresolved` by someone with write access removes
+  the dismissal. The check is an API call, so the webhook only queues a
+  `Tackle.Web.Feedback.Job`.
+- **Reactions are counts, not decisions.** GitHub sends no webhook for
+  reactions; the review comments of a pull request carry their counts
+  (`GET /repos/{owner}/{repo}/pulls/{number}/comments`, `reactions`). They
+  are read for pull requests with posted comments when the pull request gets
+  a new head or is closed, and stored on the finding (`reactions_up`,
+  `reactions_down`). Anyone who can see a public repository can react, so
+  reactions never dismiss anything.
+- **Dismissing in the browser.** The installation's owner dismisses or
+  restores a finding on the review page (`source: :web`); grantees cannot.
+**Implemented in phase 9**: `Reviews.Dismissal` (with `Dismissal.ByActor`
+and the shared `Forges.OwnerCheck`), `Tackle.Web.Feedback` and
+`Feedback.Job` (queue `forge`), `Forge.review_comment_reactions/4`, the
+`:review_thread` event, `Finding.reactions_up`/`reactions_down` and an index
+on `forge_comment_id`, and the dismiss/restore controls on the review and
+repository pages. A resolve and an unresolve in quick succession are
+separate jobs and may run in either order.
+
+- Not in phase 9: marking findings fixed (a later run of the same pull
+  request that no longer finds them), replies, and statistics.
+
+The App also subscribes to `pull_request_review_thread` (new registrations;
+an existing App adds the event in its GitHub settings).
 
 ## 8. Phases
 
@@ -1032,8 +1081,9 @@ use Postgres with the Ecto sandbox. Commit per phase.
    timer, not PubSub: the review job's writes run inside its own Repo
    transactions); pull request titles on review requests; lists filtered with
    `Forges.AccessCheck.visible/2` so admins see only their own there too.
-9. **Feedback.** Resolved threads and reactions → `FindingOutcome`s;
-   outcomes → known fingerprints.
+9. **Feedback** (§7.13). **Implemented.** Resolved threads (by writers) and the owner's
+   choice → `Dismissal`s → known fingerprints; reactions → counts on
+   findings.
 
 ## 9. Environment notes for the next agent
 

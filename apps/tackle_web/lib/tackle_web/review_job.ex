@@ -24,7 +24,7 @@ defmodule Tackle.Web.ReviewJob do
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Tools.{Bash, Read}
-  alias Tackle.Web.{AgentBackend, Models, Posting}
+  alias Tackle.Web.{AgentBackend, Feedback, Models, Posting}
   alias Tackle.Web.Forges.Installation
   alias Tackle.Web.ReviewJob.{Lifecycle, Store}
   alias Tackle.Web.Reviews.ReviewRequest
@@ -151,7 +151,8 @@ defmodule Tackle.Web.ReviewJob do
         rules: discovery.rules,
         settings: settings,
         profile: request.profile,
-        known_fingerprints: [],
+        # Findings dismissed in the repository are not reported again (§7.13).
+        known_fingerprints: Feedback.dismissed_fingerprints(repository.id),
         warnings: Enum.map(discovery.warnings, &warning/1)
       )
     end

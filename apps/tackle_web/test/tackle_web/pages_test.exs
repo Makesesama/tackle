@@ -14,7 +14,7 @@ defmodule Tackle.Web.PagesTest do
   alias Tackle.Plugins.Codex
   alias Tackle.Web.Forges.{Access, Installation, Repository}
   alias Tackle.Web.Models.{Provider, ReviewDefaults}
-  alias Tackle.Web.Reviews.{Finding, ReviewRequest, ReviewRun}
+  alias Tackle.Web.Reviews.{Dismissal, Finding, ReviewRequest, ReviewRun}
 
   alias Tackle.Web.{
     GrantsComponent,
@@ -383,6 +383,73 @@ defmodule Tackle.Web.PagesTest do
       {:ok, socket} = ReviewLive.mount(%{"id" => request.id}, %{}, socket(owner))
       assert socket.assigns.run == nil
       assert socket.assigns.request.status == :pending
+    end
+  end
+
+  describe "feedback on the pages" do
+    test "the owner dismisses a finding on the review page and restores it on the repository's",
+         %{owner: owner, repository: repository} do
+      request = request!(repository)
+      run!(request, [{:shown, "Injection in widgets", "Body."}])
+      {:ok, socket} = ReviewLive.mount(%{"id" => request.id}, %{}, socket(owner))
+      [finding] = socket.assigns.run.findings
+
+      {:noreply, socket} = ReviewLive.handle_event("dismiss", %{"id" => finding.id}, socket)
+      assert socket.assigns.flash["info"] =~ "Dismissed"
+      assert %{source: :web, by: "olivia"} = socket.assigns.dismissed[finding.fingerprint]
+
+      html = build_conn() |> page(owner, "/repos/#{repository.id}") |> html_response(200)
+      assert html =~ "Dismissed findings"
+      assert html =~ "Injection in widgets"
+
+      {:ok, repo_socket} = RepositoryLive.mount(%{"id" => repository.id}, %{}, socket(owner))
+      [dismissal] = repo_socket.assigns.dismissals
+
+      {:noreply, repo_socket} =
+        RepositoryLive.handle_event("restore", %{"id" => dismissal.id}, repo_socket)
+
+      assert repo_socket.assigns.dismissals == []
+      assert Ash.read!(Dismissal) == []
+
+      # A finding id from elsewhere is not on the page.
+      {:noreply, refused} =
+        ReviewLive.handle_event("dismiss", %{"id" => Ecto.UUID.generate()}, socket)
+
+      assert refused.assigns.flash["error"]
+    end
+
+    test "grantees see dismissals and reactions but cannot dismiss", %{
+      conn: conn,
+      installation: installation,
+      repository: repository
+    } do
+      request = request!(repository)
+      run!(request, [{:shown, "Injection in widgets", "Body."}])
+      [finding] = Ash.read!(Finding)
+
+      finding
+      |> Ash.Changeset.for_update(:record_reactions, %{reactions_up: 4, reactions_down: 2})
+      |> Ash.update!()
+
+      Dismissal.dismiss!(repository.id, finding.fingerprint, %{
+        source: :forge,
+        by: "ada",
+        title: finding.title
+      })
+
+      grantee = user!()
+      grant!(installation, grantee)
+
+      html = conn |> page(grantee, "/reviews/#{request.id}") |> html_response(200)
+      assert html =~ "👍 4 👎 2"
+      assert html =~ "dismissed by ada (resolved on GitHub)"
+      refute html =~ ~s(phx-click="restore")
+      refute html =~ ~s(phx-click="dismiss")
+
+      {:ok, socket} = ReviewLive.mount(%{"id" => request.id}, %{}, socket(grantee))
+      {:noreply, refused} = ReviewLive.handle_event("restore", %{"id" => finding.id}, socket)
+      assert refused.assigns.flash["error"]
+      assert [_still] = Ash.read!(Dismissal)
     end
   end
 

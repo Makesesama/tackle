@@ -18,6 +18,9 @@ defmodule Tackle.Web.Forge.Event do
       `sender`.
     * `:comment` - a new comment on a pull request's conversation:
       `installation`, `repository`, `comment`.
+    * `:review_thread` - a review thread was resolved or unresolved by a
+      person (`action` `:resolved` or `:unresolved`): `installation`,
+      `repository`, `thread`, `sender`.
     * `:ping` - the forge checks the webhook.
     * `:ignored` - anything else; `reason` says what it was.
   """
@@ -41,6 +44,9 @@ defmodule Tackle.Web.Forge.Event do
           author_is_bot: boolean()
         }
 
+  @typedoc "A review thread: its pull request and the forge's ids of its comments."
+  @type thread :: %{pull_number: pos_integer(), comment_ids: [String.t()]}
+
   @type t :: %__MODULE__{
           type:
             :installation
@@ -48,6 +54,7 @@ defmodule Tackle.Web.Forge.Event do
             | :repositories_removed
             | :pull_request
             | :comment
+            | :review_thread
             | :ping
             | :ignored,
           delivery_id: String.t() | nil,
@@ -57,6 +64,7 @@ defmodule Tackle.Web.Forge.Event do
           repositories: [repository()],
           pull_request: Tackle.Web.Forge.pull_request() | nil,
           comment: comment() | nil,
+          thread: thread() | nil,
           sender: String.t() | nil,
           reason: String.t() | nil
         }
@@ -70,6 +78,7 @@ defmodule Tackle.Web.Forge.Event do
     :repository,
     :pull_request,
     :comment,
+    :thread,
     :sender,
     :reason,
     repositories: []

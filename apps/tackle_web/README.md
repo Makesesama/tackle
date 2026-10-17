@@ -1,7 +1,8 @@
 # tackle_web
 
-**Status: phases 1–8 (7: ownership and access, 8: user pages) and 6b
-(web-only setup) of [`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
+**Status: phases 1–9 (7: ownership and access, 8: user pages, 9: feedback)
+and 6b (web-only setup) of
+[`docs/TACKLE_WEB_PLAN.md`](../../docs/TACKLE_WEB_PLAN.md).**
 A web app that will review pull requests with
 [`tackle_review`](../../packages/tackle_review/README.md) and post the
 findings to the forge. So far it receives GitHub webhooks: it keeps track
@@ -17,7 +18,9 @@ providers and review defaults ([ownership](#ownership-and-access-phase-7)).
 Signed-in users have their own [pages](#user-pages-phase-8): their
 repositories with the status of each review, the findings of a review, and,
 for what they own, settings, access, and model providers. Admins see and
-manage everything in AshAdmin. Queued reviews now run in the
+manage everything in AshAdmin. Findings that someone with write access
+resolves on GitHub, or the owner dismisses, are not reported again in that
+repository ([feedback](#feedback-phase-9)). Queued reviews now run in the
 read-only jail, with base-commit rules and
 explicit model settings, store their runs/findings at `:reviewed`, then post a
 sanitized GitHub COMMENT review and transition to `:posted`. Posting retries use
@@ -210,7 +213,7 @@ copied by hand.
    to own it (empty: your personal account). GitHub's App manifest flow
    registers it with everything preset: webhook URL
    `<TACKLE_WEB_URL>/webhooks/github` and its events (pull request, issue
-   comment), the sign-in callback, public (so users can install it on their
+   comment, pull request review thread), the sign-in callback, public (so users can install it on their
    own accounts), and the permissions (Metadata,
    Contents read; Pull requests write; Issues read; organisation Members
    read). GitHub sends the browser back with a one-time code, and the App id,
@@ -230,7 +233,9 @@ installations there.
 
 An App created before phase 7 is private, so only its own account can install
 it: make it public in the App's GitHub settings (Advanced, "Make public") to
-let users install it on theirs.
+let users install it on theirs. Such an App also lacks the "Pull request
+review thread" event that [feedback](#feedback-phase-9) needs: tick it under
+the App's "Permissions & events".
 
 **Locally** (`TACKLE_WEB_URL` on `localhost`) GitHub cannot deliver webhooks,
 so the App is registered without one: installations come from the install
@@ -411,6 +416,34 @@ these pages. Finding text comes from the models and is never rendered as HTML.
 The page tests render over HTTP and call the pages' events directly;
 `Phoenix.LiveViewTest` would need the `lazy_html` package, which is not a
 dependency.
+
+## Feedback (phase 9)
+
+`Tackle.Web.Feedback` turns what people do with posted findings into data
+(plan §7.13):
+
+- **Resolving a thread dismisses its finding.** A `pull_request_review_thread`
+  delivery (`resolved` or `unresolved`) counts only when one of the thread's
+  comment ids is a line comment tackle posted in that repository
+  (`Finding.forge_comment_id`); text in comments is never trusted. The webhook
+  queues `Tackle.Web.Feedback.Job`, which checks that the person has write
+  access (a pull request's author may resolve threads too, and must not hide
+  findings that way), then records a `Tackle.Web.Reviews.Dismissal` for the
+  repository and fingerprint (`source: :forge`), or removes it on
+  `unresolved`. Bots' changes are ignored.
+- **The owner dismisses on the review page** (`source: :web`) and restores on
+  the review or repository page; grantees see dismissals but cannot change
+  them, and admins can restore in AshAdmin.
+- **Reviews skip dismissed findings**: `ReviewJob` passes the repository's
+  dismissed fingerprints to `Tackle.Review.run/2` as `:known_fingerprints`.
+- **Reactions** (👍/👎) on posted comments are read when a pull request with
+  posted comments gets a new head or is closed (one job per pull request per
+  minute; `GET /repos/{owner}/{repo}/pulls/{number}/comments`) and stored on
+  the findings (`reactions_up`, `reactions_down`), shown on the review page.
+  They are counts only and never dismiss anything.
+
+A resolve and an unresolve in quick succession are separate jobs and can run
+in either order; the thread's last state is not read back from GitHub.
 
 ## Models and credentials (phase 3)
 

@@ -1,5 +1,9 @@
 defmodule Tackle.Web.Reviews.Finding do
-  @moduledoc "A shown, rejected, or verified-but-hidden finding from one run."
+  @moduledoc """
+  A shown, rejected, or verified-but-hidden finding from one run. A shown
+  finding posted as a line comment has its `forge_comment_id`, and the
+  reactions on that comment as last read (docs/TACKLE_WEB_PLAN.md §7.13).
+  """
   use Ash.Resource,
     otp_app: :tackle_web,
     domain: Tackle.Web.Reviews,
@@ -13,6 +17,11 @@ defmodule Tackle.Web.Reviews.Finding do
 
     references do
       reference :run, on_delete: :delete
+    end
+
+    # Feedback finds the findings behind a forge's comments (§7.13).
+    custom_indexes do
+      index [:forge_comment_id], where: "forge_comment_id IS NOT NULL"
     end
   end
 
@@ -30,6 +39,11 @@ defmodule Tackle.Web.Reviews.Finding do
     update :record_comment do
       accept [:forge_comment_id]
       require_atomic? false
+    end
+
+    # Internal: the reactions on the posted comment, read by Tackle.Web.Feedback.
+    update :record_reactions do
+      accept [:reactions_up, :reactions_down]
     end
   end
 
@@ -73,6 +87,9 @@ defmodule Tackle.Web.Reviews.Finding do
     attribute :evidence, :string, public?: true
     attribute :hidden_reason, :map, public?: true
     attribute :forge_comment_id, :string, public?: true
+    # 👍 and 👎 on the posted comment when they were last read; nil before.
+    attribute :reactions_up, :integer, public?: true, constraints: [min: 0]
+    attribute :reactions_down, :integer, public?: true, constraints: [min: 0]
     timestamps()
   end
 

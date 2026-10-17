@@ -220,6 +220,10 @@ defmodule Tackle.Web.Forges.Repository do
       public? true
     end
 
+    has_many :dismissals, Tackle.Web.Reviews.Dismissal do
+      public? true
+    end
+
     # Grants on this repository alone; grants on the whole installation are
     # the installation's.
     has_many :accesses, Access do

@@ -1,8 +1,9 @@
 defmodule Tackle.Web.RepositoryLive do
   @moduledoc """
-  `/repos/:id`: a repository's reviews, newest first. Its installation's
-  owner also changes its review settings here and decides who else may see
-  it (`Tackle.Web.GrantsComponent`).
+  `/repos/:id`: a repository's reviews, newest first, and the findings
+  dismissed in it. Its installation's owner also restores dismissed
+  findings, changes its review settings, and decides who else may see it
+  (`Tackle.Web.GrantsComponent`).
   """
 
   use Phoenix.LiveView
@@ -14,7 +15,7 @@ defmodule Tackle.Web.RepositoryLive do
 
   alias Tackle.Web.Forge
   alias Tackle.Web.Forges.{Installation, Repository}
-  alias Tackle.Web.Reviews.ReviewRequest
+  alias Tackle.Web.Reviews.{Dismissal, ReviewRequest}
 
   @requests 50
 
@@ -41,6 +42,20 @@ defmodule Tackle.Web.RepositoryLive do
   # Only the owner's page has the form.
   @impl true
   def handle_event("save", _params, %{assigns: %{form: nil}} = socket), do: {:noreply, socket}
+
+  def handle_event("restore", %{"id" => id}, socket) do
+    with_user(socket, fn socket ->
+      user = socket.assigns.current_user
+
+      with %Dismissal{repository_id: repository_id} = dismissal <- get(Dismissal, id, user),
+           true <- repository_id == socket.assigns.repository.id,
+           :ok <- Dismissal.restore(dismissal, actor: user) do
+        socket |> put_flash(:info, "Restored: later reviews report it again.") |> load_requests()
+      else
+        _error -> put_flash(socket, :error, "The finding could not be restored.")
+      end
+    end)
+  end
 
   def handle_event("save", %{"form" => params}, socket) do
     with_user(socket, fn socket ->
@@ -77,7 +92,13 @@ defmodule Tackle.Web.RepositoryLive do
       |> Ash.Query.load(latest_run: [:shown_findings])
       |> Ash.read!(actor: socket.assigns.current_user)
 
-    assign(socket, :requests, requests)
+    dismissals =
+      Dismissal
+      |> Ash.Query.filter(repository_id == ^socket.assigns.repository.id)
+      |> Ash.Query.sort(updated_at: :desc)
+      |> Ash.read!(actor: socket.assigns.current_user)
+
+    assign(socket, requests: requests, dismissals: dismissals)
   end
 
   # `settings` is edited as JSON text; a budget left empty is no limit.
@@ -184,6 +205,31 @@ defmodule Tackle.Web.RepositoryLive do
               <span :if={request.latest_run}>{request.latest_run.shown_findings}</span>
             </td>
             <td class="right muted small"><.time at={request.updated_at} /></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section :if={@dismissals != []} class="card">
+      <div class="card-header"><h2>Dismissed findings</h2></div>
+      <p class="muted small">Reviews of this repository no longer report these.</p>
+      <table class="list">
+        <tbody>
+          <tr :for={dismissal <- @dismissals}>
+            <td>
+              <span class="strong">{dismissal.title || dismissal.fingerprint}</span>
+              <div class="muted small">
+                by {dismissal.by}
+                {if dismissal.source == :forge, do: "(resolved on GitHub)", else: "(here)"}
+                <span :if={dismissal.pull_number}>· #{dismissal.pull_number}</span>
+                · <.time at={dismissal.updated_at} />
+              </div>
+            </td>
+            <td :if={@owner?} class="right">
+              <button class="small secondary" phx-click="restore" phx-value-id={dismissal.id}>
+                Restore
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>

@@ -2,8 +2,12 @@ defmodule Tackle.Web.ReviewLive do
   @moduledoc """
   `/reviews/:id`: one review request of a pull request head, with its
   latest run: the verdict, what it cost, and its findings, those posted on
-  the pull request first. Finding text comes from the models and is shown
-  as plain text, never as HTML.
+  the pull request first, with the reactions on their comments. Finding
+  text comes from the models and is shown as plain text, never as HTML.
+
+  The installation's owner dismisses a finding here, so that later reviews
+  of the repository do not report it again, or restores it
+  (`Tackle.Web.Reviews.Dismissal`, docs/TACKLE_WEB_PLAN.md §7.13).
   """
 
   use Phoenix.LiveView
@@ -14,7 +18,8 @@ defmodule Tackle.Web.ReviewLive do
   import Tackle.Web.UI
 
   alias Tackle.Web.Forge
-  alias Tackle.Web.Reviews.{Finding, ReviewRequest, ReviewRun}
+  alias Tackle.Web.Forges.Installation
+  alias Tackle.Web.Reviews.{Dismissal, Finding, ReviewRequest, ReviewRun}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -42,6 +47,49 @@ defmodule Tackle.Web.ReviewLive do
 
   defp in_flight?(_socket), do: false
 
+  @impl true
+  def handle_event("dismiss", %{"id" => id}, socket) do
+    with_user(socket, fn socket ->
+      %{request: request, current_user: user} = socket.assigns
+
+      with %{} = finding <- finding(socket, id),
+           {:ok, _dismissal} <-
+             Dismissal.dismiss(
+               request.repository_id,
+               finding.fingerprint,
+               %{title: finding.title, pull_number: request.pull_number},
+               actor: user
+             ) do
+        socket |> put_flash(:info, "Dismissed: later reviews will not report it.") |> load()
+      else
+        _error -> put_flash(socket, :error, "The finding could not be dismissed.")
+      end
+    end)
+  end
+
+  def handle_event("restore", %{"id" => id}, socket) do
+    with_user(socket, fn socket ->
+      %{request: request, current_user: user} = socket.assigns
+
+      with %{} = finding <- finding(socket, id),
+           {:ok, %Dismissal{} = dismissal} <-
+             Dismissal.get(request.repository_id, finding.fingerprint, actor: user),
+           :ok <- Dismissal.restore(dismissal, actor: user) do
+        socket |> put_flash(:info, "Restored: later reviews report it again.") |> load()
+      else
+        _error -> put_flash(socket, :error, "The finding could not be restored.")
+      end
+    end)
+  end
+
+  # Only findings of the run on the page.
+  defp finding(socket, id) do
+    case socket.assigns.run do
+      nil -> nil
+      run -> Enum.find(run.findings, &(&1.id == id))
+    end
+  end
+
   defp load(socket) do
     user = socket.assigns.current_user
 
@@ -54,7 +102,7 @@ defmodule Tackle.Web.ReviewLive do
     request =
       ReviewRequest
       |> Ash.Query.filter(id == ^socket.assigns.request_id)
-      |> Ash.Query.load(repository: [:installation], runs: runs)
+      |> Ash.Query.load(repository: [:installation, :dismissals], runs: runs)
       |> Ash.read_one!(actor: user)
 
     case request do
@@ -69,6 +117,8 @@ defmodule Tackle.Web.ReviewLive do
         socket
         |> assign(:page_title, "##{request.pull_number} #{request.repository.name}")
         |> assign(request: request, run: run, earlier_runs: length(request.runs) - 1)
+        |> assign(:owner?, Installation.owned_by?(request.repository.installation, user))
+        |> assign(:dismissed, Map.new(request.repository.dismissals, &{&1.fingerprint, &1}))
         |> assign(:groups, group_findings(run))
     end
   end
@@ -143,6 +193,7 @@ defmodule Tackle.Web.ReviewLive do
         <summary>
           <span class={"badge severity-#{finding.severity}"}>{finding.severity}</span>
           <span :if={finding.blocking} class="badge verdict-blocking">blocking</span>
+          <span :if={@dismissed[finding.fingerprint]} class="badge">dismissed</span>
           <span class="strong">{finding.title}</span>
           <span class="muted small location">{location(finding)}</span>
         </summary>
@@ -150,10 +201,37 @@ defmodule Tackle.Web.ReviewLive do
           <p class="text">{finding.body}</p>
           <pre :if={finding.suggestion} class="suggestion">{finding.suggestion}</pre>
           <p :if={finding.evidence} class="muted small text">Why it was rejected: {finding.evidence}</p>
-          <p class="muted small">
-            {finding.category} · confidence {round(finding.confidence * 100)}%
-            <span :if={finding.rule_id}>· rule {finding.rule_id}</span>
-          </p>
+          <div class="finding-meta">
+            <p class="muted small">
+              {finding.category} · confidence {round(finding.confidence * 100)}%
+              <span :if={finding.rule_id}>· rule {finding.rule_id}</span>
+              <span :if={finding.reactions_up} title="Reactions on the comment on GitHub">
+                · 👍 {finding.reactions_up} 👎 {finding.reactions_down}
+              </span>
+              <span :if={@dismissed[finding.fingerprint]}>
+                · {dismissed_text(@dismissed[finding.fingerprint])}
+              </span>
+            </p>
+            <span :if={@owner? and state != :rejected}>
+              <button
+                :if={!@dismissed[finding.fingerprint]}
+                class="small secondary"
+                phx-click="dismiss"
+                phx-value-id={finding.id}
+                title="Later reviews of this repository will not report it"
+              >
+                Dismiss
+              </button>
+              <button
+                :if={@dismissed[finding.fingerprint]}
+                class="small secondary"
+                phx-click="restore"
+                phx-value-id={finding.id}
+              >
+                Restore
+              </button>
+            </span>
+          </div>
         </div>
       </details>
     </section>
@@ -170,6 +248,11 @@ defmodule Tackle.Web.ReviewLive do
       request.pull_number
     )
   end
+
+  defp dismissed_text(%Dismissal{source: :forge, by: by}),
+    do: "dismissed by #{by} (resolved on GitHub)"
+
+  defp dismissed_text(%Dismissal{by: by}), do: "dismissed by #{by}"
 
   defp location(%{path: path, start_line: line, end_line: line}), do: "#{path}:#{line}"
   defp location(%{path: path, start_line: first, end_line: last}), do: "#{path}:#{first}–#{last}"

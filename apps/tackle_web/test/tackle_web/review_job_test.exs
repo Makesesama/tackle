@@ -15,8 +15,8 @@ defmodule Tackle.Web.ReviewJobTest do
   alias Tackle.Web.Forges.{Installation, Repository}
   alias Tackle.Web.Models.{Provider, ReviewDefaults}
   alias Tackle.Web.ReviewJob.{Lifecycle, Store}
+  alias Tackle.Web.Reviews.{Dismissal, ReviewRequest, ReviewRun}
   alias Tackle.Web.Reviews.Finding, as: StoredFinding
-  alias Tackle.Web.Reviews.{ReviewRequest, ReviewRun}
 
   @moduletag :capture_log
 
@@ -243,6 +243,19 @@ defmodule Tackle.Web.ReviewJobTest do
     assert :ok = run(c, job)
     refute_received {:model_call, _, _, _}
     assert [_run] = Ash.read!(ReviewRun)
+  end
+
+  test "findings dismissed in the repository are not reported again", c do
+    assert :ok = run(c, job!())
+    assert [%{state: :shown, fingerprint: fingerprint} = first] = Ash.read!(StoredFinding)
+
+    Dismissal.dismiss!(c.repository.id, fingerprint, %{source: :forge, by: "olivia"})
+    rerun = ReviewRequest.rerun!(Ash.get!(ReviewRequest, c.request.id), %{trigger: :command})
+    assert :ok = run(%{c | request: rerun}, job!())
+
+    assert [^first] = Ash.read!(StoredFinding)
+    assert [_first, second] = ReviewRun |> Ash.Query.sort(inserted_at: :asc) |> Ash.read!()
+    assert second.verdict == :clean
   end
 
   test "a successful review redacts provider response bodies from partial scoring failures", c do

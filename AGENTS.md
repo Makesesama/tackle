@@ -189,12 +189,12 @@ Burrito, or lint commands for tooling that has not been wired up.
   bundled delegation tools and the catalog tools granted to the root agent.
 - `apps/tackle_web/`: Phoenix/Ash web app (`Tackle.Web.*`, `:tackle_web`)
   that will review forge pull requests with `tackle_review`; built in phases
-  from `docs/TACKLE_WEB_PLAN.md`, currently through phase 7 (jailed review jobs,
+  from `docs/TACKLE_WEB_PLAN.md`, now through phase 9 (jailed review jobs,
   stored runs/findings, retry-safe sanitized GitHub posting to `:posted`,
   GitHub sign-in with AshAdmin behind admin policies, browser-only setup of
   the GitHub App via `/setup`, installation owners with access grants and
-  user-owned providers, and the user pages: repositories, reviews, and model
-  settings).
+  user-owned providers, the user pages: repositories, reviews, and model
+  settings, and feedback: dismissals from resolved threads and reactions).
   It depends on the packages, not the harness, and keeps Ash,
   Oban, Cloak, and PostgreSQL to itself. Its tests need a PostgreSQL server (see its README). Packaged as
   `.#tackle-web` (`nix/packages/tackle-web.nix`) and run by the NixOS

@@ -173,6 +173,34 @@ defmodule Tackle.Web.Forge.GitHub do
   def parse_event("issue_comment", %{"action" => action}),
     do: {:ok, ignored("issue_comment #{action}")}
 
+  # Resolving or unresolving a line comment's thread (§7.13). Bots' changes
+  # (another app's) never count.
+  def parse_event("pull_request_review_thread", %{"action" => action} = payload)
+      when action in ["resolved", "unresolved"] do
+    case payload["sender"] do
+      %{"login" => login, "type" => "User"} when is_binary(login) ->
+        with {:ok, repository} <- repository(payload["repository"]),
+             {:ok, installation} <- installation_of(payload["installation"], repository),
+             {:ok, thread} <- thread(payload["pull_request"], payload["thread"]) do
+          {:ok,
+           %Event{
+             type: :review_thread,
+             action: if(action == "resolved", do: :resolved, else: :unresolved),
+             installation: installation,
+             repository: repository,
+             thread: thread,
+             sender: login
+           }}
+        end
+
+      _other ->
+        {:ok, ignored("review thread #{action} by a bot")}
+    end
+  end
+
+  def parse_event("pull_request_review_thread", %{"action" => action}),
+    do: {:ok, ignored("pull_request_review_thread #{action}")}
+
   def parse_event(event, _payload), do: {:ok, ignored("event #{inspect(event)}")}
 
   defp ignored(reason), do: %Event{type: :ignored, reason: reason}
@@ -295,6 +323,19 @@ defmodule Tackle.Web.Forge.GitHub do
   end
 
   defp comment(_issue, _comment), do: :error
+
+  defp thread(%{"number" => number}, %{"comments" => comments})
+       when is_integer(number) and number > 0 and is_list(comments) do
+    ids =
+      Enum.flat_map(comments, fn
+        %{"id" => id} when is_integer(id) and id > 0 -> [Integer.to_string(id)]
+        _other -> []
+      end)
+
+    {:ok, %{pull_number: number, comment_ids: ids}}
+  end
+
+  defp thread(_pull_request, _thread), do: :error
 
   ## Sign-in
 
@@ -492,7 +533,7 @@ defmodule Tackle.Web.Forge.GitHub do
     "issues" => "read",
     "members" => "read"
   }
-  @events ["pull_request", "issue_comment"]
+  @events ["pull_request", "issue_comment", "pull_request_review_thread"]
 
   @impl Tackle.Web.Forge
   def registration_form(base_url, state, opts) when is_binary(base_url) and is_binary(state) do
@@ -923,6 +964,29 @@ defmodule Tackle.Web.Forge.GitHub do
        do: {:ok, %{id: Integer.to_string(id), body: body}}
 
   defp posted_comment(_comment), do: :error
+
+  @impl Tackle.Web.Forge
+  def review_comment_reactions(forge_app, installation, repository, number)
+      when is_integer(number) and number > 0 do
+    path = pulls_path(repository, number) <> "/comments"
+    paginate(forge_app, installation, path, &comment_reactions/1)
+  end
+
+  defp comment_reactions(%{"id" => id} = comment) when is_integer(id) and id > 0 do
+    reactions = Map.get(comment, "reactions") || %{}
+
+    {:ok,
+     %{
+       id: Integer.to_string(id),
+       up: count(reactions["+1"]),
+       down: count(reactions["-1"])
+     }}
+  end
+
+  defp comment_reactions(_comment), do: :error
+
+  defp count(value) when is_integer(value) and value >= 0, do: value
+  defp count(_value), do: 0
 
   @impl Tackle.Web.Forge
   def pull_request_files(forge_app, installation, repository, number)
