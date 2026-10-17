@@ -5,6 +5,7 @@ defmodule Tackle.Web.ModelsTest do
 
   alias Ash.Resource.Info
   alias Tackle.Lib.CredentialStore, as: Store
+  alias Tackle.Plugins.Codex
   alias Tackle.Web.{CredentialStore, Models, Repo}
   alias Tackle.Web.Models.{Provider, ReviewDefaults}
 
@@ -57,6 +58,25 @@ defmodule Tackle.Web.ModelsTest do
     assert provider.adapter == Tackle.Plugins.OpenRouter
     assert provider.settings == %{"provider_routing" => %{"order" => ["test"]}}
     assert Models.enabled_providers(nil) == {:ok, []}
+  end
+
+  test "model options are the enabled providers' own models, as accepted references",
+       %{owner: owner} do
+    register!(owner, "disabled", :openrouter)
+    register!(owner, "openai-codex", :codex, %{enabled: true})
+    register!(user!(), "other", :codex, %{enabled: true})
+
+    assert {:ok, [{"openai-codex", options}]} = Models.model_options(owner.id)
+    assert Enum.map(options, &elem(&1, 0)) == Codex.models()
+    assert {"gpt-6.1-sol", @model} in options
+
+    # Every offered reference validates.
+    for {_model, ref} <- options do
+      assert {:ok, _settings} =
+               Models.validate_settings(owner.id, %{"models" => %{"detector" => ref}})
+    end
+
+    assert Models.model_options(nil) == {:ok, []}
   end
 
   test "OpenRouter key action encrypts and redacts secrets, and refuses Codex or empty keys",

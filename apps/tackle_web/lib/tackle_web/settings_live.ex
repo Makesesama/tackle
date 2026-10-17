@@ -16,6 +16,7 @@ defmodule Tackle.Web.SettingsLive do
   import Tackle.Web.UI
 
   alias Tackle.Lib.Thinking
+  alias Tackle.Web.Models
   alias Tackle.Web.Models.{Provider, ReviewDefaults}
 
   @stages ~w(detector verifier scorer)
@@ -99,6 +100,7 @@ defmodule Tackle.Web.SettingsLive do
       |> Ash.read!(actor: user)
 
     {:ok, defaults} = ReviewDefaults.get(user.id, actor: user)
+    {:ok, model_options} = Models.model_options(user.id)
 
     register_form =
       Provider
@@ -107,6 +109,7 @@ defmodule Tackle.Web.SettingsLive do
 
     assign(socket,
       providers: providers,
+      model_options: model_options,
       register_form: register_form,
       defaults_form: defaults_form(defaults, user)
     )
@@ -229,9 +232,9 @@ defmodule Tackle.Web.SettingsLive do
     <section class="card">
       <div class="card-header"><h2>Review defaults</h2></div>
       <p class="muted">
-        Reviews need a detector and a verifier model, as <code>provider/model</code>
-        {enabled_text(@enabled)}. A repository's settings can choose others. The scorer
-        uses the verifier's model when it is empty.
+        Reviews need a detector and a verifier model {enabled_text(@enabled)}. A
+        repository's settings can choose others. The scorer uses the verifier's model
+        when it is empty.
       </p>
       <.form for={@defaults_form} phx-submit="save_defaults">
         <p :for={error <- @defaults_form[:models].errors ++ @defaults_form[:thinking].errors} class="error">
@@ -240,8 +243,15 @@ defmodule Tackle.Web.SettingsLive do
         <div :for={stage <- @stages} class="row stage">
           <.input
             field={@defaults_form[elem(@fields[stage], 0)]}
+            type="select"
             label={String.capitalize(stage) <> " model"}
-            placeholder="provider/model"
+            options={
+              model_select_options(
+                @model_options,
+                stage,
+                @defaults_form[elem(@fields[stage], 0)].value
+              )
+            }
           />
           <.input
             field={@defaults_form[elem(@fields[stage], 1)]}
@@ -255,6 +265,24 @@ defmodule Tackle.Web.SettingsLive do
     </section>
     """
   end
+
+  # The enabled providers' models, grouped by provider, after an empty
+  # choice. A chosen reference that is no longer offered (its provider was
+  # disabled, or the model removed) stays selectable, marked, so the form
+  # shows and keeps it instead of switching to another model unnoticed.
+  defp model_select_options(groups, stage, value) do
+    value = if is_binary(value), do: String.trim(value), else: ""
+
+    offered? =
+      value == "" or Enum.any?(groups, fn {_id, models} -> List.keymember?(models, value, 1) end)
+
+    unavailable = if offered?, do: [], else: [{value <> " (unavailable)", value}]
+
+    [{empty_choice(stage), ""} | unavailable] ++ groups
+  end
+
+  defp empty_choice("scorer"), do: "Verifier's model"
+  defp empty_choice(_stage), do: "Choose a model"
 
   defp state(%Provider{enabled: true}), do: "enabled"
   defp state(%Provider{enabled: false}), do: "disabled"

@@ -10,6 +10,7 @@ defmodule Tackle.Web.PagesTest do
   import Tackle.Web.AccountsFixtures
   import Tackle.Web.GitHubFixtures
 
+  alias Phoenix.HTML.Safe
   alias Phoenix.LiveView.Socket
   alias Tackle.Plugins.Codex
   alias Tackle.Web.Forges.{Access, Installation, Repository}
@@ -579,6 +580,47 @@ defmodule Tackle.Web.PagesTest do
       {:noreply, failed} = SettingsLive.handle_event("save_defaults", %{"form" => bad}, saved)
       assert failed.assigns.defaults_form[:models].errors != []
       assert {:ok, %{models: ^models}} = ReviewDefaults.get(owner.id)
+      # The rejected reference stays selected, so the form shows what failed.
+      assert render_html(failed) =~
+               ~s{<option selected value="missing/model">missing/model (unavailable)</option>}
     end
+
+    test "offers the enabled providers' models; keeps a saved model that is no longer offered", %{
+      conn: conn,
+      owner: owner
+    } do
+      codex = Provider.register!("openai-codex", :codex, %{owner_id: owner.id, enabled: true})
+      Provider.register!("router", :openrouter, %{owner_id: owner.id})
+      model = "openai-codex/" <> hd(Codex.models())
+
+      html = conn |> page(owner, "/settings") |> html_response(200)
+      assert html =~ ~s(<optgroup label="openai-codex">)
+      assert html =~ ~s(<option value="#{model}">#{hd(Codex.models())}</option>)
+      refute html =~ ~s(value="router/)
+      assert html =~ "Choose a model"
+      assert html =~ "Verifier&#39;s model"
+      refute html =~ "(unavailable)"
+
+      ReviewDefaults.configure!(%{
+        user_id: owner.id,
+        models: %{"detector" => model, "verifier" => model}
+      })
+
+      html = build_conn() |> page(owner, "/settings") |> html_response(200)
+      assert html =~ ~s(<option selected value="#{model}">#{hd(Codex.models())}</option>)
+
+      Provider.configure!(codex, %{enabled: false})
+
+      html = build_conn() |> page(owner, "/settings") |> html_response(200)
+      refute html =~ ~s(<optgroup label="openai-codex">)
+      assert html =~ ~s{<option selected value="#{model}">#{model} (unavailable)</option>}
+    end
+  end
+
+  defp render_html(socket) do
+    socket.assigns
+    |> SettingsLive.render()
+    |> Safe.to_iodata()
+    |> IO.iodata_to_binary()
   end
 end

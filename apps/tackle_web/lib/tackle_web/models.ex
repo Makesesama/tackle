@@ -54,6 +54,26 @@ defmodule Tackle.Web.Models do
     end
   end
 
+  @doc """
+  The model references selectable with the owner's enabled providers, as
+  `{provider_id, [{model, "provider_id/model"}]}` groups in provider order.
+  These are the adapters' own model lists, which are the only models
+  `validate_settings/2` accepts. A provider whose list cannot be read is left
+  out; selecting its models fails validation with the reason.
+  """
+  @spec model_options(owner_id() | nil) ::
+          {:ok, [{String.t(), [{String.t(), String.t()}]}]} | {:error, term()}
+  def model_options(owner_id) do
+    with {:ok, providers} <- enabled_providers(owner_id) do
+      options =
+        for provider <- providers,
+            {:ok, models} <- [LLMProvider.models(provider)],
+            do: {provider.id, Enum.map(models, &{&1, provider.id <> "/" <> &1})}
+
+      {:ok, options}
+    end
+  end
+
   @doc "The fixed adapter allowlist; never converts user input into module names."
   @spec adapter(:openrouter | :codex) :: module()
   def adapter(:openrouter), do: Tackle.Plugins.OpenRouter
