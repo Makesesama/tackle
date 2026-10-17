@@ -114,8 +114,11 @@ defmodule Tackle.Web.PagesTest do
       assert redirected_to(page(build_conn(), owner, "/"), 302) == "/repos"
     end
 
-    test "the logo is served", %{conn: conn} do
+    test "the logo is served, and as a PNG for the GitHub App", %{conn: conn} do
       assert conn |> get("/assets/logo.svg") |> response(200) =~ "<svg"
+
+      assert <<137, "PNG", _rest::binary>> =
+               build_conn() |> get("/assets/logo.png") |> response(200)
     end
 
     test "every user page needs a sign-in", %{conn: conn, repository: repository} do

@@ -60,7 +60,9 @@ defmodule Tackle.Web.SetupHTML do
           <li class={if @status.forge_app, do: "done"}>
             <strong>Create the GitHub App.</strong>
             <%= if @status.forge_app do %>
-              Done: App {@status.forge_app.app_id}.
+              Done: App {@status.forge_app.app_id}. GitHub's manifest cannot set a logo: to
+              give the App tackle's, download <a href="/assets/logo.png" download>logo.png</a>
+              and upload it in the App's settings on GitHub (General, Display information).
             <% else %>
               <form action="/setup/github" method="post">
                 <input type="hidden" name="_csrf_token" value={get_csrf_token()} />

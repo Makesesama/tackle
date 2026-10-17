@@ -139,7 +139,10 @@ defmodule Tackle.Web.SetupTest do
     assert %{account: "acme", status: :active} =
              Installation.get_external!(:github, installation_id)
 
-    assert html_response(get(recycle(installed), "/setup"), 200) =~ "Sign in with GitHub"
+    setup_page = html_response(get(recycle(installed), "/setup"), 200)
+    assert setup_page =~ "Sign in with GitHub"
+    # The manifest cannot carry a logo; the page offers it for upload.
+    assert setup_page =~ ~s(href="/assets/logo.png")
 
     # 5. Signing in from this browser claims admin (AuthControllerTest);
     # afterwards setup is complete and closed.

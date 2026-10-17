@@ -50,7 +50,7 @@ defmodule Tackle.Web.Endpoint do
   plug Plug.Static,
     at: "/assets",
     from: {:tackle_web, "priv/static/assets"},
-    only: ~w(app.css app.js logo.svg)
+    only: ~w(app.css app.js logo.svg logo.png)
 
   plug Plug.Static,
     at: "/vendor/phoenix",
