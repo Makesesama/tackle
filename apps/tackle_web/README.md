@@ -218,7 +218,10 @@ copied by hand.
    Contents read; Pull requests write; Issues read; organisation Members
    read). GitHub sends the browser back with a one-time code, and the App id,
    client id and secret, webhook secret, and private key go straight into the
-   encrypted database.
+   encrypted database. GitHub's manifest cannot set a logo: upload
+   [`docs/assets/tackle-logo.png`](../../docs/assets/tackle-logo.png) (also
+   served at `/assets/logo.png` and linked from the setup page) in the App's
+   settings under "Display information".
 3. **Install it** on the organisation (or account) whose pull requests it
    reviews. GitHub returns to `/setup/github/installed`; the installation is
    confirmed with GitHub and recorded with its repositories (disabled by
