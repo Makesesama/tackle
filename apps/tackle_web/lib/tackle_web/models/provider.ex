@@ -11,7 +11,9 @@ defmodule Tackle.Web.Models.Provider do
 
   Signed-in users `:register` providers for themselves, and `:configure`
   and `:set_credentials` (an OpenRouter API key, write-only) their own;
-  admins can read every provider but not change other users' ones.
+  admins can read every provider but not change other users' ones. A
+  provider is enabled when it first gets credentials, and `connected` says
+  whether it has them without decrypting them.
   `:store_credentials` is the credential store's internal seam, and
   decryption with an actor is refused (`Tackle.Web.Vault.authorize_decrypt/4`).
   Codex credentials come from the device login page
@@ -39,6 +41,8 @@ defmodule Tackle.Web.Models.Provider do
     vault Tackle.Web.Vault
     attributes [:credentials]
     on_decrypt {Tackle.Web.Vault, :authorize_decrypt, []}
+    # Deleted credentials are SQL NULL, so `connected` can tell.
+    encrypt_nil? false
   end
 
   admin do
@@ -87,13 +91,32 @@ defmodule Tackle.Web.Models.Provider do
           "api_key" => Ash.Changeset.get_argument(changeset, :api_key)
         })
       end
+
+      change &enable_when_first_connected/2
     end
 
     # Internal store seam for opaque OAuth credentials and deletion (nil).
     update :store_credentials do
       accept [:credentials]
       require_atomic? false
+
+      change &enable_when_first_connected/2
     end
+  end
+
+  # A provider is enabled when it first gets credentials, as it was of no use
+  # without them; one disabled later stays disabled when they change. A
+  # before-action hook, so it sees the credentials whichever change
+  # (AshCloak's or the action's) encrypts them.
+  defp enable_when_first_connected(changeset, _context) do
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      stored? = not is_nil(changeset.data.encrypted_credentials)
+      storing? = not is_nil(Ash.Changeset.get_attribute(changeset, :encrypted_credentials))
+
+      if storing? and not stored?,
+        do: Ash.Changeset.force_change_attribute(changeset, :enabled, true),
+        else: changeset
+    end)
   end
 
   policies do
@@ -154,6 +177,13 @@ defmodule Tackle.Web.Models.Provider do
   relationships do
     belongs_to :owner, Tackle.Web.Accounts.User do
       allow_nil? false
+      public? true
+    end
+  end
+
+  calculations do
+    # Whether credentials are stored, without decrypting them.
+    calculate :connected, :boolean, expr(not is_nil(encrypted_credentials)) do
       public? true
     end
   end

@@ -2,10 +2,12 @@ defmodule Tackle.Web.Triggers.CommandJobTest do
   use Tackle.Web.DataCase, async: true
   use Oban.Testing, repo: Tackle.Web.Repo
 
+  import Tackle.Web.AccountsFixtures
   import Tackle.Web.GitHubFixtures
 
   alias Tackle.Web.Forge.GitHub
   alias Tackle.Web.Reviews.ReviewRequest
+  alias Tackle.Web.Triggers
   alias Tackle.Web.Triggers.CommandJob
 
   setup do
@@ -102,5 +104,41 @@ defmodule Tackle.Web.Triggers.CommandJobTest do
   test "cancels an unknown profile without calling the forge", %{repository: repository} do
     assert {:cancel, "unknown profile \"loud\""} =
              perform_job(CommandJob, args(repository, %{profile: "loud"}))
+  end
+
+  describe "from the web pages" do
+    setup do
+      owner = user!(%{login: "ada"})
+      installation = installation!(%{owner: owner, review_new_repositories: true})
+      %{owner: owner, repository: repository!(installation)}
+    end
+
+    test "the installation's owner requests a review with their own write access", %{
+      owner: owner,
+      repository: repository
+    } do
+      stub_github("write")
+
+      assert {:ok, :created, %ReviewRequest{trigger: :command, requested_by: "ada"} = request} =
+               Triggers.owner_command(owner, repository, 7, :quiet)
+
+      assert request.profile == :quiet
+      assert request.head_sha == sha("head")
+
+      # The same head and profile again: nothing new.
+      assert {:ok, :exists, %{id: id}} = Triggers.owner_command(owner, repository, 7, :quiet)
+      assert id == request.id
+    end
+
+    test "others may not, and the forge still decides write access", %{
+      owner: owner,
+      repository: repository
+    } do
+      assert {:error, :not_owner} = Triggers.owner_command(user!(), repository, 7, nil)
+
+      stub_github("read")
+      assert {:error, :no_write_access} = Triggers.owner_command(owner, repository, 7, nil)
+      assert {:ok, nil} = ReviewRequest.get_head(repository.id, 7, sha("head"))
+    end
   end
 end

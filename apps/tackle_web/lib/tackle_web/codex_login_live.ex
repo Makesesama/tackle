@@ -13,6 +13,9 @@ defmodule Tackle.Web.CodexLoginLive do
   `Tackle.Web.Models.CodexDevice` stores the credentials directly; the page
   only shows the user code and the verification URL. Device polling runs as
   a LiveView async task, which is cancelled when the page process exits.
+  `?provider=<name>` preselects one of the user's providers (the Models
+  page links that way), and a provider is enabled when it is first
+  connected (`Tackle.Web.Models.Provider`).
   """
 
   use Phoenix.LiveView
@@ -25,13 +28,16 @@ defmodule Tackle.Web.CodexLoginLive do
   alias Tackle.Web.Models.{CodexDevice, Provider}
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(params, _session, socket) do
+    providers = codex_providers(socket.assigns.current_user)
+
     {:ok,
      socket
      |> assign(:page_title, "Codex login")
      |> assign(:status, :ready)
      |> assign(:device, nil)
-     |> assign(:providers, codex_providers(socket.assigns.current_user))}
+     |> assign(:providers, providers)
+     |> assign(:selected, if(params["provider"] in providers, do: params["provider"]))}
   end
 
   @impl true
@@ -45,6 +51,7 @@ defmodule Tackle.Web.CodexLoginLive do
           socket
           |> assign(:status, :requesting)
           |> assign(:device, nil)
+          |> assign(:selected, name)
           |> start_async(:request_code, fn -> CodexDevice.request(user.id, name) end)
 
         {:noreply, socket}
@@ -88,7 +95,7 @@ defmodule Tackle.Web.CodexLoginLive do
     ~H"""
     <.page_header title="Connect OpenAI Codex">
       <:subtitle>
-        <a href="/settings">Models</a>
+        <.link navigate="/settings">Models</.link>
         · signs a ChatGPT subscription in for one of your OpenAI Codex providers
       </:subtitle>
     </.page_header>
@@ -96,7 +103,7 @@ defmodule Tackle.Web.CodexLoginLive do
     <section class="card">
       <%= if @providers == [] do %>
         <p>
-          You have no OpenAI Codex provider yet. <a href="/settings">Add one</a>
+          You have no OpenAI Codex provider yet. <.link navigate="/settings">Add one</.link>
           (kind <em>OpenAI Codex</em>) first.
         </p>
       <% else %>
@@ -104,27 +111,49 @@ defmodule Tackle.Web.CodexLoginLive do
           <div class="field">
             <label for="provider">Provider</label>
             <select id="provider" name="provider">
-              <option :for={name <- @providers} value={name}>{name}</option>
+              <option :for={name <- @providers} value={name} selected={name == @selected}>
+                {name}
+              </option>
             </select>
           </div>
-          <button disabled={@status in [:requesting, :waiting]}>Connect</button>
+          <button disabled={@status in [:requesting, :waiting]} phx-disable-with="Connecting…">
+            Connect
+          </button>
         </form>
       <% end %>
 
       <div :if={@device} class="device">
         <p>
-          Open <a href={@device.verification_uri} rel="noreferrer">{@device.verification_uri}</a>
+          Open
+          <a href={@device.verification_uri} target="_blank" rel="noopener noreferrer">
+            {@device.verification_uri}
+          </a>
           and enter this code:
         </p>
-        <p class="code">{@device.user_code}</p>
+        <p class="row">
+          <span class="code" id="codex-user-code">{@device.user_code}</span>
+          <button
+            type="button"
+            class="small secondary"
+            data-copy="#codex-user-code"
+            data-copied="Copied"
+          >
+            Copy
+          </button>
+        </p>
       </div>
-      <p :if={@status != :ready} class={"notice notice-#{@status}"}>{status_text(@status)}</p>
+      <p :if={@status not in [:ready, :complete]} class={"notice notice-#{@status}"}>
+        {status_text(@status)}
+      </p>
+      <p :if={@status == :complete} class="notice notice-complete">
+        Connected {@selected}. Choose its models on the <.link navigate="/settings">Models</.link>
+        page.
+      </p>
     </section>
     """
   end
 
   defp status_text(:requesting), do: "Asking OpenAI for a code…"
   defp status_text(:waiting), do: "Waiting for you to enter the code…"
-  defp status_text(:complete), do: "Connected. Enable the provider on the Models page to use it."
   defp status_text(:failed), do: "The login did not complete. Please try again."
 end

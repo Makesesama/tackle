@@ -1,8 +1,9 @@
 defmodule Tackle.Web.RepositoryLive do
   @moduledoc """
   `/repos/:id`: a repository's reviews, newest first, and the findings
-  dismissed in it. Its installation's owner also restores dismissed
-  findings, changes its review settings, and decides who else may see it
+  dismissed in it. Its installation's owner also requests reviews
+  (`Tackle.Web.ReviewRequestComponent`), restores dismissed findings,
+  changes its review settings, and decides who else may see it
   (`Tackle.Web.GrantsComponent`).
   """
 
@@ -147,7 +148,7 @@ defmodule Tackle.Web.RepositoryLive do
     ~H"""
     <.page_header title={"#{@repository.owner}/#{@repository.name}"}>
       <:subtitle>
-        <a href="/repos">Repositories</a>
+        <.link navigate="/repos">Repositories</.link>
         · {if @repository.enabled,
           do: auto_review_label(@repository.auto_review),
           else: "Reviews off"}
@@ -167,9 +168,21 @@ defmodule Tackle.Web.RepositoryLive do
     <section class="card">
       <div class="card-header"><h2>Reviews</h2></div>
 
+      <.live_component
+        :if={@owner? and @repository.enabled and @repository.active}
+        module={Tackle.Web.ReviewRequestComponent}
+        id="review-request"
+        label="Review"
+        repository={@repository}
+        current_user={@current_user}
+        signed_in_at={@signed_in_at}
+      />
+
       <.empty :if={@requests == []}>
         <p :if={@repository.enabled}>
-          No reviews yet. Comment <code>/tackle review</code> on a pull request to request one.
+          No reviews yet. Comment <code>/tackle review</code> on a pull request to request one{if @owner? and @repository.active,
+            do: ", or request one above",
+            else: ""}.
         </p>
         <p :if={!@repository.enabled}>
           Reviews are off for this repository.
@@ -189,9 +202,9 @@ defmodule Tackle.Web.RepositoryLive do
         <tbody>
           <tr :for={request <- @requests}>
             <td>
-              <a class="strong" href={"/reviews/#{request.id}"}>
+              <.link class="strong" navigate={"/reviews/#{request.id}"}>
                 #{request.pull_number} {request.title}
-              </a>
+              </.link>
               <div class="muted small">
                 <.sha sha={request.head_sha} /> · {trigger_label(request.trigger)}
                 <span :if={request.requested_by}>by {request.requested_by}</span>
@@ -226,7 +239,12 @@ defmodule Tackle.Web.RepositoryLive do
               </div>
             </td>
             <td :if={@owner?} class="right">
-              <button class="small secondary" phx-click="restore" phx-value-id={dismissal.id}>
+              <button
+                class="small secondary"
+                phx-click="restore"
+                phx-value-id={dismissal.id}
+                phx-disable-with="Restoring…"
+              >
                 Restore
               </button>
             </td>
@@ -275,7 +293,7 @@ defmodule Tackle.Web.RepositoryLive do
             "for example {\"models\": {\"detector\": \"openrouter/...\"}}. " <>
             "Unset stages use your model defaults."}
         />
-        <button type="submit">Save</button>
+        <button type="submit" phx-disable-with="Saving…">Save</button>
       </.form>
     </section>
 

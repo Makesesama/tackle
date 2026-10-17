@@ -148,6 +148,33 @@ defmodule Tackle.Web.ModelsTest do
     assert Store.fetch(handle, "codex") == :error
   end
 
+  test "a provider is enabled when it first gets credentials, and says whether it has them",
+       %{owner: owner} do
+    router = register!(owner, "openrouter", :openrouter)
+    assert %{connected: false, enabled: false} = Ash.load!(router, :connected)
+
+    router = Provider.set_credentials!(router, "sk-first")
+    assert %{connected: true, enabled: true} = Ash.load!(router, :connected)
+
+    # Disabled later, it stays disabled when its key changes.
+    router = Provider.configure!(router, %{enabled: false})
+    router = Provider.set_credentials!(router, "sk-second")
+    assert %{connected: true, enabled: false} = Ash.load!(router, :connected)
+
+    # The credential store's writes (the Codex login) do the same.
+    handle = CredentialStore.handle(owner.id)
+    codex = register!(owner, "codex", :codex)
+    :ok = Store.put(handle, "codex", %{"refresh_token" => "first"})
+    assert {:ok, %{connected: true, enabled: true}} = Provider.get(codex.id, load: [:connected])
+
+    Provider.configure!(Provider.get!(codex.id), %{enabled: false})
+    :ok = Store.put(handle, "codex", %{"refresh_token" => "refreshed"})
+    assert {:ok, %{enabled: false}} = Provider.get(codex.id)
+
+    :ok = Store.delete(handle, "codex")
+    assert {:ok, %{connected: false, enabled: false}} = Provider.get(codex.id, load: [:connected])
+  end
+
   test "metadata updates cannot overwrite a refreshed credential, and empty maps remain stored",
        %{owner: owner} do
     handle = CredentialStore.handle(owner.id)

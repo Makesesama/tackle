@@ -1,9 +1,9 @@
 defmodule Tackle.Web.Triggers.CommandJob do
   @moduledoc """
   Finishes a `/tackle review` command outside the webhook request
-  (docs/TACKLE_WEB_PLAN.md §7.7): checks that the comment's author has write
-  access, reads the pull request's current head from the forge, and
-  requests the review with `Tackle.Web.Triggers.command/4`.
+  (docs/TACKLE_WEB_PLAN.md §7.7) with `Tackle.Web.Triggers.run_command/4`:
+  checks that the comment's author has write access, reads the pull
+  request's current head from the forge, and requests its review.
 
   Forge errors are retried. A command that may not run (no write access, a
   disabled repository, a closed pull request) is cancelled with the reason.
@@ -13,8 +13,7 @@ defmodule Tackle.Web.Triggers.CommandJob do
 
   require Logger
 
-  alias Tackle.Web.Forge
-  alias Tackle.Web.Forges.{ForgeApp, Repository}
+  alias Tackle.Web.Forges.Repository
   alias Tackle.Web.Reviews.Profile
   alias Tackle.Web.Triggers
 
@@ -24,19 +23,19 @@ defmodule Tackle.Web.Triggers.CommandJob do
           %{"repository_id" => repository_id, "pull_number" => number, "login" => login} = args
       }) do
     with {:ok, profile} <- profile(args["profile"]),
-         {:ok, repository} <- repository(repository_id),
-         {:ok, forge_app} <- forge_app(repository.installation.forge) do
-      forge = Forge.module(repository.installation.forge)
+         {:ok, repository} <- repository(repository_id) do
+      case Triggers.run_command(repository, number, login, profile) do
+        {:ok, outcome, _request} ->
+          finish(outcome, login, repository, number)
 
-      with {:ok, true} <-
-             forge.can_trigger?(forge_app, repository.installation, repository, login),
-           {:ok, pull_request} <-
-             forge.pull_request(forge_app, repository.installation, repository, number),
-           {:ok, outcome, _request} <- Triggers.command(repository, pull_request, profile, login) do
-        finish(outcome, login, repository, number)
-      else
-        {:ok, false} -> {:cancel, "#{login} has no write access to #{full_name(repository)}"}
-        {:error, reason} -> {:error, reason}
+        {:error, :no_write_access} ->
+          {:cancel, "#{login} has no write access to #{full_name(repository)}"}
+
+        {:error, :no_forge_app} ->
+          {:cancel, "the #{repository.installation.forge} app is not configured"}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end
@@ -54,14 +53,6 @@ defmodule Tackle.Web.Triggers.CommandJob do
     case Profile.match(value) do
       {:ok, profile} -> {:ok, profile}
       :error -> {:cancel, "unknown profile #{inspect(value)}"}
-    end
-  end
-
-  defp forge_app(forge) do
-    case ForgeApp.get(forge) do
-      {:ok, %ForgeApp{} = forge_app} -> {:ok, forge_app}
-      {:ok, nil} -> {:cancel, "the #{forge} app is not configured"}
-      {:error, reason} -> {:error, reason}
     end
   end
 

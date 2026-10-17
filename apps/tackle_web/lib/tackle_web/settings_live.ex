@@ -4,8 +4,10 @@ defmodule Tackle.Web.SettingsLive do
   (docs/TACKLE_WEB_PLAN.md §7.2, §7.12), which the reviews of the
   installations they own use. Admins see only their own here too.
 
-  API keys are write-only: they are stored encrypted and never shown again.
-  Codex providers connect on `/codex-login`.
+  API keys are write-only: they are stored encrypted and never shown again;
+  the page only says whether a provider has its credentials. Codex
+  providers connect on `/codex-login`. A provider is enabled when it first
+  gets credentials (`Tackle.Web.Models.Provider`).
   """
 
   use Phoenix.LiveView
@@ -39,7 +41,9 @@ defmodule Tackle.Web.SettingsLive do
     with_user(socket, fn socket ->
       case AshPhoenix.Form.submit(socket.assigns.register_form, params: params) do
         {:ok, provider} ->
-          socket |> put_flash(:info, "Added #{provider.name}. Enable it to use it.") |> load()
+          socket
+          |> put_flash(:info, "Added #{provider.name}. #{connect_text(provider)}")
+          |> load()
 
         {:error, form} ->
           assign(socket, :register_form, to_form(form))
@@ -67,7 +71,12 @@ defmodule Tackle.Web.SettingsLive do
 
       with %Provider{} = provider <- own_provider(id, user),
            {:ok, provider} <- Provider.set_credentials(provider, key, actor: user) do
-        put_flash(socket, :info, "Stored the API key of #{provider.name}.")
+        socket
+        |> put_flash(
+          :info,
+          "Stored the API key of #{provider.name}; #{provider.name} is #{state(provider)}."
+        )
+        |> load()
       else
         _error -> put_flash(socket, :error, "The API key could not be stored.")
       end
@@ -97,6 +106,7 @@ defmodule Tackle.Web.SettingsLive do
       Provider
       |> Ash.Query.filter(owner_id == ^user.id)
       |> Ash.Query.sort(:name)
+      |> Ash.Query.load(:connected)
       |> Ash.read!(actor: user)
 
     {:ok, defaults} = ReviewDefaults.get(user.id, actor: user)
@@ -182,7 +192,9 @@ defmodule Tackle.Web.SettingsLive do
           <tr :for={provider <- @providers}>
             <td>
               <span class="strong">{provider.name}</span>
-              <div class="muted small">{adapter_label(provider.adapter)}</div>
+              <div class="muted small">
+                {adapter_label(provider.adapter)} · {connection_label(provider)}
+              </div>
             </td>
             <td>
               <form :if={provider.adapter == :openrouter} phx-submit="set_key" class="row">
@@ -190,20 +202,39 @@ defmodule Tackle.Web.SettingsLive do
                 <input
                   type="password"
                   name="api_key"
-                  placeholder="New API key"
+                  placeholder={if provider.connected, do: "New API key", else: "API key"}
                   autocomplete="off"
                   aria-label={"API key of #{provider.name}"}
                   required
                 />
-                <button type="submit" class="small secondary">Store key</button>
+                <button
+                  type="submit"
+                  class={if provider.connected, do: "small secondary", else: "small"}
+                  phx-disable-with="Storing…"
+                >
+                  {if provider.connected, do: "Replace key", else: "Store key"}
+                </button>
               </form>
-              <a :if={provider.adapter == :codex} class="button small secondary" href="/codex-login">
-                Connect ChatGPT
-              </a>
+              <.link
+                :if={provider.adapter == :codex}
+                class={if provider.connected, do: "button small secondary", else: "button small"}
+                navigate={"/codex-login?" <> URI.encode_query(%{provider: provider.name})}
+              >
+                {if provider.connected, do: "Reconnect ChatGPT", else: "Connect ChatGPT"}
+              </.link>
             </td>
             <td class="right">
               <span :if={provider.enabled} class="badge status-posted">Enabled</span>
-              <button class="small secondary" phx-click="toggle" phx-value-id={provider.id}>
+              <button
+                class="small secondary"
+                phx-click="toggle"
+                phx-value-id={provider.id}
+                phx-disable-with={if provider.enabled, do: "Disabling…", else: "Enabling…"}
+                data-confirm={
+                  provider.enabled &&
+                    "Disable #{provider.name}? Reviews that use its models fail until it is enabled again."
+                }
+              >
                 {if provider.enabled, do: "Disable", else: "Enable"}
               </button>
             </td>
@@ -225,7 +256,7 @@ defmodule Tackle.Web.SettingsLive do
           label="Kind"
           options={[{"OpenRouter (API key)", "openrouter"}, {"OpenAI Codex (ChatGPT)", "codex"}]}
         />
-        <button type="submit">Add provider</button>
+        <button type="submit" phx-disable-with="Adding…">Add provider</button>
       </.form>
     </section>
 
@@ -260,7 +291,7 @@ defmodule Tackle.Web.SettingsLive do
             options={@thinking_options}
           />
         </div>
-        <button type="submit">Save defaults</button>
+        <button type="submit" phx-disable-with="Saving…">Save defaults</button>
       </.form>
     </section>
     """
@@ -291,6 +322,14 @@ defmodule Tackle.Web.SettingsLive do
 
   defp enabled_text(enabled),
     do: "with one of your enabled providers: " <> Enum.map_join(enabled, ", ", & &1.name)
+
+  defp connect_text(%Provider{adapter: :openrouter}), do: "Store its API key to use it."
+  defp connect_text(%Provider{adapter: :codex}), do: "Connect it to ChatGPT to use it."
+
+  defp connection_label(%Provider{adapter: :openrouter, connected: true}), do: "API key stored"
+  defp connection_label(%Provider{adapter: :openrouter}), do: "No API key yet"
+  defp connection_label(%Provider{adapter: :codex, connected: true}), do: "Connected"
+  defp connection_label(%Provider{adapter: :codex}), do: "Not connected yet"
 
   defp adapter_label(:openrouter), do: "OpenRouter"
   defp adapter_label(:codex), do: "OpenAI Codex"

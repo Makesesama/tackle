@@ -73,7 +73,7 @@ defmodule Tackle.Web.InstallationLive do
     ~H"""
     <.page_header title={@installation.account}>
       <:subtitle>
-        <a href="/repos">Repositories</a>
+        <.link navigate="/repos">Repositories</.link>
         · installed by {@installation.owner_login || "an unknown user"}
         <span :if={@installation.status != :active}>· {@installation.status}</span>
       </:subtitle>
@@ -85,7 +85,9 @@ defmodule Tackle.Web.InstallationLive do
       <table :if={@repositories != []} class="list">
         <tbody>
           <tr :for={repository <- @repositories}>
-            <td><a class="strong" href={"/repos/#{repository.id}"}>{repository.name}</a></td>
+            <td>
+              <.link class="strong" navigate={"/repos/#{repository.id}"}>{repository.name}</.link>
+            </td>
             <td class="right muted small">
               {if repository.enabled,
                 do: auto_review_label(repository.auto_review),
@@ -120,7 +122,14 @@ defmodule Tackle.Web.InstallationLive do
           label="Also apply to every existing repository"
           help="Overwrites each repository's review and automatic review setting."
         />
-        <button type="submit">Save</button>
+        <button
+          type="submit"
+          phx-disable-with="Saving…"
+          data-confirm="This overwrites whether and when every existing repository is reviewed. Save?"
+          data-confirm-if={"#" <> @form[:apply_to_repositories].id}
+        >
+          Save
+        </button>
       </.form>
     </section>
 

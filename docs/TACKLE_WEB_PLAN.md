@@ -763,7 +763,8 @@ connect parameters, and events, so its live session runs a hook
 before every `handle_params` and event and drops the actor/authorisation/tenant
 events. AshCloak's `on_decrypt` refuses decryption with an actor. The forge
 app is registered by setup's manifest flow (§7.11), never typed into a form;
-reruns and posting retries stay console actions. Policies need a SAT
+reruns and posting retries are not admin actions (installation owners
+request them on the user pages, phase 8, and the console can). Policies need a SAT
 solver: `simple_sat` (pure Elixir).
 
 ### 7.10 Deployment
@@ -1081,6 +1082,11 @@ use Postgres with the Ecto sandbox. Commit per phase.
    timer, not PubSub: the review job's writes run inside its own Repo
    transactions); pull request titles on review requests; lists filtered with
    `Forges.AccessCheck.visible/2` so admins see only their own there too.
+   Later usability work: owners request reviews, review again, and retry
+   posting on these pages (`Triggers.owner_command/4`, the same path as a
+   `/tackle review` comment); a getting-started checklist on `/repos`;
+   providers show whether they have credentials and are enabled by their
+   first ones.
 9. **Feedback** (§7.13). **Implemented.** Resolved threads (by writers) and the owner's
    choice → `Dismissal`s → known fingerprints; reactions → counts on
    findings.

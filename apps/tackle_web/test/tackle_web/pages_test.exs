@@ -12,17 +12,25 @@ defmodule Tackle.Web.PagesTest do
 
   alias Phoenix.HTML.Safe
   alias Phoenix.LiveView.Socket
+  alias Tackle.Lib.CredentialStore, as: Credentials
   alias Tackle.Plugins.Codex
+  alias Tackle.Web.Forge.GitHub
   alias Tackle.Web.Forges.{Access, Installation, Repository}
   alias Tackle.Web.Models.{Provider, ReviewDefaults}
+  alias Tackle.Web.ReviewJob.Store
   alias Tackle.Web.Reviews.{Dismissal, Finding, ReviewRequest, ReviewRun}
 
   alias Tackle.Web.{
+    CodexLoginLive,
+    CredentialStore,
     GrantsComponent,
     InstallationLive,
     RepositoryLive,
+    ReposLive,
     ReviewLive,
-    SettingsLive
+    ReviewRequestComponent,
+    SettingsLive,
+    Triggers
   }
 
   setup do
@@ -170,10 +178,61 @@ defmodule Tackle.Web.PagesTest do
       end
     end
 
+    test "a checklist says what the owner's reviews still need, until they can run", %{
+      conn: conn,
+      owner: owner,
+      repository: repository
+    } do
+      html = conn |> page(owner, "/repos") |> html_response(200)
+      assert html =~ "Getting started"
+
+      assert steps(owner) == %{install: true, provider: false, models: false, review: false}
+
+      # A connected Codex provider is enabled with its first credentials.
+      Provider.register!("openai-codex", :codex, %{owner_id: owner.id})
+      :ok = Credentials.put(CredentialStore.handle(owner.id), "openai-codex", %{"token" => "t"})
+      assert %{provider: true, models: false} = steps(owner)
+
+      model = "openai-codex/" <> hd(Codex.models())
+
+      ReviewDefaults.configure!(%{
+        user_id: owner.id,
+        models: %{"detector" => model, "verifier" => model}
+      })
+
+      assert %{provider: true, models: true, review: false} = steps(owner)
+
+      request!(repository)
+      {:ok, socket} = ReposLive.mount(%{}, %{}, socket(owner))
+      assert socket.assigns.steps == []
+      refute build_conn() |> page(owner, "/repos") |> html_response(200) =~ "Getting started"
+    end
+
+    test "users without installations get the checklist; those only given access do not", %{
+      conn: conn,
+      installation: installation
+    } do
+      newcomer = user!()
+      html = conn |> page(newcomer, "/repos") |> html_response(200)
+      assert html =~ "Getting started"
+      assert html =~ "No repositories yet"
+      assert %{install: false} = steps(newcomer)
+
+      grantee = user!()
+      grant!(installation, grantee)
+      {:ok, socket} = ReposLive.mount(%{}, %{}, socket(grantee))
+      assert socket.assigns.steps == []
+    end
+
     test "admins get the sync button", %{conn: conn} do
       assert conn |> page(admin!(), "/repos") |> html_response(200) =~ ~s(action="/setup/sync")
       refute build_conn() |> page(user!(), "/repos") |> html_response(200) =~ "/setup/sync"
     end
+  end
+
+  defp steps(user) do
+    {:ok, socket} = ReposLive.mount(%{}, %{}, socket(user))
+    Map.new(socket.assigns.steps, &{&1.id, &1.done})
   end
 
   describe "/repos/:id" do
@@ -190,6 +249,7 @@ defmodule Tackle.Web.PagesTest do
       assert html =~ "Review settings (JSON)"
       assert html =~ "Give access"
       assert html =~ ~s(/acme/widgets")
+      assert html =~ ~s(name="pull_number")
     end
 
     test "a grantee reads it without settings; others are sent away; a crafted save is ignored",
@@ -205,6 +265,7 @@ defmodule Tackle.Web.PagesTest do
       assert html =~ "acme/widgets"
       refute html =~ "Review settings"
       refute html =~ "Give access"
+      refute html =~ ~s(name="pull_number")
 
       assert redirected_to(page(build_conn(), user!(), "/repos/#{repository.id}"), 302) ==
                "/repos"
@@ -262,6 +323,190 @@ defmodule Tackle.Web.PagesTest do
 
       assert {:noreply, %Socket{redirected: {:redirect, %{to: "/"}}}} =
                RepositoryLive.handle_event("save", %{"form" => %{}}, expired)
+    end
+  end
+
+  describe "requesting reviews" do
+    defp request_component(user, repository, attrs \\ %{}) do
+      {:ok, socket} =
+        ReviewRequestComponent.update(
+          Map.merge(
+            %{
+              id: "review-request",
+              label: "Review",
+              repository: repository,
+              current_user: user,
+              signed_in_at: System.os_time(:second)
+            },
+            attrs
+          ),
+          %Socket{assigns: %{__changed__: %{}, flash: %{}, myself: nil}}
+        )
+
+      socket
+    end
+
+    # The token request, the owner's permission, and pull request 42.
+    defp stub_pull_request(owner, permission, state \\ "open") do
+      expires_at = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+
+      Req.Test.stub(GitHub, fn conn ->
+        case conn.request_path do
+          "/app/installations/" <> _rest ->
+            Req.Test.json(conn, %{"token" => "ghs_test", "expires_at" => expires_at})
+
+          "/repos/acme/widgets/collaborators/" <> rest ->
+            assert rest == "#{owner.login}/permission"
+            Req.Test.json(conn, %{"permission" => permission})
+
+          "/repos/acme/widgets/pulls/42" ->
+            repo = %{"id" => 1}
+
+            Req.Test.json(conn, %{
+              "number" => 42,
+              "title" => "Add widgets",
+              "state" => state,
+              "draft" => false,
+              "head" => %{"sha" => sha("web-head"), "repo" => repo},
+              "base" => %{"sha" => sha("base"), "ref" => "main", "repo" => repo}
+            })
+        end
+      end)
+    end
+
+    # The event, then the result of its async task, run here.
+    defp request_review(socket, user, repository, params) do
+      {:noreply, busy} = ReviewRequestComponent.handle_event("request", params, socket)
+      assert busy.assigns.busy
+
+      profile =
+        if params["profile"] in [nil, ""],
+          do: nil,
+          else: String.to_existing_atom(params["profile"])
+
+      number = socket.assigns.pull_number || String.to_integer(params["pull_number"])
+      result = Triggers.owner_command(user, repository, number, profile)
+
+      {:noreply, done} =
+        ReviewRequestComponent.handle_async(:request, {:ok, {number, result}}, busy)
+
+      refute done.assigns.busy
+      done
+    end
+
+    test "the owner requests a review of a pull request and is sent to it", %{
+      owner: owner,
+      repository: repository
+    } do
+      stub_pull_request(owner, "write")
+      socket = request_component(owner, repository)
+
+      done = request_review(socket, owner, repository, %{"pull_number" => "42", "profile" => ""})
+
+      assert {:ok, %ReviewRequest{id: id, requested_by: "olivia", trigger: :command}} =
+               ReviewRequest.get_head(repository.id, 42, sha("web-head"))
+
+      assert {:live, :redirect, %{to: to}} = done.redirected
+      assert to == "/reviews/#{id}"
+      assert done.assigns.flash["info"] =~ "Reviewing #42"
+
+      # Again with the same profile: already reviewed once it is posted.
+      ReviewRequest
+      |> Ash.get!(id)
+      |> Ash.Changeset.for_update(:record_progress, %{status: :posted})
+      |> Ash.update!()
+
+      again = request_review(socket, owner, repository, %{"pull_number" => "42", "profile" => ""})
+      assert {:reviewed, %{id: ^id}} = again.assigns.notice
+      assert again.redirected == nil
+    end
+
+    test "says why nothing was requested", %{owner: owner, repository: repository} do
+      socket = request_component(owner, repository)
+
+      {:noreply, invalid} =
+        ReviewRequestComponent.handle_event("request", %{"pull_number" => "x"}, socket)
+
+      assert invalid.assigns.notice == "Enter the number of a pull request."
+      refute invalid.assigns.busy
+
+      stub_pull_request(owner, "read")
+      denied = request_review(socket, owner, repository, %{"pull_number" => "42"})
+      assert denied.assigns.notice =~ "no write access"
+
+      stub_pull_request(owner, "admin", "closed")
+      closed = request_review(socket, owner, repository, %{"pull_number" => "42"})
+      assert closed.assigns.notice == "Pull request #42 is closed."
+
+      # Someone else, even when the form is sent anyway.
+      other = user!()
+
+      refused =
+        request_review(request_component(other, repository), other, repository, %{
+          "pull_number" => "42"
+        })
+
+      assert refused.assigns.notice =~ "Only the installation's owner"
+      assert {:ok, nil} = ReviewRequest.get_head(repository.id, 42, sha("web-head"))
+    end
+
+    test "the review page reviews its pull request again; only the owner sees it", %{
+      conn: conn,
+      owner: owner,
+      installation: installation,
+      repository: repository
+    } do
+      request = request!(repository)
+      html = conn |> page(owner, "/reviews/#{request.id}") |> html_response(200)
+      assert html =~ "Review again"
+      refute html =~ ~s(name="pull_number")
+
+      grantee = user!()
+      grant!(installation, grantee)
+
+      refute build_conn() |> page(grantee, "/reviews/#{request.id}") |> html_response(200) =~
+               "Review again"
+
+      stub_pull_request(owner, "write")
+      socket = request_component(owner, repository, %{pull_number: 42, label: "Review again"})
+      done = request_review(socket, owner, repository, %{"profile" => "assertive"})
+
+      assert {:ok, %{profile: :assertive}} =
+               ReviewRequest.get_head(repository.id, 42, sha("web-head"))
+
+      assert {:live, :redirect, _to} = done.redirected
+    end
+
+    test "the owner retries posting a review whose posting failed", %{
+      conn: conn,
+      owner: owner,
+      installation: installation,
+      repository: repository
+    } do
+      request = request!(repository)
+      run!(request, [{:shown, "Injection in widgets", "Body."}])
+
+      request
+      |> Ash.Changeset.for_update(:record_progress, %{
+        status: :failed,
+        error: Store.posting_error()
+      })
+      |> Ash.update!()
+
+      html = conn |> page(owner, "/reviews/#{request.id}") |> html_response(200)
+      assert html =~ "Retry posting"
+
+      grantee = user!()
+      grant!(installation, grantee)
+      {:ok, theirs} = ReviewLive.mount(%{"id" => request.id}, %{}, socket(grantee))
+      {:noreply, refused} = ReviewLive.handle_event("retry_posting", %{}, theirs)
+      assert refused.assigns.flash["error"]
+      assert %{status: :failed} = Ash.get!(ReviewRequest, request.id)
+
+      {:ok, socket} = ReviewLive.mount(%{"id" => request.id}, %{}, socket(owner))
+      {:noreply, retried} = ReviewLive.handle_event("retry_posting", %{}, socket)
+      assert retried.assigns.flash["info"] =~ "Posting again"
+      assert %{status: :reviewed, error: nil} = retried.assigns.request
     end
   end
 
@@ -502,6 +747,7 @@ defmodule Tackle.Web.PagesTest do
       assert html =~ "mine"
       refute html =~ "theirs"
       assert html =~ "Detector model"
+      assert html =~ "No API key yet"
     end
 
     test "registers, enables, and stores an API key for the user's own providers only", %{
@@ -518,10 +764,9 @@ defmodule Tackle.Web.PagesTest do
 
       assert [%Provider{name: "openrouter", enabled: false} = provider] = socket.assigns.providers
       assert provider.owner_id == owner.id
+      assert socket.assigns.flash["info"] =~ "Store its API key to use it."
 
-      {:noreply, socket} = SettingsLive.handle_event("toggle", %{"id" => provider.id}, socket)
-      assert [%{enabled: true}] = socket.assigns.providers
-
+      # The first key enables it.
       {:noreply, socket} =
         SettingsLive.handle_event(
           "set_key",
@@ -529,7 +774,15 @@ defmodule Tackle.Web.PagesTest do
           socket
         )
 
-      assert socket.assigns.flash["info"] =~ "Stored the API key"
+      assert socket.assigns.flash["info"] =~
+               "Stored the API key of openrouter; openrouter is enabled."
+
+      assert [%{enabled: true, connected: true}] = socket.assigns.providers
+
+      {:noreply, socket} = SettingsLive.handle_event("toggle", %{"id" => provider.id}, socket)
+      assert [%{enabled: false}] = socket.assigns.providers
+      {:noreply, socket} = SettingsLive.handle_event("toggle", %{"id" => provider.id}, socket)
+      assert [%{enabled: true}] = socket.assigns.providers
 
       assert %{credentials: %{"api_key" => "sk-secret"}} =
                Ash.load!(Ash.get!(Provider, provider.id), :credentials)
@@ -614,6 +867,28 @@ defmodule Tackle.Web.PagesTest do
       html = build_conn() |> page(owner, "/settings") |> html_response(200)
       refute html =~ ~s(<optgroup label="openai-codex">)
       assert html =~ ~s{<option selected value="#{model}">#{model} (unavailable)</option>}
+    end
+  end
+
+  describe "/codex-login" do
+    test "the Models page links a Codex provider's login, which preselects it", %{
+      conn: conn,
+      owner: owner
+    } do
+      Provider.register!("first", :codex, %{owner_id: owner.id})
+      Provider.register!("second", :codex, %{owner_id: owner.id})
+
+      html = conn |> page(owner, "/settings") |> html_response(200)
+      assert html =~ ~s(href="/codex-login?provider=second")
+      assert html =~ "Not connected yet"
+
+      {:ok, socket} = CodexLoginLive.mount(%{"provider" => "second"}, %{}, socket(owner))
+      assert socket.assigns.selected == "second"
+
+      # Only the user's own providers.
+      Provider.register!("theirs", :codex, %{owner_id: user!().id})
+      {:ok, socket} = CodexLoginLive.mount(%{"provider" => "theirs"}, %{}, socket(owner))
+      assert socket.assigns.selected == nil
     end
   end
 

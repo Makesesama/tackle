@@ -31,8 +31,10 @@ defmodule Tackle.Web.Triggers do
 
   require Logger
 
+  alias Tackle.Web.Accounts.User
   alias Tackle.Web.Command
-  alias Tackle.Web.Forges.Repository
+  alias Tackle.Web.Forge
+  alias Tackle.Web.Forges.{ForgeApp, Installation, Repository}
   alias Tackle.Web.Posting
   alias Tackle.Web.ReviewJob.Store
   alias Tackle.Web.Reviews.ReviewRequest
@@ -126,6 +128,58 @@ defmodule Tackle.Web.Triggers do
           {:error, reason} -> {:error, reason}
         end
     end
+  end
+
+  @doc """
+  Runs a review command by `login` for pull request `number` of
+  `repository` (loaded with its installation): checks with the forge that
+  `login` has write access, reads the pull request's current head, and
+  requests its review with `command/4`. `Tackle.Web.Triggers.CommandJob`
+  runs it for `/tackle review` comments, `owner_command/4` for the web
+  pages.
+
+  `{:error, :no_write_access}` and `{:error, :no_forge_app}` are final;
+  other errors come from the forge and may pass on a retry.
+  """
+  @spec run_command(Repository.t(), pos_integer(), String.t(), atom() | nil) ::
+          {:ok, outcome(), ReviewRequest.t() | nil}
+          | {:error, :no_write_access | :no_forge_app | term()}
+  def run_command(%Repository{} = repository, number, login, profile)
+      when is_integer(number) and number > 0 and is_binary(login) do
+    forge = Forge.module(repository.installation.forge)
+
+    with {:ok, forge_app} <- forge_app(repository.installation.forge),
+         {:ok, true} <- forge.can_trigger?(forge_app, repository.installation, repository, login),
+         {:ok, pull_request} <-
+           forge.pull_request(forge_app, repository.installation, repository, number) do
+      command(repository, pull_request, profile, login)
+    else
+      {:ok, false} -> {:error, :no_write_access}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp forge_app(forge) do
+    case ForgeApp.get(forge) do
+      {:ok, %ForgeApp{} = forge_app} -> {:ok, forge_app}
+      {:ok, nil} -> {:error, :no_forge_app}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Runs a review command from the web pages: as `run_command/4` with
+  `user`'s login, for the owner of the repository's installation only
+  (`{:error, :not_owner}` otherwise), since people given access may only
+  read. The forge still checks the owner's write access.
+  """
+  @spec owner_command(User.t(), Repository.t(), pos_integer(), atom() | nil) ::
+          {:ok, outcome(), ReviewRequest.t() | nil}
+          | {:error, :not_owner | :no_write_access | :no_forge_app | term()}
+  def owner_command(%User{} = user, %Repository{} = repository, number, profile) do
+    if Installation.owned_by?(repository.installation, user),
+      do: run_command(repository, number, user.login, profile),
+      else: {:error, :not_owner}
   end
 
   @doc """

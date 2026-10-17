@@ -67,8 +67,9 @@ iex -S mix phx.server
 ```
 
 On `localhost` GitHub cannot deliver webhooks (the App is registered without
-one), so start a review the way a `/tackle review` comment does, with a
-login that has write access to the repository:
+one), so request reviews on the repository's page (`/repos/:id`) as the
+installation's owner, or from the console the way a `/tackle review` comment
+does, with a login that has write access to the repository:
 
 ```elixir
 require Ash.Query
@@ -348,7 +349,8 @@ The start page links to it; every signed-in user gets the install link and
 
 The GitHub App itself is created in setup; replacing or rotating its secrets is
 not in the browser yet (the recovery command above). Paid reruns and posting
-retries stay console actions (see below).
+retries are not admin actions: installation owners request them on the user
+pages ([phase 8](#user-pages-phase-8)), and the console does too (see below).
 
 **Authorisation.** Every domain authorises when an actor is given
 (`authorize :when_requested`): the web interface always passes the signed-in
@@ -431,12 +433,36 @@ LiveView pages for every signed-in user, under the top bar with the logo
 | Page | What it shows |
 |---|---|
 | `/` | the start page: what tackle is and "Sign in with GitHub"; signed-in users go on to `/repos` |
-| `/repos` (`ReposLive`) | the installations and repositories the user owns or was granted, each with its latest review; "Install on GitHub"; admins also get "Sync from GitHub" |
-| `/repos/:id` (`RepositoryLive`) | the repository's latest 50 review requests with status, verdict, and posted findings; for the owner, its review settings and who has access |
-| `/reviews/:id` (`ReviewLive`) | one request's latest run: status, verdict, duration, tokens, and its findings (posted, verified but hidden, rejected) as plain text |
+| `/repos` (`ReposLive`) | the installations and repositories the user owns or was granted, each with its latest review; "Install on GitHub"; admins also get "Sync from GitHub"; until the user's own reviews can run, a "Getting started" checklist |
+| `/repos/:id` (`RepositoryLive`) | the repository's latest 50 review requests with status, verdict, and posted findings; for the owner, a form to review a pull request, its review settings, and who has access |
+| `/reviews/:id` (`ReviewLive`) | one request's latest run: status, verdict, duration, tokens, and its findings (posted, verified but hidden, rejected) as plain text; for the owner, "Review again" and, after a posting failure, "Retry posting" |
 | `/installations/:id` (`InstallationLive`) | its repositories; for the owner, the defaults for new repositories and access to all of them |
-| `/settings` (`SettingsLive`) | the user's providers (add, enable, store an OpenRouter key) and review defaults |
-| `/codex-login` | connects one of the user's Codex providers |
+| `/settings` (`SettingsLive`) | the user's providers (add, store an OpenRouter key, enable or disable; whether each has credentials) and review defaults |
+| `/codex-login` | connects one of the user's Codex providers; `?provider=<name>` preselects it |
+
+**Requesting reviews.** The installation's owner requests a review of a pull
+request on the repository's page, or of the same pull request again on a
+review's page (`Tackle.Web.ReviewRequestComponent`). It does what a
+`/tackle review [profile]` comment from them does
+(`Tackle.Web.Triggers.owner_command/4`, which shares
+`Triggers.run_command/4` with `CommandJob`): GitHub must report write access
+for the owner's login, and the pull request's current head is reviewed, so a
+head already reviewed with the same profile is not reviewed (and paid for)
+again; another profile reviews it again. The forge calls run as an async task
+of the page, and the page says why nothing was requested (closed, no write
+access, not found). "Retry posting" calls `Posting.retry/1`: it posts the
+stored run again without model calls.
+
+**Getting started.** For users who own an installation or have none yet,
+`/repos` lists what their reviews still need until all is done: an
+installation of their own, a connected and enabled provider, detector and
+verifier models in their review defaults, and a first review.
+
+**In the browser.** Links between the pages navigate over the LiveView
+connection; `app.js` marks the top bar's current section, asks before
+destructive clicks (`data-confirm`, optionally only while a checkbox is
+checked with `data-confirm-if`), and copies the Codex code (`data-copy`).
+Buttons are disabled while their event runs.
 
 The lists show only what the user owns or was granted, admins included
 (`Forges.AccessCheck.visible/2`); every read and write runs with the user as
@@ -485,7 +511,9 @@ in either order; the thread's last state is not read back from GitHub.
 actor; trusted code passes `owner_id` in `attrs`. Names use lowercase
 letters/digits and inner hyphens, are unique per owner, and are what model
 references start with; adapters are **only** `:openrouter` or `:codex`. Several
-names can use the same adapter. New providers are disabled; `configure/2`
+names can use the same adapter. New providers are disabled until they first
+get credentials (an API key or a Codex login), which enables them; one
+disabled later stays disabled when its credentials change. `configure/2`
 changes `settings` (an opaque string-keyed JSON map) and `enabled`, not name,
 owner, adapter, or credentials. `Models.enabled_providers(owner_id)` builds
 `Tackle.Lib.LLM.Provider` instances of one owner without loading secrets.
@@ -496,6 +524,10 @@ OpenRouter's `Provider.set_credentials(provider, api_key)` accepts a nonempty
 key and stores `%{"api_key" => key}`; it rejects Codex providers. **Do not set
 `OPENROUTER_API_KEY` in the service environment**: that adapter's fallback for
 the default `openrouter` id would bypass database-only configuration.
+
+The `connected` calculation says whether credentials are stored without
+decrypting them; deleted credentials are stored as SQL NULL
+(`encrypt_nil? false`).
 
 `Tackle.Web.CredentialStore.handle(owner_id)` is
 `{Tackle.Web.CredentialStore, owner_id}`, and ids in it are provider names.
@@ -750,8 +782,9 @@ subsequent reads; the database and forge cannot share a transaction.
 
 Posting failures retain `:reviewed` for Oban retries. Exhausted/cancelled jobs
 become `:failed` with a fixed, redacted posting error, rather than creating
-endless new retry cycles. After repairing access or configuration, use the
-trusted console (there is no browser or admin action for it):
+endless new retry cycles. After repairing access or configuration, the
+installation's owner clicks "Retry posting" on the review's page, or use the
+trusted console (there is no admin action for it):
 
 ```elixir
 Tackle.Web.Posting.retry(request_id)

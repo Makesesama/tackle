@@ -135,6 +135,7 @@ defmodule Tackle.Web.GrantsComponent do
                 phx-value-id={grant.id}
                 phx-target={@myself}
                 data-confirm={"Remove #{grant.login}'s access?"}
+                phx-disable-with="Removing…"
               >
                 Remove
               </button>
@@ -156,7 +157,7 @@ defmodule Tackle.Web.GrantsComponent do
             {"All repositories of #{@installation.account}", "installation"}
           ]}
         />
-        <button type="submit">Give access</button>
+        <button type="submit" phx-disable-with="Checking…">Give access</button>
       </.form>
       <p :if={@notice} class="notice">{@notice}</p>
     </section>

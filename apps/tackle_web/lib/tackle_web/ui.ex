@@ -21,7 +21,11 @@ defmodule Tackle.Web.UI do
     """
   end
 
-  @doc "The bar on top of every page: the logo, navigation, and who is signed in."
+  @doc """
+  The bar on top of every page: the logo, navigation, and who is signed in.
+  It is in the root layout, which live navigation does not render again, so
+  `app.js` marks the current section's link from the path (`data-paths`).
+  """
   attr :current_user, :any, default: nil
 
   def top_bar(assigns) do
@@ -29,9 +33,9 @@ defmodule Tackle.Web.UI do
     <header class="topbar">
       <a class="brand" href="/"><.logo />tackle</a>
       <nav :if={@current_user}>
-        <a href="/repos">Repositories</a>
-        <a href="/settings">Models</a>
-        <a :if={@current_user.admin} href="/admin">Admin</a>
+        <.link navigate="/repos" data-paths="/repos /reviews /installations">Repositories</.link>
+        <.link navigate="/settings" data-paths="/settings /codex-login">Models</.link>
+        <a :if={@current_user.admin} href="/admin" data-paths="/admin">Admin</a>
       </nav>
       <div :if={@current_user} class="who">
         <span class="muted">{@current_user.login}</span>

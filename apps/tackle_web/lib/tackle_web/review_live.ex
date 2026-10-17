@@ -7,7 +7,10 @@ defmodule Tackle.Web.ReviewLive do
 
   The installation's owner dismisses a finding here, so that later reviews
   of the repository do not report it again, or restores it
-  (`Tackle.Web.Reviews.Dismissal`, docs/TACKLE_WEB_PLAN.md §7.13).
+  (`Tackle.Web.Reviews.Dismissal`, docs/TACKLE_WEB_PLAN.md §7.13). The owner
+  also retries posting a review whose posting failed, from the stored run
+  and without model calls (`Tackle.Web.Posting.retry/1`), and reviews the
+  pull request again (`Tackle.Web.ReviewRequestComponent`).
   """
 
   use Phoenix.LiveView
@@ -19,6 +22,8 @@ defmodule Tackle.Web.ReviewLive do
 
   alias Tackle.Web.Forge
   alias Tackle.Web.Forges.Installation
+  alias Tackle.Web.Posting
+  alias Tackle.Web.ReviewJob.Store
   alias Tackle.Web.Reviews.{Dismissal, Finding, ReviewRequest, ReviewRun}
 
   @impl true
@@ -82,6 +87,22 @@ defmodule Tackle.Web.ReviewLive do
     end)
   end
 
+  def handle_event("retry_posting", _params, socket) do
+    with_user(socket, fn socket ->
+      %{request: request, current_user: user} = socket.assigns
+
+      with true <- Installation.owned_by?(request.repository.installation, user),
+           {:ok, _request} <- Posting.retry(request.id) do
+        socket
+        |> put_flash(:info, "Posting again, from the stored review; this page updates by itself.")
+        |> load()
+        |> schedule_refresh()
+      else
+        _error -> put_flash(socket, :error, "Posting could not be retried.")
+      end
+    end)
+  end
+
   # Only findings of the run on the page.
   defp finding(socket, id) do
     case socket.assigns.run do
@@ -141,9 +162,9 @@ defmodule Tackle.Web.ReviewLive do
     ~H"""
     <.page_header title={"##{@request.pull_number} #{@request.title}"}>
       <:subtitle>
-        <a href={"/repos/#{@request.repository.id}"}>
+        <.link navigate={"/repos/#{@request.repository.id}"}>
           {@request.repository.owner}/{@request.repository.name}
-        </a>
+        </.link>
         · <.sha sha={@request.head_sha} /> onto {@request.base_ref}
         <span :if={@request.requested_by}>· requested by {@request.requested_by}</span>
       </:subtitle>
@@ -177,7 +198,31 @@ defmodule Tackle.Web.ReviewLive do
       </div>
     </section>
 
-    <p :if={@request.error} class={"notice notice-#{@request.status}"}>{@request.error}</p>
+    <div :if={@request.error} class={"notice notice-#{@request.status} notice-row"}>
+      <span>{@request.error}</span>
+      <button
+        :if={@owner? and posting_failed?(@request)}
+        class="small"
+        phx-click="retry_posting"
+        phx-disable-with="Retrying…"
+        title="Posts the stored review again, without model calls"
+      >
+        Retry posting
+      </button>
+    </div>
+
+    <section :if={@owner? and @request.repository.enabled and @request.repository.active} class="card">
+      <div class="card-header"><h2>Review again</h2></div>
+      <.live_component
+        module={Tackle.Web.ReviewRequestComponent}
+        id="review-request"
+        label="Review again"
+        repository={@request.repository}
+        pull_number={@request.pull_number}
+        current_user={@current_user}
+        signed_in_at={@signed_in_at}
+      />
+    </section>
 
     <.empty :if={!@run && @request.status in [:pending, :running]}>
       <p>The review is {if @request.status == :pending, do: "queued", else: "running"}; this page updates by itself.</p>
@@ -218,6 +263,7 @@ defmodule Tackle.Web.ReviewLive do
                 class="small secondary"
                 phx-click="dismiss"
                 phx-value-id={finding.id}
+                phx-disable-with="Dismissing…"
                 title="Later reviews of this repository will not report it"
               >
                 Dismiss
@@ -227,6 +273,7 @@ defmodule Tackle.Web.ReviewLive do
                 class="small secondary"
                 phx-click="restore"
                 phx-value-id={finding.id}
+                phx-disable-with="Restoring…"
               >
                 Restore
               </button>
@@ -248,6 +295,9 @@ defmodule Tackle.Web.ReviewLive do
       request.pull_number
     )
   end
+
+  defp posting_failed?(request),
+    do: request.status == :failed and request.error == Store.posting_error()
 
   defp dismissed_text(%Dismissal{source: :forge, by: by}),
     do: "dismissed by #{by} (resolved on GitHub)"
