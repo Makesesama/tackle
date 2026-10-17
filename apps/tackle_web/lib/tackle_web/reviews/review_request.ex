@@ -22,7 +22,8 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
     domain: Tackle.Web.Reviews,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
-    extensions: [AshOban, AshAdmin.Resource]
+    extensions: [AshOban, AshAdmin.Resource],
+    simple_notifiers: [Tackle.Web.Updates]
 
   require Ash.Query
 
@@ -304,6 +305,7 @@ defmodule Tackle.Web.Reviews.ReviewRequest do
     end)
     |> Ash.bulk_update(:skip, %{reason: reason},
       return_errors?: true,
+      notify?: true,
       strategy: [:atomic, :stream]
     )
     |> case do

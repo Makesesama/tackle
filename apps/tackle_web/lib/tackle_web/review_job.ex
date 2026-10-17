@@ -5,7 +5,8 @@ defmodule Tackle.Web.ReviewJob do
   jail, and agents are torn down, from the freshly read request. An attempt
   that claims an already `:reviewed` request only posts: no checkout, models,
   or token budget. Duplicate/terminal attempts return without Git, model, or
-  forge calls. All database locks are short-lived.
+  forge calls. All database locks are short-lived. While it works, the job
+  reports its progress to the request's pages (`Tackle.Web.ReviewProgress`).
 
   A failed posting keeps the request `:reviewed` for the job's next attempt;
   the final one fails with `Tackle.Web.ReviewJob.Store.posting_error/0`.
@@ -26,7 +27,7 @@ defmodule Tackle.Web.ReviewJob do
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Tools.{Bash, Read}
-  alias Tackle.Web.{AgentBackend, Feedback, Models, Posting}
+  alias Tackle.Web.{AgentBackend, Feedback, Models, Posting, ReviewProgress}
   alias Tackle.Web.Forges.Installation
   alias Tackle.Web.ReviewJob.{Lifecycle, Store}
   alias Tackle.Web.Reviews.ReviewRequest
@@ -37,20 +38,28 @@ defmodule Tackle.Web.ReviewJob do
       {:ok, {:claimed, request, repository}} ->
         opts = Map.get(input, :opts, [])
 
-        case execute(request, repository, job, opts) do
-          :ok -> post_reviewed(request.id, repository, job, opts)
-          :stale -> :ok
-          {:error, message} -> {:error, message}
-        end
+        ReviewProgress.track(id, :checkout, fn ->
+          review_and_post(request, repository, job, opts)
+        end)
 
       {:ok, {:post, request, repository}} ->
-        post(request, repository, job, Map.get(input, :opts, []))
+        ReviewProgress.track(id, :posting, fn ->
+          post(request, repository, job, Map.get(input, :opts, []))
+        end)
 
       {:ok, :noop} ->
         :ok
 
       {:error, _reason} ->
         {:error, "could not claim review request"}
+    end
+  end
+
+  defp review_and_post(request, repository, job, opts) do
+    case execute(request, repository, job, opts) do
+      :ok -> post_reviewed(request.id, repository, job, opts)
+      :stale -> :ok
+      {:error, message} -> {:error, message}
     end
   end
 
@@ -64,6 +73,7 @@ defmodule Tackle.Web.ReviewJob do
       try do
         with {:ok, result} <- review(owner, request, repository, opts),
              :ok <- Lifecycle.check(owner),
+             :ok <- ReviewProgress.report(request.id, {:phase, :storing}),
              {:ok, stored} <-
                Store.complete(
                  request.id,
@@ -104,6 +114,7 @@ defmodule Tackle.Web.ReviewJob do
 
   defp post(request, repository, job, opts) do
     posting = Keyword.get(opts, :posting, Posting)
+    ReviewProgress.report(request.id, {:phase, :posting})
 
     result =
       try do
@@ -134,7 +145,9 @@ defmodule Tackle.Web.ReviewJob do
          {:ok, settings} <-
            models.resolve_settings(owner_id, repository.settings, request.profile),
          {:ok, checkout} <- Lifecycle.prepare(owner, request),
+         :ok <- ReviewProgress.report(request.id, {:phase, :jail}),
          {:ok, jail} <- Lifecycle.jail(owner, checkout),
+         :ok <- ReviewProgress.report(request.id, {:phase, :loading}),
          {:ok, change} <-
            Change.load(
              cwd: checkout.worktree,
@@ -145,7 +158,8 @@ defmodule Tackle.Web.ReviewJob do
          discovery =
            Rules.load([{:project, files}], builtin_rules: settings.default_rules || :all),
          {:ok, spec} <- scope_spec({owner_id, providers}, settings, checkout, jail, opts),
-         {:ok, scope} <- Lifecycle.scope(owner, spec) do
+         {:ok, scope} <- Lifecycle.scope(owner, spec),
+         :ok <- ReviewProgress.report(request.id, {:phase, :reviewing}) do
       Review.run(change,
         requester: scope.root_agent_ref,
         profiles: spec.profiles,
@@ -154,7 +168,9 @@ defmodule Tackle.Web.ReviewJob do
         profile: request.profile,
         # Findings dismissed in the repository are not reported again (§7.13).
         known_fingerprints: Feedback.dismissed_fingerprints(repository.id),
-        warnings: Enum.map(discovery.warnings, &warning/1)
+        warnings: Enum.map(discovery.warnings, &warning/1),
+        # Live on the review's pages (Tackle.Web.ReviewProgress).
+        on_event: &ReviewProgress.report(request.id, &1)
       )
     end
   end

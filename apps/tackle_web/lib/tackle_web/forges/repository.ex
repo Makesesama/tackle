@@ -24,7 +24,8 @@ defmodule Tackle.Web.Forges.Repository do
     domain: Tackle.Web.Forges,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
-    extensions: [AshAdmin.Resource]
+    extensions: [AshAdmin.Resource],
+    simple_notifiers: [Tackle.Web.Updates]
 
   alias Tackle.Web.Accounts.Check
   alias Tackle.Web.Forges.{Access, AccessCheck, AutoReview, Installation}

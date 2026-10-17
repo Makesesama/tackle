@@ -11,6 +11,10 @@ defmodule Tackle.Web.ReviewLive do
   also retries posting a review whose posting failed, from the stored run
   and without model calls (`Tackle.Web.Posting.retry/1`), and reviews the
   pull request again (`Tackle.Web.ReviewRequestComponent`).
+
+  The page is live (`Tackle.Web.Live`): it follows the request, its latest
+  run's findings, the repository's dismissals, and the installation, and
+  shows what a review in flight is doing (`Tackle.Web.ReviewProgress`).
   """
 
   use Phoenix.LiveView
@@ -22,7 +26,7 @@ defmodule Tackle.Web.ReviewLive do
 
   alias Tackle.Web.Forge
   alias Tackle.Web.Forges.Installation
-  alias Tackle.Web.Posting
+  alias Tackle.Web.{Posting, ReviewProgress, Updates}
   alias Tackle.Web.ReviewJob.Store
   alias Tackle.Web.Reviews.{Dismissal, Finding, ReviewRequest, ReviewRun}
 
@@ -33,24 +37,16 @@ defmodule Tackle.Web.ReviewLive do
         not_found(socket)
 
       request ->
-        socket = socket |> assign(:request_id, request.id) |> load()
-        {:ok, if(in_flight?(socket), do: schedule_refresh(socket), else: socket)}
+        {:ok, socket |> assign(:request_id, request.id) |> load()}
     end
   end
 
-  # Only a review in flight refreshes; a finished one does not change.
   @impl true
-  def handle_info(:refresh, socket) do
-    with_user(socket, fn socket ->
-      socket = load(socket)
-      if in_flight?(socket), do: schedule_refresh(socket), else: socket
-    end)
-  end
+  def handle_info({Updates, _topic}, socket), do: {:noreply, changed(socket)}
+  def handle_info(:reload, socket), do: with_user(reloading(socket), &load/1)
 
-  defp in_flight?(%{assigns: %{request: %{status: status}}}),
-    do: status in [:pending, :running, :reviewed]
-
-  defp in_flight?(_socket), do: false
+  def handle_info({ReviewProgress, id, version, progress}, socket),
+    do: with_user(socket, &put_progress(&1, id, version, progress))
 
   @impl true
   def handle_event("dismiss", %{"id" => id}, socket) do
@@ -96,7 +92,6 @@ defmodule Tackle.Web.ReviewLive do
         socket
         |> put_flash(:info, "Posting again, from the stored review; this page updates by itself.")
         |> load()
-        |> schedule_refresh()
       else
         _error -> put_flash(socket, :error, "Posting could not be retried.")
       end
@@ -141,8 +136,21 @@ defmodule Tackle.Web.ReviewLive do
         |> assign(:owner?, Installation.owned_by?(request.repository.installation, user))
         |> assign(:dismissed, Map.new(request.repository.dismissals, &{&1.fingerprint, &1}))
         |> assign(:groups, group_findings(run))
+        |> follow(topics(request, run))
+        |> track_progress(if in_flight?(request), do: [request.id], else: [])
     end
   end
+
+  defp topics(request, run) do
+    [
+      Updates.review(request.id),
+      Updates.dismissals(request.repository_id),
+      Updates.installation(request.repository.installation_id)
+    ] ++ if(run, do: [Updates.run(run.id)], else: [])
+  end
+
+  # Running, or stored and posting.
+  defp in_flight?(request), do: request.status in [:running, :reviewed]
 
   defp group_findings(nil), do: []
 
@@ -224,8 +232,17 @@ defmodule Tackle.Web.ReviewLive do
       />
     </section>
 
-    <.empty :if={!@run && @request.status in [:pending, :running]}>
-      <p>The review is {if @request.status == :pending, do: "queued", else: "running"}; this page updates by itself.</p>
+    <.review_progress
+      :if={progress(@progress, @request.id)}
+      progress={progress(@progress, @request.id)}
+    />
+
+    <.empty :if={!@run && @request.status == :pending}>
+      <p>The review is queued; this page updates by itself.</p>
+    </.empty>
+
+    <.empty :if={!@run && @request.status == :running && !progress(@progress, @request.id)}>
+      <p>The review is running; this page updates by itself.</p>
     </.empty>
 
     <.empty :if={@run && @run.findings == []}>

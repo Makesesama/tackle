@@ -5,6 +5,10 @@ defmodule Tackle.Web.RepositoryLive do
   (`Tackle.Web.ReviewRequestComponent`), restores dismissed findings,
   changes its review settings, and decides who else may see it
   (`Tackle.Web.GrantsComponent`).
+
+  The page is live (`Tackle.Web.Live`): it follows the repository, its
+  reviews and dismissals, and its installation, and says what a review in
+  flight is doing. An update leaves a settings form being edited as it is.
   """
 
   use Phoenix.LiveView
@@ -14,7 +18,7 @@ defmodule Tackle.Web.RepositoryLive do
   import Tackle.Web.Live
   import Tackle.Web.UI
 
-  alias Tackle.Web.Forge
+  alias Tackle.Web.{Forge, GrantsComponent, ReviewProgress, Updates}
   alias Tackle.Web.Forges.{Installation, Repository}
   alias Tackle.Web.Reviews.{Dismissal, ReviewRequest}
 
@@ -31,14 +35,16 @@ defmodule Tackle.Web.RepositoryLive do
          socket
          |> assign(:page_title, "#{repository.owner}/#{repository.name}")
          |> assign_repository(repository)
-         |> load_requests()
-         |> schedule_refresh()}
+         |> load_requests()}
     end
   end
 
   @impl true
-  def handle_info(:refresh, socket),
-    do: with_user(socket, &(&1 |> load_requests() |> schedule_refresh()))
+  def handle_info({Updates, _topic}, socket), do: {:noreply, changed(socket)}
+  def handle_info(:reload, socket), do: with_user(reloading(socket), &reload/1)
+
+  def handle_info({ReviewProgress, id, version, progress}, socket),
+    do: with_user(socket, &put_progress(&1, id, version, progress))
 
   # Only the owner's page has the form.
   @impl true
@@ -75,6 +81,31 @@ defmodule Tackle.Web.RepositoryLive do
     end)
   end
 
+  defp reload(socket) do
+    %{repository: repository, current_user: user, owner?: owner?} = socket.assigns
+
+    case get(Repository, repository.id, user, load: [:installation]) do
+      nil ->
+        socket
+        |> put_flash(:error, "That repository is no longer available to you.")
+        |> push_navigate(to: "/repos")
+
+      repository ->
+        socket =
+          if Installation.owned_by?(repository.installation, user) == owner?,
+            do: assign(socket, :repository, repository),
+            else: assign_repository(socket, repository)
+
+        # Grants changed elsewhere: the component reads them again.
+        if socket.assigns.owner?,
+          do: send_update(GrantsComponent, id: "grants", installation: repository.installation)
+
+        load_requests(socket)
+    end
+  end
+
+  # The owner's settings form, made again only after saving or when the
+  # page's user became or stopped being the owner.
   defp assign_repository(socket, repository) do
     user = socket.assigns.current_user
     owner? = Installation.owned_by?(repository.installation, user)
@@ -99,7 +130,22 @@ defmodule Tackle.Web.RepositoryLive do
       |> Ash.Query.sort(updated_at: :desc)
       |> Ash.read!(actor: socket.assigns.current_user)
 
-    assign(socket, requests: requests, dismissals: dismissals)
+    repository = socket.assigns.repository
+
+    in_flight =
+      for %{status: status, id: id} <- requests, status in [:running, :reviewed], do: id
+
+    topics =
+      [
+        Updates.repository(repository.id),
+        Updates.dismissals(repository.id),
+        Updates.installation(repository.installation_id)
+      ] ++ Enum.map(in_flight, &Updates.review/1)
+
+    socket
+    |> assign(requests: requests, dismissals: dismissals)
+    |> follow(topics)
+    |> track_progress(in_flight)
   end
 
   # `settings` is edited as JSON text; a budget left empty is no limit.
@@ -213,6 +259,9 @@ defmodule Tackle.Web.RepositoryLive do
             <td>
               <.status_badge status={request.status} />
               <.verdict_badge :if={request.latest_run} verdict={request.latest_run.verdict} />
+              <div :if={progress(@progress, request.id)} class="muted small status-progress">
+                {ReviewProgress.describe(progress(@progress, request.id))}
+              </div>
             </td>
             <td class="hide-small">
               <span :if={request.latest_run}>{request.latest_run.shown_findings}</span>

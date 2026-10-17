@@ -1078,15 +1078,20 @@ use Postgres with the Ecto sandbox. Commit per phase.
    review defaults. AshAdmin stays the admin tool. **Implemented**: LiveViews
    `ReposLive`, `RepositoryLive`, `ReviewLive`, `InstallationLive`,
    `SettingsLive`, and `GrantsComponent` in one `live_session` behind
-   `Auth.require_user`, refreshing every ten seconds while connected (a
-   timer, not PubSub: the review job's writes run inside its own Repo
-   transactions); pull request titles on review requests; lists filtered with
-   `Forges.AccessCheck.visible/2` so admins see only their own there too.
-   Later usability work: owners request reviews, review again, and retry
-   posting on these pages (`Triggers.owner_command/4`, the same path as a
-   `/tackle review` comment); a getting-started checklist on `/repos`;
+   `Auth.require_user`; pull request titles on review requests; lists
+   filtered with `Forges.AccessCheck.visible/2` so admins see only their own
+   there too. Later usability work: owners request reviews, review again, and
+   retry posting on these pages (`Triggers.owner_command/4`, the same path as
+   a `/tackle review` comment); a getting-started checklist on `/repos`;
    providers show whether they have credentials and are enabled by their
-   first ones.
+   first ones. **Live pages** (replacing a ten-second refresh timer):
+   `Tackle.Web.Updates`, an Ash notifier on the resources the pages show,
+   sends payload-free PubSub messages once writes commit (the review job's
+   `Store` transactions run in `Ash.transact/3` for that), and each page
+   reads again with its user as the actor; review jobs report their phase and
+   `Tackle.Review` events to `Tackle.Web.ReviewProgress` (a `Registry` per
+   request, owned by the job's process), which the review, repository, and
+   repositories pages show as the CLI's review view does.
 9. **Feedback** (§7.13). **Implemented.** Resolved threads (by writers) and the owner's
    choice → `Dismissal`s → known fingerprints; reactions → counts on
    findings.

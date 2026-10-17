@@ -26,7 +26,8 @@ defmodule Tackle.Web.Models.Provider do
     domain: Tackle.Web.Models,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
-    extensions: [AshCloak, AshAdmin.Resource]
+    extensions: [AshCloak, AshAdmin.Resource],
+    simple_notifiers: [Tackle.Web.Updates]
 
   postgres do
     table "providers"

@@ -136,10 +136,12 @@ defmodule Tackle.Web.ModelsTest do
 
     assert Store.fetch(handle, "codex") == {:ok, %{"refresh_token" => "rotated"}}
 
-    assert {:error, :test_rollback} =
-             Repo.transaction(fn ->
+    # A caller's transaction rolls the write back (an Ash one, which also
+    # holds the write's notification until it commits).
+    assert {:error, _rolled_back} =
+             Ash.transact(Provider, fn ->
                :ok = Store.put(handle, "codex", %{"refresh_token" => "rolled-back"})
-               Repo.rollback(:test_rollback)
+               {:error, :test_rollback}
              end)
 
     assert Store.fetch(handle, "codex") == {:ok, %{"refresh_token" => "rotated"}}

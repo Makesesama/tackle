@@ -27,6 +27,10 @@ config :tackle_web, Tackle.Web.Forge.GitHub,
 
 config :ash, disable_async?: true
 
+# A write whose notification would be lost, so live pages miss it
+# (Tackle.Web.Updates), fails the test instead of logging a warning.
+config :ash, missed_notifications: :raise
+
 config :logger, level: :warning
 
 config :phoenix, :plug_init_mode, :runtime

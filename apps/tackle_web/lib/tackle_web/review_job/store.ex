@@ -24,7 +24,7 @@ defmodule Tackle.Web.ReviewJob.Store do
   # {:ok, {:post, request, repo}} for posting an already stored review, or
   # {:ok, :noop}.
   def claim(id, job) do
-    Repo.transaction(fn ->
+    transaction(fn ->
       with true <- advisory_lock(id),
            request <- locked_request(id),
            false <- request.status in @terminal,
@@ -136,7 +136,7 @@ defmodule Tackle.Web.ReviewJob.Store do
   end
 
   def complete(id, job, result, duration_ms) do
-    Repo.transaction(fn ->
+    transaction(fn ->
       request = locked_request(id)
 
       if request.status == :running and owned?(request, job) and executing?(job) do
@@ -165,7 +165,7 @@ defmodule Tackle.Web.ReviewJob.Store do
   def failed(id, job, message), do: record_failure(id, job, message, final?(job))
 
   defp record_failure(id, job, message, final?) do
-    Repo.transaction(fn ->
+    transaction(fn ->
       request = locked_request(id)
 
       if owned?(request, job) and executing?(job) do
@@ -189,7 +189,7 @@ defmodule Tackle.Web.ReviewJob.Store do
   Only reads; no forge calls happen while the lock is held.
   """
   def posting_snapshot(id, job) do
-    Repo.transaction(fn ->
+    transaction(fn ->
       with {:ok, request} <- posting_owner(id, job),
            %ReviewRun{} = run <- latest_run(id) do
         %{
@@ -198,7 +198,7 @@ defmodule Tackle.Web.ReviewJob.Store do
           repository: Ash.get!(Repository, request.repository_id, load: [:installation])
         }
       else
-        _stale -> Repo.rollback(:stale)
+        _stale -> {:abort, :stale}
       end
     end)
   end
@@ -210,12 +210,12 @@ defmodule Tackle.Web.ReviewJob.Store do
   """
   def prepare_posting(id, job, run_id, %{body: body, comments: comments, fingerprints: prints})
       when is_binary(body) and is_list(comments) and is_list(prints) do
-    Repo.transaction(fn ->
+    transaction(fn ->
       with {:ok, _request} <- posting_owner(id, job),
            %ReviewRun{id: ^run_id} = run <- latest_run(id) do
         freeze_posting(run, %{body: body, comments: comments, fingerprints: prints})
       else
-        _stale -> Repo.rollback(:stale)
+        _stale -> {:abort, :stale}
       end
     end)
   end
@@ -247,7 +247,7 @@ defmodule Tackle.Web.ReviewJob.Store do
   def posted(_id, _job, _run_id, _review_id, _comment_ids), do: {:error, :invalid_payload}
 
   defp record_posted(id, job, run_id, review_id, comment_ids) do
-    Repo.transaction(fn ->
+    transaction(fn ->
       with {:ok, request} <- posting_owner(id, job),
            %ReviewRun{id: ^run_id, summary: %{"posting" => %{"body" => _} = posting} = summary} =
              run <- latest_run(id) do
@@ -258,7 +258,7 @@ defmodule Tackle.Web.ReviewJob.Store do
         update(request, %{status: :posted, error: nil, forge_review_id: review_id})
         :ok
       else
-        _stale -> Repo.rollback(:stale)
+        _stale -> {:abort, :stale}
       end
     end)
   end
@@ -277,7 +277,7 @@ defmodule Tackle.Web.ReviewJob.Store do
   end
 
   defp reset_posting(id) do
-    Repo.transaction(fn ->
+    transaction(fn ->
       blocking_advisory_lock(id)
 
       with %ReviewRequest{} = request <- locked_request(id, false),
@@ -293,7 +293,7 @@ defmodule Tackle.Web.ReviewJob.Store do
         AshOban.run_trigger(request, :run)
         request
       else
-        _not_retryable -> Repo.rollback(:not_retryable)
+        _not_retryable -> {:abort, :not_retryable}
       end
     end)
   end
@@ -376,6 +376,19 @@ defmodule Tackle.Web.ReviewJob.Store do
     |> Map.merge(extra)
     |> Map.merge(%{run_id: run_id, state: state})
     |> then(&Ash.create!(Finding, &1))
+  end
+
+  # Like Repo.transaction/1, with `{:abort, reason}` for Repo.rollback/1:
+  # every abort comes before any write, so committing it changes nothing.
+  # Ash queues the notifications of the writes inside (Tackle.Web.Updates)
+  # and sends them once the outermost transaction commits, so live pages
+  # never read uncommitted state.
+  defp transaction(fun) do
+    case Ash.transact(ReviewRequest, fun) do
+      {:ok, {:abort, reason}} -> {:error, reason}
+      {:ok, result} -> {:ok, result}
+      {:error, error} -> {:error, error}
+    end
   end
 
   defp update(request, attrs) do

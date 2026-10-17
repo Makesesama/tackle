@@ -436,9 +436,9 @@ LiveView pages for every signed-in user, under the top bar with the logo
 | Page | What it shows |
 |---|---|
 | `/` | the start page: what tackle is and "Sign in with GitHub"; signed-in users go on to `/repos` |
-| `/repos` (`ReposLive`) | the installations and repositories the user owns or was granted, each with its latest review; "Install on GitHub"; admins also get "Sync from GitHub"; until the user's own reviews can run, a "Getting started" checklist |
+| `/repos` (`ReposLive`) | the installations and repositories the user owns or was granted, each with its latest review (and what it is doing while it runs); "Install on GitHub"; admins also get "Sync from GitHub"; until the user's own reviews can run, a "Getting started" checklist |
 | `/repos/:id` (`RepositoryLive`) | the repository's latest 50 review requests with status, verdict, and posted findings; for the owner, a form to review a pull request, its review settings, and who has access |
-| `/reviews/:id` (`ReviewLive`) | one request's latest run: status, verdict, duration, tokens, and its findings (posted, verified but hidden, rejected) as plain text; for the owner, "Review again" and, after a posting failure, "Retry posting" |
+| `/reviews/:id` (`ReviewLive`) | one request's progress while it runs (phases, parts reviewed, candidate findings and their verdicts), then its latest run: status, verdict, duration, tokens, and its findings (posted, verified but hidden, rejected) as plain text; for the owner, "Review again" and, after a posting failure, "Retry posting" |
 | `/installations/:id` (`InstallationLive`) | its repositories; for the owner, the defaults for new repositories and access to all of them |
 | `/settings` (`SettingsLive`) | the user's providers (add, store an OpenRouter key, enable or disable; whether each has credentials) and review defaults |
 | `/codex-login` | connects one of the user's Codex providers; `?provider=<name>` preselects it |
@@ -470,10 +470,31 @@ Buttons are disabled while their event runs.
 The lists show only what the user owns or was granted, admins included
 (`Forges.AccessCheck.visible/2`); every read and write runs with the user as
 the actor, so the policies decide, and pages re-read the user before every
-event and refresh, so an expired sign-in stops an open page. Status pages
-refresh every ten seconds while connected. Pull request titles are stored with
+event and update, so an expired sign-in stops an open page. Pull request titles are stored with
 review requests (from the webhook or the pull request read by a command) for
 these pages. Finding text comes from the models and is never rendered as HTML.
+
+**Live.** While connected, the pages follow what they show and read it again
+when it changes: `Tackle.Web.Updates` is an Ash notifier on the review,
+forge, and model resources that sends a message with only a topic (a
+request, a run's findings, a repository, its dismissals, an installation,
+all installations and grants, a user's providers) once the write commits,
+and the page reads again as its user, once for a burst of changes. A page
+whose user lost access leaves on the next change, and a settings form being
+edited is kept. Writes inside a transaction must use `Ash.transact/3` (as the
+review job's `Store` and the credential store do) so their notifications wait
+for the commit; tests raise on missed notifications.
+
+While a review runs, its job reports what it is doing to
+`Tackle.Web.ReviewProgress`: the phase (fetching the pull request, starting
+the jail, reading the change and rules, reviewing, storing, posting) and the
+review's events: its parts with their status, and the candidate findings
+with their verifier verdicts, as the CLI's review view shows them. The
+review page shows all of it; the repository and repositories pages say what
+an in-flight review is doing. The progress lives in a `Registry` owned by
+the job's process, so it ends with the job and a page opened mid-review
+starts from it; with several nodes, pages on another node get the messages
+but not the progress so far.
 
 The page tests render over HTTP and call the pages' events directly;
 `Phoenix.LiveViewTest` would need the `lazy_html` package, which is not a

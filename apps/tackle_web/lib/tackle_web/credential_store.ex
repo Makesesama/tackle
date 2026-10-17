@@ -12,7 +12,6 @@ defmodule Tackle.Web.CredentialStore do
   @behaviour Tackle.Lib.CredentialStore
 
   alias Tackle.Web.Models.Provider
-  alias Tackle.Web.Repo
 
   @doc "The stable handle for the providers of the user `owner_id`."
   @spec handle(Ecto.UUID.t()) :: Tackle.Lib.CredentialStore.handle()
@@ -40,9 +39,15 @@ defmodule Tackle.Web.CredentialStore do
   @impl true
   def delete(owner_id, name), do: write(owner_id, name, nil, true)
 
+  # Ash sends the provider's notification (Tackle.Web.Updates) once the
+  # transaction commits. A failure comes before any write, so it commits
+  # nothing.
   defp write(owner_id, name, credentials, deleting?) do
-    case Repo.transaction(fn -> write_in_transaction(owner_id, name, credentials, deleting?) end) do
+    case Ash.transact(Provider, fn ->
+           write_in_transaction(owner_id, name, credentials, deleting?)
+         end) do
       {:ok, :ok} -> :ok
+      {:ok, {:failed, error}} -> {:error, error}
       {:error, error} -> {:error, error}
     end
   end
@@ -52,7 +57,7 @@ defmodule Tackle.Web.CredentialStore do
          :ok <- update_credentials(provider, name, credentials, deleting?) do
       :ok
     else
-      {:error, error} -> Repo.rollback(error)
+      {:error, error} -> {:failed, error}
     end
   end
 

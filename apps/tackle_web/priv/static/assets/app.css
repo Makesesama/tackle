@@ -836,3 +836,64 @@ body > main label {
     padding-top: 0.5rem;
   }
 }
+
+/* A review in flight */
+
+.review-progress .steps {
+  margin-bottom: 0.75rem;
+}
+
+.review-progress .step-done,
+.review-progress .step-todo {
+  color: var(--muted);
+}
+
+.review-progress .step-done .check {
+  border-color: var(--green);
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.review-progress .step-current {
+  font-weight: 600;
+}
+
+.review-progress .step-current .check {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.review-progress .parts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.review-progress progress {
+  flex: 1;
+  min-width: 8rem;
+  max-width: 24rem;
+  accent-color: var(--accent);
+}
+
+.candidate-verifying {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.candidate-confirmed {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.candidate-uncertain {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.status-progress {
+  margin-top: 0.15rem;
+}

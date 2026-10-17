@@ -1,7 +1,8 @@
 defmodule Tackle.Web.UI do
   @moduledoc """
   Components of the app's own pages: the top bar with the logo, flash
-  messages, page headers, status badges, times, and form inputs for
+  messages, page headers, status badges, the progress of a review in
+  flight, times, and form inputs for
   `Phoenix.HTML.FormField`s (AshPhoenix forms). The styles are in
   `priv/static/assets/app.css`.
   """
@@ -11,6 +12,7 @@ defmodule Tackle.Web.UI do
   import Phoenix.Controller, only: [get_csrf_token: 0]
 
   alias Phoenix.HTML.{Form, FormField}
+  alias Tackle.Web.ReviewProgress
 
   @doc "The logo: the pixel mark of `docs/assets/tackle-logo.svg`."
   attr :class, :string, default: "logo"
@@ -142,6 +144,89 @@ defmodule Tackle.Web.UI do
       _older -> Calendar.strftime(at, "%Y-%m-%d")
     end
   end
+
+  @doc """
+  What a review in flight is doing (`Tackle.Web.ReviewProgress`): its
+  phases, how many of its parts are reviewed, and the candidate findings
+  with their verdicts. Finding text comes from the models and is shown as
+  plain text.
+  """
+  attr :progress, ReviewProgress, required: true
+
+  def review_progress(assigns) do
+    progress = assigns.progress
+    current = Enum.find_index(ReviewProgress.phases(), &(&1 == progress.phase))
+
+    steps =
+      ReviewProgress.phases()
+      |> Enum.with_index()
+      |> Enum.map(fn {phase, index} -> {phase, step(index, current)} end)
+
+    assigns = assign(assigns, steps: steps, counts: ReviewProgress.counts(progress))
+
+    ~H"""
+    <section class="card review-progress" id="review-progress">
+      <div class="card-header">
+        <h2>Progress</h2>
+        <span class="muted small">{ReviewProgress.describe(@progress)}</span>
+      </div>
+      <ol class="checklist steps">
+        <li :for={{phase, state} <- @steps} class={"step-#{state}"}>
+          <span class="check" aria-hidden="true">{if state == :done, do: "✓"}</span>
+          <span class="visually-hidden">{step_state(state)}</span>
+          <span>{ReviewProgress.phase_label(phase)}</span>
+        </li>
+      </ol>
+      <div :if={@counts.total} class="parts">
+        <progress max={max(@counts.total, 1)} value={@counts.done + @counts.failed}></progress>
+        <span class="muted small">
+          {@counts.done + @counts.failed} of {@counts.total} parts reviewed<span :if={@counts.failed > 0}>, {@counts.failed} failed</span>
+        </span>
+      </div>
+      <table :if={@progress.candidates != []} class="list candidates">
+        <tbody>
+          <tr :for={candidate <- @progress.candidates}>
+            <td>
+              <span :if={candidate.severity} class={"badge severity-#{candidate.severity}"}>
+                {candidate.severity}
+              </span>
+              <span class="strong">{candidate.title || "A finding"}</span>
+              <div :if={candidate.path} class="muted small location">{candidate_location(candidate)}</div>
+            </td>
+            <td class="right">
+              <span class={"badge candidate-#{candidate.verdict || :verifying}"}>
+                {candidate_verdict(candidate.verdict)}
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p :if={@progress.omitted > 0} class="muted small">
+        and {@progress.omitted} earlier candidates
+      </p>
+    </section>
+    """
+  end
+
+  defp step(index, current) when index < current, do: :done
+  defp step(current, current), do: :current
+  defp step(_index, _current), do: :todo
+
+  defp step_state(:done), do: "Done:"
+  defp step_state(:current), do: "Now:"
+  defp step_state(:todo), do: "Next:"
+
+  defp candidate_location(%{path: path, start_line: nil}), do: path
+  defp candidate_location(%{path: path, start_line: line, end_line: line}), do: "#{path}:#{line}"
+  defp candidate_location(%{path: path, start_line: first, end_line: nil}), do: "#{path}:#{first}"
+
+  defp candidate_location(%{path: path, start_line: first, end_line: last}),
+    do: "#{path}:#{first}–#{last}"
+
+  defp candidate_verdict(nil), do: "Verifying"
+  defp candidate_verdict(:confirmed), do: "Confirmed"
+  defp candidate_verdict(:rejected), do: "Rejected"
+  defp candidate_verdict(:uncertain), do: "Uncertain"
 
   @doc "A commit SHA, shortened."
   attr :sha, :string, required: true

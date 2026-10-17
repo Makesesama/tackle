@@ -11,7 +11,18 @@ defmodule Tackle.Web.ReviewJobTest do
   alias Tackle.Review.{Finding, Result, Settings}
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
-  alias Tackle.Web.{AgentBackend, Models, Repo, ReviewAdapter, ReviewJail, ReviewJob}
+
+  alias Tackle.Web.{
+    AgentBackend,
+    Models,
+    Repo,
+    ReviewAdapter,
+    ReviewJail,
+    ReviewJob,
+    ReviewProgress,
+    Updates
+  }
+
   alias Tackle.Web.Forges.{Installation, Repository}
   alias Tackle.Web.Models.{Provider, ReviewDefaults}
   alias Tackle.Web.ReviewJob.{Lifecycle, Store}
@@ -243,6 +254,51 @@ defmodule Tackle.Web.ReviewJobTest do
     assert :ok = run(c, job)
     refute_received {:model_call, _, _, _}
     assert [_run] = Ash.read!(ReviewRun)
+  end
+
+  describe "live progress" do
+    test "the job reports its phases and the review's events in order, and leaves none", c do
+      topic = Updates.review(c.request.id)
+      :ok = Updates.subscribe(topic)
+      assert :ok = run(c, job!())
+
+      {versions, snapshots} = c.request.id |> progress_messages() |> Enum.unzip()
+      assert versions == Enum.sort(versions)
+      assert versions == Enum.uniq(versions)
+      assert List.last(snapshots) == nil
+
+      phases = snapshots |> Enum.reject(&is_nil/1) |> Enum.map(& &1.phase) |> Enum.dedup()
+      assert phases == [:checkout, :jail, :loading, :reviewing, :storing, :posting]
+
+      stored = Enum.find(snapshots, &match?(%ReviewProgress{phase: :storing}, &1))
+      assert %{total: total, done: total, verifying: 0} = ReviewProgress.counts(stored)
+      assert total > 0
+      assert Enum.any?(stored.candidates, &(&1.verdict == :confirmed))
+
+      assert ReviewProgress.current(c.request.id) == nil
+      # The status changes are sent as well, for the pages to read again.
+      assert_received {Updates, ^topic}
+    end
+
+    test "a posting-only attempt reports only posting", c do
+      opts = Keyword.put(c.opts, :posting_result, {:error, "forge posting failed"})
+      job = job!()
+      assert {:error, _message} = run(%{c | opts: opts}, job)
+
+      :ok = Updates.subscribe(Updates.review(c.request.id))
+      assert :ok = run(c, retry!(job))
+
+      assert [{_version, %ReviewProgress{phase: :posting}}, {_ended, nil}] =
+               progress_messages(c.request.id)
+    end
+  end
+
+  defp progress_messages(id) do
+    receive do
+      {ReviewProgress, ^id, version, progress} -> [{version, progress} | progress_messages(id)]
+    after
+      0 -> []
+    end
   end
 
   test "findings dismissed in the repository are not reported again", c do

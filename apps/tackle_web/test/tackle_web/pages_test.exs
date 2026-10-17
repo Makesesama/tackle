@@ -25,12 +25,15 @@ defmodule Tackle.Web.PagesTest do
     CredentialStore,
     GrantsComponent,
     InstallationLive,
+    Live,
     RepositoryLive,
     ReposLive,
     ReviewLive,
+    ReviewProgress,
     ReviewRequestComponent,
     SettingsLive,
-    Triggers
+    Triggers,
+    Updates
   }
 
   setup do
@@ -891,6 +894,220 @@ defmodule Tackle.Web.PagesTest do
       assert socket.assigns.selected == nil
     end
   end
+
+  describe "live pages" do
+    # A connected page whose process is the test: it subscribes the test
+    # process, so the test gets what the page would.
+    defp connected(socket), do: %{socket | transport_pid: self()}
+
+    defp set_status(request, status) do
+      request
+      |> Ash.Changeset.for_update(:record_progress, %{status: status})
+      |> Ash.update!()
+    end
+
+    # What the page does with an update: one reload for a burst of them.
+    defp update(module, socket, topic) do
+      assert_received {Updates, ^topic}
+      {:noreply, socket} = module.handle_info({Updates, topic}, socket)
+      {:noreply, socket} = module.handle_info({Updates, topic}, socket)
+      assert_received :reload
+      refute_received :reload
+      {:noreply, socket} = module.handle_info(:reload, socket)
+      refute socket.assigns.reload_pending
+      socket
+    end
+
+    defp flush_updates do
+      receive do
+        {Updates, _topic} -> flush_updates()
+      after
+        0 -> :ok
+      end
+    end
+
+    test "the review page follows its request, its run, and reads again on a change", %{
+      owner: owner,
+      installation: installation,
+      repository: repository
+    } do
+      request = request!(repository)
+      {:ok, socket} = ReviewLive.mount(%{"id" => request.id}, %{}, connected(socket(owner)))
+
+      assert MapSet.new([
+               Updates.review(request.id),
+               Updates.dismissals(repository.id),
+               Updates.installation(installation.id)
+             ]) == socket.assigns.followed
+
+      set_status(request, :running)
+      socket = update(ReviewLive, socket, Updates.review(request.id))
+      assert socket.assigns.request.status == :running
+
+      run = run!(request, [{:shown, "Injection in widgets", "Body."}])
+      flush_updates()
+      set_status(request, :posted)
+      socket = update(ReviewLive, socket, Updates.review(request.id))
+      assert socket.assigns.run.id == run.id
+      assert MapSet.member?(socket.assigns.followed, Updates.run(run.id))
+      assert socket.assigns.progress == %{}
+    end
+
+    test "the pages say what a review in flight is doing", %{
+      conn: conn,
+      owner: owner,
+      repository: repository
+    } do
+      request = request!(repository) |> set_status(:running)
+      flush_updates()
+
+      ReviewProgress.track(request.id, :checkout, fn ->
+        ReviewProgress.report(request.id, {:started, %{units: 2}})
+        ReviewProgress.report(request.id, {:unit, "lib/a.ex#0", :done})
+        ReviewProgress.report(request.id, {:unit, "lib/b.ex#0", {:failed, :timeout}})
+
+        for {print, title, verdict} <- [
+              {"p1", "Unescaped <i>input</i>", :confirmed},
+              {"p2", "Slow", nil}
+            ] do
+          location = %{path: "lib/a.ex", start_line: 3, end_line: 5}
+          finding = %{fingerprint: print, title: title, severity: :high, location: location}
+          ReviewProgress.report(request.id, {:candidate, finding})
+          if verdict, do: ReviewProgress.report(request.id, {:verdict, print, verdict})
+        end
+
+        html = conn |> page(owner, "/reviews/#{request.id}") |> html_response(200)
+        assert html =~ "Progress"
+        assert html =~ "Verifying findings: 1 of 2 checked"
+        assert html =~ "2 of 2 parts reviewed"
+        assert html =~ ", 1 failed"
+        assert html =~ "Unescaped &lt;i&gt;input&lt;/i&gt;"
+        refute html =~ "<i>input</i>"
+        assert html =~ "lib/a.ex:3–5"
+        assert html =~ "Confirmed"
+        assert html =~ "badge candidate-verifying"
+
+        html = build_conn() |> page(owner, "/repos/#{repository.id}") |> html_response(200)
+        assert html =~ "Verifying findings: 1 of 2 checked"
+
+        html = build_conn() |> page(owner, "/repos") |> html_response(200)
+        assert html =~ "Verifying findings: 1 of 2 checked"
+
+        {:ok, socket} = ReviewLive.mount(%{"id" => request.id}, %{}, connected(socket(owner)))
+        assert %ReviewProgress{total: 2} = progress(socket, request.id)
+
+        # Messages: newer ones are taken, older and other requests' are not.
+        candidate = %{
+          fingerprint: "f1",
+          title: "Injection <b>here</b>",
+          severity: :high,
+          location: %{path: "lib/a.ex", start_line: 3, end_line: 3}
+        }
+
+        ReviewProgress.report(request.id, {:candidate, candidate})
+        assert_received {ReviewProgress, id, version, newer}
+        {:noreply, socket} = ReviewLive.handle_info({ReviewProgress, id, version, newer}, socket)
+
+        assert [%{title: "Injection <b>here</b>"} | _earlier] =
+                 progress(socket, request.id).candidates
+
+        {:noreply, same} =
+          ReviewLive.handle_info({ReviewProgress, id, version - 1, nil}, socket)
+
+        assert progress(same, request.id) == newer
+
+        {:noreply, same} =
+          ReviewLive.handle_info({ReviewProgress, Ecto.UUID.generate(), version + 1, nil}, same)
+
+        assert progress(same, request.id) == newer
+      end)
+
+      # The job stopped reporting.
+      assert_received {ReviewProgress, _id, _version, nil}
+      html = build_conn() |> page(owner, "/reviews/#{request.id}") |> html_response(200)
+      refute html =~ "parts reviewed"
+      assert html =~ "The review is running"
+    end
+
+    test "the repository page follows new reviews and keeps a settings form being edited", %{
+      owner: owner,
+      installation: installation,
+      repository: repository
+    } do
+      {:ok, socket} =
+        RepositoryLive.mount(%{"id" => repository.id}, %{}, connected(socket(owner)))
+
+      assert socket.assigns.requests == []
+      form = socket.assigns.form
+
+      request = request!(repository) |> set_status(:running)
+      socket = update(RepositoryLive, socket, Updates.repository(repository.id))
+      assert [%{id: id}] = socket.assigns.requests
+      assert id == request.id
+      assert socket.assigns.form == form
+      # A review in flight: the page follows its progress too.
+      assert MapSet.member?(socket.assigns.followed, Updates.review(request.id))
+      assert Map.has_key?(socket.assigns.progress, request.id)
+      flush_updates()
+
+      # Grants changed elsewhere: the component reads them again.
+      grant!(installation, user!())
+      update(RepositoryLive, socket, Updates.installation(installation.id))
+      assert_received {:phoenix, :send_update, _update}
+    end
+
+    test "a page whose access was revoked leaves on the next update", %{
+      installation: installation,
+      repository: repository
+    } do
+      grantee = user!()
+      access = grant!(installation, grantee)
+
+      {:ok, socket} =
+        RepositoryLive.mount(%{"id" => repository.id}, %{}, connected(socket(grantee)))
+
+      Access.revoke!(access)
+      socket = update(RepositoryLive, socket, Updates.installation(installation.id))
+      assert {:live, :redirect, %{to: "/repos"}} = socket.redirected
+    end
+
+    test "the repositories and installation pages follow what they list", %{
+      owner: owner,
+      installation: installation,
+      repository: repository
+    } do
+      {:ok, repos} = ReposLive.mount(%{}, %{}, connected(socket(owner)))
+
+      assert MapSet.subset?(
+               MapSet.new([
+                 Updates.installations(),
+                 Updates.user(owner.id),
+                 Updates.installation(installation.id),
+                 Updates.repository(repository.id)
+               ]),
+               repos.assigns.followed
+             )
+
+      {:ok, page} =
+        InstallationLive.mount(%{"id" => installation.id}, %{}, connected(socket(owner)))
+
+      form = page.assigns.form
+
+      other =
+        Repository.sync!(installation.id, to_string(unique_id()), installation.account, "gadgets")
+
+      flush_updates()
+      Repository.configure!(other, %{enabled: true})
+      page = update(InstallationLive, page, Updates.installation(installation.id))
+      assert Enum.map(page.assigns.repositories, & &1.name) == ["gadgets", "widgets"]
+      assert page.assigns.form == form
+
+      repos = update(ReposLive, repos, Updates.installation(installation.id))
+      assert [%{repositories: [_gadgets, _widgets]}] = repos.assigns.groups
+    end
+  end
+
+  defp progress(socket, id), do: Live.progress(socket.assigns.progress, id)
 
   defp render_html(socket) do
     socket.assigns

@@ -3,6 +3,10 @@ defmodule Tackle.Web.InstallationLive do
   `/installations/:id`: an installation's repositories and, for its owner,
   the defaults new repositories get and who else may see them
   (`Tackle.Web.GrantsComponent`).
+
+  The page is live (`Tackle.Web.Live`): it follows the installation, its
+  repositories, and its grants. An update leaves the defaults form being
+  edited as it is.
   """
 
   use Phoenix.LiveView
@@ -13,6 +17,7 @@ defmodule Tackle.Web.InstallationLive do
   import Tackle.Web.UI
 
   alias Tackle.Web.Forges.{AccessCheck, Installation, Repository}
+  alias Tackle.Web.{GrantsComponent, Updates}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -25,6 +30,10 @@ defmodule Tackle.Web.InstallationLive do
          socket |> assign(:page_title, installation.account) |> assign_installation(installation)}
     end
   end
+
+  @impl true
+  def handle_info({Updates, _topic}, socket), do: {:noreply, changed(socket)}
+  def handle_info(:reload, socket), do: with_user(reloading(socket), &reload/1)
 
   # Only the owner's page has the form.
   @impl true
@@ -42,16 +51,34 @@ defmodule Tackle.Web.InstallationLive do
     end)
   end
 
+  defp reload(socket) do
+    %{installation: installation, current_user: user, owner?: owner?} = socket.assigns
+
+    case get(Installation, installation.id, user) do
+      nil ->
+        socket
+        |> put_flash(:error, "That installation is no longer available to you.")
+        |> push_navigate(to: "/repos")
+
+      installation ->
+        socket =
+          if Installation.owned_by?(installation, user) == owner?,
+            do: assign_repositories(socket, installation),
+            else: assign_installation(socket, installation)
+
+        # Grants changed elsewhere: the component reads them again.
+        if socket.assigns.owner?,
+          do: send_update(GrantsComponent, id: "grants", installation: installation)
+
+        socket
+    end
+  end
+
+  # The owner's defaults form, made again only after saving or when the
+  # page's user became or stopped being the owner.
   defp assign_installation(socket, installation) do
     user = socket.assigns.current_user
     owner? = Installation.owned_by?(installation, user)
-
-    repositories =
-      Repository
-      |> Ash.Query.filter(installation_id == ^installation.id and active == true)
-      |> Ash.Query.do_filter(AccessCheck.visible(user, at: :repository))
-      |> Ash.Query.sort(:name)
-      |> Ash.read!(actor: user)
 
     form =
       if owner? do
@@ -60,12 +87,24 @@ defmodule Tackle.Web.InstallationLive do
         |> to_form()
       end
 
-    assign(socket,
-      installation: installation,
-      owner?: owner?,
-      repositories: repositories,
-      form: form
-    )
+    socket
+    |> assign(owner?: owner?, form: form)
+    |> assign_repositories(installation)
+  end
+
+  defp assign_repositories(socket, installation) do
+    user = socket.assigns.current_user
+
+    repositories =
+      Repository
+      |> Ash.Query.filter(installation_id == ^installation.id and active == true)
+      |> Ash.Query.do_filter(AccessCheck.visible(user, at: :repository))
+      |> Ash.Query.sort(:name)
+      |> Ash.read!(actor: user)
+
+    socket
+    |> assign(installation: installation, repositories: repositories)
+    |> follow([Updates.installation(installation.id)])
   end
 
   @impl true

@@ -22,7 +22,8 @@ defmodule Tackle.Web.Reviews.Dismissal do
     domain: Tackle.Web.Reviews,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
-    extensions: [AshAdmin.Resource]
+    extensions: [AshAdmin.Resource],
+    simple_notifiers: [Tackle.Web.Updates]
 
   alias Tackle.Web.Accounts.Check
   alias Tackle.Web.Forges.{AccessCheck, OwnerCheck, Repository}

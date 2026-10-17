@@ -12,10 +12,13 @@ defmodule Tackle.Web.Application do
     children = [
       Tackle.Web.Vault,
       Tackle.Web.Repo,
+      # Before anything that writes: writes notify the pages over PubSub
+      # (Tackle.Web.Updates), and review jobs report their progress.
+      {Phoenix.PubSub, name: Tackle.Web.PubSub},
+      Tackle.Web.ReviewProgress,
       Tackle.Web.ReviewJob.Sweeper,
       {Oban, oban_config()},
       Tackle.Web.Forge.GitHub.TokenCache,
-      {Phoenix.PubSub, name: Tackle.Web.PubSub},
       Endpoint,
       # After the endpoint: the message names its URL.
       announce_setup()

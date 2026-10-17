@@ -5,7 +5,8 @@ defmodule Tackle.Web.Reviews.ReviewRun do
     domain: Tackle.Web.Reviews,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
-    extensions: [AshAdmin.Resource]
+    extensions: [AshAdmin.Resource],
+    simple_notifiers: [Tackle.Web.Updates]
 
   postgres do
     table "review_runs"

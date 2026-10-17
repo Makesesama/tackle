@@ -9,6 +9,10 @@ defmodule Tackle.Web.ReposLive do
   is missing: an installation of their own, a connected and enabled model
   provider, the detector and verifier models, and a first review. Users
   who only see installations shared with them do not get it.
+
+  The page is live (`Tackle.Web.Live`): it follows the installations, the
+  repositories it lists and their reviews, and the user's providers and
+  defaults, and says what a review in flight is doing.
   """
 
   use Phoenix.LiveView
@@ -20,16 +24,19 @@ defmodule Tackle.Web.ReposLive do
 
   alias Tackle.Web.Forges.{AccessCheck, Installation, Repository}
   alias Tackle.Web.Models.{Provider, ReviewDefaults}
-  alias Tackle.Web.SetupHTML
+  alias Tackle.Web.{ReviewProgress, SetupHTML, Updates}
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, socket |> assign(:page_title, "Repositories") |> load() |> schedule_refresh()}
+    {:ok, socket |> assign(:page_title, "Repositories") |> load()}
   end
 
   @impl true
-  def handle_info(:refresh, socket),
-    do: with_user(socket, &(&1 |> load() |> schedule_refresh()))
+  def handle_info({Updates, _topic}, socket), do: {:noreply, changed(socket)}
+  def handle_info(:reload, socket), do: with_user(reloading(socket), &load/1)
+
+  def handle_info({ReviewProgress, id, version, progress}, socket),
+    do: with_user(socket, &put_progress(&1, id, version, progress))
 
   defp load(socket) do
     user = socket.assigns.current_user
@@ -59,7 +66,28 @@ defmodule Tackle.Web.ReposLive do
         }
       end)
 
-    assign(socket, groups: groups, steps: steps(user, groups))
+    in_flight = in_flight(repositories)
+
+    socket
+    |> assign(groups: groups, steps: steps(user, groups))
+    |> follow(topics(user, installations, repositories, in_flight))
+    |> track_progress(in_flight)
+  end
+
+  defp topics(user, installations, repositories, in_flight) do
+    [Updates.installations(), Updates.user(user.id)] ++
+      Enum.map(installations, &Updates.installation(&1.id)) ++
+      Enum.flat_map(Map.values(repositories), fn repositories ->
+        Enum.map(repositories, &Updates.repository(&1.id))
+      end) ++ Enum.map(in_flight, &Updates.review/1)
+  end
+
+  # The latest requests whose reviews are running or posting.
+  defp in_flight(repositories) do
+    for {_installation, repositories} <- repositories,
+        %{latest_request: %{status: status, id: id}} <- repositories,
+        status in [:running, :reviewed],
+        do: id
   end
 
   # What the user's own reviews still need, in order; none once all is done
@@ -183,7 +211,7 @@ defmodule Tackle.Web.ReposLive do
               </div>
             </td>
             <td class="latest">
-              <.latest repository={repository} />
+              <.latest repository={repository} progress={@progress} />
             </td>
           </tr>
         </tbody>
@@ -193,6 +221,7 @@ defmodule Tackle.Web.ReposLive do
   end
 
   attr :repository, Repository, required: true
+  attr :progress, :map, required: true
 
   defp latest(%{repository: %{latest_request: nil}} = assigns) do
     ~H"""
@@ -201,14 +230,16 @@ defmodule Tackle.Web.ReposLive do
   end
 
   defp latest(assigns) do
-    assigns = assign(assigns, :request, assigns.repository.latest_request)
+    request = assigns.repository.latest_request
+    assigns = assign(assigns, request: request, now: progress(assigns.progress, request.id))
 
     ~H"""
     <.link navigate={"/reviews/#{@request.id}"} class="row-link">
       <.status_badge status={@request.status} />
       <.verdict_badge :if={@request.latest_run} verdict={@request.latest_run.verdict} />
       <span class="pr">#{@request.pull_number} {@request.title}</span>
-      <span class="muted small"><.time at={@request.updated_at} /></span>
+      <span :if={@now} class="muted small">{ReviewProgress.describe(@now)}</span>
+      <span :if={!@now} class="muted small"><.time at={@request.updated_at} /></span>
     </.link>
     """
   end

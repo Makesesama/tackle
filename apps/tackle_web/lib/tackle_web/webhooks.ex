@@ -160,6 +160,7 @@ defmodule Tackle.Web.Webhooks do
   defp bulk_deactivate(query) do
     case Ash.bulk_update(query, :deactivate, %{},
            return_errors?: true,
+           notify?: true,
            strategy: [:atomic, :stream]
          ) do
       %Ash.BulkResult{status: :success} -> :ok
