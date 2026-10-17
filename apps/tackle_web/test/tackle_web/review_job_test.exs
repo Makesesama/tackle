@@ -515,6 +515,32 @@ defmodule Tackle.Web.ReviewJobTest do
     refute_received {:prepared, _}
   end
 
+  defmodule FailingCheckout do
+    @moduledoc false
+    def prepare(_request, opts), do: {:error, Keyword.fetch!(opts, :reason)}
+    def cleanup(_checkout, _opts), do: :ok
+  end
+
+  test "checkout failures say what to fix, without details", c do
+    for {reason, expected} <- [
+          {:unsafe_checkout_path, "set TACKLE_WEB_STATE_DIR"},
+          {:git_failed, "git could not clone"},
+          {:checkout_failed, "check git and the state directory"}
+        ] do
+      request =
+        case Ash.get!(ReviewRequest, c.request.id) do
+          %{status: :pending} = pending -> pending
+          failed -> ReviewRequest.rerun!(failed, %{trigger: :command})
+        end
+
+      opts =
+        Keyword.merge(c.opts, checkout: FailingCheckout, checkout_opts: [reason: reason])
+
+      assert {:error, message} = run(%{c | request: request, opts: opts}, job!(3))
+      assert message =~ expected
+    end
+  end
+
   test "a killed caller tears down its globally supervised scope, jail and checkout owner", c do
     test = self()
 

@@ -57,6 +57,36 @@ bash scripts/db.sh stop
 If `idna` or another rebar3 dependency fails to build, set
 `MIX_REBAR3=$(which rebar3)`.
 
+**Reviewing locally.** Reviews clone into `.state/` here (`TACKLE_WEB_STATE_DIR`)
+and run only in the review jail, so start the server with the jail's launcher:
+
+```sh
+nix build .#tackle-review-jail -o /tmp/tackle-review-jail   # from the repository root
+export TACKLE_WEB_REVIEW_JAIL=$(readlink -f /tmp/tackle-review-jail)/bin/tackle-review-jail
+iex -S mix phx.server
+```
+
+On `localhost` GitHub cannot deliver webhooks (the App is registered without
+one), so start a review the way a `/tackle review` comment does, with a
+login that has write access to the repository:
+
+```elixir
+require Ash.Query
+repo = Tackle.Web.Forges.Repository |> Ash.Query.filter(owner == "acme" and name == "widgets") |> Ash.read_one!()
+
+%{repository_id: repo.id, pull_number: 12, login: "octocat", profile: nil}
+|> Tackle.Web.Triggers.CommandJob.new()
+|> Oban.insert()
+```
+
+The review needs the repository enabled and its installation owner's models
+(`/settings`). For real webhooks, put a tunnel that passes requests through
+unchanged (cloudflared, ngrok; not smee.io, which re-encodes the body) in
+front of port 4000, set the App's webhook URL to
+`https://<tunnel>/webhooks/github` with a secret and its events (pull request,
+issue comment, pull request review thread) on GitHub, and store the same
+secret with `ForgeApp.configure/2` from `iex`.
+
 Checks, as for the other projects:
 
 ```sh
@@ -86,7 +116,7 @@ review every generated migration before committing it.
 | `LISTEN_ADDRESS` | `127.0.0.1` | IP address to listen on |
 | `PORT` | `4000` | port to listen on |
 | `TACKLE_WEB_REVIEW_JAIL` | unset (reviews fail closed) | absolute path to the `tackle-review-jail` exec-server launcher |
-| `TACKLE_WEB_STATE_DIR` | `/var/lib/tackle-web` | repository clones and per-run worktrees; separate from `HOME` |
+| `TACKLE_WEB_STATE_DIR` | `/var/lib/tackle-web` (in development `.state/` here) | repository clones and per-run worktrees; separate from `HOME` |
 | `TACKLE_WEB_URL` | `http://localhost:4000` | the public URL, as the forge and browsers reach the app; an `https` URL turns on HTTPS redirects, HSTS, and secure cookies (see [sign-in](#sign-in-and-administration-phase-6)) |
 
 Generate a Cloak key with `head -c 32 /dev/urandom | base64`. Losing it

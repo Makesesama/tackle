@@ -19,6 +19,8 @@ defmodule Tackle.Web.ReviewJob do
   returning `:ok` or `{:error, message}` with a fixed, safe message.
   """
 
+  require Logger
+
   alias Tackle.Review
   alias Tackle.Review.{Change, Rules, Stages}
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
@@ -74,8 +76,7 @@ defmodule Tackle.Web.ReviewJob do
           {:error, reason} -> {:error, failure(reason)}
         end
       rescue
-        _error ->
-          {:error, "review failed; check checkout, model configuration and provider access"}
+        error -> {:error, failure(error)}
       catch
         :exit, _reason -> {:error, "review runtime stopped"}
       after
@@ -221,6 +222,28 @@ defmodule Tackle.Web.ReviewJob do
   defp failure({:unknown_provider, _provider}), do: "review model provider is not enabled"
   defp failure({:unknown_model, _model}), do: "review model is not available"
 
-  defp failure(_reason),
-    do: "review failed; check checkout, model configuration and provider access"
+  defp failure(:unsafe_checkout_path),
+    do: "the state directory is not usable; set TACKLE_WEB_STATE_DIR to a writable absolute path"
+
+  defp failure(:clone_auth_failed), do: "could not get the forge's credentials to clone"
+  defp failure(:git_failed), do: "git could not clone or fetch the repository"
+  defp failure(:git_timeout), do: "git timed out cloning or fetching the repository"
+  defp failure(:repository_unavailable), do: "the repository is no longer available"
+
+  defp failure(reason) when reason in [:checkout_in_use, :checkout_lock_timeout],
+    do: "the repository's checkout is busy"
+
+  defp failure(:checkout_failed),
+    do: "the checkout failed; check git and the state directory (TACKLE_WEB_STATE_DIR)"
+
+  # Anything else: only the reason's kind is logged, never its details.
+  defp failure(reason) do
+    Logger.warning("review failed: #{inspect(kind(reason))}")
+    "review failed; check checkout, model configuration and provider access"
+  end
+
+  defp kind(reason) when is_atom(reason), do: reason
+  defp kind(reason) when is_tuple(reason) and is_atom(elem(reason, 0)), do: elem(reason, 0)
+  defp kind(%{__exception__: true} = exception), do: exception.__struct__
+  defp kind(_reason), do: :unexpected
 end

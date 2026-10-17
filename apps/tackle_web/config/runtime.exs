@@ -1,8 +1,15 @@
 import Config
 
+# Clones and worktrees: the service's state directory in production, a
+# directory in the project (ignored by Git) in development.
+default_state_dir =
+  if config_env() == :prod,
+    do: "/var/lib/tackle-web",
+    else: Path.expand("../.state", __DIR__)
+
 config :tackle_web,
   review_jail: System.get_env("TACKLE_WEB_REVIEW_JAIL"),
-  state_dir: System.get_env("TACKLE_WEB_STATE_DIR", "/var/lib/tackle-web")
+  state_dir: System.get_env("TACKLE_WEB_STATE_DIR", default_state_dir)
 
 # Production settings from the environment. The NixOS module sets them; the
 # secrets (SECRET_KEY_BASE, TACKLE_WEB_CLOAK_KEY, a DATABASE_URL with a
