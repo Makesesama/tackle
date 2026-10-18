@@ -64,6 +64,7 @@ build, or sandbox.
 | `packages/tackle_runtime` | Reusable scoped OTP orchestration (`Tackle.Runtime`). |
 | `packages/tackle_tools` | Coding tools (`read`, `bash`, `edit`, `write`) and their local and jailed executors. |
 | `packages/tackle_review` | Code review on the runtime (`Tackle.Review`), without storage or harness code. |
+| `packages/tackle_elixir` | Elixir project nodes (`Tackle.Elixir`): compile and inspect a Mix project in its own BEAM node. |
 | `packages/tackle` | Developer-harness composition, configuration, and built-in tools (`Tackle`). |
 | Plugin packages | Provider adapters and optional integrations, using explicit contracts. |
 | `apps/tackle_cli` | Terminal interaction and fixed Burrito distribution; no duplicate agent loop. |
@@ -98,6 +99,11 @@ and unfinished integrations:
 - [`packages/tackle_review`](packages/tackle_review/README.md) contains code
   review (`Tackle.Review.*`) on the runtime. The harness uses it through
   `Tackle.LocalReview`, which adds the local settings, rules, and history.
+- [`packages/tackle_elixir`](packages/tackle_elixir/README.md) contains
+  Elixir project nodes (`Tackle.Elixir.*`): a broker that runs where the
+  agent's commands run and keeps a BEAM node per Mix project, so Tackle can
+  compile the project and get its diagnostics as data. Nothing uses it yet;
+  see the [plan](docs/PROJECT_NODE_PLAN.md).
 - [`packages/tackle_exec`](packages/tackle_exec/README.md) contains the
   exec-server protocol, jail-side server, and host client for running tool
   primitives in a jail (`Tackle.Exec.*`). The built-in tools reach it through

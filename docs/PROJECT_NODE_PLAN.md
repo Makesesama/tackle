@@ -1,6 +1,8 @@
 # Project node: plan
 
-Status: **plan.** Nothing here is implemented. It follows from
+Status: **plan, partly implemented.** Steps 1 to 3 (the spike, standard
+input in the executor, and the broker with `compile` in
+`packages/tackle_elixir`) are done; the rest is a proposal. It follows from
 [`ELIXIR_INTEGRATION_RESEARCH.md`](ELIXIR_INTEGRATION_RESEARCH.md): running
 `mix compile` in a shell and parsing its output is something any harness can
 do. What a harness written in Elixir can do and others cannot easily do is
@@ -304,9 +306,15 @@ development jail (`tackle-dev-exec-jail`):
 2. **Stdin in the executor** (done): protocol version 2 adds `:input`,
    `Tackle.Exec.Client.input/3`, and the optional `Tackle.Executor` callback
    `input/3`, implemented by both executors.
-3. **Node and host client with `compile`**, then the compile gate on top of
-   it. The current shell-based gate either becomes the fallback when no node
-   can start or is removed.
+3. **Node and host client with `compile`** (done): `Tackle.Elixir.ProjectNode`
+   and `Tackle.Elixir.ProjectNodes`, the broker and helper in
+   `packages/tackle_elixir/priv/project_node/`. Differences from the design
+   above: the host passes the distribution cookie in `ERL_ZFLAGS`, so neither
+   the broker nor the project nodes read or write a cookie file; the broker
+   runs under `sh -c '... 2>>broker.log'`, because the VM can write to
+   standard error before the broker's code runs; and one broker serves every
+   session that shares an executor. Then the compile gate on top of it, in
+   place of the shell-based one.
 4. **`docs`**, a lookup tool with instructions, and the comparison from the
    research document (no lookup, available, prompted) on macro-heavy tasks.
 5. **`callers` and compile-time dependencies**, and their use in

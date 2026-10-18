@@ -40,6 +40,12 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 (cd packages/tackle_review && mix compile --warnings-as-errors && mix test)
 (cd packages/tackle_review && mix format --check-formatted)
 
+# Elixir project nodes (MIX_REBAR3 from the dev shell; the tests start real
+# brokers and project nodes, so they need sh, elixir, and erl)
+(cd packages/tackle_elixir && mix deps.get)
+(cd packages/tackle_elixir && mix compile --warnings-as-errors && mix test)
+(cd packages/tackle_elixir && mix format --check-formatted)
+
 # Anubis MCP bridge: only when affected
 (cd packages/tackle_anubis && mix deps.get)
 (cd packages/tackle_anubis && mix compile --warnings-as-errors && mix test)
@@ -144,6 +150,12 @@ Burrito, or lint commands for tooling that has not been wired up.
   findings, and their runtime backend implements the spec callbacks
   (`configure/2`, `describe/1`, `llm/1`). The harness depends on it and adds
   local settings, rules, and history in `Tackle.LocalReview`.
+- `packages/tackle_elixir/`: Elixir project nodes (`Tackle.Elixir.*`,
+  `:tackle_elixir`) on `tackle_lib`, `tackle_tools`, and `tackle_exec` only.
+  `Tackle.Elixir.ProjectNode` starts a broker through a session's executor
+  (inside the jail when jailed), which drives one BEAM node per Mix project
+  over Erlang distribution that never leaves the executor; the host talks to
+  the broker in checked frames. See `docs/PROJECT_NODE_PLAN.md`.
 - `packages/tackle_phoenix/`: existing Phoenix LiveView (`~> 1.1.33`) and
   PubSub (`~> 2.1`) integration, with its own Mix project and tests. It includes
   a runtime backend that keeps delegated turns inside the host Store lifecycle.
