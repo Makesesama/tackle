@@ -313,8 +313,9 @@ development jail (`tackle-dev-exec-jail`):
    the broker nor the project nodes read or write a cookie file; the broker
    runs under `sh -c '... 2>>broker.log'`, because the VM can write to
    standard error before the broker's code runs; and one broker serves every
-   session that shares an executor. Then the compile gate on top of it, in
-   place of the shell-based one.
+   session that shares an executor. The compile gate
+   (`Tackle.Elixir.CompileGate`) runs on it and is on by default in the
+   harness.
 4. **`docs`**, a lookup tool with instructions, and the comparison from the
    research document (no lookup, available, prompted) on macro-heavy tasks.
 5. **`callers` and compile-time dependencies**, and their use in

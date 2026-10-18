@@ -106,6 +106,26 @@ defmodule Tackle.Config.ProjectFileTest do
     assert {:error, {:unknown_config_fields, ^path, ["show_subagent_sidebar"]}} = load(ctx)
   end
 
+  test "a project file tunes the compile gate but cannot turn it back on", ctx do
+    write(project(ctx.repo), ~s({"compile_gate": {"max_rounds": 1}}))
+    assert {:ok, config} = load(ctx)
+    assert config.compile_gate.max_rounds == 1
+
+    write(ctx.home, ~s({"compile_gate": false}))
+    assert {:ok, config} = load(ctx)
+    assert config.compile_gate == nil
+
+    write(ctx.home, ~s({"compile_gate": {"enabled": false}}))
+    write(project(ctx.repo), ~s({"compile_gate": {"enabled": true, "max_rounds": 1}}))
+    assert {:ok, config} = load(ctx)
+    assert config.compile_gate == nil
+
+    write(ctx.home, ~s({"compile_gate": {"max_rounds": 3}}))
+    write(project(ctx.repo), ~s({"compile_gate": false}))
+    assert {:ok, config} = load(ctx)
+    assert config.compile_gate == nil
+  end
+
   test "project and user files are validated and reported separately", ctx do
     path = write(project(ctx.repo), ~s({"model": ""}))
     assert {:error, {:invalid_config_field, ^path, "model"}} = load(ctx)

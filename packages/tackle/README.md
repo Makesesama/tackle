@@ -672,6 +672,27 @@ such as `"ollama/tev1:4b"` (see `Tackle.Lib.Decision`):
 { "watchdog": { "model": "ollama/tev1:4b", "after_seconds": 60, "threshold": 0.85 } }
 ```
 
+The Elixir compile gate (`Tackle.Elixir.CompileGate` from
+[`tackle_elixir`](../tackle_elixir/README.md)) is on by default for sessions
+built by `Tackle.Config.load/1`. When a turn changes Elixir sources of a Mix
+project through `edit` or `write`, the gate compiles the project in its
+project node (`Tackle.Elixir.ProjectNodes`, through the session's executor)
+before the first change and again when the model answers; new errors and
+warnings
+continue the turn with one message reporting them, up to `max_rounds` times.
+It logs every decision to `$TACKLE_HOME/logs/compile_gate.jsonl`. An optional
+`compile_gate` object tunes it (`enabled`, `max_rounds`, `timeout_seconds`,
+`warnings`), and `"compile_gate": false` turns it off; a project file can tune
+it but not turn it back on when the user turned it off. `"max_rounds": 0`
+checks and logs without continuing turns:
+
+```json
+{ "compile_gate": { "max_rounds": 1, "timeout_seconds": 300, "warnings": false } }
+```
+
+`Tackle.Config.new/1` treats an absent `compile_gate` option as off, as for
+session titles.
+
 Tools can use decision models too. When any session provider's adapter
 implements `Tackle.Lib.Decision`, the session context carries `:decisions`
 (those providers and a default model), which the workflow tool hands to

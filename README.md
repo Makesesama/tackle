@@ -102,8 +102,10 @@ and unfinished integrations:
 - [`packages/tackle_elixir`](packages/tackle_elixir/README.md) contains
   Elixir project nodes (`Tackle.Elixir.*`): a broker that runs where the
   agent's commands run and keeps a BEAM node per Mix project, so Tackle can
-  compile the project and get its diagnostics as data. Nothing uses it yet;
-  see the [plan](docs/PROJECT_NODE_PLAN.md).
+  compile the project and get its diagnostics as data (see the
+  [plan](docs/PROJECT_NODE_PLAN.md)). Its compile gate sends the errors and
+  warnings a turn introduced back to the agent before the turn ends; the
+  harness turns it on by default.
 - [`packages/tackle_exec`](packages/tackle_exec/README.md) contains the
   exec-server protocol, jail-side server, and host client for running tool
   primitives in a jail (`Tackle.Exec.*`). The built-in tools reach it through

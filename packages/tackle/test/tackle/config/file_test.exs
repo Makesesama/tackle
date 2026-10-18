@@ -3,6 +3,7 @@ defmodule Tackle.Config.FileTest do
 
   alias Tackle.Config
   alias Tackle.Config.Narration
+  alias Tackle.Elixir.CompileGate.Settings, as: CompileGateSettings
   alias Tackle.Lib.LLM.Provider
 
   defmodule Adapter do
@@ -417,6 +418,95 @@ defmodule Tackle.Config.FileTest do
 
     assert {:error, {:unknown_model, "test/missing"}} =
              Config.load(available_adapters: [Adapter], env: env)
+  end
+
+  test "the compile gate is on by default and configurable through config.json", %{
+    home: home,
+    env: env
+  } do
+    load = fn ->
+      Config.load(available_adapters: [Adapter], env: env, overrides: [model: "test/default"])
+    end
+
+    log_path = Path.join([home, "logs", "compile_gate.jsonl"])
+
+    assert {:ok, config} = load.()
+
+    assert %CompileGateSettings{enabled: true, max_rounds: 2, warnings: true, log_path: ^log_path} =
+             config.compile_gate
+
+    state = Config.to_agent_state(config)
+    assert List.last(state.hooks) == Tackle.Elixir.CompileGate
+    assert state.context.compile_gate == config.compile_gate
+
+    write_config(
+      home,
+      JSON.encode!(%{
+        "compile_gate" => %{"max_rounds" => 0, "timeout_seconds" => 30, "warnings" => false}
+      })
+    )
+
+    assert {:ok, config} = load.()
+
+    assert %CompileGateSettings{
+             max_rounds: 0,
+             timeout_ms: 30_000,
+             warnings: false,
+             log_path: ^log_path
+           } =
+             config.compile_gate
+
+    for off <- [~s({"compile_gate": false}), ~s({"compile_gate": {"enabled": false}})] do
+      write_config(home, off)
+      assert {:ok, config} = load.()
+      assert config.compile_gate == nil
+      state = Config.to_agent_state(config)
+      refute Tackle.Elixir.CompileGate in state.hooks
+      refute Map.has_key?(state.context, :compile_gate)
+    end
+
+    write_config(home, ~s({"compile_gate": null}))
+    assert {:ok, %{compile_gate: %CompileGateSettings{enabled: true}}} = load.()
+  end
+
+  test "Config.new/1 leaves the compile gate off unless asked" do
+    assert {:ok, config} = Config.new(providers: [Adapter], model: "test/default")
+    assert config.compile_gate == nil
+    refute Tackle.Elixir.CompileGate in Config.to_agent_state(config).hooks
+
+    assert {:ok, config} =
+             Config.new(
+               providers: [Adapter],
+               model: "test/default",
+               compile_gate: [max_rounds: 1],
+               hooks: [Tackle.Elixir.CompileGate],
+               context: %{compile_gate: :host_settings}
+             )
+
+    state = Config.to_agent_state(config)
+    assert state.hooks == [Tackle.Elixir.CompileGate]
+    assert state.context.compile_gate == :host_settings
+  end
+
+  test "invalid compile gate configuration returns errors", %{home: home, env: env} do
+    path = write_config(home, ~s({"compile_gate": "yes"}))
+
+    assert {:error, {:invalid_config_field, ^path, "compile_gate"}} =
+             Config.load(available_adapters: [Adapter], env: env)
+
+    write_config(home, JSON.encode!(%{"compile_gate" => %{"log_path" => "/tmp/x"}}))
+
+    assert {:error, {:invalid_config_field, ^path, "compile_gate"}} =
+             Config.load(available_adapters: [Adapter], env: env)
+
+    write_config(home, JSON.encode!(%{"compile_gate" => %{"max_rounds" => -1}}))
+
+    assert {:error, {:invalid_option, :compile_gate, {:max_rounds, -1}}} =
+             Config.load(
+               available_adapters: [Adapter],
+               env: env,
+               overrides: [model: "test/default"]
+             )
   end
 
   test "the watchdog is off by default and configurable through config.json", %{

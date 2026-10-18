@@ -84,6 +84,13 @@ defmodule Tackle.Elixir.ProjectNode do
 
     signal = Keyword.get(opts, :cancellation_signal)
 
+    cond do
+      Cancellation.cancelled?(signal) -> {:error, :cancelled}
+      true -> send_request(server, request, deadline, signal)
+    end
+  end
+
+  defp send_request(server, request, deadline, signal) do
     case GenServer.whereis(server) do
       nil ->
         {:error, :node_down}
@@ -244,7 +251,8 @@ defmodule Tackle.Elixir.ProjectNode do
   defp read(client, executor, argv, dir) do
     # The distribution cookie of the broker and its project nodes: read at
     # boot from the environment, never on a command line or in a file.
-    cookie = Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+    # Prefixed: an argument starting with "-" would be read as another flag.
+    cookie = "tackle" <> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
     env = [{"ERL_ZFLAGS", "-setcookie " <> cookie}]
 
     case Executor.exec(executor, argv, cwd: dir, env: env) do

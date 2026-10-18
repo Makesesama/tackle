@@ -25,6 +25,8 @@ defmodule Tackle.Config do
   alias Tackle.Config.Narration
   alias Tackle.Config.SessionTitles
   alias Tackle.Config.Watchdog
+  alias Tackle.Elixir.CompileGate
+  alias Tackle.Elixir.CompileGate.Settings, as: CompileGateSettings
   alias Tackle.Executor
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.Decision
@@ -92,7 +94,8 @@ defmodule Tackle.Config do
     :narration,
     :decision_model,
     :review,
-    :agents
+    :agents,
+    :compile_gate
   ]
 
   @project_config_file ".tackle/config.json"
@@ -119,7 +122,8 @@ defmodule Tackle.Config do
             narration: nil,
             decision_model: nil,
             review: nil,
-            agents: %{}
+            agents: %{},
+            compile_gate: nil
 
   @type t :: %__MODULE__{
           providers: [Provider.t()],
@@ -143,7 +147,8 @@ defmodule Tackle.Config do
           narration: Narration.t() | nil,
           decision_model: Tackle.Lib.Decision.Selection.t() | nil,
           review: ReviewSettings.t() | nil,
-          agents: %{optional(String.t()) => agent_settings()}
+          agents: %{optional(String.t()) => agent_settings()},
+          compile_gate: CompileGateSettings.t() | nil
         }
 
   @typedoc """
@@ -213,6 +218,7 @@ defmodule Tackle.Config do
          {:ok, env_opts} <- environment_options(env),
          {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, providers),
          {:ok, session_opts} <- default_session_titles(session_opts),
+         session_opts = default_compile_gate(session_opts, Path.dirname(config_path)),
          {:ok, config} <- session_opts |> Keyword.put(:providers, providers) |> new() do
       load_system_prompt(
         config,
@@ -256,6 +262,13 @@ defmodule Tackle.Config do
   The session context gets them under `:review_settings`, unless the host
   already put a `:review_settings` entry there.
 
+  Optional `:compile_gate` turns on the Elixir compile gate,
+  `Tackle.Elixir.CompileGate`, with `Tackle.Elixir.CompileGate.Settings`
+  (`false` or absent leaves it off; `load/1` turns it on by default). Agent
+  states built by `to_agent_state/2` then carry the hook after the configured
+  hooks and the settings under the context key `:compile_gate`, unless the host
+  already put a `:compile_gate` entry there.
+
   Optional `:agents` maps subagent profile names to `t:agent_settings/0`,
   which `Tackle.Coding` applies over the profiles' own `model` and `thinking`.
   Model references are resolved eagerly, so unavailable models are errors even
@@ -276,6 +289,7 @@ defmodule Tackle.Config do
          {:ok, decision_model} <-
            resolve_decision_model(Keyword.get(opts, :decision_model), providers),
          {:ok, review} <- ReviewSettings.new(Keyword.get(opts, :review), providers),
+         {:ok, compile_gate} <- resolve_compile_gate(Keyword.get(opts, :compile_gate)),
          :ok <- validate_agents(Keyword.get(opts, :agents, %{}), providers),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
@@ -323,7 +337,8 @@ defmodule Tackle.Config do
          narration: narration,
          decision_model: decision_model,
          review: review,
-         agents: Keyword.get(opts, :agents, %{})
+         agents: Keyword.get(opts, :agents, %{}),
+         compile_gate: compile_gate
        }}
     end
   end
@@ -356,9 +371,9 @@ defmodule Tackle.Config do
     Tackle.Lib.new(
       llm: config.llm,
       tools: config.tools,
-      hooks: config.hooks,
+      hooks: compile_gate_hooks(config.hooks, config.compile_gate),
       system_prompt: config.system_prompt,
-      context: config.context,
+      context: put_compile_gate(config.context, config.compile_gate),
       max_iterations: config.max_iterations,
       tool_policy: config.tool_policy,
       llm_opts: llm_opts,
@@ -439,6 +454,24 @@ defmodule Tackle.Config do
       {:ok, session_opts}
     else
       {:ok, Keyword.put(session_opts, :session_titles, [])}
+    end
+  end
+
+  # The compile gate is on by default for the harness loader, logging its
+  # decisions under the Tackle home; an explicit `compile_gate` entry (including
+  # `false`) still wins. `new/1` alone treats the option as absent.
+  defp default_compile_gate(session_opts, home) do
+    log_path = Path.join([home, "logs", "compile_gate.jsonl"])
+
+    case Keyword.get(session_opts, :compile_gate) do
+      nil ->
+        Keyword.put(session_opts, :compile_gate, log_path: log_path)
+
+      opts when is_list(opts) ->
+        Keyword.put(session_opts, :compile_gate, Keyword.put_new(opts, :log_path, log_path))
+
+      _false_or_settings ->
+        session_opts
     end
   end
 
@@ -897,6 +930,19 @@ defmodule Tackle.Config do
         })
     end
   end
+
+  defp resolve_compile_gate(nil), do: {:ok, nil}
+  defp resolve_compile_gate(value), do: CompileGateSettings.new(value)
+
+  defp compile_gate_hooks(hooks, nil), do: hooks
+
+  defp compile_gate_hooks(hooks, %CompileGateSettings{}) do
+    if CompileGate in hooks, do: hooks, else: Enum.reverse([CompileGate | Enum.reverse(hooks)])
+  end
+
+  defp put_compile_gate(context, nil), do: context
+  defp put_compile_gate(%{compile_gate: _host_settings} = context, _settings), do: context
+  defp put_compile_gate(context, settings), do: Map.put(context, :compile_gate, settings)
 
   defp put_review(context, nil), do: context
   defp put_review(%{review_settings: _host_settings} = context, _review), do: context

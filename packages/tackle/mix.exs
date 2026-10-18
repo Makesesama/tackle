@@ -36,6 +36,7 @@ defmodule Tackle.MixProject do
       {:tackle_runtime, path: "../tackle_runtime"},
       {:tackle_tools, path: "../tackle_tools"},
       {:tackle_review, path: "../tackle_review"},
+      {:tackle_elixir, path: "../tackle_elixir"},
       {:yaml_frontmatter, path: "../yaml_frontmatter"},
       # Test-only: an optional host plugin, used to prove that a host can grant
       # its model-facing tool to a real harness session. The harness itself

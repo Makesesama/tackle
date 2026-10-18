@@ -155,7 +155,10 @@ Burrito, or lint commands for tooling that has not been wired up.
   `Tackle.Elixir.ProjectNode` starts a broker through a session's executor
   (inside the jail when jailed), which drives one BEAM node per Mix project
   over Erlang distribution that never leaves the executor; the host talks to
-  the broker in checked frames. See `docs/PROJECT_NODE_PLAN.md`.
+  the broker in checked frames. See `docs/PROJECT_NODE_PLAN.md`. Its
+  `Tackle.Elixir.CompileGate` hook compiles the projects a turn changed
+  before the turn ends; the harness depends on the package and turns the gate
+  on in `Tackle.Config.load/1`.
 - `packages/tackle_phoenix/`: existing Phoenix LiveView (`~> 1.1.33`) and
   PubSub (`~> 2.1`) integration, with its own Mix project and tests. It includes
   a runtime backend that keeps delegated turns inside the host Store lifecycle.

@@ -689,6 +689,7 @@ let
               tackle_runtime
               tackle_tools
               tackle_review
+              tackle_elixir
               yaml_frontmatter
             ];
           };
@@ -742,6 +743,24 @@ let
             beamDeps = [
               req
               tackle_lib
+            ];
+          };
+        in
+        drv;
+
+      tackle_elixir =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "tackle_elixir";
+
+            src = ../packages/tackle_elixir;
+
+            beamDeps = [
+              tackle_lib
+              tackle_tools
+              tackle_exec
             ];
           };
         in

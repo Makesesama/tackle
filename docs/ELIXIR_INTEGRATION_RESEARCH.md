@@ -1,7 +1,8 @@
 # Elixir integrations for the harness and review: research and plan
 
-Status: **research notes and plan.** Nothing described under "Plan" is
-implemented. The goal is to make `tackle_cli` and `tackle_review` the best
+Status: **research notes and plan.** Of the "Plan", only the gate seam and
+the compile gate (`packages/tackle_elixir`) are implemented; the rest is a
+proposal. The goal is to make `tackle_cli` and `tackle_review` the best
 agent harness and review tool for Elixir while keeping other languages
 working. We integrate with Tidewave and Expert instead of competing with
 them.
@@ -157,10 +158,18 @@ to expose only selected tools of a server; the plan needs one (see below).
 
 1. **Parse guard.** `edit` and `write` reject `.ex`/`.exs` results that
    `Code.string_to_quoted/2` cannot parse, with the parser's message.
-2. **Compile gate.** When the agent gives a final answer, run
-   `mix compile` (later `mix format --check-formatted` and
+2. **Compile gate (implemented).** When the agent gives a final answer,
+   compile (later perhaps `mix format --check-formatted` and
    `mix test --stale`), compare with the baseline, and either finish or
    send the new diagnostics back and continue the turn.
+   `Tackle.Elixir.CompileGate` compiles in the project node
+   ([`PROJECT_NODE_PLAN.md`](PROJECT_NODE_PLAN.md)), which returns
+   diagnostics as data, and takes the baseline before the turn's first
+   `edit` or `write` of a project's Elixir source rather than at turn start,
+   so turns that change no Elixir code cost nothing. It logs to
+   `$TACKLE_HOME/logs/compile_gate.jsonl` and is on by default in the
+   harness; see [`packages/tackle_elixir`](../packages/tackle_elixir/README.md).
+   Changes made through `bash` are not watched yet.
 3. **Lookup tools.** A small allowlist of Tidewave or ElixirLS MCP tools,
    plus a skill that says to use them for macro-generated and dependency
    code.
@@ -175,11 +184,15 @@ to expose only selected tools of a server; the plan needs one (see below).
   return `{:continue, messages}` (or `{:continue, messages, context}`) to
   send feedback and continue the turn. Plugins register such hooks like any
   other. The loop bounds repeated continuations only by `max_iterations`;
-  a gate counts its own rounds in the context.
+  a gate counts its own rounds in the context. Hooks also receive the run's
+  cancellation signal in their context, so a slow gate can stop early.
 - **No per-tool allowlist in `tackle_mcp`.** Needed to expose a few tools
   of a server instead of all of them.
-- **No gate telemetry.** Decisions should go to the session journal or
-  events so daily use produces data.
+- **Gate decisions are logged to a file (done).** The compile gate appends
+  every baseline and check to a JSON-lines log (the TUI hides `Logger`
+  output). They are not yet in the session journal or the event stream, so
+  the CLI does not show them, and the gate's message appears as an ordinary
+  user message.
 
 ### Order of work
 

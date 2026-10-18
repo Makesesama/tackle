@@ -1129,6 +1129,28 @@ Set `"session_titles": false` to disable generation. A session that already
 carries an explicit title (through `Tackle.Session.Spec`'s `:title`) is never
 retitled, and a resumed session keeps its committed title.
 
+### Elixir compile gate
+
+When the agent changes Elixir sources of a Mix project with `edit` or `write`,
+Tackle compiles that project before the first change and again when the
+agent says it is done. Errors and warnings that the change introduced are
+sent back to the agent, which keeps working on them, at most twice per turn.
+Compiles happen in a BEAM node for the project that runs where the agent's
+commands run (in the jail when it is jailed) with the project's own Elixir,
+so a compile with few changes takes tens of milliseconds once the node is up;
+the first one in a session starts it, which takes about a second. Every
+decision is logged to
+`$TACKLE_HOME/logs/compile_gate.jsonl`. It is on by default; tune or disable it
+in `$TACKLE_HOME/config.json`:
+
+```json
+{ "compile_gate": { "max_rounds": 1, "timeout_seconds": 300, "warnings": false } }
+```
+
+`"compile_gate": false` turns it off, and `"max_rounds": 0` only checks and
+logs. See [`tackle_elixir`](../../packages/tackle_elixir/README.md) for
+details.
+
 ### Command watchdog
 
 The CLI's default local `ollama` provider offers the `ollama/tev1:4b` decision
