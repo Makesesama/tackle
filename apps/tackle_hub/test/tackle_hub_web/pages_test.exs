@@ -112,6 +112,13 @@ defmodule Tackle.HubWeb.PagesTest do
 
   defp page(conn, user, path), do: conn |> sign_in(user) |> get(path)
 
+  # The settings form's stage inputs, all left on the owner's defaults.
+  defp stage_params do
+    for stage <- ~w(detector verifier scorer), suffix <- ~w(_model _thinking), into: %{} do
+      {stage <> suffix, ""}
+    end
+  end
+
   describe "the start page" do
     test "shows the logo and sign-in; signed-in users go to their repositories", %{
       conn: conn,
@@ -247,7 +254,8 @@ defmodule Tackle.HubWeb.PagesTest do
 
       assert html =~ "acme/widgets"
       assert html =~ "#42 Add widgets"
-      assert html =~ "Review settings (JSON)"
+      assert html =~ "Detector model"
+      assert html =~ "Advanced settings (JSON)"
       assert html =~ "Give access"
       assert html =~ ~s(/acme/widgets")
       assert html =~ ~s(name="pull_number")
@@ -264,7 +272,8 @@ defmodule Tackle.HubWeb.PagesTest do
 
       html = conn |> page(grantee, "/repos/#{repository.id}") |> html_response(200)
       assert html =~ "acme/widgets"
-      refute html =~ "Review settings"
+      refute html =~ "Detector model"
+      refute html =~ "Advanced settings"
       refute html =~ "Give access"
       refute html =~ ~s(name="pull_number")
 
@@ -282,18 +291,22 @@ defmodule Tackle.HubWeb.PagesTest do
       assert %{enabled: true} = Ash.get!(Repository, repository.id)
     end
 
-    test "the owner saves settings; JSON is checked", %{owner: owner, repository: repository} do
+    test "the owner saves settings; the advanced JSON is checked", %{
+      owner: owner,
+      repository: repository
+    } do
       {:ok, socket} = RepositoryLive.mount(%{"id" => repository.id}, %{}, socket(owner))
 
-      params = %{
-        "enabled" => "true",
-        "auto_review" => "on_open_and_push",
-        "auto_review_drafts" => "true",
-        "auto_review_forks" => "false",
-        "profile" => "quiet",
-        "daily_token_budget" => "",
-        "settings" => ~s({"default_rules": []})
-      }
+      params =
+        Map.merge(stage_params(), %{
+          "enabled" => "true",
+          "auto_review" => "on_open_and_push",
+          "auto_review_drafts" => "true",
+          "auto_review_forks" => "false",
+          "profile" => "quiet",
+          "daily_token_budget" => "",
+          "advanced" => ~s({"default_rules": []})
+        })
 
       assert {:noreply, saved} = RepositoryLive.handle_event("save", %{"form" => params}, socket)
       assert saved.assigns.flash["info"] == "Settings saved."
@@ -303,16 +316,76 @@ defmodule Tackle.HubWeb.PagesTest do
                auto_review_drafts: true,
                profile: :quiet,
                daily_token_budget: nil,
-               settings: %{"default_rules" => []}
+               settings: %{"default_rules" => []} = settings
              } = Ash.get!(Repository, repository.id)
 
-      invalid = Map.put(params, "settings", "{not json")
+      # Empty stage inputs leave models and thinking to the owner's defaults.
+      assert map_size(settings) == 1
 
-      assert {:noreply, failed} =
-               RepositoryLive.handle_event("save", %{"form" => invalid}, saved)
+      for {advanced, message} <- [
+            {"{not json", "not valid JSON"},
+            {"[1]", "must be a JSON object"},
+            {~s({"models": {"detector": "x/y"}}), "Choose models and thinking levels above"}
+          ] do
+        invalid = Map.put(params, "advanced", advanced)
 
+        assert {:noreply, failed} =
+                 RepositoryLive.handle_event("save", %{"form" => invalid}, saved)
+
+        assert failed.assigns.settings_error =~ message
+        # What was entered stays in the form.
+        assert failed.assigns.form[:advanced].value == advanced
+        assert %{settings: ^settings} = Ash.get!(Repository, repository.id)
+      end
+    end
+
+    test "the owner picks stage models and thinking; the rest stays JSON", %{
+      conn: conn,
+      owner: owner,
+      repository: repository
+    } do
+      Provider.register!("openai-codex", :codex, %{owner_id: owner.id, enabled: true})
+      model = "openai-codex/" <> hd(Codex.models())
+      ReviewDefaults.configure!(%{user_id: owner.id, models: %{"detector" => model}})
+
+      {:ok, socket} = RepositoryLive.mount(%{"id" => repository.id}, %{}, socket(owner))
+
+      params =
+        Map.merge(stage_params(), %{
+          "verifier_model" => model,
+          "verifier_thinking" => "high",
+          "advanced" => ~s({"max_steps": {"verifier": 6}, "default_rules": ["injection"]})
+        })
+
+      assert {:noreply, saved} = RepositoryLive.handle_event("save", %{"form" => params}, socket)
+      assert saved.assigns.flash["info"] == "Settings saved."
+
+      assert %{
+               settings: %{
+                 "models" => %{"verifier" => ^model},
+                 "thinking" => %{"verifier" => "high"},
+                 "max_steps" => %{"verifier" => 6},
+                 "default_rules" => ["injection"]
+               }
+             } = Ash.get!(Repository, repository.id)
+
+      # The page shows the stages in their inputs, the rest indented as JSON,
+      # and what an empty stage uses.
+      html = conn |> page(owner, "/repos/#{repository.id}") |> html_response(200)
+      assert html =~ ~s(<option selected value="#{model}">#{hd(Codex.models())}</option>)
+      assert html =~ ~s(<option selected value="high">high</option>)
+      assert html =~ "Your default (#{model})"
+      assert html =~ "Your default (none chosen)"
+      assert html =~ "Your default (the verifier&#39;s model)"
+      assert html =~ ~s(<details class="advanced" id="advanced-settings" open)
+      assert html =~ ~s(  &quot;max_steps&quot;: { &quot;verifier&quot;: 6 })
+
+      # A model that is not offered: refused, with the reason, and kept selected.
+      bad = Map.put(params, "detector_model", "missing/model")
+      assert {:noreply, failed} = RepositoryLive.handle_event("save", %{"form" => bad}, saved)
       assert failed.assigns.form[:settings].errors != []
-      assert %{settings: %{"default_rules" => []}} = Ash.get!(Repository, repository.id)
+      assert failed.assigns.form[:detector_model].value == "missing/model"
+      refute Map.has_key?(Ash.get!(Repository, repository.id).settings["models"], "detector")
     end
 
     test "a page left open stops at the next event once the sign-in expired", %{

@@ -647,6 +647,36 @@ textarea:focus {
   flex: 1;
 }
 
+/* A repository's settings */
+
+form h3 {
+  margin: 1.5rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+form h3 + .help {
+  margin: 0.15rem 0 0.75rem;
+}
+
+details.advanced {
+  margin: 0.5rem 0 1rem;
+}
+
+details.advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 0.6rem;
+}
+
+details.advanced summary:hover {
+  color: var(--text);
+}
+
 /* A review */
 
 .summary {

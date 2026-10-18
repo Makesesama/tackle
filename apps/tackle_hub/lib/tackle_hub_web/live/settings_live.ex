@@ -279,7 +279,7 @@ defmodule Tackle.HubWeb.SettingsLive do
             options={
               model_select_options(
                 @model_options,
-                stage,
+                empty_choice(stage),
                 @defaults_form[elem(@fields[stage], 0)].value
               )
             }
@@ -295,21 +295,6 @@ defmodule Tackle.HubWeb.SettingsLive do
       </.form>
     </section>
     """
-  end
-
-  # The enabled providers' models, grouped by provider, after an empty
-  # choice. A chosen reference that is no longer offered (its provider was
-  # disabled, or the model removed) stays selectable, marked, so the form
-  # shows and keeps it instead of switching to another model unnoticed.
-  defp model_select_options(groups, stage, value) do
-    value = if is_binary(value), do: String.trim(value), else: ""
-
-    offered? =
-      value == "" or Enum.any?(groups, fn {_id, models} -> List.keymember?(models, value, 1) end)
-
-    unavailable = if offered?, do: [], else: [{value <> " (unavailable)", value}]
-
-    [{empty_choice(stage), ""} | unavailable] ++ groups
   end
 
   defp empty_choice("scorer"), do: "Verifier's model"

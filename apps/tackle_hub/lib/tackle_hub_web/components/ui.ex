@@ -237,6 +237,27 @@ defmodule Tackle.HubWeb.UI do
     """
   end
 
+  @doc """
+  The options of a model select: `empty` (the choice of no model, with the
+  value `""`) and then the enabled providers' models, grouped by provider
+  (`Tackle.Hub.Models.model_options/1`). A chosen reference that is no
+  longer offered (its provider was disabled, or the model removed) stays
+  selectable, marked, so the form shows and keeps it instead of switching
+  to another model unnoticed.
+  """
+  @spec model_select_options([{String.t(), [{String.t(), String.t()}]}], String.t(), term()) ::
+          list()
+  def model_select_options(groups, empty, value) do
+    value = if is_binary(value), do: String.trim(value), else: ""
+
+    offered? =
+      value == "" or Enum.any?(groups, fn {_id, models} -> List.keymember?(models, value, 1) end)
+
+    unavailable = if offered?, do: [], else: [{value <> " (unavailable)", value}]
+
+    [{empty, ""} | unavailable] ++ groups
+  end
+
   @doc "The words for a repository's automatic review mode."
   @spec auto_review_label(atom()) :: String.t()
   def auto_review_label(:off), do: "On command"
