@@ -130,11 +130,14 @@ monitoring, and plain function calls instead of request handlers.
 - The broker is started through the session's executor with the project's
   `elixir` and starts distribution itself (`Node.start/2`) with a random
   cookie from `:crypto.strong_rand_bytes/1`.
-- The broker starts each project node in the project root, Next LS style:
-  `mix loadpaths --no-compile` loads the project and its dependencies without
-  compiling or starting the application (no Phoenix endpoint, no Repo
-  connections), so a node starts even when the project does not compile; it
-  compiles on request and returns the errors as data.
+- The broker starts each project node in the project root as a bare node,
+  compiles the helper there, and loads the project with
+  `Mix.CLI.main(["loadpaths", "--no-compile"])` over `:erpc` (see "Spike
+  results" for why not on the command line): the project and its
+  dependencies are loaded without compiling or starting the application (no
+  Phoenix endpoint, no Repo connections), so a node starts even when the
+  project does not compile; it compiles on request and returns the errors as
+  data.
 - `elixir` and `mix` are the project's, found on the jail's `PATH` (the
   project's devshell) or the host's. When there are none, the node is
   unavailable and its consumers fall back or stay quiet.
@@ -241,16 +244,63 @@ Evaluation of arbitrary code is deliberately not in the first version.
 - The broker's and helpers' source is written to the jail's temporary
   directory, not the workspace.
 
+## Spike results
+
+A throwaway broker (not in the repository) answered the first spike's
+questions on 2026-10-18 with Elixir 1.20.4 / OTP 29, locally and inside the
+development jail (`tackle-dev-exec-jail`):
+
+- **EPMD-less distribution works with stock flags.** The broker starts
+  distribution at runtime (`Node.start/2`, cookie from
+  `:crypto.strong_rand_bytes/1`) in a VM started with `-start_epmd false
+  -kernel erl_epmd_node_listen_port PORT -kernel inet_dist_use_interface
+  {127,0,0,1}`. Project nodes get the same port and `-dist_listen false`, so
+  they never listen and are hidden; they connect out to the broker, and the
+  broker calls them over that connection. The cookie reaches the project
+  node through its environment, not its command line.
+- **Boot through the broker, not `mix loadpaths` on the command line.** With
+  `-S mix loadpaths --no-compile`, `Mix.Project.get/0` is set while path
+  dependencies are still loading, and a compile started then loads them a
+  second time and crashes the node. Starting a bare node in the project
+  directory, compiling the helper with `Code.compile_file/1`, and then
+  calling `Mix.CLI.main(["loadpaths", "--no-compile"])` over `:erpc` returns
+  exactly when the project is loaded.
+- **Compile results as data:** `Mix.Task.clear/0` and
+  `Mix.Task.run("compile", ["--return-errors", "--all-warnings"])` return
+  `{status, [%Mix.Task.Compiler.Diagnostic{}]}` with file, position,
+  severity, message, and compiler. Mix's own output goes to the caller's
+  group leader, so the broker has to capture it.
+- **Timings** (no-op compile, warm node vs. `mix compile` in a shell):
+
+  | Project | Node | Shell |
+  | --- | --- | --- |
+  | `packages/tackle_runtime` | 86–91 ms | ~460 ms |
+  | `apps/tackle_hub` (Phoenix, Ash) | ~350 ms | ~1,270 ms |
+
+  A compile after a breaking edit took 109–133 ms, and the revert 166–345 ms.
+  Broker start to project connected: ~190 ms; helper and project loaded:
+  ~170 ms more.
+- **Generated code is visible:** the Ash resource's `__schema__/1,2` and
+  `__changeset__/0`, the router's `__routes__/0` and `__match_route__/3`,
+  GenServer callbacks from `use`, with docs and source files.
+- **Callers:** `Mix.Tasks.Xref.calls/1` returned 972 call sites with file and
+  line in 7 ms and found both callers of `Tackle.Runtime.Limits.new/1`. It is
+  deprecated in favour of compilation tracers, so the node should install a
+  tracer of its own and use `calls/1` only as a stopgap.
+- **Inside the jail** the same broker ran unchanged with the jail's
+  `elixir`, and the host could open a TCP connection to the broker's
+  distribution port: the shared network namespace exposes it, as expected.
+  Joining needs the 24-byte random cookie. OTP 29 has no built-in Unix
+  socket distribution (`-proto_dist local` is "not supported"); removing the
+  exposure needs a small carrier compiled into each node at boot, which is
+  later hardening.
+
 ## Order of work
 
-1. **Spike** (throwaway, measured): a broker and a project node, locally and
-   in the jail, with EPMD-less loopback distribution between them and frames
-   to the host; compile a real project (this repository's packages and a
-   Phoenix app) and return structured diagnostics, recompile after an edit,
-   and time it against `mix compile` in a shell. Answers: start-up time,
-   what `--all-warnings` returns as data, build directory behaviour, whether
-   Unix-socket distribution is practical, and what is reachable from the
-   host while the nodes run.
+1. **Spike** (done; see "Spike results"): broker and project node locally
+   and in the jail, compile as data, docs, callers, timings, exposure. Not
+   yet covered: frames between the harness and the broker (they need step
+   2), and the oldest Elixir/OTP the boot works with.
 2. **Stdin in the executor**: the exec protocol request, the executor
    callback, and tests for both executors.
 3. **Node and host client with `compile`**, then the compile gate on top of
