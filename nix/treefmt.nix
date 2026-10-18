@@ -12,7 +12,7 @@
   # settings of Ash, Phoenix, and Plug and runs Spark's plugin; the
   # repository-level formatter would add parentheses to every DSL call. The
   # credo pre-commit hook checks it with `mix format --check-formatted`.
-  settings.formatter.mix-format.excludes = [ "apps/tackle_web/**" ];
+  settings.formatter.mix-format.excludes = [ "apps/tackle_hub/**" ];
 
   programs.nixfmt = {
     enable = true;

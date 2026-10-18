@@ -15,7 +15,7 @@ let
         enableNix = false;
         restrictSockets = true;
         # A review's commands are read-only searches; the service's cgroup
-        # bounds memory and tasks as a whole (nix/modules/tackle-web.nix).
+        # bounds memory and tasks as a whole (nix/modules/tackle-hub.nix).
         limits = {
           tmpfsSize = 256 * 1024 * 1024;
           fileSize = 256 * 1024 * 1024;

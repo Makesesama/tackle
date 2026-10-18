@@ -35,10 +35,10 @@ let
     export TACKLE_MUSL_CARGO=${muslRust}/bin/cargo
     export TACKLE_MUSL_RUSTC=${muslRust}/bin/rustc
   '';
-  # apps/tackle_web runs reviews only in this jail (config/runtime.exs). An
-  # explicitly set TACKLE_WEB_REVIEW_JAIL still wins.
+  # apps/tackle_hub runs reviews only in this jail (config/runtime.exs). An
+  # explicitly set TACKLE_HUB_REVIEW_JAIL still wins.
   reviewJailEnv = pkgs.lib.optionalString (reviewJail != null) ''
-    export TACKLE_WEB_REVIEW_JAIL=''${TACKLE_WEB_REVIEW_JAIL:-${pkgs.lib.getExe reviewJail}}
+    export TACKLE_HUB_REVIEW_JAIL=''${TACKLE_HUB_REVIEW_JAIL:-${pkgs.lib.getExe reviewJail}}
   '';
 in
 pkgs.mkShell {
@@ -57,7 +57,7 @@ pkgs.mkShell {
     pkgs.xz
     pkgs.zig_0_16
 
-    # apps/tackle_web's optional local cluster (apps/tackle_web/scripts/db.sh)
+    # apps/tackle_hub's optional local cluster (apps/tackle_hub/scripts/db.sh)
     pkgs.postgresql
 
     # Development tools

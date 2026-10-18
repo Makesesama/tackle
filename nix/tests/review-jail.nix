@@ -11,12 +11,12 @@ let
   tackleExec = pkgs.callPackage ../packages/tackle-exec.nix { };
   executor = ../../packages/tackle_tools/lib/tackle/executor.ex;
   jailed = ../../packages/tackle_tools/lib/tackle/executor/jailed.ex;
-  reviewJail = ../../apps/tackle_web/lib/tackle_web/review_jail.ex;
+  reviewJail = ../../apps/tackle_hub/lib/tackle_hub/review_jail.ex;
   unrelated = pkgs.writeText "review-jail-host-only" "not in the tool closure";
   driver = pkgs.writeText "review-jail-smoke.exs" ''
     [launcher, state, tree, clone, unrelated] = System.argv()
-    Application.put_env(:tackle_web, :review_jail, launcher)
-    alias Tackle.Web.ReviewJail
+    Application.put_env(:tackle_hub, :review_jail, launcher)
+    alias Tackle.Hub.ReviewJail
     alias Tackle.Executor
     checkout = %{worktree: tree, clone: clone, state_dir: state}
     {:ok, handle} = ReviewJail.start(checkout)

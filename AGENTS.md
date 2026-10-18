@@ -98,13 +98,13 @@ configured toolchain (Elixir 1.20 / Erlang/OTP 29).
 
 # Web review app (PostgreSQL on localhost:5432 as postgres/postgres, or PG*
 # variables, or scripts/db.sh; see its README; needs MIX_REBAR3)
-(cd apps/tackle_web && mix deps.get)
-(cd apps/tackle_web && mix compile --warnings-as-errors && mix test)
-(cd apps/tackle_web && mix format --check-formatted && mix credo --strict)
+(cd apps/tackle_hub && mix deps.get)
+(cd apps/tackle_hub && mix compile --warnings-as-errors && mix test)
+(cd apps/tackle_hub && mix format --check-formatted && mix credo --strict)
 # After dependency changes: regenerate and build the Nix package; VM test (KVM)
-(cd apps/tackle_web && mix deps.nix) && nix fmt -- nix/tackle-web-deps.nix
-nix build .#tackle-web
-nix build .#checks.x86_64-linux.tackle-web-vm
+(cd apps/tackle_hub && mix deps.nix) && nix fmt -- nix/tackle-hub-deps.nix
+nix build .#tackle-hub
+nix build .#checks.x86_64-linux.tackle-hub-vm
 
 # Emacs client (Elisp; needs an Emacs in the dev shell or PATH)
 (cd apps/etackle && emacs -Q --batch -L . -l test/etackle-test.el \
@@ -187,9 +187,11 @@ Burrito, or lint commands for tooling that has not been wired up.
   distribution dependency; runtime adapter loading remains a harness concern.
   It also bundles `tackle_workflow`; `Tackle.CLI.Distribution` lists the
   bundled delegation tools and the catalog tools granted to the root agent.
-- `apps/tackle_web/`: Phoenix/Ash web app (`Tackle.Web.*`, `:tackle_web`)
+- `apps/tackle_hub/`: Phoenix/Ash web app (`:tackle_hub`; domain
+  `Tackle.Hub.*` in `lib/tackle_hub/`, web layer `Tackle.HubWeb.*` in
+  `lib/tackle_hub_web/`)
   that will review forge pull requests with `tackle_review`; built in phases
-  from `docs/TACKLE_WEB_PLAN.md`, now through phase 9 (jailed review jobs,
+  from `docs/TACKLE_HUB_PLAN.md`, now through phase 9 (jailed review jobs,
   stored runs/findings, retry-safe sanitized GitHub posting to `:posted`,
   GitHub sign-in with AshAdmin behind admin policies, browser-only setup of
   the GitHub App via `/setup`, installation owners with access grants and
@@ -197,8 +199,8 @@ Burrito, or lint commands for tooling that has not been wired up.
   settings, and feedback: dismissals from resolved threads and reactions).
   It depends on the packages, not the harness, and keeps Ash,
   Oban, Cloak, and PostgreSQL to itself. Its tests need a PostgreSQL server (see its README). Packaged as
-  `.#tackle-web` (`nix/packages/tackle-web.nix`) and run by the NixOS
-  module `nixosModules.tackle-web` (`nix/modules/tackle-web.nix`).
+  `.#tackle-hub` (`nix/packages/tackle-hub.nix`) and run by the NixOS
+  module `nixosModules.tackle-hub` (`nix/modules/tackle-hub.nix`).
 - `apps/etackle/`: Emacs client for the Tackle SDK wire protocol
   (`packages/tackle_sdk/PROTOCOL.md`), speaking ndjson JSON-RPC over stdio to
   `tackle sdk`. Plain Emacs Lisp (Emacs 28.1+), not a Mix project; see its
@@ -248,7 +250,7 @@ provider-specific translation inside adapters.
 
 Always use Elixir's standard-library `JSON` module for JSON encoding and
 decoding. Never use Jason or another third-party JSON library, and do not add
-one as a dependency. The one exception is transitive: `apps/tackle_web`'s
+one as a dependency. The one exception is transitive: `apps/tackle_hub`'s
 frameworks (Ash, Oban, Postgrex, Cloak) pull in Jason, which is accepted;
 our code there still uses `JSON`, and Jason is never listed in a `mix.exs`.
 

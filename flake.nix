@@ -80,8 +80,8 @@
       };
       homeManagerModules = self.homeModules;
 
-      # NixOS module: `services.tackle-web`. See nix/modules/tackle-web.nix.
-      nixosModules.tackle-web = import ./nix/modules/tackle-web.nix self;
+      # NixOS module: `services.tackle-hub`. See nix/modules/tackle-hub.nix.
+      nixosModules.tackle-hub = import ./nix/modules/tackle-hub.nix self;
 
       packages = forAllSystems (
         {
@@ -105,7 +105,7 @@
         {
           default = package;
           tackle-cli = package;
-          tackle-web = pkgs.callPackage ./nix/packages/tackle-web.nix { };
+          tackle-hub = pkgs.callPackage ./nix/packages/tackle-hub.nix { };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           tackle-review-jail = pkgs.callPackage ./nix/packages/review-jail.nix {
@@ -124,7 +124,7 @@
           system,
         }:
         pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          tackle-web-vm = pkgs.testers.runNixOSTest (import ./nix/tests/tackle-web.nix self);
+          tackle-hub-vm = pkgs.testers.runNixOSTest (import ./nix/tests/tackle-hub.nix self);
         }
         // {
           pre-commit-check = inputs.pre-commit-hooks.lib.${system}.run {
@@ -133,7 +133,7 @@
               credo = {
                 enable = true;
                 package = pkgs.elixir;
-                entry = "${pkgs.bash}/bin/bash -c 'cd packages/tackle && mix credo --strict && cd ../tackle_review && mix credo --strict && cd ../tackle_tools && mix credo --strict && cd ../../apps/tackle_web && mix format --check-formatted && exec mix credo --strict'";
+                entry = "${pkgs.bash}/bin/bash -c 'cd packages/tackle && mix credo --strict && cd ../tackle_review && mix credo --strict && cd ../tackle_tools && mix credo --strict && cd ../../apps/tackle_hub && mix format --check-formatted && exec mix credo --strict'";
                 pass_filenames = false;
               };
               # dialyzer.enable = true;
@@ -212,7 +212,7 @@
               pkgs.cargo
               pkgs.rustc
               pkgs.rustfmt
-              # apps/tackle_web's tests run against a throwaway cluster.
+              # apps/tackle_hub's tests run against a throwaway cluster.
               pkgs.postgresql
             ];
             shellHook = ciShellHook;
