@@ -40,6 +40,13 @@ defmodule Tackle.Exec.Client do
   `{:error, "output buffer overflow"}`. If the caller exits, the command's
   process group is killed.
 
+  `input/3` writes to a running command's standard input. Input the command
+  has not read is buffered in the jail; a command that leaves more than
+  16 MiB unread is killed and its stream ends with
+  `{:error, "input buffer overflow"}`. Standard input is never closed. A
+  command that exits while input is still being written to it ends with
+  `{:error, "command stopped reading its input; exit status unknown"}`.
+
   ## Lifecycle
 
   When the client stops, it kills the launcher with `SIGKILL` and closes the
@@ -55,6 +62,7 @@ defmodule Tackle.Exec.Client do
 
   @default_max_frame 2 * 1_024 * 1_024
   @default_max_write 16 * 1_024 * 1_024
+  @default_max_input 1_024 * 1_024
   @default_window 256 * 1_024
   @default_handshake_timeout 5_000
   @default_call_timeout 60_000
@@ -88,6 +96,7 @@ defmodule Tackle.Exec.Client do
       16 times this much memory.
     * `:max_write` - largest `write/4` payload in bytes (default 16 MiB). Up to
       this many request bytes may be queued while the jail is not reading.
+    * `:max_input` - largest `input/3` payload in bytes (default 1 MiB).
     * `:window` - unacknowledged output allowed per command (default 256 KiB).
     * `:max_requests` - pending requests allowed at once (default 1024).
     * `:handshake_timeout` - milliseconds to wait for the hello frame (default 5000).
@@ -143,6 +152,18 @@ defmodule Tackle.Exec.Client do
   def ack(client, ref, bytes) when is_reference(ref) and is_integer(bytes) and bytes >= 0 do
     GenServer.cast(client, {:ack, ref, bytes})
   end
+
+  @doc """
+  Writes `data` to the standard input of a running command.
+
+  Returns once the request is queued for the jail, not when the command has
+  read it. Fails with `:unknown_command` when `ref` is not a running command
+  of this client, `:too_large` above `:max_input`, and `:busy` while too many
+  request bytes are queued.
+  """
+  @spec input(GenServer.server(), reference(), binary()) :: :ok | {:error, error()}
+  def input(client, ref, data) when is_reference(ref) and is_binary(data),
+    do: call(client, {:input, ref, data}, @default_call_timeout)
 
   @doc "Sends `SIGTERM` or `SIGKILL` to the command's process group."
   @spec signal(GenServer.server(), reference(), Protocol.signal()) :: :ok
@@ -259,6 +280,7 @@ defmodule Tackle.Exec.Client do
       launcher: Keyword.get(opts, :launcher),
       max_frame: Keyword.get(opts, :max_frame, @default_max_frame),
       max_write: Keyword.get(opts, :max_write, @default_max_write),
+      max_input: Keyword.get(opts, :max_input, @default_max_input),
       window: Keyword.get(opts, :window, @default_window),
       max_requests: Keyword.get(opts, :max_requests, @default_max_requests),
       handshake_timeout: Keyword.get(opts, :handshake_timeout, @default_handshake_timeout),
@@ -267,7 +289,7 @@ defmodule Tackle.Exec.Client do
       cd: Keyword.get_lazy(opts, :cd, &File.cwd!/0)
     }
 
-    integers = [:max_frame, :max_write, :window, :max_requests, :handshake_timeout]
+    integers = [:max_frame, :max_write, :max_input, :window, :max_requests, :handshake_timeout]
 
     cond do
       not launcher?(config.launcher) ->
@@ -366,6 +388,18 @@ defmodule Tackle.Exec.Client do
       state = %{state | next_id: id + 1, requests: Map.put(state.requests, id, entry)}
       {:noreply, send_request(state, request)}
     else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:input, _ref, ""}, _from, state), do: {:reply, :ok, state}
+
+  def handle_call({:input, ref, data}, _from, state) do
+    with {:ok, id, _exec} <- fetch_exec(state, ref),
+         :ok <- check_input(data, state) do
+      {:reply, :ok, send_request(state, {:input, id, data})}
+    else
+      :error -> {:reply, {:error, :unknown_command}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -568,6 +602,14 @@ defmodule Tackle.Exec.Client do
   defp check_capacity(state) do
     cond do
       map_size(state.requests) >= state.config.max_requests -> {:error, :busy}
+      state.outbox_bytes > state.config.max_write -> {:error, :busy}
+      true -> :ok
+    end
+  end
+
+  defp check_input(data, state) do
+    cond do
+      byte_size(data) > state.config.max_input -> {:error, :too_large}
       state.outbox_bytes > state.config.max_write -> {:error, :busy}
       true -> :ok
     end

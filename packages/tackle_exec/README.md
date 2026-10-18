@@ -33,6 +33,10 @@ so `Tackle.Exec.Client` treats the server as hostile:
   never returns more data than requested.
 - Command output is credit based. Output beyond the granted window is a
   violation.
+- `input/3` writes to a command's standard input, at most `:max_input`
+  (1 MiB by default) per call. The exec-server writes it from a process per
+  command, so a command that does not read cannot stall the server, and it
+  kills a command that leaves more than 16 MiB unread.
 - It never blocks on the port. A jail that stops reading its input cannot
   suspend the client; unsent requests queue up to `:max_write` bytes, after
   which requests fail with `:busy`. Pending requests are limited by

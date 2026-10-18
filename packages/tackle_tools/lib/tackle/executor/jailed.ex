@@ -70,6 +70,9 @@ defmodule Tackle.Executor.Jailed do
   end
 
   @impl true
+  def input(%{client: client}, ref, data), do: Client.input(client, ref, data)
+
+  @impl true
   def cancel(%{client: client} = config, ref) do
     Client.signal(client, ref, :kill)
     drain(config, ref, System.monotonic_time(:millisecond) + @cancel_drain_timeout)

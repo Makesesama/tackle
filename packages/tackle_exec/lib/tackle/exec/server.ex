@@ -17,7 +17,13 @@ defmodule Tackle.Exec.Server do
   their own session and process group, so `:signal` reaches the whole group
   through the `kill` executable. Output the host has not granted credit for is
   buffered; a command whose buffered output exceeds 16 MiB is killed and
-  reported as `"output buffer overflow"`. Filesystem operations run in
+  reported as `"output buffer overflow"`. Input for a command's standard input
+  is written by a writer process of its own, so a command that stops reading
+  blocks only its writer, never the server; a command whose unwritten input
+  exceeds 16 MiB is killed and reported as `"input buffer overflow"`. When
+  a command exits or closes its standard input while input is still being
+  written, the write fails and the exit status is lost; the command is then
+  reported as `"command stopped reading its input; exit status unknown"`. Filesystem operations run in
   short-lived worker processes so a blocking path, such as a FIFO, cannot stall
   the loop.
 
@@ -29,6 +35,7 @@ defmodule Tackle.Exec.Server do
 
   @chunk_bytes 64 * 1_024
   @max_pending_bytes 16 * 1_024 * 1_024
+  @max_pending_input_bytes 16 * 1_024 * 1_024
 
   @doc "Runs the exec-server until standard input closes, then halts the VM."
   @spec main() :: no_return()
@@ -91,6 +98,9 @@ defmodule Tackle.Exec.Server do
         send_message(state, file_reply(id, result))
         loop(state)
 
+      {:input_written, id, bytes} ->
+        state |> input_written(id, bytes) |> loop()
+
       _other ->
         loop(state)
     end
@@ -119,7 +129,9 @@ defmodule Tackle.Exec.Server do
           pending: :queue.new(),
           pending_bytes: 0,
           status: nil,
-          failure: nil
+          failure: nil,
+          writer: nil,
+          input_bytes: 0
         }
 
         %{state | execs: Map.put(state.execs, id, exec), ports: Map.put(state.ports, port, id)}
@@ -146,6 +158,13 @@ defmodule Tackle.Exec.Server do
     end
   end
 
+  defp handle_request(state, {:input, id, data}) do
+    case state.execs do
+      %{^id => %{status: nil, failure: nil} = exec} -> put_exec(state, input(exec, data))
+      _execs -> state
+    end
+  end
+
   defp handle_request(state, {:read, id, %{path: path, offset: offset, length: length}}),
     do: run_file_op(state, id, fn -> FileOps.read(path, offset, length) end)
 
@@ -162,6 +181,54 @@ defmodule Tackle.Exec.Server do
 
   defp handle_request(state, {:list, id, %{path: path}}),
     do: run_file_op(state, id, fn -> FileOps.list(path) end)
+
+  defp input(exec, data) do
+    if exec.input_bytes + byte_size(data) > @max_pending_input_bytes do
+      kill_group(exec, :kill)
+      stop_writer(exec)
+      %{exec | failure: "input buffer overflow", writer: nil, input_bytes: 0}
+    else
+      exec = ensure_writer(exec)
+      send(exec.writer, {:write, data})
+      %{exec | input_bytes: exec.input_bytes + byte_size(data)}
+    end
+  end
+
+  defp ensure_writer(%{writer: nil, port: port, id: id} = exec) do
+    server = self()
+    %{exec | writer: spawn(fn -> write_input(server, id, port) end)}
+  end
+
+  defp ensure_writer(exec), do: exec
+
+  # Port.command/2 suspends the caller while the command does not read its
+  # input; only this process waits. Writing to a closed port raises, which
+  # ends the writer.
+  defp write_input(server, id, port) do
+    receive do
+      {:write, data} ->
+        if command(port, data) do
+          send(server, {:input_written, id, byte_size(data)})
+          write_input(server, id, port)
+        end
+    end
+  end
+
+  defp command(port, data) do
+    Port.command(port, data)
+  rescue
+    ArgumentError -> false
+  end
+
+  defp input_written(state, id, bytes) do
+    case state.execs do
+      %{^id => exec} -> put_exec(state, %{exec | input_bytes: max(exec.input_bytes - bytes, 0)})
+      _execs -> state
+    end
+  end
+
+  defp stop_writer(%{writer: nil}), do: :ok
+  defp stop_writer(%{writer: writer}), do: Process.exit(writer, :kill)
 
   defp exec_output(state, id, data) do
     exec = Map.fetch!(state.execs, id)
@@ -192,7 +259,13 @@ defmodule Tackle.Exec.Server do
   defp exec_exited(state, port, status) do
     id = Map.fetch!(state.ports, port)
     exec = Map.fetch!(state.execs, id)
-    flush(%{state | ports: Map.delete(state.ports, port)}, %{exec | status: status})
+    stop_writer(exec)
+
+    flush(%{state | ports: Map.delete(state.ports, port)}, %{
+      exec
+      | status: status,
+        writer: nil
+    })
   end
 
   # A command port that exits without reporting a status is a server-side
@@ -201,17 +274,24 @@ defmodule Tackle.Exec.Server do
     id = Map.fetch!(state.ports, port)
     exec = Map.fetch!(state.execs, id)
     kill_group(exec, :kill)
+    stop_writer(exec)
 
     exec = %{
       exec
       | status: 0,
-        failure: exec.failure || "command port failed: #{inspect(reason)}",
+        writer: nil,
+        failure: exec.failure || port_failure(reason),
         pending: :queue.new(),
         pending_bytes: 0
     }
 
     flush(%{state | ports: Map.delete(state.ports, port)}, exec)
   end
+
+  # Writing input to a command that exited or closed its standard input fails
+  # with EPIPE, and the port closes without reporting the exit status.
+  defp port_failure(:epipe), do: "command stopped reading its input; exit status unknown"
+  defp port_failure(reason), do: "command port failed: #{inspect(reason)}"
 
   defp flush(state, %{credit: credit, pending_bytes: pending} = exec)
        when credit > 0 and pending > 0 do
@@ -260,7 +340,11 @@ defmodule Tackle.Exec.Server do
   defp put_exec(state, exec), do: %{state | execs: Map.put(state.execs, exec.id, exec)}
 
   defp kill_running(state) do
-    for {_id, %{status: nil} = exec} <- state.execs, do: kill_group(exec, :kill)
+    for {_id, %{status: nil} = exec} <- state.execs do
+      kill_group(exec, :kill)
+      stop_writer(exec)
+    end
+
     :ok
   end
 

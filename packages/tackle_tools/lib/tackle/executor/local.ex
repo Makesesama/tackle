@@ -4,6 +4,13 @@ defmodule Tackle.Executor.Local do
   environment, with its filesystem and operating-system permissions.
 
   This is the default executor. It provides no isolation.
+
+  A command's port is linked to the process that started it. Writing input
+  to a command that has closed its standard input closes the port with
+  `:epipe`, which sends that process an exit signal; a process that writes
+  input should trap exits, and `await/3` then reports the exit as
+  `{:error, reason}`. `input/3` blocks while the command does not read its
+  input; callers that must stay responsive write from a process of their own.
   """
 
   @behaviour Tackle.Executor
@@ -23,9 +30,18 @@ defmodule Tackle.Executor.Local do
     receive do
       {^port, {:data, data}} -> {:data, data}
       {^port, {:exit_status, status}} -> {:exit_status, status}
+      {:EXIT, ^port, reason} when reason != :normal -> {:error, reason}
     after
       timeout -> :timeout
     end
+  end
+
+  @impl true
+  def input(_config, %{port: port}, data) do
+    Port.command(port, data)
+    :ok
+  rescue
+    ArgumentError -> {:error, :closed}
   end
 
   @impl true

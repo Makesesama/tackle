@@ -60,6 +60,18 @@ defmodule Tackle.Executor do
   @doc "Kills the command's process group and discards its remaining events."
   @callback cancel(config :: term(), handle()) :: :ok
 
+  @doc """
+  Writes `data` to a running command's standard input.
+
+  Optional: executors without it return `{:error, :unsupported}` from
+  `input/3`. Standard input is never closed, so a command that reads it runs
+  until it exits on its own or is cancelled. A command that exits while input
+  is still being written may end with an error instead of its exit status.
+  """
+  @callback input(config :: term(), handle(), data :: binary()) :: :ok | {:error, reason()}
+
+  @optional_callbacks input: 3
+
   @doc "Reads up to `length` bytes at `offset`. Directories return `:eisdir`."
   @callback read(config :: term(), Path.t(), non_neg_integer(), pos_integer()) ::
               {:ok, read_result()} | {:error, reason()}
@@ -111,6 +123,14 @@ defmodule Tackle.Executor do
   @doc "See the `c:await/3` callback."
   @spec await(t(), handle(), non_neg_integer()) :: event() | :timeout
   def await({module, config}, handle, timeout), do: module.await(config, handle, timeout)
+
+  @doc "See the `c:input/3` callback."
+  @spec input(t(), handle(), binary()) :: :ok | {:error, reason() | :unsupported}
+  def input({module, config}, handle, data) when is_binary(data) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :input, 3),
+      do: module.input(config, handle, data),
+      else: {:error, :unsupported}
+  end
 
   @doc "See the `c:cancel/2` callback."
   @spec cancel(t(), handle()) :: :ok
@@ -183,6 +203,9 @@ defmodule Tackle.Executor do
   def format_reason(:busy), do: "the execution environment is busy"
   def format_reason(:timeout), do: "the execution environment did not respond in time"
   def format_reason(:invalid_request), do: "invalid request"
+  def format_reason(:unsupported), do: "the execution environment does not support this"
+  def format_reason(:closed), do: "the command has finished"
+  def format_reason(:unknown_command), do: "the command has finished"
 
   def format_reason(reason) when is_atom(reason),
     do: reason |> :file.format_error() |> List.to_string()

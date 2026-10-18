@@ -16,6 +16,91 @@ defmodule Tackle.Exec.ClientTest do
     %{client: client, directory: directory}
   end
 
+  describe "input/3" do
+    test "writes to a running command's standard input", %{client: client, directory: dir} do
+      {:ok, ref} = Client.exec(client, ["cat"], cwd: dir)
+
+      assert :ok = Client.input(client, ref, "hello\n")
+      assert_receive {:tackle_exec, ^ref, {:data, "hello\n"}}, 5_000
+      Client.ack(client, ref, 6)
+
+      assert :ok = Client.input(client, ref, "")
+      assert :ok = Client.input(client, ref, "again\n")
+      assert_receive {:tackle_exec, ^ref, {:data, "again\n"}}, 5_000
+      Client.ack(client, ref, 6)
+
+      Client.signal(client, ref, :kill)
+      assert {:ok, 137, ""} = collect(client, ref)
+    end
+
+    test "a command can read input until it is done", %{client: client, directory: dir} do
+      {:ok, ref} = Client.exec(client, ["head", "-n", "2"], cwd: dir)
+
+      assert :ok = Client.input(client, ref, "one\ntwo\nthree\n")
+      assert {:ok, 0, "one\ntwo\n"} = collect(client, ref)
+    end
+
+    test "rejects unknown and finished commands and oversized input", %{directory: dir} do
+      client =
+        start_supervised!({Client, launcher: server_launcher(), max_input: 8}, id: :small_input)
+
+      assert {:error, :unknown_command} = Client.input(client, make_ref(), "x")
+
+      {:ok, ref} = Client.exec(client, ["cat"], cwd: dir)
+      assert {:error, :too_large} = Client.input(client, ref, "123456789")
+      assert :ok = Client.input(client, ref, "12345678")
+      Client.signal(client, ref, :kill)
+      assert {:ok, 137, "12345678"} = collect(client, ref)
+
+      assert {:error, :unknown_command} = Client.input(client, ref, "x")
+    end
+
+    test "a command that does not read its input stalls neither the server nor others", %{
+      client: client,
+      directory: dir
+    } do
+      {:ok, ref} = Client.exec(client, ["sleep", "30"], cwd: dir)
+      chunk = :binary.copy("x", 1_024 * 1_024)
+
+      for _ <- 1..4, do: assert(:ok = Client.input(client, ref, chunk))
+
+      assert {:ok, 0, "still here\n"} = run(client, ["echo", "still here"], cwd: dir)
+      assert {:ok, %{type: :directory}} = Client.stat(client, dir)
+
+      # The kill interrupts a pending write, so the exit status is lost.
+      Client.signal(client, ref, :kill)
+
+      assert {:error, "command stopped reading its input; exit status unknown", ""} =
+               collect(client, ref)
+    end
+
+    test "kills a command whose unread input overflows the buffer", %{
+      client: client,
+      directory: dir
+    } do
+      {:ok, ref} = Client.exec(client, ["sleep", "30"], cwd: dir)
+      chunk = :binary.copy("x", 1_024 * 1_024)
+
+      # The port driver holds one chunk itself; the writer's queue holds the
+      # rest. The client refuses input with :busy while its own queue to the
+      # jail is full, so retry until all of it is sent.
+      for _ <- 1..20, do: send_input(client, ref, chunk)
+
+      assert {:error, "input buffer overflow", ""} = collect(client, ref, 10_000)
+    end
+  end
+
+  defp send_input(client, ref, data) do
+    case Client.input(client, ref, data) do
+      {:error, :busy} ->
+        Process.sleep(10)
+        send_input(client, ref, data)
+
+      result ->
+        result
+    end
+  end
+
   describe "exec/3" do
     test "streams merged output and the exit status", %{client: client, directory: dir} do
       assert {:ok, 0, "out\nerr\n"} =

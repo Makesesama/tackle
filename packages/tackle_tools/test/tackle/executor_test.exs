@@ -32,6 +32,25 @@ defmodule Tackle.ExecutorTest do
     assert reason == "tackle-missing-command: command not found"
   end
 
+  test "input writes to a running command's standard input", %{executor: executor, dir: dir} do
+    {:ok, handle} = Executor.exec(executor, ["head", "-n", "2"], cwd: dir)
+
+    assert :ok = Executor.input(executor, handle, "one\n")
+    assert :ok = Executor.input(executor, handle, "two\nthree\n")
+    assert collect(executor, handle, "") == {0, "one\ntwo\n"}
+  end
+
+  test "input keeps a command reading until it is cancelled", %{executor: executor, dir: dir} do
+    {:ok, handle} = Executor.exec(executor, ["cat"], cwd: dir)
+
+    for line <- ["a\n", "b\n"] do
+      assert :ok = Executor.input(executor, handle, line)
+      assert {:data, ^line} = Executor.await(executor, handle, 5_000)
+    end
+
+    assert :ok = Executor.cancel(executor, handle)
+  end
+
   test "cancel kills the command's whole process group", %{executor: executor, dir: dir} do
     {:ok, handle} = Executor.exec(executor, ["sh", "-c", "sleep 30 & echo $!; wait"], cwd: dir)
     assert {:data, pid_line} = Executor.await(executor, handle, 5_000)
@@ -179,6 +198,11 @@ defmodule Tackle.Executor.JailedTest do
     assert_raise ArgumentError, fn -> Executor.Jailed.new(:client, []) end
   end
 
+  test "input is unsupported by executors without the callback" do
+    assert {:error, :unsupported} = Executor.input({Tackle.ExecutorTest.NoInput, nil}, :h, "x")
+    assert Executor.format_reason(:unsupported) =~ "does not support"
+  end
+
   test "format_reason covers POSIX, executor, and free-form reasons" do
     assert Executor.format_reason(:enoent) == "no such file or directory"
     assert Executor.format_reason(:too_large) =~ "too large"
@@ -192,4 +216,8 @@ defmodule Tackle.Executor.JailedTest do
     assert {:ok, "unset"} =
              Bash.run(%{"command" => "printf ${HOME:-unset}"}, %{executor: executor})
   end
+end
+
+defmodule Tackle.ExecutorTest.NoInput do
+  @moduledoc false
 end

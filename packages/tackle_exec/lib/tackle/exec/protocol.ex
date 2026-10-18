@@ -10,6 +10,7 @@ defmodule Tackle.Exec.Protocol do
       {:exec, id, %{argv: [binary], cwd: binary, env: [{binary, binary}], window: pos_integer}}
       {:signal, id, :term | :kill}
       {:grant, id, pos_integer}
+      {:input, id, binary}
       {:read, id, %{path: binary, offset: non_neg_integer, length: pos_integer}}
       {:write, id, %{path: binary, data: binary, mkdir_p: boolean, mode: :replace | :append | :create}}
       {:delete, id, %{path: binary}}
@@ -25,7 +26,12 @@ defmodule Tackle.Exec.Protocol do
       {:error, id, binary}
 
   `:exec` output is credit based: the exec-server may send at most `window`
-  bytes of `:out` data plus whatever later `:grant` requests add. Errors are
+  bytes of `:out` data plus whatever later `:grant` requests add. `:input`
+  writes a non-empty binary to a running command's standard input and has no
+  reply; the exec-server buffers input the command has not read yet and kills
+  a command whose buffered input exceeds its limit, reporting
+  `"input buffer overflow"`. Standard input is never closed: a command that
+  reads it runs until it exits on its own or is signalled. Errors are
   always binaries of at most 4096 bytes on the wire, so a reply can never
   require atoms that do not exist on the host; `error_reason/1` maps known
   POSIX codes back to atoms.
@@ -43,7 +49,8 @@ defmodule Tackle.Exec.Protocol do
   should keep the incoming frame limit well below their memory budget.
   """
 
-  @version 1
+  # Version 2 added `:input`.
+  @version 2
   @max_error_bytes 4_096
   @max_file_size 0x7FFF_FFFF_FFFF_FFFF
   @max_mode 0o177777
@@ -75,6 +82,7 @@ defmodule Tackle.Exec.Protocol do
            }}
           | {:signal, id(), signal()}
           | {:grant, id(), pos_integer()}
+          | {:input, id(), binary()}
           | {:read, id(), %{path: binary(), offset: non_neg_integer(), length: pos_integer()}}
           | {:write, id(),
              %{
@@ -199,6 +207,9 @@ defmodule Tackle.Exec.Protocol do
     do: if(id?(id), do: {:ok, request}, else: {:error, :invalid_request})
 
   def parse_request({:grant, id, bytes} = request) when is_integer(bytes) and bytes > 0,
+    do: if(id?(id), do: {:ok, request}, else: {:error, :invalid_request})
+
+  def parse_request({:input, id, data} = request) when is_binary(data) and data != "",
     do: if(id?(id), do: {:ok, request}, else: {:error, :invalid_request})
 
   def parse_request({:read, id, %{path: path, offset: offset, length: length} = params} = request)

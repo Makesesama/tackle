@@ -90,16 +90,20 @@ host.
 Any violation stops the client, kills the jail, and fails in-flight requests
 with `:exec_server_down`.
 
-## Protocol version 1
+## Protocol version 2
+
+Version 2 added `:input`; version 1 had no way to write to a command's
+standard input.
 
 ```elixir
 # jail -> host, first frame
-{:hello, 1}
+{:hello, 2}
 
 # host -> jail
 {:exec, id, %{argv: [binary], cwd: binary, env: [{binary, binary}], window: pos_integer}}
 {:signal, id, :term | :kill}
 {:grant, id, pos_integer}
+{:input, id, binary}
 {:read, id, %{path: binary, offset: non_neg_integer, length: pos_integer}}
 {:write, id, %{path: binary, data: binary, mkdir_p: boolean, mode: :replace | :append | :create}}
 {:delete, id, %{path: binary}}
@@ -126,9 +130,17 @@ with `:exec_server_down`.
   new owner-only (0600) file and fails with `eexist` if the path exists; the
   `Bash` tool uses both for its full-output spill file.
 - `:delete` removes a file, not a directory.
-- Standard input for commands (needed for MCP stdio servers) is not part of
-  version 1. Erlang ports cannot half-close a child's standard input, so it
-  needs its own design.
+- `:input` writes to a running command's standard input and has no reply.
+  The exec-server writes through a process per command, so a command that
+  stops reading blocks only that process, and kills a command whose unwritten
+  input exceeds 16 MiB (`"input buffer overflow"`). Erlang ports cannot
+  half-close a child's standard input, so it is never closed: input suits
+  long-lived programs that speak a protocol, such as the project node's
+  broker (`docs/PROJECT_NODE_PLAN.md`) or MCP stdio servers, not commands
+  that read until end of file. A command that exits while input is being
+  written to it loses its exit status (the write fails with EPIPE and the
+  port closes) and is reported as `"command stopped reading its input; exit
+  status unknown"`.
 - **Flow control:** the host cannot throttle a port, so `:out` is credit based.
   Each command starts with a window (256 KiB by default). The caller
   acknowledges consumed bytes, the client grants them back, and output beyond

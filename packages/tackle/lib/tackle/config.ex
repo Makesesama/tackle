@@ -930,11 +930,13 @@ defmodule Tackle.Config do
 
   defp validate_executor(_context), do: :ok
 
+  # Optional callbacks, such as `input/3`, are not required.
   defp executor_module?(module) do
+    required =
+      Executor.behaviour_info(:callbacks) -- Executor.behaviour_info(:optional_callbacks)
+
     Code.ensure_loaded?(module) and
-      Enum.all?(Executor.behaviour_info(:callbacks), fn {name, arity} ->
-        function_exported?(module, name, arity)
-      end)
+      Enum.all?(required, fn {name, arity} -> function_exported?(module, name, arity) end)
   end
 
   defp validate_iteration_limit(:infinity), do: :ok

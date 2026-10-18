@@ -301,8 +301,9 @@ development jail (`tackle-dev-exec-jail`):
    and in the jail, compile as data, docs, callers, timings, exposure. Not
    yet covered: frames between the harness and the broker (they need step
    2), and the oldest Elixir/OTP the boot works with.
-2. **Stdin in the executor**: the exec protocol request, the executor
-   callback, and tests for both executors.
+2. **Stdin in the executor** (done): protocol version 2 adds `:input`,
+   `Tackle.Exec.Client.input/3`, and the optional `Tackle.Executor` callback
+   `input/3`, implemented by both executors.
 3. **Node and host client with `compile`**, then the compile gate on top of
    it. The current shell-based gate either becomes the fallback when no node
    can start or is removed.
