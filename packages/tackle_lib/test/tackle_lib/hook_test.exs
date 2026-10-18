@@ -227,6 +227,45 @@ defmodule Tackle.Lib.HookTest do
   end
 
   describe "Hook callbacks" do
+    test "a hook module that is not loaded yet still runs" do
+      module = Tackle.Lib.HookTest.NotYetLoadedHook
+      tmp_dir = Path.join(System.tmp_dir!(), "tackle-hook-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp_dir)
+
+      [{^module, binary}] =
+        Code.compile_string("""
+        defmodule #{inspect(module)} do
+          @behaviour Tackle.Lib.Hook
+          def before_prompt(_state, context), do: {:ok, Map.put(context, :ran, true)}
+          def before_turn_end(_state, context), do: {:continue, ["checked"], context}
+        end
+        """)
+
+      File.write!(Path.join(tmp_dir, "#{module}.beam"), binary)
+      Code.prepend_path(tmp_dir)
+
+      on_exit(fn ->
+        Code.delete_path(tmp_dir)
+        :code.purge(module)
+        :code.delete(module)
+        File.rm_rf!(tmp_dir)
+      end)
+
+      unload = fn ->
+        :code.purge(module)
+        :code.delete(module)
+        refute :code.is_loaded(module)
+      end
+
+      state = State.new()
+
+      unload.()
+      assert {:ok, %{ran: true}} = Hook.invoke([module], :before_prompt, [state], %{})
+
+      unload.()
+      assert {:ok, %{}, ["checked"]} = Hook.invoke_before_turn_end([module], state, %{})
+    end
+
     test "all callbacks are optional" do
       defmodule MinimalHook do
         @behaviour Tackle.Lib.Hook

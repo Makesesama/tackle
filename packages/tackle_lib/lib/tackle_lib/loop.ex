@@ -675,9 +675,13 @@ defmodule Tackle.Lib.Loop do
   # Runs the `before_turn_end` hooks, which may continue the turn with feedback
   # messages (for example from a compile gate) instead of completing it.
   defp before_turn_end(state, callbacks) do
-    case Hook.invoke_before_turn_end(snapshot_hooks(callbacks), state, state.context) do
+    case Hook.invoke_before_turn_end(
+           snapshot_hooks(callbacks),
+           state,
+           hook_context(state, callbacks)
+         ) do
       {:ok, context, messages} ->
-        state = %{state | context: context}
+        state = %{state | context: state_context(context, state.context)}
 
         cond do
           cancelled?(callbacks) ->
@@ -1404,11 +1408,26 @@ defmodule Tackle.Lib.Loop do
   end
 
   defp invoke_hook(%State{} = state, callbacks, event, args) do
-    case Hook.invoke(snapshot_hooks(callbacks), event, args, state.context) do
-      {:ok, context} -> {:ok, %{state | context: context}}
+    case Hook.invoke(snapshot_hooks(callbacks), event, args, hook_context(state, callbacks)) do
+      {:ok, context} -> {:ok, %{state | context: state_context(context, state.context)}}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # Hooks see the run's cancellation signal, so a slow hook (such as a gate that
+  # compiles the project) can stop early. The signal belongs to this run and is
+  # not kept in the state's context, unless the host put that key there itself.
+  defp hook_context(%State{context: %{cancellation_signal: _} = context}, _callbacks),
+    do: context
+
+  defp hook_context(%State{context: context}, %{cancellation_signal: signal})
+       when not is_nil(signal),
+       do: Map.put(context, :cancellation_signal, signal)
+
+  defp hook_context(%State{context: context}, _callbacks), do: context
+
+  defp state_context(context, %{cancellation_signal: _}), do: context
+  defp state_context(context, _original), do: Map.delete(context, :cancellation_signal)
 
   defp emit_and_finalize_message(%State{} = state, callbacks, %Message{} = message) do
     emit(callbacks, Event.message_end(message))

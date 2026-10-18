@@ -827,6 +827,11 @@ defmodule MyApp.Hooks.CompileGate do
 end
 ```
 
+When the run has a cancellation signal, hooks other than `after_turn/2` get it
+in their context as `:cancellation_signal`, so a slow hook can check
+`Tackle.Lib.Cancellation.cancelled?/1` and stop early; the loop does not keep
+it in the state's context.
+
 Good hook uses include audit logging, incremental persistence, correlation
 metadata, and cleanup. Hosts can use `after_message/3` and `after_turn/2` for
 idempotent message persistence and title generation.

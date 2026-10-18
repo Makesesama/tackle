@@ -2564,6 +2564,66 @@ defmodule Tackle.Lib.LoopTest do
       assert {:error, _state} = Loop.run(turn_end_state([]), "hello")
       refute_receive {:before_turn_end, _, _}, 20
     end
+
+    defmodule SignalHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def before_prompt(_state, context) do
+        send(
+          context.test_pid,
+          {:signal_in, :before_prompt, Map.get(context, :cancellation_signal)}
+        )
+
+        {:ok, Map.put(context, :seen_prompt, true)}
+      end
+
+      @impl true
+      def before_turn_end(_state, context) do
+        send(context.test_pid, {:signal_in, :before_turn_end, context[:cancellation_signal]})
+        {:ok, Map.put(context, :seen_turn_end, true)}
+      end
+
+      @impl true
+      def after_turn(_state, context) do
+        send(context.test_pid, {:signal_in, :after_turn, context[:cancellation_signal]})
+        :ok
+      end
+    end
+
+    test "hooks receive the run's cancellation signal without keeping it in the state" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+      signal = Cancellation.new_signal()
+
+      state = State.new(model: "test/model", hooks: [SignalHook], context: %{test_pid: self()})
+      assert {:ok, state} = Loop.run(state, "hello", cancellation_signal: signal)
+
+      assert_receive {:signal_in, :before_prompt, ^signal}
+      assert_receive {:signal_in, :before_turn_end, ^signal}
+      assert_receive {:signal_in, :after_turn, nil}
+      assert state.context.seen_prompt
+      assert state.context.seen_turn_end
+      refute Map.has_key?(state.context, :cancellation_signal)
+    end
+
+    test "a host's own :cancellation_signal context entry is kept" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+
+      state =
+        State.new(
+          model: "test/model",
+          hooks: [SignalHook],
+          context: %{test_pid: self(), cancellation_signal: :host_value}
+        )
+
+      assert {:ok, state} =
+               Loop.run(state, "hello", cancellation_signal: Cancellation.new_signal())
+
+      assert_receive {:signal_in, :before_turn_end, :host_value}
+      assert state.context.cancellation_signal == :host_value
+    end
   end
 
   defp collect_terminal_event_types(events) do

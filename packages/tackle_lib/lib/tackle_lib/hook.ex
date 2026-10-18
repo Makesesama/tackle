@@ -43,6 +43,14 @@ defmodule Tackle.Lib.Hook do
   count in `after_turn/2`. Report problems neutrally rather than ordering the
   model to fix every one of them.
 
+  ## Cancellation
+
+  When the run has a cancellation signal, every callback except `after_turn/2`
+  receives it in its context as `:cancellation_signal`. A slow hook, such as a
+  gate that compiles the project, should check it with
+  `Tackle.Lib.Cancellation.cancelled?/1` and stop early. The signal belongs to
+  the run: the loop does not keep it in the state's context.
+
   ## Example
 
       defmodule MyApp.Hooks.AuditLogger do
@@ -203,7 +211,7 @@ defmodule Tackle.Lib.Hook do
   end
 
   defp apply_before_turn_end(hook_module, state, context) do
-    if function_exported?(hook_module, :before_turn_end, 2) do
+    if implements?(hook_module, :before_turn_end, 2) do
       hook_module
       |> apply(:before_turn_end, [state, context])
       |> handle_before_turn_end_result(hook_module, context)
@@ -243,11 +251,17 @@ defmodule Tackle.Lib.Hook do
     end
   end
 
+  # `function_exported?/3` is false for a module that is not loaded yet, which
+  # in interactive mode (tests, `mix run`, IEx) would skip a hook silently.
+  defp implements?(hook_module, event, arity) do
+    Code.ensure_loaded?(hook_module) and function_exported?(hook_module, event, arity)
+  end
+
   defp apply_hook(hook_module, event, args, acc_context) do
     full_args = List.insert_at(args, -1, acc_context)
     arity = length(full_args)
 
-    if function_exported?(hook_module, event, arity) do
+    if implements?(hook_module, event, arity) do
       hook_module
       |> apply(event, full_args)
       |> handle_hook_result(hook_module, event, full_args, acc_context)
