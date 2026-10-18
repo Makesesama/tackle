@@ -658,14 +658,7 @@ defmodule Tackle.Lib.Loop do
     else
       case append_incoming_messages(state, callbacks) do
         {:ok, state, 0} ->
-          emit(callbacks, Event.new(:status_change, %{status: :completed}))
-
-          emit(
-            callbacks,
-            Event.new(:turn_end, %{session_id: state.session_id, status: :completed})
-          )
-
-          terminal_result({:ok, state}, callbacks)
+          before_turn_end(state, callbacks)
 
         {:ok, state, _count} ->
           continue_loop(state, callbacks)
@@ -677,6 +670,43 @@ defmodule Tackle.Lib.Loop do
           terminal_result({:error, final_state}, callbacks)
       end
     end
+  end
+
+  # Runs the `before_turn_end` hooks, which may continue the turn with feedback
+  # messages (for example from a compile gate) instead of completing it.
+  defp before_turn_end(state, callbacks) do
+    case Hook.invoke_before_turn_end(snapshot_hooks(callbacks), state, state.context) do
+      {:ok, context, messages} ->
+        state = %{state | context: context}
+
+        cond do
+          cancelled?(callbacks) ->
+            terminal_result(cancel_run(state, callbacks), callbacks)
+
+          messages == [] ->
+            complete_turn(state, callbacks)
+
+          true ->
+            continue_after_turn_end_hooks(state, callbacks, messages)
+        end
+
+      {:error, reason} ->
+        final_state = State.set_error(state, "Hook aborted before turn end: #{inspect(reason)}")
+        terminal_result({:error, final_state}, callbacks)
+    end
+  end
+
+  defp continue_after_turn_end_hooks(state, callbacks, messages) do
+    case append_incoming_batch(state, callbacks, messages) do
+      {:ok, state, _count} -> continue_loop(state, callbacks)
+      {:error, _reason, state} -> terminal_result({:error, state}, callbacks)
+    end
+  end
+
+  defp complete_turn(state, callbacks) do
+    emit(callbacks, Event.new(:status_change, %{status: :completed}))
+    emit(callbacks, Event.new(:turn_end, %{session_id: state.session_id, status: :completed}))
+    terminal_result({:ok, state}, callbacks)
   end
 
   defp append_incoming_messages(state, %{take_incoming_messages: nil}),

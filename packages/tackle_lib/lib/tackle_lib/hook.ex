@@ -13,7 +13,9 @@ defmodule Tackle.Lib.Hook do
     3. `before_tool_call/3` — before each individual tool call is executed.
     4. `after_tool_call/3`  — after each tool call settles (success or error).
     5. `after_message/3` — after an assistant/tool/user message is finalized and emitted.
-    6. `after_turn/2`       — after the turn completes (success, error, or cancel).
+    6. `before_turn_end/2`  — after a final answer, before the turn completes; can
+       continue the turn with feedback (see "Gating the end of a turn").
+    7. `after_turn/2`       — after the turn completes (success, error, or cancel).
 
   ## Return conventions
 
@@ -21,6 +23,25 @@ defmodule Tackle.Lib.Hook do
     * `{:ok, context}` — mutator; the returned context map replaces the current
       run context for subsequent steps.
     * `{:error, reason}` — abort; the turn is halted with the given error reason.
+
+  `before_turn_end/2` may also return `{:continue, messages}` or
+  `{:continue, messages, context}`.
+
+  ## Gating the end of a turn
+
+  `before_turn_end/2` lets a hook check the agent's work before the turn
+  completes, for example by compiling the project. It runs when the model has
+  given a final answer and the host has no queued incoming messages. Returning
+  `{:continue, messages}` appends each message (a non-empty string) as a user
+  message and continues the same turn, so the model can repair its work; an
+  empty list completes the turn like `:ok`. When several hooks run, their
+  messages are appended in hook order.
+
+  The loop does not limit how often a hook continues a turn beyond the state's
+  `max_iterations`, which ends the turn with an error. A gate should count its
+  own rounds in the context and stop continuing after a few, and can reset the
+  count in `after_turn/2`. Report problems neutrally rather than ordering the
+  model to fix every one of them.
 
   ## Example
 
@@ -103,6 +124,22 @@ defmodule Tackle.Lib.Hook do
             ) :: :ok | {:ok, map()} | {:error, term()}
 
   @doc """
+  Called after the model gives a final answer, before the turn completes.
+
+  Receives the current state, whose last message is the final assistant
+  message, and the run context. Not called for turns that end in an error,
+  cancellation, or the iteration limit. Return `{:continue, messages}` or
+  `{:continue, messages, context}` to append `messages` as user messages and
+  continue the turn; see "Gating the end of a turn" in the module docs.
+  """
+  @callback before_turn_end(state :: State.t(), context :: map()) ::
+              :ok
+              | {:ok, map()}
+              | {:continue, [String.t()]}
+              | {:continue, [String.t()], map()}
+              | {:error, term()}
+
+  @doc """
   Called after the turn completes, regardless of outcome.
 
   Receives the final state (with status `:completed`, `:error`, or `:cancelled`)
@@ -117,13 +154,16 @@ defmodule Tackle.Lib.Hook do
                       before_tool_call: 3,
                       after_tool_call: 3,
                       after_message: 3,
+                      before_turn_end: 2,
                       after_turn: 2
 
   @doc """
   Invokes a lifecycle callback across all configured hook modules.
 
   Returns `{:ok, context}` where context may have been updated by mutator hooks.
-  Returns `{:error, reason}` if any hook aborted.
+  Returns `{:error, reason}` if any hook aborted. Use
+  `invoke_before_turn_end/3` for `before_turn_end/2`, whose hooks can also
+  continue the turn.
   """
   @spec invoke(
           hooks :: [module()],
@@ -135,6 +175,72 @@ defmodule Tackle.Lib.Hook do
     Enum.reduce_while(hooks, {:ok, context}, fn hook_module, {:ok, acc_context} ->
       apply_hook(hook_module, event, args, acc_context)
     end)
+  end
+
+  @doc """
+  Invokes `before_turn_end/2` across all configured hook modules.
+
+  Hooks run in order, each receiving the context returned by the previous one.
+  Returns `{:ok, context, messages}` with the messages of every hook that
+  returned `{:continue, ...}`, in hook order; an empty list means the turn may
+  complete. Returns `{:error, reason}` if a hook aborted or returned an
+  unexpected value, without running the hooks after it.
+  """
+  @spec invoke_before_turn_end(hooks :: [module()], state :: State.t(), context :: map()) ::
+          {:ok, map(), [String.t()]} | {:error, term()}
+  def invoke_before_turn_end(hooks, %State{} = state, context) when is_list(hooks) do
+    hooks
+    |> Enum.reduce_while({:ok, context, []}, fn hook_module, {:ok, acc_context, acc_messages} ->
+      case apply_before_turn_end(hook_module, state, acc_context) do
+        {:ok, new_context, messages} -> {:cont, {:ok, new_context, [messages | acc_messages]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, context, messages} -> {:ok, context, messages |> Enum.reverse() |> List.flatten()}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp apply_before_turn_end(hook_module, state, context) do
+    if function_exported?(hook_module, :before_turn_end, 2) do
+      hook_module
+      |> apply(:before_turn_end, [state, context])
+      |> handle_before_turn_end_result(hook_module, context)
+    else
+      {:ok, context, []}
+    end
+  end
+
+  defp handle_before_turn_end_result(:ok, _hook_module, context), do: {:ok, context, []}
+
+  defp handle_before_turn_end_result({:ok, new_context}, _hook_module, _context)
+       when is_map(new_context),
+       do: {:ok, new_context, []}
+
+  defp handle_before_turn_end_result({:continue, messages}, hook_module, context),
+    do: continue_with(messages, context, hook_module)
+
+  defp handle_before_turn_end_result({:continue, messages, new_context}, hook_module, _context)
+       when is_map(new_context),
+       do: continue_with(messages, new_context, hook_module)
+
+  defp handle_before_turn_end_result({:error, _reason} = error, _hook_module, _context),
+    do: error
+
+  defp handle_before_turn_end_result(other, hook_module, _context) do
+    {:error,
+     "Hook #{inspect(hook_module)}.before_turn_end/2 returned unexpected value: #{inspect(other)}"}
+  end
+
+  defp continue_with(messages, context, hook_module) do
+    if is_list(messages) and Enum.all?(messages, &(is_binary(&1) and &1 != "")) do
+      {:ok, context, messages}
+    else
+      {:error,
+       "Hook #{inspect(hook_module)}.before_turn_end/2 returned invalid messages " <>
+         "(expected non-empty strings): #{inspect(messages)}"}
+    end
   end
 
   defp apply_hook(hook_module, event, args, acc_context) do

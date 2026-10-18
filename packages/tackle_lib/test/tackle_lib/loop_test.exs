@@ -2352,6 +2352,220 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
+  describe "before_turn_end hooks" do
+    # Answers `before_turn_end` from `context.gate_plan`: a list of results
+    # consumed one per call (`:ok` when empty), or `:always` to keep continuing.
+    defmodule GateHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def before_turn_end(state, context) do
+        last = List.last(state.messages)
+        send(context.test_pid, {:before_turn_end, last.role, last.content})
+
+        case context.gate_plan do
+          :always -> {:continue, ["still failing"]}
+          [] -> :ok
+          [next | rest] -> respond(next, Map.put(context, :gate_plan, rest))
+        end
+      end
+
+      @impl true
+      def after_turn(_state, context) do
+        send(context.test_pid, {:gate_after_turn, context.gate_plan})
+        :ok
+      end
+
+      defp respond(:cancel, context) do
+        Cancellation.cancel(context.signal, "stop")
+        {:continue, ["too late"], context}
+      end
+
+      defp respond({:continue, messages}, context), do: {:continue, messages, context}
+      defp respond(other, _context), do: other
+    end
+
+    defmodule SecondGateHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def before_turn_end(_state, context) do
+        send(context.test_pid, {:second_gate, context.gate_plan})
+        {:continue, ["format check failed"]}
+      end
+    end
+
+    defp turn_end_state(plan, opts \\ []) do
+      context = Map.merge(%{test_pid: self(), gate_plan: plan}, Keyword.get(opts, :context, %{}))
+
+      State.new(
+        model: "test/model",
+        hooks: Keyword.get(opts, :hooks, [GateHook]),
+        tools: Keyword.get(opts, :tools, []),
+        max_iterations: Keyword.get(opts, :max_iterations, :infinity),
+        context: context
+      )
+    end
+
+    test "continues the turn with the hook's messages, then completes" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+
+      state = turn_end_state([{:continue, ["compile failed: undefined function foo/0"]}])
+
+      assert {:ok, state} =
+               Loop.run(state, "hello",
+                 event_callback: fn event -> send(self(), {:event, event.type}) end
+               )
+
+      assert state.status == :completed
+      assert state.current_iteration == 2
+
+      assert Enum.map(state.messages, &{&1.role, &1.content}) == [
+               {:user, "hello"},
+               {:assistant, "done"},
+               {:user, "compile failed: undefined function foo/0"},
+               {:assistant, "done"}
+             ]
+
+      assert_receive {:messages, [%{content: "hello"}]}
+      assert_receive {:messages, second_call}
+      assert List.last(second_call).content == "compile failed: undefined function foo/0"
+
+      assert_receive {:before_turn_end, :assistant, "done"}
+      assert_receive {:before_turn_end, :assistant, "done"}
+      refute_receive {:before_turn_end, _, _}, 20
+
+      # The context returned with the messages is kept for later steps.
+      assert state.context.gate_plan == []
+      assert_receive {:gate_after_turn, []}
+
+      events = collect_terminal_event_types([])
+      assert Enum.count(events, &(&1 == :turn_end)) == 1
+      assert Enum.take(events, -2) == [:status_change, :turn_end]
+    end
+
+    test "completes the turn when the hook returns no messages" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+
+      assert {:ok, state} = Loop.run(turn_end_state([{:continue, []}]), "hello")
+      assert state.status == :completed
+      assert state.current_iteration == 1
+      assert_receive {:before_turn_end, :assistant, "done"}
+      refute_receive {:before_turn_end, _, _}, 20
+    end
+
+    test "runs only after a final answer, not after a tool batch" do
+      Application.put_env(:tackle_lib, :llm, StructuredMessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+      Process.put(:call_count, 0)
+
+      assert {:ok, _state} = Loop.run(turn_end_state([], tools: [FirstTool]), "hello")
+      assert_receive {:tool_execute, :first}
+      assert_receive {:before_turn_end, :assistant, "All done."}
+      refute_receive {:before_turn_end, _, _}, 20
+    end
+
+    test "queued incoming messages are handled before the hooks run" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+      Process.put(:incoming_polls, 0)
+
+      callback = fn ->
+        polls = Process.get(:incoming_polls, 0)
+        Process.put(:incoming_polls, polls + 1)
+        if polls == 1, do: {:ok, ["follow up"]}, else: {:ok, []}
+      end
+
+      assert {:ok, state} =
+               Loop.run(turn_end_state([]), "hello", take_incoming_messages: callback)
+
+      assert state.current_iteration == 2
+      assert_receive {:before_turn_end, :assistant, "done"}
+      refute_receive {:before_turn_end, _, _}, 20
+    end
+
+    test "messages of several hooks are appended in hook order" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+
+      # SecondGateHook always continues, so the iteration limit ends the turn.
+      state =
+        turn_end_state([{:continue, ["compile failed"]}],
+          hooks: [GateHook, SecondGateHook],
+          max_iterations: 2
+        )
+
+      assert {:error, state} = Loop.run(state, "hello")
+
+      # SecondGateHook sees the context returned by GateHook.
+      assert_receive {:second_gate, []}
+
+      assert Enum.map(Enum.take(state.messages, 4), &{&1.role, &1.content}) == [
+               {:user, "hello"},
+               {:assistant, "done"},
+               {:user, "compile failed"},
+               {:user, "format check failed"}
+             ]
+    end
+
+    test "max_iterations ends a turn whose hook keeps continuing it" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+
+      assert {:error, state} = Loop.run(turn_end_state(:always, max_iterations: 3), "hello")
+      assert state.status == :error
+      assert state.error =~ "maximum iterations"
+      assert state.current_iteration == 3
+      assert_receive {:gate_after_turn, :always}
+    end
+
+    test "an error from the hook aborts the turn" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+
+      assert {:error, state} = Loop.run(turn_end_state([{:error, :gate_crashed}]), "hello")
+      assert state.status == :error
+      assert state.error =~ "Hook aborted before turn end"
+      assert state.error =~ "gate_crashed"
+      assert_receive {:gate_after_turn, [{:error, :gate_crashed}]}
+    end
+
+    test "invalid messages abort the turn" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+
+      assert {:error, state} = Loop.run(turn_end_state([{:continue, [""]}]), "hello")
+      assert state.error =~ "invalid messages"
+      assert state.current_iteration == 1
+    end
+
+    test "cancellation during the hook cancels instead of continuing" do
+      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
+      Process.put(:test_pid, self())
+      signal = Cancellation.new_signal()
+
+      assert {:cancelled, state} =
+               Loop.run(turn_end_state([:cancel], context: %{signal: signal}), "hello",
+                 cancellation_signal: signal
+               )
+
+      assert state.current_iteration == 1
+      refute Enum.any?(state.messages, &(&1.content == "too late"))
+      assert_receive {:messages, _first_call}
+      refute_receive {:messages, _}, 20
+    end
+
+    test "is not called when the provider fails" do
+      Application.put_env(:tackle_lib, :llm, PermanentFailureAdapter)
+      Process.put(:test_pid, self())
+
+      assert {:error, _state} = Loop.run(turn_end_state([]), "hello")
+      refute_receive {:before_turn_end, _, _}, 20
+    end
+  end
+
   defp collect_terminal_event_types(events) do
     receive do
       {:event, type} when is_atom(type) -> collect_terminal_event_types([type | events])

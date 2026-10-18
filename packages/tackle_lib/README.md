@@ -314,7 +314,10 @@ repeat until final answer (or a configured max_iterations):
   call or stream LLM
   after_prompt hook
   ├── final content:
-  │     append assistant message; emit message_end, status_change, turn_end
+  │     append assistant message; emit message_end
+  │     poll queued incoming messages (continue if any)
+  │     before_turn_end hooks (continue with their messages if any)
+  │     emit status_change, turn_end
   └── native tool calls:
         append assistant tool-call message
         for each call, in provider order:
@@ -779,11 +782,50 @@ Implement `Tackle.Lib.Hook` to observe or mutate context at stable lifecycle poi
 | `before_tool_call/3` | Before each normalized tool call |
 | `after_tool_call/3` | After each success/error settlement |
 | `after_message/3` | After each finalized user/assistant/tool message |
+| `before_turn_end/2` | After a final answer, before the turn completes |
 | `after_turn/2` | Once during terminal cleanup |
 
 Return `:ok` to observe, `{:ok, new_context}` to replace the context for later
 steps, or `{:error, reason}` to abort the turn. Hooks run in configured order;
 each receives the context returned by the previous hook.
+
+`before_turn_end/2` can also return `{:continue, messages}` or
+`{:continue, messages, new_context}` to keep the turn going: each message (a
+non-empty string) is appended as a user message, in hook order, and the model
+answers again. Use it for checks that gate the end of a turn, such as compiling
+the project and reporting new errors. It runs only after a final answer when no
+incoming messages are queued, not for errors or cancellation. The loop bounds
+repeated continuations only by `max_iterations`, which ends the turn with an
+error, so a gate should count its rounds in the context, stop continuing after
+a few, and reset the count in `after_turn/2`:
+
+```elixir
+defmodule MyApp.Hooks.CompileGate do
+  @behaviour Tackle.Lib.Hook
+
+  @max_rounds 2
+
+  @impl true
+  def before_turn_end(_state, context) do
+    rounds = Map.get(context, :compile_gate_rounds, 0)
+
+    case MyApp.Checks.new_compile_errors() do
+      [] ->
+        :ok
+
+      _errors when rounds >= @max_rounds ->
+        :ok
+
+      errors ->
+        message = "The compile gate found new errors:\n" <> Enum.join(errors, "\n")
+        {:continue, [message], Map.put(context, :compile_gate_rounds, rounds + 1)}
+    end
+  end
+
+  @impl true
+  def after_turn(_state, context), do: {:ok, Map.delete(context, :compile_gate_rounds)}
+end
+```
 
 Good hook uses include audit logging, incremental persistence, correlation
 metadata, and cleanup. Hosts can use `after_message/3` and `after_turn/2` for
