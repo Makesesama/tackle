@@ -495,7 +495,10 @@ exec-server on the first session and refuses to start sessions if the jail does
 not answer. It passes the launcher only `PATH`, `HOME`, `LANG`, `LC_ALL`,
 `TERM`, and `XDG_CACHE_HOME` (`Tackle.CLI.Jail`), so the jail can inherit the
 project's cached nix-direnv devshell without exposing the rest of the host
-environment. See
+environment. Host variables you name in `config.json` under `jail.env` (for
+example `{"jail": {"env": ["GH_TOKEN"]}}`) are added to the environment of
+the agent's commands instead, never the launcher's; only the user file can set
+them. See
 [jailed execution](../../README.md#jailed-execution-on-linux) for the jail
 policy, requirements, and the credential-free host smoke test. The
 `jailed-tackle` command is the development-checkout launcher.

@@ -2,6 +2,7 @@ defmodule Tackle.Config.FileTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Config
+  alias Tackle.Config.File, as: ConfigFile
   alias Tackle.Config.Narration
   alias Tackle.Elixir.CompileGate.Settings, as: CompileGateSettings
   alias Tackle.Lib.LLM.Provider
@@ -260,6 +261,43 @@ defmodule Tackle.Config.FileTest do
 
     assert {:error, {:invalid_config_field, ^path, "show_subagent_sidebar"}} =
              Config.load(available_adapters: [Adapter], env: env)
+  end
+
+  test "validates the CLI jail environment alongside harness fields", %{home: home, env: env} do
+    path = write_config(home, ~s({"model":"test/file","jail":{"env":["GH_TOKEN","_X1"]}}))
+    assert {:ok, config} = Config.load(available_adapters: [Adapter], env: env)
+    assert config.model_ref == "test/file"
+    assert ConfigFile.jail_env(path) == {:ok, ["GH_TOKEN", "_X1"]}
+
+    for invalid <- [
+          ~s({"jail":["GH_TOKEN"]}),
+          ~s({"jail":{"env":"GH_TOKEN"}}),
+          ~s({"jail":{"env":null}}),
+          ~s({"jail":{"env":["GH-TOKEN"]}}),
+          ~s({"jail":{"env":["1X"]}}),
+          ~s({"jail":{"env":[""]}}),
+          ~s({"jail":{"env":["A=B"]}}),
+          ~s({"jail":{"env":[1]}}),
+          ~s({"jail":{"env":[],"mounts":[]}})
+        ] do
+      File.write!(path, invalid)
+
+      assert {:error, {:invalid_config_field, ^path, "jail"}} =
+               Config.load(available_adapters: [Adapter], env: env)
+
+      assert {:error, {:invalid_config_field, ^path, "jail"}} = ConfigFile.jail_env(path)
+    end
+  end
+
+  test "jail_env is empty without the setting or the file", %{home: home} do
+    path = Path.join(home, "config.json")
+    assert ConfigFile.jail_env(path) == {:ok, []}
+    File.mkdir_p!(home)
+
+    for empty <- [~s({}), ~s({"jail":null}), ~s({"jail":{}}), ~s({"jail":{"env":[]}})] do
+      File.write!(path, empty)
+      assert ConfigFile.jail_env(path) == {:ok, []}
+    end
   end
 
   test "config.json providers merge over adapter defaults and accounts", %{

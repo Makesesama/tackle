@@ -612,10 +612,10 @@ built-in defaults < ~/.tackle/config.json < .tackle/config.json < TACKLE_MODEL/T
 A project can carry its own `.tackle/config.json`. The harness uses the nearest
 one at or above the working directory, stopping at the Git root (as for
 `.tackle/agents`), and reads it through the session executor like `AGENTS.md`.
-It accepts the same fields as the user file except `providers` and
-`show_subagent_sidebar`: a repository chooses among the providers and accounts
+It accepts the same fields as the user file except `providers`,
+`show_subagent_sidebar`, and `jail`: a repository chooses among the providers and accounts
 you configured but cannot declare its own, which could send your credentials
-to another endpoint. Each file is validated on its own; JSON objects then merge
+to another endpoint, nor pass host environment variables into the CLI's jail. Each file is validated on its own; JSON objects then merge
 recursively, so a project can change one review stage or one agent setting and
 keep the rest of your user configuration. A project value of `null` clears the
 user value. For example:
@@ -636,7 +636,8 @@ on it instead of following the root's current model. Names without a
 discovered profile are ignored, but their models must still be available.
 The configuration file accepts `model` and `thinking` harness fields and the
 CLI-only boolean `show_subagent_sidebar` (default `true`), which does not affect
-agent sessions. It also accepts a `session_titles` object configuring automatic
+agent sessions, and the CLI-only `jail` object, whose `env` list names host
+environment variables passed to commands in the CLI's jail (`Tackle.CLI.Jail`). It also accepts a `session_titles` object configuring automatic
 LLM-generated session titles: after an untitled durable session settles its
 first user message (or, for a resumed untitled session, its next one), one
 tool-free generation call produces a concise title that is

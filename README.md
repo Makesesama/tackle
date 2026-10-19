@@ -242,7 +242,8 @@ The jail (`nix/packages/exec-jail.nix`):
   launcher refuses a worktree whose `.git` file and Git directory do not
   point at each other; `git worktree repair` on the host fixes a moved one.
   Create worktrees on the host: `git worktree add` fails in the jail;
-- gives the jail a private `/tmp` and home, and a cleared environment;
+- gives the jail a private `/tmp` and home, and a cleared environment, apart
+  from the variables you name in `jail.env` (see below);
 - does not mount the host's Git configuration: Git in the jail reads the
   `gitConfig` built into the launcher (`/etc/tackle/gitconfig`, read-only) as
   its global configuration, so set the commit identity there (see
@@ -277,6 +278,25 @@ on in `tackle-cli-jail`), and sourcing it runs the devshell's `shellHook`
 inside the jail, which is code `direnv allow` already runs for you on the host.
 Build a launcher with `inheritDirenv = false` to turn it off
 (`nix/packages/jail-direnv.nix`).
+
+Only the devshell's profile is reproduced, not the rest of `.envrc`, and the
+jail's environment starts empty, so variables such as `GH_TOKEN` that your
+`.envrc` exports do not reach the agent's commands. To pass some in, name them
+in `~/.tackle/config.json`:
+
+```json
+{ "jail": { "env": ["GH_TOKEN"] } }
+```
+
+Each named variable that is set in Tackle's environment when the jail starts
+is added to the environment of every command in the jail; unset ones are
+skipped, so a token that only one project's direnv exports reaches only that
+project's jail. A project's `.tackle/config.json` cannot set `jail`, so a
+cloned repository cannot ask for your secrets. The values are readable by
+everything in the jail, which has network access: pass tokens scoped to what
+the agent should do, such as a fine-grained GitHub token for one repository.
+Commands also need the tool itself on `PATH`, for example `gh` in the project's
+devshell.
 
 Tackle reads project guidance (`AGENTS.md`), skills, and project agent
 definitions inside the workspace through the jail, so a symlink that jailed code

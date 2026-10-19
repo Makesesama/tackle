@@ -18,14 +18,16 @@ defmodule Tackle.Config.File do
     "decision_model",
     "review",
     "agents",
-    "compile_gate"
+    "compile_gate",
+    "jail"
   ]
 
   # A project file comes from the repository, so it may only choose among what
   # the user already configured: it cannot declare providers (which carry base
   # URLs and credential settings), and the CLI-only display preference stays
-  # with the user.
-  @project_fields @known_fields -- ["providers", "show_subagent_sidebar"]
+  # with the user. Nor can it name host environment variables to pass into the
+  # jail (`jail`), which would hand a cloned repository the user's secrets.
+  @project_fields @known_fields -- ["providers", "show_subagent_sidebar", "jail"]
 
   @doc "Loads the user configuration file; a missing file is empty."
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
@@ -36,8 +38,8 @@ defmodule Tackle.Config.File do
   @doc """
   Loads the user configuration file layered under a project file's contents.
 
-  The project file may use every field except `providers` and
-  `show_subagent_sidebar`. Each file is validated on its own; then JSON objects
+  The project file may use every field except `providers`,
+  `show_subagent_sidebar`, and `jail`. Each file is validated on its own; then JSON objects
   merge recursively, with project values replacing user values, except that a
   project cannot turn on a compile gate the user set to `false`.
   """
@@ -102,7 +104,8 @@ defmodule Tackle.Config.File do
          {:ok, review_opts} <- review_options(path, config),
          {:ok, agent_opts} <- agents_options(path, config),
          {:ok, compile_gate_opts} <- compile_gate_options(path, config),
-         :ok <- sidebar_option(path, config) do
+         :ok <- sidebar_option(path, config),
+         :ok <- jail_option(path, config) do
       {:ok,
        model_opts ++
          thinking_opts ++
@@ -334,6 +337,45 @@ defmodule Tackle.Config.File do
       :error -> :ok
     end
   end
+
+  @doc """
+  Returns the host environment variables the user file passes into a jail:
+  the names in `jail.env`, or `[]`. The whole file is validated; a missing
+  file is empty. Only the user file can set them.
+  """
+  @spec jail_env(Path.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def jail_env(path) when is_binary(path) do
+    with {:ok, config} <- read_user(path),
+         {:ok, _opts} <- to_options(path, config) do
+      case config do
+        %{"jail" => %{"env" => names}} -> {:ok, names}
+        _other -> {:ok, []}
+      end
+    end
+  end
+
+  # The CLI's jail settings. Like the sidebar preference, they are validated
+  # here but are not session options: `Tackle.CLI.Jail` reads them with
+  # `jail_env/1`.
+  defp jail_option(path, config) do
+    case Map.fetch(config, "jail") do
+      {:ok, nil} -> :ok
+      {:ok, %{} = jail} -> jail_fields(path, jail)
+      {:ok, _other} -> {:error, {:invalid_config_field, path, "jail"}}
+      :error -> :ok
+    end
+  end
+
+  defp jail_fields(path, %{"env" => names} = jail) when map_size(jail) == 1 and is_list(names) do
+    if Enum.all?(names, &env_name?/1),
+      do: :ok,
+      else: {:error, {:invalid_config_field, path, "jail"}}
+  end
+
+  defp jail_fields(_path, jail) when map_size(jail) == 0, do: :ok
+  defp jail_fields(path, _jail), do: {:error, {:invalid_config_field, path, "jail"}}
+
+  defp env_name?(name), do: is_binary(name) and Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_]*\z/, name)
 
   # The default decision model for classification (`tackle.classify` in
   # workflows); `Tackle.Config` resolves it against the session's adapters.

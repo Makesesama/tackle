@@ -73,6 +73,57 @@ defmodule Tackle.CLI.JailTest do
     refute Map.has_key?(vars, "TACKLE_HOME")
   end
 
+  test "passes the variables named in config.json to commands, not to the launcher", %{
+    root: root,
+    workspace: workspace,
+    env: env
+  } do
+    dump = Path.join(root, "launcher-env")
+    # Set for the CLI process too, so the launcher could have inherited it.
+    with_env(%{"GH_TOKEN" => "gh-secret"})
+    File.mkdir_p!(env["TACKLE_HOME"])
+
+    File.write!(
+      Path.join(env["TACKLE_HOME"], "config.json"),
+      ~s({"jail": {"env": ["GH_TOKEN", "TACKLE_UNSET"]}})
+    )
+
+    env =
+      Map.merge(env, %{
+        "TACKLE_EXEC_LAUNCHER" => launcher(root, dump_env: dump),
+        "GH_TOKEN" => "gh-secret",
+        "TACKLE_TEST_SECRET" => "x"
+      })
+
+    assert {:ok, executor} =
+             Jail.ensure_started(env: env, cwd: workspace, verify_isolation: false)
+
+    refute inspect(executor) =~ "gh-secret"
+    refute Map.has_key?(launcher_env(dump), "GH_TOKEN")
+
+    script =
+      ~s(printf '%s|%s|%s' "$GH_TOKEN" "${TACKLE_UNSET-unset}" "${TACKLE_TEST_SECRET-unset}")
+
+    {:ok, handle} = Executor.exec(executor, ["sh", "-c", script], cwd: workspace)
+    assert collect(executor, handle, "") == "gh-secret|unset|unset"
+  end
+
+  test "does not start with an invalid jail setting", %{
+    root: root,
+    workspace: workspace,
+    env: env
+  } do
+    File.mkdir_p!(env["TACKLE_HOME"])
+    path = Path.join(env["TACKLE_HOME"], "config.json")
+    File.write!(path, ~s({"jail": {"env": ["GH-TOKEN"]}}))
+    env = Map.put(env, "TACKLE_EXEC_LAUNCHER", launcher(root))
+
+    assert {:error, {:invalid_config_field, ^path, "jail"}} =
+             Jail.ensure_started(env: env, cwd: workspace, verify_isolation: false)
+
+    refute Process.whereis(Tackle.CLI.Jail.Supervisor)
+  end
+
   test "mounts TACKLE_EXEC_WORKSPACE when it contains the working directory", %{
     root: root,
     workspace: workspace,
@@ -295,6 +346,13 @@ defmodule Tackle.CLI.JailTest do
     end)
 
     Enum.each(vars, fn {name, value} -> System.put_env(name, value) end)
+  end
+
+  defp collect(executor, handle, output) do
+    case Executor.await(executor, handle, 5_000) do
+      {:data, data} -> collect(executor, handle, output <> data)
+      {:exit_status, 0} -> output
+    end
   end
 
   defp launcher_env(dump) do

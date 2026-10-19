@@ -216,6 +216,45 @@ defmodule Tackle.Executor.JailedTest do
     assert {:ok, "unset"} =
              Bash.run(%{"command" => "printf ${HOME:-unset}"}, %{executor: executor})
   end
+
+  test "adds the configured environment to every command", %{client: client} do
+    executor =
+      Executor.Jailed.new(client,
+        workspace: "/",
+        env: [{"TACKLE_FORWARDED", "secret"}, {"TACKLE_SHADOWED", "base"}]
+      )
+
+    assert {:ok, "secret base"} =
+             Bash.run(
+               %{"command" => "printf '%s %s' \"$TACKLE_FORWARDED\" \"$TACKLE_SHADOWED\""},
+               %{executor: executor}
+             )
+
+    # A command's own environment takes precedence.
+    {:ok, handle} =
+      Executor.exec(executor, ["sh", "-c", "printf %s \"$TACKLE_SHADOWED\""],
+        cwd: "/",
+        env: [{"TACKLE_SHADOWED", "command"}]
+      )
+
+    assert collect(executor, handle, "") == "command"
+  end
+
+  test "keeps the configured environment out of inspected executors" do
+    executor = Executor.Jailed.new(:client, workspace: "/w", env: [{"GH_TOKEN", "secret"}])
+    refute inspect(executor) =~ "secret"
+
+    assert_raise ArgumentError, fn ->
+      Executor.Jailed.new(:client, workspace: "/w", env: [{"GH_TOKEN", 1}])
+    end
+  end
+
+  defp collect(executor, handle, output) do
+    case Executor.await(executor, handle, 5_000) do
+      {:data, data} -> collect(executor, handle, output <> data)
+      {:exit_status, 0} -> output
+    end
+  end
 end
 
 defmodule Tackle.ExecutorTest.NoInput do

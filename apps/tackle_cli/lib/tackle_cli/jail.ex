@@ -19,8 +19,20 @@ defmodule Tackle.CLI.Jail do
   Jailed mode fails closed: when the launcher is configured but the jail does
   not answer, sessions do not start, and tools never fall back to running on
   the host.
+
+  The jail starts with an empty environment. The user's `config.json` (never
+  a project's `.tackle/config.json`) can name host environment variables to
+  pass into it, such as a token for the `gh` CLI:
+
+      {"jail": {"env": ["GH_TOKEN"]}}
+
+  Each named variable that is set in the CLI's environment when the jail
+  starts is added to the environment of every command run in the jail
+  (`Tackle.Executor.Jailed`); the launcher never sees it. Anything in the jail
+  can read these values.
   """
 
+  alias Tackle.Config.File, as: ConfigFile
   alias Tackle.Exec.Client
   alias Tackle.Executor.Jailed
 
@@ -96,10 +108,11 @@ defmodule Tackle.CLI.Jail do
     with :ok <- check_contains(workspace, cwd),
          {:ok, tackle_home} <- Tackle.Paths.home(env: env),
          :ok <- check_workspace(workspace, tackle_home, env),
+         {:ok, forwarded_env} <- forwarded_env(tackle_home, env),
          {:ok, log} <- log_path(tackle_home),
          :ok <- start_client(launcher, log, workspace),
          :ok <- ready_or_stop(cwd, tackle_home, log, Keyword.get(opts, :verify_isolation, true)) do
-      executor = Jailed.new(@client, workspace: workspace)
+      executor = Jailed.new(@client, workspace: workspace, env: forwarded_env)
       Application.put_env(:tackle_cli, :jail_executor, executor)
       {:ok, executor}
     end
@@ -180,6 +193,18 @@ defmodule Tackle.CLI.Jail do
     case File.read_link(candidate) do
       {:ok, target} -> resolve(Path.split(Path.expand(target, acc)) ++ rest, "/", links + 1)
       {:error, _reason} -> resolve(rest, candidate, links)
+    end
+  end
+
+  # The variables the user's config.json passes into the jail, with their
+  # values from the CLI's environment; unset ones are skipped, so a variable
+  # that only a project's direnv sets reaches only that project's jail.
+  defp forwarded_env(tackle_home, env) do
+    with {:ok, names} <- ConfigFile.jail_env(Path.join(tackle_home, "config.json")) do
+      {:ok,
+       for name <- Enum.uniq(names), value = Map.get(env, name), is_binary(value) do
+         {name, value}
+       end}
     end
   end
 

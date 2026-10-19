@@ -29,6 +29,11 @@ defmodule Tackle.Executor.Jailed do
     * `:workspace` - required host directory that the jail mounts at the same
       path. Host-side reads of project files inside it go through the jail.
     * `:tmp_dir` - directory for temporary files inside the jail (default `"/tmp"`).
+    * `:env` - list of `{name, value}` strings added to the environment of
+      every command, such as credentials the host chose to pass into the
+      jail. A command's own `:env` entries take precedence. The values are
+      kept in a closure so that inspecting the executor, as crash reports
+      do, does not print them.
   """
   @spec new(GenServer.server(), keyword()) :: Tackle.Executor.t()
   def new(client, opts) do
@@ -38,14 +43,36 @@ defmodule Tackle.Executor.Jailed do
         _missing -> raise ArgumentError, "Tackle.Executor.Jailed.new/2 requires :workspace"
       end
 
+    env = Keyword.get(opts, :env, [])
+
+    unless is_list(env) and Enum.all?(env, &env_entry?/1) do
+      raise ArgumentError, "Tackle.Executor.Jailed.new/2 expects :env as {name, value} strings"
+    end
+
     {__MODULE__,
-     %{client: client, workspace: workspace, tmp_dir: Keyword.get(opts, :tmp_dir, "/tmp")}}
+     %{
+       client: client,
+       workspace: workspace,
+       tmp_dir: Keyword.get(opts, :tmp_dir, "/tmp"),
+       env: fn -> env end
+     }}
   end
 
   @impl true
-  def exec(%{client: client}, argv, opts) do
-    Client.exec(client, argv, cwd: Keyword.fetch!(opts, :cwd), env: Keyword.get(opts, :env, []))
+  def exec(%{client: client} = config, argv, opts) do
+    Client.exec(client, argv,
+      cwd: Keyword.fetch!(opts, :cwd),
+      env: command_env(config, Keyword.get(opts, :env, []))
+    )
   end
+
+  defp command_env(%{env: base}, env) do
+    names = MapSet.new(env, fn {name, _value} -> name end)
+    Enum.reject(base.(), fn {name, _value} -> MapSet.member?(names, name) end) ++ env
+  end
+
+  defp env_entry?({name, value}), do: is_binary(name) and is_binary(value)
+  defp env_entry?(_entry), do: false
 
   @impl true
   def await(%{client: client}, ref, timeout) do

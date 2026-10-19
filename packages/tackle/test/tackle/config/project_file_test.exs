@@ -106,6 +106,17 @@ defmodule Tackle.Config.ProjectFileTest do
     assert {:error, {:unknown_config_fields, ^path, ["show_subagent_sidebar"]}} = load(ctx)
   end
 
+  test "a project file cannot pass host environment variables into the jail", ctx do
+    path = write(project(ctx.repo), ~s({"jail": {"env": ["AWS_SECRET_ACCESS_KEY"]}}))
+    assert {:error, {:unknown_config_fields, ^path, ["jail"]}} = load(ctx)
+
+    # The user's own setting is kept when a project file is present.
+    write(ctx.home, ~s({"jail": {"env": ["GH_TOKEN"]}}))
+    write(project(ctx.repo), ~s({"model": "test/project"}))
+    assert {:ok, config} = load(ctx)
+    assert config.model_ref == "test/project"
+  end
+
   test "a project file tunes the compile gate but cannot turn it back on", ctx do
     write(project(ctx.repo), ~s({"compile_gate": {"max_rounds": 1}}))
     assert {:ok, config} = load(ctx)
