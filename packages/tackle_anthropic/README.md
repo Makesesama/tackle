@@ -125,6 +125,15 @@ limit; generic 4xx/5xx and transport failures stay unclassified. Anthropic's
 `max_tokens` stop reason is returned as a normal terminal response with the
 partial content.
 
+Images in the conversation are fitted to Anthropic's per-request image limits
+before each request, so a session that collected an oversized image keeps
+working: images over 8000 px per side are always replaced with an explanatory
+text block; once a request would carry more than 20 images, images over 2000 px
+per side (or of unrecognised size) are replaced too; and beyond 100 images the
+oldest are dropped. The replacement is deterministic, so it only disturbs the
+prompt cache when a threshold is crossed, and the stored session keeps the
+original images.
+
 `model_info/1` exposes the selectable catalog's context windows, maximum output
 limits, and USD-per-million-token price cards, including cache read/write rates.
 

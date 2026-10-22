@@ -8,7 +8,7 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   alias Tackle.Lib.JSON
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
-  alias Tackle.Plugins.Anthropic.Prompt
+  alias Tackle.Plugins.Anthropic.{Images, Prompt}
 
   @claude_code_tools %{
     "read" => "Read",
@@ -43,6 +43,10 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   after an aborted turn) are closed with a synthetic `"No result provided"`
   result, and consecutive tool results are merged into one user message.
 
+  Images that would exceed Anthropic's per-request image limits are replaced
+  with explanatory text so a session holding them keeps working (see
+  `Tackle.Plugins.Anthropic.Images`).
+
   Stored `provider_state` blocks are replayed only when they came from the same
   provider (`opts[:provider_id]`, default `"anthropic"`), model, and auth mode.
   """
@@ -62,7 +66,7 @@ defmodule Tackle.Plugins.Anthropic.Convert do
     state = convert_list(messages, state)
 
     case state.error do
-      nil -> {:ok, state.params |> Enum.reverse() |> put_cache_control()}
+      nil -> {:ok, state.params |> Enum.reverse() |> Images.fit_limits() |> put_cache_control()}
       error -> {:error, error}
     end
   end
