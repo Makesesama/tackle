@@ -312,27 +312,36 @@ defmodule Tackle.Session.Projection do
   defp parent_session_id(%__MODULE__{parent: %{"session_id" => session_id}}), do: session_id
   defp parent_session_id(_projection), do: nil
 
-  defp apply_event(%{"type" => "session.created", "data" => data}, projection) do
+  defp apply_event(%{"type" => "session.created" = type, "data" => data}, projection) do
+    check_metadata!(type, data)
+
     %{
       projection
       | title: Map.get(data, "title", projection.title),
-        tags: Map.get(data, "tags", projection.tags),
+        tags: Map.get(data, "tags") || projection.tags,
         model_ref: Map.get(data, "model_ref", projection.model_ref),
         thinking: Map.get(data, "thinking", projection.thinking),
         cwd: Map.get(data, "cwd", projection.cwd),
-        tree_enabled?: projection.tree_enabled? or Map.get(data, "tree", false)
+        tree_enabled?: projection.tree_enabled? or Map.get(data, "tree") == true
     }
   end
 
-  defp apply_event(%{"type" => "session.metadata_changed", "data" => data}, projection) do
+  defp apply_event(%{"type" => "session.metadata_changed" = type, "data" => data}, projection) do
+    check_metadata!(type, data)
+
     %{
       projection
       | title: Map.get(data, "title", projection.title),
-        tags: Map.get(data, "tags", projection.tags)
+        tags: Map.get(data, "tags") || projection.tags
     }
   end
 
-  defp apply_event(%{"type" => "session.configuration_changed", "data" => data}, projection) do
+  defp apply_event(
+         %{"type" => "session.configuration_changed" = type, "data" => data},
+         projection
+       ) do
+    check_metadata!(type, data)
+
     %{
       projection
       | model_ref: Map.get(data, "model_ref", projection.model_ref),
@@ -387,7 +396,7 @@ defmodule Tackle.Session.Projection do
 
   defp apply_event(%{"type" => "message.appended", "data" => data}, projection) do
     parent_id = parent_id(data, projection.tree.active_id)
-    message = decode_message(Map.fetch!(data, "message"))
+    message = decode_message(Map.get(data, "message"))
 
     projection
     |> resolve_pending_tool(message)
@@ -443,7 +452,7 @@ defmodule Tackle.Session.Projection do
   defp apply_live_event(%{"type" => "message.appended", "data" => data}, projection) do
     previous_active_id = Tree.active_id(projection.tree)
     parent_id = parent_id(data, previous_active_id)
-    message = decode_message(Map.fetch!(data, "message"))
+    message = decode_message(Map.get(data, "message"))
     plain = plain_message(message)
 
     projection =
@@ -512,6 +521,25 @@ defmodule Tackle.Session.Projection do
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
   end
+
+  # Listings, search, and resume read these fields, so a value of another type
+  # is a corrupt record rather than something to carry along. Missing fields
+  # keep their previous value.
+  defp check_metadata!(type, data) do
+    Enum.each(data, fn {key, value} ->
+      if not valid_metadata?(key, value),
+        do: raise(ProjectionError, reason: {:invalid_event_data, type, key})
+    end)
+  end
+
+  defp valid_metadata?(key, value) when key in ["title", "cwd", "model_ref"],
+    do: is_nil(value) or is_binary(value)
+
+  defp valid_metadata?("tags", tags),
+    do: is_nil(tags) or (is_list(tags) and Enum.all?(tags, &is_binary/1))
+
+  defp valid_metadata?("tree", tree), do: is_nil(tree) or is_boolean(tree)
+  defp valid_metadata?(_key, _value), do: true
 
   defp decode_message(data) do
     case Codec.decode_message(data) do

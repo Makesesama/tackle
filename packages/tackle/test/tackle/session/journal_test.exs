@@ -957,6 +957,26 @@ defmodule Tackle.Session.JournalTest do
                Reader.read(ctx.session_id, home: ctx.home)
     end
 
+    test "reports message data without a message as an error instead of raising", ctx do
+      write_raw_journal!(ctx, [
+        header(ctx),
+        commit(ctx, 1, [Log.event("message.appended", %{"parent_id" => nil})])
+      ])
+
+      assert {:error, {:invalid_projection, {:invalid_durable_message, nil}}} =
+               Reader.read(ctx.session_id, home: ctx.home)
+    end
+
+    test "reports metadata of the wrong type as an error", ctx do
+      write_raw_journal!(ctx, [
+        header(ctx),
+        commit(ctx, 1, [Log.event("session.created", %{"tags" => "not-a-list"})])
+      ])
+
+      assert {:error, {:invalid_projection, {:invalid_event_data, "session.created", "tags"}}} =
+               Reader.read(ctx.session_id, home: ctx.home)
+    end
+
     test "rejects a header with a mismatched session id" do
       home = tmp_home()
       session_id = ID.generate()
@@ -1247,28 +1267,6 @@ defmodule Tackle.Session.JournalTest do
     <<magic::binary-size(4), _status::binary-size(4), rest::binary>> = File.read!(path)
     File.write!(path, magic <> <<6, 7, 8, 9>> <> rest)
     :ok
-  end
-
-  defp write_raw_journal!(ctx, items) do
-    {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
-    path = Path.join(dir, "session.dlog")
-    name = {:tackle_test_raw, ctx.session_id}
-
-    {:ok, name} =
-      :disk_log.open(
-        name: name,
-        file: String.to_charlist(path),
-        type: :halt,
-        format: :internal,
-        mode: :read_write,
-        repair: false,
-        notify: false,
-        size: :infinity
-      )
-
-    Enum.each(items, fn item -> :ok = :disk_log.log(name, item) end)
-    :ok = :disk_log.sync(name)
-    :ok = :disk_log.close(name)
   end
 
   defp header(ctx) do

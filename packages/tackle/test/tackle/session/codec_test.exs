@@ -266,6 +266,21 @@ defmodule Tackle.Session.CodecTest do
       end
     end
 
+    test "a record with null shadowed ids shadowed nothing; other values are refused" do
+      {:ok, data} = Codec.encode_compaction(record([]))
+
+      assert {:ok, %Record{shadowed_message_ids: []}} =
+               Codec.decode_compaction(%{data | "shadowed_message_ids" => nil})
+
+      assert {:ok, %Record{shadowed_message_ids: []}} =
+               Codec.decode_compaction(Map.delete(data, "shadowed_message_ids"))
+
+      for ids <- ["u1", [1]] do
+        assert {:error, {:invalid_compaction_shadowed_ids, ^ids}} =
+                 Codec.decode_compaction(%{data | "shadowed_message_ids" => ids})
+      end
+    end
+
     test "rejects a malformed creation time or details" do
       {:ok, data} = Codec.encode_compaction(record([]))
 

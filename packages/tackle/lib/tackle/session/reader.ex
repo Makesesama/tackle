@@ -22,6 +22,7 @@ defmodule Tackle.Session.Reader do
   alias Tackle.Session.Compression
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
+  alias Tackle.Session.ProjectionError
   alias Tackle.Session.Storage
 
   @chunk_size 100
@@ -230,10 +231,14 @@ defmodule Tackle.Session.Reader do
     end
   end
 
+  # The projection raises `ProjectionError` for a commit it cannot fold. Any
+  # other exception is a malformed record it did not anticipate; it is
+  # reported by type only, since its message can carry conversation data.
   defp fold(name, session_id, path) do
     do_fold(name, session_id, path)
   rescue
-    error in Tackle.Session.ProjectionError -> {:error, {:invalid_projection, error.reason}}
+    error in ProjectionError -> {:error, {:invalid_projection, error.reason}}
+    error -> {:error, {:invalid_projection, {:exception, error.__struct__}}}
   end
 
   defp do_fold(name, session_id, path) do

@@ -244,7 +244,7 @@ defmodule Tackle.Session.Catalog do
     timeout = Keyword.get(opts, :rebuild_session_timeout, @rebuild_session_timeout)
 
     locations
-    |> Task.async_stream(fn {id, location_opts} -> index_session(table, id, location_opts) end,
+    |> Task.async_stream(fn {id, location_opts} -> safely_index(table, id, location_opts) end,
       max_concurrency: System.schedulers_online(),
       ordered: false,
       timeout: timeout,
@@ -254,6 +254,15 @@ defmodule Tackle.Session.Catalog do
       {:ok, :ok}, acc -> %{acc | indexed: acc.indexed + 1}
       _skipped, acc -> %{acc | skipped: acc.skipped + 1}
     end)
+  end
+
+  # The tasks are linked to the catalog, so a session that raises (a malformed
+  # journal the reader did not anticipate) is skipped instead of taking the
+  # catalog down.
+  defp safely_index(table, session_id, opts) do
+    index_session(table, session_id, opts)
+  rescue
+    error -> {:error, {:exception, error.__struct__}}
   end
 
   # A compressed journal never changes and compression brought its sidecar up
@@ -448,6 +457,8 @@ defmodule Tackle.Session.Catalog do
 
   defp search_text(%Entry{search_text: text}) when is_binary(text), do: text
 
+  # Runs in a task linked to the searching process: a session whose text
+  # cannot be built, even one that raises, is matched on its metadata.
   defp search_text(%Entry{} = entry) do
     case session_projection(entry) do
       {:ok, projection} ->
@@ -463,6 +474,8 @@ defmodule Tackle.Session.Catalog do
       _unavailable ->
         metadata_text(entry)
     end
+  rescue
+    _error -> metadata_text(entry)
   end
 
   # A live session is read from its journal owner, which also holds unsynced

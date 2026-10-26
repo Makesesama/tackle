@@ -240,18 +240,19 @@ defmodule Tackle.Session.Codec do
          {:ok, summary_message} <- decode_message(Map.get(data, "summary_message")),
          {:ok, usage} <- decode_usage(Map.get(data, "summary_usage")),
          {:ok, created_at} <- decode_created_at(Map.get(data, "created_at")),
+         {:ok, shadowed} <- decode_shadowed_ids(Map.get(data, "shadowed_message_ids")),
          {:ok, details} <- decode_details(Map.get(data, "details")) do
       {:ok,
        %Record{
          compaction_id: Map.get(data, "compaction_id"),
          trigger: trigger,
          summary_message: summary_message,
-         shadowed_message_ids: Map.get(data, "shadowed_message_ids", []),
+         shadowed_message_ids: shadowed,
          first_retained_message_id: Map.get(data, "first_retained_message_id"),
          previous_compaction_id: Map.get(data, "previous_compaction_id"),
          parent_id: Map.get(data, "parent_id"),
-         tokens_before: Map.get(data, "tokens_before", 0),
-         estimated_tokens_after: Map.get(data, "estimated_tokens_after", 0),
+         tokens_before: Map.get(data, "tokens_before") || 0,
+         estimated_tokens_after: Map.get(data, "estimated_tokens_after") || 0,
          summary_usage: usage,
          summary_model: Map.get(data, "summary_model"),
          created_at: created_at,
@@ -266,6 +267,17 @@ defmodule Tackle.Session.Codec do
   defp decode_trigger("overflow"), do: {:ok, :overflow}
   defp decode_trigger("manual"), do: {:ok, :manual}
   defp decode_trigger(other), do: {:error, {:unknown_compaction_trigger, other}}
+
+  # A record without shadowed ids (or with `nil`) shadowed nothing.
+  defp decode_shadowed_ids(nil), do: {:ok, []}
+
+  defp decode_shadowed_ids(ids) when is_list(ids) do
+    if Enum.all?(ids, &is_binary/1),
+      do: {:ok, ids},
+      else: {:error, {:invalid_compaction_shadowed_ids, ids}}
+  end
+
+  defp decode_shadowed_ids(other), do: {:error, {:invalid_compaction_shadowed_ids, other}}
 
   defp decode_created_at(value) when is_binary(value), do: decode_datetime(value)
   defp decode_created_at(other), do: {:error, {:invalid_compaction_created_at, other}}

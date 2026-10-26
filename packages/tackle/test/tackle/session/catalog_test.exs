@@ -3,9 +3,11 @@ defmodule Tackle.Session.CatalogTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
   alias Tackle.Session.Catalog.Entry
   alias Tackle.Session.Journal
+  alias Tackle.Session.Log
   alias Tackle.Session.Storage
 
   setup do
@@ -164,6 +166,35 @@ defmodule Tackle.Session.CatalogTest do
     assert {:ok, %{session_id: ^healthy_id}} = Catalog.get(healthy_id)
   end
 
+  test "a malformed journal is skipped by rebuild and search instead of crashing", ctx do
+    healthy_id = create_session(ctx, cwd: unique_cwd(ctx, "healthy"), title: "Healthy")
+    broken = %{home: ctx.home, session_id: ID.generate()}
+
+    write_raw_journal!(broken, [
+      Log.header(session_id: broken.session_id, created_at: now(), cwd: nil, parent: nil),
+      Log.commit(
+        session_id: broken.session_id,
+        seq: 1,
+        commit_id: ID.generate(),
+        written_at: now(),
+        events: [Log.event("message.appended", %{"parent_id" => nil})]
+      )
+    ])
+
+    assert %{indexed: 1, skipped: 1} = Catalog.rebuild(home: ctx.home)
+    assert {:ok, %{session_id: ^healthy_id}} = Catalog.get(healthy_id)
+
+    # An entry recorded earlier still points at the file; searching it falls
+    # back to the entry's metadata.
+    {:ok, path} = Storage.journal_path(broken.session_id, home: ctx.home)
+    Catalog.record(%{session_id: broken.session_id, title: "Broken", journal_path: path})
+
+    assert {:ok, %{sessions: [%{session_id: id}]}} = Tackle.search_sessions("Broken")
+    assert id == broken.session_id
+    assert {:ok, %{sessions: []}} = Tackle.search_sessions("nothing matches this")
+    assert Process.alive?(Process.whereis(Catalog))
+  end
+
   test "marks stale projections and catches them up by sequence", ctx do
     cwd = unique_cwd(ctx, "stale")
 
@@ -204,6 +235,8 @@ defmodule Tackle.Session.CatalogTest do
     [{^session_id, entry}] = :ets.lookup(Catalog, session_id)
     entry
   end
+
+  defp now, do: DateTime.to_iso8601(DateTime.utc_now())
 
   defp unique_cwd(ctx, label) do
     Path.join(ctx.home, "cwd-#{label}-#{System.unique_integer([:positive])}")
