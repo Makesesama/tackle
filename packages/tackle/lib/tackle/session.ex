@@ -374,10 +374,16 @@ defmodule Tackle.Session do
     end
   end
 
+  # A storage task (a turn's begin or terminal commit, or a deferred
+  # operation) is outstanding, or the journal is delayed: work that writes or
+  # starts a turn waits.
+  defguardp is_storage_busy(state)
+            when not is_nil(state.storage_task) or state.storage_status == :delayed
+
   @impl true
   def handle_call(operation, _from, state)
-      when (not is_nil(state.storage_task) or state.storage_status == :delayed) and
-             (operation == :abandon_turn or
+      when is_storage_busy(state) and
+             (operation in [:abandon_turn, :continue] or
                 (is_tuple(operation) and elem(operation, 0) in [:compact, :navigate, :reconfigure])),
       do: {:reply, {:error, :storage_busy}, state}
 
@@ -388,9 +394,8 @@ defmodule Tackle.Session do
     queue_user_message(state, input)
   end
 
-  def handle_call({:submit, _input}, _from, %{storage_task: task} = state)
-      when not is_nil(task) or state.storage_status == :delayed,
-      do: {:reply, {:error, :storage_busy}, state}
+  def handle_call({:submit, _input}, _from, state) when is_storage_busy(state),
+    do: {:reply, {:error, :storage_busy}, state}
 
   def handle_call({:submit, _input}, _from, %{recovery: recovery} = state)
       when not is_nil(recovery) do
@@ -443,8 +448,7 @@ defmodule Tackle.Session do
   # Like a mid-turn submit, a message for the active turn is queued while its
   # storage is busy; an idle session would have to start a turn for it.
   def handle_call({:deliver, %Envelope{}}, _from_call, state)
-      when is_nil(state.active_turn) and
-             (not is_nil(state.storage_task) or state.storage_status == :delayed),
+      when is_nil(state.active_turn) and is_storage_busy(state),
       do: {:reply, {:error, :storage_busy}, state}
 
   def handle_call({:deliver, %Envelope{} = envelope}, _from_call, state) do
@@ -460,10 +464,6 @@ defmodule Tackle.Session do
     broadcast_inbox_drained(state, envelopes)
     {:reply, {:ok, Enum.map(envelopes, &envelope_content/1)}, state}
   end
-
-  def handle_call(:continue, _from, %{storage_task: task} = state)
-      when not is_nil(task) or state.storage_status == :delayed,
-      do: {:reply, {:error, :storage_busy}, state}
 
   def handle_call(:continue, from, state) do
     start_turn(:continue, nil, state, from)
@@ -587,16 +587,8 @@ defmodule Tackle.Session do
 
   def handle_call({:reconfigure, opts}, from, state) do
     case Config.reconfigure(state.config, opts) do
-      {:ok, config} ->
-        defer_storage(
-          state,
-          from,
-          fn -> persist_configuration(state, config) end,
-          &finish_reconfiguration(&1, &2, config)
-        )
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+      {:ok, config} -> apply_reconfiguration(state, from, config)
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -895,6 +887,19 @@ defmodule Tackle.Session do
     if is_nil(pending.from) and state.lifetime == :ephemeral,
       do: finish_ephemeral(state, {:runtime_error, {:continuation_failed, reason}}),
       else: {:noreply, state}
+  end
+
+  # Without a journal there is nothing to commit first.
+  defp apply_reconfiguration(%{journal: nil} = state, _from, config),
+    do: finish_reconfiguration(state, :ok, config)
+
+  defp apply_reconfiguration(%{journal: journal} = state, from, config) do
+    defer_storage(
+      state,
+      from,
+      fn -> Journal.configuration_changed(journal, config) end,
+      &finish_reconfiguration(&1, &2, config)
+    )
   end
 
   defp finish_reconfiguration(state, :ok, config) do
@@ -1289,9 +1294,7 @@ defmodule Tackle.Session do
 
   defp schedule_inbox_wake(state), do: state
 
-  defp start_inbox_turn(state)
-       when not is_nil(state.storage_task) or state.storage_status == :delayed,
-       do: {:skip, state}
+  defp start_inbox_turn(state) when is_storage_busy(state), do: {:skip, state}
 
   defp start_inbox_turn(%{lifetime: :explicit, recovery: nil, active_turn: nil} = state) do
     if deliverable_inbox_pending?(state) do
@@ -1781,12 +1784,6 @@ defmodule Tackle.Session do
 
   defp terminal_event({:runtime_error, reason}),
     do: {"turn.crashed", %{"reason" => inspect(reason)}}
-
-  defp persist_configuration(%{journal: nil}, _config), do: :ok
-
-  defp persist_configuration(%{journal: journal}, config) do
-    Journal.configuration_changed(journal, config)
-  end
 
   # The runtime builds the context, so a session always runs inside a scope
   # whose coordinator and supervisors it can reach; there is no fallback.
