@@ -1073,6 +1073,102 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
+  defmodule EmptyResponseAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    # Replies from the script in :empty_script, then with empty responses.
+    @impl true
+    def generate(_schema, _opts) do
+      send(Process.get(:test_pid), :llm_call)
+
+      case Process.get(:empty_script, []) do
+        [data | rest] ->
+          Process.put(:empty_script, rest)
+          {:ok, %{data: data, usage: nil, model: "test/model"}}
+
+        [] ->
+          {:ok, %{data: %{"thinking" => "hmm"}, usage: nil, model: "test/model"}}
+      end
+    end
+  end
+
+  describe "empty responses" do
+    setup do
+      Application.put_env(:tackle_lib, :llm, EmptyResponseAdapter)
+      Process.put(:test_pid, self())
+      :ok
+    end
+
+    test "are asked again once as a retry of the same request" do
+      Process.put(:empty_script, [%{"thinking" => "hmm"}, %{"content" => "answer"}])
+      test_pid = self()
+
+      assert {:ok, state} =
+               Loop.run(State.new(model: "test/model"), "hello",
+                 event_callback: fn event -> send(test_pid, {:event, event}) end
+               )
+
+      assert Enum.map(state.messages, &{&1.role, &1.content}) ==
+               [user: "hello", assistant: "answer"]
+
+      assert_receive {:event, %Event{type: :message_start, id: pending_id}}
+
+      assert_receive {:event,
+                      %Event{
+                        type: :retry_scheduled,
+                        id: ^pending_id,
+                        data: %{reason: :empty_response}
+                      }}
+
+      assert_receive {:event, %Event{type: :retry_end, data: %{success?: true}}}
+      assert List.last(state.messages).id == pending_id
+      assert_received :llm_call
+      assert_received :llm_call
+      refute_received :llm_call
+    end
+
+    test "end the turn with an error when the model stays empty" do
+      assert {:error, state} = Loop.run(State.new(model: "test/model"), "hello")
+
+      assert state.error == "The model returned an empty response"
+      assert state.pending_assistant_id == nil
+      assert Enum.map(state.messages, & &1.role) == [:user]
+      assert_received :llm_call
+      assert_received :llm_call
+      refute_received :llm_call
+    end
+
+    test "after a tool result are bounded too" do
+      Process.put(:empty_script, [
+        %{"tool_calls" => [%{"id" => "c1", "name" => "first", "arguments" => %{}}]}
+      ])
+
+      state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+
+      assert {:error, state} = Loop.run(state, "use the tool")
+      assert state.error == "The model returned an empty response"
+      assert Enum.map(state.messages, & &1.role) == [:user, :assistant, :tool]
+      assert_received {:tool_execute, :first}
+
+      for _call <- 1..3, do: assert_received(:llm_call)
+      refute_received :llm_call
+    end
+
+    test "a non-empty response gives a later empty response its own re-ask" do
+      Process.put(:empty_script, [
+        %{},
+        %{"tool_calls" => [%{"id" => "c1", "name" => "first", "arguments" => %{}}]},
+        %{},
+        %{"content" => "answer"}
+      ])
+
+      state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+
+      assert {:ok, state} = Loop.run(state, "use the tool")
+      assert List.last(state.messages).content == "answer"
+    end
+  end
+
   test "host llm_opts override the loop's defaults but not the request" do
     Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
     Process.put(:test_pid, self())

@@ -564,18 +564,15 @@ defmodule Tackle.Lib.Loop do
 
     cond do
       tool_calls != [] ->
+        callbacks = %{callbacks | empty_response_retried?: false}
         handle_tool_call_response(state, callbacks, tool_calls, message_opts)
 
       content && content != "" ->
+        callbacks = %{callbacks | empty_response_retried?: false}
         handle_content_response(state, callbacks, content, message_opts)
 
-      has_tool_results_in_recent_messages?(State.model_messages(state)) &&
-          not State.max_iterations_reached?(state) ->
-        Logger.warning("LLM failed to provide content after tool results, retrying...")
-        loop(state, callbacks)
-
       true ->
-        handle_empty_response(state, callbacks, thinking)
+        handle_empty_response(state, callbacks)
     end
   end
 
@@ -630,29 +627,36 @@ defmodule Tackle.Lib.Loop do
     finalize_completed_assistant_message(state, callbacks, assistant_message)
   end
 
-  defp handle_empty_response(state, callbacks, thinking) do
-    Logger.warning("LLM response had neither native tool_calls nor content")
+  # A response with neither content nor tool calls (a content filter, a
+  # reasoning-only reply, or a server returning an empty message) is asked again
+  # once, as a retry of the same request: the retry events let hosts discard any
+  # text streamed for it. A second empty response in a row ends the turn rather
+  # than inventing an answer or spending provider calls without bound.
+  defp handle_empty_response(state, %{empty_response_retried?: false} = callbacks) do
+    Logger.warning("LLM response had neither tool calls nor content; asking again")
+    callbacks = %{callbacks | empty_response_retried?: true}
 
-    fallback_content =
-      if thinking && thinking != "" do
-        thinking
-      else
-        "I'm not sure how to help with that. Could you please clarify your question?"
-      end
-
-    assistant_message =
-      Message.assistant(
-        content: fallback_content,
-        id: state.pending_assistant_id,
-        id_generator: state.id_generator
+    emit(
+      callbacks,
+      Event.new(
+        :retry_scheduled,
+        %{attempt: 1, max_retries: 1, delay_ms: 0, reason: :empty_response},
+        id: state.pending_assistant_id
       )
+    )
 
-    state =
+    emit(callbacks, Event.new(:retry_start, %{attempt: 1}, id: state.pending_assistant_id))
+    handle_retry_result(call_llm(state, callbacks), state, callbacks, 1)
+  end
+
+  defp handle_empty_response(state, callbacks) do
+    final_state =
       state
-      |> State.add_message(assistant_message)
-      |> State.set_status(:completed)
+      |> clear_pending_assistant_id()
+      |> State.set_error("The model returned an empty response")
 
-    finalize_completed_assistant_message(state, callbacks, assistant_message)
+    emit(callbacks, Event.new(:error, %{error: final_state.error, reason: :empty_response}))
+    terminal_result({:error, final_state}, callbacks)
   end
 
   defp finalize_completed_assistant_message(state, callbacks, assistant_message) do
@@ -768,13 +772,6 @@ defmodule Tackle.Lib.Loop do
     else
       {:error, {:invalid_incoming_messages, messages}}
     end
-  end
-
-  defp has_tool_results_in_recent_messages?(messages) do
-    messages
-    |> Enum.reverse()
-    |> Enum.take(5)
-    |> Enum.any?(fn msg -> msg.role == :tool end)
   end
 
   defp get_string_field(response, key) do
@@ -1324,7 +1321,8 @@ defmodule Tackle.Lib.Loop do
       tool_supervisor: Keyword.get(opts, :tool_supervisor),
       take_incoming_messages: Keyword.get(opts, :take_incoming_messages),
       before_provider_call: Keyword.get(opts, :before_provider_call),
-      before_tool_execution: Keyword.get(opts, :before_tool_execution)
+      before_tool_execution: Keyword.get(opts, :before_tool_execution),
+      empty_response_retried?: false
     }
   end
 
