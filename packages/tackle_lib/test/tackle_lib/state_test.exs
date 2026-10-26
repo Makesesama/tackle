@@ -196,7 +196,7 @@ defmodule Tackle.Lib.StateTest do
     end
   end
 
-  describe "set_error/2" do
+  describe "set_error/3" do
     test "sets the error and status" do
       state = State.new()
 
@@ -204,6 +204,25 @@ defmodule Tackle.Lib.StateTest do
 
       assert state.status == :error
       assert state.error == "Something went wrong"
+      assert state.error_reason == nil
+    end
+
+    test "keeps the structured reason next to the message" do
+      state = State.set_error(State.new(), "Failed to get response: :timeout", :timeout)
+
+      assert state.error == "Failed to get response: :timeout"
+      assert state.error_reason == :timeout
+    end
+
+    test "cancelling clears the error reason" do
+      state =
+        State.new()
+        |> State.set_error("Failed", :timeout)
+        |> State.set_cancelled("stop")
+
+      assert state.status == :cancelled
+      assert state.error == "stop"
+      assert state.error_reason == nil
     end
   end
 end

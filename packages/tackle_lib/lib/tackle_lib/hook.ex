@@ -9,7 +9,8 @@ defmodule Tackle.Lib.Hook do
   ## Lifecycle events (in order per turn)
 
     1. `before_prompt/2` — before the LLM prompt is assembled.
-    2. `after_prompt/2`  — after the LLM response is received and parsed.
+    2. `after_prompt/3`  — after the step's LLM response is received and
+       normalized into a `Tackle.Lib.LLM.Response`.
     3. `before_tool_call/3` — before each individual tool call is executed.
     4. `after_tool_call/3`  — after each tool call settles (success or error).
     5. `after_message/3` — after an assistant/tool/user message is finalized and emitted.
@@ -22,7 +23,8 @@ defmodule Tackle.Lib.Hook do
     * `:ok` — observer-only; the hook read state but made no changes.
     * `{:ok, context}` — mutator; the returned context map replaces the current
       run context for subsequent steps.
-    * `{:error, reason}` — abort; the turn is halted with the given error reason.
+    * `{:error, reason}` — abort; the turn is halted with the given error reason,
+      which the turn's state keeps as `error_reason` (see `Tackle.Lib.State`).
 
   A hook that raises, throws, or exits aborts the turn the same way, with a
   reason describing the crash. Crashes in `after_turn/2` are logged and
@@ -76,6 +78,7 @@ defmodule Tackle.Lib.Hook do
 
   require Logger
 
+  alias Tackle.Lib.LLM.Response
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
   alias Tackle.Lib.Tool.Call
@@ -93,13 +96,16 @@ defmodule Tackle.Lib.Hook do
               :ok | {:ok, map()} | {:error, term()}
 
   @doc """
-  Called after the LLM responds and the response is parsed into structured data.
+  Called after the LLM responds, with the response the step keeps.
 
-  Receives the current state, the parsed response map (usually plain `content`
-  and/or provider-native `tool_calls`), and the run context. The hook fires
-  before the loop dispatches tool calls or final-answer logic.
+  Receives the current state, the normalized `Tackle.Lib.LLM.Response` (its
+  `content`, `thinking`, `tool_calls` as `Tackle.Lib.Tool.Call` structs, and
+  `usage`), and the run context. The hook fires once per step, after the
+  step's `:step_end` event and before the loop dispatches tool calls or the
+  final answer. It never sees an empty response the loop asked again, nor a
+  malformed result, which ends the turn before the hook runs.
   """
-  @callback after_prompt(state :: State.t(), response :: map(), context :: map()) ::
+  @callback after_prompt(state :: State.t(), response :: Response.t(), context :: map()) ::
               :ok | {:ok, map()} | {:error, term()}
 
   @doc """

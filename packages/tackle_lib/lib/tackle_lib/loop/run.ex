@@ -8,8 +8,8 @@ defmodule Tackle.Lib.Loop.Run do
   # The functions below are the operations every step performs through those
   # inputs: emitting events to the run's callback, invoking the snapshot's
   # hooks with the run's cancellation signal, finalizing a message, and
-  # observing cancellation. `Tackle.Lib.Loop` and `Tackle.Lib.Loop.Tools` share
-  # them.
+  # observing cancellation. `Tackle.Lib.Loop`, `Tackle.Lib.Loop.Provider`, and
+  # `Tackle.Lib.Loop.Tools` share them.
 
   require Logger
 
@@ -32,8 +32,7 @@ defmodule Tackle.Lib.Loop.Run do
           take_incoming_messages: (-> {:ok, [String.t()]} | {:error, term()}) | nil,
           before_provider_call: gate(),
           before_tool_execution: gate(),
-          snapshot: Snapshot.t(),
-          empty_response_retried?: boolean()
+          snapshot: Snapshot.t()
         }
 
   @enforce_keys [:event_callback, :tool_context, :snapshot]
@@ -46,8 +45,7 @@ defmodule Tackle.Lib.Loop.Run do
     :before_provider_call,
     :before_tool_execution,
     :snapshot,
-    llm_stream?: false,
-    empty_response_retried?: false
+    llm_stream?: false
   ]
 
   @doc """
@@ -139,6 +137,24 @@ defmodule Tackle.Lib.Loop.Run do
   defp cancellation_reason(reason), do: inspect(reason)
 
   @doc """
+  The options `Tackle.Lib.Compaction.compact/3` needs to compact within the
+  run: its snapshot, event callback, provider gate, and cancellation signal.
+  """
+  @spec compaction_opts(t()) :: keyword()
+  def compaction_opts(%__MODULE__{} = run) do
+    opts = [
+      snapshot: run.snapshot,
+      event_callback: run.event_callback,
+      before_provider_call: run.before_provider_call
+    ]
+
+    case run.cancellation_signal do
+      nil -> opts
+      signal -> Keyword.put(opts, :cancellation_signal, signal)
+    end
+  end
+
+  @doc """
   Invokes the snapshot's `hook` callbacks with `args` and keeps the context
   they return on `state`.
   """
@@ -179,7 +195,8 @@ defmodule Tackle.Lib.Loop.Run do
 
   @doc """
   Finalizes a message already added to `state`: emits its `message_end` event
-  and runs the `after_message` hooks. A hook error sets `state.error`.
+  and runs the `after_message` hooks. A hook error sets `state.error`, with
+  the hook's reason as `state.error_reason`.
   """
   @spec finalize_message(State.t(), t(), Message.t()) :: {:ok, State.t()} | {:error, State.t()}
   def finalize_message(%State{} = state, %__MODULE__{} = run, %Message{} = message) do
@@ -190,7 +207,7 @@ defmodule Tackle.Lib.Loop.Run do
         {:ok, state}
 
       {:error, reason} ->
-        {:error, State.set_error(state, "Hook aborted after message: #{inspect(reason)}")}
+        {:error, State.set_error(state, "Hook aborted after message: #{inspect(reason)}", reason)}
     end
   end
 end

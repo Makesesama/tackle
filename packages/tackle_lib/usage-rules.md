@@ -122,7 +122,9 @@ config :tackle_lib, llm: MyApp.AI.TackleAdapter
 - Tackle.Lib also sets `:model`, `:system`, `:temperature`, `:strict_schema`,
   `:native_tools`, `:tools`, and appends host `:llm_opts`.
 - Return `{:ok, %{data: map, usage: map | %Tackle.Lib.Usage{} | nil, model: binary | nil}}`.
-  `:data` holds assistant `content` and/or native `tool_calls`. Tackle.Lib
+  `:data` holds assistant `content` and/or native `tool_calls`. The loop
+  normalizes the result into `%Tackle.Lib.LLM.Response{}`; a malformed one
+  ends the turn with the error reason `{:invalid_response, detail}`. Tackle.Lib
   normalizes `:usage` into `%Tackle.Lib.Usage{}` and applies the selected
   adapter's price card when provider cost is absent. Derived cost is estimated;
   host billing and quota policy remain host-owned.
@@ -134,14 +136,16 @@ config :tackle_lib, llm: MyApp.AI.TackleAdapter
 Implement `Tackle.Lib.Hook` to observe/mutate the loop without touching it. All
 callbacks are optional; implement only what you need. Order per turn:
 `before_prompt/2` → `after_prompt/3` → `before_tool_call/3` →
-`after_tool_call/3` → `after_message/3` → `after_turn/2`.
+`after_tool_call/3` → `after_message/3` → `after_turn/2`. `after_prompt/3`
+receives the step's normalized `%Tackle.Lib.LLM.Response{}`.
 
 Return conventions:
 
 - `:ok` — observer only.
 - `{:ok, context}` — mutator; the returned map replaces the run context for
   later steps.
-- `{:error, reason}` — abort the turn with that error.
+- `{:error, reason}` — abort the turn with that error; the state keeps
+  `reason` as `error_reason`.
 
 ```elixir
 defmodule MyApp.Hooks.AuditLogger do

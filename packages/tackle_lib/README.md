@@ -302,6 +302,13 @@ Results are always one of:
 {:cancelled, %Tackle.Lib.State{status: :cancelled}}
 ```
 
+An error result carries a human-readable `state.error` and the structured
+`state.error_reason` behind it, which the `:error` event also reports as
+`:reason`: the provider's error reason, a hook's abort reason,
+`:max_iterations`, `:empty_response`, `{:invalid_response, detail}`, and so on.
+Match on `error_reason`; show `error`. A cancelled state keeps the cancellation
+reason in `error`.
+
 Convenience readers are `Tackle.Lib.last_answer/1`, `Tackle.Lib.messages/1`,
 `Tackle.Lib.usage/1`, `Tackle.Lib.context_usage/1`, `Tackle.Lib.completed?/1`,
 `Tackle.Lib.error?/1`, and `Tackle.Lib.error/1`.
@@ -317,8 +324,10 @@ append + finalize user message
 repeat until final answer (or a configured max_iterations):
   set thinking; emit message_start + step_start
   before_prompt hook
-  call or stream LLM
-  after_prompt hook
+  call or stream LLM (retries, overflow recovery, one re-ask of an
+    empty response); emit usage for every response
+  normalize the response into %Tackle.Lib.LLM.Response{}; emit step_end
+  after_prompt hook (receives the response)
   ├── final content:
   │     append assistant message; emit message_end
   │     poll queued incoming messages (continue if any)
@@ -545,6 +554,16 @@ The adapter returns:
 or `nil`. Tackle.Lib normalizes it. Adapter price cards may fill an itemized and
 total estimate when the provider omits cost; hosts still own billing, quota, and
 persistence policy.
+
+The loop normalizes each chat response into a `%Tackle.Lib.LLM.Response{}`
+(`Tackle.Lib.LLM.Response.from_result/1`) before hooks, events, or messages see
+it. `"content"` and `"thinking"` (or `:content` and `:thinking`) must be
+strings or absent, `"tool_calls"` (or `:tool_calls`) a list of calls
+`Tackle.Lib.Tool.Call.normalize/1` accepts or absent, and `:provider_state` a
+map or `nil`. Any other result ends the turn with the error reason
+`{:invalid_response, detail}` rather than crashing the loop.
+`Tackle.Lib.LLM.generate_with/3` and `stream_with/4` themselves still return the
+adapter's map, since they also serve structured outputs.
 
 `:provider_state` is optional opaque, non-secret continuation metadata needed by
 some stateless provider APIs. Tackle.Lib stores it on the assistant message and
@@ -786,7 +805,7 @@ Implement `Tackle.Lib.Hook` to observe or mutate context at stable lifecycle poi
 | Callback | Called |
 |---|---|
 | `before_prompt/2` | Before each LLM request |
-| `after_prompt/3` | After parsing the LLM response |
+| `after_prompt/3` | After the step's LLM response, normalized into `%Tackle.Lib.LLM.Response{}` |
 | `before_tool_call/3` | Before each normalized tool call |
 | `after_tool_call/3` | After each success/error settlement |
 | `after_message/3` | After each finalized user/assistant/tool message |
@@ -922,6 +941,14 @@ receive `:retry_scheduled`, before the next attempt emits more deltas.
 Retry lifecycle data includes the one-indexed `attempt`; `:retry_scheduled` also
 includes `max_retries`, `delay_ms`, and `reason`, while the single terminal
 `:retry_end` includes `success?` and the final `reason` on failure.
+
+A response with neither content nor tool calls is asked again once, as a retry
+of the same request: `:retry_scheduled` with reason `:empty_response`
+(`max_retries: 1`, `delay_ms: 0`), then `:retry_start`. A second empty response
+in a row ends the turn with "The model returned an empty response" and the
+error reason `:empty_response`. Every response, including an empty one, emits
+its own `:usage` event, but a step emits a single `:step_end`, for the response
+it keeps, and the `after_prompt` hooks only see that response.
 
 ## Cooperative cancellation
 

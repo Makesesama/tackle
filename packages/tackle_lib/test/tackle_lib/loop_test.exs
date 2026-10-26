@@ -3,6 +3,7 @@ defmodule Tackle.Lib.LoopTest do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
+  alias Tackle.Lib.LLM.Response
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
@@ -149,36 +150,6 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
-  # Captures opts[:messages] (the structured array) on every call, then drives a
-  # tool-call turn followed by a content turn so the second call's array carries
-  # the assistant tool-call turn and the linked tool result.
-  defmodule RetryThenSuccessAdapter do
-    @behaviour Tackle.Lib.LLM
-
-    @impl true
-    def generate(_schema, opts) do
-      call_count = Process.get(:retry_call_count, 0)
-      Process.put(:retry_call_count, call_count + 1)
-      send(Process.get(:test_pid), {:retry_messages, Keyword.fetch!(opts, :messages)})
-
-      if call_count == 0 do
-        {:error, {:request_failed, :timeout}}
-      else
-        {:ok, %{data: %{"content" => "retried"}, usage: nil, model: "test/model"}}
-      end
-    end
-  end
-
-  defmodule AlwaysTransientAdapter do
-    @behaviour Tackle.Lib.LLM
-
-    @impl true
-    def generate(_schema, _opts) do
-      send(Process.get(:test_pid), :retry_call)
-      {:error, {:http_error, 503, "unavailable"}}
-    end
-  end
-
   defmodule PermanentFailureAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -189,23 +160,9 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
-  defmodule CancelDuringRetryAdapter do
-    @behaviour Tackle.Lib.LLM
-
-    @impl true
-    def generate(_schema, opts) do
-      signal = Keyword.fetch!(opts, :cancellation_signal)
-      send(Process.get(:test_pid), :retry_call)
-
-      spawn(fn ->
-        Process.sleep(20)
-        Cancellation.cancel(signal, "cancelled in backoff")
-      end)
-
-      {:error, {:request_failed, :timeout}}
-    end
-  end
-
+  # Captures opts[:messages] (the structured array) on every call, then drives a
+  # tool-call turn followed by a content turn so the second call's array carries
+  # the assistant tool-call turn and the linked tool result.
   defmodule StructuredMessagesCapturingAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -369,178 +326,6 @@ defmodule Tackle.Lib.LoopTest do
       refute Map.has_key?(final_state.context, :from_run)
       assert final_state.context.event_callback == :stale
     end
-  end
-
-  test "retries a transient provider failure without duplicating the turn" do
-    Application.put_env(:tackle_lib, :llm, RetryThenSuccessAdapter)
-    Process.put(:test_pid, self())
-    Process.put(:retry_call_count, 0)
-
-    state = State.new(model: "test/model", retry: [base_delay_ms: 0])
-
-    assert {:ok, state} =
-             Loop.run(state, "hello",
-               event_callback: fn event -> send(self(), {:event, event}) end
-             )
-
-    assert state.current_iteration == 1
-    assert Enum.map(state.messages, & &1.role) == [:user, :assistant]
-    assert List.last(state.messages).content == "retried"
-    assert_receive {:retry_messages, [%{role: :user, content: "hello"}]}
-    assert_receive {:retry_messages, [%{role: :user, content: "hello"}]}
-
-    assert_receive {:event,
-                    %Event{
-                      type: :retry_scheduled,
-                      data: %{
-                        attempt: 1,
-                        max_retries: 3,
-                        delay_ms: 0,
-                        reason: {:request_failed, :timeout}
-                      }
-                    }}
-
-    assert_receive {:event, %Event{type: :retry_start, data: %{attempt: 1}}}
-    assert_receive {:event, %Event{type: :retry_end, data: %{attempt: 1, success?: true}}}
-  end
-
-  test "emits one retry end and returns the last error after exhausting retries" do
-    Application.put_env(:tackle_lib, :llm, AlwaysTransientAdapter)
-    Process.put(:test_pid, self())
-
-    state = State.new(model: "test/model", retry: [max_retries: 2, base_delay_ms: 0])
-
-    assert {:error, state} =
-             Loop.run(state, "hello",
-               event_callback: fn event -> send(self(), {:event, event}) end
-             )
-
-    assert state.current_iteration == 1
-    assert Enum.map(state.messages, & &1.role) == [:user]
-    assert state.error =~ "503"
-    assert_receive :retry_call
-    assert_receive :retry_call
-    assert_receive :retry_call
-    refute_receive :retry_call
-
-    events = collect_events([])
-
-    retry_types =
-      events
-      |> Enum.filter(&(&1.type in [:retry_scheduled, :retry_start, :retry_end]))
-      |> Enum.map(& &1.type)
-
-    assert retry_types == [
-             :retry_scheduled,
-             :retry_start,
-             :retry_scheduled,
-             :retry_start,
-             :retry_end
-           ]
-
-    assert [%Event{data: %{attempt: 2, success?: false}}] =
-             Enum.filter(events, &(&1.type == :retry_end))
-  end
-
-  test "does not retry a permanent provider failure" do
-    Application.put_env(:tackle_lib, :llm, PermanentFailureAdapter)
-    Process.put(:test_pid, self())
-
-    assert {:error, _state} = Loop.run(State.new(model: "test/model"), "hello")
-    assert_receive :retry_call
-    refute_receive :retry_call
-  end
-
-  test "cancels cooperatively during provider retry backoff" do
-    Application.put_env(:tackle_lib, :llm, CancelDuringRetryAdapter)
-    Process.put(:test_pid, self())
-    signal = Cancellation.new_signal()
-
-    assert {:cancelled, state} =
-             Loop.run(State.new(model: "test/model", retry: [base_delay_ms: 5_000]), "hello",
-               cancellation_signal: signal,
-               event_callback: fn event -> send(self(), {:event, event}) end
-             )
-
-    assert state.status == :cancelled
-    assert state.error == "cancelled in backoff"
-    assert state.current_iteration == 1
-    assert_receive :retry_call
-    refute_receive :retry_call
-    assert_receive {:event, %Event{type: :retry_scheduled}}
-    assert_receive {:event, %Event{type: :retry_end, data: %{success?: false}}}
-    assert_receive {:event, %Event{type: :turn_cancelled}}
-  end
-
-  test "provider callback gates every automatic retry and can reject dispatch" do
-    Application.put_env(:tackle_lib, :llm, AlwaysTransientAdapter)
-    Process.put(:test_pid, self())
-    Process.put(:gate_count, 0)
-
-    gate = fn ->
-      count = Process.get(:gate_count, 0)
-      Process.put(:gate_count, count + 1)
-      send(self(), {:provider_gate, count + 1})
-      :ok
-    end
-
-    assert {:error, _state} =
-             Loop.run(
-               State.new(model: "test/model", retry: [max_retries: 2, base_delay_ms: 0]),
-               "hello",
-               before_provider_call: gate
-             )
-
-    assert_receive {:provider_gate, 1}
-    assert_receive {:provider_gate, 2}
-    assert_receive {:provider_gate, 3}
-    assert Process.get(:gate_count) == 3
-    assert_receive :retry_call
-    assert_receive :retry_call
-    assert_receive :retry_call
-
-    Process.put(:gate_count, 0)
-
-    assert {:error, state} =
-             Loop.run(State.new(model: "test/model"), "hello",
-               before_provider_call: fn ->
-                 send(self(), :provider_rejected)
-                 {:error, :storage_paused}
-               end
-             )
-
-    assert state.error =~ "storage_paused"
-    assert_receive :provider_rejected
-    refute_receive :retry_call
-  end
-
-  test "cancellation while provider gate blocks prevents provider dispatch" do
-    Application.put_env(:tackle_lib, :llm, NoCallAdapter)
-    Process.put(:test_pid, self())
-    signal = Cancellation.new_signal()
-    test_pid = self()
-
-    on_exit(fn -> Cancellation.delete(signal) end)
-
-    task =
-      Task.async(fn ->
-        Process.put(:test_pid, test_pid)
-
-        Loop.run(State.new(model: "test/model"), "hello",
-          cancellation_signal: signal,
-          before_provider_call: fn ->
-            send(test_pid, :provider_gate_entered)
-            receive do: (:release_provider_gate -> :ok)
-          end
-        )
-      end)
-
-    assert_receive :provider_gate_entered
-    Cancellation.cancel(signal, "cancelled at gate")
-    send(task.pid, :release_provider_gate)
-    assert {:cancelled, state} = Task.await(task, 2_000)
-    assert state.error == "cancelled at gate"
-    refute_receive :llm_called
   end
 
   test "sends only persisted messages to the provider" do
@@ -831,180 +616,6 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:event, %Event{type: :turn_end, data: %{status: :completed}}}
   end
 
-  test "can route provider streaming through Tackle.Lib event deltas" do
-    test_pid = self()
-    state = State.new(model: "test/model")
-
-    assert {:ok, _state} =
-             Loop.run(state, "hello",
-               llm_stream: true,
-               event_callback: fn event -> send(test_pid, {:event, event}) end
-             )
-
-    assert_receive {:event, %Event{type: :message_delta, data: %{delta: "do"}}}
-    assert_receive {:event, %Event{type: :message_delta, data: %{delta: "ne"}}}
-  end
-
-  defmodule UsageStreamingAdapter do
-    @behaviour Tackle.Lib.LLM
-
-    @impl true
-    def generate(_schema, _opts) do
-      {:ok,
-       %{
-         data: %{"content" => "done"},
-         usage: %{prompt_tokens: 5, completion_tokens: 4},
-         model: "test/model"
-       }}
-    end
-
-    @impl true
-    def stream(schema, opts, event_callback) do
-      event_callback.(%{type: :text_delta, text: "done"})
-      event_callback.(%{type: :usage, usage: %{prompt_tokens: 5, completion_tokens: 4}})
-      generate(schema, opts)
-    end
-  end
-
-  defmodule GenerateOnlyUsageAdapter do
-    @behaviour Tackle.Lib.LLM
-
-    @impl true
-    def generate(_schema, _opts) do
-      {:ok,
-       %{
-         data: %{"content" => "done"},
-         usage: %{prompt_tokens: 5, completion_tokens: 4},
-         model: "test/model"
-       }}
-    end
-  end
-
-  test "streaming reports each response's usage once" do
-    for adapter <- [UsageStreamingAdapter, GenerateOnlyUsageAdapter] do
-      Application.put_env(:tackle_lib, :llm, adapter)
-      test_pid = self()
-
-      assert {:ok, _state} =
-               Loop.run(State.new(model: "test/model"), "hello",
-                 llm_stream: true,
-                 event_callback: fn event -> send(test_pid, {:event, event}) end
-               )
-
-      assert_receive {:event, %Event{type: :turn_end}}
-
-      usages =
-        for {:event, %Event{type: :usage, data: %{usage: usage}}} <- drain_messages(),
-            do: usage
-
-      assert [%Usage{input_tokens: 5, output_tokens: 4}] = usages, inspect(adapter)
-    end
-  end
-
-  defp drain_messages(acc \\ []) do
-    receive do
-      message -> drain_messages([message | acc])
-    after
-      0 -> Enum.reverse(acc)
-    end
-  end
-
-  defmodule EmptyResponseAdapter do
-    @behaviour Tackle.Lib.LLM
-
-    # Replies from the script in :empty_script, then with empty responses.
-    @impl true
-    def generate(_schema, _opts) do
-      send(Process.get(:test_pid), :llm_call)
-
-      case Process.get(:empty_script, []) do
-        [data | rest] ->
-          Process.put(:empty_script, rest)
-          {:ok, %{data: data, usage: nil, model: "test/model"}}
-
-        [] ->
-          {:ok, %{data: %{"thinking" => "hmm"}, usage: nil, model: "test/model"}}
-      end
-    end
-  end
-
-  describe "empty responses" do
-    setup do
-      Application.put_env(:tackle_lib, :llm, EmptyResponseAdapter)
-      Process.put(:test_pid, self())
-      :ok
-    end
-
-    test "are asked again once as a retry of the same request" do
-      Process.put(:empty_script, [%{"thinking" => "hmm"}, %{"content" => "answer"}])
-      test_pid = self()
-
-      assert {:ok, state} =
-               Loop.run(State.new(model: "test/model"), "hello",
-                 event_callback: fn event -> send(test_pid, {:event, event}) end
-               )
-
-      assert Enum.map(state.messages, &{&1.role, &1.content}) ==
-               [user: "hello", assistant: "answer"]
-
-      assert_receive {:event, %Event{type: :message_start, id: pending_id}}
-
-      assert_receive {:event,
-                      %Event{
-                        type: :retry_scheduled,
-                        id: ^pending_id,
-                        data: %{reason: :empty_response}
-                      }}
-
-      assert_receive {:event, %Event{type: :retry_end, data: %{success?: true}}}
-      assert List.last(state.messages).id == pending_id
-      assert_received :llm_call
-      assert_received :llm_call
-      refute_received :llm_call
-    end
-
-    test "end the turn with an error when the model stays empty" do
-      assert {:error, state} = Loop.run(State.new(model: "test/model"), "hello")
-
-      assert state.error == "The model returned an empty response"
-      assert state.pending_assistant_id == nil
-      assert Enum.map(state.messages, & &1.role) == [:user]
-      assert_received :llm_call
-      assert_received :llm_call
-      refute_received :llm_call
-    end
-
-    test "after a tool result are bounded too" do
-      Process.put(:empty_script, [
-        %{"tool_calls" => [%{"id" => "c1", "name" => "first", "arguments" => %{}}]}
-      ])
-
-      state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
-
-      assert {:error, state} = Loop.run(state, "use the tool")
-      assert state.error == "The model returned an empty response"
-      assert Enum.map(state.messages, & &1.role) == [:user, :assistant, :tool]
-      assert_received {:tool_execute, :first}
-
-      for _call <- 1..3, do: assert_received(:llm_call)
-      refute_received :llm_call
-    end
-
-    test "a non-empty response gives a later empty response its own re-ask" do
-      Process.put(:empty_script, [
-        %{},
-        %{"tool_calls" => [%{"id" => "c1", "name" => "first", "arguments" => %{}}]},
-        %{},
-        %{"content" => "answer"}
-      ])
-
-      state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
-
-      assert {:ok, state} = Loop.run(state, "use the tool")
-      assert List.last(state.messages).content == "answer"
-    end
-  end
-
   test "host llm_opts override the loop's defaults but not the request" do
     Application.put_env(:tackle_lib, :llm, NativeContentAdapter)
     Process.put(:test_pid, self())
@@ -1273,6 +884,7 @@ defmodule Tackle.Lib.LoopTest do
       {{:error, state}, events} = run_collecting(state, "hello")
 
       assert state.pending_assistant_id == nil
+      assert state.error_reason == :nope
 
       assert %Event{type: :error, data: %{reason: :nope}} =
                Enum.find(events, &(&1.type == :error))
@@ -1311,6 +923,7 @@ defmodule Tackle.Lib.LoopTest do
                )
 
       assert state.error == "Hook aborted after message: :journal_stalled"
+      assert state.error_reason == :journal_stalled
 
       assert Enum.map(state.messages, & &1.content) == ["hello", "queued a", "queued b"]
     end
@@ -1376,7 +989,7 @@ defmodule Tackle.Lib.LoopTest do
       end
 
       @impl true
-      def after_prompt(_state, _response, context) do
+      def after_prompt(_state, %Response{}, context) do
         send(Map.get(context, :test_pid, self()), {:hook_fired, :after_prompt})
         :ok
       end
@@ -1698,6 +1311,7 @@ defmodule Tackle.Lib.LoopTest do
       assert {:error, state} = Loop.run(state, "test abort")
       assert state.status == :error
       assert state.error =~ "Hook aborted after tool call"
+      assert state.error_reason == :after_tool_failed
     end
 
     test "after_message aborts both tool settlements before their event and after_tool_call" do

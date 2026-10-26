@@ -1075,6 +1075,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
                )
 
       assert final_state.error == "Hook aborted before tool call: :rejected"
+      assert final_state.error_reason == :rejected
       assert_receive {:tool_execute, :first}
       refute_received {:tool_execute, :second}
 
@@ -1270,6 +1271,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
         assert state.error =~ "Tool execution gate failed"
         assert state.error =~ "storage_failed"
+        assert state.error_reason == :storage_failed
         refute_received {:tool_execute, _}
       end
     end

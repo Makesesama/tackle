@@ -22,7 +22,8 @@ defmodule Tackle.Lib.Loop.Tools do
   #
   # The loop process stays the only writer of `State`: a job carries only what
   # its tool needs, never the transcript. Every step returns `{:ok, state}`,
-  # `{:error, state}` with `state.error` set, or `{:cancelled, state}`.
+  # `{:error, state}` with `state.error` and `state.error_reason` set, or
+  # `{:cancelled, state}`.
 
   require Logger
 
@@ -66,7 +67,7 @@ defmodule Tackle.Lib.Loop.Tools do
   request. The results go through the normal message finalization path, so
   durable sessions persist them like any other tool result. A failing
   finalization hook does not replace the outcome being settled: the state's
-  status and error are kept.
+  status, error, and error reason are kept.
   """
   @spec settle_interrupted(State.t(), Run.t(), String.t()) :: State.t()
   def settle_interrupted(%State{} = state, %Run{} = run, outcome) when is_binary(outcome) do
@@ -75,7 +76,7 @@ defmodule Tackle.Lib.Loop.Tools do
       |> Messages.unresolved_tool_calls()
       |> Enum.reduce(state, &settle_interrupted_call(&1, &2, run, outcome))
 
-    %{settled | status: state.status, error: state.error}
+    %{settled | status: state.status, error: state.error, error_reason: state.error_reason}
   end
 
   defp settle_interrupted_call(%{id: id, name: name}, %State{} = state, run, outcome) do
@@ -200,7 +201,8 @@ defmodule Tackle.Lib.Loop.Tools do
         {:ok, state}
 
       {:error, reason} ->
-        {:error, State.set_error(state, "Hook aborted before tool call: #{inspect(reason)}")}
+        {:error,
+         State.set_error(state, "Hook aborted before tool call: #{inspect(reason)}", reason)}
     end
   end
 
@@ -212,7 +214,8 @@ defmodule Tackle.Lib.Loop.Tools do
           checkpoint(state, run)
 
         {:error, reason} ->
-          {:error, State.set_error(state, "Tool execution gate failed: #{inspect(reason)}")}
+          {:error,
+           State.set_error(state, "Tool execution gate failed: #{inspect(reason)}", reason)}
       end
     else
       checkpoint(state, run)
@@ -443,7 +446,8 @@ defmodule Tackle.Lib.Loop.Tools do
           {:ok, state}
 
         {:error, reason} ->
-          {:error, State.set_error(state, "Hook aborted after tool call: #{inspect(reason)}")}
+          {:error,
+           State.set_error(state, "Hook aborted after tool call: #{inspect(reason)}", reason)}
       end
     end
   end

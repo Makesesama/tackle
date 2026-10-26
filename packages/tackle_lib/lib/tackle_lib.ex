@@ -250,6 +250,7 @@ defmodule Tackle.Lib do
         current_iteration: 0,
         status: :idle,
         error: nil,
+        error_reason: nil,
         pending_assistant_id: nil,
         overflow_retries: 0
     }

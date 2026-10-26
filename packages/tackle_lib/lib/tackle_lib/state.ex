@@ -8,6 +8,14 @@ defmodule Tackle.Lib.State do
   in. The host application passes the tool modules and model spec it wants. This
   keeps Tackle.Lib domain-agnostic — it knows how to run a loop, not which tools or
   models exist.
+
+  A turn that ends in an error leaves a human-readable message in `:error` and
+  the structured reason behind it in `:error_reason`, the same term the turn's
+  `:error` event reports as `:reason` (for example the provider's error reason,
+  a hook's abort reason, `:max_iterations`, `:empty_response`, or
+  `{:invalid_response, detail}`). Hosts match on `:error_reason`; `:error` is
+  for people. A cancelled turn keeps its cancellation reason in `:error`. Both
+  are cleared when the next turn starts.
   """
 
   alias Tackle.Lib.Compaction
@@ -43,6 +51,7 @@ defmodule Tackle.Lib.State do
           id_generator: ID.generator(),
           hooks: [module()],
           error: String.t() | nil,
+          error_reason: term(),
           pending_assistant_id: String.t() | nil,
           retry: Retry.t(),
           compaction: Compaction.Config.t() | nil,
@@ -73,6 +82,7 @@ defmodule Tackle.Lib.State do
             id_generator: &ID.uuid4/0,
             hooks: [],
             error: nil,
+            error_reason: nil,
             pending_assistant_id: nil,
             retry: Retry.new!(),
             compaction: nil,
@@ -139,6 +149,7 @@ defmodule Tackle.Lib.State do
       id_generator: id_generator,
       hooks: Keyword.get(opts, :hooks, []),
       error: nil,
+      error_reason: nil,
       pending_assistant_id: nil,
       retry: normalize_retry(Keyword.get(opts, :retry)),
       compaction: normalize_compaction(Keyword.get(opts, :compaction)),
@@ -301,18 +312,21 @@ defmodule Tackle.Lib.State do
   def last_compaction_id(%__MODULE__{last_compaction_id: id}), do: id
 
   @doc """
-  Sets an error on the state.
+  Sets an error on the state: `message` is the human-readable `:error`, and
+  `reason` the structured `:error_reason` behind it (for example a provider's
+  error reason or a hook's abort reason), or `nil` when there is none.
   """
-  @spec set_error(t(), String.t()) :: t()
-  def set_error(%__MODULE__{} = state, error) do
-    %{state | status: :error, error: error}
+  @spec set_error(t(), String.t(), term()) :: t()
+  def set_error(%__MODULE__{} = state, message, reason \\ nil) do
+    %{state | status: :error, error: message, error_reason: reason}
   end
 
   @doc """
-  Marks the state as cancelled.
+  Marks the state as cancelled. The cancellation reason is kept in `:error`;
+  `:error_reason` is cleared.
   """
   @spec set_cancelled(t(), String.t()) :: t()
   def set_cancelled(%__MODULE__{} = state, reason) do
-    %{state | status: :cancelled, error: reason}
+    %{state | status: :cancelled, error: reason, error_reason: nil}
   end
 end

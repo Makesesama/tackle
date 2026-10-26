@@ -84,7 +84,15 @@ defmodule Tackle.Lib.LLM do
 
   On success the adapter returns `{:ok, %{data: map, usage: map | Tackle.Lib.Usage.t() | nil, model: String.t() | nil}}`
   where `:data` contains assistant `content` and/or native `tool_calls`, or a
-  parsed structured response for non-tool calls. Adapters may return opaque,
+  parsed structured response for non-tool calls. `generate_with/3` and
+  `stream_with/4` return this map as is (with its usage normalized), since
+  they also serve structured outputs. For a chat turn, the agent loop then
+  normalizes it into a `Tackle.Lib.LLM.Response` (`Tackle.Lib.LLM.Response.from_result/1`):
+  `content` and `thinking` must be strings or absent, and `tool_calls` a list
+  of calls `Tackle.Lib.Tool.Call.normalize/1` accepts. A result that does not
+  fit ends the turn with an `{:invalid_response, detail}` error reason
+  instead of crashing the loop, and a response with neither content nor tool
+  calls is asked again once. Adapters may return opaque,
   non-secret `:provider_state` continuation metadata; Tackle.Lib stores it on
   the assistant message and returns it only to subsequent adapters, which must
   validate the originating provider and model before replaying it. `generate/3`

@@ -46,6 +46,25 @@ defmodule Tackle.Lib.Loop do
   `before_tool_call` hook, and no tool runs. Cancellation is checked again after
   the callback.
 
+  ## Responses
+
+  Each step keeps one provider response, normalized into a
+  `Tackle.Lib.LLM.Response` before the `after_prompt` hooks see it. Transient
+  provider failures are retried under the state's `Tackle.Lib.Retry` policy,
+  and a provider-confirmed context overflow is compacted and sent again when
+  compaction is enabled. A response with neither content nor tool calls is
+  asked again once, as a retry with reason `:empty_response`; a second empty
+  response in a row ends the turn with an error. A malformed adapter result
+  ends the turn with an `{:invalid_response, detail}` error reason. Every
+  response reports its usage with a `:usage` event, and the step ends with one
+  `:step_end` event for the response it keeps.
+
+  ## Errors
+
+  A turn that ends in an error sets `state.error` to a human-readable message
+  and `state.error_reason` to the structured reason, which the `:error` event
+  also carries as `:reason` (see `Tackle.Lib.State`).
+
   ## Append-only provider context
 
   Each generation receives the persisted user, assistant, and tool messages
@@ -61,17 +80,13 @@ defmodule Tackle.Lib.Loop do
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.Hook
-  alias Tackle.Lib.LLM
-  alias Tackle.Lib.Message
+  alias Tackle.Lib.LLM.Response
+  alias Tackle.Lib.Loop.Provider
   alias Tackle.Lib.Loop.Run
   alias Tackle.Lib.Loop.Tools
-  alias Tackle.Lib.Messages
-  alias Tackle.Lib.Retry
+  alias Tackle.Lib.Message
   alias Tackle.Lib.State
-  alias Tackle.Lib.SystemPrompt
   alias Tackle.Lib.Tool.Call
-  alias Tackle.Lib.Tool.Policy
-  alias Tackle.Lib.Tool.Registry
 
   @doc """
   Runs the agent loop for a user query.
@@ -161,6 +176,7 @@ defmodule Tackle.Lib.Loop do
       | current_iteration: 0,
         status: :idle,
         error: nil,
+        error_reason: nil,
         pending_assistant_id: nil,
         overflow_retries: 0
     }
@@ -216,182 +232,6 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
-  defp before_prompt(state, run) do
-    case invoke_before_prompt(state, run) do
-      {:ok, state} ->
-        call_provider(state, run)
-
-      {:error, reason} ->
-        fail(state, run, "Hook aborted before prompt: #{inspect(reason)}", reason)
-    end
-  end
-
-  defp call_provider(state, run) do
-    case call_llm(state, run) do
-      {:error, reason} = error ->
-        cond do
-          Run.cancelled?(run) or recoverable_overflow?(state, reason, run) ->
-            handle_llm_call_result(error, state, run)
-
-          Retry.available?(run.snapshot.retry, 0) and Retry.retryable?(reason) ->
-            retry_llm(state, run, reason, 1)
-
-          true ->
-            handle_llm_call_result(error, state, run)
-        end
-
-      result ->
-        handle_llm_call_result(result, state, run)
-    end
-  end
-
-  defp retry_llm(state, run, reason, attempt) do
-    retry = run.snapshot.retry
-    delay_ms = Retry.delay(retry, attempt)
-
-    Run.emit(
-      run,
-      Event.new(
-        :retry_scheduled,
-        %{
-          attempt: attempt,
-          max_retries: retry.max_retries,
-          delay_ms: delay_ms,
-          reason: reason
-        },
-        id: state.pending_assistant_id
-      )
-    )
-
-    case Retry.wait(delay_ms, run.cancellation_signal) do
-      :ok ->
-        if Run.cancelled?(run) do
-          emit_retry_end(run, false, attempt, reason)
-          handle_llm_call_result({:error, reason}, state, run)
-        else
-          Run.emit(
-            run,
-            Event.new(:retry_start, %{attempt: attempt}, id: state.pending_assistant_id)
-          )
-
-          handle_retry_result(call_llm(state, run), state, run, attempt)
-        end
-
-      {:cancelled, _reason} ->
-        emit_retry_end(run, false, attempt, reason)
-        handle_llm_call_result({:error, reason}, state, run)
-    end
-  end
-
-  defp handle_retry_result({:error, reason} = error, state, run, attempt) do
-    retry = run.snapshot.retry
-
-    cond do
-      Run.cancelled?(run) or recoverable_overflow?(state, reason, run) ->
-        emit_retry_end(run, false, attempt, reason)
-        handle_llm_call_result(error, state, run)
-
-      Retry.available?(retry, attempt) and Retry.retryable?(reason) ->
-        retry_llm(state, run, reason, attempt + 1)
-
-      true ->
-        emit_retry_end(run, false, attempt, reason)
-        handle_llm_call_result(error, state, run)
-    end
-  end
-
-  defp handle_retry_result(result, state, run, attempt) do
-    emit_retry_end(run, true, attempt, nil)
-    handle_llm_call_result(result, state, run)
-  end
-
-  defp emit_retry_end(run, success?, attempt, reason) do
-    data = %{success?: success?, attempt: attempt}
-    data = if is_nil(reason), do: data, else: Map.put(data, :reason, reason)
-    Run.emit(run, Event.new(:retry_end, data))
-  end
-
-  defp handle_llm_call_result({:ok, %{data: response} = result}, state, run) do
-    if Run.cancelled?(run) do
-      cancel(state, run)
-    else
-      emit_llm_settlement_events(run, state, result)
-
-      case invoke_after_prompt(state, response, run) do
-        {:ok, state} ->
-          handle_llm_response(state, response, run, result)
-
-        {:error, reason} ->
-          fail(state, run, "Hook aborted after prompt: #{inspect(reason)}", reason)
-      end
-    end
-  end
-
-  defp handle_llm_call_result({:error, reason}, state, run) do
-    cond do
-      Run.cancelled?(run) ->
-        cancel(state, run)
-
-      recoverable_overflow?(state, reason, run) ->
-        recover_overflow(state, reason, run)
-
-      true ->
-        Logger.error("LLM call failed: #{inspect(reason)}")
-        fail(state, run, "Failed to get response: #{inspect(reason)}", reason)
-    end
-  end
-
-  # Provider-confirmed context overflow is distinct from proactive pressure. The
-  # turn may compact and reissue the same request up to the policy's
-  # `overflow_retry_limit`, bypassing the normal threshold. If a compaction
-  # pass was committed before a later pass failed, the smaller context is
-  # still worth a retry; any other compaction failure keeps the original
-  # provider error.
-  defp recover_overflow(state, reason, run) do
-    Logger.warning("Provider reported context overflow; compacting and retrying")
-
-    Run.emit(run, Event.new(:compaction_retry, %{trigger: :overflow, reason: reason}))
-
-    case Compaction.compact(state, :overflow, compaction_opts(run)) do
-      {:ok, state, _record} ->
-        retry_after_overflow(state, run)
-
-      {:error, {:durable_commit_failed, _reason} = error} ->
-        fail(state, run, inspect(error), error)
-
-      {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
-        fail(committed_state, run, inspect(error), error)
-
-      {:cancelled, _reason} ->
-        cancel(state, run)
-
-      {:cancelled, _reason, committed_state} ->
-        cancel(committed_state, run)
-
-      {:error, _compaction_reason, committed_state} ->
-        retry_after_overflow(committed_state, run)
-
-      {:error, _compaction_reason} ->
-        fail(state, run, "Failed to get response: #{inspect(reason)}", reason)
-    end
-  end
-
-  defp retry_after_overflow(state, run) do
-    call_provider(%{state | overflow_retries: state.overflow_retries + 1}, run)
-  end
-
-  defp recoverable_overflow?(%State{} = state, reason, run) do
-    LLM.context_window_exceeded?(reason) and Compaction.enabled?(state) and
-      overflow_retries_remaining?(state, run)
-  end
-
-  defp overflow_retries_remaining?(%State{} = state, run) do
-    case Compaction.resolve(state, snapshot: run.snapshot) do
-      {:ok, resolved, _info} -> state.overflow_retries < resolved.overflow_retry_limit
-      {:error, _reason} -> false
-    end
-  end
-
   defp maybe_auto_compact(state, run) do
     with true <- Compaction.enabled?(state),
          {:ok, resolved, info} <- Compaction.resolve(state, snapshot: run.snapshot),
@@ -421,149 +261,62 @@ defmodule Tackle.Lib.Loop do
   # Keep Compaction.compact/3's public result shape; only Loop normalizes
   # failures to include the state that must survive the turn.
   defp compact_with_state(state, trigger, run) do
-    case Compaction.compact(state, trigger, compaction_opts(run)) do
+    case Compaction.compact(state, trigger, Run.compaction_opts(run)) do
       {status, reason} when status in [:error, :cancelled] -> {status, reason, state}
       result -> result
     end
   end
 
-  defp compaction_opts(run) do
-    [
-      snapshot: run.snapshot,
-      event_callback: run.event_callback,
-      before_provider_call: run.before_provider_call
-    ]
-    |> maybe_put_cancellation_signal(run.cancellation_signal)
-  end
-
-  defp call_llm(%State{} = state, run) do
-    snapshot = run.snapshot
-    system_prompt = snapshot.system_prompt
-
-    # Each persisted turn is its own role-tagged map. Assistant tool calls and
-    # tool results are linked by tool_call_id, and subsequent requests extend
-    # this array without injecting or replacing synthetic messages. Compaction
-    # may have replaced the array with a checkpoint plus a recent tail.
-    structured_messages = Messages.to_provider(State.model_messages(state))
-
-    response_schema =
-      SystemPrompt.response_schema(
-        prompt_renderer: snapshot.prompt_renderer,
-        prompt_renderer_opts: snapshot.prompt_renderer_opts
-      )
-
-    tool_definitions = provider_tool_definitions(run.snapshot.tool_registry)
-    native_tools? = tool_definitions != []
-
-    generate_opts =
-      LLM.request_opts(
-        [
-          model: snapshot.model,
-          session_id: state.session_id,
-          system: system_prompt,
-          messages: structured_messages,
-          native_tools: native_tools?,
-          tools: tool_definitions
-        ]
-        |> maybe_put_cancellation_signal(run.cancellation_signal),
-        [temperature: 0.3, strict_schema: false],
-        Policy.sanitize_llm_opts(snapshot.llm_opts)
-      )
-
-    with :ok <- Tackle.Lib.ProviderGate.await(run.before_provider_call),
-         false <- Run.cancelled?(run) do
-      if run.llm_stream? do
-        pending_id = state.pending_assistant_id
-
-        LLM.stream_with(
-          snapshot.llm || snapshot.llm_adapter,
-          response_schema,
-          generate_opts,
-          fn
-            # The loop reports each response's usage once, when the response
-            # settles (`emit_llm_settlement_events/3`). Streaming adapters and
-            # the non-streaming fallback also report it, which would make
-            # hosts that sum usage events count every response twice.
-            %Event{type: :usage} ->
-              :ok
-
-            event ->
-              event
-              |> stamp_pending_id(pending_id)
-              |> then(&Run.emit(run, &1))
-          end
-        )
-      else
-        LLM.generate_with(
-          snapshot.llm || snapshot.llm_adapter,
-          response_schema,
-          generate_opts
-        )
-      end
-    else
-      {:error, _reason} = error -> error
-      true -> {:error, :cancelled}
-    end
-  end
-
-  # Streaming delta events from the adapter carry no message id (the provider
-  # doesn't know the id Tackle.Lib minted in :message_start). Stamp the pending
-  # assistant id onto them so subscribers can route deltas to the correct
-  # in-flight message bubble. Events that already carry an id are left as-is.
-  defp stamp_pending_id(%Event{id: id} = event, _pending_id) when is_binary(id) and id != "",
-    do: event
-
-  defp stamp_pending_id(%Event{} = event, pending_id) when is_binary(pending_id),
-    do: %{event | id: pending_id}
-
-  defp stamp_pending_id(event, _pending_id), do: event
-
-  defp handle_llm_response(state, response, run, result) do
-    case get_tool_calls(response) do
-      {:ok, tool_calls} ->
-        handle_valid_llm_response(state, response, run, result, tool_calls)
+  defp before_prompt(state, run) do
+    case Run.invoke_hook(state, run, :before_prompt, [state]) do
+      {:ok, state} ->
+        request(state, run)
 
       {:error, reason} ->
-        fail(state, run, "Invalid provider tool calls: #{inspect(reason)}", reason)
+        fail(state, run, "Hook aborted before prompt: #{inspect(reason)}", reason)
     end
   end
 
-  defp handle_valid_llm_response(state, response, run, result, tool_calls) do
-    thinking = get_string_field(response, "thinking")
-    content = get_string_field(response, "content")
-
-    message_opts = [
-      content: content,
-      thinking: thinking,
-      token_usage: Map.get(result, :usage),
-      model: Map.get(result, :model),
-      provider_state: Map.get(result, :provider_state),
-      id: state.pending_assistant_id,
-      id_generator: state.id_generator
-    ]
-
-    cond do
-      tool_calls != [] ->
-        run = %{run | empty_response_retried?: false}
-        handle_tool_call_response(state, run, tool_calls, message_opts)
-
-      content && content != "" ->
-        run = %{run | empty_response_retried?: false}
-        handle_content_response(state, run, content, message_opts)
-
-      true ->
-        handle_empty_response(state, run)
+  defp request(state, run) do
+    case Provider.request(state, run) do
+      {:ok, response, state} -> after_prompt(state, run, response)
+      {:error, state} -> finish(:error, state, run)
+      {:cancelled, state} -> cancel(state, run)
     end
   end
 
-  defp handle_tool_call_response(state, run, tool_calls, message_opts) do
+  # The step ends with the response it keeps: a re-asked empty response is
+  # never seen here.
+  defp after_prompt(state, run, %Response{} = response) do
+    Run.emit(
+      run,
+      Event.new(:step_end, %{
+        iteration: state.current_iteration,
+        usage: response.usage,
+        model: response.model,
+        provider: response.provider
+      })
+    )
+
+    case Run.invoke_hook(state, run, :after_prompt, [state, response]) do
+      {:ok, state} ->
+        respond(state, run, response)
+
+      {:error, reason} ->
+        fail(state, run, "Hook aborted after prompt: #{inspect(reason)}", reason)
+    end
+  end
+
+  # A response with tool calls runs them; any other response has content (the
+  # provider never returns an empty one) and is the final answer.
+  defp respond(state, run, %Response{tool_calls: [_ | _]} = response) do
     # Assign ids to every tool call up front so the SAME id is stored on the
     # assistant message's tool_calls AND later threaded onto each tool result
     # (tool_call_id). This is the call->result linkage providers require; it is
     # what lets the next request carry a structured, correctly-paired history
     # instead of a flattened blob.
-    tool_calls = Enum.map(tool_calls, &ensure_tool_call_id(&1, state))
-    assistant_message = Message.assistant(Keyword.put(message_opts, :tool_calls, tool_calls))
+    tool_calls = Enum.map(response.tool_calls, &ensure_tool_call_id(&1, state))
+    assistant_message = assistant_message(state, response, tool_calls)
     state = State.add_message(state, assistant_message)
 
     case Run.finalize_message(state, run, assistant_message) do
@@ -586,11 +339,8 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
-  defp handle_content_response(state, run, content, message_opts) do
-    assistant_message =
-      message_opts
-      |> Keyword.put(:content, content)
-      |> Message.assistant()
+  defp respond(state, run, %Response{} = response) do
+    assistant_message = assistant_message(state, response, nil)
 
     state =
       state
@@ -600,30 +350,19 @@ defmodule Tackle.Lib.Loop do
     finalize_completed_assistant_message(state, run, assistant_message)
   end
 
-  # A response with neither content nor tool calls (a content filter, a
-  # reasoning-only reply, or a server returning an empty message) is asked again
-  # once, as a retry of the same request: the retry events let hosts discard any
-  # text streamed for it. A second empty response in a row ends the turn rather
-  # than inventing an answer or spending provider calls without bound.
-  defp handle_empty_response(state, %Run{empty_response_retried?: false} = run) do
-    Logger.warning("LLM response had neither tool calls nor content; asking again")
-    run = %{run | empty_response_retried?: true}
-
-    Run.emit(
-      run,
-      Event.new(
-        :retry_scheduled,
-        %{attempt: 1, max_retries: 1, delay_ms: 0, reason: :empty_response},
-        id: state.pending_assistant_id
-      )
+  # The assistant message takes the pending id minted at `message_start`.
+  defp assistant_message(state, %Response{} = response, tool_calls) do
+    Message.assistant(
+      content: response.content,
+      thinking: response.thinking,
+      tool_calls: tool_calls,
+      token_usage: response.usage,
+      model: response.model,
+      provider_state: response.provider_state,
+      id: state.pending_assistant_id,
+      id_generator: state.id_generator
     )
-
-    Run.emit(run, Event.new(:retry_start, %{attempt: 1}, id: state.pending_assistant_id))
-    handle_retry_result(call_llm(state, run), state, run, 1)
   end
-
-  defp handle_empty_response(state, run),
-    do: fail(state, run, "The model returned an empty response", :empty_response)
 
   defp finalize_completed_assistant_message(state, run, assistant_message) do
     case Run.finalize_message(state, run, assistant_message) do
@@ -691,7 +430,8 @@ defmodule Tackle.Lib.Loop do
         append_incoming_batch(state, run, incoming)
 
       {:error, reason} ->
-        {:error, State.set_error(state, "Could not receive queued messages: #{inspect(reason)}")}
+        {:error,
+         State.set_error(state, "Could not receive queued messages: #{inspect(reason)}", reason)}
     end
   end
 
@@ -731,77 +471,13 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
-  defp get_string_field(response, key) do
-    case response do
-      %{^key => value} when is_binary(value) -> value
-      map when is_map(map) -> Map.get(map, key)
-    end
-  end
-
-  defp get_tool_calls(response) do
-    raw_calls =
-      case response do
-        %{"tool_calls" => calls} when is_list(calls) -> calls
-        %{tool_calls: calls} when is_list(calls) -> calls
-        _ -> []
-      end
-
-    Enum.reduce_while(raw_calls, {:ok, []}, fn raw_call, {:ok, calls} ->
-      case Call.normalize(raw_call) do
-        {:ok, call} -> {:cont, {:ok, [call | calls]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, calls} -> {:ok, Enum.reverse(calls)}
-      error -> error
-    end
-  end
-
   defp ensure_tool_call_id(%Call{id: id} = call, _state) when is_binary(id) and id != "",
     do: call
 
   defp ensure_tool_call_id(%Call{} = call, state),
     do: %{call | id: generate_call_id(state)}
 
-  defp provider_tool_definitions(%Registry{} = registry) do
-    Registry.definitions(registry)
-  end
-
-  defp maybe_put_cancellation_signal(opts, nil), do: opts
-
-  defp maybe_put_cancellation_signal(opts, signal),
-    do: Keyword.put(opts, :cancellation_signal, signal)
-
-  defp emit_llm_settlement_events(run, %State{} = state, result) do
-    usage = Map.get(result, :usage)
-
-    if usage do
-      Run.emit(run, Event.usage(usage))
-    end
-
-    Run.emit(
-      run,
-      Event.new(:step_end, %{
-        iteration: state.current_iteration,
-        usage: usage,
-        model: Map.get(result, :model),
-        provider: Map.get(result, :provider)
-      })
-    )
-  end
-
   defp generate_call_id(%State{id_generator: id_generator}), do: id_generator.()
-
-  # --- Hook invocations ---
-
-  defp invoke_before_prompt(%State{} = state, run) do
-    Run.invoke_hook(state, run, :before_prompt, [state])
-  end
-
-  defp invoke_after_prompt(%State{} = state, response, run) do
-    Run.invoke_hook(state, run, :after_prompt, [state, response])
-  end
 
   defp clear_pending_assistant_id(%State{} = state) do
     %{state | pending_assistant_id: nil}
@@ -813,14 +489,14 @@ defmodule Tackle.Lib.Loop do
     do: finish(:cancelled, Run.mark_cancelled(state, run), run)
 
   defp fail(%State{} = state, run, message, reason),
-    do: finish(:error, State.set_error(state, message), run, reason)
+    do: finish(:error, State.set_error(state, message, reason), run)
 
   # Every turn ends here, whatever the outcome: an assistant message that was
   # started is no longer pending, tool calls left without results are settled,
-  # the outcome's events are emitted (an error outcome reports the error with
-  # its `reason`, when there is one), and the `after_turn` hooks run last.
-  defp finish(outcome, %State{} = state, run, reason \\ nil)
-       when outcome in [:ok, :error, :cancelled] do
+  # the outcome's events are emitted (an error outcome reports `state.error`
+  # with `state.error_reason` as its `reason`, when there is one), and the
+  # `after_turn` hooks run last.
+  defp finish(outcome, %State{} = state, run) when outcome in [:ok, :error, :cancelled] do
     state = clear_pending_assistant_id(state)
 
     state =
@@ -828,7 +504,7 @@ defmodule Tackle.Lib.Loop do
         do: state,
         else: Tools.settle_interrupted(state, run, interrupted_as(outcome))
 
-    emit_turn_end(outcome, state, run, reason)
+    emit_turn_end(outcome, state, run)
 
     state =
       case Hook.invoke(run.snapshot.hooks, :after_turn, [state], state.context) do
@@ -842,12 +518,12 @@ defmodule Tackle.Lib.Loop do
   defp interrupted_as(:error), do: "aborted"
   defp interrupted_as(:cancelled), do: "cancelled"
 
-  defp emit_turn_end(:ok, state, run, _reason) do
+  defp emit_turn_end(:ok, state, run) do
     Run.emit(run, Event.new(:status_change, %{status: :completed}))
     Run.emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :completed}))
   end
 
-  defp emit_turn_end(:cancelled, state, run, _reason) do
+  defp emit_turn_end(:cancelled, state, run) do
     Run.emit(run, Event.new(:status_change, %{status: :cancelled}))
 
     Run.emit(
@@ -858,9 +534,12 @@ defmodule Tackle.Lib.Loop do
     Run.emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :cancelled}))
   end
 
-  defp emit_turn_end(:error, state, run, reason) do
+  defp emit_turn_end(:error, state, run) do
     data =
-      if is_nil(reason), do: %{error: state.error}, else: %{error: state.error, reason: reason}
+      case state.error_reason do
+        nil -> %{error: state.error}
+        reason -> %{error: state.error, reason: reason}
+      end
 
     Run.emit(run, Event.new(:error, data))
     Run.emit(run, Event.new(:status_change, %{status: :error}))
