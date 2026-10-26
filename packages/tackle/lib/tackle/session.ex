@@ -45,6 +45,7 @@ defmodule Tackle.Session do
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
   alias Tackle.Lib.State, as: AgentState
+  alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Envelope
   alias Tackle.Runtime.Outcome
@@ -153,25 +154,19 @@ defmodule Tackle.Session do
   @type turn_result ::
           {:ok, AgentState.t()} | {:error, AgentState.t()} | {:cancelled, AgentState.t()}
 
+  @typedoc """
+  What a session starts from: the agent's configuration, the runtime context
+  the agent's backend received, and the durable session it owns, if any.
+  Only `Tackle.Runtime.RootBackend` starts sessions, and only a root session
+  is durable.
+  """
+  @type start_arg :: {Config.t(), AgentContext.t(), SessionSpec.t() | nil}
+
   @doc false
-  @spec start_link(Config.t() | {Config.t(), keyword()}) :: GenServer.on_start()
-  def start_link(%Config{} = config), do: start_link(config, [])
-  def start_link({%Config{} = config, opts}), do: start_link(config, opts)
-
-  def start_link(%Config{} = config, opts) when is_list(opts) do
-    GenServer.start_link(__MODULE__, {config, opts}, session_name(opts))
-  end
-
-  @doc false
-  def child_spec(%Config{} = config), do: child_spec({config, []})
-
-  def child_spec({%Config{} = config, opts}) do
-    %{
-      id: Keyword.get(opts, :id, __MODULE__),
-      start: {__MODULE__, :start_link, [config, opts]},
-      restart: Keyword.get(opts, :restart, :temporary)
-    }
-  end
+  @spec start_link(start_arg()) :: GenServer.on_start()
+  def start_link({%Config{}, %AgentContext{}, durable} = arg)
+      when is_nil(durable) or is_struct(durable, SessionSpec),
+      do: GenServer.start_link(__MODULE__, arg)
 
   @doc "Starts a turn, or queues input for the active turn's next provider boundary."
   @spec submit(GenServer.server(), String.t()) ::
@@ -341,34 +336,25 @@ defmodule Tackle.Session do
   def unsubscribe(session), do: GenServer.call(session, :unsubscribe)
 
   @impl true
-  def init({%Config{} = config, opts}) do
+  def init({%Config{} = config, %AgentContext{} = context, durable}) do
     Process.flag(:trap_exit, true)
 
-    scope_ref = Keyword.get(opts, :scope_ref)
-    agent_ref = Keyword.get(opts, :agent_ref)
-    coordinator = Keyword.get(opts, :coordinator) || coordinator_pid(scope_ref)
-    work_supervisor = Keyword.get(opts, :work_supervisor) || work_supervisor(scope_ref)
-    tool_supervisor = Keyword.get(opts, :tool_supervisor)
-
-    with :ok <-
-           validate_ownership(scope_ref, agent_ref, coordinator, work_supervisor, tool_supervisor),
-         :ok <- register(scope_ref, agent_ref),
+    with :ok <- validate_ownership(context),
+         :ok <- register(context.agent_ref),
          {:ok, config, agent_state, journal, recovery, tree_enabled?} <-
-           build_agent_state(config, scope_ref, agent_ref, opts) do
+           build_agent_state(config, context.agent_ref, durable) do
       state = %{
         config: config,
         agent_state: agent_state,
         active_turn: nil,
         subscribers: %{},
-        scope_ref: scope_ref,
-        agent_ref: agent_ref,
-        coordinator: coordinator,
-        lifetime: Keyword.get(opts, :lifetime, :explicit),
-        parent: Keyword.get(opts, :parent),
-        terminal: Keyword.get(opts, :terminal),
-        context_overrides: Keyword.get(opts, :context_overrides, %{}),
-        work_supervisor: work_supervisor,
-        tool_supervisor: tool_supervisor,
+        scope_ref: context.scope_ref,
+        agent_ref: context.agent_ref,
+        coordinator: context.coordinator,
+        lifetime: context.lifetime,
+        terminal: context.terminal,
+        work_supervisor: context.work_supervisor,
+        tool_supervisor: context.tool_supervisor,
         journal: journal,
         recovery: recovery,
         tree_enabled?: tree_enabled?,
@@ -1593,39 +1579,20 @@ defmodule Tackle.Session do
 
   # Tools find the agent they act for under `:runtime` (`AgentRef.from_context/1`);
   # the scope coordinator owns what that agent may do.
-  defp put_runtime_context(agent_state, %ScopeRef{}, %AgentRef{} = agent_ref, overrides) do
-    context =
-      agent_state.context
-      |> Map.put(:runtime, agent_ref)
-      |> Map.merge(overrides)
+  defp put_runtime_context(agent_state, %AgentRef{} = agent_ref),
+    do: %{agent_state | context: Map.put(agent_state.context, :runtime, agent_ref)}
 
-    %{agent_state | context: context}
+  defp build_agent_state(config, agent_ref, nil) do
+    agent_state =
+      config
+      |> Config.to_agent_state(credential_store: Auth.credential_store())
+      |> put_runtime_context(agent_ref)
+
+    {:ok, config, agent_state, nil, nil, false}
   end
 
-  defp put_runtime_context(agent_state, _scope_ref, _agent_ref, _overrides), do: agent_state
-
-  defp build_agent_state(config, scope_ref, agent_ref, opts) do
-    case Keyword.get(opts, :durable) do
-      nil ->
-        agent_state =
-          config
-          |> Config.to_agent_state(credential_store: Auth.credential_store())
-          |> put_runtime_context(scope_ref, agent_ref, Keyword.get(opts, :context_overrides, %{}))
-
-        {:ok, config, agent_state, nil, nil, false}
-
-      %SessionSpec{} = durable ->
-        build_durable_agent_state(config, scope_ref, agent_ref, opts, durable)
-    end
-  end
-
-  defp build_durable_agent_state(config, scope_ref, agent_ref, opts, durable) do
-    runtime = %{
-      scope_ref: scope_ref,
-      agent_ref: agent_ref,
-      context_overrides: Keyword.get(opts, :context_overrides, %{}),
-      owner: self()
-    }
+  defp build_agent_state(config, agent_ref, %SessionSpec{} = durable) do
+    runtime = %{agent_ref: agent_ref, owner: self()}
 
     with {:ok, journal} <- Journal.whereis(durable.session_id),
          {:ok, projection} <- Journal.projection(journal),
@@ -1654,12 +1621,7 @@ defmodule Tackle.Session do
   # against the recording again. `owner` is the session process, since this
   # runs in a storage task.
   defp reload_durable_state(state, owner) do
-    runtime = %{
-      scope_ref: state.scope_ref,
-      agent_ref: state.agent_ref,
-      context_overrides: state.context_overrides,
-      owner: owner
-    }
+    runtime = %{agent_ref: state.agent_ref, owner: owner}
 
     with {:ok, projection} <- Journal.projection(state.journal),
          {:ok, loaded} <- load_projection(projection, state.config, true) do
@@ -1678,7 +1640,7 @@ defmodule Tackle.Session do
   defp restore_durable_state(journal, loaded, recovery, runtime) do
     agent_state =
       loaded.state
-      |> put_runtime_context(runtime.scope_ref, runtime.agent_ref, runtime.context_overrides)
+      |> put_runtime_context(runtime.agent_ref)
       |> install_persistence_hook(runtime.owner)
       |> install_committer()
 
@@ -1831,67 +1793,32 @@ defmodule Tackle.Session do
     Journal.configuration_changed(journal, config)
   end
 
-  defp validate_ownership(%ScopeRef{}, %AgentRef{}, coordinator, work_supervisor, tool_supervisor)
+  # The runtime builds the context, so a session always runs inside a scope
+  # whose coordinator and supervisors it can reach; there is no fallback.
+  defp validate_ownership(%AgentContext{
+         scope_ref: %ScopeRef{scope_id: scope_id},
+         agent_ref: %AgentRef{scope_id: scope_id},
+         coordinator: coordinator,
+         work_supervisor: work_supervisor,
+         tool_supervisor: tool_supervisor
+       })
        when not is_nil(coordinator) and not is_nil(work_supervisor) and
               not is_nil(tool_supervisor),
        do: :ok
 
-  defp validate_ownership(scope_ref, _agent_ref, _coordinator, _work_supervisor, _tool_supervisor)
-       when not is_struct(scope_ref, ScopeRef),
-       do: {:error, {:missing_scope_ownership, :scope_ref}}
+  defp validate_ownership(%AgentContext{}), do: {:error, :invalid_scope_ownership}
 
-  defp validate_ownership(_scope_ref, agent_ref, _coordinator, _work_supervisor, _tool_supervisor)
-       when not is_struct(agent_ref, AgentRef),
-       do: {:error, {:missing_scope_ownership, :agent_ref}}
-
-  defp validate_ownership(
-         _scope_ref,
-         _agent_ref,
-         _coordinator,
-         _work_supervisor,
-         _tool_supervisor
-       ),
-       do: {:error, :missing_scope_supervision}
-
-  defp register(%ScopeRef{} = scope_ref, %AgentRef{scope_id: scope_id} = agent_ref)
-       when scope_ref.scope_id == scope_id do
+  defp register(%AgentRef{} = agent_ref) do
     case Registry.register(agent_ref, :agent) do
       {:ok, _pid} -> :ok
       {:error, {:already_registered, _pid}} -> {:error, :already_registered}
     end
   end
 
-  defp register(%ScopeRef{}, %AgentRef{}), do: {:error, :scope_mismatch}
-
   defp register_with_coordinator(%{coordinator: coordinator, agent_ref: %AgentRef{} = agent_ref}) do
     Coordinator.register_agent(coordinator, agent_ref, self())
   catch
     :exit, _reason -> :ok
-  end
-
-  defp coordinator_pid(%ScopeRef{} = scope_ref) do
-    case Registry.coordinator(scope_ref) do
-      {:ok, pid} -> pid
-      {:error, :not_found} -> nil
-    end
-  end
-
-  defp coordinator_pid(_scope_ref), do: nil
-
-  defp work_supervisor(%ScopeRef{} = scope_ref) do
-    case Registry.work_supervisor(scope_ref) do
-      {:ok, pid} -> pid
-      {:error, :not_found} -> nil
-    end
-  end
-
-  defp work_supervisor(_scope_ref), do: nil
-
-  defp session_name(opts) do
-    case Keyword.get(opts, :name) do
-      nil -> []
-      name -> [name: name]
-    end
   end
 
   defp build_snapshot(state) do

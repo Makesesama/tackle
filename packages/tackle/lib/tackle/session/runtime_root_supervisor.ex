@@ -6,7 +6,6 @@ defmodule Tackle.Session.RuntimeRootSupervisor do
   alias Tackle.Config
   alias Tackle.Lib.Thinking
   alias Tackle.Runtime.AgentContext
-  alias Tackle.Runtime.RootBackend
   alias Tackle.Session.Spec, as: SessionSpec
 
   def start_link({%Config{}, %AgentContext{}} = arg) do
@@ -16,11 +15,9 @@ defmodule Tackle.Session.RuntimeRootSupervisor do
   @impl true
   def init({%Config{} = config, %AgentContext{} = context}) do
     session_spec = session_plan(context.scope_options)
-    opts = RootBackend.session_opts(context)
-    opts = if session_spec, do: Keyword.put(opts, :durable, session_spec), else: opts
 
     session_child =
-      Supervisor.child_spec({Tackle.Session, {config, opts}},
+      Supervisor.child_spec({Tackle.Session, {config, context, session_spec}},
         id: {:root_session, context.agent_ref.agent_id},
         restart: :permanent
       )

@@ -24,7 +24,7 @@ defmodule Tackle.Runtime.RootBackend do
   end
 
   def child_spec(%AgentSpec{config: config}, %AgentContext{} = context) do
-    {Session, {config, session_opts(context)}}
+    {Session, {config, context, nil}}
   end
 
   @impl true
@@ -187,27 +187,4 @@ defmodule Tackle.Runtime.RootBackend do
   end
 
   def notify(_pid, _notification), do: :ok
-
-  @doc false
-  def session_opts(%AgentContext{} = context) do
-    [
-      scope_ref: context.scope_ref,
-      agent_ref: context.agent_ref,
-      lifetime: context.lifetime,
-      coordinator: context.coordinator,
-      work_supervisor: context.work_supervisor,
-      tool_supervisor: context.tool_supervisor,
-      parent: context.parent,
-      context_overrides: event_context(context),
-      terminal: context.terminal,
-      id: {:session, context.agent_ref.agent_id},
-      restart: :permanent
-    ]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-  end
-
-  defp event_context(%AgentContext{event_callback: callback}) when is_function(callback, 1),
-    do: %{event_callback: callback}
-
-  defp event_context(_context), do: %{}
 end
