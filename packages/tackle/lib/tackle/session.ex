@@ -124,8 +124,7 @@ defmodule Tackle.Session do
     @type active_turn :: %{
             required(:id) => String.t(),
             required(:operation) => :run | :continue,
-            required(:cancellation_requested?) => boolean(),
-            required(:cancelled_calls) => MapSet.t(String.t())
+            required(:cancellation_requested?) => boolean()
           }
 
     @type recovery :: %{
@@ -553,18 +552,11 @@ defmodule Tackle.Session do
       ),
       do: {:reply, :ok, state}
 
-  # The cancelled id is remembered so its per-call record is deleted when the
-  # turn settles, even when the call had already finished or never existed.
+  # A record for a call that had already finished, or never existed, is
+  # deleted with the turn signal when the turn settles.
   def handle_call({:cancel_tool_call, call_id, reason}, _from, state) do
-    %{active_turn: active_turn} = state
-    active_turn.signal |> Cancellation.for_call(call_id) |> Cancellation.cancel(reason)
-
-    active_turn = %{
-      active_turn
-      | cancelled_calls: MapSet.put(active_turn.cancelled_calls, call_id)
-    }
-
-    {:reply, :ok, %{state | active_turn: active_turn}}
+    state.active_turn.signal |> Cancellation.for_call(call_id) |> Cancellation.cancel(reason)
+    {:reply, :ok, state}
   end
 
   def handle_call({:reconfigure, _opts}, _from, %{active_turn: active_turn} = state)
@@ -968,8 +960,7 @@ defmodule Tackle.Session do
           task: task,
           signal: signal,
           initial_message_ids: MapSet.new(agent_state.messages, & &1.id),
-          cancellation_requested?: false,
-          cancelled_calls: MapSet.new()
+          cancellation_requested?: false
         }
 
         {:reply, {:ok, turn_id}, %{state | active_turn: active_turn}}
@@ -999,7 +990,6 @@ defmodule Tackle.Session do
           signal: signal,
           initial_message_ids: MapSet.new(agent_state.messages, & &1.id),
           cancellation_requested?: false,
-          cancelled_calls: MapSet.new(),
           beginning?: true
         }
 
@@ -1896,18 +1886,10 @@ defmodule Tackle.Session do
     :ok
   end
 
-  # Per-call records exist only for calls a host cancelled through
-  # `cancel_tool_call/3`; the loop deletes them as calls settle, but a call
-  # killed mid-flight or cancelled after settling would otherwise leak one.
-  defp delete_turn_signals(%{signal: nil}), do: :ok
-
-  defp delete_turn_signals(%{signal: signal} = active_turn) do
-    active_turn
-    |> Map.get(:cancelled_calls, MapSet.new())
-    |> Enum.each(&(signal |> Cancellation.for_call(&1) |> Cancellation.delete()))
-
-    Cancellation.delete(signal)
-  end
+  # Deleting the turn signal also deletes the per-call records of calls a host
+  # cancelled through `cancel_tool_call/3`, including calls killed mid-flight
+  # or cancelled after they settled.
+  defp delete_turn_signals(%{signal: signal}), do: Cancellation.delete(signal)
 
   defp cleanup_title_task(nil), do: :ok
   defp cleanup_title_task(:done), do: :ok

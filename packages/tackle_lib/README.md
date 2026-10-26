@@ -1125,13 +1125,15 @@ turn still stops every call, while a host (for example a watchdog) can cancel
 one child to stop only that call; the tool returns an error and the turn
 continues. Child ids are the deterministic `{parent_id, tool_call_id}`, so the
 host derives the same child from the turn signal it already holds. The loop
-deletes each child record after its call settles; hosts that cancel children
-should still delete them once the turn settles.
+deletes each child record after its call settles, and deleting the turn signal
+deletes any child a host cancelled after its call settled.
 
 Cancellation is cooperative, not preemptive. Tackle.Lib cannot interrupt code that
-ignores the signal. Delete signals after terminal settlement with
-`Tackle.Lib.Cancellation.delete/1`; `Tackle.Phoenix.Runner` manages this lifecycle
-automatically.
+ignores the signal. The first cancellation wins: cancelling a cancelled signal
+keeps its original reason, and a `nil` reason is stored as `:cancelled`. Delete
+signals after terminal settlement with `Tackle.Lib.Cancellation.delete/1`, which
+also deletes every per-call signal derived from the signal;
+`Tackle.Phoenix.Runner` manages this lifecycle automatically.
 
 The cancellation store is configurable:
 
@@ -1146,8 +1148,11 @@ Ensure the application is started before using the default store (Mix normally
 starts dependency applications; standalone scripts can use
 `Application.ensure_all_started(:tackle_lib)`). Operations raise `ArgumentError`
 if the table is unavailable; they never create a replacement in the caller.
-Records are not durable across store owner or application restarts. Custom stores
-remain host-owned: the host is responsible for starting and supervising them.
+Records are not durable across store owner or application restarts. Every host
+on the node shares this table; the Tackle runtime uses it too. Custom stores
+remain host-owned: the host is responsible for starting and supervising them,
+and they must keep the first reason and delete derived per-call records (see
+`Tackle.Lib.Cancellation.Store`).
 Store ids are references for turn signals and `{parent_id, tool_call_id}` tuples
 for per-call signals, so custom stores must accept any such term as a key.
 

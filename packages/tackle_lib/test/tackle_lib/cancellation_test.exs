@@ -15,7 +15,7 @@ defmodule Tackle.Lib.CancellationTest do
 
     @impl true
     def cancel(signal_id, reason) do
-      Agent.update(@name, &Map.put(&1, signal_id, reason))
+      Agent.update(@name, &Map.put_new(&1, signal_id, reason))
     end
 
     @impl true
@@ -25,8 +25,14 @@ defmodule Tackle.Lib.CancellationTest do
 
     @impl true
     def delete(signal_id) do
-      Agent.update(@name, &Map.delete(&1, signal_id))
+      Agent.update(@name, fn records ->
+        Map.reject(records, fn {id, _reason} -> derived?(id, signal_id) end)
+      end)
     end
+
+    defp derived?(id, id), do: true
+    defp derived?({parent, _call}, id), do: derived?(parent, id)
+    defp derived?(_other, _id), do: false
   end
 
   defmodule FailingStore do
@@ -117,6 +123,50 @@ defmodule Tackle.Lib.CancellationTest do
     assert :ets.whereis(Ets) == :undefined
   end
 
+  test "the first reason wins" do
+    Application.delete_env(:tackle_lib, :cancellation_store)
+    signal = Cancellation.new_signal()
+    on_exit(fn -> Cancellation.delete(signal) end)
+
+    assert Cancellation.cancel(signal, :user_cancelled) == :ok
+    assert Cancellation.cancel(signal, :session_closed) == :ok
+    assert Cancellation.reason(signal) == :user_cancelled
+  end
+
+  test "a nil reason cancels with :cancelled" do
+    Application.delete_env(:tackle_lib, :cancellation_store)
+    signal = Cancellation.new_signal()
+    on_exit(fn -> Cancellation.delete(signal) end)
+
+    assert Cancellation.cancel(signal, nil) == :ok
+    assert Cancellation.cancelled?(signal)
+    assert Cancellation.reason(signal) == :cancelled
+  end
+
+  test "deleting a signal deletes the per-call signals derived from it" do
+    Application.delete_env(:tackle_lib, :cancellation_store)
+    signal = Cancellation.new_signal()
+    other = Cancellation.new_signal()
+    child = Cancellation.for_call(signal, "call_1")
+    grandchild = Cancellation.for_call(child, "inner")
+    other_child = Cancellation.for_call(other, "call_1")
+
+    on_exit(fn -> Enum.each([signal, other], &Cancellation.delete/1) end)
+
+    Enum.each([child, grandchild, other_child], &Cancellation.cancel(&1, :stop))
+    assert Cancellation.delete(signal) == :ok
+
+    assert :ets.lookup(Ets, child.id) == []
+    assert :ets.lookup(Ets, grandchild.id) == []
+    refute Cancellation.cancelled?(grandchild)
+    assert Cancellation.reason(other_child) == :stop
+
+    # A child's deletion never reaches its parent.
+    Cancellation.cancel(other, :parent)
+    assert Cancellation.delete(other_child) == :ok
+    assert Cancellation.reason(other) == :parent
+  end
+
   test "uses configured cancellation store" do
     Application.put_env(:tackle_lib, :cancellation_store, AgentStore)
 
@@ -203,6 +253,10 @@ defmodule Tackle.Lib.CancellationTest do
 
       Cancellation.cancel(child, "stop child")
       assert Cancellation.reason(grandchild) == "stop child"
+
+      Cancellation.cancel(grandchild, "stop grandchild")
+      assert Cancellation.delete(signal) == :ok
+      refute Cancellation.cancelled?(grandchild)
     end
 
     test "children of old signals keep the parent's original store" do

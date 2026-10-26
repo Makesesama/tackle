@@ -154,3 +154,37 @@ defmodule Tackle.SDK.Test.EchoTool do
   def execute(%{"text" => text}, _context), do: {:ok, text}
   def execute(_args, _context), do: {:error, :missing_text}
 end
+
+defmodule Tackle.SDK.Test.CancellableLLM do
+  @moduledoc """
+  `Tackle.Lib.LLM` adapter that reports its cancellation signal to the process
+  in the `:tackle_sdk, :cancellable_llm_test_pid` application env and waits
+  until the signal is cancelled.
+  """
+
+  @behaviour Tackle.Lib.LLM
+
+  alias Tackle.Lib.Cancellation
+
+  @impl true
+  def adapter_id, do: "cancellable"
+
+  @impl true
+  def models, do: ["waiting"]
+
+  @impl true
+  def generate(_schema, opts) do
+    signal = Keyword.fetch!(opts, :cancellation_signal)
+    send(Application.fetch_env!(:tackle_sdk, :cancellable_llm_test_pid), {:llm_signal, signal})
+    await_cancellation(signal)
+  end
+
+  defp await_cancellation(signal) do
+    if Cancellation.cancelled?(signal) do
+      {:error, :cancelled}
+    else
+      Process.sleep(5)
+      await_cancellation(signal)
+    end
+  end
+end

@@ -9,8 +9,10 @@ defmodule Tackle.SDK.ServerTest do
 
   use ExUnit.Case, async: false
 
+  alias Tackle.Lib.Cancellation
   alias Tackle.Lib.LLM.Provider
   alias Tackle.SDK.Server
+  alias Tackle.SDK.Test.CancellableLLM
   alias Tackle.SDK.Test.EchoTool
   alias Tackle.SDK.Test.FakeLLM
   alias Tackle.SDK.Test.LocalFirstLLM
@@ -273,6 +275,29 @@ defmodule Tackle.SDK.ServerTest do
       assert turn_end["result"] == "cancelled"
 
       assert_receive {:run_result, :ok}
+    end
+
+    test "a settled turn deletes its cancellation signal" do
+      Application.put_env(:tackle_sdk, :cancellable_llm_test_pid, self())
+      on_exit(fn -> Application.delete_env(:tackle_sdk, :cancellable_llm_test_pid) end)
+
+      start(
+        [
+          @init,
+          ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"sess-1","model":"cancellable/waiting"}}),
+          ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"sess-1","turnId":"turn-1","input":"hello"}}),
+          ~s({"jsonrpc":"2.0","id":4,"method":"turn/cancel","params":{"turnId":"turn-1"}})
+        ],
+        providers: [CancellableLLM]
+      )
+
+      assert_receive {:llm_signal, signal}, 2_000
+      assert %{"id" => 4, "result" => %{"cancelled" => true}} = await_response(4)
+      assert {:ok, _events, %{"result" => "cancelled"}} = collect_event_types(2_000)
+      assert_receive {:run_result, :ok}
+
+      assert :ets.lookup(Cancellation.Store.Ets, signal.id) == []
+      refute Cancellation.cancelled?(signal)
     end
 
     test "a second concurrent turn on the same session is rejected" do

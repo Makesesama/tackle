@@ -13,7 +13,15 @@ defmodule Tackle.Lib.Cancellation.Store do
   responsible for preserving cancelled reasons until `delete/1` is called. Ids
   are references for turn signals and `{parent_id, tool_call_id}` tuples for
   per-call signals (see `Tackle.Lib.Cancellation.for_call/2`), so stores must
-  accept any such term as a key and treat each id independently.
+  accept any such term as a key.
+
+  A store must:
+
+    * keep the first reason: `cancel/2` on an id that already has a reason
+      leaves it unchanged (reasons are never `nil`);
+    * make `delete/1` remove the id's record and the records of every id
+      derived from it, that is every `{signal_id, _}` key, recursively, while
+      never removing a parent's record when a derived id is deleted.
   """
 
   @type signal_id :: reference() | {signal_id(), term()}

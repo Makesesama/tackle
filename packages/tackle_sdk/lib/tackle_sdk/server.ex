@@ -196,6 +196,7 @@ defmodule Tackle.SDK.Server do
 
       {turn, turns} ->
         Process.demonitor(turn.monitor_ref, [:flush])
+        Cancellation.delete(turn.signal)
 
         sessions =
           Map.update!(state.sessions, turn.session_id, fn _old ->
@@ -219,7 +220,8 @@ defmodule Tackle.SDK.Server do
       nil ->
         {:noreply, state}
 
-      {turn_id, _turn} ->
+      {turn_id, turn} ->
+        Cancellation.delete(turn.signal)
         turns = Map.delete(state.turns, turn_id)
 
         write(

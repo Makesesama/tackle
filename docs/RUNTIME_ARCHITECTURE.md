@@ -178,7 +178,6 @@ The implemented reusable process tree is:
 
 ```text
 Tackle.Runtime.Supervisor
-├── Tackle.Runtime.CancellationStore
 ├── Tackle.Runtime.Registry
 └── Tackle.AgentSupervisor                 global DynamicSupervisor
     ├── AgentScope A                        Supervisor; one per root agent
@@ -198,6 +197,8 @@ Tackle.Runtime.Supervisor
     └── AgentScope B
         └── ...
 ```
+
+Cancellation signals live in `Tackle.Lib`'s default store, whose ETS table is owned by a process in the `:tackle_lib` application; the runtime has no store of its own and does not change the `:tackle_lib` configuration.
 
 `Tackle.AgentSupervisor` owns root-agent scopes rather than every agent directly. All agents enter through a scope; there is no unscoped runtime fallback.
 

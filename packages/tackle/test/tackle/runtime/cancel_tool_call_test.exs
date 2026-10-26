@@ -4,7 +4,7 @@ defmodule Tackle.Runtime.CancelToolCallTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Lib.{Cancellation, Event}
-  alias Tackle.Runtime.CancellationStore
+  alias Tackle.Lib.Cancellation.Store.Ets, as: CancellationStore
 
   defmodule PollingTool do
     @moduledoc false

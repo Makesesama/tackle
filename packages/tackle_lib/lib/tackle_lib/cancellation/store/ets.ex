@@ -8,6 +8,11 @@ defmodule Tackle.Lib.Cancellation.Store.Ets do
   raise `ArgumentError` if the table is unavailable rather than recreating it in
   a caller. Records are not preserved across owner or application restarts.
 
+  Only cancelled signals have records: `cancel/2` inserts one unless the id
+  already has a reason, and `delete/1` removes an id together with the records
+  of the per-call ids derived from it. Every host on the node, the Tackle
+  runtime included, shares this table.
+
   Hosts that prefer a different storage mechanism can implement
   `Tackle.Lib.Cancellation.Store` and set `:cancellation_store` in config.
   """
@@ -30,7 +35,7 @@ defmodule Tackle.Lib.Cancellation.Store.Ets do
 
   @impl true
   def cancel(signal_id, reason) do
-    true = :ets.insert(@table, {signal_id, reason})
+    :ets.insert_new(@table, {signal_id, reason})
     :ok
   end
 
@@ -44,7 +49,14 @@ defmodule Tackle.Lib.Cancellation.Store.Ets do
 
   @impl true
   def delete(signal_id) do
-    :ets.delete(@table, signal_id)
-    :ok
+    true = :ets.delete(@table, signal_id)
+    signal_id |> derived_ids() |> Enum.each(&delete/1)
+  end
+
+  # Keys `{signal_id, _}`. `:const` keeps the id from being read as a pattern.
+  defp derived_ids(signal_id) do
+    :ets.select(@table, [
+      {{{:"$1", :_}, :_}, [{:"=:=", :"$1", {:const, signal_id}}], [{:element, 1, :"$_"}]}
+    ])
   end
 end

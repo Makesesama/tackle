@@ -61,7 +61,9 @@ Tackle.Lib.last_answer(state)
 - `:cancellation_signal` — a `Tackle.Lib.Cancellation.Signal` checked between loop
   steps; adapters receive it and tools receive its per-call child
   (`Tackle.Lib.Cancellation.for_call/2`), which a host can cancel to stop just
-  that call. Adapters/tools should observe it and abort.
+  that call. Adapters/tools should observe it and abort. The first reason
+  wins, and `Tackle.Lib.Cancellation.delete/1` on the turn signal after the run
+  settles also deletes its per-call signals.
 
 ## Defining tools
 

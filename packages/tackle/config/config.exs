@@ -1,6 +1,5 @@
 import Config
 
-config :tackle_lib, cancellation_store: Tackle.Runtime.CancellationStore
 config :tackle_runtime, default_backend: Tackle.Runtime.RootBackend
 
 if config_env() == :test do

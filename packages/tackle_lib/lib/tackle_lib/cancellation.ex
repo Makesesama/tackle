@@ -24,8 +24,16 @@ defmodule Tackle.Lib.Cancellation do
   every call. A child reports its own reason first and falls back to its
   parent's. Child ids are deterministic (`{parent_id, tool_call_id}`), so any
   process holding the turn signal can derive the same child without
-  coordination. Whoever cancels a child should `delete/1` it once the turn has
-  settled; the loop also deletes each child after its call settles.
+  coordination. Deleting the turn signal once the turn has settled also deletes
+  every child derived from it; the loop deletes each child after its call
+  settles.
+
+  ## Reasons
+
+  The first cancellation of a signal wins: cancelling it again keeps the
+  original reason, so a later `:session_closed` cannot hide that the user
+  cancelled first. `nil` is not a reason (`reason/1` returns `nil` for an
+  active signal), so `cancel(signal, nil)` cancels with `:cancelled`.
 
   ## Storage
 
@@ -85,10 +93,17 @@ defmodule Tackle.Lib.Cancellation do
   end
 
   @doc """
-  Marks a signal as cancelled.
+  Marks a signal as cancelled with `reason` (`:cancelled` by default).
+
+  A signal that is already cancelled keeps its first reason. A `nil` reason
+  is stored as `:cancelled`.
   """
   @spec cancel(signal(), reason()) :: :ok
-  def cancel(%Signal{id: id} = signal, reason \\ :cancelled) do
+  def cancel(signal, reason \\ :cancelled)
+
+  def cancel(%Signal{} = signal, nil), do: cancel(signal, :cancelled)
+
+  def cancel(%Signal{id: id} = signal, reason) do
     signal_store(signal).cancel(id, reason)
   end
 
@@ -119,10 +134,12 @@ defmodule Tackle.Lib.Cancellation do
   end
 
   @doc """
-  Removes a signal from the cancellation table.
+  Removes a signal's record and the records of every per-call signal derived
+  from it (`for_call/2`), however deeply nested.
 
-  Hosts may call this after a run is fully settled if they create many signals.
-  Deleting a per-call signal removes only its own record, never its parent's.
+  Hosts call this once a run has fully settled, so cancelled per-call signals
+  do not outlive their turn. Deleting a per-call signal never removes its
+  parent's record.
   """
   @spec delete(signal() | nil) :: :ok
   def delete(nil), do: :ok
