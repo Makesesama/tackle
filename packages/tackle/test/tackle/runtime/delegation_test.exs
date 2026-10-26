@@ -163,6 +163,25 @@ defmodule Tackle.Runtime.DelegationTest do
     refute Outcome.library?(outcome)
   end
 
+  test "a cancelled delegated run records the runtime's cancellation reason" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{"worker" => agent_spec("worker", mode: :block)}
+      )
+
+    root = scope.root_agent_ref
+    {:ok, run_ref} = Tackle.Runtime.request_agent(root, "worker", "go")
+    assert_receive {:adapter_called, _turn, _model, _opts}, 5_000
+
+    assert {:ok, :cancelling} = Tackle.Runtime.cancel_run(root, run_ref, :stop_now)
+
+    assert %Outcome{status: :cancelled, agent_state: agent_state} =
+             Tackle.Runtime.await(root, run_ref, 5_000)
+
+    assert agent_state.error == inspect(:stop_now)
+  end
+
   test "an inactivity timeout settles as timeout and cleans up the child" do
     scope =
       start_scope(

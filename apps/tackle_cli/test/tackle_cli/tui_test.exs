@@ -142,7 +142,7 @@ defmodule Tackle.CLI.TUITest do
       end
     end
 
-    def handle_call(:cancel, _from, state) do
+    def handle_call({:cancel, _reason}, _from, state) do
       send(state.test_pid, :cancelled)
 
       case Map.pop(state, :pending_compact) do

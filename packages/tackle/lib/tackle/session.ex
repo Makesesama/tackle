@@ -194,9 +194,14 @@ defmodule Tackle.Session do
   Requests cooperative cancellation of the active turn, or of a running manual
   compaction (`compact/2`, which then returns `{:error, {:cancelled, reason}}`).
   Does nothing when neither is running.
+
+  `reason` (`:user_cancelled` by default) is recorded as the cancelled turn's
+  error; the runtime passes its own, such as `:request_terminated` for a
+  delegated run. The first reason a turn is cancelled with wins.
   """
-  @spec cancel(GenServer.server()) :: :ok
-  def cancel(session), do: GenServer.call(session, :cancel)
+  @spec cancel(GenServer.server(), term()) :: :ok
+  def cancel(session, reason \\ :user_cancelled),
+    do: GenServer.call(session, {:cancel, reason})
 
   @doc """
   Requests cancellation of one tool call of the active turn.
@@ -548,8 +553,8 @@ defmodule Tackle.Session do
   end
 
   # Cancels the active turn or, while idle, a running manual compaction.
-  def handle_call(:cancel, _from, state),
-    do: {:reply, :ok, cancel_running(state, :user_cancelled)}
+  def handle_call({:cancel, reason}, _from, state),
+    do: {:reply, :ok, cancel_running(state, reason)}
 
   def handle_call(:tree, _from, state) do
     {:reply, {:ok, state.agent_state.tree}, state}
