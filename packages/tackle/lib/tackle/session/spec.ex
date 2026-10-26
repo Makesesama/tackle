@@ -14,7 +14,6 @@ defmodule Tackle.Session.Spec do
   alias Tackle.Runtime.ID
   alias Tackle.Session.Storage
 
-  @enforce_keys []
   defstruct session_id: nil,
             cwd: nil,
             parent: nil,
@@ -79,10 +78,6 @@ defmodule Tackle.Session.Spec do
   @spec session_id(t()) :: String.t()
   def session_id(%__MODULE__{session_id: nil}), do: ID.generate()
   def session_id(%__MODULE__{session_id: session_id}), do: session_id
-
-  @doc "Returns the resolved storage options for this session."
-  @spec storage(t()) :: keyword()
-  def storage(%__MODULE__{storage: storage}), do: storage
 
   @doc "Returns the same spec with a concrete session id."
   @spec with_session_id(t(), String.t()) :: t()

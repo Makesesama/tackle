@@ -24,7 +24,6 @@ defmodule Tackle.Session.Loader do
   alias Tackle.Config
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Lib.Thinking
-  alias Tackle.Session.Codec
   alias Tackle.Session.Projection
 
   @type result :: %{
@@ -103,22 +102,6 @@ defmodule Tackle.Session.Loader do
         {:error,
          {:configuration_required,
           %{model: recorded, thinking: projection.thinking, available: config.model_ref}}}
-    end
-  end
-
-  @doc "Decodes durable messages in order, failing on the first invalid message."
-  @spec decode_messages([map()]) :: {:ok, [Tackle.Lib.Message.t()]} | {:error, term()}
-  def decode_messages(messages) when is_list(messages) do
-    messages
-    |> Enum.reduce_while({:ok, []}, fn data, {:ok, acc} ->
-      case Codec.decode_message(data) do
-        {:ok, message} -> {:cont, {:ok, [message | acc]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
-      {:error, _reason} = error -> error
     end
   end
 end

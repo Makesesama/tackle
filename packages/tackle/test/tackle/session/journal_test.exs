@@ -9,7 +9,6 @@ defmodule Tackle.Session.JournalTest do
   alias Tackle.Runtime.ID
   alias Tackle.Session.Journal
   alias Tackle.Session.Journal.Watchdog
-  alias Tackle.Session.Loader
   alias Tackle.Session.Log
   alias Tackle.Session.Persistence
   alias Tackle.Session.Reader
@@ -193,7 +192,7 @@ defmodule Tackle.Session.JournalTest do
       {:ok, journal} = start_journal(ctx)
       assert {:ok, projection} = Journal.projection(journal)
       assert projection.last_seq == 5
-      assert [%Tackle.Lib.Message{role: :user, content: "hello"}] = decode_messages(projection)
+      assert [%Message{role: :user, content: "hello"}] = Tree.transcript(projection.tree)
 
       assert {:ok, _turn_id} = Journal.begin_turn(journal, :continue, nil)
       assert {:ok, status} = Journal.status(journal)
@@ -933,11 +932,6 @@ defmodule Tackle.Session.JournalTest do
     if Process.alive?(journal), do: GenServer.stop(journal)
   catch
     :exit, _reason -> :ok
-  end
-
-  defp decode_messages(projection) do
-    {:ok, messages} = Loader.decode_messages(projection.messages)
-    messages
   end
 
   defp mark_unclean!(ctx) do
