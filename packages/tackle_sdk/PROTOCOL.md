@@ -59,7 +59,8 @@ only select a subset per session.
 ]}}
 ```
 
-`parameters` is a JSON Schema object.
+`parameters` is a JSON Schema object: the `input_schema` of the tool's
+`Tackle.Lib.Tool.definition/1`, the same schema model providers receive.
 
 ### `session/new`
 

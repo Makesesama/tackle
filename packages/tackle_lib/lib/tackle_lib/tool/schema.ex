@@ -3,9 +3,11 @@ defmodule Tackle.Lib.Tool.Schema do
   Format-agnostic tool schema helpers.
 
   Tackle.Lib's core schema is a small Elixir keyword-list shape used for local tool
-  argument validation/coercion. Wire-format projections such as JSON Schema or
-  Peri live outside this module so provider adapters can choose their own
-  representation without making Tackle.Lib's core contract format-specific.
+  argument validation/coercion. Wire-format projections live outside this
+  module: `Tackle.Lib.Tool.Schema.JsonSchema` projects it into the JSON Schema
+  of a tool's definition (`Tackle.Lib.Tool.definition/1`), which provider
+  adapters send as it is, and integrations may add their own (for example,
+  Peri in `tackle_anubis`).
 
   The canonical normalized argument map uses **string keys** because tool calls
   commonly arrive from JSON providers with string-keyed arguments. Host adapters
@@ -124,17 +126,6 @@ defmodule Tackle.Lib.Tool.Schema do
   def validate_schema(schema),
     do: {:error, "schema must be a keyword list of fields, got: #{inspect(schema)}"}
 
-  @doc "Returns a provider-neutral, serializable definition map."
-  @spec definition(String.t(), String.t(), t(), keyword()) :: map()
-  def definition(name, description, input_schema, opts \\ []) do
-    %{
-      name: name,
-      description: description,
-      input_schema: normalize_schema(input_schema),
-      output_schema: opts[:output_schema]
-    }
-  end
-
   @doc """
   Validates a tool output value.
 
@@ -187,24 +178,6 @@ defmodule Tackle.Lib.Tool.Schema do
     Enum.map_join(errors, "; ", fn
       %{field: nil, message: message} -> message
       %{field: field, message: message} -> "#{field}: #{message}"
-    end)
-  end
-
-  @doc false
-  @spec normalize_schema(t()) :: [map()]
-  def normalize_schema(schema) do
-    Enum.map(schema, fn {field, opts} ->
-      %{
-        name: to_string(field),
-        type: format_type(Keyword.get(opts, :type, :string)),
-        required: Keyword.get(opts, :required, false),
-        description: Keyword.get(opts, :description),
-        default: Keyword.get(opts, :default),
-        enum: Keyword.get(opts, :enum),
-        nullable: Keyword.get(opts, :nullable)
-      }
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Map.new()
     end)
   end
 
@@ -417,8 +390,4 @@ defmodule Tackle.Lib.Tool.Schema do
         if value in values, do: :ok, else: {:error, "must be one of #{Enum.join(values, ", ")}"}
     end
   end
-
-  defp format_type({:list, inner}), do: "array<#{format_type(inner)}>"
-  defp format_type(:float), do: "number"
-  defp format_type(type) when type in @primitive_types, do: Atom.to_string(type)
 end

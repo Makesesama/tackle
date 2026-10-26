@@ -581,11 +581,13 @@ its embedded provider id and model match the current request, so state from
 one account is never replayed to another provider on the same adapter. Hosts that persist
 conversations must preserve this field.
 
-Provider adapters are also responsible for translating Tackle.Lib's normalized
-tool definitions into the provider wire format. `opts[:tools]` contains
-serializable `:input_schema` field maps. In code that still has a tool module's
-native keyword schema, `Tackle.Lib.Tool.Schema.JsonSchema.to_json_schema/1` provides
-the standard JSON Schema projection.
+Provider adapters are also responsible for putting Tackle.Lib's tool
+definitions (`Tackle.Lib.Tool.definition/1`) into the provider wire format.
+Each definition in `opts[:tools]` carries its parameters as a JSON Schema
+object in `:input_schema`, computed once by the library with
+`Tackle.Lib.Tool.Schema.JsonSchema.to_json_schema/1`, so adapters send it as it
+is instead of converting schemas themselves. A keyword structured-output
+schema can be projected with the same function.
 
 ### Decision models
 
@@ -683,8 +685,8 @@ field (so a tool can write an empty file); on every other type it counts as
 absent, like `nil`. Absent fields get their default. `nullable: true` accepts
 and preserves an explicit `nil` (JSON `null`); an enum on such a field must
 include `nil` to allow it. Enum membership is checked with `in` after
-coercion, so `1` and `1.0` differ. Adapters that project schemas to JSON
-Schema advertise nullable fields with a `[type, "null"]` type. Tackle.Lib
+coercion, so `1` and `1.0` differ. A tool's definition advertises nullable
+fields with a `[type, "null"]` JSON Schema type. Tackle.Lib
 never creates atoms from provider/user keys.
 
 ### Settlement and errors

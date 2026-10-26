@@ -2,9 +2,22 @@ defmodule Tackle.Lib.Tool.Schema.JsonSchema do
   @moduledoc """
   JSON Schema projection for Tackle.Lib's native tool schema.
 
-  This module is intentionally separate from `Tackle.Lib.Tool.Schema` so core Tackle.Lib
-  remains format-agnostic. Provider adapters that speak JSON Schema can opt into
-  this projection at the adapter boundary.
+  `Tackle.Lib.Tool.definition/1` uses it to compute a tool's `input_schema`
+  once, so provider adapters send that JSON Schema as it is instead of
+  converting tool schemas themselves. Adapters that take a structured-output
+  schema in the keyword form may project it with `to_json_schema/1` too.
+
+  The projection of a field:
+
+    * `:string`, `:integer`, `:boolean`, and `:map` become the JSON Schema
+      types `"string"`, `"integer"`, `"boolean"`, and `"object"`; `:float`
+      becomes `"number"`; `{:list, type}` becomes an `"array"` whose
+      `"items"` are the projection of `type`;
+    * `nullable: true` makes the type `[type, "null"]`;
+    * `:description`, `:default`, and `:enum` are kept as `"description"`,
+      `"default"`, and `"enum"`;
+    * `required: true` lists the field in the object's `"required"`, in
+      declaration order.
   """
 
   @type schema :: Tackle.Lib.Tool.Schema.t()

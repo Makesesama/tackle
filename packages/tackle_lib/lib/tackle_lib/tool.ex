@@ -17,8 +17,8 @@ defmodule Tackle.Lib.Tool do
       host-supplied context map, returning `{:ok, result}` or `{:error, reason}`.
 
   The schema itself is owned by `Tackle.Lib.Tool.Schema`, not by any provider
-  adapter. Provider-specific projections should be derived at the adapter
-  boundary (for example, `Tackle.Lib.Tool.Schema.JsonSchema.to_json_schema/1`).
+  adapter. `definition/1` projects it once into the JSON Schema object that
+  provider adapters send as it is (see `t:definition/0`).
 
   ## Errors the model sees
 
@@ -59,6 +59,7 @@ defmodule Tackle.Lib.Tool do
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Tool.Content
   alias Tackle.Lib.Tool.Schema
+  alias Tackle.Lib.Tool.Schema.JsonSchema
 
   @doc "Returns the unique name of the tool."
   @callback name() :: String.t()
@@ -270,22 +271,33 @@ defmodule Tackle.Lib.Tool do
 
   def missing_callbacks(_module), do: @required_callbacks
 
-  @doc """
-  Returns Tackle.Lib's provider-neutral definition for a tool module.
+  @typedoc """
+  A tool's provider-neutral definition: what adapters send to providers.
+
+  `input_schema` is the JSON Schema object of the tool's parameters
+  (`Tackle.Lib.Tool.Schema.JsonSchema.to_json_schema/1`), with string keys,
+  which adapters can put on the wire as it is. `output_schema` is the tool's
+  optional output schema, unchanged.
   """
-  @spec definition(module()) :: %{
+  @type definition :: %{
           name: String.t(),
           description: String.t(),
-          input_schema: [map()],
-          output_schema: Tackle.Lib.Tool.Schema.output_schema()
+          input_schema: map(),
+          output_schema: Schema.output_schema()
         }
+
+  @doc """
+  Returns Tackle.Lib's provider-neutral definition for a tool module (see
+  `t:definition/0`).
+  """
+  @spec definition(module()) :: definition()
   def definition(tool_module) do
-    Schema.definition(
-      tool_module.name(),
-      tool_module.description(),
-      tool_module.parameters_schema(),
+    %{
+      name: tool_module.name(),
+      description: tool_module.description(),
+      input_schema: JsonSchema.to_json_schema(tool_module.parameters_schema()),
       output_schema: output_schema(tool_module)
-    )
+    }
   end
 
   @doc """
@@ -304,30 +316,6 @@ defmodule Tackle.Lib.Tool do
     if function_exported?(tool_module, :effect, 0) and tool_module.effect() == :read_only,
       do: :read_only,
       else: :external
-  end
-
-  @doc """
-  Builds a tool description block for the system prompt.
-  """
-  @spec build_tool_description(module()) :: String.t()
-  def build_tool_description(tool_module) do
-    """
-    ### #{tool_module.name()}
-
-    #{tool_module.description()}
-
-    Parameters:
-    #{format_params(tool_module.parameters_schema())}
-    """
-  end
-
-  defp format_params(params) do
-    Enum.map_join(params, "\n", fn {param_name, opts} ->
-      type = Keyword.get(opts, :type, :string)
-      required = if Keyword.get(opts, :required, false), do: " (required)", else: ""
-      desc = Keyword.get(opts, :description, "")
-      "    - #{param_name}: #{format_type(type)}#{required} - #{desc}"
-    end)
   end
 
   @doc """
@@ -505,13 +493,6 @@ defmodule Tackle.Lib.Tool do
     do: %{part | "text" => model_text(text)}
 
   defp sanitize_part(part), do: part
-
-  defp format_type(:string), do: "string"
-  defp format_type(:integer), do: "integer"
-  defp format_type(:float), do: "number"
-  defp format_type(:boolean), do: "boolean"
-  defp format_type({:list, inner}), do: "array of #{format_type(inner)}"
-  defp format_type(:map), do: "object"
 
   defp format_result(result) when is_map(result) or is_list(result) do
     JSON.encode!(result)

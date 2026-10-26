@@ -4,6 +4,7 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
   alias Tackle.Plugins.Anthropic.Convert
 
   @model "claude-opus-5-5"
+  @empty_schema %{"type" => "object", "properties" => %{}, "required" => []}
 
   test "pairs tool_use with tool_result and caches the final user block" do
     messages = [
@@ -52,7 +53,11 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
                  %{
                    name: "my_tool",
                    description: "Does a thing",
-                   input_schema: [q: [type: :string, required: true]]
+                   input_schema: %{
+                     "type" => "object",
+                     "properties" => %{"q" => %{"type" => "string"}},
+                     "required" => ["q"]
+                   }
                  }
                ],
                true
@@ -69,14 +74,14 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
 
     assert {:ok, [known]} =
              Convert.tools(
-               [%{name: "read", description: "Read", input_schema: []}],
+               [%{name: "read", description: "Read", input_schema: @empty_schema}],
                true
              )
 
     assert known["name"] == "Read"
 
     assert Convert.tool_name_map(
-             [%{name: "read", description: "r", input_schema: []}],
+             [%{name: "read", description: "r", input_schema: @empty_schema}],
              true
            ) == %{"Read" => "read"}
   end

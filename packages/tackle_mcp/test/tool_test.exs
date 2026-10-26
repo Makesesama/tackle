@@ -62,6 +62,43 @@ defmodule Tackle.Plugins.MCP.ToolTest do
     assert_received {:called, "structured", %{"value" => 3}}
   end
 
+  test "gives providers the JSON Schema of the projected MCP input schema" do
+    descriptor = %{
+      "name" => "recolor",
+      "description" => "Recolors a project",
+      "inputSchema" => %{
+        "type" => "object",
+        "properties" => %{
+          "color" => %{
+            "anyOf" => [%{"type" => "string", "enum" => ["red", "blue"]}, %{"type" => "null"}],
+            "description" => "New color; null clears it"
+          },
+          "ids" => %{"type" => "array", "items" => %{"type" => "integer"}},
+          "limit" => %{"type" => "number", "default" => 1.5},
+          "filters" => %{"oneOf" => [%{"type" => "object"}, %{"type" => "string"}]}
+        },
+        "required" => ["ids"]
+      }
+    }
+
+    assert {:ok, tool} = Tool.create("demo", descriptor, self(), FakeConnection, 123)
+
+    assert LibTool.definition(tool).input_schema == %{
+             "type" => "object",
+             "properties" => %{
+               "color" => %{
+                 "type" => ["string", "null"],
+                 "enum" => ["red", "blue", nil],
+                 "description" => "New color; null clears it"
+               },
+               "ids" => %{"type" => "array", "items" => %{"type" => "integer"}},
+               "limit" => %{"type" => "number", "default" => 1.5},
+               "filters" => %{"type" => "object"}
+             },
+             "required" => ["ids"]
+           }
+  end
+
   test "projects MCP text and image content" do
     descriptor = %{"name" => "mixed", "inputSchema" => %{}}
 

@@ -7,6 +7,12 @@ defmodule Tackle.Plugins.CodexTest do
   alias Tackle.Plugins.Codex
   alias Tackle.Plugins.Codex.SSE
 
+  @search_schema %{
+    "type" => "object",
+    "properties" => %{"query" => %{"type" => "string", "description" => "Query"}},
+    "required" => ["query"]
+  }
+
   defmodule Interaction do
     @behaviour Tackle.Lib.Interaction
 
@@ -175,18 +181,7 @@ defmodule Tackle.Plugins.CodexTest do
           %{role: :tool, tool_call_id: "call-old", name: "search", content: "old result"}
         ],
         tools: [
-          %{
-            name: "search",
-            description: "Search documents",
-            input_schema: [query: [type: :string, required: true, description: "Query"]]
-          },
-          %{
-            name: "recolor",
-            description: "Recolor a project",
-            input_schema: [
-              %{name: "color", type: "string", nullable: true, enum: ["red", nil]}
-            ]
-          }
+          %{name: "search", description: "Search documents", input_schema: @search_schema}
         ]
       )
 
@@ -237,13 +232,9 @@ defmodule Tackle.Plugins.CodexTest do
              &(&1["type"] == "function_call_output" and &1["call_id"] == "call-old")
            )
 
-    assert [%{"name" => "search", "parameters" => parameters}, recolor] = body["tools"]
-    assert parameters["required"] == ["query"]
-
-    assert recolor["parameters"]["properties"]["color"] == %{
-             "type" => ["string", "null"],
-             "enum" => ["red", nil]
-           }
+    # The definition's JSON Schema goes on the wire as it is.
+    assert [%{"name" => "search", "parameters" => @search_schema, "strict" => nil}] =
+             body["tools"]
   end
 
   test "closes dangling tool calls left by a cancelled turn", %{store: store} do

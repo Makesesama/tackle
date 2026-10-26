@@ -8,6 +8,12 @@ defmodule Tackle.Plugins.OpenRouterTest do
   @model "openai/gpt-6-luna"
   @claude "anthropic/claude-sonnet-5.5"
 
+  @search_schema %{
+    "type" => "object",
+    "properties" => %{"query" => %{"type" => "string", "description" => "Query"}},
+    "required" => ["query"]
+  }
+
   defmodule CredentialStore do
     @behaviour Tackle.Lib.CredentialStore
 
@@ -149,11 +155,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
           %{role: :tool, tool_call_id: "call-old", name: "search", content: "old result"}
         ],
         tools: [
-          %{
-            name: "search",
-            description: "Search documents",
-            input_schema: [query: [type: :string, required: true, description: "Query"]]
-          }
+          %{name: "search", description: "Search documents", input_schema: @search_schema}
         ]
       )
 
@@ -204,10 +206,13 @@ defmodule Tackle.Plugins.OpenRouterTest do
 
     assert old_call["function"]["arguments"] == "{\"query\":\"old\"}"
 
-    assert [%{"type" => "function", "function" => %{"name" => "search", "parameters" => params}}] =
-             body["tools"]
+    assert [
+             %{
+               "type" => "function",
+               "function" => %{"name" => "search", "parameters" => @search_schema}
+             }
+           ] = body["tools"]
 
-    assert params["required"] == ["query"]
     assert body["tool_choice"] == "auto"
   end
 

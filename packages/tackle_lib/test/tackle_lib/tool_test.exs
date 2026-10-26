@@ -387,12 +387,67 @@ defmodule Tackle.Lib.ToolTest do
     assert Tool.effect(DSLSearchTool) == :external
   end
 
-  test "definition/1 exposes provider-neutral tool metadata" do
-    assert %{
-             name: "echo",
-             description: "Echoes normalized args.",
-             input_schema: [%{name: "query", type: "string", required: true} | _]
-           } = Tool.definition(EchoTool)
+  defmodule GoldenTool do
+    use Tackle.Lib.Tool
+
+    tool_name("golden")
+    description("Exercises every schema feature providers see.")
+
+    input do
+      field(:path, :string, required: true, description: "File to change")
+      field(:mode, :string, enum: ["append", "replace"], default: "replace")
+      field(:limit, :integer, default: 10)
+      field(:ratio, :float)
+      field(:dry_run, :boolean, default: false)
+      field(:note, :string, required: true, nullable: true)
+      field(:color, :string, nullable: true, enum: ["red", nil])
+      field(:options, :map)
+      field(:tags, {:list, :string})
+      field(:edits, {:list, :map}, required: true)
+      field(:matrix, {:list, {:list, :float}})
+    end
+
+    output do
+      field(:ok, :boolean, required: true)
+    end
+
+    def run(args, _context), do: {:ok, args}
+  end
+
+  # The one place the provider-facing JSON Schema is pinned: adapters send a
+  # definition's input_schema as it is.
+  test "definition/1 carries the JSON Schema of the tool's parameters" do
+    assert Tool.definition(GoldenTool) == %{
+             name: "golden",
+             description: "Exercises every schema feature providers see.",
+             input_schema: %{
+               "type" => "object",
+               "properties" => %{
+                 "path" => %{"type" => "string", "description" => "File to change"},
+                 "mode" => %{
+                   "type" => "string",
+                   "enum" => ["append", "replace"],
+                   "default" => "replace"
+                 },
+                 "limit" => %{"type" => "integer", "default" => 10},
+                 "ratio" => %{"type" => "number"},
+                 "dry_run" => %{"type" => "boolean", "default" => false},
+                 "note" => %{"type" => ["string", "null"]},
+                 "color" => %{"type" => ["string", "null"], "enum" => ["red", nil]},
+                 "options" => %{"type" => "object"},
+                 "tags" => %{"type" => "array", "items" => %{"type" => "string"}},
+                 "edits" => %{"type" => "array", "items" => %{"type" => "object"}},
+                 "matrix" => %{
+                   "type" => "array",
+                   "items" => %{"type" => "array", "items" => %{"type" => "number"}}
+                 }
+               },
+               "required" => ["path", "note", "edits"]
+             },
+             output_schema: [ok: [type: :boolean, required: true]]
+           }
+
+    assert {:ok, _json} = JSON.encode(Tool.definition(GoldenTool).input_schema)
   end
 
   test "use Tackle.Lib.Tool defines the canonical callback API" do
@@ -916,18 +971,6 @@ defmodule Tackle.Lib.ToolTest do
     end
   end
 
-  test "JsonSchema.to_json_schema/1 projects schema for provider adapters" do
-    assert %{
-             "type" => "object",
-             "required" => ["query"],
-             "properties" => %{
-               "query" => %{"type" => "string", "description" => "Search query"},
-               "limit" => %{"type" => "integer", "default" => 10},
-               "tags" => %{"type" => "array", "items" => %{"type" => "string"}}
-             }
-           } = JsonSchema.to_json_schema(EchoTool.parameters_schema())
-  end
-
   test "nullable fields preserve explicit nil and project to JSON Schema" do
     schema = [
       color: [type: :string, nullable: true, enum: ["red", nil]],
@@ -945,8 +988,6 @@ defmodule Tackle.Lib.ToolTest do
              Schema.validate([color: [type: :string, nullable: true, enum: ["red"]]], %{
                "color" => nil
              })
-
-    assert [%{name: "color", nullable: true} | _] = Schema.normalize_schema(schema)
 
     assert %{
              "properties" => %{

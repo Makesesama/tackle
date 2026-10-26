@@ -7,7 +7,6 @@ defmodule Tackle.Plugins.Anthropic.Convert do
 
   alias Tackle.Lib.JSON
   alias Tackle.Lib.LLM.Provider
-  alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Anthropic.{Images, Prompt}
 
   @claude_code_tools %{
@@ -418,14 +417,14 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   defp convert_tool(tool, is_oauth) when is_map(tool) do
     name = field(tool, :name)
     description = field(tool, :description)
-    input_schema = field(tool, :input_schema) || []
+    input_schema = field(tool, :input_schema)
 
-    if is_binary(name) and name != "" and is_binary(description) and is_list(input_schema) do
+    if is_binary(name) and name != "" and is_binary(description) and is_map(input_schema) do
       {:ok,
        %{
          "name" => wire_name(name, is_oauth),
          "description" => description,
-         "input_schema" => tool_json_schema(input_schema)
+         "input_schema" => input_schema
        }}
     else
       {:error, {:invalid_tool, name}}
@@ -433,59 +432,6 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   end
 
   defp convert_tool(_tool, _is_oauth), do: {:error, :invalid_tool}
-
-  defp tool_json_schema(input_schema) do
-    if Keyword.keyword?(input_schema) do
-      JsonSchema.to_json_schema(input_schema)
-    else
-      properties =
-        Map.new(input_schema, fn definition ->
-          name = field(definition, :name)
-
-          schema =
-            definition
-            |> field(:type)
-            |> normalized_type_schema()
-            |> maybe_nullable(field(definition, :nullable))
-            |> maybe_put("description", field(definition, :description))
-            |> maybe_put("default", field(definition, :default))
-            |> maybe_put("enum", field(definition, :enum))
-
-          {name, schema}
-        end)
-
-      required =
-        input_schema
-        |> Enum.filter(&(field(&1, :required) == true))
-        |> Enum.map(&field(&1, :name))
-
-      %{"type" => "object", "properties" => properties, "required" => required}
-    end
-  end
-
-  defp maybe_nullable(schema, true), do: Map.update!(schema, "type", &[&1, "null"])
-  defp maybe_nullable(schema, _nullable), do: schema
-
-  defp normalized_type_schema(type) when type in [:string, "string"], do: %{"type" => "string"}
-  defp normalized_type_schema(type) when type in [:integer, "integer"], do: %{"type" => "integer"}
-
-  defp normalized_type_schema(type) when type in [:float, :number, "number"],
-    do: %{"type" => "number"}
-
-  defp normalized_type_schema(type) when type in [:boolean, "boolean"], do: %{"type" => "boolean"}
-
-  defp normalized_type_schema(type) when type in [:map, "map", "object"],
-    do: %{"type" => "object"}
-
-  defp normalized_type_schema({kind, inner}) when kind in [:list, :array],
-    do: %{"type" => "array", "items" => normalized_type_schema(inner)}
-
-  defp normalized_type_schema("array<" <> inner) do
-    inner = String.slice(inner, 0, max(0, byte_size(inner) - 1))
-    %{"type" => "array", "items" => normalized_type_schema(inner)}
-  end
-
-  defp normalized_type_schema(_type), do: %{"type" => "string"}
 
   defp decode_arguments(arguments) when is_binary(arguments) do
     case JSON.decode(arguments) do

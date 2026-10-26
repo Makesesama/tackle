@@ -13,7 +13,7 @@ defmodule Tackle.Lib.Tool.Registry do
   @type entry :: %{
           required(:name) => String.t(),
           required(:module) => module(),
-          required(:definition) => map()
+          required(:definition) => Tool.definition()
         }
 
   @typedoc """
@@ -73,7 +73,7 @@ defmodule Tackle.Lib.Tool.Registry do
   Returns provider-neutral definitions, in the order their modules were given
   to `new/1`.
   """
-  @spec definitions(t()) :: [map()]
+  @spec definitions(t()) :: [Tool.definition()]
   def definitions(%__MODULE__{entries: entries}), do: Enum.map(entries, & &1.definition)
 
   @doc "Looks up an entry by tool name, or returns `nil`."

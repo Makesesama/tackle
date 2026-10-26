@@ -5,6 +5,8 @@ defmodule Tackle.Plugins.AnthropicTest do
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.Anthropic
 
+  @empty_schema %{"type" => "object", "properties" => %{}, "required" => []}
+
   defmodule CredentialStore do
     @behaviour Tackle.Lib.CredentialStore
 
@@ -89,7 +91,7 @@ defmodule Tackle.Plugins.AnthropicTest do
     opts = [
       model: "claude-opus-5-5",
       messages: [%{role: :user, content: "hello"}],
-      tools: [%{name: "read", description: "Read a file", input_schema: []}],
+      tools: [%{name: "read", description: "Read a file", input_schema: @empty_schema}],
       system: "Be useful",
       temperature: 0.3,
       max_tokens: 4_096,
@@ -141,7 +143,7 @@ defmodule Tackle.Plugins.AnthropicTest do
     opts = [
       model: "claude-opus-5-5",
       messages: [%{role: :user, content: "hello"}],
-      tools: [%{name: "read", description: "Read a file", input_schema: []}],
+      tools: [%{name: "read", description: "Read a file", input_schema: @empty_schema}],
       system: "Be useful",
       credential_store: store,
       request: request

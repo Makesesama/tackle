@@ -5,6 +5,12 @@ defmodule Tackle.Plugins.DeepSeekTest do
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.DeepSeek
 
+  @search_schema %{
+    "type" => "object",
+    "properties" => %{"query" => %{"type" => "string", "description" => "Query"}},
+    "required" => ["query"]
+  }
+
   defmodule CredentialStore do
     @behaviour Tackle.Lib.CredentialStore
 
@@ -149,11 +155,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
           %{role: :tool, tool_call_id: "call-old", name: "search", content: "old result"}
         ],
         tools: [
-          %{
-            name: "search",
-            description: "Search documents",
-            input_schema: [query: [type: :string, required: true, description: "Query"]]
-          }
+          %{name: "search", description: "Search documents", input_schema: @search_schema}
         ]
       )
 
@@ -202,13 +204,12 @@ defmodule Tackle.Plugins.DeepSeekTest do
                "type" => "function",
                "function" => %{
                  "name" => "search",
-                 "parameters" => parameters,
+                 "parameters" => @search_schema,
                  "strict" => false
                }
              }
            ] = body["tools"]
 
-    assert parameters["required"] == ["query"]
     assert body["tool_choice"] == "auto"
   end
 
@@ -419,7 +420,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     ]
 
     tools = [
-      %{name: "search", description: "Search", input_schema: [query: [type: :string]]}
+      %{name: "search", description: "Search", input_schema: @search_schema}
     ]
 
     opts =

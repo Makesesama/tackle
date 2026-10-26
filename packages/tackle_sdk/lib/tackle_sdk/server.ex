@@ -49,7 +49,7 @@ defmodule Tackle.SDK.Server do
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Loop
   alias Tackle.Lib.State
-  alias Tackle.Lib.Tool.Schema.JsonSchema
+  alias Tackle.Lib.Tool
   alias Tackle.SDK.Protocol
 
   @default_max_iterations :infinity
@@ -265,10 +265,12 @@ defmodule Tackle.SDK.Server do
   defp dispatch_initialized(%{method: "tools/list"} = request, state) do
     tools =
       Enum.map(state.tools, fn tool ->
+        definition = Tool.definition(tool)
+
         %{
-          "name" => tool.name(),
-          "description" => tool.description(),
-          "parameters" => JsonSchema.to_json_schema(tool.parameters_schema())
+          "name" => definition.name,
+          "description" => definition.description,
+          "parameters" => definition.input_schema
         }
       end)
 

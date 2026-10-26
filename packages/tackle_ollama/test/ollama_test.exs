@@ -19,6 +19,12 @@ defmodule Tackle.Plugins.OllamaTest do
     :ok
   end
 
+  @search_schema %{
+    "type" => "object",
+    "properties" => %{"query" => %{"type" => "string"}},
+    "required" => ["query"]
+  }
+
   @catalog ["gpt-oss:120b", "gpt-oss:20b", "kimi-k3", "deepseek-v4.1-flash", "glm-5.3"]
 
   describe "default providers" do
@@ -268,11 +274,7 @@ defmodule Tackle.Plugins.OllamaTest do
       request: request,
       messages: [%{role: :user, content: "go"}],
       tools: [
-        %{
-          name: "search",
-          description: "Search",
-          input_schema: [query: [type: :string, required: true]]
-        }
+        %{name: "search", description: "Search", input_schema: @search_schema}
       ],
       reasoning_effort: :off
     ]
@@ -294,7 +296,17 @@ defmodule Tackle.Plugins.OllamaTest do
     assert body["stream_options"] == %{"include_usage" => true}
     assert body["reasoning_effort"] == "none"
     assert body["response_format"]["type"] == "json_schema"
-    assert get_in(body, ["tools", Access.at(0), "function", "name"]) == "search"
+
+    assert body["tools"] == [
+             %{
+               "type" => "function",
+               "function" => %{
+                 "name" => "search",
+                 "description" => "Search",
+                 "parameters" => @search_schema
+               }
+             }
+           ]
   end
 
   test "rejects unsafe keys and local-only model suffix" do
