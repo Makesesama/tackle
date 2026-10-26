@@ -432,9 +432,12 @@ synced where an irreversible effect depends on it: before a tool with external
 effects runs, everything appended so far is made durable; read-only tools skip
 that sync. A provider call only waits until earlier journal requests have
 completed, never for a sync. Compactions, navigations, and configuration and
-title changes are synced before they take effect. If a journal append, sync, or
-validation fails, the session stops instead of continuing with memory-only
-state.
+title changes are synced before they take effect. If a journal append or sync
+fails, the session stops instead of continuing with memory-only state. A write
+the journal refuses before writing anything (data it cannot record, a commit
+that would not replay) returns an error and leaves the journal usable; a
+message refused that way fails the turn with `{:message_not_journaled, reason}`,
+and the session rebuilds its state from the journal.
 
 An independent watchdog uses a 15-second threshold. A live `sync` that exceeds
 it pauses durable progress instead of killing the session. The original sync
@@ -471,9 +474,9 @@ A fatal stall automatically captures the operation, stage, sequence, elapsed tim
 queue length, and payload-free stack frames. The watchdog logs this diagnostic
 and makes a bounded, best-effort attempt to save `journal-failure.json` beside
 `session.dlog` with private file permissions, including when the TUI mutes console
-logging. Unexpected journal exits (including disk errors, rejected durable data,
-and writer-lock loss) also produce a report with a payload-free failure category
-and the last stage/sequence before cleanup. Normal shutdown does not create a
+logging. Unexpected journal exits (including disk errors and writer-lock loss)
+also produce a report with a payload-free failure category and the last
+stage/sequence before cleanup. Normal shutdown does not create a
 failure report. Check `recorded_at`: a report from an earlier crash is retained
 when the session resumes. If storage itself is stuck, saving that diagnostic may
 also fail; scope shutdown does not depend on it. Prompts, tool arguments, and

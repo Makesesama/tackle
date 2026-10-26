@@ -317,10 +317,14 @@ Required envelope rules include:
 - `commit_id` is unique;
 - `events` is a non-empty list;
 - each event has an independently versioned schema;
-- every value passes the durable-data validator; and
+- every value passes the durable-data validator;
+- the commit folds into the current projection: no duplicate entry id, a known
+  parent and navigation target, a decodable compaction; and
 - one commit remains below an application-defined maximum item size substantially lower than `:disk_log`'s 4 GB term limit.
 
 Unknown required events stop replay with an unsupported-schema error. Unknown optional extension events can be retained while the core projection ignores them.
+
+The live owner checks these rules, folding the commit into its projection, before it appends anything, so a commit replay would reject never reaches the file. A refused write (invalid data, a commit that would not fold, a branch in a session without branching, a write without an active turn, a settlement of another turn) returns `{:error, reason}` and leaves the journal usable. A failure once bytes may have been written (append, sync, lost lock, a `:disk_log` error notification) stops the owner and its durable scope.
 
 ### 7.4 Event types
 
@@ -453,6 +457,16 @@ turn.crashed
 ```
 
 A Task crash is never rewritten as a normal library error.
+
+A terminal event settles the active turn, or the interrupted turn a resumed
+journal reports, and must name it: settling another turn, or one turn twice, is
+refused with `:turn_mismatch`.
+
+When the journal refuses a message the loop settled (it cannot be recorded),
+the persistence hook fails the turn with `{:message_not_journaled, reason}`.
+The turn's state still holds that message, so after `turn.errored` is
+appended the session rebuilds its state from the journal like after a crash;
+the journal itself stays usable.
 
 A crashed Task returns no state, but the persistence hook has already
 journaled the messages it settled. After `turn.crashed` is appended, a durable
@@ -687,9 +701,9 @@ reading the journal's projection once: it also enables branching when the
 session spec asks for it, installs the persistence hook and the committer,
 reports an interrupted turn as the recovery the frontend must decide, and
 otherwise repairs tool calls a settled turn left without results. After a
-turn whose start failed or whose task crashed is settled,
-`Durable.reopen/4` rebuilds the state the same way, with the session's
-configuration overriding the recorded one.
+turn whose start failed, whose task crashed, or whose message the journal
+refused is settled, `Durable.reopen/4` rebuilds the state the same way, with
+the session's configuration overriding the recorded one.
 
 If the recorded configuration cannot be resolved, loading returns a typed configuration-required result. It does not silently switch providers or models.
 

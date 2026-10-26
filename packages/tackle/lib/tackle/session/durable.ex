@@ -109,14 +109,17 @@ defmodule Tackle.Session.Durable do
 
   @doc """
   Rebuilds the state from the journal after a turn that could not finish
-  (its start failed or its task crashed) was settled.
+  (its start failed or its task crashed) was settled, or one that failed
+  because the journal refused one of its messages
+  (`{:message_not_journaled, reason}`, see `Tackle.Session.Persistence`).
 
   The turn's messages are journaled (by the persistence hook, or with the
-  inbox) while the session still holds the pre-turn state. Rebuilding it the
-  way `open/3` does makes memory and journal agree again: the next message
-  links to the journaled tip instead of starting a branch, and calls the
-  crash left without results are repaired. The session's configuration is
-  authoritative, so it overrides the recorded one.
+  inbox) while the session still holds the pre-turn state, or the turn's
+  state holds a message the journal refused. Rebuilding it the way `open/3`
+  does makes memory and journal agree again: the next message links to the
+  journaled tip instead of starting a branch, and calls the crash left without
+  results are repaired. The session's configuration is authoritative, so it
+  overrides the recorded one.
   """
   @spec reopen(pid(), Config.t(), AgentRef.t(), boolean()) ::
           {:ok, AgentState.t()} | {:error, term()}

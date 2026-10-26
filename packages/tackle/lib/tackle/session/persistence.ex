@@ -31,6 +31,12 @@ defmodule Tackle.Session.Persistence do
   state rather than guessing parentage from the previous journal commit; a
   journal without branching leaves the implied link out.
 
+  A message the journal does not append fails the turn with
+  `{:message_not_journaled, reason}`, the reason the turn's state records.
+  The loop already holds that message, so the session rebuilds its state from
+  the journal once the turn is settled (see `Tackle.Session.Durable.reopen/4`)
+  instead of continuing with a transcript the journal does not have.
+
   Once a user message is appended, the hook tells the session that owns the
   agent (`Tackle.Runtime.session_pid/1` for the context's `:runtime`
   reference) with `{:tackle_message_appended, session_id, message}`, so the
@@ -48,8 +54,9 @@ defmodule Tackle.Session.Persistence do
 
   @impl true
   def after_message(%State{session_id: session_id} = state, %Message{} = message, context) do
-    with :ok <- persist(session_id, &Durable.append_message(&1, state, message)) do
-      notify_appended(message, session_id, context)
+    case persist(session_id, &Durable.append_message(&1, state, message)) do
+      :ok -> notify_appended(message, session_id, context)
+      {:error, reason} -> {:error, {:message_not_journaled, reason}}
     end
   end
 

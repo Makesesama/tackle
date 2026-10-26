@@ -489,10 +489,16 @@ defmodule Tackle.Session.JournalTest do
       log = {:tackle_session, ctx.session_id}
       assert :ok = :disk_log.block(log, true)
       ref = Process.monitor(journal)
-      bad_message = Message.assistant(content: "hi", provider_state: %{"pid" => self()})
+      message = Message.assistant(content: "hi")
+      # The owner stops on the notification, queued before the request, while
+      # that request is pending.
+      :ok = :sys.suspend(journal)
+      send(journal, {:disk_log, node(), log, :full})
+      task = Task.async(fn -> Journal.append_message(journal, message) end)
+      await_queued_append(journal, message.id)
+      :ok = :sys.resume(journal)
 
-      assert {:error, {:journal_stalled, diagnostic}} =
-               Journal.append_message(journal, bad_message)
+      assert {:error, {:journal_stalled, diagnostic}} = Task.await(task)
 
       assert diagnostic["stage"] == "cleanup_sync"
       assert_receive {:DOWN, ^ref, :process, ^journal, :killed}, 1_000
@@ -636,7 +642,7 @@ defmodule Tackle.Session.JournalTest do
       state = %State{session_id: ctx.session_id}
       message = Message.assistant(content: "answer")
 
-      assert {:error, {:journal_unavailable, :not_found}} =
+      assert {:error, {:message_not_journaled, {:journal_unavailable, :not_found}}} =
                Persistence.after_message(state, message, %{})
 
       assert {:error, {:journal_unavailable, :not_found}} =
@@ -759,19 +765,104 @@ defmodule Tackle.Session.JournalTest do
     JSON.decode!(File.read!(report))
   end
 
-  describe "fail-closed behavior" do
-    test "stops the owner when a message cannot be persisted", ctx do
+  describe "rejected writes" do
+    test "a message that cannot be persisted is refused without stopping the owner", ctx do
       {:ok, journal} = start_journal(ctx)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      :ok = Journal.append_message(journal, Message.user("hello"))
+      {:ok, before} = Journal.status(journal)
 
       bad_message = Message.assistant(content: "hi", provider_state: %{"pid" => self()})
 
-      assert {:error, {:journal_failure, {:invalid_message, {:forbidden_term, :pid}}}} =
+      assert {:error, {:invalid_message, {:forbidden_term, :pid}}} =
                Journal.append_message(journal, bad_message)
 
-      ref = Process.monitor(journal)
-      assert_receive {:DOWN, ^ref, :process, ^journal, _reason}, 1_000
-      assert await_failure_report(ctx)["failure"] == "journal_failure/invalid_message"
+      assert {:error, {:invalid_tool_call, {:forbidden_term, :pid}}} =
+               Journal.tool_started(journal, %{
+                 id: "call-1",
+                 name: "read",
+                 arguments: %{"x" => self()}
+               })
+
+      assert {:error, {:invalid_settlement, {:forbidden_term, :pid}}} =
+               Journal.settle_turn(journal, "turn.completed", %{"reason" => self()})
+
+      assert Process.alive?(journal)
+      assert {:ok, ^before} = Journal.status(journal)
+      assert_journal_usable(ctx, journal, ["hello", "after"])
+    end
+
+    test "a commit that would not fold is refused before it is written", ctx do
+      {:ok, journal} = start_journal(ctx, tree: true)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      user = Message.user("hello")
+      :ok = Journal.append_message(journal, user, {:tree, nil})
+      {:ok, before} = Journal.status(journal)
+
+      assert {:error, {:invalid_commit, {:duplicate_entry, _id}}} =
+               Journal.append_message(journal, user, {:tree, user.id})
+
+      assert {:error, {:invalid_commit, {:unknown_parent, "missing"}}} =
+               Journal.append_message(journal, Message.user("orphan"), {:tree, "missing"})
+
+      navigation = %Tree.Change{
+        from_id: user.id,
+        to_id: "missing",
+        selected_id: "missing",
+        mode: :move,
+        revision: 1
+      }
+
+      assert {:error, {:invalid_commit, _reason}} = Journal.tree_navigated(journal, navigation)
+
+      assert Process.alive?(journal)
+      assert {:ok, ^before} = Journal.status(journal)
+      assert_journal_usable(ctx, journal, ["hello", "after"])
+    end
+  end
+
+  describe "settling a turn" do
+    test "refuses a turn other than the active one", ctx do
+      {:ok, journal} = start_journal(ctx)
+      turn_id = ID.generate()
+      {:ok, ^turn_id} = Journal.begin_turn(journal, :run, "hello", turn_id)
+
+      assert {:error, :turn_mismatch} =
+               Journal.settle_turn(journal, "turn.completed", %{"turn_id" => "other-turn"})
+
+      assert :ok = Journal.settle_turn(journal, "turn.completed", %{"turn_id" => turn_id})
+
+      assert {:error, :turn_mismatch} =
+               Journal.settle_turn(journal, "turn.completed", %{"turn_id" => turn_id})
+
+      assert {:error, :turn_mismatch} =
+               Journal.settle_turn(journal, "turn.errored", %{"turn_id" => "never-started"})
+
+      assert {:error, :no_active_turn} = Journal.settle_turn(journal, "turn.completed", %{})
+      stop_journal(journal)
+
+      {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+
+      terminals =
+        Enum.filter(replay.commits, &(commit_type?(&1) == %{"type" => "turn.completed"}))
+
+      assert [%{"turn_id" => ^turn_id}] = terminals
+      assert Map.keys(replay.projection.turns) == [turn_id]
+    end
+
+    test "settles the interrupted turn of a reopened journal, and only that one", ctx do
+      {:ok, journal} = start_journal(ctx)
+      turn_id = ID.generate()
+      {:ok, ^turn_id} = Journal.begin_turn(journal, :run, "hello", turn_id)
+      stop_journal(journal)
+
+      {:ok, journal} = start_journal(ctx)
+
+      assert {:error, :turn_mismatch} =
+               Journal.settle_turn(journal, "turn.abandoned", %{"turn_id" => "other-turn"})
+
+      assert :ok = Journal.settle_turn(journal, "turn.abandoned", %{"turn_id" => turn_id})
+      assert {:ok, %{active_turn: nil}} = Journal.projection(journal)
     end
   end
 
@@ -923,6 +1014,22 @@ defmodule Tackle.Session.JournalTest do
                  false
              end)
            end) == :ok
+  end
+
+  # The journal still accepts writes (an "after" answer), and its file replays
+  # and reopens with `contents`.
+  defp assert_journal_usable(ctx, journal, contents) do
+    assert :ok = Journal.append_message(journal, Message.assistant(content: "after"))
+    assert :ok = Journal.settle_turn(journal, "turn.completed", %{})
+    stop_journal(journal)
+
+    assert {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+    assert Enum.map(replay.projection.messages, & &1["content"]) == contents
+
+    {:ok, reopened} = start_journal(ctx)
+    assert {:ok, %{messages: messages}} = Journal.projection(reopened)
+    assert length(messages) == length(contents)
+    stop_journal(reopened)
   end
 
   defp stop_journal(journal) do

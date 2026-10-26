@@ -31,9 +31,22 @@ defmodule Tackle.Session.Journal do
   execution continues. The commit outcome may be unknown: replay is required
   before any retry. Diagnostics contain stage and stack information, not payloads.
 
-  A journal failure is fatal to further durable execution: append, sync, and
-  validation failures stop the owner, which terminates its durable scope rather
-  than continuing with memory-only state.
+  ## Rejections and failures
+
+  A request the journal refuses before writing anything returns
+  `{:error, reason}` and leaves the journal usable: an invalid message, tool
+  call, settlement, or commit, including one that does not fold into the
+  projection (`{:invalid_commit, reason}`, for example a duplicate entry id or
+  a navigation to an unknown entry); a branch in a session without branching
+  (`:tree_disabled`); a write without an active turn (`:no_active_turn`); or a
+  settlement of another turn (`:turn_mismatch`). The caller decides what the
+  refusal means for its own state.
+
+  Anything that fails once bytes may have been written (append, sync, a lost
+  writer lock, a `:disk_log` error notification), and a storage failure while
+  opening, is fatal to further durable execution: the owner stops, which
+  terminates its durable scope rather than continuing with memory-only state,
+  and the caller receives `{:error, {:journal_failure, reason}}`.
   """
 
   use GenServer, restart: :permanent
@@ -51,6 +64,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Session.Journal.Watchdog
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
+  alias Tackle.Session.ProjectionError
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
   alias Tackle.Session.Storage.Lock
@@ -172,7 +186,15 @@ defmodule Tackle.Session.Journal do
   @spec context_compacted(GenServer.server(), map()) :: :ok | {:error, term()}
   def context_compacted(journal, data), do: durable_call(journal, {:context_compacted, data})
 
-  @doc "Settles the active turn with a terminal event (write-behind)."
+  @doc """
+  Settles a turn with a terminal event (write-behind).
+
+  The turn is the active one or, in a journal opened with an interrupted turn,
+  that turn. A `"turn_id"` in `data` must name it; without one the turn is
+  implied. Settling another turn, or a turn twice, is refused with
+  `{:error, :turn_mismatch}`; with no turn to settle the error is
+  `{:error, :no_active_turn}`.
+  """
   @spec settle_turn(GenServer.server(), atom(), map()) :: :ok | {:error, term()}
   def settle_turn(journal, type, data \\ %{}),
     do: durable_call(journal, {:settle_turn, type, data})
@@ -404,8 +426,8 @@ defmodule Tackle.Session.Journal do
             record_catalog(state, state.next_seq - 1)
             {:reply, {:ok, turn_id}, state}
 
-          {:error, reason} ->
-            fail(state, reason)
+          error ->
+            refuse_or_fail(state, error)
         end
     end
   end
@@ -420,42 +442,30 @@ defmodule Tackle.Session.Journal do
          {:ok, state, _seq} <- commit(state, [event], state_active_turn_id(state)) do
       {:reply, :ok, state}
     else
-      {:error, :tree_disabled} -> {:reply, {:error, :tree_disabled}, state}
-      {:error, reason} -> fail(state, reason)
+      error -> refuse_or_fail(state, error)
     end
   end
 
   def handle_call({:append_message, %Message{} = message, parent, sync?}, _from, state) do
     Watchdog.stage(self(), :encode_message, state.next_seq)
 
-    with %{turn_id: turn_id} <- state.active_turn,
+    with {:ok, turn_id} <- active_turn_id(state),
          {:ok, parent} <- journal_parent(state.projection, parent),
          {:ok, event} <- message_event(message, parent),
          {:ok, state, _seq} <- commit(state, [event], turn_id, sync?) do
       {:reply, :ok, state}
     else
-      nil ->
-        {:reply, {:error, :no_active_turn}, state}
-
-      {:error, :tree_disabled} ->
-        {:reply, {:error, :tree_disabled}, state}
-
-      {:error, reason} ->
-        fail(state, reason)
+      error -> refuse_or_fail(state, error)
     end
   end
 
   def handle_call({:tool_started, call, sync?}, _from, state) do
-    with %{turn_id: turn_id} <- state.active_turn,
+    with {:ok, turn_id} <- active_turn_id(state),
          {:ok, event} <- tool_event(call),
          {:ok, state, _seq} <- commit(state, [event], turn_id, sync?) do
       {:reply, :ok, state}
     else
-      nil ->
-        {:reply, {:error, :no_active_turn}, state}
-
-      {:error, reason} ->
-        fail(state, reason)
+      error -> refuse_or_fail(state, error)
     end
   end
 
@@ -480,7 +490,7 @@ defmodule Tackle.Session.Journal do
 
     case commit(state, [event], state_active_turn_id(state)) do
       {:ok, state, _seq} -> {:reply, :ok, state}
-      {:error, reason} -> fail(state, reason)
+      error -> refuse_or_fail(state, error)
     end
   end
 
@@ -497,27 +507,20 @@ defmodule Tackle.Session.Journal do
 
     case commit(state, [event], nil) do
       {:ok, state, _seq} -> {:reply, :ok, state}
-      {:error, reason} -> fail(state, reason)
+      error -> refuse_or_fail(state, error)
     end
   end
 
+  # Write-behind: the OS writes the settled turn back on its own schedule, so
+  # an app crash keeps it; only power loss can lose the last turns.
   def handle_call({:settle_turn, type, data}, _from, state) do
-    case settle_event(state, type, data) do
-      {:ok, event, turn_id} ->
-        # Write-behind: the OS writes the settled turn back on its own schedule,
-        # so an app crash keeps it; only power loss can lose the last turns.
-        case commit(state, [event], turn_id, false) do
-          {:ok, state, seq} ->
-            state = %{state | active_turn: nil}
-            record_catalog(state, seq)
-            {:reply, :ok, state}
-
-          {:error, reason} ->
-            fail(state, reason)
-        end
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+    with {:ok, event, turn_id} <- settle_event(state, type, data),
+         {:ok, state, seq} <- commit(state, [event], turn_id, false) do
+      state = %{state | active_turn: nil}
+      record_catalog(state, seq)
+      {:reply, :ok, state}
+    else
+      error -> refuse_or_fail(state, error)
     end
   end
 
@@ -542,7 +545,7 @@ defmodule Tackle.Session.Journal do
 
     case commit(state, [event], nil) do
       {:ok, state, _seq} -> {:reply, :ok, state}
-      {:error, reason} -> fail(state, reason)
+      error -> refuse_or_fail(state, error)
     end
   end
 
@@ -555,7 +558,7 @@ defmodule Tackle.Session.Journal do
 
     case commit(state, [event], nil) do
       {:ok, state, _seq} -> {:reply, :ok, state}
-      {:error, reason} -> fail(state, reason)
+      error -> refuse_or_fail(state, error)
     end
   end
 
@@ -568,7 +571,7 @@ defmodule Tackle.Session.Journal do
 
     case commit(state, [event], state_active_turn_id(state)) do
       {:ok, state, _seq} -> {:reply, :ok, %{state | active_turn: nil}}
-      {:error, reason} -> fail(state, reason)
+      error -> refuse_or_fail(state, error)
     end
   end
 
@@ -738,7 +741,7 @@ defmodule Tackle.Session.Journal do
 
       case commit(state, [created], nil) do
         {:ok, state, _seq} -> {:ok, state}
-        {:error, reason} -> {:error, reason}
+        {_rejected_or_error, reason} -> {:error, reason}
       end
     end
   end
@@ -762,11 +765,15 @@ defmodule Tackle.Session.Journal do
 
         case commit(state, [event], nil) do
           {:ok, state, _seq} -> {:ok, %{state | recovered: info}}
-          {:error, reason} -> {:error, reason}
+          {_rejected_or_error, reason} -> {:error, reason}
         end
     end
   end
 
+  # Returns `{:rejected, reason}` when the commit is refused before anything is
+  # written: it must validate and fold into the projection (pure and cheap)
+  # before it is appended, so a commit that replay would reject never reaches
+  # the file. `{:error, reason}` means appending or syncing failed.
   defp commit(state, events, turn_id, sync? \\ true) do
     seq = state.next_seq
 
@@ -781,14 +788,18 @@ defmodule Tackle.Session.Journal do
       )
 
     with :ok <- stage(:validate, seq, fn -> commit_validation(commit) end),
+         {:ok, projection} <- stage(:projection, seq, fn -> fold(state.projection, commit) end),
          :ok <- stage(:append, seq, fn -> Reader.log(state.name, commit) end) do
-      projection =
-        stage(:projection, seq, fn -> Projection.apply_commit(state.projection, commit) end)
-
       next = %{state | projection: projection, next_seq: seq + 1}
 
       with {:ok, next} <- maybe_sync(next, sync?), do: {:ok, next, seq}
     end
+  end
+
+  defp fold(projection, commit) do
+    {:ok, Projection.apply_commit(projection, commit)}
+  rescue
+    error in ProjectionError -> {:rejected, {:invalid_commit, error.reason}}
   end
 
   defp maybe_sync(state, true), do: sync_appended(state)
@@ -819,13 +830,21 @@ defmodule Tackle.Session.Journal do
     do: stage(:catalog, seq, fn -> Catalog.record(build_summary(state)) end)
 
   defp commit_validation(commit) do
-    with :ok <- Log.validate_commit(commit, commit["session_id"], commit["seq"]) do
-      case Codec.validate(commit) do
-        :ok -> :ok
-        {:error, reason} -> {:error, {:invalid_commit, reason}}
-      end
+    with :ok <- Log.validate_commit(commit, commit["session_id"], commit["seq"]),
+         :ok <- Codec.validate(commit) do
+      :ok
+    else
+      {:error, reason} -> {:rejected, {:invalid_commit, reason}}
     end
   end
+
+  # The caller's error, not the journal's: refuse it and stay usable. Anything
+  # else failed after bytes may have been written, which is fatal.
+  defp refuse_or_fail(state, {:rejected, reason}), do: {:reply, {:error, reason}, state}
+  defp refuse_or_fail(state, {:error, reason}), do: fail(state, reason)
+
+  defp active_turn_id(%{active_turn: %{turn_id: turn_id}}), do: {:ok, turn_id}
+  defp active_turn_id(_state), do: {:rejected, :no_active_turn}
 
   defp message_event(%Message{} = message, parent) do
     case Codec.encode_message(message) do
@@ -833,7 +852,7 @@ defmodule Tackle.Session.Journal do
         {:ok, Log.event("message.appended", maybe_put_parent(%{"message" => data}, parent))}
 
       {:error, reason} ->
-        {:error, reason}
+        {:rejected, reason}
     end
   end
 
@@ -846,7 +865,7 @@ defmodule Tackle.Session.Journal do
   defp journal_parent(%Projection{tree: tree}, {:tree, parent_id}) do
     if parent_id == Tree.active_id(tree),
       do: {:ok, :none},
-      else: {:error, :tree_disabled}
+      else: {:rejected, :tree_disabled}
   end
 
   defp compaction_data(%Projection{tree_enabled?: true}, data), do: {:ok, data}
@@ -875,7 +894,7 @@ defmodule Tackle.Session.Journal do
 
     case Codec.validate(data) do
       :ok -> {:ok, Log.event("tool.execution_started", data)}
-      {:error, reason} -> {:error, {:invalid_tool_call, reason}}
+      {:error, reason} -> {:rejected, {:invalid_tool_call, reason}}
     end
   end
 
@@ -889,26 +908,41 @@ defmodule Tackle.Session.Journal do
   defp normalize_tool_call(call), do: Codec.normalize(call)
 
   defp settle_event(state, type, data) do
-    turn_id = state_active_turn_id(state) || data["turn_id"]
+    with {:ok, turn_id} <- settled_turn_id(state, data["turn_id"]),
+         :ok <- terminal_event(type) do
+      payload =
+        data
+        |> Map.put("turn_id", turn_id)
+        |> Map.put_new("settled_at", now())
 
-    cond do
-      not is_binary(turn_id) ->
-        {:error, :no_active_turn}
-
-      not Log.terminal_event?(type) ->
-        {:error, {:invalid_terminal_event, type}}
-
-      true ->
-        payload =
-          data
-          |> Map.put("turn_id", turn_id)
-          |> Map.put_new("settled_at", now())
-
-        case Codec.validate(payload) do
-          :ok -> {:ok, Log.event(type, payload), turn_id}
-          {:error, reason} -> {:error, {:invalid_settlement, reason}}
-        end
+      case Codec.validate(payload) do
+        :ok -> {:ok, Log.event(type, payload), turn_id}
+        {:error, reason} -> {:rejected, {:invalid_settlement, reason}}
+      end
     end
+  end
+
+  # Only the active turn can be settled or, in a journal opened with an
+  # interrupted turn, that turn. A settlement never names another turn: it
+  # would end the wrong one, settle one twice, or invent one.
+  defp settled_turn_id(state, requested) do
+    case {settleable_turn_id(state), requested} do
+      {nil, nil} -> {:rejected, :no_active_turn}
+      {turn_id, nil} -> {:ok, turn_id}
+      {turn_id, turn_id} -> {:ok, turn_id}
+      {_turn_id, _other} -> {:rejected, :turn_mismatch}
+    end
+  end
+
+  defp settleable_turn_id(%{active_turn: %{turn_id: turn_id}}), do: turn_id
+
+  defp settleable_turn_id(%{projection: %Projection{active_turn: %{turn_id: turn_id}}}),
+    do: turn_id
+
+  defp settleable_turn_id(_state), do: nil
+
+  defp terminal_event(type) do
+    if Log.terminal_event?(type), do: :ok, else: {:rejected, {:invalid_terminal_event, type}}
   end
 
   # The live summary carries no search text: building it costs O(session), so

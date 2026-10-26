@@ -105,9 +105,17 @@ defmodule Tackle.Test.Adapter do
 
   defp await_manual(_test_pid, default_content, signal, opts) do
     receive do
-      {:respond, content} -> response(content, opts)
-      :crash -> crash_turn_task()
-      {:error, reason} -> {:error, reason}
+      {:respond, content} ->
+        response(content, opts)
+
+      {:respond, content, provider_state} ->
+        response(content, [{:provider_state, provider_state} | opts])
+
+      :crash ->
+        crash_turn_task()
+
+      {:error, reason} ->
+        {:error, reason}
     after
       5_000 ->
         if Cancellation.cancelled?(signal) do
@@ -176,7 +184,8 @@ defmodule Tackle.Test.Adapter do
        data: %{"content" => content, "tool_calls" => []},
        usage: Keyword.get(opts, :usage),
        model: Keyword.fetch!(opts, :model),
-       provider: adapter_id()
+       provider: adapter_id(),
+       provider_state: Keyword.get(opts, :provider_state)
      }}
   end
 end

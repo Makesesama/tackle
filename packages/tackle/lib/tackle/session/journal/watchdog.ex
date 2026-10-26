@@ -453,13 +453,10 @@ defmodule Tackle.Session.Journal.Watchdog do
   defp failure_tag({tag, _detail})
        when tag in [
               :writer_lock_lost,
-              :invalid_message,
               :invalid_commit,
-              :invalid_tool_call,
               :journal_sync_failed,
               :journal_append_failed,
-              :error_status,
-              :forbidden_term
+              :error_status
             ],
        do: Atom.to_string(tag)
 

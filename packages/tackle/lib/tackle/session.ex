@@ -998,15 +998,26 @@ defmodule Tackle.Session do
   end
 
   # A durable crashed turn's messages are journaled while the session holds
-  # the pre-turn state, so it is rebuilt from the journal once the turn is
-  # settled.
-  defp rebuild_after(%{journal: journal} = state, {:runtime_error, _reason})
-       when not is_nil(journal) do
-    %{config: config, agent_ref: agent_ref, tree_enabled?: tree_enabled?} = state
-    fn -> Durable.reopen(journal, config, agent_ref, tree_enabled?) end
+  # the pre-turn state, and a turn that failed because the journal refused a
+  # message holds that message, which the journal does not have. Either is
+  # rebuilt from the journal once the turn is settled.
+  defp rebuild_after(%{journal: journal} = state, result) when not is_nil(journal) do
+    if diverged?(result) do
+      %{config: config, agent_ref: agent_ref, tree_enabled?: tree_enabled?} = state
+      fn -> Durable.reopen(journal, config, agent_ref, tree_enabled?) end
+    else
+      fn -> :ok end
+    end
   end
 
   defp rebuild_after(_state, _result), do: fn -> :ok end
+
+  defp diverged?({:runtime_error, _reason}), do: true
+
+  defp diverged?({:error, %AgentState{error_reason: {:message_not_journaled, _reason}}}),
+    do: true
+
+  defp diverged?(_result), do: false
 
   # Without a journal a begin or terminal commit writes nothing, so it
   # finishes at once; a durable one runs in a storage task.

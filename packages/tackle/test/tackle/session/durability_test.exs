@@ -564,6 +564,44 @@ defmodule Tackle.Session.DurabilityTest do
     assert Journal.whereis(snapshot.session_id) == {:error, :not_found}
   end
 
+  test "a message the journal refuses fails the turn and the session rebuilds from the journal",
+       ctx do
+    scope = start_durable_scope(home: ctx.home, root: [mode: :manual])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    {:ok, journal} = Journal.whereis(session_id)
+
+    {:ok, first} = Tackle.submit(scope.root_agent_ref, "first")
+    assert_receive {:adapter_called, adapter, _model, _opts}, 5_000
+    # A process id cannot be journaled, so the journal refuses the answer.
+    send(adapter, {:respond, "refused", %{"pid" => self()}})
+    assert_receive {:tackle_turn_finished, ^session_id, ^first, {:error, errored}}, 5_000
+
+    assert {:message_not_journaled, {:invalid_message, {:forbidden_term, :pid}}} =
+             errored.error_reason
+
+    # The journal stayed usable, and the session no longer holds the refused answer.
+    assert Journal.whereis(session_id) == {:ok, journal}
+    {:ok, current} = Tackle.snapshot(scope.root_agent_ref)
+    assert Enum.map(current.agent_state.messages, & &1.content) == ["first"]
+
+    {:ok, second} = Tackle.submit(scope.root_agent_ref, "second")
+    assert_receive {:adapter_called, adapter, _model, _opts}, 5_000
+    send(adapter, {:respond, "answer"})
+    assert_receive {:tackle_turn_finished, ^session_id, ^second, {:ok, _state}}, 5_000
+
+    {:ok, current} = Tackle.snapshot(scope.root_agent_ref)
+    assert Enum.map(current.agent_state.messages, & &1.content) == ["first", "second", "answer"]
+
+    {:ok, replay} = read_journal(session_id, home: ctx.home)
+
+    assert Enum.map(replay.projection.messages, & &1["content"]) == [
+             "first",
+             "second",
+             "answer"
+           ]
+  end
+
   test "journal owner failure terminates the durable scope", ctx do
     scope = start_durable_scope(home: ctx.home, root: [content: "answer"])
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
@@ -587,8 +625,7 @@ defmodule Tackle.Session.DurabilityTest do
     assert_receive {:adapter_called, _pid, _model, _opts}, 5_000
     {:ok, journal} = Journal.whereis(snapshot.session_id)
 
-    bad_message = Message.assistant(content: "hi", provider_state: %{"pid" => self()})
-    assert {:error, _reason} = Journal.append_message(journal, bad_message)
+    send(journal, {:disk_log, node(), {:tackle_session, snapshot.session_id}, :full})
     # The sibling session's monitor cannot reveal the journal's exit reason.
     assert_receive {:DOWN, ^monitor, :process, _pid, :shutdown}, 1_000
 
@@ -596,8 +633,7 @@ defmodule Tackle.Session.DurabilityTest do
     report = Path.join(Path.dirname(path), "journal-failure.json")
     assert eventually(fn -> File.exists?(report) end) == :ok
     diagnostic = JSON.decode!(File.read!(report))
-    assert diagnostic["failure"] == "journal_failure/invalid_message"
-    assert diagnostic["stage"] == "encode_message"
+    assert diagnostic["failure"] == "journal_failure/disk_full"
   end
 
   defp commit_kind(%{"events" => [event | _rest]}) do
