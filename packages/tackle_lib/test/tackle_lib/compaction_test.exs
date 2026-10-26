@@ -840,7 +840,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:error, final} = Tackle.Lib.run(state, "next")
       assert final.status == :error
       assert Process.get(:adapter_calls, 0) == 0
-      assert_uncompacted(state)
+      assert_uncompacted(final)
     end
   end
 
