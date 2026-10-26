@@ -111,12 +111,15 @@ defmodule Tackle.Lib.MessagesTest do
       assert [] = Messages.to_provider([msg])
     end
 
-    test "generates a linking id when an assistant tool call lacks one" do
+    test "derives a stable id when an assistant tool call lacks one" do
       msg =
-        Message.assistant(tool_calls: [%{name: "search", arguments: %{}}])
+        Message.assistant(
+          id: "msg_1",
+          tool_calls: [%{id: "kept", name: "read"}, %{name: "search", arguments: %{}}]
+        )
 
-      assert [%{tool_calls: [%{id: id}]}] = Messages.to_provider([msg])
-      assert is_binary(id) and id != ""
+      assert [%{tool_calls: [%{id: "kept"}, %{id: "call_msg_1_1"}]}] = Messages.to_provider([msg])
+      assert Messages.to_provider([msg]) == Messages.to_provider([msg])
     end
   end
 
@@ -148,6 +151,25 @@ defmodule Tackle.Lib.MessagesTest do
       ]
 
       assert Messages.unresolved_tool_calls(messages) == []
+    end
+
+    test "keeps transcript order and lists a repeated id once" do
+      messages = [
+        Message.assistant(
+          tool_calls: [
+            %{id: "b", name: "second"},
+            %{id: "a", name: "first"},
+            %{id: "b", name: "x"}
+          ]
+        ),
+        Message.assistant(tool_calls: [%{"id" => "c", "name" => "third"}])
+      ]
+
+      assert Messages.unresolved_tool_calls(messages) == [
+               %{id: "b", name: "second"},
+               %{id: "a", name: "first"},
+               %{id: "c", name: "third"}
+             ]
     end
 
     test "keeps calls from an earlier turn that were never settled" do

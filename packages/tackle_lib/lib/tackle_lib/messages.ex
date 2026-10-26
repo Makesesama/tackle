@@ -49,7 +49,6 @@ defmodule Tackle.Lib.Messages do
   convention), not a map.
   """
 
-  alias Tackle.Lib.ID
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
 
@@ -79,29 +78,33 @@ defmodule Tackle.Lib.Messages do
   """
   @spec unresolved_tool_calls(list(Message.t())) :: [%{id: String.t(), name: String.t()}]
   def unresolved_tool_calls(messages) when is_list(messages) do
-    messages
-    |> Enum.reduce([], fn
-      %Message{role: :assistant, tool_calls: calls}, pending when is_list(calls) ->
-        Enum.reduce(calls, pending, fn call, acc ->
-          case {tool_call_field(call, :id), tool_call_field(call, :name)} do
-            {id, name} when is_binary(id) and is_binary(name) ->
-              if Enum.any?(acc, &(&1.id == id)) do
-                acc
-              else
-                acc ++ [%{id: id, name: name}]
-              end
+    # One pass over the history: pending calls are keyed by id with the
+    # position they were made at, so the result keeps transcript order.
+    {pending, _position} =
+      Enum.reduce(messages, {%{}, 0}, fn
+        %Message{role: :assistant, tool_calls: calls}, acc when is_list(calls) ->
+          Enum.reduce(calls, acc, &put_pending_call/2)
 
-            _invalid ->
-              acc
-          end
-        end)
+        %Message{role: :tool, tool_call_id: id}, {pending, position} when is_binary(id) ->
+          {Map.delete(pending, id), position}
 
-      %Message{role: :tool, tool_call_id: id}, pending when is_binary(id) ->
-        Enum.reject(pending, &(&1.id == id))
+        _message, acc ->
+          acc
+      end)
 
-      _message, pending ->
-        pending
-    end)
+    pending
+    |> Enum.sort_by(fn {_id, {position, _name}} -> position end)
+    |> Enum.map(fn {id, {_position, name}} -> %{id: id, name: name} end)
+  end
+
+  defp put_pending_call(call, {pending, position} = acc) do
+    case {tool_call_field(call, :id), tool_call_field(call, :name)} do
+      {id, name} when is_binary(id) and is_binary(name) and not is_map_key(pending, id) ->
+        {Map.put(pending, id, {position, name}), position + 1}
+
+      _duplicate_or_invalid ->
+        acc
+    end
   end
 
   defp tool_call_field(%Tackle.Lib.Tool.Call{} = call, key), do: Map.get(call, key)
@@ -128,7 +131,7 @@ defmodule Tackle.Lib.Messages do
   end
 
   def to_provider_message(%Message{role: :assistant} = message) do
-    tool_calls = encode_tool_calls(message.tool_calls)
+    tool_calls = encode_tool_calls(message.tool_calls, message.id)
 
     provider_message =
       cond do
@@ -168,18 +171,17 @@ defmodule Tackle.Lib.Messages do
 
   defp maybe_put_provider_state(message, _provider_state), do: message
 
-  defp encode_tool_calls(nil), do: []
-  defp encode_tool_calls([]), do: []
-
-  defp encode_tool_calls(tool_calls) when is_list(tool_calls) do
-    Enum.map(tool_calls, &encode_tool_call/1)
+  defp encode_tool_calls(tool_calls, message_id) when is_list(tool_calls) do
+    tool_calls
+    |> Enum.with_index()
+    |> Enum.map(fn {tool_call, index} -> encode_tool_call(tool_call, message_id, index) end)
   end
 
-  defp encode_tool_calls(_), do: []
+  defp encode_tool_calls(_tool_calls, _message_id), do: []
 
-  defp encode_tool_call(tool_call) do
+  defp encode_tool_call(tool_call, message_id, index) do
     %{
-      id: tool_call_id(tool_call),
+      id: tool_call_id(tool_call, message_id, index),
       type: "function",
       function: %{
         name: tool_call_name(tool_call),
@@ -188,10 +190,13 @@ defmodule Tackle.Lib.Messages do
     }
   end
 
-  defp tool_call_id(%{id: id}) when is_binary(id) and id != "", do: id
-  defp tool_call_id(%{"id" => id}) when is_binary(id) and id != "", do: id
-  # Fall back to a deterministic-ish id so the call still links to its result.
-  defp tool_call_id(_), do: ID.uuid4()
+  defp tool_call_id(%{id: id}, _message_id, _index) when is_binary(id) and id != "", do: id
+  defp tool_call_id(%{"id" => id}, _message_id, _index) when is_binary(id) and id != "", do: id
+
+  # The loop gives every call an id, so only foreign history lacks one. Derive
+  # it from the message so every request sends the same id: a random one would
+  # change the request prefix each time and defeat provider prompt caching.
+  defp tool_call_id(_tool_call, message_id, index), do: "call_#{message_id}_#{index}"
 
   defp tool_call_name(%{name: name}) when is_binary(name), do: name
   defp tool_call_name(%{"name" => name}) when is_binary(name), do: name

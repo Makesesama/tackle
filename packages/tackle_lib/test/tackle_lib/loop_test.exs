@@ -6,6 +6,7 @@ defmodule Tackle.Lib.LoopTest do
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Messages
   alias Tackle.Lib.State
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Policy
@@ -2195,6 +2196,173 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
+  describe "turn end" do
+    defmodule TurnEndHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def before_prompt(_state, %{crash: :before_prompt}), do: raise("prompt hook bug")
+      def before_prompt(_state, %{abort: :before_prompt}), do: {:error, :nope}
+      def before_prompt(_state, _context), do: :ok
+
+      @impl true
+      def after_message(_state, %Message{role: :assistant, tool_calls: [_ | _]}, %{
+            fail: :tool_call_message
+          }),
+          do: {:error, :journal_stalled}
+
+      def after_message(_state, %Message{role: :user, content: "queued a"}, %{
+            fail: :queued_message
+          }),
+          do: {:error, :journal_stalled}
+
+      def after_message(_state, _message, _context), do: :ok
+
+      @impl true
+      def before_turn_end(_state, %{crash: :before_turn_end}), do: exit(:gate_down)
+      def before_turn_end(_state, _context), do: :ok
+    end
+
+    defmodule FirstCallsToolThenAnswersAdapter do
+      @behaviour Tackle.Lib.LLM
+
+      @impl true
+      def generate(_schema, opts) do
+        messages = Keyword.fetch!(opts, :messages)
+        send(Process.get(:test_pid), {:provider_messages, messages})
+
+        if Enum.any?(messages, &(&1.role == :tool)) do
+          {:ok, %{data: %{"content" => "answered"}, usage: nil, model: "test/model"}}
+        else
+          {:ok,
+           %{
+             data: %{"tool_calls" => [%{"id" => "c1", "name" => "first", "arguments" => %{}}]},
+             usage: nil,
+             model: "test/model"
+           }}
+        end
+      end
+    end
+
+    setup do
+      Application.put_env(:tackle_lib, :llm, FirstCallsToolThenAnswersAdapter)
+      Process.put(:test_pid, self())
+      :ok
+    end
+
+    defp turn_end_hook_state(context) do
+      State.new(
+        model: "test/model",
+        tools: [FirstTool],
+        hooks: [TurnEndHook],
+        context: Map.put(context, :test_pid, self())
+      )
+    end
+
+    defp run_collecting(state, input, opts \\ []) do
+      test_pid = self()
+      opts = Keyword.put(opts, :event_callback, &send(test_pid, {:event, &1}))
+      result = Loop.run(state, input, opts)
+      {result, collect_events([])}
+    end
+
+    test "tool calls are settled when finalizing their assistant message fails" do
+      state = turn_end_hook_state(%{fail: :tool_call_message})
+
+      {{:error, state}, events} = run_collecting(state, "use the tool")
+
+      assert state.error =~ "Hook aborted after message: :journal_stalled"
+      assert Messages.unresolved_tool_calls(state.messages) == []
+      assert %Message{role: :tool, tool_call_id: "c1"} = List.last(state.messages)
+      assert List.last(state.messages).content =~ "aborted"
+      refute_received {:tool_execute, :first}
+
+      assert [:tool_error, :error, :status_change, :turn_end] =
+               events |> Enum.map(& &1.type) |> Enum.take(-4)
+    end
+
+    test "a turn starting from unresolved tool calls settles them before the provider call" do
+      state = %{
+        State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+        | messages: [
+            Message.user("earlier"),
+            Message.assistant(tool_calls: [%Call{id: "old", name: "first", arguments: %{}}])
+          ]
+      }
+
+      for start <- [&Loop.run(&1, "again"), &Loop.continue/1] do
+        assert {:ok, final_state} = start.(state)
+        assert_receive {:provider_messages, messages}
+
+        assert [_user, _assistant, %{role: :tool, tool_call_id: "old", content: content} | _] =
+                 messages
+
+        assert content =~ "interrupted"
+        assert Messages.unresolved_tool_calls(final_state.messages) == []
+      end
+    end
+
+    test "continue/2 starts a turn like run/3" do
+      test_pid = self()
+      state = %{State.new(model: "test/model") | messages: [Message.user("hello")]}
+
+      Application.put_env(:tackle_lib, :llm, TestAdapter)
+
+      assert {:ok, _state} =
+               Loop.continue(state, event_callback: &send(test_pid, {:event, &1}))
+
+      assert [%Event{type: :turn_start} | _] = collect_events([])
+    end
+
+    test "an error before the provider call leaves no pending assistant message" do
+      state = turn_end_hook_state(%{abort: :before_prompt})
+
+      {{:error, state}, events} = run_collecting(state, "hello")
+
+      assert state.pending_assistant_id == nil
+
+      assert %Event{type: :error, data: %{reason: :nope}} =
+               Enum.find(events, &(&1.type == :error))
+    end
+
+    test "a crashing hook ends the turn with an error instead of crashing the loop" do
+      for {crash, message} <- [
+            before_prompt: "prompt hook bug",
+            before_turn_end: "(exit) :gate_down"
+          ] do
+        assert {:error, state} = Loop.run(turn_end_hook_state(%{crash: crash}), "hello")
+        assert state.error =~ "TurnEndHook.#{crash}/"
+        assert state.error =~ "crashed"
+        assert state.error =~ message
+      end
+    end
+
+    test "a crashing event callback does not stop the turn" do
+      Application.put_env(:tackle_lib, :llm, TestAdapter)
+
+      assert {:ok, state} =
+               Loop.run(State.new(model: "test/model"), "hello",
+                 event_callback: fn _event -> raise "observer bug" end
+               )
+
+      assert Tackle.Lib.last_answer(state) == "done"
+    end
+
+    test "queued messages are kept when finalizing one of them fails" do
+      Application.put_env(:tackle_lib, :llm, TestAdapter)
+      state = turn_end_hook_state(%{fail: :queued_message})
+
+      assert {:error, state} =
+               Loop.run(state, "hello",
+                 take_incoming_messages: fn -> {:ok, ["queued a", "queued b"]} end
+               )
+
+      assert state.error == "Hook aborted after message: :journal_stalled"
+
+      assert Enum.map(state.messages, & &1.content) == ["hello", "queued a", "queued b"]
+    end
+  end
+
   describe "hook integration" do
     defmodule HookLoggingTool do
       @behaviour Tackle.Lib.Tool
@@ -2353,9 +2521,7 @@ defmodule Tackle.Lib.LoopTest do
                      [:status_change, :turn_cancelled, :turn_end, :after_turn]
           else
             assert :step_start in events
-
-            if adapter == PermanentFailureAdapter,
-              do: assert(Enum.take(events, -2) == [:error, :after_turn])
+            assert Enum.take(events, -4) == [:error, :status_change, :turn_end, :after_turn]
           end
         end
       end

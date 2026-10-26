@@ -131,6 +131,31 @@ defmodule Tackle.Lib.HookTest do
       assert {:error, error} = Hook.invoke([BadReturnHook], :before_prompt, [state], %{})
       assert error =~ "returned unexpected value"
     end
+
+    test "returns an error, without running later hooks, when a hook crashes" do
+      defmodule CrashingHook do
+        @behaviour Tackle.Lib.Hook
+
+        @impl true
+        def before_prompt(_state, %{crash: :raise}), do: raise("hook bug")
+        def before_prompt(_state, %{crash: :throw}), do: throw(:oops)
+        def before_prompt(_state, %{crash: :exit}), do: exit(:timeout)
+      end
+
+      state = State.new()
+
+      for {crash, banner} <- [
+            raise: "(RuntimeError) hook bug",
+            throw: "(throw) :oops",
+            exit: "(exit) time out"
+          ] do
+        assert {:error, error} =
+                 Hook.invoke([CrashingHook, MutatorHook], :before_prompt, [state], %{crash: crash})
+
+        assert error =~ "CrashingHook.before_prompt/2 crashed"
+        assert error =~ banner
+      end
+    end
   end
 
   describe "Hook.invoke_before_turn_end/3" do
@@ -223,6 +248,15 @@ defmodule Tackle.Lib.HookTest do
 
         assert error =~ "before_turn_end/2 returned unexpected value"
       end
+    end
+
+    test "returns an error when a hook crashes" do
+      Process.put(:test_pid, self())
+
+      # ResultHook fetches the missing :result key and raises.
+      assert {:error, error} = Hook.invoke_before_turn_end([ResultHook], State.new(), %{})
+
+      assert error =~ "ResultHook.before_turn_end/2 crashed"
     end
   end
 

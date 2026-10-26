@@ -24,6 +24,10 @@ defmodule Tackle.Lib.Hook do
       run context for subsequent steps.
     * `{:error, reason}` — abort; the turn is halted with the given error reason.
 
+  A hook that raises, throws, or exits aborts the turn the same way, with a
+  reason describing the crash. Crashes in `after_turn/2` are logged and
+  otherwise ignored, like its errors.
+
   `before_turn_end/2` may also return `{:continue, messages}` or
   `{:continue, messages, context}`.
 
@@ -69,6 +73,8 @@ defmodule Tackle.Lib.Hook do
         context: %{user_id: user.id}
       )
   """
+
+  require Logger
 
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
@@ -212,9 +218,10 @@ defmodule Tackle.Lib.Hook do
 
   defp apply_before_turn_end(hook_module, state, context) do
     if implements?(hook_module, :before_turn_end, 2) do
-      hook_module
-      |> apply(:before_turn_end, [state, context])
-      |> handle_before_turn_end_result(hook_module, context)
+      case call_hook(hook_module, :before_turn_end, [state, context]) do
+        {:ok, result} -> handle_before_turn_end_result(result, hook_module, context)
+        {:crashed, reason} -> {:error, reason}
+      end
     else
       {:ok, context, []}
     end
@@ -257,14 +264,37 @@ defmodule Tackle.Lib.Hook do
     Code.ensure_loaded?(hook_module) and function_exported?(hook_module, event, arity)
   end
 
+  # A hook that raises, throws, or exits aborts like one returning an error, so
+  # the loop still settles the turn instead of crashing with it.
+  defp call_hook(hook_module, event, args) do
+    {:ok, apply(hook_module, event, args)}
+  catch
+    kind, reason ->
+      stacktrace = __STACKTRACE__
+
+      Logger.error(fn ->
+        [
+          "Hook ",
+          inspect(hook_module),
+          ".#{event}/#{length(args)} crashed: ",
+          Exception.format(kind, reason, stacktrace)
+        ]
+      end)
+
+      {:crashed,
+       "Hook #{inspect(hook_module)}.#{event}/#{length(args)} crashed: " <>
+         String.replace_prefix(Exception.format_banner(kind, reason, stacktrace), "** ", "")}
+  end
+
   defp apply_hook(hook_module, event, args, acc_context) do
     full_args = List.insert_at(args, -1, acc_context)
     arity = length(full_args)
 
     if implements?(hook_module, event, arity) do
-      hook_module
-      |> apply(event, full_args)
-      |> handle_hook_result(hook_module, event, full_args, acc_context)
+      case call_hook(hook_module, event, full_args) do
+        {:ok, result} -> handle_hook_result(result, hook_module, event, full_args, acc_context)
+        {:crashed, reason} -> {:halt, {:error, reason}}
+      end
     else
       {:cont, {:ok, acc_context}}
     end
