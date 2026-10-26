@@ -131,7 +131,7 @@ defmodule Tackle.Lib.Messages do
   end
 
   def to_provider_message(%Message{role: :assistant} = message) do
-    tool_calls = encode_tool_calls(message.tool_calls, message.id)
+    tool_calls = encode_tool_calls(message.tool_calls, message.id || :erlang.phash2(message))
 
     provider_message =
       cond do
@@ -194,8 +194,9 @@ defmodule Tackle.Lib.Messages do
   defp tool_call_id(%{"id" => id}, _message_id, _index) when is_binary(id) and id != "", do: id
 
   # The loop gives every call an id, so only foreign history lacks one. Derive
-  # it from the message so every request sends the same id: a random one would
-  # change the request prefix each time and defeat provider prompt caching.
+  # it from the message (its id, or a hash of a message built without one) so
+  # every request sends the same id: a random one would change the request
+  # prefix each time and defeat provider prompt caching.
   defp tool_call_id(_tool_call, message_id, index), do: "call_#{message_id}_#{index}"
 
   defp tool_call_name(%{name: name}) when is_binary(name), do: name

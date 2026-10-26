@@ -121,6 +121,16 @@ defmodule Tackle.Lib.MessagesTest do
       assert [%{tool_calls: [%{id: "kept"}, %{id: "call_msg_1_1"}]}] = Messages.to_provider([msg])
       assert Messages.to_provider([msg]) == Messages.to_provider([msg])
     end
+
+    test "derives distinct ids for id-less calls of messages without an id" do
+      first = %Message{role: :assistant, tool_calls: [%{name: "search", arguments: %{"q" => 1}}]}
+      second = %Message{role: :assistant, tool_calls: [%{name: "search", arguments: %{"q" => 2}}]}
+
+      assert [%{tool_calls: [%{id: a}]}, %{tool_calls: [%{id: b}]}] =
+               Messages.to_provider([first, second])
+
+      assert a != b
+    end
   end
 
   describe "unresolved_tool_calls/1" do
