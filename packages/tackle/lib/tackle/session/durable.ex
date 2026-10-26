@@ -94,15 +94,13 @@ defmodule Tackle.Session.Durable do
   end
 
   def open(%Config{} = config, %AgentRef{} = agent_ref, %SessionSpec{} = spec) do
-    owner = self()
-
     with {:ok, journal} <- Journal.whereis(spec.session_id),
          {:ok, opened} <-
-           restore(journal, put_credential_store(config), agent_ref, owner,
+           restore(journal, put_credential_store(config), agent_ref,
              override_config: spec.override_config,
              tree: spec.tree
            ) do
-      {:ok, %{opened | storage: Watchdog.subscribe(journal, owner)}}
+      {:ok, %{opened | storage: Watchdog.subscribe(journal, self())}}
     end
   end
 
@@ -115,14 +113,13 @@ defmodule Tackle.Session.Durable do
   way `open/3` does makes memory and journal agree again: the next message
   links to the journaled tip instead of starting a branch, and calls the
   crash left without results are repaired. The session's configuration is
-  authoritative, so it overrides the recorded one. `owner` is the session
-  process, since this runs in a storage task.
+  authoritative, so it overrides the recorded one.
   """
-  @spec reopen(pid(), Config.t(), AgentRef.t(), boolean(), pid()) ::
+  @spec reopen(pid(), Config.t(), AgentRef.t(), boolean()) ::
           {:ok, AgentState.t()} | {:error, term()}
-  def reopen(journal, %Config{} = config, %AgentRef{} = agent_ref, tree_enabled?, owner) do
+  def reopen(journal, %Config{} = config, %AgentRef{} = agent_ref, tree_enabled?) do
     with {:ok, opened} <-
-           restore(journal, config, agent_ref, owner, override_config: true, tree: tree_enabled?) do
+           restore(journal, config, agent_ref, override_config: true, tree: tree_enabled?) do
       {:ok, opened.agent_state}
     end
   end
@@ -214,7 +211,7 @@ defmodule Tackle.Session.Durable do
   def tool_gate(nil), do: nil
   def tool_gate(journal), do: fn -> Journal.await_durable(journal) end
 
-  defp restore(journal, config, agent_ref, owner, opts) do
+  defp restore(journal, config, agent_ref, opts) do
     with {:ok, projection} <- Journal.projection(journal),
          {:ok, loaded} <-
            Loader.load(projection, config, override_config: opts[:override_config]),
@@ -225,7 +222,7 @@ defmodule Tackle.Session.Durable do
       agent_state =
         loaded.state
         |> put_runtime_context(agent_ref)
-        |> install_persistence_hook(owner)
+        |> install_persistence_hook()
         |> install_committer()
 
       with {:ok, agent_state} <-
@@ -265,15 +262,11 @@ defmodule Tackle.Session.Durable do
   defp enable_tree(journal, _projection, true), do: Journal.enable_tree(journal)
 
   # The hook is added directly rather than through Config; Tackle.Lib.Hook
-  # loads hook modules itself when it validates or invokes them.
-  defp install_persistence_hook(%AgentState{} = state, owner) do
-    %{
-      state
-      | hooks: Enum.concat(state.hooks, [Persistence]),
-        context:
-          state.context |> Map.put(:journal_required, true) |> Map.put(:session_owner, owner)
-    }
-  end
+  # loads hook modules itself when it validates or invokes them. It finds the
+  # journal by session id and the session through the `:runtime` reference,
+  # so nothing of the session reaches the context tools see.
+  defp install_persistence_hook(%AgentState{} = state),
+    do: %{state | hooks: Enum.concat(state.hooks, [Persistence])}
 
   # Durable sessions commit compactions and navigations through the journal
   # before the library installs them in memory.

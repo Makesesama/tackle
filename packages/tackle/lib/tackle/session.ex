@@ -935,12 +935,11 @@ defmodule Tackle.Session do
 
   # A durable crashed turn's messages are journaled while the session holds
   # the pre-turn state, so it is rebuilt from the journal once the turn is
-  # settled. `self()` is taken here: the rebuild runs in a storage task.
+  # settled.
   defp rebuild_after(%{journal: journal} = state, {:runtime_error, _reason})
        when not is_nil(journal) do
     %{config: config, agent_ref: agent_ref, tree_enabled?: tree_enabled?} = state
-    owner = self()
-    fn -> Durable.reopen(journal, config, agent_ref, tree_enabled?, owner) end
+    fn -> Durable.reopen(journal, config, agent_ref, tree_enabled?) end
   end
 
   defp rebuild_after(_state, _result), do: fn -> :ok end

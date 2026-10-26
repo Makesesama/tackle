@@ -687,7 +687,7 @@ session spec asks for it, installs the persistence hook and the committer,
 reports an interrupted turn as the recovery the frontend must decide, and
 otherwise repairs tool calls a settled turn left without results. After a
 turn whose start failed or whose task crashed is settled,
-`Durable.reopen/5` rebuilds the state the same way, with the session's
+`Durable.reopen/4` rebuilds the state the same way, with the session's
 configuration overriding the recorded one.
 
 If the recorded configuration cannot be resolved, loading returns a typed configuration-required result. It does not silently switch providers or models.

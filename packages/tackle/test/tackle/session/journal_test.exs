@@ -632,18 +632,15 @@ defmodule Tackle.Session.JournalTest do
       assert_receive {:DOWN, ^ref, :process, ^journal, {:journal_failure, :disk_full}}, 1_000
     end
 
-    test "missing owners fail closed only for durable hook contexts", ctx do
+    test "the persistence hook fails closed without a journal", ctx do
       state = %State{session_id: ctx.session_id}
       message = Message.assistant(content: "answer")
 
       assert {:error, {:journal_unavailable, :not_found}} =
-               Persistence.after_message(state, message, %{journal_required: true})
+               Persistence.after_message(state, message, %{})
 
       assert {:error, {:journal_unavailable, :not_found}} =
-               Persistence.before_tool_call(state, %{}, %{journal_required: true})
-
-      assert :ok = Persistence.after_message(state, message, %{})
-      assert :ok = Persistence.before_tool_call(state, %{}, %{})
+               Persistence.before_tool_call(state, %{}, %{})
     end
 
     test "journal death releases a waiting persistence hook with an error", ctx do

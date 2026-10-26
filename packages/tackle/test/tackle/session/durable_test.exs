@@ -15,6 +15,25 @@ defmodule Tackle.Session.DurableTest do
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Session.Turn
 
+  defmodule ContextTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "context"
+
+    @impl true
+    def description, do: "Reports its execution context to the test."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, context) do
+      send(context.test_pid, {:tool_context, context})
+      {:ok, %{}}
+    end
+  end
+
   setup do
     {:ok, home: tmp_home(), agent_ref: AgentRef.new!(ID.generate(), ID.generate())}
   end
@@ -74,6 +93,31 @@ defmodule Tackle.Session.DurableTest do
       assert repaired.id in Enum.map(projection.messages, & &1["id"])
 
       GenServer.stop(journal)
+    end
+
+    test "tools of a durable session see none of its internals", ctx do
+      scope =
+        start_durable_scope(
+          home: ctx.home,
+          root: [
+            tools: [ContextTool],
+            context: %{test_pid: self()},
+            llm_opts: [
+              mode: :tool_then_answer,
+              tool_call: %{"id" => "c1", "name" => "context", "arguments" => %{}}
+            ]
+          ]
+        )
+
+      root = scope.root_agent_ref
+      {:ok, _snapshot} = Tackle.subscribe(root)
+      {:ok, turn_id} = Tackle.submit(root, "hello")
+      assert_receive {:tool_context, context}, 5_000
+      assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
+
+      assert context.runtime == root
+      refute Map.has_key?(context, :session_owner)
+      refute Map.has_key?(context, :journal_required)
     end
 
     test "append_message records the message's tree parent", ctx do

@@ -22,53 +22,60 @@ defmodule Tackle.Session.Persistence do
   external tool whose result was lost is reported as uncertain.
 
   The hook is provider-neutral and storage-free: it resolves the session's
-  journal by session id and is a no-op for sessions without one, so the same
-  hook can be installed for durable and ephemeral agents alike. Durable session
-  context carries `:journal_required`, so a missing owner fails closed rather
-  than being mistaken for an ephemeral session.
+  journal by session id. `Tackle.Session.Durable` installs it only in durable
+  sessions, so a journal that cannot be found fails the turn rather than
+  being mistaken for a session without one.
 
   The hook appends a message through `Tackle.Session.Durable.append_message/3`,
   which commits it with the parent link of its tree entry in the settled
   state rather than guessing parentage from the previous journal commit; a
   journal without branching leaves the implied link out.
+
+  Once a user message is appended, the hook tells the session that owns the
+  agent (`Tackle.Runtime.session_pid/1` for the context's `:runtime`
+  reference) with `{:tackle_message_appended, session_id, message}`, so the
+  session can title itself from it.
   """
 
   @behaviour Tackle.Lib.Hook
 
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
+  alias Tackle.Runtime
+  alias Tackle.Runtime.AgentRef
   alias Tackle.Session.Durable
   alias Tackle.Session.Journal
 
   @impl true
   def after_message(%State{session_id: session_id} = state, %Message{} = message, context) do
-    with :ok <-
-           persist(session_id, context, &Durable.append_message(&1, state, message)) do
-      # Live message_end precedes the hook. Title generation must wait until
-      # this user message is appended, not race it; the session decides
-      # whether the user wrote it.
-      if message.role == :user and is_pid(context[:session_owner]) do
-        send(context.session_owner, {:tackle_message_appended, session_id, message})
-      end
-
-      :ok
+    with :ok <- persist(session_id, &Durable.append_message(&1, state, message)) do
+      notify_appended(message, session_id, context)
     end
   end
 
   @impl true
-  def before_tool_call(%State{session_id: session_id}, call, context) do
-    persist(session_id, context, &Journal.tool_started(&1, call, sync: false))
+  def before_tool_call(%State{session_id: session_id}, call, _context) do
+    persist(session_id, &Journal.tool_started(&1, call, sync: false))
   end
 
-  defp persist(session_id, context, fun) do
+  defp persist(session_id, fun) do
     case Journal.whereis(session_id) do
-      {:ok, journal} ->
-        fun.(journal)
-
-      {:error, :not_found} ->
-        if context[:journal_required],
-          do: {:error, {:journal_unavailable, :not_found}},
-          else: :ok
+      {:ok, journal} -> fun.(journal)
+      {:error, :not_found} -> {:error, {:journal_unavailable, :not_found}}
     end
   end
+
+  # Live message_end precedes the hook. Title generation must wait until this
+  # user message is appended, not race it; the session decides whether the
+  # user wrote it.
+  defp notify_appended(%Message{role: :user} = message, session_id, context) do
+    with %AgentRef{} = agent_ref <- AgentRef.from_context(context),
+         {:ok, session} <- Runtime.session_pid(agent_ref) do
+      send(session, {:tackle_message_appended, session_id, message})
+    end
+
+    :ok
+  end
+
+  defp notify_appended(_message, _session_id, _context), do: :ok
 end
