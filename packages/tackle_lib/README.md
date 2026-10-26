@@ -407,7 +407,8 @@ count, and adapter-owned price card. `Tackle.Lib.LLM.select/2` validates and
 freezes this metadata in the selection. `Tackle.Lib.LLM.model_info/2` is the safe
 callback boundary for callers that need explicit callback/validation errors.
 Price-card cost is marked estimated; a numeric provider-reported total remains
-authoritative.
+authoritative, and such usage gets no estimated breakdown, which would not add
+up to it.
 
 ### Provider errors
 

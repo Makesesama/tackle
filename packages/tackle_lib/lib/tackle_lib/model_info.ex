@@ -52,18 +52,26 @@ defmodule Tackle.Lib.ModelInfo do
   def normalize(model, info), do: {:error, {:invalid_model_info, model, info}}
 
   @doc """
-  Adds an itemized estimated cost to one usage entry.
+  Adds an itemized estimated cost to one usage entry without a reported cost.
 
-  Existing provider-reported numeric cost and itemization are preserved. When
-  the price card supplies itemization, the breakdown is marked `estimated: true`.
-  `cost_estimated: true` marks only a total derived from that price card.
+  When the usage has no numeric `:cost`, the price card's estimate fills
+  `:cost` (marked `cost_estimated: true`), `:currency`, and a
+  `:cost_breakdown` marked `estimated: true`. Usage with a provider-reported
+  cost is returned unchanged: an estimated breakdown would not add up to the
+  billed total, and aggregates would sum mismatched breakdowns.
   """
   @spec estimate_cost(t(), Usage.t() | map() | nil) :: Usage.t() | nil
   def estimate_cost(%__MODULE__{pricing: nil}, usage), do: Usage.normalize(usage)
   def estimate_cost(%__MODULE__{}, nil), do: nil
 
   def estimate_cost(%__MODULE__{pricing: pricing}, usage) do
-    usage = Usage.normalize(usage)
+    case Usage.normalize(usage) do
+      %Usage{cost: cost} = usage when is_number(cost) -> usage
+      usage -> estimate(usage, pricing)
+    end
+  end
+
+  defp estimate(%Usage{} = usage, pricing) do
     unit = pricing.unit_tokens
 
     breakdown =
@@ -81,24 +89,14 @@ defmodule Tackle.Lib.ModelInfo do
     else
       estimated_total = breakdown |> Map.values() |> Enum.sum()
 
-      estimated_breakdown =
-        breakdown |> Map.put(:total, estimated_total) |> Map.put(:estimated, true)
-
-      if is_number(usage.cost) do
-        %{
-          usage
-          | cost_breakdown: usage.cost_breakdown || estimated_breakdown,
-            currency: usage.currency || pricing.currency
-        }
-      else
-        %{
-          usage
-          | cost: estimated_total,
-            cost_breakdown: estimated_breakdown,
-            cost_estimated: true,
-            currency: pricing.currency
-        }
-      end
+      %{
+        usage
+        | cost: estimated_total,
+          cost_breakdown:
+            breakdown |> Map.put(:total, estimated_total) |> Map.put(:estimated, true),
+          cost_estimated: true,
+          currency: pricing.currency
+      }
     end
   end
 

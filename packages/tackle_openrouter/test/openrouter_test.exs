@@ -178,6 +178,8 @@ defmodule Tackle.Plugins.OpenRouterTest do
            } = result.usage
 
     refute result.usage.cost_estimated
+    # The billed cost has no price-card breakdown that would not add up to it.
+    assert result.usage.cost_breakdown == nil
 
     assert_receive {:request, request_options}
     assert request_options[:url] == "https://openrouter.ai/api/v1/chat/completions"

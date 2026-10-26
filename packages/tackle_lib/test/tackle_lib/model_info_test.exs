@@ -75,19 +75,31 @@ defmodule Tackle.Lib.ModelInfoTest do
       assert usage.currency == "USD"
     end
 
-    test "preserves authoritative provider cost while marking derived itemization", %{info: info} do
-      usage =
-        ModelInfo.estimate_cost(info, %Usage{
-          input_tokens: 100_000,
-          cost: 0.123,
-          currency: "EUR"
-        })
+    test "leaves usage with a provider-reported cost unchanged", %{info: info} do
+      reported = %Usage{
+        input_tokens: 100_000,
+        cost: 0.123,
+        currency: "EUR",
+        total_tokens: 100_000
+      }
 
-      assert usage.cost == 0.123
-      assert usage.currency == "EUR"
-      assert usage.cost_estimated == nil
-      assert usage.cost_breakdown.estimated
-      assert_in_delta usage.cost_breakdown.total, 0.2, 0.000_001
+      assert ModelInfo.estimate_cost(info, reported) == reported
+
+      without_currency = %{reported | currency: nil}
+      assert ModelInfo.estimate_cost(info, without_currency) == without_currency
+
+      itemized = %{reported | cost_breakdown: %{input: 0.123, total: 0.123}}
+      assert ModelInfo.estimate_cost(info, itemized) == itemized
+    end
+
+    test "aggregates billed and estimated usage without mismatched breakdowns", %{info: info} do
+      billed = ModelInfo.estimate_cost(info, %Usage{input_tokens: 100_000, cost: 0.123})
+      estimated = ModelInfo.estimate_cost(info, %Usage{input_tokens: 100_000})
+
+      aggregate = Usage.aggregate([billed, estimated])
+      assert_in_delta aggregate.cost, 0.323, 0.000_001
+      assert aggregate.cost_estimated
+      assert aggregate.cost_breakdown == nil
     end
 
     test "does not invent a zero-dollar total when no token bucket was reported", %{info: info} do
