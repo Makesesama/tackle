@@ -16,8 +16,9 @@ defmodule Tackle.Lib.Compaction.Policy do
       attention_limit  = floor(context_window * policy.attention_ratio)
       trigger_at       = min(hard_safe_limit, attention_limit)
 
-      summary_max_tokens = policy.summary_max_tokens ||
-                           min(max_output_tokens || 8,192, 8,192)
+      summary_max_tokens = min(policy.summary_max_tokens,
+                               max_output_tokens || policy.summary_max_tokens)
+                           (policy.summary_max_tokens defaults to 8,192)
       max_retained_tokens = trigger_at - fixed_tokens - summary_max_tokens
       retain_tokens    = min(policy.retain_tokens ||
                                clamp(floor(context_window * retain_ratio), 4,096, 20,000),
@@ -51,7 +52,7 @@ defmodule Tackle.Lib.Compaction.Policy do
 
   @default_response_reserve 8_192
   @default_max_response_reserve 32_768
-  @default_max_summary_tokens 8_192
+  @default_summary_max_tokens 8_192
 
   @type t :: %__MODULE__{
           response_reserve: pos_integer() | nil,
@@ -62,8 +63,7 @@ defmodule Tackle.Lib.Compaction.Policy do
           retain_ratio: float(),
           min_retain_tokens: pos_integer(),
           max_retain_tokens: pos_integer(),
-          summary_max_tokens: pos_integer() | nil,
-          max_summary_tokens: pos_integer(),
+          summary_max_tokens: pos_integer(),
           overflow_retry_limit: non_neg_integer()
         }
 
@@ -91,28 +91,20 @@ defmodule Tackle.Lib.Compaction.Policy do
             retain_ratio: 0.16,
             min_retain_tokens: 4_096,
             max_retain_tokens: 20_000,
-            summary_max_tokens: nil,
-            max_summary_tokens: @default_max_summary_tokens,
+            summary_max_tokens: @default_summary_max_tokens,
             overflow_retry_limit: 1
 
-  @doc "Builds and validates a policy from options."
+  @doc """
+  Builds and validates a policy from options.
+
+  The options are the struct's fields. `:summary_max_tokens` is the most
+  output a summary may ask for; a model that declares a smaller
+  `max_output_tokens` lowers it. An unknown option is an error.
+  """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
-    policy = struct(__MODULE__, opts)
-
-    with :ok <- optional_positive_integer(:response_reserve, policy.response_reserve),
-         :ok <- positive_integer(:max_response_reserve, policy.max_response_reserve),
-         :ok <- non_negative_integer(:safety_reserve, policy.safety_reserve),
-         :ok <- ratio(:attention_ratio, policy.attention_ratio),
-         :ok <- optional_positive_integer(:retain_tokens, policy.retain_tokens),
-         :ok <- ratio(:retain_ratio, policy.retain_ratio),
-         :ok <- positive_integer(:min_retain_tokens, policy.min_retain_tokens),
-         :ok <- positive_integer(:max_retain_tokens, policy.max_retain_tokens),
-         :ok <- optional_positive_integer(:summary_max_tokens, policy.summary_max_tokens),
-         :ok <- positive_integer(:max_summary_tokens, policy.max_summary_tokens),
-         :ok <- non_negative_integer(:overflow_retry_limit, policy.overflow_retry_limit),
-         :ok <- ordered_retention(policy) do
-      {:ok, policy}
+    with :ok <- known_options(opts) do
+      validate(struct(__MODULE__, opts))
     end
   end
 
@@ -153,8 +145,7 @@ defmodule Tackle.Lib.Compaction.Policy do
     trigger_at = min(hard_safe_limit, attention_limit)
 
     summary_max_tokens =
-      policy.summary_max_tokens ||
-        min(info.max_output_tokens || policy.max_summary_tokens, policy.max_summary_tokens)
+      min(policy.summary_max_tokens, info.max_output_tokens || policy.summary_max_tokens)
 
     retain_target =
       policy.retain_tokens ||
@@ -210,6 +201,31 @@ defmodule Tackle.Lib.Compaction.Policy do
 
       _unset ->
         min(info.max_output_tokens || @default_response_reserve, policy.max_response_reserve)
+    end
+  end
+
+  defp known_options(opts) do
+    fields = __MODULE__ |> struct() |> Map.keys() |> List.delete(:__struct__)
+
+    case Keyword.keys(opts) -- fields do
+      [] -> :ok
+      unknown -> {:error, {:invalid_policy, {:unknown_options, unknown}}}
+    end
+  end
+
+  defp validate(policy) do
+    with :ok <- optional_positive_integer(:response_reserve, policy.response_reserve),
+         :ok <- positive_integer(:max_response_reserve, policy.max_response_reserve),
+         :ok <- non_negative_integer(:safety_reserve, policy.safety_reserve),
+         :ok <- ratio(:attention_ratio, policy.attention_ratio),
+         :ok <- optional_positive_integer(:retain_tokens, policy.retain_tokens),
+         :ok <- ratio(:retain_ratio, policy.retain_ratio),
+         :ok <- positive_integer(:min_retain_tokens, policy.min_retain_tokens),
+         :ok <- positive_integer(:max_retain_tokens, policy.max_retain_tokens),
+         :ok <- positive_integer(:summary_max_tokens, policy.summary_max_tokens),
+         :ok <- non_negative_integer(:overflow_retry_limit, policy.overflow_retry_limit),
+         :ok <- ordered_retention(policy) do
+      {:ok, policy}
     end
   end
 

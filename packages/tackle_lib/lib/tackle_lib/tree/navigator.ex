@@ -3,9 +3,10 @@ defmodule Tackle.Lib.Tree.Navigator do
   Navigation transaction for a conversation tree.
 
   Navigation prepares a transition against an expected revision and position,
-  validates the destination, and returns the destination tree plus the
-  navigation outcome. It never mutates existing entries, never runs a turn, and
-  never re-executes a tool.
+  validates the destination, commits the `Tackle.Lib.Tree.Change` through the
+  state's `Tackle.Lib.Committer`, and only then installs the new active
+  position. It never mutates existing entries, never runs a turn, and never
+  re-executes a tool. `Tackle.Lib.navigate/3` delegates here.
 
   ## Targets
 
@@ -27,78 +28,87 @@ defmodule Tackle.Lib.Tree.Navigator do
   durable state are left untouched, though `:edit` still exposes the draft.
   """
 
+  alias Tackle.Lib.Committer
   alias Tackle.Lib.Message
+  alias Tackle.Lib.State
   alias Tackle.Lib.Tree
   alias Tackle.Lib.Tree.Change
+  alias Tackle.Lib.Tree.Navigator.Outcome
 
   @type target :: nil | String.t() | {:entry, String.t()} | {:edit, String.t()}
 
-  @type mode :: :move | :edit
-
-  @type outcome :: %{
-          tree: Tree.t(),
-          selected_id: String.t() | nil,
-          destination_id: String.t() | nil,
-          draft: Message.t() | nil,
-          mode: mode(),
-          noop?: boolean(),
-          change: Change.t() | nil
-        }
-
   @doc """
-  Prepares one navigation against a tree.
+  Navigates the active position of a tree state.
 
-  `opts` may carry `:expected_revision` for a stale-transition check, and
-  `:session_id` so the returned `Tackle.Lib.Tree.Change` identifies its session.
+  The only option is `:expected_revision`, which rejects a transition prepared
+  against another revision of the tree. The change is committed through the
+  state's own committer. Expected failures include `:tree_disabled`,
+  `:turn_in_progress`, `{:unknown_entry, id}`, `{:unsafe_continuation, id}`,
+  `{:stale_transition, expected, actual}`, and `{:durable_commit_failed,
+  reason}`. A failed validation or commit leaves the state unchanged.
   """
-  @spec navigate(Tree.t(), target(), keyword()) :: {:ok, outcome()} | {:error, term()}
-  def navigate(%Tree{} = tree, target, opts \\ []) do
-    with :ok <- validate_revision(tree, Keyword.get(opts, :expected_revision)),
-         {:ok, selected_id, destination_id, mode} <- resolve_target(tree, target),
-         :ok <- validate_resumable(tree, destination_id) do
-      select(tree, selected_id, destination_id, mode, opts)
+  @spec navigate(State.t(), target(), keyword()) ::
+          {:ok, State.t(), Outcome.t()} | {:error, term()}
+  def navigate(%State{} = state, target, opts \\ []) do
+    opts = Keyword.validate!(opts, [:expected_revision])
+
+    with {:ok, tree} <- navigable_tree(state),
+         {:ok, moved, outcome} <- prepare(tree, target, opts),
+         :ok <- commit(state, outcome) do
+      {:ok, install(state, moved), outcome}
     end
   end
 
-  defp select(tree, selected_id, destination_id, mode, opts) do
-    draft = draft_message(tree, selected_id, mode)
+  @doc """
+  Prepares one navigation against a tree, without committing it.
 
-    if destination_id == tree.active_id do
-      {:ok, outcome(tree, selected_id, destination_id, draft, mode, nil, true)}
-    else
+  Returns the tree with its new active position and the outcome. `opts` may
+  carry `:expected_revision` for a stale-transition check.
+  """
+  @spec prepare(Tree.t(), target(), keyword()) :: {:ok, Tree.t(), Outcome.t()} | {:error, term()}
+  def prepare(%Tree{} = tree, target, opts \\ []) do
+    with :ok <- validate_revision(tree, Keyword.get(opts, :expected_revision)),
+         {:ok, selected_id, destination_id, mode} <- resolve_target(tree, target),
+         :ok <- validate_resumable(tree, destination_id),
+         {:ok, moved} <- Tree.move(tree, destination_id) do
       change = %Change{
-        session_id: Keyword.get(opts, :session_id),
         from_id: tree.active_id,
         to_id: destination_id,
         selected_id: selected_id,
         mode: mode,
-        revision: tree.revision + 1
+        revision: moved.revision
       }
 
-      move(tree, selected_id, destination_id, draft, mode, change)
+      outcome = %Outcome{
+        change: change,
+        draft: draft_message(tree, selected_id, mode),
+        noop?: destination_id == tree.active_id
+      }
+
+      {:ok, moved, outcome}
     end
   end
 
-  defp move(tree, selected_id, destination_id, draft, mode, change) do
-    case Tree.move(tree, destination_id) do
-      {:ok, tree} ->
-        {:ok, outcome(tree, selected_id, destination_id, draft, mode, change, false)}
+  defp navigable_tree(%State{tree: nil}), do: {:error, :tree_disabled}
 
-      {:error, _reason} = error ->
-        error
-    end
-  end
+  # The library refuses to navigate a state that is visibly mid-turn. Immutable
+  # state cannot know about another process executing a copy, so the host must
+  # still serialize turns, navigation, and compaction.
+  defp navigable_tree(%State{status: status}) when status in [:thinking, :acting],
+    do: {:error, :turn_in_progress}
 
-  defp outcome(tree, selected_id, destination_id, draft, mode, change, noop?) do
-    %{
-      tree: tree,
-      selected_id: selected_id,
-      destination_id: destination_id,
-      draft: draft,
-      mode: mode,
-      noop?: noop?,
-      change: change
-    }
+  defp navigable_tree(%State{tree: %Tree{} = tree}), do: {:ok, tree}
+
+  defp commit(_state, %Outcome{noop?: true}), do: :ok
+  defp commit(state, %Outcome{change: change}), do: Committer.commit(state, change)
+
+  defp install(%State{} = state, %Tree{} = tree) do
+    State.reset_turn(%{
+      state
+      | tree: tree,
+        messages: Tree.transcript(tree),
+        model_messages: Tree.model_context(tree)
+    })
   end
 
   defp resolve_target(_tree, nil), do: {:ok, nil, nil, :move}

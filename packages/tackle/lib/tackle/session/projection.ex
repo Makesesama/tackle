@@ -47,7 +47,6 @@ defmodule Tackle.Session.Projection do
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tree
   alias Tackle.Session.Codec
-  alias Tackle.Session.Compaction
   alias Tackle.Session.ProjectionError
 
   @terminal_events ~w(turn.completed turn.errored turn.cancelled turn.crashed turn.abandoned)
@@ -407,7 +406,7 @@ defmodule Tackle.Session.Projection do
   defp apply_event(%{"type" => "context.compacted", "data" => data}, projection) do
     parent_id = parent_id(data, projection.tree.active_id)
 
-    case Compaction.decode(data) do
+    case Codec.decode_compaction(data) do
       {:ok, %Record{} = record} ->
         case Tree.append_compaction(projection.tree, record, parent_id: parent_id) do
           {:ok, tree, _entry} ->

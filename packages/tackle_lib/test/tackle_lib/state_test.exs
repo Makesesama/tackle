@@ -2,6 +2,7 @@ defmodule Tackle.Lib.StateTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.Compaction
+  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.Retry
@@ -70,6 +71,29 @@ defmodule Tackle.Lib.StateTest do
 
       assert_raise ArgumentError, ~r/invalid :retry config/, fn ->
         State.new(retry: [base_delay_ms: -1])
+      end
+    end
+
+    test "compaction is a config or nil, which disables it" do
+      assert State.new().compaction == nil
+      assert State.new(compaction: nil).compaction == nil
+      assert %Compaction.Config{max_passes: 2} = State.new(compaction: [max_passes: 2]).compaction
+
+      config = Compaction.Config.new!([])
+      assert State.new(compaction: config).compaction == config
+
+      for value <- [false, true] do
+        assert_raise ArgumentError, ~r/expected :compaction/, fn ->
+          State.new(compaction: value)
+        end
+      end
+
+      # Durability belongs to the state's committer, and nil is the only way
+      # to disable compaction.
+      for option <- [committer: MyCommitter, enabled?: false] do
+        assert_raise ArgumentError, ~r/unknown_options/, fn ->
+          State.new(compaction: [option])
+        end
       end
     end
 
@@ -207,7 +231,7 @@ defmodule Tackle.Lib.StateTest do
     end
 
     test "is the id of the checkpoint at the head of a linear model projection" do
-      checkpoint = Compaction.checkpoint_message("compaction-1", "Earlier work")
+      checkpoint = Checkpoint.message("compaction-1", "Earlier work")
       state = %{State.new() | model_messages: [checkpoint, Message.user("Next")]}
 
       assert State.last_compaction_id(state) == "compaction-1"
@@ -233,7 +257,7 @@ defmodule Tackle.Lib.StateTest do
       before = Message.assistant(content: "a", token_usage: %Usage{input_tokens: 1})
       retained = Message.assistant(content: "b", token_usage: %Usage{input_tokens: 2})
       later = Message.assistant(content: "c", token_usage: %Usage{input_tokens: 3})
-      checkpoint = Compaction.checkpoint_message("compaction-1", "Earlier work")
+      checkpoint = Checkpoint.message("compaction-1", "Earlier work")
 
       state = %{
         State.new()
@@ -249,7 +273,7 @@ defmodule Tackle.Lib.StateTest do
 
     test "keeps the current span right after a compaction, while it has no usage" do
       before = Message.assistant(content: "a", token_usage: %Usage{input_tokens: 1})
-      checkpoint = Compaction.checkpoint_message("compaction-1", "Earlier work")
+      checkpoint = Checkpoint.message("compaction-1", "Earlier work")
 
       state = %{State.new() | messages: [before], model_messages: [checkpoint]}
 

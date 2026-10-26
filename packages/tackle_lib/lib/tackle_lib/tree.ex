@@ -40,6 +40,7 @@ defmodule Tackle.Lib.Tree do
   This value is pure: it needs no process, storage, or OTP supervision.
   """
 
+  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
@@ -68,13 +69,9 @@ defmodule Tackle.Lib.Tree do
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
-  @doc "Returns the number of entries in the tree."
-  @spec size(t()) :: non_neg_integer()
-  def size(%__MODULE__{entries: entries}), do: map_size(entries)
-
   @doc "Returns true when the tree holds no entries."
   @spec empty?(t()) :: boolean()
-  def empty?(%__MODULE__{} = tree), do: size(tree) == 0
+  def empty?(%__MODULE__{entries: entries}), do: map_size(entries) == 0
 
   @doc "Returns the current active entry id, or nil before the root."
   @spec active_id(t()) :: id() | nil
@@ -93,10 +90,6 @@ defmodule Tackle.Lib.Tree do
   @spec contains?(t(), id() | nil) :: boolean()
   def contains?(_tree, nil), do: false
   def contains?(%__MODULE__{entries: entries}, id), do: is_map_key(entries, id)
-
-  @doc "Returns the active entry, or nil before the root."
-  @spec active_entry(t()) :: Entry.t() | nil
-  def active_entry(%__MODULE__{} = tree), do: entry(tree, tree.active_id)
 
   @doc "Returns every entry in chronological insertion order."
   @spec enumerate(t()) :: [Entry.t()]
@@ -182,25 +175,10 @@ defmodule Tackle.Lib.Tree do
       %Entry{kind: :compaction, compaction: %Record{} = record}, acc ->
         acc
         |> Enum.reverse()
-        |> apply_compaction(record)
+        |> Checkpoint.apply_compaction(record)
         |> Enum.reverse()
     end)
     |> Enum.reverse()
-  end
-
-  @doc "Returns the last assistant answer on the active path, or nil."
-  @spec last_answer(t()) :: String.t() | nil
-  def last_answer(%__MODULE__{} = tree) do
-    tree
-    |> transcript()
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      %Message{role: :assistant, content: content} when is_binary(content) and content != "" ->
-        content
-
-      _message ->
-        nil
-    end)
   end
 
   @doc """
@@ -302,13 +280,17 @@ defmodule Tackle.Lib.Tree do
   @doc """
   Appends a committed compaction to the active position.
 
-  The compaction id is reused as the entry id, and the record's summary message
-  becomes the branch's new context checkpoint.
+  `:parent_id` overrides the attachment point like in `append_message/3`. The
+  compaction id is reused as the entry id, the record's `:parent_id` is set to
+  the entry it attaches to, and the record's summary message becomes the
+  branch's new context checkpoint.
   """
   @spec append_compaction(t(), Record.t(), keyword()) ::
           {:ok, t(), Entry.t()} | {:error, term()}
   def append_compaction(%__MODULE__{} = tree, %Record{} = record, opts \\ []) do
-    append(tree, :compaction, %{compaction: record}, record.compaction_id, opts)
+    parent_id = Keyword.get(opts, :parent_id, tree.active_id)
+    record = %{record | parent_id: parent_id}
+    append(tree, :compaction, %{compaction: record}, record.compaction_id, parent_id: parent_id)
   end
 
   @doc """
@@ -328,101 +310,6 @@ defmodule Tackle.Lib.Tree do
     case entry(tree, id) do
       nil -> {:error, {:unknown_entry, id}}
       _entry -> {:ok, %{tree | active_id: id, revision: tree.revision + 1}}
-    end
-  end
-
-  @doc """
-  Builds a validated tree from durable entry descriptors.
-
-  Each descriptor is a map with `:id`, `:parent_id`, `:kind`, and either
-  `:message` or `:compaction`. Descriptors must arrive in chronological order;
-  every parent must already exist (which also guarantees acyclicity). Invalid
-  input is rejected rather than repaired by dropping entries.
-  """
-  @spec restore([map()], keyword()) :: {:ok, t()} | {:error, term()}
-  def restore(entries, opts \\ []) when is_list(entries) do
-    case build_restored(entries, %__MODULE__{}, 1) do
-      {:ok, tree} -> restore_active(tree, Keyword.get(opts, :active_id))
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp build_restored([], tree, _ordinal), do: {:ok, tree}
-
-  defp build_restored([descriptor | rest], tree, ordinal) do
-    with {:ok, entry} <- build_entry(descriptor, ordinal),
-         :ok <- validate_unique(tree, entry.id),
-         :ok <- validate_parent(tree, entry.parent_id) do
-      build_restored(rest, insert(tree, entry), ordinal + 1)
-    end
-  end
-
-  defp build_entry(%{} = descriptor, ordinal) do
-    id = fetch(descriptor, :id)
-    kind = normalize_kind(fetch(descriptor, :kind))
-    parent_id = fetch(descriptor, :parent_id)
-
-    with :ok <- validate_id(id),
-         :ok <- validate_kind(kind, descriptor),
-         :ok <- validate_parent_value(parent_id) do
-      entry =
-        case kind do
-          :message ->
-            %Entry{
-              id: id,
-              parent_id: parent_id,
-              kind: :message,
-              ordinal: ordinal,
-              message: fetch(descriptor, :message)
-            }
-
-          :compaction ->
-            %Entry{
-              id: id,
-              parent_id: parent_id,
-              kind: :compaction,
-              ordinal: ordinal,
-              compaction: fetch(descriptor, :compaction)
-            }
-        end
-
-      {:ok, entry}
-    end
-  end
-
-  defp build_entry(other, _ordinal), do: {:error, {:invalid_entry, other}}
-
-  defp validate_kind(:message, descriptor) do
-    case fetch(descriptor, :message) do
-      %Message{} -> :ok
-      other -> {:error, {:invalid_entry_message, other}}
-    end
-  end
-
-  defp validate_kind(:compaction, descriptor) do
-    case fetch(descriptor, :compaction) do
-      %Record{} -> :ok
-      other -> {:error, {:invalid_entry_compaction, other}}
-    end
-  end
-
-  defp validate_kind(other, _descriptor), do: {:error, {:invalid_entry_kind, other}}
-
-  defp normalize_kind("message"), do: :message
-  defp normalize_kind("compaction"), do: :compaction
-  defp normalize_kind(kind), do: kind
-
-  defp validate_parent_value(nil), do: :ok
-  defp validate_parent_value(parent_id) when is_binary(parent_id) and parent_id != "", do: :ok
-  defp validate_parent_value(other), do: {:error, {:invalid_parent, other}}
-
-  defp restore_active(tree, nil), do: {:ok, %{tree | active_id: nil}}
-
-  defp restore_active(tree, active_id) do
-    if contains?(tree, active_id) do
-      {:ok, %{tree | active_id: active_id}}
-    else
-      {:error, {:unknown_active_entry, active_id}}
     end
   end
 
@@ -446,7 +333,8 @@ defmodule Tackle.Lib.Tree do
     end
   end
 
-  # Adds a validated entry and makes it the active position.
+  # Adds a validated entry and makes it the active position. The only
+  # insertion path, so the child index stays in step with the entries.
   defp insert(tree, %Entry{id: id, parent_id: parent_id} = entry) do
     %{
       tree
@@ -482,32 +370,6 @@ defmodule Tackle.Lib.Tree do
     end
   end
 
-  defp apply_compaction(acc, %Record{} = record) do
-    [record.summary_message | acc |> retained_tail(record) |> reset_metadata()]
-  end
-
-  defp retained_tail(acc, %Record{first_retained_message_id: id, shadowed_message_ids: shadowed}) do
-    case id do
-      nil ->
-        drop_shadowed(acc, shadowed)
-
-      id ->
-        case Enum.find_index(acc, &(&1.id == id)) do
-          nil -> drop_shadowed(acc, shadowed)
-          index -> Enum.drop(acc, index)
-        end
-    end
-  end
-
-  defp drop_shadowed(messages, shadowed_ids) do
-    shadowed = MapSet.new(shadowed_ids)
-    Enum.drop_while(messages, &MapSet.member?(shadowed, &1.id))
-  end
-
-  defp reset_metadata(messages) do
-    Enum.map(messages, &%{&1 | token_usage: nil, provider_state: nil})
-  end
-
   # Tool calls on a path: `pending` holds calls without a result yet, `results`
   # every result seen, so a result recorded before its call still answers it.
   defp track_tool_calls(%Entry{} = entry, {pending, results}) do
@@ -539,6 +401,4 @@ defmodule Tackle.Lib.Tree do
   end
 
   defp entry_tool_result_ids(_entry), do: []
-
-  defp fetch(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
 end

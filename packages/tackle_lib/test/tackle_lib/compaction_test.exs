@@ -3,6 +3,7 @@ defmodule Tackle.Lib.CompactionTest do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction
+  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.Compaction.Prompt
   alias Tackle.Lib.Compaction.Record
@@ -33,7 +34,7 @@ defmodule Tackle.Lib.CompactionTest do
   end
 
   defmodule TestCommitter do
-    @behaviour Tackle.Lib.Compaction.Committer
+    @behaviour Tackle.Lib.Committer
 
     @impl true
     def commit(record, context) do
@@ -54,7 +55,7 @@ defmodule Tackle.Lib.CompactionTest do
   end
 
   defmodule FailingCommitter do
-    @behaviour Tackle.Lib.Compaction.Committer
+    @behaviour Tackle.Lib.Committer
 
     @impl true
     def commit(_record, _context), do: {:error, :disk_full}
@@ -146,7 +147,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert Enum.map(compacted.messages, & &1.id) == Enum.map(state.messages, & &1.id)
 
       assert [checkpoint, retained] = compacted.model_messages
-      assert Compaction.checkpoint?(checkpoint)
+      assert Checkpoint.message?(checkpoint)
       assert checkpoint.id == record.compaction_id
       assert retained.id == List.last(state.messages).id
 
@@ -155,15 +156,48 @@ defmodule Tackle.Lib.CompactionTest do
       assert record.first_retained_message_id == retained.id
       assert record.tokens_before > 0
       assert record.estimated_tokens_after > 0
+      assert %DateTime{} = record.created_at
+      assert record.details == %{pass: 1}
+      assert record.parent_id == nil
 
       assert Process.get(:last_record) == record
-      assert Process.get(:last_commit_context).session_id == state.session_id
+
+      assert Process.get(:last_commit_context) == %{
+               session_id: state.session_id,
+               context: state.context
+             }
+    end
+
+    test "installs the very checkpoint message the record commits" do
+      state = state([user(700), assistant(700)])
+
+      assert {:ok, compacted, record} = Compaction.compact(state, :pressure, [])
+      assert hd(compacted.model_messages) == record.summary_message
+    end
+
+    test "is disabled without a compaction config and returns the state unchanged" do
+      state = %{state([user(700), assistant(700)]) | compaction: nil}
+
+      assert {:error, :disabled, ^state} = Compaction.compact(state, :manual, [])
+      assert {:error, :disabled} = Compaction.resolve(state)
+      assert Compaction.nothing_to_do?(:disabled)
+      refute Process.get(:last_request)
+    end
+
+    test "a turn's snapshot supplies the adapter options of the summary" do
+      state =
+        state([user(10), assistant(10)], policy: [retain_tokens: 5], llm_opts: [tag: "state"])
+
+      snapshot = Tackle.Lib.Snapshot.capture(%{state | llm_opts: [tag: "turn"]})
+
+      assert {:ok, _compacted, _record} = Compaction.compact(state, :manual, snapshot: snapshot)
+      assert Process.get(:last_summarizer_opts)[:llm_opts] == [tag: "turn"]
     end
 
     test "does nothing below the pressure threshold" do
       state = state([user(10), assistant(10)])
 
-      assert {:error, :nothing_to_compact} = Compaction.compact(state, :pressure, [])
+      assert {:error, :nothing_to_compact, _state} = Compaction.compact(state, :pressure, [])
       refute Process.get(:last_record)
     end
 
@@ -172,7 +206,7 @@ defmodule Tackle.Lib.CompactionTest do
 
       assert {:ok, compacted, record} = Compaction.compact(state, :manual, [])
       assert record.trigger == :manual
-      assert Compaction.checkpoint?(hd(compacted.model_messages))
+      assert Checkpoint.message?(hd(compacted.model_messages))
     end
 
     test "forwards state LLM options and applies per-call overrides" do
@@ -203,14 +237,14 @@ defmodule Tackle.Lib.CompactionTest do
     test "disables automatic pressure compaction without a usable window" do
       state = state([user(700), assistant(700)], policy: [safety_reserve: 5_000])
 
-      assert {:error, :nothing_to_compact} = Compaction.compact(state, :pressure, [])
+      assert {:error, :nothing_to_compact, _state} = Compaction.compact(state, :pressure, [])
     end
 
     test "reports no_context_window when the adapter declares no window" do
       state = %{state([user(700), assistant(700)]) | llm: nil}
 
       assert {:error, :no_context_window} = Compaction.resolve(state)
-      assert {:error, :no_context_window} = Compaction.compact(state, :pressure, [])
+      assert {:error, :no_context_window, _state} = Compaction.compact(state, :pressure, [])
     end
 
     test "resets retained usage and provider state without changing the transcript" do
@@ -235,7 +269,7 @@ defmodule Tackle.Lib.CompactionTest do
       state = state([user(700), assistant(700)])
       Process.put(:summarize_result, {:error, :provider_unavailable})
 
-      assert {:error, :provider_unavailable} = Compaction.compact(state, :pressure, [])
+      assert {:error, :provider_unavailable, ^state} = Compaction.compact(state, :pressure, [])
       assert state.model_messages == nil
       refute Process.get(:last_record)
     end
@@ -244,7 +278,7 @@ defmodule Tackle.Lib.CompactionTest do
       state = state([user(700), assistant(700)])
       Process.put(:summarize_result, {:ok, %Summary{content: ""}})
 
-      assert {:error, :empty_summary} = Compaction.compact(state, :pressure, [])
+      assert {:error, :empty_summary, _state} = Compaction.compact(state, :pressure, [])
       refute Process.get(:last_record)
     end
 
@@ -253,7 +287,7 @@ defmodule Tackle.Lib.CompactionTest do
 
       Process.put(:summarize_result, {:ok, %Summary{content: text(700), stop_reason: :end}})
 
-      assert {:error, :summary_not_smaller} = Compaction.compact(state, :pressure, [])
+      assert {:error, :summary_not_smaller, _state} = Compaction.compact(state, :pressure, [])
       refute Process.get(:last_record)
     end
 
@@ -269,14 +303,14 @@ defmodule Tackle.Lib.CompactionTest do
          }}
       )
 
-      assert {:error, :truncated_summary} = Compaction.compact(state, :pressure, [])
+      assert {:error, :truncated_summary, _state} = Compaction.compact(state, :pressure, [])
     end
 
     test "rejects a summary the provider stopped at the output limit" do
       state = state([user(700), assistant(700)])
       Process.put(:summarize_result, {:ok, %Summary{content: text(10), stop_reason: :max_tokens}})
 
-      assert {:error, :truncated_summary} = Compaction.compact(state, :pressure, [])
+      assert {:error, :truncated_summary, _state} = Compaction.compact(state, :pressure, [])
       refute Process.get(:last_record)
     end
 
@@ -288,7 +322,8 @@ defmodule Tackle.Lib.CompactionTest do
         {:ok, %Summary{content: text(10), stop_reason: :content_filter}}
       )
 
-      assert {:error, :summary_content_filtered} = Compaction.compact(state, :pressure, [])
+      assert {:error, :summary_content_filtered, _state} =
+               Compaction.compact(state, :pressure, [])
     end
 
     test "a complete summary whose output reached the cap is accepted" do
@@ -330,7 +365,7 @@ defmodule Tackle.Lib.CompactionTest do
       for result <- [{:ok, %{content: "checkpoint summary"}}, :ok, {:ok, %Summary{content: 42}}] do
         Process.put(:summarize_result, result)
 
-        assert {:error, {:invalid_summary_result, ^result}} =
+        assert {:error, {:invalid_summary_result, ^result}, _state} =
                  Compaction.compact(state, :pressure, [])
       end
 
@@ -347,7 +382,7 @@ defmodule Tackle.Lib.CompactionTest do
           ] do
         Process.put(:summarize_result, crash)
 
-        assert {:error, {:summarizer_failed, ^reason}} =
+        assert {:error, {:summarizer_failed, ^reason}, _state} =
                  Compaction.compact(state, :pressure, [])
       end
 
@@ -357,7 +392,7 @@ defmodule Tackle.Lib.CompactionTest do
     test "manual compaction of a conversation within the retention target has nothing to do" do
       state = state([user(10), assistant(10)])
 
-      assert {:error, :nothing_to_compact} = Compaction.compact(state, :manual, [])
+      assert {:error, :nothing_to_compact, _state} = Compaction.compact(state, :manual, [])
       refute Process.get(:last_request)
     end
 
@@ -370,7 +405,7 @@ defmodule Tackle.Lib.CompactionTest do
 
       # The retained message fits the target, so only the checkpoint could be
       # shadowed: summarizing a summary is no progress.
-      assert {:error, :nothing_to_compact} = Compaction.compact(once, :manual, [])
+      assert {:error, :nothing_to_compact, _state} = Compaction.compact(once, :manual, [])
       refute Process.get(:last_request)
     end
 
@@ -381,7 +416,7 @@ defmodule Tackle.Lib.CompactionTest do
       # above the threshold.
       Process.put(:summarize_result, {:ok, %Summary{content: text(650), stop_reason: :end}})
 
-      assert {:error, :insufficient_reduction} = Compaction.compact(state, :pressure, [])
+      assert {:error, :insufficient_reduction, _state} = Compaction.compact(state, :pressure, [])
       refute Process.get(:last_record)
     end
 
@@ -398,7 +433,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:ok, compacted, record} = Compaction.compact(state, :pressure, [])
       assert "huge" in record.shadowed_message_ids
       assert [checkpoint] = compacted.model_messages
-      assert Compaction.checkpoint?(checkpoint)
+      assert Checkpoint.message?(checkpoint)
       assert record.estimated_tokens_after < 1_000
     end
 
@@ -428,7 +463,7 @@ defmodule Tackle.Lib.CompactionTest do
       state = state([user(700), assistant(700)])
       Process.put(:commit_result, {:error, :disk_full})
 
-      assert {:error, {:durable_commit_failed, :disk_full}} =
+      assert {:error, {:durable_commit_failed, :disk_full}, ^state} =
                Compaction.compact(state, :pressure, [])
 
       assert state.model_messages == nil
@@ -439,7 +474,7 @@ defmodule Tackle.Lib.CompactionTest do
       signal = Cancellation.new_signal()
       :ok = Cancellation.cancel(signal, :user_cancelled)
 
-      assert {:cancelled, :user_cancelled} =
+      assert {:cancelled, :user_cancelled, _state} =
                Compaction.compact(state, :pressure, cancellation_signal: signal)
 
       refute Process.get(:last_record)
@@ -462,7 +497,7 @@ defmodule Tackle.Lib.CompactionTest do
     test "a rejected provider gate prevents summarization and checkpoint commit" do
       state = state([user(700), assistant(700)])
 
-      assert {:error, :storage_unavailable} =
+      assert {:error, :storage_unavailable, _state} =
                Compaction.compact(state, :pressure,
                  before_provider_call: fn -> {:error, :storage_unavailable} end
                )
@@ -476,7 +511,7 @@ defmodule Tackle.Lib.CompactionTest do
       signal = Cancellation.new_signal()
       on_exit(fn -> Cancellation.delete(signal) end)
 
-      assert {:cancelled, :user_cancelled} =
+      assert {:cancelled, :user_cancelled, _state} =
                Compaction.compact(state, :pressure,
                  cancellation_signal: signal,
                  before_provider_call: fn -> Cancellation.cancel(signal, :user_cancelled) end
@@ -492,7 +527,7 @@ defmodule Tackle.Lib.CompactionTest do
         signal = Cancellation.new_signal()
         on_exit(fn -> Cancellation.delete(signal) end)
 
-        assert {:cancelled, :user_cancelled} =
+        assert {:cancelled, :user_cancelled, _state} =
                  Compaction.compact(state, :pressure,
                    cancellation_signal: signal,
                    before_provider_call: fn ->
@@ -541,7 +576,7 @@ defmodule Tackle.Lib.CompactionTest do
         {:ok, TestSummarizer.default_summary()}
       end)
 
-      assert {:cancelled, :user_cancelled} =
+      assert {:cancelled, :user_cancelled, _state} =
                Compaction.compact(state, :pressure, cancellation_signal: signal)
 
       assert Process.get(:last_summarizer_opts)[:cancellation_signal] == signal
@@ -557,7 +592,7 @@ defmodule Tackle.Lib.CompactionTest do
         {:error, :provider_stopped}
       end)
 
-      assert {:cancelled, :user_cancelled} =
+      assert {:cancelled, :user_cancelled, _state} =
                Compaction.compact(state, :pressure, cancellation_signal: signal)
 
       refute Process.get(:last_record)
@@ -570,14 +605,14 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:ok, once, _record} = Compaction.compact(state, :manual, [])
       assert {:ok, twice, _record} = Compaction.compact(once, :manual, [])
 
-      checkpoints = Enum.filter(twice.model_messages, &Compaction.checkpoint?/1)
+      checkpoints = Enum.filter(twice.model_messages, &Checkpoint.message?/1)
       assert [_checkpoint] = checkpoints
 
       # The earlier checkpoint is sent once, as the first shadowed message,
       # and the directive does not repeat it.
       request = Process.get(:last_request)
       assert [previous | _rest] = request.messages
-      assert Compaction.checkpoint_body(previous) == "prior facts: alpha"
+      assert Checkpoint.body(previous) == "prior facts: alpha"
 
       directive = request |> Request.to_provider_messages() |> List.last()
       refute directive.content =~ "prior facts: alpha"
@@ -589,7 +624,7 @@ defmodule Tackle.Lib.CompactionTest do
 
       assert {:ok, compacted, _record} = Compaction.compact(state, :pressure, [])
       assert Process.get(:commit_count) == 2
-      assert Enum.count(compacted.model_messages, &Compaction.checkpoint?/1) == 1
+      assert Enum.count(compacted.model_messages, &Checkpoint.message?/1) == 1
     end
 
     test "a failed second pass returns the checkpoint already durably committed" do
@@ -634,7 +669,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:ok, final} = Tackle.Lib.run(state, "next")
       assert Process.get(:adapter_calls) == 2
       assert Tackle.Lib.last_answer(final) == "answer"
-      assert Enum.any?(final.model_messages, &Compaction.checkpoint?/1)
+      assert Enum.any?(final.model_messages, &Checkpoint.message?/1)
     end
 
     test "does not retry overflow more than once" do
@@ -680,6 +715,26 @@ defmodule Tackle.Lib.CompactionTest do
       assert final.model_messages == nil
       assert Tackle.Lib.last_answer(final) == "answer"
       refute Process.get(:last_record)
+    end
+
+    test "a pressure compaction with nothing to do lets a later step of the turn compact" do
+      state = state([user(10), assistant(10)])
+      Process.put(:adapter_calls, 1)
+
+      # Below the threshold at the first step; the follow-up after the first
+      # answer pushes the next step above it.
+      take_incoming_messages = fn ->
+        polls = Process.get(:incoming_polls, 0) + 1
+        Process.put(:incoming_polls, polls)
+        if polls == 2, do: {:ok, [text(1_200)]}, else: {:ok, []}
+      end
+
+      assert {:ok, final} =
+               Tackle.Lib.run(state, "next", take_incoming_messages: take_incoming_messages)
+
+      assert Process.get(:commit_count) == 1
+      assert [checkpoint | _tail] = final.model_messages
+      assert Checkpoint.message?(checkpoint)
     end
 
     test "a failed pressure compaction is not retried at every step of the turn" do
@@ -756,7 +811,7 @@ defmodule Tackle.Lib.CompactionTest do
     end
 
     test "does not attempt overflow recovery when compaction is disabled" do
-      state = state([user(100), assistant(100)], config_opts: [enabled?: false])
+      state = %{state([user(100), assistant(100)]) | compaction: nil}
       test_pid = self()
 
       assert {:error, final} =
@@ -769,7 +824,7 @@ defmodule Tackle.Lib.CompactionTest do
 
     test "fails an overflow recovery when the durable commit fails" do
       state = loop_state([user(100), assistant(100)])
-      state = %{state | compaction: %{state.compaction | committer: FailingCommitter}}
+      state = %{state | committer: FailingCommitter}
 
       assert {:error, final} = Tackle.Lib.run(state, "next")
       assert final.error =~ "durable_commit_failed"
@@ -808,8 +863,7 @@ defmodule Tackle.Lib.CompactionTest do
         safety_reserve: 0,
         attention_ratio: 0.9,
         retain_tokens: 50,
-        summary_max_tokens: 1_000,
-        max_summary_tokens: 1_000
+        summary_max_tokens: 1_000
       ]
     )
     |> Map.put(:system_prompt, "system")
@@ -826,13 +880,11 @@ defmodule Tackle.Lib.CompactionTest do
               safety_reserve: 0,
               attention_ratio: 0.5,
               retain_tokens: 100,
-              summary_max_tokens: 200,
-              max_summary_tokens: 200
+              summary_max_tokens: 200
             ],
             Keyword.get(opts, :policy, [])
           ),
-        summarizer: TestSummarizer,
-        committer: Keyword.get(opts, :committer, TestCommitter)
+        summarizer: TestSummarizer
       )
       |> then(fn config -> struct(config, Keyword.get(opts, :config_opts, [])) end)
 
@@ -840,7 +892,8 @@ defmodule Tackle.Lib.CompactionTest do
       llm: selection(),
       llm_opts: Keyword.get(opts, :llm_opts, []),
       tools: Keyword.get(opts, :tools, []),
-      compaction: config
+      compaction: config,
+      committer: Keyword.get(opts, :committer, TestCommitter)
     )
     |> then(fn state -> Enum.reduce(messages, state, &State.add_message(&2, &1)) end)
   end
@@ -851,7 +904,7 @@ defmodule Tackle.Lib.CompactionTest do
       provider_id: "test",
       model: "large",
       ref: "test/large",
-      model_info: %ModelInfo{model: "large", context_window: 2_000, max_output_tokens: 100}
+      model_info: %ModelInfo{model: "large", context_window: 2_000, max_output_tokens: 1_000}
     }
   end
 
@@ -861,7 +914,7 @@ defmodule Tackle.Lib.CompactionTest do
   defp two_pass_state do
     state([user(3_000), assistant(3_000), user(500), assistant(500)],
       config_opts: [max_passes: 2],
-      policy: [summary_max_tokens: 100, max_summary_tokens: 100]
+      policy: [summary_max_tokens: 100]
     )
   end
 

@@ -2,7 +2,11 @@ defmodule Tackle.Session.LoaderTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Config
+  alias Tackle.Lib.Message
+  alias Tackle.Lib.Tree
+  alias Tackle.Session.Codec
   alias Tackle.Session.Loader
+  alias Tackle.Session.Log
   alias Tackle.Session.Projection
 
   defmodule Adapter do
@@ -46,5 +50,48 @@ defmodule Tackle.Session.LoaderTest do
     assert {:ok, %{state: state}} = Loader.load(projection, config)
     assert state.session_id == "persisted-session"
     refute_receive :id_generated
+  end
+
+  test "installs the replayed tree of a branching session as it is" do
+    {:ok, config} = Config.new(providers: [Adapter], model: "loader-test/model", tools: [])
+
+    projection =
+      Projection.new(
+        %{
+          "session_id" => "tree-session",
+          "created_at" => "2026-01-01T00:00:00Z",
+          "cwd" => nil,
+          "parent" => nil
+        },
+        model_ref: config.model_ref,
+        tree: true
+      )
+
+    projection =
+      [{"u1", :user, nil}, {"a1", :assistant, "u1"}, {"u2", :user, nil}]
+      |> Enum.with_index(1)
+      |> Enum.reduce(projection, fn {{id, role, parent_id}, seq}, projection ->
+        message = %Message{id: id, role: role, content: id, timestamp: ~U[2026-01-01 00:00:00Z]}
+        {:ok, data} = Codec.encode_message(message)
+
+        Projection.apply_commit(
+          projection,
+          Log.commit(
+            session_id: "tree-session",
+            seq: seq,
+            commit_id: "commit-#{seq}",
+            written_at: "2026-01-01T00:00:00Z",
+            events: [
+              Log.event("message.appended", %{"message" => data, "parent_id" => parent_id})
+            ]
+          )
+        )
+      end)
+
+    assert {:ok, %{state: state}} = Loader.load(projection, config)
+    assert state.tree == projection.tree
+    assert Enum.map(Tree.children(state.tree, nil), & &1.id) == ["u1", "u2"]
+    assert Enum.map(state.messages, & &1.id) == ["u2"]
+    assert state.model_messages == Tree.model_context(state.tree)
   end
 end

@@ -53,7 +53,7 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
   defp generate(selection, %Request{} = request, opts) do
     request_opts =
       [
-        model: request.model || selection.model,
+        model: selection.model,
         session_id: request.session_id,
         system: request.system,
         messages: Request.to_provider_messages(request),

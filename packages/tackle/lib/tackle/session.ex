@@ -48,6 +48,7 @@ defmodule Tackle.Session do
   alias Tackle.Runtime.RunRef
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.Task, as: TurnTask
+  alias Tackle.Session.Committer
   alias Tackle.Session.Journal
   alias Tackle.Session.Journal.Watchdog
   alias Tackle.Session.Loader
@@ -55,7 +56,6 @@ defmodule Tackle.Session do
   alias Tackle.Session.Projection
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Session.Title
-  alias Tackle.Session.Tree, as: SessionTree
 
   @task_shutdown_timeout 1_000
   @max_inbox_messages 32
@@ -294,8 +294,8 @@ defmodule Tackle.Session do
 
   Navigation is rejected during an active turn or while an interrupted turn
   requires an explicit recovery decision. The destination is validated, the
-  committed position is persisted through the tree committer, and only then is
-  the new position installed and published to subscribers.
+  committed position is persisted through the session's committer, and only
+  then is the new position installed and published to subscribers.
 
   `target` is described in `Tackle.Lib.Tree.Navigator`. The only option is
   `:expected_revision`; any other option is ignored, and the change is always
@@ -304,7 +304,7 @@ defmodule Tackle.Session do
   message as a draft.
   """
   @spec navigate(GenServer.server(), Tackle.Lib.Tree.Navigator.target(), keyword()) ::
-          {:ok, Snapshot.t(), Tackle.Lib.Tree.Navigator.outcome()} | {:error, term()}
+          {:ok, Snapshot.t(), Tackle.Lib.Tree.Navigator.Outcome.t()} | {:error, term()}
   def navigate(session, target, opts \\ []) when is_list(opts),
     do: GenServer.call(session, {:navigate, target, opts}, :infinity)
 
@@ -864,6 +864,8 @@ defmodule Tackle.Session do
   defp finish_reconfiguration(state, {:error, reason}, _config),
     do: {:stop, {:persistence_failed, reason}, {:error, reason}, state}
 
+  # A failed or cancelled compaction still returns the last committed state:
+  # when an earlier pass committed, the session keeps and broadcasts it.
   defp finish_compaction(state, result, session_id) do
     case result do
       {:ok, agent_state, record} ->
@@ -872,23 +874,21 @@ defmodule Tackle.Session do
         broadcast(state, {:tackle_session_compacted, session_id, snapshot, record})
         {:reply, {:ok, snapshot, record}, state}
 
-      {:error, reason, agent_state} ->
-        state = %{state | agent_state: agent_state}
-        snapshot = build_snapshot(state)
-        broadcast(state, {:tackle_session_compacted, session_id, snapshot, nil})
-        {:reply, {:error, reason}, state}
+      {status, reason, agent_state} when status in [:error, :cancelled] ->
+        state = keep_committed_compaction(state, agent_state, session_id)
+        reply = if status == :cancelled, do: {:cancelled, reason}, else: reason
+        {:reply, {:error, reply}, state}
+    end
+  end
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-
-      {:cancelled, reason, agent_state} ->
-        state = %{state | agent_state: agent_state}
-        snapshot = build_snapshot(state)
-        broadcast(state, {:tackle_session_compacted, session_id, snapshot, nil})
-        {:reply, {:error, {:cancelled, reason}}, state}
-
-      {:cancelled, reason} ->
-        {:reply, {:error, {:cancelled, reason}}, state}
+  defp keep_committed_compaction(state, agent_state, session_id) do
+    if AgentState.last_compaction_id(agent_state) ==
+         AgentState.last_compaction_id(state.agent_state) do
+      state
+    else
+      state = %{state | agent_state: agent_state}
+      broadcast(state, {:tackle_session_compacted, session_id, build_snapshot(state), nil})
+      state
     end
   end
 
@@ -1244,7 +1244,7 @@ defmodule Tackle.Session do
       case Journal.append_message(
              journal,
              message,
-             inbox_tree_parent(agent_state, message.id),
+             Persistence.tree_parent(agent_state, message.id),
              sync: false
            ) do
         :ok -> {:cont, :ok}
@@ -1252,15 +1252,6 @@ defmodule Tackle.Session do
       end
     end)
   end
-
-  defp inbox_tree_parent(%AgentState{tree: %Tackle.Lib.Tree{} = tree}, message_id) do
-    case Tackle.Lib.Tree.entry(tree, message_id) do
-      %{parent_id: parent_id} -> {:tree, parent_id}
-      _entry -> :none
-    end
-  end
-
-  defp inbox_tree_parent(%AgentState{}, _message_id), do: :none
 
   defp drop_reserved_inbox(state, reserved) do
     retained = :queue.to_list(state.inbox) -- reserved
@@ -1522,8 +1513,7 @@ defmodule Tackle.Session do
         loaded.state
         |> put_runtime_context(scope_ref, agent_ref, opts)
         |> install_persistence_hook()
-        |> install_compaction_committer()
-        |> install_tree_committer()
+        |> install_committer()
 
       recovery = recovery_for(projection)
 
@@ -1592,14 +1582,9 @@ defmodule Tackle.Session do
   defp enable_tree_if_needed(_journal, %Projection{tree_enabled?: true}, true), do: :ok
   defp enable_tree_if_needed(journal, _projection, true), do: Journal.enable_tree(journal)
 
-  defp install_compaction_committer(%AgentState{compaction: nil} = state), do: state
-
-  defp install_compaction_committer(%AgentState{} = state) do
-    # Durable sessions commit the compaction record through the journal before
-    # the library installs the replacement in memory.
-    config = Compaction.Config.put_committer(state.compaction, Tackle.Session.Compaction)
-    %{state | compaction: config}
-  end
+  # Durable sessions commit compactions and navigations through the journal
+  # before the library installs them in memory.
+  defp install_committer(%AgentState{} = state), do: %{state | committer: Committer}
 
   # The hook is added directly rather than through Config; Tackle.Lib.Hook
   # loads hook modules itself when it validates or invokes them.
@@ -1610,14 +1595,6 @@ defmodule Tackle.Session do
         context:
           state.context |> Map.put(:journal_required, true) |> Map.put(:session_owner, self())
     }
-  end
-
-  defp install_tree_committer(%AgentState{tree: nil} = state), do: state
-
-  defp install_tree_committer(%AgentState{} = state) do
-    # Durable tree navigations are committed through the journal before the
-    # library installs the new active position.
-    %{state | tree_committer: SessionTree}
   end
 
   defp append(items, item), do: Enum.concat(items, [item])

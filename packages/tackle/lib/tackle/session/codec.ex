@@ -20,6 +20,7 @@ defmodule Tackle.Session.Codec do
   binary keys, so a tool result that read an image round-trips unchanged.
   """
 
+  alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Usage
@@ -191,6 +192,88 @@ defmodule Tackle.Session.Codec do
   end
 
   def decode_usage(other), do: {:error, {:invalid_usage, other}}
+
+  @doc """
+  Encodes one committed compaction record into its durable map
+  representation, the data of a `context.compacted` event.
+
+  The synthetic checkpoint is stored as a durable message, next to the
+  shadowed message ids for provenance, the first retained id, and auxiliary
+  summarization usage. `"parent_id"` is written only for a record attached to
+  a tree entry; a linear record leaves it absent so replay chains it by
+  position.
+  """
+  @spec encode_compaction(Record.t()) :: {:ok, map()} | {:error, term()}
+  def encode_compaction(%Record{} = record) do
+    with {:ok, summary_message} <- encode_message(record.summary_message) do
+      data = %{
+        "compaction_id" => record.compaction_id,
+        "trigger" => Atom.to_string(record.trigger),
+        "summary_message" => summary_message,
+        "shadowed_message_ids" => record.shadowed_message_ids,
+        "first_retained_message_id" => record.first_retained_message_id,
+        "previous_compaction_id" => record.previous_compaction_id,
+        "tokens_before" => record.tokens_before,
+        "estimated_tokens_after" => record.estimated_tokens_after,
+        "summary_usage" => encode_usage(record.summary_usage),
+        "summary_model" => record.summary_model,
+        "created_at" => encode_datetime(record.created_at),
+        "details" => normalize(record.details)
+      }
+
+      if is_nil(record.parent_id),
+        do: {:ok, data},
+        else: {:ok, Map.put(data, "parent_id", record.parent_id)}
+    end
+  end
+
+  @doc """
+  Rebuilds a `Tackle.Lib.Compaction.Record` from durable event data.
+
+  Returns an explicit error for a malformed record, such as an unknown
+  trigger or creation time, rather than repairing it.
+  """
+  @spec decode_compaction(term()) :: {:ok, Record.t()} | {:error, term()}
+  def decode_compaction(%{} = data) do
+    with {:ok, trigger} <- decode_trigger(Map.get(data, "trigger")),
+         {:ok, summary_message} <- decode_message(Map.get(data, "summary_message")),
+         {:ok, usage} <- decode_usage(Map.get(data, "summary_usage")),
+         {:ok, created_at} <- decode_created_at(Map.get(data, "created_at")),
+         {:ok, details} <- decode_details(Map.get(data, "details")) do
+      {:ok,
+       %Record{
+         compaction_id: Map.get(data, "compaction_id"),
+         trigger: trigger,
+         summary_message: summary_message,
+         shadowed_message_ids: Map.get(data, "shadowed_message_ids", []),
+         first_retained_message_id: Map.get(data, "first_retained_message_id"),
+         previous_compaction_id: Map.get(data, "previous_compaction_id"),
+         parent_id: Map.get(data, "parent_id"),
+         tokens_before: Map.get(data, "tokens_before", 0),
+         estimated_tokens_after: Map.get(data, "estimated_tokens_after", 0),
+         summary_usage: usage,
+         summary_model: Map.get(data, "summary_model"),
+         created_at: created_at,
+         details: details
+       }}
+    end
+  end
+
+  def decode_compaction(other), do: {:error, {:invalid_compaction_data, other}}
+
+  defp decode_trigger("pressure"), do: {:ok, :pressure}
+  defp decode_trigger("overflow"), do: {:ok, :overflow}
+  defp decode_trigger("manual"), do: {:ok, :manual}
+  defp decode_trigger(other), do: {:error, {:unknown_compaction_trigger, other}}
+
+  defp decode_created_at(value) when is_binary(value), do: decode_datetime(value)
+  defp decode_created_at(other), do: {:error, {:invalid_compaction_created_at, other}}
+
+  # The library records the tightening pass; no other detail was ever written.
+  defp decode_details(nil), do: {:ok, %{}}
+  defp decode_details(%{"pass" => pass}) when is_integer(pass), do: {:ok, %{pass: pass}}
+  defp decode_details(%{} = details) when map_size(details) == 0, do: {:ok, %{}}
+  defp decode_details(other), do: {:error, {:invalid_compaction_details, other}}
 
   defp encode_role(nil), do: nil
   defp encode_role(role) when is_atom(role), do: Atom.to_string(role)

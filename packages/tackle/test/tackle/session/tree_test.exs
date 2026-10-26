@@ -71,10 +71,10 @@ defmodule Tackle.Session.TreeTest do
   end
 
   defmodule SkippingCommitter do
-    @behaviour Tackle.Lib.Tree.Committer
+    @behaviour Tackle.Lib.Committer
 
     @impl true
-    def commit_navigation(_change, _context) do
+    def commit(_change, _context) do
       send(Application.fetch_env!(:tackle, :skipping_committer_pid), :skipped_journal)
       :ok
     end
@@ -201,34 +201,5 @@ defmodule Tackle.Session.TreeTest do
     assert [user, assistant] = Tree.enumerate(projection.tree)
     assert Tree.entry(projection.tree, assistant.id).parent_id == user.id
     assert Tree.active_id(projection.tree) == assistant.id
-  end
-
-  test "an invalid parent link is rejected rather than repaired", ctx do
-    scope = start_durable_scope(home: ctx.home, root: [content: "answer"])
-    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
-    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
-    assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
-    session_id = snapshot.session_id
-    stop_scope(scope.scope_ref)
-
-    {:ok, replay} = read_journal(session_id, home: ctx.home)
-
-    assert {:ok, _} =
-             Tree.restore(
-               replay.projection.tree
-               |> Tree.enumerate()
-               |> Enum.map(&Map.from_struct/1)
-             )
-
-    bad = [
-      %{
-        id: "x",
-        parent_id: "missing",
-        kind: :message,
-        message: %Tackle.Lib.Message{id: "x", role: :user}
-      }
-    ]
-
-    assert {:error, {:unknown_parent, "missing"}} = Tree.restore(bad)
   end
 end

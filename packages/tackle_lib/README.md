@@ -1217,15 +1217,16 @@ and summarized). Retained content and tool linkage stay intact, while stale
 usage and provider continuation metadata are cleared at the new context
 boundary.
 
-Compaction is opt-in. Supply a config when building state:
+Compaction is opt-in. Supply a config (or its options) when building state;
+`compaction: nil`, the default, is the one way to disable it:
 
 ```elixir
 state =
   Tackle.Lib.new(
     llm: selection,
+    committer: MyApp.Committer,
     compaction: [
       summarizer: Tackle.Lib.Compaction.Summarizer.LLM,
-      committer: MyApp.CompactionCommitter,
       policy: [safety_reserve: 4_096, retain_ratio: 0.16]
     ]
   )
@@ -1240,13 +1241,23 @@ Entry points share one transaction:
   reported it in an HTTP error or inside a stream; and
 - `Tackle.Lib.compact/2` for an idle, operator-requested compaction. A
   conversation that already fits the retention target has nothing to compact
-  (`{:error, :nothing_to_compact}`).
+  (`{:error, :nothing_to_compact, state}`).
+
+Every entry point gets one of three results from
+`Tackle.Lib.Compaction.compact/3`: `{:ok, state, record}`, or
+`{:error, reason, state}` / `{:cancelled, reason, state}`, where `state` is
+always the last committed state (the input when nothing was committed).
+`Tackle.Lib.Compaction.nothing_to_do?/1` tells the reasons that only mean
+there was nothing to do (`:disabled`, `:no_context_window`,
+`:nothing_to_compact`) from failures; the loop calls `compact/3` with
+`:pressure` before every request and goes on when there is nothing to do.
 
 `Tackle.Lib.Compaction.Policy` resolves the threshold from the model's window,
 a response reserve (the request's `:max_tokens` when the host sets one,
 otherwise the model's output limit capped at 32,768 tokens, so a model that
 declares half its window as output does not compact at half the window), and a
-safety reserve. It keeps the retention target below what a compaction can leave
+safety reserve. `summary_max_tokens` (8,192 by default) is the most output a
+summary may ask for, lowered to the model's output limit. It keeps the retention target below what a compaction can leave
 under the threshold once the system prompt, tools, and a summary are paid for,
 and disables pressure compaction for windows too small for that.
 
@@ -1260,9 +1271,9 @@ shortened with a marker (`Tackle.Lib.Compaction.Input`); earlier checkpoints are
 sent once, as the first shadowed message.
 
 A `Tackle.Lib.Compaction.Summarizer` only turns a request into text plus usage.
-It receives the state's host-supplied `llm_opts` (including credential-store
-handles) and the optional `:cancellation_signal`; explicit compaction `:llm_opts`
-are merged on top. Summarizers should forward the signal to blocking provider
+It receives the host-supplied `llm_opts` (including credential-store handles)
+of the turn's snapshot, or of the state outside a turn, and the optional
+`:cancellation_signal`; explicit compaction `:llm_opts` are merged on top. Summarizers should forward the signal to blocking provider
 calls and check it cooperatively. A result other than `{:ok, %Summary{}}` or
 `{:error, reason}`, and a summarizer that raises, throws, or exits, fails the
 pass. The default `Tackle.Lib.Compaction.Summarizer.LLM` asks for the policy's
@@ -1270,14 +1281,23 @@ summary output limit and the `"minimal"` thinking level, and passes the
 response's `stop_reason` on: a summary that stopped at `:max_tokens` is
 rejected as truncated, and without a stop reason only visible output tokens
 (output less reasoning) count toward the limit. If a later tightening pass
-fails after an earlier pass has already committed, `compact/2` returns
-`{:error | :cancelled, reason, committed_state}`; retain that state so the
-in-memory projection matches the durable checkpoint. The core owns
-balanced cut selection, strict validation (non-empty, complete, no tool calls,
-strictly smaller than the shadowed region), the durability commit, and the
-in-memory replacement. A `Tackle.Lib.Compaction.Committer` makes the record
-durable before replacement; a commit failure is reported as
-`{:error, {:durable_commit_failed, reason}}` so a host can fail closed.
+fails after an earlier pass has already committed, the returned state holds
+that pass; retain it so the in-memory projection matches the durable
+checkpoint. The core owns balanced cut selection, strict validation
+(non-empty, complete, no tool calls, strictly smaller than the shadowed
+region), the durability commit, and the in-memory replacement.
+`Tackle.Lib.Compaction.Checkpoint` builds the checkpoint message and applies a
+committed `Tackle.Lib.Compaction.Record` to a message list, for the live
+replacement and for a tree's branches alike.
+
+The state's `:committer`, a `Tackle.Lib.Committer`, makes the record durable
+before replacement; a commit failure is reported as
+`{:error, {:durable_commit_failed, reason}, state}` so a host can fail closed.
+The same committer receives tree navigations (below), with the context
+`%{session_id: session_id, context: context}`. A record names the tree entry
+it attaches to in `:parent_id` (`nil` in linear mode), so a committer never
+needs the tree. A committer that returns anything but `:ok` or
+`{:error, reason}`, raises, throws, or exits fails the commit the same way.
 
 Lifecycle events `:compaction_start`, `:compaction_end`, and `:compaction_retry`
 carry trigger, before/after estimates, counts, duration, and summary model/usage.
@@ -1294,13 +1314,14 @@ alternative paths. It is opt-in and needs no process, storage, or OTP
 supervision:
 
 ```elixir
-state = Tackle.Lib.new(llm: selection, tree: true, tree_committer: MyApp.TreeCommitter)
+state = Tackle.Lib.new(llm: selection, tree: true, committer: MyApp.Committer)
 {:ok, state} = Tackle.Lib.run(state, "investigate the cache")
 
 # Move to the parent of an earlier user message; the selected message comes back
 # as a draft so the host can refill its editor and create a sibling branch.
 {:ok, state, outcome} = Tackle.Lib.navigate(state, {:edit, user_message_id})
 outcome.draft.content
+outcome.change.to_id # the parent, now the active position
 
 # Return to the empty conversation before the first message.
 {:ok, state, _outcome} = Tackle.Lib.navigate(state, nil)
@@ -1321,20 +1342,26 @@ Three readers stay deliberately distinct:
   the compactions that occur on that path applied.
 
 Accordingly, `Tackle.Lib.usage/1` aggregates assistant usage across the whole
-archive while `Tackle.Lib.branch_usage/1` follows the active path, and
+archive while `Tackle.Lib.State.branch_usage/1` follows the active path, and
 `Tackle.Lib.context_usage/1` measures the selected model projection. A compaction
 on one branch never changes a sibling's context, and returning after a
 compaction restores the same summary without re-summarizing.
 
 Navigation never runs a turn, re-executes a tool, or edits entries. It validates
 the destination against the current revision, rejects a structurally incomplete
-tool batch with `{:error, {:unsafe_continuation, id}}`, and commits through a
-`Tackle.Lib.Tree.Committer` before installing the position. The committer is
-always the state's `tree_committer`, never an option, so a caller cannot skip
-the commit; the only option is `:expected_revision`. A missing committer is
-valid only for explicitly in-memory use. Failed validation or commit leaves
-the accepted state unchanged. `Tackle.Lib.Tree.restore/2` is the validated
-restoration path for hosts that persist their own entries.
+tool batch with `{:error, {:unsafe_continuation, id}}`, and commits its
+`Tackle.Lib.Tree.Change` through the state's `Tackle.Lib.Committer` before
+installing the position (`Tackle.Lib.Tree.Navigator`). The committer is always
+the state's own, never an option, so a caller cannot skip the commit; the only
+option is `:expected_revision`, and any other raises `ArgumentError`. A missing
+committer is valid only for explicitly in-memory use. Failed validation or
+commit leaves the accepted state unchanged. The outcome
+(`Tackle.Lib.Tree.Navigator.Outcome`) wraps the change with the edit draft
+and whether the navigation was a no-op, which commits nothing. Hosts that
+persist their own entries rebuild a tree by appending them in order with
+`Tackle.Lib.Tree.append_message/3` and `append_compaction/3` and their
+`:parent_id`, which validate every link, and `Tackle.Lib.Tree.move/2` to the
+recorded position, then pass the tree to `Tackle.Lib.new/1`.
 
 A tree keeps an index of each entry's children, so `Tackle.Lib.Tree.children/2`
 costs the number of children. `Tackle.Lib.Tree.resumable?/2` checks one entry;

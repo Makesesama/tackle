@@ -14,7 +14,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
   }
 
   alias Tackle.CLI.Widgets.Input
-  alias Tackle.Lib.Compaction, as: LibCompaction
+  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.{Event, Message}
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Session.Snapshot
@@ -63,7 +63,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
   test "a committed checkpoint is synced even when a later manual pass fails" do
     state = shell()
     {:noreply, running, commands: [_]} = Compaction.request(state)
-    checkpoint = LibCompaction.checkpoint_message("partial", "saved context")
+    checkpoint = Checkpoint.message("partial", "saved context")
 
     snapshot = %Snapshot{
       session_id: "session",
@@ -195,7 +195,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
 
   test "resumed checkpoints expose their summary without inventing token counts" do
     state = shell()
-    checkpoint = LibCompaction.checkpoint_message("checkpoint", "background summary")
+    checkpoint = Checkpoint.message("checkpoint", "background summary")
 
     state =
       %{state | agent_state: %{state.agent_state | model_messages: [checkpoint]}}
@@ -208,7 +208,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
 
   test "a new completed pass never exposes the previous checkpoint as its summary" do
     state = shell()
-    checkpoint = LibCompaction.checkpoint_message("old", "old summary")
+    checkpoint = Checkpoint.message("old", "old summary")
 
     state = %{
       state
@@ -259,7 +259,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
       tokens_before: 1_200,
       estimated_tokens_after: 300,
       shadowed_message_ids: ["user"],
-      summary_message: LibCompaction.checkpoint_message("checkpoint", "background summary")
+      summary_message: Checkpoint.message("checkpoint", "background summary")
     }
   end
 

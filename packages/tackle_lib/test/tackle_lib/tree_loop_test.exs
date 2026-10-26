@@ -36,7 +36,7 @@ defmodule Tackle.Lib.TreeLoopTest do
     assert Enum.map(second_call, & &1.content) == ["second question"]
 
     # Both branches survive; the first is untouched by the second.
-    assert Tree.size(state.tree) == 4
+    assert length(Tree.enumerate(state.tree)) == 4
     assert Enum.map(Tree.transcript(state.tree), & &1.content) == ["second question", "answer"]
 
     {:ok, tree} = Tree.move(state.tree, nil)

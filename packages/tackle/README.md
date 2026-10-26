@@ -526,7 +526,7 @@ Three surfaces are deliberately distinct:
   with the compactions that occur on that path applied.
 
 `Tackle.Lib.usage/1` aggregates assistant usage across the whole archive while
-`Tackle.Lib.branch_usage/1` follows the active path. `Tackle.Lib.context_usage/1`
+`Tackle.Lib.State.branch_usage/1` follows the active path. `Tackle.Lib.context_usage/1`
 reports the model projection, so branch switches reset context pressure to the
 selected branch.
 
@@ -543,6 +543,7 @@ is inspectable but not selectable.
 # move to the parent of an earlier user message and get it back as a draft.
 {:ok, _snapshot, outcome} = Tackle.navigate(scope.root_agent_ref, {:edit, user_message_id})
 outcome.draft.content
+outcome.change.to_id # the parent, now the active position
 
 # Return to the empty conversation before the first message.
 {:ok, _snapshot, _outcome} = Tackle.navigate(scope.root_agent_ref, nil)

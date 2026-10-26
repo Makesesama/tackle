@@ -25,7 +25,7 @@ defmodule Tackle.CLI.TUITest do
   alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
   alias Tackle.CLI.Widgets.Conversation.Cell
   alias Tackle.CLI.Widgets.Input
-  alias Tackle.Lib.Compaction, as: LibCompaction
+  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.{Event, LLM, Message, State}
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.ID
@@ -164,7 +164,7 @@ defmodule Tackle.CLI.TUITest do
     def handle_call({:compact, _opts}, _from, state) do
       send(state.test_pid, :compact_requested)
 
-      checkpoint = LibCompaction.checkpoint_message("ckpt-1", "compacted background")
+      checkpoint = Checkpoint.message("ckpt-1", "compacted background")
 
       agent_state = %{
         state.agent_state
@@ -2315,7 +2315,7 @@ defmodule Tackle.CLI.TUITest do
     [first, second, third, fourth] =
       Enum.map(usages, &Message.assistant(content: "step", token_usage: &1))
 
-    checkpoint = LibCompaction.checkpoint_message("compaction-1", "Earlier work")
+    checkpoint = Checkpoint.message("compaction-1", "Earlier work")
 
     agent_state = %{
       live_state.agent_state
@@ -2343,7 +2343,7 @@ defmodule Tackle.CLI.TUITest do
 
     # A compaction (such as /compact) settled before this turn, and no
     # message after it has usage yet.
-    checkpoint = LibCompaction.checkpoint_message("compaction-1", "Earlier work")
+    checkpoint = Checkpoint.message("compaction-1", "Earlier work")
 
     agent_state = %{
       state.agent_state

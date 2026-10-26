@@ -190,23 +190,16 @@ defmodule Tackle.Lib.Loop.Provider do
       {:ok, state, _record} ->
         retry_after_overflow(state, run, tries)
 
-      {:error, {:durable_commit_failed, _reason} = error} ->
-        fail(state, inspect(error), error)
+      {:error, {:durable_commit_failed, _reason} = error, committed} ->
+        fail(committed, inspect(error), error)
 
-      {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
-        fail(committed_state, inspect(error), error)
+      {:cancelled, _reason, committed} ->
+        cancel(committed, run)
 
-      {:cancelled, _reason} ->
-        cancel(state, run)
-
-      {:cancelled, _reason, committed_state} ->
-        cancel(committed_state, run)
-
-      {:error, _compaction_reason, committed_state} ->
-        retry_after_overflow(committed_state, run, tries)
-
-      {:error, _compaction_reason} ->
-        fail_request(state, reason)
+      {:error, _compaction_reason, committed} ->
+        if State.last_compaction_id(committed) == State.last_compaction_id(state),
+          do: fail_request(state, reason),
+          else: retry_after_overflow(committed, run, tries)
     end
   end
 
@@ -215,16 +208,14 @@ defmodule Tackle.Lib.Loop.Provider do
     attempt(state, run, %{tries | retries: 0, open: nil})
   end
 
+  # Compaction is disabled, or the model declares no context window, when the
+  # policy does not resolve.
   defp recoverable_overflow?(%State{} = state, reason, run) do
-    LLM.context_window_exceeded?(reason) and Compaction.enabled?(state) and
-      overflow_retries_remaining?(state, run)
-  end
-
-  defp overflow_retries_remaining?(%State{} = state, run) do
-    case Compaction.resolve(state, snapshot: run.snapshot) do
-      {:ok, resolved, _info} -> run.overflow_retries < resolved.overflow_retry_limit
-      {:error, _reason} -> false
-    end
+    LLM.context_window_exceeded?(reason) and
+      case Compaction.resolve(state, snapshot: run.snapshot) do
+        {:ok, resolved, _info} -> run.overflow_retries < resolved.overflow_retry_limit
+        {:error, _reason} -> false
+      end
   end
 
   # ── Dispatch ──────────────────────────────────────────────────────────

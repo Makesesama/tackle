@@ -24,6 +24,7 @@ defmodule Tackle.Lib.State do
   are cleared when the next turn starts (`reset_turn/1`).
   """
 
+  alias Tackle.Lib.Committer
   alias Tackle.Lib.Compaction
   alias Tackle.Lib.Hook
   alias Tackle.Lib.ID
@@ -60,7 +61,7 @@ defmodule Tackle.Lib.State do
           retry: Retry.t(),
           compaction: Compaction.Config.t() | nil,
           tree: Tree.t() | nil,
-          tree_committer: module() | nil
+          committer: module() | nil
         }
 
   @default_max_iterations :infinity
@@ -86,7 +87,7 @@ defmodule Tackle.Lib.State do
             retry: Retry.new!(),
             compaction: nil,
             tree: nil,
-            tree_committer: nil
+            committer: nil
 
   @doc """
   Creates a new agent state with the given options.
@@ -113,14 +114,16 @@ defmodule Tackle.Lib.State do
     * `:session_id` - Existing session id to install without invoking `:id_generator`
     * `:retry` - `Tackle.Lib.Retry`, options, `false`, or `nil` (default: three
       retries with deterministic exponential backoff starting at 2 seconds)
-    * `:compaction` - `Tackle.Lib.Compaction.Config`, options, `false`, or `nil`
-      (default: `nil`, compaction disabled)
+    * `:compaction` - a `Tackle.Lib.Compaction.Config` or its options, or
+      `nil` (the default), which disables compaction
     * `:tree` - `true`, a `Tackle.Lib.Tree`, or `nil`/`false` (default: `nil`).
       `true` enables an opt-in conversation tree with branching history. When
       given an existing tree, the active transcript and model context are
       reconstructed from its selected path.
-    * `:tree_committer` - module implementing `Tackle.Lib.Tree.Committer` used
-      to persist navigation before it is installed (default: `nil`)
+    * `:committer` - module implementing `Tackle.Lib.Committer`, which makes
+      compactions and navigations durable before they are installed
+      (default: `nil`, in memory only); raises `ArgumentError` for a module
+      that is not loaded or does not export `commit/2`
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
@@ -152,7 +155,7 @@ defmodule Tackle.Lib.State do
       retry: normalize_retry(Keyword.get(opts, :retry)),
       compaction: normalize_compaction(Keyword.get(opts, :compaction)),
       tree: tree,
-      tree_committer: Keyword.get(opts, :tree_committer)
+      committer: committer!(Keyword.get(opts, :committer))
     }
   end
 
@@ -175,15 +178,9 @@ defmodule Tackle.Lib.State do
 
   defp normalize_compaction(nil), do: nil
 
-  defp normalize_compaction(%Compaction.Config{} = config) do
+  defp normalize_compaction(config)
+       when is_struct(config, Compaction.Config) or is_list(config) do
     case Compaction.Config.new(config) do
-      {:ok, config} -> config
-      {:error, reason} -> raise ArgumentError, "invalid :compaction config: #{inspect(reason)}"
-    end
-  end
-
-  defp normalize_compaction(opts) when is_list(opts) or is_boolean(opts) do
-    case Compaction.Config.new(opts) do
       {:ok, config} -> config
       {:error, reason} -> raise ArgumentError, "invalid :compaction config: #{inspect(reason)}"
     end
@@ -191,7 +188,14 @@ defmodule Tackle.Lib.State do
 
   defp normalize_compaction(other) do
     raise ArgumentError,
-          "expected :compaction to be a config, options, false, or nil, got: #{inspect(other)}"
+          "expected :compaction to be a config, options, or nil, got: #{inspect(other)}"
+  end
+
+  defp committer!(committer) do
+    case Committer.validate(committer) do
+      :ok -> committer
+      {:error, reason} -> raise ArgumentError, "invalid :committer: #{inspect(reason)}"
+    end
   end
 
   # A selection names its own model, so a separate `:model` could only be
@@ -403,7 +407,7 @@ defmodule Tackle.Lib.State do
   def last_compaction_id(%__MODULE__{tree: %Tree{} = tree}), do: Tree.last_compaction_id(tree)
 
   def last_compaction_id(%__MODULE__{model_messages: [%Message{id: id} = first | _rest]}) do
-    if Compaction.checkpoint?(first), do: id
+    if Compaction.Checkpoint.message?(first), do: id
   end
 
   def last_compaction_id(%__MODULE__{}), do: nil

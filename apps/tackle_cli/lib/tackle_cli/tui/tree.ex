@@ -43,6 +43,7 @@ defmodule Tackle.CLI.TUI.Tree do
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tree, as: ConversationTree
+  alias Tackle.Lib.Tree.Navigator.Outcome
 
   @root_id :conversation_root
   @unsafe_id :unsafe_entry
@@ -577,7 +578,7 @@ defmodule Tackle.CLI.TUI.Tree do
   end
 
   defp search_text(%{kind: :compaction, compaction: compaction}, _calls) do
-    Tackle.Lib.Compaction.checkpoint_body(compaction.summary_message) || "context compacted"
+    Tackle.Lib.Compaction.Checkpoint.body(compaction.summary_message) || "context compacted"
   end
 
   defp search_text(_entry, _calls), do: ""
@@ -672,12 +673,12 @@ defmodule Tackle.CLI.TUI.Tree do
   checkpoint card, and fills an untouched composer with a selected user message.
   A non-empty draft is preserved and the notice explains why.
   """
-  @spec apply_outcome(State.t(), map()) :: State.t()
-  def apply_outcome(%State{} = state, outcome) do
+  @spec apply_outcome(State.t(), Outcome.t()) :: State.t()
+  def apply_outcome(%State{} = state, %Outcome{} = outcome) do
     state = %{state | notice: notice(outcome)}
     state = Compaction.restore(state)
 
-    case Map.get(outcome, :draft) do
+    case outcome.draft do
       %Message{content: content} when is_binary(content) and content != "" ->
         if state.draft_empty? do
           :ok = Input.set_value(state.input, content)
@@ -691,10 +692,11 @@ defmodule Tackle.CLI.TUI.Tree do
     end
   end
 
-  defp notice(%{mode: :edit, draft: %Message{content: content}}) when is_binary(content),
-    do: "Editing an earlier message · submit to branch · workspace is unchanged"
+  defp notice(%Outcome{change: %{mode: :edit}, draft: %Message{content: content}})
+       when is_binary(content),
+       do: "Editing an earlier message · submit to branch · workspace is unchanged"
 
-  defp notice(%{destination_id: nil}),
+  defp notice(%Outcome{change: %{to_id: nil}}),
     do: "Moved before the first message · workspace is unchanged"
 
   defp notice(_outcome), do: "Moved to an earlier position · workspace is unchanged"

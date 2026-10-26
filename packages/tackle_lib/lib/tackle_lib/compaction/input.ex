@@ -23,7 +23,7 @@ defmodule Tackle.Lib.Compaction.Input do
   input: the transcript and the model projection are unchanged.
   """
 
-  alias Tackle.Lib.Compaction
+  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
@@ -54,11 +54,11 @@ defmodule Tackle.Lib.Compaction.Input do
 
     fixed =
       sizes
-      |> Enum.filter(fn {message, _size} -> Compaction.checkpoint?(message) end)
+      |> Enum.filter(fn {message, _size} -> Checkpoint.message?(message) end)
       |> Enum.reduce(0, fn {_message, size}, acc -> acc + size end)
 
     shortenable =
-      for {message, size} <- sizes, not Compaction.checkpoint?(message), do: size
+      for {message, size} <- sizes, not Checkpoint.message?(message), do: size
 
     case level(shortenable, budget - fixed) do
       level when level >= @min_message_tokens -> settle(sizes, budget, level)
@@ -106,7 +106,7 @@ defmodule Tackle.Lib.Compaction.Input do
   end
 
   defp shorten_message(message, size, level) do
-    if size <= level or Compaction.checkpoint?(message),
+    if size <= level or Checkpoint.message?(message),
       do: {message, false},
       else: {truncate(message, level), true}
   end

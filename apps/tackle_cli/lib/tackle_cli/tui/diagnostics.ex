@@ -39,6 +39,7 @@ defmodule Tackle.CLI.TUI.Diagnostics do
       max_iterations: agent.max_iterations,
       retry: agent.retry,
       compaction: compaction_policy(agent.compaction),
+      committer: agent.committer,
       tool_policy: agent.tool_policy,
       hooks: agent.hooks,
       prompt_renderer: agent.prompt_renderer,
@@ -197,7 +198,7 @@ defmodule Tackle.CLI.TUI.Diagnostics do
   defp compaction_policy(nil), do: nil
 
   defp compaction_policy(config),
-    do: Map.take(config, [:enabled?, :policy, :summarizer, :committer, :max_passes])
+    do: Map.take(config, [:policy, :summarizer, :instructions, :max_passes])
 
   defp usage(nil), do: nil
   defp usage(value), do: value |> Usage.normalize() |> Map.from_struct() |> Map.delete(:raw)

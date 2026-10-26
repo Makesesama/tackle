@@ -833,10 +833,11 @@ defmodule Tackle.Config do
 
   # Compaction is enabled by default in the root harness; the trigger policy is
   # inert for models whose declared window cannot hold the reserves (see
-  # `Tackle.Lib.Compaction.Policy`). Pass `compaction: false` to disable it.
+  # `Tackle.Lib.Compaction.Policy`). Pass `compaction: false` to disable it,
+  # which leaves the resolved config `nil`, as `Tackle.Lib.State` expects.
   defp resolve_compaction(nil), do: CompactionConfig.new([])
   defp resolve_compaction(%CompactionConfig{} = config), do: CompactionConfig.new(config)
-  defp resolve_compaction(false), do: CompactionConfig.new(false)
+  defp resolve_compaction(false), do: {:ok, nil}
   defp resolve_compaction(opts) when is_list(opts), do: CompactionConfig.new(opts)
   defp resolve_compaction(other), do: {:error, {:invalid_option, :compaction, other}}
 

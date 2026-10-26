@@ -158,7 +158,7 @@ defmodule Tackle.Lib.Compaction.PlanTest do
     end
 
     test "never shadows only an earlier checkpoint" do
-      checkpoint = Tackle.Lib.Compaction.checkpoint_message("c1", "summary")
+      checkpoint = Tackle.Lib.Compaction.Checkpoint.message("c1", "summary")
       messages = [checkpoint, message(:user, tokens(100)), message(:assistant, tokens(100))]
 
       assert {:ok, plan} = Plan.select(messages, retain_tokens: 150)

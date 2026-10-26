@@ -80,7 +80,6 @@ defmodule Tackle.Lib.Loop do
   require Logger
 
   alias Tackle.Lib.Compaction
-  alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.Hook
   alias Tackle.Lib.LLM.Response
@@ -221,45 +220,31 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
-  # A pressure compaction that fails is not tried again in the same turn: the
-  # next step would select the same plan and pay for the same summary. The
-  # turn goes on with the context it has; a provider overflow still gets its
-  # own compact-and-retry.
+  # Pressure compaction runs before every request and decides for itself
+  # whether the context is under pressure; when there is nothing to do the
+  # step goes on. A pressure compaction that fails is not tried again in the
+  # same turn: the next step would select the same plan and pay for the same
+  # summary. The turn goes on with the last committed context; a provider
+  # overflow still gets its own compact-and-retry. Only a durability failure
+  # ends the turn.
   defp maybe_auto_compact(state, %Run{pressure_compaction_failed?: true} = run),
     do: {:ok, state, run}
 
   defp maybe_auto_compact(state, run) do
-    with true <- Compaction.enabled?(state),
-         {:ok, resolved, info} <- Compaction.resolve(state, snapshot: run.snapshot),
-         true <- resolved.usable?,
-         %ContextUsage{tokens: tokens} <- ContextUsage.estimate(state, info),
-         true <- Compaction.Policy.pressure?(resolved, tokens) do
-      case compact_with_state(state, :pressure, run) do
-        {:ok, state, _record} ->
-          {:ok, state, run}
+    case Compaction.compact(state, :pressure, Run.compaction_opts(run)) do
+      {:ok, state, _record} ->
+        {:ok, state, run}
 
-        {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
-          {:error, error, committed_state}
+      {:error, {:durable_commit_failed, _reason}, _state} = failed ->
+        failed
 
-        {:cancelled, reason, committed_state} ->
-          {:cancelled, reason, committed_state}
+      {:cancelled, _reason, _state} = cancelled ->
+        cancelled
 
-        {:error, _reason, committed_state} ->
-          # Continue with a prior committed checkpoint if there is one; otherwise
-          # the model surface is unchanged. Only durability failures are fatal.
-          {:ok, committed_state, %{run | pressure_compaction_failed?: true}}
-      end
-    else
-      _skip -> {:ok, state, run}
-    end
-  end
-
-  # Keep Compaction.compact/3's public result shape; only Loop normalizes
-  # failures to include the state that must survive the turn.
-  defp compact_with_state(state, trigger, run) do
-    case Compaction.compact(state, trigger, Run.compaction_opts(run)) do
-      {status, reason} when status in [:error, :cancelled] -> {status, reason, state}
-      result -> result
+      {:error, reason, state} ->
+        if Compaction.nothing_to_do?(reason),
+          do: {:ok, state, run},
+          else: {:ok, state, %{run | pressure_compaction_failed?: true}}
     end
   end
 

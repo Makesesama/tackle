@@ -72,12 +72,17 @@ defmodule Tackle.Session.Persistence do
     end
   end
 
-  defp tree_parent(%State{tree: %Tree{} = tree}, message_id) do
+  @doc """
+  Returns the journal parent of a message just appended to `state`: the
+  parent of its tree entry in a branching session, `:none` in a linear one.
+  """
+  @spec tree_parent(State.t(), String.t()) :: {:tree, String.t() | nil} | :none
+  def tree_parent(%State{tree: %Tree{} = tree}, message_id) do
     case Tree.entry(tree, message_id) do
       %{parent_id: parent_id} -> {:tree, parent_id}
       _entry -> :none
     end
   end
 
-  defp tree_parent(_state, _message_id), do: :none
+  def tree_parent(_state, _message_id), do: :none
 end

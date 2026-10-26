@@ -2,8 +2,9 @@ defmodule Tackle.Plugins.CodexTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib
-  alias Tackle.Lib.{Cancellation, Compaction, Event, LLM, Loop, Message, ModelInfo, State}
+  alias Tackle.Lib.{Cancellation, Event, LLM, Loop, Message, ModelInfo, State}
   alias Tackle.Lib.{Thinking, Usage}
+  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.Compaction.Summary
   alias Tackle.Lib.LLM.Error
@@ -27,7 +28,7 @@ defmodule Tackle.Plugins.CodexTest do
   end
 
   defmodule OverflowCommitter do
-    @behaviour Tackle.Lib.Compaction.Committer
+    @behaviour Tackle.Lib.Committer
 
     @impl true
     def commit(_record, _context), do: :ok
@@ -1065,8 +1066,7 @@ defmodule Tackle.Plugins.CodexTest do
     compaction =
       CompactionConfig.new!(
         policy: [retain_tokens: 10],
-        summarizer: OverflowSummarizer,
-        committer: OverflowCommitter
+        summarizer: OverflowSummarizer
       )
 
     state =
@@ -1074,6 +1074,7 @@ defmodule Tackle.Plugins.CodexTest do
         llm: selection,
         retry: false,
         compaction: compaction,
+        committer: OverflowCommitter,
         llm_opts: [credential_store: store, request: request, transport: :sse]
       )
       |> State.add_message(Message.user(String.duplicate("earlier ", 200)))
@@ -1129,8 +1130,8 @@ defmodule Tackle.Plugins.CodexTest do
     state =
       Lib.new(
         llm: selection,
-        compaction:
-          CompactionConfig.new!(policy: [retain_tokens: 10], committer: OverflowCommitter),
+        compaction: CompactionConfig.new!(policy: [retain_tokens: 10]),
+        committer: OverflowCommitter,
         llm_opts: [
           credential_store: store,
           request: request,
@@ -1144,7 +1145,7 @@ defmodule Tackle.Plugins.CodexTest do
 
     assert {:ok, compacted, record} = Lib.compact(state)
     assert record.summary_usage.reasoning_tokens == 8_990
-    assert Compaction.checkpoint_body(hd(compacted.model_messages)) == "## Goal\nShip it"
+    assert Checkpoint.body(hd(compacted.model_messages)) == "## Goal\nShip it"
 
     assert_received {:summary_request, options}
     assert {:ok, body} = JSON.decode(options[:body])

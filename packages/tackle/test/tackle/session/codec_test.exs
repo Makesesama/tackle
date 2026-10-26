@@ -1,6 +1,8 @@
 defmodule Tackle.Session.CodecTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.Compaction.Checkpoint
+  alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Usage
@@ -223,5 +225,80 @@ defmodule Tackle.Session.CodecTest do
       assert {:error, {:invalid_timestamp, "not-a-date", _}} =
                Codec.decode_message(%{"role" => "user", "timestamp" => "not-a-date"})
     end
+  end
+
+  describe "compaction records" do
+    test "round-trip, with the creation time as a DateTime and atom-keyed details" do
+      record = record(parent_id: "a1")
+
+      assert {:ok, data} = Codec.encode_compaction(record)
+      assert :ok = Codec.validate(data)
+      assert data["created_at"] == "2026-01-01T00:00:03Z"
+      assert data["details"] == %{"pass" => 1}
+      assert data["parent_id"] == "a1"
+
+      assert {:ok, decoded} = Codec.decode_compaction(data)
+      assert decoded.created_at == ~U[2026-01-01 00:00:03Z]
+      assert decoded.details == %{pass: 1}
+      assert decoded.parent_id == "a1"
+      assert decoded.trigger == :pressure
+      assert decoded.summary_message.content == record.summary_message.content
+    end
+
+    test "a linear record writes no parent, so replay chains it by position" do
+      assert {:ok, data} = Codec.encode_compaction(record(parent_id: nil))
+      refute Map.has_key?(data, "parent_id")
+    end
+
+    test "decodes every trigger ever written and rejects any other" do
+      {:ok, data} = Codec.encode_compaction(record([]))
+
+      for trigger <- ["pressure", "overflow", "manual"] do
+        assert {:ok, %Record{trigger: decoded}} =
+                 Codec.decode_compaction(%{data | "trigger" => trigger})
+
+        assert Atom.to_string(decoded) == trigger
+      end
+
+      for trigger <- ["threshold", nil, :manual] do
+        assert {:error, {:unknown_compaction_trigger, ^trigger}} =
+                 Codec.decode_compaction(%{data | "trigger" => trigger})
+      end
+    end
+
+    test "rejects a malformed creation time or details" do
+      {:ok, data} = Codec.encode_compaction(record([]))
+
+      assert {:error, {:invalid_compaction_created_at, nil}} =
+               Codec.decode_compaction(Map.delete(data, "created_at"))
+
+      assert {:error, {:invalid_timestamp, "yesterday", _}} =
+               Codec.decode_compaction(%{data | "created_at" => "yesterday"})
+
+      assert {:error, {:invalid_compaction_details, %{"pass" => "one"}}} =
+               Codec.decode_compaction(%{data | "details" => %{"pass" => "one"}})
+
+      assert {:ok, %Record{details: %{}}} = Codec.decode_compaction(Map.delete(data, "details"))
+    end
+  end
+
+  defp record(fields) do
+    struct(
+      %Record{
+        compaction_id: "c1",
+        trigger: :pressure,
+        summary_message: %{
+          Checkpoint.message("c1", "summary")
+          | timestamp: ~U[2026-01-01 00:00:03Z]
+        },
+        shadowed_message_ids: ["u1"],
+        first_retained_message_id: "a1",
+        tokens_before: 100,
+        estimated_tokens_after: 20,
+        created_at: ~U[2026-01-01 00:00:03Z],
+        details: %{pass: 1}
+      },
+      fields
+    )
   end
 end

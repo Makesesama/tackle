@@ -32,7 +32,7 @@ defmodule Tackle.Lib.Compaction.Plan do
   same projection and policy always produce the same plan.
   """
 
-  alias Tackle.Lib.Compaction
+  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
@@ -157,7 +157,7 @@ defmodule Tackle.Lib.Compaction.Plan do
     |> Enum.with_index(1)
     |> Enum.reduce({MapSet.new(), false, []}, fn {{message, next}, cut}, {pending, new?, cuts} ->
       pending = track(pending, message, cut - 1, results)
-      new? = new? or not Compaction.checkpoint?(message)
+      new? = new? or not Checkpoint.message?(message)
 
       cuts =
         if new? and MapSet.size(pending) == 0 and not tool_result?(next),

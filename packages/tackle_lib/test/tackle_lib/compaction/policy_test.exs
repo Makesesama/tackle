@@ -156,6 +156,26 @@ defmodule Tackle.Lib.Compaction.PolicyTest do
     end
   end
 
+  describe "summary_max_tokens" do
+    test "is lowered to the model's output limit" do
+      policy = Policy.new!(summary_max_tokens: 4_000)
+
+      assert {:ok, small} =
+               Policy.resolve(policy, %ModelInfo{
+                 model: "m",
+                 context_window: 100_000,
+                 max_output_tokens: 1_000
+               })
+
+      assert small.summary_max_tokens == 1_000
+
+      assert {:ok, unknown} =
+               Policy.resolve(policy, %ModelInfo{model: "m", context_window: 100_000})
+
+      assert unknown.summary_max_tokens == 4_000
+    end
+  end
+
   describe "pressure?/2" do
     test "is true exactly at the threshold" do
       {:ok, resolved} =
@@ -181,6 +201,11 @@ defmodule Tackle.Lib.Compaction.PolicyTest do
       assert {:error, _reason} = Policy.new(retain_tokens: 0)
       assert {:error, _reason} = Policy.new(min_retain_tokens: 10, max_retain_tokens: 5)
       assert {:error, _reason} = Policy.new(max_response_reserve: 0)
+    end
+
+    test "rejects unknown options" do
+      assert {:error, {:invalid_policy, {:unknown_options, [:max_summary_tokens]}}} =
+               Policy.new(max_summary_tokens: 1_000)
     end
   end
 end

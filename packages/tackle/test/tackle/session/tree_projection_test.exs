@@ -3,7 +3,6 @@ defmodule Tackle.Session.TreeProjectionTest do
 
   alias Tackle.Lib.Tree
   alias Tackle.Session.Codec
-  alias Tackle.Session.Compaction
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
   alias Tackle.Session.ProjectionError
@@ -148,7 +147,7 @@ defmodule Tackle.Session.TreeProjectionTest do
       "details" => %{"pass" => 1}
     }
 
-    assert {:ok, record} = Compaction.decode(data)
+    assert {:ok, record} = Codec.decode_compaction(data)
     assert record.compaction_id == "ckpt-1"
     assert record.trigger == :pressure
     assert record.summary_message.id == "ckpt-1"

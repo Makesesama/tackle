@@ -11,26 +11,28 @@ defmodule Tackle.Lib.Compaction.Request do
   window, the core shortens the largest ones first
   (`Tackle.Lib.Compaction.Input`).
 
+  `:selection` is the conversation's `Tackle.Lib.LLM.Selection`, which names
+  the model and its limits. `:summary_max_tokens` is the most output the
+  summary may use (`Tackle.Lib.Compaction.Policy`).
+
   A summarizer only produces text plus bounded metadata and usage. It never
   selects the cut, commits durable state, or replaces the model surface.
   """
 
   alias Tackle.Lib.Compaction.Prompt
+  alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
-  alias Tackle.Lib.ModelInfo
 
   @type t :: %__MODULE__{
           messages: [Message.t()],
           system: String.t() | nil,
           tools: [map()],
           selection: Selection.t() | nil,
-          model: String.t() | nil,
-          model_info: ModelInfo.t() | nil,
           session_id: String.t() | nil,
           instructions: String.t() | nil,
-          trigger: atom() | nil,
+          trigger: Record.trigger() | nil,
           summary_max_tokens: pos_integer() | nil
         }
 
@@ -39,8 +41,6 @@ defmodule Tackle.Lib.Compaction.Request do
             system: nil,
             tools: [],
             selection: nil,
-            model: nil,
-            model_info: nil,
             session_id: nil,
             instructions: nil,
             trigger: nil,

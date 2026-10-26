@@ -68,25 +68,16 @@ defmodule Tackle.Session.Loader do
     end
   end
 
-  defp restore_tree(%Projection{tree: nil}), do: restore_tree_value(Tree.new())
+  # The projection folds its tree through `Tree.append_message/3` and
+  # `Tree.append_compaction/3`, which validate every link and keep the child
+  # index, and rejects a journal they refuse, so its tree is installed as is.
+  # A session not yet written has no tree.
+  defp restore_tree(%Projection{tree: nil}), do: install_tree(Tree.new())
+  defp restore_tree(%Projection{tree: %Tree{} = tree}), do: install_tree(tree)
 
-  defp restore_tree(%Projection{tree: %Tree{} = tree}), do: restore_tree_value(tree)
-
-  defp restore_tree_value(%Tree{} = tree) do
-    descriptors = tree |> Tree.enumerate() |> Enum.map(&Map.from_struct/1)
-
-    case Tree.restore(descriptors, active_id: tree.active_id) do
-      {:ok, tree} ->
-        {:ok,
-         %{
-           tree: tree,
-           messages: Tree.transcript(tree),
-           model_messages: Tree.model_context(tree)
-         }}
-
-      {:error, reason} ->
-        {:error, {:invalid_tree, reason}}
-    end
+  defp install_tree(tree) do
+    {:ok,
+     %{tree: tree, messages: Tree.transcript(tree), model_messages: Tree.model_context(tree)}}
   end
 
   defp decode_linear(%Projection{} = projection) do

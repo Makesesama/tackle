@@ -18,7 +18,7 @@ defmodule Tackle.CLI.TUI.Compaction do
 
   alias ExRatatui.Command
   alias Tackle.CLI.TUI.{State, Util, Viewport}
-  alias Tackle.Lib.Compaction, as: LibCompaction
+  alias Tackle.Lib.Compaction.Checkpoint
 
   @doc """
   Starts a manual compaction command when the shell is idle.
@@ -111,7 +111,7 @@ defmodule Tackle.CLI.TUI.Compaction do
       trigger: Map.get(record, :trigger),
       tokens_before: Map.get(record, :tokens_before),
       estimated_tokens_after: Map.get(record, :estimated_tokens_after),
-      summary: LibCompaction.checkpoint_body(Map.get(record, :summary_message))
+      summary: Checkpoint.body(Map.get(record, :summary_message))
     })
   end
 
@@ -179,7 +179,7 @@ defmodule Tackle.CLI.TUI.Compaction do
             else: card
 
         if checkpoint && Map.get(card, :compaction_id) == checkpoint.id,
-          do: Map.put(card, :summary, LibCompaction.checkpoint_body(checkpoint)),
+          do: Map.put(card, :summary, Checkpoint.body(checkpoint)),
           else: card
       end)
 
@@ -201,7 +201,7 @@ defmodule Tackle.CLI.TUI.Compaction do
           turn_id: nil,
           boundary: 0,
           restored?: true,
-          summary: LibCompaction.checkpoint_body(checkpoint)
+          summary: Checkpoint.body(checkpoint)
         }
 
         %{state | compactions: [card]}
@@ -210,7 +210,7 @@ defmodule Tackle.CLI.TUI.Compaction do
 
   defp checkpoint(agent_state) do
     case agent_state.model_messages do
-      [first | _] -> if LibCompaction.checkpoint?(first), do: first
+      [first | _] -> if Checkpoint.message?(first), do: first
       _ -> nil
     end
   end

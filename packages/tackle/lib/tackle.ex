@@ -124,7 +124,7 @@ defmodule Tackle do
   target returns the selected user message as a draft.
   """
   @spec navigate(AgentRef.t(), Tackle.Lib.Tree.Navigator.target(), keyword()) ::
-          {:ok, Tackle.Session.Snapshot.t(), Tackle.Lib.Tree.Navigator.outcome()}
+          {:ok, Tackle.Session.Snapshot.t(), Tackle.Lib.Tree.Navigator.Outcome.t()}
           | {:error, term()}
   def navigate(%AgentRef{} = agent_ref, target, opts \\ []),
     do: Runtime.navigate(agent_ref, target, opts)

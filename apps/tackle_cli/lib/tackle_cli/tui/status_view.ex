@@ -32,7 +32,8 @@ defmodule Tackle.CLI.TUI.StatusView do
 
   alias Tackle.CLI.TUI.State.Metrics
   alias Tackle.Lib
-  alias Tackle.Lib.{Compaction, ContextUsage, Usage}
+  alias Tackle.Lib.{ContextUsage, Usage}
+  alias Tackle.Lib.Compaction.Checkpoint
 
   @spinner_frames ~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 
@@ -289,7 +290,7 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp compaction_indicator(%State{agent_state: %Lib.State{model_messages: messages}})
        when is_list(messages) do
     case messages do
-      [first | _rest] -> if Compaction.checkpoint?(first), do: "compacted", else: nil
+      [first | _rest] -> if Checkpoint.message?(first), do: "compacted", else: nil
       [] -> nil
     end
   end

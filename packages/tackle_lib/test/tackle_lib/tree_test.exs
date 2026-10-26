@@ -11,6 +11,7 @@ defmodule Tackle.Lib.TreeTest do
   alias Tackle.Lib.Tree
   alias Tackle.Lib.Tree.Change
   alias Tackle.Lib.Tree.Navigator
+  alias Tackle.Lib.Tree.Navigator.Outcome
   alias Tackle.Lib.Usage
 
   defp msg(id, role, content, opts \\ []) do
@@ -34,7 +35,7 @@ defmodule Tackle.Lib.TreeTest do
       first_retained_message_id: first_retained,
       tokens_before: 100,
       estimated_tokens_after: 10,
-      created_at: "2026-01-01T00:00:00Z"
+      created_at: ~U[2026-01-01 00:00:00Z]
     }
   end
 
@@ -93,7 +94,7 @@ defmodule Tackle.Lib.TreeTest do
 
       assert Enum.map(Tree.transcript(tree), & &1.id) == ["u2", "a2"]
       assert Enum.map(Tree.children(tree, nil), & &1.id) == ["u1", "u2"]
-      assert Tree.size(tree) == 4
+      assert length(Tree.enumerate(tree)) == 4
 
       {:ok, tree} = Tree.move(tree, "a1")
       assert Enum.map(Tree.transcript(tree), & &1.id) == ["u1", "a1"]
@@ -112,38 +113,6 @@ defmodule Tackle.Lib.TreeTest do
     test "rejects invalid entry ids" do
       assert {:error, {:invalid_entry_id, nil}} =
                Tree.append_message(Tree.new(), msg(nil, :user, "x"))
-    end
-  end
-
-  describe "restore/2" do
-    test "rebuilds a validated tree with an active position" do
-      descriptors = [
-        %{id: "u1", parent_id: nil, kind: :message, message: msg("u1", :user, "a")},
-        %{id: "a1", parent_id: "u1", kind: :message, message: msg("a1", :assistant, "b")},
-        %{id: "u2", parent_id: nil, kind: :message, message: msg("u2", :user, "c")}
-      ]
-
-      assert {:ok, tree} = Tree.restore(descriptors, active_id: "u2")
-      assert Tree.active_id(tree) == "u2"
-      assert Enum.map(Tree.transcript(tree), & &1.id) == ["u2"]
-    end
-
-    test "rejects duplicates, unknown parents, and unknown active positions" do
-      duplicate = [
-        %{id: "u1", parent_id: nil, kind: :message, message: msg("u1", :user, "a")},
-        %{id: "u1", parent_id: nil, kind: :message, message: msg("u1", :user, "b")}
-      ]
-
-      assert {:error, {:duplicate_entry, "u1"}} = Tree.restore(duplicate)
-
-      orphan = [
-        %{id: "a1", parent_id: "missing", kind: :message, message: msg("a1", :assistant, "b")}
-      ]
-
-      assert {:error, {:unknown_parent, "missing"}} = Tree.restore(orphan)
-
-      valid = [%{id: "u1", parent_id: nil, kind: :message, message: msg("u1", :user, "a")}]
-      assert {:error, {:unknown_active_entry, "gone"}} = Tree.restore(valid, active_id: "gone")
     end
   end
 
@@ -242,19 +211,13 @@ defmodule Tackle.Lib.TreeTest do
   end
 
   describe "child index" do
-    test "stays consistent through appends, branches, compactions, and restore" do
+    test "stays consistent through appends, branches, and compactions" do
       tree = tool_branches(Tree.new(), 3, 2)
       {:ok, tree} = Tree.move(tree, "b1-0-user")
       {:ok, tree, _} = Tree.append_compaction(tree, compaction("c1", "summary", [], nil))
       {tree, _} = append!(tree, msg("root2", :user, "new root"), parent_id: nil)
 
       assert_index_consistent(tree)
-
-      {:ok, restored} =
-        tree |> Tree.enumerate() |> Enum.map(&Map.from_struct/1) |> Tree.restore()
-
-      assert restored.child_ids == tree.child_ids
-      assert_index_consistent(restored)
     end
 
     test "children/2 and resumable_ids/1 read the index rather than scanning entries" do
@@ -271,7 +234,7 @@ defmodule Tackle.Lib.TreeTest do
     test "handles a few thousand entries, deep and wide" do
       # 40 branches of 25 rounds (user, call, result, answer): 4,000 entries.
       tree = tool_branches(Tree.new(), 40, 25)
-      assert Tree.size(tree) == 4_000
+      assert length(Tree.enumerate(tree)) == 4_000
 
       chain =
         Enum.reduce(1..3_000, Tree.new(), fn index, tree ->
@@ -341,12 +304,15 @@ defmodule Tackle.Lib.TreeTest do
       {tree, _} = append!(Tree.new(), msg("u1", :user, "first"))
       {tree, _} = append!(tree, msg("a1", :assistant, "answer"))
 
-      assert {:ok, outcome} = Navigator.navigate(tree, {:edit, "u1"})
-      assert outcome.destination_id == nil
-      assert outcome.selected_id == "u1"
+      assert {:ok, moved, %Outcome{} = outcome} = Navigator.prepare(tree, {:edit, "u1"})
       assert outcome.draft.content == "first"
-      assert outcome.tree.active_id == nil
-      assert %Change{from_id: "a1", to_id: nil, mode: :edit} = outcome.change
+      refute outcome.noop?
+      assert moved.active_id == nil
+
+      assert %Change{from_id: "a1", to_id: nil, selected_id: "u1", mode: :edit} =
+               outcome.change
+
+      assert outcome.change.revision == moved.revision
     end
 
     test "rejects unknown entries, unsafe destinations, and stale revisions" do
@@ -360,11 +326,11 @@ defmodule Tackle.Lib.TreeTest do
           )
         )
 
-      assert {:error, {:unknown_entry, "nope"}} = Navigator.navigate(tree, "nope")
-      assert {:error, {:unsafe_continuation, "a1"}} = Navigator.navigate(tree, "a1")
+      assert {:error, {:unknown_entry, "nope"}} = Navigator.prepare(tree, "nope")
+      assert {:error, {:unsafe_continuation, "a1"}} = Navigator.prepare(tree, "a1")
 
       assert {:error, {:stale_transition, 0, revision}} =
-               Navigator.navigate(tree, "u1", expected_revision: 0)
+               Navigator.prepare(tree, "u1", expected_revision: 0)
 
       assert is_integer(revision)
     end
@@ -372,10 +338,16 @@ defmodule Tackle.Lib.TreeTest do
     test "selecting the current position is a no-op" do
       {tree, _} = append!(Tree.new(), msg("u1", :user, "run"))
 
-      assert {:ok, outcome} = Navigator.navigate(tree, "u1")
+      assert {:ok, ^tree, outcome} = Navigator.prepare(tree, "u1")
       assert outcome.noop?
-      assert outcome.change == nil
-      assert outcome.tree == tree
+
+      assert outcome.change == %Change{
+               from_id: "u1",
+               to_id: "u1",
+               selected_id: "u1",
+               mode: :move,
+               revision: tree.revision
+             }
     end
   end
 
@@ -426,7 +398,7 @@ defmodule Tackle.Lib.TreeTest do
         State.new(
           tree: true,
           id_generator: id_generator(),
-          tree_committer: __MODULE__.OkCommitter
+          committer: __MODULE__.OkCommitter
         )
 
       state = State.add_message(state, msg("u1", :user, "hello"))
@@ -439,7 +411,7 @@ defmodule Tackle.Lib.TreeTest do
 
       failing = %{
         State.new(tree: true, id_generator: id_generator())
-        | tree_committer: __MODULE__.FailCommitter
+        | committer: __MODULE__.FailCommitter
       }
 
       failing = State.add_message(failing, msg("u1", :user, "hello"))
@@ -452,20 +424,34 @@ defmodule Tackle.Lib.TreeTest do
     test "navigation always commits through the state's committer" do
       state = %{
         State.new(tree: true, id_generator: id_generator())
-        | tree_committer: __MODULE__.RecordingNavigationCommitter
+        | committer: __MODULE__.RecordingCommitter
       }
 
       state = State.add_message(state, msg("u1", :user, "hello"))
 
-      assert {:ok, _state, outcome} =
-               Tackle.Lib.navigate(state, nil,
-                 committer: __MODULE__.SkippingCommitter,
-                 session_id: "someone-else"
-               )
+      assert_raise ArgumentError, fn ->
+        Tackle.Lib.navigate(state, nil, committer: __MODULE__.SkippingCommitter)
+      end
 
-      assert outcome.change.session_id == state.session_id
-      assert_received {:navigation_committed, %Change{to_id: nil}}
       refute_received :skipped
+
+      assert {:ok, _state, outcome} = Tackle.Lib.navigate(state, nil)
+      assert_received {:committed, change, context}
+      assert change == outcome.change
+      assert context == %{session_id: state.session_id, context: state.context}
+    end
+
+    test "selecting the current position commits nothing" do
+      state = %{
+        State.new(tree: true, id_generator: id_generator())
+        | committer: __MODULE__.RecordingCommitter
+      }
+
+      state = State.add_message(state, msg("u1", :user, "hello"))
+
+      assert {:ok, navigated, %Outcome{noop?: true}} = Tackle.Lib.navigate(state, "u1")
+      assert navigated.tree == state.tree
+      refute_received {:committed, _change, _context}
     end
 
     test "navigation honours an expected revision" do
@@ -492,34 +478,34 @@ defmodule Tackle.Lib.TreeTest do
   end
 
   defmodule OkCommitter do
-    @behaviour Tackle.Lib.Tree.Committer
+    @behaviour Tackle.Lib.Committer
 
     @impl true
-    def commit_navigation(%Change{}, _context), do: :ok
+    def commit(%Change{}, _context), do: :ok
   end
 
   defmodule FailCommitter do
-    @behaviour Tackle.Lib.Tree.Committer
+    @behaviour Tackle.Lib.Committer
 
     @impl true
-    def commit_navigation(%Change{}, _context), do: {:error, :nope}
+    def commit(%Change{}, _context), do: {:error, :nope}
   end
 
-  defmodule RecordingNavigationCommitter do
-    @behaviour Tackle.Lib.Tree.Committer
+  defmodule RecordingCommitter do
+    @behaviour Tackle.Lib.Committer
 
     @impl true
-    def commit_navigation(%Change{} = change, _context) do
-      send(self(), {:navigation_committed, change})
+    def commit(change, context) do
+      send(self(), {:committed, change, context})
       :ok
     end
   end
 
   defmodule SkippingCommitter do
-    @behaviour Tackle.Lib.Tree.Committer
+    @behaviour Tackle.Lib.Committer
 
     @impl true
-    def commit_navigation(%Change{}, _context) do
+    def commit(_change, _context) do
       send(self(), :skipped)
       :ok
     end
@@ -532,16 +518,6 @@ defmodule Tackle.Lib.TreeTest do
     def summarize(_request, _opts) do
       {:ok,
        %Tackle.Lib.Compaction.Summary{content: "branch summary", usage: nil, model: "test/m"}}
-    end
-  end
-
-  defmodule RecordingCommitter do
-    @behaviour Tackle.Lib.Compaction.Committer
-
-    @impl true
-    def commit(record, _context) do
-      send(self(), {:committed, record.compaction_id})
-      :ok
     end
   end
 
@@ -568,7 +544,7 @@ defmodule Tackle.Lib.TreeTest do
       config =
         Config.new!(
           summarizer: TreeSummarizer,
-          policy: [retain_tokens: 10, summary_max_tokens: 1_000, max_summary_tokens: 1_000]
+          policy: [retain_tokens: 10, summary_max_tokens: 1_000]
         )
 
       selection = %Selection{
@@ -579,13 +555,22 @@ defmodule Tackle.Lib.TreeTest do
         model_info: %ModelInfo{model: "tree-model", context_window: 100_000}
       }
 
-      state = State.new(tree: true, llm: selection, compaction: config)
+      state =
+        State.new(tree: true, llm: selection, compaction: config, committer: RecordingCommitter)
+
       state = State.add_message(state, msg("u1", :user, String.duplicate("x", 4000)))
       state = State.add_message(state, msg("a1", :assistant, String.duplicate("y", 4000)))
 
-      assert {:ok, compacted, %Record{compaction_id: id}} = Tackle.Lib.compact(state)
+      assert {:ok, compacted, %Record{compaction_id: id} = record} = Tackle.Lib.compact(state)
       assert id == compacted.tree.active_id
-      assert Tree.size(compacted.tree) == 3
+
+      # The committed record names the entry it attaches to, so a committer
+      # does not need the tree.
+      assert record.parent_id == "a1"
+      assert Tree.entry(compacted.tree, id).compaction == record
+      assert_received {:committed, ^record, _context}
+      assert compacted.model_messages == Tree.model_context(compacted.tree)
+      assert length(Tree.enumerate(compacted.tree)) == 3
       assert Enum.map(Tree.transcript(compacted.tree), & &1.id) == ["u1", "a1"]
       assert [summary | _tail] = Tree.model_context(compacted.tree)
       assert summary.id == id
@@ -601,8 +586,7 @@ defmodule Tackle.Lib.TreeTest do
       config =
         Config.new!(
           summarizer: TreeSummarizer,
-          committer: RecordingCommitter,
-          policy: [retain_tokens: 10, summary_max_tokens: 1_000, max_summary_tokens: 1_000]
+          policy: [retain_tokens: 10, summary_max_tokens: 1_000]
         )
 
       selection = %Selection{
@@ -615,13 +599,19 @@ defmodule Tackle.Lib.TreeTest do
 
       # The compaction id collides with an existing entry.
       state =
-        State.new(tree: true, llm: selection, compaction: config, id_generator: fn -> "u1" end)
+        State.new(
+          tree: true,
+          llm: selection,
+          compaction: config,
+          committer: RecordingCommitter,
+          id_generator: fn -> "u1" end
+        )
 
       state = State.add_message(state, msg("u1", :user, String.duplicate("x", 4000)))
       state = State.add_message(state, msg("a1", :assistant, String.duplicate("y", 4000)))
 
-      assert {:error, {:invalid_compaction, _reason}} = Tackle.Lib.compact(state)
-      refute_received {:committed, _id}
+      assert {:error, {:invalid_compaction, _reason}, ^state} = Tackle.Lib.compact(state)
+      refute_received {:committed, _record, _context}
     end
   end
 

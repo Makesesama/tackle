@@ -28,14 +28,4 @@ defmodule Tackle.Lib.Tree.Entry do
 
   @enforce_keys [:id, :kind, :ordinal]
   defstruct [:id, :parent_id, :kind, :ordinal, :message, :compaction]
-
-  @doc "Returns the settled message for a message entry."
-  @spec message(t()) :: Message.t() | nil
-  def message(%__MODULE__{kind: :message, message: message}), do: message
-  def message(%__MODULE__{}), do: nil
-
-  @doc "Returns the compaction record for a compaction entry."
-  @spec compaction(t()) :: Record.t() | nil
-  def compaction(%__MODULE__{kind: :compaction, compaction: record}), do: record
-  def compaction(%__MODULE__{}), do: nil
 end

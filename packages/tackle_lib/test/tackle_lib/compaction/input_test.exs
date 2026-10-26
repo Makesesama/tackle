@@ -1,7 +1,7 @@
 defmodule Tackle.Lib.Compaction.InputTest do
   use ExUnit.Case, async: true
 
-  alias Tackle.Lib.Compaction
+  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.Compaction.Input
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Message
@@ -29,7 +29,7 @@ defmodule Tackle.Lib.Compaction.InputTest do
   end
 
   test "never shortens an earlier checkpoint" do
-    checkpoint = Compaction.checkpoint_message("cp", text(300))
+    checkpoint = Checkpoint.message("cp", text(300))
     huge = Message.user(text(5_000))
 
     assert {:ok, [^checkpoint, shortened], 1} = Input.fit([checkpoint, huge], 1_000)

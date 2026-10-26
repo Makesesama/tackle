@@ -19,8 +19,11 @@ defmodule Tackle.Lib do
       after_turn).
     * `Tackle.Lib.Message` — conversation message value struct.
     * `Tackle.Lib.Compaction` — checkpoint compaction of the provider-visible
-      model projection, with pluggable summarizers and an optional durability
-      committer.
+      model projection, with pluggable summarizers.
+    * `Tackle.Lib.Tree` — opt-in branching conversation history, navigated
+      with `navigate/3`.
+    * `Tackle.Lib.Committer` — the durability seam compactions and
+      navigations commit through before they are installed.
     * `Tackle.Lib.Tool` — the tool behaviour the loop calls.
     * `Tackle.Lib.Tool.Schema` — provider-neutral tool argument validation/coercion.
     * `Tackle.Lib.CredentialStore` — provider-neutral access through host-owned handles.
@@ -67,7 +70,6 @@ defmodule Tackle.Lib do
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
-  alias Tackle.Lib.Tree
   alias Tackle.Lib.Tree.Navigator
 
   @doc """
@@ -140,15 +142,14 @@ defmodule Tackle.Lib do
   Runs one manual (idle) compaction of the model projection.
 
   Manual compaction bypasses the automatic pressure threshold but otherwise
-  shares the exact transaction, validation, and durability rules. Returns the
-  updated state and the durable `Tackle.Lib.Compaction.Record`, or
-  `{:error, :nothing_to_compact}` when the projection already fits the
+  shares the exact transaction, validation, and durability rules of
+  `Tackle.Lib.Compaction.compact/3`. Returns the updated state and the durable
+  `Tackle.Lib.Compaction.Record`, or `{:error, reason, state}` /
+  `{:cancelled, reason, state}` with the last committed state, such as
+  `{:error, :nothing_to_compact, state}` when the projection already fits the
   policy's retention target.
   """
-  @spec compact(State.t(), keyword()) ::
-          {:ok, State.t(), Tackle.Lib.Compaction.Record.t()}
-          | {:error | :cancelled, term()}
-          | {:error | :cancelled, term(), State.t()}
+  @spec compact(State.t(), keyword()) :: Compaction.result()
   def compact(%State{} = state, opts \\ []), do: Compaction.compact(state, :manual, opts)
 
   @doc """
@@ -158,98 +159,16 @@ defmodule Tackle.Lib do
   defdelegate usage(state), to: State
 
   @doc """
-  Derives token/cost usage for the active conversation path only.
-
-  Linear mode has a single path, so this equals `usage/1`. In tree mode it
-  excludes sibling branches.
-  """
-  @spec branch_usage(State.t()) :: Tackle.Lib.Usage.t()
-  defdelegate branch_usage(state), to: State
-
-  @doc """
-  Returns the conversation tree, or `nil` when tree history is disabled.
-  """
-  @spec tree(State.t()) :: Tree.t() | nil
-  def tree(%State{tree: tree}), do: tree
-
-  @doc """
   Navigates the active position of an opt-in tree session.
 
-  The library prepares the transition against the tree's current revision,
-  validates the destination, and commits through the configured
-  `Tackle.Lib.Tree.Committer` before installing the new position. Navigation
-  never runs a turn, re-executes a tool, or modifies entries.
-
-  Targets are described in `Tackle.Lib.Tree.Navigator`. The only option is
-  `:expected_revision`, which rejects a transition prepared against another
-  revision of the tree. The committer is always the state's own
-  `tree_committer`, and the change names the state's session. Expected failures
-  include `:tree_disabled`, `{:unknown_entry, id}`, `{:unsafe_continuation,
-  id}`, `{:stale_transition, expected, actual}`, and
-  `{:durable_commit_failed, reason}`. A failed validation or commit leaves the
-  accepted state unchanged.
+  Commits the `Tackle.Lib.Tree.Change` through the state's
+  `Tackle.Lib.Committer` before installing the new position. Targets, the
+  `:expected_revision` option, and the errors are described in
+  `Tackle.Lib.Tree.Navigator.navigate/3`.
   """
   @spec navigate(State.t(), Navigator.target(), keyword()) ::
-          {:ok, State.t(), Navigator.outcome()} | {:error, term()}
-  def navigate(%State{} = state, target, opts \\ []) do
-    case state.tree do
-      nil ->
-        {:error, :tree_disabled}
-
-      %Tree{} = tree ->
-        navigate_tree(state, tree, target, opts)
-    end
-  end
-
-  defp navigate_tree(%State{} = state, tree, target, opts) do
-    if active?(state) do
-      {:error, :turn_in_progress}
-    else
-      navigator_opts =
-        opts
-        |> Keyword.take([:expected_revision])
-        |> Keyword.put(:session_id, state.session_id)
-
-      with {:ok, outcome} <- Navigator.navigate(tree, target, navigator_opts),
-           :ok <- commit_navigation(state, outcome.change) do
-        {:ok, install_navigation(state, outcome), outcome}
-      end
-    end
-  end
-
-  # The library refuses to navigate a state that is visibly mid-turn. Immutable
-  # state cannot know about another process executing a copy, so the host must
-  # still serialize turns, navigation, and compaction.
-  defp active?(%State{status: status}), do: status in [:thinking, :acting]
-
-  defp commit_navigation(_state, nil), do: :ok
-  defp commit_navigation(%State{tree_committer: nil}, _change), do: :ok
-
-  defp commit_navigation(%State{tree_committer: module} = state, change),
-    do: commit_with(module, change, state)
-
-  defp commit_with(module, change, state) do
-    case module.commit_navigation(change, %{session_id: state.session_id, context: state.context}) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:durable_commit_failed, reason}}
-      other -> {:error, {:durable_commit_failed, {:unexpected_commit_result, other}}}
-    end
-  rescue
-    error -> {:error, {:durable_commit_failed, Exception.message(error)}}
-  catch
-    kind, reason -> {:error, {:durable_commit_failed, {kind, reason}}}
-  end
-
-  defp install_navigation(%State{} = state, outcome) do
-    tree = outcome.tree
-
-    State.reset_turn(%{
-      state
-      | tree: tree,
-        messages: Tree.transcript(tree),
-        model_messages: Tree.model_context(tree)
-    })
-  end
+          {:ok, State.t(), Navigator.Outcome.t()} | {:error, term()}
+  defdelegate navigate(state, target, opts \\ []), to: Navigator
 
   @doc """
   Calculates current context-window usage for the selected model.

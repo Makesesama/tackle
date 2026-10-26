@@ -1,10 +1,10 @@
 # Optional conversation trees
 
 Status: implemented first version. The library owns branching semantics
-(`Tackle.Lib.Tree`, `Tackle.Lib.Tree.Navigator`, `Tackle.Lib.Tree.Committer`),
-the root harness owns durable records and runtime coordination
-(`Tackle.Session.Tree`, the `tree.enabled`/`tree.navigated` events, and the
-tree-aware projection/loader), and the CLI owns the `/tree` picker. Steps 1–6 of
+(`Tackle.Lib.Tree`, `Tackle.Lib.Tree.Navigator`, and the shared
+`Tackle.Lib.Committer` seam, which compactions use as well), the root harness
+owns durable records and runtime coordination (`Tackle.Session.Committer`, the
+`tree.enabled`/`tree.navigated` events, and the tree-aware projection/loader), and the CLI owns the `/tree` picker. Steps 1–6 of
 the sequence below are implemented with tests; step 7 documents the result. The
 "Later increments" and "Follow-up" sections remain deliberately deferred.
 

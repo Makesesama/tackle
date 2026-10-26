@@ -8,6 +8,8 @@ defmodule Tackle.CLI.TreeTest do
   alias Tackle.CLI.Widgets.{Input, TreeScreen}
   alias Tackle.Lib.{Message, State}
   alias Tackle.Lib.Tree, as: ConversationTree
+  alias Tackle.Lib.Tree.Change
+  alias Tackle.Lib.Tree.Navigator.Outcome
 
   defp base_state(opts \\ []) do
     input = Input.new()
@@ -24,6 +26,13 @@ defmodule Tackle.CLI.TreeTest do
 
     state = Viewport.update_draft(state)
     %{state | overlay: Keyword.get(opts, :overlay)}
+  end
+
+  defp edit_outcome(text) do
+    %Outcome{
+      change: %Change{from_id: "a1", to_id: nil, selected_id: "u1", mode: :edit, revision: 3},
+      draft: Message.user(text)
+    }
   end
 
   defp tree_with_branches do
@@ -280,7 +289,7 @@ defmodule Tackle.CLI.TreeTest do
         end)
       end)
 
-    assert ConversationTree.size(tree) == 3_000
+    assert length(ConversationTree.enumerate(tree)) == 3_000
 
     all = Tree.items(tree, :all)
     assert length(all) == 3_001
@@ -348,8 +357,7 @@ defmodule Tackle.CLI.TreeTest do
   test "an untouched composer receives the selected user message" do
     state = base_state()
 
-    outcome = %{mode: :edit, draft: Message.user("earlier text"), destination_id: nil}
-    state = Tree.apply_outcome(state, outcome)
+    state = Tree.apply_outcome(state, edit_outcome("earlier text"))
 
     assert Input.get_value(state.input) == "earlier text"
     assert state.notice =~ "workspace is unchanged"
@@ -358,8 +366,7 @@ defmodule Tackle.CLI.TreeTest do
   test "a non-empty draft is preserved when a user message is selected" do
     state = base_state(draft: "my own draft")
 
-    outcome = %{mode: :edit, draft: Message.user("earlier text"), destination_id: nil}
-    state = Tree.apply_outcome(state, outcome)
+    state = Tree.apply_outcome(state, edit_outcome("earlier text"))
 
     assert Input.get_value(state.input) == "my own draft"
     assert state.notice =~ "draft kept"
@@ -367,7 +374,12 @@ defmodule Tackle.CLI.TreeTest do
 
   test "a move outcome never overwrites the draft" do
     state = base_state(draft: "keep me")
-    state = Tree.apply_outcome(state, %{mode: :move, draft: nil, destination_id: "a1"})
+
+    outcome = %Outcome{
+      change: %Change{from_id: "a2", to_id: "a1", selected_id: "a1", revision: 3}
+    }
+
+    state = Tree.apply_outcome(state, outcome)
 
     assert Input.get_value(state.input) == "keep me"
   end

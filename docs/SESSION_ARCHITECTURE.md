@@ -567,14 +567,16 @@ fail-closed contract:
 3. it builds the replacement without installing it, appending the compaction
    entry to a copy of the conversation tree, so a record the tree refuses is
    never committed;
-4. it commits one `context.compacted` event through `Tackle.Session.Compaction`,
-   which resolves the live journal by session id and syncs the commit;
+4. it commits one `context.compacted` event through the state's
+   `Tackle.Lib.Committer`, `Tackle.Session.Committer`, which resolves the live
+   journal by session id and syncs the commit (the record names the tree entry
+   it attaches to, written as `parent_id`);
 5. only after a successful commit does it install the replacement in
    `State.model_messages`.
 
 A summarizer, validation, or commit failure leaves the model context unchanged. A
-commit failure is returned as `{:error, {:durable_commit_failed, reason}}` so the
-loop fails the turn instead of continuing with an unpersisted checkpoint. The
+commit failure is returned as `{:error, {:durable_commit_failed, reason}, state}`
+so the loop fails the turn instead of continuing with an unpersisted checkpoint. The
 canonical transcript is never compacted, so history remains append-only,
 inspectable, searchable, and forkable.
 
