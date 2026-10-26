@@ -23,10 +23,19 @@ defmodule Tackle.Session.EventsTest do
 
   test "unsubscribing stops deliveries and its monitor" do
     pid = subscriber()
-    events = Events.new("session") |> Events.subscribe(pid) |> Events.unsubscribe(pid)
+    events = Events.new("session") |> Events.subscribe(self()) |> Events.subscribe(pid)
+    %{^pid => monitor} = events.subscribers
+    events = events |> Events.unsubscribe(pid) |> Events.unsubscribe(self())
 
     assert events.subscribers == %{}
     assert Events.unsubscribe(events, pid) == events
+
+    Events.title_changed(events, "Fix it")
+    refute_received {:tackle_session_title_changed, "session", _title}
+
+    Process.unlink(pid)
+    Process.exit(pid, :kill)
+    refute_receive {:DOWN, ^monitor, :process, ^pid, _reason}, 50
   end
 
   test "a subscriber's DOWN drops it; another monitor's does not" do
