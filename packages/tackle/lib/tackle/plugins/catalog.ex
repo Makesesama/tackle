@@ -177,30 +177,24 @@ defmodule Tackle.Plugins.Catalog do
     end)
   end
 
-  defp validate_provider_models(provider, entry) do
-    case Provider.instance_call(provider, :models) do
-      {:ok, models} ->
-        if valid_models?(models),
-          do: :ok,
-          else: entry_error(entry, :adapter, {:invalid_models, models})
-
-      {:error, {:invalid_adapter, _module, {:missing_callback, _callback}}} ->
-        entry_error(entry, :adapter, {:missing_callback, {:models, 0}})
-
-      {:error, {:adapter_callback_failed, _module, function, detail}} ->
-        entry_error(entry, :adapter, {:callback_failed, function, detail})
-    end
-  end
-
   # An empty list is valid: adapters whose models come only from host
   # configuration (such as a local Ollama server) contribute no models until
   # some are configured.
-  defp valid_models?(models) when is_list(models) do
-    Enum.all?(models, &(is_binary(&1) and &1 != "" and &1 == String.trim(&1))) and
-      length(Enum.uniq(models)) == length(models)
-  end
+  defp validate_provider_models(provider, entry) do
+    case Provider.models(provider) do
+      {:ok, _models} ->
+        :ok
 
-  defp valid_models?(_models), do: false
+      {:error, {:invalid_adapter, _module, {:missing_callback, callback}}} ->
+        entry_error(entry, :adapter, {:missing_callback, callback})
+
+      {:error, {:adapter_callback_failed, _module, function, detail}} ->
+        entry_error(entry, :adapter, {:callback_failed, function, detail})
+
+      {:error, reason} ->
+        entry_error(entry, :adapter, reason)
+    end
+  end
 
   defp validate_module(module, source, :adapter), do: validate_adapter(module, source)
 

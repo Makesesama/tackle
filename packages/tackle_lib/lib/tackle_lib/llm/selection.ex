@@ -110,28 +110,11 @@ defmodule Tackle.Lib.LLM.Selection do
   end
 
   defp validate_chat_adapter(adapter) do
-    with {:module, ^adapter} <- Code.ensure_loaded(adapter),
-         :ok <- require_generation(adapter),
-         :ok <- require_callback(adapter, :adapter_id, [0]) do
-      require_callback(adapter, :models, [1, 0])
-    else
-      {:error, {:invalid_adapter, _adapter, _reason}} = error -> error
-      {:error, reason} -> {:error, {:invalid_adapter, adapter, {:not_loaded, reason}}}
+    with :ok <- Provider.ensure_loaded(adapter),
+         :ok <- Provider.ensure_generates(adapter),
+         :ok <- Provider.ensure_exported(adapter, :adapter_id, 0) do
+      Provider.ensure_exported(adapter, :models, [1, 0])
     end
-  end
-
-  # An adapter generates, streams, or both; `Tackle.Lib.LLM` calls the one
-  # it has.
-  defp require_generation(adapter) do
-    if function_exported?(adapter, :generate, 2) or function_exported?(adapter, :stream, 3),
-      do: :ok,
-      else: {:error, {:invalid_adapter, adapter, {:missing_callback, {:generate, 2}}}}
-  end
-
-  defp require_callback(adapter, name, arities) do
-    if Enum.any?(arities, &function_exported?(adapter, name, &1)),
-      do: :ok,
-      else: {:error, {:invalid_adapter, adapter, {:missing_callback, {name, List.last(arities)}}}}
   end
 
   defp valid_provider_id?(provider_id), do: Provider.valid_id?(provider_id)

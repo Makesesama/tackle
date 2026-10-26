@@ -31,11 +31,11 @@ defmodule Tackle.Lib.Loop.Tools do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.Loop.Batch
+  alias Tackle.Lib.Loop.Gate
   alias Tackle.Lib.Loop.Job
   alias Tackle.Lib.Loop.Run
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
-  alias Tackle.Lib.ProviderGate
   alias Tackle.Lib.State
   alias Tackle.Lib.Telemetry
   alias Tackle.Lib.Tool
@@ -199,7 +199,7 @@ defmodule Tackle.Lib.Loop.Tools do
   # Cancellation is checked again after the gate, which may have blocked.
   defp pass_gate(calls, state, run) do
     if Enum.any?(calls, &external_effect?(&1, run)) do
-      case ProviderGate.await(run.before_tool_execution, :before_tool_execution) do
+      case Gate.before_tool_execution(run.before_tool_execution) do
         :ok ->
           checkpoint(state, run)
 

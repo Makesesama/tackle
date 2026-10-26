@@ -54,6 +54,7 @@ defmodule Tackle.Lib.Compaction do
   alias Tackle.Lib.Compaction.Request
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
+  alias Tackle.Lib.Loop.Gate
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
   alias Tackle.Lib.Tool.Registry
@@ -492,7 +493,7 @@ defmodule Tackle.Lib.Compaction do
   end
 
   defp await_provider(opts) do
-    result = Tackle.Lib.ProviderGate.await(Keyword.get(opts, :before_provider_call))
+    result = Gate.before_provider_call(Keyword.get(opts, :before_provider_call))
 
     case check_cancel(opts) do
       :ok -> result

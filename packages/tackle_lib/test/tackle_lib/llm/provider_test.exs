@@ -209,6 +209,18 @@ defmodule Tackle.Lib.LLM.ProviderTest do
     assert {:error, {:invalid_adapter, Nope.Missing, {:not_loaded, _}}} = Provider.local?(missing)
   end
 
+  test "adapter_id/1 loads the adapter and validates its type id" do
+    assert Provider.adapter_id(InstanceAdapter) == {:ok, "instance"}
+
+    assert {:error, {:invalid_adapter, Nope.Missing, {:not_loaded, _}}} =
+             Provider.adapter_id(Nope.Missing)
+
+    assert Provider.adapter_id(Enum) ==
+             {:error, {:invalid_adapter, Enum, {:missing_callback, {:adapter_id, 0}}}}
+
+    assert Provider.adapter_id(nil) == {:error, {:invalid_adapter, nil, :not_a_module}}
+  end
+
   test "id/2 and settings/1 read adapter options with fallbacks" do
     assert Provider.id([provider_id: "work"], "default") == "work"
     assert Provider.id([provider_id: ""], "default") == "default"

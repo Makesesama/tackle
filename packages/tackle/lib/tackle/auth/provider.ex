@@ -163,7 +163,7 @@ defmodule Tackle.Auth.Provider do
          {:ok, accounts} <- current_accounts(opts),
          {:ok, entries} <- Plugins.provider_entries(plugin_opts(opts)),
          {:ok, adapter, base} <- login_source(id, entries, accounts),
-         {:ok, adapter_id} <- adapter_type(adapter),
+         {:ok, adapter_id} <- Provider.adapter_id(adapter),
          :ok <- check_recorded(accounts, name, adapter_id),
          recorded? = Map.has_key?(accounts, name),
          account = account(adapter_id, base),
@@ -215,7 +215,7 @@ defmodule Tackle.Auth.Provider do
         providers = providers(entries)
         adapters = providers |> Enum.map(& &1.adapter) |> Enum.uniq()
 
-        case Enum.find(adapters, &(adapter_type(&1) == {:ok, id})) do
+        case Enum.find(adapters, &(Provider.adapter_id(&1) == {:ok, id})) do
           nil -> {:error, unsupported(id, providers, adapters)}
           adapter -> {:ok, adapter, nil}
         end
@@ -272,7 +272,7 @@ defmodule Tackle.Auth.Provider do
   # Only an account of this provider's adapter is deleted; a record of the
   # same name for another adapter belongs to another host's provider.
   defp forget_account(%Provider{id: id, adapter: adapter}) do
-    with {:ok, adapter_id} <- adapter_type(adapter),
+    with {:ok, adapter_id} <- Provider.adapter_id(adapter),
          {:ok, accounts} <- stored_accounts() do
       case accounts do
         %{^id => %{"adapter" => ^adapter_id}} -> Auth.delete_account(id)
@@ -300,7 +300,7 @@ defmodule Tackle.Auth.Provider do
 
   # Login with `:as` also accepts adapter type ids, so they are listed too.
   defp unsupported(id, providers, adapters) do
-    types = for adapter <- adapters, {:ok, type} <- [adapter_type(adapter)], do: type
+    types = for adapter <- adapters, {:ok, type} <- [Provider.adapter_id(adapter)], do: type
     supported = Enum.uniq(Enum.map(providers, & &1.id) ++ types)
     {:unsupported_auth_provider, id, {:supported, supported}}
   end
@@ -331,17 +331,9 @@ defmodule Tackle.Auth.Provider do
   end
 
   defp adapter_id(adapter) do
-    case adapter_type(adapter) do
+    case Provider.adapter_id(adapter) do
       {:ok, adapter_id} -> adapter_id
       {:error, _reason} -> nil
-    end
-  end
-
-  defp adapter_type(adapter) do
-    case Provider.call(adapter, :adapter_id, []) do
-      {:ok, adapter_id} when is_binary(adapter_id) -> {:ok, adapter_id}
-      {:ok, other} -> {:error, {:invalid_adapter_id, other}}
-      {:error, reason} -> {:error, reason}
     end
   end
 

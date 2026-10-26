@@ -27,9 +27,14 @@ defmodule Tackle.Lib.LLM.Provider do
   Settings are an opaque, JSON-compatible map with string keys. Tackle.Lib
   never interprets them; it passes them to the adapter as
   `opts[:provider_settings]` together with `opts[:provider_id]`, and to the
-  optional instance-aware callbacks `models/1`, `model_info/2`,
-  `decision_models/1`, and `local?/1`, which take precedence over their
-  arity-zero versions.
+  instance-aware versions of the optional catalog callbacks, which take
+  precedence over their arity-zero versions: `models/1` and `model_info/2`
+  of `Tackle.Lib.LLM`, and, for adapters that also implement
+  `Tackle.Lib.Decision`, its `decision_models/1` and `local?/1`.
+
+  Adapters read conventional settings with the helpers below:
+  `string_setting/3`, `put_base_url/2` (`"base_url"`), and `api_key/3`
+  (`"api_key_env"`).
   """
 
   alias Tackle.Lib.CredentialStore
@@ -81,10 +86,7 @@ defmodule Tackle.Lib.LLM.Provider do
   """
   @spec defaults(module()) :: {:ok, [t()]} | {:error, term()}
   def defaults(adapter) when is_atom(adapter) and not is_nil(adapter) do
-    with :ok <- ensure_loaded(adapter),
-         :ok <- ensure_exported(adapter, :adapter_id, 0),
-         {:ok, adapter_id} <- call(adapter, :adapter_id, []),
-         :ok <- validate_adapter_id(adapter_id) do
+    with {:ok, adapter_id} <- adapter_id(adapter) do
       if function_exported?(adapter, :default_providers, 0) do
         default_providers(adapter)
       else
@@ -94,6 +96,25 @@ defmodule Tackle.Lib.LLM.Provider do
   end
 
   def defaults(adapter), do: {:error, {:invalid_adapter, adapter, :not_a_module}}
+
+  @doc """
+  Returns an adapter's type id, its `adapter_id/0`.
+
+  The adapter is loaded and must export `adapter_id/0` returning a valid id
+  (see `valid_id?/1`). A callback that raises, throws, or exits is
+  `{:error, {:adapter_callback_failed, adapter, :adapter_id, detail}}`.
+  """
+  @spec adapter_id(module()) :: {:ok, String.t()} | {:error, term()}
+  def adapter_id(adapter) when is_atom(adapter) and not is_nil(adapter) do
+    with :ok <- ensure_loaded(adapter),
+         :ok <- ensure_exported(adapter, :adapter_id, 0),
+         {:ok, adapter_id} <- call(adapter, :adapter_id, []),
+         :ok <- validate_adapter_id(adapter_id) do
+      {:ok, adapter_id}
+    end
+  end
+
+  def adapter_id(adapter), do: {:error, {:invalid_adapter, adapter, :not_a_module}}
 
   @doc """
   Expands providers and adapter modules into providers with unique ids.
@@ -119,7 +140,17 @@ defmodule Tackle.Lib.LLM.Provider do
 
   def expand(sources), do: {:error, {:invalid_providers, sources}}
 
-  @doc "Returns the validated chat models of one provider."
+  @doc """
+  Returns the validated chat models of one provider: `models/1` with its
+  settings, else `models/0`.
+
+  The list may be empty; its entries must be unique, non-empty, trimmed
+  strings. Errors: `{:invalid_models, id, value}` for a value that is not a
+  list, `{:invalid_model_id, id, model}`, `{:duplicate_model_id, id, model}`,
+  `{:invalid_adapter, adapter, reason}` for an adapter that cannot be loaded
+  or exports neither callback, and `{:adapter_callback_failed, adapter,
+  :models, detail}`.
+  """
   @spec models(t()) :: {:ok, [String.t()]} | {:error, term()}
   def models(%__MODULE__{} = provider) do
     with {:ok, models} <- instance_call(provider, :models) do
@@ -292,9 +323,7 @@ defmodule Tackle.Lib.LLM.Provider do
 
   defp header_safe?(value), do: value |> :binary.bin_to_list() |> Enum.all?(&(&1 in 0x21..0x7E))
 
-  @doc false
-  @spec validate_models(term(), String.t()) :: {:ok, [String.t()]} | {:error, term()}
-  def validate_models(models, provider_id) when is_list(models) do
+  defp validate_models(models, provider_id) when is_list(models) do
     Enum.reduce_while(models, {:ok, MapSet.new()}, fn model, {:ok, seen} ->
       cond do
         not valid_model?(model) ->
@@ -313,14 +342,12 @@ defmodule Tackle.Lib.LLM.Provider do
     end
   end
 
-  def validate_models(models, provider_id),
+  defp validate_models(models, provider_id),
     do: {:error, {:invalid_models, provider_id, models}}
 
-  @doc false
   # Calls the arity-one instance callback with the provider settings when the
   # adapter exports it, else the arity-zero callback.
-  @spec instance_call(t(), atom()) :: {:ok, term()} | {:error, term()}
-  def instance_call(%__MODULE__{adapter: adapter, settings: settings}, callback) do
+  defp instance_call(%__MODULE__{adapter: adapter, settings: settings}, callback) do
     with :ok <- ensure_loaded(adapter) do
       cond do
         function_exported?(adapter, callback, 1) -> call(adapter, callback, [settings])
@@ -330,9 +357,7 @@ defmodule Tackle.Lib.LLM.Provider do
     end
   end
 
-  @doc false
-  @spec call(module(), atom(), list()) :: {:ok, term()} | {:error, term()}
-  def call(adapter, callback, args) do
+  defp call(adapter, callback, args) do
     {:ok, apply(adapter, callback, args)}
   rescue
     exception ->
@@ -341,11 +366,6 @@ defmodule Tackle.Lib.LLM.Provider do
     kind, reason ->
       {:error, {:adapter_callback_failed, adapter, callback, {kind, reason}}}
   end
-
-  @doc false
-  @spec model_info(t(), String.t()) :: {:ok, term()} | {:error, term()}
-  def model_info(%__MODULE__{adapter: adapter, settings: settings}, model),
-    do: model_info(adapter, settings, model)
 
   # Prefers the instance-aware `model_info/2`, like the other callbacks.
   @doc false
@@ -404,17 +424,39 @@ defmodule Tackle.Lib.LLM.Provider do
     end
   end
 
-  defp ensure_loaded(adapter) do
+  # The adapter checks `Tackle.Lib.LLM`, `Tackle.Lib.LLM.Selection`, and
+  # `Tackle.Lib.Decision.Selection` share, so every one reports a broken
+  # adapter as `{:invalid_adapter, adapter, reason}`.
+
+  @doc false
+  @spec ensure_loaded(module()) :: :ok | {:error, {:invalid_adapter, module(), term()}}
+  def ensure_loaded(adapter) do
     case Code.ensure_loaded(adapter) do
       {:module, ^adapter} -> :ok
       {:error, reason} -> {:error, {:invalid_adapter, adapter, {:not_loaded, reason}}}
     end
   end
 
-  defp ensure_exported(adapter, name, arity) do
-    if function_exported?(adapter, name, arity),
+  # An adapter generates, streams, or both; `Tackle.Lib.LLM` calls the one it
+  # has.
+  @doc false
+  @spec ensure_generates(module()) :: :ok | {:error, {:invalid_adapter, module(), term()}}
+  def ensure_generates(adapter) do
+    if function_exported?(adapter, :generate, 2) or function_exported?(adapter, :stream, 3),
       do: :ok,
-      else: {:error, {:invalid_adapter, adapter, {:missing_callback, {name, arity}}}}
+      else: {:error, {:invalid_adapter, adapter, {:missing_callback, {:generate, 2}}}}
+  end
+
+  # Requires one of `arities` of a callback, reporting the last as missing.
+  @doc false
+  @spec ensure_exported(module(), atom(), non_neg_integer() | [non_neg_integer()]) ::
+          :ok | {:error, {:invalid_adapter, module(), term()}}
+  def ensure_exported(adapter, name, arities) do
+    arities = List.wrap(arities)
+
+    if Enum.any?(arities, &function_exported?(adapter, name, &1)),
+      do: :ok,
+      else: {:error, {:invalid_adapter, adapter, {:missing_callback, {name, List.last(arities)}}}}
   end
 
   defp validate_adapter_id(adapter_id) do

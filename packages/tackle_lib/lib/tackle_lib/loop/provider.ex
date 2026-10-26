@@ -43,9 +43,9 @@ defmodule Tackle.Lib.Loop.Provider do
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Response
+  alias Tackle.Lib.Loop.Gate
   alias Tackle.Lib.Loop.Run
   alias Tackle.Lib.Messages
-  alias Tackle.Lib.ProviderGate
   alias Tackle.Lib.Retry
   alias Tackle.Lib.State
   alias Tackle.Lib.SystemPrompt
@@ -230,7 +230,7 @@ defmodule Tackle.Lib.Loop.Provider do
   # ── Dispatch ──────────────────────────────────────────────────────────
 
   defp dispatch(%State{} = state, run) do
-    with :ok <- ProviderGate.await(run.before_provider_call),
+    with :ok <- Gate.before_provider_call(run.before_provider_call),
          false <- Run.cancelled?(run) do
       {schema, opts} = request_args(state, run)
       selection = run.snapshot.llm

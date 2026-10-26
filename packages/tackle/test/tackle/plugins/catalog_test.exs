@@ -151,7 +151,8 @@ defmodule Tackle.Plugins.CatalogTest do
     assert {:error, {:invalid_plugin, :adapter, :bad, {:invalid_adapter_id, "Bad id"}}} =
              Catalog.new(adapters: [entry(InvalidAdapter, :bad)], tools: [], hooks: [])
 
-    assert {:error, {:invalid_plugin, :adapter, :dup, {:invalid_models, ["small", "small"]}}} =
+    assert {:error,
+            {:invalid_plugin, :adapter, :dup, {:duplicate_model_id, "invalid-models", "small"}}} =
              Catalog.new(adapters: [entry(InvalidModelsAdapter, :dup)], tools: [], hooks: [])
 
     assert {:error, {:invalid_plugin, :hook, :empty, :no_hook_callbacks}} =

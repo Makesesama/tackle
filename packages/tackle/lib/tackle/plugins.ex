@@ -224,7 +224,7 @@ defmodule Tackle.Plugins do
 
   defp index_adapter_type(index, adapter) do
     with {:ok, [_ | _]} <- Provider.defaults(adapter),
-         {:ok, adapter_id} <- Provider.call(adapter, :adapter_id, []) do
+         {:ok, adapter_id} <- Provider.adapter_id(adapter) do
       put_adapter_type(index, adapter_id, adapter)
     end
   end

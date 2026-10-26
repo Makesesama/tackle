@@ -370,13 +370,9 @@ defmodule Tackle.Lib.LLM do
   """
   @spec model_info(module() | Provider.t(), String.t()) ::
           {:ok, ModelInfo.t() | nil} | {:error, term()}
-  def model_info(%Provider{adapter: adapter} = provider, model)
-      when is_binary(model) and model != "" do
-    with :ok <- ensure_adapter_loaded(adapter),
-         {:ok, value} <- Provider.model_info(provider, model) do
-      ModelInfo.normalize(model, value)
-    end
-  end
+  def model_info(%Provider{adapter: adapter, settings: settings}, model)
+      when is_binary(model) and model != "",
+      do: adapter_model_info(adapter, model, settings)
 
   def model_info(adapter, model)
       when is_atom(adapter) and not is_nil(adapter) and is_binary(model) and model != "",
@@ -442,8 +438,8 @@ defmodule Tackle.Lib.LLM do
       |> Keyword.put(:provider_id, provider_id)
       |> Keyword.put(:provider_settings, selection.provider_settings)
 
-    with :ok <- ensure_adapter_loaded(adapter),
-         :ok <- ensure_generates(adapter),
+    with :ok <- Provider.ensure_loaded(adapter),
+         :ok <- Provider.ensure_generates(adapter),
          {:ok, schema} <- json_schema(schema) do
       {:ok,
        %{
@@ -455,12 +451,6 @@ defmodule Tackle.Lib.LLM do
          opts: drop_foreign_provider_state(opts, provider_id, model)
        }}
     end
-  end
-
-  defp ensure_generates(adapter) do
-    if function_exported?(adapter, :generate, 2) or function_exported?(adapter, :stream, 3),
-      do: :ok,
-      else: {:error, {:invalid_adapter, adapter, {:missing_callback, {:generate, 2}}}}
   end
 
   # Adapters receive one JSON Schema form: a keyword schema is projected once
@@ -629,16 +619,8 @@ defmodule Tackle.Lib.LLM do
   defp estimate_cost(%ModelInfo{} = info, usage), do: ModelInfo.estimate_cost(info, usage)
 
   defp adapter_model_info(adapter, model, settings) do
-    with :ok <- ensure_adapter_loaded(adapter),
-         {:ok, value} <- Provider.model_info(adapter, settings, model) do
+    with {:ok, value} <- Provider.model_info(adapter, settings, model) do
       ModelInfo.normalize(model, value)
-    end
-  end
-
-  defp ensure_adapter_loaded(adapter) do
-    case Code.ensure_loaded(adapter) do
-      {:module, ^adapter} -> :ok
-      {:error, reason} -> {:error, {:invalid_adapter, adapter, {:not_loaded, reason}}}
     end
   end
 end

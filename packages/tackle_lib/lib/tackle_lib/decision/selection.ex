@@ -28,7 +28,7 @@ defmodule Tackle.Lib.Decision.Selection do
   @spec resolve([Provider.source()], String.t()) :: {:ok, t()} | {:error, term()}
   def resolve(sources, model_ref) when is_list(sources) and is_binary(model_ref) do
     with {:ok, {provider_id, model}} <- LLMSelection.parse_model_ref(model_ref),
-         {:ok, index} <- LLMSelection.index_providers(sources, &validate_loaded/1),
+         {:ok, index} <- LLMSelection.index_providers(sources, &Provider.ensure_loaded/1),
          {:ok, provider} <- LLMSelection.fetch_provider(index, provider_id),
          :ok <- ensure_decision_adapter(provider),
          {:ok, models} <- Provider.decision_models(provider),
@@ -50,12 +50,6 @@ defmodule Tackle.Lib.Decision.Selection do
 
   # Providers are expanded before validation, which already loads every
   # adapter and requires `adapter_id/0`; non-decision adapters may be listed.
-  defp validate_loaded(adapter) do
-    case Code.ensure_loaded(adapter) do
-      {:module, ^adapter} -> :ok
-      {:error, reason} -> {:error, {:invalid_adapter, adapter, {:not_loaded, reason}}}
-    end
-  end
 
   defp ensure_decision_adapter(%Provider{adapter: adapter, id: id}) do
     decides? = function_exported?(adapter, :decide, 2)
