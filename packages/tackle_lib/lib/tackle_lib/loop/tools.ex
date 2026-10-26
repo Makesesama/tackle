@@ -17,19 +17,21 @@ defmodule Tackle.Lib.Loop.Tools do
   # one call at a time through the whole pipeline, inline in the loop process.
   # The concurrent policy accepts and starts each call in turn, passes the gate
   # once for the batch, runs the jobs in supervised tasks
-  # (`Tackle.Lib.Tool.Batch`), and commits them in call order; its `tool_start`
+  # (`Tackle.Lib.Loop.Batch`), and commits them in call order; its `tool_start`
   # events therefore come before the gate. Cancellation is checked before the
   # step's first call is accepted and again before anything starts or runs.
   #
-  # The loop process stays the only writer of `State`: a job carries only what
-  # its tool needs, never the transcript. Every step returns `{:ok, state}`,
-  # `{:error, state}` with `state.error` and `state.error_reason` set, or
-  # `{:cancelled, state}`.
+  # The loop process stays the only writer of `State`: a job
+  # (`Tackle.Lib.Loop.Job`) carries only what its tool needs, never the
+  # transcript. Every step returns `{:ok, state}`, `{:error, state}` with
+  # `state.error` and `state.error_reason` set, or `{:cancelled, state}`.
 
   require Logger
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
+  alias Tackle.Lib.Loop.Batch
+  alias Tackle.Lib.Loop.Job
   alias Tackle.Lib.Loop.Run
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
@@ -37,7 +39,6 @@ defmodule Tackle.Lib.Loop.Tools do
   alias Tackle.Lib.State
   alias Tackle.Lib.Telemetry
   alias Tackle.Lib.Tool
-  alias Tackle.Lib.Tool.Batch
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Error, as: ToolError
   alias Tackle.Lib.Tool.Policy
@@ -144,18 +145,13 @@ defmodule Tackle.Lib.Loop.Tools do
     end
   end
 
-  # A cancelled batch can lack settlements for tools that never finished; those
-  # calls are skipped so a tool that did run still records its result. A
-  # failing commit takes precedence over the cancellation.
+  # A cancelled batch can lack settlements for tools that did not finish within
+  # the cancellation grace and were killed; those calls are skipped here and
+  # settled as interrupted when the turn ends, so a tool that did run still
+  # records its result. A failing commit takes precedence over the
+  # cancellation.
   defp run_batch(jobs, state, run) do
-    {settlements, outcome} =
-      Batch.run(
-        jobs,
-        run.tool_supervisor,
-        &settle/1,
-        &emit_execution_end(&1, run),
-        fn -> Run.cancelled?(run) end
-      )
+    {settlements, outcome} = Batch.run(jobs, run, &settle/1)
 
     settlements
     |> Enum.sort_by(fn {index, _settlement} -> index end)
@@ -250,7 +246,7 @@ defmodule Tackle.Lib.Loop.Tools do
         kind, reason -> {:raise, kind, reason, __STACKTRACE__}
       end
 
-    %{
+    %Job{
       call: call,
       call_signal: call_signal,
       execution: execution,
@@ -289,7 +285,7 @@ defmodule Tackle.Lib.Loop.Tools do
   # so it never touches agent state or emits agent events. Once the call
   # settles, its per-call cancellation record (if a host cancelled it) is no
   # longer observed by anyone, so it is deleted.
-  defp settle(%{call: call, execution: execution, telemetry_name: name} = job) do
+  defp settle(%Job{call: call, execution: execution, telemetry_name: name} = job) do
     telemetry_ref = Telemetry.start(@telemetry_event, %{tool_name: name})
     started_at = System.monotonic_time()
 
@@ -363,7 +359,8 @@ defmodule Tackle.Lib.Loop.Tools do
 
   # Execution progress is transient and may arrive out of call order. Keep it
   # separate from tool_end/tool_error, which follow ordered message persistence.
-  # Only the loop process emits these events, never the worker tasks.
+  # Only the loop process emits these events, never the worker tasks
+  # (`Tackle.Lib.Loop.Batch` emits them for a concurrent batch).
   defp emit_execution_end(settlement, run),
     do: Run.emit(run, Event.tool_execution_end(settlement))
 

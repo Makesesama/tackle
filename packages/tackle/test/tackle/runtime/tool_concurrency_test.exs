@@ -82,6 +82,28 @@ defmodule Tackle.Runtime.ToolConcurrencyTest do
     refute_receive {:tackle_event, _session_id, ^turn_id, %Event{type: :tool_execution_end}}, 20
   end
 
+  # The loop's batch stops its own tasks when the turn task dies: each call is
+  # cancelled and gets a grace period to stop its work before it is killed.
+  test "a crashed turn's in-flight tool tasks are stopped" do
+    scope = start_concurrent_scope()
+
+    assert {:ok, _snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    assert {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+
+    assert_receive {:tool_entered, _first_name, first_task}, 5_000
+    assert_receive {:tool_entered, _second_name, second_task}, 5_000
+    {:dictionary, dictionary} = Process.info(first_task, :dictionary)
+    [turn_task | _callers] = Keyword.fetch!(dictionary, :"$callers")
+    first_monitor = Process.monitor(first_task)
+    second_monitor = Process.monitor(second_task)
+
+    Process.exit(turn_task, :kill)
+
+    assert_receive {:tackle_turn_failed, _session_id, ^turn_id, :killed}, 5_000
+    assert_receive {:DOWN, ^first_monitor, :process, ^first_task, :killed}, 5_000
+    assert_receive {:DOWN, ^second_monitor, :process, ^second_task, :killed}, 5_000
+  end
+
   test "a root tool supervisor crash tears down the scope" do
     scope = start_scope()
     {:ok, tool_supervisor} = Registry.tool_supervisor(scope.root_agent_ref)

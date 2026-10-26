@@ -743,7 +743,6 @@ defmodule Tackle.Session do
       ) do
     delete_turn_signals(active_turn)
     release_turn(state)
-    terminate_tool_tasks(state)
     begin_terminal_persist(state, active_turn, {:runtime_error, reason}, state.agent_state)
   end
 
@@ -1918,21 +1917,6 @@ defmodule Tackle.Session do
 
   defp cleanup_title_task(%TurnTask{} = task),
     do: TurnTask.shutdown(task, @task_shutdown_timeout)
-
-  # A crashed turn can leave tool tasks running under the session's tool
-  # supervisor. Only one turn runs at a time, so none of them belong to any
-  # future work and they are terminated here instead of leaking.
-  defp terminate_tool_tasks(%{tool_supervisor: nil}), do: :ok
-
-  defp terminate_tool_tasks(%{tool_supervisor: supervisor}) do
-    supervisor
-    |> Task.Supervisor.children()
-    |> Enum.each(&Task.Supervisor.terminate_child(supervisor, &1))
-
-    :ok
-  catch
-    :exit, _reason -> :ok
-  end
 
   # The default ETS cancellation store can lose its lazily-created table when
   # its owning process exits. Cleanup must not crash a terminating session.

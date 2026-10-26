@@ -750,7 +750,7 @@ the exact order the model requested them.
 | Tool result order                      | requested order                 | requested order                          |
 | Events                                 | `tool_start`/`tool_end` interleave per call | all `tool_start` first, execution progress per worker, settlement in order |
 | Tool crash                             | becomes a tool error; later calls continue | becomes a tool error; siblings continue  |
-| Cancellation                           | calls not yet started are skipped | in-flight tasks are shut down          |
+| Cancellation                           | calls not yet started are skipped | in-flight tasks get a grace period, then are killed |
 | `before_tool_call` hooks               | immediately before each call    | for the whole batch before any call      |
 | `after_tool_call` hooks                | per call, threading context     | after the batch, in requested order      |
 | Side-effect ordering within the batch  | requested order                 | none between calls                       |
@@ -785,8 +785,16 @@ Tackle.Lib.run(state, "apply every fix", tool_supervisor: MyApp.ToolTaskSupervis
 ```
 
 In `:concurrent` mode each call runs as a task under the supplied
-`Task.Supervisor`. A tool crash becomes a tool error result, cancellation shuts
-the batch down, and results are still appended in call order. The supervisor is
+`Task.Supervisor`. A tool crash becomes a tool error result, and results are
+still appended in call order. When the turn is cancelled, the tools see it
+through their call's cancellation signal; the batch waits up to two seconds in
+total for them to stop (so `bash` can kill its processes), keeps the results of
+calls that settle, and kills the rest, whose calls get the usual interrupted
+results. A task that cannot be started (the supervisor is down or at its
+`:max_children`) settles as a crashed tool error, as do the calls after it.
+Tool tasks are not linked to the loop process, but they do not outlive it:
+if it crashes or is killed, each running call is cancelled with reason
+`:caller_down`, given the same grace, and then killed. The supervisor is
 host-owned so one agent session cannot leak tasks into another; `run/3` and
 `continue/2` raise `ArgumentError` before the turn starts if `:concurrent` is
 configured without a `:tool_supervisor`.

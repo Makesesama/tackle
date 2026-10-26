@@ -492,7 +492,7 @@ The subagent tool performs these operations back-to-back and therefore behaves s
 
 ### 8.2 Parallel execution
 
-`Tackle.Lib` executes tool calls sequentially by default. The host may opt a session into `:concurrent` tool execution with `Tackle.Lib.Tool.Policy.concurrent/0`; the runtime then passes the session's own tool `Task.Supervisor` as the `:tool_supervisor` run option. The loop runs every call in one batch as a supervised task and commits results in the model's call order, so the transcript is identical to the sequential one. A tool crash is isolated to its task and surfaces as a tool error; cancelling the turn shuts the batch down.
+`Tackle.Lib` executes tool calls sequentially by default. The host may opt a session into `:concurrent` tool execution with `Tackle.Lib.Tool.Policy.concurrent/0`; the runtime then passes the session's own tool `Task.Supervisor` as the `:tool_supervisor` run option. The loop runs every call in one batch as a supervised task and commits results in the model's call order, so the transcript is identical to the sequential one. A tool crash is isolated to its task and surfaces as a tool error; cancelling the turn gives the batch's tools a short grace period to stop their work and then kills the rest, and a turn task that dies takes its tool tasks down the same way.
 
 If a model emits multiple individual subagent tool calls in one batch, those calls can now start their children in parallel under that same policy. That is a property of the batch, not of delegation: subagents themselves remain ordinary agents in the same scope.
 

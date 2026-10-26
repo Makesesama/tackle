@@ -199,10 +199,12 @@ defmodule Tackle.Lib.Loop.ToolsTest do
       name = Map.fetch!(args, "name")
       send(test_pid, {:tool_entered, name, self()})
 
+      # It ignores cancellation, and outlasts the concurrent batch's
+      # cancellation grace, so a cancelled batch has to kill it.
       receive do
         {:release, ^name} -> {:ok, %{name: name}}
       after
-        2_000 -> {:ok, %{name: name, timed_out: true}}
+        5_000 -> {:ok, %{name: name, timed_out: true}}
       end
     end
   end

@@ -254,8 +254,10 @@ defmodule Tackle.Tools.SubagentAsyncTest do
 
     assert :ok = Tackle.Runtime.cancel_turn(scope.root_agent_ref)
 
+    # The blocking tool ignores cancellation, so it is killed only once the
+    # batch's cancellation grace has passed.
     assert_receive {:tackle_turn_finished, ^session_id, ^first_turn, {:cancelled, _state}},
-                   2_000
+                   5_000
 
     assert {:ok, :running} = run_status(scope, run_id)
     refute_receive {:DOWN, ^request_monitor, :process, ^request, _reason}, 20
@@ -358,9 +360,11 @@ defmodule Tackle.Tools.SubagentAsyncTest do
     assert {:ok, :running} = run_status(scope, run_id)
     assert :ok = Tackle.Runtime.cancel_turn(scope.root_agent_ref)
 
+    # The paused tool ignores cancellation, so it is killed only once the
+    # batch's cancellation grace has passed.
     assert_receive {:tackle_turn_finished, ^session_id, ^first_turn,
                     {:cancelled, cancelled_state}},
-                   2_000
+                   5_000
 
     # The interrupted call is settled with a synthetic result so the transcript
     # keeps the call/result pairing providers require; the run id itself still
