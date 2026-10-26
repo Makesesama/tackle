@@ -62,6 +62,7 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
     assert {:ok, result} = SSE.result(parser, "claude-opus-5-5", nil)
     assert result.data == %{"content" => "hello", "tool_calls" => []}
     assert result.usage == usage
+    assert result.stop_reason == :end
     assert result.model == "claude-opus-5-5"
 
     assert result.provider_state == %{
@@ -144,6 +145,7 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
            ]
 
     assert {:ok, result} = SSE.result(parser, "claude-opus-5-5", nil)
+    assert result.stop_reason == :tool_calls
 
     assert result.data == %{
              "thinking" => "why",
@@ -161,6 +163,31 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
                "input" => %{"path" => "a"}
              }
            ]
+  end
+
+  test "maps the provider's stop reason to a neutral one" do
+    for {reason, expected} <- [
+          {"end_turn", :end},
+          {"stop_sequence", :end},
+          {"tool_use", :tool_calls},
+          {"max_tokens", :max_tokens},
+          {"model_context_window_exceeded", :max_tokens},
+          {"refusal", :content_filter},
+          {"pause_turn", nil}
+        ] do
+      wire =
+        sse("message_start", %{"message" => %{"model" => "claude-fable-5"}}) <>
+          sse("content_block_delta", %{
+            "index" => 0,
+            "delta" => %{"type" => "text_delta", "text" => "partial"}
+          }) <>
+          sse("message_delta", %{"delta" => %{"stop_reason" => reason}}) <>
+          sse("message_stop", %{})
+
+      {parser, _events} = run(wire)
+
+      assert {:ok, %{stop_reason: ^expected}} = SSE.result(parser, "claude-fable-5", nil)
+    end
   end
 
   test "captures redacted thinking as a replayable block" do

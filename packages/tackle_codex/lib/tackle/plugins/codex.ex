@@ -32,6 +32,18 @@ defmodule Tackle.Plugins.Codex do
   Honoured settings: `"base_url"` (the ChatGPT backend base URL). An explicit
   `:base_url` option wins over it.
 
+  ## Output limit and stop reasons
+
+  `:max_tokens` is not sent: the ChatGPT Codex backend rejects the Responses
+  API's `max_output_tokens` (`"Unsupported parameter: max_output_tokens"`), so
+  a request cannot cap its output. A completed response reports the stop
+  reason `:tool_calls` when it called tools and `:end` otherwise. A
+  `response.incomplete` (the output limit or a content filter) is returned as
+  an `:invalid_response` `Tackle.Lib.LLM.Error` with details
+  `{:incomplete_response, reason}`, as the Codex CLI treats it, never as a
+  partial answer. Usage `output_tokens` include reasoning tokens
+  (`reasoning_tokens` reports them).
+
   ## Thinking levels
 
   `:reasoning_effort` accepts every `Tackle.Lib.Thinking` level and sends the

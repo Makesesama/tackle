@@ -1093,6 +1093,32 @@ defmodule Tackle.Plugins.CodexTest do
                      }}
   end
 
+  test "reports the stop reason of a completed response", %{store: store} do
+    text = fn options -> completed_response(options, "done") end
+
+    calls = fn options ->
+      streaming_response(options, [
+        sse(%{
+          "type" => "response.completed",
+          "response" => %{
+            "status" => "completed",
+            "output" => [
+              %{
+                "type" => "function_call",
+                "call_id" => "c1",
+                "name" => "search",
+                "arguments" => "{}"
+              }
+            ]
+          }
+        })
+      ])
+    end
+
+    assert {:ok, %{stop_reason: :end}} = generate(nil, base_opts(store, text))
+    assert {:ok, %{stop_reason: :tool_calls}} = generate(nil, base_opts(store, calls))
+  end
+
   test "login runs the device-code flow through the interaction handle" do
     access_token = jwt("device-account")
     counter = start_supervised!({Agent, fn -> 0 end}, id: {Agent, make_ref()})

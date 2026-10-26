@@ -26,7 +26,17 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
     assert {:ok, result} = SSE.result(parser, "deepseek-flash", nil)
     assert result.model == "deepseek-flash-actual"
     assert result.data == %{"content" => "héllo", "tool_calls" => []}
+    assert result.stop_reason == :end
     assert_receive %{type: :text_delta, delta: "héllo"}
+  end
+
+  test "reports tool calls as the stop reason" do
+    parser =
+      completed_tool_stream([
+        [%{"index" => 0, "id" => "c1", "function" => %{"name" => "search", "arguments" => "{}"}}]
+      ])
+
+    assert {:ok, %{stop_reason: :tool_calls}} = SSE.result(parser, "deepseek-v4-pro", nil)
   end
 
   test "requires both a successful finish reason and DONE" do

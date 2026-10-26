@@ -29,6 +29,7 @@ defmodule Tackle.Plugins.Ollama.SSETest do
 
     assert {:ok, result} = parser |> SSE.finish(@noop) |> SSE.result("m", nil)
     assert result.data == %{"content" => "héllo", "thinking" => "think", "tool_calls" => []}
+    assert result.stop_reason == :end
 
     assert result.provider_state == %{"reasoning" => "think"}
 
@@ -47,6 +48,7 @@ defmodule Tackle.Plugins.Ollama.SSETest do
 
     parser = SSE.push(SSE.new(), wire, &send(self(), {:event, &1}))
     assert {:ok, result} = SSE.result(parser, "m", nil)
+    assert result.stop_reason == :tool_calls
 
     assert [%{"id" => "wire-id", "name" => "a", "arguments" => "{}"}, generated] =
              result.data["tool_calls"]

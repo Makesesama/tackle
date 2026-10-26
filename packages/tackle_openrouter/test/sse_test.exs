@@ -26,12 +26,37 @@ defmodule Tackle.Plugins.OpenRouter.SSETest do
              SSE.new() |> SSE.push(wire, @noop) |> SSE.finish(@noop) |> SSE.result("m", nil)
 
     assert result.data == %{"content" => "hi", "tool_calls" => []}
+    assert result.stop_reason == :end
 
     assert %Usage{input_tokens: 3, cache_read_tokens: 0, total_tokens: 4, cost: nil} =
              result.usage
 
     assert result.usage.raw == %{"prompt_tokens" => 3, "completion_tokens" => 1}
     assert result.provider_state == nil
+  end
+
+  test "reports tool calls as the stop reason" do
+    wire =
+      "data: " <>
+        JSON.encode!(%{
+          "choices" => [
+            %{
+              "delta" => %{
+                "tool_calls" => [
+                  %{
+                    "index" => 0,
+                    "id" => "c1",
+                    "function" => %{"name" => "search", "arguments" => "{}"}
+                  }
+                ]
+              },
+              "finish_reason" => "tool_calls"
+            }
+          ]
+        }) <> "\n\ndata: [DONE]\n\n"
+
+    assert {:ok, %{stop_reason: :tool_calls}} =
+             SSE.new() |> SSE.push(wire, @noop) |> SSE.finish(@noop) |> SSE.result("m", nil)
   end
 
   test "reads reasoning from the first populated alias without duplicating it" do

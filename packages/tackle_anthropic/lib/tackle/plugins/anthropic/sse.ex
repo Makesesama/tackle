@@ -68,7 +68,14 @@ defmodule Tackle.Plugins.Anthropic.SSE do
   end
 
   @spec result(t(), String.t(), keyword() | map() | nil) ::
-          {:ok, %{data: map(), usage: Usage.t() | nil, model: String.t(), provider_state: map()}}
+          {:ok,
+           %{
+             data: map(),
+             usage: Usage.t() | nil,
+             stop_reason: :end | :max_tokens | :tool_calls | :content_filter | nil,
+             model: String.t(),
+             provider_state: map()
+           }}
           | {:error, term()}
   def result(%__MODULE__{cancelled?: true}, _requested_model, _schema), do: {:error, :cancelled}
 
@@ -105,11 +112,24 @@ defmodule Tackle.Plugins.Anthropic.SSE do
        %{
          data: data,
          usage: usage(state.usage),
+         stop_reason: stop_reason(state.stop_reason),
          model: model,
          provider_state: provider_state(state)
        }}
     end
   end
+
+  # The Messages API's stop reasons, as `Tackle.Lib.LLM.Response` stop
+  # reasons. `pause_turn` (a server tool paused the turn) and unknown reasons
+  # have no neutral meaning.
+  defp stop_reason(reason) when reason in ["end_turn", "stop_sequence"], do: :end
+  defp stop_reason("tool_use"), do: :tool_calls
+
+  defp stop_reason(reason) when reason in ["max_tokens", "model_context_window_exceeded"],
+    do: :max_tokens
+
+  defp stop_reason("refusal"), do: :content_filter
+  defp stop_reason(_reason), do: nil
 
   defp split_complete_lines(data) do
     lines = :binary.split(data, "\n", [:global])

@@ -16,6 +16,8 @@ defmodule Tackle.Lib.LLM.Response do
       structs, in provider order (possibly without ids yet; the loop assigns
       missing ones);
     * `:usage` - the response's `Tackle.Lib.Usage`, or `nil`;
+    * `:stop_reason` - why the provider stopped generating, when it says
+      (see `t:stop_reason/0`), or `nil`;
     * `:model`, `:provider`, `:provider_state` - passed through from the
       result; `Tackle.Lib.LLM` then sets `:provider` to the selected
       provider id and stamps `:provider_state` with its origin.
@@ -33,6 +35,11 @@ defmodule Tackle.Lib.LLM.Response do
       accepted with its `argument_error` set, so it settles as a tool error
       the model can see instead of failing the turn.
 
+  The result's `:stop_reason` must be one of `t:stop_reason/0` or absent.
+  Adapters set it from the provider's own report (a finish or stop reason, a
+  response status) and leave it `nil` when the provider reports none or one
+  without a neutral meaning.
+
   The result's `:usage` may be `nil`, a `Tackle.Lib.Usage`, or a map with its
   canonical field names (normalized with `Tackle.Lib.Usage.normalize/1`; a
   provider's native report is not recognized), and `:provider_state`
@@ -44,12 +51,28 @@ defmodule Tackle.Lib.LLM.Response do
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Usage
 
+  @stop_reasons [:end, :max_tokens, :tool_calls, :content_filter]
+
+  @typedoc """
+  Why the provider stopped generating:
+
+    * `:end` - the model finished its answer (or hit a stop sequence);
+    * `:max_tokens` - the output limit cut the answer off, so it is
+      incomplete;
+    * `:tool_calls` - the model stopped to call tools;
+    * `:content_filter` - the provider withheld or cut off the output;
+    * `nil` - the provider reported no reason, or one without a neutral
+      meaning.
+  """
+  @type stop_reason :: :end | :max_tokens | :tool_calls | :content_filter | nil
+
   @type t :: %__MODULE__{
           data: map(),
           content: String.t() | nil,
           thinking: String.t() | nil,
           tool_calls: [Call.t()],
           usage: Usage.t() | nil,
+          stop_reason: stop_reason(),
           model: String.t() | nil,
           provider: String.t() | atom() | nil,
           provider_state: map() | nil
@@ -67,6 +90,7 @@ defmodule Tackle.Lib.LLM.Response do
           | {:thinking, term()}
           | {:tool_calls, :malformed_tool_call | :not_a_list}
           | {:usage, term()}
+          | {:stop_reason, term()}
           | {:provider_state, term()}
 
   defstruct data: %{},
@@ -74,6 +98,7 @@ defmodule Tackle.Lib.LLM.Response do
             thinking: nil,
             tool_calls: [],
             usage: nil,
+            stop_reason: nil,
             model: nil,
             provider: nil,
             provider_state: nil
@@ -98,6 +123,7 @@ defmodule Tackle.Lib.LLM.Response do
          {:ok, thinking} <- text(data, "thinking", :thinking),
          {:ok, tool_calls} <- tool_calls(data),
          {:ok, usage} <- usage(Map.get(result, :usage)),
+         {:ok, stop_reason} <- stop_reason(Map.get(result, :stop_reason)),
          {:ok, provider_state} <- provider_state(Map.get(result, :provider_state)) do
       {:ok,
        %__MODULE__{
@@ -106,6 +132,7 @@ defmodule Tackle.Lib.LLM.Response do
          thinking: thinking,
          tool_calls: tool_calls,
          usage: usage,
+         stop_reason: stop_reason,
          model: Map.get(result, :model),
          provider: Map.get(result, :provider),
          provider_state: provider_state
@@ -152,6 +179,9 @@ defmodule Tackle.Lib.LLM.Response do
   defp usage(%Usage{} = usage), do: {:ok, usage}
   defp usage(%{} = usage), do: {:ok, Usage.normalize(usage)}
   defp usage(usage), do: invalid({:usage, usage})
+
+  defp stop_reason(reason) when is_nil(reason) or reason in @stop_reasons, do: {:ok, reason}
+  defp stop_reason(reason), do: invalid({:stop_reason, reason})
 
   defp provider_state(state) when is_map(state) or is_nil(state), do: {:ok, state}
   defp provider_state(state), do: invalid({:provider_state, state})

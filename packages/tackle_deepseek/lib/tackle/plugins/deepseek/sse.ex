@@ -72,6 +72,7 @@ defmodule Tackle.Plugins.DeepSeek.SSE do
            %{
              data: map(),
              usage: Usage.t() | nil,
+             stop_reason: :end | :tool_calls | nil,
              model: String.t(),
              provider_state: map() | nil
            }}
@@ -114,11 +115,18 @@ defmodule Tackle.Plugins.DeepSeek.SSE do
        %{
          data: data,
          usage: state.usage,
+         stop_reason: stop_reason(state.finish_reason),
          model: state.model || requested_model,
          provider_state: provider_state(state.thinking)
        }}
     end
   end
+
+  # A response cut off by its output limit (`"length"`) or filtered is an
+  # error, so a result only stops at its end or for tool calls.
+  defp stop_reason(reason) when reason in ["stop", "end"], do: :end
+  defp stop_reason(reason) when reason in ["tool_calls", "function_call"], do: :tool_calls
+  defp stop_reason(_reason), do: nil
 
   defp split_complete_lines(data) do
     lines = :binary.split(data, "\n", [:global])

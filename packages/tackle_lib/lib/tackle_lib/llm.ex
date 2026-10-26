@@ -79,7 +79,8 @@ defmodule Tackle.Lib.LLM do
     should observe it and abort provider work when possible.
   * `:temperature` — the sampling temperature. The agent loop defaults it to
     `0.3`; host options override it.
-  * `:max_tokens` — the most output tokens to generate, or absent.
+  * `:max_tokens` — the most output tokens to generate, or absent. An adapter
+    whose provider refuses an output limit ignores it and documents that.
   * `:reasoning_effort` — the thinking level (see `Tackle.Lib.Thinking`) as a
     string or atom, `:none` for no reasoning, or absent for the model's
     default. Adapters read it with `Tackle.Lib.Thinking.parse/1` and accept
@@ -102,7 +103,8 @@ defmodule Tackle.Lib.LLM do
   ### Results
 
   On success the adapter returns `{:ok, %{data: map, usage: map | nil, model:
-  String.t() | nil}}`, optionally with opaque `:provider_state`. `:data` holds
+  String.t() | nil}}`, optionally with opaque `:provider_state` and a
+  `:stop_reason` (`t:Tackle.Lib.LLM.Response.stop_reason/0`). `:data` holds
   the assistant's `"content"`, `"thinking"`, and native `"tool_calls"`, or the
   parsed object of a structured response. `generate_with/3` and
   `stream_with/4` check the result and return `{:ok,
@@ -121,6 +123,10 @@ defmodule Tackle.Lib.LLM do
     call's usage of record: `:usage` events a streaming adapter emits reach
     the caller normalized but unpriced (the agent loop drops them and reports
     the response's usage once).
+  * `stop_reason` is `:end`, `:max_tokens`, `:tool_calls`, or
+    `:content_filter` when the provider reports why it stopped, and absent
+    otherwise. Callers that cap the output (the compaction summarizer) read
+    `:max_tokens` as a cut-off answer.
   * `provider` is the selected provider id, whatever the adapter reported.
   * `provider_state` is stamped with the `"provider"` id and the requested
     `"model"`.

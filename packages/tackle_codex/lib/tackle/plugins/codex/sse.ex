@@ -77,6 +77,7 @@ defmodule Tackle.Plugins.Codex.SSE do
            %{
              data: map(),
              usage: Usage.t() | nil,
+             stop_reason: :end | :tool_calls,
              model: String.t(),
              provider_state: map() | nil
            }}
@@ -119,6 +120,7 @@ defmodule Tackle.Plugins.Codex.SSE do
        %{
          data: data,
          usage: state.usage,
+         stop_reason: if(tool_calls == [], do: :end, else: :tool_calls),
          model: model,
          provider_state: provider_state(state.provider_output)
        }}
@@ -289,6 +291,9 @@ defmodule Tackle.Plugins.Codex.SSE do
     end
   end
 
+  # Like the Codex CLI, an incomplete response (the output limit, a content
+  # filter) is an error rather than a partial answer, so only completed
+  # responses carry a stop reason.
   defp incomplete(response) do
     reason = get_in(response, ["incomplete_details", "reason"]) || "unknown"
 

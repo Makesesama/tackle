@@ -20,6 +20,7 @@ defmodule Tackle.Lib.LLM.ResponseTest do
                   %Call{id: nil, name: "bash", arguments: %{}}
                 ],
                 usage: ^usage,
+                stop_reason: :tool_calls,
                 model: "test/model",
                 provider: "test",
                 provider_state: %{"opaque" => "state"}
@@ -34,6 +35,7 @@ defmodule Tackle.Lib.LLM.ResponseTest do
                    ]
                  },
                  usage: usage,
+                 stop_reason: :tool_calls,
                  model: "test/model",
                  provider: "test",
                  provider_state: %{"opaque" => "state"}
@@ -106,6 +108,18 @@ defmodule Tackle.Lib.LLM.ResponseTest do
                  data: %{"content" => "hi"},
                  usage: %{input_tokens: 5, output_tokens: 4}
                })
+    end
+
+    test "accepts each stop reason and rejects any other" do
+      for reason <- [:end, :max_tokens, :tool_calls, :content_filter, nil] do
+        assert {:ok, %Response{stop_reason: ^reason}} =
+                 Response.from_result(%{data: %{"content" => "x"}, stop_reason: reason})
+      end
+
+      for reason <- ["stop", :length, 1] do
+        assert {:error, {:invalid_response, {:stop_reason, ^reason}}} =
+                 Response.from_result(%{data: %{"content" => "x"}, stop_reason: reason})
+      end
     end
 
     test "rejects malformed results" do
