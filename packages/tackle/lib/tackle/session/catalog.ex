@@ -20,9 +20,10 @@ defmodule Tackle.Session.Catalog do
   caches it on the entry until the session's next indexed commit. Startup
   indexing takes it from summary sidecars or the replay it already does.
 
-  At startup the catalog rebuilds its index (`rebuild/1`): a session's
-  summary sidecar is used as it is while its journal file is unchanged, and
-  other sessions are replayed.
+  At startup the catalog rebuilds its index (`rebuild/1`) in a task: a
+  session's summary sidecar is used as it is while its journal file is
+  unchanged, and other sessions are replayed. Journal updates are recorded
+  meanwhile, and reads wait until the index is complete.
 
   Archived sessions are indexed too, marked `archived: true`. Listing excludes
   them unless the `:archived` filter is `true` (archived only) or `:all`.
@@ -107,15 +108,21 @@ defmodule Tackle.Session.Catalog do
     :ok
   end
 
-  @doc "Returns one indexed session summary."
+  @doc """
+  Returns one indexed session summary.
+
+  Like `list/1`, it waits for a running rebuild (see `rebuild/1`).
+  """
   @spec get(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def get(session_id), do: GenServer.call(__MODULE__, {:get, session_id})
+  def get(session_id), do: GenServer.call(__MODULE__, {:get, session_id}, :infinity)
 
   @doc """
   Lists sessions with stable cursor pagination.
 
   The `:status` filter takes a `t:Tackle.Session.Catalog.Entry.status/0` or
-  its name as a string (`"active"`).
+  its name as a string (`"active"`). A listing waits for a running rebuild,
+  such as the one at startup, so it never reports a partial index; the wait
+  is bounded by the rebuild's per-session timeouts (see `rebuild/1`).
   """
   @spec list(filters() | keyword()) ::
           {:ok, %{sessions: [Entry.t()], next_cursor: String.t() | nil}}
@@ -124,7 +131,7 @@ defmodule Tackle.Session.Catalog do
 
     # Metadata filters run in the catalog, ordered after earlier `record/1`
     # casts. Text matching may build search text, so it runs in the caller.
-    with {:ok, entries} <- GenServer.call(__MODULE__, {:candidates, filters}) do
+    with {:ok, entries} <- GenServer.call(__MODULE__, {:candidates, filters}, :infinity) do
       {:ok, entries |> filter_text(Map.get(filters, :text)) |> paginate(filters)}
     end
   end
@@ -148,6 +155,10 @@ defmodule Tackle.Session.Catalog do
   marked `stale: true`; a session without one, or whose journal cannot be
   read, is skipped. Returns how many sessions were indexed, how many of those
   are stale, and how many were skipped.
+
+  The rebuild runs in a task, so the catalog keeps recording journal updates
+  meanwhile, and those win over what the rebuild read. Reads wait until it
+  has finished.
   """
   @spec rebuild(keyword()) :: %{
           indexed: non_neg_integer(),
@@ -230,26 +241,31 @@ defmodule Tackle.Session.Catalog do
         {:write_concurrency, true}
       ])
 
-    {:ok, %{table: table, opts: opts}, {:continue, :rebuild}}
+    {:ok, %{table: table, opts: opts, rebuild: nil, deferred: []}, {:continue, :rebuild}}
   end
 
-  # The state holds only the table and options, but the last message can
-  # carry a summary's preview or a session's whole search text, which crash
-  # reports and `:sys.get_status/1` must not show.
+  # The last message, and the requests waiting for a rebuild, can carry a
+  # summary's preview, a search query, or a session's whole search text,
+  # which crash reports and `:sys.get_status/1` must not show.
   @impl true
-  def format_status(status),
-    do: StatusRedaction.format_status(status, &%{&1 | opts: StatusRedaction.keys(&1.opts)})
+  def format_status(status), do: StatusRedaction.format_status(status, &redact_state/1)
+
+  defp redact_state(state) do
+    state
+    |> Map.replace_lazy(:opts, &StatusRedaction.keys/1)
+    |> Map.replace_lazy(:deferred, fn deferred ->
+      Enum.map(deferred, fn {request, _from} -> StatusRedaction.message(request) end)
+    end)
+  end
 
   @impl true
-  def handle_continue(:rebuild, state) do
-    _ = rebuild_state(state)
-    {:noreply, state}
-  end
+  def handle_continue(:rebuild, state), do: {:noreply, start_rebuild(state, state.opts, nil)}
 
   @impl true
   def handle_cast({:record, summary}, state) do
-    insert(state.table, to_entry(summary))
-    {:noreply, state}
+    entry = to_entry(summary)
+    insert(state.table, entry)
+    {:noreply, touch(state, entry.session_id, :recorded)}
   end
 
   # A search built this text from the session at `seq`. Keep it only while the
@@ -268,31 +284,83 @@ defmodule Tackle.Session.Catalog do
 
   def handle_cast({:forget, session_id}, state) do
     :ets.delete(state.table, session_id)
-    {:noreply, state}
+    {:noreply, touch(state, session_id, :forgotten)}
   end
 
+  # While a rebuild runs, every request waits for it, in arrival order.
   @impl true
-  def handle_call({:get, session_id}, _from, state) do
-    case :ets.lookup(state.table, session_id) do
-      [{^session_id, entry}] -> {:reply, {:ok, Entry.public(entry)}, state}
-      [] -> {:reply, {:error, :not_found}, state}
+  def handle_call(request, from, %{rebuild: %{}} = state),
+    do: {:noreply, %{state | deferred: [{request, from} | state.deferred]}}
+
+  def handle_call({:rebuild, opts}, from, state),
+    do: {:noreply, start_rebuild(state, opts, from)}
+
+  def handle_call(request, _from, state), do: {:reply, read(request, state.table), state}
+
+  @impl true
+  def handle_info({ref, result}, %{rebuild: %{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    install(state.table, result.entries, state.rebuild.touched)
+    if state.rebuild.caller, do: GenServer.reply(state.rebuild.caller, result.report)
+    run_deferred(%{state | rebuild: nil, deferred: []}, Enum.reverse(state.deferred))
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
+
+  defp read({:get, session_id}, table) do
+    case :ets.lookup(table, session_id) do
+      [{^session_id, entry}] -> {:ok, Entry.public(entry)}
+      [] -> {:error, :not_found}
     end
   end
 
-  def handle_call({:candidates, filters}, _from, state) do
-    entries = state.table |> :ets.tab2list() |> Enum.map(fn {_id, entry} -> entry end)
-    {:reply, {:ok, filter(entries, filters)}, state}
+  defp read({:candidates, filters}, table) do
+    entries = table |> :ets.tab2list() |> Enum.map(fn {_id, entry} -> entry end)
+    {:ok, filter(entries, filters)}
   end
 
-  def handle_call({:rebuild, opts}, _from, state) do
-    {:reply, rebuild_state(Map.put(state, :opts, opts)), state}
+  # The task is linked to the catalog; the work for each session never raises
+  # (`bounded/3`), so only a bug in the rebuild itself can take the catalog
+  # down with it.
+  defp start_rebuild(state, opts, caller) do
+    task = Task.async(fn -> build_index(opts) end)
+    %{state | rebuild: %{task: task, caller: caller, touched: %{}}}
   end
 
-  defp rebuild_state(state) do
-    %{entries: entries, report: report} = build_index(state.opts)
-    :ets.delete_all_objects(state.table)
-    Enum.each(entries, &insert(state.table, &1))
-    report
+  # Remembers which sessions journal updates or `forget/1` changed while a
+  # rebuild runs, so its older reading does not overwrite them.
+  defp touch(%{rebuild: nil} = state, _session_id, _change), do: state
+
+  defp touch(%{rebuild: rebuild} = state, session_id, change),
+    do: %{state | rebuild: %{rebuild | touched: Map.put(rebuild.touched, session_id, change)}}
+
+  # Replaces the index with the rebuilt entries. A session recorded during the
+  # rebuild keeps its recorded entry, which describes a newer commit than the
+  # file the rebuild read, and one forgotten meanwhile stays forgotten.
+  defp install(table, entries, touched) do
+    recorded =
+      for {session_id, :recorded} <- touched,
+          [{^session_id, entry}] <- [:ets.lookup(table, session_id)],
+          do: entry
+
+    :ets.delete_all_objects(table)
+
+    entries
+    |> Enum.reject(&Map.has_key?(touched, &1.session_id))
+    |> Enum.concat(recorded)
+    |> Enum.each(&insert(table, &1))
+  end
+
+  # A rebuild requested meanwhile starts once the previous one has finished,
+  # and the requests after it wait again.
+  defp run_deferred(state, []), do: {:noreply, state}
+
+  defp run_deferred(state, [{{:rebuild, opts}, from} | rest]),
+    do: {:noreply, %{start_rebuild(state, opts, from) | deferred: Enum.reverse(rest)}}
+
+  defp run_deferred(state, [{request, from} | rest]) do
+    GenServer.reply(from, read(request, state.table))
+    run_deferred(state, rest)
   end
 
   defp build_index(opts) do
@@ -354,8 +422,8 @@ defmodule Tackle.Session.Catalog do
   end
 
   # Runs `fun` for each item in its own task with a deadline. The tasks are
-  # linked to the catalog, so a session whose work raises (a malformed file
-  # the reader did not anticipate) only fails that session.
+  # linked to the caller, so a session whose work raises (a malformed file the
+  # reader did not anticipate) only fails that session.
   defp bounded(items, timeout, fun) do
     items
     |> Task.async_stream(fn item -> safely(fn -> fun.(item) end) end,

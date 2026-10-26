@@ -31,8 +31,15 @@ defmodule Tackle.Session.CatalogTest do
   end
 
   test "its crash reports show neither cached search text nor options" do
+    waiting = {{:candidates, %{text: "secret query"}}, {self(), make_ref()}}
+
     status = %{
-      state: %{table: Catalog, opts: [env: %{"TACKLE_SECRET" => "secret"}]},
+      state: %{
+        table: Catalog,
+        opts: [env: %{"TACKLE_SECRET" => "secret"}],
+        rebuild: nil,
+        deferred: [waiting]
+      },
       message: {:"$gen_cast", {:cache_search_text, "session", 3, "secret conversation"}},
       reason: :boom,
       log: [{:in, {:"$gen_cast", {:record, %{preview: "secret preview"}}}}]
@@ -41,7 +48,14 @@ defmodule Tackle.Session.CatalogTest do
     redacted = Catalog.format_status(status)
 
     refute inspect(redacted, limit: :infinity, printable_limit: :infinity) =~ "secret"
-    assert redacted.state == %{table: Catalog, opts: [:env]}
+
+    assert redacted.state == %{
+             table: Catalog,
+             opts: [:env],
+             rebuild: nil,
+             deferred: [:candidates]
+           }
+
     assert redacted.message == {:"$gen_cast", :cache_search_text}
     assert redacted.reason == :boom
   end
@@ -202,6 +216,37 @@ defmodule Tackle.Session.CatalogTest do
     assert {:ok, %{title: "Sidecar title", stale: true}} = Catalog.get(session_id)
   end
 
+  test "reads wait for a running rebuild, which keeps journal updates", ctx do
+    cwd = unique_cwd(ctx, "waiting")
+    session_id = create_session(ctx, cwd: cwd, title: "Waiting")
+    {:ok, summary} = Storage.summary_path(session_id, home: ctx.home, cwd: cwd)
+    # Without a current sidecar the rebuild has to replay the journal.
+    rewrite_sidecar!(summary, session_id, :absent, "Waiting")
+
+    # Longer than a default `GenServer.call/2` timeout.
+    rebuild_timeout = 5_300
+
+    {listed, recorded} =
+      with_disk_log_stalled(fn ->
+        rebuild =
+          Task.async(fn ->
+            Catalog.rebuild(home: ctx.home, rebuild_session_timeout: rebuild_timeout)
+          end)
+
+        # The rebuild is replaying the journal once its open waits.
+        assert eventually(fn -> disk_log_waiting?() end) == :ok
+
+        Catalog.record(%{session_id: "live", title: "Live", updated_at: "9"})
+        listed = Catalog.list(%{})
+        Task.await(rebuild, :infinity)
+        {listed, Catalog.get("live")}
+      end)
+
+    assert {:ok, %{sessions: sessions}} = listed
+    assert "live" in Enum.map(sessions, & &1.session_id)
+    assert {:ok, %{title: "Live"}} = recorded
+  end
+
   test "a stalled session does not block the catalog rebuild", ctx do
     healthy_id = create_session(ctx, cwd: unique_cwd(ctx, "healthy"), title: "Healthy")
     blocked_dir = Path.join([ctx.home, "sessions", "blocked-journal"])
@@ -323,6 +368,13 @@ defmodule Tackle.Session.CatalogTest do
     after
       :sys.resume(server)
     end
+  end
+
+  defp disk_log_waiting? do
+    {:message_queue_len, waiting} =
+      Process.info(Process.whereis(:disk_log_server), :message_queue_len)
+
+    waiting > 0
   end
 
   defp unique_cwd(ctx, label) do

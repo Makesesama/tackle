@@ -518,7 +518,8 @@ Session inspection and management never expose a PID or the journal process:
   timestamped settled assistant-message usage for one or every durable session;
   the global scan replays independent journals with bounded concurrency;
 - `Tackle.list_sessions/1` and `Tackle.search_sessions/2` use the rebuildable
-  derived catalog with stable cursor pagination;
+  derived catalog with stable cursor pagination; while the catalog rebuilds
+  (at startup), they wait for it, so they never list a partial index;
 - `Tackle.fork_session/2` materializes a self-contained session from validated
   parent history, so the child survives deletion of the parent;
 - `Tackle.session_summary/2` returns a session's catalog summary;

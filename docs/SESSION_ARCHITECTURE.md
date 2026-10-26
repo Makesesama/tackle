@@ -821,11 +821,12 @@ replay it already performs.
 
 Derived catalog data uses atomically replaced ETF sidecars (`summary.etf`) to avoid replaying every complete journal during normal startup. Each sidecar includes its schema version, session ID, projected sequence, and the size and modification time of the journal file it was built from. A journal owner writes it when it stops, after closing its log; compression writes it from a full replay before it replaces the journal with its compressed copy.
 
-On startup the catalog rebuilds its index:
+On startup the catalog rebuilds its index in a task:
 
 1. read every session's sidecar; one whose journal still has the recorded size and modification time, or whose journal is stored compressed (a compressed journal never changes), is used as it is;
 2. replay every other journal, including those whose sidecar was written before sidecars recorded the file's size and modification time;
-3. bound each step per session (two seconds by default); a replay that times out falls back to the session's sidecar, marked `stale`, and a session without one, or whose journal cannot be read, is skipped; the rebuild reports how many sessions it indexed, how many of them are stale, and how many it skipped.
+3. bound each step per session (two seconds by default); a replay that times out falls back to the session's sidecar, marked `stale`, and a session without one, or whose journal cannot be read, is skipped; the rebuild reports how many sessions it indexed, how many of them are stale, and how many it skipped; and
+4. keep recording journal updates meanwhile, which win over what the rebuild read. Reads (`get`, `list`, `search`) wait until the rebuild has finished, so they never return a partial index.
 
 A failed catalog update does not roll back an already durable session commit. The entry stays stale until the session's next indexed commit or the next rebuild.
 
