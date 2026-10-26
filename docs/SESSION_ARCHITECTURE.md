@@ -219,7 +219,7 @@ one TACKLE_HOME
 
 A deterministic log name protects against duplicate opens within one connected node. A storage ownership guard must reject concurrently active writers when detectable. Cross-BEAM failover and distributed leases are not promised. If ownership is uncertain, Tackle fails with `:session_in_use` or a recovery-required error rather than opening with automatic repair.
 
-A later advisory-lock or fencing implementation may strengthen cross-process ownership without changing journal records.
+On systems with `flock`, the guard is an operating-system advisory lock on `writer.lock`, held by a small linked lock process. A conflict with another process of the same OS process (background compression, or moving a session to the archive or trash) is waited out briefly; a lock attempt that fails leaves nothing behind for its caller, so the waiting journal owner keeps running.
 
 ### 6.2 Deferred materialization of new sessions
 

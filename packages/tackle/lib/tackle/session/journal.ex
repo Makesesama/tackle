@@ -644,6 +644,10 @@ defmodule Tackle.Session.Journal do
     end
   end
 
+  # A port's exit signal is never fatal here: the lock port's loss arrives as
+  # `{port, {:exit_status, status}}` above (and through the watchdog's
+  # monitor). A linked process, such as the log backend, exiting is.
+  def handle_info({:EXIT, port, _reason}, state) when is_port(port), do: {:noreply, state}
   def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
   def handle_info(_message, state), do: {:noreply, state}

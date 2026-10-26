@@ -1001,6 +1001,21 @@ defmodule Tackle.Session.JournalTest do
   end
 
   describe "storage ownership" do
+    test "a lock this OS process holds briefly is waited out without stopping the owner", ctx do
+      create_session!(ctx)
+      holder = hold_lock(ctx)
+
+      # Every failed attempt is a lock process that exits; none may stop the owner.
+      Process.send_after(holder, :release, 300)
+      assert {:ok, journal} = start_journal(ctx)
+      ref = Process.monitor(journal)
+
+      refute_receive {:DOWN, ^ref, :process, ^journal, _reason}, 200
+      assert {:ok, %{materialized?: true}} = Journal.status(journal)
+      assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "again")
+      stop_journal(journal)
+    end
+
     test "rejects a second journal owner in the same node", ctx do
       {:ok, _journal} = start_journal(ctx)
       assert {:error, {:already_started, _pid}} = start_journal(ctx)
@@ -1043,6 +1058,32 @@ defmodule Tackle.Session.JournalTest do
                  false
              end)
            end) == :ok
+  end
+
+  defp create_session!(ctx) do
+    {:ok, journal} = start_journal(ctx)
+    {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+    :ok = Journal.settle_turn(journal, "turn.completed", %{})
+    stop_journal(journal)
+  end
+
+  # Holds the session's writer lock in another process of this OS process
+  # until it receives `:release`.
+  defp hold_lock(ctx) do
+    test_pid = self()
+
+    holder =
+      spawn(fn ->
+        {:ok, lock} = Storage.acquire_lock(ctx.session_id, home: ctx.home)
+        send(test_pid, :locked)
+
+        receive do
+          :release -> Storage.release_lock(lock)
+        end
+      end)
+
+    assert_receive :locked, 5_000
+    holder
   end
 
   # The journal still accepts writes (an "after" answer), and its file replays

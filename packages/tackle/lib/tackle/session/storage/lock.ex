@@ -129,9 +129,11 @@ defmodule Tackle.Session.Storage.Lock do
         end
 
       {^port, {:exit_status, @lock_conflict_exit}} ->
+        forget_port(port)
         session_in_use(path)
 
       {^port, {:exit_status, status}} ->
+        forget_port(port)
         {:error, {:lock_start_failed, path, status, String.trim(output)}}
     after
       @lock_start_timeout ->
@@ -159,10 +161,12 @@ defmodule Tackle.Session.Storage.Lock do
       _ = Port.command(port, "\n")
 
       receive do
-        {^port, {:exit_status, _status}} -> :ok
+        {^port, {:exit_status, _status}} -> forget_port(port)
       after
         1_000 -> close_port(port)
       end
+    else
+      forget_port(port)
     end
   rescue
     _error -> close_port(port)
@@ -170,9 +174,23 @@ defmodule Tackle.Session.Storage.Lock do
 
   defp close_port(port) do
     if Port.info(port), do: Port.close(port)
-    :ok
+    forget_port(port)
   rescue
-    _error -> :ok
+    _error -> forget_port(port)
+  end
+
+  # The port stays linked while it holds the lock, so the lock dies with its
+  # owner. Once it ended, its exit signal must not reach a caller that traps
+  # exits (the journal does, and a lock conflict with this OS process is
+  # retried): drop the link and any exit already delivered.
+  defp forget_port(port) do
+    Process.unlink(port)
+
+    receive do
+      {:EXIT, ^port, _reason} -> :ok
+    after
+      0 -> :ok
+    end
   end
 
   defp session_in_use(path) do
