@@ -16,7 +16,9 @@ defmodule Tackle.Lib.Committer do
   `:ok`. A failure leaves the state unchanged and is reported as
   `{:durable_commit_failed, reason}`: the caller must not continue with a
   state whose change was never persisted. A committer that returns anything
-  else, raises, throws, or exits fails the same way.
+  else fails with `{:unexpected_commit_result, value}`, and one that raises,
+  throws, or exits with `{:committer_crashed, committer, kind, reason}`, which
+  keeps the exception (for `:error`) or the thrown or exit value.
 
   The context names the state's session and carries its host context:
   `%{session_id: session_id, context: context}`. A committer lowers the change
@@ -53,10 +55,10 @@ defmodule Tackle.Lib.Committer do
       {:error, reason} -> {:error, {:durable_commit_failed, reason}}
       other -> {:error, {:durable_commit_failed, {:unexpected_commit_result, other}}}
     end
-  rescue
-    error -> {:error, {:durable_commit_failed, Exception.message(error)}}
   catch
-    kind, reason -> {:error, {:durable_commit_failed, {kind, reason}}}
+    kind, reason ->
+      reason = Exception.normalize(kind, reason, __STACKTRACE__)
+      {:error, {:durable_commit_failed, {:committer_crashed, module, kind, reason}}}
   end
 
   @doc """

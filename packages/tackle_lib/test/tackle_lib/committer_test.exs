@@ -42,9 +42,12 @@ defmodule Tackle.Lib.CommitterTest do
     for {result, reason} <- [
           {{:error, :disk_full}, :disk_full},
           {:done, {:unexpected_commit_result, :done}},
-          {fn -> raise "boom" end, "boom"},
-          {fn -> throw(:oops) end, {:throw, :oops}},
-          {fn -> exit(:gone) end, {:exit, :gone}}
+          {fn -> raise "boom" end,
+           {:committer_crashed, ResultCommitter, :error, %RuntimeError{message: "boom"}}},
+          {fn -> :erlang.error(:badarg) end,
+           {:committer_crashed, ResultCommitter, :error, %ArgumentError{}}},
+          {fn -> throw(:oops) end, {:committer_crashed, ResultCommitter, :throw, :oops}},
+          {fn -> exit(:gone) end, {:committer_crashed, ResultCommitter, :exit, :gone}}
         ] do
       Process.put(:commit_result, result)
 
