@@ -71,6 +71,11 @@ Both functions take options as their last argument:
 | `:annotations` | `register_all/3` | MCP annotations forwarded to `Anubis.Server.Frame.register_tool/3` |
 | `:title`, `:task_support`, `:scopes` | `register_all/3` | Registration metadata forwarded to Anubis |
 
+Both functions build a `Tackle.Lib.Integrations.Registry` from a list of tool
+modules, which validates them like the agent loop's tool registry: a module
+that is not a tool, or two tools with the same name, raise `ArgumentError`
+instead of registering a tool twice.
+
 `dispatch/4` returns `{:reply, response, frame}` for known tools and
 `{:error, :unknown_tool}` otherwise, leaving protocol error mapping to the host
 server.

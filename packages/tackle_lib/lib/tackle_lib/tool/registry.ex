@@ -19,9 +19,13 @@ defmodule Tackle.Lib.Tool.Registry do
           required(:definition) => map()
         }
 
-  @type t :: %__MODULE__{entries: %{String.t() => entry()}, modules: [module()]}
+  @typedoc """
+  A registry: its entries in registration order, and the same entries by
+  tool name.
+  """
+  @type t :: %__MODULE__{entries: [entry()], by_name: %{String.t() => entry()}}
 
-  defstruct entries: %{}, modules: []
+  defstruct entries: [], by_name: %{}
 
   @doc """
   Builds a registry from a list of `Tackle.Lib.Tool` modules.
@@ -33,49 +37,58 @@ defmodule Tackle.Lib.Tool.Registry do
   """
   @spec new([module()]) :: t()
   def new(tools) when is_list(tools) do
-    entries =
-      Enum.reduce(tools, %{}, fn tool_module, entries ->
-        validate_tool_module!(tool_module)
-        validate_schemas!(tool_module)
-        definition = Tool.definition(tool_module)
-        name = definition.name
+    {entries, by_name} =
+      Enum.reduce(tools, {[], %{}}, fn tool_module, {entries, by_name} ->
+        entry = entry!(tool_module)
 
-        unless is_binary(name) and name != "" do
-          raise ArgumentError, "invalid tool name for #{inspect(tool_module)}: #{inspect(name)}"
+        if Map.has_key?(by_name, entry.name) do
+          raise ArgumentError, "duplicate tool name: #{inspect(entry.name)}"
         end
 
-        if Map.has_key?(entries, name) do
-          raise ArgumentError, "duplicate tool name: #{inspect(name)}"
-        end
-
-        Map.put(entries, name, %{
-          id: definition.definition_id,
-          name: name,
-          module: tool_module,
-          definition: definition
-        })
+        {[entry | entries], Map.put(by_name, entry.name, entry)}
       end)
 
-    %__MODULE__{entries: entries, modules: tools}
+    %__MODULE__{entries: Enum.reverse(entries), by_name: by_name}
   end
+
+  defp entry!(tool_module) do
+    validate_tool_module!(tool_module)
+    validate_schemas!(tool_module)
+    definition = Tool.definition(tool_module)
+    name = definition.name
+
+    unless is_binary(name) and name != "" do
+      raise ArgumentError, "invalid tool name for #{inspect(tool_module)}: #{inspect(name)}"
+    end
+
+    %{id: definition.definition_id, name: name, module: tool_module, definition: definition}
+  end
+
+  @doc "Returns the registered entries, in the order their modules were given to `new/1`."
+  @spec entries(t()) :: [entry()]
+  def entries(%__MODULE__{entries: entries}), do: entries
 
   @doc "Returns the registered tool modules, in the order they were given to `new/1`."
   @spec modules(t()) :: [module()]
-  def modules(%__MODULE__{modules: modules}), do: modules
+  def modules(%__MODULE__{entries: entries}), do: Enum.map(entries, & &1.module)
 
-  @doc "Returns provider-neutral definitions with stable definition ids."
+  @doc """
+  Returns provider-neutral definitions with stable definition ids, in the
+  order their modules were given to `new/1`.
+  """
   @spec definitions(t()) :: [map()]
-  def definitions(%__MODULE__{entries: entries}) do
-    entries
-    |> Map.values()
-    |> Enum.map(& &1.definition)
-  end
+  def definitions(%__MODULE__{entries: entries}), do: Enum.map(entries, & &1.definition)
+
+  @doc "Looks up an entry by tool name, or returns `nil`."
+  @spec lookup(t(), String.t()) :: entry() | nil
+  def lookup(%__MODULE__{by_name: by_name}, name) when is_binary(name),
+    do: Map.get(by_name, name)
 
   @doc "Resolves a tool call to a registered tool module or returns a structured rejection."
   @spec resolve(t(), Call.t()) ::
           {:ok, entry()} | {:error, :unknown_tool | :stale_tool_definition}
-  def resolve(%__MODULE__{entries: entries}, %Call{name: name, definition_id: definition_id}) do
-    case Map.get(entries, name) do
+  def resolve(%__MODULE__{by_name: by_name}, %Call{name: name, definition_id: definition_id}) do
+    case Map.get(by_name, name) do
       nil ->
         {:error, :unknown_tool}
 
@@ -89,10 +102,6 @@ defmodule Tackle.Lib.Tool.Registry do
         {:ok, entry}
     end
   end
-
-  @doc "Fetches an entry by tool name."
-  @spec get(t(), String.t()) :: entry() | nil
-  def get(%__MODULE__{entries: entries}, name), do: Map.get(entries, name)
 
   defp validate_schemas!(tool_module) do
     validate_schema!(tool_module, "parameters", tool_module.parameters_schema())

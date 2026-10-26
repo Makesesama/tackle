@@ -508,7 +508,7 @@ The loop supplies these adapter options:
 - `:temperature`
 - `:strict_schema`
 - `:native_tools`
-- `:tools` — provider-neutral definitions
+- `:tools` — provider-neutral definitions, in the order of the state's `:tools`
 - `:cancellation_signal`, when present
 - host `state.llm_opts`, except unsupported tool-policy options
 
@@ -1108,10 +1108,12 @@ continues against the frozen snapshot even if application configuration or code
 registration changes while it runs.
 
 Snapshots include deterministic `system_prompt_version_id` and
-`tools_version_id` values. Persist those IDs in host audit records when you need
-to explain which configuration a turn used. The snapshot belongs to the running
-turn and is not stored on `Tackle.Lib.State`; `continue/2` captures a fresh one
-like `run/3`.
+`tools_version_id` values. `tools_version_id` hashes the tool definitions in
+registration order, the order providers receive them, and is the same for a
+list of tool modules and a registry built from it. Persist those IDs in host
+audit records when you need to explain which configuration a turn used. The
+snapshot belongs to the running turn and is not stored on `Tackle.Lib.State`;
+`continue/2` captures a fresh one like `run/3`.
 
 ## Prompt caching
 

@@ -22,6 +22,22 @@ defmodule Tackle.Lib.SnapshotTest do
     def execute(_args, _context), do: {:ok, %{ok: true}}
   end
 
+  defmodule AlphaTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "alpha"
+
+    @impl true
+    def description, do: "A tool whose name sorts before snapshot_test."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, _context), do: {:ok, %{}}
+  end
+
   defmodule ChangingDefinitionTool do
     @behaviour Tackle.Lib.Tool
 
@@ -209,6 +225,17 @@ defmodule Tackle.Lib.SnapshotTest do
       id1 = Snapshot.tools_version_id([SnapshotTestTool])
       id2 = Snapshot.tools_version_id([])
       assert id1 != id2
+    end
+
+    test "hashes a tool list and a registry of the same tools alike, in their order" do
+      # "alpha" sorts before "snapshot_test": a registry used to hash its
+      # definitions in name order while a list hashed them as given.
+      tools = [SnapshotTestTool, AlphaTool]
+
+      assert Snapshot.tools_version_id(tools) == Snapshot.tools_version_id(Registry.new(tools))
+
+      # Providers receive the tools in this order, so it is part of the version.
+      refute Snapshot.tools_version_id(tools) == Snapshot.tools_version_id(Enum.reverse(tools))
     end
   end
 

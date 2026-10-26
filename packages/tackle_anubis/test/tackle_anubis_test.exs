@@ -93,6 +93,25 @@ defmodule Tackle.AnubisTest do
     assert is_function(tool.validate_input, 1)
   end
 
+  test "register_all/3 rejects two tools with the same name instead of registering it twice" do
+    defmodule DuplicateSearchTool do
+      use Tackle.Lib.Tool
+
+      tool_name("search")
+      description("Another search tool.")
+
+      input do
+        field(:query, :string, required: true)
+      end
+
+      def run(_args, _context), do: {:ok, "duplicate"}
+    end
+
+    assert_raise ArgumentError, ~s(duplicate tool name: "search"), fn ->
+      Anubis.register_all(Frame.new(), [SearchTool, TextTool, DuplicateSearchTool])
+    end
+  end
+
   test "dispatch/4 validates args, builds context, and returns structured tool responses" do
     frame = Frame.new(%{user_id: "user-1"})
 

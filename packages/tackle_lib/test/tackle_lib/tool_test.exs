@@ -827,6 +827,40 @@ defmodule Tackle.Lib.ToolTest do
              Tackle.Lib.Tool.Registry.resolve(registry, stale_call)
   end
 
+  test "registry keeps registration order for entries, modules, and definitions" do
+    # Names out of alphabetical order and more tools than a small map holds
+    # sorted, so neither name nor hash order passes by accident.
+    names = for i <- 40..1//-1, do: "tool_#{i}"
+
+    tools =
+      for name <- names do
+        module = Module.concat(__MODULE__, "Ordered_#{name}")
+
+        Module.create(
+          module,
+          quote do
+            @behaviour Tackle.Lib.Tool
+            def name, do: unquote(name)
+            def description, do: "Ordered test tool."
+            def parameters_schema, do: []
+            def execute(_args, _context), do: {:ok, "ok"}
+          end,
+          Macro.Env.location(__ENV__)
+        )
+
+        module
+      end
+
+    registry = Tackle.Lib.Tool.Registry.new(tools)
+
+    assert Enum.map(Tackle.Lib.Tool.Registry.definitions(registry), & &1.name) == names
+    assert Enum.map(Tackle.Lib.Tool.Registry.entries(registry), & &1.name) == names
+    assert Tackle.Lib.Tool.Registry.modules(registry) == tools
+    assert %{module: first} = Tackle.Lib.Tool.Registry.lookup(registry, "tool_40")
+    assert first == hd(tools)
+    assert Tackle.Lib.Tool.Registry.lookup(registry, "missing") == nil
+  end
+
   test "registry rejects invalid modules instead of dropping them" do
     for invalid <- [MissingCallbacksTool, :missing_tool_module, "not a module"] do
       assert_raise ArgumentError, ~r/not a valid Tackle.Lib.Tool; missing callbacks:/, fn ->

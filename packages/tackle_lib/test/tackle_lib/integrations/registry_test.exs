@@ -53,6 +53,36 @@ defmodule Tackle.Lib.Integrations.RegistryTest do
     assert Registry.lookup(registry, "missing") == nil
   end
 
+  defmodule DuplicateFirstTool do
+    use Tackle.Lib.Tool
+
+    tool_name("first")
+    description("Another tool named first.")
+
+    input do
+      field(:value, :string, required: true)
+    end
+
+    def run(%{"value" => value}, _context), do: {:ok, value}
+  end
+
+  test "new/1 rejects duplicate tool names instead of listing a tool twice" do
+    for tools <- [
+          [FirstTool, SecondTool, DuplicateFirstTool],
+          [FirstTool, FirstTool]
+        ] do
+      assert_raise ArgumentError, ~s(duplicate tool name: "first"), fn ->
+        Registry.new(tools)
+      end
+    end
+  end
+
+  test "new/1 rejects modules that are not tools" do
+    assert_raise ArgumentError, ~r/not a valid Tackle.Lib.Tool/, fn ->
+      Registry.new([FirstTool, :missing_tool_module])
+    end
+  end
+
   test "new/1 accepts an empty tool list" do
     assert Registry.new([]) |> Registry.entries() == []
   end

@@ -30,7 +30,13 @@ defmodule Tackle.Anubis do
 
   @type dispatch_result :: {:reply, term(), term()} | {:error, :unknown_tool}
 
-  @doc "Registers all tools on an Anubis frame."
+  @doc """
+  Registers all tools on an Anubis frame, in their order.
+
+  A list of tool modules is built into a `Tackle.Lib.Integrations.Registry`,
+  which raises `ArgumentError` for a module that is not a tool or a duplicate
+  tool name.
+  """
   @spec register_all(term(), [module()] | Registry.t(), keyword()) :: term()
   def register_all(%{__struct__: Frame} = frame, tools_or_registry, opts \\ []) do
     tools_or_registry
