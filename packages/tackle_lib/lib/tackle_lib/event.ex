@@ -143,19 +143,22 @@ defmodule Tackle.Lib.Event do
   Adapters should prefer emitting Tackle.Lib-shaped events directly, but this helper
   accepts common provider-ish event maps so the optional `stream/3` callback in
   `Tackle.Lib.LLM` can produce standard events for hosts at this normalization
-  boundary.
+  boundary. A `{type, data}` tuple with a map is the map with that type; a
+  `{type, value}` tuple carries the type's main value, such as the text of
+  `{:text_delta, "hi"}`, the usage of `{:usage, %Tackle.Lib.Usage{}}`, or the
+  reason of `{:error, reason}`.
   """
   @spec normalize(t() | tuple() | map(), keyword()) :: t()
   def normalize(event, opts \\ [])
 
   def normalize(%__MODULE__{} = event, _opts), do: event
 
-  def normalize({type, data}, opts) when is_atom(type) and is_map(data) do
+  def normalize({type, data}, opts) when is_atom(type) and is_map(data) and not is_struct(data) do
     normalize(Map.put(data, :type, type), opts)
   end
 
   def normalize({type, value}, opts) when is_atom(type) do
-    normalize(%{type: type, value: value}, opts)
+    normalize(%{:type => type, tuple_key(normalize_type(type)) => value}, opts)
   end
 
   def normalize(%{} = event, opts) do
@@ -223,6 +226,14 @@ defmodule Tackle.Lib.Event do
     data = event |> drop_keys([:type, "type", :raw, "raw"])
     new(type, data, metadata: metadata)
   end
+
+  # A `{type, value}` tuple carries its value where the type's builder reads it.
+  defp tuple_key(type) when type in [:message_delta, :reasoning_delta, :tool_input_delta],
+    do: :delta
+
+  defp tuple_key(:usage), do: :usage
+  defp tuple_key(:error), do: :error
+  defp tuple_key(_type), do: :value
 
   defp event_value(event, keys, default \\ nil) do
     Enum.find_value(keys, default, fn key -> Map.get(event, key) end)

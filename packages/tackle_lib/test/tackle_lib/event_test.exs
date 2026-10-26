@@ -36,6 +36,27 @@ defmodule Tackle.Lib.EventTest do
                Event.normalize(%{type: :usage, usage: %{input_tokens: 3, output_tokens: 2}})
     end
 
+    test "normalizes value tuples into the type's event" do
+      assert %Event{type: :message_delta, data: %{delta: "hi"}} =
+               Event.normalize({:text_delta, "hi"})
+
+      assert %Event{type: :message_delta, data: %{delta: "why", field: :reasoning}} =
+               Event.normalize({:reasoning_delta, "why"})
+
+      assert %Event{type: :message_delta, data: %{delta: "{", field: :tool_input}} =
+               Event.normalize({:tool_input_delta, "{"})
+
+      usage = %Usage{input_tokens: 3, output_tokens: 2}
+
+      assert %Event{type: :usage, data: %{usage: %Usage{input_tokens: 3, total_tokens: 5}}} =
+               Event.normalize({:usage, usage})
+
+      assert %Event{type: :error, data: %{error: "boom"}} = Event.normalize({:error, "boom"})
+
+      assert %Event{type: :message_delta, data: %{delta: "map"}} =
+               Event.normalize({:text_delta, %{text: "map"}})
+    end
+
     test "normalizes reasoning and partial tool input as message deltas with fields" do
       assert %Event{type: :message_delta, data: %{field: :reasoning, delta: "thinking"}} =
                Event.normalize(%{type: :reasoning_delta, delta: "thinking"})
