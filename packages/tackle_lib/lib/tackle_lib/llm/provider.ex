@@ -237,7 +237,13 @@ defmodule Tackle.Lib.LLM.Provider do
 
   @doc false
   @spec model_info(t(), String.t()) :: {:ok, term()} | {:error, term()}
-  def model_info(%__MODULE__{adapter: adapter, settings: settings}, model) do
+  def model_info(%__MODULE__{adapter: adapter, settings: settings}, model),
+    do: model_info(adapter, settings, model)
+
+  # Prefers the instance-aware `model_info/2`, like the other callbacks.
+  @doc false
+  @spec model_info(module(), settings(), String.t()) :: {:ok, term()} | {:error, term()}
+  def model_info(adapter, settings, model) do
     with :ok <- ensure_loaded(adapter) do
       cond do
         function_exported?(adapter, :model_info, 2) ->

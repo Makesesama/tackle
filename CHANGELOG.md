@@ -90,6 +90,7 @@ Notable changes to Tackle are recorded here. This repository contains separate M
 - `Tackle.Lib.ModelInfo.estimate_cost/2` leaves usage with a provider-reported cost unchanged. It attached a price-card breakdown to OpenRouter's and Ollama's billed costs, whose total disagreed with `cost`, and aggregates summed such mismatched breakdowns; it also filled a missing currency from the price card.
 - Fixed `Tackle.Lib.Event.normalize/2` dropping the value of `{type, value}` tuples: `{:text_delta, "hi"}` became an empty delta. The value now goes where the type's event reads it (the delta, usage, or error), and `{:usage, %Tackle.Lib.Usage{}}` is no longer read as a usage map with a `type` key.
 - `Tackle.Lib.ContextUsage.estimate_message/1` counts a message's content parts: text parts like text, images at 1,600 tokens each, other parts by size. Images a tool read were not counted, so context pressure and compaction underestimated them. `ContextUsage.since_checkpoint/1` splits newest-first messages at their latest usage checkpoint, and `Tackle.Session.Projection.context_tokens/1` uses it instead of a copy of that logic, so catalog `context_tokens` counts images too.
+- Fixed `Tackle.Lib.LLM.model_info/2` returning `{:ok, nil}` for a bare adapter module that exports only `model_info/2` (such as Ollama): it now calls it with empty settings, and requests to a bare module pass their `:provider_settings`.
 
 ### Release preparation
 

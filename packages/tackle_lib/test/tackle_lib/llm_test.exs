@@ -4,6 +4,7 @@ defmodule Tackle.Lib.LLMTest do
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Error
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.LLM.Response
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.ModelInfo
@@ -167,6 +168,24 @@ defmodule Tackle.Lib.LLMTest do
     def generate(_schema, _opts), do: {:error, :not_used}
   end
 
+  defmodule SettingsMetadataAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "settings-metadata"
+
+    @impl true
+    def models, do: ["model"]
+
+    @impl true
+    def model_info("model", settings) do
+      %{context_window: Map.get(settings, "context_window", 4_096)}
+    end
+
+    @impl true
+    def generate(_schema, _opts), do: {:error, :not_used}
+  end
+
   defmodule FailingMetadataAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -298,6 +317,16 @@ defmodule Tackle.Lib.LLMTest do
 
       assert {:ok, %Selection{model_info: nil}} =
                LLM.select([SelectableAdapterA], "provider-a/shared")
+    end
+
+    test "model_info/2 calls an adapter that only exports model_info/2" do
+      assert {:ok, %ModelInfo{context_window: 4_096}} =
+               LLM.model_info(SettingsMetadataAdapter, "model")
+
+      assert {:ok, provider} =
+               Provider.new("custom", SettingsMetadataAdapter, %{"context_window" => 8_192})
+
+      assert {:ok, %ModelInfo{context_window: 8_192}} = LLM.model_info(provider, "model")
     end
 
     test "returns malformed metadata and callback failures explicitly" do

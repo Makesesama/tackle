@@ -364,8 +364,10 @@ defmodule Tackle.Lib.LLM do
   @doc """
   Safely resolves and validates optional metadata for one adapter-local model.
 
-  Accepts an adapter module or a provider; providers prefer `model_info/2`
-  with their settings. Adapters without `model_info` return `{:ok, nil}`.
+  Accepts an adapter module or a provider. Adapters exporting `model_info/2`
+  get the provider's settings, or empty settings for a bare module (which
+  stands for a provider with empty settings), and others `model_info/1`.
+  Adapters without `model_info` return `{:ok, nil}`.
   Callback failures and malformed metadata are returned explicitly so hosts
   never run with silently invalid model limits or prices.
   """
@@ -380,12 +382,8 @@ defmodule Tackle.Lib.LLM do
   end
 
   def model_info(adapter, model)
-      when is_atom(adapter) and not is_nil(adapter) and is_binary(model) and model != "" do
-    with :ok <- ensure_adapter_loaded(adapter),
-         {:ok, value} <- call_model_info(adapter, model) do
-      ModelInfo.normalize(model, value)
-    end
-  end
+      when is_atom(adapter) and not is_nil(adapter) and is_binary(model) and model != "",
+      do: adapter_model_info(adapter, model, %{})
 
   def model_info(adapter, model), do: {:error, {:invalid_model_info_request, adapter, model}}
 
@@ -748,8 +746,18 @@ defmodule Tackle.Lib.LLM do
 
   defp model_info_from_opts(adapter, opts) do
     case Keyword.get(opts, :model) do
-      model when is_binary(model) and model != "" -> model_info(adapter, model)
-      _missing -> {:ok, nil}
+      model when is_binary(model) and model != "" ->
+        adapter_model_info(adapter, model, Keyword.get(opts, :provider_settings) || %{})
+
+      _missing ->
+        {:ok, nil}
+    end
+  end
+
+  defp adapter_model_info(adapter, model, settings) do
+    with :ok <- ensure_adapter_loaded(adapter),
+         {:ok, value} <- Provider.model_info(adapter, settings, model) do
+      ModelInfo.normalize(model, value)
     end
   end
 
@@ -758,20 +766,6 @@ defmodule Tackle.Lib.LLM do
       {:module, ^adapter} -> :ok
       {:error, reason} -> {:error, {:invalid_adapter, adapter, {:not_loaded, reason}}}
     end
-  end
-
-  defp call_model_info(adapter, model) do
-    if function_exported?(adapter, :model_info, 1) do
-      {:ok, adapter.model_info(model)}
-    else
-      {:ok, nil}
-    end
-  rescue
-    exception ->
-      {:error, {:adapter_callback_failed, adapter, :model_info, Exception.message(exception)}}
-  catch
-    kind, reason ->
-      {:error, {:adapter_callback_failed, adapter, :model_info, {kind, reason}}}
   end
 
   defp maybe_put(map, _key, nil), do: map
