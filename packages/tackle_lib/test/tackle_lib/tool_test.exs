@@ -147,6 +147,25 @@ defmodule Tackle.Lib.ToolTest do
     def model_error(_reason), do: raise("projection failed")
   end
 
+  defmodule MisbehavingTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "misbehaving"
+
+    @impl true
+    def description, do: "Fails in the way named by the test process."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, %{how: :exit}), do: exit(:timeout)
+    def execute(_args, %{how: :throw}), do: throw(:oops)
+    def execute(_args, %{how: :tuple}), do: {:ok, %{pair: {1, 2}}}
+    def execute(_args, %{how: :invalid_utf8}), do: {:ok, %{text: <<255>>}}
+  end
+
   defmodule DSLSearchTool do
     use Tackle.Lib.Tool
 
@@ -490,6 +509,30 @@ defmodule Tackle.Lib.ToolTest do
 
     assert error.reason == :execution_error
     assert error.content == "Error: The tool failed while completing the request."
+  end
+
+  test "settle/3 turns tool exits and throws into execution errors" do
+    call = %Tackle.Lib.Tool.Call{id: "call_bad", name: "misbehaving", arguments: %{}}
+
+    for how <- [:exit, :throw] do
+      assert {:error, %Tackle.Lib.Tool.Error{} = error} =
+               Tool.settle(MisbehavingTool, call, %{how: how})
+
+      assert error.reason == :execution_error
+      assert error.content == "Error: The tool failed while completing the request."
+    end
+  end
+
+  test "settle/3 reports results that cannot be encoded as invalid output" do
+    call = %Tackle.Lib.Tool.Call{id: "call_bad", name: "misbehaving", arguments: %{}}
+
+    for how <- [:tuple, :invalid_utf8] do
+      assert {:error, %Tackle.Lib.Tool.Error{} = error} =
+               Tool.settle(MisbehavingTool, call, %{how: how})
+
+      assert error.reason == :invalid_output
+      assert error.message =~ "could not be encoded as JSON"
+    end
   end
 
   test "execute_tool_call/3 validates before executing" do

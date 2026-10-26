@@ -3,7 +3,6 @@ defmodule Tackle.Lib.Tool.Batch do
 
   require Logger
 
-  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Error
 
   @tool_poll_ms 100
@@ -65,7 +64,7 @@ defmodule Tackle.Lib.Tool.Batch do
             {index, call} = Map.fetch!(by_ref, task.ref)
             Logger.error("Tool task for #{call.name} exited: #{inspect(reason)}")
 
-            settlement = crashed_settlement(call, reason)
+            settlement = {:error, Error.crashed(call, :exit, reason)}
             on_execution_end.(settlement)
             {Map.put(acc, index, settlement), MapSet.put(done, task.ref)}
         end
@@ -90,18 +89,5 @@ defmodule Tackle.Lib.Tool.Batch do
           acc
       end
     end)
-  end
-
-  defp crashed_settlement(%Call{} = call, reason) do
-    {:error,
-     %Error{
-       tool_call_id: call.id,
-       name: call.name,
-       reason: :execution_error,
-       message: "Tool crashed: #{inspect(reason)}",
-       content: "Error: The tool failed while completing the request.",
-       details: reason,
-       metadata: %{definition_id: call.definition_id}
-     }}
   end
 end

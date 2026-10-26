@@ -475,6 +475,17 @@ defmodule Tackle.Lib.Tool do
       end)
 
       {:error, {:exception, error}}
+  catch
+    # An exit (such as a GenServer.call timeout) or a throw from a tool is a
+    # failed execution like a raise, not a crash of the caller.
+    kind, reason ->
+      stacktrace = __STACKTRACE__
+
+      Logger.error(fn ->
+        ["Tool ", inspect(tool_module), " failed: ", Exception.format(kind, reason, stacktrace)]
+      end)
+
+      {:error, {kind, reason}}
   end
 
   defp validate_output(_tool_module, %Tackle.Lib.Tool.Content{} = content), do: {:ok, content}
@@ -499,7 +510,13 @@ defmodule Tackle.Lib.Tool do
     end
   end
 
-  defp project_output(result), do: {:ok, {format_result(result), []}}
+  defp project_output(result) do
+    {:ok, {format_result(result), []}}
+  rescue
+    error ->
+      {:error,
+       {:invalid_output, "Tool result could not be encoded as JSON: #{Exception.message(error)}"}}
+  end
 
   defp tool_error(call, reason, message, details \\ nil, content \\ nil) do
     %Tackle.Lib.Tool.Error{

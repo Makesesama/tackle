@@ -227,15 +227,51 @@ defmodule Tackle.Lib.LoopTest do
     def name, do: "crash"
 
     @impl true
-    def description, do: "Exits the task to exercise crash isolation."
+    def description, do: "Kills its task to exercise crash isolation."
 
     @impl true
     def parameters_schema, do: []
 
-    # An exit is not an exception, so it escapes the tool settlement rescue and
-    # terminates the supervised tool task itself.
+    # Tool settlement turns raises, throws, and exits into error results, so
+    # only a killed task process reaches the batch's crash handling.
     @impl true
-    def execute(_args, _context), do: exit(:tool_boom)
+    def execute(_args, _context), do: Process.exit(self(), :kill)
+  end
+
+  defmodule MisbehavingTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "misbehave"
+
+    @impl true
+    def description, do: "Fails in the way named by its argument."
+
+    @impl true
+    def parameters_schema, do: [how: [type: :string, required: true]]
+
+    @impl true
+    def execute(%{"how" => "exit"}, _context), do: exit(:timeout)
+    def execute(%{"how" => "throw"}, _context), do: throw(:oops)
+    def execute(%{"how" => "unencodable"}, _context), do: {:ok, %{pair: {1, 2}}}
+  end
+
+  defmodule MisbehavingToolAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, opts) do
+      if Enum.any?(Keyword.fetch!(opts, :messages), &(&1.role == :tool)) do
+        {:ok, %{data: %{"content" => "survived"}, usage: nil, model: "test/model"}}
+      else
+        calls =
+          for how <- ["exit", "throw", "unencodable"] do
+            %{"id" => how, "name" => "misbehave", "arguments" => %{"how" => how}}
+          end
+
+        {:ok, %{data: %{"tool_calls" => calls}, usage: nil, model: "test/model"}}
+      end
+    end
   end
 
   defmodule ParallelToolAdapter do
@@ -1472,6 +1508,70 @@ defmodule Tackle.Lib.LoopTest do
 
     assert_receive {:event, %Event{type: :tool_error, data: %{tool_call_id: "c1"}}}
     assert_receive {:event, %Event{type: :tool_error, data: %{tool_call_id: "c2"}}}
+    refute_receive {:tool_entered, _, _}
+  end
+
+  test "sequential policy settles tools that exit, throw, or return unencodable data" do
+    Application.put_env(:tackle_lib, :llm, MisbehavingToolAdapter)
+    test_pid = self()
+
+    state = State.new(model: "test/model", tools: [MisbehavingTool])
+
+    assert {:ok, final_state} =
+             Loop.run(state, "misbehave",
+               event_callback: fn event -> send(test_pid, {:event, event}) end
+             )
+
+    assert List.last(final_state.messages).content == "survived"
+
+    assert [exit, throw, unencodable] = Enum.filter(final_state.messages, &(&1.role == :tool))
+    assert {exit.tool_call_id, throw.tool_call_id} == {"exit", "throw"}
+    assert exit.content == "Error: The tool failed while completing the request."
+    assert throw.content == "Error: The tool failed while completing the request."
+    assert unencodable.tool_call_id == "unencodable"
+
+    assert_receive {:event,
+                    %Event{
+                      type: :tool_error,
+                      data: %{tool_call_id: "exit", details: {:exit, :timeout}}
+                    }}
+
+    assert_receive {:event,
+                    %Event{
+                      type: :tool_error,
+                      data: %{tool_call_id: "throw", details: {:throw, :oops}}
+                    }}
+
+    assert_receive {:event,
+                    %Event{
+                      type: :tool_error,
+                      data: %{tool_call_id: "unencodable", reason: :invalid_output}
+                    }}
+  end
+
+  test "sequential preparation errors settle as tool crashes instead of crashing the loop" do
+    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
+    test_pid = self()
+
+    state = State.new(model: "test/model", tools: [BlockingTool], context: %{test_pid: test_pid})
+
+    assert {:ok, final_state} =
+             Loop.run(state, "run both",
+               event_context: nil,
+               event_callback: fn event -> send(test_pid, {:event, event}) end
+             )
+
+    assert final_state.status == :completed
+
+    assert Enum.map(Enum.filter(final_state.messages, &(&1.role == :tool)), & &1.tool_call_id) ==
+             ["c1", "c2"]
+
+    assert_receive {:event,
+                    %Event{
+                      type: :tool_error,
+                      data: %{tool_call_id: "c1", reason: :execution_error}
+                    }}
+
     refute_receive {:tool_entered, _, _}
   end
 

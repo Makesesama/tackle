@@ -1165,26 +1165,31 @@ defmodule Tackle.Lib.Loop do
       )
 
       settlement
-    rescue
-      error ->
-        Telemetry.exception(
-          [:tackle, :tool, :execution],
-          telemetry_ref,
-          %{duration: Telemetry.monotonic_duration(started_at), count: 1},
-          %{tool_name: telemetry_name, error_type: :error}
-        )
-
-        reraise error, __STACKTRACE__
     catch
+      # Tool.settle/3 turns a tool's own failures into error results. What is
+      # left (preparing the call's context failed, or a telemetry adapter
+      # crashed) settles the call as crashed under either execution policy, so
+      # one call cannot take down the loop and leave its batch unresolved.
       kind, reason ->
+        stacktrace = __STACKTRACE__
+
         Telemetry.exception(
           [:tackle, :tool, :execution],
           telemetry_ref,
           %{duration: Telemetry.monotonic_duration(started_at), count: 1},
-          %{tool_name: telemetry_name, error_type: exception_type(kind, reason)}
+          %{tool_name: telemetry_name, error_type: kind}
         )
 
-        :erlang.raise(kind, reason, __STACKTRACE__)
+        Logger.error(fn ->
+          [
+            "Tool call ",
+            inspect(tool_call.name),
+            " crashed: ",
+            Exception.format(kind, reason, stacktrace)
+          ]
+        end)
+
+        {:error, ToolError.crashed(tool_call, kind, reason)}
     end
   end
 
@@ -1219,8 +1224,6 @@ defmodule Tackle.Lib.Loop do
        do: reason
 
   defp bounded_tool_error(_reason), do: :execution_error
-
-  defp exception_type(kind, _reason) when kind in [:error, :exit, :throw], do: kind
 
   defp provider_tool_definitions(%Registry{} = registry) do
     Registry.definitions(registry)

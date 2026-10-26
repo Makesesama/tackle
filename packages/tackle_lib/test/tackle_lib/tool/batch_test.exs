@@ -52,7 +52,8 @@ defmodule Tackle.Lib.Tool.BatchTest do
 
     assert error.tool_call_id == "crash"
     assert error.reason == :execution_error
-    assert error.details == :broken
+    assert error.details == {:exit, :broken}
+    assert error.message == "Tool crashed: exit :broken"
     assert error.content == "Error: The tool failed while completing the request."
   end
 
