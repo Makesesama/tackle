@@ -135,7 +135,7 @@ defmodule Tackle.Plugins.Catalog do
   defp validate_entry(entry, kind), do: entry_error(entry, kind, :invalid_entry_shape)
 
   defp validate_adapter(module, source) do
-    with :ok <- required_callback(module, :generate, 2, source, :adapter),
+    with :ok <- generation_callback(module, source),
          {:ok, id} <- callback(module, :adapter_id, 0, source, :adapter),
          true <- Provider.valid_id?(id),
          :ok <- validate_adapter_models(module, source) do
@@ -236,6 +236,13 @@ defmodule Tackle.Plugins.Catalog do
       [missing | _rest] ->
         entry_error(%{module: module, source: source}, :tool, {:missing_callback, missing})
     end
+  end
+
+  # An adapter generates, streams, or both (see `Tackle.Lib.LLM`).
+  defp generation_callback(module, source) do
+    if function_exported?(module, :stream, 3),
+      do: :ok,
+      else: required_callback(module, :generate, 2, source, :adapter)
   end
 
   defp required_callback(module, function, arity, source, kind) do

@@ -43,6 +43,13 @@ defmodule Tackle.Plugins.CatalogTest do
     def models, do: ["small"]
   end
 
+  defmodule StreamOnlyAdapter do
+    @behaviour Tackle.Lib.LLM
+    def adapter_id, do: "stream-only"
+    def models, do: ["small"]
+    def stream(_, _, _), do: {:error, :unused}
+  end
+
   defmodule UnconfiguredAdapter do
     @behaviour Tackle.Lib.LLM
     def adapter_id, do: "unconfigured"
@@ -152,6 +159,11 @@ defmodule Tackle.Plugins.CatalogTest do
 
     assert {:error, {:invalid_plugin, :adapter, :missing, {:missing_callback, {:generate, 2}}}} =
              Catalog.new(adapters: [entry(MissingGenerate, :missing)], tools: [], hooks: [])
+
+    assert {:ok, catalog} =
+             Catalog.new(adapters: [entry(StreamOnlyAdapter, :stream)], tools: [], hooks: [])
+
+    assert Catalog.adapter_modules(catalog) == [StreamOnlyAdapter]
 
     assert {:error, {:invalid_plugin, :tool, :missing, {:missing_callback, {:description, 0}}}} =
              Catalog.new(adapters: [], tools: [entry(MissingToolCallback, :missing)], hooks: [])
