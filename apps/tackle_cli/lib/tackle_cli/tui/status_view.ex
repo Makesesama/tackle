@@ -313,10 +313,9 @@ defmodule Tackle.CLI.TUI.StatusView do
     [live | live_rest] = Metrics.turn_segments(state.metrics)
 
     settled =
-      case Lib.State.usage_segments(state.agent_state) do
-        [] -> [live]
-        segments -> List.update_at(segments, -1, &(&1 ++ live))
-      end
+      state.agent_state
+      |> Lib.State.usage_segments()
+      |> List.update_at(-1, &(&1 ++ live))
 
     Enum.map(settled ++ live_rest, fn segment ->
       segment |> Enum.map(&Usage.normalize/1) |> Enum.filter(&usage_activity?/1)

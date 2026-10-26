@@ -61,7 +61,8 @@ defmodule Tackle.Lib.TreeTest do
 
       state = %{State.new() | tree: tree, messages: Tree.transcript(tree)}
 
-      assert State.usage_segments(state) == [[u1, u2], [u3]]
+      # The span after the last compaction has no usage yet, but is current.
+      assert State.usage_segments(state) == [[u1, u2], [u3], []]
 
       # The rewritten prefix after each compaction is not a cache miss.
       assert Usage.cache_reuse_rate(State.usage_segments(state)) == 1.0

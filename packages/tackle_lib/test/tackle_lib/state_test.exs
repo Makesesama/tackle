@@ -226,7 +226,7 @@ defmodule Tackle.Lib.StateTest do
         |> State.add_message(second)
 
       assert State.usage_segments(state) == [[first.token_usage, second.token_usage]]
-      assert State.usage_segments(State.new()) == []
+      assert State.usage_segments(State.new()) == [[]]
     end
 
     test "starts a span after the latest compaction of a linear projection" do
@@ -245,6 +245,15 @@ defmodule Tackle.Lib.StateTest do
                [before.token_usage, retained.token_usage],
                [later.token_usage]
              ]
+    end
+
+    test "keeps the current span right after a compaction, while it has no usage" do
+      before = Message.assistant(content: "a", token_usage: %Usage{input_tokens: 1})
+      checkpoint = Compaction.checkpoint_message("compaction-1", "Earlier work")
+
+      state = %{State.new() | messages: [before], model_messages: [checkpoint]}
+
+      assert State.usage_segments(state) == [[before.token_usage], []]
     end
   end
 

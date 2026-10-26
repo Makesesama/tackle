@@ -2281,6 +2281,47 @@ defmodule Tackle.CLI.TUITest do
     assert status_text(state(tui)) =~ "CH100.0%"
   end
 
+  test "starts a new cache span for a turn right after a compaction", %{tui: tui} do
+    inject_resize(tui, 120, 24)
+    state = state(tui)
+
+    [first, second] =
+      Enum.map(
+        [
+          %{input_tokens: 100, output_tokens: 1, cache_read_tokens: 0},
+          %{input_tokens: 100, output_tokens: 1, cache_read_tokens: 100}
+        ],
+        &Message.assistant(content: "step", token_usage: &1)
+      )
+
+    # A compaction (such as /compact) settled before this turn, and no
+    # message after it has usage yet.
+    checkpoint = LibCompaction.checkpoint_message("compaction-1", "Earlier work")
+
+    agent_state = %{
+      state.agent_state
+      | messages: [first, second],
+        model_messages: [checkpoint]
+    }
+
+    turn_usages =
+      Enum.map(
+        [
+          %{input_tokens: 30, output_tokens: 1, cache_read_tokens: 0},
+          %{input_tokens: 10, output_tokens: 1, cache_read_tokens: 30}
+        ],
+        &Tackle.Lib.Usage.normalize/1
+      )
+
+    state = %{
+      state
+      | agent_state: agent_state,
+        metrics: %{state.metrics | turn_usages: turn_usages}
+    }
+
+    assert status_text(state) =~ "CH100.0%"
+  end
+
   test "omits context and token statistics when they are unavailable", %{tui: tui} do
     state = state(tui)
     llm = %{state.agent_state.llm | model_info: nil}

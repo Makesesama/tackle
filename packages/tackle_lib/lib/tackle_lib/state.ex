@@ -335,8 +335,11 @@ defmodule Tackle.Lib.State do
   Each list holds, oldest first, the `token_usage` of the messages in one
   span over which the context only grew; a compaction starts the next span.
   `Tackle.Lib.Usage.cache_reuse/1` takes these spans, since comparing prompts
-  across a rewrite would count the rewritten prefix as a cache miss. Spans
-  without usage are left out.
+  across a rewrite would count the rewritten prefix as a cache miss. Earlier
+  spans without usage are left out, but the last span is always the current
+  one, empty right after a compaction, so usage that arrives next (such as a
+  running turn's) can be appended to it without joining the span before the
+  compaction.
 
   In tree mode the spans follow the compaction entries on the active path.
   Linear mode knows only the latest compaction (the head of the model
@@ -355,7 +358,7 @@ defmodule Tackle.Lib.State do
     end)
     |> Enum.reverse()
     |> Enum.map(&(&1 |> Enum.reverse() |> message_usages()))
-    |> Enum.reject(&(&1 == []))
+    |> keep_current_span()
   end
 
   def usage_segments(%__MODULE__{} = state) do
@@ -377,7 +380,12 @@ defmodule Tackle.Lib.State do
           [earlier, later]
       end
 
-    segments |> Enum.map(&message_usages/1) |> Enum.reject(&(&1 == []))
+    segments |> Enum.map(&message_usages/1) |> keep_current_span()
+  end
+
+  defp keep_current_span(segments) do
+    {earlier, [current]} = Enum.split(segments, -1)
+    Enum.reject(earlier, &(&1 == [])) ++ [current]
   end
 
   defp message_usages(messages) do
