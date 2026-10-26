@@ -297,6 +297,57 @@ defmodule Tackle.Session.CompactionTest do
     assert {:ok, _snapshot, _record} = Task.await(compact)
   end
 
+  test "manual compaction progress reaches the session's current subscribers", ctx do
+    scope = start_durable_scope(home: ctx.home, root: root_opts())
+    root = scope.root_agent_ref
+    {:ok, snapshot} = Tackle.subscribe(root)
+    session_id = snapshot.session_id
+    {:ok, turn_id} = Tackle.submit(root, long_prompt())
+    assert_receive {:tackle_turn_finished, _, ^turn_id, _}, 5_000
+    flush_compaction_requests()
+
+    Application.put_env(:tackle, :compaction_summary_result, :block)
+    compact = Task.async(fn -> Tackle.compact(root) end)
+    assert_receive {:compaction_request, _, _}, 5_000
+    assert_receive {:tackle_compaction, ^session_id, %Tackle.Lib.Event{type: :compaction_start}}
+
+    # The subscribers change while the compaction runs.
+    assert :ok = Tackle.unsubscribe(root)
+    late = subscribe_forwarding(root)
+
+    {:ok, session} = Tackle.Runtime.session_pid(root)
+    send(:sys.get_state(session).storage_task.task.pid, :release_compaction)
+    assert {:ok, _snapshot, _record} = Task.await(compact)
+
+    assert_receive {^late,
+                    {:tackle_compaction, ^session_id, %Tackle.Lib.Event{type: :compaction_end}}},
+                   5_000
+
+    refute_received {:tackle_compaction, _session_id, _event}
+  end
+
+  defp subscribe_forwarding(agent_ref) do
+    parent = self()
+
+    pid =
+      spawn_link(fn ->
+        {:ok, _snapshot} = Tackle.subscribe(agent_ref)
+        send(parent, {:subscribed, self()})
+        forward(parent)
+      end)
+
+    assert_receive {:subscribed, ^pid}, 5_000
+    pid
+  end
+
+  defp forward(parent) do
+    receive do
+      message ->
+        send(parent, {self(), message})
+        forward(parent)
+    end
+  end
+
   test "cancel stops a running manual compaction and deletes its signal", ctx do
     scope = start_durable_scope(home: ctx.home, root: root_opts())
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)

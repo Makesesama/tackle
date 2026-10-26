@@ -519,9 +519,16 @@ defmodule Tackle.Session do
     {:reply, {:error, {:recovery_required, recovery}}, state}
   end
 
+  # Progress goes through the session, which broadcasts it to whoever is
+  # subscribed when it arrives, as for turn events.
   def handle_call({:compact, opts}, from, state) do
     session_id = state.agent_state.session_id
-    event_callback = fn event -> broadcast(state, {:tackle_compaction, session_id, event}) end
+    session_pid = self()
+
+    event_callback = fn event ->
+      send(session_pid, {:tackle_compaction_progress, session_id, event})
+    end
+
     signal = Cancellation.new_signal()
 
     compaction_opts =
@@ -694,6 +701,12 @@ defmodule Tackle.Session do
     cleanup_active_turn(state.active_turn)
     release_turn(state)
     {:stop, {:persistence_failed, reason}, %{state | storage_task: nil, active_turn: nil}}
+  end
+
+  def handle_info({:tackle_compaction_progress, session_id, event}, state)
+      when session_id == state.agent_state.session_id do
+    broadcast(state, {:tackle_compaction, session_id, event})
+    {:noreply, state}
   end
 
   def handle_info({:tackle_storage, session_id, status}, state)
