@@ -56,7 +56,9 @@ end
 `register_all/3` projects each tool's `Tackle.Lib.Tool` schema into the Peri
 schema Anubis expects, and `dispatch/4` runs the tool through
 `Tackle.Lib.Tool.settle/3`. Validation, output projection, and error mapping are
-therefore identical to a tool call made by the agent loop.
+therefore identical to a tool call made by the agent loop. A failed call
+replies with an MCP error whose text is the error's model-facing `content`
+(what the agent loop puts in the transcript), never its host-facing `message`.
 
 ### Options
 

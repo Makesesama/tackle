@@ -90,8 +90,10 @@ defmodule Tackle.Anubis do
       {:ok, %Result{content: content}} ->
         Response.text(response_type, content)
 
-      {:error, %Error{message: message}} ->
-        Response.error(response_type, message)
+      # MCP clients pass tool results to a model, so they get the error's
+      # model-facing content, not its host-facing message.
+      {:error, %Error{content: content}} ->
+        Response.error(response_type, content)
     end
   end
 

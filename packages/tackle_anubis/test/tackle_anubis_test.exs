@@ -39,6 +39,19 @@ defmodule Tackle.AnubisTest do
     def run(%{"value" => value}, _context), do: {:ok, value}
   end
 
+  defmodule FailingTool do
+    use Tackle.Lib.Tool
+
+    tool_name("failing")
+    description("Fails with a host-facing reason.")
+
+    input do
+      field(:value, :string)
+    end
+
+    def run(_args, _context), do: {:error, {:secret_backend_failure, "token-123"}}
+  end
+
   defmodule FilterTool do
     use Tackle.Lib.Tool
 
@@ -137,8 +150,21 @@ defmodule Tackle.AnubisTest do
              Anubis.dispatch("search", %{}, frame, tools: [SearchTool], call_id: "call_1")
 
     assert response.isError == true
-    assert [%{"text" => message}] = response.content
-    assert message =~ "Invalid tool arguments"
+
+    assert [%{"text" => "Error: Invalid tool arguments: query: is required"}] =
+             response.content
+  end
+
+  test "dispatch/4 sends the model-facing error content, not the host-facing message" do
+    frame = Frame.new()
+
+    assert {:reply, response, ^frame} =
+             Anubis.dispatch("failing", %{}, frame, tools: [FailingTool], call_id: "call_1")
+
+    assert response.isError == true
+
+    assert [%{"text" => "Error: The tool failed while completing the request."}] =
+             response.content
   end
 
   test "dispatch/4 supports non-map tool results as text responses" do
