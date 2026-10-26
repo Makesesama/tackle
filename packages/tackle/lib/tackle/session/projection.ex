@@ -87,6 +87,10 @@ defmodule Tackle.Session.Projection do
   The recovery status of the durable history: `:interrupted` while a turn has
   no terminal event, otherwise `:recovered` once repair recovered the journal,
   otherwise `:clean`.
+
+  Every commit keeps it current, live and in replay, so it is what replay of
+  the history so far reports: a turn a live owner is still running counts as
+  interrupted here. The catalog lists such a session as `:active` instead.
   """
   @type status :: :clean | :interrupted | :recovered
 
@@ -153,7 +157,12 @@ defmodule Tackle.Session.Projection do
         %{"seq" => seq, "events" => events} = commit
       ) do
     projection = Enum.reduce(events, projection, &apply_live_event/2)
-    %{projection | last_seq: seq, updated_at: commit["written_at"] || projection.updated_at}
+
+    classify(%{
+      projection
+      | last_seq: seq,
+        updated_at: commit["written_at"] || projection.updated_at
+    })
   end
 
   @doc false
@@ -163,7 +172,12 @@ defmodule Tackle.Session.Projection do
         %{"seq" => seq, "events" => events} = commit
       ) do
     projection = Enum.reduce(events, projection, &apply_event/2)
-    %{projection | last_seq: seq, updated_at: commit["written_at"] || projection.updated_at}
+
+    classify(%{
+      projection
+      | last_seq: seq,
+        updated_at: commit["written_at"] || projection.updated_at
+    })
   end
 
   @doc false
@@ -171,15 +185,6 @@ defmodule Tackle.Session.Projection do
   def refresh(%__MODULE__{tree: tree} = projection) do
     %{projection | messages: plain_messages(tree), model_messages: plain_model_messages(tree)}
   end
-
-  @doc "Returns the projection's derived recovery status."
-  @spec classify(t()) :: t()
-  def classify(%__MODULE__{active_turn: active_turn} = projection) when not is_nil(active_turn) do
-    %{projection | status: :interrupted}
-  end
-
-  def classify(%__MODULE__{recovered: %{}} = projection), do: %{projection | status: :recovered}
-  def classify(%__MODULE__{} = projection), do: %{projection | status: :clean}
 
   @doc """
   Returns tool executions started without a durable result, in start order.
@@ -369,7 +374,7 @@ defmodule Tackle.Session.Projection do
   end
 
   defp apply_event(%{"type" => "session.recovered", "data" => data}, projection) do
-    %{projection | recovered: data, status: :recovered}
+    %{projection | recovered: data}
   end
 
   # Legacy: no longer written. It records when an earlier version closed the
@@ -600,6 +605,14 @@ defmodule Tackle.Session.Projection do
   defp terminal_status("turn.cancelled"), do: :cancelled
   defp terminal_status("turn.crashed"), do: :crashed
   defp terminal_status("turn.abandoned"), do: :abandoned
+
+  # Every commit keeps the status current, so live owners, replay, the
+  # catalog, and the summary sidecar all report the same one.
+  defp classify(%__MODULE__{active_turn: %{}} = projection),
+    do: %{projection | status: :interrupted}
+
+  defp classify(%__MODULE__{recovered: %{}} = projection), do: %{projection | status: :recovered}
+  defp classify(%__MODULE__{} = projection), do: %{projection | status: :clean}
 
   defp active_turn_id(%__MODULE__{active_turn: %{turn_id: turn_id}}), do: turn_id
   defp active_turn_id(_projection), do: nil

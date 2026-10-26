@@ -7,6 +7,7 @@ defmodule Tackle.Session.JournalTest do
   alias Tackle.Lib.State
   alias Tackle.Lib.Tree
   alias Tackle.Runtime.ID
+  alias Tackle.Session.Catalog
   alias Tackle.Session.Journal
   alias Tackle.Session.Journal.Watchdog
   alias Tackle.Session.Log
@@ -157,6 +158,31 @@ defmodule Tackle.Session.JournalTest do
       {:ok, journal} = start_journal(ctx)
       assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "one")
       assert {:error, :turn_in_progress} = Journal.begin_turn(journal, :run, "two")
+    end
+  end
+
+  describe "status classification" do
+    test "a stopped owner leaves the status replay reports in the catalog and sidecar", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, turn_id} = Journal.begin_turn(journal, :run, "hello")
+      assert eventually(fn -> catalog_status(ctx) == :active end) == :ok
+
+      stop_journal(journal)
+      assert eventually(fn -> catalog_status(ctx) == :interrupted end) == :ok
+      assert sidecar_status(ctx) == "interrupted"
+
+      # Abandoning the interrupted turn and running a clean one makes it clean.
+      {:ok, journal} = start_journal(ctx)
+      assert {:ok, %{status: :interrupted}} = Journal.projection(journal)
+      :ok = Journal.settle_turn(journal, "turn.abandoned", %{"turn_id" => turn_id})
+      assert {:ok, %{status: :clean}} = Journal.projection(journal)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "again")
+      :ok = Journal.settle_turn(journal, "turn.completed", %{})
+
+      stop_journal(journal)
+      assert eventually(fn -> catalog_status(ctx) == :clean end) == :ok
+      assert sidecar_status(ctx) == "clean"
+      assert {:ok, %{status: :clean}} = Reader.read(ctx.session_id, home: ctx.home)
     end
   end
 
@@ -1270,6 +1296,19 @@ defmodule Tackle.Session.JournalTest do
     assert {:ok, %{messages: messages}} = Journal.projection(reopened)
     assert length(messages) == length(contents)
     stop_journal(reopened)
+  end
+
+  defp catalog_status(ctx) do
+    case Catalog.get(ctx.session_id) do
+      {:ok, entry} -> entry.status
+      {:error, :not_found} -> nil
+    end
+  end
+
+  defp sidecar_status(ctx) do
+    {:ok, path} = Storage.summary_path(ctx.session_id, home: ctx.home)
+    {:ok, payload} = Catalog.read_sidecar_file(path, ctx.session_id)
+    payload["summary"]["status"]
   end
 
   defp stop_journal(journal) do

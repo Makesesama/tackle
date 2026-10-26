@@ -247,7 +247,7 @@ defmodule Tackle.Session.Reader do
          :ok <- Log.validate_header(header, session_id),
          {:ok, projection, commits} <-
            fold_commits(raw_commits, Projection.new(header), session_id) do
-      projection = projection |> Projection.refresh() |> Projection.classify()
+      projection = Projection.refresh(projection)
 
       {:ok,
        %{

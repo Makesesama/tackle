@@ -76,8 +76,6 @@ defmodule Tackle.Session.Journal do
   # kills the owner, so a stalled cleanup still leaves its diagnostic.
   @shutdown_margin 1_000
 
-  @type turn :: %{turn_id: String.t(), operation: atom()}
-
   @type state :: %{
           session_id: String.t(),
           path: String.t(),
@@ -86,7 +84,7 @@ defmodule Tackle.Session.Journal do
           next_seq: pos_integer() | nil,
           synced_seq: non_neg_integer() | nil,
           projection: Projection.t() | nil,
-          active_turn: turn() | nil,
+          live_turn?: boolean(),
           recovered: map() | nil,
           materialized?: boolean(),
           open_opts: keyword() | nil
@@ -377,7 +375,7 @@ defmodule Tackle.Session.Journal do
       next_seq: nil,
       synced_seq: nil,
       projection: nil,
-      active_turn: nil,
+      live_turn?: false,
       recovered: nil,
       materialized?: false,
       open_opts: opts
@@ -415,7 +413,7 @@ defmodule Tackle.Session.Journal do
       {:error, reason} ->
         fail(state, reason)
 
-      {:ok, %{active_turn: active_turn} = state} when is_map(active_turn) ->
+      {:ok, %{live_turn?: true} = state} ->
         {:reply, {:error, :turn_in_progress}, state}
 
       {:ok, state} ->
@@ -432,8 +430,7 @@ defmodule Tackle.Session.Journal do
         # effect yet, so it simply did not happen.
         case commit(state, [event], turn_id, false) do
           {:ok, state, _seq} ->
-            turn = %{turn_id: turn_id, operation: operation}
-            state = %{state | active_turn: turn}
+            state = %{state | live_turn?: true}
             # No sync happens here, so show the running turn in the catalog now.
             record_catalog(state, state.next_seq - 1)
             {:reply, {:ok, turn_id}, state}
@@ -451,7 +448,7 @@ defmodule Tackle.Session.Journal do
   def handle_call({:context_compacted, data}, _from, state) do
     with {:ok, data} <- compaction_data(state.projection, data),
          event = Log.event("context.compacted", data),
-         {:ok, state, _seq} <- commit(state, [event], state_active_turn_id(state)) do
+         {:ok, state, _seq} <- commit(state, [event], live_turn_id(state)) do
       {:reply, :ok, state}
     else
       error -> refuse_or_fail(state, error)
@@ -500,7 +497,7 @@ defmodule Tackle.Session.Journal do
         "navigated_at" => now()
       })
 
-    case commit(state, [event], state_active_turn_id(state)) do
+    case commit(state, [event], live_turn_id(state)) do
       {:ok, state, _seq} -> {:reply, :ok, state}
       error -> refuse_or_fail(state, error)
     end
@@ -528,7 +525,7 @@ defmodule Tackle.Session.Journal do
   def handle_call({:settle_turn, type, data}, _from, state) do
     with {:ok, event, turn_id} <- settle_event(state, type, data),
          {:ok, state, seq} <- commit(state, [event], turn_id, false) do
-      state = %{state | active_turn: nil}
+      state = %{state | live_turn?: false}
       record_catalog(state, seq)
       {:reply, :ok, state}
     else
@@ -608,7 +605,7 @@ defmodule Tackle.Session.Journal do
     status = %{
       session_id: state.session_id,
       last_seq: 0,
-      active_turn: nil,
+      active_turn_id: nil,
       recovered: nil,
       materialized?: false
     }
@@ -620,7 +617,7 @@ defmodule Tackle.Session.Journal do
     status = %{
       session_id: state.session_id,
       last_seq: state.projection.last_seq,
-      active_turn: state.active_turn,
+      active_turn_id: live_turn_id(state),
       recovered: state.recovered,
       materialized?: true
     }
@@ -660,6 +657,7 @@ defmodule Tackle.Session.Journal do
   def terminate({:journal_failure, {:writer_lock_lost, _status}}, state) do
     Watchdog.cleanup(self())
     cleanup_step(:cleanup_close, fn -> Reader.close(state.name) end)
+    record_final_summary(state)
     Watchdog.lock(self(), nil)
     :ok
   end
@@ -669,6 +667,7 @@ defmodule Tackle.Session.Journal do
     cleanup_step(:cleanup_sync, fn -> Reader.sync(state.name) end)
     cleanup_step(:cleanup_close, fn -> Reader.close(state.name) end)
     cleanup_step(:cleanup_summary, fn -> write_summary_sidecar(state) end)
+    record_final_summary(state)
     cleanup_step(:cleanup_lock, fn -> Storage.release_lock(state.lock) end)
     Watchdog.lock(self(), nil)
     :ok
@@ -711,7 +710,7 @@ defmodule Tackle.Session.Journal do
       next_seq: nil,
       synced_seq: nil,
       projection: nil,
-      active_turn: nil,
+      live_turn?: false,
       recovered: nil,
       materialized?: true,
       open_opts: nil
@@ -887,8 +886,12 @@ defmodule Tackle.Session.Journal do
   defp refuse_or_fail(state, {:rejected, reason}), do: {:reply, {:error, reason}, state}
   defp refuse_or_fail(state, {:error, reason}), do: fail(state, reason)
 
-  defp active_turn_id(%{active_turn: %{turn_id: turn_id}}), do: {:ok, turn_id}
-  defp active_turn_id(_state), do: {:rejected, :no_active_turn}
+  defp active_turn_id(state) do
+    case live_turn_id(state) do
+      nil -> {:rejected, :no_active_turn}
+      turn_id -> {:ok, turn_id}
+    end
+  end
 
   defp message_event(%Message{} = message, parent) do
     case Codec.encode_message(message) do
@@ -978,8 +981,6 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  defp settleable_turn_id(%{active_turn: %{turn_id: turn_id}}), do: turn_id
-
   defp settleable_turn_id(%{projection: %Projection{active_turn: %{turn_id: turn_id}}}),
     do: turn_id
 
@@ -991,49 +992,40 @@ defmodule Tackle.Session.Journal do
 
   # The live summary carries no search text: building it costs O(session), so
   # the catalog builds it only when a search needs it. `journal_path` lets the
-  # catalog find this session's file later.
-  defp build_summary(state) do
+  # catalog find this session's file later. While this owner runs a turn the
+  # session is listed as `:active`; otherwise, and once the owner stops, with
+  # the projection's status, which is what replay reports.
+  defp build_summary(state, status \\ nil) do
     state.projection
-    |> Map.put(:status, live_status(state))
+    |> Map.put(:status, status || live_status(state))
     |> Projection.metadata()
     |> Map.put(:journal_path, state.path)
   end
 
-  defp live_status(%{active_turn: nil} = state), do: state.projection.status
-  defp live_status(%{active_turn: %{}}), do: :active
+  defp live_status(%{live_turn?: true}), do: :active
+  defp live_status(state), do: state.projection.status
 
-  defp write_summary_sidecar(state) do
-    path = Path.join(Path.dirname(state.path), "summary.etf")
-
-    with {:ok, encoded} <- encode_summary(state) do
-      Storage.atomic_write(path, encoded)
-    end
+  # The owner is stopping: a turn it still runs is interrupted from now on.
+  defp record_final_summary(state) do
+    Catalog.record(build_summary(state, state.projection.status))
   end
 
-  defp encode_summary(state) do
-    payload = %{
-      "schema_version" => 1,
-      "session_id" => state.session_id,
-      "last_indexed_seq" => state.projection.last_seq,
-      # Written once, when the owner stops, so the next startup can index
-      # without replaying the journal.
-      "summary" =>
-        state
-        |> build_summary()
-        |> Map.delete(:journal_path)
-        |> Map.put(:search_text, Projection.search_text(state.projection))
-        |> Catalog.encode_summary()
-    }
-
-    {:ok, :erlang.term_to_binary(payload, [:compressed])}
-  rescue
-    _error -> {:error, :summary_encode_failed}
+  # Written once, when the owner stops, so the next startup can index without
+  # replaying the journal.
+  defp write_summary_sidecar(state) do
+    path = Path.join(Path.dirname(state.path), "summary.etf")
+    Storage.atomic_write(path, Catalog.sidecar(state.projection))
   end
 
   defp sync?(opts), do: Keyword.get(opts, :sync, true) != false
 
-  defp state_active_turn_id(%{active_turn: %{turn_id: turn_id}}), do: turn_id
-  defp state_active_turn_id(_state), do: nil
+  # The turn this owner began and has not settled. The projection's active turn
+  # is that turn or, in a journal opened with an interrupted turn, that one,
+  # which accepts only its settlement.
+  defp live_turn_id(%{live_turn?: true, projection: %Projection{active_turn: %{turn_id: id}}}),
+    do: id
+
+  defp live_turn_id(_state), do: nil
 
   defp notification_health({:error_status, :ok}), do: :ok
   defp notification_health({:error_status, status}), do: {:fatal, {:error_status, status}}

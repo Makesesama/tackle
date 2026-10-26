@@ -243,6 +243,21 @@ defmodule Tackle.Session.ProjectionTest do
     assert Projection.context_tokens(projection) == 1_000 + 10 + 1_600
   end
 
+  test "every commit keeps the recovery status current" do
+    projection =
+      Projection.apply_commit(Projection.new(header()), commit(1, [turn_event("turn-1")]))
+
+    assert projection.status == :interrupted
+
+    projection = Projection.apply_commit(projection, commit(2, [turn_settled_event("turn-1")]))
+    assert projection.status == :clean
+
+    projection =
+      Projection.apply_commit(projection, commit(3, [Log.event("session.recovered", %{})]))
+
+    assert projection.status == :recovered
+  end
+
   test "a durable tool result resolves its pending tool start" do
     projection =
       Projection.new(header())
