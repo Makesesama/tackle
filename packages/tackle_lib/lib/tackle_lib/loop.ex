@@ -57,26 +57,21 @@ defmodule Tackle.Lib.Loop do
 
   require Logger
 
-  alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.Hook
   alias Tackle.Lib.LLM
   alias Tackle.Lib.Message
-  alias Tackle.Lib.Messages
   alias Tackle.Lib.Loop.Run
+  alias Tackle.Lib.Loop.Tools
+  alias Tackle.Lib.Messages
   alias Tackle.Lib.Retry
   alias Tackle.Lib.State
   alias Tackle.Lib.SystemPrompt
-  alias Tackle.Lib.Telemetry
-  alias Tackle.Lib.Tool
-  alias Tackle.Lib.Tool.Batch
   alias Tackle.Lib.Tool.Call
-  alias Tackle.Lib.Tool.Error, as: ToolError
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry
-  alias Tackle.Lib.Tool.Result, as: ToolResult
 
   @doc """
   Runs the agent loop for a user query.
@@ -98,8 +93,9 @@ defmodule Tackle.Lib.Loop do
       Tools receive the per-call child signal (`Tackle.Lib.Cancellation.for_call/2`).
     * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot. When omitted,
       the state's configured id generator is used.
-    * `:tool_supervisor` - Optional `Task.Supervisor` used when the state's tool policy is
-      `:concurrent`. Ignored (and not required) for the default sequential policy.
+    * `:tool_supervisor` - `Task.Supervisor` used when the state's tool policy is
+      `:concurrent`; without one, a concurrent policy raises `ArgumentError` before
+      the turn starts. Ignored (and not required) for the default sequential policy.
     * `:before_provider_call` - Optional zero-arity callback returning `:ok` or
       `{:error, reason}`, invoked before every provider dispatch, including retries
       and compaction summaries.
@@ -118,16 +114,16 @@ defmodule Tackle.Lib.Loop do
     run = Run.new!(opts, state)
     state = reset_turn(state)
 
-    emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
+    Run.emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
 
-    if cancelled?(run) do
+    if Run.cancelled?(run) do
       cancel(state, run)
     else
-      state = settle_unresolved_tool_calls(state, run, "interrupted")
+      state = Tools.settle_interrupted(state, run, "interrupted")
       user_message = Message.user(user_input, id_generator: state.id_generator)
       state = State.add_message(state, user_message)
 
-      case emit_and_finalize_message(state, run, user_message) do
+      case Run.finalize_message(state, run, user_message) do
         {:ok, state} -> loop(state, run)
         {:error, state} -> finish(:error, state, run)
       end
@@ -150,10 +146,10 @@ defmodule Tackle.Lib.Loop do
     run = Run.new!(opts, state)
     state = reset_turn(state)
 
-    emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
+    Run.emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
 
     state
-    |> settle_unresolved_tool_calls(run, "interrupted")
+    |> Tools.settle_interrupted(run, "interrupted")
     |> loop(run)
   end
 
@@ -172,7 +168,7 @@ defmodule Tackle.Lib.Loop do
 
   # Each turn runs against configuration frozen when it starts.
   defp loop(%State{} = state, run) do
-    if cancelled?(run) do
+    if Run.cancelled?(run) do
       cancel(state, run)
     else
       case append_incoming_messages(state, run) do
@@ -184,7 +180,7 @@ defmodule Tackle.Lib.Loop do
 
   defp continue_loop(%State{} = state, run) do
     cond do
-      cancelled?(run) ->
+      Run.cancelled?(run) ->
         cancel(state, run)
 
       State.max_iterations_reached?(state) ->
@@ -200,13 +196,13 @@ defmodule Tackle.Lib.Loop do
     state = State.increment_iteration(state)
     state = State.set_status(state, :thinking)
 
-    emit(run, Event.new(:status_change, %{status: :thinking}))
+    Run.emit(run, Event.new(:status_change, %{status: :thinking}))
 
     assistant_id = state.id_generator.()
     state = %{state | pending_assistant_id: assistant_id}
-    emit(run, Event.message_start(id: assistant_id, role: :assistant))
+    Run.emit(run, Event.message_start(id: assistant_id, role: :assistant))
 
-    emit(run, Event.new(:step_start, %{iteration: state.current_iteration}))
+    Run.emit(run, Event.new(:step_start, %{iteration: state.current_iteration}))
 
     case maybe_auto_compact(state, run) do
       {:ok, state} ->
@@ -234,7 +230,7 @@ defmodule Tackle.Lib.Loop do
     case call_llm(state, run) do
       {:error, reason} = error ->
         cond do
-          cancelled?(run) or recoverable_overflow?(state, reason, run) ->
+          Run.cancelled?(run) or recoverable_overflow?(state, reason, run) ->
             handle_llm_call_result(error, state, run)
 
           Retry.available?(run.snapshot.retry, 0) and Retry.retryable?(reason) ->
@@ -253,7 +249,7 @@ defmodule Tackle.Lib.Loop do
     retry = run.snapshot.retry
     delay_ms = Retry.delay(retry, attempt)
 
-    emit(
+    Run.emit(
       run,
       Event.new(
         :retry_scheduled,
@@ -269,11 +265,11 @@ defmodule Tackle.Lib.Loop do
 
     case Retry.wait(delay_ms, run.cancellation_signal) do
       :ok ->
-        if cancelled?(run) do
+        if Run.cancelled?(run) do
           emit_retry_end(run, false, attempt, reason)
           handle_llm_call_result({:error, reason}, state, run)
         else
-          emit(
+          Run.emit(
             run,
             Event.new(:retry_start, %{attempt: attempt}, id: state.pending_assistant_id)
           )
@@ -291,7 +287,7 @@ defmodule Tackle.Lib.Loop do
     retry = run.snapshot.retry
 
     cond do
-      cancelled?(run) or recoverable_overflow?(state, reason, run) ->
+      Run.cancelled?(run) or recoverable_overflow?(state, reason, run) ->
         emit_retry_end(run, false, attempt, reason)
         handle_llm_call_result(error, state, run)
 
@@ -312,11 +308,11 @@ defmodule Tackle.Lib.Loop do
   defp emit_retry_end(run, success?, attempt, reason) do
     data = %{success?: success?, attempt: attempt}
     data = if is_nil(reason), do: data, else: Map.put(data, :reason, reason)
-    emit(run, Event.new(:retry_end, data))
+    Run.emit(run, Event.new(:retry_end, data))
   end
 
   defp handle_llm_call_result({:ok, %{data: response} = result}, state, run) do
-    if cancelled?(run) do
+    if Run.cancelled?(run) do
       cancel(state, run)
     else
       emit_llm_settlement_events(run, state, result)
@@ -333,7 +329,7 @@ defmodule Tackle.Lib.Loop do
 
   defp handle_llm_call_result({:error, reason}, state, run) do
     cond do
-      cancelled?(run) ->
+      Run.cancelled?(run) ->
         cancel(state, run)
 
       recoverable_overflow?(state, reason, run) ->
@@ -354,7 +350,7 @@ defmodule Tackle.Lib.Loop do
   defp recover_overflow(state, reason, run) do
     Logger.warning("Provider reported context overflow; compacting and retrying")
 
-    emit(run, Event.new(:compaction_retry, %{trigger: :overflow, reason: reason}))
+    Run.emit(run, Event.new(:compaction_retry, %{trigger: :overflow, reason: reason}))
 
     case Compaction.compact(state, :overflow, compaction_opts(run)) do
       {:ok, state, _record} ->
@@ -475,7 +471,7 @@ defmodule Tackle.Lib.Loop do
       )
 
     with :ok <- Tackle.Lib.ProviderGate.await(run.before_provider_call),
-         false <- cancelled?(run) do
+         false <- Run.cancelled?(run) do
       if run.llm_stream? do
         pending_id = state.pending_assistant_id
 
@@ -494,7 +490,7 @@ defmodule Tackle.Lib.Loop do
             event ->
               event
               |> stamp_pending_id(pending_id)
-              |> then(&emit(run, &1))
+              |> then(&Run.emit(run, &1))
           end
         )
       else
@@ -570,16 +566,16 @@ defmodule Tackle.Lib.Loop do
     assistant_message = Message.assistant(Keyword.put(message_opts, :tool_calls, tool_calls))
     state = State.add_message(state, assistant_message)
 
-    case emit_and_finalize_message(state, run, assistant_message) do
+    case Run.finalize_message(state, run, assistant_message) do
       {:ok, state} ->
         state =
           state
           |> clear_pending_assistant_id()
           |> State.set_status(:acting)
 
-        emit(run, Event.new(:status_change, %{status: :acting}))
+        Run.emit(run, Event.new(:status_change, %{status: :acting}))
 
-        case execute_tool_calls(state, tool_calls, run) do
+        case Tools.execute(state, tool_calls, run) do
           {:ok, state} -> loop(state, run)
           {:error, state} -> finish(:error, state, run)
           {:cancelled, state} -> cancel(state, run)
@@ -613,7 +609,7 @@ defmodule Tackle.Lib.Loop do
     Logger.warning("LLM response had neither tool calls nor content; asking again")
     run = %{run | empty_response_retried?: true}
 
-    emit(
+    Run.emit(
       run,
       Event.new(
         :retry_scheduled,
@@ -622,7 +618,7 @@ defmodule Tackle.Lib.Loop do
       )
     )
 
-    emit(run, Event.new(:retry_start, %{attempt: 1}, id: state.pending_assistant_id))
+    Run.emit(run, Event.new(:retry_start, %{attempt: 1}, id: state.pending_assistant_id))
     handle_retry_result(call_llm(state, run), state, run, 1)
   end
 
@@ -630,7 +626,7 @@ defmodule Tackle.Lib.Loop do
     do: fail(state, run, "The model returned an empty response", :empty_response)
 
   defp finalize_completed_assistant_message(state, run, assistant_message) do
-    case emit_and_finalize_message(state, run, assistant_message) do
+    case Run.finalize_message(state, run, assistant_message) do
       {:ok, state} ->
         state = clear_pending_assistant_id(state)
         continue_after_assistant(state, run)
@@ -641,7 +637,7 @@ defmodule Tackle.Lib.Loop do
   end
 
   defp continue_after_assistant(state, run) do
-    if cancelled?(run) do
+    if Run.cancelled?(run) do
       cancel(state, run)
     else
       case append_incoming_messages(state, run) do
@@ -658,13 +654,13 @@ defmodule Tackle.Lib.Loop do
     case Hook.invoke_before_turn_end(
            run.snapshot.hooks,
            state,
-           hook_context(state, run)
+           Run.hook_context(state, run)
          ) do
       {:ok, context, messages} ->
-        state = %{state | context: state_context(context, state.context)}
+        state = Run.put_hook_context(state, context)
 
         cond do
-          cancelled?(run) ->
+          Run.cancelled?(run) ->
             cancel(state, run)
 
           messages == [] ->
@@ -707,7 +703,7 @@ defmodule Tackle.Lib.Loop do
     state = Enum.reduce(messages, state, &State.add_message(&2, &1))
 
     Enum.reduce_while(messages, {:ok, state, 0}, fn message, {:ok, state, count} ->
-      case emit_and_finalize_message(state, run, message) do
+      case Run.finalize_message(state, run, message) do
         {:ok, state} -> {:cont, {:ok, state, count + 1}}
         {:error, state} -> {:halt, {:error, state}}
       end
@@ -762,522 +758,14 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
-  defp execute_tool_calls(%State{} = state, tool_calls, run) do
-    case state.tool_policy do
-      %Policy{execution_mode: :concurrent} ->
-        execute_tool_calls_concurrently(state, tool_calls, run)
-
-      %Policy{} ->
-        execute_tool_calls_sequentially(state, tool_calls, run)
-    end
-  end
-
-  defp execute_tool_calls_sequentially(state, tool_calls, run) do
-    Enum.reduce_while(tool_calls, state, fn tool_call, acc_state ->
-      execute_tool_call_until_cancelled(tool_call, acc_state, run)
-    end)
-    |> settle_tool_batch()
-  end
-
-  # Concurrent execution keeps the loop process as the only writer of `State`:
-  # every call in the batch is prepared and dispatched here, tools settle in
-  # supervised tasks, and the results are committed back in the model's order.
-  defp execute_tool_calls_concurrently(state, tool_calls, run) do
-    supervisor = run.tool_supervisor
-
-    cond do
-      is_nil(supervisor) ->
-        raise ArgumentError,
-              "concurrent tool execution requires a :tool_supervisor option; " <>
-                "pass a Task.Supervisor or use the sequential tool policy"
-
-      cancelled?(run) ->
-        {:cancelled, cancel_state(state, run)}
-
-      true ->
-        run_concurrent_batch(tool_calls, state, run, supervisor)
-    end
-  end
-
-  defp run_concurrent_batch(tool_calls, state, run, supervisor) do
-    case prepare_tool_batch(tool_calls, state, run) do
-      {:ok, jobs, state} ->
-        case await_tool_gate(Enum.map(jobs, & &1.call), run) do
-          :ok ->
-            run_tool_jobs(jobs, state, run, supervisor)
-
-          {:error, reason} ->
-            # No job ran, so no settlement will delete the per-call signals.
-            Enum.each(jobs, &Cancellation.delete(&1.call_signal))
-            {:error, tool_gate_error(state, reason)}
-        end
-
-      {:cancelled, state} ->
-        {:cancelled, state}
-
-      {:abort, state} ->
-        {:error, state}
-    end
-  end
-
-  defp run_tool_jobs(jobs, state, run, supervisor) do
-    if cancelled?(run) do
-      Enum.each(jobs, &Cancellation.delete(&1.call_signal))
-      {:cancelled, cancel_state(state, run)}
-    else
-      {settlements, outcome} =
-        Batch.run(
-          jobs,
-          supervisor,
-          &settle_tool_call/1,
-          &emit_tool_execution_end(&1, run),
-          fn -> cancelled?(run) end
-        )
-
-      state = commit_tool_batch(jobs, settlements, state, run)
-
-      case {state.status, outcome} do
-        {:error, _status} -> {:error, state}
-        {_status, :cancelled} -> {:cancelled, cancel_state(state, run)}
-        _other -> {:ok, state}
-      end
-    end
-  end
-
-  defp settle_tool_batch(%State{status: :cancelled} = state), do: {:cancelled, state}
-  defp settle_tool_batch(%State{status: :error} = state), do: {:error, state}
-  defp settle_tool_batch(%State{} = state), do: {:ok, state}
-
-  # A turn that ends while tool calls are unresolved leaves an assistant
-  # message whose calls have no results. Providers reject that history on the
-  # next request, which makes a stopped session impossible to continue, so an
-  # interrupted batch is settled with synthetic error results before the turn
-  # terminates, and a turn starting from such a history settles them first.
-  # The results go through the normal message finalization path, so durable
-  # sessions persist them like any other tool result. A failing finalization
-  # hook does not replace the outcome being settled.
-  defp settle_unresolved_tool_calls(%State{} = state, run, outcome) do
-    settled =
-      state.messages
-      |> Messages.unresolved_tool_calls()
-      |> Enum.reduce(state, &settle_interrupted_tool_call(&1, &2, run, outcome))
-
-    %{settled | status: state.status, error: state.error}
-  end
-
-  defp settle_interrupted_tool_call(%{id: id, name: name}, %State{} = state, run, outcome) do
-    content = "Error: Tool execution was #{outcome} before this call completed."
-
-    message =
-      Message.tool_result(id, name, content, id_generator: state.id_generator)
-
-    state = State.add_message(state, message)
-
-    case emit_and_finalize_message(state, run, message) do
-      {:ok, state} ->
-        emit(
-          run,
-          Event.new(:tool_error, %{
-            tool_call_id: id,
-            name: name,
-            error: content,
-            reason: :interrupted
-          })
-        )
-
-        state
-
-      {:error, state} ->
-        state
-    end
-  end
-
-  defp execute_tool_call_until_cancelled(tool_call, state, run) do
-    if cancelled?(run) do
-      {:halt, cancel_state(state, run)}
-    else
-      tool_call
-      |> execute_single_tool(state, run)
-      |> continue_or_cancel(run)
-    end
-  end
-
-  defp continue_or_cancel({:ok, %State{} = state}, run) do
-    if cancelled?(run) do
-      {:halt, cancel_state(state, run)}
-    else
-      {:cont, state}
-    end
-  end
-
-  defp continue_or_cancel({status, %State{} = state}, _run)
-       when status in [:abort, :cancelled],
-       do: {:halt, state}
-
   defp ensure_tool_call_id(%Call{id: id} = call, _state) when is_binary(id) and id != "",
     do: call
 
   defp ensure_tool_call_id(%Call{} = call, state),
     do: %{call | id: generate_call_id(state)}
 
-  defp execute_single_tool(%Call{arguments: _args} = tool_call, state, run) do
-    tool_call_id = tool_call.id || generate_call_id(state)
-    tool_call = %{tool_call | id: tool_call_id}
-
-    with {:hook, {:ok, state}} <- {:hook, invoke_before_tool_call(state, tool_call, run)},
-         {:gate, :ok, _state} <- {:gate, await_tool_gate([tool_call], run), state} do
-      if cancelled?(run) do
-        {:cancelled, cancel_state(state, run)}
-      else
-        do_execute_single_tool(tool_call, state, run)
-      end
-    else
-      {:hook, {:error, reason}} ->
-        {:abort, State.set_error(state, "Hook aborted before tool call: #{inspect(reason)}")}
-
-      {:gate, {:error, reason}, state} ->
-        {:abort, tool_gate_error(state, reason)}
-    end
-  end
-
-  defp await_tool_gate(calls, run) do
-    if Enum.any?(calls, &external_effect?(&1, run)),
-      do: Tackle.Lib.ProviderGate.await(run.before_tool_execution, :before_tool_execution),
-      else: :ok
-  end
-
-  # A call whose tool cannot be resolved never runs, so it has no effect to
-  # guard. Anything the loop cannot classify is treated as external.
-  defp external_effect?(%Call{} = call, run) do
-    case Registry.resolve(run.snapshot.tool_registry, call) do
-      {:ok, %{module: module}} -> Tool.effect(module) == :external
-      {:error, _reason} -> false
-    end
-  catch
-    _kind, _reason -> true
-  end
-
-  defp tool_gate_error(state, reason),
-    do: State.set_error(state, "Tool execution gate failed: #{inspect(reason)}")
-
-  defp do_execute_single_tool(%Call{name: name, arguments: args} = tool_call, state, run) do
-    emit(
-      run,
-      Event.new(:tool_start, %{tool_call_id: tool_call.id, name: name, arguments: args})
-    )
-
-    settlement = tool_call |> execution_job(state, run) |> settle_tool_call()
-    emit_tool_execution_end(settlement, run)
-    append_tool_settlement(settlement, state, run)
-  end
-
-  # ── Concurrent batch ──────────────────────────────────────────────────
-
-  # Runs every `before_tool_call` hook up front, emits each `tool_start`, and
-  # captures one execution job per call. Hooks are gates, so an abort anywhere in
-  # the batch stops the whole batch before any tool runs.
-  defp prepare_tool_batch(tool_calls, state, run) do
-    Enum.reduce_while(Enum.with_index(tool_calls), {:ok, [], state}, fn {call, index},
-                                                                        {:ok, jobs, acc_state} ->
-      tool_call = %{call | id: call.id || generate_call_id(acc_state)}
-
-      case invoke_before_tool_call(acc_state, tool_call, run) do
-        {:ok, acc_state} ->
-          if cancelled?(run) do
-            {:halt, {:cancelled, cancel_state(acc_state, run)}}
-          else
-            prepare_tool_job(tool_call, index, jobs, acc_state, run)
-          end
-
-        {:error, reason} ->
-          {:halt,
-           {:abort,
-            State.set_error(acc_state, "Hook aborted before tool call: #{inspect(reason)}")}}
-      end
-    end)
-    |> case do
-      {:ok, jobs, state} -> {:ok, Enum.reverse(jobs), state}
-      {:cancelled, state} -> {:cancelled, state}
-      {:abort, state} -> {:abort, state}
-    end
-  end
-
-  defp prepare_tool_job(tool_call, index, jobs, acc_state, run) do
-    emit(
-      run,
-      Event.new(:tool_start, %{
-        tool_call_id: tool_call.id,
-        name: tool_call.name,
-        arguments: tool_call.arguments
-      })
-    )
-
-    job = Map.put(execution_job(tool_call, acc_state, run), :index, index)
-    {:cont, {:ok, [job | jobs], acc_state}}
-  end
-
-  # Execution progress is transient and may arrive out of call order. Keep it
-  # separate from tool_end/tool_error, which follow ordered message persistence.
-  # Only the loop emits these events, never the worker tasks.
-  defp emit_tool_execution_end({:ok, %ToolResult{} = result}, run) do
-    emit(
-      run,
-      Event.new(:tool_execution_end, %{
-        tool_call_id: result.tool_call_id,
-        name: result.name,
-        status: :completed,
-        result: result.content
-      })
-    )
-  end
-
-  defp emit_tool_execution_end({:error, %ToolError{} = error}, run) do
-    emit(
-      run,
-      Event.new(:tool_execution_end, %{
-        tool_call_id: error.tool_call_id,
-        name: error.name || "unknown",
-        status: :failed,
-        error: error.message,
-        reason: error.reason
-      })
-    )
-  end
-
-  # Commits every available settlement in call order. A cancelled batch can lack
-  # settlements for tools that never finished; those calls are skipped so a tool
-  # that did run still records its result.
-  defp commit_tool_batch(jobs, settlements, state, run) do
-    Enum.reduce_while(jobs, state, fn %{index: index}, acc_state ->
-      case Map.fetch(settlements, index) do
-        {:ok, settlement} -> commit_tool_settlement(settlement, acc_state, run)
-        :error -> {:cont, acc_state}
-      end
-    end)
-  end
-
-  defp commit_tool_settlement(settlement, acc_state, run) do
-    case append_tool_settlement(settlement, acc_state, run) do
-      {:ok, acc_state} -> {:cont, acc_state}
-      {:abort, acc_state} -> {:halt, acc_state}
-    end
-  end
-
-  # The loop owns transcript state; tool tasks receive only the resolved call,
-  # execution context, and telemetry inputs. Hooks may update context between
-  # calls, so each job is built after its before_tool_call hook has run.
-  defp execution_job(%Call{name: name} = call, state, run) do
-    # Preserve the task's exception telemetry and crash settlement if preparing
-    # a call fails (for example, an invalid host execution context).
-    call_signal = Cancellation.for_call(run.cancellation_signal, call.id)
-
-    execution =
-      try do
-        case Registry.resolve(run.snapshot.tool_registry, call) do
-          {:ok, %{module: module}} ->
-            {:ok, module, tool_context(state, run, call, call_signal)}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-      catch
-        kind, reason -> {:raise, kind, reason, __STACKTRACE__}
-      end
-
-    %{
-      call: call,
-      call_signal: call_signal,
-      execution: execution,
-      telemetry_name: telemetry_tool_name(name, state.context),
-      telemetry_adapter: get_in(state.context, [:telemetry, :adapter])
-    }
-  end
-
-  # Runs one call's settle pipeline (execute, validate, telemetry).
-  # Sequential execution calls this inline; concurrent execution calls it inside a
-  # supervised task. It never touches agent state or emits agent events. Once the
-  # call settles, its per-call cancellation record (if a host cancelled it) is no
-  # longer observed by anyone, so it is deleted.
-  defp settle_tool_call(%{call_signal: call_signal} = job) do
-    settle_tool_call_job(job)
-  after
-    Cancellation.delete(call_signal)
-  end
-
-  defp settle_tool_call_job(%{
-         call: tool_call,
-         execution: execution,
-         telemetry_name: telemetry_name,
-         telemetry_adapter: telemetry_adapter
-       }) do
-    telemetry_ref = Telemetry.start([:tackle, :tool, :execution], %{tool_name: telemetry_name})
-    started_at = System.monotonic_time()
-
-    try do
-      settlement =
-        with_tool_telemetry_context(telemetry_adapter, telemetry_ref, fn ->
-          case execution do
-            {:ok, tool_module, context} -> Tool.settle(tool_module, tool_call, context)
-            {:error, reason} -> registry_error(tool_call, reason)
-            {:raise, kind, reason, stacktrace} -> :erlang.raise(kind, reason, stacktrace)
-          end
-        end)
-
-      Telemetry.stop(
-        [:tackle, :tool, :execution],
-        telemetry_ref,
-        %{duration: Telemetry.monotonic_duration(started_at), count: 1},
-        %{tool_name: telemetry_name, outcome: tool_outcome(settlement)}
-      )
-
-      settlement
-    catch
-      # Tool.settle/3 turns a tool's own failures into error results. What is
-      # left (preparing the call's context failed, or a telemetry adapter
-      # crashed) settles the call as crashed under either execution policy, so
-      # one call cannot take down the loop and leave its batch unresolved.
-      kind, reason ->
-        stacktrace = __STACKTRACE__
-
-        Telemetry.exception(
-          [:tackle, :tool, :execution],
-          telemetry_ref,
-          %{duration: Telemetry.monotonic_duration(started_at), count: 1},
-          %{tool_name: telemetry_name, error_type: kind}
-        )
-
-        Logger.error(fn ->
-          [
-            "Tool call ",
-            inspect(tool_call.name),
-            " crashed: ",
-            Exception.format(kind, reason, stacktrace)
-          ]
-        end)
-
-        {:error, ToolError.crashed(tool_call, kind, reason)}
-    end
-  end
-
-  defp with_tool_telemetry_context(adapter, telemetry_ref, fun)
-       when is_reference(telemetry_ref) and is_function(fun, 0) do
-    if is_atom(adapter) and not is_nil(adapter) do
-      adapter.with_context(telemetry_ref, fun)
-    else
-      fun.()
-    end
-  end
-
-  defp telemetry_tool_name(name, context) when is_binary(name) do
-    allowed_names = get_in(context, [:telemetry, :tool_names]) || []
-    if name in allowed_names, do: name, else: "other"
-  end
-
-  defp telemetry_tool_name(_name, _state), do: "other"
-
-  defp tool_outcome({:ok, %ToolResult{}}), do: :success
-  defp tool_outcome({:error, %ToolError{reason: reason}}), do: bounded_tool_error(reason)
-  defp tool_outcome(_settlement), do: :execution_error
-
-  defp bounded_tool_error(reason)
-       when reason in [
-              :invalid_input,
-              :invalid_output,
-              :execution_error,
-              :unknown_tool,
-              :stale_tool_definition
-            ],
-       do: reason
-
-  defp bounded_tool_error(_reason), do: :execution_error
-
   defp provider_tool_definitions(%Registry{} = registry) do
     Registry.definitions(registry)
-  end
-
-  defp append_tool_settlement({:ok, %ToolResult{} = result}, state, run) do
-    tool_message =
-      Message.tool_result(result.tool_call_id, result.name, result.content,
-        id_generator: state.id_generator,
-        parts: result.parts
-      )
-
-    event =
-      Event.new(:tool_end, %{
-        tool_call_id: result.tool_call_id,
-        name: result.name,
-        result: result.content,
-        raw: result.raw,
-        metadata: result.metadata
-      })
-
-    finalize_tool_settlement(state, run, tool_message, event, result)
-  end
-
-  defp append_tool_settlement({:error, %ToolError{} = error}, state, run) do
-    name = error.name || "unknown"
-
-    tool_message =
-      Message.tool_result(error.tool_call_id, name, error.content,
-        id_generator: state.id_generator
-      )
-
-    event =
-      Event.new(:tool_error, %{
-        tool_call_id: error.tool_call_id,
-        name: name,
-        error: error.message,
-        reason: error.reason,
-        details: error.details,
-        metadata: error.metadata
-      })
-
-    finalize_tool_settlement(state, run, tool_message, event, error)
-  end
-
-  defp finalize_tool_settlement(state, run, tool_message, event, settlement) do
-    state = State.add_message(state, tool_message)
-
-    case emit_and_finalize_message(state, run, tool_message) do
-      {:ok, state} ->
-        emit(run, event)
-
-        case invoke_after_tool_call(state, settlement, run) do
-          {:ok, state} ->
-            {:ok, state}
-
-          {:error, reason} ->
-            {:abort, State.set_error(state, "Hook aborted after tool call: #{inspect(reason)}")}
-        end
-
-      {:error, state} ->
-        {:abort, state}
-    end
-  end
-
-  defp registry_error(%Call{} = call, :unknown_tool) do
-    {:error,
-     %ToolError{
-       tool_call_id: call.id,
-       name: call.name,
-       reason: :unknown_tool,
-       message: "Unknown tool: #{call.name}",
-       content: "Error: Unknown tool: #{call.name}",
-       metadata: %{definition_id: call.definition_id}
-     }}
-  end
-
-  defp registry_error(%Call{} = call, :stale_tool_definition) do
-    {:error,
-     %ToolError{
-       tool_call_id: call.id,
-       name: call.name,
-       reason: :stale_tool_definition,
-       message: "Stale tool definition for #{call.name}; ask for the current tool list and retry",
-       content:
-         "Error: Stale tool definition for #{call.name}; ask for the current tool list and retry",
-       metadata: %{definition_id: call.definition_id}
-     }}
   end
 
   defp maybe_put_cancellation_signal(opts, nil), do: opts
@@ -1285,65 +773,14 @@ defmodule Tackle.Lib.Loop do
   defp maybe_put_cancellation_signal(opts, signal),
     do: Keyword.put(opts, :cancellation_signal, signal)
 
-  # Tools see the state's context with the run's `:tool_context` merged over
-  # it, and the loop's own keys on top: the run's event callback, so a tool can
-  # report progress through the same path as the loop, and the call's id.
-  # Tools receive their call's child signal: it observes turn cancellation and
-  # can also be cancelled on its own to stop just this call. The loop's boundary
-  # checks keep using the turn signal.
-  defp tool_context(%State{} = state, %Run{} = run, %Call{} = tool_call, call_signal) do
-    context =
-      state.context
-      |> Map.merge(run.tool_context)
-      |> Map.put(:event_callback, run.event_callback)
-      |> Map.put(:tool_call_id, tool_call.id)
-
-    case call_signal do
-      nil -> context
-      signal -> Map.put(context, :cancellation_signal, signal)
-    end
-  end
-
-  defp cancelled?(%Run{cancellation_signal: signal}), do: Cancellation.cancelled?(signal)
-
-  defp cancel_state(%State{} = state, run) do
-    reason = run.cancellation_signal |> Cancellation.reason() |> cancellation_reason()
-    State.set_cancelled(state, reason)
-  end
-
-  defp cancellation_reason(nil), do: "Cancelled"
-  defp cancellation_reason(reason) when is_binary(reason), do: reason
-  defp cancellation_reason(reason), do: inspect(reason)
-
-  # Events are observations: a crashing host callback is logged and the turn
-  # goes on, so an observer's bug cannot leave the transcript half-settled.
-  defp emit(run, %Event{} = event) do
-    run.event_callback.(event)
-    :ok
-  catch
-    kind, reason ->
-      stacktrace = __STACKTRACE__
-
-      Logger.error(fn ->
-        [
-          "Event callback crashed on ",
-          inspect(event.type),
-          ": ",
-          Exception.format(kind, reason, stacktrace)
-        ]
-      end)
-
-      :ok
-  end
-
   defp emit_llm_settlement_events(run, %State{} = state, result) do
     usage = Map.get(result, :usage)
 
     if usage do
-      emit(run, Event.usage(usage))
+      Run.emit(run, Event.usage(usage))
     end
 
-    emit(
+    Run.emit(
       run,
       Event.new(:step_end, %{
         iteration: state.current_iteration,
@@ -1359,57 +796,11 @@ defmodule Tackle.Lib.Loop do
   # --- Hook invocations ---
 
   defp invoke_before_prompt(%State{} = state, run) do
-    invoke_hook(state, run, :before_prompt, [state])
+    Run.invoke_hook(state, run, :before_prompt, [state])
   end
 
   defp invoke_after_prompt(%State{} = state, response, run) do
-    invoke_hook(state, run, :after_prompt, [state, response])
-  end
-
-  defp invoke_before_tool_call(%State{} = state, %Call{} = tool_call, run) do
-    invoke_hook(state, run, :before_tool_call, [state, tool_call])
-  end
-
-  defp invoke_after_tool_call(%State{} = state, tool_result, run) do
-    invoke_hook(state, run, :after_tool_call, [state, tool_result])
-  end
-
-  defp invoke_after_message(%State{} = state, %Message{} = message, run) do
-    invoke_hook(state, run, :after_message, [state, message])
-  end
-
-  defp invoke_hook(%State{} = state, run, event, args) do
-    case Hook.invoke(run.snapshot.hooks, event, args, hook_context(state, run)) do
-      {:ok, context} -> {:ok, %{state | context: state_context(context, state.context)}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  # Hooks see the run's cancellation signal, so a slow hook (such as a gate that
-  # compiles the project) can stop early. The signal belongs to this run and is
-  # not kept in the state's context, unless the host put that key there itself.
-  defp hook_context(%State{context: %{cancellation_signal: _} = context}, _run),
-    do: context
-
-  defp hook_context(%State{context: context}, %Run{cancellation_signal: signal})
-       when not is_nil(signal),
-       do: Map.put(context, :cancellation_signal, signal)
-
-  defp hook_context(%State{context: context}, _run), do: context
-
-  defp state_context(context, %{cancellation_signal: _}), do: context
-  defp state_context(context, _original), do: Map.delete(context, :cancellation_signal)
-
-  defp emit_and_finalize_message(%State{} = state, run, %Message{} = message) do
-    emit(run, Event.message_end(message))
-
-    case invoke_after_message(state, message, run) do
-      {:ok, state} ->
-        {:ok, state}
-
-      {:error, reason} ->
-        {:error, State.set_error(state, "Hook aborted after message: #{inspect(reason)}")}
-    end
+    Run.invoke_hook(state, run, :after_prompt, [state, response])
   end
 
   defp clear_pending_assistant_id(%State{} = state) do
@@ -1419,7 +810,7 @@ defmodule Tackle.Lib.Loop do
   # --- Turn end ---
 
   defp cancel(%State{} = state, run),
-    do: finish(:cancelled, cancel_state(state, run), run)
+    do: finish(:cancelled, Run.mark_cancelled(state, run), run)
 
   defp fail(%State{} = state, run, message, reason),
     do: finish(:error, State.set_error(state, message), run, reason)
@@ -1435,7 +826,7 @@ defmodule Tackle.Lib.Loop do
     state =
       if outcome == :ok,
         do: state,
-        else: settle_unresolved_tool_calls(state, run, interrupted_as(outcome))
+        else: Tools.settle_interrupted(state, run, interrupted_as(outcome))
 
     emit_turn_end(outcome, state, run, reason)
 
@@ -1452,27 +843,27 @@ defmodule Tackle.Lib.Loop do
   defp interrupted_as(:cancelled), do: "cancelled"
 
   defp emit_turn_end(:ok, state, run, _reason) do
-    emit(run, Event.new(:status_change, %{status: :completed}))
-    emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :completed}))
+    Run.emit(run, Event.new(:status_change, %{status: :completed}))
+    Run.emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :completed}))
   end
 
   defp emit_turn_end(:cancelled, state, run, _reason) do
-    emit(run, Event.new(:status_change, %{status: :cancelled}))
+    Run.emit(run, Event.new(:status_change, %{status: :cancelled}))
 
-    emit(
+    Run.emit(
       run,
       Event.new(:turn_cancelled, %{session_id: state.session_id, reason: state.error})
     )
 
-    emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :cancelled}))
+    Run.emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :cancelled}))
   end
 
   defp emit_turn_end(:error, state, run, reason) do
     data =
       if is_nil(reason), do: %{error: state.error}, else: %{error: state.error, reason: reason}
 
-    emit(run, Event.new(:error, data))
-    emit(run, Event.new(:status_change, %{status: :error}))
-    emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :error}))
+    Run.emit(run, Event.new(:error, data))
+    Run.emit(run, Event.new(:status_change, %{status: :error}))
+    Run.emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :error}))
   end
 end

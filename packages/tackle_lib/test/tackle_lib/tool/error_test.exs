@@ -1,0 +1,47 @@
+defmodule Tackle.Lib.Tool.ErrorTest do
+  use ExUnit.Case, async: true
+
+  alias Tackle.Lib.Tool.Call
+  alias Tackle.Lib.Tool.Error
+
+  @call %Call{id: "call-1", name: "lookup", arguments: %{}, definition_id: "def-1"}
+
+  test "unknown_tool/1 settles a call to a tool the registry does not know" do
+    assert Error.unknown_tool(@call) == %Error{
+             tool_call_id: "call-1",
+             name: "lookup",
+             reason: :unknown_tool,
+             message: "Unknown tool: lookup",
+             content: "Error: Unknown tool: lookup",
+             details: nil,
+             metadata: %{definition_id: "def-1"}
+           }
+  end
+
+  test "stale_definition/1 asks the model to refresh its tool list" do
+    message = "Stale tool definition for lookup; ask for the current tool list and retry"
+
+    assert Error.stale_definition(@call) == %Error{
+             tool_call_id: "call-1",
+             name: "lookup",
+             reason: :stale_tool_definition,
+             message: message,
+             content: "Error: " <> message,
+             details: nil,
+             metadata: %{definition_id: "def-1"}
+           }
+  end
+
+  test "crashed/3 keeps the crash for the host and shows the model a generic error" do
+    raised = Error.crashed(@call, :error, %RuntimeError{message: "boom"})
+
+    assert raised.reason == :execution_error
+    assert raised.message == "Tool crashed: boom"
+    assert raised.content == "Error: The tool failed while completing the request."
+    assert raised.details == {:error, %RuntimeError{message: "boom"}}
+    assert raised.metadata == %{definition_id: "def-1"}
+
+    assert Error.crashed(@call, :throw, :oops).message == "Tool crashed: throw :oops"
+    assert Error.crashed(@call, :exit, :killed).message == "Tool crashed: exit :killed"
+  end
+end

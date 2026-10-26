@@ -696,7 +696,7 @@ the exact order the model requested them.
 | Supervisor required                    | no                              | yes — the `:tool_supervisor` run option  |
 | Tool result order                      | requested order                 | requested order                          |
 | Events                                 | `tool_start`/`tool_end` interleave per call | all `tool_start` first, execution progress per worker, settlement in order |
-| Tool crash                             | normal turn error path          | becomes a tool error; siblings continue  |
+| Tool crash                             | becomes a tool error; later calls continue | becomes a tool error; siblings continue  |
 | Cancellation                           | calls not yet started are skipped | in-flight tasks are shut down          |
 | `before_tool_call` hooks               | immediately before each call    | for the whole batch before any call      |
 | `after_tool_call` hooks                | per call, threading context     | after the batch, in requested order      |
@@ -734,8 +734,9 @@ Tackle.Lib.run(state, "apply every fix", tool_supervisor: MyApp.ToolTaskSupervis
 In `:concurrent` mode each call runs as a task under the supplied
 `Task.Supervisor`. A tool crash becomes a tool error result, cancellation shuts
 the batch down, and results are still appended in call order. The supervisor is
-host-owned so one agent session cannot leak tasks into another; the library
-raises if `:concurrent` is configured without a `:tool_supervisor`.
+host-owned so one agent session cannot leak tasks into another; `run/3` and
+`continue/2` raise `ArgumentError` before the turn starts if `:concurrent` is
+configured without a `:tool_supervisor`.
 
 Either mode may still select its tools up front. Tackle.Lib intentionally does
 not support forced tool choice, provider-side parallel tool calls, allow/deny

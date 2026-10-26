@@ -95,10 +95,6 @@ defmodule Tackle.Lib.Tool.BatchTest do
   end
 
   defp jobs(ids) do
-    ids
-    |> Enum.with_index()
-    |> Enum.map(fn {id, index} ->
-      %{index: index, call: %Call{id: id, name: "test", definition_id: "definition"}}
-    end)
+    Enum.map(ids, &%{call: %Call{id: &1, name: "test", definition_id: "definition"}})
   end
 end

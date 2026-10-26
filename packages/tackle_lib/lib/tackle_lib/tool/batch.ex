@@ -10,16 +10,18 @@ defmodule Tackle.Lib.Tool.Batch do
 
   # Jobs contain only the resolved execution inputs, never the agent state.
   # The caller prepares them after its before-tool hooks and commits the returned
-  # settlements in call order, retaining sole ownership of the transcript.
+  # settlements, keyed by each job's position in `jobs`, in call order,
+  # retaining sole ownership of the transcript.
   @spec run([map()], pid() | atom(), (map() -> term()), (term() -> term()), (-> boolean())) ::
-          {map(), :ok | :cancelled}
+          {%{non_neg_integer() => term()}, :ok | :cancelled}
   def run(jobs, supervisor, settle, on_execution_end, cancelled?) do
     jobs
+    |> Enum.with_index()
     |> Enum.map(&start_task(&1, supervisor, settle))
     |> await(%{}, on_execution_end, cancelled?)
   end
 
-  defp start_task(%{index: index, call: call} = job, supervisor, settle) do
+  defp start_task({%{call: call} = job, index}, supervisor, settle) do
     task =
       Task.Supervisor.async_nolink(supervisor, fn ->
         :proc_lib.set_label("tool:#{call.name}")

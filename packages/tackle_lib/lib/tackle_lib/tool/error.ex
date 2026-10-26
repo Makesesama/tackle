@@ -26,6 +26,39 @@ defmodule Tackle.Lib.Tool.Error do
   defstruct [:tool_call_id, :name, :reason, :message, :content, :details, metadata: %{}]
 
   @doc """
+  Builds the settlement of a call to a tool the registry does not know.
+  """
+  @spec unknown_tool(Tackle.Lib.Tool.Call.t()) :: t()
+  def unknown_tool(%Tackle.Lib.Tool.Call{} = call) do
+    unresolved(call, :unknown_tool, "Unknown tool: #{call.name}")
+  end
+
+  @doc """
+  Builds the settlement of a call made against an outdated definition of a
+  tool: its `definition_id` no longer matches the registry's. The model is
+  asked to fetch the current tool list and retry.
+  """
+  @spec stale_definition(Tackle.Lib.Tool.Call.t()) :: t()
+  def stale_definition(%Tackle.Lib.Tool.Call{} = call) do
+    unresolved(
+      call,
+      :stale_tool_definition,
+      "Stale tool definition for #{call.name}; ask for the current tool list and retry"
+    )
+  end
+
+  defp unresolved(call, reason, message) do
+    %__MODULE__{
+      tool_call_id: call.id,
+      name: call.name,
+      reason: reason,
+      message: message,
+      content: "Error: " <> message,
+      metadata: %{definition_id: call.definition_id}
+    }
+  end
+
+  @doc """
   Builds the settlement of a tool call that crashed: its execution raised,
   threw, or exited instead of returning a result.
 
