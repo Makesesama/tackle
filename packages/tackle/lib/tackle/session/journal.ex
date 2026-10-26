@@ -1010,11 +1010,16 @@ defmodule Tackle.Session.Journal do
     Catalog.record(build_summary(state, state.projection.status))
   end
 
-  # Written once, when the owner stops, so the next startup can index without
-  # replaying the journal.
+  # Written once, when the owner stops and its log is closed, so the next
+  # startup can index without replaying the journal as long as the file keeps
+  # the size and modification time recorded here.
   defp write_summary_sidecar(state) do
     path = Path.join(Path.dirname(state.path), "summary.etf")
-    Storage.atomic_write(path, Catalog.sidecar(state.projection))
+
+    Storage.atomic_write(
+      path,
+      Catalog.sidecar(state.projection, Catalog.journal_stat(state.path))
+    )
   end
 
   defp sync?(opts), do: Keyword.get(opts, :sync, true) != false

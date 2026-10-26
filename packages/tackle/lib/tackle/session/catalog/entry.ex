@@ -12,6 +12,11 @@ defmodule Tackle.Session.Catalog.Entry do
   estimated size of the session's model context (see
   `Tackle.Session.Projection.context_tokens/1`); it is `nil` for summaries
   written before the field existed.
+
+  `:stale` marks an entry a rebuild took from the session's summary sidecar
+  because replaying its journal, which changed since the sidecar was written,
+  took too long (`Tackle.Session.Catalog.rebuild/1`). It may miss the latest
+  commits until the session's next indexed commit or rebuild.
   """
 
   @enforce_keys [:session_id]
@@ -29,6 +34,7 @@ defmodule Tackle.Session.Catalog.Entry do
             parent_session_id: nil,
             archived: false,
             context_tokens: nil,
+            stale: false,
             search_text: nil,
             journal_path: nil
 
@@ -53,6 +59,7 @@ defmodule Tackle.Session.Catalog.Entry do
           parent_session_id: String.t() | nil,
           archived: boolean(),
           context_tokens: non_neg_integer() | nil,
+          stale: boolean(),
           search_text: String.t() | nil,
           journal_path: String.t() | nil
         }
@@ -71,7 +78,8 @@ defmodule Tackle.Session.Catalog.Entry do
     :last_indexed_seq,
     :parent_session_id,
     :archived,
-    :context_tokens
+    :context_tokens,
+    :stale
   ]
 
   @doc "Returns the frontend-facing projection of an entry."

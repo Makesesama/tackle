@@ -159,6 +159,49 @@ defmodule Tackle.Session.CatalogTest do
     assert entry.last_indexed_seq > 0
   end
 
+  test "uses a sidecar whose journal is unchanged without replaying it", ctx do
+    cwd = unique_cwd(ctx, "current")
+    session_id = create_session(ctx, cwd: cwd, title: "Current")
+    {:ok, path} = Storage.journal_path(session_id, home: ctx.home, cwd: cwd)
+
+    # Same size and modification time, but no longer a journal: a replay
+    # would fail, so the session is indexed only if its sidecar is trusted.
+    %File.Stat{size: size, mtime: mtime} = File.stat!(path, time: :posix)
+    File.write!(path, :binary.copy(<<0>>, size))
+    File.touch!(path, mtime)
+
+    assert %{indexed: 1, stale: 0, skipped: 0} = Catalog.rebuild(home: ctx.home)
+    assert {:ok, %{title: "Current", stale: false}} = Catalog.get(session_id)
+  end
+
+  test "replays a journal that changed since its sidecar, or an old sidecar", ctx do
+    cwd = unique_cwd(ctx, "changed")
+    session_id = create_session(ctx, cwd: cwd, title: "Journal title")
+    {:ok, summary} = Storage.summary_path(session_id, home: ctx.home, cwd: cwd)
+
+    for journal <- [%{"size" => 1, "mtime" => 1}, :absent] do
+      rewrite_sidecar!(summary, session_id, journal, "Sidecar title")
+
+      assert %{indexed: 1, skipped: 0} = Catalog.rebuild(home: ctx.home)
+      assert {:ok, %{title: "Journal title"}} = Catalog.get(session_id)
+    end
+  end
+
+  test "a replay that times out falls back to the sidecar, marked stale", ctx do
+    cwd = unique_cwd(ctx, "slow")
+    session_id = create_session(ctx, cwd: cwd, title: "Journal title")
+    {:ok, summary} = Storage.summary_path(session_id, home: ctx.home, cwd: cwd)
+    rewrite_sidecar!(summary, session_id, :absent, "Sidecar title")
+
+    report =
+      with_disk_log_stalled(fn ->
+        Catalog.rebuild(home: ctx.home, rebuild_session_timeout: 300)
+      end)
+
+    assert report == %{indexed: 1, stale: 1, skipped: 0}
+    assert {:ok, %{title: "Sidecar title", stale: true}} = Catalog.get(session_id)
+  end
+
   test "a stalled session does not block the catalog rebuild", ctx do
     healthy_id = create_session(ctx, cwd: unique_cwd(ctx, "healthy"), title: "Healthy")
     blocked_dir = Path.join([ctx.home, "sessions", "blocked-journal"])
@@ -254,6 +297,33 @@ defmodule Tackle.Session.CatalogTest do
   end
 
   defp now, do: DateTime.to_iso8601(DateTime.utc_now())
+
+  # `journal` is the file stat to record, or `:absent` for a sidecar written
+  # before sidecars recorded it.
+  defp rewrite_sidecar!(path, session_id, journal, title) do
+    {:ok, payload} = Catalog.read_sidecar_file(path, session_id)
+    payload = put_in(payload, ["summary", "title"], title)
+
+    payload =
+      if journal == :absent,
+        do: Map.delete(payload, "journal"),
+        else: Map.put(payload, "journal", journal)
+
+    File.write!(path, :erlang.term_to_binary(payload))
+  end
+
+  # Every `:disk_log.open/1` waits while the log server is suspended, so
+  # replaying a journal stalls while reading its sidecar does not.
+  defp with_disk_log_stalled(fun) do
+    server = Process.whereis(:disk_log_server)
+    :ok = :sys.suspend(server)
+
+    try do
+      fun.()
+    after
+      :sys.resume(server)
+    end
+  end
 
   defp unique_cwd(ctx, label) do
     Path.join(ctx.home, "cwd-#{label}-#{System.unique_integer([:positive])}")

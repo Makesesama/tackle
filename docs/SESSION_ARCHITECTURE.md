@@ -819,17 +819,15 @@ replay it already performs.
 
 ### 12.3 Rebuild behavior
 
-Derived catalog data may use atomically replaced ETF sidecars to avoid replaying every complete journal during normal startup. Each sidecar includes its schema version, session ID, and projected sequence.
+Derived catalog data uses atomically replaced ETF sidecars (`summary.etf`) to avoid replaying every complete journal during normal startup. Each sidecar includes its schema version, session ID, projected sequence, and the size and modification time of the journal file it was built from. A journal owner writes it when it stops, after closing its log; compression writes it from a full replay before it replaces the journal with its compressed copy.
 
-On startup:
+On startup the catalog rebuilds its index:
 
-1. load valid summaries into ETS;
-2. compare their projected sequence with journal state;
-3. replay missing tails;
-4. rebuild missing or incompatible summaries; and
-5. make partial indexing status visible rather than pretending results are complete.
+1. read every session's sidecar; one whose journal still has the recorded size and modification time, or whose journal is stored compressed (a compressed journal never changes), is used as it is;
+2. replay every other journal, including those whose sidecar was written before sidecars recorded the file's size and modification time;
+3. bound each step per session (two seconds by default); a replay that times out falls back to the session's sidecar, marked `stale`, and a session without one, or whose journal cannot be read, is skipped; the rebuild reports how many sessions it indexed, how many of them are stale, and how many it skipped.
 
-A failed catalog update does not roll back an already durable session commit. It marks the projection stale and schedules repair.
+A failed catalog update does not roll back an already durable session commit. The entry stays stale until the session's next indexed commit or the next rebuild.
 
 The initial implementation should remain OTP-native and dependency-free. If measured scale later requires SQLite FTS5 or another specialized index, it can replace the derived search implementation without changing journals, session APIs, or durable semantics. A custom persistent full-text database is not part of the core design.
 

@@ -141,7 +141,8 @@ defmodule Tackle.Session.Compression do
          stat: {stat.size, stat.mtime},
          plain_size: byte_size(plain),
          compressed: compressed,
-         sidecar: Catalog.sidecar(replay.projection)
+         sidecar:
+           Catalog.sidecar(replay.projection, %{"size" => stat.size, "mtime" => stat.mtime})
        }}
     else
       {:ok, _different} -> {:error, {:verify_failed, path}}

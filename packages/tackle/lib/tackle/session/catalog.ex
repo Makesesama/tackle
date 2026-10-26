@@ -20,6 +20,10 @@ defmodule Tackle.Session.Catalog do
   caches it on the entry until the session's next indexed commit. Startup
   indexing takes it from summary sidecars or the replay it already does.
 
+  At startup the catalog rebuilds its index (`rebuild/1`): a session's
+  summary sidecar is used as it is while its journal file is unchanged, and
+  other sessions are replayed.
+
   Archived sessions are indexed too, marked `archived: true`. Listing excludes
   them unless the `:archived` filter is `true` (archived only) or `:all`.
   """
@@ -104,7 +108,7 @@ defmodule Tackle.Session.Catalog do
   end
 
   @doc "Returns one indexed session summary."
-  @spec get(String.t()) :: {:ok, Entry.t()} | {:error, :not_found}
+  @spec get(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get(session_id), do: GenServer.call(__MODULE__, {:get, session_id})
 
   @doc """
@@ -135,12 +139,21 @@ defmodule Tackle.Session.Catalog do
   @doc """
   Rebuilds the derived index from journals and sidecars.
 
-  Valid, current sidecars are used directly; missing, stale, corrupt, or
-  incompatible summaries are rebuilt by folding the journal. Sessions whose
-  journal cannot be read within the per-session rebuild timeout are omitted and
-  reported as skipped rather than blocking the entire catalog.
+  A session's summary sidecar is used as it is when it records the journal's
+  current size and modification time, or when the journal is stored
+  compressed (a compressed journal never changes). Any other session is
+  replayed from its journal. Each step has the per-session rebuild timeout
+  (`:rebuild_session_timeout`, two seconds by default). A replay that times
+  out falls back to the session's sidecar, if it has a valid one, as an entry
+  marked `stale: true`; a session without one, or whose journal cannot be
+  read, is skipped. Returns how many sessions were indexed, how many of those
+  are stale, and how many were skipped.
   """
-  @spec rebuild(keyword()) :: %{indexed: non_neg_integer(), skipped: non_neg_integer()}
+  @spec rebuild(keyword()) :: %{
+          indexed: non_neg_integer(),
+          stale: non_neg_integer(),
+          skipped: non_neg_integer()
+        }
   def rebuild(opts \\ []) do
     GenServer.call(__MODULE__, {:rebuild, opts}, :infinity)
   end
@@ -173,6 +186,37 @@ defmodule Tackle.Session.Catalog do
       context_tokens: data["context_tokens"],
       search_text: data["search_text"]
     }
+  end
+
+  @doc false
+  # Encodes the summary sidecar of a projection. `journal` is what
+  # `journal_stat/1` returned for the journal file the projection describes,
+  # so a rebuild can tell whether the file changed since.
+  @spec sidecar(Projection.t(), map() | nil) :: binary()
+  def sidecar(%Projection{} = projection, journal) do
+    payload = %{
+      "schema_version" => @summary_schema_version,
+      "session_id" => projection.session_id,
+      "last_indexed_seq" => projection.last_seq,
+      "journal" => journal,
+      "summary" => projection |> summary_for() |> encode_summary()
+    }
+
+    :erlang.term_to_binary(payload, [:compressed])
+  end
+
+  @doc false
+  # The size and modification time of a journal file, as a sidecar records
+  # them, or `nil` when it is not a readable regular file.
+  @spec journal_stat(String.t()) :: map() | nil
+  def journal_stat(path) do
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{type: :regular, size: size, mtime: mtime}} ->
+        %{"size" => size, "mtime" => mtime}
+
+      _other ->
+        nil
+    end
   end
 
   @impl true
@@ -245,70 +289,123 @@ defmodule Tackle.Session.Catalog do
   end
 
   defp rebuild_state(state) do
-    opts = Map.get(state, :opts, [])
+    %{entries: entries, report: report} = build_index(state.opts)
     :ets.delete_all_objects(state.table)
+    Enum.each(entries, &insert(state.table, &1))
+    report
+  end
 
+  defp build_index(opts) do
     case Storage.list_session_locations(opts) do
-      {:ok, locations} -> index_sessions(state.table, locations, opts)
-      {:error, _reason} -> %{indexed: 0, skipped: 0}
+      {:ok, locations} ->
+        index_sessions(locations, opts)
+
+      {:error, _reason} ->
+        %{entries: [], report: %{indexed: 0, stale: 0, skipped: 0}}
     end
   end
 
-  defp index_sessions(table, locations, opts) do
+  # First every session's sidecar is read and checked against its journal;
+  # then the sessions without a current one are replayed.
+  defp index_sessions(locations, opts) do
     timeout = Keyword.get(opts, :rebuild_session_timeout, @rebuild_session_timeout)
+    checked = bounded(locations, timeout, fn {id, location} -> from_sidecar(id, location) end)
 
-    locations
-    |> Task.async_stream(fn {id, location_opts} -> safely_index(table, id, location_opts) end,
-      max_concurrency: System.schedulers_online(),
-      ordered: false,
-      timeout: timeout,
-      on_timeout: :kill_task
-    )
-    |> Enum.reduce(%{indexed: 0, skipped: 0}, fn
-      {:ok, :ok}, acc -> %{acc | indexed: acc.indexed + 1}
-      _skipped, acc -> %{acc | skipped: acc.skipped + 1}
+    {current, pending, skipped} =
+      Enum.zip_reduce(locations, checked, {[], [], 0}, fn
+        _location, {:ok, {:current, entry}}, {current, pending, skipped} ->
+          {[entry | current], pending, skipped}
+
+        location, {:ok, {:replay, fallback}}, {current, pending, skipped} ->
+          {current, [{location, fallback} | pending], skipped}
+
+        _location, _failed, {current, pending, skipped} ->
+          {current, pending, skipped + 1}
+      end)
+
+    replayed =
+      bounded(pending, timeout, fn {{id, location}, _fallback} -> from_journal(id, location) end)
+
+    initial = %{entries: current, report: %{indexed: length(current), stale: 0, skipped: skipped}}
+
+    Enum.zip_reduce(pending, replayed, initial, fn
+      _pending, {:ok, {:ok, entry}}, acc ->
+        add_entry(acc, entry, :indexed)
+
+      {_location, %Entry{} = fallback}, {:exit, :timeout}, acc ->
+        add_entry(acc, %{fallback | stale: true}, :stale)
+
+      _pending, _failed, acc ->
+        update_in(acc.report.skipped, &(&1 + 1))
     end)
   end
 
-  # The tasks are linked to the catalog, so a session that raises (a malformed
-  # journal the reader did not anticipate) is skipped instead of taking the
-  # catalog down.
-  defp safely_index(table, session_id, opts) do
-    index_session(table, session_id, opts)
+  defp add_entry(acc, entry, :indexed) do
+    %{
+      acc
+      | entries: [entry | acc.entries],
+        report: %{acc.report | indexed: acc.report.indexed + 1}
+    }
+  end
+
+  defp add_entry(acc, entry, :stale) do
+    acc = add_entry(acc, entry, :indexed)
+    %{acc | report: %{acc.report | stale: acc.report.stale + 1}}
+  end
+
+  # Runs `fun` for each item in its own task with a deadline. The tasks are
+  # linked to the catalog, so a session whose work raises (a malformed file
+  # the reader did not anticipate) only fails that session.
+  defp bounded(items, timeout, fun) do
+    items
+    |> Task.async_stream(fn item -> safely(fn -> fun.(item) end) end,
+      max_concurrency: System.schedulers_online(),
+      ordered: true,
+      timeout: timeout,
+      on_timeout: :kill_task
+    )
+    |> Enum.to_list()
+  end
+
+  defp safely(fun) do
+    fun.()
   rescue
     error -> {:error, {:exception, error.__struct__}}
   end
 
-  # A compressed journal never changes and compression brought its sidecar up
-  # to date, so the sidecar is used without decompressing the journal.
-  defp index_session(table, session_id, opts) do
+  # A sidecar is current when the journal is stored compressed (it never
+  # changes, and compression wrote the sidecar from a full replay) or still
+  # has the size and modification time the sidecar recorded. A sidecar
+  # written before it recorded them is never current, so its session is
+  # replayed; it is still the fallback when replaying takes too long.
+  defp from_sidecar(session_id, opts) do
     case read_sidecar(session_id, opts) do
-      {:ok, %{"last_indexed_seq" => last_seq} = sidecar} ->
-        if compressed?(session_id, opts) or Reader.last_seq(session_id, opts) == {:ok, last_seq} do
-          entry = decode_summary(sidecar["summary"] || %{"session_id" => session_id})
-          insert(table, located(entry, session_id, opts))
-          :ok
-        else
-          index_from_journal(table, session_id, opts)
-        end
+      {:ok, sidecar} ->
+        entry = sidecar["summary"] |> decode_summary() |> located(session_id, opts)
+        if current?(sidecar, session_id, opts), do: {:current, entry}, else: {:replay, entry}
 
-      _other ->
-        index_from_journal(table, session_id, opts)
+      :error ->
+        {:replay, nil}
     end
   end
 
-  defp compressed?(session_id, opts) do
+  defp current?(sidecar, session_id, opts) do
     case Storage.journal_path(session_id, opts) do
-      {:ok, path} -> not File.exists?(path) and File.regular?(Storage.compressed_path(path))
-      {:error, _reason} -> false
+      {:ok, path} ->
+        compressed?(path) or
+          (is_map(sidecar["journal"]) and sidecar["journal"] == journal_stat(path))
+
+      {:error, _reason} ->
+        false
     end
   end
 
-  defp index_from_journal(table, session_id, opts) do
+  defp compressed?(path),
+    do: not File.exists?(path) and File.regular?(Storage.compressed_path(path))
+
+  defp from_journal(session_id, opts) do
     with {:ok, projection} <- Reader.projection(session_id, opts) do
-      entry = to_entry(summary_for(projection))
-      insert(table, located(entry, session_id, opts))
-      :ok
+      {:ok, projection |> summary_for() |> to_entry() |> located(session_id, opts)}
     end
   end
 
@@ -343,26 +440,12 @@ defmodule Tackle.Session.Catalog do
          {:ok, binary} <- File.read(path),
          {:ok, payload} <- decode_sidecar(binary),
          true <- payload["schema_version"] == @summary_schema_version,
-         true <- payload["session_id"] == session_id do
+         true <- payload["session_id"] == session_id,
+         true <- is_map(payload["summary"]) do
       {:ok, payload}
     else
       _other -> :error
     end
-  end
-
-  @doc false
-  # Encodes the summary sidecar for a replayed projection, in the format the
-  # journal writes when its owner stops.
-  @spec sidecar(Projection.t()) :: binary()
-  def sidecar(%Projection{} = projection) do
-    payload = %{
-      "schema_version" => @summary_schema_version,
-      "session_id" => projection.session_id,
-      "last_indexed_seq" => projection.last_seq,
-      "summary" => projection |> summary_for() |> encode_summary()
-    }
-
-    :erlang.term_to_binary(payload, [:compressed])
   end
 
   defp decode_sidecar(binary) do
