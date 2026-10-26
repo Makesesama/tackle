@@ -22,6 +22,33 @@ defmodule Tackle.Lib.SnapshotTest do
     def execute(_args, _context), do: {:ok, %{ok: true}}
   end
 
+  defmodule AtomOrderTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "atom_order"
+
+    @impl true
+    def description, do: "A tool whose output schema has atom keys."
+
+    @impl true
+    def parameters_schema, do: []
+
+    # The atoms are created at runtime, the later-sorting one first, so their
+    # order in the atom table (which orders small maps in memory and in a
+    # plain `:erlang.term_to_binary/1`) differs from their term order. In a
+    # new VM the table order would depend on what created the atoms first.
+    @impl true
+    def output_schema do
+      zz = String.to_atom("tackle_snapshot_test_zz")
+      aa = String.to_atom("tackle_snapshot_test_aa")
+      %{zz => "last", aa => "first"}
+    end
+
+    @impl true
+    def execute(_args, _context), do: {:ok, %{}}
+  end
+
   defmodule AlphaTool do
     @behaviour Tackle.Lib.Tool
 
@@ -220,6 +247,18 @@ defmodule Tackle.Lib.SnapshotTest do
       id1 = Snapshot.tools_version_id([SnapshotTestTool])
       id2 = Snapshot.tools_version_id([])
       assert id1 != id2
+    end
+
+    test "does not depend on the order atoms were created in" do
+      definitions = [Tackle.Lib.Tool.definition(AtomOrderTool)]
+
+      # A term-ordered encoding is the same in every VM, whatever the atom table.
+      expected =
+        :crypto.hash(:sha256, :erlang.term_to_binary(definitions, [:deterministic]))
+        |> Base.encode16(case: :lower)
+        |> binary_part(0, 16)
+
+      assert Snapshot.tools_version_id([AtomOrderTool]) == expected
     end
 
     test "hashes a tool list and a registry of the same tools alike, in their order" do

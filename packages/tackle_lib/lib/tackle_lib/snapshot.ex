@@ -132,9 +132,12 @@ defmodule Tackle.Lib.Snapshot do
     |> hash_definitions()
   end
 
+  # `:deterministic` encodes maps in term order. A plain encoding follows their
+  # order in memory, which for atom keys is the order the atoms were created
+  # in, so the same definitions would hash differently in another VM.
   defp hash_definitions(definitions) do
     definitions
-    |> :erlang.term_to_binary()
+    |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
     |> binary_part(0, 16)
