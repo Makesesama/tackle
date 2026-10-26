@@ -3,12 +3,23 @@ defmodule Tackle.Session.TitleTest do
 
   import Tackle.Test.Runtime
 
-  alias Tackle.Lib.{Event, LLM, Message, State}
-  alias Tackle.Runtime.ID
-  alias Tackle.Session.{Journal, Persistence, Reader}
+  alias Tackle.Lib.{Event, LLM, Message}
+  alias Tackle.Runtime.{Envelope, ID}
+  alias Tackle.Session
+  alias Tackle.Session.{Journal, Reader}
   alias Tackle.Session.Title
 
   @title_instructions "Generate a concise, single-line task title"
+
+  defmodule HoldTurnEndHook do
+    @behaviour Tackle.Lib.Hook
+
+    @impl true
+    def before_turn_end(_state, context) do
+      send(context.test_pid, {:turn_ending, self()})
+      receive do: (:proceed -> :ok)
+    end
+  end
 
   setup do
     {:ok, home: tmp_home()}
@@ -137,11 +148,7 @@ defmodule Tackle.Session.TitleTest do
     end
 
     test "live message events cannot race the specific durable acknowledgment", ctx do
-      session_id = ID.generate()
-      {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
-      {:ok, _} = Journal.begin_turn(journal, :continue, nil)
-      :ok = Journal.settle_turn(journal, "turn.completed", %{})
-      GenServer.stop(journal)
+      session_id = untitled_session(ctx)
 
       scope =
         start_durable_scope(
@@ -150,23 +157,82 @@ defmodule Tackle.Session.TitleTest do
           root: root_opts(llm_opts: [mode: :manual])
         )
 
-      {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+      {:ok, _snapshot} = Tackle.subscribe(scope.root_agent_ref)
       {:ok, turn_id} = Tackle.continue(scope.root_agent_ref)
       assert_receive {:adapter_called, turn_task, _, _}, 5_000
       {:ok, session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+      assert {:ok, :queued} = Tackle.submit(scope.root_agent_ref, "Fix the login form")
       message = Message.user("Fix the login form")
       # This is deliberately the pre-hook event ordering used by the loop.
       send(session, {:tackle_event, turn_id, Event.message_end(message)})
       refute_receive {:adapter_called, _, _, _}, 150
       assert :sys.get_state(session).title_task == nil
-      state = State.add_message(snapshot.agent_state, message)
-      assert :ok = Persistence.after_message(state, message, state.context)
-      assert_receive {:adapter_called, title_task, _, opts}, 5_000
-      assert title_call?(opts)
+
+      # The loop takes the queued message after this answer and appends it.
+      send(turn_task, {:respond, "answer"})
+      {title_task, turn_task} = await_title_and_turn_calls()
       send(title_task, {:respond, "Fix the login form"})
       assert_receive {:tackle_session_title_changed, ^session_id, "Fix the login form"}, 5_000
       send(turn_task, {:respond, "answer"})
       assert_receive {:tackle_turn_finished, _, ^turn_id, _}, 5_000
+    end
+
+    test "messages the user did not write never title the session", ctx do
+      session_id = untitled_session(ctx)
+
+      scope =
+        start_durable_scope(
+          home: ctx.home,
+          session: [session_id: session_id],
+          root: root_opts(llm_opts: [mode: :manual])
+        )
+
+      root = scope.root_agent_ref
+      {:ok, _snapshot} = Tackle.subscribe(root)
+      {:ok, turn_id} = Tackle.continue(root)
+      assert_receive {:adapter_called, turn_task, _, _}, 5_000
+      {:ok, session} = Tackle.Runtime.session_pid(root)
+      {:ok, envelope} = Envelope.new(:message, root, "Fix the login form")
+      assert :ok = Session.deliver(session, envelope)
+
+      # The loop takes the agent message after this answer and appends it.
+      send(turn_task, {:respond, "answer"})
+      assert_receive {:adapter_called, turn_task, _, opts}, 5_000
+      refute title_call?(opts)
+      send(turn_task, {:respond, "answer"})
+      assert_receive {:tackle_turn_finished, _, ^turn_id, {:ok, state}}, 5_000
+
+      assert Enum.any?(state.messages, &(&1.content =~ "Message from agent"))
+      refute_receive {:adapter_called, _, _, _}, 150
+      refute_received {:tackle_session_title_changed, _session_id, _title}
+      assert :sys.get_state(session).title_task == nil
+    end
+
+    test "a queued user message that starts the next turn titles the session", ctx do
+      session_id = untitled_session(ctx)
+
+      scope =
+        start_durable_scope(
+          home: ctx.home,
+          session: [session_id: session_id],
+          root: root_opts(hooks: [HoldTurnEndHook], context: %{test_pid: self()})
+        )
+
+      root = scope.root_agent_ref
+      {:ok, _snapshot} = Tackle.subscribe(root)
+      {:ok, turn_id} = Tackle.continue(root)
+      assert_receive {:turn_ending, hook}, 5_000
+
+      # The loop no longer takes queued messages for this turn.
+      assert {:ok, :queued} = Tackle.submit(root, "Fix the login form")
+      send(hook, :proceed)
+      assert_receive {:tackle_turn_finished, _, ^turn_id, {:ok, _state}}, 5_000
+
+      assert_receive {:tackle_turn_started, ^session_id, next_turn, :queued_messages}, 5_000
+      assert_receive {:tackle_session_title_changed, ^session_id, "Fix the login form"}, 5_000
+      assert_receive {:turn_ending, hook}, 5_000
+      send(hook, :proceed)
+      assert_receive {:tackle_turn_finished, _, ^next_turn, {:ok, _state}}, 5_000
     end
 
     test "commits the title while the turn is still running", ctx do
@@ -267,6 +333,29 @@ defmodule Tackle.Session.TitleTest do
 
       refute_receive {:tackle_session_title_changed, _sid, _title}, 300
     end
+  end
+
+  # A materialized session without a title or any user message.
+  defp untitled_session(ctx) do
+    session_id = ID.generate()
+    {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
+    {:ok, _} = Journal.begin_turn(journal, :continue, nil)
+    :ok = Journal.settle_turn(journal, "turn.completed", %{})
+    GenServer.stop(journal)
+    session_id
+  end
+
+  defp await_title_and_turn_calls do
+    calls =
+      Enum.map(1..2, fn _ ->
+        assert_receive {:adapter_called, pid, _model, opts}, 5_000
+        {pid, opts}
+      end)
+
+    [{title_task, _}, {turn_task, _}] =
+      Enum.sort_by(calls, fn {_pid, opts} -> if title_call?(opts), do: 0, else: 1 end)
+
+    {title_task, turn_task}
   end
 
   defp root_opts(opts \\ []) do

@@ -1119,7 +1119,9 @@ committed, and the card reports the compaction as cancelled.
 
 After the first prompt of a new session, one tool-free LLM call generates a
 concise task title (at most 36 characters, following codex-rs thread titles).
-A resumed session that is still untitled is titled from its next prompt. The
+A resumed session that is still untitled is titled from its next prompt.
+Only prompts you write count: messages from subagents and background notices
+never title a session. The
 title is committed to the session journal, so `tackle sessions list`, the dashboard
 shortcuts, and search show it, and the terminal window title adopts it. The
 title call runs concurrently with the turn and uses the session's model by

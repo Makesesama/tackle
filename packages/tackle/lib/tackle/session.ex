@@ -482,7 +482,7 @@ defmodule Tackle.Session do
 
   def handle_call(:take_incoming_messages, _from, state) do
     envelopes = deliverable_inbox(state)
-    state = drop_deliverable_inbox(state)
+    state = state |> drop_deliverable_inbox() |> record_user_inputs(envelopes)
     broadcast_inbox_drained(state, envelopes)
     {:reply, {:ok, Enum.map(envelopes, &envelope_content/1)}, state}
   end
@@ -744,9 +744,14 @@ defmodule Tackle.Session do
     {:noreply, state}
   end
 
+  # Only input the user wrote can title the session: the turn's own input and
+  # queued user messages, not agent messages, background notices, or hook
+  # feedback the loop also appends as user messages.
   def handle_info({:tackle_message_appended, session_id, %Message{} = message}, state)
       when session_id == state.agent_state.session_id do
-    {:noreply, maybe_generate_title(state, Event.message_end(message))}
+    if user_authored?(state.active_turn, message),
+      do: {:noreply, maybe_generate_title(state, message.content)},
+      else: {:noreply, state}
   end
 
   def handle_info({:tackle_event, _turn_id, %Event{}}, state), do: {:noreply, state}
@@ -877,7 +882,12 @@ defmodule Tackle.Session do
        do: finish_storage_operation(pending.from, pending.complete.(state, result))
 
   defp finish_begin_turn(state, pending, :ok) do
-    state = drop_reserved_inbox(state, pending.inbox_messages)
+    state =
+      state
+      |> drop_reserved_inbox(pending.inbox_messages)
+      # The session journaled these itself, so no hook reports them appended.
+      |> maybe_generate_title(first_user_input(pending.inbox_messages))
+
     broadcast_inbox_drained(state, pending.inbox_messages)
 
     if pending.reason do
@@ -1080,6 +1090,7 @@ defmodule Tackle.Session do
           task: task,
           signal: signal,
           initial_message_ids: MapSet.new(agent_state.messages, & &1.id),
+          user_inputs: user_inputs(operation, input),
           cancellation_requested?: false
         }
 
@@ -1109,6 +1120,7 @@ defmodule Tackle.Session do
           task: nil,
           signal: signal,
           initial_message_ids: MapSet.new(agent_state.messages, & &1.id),
+          user_inputs: user_inputs(operation, input),
           cancellation_requested?: false,
           beginning?: true
         }
@@ -1958,27 +1970,49 @@ defmodule Tackle.Session do
 
   # -- automatic session titles ---------------------------------------------
 
-  # Codex-style automatic titles: the first settled user message of an
-  # untitled durable session starts one bounded, tool-free generation task
+  # Codex-style automatic titles: the first settled message the user wrote in
+  # an untitled durable session starts one bounded, tool-free generation task
   # (`Tackle.Session.Title`). The task runs concurrently with the active turn,
   # so the title is ready soon after the prompt instead of after the turn. An
   # explicit title from the session spec or a resumed journal suppresses
   # generation, and a session generates at most one title.
   defp maybe_generate_title(
          %{session_title: nil, title_task: nil, journal: journal} = state,
-         %Event{type: :message_end, data: %{message: %Message{role: :user} = message}}
+         content
        )
-       when not is_nil(journal) do
-    content = message.content
-
-    if titles_enabled?(state.config) and is_binary(content) and String.trim(content) != "" do
+       when not is_nil(journal) and is_binary(content) do
+    if titles_enabled?(state.config) and String.trim(content) != "" do
       start_title_task(state, content)
     else
       state
     end
   end
 
-  defp maybe_generate_title(state, _event), do: state
+  defp maybe_generate_title(state, _content), do: state
+
+  defp user_inputs(:run, input) when is_binary(input), do: [input]
+  defp user_inputs(_operation, _input), do: []
+
+  # Records the queued user messages handed to the loop, whose append the
+  # persistence hook reports.
+  defp record_user_inputs(%{active_turn: %{user_inputs: inputs} = active_turn} = state, envelopes) do
+    queued = for %{from: :user, message: content} <- envelopes, do: content
+    %{state | active_turn: %{active_turn | user_inputs: inputs ++ queued}}
+  end
+
+  defp record_user_inputs(state, _envelopes), do: state
+
+  defp user_authored?(%{user_inputs: inputs}, %Message{role: :user, content: content}),
+    do: content in inputs
+
+  defp user_authored?(_active_turn, _message), do: false
+
+  defp first_user_input(entries) do
+    Enum.find_value(entries, fn
+      %{from: :user, message: content} -> content
+      _envelope -> nil
+    end)
+  end
 
   defp titles_enabled?(%Config{session_titles: %SessionTitles{}}), do: true
   defp titles_enabled?(_config), do: false

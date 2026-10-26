@@ -648,9 +648,10 @@ The configuration file accepts `model` and `thinking` harness fields and the
 CLI-only boolean `show_subagent_sidebar` (default `true`), which does not affect
 agent sessions, and the CLI-only `jail` object, whose `env` list names host
 environment variables passed to commands in the CLI's jail (`Tackle.CLI.Jail`). It also accepts a `session_titles` object configuring automatic
-LLM-generated session titles: after an untitled durable session settles its
-first user message (or, for a resumed untitled session, its next one), one
-tool-free generation call produces a concise title that is
+LLM-generated session titles: after an untitled durable session settles the
+first message the user wrote (or, for a resumed untitled session, the next
+one; messages from other agents, background notices, and hook feedback never
+count), one tool-free generation call produces a concise title that is
 committed through the journal and shown in session listings and the terminal
 window title. Titles are enabled by the harness loader (`Tackle.Config.load/1`)
 and can be disabled with `"session_titles": false`; an optional `model` field

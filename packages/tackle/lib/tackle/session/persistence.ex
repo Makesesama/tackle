@@ -47,7 +47,8 @@ defmodule Tackle.Session.Persistence do
              Journal.append_message(journal, message, tree_parent(state, message.id), sync: false)
            end) do
       # Live message_end precedes the hook. Title generation must wait until
-      # this user message is appended, not race it.
+      # this user message is appended, not race it; the session decides
+      # whether the user wrote it.
       if message.role == :user and is_pid(context[:session_owner]) do
         send(context.session_owner, {:tackle_message_appended, session_id, message})
       end
