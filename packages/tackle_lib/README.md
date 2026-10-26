@@ -1330,8 +1330,11 @@ cache_read_tokens / (input_tokens + cache_read_tokens + cache_write_tokens)
 That raw share includes cold-start and newly appended content. To measure cache
 quality, `Tackle.Lib.Usage.cache_reuse/1` compares each checkpoint with the
 preceding prompt and reports reusable, reused, and missed tokens plus the reuse
-rate. `cache_reuse_rate/1` returns only that ratio. Start a new sequence after
-compaction or another non-append-only context rewrite.
+rate. `cache_reuse_rate/1` returns only that ratio. A sequence must not span a
+compaction or another non-append-only context rewrite; both also take a list of
+sequences, measured separately and summed, such as
+`Tackle.Lib.State.usage_segments/1`, which splits a conversation's usage at its
+compactions.
 
 The metrics return `nil` when their required cache reporting or prompt usage is
 unavailable. `Tackle.Lib.usage(state)` derives aggregate usage from assistant

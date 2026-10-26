@@ -43,6 +43,32 @@ defmodule Tackle.Lib.TreeTest do
     {tree, entry}
   end
 
+  describe "State.usage_segments/1" do
+    test "splits the active path's usage at compactions" do
+      u1 = %Usage{input_tokens: 10, cache_read_tokens: 0}
+      u2 = %Usage{input_tokens: 5, cache_read_tokens: 10}
+      u3 = %Usage{input_tokens: 4, cache_read_tokens: 1}
+
+      tree = Tree.new()
+      {tree, _} = append!(tree, msg("u1", :user, "hello"))
+      {tree, _} = append!(tree, msg("a1", :assistant, "hi", token_usage: u1))
+      {tree, _} = append!(tree, msg("u2", :user, "more"))
+      {tree, _} = append!(tree, msg("a2", :assistant, "ok", token_usage: u2))
+      {:ok, tree, _} = Tree.append_compaction(tree, compaction("c1", "summary", ["u1"], "u2"))
+      {tree, _} = append!(tree, msg("u3", :user, "next"))
+      {tree, _} = append!(tree, msg("a3", :assistant, "done", token_usage: u3))
+      {:ok, tree, _} = Tree.append_compaction(tree, compaction("c2", "summary", ["u2"], "u3"))
+
+      state = %{State.new() | tree: tree, messages: Tree.transcript(tree)}
+
+      assert State.usage_segments(state) == [[u1, u2], [u3]]
+
+      # The rewritten prefix after each compaction is not a cache miss.
+      assert Usage.cache_reuse_rate(State.usage_segments(state)) == 1.0
+      assert Usage.cache_reuse_rate([u1, u2, u3]) < 1.0
+    end
+  end
+
   describe "append and traversal" do
     test "appends to the active position and derives the transcript" do
       tree = Tree.new()

@@ -261,11 +261,58 @@ defmodule Tackle.Lib.Usage do
   achieving 100% reuse of every preceding prompt.
 
   Returns `nil` until at least one consecutive checkpoint reports cache
-  buckets and has reusable prompt volume. Callers must start a new sequence
-  after compaction or any other non-append-only context rewrite.
+  buckets and has reusable prompt volume. A sequence must not span a
+  compaction or any other non-append-only context rewrite, whose new prefix
+  would count as a miss. To measure a conversation across rewrites, pass a
+  list of sequences instead (such as `Tackle.Lib.State.usage_segments/1`):
+  each is measured on its own and the totals are summed.
   """
-  @spec cache_reuse([t() | map() | nil]) :: cache_reuse() | nil
+  @spec cache_reuse([t() | map() | nil] | [[t() | map() | nil]]) :: cache_reuse() | nil
   def cache_reuse(usages) when is_list(usages) do
+    {reusable_tokens, reused_tokens} =
+      if usages != [] and Enum.all?(usages, &is_list/1) do
+        usages
+        |> Enum.map(&sequence_reuse/1)
+        |> Enum.reduce({0, 0}, fn {reusable, reused}, {total_reusable, total_reused} ->
+          {total_reusable + reusable, total_reused + reused}
+        end)
+      else
+        sequence_reuse(usages)
+      end
+
+    if reusable_tokens > 0 do
+      %{
+        reusable_tokens: reusable_tokens,
+        reused_tokens: reused_tokens,
+        missed_tokens: reusable_tokens - reused_tokens,
+        rate: reused_tokens / reusable_tokens
+      }
+    end
+  end
+
+  @doc "Returns the preceding-prompt cache reuse ratio of `cache_reuse/1`."
+  @spec cache_reuse_rate([t() | map() | nil] | [[t() | map() | nil]]) :: float() | nil
+  def cache_reuse_rate(usages) when is_list(usages) do
+    case cache_reuse(usages) do
+      %{rate: rate} -> rate
+      nil -> nil
+    end
+  end
+
+  @doc """
+  Converts a usage struct to a plain map without nil values.
+  """
+  @spec to_map(t() | nil) :: map() | nil
+  def to_map(nil), do: nil
+
+  def to_map(%__MODULE__{} = usage) do
+    usage
+    |> Map.from_struct()
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp sequence_reuse(usages) do
     {_previous_prompt, reusable_tokens, reused_tokens} =
       Enum.reduce(usages, {nil, 0, 0}, fn value, {previous_prompt, reusable, reused} ->
         usage = normalize(value)
@@ -293,36 +340,7 @@ defmodule Tackle.Lib.Usage do
         end
       end)
 
-    if reusable_tokens > 0 do
-      %{
-        reusable_tokens: reusable_tokens,
-        reused_tokens: reused_tokens,
-        missed_tokens: reusable_tokens - reused_tokens,
-        rate: reused_tokens / reusable_tokens
-      }
-    end
-  end
-
-  @doc "Returns the preceding-prompt cache reuse ratio for a usage sequence."
-  @spec cache_reuse_rate([t() | map() | nil]) :: float() | nil
-  def cache_reuse_rate(usages) when is_list(usages) do
-    case cache_reuse(usages) do
-      %{rate: rate} -> rate
-      nil -> nil
-    end
-  end
-
-  @doc """
-  Converts a usage struct to a plain map without nil values.
-  """
-  @spec to_map(t() | nil) :: map() | nil
-  def to_map(nil), do: nil
-
-  def to_map(%__MODULE__{} = usage) do
-    usage
-    |> Map.from_struct()
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
+    {reusable_tokens, reused_tokens}
   end
 
   defp cache_buckets_reported?(%__MODULE__{} = usage) do

@@ -30,6 +30,7 @@ defmodule Tackle.CLI.TUI.StatusView do
     UsageChart
   }
 
+  alias Tackle.CLI.TUI.State.Metrics
   alias Tackle.Lib
   alias Tackle.Lib.{Compaction, ContextUsage, Usage}
 
@@ -277,7 +278,7 @@ defmodule Tackle.CLI.TUI.StatusView do
       compaction_indicator(state),
       token_indicator(usage.input_tokens, usage.output_tokens),
       context_indicator(displayed_context_usage(state)),
-      cache_hit_indicator(displayed_usage_checkpoints(state)),
+      cache_hit_indicator(cache_segments(state)),
       cost_indicator(usage)
     ]
     |> Enum.reject(&is_nil/1)
@@ -296,18 +297,30 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp compaction_indicator(_state), do: nil
 
   defp displayed_usage(state) do
-    state
-    |> displayed_usage_checkpoints()
-    |> Usage.aggregate()
-  end
-
-  defp displayed_usage_checkpoints(state) do
     settled =
       state.agent_state.messages
       |> Enum.map(&Usage.normalize(&1.token_usage))
       |> Enum.reject(&(is_nil(&1) or not usage_activity?(&1)))
 
-    settled ++ state.metrics.turn_usages
+    Usage.aggregate(settled ++ state.metrics.turn_usages)
+  end
+
+  # Cache reuse is measured per span between compactions: a compaction
+  # rewrites the context, so its new prefix is not a cache miss (see
+  # `Tackle.Lib.Usage.cache_reuse/1`). The running turn continues the last
+  # settled span until a compaction during the turn starts a new one.
+  defp cache_segments(state) do
+    [live | live_rest] = Metrics.turn_segments(state.metrics)
+
+    settled =
+      case Lib.State.usage_segments(state.agent_state) do
+        [] -> [live]
+        segments -> List.update_at(segments, -1, &(&1 ++ live))
+      end
+
+    Enum.map(settled ++ live_rest, fn segment ->
+      segment |> Enum.map(&Usage.normalize/1) |> Enum.filter(&usage_activity?/1)
+    end)
   end
 
   defp displayed_context_usage(%State{metrics: %{context_usage: %ContextUsage{} = context}}),

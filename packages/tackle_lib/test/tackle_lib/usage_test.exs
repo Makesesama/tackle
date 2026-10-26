@@ -217,6 +217,29 @@ defmodule Tackle.Lib.UsageTest do
              }
     end
 
+    test "measures each sequence of a list of sequences on its own" do
+      before = [
+        %Usage{input_tokens: 100, cache_read_tokens: 0},
+        %Usage{input_tokens: 20, cache_read_tokens: 100}
+      ]
+
+      # A compaction rewrote the context: the next prompt is small and new.
+      after_rewrite = [
+        %Usage{input_tokens: 30, cache_read_tokens: 0},
+        %Usage{input_tokens: 10, cache_read_tokens: 30}
+      ]
+
+      assert Usage.cache_reuse([before, after_rewrite]) == %{
+               reusable_tokens: 130,
+               reused_tokens: 130,
+               missed_tokens: 0,
+               rate: 1.0
+             }
+
+      assert Usage.cache_reuse_rate(before ++ after_rewrite) < 1.0
+      assert Usage.cache_reuse([[], []]) == nil
+    end
+
     test "requires consecutive prompt checkpoints with cache reporting" do
       assert Usage.cache_reuse([]) == nil
       assert Usage.cache_reuse([%Usage{input_tokens: 100}]) == nil

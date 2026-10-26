@@ -213,6 +213,40 @@ defmodule Tackle.Lib.StateTest do
     end
   end
 
+  describe "usage_segments/1" do
+    test "returns one span without a compaction" do
+      first = Message.assistant(content: "a", token_usage: %Usage{input_tokens: 1})
+      second = Message.assistant(content: "b", token_usage: %Usage{input_tokens: 2})
+
+      state =
+        State.new()
+        |> State.add_message(Message.user("q"))
+        |> State.add_message(first)
+        |> State.add_message(second)
+
+      assert State.usage_segments(state) == [[first.token_usage, second.token_usage]]
+      assert State.usage_segments(State.new()) == []
+    end
+
+    test "starts a span after the latest compaction of a linear projection" do
+      before = Message.assistant(content: "a", token_usage: %Usage{input_tokens: 1})
+      retained = Message.assistant(content: "b", token_usage: %Usage{input_tokens: 2})
+      later = Message.assistant(content: "c", token_usage: %Usage{input_tokens: 3})
+      checkpoint = Compaction.checkpoint_message("compaction-1", "Earlier work")
+
+      state = %{
+        State.new()
+        | messages: [before, retained, later],
+          model_messages: [checkpoint, %{retained | token_usage: nil}, later]
+      }
+
+      assert State.usage_segments(state) == [
+               [before.token_usage, retained.token_usage],
+               [later.token_usage]
+             ]
+    end
+  end
+
   describe "max_iterations_reached?/1" do
     test "returns false when the default limit is unlimited" do
       refute State.max_iterations_reached?(%{State.new() | current_iteration: 20})

@@ -2230,6 +2230,57 @@ defmodule Tackle.CLI.TUITest do
     assert settled_status =~ "~$1.00"
   end
 
+  test "measures cache reuse per span between compactions", %{tui: tui} do
+    inject_resize(tui, 120, 24)
+    inject_paste(tui, "go")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "go"}
+
+    state = state(tui)
+
+    usages = [
+      %{input_tokens: 100, output_tokens: 1, cache_read_tokens: 0},
+      %{input_tokens: 100, output_tokens: 1, cache_read_tokens: 100},
+      # After the compaction the prompt is a new, shorter prefix.
+      %{input_tokens: 30, output_tokens: 1, cache_read_tokens: 0},
+      %{input_tokens: 10, output_tokens: 1, cache_read_tokens: 30}
+    ]
+
+    {before, later} = Enum.split(usages, 2)
+
+    for usage <- before,
+        do: send(tui, {:tackle_event, state.session_id, "turn-1", Event.usage(usage)})
+
+    compacted =
+      Event.compaction_end(compaction_id: "compaction-1", trigger: :pressure, status: :completed)
+
+    send(tui, {:tackle_event, state.session_id, "turn-1", compacted})
+
+    for usage <- later,
+        do: send(tui, {:tackle_event, state.session_id, "turn-1", Event.usage(usage)})
+
+    live_state = state(tui)
+    assert status_text(live_state) =~ "CH100.0%"
+    # One sequence across the compaction would count its new prefix as missed.
+    assert Tackle.Lib.Usage.cache_reuse_rate(Enum.map(usages, &Tackle.Lib.Usage.normalize/1)) <
+             1.0
+
+    [first, second, third, fourth] =
+      Enum.map(usages, &Message.assistant(content: "step", token_usage: &1))
+
+    checkpoint = LibCompaction.checkpoint_message("compaction-1", "Earlier work")
+
+    agent_state = %{
+      live_state.agent_state
+      | messages: [first, second, third, fourth],
+        model_messages: [checkpoint, third, fourth],
+        status: :completed
+    }
+
+    send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
+    assert status_text(state(tui)) =~ "CH100.0%"
+  end
+
   test "omits context and token statistics when they are unavailable", %{tui: tui} do
     state = state(tui)
     llm = %{state.agent_state.llm | model_info: nil}

@@ -782,6 +782,11 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
          %State{session_id: session_id, active_turn: %{id: turn_id}} = state
        )
        when type in [:compaction_start, :compaction_end, :compaction_retry] do
+    state =
+      if type == :compaction_end and Map.get(event.data, :status) == :completed,
+        do: %{state | metrics: Metrics.compacted(state.metrics)},
+        else: state
+
     {:noreply,
      state |> Compaction.project(event.type, event.data) |> Viewport.refresh([:settled, :turn])}
   end

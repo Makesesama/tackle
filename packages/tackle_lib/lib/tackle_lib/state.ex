@@ -323,6 +323,62 @@ defmodule Tackle.Lib.State do
   def branch_usage(%__MODULE__{} = state), do: usage(state)
 
   @doc """
+  Returns the usage on the active conversation, split where compactions
+  rewrote the model context.
+
+  Each list holds, oldest first, the `token_usage` of the messages in one
+  span over which the context only grew; a compaction starts the next span.
+  `Tackle.Lib.Usage.cache_reuse/1` takes these spans, since comparing prompts
+  across a rewrite would count the rewritten prefix as a cache miss. Spans
+  without usage are left out.
+
+  In tree mode the spans follow the compaction entries on the active path.
+  Linear mode knows only the latest compaction (the head of the model
+  projection), so the spans before it come back as one.
+  """
+  @spec usage_segments(t()) :: [[Usage.t() | map()]]
+  def usage_segments(%__MODULE__{tree: %Tree{} = tree}) do
+    tree
+    |> Tree.active_path()
+    |> Enum.reduce([[]], fn
+      %Tree.Entry{kind: :compaction}, segments ->
+        [[] | segments]
+
+      %Tree.Entry{kind: :message, message: message}, [segment | rest] ->
+        [[message | segment] | rest]
+    end)
+    |> Enum.reverse()
+    |> Enum.map(&(&1 |> Enum.reverse() |> message_usages()))
+    |> Enum.reject(&(&1 == []))
+  end
+
+  def usage_segments(%__MODULE__{} = state) do
+    segments =
+      case last_compaction_id(state) do
+        nil ->
+          [state.messages]
+
+        _id ->
+          # The model projection's retained copies lost their usage; messages
+          # still carrying it there arrived after the compaction.
+          current =
+            for %Message{id: id, token_usage: usage} <- state.model_messages,
+                not is_nil(usage),
+                into: MapSet.new(),
+                do: id
+
+          {later, earlier} = Enum.split_with(state.messages, &MapSet.member?(current, &1.id))
+          [earlier, later]
+      end
+
+    segments |> Enum.map(&message_usages/1) |> Enum.reject(&(&1 == []))
+  end
+
+  defp message_usages(messages) do
+    for %Message{token_usage: usage} <- messages, not is_nil(usage), do: usage
+  end
+
+  @doc """
   Returns the most recent compaction id on the active path, or nil.
 
   In tree mode it is the latest compaction entry on the active path. In
