@@ -3,9 +3,10 @@ defmodule Tackle.Session.Reader do
   Bounded replay, validation, and controlled repair for a session journal.
 
   A reader folds internal `:disk_log` items in sequence order: validate the
-  header and physical format, read items in bounded chunks, decode and validate
-  one durable commit at a time, require contiguous sequence numbers, upcast
-  older event versions, and apply events to a plain projection.
+  header and physical format, read items in bounded chunks, decode one durable
+  commit at a time, require contiguous sequence numbers, upcast older event
+  versions and then validate the events against the current schema
+  (`Tackle.Session.Log.read_commit/4`), and apply them to a plain projection.
 
   Ordinary replay uses `:disk_log.bchunk/3` plus
   `:erlang.binary_to_term/2` with `:safe`, so replaying a journal cannot create
@@ -272,23 +273,8 @@ defmodule Tackle.Session.Reader do
   end
 
   defp apply_commit(commit, projection, session_id, expected) do
-    with :ok <- Log.validate_commit(commit, session_id, expected),
-         {:ok, upcasted} <- upcast_commit(commit) do
+    with {:ok, upcasted} <- Log.read_commit(commit, session_id, expected) do
       {:ok, Projection.apply_replay_commit(projection, upcasted), upcasted}
-    end
-  end
-
-  defp upcast_commit(commit) do
-    commit["events"]
-    |> Enum.reduce_while({:ok, []}, fn event, {:ok, acc} ->
-      case Log.upcast_event(event) do
-        {:ok, upcasted} -> {:cont, {:ok, [upcasted | acc]}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, events} -> {:ok, %{commit | "events" => Enum.reverse(events)}}
-      {:error, _reason} = error -> error
     end
   end
 

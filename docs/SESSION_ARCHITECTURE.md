@@ -321,7 +321,7 @@ Required envelope rules include:
 - `seq` is exactly the previous sequence plus one;
 - `commit_id` is unique;
 - `events` is a non-empty list;
-- each event has an independently versioned schema;
+- each event has an independently versioned schema, and its `data` is a map;
 - every value passes the durable-data validator;
 - the commit folds into the current projection: no duplicate entry id, a known
   parent and navigation target, a decodable compaction; and
@@ -631,9 +631,9 @@ A reader folds records in sequence order:
 
 1. validate the header and supported physical format;
 2. read internal items in bounded chunks;
-3. decode and validate one durable commit at a time;
+3. decode and validate one durable commit envelope at a time;
 4. require contiguous sequence numbers and unique commit IDs;
-5. upcast known older event versions in memory;
+5. upcast known older event versions in memory, then validate each event against its current version;
 6. apply events to a plain durable projection; and
 7. classify the final session as clean, closed, interrupted, recovered, corrupt, or unsupported.
 
@@ -865,7 +865,7 @@ Schema evolution occurs at three independent levels:
 2. commit-envelope `schema_version`; and
 3. per-event `version`.
 
-Readers use pure upcasters from old plain maps to the current in-memory schema. Reading an old journal does not rewrite it automatically.
+Readers use pure upcasters from old plain maps to the current in-memory schema. Reading an old journal does not rewrite it automatically. `Tackle.Session.Log` registers one upcaster per `{event_type, from_version}`, each producing the next version's event data; `Log.read_commit/4` applies them one version at a time before it validates the event, so the checks always describe the current version. A reader accepts every version from 1 up to the current one and rejects a newer version as unsupported. Bumping an event's version therefore requires an upcaster from every older version, which a test enforces.
 
 An explicit migration:
 

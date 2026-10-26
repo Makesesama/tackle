@@ -9,6 +9,18 @@ defmodule Tackle.Session.Log do
   A commit is the unit of atomicity: the complete envelope is passed to one
   `:disk_log.log/2` call. Several separate calls are never treated as one
   transaction.
+
+  ## Versions
+
+  The header's `format_version`, the envelope's `schema_version`, and each
+  event's `version` evolve independently. A reader accepts every version from
+  1 up to the current one and rejects newer ones as unsupported: the file may
+  be valid under a newer Tackle. `read_commit/4` upcasts an older event to the
+  current version in memory, one version at a time through the upcaster
+  registered for `{type, from_version}`, before it validates the event, so the
+  checks always describe the current schema. Bumping an event's version
+  therefore requires an upcaster from every older version; reading never
+  rewrites the file.
   """
 
   alias Tackle.Session.Codec
@@ -39,6 +51,10 @@ defmodule Tackle.Session.Log do
     "turn.abandoned" => 1
   }
 
+  # `{type, from_version}` => a function from that version's event data to the
+  # next version's. Empty while every event is at version 1.
+  @upcasters %{}
+
   @terminal_events ~w(turn.completed turn.errored turn.cancelled turn.crashed turn.abandoned)
 
   @type event :: %{
@@ -46,6 +62,15 @@ defmodule Tackle.Session.Log do
         }
 
   @type commit :: %{required(String.t()) => term()}
+
+  @typedoc """
+  The event schema a reader upcasts and validates against: the current
+  version of every core event type and the upcasters from older versions.
+  """
+  @type schema :: %{
+          versions: %{optional(String.t()) => pos_integer()},
+          upcasters: %{optional({String.t(), pos_integer()}) => (map() -> map())}
+        }
 
   @doc "Returns the supported journal container format version."
   @spec format_version() :: pos_integer()
@@ -58,6 +83,10 @@ defmodule Tackle.Session.Log do
   @doc "Returns every core event type with its current version."
   @spec event_versions() :: %{optional(String.t()) => pos_integer()}
   def event_versions, do: @event_versions
+
+  @doc "Returns the event schema of this build: current versions and upcasters."
+  @spec schema() :: schema()
+  def schema, do: %{versions: @event_versions, upcasters: @upcasters}
 
   @doc "Returns the event types that settle a turn."
   @spec terminal_events() :: [String.t()]
@@ -143,16 +172,83 @@ defmodule Tackle.Session.Log do
   def validate_header(other, _session_id), do: {:error, {:invalid_header, other}}
 
   @doc """
-  Validates one commit envelope against the expected session and sequence.
+  Validates one commit envelope this build is about to write.
 
-  Required envelope rules are enforced here: matching session, contiguous
-  sequence, unique commit identity, a non-empty event list, independently
-  versioned events, and a durable plain-data payload.
+  Required envelope rules are enforced here: the current schema version,
+  matching session, contiguous sequence, unique commit identity, a non-empty
+  event list, events at their current versions, and a durable plain-data
+  payload. Stored commits are read with `read_commit/4` instead, which also
+  accepts older versions.
   """
   @spec validate_commit(term(), String.t(), pos_integer()) :: :ok | {:error, term()}
-  def validate_commit(%{"record" => @commit_record} = commit, session_id, expected_seq) do
+  def validate_commit(commit, session_id, expected_seq) do
+    with :ok <- validate_envelope(commit, session_id, expected_seq, @schema_version) do
+      validate_events(commit["events"], schema())
+    end
+  end
+
+  @doc """
+  Reads one stored commit: validates its envelope, upcasts every event to its
+  current version, then validates the events against `schema`.
+
+  Envelope schema versions and event versions from 1 up to the current one are
+  accepted; newer ones are unsupported. Unknown optional events are kept
+  unchanged for callers that retain them; the core projection ignores them.
+  """
+  @spec read_commit(term(), String.t(), pos_integer(), schema()) ::
+          {:ok, commit()} | {:error, term()}
+  def read_commit(commit, session_id, expected_seq, schema \\ schema()) do
+    # Version 1 is the only envelope schema so far; a new one adds its upcast
+    # here, before the events are read.
+    with :ok <- validate_envelope(commit, session_id, expected_seq, 1),
+         events = Enum.map(commit["events"], &upcast_event(&1, schema)),
+         :ok <- validate_events(events, schema) do
+      {:ok, %{commit | "events" => events}}
+    end
+  end
+
+  @doc """
+  Upcasts one event to the current version `schema` gives its type.
+
+  Each step applies the upcaster registered for `{type, version}` to the
+  event's data. An event of an unknown type, of the current or a newer
+  version, or without an upcaster for its next step is returned unchanged, so
+  validation reports it.
+  """
+  @spec upcast_event(term(), schema()) :: term()
+  def upcast_event(%{"type" => type, "version" => version} = event, schema)
+      when is_binary(type) and is_integer(version) and version >= 1 do
+    with {:ok, current} when version < current <- Map.fetch(schema.versions, type),
+         {:ok, upcaster} <- Map.fetch(schema.upcasters, {type, version}) do
+      event
+      |> Map.merge(%{"version" => version + 1, "data" => upcaster.(Map.get(event, "data", %{}))})
+      |> upcast_event(schema)
+    else
+      _current_or_unknown -> event
+    end
+  end
+
+  def upcast_event(event, _schema), do: event
+
+  @doc "Returns true when `event_type` settles a turn."
+  @spec terminal_event?(term()) :: boolean()
+  def terminal_event?(type), do: type in @terminal_events
+
+  defp validate_parent(nil), do: :ok
+
+  defp validate_parent(%{"session_id" => session_id, "seq" => seq} = parent)
+       when is_binary(session_id) and is_integer(seq) and seq >= 0 do
+    case Map.keys(parent) -- ["session_id", "seq"] do
+      [] -> :ok
+      extra -> {:error, {:invalid_header_parent, extra}}
+    end
+  end
+
+  defp validate_parent(other), do: {:error, {:invalid_header_parent, other}}
+
+  defp validate_envelope(%{"record" => @commit_record} = commit, session_id, expected_seq, oldest) do
     cond do
-      commit["schema_version"] != @schema_version ->
+      not supported_schema_version?(commit["schema_version"], oldest) ->
         {:error, {:unsupported_schema_version, commit["schema_version"]}}
 
       commit["session_id"] != session_id ->
@@ -171,83 +267,54 @@ defmodule Tackle.Session.Log do
         {:error, {:invalid_commit, :events}}
 
       true ->
-        validate_events(commit["events"])
+        :ok
     end
   end
 
-  def validate_commit(%{}, _session_id, _expected_seq), do: {:error, {:invalid_commit, :record}}
-  def validate_commit(other, _session_id, _expected_seq), do: {:error, {:invalid_commit, other}}
+  defp validate_envelope(%{}, _session_id, _expected_seq, _oldest),
+    do: {:error, {:invalid_commit, :record}}
 
-  @doc """
-  Upcasts one event to the current in-memory schema.
+  defp validate_envelope(other, _session_id, _expected_seq, _oldest),
+    do: {:error, {:invalid_commit, other}}
 
-  Reading an older journal never rewrites it. Unknown optional events are kept
-  for callers that retain them but are ignored by the core projection.
-  """
-  @spec upcast_event(term()) :: {:ok, event()} | {:error, term()}
-  def upcast_event(%{"type" => type, "version" => version} = event)
-      when is_binary(type) and is_integer(version) do
-    case Map.fetch(@event_versions, type) do
-      {:ok, current} when version == current -> {:ok, event}
-      {:ok, current} when version < current -> {:ok, upcast(type, version, event)}
-      {:ok, _current} -> {:error, {:unsupported_event_version, type, version}}
-      :error -> {:ok, event}
-    end
-  end
+  defp supported_schema_version?(version, oldest),
+    do: is_integer(version) and version >= oldest and version <= @schema_version
 
-  def upcast_event(other), do: {:error, {:invalid_event, other}}
-
-  @doc "Returns true when `event_type` settles a turn."
-  @spec terminal_event?(term()) :: boolean()
-  def terminal_event?(type), do: type in @terminal_events
-
-  defp upcast(_type, _from_version, event), do: event
-
-  defp validate_parent(nil), do: :ok
-
-  defp validate_parent(%{"session_id" => session_id, "seq" => seq} = parent)
-       when is_binary(session_id) and is_integer(seq) and seq >= 0 do
-    case Map.keys(parent) -- ["session_id", "seq"] do
-      [] -> :ok
-      extra -> {:error, {:invalid_header_parent, extra}}
-    end
-  end
-
-  defp validate_parent(other), do: {:error, {:invalid_header_parent, other}}
-
-  defp validate_events(events) do
+  defp validate_events(events, schema) do
     Enum.reduce_while(events, :ok, fn event, :ok ->
-      case validate_event(event) do
+      case validate_event(event, schema) do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp validate_event(%{"type" => type, "version" => version, "required" => required} = event)
+  defp validate_event(
+         %{"type" => type, "version" => version, "required" => required} = event,
+         schema
+       )
        when is_binary(type) and is_integer(version) and is_boolean(required) do
-    cond do
-      required and not known_event?(type) ->
-        {:error, {:unsupported_required_event, type, version}}
-
-      supported_event?(type, version) ->
-        validate_event_data(event, type)
-
-      true ->
-        {:error, {:unsupported_event_version, type, version}}
+    case Map.fetch(schema.versions, type) do
+      {:ok, ^version} -> validate_event_data(event, type)
+      {:ok, _other} -> {:error, {:unsupported_event_version, type, version}}
+      :error when required -> {:error, {:unsupported_required_event, type, version}}
+      :error -> validate_event_data(event, type)
     end
   end
 
-  defp validate_event(other), do: {:error, {:invalid_event, other}}
+  defp validate_event(other, _schema), do: {:error, {:invalid_event, other}}
 
-  defp supported_event?(type, version) do
-    Map.get(@event_versions, type) == version or not known_event?(type)
-  end
-
+  # Event data is a plain map; the projection reads its fields by key.
   defp validate_event_data(event, type) do
-    case Codec.validate(Map.get(event, "data", %{})) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:invalid_event_data, type, reason}}
+    case Map.get(event, "data", %{}) do
+      %{} = data when not is_struct(data) ->
+        case Codec.validate(data) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:invalid_event_data, type, reason}}
+        end
+
+      _other ->
+        {:error, {:invalid_event_data, type, :not_a_map}}
     end
   end
 end
