@@ -359,7 +359,6 @@ defmodule Tackle.Session do
         recovery: recovery,
         tree_enabled?: tree_enabled?,
         inbox: :queue.new(),
-        inbox_count: 0,
         inbox_wake_scheduled?: false,
         session_title: projection_title(journal),
         title_task: nil,
@@ -426,7 +425,7 @@ defmodule Tackle.Session do
 
       index ->
         retained = List.delete_at(entries, index)
-        state = %{state | inbox: :queue.from_list(retained), inbox_count: length(retained)}
+        state = %{state | inbox: :queue.from_list(retained)}
         {:reply, :ok, state}
     end
   end
@@ -844,7 +843,7 @@ defmodule Tackle.Session do
            )
          end) do
       {:ok, task} ->
-        active = %{state.active_turn | task: task, beginning?: false}
+        active = %{state.active_turn | task: task}
         if pending.from, do: GenServer.reply(pending.from, {:ok, pending.turn_id})
         {:noreply, %{state | active_turn: active}}
 
@@ -873,7 +872,7 @@ defmodule Tackle.Session do
   defp abort_begun_turn(state, pending, reason) do
     Cancellation.delete(pending.signal)
     release_turn(state)
-    active_turn = %{state.active_turn | signal: nil, beginning?: false}
+    active_turn = %{state.active_turn | signal: nil}
     state = %{state | active_turn: active_turn}
 
     begin_terminal_persist(
@@ -1059,8 +1058,7 @@ defmodule Tackle.Session do
           signal: signal,
           initial_message_ids: MapSet.new(agent_state.messages, & &1.id),
           user_inputs: user_inputs(operation, input),
-          cancellation_requested?: false,
-          beginning?: true
+          cancellation_requested?: false
         }
 
         pending = %{
@@ -1327,8 +1325,6 @@ defmodule Tackle.Session do
     end
   end
 
-  defp project_inbox(%{inbox_count: 0} = state), do: {state.agent_state, [], []}
-
   defp project_inbox(state) do
     envelopes = :queue.to_list(state.inbox)
 
@@ -1362,11 +1358,10 @@ defmodule Tackle.Session do
 
   defp drop_reserved_inbox(state, reserved) do
     retained = :queue.to_list(state.inbox) -- reserved
-    %{state | inbox: :queue.from_list(retained), inbox_count: length(retained)}
+    %{state | inbox: :queue.from_list(retained)}
   end
 
-  defp clear_inbox(state),
-    do: %{state | inbox: :queue.new(), inbox_count: 0}
+  defp clear_inbox(state), do: %{state | inbox: :queue.new()}
 
   defp queue_user_message(state, message) do
     entry = %{from: :user, message: message}
@@ -1438,7 +1433,7 @@ defmodule Tackle.Session do
   end
 
   defp enqueue(state, envelope) do
-    %{state | inbox: :queue.in(envelope, state.inbox), inbox_count: state.inbox_count + 1}
+    %{state | inbox: :queue.in(envelope, state.inbox)}
   end
 
   defp deliverable_inbox(state) do
@@ -1453,7 +1448,7 @@ defmodule Tackle.Session do
       |> :queue.to_list()
       |> Enum.reject(&deliverable_envelope?/1)
 
-    %{state | inbox: :queue.from_list(retained), inbox_count: length(retained)}
+    %{state | inbox: :queue.from_list(retained)}
   end
 
   defp deliverable_envelope?(%Envelope{kind: :launch}), do: false
@@ -1514,7 +1509,7 @@ defmodule Tackle.Session do
           false
       end)
 
-    %{state | inbox: :queue.from_list(inbox), inbox_count: length(inbox)}
+    %{state | inbox: :queue.from_list(inbox)}
   end
 
   defp broadcast_inbox_drained(state, messages) do
