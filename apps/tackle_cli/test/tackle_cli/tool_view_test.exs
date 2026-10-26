@@ -72,6 +72,20 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
     assert MessageView.search_text(failed) =~ "newText"
   end
 
+  test "tool values are shown as JSON, and inspected when JSON cannot encode them" do
+    live = %{
+      tool_activity: [
+        %{id: "json", name: "custom", arguments: %{"path" => "a"}, result: %{"ok" => true}},
+        %{id: "term", name: "custom", arguments: %{"path" => "b"}, result: %{pid: self()}}
+      ]
+    }
+
+    [json, term] = MessageView.section_entries(live, :tools)
+
+    assert MessageView.tool_output(json) == ~s({"ok":true})
+    assert MessageView.tool_output(term) == inspect(%{pid: self()})
+  end
+
   test "multiple calls of the same tool keep distinct stable live and settled ids" do
     live = %{
       tool_activity: [

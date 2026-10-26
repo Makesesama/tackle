@@ -1352,17 +1352,10 @@ telemetry metadata.
 `Tackle.Phoenix.Runner` additionally emits turn telemetry; see the Phoenix
 README.
 
-## JSON boundary
+## JSON
 
-Tackle.Lib defaults to Elixir's built-in `JSON` module through
-`Tackle.Lib.JSON.Default`. Override it only when the host needs a different
-implementation:
-
-```elixir
-config :tackle_lib, json: MyApp.JSONAdapter
-```
-
-The adapter implements `encode/1`, `encode!/1`, `decode/1`, and `decode!/1`.
+Tackle.Lib encodes and decodes JSON with Elixir's built-in `JSON` module; it
+has no JSON adapter setting and no JSON dependency.
 
 ## Reusing tools through Anubis MCP
 

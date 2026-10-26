@@ -49,7 +49,6 @@ defmodule Tackle.Lib.Messages do
   convention), not a map.
   """
 
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Error, as: ToolError

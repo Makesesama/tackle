@@ -38,8 +38,8 @@ defmodule Tackle.Anubis.Schema do
   defp peri_type(:float, _enum), do: :float
   # Some MCP clients serialize nested object arguments as JSON strings even
   # when the tool schema advertises an object. Accept either at the Anubis
-  # boundary; `Tackle.Lib.Tool.Schema` decodes string values with the
-  # configured Tackle.Lib.JSON behaviour when settlement validates them.
+  # boundary; `Tackle.Lib.Tool.Schema` decodes string values with
+  # Elixir's `JSON` module when settlement validates them.
   defp peri_type(:map, _enum), do: {:either, {:map, :string}}
   defp peri_type({:list, inner}, _enum), do: {:list, peri_type(inner, nil)}
   defp peri_type(type, _enum) when type in [:string, :integer, :boolean], do: type

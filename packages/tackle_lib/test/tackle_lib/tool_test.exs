@@ -1,7 +1,6 @@
 defmodule Tackle.Lib.ToolTest do
   use ExUnit.Case, async: true
 
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Content
   alias Tackle.Lib.Tool.Schema
@@ -448,7 +447,7 @@ defmodule Tackle.Lib.ToolTest do
              output_schema: [ok: [type: :boolean, required: true]]
            }
 
-    assert {:ok, _json} = JSON.encode(Tool.definition(GoldenTool).input_schema)
+    assert is_binary(JSON.encode!(Tool.definition(GoldenTool).input_schema))
   end
 
   test "use Tackle.Lib.Tool defines the canonical callback API" do
@@ -737,7 +736,7 @@ defmodule Tackle.Lib.ToolTest do
 
       assert result.content == "bytes: \uFFFD\uFFFD"
       assert result.raw == "bytes: " <> <<255, 254>>
-      assert {:ok, _json} = JSON.encode(%{"content" => result.content})
+      assert is_binary(JSON.encode!(%{"content" => result.content}))
     end
 
     test "replaces invalid bytes in content text and text parts" do

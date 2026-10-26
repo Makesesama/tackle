@@ -28,8 +28,6 @@ defmodule Tackle.Lib.Tool.Call do
 
   defstruct [:id, :name, arguments: %{}, argument_error: nil, raw: nil]
 
-  alias Tackle.Lib.JSON
-
   @doc """
   Normalizes a provider tool call with string or atom keys.
 

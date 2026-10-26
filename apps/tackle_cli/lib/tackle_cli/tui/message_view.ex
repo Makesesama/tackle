@@ -24,7 +24,6 @@ defmodule Tackle.CLI.TUI.MessageView do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
   alias Tackle.CLI.TUI.{Compaction, Glyph, Pastes, Theme, ToolGroups, ToolView}
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
   @uuid "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -865,11 +864,11 @@ defmodule Tackle.CLI.TUI.MessageView do
 
   defp format_value(value) when is_binary(value), do: value
 
+  # Values JSON cannot encode, such as tuples or PIDs, are shown inspected.
   defp format_value(value) when is_map(value) or is_list(value) do
-    case JSON.encode(value) do
-      {:ok, encoded} -> encoded
-      {:error, _reason} -> inspect(value)
-    end
+    JSON.encode!(value)
+  rescue
+    _error -> inspect(value)
   end
 
   defp format_value(value), do: inspect(value)

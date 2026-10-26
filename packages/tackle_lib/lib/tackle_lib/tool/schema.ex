@@ -44,7 +44,7 @@ defmodule Tackle.Lib.Tool.Schema do
       returns a float (`1` becomes `1.0`);
     * `:boolean` accepts booleans and `"true"`/`"false"`;
     * `:map` accepts maps and strings holding a JSON object (some providers
-      send nested objects as JSON strings), decoded with `Tackle.Lib.JSON`,
+      send nested objects as JSON strings), decoded with Elixir's `JSON`,
       including inside `{:list, :map}`;
     * `{:list, type}` accepts lists and coerces each item.
 
@@ -53,8 +53,6 @@ defmodule Tackle.Lib.Tool.Schema do
   its default, or a required field reports `"is required"`. On a `:string`
   field `""` is a value like any other string.
   """
-
-  alias Tackle.Lib.JSON
 
   @type primitive_type :: :string | :integer | :float | :boolean | :map
   @type schema_type :: primitive_type() | {:list, schema_type()}

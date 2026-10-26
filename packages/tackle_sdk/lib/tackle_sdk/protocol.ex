@@ -70,7 +70,7 @@ defmodule Tackle.SDK.Protocol do
         :ignore
 
       trimmed ->
-        case Tackle.Lib.JSON.decode(trimmed) do
+        case JSON.decode(trimmed) do
           {:ok, %{"jsonrpc" => "2.0", "method" => method} = frame} when is_binary(method) ->
             {:ok, %{method: method, params: normalize_params(frame["params"]), id: frame["id"]}}
 
@@ -110,7 +110,7 @@ defmodule Tackle.SDK.Protocol do
   @doc "Encodes a frame as one ndjson line (trailing newline included)."
   @spec encode_line(map()) :: binary()
   def encode_line(%{} = frame) do
-    Tackle.Lib.JSON.encode!(frame) <> "\n"
+    JSON.encode!(frame) <> "\n"
   end
 
   @doc """

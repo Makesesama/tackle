@@ -1,7 +1,6 @@
 defmodule Tackle.Plugins.Anthropic.OAuthTest do
   use ExUnit.Case, async: true
 
-  alias Tackle.Lib.JSON
   alias Tackle.Plugins.Anthropic.OAuth
 
   @token_url "https://token.test/v1/oauth/token"

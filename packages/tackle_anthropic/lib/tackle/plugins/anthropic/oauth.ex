@@ -14,7 +14,6 @@ defmodule Tackle.Plugins.Anthropic.OAuth do
   """
 
   alias Tackle.Lib.Cancellation
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.Anthropic.HTTP
   alias Tackle.Plugins.Anthropic.PKCE

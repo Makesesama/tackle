@@ -68,7 +68,7 @@ defmodule Tackle.SDK.ProtocolTest do
       line = Protocol.encode_line(Protocol.response(1, %{}))
 
       assert String.ends_with?(line, "\n")
-      assert {:ok, %{"id" => 1}} = Tackle.Lib.JSON.decode(line)
+      assert {:ok, %{"id" => 1}} = JSON.decode(line)
     end
   end
 
@@ -136,7 +136,7 @@ defmodule Tackle.SDK.ProtocolTest do
           Protocol.notification("event", %{"payload" => Protocol.json_safe(term)})
         )
 
-      assert {:ok, _} = Tackle.Lib.JSON.decode(encoded)
+      assert {:ok, _} = JSON.decode(encoded)
     end
   end
 end

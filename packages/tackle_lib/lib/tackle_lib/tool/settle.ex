@@ -15,7 +15,6 @@ defmodule Tackle.Lib.Tool.Settle do
 
   require Logger
 
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Content

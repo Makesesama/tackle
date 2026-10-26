@@ -9,7 +9,6 @@ defmodule Tackle.Plugins.Anthropic.SSE do
   # The parser accumulates content blocks, emits provider-neutral delta events,
   # and produces the final adapter response plus replayable `provider_state`.
 
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.Usage
 

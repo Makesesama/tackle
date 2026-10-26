@@ -1,7 +1,6 @@
 defmodule Tackle.Plugins.Anthropic.SSETest do
   use ExUnit.Case, async: true
 
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.Usage
   alias Tackle.Plugins.Anthropic.SSE

@@ -32,7 +32,7 @@ defmodule Tackle.SDK.ServerTest do
 
   defp next_frame(timeout \\ 1_000) do
     assert_receive {:out, line}, timeout
-    {:ok, frame} = Tackle.Lib.JSON.decode(line)
+    {:ok, frame} = JSON.decode(line)
     frame
   end
 
@@ -53,7 +53,7 @@ defmodule Tackle.SDK.ServerTest do
   defp collect_event_types(acc, timeout) do
     receive do
       {:out, line} ->
-        {:ok, frame} = Tackle.Lib.JSON.decode(line)
+        {:ok, frame} = JSON.decode(line)
 
         case frame["method"] do
           "event" -> collect_event_types([frame["params"]["event"]["type"] | acc], timeout)

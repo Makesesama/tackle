@@ -23,7 +23,6 @@ defmodule Tackle.Lib do
       committer.
     * `Tackle.Lib.Tool` — the tool behaviour the loop calls.
     * `Tackle.Lib.Tool.Schema` — provider-neutral tool argument validation/coercion.
-    * `Tackle.Lib.JSON` — configurable JSON behaviour with a built-in default adapter.
     * `Tackle.Lib.CredentialStore` — provider-neutral access through host-owned handles.
     * `Tackle.Lib.SystemPrompt` — response-format contract + tool-doc assembly.
     * `Tackle.Lib.Usage` — normalized token/cost metadata for LLM steps.
@@ -41,8 +40,6 @@ defmodule Tackle.Lib do
 
     * One or more LLM adapters implementing `Tackle.Lib.LLM`, selected per state
       with `Tackle.Lib.LLM.select/2`.
-    * Optionally, a JSON adapter implementing `Tackle.Lib.JSON` (configured via
-      `config :tackle_lib, json: MyApp.JSONAdapter`; defaults to `Tackle.Lib.JSON.Default`).
     * Concrete tools defined with `use Tackle.Lib.Tool` or manually implementing the
       `Tackle.Lib.Tool` callbacks.
     * A composed system prompt (domain model, workflows, etc.).

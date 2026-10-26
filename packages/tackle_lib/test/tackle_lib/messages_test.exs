@@ -1,7 +1,6 @@
 defmodule Tackle.Lib.MessagesTest do
   use ExUnit.Case, async: true
 
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
   alias Tackle.Lib.Tool.Call

@@ -5,7 +5,6 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   # Anthropic Messages wire format, including Claude Code tool-name namespacing
   # and the tool_use/tool_result pairing the API requires.
 
-  alias Tackle.Lib.JSON
   alias Tackle.Plugins.Anthropic.{Images, Prompt}
 
   @claude_code_tools %{

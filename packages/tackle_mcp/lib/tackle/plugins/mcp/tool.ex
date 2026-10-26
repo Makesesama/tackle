@@ -1,7 +1,6 @@
 defmodule Tackle.Plugins.MCP.Tool do
   @moduledoc false
 
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.Tool.Content
   alias Tackle.Plugins.MCP.Schema
 

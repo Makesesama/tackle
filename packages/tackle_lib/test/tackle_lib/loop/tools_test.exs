@@ -4,7 +4,6 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
-  alias Tackle.Lib.JSON
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
