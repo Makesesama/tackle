@@ -85,6 +85,7 @@ defmodule Tackle.Lib.Loop do
     * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs.
     * `:event_context` - Additional host context merged into tool execution context.
     * `:llm_stream` - When true, use the optional `stream/3` callback in `Tackle.Lib.LLM` if the adapter supports it.
+      Usage is still reported once per response, by the loop's own `:usage` event.
     * `:cancellation_signal` - Optional `Tackle.Lib.Cancellation.Signal` checked between loop steps.
       Tools receive the per-call child signal (`Tackle.Lib.Cancellation.for_call/2`).
     * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot. When omitted,
@@ -492,10 +493,18 @@ defmodule Tackle.Lib.Loop do
           snapshot.llm || snapshot.llm_adapter,
           response_schema,
           generate_opts,
-          fn event ->
-            event
-            |> stamp_pending_id(pending_id)
-            |> then(&emit(callbacks, &1))
+          fn
+            # The loop reports each response's usage once, when the response
+            # settles (`emit_llm_settlement_events/3`). Streaming adapters and
+            # the non-streaming fallback also report it, which would make
+            # hosts that sum usage events count every response twice.
+            %Event{type: :usage} ->
+              :ok
+
+            event ->
+              event
+              |> stamp_pending_id(pending_id)
+              |> then(&emit(callbacks, &1))
           end
         )
       else

@@ -1009,6 +1009,70 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:event, %Event{type: :message_delta, data: %{delta: "ne"}}}
   end
 
+  defmodule UsageStreamingAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      {:ok,
+       %{
+         data: %{"content" => "done"},
+         usage: %{prompt_tokens: 5, completion_tokens: 4},
+         model: "test/model"
+       }}
+    end
+
+    @impl true
+    def stream(schema, opts, event_callback) do
+      event_callback.(%{type: :text_delta, text: "done"})
+      event_callback.(%{type: :usage, usage: %{prompt_tokens: 5, completion_tokens: 4}})
+      generate(schema, opts)
+    end
+  end
+
+  defmodule GenerateOnlyUsageAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, _opts) do
+      {:ok,
+       %{
+         data: %{"content" => "done"},
+         usage: %{prompt_tokens: 5, completion_tokens: 4},
+         model: "test/model"
+       }}
+    end
+  end
+
+  test "streaming reports each response's usage once" do
+    for adapter <- [UsageStreamingAdapter, GenerateOnlyUsageAdapter] do
+      Application.put_env(:tackle_lib, :llm, adapter)
+      test_pid = self()
+
+      assert {:ok, _state} =
+               Loop.run(State.new(model: "test/model"), "hello",
+                 llm_stream: true,
+                 event_callback: fn event -> send(test_pid, {:event, event}) end
+               )
+
+      assert_receive {:event, %Event{type: :turn_end}}
+
+      usages =
+        for {:event, %Event{type: :usage, data: %{usage: usage}}} <- drain_messages(),
+            do: usage
+
+      assert [%Usage{input_tokens: 5, output_tokens: 4}] = usages, inspect(adapter)
+    end
+  end
+
+  defp drain_messages(acc \\ []) do
+    receive do
+      message -> drain_messages([message | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   test "host llm_opts override the loop's defaults but not the request" do
     Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
     Process.put(:test_pid, self())
