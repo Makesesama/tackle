@@ -62,6 +62,21 @@ defmodule Tackle.Lib.Compaction.InputTest do
     assert shortened.provider_state == nil
   end
 
+  test "keeps pieces shorter than the omission marker as they are" do
+    call =
+      Message.assistant(
+        content: text(5_000),
+        tool_calls: [%{id: "l1", name: "list", arguments: %{"path" => "lib/a.ex"}}]
+      )
+
+    result = Message.tool_result("l1", "list", "ok")
+
+    assert {:ok, [shortened, ^result], 1} = Input.fit([call, result], 1_000)
+    assert shortened.content =~ "characters omitted for compaction"
+    assert [%Tool.Call{id: "l1", arguments: arguments}] = shortened.tool_calls
+    assert arguments == %{"path" => "lib/a.ex"}
+  end
+
   test "replaces content parts with a note" do
     image = Tool.Content.image("image/png", String.duplicate("A", 100))
 

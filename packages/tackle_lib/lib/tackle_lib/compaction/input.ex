@@ -173,6 +173,8 @@ defmodule Tackle.Lib.Compaction.Input do
   # The marker takes at most this many characters of the kept share.
   @marker_chars 64
 
+  # A piece shorter than the marker stays as it is: replacing it would make
+  # the input longer, not shorter.
   defp shorten_text(text, keep) do
     length = String.length(text)
 
@@ -183,7 +185,11 @@ defmodule Tackle.Lib.Compaction.Input do
       head = div(kept * 2, 3)
       marker = "\n[… #{length - kept} characters omitted for compaction …]\n"
 
-      String.slice(text, 0, head) <> marker <> String.slice(text, length - (kept - head), length)
+      shortened =
+        String.slice(text, 0, head) <>
+          marker <> String.slice(text, length - (kept - head), length)
+
+      if String.length(shortened) < length, do: shortened, else: text
     end
   end
 end
