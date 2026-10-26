@@ -53,13 +53,27 @@ defmodule TackleTest do
     end
   end
 
-  defmodule SnapshotTurnHook do
-    @behaviour Tackle.Lib.Hook
+  defmodule TurnContextTool do
+    @behaviour Tackle.Lib.Tool
 
     @impl true
-    def before_prompt(state, context) do
-      send(Map.fetch!(context, :test_pid), {:snapshot_turn_id, state.snapshot.turn_id})
-      :ok
+    def name, do: "turn_context"
+
+    @impl true
+    def description, do: "Reports the turn context it receives."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, context) do
+      send(context.test_pid, {:tool_turn_id, context.runtime_turn_id})
+
+      context.event_callback.(
+        Event.new(:tool_progress, %{tool_call_id: context.tool_call_id, delta: "probing"})
+      )
+
+      {:ok, %{ok: true}}
     end
   end
 
@@ -220,24 +234,31 @@ defmodule TackleTest do
     assert Cancellation.reason(signal) == nil
   end
 
-  test "uses the harness turn id in the library snapshot" do
+  test "gives tools the harness turn id and the turn's event callback" do
     scope =
       start_scope(
-        providers: [ControlledAdapter],
-        model: "controlled/test",
-        hooks: [SnapshotTurnHook],
+        providers: [Tackle.Test.Adapter],
+        model: "test/echo",
+        tools: [TurnContextTool],
         context: %{test_pid: self()},
-        llm_opts: [test_pid: self()]
+        llm_opts: [
+          test_pid: self(),
+          mode: :tool_then_answer,
+          tool_call: %{"id" => "c1", "name" => "turn_context", "arguments" => %{}},
+          content: "done"
+        ]
       )
 
     agent_ref = scope.root_agent_ref
     assert {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
     assert {:ok, turn_id} = Tackle.submit(agent_ref, "hello")
-    assert_receive {:snapshot_turn_id, ^turn_id}
-    assert_receive {:adapter_called, task_pid, "test", _signal}
+    assert_receive {:tool_turn_id, ^turn_id}
+    assert {:finished, {:ok, _state}, events} = await_terminal(session_id, turn_id)
 
-    send(task_pid, {:respond, "done"})
-    assert {:finished, {:ok, _state}, _events} = await_terminal(session_id, turn_id)
+    assert Enum.any?(
+             events,
+             &match?(%Event{type: :tool_progress, data: %{tool_call_id: "c1"}}, &1)
+           )
   end
 
   test "queues overlapping turns at the next provider boundary" do

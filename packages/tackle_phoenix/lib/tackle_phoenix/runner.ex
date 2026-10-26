@@ -514,22 +514,20 @@ defmodule Tackle.Phoenix.Runner do
       with_telemetry_context(state.config, telemetry_ref, fn ->
         state.config.agent.continue(
           enriched_state,
-          build_run_opts(state.config, session_pid, signal, opts)
+          build_run_opts(state.config, session_pid, signal)
         )
       end)
     end)
   end
 
-  defp build_run_opts(config, session_pid, signal, opts) do
-    event_callback = fn event -> send(session_pid, {:tackle_event, event}) end
-
+  # The loop puts the event callback into every tool's context, so tools report
+  # progress through the same Runner/PubSub path as the loop's own events.
+  defp build_run_opts(config, session_pid, signal) do
     [
-      event_callback: event_callback,
-      event_context: %{event_callback: event_callback},
+      event_callback: fn event -> send(session_pid, {:tackle_event, event}) end,
       cancellation_signal: signal
     ]
     |> maybe_put(:tool_supervisor, Map.get(config, :tool_supervisor))
-    |> maybe_put(:extra_hooks, Keyword.get(opts, :extra_hooks))
   end
 
   defp maybe_put(opts, _key, nil), do: opts

@@ -163,7 +163,6 @@ defmodule Tackle.Session.Loader do
         current_iteration: 0,
         status: :idle,
         error: nil,
-        snapshot: nil,
         pending_assistant_id: nil,
         overflow_retries: 0
     }

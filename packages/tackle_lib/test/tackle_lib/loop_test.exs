@@ -572,6 +572,104 @@ defmodule Tackle.Lib.LoopTest do
     end)
   end
 
+  describe "run options" do
+    defmodule ContextProbeTool do
+      @behaviour Tackle.Lib.Tool
+
+      @impl true
+      def name, do: "probe"
+
+      @impl true
+      def description, do: "Reports the context it receives."
+
+      @impl true
+      def parameters_schema, do: []
+
+      @impl true
+      def execute(_args, context) do
+        send(context.test_pid, {:tool_context, context})
+        context.event_callback.(Event.new(:tool_progress, %{delta: "probing"}))
+        {:ok, %{ok: true}}
+      end
+    end
+
+    defmodule ProbeAdapter do
+      @behaviour Tackle.Lib.LLM
+
+      @impl true
+      def generate(_schema, opts) do
+        if Enum.any?(Keyword.fetch!(opts, :messages), &(&1.role == :tool)) do
+          {:ok, %{data: %{"content" => "probed"}, usage: nil, model: "test/model"}}
+        else
+          {:ok,
+           %{
+             data: %{"tool_calls" => [%{"id" => "p1", "name" => "probe", "arguments" => %{}}]},
+             usage: nil,
+             model: "test/model"
+           }}
+        end
+      end
+    end
+
+    test "unknown options raise before the turn starts" do
+      test_pid = self()
+      state = State.new(model: "test/model")
+      callback = &send(test_pid, {:event, &1})
+
+      for opts <- [
+            [bogus: true],
+            [event_context: %{}],
+            [cancel_signal: Cancellation.new_signal()],
+            [extra_hooks: []]
+          ] do
+        assert_raise ArgumentError, ~r/unknown keys/, fn ->
+          Loop.run(state, "hello", [{:event_callback, callback} | opts])
+        end
+
+        assert_raise ArgumentError, ~r/unknown keys/, fn ->
+          Loop.continue(state, [{:event_callback, callback} | opts])
+        end
+      end
+
+      refute_received {:event, _event}
+    end
+
+    test "tools receive the run's event callback and tool context without the host repeating them" do
+      Application.put_env(:tackle_lib, :llm, ProbeAdapter)
+      test_pid = self()
+      signal = Cancellation.new_signal()
+
+      state =
+        State.new(
+          model: "test/model",
+          tools: [ContextProbeTool],
+          context: %{test_pid: test_pid, from_state: true, event_callback: :stale}
+        )
+
+      callback = &send(test_pid, {:event, &1})
+
+      assert {:ok, final_state} =
+               Loop.run(state, "probe",
+                 event_callback: callback,
+                 tool_context: %{from_run: true, tool_call_id: "overridden"},
+                 cancellation_signal: signal
+               )
+
+      assert Tackle.Lib.last_answer(final_state) == "probed"
+      assert_receive {:tool_context, context}
+      assert context.event_callback == callback
+      assert context.from_state
+      assert context.from_run
+      assert context.tool_call_id == "p1"
+      assert context.cancellation_signal == Cancellation.for_call(signal, "p1")
+      assert_receive {:event, %Event{type: :tool_progress, data: %{delta: "probing"}}}
+
+      # The run's tool context belongs to tool execution; the state keeps its own.
+      refute Map.has_key?(final_state.context, :from_run)
+      assert final_state.context.event_callback == :stale
+    end
+  end
+
   test "retries a transient provider failure without duplicating the turn" do
     Application.put_env(:tackle_lib, :llm, RetryThenSuccessAdapter)
     Process.put(:test_pid, self())
@@ -1498,7 +1596,7 @@ defmodule Tackle.Lib.LoopTest do
     assert {:ok, final_state} =
              Loop.run(state, "run both",
                tool_supervisor: supervisor,
-               event_context: nil,
+               tool_context: nil,
                event_callback: fn event -> send(test_pid, {:event, event}) end
              )
 
@@ -1558,7 +1656,7 @@ defmodule Tackle.Lib.LoopTest do
 
     assert {:ok, final_state} =
              Loop.run(state, "run both",
-               event_context: nil,
+               tool_context: nil,
                event_callback: fn event -> send(test_pid, {:event, event}) end
              )
 
@@ -2507,7 +2605,6 @@ defmodule Tackle.Lib.LoopTest do
         outcome = if status == :completed, do: :ok, else: status
         assert {^outcome, final_state} = result
         assert final_state.status == status
-        assert final_state.snapshot == nil
         assert final_state.context.cleaned_up
 
         assert_receive {:after_turn, ^status, error}
@@ -2532,7 +2629,7 @@ defmodule Tackle.Lib.LoopTest do
       end
     end
 
-    test "after_turn failure preserves the outcome and still clears the snapshot" do
+    test "after_turn failure preserves the outcome" do
       state =
         State.new(
           model: "test/model",
@@ -2543,7 +2640,6 @@ defmodule Tackle.Lib.LoopTest do
       assert {:ok, final_state} = Loop.run(state, "hello")
       assert_receive {:after_turn_failed, :completed}
       refute_receive {:after_turn_failed, _}, 20
-      assert final_state.snapshot == nil
       assert final_state.context == state.context
     end
 
@@ -2552,7 +2648,6 @@ defmodule Tackle.Lib.LoopTest do
       assert {:ok, final_state} = Loop.continue(state)
       assert_receive {:after_turn, :completed, nil}
       refute_receive {:after_turn, _, _}, 20
-      assert final_state.snapshot == nil
     end
 
     defmodule ContextMutatorHook do
@@ -2676,8 +2771,7 @@ defmodule Tackle.Lib.LoopTest do
 
       assert {:ok, state} = Loop.run(state, "test mutator")
       assert state.status == :completed
-      # The before_prompt hook mutated the context
-      # Note: after_turn cleanup clears the snapshot but preserves context
+      # The before_prompt hook mutated the context, and it survives the turn
       assert state.context.hook_marker == "mutated_before_prompt"
     end
 
@@ -2692,7 +2786,6 @@ defmodule Tackle.Lib.LoopTest do
         )
 
       assert {:ok, state} = Loop.run(state, "hello")
-      assert state.snapshot == nil
       assert state.status == :completed
     end
 
@@ -2754,7 +2847,6 @@ defmodule Tackle.Lib.LoopTest do
       assert {:error, state} = Loop.run(state, "test abort")
       assert state.status == :error
       assert state.error =~ "Hook aborted after tool call"
-      assert state.snapshot == nil
     end
 
     test "after_message aborts both tool settlements before their event and after_tool_call" do

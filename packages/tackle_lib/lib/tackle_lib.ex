@@ -81,17 +81,28 @@ defmodule Tackle.Lib do
   Runs the agent for a user query.
 
   ## Options
-    * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs.
+
+  Unknown options raise `ArgumentError`. See `Tackle.Lib.Loop.run/3` for details.
+
+    * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs. Tools
+      also receive it in their context as `:event_callback`.
+    * `:tool_context` - Map merged over `state.context` for tool execution only.
     * `:llm_stream` - When true, use the optional `stream/3` callback in `Tackle.Lib.LLM` if the configured adapter supports it.
+    * `:cancellation_signal` - `Tackle.Lib.Cancellation.Signal` checked between loop steps.
     * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot.
+    * `:tool_supervisor` - `Task.Supervisor` required by the `:concurrent` tool policy.
+    * `:take_incoming_messages` - Zero-arity callback returning queued user messages.
+    * `:before_provider_call` - Zero-arity gate run before every provider dispatch.
+    * `:before_tool_execution` - Zero-arity gate run before tools with external effects.
   """
   defdelegate run(state, user_input, opts \\ []), to: Loop
 
   @doc """
   Retries the loop against existing state without appending a new user message.
 
-  Accepts the same execution options as `run/3`, including a host-assigned
-  `:turn_id`.
+  Accepts the same options as `run/3`, including a host-assigned `:turn_id`;
+  unknown options raise `ArgumentError`. Like `run/3`, it captures a fresh
+  snapshot of the state's configuration for the turn.
   """
   defdelegate continue(state, opts \\ []), to: Loop
 
@@ -240,7 +251,6 @@ defmodule Tackle.Lib do
         status: :idle,
         error: nil,
         pending_assistant_id: nil,
-        snapshot: nil,
         overflow_retries: 0
     }
   end

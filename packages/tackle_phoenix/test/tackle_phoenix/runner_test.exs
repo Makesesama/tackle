@@ -31,18 +31,17 @@ defmodule Tackle.Phoenix.RunnerTest do
     end
   end
 
-  defmodule EventContextAgent do
+  defmodule EventCallbackAgent do
     @moduledoc false
 
     alias Tackle.Lib.Event
     alias Tackle.Lib.State
 
+    # Stands in for a tool: the loop hands tools the run's `:event_callback`.
     def continue(%State{} = state, opts) do
       send(state.context.test_pid, {:run_opts, opts})
 
-      Keyword.fetch!(opts, :event_context).event_callback.(
-        Event.new(:tool_progress, %{output: "hi"})
-      )
+      Keyword.fetch!(opts, :event_callback).(Event.new(:tool_progress, %{output: "hi"}))
 
       {:ok, state}
     end
@@ -372,8 +371,8 @@ defmodule Tackle.Phoenix.RunnerTest do
     :ok
   end
 
-  test "passes the same loop event callback to the tool context" do
-    config = correlation_runner_config(EventContextAgent)
+  test "tool events sent through the loop event callback reach subscribers" do
+    config = correlation_runner_config(EventCallbackAgent)
     agent_state = %State{context: %{test_pid: self(), persistence: %{}}}
     host_state = %{test_pid: self(), session_id: "event-context-session"}
 
@@ -387,15 +386,14 @@ defmodule Tackle.Phoenix.RunnerTest do
              )
 
     assert_receive {:run_opts, opts}
-    assert %{event_callback: callback} = Keyword.fetch!(opts, :event_context)
-    assert is_function(callback, 1)
-    assert callback == Keyword.fetch!(opts, :event_callback)
+    assert Keyword.keys(opts) -- [:event_callback, :cancellation_signal, :tool_supervisor] == []
+    assert is_function(Keyword.fetch!(opts, :event_callback), 1)
     assert_receive {:agent_event, %Event{type: :tool_progress, data: %{output: "hi"}}}
   end
 
-  test "runtime turns pass the loop event callback to the tool context" do
+  test "runtime turns deliver events sent through the loop event callback" do
     config =
-      correlation_runner_config(EventContextAgent)
+      correlation_runner_config(EventCallbackAgent)
       |> Map.put(:runtime_turn_opts, [])
 
     agent_state = %State{context: %{test_pid: self(), persistence: %{}}}
@@ -411,8 +409,7 @@ defmodule Tackle.Phoenix.RunnerTest do
     assert {:ok, %{turn_active?: false}} = Runner.runtime_subscribe(runner)
     assert {:ok, ^runner} = Runner.runtime_submit(runner, "hello")
     assert_receive {:run_opts, opts}
-    assert %{event_callback: callback} = Keyword.fetch!(opts, :event_context)
-    assert callback == Keyword.fetch!(opts, :event_callback)
+    assert is_function(Keyword.fetch!(opts, :event_callback), 1)
     assert_receive {:tackle_runtime_event, %Event{type: :tool_progress, data: %{output: "hi"}}}
   end
 

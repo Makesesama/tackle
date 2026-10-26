@@ -279,14 +279,20 @@ message; it clears the error/status, resets the iteration budget, and retries
 the existing conversation. This is the correct primitive for a Retry button
 after the user's message has already been recorded.
 
-Run options:
+Run options (both functions take the same ones; an unknown option raises
+`ArgumentError`):
 
 | Option | Purpose |
 |---|---|
-| `:event_callback` | Receives `%Tackle.Lib.Event{}` values |
+| `:event_callback` | Receives `%Tackle.Lib.Event{}` values; tools also receive it in their context as `:event_callback` |
+| `:tool_context` | Map merged over `state.context` for tool execution only (default `%{}`) |
 | `:llm_stream` | Uses adapter `stream/3`, with generate fallback |
 | `:cancellation_signal` | Cooperative cancellation handle |
+| `:turn_id` | Host-assigned turn id stored on the per-turn snapshot |
+| `:tool_supervisor` | `Task.Supervisor` for the `:concurrent` tool policy |
+| `:take_incoming_messages` | Zero-arity callback returning `{:ok, [message]}` or `{:error, reason}`; queued user messages are appended before the next provider call |
 | `:before_provider_call` | Zero-arity provider dispatch gate; returns `:ok` or `{:error, reason}` |
+| `:before_tool_execution` | Zero-arity gate before tools with external effects run; returns `:ok` or `{:error, reason}` |
 
 Results are always one of:
 
@@ -329,7 +335,6 @@ repeat until final answer (or a configured max_iterations):
           after_tool_call hook
         repeat
 run after_turn hook
-clear per-turn snapshot
 ```
 
 The message history sent to an adapter is structured, not flattened. Assistant
@@ -749,7 +754,9 @@ list. Do not rely on provider options as the authorization boundary.
 ## Context and authorization
 
 `Tackle.Lib.State.context` is an opaque host map. Tackle.Lib passes it through hooks and
-to every tool. If a cancellation signal exists, the tool receives its call's
+to every tool. A tool's context also has the run's `:tool_context` merged in,
+the run's event callback under `:event_callback`, and its call's id under
+`:tool_call_id`. If a cancellation signal exists, the tool receives its call's
 child signal (`Tackle.Lib.Cancellation.for_call/2`) under `:cancellation_signal`
 as well.
 
@@ -1013,8 +1020,9 @@ registration changes while it runs.
 
 Snapshots include deterministic `system_prompt_version_id` and
 `tools_version_id` values. Persist those IDs in host audit records when you need
-to explain which configuration a turn used. The snapshot itself is cleared from
-state during terminal cleanup.
+to explain which configuration a turn used. The snapshot belongs to the running
+turn and is not stored on `Tackle.Lib.State`; `continue/2` captures a fresh one
+like `run/3`.
 
 ## Prompt caching
 

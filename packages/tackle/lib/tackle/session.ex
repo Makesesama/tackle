@@ -1101,10 +1101,7 @@ defmodule Tackle.Session do
   defp turn_opts(state, session_pid, turn_id, signal) do
     [
       event_callback: fn event -> send(session_pid, {:tackle_event, turn_id, event}) end,
-      event_context: %{
-        event_callback: fn event -> send(session_pid, {:tackle_event, turn_id, event}) end,
-        runtime_turn_id: turn_id
-      },
+      tool_context: %{runtime_turn_id: turn_id},
       cancellation_signal: signal,
       before_provider_call: provider_gate(state),
       before_tool_execution: tool_gate(state),
