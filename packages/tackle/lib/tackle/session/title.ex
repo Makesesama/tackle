@@ -2,11 +2,25 @@ defmodule Tackle.Session.Title do
   @moduledoc """
   LLM-generated session titles.
 
-  After an untitled durable session settles a user message, one tool-free
-  generation call produces a concise task title that is committed through the
-  journal's metadata path and surfaces in the catalog and every frontend. For a
-  new session this is its first user message; a resumed session that is still
-  untitled is titled from its next user message.
+  After an untitled durable session settles the first message the user
+  wrote, one tool-free generation call produces a concise task title that is
+  committed through the journal's metadata path and surfaces in the catalog
+  and every frontend. For a new session this is its first user message; a
+  resumed session that is still untitled is titled from its next user
+  message. The call runs in a task under the session's work supervisor,
+  concurrently with the turn, so the title is ready soon after the prompt
+  instead of after the turn (`start/5`).
+
+  A session's title goes through these states (`t:t/0`):
+
+    * `:untitled` - no title yet; the next message the user writes may start
+      one.
+    * `{:pending, task}` - a generation task runs.
+    * `{:titled, title}` - the journal records `title`, generated or set
+      explicitly through the session spec. A titled session never
+      generates another.
+    * `:failed` - the one generation failed, crashed, or could not start.
+      The session stays untitled and does not try again.
 
   The prompt and normalization follow codex-rs thread titles
   (`codex-rs/tui/src/app/thread_title.rs`): a byte-bounded prompt over the
@@ -17,9 +31,15 @@ defmodule Tackle.Session.Title do
   the first user message.
   """
 
+  require Logger
+
+  alias Tackle.Config
+  alias Tackle.Config.SessionTitles
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Response
   alias Tackle.Lib.LLM.Selection
+  alias Tackle.Runtime.Task, as: TitleTask
+  alias Tackle.Session.Journal
 
   # Codex THREAD_TITLE_MAX_CHARS: titles stay scannable in lists and tabs.
   @max_chars 36
@@ -30,6 +50,67 @@ defmodule Tackle.Session.Title do
 
   @quote_chars ["\"", "'", "`", "“", "”", "‘", "’"]
   @trailing_punctuation [".", "?", "!"]
+
+  @typedoc "A session's title; see the module docs."
+  @type t :: :untitled | {:pending, TitleTask.t()} | {:titled, String.t()} | :failed
+
+  @doc "The title of a session whose journal records `title`, `nil` when none."
+  @spec new(String.t() | nil) :: t()
+  def new(nil), do: :untitled
+  def new(title) when is_binary(title), do: {:titled, title}
+
+  @doc "The title's text, or `nil` while the session is untitled."
+  @spec current(t()) :: String.t() | nil
+  def current({:titled, title}), do: title
+  def current(_title), do: nil
+
+  @doc """
+  Starts generating a durable session's title from `content`, a message the
+  user wrote, under `supervisor`; the caller owns the task and passes its
+  result to `finish/1`.
+
+  Returns `:untitled` and starts nothing for a session without a journal,
+  without `Tackle.Config.SessionTitles` configured, or for blank content.
+  The task waits behind the journal's outstanding commits, generates the
+  title, and commits it through `Tackle.Session.Journal.metadata_changed/2`,
+  returning `{:ok, title}` or `{:error, reason}`. A dedicated title model
+  wins when one is configured; otherwise the call reuses the session's
+  selection and LLM options, which carry its credential store.
+  """
+  @spec start(Config.t(), pid() | nil, Supervisor.supervisor(), String.t(), String.t() | nil) ::
+          t()
+  def start(%Config{} = config, journal, supervisor, session_id, content) do
+    if titleable?(config, journal, content),
+      do: start_task(config, journal, supervisor, session_id, content),
+      else: :untitled
+  end
+
+  @doc """
+  Settles a title task: its result, or `{:exit, reason}` when it crashed.
+  A failure only leaves the session untitled; it is logged at debug level
+  and never surfaces as a session error.
+  """
+  @spec finish({:ok, String.t()} | {:error, term()} | {:exit, term()}) :: t()
+  def finish({:ok, title}) when is_binary(title), do: {:titled, title}
+
+  def finish({:exit, _reason}) do
+    Logger.debug("session title generation crashed")
+    :failed
+  end
+
+  def finish({:error, reason}) do
+    Logger.debug("session title generation failed: #{inspect(reason)}")
+    :failed
+  end
+
+  @doc "Stops a pending title task."
+  @spec shutdown(t(), timeout()) :: :ok
+  def shutdown({:pending, task}, timeout) do
+    TitleTask.shutdown(task, timeout)
+    :ok
+  end
+
+  def shutdown(_title, _timeout), do: :ok
 
   @doc """
   Generates one session title for `user_message` through `selection`.
@@ -99,6 +180,41 @@ defmodule Tackle.Session.Title do
   end
 
   def normalize(_raw), do: {:error, :invalid_title}
+
+  defp titleable?(%Config{session_titles: %SessionTitles{}}, journal, content)
+       when not is_nil(journal) and is_binary(content),
+       do: String.trim(content) != ""
+
+  defp titleable?(_config, _journal, _content), do: false
+
+  defp start_task(config, journal, supervisor, session_id, content) do
+    selection = selection(config)
+    llm_opts = Keyword.put(config.llm_opts, :session_id, session_id)
+    generate = fn -> generate_and_commit(journal, selection, content, llm_opts) end
+
+    case TitleTask.start(supervisor, generate) do
+      {:ok, task} ->
+        {:pending, task}
+
+      {:error, reason} ->
+        Logger.debug("session title task failed to start: #{inspect(reason)}")
+        :failed
+    end
+  end
+
+  # A title is also a model effect: wait behind outstanding commits.
+  defp generate_and_commit(journal, selection, content, llm_opts) do
+    with :ok <- Journal.await_idle(journal),
+         {:ok, title} <- generate(selection, content, llm_opts),
+         :ok <- Journal.metadata_changed(journal, %{"title" => title}) do
+      {:ok, title}
+    end
+  end
+
+  defp selection(%Config{session_titles: %SessionTitles{selection: %Selection{} = selection}}),
+    do: selection
+
+  defp selection(%Config{llm: %Selection{} = selection}), do: selection
 
   defp title_from_response(%Response{tool_calls: [_ | _]}), do: {:error, :title_tool_calls}
 

@@ -108,6 +108,33 @@ defmodule Tackle.Session.TitleTest do
     end
   end
 
+  describe "title states" do
+    test "a recorded title is current; an untitled session has none" do
+      assert Title.new(nil) == :untitled
+      assert Title.new("Fix the login form") == {:titled, "Fix the login form"}
+      assert Title.current({:titled, "Fix the login form"}) == "Fix the login form"
+      assert Title.current(:untitled) == nil
+      assert Title.current(:failed) == nil
+    end
+
+    test "start generates nothing it cannot commit or was not asked for" do
+      titled = config(session_titles: [model: "test/echo"])
+      supervisor = start_supervised!(DynamicSupervisor)
+      journal = self()
+
+      assert Title.start(titled, nil, supervisor, "session", "Fix it") == :untitled
+      assert Title.start(config(), journal, supervisor, "session", "Fix it") == :untitled
+      assert Title.start(titled, journal, supervisor, "session", "  ") == :untitled
+      assert Title.start(titled, journal, supervisor, "session", nil) == :untitled
+    end
+
+    test "finish keeps a generated title and marks a failure as final" do
+      assert Title.finish({:ok, "Fix the login form"}) == {:titled, "Fix the login form"}
+      assert Title.finish({:error, :invalid_title}) == :failed
+      assert Title.finish({:exit, :killed}) == :failed
+    end
+  end
+
   describe "automatic generation" do
     test "titles an untitled durable session after its first user message", ctx do
       scope = start_durable_scope(home: ctx.home, root: root_opts())
@@ -166,7 +193,7 @@ defmodule Tackle.Session.TitleTest do
       # This is deliberately the pre-hook event ordering used by the loop.
       send(session, {:tackle_event, turn_id, Event.message_end(message)})
       refute_receive {:adapter_called, _, _, _}, 150
-      assert :sys.get_state(session).title_task == nil
+      assert :sys.get_state(session).title == :untitled
 
       # The loop takes the queued message after this answer and appends it.
       send(turn_task, {:respond, "answer"})
@@ -205,7 +232,7 @@ defmodule Tackle.Session.TitleTest do
       assert Enum.any?(state.messages, &(&1.content =~ "Message from agent"))
       refute_receive {:adapter_called, _, _, _}, 150
       refute_received {:tackle_session_title_changed, _session_id, _title}
-      assert :sys.get_state(session).title_task == nil
+      assert :sys.get_state(session).title == :untitled
     end
 
     test "a queued user message that starts the next turn titles the session", ctx do
@@ -304,10 +331,17 @@ defmodule Tackle.Session.TitleTest do
 
       {:ok, projection} = Reader.projection(snapshot.session_id, home: ctx.home)
       assert projection.title == nil
+      {:ok, session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
+      assert :sys.get_state(session).title == :failed
+      adapter_calls()
 
-      # The session keeps accepting work after the failed title call.
+      # The session keeps accepting work after the failed title call, and
+      # does not try to title itself again.
       {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "Another prompt")
       assert_receive {:tackle_turn_finished, _sid, ^turn_id, {:ok, _state}}, 5_000
+      Process.sleep(300)
+      assert [turn_call] = adapter_calls()
+      refute title_call?(turn_call)
     end
 
     test "a resumed session does not regenerate its committed title", ctx do
@@ -332,6 +366,16 @@ defmodule Tackle.Session.TitleTest do
       assert_receive {:tackle_turn_finished, _sid, ^turn_id, {:ok, _state}}, 5_000
 
       refute_receive {:tackle_session_title_changed, _sid, _title}, 300
+    end
+  end
+
+  # Takes the adapter calls received so far off the mailbox, returning their
+  # options.
+  defp adapter_calls do
+    receive do
+      {:adapter_called, _pid, _model, opts} -> [opts | adapter_calls()]
+    after
+      0 -> []
     end
   end
 

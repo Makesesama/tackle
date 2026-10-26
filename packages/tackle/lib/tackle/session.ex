@@ -35,12 +35,10 @@ defmodule Tackle.Session do
 
   alias Tackle.AgentScope.Coordinator
   alias Tackle.Config
-  alias Tackle.Config.SessionTitles
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
-  alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Runtime.AgentContext
@@ -53,7 +51,6 @@ defmodule Tackle.Session do
   alias Tackle.Runtime.Task, as: TurnTask
   alias Tackle.Session.Durable
   alias Tackle.Session.Inbox
-  alias Tackle.Session.Journal
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Session.Title
   alias Tackle.Session.Turn
@@ -295,8 +292,7 @@ defmodule Tackle.Session do
         tree_enabled?: opened.tree_enabled?,
         inbox: Inbox.new(),
         inbox_wake_scheduled?: false,
-        session_title: opened.title,
-        title_task: nil,
+        title: Title.new(opened.title),
         storage_task: nil,
         storage_status: opened.storage
       }
@@ -611,7 +607,7 @@ defmodule Tackle.Session do
   def handle_info({:tackle_message_appended, session_id, %Message{} = message}, state)
       when session_id == state.agent_state.session_id do
     if Turn.user_authored?(state.active_turn, message),
-      do: {:noreply, maybe_generate_title(state, message.content)},
+      do: {:noreply, maybe_start_title(state, message.content)},
       else: {:noreply, state}
   end
 
@@ -648,21 +644,18 @@ defmodule Tackle.Session do
     {:noreply, cancel_running(state, reason)}
   end
 
-  # A completed title generation commits through the journal's metadata path so
-  # the projection, catalog, and every frontend pick it up. A failure only
-  # leaves the session untitled; it never surfaces as a session error.
-  def handle_info({ref, result}, %{title_task: %TurnTask{ref: ref}} = state) do
-    Process.demonitor(state.title_task.monitor, [:flush])
-    {:noreply, state |> Map.put(:title_task, :done) |> apply_generated_title(result)}
+  # A generated title is already committed through the journal's metadata
+  # path, so the projection, catalog, and every frontend pick it up.
+  def handle_info({ref, result}, %{title: {:pending, %TurnTask{ref: ref} = task}} = state) do
+    Process.demonitor(task.monitor, [:flush])
+    {:noreply, finish_title(state, result)}
   end
 
   def handle_info(
-        {:DOWN, monitor, :process, _pid, _reason},
-        %{title_task: %TurnTask{monitor: monitor}} = state
-      ) do
-    Logger.debug("session title generation crashed")
-    {:noreply, %{state | title_task: :done}}
-  end
+        {:DOWN, monitor, :process, _pid, reason},
+        %{title: {:pending, %TurnTask{monitor: monitor}}} = state
+      ),
+      do: {:noreply, finish_title(state, {:exit, reason})}
 
   def handle_info(:tackle_inbox_wake, state),
     do: start_inbox_turn(%{state | inbox_wake_scheduled?: false})
@@ -697,7 +690,7 @@ defmodule Tackle.Session do
   @impl true
   def terminate(_reason, state) do
     cleanup_active_turn(state.active_turn)
-    cleanup_title_task(state.title_task)
+    Title.shutdown(state.title, @task_shutdown_timeout)
 
     if state.storage_task do
       TurnTask.shutdown(state.storage_task.task, @task_shutdown_timeout)
@@ -763,7 +756,7 @@ defmodule Tackle.Session do
     state =
       %{state | inbox: inbox}
       # The session journaled these itself, so no hook reports them appended.
-      |> maybe_generate_title(first_user_input(entries))
+      |> maybe_start_title(entries |> Inbox.user_messages() |> List.first())
 
     broadcast_inbox_drained(state, entries)
     state
@@ -1240,85 +1233,33 @@ defmodule Tackle.Session do
       agent_ref: state.agent_ref,
       scope_ref: state.scope_ref,
       recovery: state.recovery,
-      session_title: state.session_title,
+      session_title: Title.current(state.title),
       storage: state.storage_status
     }
   end
 
-  # -- automatic session titles ---------------------------------------------
+  # Only the first message the user wrote in an untitled session starts a
+  # title (`Tackle.Session.Title`); the generation runs beside the turn.
+  defp maybe_start_title(%{title: :untitled} = state, content) do
+    %{config: config, journal: journal, work_supervisor: supervisor} = state
+    title = Title.start(config, journal, supervisor, state.agent_state.session_id, content)
+    %{state | title: title}
+  end
 
-  # Codex-style automatic titles: the first settled message the user wrote in
-  # an untitled durable session starts one bounded, tool-free generation task
-  # (`Tackle.Session.Title`). The task runs concurrently with the active turn,
-  # so the title is ready soon after the prompt instead of after the turn. An
-  # explicit title from the session spec or a resumed journal suppresses
-  # generation, and a session generates at most one title.
-  defp maybe_generate_title(
-         %{session_title: nil, title_task: nil, journal: journal} = state,
-         content
-       )
-       when not is_nil(journal) and is_binary(content) do
-    if titles_enabled?(state.config) and String.trim(content) != "" do
-      start_title_task(state, content)
-    else
-      state
+  defp maybe_start_title(state, _content), do: state
+
+  defp finish_title(state, result) do
+    title = Title.finish(result)
+    state = %{state | title: title}
+
+    case title do
+      {:titled, text} ->
+        broadcast(state, {:tackle_session_title_changed, state.agent_state.session_id, text})
+        state
+
+      _failed ->
+        state
     end
-  end
-
-  defp maybe_generate_title(state, _content), do: state
-
-  defp first_user_input(entries), do: entries |> Inbox.user_messages() |> List.first()
-
-  defp titles_enabled?(%Config{session_titles: %SessionTitles{}}), do: true
-  defp titles_enabled?(_config), do: false
-
-  defp start_title_task(state, user_message) do
-    selection = title_selection(state.config)
-    llm_opts = title_llm_opts(state)
-
-    case TurnTask.start(state.work_supervisor, fn ->
-           generate_and_persist_title(state.journal, selection, user_message, llm_opts)
-         end) do
-      {:ok, task} ->
-        %{state | title_task: task}
-
-      {:error, reason} ->
-        Logger.debug("session title task failed to start: #{inspect(reason)}")
-        %{state | title_task: :done}
-    end
-  end
-
-  defp generate_and_persist_title(journal, selection, user_message, llm_opts) do
-    # A title is also a model effect: wait behind outstanding commits.
-    with :ok <- Journal.await_idle(journal),
-         {:ok, title} <- Title.generate(selection, user_message, llm_opts),
-         :ok <- Journal.metadata_changed(journal, %{"title" => title}) do
-      {:ok, title}
-    end
-  end
-
-  # A dedicated title model wins when one is configured; otherwise the title
-  # call reuses the session's live selection, like codex falling back to the
-  # current model.
-  defp title_selection(%Config{
-         session_titles: %SessionTitles{selection: %Selection{} = selection}
-       }),
-       do: selection
-
-  defp title_selection(%Config{llm: %Selection{} = selection}), do: selection
-
-  defp title_llm_opts(%{config: config, agent_state: agent_state}),
-    do: Keyword.put(config.llm_opts, :session_id, agent_state.session_id)
-
-  defp apply_generated_title(state, {:ok, title}) do
-    state = %{state | session_title: title}
-    broadcast(state, {:tackle_session_title_changed, state.agent_state.session_id, title})
-    state
-  end
-
-  defp apply_generated_title(state, {:error, reason}) do
-    Logger.debug("session title generation failed: #{inspect(reason)}")
-    state
   end
 
   defp project_usage_event(
@@ -1377,12 +1318,6 @@ defmodule Tackle.Session do
     safe_cancellation(fn -> Turn.delete_signal(turn) end)
     :ok
   end
-
-  defp cleanup_title_task(nil), do: :ok
-  defp cleanup_title_task(:done), do: :ok
-
-  defp cleanup_title_task(%TurnTask{} = task),
-    do: TurnTask.shutdown(task, @task_shutdown_timeout)
 
   # The default ETS cancellation store can lose its lazily-created table when
   # its owning process exits. Cleanup must not crash a terminating session.
