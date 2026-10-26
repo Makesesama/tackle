@@ -1,6 +1,8 @@
 defmodule Tackle.Plugins.Ollama.HTTP do
   @moduledoc false
 
+  alias Tackle.Lib.LLM.Error
+
   @type stream_callback ::
           (binary(), Req.Response.t(), term() -> {:cont, term()} | {:halt, term()})
 
@@ -18,10 +20,8 @@ defmodule Tackle.Plugins.Ollama.HTTP do
       end
 
     normalize_stream_result(result)
-  rescue
-    exception -> {:error, {:request_failed, Exception.message(exception)}}
   catch
-    kind, reason -> {:error, {:request_failed, {kind, reason}}}
+    kind, reason -> {:error, Error.from_caught(kind, reason)}
   end
 
   @cancel_poll_ms 50
@@ -54,7 +54,7 @@ defmodule Tackle.Plugins.Ollama.HTTP do
         result
 
       {:exit, reason} ->
-        {:error, {:request_failed, {:exit, reason}}}
+        {:error, Error.from_caught(:exit, reason)}
 
       nil ->
         if Tackle.Lib.Cancellation.cancelled?(signal) do
@@ -69,13 +69,11 @@ defmodule Tackle.Plugins.Ollama.HTTP do
   defp send_request(request_fun, request_options) do
     case request_fun.(request_options) do
       {:ok, %{status: status} = response} when is_integer(status) -> {:ok, response}
-      {:error, reason} -> {:error, {:request_failed, reason}}
-      other -> {:error, {:invalid_http_response, other}}
+      {:error, reason} -> {:error, Error.from_transport(reason)}
+      other -> {:error, Error.new(:invalid_response, details: other)}
     end
-  rescue
-    exception -> {:error, {:request_failed, Exception.message(exception)}}
   catch
-    kind, reason -> {:error, {:request_failed, {kind, reason}}}
+    kind, reason -> {:error, Error.from_caught(kind, reason)}
   end
 
   defp stream_request(request_options, initial_acc, callback, opts) do
@@ -111,13 +109,8 @@ defmodule Tackle.Plugins.Ollama.HTTP do
   defp normalize_stream_result({:ok, %{status: _status} = response}), do: {:ok, response}
 
   defp normalize_stream_result({:error, reason, _response, _acc}),
-    do: {:error, {:request_failed, reason}}
+    do: {:error, Error.from_transport(reason)}
 
-  defp normalize_stream_result({:error, reason}), do: {:error, {:request_failed, reason}}
-  defp normalize_stream_result(other), do: {:error, {:invalid_http_response, other}}
-
-  @spec error_body(term()) :: term()
-  def error_body(%{} = body), do: body
-  def error_body(body) when is_binary(body), do: String.slice(body, 0, 4_096)
-  def error_body(body), do: inspect(body, limit: 20, printable_limit: 4_096)
+  defp normalize_stream_result({:error, reason}), do: {:error, Error.from_transport(reason)}
+  defp normalize_stream_result(other), do: {:error, Error.new(:invalid_response, details: other)}
 end

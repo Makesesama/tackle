@@ -2,8 +2,12 @@ defmodule Tackle.Plugins.CodexTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib
-  alias Tackle.Lib.{Cancellation, LLM, Loop, ModelInfo, Usage}
+  alias Tackle.Lib.{Cancellation, Event, LLM, Loop, Message, ModelInfo, State, Usage}
+  alias Tackle.Lib.Compaction.Config, as: CompactionConfig
+  alias Tackle.Lib.Compaction.Summary
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.Retry
   alias Tackle.Plugins.Codex
   alias Tackle.Plugins.Codex.SSE
 
@@ -12,6 +16,21 @@ defmodule Tackle.Plugins.CodexTest do
     "properties" => %{"query" => %{"type" => "string", "description" => "Query"}},
     "required" => ["query"]
   }
+
+  defmodule OverflowSummarizer do
+    @behaviour Tackle.Lib.Compaction.Summarizer
+
+    @impl true
+    def summarize(_request, _opts),
+      do: {:ok, %Summary{content: "checkpoint summary", usage: nil, model: "test/m"}}
+  end
+
+  defmodule OverflowCommitter do
+    @behaviour Tackle.Lib.Compaction.Committer
+
+    @impl true
+    def commit(_record, _context), do: :ok
+  end
 
   defmodule Interaction do
     @behaviour Tackle.Lib.Interaction
@@ -555,7 +574,7 @@ defmodule Tackle.Plugins.CodexTest do
       |> Keyword.put(:transport, :auto)
       |> Keyword.put(:websocket_request, websocket_request)
 
-    assert {:error, {:websocket_transport_failed, :after_stream, "closed"}} =
+    assert {:error, %Error{kind: :unknown, message: "The provider request failed: closed"}} =
              Codex.stream(nil, opts, fn event -> send(test_pid, {:event, event}) end)
 
     assert_receive {:event, %{type: :text_delta, delta: "partial"}}
@@ -586,7 +605,8 @@ defmodule Tackle.Plugins.CodexTest do
           assert header_value(headers, "authorization") == "Bearer access-token"
 
           {:error,
-           {:websocket_transport_failed, :before_stream, {:http_error, 401, "unauthorized"}}}
+           {:websocket_transport_failed, :before_stream,
+            Error.from_response(401, "unauthorized", [])}}
 
         1 ->
           assert header_value(headers, "authorization") == "Bearer #{refreshed_access}"
@@ -876,8 +896,12 @@ defmodule Tackle.Plugins.CodexTest do
       streaming_response(options, split_binary(body, [5, 17]), 400)
     end
 
-    assert {:error, {:http_error, 400, ^body}} =
+    assert {:error,
+            %Error{kind: :invalid_request, status: 400, details: details, message: message}} =
              Codex.generate(nil, base_opts(store, request))
+
+    assert details == JSON.decode!(body)
+    assert message =~ "No tool output found for function call call-1."
   end
 
   test "does not expose the stream accumulator for a bodyless HTTP error", %{store: store} do
@@ -888,7 +912,8 @@ defmodule Tackle.Plugins.CodexTest do
     opts = base_opts(store, fn _options -> flunk("unexpected legacy request") end)
     opts = Keyword.put(opts, :stream, stream)
 
-    assert {:error, {:http_error, 400, ""}} = Codex.generate(nil, opts)
+    assert {:error, %Error{kind: :invalid_request, status: 400, details: ""}} =
+             Codex.generate(nil, opts)
   end
 
   test "classifies a wire context overflow as a provider-neutral error", %{store: store} do
@@ -903,14 +928,122 @@ defmodule Tackle.Plugins.CodexTest do
 
     request = fn _options -> {:ok, %Req.Response{status: 400, body: body}} end
 
-    assert {:error, :context_window_exceeded} = Codex.generate(nil, base_opts(store, request))
+    assert {:error, %Error{kind: :context_window_exceeded, status: 400}} =
+             Codex.generate(nil, base_opts(store, request))
   end
 
   test "does not classify generic 4xx errors as overflow", %{store: store} do
     request = fn _options -> {:ok, %Req.Response{status: 400, body: "bad request"}} end
 
-    assert {:error, {:http_error, 400, "bad request"}} =
+    assert {:error, %Error{kind: :invalid_request, status: 400, details: "bad request"}} =
              Codex.generate(nil, base_opts(store, request))
+  end
+
+  test "passes Retry-After through on a rate limit", %{store: store} do
+    request = fn _options ->
+      {:ok, %Req.Response{status: 429, headers: %{"retry-after" => ["17"]}, body: ""}}
+    end
+
+    assert {:error, %Error{kind: :rate_limited, status: 429, retry_after_ms: 17_000} = error} =
+             Codex.generate(nil, base_opts(store, request))
+
+    assert Retry.retryable?(error)
+  end
+
+  test "reports Req transport failures as retryable transport errors", %{store: store} do
+    for reason <- [:closed, :econnrefused, :econnreset, :nxdomain] do
+      request = fn _options -> {:error, %Req.TransportError{reason: reason}} end
+
+      assert {:error, %Error{kind: :transport, details: %Req.TransportError{}} = error} =
+               Codex.generate(nil, base_opts(store, request))
+
+      assert Retry.retryable?(error)
+    end
+
+    request = fn _options -> {:error, %Req.TransportError{reason: :timeout}} end
+    assert {:error, %Error{kind: :timeout}} = Codex.generate(nil, base_opts(store, request))
+  end
+
+  test "reports Mint transport failures of a WebSocket as retryable", %{store: store} do
+    websocket_request = fn _body, _options, _headers, _callback ->
+      {:error,
+       {:websocket_transport_failed, :after_stream, %Mint.TransportError{reason: :closed}}}
+    end
+
+    opts =
+      base_opts(store, fn _options -> flunk("unexpected SSE request") end)
+      |> Keyword.put(:transport, :websocket)
+      |> Keyword.put(:websocket_request, websocket_request)
+
+    assert {:error, %Error{kind: :transport} = error} = Codex.generate(nil, opts)
+    assert Retry.retryable?(error)
+  end
+
+  test "classifies a context overflow reported inside the stream", %{store: store} do
+    request = fn options -> streaming_response(options, [overflow_event()]) end
+
+    assert {:error, %Error{kind: :context_window_exceeded, status: nil}} =
+             Codex.generate(nil, base_opts(store, request))
+  end
+
+  test "an in-stream overflow compacts and retries through the loop", %{store: store} do
+    calls = start_supervised!({Agent, fn -> 0 end}, id: {Agent, make_ref()})
+
+    request = fn options ->
+      case Agent.get_and_update(calls, &{&1, &1 + 1}) do
+        0 ->
+          streaming_response(options, [overflow_event()])
+
+        _retry ->
+          streaming_response(options, [
+            sse(%{
+              "type" => "response.completed",
+              "response" => %{
+                "status" => "completed",
+                "output" => [
+                  %{
+                    "type" => "message",
+                    "content" => [%{"type" => "output_text", "text" => "compacted answer"}]
+                  }
+                ]
+              }
+            })
+          ])
+      end
+    end
+
+    {:ok, selection} = LLM.select([Codex], "openai-codex/gpt-5.5")
+
+    compaction =
+      CompactionConfig.new!(
+        policy: [retain_tokens: 10],
+        summarizer: OverflowSummarizer,
+        committer: OverflowCommitter
+      )
+
+    state =
+      Lib.new(
+        llm: selection,
+        retry: false,
+        compaction: compaction,
+        llm_opts: [credential_store: store, request: request, transport: :sse]
+      )
+      |> State.add_message(Message.user(String.duplicate("earlier ", 200)))
+      |> State.add_message(Message.assistant(content: String.duplicate("answer ", 200)))
+
+    test_pid = self()
+
+    assert {:ok, final_state} =
+             Loop.run(state, "hello", event_callback: &send(test_pid, {:event, &1}))
+
+    assert Lib.last_answer(final_state) == "compacted answer"
+    assert Agent.get(calls, & &1) == 2
+
+    assert_received {:event,
+                     %Event{
+                       type: :compaction_retry,
+                       data: %{trigger: :overflow, reason: %Error{kind: :context_window_exceeded}}
+                     }}
   end
 
   test "login runs the device-code flow through the interaction handle" do
@@ -1002,7 +1135,7 @@ defmodule Tackle.Plugins.CodexTest do
   test "usage surfaces provider errors", %{store: store} do
     request = fn _options -> {:ok, %Req.Response{status: 403, body: "no usage"}} end
 
-    assert {:error, {:http_error, 403, "no usage"}} =
+    assert {:error, %Error{kind: :auth, status: 403, details: "no usage"}} =
              Codex.usage(credential_store: store, request: request)
   end
 
@@ -1285,6 +1418,19 @@ defmodule Tackle.Plugins.CodexTest do
   end
 
   defp sse(event), do: "data: #{JSON.encode!(event)}\n\n"
+
+  defp overflow_event do
+    sse(%{
+      "type" => "response.failed",
+      "response" => %{
+        "status" => "failed",
+        "error" => %{
+          "code" => "context_length_exceeded",
+          "message" => "Your input exceeds the context window of this model."
+        }
+      }
+    })
+  end
 
   defp header(options, name) do
     options

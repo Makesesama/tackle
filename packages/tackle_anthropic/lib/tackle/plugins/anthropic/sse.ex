@@ -10,6 +10,7 @@ defmodule Tackle.Plugins.Anthropic.SSE do
   # and produces the final adapter response plus replayable `provider_state`.
 
   alias Tackle.Lib.JSON
+  alias Tackle.Lib.LLM.Error
 
   defstruct buffer: "",
             event_name: nil,
@@ -71,14 +72,18 @@ defmodule Tackle.Plugins.Anthropic.SSE do
           | {:error, term()}
   def result(%__MODULE__{cancelled?: true}, _requested_model, _schema), do: {:error, :cancelled}
 
-  def result(%__MODULE__{error: error}, _requested_model, _schema) when not is_nil(error),
+  def result(%__MODULE__{error: %Error{} = error}, _requested_model, _schema),
     do: {:error, error}
 
+  def result(%__MODULE__{error: error}, _requested_model, _schema) when not is_nil(error),
+    do: {:error, Error.new(:invalid_response, details: error)}
+
+  # A stream that stops before `message_stop` lost its connection.
   def result(%__MODULE__{done?: false}, _requested_model, _schema),
-    do: {:error, :stream_ended_without_message_stop}
+    do: {:error, Error.new(:transport, details: :stream_ended_without_message_stop)}
 
   def result(%__MODULE__{stop_reason: nil}, _requested_model, _schema),
-    do: {:error, :stream_ended_without_stop_reason}
+    do: {:error, Error.new(:invalid_response, details: :stream_ended_without_stop_reason)}
 
   def result(%__MODULE__{} = state, requested_model, schema) do
     model = state.model || requested_model
@@ -201,8 +206,9 @@ defmodule Tackle.Plugins.Anthropic.SSE do
 
   defp handle_event(state, %{"type" => "ping"}, _callback), do: state
 
+  # An error after the stream started, such as `overloaded_error`.
   defp handle_event(state, %{"type" => "error", "error" => error}, _callback) do
-    %{state | error: {:provider_error, error}}
+    %{state | error: Error.from_stream(error)}
   end
 
   defp handle_event(state, _event, _callback), do: state

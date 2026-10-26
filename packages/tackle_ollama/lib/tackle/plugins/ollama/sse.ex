@@ -1,6 +1,8 @@
 defmodule Tackle.Plugins.Ollama.SSE do
   @moduledoc false
 
+  alias Tackle.Lib.LLM.Error
+
   # Ollama's OpenAI-compatible stream ends with a finish-reason frame,
   # an optional empty-choices usage frame, and [DONE]. Tool ids may be absent.
 
@@ -98,14 +100,19 @@ defmodule Tackle.Plugins.Ollama.SSE do
           | {:error, term()}
   def result(%__MODULE__{cancelled?: true}, _requested_model, _schema), do: {:error, :cancelled}
 
-  def result(%__MODULE__{error: error}, _requested_model, _schema) when not is_nil(error),
+  def result(%__MODULE__{error: %Error{} = error}, _requested_model, _schema),
     do: {:error, error}
 
+  def result(%__MODULE__{error: error}, _requested_model, _schema) when not is_nil(error),
+    do: {:error, Error.new(:invalid_response, details: error)}
+
+  # A stream that stops before its finish reason or `[DONE]` lost its
+  # connection.
   def result(%__MODULE__{terminal?: false}, _requested_model, _schema),
-    do: {:error, :stream_ended_without_finish_reason}
+    do: {:error, Error.new(:transport, details: :stream_ended_without_finish_reason)}
 
   def result(%__MODULE__{done?: false}, _requested_model, _schema),
-    do: {:error, :stream_ended_without_done}
+    do: {:error, Error.new(:transport, details: :stream_ended_without_done)}
 
   def result(%__MODULE__{} = state, requested_model, schema) do
     tool_calls = ordered_tool_calls(state)
@@ -199,7 +206,7 @@ defmodule Tackle.Plugins.Ollama.SSE do
   end
 
   defp handle_event(state, %{"error" => error}, _callback) when not is_nil(error),
-    do: put_error(state, {:provider_error, error})
+    do: put_error(state, Error.from_stream(error))
 
   defp handle_event(state, event, callback) do
     state = put_response_model(state, event["model"])
@@ -277,7 +284,13 @@ defmodule Tackle.Plugins.Ollama.SSE do
           %{state | finish_reason: reason, terminal?: true}
 
         "length" ->
-          put_error(state, {:incomplete_response, "length"})
+          put_error(
+            state,
+            Error.new(:invalid_response,
+              message: "The provider ended the response early (length)",
+              details: {:incomplete_response, "length"}
+            )
+          )
 
         reason ->
           put_error(state, {:provider_finish_reason, reason})

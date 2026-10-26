@@ -15,6 +15,7 @@ defmodule Tackle.Plugins.Anthropic.OAuth do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.JSON
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.Anthropic.HTTP
   alias Tackle.Plugins.Anthropic.PKCE
 
@@ -230,17 +231,11 @@ defmodule Tackle.Plugins.Anthropic.OAuth do
   end
 
   defp retry_delay(response, opts, attempt) do
-    case HTTP.header(response, "retry-after") do
-      value when is_binary(value) ->
-        case Integer.parse(value) do
-          {seconds, _rest} ->
-            min(seconds * 1_000, Keyword.get(opts, :max_retry_delay_ms, @max_retry_delay_ms))
+    case Error.retry_after_ms(Map.get(response, :headers) || %{}) do
+      ms when is_integer(ms) ->
+        min(ms, Keyword.get(opts, :max_retry_delay_ms, @max_retry_delay_ms))
 
-          :error ->
-            backoff(opts, attempt)
-        end
-
-      _missing ->
+      nil ->
         backoff(opts, attempt)
     end
   end

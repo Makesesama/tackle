@@ -29,6 +29,7 @@ defmodule Tackle.Plugins.DeepSeek do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Interaction
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.DeepSeek.HTTP
@@ -138,8 +139,8 @@ defmodule Tackle.Plugins.DeepSeek do
     HTTP.decode_json(body)
   end
 
-  defp balance_response(%{status: status, body: body}) do
-    {:error, {:http_error, status, HTTP.error_body(body)}}
+  defp balance_response(%{status: status, body: body} = response) do
+    {:error, Error.from_response(status, body, Map.get(response, :headers))}
   end
 
   defp balance_url(opts) do
@@ -197,13 +198,18 @@ defmodule Tackle.Plugins.DeepSeek do
     signal = Keyword.get(opts, :cancellation_signal)
     initial_parser = SSE.new()
 
-    stream = fn chunk, _response, parser ->
-      parser = parser_state(parser, initial_parser)
+    # Req streams body chunks of error responses too; those are collected as a
+    # bounded raw body instead of being fed to the SSE parser.
+    stream = fn chunk, response, acc ->
+      cond do
+        error_status?(response) ->
+          {:cont, append_error_body(acc, chunk)}
 
-      if Cancellation.cancelled?(signal) do
-        {:halt, SSE.cancel(parser)}
-      else
-        {:cont, SSE.push(parser, chunk, event_callback)}
+        Cancellation.cancelled?(signal) ->
+          {:halt, SSE.cancel(parser_state(acc, initial_parser))}
+
+        true ->
+          {:cont, SSE.push(parser_state(acc, initial_parser), chunk, event_callback)}
       end
     end
 
@@ -234,44 +240,26 @@ defmodule Tackle.Plugins.DeepSeek do
     |> SSE.result(model, schema)
   end
 
-  defp response_result(%{status: status, body: body}, _model, _schema, _event_callback) do
-    error_body = HTTP.error_body(body)
-
-    case classify_overflow(status, error_body) do
-      :context_window_exceeded -> {:error, :context_window_exceeded}
-      :other -> {:error, {:http_error, status, error_body}}
-    end
+  defp response_result(%{status: status, body: body} = response, _model, _schema, _callback) do
+    {:error, Error.from_response(status, raw_error_body(body), Map.get(response, :headers))}
   end
 
-  # Only wire errors that unambiguously name a context/token limit are treated as
-  # overflow, so the harness can run exactly one compact-and-retry. Generic
-  # 4xx/5xx, rate limits, and transport failures stay unclassified.
-  @overflow_markers [
-    "context_length_exceeded",
-    "context_window_exceeded",
-    "maximum context length",
-    "exceeds the context window",
-    "too many tokens",
-    "input is too long",
-    "reduce the length of the messages"
-  ]
+  @max_error_body_bytes 16_384
 
-  defp classify_overflow(status, error_body) when status in [400, 413, 422] do
-    if overflow_message?(error_body), do: :context_window_exceeded, else: :other
-  end
+  defp error_status?(%{status: status}) when is_integer(status), do: status not in 200..299
+  defp error_status?(_response), do: false
 
-  defp classify_overflow(_status, _error_body), do: :other
+  defp append_error_body({:error_body, body}, chunk),
+    do: {:error_body, bounded(body <> chunk)}
 
-  defp overflow_message?(error_body) do
-    text =
-      case error_body do
-        body when is_binary(body) -> body
-        body -> inspect(body, limit: 20, printable_limit: 4_096)
-      end
+  defp append_error_body(_acc, chunk), do: {:error_body, bounded(chunk)}
 
-    downcased = String.downcase(text)
-    Enum.any?(@overflow_markers, &String.contains?(downcased, &1))
-  end
+  defp bounded(body) when byte_size(body) <= @max_error_body_bytes, do: body
+  defp bounded(body), do: binary_part(body, 0, @max_error_body_bytes)
+
+  defp raw_error_body({:error_body, body}), do: body
+  defp raw_error_body(%SSE{}), do: ""
+  defp raw_error_body(body), do: body
 
   defp build_request_body(schema, opts) do
     model = Keyword.fetch!(opts, :model)

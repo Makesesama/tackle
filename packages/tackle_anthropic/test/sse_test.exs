@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.JSON
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.Anthropic.SSE
 
   test "accumulates text deltas, emits usage, and returns a replayable state" do
@@ -210,7 +211,24 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
 
     {parser, _events} = run(error_wire)
 
-    assert {:error, {:provider_error, %{"type" => "overloaded_error", "message" => "busy"}}} =
+    assert {:error,
+            %Error{
+              kind: :overloaded,
+              message: "The provider is overloaded: busy",
+              details: %{"type" => "overloaded_error", "message" => "busy"}
+            } = error} = SSE.result(parser, "claude-opus-5-5", nil)
+
+    assert Tackle.Lib.Retry.retryable?(error)
+
+    overflow_wire =
+      sse("error", %{
+        "type" => "error",
+        "error" => %{"type" => "invalid_request_error", "message" => "prompt is too long"}
+      })
+
+    {parser, _events} = run(overflow_wire)
+
+    assert {:error, %Error{kind: :context_window_exceeded}} =
              SSE.result(parser, "claude-opus-5-5", nil)
 
     incomplete =
@@ -219,7 +237,7 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
 
     {parser, _events} = run(incomplete)
 
-    assert {:error, :stream_ended_without_message_stop} =
+    assert {:error, %Error{kind: :transport, details: :stream_ended_without_message_stop}} =
              SSE.result(parser, "claude-opus-5-5", nil)
 
     assert {:error, :cancelled} = SSE.result(SSE.cancel(SSE.new()), "claude-opus-5-5", nil)

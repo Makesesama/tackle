@@ -121,6 +121,13 @@ connections close after five minutes by default; `:websocket_idle_timeout` and
 that knows a session has ended can release its connection immediately with
 `Tackle.Plugins.Codex.close_session(session_id)`.
 
+Failures are `Tackle.Lib.LLM.Error`s on every transport: HTTP and WebSocket
+upgrade errors keep their status and `Retry-After`, a `response.failed` or
+`error` event is classified by its code (`context_length_exceeded` is a
+`:context_window_exceeded` the loop compacts and retries), and WebSocket or
+stream interruptions are `:transport` errors. ChatGPT plan limits
+(`usage_limit_reached`) are `:quota_exceeded` and are not retried.
+
 For stateless SSE continuations and full-context WebSocket recovery, the adapter
 stores the provider's opaque response output on the assistant message and replays
 it only for the same provider id and model. Hosts that persist conversations must

@@ -1,6 +1,7 @@
 defmodule Tackle.Plugins.DeepSeek.SSETest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.DeepSeek.SSE
 
   test "buffers arbitrary UTF-8 splits and accepts comments, multiline data, and CRLF" do
@@ -36,7 +37,7 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
       )
       |> SSE.push("data: [DONE]\n\n", fn _event -> :ok end)
 
-    assert {:error, :stream_ended_without_finish_reason} =
+    assert {:error, %Error{kind: :transport, details: :stream_ended_without_finish_reason}} =
              SSE.result(unfinished, "deepseek-flash", nil)
 
     missing_done =
@@ -49,7 +50,8 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
       )
       |> SSE.finish(fn _event -> :ok end)
 
-    assert {:error, :stream_ended_without_done} = SSE.result(missing_done, "deepseek-flash", nil)
+    assert {:error, %Error{kind: :transport, details: :stream_ended_without_done}} =
+             SSE.result(missing_done, "deepseek-flash", nil)
   end
 
   test "reports incomplete responses and lets a provider error override parser errors" do
@@ -61,7 +63,7 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
       )
       |> SSE.finish(fn _event -> :ok end)
 
-    assert {:error, {:incomplete_response, "length"}} =
+    assert {:error, %Error{kind: :invalid_response, details: {:incomplete_response, "length"}}} =
              SSE.result(incomplete, "deepseek-flash", nil)
 
     provider_error =
@@ -70,8 +72,24 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
       |> SSE.push(event(%{"error" => %{"message" => "bad request"}}), fn _event -> :ok end)
       |> SSE.finish(fn _event -> :ok end)
 
-    assert {:error, {:provider_error, %{"message" => "bad request"}}} =
+    assert {:error, %Error{kind: :unknown, details: %{"message" => "bad request"}}} =
              SSE.result(provider_error, "deepseek-flash", nil)
+
+    overflow =
+      SSE.new()
+      |> SSE.push(
+        event(%{
+          "error" => %{
+            "code" => "context_length_exceeded",
+            "message" => "This model's maximum context length is 65536 tokens."
+          }
+        }),
+        fn _event -> :ok end
+      )
+      |> SSE.finish(fn _event -> :ok end)
+
+    assert {:error, %Error{kind: :context_window_exceeded}} =
+             SSE.result(overflow, "deepseek-flash", nil)
   end
 
   test "reports malformed SSE JSON and malformed structured output" do
@@ -80,7 +98,7 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
       |> SSE.push("data: {not-json}\n\n", fn _event -> :ok end)
       |> SSE.finish(fn _event -> :ok end)
 
-    assert {:error, {:invalid_sse_json, "{not-json}"}} =
+    assert {:error, %Error{kind: :invalid_response, details: {:invalid_sse_json, "{not-json}"}}} =
              SSE.result(malformed, "deepseek-flash", nil)
 
     structured =
@@ -176,7 +194,8 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
       )
       |> SSE.push("data: [DONE]\n\n", fn _event -> :ok end)
 
-    assert {:error, :data_after_finish_reason} = SSE.result(parser, "deepseek-flash", nil)
+    assert {:error, %Error{kind: :invalid_response, details: :data_after_finish_reason}} =
+             SSE.result(parser, "deepseek-flash", nil)
   end
 
   test "validates completed tool identity and object arguments" do
@@ -210,7 +229,9 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
 
     for {tool_calls, expected} <- cases do
       parser = completed_tool_stream([tool_calls])
-      assert {:error, ^expected} = SSE.result(parser, "deepseek-v4-pro", nil)
+
+      assert {:error, %Error{kind: :invalid_response, details: ^expected}} =
+               SSE.result(parser, "deepseek-v4-pro", nil)
     end
   end
 
@@ -227,7 +248,8 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
         [%{"index" => 0, "id" => "call-2", "function" => %{"arguments" => "}"}}]
       ])
 
-    assert {:error, {:conflicting_tool_call_identity, :id}} =
+    assert {:error,
+            %Error{kind: :invalid_response, details: {:conflicting_tool_call_identity, :id}}} =
              SSE.result(conflicting, "deepseek-v4-pro", nil)
 
     duplicate =
@@ -238,7 +260,8 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
         ]
       ])
 
-    assert {:error, :duplicate_tool_call_id} = SSE.result(duplicate, "deepseek-v4-pro", nil)
+    assert {:error, %Error{kind: :invalid_response, details: :duplicate_tool_call_id}} =
+             SSE.result(duplicate, "deepseek-v4-pro", nil)
   end
 
   test "ignores all data after DONE" do

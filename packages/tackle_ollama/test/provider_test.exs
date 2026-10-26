@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
   use ExUnit.Case, async: false
 
   alias Tackle.Lib.{Cancellation, LLM, Usage}
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.Ollama
 
@@ -293,20 +294,21 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
   end
 
   test "preserves bounded streamed HTTP errors and classifies only specific overflow" do
-    for {status, body, expected} <- [
+    for {status, body, kind} <- [
           {400, %{"error" => %{"message" => "bad request", "request" => "too many tokens"}},
-           {:http_error, 400,
-            %{"error" => %{"message" => "bad request", "request" => "too many tokens"}}}},
-          {401, %{"error" => "maximum context length"},
-           {:http_error, 401, %{"error" => "maximum context length"}}},
-          {400, %{"error" => "maximum context length exceeded"}, :context_window_exceeded}
+           :invalid_request},
+          {401, %{"error" => "maximum context length"}, :auth},
+          {400, %{"error" => "maximum context length exceeded"}, :context_window_exceeded},
+          {400, %{"error" => "the input length exceeds the context length"},
+           :context_window_exceeded}
         ] do
       stream = fn _, initial, callback ->
         {:cont, acc} = callback.(JSON.encode!(body), %{status: status}, initial)
         {:ok, %{status: status}, acc}
       end
 
-      assert {:error, ^expected} = Ollama.generate(nil, opts(nil, api_key: "key", stream: stream))
+      assert {:error, %Error{kind: ^kind, status: ^status, details: ^body}} =
+               Ollama.generate(nil, opts(nil, api_key: "key", stream: stream))
     end
 
     stream = fn _, initial, callback ->
@@ -314,26 +316,48 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
       {:ok, %{status: 500}, acc}
     end
 
-    assert {:error, {:http_error, 500, body}} =
+    assert {:error, %Error{kind: :server, status: 500, details: body}} =
              Ollama.generate(nil, opts(nil, api_key: "key", stream: stream))
 
-    assert byte_size(body) <= 4_096
+    assert byte_size(body) <= 16_384
+  end
+
+  test "passes a rate limit's Retry-After through" do
+    stream = fn _, initial, callback ->
+      response = %{status: 429, headers: %{"retry-after" => ["4"]}}
+      {:cont, acc} = callback.(~s({"error":"too many requests"}), response, initial)
+      {:ok, response, acc}
+    end
+
+    assert {:error, %Error{kind: :rate_limited, retry_after_ms: 4_000} = error} =
+             Ollama.generate(nil, opts(nil, api_key: "key", stream: stream))
+
+    assert Tackle.Lib.Retry.retryable?(error)
   end
 
   test "in-stream overflow is retriable only before output; transport errors stay errors" do
     error = sse(%{"error" => %{"message" => "maximum context length exceeded"}})
 
-    assert {:error, :context_window_exceeded} =
+    assert {:error, %Error{kind: :context_window_exceeded}} =
              Ollama.generate(
                nil,
                opts(fn _ -> {:ok, %{status: 200, body: error}} end, api_key: "key")
              )
 
     request = fn _ -> {:ok, %{status: 200, body: frame(%{"content" => "partial"}) <> error}} end
-    assert {:error, {:provider_error, _}} = Ollama.generate(nil, opts(request, api_key: "key"))
 
-    assert {:error, {:request_failed, :timeout}} =
+    assert {:error, %Error{kind: :invalid_response}} =
+             Ollama.generate(nil, opts(request, api_key: "key"))
+
+    assert {:error, %Error{kind: :timeout}} =
              Ollama.generate(nil, opts(fn _ -> {:error, :timeout} end, api_key: "key"))
+
+    refused = fn _ -> {:error, %Req.TransportError{reason: :econnrefused}} end
+
+    assert {:error, %Error{kind: :transport} = transport} =
+             Ollama.generate(nil, opts(refused, api_key: "key"))
+
+    assert Tackle.Lib.Retry.retryable?(transport)
   end
 
   test "cancellation before HTTP and during streams fails without returning partial output" do

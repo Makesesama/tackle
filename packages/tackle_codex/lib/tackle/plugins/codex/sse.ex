@@ -1,6 +1,8 @@
 defmodule Tackle.Plugins.Codex.SSE do
   @moduledoc false
 
+  alias Tackle.Lib.LLM.Error
+
   @enforce_keys []
   defstruct buffer: "",
             data_lines: [],
@@ -80,11 +82,15 @@ defmodule Tackle.Plugins.Codex.SSE do
           | {:error, term()}
   def result(%__MODULE__{cancelled?: true}, _requested_model, _schema), do: {:error, :cancelled}
 
-  def result(%__MODULE__{error: error}, _requested_model, _schema) when not is_nil(error),
+  def result(%__MODULE__{error: %Error{} = error}, _requested_model, _schema),
     do: {:error, error}
 
+  def result(%__MODULE__{error: error}, _requested_model, _schema) when not is_nil(error),
+    do: {:error, Error.new(:invalid_response, details: error)}
+
+  # A stream that stops before its terminal event lost its connection.
   def result(%__MODULE__{terminal?: false}, _requested_model, _schema),
-    do: {:error, :stream_ended_without_terminal_event}
+    do: {:error, Error.new(:transport, details: :stream_ended_without_terminal_event)}
 
   def result(%__MODULE__{} = state, requested_model, schema) do
     model = state.model || requested_model
@@ -243,16 +249,18 @@ defmodule Tackle.Plugins.Codex.SSE do
   end
 
   defp handle_event(state, %{"type" => "response.incomplete", "response" => response}, _callback) do
-    reason = get_in(response, ["incomplete_details", "reason"])
-    put_error(state, {:incomplete_response, reason || "unknown"})
+    put_error(state, incomplete(response))
   end
 
+  # A failed response or an error event, such as a context overflow
+  # (`"context_length_exceeded"`) or a rate limit reported after the stream
+  # started.
   defp handle_event(state, %{"type" => "response.failed", "response" => response}, _callback) do
-    put_error(state, {:provider_error, response["error"] || response})
+    put_error(state, Error.from_stream(response["error"] || response))
   end
 
   defp handle_event(state, %{"type" => "error"} = event, _callback) do
-    put_error(state, {:provider_error, event["error"] || event["message"] || event})
+    put_error(state, Error.from_stream(event))
   end
 
   defp handle_event(state, _event, _callback), do: state
@@ -273,12 +281,20 @@ defmodule Tackle.Plugins.Codex.SSE do
         }
 
       "incomplete" ->
-        reason = get_in(response, ["incomplete_details", "reason"])
-        put_error(state, {:incomplete_response, reason || "unknown"})
+        put_error(state, incomplete(response))
 
       status ->
-        put_error(state, {:provider_error, response["error"] || status})
+        put_error(state, Error.from_stream(response["error"] || status))
     end
+  end
+
+  defp incomplete(response) do
+    reason = get_in(response, ["incomplete_details", "reason"]) || "unknown"
+
+    Error.new(:invalid_response,
+      message: "The provider ended the response early (#{reason})",
+      details: {:incomplete_response, reason}
+    )
   end
 
   defp apply_terminal_output(state, output) when is_list(output) do

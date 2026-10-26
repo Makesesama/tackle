@@ -6,6 +6,7 @@ defmodule Tackle.Hub.ReviewJobTest do
   import Tackle.Hub.GitHubFixtures
 
   alias Tackle.Executor.Jailed
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.Usage
   alias Tackle.Plugins.Codex
   alias Tackle.Review.{Finding, Result, Settings}
@@ -316,8 +317,11 @@ defmodule Tackle.Hub.ReviewJobTest do
 
   test "a successful review redacts provider response bodies from partial scoring failures", c do
     script = fn
-      nil, opts -> script(nil, opts)
-      _schema, _opts -> {:error, {:http_error, 500, "private-provider-response-sentinel"}}
+      nil, opts ->
+        script(nil, opts)
+
+      _schema, _opts ->
+        {:error, Error.from_response(500, "private-provider-response-sentinel", [])}
     end
 
     opts = Keyword.put(c.opts, :llm_opts, test_pid: self(), script: script)

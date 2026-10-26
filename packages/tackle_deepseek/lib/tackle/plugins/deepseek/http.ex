@@ -1,6 +1,8 @@
 defmodule Tackle.Plugins.DeepSeek.HTTP do
   @moduledoc false
 
+  alias Tackle.Lib.LLM.Error
+
   @type stream_callback ::
           (binary(), Req.Response.t(), term() -> {:cont, term()} | {:halt, term()})
 
@@ -18,10 +20,8 @@ defmodule Tackle.Plugins.DeepSeek.HTTP do
       end
 
     normalize_stream_result(result)
-  rescue
-    exception -> {:error, {:request_failed, Exception.message(exception)}}
   catch
-    kind, reason -> {:error, {:request_failed, {kind, reason}}}
+    kind, reason -> {:error, Error.from_caught(kind, reason)}
   end
 
   defp stream_request(request_options, initial_acc, callback, opts) do
@@ -57,15 +57,10 @@ defmodule Tackle.Plugins.DeepSeek.HTTP do
   defp normalize_stream_result({:ok, %{status: _status} = response}), do: {:ok, response}
 
   defp normalize_stream_result({:error, reason, _response, _acc}),
-    do: {:error, {:request_failed, reason}}
+    do: {:error, Error.from_transport(reason)}
 
-  defp normalize_stream_result({:error, reason}), do: {:error, {:request_failed, reason}}
-  defp normalize_stream_result(other), do: {:error, {:invalid_http_response, other}}
-
-  @spec error_body(term()) :: term()
-  def error_body(%{} = body), do: body
-  def error_body(body) when is_binary(body), do: String.slice(body, 0, 4_096)
-  def error_body(body), do: inspect(body, limit: 20, printable_limit: 4_096)
+  defp normalize_stream_result({:error, reason}), do: {:error, Error.from_transport(reason)}
+  defp normalize_stream_result(other), do: {:error, Error.new(:invalid_response, details: other)}
 
   @doc "Performs one non-streaming request."
   @spec request(keyword(), keyword()) :: {:ok, Req.Response.t() | map()} | {:error, term()}
@@ -75,13 +70,11 @@ defmodule Tackle.Plugins.DeepSeek.HTTP do
     case request_fun.(request_options) do
       {:ok, %Req.Response{} = response} -> {:ok, response}
       {:ok, %{status: _status, body: _body} = response} -> {:ok, response}
-      {:error, reason} -> {:error, {:request_failed, reason}}
-      other -> {:error, {:invalid_http_response, other}}
+      {:error, reason} -> {:error, Error.from_transport(reason)}
+      other -> {:error, Error.new(:invalid_response, details: other)}
     end
-  rescue
-    exception -> {:error, {:request_failed, Exception.message(exception)}}
   catch
-    kind, reason -> {:error, {:request_failed, {kind, reason}}}
+    kind, reason -> {:error, Error.from_caught(kind, reason)}
   end
 
   @doc "Decodes a decoded-or-encoded JSON object body."

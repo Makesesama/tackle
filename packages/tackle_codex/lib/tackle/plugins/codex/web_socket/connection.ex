@@ -3,6 +3,7 @@ defmodule Tackle.Plugins.Codex.WebSocket.Connection do
 
   use GenServer, restart: :temporary
 
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.Codex.WebSocket
 
   @registry Tackle.Plugins.Codex.WebSocket.Registry
@@ -178,9 +179,9 @@ defmodule Tackle.Plugins.Codex.WebSocket.Connection do
            request_ref: request_ref
        }}
     else
-      {:error, connection, %Mint.WebSocket.UpgradeFailureError{status_code: status} = error} ->
+      {:error, connection, %Mint.WebSocket.UpgradeFailureError{} = error} ->
         Mint.HTTP.close(connection)
-        {:error, {:http_error, status, Exception.message(error)}}
+        {:error, Error.from_response(error.status_code, "", error.headers || [])}
 
       {:error, connection, reason} ->
         Mint.HTTP.close(connection)

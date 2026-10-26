@@ -204,7 +204,11 @@ Supports streaming text/reasoning, native function tools, JSON Schema response
 formats, token usage, cancellation between chunks, and explicit context-overflow
 errors. Both `generate/2` and `stream/3` use SSE transport to
 `<base_url>/chat/completions`. Truncated streams and output-token exhaustion
-return errors rather than incomplete tool calls.
+return errors rather than incomplete tool calls. Failures are
+`Tackle.Lib.LLM.Error`s: HTTP errors keep their status and `Retry-After`, an
+error event in a committed stream is classified by its code, a truncated stream
+is a `:transport` error, and only errors that name a context limit become
+`:context_window_exceeded` (in a stream, only before any output).
 
 Standard options include `:model`, `:messages`, `:system`, `:tools`,
 `:temperature`, `:top_p`, `:max_tokens`, `:stop`, and `:cancellation_signal`.
@@ -245,7 +249,7 @@ same rules as chat. Requests are validated against the `Tackle.Lib.Decision`
 limits before sending. Every asked question must be answered with its own type;
 `choice` answers must name a known option, and a `score` without an explicit
 value is the probability-weighted average of its zero-based levels. Non-2xx
-responses return `{:error, {:http_error, status, body}}`. `decide/2` honours
+responses return `{:error, %Tackle.Lib.LLM.Error{}}`. `decide/2` honours
 `:cancellation_signal` (an in-flight request is abandoned) and
 `:receive_timeout` (default 60,000 ms, since a model may load on first use).
 

@@ -1,6 +1,7 @@
 defmodule Tackle.Plugins.Ollama.HTTPTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.Ollama
   alias Tackle.Plugins.Ollama.HTTP
 
@@ -57,12 +58,12 @@ defmodule Tackle.Plugins.Ollama.HTTPTest do
   end
 
   test "stream transport failures and invalid return shapes are explicit errors" do
-    assert {:error, {:request_failed, :timeout}} =
+    assert {:error, %Error{kind: :timeout, details: :timeout}} =
              HTTP.stream([], nil, fn _, _, _ -> flunk("no chunk") end,
                stream: fn _, _, _ -> {:error, :timeout, nil, nil} end
              )
 
-    assert {:error, {:invalid_http_response, :unexpected}} =
+    assert {:error, %Error{kind: :invalid_response, details: :unexpected}} =
              HTTP.stream([], nil, fn _, _, _ -> flunk("no chunk") end,
                stream: fn _, _, _ -> :unexpected end
              )

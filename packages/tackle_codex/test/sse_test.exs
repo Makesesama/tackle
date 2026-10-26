@@ -31,7 +31,8 @@ defmodule Tackle.Plugins.Codex.SSETest do
   test "rejects a stream without a terminal response event" do
     parser = SSE.new() |> SSE.push(~s|data: {"type":"response.created"}\n\n|, fn _ -> :ok end)
 
-    assert {:error, :stream_ended_without_terminal_event} =
+    assert {:error,
+            %Tackle.Lib.LLM.Error{kind: :transport, details: :stream_ended_without_terminal_event}} =
              parser |> SSE.finish(fn _ -> :ok end) |> SSE.result("gpt-5.5", nil)
   end
 

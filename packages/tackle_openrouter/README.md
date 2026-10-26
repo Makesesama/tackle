@@ -206,12 +206,15 @@ used for accounting either way.
   schema support drop the parameter.
 - **Tool results** are text-only. Image parts become an explicit
   `[image content omitted: ...]` note.
-- **Errors.** Only error messages that name a context limit become
+- **Errors.** Failures are `Tackle.Lib.LLM.Error`s with the HTTP status,
+  `Retry-After`, and the decoded error body as `details`; a mid-stream error
+  event is classified by its code (OpenRouter relays the upstream status there).
+  Only error messages that name a context limit become
   `:context_window_exceeded`, including an overflow reported on an already
-  committed stream before any output. Rate limits, insufficient credits (`402`),
-  and other failures stay `{:http_error, status, body}` with the decoded error
-  body. HTTP retries are disabled so a request is never replayed after visible
-  stream output.
+  committed stream before any output. Rate limits are `:rate_limited` and
+  insufficient credits (`402`) `:quota_exceeded`. HTTP retries in the adapter
+  are disabled so a request is never replayed after visible stream output; the
+  loop's retry policy decides.
 - **API keys** from every source are trimmed, and keys containing spaces or
   control characters are rejected with `:invalid_api_key` before a request is
   built.

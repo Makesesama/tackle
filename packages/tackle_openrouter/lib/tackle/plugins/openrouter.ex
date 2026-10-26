@@ -61,6 +61,7 @@ defmodule Tackle.Plugins.OpenRouter do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Interaction
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.OpenRouter.HTTP
@@ -202,8 +203,8 @@ defmodule Tackle.Plugins.OpenRouter do
     end
   end
 
-  defp key_response(%{status: status, body: body}) do
-    {:error, {:http_error, status, HTTP.error_body(body)}}
+  defp key_response(%{status: status, body: body} = response) do
+    {:error, Error.from_response(status, body, Map.get(response, :headers))}
   end
 
   @impl true
@@ -304,82 +305,26 @@ defmodule Tackle.Plugins.OpenRouter do
       |> SSE.finish(event_callback)
 
     case SSE.result(parser, model, schema) do
-      {:error, {:provider_error, error}} = failure ->
+      {:error, %Error{kind: :context_window_exceeded} = error} ->
         # OpenRouter may commit a 200 before the upstream rejects the prompt;
-        # an overflow reported before any output is still an overflow.
-        if SSE.output?(parser) or not overflow_message?(error),
-          do: failure,
-          else: {:error, :context_window_exceeded}
+        # an overflow reported before any output is still an overflow, but
+        # compacting after streamed output would repeat that output.
+        if SSE.output?(parser),
+          do: {:error, %{error | kind: :invalid_response}},
+          else: {:error, error}
 
       result ->
         result
     end
   end
 
-  defp response_result(%{status: status, body: body}, _model, _schema, _event_callback) do
-    error_body = body |> raw_error_body() |> HTTP.error_body()
-
-    case classify_overflow(status, error_body) do
-      :context_window_exceeded -> {:error, :context_window_exceeded}
-      :other -> {:error, {:http_error, status, error_body}}
-    end
+  defp response_result(%{status: status, body: body} = response, _model, _schema, _callback) do
+    {:error, Error.from_response(status, raw_error_body(body), Map.get(response, :headers))}
   end
 
-  defp raw_error_body({:error_body, body}), do: decode_error_body(body)
-  defp raw_error_body(body) when is_binary(body), do: decode_error_body(body)
+  defp raw_error_body({:error_body, body}), do: body
   defp raw_error_body(%SSE{}), do: ""
   defp raw_error_body(body), do: body
-
-  defp decode_error_body(body) do
-    case JSON.decode(body) do
-      {:ok, %{} = decoded} -> decoded
-      _other -> body
-    end
-  end
-
-  # Only wire errors that unambiguously name a context/token limit are treated as
-  # overflow, so the harness can run exactly one compact-and-retry. Generic
-  # 4xx/5xx, rate limits, insufficient credits, and transport failures stay
-  # unclassified. OpenRouter relays upstream wording, so markers cover the
-  # common backends it routes to. Only the error message and the relayed
-  # upstream text are searched, never echoed request content.
-  @overflow_markers [
-    "context_length_exceeded",
-    "context_window_exceeded",
-    "maximum context length",
-    "maximum allowed input length",
-    "exceeds the context window",
-    "exceeds the maximum number of tokens",
-    "prompt is too long",
-    "input is too long",
-    "too many tokens",
-    "reduce the length of the messages"
-  ]
-
-  defp classify_overflow(status, error_body) when status in [400, 413, 422] do
-    if overflow_message?(error_body), do: :context_window_exceeded, else: :other
-  end
-
-  defp classify_overflow(_status, _error_body), do: :other
-
-  defp overflow_message?(error) do
-    error
-    |> error_texts()
-    |> Enum.any?(fn text ->
-      downcased = String.downcase(text)
-      Enum.any?(@overflow_markers, &String.contains?(downcased, &1))
-    end)
-  end
-
-  defp error_texts(%{"error" => %{} = error}), do: error_texts(error)
-
-  defp error_texts(%{} = error) do
-    [error["code"], error["message"], get_in(error, ["metadata", "raw"])]
-    |> Enum.filter(&is_binary/1)
-  end
-
-  defp error_texts(body) when is_binary(body), do: [body]
-  defp error_texts(_body), do: []
 
   defp build_request_body(schema, opts) do
     model = Keyword.fetch!(opts, :model)

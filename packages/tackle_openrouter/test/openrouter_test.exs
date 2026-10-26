@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
   use ExUnit.Case, async: false
 
   alias Tackle.Lib.{Cancellation, LLM, ModelInfo, Usage}
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.OpenRouter
 
@@ -693,8 +694,10 @@ defmodule Tackle.Plugins.OpenRouterTest do
         ])
       end
 
-      assert {:error, {:provider_error, %{"code" => "server_error"}}} =
+      assert {:error, %Error{kind: :server, details: %{"code" => "server_error"}} = error} =
                OpenRouter.generate(nil, base_opts(store, request))
+
+      assert Tackle.Lib.Retry.retryable?(error)
     end
 
     test "rejects output after the finish reason", %{store: store} do
@@ -706,7 +709,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         ])
       end
 
-      assert {:error, :data_after_finish_reason} =
+      assert {:error, %Error{kind: :invalid_response, details: :data_after_finish_reason}} =
                OpenRouter.generate(nil, base_opts(store, request))
     end
 
@@ -715,21 +718,21 @@ defmodule Tackle.Plugins.OpenRouterTest do
         streaming_response(options, [sse(chunk(@model, %{"content" => "x"}, "length")), done()])
       end
 
-      assert {:error, {:incomplete_response, "length"}} =
+      assert {:error, %Error{kind: :invalid_response, details: {:incomplete_response, "length"}}} =
                OpenRouter.generate(nil, base_opts(store, length))
 
       no_done = fn options ->
         streaming_response(options, [sse(chunk(@model, %{"content" => "x"}, "stop"))])
       end
 
-      assert {:error, :stream_ended_without_done} =
+      assert {:error, %Error{kind: :transport, details: :stream_ended_without_done}} =
                OpenRouter.generate(nil, base_opts(store, no_done))
 
       no_finish = fn options ->
         streaming_response(options, [sse(chunk(@model, %{"content" => "x"})), done()])
       end
 
-      assert {:error, :stream_ended_without_finish_reason} =
+      assert {:error, %Error{kind: :transport, details: :stream_ended_without_finish_reason}} =
                OpenRouter.generate(nil, base_opts(store, no_finish))
     end
 
@@ -760,7 +763,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
           ])
         end
 
-        assert {:error, :invalid_reasoning_details} =
+        assert {:error, %Error{kind: :invalid_response, details: :invalid_reasoning_details}} =
                  OpenRouter.generate(nil, base_opts(store, request))
       end
     end
@@ -797,7 +800,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         ])
       end
 
-      assert {:error, :data_after_finish_reason} =
+      assert {:error, %Error{kind: :invalid_response, details: :data_after_finish_reason}} =
                OpenRouter.generate(nil, base_opts(store, request))
     end
 
@@ -824,7 +827,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         ])
       end
 
-      assert {:error, :context_window_exceeded} =
+      assert {:error, %Error{kind: :context_window_exceeded}} =
                OpenRouter.generate(nil, base_opts(store, before_output))
 
       after_output = fn options ->
@@ -835,7 +838,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         ])
       end
 
-      assert {:error, {:provider_error, ^error}} =
+      assert {:error, %Error{kind: :invalid_response, details: ^error}} =
                OpenRouter.generate(nil, base_opts(store, after_output))
     end
   end
@@ -917,7 +920,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       {:ok, %Req.Response{status: 400, body: body}}
     end
 
-    assert {:error, :context_window_exceeded} =
+    assert {:error, %Error{kind: :context_window_exceeded}} =
              OpenRouter.generate(nil, base_opts(store, request))
   end
 
@@ -927,8 +930,10 @@ defmodule Tackle.Plugins.OpenRouterTest do
         {:ok, %Req.Response{status: status, body: %{"error" => %{"message" => "nope"}}}}
       end
 
-      assert {:error, {:http_error, ^status, _body}} =
+      assert {:error, %Error{status: ^status, kind: kind}} =
                OpenRouter.generate(nil, base_opts(store, request))
+
+      refute kind == :context_window_exceeded
     end
 
     # Request text echoed elsewhere in the error must not look like an overflow.
@@ -941,7 +946,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       {:ok, %Req.Response{status: 400, body: body}}
     end
 
-    assert {:error, {:http_error, 400, _body}} =
+    assert {:error, %Error{kind: :invalid_request, status: 400}} =
              OpenRouter.generate(nil, base_opts(store, echoed))
   end
 
@@ -959,19 +964,29 @@ defmodule Tackle.Plugins.OpenRouterTest do
     for wire <- [[overflow], [overflow <> "\n"], [head, tail]] do
       request = fn options -> streaming_response(options, wire, 400) end
 
-      assert {:error, :context_window_exceeded} =
+      assert {:error, %Error{kind: :context_window_exceeded}} =
                OpenRouter.generate(nil, base_opts(store, request))
     end
 
     credits = JSON.encode!(%{"error" => %{"code" => 402, "message" => "Insufficient credits"}})
     request = fn options -> streaming_response(options, [credits <> "\n"], 402) end
 
-    assert {:error, {:http_error, 402, %{"error" => %{"message" => "Insufficient credits"}}}} =
+    assert {:error,
+            %Error{
+              kind: :quota_exceeded,
+              status: 402,
+              details: %{"error" => %{"message" => "Insufficient credits"}}
+            }} =
              OpenRouter.generate(nil, base_opts(store, request))
 
     request = fn options -> streaming_response(options, ["upstream exploded"], 502) end
 
-    assert {:error, {:http_error, 502, "upstream exploded"}} =
+    assert {:error,
+            %Error{
+              kind: :server,
+              status: 502,
+              message: "The provider failed (HTTP 502): upstream exploded"
+            }} =
              OpenRouter.generate(nil, base_opts(store, request))
   end
 
@@ -1174,7 +1189,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
     test "usage surfaces provider errors", %{store: store} do
       request = fn _options -> {:ok, %Req.Response{status: 401, body: "unauthorized"}} end
 
-      assert {:error, {:http_error, 401, "unauthorized"}} =
+      assert {:error, %Error{kind: :auth, status: 401, details: "unauthorized"}} =
                OpenRouter.usage(credential_store: store, request: request)
     end
   end

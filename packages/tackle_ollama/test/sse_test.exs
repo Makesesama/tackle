@@ -1,6 +1,7 @@
 defmodule Tackle.Plugins.Ollama.SSETest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.Ollama.SSE
 
   @noop &Function.identity/1
@@ -101,8 +102,12 @@ defmodule Tackle.Plugins.Ollama.SSETest do
        :duplicate_tool_call_index}
     ]
 
+    truncated = [:stream_ended_without_finish_reason, :stream_ended_without_done]
+
     for {wire, error} <- cases do
-      assert {:error, ^error} =
+      kind = if error in truncated, do: :transport, else: :invalid_response
+
+      assert {:error, %Error{kind: ^kind, details: ^error}} =
                SSE.new() |> SSE.push(wire, @noop) |> SSE.finish(@noop) |> SSE.result("m", nil)
     end
   end
@@ -112,10 +117,11 @@ defmodule Tackle.Plugins.Ollama.SSETest do
       frame(%{"tool_calls" => [call(0, "one", "a", "{")]}) <>
         frame(%{"tool_calls" => [call(0, "two", nil, "}")]})
 
-    assert {:error, {:conflicting_tool_call_identity, :id}} =
+    assert {:error,
+            %Error{kind: :invalid_response, details: {:conflicting_tool_call_identity, :id}}} =
              SSE.new() |> SSE.push(wire, @noop) |> SSE.result("m", nil)
 
-    assert {:error, {:provider_error, "failed"}} =
+    assert {:error, %Error{kind: :unknown, message: "The provider request failed: failed"}} =
              SSE.new() |> SSE.push(sse(%{"error" => "failed"}), @noop) |> SSE.result("m", nil)
 
     assert {:error, :cancelled} = SSE.new() |> SSE.cancel() |> SSE.result("m", nil)

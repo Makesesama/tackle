@@ -5,6 +5,7 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
 
   alias Tackle.Lib.{Cancellation, Decision, LLM, Usage}
   alias Tackle.Lib.Decision.{Answer, Question, Result}
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.Ollama
 
   setup do
@@ -362,18 +363,24 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
     end
 
     test "reports server errors and transport failures" do
-      assert {:error, {:http_error, 404, %{"error" => "model \"tev1:4b\" not found"}}} =
+      assert {:error,
+              %Error{
+                kind: :invalid_request,
+                status: 404,
+                message:
+                  "The provider rejected the request (HTTP 404): model \"tev1:4b\" not found"
+              }} =
                decide(questions(),
                  request: respond(404, %{"error" => "model \"tev1:4b\" not found"})
                )
 
-      assert {:error, {:http_error, 500, "boom"}} =
+      assert {:error, %Error{kind: :server, status: 500, details: "boom"}} =
                decide(questions(), request: fn _ -> {:ok, %{status: 500, body: "boom"}} end)
 
-      assert {:error, {:request_failed, :econnrefused}} =
+      assert {:error, %Error{kind: :transport, details: :econnrefused}} =
                decide(questions(), request: fn _ -> {:error, :econnrefused} end)
 
-      assert {:error, {:request_failed, "raised"}} =
+      assert {:error, %Error{kind: :unknown, message: "The provider request failed: raised"}} =
                decide(questions(), request: fn _ -> raise "raised" end)
     end
 

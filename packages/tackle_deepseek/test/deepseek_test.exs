@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
   use ExUnit.Case, async: false
 
   alias Tackle.Lib.{Cancellation, LLM, ModelInfo, Usage}
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.DeepSeek
 
@@ -676,14 +677,42 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
     request = fn _options -> {:ok, %Req.Response{status: 400, body: body}} end
 
-    assert {:error, :context_window_exceeded} = DeepSeek.generate(nil, base_opts(store, request))
+    assert {:error, %Error{kind: :context_window_exceeded, status: 400}} =
+             DeepSeek.generate(nil, base_opts(store, request))
   end
 
   test "does not classify generic 4xx errors as overflow", %{store: store} do
     request = fn _options -> {:ok, %Req.Response{status: 400, body: "bad request"}} end
 
-    assert {:error, {:http_error, 400, "bad request"}} =
+    assert {:error, %Error{kind: :invalid_request, status: 400, details: "bad request"}} =
              DeepSeek.generate(nil, base_opts(store, request))
+  end
+
+  test "reads an error body streamed with a non-2xx status", %{store: store} do
+    body =
+      JSON.encode!(%{
+        "error" => %{
+          "code" => "context_length_exceeded",
+          "message" => "This model's maximum context length is 65536 tokens."
+        }
+      })
+
+    {head, tail} = String.split_at(body, 30)
+    request = fn options -> streaming_response(options, [head, tail], 400) end
+
+    assert {:error, %Error{kind: :context_window_exceeded, details: %{"error" => _}}} =
+             DeepSeek.generate(nil, base_opts(store, request))
+  end
+
+  test "passes a rate limit's Retry-After through", %{store: store} do
+    request = fn _options ->
+      {:ok, %Req.Response{status: 429, headers: %{"retry-after" => ["6"]}, body: ""}}
+    end
+
+    assert {:error, %Error{kind: :rate_limited, retry_after_ms: 6_000} = error} =
+             DeepSeek.generate(nil, base_opts(store, request))
+
+    assert Tackle.Lib.Retry.retryable?(error)
   end
 
   test "login prompts for an API key through the interaction handle" do
@@ -735,7 +764,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
   test "usage surfaces provider errors", %{store: store} do
     request = fn _options -> {:ok, %Req.Response{status: 401, body: "unauthorized"}} end
 
-    assert {:error, {:http_error, 401, "unauthorized"}} =
+    assert {:error, %Error{kind: :auth, status: 401, details: "unauthorized"}} =
              DeepSeek.usage(credential_store: store, request: request)
   end
 
@@ -915,9 +944,9 @@ defmodule Tackle.Plugins.DeepSeekTest do
     ]
   end
 
-  defp streaming_response(options, chunks) do
+  defp streaming_response(options, chunks, status \\ 200) do
     into = Keyword.fetch!(options, :into)
-    initial = {%Req.Request{}, %Req.Response{status: 200, headers: %{}, body: ""}}
+    initial = {%Req.Request{}, %Req.Response{status: status, headers: %{}, body: ""}}
 
     {_request, response} =
       Enum.reduce_while(chunks, initial, fn chunk, pair ->

@@ -41,6 +41,7 @@ defmodule Tackle.Plugins.Anthropic do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Interaction
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Anthropic.Convert
@@ -200,7 +201,7 @@ defmodule Tackle.Plugins.Anthropic do
   end
 
   defp retry_unauthorized(
-         {:error, {:http_error, 401, _body}},
+         {:error, %Error{status: 401}},
          schema,
          opts,
          %{type: :oauth, handle: handle, token: rejected},
@@ -287,45 +288,8 @@ defmodule Tackle.Plugins.Anthropic do
     |> SSE.result(model, schema)
   end
 
-  defp response_result(%{status: status, body: body}, _model, _schema, _event_callback) do
-    error_body = HTTP.error_body(body)
-
-    case classify_overflow(status, error_body) do
-      :context_window_exceeded -> {:error, :context_window_exceeded}
-      :other -> {:error, {:http_error, status, error_body}}
-    end
-  end
-
-  # Only wire errors that unambiguously name a context/token limit are treated as
-  # overflow, so the harness can run exactly one compact-and-retry. Generic
-  # 4xx/5xx, rate limits, and transport failures stay unclassified.
-  @overflow_markers [
-    "prompt is too long",
-    "context window",
-    "context length",
-    "maximum context length",
-    "too many tokens",
-    "input is too long",
-    "exceed context limit",
-    "exceeds the maximum"
-  ]
-
-  defp classify_overflow(status, error_body) when status in [400, 413, 422] do
-    if overflow_message?(error_body), do: :context_window_exceeded, else: :other
-  end
-
-  defp classify_overflow(_status, _error_body), do: :other
-
-  defp overflow_message?(error_body) do
-    text =
-      case error_body do
-        body when is_binary(body) -> body
-        body -> inspect(body, limit: 20, printable_limit: 4_096)
-      end
-
-    downcased = String.downcase(text)
-    Enum.any?(@overflow_markers, &String.contains?(downcased, &1))
-  end
+  defp response_result(%{status: status, body: body} = response, _model, _schema, _callback),
+    do: {:error, Error.from_response(status, body, Map.get(response, :headers))}
 
   defp build_request_body(schema, opts, auth) do
     model = Keyword.fetch!(opts, :model)

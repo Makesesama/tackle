@@ -155,6 +155,20 @@ defmodule Tackle.CLI.Output.AuthTest do
     assert decoded["error"]["message"] =~ "not configured"
   end
 
+  test "provider errors show their message and kind" do
+    error = Tackle.Lib.LLM.Error.from_response(401, ~s({"error":{"message":"bad key"}}), [])
+
+    rendered = plain(Auth.render_error(error, Output.new(color: :never)))
+    assert rendered =~ "The provider rejected the credentials (HTTP 401): bad key."
+    refute rendered =~ "%Tackle.Lib.LLM.Error"
+
+    decoded = error |> Auth.render_error(Output.new(format: :json)) |> plain() |> JSON.decode!()
+    assert decoded["error"]["code"] == "auth"
+
+    assert decoded["error"]["message"] ==
+             "The provider rejected the credentials (HTTP 401): bad key."
+  end
+
   test "provider instance errors are explained without internal tuples" do
     cases = [
       {{:unknown_provider, "codex-work"}, ~s(Provider "codex-work" is not configured.)},

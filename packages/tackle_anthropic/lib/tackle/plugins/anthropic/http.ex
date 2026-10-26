@@ -1,6 +1,8 @@
 defmodule Tackle.Plugins.Anthropic.HTTP do
   @moduledoc false
 
+  alias Tackle.Lib.LLM.Error
+
   @type request_fun :: (keyword() -> {:ok, Req.Response.t()} | {:error, term()})
   @type stream_callback ::
           (binary(), Req.Response.t(), term() -> {:cont, term()} | {:halt, term()})
@@ -15,13 +17,11 @@ defmodule Tackle.Plugins.Anthropic.HTTP do
     case request_fun.(request_options) do
       {:ok, %Req.Response{} = response} -> {:ok, response}
       {:ok, %{status: _status, body: _body} = response} -> {:ok, response}
-      {:error, reason} -> {:error, {:request_failed, reason}}
-      other -> {:error, {:invalid_http_response, other}}
+      {:error, reason} -> {:error, Error.from_transport(reason)}
+      other -> {:error, Error.new(:invalid_response, details: other)}
     end
-  rescue
-    exception -> {:error, {:request_failed, Exception.message(exception)}}
   catch
-    kind, reason -> {:error, {:request_failed, {kind, reason}}}
+    kind, reason -> {:error, Error.from_caught(kind, reason)}
   end
 
   @doc "Streams a request with the Req.stream/4 accumulator contract."
@@ -40,10 +40,8 @@ defmodule Tackle.Plugins.Anthropic.HTTP do
       end
 
     normalize_stream_result(result, initial_acc)
-  rescue
-    exception -> {:error, {:request_failed, Exception.message(exception)}}
   catch
-    kind, reason -> {:error, {:request_failed, {kind, reason}}}
+    kind, reason -> {:error, Error.from_caught(kind, reason)}
   end
 
   defp stream_request(request_options, initial_acc, callback, opts) do
@@ -101,13 +99,13 @@ defmodule Tackle.Plugins.Anthropic.HTTP do
     do: {:ok, Map.put(response, :body, stream_body(status, body, initial_acc))}
 
   defp normalize_stream_result({:error, reason, _response, _acc}, _initial_acc),
-    do: {:error, {:request_failed, reason}}
+    do: {:error, Error.from_transport(reason)}
 
   defp normalize_stream_result({:error, reason}, _initial_acc),
-    do: {:error, {:request_failed, reason}}
+    do: {:error, Error.from_transport(reason)}
 
   defp normalize_stream_result(other, _initial_acc),
-    do: {:error, {:invalid_http_response, other}}
+    do: {:error, Error.new(:invalid_response, details: other)}
 
   defp stream_body(_status, {:http_error_body, body}, _initial_acc), do: body
 

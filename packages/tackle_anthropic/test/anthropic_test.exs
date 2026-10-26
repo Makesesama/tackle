@@ -2,7 +2,9 @@ defmodule Tackle.Plugins.AnthropicTest do
   use ExUnit.Case, async: false
 
   alias Tackle.Lib.{LLM, ModelInfo}
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.Retry
   alias Tackle.Plugins.Anthropic
 
   @empty_schema %{"type" => "object", "properties" => %{}, "required" => []}
@@ -256,13 +258,59 @@ defmodule Tackle.Plugins.AnthropicTest do
       api_key: "sk-ant-api03-test"
     ]
 
-    assert {:error, :context_window_exceeded} =
+    assert {:error, %Error{kind: :context_window_exceeded, status: 400}} =
              Anthropic.generate(nil, Keyword.merge(base, request: overflow))
 
     generic = fn options -> feed_chunks(options, ["{\"error\":\"boom\"}"], 400) end
 
-    assert {:error, {:http_error, 400, _body}} =
+    assert {:error, %Error{kind: :invalid_request, status: 400, message: message}} =
              Anthropic.generate(nil, Keyword.merge(base, request: generic))
+
+    assert message == "The provider rejected the request (HTTP 400): boom"
+
+    max_tokens =
+      fn options ->
+        feed_chunks(
+          options,
+          [
+            ~s({"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 200000 > 64000, which exceeds the maximum allowed"}})
+          ],
+          400
+        )
+      end
+
+    assert {:error, %Error{kind: :invalid_request}} =
+             Anthropic.generate(nil, Keyword.merge(base, request: max_tokens))
+  end
+
+  test "reports overload with its Retry-After and transport failures as retryable" do
+    base = [
+      model: "claude-opus-5-5",
+      messages: [%{role: :user, content: "hello"}],
+      tools: [],
+      api_key: "sk-ant-api03-test"
+    ]
+
+    overloaded = fn options ->
+      feed_chunks(
+        options,
+        [~s({"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}})],
+        529,
+        %{"retry-after" => ["3"]}
+      )
+    end
+
+    assert {:error, %Error{kind: :overloaded, status: 529, retry_after_ms: 3_000} = error} =
+             Anthropic.generate(nil, Keyword.merge(base, request: overloaded))
+
+    assert Retry.retryable?(error)
+
+    refused = fn _options -> {:error, %Req.TransportError{reason: :econnrefused}} end
+
+    assert {:error, %Error{kind: :transport} = error} =
+             Anthropic.generate(nil, Keyword.merge(base, request: refused))
+
+    assert Retry.retryable?(error)
   end
 
   test "login prompts for an API key" do
@@ -606,9 +654,9 @@ defmodule Tackle.Plugins.AnthropicTest do
     {CredentialStore, agent}
   end
 
-  defp feed_chunks(options, chunks, status) do
+  defp feed_chunks(options, chunks, status, headers \\ %{}) do
     into = Keyword.fetch!(options, :into)
-    initial = {%Req.Request{}, %Req.Response{status: status, headers: %{}, body: ""}}
+    initial = {%Req.Request{}, %Req.Response{status: status, headers: headers, body: ""}}
 
     {_request, response} =
       Enum.reduce_while(chunks, initial, fn chunk, pair ->

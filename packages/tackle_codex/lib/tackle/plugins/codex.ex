@@ -34,6 +34,7 @@ defmodule Tackle.Plugins.Codex do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Interaction
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Codex.HTTP
@@ -152,7 +153,7 @@ defmodule Tackle.Plugins.Codex do
     end
   end
 
-  defp retry_usage_unauthorized({:error, {:http_error, 401, _body}}, handle, rejected, opts) do
+  defp retry_usage_unauthorized({:error, %Error{status: 401}}, handle, rejected, opts) do
     rejected_access_token = rejected["access_token"] || rejected["access"]
 
     with {:ok, credentials} <- fresh_credentials(handle, rejected_access_token, opts),
@@ -181,8 +182,8 @@ defmodule Tackle.Plugins.Codex do
     HTTP.decode_json(body)
   end
 
-  defp usage_response(%{status: status, body: body}) do
-    {:error, {:http_error, status, HTTP.error_body(body)}}
+  defp usage_response(%{status: status, body: body} = response) do
+    {:error, Error.from_response(status, body, Map.get(response, :headers))}
   end
 
   defp usage_url(opts) do
@@ -223,7 +224,7 @@ defmodule Tackle.Plugins.Codex do
   end
 
   defp retry_unauthorized(
-         {:error, {:http_error, 401, _body}},
+         {:error, %Error{status: 401}},
          schema,
          opts,
          handle,
@@ -268,7 +269,9 @@ defmodule Tackle.Plugins.Codex do
         send_sse_request(body, opts, access_token, account_id, event_callback)
 
       transport when transport in [:websocket, :websocket_cached] ->
-        send_websocket_request(body, opts, access_token, account_id, event_callback, transport)
+        body
+        |> send_websocket_request(opts, access_token, account_id, event_callback, transport)
+        |> websocket_result()
 
       :auto ->
         case send_websocket_request(body, opts, access_token, account_id, event_callback, :auto) do
@@ -276,13 +279,30 @@ defmodule Tackle.Plugins.Codex do
             send_sse_request(body, opts, access_token, account_id, event_callback)
 
           result ->
-            result
+            websocket_result(result)
         end
 
       transport ->
         {:error, {:invalid_transport, transport}}
     end
   end
+
+  # WebSocket failures carry the phase they happened in, which only decides
+  # the SSE fallback above; callers see a `Tackle.Lib.LLM.Error`.
+  defp websocket_result({:error, {:websocket_transport_failed, _phase, reason}}),
+    do: {:error, websocket_error(reason)}
+
+  defp websocket_result(result), do: result
+
+  defp websocket_error(%Error{} = error), do: error
+  defp websocket_error(:cancelled), do: :cancelled
+
+  defp websocket_error(reason)
+       when reason == :invalid_websocket_event or
+              (is_tuple(reason) and elem(reason, 0) == :invalid_websocket_json),
+       do: Error.new(:invalid_response, details: reason)
+
+  defp websocket_error(reason), do: Error.from_transport(reason)
 
   defp send_sse_request(body, opts, access_token, account_id, event_callback) do
     signal = Keyword.get(opts, :cancellation_signal)
@@ -332,35 +352,20 @@ defmodule Tackle.Plugins.Codex do
       event_callback.(event)
     end
 
-    result =
-      try do
-        request.(
-          body,
-          websocket_opts,
-          websocket_headers(opts, access_token, account_id),
-          tracked_callback
-        )
-      rescue
-        exception ->
-          {:error,
-           {:websocket_transport_failed, websocket_phase(visibility),
-            Exception.message(exception)}}
-      catch
-        kind, reason ->
-          {:error, {:websocket_transport_failed, websocket_phase(visibility), {kind, reason}}}
-      end
-      |> preserve_observed_websocket_phase(visibility)
-
-    case {transport, result} do
-      {explicit,
-       {:error,
-        {:websocket_transport_failed, :before_stream, {:http_error, status, response_body}}}}
-      when explicit in [:websocket, :websocket_cached] ->
-        {:error, {:http_error, status, response_body}}
-
-      {_transport, result} ->
-        result
+    try do
+      request.(
+        body,
+        websocket_opts,
+        websocket_headers(opts, access_token, account_id),
+        tracked_callback
+      )
+    catch
+      kind, reason ->
+        {:error,
+         {:websocket_transport_failed, websocket_phase(visibility),
+          Error.from_caught(kind, reason)}}
     end
+    |> preserve_observed_websocket_phase(visibility)
   end
 
   defp preserve_observed_websocket_phase(
@@ -390,44 +395,8 @@ defmodule Tackle.Plugins.Codex do
     |> SSE.result(model, schema)
   end
 
-  defp response_result(%{status: status, body: body}, _model, _schema, _event_callback) do
-    error_body = HTTP.error_body(body)
-
-    case classify_overflow(status, error_body) do
-      :context_window_exceeded -> {:error, :context_window_exceeded}
-      :other -> {:error, {:http_error, status, error_body}}
-    end
-  end
-
-  # Only wire errors that unambiguously name a context/token limit are treated
-  # as overflow, so the harness can run exactly one compact-and-retry. Generic
-  # 4xx/5xx, rate limits, and transport failures stay unclassified.
-  @overflow_markers [
-    "context_length_exceeded",
-    "context_window_exceeded",
-    "maximum context length",
-    "exceeds the context window",
-    "too many tokens",
-    "input is too long",
-    "reduce the length of the messages"
-  ]
-
-  defp classify_overflow(status, error_body) when status in [400, 413, 422] do
-    if overflow_message?(error_body), do: :context_window_exceeded, else: :other
-  end
-
-  defp classify_overflow(_status, _error_body), do: :other
-
-  defp overflow_message?(error_body) do
-    text =
-      case error_body do
-        body when is_binary(body) -> body
-        body -> inspect(body, limit: 20, printable_limit: 4_096)
-      end
-
-    downcased = String.downcase(text)
-    Enum.any?(@overflow_markers, &String.contains?(downcased, &1))
-  end
+  defp response_result(%{status: status, body: body} = response, _model, _schema, _callback),
+    do: {:error, Error.from_response(status, body, Map.get(response, :headers))}
 
   defp build_request_body(schema, opts) do
     with {:ok, input} <-

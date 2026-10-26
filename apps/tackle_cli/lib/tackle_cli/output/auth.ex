@@ -300,9 +300,7 @@ defmodule Tackle.CLI.Output.Auth do
 
   def error_message(:no_providers_configured), do: "No providers are configured."
 
-  def error_message({:http_error, status, _body}) do
-    "The provider returned HTTP #{status}."
-  end
+  def error_message(%Tackle.Lib.LLM.Error{} = error), do: Exception.message(error) <> "."
 
   def error_message({:adapter_callback_failed, adapter, callback, detail}) do
     provider = adapter |> Module.split() |> List.last()
@@ -544,6 +542,8 @@ defmodule Tackle.CLI.Output.Auth do
   defp supported_providers(providers) do
     " Available providers: " <> Enum.join(providers, ", ") <> "."
   end
+
+  defp error_code(%Tackle.Lib.LLM.Error{kind: kind}), do: to_string(kind)
 
   defp error_code(reason) when is_tuple(reason) and tuple_size(reason) > 1 do
     case elem(reason, 0) do

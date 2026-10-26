@@ -1,6 +1,7 @@
 defmodule Tackle.Plugins.OpenRouter.SSETest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.OpenRouter.SSE
 
   @noop &Function.identity/1
@@ -57,7 +58,7 @@ defmodule Tackle.Plugins.OpenRouter.SSETest do
   end
 
   test "rejects invalid JSON payloads and conflicting tool identities" do
-    assert {:error, {:invalid_sse_json, "{oops"}} =
+    assert {:error, %Error{kind: :invalid_response, details: {:invalid_sse_json, "{oops"}}} =
              SSE.new()
              |> SSE.push("data: {oops\n\n", @noop)
              |> SSE.result("m", nil)
@@ -72,7 +73,8 @@ defmodule Tackle.Plugins.OpenRouter.SSETest do
 
     wire = "data: #{JSON.encode!(calls.("a"))}\n\ndata: #{JSON.encode!(calls.("b"))}\n\n"
 
-    assert {:error, {:conflicting_tool_call_identity, :id}} =
+    assert {:error,
+            %Error{kind: :invalid_response, details: {:conflicting_tool_call_identity, :id}}} =
              SSE.new() |> SSE.push(wire, @noop) |> SSE.result("m", nil)
   end
 end

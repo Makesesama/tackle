@@ -1,6 +1,7 @@
 defmodule Tackle.Plugins.DeepSeek.HTTPTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Plugins.DeepSeek.HTTP
 
   test "normalizes an injected three-tuple stream result" do
@@ -22,25 +23,34 @@ defmodule Tackle.Plugins.DeepSeek.HTTPTest do
   test "wraps request failures, exceptions, and invalid responses" do
     callback = fn _chunk, _response, acc -> {:cont, acc} end
 
-    assert {:error, {:request_failed, :timeout}} =
+    assert {:error, %Error{kind: :timeout, details: :timeout}} =
              HTTP.stream([], nil, callback,
                stream: fn _options, _initial, _callback -> {:error, :timeout} end
              )
 
-    assert {:error, {:request_failed, "boom"}} =
+    assert {:error, %Error{kind: :unknown, message: "The provider request failed: boom"}} =
              HTTP.stream([], nil, callback,
                stream: fn _options, _initial, _callback -> raise "boom" end
              )
 
-    assert {:error, {:invalid_http_response, :unexpected}} =
+    assert {:error, %Error{kind: :invalid_response, details: :unexpected}} =
              HTTP.stream([], nil, callback,
                stream: fn _options, _initial, _callback -> :unexpected end
              )
   end
 
-  test "bounds provider error bodies" do
-    assert HTTP.error_body(%{"error" => "bad"}) == %{"error" => "bad"}
-    assert HTTP.error_body(String.duplicate("x", 5_000)) == String.duplicate("x", 4_096)
-    assert HTTP.error_body({:unexpected, :body}) == "{:unexpected, :body}"
+  test "reports Req transport failures as retryable errors" do
+    callback = fn _chunk, _response, acc -> {:cont, acc} end
+
+    for reason <- [:closed, :econnrefused, :econnreset, :nxdomain] do
+      stream = fn _options, _initial, _callback ->
+        {:error, %Req.TransportError{reason: reason}}
+      end
+
+      assert {:error, %Error{kind: :transport} = error} =
+               HTTP.stream([], nil, callback, stream: stream)
+
+      assert Tackle.Lib.Retry.retryable?(error)
+    end
   end
 end

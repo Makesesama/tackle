@@ -120,8 +120,11 @@ message's `provider_state` and replays them only for the same provider id,
 model, and auth mode. Hosts that persist conversations must preserve
 `Tackle.Lib.Message.provider_state`.
 
-Context-window overflow is classified only from errors that name a token/context
-limit; generic 4xx/5xx and transport failures stay unclassified. Anthropic's
+Failures are `Tackle.Lib.LLM.Error`s: HTTP errors keep their status and
+`Retry-After` (a `529` is `:overloaded`), stream `error` events such as
+`overloaded_error` are classified by type, and a stream that ends before
+`message_stop` is a `:transport` error. Context-window overflow is classified
+only from errors that name a token/context limit. Anthropic's
 `max_tokens` stop reason is returned as a normal terminal response with the
 partial content.
 
