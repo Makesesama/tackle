@@ -1143,14 +1143,17 @@ commands run (in the jail when it is jailed) with the project's own Elixir,
 so a compile with few changes takes tens of milliseconds once the node is up;
 the first one in a session starts it, which takes about a second. Every
 decision is logged to
-`$TACKLE_HOME/logs/compile_gate.jsonl`. It is on by default; tune or disable it
-in `$TACKLE_HOME/config.json`:
+`$TACKLE_HOME/logs/compile_gate.jsonl`. It is off by default for now, because
+the gate shares the project's build directory with the agent's own `mix`
+commands and can report warnings caused by a broken build rather than by the
+change. Turn it on with `"compile_gate": true`, or tune it, in
+`$TACKLE_HOME/config.json`:
 
 ```json
 { "compile_gate": { "max_rounds": 1, "timeout_seconds": 300, "warnings": false } }
 ```
 
-`"compile_gate": false` turns it off, and `"max_rounds": 0` only checks and
+A project file can tune or turn off the gate but cannot turn it on. `"compile_gate": false` turns it off, and `"max_rounds": 0` only checks and
 logs. See [`tackle_elixir`](../../packages/tackle_elixir/README.md) for
 details.
 

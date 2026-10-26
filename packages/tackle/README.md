@@ -674,17 +674,18 @@ such as `"ollama/tev1:4b"` (see `Tackle.Lib.Decision`):
 ```
 
 The Elixir compile gate (`Tackle.Elixir.CompileGate` from
-[`tackle_elixir`](../tackle_elixir/README.md)) is on by default for sessions
-built by `Tackle.Config.load/1`. When a turn changes Elixir sources of a Mix
+[`tackle_elixir`](../tackle_elixir/README.md)) is off by default; a user
+configuration with `"compile_gate": true`, or a `compile_gate` object, turns it
+on for sessions built by `Tackle.Config.load/1`. When a turn changes Elixir sources of a Mix
 project through `edit` or `write`, the gate compiles the project in its
 project node (`Tackle.Elixir.ProjectNodes`, through the session's executor)
 before the first change and again when the model answers; new errors and
 warnings
 continue the turn with one message reporting them, up to `max_rounds` times.
-It logs every decision to `$TACKLE_HOME/logs/compile_gate.jsonl`. An optional
+It logs every decision to `$TACKLE_HOME/logs/compile_gate.jsonl`. A
 `compile_gate` object tunes it (`enabled`, `max_rounds`, `timeout_seconds`,
 `warnings`), and `"compile_gate": false` turns it off; a project file can tune
-it but not turn it back on when the user turned it off. `"max_rounds": 0`
+or turn it off but cannot turn it on unless the user did. `"max_rounds": 0`
 checks and logs without continuing turns:
 
 ```json

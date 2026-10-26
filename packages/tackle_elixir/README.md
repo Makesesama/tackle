@@ -112,9 +112,10 @@ Tackle.Lib.new(
 )
 ```
 
-The harness does this for every session `Tackle.Config.load/1` builds, with
-the log at `$TACKLE_HOME/logs/compile_gate.jsonl`, and reads the settings
-from the `compile_gate` object of `config.json` (`false` turns it off).
+The harness does this for sessions `Tackle.Config.load/1` builds when the
+user's `config.json` turns the gate on (`"compile_gate": true` or a
+`compile_gate` object of settings; it is off by default), with the log at
+`$TACKLE_HOME/logs/compile_gate.jsonl`.
 
 Each log line records one decision:
 

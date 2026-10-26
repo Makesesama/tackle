@@ -314,8 +314,10 @@ development jail (`tackle-dev-exec-jail`):
    runs under `sh -c '... 2>>broker.log'`, because the VM can write to
    standard error before the broker's code runs; and one broker serves every
    session that shares an executor. The compile gate
-   (`Tackle.Elixir.CompileGate`) runs on it and is on by default in the
-   harness.
+   (`Tackle.Elixir.CompileGate`) runs on it; the harness has it off by
+   default for now (opt-in through `config.json`), because it shares the
+   project's `_build` with the agent's own `mix` commands and reports
+   warnings caused by a broken build.
 4. **`docs`**, a lookup tool with instructions, and the comparison from the
    research document (no lookup, available, prompted) on macro-heavy tasks.
 5. **`callers` and compile-time dependencies**, and their use in

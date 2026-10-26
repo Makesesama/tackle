@@ -105,7 +105,7 @@ and unfinished integrations:
   compile the project and get its diagnostics as data (see the
   [plan](docs/PROJECT_NODE_PLAN.md)). Its compile gate sends the errors and
   warnings a turn introduced back to the agent before the turn ends; the
-  harness turns it on by default.
+  harness offers it as an opt-in (off by default).
 - [`packages/tackle_exec`](packages/tackle_exec/README.md) contains the
   exec-server protocol, jail-side server, and host client for running tool
   primitives in a jail (`Tackle.Exec.*`). The built-in tools reach it through

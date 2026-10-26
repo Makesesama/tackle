@@ -117,7 +117,15 @@ defmodule Tackle.Config.ProjectFileTest do
     assert config.model_ref == "test/project"
   end
 
-  test "a project file tunes the compile gate but cannot turn it back on", ctx do
+  test "a project file tunes or turns off the compile gate but cannot turn it on", ctx do
+    # Off unless the user turned it on.
+    for project <- [~s({"compile_gate": true}), ~s({"compile_gate": {"max_rounds": 1}})] do
+      write(project(ctx.repo), project)
+      assert {:ok, config} = load(ctx)
+      assert config.compile_gate == nil
+    end
+
+    write(ctx.home, ~s({"compile_gate": true}))
     write(project(ctx.repo), ~s({"compile_gate": {"max_rounds": 1}}))
     assert {:ok, config} = load(ctx)
     assert config.compile_gate.max_rounds == 1

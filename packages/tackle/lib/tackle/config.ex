@@ -264,7 +264,7 @@ defmodule Tackle.Config do
 
   Optional `:compile_gate` turns on the Elixir compile gate,
   `Tackle.Elixir.CompileGate`, with `Tackle.Elixir.CompileGate.Settings`
-  (`false` or absent leaves it off; `load/1` turns it on by default). Agent
+  (`false` or absent leaves it off, also in `load/1`). Agent
   states built by `to_agent_state/2` then carry the hook after the configured
   hooks and the settings under the context key `:compile_gate`, unless the host
   already put a `:compile_gate` entry there.
@@ -457,20 +457,17 @@ defmodule Tackle.Config do
     end
   end
 
-  # The compile gate is on by default for the harness loader, logging its
-  # decisions under the Tackle home; an explicit `compile_gate` entry (including
-  # `false`) still wins. `new/1` alone treats the option as absent.
+  # The compile gate is off by default. When the configuration turns it on, the
+  # harness loader logs its decisions under the Tackle home unless a log path
+  # was given.
   defp default_compile_gate(session_opts, home) do
     log_path = Path.join([home, "logs", "compile_gate.jsonl"])
 
     case Keyword.get(session_opts, :compile_gate) do
-      nil ->
-        Keyword.put(session_opts, :compile_gate, log_path: log_path)
-
       opts when is_list(opts) ->
         Keyword.put(session_opts, :compile_gate, Keyword.put_new(opts, :log_path, log_path))
 
-      _false_or_settings ->
+      _absent_false_or_settings ->
         session_opts
     end
   end

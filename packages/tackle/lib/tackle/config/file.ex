@@ -41,7 +41,7 @@ defmodule Tackle.Config.File do
   The project file may use every field except `providers`,
   `show_subagent_sidebar`, and `jail`. Each file is validated on its own; then JSON objects
   merge recursively, with project values replacing user values, except that a
-  project cannot turn on a compile gate the user set to `false`.
+  project cannot turn on a compile gate the user did not turn on.
   """
   @spec load(Path.t(), {Path.t(), binary()} | nil) :: {:ok, keyword()} | {:error, term()}
   def load(user_path, nil), do: load(user_path)
@@ -51,19 +51,22 @@ defmodule Tackle.Config.File do
          {:ok, _opts} <- to_options(user_path, user),
          {:ok, project} <- decode(project_path, contents, @project_fields),
          {:ok, _opts} <- to_options(project_path, project) do
-      to_options(project_path, user |> deep_merge(project) |> keep_user_opt_outs(user))
+      to_options(project_path, user |> deep_merge(project) |> keep_compile_gate_opt_in(user))
     end
   end
 
-  # A project file may tune the compile gate, which runs `mix compile` on the
-  # project, but not turn it back on when the user turned it off.
-  defp keep_user_opt_outs(merged, %{"compile_gate" => false}),
-    do: Map.put(merged, "compile_gate", false)
+  # A project file may tune or turn off the compile gate, which runs
+  # `mix compile` on the project, but only the user can turn it on.
+  defp keep_compile_gate_opt_in(merged, user) do
+    if compile_gate_on?(Map.get(user, "compile_gate")),
+      do: merged,
+      else: Map.delete(merged, "compile_gate")
+  end
 
-  defp keep_user_opt_outs(merged, %{"compile_gate" => %{"enabled" => false}}),
-    do: Map.put(merged, "compile_gate", false)
-
-  defp keep_user_opt_outs(merged, _user), do: merged
+  defp compile_gate_on?(true), do: true
+  defp compile_gate_on?(%{"enabled" => false}), do: false
+  defp compile_gate_on?(%{}), do: true
+  defp compile_gate_on?(_off), do: false
 
   defp read_user(path) do
     case File.read(path) do
@@ -116,11 +119,12 @@ defmodule Tackle.Config.File do
     end
   end
 
-  # The Elixir compile gate is on by default: `false` turns it off, `null` or
-  # a missing field keeps the defaults, and an object sets `enabled`,
-  # `max_rounds`, `timeout_seconds`, and `warnings`. The log path is not a file
-  # setting; `Tackle.Config.load/1` puts the log under the Tackle home. Values
-  # are validated by `Tackle.Elixir.CompileGate.Settings`.
+  # The Elixir compile gate is off by default: `true` turns it on with the
+  # defaults, `false`, `null`, or a missing field leave it off, and an object
+  # turns it on and sets `enabled`, `max_rounds`, `timeout_seconds`, and
+  # `warnings`. The log path is not a file setting; `Tackle.Config.load/1` puts
+  # the log under the Tackle home. Values are validated by
+  # `Tackle.Elixir.CompileGate.Settings`.
   @compile_gate_fields %{
     "enabled" => :enabled,
     "max_rounds" => :max_rounds,
@@ -130,6 +134,7 @@ defmodule Tackle.Config.File do
 
   defp compile_gate_options(path, config) do
     case Map.fetch(config, "compile_gate") do
+      {:ok, true} -> {:ok, [compile_gate: []]}
       {:ok, false} -> {:ok, [compile_gate: false]}
       {:ok, nil} -> {:ok, []}
       {:ok, %{} = gate} -> compile_gate_fields(path, gate)
