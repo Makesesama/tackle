@@ -105,7 +105,9 @@ Each agent permits one active turn; `Tackle.submit/2` may return
 `{:ok, :queued}` when a turn is already running, and `Tackle.withdraw_queued/2`
 removes a matching queued message before it starts. `Tackle.continue/1`
 retries the settled conversation without adding another user message.
-`Tackle.cancel/1` requests cooperative cancellation, and `Tackle.stop_scope/1` stops the whole scope.
+`Tackle.cancel/1` requests cooperative cancellation of the active turn or, while
+the agent is idle, of a running `Tackle.compact/2`, and `Tackle.stop_scope/1`
+stops the whole scope.
 `Tackle.reconfigure/2` can change the selected model and thinking level while an
 agent is idle without discarding its conversation. `Tackle.monitor_agent/1`
 returns a monitor reference for crash detection without exposing a runtime PID.

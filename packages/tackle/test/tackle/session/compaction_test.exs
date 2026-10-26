@@ -3,6 +3,7 @@ defmodule Tackle.Session.CompactionTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction
   alias Tackle.Lib.Compaction.Summary
   alias Tackle.Lib.Usage
@@ -27,11 +28,23 @@ defmodule Tackle.Session.CompactionTest do
             :release_compaction -> {:ok, default_summary()}
           end
 
+        :until_cancelled ->
+          await_cancellation(Keyword.fetch!(opts, :cancellation_signal))
+
         {:ok, summary} ->
           {:ok, summary}
 
         {:error, reason} ->
           {:error, reason}
+      end
+    end
+
+    defp await_cancellation(signal) do
+      if Cancellation.cancelled?(signal) do
+        {:error, :cancelled}
+      else
+        Process.sleep(5)
+        await_cancellation(signal)
       end
     end
 
@@ -226,11 +239,37 @@ defmodule Tackle.Session.CompactionTest do
     compact = Task.async(fn -> Tackle.compact(scope.root_agent_ref) end)
     assert_receive {:compaction_request, _, _}, 5_000
     assert {:ok, _} = Tackle.snapshot(scope.root_agent_ref)
-    assert :ok = Tackle.cancel(scope.root_agent_ref)
     assert {:error, :storage_busy} = Tackle.submit(scope.root_agent_ref, "rejected")
     {:ok, session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
     send(:sys.get_state(session).storage_task.task.pid, :release_compaction)
     assert {:ok, _snapshot, _record} = Task.await(compact)
+  end
+
+  test "cancel stops a running manual compaction and deletes its signal", ctx do
+    scope = start_durable_scope(home: ctx.home, root: root_opts())
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, long_prompt())
+    assert_receive {:tackle_turn_finished, _, ^turn_id, _}, 5_000
+    flush_compaction_requests()
+    before = Tackle.snapshot(scope.root_agent_ref)
+
+    Application.put_env(:tackle, :compaction_summary_result, :until_cancelled)
+    compact = Task.async(fn -> Tackle.compact(scope.root_agent_ref) end)
+    assert_receive {:compaction_request, _request, opts}, 5_000
+    signal = Keyword.fetch!(opts, :cancellation_signal)
+
+    assert :ok = Tackle.cancel(scope.root_agent_ref)
+    assert {:error, {:cancelled, :user_cancelled}} = Task.await(compact)
+
+    assert :ets.lookup(Cancellation.Store.Ets, signal.id) == []
+    assert Tackle.snapshot(scope.root_agent_ref) == before
+
+    {:ok, replay} = Reader.read(snapshot.session_id, home: ctx.home)
+    refute Enum.any?(replay.commits, &compacted_commit?/1)
+
+    # The next compaction gets a fresh signal and succeeds.
+    Application.put_env(:tackle, :compaction_summary_result, :default)
+    assert {:ok, _compacted, _record} = Tackle.compact(scope.root_agent_ref)
   end
 
   defp flush_compaction_requests do

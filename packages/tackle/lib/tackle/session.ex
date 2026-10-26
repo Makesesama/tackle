@@ -186,7 +186,11 @@ defmodule Tackle.Session do
   @spec continue(GenServer.server()) :: {:ok, String.t()} | {:error, term()}
   def continue(session), do: GenServer.call(session, :continue, :infinity)
 
-  @doc "Requests cooperative cancellation of the active turn."
+  @doc """
+  Requests cooperative cancellation of the active turn, or of a running manual
+  compaction (`compact/2`, which then returns `{:error, {:cancelled, reason}}`).
+  Does nothing when neither is running.
+  """
   @spec cancel(GenServer.server()) :: :ok
   def cancel(session), do: GenServer.call(session, :cancel)
 
@@ -248,7 +252,8 @@ defmodule Tackle.Session do
   `opts` may carry `:instructions` to add operator focus; it never removes the
   default summary invariants. If a later pass fails after an earlier checkpoint
   was committed, the session retains and broadcasts the committed projection
-  even though the call returns an error.
+  even though the call returns an error. `cancel/1` stops a running manual
+  compaction cooperatively.
   """
   @spec compact(GenServer.server(), keyword()) ::
           {:ok, Snapshot.t(), Tackle.Lib.Compaction.Record.t()}
@@ -493,24 +498,27 @@ defmodule Tackle.Session do
   def handle_call({:compact, opts}, from, state) do
     session_id = state.agent_state.session_id
     event_callback = fn event -> broadcast(state, {:tackle_compaction, session_id, event}) end
+    signal = Cancellation.new_signal()
 
     compaction_opts =
       opts
       |> Keyword.take([:instructions])
       |> Keyword.put(:event_callback, event_callback)
       |> Keyword.put(:before_provider_call, provider_gate(state))
+      |> Keyword.put(:cancellation_signal, signal)
 
     defer_storage(
       state,
       from,
       fn -> Compaction.compact(state.agent_state, :manual, compaction_opts) end,
-      fn state, result -> finish_compaction(state, result, session_id) end
+      fn state, result -> finish_compaction(state, result, session_id) end,
+      signal
     )
   end
 
-  def handle_call(:cancel, _from, %{active_turn: nil} = state) do
-    {:reply, :ok, state}
-  end
+  # Cancels the active turn or, while idle, a running manual compaction.
+  def handle_call(:cancel, _from, state),
+    do: {:reply, :ok, cancel_running(state, :user_cancelled)}
 
   def handle_call(:tree, _from, state) do
     {:reply, {:ok, state.agent_state.tree}, state}
@@ -537,14 +545,6 @@ defmodule Tackle.Session do
       fn -> Tackle.Lib.navigate(state.agent_state, target, opts) end,
       &finish_navigation/2
     )
-  end
-
-  def handle_call(:cancel, _from, state) do
-    if state.active_turn.signal,
-      do: Cancellation.cancel(state.active_turn.signal, :user_cancelled)
-
-    active_turn = %{state.active_turn | cancellation_requested?: true}
-    {:reply, :ok, %{state | active_turn: active_turn}}
   end
 
   def handle_call({:cancel_tool_call, _call_id, _reason}, _from, %{active_turn: nil} = state),
@@ -609,7 +609,7 @@ defmodule Tackle.Session do
   end
 
   def handle_call(:close, from, state) do
-    state = cancel_active_turn(state, :session_closed)
+    state = cancel_running(state, :session_closed)
 
     result =
       defer_storage(state, from, fn -> persist_close(state) end, fn state, result ->
@@ -646,6 +646,7 @@ defmodule Tackle.Session do
   @impl true
   def handle_info({ref, result}, %{storage_task: %{task: %{ref: ref}} = pending} = state) do
     Process.demonitor(pending.task.monitor, [:flush])
+    delete_operation_signal(pending)
     state = %{state | storage_task: nil}
 
     finish_storage_task(state, pending, result)
@@ -656,6 +657,7 @@ defmodule Tackle.Session do
         %{storage_task: %{task: %{monitor: monitor}} = pending} = state
       ) do
     Process.demonitor(monitor, [:flush])
+    delete_operation_signal(pending)
 
     if Map.get(pending, :from),
       do: GenServer.reply(pending.from, {:error, {:persistence_failed, reason}})
@@ -745,7 +747,7 @@ defmodule Tackle.Session do
   end
 
   def handle_info({:runtime_cancel, reason}, state) do
-    {:noreply, cancel_active_turn(state, reason)}
+    {:noreply, cancel_running(state, reason)}
   end
 
   # A completed title generation commits through the journal's metadata path so
@@ -793,7 +795,12 @@ defmodule Tackle.Session do
   def terminate(_reason, state) do
     cleanup_active_turn(state.active_turn)
     cleanup_title_task(state.title_task)
-    if state.storage_task, do: TurnTask.shutdown(state.storage_task.task, @task_shutdown_timeout)
+
+    if state.storage_task do
+      TurnTask.shutdown(state.storage_task.task, @task_shutdown_timeout)
+      safe_cancellation(fn -> delete_operation_signal(state.storage_task) end)
+    end
+
     :ok
   end
 
@@ -905,16 +912,24 @@ defmodule Tackle.Session do
 
   # One deferred operation retains one caller and one payload. Mutating
   # admission is rejected until it completes; control calls stay responsive.
-  defp defer_storage(state, from, fun, complete) do
+  # An operation `cancel/1` can stop carries its cancellation signal, which is
+  # deleted when the operation settles.
+  defp defer_storage(state, from, fun, complete, signal \\ nil) do
     case start_turn_task(state.work_supervisor, fun) do
       {:ok, task} ->
-        pending = %{kind: :operation, task: task, from: from, complete: complete}
+        pending = %{kind: :operation, task: task, from: from, complete: complete, signal: signal}
         {:noreply, %{state | storage_task: pending}}
 
       {:error, reason} ->
+        Cancellation.delete(signal)
         {:reply, {:error, {:storage_task_failed, reason}}, state}
     end
   end
+
+  defp delete_operation_signal(%{kind: kind, signal: signal}) when kind in [:operation, :close],
+    do: Cancellation.delete(signal)
+
+  defp delete_operation_signal(_pending), do: :ok
 
   defp finish_storage_operation(from, {:reply, reply, state}) do
     GenServer.reply(from, reply)
@@ -1440,9 +1455,20 @@ defmodule Tackle.Session do
   defp outcome_from_result({:runtime_error, reason}, state),
     do: Outcome.new(:runtime_error, reason: reason, agent_ref: state.agent_ref)
 
-  defp cancel_active_turn(%{active_turn: nil} = state, _reason), do: state
+  # Idle, the only cancellable work is a manual compaction.
+  defp cancel_running(%{active_turn: nil} = state, reason) do
+    case state.storage_task do
+      %{kind: :operation, signal: %Cancellation.Signal{} = signal} ->
+        Cancellation.cancel(signal, reason)
 
-  defp cancel_active_turn(%{active_turn: active_turn} = state, reason) do
+      _none ->
+        :ok
+    end
+
+    state
+  end
+
+  defp cancel_running(%{active_turn: active_turn} = state, reason) do
     if active_turn.signal, do: Cancellation.cancel(active_turn.signal, reason)
     %{state | active_turn: %{active_turn | cancellation_requested?: true}}
   end

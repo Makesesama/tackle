@@ -100,6 +100,15 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     do: {:noreply, state, render?: false}
 
   defp route(
+         {:tui_compact_cancel_result, ref, {:error, reason}},
+         %State{pending_operation: %{ref: ref, kind: :compact}} = state
+       ),
+       do: {:noreply, %{state | notice: "Cancellation failed: #{Util.format_reason(reason)}"}}
+
+  defp route({:tui_compact_cancel_result, _ref, _result}, state),
+    do: {:noreply, state, render?: false}
+
+  defp route(
          {:tui_operation_result, ref, :submit, result},
          %State{pending_operation: %{ref: ref, kind: :submit} = operation} = state
        ) do
@@ -233,6 +242,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
         }
 
         {:noreply, state |> Compaction.completed(record) |> Viewport.refresh()}
+
+      {:error, {:cancelled, _reason}} ->
+        compaction_cancelled(state)
 
       {:error, reason} ->
         compaction_failed(state, reason)
@@ -986,6 +998,21 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     {:noreply, state |> Viewport.relayout() |> Viewport.refresh([:pending, :error]),
      commands: commands}
+  end
+
+  defp compaction_cancelled(state) do
+    state =
+      state
+      |> Compaction.project(:compaction_end, %{status: :cancelled})
+      |> Map.merge(%{
+        pending_operation: nil,
+        activity: nil,
+        error: nil,
+        outcome: :cancelled,
+        notice: "Compaction cancelled"
+      })
+
+    {:noreply, Viewport.refresh(state, [:settled, :turn])}
   end
 
   defp compaction_failed(state, reason) do

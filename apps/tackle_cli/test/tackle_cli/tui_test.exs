@@ -144,7 +144,21 @@ defmodule Tackle.CLI.TUITest do
 
     def handle_call(:cancel, _from, state) do
       send(state.test_pid, :cancelled)
-      {:reply, :ok, state}
+
+      case Map.pop(state, :pending_compact) do
+        {nil, state} ->
+          {:reply, :ok, state}
+
+        {from, state} ->
+          GenServer.reply(from, {:error, {:cancelled, :user_cancelled}})
+          {:reply, :ok, state}
+      end
+    end
+
+    # A test sets `block_compact?` to hold the compaction until cancelled.
+    def handle_call({:compact, _opts}, from, %{block_compact?: true} = state) do
+      send(state.test_pid, :compact_requested)
+      {:noreply, Map.put(state, :pending_compact, from)}
     end
 
     def handle_call({:compact, _opts}, _from, state) do
@@ -2155,6 +2169,39 @@ defmodule Tackle.CLI.TUITest do
     assert state.notice =~ "when idle"
     assert state.pending_operation == nil
     refute_receive :compact_requested, 50
+  end
+
+  test "Esc cancels a running manual compaction once", %{tui: tui, agent_ref: agent_ref} do
+    {:ok, session} = Tackle.Runtime.session_pid(agent_ref)
+    :sys.replace_state(session, &Map.put(&1, :block_compact?, true))
+
+    inject_key(tui, "k", ["ctrl"])
+    assert_receive :compact_requested
+
+    inject_key(tui, "esc")
+    assert_receive :cancelled
+
+    state = await_state(tui, &(&1.pending_operation == nil))
+    assert state.outcome == :cancelled
+    assert state.notice == "Compaction cancelled"
+    assert state.error == nil
+    assert conversation_text(state) =~ "Compaction cancelled"
+    refute_receive :cancelled, 50
+  end
+
+  test "a second Esc does not cancel a compaction twice", %{tui: tui} do
+    state = state(tui)
+    ref = make_ref()
+
+    state = %{
+      state
+      | pending_operation: %{ref: ref, kind: :compact, cancellation_requested?: true},
+        activity: "cancelling"
+    }
+
+    assert {:noreply, same} = TUI.handle_event(%Key{code: "esc", kind: "press"}, state)
+    assert same.notice == "Cancellation already requested"
+    assert same.pending_operation.ref == ref
   end
 
   test "a rejected compaction is reported in the error row", %{tui: tui} do

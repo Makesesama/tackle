@@ -659,8 +659,32 @@ defmodule Tackle.CLI.TUI do
      commands: commands}
   end
 
-  defp escape_empty(%{pending_operation: %{kind: :compact}} = state) do
-    {:noreply, %{state | notice: "Manual compaction cannot be cancelled; draft kept"}}
+  defp escape_empty(
+         %{pending_operation: %{kind: :compact, cancellation_requested?: true}} = state
+       ),
+       do: {:noreply, %{state | notice: "Cancellation already requested"}}
+
+  # The compaction keeps its correlation: its own result reports the
+  # cancellation.
+  defp escape_empty(%{pending_operation: %{kind: :compact} = operation} = state) do
+    agent_ref = state.agent_ref
+    ref = operation.ref
+
+    command =
+      Command.async(
+        fn -> Tackle.cancel(agent_ref) end,
+        &{:tui_compact_cancel_result, ref, &1}
+      )
+
+    operation = Map.put(operation, :cancellation_requested?, true)
+
+    {:noreply,
+     %{
+       state
+       | pending_operation: operation,
+         activity: "cancelling",
+         notice: "Cancelling compaction…"
+     }, commands: [command]}
   end
 
   defp escape_empty(%{pending_operation: %{kind: :cancel}} = state) do

@@ -79,7 +79,10 @@ defmodule Tackle do
   @spec continue(AgentRef.t()) :: {:ok, String.t()} | {:error, term()}
   def continue(%AgentRef{} = agent_ref), do: Runtime.continue(agent_ref)
 
-  @doc "Requests cooperative cancellation of the active turn."
+  @doc """
+  Requests cooperative cancellation of the active turn, or of a running manual
+  compaction (`compact/2` then returns `{:error, {:cancelled, reason}}`).
+  """
   @spec cancel(AgentRef.t()) :: :ok | {:error, term()}
   def cancel(%AgentRef{} = agent_ref), do: Runtime.cancel_turn(agent_ref)
 
@@ -98,7 +101,8 @@ defmodule Tackle do
   The canonical transcript is preserved; only the provider-visible projection
   becomes a synthetic checkpoint plus a verbatim recent tail, committed durably
   before the in-memory replacement is installed. Returns the post-compaction
-  snapshot and the durable `Tackle.Lib.Compaction.Record`.
+  snapshot and the durable `Tackle.Lib.Compaction.Record`. `cancel/1` stops a
+  running compaction before it commits.
   """
   @spec compact(AgentRef.t(), keyword()) ::
           {:ok, Tackle.Session.Snapshot.t(), Tackle.Lib.Compaction.Record.t()}

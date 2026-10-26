@@ -1111,8 +1111,9 @@ Resuming a compacted session exposes its current checkpoint summary at the start
 of the transcript, labeled as restored because its historical position and token
 counts are unavailable. Live cards retain their chronological positions for the
 current session view; they are not a persisted compaction archive. Drafts remain
-editable and are never queued during manual compaction; Esc does not cancel that
-synchronous session operation.
+editable and are never queued during manual compaction. Esc (with an empty
+draft) cancels a manual compaction: the summary request stops, nothing is
+committed, and the card reports the compaction as cancelled.
 
 ### Session titles
 
