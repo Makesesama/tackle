@@ -8,7 +8,6 @@ defmodule Tackle.Lib.Tool.Error do
 
   @type reason ::
           :unknown_tool
-          | :stale_tool_definition
           | :invalid_input
           | :invalid_output
           | :execution_error
@@ -31,31 +30,14 @@ defmodule Tackle.Lib.Tool.Error do
   """
   @spec unknown_tool(Tackle.Lib.Tool.Call.t()) :: t()
   def unknown_tool(%Tackle.Lib.Tool.Call{} = call) do
-    unresolved(call, :unknown_tool, "Unknown tool: #{call.name}")
-  end
+    message = "Unknown tool: #{call.name}"
 
-  @doc """
-  Builds the settlement of a call made against an outdated definition of a
-  tool: its `definition_id` no longer matches the registry's. The model is
-  asked to fetch the current tool list and retry.
-  """
-  @spec stale_definition(Tackle.Lib.Tool.Call.t()) :: t()
-  def stale_definition(%Tackle.Lib.Tool.Call{} = call) do
-    unresolved(
-      call,
-      :stale_tool_definition,
-      "Stale tool definition for #{call.name}; ask for the current tool list and retry"
-    )
-  end
-
-  defp unresolved(call, reason, message) do
     %__MODULE__{
       tool_call_id: call.id,
       name: call.name,
-      reason: reason,
+      reason: :unknown_tool,
       message: message,
-      content: "Error: " <> message,
-      metadata: %{definition_id: call.definition_id}
+      content: "Error: " <> message
     }
   end
 
@@ -76,8 +58,7 @@ defmodule Tackle.Lib.Tool.Error do
       reason: :execution_error,
       message: "Tool crashed: " <> describe_crash(kind, reason),
       content: "Error: The tool failed while completing the request.",
-      details: {kind, reason},
-      metadata: %{definition_id: call.definition_id}
+      details: {kind, reason}
     }
   end
 

@@ -15,7 +15,8 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.Snapshot` — immutable per-turn configuration baseline (tools,
       hooks, LLM config, version IDs).
     * `Tackle.Lib.Hook` — typed lifecycle hooks (before_prompt, after_prompt,
-      before_tool_call, after_tool_call, after_turn).
+      before_tool_call, after_tool_call, after_message, before_turn_end,
+      after_turn).
     * `Tackle.Lib.Message` — conversation message value struct.
     * `Tackle.Lib.Compaction` — checkpoint compaction of the provider-visible
       model projection, with pluggable summarizers and an optional durability

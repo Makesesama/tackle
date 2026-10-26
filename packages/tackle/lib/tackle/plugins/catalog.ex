@@ -8,6 +8,7 @@ defmodule Tackle.Plugins.Catalog do
 
   alias Tackle.Lib.Hook
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.Tool
 
   @enforce_keys [:adapters, :tools, :hooks]
   defstruct adapters: [], tools: [], hooks: []
@@ -228,13 +229,13 @@ defmodule Tackle.Plugins.Catalog do
   end
 
   defp tool_callbacks(module, source) do
-    Enum.reduce_while([{:description, 0}, {:parameters_schema, 0}, {:execute, 2}], :ok, fn
-      {function, arity}, :ok ->
-        case required_callback(module, function, arity, source, :tool) do
-          :ok -> {:cont, :ok}
-          error -> {:halt, error}
-        end
-    end)
+    case Tool.missing_callbacks(module) do
+      [] ->
+        :ok
+
+      [missing | _rest] ->
+        entry_error(%{module: module, source: source}, :tool, {:missing_callback, missing})
+    end
   end
 
   defp required_callback(module, function, arity, source, kind) do

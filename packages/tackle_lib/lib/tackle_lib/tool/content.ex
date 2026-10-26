@@ -50,10 +50,6 @@ defmodule Tackle.Lib.Tool.Content do
     %__MODULE__{text: text, parts: parts}
   end
 
-  @doc "Builds a text content part."
-  @spec text(String.t()) :: part()
-  def text(text) when is_binary(text), do: %{"type" => "text", "text" => text}
-
   @doc """
   Builds an image content part from standard base64 data.
 

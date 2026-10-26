@@ -4,7 +4,7 @@ defmodule Tackle.Lib.Tool.ErrorTest do
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Error
 
-  @call %Call{id: "call-1", name: "lookup", arguments: %{}, definition_id: "def-1"}
+  @call %Call{id: "call-1", name: "lookup", arguments: %{}}
 
   test "interrupted/3 settles a call left without a result when its turn ended" do
     message = "Tool execution was aborted before this call completed."
@@ -38,21 +38,7 @@ defmodule Tackle.Lib.Tool.ErrorTest do
              message: "Unknown tool: lookup",
              content: "Error: Unknown tool: lookup",
              details: nil,
-             metadata: %{definition_id: "def-1"}
-           }
-  end
-
-  test "stale_definition/1 asks the model to refresh its tool list" do
-    message = "Stale tool definition for lookup; ask for the current tool list and retry"
-
-    assert Error.stale_definition(@call) == %Error{
-             tool_call_id: "call-1",
-             name: "lookup",
-             reason: :stale_tool_definition,
-             message: message,
-             content: "Error: " <> message,
-             details: nil,
-             metadata: %{definition_id: "def-1"}
+             metadata: %{}
            }
   end
 
@@ -63,7 +49,7 @@ defmodule Tackle.Lib.Tool.ErrorTest do
     assert raised.message == "Tool crashed: boom"
     assert raised.content == "Error: The tool failed while completing the request."
     assert raised.details == {:error, %RuntimeError{message: "boom"}}
-    assert raised.metadata == %{definition_id: "def-1"}
+    assert raised.metadata == %{}
 
     assert Error.crashed(@call, :throw, :oops).message == "Tool crashed: throw :oops"
     assert Error.crashed(@call, :exit, :killed).message == "Tool crashed: exit :killed"

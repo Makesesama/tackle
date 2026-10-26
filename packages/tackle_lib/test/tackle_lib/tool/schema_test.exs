@@ -77,7 +77,8 @@ defmodule Tackle.Lib.Tool.SchemaTest do
     assert {:ok, %{"ratio" => 1.0, "scores" => [2.0, 0.5, 3.0]}} =
              Schema.validate(schema, %{"ratio" => 1, "scores" => [2, 0.5, "3"]})
 
-    assert is_float(Schema.validate!(schema, %{"ratio" => 1})["ratio"])
+    assert {:ok, %{"ratio" => ratio}} = Schema.validate(schema, %{"ratio" => 1})
+    assert is_float(ratio)
   end
 
   describe "map fields" do
@@ -117,10 +118,6 @@ defmodule Tackle.Lib.Tool.SchemaTest do
         assert {:error, [%{field: nil, message: "must be an object"}]} =
                  Schema.validate([limit: [type: :integer]], value)
       end
-
-      assert_raise ArgumentError, "Invalid tool arguments: must be an object", fn ->
-        Schema.validate!([], "text")
-      end
     end
   end
 
@@ -157,7 +154,6 @@ defmodule Tackle.Lib.Tool.SchemaTest do
       ]
 
       assert Schema.validate_schema(schema) == :ok
-      assert Schema.validate_schema!(schema) == :ok
       assert Schema.validate_schema([]) == :ok
     end
 
@@ -193,10 +189,6 @@ defmodule Tackle.Lib.Tool.SchemaTest do
 
       assert {:error, "field :f is declared more than once"} =
                Schema.validate_schema(f: [type: :string], f: [type: :integer])
-
-      assert_raise ArgumentError, ~r/invalid tool schema: field :f has unknown type/, fn ->
-        Schema.validate_schema!(f: [type: :text])
-      end
     end
   end
 

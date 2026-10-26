@@ -17,12 +17,13 @@ defmodule Tackle.Lib.PromptRenderer.NativeTools do
 
   @impl Tackle.Lib.PromptRenderer
   def render_tools(tools, opts) do
-    description_renderer = Keyword.get(opts, :description_renderer)
-    tool_renderer = Keyword.get(opts, :tool_renderer)
+    render =
+      case Keyword.get(opts, :tool_renderer) do
+        nil -> &Tool.build_tool_description/1
+        tool_renderer -> &tool_renderer.render/1
+      end
 
-    Enum.map_join(tools, "\n", fn tool ->
-      render_tool_description(tool, tool_renderer, description_renderer)
-    end)
+    Enum.map_join(tools, "\n", render)
   end
 
   @impl Tackle.Lib.PromptRenderer
@@ -45,20 +46,4 @@ defmodule Tackle.Lib.PromptRenderer.NativeTools do
 
   @impl Tackle.Lib.PromptRenderer
   def response_schema(_opts), do: nil
-
-  defp render_tool_description(tool, nil, description_renderer) do
-    Tool.build_tool_description(tool, description_renderer)
-  end
-
-  defp render_tool_description(tool, tool_renderer, nil) do
-    tool_renderer.render(tool)
-  end
-
-  defp render_tool_description(tool, tool_renderer, description_renderer) do
-    if function_exported?(tool_renderer, :render, 2) do
-      tool_renderer.render(tool, description_renderer)
-    else
-      tool_renderer.render(tool)
-    end
-  end
 end

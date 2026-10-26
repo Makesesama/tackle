@@ -54,15 +54,9 @@ defmodule Tackle.Anubis do
       nil ->
         {:error, :unknown_tool}
 
-      %{module: tool_module, definition: definition} ->
+      %{module: tool_module} ->
         context = build_context(frame, opts)
-
-        call = %Call{
-          id: call_id(opts),
-          name: name,
-          arguments: params || %{},
-          definition_id: definition.definition_id
-        }
+        call = %Call{id: call_id(opts), name: name, arguments: params || %{}}
 
         {:reply, run_tool(tool_module, call, context), frame}
     end
@@ -74,7 +68,7 @@ defmodule Tackle.Anubis do
          opts
        ) do
     registration_opts = [
-      description: tool_description(tool_module, definition, opts),
+      description: definition.description,
       input_schema: AnubisSchema.to_peri(tool_module.parameters_schema()),
       output_schema: tool_module |> Tool.output_schema() |> AnubisSchema.to_peri(),
       annotations: Keyword.get(opts, :annotations, %{}),
@@ -98,17 +92,6 @@ defmodule Tackle.Anubis do
 
       {:error, %Error{message: message}} ->
         Response.error(response_type, message)
-    end
-  end
-
-  # Renders the description the MCP host should show. When the caller passes a
-  # `:description_renderer` module, host-defined `description_metadata/0` is
-  # rendered with it (e.g. XML for Anthropic-native MCP); otherwise the flat
-  # `description/0` carried on the definition is used.
-  defp tool_description(tool_module, definition, opts) do
-    case Keyword.get(opts, :description_renderer) do
-      nil -> definition.description
-      renderer when is_atom(renderer) -> Tool.render_description(tool_module, renderer)
     end
   end
 

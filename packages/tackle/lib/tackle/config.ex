@@ -36,6 +36,7 @@ defmodule Tackle.Config do
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Retry
   alias Tackle.Lib.Thinking
+  alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry, as: ToolRegistry
   alias Tackle.Plugins.Catalog
@@ -57,8 +58,6 @@ defmodule Tackle.Config do
     :overrides
   ]
   @reconfigure_option_keys [:model, :thinking]
-
-  @tool_callbacks [{:name, 0}, {:description, 0}, {:parameters_schema, 0}, {:execute, 2}]
 
   @reserved_llm_option_names MapSet.new([
                                "credential_store",
@@ -794,7 +793,7 @@ defmodule Tackle.Config do
   end
 
   defp validate_tool_module(tool) when is_atom(tool) do
-    case missing_tool_callbacks(tool) do
+    case Tool.missing_callbacks(tool) do
       [] -> tool
       missing -> raise ArgumentError, missing_callbacks_message(tool, missing)
     end
@@ -808,16 +807,6 @@ defmodule Tackle.Config do
     callbacks = Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
 
     "#{inspect(tool)} is not a valid Tackle.Lib.Tool; missing callbacks: " <> callbacks
-  end
-
-  defp missing_tool_callbacks(tool) do
-    if Code.ensure_loaded?(tool) do
-      Enum.reject(@tool_callbacks, fn {name, arity} ->
-        function_exported?(tool, name, arity)
-      end)
-    else
-      @tool_callbacks
-    end
   end
 
   defp validate_modules(name, modules) when is_list(modules) do

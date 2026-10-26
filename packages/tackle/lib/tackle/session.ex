@@ -1579,12 +1579,9 @@ defmodule Tackle.Session do
     %{state | compaction: config}
   end
 
+  # The hook is added directly rather than through Config; Tackle.Lib.Hook
+  # loads hook modules itself when it validates or invokes them.
   defp install_persistence_hook(%AgentState{} = state) do
-    # The hook module is added directly rather than through Config's module
-    # validation, so ensure it is loaded before the loop's function_exported?
-    # dispatch can see it.
-    _ = Code.ensure_loaded(Persistence)
-
     %{
       state
       | hooks: append(state.hooks, Persistence),

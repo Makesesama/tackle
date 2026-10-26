@@ -57,6 +57,13 @@ defmodule Tackle.Lib.SystemPromptTest do
       assert prompt =~ "## Responding"
     end
 
+    test "the default renderer describes each tool's name, description, and parameters" do
+      description = SystemPrompt.tool_descriptions([TestTool])
+
+      assert description =~ ~r/\A### test_tool\n\nA test tool\n\nParameters:\n/
+      assert description =~ "    - query: string (required) -"
+    end
+
     test "lets hosts customize tool and response rendering through one prompt renderer" do
       opts = [
         prompt_renderer: CustomPromptRenderer,

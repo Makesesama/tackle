@@ -38,9 +38,8 @@ Tackle.Lib requires Elixir `~> 1.18`. This Git-only installation is not a Hex
 release. To work on the library within a checkout, use its local Mix project in
 `packages/tackle_lib` instead.
 
-Tackle.Lib requires Elixir `~> 1.18`, includes `:telemetry` for its bounded
-lifecycle events, and uses `:jsv` for standards-compliant JSON Schema output
-validation. Exposing Tackle.Lib tools through Anubis MCP is a separate
+Tackle.Lib requires Elixir `~> 1.18` and includes `:telemetry` for its bounded
+lifecycle events. Exposing Tackle.Lib tools through Anubis MCP is a separate
 package ([`../tackle_anubis`](../tackle_anubis/README.md)); the core library has
 no MCP dependency.
 
@@ -182,7 +181,8 @@ end
 Tool arguments are normalized to **string keys** before `run/2`. A tool returns
 `{:ok, result}` or `{:error, reason}`. Expected failures should not raise. Hosts
 that expose tools across a public boundary should validate their tool modules
-(e.g. with `Tackle.Lib.Tool.Registry.new/1`) before they are placed in state.
+(e.g. with `Tackle.Lib.Tool.tool?/1` or `Tackle.Lib.Tool.Registry.new/1`) before
+they are placed in state.
 
 ### 3. Compose a prompt and run the agent
 
@@ -585,8 +585,7 @@ Provider adapters are also responsible for translating Tackle.Lib's normalized
 tool definitions into the provider wire format. `opts[:tools]` contains
 serializable `:input_schema` field maps. In code that still has a tool module's
 native keyword schema, `Tackle.Lib.Tool.Schema.JsonSchema.to_json_schema/1` provides
-the standard JSON Schema projection. `JsonSchema.validate_output/2` validates
-JSON Schema maps using JSV and Draft 2020-12.
+the standard JSON Schema projection.
 
 ### Decision models
 
@@ -653,10 +652,12 @@ A manual tool implements:
 - `parameters_schema/0`
 - `execute/2`
 - optional `output_schema/0`
-- optional `description_metadata/0`
+- optional `effect/0`
 
 `use Tackle.Lib.Tool` generates the standard callbacks from the DSL and delegates
-execution to `run/2`.
+execution to `run/2`. `Tackle.Lib.Tool.tool?/1` checks that a module is loadable
+and exports the four required callbacks; `Tackle.Lib.Tool.missing_callbacks/1`
+lists the ones it lacks.
 
 Supported schema types are:
 
@@ -696,7 +697,8 @@ never creates atoms from provider/user keys.
 2. validate and coerce arguments;
 3. execute the host tool;
 4. validate output when a schema exists (a keyword output schema requires a
-   map);
+   map; a `{validator, schema}` tuple calls the host validator module; a map,
+   such as an MCP tool's JSON Schema, is opaque and not validated);
 5. preserve the raw result for host events;
 6. project the result to text/JSON for the model transcript, replacing
    invalid UTF-8 with U+FFFD.
@@ -730,11 +732,11 @@ settles as an `:invalid_input` error the model can see and retry, without
 running the tool or passing the `:before_tool_execution` gate, instead of
 failing the whole turn.
 
-Unknown tools and stale `definition_id` values settle as typed errors rather
-than executing a different definition. `Tackle.Lib.Tool.Registry.new/1` raises
-`ArgumentError` for invalid tool modules, invalid names, or duplicate names;
-registration never silently drops tools or selects one duplicate over another.
-Definitions and tool sets have deterministic SHA-256-derived IDs for audit and
+Calls to unknown tools settle as typed `:unknown_tool` errors.
+`Tackle.Lib.Tool.Registry.new/1` raises `ArgumentError` for invalid tool
+modules, invalid names, or duplicate names; registration never silently drops
+tools or selects one duplicate over another. Tool sets have deterministic
+SHA-256-derived IDs (`Tackle.Lib.Snapshot.tools_version_id/1`) for audit and
 cache keys.
 
 ### Tool execution modes
@@ -801,7 +803,9 @@ configured without a `:tool_supervisor`.
 
 Either mode may still select its tools up front. Tackle.Lib intentionally does
 not support forced tool choice, provider-side parallel tool calls, allow/deny
-options, or weighting. These keys are removed from `llm_opts`:
+options, or weighting. `Tackle.Lib.LLM.request_opts/3`, which builds the
+adapter options of every loop and compaction request, removes these keys from
+`llm_opts`:
 
 - `:tool_choice`
 - `:parallel_tool_calls`
@@ -1088,11 +1092,6 @@ structure:
 may return a response schema for a structured **non-tool** turn. Tool execution
 always uses provider-native tool calls. The built-in
 `Tackle.Lib.PromptRenderer.NativeTools` is the default.
-
-A host may implement `description_metadata/0` on tools and render the same
-structured documentation differently for web prompts and MCP—for example,
-Markdown for a web agent and XML-oriented descriptions for MCP while sharing
-the same tool modules.
 
 The loop sends the persisted user, assistant, and tool messages without adding
 synthetic per-step messages. Provider context therefore remains append-only
@@ -1466,8 +1465,8 @@ mixin. Use `Tackle.Phoenix.EventReducer` directly as shown in the Phoenix README
 
 ## Performance benchmarks
 
-Repository-only Benchee suites cover history growth, context estimation, tool
-settlement, and JSON Schema validation. See the [benchmark guide](../../bench/README.md)
+Repository-only Benchee suites cover history growth, context estimation, and
+tool settlement with and without output validation. See the [benchmark guide](../../bench/README.md)
 for commands, smoke checks, saved baselines, and measurement limitations.
 Benchee is dev-only and is not a runtime dependency.
 

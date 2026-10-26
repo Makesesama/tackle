@@ -120,7 +120,9 @@ config :tackle_lib, llm: MyApp.AI.TackleAdapter
   (carrying native `:tool_calls`), and `:tool` entries linked by `:tool_call_id`.
   Send this array to the provider as-is — **do not flatten history**.
 - Tackle.Lib also sets `:model`, `:system`, `:temperature`, `:strict_schema`,
-  `:native_tools`, `:tools`, and appends host `:llm_opts`.
+  `:native_tools`, `:tools`, and appends host `:llm_opts` without the
+  tool-selection options it does not support (`:tool_choice`,
+  `:parallel_tool_calls`, and the like; see `Tackle.Lib.LLM.request_opts/3`).
 - Return `{:ok, %{data: map, usage: map | %Tackle.Lib.Usage{} | nil, model: binary | nil}}`.
   `:data` holds assistant `content` and/or native `tool_calls`. The loop
   normalizes the result into `%Tackle.Lib.LLM.Response{}`; a malformed one

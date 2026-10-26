@@ -93,15 +93,6 @@ defmodule Tackle.Lib.Tool.Schema do
 
   def validate(_schema, _args), do: {:error, [%{field: nil, message: "must be an object"}]}
 
-  @doc "Raises if validation fails. Useful for tests and adapters."
-  @spec validate!(t(), term()) :: map()
-  def validate!(schema, args) do
-    case validate(schema, args) do
-      {:ok, normalized} -> normalized
-      {:error, errors} -> raise ArgumentError, format_errors(errors)
-    end
-  end
-
   @doc """
   Checks that `schema` is a valid keyword schema: a keyword list of fields
   with atom names, each declared once, with known options (see the module
@@ -132,15 +123,6 @@ defmodule Tackle.Lib.Tool.Schema do
 
   def validate_schema(schema),
     do: {:error, "schema must be a keyword list of fields, got: #{inspect(schema)}"}
-
-  @doc "Like `validate_schema/1`, but raises `ArgumentError` for an invalid schema."
-  @spec validate_schema!(term()) :: :ok
-  def validate_schema!(schema) do
-    case validate_schema(schema) do
-      :ok -> :ok
-      {:error, message} -> raise ArgumentError, "invalid tool schema: " <> message
-    end
-  end
 
   @doc "Returns a provider-neutral, serializable definition map."
   @spec definition(String.t(), String.t(), t(), keyword()) :: map()

@@ -970,7 +970,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
              ["c1", "c2"]
   end
 
-  describe "unresolvable calls" do
+  describe "calls to unknown tools" do
     defmodule UnresolvableCallsAdapter do
       @behaviour Tackle.Lib.LLM
 
@@ -979,10 +979,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
         if Enum.any?(Keyword.fetch!(opts, :messages), &(&1.role == :tool)) do
           {:ok, %{data: %{"content" => "done"}, usage: nil, model: "test/model"}}
         else
-          calls = [
-            %{"id" => "unknown", "name" => "missing", "arguments" => %{}},
-            %{"id" => "stale", "name" => "first", "arguments" => %{}, "definition_id" => "old"}
-          ]
+          calls = [%{"id" => "unknown", "name" => "missing", "arguments" => %{}}]
 
           {:ok, %{data: %{"tool_calls" => calls}, usage: nil, model: "test/model"}}
         end
@@ -1008,20 +1005,14 @@ defmodule Tackle.Lib.Loop.ToolsTest do
                    event_callback: &send(test_pid, {:event, &1})
                  )
 
-        assert [unknown, stale] = Enum.filter(final_state.messages, &(&1.role == :tool))
+        assert [unknown] = Enum.filter(final_state.messages, &(&1.role == :tool))
         assert unknown.content == "Error: Unknown tool: missing"
-        assert stale.content =~ "Error: Stale tool definition for first"
 
         assert_receive {:event,
                         %Event{type: :tool_error, data: %{tool_call_id: "unknown"} = unknown}}
 
         assert unknown.reason == :unknown_tool
-        assert unknown.metadata == %{definition_id: nil}
-
-        assert_receive {:event, %Event{type: :tool_error, data: %{tool_call_id: "stale"} = stale}}
-
-        assert stale.reason == :stale_tool_definition
-        assert stale.metadata == %{definition_id: "old"}
+        assert unknown.metadata == %{}
         refute_received {:tool_execute, _}
       end
     end

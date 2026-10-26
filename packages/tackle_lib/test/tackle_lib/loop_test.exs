@@ -496,8 +496,7 @@ defmodule Tackle.Lib.LoopTest do
   test "normalizes provider calls with nested function, atom keys and JSON arguments" do
     raw = %{
       id: "call-1",
-      function: %{"name" => "first", "arguments" => ~s({"query":"hi"})},
-      definition_id: "version-1"
+      function: %{"name" => "first", "arguments" => ~s({"query":"hi"})}
     }
 
     assert {:ok,
@@ -505,7 +504,6 @@ defmodule Tackle.Lib.LoopTest do
               id: "call-1",
               name: "first",
               arguments: %{"query" => "hi"},
-              definition_id: "version-1",
               raw: ^raw
             }} = Call.normalize(raw)
 

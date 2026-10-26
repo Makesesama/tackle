@@ -112,8 +112,8 @@ defmodule Tackle.Lib.Snapshot do
   @doc """
   Computes a stable version ID for a system prompt string.
 
-  Uses the same SHA-256 prefix hashing as `Tackle.Lib.Tool.definition_id/1` so
-  all definition/version identifiers share one canonical style.
+  Uses the same SHA-256 prefix hashing as `tools_version_id/1` so all version
+  identifiers share one canonical style.
 
   Returns `nil` when the prompt is nil.
   """
@@ -146,7 +146,6 @@ defmodule Tackle.Lib.Snapshot do
 
   defp hash_definitions(definitions) do
     definitions
-    |> Enum.map(&Map.drop(&1, [:definition_id]))
     |> :erlang.term_to_binary()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)

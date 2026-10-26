@@ -304,6 +304,23 @@ defmodule Tackle.Lib.LLMTest do
       assert Keyword.get_values(opts, :model) == ["m"]
       assert Keyword.get_values(opts, :messages) == [[:real]]
     end
+
+    test "drops host tool-selection options but keeps a request's own" do
+      opts =
+        LLM.request_opts(
+          [model: "m", tool_choice: "none"],
+          [temperature: 0.3],
+          tool_choice: "required",
+          parallel_tool_calls: true,
+          allowed_tools: ["read"],
+          disallowed_tools: ["bash"],
+          tool_weights: %{"read" => 2},
+          tool_policy: :forced,
+          top_p: 0.9
+        )
+
+      assert opts == [model: "m", tool_choice: "none", temperature: 0.3, top_p: 0.9]
+    end
   end
 
   test "normalizes adapter usage maps" do

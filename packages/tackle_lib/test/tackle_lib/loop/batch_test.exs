@@ -265,7 +265,7 @@ defmodule Tackle.Lib.Loop.BatchTest do
   defp jobs(ids, signal \\ nil) do
     Enum.map(ids, fn id ->
       %Job{
-        call: %Call{id: id, name: "test", definition_id: "definition"},
+        call: %Call{id: id, name: "test"},
         call_signal: Cancellation.for_call(signal, id)
       }
     end)

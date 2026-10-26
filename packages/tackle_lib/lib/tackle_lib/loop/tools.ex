@@ -240,7 +240,6 @@ defmodule Tackle.Lib.Loop.Tools do
         case Registry.resolve(run.snapshot.tool_registry, call) do
           {:ok, %{module: module}} -> {:ok, module, tool_context(state, run, call, call_signal)}
           {:error, :unknown_tool} -> {:error, ToolError.unknown_tool(call)}
-          {:error, :stale_tool_definition} -> {:error, ToolError.stale_definition(call)}
         end
       catch
         kind, reason -> {:raise, kind, reason, __STACKTRACE__}
@@ -346,13 +345,7 @@ defmodule Tackle.Lib.Loop.Tools do
   defp tool_outcome({:error, %ToolError{reason: reason}}), do: bounded_tool_error(reason)
 
   defp bounded_tool_error(reason)
-       when reason in [
-              :invalid_input,
-              :invalid_output,
-              :execution_error,
-              :unknown_tool,
-              :stale_tool_definition
-            ],
+       when reason in [:invalid_input, :invalid_output, :execution_error, :unknown_tool],
        do: reason
 
   defp bounded_tool_error(_reason), do: :execution_error

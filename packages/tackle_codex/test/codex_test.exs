@@ -178,8 +178,7 @@ defmodule Tackle.Plugins.CodexTest do
           %{
             name: "search",
             description: "Search documents",
-            input_schema: [query: [type: :string, required: true, description: "Query"]],
-            definition_id: "ignored-by-provider"
+            input_schema: [query: [type: :string, required: true, description: "Query"]]
           },
           %{
             name: "recolor",

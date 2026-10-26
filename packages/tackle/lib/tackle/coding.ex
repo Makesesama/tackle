@@ -19,6 +19,7 @@ defmodule Tackle.Coding do
   alias Tackle.Agents.Definition
   alias Tackle.Config
   alias Tackle.Executor
+  alias Tackle.Lib.Tool
   alias Tackle.Plugins.Catalog
   alias Tackle.Runtime.{AgentSpec, ScopeSpec}
   alias Tackle.Session.Spec, as: SessionSpec
@@ -157,12 +158,7 @@ defmodule Tackle.Coding do
   end
 
   defp validate_root_tools(tools) when is_list(tools) do
-    if Enum.all?(tools, fn tool ->
-         is_atom(tool) and Code.ensure_loaded?(tool) and
-           function_exported?(tool, :name, 0) and function_exported?(tool, :execute, 2)
-       end),
-       do: :ok,
-       else: {:error, :invalid_root_tools}
+    if Enum.all?(tools, &Tool.tool?/1), do: :ok, else: {:error, :invalid_root_tools}
   end
 
   defp validate_root_tools(_), do: {:error, :invalid_root_tools}

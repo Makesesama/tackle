@@ -1,12 +1,10 @@
 defmodule Tackle.Lib.Tool.Schema.JsonSchema do
   @moduledoc """
-  JSON Schema projection and validation for Tackle.Lib's native tool schema.
+  JSON Schema projection for Tackle.Lib's native tool schema.
 
   This module is intentionally separate from `Tackle.Lib.Tool.Schema` so core Tackle.Lib
   remains format-agnostic. Provider adapters that speak JSON Schema can opt into
   this projection at the adapter boundary.
-
-  Validation is delegated to `JSV` using JSON Schema Draft 2020-12.
   """
 
   @type schema :: Tackle.Lib.Tool.Schema.t()
@@ -32,64 +30,6 @@ defmodule Tackle.Lib.Tool.Schema.JsonSchema do
 
     %{"type" => "object", "properties" => properties, "required" => required}
   end
-
-  @doc "Validates output against a JSON Schema."
-  @spec validate_output(map(), term()) :: {:ok, term()} | {:error, String.t()}
-  def validate_output(%{} = schema, output) do
-    with {:ok, root} <- JSV.build(schema, atoms: false, warnings: :silent),
-         {:ok, _validated} <- JSV.validate(stringify_map_keys(output), root, cast: false) do
-      {:ok, output}
-    else
-      {:error, %JSV.ValidationError{} = error} ->
-        {:error, "Invalid tool output: #{format_validation_error(error)}"}
-
-      {:error, %JSV.BuildError{} = error} ->
-        {:error, "Invalid output schema: #{Exception.message(error)}"}
-    end
-  end
-
-  @doc "Alias for validator tuples accepted by `Tackle.Lib.Tool.Schema.validate_output/2`."
-  @spec validate(map(), term()) :: {:ok, term()} | {:error, String.t()}
-  def validate(schema, output), do: validate_output(schema, output)
-
-  defp format_validation_error(error) do
-    error
-    |> JSV.normalize_error()
-    |> Map.fetch!(:details)
-    |> Enum.flat_map(&format_detail/1)
-    |> Enum.join("; ")
-  end
-
-  defp format_detail(detail) do
-    path = format_instance_path(detail.instanceLocation)
-
-    Enum.map(detail.errors, &format_message(path, &1))
-  end
-
-  defp format_message("$", error), do: error.message
-  defp format_message(path, error), do: "#{path} #{error.message}"
-
-  defp format_instance_path("#"), do: "$"
-
-  defp format_instance_path("#/" <> pointer) do
-    pointer
-    |> String.split("/")
-    |> Enum.map_join(".", &unescape_pointer_segment/1)
-    |> then(&"$.#{&1}")
-  end
-
-  defp unescape_pointer_segment(segment) do
-    segment
-    |> String.replace("~1", "/")
-    |> String.replace("~0", "~")
-  end
-
-  defp stringify_map_keys(%{} = map) do
-    Map.new(map, fn {key, value} -> {to_string(key), stringify_map_keys(value)} end)
-  end
-
-  defp stringify_map_keys(list) when is_list(list), do: Enum.map(list, &stringify_map_keys/1)
-  defp stringify_map_keys(value), do: value
 
   defp field_json_schema(opts) do
     type = Keyword.get(opts, :type, :string)

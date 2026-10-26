@@ -67,7 +67,6 @@ Both functions take options as their last argument:
 | `:tools` | `dispatch/4` (required) | Tool modules or a `Tackle.Lib.Integrations.Registry` |
 | `:context` | `dispatch/4` | Context map, or a 1-arity function of the frame |
 | `:call_id` | `dispatch/4` | Explicit tool-call id; defaults to a generated UUID |
-| `:description_renderer` | `register_all/3` | Renderer module for host-defined `description_metadata/0` |
 | `:annotations` | `register_all/3` | MCP annotations forwarded to `Anubis.Server.Frame.register_tool/3` |
 | `:title`, `:task_support`, `:scopes` | `register_all/3` | Registration metadata forwarded to Anubis |
 

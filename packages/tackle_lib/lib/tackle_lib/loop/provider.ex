@@ -46,7 +46,6 @@ defmodule Tackle.Lib.Loop.Provider do
   alias Tackle.Lib.Retry
   alias Tackle.Lib.State
   alias Tackle.Lib.SystemPrompt
-  alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Registry
   alias Tackle.Lib.Usage
 
@@ -262,7 +261,7 @@ defmodule Tackle.Lib.Loop.Provider do
       LLM.request_opts(
         request,
         [temperature: 0.3, strict_schema: false],
-        Policy.sanitize_llm_opts(snapshot.llm_opts)
+        snapshot.llm_opts
       )
 
     {schema, opts}

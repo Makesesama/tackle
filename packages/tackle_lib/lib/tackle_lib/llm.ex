@@ -256,20 +256,36 @@ defmodule Tackle.Lib.LLM do
   def context_window_exceeded?({:context_window_exceeded, _details}), do: true
   def context_window_exceeded?(_reason), do: false
 
+  # Host options that would force a tool choice, restrict or weight the
+  # registered tools, or let the provider schedule tool calls. The loop owns
+  # the tool list and the execution order (see `Tackle.Lib.Tool.Policy`).
+  @tool_selection_opts [
+    :tool_choice,
+    :parallel_tool_calls,
+    :allowed_tools,
+    :disallowed_tools,
+    :tool_weights,
+    :tool_policy
+  ]
+
   @doc """
   Builds adapter options from a request, overridable defaults, and host options.
 
   `request` holds the options that define the call (such as `:model`,
   `:messages`, `:system`, and `:tools`); host options never replace them.
   `defaults` (such as `:temperature`) are tuning values that host options do
-  override. Host options are otherwise passed through. The result has one
-  entry per key, so adapters read the same value whether they use
-  `Keyword.get/2` or `Map.new/1`.
+  override. Host options are otherwise passed through, except the
+  tool-selection options Tackle.Lib does not support, which are dropped:
+  `:tool_choice`, `:parallel_tool_calls`, `:allowed_tools`,
+  `:disallowed_tools`, `:tool_weights`, and `:tool_policy`. A request may
+  still set one itself (the compaction summarizer sends `tool_choice:
+  "none"`). The result has one entry per key, so adapters read the same value
+  whether they use `Keyword.get/2` or `Map.new/1`.
   """
   @spec request_opts(keyword(), keyword(), keyword()) :: keyword()
   def request_opts(request, defaults, host_opts)
       when is_list(request) and is_list(defaults) and is_list(host_opts) do
-    host_opts = Keyword.drop(host_opts, Keyword.keys(request))
+    host_opts = Keyword.drop(host_opts, Keyword.keys(request) ++ @tool_selection_opts)
     request ++ Keyword.merge(defaults, host_opts)
   end
 

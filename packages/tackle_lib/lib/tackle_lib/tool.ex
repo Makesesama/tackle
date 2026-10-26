@@ -84,17 +84,6 @@ defmodule Tackle.Lib.Tool do
   @callback output_schema() :: Tackle.Lib.Tool.Schema.output_schema()
 
   @doc """
-  Optional host-defined structured description metadata.
-
-  When present, surfaces render this per their own convention (e.g. markdown for
-  a prompt-driven loop, XML for Anthropic-native MCP) by passing it to a host
-  renderer module via `render_description/2`. The metadata shape and the renderer
-  are owned by the host; Tackle.Lib stays agnostic. `description/0` remains the flat
-  fallback for consumers that only want a string.
-  """
-  @callback description_metadata() :: term() | nil
-
-  @doc """
   Executes the tool with the given arguments and context.
 
     * `args` — map of argument values matching the parameters schema.
@@ -116,7 +105,7 @@ defmodule Tackle.Lib.Tool do
   """
   @callback effect() :: :read_only | :external
 
-  @optional_callbacks output_schema: 0, description_metadata: 0, effect: 0
+  @optional_callbacks output_schema: 0, effect: 0
 
   @doc """
   Defines a Tackle.Lib tool with the canonical DSL.
@@ -150,7 +139,7 @@ defmodule Tackle.Lib.Tool do
   output fields do not pass `Tackle.Lib.Tool.Schema.validate_schema/1`.
   Modules can still implement the callbacks manually when they are adapting
   an existing abstraction; `Tackle.Lib.Tool.Registry.new/1` checks their
-  schemas when they are registered.
+  callbacks (see `tool?/1`) and schemas when they are registered.
   """
   defmacro __using__(_opts) do
     quote do
@@ -250,11 +239,36 @@ defmodule Tackle.Lib.Tool do
     end
   end
 
+  @required_callbacks [name: 0, description: 0, parameters_schema: 0, execute: 2]
+
   @doc """
-  The tool's public name.
+  Returns true when `module` is a tool: a module that can be loaded and that
+  exports every required `Tackle.Lib.Tool` callback (`name/0`,
+  `description/0`, `parameters_schema/0`, and `execute/2`).
   """
-  @spec tool_name(module()) :: String.t()
-  def tool_name(tool_module), do: tool_module.name()
+  @spec tool?(term()) :: boolean()
+  def tool?(module), do: missing_callbacks(module) == []
+
+  @doc """
+  Returns the required `Tackle.Lib.Tool` callbacks that `module` does not
+  export, in the order `name/0`, `description/0`, `parameters_schema/0`,
+  `execute/2`; all of them for a term that is not a loadable module.
+
+      iex> Tackle.Lib.Tool.missing_callbacks(:not_a_tool_module)
+      [name: 0, description: 0, parameters_schema: 0, execute: 2]
+  """
+  @spec missing_callbacks(term()) :: [{atom(), arity()}]
+  def missing_callbacks(module) when is_atom(module) do
+    if Code.ensure_loaded?(module) do
+      Enum.reject(@required_callbacks, fn {name, arity} ->
+        function_exported?(module, name, arity)
+      end)
+    else
+      @required_callbacks
+    end
+  end
+
+  def missing_callbacks(_module), do: @required_callbacks
 
   @doc """
   Returns Tackle.Lib's provider-neutral definition for a tool module.
@@ -263,30 +277,15 @@ defmodule Tackle.Lib.Tool do
           name: String.t(),
           description: String.t(),
           input_schema: [map()],
-          output_schema: Tackle.Lib.Tool.Schema.output_schema(),
-          definition_id: String.t()
+          output_schema: Tackle.Lib.Tool.Schema.output_schema()
         }
   def definition(tool_module) do
-    definition =
-      Schema.definition(
-        tool_module.name(),
-        tool_module.description(),
-        tool_module.parameters_schema(),
-        output_schema: output_schema(tool_module)
-      )
-
-    Map.put(definition, :definition_id, definition_id(definition))
-  end
-
-  @doc "Returns a deterministic id for a provider-neutral tool definition."
-  @spec definition_id(map()) :: String.t()
-  def definition_id(definition) do
-    definition
-    |> Map.drop([:definition_id])
-    |> :erlang.term_to_binary()
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
-    |> binary_part(0, 16)
+    Schema.definition(
+      tool_module.name(),
+      tool_module.description(),
+      tool_module.parameters_schema(),
+      output_schema: output_schema(tool_module)
+    )
   end
 
   @doc """
@@ -308,62 +307,19 @@ defmodule Tackle.Lib.Tool do
   end
 
   @doc """
-  Returns the optional structured description metadata for a tool module, or nil.
-
-  The metadata shape is host-defined — Tackle.Lib only knows it may exist and that a
-  host renderer can turn it into text (see `render_description/2`).
-  """
-  @spec description_metadata(module()) :: term() | nil
-  def description_metadata(tool_module) do
-    if function_exported?(tool_module, :description_metadata, 0),
-      do: tool_module.description_metadata(),
-      else: nil
-  end
-
-  @doc """
-  Renders a tool module's description for a given surface renderer.
-
-  Prefers host-defined structured `description_metadata/0`, rendered by calling
-  `renderer.render/1` on it, and falls back to the flat `description/0` string
-  when no metadata is declared. The renderer module and metadata shape are owned
-  by the host; Tackle.Lib only wires the selection.
-  """
-  @spec render_description(module(), module()) :: String.t()
-  def render_description(tool_module, renderer) when is_atom(renderer) do
-    case description_metadata(tool_module) do
-      nil -> tool_module.description()
-      metadata -> renderer.render(metadata)
-    end
-  end
-
-  @doc """
   Builds a tool description block for the system prompt.
-
-  Pass `renderer` to render host-defined `description_metadata/0` (via
-  `render_description/2`) instead of the flat `description/0`.
   """
-  @spec build_tool_description(module(), module() | nil) :: String.t()
-  def build_tool_description(tool_module, renderer \\ nil) do
-    name = tool_module.name()
-    description = render_description_with(tool_module, renderer)
-    params = tool_module.parameters_schema()
-    definition_id = definition(tool_module).definition_id
-
+  @spec build_tool_description(module()) :: String.t()
+  def build_tool_description(tool_module) do
     """
-    ### #{name}
-    Definition ID: #{definition_id}
+    ### #{tool_module.name()}
 
-    #{description}
+    #{tool_module.description()}
 
     Parameters:
-    #{format_params(params)}
+    #{format_params(tool_module.parameters_schema())}
     """
   end
-
-  defp render_description_with(tool_module, nil), do: tool_module.description()
-
-  defp render_description_with(tool_module, renderer),
-    do: render_description(tool_module, renderer)
 
   defp format_params(params) do
     Enum.map_join(params, "\n", fn {param_name, opts} ->
@@ -372,14 +328,6 @@ defmodule Tackle.Lib.Tool do
       desc = Keyword.get(opts, :description, "")
       "    - #{param_name}: #{format_type(type)}#{required} - #{desc}"
     end)
-  end
-
-  @doc """
-  Finds a tool module by name from a list of tools.
-  """
-  @spec find_tool([module()], String.t()) :: module() | nil
-  def find_tool(tools, name) do
-    Enum.find(tools, fn tool -> tool.name() == name end)
   end
 
   @doc """
@@ -428,8 +376,7 @@ defmodule Tackle.Lib.Tool do
          raw: raw_result,
          output: output,
          content: content,
-         parts: parts,
-         metadata: %{definition_id: call.definition_id}
+         parts: parts
        }}
     else
       {:error, {:invalid_input, message}} ->
@@ -453,29 +400,6 @@ defmodule Tackle.Lib.Tool do
       {:error, reason} ->
         {:error,
          tool_error(call, :execution_error, "Tool execution failed: #{inspect(reason)}", reason)}
-    end
-  end
-
-  @doc """
-  Executes a tool call and returns a formatted string result.
-
-  Kept as a compatibility wrapper for callers that have not adopted
-  `settle/3` yet.
-  """
-  @spec execute_tool_call(module(), map() | nil, map()) ::
-          {:ok, String.t()} | {:error, String.t()}
-  def execute_tool_call(tool_module, args, context) do
-    call = %Tackle.Lib.Tool.Call{id: "legacy", name: tool_module.name(), arguments: args || %{}}
-
-    case settle(tool_module, call, context) do
-      {:ok, %Tackle.Lib.Tool.Result{content: content}} ->
-        {:ok, content}
-
-      {:error, %Tackle.Lib.Tool.Error{reason: :execution_error, message: message}} ->
-        {:error, message}
-
-      {:error, %Tackle.Lib.Tool.Error{content: content}} ->
-        {:error, content}
     end
   end
 
@@ -566,8 +490,7 @@ defmodule Tackle.Lib.Tool do
       reason: reason,
       message: model_text(message),
       content: error_content(model_message),
-      details: details,
-      metadata: %{definition_id: call.definition_id}
+      details: details
     }
   end
 

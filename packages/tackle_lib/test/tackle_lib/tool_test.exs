@@ -7,6 +7,8 @@ defmodule Tackle.Lib.ToolTest do
   alias Tackle.Lib.Tool.Schema
   alias Tackle.Lib.Tool.Schema.JsonSchema
 
+  doctest Tool
+
   defmodule EchoTool do
     @behaviour Tackle.Lib.Tool
 
@@ -160,7 +162,9 @@ defmodule Tackle.Lib.ToolTest do
     def execute(_args, %{how: :text}), do: {:ok, "bytes: " <> <<255, 254>>}
 
     def execute(_args, %{how: :content}),
-      do: {:ok, Content.new("text " <> <<255>>, [Content.text("part " <> <<200>>)])}
+      do:
+        {:ok,
+         Content.new("text " <> <<255>>, [%{"type" => "text", "text" => "part " <> <<200>>}])}
 
     def execute(_args, %{how: :error}), do: {:error, "failed on " <> <<255>>}
   end
@@ -802,29 +806,54 @@ defmodule Tackle.Lib.ToolTest do
                  fn -> Tackle.Lib.Tool.Registry.new([UnknownOutputOptionTool]) end
   end
 
-  test "execute_tool_call/3 validates before executing" do
-    assert {:ok, encoded} =
-             Tool.execute_tool_call(EchoTool, %{"query" => "hi", "limit" => "3"}, %{})
+  test "settle/3 validates before executing" do
+    call = %Tackle.Lib.Tool.Call{
+      id: "call_echo",
+      name: "echo",
+      arguments: %{"query" => "hi", "limit" => "3"}
+    }
 
+    assert {:ok, %Tackle.Lib.Tool.Result{content: encoded}} = Tool.settle(EchoTool, call, %{})
     assert {:ok, %{"limit" => 3, "query" => "hi"}} = JSON.decode(encoded)
 
-    assert {:error, error} = Tool.execute_tool_call(EchoTool, %{"limit" => "nope"}, %{})
-    assert error == "Error: Invalid tool arguments: query: is required; limit: must be an integer"
+    invalid = %{call | arguments: %{"limit" => "nope"}}
+
+    assert {:error, %Tackle.Lib.Tool.Error{reason: :invalid_input} = error} =
+             Tool.settle(EchoTool, invalid, %{})
+
+    assert error.message ==
+             "Invalid tool arguments: query: is required; limit: must be an integer"
+
+    assert error.content ==
+             "Error: Invalid tool arguments: query: is required; limit: must be an integer"
   end
 
-  test "registry assigns stable definition ids and rejects stale calls" do
+  test "registry resolves calls by tool name" do
     registry = Tackle.Lib.Tool.Registry.new([EchoTool])
-    [definition] = Tackle.Lib.Tool.Registry.definitions(registry)
 
-    assert %{definition_id: definition_id, name: "echo"} = definition
+    assert {:ok, %{name: "echo", module: EchoTool}} =
+             Tackle.Lib.Tool.Registry.resolve(registry, %Tackle.Lib.Tool.Call{name: "echo"})
 
-    fresh_call = %Tackle.Lib.Tool.Call{name: "echo", definition_id: definition_id}
-    stale_call = %Tackle.Lib.Tool.Call{name: "echo", definition_id: "old"}
+    assert {:error, :unknown_tool} =
+             Tackle.Lib.Tool.Registry.resolve(registry, %Tackle.Lib.Tool.Call{name: "missing"})
+  end
 
-    assert {:ok, %{module: EchoTool}} = Tackle.Lib.Tool.Registry.resolve(registry, fresh_call)
+  test "tool?/1 and missing_callbacks/1 tell tool modules from other terms" do
+    assert Tool.tool?(EchoTool)
+    assert Tool.tool?(DSLSearchTool)
+    assert Tool.missing_callbacks(EchoTool) == []
 
-    assert {:error, :stale_tool_definition} =
-             Tackle.Lib.Tool.Registry.resolve(registry, stale_call)
+    refute Tool.tool?(MissingCallbacksTool)
+
+    assert Tool.missing_callbacks(MissingCallbacksTool) ==
+             [description: 0, parameters_schema: 0, execute: 2]
+
+    for not_a_module <- [:missing_tool_module, "not a module", nil, 42] do
+      refute Tool.tool?(not_a_module)
+
+      assert Tool.missing_callbacks(not_a_module) ==
+               [name: 0, description: 0, parameters_schema: 0, execute: 2]
+    end
   end
 
   test "registry keeps registration order for entries, modules, and definitions" do
@@ -925,50 +954,5 @@ defmodule Tackle.Lib.ToolTest do
                "plain" => %{"type" => "string"}
              }
            } = JsonSchema.to_json_schema(schema)
-  end
-
-  test "JsonSchema validates output with JSV" do
-    schema = %{
-      "type" => "object",
-      "properties" => %{
-        "status" => %{"const" => "complete"},
-        "items" => %{
-          "type" => "array",
-          "minItems" => 1,
-          "items" => %{
-            "type" => "object",
-            "properties" => %{"score" => %{"type" => "number", "minimum" => 0}},
-            "required" => ["score"]
-          }
-        }
-      },
-      "required" => ["status", "items"],
-      "additionalProperties" => false
-    }
-
-    output = %{"status" => "complete", "items" => [%{"score" => 0.5}]}
-    atom_keyed_output = %{status: "complete", items: [%{score: 0.5}]}
-
-    assert {:ok, ^output} = JsonSchema.validate_output(schema, output)
-    assert {:ok, ^atom_keyed_output} = JsonSchema.validate_output(schema, atom_keyed_output)
-
-    assert {:error, error} =
-             JsonSchema.validate_output(schema, %{
-               "status" => "pending",
-               "items" => [%{"score" => -1}],
-               "extra" => true
-             })
-
-    assert error =~ "Invalid tool output"
-    assert error =~ "complete"
-    assert error =~ "minimum"
-    assert error =~ "additional properties"
-  end
-
-  test "JsonSchema returns an error for an invalid schema" do
-    assert {:error, error} =
-             JsonSchema.validate_output(%{"type" => "not-a-json-schema-type"}, "value")
-
-    assert error =~ "Invalid output schema"
   end
 end

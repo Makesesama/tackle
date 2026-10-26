@@ -36,16 +36,16 @@ on unexpected results; runtime fixture lifecycle/cleanup also has ExUnit coverag
 | --- | --- |
 | `tackle_lib/bench/history.exs` | One append to existing linear/tree/shortened-projection histories; context estimation with/without a recent usage checkpoint; provider projection. 10–10,000 messages. Fixtures are built outside timing. |
 | `tackle_lib/bench/context.exs` | Isolated context estimation with/without a recent checkpoint at 1,000–10,000 messages; allocations and reductions included. |
-| `tackle_lib/bench/tools.exs` | Full echo-tool settlement with keyword or nested JSON Schema output validation, plus isolated JSV build/validate costs. 1–100 output items. |
+| `tackle_lib/bench/tools.exs` | Full echo-tool settlement with keyword output validation or without an output schema. 1–100 output items. |
 | `tackle_runtime/bench/lifecycle.exs` | Full fresh-scope delegated lifecycle. 10–10,000 returned messages. Also prints untimed retained Request process diagnostics. |
 | `tackle_runtime/bench/streaming.exs` | Fresh scope → 0/100/1,000 event burst → awaited result → shutdown, with and without subscription. The unsubscribed backend produces no events. |
 | `tackle_runtime/bench/retained.exs` | Untimed, post-GC retained Request and backend process bytes plus outcome/setup-config term words. Contrasts large results against large setup-only config. |
 
 These are different workloads, not interchangeable implementations: cross-job
 speed ratios are disabled. In particular, keyword validation only checks the
-list/map shape; JSON Schema also checks nested properties. Precompiled JSV
-validation omits the library's key normalization and schema build. The shortened
-history fixture represents projection costs, not a real compaction transaction.
+list/map shape, and settlement without an output schema skips validation. The
+shortened history fixture represents projection costs, not a real compaction
+transaction.
 History append measures one append at a given size, not building an entire history.
 
 Delegated runtime timings include scope startup, process/message copying, fake

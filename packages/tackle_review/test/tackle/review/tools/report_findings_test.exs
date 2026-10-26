@@ -3,7 +3,7 @@ defmodule Tackle.Review.Tools.ReportFindingsTest do
 
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool
-  alias Tackle.Lib.Tool.Call
+  alias Tackle.Lib.Tool.{Call, Error, Result}
   alias Tackle.Review.Finding
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
 
@@ -37,7 +37,23 @@ defmodule Tackle.Review.Tools.ReportFindingsTest do
     )
   end
 
-  defp tool(args, context), do: Tool.execute_tool_call(ReportFindings, args, context)
+  defp tool(args, context), do: settle(ReportFindings, args, context)
+
+  # Settles a call like the loop does: the transcript text of a result, or the
+  # message of an execution error. The tools' failure reasons are written for
+  # the model, so the model sees the same message.
+  defp settle(tool_module, args, context) do
+    call = %Call{id: "call_1", name: tool_module.name(), arguments: args}
+
+    case Tool.settle(tool_module, call, context) do
+      {:ok, %Result{content: content}} ->
+        {:ok, content}
+
+      {:error, %Error{reason: :execution_error, message: message, content: content}} ->
+        assert content == "Error: " <> message
+        {:error, message}
+    end
+  end
 
   describe "accept/2" do
     test "returns valid findings and indexed errors for invalid ones" do
@@ -306,7 +322,7 @@ defmodule Tackle.Review.Tools.ReportFindingsTest do
       args = %{"finding" => "F1", "verdict" => "confirmed", "evidence" => "lib/a.ex:11"}
 
       assert {:ok, text} =
-               Tool.execute_tool_call(ReportVerdict, args, %{
+               settle(ReportVerdict, args, %{
                  review: %{stage: :verifier, finding_ids: ["F1"]}
                })
 
@@ -314,7 +330,7 @@ defmodule Tackle.Review.Tools.ReportFindingsTest do
       assert text =~ "do not call report_verdict again"
 
       assert {:ok, text} =
-               Tool.execute_tool_call(ReportVerdict, args, %{
+               settle(ReportVerdict, args, %{
                  review: %{stage: :verifier, finding_ids: ["F1", "F2"]}
                })
 
@@ -322,7 +338,7 @@ defmodule Tackle.Review.Tools.ReportFindingsTest do
       assert text =~ "Go on with the findings you have not decided yet"
 
       assert {:error, text} =
-               Tool.execute_tool_call(ReportVerdict, args, %{review: @review})
+               settle(ReportVerdict, args, %{review: @review})
 
       assert text =~ "only available in review verifier runs"
     end

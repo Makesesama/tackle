@@ -8,6 +8,7 @@ defmodule Tackle.Tools.ReviewTest do
   alias Tackle.Config
   alias Tackle.Executor.Jailed
   alias Tackle.Lib.Tool
+  alias Tackle.Lib.Tool.{Call, Error, Result}
   alias Tackle.LocalReview.History
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
   alias Tackle.Runtime.{AgentSpec, Limits}
@@ -158,7 +159,23 @@ defmodule Tackle.Tools.ReviewTest do
     AgentSpec.new!(name: name, config: config, timeout: 5_000)
   end
 
-  defp review(args, context), do: Tool.execute_tool_call(Tackle.Tools.Review, args, context)
+  # Settles a review_changes call like the loop does: the transcript text of a
+  # result, or the settled error.
+  defp review(args, context) do
+    call = %Call{id: "call_review", name: "review_changes", arguments: args}
+
+    case Tool.settle(Tackle.Tools.Review, call, context) do
+      {:ok, %Result{content: content}} -> {:ok, content}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  # A review failure reason is a message written for the model: the host and
+  # the model see the same text.
+  defp assert_model_error(%Error{reason: :execution_error} = error) do
+    assert error.content == "Error: " <> error.message
+    error.message
+  end
 
   # The repository root as Git reports it, which keys the history.
   defp root(repo), do: repo |> GitRepo.git(["rev-parse", "--show-toplevel"]) |> String.trim()
@@ -371,22 +388,28 @@ defmodule Tackle.Tools.ReviewTest do
   end
 
   test "reports invalid input and change errors to the model", ctx do
-    assert {:error, message} = review(%{"profile" => "loud"}, ctx.context)
+    assert {:error, %Error{reason: :invalid_input} = error} =
+             review(%{"profile" => "loud"}, ctx.context)
 
-    assert message ==
+    assert error.message ==
+             "Invalid tool arguments: profile: must be one of assertive, default, quiet"
+
+    assert error.content ==
              "Error: Invalid tool arguments: profile: must be one of assertive, default, quiet"
 
-    assert {:error, message} = review(%{"range" => "no-such-ref..HEAD"}, ctx.context)
-    assert message == "Cannot load the change: unknown revision: no-such-ref"
+    assert {:error, error} = review(%{"range" => "no-such-ref..HEAD"}, ctx.context)
 
-    assert {:error, message} =
+    assert assert_model_error(error) ==
+             "Cannot load the change: unknown revision: no-such-ref"
+
+    assert {:error, error} =
              review(%{"range" => "main..HEAD", "staged" => true}, ctx.context)
 
-    assert message =~ "Cannot load the change:"
+    assert assert_model_error(error) =~ "Cannot load the change:"
 
     outside = tmp_home()
-    assert {:error, message} = review(%{}, Map.put(ctx.context, :cwd, outside))
-    assert message =~ "is not inside a Git repository"
+    assert {:error, error} = review(%{}, Map.put(ctx.context, :cwd, outside))
+    assert assert_model_error(error) =~ "is not inside a Git repository"
 
     refute_received {:llm_call, _stage}
   end
@@ -400,21 +423,24 @@ defmodule Tackle.Tools.ReviewTest do
 
     # As for `git` in the jail, the repository around the workspace is not
     # visible.
-    assert {:error, message} = review(%{}, context)
-    assert message == "Cannot load the change: #{workspace} is not inside a Git repository"
+    assert {:error, error} = review(%{}, context)
+
+    assert assert_model_error(error) ==
+             "Cannot load the change: #{workspace} is not inside a Git repository"
+
     refute_received {:llm_call, _stage}
   end
 
   test "requires a runtime reference to an agent that may delegate", ctx do
-    assert {:error, message} = review(%{}, Map.delete(ctx.context, :runtime))
-    assert message =~ "no runtime reference"
+    assert {:error, error} = review(%{}, Map.delete(ctx.context, :runtime))
+    assert assert_model_error(error) =~ "no runtime reference"
 
     no_delegation = start_scope(root: [allow_delegation: false], profiles: %{})
 
-    assert {:error, message} =
+    assert {:error, error} =
              review(%{}, %{ctx.context | runtime: no_delegation.root_agent_ref})
 
-    assert message =~ "delegation"
+    assert assert_model_error(error) =~ "delegation"
     refute_received {:llm_call, _stage}
   end
 
@@ -451,9 +477,9 @@ defmodule Tackle.Tools.ReviewTest do
   test "fails clearly when the scope lacks the review profiles", ctx do
     scope = start_scope(root: [allow_delegation: true], profiles: %{})
 
-    assert {:error, message} = review(%{}, %{ctx.context | runtime: scope.root_agent_ref})
+    assert {:error, error} = review(%{}, %{ctx.context | runtime: scope.root_agent_ref})
 
-    assert message ==
+    assert assert_model_error(error) ==
              "The review failed: the review-detector agent profile is not available in this session"
 
     refute_received {:llm_call, _stage}

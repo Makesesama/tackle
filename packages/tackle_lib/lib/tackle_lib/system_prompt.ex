@@ -47,13 +47,9 @@ defmodule Tackle.Lib.SystemPrompt do
     * `:title` - section title, defaults to `"Available Tools"`
     * `:prompt_renderer` - `Tackle.Lib.PromptRenderer` implementation
     * `:prompt_renderer_opts` - options passed to the prompt renderer
-
-  For compatibility, passing a module as the third argument is treated as the
-  default renderer's `:description_renderer` option.
   """
-  @spec add_tools(t(), [module()], renderer_opts() | module() | nil) :: t()
-  def add_tools(%__MODULE__{} = prompt, tools, opts \\ []) do
-    opts = normalize_tool_opts(opts)
+  @spec add_tools(t(), [module()], renderer_opts()) :: t()
+  def add_tools(%__MODULE__{} = prompt, tools, opts \\ []) when is_list(opts) do
     title = Keyword.get(opts, :title, "Available Tools")
 
     add_section(prompt, title, tool_descriptions(tools, opts))
@@ -89,9 +85,8 @@ defmodule Tackle.Lib.SystemPrompt do
   end
 
   @doc "Builds the prompt-rendered tool-descriptions block."
-  @spec tool_descriptions([module()], renderer_opts() | module() | nil) :: String.t()
-  def tool_descriptions(tools, opts \\ []) do
-    opts = normalize_tool_opts(opts)
+  @spec tool_descriptions([module()], renderer_opts()) :: String.t()
+  def tool_descriptions(tools, opts \\ []) when is_list(opts) do
     {renderer, renderer_opts} = PromptRenderer.resolve(opts)
 
     renderer.render_tools(tools, renderer_opts)
@@ -115,13 +110,6 @@ defmodule Tackle.Lib.SystemPrompt do
 
   defp add(%__MODULE__{sections: sections} = prompt, section) do
     %{prompt | sections: List.insert_at(sections, -1, section)}
-  end
-
-  defp normalize_tool_opts(nil), do: []
-  defp normalize_tool_opts(opts) when is_list(opts), do: opts
-
-  defp normalize_tool_opts(renderer) when is_atom(renderer) do
-    [description_renderer: renderer]
   end
 
   defp normalize_renderer_opts(nil), do: []

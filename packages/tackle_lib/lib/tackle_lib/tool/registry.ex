@@ -3,9 +3,7 @@ defmodule Tackle.Lib.Tool.Registry do
   Immutable registry of tools available to a Tackle.Lib run.
 
   The registry materializes tool modules into provider-neutral definitions and
-  assigns each one a deterministic `definition_id`. If a tool call includes a
-  `definition_id`, resolution rejects stale calls whose id no longer matches the
-  registered definition for that name.
+  resolves tool calls to them by name.
   """
 
   alias Tackle.Lib.Tool
@@ -13,7 +11,6 @@ defmodule Tackle.Lib.Tool.Registry do
   alias Tackle.Lib.Tool.Schema
 
   @type entry :: %{
-          required(:id) => String.t(),
           required(:name) => String.t(),
           required(:module) => module(),
           required(:definition) => map()
@@ -30,10 +27,10 @@ defmodule Tackle.Lib.Tool.Registry do
   @doc """
   Builds a registry from a list of `Tackle.Lib.Tool` modules.
 
-  Raises `ArgumentError` for a module missing required tool callbacks, an invalid
-  tool name, a duplicate name (including a module listed twice), or a
-  parameters schema or keyword output schema that does not pass
-  `Tackle.Lib.Tool.Schema.validate_schema/1`.
+  Raises `ArgumentError` for a module that is not a tool (see
+  `Tackle.Lib.Tool.tool?/1`), an invalid tool name, a duplicate name
+  (including a module listed twice), or a parameters schema or keyword output
+  schema that does not pass `Tackle.Lib.Tool.Schema.validate_schema/1`.
   """
   @spec new([module()]) :: t()
   def new(tools) when is_list(tools) do
@@ -61,7 +58,7 @@ defmodule Tackle.Lib.Tool.Registry do
       raise ArgumentError, "invalid tool name for #{inspect(tool_module)}: #{inspect(name)}"
     end
 
-    %{id: definition.definition_id, name: name, module: tool_module, definition: definition}
+    %{name: name, module: tool_module, definition: definition}
   end
 
   @doc "Returns the registered entries, in the order their modules were given to `new/1`."
@@ -73,8 +70,8 @@ defmodule Tackle.Lib.Tool.Registry do
   def modules(%__MODULE__{entries: entries}), do: Enum.map(entries, & &1.module)
 
   @doc """
-  Returns provider-neutral definitions with stable definition ids, in the
-  order their modules were given to `new/1`.
+  Returns provider-neutral definitions, in the order their modules were given
+  to `new/1`.
   """
   @spec definitions(t()) :: [map()]
   def definitions(%__MODULE__{entries: entries}), do: Enum.map(entries, & &1.definition)
@@ -84,22 +81,12 @@ defmodule Tackle.Lib.Tool.Registry do
   def lookup(%__MODULE__{by_name: by_name}, name) when is_binary(name),
     do: Map.get(by_name, name)
 
-  @doc "Resolves a tool call to a registered tool module or returns a structured rejection."
-  @spec resolve(t(), Call.t()) ::
-          {:ok, entry()} | {:error, :unknown_tool | :stale_tool_definition}
-  def resolve(%__MODULE__{by_name: by_name}, %Call{name: name, definition_id: definition_id}) do
-    case Map.get(by_name, name) do
-      nil ->
-        {:error, :unknown_tool}
-
-      %{id: ^definition_id} = entry when is_binary(definition_id) ->
-        {:ok, entry}
-
-      %{id: current_id} when is_binary(definition_id) and definition_id != current_id ->
-        {:error, :stale_tool_definition}
-
-      entry ->
-        {:ok, entry}
+  @doc "Resolves a tool call to its registered entry, or `{:error, :unknown_tool}`."
+  @spec resolve(t(), Call.t()) :: {:ok, entry()} | {:error, :unknown_tool}
+  def resolve(%__MODULE__{by_name: by_name}, %Call{name: name}) do
+    case Map.fetch(by_name, name) do
+      {:ok, entry} -> {:ok, entry}
+      :error -> {:error, :unknown_tool}
     end
   end
 
@@ -123,22 +110,15 @@ defmodule Tackle.Lib.Tool.Registry do
   end
 
   defp validate_tool_module!(tool_module) do
-    required = [name: 0, description: 0, parameters_schema: 0, execute: 2]
+    case Tool.missing_callbacks(tool_module) do
+      [] ->
+        :ok
 
-    missing =
-      if is_atom(tool_module) and Code.ensure_loaded?(tool_module) do
-        Enum.reject(required, fn {name, arity} ->
-          function_exported?(tool_module, name, arity)
-        end)
-      else
-        required
-      end
+      missing ->
+        callbacks = Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
 
-    if missing != [] do
-      callbacks = Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
-
-      raise ArgumentError,
-            "#{inspect(tool_module)} is not a valid Tackle.Lib.Tool; missing callbacks: #{callbacks}"
+        raise ArgumentError,
+              "#{inspect(tool_module)} is not a valid Tackle.Lib.Tool; missing callbacks: #{callbacks}"
     end
   end
 end
