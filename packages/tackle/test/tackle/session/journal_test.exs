@@ -1043,6 +1043,33 @@ defmodule Tackle.Session.JournalTest do
       stop_journal(journal)
     end
 
+    test "a session moved away while its lock is awaited is not recreated empty", ctx do
+      create_session!(ctx)
+      {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
+      dir = Path.dirname(path)
+      holder = hold_lock(ctx)
+      test_pid = self()
+
+      spawn(fn ->
+        # A failed start also sends the linked caller its exit signal.
+        Process.flag(:trap_exit, true)
+        send(test_pid, {:started, start_journal(ctx)})
+      end)
+
+      # The owner found the journal and now waits for the lock.
+      assert eventually(fn -> owner_stage(ctx.session_id) == :acquire_lock end) == :ok
+
+      # A move (under the lock) takes the session away; a directory of the same
+      # name appears again, as one recreated by an unguarded lock attempt would.
+      File.rename!(dir, dir <> "-moved")
+      File.mkdir_p!(dir)
+      send(holder, :release)
+
+      assert_receive {:started, result}, 5_000
+      assert result == {:error, {:session_not_found, ctx.session_id}}
+      refute File.exists?(path)
+    end
+
     test "the journal file is private, also one an earlier version left readable", ctx do
       opts = [cwd: "/tmp/private-project"]
       {:ok, journal} = start_journal(ctx, opts)
@@ -1131,6 +1158,16 @@ defmodule Tackle.Session.JournalTest do
 
     assert_receive :locked, 5_000
     holder
+  end
+
+  defp owner_stage(session_id) do
+    with {:ok, owner} <- Journal.whereis(session_id),
+         [{watchdog, _}] <-
+           Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, owner}) do
+      :sys.get_state(watchdog).stage
+    else
+      _other -> nil
+    end
   end
 
   # The journal still accepts writes (an "after" answer), and its file replays

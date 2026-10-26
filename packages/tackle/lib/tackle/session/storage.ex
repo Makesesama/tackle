@@ -255,6 +255,46 @@ defmodule Tackle.Session.Storage do
     end
   end
 
+  @doc """
+  Acquires the writer lock of a session whose journal must already exist.
+
+  Unlike `acquire_lock/2`, it never creates the session directory, and it
+  checks again under the lock that the journal, plain or compressed, exists.
+  A session moved to the archive or the trash (which happens under its lock)
+  before the lock was taken is therefore reported as
+  `{:error, {:session_not_found, session_id}}` rather than recreated empty.
+  """
+  @spec acquire_existing_lock(String.t(), keyword()) :: {:ok, Lock.t()} | {:error, term()}
+  def acquire_existing_lock(session_id, opts \\ []) do
+    with {:ok, dir} <- session_dir(session_id, opts),
+         {:ok, root} <- sessions_root(opts),
+         :ok <- ensure_journal(session_id, dir),
+         {:ok, lock} <- acquire_in_existing(session_id, dir, opts) do
+      # Under the lock the directory can no longer move, so tightening it
+      # cannot recreate it.
+      with :ok <- ensure_journal(session_id, dir),
+           :ok <- ensure_private_path(root, dir) do
+        {:ok, lock}
+      else
+        {:error, _reason} = error ->
+          release_lock(lock)
+          error
+      end
+    end
+  end
+
+  # The directory can vanish while the lock is awaited; the lock file then
+  # cannot be opened.
+  defp acquire_in_existing(session_id, dir, opts) do
+    case acquire_waiting(dir, opts) do
+      {:ok, lock} ->
+        {:ok, lock}
+
+      {:error, _reason} = error ->
+        if File.dir?(dir), do: error, else: {:error, {:session_not_found, session_id}}
+    end
+  end
+
   @doc "Releases a previously acquired ownership lock."
   @spec release_lock(Lock.t()) :: :ok
   def release_lock(%Lock{} = lock), do: Lock.release(lock)

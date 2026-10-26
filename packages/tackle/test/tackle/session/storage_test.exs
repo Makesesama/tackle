@@ -52,6 +52,23 @@ defmodule Tackle.Session.StorageTest do
            ]
   end
 
+  test "locking an existing session never recreates one that was moved away", ctx do
+    {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
+    File.write!(Path.join(dir, "session.dlog"), "journal")
+
+    assert {:ok, lock} = Storage.acquire_existing_lock(ctx.session_id, home: ctx.home)
+    Storage.release_lock(lock)
+
+    {:ok, _archived} =
+      Storage.move_session(ctx.session_id, [home: ctx.home], home: ctx.home, archived: true)
+
+    assert {:error, {:session_not_found, id}} =
+             Storage.acquire_existing_lock(ctx.session_id, home: ctx.home)
+
+    assert id == ctx.session_id
+    refute File.exists?(dir)
+  end
+
   test "reclaims a lock when a PID is reused by another process", ctx do
     {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
     path = Lock.path(dir)

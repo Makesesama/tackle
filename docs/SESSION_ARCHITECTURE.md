@@ -223,6 +223,8 @@ On systems with `flock`, the guard is an operating-system advisory lock on `writ
 
 Losing the lock is fatal: the owner then only closes its log, and neither syncs, writes the summary sidecar, nor releases a lock in a directory another process may own now.
 
+Opening an *existing* journal takes its lock without creating the session directory, and checks under the lock that the journal still exists. A session moved to the archive or the trash (which happens under its lock) while a resume was waiting is reported as `{:session_not_found, session_id}` instead of being recreated as an empty session with the same id.
+
 ### 6.2 Deferred materialization of new sessions
 
 The journal owner process starts with its durable scope, so scope supervision and fail-closed behavior are unchanged. A *new* session is not materialized until its first prompt, however. Until then the owner holds the validated session id, storage options, and creation metadata in memory and writes nothing:

@@ -317,9 +317,11 @@ defmodule Tackle.Session.Journal do
   # starts. The owner process exists immediately so the runtime can fail closed
   # and address the journal, but no directory, ownership lock, log file, or
   # catalog entry is created until there is real work to persist. An existing
-  # journal is opened and validated eagerly so resume never fabricates history.
+  # journal is opened and validated eagerly so resume never fabricates history:
+  # its lock is taken without creating a directory, and a journal moved away
+  # (archived or trashed) before the lock was held is reported as not found.
   defp open_or_defer(session_id, path, opts) do
-    if File.exists?(path) or File.exists?(Storage.compressed_path(path)) do
+    if Storage.journal_exists?(session_id, opts) do
       open_existing(session_id, opts)
     else
       {:ok, deferred_state(session_id, path, opts)}
@@ -331,7 +333,7 @@ defmodule Tackle.Session.Journal do
 
     Watchdog.stage(self(), :acquire_lock)
 
-    with {:ok, lock} <- Storage.acquire_lock(session_id, opts) do
+    with {:ok, lock} <- Storage.acquire_existing_lock(session_id, opts) do
       Watchdog.lock(self(), lock)
       Watchdog.stage(self(), :open_replay)
 
