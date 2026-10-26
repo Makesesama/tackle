@@ -931,10 +931,6 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
     end
   end
 
-  defp route({:tackle_session_closed, session_id}, %State{session_id: session_id} = state) do
-    {:stop, state}
-  end
-
   # Stop the terminal App normally, then let its runner report the runtime
   # failure. Raising here only adds a second GenServer crash to the agent loss.
   defp route(

@@ -340,10 +340,6 @@ defmodule Tackle.Session do
   @spec unsubscribe(GenServer.server()) :: :ok
   def unsubscribe(session), do: GenServer.call(session, :unsubscribe)
 
-  @doc "Closes the session and cleans up an active turn."
-  @spec close(GenServer.server()) :: :ok
-  def close(session), do: GenServer.call(session, :close, :infinity)
-
   @impl true
   def init({%Config{} = config, opts}) do
     Process.flag(:trap_exit, true)
@@ -396,16 +392,12 @@ defmodule Tackle.Session do
   @impl true
   def handle_call(operation, _from, state)
       when (not is_nil(state.storage_task) or state.storage_status == :delayed) and
-             (operation in [:abandon_turn, :close] or
+             (operation == :abandon_turn or
                 (is_tuple(operation) and elem(operation, 0) in [:compact, :navigate, :reconfigure])),
       do: {:reply, {:error, :storage_busy}, state}
 
   # Queueing input for the active turn writes nothing, so it is accepted while
-  # the turn's begin or terminal commit is outstanding or storage is delayed;
-  # only a closing session refuses it.
-  def handle_call({:submit, _input}, _from, %{storage_task: %{kind: :close}} = state),
-    do: {:reply, {:error, :storage_busy}, state}
-
+  # the turn's begin or terminal commit is outstanding or storage is delayed.
   def handle_call({:submit, input}, _from, %{active_turn: active_turn} = state)
       when not is_nil(active_turn) do
     queue_user_message(state, input)
@@ -465,9 +457,6 @@ defmodule Tackle.Session do
 
   # Like a mid-turn submit, a message for the active turn is queued while its
   # storage is busy; an idle session would have to start a turn for it.
-  def handle_call({:deliver, %Envelope{}}, _from_call, %{storage_task: %{kind: :close}} = state),
-    do: {:reply, {:error, :storage_busy}, state}
-
   def handle_call({:deliver, %Envelope{}}, _from_call, state)
       when is_nil(state.active_turn) and
              (not is_nil(state.storage_task) or state.storage_status == :delayed),
@@ -649,27 +638,6 @@ defmodule Tackle.Session do
     {:reply, :ok, %{state | subscribers: drop_subscriber(state.subscribers, subscriber)}}
   end
 
-  def handle_call(:close, from, state) do
-    state = cancel_running(state, :session_closed)
-
-    result =
-      defer_storage(state, from, fn -> persist_close(state) end, fn state, result ->
-        case result do
-          :ok ->
-            broadcast(state, {:tackle_session_closed, state.agent_state.session_id})
-            {:stop, :normal, :ok, state}
-
-          {:error, reason} ->
-            {:stop, {:persistence_failed, reason}, {:error, reason}, state}
-        end
-      end)
-
-    case result do
-      {:noreply, state} -> {:noreply, put_in(state.storage_task.kind, :close)}
-      result -> result
-    end
-  end
-
   @impl true
   def handle_cast(
         {:background_finished, %RunRef{} = run_ref, profile, %Outcome{} = outcome},
@@ -755,21 +723,6 @@ defmodule Tackle.Session do
   end
 
   def handle_info({:tackle_event, _turn_id, %Event{}}, state), do: {:noreply, state}
-
-  # Close owns the terminal transition; a settling turn cannot replace its
-  # outstanding storage continuation or start another terminal commit.
-  def handle_info(
-        {ref, _result},
-        %{storage_task: %{kind: :close}, active_turn: %{task: %TurnTask{ref: ref}}} = state
-      ),
-      do: {:noreply, state}
-
-  def handle_info(
-        {:DOWN, monitor, :process, _pid, _reason},
-        %{storage_task: %{kind: :close}, active_turn: %{task: %TurnTask{monitor: monitor}}} =
-          state
-      ),
-      do: {:noreply, state}
 
   def handle_info(
         {ref, result},
@@ -877,9 +830,8 @@ defmodule Tackle.Session do
   defp finish_storage_task(state, %{kind: :terminal} = pending, result),
     do: finish_terminal_persistence(state, pending, result)
 
-  defp finish_storage_task(state, %{kind: kind} = pending, result)
-       when kind in [:operation, :close],
-       do: finish_storage_operation(pending.from, pending.complete.(state, result))
+  defp finish_storage_task(state, %{kind: :operation} = pending, result),
+    do: finish_storage_operation(pending.from, pending.complete.(state, result))
 
   defp finish_begin_turn(state, pending, :ok) do
     state =
@@ -1033,7 +985,7 @@ defmodule Tackle.Session do
     end
   end
 
-  defp delete_operation_signal(%{kind: kind, signal: signal}) when kind in [:operation, :close],
+  defp delete_operation_signal(%{kind: :operation, signal: signal}),
     do: Cancellation.delete(signal)
 
   defp delete_operation_signal(_pending), do: :ok
@@ -1878,9 +1830,6 @@ defmodule Tackle.Session do
   defp persist_configuration(%{journal: journal}, config) do
     Journal.configuration_changed(journal, config)
   end
-
-  defp persist_close(%{journal: nil}), do: :ok
-  defp persist_close(%{journal: journal}), do: Journal.close_journal(journal)
 
   defp validate_ownership(%ScopeRef{}, %AgentRef{}, coordinator, work_supervisor, tool_supervisor)
        when not is_nil(coordinator) and not is_nil(work_supervisor) and

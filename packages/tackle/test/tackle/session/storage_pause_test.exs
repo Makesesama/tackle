@@ -407,47 +407,6 @@ defmodule Tackle.Session.StoragePauseTest do
     end
   end
 
-  test "an admitted close keeps its continuation when the turn task exits" do
-    scope = durable_scope(mode: :manual)
-    root = scope.root_agent_ref
-    {:ok, snapshot} = Tackle.subscribe(root)
-    {:ok, _turn} = Tackle.submit(root, "seed")
-    assert_receive {:adapter_called, turn_task, _, _}
-    {:ok, session} = Runtime.session_pid(root)
-    log = {:tackle_session, snapshot.session_id}
-    :ok = :disk_log.block(log, true)
-
-    try do
-      sync = Task.async(fn -> Journal.flush(Journal.via(snapshot.session_id)) end)
-      await_sync(snapshot.session_id)
-      close = Task.async(fn -> Session.close(session) end)
-      assert_storage(snapshot.session_id, :delayed)
-
-      assert eventually(fn ->
-               match?(%{storage_task: %{kind: :close}}, :sys.get_state(session))
-             end) == :ok
-
-      Process.exit(turn_task, :kill)
-
-      assert eventually(fn -> not Process.alive?(turn_task) end) == :ok
-      refute_receive {:tackle_turn_failed, _, _, _}, 50
-      assert %{storage_task: %{kind: :close}} = :sys.get_state(session)
-
-      assert {:ok, %{storage: :delayed}} = Tackle.snapshot(root)
-      assert Task.yield(close, 20) == nil
-      :ok = :disk_log.unblock(log)
-      assert Task.await(sync) == :ok
-      assert Task.await(close) == :ok
-      assert_receive {:tackle_session_closed, session_id}, 5_000
-      assert session_id == snapshot.session_id
-      {:ok, replay} = read_journal(session_id, home: scope.home)
-      assert Enum.count(replay.commits, &event?(&1, "session.closed")) == 1
-      assert replay.projection.closed_at != nil
-    after
-      :disk_log.unblock(log)
-    end
-  end
-
   test "terminal persistence waits asynchronously after a turn task crashes" do
     scope = durable_scope(mode: :manual)
     root = scope.root_agent_ref

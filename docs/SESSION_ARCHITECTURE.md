@@ -476,17 +476,16 @@ An idle model or thinking-level change is persisted before it becomes the accept
 
 If the journal commit fails, `Tackle.Session.reconfigure/2` returns an error and retains the previous configuration.
 
-### 8.6 Closing
+### 8.6 Stopping
 
-Orderly close performs:
+A session has no close operation of its own: hosts stop its scope (`Tackle.stop_scope/1`). The session process cancels and shuts down an active turn's Task without writing a terminal event, so the turn resumes as interrupted. The journal owner then performs:
 
-1. cancellation and settlement of an active turn according to current runtime rules;
-2. a `session.closed` commit when appropriate;
-3. `:disk_log.sync/1`;
-4. `:disk_log.close/1`; and
-5. release of journal ownership.
+1. `:disk_log.sync/1`;
+2. `:disk_log.close/1`;
+3. writing the session's summary sidecar; and
+4. release of journal ownership.
 
-A process or BEAM crash can skip these steps. Recovery must therefore rely on journal repair and replay, not on the presence of `session.closed`.
+The runtime appends no `session.closed` commit; journals that already contain one still replay, and the projection reports its `closed_at`. A process or BEAM crash can skip these steps. Recovery must therefore rely on journal repair and replay, not on the presence of `session.closed`.
 
 ## 9. Durability contract
 
