@@ -49,11 +49,10 @@ defmodule Tackle.CLI.TUI.ModulesTest do
   end
 
   describe "State accessors" do
-    test "model_ref/1 prefers the selection ref and falls back to the model" do
+    test "model_ref/1 reads the selection ref" do
       assert State.model_ref(agent_state()) == "openai-codex/test-model"
-
-      assert State.model_ref(%{AgentState.new() | llm: nil, model: "plain"}) == "plain"
-      assert State.model_ref(%{AgentState.new() | llm: nil, model: nil}) == nil
+      assert State.model_ref(AgentState.new()) == nil
+      assert State.model_ref(nil) == nil
     end
 
     test "model_info/1 returns metadata only when it is present" do
@@ -256,7 +255,7 @@ defmodule Tackle.CLI.TUI.ModulesTest do
   end
 
   defp agent_state do
-    %{AgentState.new() | llm: selection(), model: "test-model"}
+    AgentState.new(llm: selection())
   end
 
   defp shell_state do

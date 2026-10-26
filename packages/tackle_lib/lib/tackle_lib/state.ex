@@ -49,7 +49,6 @@ defmodule Tackle.Lib.State do
           tool_policy: Policy.t(),
           context: map(),
           llm: Selection.t() | nil,
-          model: String.t() | nil,
           system_prompt: String.t() | nil,
           prompt_renderer: module() | nil,
           prompt_renderer_opts: keyword(),
@@ -76,7 +75,6 @@ defmodule Tackle.Lib.State do
             tool_policy: Policy.default(),
             context: %{},
             llm: nil,
-            model: nil,
             system_prompt: nil,
             prompt_renderer: nil,
             prompt_renderer_opts: [],
@@ -94,11 +92,11 @@ defmodule Tackle.Lib.State do
   Creates a new agent state with the given options.
 
   ## Options
-    * `:llm` - A `Tackle.Lib.LLM.Selection` for per-state adapter selection;
-      `state.model` is then the selection's adapter-local model
-    * `:model` - Model identifier for the legacy application-configured adapter
-      (`config :tackle_lib, llm: Adapter`), used only without `:llm`. Passing
-      both `:llm` and `:model` raises `ArgumentError`.
+    * `:llm` - The `Tackle.Lib.LLM.Selection` the loop generates with (see
+      `Tackle.Lib.LLM.select/2`). A state without one can be built, inspected,
+      and restored, but `Tackle.Lib.Loop` raises `ArgumentError` when asked to
+      run it. The model is the selection's (`model/1`); a separate `:model`
+      option raises `ArgumentError`.
     * `:max_iterations` - Maximum ReAct loop iterations per turn (default: `:infinity`)
     * `:tools` - List of tool modules implementing `Tackle.Lib.Tool` (default: []),
       built into `state.tool_registry`; `tools/1` returns them
@@ -128,7 +126,7 @@ defmodule Tackle.Lib.State do
   def new(opts \\ []) do
     id_generator = Keyword.get(opts, :id_generator, &ID.uuid4/0)
 
-    {llm, model} = llm_and_model!(opts)
+    llm = llm!(opts)
 
     tree = normalize_tree(Keyword.get(opts, :tree))
 
@@ -143,7 +141,6 @@ defmodule Tackle.Lib.State do
       tool_policy: Keyword.get(opts, :tool_policy, Policy.default()),
       context: Keyword.get(opts, :context, %{}),
       llm: llm,
-      model: model,
       system_prompt: Keyword.get(opts, :system_prompt),
       prompt_renderer: Keyword.get(opts, :prompt_renderer),
       prompt_renderer_opts: Keyword.get(opts, :prompt_renderer_opts, []),
@@ -199,24 +196,33 @@ defmodule Tackle.Lib.State do
 
   # A selection names its own model, so a separate `:model` could only be
   # ignored or contradict it.
-  defp llm_and_model!(opts) do
-    case {Keyword.get(opts, :llm), Keyword.get(opts, :model)} do
-      {nil, model} ->
-        {nil, model}
+  defp llm!(opts) do
+    if Keyword.has_key?(opts, :model) do
+      raise ArgumentError,
+            "the model comes from the :llm selection; pass a Tackle.Lib.LLM.Selection " <>
+              "instead of :model (got model: #{inspect(Keyword.get(opts, :model))})"
+    end
 
-      {%Selection{} = selection, nil} ->
-        {selection, selection.model}
+    case Keyword.get(opts, :llm) do
+      nil ->
+        nil
 
-      {%Selection{}, model} ->
+      %Selection{} = selection ->
+        selection
+
+      other ->
         raise ArgumentError,
-              "pass either :llm or :model, not both; the selection already names " <>
-                "its model (got model: #{inspect(model)})"
-
-      {selection, _model} ->
-        raise ArgumentError,
-              "expected :llm to be a Tackle.Lib.LLM.Selection, got: #{inspect(selection)}"
+              "expected :llm to be a Tackle.Lib.LLM.Selection, got: #{inspect(other)}"
     end
   end
+
+  @doc """
+  Returns the adapter-local model of the state's selection, or `nil` without
+  one.
+  """
+  @spec model(t()) :: String.t() | nil
+  def model(%__MODULE__{llm: %Selection{model: model}}), do: model
+  def model(%__MODULE__{}), do: nil
 
   @doc """
   Clears the per-turn fields so a new turn starts clean: the iteration

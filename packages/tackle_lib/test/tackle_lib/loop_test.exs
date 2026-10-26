@@ -283,6 +283,21 @@ defmodule Tackle.Lib.LoopTest do
       refute_received :llm_called
     end
 
+    test "a state without an LLM selection raises before the turn starts" do
+      test_pid = self()
+      callback = &send(test_pid, {:event, &1})
+
+      assert_raise ArgumentError, ~r/needs a Tackle.Lib.LLM.Selection/, fn ->
+        Loop.run(State.new(), "hello", event_callback: callback)
+      end
+
+      assert_raise ArgumentError, ~r/needs a Tackle.Lib.LLM.Selection/, fn ->
+        Loop.continue(State.new(), event_callback: callback)
+      end
+
+      refute_received {:event, _event}
+    end
+
     test "tools receive the run's event callback and tool context without the host repeating them" do
       test_pid = self()
       signal = Cancellation.new_signal()

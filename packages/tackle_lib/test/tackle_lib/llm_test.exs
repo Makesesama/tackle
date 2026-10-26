@@ -1,5 +1,5 @@
 defmodule Tackle.Lib.LLMTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM
@@ -13,6 +13,12 @@ defmodule Tackle.Lib.LLMTest do
 
   defmodule TestAdapter do
     @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "test"
+
+    @impl true
+    def models, do: ["model"]
 
     @impl true
     def generate(_schema, _opts) do
@@ -248,19 +254,6 @@ defmodule Tackle.Lib.LLMTest do
     def models, do: ["model"]
   end
 
-  setup do
-    previous = Application.get_env(:tackle_lib, :llm)
-    Application.put_env(:tackle_lib, :llm, TestAdapter)
-
-    on_exit(fn ->
-      if previous do
-        Application.put_env(:tackle_lib, :llm, previous)
-      else
-        Application.delete_env(:tackle_lib, :llm)
-      end
-    end)
-  end
-
   describe "select/2" do
     test "resolves a canonical model reference" do
       assert {:ok,
@@ -301,11 +294,10 @@ defmodule Tackle.Lib.LLMTest do
                LLM.select([SelectableAdapterA, DuplicateAdapter], "provider-a/shared")
     end
 
-    test "requires selection metadata without breaking legacy default adapters" do
-      assert {:error, {:invalid_adapter, TestAdapter, {:missing_callback, {:adapter_id, 0}}}} =
-               LLM.select([TestAdapter], "test/model")
-
-      assert LLM.adapter() == TestAdapter
+    test "requires selection metadata" do
+      assert {:error,
+              {:invalid_adapter, NoGenerationAdapter, {:missing_callback, {:generate, 2}}}} =
+               LLM.select([NoGenerationAdapter], "silent/model")
     end
 
     test "resolves optional model metadata once and permits adapters without it" do
@@ -400,15 +392,18 @@ defmodule Tackle.Lib.LLMTest do
     end
   end
 
-  test "normalizes adapter usage maps" do
-    assert {:ok, response} = LLM.generate([], [])
+  test "normalizes adapter usage maps and stamps the selected provider" do
+    {:ok, selection} = LLM.select([TestAdapter], "test/model")
+
+    assert {:ok, response} = LLM.generate_with(selection, nil, [])
     assert response.data == %{"content" => "ok"}
     assert %Usage{input_tokens: 4, output_tokens: 6, total_tokens: 10} = response.usage
     assert response.usage.model == "test/model"
-    assert response.usage.provider == :test_provider
+    assert response.usage.provider == "test"
+    assert response.provider == "test"
   end
 
-  test "prices normalized responses and streaming usage from the requested model card" do
+  test "prices the response from the requested model card and leaves stream events unpriced" do
     {:ok, selection} = LLM.select([MetadataAdapter], "priced/model")
 
     assert {:ok, response} = LLM.generate_with(selection, nil, model: "model")
@@ -423,22 +418,20 @@ defmodule Tackle.Lib.LLMTest do
                send(test_pid, {:priced_event, event})
              end)
 
-    assert_receive {:priced_event,
-                    %Event{
-                      type: :usage,
-                      data: %{usage: %Usage{} = streamed_usage, context_usage: context_usage}
-                    }}
+    assert_in_delta streamed.usage.cost, 0.0029, 0.000_001
+    assert streamed.usage.cost_estimated
 
-    assert_in_delta streamed_usage.cost, streamed.usage.cost, 0.000_001
-    assert context_usage.tokens == streamed_usage.total_tokens
-    assert context_usage.context_window == 100_000
+    assert_receive {:priced_event, %Event{type: :usage, data: data}}
+    assert %Usage{cost: nil, input_tokens: 1_000} = data.usage
+    refute Map.has_key?(data, :context_usage)
   end
 
   test "normalizes adapter stream events into Tackle.Lib events" do
+    {:ok, selection} = LLM.select([TestAdapter], "test/model")
     test_pid = self()
 
     assert {:ok, response} =
-             LLM.stream([], [], fn event -> send(test_pid, {:event, event}) end)
+             LLM.stream_with(selection, nil, [], fn event -> send(test_pid, {:event, event}) end)
 
     assert response.data == %{"content" => "hello"}
     assert %Usage{input_tokens: 3, output_tokens: 2, total_tokens: 5} = response.usage

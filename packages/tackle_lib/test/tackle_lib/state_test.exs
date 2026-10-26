@@ -58,7 +58,7 @@ defmodule Tackle.Lib.StateTest do
       assert state.status == :idle
       # Tackle.Lib has no baked-in default model — the host supplies it.
       assert state.llm == nil
-      assert state.model == nil
+      assert State.model(state) == nil
       assert State.tools(state) == []
       assert state.retry == Retry.new!()
       assert is_function(state.id_generator, 0)
@@ -76,14 +76,12 @@ defmodule Tackle.Lib.StateTest do
     test "accepts custom options" do
       state =
         State.new(
-          model: "custom/model",
           max_iterations: 5,
           tools: [SomeTool],
           id_generator: fn -> "custom-id" end
         )
 
       assert state.session_id == "custom-id"
-      assert state.model == "custom/model"
       assert state.max_iterations == 5
       assert State.tools(state) == [SomeTool]
       assert state.id_generator.() == "custom-id"
@@ -136,10 +134,11 @@ defmodule Tackle.Lib.StateTest do
       state = State.new(llm: selection)
 
       assert state.llm == selection
-      assert state.model == "selected-model"
+      assert State.model(state) == "selected-model"
+      assert State.model(%{state | llm: %{selection | model: "swapped"}}) == "swapped"
     end
 
-    test "rejects a model next to an LLM selection" do
+    test "takes the model only from the selection" do
       selection = %Selection{
         adapter: ExampleAdapter,
         provider_id: "example",
@@ -147,8 +146,10 @@ defmodule Tackle.Lib.StateTest do
         ref: "example/selected-model"
       }
 
-      assert_raise ArgumentError, ~r/either :llm or :model, not both/, fn ->
-        State.new(llm: selection, model: "other-model")
+      for opts <- [[llm: selection, model: "other-model"], [model: "plain-model"]] do
+        assert_raise ArgumentError, ~r/the model comes from the :llm selection/, fn ->
+          State.new(opts)
+        end
       end
     end
 

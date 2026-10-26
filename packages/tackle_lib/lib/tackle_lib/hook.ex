@@ -77,7 +77,7 @@ defmodule Tackle.Lib.Hook do
       end
 
       state = Tackle.Lib.new(
-        model: "anthropic/claude-sonnet-4",
+        llm: selection,
         hooks: [MyApp.Hooks.AuditLogger],
         context: %{user_id: user.id}
       )

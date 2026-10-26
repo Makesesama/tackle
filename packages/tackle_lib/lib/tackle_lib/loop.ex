@@ -10,10 +10,10 @@ defmodule Tackle.Lib.Loop do
 
   ## Provider-agnostic
 
-  The loop never talks to an LLM directly — it calls the configured
-  `Tackle.Lib.LLM` adapter. Configure it with:
-
-      config :tackle_lib, llm: MyApp.AI.TackleAdapter
+  The loop never talks to an LLM directly — it calls the `Tackle.Lib.LLM`
+  adapter of the state's selection (`Tackle.Lib.LLM.select/2`, passed to
+  `Tackle.Lib.State.new/1` as `:llm`). `run/3` and `continue/2` raise
+  `ArgumentError` for a state without one.
 
   ## Host-supplied system prompt
 
@@ -25,7 +25,7 @@ defmodule Tackle.Lib.Loop do
   ## Provider call gate
 
   `run/3` and `continue/2` accept a `:before_provider_call` zero-arity callback.
-  It runs immediately before every provider `generate/2` or `stream/3` dispatch,
+  It runs immediately before every adapter `generate/2` or `stream/3` dispatch,
   including retries, and before each compaction summarizer invocation. It must
   return `:ok` or `{:error, reason}`. An error skips that dispatch and follows
   the ordinary provider error path. Cancellation is

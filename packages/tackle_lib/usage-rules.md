@@ -11,12 +11,13 @@ architecture, read [`README.md`](README.md). Phoenix/OTP hosts should also read
 
 ## Golden rules
 
-- **Never reference host modules from Tackle.Lib.** Host behaviour is injected
-  via config (e.g. `config :tackle_lib, llm: MyApp.AI.TackleAdapter`) or passed
-  in at call time. Tackle.Lib must remain independent of every embedding
-  application's namespace.
-- **The host must configure an LLM adapter** implementing `Tackle.Lib.LLM`. There is
-  no default and `Tackle.Lib.LLM.adapter/0` raises without one.
+- **Never reference host modules from Tackle.Lib.** Host behaviour is passed
+  in at call time (an LLM selection, tools, hooks, handles). Tackle.Lib must
+  remain independent of every embedding application's namespace.
+- **The host must select an LLM adapter** implementing `Tackle.Lib.LLM` for each
+  state (`Tackle.Lib.LLM.select/2`, passed as `:llm`). There is no default or
+  application-wide adapter; running a state without a selection raises
+  `ArgumentError`.
 - **`State` is immutable, in-memory, and not persisted.** Tackle.Lib threads it
   through the loop; the host decides how (or whether) to store it.
 - **Tools return `{:ok, result} | {:error, reason}`** and never raise for
@@ -26,9 +27,11 @@ architecture, read [`README.md`](README.md). Phoenix/OTP hosts should also read
 ## Running an agent
 
 ```elixir
+{:ok, llm} = Tackle.Lib.LLM.select([MyApp.AI.AnthropicAdapter], "anthropic/claude-sonnet-4")
+
 state =
   Tackle.Lib.new(
-    model: "anthropic/claude-sonnet-4",
+    llm: llm,
     tools: [MyApp.Tools.Search, MyApp.Tools.Fetch],
     system_prompt: MyApp.build_system_prompt(),
     context: %{user_id: user.id}
@@ -38,7 +41,7 @@ state =
 Tackle.Lib.last_answer(state)
 ```
 
-- `Tackle.Lib.new/1` builds `%Tackle.Lib.State{}`. Key opts: `:model`, `:tools`,
+- `Tackle.Lib.new/1` builds `%Tackle.Lib.State{}`. Key opts: `:llm`, `:tools`,
   `:system_prompt`, `:context`, `:max_iterations` (default `:infinity`), `:hooks`,
   `:tool_policy`, `:llm_opts`, `:prompt_renderer`, `:id_generator`.
 - `Tackle.Lib.run(state, user_input, opts)` runs one turn (think → act → repeat →
@@ -110,10 +113,12 @@ end
 
 ## The LLM adapter (host-supplied)
 
-The host implements `Tackle.Lib.LLM` and wires it up:
+The host implements `Tackle.Lib.LLM` (with `adapter_id/0` and `models/0`) and
+selects a provider and model per state:
 
 ```elixir
-config :tackle_lib, llm: MyApp.AI.TackleAdapter
+{:ok, llm} = Tackle.Lib.LLM.select([MyApp.AI.TackleAdapter], "my-adapter/my-model")
+state = Tackle.Lib.new(llm: llm)
 ```
 
 - Generation callbacks: `generate(schema, opts) :: {:ok, response} | {:error, term}`,

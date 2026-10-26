@@ -62,7 +62,6 @@ defmodule Tackle.Lib.SnapshotTest do
     test "captures a snapshot from agent state" do
       state =
         State.new(
-          model: "test/model",
           system_prompt: "You are a test agent.",
           tools: [SnapshotTestTool],
           hooks: [],
@@ -74,7 +73,6 @@ defmodule Tackle.Lib.SnapshotTest do
 
       assert is_binary(snapshot.turn_id)
       assert snapshot.system_prompt == "You are a test agent."
-      assert snapshot.model == "test/model"
       assert Registry.modules(snapshot.tool_registry) == [SnapshotTestTool]
       assert snapshot.tools_version_id == Snapshot.tools_version_id([SnapshotTestTool])
       assert snapshot.hooks == []
@@ -149,9 +147,6 @@ defmodule Tackle.Lib.SnapshotTest do
       snapshot = State.new(llm: selection) |> Snapshot.capture()
 
       assert snapshot.llm == selection
-      assert snapshot.llm_adapter == ExplicitAdapter
-      assert snapshot.model == "model-a"
-      assert snapshot.model_ref == "explicit/model-a"
     end
 
     test "computes system_prompt_version_id" do

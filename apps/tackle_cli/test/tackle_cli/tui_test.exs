@@ -192,7 +192,7 @@ defmodule Tackle.CLI.TUITest do
             state.agent_state.llm_opts
         end
 
-      agent_state = %{state.agent_state | llm: llm, model: llm.model, llm_opts: llm_opts}
+      agent_state = %{state.agent_state | llm: llm, llm_opts: llm_opts}
 
       snapshot = %Snapshot{
         session_id: agent_state.session_id,
@@ -431,7 +431,7 @@ defmodule Tackle.CLI.TUITest do
   test "runs as an ExRatatui.App with session and multiline composer state", %{tui: tui} do
     state = state(tui)
 
-    assert state.agent_state.model == "test-model"
+    assert state.agent_state.llm.model == "test-model"
     assert state.agent_state.llm.ref == "openai-codex/test-model"
     assert is_reference(state.input)
     assert Input.get_value(state.input) == ""
@@ -2000,11 +2000,11 @@ defmodule Tackle.CLI.TUITest do
 
     state =
       await_state(tui, fn state ->
-        state.pending_operation == nil and state.agent_state.model == "other-model"
+        state.pending_operation == nil and state.agent_state.llm.model == "other-model"
       end)
 
     assert state.overlay == nil
-    assert state.agent_state.model == "other-model"
+    assert state.agent_state.llm.model == "other-model"
     assert header_text(state) =~ "openai-codex/other-model"
     assert status_text(state) =~ "ctx 0/2k (0.0%)"
     assert draft(tui) == "keep this draft"

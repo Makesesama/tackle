@@ -101,7 +101,8 @@ defmodule Tackle.Plugins.AnthropicTest do
       request: request
     ]
 
-    assert {:ok, result} = LLM.generate_with(Anthropic, nil, opts)
+    {:ok, selection} = LLM.select([Anthropic], "anthropic/claude-opus-5-5")
+    assert {:ok, result} = LLM.generate_with(selection, nil, opts)
     assert result.content == "cli"
     assert result.provider == "anthropic"
 

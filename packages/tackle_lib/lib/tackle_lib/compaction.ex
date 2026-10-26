@@ -521,7 +521,7 @@ defmodule Tackle.Lib.Compaction do
 
     %{
       selection: selection,
-      model: (snapshot && snapshot.model) || state.model,
+      model: selection && selection.model,
       system: (snapshot && snapshot.system_prompt) || state.system_prompt,
       tools: tools(snapshot, state),
       model_info: selection_model_info(selection)

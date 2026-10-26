@@ -1454,7 +1454,7 @@ defmodule Tackle.Session do
   defp apply_configuration(agent_state, config) do
     llm_opts = Keyword.put(config.llm_opts, :credential_store, Auth.credential_store())
 
-    %{agent_state | llm: config.llm, model: config.llm.model, llm_opts: llm_opts}
+    %{agent_state | llm: config.llm, llm_opts: llm_opts}
   end
 
   # Tools find the agent they act for under `:runtime` (`AgentRef.from_context/1`);

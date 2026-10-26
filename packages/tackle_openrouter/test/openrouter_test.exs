@@ -371,7 +371,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         base_opts(store, request)
         |> Keyword.merge(model: @claude, messages: history.(provider_state))
 
-      assert {:ok, _result} = LLM.generate_with(OpenRouter, nil, opts)
+      assert {:ok, _result} = LLM.generate_with(selection(opts), nil, opts)
       assert_receive {:body, body}
       Enum.at(body["messages"], 1)
     end
@@ -419,7 +419,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       work = Keyword.put(opts, :provider_id, "openrouter-work")
 
       with_env(%{"OPENROUTER_API_KEY" => "default-key", "WORK_KEY" => "work-key"}, fn ->
-        assert {:ok, %{provider: "openrouter"}} = LLM.generate_with(OpenRouter, nil, opts)
+        assert {:ok, %{provider: "openrouter"}} = LLM.generate_with(selection(opts), nil, opts)
         assert_receive {:authorization, "Bearer default-key"}
 
         assert {:error, {:missing_openrouter_api_key, "openrouter-work"}} =
@@ -429,7 +429,10 @@ defmodule Tackle.Plugins.OpenRouterTest do
 
         # A provider names its own variable with "api_key_env".
         named = Keyword.put(work, :provider_settings, %{"api_key_env" => "WORK_KEY"})
-        assert {:ok, %{provider: "openrouter-work"}} = LLM.generate_with(OpenRouter, nil, named)
+
+        assert {:ok, %{provider: "openrouter-work"}} =
+                 LLM.generate_with(selection(named), nil, named)
+
         assert_receive {:authorization, "Bearer work-key"}
 
         invalid = Keyword.put(work, :provider_settings, %{"api_key_env" => ""})
@@ -493,7 +496,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         base_opts(store, request)
         |> Keyword.merge(model: @claude, provider_id: "openrouter-work")
 
-      assert {:ok, result} = LLM.generate_with(OpenRouter, nil, work_opts)
+      assert {:ok, result} = LLM.generate_with(selection(work_opts), nil, work_opts)
       assert result.provider_state["provider"] == "openrouter-work"
       assert result.provider_state["model"] == @claude
       assert_receive {:body, _first}
@@ -504,14 +507,14 @@ defmodule Tackle.Plugins.OpenRouterTest do
         %{role: :user, content: "again"}
       ]
 
-      assert {:ok, _} =
-               LLM.generate_with(OpenRouter, nil, Keyword.put(work_opts, :messages, messages))
+      replay_opts = Keyword.put(work_opts, :messages, messages)
+      assert {:ok, _} = LLM.generate_with(selection(replay_opts), nil, replay_opts)
 
       assert_receive {:body, body}
       assert %{"reasoning" => "thought"} = Enum.at(body["messages"], 1)
 
       home_opts = Keyword.merge(work_opts, provider_id: "openrouter-home", messages: messages)
-      assert {:ok, _} = LLM.generate_with(OpenRouter, nil, home_opts)
+      assert {:ok, _} = LLM.generate_with(selection(home_opts), nil, home_opts)
       assert_receive {:body, body}
       refute Map.has_key?(Enum.at(body["messages"], 1), "reasoning")
     end
@@ -645,7 +648,8 @@ defmodule Tackle.Plugins.OpenRouterTest do
 
     # `Tackle.Lib.LLM` converts the keyword schema to JSON Schema.
     schema = [answer: [type: :integer, required: true]]
-    assert {:ok, result} = LLM.generate_with(OpenRouter, schema, base_opts(store, request))
+    opts = base_opts(store, request)
+    assert {:ok, result} = LLM.generate_with(selection(opts), schema, opts)
     assert result.data == %{"answer" => 42}
 
     assert_receive {:body, body}
@@ -1209,6 +1213,15 @@ defmodule Tackle.Plugins.OpenRouterTest do
   # The adapter has no `generate/2`; `Tackle.Lib.LLM` streams it with a
   # callback that drops the events.
   defp generate(schema, opts), do: OpenRouter.stream(schema, opts, fn _event -> :ok end)
+
+  # The LLM boundary calls an adapter through a selection: here the provider
+  # and model the options name.
+  defp selection(opts) do
+    id = Keyword.get(opts, :provider_id, "openrouter")
+    {:ok, provider} = Provider.new(id, OpenRouter, Keyword.get(opts, :provider_settings, %{}))
+    {:ok, selection} = LLM.select([provider], id <> "/" <> Keyword.fetch!(opts, :model))
+    selection
+  end
 
   defp base_opts(store, request) do
     [

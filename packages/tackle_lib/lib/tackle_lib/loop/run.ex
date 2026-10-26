@@ -24,6 +24,7 @@ defmodule Tackle.Lib.Loop.Run do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.Hook
+  alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.Snapshot
   alias Tackle.Lib.State
@@ -63,9 +64,9 @@ defmodule Tackle.Lib.Loop.Run do
   @doc """
   Validates the host's options and captures the turn's snapshot of `state`.
 
-  Raises `ArgumentError` for an option the loop does not know, or for a
-  concurrent tool policy without a `:tool_supervisor`, before anything else
-  happens. `:turn_id` is stored on the snapshot.
+  Raises `ArgumentError` for an option the loop does not know, for a state
+  without a `Tackle.Lib.LLM.Selection` in `:llm`, or for a concurrent tool
+  policy without a `:tool_supervisor`, before anything else happens. `:turn_id` is stored on the snapshot.
   """
   @spec new!(keyword(), State.t()) :: t()
   def new!(opts, %State{} = state) when is_list(opts) do
@@ -82,6 +83,7 @@ defmodule Tackle.Lib.Loop.Run do
         before_tool_execution: nil
       )
 
+    validate_llm!(state.llm)
     tool_supervisor = Keyword.fetch!(opts, :tool_supervisor)
     validate_tool_supervisor!(state.tool_policy, tool_supervisor)
 
@@ -96,6 +98,14 @@ defmodule Tackle.Lib.Loop.Run do
       before_tool_execution: Keyword.fetch!(opts, :before_tool_execution),
       snapshot: Snapshot.capture(state, turn_id: Keyword.fetch!(opts, :turn_id))
     }
+  end
+
+  defp validate_llm!(%Selection{}), do: :ok
+
+  defp validate_llm!(llm) do
+    raise ArgumentError,
+          "the loop needs a Tackle.Lib.LLM.Selection in the state's :llm, got: #{inspect(llm)}; " <>
+            "select one with Tackle.Lib.LLM.select/2 and pass it to Tackle.Lib.State.new/1"
   end
 
   defp validate_tool_supervisor!(%Policy{execution_mode: :concurrent}, nil) do

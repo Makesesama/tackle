@@ -474,7 +474,6 @@ defmodule Tackle.CLI.TUI.State do
   @doc "Returns the selected model reference, or nil when the state names none."
   @spec model_ref(AgentState.t() | nil) :: String.t() | nil
   def model_ref(%AgentState{llm: %{ref: ref}}) when is_binary(ref), do: ref
-  def model_ref(%AgentState{model: model}) when is_binary(model), do: model
   def model_ref(_agent_state), do: nil
 
   @doc "Returns the selected model's metadata, or nil when it is unavailable."

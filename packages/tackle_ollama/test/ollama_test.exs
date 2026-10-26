@@ -351,15 +351,13 @@ defmodule Tackle.Plugins.OllamaTest do
     cloud = [provider_id: "ollama-cloud", request: request]
 
     assert {:error, :invalid_api_key} =
-             LLM.generate_with(Ollama, nil, [model: "gpt-oss:120b", api_key: "bad\nkey"] ++ cloud)
+             generate([model: "gpt-oss:120b", api_key: "bad\nkey"] ++ cloud)
 
     assert {:error, {:unsupported_model, "gpt-oss:120b:cloud"}} =
-             LLM.generate_with(
-               Ollama,
-               nil,
-               [model: "gpt-oss:120b:cloud", api_key: "key"] ++ cloud
-             )
+             generate([model: "gpt-oss:120b:cloud", api_key: "key"] ++ cloud)
   end
+
+  defp generate(opts), do: Ollama.stream(nil, opts, fn _event -> :ok end)
 
   defp sse(event), do: "data: " <> JSON.encode!(event) <> "\n\n"
 

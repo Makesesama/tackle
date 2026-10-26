@@ -112,17 +112,9 @@ defmodule MyApp.AI.TackleAdapter do
 end
 ```
 
-Configure it under Tackle.Lib's own OTP application key when the host uses one
-application-wide default:
-
-```elixir
-# config/config.exs
-config :tackle_lib, llm: MyApp.AI.TackleAdapter
-```
-
-There is deliberately no built-in default adapter. A host that makes multiple
-adapters available should instead implement adapter metadata and select a
-provider and model per state:
+There is deliberately no built-in or application-wide default adapter. Give
+the adapter metadata and select a provider and model for each state; the loop
+raises `ArgumentError` for a state without a selection:
 
 ```elixir
 def adapter_id, do: "openai-codex"
@@ -196,9 +188,11 @@ authoring_prompt =
   |> Tackle.Lib.SystemPrompt.add_response_format()
   |> Tackle.Lib.SystemPrompt.to_string()
 
+{:ok, llm} = Tackle.Lib.LLM.select([MyApp.AI.TackleAdapter], "my-adapter/model-name")
+
 state =
   Tackle.Lib.new(
-    model: "provider/model-name",
+    llm: llm,
     tools: tools,
     system_prompt: authoring_prompt,
     context: %{scope: current_scope}
@@ -258,8 +252,7 @@ Tackle.Lib.continue(state, run_opts)
 
 | Option | Purpose | Default |
 |---|---|---|
-| `:llm` | Selection returned by `Tackle.Lib.LLM.select/2`; `state.model` is its model | configured adapter fallback |
-| `:model` | Model identifier for a legacy configured adapter; not together with `:llm` (`ArgumentError`) | `nil` |
+| `:llm` | Selection returned by `Tackle.Lib.LLM.select/2`, required to run; `Tackle.Lib.State.model/1` reads its model (there is no `:model` option) | `nil` |
 | `:tools` | Modules implementing `Tackle.Lib.Tool`, built into `state.tool_registry` (`Tackle.Lib.State.tools/1` lists them) | `[]` |
 | `:system_prompt` | Complete host-composed system prompt | `nil` |
 | `:context` | Opaque host context passed to hooks and tools | `%{}` |
@@ -274,8 +267,8 @@ Tackle.Lib.continue(state, run_opts)
 
 Pass a positive integer as `:max_iterations` when a host needs a bounded run.
 
-The state keeps no derived copies: `Tackle.Lib.State.tools/1` reads the tool
-registry, and `Tackle.Lib.State.last_compaction_id/1` reads the tree or the
+The state keeps no derived copies: `Tackle.Lib.State.model/1` reads the
+selection, `Tackle.Lib.State.tools/1` reads the tool registry, and `Tackle.Lib.State.last_compaction_id/1` reads the tree or the
 checkpoint at the head of the model projection. The loop's per-step
 bookkeeping (the id of the assistant message being generated, the overflow
 recoveries a turn has spent) is not on the state. A host that installs a
@@ -389,9 +382,8 @@ Implement `Tackle.Lib.LLM`:
 @callback usage(opts :: keyword()) :: {:ok, report :: map()} | {:error, term()}
 ```
 
-`adapter_id/0` and either `models/1` or `models/0` are required for adapters
-passed to `Tackle.Lib.LLM.select/2`. They remain optional for compatibility
-with a single adapter configured through `config :tackle_lib, :llm`.
+`adapter_id/0` and either `models/1` or `models/0` are required: every call
+goes through a selection, and `Tackle.Lib.LLM.select/2` needs them.
 `adapter_id/0` names the adapter type: lowercase letters, digits, and inner
 hyphens. It is also the id of the adapter's default provider unless the
 adapter exports `default_providers/0`, which returns a non-empty list of
@@ -1189,26 +1181,11 @@ snapshot belongs to the running turn and is not stored on `Tackle.Lib.State`;
 
 ## Prompt caching
 
-`Tackle.Lib.Cache` adds provider-compatible cache-control markers to the stable
-request prefix:
-
-```elixir
-Tackle.Lib.new(llm_opts: [cache: true])
-```
-
-Adapters opt in by calling:
-
-```elixir
-control = Tackle.Lib.Cache.control(opts)
-messages = Tackle.Lib.Cache.mark_system(messages, control)
-tools = Tackle.Lib.Cache.mark_last_tool(tools, control)
-```
-
-This only marks cache breakpoints; it does not store or evict cached content.
-Providers that ignore the marker are unaffected. The loop also sends the stable
-state `:session_id` to every adapter so providers with cache-affinity keys can
-reuse the same cache route across steps and turns. A host may enable explicit
-cache markers for any agent whose provider supports them.
+The loop sends the stable state `:session_id` to every adapter so providers
+with cache-affinity keys can reuse the same cache route across steps and
+turns, and it never injects synthetic per-step messages, so each request
+extends the previous one's prefix. Provider-specific cache markers belong in
+the adapter.
 
 ## Context compaction
 
@@ -1469,7 +1446,7 @@ The following generic layout illustrates where each concern belongs:
 
 | Concern | Example implementation | Reusable lesson |
 |---|---|---|
-| Adapter configuration | `config/config.exs` | Configure `:tackle_lib, :llm` |
+| Model selection | `lib/my_app/agent/agent.ex` | Select `provider/model` with `Tackle.Lib.LLM.select/2` per state |
 | Provider adapter | `lib/my_app/ai/tackle_adapter.ex` | Translate structured messages/tools at one boundary |
 | Agent factory/facade | `lib/my_app/agent/agent.ex` | Centralize defaults, tools, prompt, hooks, and auth reconstruction |
 | Prompt composition | `lib/my_app/agent/system_prompt.ex` | Keep domain guidance in the host |

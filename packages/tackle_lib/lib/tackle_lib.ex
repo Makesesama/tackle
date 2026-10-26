@@ -40,7 +40,7 @@ defmodule Tackle.Lib do
   ## What the host provides
 
     * One or more LLM adapters implementing `Tackle.Lib.LLM`, selected per state
-      or configured as one compatible application-wide default.
+      with `Tackle.Lib.LLM.select/2`.
     * Optionally, a JSON adapter implementing `Tackle.Lib.JSON` (configured via
       `config :tackle_lib, json: MyApp.JSONAdapter`; defaults to `Tackle.Lib.JSON.Default`).
     * Concrete tools defined with `use Tackle.Lib.Tool` or manually implementing the
@@ -88,7 +88,7 @@ defmodule Tackle.Lib do
     * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs. Tools
       also receive it in their context as `:event_callback`.
     * `:tool_context` - Map merged over `state.context` for tool execution only.
-    * `:llm_stream` - When true, use the optional `stream/3` callback in `Tackle.Lib.LLM` if the configured adapter supports it.
+    * `:llm_stream` - When true, use the optional `stream/3` callback in `Tackle.Lib.LLM` if the selected adapter supports it.
     * `:cancellation_signal` - `Tackle.Lib.Cancellation.Signal` checked between loop steps.
     * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot.
     * `:tool_supervisor` - `Task.Supervisor` required by the `:concurrent` tool policy.

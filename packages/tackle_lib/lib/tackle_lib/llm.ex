@@ -4,15 +4,16 @@ defmodule Tackle.Lib.LLM do
 
   Tackle.Lib never talks to a provider directly. The agent loop
   (`Tackle.Lib.Loop`) calls `generate_with/3` or `stream_with/4` with the
-  selected adapter, and the host application supplies an adapter that fulfils
+  state's selection, and the host application supplies an adapter that fulfils
   this contract. This is what makes Tackle.Lib provider-agnostic: swap the
   adapter, keep the loop.
 
   ## Selecting a provider and model
 
-  Hosts that make multiple adapters available should give each adapter a stable
-  `adapter_id/0` and a `models/0` list, then resolve a canonical
-  `provider_id/model` reference:
+  Every call goes through a `Tackle.Lib.LLM.Selection`; there is no
+  application-wide default adapter. Give each adapter a stable `adapter_id/0`
+  and a `models/0` list, then resolve a canonical `provider_id/model`
+  reference:
 
       {:ok, selection} =
         Tackle.Lib.LLM.select(
@@ -30,13 +31,7 @@ defmodule Tackle.Lib.LLM do
   The selection is stored on agent state and frozen in the per-turn snapshot.
   Its adapter-local model id is passed as `opts[:model]`, and the provider as
   `opts[:provider_id]` and `opts[:provider_settings]`, so separate states can
-  use different providers without changing application-global configuration.
-
-  Callers may configure one default adapter under Tackle.Lib's application key:
-
-      config :tackle_lib, llm: MyApp.AI.TackleAdapter
-
-  `adapter/0`, `generate/2`, and `stream/3` use that default.
+  use different providers without application-global configuration.
 
   ## The contract
 
@@ -52,7 +47,7 @@ defmodule Tackle.Lib.LLM do
   its events when the caller does not stream, and one that exports only
   `generate/2` is generated when the caller streams. `stream/3` emits
   provider-specific chunks or events to its callback; Tackle.Lib normalizes
-  each into a `%Tackle.Lib.Event{}` before hosts see it.
+  each into a `%Tackle.Lib.Event{}` before the caller sees it.
 
   * `schema` — `nil` for a chat turn, or a JSON Schema object describing a
     structured response. Callers may pass a Tackle.Lib keyword schema (see
@@ -120,9 +115,12 @@ defmodule Tackle.Lib.LLM do
     anything else.
   * `usage` is canonical usage: a `%Tackle.Lib.Usage{}` the adapter built
     from its provider's report (usually with `Tackle.Lib.Usage.new/1`), or a
-    map with the struct's field names. It is priced from the model card
-    (`model_info/1`) when the provider reports no cost; derived cost
-    estimates are marked, and hosts keep billing and persistence policy.
+    map with the struct's field names. It is priced from the selection's model
+    card when the provider reports no cost; derived cost estimates are marked,
+    and hosts keep billing and persistence policy. The response's usage is the
+    call's usage of record: `:usage` events a streaming adapter emits reach
+    the caller normalized but unpriced (the agent loop drops them and reports
+    the response's usage once).
   * `provider` is the selected provider id, whatever the adapter reported.
   * `provider_state` is stamped with the `"provider"` id and the requested
     `"model"`.
@@ -171,7 +169,6 @@ defmodule Tackle.Lib.LLM do
   `model_info/1`.
   """
 
-  alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
@@ -388,64 +385,20 @@ defmodule Tackle.Lib.LLM do
   def model_info(adapter, model), do: {:error, {:invalid_model_info_request, adapter, model}}
 
   @doc """
-  Returns the configured default LLM adapter module.
+  Generates one response through a selection.
 
-  This compatibility API is used when state has no explicit selection. New
-  multi-provider hosts should prefer `select/2` and pass the resulting selection
-  to `Tackle.Lib.new/1`.
-
-  Raises if no adapter is configured — Tackle.Lib is provider-agnostic by design and
-  has no built-in default; the host app MUST supply one.
-  """
-  @spec adapter() :: module()
-  def adapter do
-    resolved = Application.get_env(:tackle_lib, :llm)
-
-    case resolved do
-      nil ->
-        raise """
-        No Tackle.Lib LLM adapter configured. Set one in config:
-
-            config :tackle_lib, llm: MyApp.AI.TackleAdapter
-
-        The adapter module must implement the Tackle.Lib.LLM behaviour.
-        """
-
-      module when is_atom(module) ->
-        module
-    end
-  end
-
-  @doc """
-  Generates through the configured default adapter (see `generate_with/3`).
-  """
-  @spec generate(schema(), keyword()) :: result()
-  def generate(schema, opts \\ []) do
-    generate_with(adapter(), schema, opts)
-  end
-
-  @doc """
-  Generates one response through a selection or a specific adapter.
-
-  Per-turn snapshots use it so a turn continues with the adapter resolved
-  when the turn started, even if application config changes meanwhile. A
-  selection passes its adapter-local model, provider id, and provider
+  The selection passes its adapter-local model, provider id, and provider
   settings as `opts[:model]`, `opts[:provider_id]`, and
-  `opts[:provider_settings]`, replacing any given. A bare adapter module
-  stands for its default provider: its provider id is `opts[:provider_id]`,
-  else its `adapter_id/0`.
+  `opts[:provider_settings]`, replacing any given. The agent loop calls it
+  with the selection frozen in the turn's snapshot.
 
   Adapters that export only `stream/3` are streamed with a callback that
   drops their events. The result is described in the module docs: a
   `Tackle.Lib.LLM.Response` or `{:error, reason}`, never an exception.
   """
-  @spec generate_with(module() | Selection.t() | nil, schema(), keyword()) :: result()
-  def generate_with(adapter_or_selection, schema, opts \\ [])
-
-  def generate_with(nil, _schema, _opts), do: {:error, :missing_llm_adapter}
-
-  def generate_with(adapter_or_selection, schema, opts) do
-    with {:ok, call} <- prepare(adapter_or_selection, schema, opts) do
+  @spec generate_with(Selection.t(), schema(), keyword()) :: result()
+  def generate_with(%Selection{} = selection, schema, opts \\ []) when is_list(opts) do
+    with {:ok, call} <- prepare(selection, schema, opts) do
       call
       |> invoke(nil)
       |> to_response(call)
@@ -453,39 +406,25 @@ defmodule Tackle.Lib.LLM do
   end
 
   @doc """
-  Streams through the configured default adapter (see `stream_with/4`).
-  """
-  @spec stream(schema(), keyword(), (Event.t() -> any())) :: result()
-  def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
-    stream_with(adapter(), schema, opts, event_callback)
-  end
-
-  @doc """
-  Streams one response through a selection or a specific adapter.
+  Streams one response through a selection.
 
   Mirrors `generate_with/3`. The adapter emits provider-specific chunks or
   events to the callback it receives; each is converted to a
-  `%Tackle.Lib.Event{}` (with usage priced from the model card) before
-  `event_callback` sees it. An adapter that exports only `generate/2` is
-  generated instead, and its response's usage is emitted as one `:usage`
-  event.
+  `%Tackle.Lib.Event{}` before `event_callback` sees it. An adapter that
+  exports only `generate/2` is generated instead, and its response's usage is
+  emitted as one `:usage` event.
   """
-  @spec stream_with(module() | Selection.t() | nil, schema(), keyword(), (Event.t() -> any())) ::
-          result()
-  def stream_with(adapter_or_selection, schema, opts, event_callback)
-
-  def stream_with(nil, _schema, _opts, _event_callback), do: {:error, :missing_llm_adapter}
-
-  def stream_with(adapter_or_selection, schema, opts, event_callback)
-      when is_function(event_callback, 1) do
-    with {:ok, call} <- prepare(adapter_or_selection, schema, opts) do
+  @spec stream_with(Selection.t(), schema(), keyword(), (Event.t() -> any())) :: result()
+  def stream_with(%Selection{} = selection, schema, opts, event_callback)
+      when is_list(opts) and is_function(event_callback, 1) do
+    with {:ok, call} <- prepare(selection, schema, opts) do
       if function_exported?(call.adapter, :stream, 3) do
         call
         |> invoke(stream_callback(call, event_callback))
         |> to_response(call)
       else
         with {:ok, response} <- call |> invoke(nil) |> to_response(call) do
-          emit_usage_event(response, call, event_callback)
+          if response.usage, do: event_callback.(Event.usage(response.usage))
           {:ok, response}
         end
       end
@@ -494,27 +433,14 @@ defmodule Tackle.Lib.LLM do
 
   # One adapter call: the adapter, its options, and what the boundary needs to
   # check and stamp the result.
-  defp prepare(%Selection{} = selection, schema, opts) when is_list(opts) do
+  defp prepare(%Selection{adapter: adapter} = selection, schema, opts) do
+    %Selection{provider_id: provider_id, model: model} = selection
+
     opts =
       opts
-      |> Keyword.put(:model, selection.model)
-      |> Keyword.put(:provider_id, selection.provider_id)
+      |> Keyword.put(:model, model)
+      |> Keyword.put(:provider_id, provider_id)
       |> Keyword.put(:provider_settings, selection.provider_settings)
-
-    build_call(selection.adapter, selection.model_info, selection.provider_id, schema, opts)
-  end
-
-  defp prepare(adapter, schema, opts) when is_atom(adapter) and is_list(opts) do
-    with :ok <- ensure_adapter_loaded(adapter),
-         {:ok, info} <- model_info_from_opts(adapter, opts) do
-      build_call(adapter, info, default_provider_id(adapter, opts), schema, opts)
-    end
-  end
-
-  defp prepare(adapter, _schema, opts), do: {:error, {:invalid_llm_request, adapter, opts}}
-
-  defp build_call(adapter, info, provider_id, schema, opts) do
-    model = Keyword.get(opts, :model)
 
     with :ok <- ensure_adapter_loaded(adapter),
          :ok <- ensure_generates(adapter),
@@ -522,23 +448,12 @@ defmodule Tackle.Lib.LLM do
       {:ok,
        %{
          adapter: adapter,
-         info: info,
+         info: selection.model_info,
          provider_id: provider_id,
          model: model,
          schema: schema,
          opts: drop_foreign_provider_state(opts, provider_id, model)
        }}
-    end
-  end
-
-  defp default_provider_id(adapter, opts) do
-    with nil <- Keyword.get(opts, :provider_id),
-         true <- function_exported?(adapter, :adapter_id, 0),
-         {:ok, id} when is_binary(id) <- Provider.call(adapter, :adapter_id, []) do
-      id
-    else
-      id when is_binary(id) and id != "" -> id
-      _missing -> nil
     end
   end
 
@@ -607,7 +522,6 @@ defmodule Tackle.Lib.LLM do
     fn provider_event ->
       provider_event
       |> Event.normalize(provider: call.provider_id)
-      |> price_usage_event(call.info, call.provider_id, call.model)
       |> event_callback.()
     end
   end
@@ -653,7 +567,7 @@ defmodule Tackle.Lib.LLM do
   defp to_response({:ok, result}, call) do
     case Response.from_result(result) do
       {:ok, response} ->
-        provider = call.provider_id || response.provider
+        provider = call.provider_id
 
         {:ok,
          %{
@@ -680,7 +594,7 @@ defmodule Tackle.Lib.LLM do
   # result has a usable one, is kept in the details: the provider still
   # spent the tokens.
   defp invalid_response(detail, result, call) do
-    provider = call.provider_id || result_field(result, :provider)
+    provider = call.provider_id
 
     usage =
       case result_field(result, :usage) do
@@ -711,48 +625,8 @@ defmodule Tackle.Lib.LLM do
     |> then(&estimate_cost(call.info, &1))
   end
 
-  defp price_usage_event(%Event{type: :usage, data: data} = event, info, provider, model) do
-    usage =
-      case Map.get(data, :usage) do
-        %{} = usage ->
-          usage
-          |> Usage.normalize(model: model, provider: provider)
-          |> then(&estimate_cost(info, &1))
-
-        _other ->
-          nil
-      end
-
-    context_usage = ContextUsage.from_usage(usage, info)
-    data = data |> Map.put(:usage, usage) |> maybe_put(:context_usage, context_usage)
-    %{event | data: data}
-  end
-
-  defp price_usage_event(%Event{} = event, _info, _provider, _model), do: event
-
   defp estimate_cost(nil, usage), do: usage
   defp estimate_cost(%ModelInfo{} = info, usage), do: ModelInfo.estimate_cost(info, usage)
-
-  defp emit_usage_event(%Response{usage: nil}, _call, _event_callback), do: :ok
-
-  defp emit_usage_event(%Response{usage: usage}, call, event_callback) do
-    usage
-    |> Event.usage()
-    |> price_usage_event(call.info, usage.provider, usage.model)
-    |> event_callback.()
-
-    :ok
-  end
-
-  defp model_info_from_opts(adapter, opts) do
-    case Keyword.get(opts, :model) do
-      model when is_binary(model) and model != "" ->
-        adapter_model_info(adapter, model, Keyword.get(opts, :provider_settings) || %{})
-
-      _missing ->
-        {:ok, nil}
-    end
-  end
 
   defp adapter_model_info(adapter, model, settings) do
     with :ok <- ensure_adapter_loaded(adapter),
@@ -767,7 +641,4 @@ defmodule Tackle.Lib.LLM do
       {:error, reason} -> {:error, {:invalid_adapter, adapter, {:not_loaded, reason}}}
     end
   end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

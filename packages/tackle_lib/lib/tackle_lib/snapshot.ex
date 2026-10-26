@@ -23,7 +23,6 @@ defmodule Tackle.Lib.Snapshot do
 
   alias Tackle.Lib.Hook
   alias Tackle.Lib.ID
-  alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Retry
   alias Tackle.Lib.SystemPrompt
@@ -40,9 +39,6 @@ defmodule Tackle.Lib.Snapshot do
           tool_registry: Registry.t(),
           hooks: [module()],
           llm: Selection.t() | nil,
-          llm_adapter: module() | nil,
-          model: String.t() | nil,
-          model_ref: String.t() | nil,
           llm_opts: keyword(),
           retry: Tackle.Lib.Retry.t(),
           captured_at: DateTime.t()
@@ -58,9 +54,6 @@ defmodule Tackle.Lib.Snapshot do
     :tool_registry,
     :hooks,
     :llm,
-    :llm_adapter,
-    :model,
-    :model_ref,
     :llm_opts,
     :retry,
     :captured_at
@@ -69,10 +62,10 @@ defmodule Tackle.Lib.Snapshot do
   @doc """
   Captures a snapshot from the current agent state and runtime configuration.
 
-  Uses the state's explicit LLM selection when present, otherwise resolving the
-  configured default adapter for compatibility. The selected adapter is frozen
-  so the turn is isolated from adapter swaps. Computes version IDs for the
-  system prompt and tool set. `:turn_id` sets the turn id instead of
+  Freezes the state's `Tackle.Lib.LLM.Selection` (its adapter, provider, and
+  model) so the turn is isolated from a selection swapped mid-turn; the loop
+  refuses to run a state without one. Computes version IDs for the system
+  prompt and tool set. `:turn_id` sets the turn id instead of
   generating one.
 
   The state's hooks are checked with `Tackle.Lib.Hook.validate!/1` again, since
@@ -83,8 +76,6 @@ defmodule Tackle.Lib.Snapshot do
   def capture(state, opts \\ []) when is_map(state) do
     turn_id = Keyword.get(opts, :turn_id) || generate_turn_id(state)
     hooks = Hook.validate!(Map.get(state, :hooks) || [])
-    llm = Map.get(state, :llm)
-    {llm_adapter, model, model_ref} = resolve_llm(llm, state)
     system_prompt = Map.get(state, :system_prompt)
     prompt_renderer = Map.get(state, :prompt_renderer)
     prompt_renderer_opts = Map.get(state, :prompt_renderer_opts, [])
@@ -99,10 +90,7 @@ defmodule Tackle.Lib.Snapshot do
       tools_version_id: tools_version_id(tool_registry),
       tool_registry: tool_registry,
       hooks: hooks,
-      llm: llm,
-      llm_adapter: llm_adapter,
-      model: model,
-      model_ref: model_ref,
+      llm: Map.get(state, :llm),
       llm_opts: Map.get(state, :llm_opts, []),
       retry: Map.get(state, :retry, Retry.new!()),
       captured_at: DateTime.utc_now()
@@ -166,21 +154,6 @@ defmodule Tackle.Lib.Snapshot do
   """
   @spec hooks(t()) :: [module()]
   def hooks(%__MODULE__{hooks: hooks}), do: hooks
-
-  defp resolve_llm(%Selection{} = selection, _state) do
-    {selection.adapter, selection.model, selection.ref}
-  end
-
-  defp resolve_llm(nil, state) do
-    model = Map.get(state, :model)
-    {resolve_default_adapter(), model, model}
-  end
-
-  defp resolve_default_adapter do
-    LLM.adapter()
-  rescue
-    _ -> nil
-  end
 
   defp generate_turn_id(%{id_generator: id_generator}) when is_function(id_generator, 0) do
     id_generator.()

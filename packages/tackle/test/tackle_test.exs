@@ -4,6 +4,7 @@ defmodule TackleTest do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.Message
+  alias Tackle.Lib.State
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.Scope
@@ -327,7 +328,7 @@ defmodule TackleTest do
     assert_receive {:tackle_session_reconfigured, ^session_id, ^snapshot}
     assert agent_state.messages == first_state.messages
     assert agent_state.llm.ref == "provider-b/shared"
-    assert agent_state.model == "shared"
+    assert State.model(agent_state) == "shared"
     assert agent_state.llm_opts[:request_tag] == "preserved"
     assert agent_state.llm_opts[:reasoning_effort] == "high"
     refute Keyword.has_key?(agent_state.llm_opts, :reasoning_summary)

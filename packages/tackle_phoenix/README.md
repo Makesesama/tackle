@@ -155,8 +155,10 @@ defmodule MyApp.Agent do
     tools = Keyword.get(opts, :tools, MyApp.Agent.Tools.default())
     context = Keyword.get(opts, :context, %{})
 
+    {:ok, llm} = Tackle.Lib.LLM.select(MyApp.AI.adapters(), Keyword.fetch!(opts, :model))
+
     Tackle.Lib.new(
-      model: Keyword.fetch!(opts, :model),
+      llm: llm,
       tools: tools,
       context: context,
       system_prompt: MyApp.Agent.Prompt.build(tools, context),

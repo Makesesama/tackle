@@ -424,7 +424,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-flash", messages: messages, tools: tools)
 
-    assert {:ok, _result} = LLM.generate_with(DeepSeek, nil, opts)
+    assert {:ok, _result} = LLM.generate_with(selection(opts), nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
     assert assistant["reasoning_content"] == "previous reasoning"
 
@@ -432,7 +432,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-flash", messages: messages)
 
-    assert {:ok, _result} = LLM.generate_with(DeepSeek, nil, opts)
+    assert {:ok, _result} = LLM.generate_with(selection(opts), nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
     assert assistant["reasoning_content"] == "previous reasoning"
 
@@ -445,7 +445,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-v4-flash", messages: v4_messages)
 
-    assert {:ok, _result} = LLM.generate_with(DeepSeek, nil, opts)
+    assert {:ok, _result} = LLM.generate_with(selection(opts), nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
     assert assistant["reasoning_content"] == "previous reasoning"
 
@@ -453,7 +453,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-v4-pro", messages: messages)
 
-    assert {:ok, _result} = LLM.generate_with(DeepSeek, nil, opts)
+    assert {:ok, _result} = LLM.generate_with(selection(opts), nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
     assert assistant["reasoning_content"] == ""
   end
@@ -558,12 +558,10 @@ defmodule Tackle.Plugins.DeepSeekTest do
     end
 
     # `Tackle.Lib.LLM` converts the keyword schema to JSON Schema.
+    opts = base_opts(store, request)
+
     assert {:ok, %{data: %{"answer" => "yes"}}} =
-             LLM.generate_with(
-               DeepSeek,
-               [answer: [type: :string, required: true]],
-               base_opts(store, request)
-             )
+             LLM.generate_with(selection(opts), [answer: [type: :string, required: true]], opts)
   end
 
   test "maps reasoning effort to DeepSeek thinking controls", %{store: store} do
@@ -809,7 +807,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       work = Keyword.put(opts, :provider_id, "deepseek-work")
 
       with_env(%{"DEEPSEEK_API_KEY" => "default-key", "WORK_KEY" => "work-key"}, fn ->
-        assert {:ok, %{provider: "deepseek"}} = LLM.generate_with(DeepSeek, nil, opts)
+        assert {:ok, %{provider: "deepseek"}} = LLM.generate_with(selection(opts), nil, opts)
         assert_receive {:authorization, "Bearer default-key"}
 
         assert {:error, {:missing_deepseek_api_key, "deepseek-work"}} =
@@ -819,7 +817,10 @@ defmodule Tackle.Plugins.DeepSeekTest do
 
         # A provider names its own variable with "api_key_env".
         named = Keyword.put(work, :provider_settings, %{"api_key_env" => "WORK_KEY"})
-        assert {:ok, %{provider: "deepseek-work"}} = LLM.generate_with(DeepSeek, nil, named)
+
+        assert {:ok, %{provider: "deepseek-work"}} =
+                 LLM.generate_with(selection(named), nil, named)
+
         assert_receive {:authorization, "Bearer work-key"}
 
         invalid = Keyword.put(work, :provider_settings, %{"api_key_env" => ""})
@@ -889,14 +890,14 @@ defmodule Tackle.Plugins.DeepSeekTest do
         base_opts(store, request)
         |> Keyword.merge(model: "deepseek-v4-pro", messages: messages)
 
-      assert {:ok, _} =
-               LLM.generate_with(DeepSeek, nil, Keyword.put(opts, :provider_id, "deepseek-work"))
+      work_opts = Keyword.put(opts, :provider_id, "deepseek-work")
+      assert {:ok, _} = LLM.generate_with(selection(work_opts), nil, work_opts)
 
       assert_receive {:body, body}
       assert [%{"reasoning_content" => "work reasoning"}, _user] = body["messages"]
 
-      assert {:ok, _} =
-               LLM.generate_with(DeepSeek, nil, Keyword.put(opts, :provider_id, "deepseek-home"))
+      home_opts = Keyword.put(opts, :provider_id, "deepseek-home")
+      assert {:ok, _} = LLM.generate_with(selection(home_opts), nil, home_opts)
 
       assert_receive {:body, body}
       assert [%{"reasoning_content" => ""}, _user] = body["messages"]
@@ -959,6 +960,15 @@ defmodule Tackle.Plugins.DeepSeekTest do
   # The adapter has no `generate/2`; `Tackle.Lib.LLM` streams it with a
   # callback that drops the events.
   defp generate(schema, opts), do: DeepSeek.stream(schema, opts, fn _event -> :ok end)
+
+  # The LLM boundary calls an adapter through a selection: here the provider
+  # and model the options name.
+  defp selection(opts) do
+    id = Keyword.get(opts, :provider_id, "deepseek")
+    {:ok, provider} = Provider.new(id, DeepSeek, Keyword.get(opts, :provider_settings, %{}))
+    {:ok, selection} = LLM.select([provider], id <> "/" <> Keyword.fetch!(opts, :model))
+    selection
+  end
 
   defp base_opts(store, request) do
     [

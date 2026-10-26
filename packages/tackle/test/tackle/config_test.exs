@@ -5,6 +5,7 @@ defmodule Tackle.ConfigTest do
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Retry
+  alias Tackle.Lib.State
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Plugins.Catalog
 
@@ -228,7 +229,7 @@ defmodule Tackle.ConfigTest do
 
     state = Config.to_agent_state(config)
     assert state.llm == config.llm
-    assert state.model == "family/nested"
+    assert State.model(state) == "family/nested"
   end
 
   test "session titles are opt-in through new and resolve a dedicated model" do

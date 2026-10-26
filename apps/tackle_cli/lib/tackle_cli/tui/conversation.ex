@@ -12,7 +12,7 @@ defmodule Tackle.CLI.TUI.Conversation do
   """
 
   alias ExRatatui.Layout.Rect
-  alias Tackle.CLI.TUI.{MessageView, ToolView}
+  alias Tackle.CLI.TUI.{MessageView, State, ToolView}
   alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
 
   @mouse_scroll_rows 3
@@ -674,9 +674,7 @@ defmodule Tackle.CLI.TUI.Conversation do
     {Enum.flat_map(layouts, & &1.items), Enum.flat_map(layouts, & &1.item_ids)}
   end
 
-  defp model_ref(%{agent_state: %{llm: %{ref: ref}}}) when is_binary(ref), do: ref
-  defp model_ref(%{agent_state: %{model: model}}) when is_binary(model), do: model
-  defp model_ref(_state), do: nil
+  defp model_ref(%{agent_state: agent_state}), do: State.model_ref(agent_state)
 
   @doc false
   @spec same_prefix?(t(), t(), non_neg_integer()) :: boolean()

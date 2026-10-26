@@ -233,12 +233,12 @@ defmodule Tackle.Lib.Loop.Provider do
     with :ok <- ProviderGate.await(run.before_provider_call),
          false <- Run.cancelled?(run) do
       {schema, opts} = request_args(state, run)
-      adapter = run.snapshot.llm || run.snapshot.llm_adapter
+      selection = run.snapshot.llm
 
       if run.llm_stream? do
-        LLM.stream_with(adapter, schema, opts, stream_callback(run))
+        LLM.stream_with(selection, schema, opts, stream_callback(run))
       else
-        LLM.generate_with(adapter, schema, opts)
+        LLM.generate_with(selection, schema, opts)
       end
     else
       {:error, reason} -> {:gate_error, reason}
@@ -263,7 +263,6 @@ defmodule Tackle.Lib.Loop.Provider do
     # may have replaced the array with a checkpoint plus a recent tail.
     request =
       [
-        model: snapshot.model,
         session_id: state.session_id,
         system: snapshot.system_prompt,
         messages: Messages.to_provider(State.model_messages(state)),

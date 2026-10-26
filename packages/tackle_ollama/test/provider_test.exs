@@ -386,9 +386,11 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
         sse(%{"choices" => [], "usage" => %{"prompt_tokens" => 5, "completion_tokens" => 2}}) <>
         "data: [DONE]\n\n"
 
+    {:ok, selection} = LLM.select([Ollama], "ollama-cloud/gpt-oss:120b")
+
     assert {:ok, result} =
              LLM.generate_with(
-               Ollama,
+               selection,
                nil,
                opts(fn _ -> {:ok, %{status: 200, body: wire}} end, api_key: "key")
              )
