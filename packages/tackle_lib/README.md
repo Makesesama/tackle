@@ -1336,6 +1336,11 @@ valid only for explicitly in-memory use. Failed validation or commit leaves
 the accepted state unchanged. `Tackle.Lib.Tree.restore/2` is the validated
 restoration path for hosts that persist their own entries.
 
+A tree keeps an index of each entry's children, so `Tackle.Lib.Tree.children/2`
+costs the number of children. `Tackle.Lib.Tree.resumable?/2` checks one entry;
+`Tackle.Lib.Tree.resumable_ids/1` returns every safe continuation point in one
+walk, for views that render the whole tree.
+
 Linear mode is unchanged: without `tree: true`, `State.messages` remains the
 entire conversation archive, as before.
 

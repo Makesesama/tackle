@@ -256,6 +256,43 @@ defmodule Tackle.CLI.TreeTest do
     assert unsafe.secondary =~ "inspect only"
   end
 
+  test "a tree of a few thousand entries lays out every row once" do
+    # 30 root branches of 25 rounds: user, tool call, result, reply.
+    tree =
+      Enum.reduce(1..30, ConversationTree.new(), fn branch, tree ->
+        {:ok, tree} = ConversationTree.move(tree, nil)
+
+        Enum.reduce(1..25, tree, fn round, tree ->
+          id = "call-#{branch}-#{round}"
+          call = %{id: id, name: "bash", arguments: %{"command" => "ls"}}
+          {:ok, tree, _} = ConversationTree.append_message(tree, Message.user("go #{id}"))
+
+          {:ok, tree, _} =
+            ConversationTree.append_message(tree, Message.assistant(tool_calls: [call]))
+
+          {:ok, tree, _} =
+            ConversationTree.append_message(tree, Message.tool_result(id, "bash", "ok"))
+
+          {:ok, tree, _} =
+            ConversationTree.append_message(tree, Message.assistant(content: "done"))
+
+          tree
+        end)
+      end)
+
+    assert ConversationTree.size(tree) == 3_000
+
+    all = Tree.items(tree, :all)
+    assert length(all) == 3_001
+    assert all |> Enum.map(& &1.entry_id) |> Enum.uniq() |> length() == 3_001
+    # Only the tool calls wait for a result; every other entry is selectable.
+    assert Enum.count(all, & &1.unsafe?) == 750
+
+    default = Tree.items(tree)
+    assert Enum.count(default, &(&1.kind == :user)) == 750
+    refute Enum.any?(default, & &1.unsafe?)
+  end
+
   test "open refuses when busy, without a tree, or when empty" do
     busy = base_state(agent_state: %{State.new() | tree: tree_with_branches()})
     busy = %{busy | active_turn: %{id: "turn-1"}}

@@ -46,16 +46,23 @@ defmodule Tackle.Lib.Tree do
   alias Tackle.Lib.Tree.Entry
   alias Tackle.Lib.Usage
 
+  @no_tool_calls {MapSet.new(), MapSet.new()}
+
   @type id :: String.t()
+
+  # `order` and each `child_ids` list are newest first, so appending is O(1).
+  # `child_ids` maps a parent id (nil for roots) to its children's ids and is
+  # kept in step with `entries` by the only insertion path, `insert/2`.
   @type t :: %__MODULE__{
           entries: %{optional(id()) => Entry.t()},
           order: [id()],
+          child_ids: %{optional(id() | nil) => [id()]},
           active_id: id() | nil,
           revision: non_neg_integer()
         }
 
   @enforce_keys []
-  defstruct entries: %{}, order: [], active_id: nil, revision: 0
+  defstruct entries: %{}, order: [], child_ids: %{}, active_id: nil, revision: 0
 
   @doc "Builds an empty tree with no active position."
   @spec new() :: t()
@@ -99,12 +106,18 @@ defmodule Tackle.Lib.Tree do
     |> Enum.map(&Map.fetch!(entries, &1))
   end
 
-  @doc "Returns the entries whose parent is `parent_id`, in chronological order."
+  @doc """
+  Returns the entries whose parent is `parent_id`, in chronological order.
+
+  Reads the tree's child index, so it costs the number of children, not the
+  size of the tree.
+  """
   @spec children(t(), id() | nil) :: [Entry.t()]
-  def children(%__MODULE__{} = tree, parent_id) do
-    tree
-    |> enumerate()
-    |> Enum.filter(&(&1.parent_id == parent_id))
+  def children(%__MODULE__{entries: entries, child_ids: child_ids}, parent_id) do
+    child_ids
+    |> Map.get(parent_id, [])
+    |> Enum.reverse()
+    |> Enum.map(&Map.fetch!(entries, &1))
   end
 
   @doc "Returns the root entries of the tree."
@@ -241,13 +254,36 @@ defmodule Tackle.Lib.Tree do
 
   def resumable?(%__MODULE__{} = tree, id) do
     if contains?(tree, id) do
-      path = ancestry(tree, id)
-      calls = Enum.flat_map(path, &entry_tool_call_ids/1)
-      results = Enum.flat_map(path, &entry_tool_result_ids/1)
-      Enum.all?(calls, &(&1 in results))
+      tree
+      |> ancestry(id)
+      |> Enum.reduce(@no_tool_calls, &track_tool_calls/2)
+      |> answered?()
     else
       false
     end
+  end
+
+  @doc """
+  Returns the ids of every entry that is a safe continuation point.
+
+  Equivalent to filtering every entry with `resumable?/2`, but walks the tree
+  once, depth first, carrying the tool calls still waiting for a result along
+  each path. Use it when checking many entries, such as when rendering the
+  whole tree.
+  """
+  @spec resumable_ids(t()) :: MapSet.t(id())
+  def resumable_ids(%__MODULE__{child_ids: child_ids} = tree) do
+    roots = child_ids |> Map.get(nil, []) |> Enum.map(&{&1, @no_tool_calls})
+    collect_resumable(tree, roots, MapSet.new())
+  end
+
+  defp collect_resumable(_tree, [], acc), do: acc
+
+  defp collect_resumable(tree, [{id, calls} | stack], acc) do
+    calls = track_tool_calls(Map.fetch!(tree.entries, id), calls)
+    acc = if answered?(calls), do: MapSet.put(acc, id), else: acc
+    children = tree.child_ids |> Map.get(id, []) |> Enum.map(&{&1, calls})
+    collect_resumable(tree, children ++ stack, acc)
   end
 
   @doc """
@@ -317,15 +353,7 @@ defmodule Tackle.Lib.Tree do
     with {:ok, entry} <- build_entry(descriptor, ordinal),
          :ok <- validate_unique(tree, entry.id),
          :ok <- validate_parent(tree, entry.parent_id) do
-      tree = %{
-        tree
-        | entries: Map.put(tree.entries, entry.id, entry),
-          order: [entry.id | tree.order],
-          active_id: entry.id,
-          revision: tree.revision + 1
-      }
-
-      build_restored(rest, tree, ordinal + 1)
+      build_restored(rest, insert(tree, entry), ordinal + 1)
     end
   end
 
@@ -414,16 +442,20 @@ defmodule Tackle.Lib.Tree do
         })
         |> then(&struct(Entry, &1))
 
-      tree = %{
-        tree
-        | entries: Map.put(tree.entries, id, entry),
-          order: [id | tree.order],
-          active_id: id,
-          revision: tree.revision + 1
-      }
-
-      {:ok, tree, entry}
+      {:ok, insert(tree, entry), entry}
     end
+  end
+
+  # Adds a validated entry and makes it the active position.
+  defp insert(tree, %Entry{id: id, parent_id: parent_id} = entry) do
+    %{
+      tree
+      | entries: Map.put(tree.entries, id, entry),
+        order: [id | tree.order],
+        child_ids: Map.update(tree.child_ids, parent_id, [id], &[id | &1]),
+        active_id: id,
+        revision: tree.revision + 1
+    }
   end
 
   defp validate_id(id) when is_binary(id) and id != "", do: :ok
@@ -475,6 +507,23 @@ defmodule Tackle.Lib.Tree do
   defp reset_metadata(messages) do
     Enum.map(messages, &%{&1 | token_usage: nil, provider_state: nil})
   end
+
+  # Tool calls on a path: `pending` holds calls without a result yet, `results`
+  # every result seen, so a result recorded before its call still answers it.
+  defp track_tool_calls(%Entry{} = entry, {pending, results}) do
+    results = Enum.reduce(entry_tool_result_ids(entry), results, &MapSet.put(&2, &1))
+    pending = Enum.reduce(entry_tool_result_ids(entry), pending, &MapSet.delete(&2, &1))
+
+    pending =
+      entry
+      |> entry_tool_call_ids()
+      |> Enum.reject(&MapSet.member?(results, &1))
+      |> Enum.reduce(pending, &MapSet.put(&2, &1))
+
+    {pending, results}
+  end
+
+  defp answered?({pending, _results}), do: MapSet.size(pending) == 0
 
   defp entry_tool_call_ids(%Entry{kind: :message, message: %Message{tool_calls: calls}}) do
     for %Call{id: id} <- calls, not is_nil(id), do: id

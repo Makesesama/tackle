@@ -143,6 +143,7 @@ defmodule Tackle.CLI.TUI.Tree do
       view: view,
       active: active,
       active_path: tree |> ConversationTree.active_path() |> MapSet.new(& &1.id),
+      resumable: ConversationTree.resumable_ids(tree),
       calls: tool_calls_by_id(tree)
     }
 
@@ -178,7 +179,7 @@ defmodule Tackle.CLI.TUI.Tree do
   end
 
   defp collect(context, entry, parent, hidden, forest) do
-    resumable? = ConversationTree.resumable?(context.tree, entry.id)
+    resumable? = MapSet.member?(context.resumable, entry.id)
 
     {parent, hidden, forest} =
       if visible?(context, entry, resumable?) do

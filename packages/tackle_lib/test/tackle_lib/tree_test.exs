@@ -206,6 +206,121 @@ defmodule Tackle.Lib.TreeTest do
     end
   end
 
+  describe "resumable_ids/1" do
+    test "returns exactly the entries resumable?/2 accepts, across branches" do
+      tree = tool_branches(Tree.new(), 3, 4)
+
+      expected =
+        tree
+        |> Tree.enumerate()
+        |> Enum.filter(&Tree.resumable?(tree, &1.id))
+        |> MapSet.new(& &1.id)
+
+      assert Tree.resumable_ids(tree) == expected
+      refute MapSet.member?(expected, "b0-1-call")
+      assert MapSet.member?(expected, "b0-1-result")
+    end
+
+    test "a result recorded before its call still answers it" do
+      {tree, _} = append!(Tree.new(), msg("t1", :tool, "early", tool_call_id: "call_1"))
+
+      {tree, _} =
+        append!(
+          tree,
+          msg("a1", :assistant, nil,
+            tool_calls: [%Call{id: "call_1", name: "tool", arguments: %{}}]
+          )
+        )
+
+      assert Tree.resumable?(tree, "a1")
+      assert Tree.resumable_ids(tree) == MapSet.new(["t1", "a1"])
+    end
+
+    test "is empty for an empty tree" do
+      assert Tree.resumable_ids(Tree.new()) == MapSet.new()
+    end
+  end
+
+  describe "child index" do
+    test "stays consistent through appends, branches, compactions, and restore" do
+      tree = tool_branches(Tree.new(), 3, 2)
+      {:ok, tree} = Tree.move(tree, "b1-0-user")
+      {:ok, tree, _} = Tree.append_compaction(tree, compaction("c1", "summary", [], nil))
+      {tree, _} = append!(tree, msg("root2", :user, "new root"), parent_id: nil)
+
+      assert_index_consistent(tree)
+
+      {:ok, restored} =
+        tree |> Tree.enumerate() |> Enum.map(&Map.from_struct/1) |> Tree.restore()
+
+      assert restored.child_ids == tree.child_ids
+      assert_index_consistent(restored)
+    end
+
+    test "children/2 and resumable_ids/1 read the index rather than scanning entries" do
+      {tree, _} = append!(Tree.new(), msg("u1", :user, "one"))
+      {:ok, tree} = Tree.move(tree, nil)
+      {tree, _} = append!(tree, msg("u2", :user, "two"))
+
+      hidden = %{tree | child_ids: %{nil => ["u2"]}}
+
+      assert Enum.map(Tree.children(hidden, nil), & &1.id) == ["u2"]
+      assert Tree.resumable_ids(hidden) == MapSet.new(["u2"])
+    end
+
+    test "handles a few thousand entries, deep and wide" do
+      # 40 branches of 25 rounds (user, call, result, answer): 4,000 entries.
+      tree = tool_branches(Tree.new(), 40, 25)
+      assert Tree.size(tree) == 4_000
+
+      chain =
+        Enum.reduce(1..3_000, Tree.new(), fn index, tree ->
+          {tree, _} = append!(tree, msg("m#{index}", :user, "step"))
+          tree
+        end)
+
+      assert_index_consistent(tree)
+      assert length(Tree.children(tree, nil)) == 40
+      assert Enum.map(Tree.children(chain, "m1500"), & &1.id) == ["m1501"]
+
+      resumable = Tree.resumable_ids(tree)
+      # Every entry but the unanswered calls (one per round).
+      assert MapSet.size(resumable) == 4_000 - 40 * 25
+      refute MapSet.member?(resumable, "b39-24-call")
+      assert MapSet.member?(resumable, "b39-24-answer")
+      assert Tree.resumable?(tree, "b39-24-answer")
+
+      assert MapSet.size(Tree.resumable_ids(chain)) == 3_000
+    end
+  end
+
+  # `branches` root branches of `rounds` user/call/result/answer rounds each.
+  defp tool_branches(tree, branches, rounds) do
+    Enum.reduce(0..(branches - 1), tree, fn branch, tree ->
+      {:ok, tree} = Tree.move(tree, nil)
+
+      Enum.reduce(0..(rounds - 1), tree, fn round, tree ->
+        prefix = "b#{branch}-#{round}"
+        call_id = "#{prefix}-id"
+        call = %Call{id: call_id, name: "tool", arguments: %{}}
+        {tree, _} = append!(tree, msg("#{prefix}-user", :user, "go"))
+        {tree, _} = append!(tree, msg("#{prefix}-call", :assistant, nil, tool_calls: [call]))
+        {tree, _} = append!(tree, msg("#{prefix}-result", :tool, "ok", tool_call_id: call_id))
+        {tree, _} = append!(tree, msg("#{prefix}-answer", :assistant, "done"))
+        tree
+      end)
+    end)
+  end
+
+  defp assert_index_consistent(tree) do
+    entries = Tree.enumerate(tree)
+    expected = Enum.group_by(entries, & &1.parent_id, & &1.id)
+
+    for parent <- [nil | Enum.map(entries, & &1.id)] do
+      assert Enum.map(Tree.children(tree, parent), & &1.id) == Map.get(expected, parent, [])
+    end
+  end
+
   describe "usage" do
     test "archive usage counts shared messages once while branch usage follows the path" do
       usage = %Usage{total_tokens: 10}
