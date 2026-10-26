@@ -2,6 +2,7 @@ defmodule Tackle.Session.ProjectionTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Content
   alias Tackle.Session.Codec
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
@@ -223,6 +224,23 @@ defmodule Tackle.Session.ProjectionTest do
       )
 
     assert Projection.context_tokens(projection) == 20
+  end
+
+  test "context tokens count image parts after the checkpoint" do
+    answer = %{
+      message("a1", :assistant, "hi")
+      | token_usage: %Tackle.Lib.Usage{total_tokens: 1_000}
+    }
+
+    image = Content.image("image/png", String.duplicate("A", 400_000))
+    read = %{message("t1", :tool, String.duplicate("x", 40)) | parts: [image]}
+
+    projection =
+      Projection.new(header())
+      |> Projection.apply_commit(commit(1, [message_event(answer)]))
+      |> Projection.apply_commit(commit(2, [message_event(read)]))
+
+    assert Projection.context_tokens(projection) == 1_000 + 10 + 1_600
   end
 
   test "a durable tool result resolves its pending tool start" do

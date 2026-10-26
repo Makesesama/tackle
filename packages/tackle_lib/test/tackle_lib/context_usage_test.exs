@@ -6,6 +6,7 @@ defmodule Tackle.Lib.ContextUsageTest do
   alias Tackle.Lib.Message
   alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tool
   alias Tackle.Lib.Usage
 
   defmodule ExampleTool do
@@ -124,6 +125,41 @@ defmodule Tackle.Lib.ContextUsageTest do
 
     assert ContextUsage.estimate(state).percent == 50.0
     assert ContextUsage.estimate(reconfigured).percent == 25.0
+  end
+
+  test "estimates content parts such as images, not just text" do
+    image = Tool.Content.image("image/png", String.duplicate("A", 400_000))
+    text = %{"type" => "text", "text" => String.duplicate("x", 40)}
+    message = Message.tool_result("call-1", "read", "Read image a.png", parts: [image, text])
+
+    assert ContextUsage.estimate_message(message) ==
+             ContextUsage.estimate_text("Read image a.png") + 1_600 + 10
+
+    state =
+      state_with_window(100_000)
+      |> State.add_message(
+        Message.assistant(content: "ok", token_usage: %Usage{total_tokens: 50})
+      )
+      |> State.add_message(message)
+
+    assert %ContextUsage{usage_tokens: 50, trailing_tokens: trailing} =
+             ContextUsage.estimate(state)
+
+    assert trailing == ContextUsage.estimate_message(message)
+  end
+
+  test "since_checkpoint stops at the newest assistant usage" do
+    older = Message.assistant(content: "older", token_usage: %Usage{total_tokens: 10})
+    zero = Message.assistant(content: "zero", token_usage: %Usage{total_tokens: 0})
+    tail = Message.user("tail text")
+
+    assert ContextUsage.since_checkpoint([tail, zero, older]) ==
+             {10, ContextUsage.estimate_message(tail) + ContextUsage.estimate_message(zero)}
+
+    assert ContextUsage.since_checkpoint(Stream.map([tail], & &1)) ==
+             {nil, ContextUsage.estimate_message(tail)}
+
+    assert ContextUsage.since_checkpoint([]) == {nil, 0}
   end
 
   test "estimates provider-neutral tool definitions before the first checkpoint" do

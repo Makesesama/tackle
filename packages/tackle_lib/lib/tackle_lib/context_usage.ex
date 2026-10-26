@@ -3,8 +3,9 @@ defmodule Tackle.Lib.ContextUsage do
   Provider-neutral context-window pressure derived from model metadata and usage.
 
   The most recent valid assistant usage is the authoritative checkpoint. Messages
-  after that checkpoint are estimated at four UTF-8 characters per token so a
-  host can make compaction decisions before another provider response arrives.
+  after that checkpoint are estimated (`estimate_message/1`: four UTF-8
+  characters per token, a fixed cost per image) so a host can make compaction
+  decisions before another provider response arrives.
 
   Estimation reads the **model projection** (`Tackle.Lib.State.model_messages/1`),
   not the canonical transcript: after compaction the provider-visible array is
@@ -19,6 +20,11 @@ defmodule Tackle.Lib.ContextUsage do
   alias Tackle.Lib.Usage
 
   @chars_per_token 4
+
+  # Providers downscale large images (Anthropic to about 1.15 megapixels, about
+  # 1,600 tokens; OpenAI to a similar budget), so one image costs at most about
+  # this much regardless of its file size.
+  @image_tokens 1_600
 
   @type t :: %__MODULE__{
           tokens: non_neg_integer(),
@@ -54,8 +60,8 @@ defmodule Tackle.Lib.ContextUsage do
       when is_integer(window) and window > 0 do
     messages = State.model_messages(state)
 
-    case estimate_since_checkpoint(Enum.reverse(messages), 0) do
-      {:none, message_tokens} ->
+    case since_checkpoint(Enum.reverse(messages)) do
+      {nil, message_tokens} ->
         trailing = estimate_context(state, message_tokens)
         build(trailing, window, 0, trailing, true)
 
@@ -102,11 +108,39 @@ defmodule Tackle.Lib.ContextUsage do
   @spec estimate_tools([map()]) :: non_neg_integer()
   def estimate_tools(tools), do: estimate_collection(tools)
 
-  @doc "Estimates the token cost of one message at four characters per token."
+  @doc """
+  Splits model messages at their latest usage checkpoint.
+
+  Takes the messages **newest first**, as any enumerable, so a host can decode
+  stored messages lazily, and stops at the checkpoint: the newest assistant
+  message whose usage reports positive context tokens
+  (`Tackle.Lib.Usage.context_tokens/1`). Returns the checkpoint's tokens, or
+  `nil` without one, and the estimated tokens of the messages after it (all
+  messages without a checkpoint).
+  """
+  @spec since_checkpoint(Enumerable.t(Message.t())) ::
+          {non_neg_integer() | nil, non_neg_integer()}
+  def since_checkpoint(newest_first) do
+    Enum.reduce_while(newest_first, {nil, 0}, fn message, {nil, trailing} ->
+      case checkpoint_tokens(message) do
+        nil -> {:cont, {nil, trailing + estimate_message(message)}}
+        tokens -> {:halt, {tokens, trailing}}
+      end
+    end)
+  end
+
+  @doc """
+  Estimates the token cost of one message.
+
+  Text, reasoning, and tool calls count four characters per token. Content
+  parts (`Tackle.Lib.Message.parts`) count too: a text part like text, an
+  image #{@image_tokens} tokens, about what providers charge for an image at the
+  size they downscale to, and other parts by their inspected size.
+  """
   @spec estimate_message(Message.t()) :: non_neg_integer()
   def estimate_message(%Message{} = message) do
     estimate_text(message.content) + estimate_text(message.thinking) +
-      estimate_collection(message.tool_calls)
+      estimate_collection(message.tool_calls) + estimate_parts(message.parts)
   end
 
   @doc "Estimates text tokens at four UTF-8 characters per token."
@@ -118,21 +152,26 @@ defmodule Tackle.Lib.ContextUsage do
 
   def estimate_text(value), do: estimate_term(value)
 
-  defp estimate_since_checkpoint([], trailing), do: {:none, trailing}
-
-  defp estimate_since_checkpoint(
-         [%Message{role: :assistant, token_usage: usage} = message | rest],
-         trailing
-       ) do
+  defp checkpoint_tokens(%Message{role: :assistant, token_usage: usage}) do
     case Usage.context_tokens(usage) do
-      tokens when is_integer(tokens) and tokens > 0 -> {tokens, trailing}
-      _invalid -> estimate_since_checkpoint(rest, trailing + estimate_message(message))
+      tokens when is_integer(tokens) and tokens > 0 -> tokens
+      _unavailable -> nil
     end
   end
 
-  defp estimate_since_checkpoint([message | rest], trailing) do
-    estimate_since_checkpoint(rest, trailing + estimate_message(message))
-  end
+  defp checkpoint_tokens(%Message{}), do: nil
+
+  defp estimate_parts(parts) when is_list(parts),
+    do: Enum.reduce(parts, 0, &(&2 + estimate_part(&1)))
+
+  defp estimate_parts(_parts), do: 0
+
+  defp estimate_part(%{"type" => "image"}), do: @image_tokens
+
+  defp estimate_part(%{"type" => "text", "text" => text}) when is_binary(text),
+    do: estimate_text(text)
+
+  defp estimate_part(part), do: estimate_term(part)
 
   defp estimate_context(state, message_tokens) do
     tool_definitions = Registry.definitions(state.tool_registry)

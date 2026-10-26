@@ -46,7 +46,6 @@ defmodule Tackle.Session.Projection do
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tree
-  alias Tackle.Lib.Usage
   alias Tackle.Session.Codec
   alias Tackle.Session.Compaction
   alias Tackle.Session.ProjectionError
@@ -208,38 +207,30 @@ defmodule Tackle.Session.Projection do
   @doc """
   Estimates the tokens of the active model context, or `nil` when it is empty.
 
-  Mirrors `Tackle.Lib.ContextUsage`: the latest assistant usage on the model
-  projection is the checkpoint, and messages after it are estimated at four
-  characters per token. Without a checkpoint the whole projection is
-  estimated. The system prompt and tool definitions are not part of the
+  Uses `Tackle.Lib.ContextUsage.since_checkpoint/1`: the latest assistant usage
+  on the model projection is the checkpoint, and messages after it are
+  estimated like `Tackle.Lib.ContextUsage.estimate_message/1` does, images
+  included. Without a checkpoint the whole projection is estimated. Messages
+  are decoded newest first and only up to the checkpoint; undecodable ones
+  are skipped. The system prompt and tool definitions are not part of the
   durable projection, so the estimate excludes them.
   """
   @spec context_tokens(t()) :: non_neg_integer() | nil
   def context_tokens(%__MODULE__{model_messages: []}), do: nil
 
   def context_tokens(%__MODULE__{model_messages: messages}) do
-    estimate_since_checkpoint(Enum.reverse(messages), 0)
-  end
-
-  defp estimate_since_checkpoint([], trailing), do: trailing
-
-  defp estimate_since_checkpoint([data | rest], trailing) do
-    case Codec.decode_message(data) do
-      {:ok, %Message{role: :assistant, token_usage: usage} = message} ->
-        case Usage.context_tokens(usage) do
-          tokens when is_integer(tokens) and tokens > 0 ->
-            tokens + trailing
-
-          _none ->
-            estimate_since_checkpoint(rest, trailing + ContextUsage.estimate_message(message))
+    {checkpoint, trailing} =
+      messages
+      |> Enum.reverse()
+      |> Stream.flat_map(fn data ->
+        case Codec.decode_message(data) do
+          {:ok, message} -> [message]
+          {:error, _reason} -> []
         end
+      end)
+      |> ContextUsage.since_checkpoint()
 
-      {:ok, %Message{} = message} ->
-        estimate_since_checkpoint(rest, trailing + ContextUsage.estimate_message(message))
-
-      {:error, _reason} ->
-        estimate_since_checkpoint(rest, trailing)
-    end
+    (checkpoint || 0) + trailing
   end
 
   @doc """

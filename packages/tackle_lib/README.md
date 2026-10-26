@@ -1343,8 +1343,9 @@ estimated.
 `Tackle.Lib.context_usage(state)` uses the latest non-zero assistant usage as a
 checkpoint, preferring provider `total_tokens` and otherwise summing input,
 output, cache-read, and cache-write exactly once. Messages after that checkpoint
-are estimated at four UTF-8 characters per token. With no checkpoint, the
-system prompt, messages, and provider-neutral tool definitions are estimated.
+are estimated at four UTF-8 characters per token, and image parts at a fixed
+1,600 tokens each. With no checkpoint, the system prompt, messages, and
+provider-neutral tool definitions are estimated.
 The result exposes raw remaining context and may exceed 100%; it does not reserve
 output tokens or trigger automatic compaction.
 

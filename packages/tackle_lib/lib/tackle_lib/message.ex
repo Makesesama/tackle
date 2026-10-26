@@ -96,7 +96,8 @@ defmodule Tackle.Lib.Message do
 
   `parts` carries extra provider-neutral content parts (for example an image the
   tool read). `content` remains the string projection that human-facing surfaces
-  and token estimates use; adapters combine both when building the model input.
+  use; adapters combine both when building the model input, and
+  `Tackle.Lib.ContextUsage` estimates both.
 
   ## Options
     * `:parts` - extra content parts (see `Tackle.Lib.Tool.Content`)
