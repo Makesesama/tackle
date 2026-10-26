@@ -155,6 +155,7 @@ The agent library (`packages/tackle_lib`) was reworked for a smaller, stricter c
 - After losing its writer lock, a journal owner only closes its log: it no longer syncs, writes `summary.etf`, or releases a lock in a session directory another process may own by then.
 - Session storage is private as documented: `session.dlog` was created `0644`, and `sessions/` and the project directories `0755`. Journals are now `0600` (`Tackle.Session.Reader.open_writable/2`), every directory from `sessions/` down to a session's is `0700` (`Tackle.Session.Storage.ensure_session_dir/2`), and `Storage.ensure_private_dir/1` makes the parents it creates private too. Journals and directories an earlier version created are tightened when the session is next opened for writing.
 - Resuming a session that is moved to the archive or the trash at the same time no longer starts an empty session with its id. The journal checked that the session existed before taking its lock, and taking the lock recreated the moved directory and an empty journal. It now takes the lock with the new `Tackle.Session.Storage.acquire_existing_lock/2`, which creates no directory and checks the journal again under the lock, and fails with `{:session_not_found, session_id}`.
+- The journal's child spec gives it its cleanup deadline (`journal_timeout`, 15 seconds by default, plus a second) as its shutdown time; the supervisor's default of five seconds could kill it while it was still closing the log, writing the summary, or releasing its lock.
 
 #### Other changes
 

@@ -1001,6 +1001,14 @@ defmodule Tackle.Session.JournalTest do
   end
 
   describe "shutdown" do
+    test "the supervisor waits for the guarded cleanup deadline" do
+      default = Journal.child_spec(session_id: "s")
+      custom = Journal.child_spec(session_id: "s", journal_timeout: 30_000)
+
+      assert default.shutdown > 15_000
+      assert custom.shutdown > 30_000
+    end
+
     test "after losing the writer lock the owner writes nothing more into the directory", ctx do
       {:ok, journal} = start_journal(ctx)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")

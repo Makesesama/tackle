@@ -46,12 +46,15 @@ defmodule Tackle.Session.Journal.Watchdog do
   def cleanup(owner), do: GenServer.cast(via(owner), :cleanup)
   def lock(owner, lock), do: GenServer.cast(via(owner), {:lock, lock})
 
+  @doc "The deadline of each durable request and of the owner's cleanup, in milliseconds."
+  def timeout(opts), do: Keyword.get(opts, :journal_timeout, @default_timeout)
+
   defp via(owner), do: {:via, Registry, {@registry, {:journal_watchdog, owner}}}
 
   @impl true
   def init({owner, session_id, opts}) do
     Process.flag(:trap_exit, true)
-    timeout = Keyword.get(opts, :journal_timeout, @default_timeout)
+    timeout = timeout(opts)
 
     if is_integer(timeout) and timeout > 0 do
       owner_ref = Process.monitor(owner)

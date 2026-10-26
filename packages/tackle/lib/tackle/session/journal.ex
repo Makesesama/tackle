@@ -71,6 +71,9 @@ defmodule Tackle.Session.Journal do
 
   @registry Tackle.Session.JournalRegistry
   @call_timeout 60_000
+  # Lets the watchdog's guarded cleanup deadline expire before the supervisor
+  # kills the owner, so a stalled cleanup still leaves its diagnostic.
+  @shutdown_margin 1_000
 
   @type turn :: %{turn_id: String.t(), operation: atom()}
 
@@ -97,8 +100,18 @@ defmodule Tackle.Session.Journal do
       id: {:session_journal, session_id},
       start: {__MODULE__, :start_link, [opts]},
       restart: :permanent,
+      shutdown: shutdown(opts),
       type: :worker
     }
+  end
+
+  # Closing the log, writing the summary sidecar, and releasing the lock may
+  # take up to the journal timeout, which the watchdog enforces.
+  defp shutdown(opts) do
+    case Watchdog.timeout(opts) do
+      timeout when is_integer(timeout) and timeout > 0 -> timeout + @shutdown_margin
+      _invalid -> 5_000
+    end
   end
 
   @doc false

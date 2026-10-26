@@ -150,7 +150,8 @@ The exact child ordering and module names may change, but these behaviors are re
 - the journal owner is available before the root session accepts work, and a new session is materialized before its first turn Task starts;
 - the root session and its internal persistence hook can make synchronous journal calls;
 - a journal-owner failure prevents further execution and terminates the durable scope;
-- orderly scope shutdown syncs and closes the journal;
+- orderly scope shutdown syncs and closes the journal, and the supervisor waits
+  for the journal's cleanup deadline (`journal_timeout`) before killing it;
 - a scope started without a `Tackle.Session.Spec` has no journal at all; and
 - one journal process never becomes a global bottleneck across unrelated sessions.
 
