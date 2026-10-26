@@ -348,7 +348,7 @@ defmodule Tackle.Session do
     with :ok <-
            validate_ownership(scope_ref, agent_ref, coordinator, work_supervisor, tool_supervisor),
          :ok <- register(scope_ref, agent_ref),
-         {:ok, agent_state, journal, recovery, tree_enabled?} <-
+         {:ok, config, agent_state, journal, recovery, tree_enabled?} <-
            build_agent_state(config, scope_ref, agent_ref, opts) do
       state = %{
         config: config,
@@ -1502,7 +1502,7 @@ defmodule Tackle.Session do
           |> Config.to_agent_state(credential_store: Auth.credential_store())
           |> put_runtime_context(scope_ref, agent_ref, opts)
 
-        {:ok, agent_state, nil, nil, false}
+        {:ok, config, agent_state, nil, nil, false}
 
       %SessionSpec{} = durable ->
         build_durable_agent_state(config, scope_ref, agent_ref, opts, durable)
@@ -1517,7 +1517,8 @@ defmodule Tackle.Session do
              credential_store: Auth.credential_store(),
              override_config: durable.override_config
            ),
-         :ok <- persist_configuration_change(journal, loaded.configuration_changed?, config),
+         :ok <-
+           persist_configuration_change(journal, loaded.configuration_changed?, loaded.config),
          :ok <- enable_tree_if_needed(journal, projection, durable.tree) do
       agent_state =
         loaded.state
@@ -1529,8 +1530,8 @@ defmodule Tackle.Session do
 
       tree_enabled? = durable.tree or projection.tree_enabled?
 
-      case repair_interrupted_tool_results(journal, agent_state, config, recovery) do
-        {:ok, agent_state} -> {:ok, agent_state, journal, recovery, tree_enabled?}
+      case repair_interrupted_tool_results(journal, agent_state, loaded.config, recovery) do
+        {:ok, agent_state} -> {:ok, loaded.config, agent_state, journal, recovery, tree_enabled?}
         {:error, reason} -> {:error, reason}
       end
     end

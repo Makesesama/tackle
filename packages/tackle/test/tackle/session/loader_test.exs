@@ -19,7 +19,7 @@ defmodule Tackle.Session.LoaderTest do
     def adapter_id, do: "loader-test"
 
     @impl true
-    def models, do: ["model"]
+    def models, do: ["model", "other"]
 
     @impl true
     def generate(_schema, _opts), do: {:error, :not_used}
@@ -150,6 +150,99 @@ defmodule Tackle.Session.LoaderTest do
     assert State.last_compaction_id(state) == "c1"
     assert Tree.active_id(state.tree) == "u2"
     assert state.tree == projection.tree
+  end
+
+  describe "the recorded model and thinking level" do
+    test "restore a recorded model whose thinking level was never set" do
+      {:ok, config} =
+        Config.new(
+          providers: [Adapter],
+          model: "loader-test/model",
+          llm_opts: [reasoning_effort: "high"]
+        )
+
+      # `session.configuration_changed` records the adapter option as is.
+      projection = selection_projection("loader-test/other", nil)
+
+      assert {:ok, %{state: state, config: resolved, configuration_changed?: false}} =
+               Loader.load(projection, config)
+
+      assert resolved.model_ref == "loader-test/other"
+      refute Keyword.has_key?(resolved.llm_opts, :reasoning_effort)
+      assert state.llm.ref == "loader-test/other"
+      refute Keyword.has_key?(state.llm_opts, :reasoning_effort)
+    end
+
+    test "restore a recorded thinking level on the configured model" do
+      {:ok, config} = Config.new(providers: [Adapter], model: "loader-test/model")
+      projection = selection_projection("loader-test/model", "high")
+
+      assert {:ok, %{state: state, config: resolved, configuration_changed?: false}} =
+               Loader.load(projection, config)
+
+      assert resolved.llm_opts[:reasoning_effort] == "high"
+      assert state.llm_opts[:reasoning_effort] == "high"
+    end
+
+    test "clear a configured thinking level the recording does not have" do
+      {:ok, config} =
+        Config.new(
+          providers: [Adapter],
+          model: "loader-test/model",
+          llm_opts: [reasoning_effort: "high"]
+        )
+
+      assert {:ok, %{config: resolved}} =
+               Loader.load(selection_projection("loader-test/model", "off"), config)
+
+      refute Keyword.has_key?(resolved.llm_opts, :reasoning_effort)
+    end
+
+    test "require configuration for an invalid recorded thinking level" do
+      {:ok, config} = Config.new(providers: [Adapter], model: "loader-test/model")
+
+      assert {:error, {:configuration_required, %{thinking: "extreme"}}} =
+               Loader.load(selection_projection("loader-test/other", "extreme"), config)
+    end
+
+    test "an override records a thinking-only change and keeps the supplied config" do
+      {:ok, config} =
+        Config.new(
+          providers: [Adapter],
+          model: "loader-test/model",
+          llm_opts: [reasoning_effort: "high"]
+        )
+
+      assert {:ok, %{config: ^config, configuration_changed?: true}} =
+               Loader.load(selection_projection("loader-test/model", "low"), config,
+                 override_config: true
+               )
+
+      assert {:ok, %{config: ^config, configuration_changed?: false}} =
+               Loader.load(selection_projection("loader-test/model", "high"), config,
+                 override_config: true
+               )
+
+      {:ok, unset} = Config.new(providers: [Adapter], model: "loader-test/model")
+
+      assert {:ok, %{configuration_changed?: false}} =
+               Loader.load(selection_projection("loader-test/model", nil), unset,
+                 override_config: true
+               )
+    end
+  end
+
+  defp selection_projection(model_ref, thinking) do
+    Projection.new(
+      %{
+        "session_id" => "selection-session",
+        "created_at" => "2026-01-01T00:00:00Z",
+        "cwd" => nil,
+        "parent" => nil
+      },
+      model_ref: model_ref,
+      thinking: thinking
+    )
   end
 
   defp message_event(message) do

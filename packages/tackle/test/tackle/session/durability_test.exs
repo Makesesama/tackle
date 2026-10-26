@@ -401,6 +401,61 @@ defmodule Tackle.Session.DurabilityTest do
     assert resumed_snapshot.agent_state.llm.ref == "test/child"
   end
 
+  test "resumes after a model switch without a thinking level and reconfigures from it", ctx do
+    scope = start_durable_scope(home: ctx.home, root: [model: "test/echo", content: "answer"])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
+    assert {:ok, _snapshot} = Tackle.reconfigure(scope.root_agent_ref, model: "test/child")
+    stop_scope(scope.scope_ref)
+
+    resumed =
+      start_durable_scope(
+        home: ctx.home,
+        session: [session_id: session_id],
+        root: [model: "test/echo", content: "answer"]
+      )
+
+    assert {:ok, resumed_snapshot} = Tackle.snapshot(resumed.root_agent_ref)
+    assert resumed_snapshot.agent_state.llm.ref == "test/child"
+
+    # Reconfiguring starts from the restored selection, not the launch config.
+    assert {:ok, reconfigured} = Tackle.reconfigure(resumed.root_agent_ref, thinking: "high")
+    assert reconfigured.agent_state.llm.ref == "test/child"
+    assert reconfigured.agent_state.llm_opts[:reasoning_effort] == "high"
+
+    {:ok, replay} = read_journal(session_id, home: ctx.home)
+
+    assert %{"model_ref" => "test/child", "thinking" => "high"} =
+             replay.commits
+             |> Enum.flat_map(& &1["events"])
+             |> Enum.filter(&(&1["type"] == "session.configuration_changed"))
+             |> List.last()
+             |> Map.fetch!("data")
+  end
+
+  test "restores a thinking level set on the configured model", ctx do
+    scope = start_durable_scope(home: ctx.home, root: [model: "test/echo", content: "answer"])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
+    assert {:ok, _snapshot} = Tackle.reconfigure(scope.root_agent_ref, thinking: "high")
+    stop_scope(scope.scope_ref)
+
+    resumed =
+      start_durable_scope(
+        home: ctx.home,
+        session: [session_id: session_id],
+        root: [model: "test/echo", content: "answer"]
+      )
+
+    assert {:ok, resumed_snapshot} = Tackle.snapshot(resumed.root_agent_ref)
+    assert resumed_snapshot.agent_state.llm.ref == "test/echo"
+    assert resumed_snapshot.agent_state.llm_opts[:reasoning_effort] == "high"
+  end
+
   test "returns a configuration-required error for an unresolvable recorded model", ctx do
     session = session_spec(home: ctx.home, model_ref: "missing/model")
 

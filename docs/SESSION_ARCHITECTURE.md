@@ -647,7 +647,11 @@ Replay does not deserialize a state struct. It produces a durable projection con
 Runtime reconstruction then:
 
 1. loads current trusted `Tackle.Config` and credentials;
-2. resolves the recorded model/profile or an explicit user override;
+2. resolves the recorded selection, the pair of model and thinking level the
+   journal last recorded (a recorded `nil` level means none was set), or an
+   explicit user override; `Tackle.Session.Loader.load/3` returns the
+   resolved configuration, which the session keeps for later
+   reconfiguration and title generation;
 3. creates a fresh `%Tackle.Lib.State{}` from that configuration (tools,
    hooks, and context come from it, never from the journal), passing the
    durable session ID as `:session_id` instead of generating one;
@@ -658,7 +662,7 @@ Runtime reconstruction then:
 5. resets the per-turn fields (iteration count, status, error, and error
    reason) with `Tackle.Lib.State.reset_turn/1`;
 6. attaches fresh runtime handles and cancellation state; and
-7. records a durable configuration change if the user selected a different model or profile.
+7. records a durable configuration change if the user selected a different model or thinking level.
 
 If the recorded configuration cannot be resolved, loading returns a typed configuration-required result. It does not silently switch providers or models.
 

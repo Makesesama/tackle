@@ -23,18 +23,31 @@ defmodule Tackle.Session.Loader do
 
   alias Tackle.Config
   alias Tackle.Lib.State, as: AgentState
+  alias Tackle.Lib.Thinking
   alias Tackle.Session.Codec
   alias Tackle.Session.Projection
 
-  @type result :: %{state: AgentState.t(), configuration_changed?: boolean()}
+  @type result :: %{
+          state: AgentState.t(),
+          config: Config.t(),
+          configuration_changed?: boolean()
+        }
 
   @doc """
   Builds a fresh runtime state from a projection and configuration.
 
+  The recorded selection is the pair of model and thinking level the journal
+  last recorded. A recorded `nil` thinking level means no explicit level was
+  set, so the restored configuration carries none.
+
   `:override_config` (false by default) tells the loader the caller explicitly
   selected the supplied configuration, so the recorded selection is superseded
-  and a configuration change must be persisted. Otherwise the recorded
-  selection is re-resolved through the current providers.
+  and `configuration_changed?` reports whether the supplied model or thinking
+  level differs from it and must be persisted. Otherwise the recorded
+  selection is restored through the current providers.
+
+  Returns the state together with the resolved configuration, which the
+  session keeps for later reconfiguration and title generation.
   """
   @spec load(Projection.t(), Config.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def load(%Projection{} = projection, %Config{} = config, opts \\ []) do
@@ -52,38 +65,44 @@ defmodule Tackle.Session.Loader do
         |> AgentState.put_tree(projection.tree)
         |> AgentState.reset_turn()
 
-      {:ok, %{state: state, configuration_changed?: changed?}}
+      {:ok, %{state: state, config: resolved, configuration_changed?: changed?}}
     end
   end
 
-  @doc """
-  Resolves the effective configuration for a recorded session.
-
-  Returns `{:ok, config, changed?}` where `changed?` reports that the supplied
-  configuration differs from the recorded selection and must be persisted.
-  """
-  @spec resolve_config(Projection.t(), Config.t(), keyword()) ::
-          {:ok, Config.t(), boolean()} | {:error, term()}
-  def resolve_config(%Projection{} = projection, %Config{} = config, opts) do
-    recorded = projection.model_ref
+  defp resolve_config(%Projection{model_ref: recorded} = projection, config, opts) do
+    current = {config.model_ref, Thinking.from_llm_opts(config.llm_opts)}
+    recorded_thinking = recorded_thinking(projection.thinking)
 
     cond do
       Keyword.get(opts, :override_config, false) ->
-        {:ok, config, config.model_ref != recorded}
+        {:ok, config, current != {recorded, recorded_thinking}}
 
-      is_nil(recorded) or recorded == config.model_ref ->
+      is_nil(recorded) or current == {recorded, recorded_thinking} ->
         {:ok, config, false}
 
       true ->
-        case Config.reconfigure(config, model: recorded, thinking: projection.thinking) do
-          {:ok, resolved} ->
-            {:ok, resolved, false}
+        restore_selection(config, recorded, recorded_thinking, projection)
+    end
+  end
 
-          {:error, _reason} ->
-            {:error,
-             {:configuration_required,
-              %{model: recorded, thinking: projection.thinking, available: config.model_ref}}}
-        end
+  # Journals record the adapter option as is: `nil` when no level was set.
+  defp recorded_thinking(thinking) do
+    case Thinking.parse(thinking) do
+      {:ok, nil} -> "off"
+      {:ok, level} -> level
+      {:error, _reason} -> {:invalid, thinking}
+    end
+  end
+
+  defp restore_selection(config, recorded, thinking, projection) do
+    with level when is_binary(level) <- thinking,
+         {:ok, resolved} <- Config.reconfigure(config, model: recorded, thinking: level) do
+      {:ok, resolved, false}
+    else
+      _invalid ->
+        {:error,
+         {:configuration_required,
+          %{model: recorded, thinking: projection.thinking, available: config.model_ref}}}
     end
   end
 
