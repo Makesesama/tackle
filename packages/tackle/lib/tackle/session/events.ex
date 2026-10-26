@@ -45,8 +45,8 @@ defmodule Tackle.Session.Events do
     * `{:tackle_storage, session_id, :delayed | :ready}` - the journal fell
       behind, or caught up again.
 
-  The session also delivers an ephemeral run's terminal outcome to its
-  request helper, not to subscribers, as
+  An `:ephemeral` (delegated) session also delivers its run's terminal
+  outcome to its request helper, not to subscribers, as
   `{:tackle_runtime_terminal, run_id, %Tackle.Runtime.Outcome{}}`.
   """
 

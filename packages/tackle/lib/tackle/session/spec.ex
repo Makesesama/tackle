@@ -3,8 +3,13 @@ defmodule Tackle.Session.Spec do
   Trusted description of one durable session attached to a runtime scope.
 
   A durable root scope owns exactly one journal. The spec carries the durable
-  session identity, the storage location, optional parent lineage for a fork,
-  the explicit repair policy, and the metadata recorded in `session.created`.
+  session identity, the storage options (location and journal timeout),
+  optional parent lineage for a fork, the explicit repair policy, the metadata
+  recorded in `session.created`, whether the scope's configuration overrides
+  the selection the journal recorded (`override_config`), and whether the
+  session may branch (`tree`, true by default). A `session_id` whose journal
+  exists is resumed; any other starts a new session, with a minted id when
+  none is given.
 
   This value is produced by trusted host code. Model- or file-generated data may
   choose a session id to resume but can never construct storage paths outside

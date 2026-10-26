@@ -2,25 +2,28 @@ defmodule Tackle.Session.Title do
   @moduledoc """
   LLM-generated session titles.
 
-  After an untitled durable session settles the first message the user
-  wrote, one tool-free generation call produces a concise task title that is
+  Once an untitled durable session has journaled a message the user wrote,
+  one tool-free generation call produces a concise task title that is
   committed through the journal's metadata path and surfaces in the catalog
-  and every frontend. For a new session this is its first user message; a
-  resumed session that is still untitled is titled from its next user
-  message. The call runs in a task under the session's work supervisor,
-  concurrently with the turn, so the title is ready soon after the prompt
-  instead of after the turn (`start/5`).
+  and every frontend. Only the user's own input counts: a turn's input, or a
+  user message queued during a turn; agent messages, background notices, and
+  hook feedback never title a session. For a new session this is its first
+  prompt; a resumed session that is still untitled is titled from the next
+  message the user writes. The call runs in a task under the session's work
+  supervisor, concurrently with the turn, so the title is ready soon after
+  the prompt instead of after the turn (`start/5`).
 
   A session's title goes through these states (`t:t/0`):
 
-    * `:untitled` - no title yet; the next message the user writes may start
-      one.
+    * `:untitled` - no title yet; the next message the user writes starts a
+      generation when titles are configured.
     * `{:pending, task}` - a generation task runs.
     * `{:titled, title}` - the journal records `title`, generated or set
       explicitly through the session spec. A titled session never
       generates another.
-    * `:failed` - the one generation failed, crashed, or could not start.
-      The session stays untitled and does not try again.
+    * `:failed` - the generation failed, crashed, or could not start. The
+      session stays untitled and this session process does not try again; a
+      later resume of the still untitled session does.
 
   The prompt and normalization follow codex-rs thread titles
   (`codex-rs/tui/src/app/thread_title.rs`): a byte-bounded prompt over the
@@ -28,7 +31,7 @@ defmodule Tackle.Session.Title do
   `@max_chars` characters. The call goes through the session's adapter
   selection (or a dedicated one configured through `Tackle.Config.SessionTitles`)
   with no tools, so it cannot execute anything or read the conversation beyond
-  the first user message.
+  the message it titles.
   """
 
   require Logger

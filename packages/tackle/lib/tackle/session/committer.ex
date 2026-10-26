@@ -1,11 +1,11 @@
 defmodule Tackle.Session.Committer do
   @moduledoc """
-  Durable persistence barrier for the root harness.
+  Commits compactions and tree navigations to a durable session's journal.
 
   Implements `Tackle.Lib.Committer`: the library commits each compaction
   record and each tree navigation here before it installs the change in
   memory. The committer resolves the live journal by session id and commits
-  synchronously:
+  and syncs before it returns:
 
     * a `Tackle.Lib.Compaction.Record` becomes a `context.compacted` event
       (`Tackle.Session.Codec.encode_compaction/1`). It never rewrites the
@@ -16,8 +16,9 @@ defmodule Tackle.Session.Committer do
       another prompt, so resume restores the selected position, including the
       position before the first message.
 
-  The committer is installed only for durable sessions, so a missing journal is
-  a hard durability failure rather than an in-memory no-op.
+  `Tackle.Session.Durable` installs the committer only in durable sessions, so
+  a missing journal is a hard durability failure rather than an in-memory
+  no-op.
   """
 
   @behaviour Tackle.Lib.Committer

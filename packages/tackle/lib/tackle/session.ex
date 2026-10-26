@@ -1,10 +1,37 @@
 defmodule Tackle.Session do
   @moduledoc """
-  Frontend-independent ownership of one in-memory agent session.
+  Frontend-independent ownership of one agent's conversation.
 
-  A session owns settled `Tackle.Lib.State`, permits one active turn, runs that
-  turn under a supervised task, forwards correlated library events to
-  subscribers, and owns cancellation-signal cleanup.
+  A session owns the settled `Tackle.Lib.State`, permits one active turn, runs
+  that turn in a supervised task, forwards correlated library events to
+  subscribers, and owns cancellation-signal cleanup. It decides what happens
+  and when; the pieces live in helpers it owns as plain values or calls:
+
+    * `Tackle.Session.Turn` - the active turn: its states, cancellation
+      signal, and what it records for the session.
+    * `Tackle.Session.Inbox` - input accepted but not yet in the
+      conversation: user messages submitted during a turn, other agents'
+      messages, and runtime notices.
+    * `Tackle.Session.Durable` - everything the session writes to or rebuilds
+      from its journal: opening (configuration resolution, the recovery of an
+      interrupted turn, repair of unresolved tool calls), beginning, settling,
+      and abandoning turns, reconfiguration, rebuilding after a crashed turn,
+      and the loop's provider and tool gates. It installs
+      `Tackle.Session.Persistence` and `Tackle.Session.Committer`.
+    * `Tackle.Session.Events` - subscribers and every message they receive.
+    * `Tackle.Session.Title` - automatic titles.
+
+  Manual compaction (`compact/2`) and navigation (`navigate/3`) run the
+  library's own operations, which in a durable session commit through the
+  state's committer before they install the change.
+
+  Journal work never runs in the session process. A turn's begin and terminal
+  commits, and the operations that write (compaction, navigation,
+  reconfiguration, abandoning a turn), run in storage tasks under the scope's
+  work supervisor. While one is outstanding, or while the journal reports
+  itself delayed, calls that would write or start a turn return
+  `{:error, :storage_busy}`; snapshots, cancellation, and input queued for the
+  active turn are still served.
 
   ## Scoped sessions
 
@@ -14,15 +41,22 @@ defmodule Tackle.Session do
   coordinator. A session without scoped runtime ownership fails to initialize:
   there is no unscoped fallback supervisor. Each session runs beneath a
   `Tackle.Runtime.AgentSupervisor`, whose dedicated tool `Task.Supervisor` keeps
-  concurrent tool execution isolated per agent.
+  concurrent tool execution isolated per agent. A session is never restarted:
+  its exit tears down its agent subtree, and for the root session the scope.
 
-  An `:ephemeral` session delivers one correlated terminal outcome to its
-  request helper and then stops. Input it acknowledged after the loop last
-  took queued messages (while `before_turn_end` hooks ran, or while the
-  terminal event was written) is not dropped: a successful turn is continued
-  with it, and the last turn's outcome is delivered. An error or cancelled
-  outcome is delivered at once, and input still queued is dropped. A session
-  process is never reset for another agent identity.
+  Only the root session of a scope started with a `Tackle.Session.Spec` is
+  durable (it owns a journal); delegated agents and root sessions without a
+  spec keep their conversation in memory only.
+
+  The runtime gives every session a lifetime. An `:explicit` session (the
+  root) lives until its scope stops and starts turns from its inbox by itself.
+  An `:ephemeral` session (a delegated run) delivers one correlated terminal
+  outcome to its request helper and then stops. Input it acknowledged after
+  the loop last took queued messages (while `before_turn_end` hooks ran, or
+  while the terminal event was written) is not dropped: a successful turn is
+  continued with it, and the last turn's outcome is delivered. An error or
+  cancelled outcome is delivered at once, and input still queued is dropped.
+  A session process is never reset for another agent identity.
 
   Subscription during an active turn is deliberately rejected because events
   are not replayed. Subscribe before submitting a turn to avoid a
@@ -102,7 +136,18 @@ defmodule Tackle.Session do
       when is_nil(durable) or is_struct(durable, SessionSpec),
       do: GenServer.start_link(__MODULE__, arg)
 
-  @doc "Starts a turn, or queues input for the active turn's next provider boundary."
+  @doc """
+  Starts a turn with `input` as its user message, or queues `input` for the
+  active turn.
+
+  An idle session returns `{:ok, turn_id}` once the turn's start is committed
+  and its task runs; the turn also takes everything queued in the inbox.
+  During a turn `input` is queued for the turn's next provider boundary and
+  `{:ok, :queued}` is returned (`{:error, :inbox_full}` when the inbox is
+  full). An idle session refuses with `{:error, :storage_busy}` while storage
+  is busy and with `{:error, {:recovery_required, recovery}}` while an
+  interrupted turn awaits `abandon_turn/1`.
+  """
   @spec submit(GenServer.server(), String.t()) ::
           {:ok, String.t() | :queued} | {:error, term()}
   def submit(session, input) when is_binary(input),
@@ -146,7 +191,17 @@ defmodule Tackle.Session do
   def cancel_tool_call(session, tool_call_id, reason) when is_binary(tool_call_id),
     do: GenServer.call(session, {:cancel_tool_call, tool_call_id, reason})
 
-  @doc "Queues an envelope for the next provider boundary or an idle agent's next turn."
+  @doc """
+  Queues an envelope from another agent or the runtime in the inbox.
+
+  During a turn the envelope reaches the conversation at the turn's next
+  provider boundary; an idle `:explicit` session starts a turn for it once
+  storage is ready. A `:launch` notice is held until its tool call settles
+  and never starts a turn. An idle session refuses a `:message` with
+  `{:error, :storage_busy}` while storage is busy; runtime notices are kept.
+  The envelope is validated (`Tackle.Runtime.Envelope.new/4`), and a full
+  inbox returns `{:error, :inbox_full}` or `{:error, :deferred_inbox_full}`.
+  """
   @spec deliver(GenServer.server(), Envelope.t()) :: :ok | {:error, term()}
   def deliver(session, %Envelope{} = envelope),
     do: GenServer.call(session, {:deliver, envelope}, :infinity)
@@ -218,12 +273,20 @@ defmodule Tackle.Session do
 
   Abandoning also settles the interrupted turn's unresolved tool calls with
   synthetic results, so the transcript keeps the call/result pairing providers
-  require and the session can accept new work afterwards.
+  require and the session can accept new work afterwards. Returns `:ok` at
+  once when no turn is interrupted.
   """
   @spec abandon_turn(GenServer.server()) :: :ok | {:error, term()}
   def abandon_turn(session), do: GenServer.call(session, :abandon_turn, :infinity)
 
-  @doc "Updates model and thinking settings while the session is idle."
+  @doc """
+  Updates model and thinking settings while the session is idle.
+
+  A durable session records the change in its journal before it
+  takes effect; if that write fails, the call returns the error and the
+  session stops, like after any other journal failure. Subscribers get
+  `:tackle_session_reconfigured` with the new snapshot.
+  """
   @spec reconfigure(GenServer.server(), keyword()) :: {:ok, Snapshot.t()} | {:error, term()}
   def reconfigure(session, opts) when is_list(opts),
     do: GenServer.call(session, {:reconfigure, opts}, :infinity)
@@ -234,8 +297,9 @@ defmodule Tackle.Session do
   Navigates the session's conversation tree while it is idle.
 
   Navigation is rejected with `{:error, :tree_disabled}` in a session without
-  branching: an ephemeral session, or a durable one whose spec sets
-  `tree: false` and whose journal never enabled it. It is also rejected
+  branching: a session without a journal (a delegated agent, or a root
+  scope started without a `Tackle.Session.Spec`), or a durable one whose
+  spec sets `tree: false` and whose journal never enabled it. It is also rejected
   during an active turn or while an interrupted turn requires an explicit
   recovery decision. The destination is validated, the
   committed position is persisted through the session's committer, and only

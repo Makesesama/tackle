@@ -64,7 +64,13 @@ defmodule Tackle do
   @spec monitor_agent(AgentRef.t()) :: {:ok, reference()} | {:error, term()}
   def monitor_agent(%AgentRef{} = agent_ref), do: Runtime.monitor_agent(agent_ref)
 
-  @doc "Starts a turn and appends one user message."
+  @doc """
+  Starts a turn with one user message, or queues it while a turn runs.
+
+  Returns `{:ok, turn_id}` for a turn it started and `{:ok, :queued}` when the
+  message waits for the active turn's next provider boundary; see
+  `Tackle.Session.submit/2`.
+  """
   @spec submit(AgentRef.t(), String.t()) ::
           {:ok, String.t() | :queued} | {:error, term()}
   def submit(%AgentRef{} = agent_ref, input), do: Runtime.submit(agent_ref, input)
@@ -123,7 +129,11 @@ defmodule Tackle do
   def navigate(%AgentRef{} = agent_ref, target, opts \\ []),
     do: Runtime.navigate(agent_ref, target, opts)
 
-  @doc "Subscribes the caller to correlated session events and terminal outcomes."
+  @doc """
+  Subscribes the caller to the agent's session messages and returns the
+  snapshot they start from; `Tackle.Session.Events` lists the messages.
+  Refused with `{:error, :turn_in_progress}` during a turn.
+  """
   @spec subscribe(AgentRef.t()) :: {:ok, Tackle.Session.Snapshot.t()} | {:error, term()}
   def subscribe(%AgentRef{} = agent_ref), do: Runtime.subscribe(agent_ref)
 
@@ -137,7 +147,9 @@ defmodule Tackle do
   A resumed session whose journal ends with `turn.started` and no terminal
   event is interrupted. If unresolved tools may have produced external effects,
   automatic continuation is prohibited until the frontend records the recovery
-  decision. This appends `turn.abandoned` and clears the recovery gate.
+  decision. This appends `turn.abandoned`, settles the turn's unresolved tool
+  calls with synthetic results, and clears the recovery gate. It does nothing
+  when no turn is interrupted.
   """
   @spec abandon_turn(AgentRef.t()) :: :ok | {:error, term()}
   def abandon_turn(%AgentRef{} = agent_ref), do: Runtime.abandon_turn(agent_ref)
@@ -199,11 +211,17 @@ defmodule Tackle do
   @spec compress_idle_sessions(keyword()) :: {:ok, map() | :recently_run} | {:error, term()}
   def compress_idle_sessions(opts \\ []), do: Compression.compress_idle(opts)
 
-  @doc "Moves an inactive session into the trash and removes it from the catalog."
+  @doc """
+  Moves an inactive session into the trash and removes it from the catalog.
+  See `Tackle.Session.Store.delete/2`.
+  """
   @spec delete_session(String.t(), keyword()) :: :ok | {:error, term()}
   def delete_session(session_id, opts \\ []), do: Store.delete(session_id, opts)
 
-  @doc "Runs an explicit durability barrier for a live durable session."
+  @doc """
+  Syncs a live durable session's journal to disk, an explicit durability
+  barrier. Returns `:ok` when the session is not live.
+  """
   @spec flush_session(String.t()) :: :ok | {:error, term()}
   def flush_session(session_id), do: Store.flush(session_id)
 end

@@ -1,14 +1,17 @@
 defmodule Tackle.Session.Store do
   @moduledoc """
-  High-level durable session operations: inspect, list, search, fork, archive,
-  and delete.
+  High-level durable session operations: inspect, usage timelines, list,
+  search, summary, flush, fork, archive, unarchive, and delete.
 
   These operations read journals and derived catalog data. They never expose
-  the journal process or `:disk_log` name, and they never mutate a live journal.
-  A fork creates a new self-contained journal; archiving renames a complete
-  session directory into `sessions/archive/` and marks it archived in the
-  catalog; deletion renames it into `sessions/trash/` before removing it from
-  the catalog.
+  the journal process or `:disk_log` name, and they never write to a live
+  journal: `flush/1`, and the reads that need a live session's write-behind
+  tail (inspect, fork), only sync it to disk. A fork creates a new
+  self-contained journal; archiving renames a complete session directory into
+  `sessions/archive/` and marks it archived in the catalog, and unarchiving
+  moves it back; deletion renames it into `sessions/trash/` before removing it
+  from the catalog. Archiving, unarchiving, and deletion only move inactive
+  sessions.
   """
 
   alias Tackle.Runtime.ID
@@ -119,7 +122,10 @@ defmodule Tackle.Session.Store do
           {:ok, %{sessions: [Catalog.Entry.t()], next_cursor: String.t() | nil}}
   def search(query, filters \\ %{}), do: Catalog.search(query, filters)
 
-  @doc "Runs an explicit durability barrier for a live session."
+  @doc """
+  Syncs a live session's journal to disk, an explicit durability barrier.
+  Returns `:ok` when no journal is live for `session_id`.
+  """
   @spec flush(String.t()) :: :ok | {:error, term()}
   def flush(session_id) do
     case Journal.whereis(session_id) do
@@ -182,7 +188,10 @@ defmodule Tackle.Session.Store do
   @doc """
   Moves an inactive session into the trash and removes it from the catalog.
 
-  Active sessions cannot be deleted. Permanent purge is a separate operation.
+  A session that is live in this node is refused with
+  `{:error, :session_active}`; one owned by another process (whose writer
+  lock is held) with `{:error, {:session_in_use, owner}}`. Trashed sessions
+  stay in `sessions/trash/`; nothing purges them.
   """
   @spec delete(String.t(), keyword()) :: :ok | {:error, term()}
   def delete(session_id, opts \\ []) do

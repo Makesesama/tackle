@@ -5,11 +5,14 @@ defmodule Tackle.Session.Durable do
   A session owns at most one `Tackle.Session.Journal`. Everything it writes
   there, and the state it rebuilds from it, goes through this module, so the
   session itself only decides when to write. A session without a journal (a
-  delegated agent) passes `nil`: opening builds a fresh state, the gates are
-  absent, and beginning or settling a turn writes nothing.
+  delegated agent, or a root scope started without a `Tackle.Session.Spec`)
+  passes `nil`: opening builds a fresh state, the gates are absent, and
+  beginning or settling a turn writes nothing.
 
-  The writes run in the session's storage tasks, not in the session process,
-  so they never block its admission and control calls.
+  Apart from `open/3`, which runs while the session starts, the writes run in
+  the session's storage tasks and in its turn's task (the persistence hook),
+  not in the session process, so they never block its admission and control
+  calls.
   """
 
   alias Tackle.Auth

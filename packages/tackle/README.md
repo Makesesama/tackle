@@ -85,7 +85,7 @@ supplied by this package as the backend for its durable root session. For the
 built-in coding profiles instead of an empty `profiles` map, use
 `Tackle.Coding.scope_spec/2`.
 
-Subscribers receive provider-neutral library events and terminal outcomes with
+Subscribers receive provider-neutral library events and turn results with
 session and turn correlation; `Tackle.Session.Events` documents each message:
 
 ```elixir
@@ -102,7 +102,9 @@ session and turn correlation; `Tackle.Session.Events` documents each message:
 ```
 
 Events outside a turn include a manual compaction's progress, background
-subagent progress and completion, and auxiliary events such as narration.
+subagent progress and completion, `:subagent_message_received` when the session
+takes another agent's message into its conversation, and auxiliary events such
+as narration.
 
 Each `%Tackle.Session.Snapshot{}` carries the settled `agent_state`; aggregate
 usage and context pressure derive from it (`Tackle.Lib.State.usage/1`,
@@ -327,7 +329,7 @@ This is the provider-neutral `AgentSpec.model_source: :parent` policy. Generic
 profiles default to `:configured` and keep their explicitly configured model;
 model-generated arguments cannot select or change this policy.
 
-Child transcripts remain ephemeral: the durable root records the subagent tool
+Child transcripts are not persisted: the durable root records the subagent tool
 call and returned findings, not the child's full history. Subagent calls wait by
 default. A call with `background: true` returns a stable run ID immediately. The
 root-only `subagent_wait` tool blocks until that run finishes and consumes its
@@ -421,11 +423,18 @@ existing session still opens and validates its journal immediately.
 {:ok, scope} = Tackle.start_scope(spec)
 ```
 
-Durability is fail-closed. A turn's `turn.started` commit is synced before its
-Task starts, every settled message is committed before the loop performs the
-next provider or tool effect, and the terminal event is synced before terminal
-outcomes are delivered. If a journal append, sync, or validation fails, the
-session stops instead of continuing with memory-only state.
+Durability is fail-closed and write-behind. A turn's `turn.started` commit is
+appended before its Task starts, and its settled messages, tool intents, and
+terminal event are appended in order, all without waiting for the disk:
+`:disk_log` hands them to the OS within about two seconds, so an application
+crash keeps them, while power loss can lose the unsynced tail. The journal is
+synced where an irreversible effect depends on it: before a tool with external
+effects runs, everything appended so far is made durable; read-only tools skip
+that sync. A provider call only waits until earlier journal requests have
+completed, never for a sync. Compactions, navigations, and configuration and
+title changes are synced before they take effect. If a journal append, sync, or
+validation fails, the session stops instead of continuing with memory-only
+state.
 
 An independent watchdog uses a 15-second threshold. A live `sync` that exceeds
 it pauses durable progress instead of killing the session. The original sync
@@ -448,7 +457,7 @@ launch/completion notices still enter the bounded inbox (128 deferred notices,
 a continuation while storage is pending.
 The harness gates every provider dispatch (including retries and compaction
 summaries) behind outstanding journal work. A title-model request also waits
-behind the durability barrier.
+behind outstanding journal work, without syncing.
 
 Startup/replay, unknown append outcomes, post-sync projection/catalog stalls,
 and termination cleanup still have hard deadlines. Expiry there stops the
@@ -507,9 +516,15 @@ Session inspection and management never expose a PID or the journal process:
   derived catalog with stable cursor pagination;
 - `Tackle.fork_session/2` materializes a self-contained session from validated
   parent history, so the child survives deletion of the parent;
+- `Tackle.session_summary/2` returns a session's catalog summary;
+- `Tackle.archive_session/2` and `Tackle.unarchive_session/2` move an inactive
+  session to and from `sessions/archive/`;
 - `Tackle.delete_session/2` moves an inactive session into `sessions/trash/` and
-  refuses to delete an active one; and
-- `Tackle.flush_session/1` runs an explicit durability barrier.
+  refuses to delete an active one (`:session_active`, or
+  `{:session_in_use, owner}` when another process holds its writer lock);
+  nothing purges the trash; and
+- `Tackle.flush_session/1` syncs a live session's journal, an explicit
+  durability barrier.
 
 Internal `.dlog` files are trusted local state, never a portable interchange
 format, and are not accepted as imports. Search indexes the title, user and
@@ -531,8 +546,9 @@ so a session can hold alternative paths instead of a single linear transcript. T
 engine owns the tree rules; the harness package owns durable records and the CLI
 owns the picker. Branching is session policy: durable root sessions enable it by
 default (`Tackle.Session.Spec` `tree: true`), while a durable session with
-`tree: false` and every ephemeral session keep a single-branch tree and reject
-`Tackle.navigate/3` with `{:error, :tree_disabled}`. The snapshot's
+`tree: false` and every session without a journal (delegated agents, and root
+scopes started without a `Tackle.Session.Spec`) keep a single-branch tree and
+reject `Tackle.navigate/3` with `{:error, :tree_disabled}`. The snapshot's
 `agent_state.tree` holds the tree either way.
 
 Three surfaces are deliberately distinct:
