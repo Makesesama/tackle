@@ -67,7 +67,7 @@ defmodule Tackle.Workflow.Tool do
 
   require Lua.API
 
-  alias Tackle.Lib.Event
+  alias Tackle.Lib.Tool, as: LibTool
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
   alias Tackle.Workflow
@@ -258,24 +258,16 @@ defmodule Tackle.Workflow.Tool do
 
   # Progress ----------------------------------------------------------------------
 
+  # Without an observer the workflow forwards no progress at all.
   defp progress_opts(context) do
-    case Map.get(context, :event_callback) do
-      callback when is_function(callback, 1) ->
-        tool_call_id = Map.get(context, :tool_call_id)
-        [on_event: &callback.(progress_event(&1, tool_call_id))]
-
-      _other ->
-        []
-    end
+    if is_function(Map.get(context, :event_callback), 1),
+      do: [on_event: &report_progress(context, &1)],
+      else: []
   end
 
-  defp progress_event(%{type: kind} = event, tool_call_id) do
-    data =
-      event
-      |> Map.delete(:type)
-      |> Map.merge(%{kind: kind, tool_call_id: tool_call_id})
-
-    Event.new(:workflow_progress, data)
+  defp report_progress(context, %{type: kind} = event) do
+    data = event |> Map.delete(:type) |> Map.put(:kind, kind)
+    LibTool.progress(context, :workflow_progress, data)
   end
 
   # Run ---------------------------------------------------------------------------

@@ -73,7 +73,7 @@ defmodule Tackle.Tools.Review do
 
   alias Tackle.AgentScope.Coordinator
   alias Tackle.Executor
-  alias Tackle.Lib.Event
+  alias Tackle.Lib.Tool
   alias Tackle.LocalReview
   alias Tackle.LocalReview.History
   alias Tackle.Review.{Change, Delegation, Detector, Finding, Rank, Result, Verifier}
@@ -227,23 +227,7 @@ defmodule Tackle.Tools.Review do
   ## Progress
 
   defp reporter(context) do
-    case Map.get(context, :event_callback) do
-      callback when is_function(callback, 1) ->
-        tool_call_id = Map.get(context, :tool_call_id)
-
-        fn review ->
-          callback.(
-            Event.new(:tool_progress, %{
-              tool_call_id: tool_call_id,
-              name: "review_changes",
-              review: review
-            })
-          )
-        end
-
-      _other ->
-        fn _review -> :ok end
-    end
+    fn review -> Tool.progress(context, %{name: "review_changes", review: review}) end
   end
 
   defp loaded(%Change{} = change, profile) do

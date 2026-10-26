@@ -831,7 +831,8 @@ to every tool. A tool's context also has the run's `:tool_context` merged in,
 the run's event callback under `:event_callback`, and its call's id under
 `:tool_call_id`. If a cancellation signal exists, the tool receives its call's
 child signal (`Tackle.Lib.Cancellation.for_call/2`) under `:cancellation_signal`
-as well.
+as well. The `Tackle.Lib.Tool` moduledoc documents these keys; tools report
+progress through the callback with `Tackle.Lib.Tool.progress/3`.
 
 A useful host context shape is:
 
@@ -965,9 +966,12 @@ should not append them to the visible answer bubble by default. The
 `tackle_phoenix` event reducer follows this rule.
 
 Host tools may emit transient `:tool_progress` events through the callback in
-their execution context. Progress should carry `tool_call_id`, `name`, and a
-bounded `delta`; it is presentation data and is replaced by the canonical
-`:tool_end` or `:tool_error` settlement.
+their execution context with `Tackle.Lib.Tool.progress(context, data)`, which
+builds them with `Tackle.Lib.Event.tool_progress/3` and puts the call's
+`tool_call_id` in `data`. Progress should also carry `name` and a bounded
+`delta`; it is presentation data and is replaced by the canonical `:tool_end`
+or `:tool_error` settlement. `Tackle.Lib.Tool.progress(context, type, data)`
+reports a host event type the same way.
 
 `:tool_execution_end` reports each completed execution as the loop collects its
 worker result, without waiting for the rest of a concurrent batch. It carries

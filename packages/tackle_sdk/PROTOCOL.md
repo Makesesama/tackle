@@ -152,7 +152,9 @@ every key is always present, `null` when it does not apply (for example
 `tool_error` always has `details` and `metadata`, also for a call interrupted
 by the end of its turn, whose `reason` is `"interrupted"`, and `retry_end`
 always has `reason` and carries the message `id` like the other retry events).
-A tool configured on the server may emit events of its own types.
+`tool_progress` is reported by the running tool: its `data` always has
+`tool_call_id`, and the rest is the tool's own. A tool configured on the
+server may emit events of its own types.
 
 Hosts built on sessions may also publish auxiliary events such as `narration`
 (`data.auxiliary` is `true`) outside any turn. This server drives the loop

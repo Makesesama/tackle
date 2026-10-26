@@ -4,7 +4,7 @@ defmodule Tackle.Tools.Bash do
   use Tackle.Lib.Tool
 
   alias Tackle.Executor
-  alias Tackle.Lib.{Cancellation, Event}
+  alias Tackle.Lib.{Cancellation, Tool}
   alias Tackle.Tools.Bash.Capture
   alias Tackle.Tools.FileSystem
 
@@ -163,21 +163,8 @@ defmodule Tackle.Tools.Bash do
     end)
   end
 
-  defp emit_progress(context, data) when is_binary(data) and data != "" do
-    case Map.get(context, :event_callback) do
-      callback when is_function(callback, 1) ->
-        callback.(
-          Event.new(:tool_progress, %{
-            tool_call_id: Map.get(context, :tool_call_id),
-            name: "bash",
-            delta: sanitize(data)
-          })
-        )
-
-      _other ->
-        :ok
-    end
-  end
+  defp emit_progress(context, data) when is_binary(data) and data != "",
+    do: Tool.progress(context, %{name: "bash", delta: sanitize(data)})
 
   defp emit_progress(_context, _data), do: :ok
 

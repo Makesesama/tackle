@@ -138,6 +138,14 @@ defmodule Tackle.Lib.EventTest do
              }
     end
 
+    test "tool_progress/3 puts the call's id in the tool's own data" do
+      event = Event.tool_progress("c1", %{name: "bash", delta: "out"}, id: "e1")
+
+      assert event.type == :tool_progress
+      assert event.id == "e1"
+      assert event.data == %{tool_call_id: "c1", name: "bash", delta: "out"}
+    end
+
     test "tool_end/2 reports the recorded result" do
       result = %ToolResult{
         tool_call_id: "c1",

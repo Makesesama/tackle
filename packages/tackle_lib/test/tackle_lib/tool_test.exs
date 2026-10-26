@@ -1004,4 +1004,43 @@ defmodule Tackle.Lib.ToolTest do
              }
            } = JsonSchema.to_json_schema(schema)
   end
+
+  describe "progress/3" do
+    setup do
+      test_pid = self()
+
+      context = %{
+        event_callback: fn event -> send(test_pid, {:event, event}) end,
+        tool_call_id: "call-7"
+      }
+
+      {:ok, context: context}
+    end
+
+    test "reports :tool_progress with the call's id", %{context: context} do
+      assert :ok = Tool.progress(context, %{name: "bash", delta: "out"})
+
+      assert_received {:event,
+                       %Tackle.Lib.Event{
+                         type: :tool_progress,
+                         data: %{tool_call_id: "call-7", name: "bash", delta: "out"}
+                       }}
+    end
+
+    test "reports a host event type with the call's id", %{context: context} do
+      assert :ok = Tool.progress(context, :subagent_progress, %{run_id: "r1"})
+
+      assert_received {:event,
+                       %Tackle.Lib.Event{
+                         type: :subagent_progress,
+                         data: %{tool_call_id: "call-7", run_id: "r1"}
+                       }}
+    end
+
+    test "does nothing without an event callback" do
+      assert :ok = Tool.progress(%{tool_call_id: "call-7"}, %{delta: "out"})
+      assert :ok = Tool.progress(%{event_callback: nil}, :workflow_progress, %{})
+      refute_received {:event, _event}
+    end
+  end
 end

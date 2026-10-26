@@ -33,6 +33,7 @@ defmodule Tackle.Lib.Event do
   | `:message_end` | `message`, `role` |
   | `:usage` | `usage` |
   | `:tool_start` | `tool_call_id`, `name`, `arguments` |
+  | `:tool_progress` | `tool_call_id`, plus the reporting tool's own fields |
   | `:tool_execution_end` | `tool_call_id`, `name`, `status` (`:completed`, `:failed`), `result`, `error`, `reason` |
   | `:tool_end` | `tool_call_id`, `name`, `result`, `raw`, `metadata` |
   | `:tool_error` | `tool_call_id`, `name`, `error`, `reason`, `details`, `metadata` |
@@ -46,7 +47,8 @@ defmodule Tackle.Lib.Event do
 
   `:message_start`, `:message_delta`, and the retry events carry the id of the
   assistant message they concern as the event `id`. `:tool_progress` events
-  are reported by tools themselves, and `:provider_event` wraps an adapter
+  are reported by tools themselves (`Tackle.Lib.Tool.progress/3`), so beyond
+  `tool_call_id` their payload is the tool's, and `:provider_event` wraps an adapter
   stream event `normalize/2` does not recognize.
 
   ## Host events
@@ -332,6 +334,17 @@ defmodule Tackle.Lib.Event do
   @spec tool_start(Call.t(), keyword()) :: t()
   def tool_start(%Call{} = call, opts \\ []) do
     new(:tool_start, %{tool_call_id: call.id, name: call.name, arguments: call.arguments}, opts)
+  end
+
+  @doc """
+  Creates a progress event a tool reports while call `tool_call_id` runs:
+  `data`, the tool's own presentation fields, with `:tool_call_id` put in it.
+  Tools report progress with `Tackle.Lib.Tool.progress/3`, which builds this
+  event.
+  """
+  @spec tool_progress(String.t() | nil, map(), keyword()) :: t()
+  def tool_progress(tool_call_id, data, opts \\ []) when is_map(data) do
+    new(:tool_progress, Map.put(data, :tool_call_id, tool_call_id), opts)
   end
 
   @doc """

@@ -23,6 +23,24 @@ defmodule Tackle.Lib.Tool do
   `use Tackle.Lib.Tool` declares a tool with the macros of
   `Tackle.Lib.Tool.DSL` instead of implementing the callbacks by hand.
 
+  ## Context
+
+  `execute/2` receives the state's `context` with the run's `:tool_context`
+  merged over it. The agent loop then puts its own keys in it for each call:
+
+    * `:event_callback` - the run's event callback, a one-argument function
+      taking a `Tackle.Lib.Event`. Report progress with `progress/3` rather
+      than calling it directly;
+    * `:tool_call_id` - the id of the call being executed;
+    * `:cancellation_signal` - the call's `Tackle.Lib.Cancellation` signal,
+      present when the run has one. It observes the turn's cancellation and
+      can be cancelled on its own to stop just this call; long-running tools
+      should poll it with `Tackle.Lib.Cancellation.cancelled?/1`.
+
+  A tool run outside the loop (for example, through `settle/3` in a test)
+  gets only the context it is given, so it should treat these keys as
+  optional.
+
   ## Errors the model sees
 
   A tool reports an expected failure by returning `{:error, reason}`.
@@ -57,6 +75,7 @@ defmodule Tackle.Lib.Tool do
   sees this behaviour.
   """
 
+  alias Tackle.Lib.Event
   alias Tackle.Lib.Tool.Schema
   alias Tackle.Lib.Tool.Schema.JsonSchema
 
@@ -256,4 +275,36 @@ defmodule Tackle.Lib.Tool do
   @spec settle(module(), Tackle.Lib.Tool.Call.t(), map()) ::
           {:ok, Tackle.Lib.Tool.Result.t()} | {:error, Tackle.Lib.Tool.Error.t()}
   defdelegate settle(tool_module, call, context), to: Tackle.Lib.Tool.Settle
+
+  @doc """
+  Reports progress of the running tool call through the loop's event
+  callback in `context` (see "Context" in the module docs).
+
+  Emits a `type` event (`:tool_progress` unless given) whose data is `data`
+  with the call's `:tool_call_id` from `context` put in it; see
+  `Tackle.Lib.Event.tool_progress/3`. Hosts may use their own event types,
+  such as `:subagent_progress`. Progress is transient presentation data: the
+  call's `:tool_end` or `:tool_error` follows it.
+
+  Does nothing when `context` has no event callback, as when a tool runs
+  outside the loop. Returns `:ok`.
+  """
+  @spec progress(map(), Event.type(), map()) :: :ok
+  def progress(context, type \\ :tool_progress, data)
+      when is_map(context) and is_atom(type) and is_map(data) do
+    case Map.get(context, :event_callback) do
+      callback when is_function(callback, 1) ->
+        callback.(progress_event(type, Map.get(context, :tool_call_id), data))
+        :ok
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp progress_event(:tool_progress, tool_call_id, data),
+    do: Event.tool_progress(tool_call_id, data)
+
+  defp progress_event(type, tool_call_id, data),
+    do: Event.new(type, Map.put(data, :tool_call_id, tool_call_id))
 end

@@ -25,7 +25,7 @@ defmodule Tackle.Tools.Subagent do
 
   use Tackle.Lib.Tool
 
-  alias Tackle.Lib.Event
+  alias Tackle.Lib.Tool
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Limits
@@ -138,27 +138,21 @@ defmodule Tackle.Tools.Subagent do
     end
   end
 
+  # Forwards the child's events only when someone observes this call.
   defp put_event_callback(opts, context, profile, background?) do
-    case Map.get(context, :event_callback) do
-      callback when is_function(callback, 1) ->
-        tool_call_id = Map.get(context, :tool_call_id)
-
-        Keyword.put(opts, :event_callback, fn run_ref, child_event ->
-          callback.(
-            Event.new(:subagent_progress, %{
-              run_id: run_ref.run_id,
-              agent_ref: run_ref.agent_ref,
-              tool_call_id: tool_call_id,
-              profile: profile,
-              model: run_ref.model_ref,
-              background: background?,
-              event: child_event
-            })
-          )
-        end)
-
-      _other ->
-        opts
+    if is_function(Map.get(context, :event_callback), 1) do
+      Keyword.put(opts, :event_callback, fn run_ref, child_event ->
+        Tool.progress(context, :subagent_progress, %{
+          run_id: run_ref.run_id,
+          agent_ref: run_ref.agent_ref,
+          profile: profile,
+          model: run_ref.model_ref,
+          background: background?,
+          event: child_event
+        })
+      end)
+    else
+      opts
     end
   end
 
@@ -233,22 +227,13 @@ defmodule Tackle.Tools.Subagent do
     do: "this host does not support choosing a subagent model; omit model to use the profile's"
 
   defp emit(context, type, run_ref, profile, outcome \\ nil) do
-    case Map.get(context, :event_callback) do
-      callback when is_function(callback, 1) ->
-        data = %{
-          run_id: run_ref.run_id,
-          agent_ref: run_ref.agent_ref,
-          tool_call_id: Map.get(context, :tool_call_id),
-          profile: profile,
-          model: run_ref.model_ref,
-          status: outcome_status(outcome)
-        }
-
-        callback.(Event.new(type, data))
-
-      _other ->
-        :ok
-    end
+    Tool.progress(context, type, %{
+      run_id: run_ref.run_id,
+      agent_ref: run_ref.agent_ref,
+      profile: profile,
+      model: run_ref.model_ref,
+      status: outcome_status(outcome)
+    })
   end
 
   defp outcome_status(nil), do: :running

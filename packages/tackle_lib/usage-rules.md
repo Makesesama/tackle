@@ -95,8 +95,12 @@ end
   `{:list, inner}`. Options: `required: true`, `default: value`,
   `description: "..."`.
 - The second `run/2` argument is the **host-supplied context map** (`:context`
-  from `Tackle.Lib.new/1`), carrying things like `user_id`, permissions, and (when
-  cancellable) `:cancellation_signal`. Tackle.Lib never populates domain data here.
+  from `Tackle.Lib.new/1`), carrying things like `user_id` and permissions. The loop
+  adds `:event_callback`, `:tool_call_id`, and (when cancellable)
+  `:cancellation_signal` (see the `Tackle.Lib.Tool` moduledoc). Tackle.Lib never
+  populates domain data here.
+- Report progress with `Tackle.Lib.Tool.progress(context, data)` rather than
+  building `:tool_progress` events from `context[:event_callback]` by hand.
 - An `output do ... end` block is optional; when present, results are validated
   against it before being projected into the transcript.
 - To adapt a richer existing tool abstraction, implement the `Tackle.Lib.Tool`
