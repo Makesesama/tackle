@@ -838,6 +838,21 @@ defmodule Tackle.Session do
 
   def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
+  # A stray message, such as another session's storage notice or a late reply
+  # the session no longer waits for, must not crash it: the root session runs
+  # under `max_restarts: 0`, so its crash takes the whole scope down. Only the
+  # message's tag is logged, since messages can carry conversation content.
+  def handle_info(message, state) do
+    Logger.debug("Tackle.Session ignored an unexpected message: #{message_tag(message)}")
+    {:noreply, state}
+  end
+
+  defp message_tag(message) when is_tuple(message) and tuple_size(message) > 0,
+    do: "tuple tagged #{inspect(elem(message, 0), limit: 3, printable_limit: 64)}"
+
+  defp message_tag(message) when is_atom(message), do: inspect(message)
+  defp message_tag(_message), do: "untagged message"
+
   @impl true
   def terminate(_reason, state) do
     cleanup_active_turn(state.active_turn)

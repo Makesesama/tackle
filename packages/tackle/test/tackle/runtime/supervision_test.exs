@@ -94,6 +94,24 @@ defmodule Tackle.Runtime.SupervisionTest do
     end)
   end
 
+  test "a stray message to the root session leaves the scope running" do
+    scope = start_durable_scope(root: [content: "answer"])
+    root = scope.root_agent_ref
+    {:ok, snapshot} = Tackle.subscribe(root)
+    {:ok, root_session} = Tackle.Runtime.session_pid(root)
+    {:ok, scope_supervisor} = Tackle.Runtime.Registry.scope(scope.scope_ref)
+    scope_monitor = Process.monitor(scope_supervisor)
+
+    # Another session's storage notice fails the session-id guard.
+    send(root_session, {:tackle_storage, "another-session", :ready})
+    send(root_session, :unexpected)
+
+    {:ok, turn_id} = Tackle.submit(root, "still here")
+    assert_receive {:tackle_turn_finished, session_id, ^turn_id, {:ok, _state}}, 5_000
+    assert session_id == snapshot.session_id
+    refute_received {:DOWN, ^scope_monitor, :process, _pid, _reason}
+  end
+
   test "a descendant crash does not terminate an unrelated sibling" do
     scope =
       start_scope(
