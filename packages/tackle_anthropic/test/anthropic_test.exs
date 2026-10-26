@@ -51,9 +51,6 @@ defmodule Tackle.Plugins.AnthropicTest do
     end
 
     @impl true
-    def confirm(_reference, _message), do: false
-
-    @impl true
     def progress(reference, opts, fun) do
       send(reference, {:interaction_progress, Keyword.get(opts, :label)})
       fun.()

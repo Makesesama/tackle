@@ -19,12 +19,6 @@ defmodule Tackle.Lib.InteractionTest do
     end
 
     @impl true
-    def confirm(reference, message) do
-      send(reference, {:confirm, IO.iodata_to_binary(message)})
-      true
-    end
-
-    @impl true
     def progress(reference, opts, fun) do
       send(reference, {:progress, opts})
       fun.()
@@ -39,9 +33,6 @@ defmodule Tackle.Lib.InteractionTest do
 
     assert {:ok, "typed-value"} = Interaction.prompt(handle, label: "Token", secret: true)
     assert_received {:prompt, [label: "Token", secret: true]}
-
-    assert Interaction.confirm(handle, "Continue?") == true
-    assert_received {:confirm, "Continue?"}
 
     assert Interaction.progress(handle, [label: "Waiting..."], fn -> :done end) == :done
     assert_received {:progress, [label: "Waiting..."]}

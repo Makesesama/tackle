@@ -3,9 +3,9 @@ defmodule Tackle.Lib.Interaction do
   Provider-neutral, frontend-supplied interaction handle for adapter flows.
 
   Tackle.Lib never writes to a terminal or reads user input directly. When an
-  adapter needs to show instructions, ask for a secret, confirm a destructive
-  action, or display progress while it waits on the provider, it receives this
-  handle through the `:interaction` option and calls these functions. The host
+  adapter needs to show instructions, ask for a secret, or display progress
+  while it waits on the provider, it receives this handle through the
+  `:interaction` option and calls these functions. The host
   supplies an implementation module and an opaque reference as
   `{module, reference}`, mirroring `Tackle.Lib.CredentialStore`.
 
@@ -57,15 +57,6 @@ defmodule Tackle.Lib.Interaction do
   @callback prompt(reference :: term(), opts :: keyword()) :: prompt_result()
 
   @doc """
-  Asks a yes/no question.
-
-  Implementations must return `false` for anything that is not an explicit
-  affirmative answer, so a missing or unreadable terminal never implies
-  consent.
-  """
-  @callback confirm(reference :: term(), message :: iodata()) :: boolean()
-
-  @doc """
   Runs `fun` while displaying progress described by `opts`.
 
   Adapters use this for provider work that blocks on the user, such as polling
@@ -86,12 +77,6 @@ defmodule Tackle.Lib.Interaction do
   def prompt({module, reference}, opts)
       when is_atom(module) and not is_nil(module) and is_list(opts) do
     module.prompt(reference, opts)
-  end
-
-  @doc "Asks a yes/no question through the supplied handle."
-  @spec confirm(handle(), iodata()) :: boolean()
-  def confirm({module, reference}, message) when is_atom(module) and not is_nil(module) do
-    module.confirm(reference, message)
   end
 
   @doc "Runs `fun` with progress feedback through the supplied handle."

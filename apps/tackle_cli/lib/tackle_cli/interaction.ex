@@ -27,15 +27,6 @@ defmodule Tackle.CLI.Interaction do
   end
 
   @impl true
-  def confirm(%Output{} = output, message) do
-    Owl.IO.confirm(message: Output.style(output, :warning, message)) == true
-  rescue
-    _exception -> false
-  catch
-    _kind, _reason -> false
-  end
-
-  @impl true
   def progress(%Output{} = output, opts, fun) when is_function(fun, 0) do
     if output.interactive? do
       frames =

@@ -31,8 +31,6 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     @impl true
     def info(_ref, _message), do: :ok
     @impl true
-    def confirm(_ref, _message), do: false
-    @impl true
     def progress(_ref, _opts, fun), do: fun.()
   end
 

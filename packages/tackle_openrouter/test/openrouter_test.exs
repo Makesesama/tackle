@@ -43,9 +43,6 @@ defmodule Tackle.Plugins.OpenRouterTest do
     end
 
     @impl true
-    def confirm(_reference, _message), do: false
-
-    @impl true
     def progress(_reference, _opts, fun), do: fun.()
   end
 

@@ -508,7 +508,7 @@ provider knowledge:
 - `login/1` runs the interactive flow (device code, browser hand-off, API-key
   prompt) and returns credentials to store. The host passes a
   `Tackle.Lib.Interaction` handle in `opts[:interaction]`; the adapter calls
-  `info/2`, `prompt/2`, `confirm/2`, and `progress/3` on it instead of depending
+  `info/2`, `prompt/2`, and `progress/3` on it instead of depending
   on a terminal library.
 - `logout/1` revokes or removes credentials. When omitted, the host deletes the
   credentials stored under the provider id.
