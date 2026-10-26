@@ -6,6 +6,11 @@ defmodule Tackle.Runtime.Envelope do
   tool call settles: a committed tool result discards it, while an interrupted
   turn makes it visible on the next turn. `:completion` is deliverable as soon
   as it arrives. Backends own capacity, projection, and wake-up policy.
+
+  `from` is the sending agent. A backend may hold its user's queued input in
+  the same shape, as a `:message` with `from: :user`, so its inbox has one
+  entry type; `new/4` never builds one, so a delivered envelope cannot claim
+  to come from the user.
   """
 
   alias Tackle.Runtime.AgentRef
@@ -17,7 +22,7 @@ defmodule Tackle.Runtime.Envelope do
   @type origin :: %{turn_id: String.t(), tool_call_id: String.t()}
   @type t :: %__MODULE__{
           kind: kind(),
-          from: AgentRef.t(),
+          from: AgentRef.t() | :user,
           message: String.t(),
           origin: origin() | nil
         }

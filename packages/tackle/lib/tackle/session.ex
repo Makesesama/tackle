@@ -54,6 +54,7 @@ defmodule Tackle.Session do
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.Task, as: TurnTask
   alias Tackle.Session.Committer
+  alias Tackle.Session.Inbox
   alias Tackle.Session.Journal
   alias Tackle.Session.Journal.Watchdog
   alias Tackle.Session.Loader
@@ -63,9 +64,6 @@ defmodule Tackle.Session do
   alias Tackle.Session.Title
 
   @task_shutdown_timeout 1_000
-  @max_inbox_messages 32
-  @max_deferred_messages 128
-  @max_inbox_bytes 24 * 1024 * 1024
 
   defmodule Snapshot do
     @moduledoc "An atomic view of a Tackle session and its active turn."
@@ -105,12 +103,6 @@ defmodule Tackle.Session do
             storage: :ready | :delayed
           }
   end
-
-  @typedoc """
-  One inbox entry: a user message submitted during a turn, or a validated
-  `Tackle.Runtime.Envelope` from another agent or the runtime.
-  """
-  @type inbox_entry :: %{from: :user, message: String.t()} | Envelope.t()
 
   @type turn_result ::
           {:ok, AgentState.t()} | {:error, AgentState.t()} | {:cancelled, AgentState.t()}
@@ -206,13 +198,14 @@ defmodule Tackle.Session do
   @doc """
   Returns the session's inbox, oldest entry first.
 
-  It holds the user messages submitted during a turn and the envelopes other
-  agents and the runtime delivered, including background launch notices held
-  until their tool call settles. Nothing in the inbox has reached the
+  Every entry is a `Tackle.Runtime.Envelope` (see `Tackle.Session.Inbox`): a
+  user message submitted during a turn has `from: :user`; the others came
+  from other agents and the runtime, including background launch notices
+  held until their tool call settles. Nothing in the inbox has reached the
   conversation yet. Meant for tests and diagnostics; the runtime does not
   call it.
   """
-  @spec inbox(GenServer.server()) :: [inbox_entry()]
+  @spec inbox(GenServer.server()) :: [Inbox.entry()]
   def inbox(session), do: GenServer.call(session, :inbox)
 
   @doc """
@@ -318,7 +311,7 @@ defmodule Tackle.Session do
         journal: journal,
         recovery: recovery,
         tree_enabled?: tree_enabled?,
-        inbox: :queue.new(),
+        inbox: Inbox.new(),
         inbox_wake_scheduled?: false,
         session_title: projection_title(journal),
         title_task: nil,
@@ -351,7 +344,10 @@ defmodule Tackle.Session do
   # the turn's begin or terminal commit is outstanding or storage is delayed.
   def handle_call({:submit, input}, _from, %{active_turn: active_turn} = state)
       when not is_nil(active_turn) do
-    queue_user_message(state, input)
+    case Inbox.push_user(state.inbox, input) do
+      {:ok, inbox} -> {:reply, {:ok, :queued}, %{state | inbox: inbox}}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:submit, _input}, _from, state) when is_storage_busy(state),
@@ -366,63 +362,47 @@ defmodule Tackle.Session do
     start_turn(:run, input, state, from)
   end
 
-  def handle_call(
-        {:withdraw_queued, _content},
-        _from,
-        %{storage_task: %{kind: :begin_turn}} = state
-      ),
-      do: {:reply, {:error, :storage_busy}, state}
-
+  # Nothing can be withdrawn while a starting turn journals the messages it
+  # reserved.
   def handle_call({:withdraw_queued, content}, _from, state) do
-    entries = :queue.to_list(state.inbox)
-
-    index =
-      entries
-      |> Enum.with_index()
-      |> Enum.reduce(nil, fn
-        {%{from: :user, message: ^content}, index}, _found -> index
-        _entry, found -> found
-      end)
-
-    case index do
-      nil ->
-        {:reply, {:error, :not_queued}, state}
-
-      index ->
-        retained = List.delete_at(entries, index)
-        state = %{state | inbox: :queue.from_list(retained)}
-        {:reply, :ok, state}
-    end
-  end
-
-  # Runtime notices are one-shot; retain them in the existing bounded inbox,
-  # but never start their continuation until storage is ready.
-  def handle_call({:deliver, %Envelope{kind: kind} = envelope}, _from, state)
-      when kind in [:completion, :launch] do
-    case Envelope.new(envelope.kind, envelope.from, envelope.message, envelope.origin) do
-      {:ok, _validated} -> enqueue_envelope(state, envelope)
+    case Inbox.withdraw(state.inbox, content) do
+      {:ok, inbox} -> {:reply, :ok, %{state | inbox: inbox}}
+      {:error, :reserved} -> {:reply, {:error, :storage_busy}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
   # Like a mid-turn submit, a message for the active turn is queued while its
   # storage is busy; an idle session would have to start a turn for it.
-  def handle_call({:deliver, %Envelope{}}, _from_call, state)
-      when is_nil(state.active_turn) and is_storage_busy(state),
+  # Runtime notices are one-shot: they are kept in the inbox whatever the
+  # storage, but never start their continuation until storage is ready.
+  def handle_call({:deliver, %Envelope{kind: kind}}, _from_call, state)
+      when kind not in [:completion, :launch] and is_nil(state.active_turn) and
+             is_storage_busy(state),
       do: {:reply, {:error, :storage_busy}, state}
 
   def handle_call({:deliver, %Envelope{} = envelope}, _from_call, state) do
-    case Envelope.new(envelope.kind, envelope.from, envelope.message, envelope.origin) do
-      {:ok, _validated} -> enqueue_envelope(state, envelope)
-      {:error, reason} -> {:reply, {:error, reason}, state}
+    case Inbox.push(state.inbox, envelope) do
+      {:ok, inbox} ->
+        state = %{state | inbox: inbox}
+
+        state =
+          if envelope.kind == :launch or state.active_turn != nil,
+            do: state,
+            else: schedule_inbox_wake(state)
+
+        {:reply, :ok, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
   def handle_call(:take_incoming_messages, _from, state) do
-    envelopes = deliverable_inbox(state)
-    state = state |> drop_deliverable_inbox() |> record_user_inputs(envelopes)
-    broadcast_inbox_drained(state, envelopes)
-    {:reply, {:ok, Enum.map(envelopes, &envelope_content/1)}, state}
+    {entries, inbox} = Inbox.take_deliverable(state.inbox)
+    state = record_user_inputs(%{state | inbox: inbox}, entries)
+    broadcast_inbox_drained(state, entries)
+    {:reply, {:ok, Enum.map(entries, &Inbox.content/1)}, state}
   end
 
   def handle_call(:continue, from, state) do
@@ -553,7 +533,7 @@ defmodule Tackle.Session do
   end
 
   def handle_call(:inbox, _from, state) do
-    {:reply, :queue.to_list(state.inbox), state}
+    {:reply, Inbox.entries(state.inbox), state}
   end
 
   def handle_call(:subscribe, _from, %{active_turn: active_turn} = state)
@@ -767,13 +747,14 @@ defmodule Tackle.Session do
     do: finish_storage_operation(pending.from, pending.complete.(state, result))
 
   defp finish_begin_turn(state, pending, :ok) do
-    state =
-      state
-      |> drop_reserved_inbox(pending.inbox_messages)
-      # The session journaled these itself, so no hook reports them appended.
-      |> maybe_generate_title(first_user_input(pending.inbox_messages))
+    {entries, inbox} = Inbox.commit_reserved(state.inbox)
 
-    broadcast_inbox_drained(state, pending.inbox_messages)
+    state =
+      %{state | inbox: inbox}
+      # The session journaled these itself, so no hook reports them appended.
+      |> maybe_generate_title(first_user_input(entries))
+
+    broadcast_inbox_drained(state, entries)
 
     if pending.reason do
       broadcast(
@@ -803,8 +784,8 @@ defmodule Tackle.Session do
   # The inbox messages journaled before the failure are part of the
   # conversation now; the rest stay queued.
   defp finish_begin_turn(state, pending, {:inbox_failed, reason, journaled}) do
-    journaled = Enum.take(pending.inbox_messages, journaled)
-    state = drop_reserved_inbox(state, journaled)
+    {journaled, inbox} = Inbox.commit_reserved(state.inbox, journaled)
+    state = %{state | inbox: inbox}
     broadcast_inbox_drained(state, journaled)
     abort_begun_turn(state, pending, {:persistence_failed, reason})
   end
@@ -836,7 +817,7 @@ defmodule Tackle.Session do
     delete_turn_signals(%{state.active_turn | signal: pending.signal})
     release_turn(state)
     if pending.from, do: GenServer.reply(pending.from, {:error, reason})
-    state = %{state | active_turn: nil}
+    state = %{state | active_turn: nil, inbox: Inbox.release(state.inbox)}
 
     # An ephemeral session's continuation has no caller: its request helper
     # still waits for the one terminal outcome.
@@ -971,7 +952,7 @@ defmodule Tackle.Session do
   defp do_start_turn(operation, input, %{journal: nil} = state, _from) do
     signal = Cancellation.new_signal()
     turn_id = state.config.id_generator.()
-    {agent_state, inbox_messages, _projected_messages} = project_inbox(state)
+    {agent_state, _projected_messages, inbox} = project_inbox(state)
     run_opts = turn_opts(state, self(), turn_id, signal)
 
     case start_turn_task(state.work_supervisor, fn ->
@@ -979,7 +960,8 @@ defmodule Tackle.Session do
          end) do
       {:ok, task} ->
         # The queued messages are the turn's only once its task runs.
-        state = clear_inbox(state)
+        {inbox_messages, inbox} = Inbox.commit_reserved(inbox)
+        state = %{state | inbox: inbox}
         broadcast_inbox_drained(state, inbox_messages)
 
         active_turn = %{
@@ -1005,7 +987,7 @@ defmodule Tackle.Session do
     signal = Cancellation.new_signal()
     turn_id = state.config.id_generator.()
     session_pid = self()
-    {agent_state, inbox_messages, projected_messages} = project_inbox(state)
+    {agent_state, projected_messages, inbox} = project_inbox(state)
     run_opts = turn_opts(state, session_pid, turn_id, signal)
 
     case start_turn_task(state.work_supervisor, fn ->
@@ -1028,15 +1010,14 @@ defmodule Tackle.Session do
           operation: operation,
           input: input,
           agent_state: agent_state,
-          inbox_messages: inbox_messages,
           run_opts: run_opts,
           signal: signal,
           turn_id: turn_id,
           task: task,
-          reason: if(is_nil(from), do: inbox_turn_reason(state))
+          reason: if(is_nil(from), do: Inbox.turn_reason(state.inbox))
         }
 
-        {:noreply, %{state | active_turn: active_turn, storage_task: pending}}
+        {:noreply, %{state | active_turn: active_turn, storage_task: pending, inbox: inbox}}
 
       {:error, reason} ->
         Cancellation.delete(signal)
@@ -1183,7 +1164,7 @@ defmodule Tackle.Session do
   # with it; the outcome of the last turn is delivered. An error or
   # cancellation ends the session at once, dropping input still queued.
   defp settle(%{lifetime: :ephemeral} = state, {:ok, %AgentState{}} = result) do
-    if deliverable_inbox_pending?(state),
+    if Inbox.pending?(state.inbox),
       do: continue_ephemeral(state),
       else: finish_ephemeral(state, result)
   end
@@ -1202,7 +1183,7 @@ defmodule Tackle.Session do
 
   # A durable start replies later; its begin broadcasts the turn's start.
   defp continue_ephemeral(state) do
-    reason = inbox_turn_reason(state)
+    reason = Inbox.turn_reason(state.inbox)
 
     case start_turn(:continue, nil, state) do
       {:reply, {:ok, turn_id}, state} ->
@@ -1240,7 +1221,7 @@ defmodule Tackle.Session do
            inbox_wake_scheduled?: false
          } = state
        ) do
-    if deliverable_inbox_pending?(state) do
+    if Inbox.pending?(state.inbox) do
       send(self(), :tackle_inbox_wake)
       %{state | inbox_wake_scheduled?: true}
     else
@@ -1253,8 +1234,8 @@ defmodule Tackle.Session do
   defp start_inbox_turn(state) when is_storage_busy(state), do: {:skip, state}
 
   defp start_inbox_turn(%{lifetime: :explicit, recovery: nil, active_turn: nil} = state) do
-    if deliverable_inbox_pending?(state) do
-      reason = inbox_turn_reason(state)
+    if Inbox.pending?(state.inbox) do
+      reason = Inbox.turn_reason(state.inbox)
 
       case start_turn(:continue, nil, state) do
         {:reply, {:ok, turn_id}, state} -> {:ok, turn_id, reason, state}
@@ -1268,32 +1249,10 @@ defmodule Tackle.Session do
 
   defp start_inbox_turn(state), do: {:skip, state}
 
-  defp deliverable_inbox_pending?(state) do
-    state.inbox
-    |> :queue.to_list()
-    |> Enum.any?(&deliverable_envelope?/1)
-  end
-
-  defp inbox_turn_reason(state) do
-    deliverable = Enum.filter(:queue.to_list(state.inbox), &deliverable_envelope?/1)
-
-    if Enum.all?(deliverable, &match?(%Envelope{kind: :completion}, &1)) do
-      :background_notice
-    else
-      :queued_messages
-    end
-  end
-
   defp project_inbox(state) do
-    envelopes = :queue.to_list(state.inbox)
-
-    {projected_messages, agent_state} =
-      Enum.map_reduce(envelopes, state.agent_state, fn envelope, agent_state ->
-        message = Message.user(envelope_content(envelope), id_generator: agent_state.id_generator)
-        {message, AgentState.add_message(agent_state, message)}
-      end)
-
-    {agent_state, envelopes, projected_messages}
+    {entries, inbox} = Inbox.reserve(state.inbox)
+    {agent_state, messages} = Inbox.project(entries, state.agent_state)
+    {agent_state, messages, inbox}
   end
 
   # Runs after `turn.started`, so a failure reports how many messages were
@@ -1313,110 +1272,6 @@ defmodule Tackle.Session do
         {:error, reason} -> {:halt, {:inbox_failed, reason, index}}
       end
     end)
-  end
-
-  defp drop_reserved_inbox(state, reserved) do
-    retained = :queue.to_list(state.inbox) -- reserved
-    %{state | inbox: :queue.from_list(retained)}
-  end
-
-  defp clear_inbox(state), do: %{state | inbox: :queue.new()}
-
-  defp queue_user_message(state, message) do
-    entry = %{from: :user, message: message}
-
-    if ordinary_inbox_count(state) >= @max_inbox_messages or inbox_bytes_full?(state, entry) do
-      {:reply, {:error, :inbox_full}, state}
-    else
-      {:reply, {:ok, :queued}, enqueue(state, entry)}
-    end
-  end
-
-  defp enqueue_envelope(state, %Envelope{kind: kind} = envelope) do
-    case inbox_capacity(state, envelope) do
-      :ok ->
-        state = enqueue(state, envelope)
-
-        state =
-          if kind == :launch or state.active_turn != nil,
-            do: state,
-            else: schedule_inbox_wake(state)
-
-        {:reply, :ok, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
-  end
-
-  defp inbox_capacity(state, %Envelope{kind: :message} = envelope) do
-    if ordinary_inbox_count(state) >= @max_inbox_messages or inbox_bytes_full?(state, envelope),
-      do: {:error, :inbox_full},
-      else: :ok
-  end
-
-  defp inbox_capacity(state, %Envelope{} = envelope) do
-    if deferred_inbox_count(state) >= @max_deferred_messages or inbox_bytes_full?(state, envelope),
-      do: {:error, :deferred_inbox_full},
-      else: :ok
-  end
-
-  defp inbox_bytes_full?(state, entry) do
-    bytes =
-      state.inbox
-      |> :queue.to_list()
-      |> Enum.reduce(:erlang.external_size(entry), fn queued, bytes ->
-        bytes + :erlang.external_size(queued)
-      end)
-
-    bytes > @max_inbox_bytes
-  end
-
-  defp ordinary_inbox_count(state) do
-    state.inbox
-    |> :queue.to_list()
-    |> Enum.count(fn
-      %Envelope{kind: :message} -> true
-      %{from: :user} -> true
-      _other -> false
-    end)
-  end
-
-  defp deferred_inbox_count(state) do
-    state.inbox
-    |> :queue.to_list()
-    |> Enum.count(fn
-      %Envelope{kind: kind} when kind in [:launch, :completion] -> true
-      _other -> false
-    end)
-  end
-
-  defp enqueue(state, envelope) do
-    %{state | inbox: :queue.in(envelope, state.inbox)}
-  end
-
-  defp deliverable_inbox(state) do
-    state.inbox
-    |> :queue.to_list()
-    |> Enum.filter(&deliverable_envelope?/1)
-  end
-
-  defp drop_deliverable_inbox(state) do
-    retained =
-      state.inbox
-      |> :queue.to_list()
-      |> Enum.reject(&deliverable_envelope?/1)
-
-    %{state | inbox: :queue.from_list(retained)}
-  end
-
-  defp deliverable_envelope?(%Envelope{kind: :launch}), do: false
-  defp deliverable_envelope?(_envelope), do: true
-
-  defp envelope_content(%{from: :user, message: content}), do: content
-
-  defp envelope_content(%Envelope{from: %AgentRef{} = from, message: content}) do
-    "Message from agent #{from.agent_id}:\n\n#{content}"
   end
 
   # A tool result the loop settles synthetically on an interrupted batch did
@@ -1457,34 +1312,13 @@ defmodule Tackle.Session do
       |> MapSet.new()
       |> MapSet.difference(interrupted)
 
-    inbox =
-      state.inbox
-      |> :queue.to_list()
-      |> Enum.reject(fn
-        %Envelope{kind: :launch, origin: %{turn_id: ^turn_id, tool_call_id: tool_call_id}} ->
-          MapSet.member?(reported_tool_calls, tool_call_id)
-
-        _envelope ->
-          false
-      end)
-
-    %{state | inbox: :queue.from_list(inbox)}
+    %{state | inbox: Inbox.discard_reported_launches(state.inbox, turn_id, reported_tool_calls)}
   end
 
-  defp broadcast_inbox_drained(state, messages) do
-    Enum.each(messages, fn
-      %Envelope{from: %AgentRef{} = from} ->
-        event =
-          Event.new(:subagent_message_received, %{
-            from_agent_ref: from,
-            agent_ref: state.agent_ref
-          })
-
-        broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
-
-      %{from: :user} ->
-        :ok
-    end)
+  defp broadcast_inbox_drained(state, entries) do
+    entries
+    |> Inbox.drained_events(state.agent_ref)
+    |> Enum.each(&broadcast(state, {:tackle_event, state.agent_state.session_id, nil, &1}))
   end
 
   defp deliver_terminal(%{terminal: nil}, _result), do: :ok
@@ -1818,8 +1652,8 @@ defmodule Tackle.Session do
 
   # Records the queued user messages handed to the loop, whose append the
   # persistence hook reports.
-  defp record_user_inputs(%{active_turn: %{user_inputs: inputs} = active_turn} = state, envelopes) do
-    queued = for %{from: :user, message: content} <- envelopes, do: content
+  defp record_user_inputs(%{active_turn: %{user_inputs: inputs} = active_turn} = state, entries) do
+    queued = Inbox.user_messages(entries)
     %{state | active_turn: %{active_turn | user_inputs: inputs ++ queued}}
   end
 
@@ -1830,12 +1664,7 @@ defmodule Tackle.Session do
 
   defp user_authored?(_active_turn, _message), do: false
 
-  defp first_user_input(entries) do
-    Enum.find_value(entries, fn
-      %{from: :user, message: content} -> content
-      _envelope -> nil
-    end)
-  end
+  defp first_user_input(entries), do: entries |> Inbox.user_messages() |> List.first()
 
   defp titles_enabled?(%Config{session_titles: %SessionTitles{}}), do: true
   defp titles_enabled?(_config), do: false
