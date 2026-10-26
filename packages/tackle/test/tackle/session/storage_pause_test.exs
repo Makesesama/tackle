@@ -7,7 +7,7 @@ defmodule Tackle.Session.StoragePauseTest do
   alias Tackle.Runtime
   alias Tackle.Runtime.{Envelope, Messaging}
   alias Tackle.Session
-  alias Tackle.Session.{Journal, JournalRegistry, Reader, Spec}
+  alias Tackle.Session.{Journal, JournalRegistry, Spec}
   alias Tackle.Test.Adapter
 
   defmodule ManualRetryAdapter do

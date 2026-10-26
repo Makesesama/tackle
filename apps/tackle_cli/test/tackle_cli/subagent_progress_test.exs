@@ -510,7 +510,7 @@ defmodule Tackle.CLI.SubagentProgressTest do
   test "foreign events are ignored and a completion without a start has no invented duration" do
     state = shell()
     foreign = {:tackle_event, "other", "turn", Event.new(:tool_start, %{name: "subagent"})}
-    assert {:noreply, ignored, render?: false} = RuntimeEvents.handle(foreign, state)
+    assert {:noreply, _ignored, render?: false} = RuntimeEvents.handle(foreign, state)
 
     state =
       event(state, :tool_error, %{tool_call_id: "missing", name: "subagent", error: "rejected"})

@@ -332,7 +332,7 @@ defmodule Tackle.CLI.ResumeTest do
     height = ResumeScreen.list_height({80, 22})
     assert rem(height, 3) == 0
 
-    {top, visible} =
+    {top, _visible} =
       Enum.reduce(0..11, {0, []}, fn selected, {top, _} ->
         win = ResumeScreen.window(rows, top, selected, height)
 

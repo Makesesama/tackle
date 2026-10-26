@@ -6,7 +6,6 @@ defmodule Tackle.Session.TreeTest do
   alias Tackle.Lib.Tree
   alias Tackle.Runtime.ID
   alias Tackle.Session.Journal
-  alias Tackle.Session.Reader
 
   setup do
     home = tmp_home()
