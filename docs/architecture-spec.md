@@ -60,9 +60,9 @@ Proposed component identities:
 
 ### Reusable library: `packages/tackle_lib`
 
-Owns the existing agent loop, state, messages, usage, snapshots, events, cancellation primitives, tool settlement, and extension behaviours.
+Owns the existing agent loop, state, messages, usage, events, cancellation primitives, tool settlement, and extension behaviours.
 
-Its public facade becomes `Tackle.Lib`; examples of migrated contracts are `Tackle.Lib.LLM`, `Tackle.Lib.Tool`, `Tackle.Lib.Hook`, and `Tackle.Lib.PromptRenderer`.
+Its public facade becomes `Tackle.Lib`; examples of migrated contracts are `Tackle.Lib.LLM`, `Tackle.Lib.Tool`, `Tackle.Lib.Hook`, and `Tackle.Lib.Committer`.
 
 It must not depend on the harness, a frontend, a concrete provider, or developer-specific tools. A different application can use this package to build its own harness without depending on `:tackle`.
 
@@ -168,8 +168,8 @@ Proposed minimal approach:
 1. Read explicitly supported configuration sources.
 2. Merge them with documented, deterministic precedence.
 3. Validate configuration and configured modules before starting provider work.
-4. Resolve provider, tools, hooks, and prompt renderer through existing contracts.
-5. Freeze resolved execution settings for a turn using the library's snapshot model.
+4. Resolve provider, tools, and hooks through existing contracts.
+5. Keep resolved execution settings fixed for a turn: the library runs each turn with the configuration its state started with.
 
 Prefer explicit module/package configuration initially. Do not add filesystem-wide discovery, automatic package installation, arbitrary runtime compilation, hot reload, or a generic plugin manifest framework without a concrete requirement and separate decision.
 

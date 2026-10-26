@@ -2,8 +2,13 @@ defmodule Tackle.Lib.Loop.Run do
   @moduledoc false
 
   # The inputs of one `Tackle.Lib.Loop` turn: the host's run options, validated
-  # once, and the turn's frozen `Tackle.Lib.Snapshot`. The loop threads this
-  # struct through every step instead of looking options up again.
+  # once. The loop threads this struct through every step instead of looking
+  # options up again.
+  #
+  # The turn's configuration (selection, adapter options, system prompt, tool
+  # registry, hooks, retry policy) is read from the state the loop threads
+  # through the turn. The loop never writes those fields, and hooks can only
+  # change the context, so a turn runs with the configuration it started with.
   #
   # It also carries the loop's own bookkeeping, which hosts never see and
   # which therefore stays off `Tackle.Lib.State`:
@@ -17,7 +22,7 @@ defmodule Tackle.Lib.Loop.Run do
   #     again (overflow recovery still runs).
   #
   # The functions below are the operations every step performs through those
-  # inputs: emitting events to the run's callback, invoking the snapshot's
+  # inputs: emitting events to the run's callback, invoking the state's
   # hooks with the run's cancellation signal, finalizing a message, and
   # observing cancellation. `Tackle.Lib.Loop`, `Tackle.Lib.Loop.Provider`, and
   # `Tackle.Lib.Loop.Tools` share them.
@@ -29,7 +34,6 @@ defmodule Tackle.Lib.Loop.Run do
   alias Tackle.Lib.Hook
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
-  alias Tackle.Lib.Snapshot
   alias Tackle.Lib.State
   alias Tackle.Lib.Tool.Policy
 
@@ -44,13 +48,12 @@ defmodule Tackle.Lib.Loop.Run do
           take_incoming_messages: (-> {:ok, [String.t()]} | {:error, term()}) | nil,
           before_provider_call: gate(),
           before_tool_execution: gate(),
-          snapshot: Snapshot.t(),
           assistant_id: String.t() | nil,
           overflow_retries: non_neg_integer(),
           pressure_compaction_failed?: boolean()
         }
 
-  @enforce_keys [:event_callback, :tool_context, :snapshot]
+  @enforce_keys [:event_callback, :tool_context]
   defstruct [
     :event_callback,
     :tool_context,
@@ -59,7 +62,6 @@ defmodule Tackle.Lib.Loop.Run do
     :take_incoming_messages,
     :before_provider_call,
     :before_tool_execution,
-    :snapshot,
     :assistant_id,
     llm_stream?: false,
     overflow_retries: 0,
@@ -67,11 +69,13 @@ defmodule Tackle.Lib.Loop.Run do
   ]
 
   @doc """
-  Validates the host's options and captures the turn's snapshot of `state`.
+  Validates the host's options and the parts of `state` the turn depends on.
 
   Raises `ArgumentError` for an option the loop does not know, for a state
-  without a `Tackle.Lib.LLM.Selection` in `:llm`, or for a concurrent tool
-  policy without a `:tool_supervisor`, before anything else happens. `:turn_id` is stored on the snapshot.
+  without a `Tackle.Lib.LLM.Selection` in `:llm`, for hooks that
+  `Tackle.Lib.Hook.validate!/1` rejects (a host can replace them on a built
+  state), or for a concurrent tool policy without a `:tool_supervisor`,
+  before anything else happens.
   """
   @spec new!(keyword(), State.t()) :: t()
   def new!(opts, %State{} = state) when is_list(opts) do
@@ -81,7 +85,6 @@ defmodule Tackle.Lib.Loop.Run do
         tool_context: %{},
         llm_stream: false,
         cancellation_signal: nil,
-        turn_id: nil,
         tool_supervisor: nil,
         take_incoming_messages: nil,
         before_provider_call: nil,
@@ -89,6 +92,7 @@ defmodule Tackle.Lib.Loop.Run do
       )
 
     validate_llm!(state.llm)
+    Hook.validate!(state.hooks)
     tool_supervisor = Keyword.fetch!(opts, :tool_supervisor)
     validate_tool_supervisor!(state.tool_policy, tool_supervisor)
 
@@ -100,8 +104,7 @@ defmodule Tackle.Lib.Loop.Run do
       tool_supervisor: tool_supervisor,
       take_incoming_messages: Keyword.fetch!(opts, :take_incoming_messages),
       before_provider_call: Keyword.fetch!(opts, :before_provider_call),
-      before_tool_execution: Keyword.fetch!(opts, :before_tool_execution),
-      snapshot: Snapshot.capture(state, turn_id: Keyword.fetch!(opts, :turn_id))
+      before_tool_execution: Keyword.fetch!(opts, :before_tool_execution)
     }
   end
 
@@ -165,12 +168,11 @@ defmodule Tackle.Lib.Loop.Run do
 
   @doc """
   The options `Tackle.Lib.Compaction.compact/3` needs to compact within the
-  run: its snapshot, event callback, provider gate, and cancellation signal.
+  run: its event callback, provider gate, and cancellation signal.
   """
   @spec compaction_opts(t()) :: keyword()
   def compaction_opts(%__MODULE__{} = run) do
     opts = [
-      snapshot: run.snapshot,
       event_callback: run.event_callback,
       before_provider_call: run.before_provider_call
     ]
@@ -182,12 +184,12 @@ defmodule Tackle.Lib.Loop.Run do
   end
 
   @doc """
-  Invokes the snapshot's `hook` callbacks with `args` and keeps the context
+  Invokes the state's `hook` callbacks with `args` and keeps the context
   they return on `state`.
   """
   @spec invoke_hook(State.t(), t(), Hook.event(), [term()]) :: {:ok, State.t()} | {:error, term()}
   def invoke_hook(%State{} = state, %__MODULE__{} = run, hook, args) do
-    case Hook.invoke(run.snapshot.hooks, hook, args, hook_context(state, run)) do
+    case Hook.invoke(state.hooks, hook, args, hook_context(state, run)) do
       {:ok, context} -> {:ok, put_hook_context(state, context)}
       {:error, reason} -> {:error, reason}
     end

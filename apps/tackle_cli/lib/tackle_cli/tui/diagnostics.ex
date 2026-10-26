@@ -42,7 +42,6 @@ defmodule Tackle.CLI.TUI.Diagnostics do
       committer: agent.committer,
       tool_policy: agent.tool_policy,
       hooks: agent.hooks,
-      prompt_renderer: agent.prompt_renderer,
       transcript_messages: length(agent.messages),
       model_context_messages: length(AgentState.model_messages(agent)),
       last_compaction_id: AgentState.last_compaction_id(agent),

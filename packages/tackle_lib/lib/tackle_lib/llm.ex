@@ -28,7 +28,7 @@ defmodule Tackle.Lib.LLM do
   id. Hosts that configure several instances of one adapter pass
   `%Tackle.Lib.LLM.Provider{}` structs instead.
 
-  The selection is stored on agent state and frozen in the per-turn snapshot.
+  The selection is stored on agent state, which a turn runs with unchanged.
   Its adapter-local model id is passed as `opts[:model]`, and the provider as
   `opts[:provider_id]` and `opts[:provider_settings]`, so separate states can
   use different providers without application-global configuration.
@@ -392,7 +392,7 @@ defmodule Tackle.Lib.LLM do
   The selection passes its adapter-local model, provider id, and provider
   settings as `opts[:model]`, `opts[:provider_id]`, and
   `opts[:provider_settings]`, replacing any given. The agent loop calls it
-  with the selection frozen in the turn's snapshot.
+  with the state's selection and no schema.
 
   Adapters that export only `stream/3` are streamed with a callback that
   drops their events. The result is described in the module docs: a

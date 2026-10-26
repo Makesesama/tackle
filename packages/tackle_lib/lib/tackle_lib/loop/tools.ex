@@ -198,7 +198,7 @@ defmodule Tackle.Lib.Loop.Tools do
 
   # Cancellation is checked again after the gate, which may have blocked.
   defp pass_gate(calls, state, run) do
-    if Enum.any?(calls, &external_effect?(&1, run)) do
+    if Enum.any?(calls, &external_effect?(&1, state.tool_registry)) do
       case Gate.before_tool_execution(run.before_tool_execution) do
         :ok ->
           checkpoint(state, run)
@@ -215,10 +215,10 @@ defmodule Tackle.Lib.Loop.Tools do
   # A call whose tool cannot be resolved, or whose provider arguments were not
   # a JSON object, never runs, so it has no effect to guard. Anything the loop
   # cannot classify is treated as external.
-  defp external_effect?(%Call{argument_error: error}, _run) when error != nil, do: false
+  defp external_effect?(%Call{argument_error: error}, _registry) when error != nil, do: false
 
-  defp external_effect?(%Call{} = call, run) do
-    case Registry.resolve(run.snapshot.tool_registry, call) do
+  defp external_effect?(%Call{} = call, registry) do
+    case Registry.resolve(registry, call) do
       {:ok, %{module: module}} -> Tool.effect(module) == :external
       {:error, _reason} -> false
     end
@@ -237,7 +237,7 @@ defmodule Tackle.Lib.Loop.Tools do
 
     execution =
       try do
-        case Registry.resolve(run.snapshot.tool_registry, call) do
+        case Registry.resolve(state.tool_registry, call) do
           {:ok, %{module: module}} -> {:ok, module, tool_context(state, run, call, call_signal)}
           {:error, :unknown_tool} -> {:error, ToolError.unknown_tool(call)}
         end

@@ -82,8 +82,6 @@ defmodule Tackle.Config do
     :max_iterations,
     :thinking,
     :llm_opts,
-    :prompt_renderer,
-    :prompt_renderer_opts,
     :id_generator,
     :llm_stream,
     :retry,
@@ -110,8 +108,6 @@ defmodule Tackle.Config do
             max_iterations: :infinity,
             tool_policy: nil,
             llm_opts: [],
-            prompt_renderer: nil,
-            prompt_renderer_opts: [],
             id_generator: &ID.uuid4/0,
             llm_stream: false,
             retry: Retry.new!(),
@@ -135,8 +131,6 @@ defmodule Tackle.Config do
           max_iterations: pos_integer() | :infinity,
           tool_policy: Policy.t(),
           llm_opts: keyword(),
-          prompt_renderer: module() | nil,
-          prompt_renderer_opts: keyword(),
           id_generator: ID.generator(),
           llm_stream: boolean(),
           retry: Retry.t(),
@@ -298,12 +292,6 @@ defmodule Tackle.Config do
          :ok <- validate_iteration_limit(Keyword.get(opts, :max_iterations, :infinity)),
          :ok <- validate_keyword_option(:llm_opts, Keyword.get(opts, :llm_opts, [])),
          :ok <- validate_reserved_llm_options(Keyword.get(opts, :llm_opts, [])),
-         :ok <-
-           validate_keyword_option(
-             :prompt_renderer_opts,
-             Keyword.get(opts, :prompt_renderer_opts, [])
-           ),
-         :ok <- validate_prompt_renderer(Keyword.get(opts, :prompt_renderer)),
          :ok <- validate_id_generator(Keyword.get(opts, :id_generator, &ID.uuid4/0)),
          :ok <- validate_boolean(:llm_stream, Keyword.get(opts, :llm_stream, false)),
          {:ok, retry} <- Retry.new(Keyword.get(opts, :retry)),
@@ -325,8 +313,6 @@ defmodule Tackle.Config do
          max_iterations: Keyword.get(opts, :max_iterations, :infinity),
          tool_policy: Policy.concurrent(),
          llm_opts: Keyword.get(opts, :llm_opts, []),
-         prompt_renderer: Keyword.get(opts, :prompt_renderer),
-         prompt_renderer_opts: Keyword.get(opts, :prompt_renderer_opts, []),
          id_generator: Keyword.get(opts, :id_generator, &ID.uuid4/0),
          llm_stream: Keyword.get(opts, :llm_stream, false),
          retry: retry,
@@ -376,8 +362,6 @@ defmodule Tackle.Config do
       max_iterations: config.max_iterations,
       tool_policy: config.tool_policy,
       llm_opts: llm_opts,
-      prompt_renderer: config.prompt_renderer,
-      prompt_renderer_opts: config.prompt_renderer_opts,
       id_generator: config.id_generator,
       session_id: Keyword.get(harness_opts, :session_id),
       retry: config.retry,
@@ -817,19 +801,6 @@ defmodule Tackle.Config do
   end
 
   defp validate_modules(name, modules), do: {:error, {:invalid_option, name, modules}}
-
-  defp validate_prompt_renderer(nil), do: :ok
-
-  defp validate_prompt_renderer(renderer) do
-    required = [render_tools: 2, render_response_format: 1, response_schema: 1]
-
-    if valid_module?(renderer) and
-         Enum.all?(required, fn {name, arity} -> function_exported?(renderer, name, arity) end) do
-      :ok
-    else
-      {:error, {:invalid_prompt_renderer, renderer}}
-    end
-  end
 
   # Compaction is enabled by default in the root harness; the trigger policy is
   # inert for models whose declared window cannot hold the reserves (see

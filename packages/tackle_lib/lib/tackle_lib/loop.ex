@@ -17,10 +17,15 @@ defmodule Tackle.Lib.Loop do
 
   ## Host-supplied system prompt
 
-  The loop uses `state.system_prompt` as-is. The host composes it (typically
-  with `Tackle.Lib.SystemPrompt` helpers for the tool block and response guidance).
-  Tool execution always uses provider-native tool calls. If a prompt renderer
-  returns a response schema, it is used only for structured non-tool responses.
+  The loop uses `state.system_prompt` as-is. The host composes it, for example
+  with `Tackle.Lib.SystemPrompt`. Tools reach the model as provider-native tool
+  definitions, and turns request no structured response schema.
+
+  ## Configuration for the turn
+
+  A turn runs with the configuration of the state it started with: its
+  selection, adapter options, system prompt, tool registry, hooks, and retry
+  policy. The loop never changes them, and hooks can only change the context.
 
   ## Provider call gate
 
@@ -108,8 +113,6 @@ defmodule Tackle.Lib.Loop do
       Usage is still reported once per response, by the loop's own `:usage` event.
     * `:cancellation_signal` - Optional `Tackle.Lib.Cancellation.Signal` checked between loop steps.
       Tools receive the per-call child signal (`Tackle.Lib.Cancellation.for_call/2`).
-    * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot. When omitted,
-      the state's configured id generator is used.
     * `:tool_supervisor` - `Task.Supervisor` used when the state's tool policy is
       `:concurrent`; without one, a concurrent policy raises `ArgumentError` before
       the turn starts. Ignored (and not required) for the default sequential policy.
@@ -152,8 +155,7 @@ defmodule Tackle.Lib.Loop do
   message. Used to retry a turn that errored: the user message is already in
   state, so we resume the loop directly. Like `run/3`, it starts a new turn:
   the iteration counter, status, and error are reset, so the retry gets a full
-  `max_iterations` budget, and a fresh snapshot of the state's configuration
-  is captured.
+  `max_iterations` budget, and it runs with the state's current configuration.
 
   Accepts the same options as `run/3`; unknown options raise `ArgumentError`.
   """
@@ -356,7 +358,7 @@ defmodule Tackle.Lib.Loop do
   # messages (for example from a compile gate) instead of completing it.
   defp before_turn_end(state, run) do
     case Hook.invoke_before_turn_end(
-           run.snapshot.hooks,
+           state.hooks,
            state,
            Run.hook_context(state, run)
          ) do
@@ -465,7 +467,7 @@ defmodule Tackle.Lib.Loop do
     emit_turn_end(outcome, state, run)
 
     state =
-      case Hook.invoke(run.snapshot.hooks, :after_turn, [state], state.context) do
+      case Hook.invoke(state.hooks, :after_turn, [state], state.context) do
         {:ok, context} -> %{state | context: context}
         _ -> state
       end

@@ -43,11 +43,14 @@ Tackle.Lib.last_answer(state)
 
 - `Tackle.Lib.new/1` builds `%Tackle.Lib.State{}`. Key opts: `:llm`, `:tools`,
   `:system_prompt`, `:context`, `:max_iterations` (default `:infinity`), `:hooks`,
-  `:tool_policy`, `:llm_opts`, `:prompt_renderer`, `:id_generator`.
+  `:tool_policy`, `:llm_opts`, `:id_generator`.
 - `Tackle.Lib.run(state, user_input, opts)` runs one turn (think → act → repeat →
   answer). Returns `{:ok, state} | {:error, state} | {:cancelled, state}`.
 - `Tackle.Lib.continue(state, opts)` re-runs the loop **without** appending a new
   user message — use it to retry a turn that errored.
+- Both take the run options documented on `Tackle.Lib.Loop.run/3`; an unknown
+  option raises `ArgumentError`. A turn runs with the state's configuration as
+  it started; the loop reads no application environment.
 - Read results with `Tackle.Lib.last_answer/1`, `Tackle.Lib.messages/1`,
   `Tackle.Lib.usage/1`, `Tackle.Lib.completed?/1`, `Tackle.Lib.error?/1`, `Tackle.Lib.error/1`.
 - Every state keeps its conversation in a `Tackle.Lib.Tree` (`state.tree`);
@@ -213,10 +216,10 @@ callback, such as a misspelled module.
 
 - The host composes `state.system_prompt` — Tackle.Lib uses it as-is.
 - `Tackle.Lib.SystemPrompt` provides composable builders (`new/0`, `add_section/3`,
-  `add_raw/2`) plus tool-doc assembly. Tool execution uses provider-native tool
-  calls, not prompt-level JSON envelopes.
-- A `Tackle.Lib.PromptRenderer` module (host-owned) aligns tool descriptions and any
-  structured-response schema per surface.
+  `add_raw/2`, `to_string/1`). Tools reach the model as provider-native tool
+  definitions, not prompt-level JSON envelopes, and a loop turn requests no
+  structured response; call `Tackle.Lib.LLM.generate_with/3` with a schema for
+  structured output.
 
 ## Integrations
 

@@ -21,7 +21,7 @@ defmodule Tackle.Lib.Hook do
   ## Configuring hooks
 
   A state's `:hooks` is a list of modules, each implementing at least one
-  callback. `Tackle.Lib.State.new/1` and the snapshot a turn captures check
+  callback. `Tackle.Lib.State.new/1` and every turn when it starts check
   them with `validate!/1` and raise `ArgumentError` for any other entry, such
   as a misspelled module, so a hook is never skipped silently.
 

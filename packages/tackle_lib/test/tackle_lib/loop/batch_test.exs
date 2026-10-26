@@ -256,7 +256,6 @@ defmodule Tackle.Lib.Loop.BatchTest do
     %Run{
       event_callback: &send(parent, {:event, &1}),
       tool_context: %{},
-      snapshot: nil,
       tool_supervisor: supervisor,
       cancellation_signal: signal
     }

@@ -1,18 +1,13 @@
 defmodule Tackle.Lib.SystemPrompt do
   @moduledoc """
-  System-prompt structural machinery for ReAct-style agents.
+  A small builder for composing a system prompt from markdown sections.
 
-  Tackle.Lib provides small prompt-building helpers. Prompt-facing tool rendering and
-  response guidance are delegated to a `Tackle.Lib.PromptRenderer` module so hosts
-  can keep tool descriptions and optional structured-response schemas aligned for
-  each surface. Tool execution uses provider-native tool calls, not prompt-level
-  JSON envelopes.
+  The loop sends `state.system_prompt` as it is; hosts may build that string
+  with these helpers. Tools reach the model through the provider-native tool
+  definitions, so the prompt does not need to describe them.
   """
 
-  alias Tackle.Lib.PromptRenderer
-
   @type section :: {String.t() | nil, String.t()}
-  @type renderer_opts :: keyword()
   @type t :: %__MODULE__{sections: [section()]}
 
   defstruct sections: []
@@ -39,28 +34,6 @@ defmodule Tackle.Lib.SystemPrompt do
     add(prompt, {nil, String.trim(body)})
   end
 
-  @doc """
-  Appends the prompt-rendered tools section for the given tool modules.
-
-  Options:
-
-    * `:title` - section title, defaults to `"Available Tools"`
-    * `:prompt_renderer` - `Tackle.Lib.PromptRenderer` implementation
-    * `:prompt_renderer_opts` - options passed to the prompt renderer
-  """
-  @spec add_tools(t(), [module()], renderer_opts()) :: t()
-  def add_tools(%__MODULE__{} = prompt, tools, opts \\ []) when is_list(opts) do
-    title = Keyword.get(opts, :title, "Available Tools")
-
-    add_section(prompt, title, tool_descriptions(tools, opts))
-  end
-
-  @doc "Appends the prompt-rendered response-format section."
-  @spec add_response_format(t(), renderer_opts()) :: t()
-  def add_response_format(%__MODULE__{} = prompt, opts \\ []) do
-    add_raw(prompt, response_format_section(opts))
-  end
-
   @doc "Renders the builder to a markdown prompt string."
   @spec to_string(t()) :: String.t()
   def to_string(%__MODULE__{sections: sections}) do
@@ -72,50 +45,7 @@ defmodule Tackle.Lib.SystemPrompt do
     |> Kernel.<>("\n")
   end
 
-  @doc "Computes a stable version ID for a system prompt string."
-  @spec version_id(String.t() | nil) :: String.t() | nil
-  def version_id(nil), do: nil
-
-  def version_id(prompt) when is_binary(prompt) do
-    prompt
-    |> :erlang.term_to_binary()
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
-    |> binary_part(0, 16)
-  end
-
-  @doc "Builds the prompt-rendered tool-descriptions block."
-  @spec tool_descriptions([module()], renderer_opts()) :: String.t()
-  def tool_descriptions(tools, opts \\ []) when is_list(opts) do
-    {renderer, renderer_opts} = PromptRenderer.resolve(opts)
-
-    renderer.render_tools(tools, renderer_opts)
-  end
-
-  @doc "Returns the prompt-rendered response-format section."
-  @spec response_format_section(renderer_opts()) :: String.t()
-  def response_format_section(opts \\ []) do
-    {renderer, renderer_opts} = PromptRenderer.resolve(normalize_renderer_opts(opts))
-
-    renderer.render_response_format(renderer_opts)
-  end
-
-  @doc "Returns the optional structured-response schema for the configured prompt renderer."
-  @spec response_schema(renderer_opts()) :: keyword() | map() | nil
-  def response_schema(opts \\ []) do
-    {renderer, renderer_opts} = PromptRenderer.resolve(normalize_renderer_opts(opts))
-
-    renderer.response_schema(renderer_opts)
-  end
-
   defp add(%__MODULE__{sections: sections} = prompt, section) do
     %{prompt | sections: List.insert_at(sections, -1, section)}
-  end
-
-  defp normalize_renderer_opts(nil), do: []
-  defp normalize_renderer_opts(opts) when is_list(opts), do: opts
-
-  defp normalize_renderer_opts(renderer) when is_atom(renderer) do
-    [prompt_renderer: renderer]
   end
 end

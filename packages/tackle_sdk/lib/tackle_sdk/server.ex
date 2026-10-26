@@ -335,7 +335,6 @@ defmodule Tackle.SDK.Server do
           Task.Supervisor.start_child(state.task_sup, fn ->
             result =
               Loop.run(session, params["input"] || "",
-                turn_id: turn_id,
                 cancellation_signal: signal,
                 event_callback: fn event -> send(server, {:sdk_event, turn_id, event}) end
               )

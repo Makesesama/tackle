@@ -1278,16 +1278,103 @@ defmodule Tackle.Lib.LoopTest do
       assert state.context.hook_marker == "mutated_before_prompt"
     end
 
-    test "snapshot is captured and used for tool registry resolution" do
-      state =
-        State.new(
-          llm: TestLLM.selection(TestAdapter),
-          tools: [FirstTool],
-          context: %{}
+    # Records what every request of a turn was sent with: a tool call first,
+    # then an answer.
+    defmodule RequestRecordingAdapter do
+      @behaviour Tackle.Lib.LLM
+
+      @impl true
+      def generate(schema, opts) do
+        send(
+          Process.get(:test_pid),
+          {:request, schema,
+           Map.new([:model, :system, :tools, :tag], &{&1, Keyword.get(opts, &1)})}
         )
 
-      assert {:ok, state} = Loop.run(state, "hello")
-      assert state.status == :completed
+        case Process.get(:call_count, 0) do
+          0 ->
+            Process.put(:call_count, 1)
+            calls = [%{"id" => "c1", "name" => "first", "arguments" => %{}}]
+            {:ok, %{data: %{"tool_calls" => calls}, usage: nil, model: "test/model"}}
+
+          _ ->
+            {:ok, %{data: %{"content" => "done"}, usage: nil, model: "test/model"}}
+        end
+      end
+    end
+
+    # Hooks see the state, but only the context they return is kept.
+    defmodule ConfigurationRewritingHook do
+      @behaviour Tackle.Lib.Hook
+
+      @impl true
+      def after_prompt(_state, _response, context) do
+        {:ok, Map.merge(context, %{llm: nil, system_prompt: "rewritten", tools: []})}
+      end
+    end
+
+    test "every step of a turn uses the configuration the turn started with" do
+      Process.put(:test_pid, self())
+
+      state =
+        State.new(
+          llm: TestLLM.selection(RequestRecordingAdapter, "model-a"),
+          system_prompt: "You are a test agent.",
+          tools: [FirstTool],
+          llm_opts: [tag: "turn"],
+          hooks: [ConfigurationRewritingHook],
+          context: %{test_pid: self()}
+        )
+
+      assert {:ok, final} = Loop.run(state, "hello")
+      assert Tackle.Lib.last_answer(final) == "done"
+
+      assert_receive {:request, nil, first}
+      assert_receive {:request, nil, second}
+
+      assert first == %{
+               model: "model-a",
+               system: "You are a test agent.",
+               tools: Tackle.Lib.Tool.Registry.definitions(state.tool_registry),
+               tag: "turn"
+             }
+
+      assert second == first
+
+      assert Map.take(final, [:llm, :system_prompt, :tool_registry, :llm_opts, :hooks]) ==
+               Map.take(state, [:llm, :system_prompt, :tool_registry, :llm_opts, :hooks])
+    end
+
+    test "hooks a host replaced on a built state are checked before the turn starts" do
+      test_pid = self()
+      callback = &send(test_pid, {:event, &1})
+
+      # Replacing the hooks on a state skips State.new/1's check.
+      state = %{
+        State.new(llm: TestLLM.selection(NoCallAdapter))
+        | hooks: [Tackle.Lib.LoopTest.MisspelledHook]
+      }
+
+      Process.put(:test_pid, test_pid)
+
+      assert_raise ArgumentError, ~r/MisspelledHook/, fn ->
+        Loop.run(state, "hello", event_callback: callback)
+      end
+
+      assert_raise ArgumentError, ~r/MisspelledHook/, fn ->
+        Loop.continue(state, event_callback: callback)
+      end
+
+      refute_received {:event, _event}
+      refute_received :llm_called
+    end
+
+    test "the removed :turn_id option is rejected like any unknown option" do
+      state = State.new(llm: TestLLM.selection(NoCallAdapter))
+
+      assert_raise ArgumentError, ~r/turn_id/, fn ->
+        Loop.run(state, "hello", turn_id: "turn-1")
+      end
     end
 
     test "successful and failed tool settlements share message, event, and hook ordering" do

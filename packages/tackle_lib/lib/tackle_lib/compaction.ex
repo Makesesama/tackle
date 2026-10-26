@@ -121,18 +121,16 @@ defmodule Tackle.Lib.Compaction do
   The policy sees the fixed part of every request (system prompt, tool
   definitions, and checkpoint framing) and the output limit the
   conversation's requests ask for (`:max_tokens` in the adapter options), see
-  `Tackle.Lib.Compaction.Policy.resolve/3`. A `:snapshot` option takes them
-  from a turn's `Tackle.Lib.Snapshot` instead of the state.
+  `Tackle.Lib.Compaction.Policy.resolve/3`.
 
   Returns `{:error, :disabled}` for a state without a compaction config, and
   `{:error, :no_context_window}` when the adapter declares no context window,
   so automatic pressure compaction is disabled rather than assuming one.
   """
-  @spec resolve(State.t(), keyword()) ::
-          {:ok, Policy.resolved(), ModelInfo.t()} | {:error, term()}
-  def resolve(%State{} = state, opts \\ []) do
+  @spec resolve(State.t()) :: {:ok, Policy.resolved(), ModelInfo.t()} | {:error, term()}
+  def resolve(%State{} = state) do
     with {:ok, config} <- config(state) do
-      resolve_policy(config, context(state, opts))
+      resolve_policy(config, context(state))
     end
   end
 
@@ -145,10 +143,7 @@ defmodule Tackle.Lib.Compaction do
 
   ## Options
 
-    * `:snapshot` - the turn's `Tackle.Lib.Snapshot`, whose model, system
-      prompt, tools, and adapter options the summary uses instead of the
-      state's.
-    * `:llm_opts` - adapter options merged over the snapshot's (or state's).
+    * `:llm_opts` - adapter options merged over the state's.
     * `:instructions` - operator focus added to the configured instructions.
     * `:event_callback` - receives the lifecycle events.
     * `:cancellation_signal` - checked before the summary and the commit.
@@ -163,7 +158,7 @@ defmodule Tackle.Lib.Compaction do
     end
 
     with {:ok, config} <- config(state),
-         ctx = context(state, opts),
+         ctx = context(state),
          {:ok, resolved, info} <- resolve_policy(config, ctx) do
       job = %{
         trigger: trigger,
@@ -504,19 +499,17 @@ defmodule Tackle.Lib.Compaction do
       else: :ok
   end
 
-  # What the summary is generated with: the turn's snapshot when the loop
-  # compacts, the state's own configuration otherwise.
-  defp context(state, opts) do
-    source = Keyword.get(opts, :snapshot) || state
-    selection = source.llm
-    llm_opts = source.llm_opts || []
+  # What the summary is generated with: the state's own configuration.
+  defp context(state) do
+    selection = state.llm
+    llm_opts = state.llm_opts || []
 
     %{
       selection: selection,
       model: selection && selection.model,
       model_info: selection_model_info(selection),
-      system: source.system_prompt,
-      tools: Registry.definitions(source.tool_registry),
+      system: state.system_prompt,
+      tools: Registry.definitions(state.tool_registry),
       llm_opts: llm_opts,
       max_tokens: Keyword.get(llm_opts, :max_tokens)
     }

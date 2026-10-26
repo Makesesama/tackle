@@ -67,8 +67,6 @@ defmodule Tackle.Lib.State do
           context: map(),
           llm: Selection.t() | nil,
           system_prompt: String.t() | nil,
-          prompt_renderer: module() | nil,
-          prompt_renderer_opts: keyword(),
           llm_opts: keyword(),
           id_generator: ID.generator(),
           hooks: [module()],
@@ -93,8 +91,6 @@ defmodule Tackle.Lib.State do
             context: %{},
             llm: nil,
             system_prompt: nil,
-            prompt_renderer: nil,
-            prompt_renderer_opts: [],
             llm_opts: [],
             id_generator: &ID.uuid4/0,
             hooks: [],
@@ -120,8 +116,6 @@ defmodule Tackle.Lib.State do
     * `:tool_policy` - Tool execution policy (defaults to sequential Tackle.Lib policy)
     * `:context` - Additional context map (user info, permissions, etc.)
     * `:system_prompt` - Custom system prompt (overrides the built default)
-    * `:prompt_renderer` - Prompt renderer used for response schema resolution
-    * `:prompt_renderer_opts` - Options passed to the prompt renderer
     * `:llm_opts` - Extra options passed through to the LLM adapter
     * `:hooks` - List of Tackle.Lib.Hook modules for lifecycle callbacks (default: []);
       raises `ArgumentError` for an entry that is not a loadable module exporting
@@ -156,8 +150,6 @@ defmodule Tackle.Lib.State do
       context: Keyword.get(opts, :context, %{}),
       llm: llm,
       system_prompt: Keyword.get(opts, :system_prompt),
-      prompt_renderer: Keyword.get(opts, :prompt_renderer),
-      prompt_renderer_opts: Keyword.get(opts, :prompt_renderer_opts, []),
       llm_opts: Keyword.get(opts, :llm_opts, []),
       id_generator: id_generator,
       hooks: Hook.validate!(Keyword.get(opts, :hooks, [])),

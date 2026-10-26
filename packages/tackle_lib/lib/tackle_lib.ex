@@ -12,8 +12,6 @@ defmodule Tackle.Lib do
 
     * `Tackle.Lib.Loop` — the ReAct loop (think → act → repeat → answer).
     * `Tackle.Lib.State` — in-memory conversation/run state.
-    * `Tackle.Lib.Snapshot` — immutable per-turn configuration baseline (tools,
-      hooks, LLM config, version IDs).
     * `Tackle.Lib.Hook` — typed lifecycle hooks (before_prompt, after_prompt,
       before_tool_call, after_tool_call, after_message, before_turn_end,
       after_turn).
@@ -27,7 +25,7 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.Tool` — the tool behaviour the loop calls.
     * `Tackle.Lib.Tool.Schema` — provider-neutral tool argument validation/coercion.
     * `Tackle.Lib.CredentialStore` — provider-neutral access through host-owned handles.
-    * `Tackle.Lib.SystemPrompt` — response-format contract + tool-doc assembly.
+    * `Tackle.Lib.SystemPrompt` — a small builder for markdown system prompts.
     * `Tackle.Lib.Usage` — normalized token/cost metadata for LLM steps.
     * `Tackle.Lib.ModelInfo` — adapter-owned model limits and price cards.
     * `Tackle.Lib.ContextUsage` — context-window pressure and token estimates.
@@ -89,7 +87,6 @@ defmodule Tackle.Lib do
     * `:tool_context` - Map merged over `state.context` for tool execution only.
     * `:llm_stream` - When true, use the optional `stream/3` callback in `Tackle.Lib.LLM` if the selected adapter supports it.
     * `:cancellation_signal` - `Tackle.Lib.Cancellation.Signal` checked between loop steps.
-    * `:turn_id` - Host-assigned turn id stored on the per-turn snapshot.
     * `:tool_supervisor` - `Task.Supervisor` required by the `:concurrent` tool policy.
     * `:take_incoming_messages` - Zero-arity callback returning queued user messages.
     * `:before_provider_call` - Zero-arity gate run before every provider dispatch.
@@ -100,9 +97,8 @@ defmodule Tackle.Lib do
   @doc """
   Retries the loop against existing state without appending a new user message.
 
-  Accepts the same options as `run/3`, including a host-assigned `:turn_id`;
-  unknown options raise `ArgumentError`. Like `run/3`, it captures a fresh
-  snapshot of the state's configuration for the turn.
+  Accepts the same options as `run/3`; unknown options raise `ArgumentError`.
+  Like `run/3`, it runs with the state's current configuration.
   """
   defdelegate continue(state, opts \\ []), to: Loop
 

@@ -251,7 +251,6 @@ defmodule Tackle.Hub.AgentBackend do
           event_callback: &send(server, {:lib_event, &1}),
           cancellation_signal: signal,
           tool_supervisor: tool_supervisor,
-          turn_id: turn_id,
           llm_stream: true
         )
       end)

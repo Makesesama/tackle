@@ -184,16 +184,6 @@ defmodule Tackle.Lib.CompactionTest do
       refute Process.get(:last_request)
     end
 
-    test "a turn's snapshot supplies the adapter options of the summary" do
-      state =
-        state([user(10), assistant(10)], policy: [retain_tokens: 5], llm_opts: [tag: "state"])
-
-      snapshot = Tackle.Lib.Snapshot.capture(%{state | llm_opts: [tag: "turn"]})
-
-      assert {:ok, _compacted, _record} = Compaction.compact(state, :manual, snapshot: snapshot)
-      assert Process.get(:last_summarizer_opts)[:llm_opts] == [tag: "turn"]
-    end
-
     test "does nothing below the pressure threshold" do
       state = state([user(10), assistant(10)])
 

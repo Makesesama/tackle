@@ -1125,7 +1125,6 @@ defmodule Tackle.Session do
       cancellation_signal: signal,
       before_provider_call: provider_gate(state),
       before_tool_execution: tool_gate(state),
-      turn_id: turn_id,
       llm_stream: state.config.llm_stream,
       take_incoming_messages: fn -> GenServer.call(session_pid, :take_incoming_messages) end,
       tool_supervisor: state.tool_supervisor

@@ -17,7 +17,7 @@ defmodule Tackle.Lib.Loop.Provider do
   #   * a provider-confirmed context overflow is compacted (`:compaction_retry`)
   #     and the request is sent again, up to the compaction policy's
   #     `overflow_retry_limit` per turn (`run.overflow_retries`);
-  #   * a transient `Tackle.Lib.LLM.Error` is retried under the snapshot's
+  #   * a transient `Tackle.Lib.LLM.Error` is retried under the state's
   #     `Tackle.Lib.Retry` policy (`:retry_scheduled`, the backoff,
   #     `:retry_start`);
   #   * any other failure ends the request with the provider's reason;
@@ -48,7 +48,6 @@ defmodule Tackle.Lib.Loop.Provider do
   alias Tackle.Lib.Messages
   alias Tackle.Lib.Retry
   alias Tackle.Lib.State
-  alias Tackle.Lib.SystemPrompt
   alias Tackle.Lib.Tool.Registry
   alias Tackle.Lib.Usage
 
@@ -56,7 +55,7 @@ defmodule Tackle.Lib.Loop.Provider do
           {:ok, Response.t(), State.t(), Run.t()} | {:error, State.t()} | {:cancelled, State.t()}
 
   @doc """
-  Requests the step's response from the snapshot's provider, with retries,
+  Requests the step's response from the state's provider, with retries,
   overflow recovery, and one re-ask of an empty response.
   """
   @spec request(State.t(), Run.t()) :: result()
@@ -105,7 +104,7 @@ defmodule Tackle.Lib.Loop.Provider do
         end_retry(run, tries, false, reason)
         recover_overflow(state, reason, run, tries)
 
-      Retry.available?(run.snapshot.retry, tries.retries) and Retry.retryable?(reason) ->
+      Retry.available?(state.retry, tries.retries) and Retry.retryable?(reason) ->
         schedule_retry(state, run, reason, tries)
 
       true ->
@@ -148,7 +147,7 @@ defmodule Tackle.Lib.Loop.Provider do
   end
 
   defp schedule_retry(state, run, reason, tries) do
-    policy = run.snapshot.retry
+    policy = state.retry
     retry = tries.retries + 1
     delay_ms = Retry.delay(policy, retry, reason)
 
@@ -212,7 +211,7 @@ defmodule Tackle.Lib.Loop.Provider do
   # policy does not resolve.
   defp recoverable_overflow?(%State{} = state, reason, run) do
     LLM.context_window_exceeded?(reason) and
-      case Compaction.resolve(state, snapshot: run.snapshot) do
+      case Compaction.resolve(state) do
         {:ok, resolved, _info} -> run.overflow_retries < resolved.overflow_retry_limit
         {:error, _reason} -> false
       end
@@ -223,13 +222,13 @@ defmodule Tackle.Lib.Loop.Provider do
   defp dispatch(%State{} = state, run) do
     with :ok <- Gate.before_provider_call(run.before_provider_call),
          false <- Run.cancelled?(run) do
-      {schema, opts} = request_args(state, run)
-      selection = run.snapshot.llm
+      opts = request_opts(state, run)
 
+      # A loop turn is a chat turn: no structured response schema.
       if run.llm_stream? do
-        LLM.stream_with(selection, schema, opts, stream_callback(run))
+        LLM.stream_with(state.llm, nil, opts, stream_callback(run))
       else
-        LLM.generate_with(selection, schema, opts)
+        LLM.generate_with(state.llm, nil, opts)
       end
     else
       {:error, reason} -> {:gate_error, reason}
@@ -237,16 +236,8 @@ defmodule Tackle.Lib.Loop.Provider do
     end
   end
 
-  defp request_args(state, run) do
-    snapshot = run.snapshot
-
-    schema =
-      SystemPrompt.response_schema(
-        prompt_renderer: snapshot.prompt_renderer,
-        prompt_renderer_opts: snapshot.prompt_renderer_opts
-      )
-
-    tools = Registry.definitions(snapshot.tool_registry)
+  defp request_opts(state, run) do
+    tools = Registry.definitions(state.tool_registry)
 
     # Each persisted turn is its own role-tagged map. Assistant tool calls and
     # tool results are linked by tool_call_id, and subsequent requests extend
@@ -255,15 +246,13 @@ defmodule Tackle.Lib.Loop.Provider do
     request =
       [
         session_id: state.session_id,
-        system: snapshot.system_prompt,
+        system: state.system_prompt,
         messages: Messages.to_provider(State.model_messages(state)),
         tools: tools
       ]
       |> put_cancellation_signal(run.cancellation_signal)
 
-    opts = LLM.request_opts(request, [temperature: 0.3], snapshot.llm_opts)
-
-    {schema, opts}
+    LLM.request_opts(request, [temperature: 0.3], state.llm_opts)
   end
 
   defp put_cancellation_signal(opts, nil), do: opts

@@ -61,13 +61,12 @@ no MCP dependency.
 host application
   ├── LLM/provider adapter ─────────────── implements Tackle.Lib.LLM
   ├── concrete domain tools ───────────── implements Tackle.Lib.Tool
-  ├── prompt and prompt renderer ──────── implements Tackle.Lib.PromptRenderer (optional)
+  ├── system prompt ───────────────────── host-composed string
   ├── persistence/auth/billing/UI ─────── host-owned
   ├── credential store implementation ── host-owned, accessed by opaque handle
   │
   └── Tackle.Lib
       ├── State + Message + Usage
-      ├── per-turn Snapshot
       ├── Loop
       │   ├── structured provider messages
       │   ├── native tool calls
@@ -184,8 +183,6 @@ tools = [MyApp.Agent.Tools.SearchDocuments]
 authoring_prompt =
   Tackle.Lib.SystemPrompt.new()
   |> Tackle.Lib.SystemPrompt.add_section("Role", "You answer from verified documents.")
-  |> Tackle.Lib.SystemPrompt.add_tools(tools)
-  |> Tackle.Lib.SystemPrompt.add_response_format()
   |> Tackle.Lib.SystemPrompt.to_string()
 
 {:ok, llm} = Tackle.Lib.LLM.select([MyApp.AI.TackleAdapter], "my-adapter/model-name")
@@ -227,7 +224,6 @@ Tackle.Lib can be used to build:
 - quota and billing systems using normalized per-step `Tackle.Lib.Usage`;
 - audit and persistence extensions through lifecycle hooks;
 - provider-switchable agents through the `Tackle.Lib.LLM` behaviour;
-- prompt variants through `Tackle.Lib.PromptRenderer`;
 - tools reused by an agent and an MCP server through the `tackle_anubis` bridge;
 - parent/child or other orchestration models implemented by host tools and
   persistence; and
@@ -260,8 +256,6 @@ Tackle.Lib.continue(state, run_opts)
 | `:hooks` | Modules implementing `Tackle.Lib.Hook`; any other entry, such as a misspelled module, raises `ArgumentError` | `[]` |
 | `:tool_policy` | Tool execution policy | sequential default |
 | `:llm_opts` | Additional adapter options | `[]` |
-| `:prompt_renderer` | Prompt renderer module | configured/default renderer |
-| `:prompt_renderer_opts` | Renderer options | `[]` |
 | `:id_generator` | Zero-arity session/message/tool-call ID function | UUID generator |
 | `:retry` | `Tackle.Lib.Retry`, options, or `false` for provider-message retries | 3 retries, 2s base, 60s cap |
 | `:tree` | An existing `Tackle.Lib.Tree` to continue; anything else raises `ArgumentError` | empty tree |
@@ -294,7 +288,6 @@ Run options (both functions take the same ones; an unknown option raises
 | `:tool_context` | Map merged over `state.context` for tool execution only (default `%{}`) |
 | `:llm_stream` | Uses adapter `stream/3`, with generate fallback |
 | `:cancellation_signal` | Cooperative cancellation handle |
-| `:turn_id` | Host-assigned turn id stored on the per-turn snapshot |
 | `:tool_supervisor` | `Task.Supervisor` for the `:concurrent` tool policy |
 | `:take_incoming_messages` | Zero-arity callback returning `{:ok, [message]}` or `{:error, reason}`; queued user messages are appended before the next provider call |
 | `:before_provider_call` | Zero-arity provider dispatch gate; returns `:ok` or `{:error, reason}` |
@@ -326,7 +319,6 @@ Convenience readers are `Tackle.Lib.last_answer/1`, `Tackle.Lib.messages/1`,
 A normal tool-using turn is:
 
 ```text
-capture immutable snapshot
 emit turn_start
 append + finalize user message
 repeat until final answer (or a configured max_iterations):
@@ -815,9 +807,7 @@ failing the whole turn.
 Calls to unknown tools settle as typed `:unknown_tool` errors.
 `Tackle.Lib.Tool.Registry.new/1` raises `ArgumentError` for invalid tool
 modules, invalid names, or duplicate names; registration never silently drops
-tools or selects one duplicate over another. Tool sets have deterministic
-SHA-256-derived IDs (`Tackle.Lib.Snapshot.tools_version_id/1`) for audit and
-cache keys.
+tools or selects one duplicate over another.
 
 ### Tool execution modes
 
@@ -947,7 +937,7 @@ values but cannot replace them: the loop dispatches the tool call it passed to
 which ends the turn before the call runs.
 
 Every hook must be a module that exports at least one callback.
-`Tackle.Lib.State.new/1`, and the snapshot each turn captures, raise
+`Tackle.Lib.State.new/1`, and every turn when it starts, raise
 `ArgumentError` for any other entry (`Tackle.Lib.Hook.validate!/1`), so a
 misspelled gate fails loudly instead of being skipped.
 
@@ -1176,44 +1166,30 @@ and they must keep the first reason and delete derived per-call records (see
 Store ids are references for turn signals and `{parent_id, tool_call_id}` tuples
 for per-call signals, so custom stores must accept any such term as a key.
 
-## Prompts and structured non-tool responses
+## Prompts
 
-The host owns the domain prompt. `Tackle.Lib.SystemPrompt` only provides composable
-structure:
+The host owns the domain prompt; the loop sends `state.system_prompt` as it
+is. `Tackle.Lib.SystemPrompt` is a small builder for composing it from
+markdown sections: `new/0`, `add_section/3`, `add_raw/2`, and `to_string/1`.
 
-- `new/0`
-- `add_section/3`
-- `add_raw/2`
-- `add_tools/3`
-- `add_response_format/2`
-- `to_string/1`
-- `version_id/1`
-
-`Tackle.Lib.PromptRenderer` controls how tools and response guidance are rendered and
-may return a response schema for a structured **non-tool** turn. Tool execution
-always uses provider-native tool calls. The built-in
-`Tackle.Lib.PromptRenderer.NativeTools` is the default.
+Tools reach the model as provider-native tool definitions, so the prompt does
+not need to describe them, and a loop turn never asks for a structured
+response. A host that wants a structured result calls
+`Tackle.Lib.LLM.generate_with/3` with a schema directly.
 
 The loop sends the persisted user, assistant, and tool messages without adding
 synthetic per-step messages. Provider context therefore remains append-only
 across tool calls. Put loop-wide behavioral guidance in the stable system prompt
 rather than at the end of each request.
 
-## Snapshots and configuration stability
+## Configuration stability
 
-At the start of a turn Tackle.Lib captures `%Tackle.Lib.Snapshot{}` containing the
-explicit adapter/model selection (or the compatible configured default),
-tools/registry, hooks, prompt, prompt renderer, and LLM options. That turn
-continues against the frozen snapshot even if application configuration or code
-registration changes while it runs.
-
-Snapshots include deterministic `system_prompt_version_id` and
-`tools_version_id` values. `tools_version_id` hashes the tool definitions in
-registration order, the order providers receive them, and is the same for a
-list of tool modules and a registry built from it. Persist those IDs in host
-audit records when you need to explain which configuration a turn used. The
-snapshot belongs to the running turn and is not stored on `Tackle.Lib.State`;
-`continue/2` captures a fresh one like `run/3`.
+A turn runs with the configuration of the state it started with: the
+adapter/model selection, adapter options, system prompt, tool registry, hooks,
+and retry policy. The loop reads no application environment, never changes
+those fields, and hooks can only change the context, so every step of the turn
+sees the same configuration. The hooks are checked again when the turn starts
+(`Tackle.Lib.Hook.validate!/1`), since a host can replace them on a built state.
 
 ## Prompt caching
 
@@ -1295,7 +1271,7 @@ message.
 
 A `Tackle.Lib.Compaction.Summarizer` only turns a request into text plus usage.
 It receives the host-supplied `llm_opts` (including credential-store handles)
-of the turn's snapshot, or of the state outside a turn, and the optional
+of the state, and the optional
 `:cancellation_signal`; explicit compaction `:llm_opts` are merged on top. Summarizers should forward the signal to blocking provider
 calls and check it cooperatively. A result other than `{:ok, %Summary{}}` or
 `{:error, reason}`, and a summarizer that raises, throws, or exits, fails the
@@ -1649,5 +1625,4 @@ Start with these files:
 - `lib/tackle_lib/tool.ex` and `lib/tackle_lib/tool/schema.ex` — tool contract
 - `lib/tackle_lib/hook.ex` and `lib/tackle_lib/event.ex` — extension/streaming seams
 - `lib/tackle_lib/cancellation.ex` — cooperative cancellation
-- `lib/tackle_lib/snapshot.ex` — per-turn configuration stability
 - `lib/tackle_lib/integrations/registry.ex` — registry for host-owned tool bridges
