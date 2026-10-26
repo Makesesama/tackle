@@ -21,6 +21,7 @@ defmodule Tackle.Session.Codec do
   """
 
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Usage
 
   @max_depth 32
@@ -204,41 +205,28 @@ defmodule Tackle.Session.Codec do
 
   defp decode_role(role), do: {:error, {:invalid_role, role}}
 
-  defp encode_tool_calls(nil), do: []
-
-  defp encode_tool_calls(calls) when is_list(calls) do
-    Enum.map(calls, fn call ->
-      %{
-        "id" => tool_field(call, :id),
-        "name" => tool_field(call, :name),
-        "arguments" => normalize(tool_field(call, :arguments) || %{})
-      }
+  defp encode_tool_calls(calls) do
+    Enum.map(calls, fn %Call{} = call ->
+      %{"id" => call.id, "name" => call.name, "arguments" => normalize(call.arguments)}
     end)
   end
 
-  # Tool calls may be plain maps or `%Tackle.Lib.Tool.Call{}` structs, depending
-  # on whether they came from a provider response or were replayed from durable
-  # history.
-  defp tool_field(call, key) when is_map(call) do
-    Map.get(call, key) || Map.get(call, Atom.to_string(key))
-  end
-
-  defp tool_field(_call, _key), do: nil
-
-  defp decode_tool_calls(nil), do: {:ok, nil}
-  defp decode_tool_calls([]), do: {:ok, nil}
+  # Stored calls are maps with string keys (or atom keys in sessions written
+  # by hand). They become `%Tackle.Lib.Tool.Call{}` structs again, so history
+  # rebuilt from the journal has the same shape as the live loop's.
+  defp decode_tool_calls(nil), do: {:ok, []}
 
   defp decode_tool_calls(calls) when is_list(calls) do
-    decoded =
-      Enum.map(calls, fn call ->
-        %{
-          id: Map.get(call, "id"),
-          name: Map.get(call, "name"),
-          arguments: Map.get(call, "arguments", %{})
-        }
-      end)
-
-    {:ok, decoded}
+    Enum.reduce_while(calls, {:ok, []}, fn call, {:ok, decoded} ->
+      case Call.normalize(call) do
+        {:ok, call} -> {:cont, {:ok, [call | decoded]}}
+        {:error, reason} -> {:halt, {:error, {:invalid_tool_call, call, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      error -> error
+    end
   end
 
   defp decode_tool_calls(other), do: {:error, {:invalid_tool_calls, other}}

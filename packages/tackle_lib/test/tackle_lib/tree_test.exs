@@ -7,6 +7,7 @@ defmodule Tackle.Lib.TreeTest do
   alias Tackle.Lib.Message
   alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tree
   alias Tackle.Lib.Tree.Change
   alias Tackle.Lib.Tree.Navigator
@@ -18,7 +19,7 @@ defmodule Tackle.Lib.TreeTest do
       role: role,
       content: content,
       timestamp: ~U[2026-01-01 00:00:00Z],
-      tool_calls: Keyword.get(opts, :tool_calls),
+      tool_calls: Keyword.get(opts, :tool_calls, []),
       tool_call_id: Keyword.get(opts, :tool_call_id),
       token_usage: Keyword.get(opts, :token_usage)
     }
@@ -161,7 +162,9 @@ defmodule Tackle.Lib.TreeTest do
       {tree, _} =
         append!(
           tree,
-          msg("a1", :assistant, nil, tool_calls: [%{id: "call_1", name: "tool", arguments: %{}}])
+          msg("a1", :assistant, nil,
+            tool_calls: [%Call{id: "call_1", name: "tool", arguments: %{}}]
+          )
         )
 
       refute Tree.resumable?(tree, "a1")
@@ -210,7 +213,9 @@ defmodule Tackle.Lib.TreeTest do
       {tree, _} =
         append!(
           tree,
-          msg("a1", :assistant, nil, tool_calls: [%{id: "call_1", name: "tool", arguments: %{}}])
+          msg("a1", :assistant, nil,
+            tool_calls: [%Call{id: "call_1", name: "tool", arguments: %{}}]
+          )
         )
 
       assert {:error, {:unknown_entry, "nope"}} = Navigator.navigate(tree, "nope")

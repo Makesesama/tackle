@@ -134,7 +134,7 @@ defmodule Tackle.Lib.Loop do
     if Run.cancelled?(run) do
       cancel(state, run)
     else
-      state = Tools.settle_interrupted(state, run, "interrupted")
+      state = Tools.settle_interrupted(state, run, :interrupted)
       user_message = Message.user(user_input, id_generator: state.id_generator)
       state = State.add_message(state, user_message)
 
@@ -164,7 +164,7 @@ defmodule Tackle.Lib.Loop do
     Run.emit(run, Event.turn_start(state.session_id))
 
     state
-    |> Tools.settle_interrupted(run, "interrupted")
+    |> Tools.settle_interrupted(run, :interrupted)
     |> loop(run)
   end
 
@@ -478,8 +478,8 @@ defmodule Tackle.Lib.Loop do
     {outcome, state}
   end
 
-  defp interrupted_as(:error), do: "aborted"
-  defp interrupted_as(:cancelled), do: "cancelled"
+  defp interrupted_as(:error), do: :aborted
+  defp interrupted_as(:cancelled), do: :cancelled
 
   defp emit_turn_end(:ok, state, run) do
     Run.emit(run, Event.status_change(:completed))

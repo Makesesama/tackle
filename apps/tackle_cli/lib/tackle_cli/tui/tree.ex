@@ -41,6 +41,7 @@ defmodule Tackle.CLI.TUI.Tree do
   alias Tackle.CLI.TUI.{Compaction, Picker, State, Util, Viewport}
   alias Tackle.CLI.Widgets.{Input, TreeScreen}
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tree, as: ConversationTree
 
   @root_id :conversation_root
@@ -473,11 +474,11 @@ defmodule Tackle.CLI.TUI.Tree do
       is_binary(message.content) and String.trim(message.content) != "" ->
         preview(message.content)
 
-      message.tool_calls in [nil, []] ->
+      message.tool_calls == [] ->
         "(reasoning)"
 
       true ->
-        "→ " <> Enum.map_join(message.tool_calls, ", ", &call_name/1)
+        "→ " <> Enum.map_join(message.tool_calls, ", ", & &1.name)
     end
   end
 
@@ -507,7 +508,7 @@ defmodule Tackle.CLI.TUI.Tree do
     names =
       Enum.flat_map(hidden, fn
         %{kind: :message, message: %Message{role: :assistant, tool_calls: [_ | _] = calls}} ->
-          Enum.map(calls, &call_name/1)
+          Enum.map(calls, & &1.name)
 
         _entry ->
           []
@@ -543,41 +544,28 @@ defmodule Tackle.CLI.TUI.Tree do
       %{kind: :message, message: %Message{tool_calls: [_ | _] = calls}} -> calls
       _entry -> []
     end)
-    |> Enum.flat_map(fn call ->
-      case call_field(call, :id) do
-        id when is_binary(id) -> [{id, call}]
-        _other -> []
-      end
+    |> Enum.flat_map(fn
+      %Call{id: id} = call when is_binary(id) -> [{id, call}]
+      %Call{} -> []
     end)
     |> Map.new()
   end
 
-  defp call_name(call), do: call_field(call, :name) || "tool"
-
   defp call_argument(nil), do: nil
 
-  defp call_argument(call) do
-    arguments = call_field(call, :arguments)
-
-    if is_map(arguments) do
-      Enum.find_value(@argument_keys, fn key ->
-        case Map.get(arguments, key) || Map.get(arguments, Atom.to_string(key)) do
-          value when is_binary(value) and value != "" -> format_argument(key, value)
-          _other -> nil
-        end
-      end)
-    end
+  defp call_argument(%Call{arguments: arguments}) do
+    Enum.find_value(@argument_keys, fn key ->
+      case Map.get(arguments, key) || Map.get(arguments, Atom.to_string(key)) do
+        value when is_binary(value) and value != "" -> format_argument(key, value)
+        _other -> nil
+      end
+    end)
   end
 
   defp format_argument(key, value) when key in [:path, :file_path],
     do: value |> Path.relative_to_cwd() |> Util.truncate(@argument_width)
 
   defp format_argument(_key, value), do: value |> one_line() |> Util.truncate(@argument_width)
-
-  defp call_field(call, key) when is_map(call),
-    do: Map.get(call, key) || Map.get(call, Atom.to_string(key))
-
-  defp call_field(_call, _key), do: nil
 
   defp search_text(%{kind: :message, message: %Message{role: :tool} = message}, calls) do
     Enum.join(Enum.reject([tool_summary(message, calls), message.content], &is_nil/1), " ")

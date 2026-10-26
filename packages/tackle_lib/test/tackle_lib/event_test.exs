@@ -160,7 +160,7 @@ defmodule Tackle.Lib.EventTest do
 
     test "tool_error/2 has one shape for failed and interrupted calls" do
       failed = %{ToolError.crashed(@call, :error, %RuntimeError{message: "boom"}) | name: nil}
-      interrupted = ToolError.interrupted("c2", "lookup", "cancelled")
+      interrupted = ToolError.interrupted("c2", "lookup", :cancelled)
 
       for error <- [failed, interrupted] do
         assert %Event{type: :tool_error, data: data} = Event.tool_error(error)

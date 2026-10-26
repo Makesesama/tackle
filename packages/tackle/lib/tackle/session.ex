@@ -62,8 +62,6 @@ defmodule Tackle.Session do
   @max_deferred_messages 128
   @max_inbox_bytes 24 * 1024 * 1024
 
-  @interrupted_tool_result "Error: Tool execution was interrupted before a result was recorded; the outcome is unknown."
-
   defmodule Stats do
     @moduledoc "Derived, immutable token, cost, model, and context statistics."
 
@@ -1517,11 +1515,16 @@ defmodule Tackle.Session do
 
   # A settled turn can still leave assistant tool calls without results — a
   # turn cancelled or crashed mid-batch, or a journal written before the loop
-  # settled interrupted batches. Providers reject that history, which makes the
-  # session impossible to continue, so resume repairs it: one synthetic result
-  # per unresolved call, committed through a dedicated repair turn so the fix
-  # is durable. A turn that still requires an explicit recovery decision is
-  # left untouched; `abandon_turn/1` settles those.
+  # settled interrupted batches — which providers reject. The loop settles such
+  # calls itself when the next turn starts, but resume repairs them first: the
+  # snapshot and transcript a frontend shows, manual compaction, and tree
+  # navigation (which only accepts positions whose calls all have results) see
+  # the history before any turn runs, and a resumed session need not run one.
+  # Their outcome is unknown, since the tool may have run, which the results
+  # say. The repair is committed through a dedicated repair turn so it is
+  # durable. A turn that
+  # still requires an explicit recovery decision is left untouched;
+  # `abandon_turn/1` settles those.
   defp repair_interrupted_tool_results(_journal, agent_state, _config, recovery)
        when not is_nil(recovery),
        do: {:ok, agent_state}
@@ -1551,13 +1554,8 @@ defmodule Tackle.Session do
   # linkage as any other tool result and survive the next resume.
   defp settle_unresolved_tool_results(%AgentState{} = agent_state) do
     agent_state.messages
-    |> Messages.unresolved_tool_calls()
-    |> Enum.reduce_while({:ok, agent_state}, fn call, {:ok, acc} ->
-      message =
-        Message.tool_result(call.id, call.name, @interrupted_tool_result,
-          id_generator: acc.id_generator
-        )
-
+    |> Messages.interrupted_results(:unknown, id_generator: agent_state.id_generator)
+    |> Enum.reduce_while({:ok, agent_state}, fn message, {:ok, acc} ->
       acc = AgentState.add_message(acc, message)
 
       case Persistence.after_message(acc, message, acc.context) do

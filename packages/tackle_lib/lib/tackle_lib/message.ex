@@ -5,25 +5,25 @@ defmodule Tackle.Lib.Message do
   Represents messages from users, assistant responses, and tool results. This is
   a pure in-memory value — Tackle.Lib does not persist messages. Host applications
   map this struct to their own storage if they need durability.
+
+  An assistant message's `tool_calls` are always `Tackle.Lib.Tool.Call`
+  structs, and every other message has none (`[]`). `assistant/1` normalizes
+  the calls it is given, so a host that rebuilds messages from stored data
+  passes them through it (or through `Tackle.Lib.Tool.Call.normalize/1`).
   """
 
   alias Tackle.Lib.ID
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Usage
 
   @type role :: :user | :assistant | :tool
-
-  @type tool_call :: %{
-          optional(:id) => String.t() | nil,
-          required(:name) => String.t(),
-          required(:arguments) => map()
-        }
 
   @type t :: %__MODULE__{
           id: String.t(),
           role: role(),
           content: String.t() | nil,
           thinking: String.t() | nil,
-          tool_calls: [tool_call()] | nil,
+          tool_calls: [Call.t()],
           tool_call_id: String.t() | nil,
           tool_name: String.t() | nil,
           parts: [map()] | nil,
@@ -37,7 +37,7 @@ defmodule Tackle.Lib.Message do
             role: nil,
             content: nil,
             thinking: nil,
-            tool_calls: nil,
+            tool_calls: [],
             tool_call_id: nil,
             tool_name: nil,
             parts: nil,
@@ -66,6 +66,9 @@ defmodule Tackle.Lib.Message do
   Creates a new assistant message with optional tool calls.
 
   ## Options
+    * `:tool_calls` - the calls the assistant made: `Tackle.Lib.Tool.Call`
+      structs, or maps that `Tackle.Lib.Tool.Call.normalize/1` accepts
+      (default none). A call that does not normalize raises `ArgumentError`.
     * `:id` - explicit message id (overrides :id_generator)
     * `:id_generator` - zero-arity function returning a message id
     * `:provider_state` - opaque, non-secret continuation metadata returned by
@@ -79,7 +82,7 @@ defmodule Tackle.Lib.Message do
       role: :assistant,
       content: Keyword.get(opts, :content),
       thinking: Keyword.get(opts, :thinking),
-      tool_calls: Keyword.get(opts, :tool_calls),
+      tool_calls: normalize_tool_calls(Keyword.get(opts, :tool_calls)),
       token_usage:
         Usage.normalize(Keyword.get(opts, :token_usage), model: Keyword.get(opts, :model)),
       model: Keyword.get(opts, :model),
@@ -116,9 +119,8 @@ defmodule Tackle.Lib.Message do
   Checks if this is a final answer message (assistant with content, no tool calls).
   """
   @spec final_answer?(t()) :: boolean()
-  def final_answer?(%__MODULE__{role: :assistant, content: content, tool_calls: tool_calls}) do
-    content != nil and content != "" and (is_nil(tool_calls) or tool_calls == [])
-  end
+  def final_answer?(%__MODULE__{role: :assistant, content: content, tool_calls: []}),
+    do: content not in [nil, ""]
 
   def final_answer?(_), do: false
 
@@ -126,9 +128,8 @@ defmodule Tackle.Lib.Message do
   Checks if this message has tool calls.
   """
   @spec has_tool_calls?(t()) :: boolean()
-  def has_tool_calls?(%__MODULE__{tool_calls: tool_calls}) do
-    is_list(tool_calls) and tool_calls != []
-  end
+  def has_tool_calls?(%__MODULE__{tool_calls: [_ | _]}), do: true
+  def has_tool_calls?(%__MODULE__{}), do: false
 
   defp generate_id(opts) do
     case Keyword.get(opts, :id) do
@@ -141,6 +142,23 @@ defmodule Tackle.Lib.Message do
         id
     end
   end
+
+  defp normalize_tool_calls(nil), do: []
+
+  defp normalize_tool_calls(calls) when is_list(calls) do
+    Enum.map(calls, fn call ->
+      case Call.normalize(call) do
+        {:ok, call} ->
+          call
+
+        {:error, reason} ->
+          raise ArgumentError, "invalid tool call #{inspect(call)}: #{inspect(reason)}"
+      end
+    end)
+  end
+
+  defp normalize_tool_calls(calls),
+    do: raise(ArgumentError, "tool calls must be a list, got: #{inspect(calls)}")
 
   defp normalize_parts(parts) when is_list(parts) and parts != [], do: parts
   defp normalize_parts(_parts), do: nil

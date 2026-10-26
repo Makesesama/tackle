@@ -20,6 +20,7 @@ defmodule Tackle.CLI.TUI.SubagentTranscript do
 
   alias Tackle.CLI.TUI.ReviewCall
   alias Tackle.Lib.{Event, Message}
+  alias Tackle.Lib.Tool.Call
 
   @max_live_tool_output_bytes 50 * 1_024
   # Settled output is kept per card for the view's previews and copy; larger
@@ -104,7 +105,7 @@ defmodule Tackle.CLI.TUI.SubagentTranscript do
     timeline =
       transcript.timeline
       |> reconcile_message(message)
-      |> put_requested_calls(message.tool_calls || [])
+      |> put_requested_calls(message.tool_calls)
 
     %{transcript | timeline: timeline, active_message_id: nil}
   end
@@ -229,15 +230,13 @@ defmodule Tackle.CLI.TUI.SubagentTranscript do
   defp open_tool?(_item), do: false
 
   defp put_requested_calls(timeline, calls) do
-    Enum.reduce(calls, timeline, fn call, acc ->
-      id = value(call, :id)
-
+    Enum.reduce(calls, timeline, fn %Call{id: id} = call, acc ->
       if is_binary(id) and is_nil(find_tool(acc, id)) do
         append(acc, %{
           kind: :tool,
           id: id,
-          name: value(call, :name) || "unknown",
-          arguments: value(call, :arguments),
+          name: call.name,
+          arguments: call.arguments,
           status: :requested
         })
       else

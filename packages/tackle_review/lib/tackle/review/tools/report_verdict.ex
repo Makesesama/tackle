@@ -18,6 +18,8 @@ defmodule Tackle.Review.Tools.ReportVerdict do
 
   use Tackle.Lib.Tool
 
+  alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Review.Tools.ReportFindings
 
   @verdict_atoms %{"confirmed" => :confirmed, "rejected" => :rejected, "uncertain" => :uncertain}
@@ -120,11 +122,10 @@ defmodule Tackle.Review.Tools.ReportVerdict do
     answered = ReportFindings.answered_call_ids(messages)
 
     reports =
-      for %{role: :assistant, tool_calls: calls} when is_list(calls) <- messages,
-          call <- calls,
-          ReportFindings.call_field(call, :name) == "report_verdict",
-          MapSet.member?(answered, ReportFindings.call_field(call, :id)),
-          {:ok, report} <- [parse(ReportFindings.call_field(call, :arguments), ids)],
+      for %Message{role: :assistant, tool_calls: calls} <- messages,
+          %Call{name: "report_verdict", id: id, arguments: arguments} <- calls,
+          MapSet.member?(answered, id),
+          {:ok, report} <- [parse(arguments, ids)],
           do: report
 
     Enum.reduce(reports, %{}, fn report, acc -> Map.put_new(acc, report.finding, report) end)

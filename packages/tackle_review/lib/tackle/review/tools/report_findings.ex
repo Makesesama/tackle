@@ -28,7 +28,9 @@ defmodule Tackle.Review.Tools.ReportFindings do
 
   use Tackle.Lib.Tool
 
+  alias Tackle.Lib.Message
   alias Tackle.Lib.Tool
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Review.{Finding, Locations}
 
   @max_findings 20
@@ -173,30 +175,20 @@ defmodule Tackle.Review.Tools.ReportFindings do
   defp reports(messages, review) do
     answered = answered_call_ids(messages)
 
-    for %{role: :assistant, tool_calls: calls} when is_list(calls) <- messages,
-        call <- calls,
-        call_field(call, :name) == "report_findings",
-        MapSet.member?(answered, call_field(call, :id)),
-        {:ok, %{"findings" => findings} = args} <- [validate_args(call_field(call, :arguments))],
+    for %Message{role: :assistant, tool_calls: calls} <- messages,
+        %Call{name: "report_findings", id: id, arguments: arguments} <- calls,
+        MapSet.member?(answered, id),
+        {:ok, %{"findings" => findings} = args} <- [Tool.validate_args(__MODULE__, arguments)],
         do: {args, accept(findings, review)}
   end
 
   @doc false
   @spec answered_call_ids([Tackle.Lib.Message.t()]) :: MapSet.t(String.t())
   def answered_call_ids(messages) do
-    for %{role: :tool, tool_call_id: id} when is_binary(id) <- messages,
+    for %Message{role: :tool, tool_call_id: id} when is_binary(id) <- messages,
         into: MapSet.new(),
         do: id
   end
-
-  @doc false
-  @spec call_field(map(), atom()) :: term()
-  def call_field(call, key), do: Map.get(call, key) || Map.get(call, Atom.to_string(key))
-
-  defp validate_args(arguments) when is_map(arguments),
-    do: Tool.validate_args(__MODULE__, arguments)
-
-  defp validate_args(_arguments), do: {:error, :invalid_arguments}
 
   defp validate(input, allowed, rule_ids) do
     with {:ok, finding} <- Finding.from_input(input, rule_ids: rule_ids),

@@ -81,15 +81,22 @@ defmodule Tackle.Lib.Tool.Error do
     }
   end
 
-  @doc """
-  Builds the settlement the loop records for a call that was left without a
-  result when its turn ended. `outcome` says how the call ended
-  (`"interrupted"`, `"aborted"`, or `"cancelled"`); the tool never ran to
-  completion, so there are no details.
+  @typedoc """
+  How a call left without a result ended: its turn was `:aborted` by an error
+  or `:cancelled`, or the call was found `:interrupted` when the next turn
+  started. `:unknown` is for a call found unresolved in stored history, whose
+  tool may or may not have run.
   """
-  @spec interrupted(String.t(), String.t() | nil, String.t()) :: t()
-  def interrupted(tool_call_id, name, outcome) when is_binary(outcome) do
-    message = "Tool execution was #{outcome} before this call completed."
+  @type interrupted_outcome :: :interrupted | :aborted | :cancelled | :unknown
+
+  @doc """
+  Builds the settlement recorded for a call that was left without a result,
+  saying how it ended (see `t:interrupted_outcome/0`). The tool never
+  reported a result, so there are no details.
+  """
+  @spec interrupted(String.t(), String.t() | nil, interrupted_outcome()) :: t()
+  def interrupted(tool_call_id, name, outcome) do
+    message = interrupted_message(outcome)
 
     %__MODULE__{
       tool_call_id: tool_call_id,
@@ -99,6 +106,12 @@ defmodule Tackle.Lib.Tool.Error do
       content: "Error: " <> message
     }
   end
+
+  defp interrupted_message(:unknown),
+    do: "Tool execution was interrupted before a result was recorded; the outcome is unknown."
+
+  defp interrupted_message(outcome) when outcome in [:interrupted, :aborted, :cancelled],
+    do: "Tool execution was #{outcome} before this call completed."
 
   defp describe_crash(:error, reason),
     do: :error |> Exception.normalize(reason) |> Exception.message()

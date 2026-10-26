@@ -58,9 +58,10 @@ defmodule Tackle.Lib.Loop.Tools do
   def execute(%State{} = state, calls, run), do: execute_each(calls, state, run)
 
   @doc """
-  Settles the tool calls in `state.messages` that have no result with
-  synthetic error results, saying the call was `outcome` ("interrupted",
-  "aborted", or "cancelled") before it completed.
+  Settles the tool calls in `state.messages` that have no result with the
+  synthetic error results of `Tackle.Lib.Messages.interrupted_results/3`,
+  saying the call was `outcome` (`:interrupted`, `:aborted`, or `:cancelled`)
+  before it completed.
 
   A turn that ends while tool calls are unresolved leaves an assistant
   message whose calls have no results, which providers reject on the next
@@ -69,23 +70,24 @@ defmodule Tackle.Lib.Loop.Tools do
   finalization hook does not replace the outcome being settled: the state's
   status, error, and error reason are kept.
   """
-  @spec settle_interrupted(State.t(), Run.t(), String.t()) :: State.t()
-  def settle_interrupted(%State{} = state, %Run{} = run, outcome) when is_binary(outcome) do
+  @spec settle_interrupted(State.t(), Run.t(), :interrupted | :aborted | :cancelled) ::
+          State.t()
+  def settle_interrupted(%State{} = state, %Run{} = run, outcome)
+      when outcome in [:interrupted, :aborted, :cancelled] do
     settled =
       state.messages
-      |> Messages.unresolved_tool_calls()
-      |> Enum.reduce(state, &settle_interrupted_call(&1, &2, run, outcome))
+      |> Messages.interrupted_results(outcome, id_generator: state.id_generator)
+      |> Enum.reduce(state, &settle_interrupted_result(&1, &2, run, outcome))
 
     %{settled | status: state.status, error: state.error, error_reason: state.error_reason}
   end
 
-  defp settle_interrupted_call(%{id: id, name: name}, %State{} = state, run, outcome) do
-    error = ToolError.interrupted(id, name, outcome)
-    message = Message.tool_result(id, name, error.content, id_generator: state.id_generator)
+  defp settle_interrupted_result(%Message{} = message, %State{} = state, run, outcome) do
     state = State.add_message(state, message)
 
     case Run.finalize_message(state, run, message) do
       {:ok, state} ->
+        error = ToolError.interrupted(message.tool_call_id, message.tool_name, outcome)
         Run.emit(run, Event.tool_error(error))
         state
 

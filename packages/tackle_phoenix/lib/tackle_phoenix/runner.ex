@@ -961,18 +961,8 @@ defmodule Tackle.Phoenix.Runner do
     messages
     |> Enum.with_index()
     |> Enum.reverse()
-    |> Enum.find_value(fn {message, index} -> if final_assistant_message?(message), do: index end)
+    |> Enum.find_value(fn {message, index} -> if Message.final_answer?(message), do: index end)
   end
-
-  defp final_assistant_message?(%Message{
-         role: :assistant,
-         content: content,
-         tool_calls: tool_calls
-       }) do
-    content not in [nil, ""] and tool_calls in [nil, []]
-  end
-
-  defp final_assistant_message?(_message), do: false
 
   defp put_persisted_session_id(%State{} = state, session_id) when is_binary(session_id) do
     %{state | context: put_in(state.context, [:persistence, :session_id], session_id)}

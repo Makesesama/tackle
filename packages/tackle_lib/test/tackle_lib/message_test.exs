@@ -2,6 +2,7 @@ defmodule Tackle.Lib.MessageTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Usage
 
   describe "user/1" do
@@ -27,15 +28,45 @@ defmodule Tackle.Lib.MessageTest do
 
       assert message.role == :assistant
       assert message.content == "Hi there!"
-      assert message.tool_calls == nil
+      assert message.tool_calls == []
     end
 
-    test "creates an assistant message with tool calls" do
-      tool_calls = [%{name: "search", arguments: %{query: "test"}}]
-      message = Message.assistant(tool_calls: tool_calls)
+    test "normalizes the tool calls it is given into Call structs" do
+      call = %Call{id: "call_1", name: "read", arguments: %{"path" => "a"}}
+
+      message =
+        Message.assistant(
+          tool_calls: [
+            %{name: "search", arguments: %{query: "test"}},
+            %{
+              "id" => "call_2",
+              "function" => %{"name" => "bash", "arguments" => ~s({"cmd":"ls"})}
+            },
+            call
+          ]
+        )
 
       assert message.role == :assistant
-      assert message.tool_calls == tool_calls
+
+      assert [
+               %Call{id: nil, name: "search", arguments: %{query: "test"}},
+               %Call{id: "call_2", name: "bash", arguments: %{"cmd" => "ls"}},
+               ^call
+             ] = message.tool_calls
+    end
+
+    test "raises on a tool call that does not normalize" do
+      assert_raise ArgumentError, ~r/invalid tool call.*:malformed_tool_call/, fn ->
+        Message.assistant(tool_calls: [%{arguments: %{}}])
+      end
+
+      assert_raise ArgumentError, ~r/invalid tool call.*:invalid_tool_arguments/, fn ->
+        Message.assistant(tool_calls: [%{name: "bash", arguments: "not json"}])
+      end
+
+      assert_raise ArgumentError, ~r/tool calls must be a list/, fn ->
+        Message.assistant(tool_calls: %{name: "bash"})
+      end
     end
 
     test "creates an assistant message with thinking" do

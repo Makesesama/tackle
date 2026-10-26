@@ -4,6 +4,7 @@ defmodule Tackle.Lib.MessagesTest do
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
+  alias Tackle.Lib.Tool.Call
 
   describe "to_provider/1" do
     test "maps a user message to a structured user entry" do
@@ -123,8 +124,15 @@ defmodule Tackle.Lib.MessagesTest do
     end
 
     test "derives distinct ids for id-less calls of messages without an id" do
-      first = %Message{role: :assistant, tool_calls: [%{name: "search", arguments: %{"q" => 1}}]}
-      second = %Message{role: :assistant, tool_calls: [%{name: "search", arguments: %{"q" => 2}}]}
+      first = %Message{
+        role: :assistant,
+        tool_calls: [%Call{name: "search", arguments: %{"q" => 1}}]
+      }
+
+      second = %Message{
+        role: :assistant,
+        tool_calls: [%Call{name: "search", arguments: %{"q" => 2}}]
+      }
 
       assert [%{tool_calls: [%{id: a}]}, %{tool_calls: [%{id: b}]}] =
                Messages.to_provider([first, second])
@@ -140,14 +148,14 @@ defmodule Tackle.Lib.MessagesTest do
         Message.assistant(
           content: nil,
           tool_calls: [
-            %Tackle.Lib.Tool.Call{id: "call_1", name: "search", arguments: %{"q" => "cats"}},
+            %Call{id: "call_1", name: "search", arguments: %{"q" => "cats"}},
             %{id: "call_2", name: "read", arguments: %{}}
           ]
         ),
         Message.tool_result("call_1", "search", "3 cats")
       ]
 
-      assert Messages.unresolved_tool_calls(messages) == [%{id: "call_2", name: "read"}]
+      assert [%Call{id: "call_2", name: "read"}] = Messages.unresolved_tool_calls(messages)
     end
 
     test "returns nothing once every call has a result" do
@@ -175,11 +183,11 @@ defmodule Tackle.Lib.MessagesTest do
         Message.assistant(tool_calls: [%{"id" => "c", "name" => "third"}])
       ]
 
-      assert Messages.unresolved_tool_calls(messages) == [
-               %{id: "b", name: "second"},
-               %{id: "a", name: "first"},
-               %{id: "c", name: "third"}
-             ]
+      assert [
+               %Call{id: "b", name: "second"},
+               %Call{id: "a", name: "first"},
+               %Call{id: "c", name: "third"}
+             ] = Messages.unresolved_tool_calls(messages)
     end
 
     test "keeps calls from an earlier turn that were never settled" do
@@ -191,7 +199,63 @@ defmodule Tackle.Lib.MessagesTest do
         Message.user("try again")
       ]
 
-      assert Messages.unresolved_tool_calls(messages) == [%{id: "call_1", name: "search"}]
+      assert [%Call{id: "call_1", name: "search"}] = Messages.unresolved_tool_calls(messages)
+    end
+
+    test "skips a call without an id, which no result can settle" do
+      messages = [%Message{role: :assistant, tool_calls: [%Call{name: "search"}]}]
+
+      assert Messages.unresolved_tool_calls(messages) == []
+    end
+  end
+
+  describe "interrupted_results/3" do
+    test "builds one synthetic error result per unresolved call, in transcript order" do
+      ids = Agent.start_link(fn -> 0 end) |> elem(1)
+      next_id = fn -> "msg-#{Agent.get_and_update(ids, &{&1, &1 + 1})}" end
+
+      messages = [
+        Message.assistant(
+          tool_calls: [
+            %{id: "call_1", name: "search"},
+            %{id: "call_2", name: "read"},
+            %{id: "call_3", name: "bash"}
+          ]
+        ),
+        Message.tool_result("call_2", "read", "done")
+      ]
+
+      assert [first, second] =
+               Messages.interrupted_results(messages, :cancelled, id_generator: next_id)
+
+      assert %Message{
+               id: "msg-0",
+               role: :tool,
+               tool_call_id: "call_1",
+               tool_name: "search",
+               content: "Error: Tool execution was cancelled before this call completed."
+             } = first
+
+      assert %Message{id: "msg-1", tool_call_id: "call_3", tool_name: "bash"} = second
+    end
+
+    test "says the outcome of a call found unresolved in stored history is unknown" do
+      messages = [Message.assistant(tool_calls: [%{id: "call_1", name: "bash"}])]
+
+      assert [%Message{content: content}] = Messages.interrupted_results(messages, :unknown)
+
+      assert content ==
+               "Error: Tool execution was interrupted before a result was recorded; " <>
+                 "the outcome is unknown."
+    end
+
+    test "builds nothing when every call has a result" do
+      messages = [
+        Message.assistant(tool_calls: [%{id: "call_1", name: "bash"}]),
+        Message.tool_result("call_1", "bash", "ok")
+      ]
+
+      assert Messages.interrupted_results(messages, :interrupted) == []
     end
   end
 end

@@ -25,11 +25,22 @@ defmodule Tackle.Lib.Tool.Call do
 
   Accepts top-level or nested `function` name and arguments. Arguments may be
   a map or a JSON object string; missing arguments default to an empty map.
+  A `Tackle.Lib.Tool.Call` struct with a name and map arguments is returned
+  unchanged.
   Invalid call shapes return `:malformed_tool_call`, and invalid or non-object
   arguments return `:invalid_tool_arguments`. Invalid JSON is never replaced
   with empty arguments, since doing so could execute a tool with defaults.
   """
   @spec normalize(term()) :: {:ok, t()} | {:error, :malformed_tool_call | :invalid_tool_arguments}
+  def normalize(%__MODULE__{name: name, arguments: arguments} = call)
+      when is_binary(name) and name != "" and is_map(arguments),
+      do: {:ok, call}
+
+  def normalize(%__MODULE__{name: name}) when is_binary(name) and name != "",
+    do: {:error, :invalid_tool_arguments}
+
+  def normalize(%__MODULE__{}), do: {:error, :malformed_tool_call}
+
   def normalize(%{} = call) do
     function = fetch(call, "function", :function, %{})
 

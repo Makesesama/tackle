@@ -42,6 +42,7 @@ defmodule Tackle.Lib.Tree do
 
   alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tree.Entry
   alias Tackle.Lib.Usage
 
@@ -475,11 +476,8 @@ defmodule Tackle.Lib.Tree do
     Enum.map(messages, &%{&1 | token_usage: nil, provider_state: nil})
   end
 
-  defp entry_tool_call_ids(%Entry{kind: :message, message: %Message{tool_calls: calls}})
-       when is_list(calls) do
-    calls
-    |> Enum.map(&tool_call_id/1)
-    |> Enum.reject(&is_nil/1)
+  defp entry_tool_call_ids(%Entry{kind: :message, message: %Message{tool_calls: calls}}) do
+    for %Call{id: id} <- calls, not is_nil(id), do: id
   end
 
   defp entry_tool_call_ids(_entry), do: []
@@ -492,10 +490,6 @@ defmodule Tackle.Lib.Tree do
   end
 
   defp entry_tool_result_ids(_entry), do: []
-
-  defp tool_call_id(%{id: id}), do: id
-  defp tool_call_id(%{"id" => id}), do: id
-  defp tool_call_id(_call), do: nil
 
   defp fetch(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
 end

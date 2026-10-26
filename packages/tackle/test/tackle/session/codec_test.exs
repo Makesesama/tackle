@@ -2,6 +2,7 @@ defmodule Tackle.Session.CodecTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Usage
   alias Tackle.Session.Codec
 
@@ -88,8 +89,65 @@ defmodule Tackle.Session.CodecTest do
       assert decoded.provider_state == message.provider_state
       assert %Usage{input_tokens: 10, output_tokens: 5} = decoded.token_usage
 
-      assert [%{id: "call-1", name: "read", arguments: %{"path" => "lib/tackle.ex"}}] =
+      assert [%Call{id: "call-1", name: "read", arguments: %{"path" => "lib/tackle.ex"}}] =
                decoded.tool_calls
+    end
+
+    test "round-trips Call structs through their stored maps" do
+      calls = [
+        %Call{id: "call-1", name: "read", arguments: %{"path" => "a"}, raw: %{"provider" => 1}},
+        %Call{id: nil, name: "bash", arguments: %{cmd: "ls"}}
+      ]
+
+      assert {:ok, data} = Codec.encode_message(Message.assistant(tool_calls: calls))
+
+      assert data["tool_calls"] == [
+               %{"id" => "call-1", "name" => "read", "arguments" => %{"path" => "a"}},
+               %{"id" => nil, "name" => "bash", "arguments" => %{"cmd" => "ls"}}
+             ]
+
+      assert {:ok, decoded} = Codec.decode_message(data)
+
+      assert [
+               %Call{id: "call-1", name: "read", arguments: %{"path" => "a"}},
+               %Call{id: nil, name: "bash", arguments: %{"cmd" => "ls"}}
+             ] = decoded.tool_calls
+
+      assert {:ok, ^data} = Codec.encode_message(decoded)
+    end
+
+    test "decodes stored tool calls with string or atom keys into Call structs" do
+      data = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{"id" => "call-1", "name" => "read", "arguments" => %{"path" => "a"}},
+          %{id: "call-2", name: "bash"}
+        ]
+      }
+
+      assert {:ok, %Message{tool_calls: calls}} = Codec.decode_message(data)
+
+      assert [
+               %Call{id: "call-1", name: "read", arguments: %{"path" => "a"}},
+               %Call{id: "call-2", name: "bash", arguments: %{}}
+             ] = calls
+    end
+
+    test "decodes a message without stored tool calls to none" do
+      assert {:ok, %Message{tool_calls: []}} = Codec.decode_message(%{"role" => "user"})
+
+      assert {:ok, %Message{tool_calls: []}} =
+               Codec.decode_message(%{"role" => "assistant", "tool_calls" => []})
+    end
+
+    test "returns an explicit error for a stored tool call that does not normalize" do
+      call = %{"id" => "call-1", "arguments" => %{}}
+
+      assert {:error, {:invalid_tool_call, ^call, :malformed_tool_call}} =
+               Codec.decode_message(%{"role" => "assistant", "tool_calls" => [call]})
+
+      assert {:error, {:invalid_tool_calls, "nope"}} =
+               Codec.decode_message(%{"role" => "assistant", "tool_calls" => "nope"})
     end
 
     test "round-trips a tool result message" do

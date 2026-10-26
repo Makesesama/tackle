@@ -83,6 +83,10 @@ defmodule Tackle.Phoenix.Store do
   @doc """
   Inject host persistence/org context into the agent state prior to the turn.
   Must return the enriched `Tackle.Lib.State`.
+
+  Messages restored from host storage keep assistant tool calls as
+  `Tackle.Lib.Tool.Call` structs; rebuilding them with
+  `Tackle.Lib.Message.assistant/1` normalizes stored call maps.
   """
   @callback enrich_state(host_state(), State.t(), turn_opts()) :: State.t()
 

@@ -106,7 +106,7 @@ defmodule Tackle.Lib.ContextUsage do
   @spec estimate_message(Message.t()) :: non_neg_integer()
   def estimate_message(%Message{} = message) do
     estimate_text(message.content) + estimate_text(message.thinking) +
-      estimate_collection(message.tool_calls || [])
+      estimate_collection(message.tool_calls)
   end
 
   @doc "Estimates text tokens at four UTF-8 characters per token."

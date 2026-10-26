@@ -1320,6 +1320,18 @@ On reload, rebuild `%Tackle.Lib.Message{}` values in sequence and create a fresh
 authorization context. Do not deserialize an old context from the database and
 trust it as current authorization.
 
+An assistant message's tool calls are always `Tackle.Lib.Tool.Call` structs (and
+`[]` without calls); `Tackle.Lib.Message.assistant/1` normalizes stored call
+maps with string or atom keys through `Tackle.Lib.Tool.Call.normalize/1` and
+raises `ArgumentError` on a call that does not normalize. Store at least each
+call's `id`, `name`, and `arguments`.
+
+A turn that stopped mid-batch can leave calls without results, which providers
+reject. `Tackle.Lib.Loop.run/3` and `continue/2` settle them with synthetic
+error results when the next turn starts; a host that wants the history repaired
+before then (for display, or to persist the repair on its own) builds the same
+results with `Tackle.Lib.Messages.interrupted_results/3`.
+
 Two supported persistence approaches are:
 
 1. **Hooks in a core-only host.** Persist finalized messages in

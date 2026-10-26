@@ -26,6 +26,7 @@ defmodule Tackle.CLI.TUI.MessageView do
   alias Tackle.CLI.TUI.{Compaction, Glyph, Pastes, Theme, ToolGroups, ToolView}
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Call
   @uuid "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
   @runtime_notice Regex.compile!(
                     "\\AMessage from agent (#{@uuid}):\\n\\nBackground subagent (#{@uuid}) " <>
@@ -120,8 +121,8 @@ defmodule Tackle.CLI.TUI.MessageView do
 
     call_ids =
       messages
-      |> Enum.flat_map(fn message -> message.tool_calls || [] end)
-      |> Enum.map(&value(&1, :id))
+      |> Enum.flat_map(fn message -> message.tool_calls end)
+      |> Enum.map(& &1.id)
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
@@ -139,7 +140,7 @@ defmodule Tackle.CLI.TUI.MessageView do
           prose = message_entries(message, index, state)
 
           calls =
-            (message.tool_calls || [])
+            message.tool_calls
             |> Enum.with_index()
             |> Enum.map(fn {call, call_index} ->
               build_call_entry(call, call_index, results, index, times)
@@ -309,14 +310,13 @@ defmodule Tackle.CLI.TUI.MessageView do
   defp live_text_id(:assistant, 0), do: "streaming:response"
   defp live_text_id(kind, index), do: "streaming:#{kind}:#{index}"
 
-  defp build_call_entry(call, call_index, results, index, times) do
-    id = value(call, :id)
+  defp build_call_entry(%Call{id: id} = call, call_index, results, index, times) do
     result = Map.get(results, id)
 
     tool_entry(
       %{
-        name: value(call, :name),
-        arguments: value(call, :arguments),
+        name: call.name,
+        arguments: call.arguments,
         status: result_status(result),
         result: if(result, do: result.content),
         elapsed_ms: if(result && is_binary(id), do: Map.get(times, id))

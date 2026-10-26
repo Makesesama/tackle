@@ -51,6 +51,8 @@ defmodule Tackle.Lib.Messages do
 
   alias Tackle.Lib.JSON
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Call
+  alias Tackle.Lib.Tool.Error, as: ToolError
 
   @doc """
   Converts a list of `%Tackle.Lib.Message{}` into provider-neutral structured maps.
@@ -70,19 +72,17 @@ defmodule Tackle.Lib.Messages do
 
   Providers reject a request whose history contains an assistant tool call
   without its tool result, so an interrupted run must settle these before the
-  next provider call. Calls are returned in transcript order as maps with the
-  call's `:id` and `:name`, ready to pair with a synthetic result.
-
-  Tool calls may be `%Tackle.Lib.Tool.Call{}` structs (live loop history) or
-  plain maps with `:id`/`:name` keys (replayed durable history).
+  next provider call (see `interrupted_results/3`). Calls are returned in
+  transcript order; a call without an id cannot be paired with a result and is
+  skipped, as is a repeated id.
   """
-  @spec unresolved_tool_calls(list(Message.t())) :: [%{id: String.t(), name: String.t()}]
+  @spec unresolved_tool_calls([Message.t()]) :: [Call.t()]
   def unresolved_tool_calls(messages) when is_list(messages) do
     # One pass over the history: pending calls are keyed by id with the
     # position they were made at, so the result keeps transcript order.
     {pending, _position} =
       Enum.reduce(messages, {%{}, 0}, fn
-        %Message{role: :assistant, tool_calls: calls}, acc when is_list(calls) ->
+        %Message{role: :assistant, tool_calls: calls}, acc ->
           Enum.reduce(calls, acc, &put_pending_call/2)
 
         %Message{role: :tool, tool_call_id: id}, {pending, position} when is_binary(id) ->
@@ -93,24 +93,39 @@ defmodule Tackle.Lib.Messages do
       end)
 
     pending
-    |> Enum.sort_by(fn {_id, {position, _name}} -> position end)
-    |> Enum.map(fn {id, {_position, name}} -> %{id: id, name: name} end)
+    |> Map.values()
+    |> Enum.sort_by(fn {position, _call} -> position end)
+    |> Enum.map(fn {_position, call} -> call end)
   end
 
-  defp put_pending_call(call, {pending, position} = acc) do
-    case {tool_call_field(call, :id), tool_call_field(call, :name)} do
-      {id, name} when is_binary(id) and is_binary(name) and not is_map_key(pending, id) ->
-        {Map.put(pending, id, {position, name}), position + 1}
+  defp put_pending_call(%Call{id: id} = call, {pending, position})
+       when is_binary(id) and not is_map_key(pending, id),
+       do: {Map.put(pending, id, {position, call}), position + 1}
 
-      _duplicate_or_invalid ->
-        acc
-    end
+  defp put_pending_call(%Call{}, acc), do: acc
+
+  @doc """
+  Builds the synthetic results that settle the unresolved tool calls of
+  `messages` (see `unresolved_tool_calls/1`): one tool result message per
+  call, in transcript order, whose content is the model-facing error of
+  `Tackle.Lib.Tool.Error.interrupted/3` for `outcome`.
+
+  The messages are only built; appending, persisting, and reporting them is
+  up to the caller.
+
+  ## Options
+    * `:id_generator` - zero-arity function returning a message id
+  """
+  @spec interrupted_results([Message.t()], ToolError.interrupted_outcome(), keyword()) ::
+          [Message.t()]
+  def interrupted_results(messages, outcome, opts \\ []) when is_list(messages) do
+    messages
+    |> unresolved_tool_calls()
+    |> Enum.map(fn %Call{id: id, name: name} ->
+      error = ToolError.interrupted(id, name, outcome)
+      Message.tool_result(id, name, error.content, Keyword.take(opts, [:id_generator]))
+    end)
   end
-
-  defp tool_call_field(%Tackle.Lib.Tool.Call{} = call, key), do: Map.get(call, key)
-
-  defp tool_call_field(call, key) when is_map(call),
-    do: Map.get(call, key) || Map.get(call, Atom.to_string(key))
 
   @doc """
   Converts a single `%Tackle.Lib.Message{}` into a provider-neutral structured map,
@@ -171,43 +186,23 @@ defmodule Tackle.Lib.Messages do
 
   defp maybe_put_provider_state(message, _provider_state), do: message
 
-  defp encode_tool_calls(tool_calls, message_id) when is_list(tool_calls) do
+  defp encode_tool_calls(tool_calls, message_id) do
     tool_calls
     |> Enum.with_index()
-    |> Enum.map(fn {tool_call, index} -> encode_tool_call(tool_call, message_id, index) end)
-  end
-
-  defp encode_tool_calls(_tool_calls, _message_id), do: []
-
-  defp encode_tool_call(tool_call, message_id, index) do
-    %{
-      id: tool_call_id(tool_call, message_id, index),
-      type: "function",
-      function: %{
-        name: tool_call_name(tool_call),
-        arguments: encode_arguments(tool_call_arguments(tool_call))
+    |> Enum.map(fn {%Call{} = call, index} ->
+      %{
+        id: tool_call_id(call, message_id, index),
+        type: "function",
+        function: %{name: call.name, arguments: JSON.encode!(call.arguments)}
       }
-    }
+    end)
   end
 
-  defp tool_call_id(%{id: id}, _message_id, _index) when is_binary(id) and id != "", do: id
-  defp tool_call_id(%{"id" => id}, _message_id, _index) when is_binary(id) and id != "", do: id
+  defp tool_call_id(%Call{id: id}, _message_id, _index) when is_binary(id) and id != "", do: id
 
   # The loop gives every call an id, so only foreign history lacks one. Derive
   # it from the message (its id, or a hash of a message built without one) so
   # every request sends the same id: a random one would change the request
   # prefix each time and defeat provider prompt caching.
-  defp tool_call_id(_tool_call, message_id, index), do: "call_#{message_id}_#{index}"
-
-  defp tool_call_name(%{name: name}) when is_binary(name), do: name
-  defp tool_call_name(%{"name" => name}) when is_binary(name), do: name
-  defp tool_call_name(_), do: nil
-
-  defp tool_call_arguments(%{arguments: args}), do: args
-  defp tool_call_arguments(%{"arguments" => args}), do: args
-  defp tool_call_arguments(_), do: %{}
-
-  defp encode_arguments(args) when is_binary(args), do: args
-  defp encode_arguments(args) when is_map(args), do: JSON.encode!(args)
-  defp encode_arguments(_), do: "{}"
+  defp tool_call_id(%Call{}, message_id, index), do: "call_#{message_id}_#{index}"
 end

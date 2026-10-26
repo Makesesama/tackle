@@ -281,7 +281,9 @@ defmodule Tackle.Session.DurabilityTest do
     assert [%Message{role: :tool, tool_call_id: "call-1", tool_name: "bash"} = settled] =
              Enum.filter(snapshot.agent_state.messages, &(&1.role == :tool))
 
-    assert settled.content =~ "interrupted"
+    assert settled.content ==
+             "Error: Tool execution was interrupted before a result was recorded; " <>
+               "the outcome is unknown."
 
     {:ok, replay} = read_journal(session_id, home: ctx.home)
     assert Enum.any?(Enum.map(replay.commits, &commit_kind/1), &(&1 == :tool_result))
@@ -331,7 +333,9 @@ defmodule Tackle.Session.DurabilityTest do
     assert [%Message{role: :tool, tool_call_id: "call-1", tool_name: "bash"} = settled] =
              Enum.filter(snapshot.agent_state.messages, &(&1.role == :tool))
 
-    assert settled.content =~ "interrupted"
+    assert settled.content ==
+             "Error: Tool execution was interrupted before a result was recorded; " <>
+               "the outcome is unknown."
 
     {:ok, replay} = read_journal(session_id, home: ctx.home)
     assert Enum.any?(Enum.map(replay.commits, &commit_kind/1), &(&1 == :tool_result))
