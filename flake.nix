@@ -182,7 +182,14 @@
           '';
 
           commonShellHook = ''
-            ${preCommitCheck.shellHook}
+            # Inside a Tackle jail (nix/packages/jail-direnv.nix sources this
+            # devshell there) .git/hooks and .git/config are read-only, so
+            # installing the hooks only fails, slowly, while the jail starts.
+            if [ -z "''${TACKLE_JAIL:-}" ]; then
+              ${preCommitCheck.shellHook}
+            else
+              export PATH=${preCommitCheck.config.package}/bin:$PATH
+            fi
             ${projectShellHook}
 
             export ERL_AFLAGS="-kernel shell_history enabled"

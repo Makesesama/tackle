@@ -276,6 +276,9 @@ locale stay on `PATH` and in the environment. A cached profile describes the
 host environment, so this only works while the store is mounted (`enableNix`,
 on in `tackle-cli-jail`), and sourcing it runs the devshell's `shellHook`
 inside the jail, which is code `direnv allow` already runs for you on the host.
+The jail sets `TACKLE_JAIL=1`, so a `shellHook` can skip work that cannot
+succeed there, such as installing Git hooks into the read-only `.git/hooks`;
+the CLI waits up to 30 seconds for the devshell and the exec-server to start.
 Build a launcher with `inheritDirenv = false` to turn it off
 (`nix/packages/jail-direnv.nix`).
 

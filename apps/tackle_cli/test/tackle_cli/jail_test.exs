@@ -51,6 +51,21 @@ defmodule Tackle.CLI.JailTest do
     assert File.exists?(Path.join(env["TACKLE_HOME"], "logs/exec-server.log"))
   end
 
+  # A launcher that sources the project's devshell runs its shellHook before
+  # the exec-server starts, which can outlast the client's default handshake.
+  test "waits for a launcher that is slow to start the exec-server", %{
+    root: root,
+    workspace: workspace,
+    env: env
+  } do
+    env = Map.put(env, "TACKLE_EXEC_LAUNCHER", launcher(root, delay: 6))
+
+    assert {:ok, executor} =
+             Jail.ensure_started(env: env, cwd: workspace, verify_isolation: false)
+
+    assert {:ok, %{type: :directory}} = Executor.stat(executor, workspace)
+  end
+
   test "passes the launcher the environment it needs and nothing else", %{
     root: root,
     workspace: workspace,
@@ -310,7 +325,8 @@ defmodule Tackle.CLI.JailTest do
 
   # Runs the real exec-server without Bubblewrap, honouring the launcher
   # contract: the first argument is the log for standard error. With
-  # `:dump_env`, the launcher records the environment the CLI passed it.
+  # `:dump_env`, the launcher records the environment the CLI passed it; with
+  # `:delay`, it waits that many seconds before starting the exec-server.
   defp launcher(root, opts \\ []) do
     erl = System.find_executable("erl") || raise "erl was not found on PATH"
     elixir_ebin = Path.join(:code.lib_dir(:elixir), "ebin")
@@ -323,10 +339,16 @@ defmodule Tackle.CLI.JailTest do
         file -> "env > #{file}\n"
       end
 
+    delay =
+      case Keyword.get(opts, :delay) do
+        nil -> ""
+        seconds -> "sleep #{seconds}\n"
+      end
+
     File.write!(path, """
     #!/bin/sh
     exec 2>>"$1"
-    #{dump}exec "#{erl}" -noshell -noinput -pa "#{elixir_ebin}" -pa "#{exec_ebin}" \\
+    #{dump}#{delay}exec "#{erl}" -noshell -noinput -pa "#{elixir_ebin}" -pa "#{exec_ebin}" \\
       -s Elixir.Tackle.Exec.Server main
     """)
 

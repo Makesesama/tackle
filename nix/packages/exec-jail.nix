@@ -163,6 +163,9 @@ jail name entry (
     (set-env "LANG" "C.UTF-8")
     (set-env "LC_ALL" "C.UTF-8")
     (set-env "SSL_CERT_FILE" cacert)
+    # Lets a devshell's shellHook, which jail-direnv.nix sources inside the
+    # jail, skip work that cannot succeed here, such as installing Git hooks.
+    (set-env "TACKLE_JAIL" "1")
   ]
   ++ lib.optional network jail.combinators.network
   ++ lib.optional readOnlyWorkspace (set-env "GIT_OPTIONAL_LOCKS" "0")

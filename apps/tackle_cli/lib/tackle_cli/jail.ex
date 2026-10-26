@@ -45,6 +45,9 @@ defmodule Tackle.CLI.Jail do
   # cache the launcher reads to reproduce the project's devshell inside the
   # jail; the launcher's environment is not the jail's, which starts cleared.
   @keep_env ~w(PATH HOME LANG LC_ALL TERM XDG_CACHE_HOME)
+  # Also the handshake timeout: the launcher may source the project's devshell,
+  # running its shellHook, before the exec-server starts and says hello, which
+  # easily takes longer than the client's default of a few seconds.
   @ready_timeout 30_000
 
   @doc """
@@ -222,7 +225,12 @@ defmodule Tackle.CLI.Jail do
       :ok
     else
       client =
-        {Client, name: @client, launcher: {launcher, [log]}, cd: cwd, keep_env: @keep_env}
+        {Client,
+         name: @client,
+         launcher: {launcher, [log]},
+         cd: cwd,
+         keep_env: @keep_env,
+         handshake_timeout: @ready_timeout}
 
       # Restart the exec-server after a crash, but give up rather than
       # respawning a broken jail forever. The CLI keeps running; tools then
