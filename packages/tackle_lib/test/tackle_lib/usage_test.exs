@@ -6,6 +6,15 @@ defmodule Tackle.Lib.UsageTest do
   doctest Usage
 
   describe "normalize/2" do
+    test "sanitizes a hand-built struct instead of raising" do
+      usage = Usage.normalize(%Usage{input_tokens: "x", output_tokens: 2, cost: "free"})
+
+      assert usage.input_tokens == nil
+      assert usage.output_tokens == 2
+      assert usage.total_tokens == 2
+      assert usage.cost == nil
+    end
+
     test "returns nil for missing usage" do
       assert Usage.normalize(nil) == nil
     end

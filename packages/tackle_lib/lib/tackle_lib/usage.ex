@@ -137,6 +137,10 @@ defmodule Tackle.Lib.Usage do
   def normalize(nil, _opts), do: nil
 
   def normalize(%__MODULE__{} = usage, opts) do
+    # A struct built by hand can carry anything; sanitizing it keeps
+    # normalize/2 total, so boundaries that promise not to raise can rely on it.
+    usage = sanitize(usage)
+
     %{
       usage
       | model: usage.model || Keyword.get(opts, :model),
@@ -152,7 +156,6 @@ defmodule Tackle.Lib.Usage do
 
     __MODULE__
     |> struct!(fields)
-    |> sanitize()
     |> normalize(opts)
   end
 
