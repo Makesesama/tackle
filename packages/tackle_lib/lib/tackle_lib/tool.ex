@@ -10,7 +10,8 @@ defmodule Tackle.Lib.Tool do
   ## The contract
 
     * `name/0` — the unique tool name the LLM uses to call it.
-    * `description/0` — natural-language description for the system prompt.
+    * `description/0` — natural-language description the model receives in
+      the tool's definition (`definition/1`).
     * `parameters_schema/0` — provider-neutral keyword schema describing input
       arguments.
     * `execute/2` — runs the tool with centrally validated/coerced args and a

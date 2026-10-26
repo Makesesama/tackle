@@ -115,7 +115,8 @@ defmodule Tackle.Lib.State do
       built into `state.tool_registry`; `tools/1` returns them
     * `:tool_policy` - Tool execution policy (defaults to sequential Tackle.Lib policy)
     * `:context` - Additional context map (user info, permissions, etc.)
-    * `:system_prompt` - Custom system prompt (overrides the built default)
+    * `:system_prompt` - The host-composed system prompt the loop sends as it
+      is (default: `nil`, no system prompt)
     * `:llm_opts` - Extra options passed through to the LLM adapter
     * `:hooks` - List of Tackle.Lib.Hook modules for lifecycle callbacks (default: []);
       raises `ArgumentError` for an entry that is not a loadable module exporting

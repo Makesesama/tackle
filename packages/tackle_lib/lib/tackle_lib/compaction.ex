@@ -22,7 +22,7 @@ defmodule Tackle.Lib.Compaction do
 
   One compaction is all-or-nothing per pass:
 
-    1. select and snapshot a plan without mutation;
+    1. select a plan without mutation;
     2. bound the summarizer input to the window (`Tackle.Lib.Compaction.Input`);
     3. generate and strictly validate the summary;
     4. build the replacement in memory without installing it (append the

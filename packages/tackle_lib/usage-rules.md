@@ -43,7 +43,12 @@ Tackle.Lib.last_answer(state)
 
 - `Tackle.Lib.new/1` builds `%Tackle.Lib.State{}`. Key opts: `:llm`, `:tools`,
   `:system_prompt`, `:context`, `:max_iterations` (default `:infinity`), `:hooks`,
-  `:tool_policy`, `:llm_opts`, `:id_generator`.
+  `:tool_policy`, `:llm_opts`, `:id_generator`, `:session_id`, `:retry`,
+  `:compaction` (`nil` disables it), `:committer` (a `Tackle.Lib.Committer`
+  that makes compactions and navigations durable), and `:tree`. It raises
+  `ArgumentError` for invalid tools, hooks, committer, compaction config, or
+  tree, and for a `:model` option (the model is the selection's,
+  `Tackle.Lib.State.model/1`).
 - `Tackle.Lib.run(state, user_input, opts)` runs one turn (think → act → repeat →
   answer). Returns `{:ok, state} | {:error, state} | {:cancelled, state}`.
 - `Tackle.Lib.continue(state, opts)` re-runs the loop **without** appending a new
@@ -68,6 +73,7 @@ Tackle.Lib.last_answer(state)
 - `:event_callback` — a 1-arity fn called with `%Tackle.Lib.Event{}` structs (run
   lifecycle, message start/end, tool start/end, usage). Use this for streaming
   UI, logging, and metrics rather than inspecting state mid-run.
+- `:tool_context` — a map merged over `state.context` for tool execution only.
 - `:llm_stream` — when `true`, uses the adapter's `stream/3` if implemented,
   falling back to `generate/2`.
 - `:cancellation_signal` — a `Tackle.Lib.Cancellation.Signal` checked between loop
@@ -110,7 +116,8 @@ end
   validated and coerced against the input schema before `run/2` is called.
 - `field` types: `:string`, `:integer`, `:float`, `:boolean`, `:map`,
   `{:list, inner}`. Options: `required: true`, `default: value`,
-  `description: "..."`.
+  `description: "..."`, `enum: [...]`, `nullable: true`. An unknown type or
+  option fails when the tool compiles.
 - The second `run/2` argument is the **host-supplied context map** (`:context`
   from `Tackle.Lib.new/1`), carrying things like `user_id` and permissions. The loop
   adds `:event_callback`, `:tool_call_id`, and (when cancellable)
@@ -123,7 +130,13 @@ end
 - To adapt a richer existing tool abstraction, implement the `Tackle.Lib.Tool`
   callbacks manually instead of using the DSL — the loop only sees the behaviour.
 - Pass tool modules directly to `Tackle.Lib.new/1`; each one must export the
-  required `Tackle.Lib.Tool` callbacks. The loop itself does not validate them.
+  required `Tackle.Lib.Tool` callbacks. `new/1` builds the registry with
+  `Tackle.Lib.Tool.Registry.new/1`, which raises `ArgumentError` for a module
+  that is not a tool (`Tackle.Lib.Tool.tool?/1`), an invalid schema, or a
+  duplicate tool name.
+- Return `{:error, message}` with a binary message the model should see
+  (`"Error: " <> message` in its transcript); never put secrets in it. Any
+  other reason reaches the model as a generic error text.
 
 ## The LLM adapter (host-supplied)
 
@@ -148,7 +161,9 @@ state = Tackle.Lib.new(llm: llm)
   tool-selection options it does not support (`:tool_choice`,
   `:parallel_tool_calls`, and the like; see `Tackle.Lib.LLM.request_opts/3`).
   The `Tackle.Lib.LLM` module docs list the standard option keys.
-- Return `{:ok, %{data: map, usage: %Tackle.Lib.Usage{} | map | nil, model: binary | nil}}`.
+- Return `{:ok, %{data: map, usage: %Tackle.Lib.Usage{} | map | nil, model: binary | nil}}`,
+  optionally with `:provider_state` and a `:stop_reason` (`:end`,
+  `:max_tokens`, `:tool_calls`, `:content_filter`).
   Translate the provider's usage report into canonical usage with
   `Tackle.Lib.Usage.new/1` (pass an OpenAI-style prompt count that includes
   cached tokens as `:prompt_tokens`, and the report as `:raw`); a plain map
@@ -180,10 +195,13 @@ state = Tackle.Lib.new(llm: llm)
 ## Lifecycle hooks
 
 Implement `Tackle.Lib.Hook` to observe/mutate the loop without touching it. All
-callbacks are optional; implement only what you need. Order per turn:
-`before_prompt/2` → `after_prompt/3` → `before_tool_call/3` →
-`after_tool_call/3` → `after_message/3` → `after_turn/2`. `after_prompt/3`
-receives the step's normalized `%Tackle.Lib.LLM.Response{}`.
+callbacks are optional, but each hook module must implement at least one.
+Order per turn: `before_prompt/2` → `after_prompt/3` → `before_tool_call/3` →
+`after_tool_call/3`, with `after_message/3` after every finalized message;
+after a final answer, `before_turn_end/2`, which can return
+`{:continue, messages}` to keep the turn going; and `after_turn/2` once at
+the end. `after_prompt/3` receives the step's normalized
+`%Tackle.Lib.LLM.Response{}`.
 
 Return conventions:
 
@@ -210,9 +228,9 @@ Tackle.Lib.new(hooks: [MyApp.Hooks.AuditLogger], context: %{user_id: user.id})
 Use hooks (not loop edits) for auditing, persistence, metrics, and per-call
 checks. `before_tool_call/3` can veto a call (`{:error, reason}` ends the turn)
 or update the context, but cannot change the call's arguments. Persist messages
-in `after_message/3`; do teardown in `after_turn/2`. `State.new/1` raises
-`ArgumentError` for a hook entry that is not a loaded module exporting a hook
-callback, such as a misspelled module.
+in `after_message/3`; do teardown in `after_turn/2`. `State.new/1`, and every
+turn when it starts, raise `ArgumentError` for a hook entry that is not a
+loadable module exporting a hook callback, such as a misspelled module.
 
 ## System prompts
 

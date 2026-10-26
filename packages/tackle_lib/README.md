@@ -103,17 +103,20 @@ defmodule MyApp.AI.TackleAdapter do
            "tool_calls" => response.tool_calls
          },
          usage: response.usage,
-         model: response.model,
-         provider: response.provider
+         model: response.model
        }}
     end
   end
 end
 ```
 
-There is deliberately no built-in or application-wide default adapter. Give
-the adapter metadata and select a provider and model for each state; the loop
-raises `ArgumentError` for a state without a selection:
+The library sets the response's `:provider` to the selected provider id, so
+the adapter does not report it. `response.usage` must already be canonical
+usage (see [LLM adapter contract](#llm-adapter-contract)).
+
+There is no built-in or application-wide default adapter. Give the adapter
+metadata and select a provider and model for each state; the loop raises
+`ArgumentError` for a state without a selection:
 
 ```elixir
 def adapter_id, do: "openai-codex"
@@ -170,10 +173,12 @@ end
 ```
 
 Tool arguments are normalized to **string keys** before `run/2`. A tool returns
-`{:ok, result}` or `{:error, reason}`. Expected failures should not raise. Hosts
-that expose tools across a public boundary should validate their tool modules
-(e.g. with `Tackle.Lib.Tool.tool?/1` or `Tackle.Lib.Tool.Registry.new/1`) before
-they are placed in state.
+`{:ok, result}` or `{:error, reason}`. Expected failures should not raise.
+`Tackle.Lib.new/1` builds the tool registry with
+`Tackle.Lib.Tool.Registry.new/1`, which raises `ArgumentError` for a module
+that is not a tool, an invalid schema, or a duplicate name; hosts that accept
+tool modules across a public boundary can check them first with
+`Tackle.Lib.Tool.tool?/1`.
 
 ### 3. Compose a prompt and run the agent
 
@@ -257,7 +262,10 @@ Tackle.Lib.continue(state, run_opts)
 | `:tool_policy` | Tool execution policy | sequential default |
 | `:llm_opts` | Additional adapter options | `[]` |
 | `:id_generator` | Zero-arity session/message/tool-call ID function | UUID generator |
-| `:retry` | `Tackle.Lib.Retry`, options, or `false` for provider-message retries | 3 retries, 2s base, 60s cap |
+| `:session_id` | Existing session id to install instead of generating one; sent to adapters for cache affinity and to the committer | generated |
+| `:retry` | `Tackle.Lib.Retry`, options, `false`, or `nil` for provider-message retries | 3 retries, 2s base, 60s cap |
+| `:compaction` | `Tackle.Lib.Compaction.Config` or its options; `nil` disables compaction (see [Context compaction](#context-compaction)) | `nil` |
+| `:committer` | Module implementing `Tackle.Lib.Committer`, which makes compactions and navigations durable before they are installed; a module that does not export `commit/2` raises `ArgumentError` | `nil` (in memory only) |
 | `:tree` | An existing `Tackle.Lib.Tree` to continue; anything else raises `ArgumentError` | empty tree |
 
 Pass a positive integer as `:max_iterations` when a host needs a bounded run.
@@ -323,10 +331,13 @@ state: `state.messages`, `state.status`, `state.error`,
 A normal tool-using turn is:
 
 ```text
-emit turn_start
-append + finalize user message
+reset the per-turn fields; emit turn_start
+settle tool calls a previous turn left without results
+append + finalize user message (run/3 only)
 repeat until final answer (or a configured max_iterations):
+  poll queued incoming messages (first step and after each tool batch)
   set thinking; emit message_start + step_start
+  pressure compaction (when configured and due)
   before_prompt hook
   call or stream LLM (retries, overflow recovery, one re-ask of an
     empty response); emit usage for every response
@@ -341,14 +352,21 @@ repeat until final answer (or a configured max_iterations):
         append assistant tool-call message
         for each call, in provider order:
           before_tool_call hook
-          validate input
-          execute tool
-          validate/project output
-          append linked tool-result message
+          before_tool_execution gate (unless read-only)
+          emit tool_start
+          validate input, execute tool, validate/project output
+          emit tool_execution_end
+          append + finalize linked tool-result message
+          emit tool_end or tool_error
           after_tool_call hook
         repeat
+on error or cancellation: settle unresolved tool calls; emit error/turn_cancelled,
+  status_change, turn_end
 run after_turn hook
 ```
+
+The concurrent tool policy groups these steps differently; see
+[Tool execution modes](#tool-execution-modes).
 
 The message history sent to an adapter is structured, not flattened. Assistant
 tool calls and tool results remain linked by `tool_call_id`, which is required
@@ -369,11 +387,13 @@ Implement `Tackle.Lib.LLM`:
 @callback model_info(model :: String.t(), settings :: map()) ::
             Tackle.Lib.ModelInfo.t() | map() | nil
 
-@callback generate(schema :: keyword() | map() | nil, opts :: keyword()) ::
-            {:ok, response} | {:error, term()}
+# Implement at least one of generate/2 and stream/3. `schema` is nil or a
+# JSON Schema map with string keys.
+@callback generate(schema :: map() | nil, opts :: keyword()) ::
+            {:ok, result} | {:error, term()}
 
-@callback stream(schema, opts, event_callback) ::
-            {:ok, response} | {:error, term()}
+@callback stream(schema :: map() | nil, opts :: keyword(), event_callback) ::
+            {:ok, result} | {:error, term()}
 
 # Optional account flow, owned end-to-end by the adapter.
 @callback login(opts :: keyword()) :: {:ok, credentials :: map()} | {:error, term()}
@@ -482,7 +502,9 @@ alias Tackle.Lib.LLM.Provider
   providers. `Provider.opts/1` returns the `:provider_id` and
   `:provider_settings` adapter options for a provider.
 - `Tackle.Lib.LLM.Selection` and `Tackle.Lib.Decision.Selection` carry
-  `:adapter`, `:provider_id`, `:provider_settings`, `:model`, and `:ref`;
+  `:adapter`, `:provider_id`, `:provider_settings`, `:model`, and `:ref`; an
+  LLM selection also freezes the model's `:model_info`, and a decision
+  selection carries `:local` (see [Decision models](#decision-models)).
   `Tackle.Lib.LLM.Selection.provider/1` rebuilds the `%Provider{}`. Responses
   and normalized usage report the provider id as `:provider`.
 
@@ -595,10 +617,15 @@ The adapter returns:
      cost: 0.002,
      currency: "USD"
    },
-   model: "provider/model-name",
+   model: "model-name",
+   stop_reason: :end,
    provider_state: %{"opaque" => "..."}
  }}
 ```
+
+`:stop_reason` is optional: `:end`, `:max_tokens`, `:tool_calls`, or
+`:content_filter` when the provider says why it stopped
+(`t:Tackle.Lib.LLM.Response.stop_reason/0`), otherwise absent or `nil`.
 
 `:usage` is canonical: a `%Tackle.Lib.Usage{}`, a map with its field names (atom
 or string keys), or `nil`. Adapters translate their provider's report
@@ -998,7 +1025,7 @@ turn, but the tool remains the final security boundary for its operation.
 ## Events and streaming
 
 Pass `event_callback: fn event -> ... end` to receive provider-independent
-events. The library's own event types (`Tackle.Lib.Event.core_type/0`) are:
+events. The library's own event types (`t:Tackle.Lib.Event.core_type/0`) are:
 
 - `:turn_start`, `:turn_end`, `:turn_cancelled`
 - `:step_start`, `:step_end`
@@ -1042,8 +1069,9 @@ reports a host event type the same way.
 
 `:tool_execution_end` reports each completed execution as the loop collects its
 worker result, without waiting for the rest of a concurrent batch. It carries
-`tool_call_id`, `name`, `status` (`:completed` or `:failed`), `result` (on
-success), and `error`/`reason` (on failure). Sequential execution emits it too.
+`tool_call_id`, `name`, `status` (`:completed` or `:failed`), `result`, and
+`error` and `reason` (`nil` when they do not apply). Sequential execution
+emits it too.
 These are transient progress events, not persistence acknowledgements: they may
 arrive out of provider order, before transcript commits, and tools terminated by
 cancellation without a result do not emit one. The existing `:tool_end` and
@@ -1436,7 +1464,8 @@ Core tool settlement emits:
 
 The events follow the `:telemetry.span/3` conventions (see
 `Tackle.Lib.Telemetry`): `:start` measures `system_time` and `monotonic_time`,
-`:stop` and `:exception` measure `duration` and `count`, and every event's
+`:stop` and `:exception` measure `duration`, `monotonic_time`, and `count`,
+and every event's
 metadata carries the start metadata (`tool_name`) and a `telemetry_ref` that
 correlates them. `:stop` adds the bounded `outcome`; `:exception` (a call
 whose preparation or settlement crashed) adds `kind` (`:error`, `:exit`, or
@@ -1503,10 +1532,13 @@ format. A host normally persists these message fields:
 - normalized usage and model;
 - sequence/position within the session.
 
-On reload, rebuild `%Tackle.Lib.Message{}` values in sequence and create a fresh
-`Tackle.Lib.State` with the current trusted tool list, prompt, adapter config, and
-authorization context. Do not deserialize an old context from the database and
-trust it as current authorization.
+On reload, rebuild `%Tackle.Lib.Message{}` values in sequence, append them to a
+`Tackle.Lib.Tree` with `Tackle.Lib.Tree.append_message/3` (and any committed
+compactions with `append_compaction/3`; see
+[Conversation trees](#conversation-trees)), and create a fresh
+`Tackle.Lib.State` from that tree (`:tree`) with the current trusted tool list,
+prompt, adapter config, and authorization context. Do not deserialize an old
+context from the database and trust it as current authorization.
 
 An assistant message's tool calls are always `Tackle.Lib.Tool.Call` structs (and
 `[]` without calls); `Tackle.Lib.Message.assistant/1` normalizes stored call
@@ -1601,7 +1633,6 @@ Tackle.Lib does **not** provide:
 - provider-side parallel tool execution (local `:concurrent` execution is available, but the provider is never asked to schedule calls);
 - forced tool selection or weighted/allow-deny tool policies;
 - preemptive cancellation of code that ignores its signal;
-- automatic provider retries/backoff;
 - distributed process discovery or a cluster-wide session registry;
 - built-in parent/child orchestration (use the optional `tackle_runtime` package); or
 - a complete chat UI.

@@ -19,7 +19,9 @@ defmodule Tackle.Lib.Loop do
 
   The loop uses `state.system_prompt` as-is. The host composes it, for example
   with `Tackle.Lib.SystemPrompt`. Tools reach the model as provider-native tool
-  definitions, and turns request no structured response schema.
+  definitions (`Tackle.Lib.Tool.definition/1`), and a turn sends no response
+  schema (`nil`); hosts that want structured output call
+  `Tackle.Lib.LLM.generate_with/3` with one.
 
   ## Configuration for the turn
 
@@ -55,17 +57,17 @@ defmodule Tackle.Lib.Loop do
 
   Each step keeps one provider response, a `Tackle.Lib.LLM.Response` as
   `Tackle.Lib.LLM.generate_with/3` returns it, which the `after_prompt` hooks
-  see. Transient
-  provider failures are retried under the state's `Tackle.Lib.Retry` policy,
-  and a provider-confirmed context overflow is compacted and sent again when
-  compaction is enabled. Pressure compaction runs before each step's request;
-  once it fails in a turn, the turn's later steps do not try it again. A response with neither content nor tool calls is
-  asked again once, as a retry with reason `:empty_response`; a second empty
-  response in a row ends the turn with an error. A malformed adapter result,
-  or an adapter that crashes, ends the turn with the `Tackle.Lib.LLM.Error`
-  the library returns for it (kind `:invalid_response` or `:unknown`). Every
-  response reports its usage with a `:usage` event, and the step ends with one
-  `:step_end` event for the response it keeps.
+  see. Transient provider failures are retried under the state's
+  `Tackle.Lib.Retry` policy, and a provider-confirmed context overflow is
+  compacted and sent again when compaction is enabled. Pressure compaction
+  runs before each step's request; once it fails in a turn, the turn's later
+  steps do not try it again. A response with neither content nor tool calls
+  is asked again once, as a retry with reason `:empty_response`; a second
+  empty response in a row ends the turn with an error. A malformed adapter
+  result, or an adapter that crashes, ends the turn with the
+  `Tackle.Lib.LLM.Error` the library returns for it (kind `:invalid_response`
+  or `:unknown`). Every response reports its usage with a `:usage` event, and
+  the step ends with one `:step_end` event for the response it keeps.
 
   ## Errors
 
