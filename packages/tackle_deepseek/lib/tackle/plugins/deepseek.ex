@@ -35,7 +35,6 @@ defmodule Tackle.Plugins.DeepSeek do
   @behaviour Tackle.Lib.LLM
 
   alias Tackle.Lib.Cancellation
-  alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
@@ -104,7 +103,7 @@ defmodule Tackle.Plugins.DeepSeek do
   @impl true
   def usage(opts) do
     with :ok <- not_cancelled(opts),
-         {:ok, opts} <- put_base_url(opts),
+         {:ok, opts} <- Provider.put_base_url(opts, @adapter_id),
          {:ok, api_key} <- api_key(opts) do
       balance_request(api_key, opts)
     end
@@ -172,7 +171,7 @@ defmodule Tackle.Plugins.DeepSeek do
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
-         {:ok, opts} <- put_base_url(opts),
+         {:ok, opts} <- Provider.put_base_url(opts, @adapter_id),
          {:ok, api_key} <- api_key(opts),
          {:ok, body} <- build_request_body(schema, opts),
          {:ok, response} <- send_request(body, opts, api_key, event_callback) do
@@ -602,66 +601,10 @@ defmodule Tackle.Plugins.DeepSeek do
   end
 
   defp api_key(opts) do
-    case Keyword.get(opts, :api_key) do
-      api_key when is_binary(api_key) and api_key != "" -> {:ok, api_key}
-      _missing -> stored_or_environment_api_key(opts)
-    end
-  end
-
-  defp stored_or_environment_api_key(opts) do
-    case Keyword.fetch(opts, :credential_store) do
-      {:ok, {module, _reference} = handle} when is_atom(module) ->
-        case CredentialStore.fetch(handle, provider_id(opts)) do
-          {:ok, credentials} when is_map(credentials) ->
-            credential_api_key(credentials) || environment_api_key(opts)
-
-          :error ->
-            environment_api_key(opts)
-
-          {:error, reason} ->
-            {:error, {:credential_store_failed, reason}}
-
-          _other ->
-            {:error, :invalid_deepseek_credentials}
-        end
-
-      {:ok, _invalid} ->
-        {:error, :invalid_credential_store}
-
-      :error ->
-        environment_api_key(opts)
-    end
-  end
-
-  defp credential_api_key(credentials) do
-    case field(credentials, :api_key) || field(credentials, :key) do
-      api_key when is_binary(api_key) and api_key != "" -> {:ok, api_key}
-      _missing -> nil
-    end
-  end
-
-  defp environment_api_key(opts) do
-    with {:ok, name} <- api_key_env(opts) do
-      case name && System.get_env(name) do
-        api_key when is_binary(api_key) and api_key != "" -> {:ok, api_key}
-        _missing -> {:error, {:missing_deepseek_api_key, provider_id(opts)}}
-      end
-    end
-  end
-
-  # The environment variable holding the provider's API key: its
-  # `"api_key_env"` setting, else `DEEPSEEK_API_KEY` for the default provider
-  # only, so another provider never picks up that key by accident.
-  defp api_key_env(opts) do
-    case Map.fetch(Provider.settings(opts), "api_key_env") do
-      {:ok, name} when is_binary(name) and name != "" ->
-        {:ok, name}
-
-      {:ok, other} ->
-        {:error, {:invalid_provider_setting, provider_id(opts), "api_key_env", other}}
-
-      :error ->
-        {:ok, if(provider_id(opts) == @adapter_id, do: "DEEPSEEK_API_KEY")}
+    case Provider.api_key(opts, @adapter_id, "DEEPSEEK_API_KEY") do
+      {:ok, api_key} -> {:ok, api_key}
+      :error -> {:error, {:missing_deepseek_api_key, provider_id(opts)}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -675,20 +618,6 @@ defmodule Tackle.Plugins.DeepSeek do
   end
 
   defp provider_id(opts), do: Provider.id(opts, @adapter_id)
-
-  # An explicit `:base_url` option wins over the provider's `"base_url"` setting.
-  defp put_base_url(opts) do
-    case Map.fetch(Provider.settings(opts), "base_url") do
-      {:ok, url} when is_binary(url) and url != "" ->
-        {:ok, Keyword.put_new(opts, :base_url, url)}
-
-      {:ok, other} ->
-        {:error, {:invalid_provider_setting, provider_id(opts), "base_url", other}}
-
-      :error ->
-        {:ok, opts}
-    end
-  end
 
   defp chat_completions_url(opts) do
     base_url = Keyword.get(opts, :base_url, @default_base_url) |> String.trim_trailing("/")

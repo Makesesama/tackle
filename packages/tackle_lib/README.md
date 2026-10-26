@@ -430,12 +430,23 @@ unsupported model, or cancellation (`:cancelled`), stay plain reasons and are
 never retried.
 
 Hosts may inject a `{module, reference}` credential-store handle in
-`opts[:credential_store]`. Adapters access the provider's namespace with
-`Tackle.Lib.CredentialStore.fetch/2`, `put/3`, and `delete/2`, using
+`opts[:credential_store]`, which adapters read with
+`Tackle.Lib.CredentialStore.from_opts/1`. Adapters access the provider's
+namespace with `Tackle.Lib.CredentialStore.fetch/2` (which checks what the
+store returns and reports its failures as `{:credential_store_failed,
+reason}`), `put/3`, and `delete/2`, using
 `Tackle.Lib.LLM.Provider.id(opts, adapter_id)` as the namespace so each provider
 keeps its own login; `Tackle.Lib.LLM.Provider.settings(opts)` reads the
 provider's settings (`%{}` when absent). Adapters that refresh credentials
-should include the provider id in any refresh lock. Tackle.Lib treats
+should include the provider id in any refresh lock.
+
+`Tackle.Lib.LLM.Provider` also holds the lookups adapters share:
+`string_setting/3` reads a string setting, `put_base_url/2` applies the
+`"base_url"` setting unless `:base_url` is explicit, and `api_key/3` finds an
+API key in `opts[:api_key]`, the stored credentials (`"api_key"` or `"key"`),
+or the environment variable the `"api_key_env"` setting names (or a default
+variable for the adapter's default provider only), trimmed and checked to be
+header-safe. Tackle.Lib treats
 credential maps as opaque JSON-compatible data; OAuth flows, token schemas,
 refresh logic, and persistence remain outside the library.
 

@@ -336,6 +336,34 @@ defmodule Tackle.Plugins.AnthropicTest do
              Tackle.Lib.CredentialStore.fetch(store, "anthropic")
   end
 
+  test "a 401 after the credentials were removed reports them missing" do
+    store =
+      start_store(%{
+        "anthropic" => %{
+          "type" => "oauth",
+          "access_token" => "sk-ant-oat-old",
+          "refresh_token" => "refresh-1",
+          "expires_at" => System.system_time(:millisecond) + 3_600_000
+        }
+      })
+
+    # The user logs out while the request is in flight.
+    request = fn options ->
+      :ok = Tackle.Lib.CredentialStore.delete(store, "anthropic")
+      feed_chunks(options, ["{\"error\":{\"message\":\"token expired\"}}"], 401)
+    end
+
+    opts = [
+      model: "claude-opus-5-5",
+      messages: [%{role: :user, content: "hello"}],
+      tools: [],
+      credential_store: store,
+      request: request
+    ]
+
+    assert {:error, {:missing_anthropic_credentials, "anthropic"}} = generate(nil, opts)
+  end
+
   test "classifies context overflow but not generic provider errors" do
     overflow = fn options ->
       feed_chunks(

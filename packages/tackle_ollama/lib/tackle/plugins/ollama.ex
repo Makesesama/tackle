@@ -82,7 +82,6 @@ defmodule Tackle.Plugins.Ollama do
   @behaviour Tackle.Lib.Decision
 
   alias Tackle.Lib.Cancellation
-  alias Tackle.Lib.CredentialStore
   alias Tackle.Lib.Decision.{Answer, Question, Request, Result}
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
@@ -235,7 +234,7 @@ defmodule Tackle.Plugins.Ollama do
           {:ok, :not_required}
 
         :required ->
-          case stored_or_environment_api_key(provider, opts) do
+          case required_api_key(provider, opts) do
             {:ok, _api_key} -> {:ok, :stored}
             {:error, {:missing_ollama_api_key, _id}} -> {:ok, :missing}
             {:error, reason} -> {:error, reason}
@@ -782,71 +781,14 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  defp required_api_key(provider, opts) do
-    case Keyword.get(opts, :api_key) do
-      api_key when is_binary(api_key) ->
-        if String.trim(api_key) == "",
-          do: stored_or_environment_api_key(provider, opts),
-          else: normalize_api_key(api_key)
-
-      _missing ->
-        stored_or_environment_api_key(provider, opts)
-    end
-  end
-
-  defp stored_or_environment_api_key(provider, opts) do
-    case Keyword.fetch(opts, :credential_store) do
-      {:ok, {module, _reference} = handle} when is_atom(module) ->
-        case CredentialStore.fetch(handle, provider.id) do
-          {:ok, credentials} when is_map(credentials) ->
-            credential_api_key(credentials) || environment_api_key(provider)
-
-          :error ->
-            environment_api_key(provider)
-
-          {:error, reason} ->
-            {:error, {:credential_store_failed, reason}}
-
-          _other ->
-            {:error, :invalid_ollama_credentials}
-        end
-
-      {:ok, _invalid} ->
-        {:error, :invalid_credential_store}
-
-      :error ->
-        environment_api_key(provider)
-    end
-  end
-
-  defp credential_api_key(credentials) do
-    case field(credentials, :api_key) || field(credentials, :key) do
-      api_key when is_binary(api_key) ->
-        if String.trim(api_key) == "", do: nil, else: normalize_api_key(api_key)
-
-      _missing ->
-        nil
-    end
-  end
-
-  defp environment_api_key(%Provider{id: id, settings: settings}) do
-    case Map.get(settings, "api_key_env") do
-      nil ->
-        {:error, {:missing_ollama_api_key, id}}
-
-      name when is_binary(name) and name != "" ->
-        case System.get_env(name) do
-          api_key when is_binary(api_key) ->
-            if String.trim(api_key) == "",
-              do: {:error, {:missing_ollama_api_key, id}},
-              else: normalize_api_key(api_key)
-
-          nil ->
-            {:error, {:missing_ollama_api_key, id}}
-        end
-
-      invalid ->
-        {:error, {:invalid_provider_settings, id, {"api_key_env", invalid}}}
+  # The key lookup of every adapter (`Tackle.Lib.LLM.Provider.api_key/3`) for
+  # this provider's settings, which may be its defaults. Ollama has no default
+  # environment variable; its cloud provider names one in "api_key_env".
+  defp required_api_key(%Provider{} = provider, opts) do
+    case Provider.api_key(Keyword.merge(opts, Provider.opts(provider)), provider.id) do
+      {:ok, api_key} -> {:ok, api_key}
+      :error -> {:error, {:missing_ollama_api_key, provider.id}}
+      {:error, reason} -> {:error, reason}
     end
   end
 

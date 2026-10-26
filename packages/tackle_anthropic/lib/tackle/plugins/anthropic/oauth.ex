@@ -170,17 +170,6 @@ defmodule Tackle.Plugins.Anthropic.OAuth do
 
   def oauth_credentials?(_credentials), do: false
 
-  @doc false
-  @spec api_key(map()) :: {:ok, String.t()} | :error
-  def api_key(credentials) when is_map(credentials) do
-    case credential_string(credentials, ["api_key", "key"]) do
-      {:ok, key} -> {:ok, key}
-      _missing -> :error
-    end
-  end
-
-  def api_key(_credentials), do: :error
-
   defp token_request(body, operation, opts) do
     request_options = [
       method: :post,

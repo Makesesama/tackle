@@ -160,34 +160,19 @@ defmodule Tackle.Plugins.Anthropic do
   @doc "Reports whether usable Anthropic credentials are stored."
   @impl true
   def status(opts) do
-    case credential_store(opts) do
-      {:ok, handle} -> status_from_handle(handle, opts)
-      :error -> environment_status(opts)
-    end
-  end
+    case stored_oauth(opts) do
+      {:ok, credentials, _handle} ->
+        {:ok, if(OAuth.expired?(credentials, opts), do: :expired, else: :stored)}
 
-  defp status_from_handle(handle, opts) do
-    case fetch_credentials(handle, provider_id(opts)) do
-      {:ok, credentials} -> {:ok, credentials_status(credentials, opts)}
-      :missing -> environment_status(opts)
-      {:error, reason} -> {:error, reason}
-    end
-  end
+      :none ->
+        case api_key_auth(opts) do
+          {:ok, _auth} -> {:ok, :stored}
+          {:error, {:missing_anthropic_credentials, _provider_id}} -> {:ok, :missing}
+          {:error, reason} -> {:error, reason}
+        end
 
-  defp credentials_status(credentials, opts) do
-    cond do
-      OAuth.oauth_credentials?(credentials) and OAuth.expired?(credentials, opts) -> :expired
-      OAuth.oauth_credentials?(credentials) -> :stored
-      match?({:ok, _key}, OAuth.api_key(credentials)) -> :stored
-      true -> :missing
-    end
-  end
-
-  defp environment_status(opts) do
-    case environment_auth(opts) do
-      {:ok, _auth} -> {:ok, :stored}
-      {:error, {:missing_anthropic_credentials, _provider_id}} -> {:ok, :missing}
-      {:error, reason} -> {:error, reason}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -195,7 +180,7 @@ defmodule Tackle.Plugins.Anthropic do
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
-         {:ok, opts} <- put_base_url(opts),
+         {:ok, opts} <- Provider.put_base_url(opts, @adapter_id),
          {:ok, auth} <- resolve_auth(opts),
          result <- request_once(schema, opts, auth, event_callback) do
       retry_unauthorized(result, schema, opts, auth, event_callback)
@@ -451,44 +436,45 @@ defmodule Tackle.Plugins.Anthropic do
     end
   end
 
+  # An explicit API key wins, then stored OAuth credentials, then the API key
+  # lookup every adapter shares (store, then environment).
   defp resolve_auth(opts) do
-    case explicit_api_key(opts) do
-      {:ok, key} ->
-        {:ok, %{type: :api_key, token: key}}
-
-      :error ->
-        credential_auth(opts)
+    with false <- explicit_api_key?(opts),
+         {:ok, credentials, handle} <- stored_oauth(opts),
+         {:ok, credentials} <- maybe_refresh(handle, credentials, nil, opts) do
+      {:ok, oauth_auth(handle, credentials)}
+    else
+      true -> api_key_auth(opts)
+      :none -> api_key_auth(opts)
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp credential_auth(opts) do
-    case credential_store(opts) do
-      {:ok, handle} -> auth_from_store(handle, opts)
-      :error -> environment_auth(opts)
+  defp explicit_api_key?(opts) do
+    case Keyword.get(opts, :api_key) do
+      key when is_binary(key) -> String.trim(key) != ""
+      _missing -> false
     end
   end
 
-  defp auth_from_store(handle, opts) do
-    case fetch_credentials(handle, provider_id(opts)) do
-      {:ok, %{} = credentials} ->
-        cond do
-          OAuth.oauth_credentials?(credentials) ->
-            with {:ok, credentials} <- maybe_refresh(handle, credentials, nil, opts) do
-              {:ok, oauth_auth(handle, credentials)}
-            end
+  # The stored credentials when they are an OAuth login, else `:none`.
+  defp stored_oauth(opts) do
+    with {:ok, handle} <- CredentialStore.from_opts(opts),
+         {:ok, credentials} <- CredentialStore.fetch(handle, provider_id(opts)) do
+      if OAuth.oauth_credentials?(credentials),
+        do: {:ok, credentials, handle},
+        else: :none
+    else
+      :error -> :none
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-          true ->
-            case OAuth.api_key(credentials) do
-              {:ok, key} -> {:ok, %{type: :api_key, token: key}}
-              :error -> {:error, :invalid_anthropic_credentials}
-            end
-        end
-
-      :missing ->
-        environment_auth(opts)
-
-      {:error, reason} ->
-        {:error, reason}
+  defp api_key_auth(opts) do
+    case Provider.api_key(opts, @adapter_id, @api_key_env) do
+      {:ok, key} -> {:ok, %{type: :api_key, token: key}}
+      :error -> {:error, {:missing_anthropic_credentials, provider_id(opts)}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -542,76 +528,13 @@ defmodule Tackle.Plugins.Anthropic do
 
   defp fetch_credentials(handle, provider_id) do
     case CredentialStore.fetch(handle, provider_id) do
-      {:ok, %{} = credentials} -> {:ok, credentials}
-      :error -> :missing
-      {:error, reason} -> {:error, {:credential_store_failed, reason}}
-      _other -> {:error, :invalid_anthropic_credentials}
+      {:ok, credentials} -> {:ok, credentials}
+      :error -> {:error, {:missing_anthropic_credentials, provider_id}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   defp provider_id(opts), do: Provider.id(opts, @adapter_id)
-
-  # An explicit `:base_url` option wins over the provider's `"base_url"` setting.
-  defp put_base_url(opts) do
-    case Map.fetch(Provider.settings(opts), "base_url") do
-      {:ok, url} when is_binary(url) and url != "" ->
-        {:ok, Keyword.put_new(opts, :base_url, url)}
-
-      {:ok, other} ->
-        {:error, {:invalid_provider_setting, provider_id(opts), "base_url", other}}
-
-      :error ->
-        {:ok, opts}
-    end
-  end
-
-  defp credential_store(opts) do
-    case Keyword.fetch(opts, :credential_store) do
-      {:ok, {module, _reference} = handle} when is_atom(module) and not is_nil(module) ->
-        {:ok, handle}
-
-      _result ->
-        :error
-    end
-  end
-
-  defp explicit_api_key(opts) do
-    case Keyword.get(opts, :api_key) do
-      key when is_binary(key) and key != "" -> {:ok, key}
-      _missing -> :error
-    end
-  end
-
-  defp environment_auth(opts) do
-    case explicit_api_key(opts) do
-      {:ok, key} ->
-        {:ok, %{type: :api_key, token: key}}
-
-      :error ->
-        with {:ok, name} <- api_key_env(opts) do
-          case name && System.get_env(name) do
-            key when is_binary(key) and key != "" -> {:ok, %{type: :api_key, token: key}}
-            _missing -> {:error, {:missing_anthropic_credentials, provider_id(opts)}}
-          end
-        end
-    end
-  end
-
-  # The environment variable holding the provider's API key: its
-  # `"api_key_env"` setting, else `ANTHROPIC_API_KEY` for the default provider
-  # only, so another provider never picks up that key by accident.
-  defp api_key_env(opts) do
-    case Map.fetch(Provider.settings(opts), "api_key_env") do
-      {:ok, name} when is_binary(name) and name != "" ->
-        {:ok, name}
-
-      {:ok, other} ->
-        {:error, {:invalid_provider_setting, provider_id(opts), "api_key_env", other}}
-
-      :error ->
-        {:ok, if(provider_id(opts) == @adapter_id, do: @api_key_env)}
-    end
-  end
 
   defp oauth_auth?(%{type: :oauth}), do: true
   defp oauth_auth?(_auth), do: false

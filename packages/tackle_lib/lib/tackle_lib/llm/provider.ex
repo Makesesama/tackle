@@ -32,6 +32,8 @@ defmodule Tackle.Lib.LLM.Provider do
   arity-zero versions.
   """
 
+  alias Tackle.Lib.CredentialStore
+
   @enforce_keys [:id, :adapter]
   defstruct [:id, :adapter, settings: %{}]
 
@@ -184,6 +186,111 @@ defmodule Tackle.Lib.LLM.Provider do
       _missing -> %{}
     end
   end
+
+  @doc """
+  Reads a string setting of the provider an adapter was called with.
+
+  Returns `{:ok, nil}` when the setting is absent and `{:ok, value}` for a
+  non-empty string. Any other value is
+  `{:error, {:invalid_provider_setting, provider_id, key, value}}`, where the
+  provider id is `opts[:provider_id]`, else `default_id`.
+  """
+  @spec string_setting(keyword(), String.t(), String.t()) ::
+          {:ok, String.t() | nil}
+          | {:error, {:invalid_provider_setting, String.t(), String.t(), term()}}
+  def string_setting(opts, key, default_id) when is_binary(key) and is_binary(default_id) do
+    case Map.fetch(settings(opts), key) do
+      {:ok, value} when is_binary(value) and value != "" -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_provider_setting, id(opts, default_id), key, value}}
+      :error -> {:ok, nil}
+    end
+  end
+
+  @doc """
+  Puts the provider's `"base_url"` setting into `opts[:base_url]`.
+
+  An explicit `:base_url` option wins over the setting. Without either,
+  `opts` is returned unchanged and the adapter uses its default URL. An
+  invalid setting is an error (see `string_setting/3`).
+  """
+  @spec put_base_url(keyword(), String.t()) :: {:ok, keyword()} | {:error, term()}
+  def put_base_url(opts, default_id) when is_list(opts) do
+    case string_setting(opts, "base_url", default_id) do
+      {:ok, nil} -> {:ok, opts}
+      {:ok, url} -> {:ok, Keyword.put_new(opts, :base_url, url)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Looks up the API key of the provider an adapter was called with.
+
+  The first key found wins:
+
+    1. `opts[:api_key]`;
+    2. the `"api_key"` (or `"key"`) entry of the credentials stored in the
+       provider's namespace of `opts[:credential_store]` (see
+       `Tackle.Lib.CredentialStore.from_opts/1`);
+    3. the environment variable named by the provider's `"api_key_env"`
+       setting, or `default_env` for the default provider (`default_id`)
+       only, so another provider never picks up that key by accident.
+
+  Keys are trimmed, and a blank key counts as none. A trimmed key with
+  spaces, control characters, or other bytes outside printable ASCII is
+  `{:error, :invalid_api_key}`, rejected before it reaches a request (an HTTP
+  client would raise with the header in its error). Returns `:error` when no
+  source has a key; adapters turn it into their own "missing key" error.
+  Credential-store failures and invalid settings are errors.
+  """
+  @spec api_key(keyword(), String.t(), String.t() | nil) ::
+          {:ok, String.t()} | :error | {:error, term()}
+  def api_key(opts, default_id, default_env \\ nil)
+      when is_list(opts) and is_binary(default_id) and
+             (is_binary(default_env) or is_nil(default_env)) do
+    with :error <- normalize_api_key(Keyword.get(opts, :api_key)),
+         :error <- stored_api_key(opts, id(opts, default_id)) do
+      environment_api_key(opts, default_id, default_env)
+    end
+  end
+
+  defp stored_api_key(opts, provider_id) do
+    with {:ok, handle} <- CredentialStore.from_opts(opts),
+         {:ok, credentials} <- CredentialStore.fetch(handle, provider_id) do
+      key =
+        Map.get(credentials, "api_key") || Map.get(credentials, :api_key) ||
+          Map.get(credentials, "key") || Map.get(credentials, :key)
+
+      normalize_api_key(key)
+    end
+  end
+
+  defp environment_api_key(opts, default_id, default_env) do
+    case string_setting(opts, "api_key_env", default_id) do
+      {:ok, nil} ->
+        if id(opts, default_id) == default_id and default_env,
+          do: env_api_key(default_env),
+          else: :error
+
+      {:ok, name} ->
+        env_api_key(name)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp env_api_key(name), do: name |> System.get_env() |> normalize_api_key()
+
+  defp normalize_api_key(key) when is_binary(key) do
+    case String.trim(key) do
+      "" -> :error
+      key -> if header_safe?(key), do: {:ok, key}, else: {:error, :invalid_api_key}
+    end
+  end
+
+  defp normalize_api_key(_missing), do: :error
+
+  defp header_safe?(value), do: value |> :binary.bin_to_list() |> Enum.all?(&(&1 in 0x21..0x7E))
 
   @doc false
   @spec validate_models(term(), String.t()) :: {:ok, [String.t()]} | {:error, term()}

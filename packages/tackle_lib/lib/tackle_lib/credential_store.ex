@@ -19,10 +19,40 @@ defmodule Tackle.Lib.CredentialStore do
   @callback delete(reference :: term(), namespace()) ::
               :ok | {:error, term()}
 
-  @doc "Fetches the opaque credentials stored for one provider namespace."
-  @spec fetch(handle(), namespace()) :: {:ok, credentials()} | :error | {:error, term()}
+  @doc """
+  Reads the credential-store handle an adapter was called with.
+
+  Returns `:error` when the options carry none (or `nil`), and
+  `{:error, :invalid_credential_store}` when `:credential_store` is not a
+  `{module, reference}` handle.
+  """
+  @spec from_opts(keyword()) :: {:ok, handle()} | :error | {:error, :invalid_credential_store}
+  def from_opts(opts) when is_list(opts) do
+    case Keyword.get(opts, :credential_store) do
+      nil -> :error
+      {module, _reference} = handle when is_atom(module) and not is_nil(module) -> {:ok, handle}
+      _invalid -> {:error, :invalid_credential_store}
+    end
+  end
+
+  @doc """
+  Fetches the opaque credentials stored for one provider namespace.
+
+  Returns `{:ok, credentials}`, `:error` when the namespace holds nothing,
+  or `{:error, {:credential_store_failed, reason}}` when the implementation
+  fails. An implementation that returns anything else, such as credentials
+  that are not a map, fails with reason `:invalid_result`; the value is not
+  echoed, since it may hold a secret.
+  """
+  @spec fetch(handle(), namespace()) ::
+          {:ok, credentials()} | :error | {:error, {:credential_store_failed, term()}}
   def fetch({module, reference}, namespace) when is_atom(module) and is_binary(namespace) do
-    module.fetch(reference, namespace)
+    case module.fetch(reference, namespace) do
+      {:ok, %{} = credentials} when not is_struct(credentials) -> {:ok, credentials}
+      :error -> :error
+      {:error, reason} -> {:error, {:credential_store_failed, reason}}
+      _other -> {:error, {:credential_store_failed, :invalid_result}}
+    end
   end
 
   @doc "Stores opaque credentials in one provider namespace."

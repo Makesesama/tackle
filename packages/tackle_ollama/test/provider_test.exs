@@ -86,11 +86,14 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
                opts(request, credential_store: {Store, {self(), {:error, :unavailable}}})
              )
 
-    assert {:error, :invalid_ollama_credentials} =
+    assert {:error, {:credential_store_failed, :invalid_result}} =
              generate(
                nil,
                opts(request, credential_store: {Store, {self(), {:ok, "invalid"}}})
              )
+
+    assert {:error, :invalid_credential_store} =
+             generate(nil, opts(request, credential_store: :not_a_handle))
 
     for key <- ["bad\r\nkey", "bad key", "bad\tkey"] do
       assert {:error, :invalid_api_key} = generate(nil, opts(request, api_key: key))

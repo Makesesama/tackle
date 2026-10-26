@@ -133,7 +133,7 @@ defmodule Tackle.Plugins.Codex do
   @impl true
   def usage(opts) do
     with :ok <- not_cancelled(opts),
-         {:ok, opts} <- put_base_url(opts),
+         {:ok, opts} <- Provider.put_base_url(opts, @adapter_id),
          {:ok, handle} <- credential_store(opts) do
       usage_request(handle, opts)
     end
@@ -222,7 +222,7 @@ defmodule Tackle.Plugins.Codex do
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
-         {:ok, opts} <- put_base_url(opts),
+         {:ok, opts} <- Provider.put_base_url(opts, @adapter_id),
          {:ok, handle} <- credential_store(opts),
          {:ok, credentials} <- fresh_credentials(handle, nil, opts),
          result <- request_once(schema, opts, credentials, event_callback) do
@@ -797,33 +797,19 @@ defmodule Tackle.Plugins.Codex do
 
   defp fetch_credentials(handle, provider_id) do
     case CredentialStore.fetch(handle, provider_id) do
-      {:ok, %{} = credentials} -> {:ok, credentials}
+      {:ok, credentials} -> {:ok, credentials}
       :error -> {:error, :missing_codex_credentials}
-      {:error, reason} -> {:error, {:credential_store_failed, reason}}
-      _other -> {:error, :invalid_codex_credentials}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   defp provider_id(opts), do: Provider.id(opts, @adapter_id)
 
-  # An explicit `:base_url` option wins over the provider's `"base_url"` setting.
-  defp put_base_url(opts) do
-    case Map.fetch(Provider.settings(opts), "base_url") do
-      {:ok, url} when is_binary(url) and url != "" ->
-        {:ok, Keyword.put_new(opts, :base_url, url)}
-
-      {:ok, other} ->
-        {:error, {:invalid_provider_setting, provider_id(opts), "base_url", other}}
-
-      :error ->
-        {:ok, opts}
-    end
-  end
-
   defp credential_store(opts) do
-    case Keyword.fetch(opts, :credential_store) do
-      {:ok, {module, _reference} = handle} when is_atom(module) -> {:ok, handle}
-      _result -> {:error, :credential_store_required}
+    case CredentialStore.from_opts(opts) do
+      {:ok, handle} -> {:ok, handle}
+      :error -> {:error, :credential_store_required}
+      {:error, reason} -> {:error, reason}
     end
   end
 

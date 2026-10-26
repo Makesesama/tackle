@@ -216,4 +216,102 @@ defmodule Tackle.Lib.LLM.ProviderTest do
     assert Provider.settings(provider_settings: %{"a" => 1}) == %{"a" => 1}
     assert Provider.settings([]) == %{}
   end
+
+  describe "adapter helpers" do
+    defmodule KeyStore do
+      @behaviour Tackle.Lib.CredentialStore
+
+      @impl true
+      def fetch(credentials, namespace) do
+        case Map.fetch(credentials, namespace) do
+          {:ok, {:fail, result}} -> result
+          {:ok, value} -> {:ok, value}
+          :error -> :error
+        end
+      end
+
+      @impl true
+      def put(_credentials, _namespace, _value), do: :ok
+
+      @impl true
+      def delete(_credentials, _namespace), do: :ok
+    end
+
+    test "string_setting/3 reads non-empty strings and reports anything else" do
+      opts = [provider_id: "work", provider_settings: %{"url" => "u", "empty" => "", "n" => 1}]
+
+      assert Provider.string_setting(opts, "url", "default") == {:ok, "u"}
+      assert Provider.string_setting(opts, "missing", "default") == {:ok, nil}
+
+      assert Provider.string_setting(opts, "empty", "default") ==
+               {:error, {:invalid_provider_setting, "work", "empty", ""}}
+
+      assert Provider.string_setting([provider_settings: %{"n" => 1}], "n", "default") ==
+               {:error, {:invalid_provider_setting, "default", "n", 1}}
+    end
+
+    test "put_base_url/2 puts the setting unless :base_url is explicit" do
+      settings = [provider_settings: %{"base_url" => "https://setting"}]
+
+      assert {:ok, opts} = Provider.put_base_url(settings, "p")
+      assert opts[:base_url] == "https://setting"
+
+      assert {:ok, opts} = Provider.put_base_url([base_url: "https://explicit"] ++ settings, "p")
+      assert Keyword.get_values(opts, :base_url) == ["https://explicit"]
+
+      assert Provider.put_base_url([], "p") == {:ok, []}
+
+      assert Provider.put_base_url([provider_settings: %{"base_url" => 1}], "p") ==
+               {:error, {:invalid_provider_setting, "p", "base_url", 1}}
+    end
+
+    test "api_key/3 takes the explicit key, then the stored one, then the environment" do
+      env = "TACKLE_PROVIDER_TEST_KEY_#{System.unique_integer([:positive])}"
+      System.put_env(env, " env-key \n")
+      on_exit(fn -> System.delete_env(env) end)
+
+      store = {KeyStore, %{"p" => %{"api_key" => "stored"}, "other" => %{key: "atom"}}}
+
+      assert Provider.api_key([api_key: " explicit ", credential_store: store], "p", env) ==
+               {:ok, "explicit"}
+
+      assert Provider.api_key([api_key: "  ", credential_store: store], "p", env) ==
+               {:ok, "stored"}
+
+      assert Provider.api_key([provider_id: "other", credential_store: store], "p", env) ==
+               {:ok, "atom"}
+
+      assert Provider.api_key([credential_store: {KeyStore, %{}}], "p", env) == {:ok, "env-key"}
+
+      assert Provider.api_key([credential_store: {KeyStore, %{"p" => %{}}}], "p", env) ==
+               {:ok, "env-key"}
+
+      # Only the default provider falls back to the default variable; others
+      # name theirs in "api_key_env".
+      assert Provider.api_key([provider_id: "work"], "p", env) == :error
+
+      assert Provider.api_key(
+               [provider_id: "work", provider_settings: %{"api_key_env" => env}],
+               "p"
+             ) == {:ok, "env-key"}
+
+      assert Provider.api_key([], "p") == :error
+    end
+
+    test "api_key/3 rejects unsafe keys and reports store and setting failures" do
+      assert Provider.api_key([api_key: "bad key"], "p") == {:error, :invalid_api_key}
+      assert Provider.api_key([api_key: "bad\nkey"], "p") == {:error, :invalid_api_key}
+
+      failing = {KeyStore, %{"p" => {:fail, {:error, :unavailable}}}}
+
+      assert Provider.api_key([credential_store: failing], "p") ==
+               {:error, {:credential_store_failed, :unavailable}}
+
+      assert Provider.api_key([credential_store: :not_a_handle], "p") ==
+               {:error, :invalid_credential_store}
+
+      assert Provider.api_key([provider_settings: %{"api_key_env" => ""}], "p") ==
+               {:error, {:invalid_provider_setting, "p", "api_key_env", ""}}
+    end
+  end
 end
