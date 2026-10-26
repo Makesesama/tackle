@@ -358,7 +358,7 @@ A durable message projection includes the relevant fields from `Tackle.Lib.Messa
 - selected model; and
 - validated provider continuation state.
 
-Tool definitions, prompt renderers, adapters, and hook modules are not stored as executable terms. Audit events may store model references, tool names, and prompt/tool version hashes.
+Tool definitions, adapters, and hook modules are not stored as executable terms. Audit events may store model references and tool names.
 
 ### 7.5 `context.compacted`
 
@@ -560,7 +560,7 @@ Checkpoint compaction is the one session operation that changes the
 provider-visible projection rather than appending to it. It preserves the same
 fail-closed contract:
 
-1. `Tackle.Lib.Compaction` selects and snapshots a balanced plan without mutation;
+1. `Tackle.Lib.Compaction` selects a balanced plan without mutation;
 2. it generates and strictly validates the summary (non-empty, complete, no tool
    calls, strictly smaller than the shadowed region, and for pressure
    compaction low enough to land below the threshold);
@@ -648,15 +648,17 @@ Runtime reconstruction then:
 
 1. loads current trusted `Tackle.Config` and credentials;
 2. resolves the recorded model/profile or an explicit user override;
-3. creates a fresh `%Tackle.Lib.State{}`;
-4. replaces its generated session ID with the durable session ID;
-5. installs the projection's replayed `Tackle.Lib.Tree` with
+3. creates a fresh `%Tackle.Lib.State{}` from that configuration (tools,
+   hooks, and context come from it, never from the journal), passing the
+   durable session ID as `:session_id` instead of generating one;
+4. installs the projection's replayed `Tackle.Lib.Tree` with
    `Tackle.Lib.State.put_tree/2`, which derives the active transcript
    (`State.messages`) and the provider context (`State.model_messages`) from
    it, for sessions with and without branching alike;
-6. resets runtime status, error, pending assistant state, snapshot, hooks, tools, registries, and context appropriately;
-7. attaches fresh runtime handles and cancellation state; and
-8. records a durable configuration change if the user selected a different model or profile.
+5. resets the per-turn fields (iteration count, status, error, and error
+   reason) with `Tackle.Lib.State.reset_turn/1`;
+6. attaches fresh runtime handles and cancellation state; and
+7. records a durable configuration change if the user selected a different model or profile.
 
 If the recorded configuration cannot be resolved, loading returns a typed configuration-required result. It does not silently switch providers or models.
 

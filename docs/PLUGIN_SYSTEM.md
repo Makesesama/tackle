@@ -25,8 +25,9 @@ Tackle accepts trusted modules **already available to the running BEAM**:
 - `Tackle.Config.new/1` accepts `:tools` and `:hooks` module lists from trusted
   code. It checks tool callbacks (`name/0`, `description/0`,
   `parameters_schema/0`, `execute/2`) and rejects duplicate tool names. Hooks
-  are checked only for loadable modules; `Tackle.Lib.Hook` callbacks are
-  optional, so a module without callbacks does nothing. The defaults come from
+  are checked only for loadable modules there; a module that exports no
+  `Tackle.Lib.Hook` callback is rejected when the agent state is built
+  (`Tackle.Lib.State.new/1` raises `ArgumentError`). The defaults come from
   `Tackle.Tools.default/0`.
 - `$TACKLE_HOME/config.json` selects `model`, `thinking`, and feature settings
   (session titles, watchdog, narration) and may declare `providers` of
@@ -44,7 +45,8 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   cannot load plugin modules. Invalid profile definitions cause scope
   construction to fail. `Tackle.Lib.Tool.Registry` materializes the selected
   modules for execution; it is not a global plugin registry.
-- The CLI bundles Codex and DeepSeek as fixed dependencies. Its experimental
+- The CLI bundles the Codex, DeepSeek, Anthropic, OpenRouter, and Ollama
+  adapters as fixed dependencies. Its experimental
   MCP client starts connections separately and passes discovered tool modules
   as `:root_tools` into `Tackle.Coding.scope_spec/2`; children opt in by name.
   MCP server failures are handled by that integration, not by a general plugin

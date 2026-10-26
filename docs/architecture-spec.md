@@ -100,7 +100,7 @@ Provider translation and optional capabilities live as independent projects unde
 
 - Codex implements `Tackle.Lib.LLM`, including protocol translation, authentication integration, and streaming normalization through the library contract.
 - Developer tools implement `Tackle.Lib.Tool`. Group related filesystem/shell tools in one package initially rather than making one package per operation.
-- Hooks and prompt renderers use existing library behaviours.
+- Hooks use the existing `Tackle.Lib.Hook` behaviour; prompts are host-composed strings (`Tackle.Lib.SystemPrompt` is an optional builder).
 - A plugin that genuinely needs harness lifecycle services may use a small explicit harness contract; ordinary providers and tools should remain reusable without that dependency.
 
 Bundled plugins have no privileged execution path. Being shipped with the product does not imply being enabled for every session.
