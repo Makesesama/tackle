@@ -16,7 +16,7 @@ The adapter uses ChatGPT subscription OAuth credentials stored under the
 provider's id in the host's credential store: `"openai-codex"` for the default
 provider, or the id of another provider on this adapter (see
 [Providers](#providers)). OAuth interaction is separate from model requests:
-`generate/2` and `stream/3` never prompt or open a browser.
+`stream/3` never prompts or opens a browser.
 
 ### Device-code login
 
@@ -77,10 +77,11 @@ hosts pass the same options to `login/1` and `usage/1`. Without them the
 adapter acts as the default `"openai-codex"` provider. The provider id is:
 
 - the credential namespace read, refreshed, and written back;
-- part of the credential refresh lock, so accounts refresh independently;
-- the reported `:provider` of each response;
-- the origin stamped on replayable `provider_state`, which is replayed only to
-  the same provider and model.
+- part of the credential refresh lock, so accounts refresh independently.
+
+`Tackle.Lib.LLM` reports it as each response's `:provider` and stamps it on
+replayable `provider_state`, which the library replays only to the same
+provider and model.
 
 Honoured provider settings:
 
@@ -129,9 +130,9 @@ stream interruptions are `:transport` errors. ChatGPT plan limits
 (`usage_limit_reached`) are `:quota_exceeded` and are not retried.
 
 For stateless SSE continuations and full-context WebSocket recovery, the adapter
-stores the provider's opaque response output on the assistant message and replays
-it only for the same provider id and model. Hosts that persist conversations must
-preserve `Tackle.Lib.Message.provider_state`.
+stores the provider's opaque response output on the assistant message, and
+`Tackle.Lib.LLM` passes it back only to the same provider id and model. Hosts
+that persist conversations must preserve `Tackle.Lib.Message.provider_state`.
 
 For prompt caching, Tackle.Lib supplies its stable session ID on every model
 request. The adapter uses it as `prompt_cache_key` and sends matching

@@ -13,7 +13,7 @@ defmodule Tackle.Plugins.Codex do
   `usage/1` callbacks: the adapter owns the device-code flow and talks to the
   user through a `Tackle.Lib.Interaction` handle supplied in `opts`. The
   underlying protocol helpers remain available through `Tackle.Plugins.Codex.OAuth`.
-  `generate/2` and `stream/3` never prompt the user.
+  `stream/3` never prompts the user.
 
   ## Providers
 
@@ -21,9 +21,13 @@ defmodule Tackle.Plugins.Codex do
   (`codex-work/gpt-5.5`, `codex-home/gpt-5.5`). The host passes the provider
   as `opts[:provider_id]` and `opts[:provider_settings]`; without them the
   adapter acts as the default `"openai-codex"` provider. The provider id is the
-  credential namespace, part of the refresh lock, the reported `:provider`, and
-  the origin stamped on replayable `:provider_state`, so one account's state is
-  never replayed to another.
+  credential namespace and part of the refresh lock. `Tackle.Lib.LLM` reports
+  it as the response's `:provider` and stamps it on replayable
+  `:provider_state`, so one account's state is never replayed to another.
+
+  Structured responses use the Responses API's `json_schema` text format,
+  named by the `:response_schema_name` option (default `"response"`) and
+  strict only when `:strict_schema` is `true` (default `false`).
 
   Honoured settings: `"base_url"` (the ChatGPT backend base URL). An explicit
   `:base_url` option wins over it.
@@ -36,7 +40,6 @@ defmodule Tackle.Plugins.Codex do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
-  alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Codex.HTTP
   alias Tackle.Plugins.Codex.OAuth
   alias Tackle.Plugins.Codex.SSE
@@ -203,16 +206,7 @@ defmodule Tackle.Plugins.Codex do
   end
 
   @impl true
-  def generate(schema, opts) do
-    perform(schema, opts, fn _event -> :ok end)
-  end
-
-  @impl true
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
-    perform(schema, opts, event_callback)
-  end
-
-  defp perform(schema, opts, event_callback) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
          {:ok, opts} <- put_base_url(opts),
@@ -245,22 +239,9 @@ defmodule Tackle.Plugins.Codex do
     with {:ok, auth} <- OAuth.access(credentials),
          {:ok, body} <- build_request_body(schema, opts),
          {:ok, response} <-
-           send_request(body, opts, auth.access_token, auth.account_id, event_callback),
-         {:ok, result} <-
-           response_result(response, Keyword.fetch!(opts, :model), schema, event_callback) do
-      {:ok, stamp_provider(result, provider_id(opts))}
+           send_request(body, opts, auth.access_token, auth.account_id, event_callback) do
+      response_result(response, Keyword.fetch!(opts, :model), schema, event_callback)
     end
-  end
-
-  # The parser stamps replayable state with the adapter type; the provider id
-  # replaces it so state is only ever replayed to the provider that produced it.
-  defp stamp_provider(result, provider_id) do
-    result
-    |> Map.put(:provider, provider_id)
-    |> Map.update(:provider_state, nil, fn
-      %{} = state -> Map.put(state, "provider", provider_id)
-      state -> state
-    end)
   end
 
   defp send_request(body, opts, access_token, account_id, event_callback) do
@@ -399,12 +380,7 @@ defmodule Tackle.Plugins.Codex do
     do: {:error, Error.from_response(status, body, Map.get(response, :headers))}
 
   defp build_request_body(schema, opts) do
-    with {:ok, input} <-
-           convert_messages(
-             Keyword.get(opts, :messages, []),
-             provider_id(opts),
-             Keyword.fetch!(opts, :model)
-           ),
+    with {:ok, input} <- convert_messages(Keyword.get(opts, :messages, [])),
          {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
          {:ok, text} <- text_options(schema, opts) do
       body =
@@ -430,11 +406,11 @@ defmodule Tackle.Plugins.Codex do
     KeyError -> {:error, :model_required}
   end
 
-  defp convert_messages(messages, provider_id, model) when is_list(messages) do
+  defp convert_messages(messages) when is_list(messages) do
     messages
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn {message, index}, {:ok, acc} ->
-      case convert_message(message, index, provider_id, model) do
+      case convert_message(message, index) do
         {:ok, items} -> {:cont, {:ok, acc ++ items}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -445,7 +421,7 @@ defmodule Tackle.Plugins.Codex do
     end)
   end
 
-  defp convert_messages(_messages, _provider_id, _model), do: {:error, :invalid_messages}
+  defp convert_messages(_messages), do: {:error, :invalid_messages}
 
   # A cancelled turn can leave a committed assistant tool call without a tool
   # result. The Responses API rejects that history on the next prompt, so close
@@ -478,13 +454,13 @@ defmodule Tackle.Plugins.Codex do
     end)
   end
 
-  defp convert_message(message, _index, _provider_id, _model) when not is_map(message),
+  defp convert_message(message, _index) when not is_map(message),
     do: {:error, :invalid_message}
 
-  defp convert_message(message, index, provider_id, model) do
+  defp convert_message(message, index) do
     case normalize_role(field(message, :role)) do
       :user -> {:ok, [input_message("user", field(message, :content) || "")]}
-      :assistant -> {:ok, assistant_items(message, index, provider_id, model)}
+      :assistant -> {:ok, assistant_items(message, index)}
       :tool -> tool_output(message)
       role -> {:error, {:unsupported_message_role, role}}
     end
@@ -499,8 +475,10 @@ defmodule Tackle.Plugins.Codex do
     %{"role" => role, "content" => [%{"type" => "input_text", "text" => content}]}
   end
 
-  defp assistant_items(message, index, provider_id, model) do
-    case replay_items(field(message, :provider_state), provider_id, model) do
+  # `Tackle.Lib.LLM` passes only provider state this provider and model
+  # produced, so the output items are replayed as they are.
+  defp assistant_items(message, index) do
+    case replay_items(field(message, :provider_state)) do
       {:ok, items} -> items
       :error -> synthetic_assistant_items(message, index)
     end
@@ -533,19 +511,14 @@ defmodule Tackle.Plugins.Codex do
     content_items ++ calls
   end
 
-  defp replay_items(provider_state, provider_id, model) when is_map(provider_state) do
-    provider = field(provider_state, :provider)
-    state_model = field(provider_state, :model)
-    output = field(provider_state, :output)
-
-    if provider == provider_id and state_model == model and is_list(output) and output != [] do
-      {:ok, output}
-    else
-      :error
+  defp replay_items(provider_state) when is_map(provider_state) do
+    case field(provider_state, :output) do
+      [_ | _] = output -> {:ok, output}
+      _other -> :error
     end
   end
 
-  defp replay_items(_provider_state, _provider_id, _model), do: :error
+  defp replay_items(_provider_state), do: :error
 
   defp function_call_item(call) do
     function = field(call, :function) || %{}
@@ -661,24 +634,20 @@ defmodule Tackle.Plugins.Codex do
     {:ok, %{"verbosity" => Keyword.get(opts, :text_verbosity, "low")}}
   end
 
-  defp text_options(schema, opts) do
-    with {:ok, json_schema} <- json_schema(schema) do
-      {:ok,
-       %{
-         "verbosity" => Keyword.get(opts, :text_verbosity, "low"),
-         "format" => %{
-           "type" => "json_schema",
-           "name" => Keyword.get(opts, :response_schema_name, "response"),
-           "schema" => json_schema,
-           "strict" => Keyword.get(opts, :strict_schema, false)
-         }
-       }}
-    end
+  defp text_options(%{} = schema, opts) do
+    {:ok,
+     %{
+       "verbosity" => Keyword.get(opts, :text_verbosity, "low"),
+       "format" => %{
+         "type" => "json_schema",
+         "name" => Keyword.get(opts, :response_schema_name, "response"),
+         "schema" => schema,
+         "strict" => Keyword.get(opts, :strict_schema, false)
+       }
+     }}
   end
 
-  defp json_schema(schema) when is_list(schema), do: {:ok, JsonSchema.to_json_schema(schema)}
-  defp json_schema(%{} = schema), do: {:ok, stringify_map_keys(schema)}
-  defp json_schema(_schema), do: {:error, :invalid_response_schema}
+  defp text_options(_schema, _opts), do: {:error, :invalid_response_schema}
 
   defp reasoning_options(opts) do
     case Keyword.get(opts, :reasoning_effort) do
@@ -862,17 +831,6 @@ defmodule Tackle.Plugins.Codex do
     do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 
   defp field(_value, _key), do: nil
-
-  defp stringify_map_keys(map) do
-    Map.new(map, fn
-      {key, %{} = value} -> {to_string(key), stringify_map_keys(value)}
-      {key, value} when is_list(value) -> {to_string(key), Enum.map(value, &stringify_value/1)}
-      {key, value} -> {to_string(key), value}
-    end)
-  end
-
-  defp stringify_value(%{} = value), do: stringify_map_keys(value)
-  defp stringify_value(value), do: value
 
   defp user_agent do
     version = Application.spec(:tackle_codex, :vsn) || ~c"0.1.0"

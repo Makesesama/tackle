@@ -106,7 +106,7 @@ defmodule Tackle.Plugins.Anthropic.SSE do
          data: data,
          usage: state.usage,
          model: model,
-         provider_state: provider_state(state, model)
+         provider_state: provider_state(state)
        }}
     end
   end
@@ -377,10 +377,10 @@ defmodule Tackle.Plugins.Anthropic.SSE do
     end
   end
 
-  defp provider_state(state, model) do
+  # `Tackle.Lib.LLM` stamps the provider and model it is replayed to; the
+  # auth mode is checked here (`Tackle.Plugins.Anthropic.Convert`).
+  defp provider_state(state) do
     %{
-      "provider" => "anthropic",
-      "model" => model,
       "oauth" => state.is_oauth,
       "stop_reason" => state.stop_reason,
       "content_blocks" => provider_blocks(state)

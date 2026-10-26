@@ -119,7 +119,7 @@ defmodule Tackle.Plugins.Codex.SSE do
          data: data,
          usage: state.usage,
          model: model,
-         provider_state: provider_state(state.provider_output, requested_model)
+         provider_state: provider_state(state.provider_output)
        }}
     end
   end
@@ -460,11 +460,9 @@ defmodule Tackle.Plugins.Codex.SSE do
 
   defp provider_output(_output), do: []
 
-  defp provider_state([], _model), do: nil
-
-  defp provider_state(output, model) do
-    %{"provider" => "openai-codex", "model" => model, "output" => output}
-  end
+  # `Tackle.Lib.LLM` stamps the provider and model it is replayed to.
+  defp provider_state([]), do: nil
+  defp provider_state(output), do: %{"output" => output}
 
   defp put_error(%__MODULE__{error: nil} = state, error), do: %{state | error: error}
   defp put_error(state, _error), do: state

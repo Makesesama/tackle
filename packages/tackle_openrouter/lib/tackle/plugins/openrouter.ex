@@ -44,8 +44,9 @@ defmodule Tackle.Plugins.OpenRouter do
   Several providers can share this adapter, each with its own API key and
   settings. The host passes the provider as `opts[:provider_id]` and
   `opts[:provider_settings]`; without them the adapter acts as the default
-  `"openrouter"` provider. The provider id is the credential namespace, the
-  reported `:provider`, and the origin stamped on replayable `:provider_state`.
+  `"openrouter"` provider. The provider id is the credential namespace;
+  `Tackle.Lib.LLM` reports it as the response's `:provider` and stamps it on
+  replayable `:provider_state`.
 
   Honoured settings: `"provider_routing"`, `"base_url"` (the API base URL;
   an explicit `:base_url` option wins over it), and `"api_key_env"` (the
@@ -63,7 +64,6 @@ defmodule Tackle.Plugins.OpenRouter do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
-  alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.OpenRouter.HTTP
   alias Tackle.Plugins.OpenRouter.SSE
 
@@ -208,37 +208,15 @@ defmodule Tackle.Plugins.OpenRouter do
   end
 
   @impl true
-  def generate(schema, opts) do
-    perform(schema, opts, fn _event -> :ok end)
-  end
-
-  @impl true
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
-    perform(schema, opts, event_callback)
-  end
-
-  defp perform(schema, opts, event_callback) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
          {:ok, opts} <- put_base_url(opts),
          {:ok, api_key} <- api_key(opts),
          {:ok, body} <- build_request_body(schema, opts),
-         {:ok, response} <- send_request(body, opts, api_key, event_callback),
-         {:ok, result} <-
-           response_result(response, Keyword.fetch!(opts, :model), schema, event_callback) do
-      {:ok, stamp_provider(result, provider_id(opts))}
+         {:ok, response} <- send_request(body, opts, api_key, event_callback) do
+      response_result(response, Keyword.fetch!(opts, :model), schema, event_callback)
     end
-  end
-
-  # The parser stamps replayable state with the adapter type; the provider id
-  # replaces it so state is only ever replayed to the provider that produced it.
-  defp stamp_provider(result, provider_id) do
-    result
-    |> Map.put(:provider, provider_id)
-    |> Map.update(:provider_state, nil, fn
-      %{} = state -> Map.put(state, "provider", provider_id)
-      state -> state
-    end)
   end
 
   defp send_request(body, opts, api_key, event_callback) do
@@ -331,7 +309,7 @@ defmodule Tackle.Plugins.OpenRouter do
 
     with {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
          {:ok, messages} <-
-           convert_messages(Keyword.get(opts, :messages, []), provider_id(opts), model),
+           convert_messages(Keyword.get(opts, :messages, [])),
          {:ok, response_format, schema_instruction} <- response_options(schema),
          {:ok, reasoning} <- reasoning_options(opts),
          {:ok, provider} <- provider_preferences(opts, model),
@@ -365,10 +343,10 @@ defmodule Tackle.Plugins.OpenRouter do
     KeyError -> {:error, :model_required}
   end
 
-  defp convert_messages(messages, provider_id, model) when is_list(messages) do
+  defp convert_messages(messages) when is_list(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, converted} ->
-      case convert_message(message, provider_id, model) do
+      case convert_message(message) do
         {:ok, nil} -> {:cont, {:ok, converted}}
         {:ok, item} -> {:cont, {:ok, [item | converted]}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -388,15 +366,15 @@ defmodule Tackle.Plugins.OpenRouter do
     end
   end
 
-  defp convert_messages(_messages, _provider_id, _model), do: {:error, :invalid_messages}
+  defp convert_messages(_messages), do: {:error, :invalid_messages}
 
-  defp convert_message(message, _provider_id, _model) when not is_map(message),
+  defp convert_message(message) when not is_map(message),
     do: {:error, :invalid_message}
 
-  defp convert_message(message, provider_id, model) do
+  defp convert_message(message) do
     case normalize_role(field(message, :role)) do
       :user -> text_message("user", field(message, :content))
-      :assistant -> assistant_message(message, provider_id, model)
+      :assistant -> assistant_message(message)
       :tool -> tool_message(message)
       role -> {:error, {:unsupported_message_role, role}}
     end
@@ -409,7 +387,7 @@ defmodule Tackle.Plugins.OpenRouter do
 
   # Tool-call-only turns send `null` content: some upstreams (Anthropic among
   # them) reject an empty text block.
-  defp assistant_message(message, provider_id, model) do
+  defp assistant_message(message) do
     content = field(message, :content)
     tool_calls = field(message, :tool_calls) |> List.wrap()
 
@@ -424,37 +402,31 @@ defmodule Tackle.Plugins.OpenRouter do
             "content" => if(empty_content?(content), do: nil, else: content)
           }
           |> maybe_put("tool_calls", non_empty(tool_calls))
-          |> put_replayed_reasoning(field(message, :provider_state), provider_id, model)
+          |> put_replayed_reasoning(field(message, :provider_state))
 
         {:ok, assistant}
       end
     end
   end
 
-  # Reasoning is replayed only when the opaque state came from this provider and
-  # the same model. Structured `reasoning_details` carry signatures and
-  # encrypted blocks some models require around tool calls, so they are
-  # preferred over the plain-text `reasoning` field.
-  defp put_replayed_reasoning(assistant, provider_state, provider_id, model)
-       when is_map(provider_state) do
-    if field(provider_state, :provider) == provider_id and
-         field(provider_state, :model) == model do
-      case {field(provider_state, :reasoning_details), field(provider_state, :reasoning)} do
-        {[_ | _] = details, _reasoning} ->
-          Map.put(assistant, "reasoning_details", details)
+  # `Tackle.Lib.LLM` passes only provider state this provider and model
+  # produced. Structured `reasoning_details` carry signatures and encrypted
+  # blocks some models require around tool calls, so they are preferred over
+  # the plain-text `reasoning` field.
+  defp put_replayed_reasoning(assistant, provider_state) when is_map(provider_state) do
+    case {field(provider_state, :reasoning_details), field(provider_state, :reasoning)} do
+      {[_ | _] = details, _reasoning} ->
+        Map.put(assistant, "reasoning_details", details)
 
-        {_details, reasoning} when is_binary(reasoning) ->
-          Map.put(assistant, "reasoning", reasoning)
+      {_details, reasoning} when is_binary(reasoning) ->
+        Map.put(assistant, "reasoning", reasoning)
 
-        _none ->
-          assistant
-      end
-    else
-      assistant
+      _none ->
+        assistant
     end
   end
 
-  defp put_replayed_reasoning(assistant, _provider_state, _provider_id, _model), do: assistant
+  defp put_replayed_reasoning(assistant, _provider_state), do: assistant
 
   defp tool_message(message) do
     call_id = field(message, :tool_call_id)
@@ -638,10 +610,7 @@ defmodule Tackle.Plugins.OpenRouter do
   # instruction because upstreams without schema support drop the parameter.
   defp response_options(nil), do: {:ok, nil, nil}
 
-  defp response_options(schema) when is_list(schema),
-    do: json_schema_response(JsonSchema.to_json_schema(schema))
-
-  defp response_options(%{} = schema), do: json_schema_response(stringify_map_keys(schema))
+  defp response_options(%{} = schema), do: json_schema_response(schema)
   defp response_options(_schema), do: {:error, :invalid_response_schema}
 
   defp json_schema_response(json_schema) do

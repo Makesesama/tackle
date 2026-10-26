@@ -87,7 +87,6 @@ defmodule Tackle.Plugins.Ollama do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
-  alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Ollama.HTTP
   alias Tackle.Plugins.Ollama.SSE
 
@@ -272,8 +271,8 @@ defmodule Tackle.Plugins.Ollama do
   # any request is built.
   defp header_safe?(value), do: value |> :binary.bin_to_list() |> Enum.all?(&(&1 in 0x21..0x7E))
 
-  # The provider a request runs under: its id names the credential namespace,
-  # the reported `:provider`, and the reasoning-replay identity.
+  # The provider a request runs under: its id names the credential namespace
+  # and prefixes synthesized tool-call ids.
   defp request_provider(opts) do
     id = Provider.id(opts, @adapter_id)
 
@@ -317,33 +316,22 @@ defmodule Tackle.Plugins.Ollama do
   end
 
   @impl Tackle.Lib.LLM
-  def generate(schema, opts) do
-    chat(schema, opts, fn _event -> :ok end)
-  end
-
-  @impl Tackle.Lib.LLM
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
-    chat(schema, opts, event_callback)
-  end
-
-  defp chat(schema, opts, event_callback) do
     with {:ok, provider} <- request_provider(opts),
          :ok <- validate_model(models(provider.settings), opts),
          :ok <- not_cancelled(opts),
          {:ok, base_url} <- base_url(provider, opts),
          {:ok, api_key} <- api_key(provider, opts),
-         {:ok, body} <- build_request_body(provider, schema, opts),
+         {:ok, body} <- build_request_body(schema, opts),
          {:ok, response} <-
            send_request(provider.id, base_url, body, opts, api_key, event_callback),
-         :ok <- not_cancelled(opts),
-         {:ok, result} <-
-           response_result(
-             response,
-             {provider.id, Keyword.fetch!(opts, :model)},
-             schema,
-             event_callback
-           ) do
-      {:ok, Map.put(result, :provider, provider.id)}
+         :ok <- not_cancelled(opts) do
+      response_result(
+        response,
+        {provider.id, Keyword.fetch!(opts, :model)},
+        schema,
+        event_callback
+      )
     end
   end
 
@@ -438,12 +426,11 @@ defmodule Tackle.Plugins.Ollama do
   defp raw_error_body(%SSE{}), do: ""
   defp raw_error_body(body), do: body
 
-  defp build_request_body(provider, schema, opts) do
+  defp build_request_body(schema, opts) do
     model = Keyword.fetch!(opts, :model)
-    replay = {provider.id, model}
 
     with {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
-         {:ok, messages} <- convert_messages(Keyword.get(opts, :messages, []), replay),
+         {:ok, messages} <- convert_messages(Keyword.get(opts, :messages, [])),
          {:ok, response_format, schema_instruction} <- response_options(schema),
          {:ok, reasoning} <- reasoning_options(opts) do
       messages =
@@ -472,11 +459,10 @@ defmodule Tackle.Plugins.Ollama do
     KeyError -> {:error, :model_required}
   end
 
-  # `replay` is the `{provider_id, model}` whose reasoning may be replayed.
-  defp convert_messages(messages, replay) when is_list(messages) do
+  defp convert_messages(messages) when is_list(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, converted} ->
-      case convert_message(message, replay) do
+      case convert_message(message) do
         {:ok, nil} -> {:cont, {:ok, converted}}
         {:ok, item} -> {:cont, {:ok, [item | converted]}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -496,15 +482,15 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  defp convert_messages(_messages, _replay), do: {:error, :invalid_messages}
+  defp convert_messages(_messages), do: {:error, :invalid_messages}
 
-  defp convert_message(message, _replay) when not is_map(message),
+  defp convert_message(message) when not is_map(message),
     do: {:error, :invalid_message}
 
-  defp convert_message(message, replay) do
+  defp convert_message(message) do
     case normalize_role(field(message, :role)) do
       :user -> text_message("user", field(message, :content))
-      :assistant -> assistant_message(message, replay)
+      :assistant -> assistant_message(message)
       :tool -> tool_message(message)
       role -> {:error, {:unsupported_message_role, role}}
     end
@@ -516,7 +502,7 @@ defmodule Tackle.Plugins.Ollama do
   defp text_message(_role, _content), do: {:error, :invalid_message_content}
 
   # Tool-call-only assistant turns have no text content.
-  defp assistant_message(message, replay) do
+  defp assistant_message(message) do
     content = field(message, :content)
     tool_calls = field(message, :tool_calls) |> List.wrap()
 
@@ -531,31 +517,23 @@ defmodule Tackle.Plugins.Ollama do
             "content" => if(empty_content?(content), do: nil, else: content)
           }
           |> maybe_put("tool_calls", non_empty(tool_calls))
-          |> put_replayed_reasoning(field(message, :provider_state), replay)
+          |> put_replayed_reasoning(field(message, :provider_state))
 
         {:ok, assistant}
       end
     end
   end
 
-  # Replay reasoning only for this provider and the same requested model.
-  defp put_replayed_reasoning(assistant, provider_state, {provider_id, model})
-       when is_map(provider_state) do
-    if field(provider_state, :provider) == provider_id and
-         field(provider_state, :model) == model do
-      case field(provider_state, :reasoning) do
-        reasoning when is_binary(reasoning) ->
-          Map.put(assistant, "reasoning", reasoning)
-
-        _none ->
-          assistant
-      end
-    else
-      assistant
+  # `Tackle.Lib.LLM` passes only provider state this provider and model
+  # produced, so its reasoning is replayed as it is.
+  defp put_replayed_reasoning(assistant, provider_state) when is_map(provider_state) do
+    case field(provider_state, :reasoning) do
+      reasoning when is_binary(reasoning) -> Map.put(assistant, "reasoning", reasoning)
+      _none -> assistant
     end
   end
 
-  defp put_replayed_reasoning(assistant, _provider_state, _replay), do: assistant
+  defp put_replayed_reasoning(assistant, _provider_state), do: assistant
 
   defp tool_message(message) do
     call_id = field(message, :tool_call_id)
@@ -739,10 +717,7 @@ defmodule Tackle.Plugins.Ollama do
   # instruction because upstreams without schema support drop the parameter.
   defp response_options(nil), do: {:ok, nil, nil}
 
-  defp response_options(schema) when is_list(schema),
-    do: json_schema_response(JsonSchema.to_json_schema(schema))
-
-  defp response_options(%{} = schema), do: json_schema_response(stringify_map_keys(schema))
+  defp response_options(%{} = schema), do: json_schema_response(schema)
   defp response_options(_schema), do: {:error, :invalid_response_schema}
 
   defp json_schema_response(json_schema) do
@@ -1093,17 +1068,6 @@ defmodule Tackle.Plugins.Ollama do
   end
 
   defp field(_value, _key), do: nil
-
-  defp stringify_map_keys(map) do
-    Map.new(map, fn
-      {key, %{} = value} -> {to_string(key), stringify_map_keys(value)}
-      {key, value} when is_list(value) -> {to_string(key), Enum.map(value, &stringify_value/1)}
-      {key, value} -> {to_string(key), value}
-    end)
-  end
-
-  defp stringify_value(%{} = value), do: stringify_map_keys(value)
-  defp stringify_value(value), do: value
 
   # `tackle-ollama/<version>` user agent for requests from this package.
   defp user_agent do

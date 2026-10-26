@@ -281,11 +281,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
              ]
            }
 
-    assert result.provider_state == %{
-             "provider" => "deepseek",
-             "model" => "deepseek-v4-pro",
-             "reasoning_content" => "considering"
-           }
+    assert result.provider_state == %{"reasoning_content" => "considering"}
 
     assert_receive {:event, %{type: :reasoning_delta, delta: "considering"}}
     assert_receive {:event, %{type: :tool_input_delta, delta: "{\"query\":"}}
@@ -332,7 +328,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
         ]
       )
 
-    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert {:ok, _result} = generate(nil, opts)
     assert_receive {:body, body}
     assert [%{"reasoning_content" => "previous reasoning"}, _tool] = body["messages"]
   end
@@ -376,7 +372,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-flash", messages: messages)
 
-    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert {:ok, _result} = generate(nil, opts)
 
     assert_receive {:body, %{"messages" => [_assistant, tool]}}
     assert tool["role"] == "tool"
@@ -428,7 +424,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-flash", messages: messages, tools: tools)
 
-    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert {:ok, _result} = LLM.generate_with(DeepSeek, nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
     assert assistant["reasoning_content"] == "previous reasoning"
 
@@ -436,7 +432,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-flash", messages: messages)
 
-    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert {:ok, _result} = LLM.generate_with(DeepSeek, nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
     assert assistant["reasoning_content"] == "previous reasoning"
 
@@ -449,7 +445,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-v4-flash", messages: v4_messages)
 
-    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert {:ok, _result} = LLM.generate_with(DeepSeek, nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
     assert assistant["reasoning_content"] == "previous reasoning"
 
@@ -457,7 +453,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-v4-pro", messages: messages)
 
-    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert {:ok, _result} = LLM.generate_with(DeepSeek, nil, opts)
     assert_receive {:body, %{"messages" => [assistant, _tool]}}
     assert assistant["reasoning_content"] == ""
   end
@@ -500,9 +496,9 @@ defmodule Tackle.Plugins.DeepSeekTest do
       base_opts(store, request)
       |> Keyword.merge(model: "deepseek-v4-flash", system: "Stable", messages: messages)
 
-    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert {:ok, _result} = generate(nil, opts)
     assert_receive {:request_body, first}
-    assert {:ok, _result} = DeepSeek.generate(nil, opts)
+    assert {:ok, _result} = generate(nil, opts)
     assert_receive {:request_body, second}
     assert first == second
 
@@ -534,12 +530,12 @@ defmodule Tackle.Plugins.DeepSeekTest do
     ]
 
     assert {:error, :invalid_tool_call} =
-             DeepSeek.generate(nil, Keyword.put(base_opts(store, request), :messages, malformed))
+             generate(nil, Keyword.put(base_opts(store, request), :messages, malformed))
 
     unpaired = [%{role: :tool, tool_call_id: "call-1", content: "result"}]
 
     assert {:error, {:invalid_tool_history, {:unexpected_tool_result, "call-1"}}} =
-             DeepSeek.generate(nil, Keyword.put(base_opts(store, request), :messages, unpaired))
+             generate(nil, Keyword.put(base_opts(store, request), :messages, unpaired))
   end
 
   test "requests JSON output and parses a structured response", %{store: store} do
@@ -561,8 +557,10 @@ defmodule Tackle.Plugins.DeepSeekTest do
       ])
     end
 
+    # `Tackle.Lib.LLM` converts the keyword schema to JSON Schema.
     assert {:ok, %{data: %{"answer" => "yes"}}} =
-             DeepSeek.generate(
+             LLM.generate_with(
+               DeepSeek,
                [answer: [type: :string, required: true]],
                base_opts(store, request)
              )
@@ -584,7 +582,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     end
 
     assert {:ok, _result} =
-             DeepSeek.generate(
+             generate(
                nil,
                Keyword.put(base_opts(store, request), :reasoning_effort, :high)
              )
@@ -596,7 +594,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
                     }}
 
     assert {:ok, _result} =
-             DeepSeek.generate(
+             generate(
                nil,
                Keyword.put(base_opts(store, request), :reasoning_effort, :off)
              )
@@ -606,7 +604,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     refute Map.has_key?(off_body, "reasoning_effort")
 
     assert {:ok, _result} =
-             DeepSeek.generate(
+             generate(
                nil,
                Keyword.put(base_opts(store, request), :reasoning_effort, :max)
              )
@@ -616,7 +614,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     assert body["reasoning_effort"] == "max"
 
     assert {:error, {:invalid_reasoning_effort, :extreme}} =
-             DeepSeek.generate(
+             generate(
                nil,
                Keyword.put(base_opts(store, request), :reasoning_effort, :extreme)
              )
@@ -648,7 +646,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     request = fn _options -> flunk("unexpected request") end
 
     assert {:error, {:unsupported_model, "unknown"}} =
-             DeepSeek.generate(nil, Keyword.put(base_opts(store, request), :model, "unknown"))
+             generate(nil, Keyword.put(base_opts(store, request), :model, "unknown"))
 
     empty_store_agent = start_supervised!({Agent, fn -> %{} end}, id: {Agent, make_ref()})
     empty_store = {CredentialStore, empty_store_agent}
@@ -661,7 +659,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     end)
 
     assert {:error, {:missing_deepseek_api_key, "deepseek"}} =
-             DeepSeek.generate(nil, base_opts(empty_store, request))
+             generate(nil, base_opts(empty_store, request))
   end
 
   test "classifies a wire context overflow as a provider-neutral error", %{store: store} do
@@ -678,14 +676,14 @@ defmodule Tackle.Plugins.DeepSeekTest do
     request = fn _options -> {:ok, %Req.Response{status: 400, body: body}} end
 
     assert {:error, %Error{kind: :context_window_exceeded, status: 400}} =
-             DeepSeek.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
   end
 
   test "does not classify generic 4xx errors as overflow", %{store: store} do
     request = fn _options -> {:ok, %Req.Response{status: 400, body: "bad request"}} end
 
     assert {:error, %Error{kind: :invalid_request, status: 400, details: "bad request"}} =
-             DeepSeek.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
   end
 
   test "reads an error body streamed with a non-2xx status", %{store: store} do
@@ -701,7 +699,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     request = fn options -> streaming_response(options, [head, tail], 400) end
 
     assert {:error, %Error{kind: :context_window_exceeded, details: %{"error" => _}}} =
-             DeepSeek.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
   end
 
   test "passes a rate limit's Retry-After through", %{store: store} do
@@ -710,7 +708,7 @@ defmodule Tackle.Plugins.DeepSeekTest do
     end
 
     assert {:error, %Error{kind: :rate_limited, retry_after_ms: 6_000} = error} =
-             DeepSeek.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
 
     assert Tackle.Lib.Retry.retryable?(error)
   end
@@ -791,23 +789,23 @@ defmodule Tackle.Plugins.DeepSeekTest do
       work = Keyword.put(opts, :provider_id, "deepseek-work")
 
       with_env(%{"DEEPSEEK_API_KEY" => "default-key", "WORK_KEY" => "work-key"}, fn ->
-        assert {:ok, %{provider: "deepseek"}} = DeepSeek.generate(nil, opts)
+        assert {:ok, %{provider: "deepseek"}} = LLM.generate_with(DeepSeek, nil, opts)
         assert_receive {:authorization, "Bearer default-key"}
 
         assert {:error, {:missing_deepseek_api_key, "deepseek-work"}} =
-                 DeepSeek.generate(nil, work)
+                 generate(nil, work)
 
         refute_received {:authorization, _header}
 
         # A provider names its own variable with "api_key_env".
         named = Keyword.put(work, :provider_settings, %{"api_key_env" => "WORK_KEY"})
-        assert {:ok, %{provider: "deepseek-work"}} = DeepSeek.generate(nil, named)
+        assert {:ok, %{provider: "deepseek-work"}} = LLM.generate_with(DeepSeek, nil, named)
         assert_receive {:authorization, "Bearer work-key"}
 
         invalid = Keyword.put(work, :provider_settings, %{"api_key_env" => ""})
 
         assert {:error, {:invalid_provider_setting, "deepseek-work", "api_key_env", ""}} =
-                 DeepSeek.generate(nil, invalid)
+                 generate(nil, invalid)
       end)
     end
 
@@ -871,11 +869,15 @@ defmodule Tackle.Plugins.DeepSeekTest do
         base_opts(store, request)
         |> Keyword.merge(model: "deepseek-v4-pro", messages: messages)
 
-      assert {:ok, _} = DeepSeek.generate(nil, Keyword.put(opts, :provider_id, "deepseek-work"))
+      assert {:ok, _} =
+               LLM.generate_with(DeepSeek, nil, Keyword.put(opts, :provider_id, "deepseek-work"))
+
       assert_receive {:body, body}
       assert [%{"reasoning_content" => "work reasoning"}, _user] = body["messages"]
 
-      assert {:ok, _} = DeepSeek.generate(nil, Keyword.put(opts, :provider_id, "deepseek-home"))
+      assert {:ok, _} =
+               LLM.generate_with(DeepSeek, nil, Keyword.put(opts, :provider_id, "deepseek-home"))
+
       assert_receive {:body, body}
       assert [%{"reasoning_content" => ""}, _user] = body["messages"]
     end
@@ -895,18 +897,18 @@ defmodule Tackle.Plugins.DeepSeekTest do
           provider_settings: %{"base_url" => "https://proxy.test/"}
         )
 
-      assert {:ok, _} = DeepSeek.generate(nil, opts)
+      assert {:ok, _} = generate(nil, opts)
       assert_receive {:url, "https://proxy.test/chat/completions"}
 
       assert {:ok, _} =
-               DeepSeek.generate(nil, Keyword.put(opts, :base_url, "https://explicit.test"))
+               generate(nil, Keyword.put(opts, :base_url, "https://explicit.test"))
 
       assert_receive {:url, "https://explicit.test/chat/completions"}
 
       invalid = Keyword.put(opts, :provider_settings, %{"base_url" => 1})
 
       assert {:error, {:invalid_provider_setting, "deepseek-work", "base_url", 1}} =
-               DeepSeek.generate(nil, invalid)
+               generate(nil, invalid)
     end
   end
 
@@ -933,6 +935,10 @@ defmodule Tackle.Plugins.DeepSeekTest do
       end)
     end
   end
+
+  # The adapter has no `generate/2`; `Tackle.Lib.LLM` streams it with a
+  # callback that drops the events.
+  defp generate(schema, opts), do: DeepSeek.stream(schema, opts, fn _event -> :ok end)
 
   defp base_opts(store, request) do
     [

@@ -47,11 +47,7 @@ defmodule Tackle.Plugins.OpenRouter.SSETest do
 
     assert result.data["thinking"] == "think"
 
-    assert result.provider_state == %{
-             "provider" => "openrouter",
-             "model" => "m",
-             "reasoning" => "think"
-           }
+    assert result.provider_state == %{"reasoning" => "think"}
 
     assert_received {:event, %{type: :reasoning_delta, delta: "think"}}
     refute_received {:event, %{type: :reasoning_delta}}

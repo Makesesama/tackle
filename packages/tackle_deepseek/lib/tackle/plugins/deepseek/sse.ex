@@ -114,7 +114,7 @@ defmodule Tackle.Plugins.DeepSeek.SSE do
          data: data,
          usage: state.usage,
          model: state.model || requested_model,
-         provider_state: provider_state(state.thinking, requested_model)
+         provider_state: provider_state(state.thinking)
        }}
     end
   end
@@ -494,15 +494,9 @@ defmodule Tackle.Plugins.DeepSeek.SSE do
 
   defp put_response_model(state, _model), do: put_error(state, :invalid_response_model)
 
-  defp provider_state("", _model), do: nil
-
-  defp provider_state(reasoning_content, model) do
-    %{
-      "provider" => "deepseek",
-      "model" => model,
-      "reasoning_content" => reasoning_content
-    }
-  end
+  # `Tackle.Lib.LLM` stamps the provider and model it is replayed to.
+  defp provider_state(""), do: nil
+  defp provider_state(reasoning_content), do: %{"reasoning_content" => reasoning_content}
 
   defp trim_trailing_cr(<<>>), do: ""
 

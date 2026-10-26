@@ -42,8 +42,7 @@ defmodule Tackle.Plugins.Ollama.SSE do
           cancelled?: boolean()
         }
 
-  # `provider` is the provider id recorded in reasoning provider state and used
-  # as the prefix of synthesized tool-call ids.
+  # `provider` is the provider id, the prefix of synthesized tool-call ids.
   @spec new(String.t()) :: t()
   def new(provider \\ "ollama") when is_binary(provider) do
     %__MODULE__{
@@ -134,7 +133,7 @@ defmodule Tackle.Plugins.Ollama.SSE do
          data: data,
          usage: state.usage,
          model: state.model || requested_model,
-         provider_state: provider_state(state, requested_model)
+         provider_state: provider_state(state)
        }}
     end
   end
@@ -591,12 +590,9 @@ defmodule Tackle.Plugins.Ollama.SSE do
 
   defp put_response_model(state, _model), do: put_error(state, :invalid_response_model)
 
-  defp provider_state(%__MODULE__{thinking: ""}, _model), do: nil
-
-  defp provider_state(state, model) do
-    %{"provider" => state.provider, "model" => model}
-    |> maybe_put("reasoning", present_string(state.thinking))
-  end
+  # `Tackle.Lib.LLM` stamps the provider and model it is replayed to.
+  defp provider_state(%__MODULE__{thinking: ""}), do: nil
+  defp provider_state(state), do: %{"reasoning" => state.thinking}
 
   defp trim_trailing_cr(<<>>), do: ""
 

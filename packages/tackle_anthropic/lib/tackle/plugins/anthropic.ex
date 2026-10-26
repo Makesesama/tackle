@@ -14,18 +14,19 @@ defmodule Tackle.Plugins.Anthropic do
       `ANTHROPIC_API_KEY` for the default `"anthropic"` provider only.
 
   Interactive login is exposed through the optional `login/1` callback and talks
-  to the user through a `Tackle.Lib.Interaction` handle. `generate/2` and
-  `stream/3` never prompt or open a browser; they refresh expiring OAuth
-  credentials through the injected `Tackle.Lib.CredentialStore` and retry one
-  request after a `401`.
+  to the user through a `Tackle.Lib.Interaction` handle. `stream/3` never
+  prompts or opens a browser; it refreshes expiring OAuth credentials through
+  the injected `Tackle.Lib.CredentialStore` and retries one request after a
+  `401`.
 
   ## Providers
 
   Several providers can share this adapter, each with its own login. The host
   passes the provider as `opts[:provider_id]` and `opts[:provider_settings]`;
   without them the adapter acts as the default `"anthropic"` provider. The
-  provider id is the credential namespace, part of the refresh lock, the
-  reported `:provider`, and the origin stamped on replayable `:provider_state`.
+  provider id is the credential namespace and part of the refresh lock;
+  `Tackle.Lib.LLM` reports it as the response's `:provider` and stamps it on
+  replayable `:provider_state`.
 
   Honoured settings: `"base_url"` (the Messages API base URL; an explicit
   `:base_url` option wins over it) and `"api_key_env"` (the environment
@@ -43,7 +44,6 @@ defmodule Tackle.Plugins.Anthropic do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
-  alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.Anthropic.Convert
   alias Tackle.Plugins.Anthropic.HTTP
   alias Tackle.Plugins.Anthropic.OAuth
@@ -181,16 +181,7 @@ defmodule Tackle.Plugins.Anthropic do
   end
 
   @impl true
-  def generate(schema, opts) do
-    perform(schema, opts, fn _event -> :ok end)
-  end
-
-  @impl true
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
-    perform(schema, opts, event_callback)
-  end
-
-  defp perform(schema, opts, event_callback) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
          {:ok, opts} <- put_base_url(opts),
@@ -218,22 +209,9 @@ defmodule Tackle.Plugins.Anthropic do
 
   defp request_once(schema, opts, auth, event_callback) do
     with {:ok, body} <- build_request_body(schema, opts, auth),
-         {:ok, response} <- send_request(body, opts, auth, event_callback),
-         {:ok, result} <-
-           response_result(response, Keyword.fetch!(opts, :model), schema, event_callback) do
-      {:ok, stamp_provider(result, provider_id(opts))}
+         {:ok, response} <- send_request(body, opts, auth, event_callback) do
+      response_result(response, Keyword.fetch!(opts, :model), schema, event_callback)
     end
-  end
-
-  # The parser stamps replayable state with the adapter type; the provider id
-  # replaces it so state is only ever replayed to the provider that produced it.
-  defp stamp_provider(result, provider_id) do
-    result
-    |> Map.put(:provider, provider_id)
-    |> Map.update(:provider_state, nil, fn
-      %{} = state -> Map.put(state, "provider", provider_id)
-      state -> state
-    end)
   end
 
   defp send_request(body, opts, auth, event_callback) do
@@ -298,7 +276,7 @@ defmodule Tackle.Plugins.Anthropic do
 
     with {:ok, schema_instruction} <- schema_instruction(schema),
          {:ok, messages} <-
-           Convert.messages(Keyword.get(opts, :messages, []), model, is_oauth, opts),
+           Convert.messages(Keyword.get(opts, :messages, []), is_oauth),
          {:ok, tools} <- Convert.tools(Keyword.get(opts, :tools, []), is_oauth),
          {:ok, thinking} <- thinking_options(opts, model, max_tokens) do
       body =
@@ -327,16 +305,8 @@ defmodule Tackle.Plugins.Anthropic do
 
   defp schema_instruction(nil), do: {:ok, nil}
 
-  defp schema_instruction(schema) when is_list(schema) do
-    json = schema |> JsonSchema.to_json_schema() |> JSON.encode!()
-
-    {:ok, "Return only a JSON object matching this JSON Schema: #{json}"}
-  end
-
   defp schema_instruction(%{} = schema) do
-    json = schema |> stringify_map_keys() |> JSON.encode!()
-
-    {:ok, "Return only a JSON object matching this JSON Schema: #{json}"}
+    {:ok, "Return only a JSON object matching this JSON Schema: #{JSON.encode!(schema)}"}
   end
 
   defp schema_instruction(_schema), do: {:error, :invalid_response_schema}
@@ -744,17 +714,6 @@ defmodule Tackle.Plugins.Anthropic do
 
   defp parser_state(%SSE{} = parser, _initial), do: parser
   defp parser_state(_body, initial), do: initial
-
-  defp stringify_map_keys(map) do
-    Map.new(map, fn
-      {key, %{} = value} -> {to_string(key), stringify_map_keys(value)}
-      {key, value} when is_list(value) -> {to_string(key), Enum.map(value, &stringify_value/1)}
-      {key, value} -> {to_string(key), value}
-    end)
-  end
-
-  defp stringify_value(%{} = value), do: stringify_map_keys(value)
-  defp stringify_value(value), do: value
 
   defp user_agent do
     version = Application.spec(:tackle_anthropic, :vsn) || ~c"0.1.0"

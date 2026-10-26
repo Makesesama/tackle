@@ -300,7 +300,7 @@ defmodule Tackle.Plugins.CodexTest do
 
     opts = base_opts(store, request) |> Keyword.put(:messages, messages)
 
-    assert {:ok, %{data: %{"content" => "continued"}}} = Codex.generate(nil, opts)
+    assert {:ok, %{data: %{"content" => "continued"}}} = generate(nil, opts)
     assert_receive {:request_input, input}
 
     assert Enum.count(input, &(&1["type"] == "function_call_output")) == 2
@@ -356,7 +356,7 @@ defmodule Tackle.Plugins.CodexTest do
 
     opts = base_opts(store, request) |> Keyword.put(:messages, messages)
 
-    assert {:ok, %{data: %{"content" => "I can see it"}}} = Codex.generate(nil, opts)
+    assert {:ok, %{data: %{"content" => "I can see it"}}} = generate(nil, opts)
     assert_receive {:request_input, input}
 
     assert Enum.any?(
@@ -394,7 +394,7 @@ defmodule Tackle.Plugins.CodexTest do
 
     opts = base_opts(store, request) |> Keyword.put(:messages, messages)
 
-    assert {:error, {:unsupported_tool_content, "video"}} = Codex.generate(nil, opts)
+    assert {:error, {:unsupported_tool_content, "video"}} = generate(nil, opts)
   end
 
   test "streams text, reasoning, and tool argument deltas across chunk boundaries", %{
@@ -514,7 +514,7 @@ defmodule Tackle.Plugins.CodexTest do
       |> Keyword.put(:session_id, "ws-session")
       |> Keyword.put(:websocket_request, websocket_request)
 
-    assert {:ok, %{data: %{"content" => "websocket"}}} = Codex.generate(nil, opts)
+    assert {:ok, %{data: %{"content" => "websocket"}}} = generate(nil, opts)
 
     assert_receive {:websocket_request, body, request_options, headers}
     assert request_options[:transport] == :auto
@@ -555,7 +555,7 @@ defmodule Tackle.Plugins.CodexTest do
       |> Keyword.put(:transport, :auto)
       |> Keyword.put(:websocket_request, websocket_request)
 
-    assert {:ok, %{data: %{"content" => "fallback"}}} = Codex.generate(nil, opts)
+    assert {:ok, %{data: %{"content" => "fallback"}}} = generate(nil, opts)
   end
 
   test "auto transport does not replay over SSE when an injected WebSocket raises after streaming starts",
@@ -638,7 +638,7 @@ defmodule Tackle.Plugins.CodexTest do
       |> Keyword.put(:transport, :websocket_cached)
       |> Keyword.put(:websocket_request, websocket_request)
 
-    assert {:ok, %{data: %{"content" => "retried"}}} = Codex.generate(nil, opts)
+    assert {:ok, %{data: %{"content" => "retried"}}} = generate(nil, opts)
     assert Agent.get(calls, & &1) == 2
   end
 
@@ -688,7 +688,7 @@ defmodule Tackle.Plugins.CodexTest do
     end
 
     assert {:ok, %{data: %{"content" => "refreshed"}}} =
-             Codex.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
 
     assert_receive {:request_url, "https://auth.openai.com/oauth/token", token_options}
     assert token_options[:form][:refresh_token] == "old-refresh"
@@ -840,7 +840,7 @@ defmodule Tackle.Plugins.CodexTest do
     end
 
     assert {:ok, %{data: %{"content" => "retried"}}} =
-             Codex.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
 
     assert Agent.get(api_calls, & &1) == 2
   end
@@ -878,7 +878,7 @@ defmodule Tackle.Plugins.CodexTest do
       base_opts(store, fn _options -> flunk("unexpected request") end)
       |> Keyword.put(:cancellation_signal, signal)
 
-    assert {:error, :cancelled} = Codex.generate(nil, opts)
+    assert {:error, :cancelled} = generate(nil, opts)
   end
 
   test "reports missing credentials without making a request" do
@@ -886,7 +886,7 @@ defmodule Tackle.Plugins.CodexTest do
     store = {CredentialStore, store_agent}
 
     assert {:error, :missing_codex_credentials} =
-             Codex.generate(nil, base_opts(store, fn _options -> flunk("unexpected request") end))
+             generate(nil, base_opts(store, fn _options -> flunk("unexpected request") end))
   end
 
   test "preserves a streamed HTTP error body", %{store: store} do
@@ -898,7 +898,7 @@ defmodule Tackle.Plugins.CodexTest do
 
     assert {:error,
             %Error{kind: :invalid_request, status: 400, details: details, message: message}} =
-             Codex.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
 
     assert details == JSON.decode!(body)
     assert message =~ "No tool output found for function call call-1."
@@ -913,7 +913,7 @@ defmodule Tackle.Plugins.CodexTest do
     opts = Keyword.put(opts, :stream, stream)
 
     assert {:error, %Error{kind: :invalid_request, status: 400, details: ""}} =
-             Codex.generate(nil, opts)
+             generate(nil, opts)
   end
 
   test "classifies a wire context overflow as a provider-neutral error", %{store: store} do
@@ -929,14 +929,14 @@ defmodule Tackle.Plugins.CodexTest do
     request = fn _options -> {:ok, %Req.Response{status: 400, body: body}} end
 
     assert {:error, %Error{kind: :context_window_exceeded, status: 400}} =
-             Codex.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
   end
 
   test "does not classify generic 4xx errors as overflow", %{store: store} do
     request = fn _options -> {:ok, %Req.Response{status: 400, body: "bad request"}} end
 
     assert {:error, %Error{kind: :invalid_request, status: 400, details: "bad request"}} =
-             Codex.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
   end
 
   test "passes Retry-After through on a rate limit", %{store: store} do
@@ -945,7 +945,7 @@ defmodule Tackle.Plugins.CodexTest do
     end
 
     assert {:error, %Error{kind: :rate_limited, status: 429, retry_after_ms: 17_000} = error} =
-             Codex.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
 
     assert Retry.retryable?(error)
   end
@@ -955,13 +955,13 @@ defmodule Tackle.Plugins.CodexTest do
       request = fn _options -> {:error, %Req.TransportError{reason: reason}} end
 
       assert {:error, %Error{kind: :transport, details: %Req.TransportError{}} = error} =
-               Codex.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
 
       assert Retry.retryable?(error)
     end
 
     request = fn _options -> {:error, %Req.TransportError{reason: :timeout}} end
-    assert {:error, %Error{kind: :timeout}} = Codex.generate(nil, base_opts(store, request))
+    assert {:error, %Error{kind: :timeout}} = generate(nil, base_opts(store, request))
   end
 
   test "reports Mint transport failures of a WebSocket as retryable", %{store: store} do
@@ -975,7 +975,7 @@ defmodule Tackle.Plugins.CodexTest do
       |> Keyword.put(:transport, :websocket)
       |> Keyword.put(:websocket_request, websocket_request)
 
-    assert {:error, %Error{kind: :transport} = error} = Codex.generate(nil, opts)
+    assert {:error, %Error{kind: :transport} = error} = generate(nil, opts)
     assert Retry.retryable?(error)
   end
 
@@ -983,7 +983,7 @@ defmodule Tackle.Plugins.CodexTest do
     request = fn options -> streaming_response(options, [overflow_event()]) end
 
     assert {:error, %Error{kind: :context_window_exceeded, status: nil}} =
-             Codex.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
   end
 
   test "an in-stream overflow compacts and retries through the loop", %{store: store} do
@@ -1181,7 +1181,7 @@ defmodule Tackle.Plugins.CodexTest do
       assert_receive {:authorization, "Bearer work-access"}
 
       missing = Keyword.put(base_opts(store, request), :provider_id, "openai-codex")
-      assert {:error, :missing_codex_credentials} = Codex.generate(nil, missing)
+      assert {:error, :missing_codex_credentials} = generate(nil, missing)
     end
 
     test "refresh reads and writes the provider's namespace", %{
@@ -1210,7 +1210,7 @@ defmodule Tackle.Plugins.CodexTest do
 
       opts = base_opts(store, request) |> Keyword.put(:provider_id, "codex-work")
 
-      assert {:ok, %{provider: "codex-work"}} = Codex.generate(nil, opts)
+      assert {:ok, %{data: %{"content" => "ok"}}} = generate(nil, opts)
       assert_receive {:refresh_token, "work-refresh"}
       assert_receive {:authorization, authorization}
       assert authorization == "Bearer #{refreshed_access}"
@@ -1251,7 +1251,7 @@ defmodule Tackle.Plugins.CodexTest do
 
       work =
         Task.async(fn ->
-          Codex.generate(nil, Keyword.put(base_opts(store, request), :provider_id, "codex-work"))
+          generate(nil, Keyword.put(base_opts(store, request), :provider_id, "codex-work"))
         end)
 
       assert_receive {:work_refresh_blocked, blocked}, 1_000
@@ -1259,13 +1259,13 @@ defmodule Tackle.Plugins.CodexTest do
       # The work refresh still holds its lock; the home refresh must not wait for it.
       home =
         Task.async(fn ->
-          Codex.generate(nil, Keyword.put(base_opts(store, request), :provider_id, "codex-home"))
+          generate(nil, Keyword.put(base_opts(store, request), :provider_id, "codex-home"))
         end)
 
-      assert {:ok, %{provider: "codex-home"}} = Task.await(home, 1_000)
+      assert {:ok, %{data: %{"content" => "ok"}}} = Task.await(home, 1_000)
 
       send(blocked, :release)
-      assert {:ok, %{provider: "codex-work"}} = Task.await(work, 1_000)
+      assert {:ok, %{data: %{"content" => "ok"}}} = Task.await(work, 1_000)
 
       stored = Agent.get(agent, & &1)
       assert stored["codex-work"]["refresh_token"] == "rotated-work-refresh"
@@ -1300,9 +1300,15 @@ defmodule Tackle.Plugins.CodexTest do
         ])
       end
 
-      work_opts = base_opts(store, request) |> Keyword.put(:provider_id, "codex-work")
-      assert {:ok, result} = Codex.generate(nil, work_opts)
+      {:ok, work} = Provider.new("codex-work", Codex)
+      {:ok, home} = Provider.new("codex-home", Codex)
+      {:ok, work_selection} = LLM.select([work, home], "codex-work/gpt-5.5")
+      {:ok, home_selection} = LLM.select([work, home], "codex-home/gpt-5.5")
+      opts = base_opts(store, request)
+
+      assert {:ok, result} = LLM.generate_with(work_selection, nil, opts)
       assert result.provider_state["provider"] == "codex-work"
+      assert result.provider_state["model"] == "gpt-5.5"
       assert_receive {:input, _first_input}
 
       messages = [
@@ -1311,15 +1317,13 @@ defmodule Tackle.Plugins.CodexTest do
         %{role: :user, content: "again"}
       ]
 
-      assert {:ok, _result} = Codex.generate(nil, Keyword.put(work_opts, :messages, messages))
+      opts = Keyword.put(opts, :messages, messages)
+
+      assert {:ok, _result} = LLM.generate_with(work_selection, nil, opts)
       assert_receive {:input, replayed}
       assert Enum.any?(replayed, &(&1["id"] == "msg_work"))
 
-      home_opts =
-        base_opts(store, request)
-        |> Keyword.merge(provider_id: "codex-home", messages: messages)
-
-      assert {:ok, _result} = Codex.generate(nil, home_opts)
+      assert {:ok, _result} = LLM.generate_with(home_selection, nil, opts)
       assert_receive {:input, synthesized}
       refute Enum.any?(synthesized, &(&1["id"] == "msg_work"))
       assert Enum.any?(synthesized, &(&1["id"] == "msg_tackle_1"))
@@ -1340,19 +1344,23 @@ defmodule Tackle.Plugins.CodexTest do
           provider_settings: %{"base_url" => "https://proxy.test/backend-api/"}
         )
 
-      assert {:ok, _result} = Codex.generate(nil, opts)
+      assert {:ok, _result} = generate(nil, opts)
       assert_receive {:url, "https://proxy.test/backend-api/codex/responses"}
 
       explicit = Keyword.put(opts, :base_url, "https://explicit.test")
-      assert {:ok, _result} = Codex.generate(nil, explicit)
+      assert {:ok, _result} = generate(nil, explicit)
       assert_receive {:url, "https://explicit.test/codex/responses"}
 
       invalid = Keyword.put(opts, :provider_settings, %{"base_url" => 42})
 
       assert {:error, {:invalid_provider_setting, "codex-work", "base_url", 42}} =
-               Codex.generate(nil, invalid)
+               generate(nil, invalid)
     end
   end
+
+  # The adapter has no `generate/2`; `Tackle.Lib.LLM` streams it with a
+  # callback that drops the events.
+  defp generate(schema, opts), do: Codex.stream(schema, opts, fn _event -> :ok end)
 
   defp completed_response(options, text) do
     streaming_response(options, [

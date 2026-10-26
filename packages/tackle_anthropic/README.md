@@ -20,8 +20,8 @@ identity system blocks, the Claude Code betas, and the Claude Code user agent,
 and namespaces non-Claude-Code tools like MCP tools (`mcp__tackle__<name>`).
 This mirrors the `pi-anthropic-oauth` extension.
 
-OAuth interaction is separate from model requests: `generate/2` and `stream/3`
-never prompt or open a browser.
+OAuth interaction is separate from model requests: `stream/3` never prompts or
+opens a browser.
 
 ```elixir
 alias Tackle.Plugins.Anthropic
@@ -78,8 +78,9 @@ The selection passes `:provider_id` and `:provider_settings` to the adapter, and
 hosts pass the same options to `login/1` and `status/1`. Without them the
 adapter acts as the default `"anthropic"` provider. The provider id is the
 credential namespace read, refreshed, and written back; part of the OAuth
-refresh lock, so accounts refresh independently; the reported `:provider`; and
-the origin stamped on replayable `provider_state`. Only the default
+refresh lock, so accounts refresh independently. `Tackle.Lib.LLM` reports it
+as the response's `:provider` and stamps it on replayable `provider_state`.
+Only the default
 `"anthropic"` provider falls back to `ANTHROPIC_API_KEY` when no credentials
 are stored; other providers read an environment variable only when they name
 one with `"api_key_env"`, so a key is never sent for another account by
@@ -116,8 +117,9 @@ API's constraint.
 
 For stateless continuations, the adapter stores the assistant's raw content
 blocks (including thinking signatures and redacted thinking) on the assistant
-message's `provider_state` and replays them only for the same provider id,
-model, and auth mode. Hosts that persist conversations must preserve
+message's `provider_state`. `Tackle.Lib.LLM` passes them back only to the same
+provider id and model, and the adapter replays them only for the same auth
+mode. Hosts that persist conversations must preserve
 `Tackle.Lib.Message.provider_state`.
 
 Failures are `Tackle.Lib.LLM.Error`s: HTTP errors keep their status and

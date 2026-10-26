@@ -25,7 +25,12 @@ defmodule Tackle.Plugins.Codex.SSETest do
     assert {:ok, result} = SSE.result(parser, "gpt-5.5", nil)
     assert result.data == %{"content" => "done", "tool_calls" => []}
     assert result.model == "gpt-5.5-2026-09-01"
-    assert result.provider_state["model"] == "gpt-5.5"
+
+    assert result.provider_state == %{
+             "output" => [
+               %{"type" => "message", "content" => [%{"type" => "output_text", "text" => "done"}]}
+             ]
+           }
   end
 
   test "rejects a stream without a terminal response event" do

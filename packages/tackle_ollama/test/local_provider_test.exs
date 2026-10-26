@@ -106,7 +106,13 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
 
       assert result.provider == "ollama"
       assert result.data["content"] == "ok"
-      assert result.provider_state["provider"] == "ollama"
+
+      assert result.provider_state == %{
+               "provider" => "ollama",
+               "model" => "qwen3:8b",
+               "reasoning" => "thinking"
+             }
+
       assert %Usage{input_tokens: 4, output_tokens: 1} = result.usage
 
       assert_receive {:request, options}
@@ -135,7 +141,7 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
       store = {RecordingStore, self()}
 
       assert {:ok, _} =
-               Ollama.generate(nil, chat_opts(request, api_key: "key", credential_store: store))
+               generate(nil, chat_opts(request, api_key: "key", credential_store: store))
 
       refute_received {:fetch, _}
       assert_received {:headers, headers}
@@ -162,14 +168,24 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
         ]
       end
 
+      selection = selection("ollama/qwen3:8b")
+
       assert {:ok, _} =
-               Ollama.generate(nil, chat_opts(request, messages: messages.("ollama")))
+               LLM.generate_with(
+                 selection,
+                 nil,
+                 chat_opts(request, messages: messages.("ollama"))
+               )
 
       assert_receive {:body, %{"messages" => [_, assistant, _]}}
       assert assistant["reasoning"] == "r"
 
       assert {:ok, _} =
-               Ollama.generate(nil, chat_opts(request, messages: messages.("ollama-cloud")))
+               LLM.generate_with(
+                 selection,
+                 nil,
+                 chat_opts(request, messages: messages.("ollama-cloud"))
+               )
 
       assert_receive {:body, %{"messages" => [_, assistant, _]}}
       refute Map.has_key?(assistant, "reasoning")
@@ -189,7 +205,7 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
         }
       )
 
-      assert {:ok, _} = Ollama.generate(nil, chat_opts(request))
+      assert {:ok, _} = generate(nil, chat_opts(request))
       assert_receive {:url, "http://gpu:11434/v1/chat/completions"}
 
       assert {:ok, _} = LLM.generate_with(selection("ollama/qwen3:8b"), nil, chat_opts(request))
@@ -198,12 +214,12 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
       settings = %{"base_url" => "http://box:1234/v1", "models" => ["qwen3:8b"]}
 
       assert {:ok, _} =
-               Ollama.generate(nil, chat_opts(request, provider_settings: settings))
+               generate(nil, chat_opts(request, provider_settings: settings))
 
       assert_receive {:url, "http://box:1234/v1/chat/completions"}
 
       assert {:ok, _} =
-               Ollama.generate(
+               generate(
                  nil,
                  chat_opts(request, provider_settings: settings, base_url: "http://explicit/v1")
                )
@@ -211,16 +227,16 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
       assert_receive {:url, "http://explicit/v1/chat/completions"}
 
       assert {:error, {:invalid_provider_settings, "ollama", {"base_url", 42}}} =
-               Ollama.generate(
+               generate(
                  nil,
                  chat_opts(request, provider_settings: %{settings | "base_url" => 42})
                )
 
       assert {:error, {:invalid_provider_settings, "ollama", :not_a_map}} =
-               Ollama.generate(nil, chat_opts(request, provider_settings: "invalid"))
+               generate(nil, chat_opts(request, provider_settings: "invalid"))
 
       assert {:error, {:invalid_base_url, ""}} =
-               Ollama.generate(nil, chat_opts(request, base_url: ""))
+               generate(nil, chat_opts(request, base_url: ""))
 
       refute_received {:url, _}
     end
@@ -238,7 +254,7 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
         {:ok, %{status: 200}, parser}
       end
 
-      assert {:ok, result} = Ollama.generate(nil, chat_opts(nil, stream: stream))
+      assert {:ok, result} = generate(nil, chat_opts(nil, stream: stream))
       assert [%{"id" => "ollama-generated-" <> _}] = result.data["tool_calls"]
     end
 
@@ -246,7 +262,7 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
       request = fn _ -> flunk("unexpected HTTP request") end
 
       assert {:error, {:unsupported_model, "llama3"}} =
-               Ollama.generate(nil, chat_opts(request, model: "llama3"))
+               generate(nil, chat_opts(request, model: "llama3"))
     end
   end
 
@@ -523,6 +539,10 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
   end
 
   defp respond(status, body), do: fn _ -> {:ok, %{status: status, body: JSON.encode!(body)}} end
+
+  # The adapter has no `generate/2`; `Tackle.Lib.LLM` streams it with a
+  # callback that drops the events.
+  defp generate(schema, opts), do: Ollama.stream(schema, opts, fn _event -> :ok end)
 
   defp chat_opts(request, extra \\ []) do
     Keyword.merge(

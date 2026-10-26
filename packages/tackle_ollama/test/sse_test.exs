@@ -29,11 +29,7 @@ defmodule Tackle.Plugins.Ollama.SSETest do
     assert {:ok, result} = parser |> SSE.finish(@noop) |> SSE.result("m", nil)
     assert result.data == %{"content" => "héllo", "thinking" => "think", "tool_calls" => []}
 
-    assert result.provider_state == %{
-             "provider" => "ollama",
-             "model" => "m",
-             "reasoning" => "think"
-           }
+    assert result.provider_state == %{"reasoning" => "think"}
 
     assert result.usage["input_tokens"] == 6
     assert result.usage["cached_input_tokens"] == 4

@@ -222,23 +222,23 @@ defmodule Tackle.Plugins.OpenRouterTest do
     request = capture_body(test_pid, @claude)
 
     assert {:ok, _result} =
-             OpenRouter.generate(nil, base_opts(store, request) |> Keyword.put(:model, @claude))
+             generate(nil, base_opts(store, request) |> Keyword.put(:model, @claude))
 
     assert_receive {:body, body}
     assert body["cache_control"] == %{"type" => "ephemeral"}
 
     opts = base_opts(store, request) |> Keyword.merge(model: @claude, cache_control: false)
-    assert {:ok, _result} = OpenRouter.generate(nil, opts)
+    assert {:ok, _result} = generate(nil, opts)
     assert_receive {:body, body}
     refute Map.has_key?(body, "cache_control")
 
     opts = Keyword.put(opts, :cache_control, %{type: "ephemeral", ttl: "1h"})
-    assert {:ok, _result} = OpenRouter.generate(nil, opts)
+    assert {:ok, _result} = generate(nil, opts)
     assert_receive {:body, body}
     assert body["cache_control"] == %{"type" => "ephemeral", "ttl" => "1h"}
 
     assert {:error, {:invalid_cache_control, :yes}} =
-             OpenRouter.generate(nil, Keyword.put(opts, :cache_control, :yes))
+             generate(nil, Keyword.put(opts, :cache_control, :yes))
   end
 
   test "sends attribution headers only when configured", %{store: store} do
@@ -253,7 +253,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       base_opts(store, request)
       |> Keyword.merge(app_url: "https://example.test", app_title: "Example")
 
-    assert {:ok, _result} = OpenRouter.generate(nil, opts)
+    assert {:ok, _result} = generate(nil, opts)
     assert_receive {:request, options}
     assert header(options, "http-referer") == "https://example.test"
     assert header(options, "x-title") == "Example"
@@ -326,8 +326,6 @@ defmodule Tackle.Plugins.OpenRouterTest do
            }
 
     assert result.provider_state == %{
-             "provider" => "openrouter",
-             "model" => @claude,
              "reasoning" => "considering",
              "reasoning_details" => [
                %{
@@ -371,7 +369,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         base_opts(store, request)
         |> Keyword.merge(model: @claude, messages: history.(provider_state))
 
-      assert {:ok, _result} = OpenRouter.generate(nil, opts)
+      assert {:ok, _result} = LLM.generate_with(OpenRouter, nil, opts)
       assert_receive {:body, body}
       Enum.at(body["messages"], 1)
     end
@@ -419,23 +417,23 @@ defmodule Tackle.Plugins.OpenRouterTest do
       work = Keyword.put(opts, :provider_id, "openrouter-work")
 
       with_env(%{"OPENROUTER_API_KEY" => "default-key", "WORK_KEY" => "work-key"}, fn ->
-        assert {:ok, %{provider: "openrouter"}} = OpenRouter.generate(nil, opts)
+        assert {:ok, %{provider: "openrouter"}} = LLM.generate_with(OpenRouter, nil, opts)
         assert_receive {:authorization, "Bearer default-key"}
 
         assert {:error, {:missing_openrouter_api_key, "openrouter-work"}} =
-                 OpenRouter.generate(nil, work)
+                 generate(nil, work)
 
         refute_received {:authorization, _header}
 
         # A provider names its own variable with "api_key_env".
         named = Keyword.put(work, :provider_settings, %{"api_key_env" => "WORK_KEY"})
-        assert {:ok, %{provider: "openrouter-work"}} = OpenRouter.generate(nil, named)
+        assert {:ok, %{provider: "openrouter-work"}} = LLM.generate_with(OpenRouter, nil, named)
         assert_receive {:authorization, "Bearer work-key"}
 
         invalid = Keyword.put(work, :provider_settings, %{"api_key_env" => ""})
 
         assert {:error, {:invalid_provider_setting, "openrouter-work", "api_key_env", ""}} =
-                 OpenRouter.generate(nil, invalid)
+                 generate(nil, invalid)
       end)
     end
 
@@ -493,8 +491,9 @@ defmodule Tackle.Plugins.OpenRouterTest do
         base_opts(store, request)
         |> Keyword.merge(model: @claude, provider_id: "openrouter-work")
 
-      assert {:ok, result} = OpenRouter.generate(nil, work_opts)
+      assert {:ok, result} = LLM.generate_with(OpenRouter, nil, work_opts)
       assert result.provider_state["provider"] == "openrouter-work"
+      assert result.provider_state["model"] == @claude
       assert_receive {:body, _first}
 
       messages = [
@@ -503,12 +502,14 @@ defmodule Tackle.Plugins.OpenRouterTest do
         %{role: :user, content: "again"}
       ]
 
-      assert {:ok, _} = OpenRouter.generate(nil, Keyword.put(work_opts, :messages, messages))
+      assert {:ok, _} =
+               LLM.generate_with(OpenRouter, nil, Keyword.put(work_opts, :messages, messages))
+
       assert_receive {:body, body}
       assert %{"reasoning" => "thought"} = Enum.at(body["messages"], 1)
 
       home_opts = Keyword.merge(work_opts, provider_id: "openrouter-home", messages: messages)
-      assert {:ok, _} = OpenRouter.generate(nil, home_opts)
+      assert {:ok, _} = LLM.generate_with(OpenRouter, nil, home_opts)
       assert_receive {:body, body}
       refute Map.has_key?(Enum.at(body["messages"], 1), "reasoning")
     end
@@ -528,18 +529,18 @@ defmodule Tackle.Plugins.OpenRouterTest do
           provider_settings: %{"base_url" => "https://proxy.test/api/v1/"}
         )
 
-      assert {:ok, _} = OpenRouter.generate(nil, opts)
+      assert {:ok, _} = generate(nil, opts)
       assert_receive {:url, "https://proxy.test/api/v1/chat/completions"}
 
       assert {:ok, _} =
-               OpenRouter.generate(nil, Keyword.put(opts, :base_url, "https://explicit.test"))
+               generate(nil, Keyword.put(opts, :base_url, "https://explicit.test"))
 
       assert_receive {:url, "https://explicit.test/chat/completions"}
 
       invalid = Keyword.put(opts, :provider_settings, %{"base_url" => nil})
 
       assert {:error, {:invalid_provider_setting, "openrouter-work", "base_url", nil}} =
-               OpenRouter.generate(nil, invalid)
+               generate(nil, invalid)
     end
   end
 
@@ -568,8 +569,8 @@ defmodule Tackle.Plugins.OpenRouterTest do
         ]
       )
 
-    assert {:ok, _} = OpenRouter.generate(nil, opts)
-    assert {:ok, _} = OpenRouter.generate(nil, opts)
+    assert {:ok, _} = generate(nil, opts)
+    assert {:ok, _} = generate(nil, opts)
     assert_receive {:raw_body, first}
     assert_receive {:raw_body, second}
     assert first == second
@@ -595,7 +596,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         }
       ])
 
-    assert {:ok, _result} = OpenRouter.generate(nil, opts)
+    assert {:ok, _result} = generate(nil, opts)
     assert_receive {:body, body}
     tool = List.last(body["messages"])
     assert tool["content"] =~ "captured\n[image content omitted"
@@ -611,7 +612,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
     ]
 
     assert {:error, {:invalid_tool_history, :missing_tool_results}} =
-             OpenRouter.generate(
+             generate(
                nil,
                base_opts(store, request) |> Keyword.put(:messages, unpaired)
              )
@@ -621,7 +622,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
     ]
 
     assert {:error, :invalid_tool_call} =
-             OpenRouter.generate(
+             generate(
                nil,
                base_opts(store, request) |> Keyword.put(:messages, malformed)
              )
@@ -640,8 +641,9 @@ defmodule Tackle.Plugins.OpenRouterTest do
       ])
     end
 
+    # `Tackle.Lib.LLM` converts the keyword schema to JSON Schema.
     schema = [answer: [type: :integer, required: true]]
-    assert {:ok, result} = OpenRouter.generate(schema, base_opts(store, request))
+    assert {:ok, result} = LLM.generate_with(OpenRouter, schema, base_opts(store, request))
     assert result.data == %{"answer" => 42}
 
     assert_receive {:body, body}
@@ -669,13 +671,13 @@ defmodule Tackle.Plugins.OpenRouterTest do
           {"none", "none"}
         ] do
       opts = base_opts(store, request) |> Keyword.put(:reasoning_effort, effort)
-      assert {:ok, _result} = OpenRouter.generate(nil, opts)
+      assert {:ok, _result} = generate(nil, opts)
       assert_receive {:body, %{"reasoning" => %{"effort" => ^expected}}}
     end
 
     for invalid <- ["extreme", 3] do
       assert {:error, {:invalid_reasoning_effort, _}} =
-               OpenRouter.generate(
+               generate(
                  nil,
                  base_opts(store, request) |> Keyword.put(:reasoning_effort, invalid)
                )
@@ -695,7 +697,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:error, %Error{kind: :server, details: %{"code" => "server_error"}} = error} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
 
       assert Tackle.Lib.Retry.retryable?(error)
     end
@@ -710,7 +712,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:error, %Error{kind: :invalid_response, details: :data_after_finish_reason}} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
     end
 
     test "reports truncated and unterminated streams", %{store: store} do
@@ -719,21 +721,21 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:error, %Error{kind: :invalid_response, details: {:incomplete_response, "length"}}} =
-               OpenRouter.generate(nil, base_opts(store, length))
+               generate(nil, base_opts(store, length))
 
       no_done = fn options ->
         streaming_response(options, [sse(chunk(@model, %{"content" => "x"}, "stop"))])
       end
 
       assert {:error, %Error{kind: :transport, details: :stream_ended_without_done}} =
-               OpenRouter.generate(nil, base_opts(store, no_done))
+               generate(nil, base_opts(store, no_done))
 
       no_finish = fn options ->
         streaming_response(options, [sse(chunk(@model, %{"content" => "x"})), done()])
       end
 
       assert {:error, %Error{kind: :transport, details: :stream_ended_without_finish_reason}} =
-               OpenRouter.generate(nil, base_opts(store, no_finish))
+               generate(nil, base_opts(store, no_finish))
     end
 
     test "treats a call without argument fragments as an empty object", %{store: store} do
@@ -751,7 +753,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:ok, %{data: %{"tool_calls" => [%{"arguments" => "{}"}]}}} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
     end
 
     test "rejects malformed reasoning details", %{store: store} do
@@ -764,7 +766,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         end
 
         assert {:error, %Error{kind: :invalid_response, details: :invalid_reasoning_details}} =
-                 OpenRouter.generate(nil, base_opts(store, request))
+                 generate(nil, base_opts(store, request))
       end
     end
 
@@ -782,7 +784,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:ok, %{provider_state: %{"reasoning_details" => replay}}} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
 
       assert replay == [
                %{"type" => "reasoning.text", "text" => "ab", "signature" => "s0", "index" => 0},
@@ -801,7 +803,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:error, %Error{kind: :invalid_response, details: :data_after_finish_reason}} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
     end
 
     test "ignores a null error field", %{store: store} do
@@ -813,7 +815,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:ok, %{data: %{"content" => "ok"}}} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
     end
 
     test "classifies an overflow on a committed stream only before any output", %{store: store} do
@@ -828,7 +830,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:error, %Error{kind: :context_window_exceeded}} =
-               OpenRouter.generate(nil, base_opts(store, before_output))
+               generate(nil, base_opts(store, before_output))
 
       after_output = fn options ->
         streaming_response(options, [
@@ -839,7 +841,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:error, %Error{kind: :invalid_response, details: ^error}} =
-               OpenRouter.generate(nil, base_opts(store, after_output))
+               generate(nil, base_opts(store, after_output))
     end
   end
 
@@ -871,20 +873,20 @@ defmodule Tackle.Plugins.OpenRouterTest do
     request = fn _options -> flunk("must not request") end
 
     assert {:error, {:unsupported_model, "nope/nope"}} =
-             OpenRouter.generate(
+             generate(
                nil,
                base_opts(store, request) |> Keyword.put(:model, "nope/nope")
              )
 
     assert {:error, :model_required} =
-             OpenRouter.generate(nil, base_opts(store, request) |> Keyword.delete(:model))
+             generate(nil, base_opts(store, request) |> Keyword.delete(:model))
 
     previous = System.get_env("OPENROUTER_API_KEY")
     System.delete_env("OPENROUTER_API_KEY")
 
     try do
       assert {:error, {:missing_openrouter_api_key, "openrouter"}} =
-               OpenRouter.generate(
+               generate(
                  nil,
                  base_opts(store, request) |> Keyword.delete(:credential_store)
                )
@@ -902,7 +904,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
     end
 
     opts = base_opts(store, request) |> Keyword.put(:api_key, "explicit-key")
-    assert {:ok, _result} = OpenRouter.generate(nil, opts)
+    assert {:ok, _result} = generate(nil, opts)
     assert_receive {:request, options}
     assert header(options, "authorization") == "Bearer explicit-key"
   end
@@ -921,7 +923,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
     end
 
     assert {:error, %Error{kind: :context_window_exceeded}} =
-             OpenRouter.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
   end
 
   test "does not classify generic errors as overflow", %{store: store} do
@@ -931,7 +933,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end
 
       assert {:error, %Error{status: ^status, kind: kind}} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
 
       refute kind == :context_window_exceeded
     end
@@ -947,7 +949,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
     end
 
     assert {:error, %Error{kind: :invalid_request, status: 400}} =
-             OpenRouter.generate(nil, base_opts(store, echoed))
+             generate(nil, base_opts(store, echoed))
   end
 
   test "reads error bodies streamed with a non-2xx status", %{store: store} do
@@ -965,7 +967,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       request = fn options -> streaming_response(options, wire, 400) end
 
       assert {:error, %Error{kind: :context_window_exceeded}} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
     end
 
     credits = JSON.encode!(%{"error" => %{"code" => 402, "message" => "Insufficient credits"}})
@@ -977,7 +979,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
               status: 402,
               details: %{"error" => %{"message" => "Insufficient credits"}}
             }} =
-             OpenRouter.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
 
     request = fn options -> streaming_response(options, ["upstream exploded"], 502) end
 
@@ -987,7 +989,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
               status: 502,
               message: "The provider failed (HTTP 502): upstream exploded"
             }} =
-             OpenRouter.generate(nil, base_opts(store, request))
+             generate(nil, base_opts(store, request))
   end
 
   test "normalizes API keys from every source and rejects unsafe ones", %{store: store} do
@@ -999,21 +1001,21 @@ defmodule Tackle.Plugins.OpenRouterTest do
     end
 
     opts = base_opts(store, request)
-    assert {:ok, _} = OpenRouter.generate(nil, Keyword.put(opts, :api_key, " k1\n"))
+    assert {:ok, _} = generate(nil, Keyword.put(opts, :api_key, " k1\n"))
     assert_receive {:authorization, "Bearer k1"}
 
     {CredentialStore, agent} = store
     Agent.update(agent, &Map.put(&1, "openrouter", %{"api_key" => "k2\r\n"}))
-    assert {:ok, _} = OpenRouter.generate(nil, opts)
+    assert {:ok, _} = generate(nil, opts)
     assert_receive {:authorization, "Bearer k2"}
 
     unsafe = "sk-or-secret\nInjected: header"
 
     assert {:error, :invalid_api_key} =
-             OpenRouter.generate(nil, Keyword.put(opts, :api_key, unsafe))
+             generate(nil, Keyword.put(opts, :api_key, unsafe))
 
     Agent.update(agent, &Map.put(&1, "openrouter", %{"api_key" => unsafe}))
-    assert {:error, :invalid_api_key} = OpenRouter.generate(nil, opts)
+    assert {:error, :invalid_api_key} = generate(nil, opts)
   end
 
   test "validates provider preferences and hashes over-long session ids", %{store: store} do
@@ -1021,13 +1023,13 @@ defmodule Tackle.Plugins.OpenRouterTest do
     request = capture_body(test_pid, @model)
 
     assert {:error, {:invalid_provider_preferences, "openai"}} =
-             OpenRouter.generate(
+             generate(
                nil,
                base_opts(store, request) |> Keyword.put(:provider_preferences, "openai")
              )
 
     assert {:ok, _} =
-             OpenRouter.generate(
+             generate(
                nil,
                base_opts(store, request) |> Keyword.put(:provider_preferences, order: ["openai"])
              )
@@ -1040,7 +1042,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       base_opts(store, request)
       |> Keyword.merge(session_id: long_id, provider_preferences: %{order: ["openai"]})
 
-    assert {:ok, _} = OpenRouter.generate(nil, opts)
+    assert {:ok, _} = generate(nil, opts)
     assert_receive {:body, body}
     assert body["provider"] == %{"order" => ["openai"]}
     assert body["session_id"] == :crypto.hash(:sha256, long_id) |> Base.encode16(case: :lower)
@@ -1060,7 +1062,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
       glm = capture_body(test_pid, "z-ai/glm-5.3")
 
       assert {:ok, _} =
-               OpenRouter.generate(
+               generate(
                  nil,
                  base_opts(store, glm) |> Keyword.put(:model, "z-ai/glm-5.3")
                )
@@ -1074,7 +1076,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
              }
 
       # Models without a route keep OpenRouter's default load balancing.
-      assert {:ok, _} = OpenRouter.generate(nil, base_opts(store, capture_body(test_pid, @model)))
+      assert {:ok, _} = generate(nil, base_opts(store, capture_body(test_pid, @model)))
       assert_receive {:body, body}
       refute Map.has_key?(body, "provider")
     end
@@ -1088,7 +1090,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         base_opts(store, capture_body(self(), @model))
         |> Keyword.put(:provider_preferences, %{"allow_fallbacks" => true, "sort" => "latency"})
 
-      assert {:ok, _} = OpenRouter.generate(nil, opts)
+      assert {:ok, _} = generate(nil, opts)
       assert_receive {:body, body}
 
       assert body["provider"] == %{
@@ -1114,7 +1116,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
         base_opts(store, capture_body(self(), "z-ai/glm-5.3"))
         |> Keyword.merge(model: "z-ai/glm-5.3", provider_settings: settings)
 
-      assert {:ok, _} = OpenRouter.generate(nil, opts)
+      assert {:ok, _} = generate(nil, opts)
       assert_receive {:body, body}
       # The user's route replaces the configured one for that model.
       assert body["provider"] == %{"only" => ["mistral/zdr"], "allow_fallbacks" => false}
@@ -1123,12 +1125,12 @@ defmodule Tackle.Plugins.OpenRouterTest do
       other =
         Keyword.merge(opts, model: @model, request: capture_body(self(), @model))
 
-      assert {:ok, _} = OpenRouter.generate(nil, other)
+      assert {:ok, _} = generate(nil, other)
       assert_receive {:body, body}
       assert body["provider"] == %{"only" => ["openai"]}
 
       bad = Keyword.put(opts, :provider_settings, %{"provider_routing" => "mistral"})
-      assert {:error, {:invalid_provider_routing, "mistral"}} = OpenRouter.generate(nil, bad)
+      assert {:error, {:invalid_provider_routing, "mistral"}} = generate(nil, bad)
     end
 
     test "rejects malformed routing configuration before requesting", %{store: store} do
@@ -1137,12 +1139,12 @@ defmodule Tackle.Plugins.OpenRouterTest do
       Application.put_env(:tackle_openrouter, :provider_routing, %{@model => "openai"})
 
       assert {:error, {:invalid_provider_routing, @model, "openai"}} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
 
       Application.put_env(:tackle_openrouter, :provider_routing, :openai)
 
       assert {:error, {:invalid_provider_routing, :openai}} =
-               OpenRouter.generate(nil, base_opts(store, request))
+               generate(nil, base_opts(store, request))
     end
   end
 
@@ -1150,7 +1152,7 @@ defmodule Tackle.Plugins.OpenRouterTest do
     request = fn _options -> flunk("must not request") end
     opts = base_opts(store, request) |> Keyword.put(:stop, {:not, :json})
 
-    assert {:error, {:invalid_request_body, _message}} = OpenRouter.generate(nil, opts)
+    assert {:error, {:invalid_request_body, _message}} = generate(nil, opts)
   end
 
   describe "account flows" do
@@ -1207,6 +1209,10 @@ defmodule Tackle.Plugins.OpenRouterTest do
       end)
     end
   end
+
+  # The adapter has no `generate/2`; `Tackle.Lib.LLM` streams it with a
+  # callback that drops the events.
+  defp generate(schema, opts), do: OpenRouter.stream(schema, opts, fn _event -> :ok end)
 
   defp base_opts(store, request) do
     [

@@ -101,8 +101,8 @@ defmodule Tackle.Plugins.AnthropicTest do
       request: request
     ]
 
-    assert {:ok, result} = Anthropic.generate(nil, opts)
-    assert result.data["content"] == "cli"
+    assert {:ok, result} = LLM.generate_with(Anthropic, nil, opts)
+    assert result.content == "cli"
     assert result.provider == "anthropic"
 
     assert_receive {:request, request_options}
@@ -151,7 +151,7 @@ defmodule Tackle.Plugins.AnthropicTest do
       request: request
     ]
 
-    assert {:ok, result} = Anthropic.generate(nil, opts)
+    assert {:ok, result} = generate(nil, opts)
     assert result.data["content"] == "ok"
 
     assert_receive {:request, request_options}
@@ -221,7 +221,7 @@ defmodule Tackle.Plugins.AnthropicTest do
       request: request
     ]
 
-    assert {:ok, result} = Anthropic.generate(nil, opts)
+    assert {:ok, result} = generate(nil, opts)
     assert result.data["content"] == "retried"
 
     assert_receive {:rejected, rejected_options}
@@ -259,12 +259,12 @@ defmodule Tackle.Plugins.AnthropicTest do
     ]
 
     assert {:error, %Error{kind: :context_window_exceeded, status: 400}} =
-             Anthropic.generate(nil, Keyword.merge(base, request: overflow))
+             generate(nil, Keyword.merge(base, request: overflow))
 
     generic = fn options -> feed_chunks(options, ["{\"error\":\"boom\"}"], 400) end
 
     assert {:error, %Error{kind: :invalid_request, status: 400, message: message}} =
-             Anthropic.generate(nil, Keyword.merge(base, request: generic))
+             generate(nil, Keyword.merge(base, request: generic))
 
     assert message == "The provider rejected the request (HTTP 400): boom"
 
@@ -280,7 +280,7 @@ defmodule Tackle.Plugins.AnthropicTest do
       end
 
     assert {:error, %Error{kind: :invalid_request}} =
-             Anthropic.generate(nil, Keyword.merge(base, request: max_tokens))
+             generate(nil, Keyword.merge(base, request: max_tokens))
   end
 
   test "reports overload with its Retry-After and transport failures as retryable" do
@@ -301,14 +301,14 @@ defmodule Tackle.Plugins.AnthropicTest do
     end
 
     assert {:error, %Error{kind: :overloaded, status: 529, retry_after_ms: 3_000} = error} =
-             Anthropic.generate(nil, Keyword.merge(base, request: overloaded))
+             generate(nil, Keyword.merge(base, request: overloaded))
 
     assert Retry.retryable?(error)
 
     refused = fn _options -> {:error, %Req.TransportError{reason: :econnrefused}} end
 
     assert {:error, %Error{kind: :transport} = error} =
-             Anthropic.generate(nil, Keyword.merge(base, request: refused))
+             generate(nil, Keyword.merge(base, request: refused))
 
     assert Retry.retryable?(error)
   end
@@ -457,7 +457,7 @@ defmodule Tackle.Plugins.AnthropicTest do
 
       opts = provider_opts(store, request) |> Keyword.put(:provider_id, "claude-work")
 
-      assert {:ok, %{provider: "claude-work"}} = Anthropic.generate(nil, opts)
+      assert {:ok, %{data: %{"content" => "ok"}}} = generate(nil, opts)
       assert_receive {:refresh_token, "work-refresh"}
       assert_receive {:authorization, "Bearer sk-ant-oat-new"}
 
@@ -497,7 +497,7 @@ defmodule Tackle.Plugins.AnthropicTest do
 
       generate = fn id ->
         Task.async(fn ->
-          Anthropic.generate(nil, Keyword.put(provider_opts(store, request), :provider_id, id))
+          generate(nil, Keyword.put(provider_opts(store, request), :provider_id, id))
         end)
       end
 
@@ -505,27 +505,56 @@ defmodule Tackle.Plugins.AnthropicTest do
       assert_receive {:work_refresh_blocked, blocked}, 1_000
 
       # The work refresh still holds its lock; the home refresh must not wait for it.
-      assert {:ok, %{provider: "claude-home"}} = Task.await(generate.("claude-home"), 1_000)
+      assert {:ok, %{data: %{"content" => "ok"}}} = Task.await(generate.("claude-home"), 1_000)
 
       send(blocked, :release)
-      assert {:ok, %{provider: "claude-work"}} = Task.await(work, 1_000)
+      assert {:ok, %{data: %{"content" => "ok"}}} = Task.await(work, 1_000)
 
       stored = Agent.get(agent, & &1)
       assert stored["claude-work"]["refresh_token"] == "rotated-work-refresh"
       assert stored["claude-home"]["refresh_token"] == "rotated-home-refresh"
     end
 
-    test "stamps continuation state with the provider id" do
-      request = fn options -> feed_chunks(options, [text_wire("ok")], 200) end
+    test "replays continuation state only to the provider and model that produced it" do
+      test_pid = self()
+
+      request = fn options ->
+        {:ok, body} = JSON.decode(options[:body])
+        send(test_pid, {:messages, body["messages"]})
+        feed_chunks(options, [thinking_text_wire("why", "sig", "ok")], 200)
+      end
+
+      {:ok, work} = Provider.new("claude-work", Anthropic)
+      {:ok, home} = Provider.new("claude-home", Anthropic)
+      {:ok, work_selection} = LLM.select([work, home], "claude-work/claude-opus-5-5")
+      {:ok, home_selection} = LLM.select([work, home], "claude-home/claude-opus-5-5")
 
       opts =
-        [api_key: "sk-ant-api03-test", provider_id: "claude-work"]
+        [api_key: "sk-ant-api03-test"]
         |> Keyword.merge(provider_opts(nil, request))
-        |> Keyword.delete(:credential_store)
+        |> Keyword.drop([:credential_store, :model])
 
-      assert {:ok, result} = Anthropic.generate(nil, opts)
+      assert {:ok, result} = LLM.generate_with(work_selection, nil, opts)
       assert result.provider == "claude-work"
       assert result.provider_state["provider"] == "claude-work"
+      assert result.provider_state["model"] == "claude-opus-5-5"
+      assert_receive {:messages, _first}
+
+      messages = [
+        %{role: :user, content: "hello"},
+        %{role: :assistant, content: "ok", provider_state: result.provider_state},
+        %{role: :user, content: "again"}
+      ]
+
+      opts = Keyword.put(opts, :messages, messages)
+
+      assert {:ok, _result} = LLM.generate_with(work_selection, nil, opts)
+      assert_receive {:messages, [_user, %{"content" => replayed}, _again]}
+      assert Enum.any?(replayed, &(&1["type"] == "thinking"))
+
+      assert {:ok, _result} = LLM.generate_with(home_selection, nil, opts)
+      assert_receive {:messages, [_user, %{"content" => synthesized}, _again]}
+      refute Enum.any?(synthesized, &(&1["type"] == "thinking"))
     end
 
     test "only the default provider falls back to ANTHROPIC_API_KEY" do
@@ -543,20 +572,20 @@ defmodule Tackle.Plugins.AnthropicTest do
         %{"ANTHROPIC_API_KEY" => "sk-ant-api03-default", "WORK_KEY" => "sk-ant-api03-work"},
         fn ->
           assert {:ok, :stored} = Anthropic.status(opts)
-          assert {:ok, %{provider: "anthropic"}} = Anthropic.generate(nil, opts)
+          assert {:ok, %{data: %{"content" => "ok"}}} = generate(nil, opts)
           assert_receive {:request, "sk-ant-api03-default"}
 
           assert {:ok, :missing} = Anthropic.status(work)
 
           assert {:error, {:missing_anthropic_credentials, "claude-work"}} =
-                   Anthropic.generate(nil, work)
+                   generate(nil, work)
 
           refute_received {:request, _key}
 
           # A provider names its own variable with "api_key_env".
           named = Keyword.put(work, :provider_settings, %{"api_key_env" => "WORK_KEY"})
           assert {:ok, :stored} = Anthropic.status(named)
-          assert {:ok, %{provider: "claude-work"}} = Anthropic.generate(nil, named)
+          assert {:ok, %{data: %{"content" => "ok"}}} = generate(nil, named)
           assert_receive {:request, "sk-ant-api03-work"}
 
           invalid = Keyword.put(work, :provider_settings, %{"api_key_env" => 1})
@@ -584,18 +613,18 @@ defmodule Tackle.Plugins.AnthropicTest do
           provider_settings: %{"base_url" => "https://proxy.test/"}
         )
 
-      assert {:ok, _result} = Anthropic.generate(nil, opts)
+      assert {:ok, _result} = generate(nil, opts)
       assert_receive {:url, "https://proxy.test/v1/messages"}
 
       assert {:ok, _result} =
-               Anthropic.generate(nil, Keyword.put(opts, :base_url, "https://explicit.test"))
+               generate(nil, Keyword.put(opts, :base_url, "https://explicit.test"))
 
       assert_receive {:url, "https://explicit.test/v1/messages"}
 
       invalid = Keyword.put(opts, :provider_settings, %{"base_url" => ""})
 
       assert {:error, {:invalid_provider_setting, "claude-proxy", "base_url", ""}} =
-               Anthropic.generate(nil, invalid)
+               generate(nil, invalid)
     end
   end
 
@@ -612,6 +641,10 @@ defmodule Tackle.Plugins.AnthropicTest do
       end)
     end
   end
+
+  # The adapter has no `generate/2`; `Tackle.Lib.LLM` streams it with a
+  # callback that drops the events.
+  defp generate(schema, opts), do: Anthropic.stream(schema, opts, fn _event -> :ok end)
 
   defp provider_opts(store, request) do
     [
@@ -675,6 +708,34 @@ defmodule Tackle.Plugins.AnthropicTest do
     }) <>
       sse("content_block_delta", %{
         "index" => 0,
+        "delta" => %{"type" => "text_delta", "text" => text}
+      }) <>
+      sse("message_delta", %{
+        "delta" => %{"stop_reason" => "end_turn"},
+        "usage" => %{"output_tokens" => 2}
+      }) <>
+      sse("message_stop", %{})
+  end
+
+  defp thinking_text_wire(thinking, signature, text) do
+    sse("message_start", %{
+      "message" => %{"model" => "claude-opus-5-5", "usage" => %{"input_tokens" => 5}}
+    }) <>
+      sse("content_block_start", %{
+        "index" => 0,
+        "content_block" => %{"type" => "thinking", "thinking" => ""}
+      }) <>
+      sse("content_block_delta", %{
+        "index" => 0,
+        "delta" => %{"type" => "thinking_delta", "thinking" => thinking}
+      }) <>
+      sse("content_block_delta", %{
+        "index" => 0,
+        "delta" => %{"type" => "signature_delta", "signature" => signature}
+      }) <>
+      sse("content_block_stop", %{"index" => 0}) <>
+      sse("content_block_delta", %{
+        "index" => 1,
         "delta" => %{"type" => "text_delta", "text" => text}
       }) <>
       sse("message_delta", %{

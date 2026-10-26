@@ -202,7 +202,8 @@ Limits and pricing are **unknown by default**, not zero-cost estimates.
 
 Supports streaming text/reasoning, native function tools, JSON Schema response
 formats, token usage, cancellation between chunks, and explicit context-overflow
-errors. Both `generate/2` and `stream/3` use SSE transport to
+errors. The adapter implements `stream/3` (`Tackle.Lib.LLM` also uses it for
+non-streaming calls) over SSE transport to
 `<base_url>/chat/completions`. Truncated streams and output-token exhaustion
 return errors rather than incomplete tool calls. Failures are
 `Tackle.Lib.LLM.Error`s: HTTP errors keep their status and `Retry-After`, an
@@ -221,9 +222,10 @@ Additional options:
   endpoints; a required key is sent there.
 - `:receive_timeout`: defaults to 120,000 ms.
 
-Results and usage report the provider id as `:provider`. Tool results are
-text-only in this adapter; image parts become an explicit omission note.
-Reasoning is replayed only for the same provider id and model. Missing tool-call
+`Tackle.Lib.LLM` reports the provider id as the result's and usage's
+`:provider`. Tool results are text-only in this adapter; image parts become an
+explicit omission note. Reasoning is kept in `provider_state`, which
+`Tackle.Lib.LLM` replays only to the same provider id and model. Missing tool-call
 ids are synthesized as `<provider_id>-generated-...`, unique per completion and
 stable across stream events and subsequent tool history.
 

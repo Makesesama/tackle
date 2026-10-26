@@ -3,8 +3,6 @@ defmodule Tackle.Plugins.Anthropic.ImagesTest do
 
   alias Tackle.Plugins.Anthropic.{Convert, Images}
 
-  @model "claude-opus-5-5"
-
   describe "dimensions/1" do
     test "reads PNG, GIF, and WebP headers" do
       assert Images.dimensions(png(2556, 1394)) == {2556, 1394}
@@ -88,7 +86,7 @@ defmodule Tackle.Plugins.Anthropic.ImagesTest do
     ]
 
     assert {:ok, [user, _assistant, %{"content" => [tool_result]}]} =
-             Convert.messages(messages, @model, false)
+             Convert.messages(messages, false)
 
     assert Enum.count(user["content"], &(&1["type"] == "image")) == 20
 

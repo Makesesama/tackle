@@ -53,7 +53,8 @@ after their identity and JSON-object arguments have been validated.
 For reasoning controls, pass `reasoning_effort: :low | :high | :max` (or
 `:none`/`:off` to disable thinking) in `:llm_opts`. Reasoning-capable models use
 DeepSeek's `thinking` plus `reasoning_effort` wire format. Prior reasoning is
-replayed only when opaque state belongs to the same provider id and model.
+kept as opaque provider state, which `Tackle.Lib.LLM` replays only to the same
+provider id and model.
 Structured responses use DeepSeek's JSON-output mode and include the requested
 schema in the system instruction.
 
@@ -76,8 +77,8 @@ alias Tackle.Lib.LLM.Provider
 The selection passes `:provider_id` and `:provider_settings` to the adapter, and
 hosts pass the same options to `login/1` and `usage/1`. Without them the
 adapter acts as the default `"deepseek"` provider. The provider id is the
-credential namespace, the reported `:provider`, and the origin stamped on
-replayable reasoning state.
+credential namespace; `Tackle.Lib.LLM` reports it as the response's
+`:provider` and stamps it on replayable reasoning state.
 
 Honoured provider settings:
 
@@ -96,8 +97,8 @@ historical raw tool-argument JSON byte-for-byte after validating it. Cache hit
 and write tokens are reported as disjoint usage buckets.
 
 Override `:base_url` for a compatible endpoint and `:request` in tests. Model
-requests are always streamed internally, while `generate/2` collects the stream
-into one result. HTTP retries are deliberately disabled so a request is never
+requests are always streamed: the adapter implements only `stream/3`, which
+`Tackle.Lib.LLM` also uses for non-streaming calls. HTTP retries are deliberately disabled so a request is never
 replayed after visible stream output. There is no OAuth, WebSocket transport,
 connection process, or persistent local cache in this plugin.
 

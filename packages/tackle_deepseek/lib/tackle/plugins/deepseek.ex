@@ -13,8 +13,9 @@ defmodule Tackle.Plugins.DeepSeek do
   Several providers can share this adapter, each with its own API key and
   endpoint. The host passes the provider as `opts[:provider_id]` and
   `opts[:provider_settings]`; without them the adapter acts as the default
-  `"deepseek"` provider. The provider id is the credential namespace, the
-  reported `:provider`, and the origin stamped on replayable `:provider_state`.
+  `"deepseek"` provider. The provider id is the credential namespace;
+  `Tackle.Lib.LLM` reports it as the response's `:provider` and stamps it on
+  replayable `:provider_state`.
 
   Honoured settings: `"base_url"` (the API base URL; an explicit `:base_url`
   option wins over it) and `"api_key_env"` (the environment variable consulted
@@ -31,7 +32,6 @@ defmodule Tackle.Plugins.DeepSeek do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
-  alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Plugins.DeepSeek.HTTP
   alias Tackle.Plugins.DeepSeek.SSE
 
@@ -161,37 +161,15 @@ defmodule Tackle.Plugins.DeepSeek do
   end
 
   @impl true
-  def generate(schema, opts) do
-    perform(schema, opts, fn _event -> :ok end)
-  end
-
-  @impl true
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
-    perform(schema, opts, event_callback)
-  end
-
-  defp perform(schema, opts, event_callback) do
     with :ok <- validate_model(opts),
          :ok <- not_cancelled(opts),
          {:ok, opts} <- put_base_url(opts),
          {:ok, api_key} <- api_key(opts),
          {:ok, body} <- build_request_body(schema, opts),
-         {:ok, response} <- send_request(body, opts, api_key, event_callback),
-         {:ok, result} <-
-           response_result(response, Keyword.fetch!(opts, :model), schema, event_callback) do
-      {:ok, stamp_provider(result, provider_id(opts))}
+         {:ok, response} <- send_request(body, opts, api_key, event_callback) do
+      response_result(response, Keyword.fetch!(opts, :model), schema, event_callback)
     end
-  end
-
-  # The parser stamps replayable state with the adapter type; the provider id
-  # replaces it so state is only ever replayed to the provider that produced it.
-  defp stamp_provider(result, provider_id) do
-    result
-    |> Map.put(:provider, provider_id)
-    |> Map.update(:provider_state, nil, fn
-      %{} = state -> Map.put(state, "provider", provider_id)
-      state -> state
-    end)
   end
 
   defp send_request(body, opts, api_key, event_callback) do
@@ -266,7 +244,7 @@ defmodule Tackle.Plugins.DeepSeek do
 
     with {:ok, tools} <- convert_tools(Keyword.get(opts, :tools, [])),
          {:ok, messages} <-
-           convert_messages(Keyword.get(opts, :messages, []), provider_id(opts), model),
+           convert_messages(Keyword.get(opts, :messages, []), model),
          {:ok, response_format, schema_instruction} <- response_options(schema),
          {:ok, reasoning_options} <- reasoning_options(opts) do
       messages =
@@ -295,10 +273,10 @@ defmodule Tackle.Plugins.DeepSeek do
     KeyError -> {:error, :model_required}
   end
 
-  defp convert_messages(messages, provider_id, model) when is_list(messages) do
+  defp convert_messages(messages, model) when is_list(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, converted} ->
-      case convert_message(message, provider_id, model) do
+      case convert_message(message, model) do
         {:ok, nil} -> {:cont, {:ok, converted}}
         {:ok, item} -> {:cont, {:ok, [item | converted]}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -318,15 +296,15 @@ defmodule Tackle.Plugins.DeepSeek do
     end
   end
 
-  defp convert_messages(_messages, _provider_id, _model), do: {:error, :invalid_messages}
+  defp convert_messages(_messages, _model), do: {:error, :invalid_messages}
 
-  defp convert_message(message, _provider_id, _model) when not is_map(message),
+  defp convert_message(message, _model) when not is_map(message),
     do: {:error, :invalid_message}
 
-  defp convert_message(message, provider_id, model) do
+  defp convert_message(message, model) do
     case normalize_role(field(message, :role)) do
       :user -> text_message("user", field(message, :content))
-      :assistant -> assistant_message(message, provider_id, model)
+      :assistant -> assistant_message(message, model)
       :tool -> tool_message(message)
       role -> {:error, {:unsupported_message_role, role}}
     end
@@ -337,7 +315,7 @@ defmodule Tackle.Plugins.DeepSeek do
 
   defp text_message(_role, _content), do: {:error, :invalid_message_content}
 
-  defp assistant_message(message, provider_id, model) do
+  defp assistant_message(message, model) do
     content = field(message, :content)
     tool_calls = field(message, :tool_calls) |> List.wrap()
 
@@ -349,7 +327,7 @@ defmodule Tackle.Plugins.DeepSeek do
         assistant =
           %{"role" => "assistant", "content" => normalize_assistant_content(content)}
           |> maybe_put("tool_calls", non_empty(tool_calls))
-          |> maybe_put_reasoning_content(message, provider_id, model)
+          |> maybe_put_reasoning_content(message, model)
 
         {:ok, assistant}
       end
@@ -536,14 +514,8 @@ defmodule Tackle.Plugins.DeepSeek do
 
   defp response_options(nil), do: {:ok, nil, nil}
 
-  defp response_options(schema) when is_list(schema) do
-    json_schema = JsonSchema.to_json_schema(schema)
-    {:ok, %{"type" => "json_object"}, schema_instruction(json_schema)}
-  end
-
-  defp response_options(%{} = schema) do
-    {:ok, %{"type" => "json_object"}, schema_instruction(stringify_map_keys(schema))}
-  end
+  defp response_options(%{} = schema),
+    do: {:ok, %{"type" => "json_object"}, schema_instruction(schema)}
 
   defp response_options(_schema), do: {:error, :invalid_response_schema}
 
@@ -560,29 +532,28 @@ defmodule Tackle.Plugins.DeepSeek do
     if content == "", do: messages, else: [%{"role" => "system", "content" => content} | messages]
   end
 
-  defp maybe_put_reasoning_content(message, source, provider_id, model) do
+  # `Tackle.Lib.LLM` passes only provider state this provider and model
+  # produced, so its reasoning content is replayed as it is.
+  defp maybe_put_reasoning_content(message, source, model) do
     if model in @reasoning_models do
-      reasoning_content =
-        replay_reasoning_content(field(source, :provider_state), provider_id, model)
-
-      Map.put(message, "reasoning_content", reasoning_content || "")
+      Map.put(message, "reasoning_content", replay_reasoning_content(source) || "")
     else
       message
     end
   end
 
-  defp replay_reasoning_content(provider_state, provider_id, model)
-       when is_map(provider_state) do
-    provider = field(provider_state, :provider)
-    state_model = field(provider_state, :model)
-    reasoning_content = field(provider_state, :reasoning_content)
+  defp replay_reasoning_content(source) do
+    case field(source, :provider_state) do
+      %{} = provider_state ->
+        case field(provider_state, :reasoning_content) do
+          reasoning_content when is_binary(reasoning_content) -> reasoning_content
+          _none -> nil
+        end
 
-    if provider == provider_id and state_model == model and is_binary(reasoning_content),
-      do: reasoning_content,
-      else: nil
+      _none ->
+        nil
+    end
   end
-
-  defp replay_reasoning_content(_provider_state, _provider_id, _model), do: nil
 
   defp tool_choice(opts, tools) do
     case Keyword.fetch(opts, :tool_choice) do
@@ -754,17 +725,6 @@ defmodule Tackle.Plugins.DeepSeek do
   end
 
   defp field(_value, _key), do: nil
-
-  defp stringify_map_keys(map) do
-    Map.new(map, fn
-      {key, %{} = value} -> {to_string(key), stringify_map_keys(value)}
-      {key, value} when is_list(value) -> {to_string(key), Enum.map(value, &stringify_value/1)}
-      {key, value} -> {to_string(key), value}
-    end)
-  end
-
-  defp stringify_value(%{} = value), do: stringify_map_keys(value)
-  defp stringify_value(value), do: value
 
   defp user_agent do
     version = Application.spec(:tackle_deepseek, :vsn) || ~c"0.1.0"

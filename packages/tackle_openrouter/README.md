@@ -89,8 +89,8 @@ alias Tackle.Lib.LLM.Provider
 The selection passes `:provider_id` and `:provider_settings` to the adapter, and
 hosts pass the same options to `login/1` and `usage/1`. Without them the
 adapter acts as the default `"openrouter"` provider. The provider id is the
-credential namespace, the reported `:provider`, and the origin stamped on
-replayable reasoning state.
+credential namespace; `Tackle.Lib.LLM` reports it as the response's
+`:provider` and stamps it on replayable reasoning state.
 
 Honoured provider settings:
 
@@ -183,17 +183,18 @@ used for accounting either way.
 
 ## Behaviour
 
-- **Streaming.** Requests are always streamed; `generate/2` collects the stream.
+- **Streaming.** Requests are always streamed: the adapter implements only
+  `stream/3`, which `Tackle.Lib.LLM` also uses for non-streaming calls.
   Keep-alive comments are ignored. A successful stream must contain a recognized
   finish reason followed by `[DONE]`. OpenRouter's usage frame, which repeats
   the finish reason, is treated as accounting, and any other output after the
   finish reason is an error. Mid-stream provider errors on a committed `200`
-  response are returned as `{:error, {:provider_error, error}}`. Tool calls are
+  response are returned as `Tackle.Lib.LLM.Error`s classified by their code. Tool calls are
   returned only after their identity and JSON-object arguments are validated.
 - **Reasoning.** Reasoning text is streamed as reasoning deltas. Structured
   `reasoning_details` (signatures, encrypted blocks) are kept as opaque provider
-  state and replayed on later turns only for the same provider id and model, which
-  some models require when continuing after tool calls.
+  state, which `Tackle.Lib.LLM` replays on later turns only to the same provider
+  id and model; some models require it when continuing after tool calls.
 - **Caching.** For `anthropic/*` models the adapter sends a top-level
   `cache_control`, so OpenRouter places and advances the cache breakpoint
   itself and the message projection stays byte-identical between turns. Other

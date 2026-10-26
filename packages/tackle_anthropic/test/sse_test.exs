@@ -43,8 +43,6 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
     assert result.model == "claude-opus-5-5"
 
     assert result.provider_state == %{
-             "provider" => "anthropic",
-             "model" => "claude-opus-5-5",
              "oauth" => true,
              "stop_reason" => "end_turn",
              "content_blocks" => [%{"type" => "text", "text" => "hello"}]

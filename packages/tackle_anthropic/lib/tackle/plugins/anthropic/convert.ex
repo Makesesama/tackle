@@ -6,7 +6,6 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   # and the tool_use/tool_result pairing the API requires.
 
   alias Tackle.Lib.JSON
-  alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.Anthropic.{Images, Prompt}
 
   @claude_code_tools %{
@@ -28,8 +27,6 @@ defmodule Tackle.Plugins.Anthropic.Convert do
           pending: [String.t()],
           tool_ids: %{optional(String.t()) => String.t()},
           used_ids: MapSet.t(String.t()),
-          provider_id: String.t(),
-          model: String.t(),
           is_oauth: boolean(),
           error: term()
         }
@@ -47,17 +44,16 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   `Tackle.Plugins.Anthropic.Images`).
 
   Stored `provider_state` blocks are replayed only when they came from the same
-  provider (`opts[:provider_id]`, default `"anthropic"`), model, and auth mode.
+  auth mode; `Tackle.Lib.LLM` passes only the provider state this provider and
+  model produced.
   """
-  @spec messages([map()], String.t(), boolean(), keyword()) :: {:ok, [map()]} | {:error, term()}
-  def messages(messages, model, is_oauth, opts \\ []) when is_list(messages) do
+  @spec messages([map()], boolean()) :: {:ok, [map()]} | {:error, term()}
+  def messages(messages, is_oauth) when is_list(messages) do
     state = %{
       params: [],
       pending: [],
       tool_ids: %{},
       used_ids: MapSet.new(),
-      provider_id: Provider.id(opts, "anthropic"),
-      model: model,
       is_oauth: is_oauth,
       error: nil
     }
@@ -227,9 +223,7 @@ defmodule Tackle.Plugins.Anthropic.Convert do
   end
 
   defp replayable?(provider_state, state) when is_map(provider_state) do
-    field(provider_state, :provider) == state.provider_id and
-      field(provider_state, :model) == state.model and
-      field(provider_state, :oauth) == state.is_oauth and
+    field(provider_state, :oauth) == state.is_oauth and
       is_list(field(provider_state, :content_blocks))
   end
 

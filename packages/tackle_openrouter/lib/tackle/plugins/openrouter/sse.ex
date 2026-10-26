@@ -42,8 +42,6 @@ defmodule Tackle.Plugins.OpenRouter.SSE do
           cancelled?: boolean()
         }
 
-  @provider "openrouter"
-
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
@@ -126,7 +124,7 @@ defmodule Tackle.Plugins.OpenRouter.SSE do
          data: data,
          usage: state.usage,
          model: state.model || requested_model,
-         provider_state: provider_state(state, requested_model)
+         provider_state: provider_state(state)
        }}
     end
   end
@@ -623,10 +621,11 @@ defmodule Tackle.Plugins.OpenRouter.SSE do
 
   defp put_response_model(state, _model), do: put_error(state, :invalid_response_model)
 
-  defp provider_state(%__MODULE__{thinking: "", reasoning_details: []}, _model), do: nil
+  # `Tackle.Lib.LLM` stamps the provider and model it is replayed to.
+  defp provider_state(%__MODULE__{thinking: "", reasoning_details: []}), do: nil
 
-  defp provider_state(state, model) do
-    %{"provider" => @provider, "model" => model}
+  defp provider_state(state) do
+    %{}
     |> maybe_put("reasoning", present_string(state.thinking))
     |> maybe_put("reasoning_details", state.reasoning_details |> Enum.reverse() |> non_empty())
   end

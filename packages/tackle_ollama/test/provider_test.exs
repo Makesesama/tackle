@@ -57,19 +57,19 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     end
 
     assert {:ok, _} =
-             Ollama.generate(
+             generate(
                nil,
                opts(request, api_key: " explicit-key ", credential_store: store)
              )
 
     assert_received {:authorization, {"authorization", "Bearer explicit-key"}}
     refute_received {:fetch, _}
-    assert {:ok, _} = Ollama.generate(nil, opts(request, api_key: "", credential_store: store))
+    assert {:ok, _} = generate(nil, opts(request, api_key: "", credential_store: store))
     assert_received {:fetch, "ollama-cloud"}
     assert_received {:authorization, {"authorization", "Bearer stored-key"}}
 
     assert {:ok, _} =
-             Ollama.generate(nil, opts(request, credential_store: {Store, {self(), :error}}))
+             generate(nil, opts(request, credential_store: {Store, {self(), :error}}))
 
     assert_received {:authorization, {"authorization", "Bearer environment-key"}}
   end
@@ -78,22 +78,22 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     request = fn _ -> flunk("unexpected HTTP request") end
 
     assert {:error, {:missing_ollama_api_key, "ollama-cloud"}} =
-             Ollama.generate(nil, opts(request))
+             generate(nil, opts(request))
 
     assert {:error, {:credential_store_failed, :unavailable}} =
-             Ollama.generate(
+             generate(
                nil,
                opts(request, credential_store: {Store, {self(), {:error, :unavailable}}})
              )
 
     assert {:error, :invalid_ollama_credentials} =
-             Ollama.generate(
+             generate(
                nil,
                opts(request, credential_store: {Store, {self(), {:ok, "invalid"}}})
              )
 
     for key <- ["bad\r\nkey", "bad key", "bad\tkey"] do
-      assert {:error, :invalid_api_key} = Ollama.generate(nil, opts(request, api_key: key))
+      assert {:error, :invalid_api_key} = generate(nil, opts(request, api_key: key))
     end
   end
 
@@ -152,7 +152,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
 
     assert {:error, {:invalid_provider_settings, "ollama-work", {"api_key", :invalid}}} =
              reason =
-             Ollama.generate(
+             generate(
                nil,
                opts(nil,
                  provider_id: "ollama-work",
@@ -227,7 +227,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     assert_received {:fetch, "ollama-work"}
   end
 
-  test "native tools round-trip synthesized ids and reasoning only for matching provider/model" do
+  test "native tools round-trip synthesized ids and reasoning" do
     stream = fn options, initial, callback ->
       send(self(), {:body, JSON.decode!(options[:body])})
 
@@ -245,7 +245,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     end
 
     options = opts(nil, api_key: "key", stream: stream)
-    assert {:ok, result} = Ollama.generate(nil, options)
+    assert {:ok, result} = generate(nil, options)
     assert_received {:body, _}
     [call] = result.data["tool_calls"]
 
@@ -259,18 +259,11 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
       %{role: :tool, tool_call_id: call["id"], content: "found"}
     ]
 
-    assert {:ok, _} = Ollama.generate(nil, Keyword.put(options, :messages, messages))
+    assert {:ok, _} = generate(nil, Keyword.put(options, :messages, messages))
     assert_received {:body, %{"messages" => [assistant, tool]}}
     assert assistant["reasoning"] == "considering"
     assert tool["tool_call_id"] == call["id"]
     assert hd(assistant["tool_calls"])["id"] == call["id"]
-    other = put_in(hd(messages), [:provider_state, "provider"], "other")
-
-    assert {:ok, _} =
-             Ollama.generate(nil, Keyword.put(options, :messages, [other, List.last(messages)]))
-
-    assert_received {:body, %{"messages" => [assistant, _]}}
-    refute Map.has_key?(assistant, "reasoning")
   end
 
   test "malformed or unanswered historical calls fail before HTTP" do
@@ -278,13 +271,13 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     call = %{id: "old", name: "search", arguments: "{}"}
 
     assert {:error, {:invalid_tool_history, :missing_tool_results}} =
-             Ollama.generate(
+             generate(
                nil,
                opts(request, api_key: "key", messages: [%{role: :assistant, tool_calls: [call]}])
              )
 
     assert {:error, {:invalid_tool_history, {:unexpected_tool_result, "old"}}} =
-             Ollama.generate(
+             generate(
                nil,
                opts(request,
                  api_key: "key",
@@ -308,7 +301,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
       end
 
       assert {:error, %Error{kind: ^kind, status: ^status, details: ^body}} =
-               Ollama.generate(nil, opts(nil, api_key: "key", stream: stream))
+               generate(nil, opts(nil, api_key: "key", stream: stream))
     end
 
     stream = fn _, initial, callback ->
@@ -317,7 +310,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     end
 
     assert {:error, %Error{kind: :server, status: 500, details: body}} =
-             Ollama.generate(nil, opts(nil, api_key: "key", stream: stream))
+             generate(nil, opts(nil, api_key: "key", stream: stream))
 
     assert byte_size(body) <= 16_384
   end
@@ -330,7 +323,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     end
 
     assert {:error, %Error{kind: :rate_limited, retry_after_ms: 4_000} = error} =
-             Ollama.generate(nil, opts(nil, api_key: "key", stream: stream))
+             generate(nil, opts(nil, api_key: "key", stream: stream))
 
     assert Tackle.Lib.Retry.retryable?(error)
   end
@@ -339,7 +332,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     error = sse(%{"error" => %{"message" => "maximum context length exceeded"}})
 
     assert {:error, %Error{kind: :context_window_exceeded}} =
-             Ollama.generate(
+             generate(
                nil,
                opts(fn _ -> {:ok, %{status: 200, body: error}} end, api_key: "key")
              )
@@ -347,15 +340,15 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
     request = fn _ -> {:ok, %{status: 200, body: frame(%{"content" => "partial"}) <> error}} end
 
     assert {:error, %Error{kind: :invalid_response}} =
-             Ollama.generate(nil, opts(request, api_key: "key"))
+             generate(nil, opts(request, api_key: "key"))
 
     assert {:error, %Error{kind: :timeout}} =
-             Ollama.generate(nil, opts(fn _ -> {:error, :timeout} end, api_key: "key"))
+             generate(nil, opts(fn _ -> {:error, :timeout} end, api_key: "key"))
 
     refused = fn _ -> {:error, %Req.TransportError{reason: :econnrefused}} end
 
     assert {:error, %Error{kind: :transport} = transport} =
-             Ollama.generate(nil, opts(refused, api_key: "key"))
+             generate(nil, opts(refused, api_key: "key"))
 
     assert Tackle.Lib.Retry.retryable?(transport)
   end
@@ -378,7 +371,7 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
              )
 
     assert {:error, :cancelled} =
-             Ollama.generate(
+             generate(
                nil,
                opts(fn _ -> flunk("unexpected HTTP") end,
                  api_key: "key",
@@ -402,6 +395,10 @@ defmodule Tackle.Plugins.Ollama.ProviderTest do
 
     assert %Usage{input_tokens: 5, output_tokens: 2, total_tokens: 7, cost: nil} = result.usage
   end
+
+  # The adapter has no `generate/2`; `Tackle.Lib.LLM` streams it with a
+  # callback that drops the events.
+  defp generate(schema, opts), do: Ollama.stream(schema, opts, fn _event -> :ok end)
 
   defp opts(request, extra \\ []),
     do:

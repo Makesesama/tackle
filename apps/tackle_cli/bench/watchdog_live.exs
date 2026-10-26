@@ -90,7 +90,7 @@ defmodule WatchdogLive.Recorder do
   def models(_settings), do: []
 
   @impl Tackle.Lib.LLM
-  def generate(schema, opts), do: Ollama.generate(schema, opts)
+  def stream(schema, opts, event_callback), do: Ollama.stream(schema, opts, event_callback)
 
   @impl Tackle.Lib.Decision
   def decision_models(settings), do: Ollama.decision_models(settings)

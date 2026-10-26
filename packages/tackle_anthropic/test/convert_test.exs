@@ -3,7 +3,6 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
 
   alias Tackle.Plugins.Anthropic.Convert
 
-  @model "claude-opus-5-5"
   @empty_schema %{"type" => "object", "properties" => %{}, "required" => []}
 
   test "pairs tool_use with tool_result and caches the final user block" do
@@ -23,7 +22,7 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
       %{role: :tool, tool_call_id: "t1", name: "read", content: "file body"}
     ]
 
-    assert {:ok, params} = Convert.messages(messages, @model, false)
+    assert {:ok, params} = Convert.messages(messages, false)
 
     assert [
              %{"role" => "user", "content" => "hi"},
@@ -96,7 +95,7 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
       %{role: :user, content: "next"}
     ]
 
-    assert {:ok, params} = Convert.messages(messages, @model, false)
+    assert {:ok, params} = Convert.messages(messages, false)
 
     assert [%{"role" => "assistant"}, synthetic, %{"role" => "user", "content" => "next"}] =
              params
@@ -114,7 +113,7 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
            }
   end
 
-  test "replays stored provider_state blocks for the same provider, model, and auth mode" do
+  test "replays stored provider_state blocks for the same auth mode" do
     blocks = [
       %{"type" => "thinking", "thinking" => "why", "signature" => "sig"},
       %{"type" => "tool_use", "id" => "t1", "name" => "Read", "input" => %{"path" => "a"}}
@@ -124,59 +123,19 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
       role: :assistant,
       content: "ignored",
       tool_calls: [%{id: "t1", function: %{name: "read", arguments: "{}"}}],
-      provider_state: %{
-        "provider" => "anthropic",
-        "model" => @model,
-        "oauth" => true,
-        "content_blocks" => blocks
-      }
+      provider_state: %{"oauth" => true, "content_blocks" => blocks}
     }
 
     assert {:ok, [%{"role" => "assistant", "content" => ^blocks}]} =
-             Convert.messages([message], @model, true)
-
-    other_model = %{
-      message
-      | provider_state: %{message.provider_state | "model" => "claude-sonnet-5"}
-    }
-
-    assert {:ok, [%{"role" => "assistant", "content" => synthesized}]} =
-             Convert.messages([other_model], @model, true)
-
-    refute Enum.any?(synthesized, &(&1["type"] == "thinking"))
-    assert Enum.any?(synthesized, &(&1["type"] == "tool_use"))
+             Convert.messages([message], true)
 
     other_auth = %{message | provider_state: %{message.provider_state | "oauth" => false}}
 
-    assert {:ok, [%{"role" => "assistant", "content" => synthesized_auth}]} =
-             Convert.messages([other_auth], @model, true)
+    assert {:ok, [%{"role" => "assistant", "content" => synthesized}]} =
+             Convert.messages([other_auth], true)
 
-    refute Enum.any?(synthesized_auth, &(&1["type"] == "thinking"))
-  end
-
-  test "replays provider_state only for the provider that produced it" do
-    blocks = [%{"type" => "thinking", "thinking" => "why", "signature" => "sig"}]
-
-    message = %{
-      role: :assistant,
-      content: "answer",
-      provider_state: %{
-        "provider" => "claude-work",
-        "model" => @model,
-        "oauth" => true,
-        "content_blocks" => blocks
-      }
-    }
-
-    assert {:ok, [%{"content" => ^blocks}]} =
-             Convert.messages([message], @model, true, provider_id: "claude-work")
-
-    for opts <- [[provider_id: "claude-home"], []] do
-      assert {:ok, [%{"content" => synthesized}]} =
-               Convert.messages([message], @model, true, opts)
-
-      refute Enum.any?(synthesized, &(&1["type"] == "thinking"))
-    end
+    refute Enum.any?(synthesized, &(&1["type"] == "thinking"))
+    assert Enum.any?(synthesized, &(&1["type"] == "tool_use"))
   end
 
   test "keeps images in tool results" do
@@ -198,7 +157,7 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
     ]
 
     assert {:ok, [_assistant, %{"role" => "user", "content" => [tool_result]}]} =
-             Convert.messages(messages, @model, false)
+             Convert.messages(messages, false)
 
     assert tool_result["cache_control"] == %{"type" => "ephemeral"}
 
@@ -213,12 +172,11 @@ defmodule Tackle.Plugins.Anthropic.ConvertTest do
 
   test "rejects unknown roles and malformed tool calls" do
     assert {:error, {:unsupported_message_role, :system}} =
-             Convert.messages([%{role: :system, content: "x"}], @model, false)
+             Convert.messages([%{role: :system, content: "x"}], false)
 
     assert {:error, :invalid_tool_call} =
              Convert.messages(
                [%{role: :assistant, content: nil, tool_calls: [%{id: "t1"}]}],
-               @model,
                false
              )
   end
