@@ -68,13 +68,27 @@ defmodule Tackle.Session.Projection do
             compactions: [],
             turns: %{},
             active_turn: nil,
+            pending_tools: [],
             last_seq: 0,
             status: :clean,
             recovered: nil,
             closed_at: nil
 
   @type turn :: %{
-          required(String.t()) => term()
+          turn_id: String.t() | nil,
+          operation: String.t() | nil,
+          status: :started | :completed | :errored | :cancelled | :crashed | :abandoned,
+          started_at: String.t() | nil,
+          ended_at: String.t() | nil,
+          input: term()
+        }
+
+  @typedoc "A tool execution started without a durable result yet."
+  @type pending_tool :: %{
+          tool_call_id: String.t() | nil,
+          name: String.t() | nil,
+          started_at: String.t() | nil,
+          turn_id: String.t() | nil
         }
 
   @type t :: %__MODULE__{
@@ -94,6 +108,7 @@ defmodule Tackle.Session.Projection do
           compactions: [map()],
           turns: %{optional(String.t()) => turn()},
           active_turn: turn() | nil,
+          pending_tools: [pending_tool()],
           last_seq: non_neg_integer(),
           status: :clean | :closed | :interrupted | :recovered | :corrupt | :unsupported,
           recovered: map() | nil,
@@ -161,19 +176,17 @@ defmodule Tackle.Session.Projection do
   def classify(%__MODULE__{} = projection), do: %{projection | status: :clean}
 
   @doc """
-  Returns tool executions started without a durable result.
+  Returns tool executions started without a durable result, in start order.
 
-  A tool result message resolves the matching `tool.execution_started`, so
-  resolved executions are excluded. A start without a later tool message means
-  the tool may have produced an external effect whose outcome is uncertain.
-  Automatic continuation is prohibited while such a tool is unresolved.
+  A tool result message resolves the matching `tool.execution_started` by its
+  tool call id, in whichever turn it arrives (a repair turn settles the calls
+  an earlier turn left open), so resolved executions are excluded. A start
+  without a later tool message means the tool may have produced an external
+  effect whose outcome is uncertain. Automatic continuation is prohibited
+  while such a tool is unresolved.
   """
-  @spec uncertain_tools(t()) :: [map()]
-  def uncertain_tools(%__MODULE__{turns: turns}) do
-    turns
-    |> Map.values()
-    |> Enum.flat_map(fn turn -> Map.get(turn, :pending_tools, []) end)
-  end
+  @spec uncertain_tools(t()) :: [pending_tool()]
+  def uncertain_tools(%__MODULE__{pending_tools: pending}), do: pending
 
   @doc """
   Returns the durable metadata summary for catalog and listing.
@@ -383,8 +396,7 @@ defmodule Tackle.Session.Projection do
       status: :started,
       started_at: data["started_at"],
       ended_at: nil,
-      input: data["input"],
-      pending_tools: []
+      input: data["input"]
     }
 
     %{
@@ -429,12 +441,11 @@ defmodule Tackle.Session.Projection do
     pending = %{
       tool_call_id: data["tool_call_id"],
       name: data["name"],
-      started_at: data["started_at"]
+      started_at: data["started_at"],
+      turn_id: active_turn_id(projection)
     }
 
-    update_active_turn(projection, fn turn ->
-      %{turn | pending_tools: append(turn.pending_tools, pending)}
-    end)
+    %{projection | pending_tools: append(projection.pending_tools, pending)}
   end
 
   defp apply_event(%{"type" => type, "data" => data} = event, projection)
@@ -485,14 +496,16 @@ defmodule Tackle.Session.Projection do
     end
   end
 
-  # A durable tool result settles the matching `tool.execution_started`: once the
-  # outcome is recorded the execution is no longer uncertain, so it must not gate
-  # recovery. A start without a result stays pending for the whole session.
+  # A durable tool result settles the matching `tool.execution_started`, in
+  # any turn: once the outcome is recorded the execution is no longer
+  # uncertain, so it must not gate recovery. A start without a result stays
+  # pending for the whole session.
+  defp resolve_pending_tool(%__MODULE__{pending_tools: []} = projection, _message),
+    do: projection
+
   defp resolve_pending_tool(projection, %Message{role: :tool, tool_call_id: id})
        when is_binary(id) do
-    update_active_turn(projection, fn turn ->
-      %{turn | pending_tools: Enum.reject(turn.pending_tools, &(&1.tool_call_id == id))}
-    end)
+    %{projection | pending_tools: Enum.reject(projection.pending_tools, &(&1.tool_call_id == id))}
   end
 
   defp resolve_pending_tool(projection, _message), do: projection
@@ -571,8 +584,7 @@ defmodule Tackle.Session.Projection do
       status: status,
       started_at: nil,
       ended_at: data["ended_at"] || data["settled_at"],
-      input: nil,
-      pending_tools: []
+      input: nil
     }
   end
 
@@ -584,15 +596,6 @@ defmodule Tackle.Session.Projection do
   defp terminal_status("turn.crashed"), do: :crashed
   defp terminal_status("turn.abandoned"), do: :abandoned
 
-  defp update_active_turn(%__MODULE__{active_turn: nil} = projection, _fun), do: projection
-
-  defp update_active_turn(%__MODULE__{active_turn: active_turn} = projection, fun) do
-    updated = fun.(active_turn)
-
-    %{
-      projection
-      | active_turn: updated,
-        turns: Map.put(projection.turns, updated.turn_id, updated)
-    }
-  end
+  defp active_turn_id(%__MODULE__{active_turn: %{turn_id: turn_id}}), do: turn_id
+  defp active_turn_id(_projection), do: nil
 end

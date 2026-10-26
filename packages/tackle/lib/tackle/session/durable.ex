@@ -34,11 +34,15 @@ defmodule Tackle.Session.Durable do
   @typedoc "The session's journal, or `nil` for a session without one."
   @type journal :: pid() | nil
 
-  @typedoc "An interrupted turn that awaits the frontend's decision."
+  @typedoc """
+  An interrupted turn that awaits the frontend's decision, with the session's
+  tool executions that have no durable result
+  (`Tackle.Session.Projection.uncertain_tools/1`).
+  """
   @type recovery :: %{
           required(:turn_id) => String.t(),
           required(:operation) => term(),
-          required(:uncertain_tools) => [map()]
+          required(:uncertain_tools) => [Projection.pending_tool()]
         }
 
   @typedoc """
@@ -280,11 +284,11 @@ defmodule Tackle.Session.Durable do
 
   defp recovery(%Projection{active_turn: nil}), do: nil
 
-  defp recovery(%Projection{active_turn: %{} = turn}) do
+  defp recovery(%Projection{active_turn: %{} = turn} = projection) do
     %{
       turn_id: turn.turn_id,
       operation: turn.operation,
-      uncertain_tools: Map.get(turn, :pending_tools, [])
+      uncertain_tools: Projection.uncertain_tools(projection)
     }
   end
 

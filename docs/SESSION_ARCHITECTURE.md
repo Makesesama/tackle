@@ -665,7 +665,7 @@ If repair reports bad bytes, the session is visibly marked as recovered. If repl
 
 ### 10.3 Incomplete turns
 
-A `turn.started` event without a matching terminal event makes the session interrupted. Replay also identifies tool starts without durable results.
+A `turn.started` event without a matching terminal event makes the session interrupted. Replay also identifies tool starts without durable results: a tool result resolves the start with its tool call id in whichever turn it arrives, so the results a repair turn writes for an earlier turn's calls resolve them. `Tackle.Session.Projection.uncertain_tools/1` is the one definition; inspection and the recovery a resumed session reports both use it.
 
 The durable projection reports at least:
 
