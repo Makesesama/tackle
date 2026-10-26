@@ -88,6 +88,9 @@ defmodule Tackle.Session.Reader do
   @doc """
   Opens a journal for the single writable owner.
 
+  The journal file is made private (`Tackle.Session.Storage.file_mode/0`),
+  including one an earlier version created with the default mode.
+
   When the log was not cleanly closed, repair must be explicitly allowed.
   Repair first preserves the original file under `recovery/`, then reports the
   recovered-item and bad-byte counts. A repaired journal is replayed and
@@ -172,41 +175,57 @@ defmodule Tackle.Session.Reader do
       "repaired_at" => DateTime.to_iso8601(DateTime.utc_now())
     }
 
-    case fold(name, session_id, path) do
-      {:ok, replay} ->
-        {:ok,
-         %{
-           name: name,
-           path: path,
-           projection: replay.projection,
-           recovered: recovered_info,
-           new?: false
-         }}
+    with :ok <- protect(name, path) do
+      case fold(name, session_id, path) do
+        {:ok, replay} ->
+          {:ok,
+           %{
+             name: name,
+             path: path,
+             projection: replay.projection,
+             recovered: recovered_info,
+             new?: false
+           }}
+
+        {:error, reason} ->
+          _ = :disk_log.close(name)
+          {:error, {:repaired_history_invalid, reason}}
+      end
+    end
+  end
+
+  # `:disk_log` creates the file with the default mode.
+  defp protect(name, path) do
+    case File.chmod(path, Storage.file_mode()) do
+      :ok ->
+        :ok
 
       {:error, reason} ->
         _ = :disk_log.close(name)
-        {:error, {:repaired_history_invalid, reason}}
+        {:error, {:journal_open_failed, path, {:chmod_failed, reason}}}
     end
   end
 
   defp finish_open(name, session_id, path, new?, recovered) do
-    case fold(name, session_id, path) do
-      {:ok, replay} ->
-        {:ok,
-         %{
-           name: name,
-           path: path,
-           projection: replay.projection,
-           recovered: recovered,
-           new?: new?
-         }}
+    with :ok <- protect(name, path) do
+      case fold(name, session_id, path) do
+        {:ok, replay} ->
+          {:ok,
+           %{
+             name: name,
+             path: path,
+             projection: replay.projection,
+             recovered: recovered,
+             new?: new?
+           }}
 
-      {:error, {:empty_journal, _path}} ->
-        {:ok, %{name: name, path: path, projection: nil, recovered: nil, new?: true}}
+        {:error, {:empty_journal, _path}} ->
+          {:ok, %{name: name, path: path, projection: nil, recovered: nil, new?: true}}
 
-      {:error, reason} ->
-        _ = :disk_log.close(name)
-        {:error, reason}
+        {:error, reason} ->
+          _ = :disk_log.close(name)
+          {:error, reason}
+      end
     end
   end
 

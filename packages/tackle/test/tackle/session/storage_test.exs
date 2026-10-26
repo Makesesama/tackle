@@ -26,6 +26,32 @@ defmodule Tackle.Session.StorageTest do
     assert Bitwise.band(mode, 0o777) == 0o700
   end
 
+  test "makes sessions/, the project directory, and the session directory private", ctx do
+    opts = [home: ctx.home, cwd: "/tmp/private-project"]
+    assert {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, opts)
+    {:ok, root} = Storage.sessions_root(home: ctx.home)
+
+    assert mode(root) == 0o700
+    assert mode(Path.dirname(dir)) == 0o700
+    assert mode(dir) == 0o700
+
+    # Directories an earlier version created with the default mode are tightened.
+    Enum.each([root, Path.dirname(dir), dir], &File.chmod!(&1, 0o755))
+    assert {:ok, ^dir} = Storage.ensure_session_dir(ctx.session_id, opts)
+    assert Enum.map([root, Path.dirname(dir), dir], &mode/1) == [0o700, 0o700, 0o700]
+  end
+
+  test "creates the missing parents of a private directory privately", ctx do
+    path = Path.join([ctx.home, "a", "b", "c"])
+    assert :ok = Storage.ensure_private_dir(path)
+
+    assert Enum.map(["a", "a/b", "a/b/c"], &mode(Path.join(ctx.home, &1))) == [
+             0o700,
+             0o700,
+             0o700
+           ]
+  end
+
   test "reclaims a lock when a PID is reused by another process", ctx do
     {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
     path = Lock.path(dir)
@@ -209,4 +235,6 @@ defmodule Tackle.Session.StorageTest do
     refute File.exists?(temp)
     assert {:error, _reason} = Storage.publish_directory(temp, final_dir)
   end
+
+  defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
 end

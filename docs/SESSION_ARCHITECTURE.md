@@ -181,7 +181,7 @@ creation. Existing flat sessions are not migrated automatically. If directory fa
 
 The journal is the only required durable file. `summary.etf`, `checkpoint.etf`, and catalog data can always be removed and recreated.
 
-Session directories should be private to the current user, and journal files should be created with restrictive permissions. Filesystem permissions are part of the security boundary because internal repair and ordinary `:disk_log.chunk/2` can decode ETF terms.
+The directories under `sessions/`, `sessions/` itself and the project directories included, are private to the current user (`0700`), and the journal, its sidecars, the writer lock, and failure reports are `0600`. Directories and journals an earlier version created with default modes are tightened when the session is next opened for writing. Filesystem permissions are part of the security boundary because the journal holds whole conversations and internal repair and ordinary `:disk_log.chunk/2` can decode ETF terms.
 
 ## 6. Journal ownership and opening
 

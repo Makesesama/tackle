@@ -30,9 +30,12 @@ defmodule Tackle.Session.Storage do
   readable. Pass `archived: true` to any path function to address the archived
   copy instead of the active one.
 
-  Directories are private to the current user and files are created
-  with restrictive permissions because internal repair and ordinary chunk
-  decoding can decode ETF terms.
+  The directories under `sessions/` (including `sessions/` itself and the
+  project directories) are private to the current user (`0700`), and the
+  journal, sidecars, lock, and failure files are created `0600`, because the
+  journal holds whole conversations and internal repair and ordinary chunk
+  decoding can decode ETF terms. Directories and journals created by earlier
+  versions are made private when a session is next opened for writing.
   """
 
   alias Tackle.Session.Storage.Lock
@@ -153,23 +156,66 @@ defmodule Tackle.Session.Storage do
 
   def validate_session_id(session_id), do: {:error, {:invalid_session_id, session_id}}
 
-  @doc "Creates the private session directory if needed."
+  @doc """
+  Creates the private session directory if needed.
+
+  Every directory from `sessions/` down to the session's, existing or not, is
+  made private.
+  """
   @spec ensure_session_dir(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def ensure_session_dir(session_id, opts \\ []) do
-    with {:ok, dir} <- session_dir(session_id, opts) do
-      case ensure_private_dir(dir) do
-        :ok -> {:ok, dir}
-        {:error, reason} -> {:error, reason}
-      end
+    with {:ok, dir} <- session_dir(session_id, opts),
+         {:ok, root} <- sessions_root(opts),
+         :ok <- ensure_private_path(root, dir) do
+      {:ok, dir}
     end
   end
 
-  @doc "Creates a private directory (and parents) with restrictive permissions."
+  # `dir` lies below `root`; `root` and each directory between them are made
+  # private, so a project directory or `sessions/` created by an earlier
+  # version is tightened too.
+  defp ensure_private_path(root, dir) do
+    dir
+    |> Path.relative_to(root)
+    |> Path.split()
+    |> Enum.scan(root, &Path.join(&2, &1))
+    |> then(&[root | &1])
+    |> Enum.reduce_while(:ok, fn path, :ok ->
+      case ensure_private_dir(path) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  @doc """
+  Creates a private directory with restrictive permissions.
+
+  The directory and every parent this call creates are `0700`; parents that
+  already existed are left as they are.
+  """
   @spec ensure_private_dir(String.t()) :: :ok | {:error, term()}
   def ensure_private_dir(path) do
-    with :ok <- mkdir_p(path) do
-      chmod(path, @dir_mode)
-    end
+    path = Path.expand(path)
+    created = missing_dirs(path, [])
+
+    with :ok <- mkdir_p(path), do: make_private(Enum.uniq([path | created]))
+  end
+
+  defp make_private(dirs) do
+    Enum.reduce_while(dirs, :ok, fn dir, :ok ->
+      case chmod(dir, @dir_mode) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  # The directories `mkdir_p` is about to create, outermost first.
+  defp missing_dirs(path, acc) do
+    if File.exists?(path) or Path.dirname(path) == path,
+      do: acc,
+      else: missing_dirs(Path.dirname(path), [path | acc])
   end
 
   @doc """
@@ -458,7 +504,7 @@ defmodule Tackle.Session.Storage do
     end
   end
 
-  @doc "Returns the journal file mode used for newly created journals."
+  @doc "Returns the mode of journals and the other files in a session directory."
   @spec file_mode() :: non_neg_integer()
   def file_mode, do: @file_mode
 

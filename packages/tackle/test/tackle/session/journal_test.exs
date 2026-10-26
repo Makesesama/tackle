@@ -1043,6 +1043,24 @@ defmodule Tackle.Session.JournalTest do
       stop_journal(journal)
     end
 
+    test "the journal file is private, also one an earlier version left readable", ctx do
+      opts = [cwd: "/tmp/private-project"]
+      {:ok, journal} = start_journal(ctx, opts)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, path} = Storage.journal_path(ctx.session_id, [home: ctx.home] ++ opts)
+      {:ok, root} = Storage.sessions_root(home: ctx.home)
+
+      assert file_mode(path) == 0o600
+      assert file_mode(root) == 0o700
+      assert file_mode(Path.dirname(Path.dirname(path))) == 0o700
+      stop_journal(journal)
+
+      File.chmod!(path, 0o644)
+      {:ok, journal} = start_journal(ctx, opts)
+      assert file_mode(path) == 0o600
+      stop_journal(journal)
+    end
+
     test "rejects a second journal owner in the same node", ctx do
       {:ok, _journal} = start_journal(ctx)
       assert {:error, {:already_started, _pid}} = start_journal(ctx)
@@ -1086,6 +1104,8 @@ defmodule Tackle.Session.JournalTest do
              end)
            end) == :ok
   end
+
+  defp file_mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
 
   defp create_session!(ctx) do
     {:ok, journal} = start_journal(ctx)
