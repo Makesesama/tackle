@@ -188,3 +188,30 @@ defmodule Tackle.SDK.Test.CancellableLLM do
     end
   end
 end
+
+defmodule Tackle.SDK.Test.SelfCancellingLLM do
+  @moduledoc """
+  `Tackle.Lib.LLM` adapter that reports its cancellation signal to the process
+  in the `:tackle_sdk, :cancellable_llm_test_pid` application env, then
+  cancels the turn through that signal itself, so a test can cancel a turn
+  without racing the request that cancels it.
+  """
+
+  @behaviour Tackle.Lib.LLM
+
+  alias Tackle.Lib.Cancellation
+
+  @impl true
+  def adapter_id, do: "self-cancelling"
+
+  @impl true
+  def models, do: ["now"]
+
+  @impl true
+  def generate(_schema, opts) do
+    signal = Keyword.fetch!(opts, :cancellation_signal)
+    send(Application.fetch_env!(:tackle_sdk, :cancellable_llm_test_pid), {:llm_signal, signal})
+    Cancellation.cancel(signal, :user_cancelled)
+    {:error, :cancelled}
+  end
+end

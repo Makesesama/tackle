@@ -281,18 +281,18 @@ defmodule Tackle.SDK.ServerTest do
       Application.put_env(:tackle_sdk, :cancellable_llm_test_pid, self())
       on_exit(fn -> Application.delete_env(:tackle_sdk, :cancellable_llm_test_pid) end)
 
+      # The adapter cancels the turn itself: a turn/cancel request could
+      # arrive before the adapter is called.
       start(
         [
           @init,
-          ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"sess-1","model":"cancellable/waiting"}}),
-          ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"sess-1","turnId":"turn-1","input":"hello"}}),
-          ~s({"jsonrpc":"2.0","id":4,"method":"turn/cancel","params":{"turnId":"turn-1"}})
+          ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"sess-1","model":"self-cancelling/now"}}),
+          ~s({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"sess-1","turnId":"turn-1","input":"hello"}})
         ],
-        providers: [CancellableLLM]
+        providers: [Tackle.SDK.Test.SelfCancellingLLM]
       )
 
       assert_receive {:llm_signal, signal}, 2_000
-      assert %{"id" => 4, "result" => %{"cancelled" => true}} = await_response(4)
       assert {:ok, _events, %{"result" => "cancelled"}} = collect_event_types(2_000)
       assert_receive {:run_result, :ok}
 
