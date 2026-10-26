@@ -488,7 +488,10 @@ without a journal, once the turn's Task runs.
 
 An idle model or thinking-level change is persisted before it becomes the accepted session configuration. The event stores only durable selections and audit hashes, not executable adapter modules or credentials.
 
-The commit is synced. If it fails, `Tackle.Session.reconfigure/2` returns the error and the session stops, as after any other journal failure; it never continues with a configuration the journal did not record.
+It records the normalized thinking level (`"off"` when none is set, or for a
+provider-specific value a host set directly), the same value `session.created`
+records; journals of earlier versions that recorded the raw option, `nil` when
+unset, still load. The commit is synced. If it fails, `Tackle.Session.reconfigure/2` returns the error and the session stops, as after any other journal failure; it never continues with a configuration the journal did not record.
 
 ### 8.6 Stopping
 

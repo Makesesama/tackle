@@ -971,6 +971,35 @@ defmodule Tackle.Session.JournalTest do
     end
   end
 
+  describe "configuration changes" do
+    test "record the normalized thinking level, never a raw adapter option", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      base = config()
+
+      # A provider-specific value a host set directly is not a level, and a
+      # tuple could not be journaled at all.
+      custom = %{base | llm_opts: Keyword.put(base.llm_opts, :reasoning_effort, {:budget, 2048})}
+      unset = %{base | llm_opts: Keyword.delete(base.llm_opts, :reasoning_effort)}
+      high = %{base | llm_opts: Keyword.put(base.llm_opts, :reasoning_effort, "high")}
+
+      assert :ok = Journal.configuration_changed(journal, custom)
+      assert :ok = Journal.configuration_changed(journal, unset)
+      assert :ok = Journal.configuration_changed(journal, high)
+      assert {:ok, %{thinking: "high"}} = Journal.projection(journal)
+      stop_journal(journal)
+
+      {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+
+      thinking =
+        for commit <- replay.commits,
+            %{"type" => "session.configuration_changed", "data" => data} <- commit["events"],
+            do: data["thinking"]
+
+      assert thinking == ["off", "off", "high"]
+    end
+  end
+
   describe "storage ownership" do
     test "rejects a second journal owner in the same node", ctx do
       {:ok, _journal} = start_journal(ctx)

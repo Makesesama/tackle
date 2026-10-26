@@ -81,7 +81,8 @@ defmodule Tackle.Session.Loader do
     end
   end
 
-  # Journals record the adapter option as is: `nil` when no level was set.
+  # Journals record the normalized level; earlier versions recorded the
+  # adapter option as is, `nil` when no level was set.
   defp recorded_thinking(thinking) do
     case Thinking.parse(thinking) do
       {:ok, nil} -> "off"

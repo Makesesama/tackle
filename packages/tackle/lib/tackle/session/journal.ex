@@ -536,10 +536,13 @@ defmodule Tackle.Session.Journal do
   end
 
   def handle_call({:configuration_changed, %Config{} = config}, _from, state) do
+    # Recorded like `session.created`: the normalized level, never a raw
+    # provider-specific option. Journals written before recorded the raw value
+    # (`nil` when unset), which `Tackle.Session.Loader` still reads.
     event =
       Log.event("session.configuration_changed", %{
         "model_ref" => config.model_ref,
-        "thinking" => config.llm_opts[:reasoning_effort],
+        "thinking" => Thinking.from_llm_opts(config.llm_opts),
         "changed_at" => now()
       })
 
