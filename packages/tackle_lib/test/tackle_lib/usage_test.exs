@@ -3,6 +3,8 @@ defmodule Tackle.Lib.UsageTest do
 
   alias Tackle.Lib.Usage
 
+  doctest Usage
+
   describe "normalize/2" do
     test "returns nil for missing usage" do
       assert Usage.normalize(nil) == nil
@@ -15,14 +17,61 @@ defmodule Tackle.Lib.UsageTest do
                Usage.normalize(usage, model: "model-a", provider: :provider)
     end
 
-    test "normalizes common atom-keyed token fields" do
-      usage = Usage.normalize(%{prompt_tokens: 12, completion_tokens: 7}, model: "model-a")
+    test "normalizes canonical atom-keyed fields and keeps their raw report" do
+      raw = %{"prompt_tokens" => 12, "completion_tokens" => 7}
+
+      usage =
+        Usage.normalize(%{input_tokens: 12, output_tokens: 7, raw: raw}, model: "model-a")
 
       assert usage.input_tokens == 12
       assert usage.output_tokens == 7
       assert usage.total_tokens == 19
       assert usage.model == "model-a"
-      assert usage.raw == %{prompt_tokens: 12, completion_tokens: 7}
+      assert usage.raw == raw
+    end
+
+    test "does not guess at provider-native fields" do
+      usage =
+        Usage.normalize(%{
+          "prompt_tokens" => 120,
+          "completion_tokens" => 7,
+          "cached_input_tokens" => 100,
+          "cache_creation_input_tokens" => 3
+        })
+
+      assert %Usage{input_tokens: nil, output_tokens: nil, total_tokens: nil, raw: nil} = usage
+      assert usage.cache_read_tokens == nil
+      assert usage.cache_write_tokens == nil
+    end
+
+    test "round-trips to_map/1 output with atom or string keys" do
+      usage =
+        Usage.new(
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_tokens: 3,
+          cost: 0.5,
+          currency: "USD",
+          cost_breakdown: %{input: 0.25, output: 0.25, total: 0.5},
+          cost_estimated: true,
+          model: "m",
+          provider: "p",
+          raw: %{"native" => 1}
+        )
+
+      map = Usage.to_map(usage)
+      assert Usage.normalize(map) == usage
+
+      stringified =
+        Map.new(map, fn
+          {:cost_breakdown, breakdown} ->
+            {"cost_breakdown", Map.new(breakdown, fn {k, v} -> {Atom.to_string(k), v} end)}
+
+          {key, value} ->
+            {Atom.to_string(key), value}
+        end)
+
+      assert Usage.normalize(stringified) == usage
     end
 
     test "normalizes string-keyed extended fields and preserves optional cost" do
@@ -48,6 +97,69 @@ defmodule Tackle.Lib.UsageTest do
       assert usage.cost == 0.001
       assert usage.currency == "USD"
       assert usage.provider == "openrouter"
+    end
+  end
+
+  describe "new/1" do
+    test "derives disjoint buckets from a prompt count that includes cached tokens" do
+      raw = %{"prompt_tokens" => 120, "completion_tokens" => 8, "total_tokens" => 128}
+
+      usage =
+        Usage.new(
+          prompt_tokens: 120,
+          cache_read_tokens: 100,
+          cache_write_tokens: 5,
+          output_tokens: 8,
+          total_tokens: 128,
+          raw: raw
+        )
+
+      assert usage.input_tokens == 15
+      assert Usage.prompt_tokens(usage) == 120
+      assert usage.total_tokens == 128
+      assert usage.raw == raw
+    end
+
+    test "never derives negative input and prefers an explicit input count" do
+      assert Usage.new(prompt_tokens: 3, cache_read_tokens: 10).input_tokens == 0
+
+      assert Usage.new(prompt_tokens: 20, input_tokens: 4, cache_read_tokens: 10).input_tokens ==
+               4
+    end
+
+    test "drops a total that disagrees with the prompt and output counts" do
+      usage = Usage.new(prompt_tokens: 10, output_tokens: 5, total_tokens: 99)
+      assert usage.total_tokens == 15
+
+      assert Usage.new(prompt_tokens: 10, total_tokens: 99).total_tokens == 99
+      assert Usage.new(input_tokens: 10, output_tokens: 5, total_tokens: 99).total_tokens == 99
+    end
+
+    test "drops values that are not counts or costs" do
+      usage =
+        Usage.new(
+          input_tokens: -1,
+          output_tokens: 2.9,
+          reasoning_tokens: "x",
+          cache_read_tokens: "4",
+          cost: -1,
+          currency: :usd,
+          raw: "text"
+        )
+
+      assert %Usage{
+               input_tokens: nil,
+               output_tokens: 2,
+               reasoning_tokens: nil,
+               cache_read_tokens: 4,
+               cost: nil,
+               currency: nil,
+               raw: nil
+             } = usage
+    end
+
+    test "rejects unknown fields" do
+      assert_raise KeyError, fn -> Usage.new(prompt_tokens: 1, cached_tokens: 2) end
     end
   end
 
@@ -145,7 +257,7 @@ defmodule Tackle.Lib.UsageTest do
       usage =
         Usage.aggregate([
           %Usage{input_tokens: 10, output_tokens: 5, total_tokens: 15},
-          %{prompt_tokens: 7, completion_tokens: 3, reasoning_tokens: 2},
+          %{input_tokens: 7, output_tokens: 3, reasoning_tokens: 2},
           nil
         ])
 

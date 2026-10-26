@@ -1,16 +1,19 @@
 defmodule Tackle.Lib.Usage do
   @moduledoc """
-  Normalized token and cost metadata for one LLM generation step.
+  Canonical token and cost metadata for one LLM generation step.
 
-  Providers vary a lot here: some return only prompt/completion token counts,
-  some include reasoning/cache buckets, and many do not return money cost at all.
-  Tackle.Lib therefore normalizes the token dimensions it knows about while keeping
-  cost optional and preserving the original provider payload in `:raw` for host
-  applications that need auditability or richer billing.
+  Providers report usage in their own shapes: prompt or input counts that do or
+  do not include cached tokens, cache buckets under different names, and money
+  cost only sometimes. Adapters translate their provider's report into this
+  struct, usually with `new/1`, and keep the provider's report in `:raw` for
+  hosts that need auditability or richer billing. Tackle.Lib never guesses at
+  provider field names.
 
-  The normalized input buckets are disjoint: `:input_tokens` is uncached input,
-  `:cache_read_tokens` was served from cache, and `:cache_write_tokens` was written
-  to cache. Total prompt volume is the sum of those three buckets.
+  The input buckets are disjoint: `:input_tokens` is uncached input,
+  `:cache_read_tokens` was served from cache, and `:cache_write_tokens` was
+  written to cache. Total prompt volume is the sum of those three buckets. A
+  provider whose prompt count includes cached tokens passes it to `new/1` as
+  `:prompt_tokens`, which derives the uncached input.
 
   Tackle.Lib deliberately does **not** depend on pricing libraries such as
   `llm_db`. Adapters may expose price cards through the optional `model_info/1`
@@ -42,7 +45,7 @@ defmodule Tackle.Lib.Usage do
           cache_read_tokens: token_count(),
           cache_write_tokens: token_count(),
           total_tokens: token_count(),
-          cost: term() | nil,
+          cost: number() | nil,
           cost_breakdown: cost_breakdown() | nil,
           cost_estimated: boolean() | nil,
           currency: String.t() | nil,
@@ -65,11 +68,68 @@ defmodule Tackle.Lib.Usage do
             provider: nil,
             raw: nil
 
-  @doc """
-  Normalizes provider-specific usage metadata into `%Tackle.Lib.Usage{}`.
+  @count_fields [
+    :input_tokens,
+    :output_tokens,
+    :reasoning_tokens,
+    :cache_read_tokens,
+    :cache_write_tokens,
+    :total_tokens
+  ]
 
-  Accepts an existing `%Tackle.Lib.Usage{}`, atom-keyed maps, and string-keyed maps.
-  Unknown fields are not discarded; the original map is retained in `:raw`.
+  @doc """
+  Builds canonical usage from an adapter's translation of a provider report.
+
+  `fields` are the struct's fields as a keyword list or an atom-keyed map,
+  plus `:prompt_tokens`. Token counts that are not non-negative integers
+  (floats are truncated) and costs that are not non-negative numbers become
+  `nil`, so adapters can pass a provider's values without checking them; an
+  unknown field raises `KeyError`.
+
+  `:prompt_tokens` is for providers whose prompt count includes cache reads and
+  writes, such as OpenAI's `prompt_tokens` and `input_tokens`. Unless
+  `:input_tokens` is given too, the uncached input is `prompt_tokens -
+  cache_read_tokens - cache_write_tokens` (at least zero). A reported
+  `:total_tokens` that does not equal `prompt_tokens + output_tokens` is
+  dropped, and a missing total is the sum of the input, output, cache-read,
+  and cache-write buckets.
+
+      iex> usage =
+      ...>   Tackle.Lib.Usage.new(
+      ...>     prompt_tokens: 120,
+      ...>     cache_read_tokens: 100,
+      ...>     output_tokens: 8,
+      ...>     raw: %{"prompt_tokens" => 120}
+      ...>   )
+      iex> {usage.input_tokens, usage.cache_read_tokens, usage.total_tokens}
+      {20, 100, 128}
+  """
+  @spec new(keyword() | map()) :: t()
+  def new(fields) when is_list(fields) or is_map(fields) do
+    {prompt, fields} = fields |> Map.new() |> Map.pop(:prompt_tokens)
+    prompt = count(prompt)
+
+    usage =
+      __MODULE__
+      |> struct!(fields)
+      |> sanitize()
+
+    usage
+    |> derive_input(prompt)
+    |> check_total(prompt)
+    |> fill_total_tokens()
+  end
+
+  @doc """
+  Normalizes canonical usage into `%Tackle.Lib.Usage{}`.
+
+  Accepts a struct or a map with the struct's field names as atom or string
+  keys, such as `to_map/1` output or a decoded journal entry; values are
+  checked like `new/1` checks them and other keys are ignored. Provider-native
+  reports (`prompt_tokens`, `cached_tokens`, ...) are not recognized: adapters
+  translate them with `new/1`. `:model` and `:provider` in `opts` fill the
+  fields when they are missing, and a missing total is derived from the
+  buckets.
   """
   @spec normalize(t() | map() | nil, keyword()) :: t() | nil
   def normalize(usage, opts \\ [])
@@ -86,57 +146,14 @@ defmodule Tackle.Lib.Usage do
   end
 
   def normalize(%{} = usage, opts) do
-    %__MODULE__{
-      input_tokens:
-        first_integer(usage, [
-          :input_tokens,
-          :prompt_tokens,
-          :input,
-          "input_tokens",
-          "prompt_tokens",
-          "input"
-        ]),
-      output_tokens:
-        first_integer(usage, [
-          :output_tokens,
-          :completion_tokens,
-          :output,
-          "output_tokens",
-          "completion_tokens",
-          "output"
-        ]),
-      reasoning_tokens:
-        first_integer(usage, [:reasoning_tokens, :reasoning, "reasoning_tokens", "reasoning"]),
-      cache_read_tokens:
-        first_integer(usage, [
-          :cache_read_tokens,
-          :cache_read,
-          :cached_input_tokens,
-          "cache_read_tokens",
-          "cache_read",
-          "cached_input_tokens"
-        ]),
-      cache_write_tokens:
-        first_integer(usage, [
-          :cache_write_tokens,
-          :cache_write,
-          :cache_creation_input_tokens,
-          "cache_write_tokens",
-          "cache_write",
-          "cache_creation_input_tokens"
-        ]),
-      total_tokens: first_integer(usage, [:total_tokens, :total, "total_tokens", "total"]),
-      cost: first_present(usage, [:cost, :total_cost, "cost", "total_cost"]),
-      cost_breakdown:
-        normalize_cost_breakdown(first_present(usage, [:cost_breakdown, "cost_breakdown"])),
-      cost_estimated:
-        normalize_boolean(first_present(usage, [:cost_estimated, "cost_estimated"])),
-      currency: first_present(usage, [:currency, "currency"]),
-      model: first_present(usage, [:model, "model"]) || Keyword.get(opts, :model),
-      provider: first_present(usage, [:provider, "provider"]) || Keyword.get(opts, :provider),
-      raw: usage
-    }
-    |> fill_total_tokens()
+    fields =
+      for {field, _default} <- Map.from_struct(%__MODULE__{}),
+          do: {field, first_present(usage, [field, Atom.to_string(field)])}
+
+    __MODULE__
+    |> struct!(fields)
+    |> sanitize()
+    |> normalize(opts)
   end
 
   @doc """
@@ -403,14 +420,50 @@ defmodule Tackle.Lib.Usage do
     %{usage | total_tokens: total}
   end
 
-  defp first_integer(map, keys) do
-    case first_present(map, keys) do
-      value when is_integer(value) and value >= 0 -> value
-      value when is_float(value) and value >= 0 -> trunc(value)
-      value when is_binary(value) -> parse_non_negative_integer(value)
-      _ -> nil
-    end
+  defp sanitize(%__MODULE__{} = usage) do
+    usage = struct!(usage, Map.new(@count_fields, &{&1, count(Map.fetch!(usage, &1))}))
+
+    %{
+      usage
+      | cost: amount(usage.cost),
+        cost_breakdown: normalize_cost_breakdown(usage.cost_breakdown),
+        cost_estimated: normalize_boolean(usage.cost_estimated),
+        currency: string(usage.currency),
+        model: string(usage.model),
+        provider: provider(usage.provider),
+        raw: if(is_map(usage.raw), do: usage.raw)
+    }
   end
+
+  defp derive_input(%__MODULE__{input_tokens: nil} = usage, prompt) when is_integer(prompt) do
+    cached = (usage.cache_read_tokens || 0) + (usage.cache_write_tokens || 0)
+    %{usage | input_tokens: max(prompt - cached, 0)}
+  end
+
+  defp derive_input(usage, _prompt), do: usage
+
+  defp check_total(%__MODULE__{total_tokens: total, output_tokens: output} = usage, prompt)
+       when is_integer(total) and is_integer(output) and is_integer(prompt) and
+              total != prompt + output,
+       do: %{usage | total_tokens: nil}
+
+  defp check_total(usage, _prompt), do: usage
+
+  defp count(value) when is_integer(value) and value >= 0, do: value
+  defp count(value) when is_float(value) and value >= 0, do: trunc(value)
+  defp count(value) when is_binary(value), do: parse_non_negative_integer(value)
+  defp count(_value), do: nil
+
+  defp amount(value) when is_number(value) and value >= 0, do: value
+  defp amount(_value), do: nil
+
+  defp string(value) when is_binary(value), do: value
+  defp string(_value), do: nil
+
+  defp provider(value) when is_binary(value) or (is_atom(value) and not is_boolean(value)),
+    do: value
+
+  defp provider(_value), do: nil
 
   defp first_present(map, keys) do
     Enum.find_value(keys, fn key ->

@@ -33,8 +33,9 @@ defmodule Tackle.Lib.LLM.Response do
       accepted with its `argument_error` set, so it settles as a tool error
       the model can see instead of failing the turn.
 
-  The result's `:usage` may be `nil`, a `Tackle.Lib.Usage`, or a provider usage
-  map (normalized with `Tackle.Lib.Usage.normalize/1`), and `:provider_state`
+  The result's `:usage` may be `nil`, a `Tackle.Lib.Usage`, or a map with its
+  canonical field names (normalized with `Tackle.Lib.Usage.normalize/1`; a
+  provider's native report is not recognized), and `:provider_state`
   must be a map or `nil`. Anything else is an `{:invalid_response, detail}`
   error, where `detail` names the offending field; `Tackle.Lib.LLM` returns
   it as a `Tackle.Lib.LLM.Error` of kind `:invalid_response`.

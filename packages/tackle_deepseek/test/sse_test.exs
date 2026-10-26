@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.LLM.Error
+  alias Tackle.Lib.Usage
   alias Tackle.Plugins.DeepSeek.SSE
 
   test "buffers arbitrary UTF-8 splits and accepts comments, multiline data, and CRLF" do
@@ -146,14 +147,14 @@ defmodule Tackle.Plugins.DeepSeek.SSETest do
 
     assert {:ok, result} = SSE.result(parser, "deepseek-v4-pro", nil)
 
-    assert result.usage == %{
-             "input_tokens" => 12,
-             "output_tokens" => 5,
-             "reasoning_tokens" => 3,
-             "cached_input_tokens" => 6,
-             "cache_write_tokens" => 2,
-             "total_tokens" => 25,
-             "provider_usage" => %{
+    assert result.usage == %Usage{
+             input_tokens: 12,
+             output_tokens: 5,
+             reasoning_tokens: 3,
+             cache_read_tokens: 6,
+             cache_write_tokens: 2,
+             total_tokens: 25,
+             raw: %{
                "prompt_tokens" => 20,
                "completion_tokens" => 5,
                "total_tokens" => 25,

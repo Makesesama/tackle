@@ -219,6 +219,13 @@ defmodule Tackle.Plugins.CodexTest do
              currency: "USD"
            } = result.usage
 
+    assert result.usage.total_tokens == 16
+
+    assert result.usage.raw["input_tokens_details"] == %{
+             "cached_tokens" => 2,
+             "cache_write_tokens" => 3
+           }
+
     assert_in_delta result.usage.cost_breakdown.input, 0.000035, 0.0000001
     assert_in_delta result.usage.cost_breakdown.output, 0.00012, 0.0000001
     assert_in_delta result.usage.cost_breakdown.cache_read, 0.000001, 0.0000001

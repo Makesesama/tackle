@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.Ollama.SSETest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.LLM.Error
+  alias Tackle.Lib.Usage
   alias Tackle.Plugins.Ollama.SSE
 
   @noop &Function.identity/1
@@ -31,9 +32,7 @@ defmodule Tackle.Plugins.Ollama.SSETest do
 
     assert result.provider_state == %{"reasoning" => "think"}
 
-    assert result.usage["input_tokens"] == 6
-    assert result.usage["cached_input_tokens"] == 4
-    assert result.usage["total_tokens"] == 13
+    assert %Usage{input_tokens: 6, cache_read_tokens: 4, total_tokens: 13} = result.usage
     assert_received {:event, %{type: :reasoning_delta, delta: "think"}}
     refute_received {:event, %{type: :reasoning_delta}}
     assert_received {:event, %{type: :usage}}

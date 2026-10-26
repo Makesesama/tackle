@@ -596,10 +596,16 @@ The adapter returns:
  }}
 ```
 
-`:usage` may already be `%Tackle.Lib.Usage{}`, a string- or atom-keyed provider map,
-or `nil`. Tackle.Lib normalizes it. Adapter price cards may fill an itemized and
-total estimate when the provider omits cost; hosts still own billing, quota, and
-persistence policy.
+`:usage` is canonical: a `%Tackle.Lib.Usage{}`, a map with its field names (atom
+or string keys), or `nil`. Adapters translate their provider's report
+themselves, usually with `Tackle.Lib.Usage.new/1`, which takes the disjoint
+buckets (`:input_tokens` uncached, `:cache_read_tokens`, `:cache_write_tokens`)
+or derives the uncached input from an OpenAI-style `:prompt_tokens` count that
+includes cached tokens, and keeps the provider's report in `:raw`. Tackle.Lib
+does not guess at provider field names such as `prompt_tokens` or
+`cached_tokens`. Adapter price cards may fill an itemized and total estimate
+when the provider omits cost; hosts still own billing, quota, and persistence
+policy.
 
 `Tackle.Lib.LLM.generate_with/3` and `stream_with/4` check the result and
 return `{:ok, %Tackle.Lib.LLM.Response{}}`

@@ -50,7 +50,7 @@ defmodule Tackle.Lib.LoopTest do
       {:ok,
        %{
          data: %{"content" => "done"},
-         usage: %{prompt_tokens: 5, completion_tokens: 4},
+         usage: %{input_tokens: 5, output_tokens: 4},
          model: "test/model"
        }}
     end

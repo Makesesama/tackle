@@ -129,7 +129,12 @@ config :tackle_lib, llm: MyApp.AI.TackleAdapter
   tool-selection options it does not support (`:tool_choice`,
   `:parallel_tool_calls`, and the like; see `Tackle.Lib.LLM.request_opts/3`).
   The `Tackle.Lib.LLM` module docs list the standard option keys.
-- Return `{:ok, %{data: map, usage: map | %Tackle.Lib.Usage{} | nil, model: binary | nil}}`.
+- Return `{:ok, %{data: map, usage: %Tackle.Lib.Usage{} | map | nil, model: binary | nil}}`.
+  Translate the provider's usage report into canonical usage with
+  `Tackle.Lib.Usage.new/1` (pass an OpenAI-style prompt count that includes
+  cached tokens as `:prompt_tokens`, and the report as `:raw`); a plain map
+  must use the struct's field names, since provider-native names such as
+  `prompt_tokens` are not recognized.
   `:data` holds assistant `content` and/or native `tool_calls`.
   `Tackle.Lib.LLM.generate_with/3` returns it as `%Tackle.Lib.LLM.Response{}`
   (with `:data` kept for structured outputs); a malformed result is
@@ -138,7 +143,7 @@ config :tackle_lib, llm: MyApp.AI.TackleAdapter
   The library sets the response's `:provider` to the selected provider id and
   replays `:provider_state` only to the provider and model that produced it,
   so adapters neither stamp nor check its origin. Tackle.Lib
-  normalizes `:usage` into `%Tackle.Lib.Usage{}` and applies the selected
+  normalizes canonical `:usage` maps into `%Tackle.Lib.Usage{}` and applies the selected
   adapter's price card when provider cost is absent. Derived cost is estimated;
   host billing and quota policy remain host-owned.
 - `schema` is an optional structured-response schema for **non-tool** turns,

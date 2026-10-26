@@ -3,12 +3,21 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
 
   alias Tackle.Lib.JSON
   alias Tackle.Lib.LLM.Error
+  alias Tackle.Lib.Usage
   alias Tackle.Plugins.Anthropic.SSE
 
   test "accumulates text deltas, emits usage, and returns a replayable state" do
     wire =
       sse("message_start", %{
-        "message" => %{"model" => "claude-opus-5-5", "usage" => %{"input_tokens" => 10}}
+        "message" => %{
+          "model" => "claude-opus-5-5",
+          "usage" => %{
+            "input_tokens" => 10,
+            "cache_read_input_tokens" => 40,
+            "cache_creation_input_tokens" => 6,
+            "output_tokens" => 1
+          }
+        }
       }) <>
         sse("content_block_start", %{
           "index" => 0,
@@ -25,21 +34,35 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
         sse("content_block_stop", %{"index" => 0}) <>
         sse("message_delta", %{
           "delta" => %{"stop_reason" => "end_turn"},
-          "usage" => %{"output_tokens" => 5}
+          "usage" => %{"output_tokens" => 5, "input_tokens" => nil}
         }) <>
         sse("message_stop", %{})
 
     {parser, events} = run(wire)
 
+    usage = %Usage{
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_tokens: 40,
+      cache_write_tokens: 6,
+      total_tokens: 61,
+      raw: %{
+        "input_tokens" => 10,
+        "cache_read_input_tokens" => 40,
+        "cache_creation_input_tokens" => 6,
+        "output_tokens" => 5
+      }
+    }
+
     assert events == [
              %{type: :text_delta, delta: "hel"},
              %{type: :text_delta, delta: "lo"},
-             %{type: :usage, usage: %{"input_tokens" => 10, "output_tokens" => 5}}
+             %{type: :usage, usage: usage}
            ]
 
     assert {:ok, result} = SSE.result(parser, "claude-opus-5-5", nil)
     assert result.data == %{"content" => "hello", "tool_calls" => []}
-    assert result.usage == %{"input_tokens" => 10, "output_tokens" => 5}
+    assert result.usage == usage
     assert result.model == "claude-opus-5-5"
 
     assert result.provider_state == %{
@@ -107,7 +130,17 @@ defmodule Tackle.Plugins.Anthropic.SSETest do
              },
              %{
                type: :usage,
-               usage: %{"input_tokens" => 3, "output_tokens" => 7, "reasoning_tokens" => 2}
+               usage: %Usage{
+                 input_tokens: 3,
+                 output_tokens: 7,
+                 reasoning_tokens: 2,
+                 total_tokens: 10,
+                 raw: %{
+                   "input_tokens" => 3,
+                   "output_tokens" => 7,
+                   "output_tokens_details" => %{"thinking_tokens" => 2}
+                 }
+               }
              }
            ]
 

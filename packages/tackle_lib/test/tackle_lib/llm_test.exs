@@ -18,7 +18,7 @@ defmodule Tackle.Lib.LLMTest do
       {:ok,
        %{
          data: %{"content" => "ok"},
-         usage: %{prompt_tokens: 4, completion_tokens: 6},
+         usage: %{input_tokens: 4, output_tokens: 6},
          model: "test/model",
          provider: :test_provider
        }}
@@ -32,7 +32,7 @@ defmodule Tackle.Lib.LLMTest do
       {:ok,
        %{
          data: %{"content" => "hello"},
-         usage: %{prompt_tokens: 3, completion_tokens: 2},
+         usage: %{input_tokens: 3, output_tokens: 2},
          model: "test/model",
          provider: :test_provider
        }}

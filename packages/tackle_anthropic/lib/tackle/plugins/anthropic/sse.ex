@@ -11,6 +11,7 @@ defmodule Tackle.Plugins.Anthropic.SSE do
 
   alias Tackle.Lib.JSON
   alias Tackle.Lib.LLM.Error
+  alias Tackle.Lib.Usage
 
   defstruct buffer: "",
             event_name: nil,
@@ -68,7 +69,7 @@ defmodule Tackle.Plugins.Anthropic.SSE do
   end
 
   @spec result(t(), String.t(), keyword() | map() | nil) ::
-          {:ok, %{data: map(), usage: map(), model: String.t(), provider_state: map()}}
+          {:ok, %{data: map(), usage: Usage.t() | nil, model: String.t(), provider_state: map()}}
           | {:error, term()}
   def result(%__MODULE__{cancelled?: true}, _requested_model, _schema), do: {:error, :cancelled}
 
@@ -104,7 +105,7 @@ defmodule Tackle.Plugins.Anthropic.SSE do
       {:ok,
        %{
          data: data,
-         usage: state.usage,
+         usage: usage(state.usage),
          model: model,
          provider_state: provider_state(state)
        }}
@@ -163,12 +164,11 @@ defmodule Tackle.Plugins.Anthropic.SSE do
 
   defp handle_event(state, %{"type" => "message_start"} = event, _callback) do
     message = Map.get(event, "message", %{})
-    usage = usage_from(Map.get(message, "usage"))
 
     %{
       state
       | model: Map.get(message, "model") || state.model,
-        usage: Map.merge(state.usage, usage)
+        usage: merge_usage(state.usage, Map.get(message, "usage"))
     }
   end
 
@@ -191,12 +191,11 @@ defmodule Tackle.Plugins.Anthropic.SSE do
 
   defp handle_event(state, %{"type" => "message_delta"} = event, _callback) do
     stop_reason = get_in(event, ["delta", "stop_reason"])
-    usage = usage_from(Map.get(event, "usage"))
 
     %{
       state
       | stop_reason: stop_reason || state.stop_reason,
-        usage: Map.merge(state.usage, usage)
+        usage: merge_usage(state.usage, Map.get(event, "usage"))
     }
   end
 
@@ -417,24 +416,32 @@ defmodule Tackle.Plugins.Anthropic.SSE do
 
   defp provider_block(_block), do: []
 
-  defp usage_from(usage) when is_map(usage) do
-    %{}
-    |> maybe_put("input_tokens", integer(usage["input_tokens"]))
-    |> maybe_put("output_tokens", integer(usage["output_tokens"]))
-    |> maybe_put("cache_read_tokens", integer(usage["cache_read_input_tokens"]))
-    |> maybe_put("cache_creation_input_tokens", integer(usage["cache_creation_input_tokens"]))
-    |> maybe_put(
-      "reasoning_tokens",
-      integer(get_in(usage, ["output_tokens_details", "thinking_tokens"]))
+  # `message_start` and `message_delta` each report part of the usage; later
+  # reported values win.
+  defp merge_usage(merged, %{} = usage),
+    do: Map.merge(merged, Map.reject(usage, fn {_key, value} -> is_nil(value) end))
+
+  defp merge_usage(merged, _usage), do: merged
+
+  # Anthropic's input buckets are already disjoint: `input_tokens` excludes
+  # cache reads and writes.
+  defp usage(raw) when map_size(raw) == 0, do: nil
+
+  defp usage(raw) do
+    Usage.new(
+      input_tokens: raw["input_tokens"],
+      output_tokens: raw["output_tokens"],
+      cache_read_tokens: raw["cache_read_input_tokens"],
+      cache_write_tokens: raw["cache_creation_input_tokens"],
+      reasoning_tokens: get_in(raw, ["output_tokens_details", "thinking_tokens"]),
+      raw: raw
     )
   end
 
-  defp usage_from(_usage), do: %{}
-
   defp emit_usage(%{usage_emitted?: true} = state, _callback), do: state
 
-  defp emit_usage(%{usage: usage} = state, callback) when map_size(usage) > 0 do
-    emit(callback, %{type: :usage, usage: usage})
+  defp emit_usage(%{usage: raw} = state, callback) when map_size(raw) > 0 do
+    emit(callback, %{type: :usage, usage: usage(raw)})
     %{state | usage_emitted?: true}
   end
 
@@ -453,9 +460,6 @@ defmodule Tackle.Plugins.Anthropic.SSE do
 
   defp text_or_empty(value) when is_binary(value), do: value
   defp text_or_empty(_value), do: ""
-
-  defp integer(value) when is_integer(value), do: value
-  defp integer(_value), do: nil
 
   defp truncate(value, limit) when is_binary(value) and byte_size(value) > limit,
     do: binary_part(value, 0, limit)

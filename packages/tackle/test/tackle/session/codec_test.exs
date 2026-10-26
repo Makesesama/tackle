@@ -93,6 +93,31 @@ defmodule Tackle.Session.CodecTest do
                decoded.tool_calls
     end
 
+    test "round-trips canonical usage, keeping the provider report as raw" do
+      usage =
+        Usage.new(
+          prompt_tokens: 120,
+          cache_read_tokens: 100,
+          output_tokens: 8,
+          cost: 0.5,
+          cost_breakdown: %{input: 0.25, output: 0.25, total: 0.5, estimated: true},
+          cost_estimated: true,
+          currency: "USD",
+          model: "echo",
+          provider: "test",
+          raw: %{"prompt_tokens" => 120, "prompt_tokens_details" => %{"cached_tokens" => 100}}
+        )
+
+      message = Message.assistant(content: "ok", token_usage: usage)
+
+      assert {:ok, data} = Codec.encode_message(message)
+      assert data["token_usage"]["raw"] == usage.raw
+      assert {:ok, decoded} = Codec.decode_message(data)
+      assert decoded.token_usage == usage
+
+      assert {:ok, ^data} = Codec.encode_message(decoded)
+    end
+
     test "round-trips Call structs through their stored maps" do
       calls = [
         %Call{id: "call-1", name: "read", arguments: %{"path" => "a"}, raw: %{"provider" => 1}},

@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.OpenRouter.SSE do
   @moduledoc false
 
   alias Tackle.Lib.LLM.Error
+  alias Tackle.Lib.Usage
 
   # Incremental parser for OpenRouter's streaming Chat Completions wire format.
   #
@@ -32,7 +33,7 @@ defmodule Tackle.Plugins.OpenRouter.SSE do
           thinking: binary(),
           reasoning_details: [map()],
           tool_calls: %{optional(non_neg_integer()) => map()},
-          usage: map() | nil,
+          usage: Usage.t() | nil,
           usage_emitted?: boolean(),
           model: String.t() | nil,
           finish_reason: String.t() | nil,
@@ -83,7 +84,7 @@ defmodule Tackle.Plugins.OpenRouter.SSE do
           {:ok,
            %{
              data: map(),
-             usage: map() | nil,
+             usage: Usage.t() | nil,
              model: String.t(),
              provider_state: map() | nil
            }}
@@ -550,53 +551,19 @@ defmodule Tackle.Plugins.OpenRouter.SSE do
   # billed `cost` in USD credits. The reported cost is kept so hosts prefer it
   # over a price-card estimate.
   defp normalize_usage(usage) do
-    cache_read =
-      non_negative_integer(get_in(usage, ["prompt_tokens_details", "cached_tokens"])) || 0
+    cost = usage["cost"]
 
-    cache_write =
-      non_negative_integer(get_in(usage, ["prompt_tokens_details", "cache_write_tokens"])) || 0
-
-    prompt_tokens = non_negative_integer(usage["prompt_tokens"])
-    output_tokens = non_negative_integer(usage["completion_tokens"])
-    cost = non_negative_number(usage["cost"])
-
-    %{}
-    |> maybe_put("input_tokens", subtract_cached(prompt_tokens, cache_read + cache_write))
-    |> maybe_put("output_tokens", output_tokens)
-    |> maybe_put(
-      "reasoning_tokens",
-      non_negative_integer(get_in(usage, ["completion_tokens_details", "reasoning_tokens"]))
+    Usage.new(
+      prompt_tokens: usage["prompt_tokens"],
+      cache_read_tokens: get_in(usage, ["prompt_tokens_details", "cached_tokens"]) || 0,
+      cache_write_tokens: get_in(usage, ["prompt_tokens_details", "cache_write_tokens"]) || 0,
+      output_tokens: usage["completion_tokens"],
+      reasoning_tokens: get_in(usage, ["completion_tokens_details", "reasoning_tokens"]),
+      total_tokens: usage["total_tokens"],
+      cost: cost,
+      currency: if(is_number(cost) and cost >= 0, do: "USD"),
+      raw: usage
     )
-    |> Map.put("cached_input_tokens", cache_read)
-    |> Map.put("cache_write_tokens", cache_write)
-    |> maybe_put(
-      "total_tokens",
-      compatible_total(usage["total_tokens"], prompt_tokens, output_tokens)
-    )
-    |> maybe_put("cost", cost)
-    |> maybe_put("currency", if(cost, do: "USD"))
-    |> Map.put("provider_usage", usage)
-  end
-
-  defp compatible_total(reported, prompt, completion) do
-    reported = non_negative_integer(reported)
-
-    case {prompt, completion, reported} do
-      {prompt, completion, nil} when is_integer(prompt) and is_integer(completion) ->
-        prompt + completion
-
-      {prompt, completion, total} when prompt + completion == total ->
-        total
-
-      {nil, _completion, total} ->
-        total
-
-      {_prompt, nil, total} ->
-        total
-
-      _mismatch ->
-        nil
-    end
   end
 
   defp structured_data(content) do
@@ -650,13 +617,6 @@ defmodule Tackle.Plugins.OpenRouter.SSE do
   defp present_string(value), do: value
   defp non_empty([]), do: nil
   defp non_empty(value), do: value
-  defp subtract_cached(nil, _cached), do: nil
-  defp subtract_cached(total, cached), do: max(0, total - cached)
-  defp non_negative_integer(value) when is_integer(value) and value >= 0, do: value
-  defp non_negative_integer(value) when is_float(value) and value >= 0, do: trunc(value)
-  defp non_negative_integer(_value), do: nil
-  defp non_negative_number(value) when is_number(value) and value >= 0, do: value
-  defp non_negative_number(_value), do: nil
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

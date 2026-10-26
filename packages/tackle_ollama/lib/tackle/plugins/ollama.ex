@@ -87,6 +87,7 @@ defmodule Tackle.Plugins.Ollama do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.Usage
   alias Tackle.Plugins.Ollama.HTTP
   alias Tackle.Plugins.Ollama.SSE
 
@@ -929,13 +930,22 @@ defmodule Tackle.Plugins.Ollama do
     with {:ok, decoded} <- decode_success_body(body),
          {:ok, answers} <- parse_answers(decoded["answers"], request.questions) do
       model = if is_binary(decoded["model"]), do: decoded["model"], else: request.model
-      usage = if is_map(decoded["usage"]), do: decoded["usage"], else: nil
-      {:ok, %Result{model: model, answers: answers, usage: usage}}
+      {:ok, %Result{model: model, answers: answers, usage: decision_usage(decoded["usage"])}}
     end
   end
 
   defp decision_result(%{status: status, body: body} = response, _request),
     do: {:error, Error.from_response(status, body, Map.get(response, :headers))}
+
+  defp decision_usage(%{} = usage) do
+    Usage.new(
+      input_tokens: usage["input_tokens"],
+      output_tokens: usage["output_tokens"],
+      raw: usage
+    )
+  end
+
+  defp decision_usage(_usage), do: nil
 
   defp decode_success_body(%{} = body), do: {:ok, body}
 

@@ -178,6 +178,9 @@ defmodule Tackle.Session.Codec do
     |> Map.new(fn {key, value} -> {Atom.to_string(key), normalize(value)} end)
   end
 
+  # Journals have always stored usage with the struct's field names as keys
+  # (`encode_usage/1`), so `Usage.normalize/1`, which reads only those, decodes
+  # every journal; the provider's own report stays opaque under "raw".
   @doc false
   @spec decode_usage(term()) :: {:ok, Usage.t() | nil} | {:error, term()}
   def decode_usage(nil), do: {:ok, nil}

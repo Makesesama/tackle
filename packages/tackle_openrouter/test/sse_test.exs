@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.OpenRouter.SSETest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.LLM.Error
+  alias Tackle.Lib.Usage
   alias Tackle.Plugins.OpenRouter.SSE
 
   @noop &Function.identity/1
@@ -25,9 +26,11 @@ defmodule Tackle.Plugins.OpenRouter.SSETest do
              SSE.new() |> SSE.push(wire, @noop) |> SSE.finish(@noop) |> SSE.result("m", nil)
 
     assert result.data == %{"content" => "hi", "tool_calls" => []}
-    assert result.usage["input_tokens"] == 3
-    assert result.usage["total_tokens"] == 4
-    refute Map.has_key?(result.usage, "cost")
+
+    assert %Usage{input_tokens: 3, cache_read_tokens: 0, total_tokens: 4, cost: nil} =
+             result.usage
+
+    assert result.usage.raw == %{"prompt_tokens" => 3, "completion_tokens" => 1}
     assert result.provider_state == nil
   end
 

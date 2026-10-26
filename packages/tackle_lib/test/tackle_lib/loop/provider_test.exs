@@ -42,7 +42,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
       {:ok,
        %{
          data: %{"content" => "done"},
-         usage: %{prompt_tokens: 5, completion_tokens: 4},
+         usage: %{input_tokens: 5, output_tokens: 4},
          model: "test/model"
        }}
     end
@@ -385,7 +385,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
       {:ok,
        %{
          data: %{"content" => "done"},
-         usage: %{prompt_tokens: 5, completion_tokens: 4},
+         usage: %{input_tokens: 5, output_tokens: 4},
          model: "test/model"
        }}
     end
@@ -393,7 +393,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     @impl true
     def stream(schema, opts, event_callback) do
       event_callback.(%{type: :text_delta, text: "done"})
-      event_callback.(%{type: :usage, usage: %{prompt_tokens: 5, completion_tokens: 4}})
+      event_callback.(%{type: :usage, usage: %{input_tokens: 5, output_tokens: 4}})
       generate(schema, opts)
     end
   end
@@ -406,7 +406,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
       {:ok,
        %{
          data: %{"content" => "done"},
-         usage: %{prompt_tokens: 5, completion_tokens: 4},
+         usage: %{input_tokens: 5, output_tokens: 4},
          model: "test/model"
        }}
     end

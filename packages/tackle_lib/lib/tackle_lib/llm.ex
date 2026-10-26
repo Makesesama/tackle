@@ -118,9 +118,11 @@ defmodule Tackle.Lib.LLM do
     response keeps its parsed object in the response's `:data`; these three
     keys keep their chat meaning there, so a schema must not use them for
     anything else.
-  * `usage` is normalized into `%Tackle.Lib.Usage{}` and priced from the
-    model card (`model_info/1`) when the provider reports no cost; derived
-    cost estimates are marked, and hosts keep billing and persistence policy.
+  * `usage` is canonical usage: a `%Tackle.Lib.Usage{}` the adapter built
+    from its provider's report (usually with `Tackle.Lib.Usage.new/1`), or a
+    map with the struct's field names. It is priced from the model card
+    (`model_info/1`) when the provider reports no cost; derived cost
+    estimates are marked, and hosts keep billing and persistence policy.
   * `provider` is the selected provider id, whatever the adapter reported.
   * `provider_state` is stamped with the `"provider"` id and the requested
     `"model"`.

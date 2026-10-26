@@ -2,8 +2,9 @@ defmodule Tackle.Lib.Decision.Result do
   @moduledoc """
   The result of one decision request.
 
-  `answers` is keyed by question name. `usage` is normalized into
-  `Tackle.Lib.Usage` by `Tackle.Lib.Decision.decide/3`.
+  `answers` is keyed by question name. `usage` is canonical usage: adapters
+  return a `Tackle.Lib.Usage` (or a map with its field names), which
+  `Tackle.Lib.Decision.decide/3` normalizes.
   """
 
   alias Tackle.Lib.Decision.Answer

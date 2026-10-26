@@ -2,6 +2,7 @@ defmodule Tackle.Plugins.Codex.SSE do
   @moduledoc false
 
   alias Tackle.Lib.LLM.Error
+  alias Tackle.Lib.Usage
 
   @enforce_keys []
   defstruct buffer: "",
@@ -25,7 +26,7 @@ defmodule Tackle.Plugins.Codex.SSE do
           },
           tool_calls: %{optional(non_neg_integer()) => map()},
           provider_output: [map()],
-          usage: map() | nil,
+          usage: Usage.t() | nil,
           model: String.t() | nil,
           terminal?: boolean(),
           error: term() | nil,
@@ -75,7 +76,7 @@ defmodule Tackle.Plugins.Codex.SSE do
           {:ok,
            %{
              data: map(),
-             usage: map() | nil,
+             usage: Usage.t() | nil,
              model: String.t(),
              provider_state: map() | nil
            }}
@@ -384,35 +385,20 @@ defmodule Tackle.Plugins.Codex.SSE do
 
   defp normalize_usage(nil), do: nil
 
+  # The Responses API counts cached input inside `input_tokens`.
   defp normalize_usage(%{} = usage) do
-    cached = non_negative_integer(get_in(usage, ["input_tokens_details", "cached_tokens"])) || 0
-
-    cache_write =
-      non_negative_integer(get_in(usage, ["input_tokens_details", "cache_write_tokens"])) || 0
-
-    input = non_negative_integer(usage["input_tokens"])
-
-    %{}
-    |> maybe_put("input_tokens", subtract_cached(input, cached + cache_write))
-    |> maybe_put("output_tokens", non_negative_integer(usage["output_tokens"]))
-    |> maybe_put(
-      "reasoning_tokens",
-      non_negative_integer(get_in(usage, ["output_tokens_details", "reasoning_tokens"]))
+    Usage.new(
+      prompt_tokens: usage["input_tokens"],
+      cache_read_tokens: get_in(usage, ["input_tokens_details", "cached_tokens"]) || 0,
+      cache_write_tokens: get_in(usage, ["input_tokens_details", "cache_write_tokens"]) || 0,
+      output_tokens: usage["output_tokens"],
+      reasoning_tokens: get_in(usage, ["output_tokens_details", "reasoning_tokens"]),
+      total_tokens: usage["total_tokens"],
+      raw: usage
     )
-    |> maybe_put("cached_input_tokens", cached)
-    |> maybe_put("cache_write_tokens", cache_write)
-    |> maybe_put("total_tokens", non_negative_integer(usage["total_tokens"]))
-    |> Map.put("provider_usage", usage)
   end
 
   defp normalize_usage(_usage), do: nil
-
-  defp subtract_cached(nil, _cached), do: nil
-  defp subtract_cached(input, cached), do: max(0, input - cached)
-
-  defp non_negative_integer(value) when is_integer(value) and value >= 0, do: value
-  defp non_negative_integer(value) when is_float(value) and value >= 0, do: trunc(value)
-  defp non_negative_integer(_value), do: nil
 
   defp structured_data(content) do
     case JSON.decode(content) do

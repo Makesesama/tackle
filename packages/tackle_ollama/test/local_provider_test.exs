@@ -309,7 +309,8 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
                )
 
       assert result.model == "tev1:4b"
-      assert %Usage{input_tokens: 174, output_tokens: 1} = result.usage
+      assert %Usage{input_tokens: 174, output_tokens: 1, total_tokens: 175} = result.usage
+      assert result.usage.raw == %{"input_tokens" => 174, "output_tokens" => 1}
 
       assert %Answer{type: :choice, choice: "stalled", confidence: 0.86} =
                verdict = result.answers["verdict"]

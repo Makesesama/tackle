@@ -104,7 +104,7 @@ defmodule Tackle.Lib.LLM.ResponseTest do
       assert {:ok, %Response{usage: %Usage{input_tokens: 5, output_tokens: 4}}} =
                Response.from_result(%{
                  data: %{"content" => "hi"},
-                 usage: %{prompt_tokens: 5, completion_tokens: 4}
+                 usage: %{input_tokens: 5, output_tokens: 4}
                })
     end
 

@@ -33,7 +33,7 @@ defmodule Tackle.Lib.EventTest do
 
     test "normalizes usage chunks into usage events" do
       assert %Event{type: :usage, data: %{usage: %Usage{input_tokens: 3, output_tokens: 2}}} =
-               Event.normalize(%{type: :usage, usage: %{prompt_tokens: 3, completion_tokens: 2}})
+               Event.normalize(%{type: :usage, usage: %{input_tokens: 3, output_tokens: 2}})
     end
 
     test "normalizes reasoning and partial tool input as message deltas with fields" do
