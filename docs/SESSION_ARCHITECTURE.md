@@ -454,6 +454,22 @@ turn.crashed
 
 A Task crash is never rewritten as a normal library error.
 
+A crashed Task returns no state, but the persistence hook has already
+journaled the messages it settled. After `turn.crashed` is appended, a durable
+session therefore rebuilds its state from the journal's projection the way it
+does on resume (the persistence hook and committer installed, unresolved tool
+calls repaired), so the next turn continues the journaled conversation. A
+session without a journal keeps its pre-turn state, since nothing was written.
+
+A turn whose start fails after `turn.started` is appended (its queued
+messages cannot be journaled, or its Task cannot be started) is settled the
+same way, with `turn.crashed`, before the session goes idle: the caller of
+`submit/2` or `continue/1` then gets the error, and a turn the session
+started from its inbox is reported with `:tackle_turn_failed`. If that
+terminal append fails, the session stops like after any other persistence
+failure. Queued messages leave the inbox only once they are journaled, or,
+without a journal, once the turn's Task runs.
+
 ### 8.5 Reconfiguration
 
 An idle model or thinking-level change is persisted before it becomes the accepted session configuration. The event stores only durable selections and audit hashes, not executable adapter modules or credentials.

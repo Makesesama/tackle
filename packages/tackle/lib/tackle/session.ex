@@ -361,6 +361,7 @@ defmodule Tackle.Session do
         lifetime: Keyword.get(opts, :lifetime, :explicit),
         parent: Keyword.get(opts, :parent),
         terminal: Keyword.get(opts, :terminal),
+        context_overrides: Keyword.get(opts, :context_overrides, %{}),
         work_supervisor: work_supervisor,
         tool_supervisor: tool_supervisor,
         journal: journal,
@@ -851,12 +852,41 @@ defmodule Tackle.Session do
         {:noreply, %{state | active_turn: active}}
 
       {:error, reason} ->
-        fail_begin_turn(state, pending, {:turn_task_failed, reason})
+        abort_begun_turn(state, pending, {:turn_task_failed, reason})
     end
+  end
+
+  # The inbox messages journaled before the failure are part of the
+  # conversation now; the rest stay queued.
+  defp finish_begin_turn(state, pending, {:inbox_failed, reason, journaled}) do
+    journaled = Enum.take(pending.inbox_messages, journaled)
+    state = drop_reserved_inbox(state, journaled)
+    broadcast_inbox_drained(state, journaled)
+    abort_begun_turn(state, pending, {:persistence_failed, reason})
   end
 
   defp finish_begin_turn(state, pending, {:error, reason}),
     do: fail_begin_turn(state, pending, {:persistence_failed, reason})
+
+  # `turn.started` is journaled, so the turn is settled as crashed (and the
+  # state rebuilt from the journal) before the session goes idle; otherwise
+  # the journal would keep an active turn and refuse every later one. A
+  # caller gets the reason once that is written; a turn the session started
+  # from its inbox fails like a crashed turn.
+  defp abort_begun_turn(state, pending, reason) do
+    Cancellation.delete(pending.signal)
+    release_turn(state)
+    active_turn = %{state.active_turn | signal: nil, beginning?: false}
+    state = %{state | active_turn: active_turn}
+
+    begin_terminal_persist(
+      state,
+      active_turn,
+      {:runtime_error, reason},
+      pending.agent_state,
+      pending.from
+    )
+  end
 
   defp fail_begin_turn(state, pending, reason) do
     delete_turn_signals(%{state.active_turn | signal: pending.signal})
@@ -980,13 +1010,15 @@ defmodule Tackle.Session do
     turn_id = state.config.id_generator.()
     {agent_state, inbox_messages, _projected_messages} = project_inbox(state)
     run_opts = turn_opts(state, self(), turn_id, signal)
-    state = clear_inbox(state)
-    broadcast_inbox_drained(state, inbox_messages)
 
     case start_turn_task(state.work_supervisor, fn ->
            run_operation(operation, agent_state, input, run_opts)
          end) do
       {:ok, task} ->
+        # The queued messages are the turn's only once its task runs.
+        state = clear_inbox(state)
+        broadcast_inbox_drained(state, inbox_messages)
+
         active_turn = %{
           id: turn_id,
           operation: operation,
@@ -1049,7 +1081,12 @@ defmodule Tackle.Session do
     end
   end
 
-  defp begin_terminal_persist(%{journal: nil} = state, active_turn, result, agent_state) do
+  defp begin_terminal_persist(state, active_turn, result, agent_state),
+    do: begin_terminal_persist(state, active_turn, result, agent_state, nil)
+
+  # Only a durable turn can fail after it started in the journal, so only
+  # durable terminal persistence has a caller to reply to.
+  defp begin_terminal_persist(%{journal: nil} = state, active_turn, result, agent_state, nil) do
     pending = %{
       turn_id: active_turn.id,
       result: result,
@@ -1060,14 +1097,17 @@ defmodule Tackle.Session do
     finish_terminal_persistence(state, pending, :ok)
   end
 
-  defp begin_terminal_persist(state, active_turn, result, agent_state) do
+  defp begin_terminal_persist(state, active_turn, result, agent_state, from) do
+    owner = self()
+
     case start_turn_task(state.work_supervisor, fn ->
-           persist_terminal(state, result)
+           persist_terminal(state, result, owner)
          end) do
       {:ok, task} ->
         pending = %{
           kind: :terminal,
           task: task,
+          from: from,
           turn_id: active_turn.id,
           result: result,
           agent_state: agent_state,
@@ -1080,8 +1120,20 @@ defmodule Tackle.Session do
         {:noreply, %{state | storage_task: pending, active_turn: active_turn}}
 
       {:error, reason} ->
+        if from, do: GenServer.reply(from, {:error, {:storage_task_failed, reason}})
         {:stop, {:storage_task_failed, reason}, %{state | active_turn: nil}}
     end
+  end
+
+  defp finish_terminal_persistence(state, pending, {:ok, %AgentState{} = agent_state}),
+    do: finish_terminal_persistence(state, %{pending | agent_state: agent_state}, :ok)
+
+  # A caller whose turn failed to start learns it from the reply, once the
+  # journal has settled the turn.
+  defp finish_terminal_persistence(state, %{from: from} = pending, :ok) when not is_nil(from) do
+    {:runtime_error, reason} = pending.result
+    GenServer.reply(from, {:error, reason})
+    {:noreply, schedule_inbox_wake(%{state | agent_state: pending.agent_state, active_turn: nil})}
   end
 
   defp finish_terminal_persistence(state, pending, :ok) do
@@ -1105,8 +1157,12 @@ defmodule Tackle.Session do
     end
   end
 
-  defp finish_terminal_persistence(state, _pending, reason),
-    do: {:stop, {:persistence_failed, reason}, %{state | active_turn: nil}}
+  defp finish_terminal_persistence(state, pending, reason) do
+    if Map.get(pending, :from),
+      do: GenServer.reply(pending.from, {:error, {:persistence_failed, reason}})
+
+    {:stop, {:persistence_failed, reason}, %{state | active_turn: nil}}
+  end
 
   defp start_turn_task(work_supervisor, fun), do: TurnTask.start(work_supervisor, fun)
 
@@ -1249,8 +1305,12 @@ defmodule Tackle.Session do
     {agent_state, envelopes, projected_messages}
   end
 
+  # Runs after `turn.started`, so a failure reports how many messages were
+  # journaled for the session to settle the started turn.
   defp persist_inbox_messages(%{journal: journal}, agent_state, messages) do
-    Enum.reduce_while(messages, :ok, fn message, :ok ->
+    messages
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {message, index}, :ok ->
       # Write-behind like loop messages: durable at the next sync point.
       case Journal.append_message(
              journal,
@@ -1259,7 +1319,7 @@ defmodule Tackle.Session do
              sync: false
            ) do
         :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
+        {:error, reason} -> {:halt, {:inbox_failed, reason, index}}
       end
     end)
   end
@@ -1483,16 +1543,16 @@ defmodule Tackle.Session do
 
   # Tools find the agent they act for under `:runtime` (`AgentRef.from_context/1`);
   # the scope coordinator owns what that agent may do.
-  defp put_runtime_context(agent_state, %ScopeRef{}, %AgentRef{} = agent_ref, opts) do
+  defp put_runtime_context(agent_state, %ScopeRef{}, %AgentRef{} = agent_ref, overrides) do
     context =
       agent_state.context
       |> Map.put(:runtime, agent_ref)
-      |> Map.merge(Keyword.get(opts, :context_overrides, %{}))
+      |> Map.merge(overrides)
 
     %{agent_state | context: context}
   end
 
-  defp put_runtime_context(agent_state, _scope_ref, _agent_ref, _opts), do: agent_state
+  defp put_runtime_context(agent_state, _scope_ref, _agent_ref, _overrides), do: agent_state
 
   defp build_agent_state(config, scope_ref, agent_ref, opts) do
     case Keyword.get(opts, :durable) do
@@ -1500,7 +1560,7 @@ defmodule Tackle.Session do
         agent_state =
           config
           |> Config.to_agent_state(credential_store: Auth.credential_store())
-          |> put_runtime_context(scope_ref, agent_ref, opts)
+          |> put_runtime_context(scope_ref, agent_ref, Keyword.get(opts, :context_overrides, %{}))
 
         {:ok, config, agent_state, nil, nil, false}
 
@@ -1510,31 +1570,69 @@ defmodule Tackle.Session do
   end
 
   defp build_durable_agent_state(config, scope_ref, agent_ref, opts, durable) do
+    runtime = %{
+      scope_ref: scope_ref,
+      agent_ref: agent_ref,
+      context_overrides: Keyword.get(opts, :context_overrides, %{}),
+      owner: self()
+    }
+
     with {:ok, journal} <- Journal.whereis(durable.session_id),
          {:ok, projection} <- Journal.projection(journal),
-         {:ok, loaded} <-
-           Loader.load(projection, config,
-             credential_store: Auth.credential_store(),
-             override_config: durable.override_config
-           ),
+         {:ok, loaded} <- load_projection(projection, config, durable.override_config),
          :ok <-
            persist_configuration_change(journal, loaded.configuration_changed?, loaded.config),
          :ok <- enable_tree_if_needed(journal, projection, durable.tree) do
-      agent_state =
-        loaded.state
-        |> put_runtime_context(scope_ref, agent_ref, opts)
-        |> install_persistence_hook()
-        |> install_committer()
-
       recovery = recovery_for(projection)
-
       tree_enabled? = durable.tree or projection.tree_enabled?
 
-      case repair_interrupted_tool_results(journal, agent_state, loaded.config, recovery) do
+      case restore_durable_state(journal, loaded, recovery, runtime) do
         {:ok, agent_state} -> {:ok, loaded.config, agent_state, journal, recovery, tree_enabled?}
         {:error, reason} -> {:error, reason}
       end
     end
+  end
+
+  # After a turn's start failed or its task crashed, the turn's messages are
+  # journaled (by the persistence hook, or with the inbox) but the session
+  # still holds the pre-turn state. Once the turn is settled in the journal,
+  # the state is rebuilt from the journal's projection the way `init/1` builds
+  # it, so memory and journal agree again: the next message links to the
+  # journaled tip instead of starting a branch (or being refused without
+  # branching), and calls the crash left without results are repaired. The
+  # session's current configuration is authoritative, so it is not resolved
+  # against the recording again. `owner` is the session process, since this
+  # runs in a storage task.
+  defp reload_durable_state(state, owner) do
+    runtime = %{
+      scope_ref: state.scope_ref,
+      agent_ref: state.agent_ref,
+      context_overrides: state.context_overrides,
+      owner: owner
+    }
+
+    with {:ok, projection} <- Journal.projection(state.journal),
+         {:ok, loaded} <- load_projection(projection, state.config, true) do
+      # The turn was just settled, so no turn awaits a recovery decision.
+      restore_durable_state(state.journal, loaded, nil, runtime)
+    end
+  end
+
+  defp load_projection(projection, config, override?) do
+    Loader.load(projection, config,
+      credential_store: Auth.credential_store(),
+      override_config: override?
+    )
+  end
+
+  defp restore_durable_state(journal, loaded, recovery, runtime) do
+    agent_state =
+      loaded.state
+      |> put_runtime_context(runtime.scope_ref, runtime.agent_ref, runtime.context_overrides)
+      |> install_persistence_hook(runtime.owner)
+      |> install_committer()
+
+    repair_interrupted_tool_results(journal, agent_state, loaded.config, recovery)
   end
 
   # A settled turn can still leave assistant tool calls without results — a
@@ -1601,12 +1699,12 @@ defmodule Tackle.Session do
 
   # The hook is added directly rather than through Config; Tackle.Lib.Hook
   # loads hook modules itself when it validates or invokes them.
-  defp install_persistence_hook(%AgentState{} = state) do
+  defp install_persistence_hook(%AgentState{} = state, owner) do
     %{
       state
       | hooks: append(state.hooks, Persistence),
         context:
-          state.context |> Map.put(:journal_required, true) |> Map.put(:session_owner, self())
+          state.context |> Map.put(:journal_required, true) |> Map.put(:session_owner, owner)
     }
   end
 
@@ -1655,9 +1753,15 @@ defmodule Tackle.Session do
     end
   end
 
-  defp persist_terminal(%{journal: journal, active_turn: %{id: turn_id}}, result) do
+  defp persist_terminal(%{journal: journal, active_turn: %{id: turn_id}} = state, result, owner) do
     {type, data} = terminal_event(result)
-    Journal.settle_turn(journal, type, Map.put(data, "turn_id", turn_id))
+
+    with :ok <- Journal.settle_turn(journal, type, Map.put(data, "turn_id", turn_id)) do
+      case result do
+        {:runtime_error, _reason} -> reload_durable_state(state, owner)
+        _settled -> :ok
+      end
+    end
   end
 
   defp terminal_event({:ok, _agent_state}), do: {"turn.completed", %{"status" => "completed"}}
