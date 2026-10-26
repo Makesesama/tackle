@@ -52,5 +52,15 @@ defmodule Tackle.Lib.EventTest do
                  delta: "{\"q"
                })
     end
+
+    test "normalizes events without a type into provider events" do
+      assert %Event{type: :provider_event, data: data} = Event.normalize(%{note: "hi"})
+      assert data == %{note: "hi"}
+    end
+
+    test "keeps the type of an unrecognized string-typed provider event" do
+      assert %Event{type: :provider_event, data: %{provider_type: "ping", seq: 1}} =
+               Event.normalize(%{"type" => "ping", seq: 1})
+    end
   end
 end

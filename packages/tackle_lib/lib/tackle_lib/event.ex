@@ -117,7 +117,15 @@ defmodule Tackle.Lib.Event do
       |> maybe_put(:provider, provider)
       |> maybe_put(:raw, event_value(event, [:raw, "raw"], event))
 
-    build_normalized(normalize_type(type), event, metadata)
+    case normalize_type(type) do
+      :provider_event when not is_nil(type) ->
+        # Keep an unrecognized provider type, which `build_normalized/3` would
+        # otherwise drop with the other `type` keys.
+        build_normalized(:provider_event, Map.put(event, :provider_type, type), metadata)
+
+      normalized ->
+        build_normalized(normalized, event, metadata)
+    end
   end
 
   defp build_normalized(:message_delta, event, metadata) do
@@ -260,7 +268,7 @@ defmodule Tackle.Lib.Event do
   defp normalize_type(type) when type in [:subagent_progress, "subagent_progress"],
     do: :subagent_progress
 
-  defp normalize_type(type) when is_atom(type), do: type
+  defp normalize_type(type) when is_atom(type) and not is_nil(type), do: type
   defp normalize_type(_type), do: :provider_event
 
   defp maybe_put(map, _key, nil), do: map

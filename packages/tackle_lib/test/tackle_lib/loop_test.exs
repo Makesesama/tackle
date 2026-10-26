@@ -2039,7 +2039,12 @@ defmodule Tackle.Lib.LoopTest do
       Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
       Process.put(:call_count, 0)
       test_pid = self()
-      gate = fn -> send(test_pid, :tool_gate) && :ok end
+
+      gate = fn ->
+        send(test_pid, :tool_gate)
+        :ok
+      end
+
       {:ok, gate: gate}
     end
 
