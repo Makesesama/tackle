@@ -1329,8 +1329,10 @@ compaction restores the same summary without re-summarizing.
 Navigation never runs a turn, re-executes a tool, or edits entries. It validates
 the destination against the current revision, rejects a structurally incomplete
 tool batch with `{:error, {:unsafe_continuation, id}}`, and commits through a
-`Tackle.Lib.Tree.Committer` before installing the position. A missing committer
-is valid only for explicitly in-memory use. Failed validation or commit leaves
+`Tackle.Lib.Tree.Committer` before installing the position. The committer is
+always the state's `tree_committer`, never an option, so a caller cannot skip
+the commit; the only option is `:expected_revision`. A missing committer is
+valid only for explicitly in-memory use. Failed validation or commit leaves
 the accepted state unchanged. `Tackle.Lib.Tree.restore/2` is the validated
 restoration path for hosts that persist their own entries.
 

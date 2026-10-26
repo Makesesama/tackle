@@ -180,7 +180,10 @@ defmodule Tackle.Lib do
   `Tackle.Lib.Tree.Committer` before installing the new position. Navigation
   never runs a turn, re-executes a tool, or modifies entries.
 
-  Targets are described in `Tackle.Lib.Tree.Navigator`. Expected failures
+  Targets are described in `Tackle.Lib.Tree.Navigator`. The only option is
+  `:expected_revision`, which rejects a transition prepared against another
+  revision of the tree. The committer is always the state's own
+  `tree_committer`, and the change names the state's session. Expected failures
   include `:tree_disabled`, `{:unknown_entry, id}`, `{:unsafe_continuation,
   id}`, `{:stale_transition, expected, actual}`, and
   `{:durable_commit_failed, reason}`. A failed validation or commit leaves the
@@ -202,8 +205,13 @@ defmodule Tackle.Lib do
     if active?(state) do
       {:error, :turn_in_progress}
     else
-      with {:ok, outcome} <- Navigator.navigate(tree, target, opts),
-           :ok <- commit_navigation(state, outcome.change, opts) do
+      navigator_opts =
+        opts
+        |> Keyword.take([:expected_revision])
+        |> Keyword.put(:session_id, state.session_id)
+
+      with {:ok, outcome} <- Navigator.navigate(tree, target, navigator_opts),
+           :ok <- commit_navigation(state, outcome.change) do
         {:ok, install_navigation(state, outcome), outcome}
       end
     end
@@ -214,17 +222,11 @@ defmodule Tackle.Lib do
   # still serialize turns, navigation, and compaction.
   defp active?(%State{status: status}), do: status in [:thinking, :acting]
 
-  defp commit_navigation(_state, nil, _opts), do: :ok
+  defp commit_navigation(_state, nil), do: :ok
+  defp commit_navigation(%State{tree_committer: nil}, _change), do: :ok
 
-  defp commit_navigation(%State{} = state, change, opts) do
-    case Keyword.get(opts, :committer) || state.tree_committer do
-      nil ->
-        :ok
-
-      module ->
-        commit_with(module, change, state)
-    end
-  end
+  defp commit_navigation(%State{tree_committer: module} = state, change),
+    do: commit_with(module, change, state)
 
   defp commit_with(module, change, state) do
     case module.commit_navigation(change, %{session_id: state.session_id, context: state.context}) do

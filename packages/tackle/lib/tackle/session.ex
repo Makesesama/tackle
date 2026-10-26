@@ -292,9 +292,11 @@ defmodule Tackle.Session do
   committed position is persisted through the tree committer, and only then is
   the new position installed and published to subscribers.
 
-  `target` is described in `Tackle.Lib.Tree.Navigator`; `opts` may carry
-  `:expected_revision` and `:mode`. Returns the post-navigation snapshot and the
-  navigation outcome, which can expose the selected user message as a draft.
+  `target` is described in `Tackle.Lib.Tree.Navigator`. The only option is
+  `:expected_revision`; any other option is ignored, and the change is always
+  committed through the session's own journal. Returns the post-navigation
+  snapshot and the navigation outcome, which can expose the selected user
+  message as a draft.
   """
   @spec navigate(GenServer.server(), Tackle.Lib.Tree.Navigator.target(), keyword()) ::
           {:ok, Snapshot.t(), Tackle.Lib.Tree.Navigator.outcome()} | {:error, term()}
@@ -524,7 +526,11 @@ defmodule Tackle.Session do
     {:reply, {:error, {:recovery_required, recovery}}, state}
   end
 
+  # Only `:expected_revision` is forwarded: the committer and the session id
+  # always come from the session's own state.
   def handle_call({:navigate, target, opts}, from, state) do
+    opts = Keyword.take(opts, [:expected_revision])
+
     defer_storage(
       state,
       from,

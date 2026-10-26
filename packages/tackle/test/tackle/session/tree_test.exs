@@ -70,6 +70,41 @@ defmodule Tackle.Session.TreeTest do
     assert Enum.map(Tree.transcript(tree), & &1.content) == ["second question", "second"]
   end
 
+  defmodule SkippingCommitter do
+    @behaviour Tackle.Lib.Tree.Committer
+
+    @impl true
+    def commit_navigation(_change, _context) do
+      send(Application.fetch_env!(:tackle, :skipping_committer_pid), :skipped_journal)
+      :ok
+    end
+  end
+
+  test "a caller cannot replace the journal committer of a navigation", ctx do
+    Application.put_env(:tackle, :skipping_committer_pid, self())
+    on_exit(fn -> Application.delete_env(:tackle, :skipping_committer_pid) end)
+
+    scope = start_durable_scope(home: ctx.home, root: [content: "answer"])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "first")
+    assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
+
+    {:ok, tree} = Tackle.tree(scope.root_agent_ref)
+    [user | _rest] = Tree.transcript(tree)
+
+    assert {:ok, _snap, _outcome} =
+             Tackle.navigate(scope.root_agent_ref, {:edit, user.id}, committer: SkippingCommitter)
+
+    refute_received :skipped_journal
+    stop_scope(scope.scope_ref)
+
+    resumed =
+      start_durable_scope(home: ctx.home, session: [session_id: snapshot.session_id])
+
+    {:ok, resumed_snapshot} = Tackle.snapshot(resumed.root_agent_ref)
+    assert Tree.active_id(resumed_snapshot.agent_state.tree) == nil
+  end
+
   test "re-editing a user message creates a sibling without duplicating ancestors", ctx do
     scope = start_durable_scope(home: ctx.home, root: [content: "answer"])
     {:ok, _snapshot} = Tackle.subscribe(scope.root_agent_ref)

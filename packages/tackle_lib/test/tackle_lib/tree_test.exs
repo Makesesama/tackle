@@ -334,6 +334,34 @@ defmodule Tackle.Lib.TreeTest do
       assert [_ | _] = failing.messages
     end
 
+    test "navigation always commits through the state's committer" do
+      state = %{
+        State.new(tree: true, id_generator: id_generator())
+        | tree_committer: __MODULE__.RecordingNavigationCommitter
+      }
+
+      state = State.add_message(state, msg("u1", :user, "hello"))
+
+      assert {:ok, _state, outcome} =
+               Tackle.Lib.navigate(state, nil,
+                 committer: __MODULE__.SkippingCommitter,
+                 session_id: "someone-else"
+               )
+
+      assert outcome.change.session_id == state.session_id
+      assert_received {:navigation_committed, %Change{to_id: nil}}
+      refute_received :skipped
+    end
+
+    test "navigation honours an expected revision" do
+      state = State.new(tree: true, id_generator: id_generator())
+      state = State.add_message(state, msg("u1", :user, "hello"))
+      revision = state.tree.revision
+
+      assert {:error, {:stale_transition, 0, ^revision}} =
+               Tackle.Lib.navigate(state, nil, expected_revision: 0)
+    end
+
     test "navigation is rejected when tree mode is disabled" do
       state = State.new()
       assert {:error, :tree_disabled} = Tackle.Lib.navigate(state, nil)
@@ -360,6 +388,26 @@ defmodule Tackle.Lib.TreeTest do
 
     @impl true
     def commit_navigation(%Change{}, _context), do: {:error, :nope}
+  end
+
+  defmodule RecordingNavigationCommitter do
+    @behaviour Tackle.Lib.Tree.Committer
+
+    @impl true
+    def commit_navigation(%Change{} = change, _context) do
+      send(self(), {:navigation_committed, change})
+      :ok
+    end
+  end
+
+  defmodule SkippingCommitter do
+    @behaviour Tackle.Lib.Tree.Committer
+
+    @impl true
+    def commit_navigation(%Change{}, _context) do
+      send(self(), :skipped)
+      :ok
+    end
   end
 
   defmodule TreeSummarizer do
