@@ -18,7 +18,7 @@ defmodule Tackle.Session.TreeTest do
     {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
-    {:ok, tree} = Tackle.tree(scope.root_agent_ref)
+    tree = active_tree(scope.root_agent_ref)
     assert [user, assistant] = Tree.transcript(tree)
     assert user.role == :user
     assert assistant.role == :assistant
@@ -36,7 +36,7 @@ defmodule Tackle.Session.TreeTest do
     {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "first")
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
-    {:ok, tree} = Tackle.tree(scope.root_agent_ref)
+    tree = active_tree(scope.root_agent_ref)
     [user | _rest] = Tree.transcript(tree)
     session_id = snapshot.session_id
 
@@ -64,7 +64,7 @@ defmodule Tackle.Session.TreeTest do
     {:ok, turn_id} = Tackle.submit(resumed.root_agent_ref, "second question")
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
-    {:ok, tree} = Tackle.tree(resumed.root_agent_ref)
+    tree = active_tree(resumed.root_agent_ref)
     assert [_, _] = Tree.children(tree, nil)
     assert Enum.map(Tree.transcript(tree), & &1.content) == ["second question", "second"]
   end
@@ -88,7 +88,7 @@ defmodule Tackle.Session.TreeTest do
     {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "first")
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
-    {:ok, tree} = Tackle.tree(scope.root_agent_ref)
+    tree = active_tree(scope.root_agent_ref)
     [user | _rest] = Tree.transcript(tree)
 
     assert {:ok, _snap, _outcome} =
@@ -110,7 +110,7 @@ defmodule Tackle.Session.TreeTest do
     {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "first")
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
-    {:ok, tree} = Tackle.tree(scope.root_agent_ref)
+    tree = active_tree(scope.root_agent_ref)
     [user | _rest] = Tree.transcript(tree)
 
     assert {:ok, _snap, outcome} = Tackle.navigate(scope.root_agent_ref, {:edit, user.id})
@@ -119,7 +119,7 @@ defmodule Tackle.Session.TreeTest do
     {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "edited first")
     assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
-    {:ok, tree} = Tackle.tree(scope.root_agent_ref)
+    tree = active_tree(scope.root_agent_ref)
     assert [_, _] = Tree.children(tree, nil)
     assert Enum.map(Tree.transcript(tree), & &1.content) == ["edited first", "answer"]
     assert Enum.count(Tree.enumerate(tree), &(&1.kind == :message)) == 4
@@ -150,7 +150,7 @@ defmodule Tackle.Session.TreeTest do
       {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
       assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
 
-      {:ok, tree} = Tackle.tree(scope.root_agent_ref)
+      tree = active_tree(scope.root_agent_ref)
       assert [user, _assistant] = Tree.transcript(tree)
 
       assert {:error, :tree_disabled} = Tackle.navigate(scope.root_agent_ref, nil)
@@ -222,5 +222,10 @@ defmodule Tackle.Session.TreeTest do
     assert [user, assistant] = Tree.enumerate(projection.tree)
     assert Tree.entry(projection.tree, assistant.id).parent_id == user.id
     assert Tree.active_id(projection.tree) == assistant.id
+  end
+
+  defp active_tree(agent_ref) do
+    {:ok, snapshot} = Tackle.snapshot(agent_ref)
+    snapshot.agent_state.tree
   end
 end

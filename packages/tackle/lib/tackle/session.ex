@@ -243,15 +243,6 @@ defmodule Tackle.Session do
   def reconfigure(_session, opts), do: {:error, {:invalid_config, opts}}
 
   @doc """
-  Reads the session's conversation tree.
-
-  Every session keeps one; in a session without branching it has a single
-  branch.
-  """
-  @spec tree(GenServer.server()) :: {:ok, Tackle.Lib.Tree.t()}
-  def tree(session), do: GenServer.call(session, :tree)
-
-  @doc """
   Navigates the session's conversation tree while it is idle.
 
   Navigation is rejected with `{:error, :tree_disabled}` in a session without
@@ -484,10 +475,6 @@ defmodule Tackle.Session do
   # Cancels the active turn or, while idle, a running manual compaction.
   def handle_call({:cancel, reason}, _from, state),
     do: {:reply, :ok, cancel_running(state, reason)}
-
-  def handle_call(:tree, _from, state) do
-    {:reply, {:ok, state.agent_state.tree}, state}
-  end
 
   # Branching is the session's policy; the library can always navigate.
   def handle_call({:navigate, _target, _opts}, _from, %{tree_enabled?: false} = state) do

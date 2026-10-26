@@ -473,8 +473,12 @@ unresolved, `Tackle.submit/2` and `Tackle.continue/1` return
 `{:error, {:recovery_required, info}}`. `Tackle.Session.Snapshot.recovery`
 exposes the unresolved turn and any tools whose external effects are uncertain.
 
+To resume, start a scope whose `Tackle.Session.Spec` names the session:
+
 ```elixir
-{:ok, scope} = Tackle.resume_session(session_id, scope_spec)
+{:ok, session} = Tackle.Session.Spec.new(session_id: session_id)
+{:ok, spec} = Tackle.Runtime.ScopeSpec.new(%{scope_spec | session: session})
+{:ok, scope} = Tackle.start_scope(spec)
 
 case Tackle.snapshot(scope.root_agent_ref) do
   {:ok, %{recovery: nil}} -> :ok
@@ -519,8 +523,8 @@ engine owns the tree rules; the harness package owns durable records and the CLI
 owns the picker. Branching is session policy: durable root sessions enable it by
 default (`Tackle.Session.Spec` `tree: true`), while a durable session with
 `tree: false` and every ephemeral session keep a single-branch tree and reject
-`Tackle.navigate/3` with `{:error, :tree_disabled}`. `Tackle.tree/1` returns the
-tree either way.
+`Tackle.navigate/3` with `{:error, :tree_disabled}`. The snapshot's
+`agent_state.tree` holds the tree either way.
 
 Three surfaces are deliberately distinct:
 

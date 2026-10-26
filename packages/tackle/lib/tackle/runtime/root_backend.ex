@@ -44,7 +44,6 @@ defmodule Tackle.Runtime.RootBackend do
   def call(pid, :abandon_turn, []), do: Session.abandon_turn(pid)
   def call(pid, :deliver, [envelope]), do: Session.deliver(pid, envelope)
   def call(pid, :compact, [opts]), do: Session.compact(pid, opts)
-  def call(pid, :tree, []), do: Session.tree(pid)
   def call(pid, :navigate, [target, opts]), do: Session.navigate(pid, target, opts)
   def call(_pid, operation, _args), do: {:error, {:unsupported_agent_operation, operation}}
 

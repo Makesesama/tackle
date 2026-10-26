@@ -28,7 +28,6 @@ defmodule Tackle do
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Compression
-  alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Session.Store
 
   @doc """
@@ -110,13 +109,6 @@ defmodule Tackle do
   def compact(%AgentRef{} = agent_ref, opts \\ []), do: Runtime.compact(agent_ref, opts)
 
   @doc """
-  Reads an agent's conversation tree, which has a single branch in a session
-  without branching.
-  """
-  @spec tree(AgentRef.t()) :: {:ok, Tackle.Lib.Tree.t()} | {:error, term()}
-  def tree(%AgentRef{} = agent_ref), do: Runtime.tree(agent_ref)
-
-  @doc """
   Navigates an idle agent's conversation tree.
 
   Navigation never runs a turn, re-executes a tool, or edits existing entries.
@@ -149,24 +141,6 @@ defmodule Tackle do
   """
   @spec abandon_turn(AgentRef.t()) :: :ok | {:error, term()}
   def abandon_turn(%AgentRef{} = agent_ref), do: Runtime.abandon_turn(agent_ref)
-
-  @doc """
-  Resumes a durable session into a new root scope.
-
-  The scope spec supplies the trusted agent configuration; the session id
-  selects the durable conversation. `opts` may carry `:repair`,
-  `:override_config`, `:storage`, and `:cwd`. The recorded model is re-resolved
-  through the current providers unless `:override_config` is set, in which case
-  a durable configuration change is recorded.
-  """
-  @spec resume_session(String.t(), ScopeSpec.t(), keyword()) ::
-          {:ok, Scope.t()} | {:error, term()}
-  def resume_session(session_id, %ScopeSpec{} = spec, opts \\ []) do
-    with {:ok, session} <- SessionSpec.new(Keyword.merge(opts, session_id: session_id)),
-         {:ok, spec} <- ScopeSpec.new(%{spec | session: session}) do
-      start_scope(spec)
-    end
-  end
 
   @doc "Reads and projects a durable session without starting a runtime scope."
   @spec inspect_session(String.t(), keyword()) :: {:ok, map()} | {:error, term()}

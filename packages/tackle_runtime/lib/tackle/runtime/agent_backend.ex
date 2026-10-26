@@ -36,7 +36,6 @@ defmodule Tackle.Runtime.AgentBackend do
           | :abandon_turn
           | :deliver
           | :compact
-          | :tree
           | :navigate
           | :cancel_tool_call
           | :publish_event

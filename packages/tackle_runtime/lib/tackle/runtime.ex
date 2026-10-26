@@ -302,18 +302,6 @@ defmodule Tackle.Runtime do
   def compact(%AgentRef{}, opts), do: {:error, {:invalid_compact_options, opts}}
 
   @doc """
-  Reads an agent's conversation tree.
-
-  Every agent state keeps a `Tackle.Lib.Tree`, with a single branch when the
-  agent never navigates. The tree is a pure value, so the caller never
-  receives a journal PID or a session process.
-  """
-  @spec tree(AgentRef.t()) :: {:ok, Tackle.Lib.Tree.t()} | {:error, term()}
-  def tree(%AgentRef{} = agent_ref) do
-    with_agent(agent_ref, :tree, [])
-  end
-
-  @doc """
   Navigates an idle agent's conversation tree.
 
   The destination is validated and committed to the journal before the new
