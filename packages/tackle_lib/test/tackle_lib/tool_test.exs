@@ -140,6 +140,7 @@ defmodule Tackle.Lib.ToolTest do
     def parameters_schema, do: []
 
     @impl true
+    def execute(_args, %{how: :raise}), do: raise("boom")
     def execute(_args, %{how: :exit}), do: exit(:timeout)
     def execute(_args, %{how: :throw}), do: throw(:oops)
     def execute(_args, %{how: :tuple}), do: {:ok, %{pair: {1, 2}}}
@@ -629,14 +630,21 @@ defmodule Tackle.Lib.ToolTest do
     refute error.content =~ "secret-token"
   end
 
-  test "settle/3 turns tool exits and throws into execution errors" do
+  @tag :capture_log
+  test "settle/3 settles tools that raise, exit, or throw as crashed" do
     call = %Tackle.Lib.Tool.Call{id: "call_bad", name: "misbehaving", arguments: %{}}
 
-    for how <- [:exit, :throw] do
+    for {how, message, details} <- [
+          {:raise, "Tool crashed: boom", {:error, %RuntimeError{message: "boom"}}},
+          {:exit, "Tool crashed: exit :timeout", {:exit, :timeout}},
+          {:throw, "Tool crashed: throw :oops", {:throw, :oops}}
+        ] do
       assert {:error, %Tackle.Lib.Tool.Error{} = error} =
                Tool.settle(MisbehavingTool, call, %{how: how})
 
       assert error.reason == :execution_error
+      assert error.message == message
+      assert error.details == details
       assert error.content == "Error: The tool failed while completing the request."
     end
   end

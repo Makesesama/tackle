@@ -20,6 +20,9 @@ defmodule Tackle.Lib.Tool do
   adapter. `definition/1` projects it once into the JSON Schema object that
   provider adapters send as it is (see `t:definition/0`).
 
+  `use Tackle.Lib.Tool` declares a tool with the macros of
+  `Tackle.Lib.Tool.DSL` instead of implementing the callbacks by hand.
+
   ## Errors the model sees
 
   A tool reports an expected failure by returning `{:error, reason}`.
@@ -54,10 +57,6 @@ defmodule Tackle.Lib.Tool do
   sees this behaviour.
   """
 
-  require Logger
-
-  alias Tackle.Lib.JSON
-  alias Tackle.Lib.Tool.Content
   alias Tackle.Lib.Tool.Schema
   alias Tackle.Lib.Tool.Schema.JsonSchema
 
@@ -142,103 +141,7 @@ defmodule Tackle.Lib.Tool do
   an existing abstraction; `Tackle.Lib.Tool.Registry.new/1` checks their
   callbacks (see `tool?/1`) and schemas when they are registered.
   """
-  defmacro __using__(_opts) do
-    quote do
-      @behaviour Tackle.Lib.Tool
-
-      import Tackle.Lib.Tool.DSL,
-        only: [tool_name: 1, description: 1, input: 1, output: 1, field: 2, field: 3]
-
-      Module.register_attribute(__MODULE__, :tackle_tool_name, accumulate: false)
-      Module.register_attribute(__MODULE__, :tackle_tool_description, accumulate: false)
-      Module.register_attribute(__MODULE__, :tackle_schema_context, accumulate: false)
-      Module.register_attribute(__MODULE__, :tackle_input_fields, accumulate: true)
-      Module.register_attribute(__MODULE__, :tackle_output_fields, accumulate: true)
-
-      @before_compile Tackle.Lib.Tool
-    end
-  end
-
-  @doc false
-  def __field__(module, context, name, type, opts)
-      when context in [:input, :output] and is_atom(name) and is_list(opts) do
-    field = {name, Keyword.put(opts, :type, type)}
-
-    attribute =
-      case context do
-        :input -> :tackle_input_fields
-        :output -> :tackle_output_fields
-      end
-
-    Module.put_attribute(module, attribute, field)
-  end
-
-  def __field__(_module, nil, _name, _type, _opts) do
-    raise ArgumentError, "field/3 must be called inside an input or output block"
-  end
-
-  def __field__(_module, _context, name, _type, opts) do
-    raise ArgumentError,
-          "field/3 expects an atom field name and keyword options, got: #{inspect(name)}, #{inspect(opts)}"
-  end
-
-  @doc false
-  defmacro __before_compile__(env) do
-    tool_name = Module.get_attribute(env.module, :tackle_tool_name)
-    description = Module.get_attribute(env.module, :tackle_tool_description)
-    input_schema = env.module |> Module.get_attribute(:tackle_input_fields) |> Enum.reverse()
-    output_schema = env.module |> Module.get_attribute(:tackle_output_fields) |> Enum.reverse()
-
-    validate_tool_attributes!(env, tool_name, description)
-    validate_schema!(env, "input", input_schema)
-    validate_schema!(env, "output", output_schema)
-
-    output_schema = if output_schema == [], do: nil, else: output_schema
-    defines_output_schema? = Module.defines?(env.module, {:output_schema, 0})
-
-    quote do
-      @impl Tackle.Lib.Tool
-      def name, do: unquote(tool_name)
-
-      @impl Tackle.Lib.Tool
-      def description, do: unquote(description)
-
-      @impl Tackle.Lib.Tool
-      def parameters_schema, do: unquote(Macro.escape(input_schema))
-
-      unless unquote(defines_output_schema?) do
-        @impl Tackle.Lib.Tool
-        def output_schema, do: unquote(Macro.escape(output_schema))
-      end
-
-      @impl Tackle.Lib.Tool
-      def execute(args, context), do: run(args, context)
-    end
-  end
-
-  defp validate_schema!(env, kind, schema) do
-    case Schema.validate_schema(schema) do
-      :ok ->
-        :ok
-
-      {:error, message} ->
-        raise ArgumentError, "#{inspect(env.module)} has an invalid #{kind} schema: #{message}"
-    end
-  end
-
-  defp validate_tool_attributes!(env, tool_name, description) do
-    unless is_binary(tool_name) and tool_name != "" do
-      raise ArgumentError, "#{inspect(env.module)} must define tool_name \"...\""
-    end
-
-    unless is_binary(description) and description != "" do
-      raise ArgumentError, "#{inspect(env.module)} must define description \"...\""
-    end
-
-    unless Module.defines?(env.module, {:run, 2}) do
-      raise ArgumentError, "#{inspect(env.module)} must define run/2"
-    end
-  end
+  defmacro __using__(_opts), do: Tackle.Lib.Tool.DSL.__using_ast__()
 
   @required_callbacks [name: 0, description: 0, parameters_schema: 0, execute: 2]
 
@@ -352,152 +255,5 @@ defmodule Tackle.Lib.Tool do
   """
   @spec settle(module(), Tackle.Lib.Tool.Call.t(), map()) ::
           {:ok, Tackle.Lib.Tool.Result.t()} | {:error, Tackle.Lib.Tool.Error.t()}
-  def settle(tool_module, %Tackle.Lib.Tool.Call{} = call, context) do
-    with {:ok, normalized_args} <- validate_input(tool_module, call),
-         {:ok, raw_result} <- execute_tool(tool_module, normalized_args, context),
-         {:ok, output} <- validate_output(tool_module, raw_result),
-         {:ok, {content, parts}} <- project_output(output) do
-      {:ok,
-       %Tackle.Lib.Tool.Result{
-         tool_call_id: call.id,
-         name: call.name,
-         raw: raw_result,
-         output: output,
-         content: content,
-         parts: parts
-       }}
-    else
-      {:error, {:invalid_input, message}} ->
-        {:error, tool_error(call, :invalid_input, message, nil, message)}
-
-      {:error, {:invalid_output, reason}} when is_binary(reason) ->
-        {:error, tool_error(call, :invalid_output, reason)}
-
-      # A host output validator may return any term.
-      {:error, {:invalid_output, reason}} ->
-        {:error,
-         tool_error(call, :invalid_output, "Invalid tool output: #{inspect(reason)}", reason)}
-
-      {:error, {:tool_execution_error, reason}} when is_binary(reason) and reason != "" ->
-        {:error, tool_error(call, :execution_error, reason, reason, reason)}
-
-      {:error, {:tool_execution_error, reason}} ->
-        {:error,
-         tool_error(call, :execution_error, "Tool execution failed: #{inspect(reason)}", reason)}
-
-      {:error, reason} ->
-        {:error,
-         tool_error(call, :execution_error, "Tool execution failed: #{inspect(reason)}", reason)}
-    end
-  end
-
-  defp validate_input(_tool_module, %Tackle.Lib.Tool.Call{argument_error: :invalid_json}),
-    do: {:error, {:invalid_input, "Invalid tool arguments: arguments are not valid JSON"}}
-
-  defp validate_input(_tool_module, %Tackle.Lib.Tool.Call{argument_error: :not_an_object}),
-    do: {:error, {:invalid_input, "Invalid tool arguments: arguments must be a JSON object"}}
-
-  defp validate_input(tool_module, %Tackle.Lib.Tool.Call{arguments: arguments}) do
-    case validate_args(tool_module, arguments) do
-      {:ok, normalized} -> {:ok, normalized}
-      {:error, message} -> {:error, {:invalid_input, message}}
-    end
-  end
-
-  defp execute_tool(tool_module, args, context) do
-    case tool_module.execute(args, context) do
-      {:ok, result} -> {:ok, result}
-      {:error, reason} -> {:error, {:tool_execution_error, reason}}
-    end
-  rescue
-    error ->
-      stacktrace = __STACKTRACE__
-
-      Logger.error(fn ->
-        [
-          "Tool ",
-          inspect(tool_module),
-          " raised: ",
-          Exception.format(:error, error, stacktrace)
-        ]
-      end)
-
-      {:error, {:exception, error}}
-  catch
-    # An exit (such as a GenServer.call timeout) or a throw from a tool is a
-    # failed execution like a raise, not a crash of the caller.
-    kind, reason ->
-      stacktrace = __STACKTRACE__
-
-      Logger.error(fn ->
-        ["Tool ", inspect(tool_module), " failed: ", Exception.format(kind, reason, stacktrace)]
-      end)
-
-      {:error, {kind, reason}}
-  end
-
-  defp validate_output(_tool_module, %Tackle.Lib.Tool.Content{} = content), do: {:ok, content}
-
-  defp validate_output(tool_module, result) do
-    case output_schema(tool_module) do
-      nil ->
-        {:ok, result}
-
-      schema ->
-        case Schema.validate_output(schema, result) do
-          {:ok, output} -> {:ok, output}
-          {:error, reason} -> {:error, {:invalid_output, reason}}
-        end
-    end
-  end
-
-  defp project_output(%Tackle.Lib.Tool.Content{text: text}) when not is_binary(text),
-    do: {:error, {:invalid_output, "Tool content text must be a string, got: #{inspect(text)}"}}
-
-  defp project_output(%Tackle.Lib.Tool.Content{text: text, parts: parts}) do
-    case Content.validate(parts) do
-      :ok -> {:ok, {model_text(text), Enum.map(parts, &sanitize_part/1)}}
-      {:error, reason} -> {:error, {:invalid_output, reason}}
-    end
-  end
-
-  defp project_output(result) do
-    {:ok, {result |> format_result() |> model_text(), []}}
-  rescue
-    error ->
-      {:error,
-       {:invalid_output, "Tool result could not be encoded as JSON: #{Exception.message(error)}"}}
-  end
-
-  # `model_message` is what the model may see; without one the model sees a
-  # generic content for the error's reason.
-  defp tool_error(call, reason, message, details \\ nil, model_message \\ nil) do
-    %Tackle.Lib.Tool.Error{
-      tool_call_id: call.id,
-      name: call.name,
-      reason: reason,
-      message: model_text(message),
-      content: error_content(model_message),
-      details: details
-    }
-  end
-
-  defp error_content(nil), do: "Error: The tool failed while completing the request."
-  defp error_content(message), do: "Error: " <> model_text(message)
-
-  # Transcript text is sent to providers as JSON on every later request, so
-  # it must be valid UTF-8.
-  defp model_text(text), do: String.replace_invalid(text)
-
-  defp sanitize_part(%{"type" => "text", "text" => text} = part),
-    do: %{part | "text" => model_text(text)}
-
-  defp sanitize_part(part), do: part
-
-  defp format_result(result) when is_map(result) or is_list(result) do
-    JSON.encode!(result)
-  end
-
-  defp format_result(result) when is_binary(result), do: result
-  defp format_result(result), do: inspect(result)
+  defdelegate settle(tool_module, call, context), to: Tackle.Lib.Tool.Settle
 end

@@ -656,8 +656,9 @@ A manual tool implements:
 - optional `output_schema/0`
 - optional `effect/0`
 
-`use Tackle.Lib.Tool` generates the standard callbacks from the DSL and delegates
-execution to `run/2`. `Tackle.Lib.Tool.tool?/1` checks that a module is loadable
+`use Tackle.Lib.Tool` imports the DSL macros of `Tackle.Lib.Tool.DSL`
+(`tool_name`, `description`, `input`, `output`, `field`), generates the
+standard callbacks from them, and delegates execution to `run/2`. `Tackle.Lib.Tool.tool?/1` checks that a module is loadable
 and exports the four required callbacks; `Tackle.Lib.Tool.missing_callbacks/1`
 lists the ones it lacks.
 
@@ -724,8 +725,12 @@ in them. Any other reason gets a generic model-facing text, and the reason
 stays in the error's `message` and `details` (and the `:tool_error` event) for
 the host. Argument validation errors are shown to the model (for example
 `"Error: Invalid tool arguments: path: is required"`); they name only schema
-fields and limits. Exceptions are rescued and logged as bugs, and their model
-text is generic; they should not be normal control flow.
+fields and limits. Exceptions, exits, and throws are caught and logged as bugs
+and settle like a crash (`Tackle.Lib.Tool.Error.crashed/3`: the message reads
+`"Tool crashed: ..."` and `details` is `{kind, reason}`); their model text is
+generic, and they should not be normal control flow. `Tackle.Lib.Tool.Error`'s
+constructors (`unknown_tool/1`, `invalid_input/2`, `invalid_output/2`,
+`failed/2`, `crashed/3`, `interrupted/3`) build every tool error.
 
 A provider tool call whose arguments are not valid JSON or not an object is
 kept with its id and name, and `Tackle.Lib.Tool.Call.normalize/1` marks it
