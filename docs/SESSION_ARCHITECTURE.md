@@ -681,6 +681,15 @@ Runtime reconstruction then:
 6. attaches fresh runtime handles and cancellation state; and
 7. records a durable configuration change if the user selected a different model or thinking level.
 
+`Tackle.Session.Durable.open/3` runs these steps when a session starts,
+reading the journal's projection once: it also enables branching when the
+session spec asks for it, installs the persistence hook and the committer,
+reports an interrupted turn as the recovery the frontend must decide, and
+otherwise repairs tool calls a settled turn left without results. After a
+turn whose start failed or whose task crashed is settled,
+`Durable.reopen/5` rebuilds the state the same way, with the session's
+configuration overriding the recorded one.
+
 If the recorded configuration cannot be resolved, loading returns a typed configuration-required result. It does not silently switch providers or models.
 
 ## 11. Load, resume, and inspect semantics

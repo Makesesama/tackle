@@ -53,10 +53,7 @@ defmodule Tackle.Session.Loader do
     with {:ok, resolved, changed?} <- resolve_config(projection, config, opts) do
       state =
         resolved
-        |> Config.to_agent_state(
-          credential_store: Keyword.get(opts, :credential_store),
-          session_id: projection.session_id
-        )
+        |> Config.to_agent_state(session_id: projection.session_id)
         # The projection folds its tree through `Tree.append_message/3` and
         # `Tree.append_compaction/3`, which validate every link and keep the
         # child index, and rejects a journal they refuse, so its tree is

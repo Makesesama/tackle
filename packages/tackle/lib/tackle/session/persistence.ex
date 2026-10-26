@@ -27,25 +27,23 @@ defmodule Tackle.Session.Persistence do
   context carries `:journal_required`, so a missing owner fails closed rather
   than being mistaken for an ephemeral session.
 
-  The hook reads the just-appended tree entry from the settled state and
-  commits the message together with its parent link, rather than guessing
-  parentage from the previous journal commit; a journal without branching
-  leaves the implied link out.
+  The hook appends a message through `Tackle.Session.Durable.append_message/3`,
+  which commits it with the parent link of its tree entry in the settled
+  state rather than guessing parentage from the previous journal commit; a
+  journal without branching leaves the implied link out.
   """
 
   @behaviour Tackle.Lib.Hook
 
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
-  alias Tackle.Lib.Tree
+  alias Tackle.Session.Durable
   alias Tackle.Session.Journal
 
   @impl true
   def after_message(%State{session_id: session_id} = state, %Message{} = message, context) do
     with :ok <-
-           persist(session_id, context, fn journal ->
-             Journal.append_message(journal, message, tree_parent(state, message.id), sync: false)
-           end) do
+           persist(session_id, context, &Durable.append_message(&1, state, message)) do
       # Live message_end precedes the hook. Title generation must wait until
       # this user message is appended, not race it; the session decides
       # whether the user wrote it.
@@ -71,20 +69,6 @@ defmodule Tackle.Session.Persistence do
         if context[:journal_required],
           do: {:error, {:journal_unavailable, :not_found}},
           else: :ok
-    end
-  end
-
-  @doc """
-  Returns the journal parent of a message just appended to `state`: the
-  parent of its tree entry, or `:none` when the tree does not hold it. The
-  journal decides whether to record the link (see
-  `Tackle.Session.Journal.append_message/4`).
-  """
-  @spec tree_parent(State.t(), String.t()) :: {:tree, String.t() | nil} | :none
-  def tree_parent(%State{tree: tree}, message_id) do
-    case Tree.entry(tree, message_id) do
-      %{parent_id: parent_id} -> {:tree, parent_id}
-      nil -> :none
     end
   end
 end

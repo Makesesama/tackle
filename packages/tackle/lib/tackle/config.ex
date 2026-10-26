@@ -344,15 +344,14 @@ defmodule Tackle.Config do
 
   def reconfigure(%__MODULE__{}, opts), do: {:error, {:invalid_config, opts}}
 
-  @doc "Builds the initial library state for a configured session."
+  @doc """
+  Builds the initial library state for a configured session.
+
+  The only option is `:session_id`. Credentials reach the adapters through
+  `llm_opts`, where `Tackle.Session` puts its credential store.
+  """
   @spec to_agent_state(t(), keyword()) :: Tackle.Lib.State.t()
   def to_agent_state(%__MODULE__{} = config, harness_opts \\ []) do
-    llm_opts =
-      case Keyword.get(harness_opts, :credential_store) do
-        nil -> config.llm_opts
-        handle -> Keyword.put(config.llm_opts, :credential_store, handle)
-      end
-
     Tackle.Lib.new(
       llm: config.llm,
       tools: config.tools,
@@ -361,7 +360,7 @@ defmodule Tackle.Config do
       context: put_compile_gate(config.context, config.compile_gate),
       max_iterations: config.max_iterations,
       tool_policy: config.tool_policy,
-      llm_opts: llm_opts,
+      llm_opts: config.llm_opts,
       id_generator: config.id_generator,
       session_id: Keyword.get(harness_opts, :session_id),
       retry: config.retry,
