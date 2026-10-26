@@ -240,7 +240,7 @@ defmodule Tackle.CLI.SlashCommandsTest do
 
     assert state.overlay == nil
     assert Input.get_value(state.input) == "/tree"
-    assert state.notice =~ "no conversation tree"
+    assert state.notice =~ "empty"
   end
 
   test "dispatch of an idle-only command during a turn keeps the draft" do

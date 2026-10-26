@@ -8,6 +8,7 @@ defmodule Tackle.CLI.TUITest do
   alias ExRatatui.Widgets.List, as: SelectionList
   alias ExRatatui.Widgets.{Paragraph, Popup, TextInput}
   alias Tackle.CLI.Keybinds
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI
 
   alias Tackle.CLI.TUI.{
@@ -25,7 +26,6 @@ defmodule Tackle.CLI.TUITest do
   alias Tackle.CLI.Widgets.Conversation, as: NativeConversation
   alias Tackle.CLI.Widgets.Conversation.Cell
   alias Tackle.CLI.Widgets.Input
-  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.{Event, LLM, Message, State}
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.ID
@@ -164,28 +164,13 @@ defmodule Tackle.CLI.TUITest do
     def handle_call({:compact, _opts}, _from, state) do
       send(state.test_pid, :compact_requested)
 
-      checkpoint = Checkpoint.message("ckpt-1", "compacted background")
-
-      agent_state = %{
-        state.agent_state
-        | model_messages: [checkpoint | state.agent_state.messages]
-      }
+      {agent_state, record} =
+        AgentStates.compact(state.agent_state, "ckpt-1", "compacted background")
 
       snapshot = %Snapshot{
         session_id: agent_state.session_id,
         agent_state: agent_state,
         active_turn: nil
-      }
-
-      record = %Tackle.Lib.Compaction.Record{
-        compaction_id: "ckpt-1",
-        trigger: :manual,
-        summary_message: checkpoint,
-        shadowed_message_ids: ["u1"],
-        first_retained_message_id: nil,
-        tokens_before: 1_200,
-        estimated_tokens_after: 300,
-        created_at: "2026-01-01T00:00:00Z"
       }
 
       {:reply, {:ok, snapshot, record}, %{state | agent_state: agent_state}}
@@ -1800,14 +1785,12 @@ defmodule Tackle.CLI.TUITest do
     delivered = await_state(tui, &(&1.queued_prompts == []))
     assert conversation_text(delivered) =~ "second draft"
 
-    agent_state = %{
-      delivered.agent_state
-      | messages: [
-          Message.user("first"),
-          Message.user("second draft"),
-          Message.assistant(content: "done")
-        ]
-    }
+    agent_state =
+      AgentStates.replace_messages(delivered.agent_state, [
+        Message.user("first"),
+        Message.user("second draft"),
+        Message.assistant(content: "done")
+      ])
 
     send(tui, {:tackle_turn_finished, waiting.session_id, "turn-2", {:ok, agent_state}})
     settled = await_state(tui, &is_nil(&1.active_turn))
@@ -2149,7 +2132,7 @@ defmodule Tackle.CLI.TUITest do
     assert_receive :compact_requested
 
     state =
-      await_state(tui, &(&1.pending_operation == nil and &1.agent_state.model_messages != nil))
+      await_state(tui, &(&1.pending_operation == nil and State.last_compaction(&1.agent_state)))
 
     assert state.notice == nil
     assert conversation_text(state) =~ "Context compacted · 1.2k → 300 est. tokens"
@@ -2260,12 +2243,11 @@ defmodule Tackle.CLI.TUITest do
     assert live_status =~ "~$1.00"
 
     agent_state = %{
-      live_state.agent_state
-      | messages: [
-          Message.assistant(content: "tool call", token_usage: first_usage),
-          Message.assistant(content: "done", token_usage: second_usage)
-        ],
-        status: :completed
+      AgentStates.replace_messages(live_state.agent_state, [
+        Message.assistant(content: "tool call", token_usage: first_usage),
+        Message.assistant(content: "done", token_usage: second_usage)
+      ])
+      | status: :completed
     }
 
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
@@ -2315,14 +2297,12 @@ defmodule Tackle.CLI.TUITest do
     [first, second, third, fourth] =
       Enum.map(usages, &Message.assistant(content: "step", token_usage: &1))
 
-    checkpoint = Checkpoint.message("compaction-1", "Earlier work")
-
-    agent_state = %{
+    {agent_state, _record} =
       live_state.agent_state
-      | messages: [first, second, third, fourth],
-        model_messages: [checkpoint, third, fourth],
-        status: :completed
-    }
+      |> AgentStates.replace_messages([first, second])
+      |> AgentStates.compact("compaction-1")
+
+    agent_state = %{AgentStates.with_messages(agent_state, [third, fourth]) | status: :completed}
 
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     assert status_text(state(tui)) =~ "CH100.0%"
@@ -2343,13 +2323,10 @@ defmodule Tackle.CLI.TUITest do
 
     # A compaction (such as /compact) settled before this turn, and no
     # message after it has usage yet.
-    checkpoint = Checkpoint.message("compaction-1", "Earlier work")
-
-    agent_state = %{
+    {agent_state, _record} =
       state.agent_state
-      | messages: [first, second],
-        model_messages: [checkpoint]
-    }
+      |> AgentStates.replace_messages([first, second])
+      |> AgentStates.compact("compaction-1")
 
     turn_usages =
       Enum.map(
@@ -2459,12 +2436,11 @@ defmodule Tackle.CLI.TUITest do
     refute conversation_text(streaming_state) =~ "Checking"
 
     agent_state = %{
-      streaming_state.agent_state
-      | messages: [
-          Message.user("hi"),
-          Message.assistant(thinking: "Checked", content: "Hello")
-        ],
-        status: :completed
+      AgentStates.replace_messages(streaming_state.agent_state, [
+        Message.user("hi"),
+        Message.assistant(thinking: "Checked", content: "Hello")
+      ])
+      | status: :completed
     }
 
     send(tui, {:tackle_turn_finished, session_id, "turn-1", {:ok, agent_state}})
@@ -2594,7 +2570,9 @@ defmodule Tackle.CLI.TUITest do
     state = state(tui)
 
     markdown = "# Done\n\nSome **bold** text with `code`.\n\n- first\n- second"
-    agent_state = %{state.agent_state | messages: [Message.assistant(content: markdown)]}
+
+    agent_state =
+      AgentStates.replace_messages(state.agent_state, [Message.assistant(content: markdown)])
 
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
@@ -2699,7 +2677,10 @@ defmodule Tackle.CLI.TUITest do
     state = state(tui)
 
     markdown = "A long response with enough words to wrap at a narrow width."
-    agent_state = %{state.agent_state | messages: [Message.assistant(content: markdown)]}
+
+    agent_state =
+      AgentStates.replace_messages(state.agent_state, [Message.assistant(content: markdown)])
+
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     wide_state = state(tui)
 
@@ -2721,7 +2702,12 @@ defmodule Tackle.CLI.TUITest do
 
     markdown = Enum.map_join(1..200, "\n", &"**response line #{&1}**")
     messages = [Message.user("x"), Message.assistant(content: markdown)]
-    agent_state = %{state.agent_state | messages: messages, status: :completed}
+
+    agent_state = %{
+      AgentStates.replace_messages(state.agent_state, messages)
+      | status: :completed
+    }
+
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
@@ -2752,7 +2738,11 @@ defmodule Tackle.CLI.TUITest do
         index -> Message.user("older message #{index}")
       end)
 
-    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    agent_state = %{
+      AgentStates.replace_messages(state.agent_state, messages)
+      | status: :completed
+    }
+
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
     terminal = ExRatatui.init_test_terminal(50, 12)
@@ -2782,7 +2772,7 @@ defmodule Tackle.CLI.TUITest do
 
     snapshot = %Snapshot{
       session_id: state.session_id,
-      agent_state: %{state.agent_state | messages: messages, status: :running},
+      agent_state: %{AgentStates.replace_messages(state.agent_state, messages) | status: :running},
       active_turn: %{id: "turn-1"}
     }
 
@@ -2848,7 +2838,12 @@ defmodule Tackle.CLI.TUITest do
 
     response = Enum.map_join(1..200, "\n", &"response line #{&1}")
     messages = [Message.user("x"), Message.assistant(content: response)]
-    agent_state = %{state.agent_state | messages: messages, status: :completed}
+
+    agent_state = %{
+      AgentStates.replace_messages(state.agent_state, messages)
+      | status: :completed
+    }
+
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
@@ -2872,7 +2867,7 @@ defmodule Tackle.CLI.TUITest do
 
     snapshot = %Snapshot{
       session_id: state.session_id,
-      agent_state: %{state.agent_state | messages: messages, status: :running},
+      agent_state: %{AgentStates.replace_messages(state.agent_state, messages) | status: :running},
       active_turn: %{id: "turn-1"}
     }
 
@@ -2916,7 +2911,11 @@ defmodule Tackle.CLI.TUITest do
       Message.assistant(content: "LATEST")
     ]
 
-    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    agent_state = %{
+      AgentStates.replace_messages(state.agent_state, messages)
+      | status: :completed
+    }
+
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
@@ -2945,7 +2944,11 @@ defmodule Tackle.CLI.TUITest do
       Message.user(String.duplicate("é", 13))
     ]
 
-    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    agent_state = %{
+      AgentStates.replace_messages(state.agent_state, messages)
+      | status: :completed
+    }
+
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
 
@@ -3118,7 +3121,11 @@ defmodule Tackle.CLI.TUITest do
       Message.assistant(content: "Done")
     ]
 
-    agent_state = %{state.agent_state | messages: messages, status: :completed}
+    agent_state = %{
+      AgentStates.replace_messages(state.agent_state, messages)
+      | status: :completed
+    }
+
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {:ok, agent_state}})
     state = state(tui)
     conversation = conversation_text(state)
@@ -4056,7 +4063,12 @@ defmodule Tackle.CLI.TUITest do
 
   defp finish_turn(tui, messages, outcome \\ :ok) do
     state = state(tui)
-    agent_state = %{state.agent_state | messages: messages, status: :completed}
+
+    agent_state = %{
+      AgentStates.replace_messages(state.agent_state, messages)
+      | status: :completed
+    }
+
     send(tui, {:tackle_turn_finished, state.session_id, "turn-1", {outcome, agent_state}})
     state(tui)
   end

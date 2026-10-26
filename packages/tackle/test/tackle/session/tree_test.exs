@@ -140,6 +140,28 @@ defmodule Tackle.Session.TreeTest do
     assert {:error, :turn_in_progress} = Tackle.navigate(scope.root_agent_ref, nil)
   end
 
+  test "a session without branching keeps a tree but refuses navigation", ctx do
+    durable =
+      start_durable_scope(home: ctx.home, root: [content: "answer"], session: [tree: false])
+
+    ephemeral = start_scope(root: [content: "answer"])
+
+    for scope <- [durable, ephemeral] do
+      {:ok, _snapshot} = Tackle.subscribe(scope.root_agent_ref)
+      {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "hello")
+      assert_receive {:tackle_turn_finished, _session_id, ^turn_id, {:ok, _state}}, 5_000
+
+      {:ok, tree} = Tackle.tree(scope.root_agent_ref)
+      assert [user, _assistant] = Tree.transcript(tree)
+
+      assert {:error, :tree_disabled} = Tackle.navigate(scope.root_agent_ref, nil)
+      assert {:error, :tree_disabled} = Tackle.navigate(scope.root_agent_ref, {:edit, user.id})
+
+      {:ok, snapshot} = Tackle.snapshot(scope.root_agent_ref)
+      assert snapshot.agent_state.tree == tree
+    end
+  end
+
   test "a legacy linear journal is upgraded in place and then branches", ctx do
     scope =
       start_durable_scope(

@@ -21,7 +21,9 @@ defmodule Tackle.Lib.Tree do
     * parent chains are acyclic and ordering is deterministic (`:ordinal`);
     * only settled messages and committed compactions become entries;
     * appending attaches to the active position and advances it;
-    * navigation changes the active position without modifying entries;
+    * navigation changes the active position without modifying entries, and
+      `update_message/3` replaces a message but never an entry's id, parent,
+      or order;
     * model projection follows ancestry, not chronological append order.
 
   ## Readers
@@ -207,16 +209,33 @@ defmodule Tackle.Lib.Tree do
     |> Usage.aggregate()
   end
 
+  @doc """
+  Returns the most recent compaction record on the active path, or nil.
+
+  Walks parent links up from the active position and stops at the first
+  compaction entry.
+  """
+  @spec last_compaction(t()) :: Record.t() | nil
+  def last_compaction(%__MODULE__{active_id: active_id} = tree),
+    do: find_compaction(tree, active_id)
+
+  defp find_compaction(_tree, nil), do: nil
+
+  defp find_compaction(tree, id) do
+    case entry(tree, id) do
+      %Entry{kind: :compaction, compaction: %Record{} = record} -> record
+      %Entry{parent_id: parent_id} -> find_compaction(tree, parent_id)
+      nil -> nil
+    end
+  end
+
   @doc "Returns the most recent compaction id on the active path, or nil."
   @spec last_compaction_id(t()) :: id() | nil
-  def last_compaction_id(%__MODULE__{active_id: active_id} = tree) do
-    tree
-    |> ancestry(active_id)
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      %Entry{kind: :compaction, compaction: %Record{compaction_id: id}} -> id
-      %Entry{} -> nil
-    end)
+  def last_compaction_id(%__MODULE__{} = tree) do
+    case last_compaction(tree) do
+      %Record{compaction_id: id} -> id
+      nil -> nil
+    end
   end
 
   @doc """
@@ -291,6 +310,35 @@ defmodule Tackle.Lib.Tree do
     parent_id = Keyword.get(opts, :parent_id, tree.active_id)
     record = %{record | parent_id: parent_id}
     append(tree, :compaction, %{compaction: record}, record.compaction_id, parent_id: parent_id)
+  end
+
+  @doc """
+  Replaces the message of one message entry, keeping its place in the tree.
+
+  `fun` receives the message and returns its replacement, which must keep the
+  message's id (`ArgumentError` otherwise): entry ids, parent links, and
+  ordering never change. The revision advances like any other change.
+  Returns `{:error, {:unknown_entry, id}}` without a message entry for `id`.
+  """
+  @spec update_message(t(), id(), (Message.t() -> Message.t())) ::
+          {:ok, t()} | {:error, term()}
+  def update_message(%__MODULE__{} = tree, id, fun) when is_function(fun, 1) do
+    case entry(tree, id) do
+      %Entry{kind: :message, message: %Message{} = message} = entry ->
+        case fun.(message) do
+          %Message{id: ^id} = updated ->
+            entries = Map.put(tree.entries, id, %{entry | message: updated})
+            {:ok, %{tree | entries: entries, revision: tree.revision + 1}}
+
+          other ->
+            raise ArgumentError,
+                  "expected the replacement of message #{inspect(id)} to be a message " <>
+                    "with the same id, got: #{inspect(other)}"
+        end
+
+      _not_a_message ->
+        {:error, {:unknown_entry, id}}
+    end
   end
 
   @doc """

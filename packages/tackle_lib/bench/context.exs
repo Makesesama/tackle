@@ -1,7 +1,7 @@
 Code.require_file("../../../bench/support.exs", __DIR__)
 
 defmodule Tackle.Lib.Bench.Context do
-  alias Tackle.Lib.{ContextUsage, Message, ModelInfo, State, Usage}
+  alias Tackle.Lib.{ContextUsage, Message, ModelInfo, State, Tree, Usage}
 
   def fixture(count) do
     messages =
@@ -14,12 +14,20 @@ defmodule Tackle.Lib.Bench.Context do
         }
       end
 
-    state = %{State.new(session_id: "bench", retry: false) | messages: messages}
-
     checkpoint =
       List.update_at(messages, count - 3, &%{&1 | token_usage: %Usage{total_tokens: 1_000}})
 
-    %{linear: state, checkpoint: %{state | messages: checkpoint}}
+    %{plain: state(messages), checkpoint: state(checkpoint)}
+  end
+
+  defp state(messages) do
+    tree =
+      Enum.reduce(messages, Tree.new(), fn message, tree ->
+        {:ok, tree, _entry} = Tree.append_message(tree, message)
+        tree
+      end)
+
+    State.new(session_id: "bench", retry: false, tree: tree)
   end
 
   def estimate(fixture, mode) do
@@ -33,12 +41,12 @@ inputs = Map.new([1_000, 10_000], &{"#{&1} messages", Context.fixture(&1)})
 
 Enum.each(inputs, fn {_name, fixture} ->
   %{usage_tokens: 1_000} = Context.estimate(fixture, :checkpoint)
-  %{usage_tokens: 0} = Context.estimate(fixture, :linear)
+  %{usage_tokens: 0} = Context.estimate(fixture, :plain)
 end)
 
 Tackle.Bench.run(
   %{
-    "context / no checkpoint" => &Context.estimate(&1, :linear),
+    "context / no checkpoint" => &Context.estimate(&1, :plain),
     "context / recent checkpoint" => &Context.estimate(&1, :checkpoint)
   },
   inputs: inputs

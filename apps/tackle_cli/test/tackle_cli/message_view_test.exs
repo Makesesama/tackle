@@ -6,6 +6,7 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.WidgetList
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.{Glyph, MessageView}
   alias Tackle.Lib.{Message, State}
 
@@ -121,7 +122,7 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
       "Message from agent #{agent}:\n\nBackground subagent #{run} completed. Use subagent_status to collect its result."
 
     state = %{
-      agent_state: %State{messages: [Message.user(source)]},
+      agent_state: AgentStates.with_messages([Message.user(source)]),
       subagents: %{run => %{profile: "scout", agent_ref: %{agent_id: agent}}}
     }
 
@@ -144,7 +145,7 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
 
     failed_state = %{
       state
-      | agent_state: %State{messages: [Message.user(failed_source)]},
+      | agent_state: AgentStates.with_messages([Message.user(failed_source)]),
         subagents: %{
           run => %{profile: "scout", agent_ref: %{agent_id: agent}, status: :runtime_error}
         }
@@ -190,7 +191,7 @@ defmodule Tackle.CLI.TUI.MessageViewTest do
   defp settled(messages),
     do:
       MessageView.section_entries(
-        %{agent_state: %State{messages: messages}, thinking_expanded?: false},
+        %{agent_state: AgentStates.with_messages(messages), thinking_expanded?: false},
         :settled
       )
 

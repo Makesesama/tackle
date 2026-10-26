@@ -9,7 +9,8 @@ alias Tackle.Lib.{Message, State}
 defmodule ConversationProbe do
   def state(messages, source) do
     %{
-      agent_state: %State{messages: messages},
+      agent_state:
+        Enum.reduce(messages, State.new(session_id: "bench"), &State.add_message(&2, &1)),
       pending_prompt: nil,
       stream: %Stream{timeline: [%{kind: :assistant, content: source}]},
       thinking_expanded?: false,

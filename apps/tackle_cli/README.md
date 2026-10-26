@@ -1253,6 +1253,8 @@ overwritten by a selected message; the notice says the draft was kept.
 Navigation is committed before it is installed, so the selected position is
 restored on `--resume` even when you exit without sending another prompt.
 Navigation does not undo workspace changes; the notice after each move says so.
+A session without branching (one started without the tree feature) still shows
+its single-branch tree, but selecting an entry reports `:tree_disabled`.
 
 ## Experimental limitations
 

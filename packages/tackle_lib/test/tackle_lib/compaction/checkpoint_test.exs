@@ -6,22 +6,23 @@ defmodule Tackle.Lib.Compaction.CheckpointTest do
   alias Tackle.Lib.Message
   alias Tackle.Lib.Usage
 
-  test "a checkpoint message carries the marker, the framing, and the summary" do
+  test "a checkpoint message carries the framing and the summary" do
     message = Checkpoint.message("c1", "Earlier work")
 
     assert message.id == "c1"
     assert message.role == :user
-    assert String.starts_with?(message.content, Checkpoint.marker())
     assert String.starts_with?(message.content, String.trim_trailing(Checkpoint.framing()))
-    assert Checkpoint.message?(message)
-    assert Checkpoint.body(message) == "Earlier work"
+
+    assert Checkpoint.summary(%{record("c1", [], nil) | summary_message: message}) ==
+             "Earlier work"
   end
 
-  test "other messages are not checkpoints and have no body" do
-    for message <- [Message.user("hello"), Message.assistant(content: "hi"), nil] do
-      refute Checkpoint.message?(message)
-      assert Checkpoint.body(message) == nil
-    end
+  test "a checkpoint without the framing is all summary" do
+    foreign = %{record("c1", [], nil) | summary_message: Message.user("Plain summary\n")}
+    assert Checkpoint.summary(foreign) == "Plain summary"
+
+    no_text = %{record("c1", [], nil) | summary_message: %{Message.user("x") | content: nil}}
+    assert Checkpoint.summary(no_text) == nil
   end
 
   describe "apply_compaction/2" do

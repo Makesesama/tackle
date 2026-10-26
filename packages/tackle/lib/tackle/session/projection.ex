@@ -33,9 +33,9 @@ defmodule Tackle.Session.Projection do
     * `model_messages` — the active path's provider-visible context, with the
       compactions that occur on that path applied.
 
-  `tree_enabled?` records whether the session is allowed to branch. A legacy
-  linear journal keeps `false` until the host records an explicit
-  `tree.enabled` transition; the derived chain is already present either way.
+  `tree_enabled?` records whether the session is allowed to branch. A journal
+  without branching keeps `false` until the host records an explicit
+  `tree.enabled` transition; its chain is a tree with one branch either way.
 
   Replay folds validated commits into the tree and derives message surfaces
   once at the end. Live commits update unchanged surfaces incrementally and
@@ -62,7 +62,7 @@ defmodule Tackle.Session.Projection do
             model_ref: nil,
             thinking: nil,
             tree_enabled?: false,
-            tree: nil,
+            tree: %Tree{},
             messages: [],
             model_messages: [],
             compactions: [],
@@ -113,8 +113,7 @@ defmodule Tackle.Session.Projection do
       thinking: Keyword.get(opts, :thinking),
       title: Keyword.get(opts, :title),
       tags: Keyword.get(opts, :tags, []),
-      tree_enabled?: Keyword.get(opts, :tree, false) or header["tree"] == true,
-      tree: Tree.new()
+      tree_enabled?: Keyword.get(opts, :tree, false) or header["tree"] == true
     }
   end
 
@@ -267,11 +266,7 @@ defmodule Tackle.Session.Projection do
   duplicated.
   """
   @spec tree_summary(t()) :: map()
-  def tree_summary(%__MODULE__{tree: nil} = projection) do
-    %{enabled?: projection.tree_enabled?, active_id: nil, entries: []}
-  end
-
-  def tree_summary(%__MODULE__{tree: %Tree{} = tree} = projection) do
+  def tree_summary(%__MODULE__{tree: tree} = projection) do
     entries =
       tree
       |> Tree.enumerate()

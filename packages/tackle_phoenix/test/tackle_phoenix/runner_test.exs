@@ -4,6 +4,7 @@ defmodule Tackle.Phoenix.RunnerTest do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tree
   alias Tackle.Lib.Usage
   alias Tackle.Phoenix.EventReducer
   alias Tackle.Phoenix.Runner
@@ -28,6 +29,24 @@ defmodule Tackle.Phoenix.RunnerTest do
       event_callback.(Event.message_end(assistant))
 
       {:ok, State.add_message(state, assistant)}
+    end
+  end
+
+  defmodule UsageEventAgent do
+    @moduledoc false
+
+    alias Tackle.Lib.Event
+    alias Tackle.Lib.Message
+    alias Tackle.Lib.State
+    alias Tackle.Lib.Usage
+
+    # Reports usage only through events; the answer itself carries none.
+    def continue(%State{} = state, opts) do
+      event_callback = Keyword.fetch!(opts, :event_callback)
+      usage = %Usage{input_tokens: 2, output_tokens: 8, total_tokens: 10}
+      event_callback.(Event.new(:step_end, %{iteration: 0, usage: usage}))
+
+      {:ok, State.add_message(state, Message.assistant(id: "usage-answer", content: "done"))}
     end
   end
 
@@ -194,6 +213,26 @@ defmodule Tackle.Phoenix.RunnerTest do
              )
 
     assert_receive {:agent_turn_done, {:ok, %State{messages: [_user, _assistant]}}}
+  end
+
+  test "attaches event-only usage to the final answer in the tree as well" do
+    config = %{correlation_runner_config(UsageEventAgent) | store: MinimalStore}
+    agent_state = %State{context: %{persistence: %{}}}
+    :ok = Runner.subscribe(config, "usage-user", "usage-session")
+
+    assert {:ok, _runner} =
+             Runner.run_turn(config, "usage-user", agent_state, "hi",
+               session_id: "usage-session",
+               agent_state: agent_state,
+               host_state: %{session_id: "usage-session"}
+             )
+
+    assert_receive {:agent_turn_done, {:ok, %State{} = state}}
+    assert [_user, %{id: "usage-answer", token_usage: usage}] = state.messages
+    assert %{total_tokens: 10} = usage
+    assert Tree.transcript(state.tree) == state.messages
+    assert state.model_messages == state.messages
+    assert State.usage(state).total_tokens == 10
   end
 
   test "two subscribers with the same session id never receive each other's turns" do

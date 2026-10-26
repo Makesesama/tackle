@@ -3,10 +3,12 @@ defmodule Tackle.Lib.StateTest do
 
   alias Tackle.Lib.Compaction
   alias Tackle.Lib.Compaction.Checkpoint
+  alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.Retry
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tree
   alias Tackle.Lib.Usage
 
   defmodule SomeTool do
@@ -54,6 +56,8 @@ defmodule Tackle.Lib.StateTest do
 
       assert state.session_id != nil
       assert state.messages == []
+      assert state.model_messages == []
+      assert Tree.empty?(state.tree)
       assert state.current_iteration == 0
       assert state.max_iterations == :infinity
       assert state.status == :idle
@@ -185,14 +189,73 @@ defmodule Tackle.Lib.StateTest do
   end
 
   describe "add_message/2" do
-    test "adds a message to the state" do
-      state = State.new()
+    test "appends the message to the tree, the transcript, and the model context" do
       message = Message.user("Hello")
+      state = State.add_message(State.new(), message)
 
-      state = State.add_message(state, message)
+      assert state.messages == [message]
+      assert state.model_messages == [message]
+      assert Tree.active_id(state.tree) == message.id
+      assert Tree.transcript(state.tree) == [message]
+    end
 
-      assert [_message] = state.messages
-      assert hd(state.messages).content == "Hello"
+    test "raises for a message the tree refuses" do
+      message = Message.user("Hello")
+      state = State.add_message(State.new(), message)
+
+      assert_raise ArgumentError, ~r/duplicate_entry/, fn -> State.add_message(state, message) end
+    end
+  end
+
+  describe "put_tree/2 and the :tree option" do
+    test "install a tree and derive the transcript and model context from it" do
+      user = Message.user("Hello", id: "u1")
+      answer = Message.assistant(content: "Hi", id: "a1")
+      tree = State.new() |> State.add_message(user) |> State.add_message(answer) |> Map.get(:tree)
+      {:ok, tree, _entry} = Tree.append_compaction(tree, record("c1", ["u1"], "a1"))
+
+      for state <- [State.put_tree(State.new(), tree), State.new(tree: tree)] do
+        assert state.tree == tree
+        assert state.messages == [user, answer]
+        assert state.model_messages == Tree.model_context(tree)
+        assert [%Message{id: "c1"}, %Message{id: "a1"}] = state.model_messages
+      end
+    end
+
+    test "rejects anything but a tree" do
+      for value <- [true, false, [], %{}] do
+        assert_raise ArgumentError, ~r/expected :tree to be a Tackle.Lib.Tree/, fn ->
+          State.new(tree: value)
+        end
+      end
+    end
+  end
+
+  describe "update_message/3" do
+    test "replaces a message in the tree, the transcript, and the model context" do
+      user = Message.user("Hello", id: "u1")
+      answer = Message.assistant(content: "Hi", id: "a1")
+      state = State.new() |> State.add_message(user) |> State.add_message(answer)
+      usage = %Usage{input_tokens: 3, output_tokens: 1}
+
+      assert {:ok, updated} = State.update_message(state, "a1", &%{&1 | token_usage: usage})
+
+      assert [^user, %Message{id: "a1", token_usage: ^usage}] = updated.messages
+      assert updated.model_messages == updated.messages
+      assert Tree.transcript(updated.tree) == updated.messages
+      assert Tree.active_id(updated.tree) == "a1"
+      assert State.usage(updated).input_tokens == 3
+    end
+
+    test "keeps message ids and reports unknown ones" do
+      state = State.add_message(State.new(), Message.user("Hello", id: "u1"))
+
+      assert State.update_message(state, "missing", & &1) ==
+               {:error, {:unknown_message, "missing"}}
+
+      assert_raise ArgumentError, ~r/same id/, fn ->
+        State.update_message(state, "u1", &%{&1 | id: "other"})
+      end
     end
   end
 
@@ -222,19 +285,42 @@ defmodule Tackle.Lib.StateTest do
     end
   end
 
-  describe "last_compaction_id/1" do
-    test "is nil before any compaction" do
+  describe "last_compaction/1 and last_compaction_id/1" do
+    test "are nil before any compaction" do
+      assert State.last_compaction(State.new()) == nil
       assert State.last_compaction_id(State.new()) == nil
 
       state = State.add_message(State.new(), Message.user("Hello"))
-      assert State.last_compaction_id(%{state | model_messages: state.messages}) == nil
+      assert State.last_compaction(state) == nil
+      assert State.last_compaction_id(state) == nil
     end
 
-    test "is the id of the checkpoint at the head of a linear model projection" do
-      checkpoint = Checkpoint.message("compaction-1", "Earlier work")
-      state = %{State.new() | model_messages: [checkpoint, Message.user("Next")]}
+    test "are the latest compaction on the active path" do
+      first = record("c1", ["u1"], "a1")
+      second = %{record("c2", ["c1", "a1"], "u2") | previous_compaction_id: "c1"}
 
-      assert State.last_compaction_id(state) == "compaction-1"
+      state =
+        State.new()
+        |> State.add_message(Message.user("Hello", id: "u1"))
+        |> State.add_message(Message.assistant(content: "Hi", id: "a1"))
+        |> compact(first)
+        |> State.add_message(Message.user("Next", id: "u2"))
+        |> compact(second)
+
+      assert %Record{compaction_id: "c2"} = State.last_compaction(state)
+      assert State.last_compaction_id(state) == "c2"
+      assert hd(state.model_messages) == State.last_compaction(state).summary_message
+    end
+
+    test "a user message that reads like a checkpoint is not one" do
+      lookalike = Checkpoint.message("u1", "Earlier work")
+
+      state =
+        State.new() |> State.add_message(lookalike) |> State.add_message(Message.user("Next"))
+
+      assert State.last_compaction(state) == nil
+      assert State.last_compaction_id(state) == nil
+      assert State.usage_segments(state) == [[]]
     end
   end
 
@@ -253,17 +339,23 @@ defmodule Tackle.Lib.StateTest do
       assert State.usage_segments(State.new()) == [[]]
     end
 
-    test "starts a span after the latest compaction of a linear projection" do
-      before = Message.assistant(content: "a", token_usage: %Usage{input_tokens: 1})
-      retained = Message.assistant(content: "b", token_usage: %Usage{input_tokens: 2})
-      later = Message.assistant(content: "c", token_usage: %Usage{input_tokens: 3})
-      checkpoint = Checkpoint.message("compaction-1", "Earlier work")
+    test "starts a span after the latest compaction" do
+      before = Message.assistant(content: "a", id: "a1", token_usage: %Usage{input_tokens: 1})
+      retained = Message.assistant(content: "b", id: "a2", token_usage: %Usage{input_tokens: 2})
+      later = Message.assistant(content: "c", id: "a3", token_usage: %Usage{input_tokens: 3})
 
-      state = %{
+      state =
         State.new()
-        | messages: [before, retained, later],
-          model_messages: [checkpoint, %{retained | token_usage: nil}, later]
-      }
+        |> State.add_message(before)
+        |> State.add_message(retained)
+        |> compact(record("c1", ["a1"], "a2"))
+        |> State.add_message(later)
+
+      assert state.model_messages == [
+               State.last_compaction(state).summary_message,
+               %{retained | token_usage: nil},
+               later
+             ]
 
       assert State.usage_segments(state) == [
                [before.token_usage, retained.token_usage],
@@ -272,10 +364,8 @@ defmodule Tackle.Lib.StateTest do
     end
 
     test "keeps the current span right after a compaction, while it has no usage" do
-      before = Message.assistant(content: "a", token_usage: %Usage{input_tokens: 1})
-      checkpoint = Checkpoint.message("compaction-1", "Earlier work")
-
-      state = %{State.new() | messages: [before], model_messages: [checkpoint]}
+      before = Message.assistant(content: "a", id: "a1", token_usage: %Usage{input_tokens: 1})
+      state = State.new() |> State.add_message(before) |> compact(record("c1", ["a1"], nil))
 
       assert State.usage_segments(state) == [[before.token_usage], []]
     end
@@ -353,5 +443,23 @@ defmodule Tackle.Lib.StateTest do
       assert state.error == "stop"
       assert state.error_reason == nil
     end
+  end
+
+  defp compact(state, record) do
+    {:ok, tree, _entry} = Tree.append_compaction(state.tree, record)
+    State.put_tree(state, tree)
+  end
+
+  defp record(id, shadowed, first_retained) do
+    %Record{
+      compaction_id: id,
+      trigger: :manual,
+      summary_message: Checkpoint.message(id, "Earlier work"),
+      shadowed_message_ids: shadowed,
+      first_retained_message_id: first_retained,
+      tokens_before: 100,
+      estimated_tokens_after: 10,
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
   end
 end

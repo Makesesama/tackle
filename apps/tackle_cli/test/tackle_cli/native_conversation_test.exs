@@ -4,6 +4,7 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Widgets.Paragraph
   alias Tackle.CLI.Native
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.{Conversation, MessageView, Theme, Viewport}
   alias Tackle.CLI.TUI.State.Stream
   alias Tackle.CLI.Widgets.Conversation, as: Widget
@@ -605,7 +606,7 @@ defmodule Tackle.CLI.Widgets.ConversationTest do
 
   defp projection(messages) do
     %{
-      agent_state: %State{messages: messages},
+      agent_state: AgentStates.with_messages(messages),
       pending_prompt: nil,
       stream: %Stream{},
       thinking_expanded?: false,

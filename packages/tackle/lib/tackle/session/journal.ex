@@ -42,6 +42,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Config
   alias Tackle.Lib.Message
   alias Tackle.Lib.Thinking
+  alias Tackle.Lib.Tree
   alias Tackle.Lib.Tree.Change
   alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
@@ -135,6 +136,13 @@ defmodule Tackle.Session.Journal do
   By default the commit is synced before this returns. With `sync: false` it is
   appended in order and becomes durable at the next sync or `flush/1`; see
   "Write-behind appends".
+
+  `parent` is `:none`, which attaches the message to the active entry, or
+  `{:tree, parent_id}`, the tree entry it attaches to (`nil` for a new root),
+  which a branching session commits with the message payload. A session
+  without branching keeps its journal format: a parent that is the active
+  entry is not written, and any other is refused with
+  `{:error, :tree_disabled}`.
   """
   @spec append_message(GenServer.server(), Message.t(), term(), keyword()) ::
           :ok | {:error, term()}
@@ -157,7 +165,9 @@ defmodule Tackle.Session.Journal do
   The event data replaces the model-surface prefix with `summary_message` while
   the canonical transcript is untouched. The commit is appended to the active
   turn when one exists and synced before the caller installs the in-memory
-  replacement.
+  replacement. Like `append_message/4`, a session without branching keeps its
+  format: a `"parent_id"` that is the active entry is not written, and any
+  other is refused with `{:error, :tree_disabled}`.
   """
   @spec context_compacted(GenServer.server(), map()) :: :ok | {:error, term()}
   def context_compacted(journal, data), do: durable_call(journal, {:context_compacted, data})
@@ -246,9 +256,8 @@ defmodule Tackle.Session.Journal do
   Persistence-hook entry point: persists a settled message by session id.
 
   Sessions without a journal — ephemeral delegated agents — are a no-op so the
-  same hook module can be installed unconditionally. `parent` is `:none` for a
-  linear session, or `{:tree, parent_id}` (which may be `nil`) for a branching
-  one, so the parent link is committed with the message payload.
+  same hook module can be installed unconditionally. `parent` is `:none` or
+  `{:tree, parent_id}`; see `append_message/4`.
   """
   @spec persist_message(String.t(), Message.t(), term()) :: :ok | {:error, term()}
   def persist_message(session_id, %Message{} = message, parent \\ :none) do
@@ -406,10 +415,12 @@ defmodule Tackle.Session.Journal do
   end
 
   def handle_call({:context_compacted, data}, _from, state) do
-    event = Log.event("context.compacted", data)
-
-    case commit(state, [event], state_active_turn_id(state)) do
-      {:ok, state, _seq} -> {:reply, :ok, state}
+    with {:ok, data} <- compaction_data(state.projection, data),
+         event = Log.event("context.compacted", data),
+         {:ok, state, _seq} <- commit(state, [event], state_active_turn_id(state)) do
+      {:reply, :ok, state}
+    else
+      {:error, :tree_disabled} -> {:reply, {:error, :tree_disabled}, state}
       {:error, reason} -> fail(state, reason)
     end
   end
@@ -418,12 +429,16 @@ defmodule Tackle.Session.Journal do
     Watchdog.stage(self(), :encode_message, state.next_seq)
 
     with %{turn_id: turn_id} <- state.active_turn,
+         {:ok, parent} <- journal_parent(state.projection, parent),
          {:ok, event} <- message_event(message, parent),
          {:ok, state, _seq} <- commit(state, [event], turn_id, sync?) do
       {:reply, :ok, state}
     else
       nil ->
         {:reply, {:error, :no_active_turn}, state}
+
+      {:error, :tree_disabled} ->
+        {:reply, {:error, :tree_disabled}, state}
 
       {:error, reason} ->
         fail(state, reason)
@@ -822,9 +837,29 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  # `:none` keeps a linear journal unchanged; `{:tree, parent_id}` records the
-  # entry the message attaches to, including `nil` for a new root, alongside the
-  # message payload in the same commit.
+  # A journal without branching keeps its format: a message always attaches
+  # to the active entry, so its parent is implied and not written, and a
+  # parent elsewhere would be a branch the session may not make.
+  defp journal_parent(%Projection{tree_enabled?: true}, parent), do: {:ok, parent}
+  defp journal_parent(_projection, :none), do: {:ok, :none}
+
+  defp journal_parent(%Projection{tree: tree}, {:tree, parent_id}) do
+    if parent_id == Tree.active_id(tree),
+      do: {:ok, :none},
+      else: {:error, :tree_disabled}
+  end
+
+  defp compaction_data(%Projection{tree_enabled?: true}, data), do: {:ok, data}
+
+  defp compaction_data(projection, data) do
+    with {:ok, :none} <- journal_parent(projection, {:tree, Map.get(data, "parent_id")}) do
+      {:ok, Map.delete(data, "parent_id")}
+    end
+  end
+
+  # `:none` attaches the message to the active entry; `{:tree, parent_id}`
+  # records the entry the message attaches to, including `nil` for a new root,
+  # alongside the message payload in the same commit.
   defp maybe_put_parent(data, :none), do: data
   defp maybe_put_parent(data, {:tree, parent_id}), do: Map.put(data, "parent_id", parent_id)
 

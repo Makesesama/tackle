@@ -64,7 +64,7 @@ end
 
 defmodule Tackle.Runtime.Bench do
   @moduledoc false
-  alias Tackle.Lib.{Message, State}
+  alias Tackle.Lib.{Message, State, Tree}
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentSpec, Outcome, ScopeSpec}
   alias Tackle.Runtime.Bench.Backend
@@ -80,11 +80,13 @@ defmodule Tackle.Runtime.Bench do
         }
       end
 
-    state = %{
-      State.new(session_id: "bench", retry: false)
-      | messages: messages,
-        status: :completed
-    }
+    tree =
+      Enum.reduce(messages, Tree.new(), fn message, tree ->
+        {:ok, tree, _entry} = Tree.append_message(tree, message)
+        tree
+      end)
+
+    state = %{State.new(session_id: "bench", retry: false, tree: tree) | status: :completed}
 
     %{agent_state: state, events: events}
   end

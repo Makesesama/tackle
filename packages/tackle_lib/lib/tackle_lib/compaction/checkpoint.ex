@@ -3,8 +3,13 @@ defmodule Tackle.Lib.Compaction.Checkpoint do
   The synthetic checkpoint a compaction puts at the head of the model context,
   and the one way a committed compaction is applied to a message list.
 
-  A checkpoint is a user message whose content starts with `marker/0`, then a
-  framing paragraph, then the summary body. Its id is the compaction's id.
+  A checkpoint is a user message whose content is a framing paragraph
+  followed by the summary body. Its id is the compaction's id, and it is the
+  `summary_message` of the compaction's `Tackle.Lib.Compaction.Record`.
+
+  A checkpoint is known by that record — the compaction entry in the state's
+  tree (`Tackle.Lib.State.last_compaction/1`) — never by its content: a user
+  message that reads like one is still a user message.
 
   `apply_compaction/2` is shared by the live install (`Tackle.Lib.Compaction`)
   and by rebuilding a branch's context from its entries
@@ -14,11 +19,11 @@ defmodule Tackle.Lib.Compaction.Checkpoint do
   alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.Message
 
-  @marker "[[context-checkpoint]]"
+  @header """
+  [[context-checkpoint]]
+  Earlier conversation in this session was compacted into the background summary below. Treat it as established context, continue from the retained messages that follow, and do not repeat it to the user.
 
-  @doc "Returns the marker that identifies a synthetic checkpoint message."
-  @spec marker() :: String.t()
-  def marker, do: @marker
+  """
 
   @doc "Builds the checkpoint message for one summary."
   @spec message(String.t(), String.t()) :: Message.t()
@@ -26,25 +31,18 @@ defmodule Tackle.Lib.Compaction.Checkpoint do
     Message.user(content(summary), id: compaction_id)
   end
 
-  @doc "Returns true when `message` is a synthetic checkpoint."
-  @spec message?(Message.t() | nil) :: boolean()
-  def message?(%Message{role: :user, content: content}) when is_binary(content),
-    do: String.starts_with?(content, @marker)
+  @doc """
+  Returns the summary body of a compaction's checkpoint, without the framing.
 
-  def message?(_message), do: false
-
-  @doc "Returns the summary body of a checkpoint message, or nil for any other message."
-  @spec body(Message.t() | nil) :: String.t() | nil
-  def body(%Message{} = message) do
-    if message?(message) do
-      case String.split(message.content, "\n\n", parts: 2) do
-        [_header, body] -> String.trim_trailing(body)
-        [_header] -> nil
-      end
-    end
+  A checkpoint built elsewhere, without this module's framing, is all
+  summary. Returns `nil` when the checkpoint has no text content.
+  """
+  @spec summary(Record.t()) :: String.t() | nil
+  def summary(%Record{summary_message: %Message{content: content}}) when is_binary(content) do
+    content |> String.replace_prefix(@header, "") |> String.trim_trailing()
   end
 
-  def body(_message), do: nil
+  def summary(%Record{}), do: nil
 
   @doc """
   Returns the checkpoint's framing without a summary: what every checkpoint
@@ -73,12 +71,5 @@ defmodule Tackle.Lib.Compaction.Checkpoint do
     [record.summary_message | retained]
   end
 
-  defp content(summary) do
-    """
-    #{@marker}
-    Earlier conversation in this session was compacted into the background summary below. Treat it as established context, continue from the retained messages that follow, and do not repeat it to the user.
-
-    #{summary}
-    """
-  end
+  defp content(summary), do: @header <> summary <> "\n"
 end

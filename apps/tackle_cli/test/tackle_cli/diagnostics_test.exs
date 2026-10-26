@@ -3,6 +3,7 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
 
   alias ExRatatui.Event.{Key, Paste, Resize}
   alias Tackle.CLI.{Keybinds, TUI}
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.{Diagnostics, Observations, Pastes, RuntimeEvents, State, Viewport}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.{Event, Message}
@@ -114,10 +115,11 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
   test "an early terminal outcome is not overwritten by submit completion" do
     ref = make_ref()
 
-    agent = %{
-      state().agent_state
-      | messages: [Message.user("go"), Message.assistant(content: "done")]
-    }
+    agent =
+      AgentStates.replace_messages(state().agent_state, [
+        Message.user("go"),
+        Message.assistant(content: "done")
+      ])
 
     pending = %{
       state()
@@ -186,13 +188,15 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
         provider_state: %{opaque: "secret"}
       )
 
-    agent = %{
-      AgentState.new(system_prompt: "composed instructions")
-      | messages: [transcript],
-        model_messages: [context],
-        context: %{password: "secret"},
-        llm_opts: [api_key: "secret"]
-    }
+    # The transcript is compacted away; the context message follows it.
+    {agent, _record} =
+      [system_prompt: "composed instructions", context: %{password: "secret"}]
+      |> Keyword.put(:llm_opts, api_key: "secret")
+      |> AgentState.new()
+      |> AgentStates.with_messages([transcript])
+      |> AgentStates.compact("c1")
+
+    agent = AgentStates.with_messages(agent, [context])
 
     state = %{state() | agent_state: agent}
 

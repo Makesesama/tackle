@@ -511,11 +511,14 @@ silently resolve an interrupted turn. Hosts must decide whether to abandon it.
 
 ## Conversation trees
 
-Durable root sessions can keep their history as an optional conversation tree,
+Every agent state keeps its history as a conversation tree (`Tackle.Lib.Tree`),
 so a session can hold alternative paths instead of a single linear transcript. The
-engine owns the tree rules in `Tackle.Lib.Tree`; the harness package owns durable
-records and the CLI owns the picker. A tree is opt-in for library hosts
-(`Tackle.Lib.new(tree: true)`), and durable root sessions enable it by default.
+engine owns the tree rules; the harness package owns durable records and the CLI
+owns the picker. Branching is session policy: durable root sessions enable it by
+default (`Tackle.Session.Spec` `tree: true`), while a durable session with
+`tree: false` and every ephemeral session keep a single-branch tree and reject
+`Tackle.navigate/3` with `{:error, :tree_disabled}`. `Tackle.tree/1` returns the
+tree either way.
 
 Three surfaces are deliberately distinct:
 
@@ -553,9 +556,11 @@ The [CLI guide](../../apps/tackle_cli/README.md#conversation-tree-tree)
 documents the terminal tree picker. Navigation changes conversation history,
 not workspace files; it never undoes tool side effects.
 
-Existing linear journals still load unchanged: their chain becomes the initial
-tree, and the first branching write records an explicit `tree.enabled`
-transition rather than rewriting the source file. `Tackle.fork_session/2`
+Journals of sessions without branching keep their format (messages and
+compactions without parent ids, each attached to the entry before it) and load
+into a single-branch tree; resuming such a session with branching enabled
+records an explicit `tree.enabled` transition rather than rewriting the source
+file. `Tackle.fork_session/2`
 remains sequence-based and copies the tree and active position into the
 self-contained child. See [`docs/SESSION_TREE_PLAN.md`](../../docs/SESSION_TREE_PLAN.md)
 for the implemented first version and the deliberately deferred increments.

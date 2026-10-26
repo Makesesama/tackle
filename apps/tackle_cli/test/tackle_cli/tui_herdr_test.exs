@@ -2,10 +2,10 @@ defmodule Tackle.CLI.TUI.HerdrTest do
   use ExUnit.Case, async: true
 
   alias Tackle.CLI.Herdr.Reporter
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.Herdr
   alias Tackle.CLI.TUI.State
   alias Tackle.Lib.Message
-  alias Tackle.Lib.State, as: AgentState
 
   @session "01234567-89ab-cdef-0123-456789abcdef"
 
@@ -62,7 +62,7 @@ defmodule Tackle.CLI.TUI.HerdrTest do
     end
 
     test "a session with history is resumable" do
-      agent_state = %AgentState{messages: [Message.user("hi")]}
+      agent_state = AgentStates.with_messages([Message.user("hi")])
       assert Herdr.report(state(agent_state: agent_state), nil) == resumable(:idle)
     end
 

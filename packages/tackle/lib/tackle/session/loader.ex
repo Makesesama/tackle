@@ -11,19 +11,18 @@ defmodule Tackle.Session.Loader do
   providers, loading returns a typed `:configuration_required` error instead of
   silently switching providers or models.
 
-  ## Linear and branching sessions
+  ## Branching and non-branching sessions
 
-  A projection always folds a `Tackle.Lib.Tree`, so one restoration path serves
-  both shapes. A session whose projection is marked `tree_enabled?` is restored
-  with an active tree; requesting `tree: true` also adopts the derived chain of a
-  legacy linear journal (the host records the explicit `tree.enabled` transition
-  separately). A tree-enabled session is never silently flattened: the tree is
-  restored or a typed error is returned.
+  A projection always folds a `Tackle.Lib.Tree`, and the runtime state always
+  keeps one, so one restoration path serves every session: the projection's
+  tree is installed as is. A journal written before branching existed is a
+  chain, so it loads as a tree with one branch. Whether the session may
+  branch (`tree_enabled?`) is host policy that `Tackle.Session` enforces; it
+  does not change what is loaded.
   """
 
   alias Tackle.Config
   alias Tackle.Lib.State, as: AgentState
-  alias Tackle.Lib.Tree
   alias Tackle.Session.Codec
   alias Tackle.Session.Projection
 
@@ -36,64 +35,26 @@ defmodule Tackle.Session.Loader do
   selected the supplied configuration, so the recorded selection is superseded
   and a configuration change must be persisted. Otherwise the recorded
   selection is re-resolved through the current providers.
-
-  `:tree` (false by default) requests branching support for a session whose
-  journal predates tree enablement; the derived chain becomes the active tree.
   """
   @spec load(Projection.t(), Config.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def load(%Projection{} = projection, %Config{} = config, opts \\ []) do
-    with {:ok, resolved, changed?} <- resolve_config(projection, config, opts),
-         {:ok, conversation} <- decode_conversation(projection, opts) do
+    with {:ok, resolved, changed?} <- resolve_config(projection, config, opts) do
       state =
         resolved
         |> Config.to_agent_state(
           credential_store: Keyword.get(opts, :credential_store),
           session_id: projection.session_id
         )
-        |> install(conversation)
+        # The projection folds its tree through `Tree.append_message/3` and
+        # `Tree.append_compaction/3`, which validate every link and keep the
+        # child index, and rejects a journal they refuse, so its tree is
+        # installed as is.
+        |> AgentState.put_tree(projection.tree)
+        |> AgentState.reset_turn()
 
       {:ok, %{state: state, configuration_changed?: changed?}}
     end
   end
-
-  defp decode_conversation(%Projection{tree_enabled?: true} = projection, _opts) do
-    restore_tree(projection)
-  end
-
-  defp decode_conversation(%Projection{} = projection, opts) do
-    if Keyword.get(opts, :tree, false) do
-      restore_tree(projection)
-    else
-      decode_linear(projection)
-    end
-  end
-
-  # The projection folds its tree through `Tree.append_message/3` and
-  # `Tree.append_compaction/3`, which validate every link and keep the child
-  # index, and rejects a journal they refuse, so its tree is installed as is.
-  # A session not yet written has no tree.
-  defp restore_tree(%Projection{tree: nil}), do: install_tree(Tree.new())
-  defp restore_tree(%Projection{tree: %Tree{} = tree}), do: install_tree(tree)
-
-  defp install_tree(tree) do
-    {:ok,
-     %{tree: tree, messages: Tree.transcript(tree), model_messages: Tree.model_context(tree)}}
-  end
-
-  defp decode_linear(%Projection{} = projection) do
-    with {:ok, messages} <- decode_messages(projection.messages),
-         {:ok, model_messages} <- decode_model_messages(projection, messages) do
-      {:ok, %{tree: nil, messages: messages, model_messages: model_messages}}
-    end
-  end
-
-  # Older journals precede the model-surface projection. An empty projection is
-  # the mirror-the-transcript default, so replaying them yields the full history
-  # as the provider-visible array.
-  defp decode_model_messages(%Projection{model_messages: []}, messages), do: {:ok, messages}
-
-  defp decode_model_messages(%Projection{model_messages: model_messages}, _messages),
-    do: decode_messages(model_messages)
 
   @doc """
   Resolves the effective configuration for a recorded session.
@@ -140,14 +101,5 @@ defmodule Tackle.Session.Loader do
       {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
       {:error, _reason} = error -> error
     end
-  end
-
-  defp install(%AgentState{} = state, conversation) do
-    AgentState.reset_turn(%{
-      state
-      | messages: conversation.messages,
-        model_messages: conversation.model_messages,
-        tree: Map.get(conversation, :tree)
-    })
   end
 end

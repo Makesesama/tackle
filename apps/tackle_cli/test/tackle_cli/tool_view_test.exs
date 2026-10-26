@@ -4,6 +4,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
   alias ExRatatui.CellSession
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Text.Line
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.{MessageView, ToolView, WorkflowProgress}
   alias Tackle.Lib.{Message, State}
 
@@ -1208,7 +1209,7 @@ defmodule Tackle.CLI.TUI.ToolViewTest do
   defp settled(messages),
     do:
       MessageView.section_entries(
-        %{agent_state: %State{messages: messages}, thinking_expanded?: false},
+        %{agent_state: AgentStates.with_messages(messages), thinking_expanded?: false},
         :settled
       )
 

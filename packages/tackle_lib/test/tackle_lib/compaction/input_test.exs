@@ -29,11 +29,21 @@ defmodule Tackle.Lib.Compaction.InputTest do
   end
 
   test "never shortens an earlier checkpoint" do
-    checkpoint = Checkpoint.message("cp", text(300))
+    checkpoint = Checkpoint.message("cp", text(600))
     huge = Message.user(text(5_000))
 
-    assert {:ok, [^checkpoint, shortened], 1} = Input.fit([checkpoint, huge], 1_000)
+    assert {:ok, [^checkpoint, shortened], 1} =
+             Input.fit([checkpoint, huge], 1_000, checkpoint_id: "cp")
+
     assert ContextUsage.estimate_message(shortened) < 1_000
+  end
+
+  test "shortens a message that only reads like a checkpoint" do
+    lookalike = Checkpoint.message("u1", text(600))
+    huge = Message.user(text(5_000))
+
+    assert {:ok, [shortened_lookalike, _shortened], 2} = Input.fit([lookalike, huge], 1_000)
+    assert shortened_lookalike.content =~ "characters omitted for compaction"
   end
 
   test "truncates large tool-call arguments but keeps the call's id and name" do

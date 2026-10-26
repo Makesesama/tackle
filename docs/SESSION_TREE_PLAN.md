@@ -8,6 +8,13 @@ owns durable records and runtime coordination (`Tackle.Session.Committer`, the
 the sequence below are implemented with tests; step 7 documents the result. The
 "Later increments" and "Follow-up" sections remain deliberately deferred.
 
+Since then, the library dropped its linear mode: every `Tackle.Lib.State`
+keeps a tree, `State.put_tree/2` is the one way to install one, and compaction
+checkpoints are known by their tree entries rather than their text. Branching
+is host policy (the harness rejects navigation in sessions without the tree
+feature), and journals of such sessions keep their format. The opt-in shape
+and "linear mode" below describe the plan as first implemented.
+
 This advances the same-session branching previously deferred in
 [SESSION_ARCHITECTURE.md](SESSION_ARCHITECTURE.md#15-forking-and-lineage). It does
 not replace `:disk_log`, independent session forks, or the scoped runtime.

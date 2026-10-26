@@ -304,11 +304,11 @@ defmodule Tackle.Runtime do
   @doc """
   Reads an agent's conversation tree.
 
-  Returns `{:ok, nil}` when the agent has branching disabled and the
-  `Tackle.Lib.Tree` otherwise. The tree is a pure value, so the caller never
+  Every agent state keeps a `Tackle.Lib.Tree`, with a single branch when the
+  agent never navigates. The tree is a pure value, so the caller never
   receives a journal PID or a session process.
   """
-  @spec tree(AgentRef.t()) :: {:ok, Tackle.Lib.Tree.t() | nil} | {:error, term()}
+  @spec tree(AgentRef.t()) :: {:ok, Tackle.Lib.Tree.t()} | {:error, term()}
   def tree(%AgentRef{} = agent_ref) do
     with_agent(agent_ref, :tree, [])
   end
@@ -318,7 +318,8 @@ defmodule Tackle.Runtime do
 
   The destination is validated and committed to the journal before the new
   active position is installed and published to subscribers. Rejected during an
-  active turn or while an interrupted turn awaits recovery.
+  active turn, while an interrupted turn awaits recovery, or when the backend
+  does not let the agent branch (`{:error, :tree_disabled}` in the harness).
   """
   @spec navigate(AgentRef.t(), term(), keyword()) ::
           {:ok, term(), term()} | {:error, term()}

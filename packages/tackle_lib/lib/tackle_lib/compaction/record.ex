@@ -15,9 +15,8 @@ defmodule Tackle.Lib.Compaction.Record do
   `:first_retained_message_id` is the first message kept after it, or `nil`
   when the compaction shadowed everything.
 
-  `:parent_id` is the tree entry the compaction is attached to in a
-  branching session (`Tackle.Lib.Tree.append_compaction/3` sets it), and
-  `nil` in a linear one.
+  `:parent_id` is the tree entry the compaction is attached to
+  (`Tackle.Lib.Tree.append_compaction/3` sets it).
 
   `:details` holds auxiliary facts with atom keys; the library records the
   tightening pass that committed the record as `:pass`.

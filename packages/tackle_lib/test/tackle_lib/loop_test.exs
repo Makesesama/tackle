@@ -911,17 +911,16 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "a turn starting from unresolved tool calls settles them before the provider call" do
-      state = %{
+      state =
         State.new(
           llm: TestLLM.selection(FirstCallsToolThenAnswersAdapter),
           tools: [FirstTool],
           context: %{test_pid: self()}
         )
-        | messages: [
-            Message.user("earlier"),
-            Message.assistant(tool_calls: [%Call{id: "old", name: "first", arguments: %{}}])
-          ]
-      }
+        |> State.add_message(Message.user("earlier"))
+        |> State.add_message(
+          Message.assistant(tool_calls: [%Call{id: "old", name: "first", arguments: %{}}])
+        )
 
       for start <- [&Loop.run(&1, "again"), &Loop.continue/1] do
         assert {:ok, final_state} = start.(state)
@@ -938,10 +937,9 @@ defmodule Tackle.Lib.LoopTest do
     test "continue/2 starts a turn like run/3" do
       test_pid = self()
 
-      state = %{
+      state =
         State.new(llm: TestLLM.selection(TestAdapter))
-        | messages: [Message.user("hello")]
-      }
+        |> State.add_message(Message.user("hello"))
 
       assert {:ok, _state} =
                Loop.continue(state, event_callback: &send(test_pid, {:event, &1}))

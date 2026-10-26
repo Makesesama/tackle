@@ -38,14 +38,13 @@ defmodule Tackle.Lib.Tree.Navigator do
   @type target :: nil | String.t() | {:entry, String.t()} | {:edit, String.t()}
 
   @doc """
-  Navigates the active position of a tree state.
+  Navigates the active position of a state's tree.
 
   The only option is `:expected_revision`, which rejects a transition prepared
   against another revision of the tree. The change is committed through the
-  state's own committer. Expected failures include `:tree_disabled`,
-  `:turn_in_progress`, `{:unknown_entry, id}`, `{:unsafe_continuation, id}`,
-  `{:stale_transition, expected, actual}`, and `{:durable_commit_failed,
-  reason}`. A failed validation or commit leaves the state unchanged.
+  state's own committer. Expected failures include `:turn_in_progress`,
+  `{:unknown_entry, id}`, `{:unsafe_continuation, id}`, `{:stale_transition,
+  expected, actual}`, and `{:durable_commit_failed, reason}`. A failed validation or commit leaves the state unchanged.
   """
   @spec navigate(State.t(), target(), keyword()) ::
           {:ok, State.t(), Outcome.t()} | {:error, term()}
@@ -89,27 +88,19 @@ defmodule Tackle.Lib.Tree.Navigator do
     end
   end
 
-  defp navigable_tree(%State{tree: nil}), do: {:error, :tree_disabled}
-
   # The library refuses to navigate a state that is visibly mid-turn. Immutable
   # state cannot know about another process executing a copy, so the host must
   # still serialize turns, navigation, and compaction.
   defp navigable_tree(%State{status: status}) when status in [:thinking, :acting],
     do: {:error, :turn_in_progress}
 
-  defp navigable_tree(%State{tree: %Tree{} = tree}), do: {:ok, tree}
+  defp navigable_tree(%State{tree: tree}), do: {:ok, tree}
 
   defp commit(_state, %Outcome{noop?: true}), do: :ok
   defp commit(state, %Outcome{change: change}), do: Committer.commit(state, change)
 
-  defp install(%State{} = state, %Tree{} = tree) do
-    State.reset_turn(%{
-      state
-      | tree: tree,
-        messages: Tree.transcript(tree),
-        model_messages: Tree.model_context(tree)
-    })
-  end
+  defp install(%State{} = state, %Tree{} = tree),
+    do: state |> State.put_tree(tree) |> State.reset_turn()
 
   defp resolve_target(_tree, nil), do: {:ok, nil, nil, :move}
 

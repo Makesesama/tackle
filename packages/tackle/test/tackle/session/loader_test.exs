@@ -2,7 +2,10 @@ defmodule Tackle.Session.LoaderTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Config
+  alias Tackle.Lib.Compaction.Checkpoint
+  alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.Message
+  alias Tackle.Lib.State
   alias Tackle.Lib.Tree
   alias Tackle.Session.Codec
   alias Tackle.Session.Loader
@@ -93,5 +96,74 @@ defmodule Tackle.Session.LoaderTest do
     assert Enum.map(Tree.children(state.tree, nil), & &1.id) == ["u1", "u2"]
     assert Enum.map(state.messages, & &1.id) == ["u2"]
     assert state.model_messages == Tree.model_context(state.tree)
+  end
+
+  test "loads a journal without branching, compactions included, into a tree" do
+    {:ok, config} = Config.new(providers: [Adapter], model: "loader-test/model", tools: [])
+
+    projection =
+      Projection.new(
+        %{
+          "session_id" => "linear-session",
+          "created_at" => "2026-01-01T00:00:00Z",
+          "cwd" => nil,
+          "parent" => nil
+        },
+        model_ref: config.model_ref
+      )
+
+    messages =
+      for {id, role} <- [{"u1", :user}, {"a1", :assistant}, {"u2", :user}] do
+        %Message{id: id, role: role, content: id, timestamp: ~U[2026-01-01 00:00:00Z]}
+      end
+
+    record = %Record{
+      compaction_id: "c1",
+      trigger: :manual,
+      summary_message: Checkpoint.message("c1", "summary"),
+      shadowed_message_ids: ["u1"],
+      first_retained_message_id: "a1",
+      tokens_before: 10,
+      estimated_tokens_after: 5,
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    {:ok, compaction} = Codec.encode_compaction(record)
+
+    # Written the way a journal without branching writes them: no parent ids.
+    events =
+      Enum.map(Enum.take(messages, 2), &message_event/1) ++
+        [Log.event("context.compacted", compaction), message_event(List.last(messages))]
+
+    projection =
+      events
+      |> Enum.with_index(1)
+      |> Enum.reduce(projection, fn {event, seq}, projection ->
+        Projection.apply_commit(projection, commit("linear-session", seq, event))
+      end)
+
+    refute projection.tree_enabled?
+    assert {:ok, %{state: state}} = Loader.load(projection, config)
+
+    assert state.messages == messages
+    assert Enum.map(state.model_messages, & &1.id) == ["c1", "a1", "u2"]
+    assert State.last_compaction_id(state) == "c1"
+    assert Tree.active_id(state.tree) == "u2"
+    assert state.tree == projection.tree
+  end
+
+  defp message_event(message) do
+    {:ok, data} = Codec.encode_message(message)
+    Log.event("message.appended", %{"message" => data})
+  end
+
+  defp commit(session_id, seq, event) do
+    Log.commit(
+      session_id: session_id,
+      seq: seq,
+      commit_id: "commit-#{seq}",
+      written_at: "2026-01-01T00:00:00Z",
+      events: [event]
+    )
   end
 end

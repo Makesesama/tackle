@@ -161,7 +161,7 @@ defmodule Tackle.Lib.Compaction.PlanTest do
       checkpoint = Tackle.Lib.Compaction.Checkpoint.message("c1", "summary")
       messages = [checkpoint, message(:user, tokens(100)), message(:assistant, tokens(100))]
 
-      assert {:ok, plan} = Plan.select(messages, retain_tokens: 150)
+      assert {:ok, plan} = Plan.select(messages, retain_tokens: 150, checkpoint_id: "c1")
       assert plan.cut_index == 2
       assert hd(plan.shadowed) == checkpoint
 
@@ -169,10 +169,20 @@ defmodule Tackle.Lib.Compaction.PlanTest do
       # under a cap the message is shadowed with the checkpoint rather than
       # summarizing the summary alone.
       single = [checkpoint, message(:assistant, tokens(100))]
-      assert {:error, :nothing_to_shadow} = Plan.select(single)
-      assert {:ok, plan} = Plan.select(single, max_retained_tokens: 1_000)
+      assert {:error, :nothing_to_shadow} = Plan.select(single, checkpoint_id: "c1")
+      assert {:ok, plan} = Plan.select(single, max_retained_tokens: 1_000, checkpoint_id: "c1")
       assert plan.cut_index == 2
       assert plan.retained == []
+    end
+
+    test "a message is a checkpoint only by its id, never by its content" do
+      # Reads exactly like a checkpoint, but no compaction made it.
+      lookalike = Tackle.Lib.Compaction.Checkpoint.message("u1", "summary")
+      messages = [lookalike, message(:user, tokens(100)), message(:assistant, tokens(100))]
+
+      assert {:ok, plan} = Plan.select(messages, retain_tokens: 150)
+      assert plan.cut_index == 1
+      assert plan.shadowed == [lookalike]
     end
 
     test "shadows an oversized message that does not fit the retained cap" do

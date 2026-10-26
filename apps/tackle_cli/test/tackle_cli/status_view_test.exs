@@ -9,14 +9,17 @@ defmodule Tackle.CLI.TUI.StatusViewTest do
 
   use ExUnit.Case, async: true
 
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.{State, StatusView}
+  alias Tackle.Lib.Compaction.Checkpoint
+  alias Tackle.Lib.Message
   alias Tackle.Lib.State, as: AgentState
 
   defp shell(attrs \\ []) do
     struct(
       %State{
         session_id: "session",
-        agent_state: %AgentState{messages: []},
+        agent_state: AgentState.new(),
         size: {80, 24}
       },
       attrs
@@ -50,6 +53,22 @@ defmodule Tackle.CLI.TUI.StatusViewTest do
     assert status_text(state) =~ "Waiting for session storage"
     refute status_text(state) =~ "cancelling"
     assert status_text(%{state | storage: :ready}) =~ "cancelling"
+  end
+
+  describe "compaction indicator" do
+    test "shows when the active branch has a compaction" do
+      {agent_state, _record} =
+        AgentStates.with_messages([Message.user("hello")]) |> AgentStates.compact("c1")
+
+      assert status_text(shell(agent_state: agent_state), 120) =~ "compacted"
+    end
+
+    test "ignores a user message that only reads like a checkpoint" do
+      lookalike = Checkpoint.message("u1", "not a summary")
+      agent_state = AgentStates.with_messages([lookalike])
+
+      refute status_text(shell(agent_state: agent_state), 120) =~ "compacted"
+    end
   end
 
   describe "elapsed clock" do

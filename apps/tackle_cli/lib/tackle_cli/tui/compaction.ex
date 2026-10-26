@@ -19,6 +19,8 @@ defmodule Tackle.CLI.TUI.Compaction do
   alias ExRatatui.Command
   alias Tackle.CLI.TUI.{State, Util, Viewport}
   alias Tackle.Lib.Compaction.Checkpoint
+  alias Tackle.Lib.Compaction.Record
+  alias Tackle.Lib.State, as: AgentState
 
   @doc """
   Starts a manual compaction command when the shell is idle.
@@ -103,15 +105,15 @@ defmodule Tackle.CLI.TUI.Compaction do
   end
 
   @doc "Attaches the committed summary without duplicating the lifecycle entry."
-  @spec completed(State.t(), map() | nil) :: State.t()
-  def completed(state, record) when is_map(record) do
+  @spec completed(State.t(), Record.t() | nil) :: State.t()
+  def completed(state, %Record{} = record) do
     put_card(state, %{
-      compaction_id: Map.get(record, :compaction_id),
+      compaction_id: record.compaction_id,
       status: :completed,
-      trigger: Map.get(record, :trigger),
-      tokens_before: Map.get(record, :tokens_before),
-      estimated_tokens_after: Map.get(record, :estimated_tokens_after),
-      summary: Checkpoint.body(Map.get(record, :summary_message))
+      trigger: record.trigger,
+      tokens_before: record.tokens_before,
+      estimated_tokens_after: record.estimated_tokens_after,
+      summary: Checkpoint.summary(record)
     })
   end
 
@@ -169,7 +171,7 @@ defmodule Tackle.CLI.TUI.Compaction do
   @doc "Moves live entries to their canonical message boundaries when a turn settles."
   @spec settle(State.t(), Tackle.Lib.State.t()) :: State.t()
   def settle(state, agent_state) do
-    checkpoint = checkpoint(agent_state)
+    checkpoint = AgentState.last_compaction(agent_state)
 
     cards =
       Enum.map(state.compactions, fn card ->
@@ -178,8 +180,8 @@ defmodule Tackle.CLI.TUI.Compaction do
             do: %{card | turn_id: nil, boundary: min(card.boundary, length(agent_state.messages))},
             else: card
 
-        if checkpoint && Map.get(card, :compaction_id) == checkpoint.id,
-          do: Map.put(card, :summary, Checkpoint.body(checkpoint)),
+        if checkpoint && Map.get(card, :compaction_id) == checkpoint.compaction_id,
+          do: Map.put(card, :summary, Checkpoint.summary(checkpoint)),
           else: card
       end)
 
@@ -189,29 +191,22 @@ defmodule Tackle.CLI.TUI.Compaction do
   @doc "Exposes a resumed checkpoint without inventing its historical position."
   @spec restore(State.t()) :: State.t()
   def restore(state) do
-    case checkpoint(state.agent_state) do
+    case AgentState.last_compaction(state.agent_state) do
       nil ->
         state
 
-      checkpoint ->
+      %Record{compaction_id: id} = checkpoint ->
         card = %{
-          id: "context:checkpoint:#{checkpoint.id}",
-          compaction_id: checkpoint.id,
+          id: "context:checkpoint:#{id}",
+          compaction_id: id,
           status: :completed,
           turn_id: nil,
           boundary: 0,
           restored?: true,
-          summary: Checkpoint.body(checkpoint)
+          summary: Checkpoint.summary(checkpoint)
         }
 
         %{state | compactions: [card]}
-    end
-  end
-
-  defp checkpoint(agent_state) do
-    case agent_state.model_messages do
-      [first | _] -> if Checkpoint.message?(first), do: first
-      _ -> nil
     end
   end
 

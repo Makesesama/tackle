@@ -147,7 +147,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert Enum.map(compacted.messages, & &1.id) == Enum.map(state.messages, & &1.id)
 
       assert [checkpoint, retained] = compacted.model_messages
-      assert Checkpoint.message?(checkpoint)
+      assert checkpoint == State.last_compaction(compacted).summary_message
       assert checkpoint.id == record.compaction_id
       assert retained.id == List.last(state.messages).id
 
@@ -158,7 +158,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert record.estimated_tokens_after > 0
       assert %DateTime{} = record.created_at
       assert record.details == %{pass: 1}
-      assert record.parent_id == nil
+      assert record.parent_id == List.last(state.messages).id
 
       assert Process.get(:last_record) == record
 
@@ -206,7 +206,7 @@ defmodule Tackle.Lib.CompactionTest do
 
       assert {:ok, compacted, record} = Compaction.compact(state, :manual, [])
       assert record.trigger == :manual
-      assert Checkpoint.message?(hd(compacted.model_messages))
+      assert hd(compacted.model_messages) == record.summary_message
     end
 
     test "forwards state LLM options and applies per-call overrides" do
@@ -270,7 +270,7 @@ defmodule Tackle.Lib.CompactionTest do
       Process.put(:summarize_result, {:error, :provider_unavailable})
 
       assert {:error, :provider_unavailable, ^state} = Compaction.compact(state, :pressure, [])
-      assert state.model_messages == nil
+      assert_uncompacted(state)
       refute Process.get(:last_record)
     end
 
@@ -432,8 +432,7 @@ defmodule Tackle.Lib.CompactionTest do
 
       assert {:ok, compacted, record} = Compaction.compact(state, :pressure, [])
       assert "huge" in record.shadowed_message_ids
-      assert [checkpoint] = compacted.model_messages
-      assert Checkpoint.message?(checkpoint)
+      assert compacted.model_messages == [record.summary_message]
       assert record.estimated_tokens_after < 1_000
     end
 
@@ -466,7 +465,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:error, {:durable_commit_failed, :disk_full}, ^state} =
                Compaction.compact(state, :pressure, [])
 
-      assert state.model_messages == nil
+      assert_uncompacted(state)
     end
 
     test "a cancelled signal aborts before any commit" do
@@ -602,17 +601,19 @@ defmodule Tackle.Lib.CompactionTest do
       state = state([user(700), assistant(700)])
       Process.put(:summarize_result, {:ok, %Summary{content: "prior facts: alpha"}})
 
-      assert {:ok, once, _record} = Compaction.compact(state, :manual, [])
-      assert {:ok, twice, _record} = Compaction.compact(once, :manual, [])
+      assert {:ok, once, first} = Compaction.compact(state, :manual, [])
+      assert {:ok, twice, second} = Compaction.compact(once, :manual, [])
 
-      checkpoints = Enum.filter(twice.model_messages, &Checkpoint.message?/1)
-      assert [_checkpoint] = checkpoints
+      assert hd(twice.model_messages) == second.summary_message
+      refute Enum.any?(twice.model_messages, &(&1.id == first.compaction_id))
+      assert second.previous_compaction_id == first.compaction_id
 
       # The earlier checkpoint is sent once, as the first shadowed message,
       # and the directive does not repeat it.
       request = Process.get(:last_request)
       assert [previous | _rest] = request.messages
-      assert Checkpoint.body(previous) == "prior facts: alpha"
+      assert previous == first.summary_message
+      assert Checkpoint.summary(first) == "prior facts: alpha"
 
       directive = request |> Request.to_provider_messages() |> List.last()
       refute directive.content =~ "prior facts: alpha"
@@ -622,9 +623,10 @@ defmodule Tackle.Lib.CompactionTest do
       state = two_pass_state()
       large_first_summary()
 
-      assert {:ok, compacted, _record} = Compaction.compact(state, :pressure, [])
+      assert {:ok, compacted, record} = Compaction.compact(state, :pressure, [])
       assert Process.get(:commit_count) == 2
-      assert Enum.count(compacted.model_messages, &Checkpoint.message?/1) == 1
+      assert hd(compacted.model_messages) == record.summary_message
+      refute Enum.any?(compacted.model_messages, &(&1.id == record.previous_compaction_id))
     end
 
     test "a failed second pass returns the checkpoint already durably committed" do
@@ -669,7 +671,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:ok, final} = Tackle.Lib.run(state, "next")
       assert Process.get(:adapter_calls) == 2
       assert Tackle.Lib.last_answer(final) == "answer"
-      assert Enum.any?(final.model_messages, &Checkpoint.message?/1)
+      assert hd(final.model_messages) == State.last_compaction(final).summary_message
     end
 
     test "does not retry overflow more than once" do
@@ -712,7 +714,7 @@ defmodule Tackle.Lib.CompactionTest do
       Process.put(:summarize_result, {:error, :summary_unavailable})
 
       assert {:ok, final} = Tackle.Lib.run(state, "next")
-      assert final.model_messages == nil
+      assert_uncompacted(final)
       assert Tackle.Lib.last_answer(final) == "answer"
       refute Process.get(:last_record)
     end
@@ -734,7 +736,7 @@ defmodule Tackle.Lib.CompactionTest do
 
       assert Process.get(:commit_count) == 1
       assert [checkpoint | _tail] = final.model_messages
-      assert Checkpoint.message?(checkpoint)
+      assert checkpoint == State.last_compaction(final).summary_message
     end
 
     test "a failed pressure compaction is not retried at every step of the turn" do
@@ -767,7 +769,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:error, final} = Tackle.Lib.run(state, "next")
       assert final.error =~ "exceeds the model's context window"
       assert Process.get(:adapter_calls) == 1
-      assert final.model_messages == nil
+      assert_uncompacted(final)
     end
 
     test "continues from a committed checkpoint when a later pressure pass fails" do
@@ -829,7 +831,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:error, final} = Tackle.Lib.run(state, "next")
       assert final.error =~ "durable_commit_failed"
       assert Process.get(:adapter_calls) == 1
-      assert final.model_messages == nil
+      assert_uncompacted(final)
     end
 
     test "fails the turn before the provider call when the durable commit fails" do
@@ -838,11 +840,16 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:error, final} = Tackle.Lib.run(state, "next")
       assert final.status == :error
       assert Process.get(:adapter_calls, 0) == 0
-      assert state.model_messages == nil
+      assert_uncompacted(state)
     end
   end
 
   # --- helpers ---
+
+  defp assert_uncompacted(state) do
+    assert State.last_compaction(state) == nil
+    assert state.model_messages == state.messages
+  end
 
   defp collect_events(state) do
     {:ok, agent} = Agent.start_link(fn -> [] end)

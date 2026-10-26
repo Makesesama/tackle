@@ -35,6 +35,7 @@ defmodule Tackle.Phoenix.EventReducer do
   alias Tackle.Lib.Event
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tree
 
   @stream_name :agent_messages
 
@@ -188,7 +189,7 @@ defmodule Tackle.Phoenix.EventReducer do
     agent_state = socket.assigns.agent_state
 
     agent_state =
-      if Enum.any?(agent_state.messages, &(&1.id == message.id)),
+      if Tree.contains?(agent_state.tree, message.id),
         do: agent_state,
         else: State.add_message(agent_state, message)
 

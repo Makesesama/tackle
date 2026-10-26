@@ -284,16 +284,22 @@ defmodule Tackle.Session do
   def reconfigure(_session, opts), do: {:error, {:invalid_config, opts}}
 
   @doc """
-  Reads the session's conversation tree, or `nil` when branching is disabled.
+  Reads the session's conversation tree.
+
+  Every session keeps one; in a session without branching it has a single
+  branch.
   """
-  @spec tree(GenServer.server()) :: {:ok, Tackle.Lib.Tree.t() | nil}
+  @spec tree(GenServer.server()) :: {:ok, Tackle.Lib.Tree.t()}
   def tree(session), do: GenServer.call(session, :tree)
 
   @doc """
   Navigates the session's conversation tree while it is idle.
 
-  Navigation is rejected during an active turn or while an interrupted turn
-  requires an explicit recovery decision. The destination is validated, the
+  Navigation is rejected with `{:error, :tree_disabled}` in a session without
+  branching: an ephemeral session, or a durable one whose spec sets
+  `tree: false` and whose journal never enabled it. It is also rejected
+  during an active turn or while an interrupted turn requires an explicit
+  recovery decision. The destination is validated, the
   committed position is persisted through the session's committer, and only
   then is the new position installed and published to subscribers.
 
@@ -342,7 +348,7 @@ defmodule Tackle.Session do
     with :ok <-
            validate_ownership(scope_ref, agent_ref, coordinator, work_supervisor, tool_supervisor),
          :ok <- register(scope_ref, agent_ref),
-         {:ok, agent_state, journal, recovery} <-
+         {:ok, agent_state, journal, recovery, tree_enabled?} <-
            build_agent_state(config, scope_ref, agent_ref, opts) do
       state = %{
         config: config,
@@ -359,6 +365,7 @@ defmodule Tackle.Session do
         tool_supervisor: tool_supervisor,
         journal: journal,
         recovery: recovery,
+        tree_enabled?: tree_enabled?,
         inbox: :queue.new(),
         inbox_count: 0,
         inbox_wake_scheduled?: false,
@@ -522,6 +529,11 @@ defmodule Tackle.Session do
 
   def handle_call(:tree, _from, state) do
     {:reply, {:ok, state.agent_state.tree}, state}
+  end
+
+  # Branching is the session's policy; the library can always navigate.
+  def handle_call({:navigate, _target, _opts}, _from, %{tree_enabled?: false} = state) do
+    {:reply, {:error, :tree_disabled}, state}
   end
 
   def handle_call({:navigate, _target, _opts}, _from, %{active_turn: active} = state)
@@ -1491,7 +1503,7 @@ defmodule Tackle.Session do
           |> Config.to_agent_state(credential_store: Auth.credential_store())
           |> put_runtime_context(scope_ref, agent_ref, opts)
 
-        {:ok, agent_state, nil, nil}
+        {:ok, agent_state, nil, nil, false}
 
       %SessionSpec{} = durable ->
         build_durable_agent_state(config, scope_ref, agent_ref, opts, durable)
@@ -1504,8 +1516,7 @@ defmodule Tackle.Session do
          {:ok, loaded} <-
            Loader.load(projection, config,
              credential_store: Auth.credential_store(),
-             override_config: durable.override_config,
-             tree: durable.tree
+             override_config: durable.override_config
            ),
          :ok <- persist_configuration_change(journal, loaded.configuration_changed?, config),
          :ok <- enable_tree_if_needed(journal, projection, durable.tree) do
@@ -1517,8 +1528,10 @@ defmodule Tackle.Session do
 
       recovery = recovery_for(projection)
 
+      tree_enabled? = durable.tree or projection.tree_enabled?
+
       case repair_interrupted_tool_results(journal, agent_state, config, recovery) do
-        {:ok, agent_state} -> {:ok, agent_state, journal, recovery}
+        {:ok, agent_state} -> {:ok, agent_state, journal, recovery, tree_enabled?}
         {:error, reason} -> {:error, reason}
       end
     end

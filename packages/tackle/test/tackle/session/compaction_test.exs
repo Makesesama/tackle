@@ -6,6 +6,8 @@ defmodule Tackle.Session.CompactionTest do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.Compaction.Summary
+  alias Tackle.Lib.State
+  alias Tackle.Lib.Tree
   alias Tackle.Lib.Usage
   alias Tackle.Session.Projection
   alias Tackle.Session.Reader
@@ -87,7 +89,8 @@ defmodule Tackle.Session.CompactionTest do
              summarizer_opts[:llm_opts][:credential_store]
 
     assert [checkpoint, retained] = compacted.agent_state.model_messages
-    assert Checkpoint.message?(checkpoint)
+    assert checkpoint == record.summary_message
+    assert State.last_compaction(compacted.agent_state) == record
     assert checkpoint.id == record.compaction_id
     assert retained.role == :assistant
 
@@ -113,6 +116,43 @@ defmodule Tackle.Session.CompactionTest do
              |> Enum.find(&(&1["type"] == "context.compacted"))
 
     assert parent_id == record.parent_id
+  end
+
+  test "a session without branching compacts and resumes in its journal format", ctx do
+    scope = start_durable_scope(home: ctx.home, root: root_opts(), session: [tree: false])
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, long_prompt())
+    assert_receive {:tackle_turn_finished, _sid, ^turn_id, {:ok, _state}}, 5_000
+
+    assert {:ok, compacted, record} = Tackle.compact(scope.root_agent_ref)
+    assert State.last_compaction(compacted.agent_state) == record
+    session_id = snapshot.session_id
+    stop_scope(scope.scope_ref)
+
+    # The journal records neither message nor compaction parents: each
+    # attaches to the entry before it.
+    assert {:ok, replay} = Reader.read(session_id, home: ctx.home)
+    events = Enum.flat_map(replay.commits, & &1["events"])
+
+    assert [_ | _] =
+             appended =
+             Enum.filter(events, &(&1["type"] in ["message.appended", "context.compacted"]))
+
+    refute Enum.any?(appended, &Map.has_key?(&1["data"], "parent_id"))
+
+    resumed =
+      start_durable_scope(
+        home: ctx.home,
+        session: [session_id: session_id, tree: false],
+        root: root_opts()
+      )
+
+    assert {:ok, resumed_snapshot} = Tackle.snapshot(resumed.root_agent_ref)
+    agent_state = resumed_snapshot.agent_state
+    assert State.last_compaction_id(agent_state) == record.compaction_id
+    assert hd(agent_state.model_messages) == record.summary_message
+    assert agent_state.messages == Tree.transcript(agent_state.tree)
+    assert {:error, :tree_disabled} = Tackle.navigate(resumed.root_agent_ref, nil)
   end
 
   test "keeps the canonical transcript inspectable and searchable while compacted", ctx do
@@ -175,7 +215,7 @@ defmodule Tackle.Session.CompactionTest do
     assert Enum.map(current.agent_state.model_messages, & &1.id) ==
              Enum.map(current.agent_state.messages, & &1.id)
 
-    refute Enum.any?(current.agent_state.model_messages, &Checkpoint.message?/1)
+    assert State.last_compaction(current.agent_state) == nil
   end
 
   test "resumes by replaying the compacted model surface", ctx do
@@ -184,7 +224,7 @@ defmodule Tackle.Session.CompactionTest do
     {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, long_prompt())
     assert_receive {:tackle_turn_finished, _sid, ^turn_id, {:ok, _state}}, 5_000
 
-    assert {:ok, _compacted, _record} = Tackle.compact(scope.root_agent_ref)
+    assert {:ok, _compacted, compacted_record} = Tackle.compact(scope.root_agent_ref)
     session_id = snapshot.session_id
     stop_scope(scope.scope_ref)
 
@@ -194,7 +234,8 @@ defmodule Tackle.Session.CompactionTest do
     assert {:ok, resumed_snapshot} = Tackle.snapshot(resumed.root_agent_ref)
     assert Enum.map(resumed_snapshot.agent_state.messages, & &1.role) == [:user, :assistant]
     assert [checkpoint, retained] = resumed_snapshot.agent_state.model_messages
-    assert Checkpoint.message?(checkpoint)
+    assert checkpoint == State.last_compaction(resumed_snapshot.agent_state).summary_message
+    assert checkpoint.id == compacted_record.compaction_id
     assert retained.role == :assistant
   end
 
@@ -236,7 +277,8 @@ defmodule Tackle.Session.CompactionTest do
 
     checkpoint = hd(projection.model_messages)
     assert checkpoint["role"] == "user"
-    assert String.starts_with?(checkpoint["content"], Checkpoint.marker())
+    assert checkpoint["id"] == Tree.last_compaction_id(projection.tree)
+    assert String.starts_with?(checkpoint["content"], String.trim(Checkpoint.framing()))
   end
 
   test "non-durable compaction also leaves Session controls responsive" do

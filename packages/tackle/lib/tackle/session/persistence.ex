@@ -27,9 +27,10 @@ defmodule Tackle.Session.Persistence do
   context carries `:journal_required`, so a missing owner fails closed rather
   than being mistaken for an ephemeral session.
 
-  For a branching session the hook reads the just-appended tree entry from the
-  settled state and commits the message together with its parent link, rather
-  than guessing parentage from the previous journal commit.
+  The hook reads the just-appended tree entry from the settled state and
+  commits the message together with its parent link, rather than guessing
+  parentage from the previous journal commit; a journal without branching
+  leaves the implied link out.
   """
 
   @behaviour Tackle.Lib.Hook
@@ -74,15 +75,15 @@ defmodule Tackle.Session.Persistence do
 
   @doc """
   Returns the journal parent of a message just appended to `state`: the
-  parent of its tree entry in a branching session, `:none` in a linear one.
+  parent of its tree entry, or `:none` when the tree does not hold it. The
+  journal decides whether to record the link (see
+  `Tackle.Session.Journal.append_message/4`).
   """
   @spec tree_parent(State.t(), String.t()) :: {:tree, String.t() | nil} | :none
-  def tree_parent(%State{tree: %Tree{} = tree}, message_id) do
+  def tree_parent(%State{tree: tree}, message_id) do
     case Tree.entry(tree, message_id) do
       %{parent_id: parent_id} -> {:tree, parent_id}
-      _entry -> :none
+      nil -> :none
     end
   end
-
-  def tree_parent(_state, _message_id), do: :none
 end

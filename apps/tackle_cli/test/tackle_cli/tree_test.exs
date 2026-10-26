@@ -92,7 +92,7 @@ defmodule Tackle.CLI.TreeTest do
   end
 
   defp overlay_state(tree, view) do
-    state = base_state(agent_state: %{State.new() | tree: tree})
+    state = base_state(agent_state: State.new(tree: tree))
     {:noreply, state} = Tree.open(state)
     if view == :default, do: state, else: cycle_to(state, view)
   end
@@ -193,14 +193,14 @@ defmodule Tackle.CLI.TreeTest do
              "● third"
            ]
 
-    state = base_state(agent_state: %{State.new() | tree: tree})
+    state = base_state(agent_state: State.new(tree: tree))
     assert {:noreply, %{overlay: {:tree, %{picker: picker}}}} = Tree.open(state)
     assert Picker.selected(picker).id == {:edit, ConversationTree.active_id(tree)}
   end
 
   test "the screen paints the header, view tabs, graph rows, selection, and hints" do
     state = %{
-      base_state(agent_state: %{State.new() | tree: tree_with_branches()})
+      base_state(agent_state: State.new(tree: tree_with_branches()))
       | size: {80, 20}
     }
 
@@ -221,7 +221,7 @@ defmodule Tackle.CLI.TreeTest do
 
   test "the hint names what Enter does for the selected row" do
     state = %{
-      base_state(agent_state: %{State.new() | tree: tree_with_branches()})
+      base_state(agent_state: State.new(tree: tree_with_branches()))
       | size: {80, 20}
     }
 
@@ -240,7 +240,7 @@ defmodule Tackle.CLI.TreeTest do
         tree
       end)
 
-    state = %{base_state(agent_state: %{State.new() | tree: tree}) | size: {80, 12}}
+    state = %{base_state(agent_state: State.new(tree: tree)) | size: {80, 12}}
     {:noreply, state} = Tree.open(state)
     text = state |> Tree.popup() |> render_text(80, 12)
     assert Enum.any?(text, &(&1 =~ "› ● prompt 30"))
@@ -302,23 +302,19 @@ defmodule Tackle.CLI.TreeTest do
     refute Enum.any?(default, & &1.unsafe?)
   end
 
-  test "open refuses when busy, without a tree, or when empty" do
-    busy = base_state(agent_state: %{State.new() | tree: tree_with_branches()})
+  test "open refuses when busy or when empty" do
+    busy = base_state(agent_state: State.new(tree: tree_with_branches()))
     busy = %{busy | active_turn: %{id: "turn-1"}}
     assert {:noreply, %{notice: notice}} = Tree.open(busy)
     assert notice =~ "idle"
 
-    no_tree = base_state()
-    assert {:noreply, %{notice: notice}} = Tree.open(no_tree)
-    assert notice =~ "no conversation tree"
-
-    empty = base_state(agent_state: %{State.new() | tree: ConversationTree.new()})
+    empty = base_state()
     assert {:noreply, %{notice: notice}} = Tree.open(empty)
     assert notice =~ "empty"
   end
 
   test "open mounts the picker and cancel leaves conversation state unchanged" do
-    state = base_state(agent_state: %{State.new() | tree: tree_with_branches()})
+    state = base_state(agent_state: State.new(tree: tree_with_branches()))
     assert {:noreply, %{overlay: {:tree, %{picker: picker}}}} = Tree.open(state)
     assert [_, _, _, _ | _] = Picker.filtered(picker)
 
@@ -328,7 +324,7 @@ defmodule Tackle.CLI.TreeTest do
 
   test "accept on a user message starts an edit navigation" do
     tree = tree_with_branches()
-    state = base_state(agent_state: %{State.new() | tree: tree})
+    state = base_state(agent_state: State.new(tree: tree))
 
     picker = Picker.new(Tree.items(tree))
     picker = selectable(picker, &match?({:edit, _}, &1.id))
@@ -344,7 +340,7 @@ defmodule Tackle.CLI.TreeTest do
 
   test "accept on an unsafe entry only notifies" do
     tree = tree_with_pending_tool()
-    state = base_state(agent_state: %{State.new() | tree: tree})
+    state = base_state(agent_state: State.new(tree: tree))
 
     picker = Picker.new(Tree.items(tree))
     picker = selectable(picker, &(&1.id == :unsafe_entry))
@@ -385,14 +381,14 @@ defmodule Tackle.CLI.TreeTest do
   end
 
   test "/tree opens the picker instead of submitting while idle" do
-    state = base_state(agent_state: %{State.new() | tree: tree_with_branches()}, draft: "/tree")
+    state = base_state(agent_state: State.new(tree: tree_with_branches()), draft: "/tree")
 
     assert {:noreply, %{overlay: {:tree, _}, pending_operation: nil}} = Composer.submit(state)
     assert Input.get_value(state.input) == ""
   end
 
   test "/tree while busy keeps the draft and does not open" do
-    state = base_state(agent_state: %{State.new() | tree: tree_with_branches()}, draft: "/tree")
+    state = base_state(agent_state: State.new(tree: tree_with_branches()), draft: "/tree")
     state = %{state | pending_operation: %{ref: make_ref(), kind: :compact}}
 
     assert {:noreply, %{overlay: nil, notice: notice}} = Composer.submit(state)
@@ -400,11 +396,11 @@ defmodule Tackle.CLI.TreeTest do
     assert Input.get_value(state.input) == "/tree"
   end
 
-  test "/tree with no tree keeps the draft and explains why" do
+  test "/tree with an empty tree keeps the draft and explains why" do
     state = base_state(draft: "/tree")
 
     assert {:noreply, %{overlay: nil, notice: notice}} = Composer.submit(state)
-    assert notice =~ "no conversation tree"
+    assert notice =~ "empty"
     assert Input.get_value(state.input) == "/tree"
   end
 
@@ -535,7 +531,7 @@ defmodule Tackle.CLI.TreeTest do
           tree
         end)
 
-      state = %{base_state(agent_state: %{State.new() | tree: tree}) | size: {80, 40}}
+      state = %{base_state(agent_state: State.new(tree: tree)) | size: {80, 40}}
       {:noreply, state} = Tree.open(state)
       state = Tree.resize(%{state | size: {80, 12}})
       text = state |> Tree.popup() |> render_text(80, 12)

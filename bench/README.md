@@ -34,7 +34,7 @@ on unexpected results; runtime fixture lifecycle/cleanup also has ExUnit coverag
 
 | Script | Measures |
 | --- | --- |
-| `tackle_lib/bench/history.exs` | One append to existing linear/tree/shortened-projection histories; context estimation with/without a recent usage checkpoint; provider projection. 10–10,000 messages. Fixtures are built outside timing. |
+| `tackle_lib/bench/history.exs` | One append to existing histories, with and without a compaction; context estimation with/without a recent usage checkpoint; provider projection. 10–10,000 messages. Fixtures are built outside timing. |
 | `tackle_lib/bench/context.exs` | Isolated context estimation with/without a recent checkpoint at 1,000–10,000 messages; allocations and reductions included. |
 | `tackle_lib/bench/tools.exs` | Full echo-tool settlement with keyword output validation or without an output schema. 1–100 output items. |
 | `tackle_runtime/bench/lifecycle.exs` | Full fresh-scope delegated lifecycle. 10–10,000 returned messages. Also prints untimed retained Request process diagnostics. |

@@ -3,8 +3,9 @@ defmodule Tackle.CLI.TUI.ToolGroupsTest do
 
   use ExUnit.Case, async: true
 
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.{MessageView, ToolGroups, ToolView}
-  alias Tackle.Lib.{Message, State}
+  alias Tackle.Lib.Message
 
   describe "classify/1" do
     test "read tool calls are exploring by definition" do
@@ -209,7 +210,7 @@ defmodule Tackle.CLI.TUI.ToolGroupsTest do
 
       expanded =
         MessageView.section_entries(
-          %{agent_state: %State{messages: messages}, thinking_expanded?: true},
+          %{agent_state: AgentStates.with_messages(messages), thinking_expanded?: true},
           :settled
         )
 
@@ -461,7 +462,7 @@ defmodule Tackle.CLI.TUI.ToolGroupsTest do
   defp settled(messages),
     do:
       MessageView.section_entries(
-        %{agent_state: %State{messages: messages}, thinking_expanded?: false},
+        %{agent_state: AgentStates.with_messages(messages), thinking_expanded?: false},
         :settled
       )
 

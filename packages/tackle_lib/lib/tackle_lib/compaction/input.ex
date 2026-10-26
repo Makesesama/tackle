@@ -19,11 +19,11 @@ defmodule Tackle.Lib.Compaction.Input do
     * provider continuation state is dropped, since an adapter would replay
       it in place of the shortened content.
 
-  Earlier checkpoints are never shortened. The result is only summarizer
-  input: the transcript and the model projection are unchanged.
+  The earlier checkpoint (`:checkpoint_id`) is never shortened. The result is
+  only summarizer input: the transcript and the model projection are
+  unchanged.
   """
 
-  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
@@ -38,27 +38,32 @@ defmodule Tackle.Lib.Compaction.Input do
   Returns `{:ok, messages, shortened}` with the number of shortened messages
   (0 when they already fit), or `{:error, :summary_input_too_large}` when they
   cannot fit even with every shortenable message at a minimal size.
+
+  ## Options
+
+    * `:checkpoint_id` - the id of the earlier checkpoint among `messages`
+      (the summary message of the branch's last compaction record), which is
+      kept verbatim, or `nil` (the default) when there is none.
   """
-  @spec fit([Message.t()], integer()) ::
+  @spec fit([Message.t()], integer(), keyword()) ::
           {:ok, [Message.t()], non_neg_integer()} | {:error, :summary_input_too_large}
-  def fit(messages, budget) when is_list(messages) and is_integer(budget) do
+  def fit(messages, budget, opts \\ []) when is_list(messages) and is_integer(budget) do
     if ContextUsage.estimate_messages(messages) <= budget do
       {:ok, messages, 0}
     else
-      shorten(messages, budget)
+      shorten(messages, budget, Keyword.get(opts, :checkpoint_id))
     end
   end
 
-  defp shorten(messages, budget) do
-    sizes = Enum.map(messages, &{&1, ContextUsage.estimate_message(&1)})
+  defp shorten(messages, budget, checkpoint_id) do
+    sizes =
+      Enum.map(messages, fn message ->
+        checkpoint? = not is_nil(checkpoint_id) and message.id == checkpoint_id
+        {message, ContextUsage.estimate_message(message), checkpoint?}
+      end)
 
-    fixed =
-      sizes
-      |> Enum.filter(fn {message, _size} -> Checkpoint.message?(message) end)
-      |> Enum.reduce(0, fn {_message, size}, acc -> acc + size end)
-
-    shortenable =
-      for {message, size} <- sizes, not Checkpoint.message?(message), do: size
+    fixed = for {_message, size, true} <- sizes, reduce: 0, do: (acc -> acc + size)
+    shortenable = for {_message, size, false} <- sizes, do: size
 
     case level(shortenable, budget - fixed) do
       level when level >= @min_message_tokens -> settle(sizes, budget, level)
@@ -90,7 +95,11 @@ defmodule Tackle.Lib.Compaction.Input do
   # Shortening estimates are approximate (framing and rounding), so the
   # level steps down until the whole really fits.
   defp settle(sizes, budget, level) do
-    shortened = Enum.map(sizes, fn {message, size} -> shorten_message(message, size, level) end)
+    shortened =
+      Enum.map(sizes, fn {message, size, checkpoint?} ->
+        shorten_message(message, size, checkpoint?, level)
+      end)
+
     messages = Enum.map(shortened, &elem(&1, 0))
 
     cond do
@@ -105,8 +114,8 @@ defmodule Tackle.Lib.Compaction.Input do
     end
   end
 
-  defp shorten_message(message, size, level) do
-    if size <= level or Checkpoint.message?(message),
+  defp shorten_message(message, size, checkpoint?, level) do
+    if size <= level or checkpoint?,
       do: {message, false},
       else: {truncate(message, level), true}
   end

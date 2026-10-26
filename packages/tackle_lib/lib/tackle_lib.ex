@@ -20,8 +20,8 @@ defmodule Tackle.Lib do
     * `Tackle.Lib.Message` — conversation message value struct.
     * `Tackle.Lib.Compaction` — checkpoint compaction of the provider-visible
       model projection, with pluggable summarizers.
-    * `Tackle.Lib.Tree` — opt-in branching conversation history, navigated
-      with `navigate/3`.
+    * `Tackle.Lib.Tree` — the conversation history every state keeps, which
+      can branch: `navigate/3` moves its active position.
     * `Tackle.Lib.Committer` — the durability seam compactions and
       navigations commit through before they are installed.
     * `Tackle.Lib.Tool` — the tool behaviour the loop calls.
@@ -159,7 +159,7 @@ defmodule Tackle.Lib do
   defdelegate usage(state), to: State
 
   @doc """
-  Navigates the active position of an opt-in tree session.
+  Navigates the active position of the state's conversation tree.
 
   Commits the `Tackle.Lib.Tree.Change` through the state's
   `Tackle.Lib.Committer` before installing the new position. Targets, the

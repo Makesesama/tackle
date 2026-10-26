@@ -1145,7 +1145,8 @@ defmodule Tackle.Plugins.CodexTest do
 
     assert {:ok, compacted, record} = Lib.compact(state)
     assert record.summary_usage.reasoning_tokens == 8_990
-    assert Checkpoint.body(hd(compacted.model_messages)) == "## Goal\nShip it"
+    assert hd(compacted.model_messages) == record.summary_message
+    assert Checkpoint.summary(record) == "## Goal\nShip it"
 
     assert_received {:summary_request, options}
     assert {:ok, body} = JSON.decode(options[:body])

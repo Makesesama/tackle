@@ -939,30 +939,24 @@ defmodule Tackle.Phoenix.Runner do
   defp aggregate_turn_usage(turn_usage) when is_map(turn_usage),
     do: Usage.aggregate(Map.values(turn_usage))
 
+  # Usage the adapter reported only through events goes on the final answer,
+  # through the state so its tree stays consistent with the transcript.
   defp attach_turn_usage(%State{} = final_state, %Usage{} = usage) do
-    if usage_total_tokens(usage) > 0 and no_message_usage?(final_state.messages) do
-      %{final_state | messages: attach_usage_to_final_assistant(final_state.messages, usage)}
+    with true <- usage_total_tokens(usage) > 0 and no_message_usage?(final_state.messages),
+         %Message{id: id} <- final_assistant(final_state.messages),
+         {:ok, state} <-
+           State.update_message(final_state, id, &%{&1 | token_usage: Usage.to_map(usage)}) do
+      state
     else
-      final_state
+      _no_usage_to_attach -> final_state
     end
   end
 
   defp no_message_usage?(messages),
     do: Enum.all?(messages, &(normalize_usage(&1.token_usage) == nil))
 
-  defp attach_usage_to_final_assistant(messages, %Usage{} = usage) do
-    case find_final_assistant_index(messages) do
-      nil -> messages
-      index -> List.update_at(messages, index, &%{&1 | token_usage: Usage.to_map(usage)})
-    end
-  end
-
-  defp find_final_assistant_index(messages) do
-    messages
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn {message, index} -> if Message.final_answer?(message), do: index end)
-  end
+  defp final_assistant(messages),
+    do: messages |> Enum.reverse() |> Enum.find(&Message.final_answer?/1)
 
   defp put_persisted_session_id(%State{} = state, session_id) when is_binary(session_id) do
     %{state | context: put_in(state.context, [:persistence, :session_id], session_id)}

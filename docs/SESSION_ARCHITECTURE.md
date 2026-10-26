@@ -570,7 +570,8 @@ fail-closed contract:
 4. it commits one `context.compacted` event through the state's
    `Tackle.Lib.Committer`, `Tackle.Session.Committer`, which resolves the live
    journal by session id and syncs the commit (the record names the tree entry
-   it attaches to, written as `parent_id`);
+   it attaches to, written as `parent_id` in a branching session and left out,
+   as implied, in one without branching);
 5. only after a successful commit does it install the replacement in
    `State.model_messages`.
 
@@ -649,9 +650,10 @@ Runtime reconstruction then:
 2. resolves the recorded model/profile or an explicit user override;
 3. creates a fresh `%Tackle.Lib.State{}`;
 4. replaces its generated session ID with the durable session ID;
-5. installs validated durable messages in order (both the complete transcript in
-   `State.messages` and the replayed provider projection in
-   `State.model_messages`);
+5. installs the projection's replayed `Tackle.Lib.Tree` with
+   `Tackle.Lib.State.put_tree/2`, which derives the active transcript
+   (`State.messages`) and the provider context (`State.model_messages`) from
+   it, for sessions with and without branching alike;
 6. resets runtime status, error, pending assistant state, snapshot, hooks, tools, registries, and context appropriately;
 7. attaches fresh runtime handles and cancellation state; and
 8. records a durable configuration change if the user selected a different model or profile.
@@ -833,15 +835,19 @@ A fork creates a new independent session at a validated commit sequence:
 
 The child can be loaded after the parent is deleted. Parent metadata exists for lineage and navigation, not for replay dependency.
 
-Branching several histories inside one file is now implemented as an optional
-conversation tree. A session's projection always folds a `Tackle.Lib.Tree`; the
-`session.created` event records tree enablement, `message.appended` carries the
-entry parent link, `context.compacted` attaches to the active branch, and
-`tree.navigated` records a committed position change. The canonical archive
-(`Projection.messages`) covers every branch once, while the active transcript
-and model context follow the selected ancestry. A legacy linear journal loads
-unchanged and records an explicit `tree.enabled` transition before its first
-branching write. Independent forks remain one file per session and copy the
+Branching several histories inside one file is implemented as a conversation
+tree. A session's projection and runtime state always fold a `Tackle.Lib.Tree`;
+the `session.created` event records whether the session may branch, which the
+session enforces by rejecting navigation with `:tree_disabled` otherwise. In a
+branching session `message.appended` carries the entry parent link,
+`context.compacted` attaches to the active branch, and `tree.navigated` records
+a committed position change; a session without branching writes neither parent
+link (each entry attaches to the one before it), so its journal keeps the
+format it always had. The canonical archive (`Projection.messages`) covers
+every branch once, while the active transcript and model context follow the
+selected ancestry. A journal without branching loads as a single-branch tree
+and records an explicit `tree.enabled` transition before its first branching
+write. Independent forks remain one file per session and copy the
 tree and active position; see
 [the conversation tree plan](SESSION_TREE_PLAN.md), which retains the existing
 journal durability contract.

@@ -2,9 +2,10 @@ defmodule Tackle.CLI.TUI.ConversationTest do
   use ExUnit.Case, async: true
 
   alias ExRatatui.Layout.Rect
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.Conversation
   alias Tackle.CLI.TUI.State.Stream
-  alias Tackle.Lib.{Message, State}
+  alias Tackle.Lib.Message
 
   test "refresh preserves the row inside a multi-widget tool card, not just its header" do
     messages =
@@ -206,7 +207,7 @@ defmodule Tackle.CLI.TUI.ConversationTest do
 
   defp projection(messages) do
     %{
-      agent_state: %State{messages: messages},
+      agent_state: AgentStates.with_messages(messages),
       pending_prompt: nil,
       tool_activity: [],
       stream: %Stream{},

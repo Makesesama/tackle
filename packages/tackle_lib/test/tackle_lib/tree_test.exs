@@ -60,7 +60,7 @@ defmodule Tackle.Lib.TreeTest do
       {tree, _} = append!(tree, msg("a3", :assistant, "done", token_usage: u3))
       {:ok, tree, _} = Tree.append_compaction(tree, compaction("c2", "summary", ["u2"], "u3"))
 
-      state = %{State.new() | tree: tree, messages: Tree.transcript(tree)}
+      state = State.new(tree: tree)
 
       # The span after the last compaction has no usage yet, but is current.
       assert State.usage_segments(state) == [[u1, u2], [u3], []]
@@ -352,8 +352,8 @@ defmodule Tackle.Lib.TreeTest do
   end
 
   describe "state integration" do
-    test "tree mode derives transcript, model context, and readers" do
-      state = State.new(tree: true, id_generator: id_generator())
+    test "a state derives transcript, model context, and readers from its tree" do
+      state = State.new(id_generator: id_generator())
 
       state = State.add_message(state, msg("u1", :user, "hello"))
 
@@ -365,7 +365,7 @@ defmodule Tackle.Lib.TreeTest do
 
       assert Enum.map(state.messages, & &1.id) == ["u1", "a1"]
       assert Enum.map(State.model_messages(state), & &1.id) == ["u1", "a1"]
-      refute is_nil(state.tree)
+      assert Tree.transcript(state.tree) == state.messages
     end
 
     test "restored branches extend their projections without importing sibling messages" do
@@ -396,7 +396,6 @@ defmodule Tackle.Lib.TreeTest do
     test "navigate commits before installing and keeps state on commit failure" do
       state =
         State.new(
-          tree: true,
           id_generator: id_generator(),
           committer: __MODULE__.OkCommitter
         )
@@ -410,7 +409,7 @@ defmodule Tackle.Lib.TreeTest do
       assert state.messages == []
 
       failing = %{
-        State.new(tree: true, id_generator: id_generator())
+        State.new(id_generator: id_generator())
         | committer: __MODULE__.FailCommitter
       }
 
@@ -423,7 +422,7 @@ defmodule Tackle.Lib.TreeTest do
 
     test "navigation always commits through the state's committer" do
       state = %{
-        State.new(tree: true, id_generator: id_generator())
+        State.new(id_generator: id_generator())
         | committer: __MODULE__.RecordingCommitter
       }
 
@@ -443,7 +442,7 @@ defmodule Tackle.Lib.TreeTest do
 
     test "selecting the current position commits nothing" do
       state = %{
-        State.new(tree: true, id_generator: id_generator())
+        State.new(id_generator: id_generator())
         | committer: __MODULE__.RecordingCommitter
       }
 
@@ -455,7 +454,7 @@ defmodule Tackle.Lib.TreeTest do
     end
 
     test "navigation honours an expected revision" do
-      state = State.new(tree: true, id_generator: id_generator())
+      state = State.new(id_generator: id_generator())
       state = State.add_message(state, msg("u1", :user, "hello"))
       revision = state.tree.revision
 
@@ -463,13 +462,16 @@ defmodule Tackle.Lib.TreeTest do
                Tackle.Lib.navigate(state, nil, expected_revision: 0)
     end
 
-    test "navigation is rejected when tree mode is disabled" do
-      state = State.new()
-      assert {:error, :tree_disabled} = Tackle.Lib.navigate(state, nil)
+    test "every state can navigate, since every state keeps a tree" do
+      state = State.add_message(State.new(), msg("u1", :user, "hello"))
+
+      assert {:ok, navigated, _outcome} = Tackle.Lib.navigate(state, nil)
+      assert navigated.messages == []
+      assert navigated.model_messages == []
     end
 
     test "navigation rejects a visibly active state" do
-      state = State.new(tree: true, id_generator: id_generator())
+      state = State.new(id_generator: id_generator())
       state = State.add_message(state, msg("u1", :user, "hello"))
       state = %{state | status: :thinking}
 
@@ -556,7 +558,7 @@ defmodule Tackle.Lib.TreeTest do
       }
 
       state =
-        State.new(tree: true, llm: selection, compaction: config, committer: RecordingCommitter)
+        State.new(llm: selection, compaction: config, committer: RecordingCommitter)
 
       state = State.add_message(state, msg("u1", :user, String.duplicate("x", 4000)))
       state = State.add_message(state, msg("a1", :assistant, String.duplicate("y", 4000)))
@@ -600,7 +602,6 @@ defmodule Tackle.Lib.TreeTest do
       # The compaction id collides with an existing entry.
       state =
         State.new(
-          tree: true,
           llm: selection,
           compaction: config,
           committer: RecordingCommitter,

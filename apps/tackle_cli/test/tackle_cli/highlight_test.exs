@@ -2,9 +2,9 @@ defmodule Tackle.CLI.TUI.HighlightTest do
   use ExUnit.Case, async: false
 
   alias ExRatatui.Style
-  alias Tackle.CLI.Test.{ErrorLumis, FakeLumis, RaisingLumis, ReflowingLumis}
+  alias Tackle.CLI.Test.{AgentStates, ErrorLumis, FakeLumis, RaisingLumis, ReflowingLumis}
   alias Tackle.CLI.TUI.{Highlight, MessageView, ToolView}
-  alias Tackle.Lib.{Message, State}
+  alias Tackle.Lib.Message
 
   setup do
     previous_theme = System.get_env("TACKLE_THEME")
@@ -183,7 +183,7 @@ defmodule Tackle.CLI.TUI.HighlightTest do
 
   defp settled(messages) do
     MessageView.section_entries(
-      %{agent_state: %State{messages: messages}, thinking_expanded?: false},
+      %{agent_state: AgentStates.with_messages(messages), thinking_expanded?: false},
       :settled
     )
   end

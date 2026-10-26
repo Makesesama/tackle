@@ -3,8 +3,9 @@ defmodule Tackle.Lib.Compaction do
   Provider-neutral checkpoint compaction of the model-visible projection.
 
   Compaction never touches the canonical transcript. `Tackle.Lib.State.messages`
-  remains the complete, settled conversation; only `model_messages` — the array
-  sent to providers — is replaced by a synthetic checkpoint followed by a
+  remains the complete, settled conversation; a compaction is an entry in the
+  state's tree, and only `model_messages` — the array sent to providers,
+  derived from the tree — is replaced by a synthetic checkpoint followed by a
   recent tail whose content and tool linkage are preserved:
 
       [old prefix ..............][recent balanced tail]
@@ -24,8 +25,8 @@ defmodule Tackle.Lib.Compaction do
     1. select and snapshot a plan without mutation;
     2. bound the summarizer input to the window (`Tackle.Lib.Compaction.Input`);
     3. generate and strictly validate the summary;
-    4. build the replacement in memory without installing it (in tree mode,
-       append the compaction entry to a copy of the tree);
+    4. build the replacement in memory without installing it (append the
+       compaction entry to a copy of the tree);
     5. commit one durable record through the state's `Tackle.Lib.Committer`;
     6. only after a successful commit install the replacement.
 
@@ -228,7 +229,8 @@ defmodule Tackle.Lib.Compaction do
   defp start_pass(state, job, pass) do
     plan_opts = [
       retain_tokens: job.resolved.retain_tokens,
-      max_retained_tokens: job.resolved.max_retained_tokens
+      max_retained_tokens: job.resolved.max_retained_tokens,
+      checkpoint_id: checkpoint_id(state)
     ]
 
     with {:ok, plan} <- Plan.select(State.model_messages(state), plan_opts) do
@@ -237,6 +239,15 @@ defmodule Tackle.Lib.Compaction do
       if reachable?(job, plan, pass),
         do: attempt(state, job, plan, pass),
         else: {:error, :insufficient_reduction}
+    end
+  end
+
+  # The id of the checkpoint leading the model context, known from the
+  # branch's last compaction record rather than from any message's content.
+  defp checkpoint_id(state) do
+    case State.last_compaction(state) do
+      %Record{summary_message: %{id: id}} -> id
+      nil -> nil
     end
   end
 
@@ -277,10 +288,9 @@ defmodule Tackle.Lib.Compaction do
          {:ok, summary} <- summarize(job, request),
          :ok <- check_cancel(opts),
          :ok <- validate_summary(summary, plan, job.resolved),
-         {:ok, record, model_messages} <-
-           build_record(state, job, compaction_id, summary, plan, pass),
+         {:ok, record} <- build_record(state, job, compaction_id, summary, plan, pass),
          :ok <- validate_progress(job, record, pass),
-         {:ok, installed, record} <- install(state, record, model_messages),
+         {:ok, installed, record} <- install(state, record),
          :ok <- check_cancel(opts),
          :ok <- Committer.commit(state, record) do
       emit(
@@ -326,7 +336,8 @@ defmodule Tackle.Lib.Compaction do
         ContextUsage.estimate_text(ctx.system) - ContextUsage.estimate_tools(ctx.tools) -
         ContextUsage.estimate_text(Prompt.directive(instructions: instructions))
 
-    with {:ok, messages, _shortened} <- Input.fit(plan.shadowed, budget) do
+    with {:ok, messages, _shortened} <-
+           Input.fit(plan.shadowed, budget, checkpoint_id: checkpoint_id(state)) do
       {:ok,
        %Request{
          messages: messages,
@@ -431,7 +442,7 @@ defmodule Tackle.Lib.Compaction do
 
   defp validate_progress(_job, _record, _pass), do: :ok
 
-  # The record and the model context it leaves, applied with
+  # The record, with the size of the model context it leaves, applied with
   # `Checkpoint.apply_compaction/2` like every other reader of the record.
   defp build_record(state, job, compaction_id, summary, plan, pass) do
     record = %Record{
@@ -457,34 +468,24 @@ defmodule Tackle.Lib.Compaction do
           ContextUsage.estimate_projection(job.ctx.system, model_messages, job.ctx.tools)
     }
 
-    {:ok, record, model_messages}
+    {:ok, record}
   end
 
   # Builds the state that installs the record without installing it: the
   # caller commits the record first, so a record the tree refuses is never
   # made durable.
   #
-  # In tree mode a compaction is a first-class entry on the active branch: the
-  # record becomes a node, and the model context is re-derived from the tree so
-  # the checkpoint applies only to the branch it was created on. Linear mode
-  # replaces the explicit model projection, whose head is the record's
-  # checkpoint message (`State.last_compaction_id/1` reads its id).
-  # The tree attaches the record to the active entry (`:parent_id`), and the
-  # committed record is the one the tree holds. The branch's transcript does
-  # not change, and its model context is what `Tree.model_context/1` derives
-  # from the new entry.
-  defp install(%State{tree: %Tree{} = tree} = state, record, model_messages) do
+  # A compaction is a first-class entry on the active branch: the tree
+  # attaches the record to the active entry (`:parent_id`), and the committed
+  # record is the one the tree holds. The branch's transcript does not change,
+  # and its model context, re-derived by `State.put_tree/2`, starts with the
+  # record's checkpoint, which applies only to the branch it was created on.
+  defp install(%State{tree: tree} = state, record) do
     case Tree.append_compaction(tree, record) do
-      {:ok, tree, entry} ->
-        {:ok, %{state | tree: tree, model_messages: model_messages}, entry.compaction}
-
-      {:error, reason} ->
-        {:error, {:invalid_compaction, reason}}
+      {:ok, tree, entry} -> {:ok, State.put_tree(state, tree), entry.compaction}
+      {:error, reason} -> {:error, {:invalid_compaction, reason}}
     end
   end
-
-  defp install(%State{} = state, record, model_messages),
-    do: {:ok, %{state | model_messages: model_messages}, record}
 
   defp await_provider(opts) do
     result = Gate.before_provider_call(Keyword.get(opts, :before_provider_call))

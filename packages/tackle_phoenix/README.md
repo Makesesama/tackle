@@ -578,17 +578,21 @@ from current server-side state.
 
 ### Conversation trees in a Phoenix host
 
-Branching is a library capability, not a Phoenix feature. A Phoenix host that
-wants in-session branching opts in with `Tackle.Lib.new(tree: true)` and persists
-its own entries through a `Tackle.Lib.Committer`; nothing in this package
-requires the root harness or its `:disk_log` journal. When a session is
-tree-enabled, remember the reader contract: `State.messages` is the **active
-branch's** transcript, not the whole archive. Hosts that index or display the
-complete history read `Tackle.Lib.Tree.enumerate/1`, while model context is
-`State.model_messages/1` (the active branch with only its own compactions).
-Usage follows the same split: `Tackle.Lib.State.branch_usage/1` for the active path,
-and the tree's own aggregate for the archive. Linear Phoenix sessions are
-unchanged and keep `State.messages` as the complete transcript.
+Branching is a library capability, not a Phoenix feature. Every
+`%Tackle.Lib.State{}` keeps its conversation in a `Tackle.Lib.Tree`; a Phoenix
+host that offers in-session branching calls `Tackle.Lib.navigate/3` and persists
+its own entries through a `Tackle.Lib.Committer`, and nothing in this package
+requires the root harness or its `:disk_log` journal. A host that does not offer
+branching never navigates, and its sessions are single-branch trees. Once a
+session has branched, remember the reader contract: `State.messages` is the
+**active branch's** transcript, not the whole archive. Hosts that index or
+display the complete history read `Tackle.Lib.Tree.enumerate/1`, while model
+context is `State.model_messages/1` (the active branch with only its own
+compactions). Usage follows the same split: `Tackle.Lib.State.branch_usage/1`
+for the active path, and `Tackle.Lib.State.usage/1` for the archive. The runner
+amends a settled message only through `Tackle.Lib.State.update_message/3` (it
+attaches usage reported only through events to the final answer), so the tree
+and the transcript never disagree.
 
 ## Telemetry
 

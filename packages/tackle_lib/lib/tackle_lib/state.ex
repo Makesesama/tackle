@@ -13,7 +13,23 @@ defmodule Tackle.Lib.State do
   own per-step bookkeeping (the id of the assistant message being generated,
   the overflow recoveries spent) lives with the running turn, never here.
   Values that can be derived are not stored twice: `tools/1` reads the tool
-  registry and `last_compaction_id/1` reads the tree or the model projection.
+  registry and `last_compaction_id/1` reads the tree.
+
+  ## Conversation
+
+  The conversation is always a `Tackle.Lib.Tree` (`:tree`): every settled
+  message and every committed compaction is an entry, and one entry is the
+  active position. A state that never navigates is simply a tree with one
+  branch. Whether a host lets its users branch is host policy; the library
+  can always navigate (`Tackle.Lib.navigate/3`).
+
+  `:messages` (the active path's complete transcript) and `:model_messages`
+  (the active path's provider context, with its compactions applied) are
+  cached derivations of the tree, kept so the loop and hosts read them
+  without walking the tree. They are written only together with the tree:
+  `add_message/2` extends them, and `put_tree/2` installs a tree and
+  re-derives both. Never set them directly; a state whose caches disagree
+  with its tree sends one history and records another.
 
   A turn that ends in an error leaves a human-readable message in `:error` and
   the structured reason behind it in `:error_reason`, the same term the turn's
@@ -42,7 +58,7 @@ defmodule Tackle.Lib.State do
   @type t :: %__MODULE__{
           session_id: String.t(),
           messages: [Message.t()],
-          model_messages: [Message.t()] | nil,
+          model_messages: [Message.t()],
           current_iteration: non_neg_integer(),
           max_iterations: iteration_limit(),
           status: status(),
@@ -60,7 +76,7 @@ defmodule Tackle.Lib.State do
           error_reason: term(),
           retry: Retry.t(),
           compaction: Compaction.Config.t() | nil,
-          tree: Tree.t() | nil,
+          tree: Tree.t(),
           committer: module() | nil
         }
 
@@ -68,7 +84,7 @@ defmodule Tackle.Lib.State do
 
   defstruct session_id: nil,
             messages: [],
-            model_messages: nil,
+            model_messages: [],
             current_iteration: 0,
             max_iterations: @default_max_iterations,
             status: :idle,
@@ -86,7 +102,7 @@ defmodule Tackle.Lib.State do
             error_reason: nil,
             retry: Retry.new!(),
             compaction: nil,
-            tree: nil,
+            tree: %Tree{},
             committer: nil
 
   @doc """
@@ -116,10 +132,9 @@ defmodule Tackle.Lib.State do
       retries with deterministic exponential backoff starting at 2 seconds)
     * `:compaction` - a `Tackle.Lib.Compaction.Config` or its options, or
       `nil` (the default), which disables compaction
-    * `:tree` - `true`, a `Tackle.Lib.Tree`, or `nil`/`false` (default: `nil`).
-      `true` enables an opt-in conversation tree with branching history. When
-      given an existing tree, the active transcript and model context are
-      reconstructed from its selected path.
+    * `:tree` - an existing `Tackle.Lib.Tree` to continue (default: an empty
+      tree); its active transcript and model context are derived from its
+      selected path (see `put_tree/2`)
     * `:committer` - module implementing `Tackle.Lib.Committer`, which makes
       compactions and navigations durable before they are installed
       (default: `nil`, in memory only); raises `ArgumentError` for a module
@@ -131,12 +146,8 @@ defmodule Tackle.Lib.State do
 
     llm = llm!(opts)
 
-    tree = normalize_tree(Keyword.get(opts, :tree))
-
-    %__MODULE__{
+    state = %__MODULE__{
       session_id: Keyword.get(opts, :session_id) || id_generator.(),
-      messages: if(tree, do: Tree.transcript(tree), else: []),
-      model_messages: if(tree, do: Tree.model_context(tree), else: nil),
       current_iteration: 0,
       max_iterations: Keyword.get(opts, :max_iterations, @default_max_iterations),
       status: :idle,
@@ -154,19 +165,19 @@ defmodule Tackle.Lib.State do
       error_reason: nil,
       retry: normalize_retry(Keyword.get(opts, :retry)),
       compaction: normalize_compaction(Keyword.get(opts, :compaction)),
-      tree: tree,
       committer: committer!(Keyword.get(opts, :committer))
     }
-  end
 
-  defp normalize_tree(nil), do: nil
-  defp normalize_tree(false), do: nil
-  defp normalize_tree(true), do: Tree.new()
-  defp normalize_tree(%Tree{} = tree), do: tree
+    case Keyword.get(opts, :tree) do
+      nil ->
+        state
 
-  defp normalize_tree(other) do
-    raise ArgumentError,
-          "expected :tree to be true, a Tackle.Lib.Tree, false, or nil, got: #{inspect(other)}"
+      %Tree{} = tree ->
+        put_tree(state, tree)
+
+      other ->
+        raise ArgumentError, "expected :tree to be a Tackle.Lib.Tree, got: #{inspect(other)}"
+    end
   end
 
   defp normalize_retry(value) do
@@ -249,26 +260,22 @@ defmodule Tackle.Lib.State do
   def tools(%__MODULE__{tool_registry: registry}), do: Registry.modules(registry)
 
   @doc """
-  Adds a message to the conversation history.
+  Adds a settled message to the conversation.
 
-  In linear mode the canonical transcript always receives the message and the
-  model projection is kept in step: while it mirrors the transcript (`nil`) it
-  stays mirrored, and once compaction has replaced it the message is appended
-  explicitly.
-
-  In tree mode the message is appended to the active position and the existing
-  projections are extended. Navigation and restoration reconstruct projections
-  from the selected tree path.
+  The message is appended to the tree at the active position, which it
+  becomes, and to the cached transcript and model context. Raises
+  `ArgumentError` when the tree refuses the message, such as one without an
+  id or with an id already in the tree.
   """
   @spec add_message(t(), Message.t()) :: t()
-  def add_message(%__MODULE__{tree: %Tree{} = tree} = state, %Message{} = message) do
+  def add_message(%__MODULE__{tree: tree} = state, %Message{} = message) do
     case Tree.append_message(tree, message) do
       {:ok, tree, _entry} ->
         %{
           state
           | tree: tree,
             messages: state.messages ++ [message],
-            model_messages: model_messages(state) ++ [message]
+            model_messages: state.model_messages ++ [message]
         }
 
       {:error, reason} ->
@@ -276,25 +283,50 @@ defmodule Tackle.Lib.State do
     end
   end
 
-  def add_message(%__MODULE__{} = state, %Message{} = message) do
+  @doc """
+  Installs `tree` as the state's conversation.
+
+  The cached transcript (`:messages`) and model context (`:model_messages`)
+  are re-derived from the tree's active path, so they always agree with it.
+  This is the one way to install a tree: a restored session, a navigation,
+  and a compaction all go through it. The turn fields are left alone; call
+  `reset_turn/1` when installing a conversation on a state that may have run
+  before.
+  """
+  @spec put_tree(t(), Tree.t()) :: t()
+  def put_tree(%__MODULE__{} = state, %Tree{} = tree) do
     %{
       state
-      | messages: state.messages ++ [message],
-        model_messages: append_model(state.model_messages, message)
+      | tree: tree,
+        messages: Tree.transcript(tree),
+        model_messages: Tree.model_context(tree)
     }
   end
 
-  defp append_model(nil, _message), do: nil
-  defp append_model(model_messages, message), do: model_messages ++ [message]
+  @doc """
+  Replaces one settled message, keeping its place in the conversation.
+
+  `fun` receives the message and returns its replacement, which must keep the
+  message's id (`ArgumentError` otherwise). The tree entry is updated and the
+  cached transcript and model context re-derived, so hosts that amend a
+  message after a turn (attaching usage the provider reported separately,
+  say) keep the tree consistent. Returns `{:error, {:unknown_message, id}}`
+  when no message entry has the id.
+  """
+  @spec update_message(t(), String.t(), (Message.t() -> Message.t())) ::
+          {:ok, t()} | {:error, {:unknown_message, String.t()}}
+  def update_message(%__MODULE__{tree: tree} = state, id, fun) when is_function(fun, 1) do
+    case Tree.update_message(tree, id, fun) do
+      {:ok, tree} -> {:ok, put_tree(state, tree)}
+      {:error, _reason} -> {:error, {:unknown_message, id}}
+    end
+  end
 
   @doc """
-  Returns the provider-visible model message projection.
-
-  `nil` means the projection mirrors the complete settled transcript; after a
-  compaction the projection is an explicit `[checkpoint | recent tail]` list.
+  Returns the provider-visible model context: the active path's messages with
+  its compactions applied, a checkpoint followed by the recent tail after one.
   """
   @spec model_messages(t()) :: [Message.t()]
-  def model_messages(%__MODULE__{model_messages: nil, messages: messages}), do: messages
   def model_messages(%__MODULE__{model_messages: model_messages}), do: model_messages
 
   @doc """
@@ -310,27 +342,21 @@ defmodule Tackle.Lib.State do
   @doc """
   Derives aggregate token/cost usage for the current run/session.
 
-  In tree mode this covers the complete archive: every settled assistant message
-  is counted once even when branches share it. Use `branch_usage/1` for the
+  This covers the complete archive: every settled assistant message is
+  counted once even when branches share it. Use `branch_usage/1` for the
   active path.
   """
   @spec usage(t()) :: Usage.t()
-  def usage(%__MODULE__{tree: %Tree{} = tree}), do: Tree.usage(tree)
-
-  def usage(%__MODULE__{} = state) do
-    state.messages
-    |> Enum.map(& &1.token_usage)
-    |> Usage.aggregate()
-  end
+  def usage(%__MODULE__{tree: tree}), do: Tree.usage(tree)
 
   @doc """
   Derives token/cost usage for the active conversation path only.
 
-  Linear mode has a single path, so this equals `usage/1`.
+  A conversation that never branched has a single path, so this equals
+  `usage/1`.
   """
   @spec branch_usage(t()) :: Usage.t()
-  def branch_usage(%__MODULE__{tree: %Tree{} = tree}), do: Tree.branch_usage(tree)
-  def branch_usage(%__MODULE__{} = state), do: usage(state)
+  def branch_usage(%__MODULE__{tree: tree}), do: Tree.branch_usage(tree)
 
   @doc """
   Returns the usage on the active conversation, split where compactions
@@ -345,12 +371,10 @@ defmodule Tackle.Lib.State do
   running turn's) can be appended to it without joining the span before the
   compaction.
 
-  In tree mode the spans follow the compaction entries on the active path.
-  Linear mode knows only the latest compaction (the head of the model
-  projection), so the spans before it come back as one.
+  The spans follow the compaction entries on the active path.
   """
   @spec usage_segments(t()) :: [[Usage.t() | map()]]
-  def usage_segments(%__MODULE__{tree: %Tree{} = tree}) do
+  def usage_segments(%__MODULE__{tree: tree}) do
     tree
     |> Tree.active_path()
     |> Enum.reduce([[]], fn
@@ -365,28 +389,6 @@ defmodule Tackle.Lib.State do
     |> keep_current_span()
   end
 
-  def usage_segments(%__MODULE__{} = state) do
-    segments =
-      case last_compaction_id(state) do
-        nil ->
-          [state.messages]
-
-        _id ->
-          # The model projection's retained copies lost their usage; messages
-          # still carrying it there arrived after the compaction.
-          current =
-            for %Message{id: id, token_usage: usage} <- state.model_messages,
-                not is_nil(usage),
-                into: MapSet.new(),
-                do: id
-
-          {later, earlier} = Enum.split_with(state.messages, &MapSet.member?(current, &1.id))
-          [earlier, later]
-      end
-
-    segments |> Enum.map(&message_usages/1) |> keep_current_span()
-  end
-
   defp keep_current_span(segments) do
     {earlier, [current]} = Enum.split(segments, -1)
     Enum.reject(earlier, &(&1 == [])) ++ [current]
@@ -397,20 +399,19 @@ defmodule Tackle.Lib.State do
   end
 
   @doc """
-  Returns the most recent compaction id on the active path, or nil.
+  Returns the most recent committed compaction on the active path, or nil.
 
-  In tree mode it is the latest compaction entry on the active path. In
-  linear mode it is the id of the checkpoint message that a compaction puts
-  at the head of the model projection, which is the compaction's id.
+  Its `summary_message` is the checkpoint at the head of `model_messages/1`.
+  Checkpoints are known by their compaction entries in the tree, never by
+  their content, so a user message that happens to look like one is still a
+  user message.
   """
+  @spec last_compaction(t()) :: Compaction.Record.t() | nil
+  def last_compaction(%__MODULE__{tree: tree}), do: Tree.last_compaction(tree)
+
+  @doc "Returns the id of the most recent compaction on the active path, or nil."
   @spec last_compaction_id(t()) :: String.t() | nil
-  def last_compaction_id(%__MODULE__{tree: %Tree{} = tree}), do: Tree.last_compaction_id(tree)
-
-  def last_compaction_id(%__MODULE__{model_messages: [%Message{id: id} = first | _rest]}) do
-    if Compaction.Checkpoint.message?(first), do: id
-  end
-
-  def last_compaction_id(%__MODULE__{}), do: nil
+  def last_compaction_id(%__MODULE__{tree: tree}), do: Tree.last_compaction_id(tree)
 
   # Loop-internal: how the loop ends a turn. `message` is the human-readable
   # `:error`, and `reason` the structured `:error_reason` behind it, or `nil`.

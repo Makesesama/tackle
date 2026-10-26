@@ -1,6 +1,7 @@
 defmodule Tackle.CLI.SubagentProgressTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.{Conversation, MessageView, RuntimeEvents, State, Viewport}
   alias Tackle.CLI.Widgets.Input
   alias Tackle.Lib.{Event, Message}
@@ -451,7 +452,13 @@ defmodule Tackle.CLI.SubagentProgressTest do
   test "clock refresh preserves the reading anchor and only changes live entries" do
     state = shell()
     messages = Enum.map(1..30, &Message.user("message #{&1}"))
-    state = Viewport.refresh(%{state | agent_state: %{state.agent_state | messages: messages}})
+
+    state =
+      Viewport.refresh(%{
+        state
+        | agent_state: AgentStates.replace_messages(state.agent_state, messages)
+      })
+
     state = state |> start("one", "Inspect") |> Viewport.scroll_to(:start)
     anchor = state.conversation.anchor
     settled = state.conversation.sections.settled

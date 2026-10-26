@@ -6,6 +6,7 @@ defmodule Tackle.CLI.ResumeConfirmTest do
   alias ExRatatui.Command
   alias ExRatatui.Event.Key
   alias Tackle.CLI.Keybinds
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.{Resume, ResumeConfirm, Session, Viewport}
   alias Tackle.CLI.TUI.State, as: TuiState
   alias Tackle.CLI.Widgets.{Input, ResumeScreen}
@@ -327,7 +328,7 @@ defmodule Tackle.CLI.ResumeConfirmTest do
     assert {:noreply, %{notice: "Nothing to archive yet", overlay: nil}} =
              Session.request_archive(base_state(hooks))
 
-    with_history = %{AgentState.new() | messages: [Message.user("hi")]}
+    with_history = AgentStates.with_messages([Message.user("hi")])
 
     assert {:noreply, %{notice: notice, overlay: nil}} =
              Session.request_archive(base_state(agent_state: with_history))

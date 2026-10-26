@@ -5,6 +5,7 @@ defmodule Tackle.Session.JournalTest do
 
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tree
   alias Tackle.Runtime.ID
   alias Tackle.Session.Journal
   alias Tackle.Session.Journal.Watchdog
@@ -104,6 +105,54 @@ defmodule Tackle.Session.JournalTest do
       assert [_, _] = replay.projection.messages
       assert replay.projection.status == :clean
       assert replay.projection.active_turn == nil
+    end
+
+    test "a journal without branching keeps its format and refuses a branch", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      user = Message.user("hello")
+      answer = Message.assistant(content: "world")
+
+      # The parent a branching session would record is implied, so not written.
+      assert :ok = Journal.append_message(journal, user, {:tree, nil})
+      assert :ok = Journal.append_message(journal, answer, {:tree, user.id})
+
+      # A parent other than the active entry would branch.
+      assert {:error, :tree_disabled} =
+               Journal.append_message(journal, Message.user("branch"), {:tree, user.id})
+
+      assert {:ok, %{last_seq: 4}} = Journal.status(journal)
+      assert :ok = Journal.flush(journal)
+      {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+
+      appended =
+        for commit <- replay.commits,
+            %{"type" => "message.appended", "data" => data} <- commit["events"],
+            do: data
+
+      assert [_, _] = appended
+      refute Enum.any?(appended, &Map.has_key?(&1, "parent_id"))
+      assert Enum.map(replay.projection.messages, & &1["id"]) == [user.id, answer.id]
+    end
+
+    test "a branching journal records every parent", ctx do
+      {:ok, journal} = start_journal(ctx, tree: true)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      user = Message.user("hello")
+      assert :ok = Journal.append_message(journal, user, {:tree, nil})
+      assert :ok = Journal.append_message(journal, Message.user("sibling"), {:tree, nil})
+
+      assert :ok = Journal.flush(journal)
+      {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+
+      assert [nil, nil] =
+               for(
+                 commit <- replay.commits,
+                 %{"type" => "message.appended", "data" => data} <- commit["events"],
+                 do: Map.fetch!(data, "parent_id")
+               )
+
+      assert [_, _] = Tree.roots(replay.projection.tree)
     end
 
     test "rejects a second concurrent turn", ctx do

@@ -10,8 +10,8 @@ defmodule Tackle.Lib.Compaction.Plan do
     * the retained tail never begins with a tool result;
     * an assistant tool call is never separated from any of its results, even
       when other messages sit between them; and
-    * a cut never shadows only an earlier checkpoint, which would summarize a
-      summary without shadowing anything new.
+    * a cut never shadows only an earlier checkpoint (`:checkpoint_id`),
+      which would summarize a summary without shadowing anything new.
 
   The cut keeps approximately `:retain_tokens` verbatim: it is the first valid
   boundary at or after the message that crosses the target, counted from the
@@ -32,7 +32,6 @@ defmodule Tackle.Lib.Compaction.Plan do
   same projection and policy always produce the same plan.
   """
 
-  alias Tackle.Lib.Compaction.Checkpoint
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tool.Call
@@ -67,6 +66,10 @@ defmodule Tackle.Lib.Compaction.Plan do
       tail (default 0).
     * `:max_retained_tokens` - the most tokens the tail may keep, or `nil`
       (the default) for no cap.
+    * `:checkpoint_id` - the id of the earlier checkpoint leading `messages`
+      (the summary message of the branch's last compaction record), or `nil`
+      (the default) when there is none. Only that message counts as a
+      checkpoint; message content never does.
 
   Returns `{:error, :nothing_to_shadow}` when no structurally valid cut exists
   or the projection already fits `:retain_tokens`.
@@ -81,7 +84,7 @@ defmodule Tackle.Lib.Compaction.Plan do
     if elem(tails, 0) <= retain_tokens do
       {:error, :nothing_to_shadow}
     else
-      cuts = valid_cuts(messages)
+      cuts = valid_cuts(messages, Keyword.get(opts, :checkpoint_id))
 
       case choose_cut(cuts, sizes, tails, retain_tokens, max_retained) do
         nil -> {:error, :nothing_to_shadow}
@@ -148,7 +151,7 @@ defmodule Tackle.Lib.Compaction.Plan do
   # checkpoints. Calls without a later result (foreign or unsettled history)
   # cannot be kept together with one and never block a cut. One pass, with
   # the set of calls still waiting.
-  defp valid_cuts(messages) do
+  defp valid_cuts(messages, checkpoint_id) do
     results = result_positions(messages)
     upcoming = tl(messages ++ [nil])
 
@@ -157,7 +160,7 @@ defmodule Tackle.Lib.Compaction.Plan do
     |> Enum.with_index(1)
     |> Enum.reduce({MapSet.new(), false, []}, fn {{message, next}, cut}, {pending, new?, cuts} ->
       pending = track(pending, message, cut - 1, results)
-      new? = new? or not Checkpoint.message?(message)
+      new? = new? or not checkpoint?(message, checkpoint_id)
 
       cuts =
         if new? and MapSet.size(pending) == 0 and not tool_result?(next),
@@ -200,6 +203,9 @@ defmodule Tackle.Lib.Compaction.Plan do
     do: MapSet.delete(pending, id)
 
   defp track(pending, _message, _index, _results), do: pending
+
+  defp checkpoint?(_message, nil), do: false
+  defp checkpoint?(%Message{id: id}, checkpoint_id), do: id == checkpoint_id
 
   defp tool_result?(%Message{role: :tool}), do: true
   defp tool_result?(_message), do: false

@@ -199,9 +199,10 @@ defmodule Tackle.Session.Codec do
 
   The synthetic checkpoint is stored as a durable message, next to the
   shadowed message ids for provenance, the first retained id, and auxiliary
-  summarization usage. `"parent_id"` is written only for a record attached to
-  a tree entry; a linear record leaves it absent so replay chains it by
-  position.
+  summarization usage. `"parent_id"` is written for a record attached to a
+  tree entry. A journal without branching leaves it out
+  (`Tackle.Session.Journal.context_compacted/2`), and replay chains such a
+  record by position.
   """
   @spec encode_compaction(Record.t()) :: {:ok, map()} | {:error, term()}
   def encode_compaction(%Record{} = record) do

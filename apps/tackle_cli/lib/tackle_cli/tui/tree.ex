@@ -82,7 +82,8 @@ defmodule Tackle.CLI.TUI.Tree do
   Opens the conversation-tree screen when the shell is idle.
 
   Reports a notice instead when a turn is active, another operation is pending,
-  or the session has no tree.
+  or the tree is empty. A session without branching still shows its tree;
+  navigating it reports the session's `:tree_disabled` rejection.
   """
   @spec open(State.t()) :: {:noreply, State.t()}
   def open(%State{active_turn: turn} = state) when not is_nil(turn) do
@@ -91,10 +92,6 @@ defmodule Tackle.CLI.TUI.Tree do
 
   def open(%State{pending_operation: operation} = state) when not is_nil(operation) do
     {:noreply, %{state | notice: "Wait for the current operation to finish"}}
-  end
-
-  def open(%State{agent_state: %{tree: nil}} = state) do
-    {:noreply, %{state | notice: "This session has no conversation tree"}}
   end
 
   def open(%State{} = state) do
@@ -578,7 +575,7 @@ defmodule Tackle.CLI.TUI.Tree do
   end
 
   defp search_text(%{kind: :compaction, compaction: compaction}, _calls) do
-    Tackle.Lib.Compaction.Checkpoint.body(compaction.summary_message) || "context compacted"
+    Tackle.Lib.Compaction.Checkpoint.summary(compaction) || "context compacted"
   end
 
   defp search_text(_entry, _calls), do: ""

@@ -168,7 +168,7 @@ defmodule Tackle.Workflow.TestAgent do
 
   defp publish_events(_state), do: :ok
 
-  defp answer(content), do: %State{messages: [Message.assistant(content: content)]}
+  defp answer(content), do: State.add_message(State.new(), Message.assistant(content: content))
 
   defp notify(config, message) do
     if pid = Map.get(config, :test_pid), do: send(pid, message)

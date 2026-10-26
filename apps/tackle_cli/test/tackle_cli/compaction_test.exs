@@ -14,8 +14,8 @@ defmodule Tackle.CLI.TUI.CompactionTest do
   }
 
   alias Tackle.CLI.Widgets.Input
-  alias Tackle.Lib.Compaction.Checkpoint
-  alias Tackle.Lib.{Event, Message}
+  alias Tackle.Lib.Compaction.{Checkpoint, Record}
+  alias Tackle.Lib.{Event, Message, Tree}
   alias Tackle.Lib.State, as: AgentState
   alias Tackle.Session.Snapshot
 
@@ -27,12 +27,11 @@ defmodule Tackle.CLI.TUI.CompactionTest do
 
     record = record()
 
-    snapshot = %Snapshot{
-      session_id: "session",
-      agent_state: %{state.agent_state | model_messages: [record.summary_message]}
-    }
+    snapshot = %Snapshot{session_id: "session", agent_state: compacted(state.agent_state, record)}
 
-    event = Event.new(:compaction_end, Map.merge(record, %{status: :completed}))
+    event =
+      Event.new(:compaction_end, record |> Map.from_struct() |> Map.put(:status, :completed))
+
     {:noreply, ended} = RuntimeEvents.handle({:tackle_compaction, "session", event}, running)
     assert card(ended).content =~ "1.2k → 300 est. tokens"
 
@@ -63,17 +62,17 @@ defmodule Tackle.CLI.TUI.CompactionTest do
   test "a committed checkpoint is synced even when a later manual pass fails" do
     state = shell()
     {:noreply, running, commands: [_]} = Compaction.request(state)
-    checkpoint = Checkpoint.message("partial", "saved context")
+    partial = record("partial", "saved context")
 
     snapshot = %Snapshot{
       session_id: "session",
-      agent_state: %{state.agent_state | model_messages: [checkpoint]}
+      agent_state: compacted(state.agent_state, partial)
     }
 
     {:noreply, updated} =
       RuntimeEvents.handle({:tackle_session_compacted, "session", snapshot, nil}, running)
 
-    assert updated.agent_state.model_messages == [checkpoint]
+    assert updated.agent_state.model_messages == [partial.summary_message]
     assert updated.pending_operation == running.pending_operation
   end
 
@@ -84,13 +83,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
     later = Enum.map(1..30, &Message.assistant(content: "later message #{&1}"))
 
     state =
-      %{
-        completed
-        | agent_state: %{
-            completed.agent_state
-            | messages: completed.agent_state.messages ++ later
-          }
-      }
+      %{completed | agent_state: add_messages(completed.agent_state, later)}
       |> Viewport.refresh()
 
     assert [user, checkpoint | rest] = Conversation.entries(state.conversation)
@@ -128,10 +121,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
     assert Enum.map(Conversation.entries(state.conversation), & &1.kind) ==
              [:user, :assistant, :compaction, :assistant]
 
-    agent_state = %{
-      state.agent_state
-      | messages: state.agent_state.messages ++ [before, after_message]
-    }
+    agent_state = add_messages(state.agent_state, [before, after_message])
 
     {:noreply, settled} =
       RuntimeEvents.handle(
@@ -195,10 +185,9 @@ defmodule Tackle.CLI.TUI.CompactionTest do
 
   test "resumed checkpoints expose their summary without inventing token counts" do
     state = shell()
-    checkpoint = Checkpoint.message("checkpoint", "background summary")
 
     state =
-      %{state | agent_state: %{state.agent_state | model_messages: [checkpoint]}}
+      %{state | agent_state: compacted(state.agent_state, record())}
       |> Compaction.restore()
       |> Viewport.refresh()
 
@@ -208,12 +197,11 @@ defmodule Tackle.CLI.TUI.CompactionTest do
 
   test "a new completed pass never exposes the previous checkpoint as its summary" do
     state = shell()
-    checkpoint = Checkpoint.message("old", "old summary")
 
     state = %{
       state
       | active_turn: %{id: "turn"},
-        agent_state: %{state.agent_state | model_messages: [checkpoint]}
+        agent_state: compacted(state.agent_state, record("old", "old summary"))
     }
 
     {:noreply, state} =
@@ -225,7 +213,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
   test "foreign events are ignored and reading anchors survive progress updates" do
     state = shell()
     messages = Enum.map(1..30, &Message.user("message #{&1}"))
-    state = Viewport.refresh(%{state | agent_state: %{state.agent_state | messages: messages}})
+    state = Viewport.refresh(%{state | agent_state: add_messages(state.agent_state, messages)})
     state = Viewport.scroll_to(state, :start)
     event = Event.new(:compaction_start, %{trigger: :manual})
 
@@ -252,16 +240,25 @@ defmodule Tackle.CLI.TUI.CompactionTest do
   defp turn_event(state, type, data),
     do: RuntimeEvents.handle({:tackle_event, "session", "turn", Event.new(type, data)}, state)
 
-  defp record do
-    %{
-      compaction_id: "checkpoint",
+  defp record(id \\ "checkpoint", summary \\ "background summary") do
+    %Record{
+      compaction_id: id,
       trigger: :manual,
       tokens_before: 1_200,
       estimated_tokens_after: 300,
       shadowed_message_ids: ["user"],
-      summary_message: Checkpoint.message("checkpoint", "background summary")
+      summary_message: Checkpoint.message(id, summary),
+      created_at: ~U[2026-01-01 00:00:00Z]
     }
   end
+
+  defp compacted(agent_state, record) do
+    {:ok, tree, _entry} = Tree.append_compaction(agent_state.tree, record)
+    AgentState.put_tree(agent_state, tree)
+  end
+
+  defp add_messages(agent_state, messages),
+    do: Enum.reduce(messages, agent_state, &AgentState.add_message(&2, &1))
 
   defp shell do
     input = Input.new()
@@ -271,7 +268,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
       session_id: "session",
       input: input,
       draft_empty?: false,
-      agent_state: %AgentState{messages: [Message.user("hello", id: "user")]},
+      agent_state: AgentState.add_message(AgentState.new(), Message.user("hello", id: "user")),
       conversation: Viewport.new_conversation(80, 24)
     })
   end

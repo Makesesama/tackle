@@ -33,7 +33,6 @@ defmodule Tackle.CLI.TUI.StatusView do
   alias Tackle.CLI.TUI.State.Metrics
   alias Tackle.Lib
   alias Tackle.Lib.{ContextUsage, Usage}
-  alias Tackle.Lib.Compaction.Checkpoint
 
   @spinner_frames ~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 
@@ -285,14 +284,10 @@ defmodule Tackle.CLI.TUI.StatusView do
     |> Enum.reject(&is_nil/1)
   end
 
-  # A checkpoint leading the model projection means the provider surface is
-  # compacted even though the transcript still shows the full history.
-  defp compaction_indicator(%State{agent_state: %Lib.State{model_messages: messages}})
-       when is_list(messages) do
-    case messages do
-      [first | _rest] -> if Checkpoint.message?(first), do: "compacted", else: nil
-      [] -> nil
-    end
+  # A compaction on the active branch means the provider surface is compacted
+  # even though the transcript still shows the full history.
+  defp compaction_indicator(%State{agent_state: %Lib.State{} = agent_state}) do
+    if Lib.State.last_compaction_id(agent_state), do: "compacted"
   end
 
   defp compaction_indicator(_state), do: nil

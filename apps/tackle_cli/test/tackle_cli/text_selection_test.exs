@@ -5,6 +5,7 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
   alias ExRatatui.Event.{Key, Mouse}
   alias ExRatatui.Layout.Rect
   alias Tackle.CLI.{Native, TUI}
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.{Browser, Conversation, Layout, State, TextSelection, Theme, Viewport}
   alias Tackle.CLI.Widgets.{Browse, Input}
   alias Tackle.CLI.Widgets.Conversation, as: Widget
@@ -98,7 +99,12 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
 
     resized = Conversation.resize(state.conversation, %{state.conversation.rect | width: 20})
     assert resized.text_selection == nil
-    changed = %{state | agent_state: %{state.agent_state | messages: [Message.user("changed")]}}
+
+    changed = %{
+      state
+      | agent_state: AgentStates.replace_messages(state.agent_state, [Message.user("changed")])
+    }
+
     assert Viewport.refresh(changed).conversation.text_selection == nil
   end
 
@@ -176,7 +182,7 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
         [Message.assistant(content: "hello world")]
 
     state =
-      %{state | agent_state: %{state.agent_state | messages: messages}}
+      %{state | agent_state: AgentStates.replace_messages(state.agent_state, messages)}
       |> Viewport.refresh()
       |> Viewport.scroll_to(:end)
 
@@ -245,7 +251,7 @@ defmodule Tackle.CLI.TUI.TextSelectionTest do
     %State{
       input: input,
       draft_empty?: false,
-      agent_state: %Tackle.Lib.State{messages: [Message.user(text)]},
+      agent_state: AgentStates.with_messages([Message.user(text)]),
       size: {40, 20},
       conversation: Conversation.new(%Rect{width: 40, height: 12}),
       clipboard_writer: fn text ->

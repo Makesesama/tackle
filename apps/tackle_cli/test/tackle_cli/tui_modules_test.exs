@@ -1,6 +1,7 @@
 defmodule Tackle.CLI.TUI.ModulesTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.CLI.Test.AgentStates
   alias Tackle.CLI.TUI.Compaction, as: TUICompaction
   alias Tackle.CLI.TUI.{Composer, Inspector, Menu, State, Util, Viewport}
   alias Tackle.CLI.Widgets.Input
@@ -69,9 +70,10 @@ defmodule Tackle.CLI.TUI.ModulesTest do
       ]
 
       assert %Usage{input_tokens: 5, output_tokens: 2} =
-               State.latest_usage(%{agent_state() | messages: messages})
+               State.latest_usage(AgentStates.replace_messages(agent_state(), messages))
 
-      assert State.latest_usage(%{agent_state() | messages: [Message.user("hi")]}) == nil
+      assert State.latest_usage(AgentStates.replace_messages(agent_state(), [Message.user("hi")])) ==
+               nil
     end
 
     test "available_models/2 keeps the current model visible" do
@@ -165,7 +167,7 @@ defmodule Tackle.CLI.TUI.ModulesTest do
       messages = Enum.map(1..100, &Message.user("message #{&1}"))
 
       state =
-        %{state | agent_state: %{state.agent_state | messages: messages}}
+        %{state | agent_state: AgentStates.replace_messages(state.agent_state, messages)}
         |> Viewport.refresh()
         |> Viewport.scroll_to(:start)
 

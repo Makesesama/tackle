@@ -23,7 +23,7 @@ defmodule Tackle.Lib.TreeLoopTest do
   end
 
   test "a branch switch sends only the active path to the provider" do
-    state = State.new(tree: true, llm: TestLLM.selection(CapturingAdapter))
+    state = State.new(llm: TestLLM.selection(CapturingAdapter))
     assert {:ok, state} = Loop.run(state, "first question")
 
     assert_receive {:messages, first_call}

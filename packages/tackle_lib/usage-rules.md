@@ -50,6 +50,13 @@ Tackle.Lib.last_answer(state)
   user message — use it to retry a turn that errored.
 - Read results with `Tackle.Lib.last_answer/1`, `Tackle.Lib.messages/1`,
   `Tackle.Lib.usage/1`, `Tackle.Lib.completed?/1`, `Tackle.Lib.error?/1`, `Tackle.Lib.error/1`.
+- Every state keeps its conversation in a `Tackle.Lib.Tree` (`state.tree`);
+  `state.messages` and `state.model_messages` are caches derived from it. Never
+  write those fields: append with `Tackle.Lib.State.add_message/2`, install a
+  restored tree with `:tree` or `Tackle.Lib.State.put_tree/2`, and amend a
+  settled message with `Tackle.Lib.State.update_message/3`. A compaction
+  checkpoint is `Tackle.Lib.State.last_compaction/1`'s `summary_message`; never
+  detect one by its text.
 
 ### run/continue options
 

@@ -264,12 +264,16 @@ Tackle.Lib.continue(state, run_opts)
 | `:prompt_renderer_opts` | Renderer options | `[]` |
 | `:id_generator` | Zero-arity session/message/tool-call ID function | UUID generator |
 | `:retry` | `Tackle.Lib.Retry`, options, or `false` for provider-message retries | 3 retries, 2s base, 60s cap |
+| `:tree` | An existing `Tackle.Lib.Tree` to continue; anything else raises `ArgumentError` | empty tree |
 
 Pass a positive integer as `:max_iterations` when a host needs a bounded run.
 
-The state keeps no derived copies: `Tackle.Lib.State.model/1` reads the
-selection, `Tackle.Lib.State.tools/1` reads the tool registry, and `Tackle.Lib.State.last_compaction_id/1` reads the tree or the
-checkpoint at the head of the model projection. The loop's per-step
+The state keeps no derived copies beyond the conversation caches:
+`Tackle.Lib.State.model/1` reads the selection, `Tackle.Lib.State.tools/1`
+reads the tool registry, and `Tackle.Lib.State.last_compaction/1` and
+`last_compaction_id/1` read the compaction entries of the state's tree (see
+[Conversation trees](#conversation-trees) for the `messages` and
+`model_messages` caches). The loop's per-step
 bookkeeping (the id of the assistant message being generated, the overflow
 recoveries a turn has spent) is not on the state. A host that installs a
 restored or navigated conversation on a state calls
@@ -1267,8 +1271,11 @@ it replaces, and a pressure compaction ends below the threshold
 (`:insufficient_reduction` otherwise). A pressure compaction that fails is not
 retried for the rest of the turn; overflow recovery still applies. When the
 shadowed messages would not fit the summarization request, the largest are
-shortened with a marker (`Tackle.Lib.Compaction.Input`); earlier checkpoints are
-sent once, as the first shadowed message.
+shortened with a marker (`Tackle.Lib.Compaction.Input`); the earlier checkpoint
+is sent once, unshortened, as the first shadowed message. A checkpoint is known
+by its compaction entry in the state's tree (`Tackle.Lib.State.last_compaction/1`),
+never by its text, so a user message that reads like one is still a user
+message.
 
 A `Tackle.Lib.Compaction.Summarizer` only turns a request into text plus usage.
 It receives the host-supplied `llm_opts` (including credential-store handles)
@@ -1286,17 +1293,17 @@ that pass; retain it so the in-memory projection matches the durable
 checkpoint. The core owns balanced cut selection, strict validation
 (non-empty, complete, no tool calls, strictly smaller than the shadowed
 region), the durability commit, and the in-memory replacement.
-`Tackle.Lib.Compaction.Checkpoint` builds the checkpoint message and applies a
-committed `Tackle.Lib.Compaction.Record` to a message list, for the live
-replacement and for a tree's branches alike.
+`Tackle.Lib.Compaction.Checkpoint` builds the checkpoint message, returns a
+record's summary text (`summary/1`), and applies a committed
+`Tackle.Lib.Compaction.Record` to a message list, for the live replacement and
+for a tree's branches alike.
 
 The state's `:committer`, a `Tackle.Lib.Committer`, makes the record durable
 before replacement; a commit failure is reported as
 `{:error, {:durable_commit_failed, reason}, state}` so a host can fail closed.
 The same committer receives tree navigations (below), with the context
 `%{session_id: session_id, context: context}`. A record names the tree entry
-it attaches to in `:parent_id` (`nil` in linear mode), so a committer never
-needs the tree. A committer that returns anything but `:ok` or
+it attaches to in `:parent_id`, so a committer never needs the tree. A committer that returns anything but `:ok` or
 `{:error, reason}`, raises, throws, or exits fails the commit the same way.
 
 Lifecycle events `:compaction_start`, `:compaction_end`, and `:compaction_retry`
@@ -1309,12 +1316,13 @@ reuse sequence.
 
 ## Conversation trees
 
-`Tackle.Lib.Tree` is an optional, pure conversation tree for sessions that need
-alternative paths. It is opt-in and needs no process, storage, or OTP
-supervision:
+Every `Tackle.Lib.State` keeps its conversation in a `Tackle.Lib.Tree`, a pure
+value that needs no process, storage, or OTP supervision. A conversation that
+never navigates is a tree with one branch; navigating lets it hold alternative
+paths:
 
 ```elixir
-state = Tackle.Lib.new(llm: selection, tree: true, committer: MyApp.Committer)
+state = Tackle.Lib.new(llm: selection, committer: MyApp.Committer)
 {:ok, state} = Tackle.Lib.run(state, "investigate the cache")
 
 # Move to the parent of an earlier user message; the selected message comes back
@@ -1361,15 +1369,21 @@ and whether the navigation was a no-op, which commits nothing. Hosts that
 persist their own entries rebuild a tree by appending them in order with
 `Tackle.Lib.Tree.append_message/3` and `append_compaction/3` and their
 `:parent_id`, which validate every link, and `Tackle.Lib.Tree.move/2` to the
-recorded position, then pass the tree to `Tackle.Lib.new/1`.
+recorded position, then pass the tree to `Tackle.Lib.new/1` (`:tree`) or
+`Tackle.Lib.State.put_tree/2`.
 
 A tree keeps an index of each entry's children, so `Tackle.Lib.Tree.children/2`
 costs the number of children. `Tackle.Lib.Tree.resumable?/2` checks one entry;
 `Tackle.Lib.Tree.resumable_ids/1` returns every safe continuation point in one
 walk, for views that render the whole tree.
 
-Linear mode is unchanged: without `tree: true`, `State.messages` remains the
-entire conversation archive, as before.
+`State.messages` and `State.model_messages` are cached derivations of the
+tree. `Tackle.Lib.State.add_message/2` extends them, `put_tree/2` installs a
+tree and re-derives both, and `update_message/3` replaces one settled message
+(to attach usage reported after the turn, say); never write the fields
+directly. Whether users may branch is host policy: the library can always
+navigate, and a host that does not offer branching simply never calls
+`navigate/3`.
 
 ## Usage and billing
 

@@ -1,12 +1,14 @@
 defmodule Tackle.Lib.ContextUsageTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.State
   alias Tackle.Lib.Tool
+  alias Tackle.Lib.Tree
   alias Tackle.Lib.Usage
 
   defmodule ExampleTool do
@@ -73,7 +75,21 @@ defmodule Tackle.Lib.ContextUsageTest do
   test "uses compacted model projection instead of canonical transcript" do
     state = state_with_window(1_000, system_prompt: "1234")
     old = Message.assistant(content: "old", token_usage: %Usage{total_tokens: 500})
-    state = %{state | messages: [old], model_messages: [Message.user("🙂🙂🙂🙂🙂")]}
+    state = State.add_message(state, old)
+
+    record = %Record{
+      compaction_id: "c1",
+      trigger: :manual,
+      summary_message: Message.user("🙂🙂🙂🙂🙂", id: "c1"),
+      shadowed_message_ids: [old.id],
+      tokens_before: 500,
+      estimated_tokens_after: 3,
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    {:ok, tree, _entry} = Tree.append_compaction(state.tree, record)
+    state = State.put_tree(state, tree)
+    assert state.messages == [old]
 
     assert %ContextUsage{usage_tokens: 0, tokens: 3, estimated?: true} =
              ContextUsage.estimate(state)
