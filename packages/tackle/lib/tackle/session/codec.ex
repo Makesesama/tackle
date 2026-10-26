@@ -176,8 +176,15 @@ defmodule Tackle.Session.Codec do
     usage
     |> Map.from_struct()
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new(fn {key, value} -> {Atom.to_string(key), normalize(value)} end)
+    |> Map.new(fn {key, value} -> {Atom.to_string(key), encode_usage_field(key, value)} end)
   end
+
+  # `Usage.t()` allows an atom provider; it is stored, and decoded, as its name.
+  defp encode_usage_field(:provider, provider)
+       when is_atom(provider) and not is_boolean(provider),
+       do: Atom.to_string(provider)
+
+  defp encode_usage_field(_key, value), do: normalize(value)
 
   # Journals have always stored usage with the struct's field names as keys
   # (`encode_usage/1`), so `Usage.normalize/1`, which reads only those, decodes

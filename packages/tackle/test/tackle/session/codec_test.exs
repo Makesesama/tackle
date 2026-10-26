@@ -120,6 +120,19 @@ defmodule Tackle.Session.CodecTest do
       assert {:ok, ^data} = Codec.encode_message(decoded)
     end
 
+    test "stores an atom provider as its name and still refuses unencodable usage" do
+      message = Message.assistant(content: "ok", token_usage: %Usage{provider: :openai})
+
+      assert {:ok, data} = Codec.encode_message(message)
+      assert data["token_usage"]["provider"] == "openai"
+      assert {:ok, %{token_usage: %Usage{provider: "openai"}}} = Codec.decode_message(data)
+
+      unencodable = %Usage{provider: :openai, raw: %{"owner" => self()}}
+
+      assert {:error, {:invalid_message, {:forbidden_term, :pid}}} =
+               Codec.encode_message(Message.assistant(content: "ok", token_usage: unencodable))
+    end
+
     test "round-trips Call structs through their stored maps" do
       calls = [
         %Call{id: "call-1", name: "read", arguments: %{"path" => "a"}, raw: %{"provider" => 1}},
