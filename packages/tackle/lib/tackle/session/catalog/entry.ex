@@ -32,13 +32,19 @@ defmodule Tackle.Session.Catalog.Entry do
             search_text: nil,
             journal_path: nil
 
+  @typedoc """
+  The session's status: the projection's (`Tackle.Session.Projection.status/0`),
+  or `:active` while its journal owner runs a turn.
+  """
+  @type status :: :clean | :interrupted | :recovered | :active
+
   @type t :: %__MODULE__{
           session_id: String.t(),
           title: String.t() | nil,
           cwd: String.t() | nil,
           created_at: String.t() | nil,
           updated_at: String.t() | nil,
-          status: atom() | nil,
+          status: status() | nil,
           model: String.t() | nil,
           tags: [String.t()],
           message_count: non_neg_integer(),

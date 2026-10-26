@@ -107,6 +107,23 @@ defmodule Tackle.Session.CatalogTest do
              Tackle.search_sessions("hello from #{marker}")
   end
 
+  test "filters by a status given as an atom or a string", ctx do
+    cwd = unique_cwd(ctx, "status")
+    Catalog.rebuild(home: ctx.home)
+    Catalog.record(%{session_id: "running", cwd: cwd, status: :active, updated_at: "2"})
+    Catalog.record(%{session_id: "stopped", cwd: cwd, status: :clean, updated_at: "1"})
+
+    for status <- [:active, "active"] do
+      assert {:ok, %{sessions: [%{session_id: "running"}]}} =
+               Catalog.list(cwd: cwd, status: status)
+    end
+
+    assert {:ok, %{sessions: [%{session_id: "stopped"}]}} =
+             Catalog.list(cwd: cwd, status: "clean")
+
+    assert {:ok, %{sessions: []}} = Catalog.list(cwd: cwd, status: "no-such-status")
+  end
+
   test "paginates with a stable cursor", ctx do
     cwd = unique_cwd(ctx, "paged")
     ids = for index <- 1..3, do: create_session(ctx, cwd: cwd, title: "Page #{index}")

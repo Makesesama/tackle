@@ -38,11 +38,20 @@ defmodule Tackle.Session.Catalog do
   @rebuild_session_timeout 2_000
   @search_text_timeout 5_000
 
+  # The statuses an entry can have, by name. Earlier versions recorded
+  # `"closed"` for a session that is clean now.
+  @statuses %{
+    "clean" => :clean,
+    "interrupted" => :interrupted,
+    "recovered" => :recovered,
+    "active" => :active
+  }
+
   @type filters :: %{
           optional(:text) => String.t() | nil,
           optional(:cwd) => String.t() | nil,
           optional(:session_ids) => [String.t()] | nil,
-          optional(:status) => atom() | String.t() | nil,
+          optional(:status) => Entry.status() | String.t() | nil,
           optional(:model) => String.t() | nil,
           optional(:tags) => [String.t()],
           optional(:archived) => boolean() | :all,
@@ -98,7 +107,12 @@ defmodule Tackle.Session.Catalog do
   @spec get(String.t()) :: {:ok, Entry.t()} | {:error, :not_found}
   def get(session_id), do: GenServer.call(__MODULE__, {:get, session_id})
 
-  @doc "Lists sessions with stable cursor pagination."
+  @doc """
+  Lists sessions with stable cursor pagination.
+
+  The `:status` filter takes a `t:Tackle.Session.Catalog.Entry.status/0` or
+  its name as a string (`"active"`).
+  """
   @spec list(filters() | keyword()) ::
           {:ok, %{sessions: [Entry.t()], next_cursor: String.t() | nil}}
   def list(filters \\ %{}) do
@@ -562,24 +576,17 @@ defmodule Tackle.Session.Catalog do
   defp normalize_filters(filters) when is_list(filters),
     do: filters |> Map.new() |> normalize_filters()
 
+  # A status may be named by a string, as a JSON host sends it; one that names
+  # no status matches nothing.
+  defp normalize_filters(%{status: status} = filters) when is_binary(status),
+    do: %{filters | status: Map.get(@statuses, status, status)}
+
   defp normalize_filters(filters) when is_map(filters), do: filters
 
   defp decode_status(nil), do: nil
   defp decode_status(status) when is_atom(status), do: status
 
-  defp decode_status(status) when is_binary(status) do
-    case status do
-      "clean" -> :clean
-      # Written by earlier versions for a session that is clean now.
-      "closed" -> :clean
-      "interrupted" -> :interrupted
-      "recovered" -> :recovered
-      "corrupt" -> :corrupt
-      "unsupported" -> :unsupported
-      "active" -> :active
-      _other -> :clean
-    end
-  end
+  defp decode_status(status) when is_binary(status), do: Map.get(@statuses, status, :clean)
 
   defp encode_value(nil), do: nil
   defp encode_value(value) when is_boolean(value), do: value
