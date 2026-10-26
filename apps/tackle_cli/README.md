@@ -641,9 +641,10 @@ you can edit your draft, inspect the conversation, and request cancellation.
 No new model/tool work passes its durability boundary until storage confirms
 the pending sync; the same commit is never appended twice. Progress resumes
 automatically, including in one-shot runs (their normal answer timeout is
-suspended during the storage wait). Cancellation also waits for durable
-settlement; already-running external effects cannot be rolled back. New
-submissions/configuration changes are rejected while storage is delayed.
+suspended during the storage wait). A cancelled turn also settles only once
+the journal catches up; already-running external effects cannot be rolled
+back. Submissions that would start a turn and configuration changes are
+rejected while storage is delayed.
 
 The watchdog still stops the scope for unknown append outcomes, actual storage
 errors, and bounded startup/cleanup failures. Its threshold is not a turn or

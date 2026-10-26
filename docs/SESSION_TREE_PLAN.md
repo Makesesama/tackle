@@ -12,8 +12,10 @@ Since then, the library dropped its linear mode: every `Tackle.Lib.State`
 keeps a tree, `State.put_tree/2` is the one way to install one, and compaction
 checkpoints are known by their tree entries rather than their text. Branching
 is host policy (the harness rejects navigation in sessions without the tree
-feature), and journals of such sessions keep their format. The opt-in shape
-and "linear mode" below describe the plan as first implemented.
+feature), and journals of such sessions keep their format. The facade's tree
+inspection (`Tackle.tree/1`, `Tackle.Session.tree/1`) is gone too: hosts read
+the snapshot's `agent_state.tree`. The opt-in shape, "linear mode", and the
+tree inspection of step 5 below describe the plan as first implemented.
 
 This advances the same-session branching previously deferred in
 [SESSION_ARCHITECTURE.md](SESSION_ARCHITECTURE.md#15-forking-and-lineage). It does

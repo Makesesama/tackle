@@ -40,7 +40,7 @@ The first implementation uses these defaults:
 - The runtime preserves a child's full terminal outcome internally; the subagent tool projects the appropriate final answer or error into a parent tool result.
 - A busy ephemeral child rejects additional work. General-purpose agent inboxes and queues are deferred.
 - Fleet concurrency overflow is rejected explicitly in the initial implementation rather than queued.
-- Scoped runtime processes are temporary. Lost in-memory state is not restarted or reconstructed.
+- Scoped runtime processes are never restarted. Lost in-memory state is not reconstructed.
 - Subagents, scripted workflows, scopes, and fleets belong to the optional `:tackle_runtime` package and its `:tackle_workflow` client. `Tackle.Lib` remains unaware of them. Hosts supply a `Tackle.Runtime.AgentBackend`; the root harness adapts `Tackle.Session`, while `Tackle.Phoenix` adapts `Runner`/`Store`. The runtime supplies one dedicated tool supervisor per agent.
 
 ## 2. Current foundation
@@ -51,7 +51,7 @@ The current harness already has the correct basic process split:
 frontend
   │
   ▼
-Tackle.Session                         temporary GenServer
+Tackle.Session                         GenServer, never restarted
   ├── owns the settled Tackle.Lib.State
   ├── allows one active turn
   ├── owns subscribers and cancellation
@@ -67,6 +67,8 @@ Tackle.Session                         temporary GenServer
         ├── produces a new immutable State
         └── emits events through a callback
 ```
+
+`Tackle.Session` is a `:permanent` child of a supervisor with `max_restarts: 0` (its `Tackle.Runtime.AgentSupervisor`, or for a durable root `Tackle.Session.RuntimeRootSupervisor` beside its journal), so any exit tears its agent subtree down instead of restarting an empty session.
 
 `Tackle.Lib.Loop` is synchronous code. It is not a GenServer and should remain independent of OTP runtime policy. The root harness runs each turn as a temporary Task child of the owning scope's `Tackle.AgentScope.WorkSupervisor`; `Tackle.Session` remains responsive while the task performs provider calls and tool execution.
 
@@ -323,7 +325,7 @@ Tackle.start_scope(%ScopeSpec{})        :: {:ok, %Scope{}} | {:error, term()}
 Tackle.stop_scope(%ScopeRef{})          :: :ok | {:error, term()}
 Tackle.scope_snapshot(%ScopeRef{})      :: {:ok, map()} | {:error, term()}
 
-Tackle.submit(%AgentRef{}, input)       :: {:ok, turn_id} | {:error, term()}
+Tackle.submit(%AgentRef{}, input)       :: {:ok, turn_id | :queued} | {:error, term()}
 Tackle.continue(%AgentRef{})            :: {:ok, turn_id} | {:error, term()}
 Tackle.cancel(%AgentRef{})              :: :ok | {:error, term()}
 Tackle.reconfigure(%AgentRef{}, opts)   :: {:ok, %Snapshot{}} | {:error, term()}
@@ -675,7 +677,7 @@ Acceptance criteria:
 
 ### Task 3: make `Tackle.Session` scope-aware
 
-Keep `Tackle.Session` as the only stateful agent GenServer. Extend its start options and state with:
+Keep `Tackle.Session` as the only stateful agent GenServer. It starts from the `Tackle.Runtime.AgentContext` its backend receives, which carries:
 
 - `AgentRef` and root scope reference;
 - optional logical parent agent and run;
@@ -686,7 +688,7 @@ Keep `Tackle.Session` as the only stateful agent GenServer. Extend its start opt
 
 Scoped turn execution moved from the former global `Tackle.TaskSupervisor` to temporary Task children under the root scope's `WorkSupervisor`. The existing event and Task-crash handling semantics are preserved.
 
-An explicit root session remains alive until the root scope is closed. An ephemeral descendant delivers its correlated terminal outcome and is then terminated. Every descendant starts with a fresh `%Tackle.Lib.State{}` and is never reset for another identity.
+An explicit root session remains alive until the root scope is stopped. An ephemeral descendant delivers its correlated terminal outcome and is then terminated. Every descendant starts with a fresh `%Tackle.Lib.State{}` and is never reset for another identity.
 
 Acceptance criteria:
 

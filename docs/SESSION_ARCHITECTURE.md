@@ -29,7 +29,7 @@ This document resolves the session-persistence decisions deferred by [`RUNTIME_A
 10. Loading replays durable conversation data into a fresh, trusted runtime configuration. It never restores PIDs, Tasks, runtime references, credential handles, executable modules, or stale process state.
 11. Search, summaries, checkpoints, and indexes are derived projections. They may lag, be deleted, or be rebuilt without changing the durable session.
 12. Streaming token deltas and frontend-only events are not canonical history. Tackle persists settled messages, turn boundaries, tool-execution boundaries, configuration changes, and terminal outcomes.
-13. The CLI's root conversations are durable by default. Ephemeral delegated agents remain ephemeral unless a later explicit retention policy gives them independent durable sessions.
+13. The CLI's root conversations are durable by default. Delegated agents (the runtime's `:ephemeral` lifetime) keep their conversation in memory only unless a later explicit retention policy gives them independent durable sessions.
 14. A fork creates a new, self-contained journal. A child session records its lineage but does not depend on the parent file remaining available.
 15. Session files remain local to one Tackle storage root. Distributed authority, replication, and concurrent multi-node writers are deferred.
 
@@ -151,7 +151,7 @@ The exact child ordering and module names may change, but these behaviors are re
 - the root session and its internal persistence hook can make synchronous journal calls;
 - a journal-owner failure prevents further execution and terminates the durable scope;
 - orderly scope shutdown syncs and closes the journal;
-- an ephemeral scope may omit the journal entirely; and
+- a scope started without a `Tackle.Session.Spec` has no journal at all; and
 - one journal process never becomes a global bottleneck across unrelated sessions.
 
 A dedicated journal owner is justified even though `:disk_log` has its own process. The Tackle owner holds the application sequence, validates commits, applies durability policy, owns the `:disk_log` lifecycle, and provides one narrow API to the session and loop hook. Callers do not open or write the file directly.
@@ -331,7 +331,7 @@ session.created
 session.metadata_changed
 session.configuration_changed
 session.recovered
-session.closed
+session.closed               legacy: replayed, no longer written by the runtime
 turn.started
 message.appended
 context.compacted
@@ -396,10 +396,10 @@ Saving is integrated at semantic boundaries using the root session and an intern
 
 For `submit`:
 
-1. `Tackle.Session` asks the journal to append `turn.started` (write-behind), including the raw submitted input for audit and recovery diagnostics. For a new session this first commit also materializes the journal: the owner acquires ownership, opens the log, and writes and syncs the header and `session.created` first.
-2. Only after the append succeeds does the session start the supervised turn Task.
+1. `Tackle.Session` asks the journal, from a storage task, to append `turn.started` (write-behind), including the raw submitted input for audit and recovery diagnostics, followed by the messages the turn takes from the session's inbox. For a new session this first commit also materializes the journal: the owner acquires ownership, opens the log, and writes and syncs the header and `session.created` first.
+2. Only after the appends succeed does the session start the supervised turn Task.
 3. `Tackle.Lib.Loop` constructs and settles the user message.
-4. The internal `after_message` hook appends `message.appended` write-behind. It becomes durable at the next sync point (an external tool's gate or the terminal event); the provider request does not wait for it.
+4. The internal `after_message` hook appends `message.appended` write-behind. It becomes durable at the next sync (an external tool's gate, a synced commit such as a compaction or title, or an explicit flush); the provider request only waits until the journal has finished earlier requests, without syncing.
 5. If persistence fails, the hook aborts the turn and the session does not continue in memory-only mode.
 
 The settled user message, rather than the raw input in `turn.started`, is the conversation projection. A crash before that message commits leaves an interrupted attempt but does not fabricate a message during replay.
@@ -440,7 +440,7 @@ After the turn Task settles or crashes, `Tackle.Session` appends the correspondi
 
 - replacing the session's settled in-memory state;
 - broadcasting `:tackle_turn_finished` or `:tackle_turn_failed`;
-- delivering an ephemeral correlated outcome; or
+- delivering a delegated (`:ephemeral`) session's correlated outcome; or
 - accepting another turn.
 
 Expected outcomes remain distinct:
@@ -474,7 +474,7 @@ without a journal, once the turn's Task runs.
 
 An idle model or thinking-level change is persisted before it becomes the accepted session configuration. The event stores only durable selections and audit hashes, not executable adapter modules or credentials.
 
-If the journal commit fails, `Tackle.Session.reconfigure/2` returns an error and retains the previous configuration.
+The commit is synced. If it fails, `Tackle.Session.reconfigure/2` returns the error and the session stops, as after any other journal failure; it never continues with a configuration the journal did not record.
 
 ### 8.6 Stopping
 
@@ -498,7 +498,7 @@ semantic commit
   → acknowledge success
 ```
 
-There is no user-configurable buffered durability mode. Compaction, navigation, configuration, metadata, recovery, and close commits follow the policy above. `turn.started`, terminal events, and loop-written messages and tool intents are write-behind, as described next.
+There is no user-configurable buffered durability mode. Compaction, navigation, configuration, metadata, and recovery commits follow the policy above. `turn.started`, terminal events, and loop-written messages and tool intents are write-behind, as described next.
 
 ### Write-behind loop commits
 
@@ -568,7 +568,8 @@ encoded entries); their continuation waits for storage readiness. The journal se
 requests / 24 MiB of encoded request data, returning `:journal_busy` at capacity.
 The CLI shows “Waiting for session storage”; its one-shot answer timeout does
 not expire during that wait. Cancellation requests are accepted, but terminal
-settlement still waits for durability. Already-running parallel effects are
+settlement still waits for the journal, since the terminal event queues behind
+the stalled sync. Already-running parallel effects are
 not rolled back.
 
 ### 9.1 Compaction durability barrier
@@ -703,19 +704,21 @@ Internally, one replay operation supplies several public use cases:
 
 This distinction aligns with the Agent Client Protocol's session concepts: ACP `session/load` replays history to the client, whereas `session/resume` restores the agent-side session without replaying that history. ACP does not define Tackle's local storage format.
 
-The exact public API is deferred, but the conceptual operations are:
+The implemented operations are:
 
 ```elixir
-Tackle.create_session(scope_spec, opts)
 Tackle.inspect_session(session_id, opts)
-Tackle.load_session(session_id, scope_spec, opts)
-Tackle.resume_session(session_id, scope_spec, opts)
 Tackle.list_sessions(filters)
 Tackle.search_sessions(query, filters)
+Tackle.session_summary(session_id, opts)
 Tackle.fork_session(session_id, opts)
+Tackle.archive_session(session_id, opts)
+Tackle.unarchive_session(session_id, opts)
 Tackle.delete_session(session_id, opts)
 Tackle.flush_session(session_id)
 ```
+
+Creating and resuming have no functions of their own: a host starts a scope (`Tackle.start_scope/1`) with a `Tackle.Session.Spec`. A spec without a `session_id`, or with an id no journal has, creates a session; one with an existing session's id resumes it. **load** (replaying history to an attaching frontend) is deferred; a frontend reads the resumed snapshot's `agent_state` instead.
 
 These operations return stable session metadata and PID-free runtime references. They never expose the journal process or `:disk_log` name.
 
@@ -888,7 +891,7 @@ journal durability contract.
 
 Deleting an inactive session initially renames its complete directory into `sessions/trash/` and removes it from the catalog. Renaming first prevents a partial multi-file deletion from leaving a session that appears live.
 
-Permanent purge is a separate explicit operation. Active sessions cannot be deleted. The canonical default retention policy is indefinite until a user or embedding host configures otherwise.
+Active sessions cannot be deleted: a session live in this node is refused with `:session_active`, and one whose writer lock another process holds with `{:session_in_use, owner}`. Nothing purges the trash yet; a permanent purge would be a separate explicit operation. The canonical default retention policy is indefinite until a user or embedding host configures otherwise.
 
 No retention policy may silently convert a complete journal into a wrap log. If long histories need compaction, the system must preserve an explicit archive or write a new independently valid compacted session with documented semantic loss.
 
@@ -1008,7 +1011,7 @@ Acceptance criteria:
 - terminal settlement is durable before terminal delivery (since relaxed:
   appended write-behind before delivery; see section 9);
 - persistence failure aborts rather than degrading to memory-only execution; and
-- ephemeral scopes continue to work without a journal.
+- scopes without a session spec continue to work without a journal.
 
 ### Task 5: loading and resume
 
