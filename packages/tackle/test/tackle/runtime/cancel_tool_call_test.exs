@@ -25,10 +25,6 @@ defmodule Tackle.Runtime.CancelToolCallTest do
       await(name, Map.get(context, :cancellation_signal))
     end
 
-    @impl true
-    def model_error(reason) when is_binary(reason), do: reason
-    def model_error(_reason), do: nil
-
     defp await(name, signal) do
       receive do
         {:release, ^name} -> {:ok, %{name: name}}

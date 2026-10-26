@@ -88,10 +88,6 @@ defmodule Tackle.Review.Tools.ReportFindings do
 
   def run(_args, _context), do: {:error, "report_findings requires a findings list"}
 
-  @impl true
-  def model_error(reason) when is_binary(reason), do: reason
-  def model_error(_reason), do: nil
-
   @doc """
   Validates reported findings against a unit.
 

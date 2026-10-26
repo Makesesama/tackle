@@ -387,13 +387,7 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "rejects malformed provider tool calls without crashing the loop" do
-    for calls <- [
-          [nil],
-          [%{"function" => "not a map"}],
-          [%{"name" => "first", "arguments" => "{"}],
-          [%{"name" => "first", "arguments" => "[]"}],
-          [%{"name" => "first", "arguments" => [1]}]
-        ] do
+    for calls <- [[nil], [%{"function" => "not a map"}], [%{"arguments" => %{}}]] do
       Process.put(:bad_tool_calls, calls)
 
       assert {:error, state} =
@@ -410,6 +404,73 @@ defmodule Tackle.Lib.LoopTest do
       assert state.error =~ "Invalid provider tool calls"
       refute_receive {:tool_execute, :first}
     end
+  end
+
+  # Answers with the calls in `:bad_tool_calls` first, then reports the
+  # provider messages of the next request and answers "done".
+  defmodule BadArgumentsAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def generate(_schema, opts) do
+      case Process.get(:bad_tool_calls) do
+        nil ->
+          send(Process.get(:test_pid), {:messages, Keyword.fetch!(opts, :messages)})
+          {:ok, %{data: %{"content" => "done"}, usage: nil, model: "test/model"}}
+
+        calls ->
+          Process.delete(:bad_tool_calls)
+          {:ok, %{data: %{"tool_calls" => calls}, usage: nil, model: "test/model"}}
+      end
+    end
+  end
+
+  test "settles calls with unusable arguments as tool errors the model sees and continues" do
+    Process.put(:test_pid, self())
+
+    Process.put(:bad_tool_calls, [
+      %{"id" => "ok", "name" => "first", "arguments" => %{}},
+      %{"id" => "bad_json", "name" => "first", "arguments" => "{"},
+      %{"id" => "not_object", "name" => "first", "arguments" => "[]"},
+      %{"id" => "list", "name" => "first", "arguments" => [1]},
+      %{"id" => "empty", "name" => "first", "arguments" => ""}
+    ])
+
+    assert {:ok, state} =
+             Loop.run(
+               State.new(
+                 llm: TestLLM.selection(BadArgumentsAdapter),
+                 tools: [FirstTool],
+                 context: %{test_pid: self()}
+               ),
+               "hello"
+             )
+
+    assert state.status == :completed
+
+    # Only the calls with usable arguments ran: "ok" and "empty" ("" is no arguments).
+    assert_received {:tool_execute, :first}
+    assert_received {:tool_execute, :first}
+    refute_received {:tool_execute, :first}
+
+    results =
+      for %Message{role: :tool, tool_call_id: id, content: content} <- state.messages,
+          do: {id, content}
+
+    assert [
+             {"ok", ~s({"ok":true})},
+             {"bad_json", "Error: Invalid tool arguments: arguments are not valid JSON"},
+             {"not_object", "Error: Invalid tool arguments: arguments must be a JSON object"},
+             {"list", "Error: Invalid tool arguments: arguments must be a JSON object"},
+             {"empty", ~s({"ok":true})}
+           ] = results
+
+    # The next request carries every call with its result.
+    assert_received {:messages, messages}
+
+    assert [%{role: :assistant, tool_calls: calls} | tool_results] = Enum.drop(messages, 1)
+    assert Enum.map(calls, & &1.id) == ["ok", "bad_json", "not_object", "list", "empty"]
+    assert Enum.map(tool_results, & &1.tool_call_id) == Enum.map(calls, & &1.id)
   end
 
   test "executes a nested call with decoded JSON arguments" do
@@ -432,26 +493,6 @@ defmodule Tackle.Lib.LoopTest do
            end)
   end
 
-  test "rejects an entire batch if a later call has invalid JSON" do
-    Process.put(:bad_tool_calls, [
-      %{"name" => "first", "arguments" => %{}},
-      %{"name" => "first", "arguments" => "{"}
-    ])
-
-    assert {:error, state} =
-             Loop.run(
-               State.new(
-                 llm: TestLLM.selection(MalformedToolAdapter),
-                 tools: [FirstTool],
-                 context: %{test_pid: self()}
-               ),
-               "hello"
-             )
-
-    assert state.error =~ "invalid_tool_arguments"
-    refute_receive {:tool_execute, :first}
-  end
-
   test "normalizes provider calls with nested function, atom keys and JSON arguments" do
     raw = %{
       id: "call-1",
@@ -471,11 +512,14 @@ defmodule Tackle.Lib.LoopTest do
     assert {:ok, %Call{arguments: %{}}} = Call.normalize(%{"name" => "first"})
     assert {:error, :malformed_tool_call} = Call.normalize(%{"arguments" => %{}})
 
-    assert {:error, :invalid_tool_arguments} =
+    assert {:ok, %Call{name: "first", arguments: %{}, argument_error: :invalid_json}} =
              Call.normalize(%{"name" => "first", "arguments" => "{"})
 
-    assert {:error, :invalid_tool_arguments} =
+    assert {:ok, %Call{name: "first", arguments: %{}, argument_error: :not_an_object}} =
              Call.normalize(%{"name" => "first", "arguments" => "[]"})
+
+    assert {:ok, %Call{arguments: %{}, argument_error: nil}} =
+             Call.normalize(%{"name" => "first", "arguments" => " "})
 
     assert {:ok, %Call{arguments: %{"query" => "hi"}}} =
              Call.normalize(%{"name" => "first", "arguments" => %{"query" => "hi"}})

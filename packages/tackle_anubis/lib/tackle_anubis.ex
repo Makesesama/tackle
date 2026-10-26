@@ -54,7 +54,7 @@ defmodule Tackle.Anubis do
         call = %Call{
           id: call_id(opts),
           name: name,
-          arguments: Tool.normalize_args(tool_module, params || %{}),
+          arguments: params || %{},
           definition_id: definition.definition_id
         }
 

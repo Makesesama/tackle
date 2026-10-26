@@ -76,6 +76,17 @@ defmodule Tackle.Plugins.MCP.SchemaTest do
              Tackle.Lib.Tool.Schema.validate(projected, %{"color" => "blue"})
   end
 
+  test "rejects option values Tackle cannot register" do
+    for {property, message} <- [
+          {%{"type" => "string", "enum" => "one"}, "field :value option :enum must be a list"},
+          {%{"type" => "string", "description" => 42},
+           "field :value option :description must be a string"}
+        ] do
+      assert {:error, {:invalid_input_schema, ^message}} =
+               Schema.to_tackle(%{"type" => "object", "properties" => %{"value" => property}})
+    end
+  end
+
   test "rejects unions that are not a single type plus null" do
     for property <- [
           %{"anyOf" => [%{"type" => "string"}, %{"type" => "integer"}]},

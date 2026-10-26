@@ -55,13 +55,16 @@ defmodule Tackle.Lib.MessageTest do
              ] = message.tool_calls
     end
 
+    test "keeps a named call whose arguments are not a JSON object" do
+      message = Message.assistant(tool_calls: [%{id: "c1", name: "bash", arguments: "not json"}])
+
+      assert [%Call{id: "c1", name: "bash", arguments: %{}, argument_error: :invalid_json}] =
+               message.tool_calls
+    end
+
     test "raises on a tool call that does not normalize" do
       assert_raise ArgumentError, ~r/invalid tool call.*:malformed_tool_call/, fn ->
         Message.assistant(tool_calls: [%{arguments: %{}}])
-      end
-
-      assert_raise ArgumentError, ~r/invalid tool call.*:invalid_tool_arguments/, fn ->
-        Message.assistant(tool_calls: [%{name: "bash", arguments: "not json"}])
       end
 
       assert_raise ArgumentError, ~r/tool calls must be a list/, fn ->

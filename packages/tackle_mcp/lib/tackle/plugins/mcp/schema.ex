@@ -8,8 +8,9 @@ defmodule Tackle.Plugins.MCP.Schema do
   fields expressed as `anyOf`, `oneOf`, or a type array retain explicit nulls.
   Nested object constraints remain the MCP server's responsibility. A common
   object-or-string union is projected as an object (the JSON string alternative
-  is not exposed to the model); other unsupported property schemas are rejected
-  during discovery.
+  is not exposed to the model); other unsupported property schemas, and
+  options Tackle cannot represent (such as an `enum` that is not a list), are
+  rejected during discovery.
   """
 
   @type result :: {:ok, Tackle.Lib.Tool.Schema.t()} | {:error, term()}
@@ -20,12 +21,23 @@ defmodule Tackle.Plugins.MCP.Schema do
     with :ok <- validate_root_type(schema),
          {:ok, properties} <- fetch_properties(schema),
          {:ok, required} <- fetch_required(schema),
-         {:ok, fields} <- project_properties(properties, required) do
-      {:ok, Enum.reverse(fields)}
+         {:ok, fields} <- project_properties(properties, required),
+         fields = Enum.reverse(fields),
+         :ok <- validate_projection(fields) do
+      {:ok, fields}
     end
   end
 
   def to_tackle(schema), do: {:error, {:invalid_input_schema, schema}}
+
+  # Option values come from the server (a non-string description, an enum
+  # that is not a list); a schema Tackle cannot register is rejected here.
+  defp validate_projection(fields) do
+    case Tackle.Lib.Tool.Schema.validate_schema(fields) do
+      :ok -> :ok
+      {:error, message} -> {:error, {:invalid_input_schema, message}}
+    end
+  end
 
   defp project_properties(properties, required) do
     properties

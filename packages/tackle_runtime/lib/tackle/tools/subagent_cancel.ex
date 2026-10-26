@@ -43,10 +43,6 @@ defmodule Tackle.Tools.SubagentCancel do
 
   def run(_args, _context), do: {:error, "subagent_cancel requires a run_id"}
 
-  @impl true
-  def model_error(reason) when is_binary(reason), do: reason
-  def model_error(_reason), do: nil
-
   defp fetch_agent_ref(context) do
     case AgentRef.from_context(context) do
       %AgentRef{} = agent_ref -> {:ok, agent_ref}

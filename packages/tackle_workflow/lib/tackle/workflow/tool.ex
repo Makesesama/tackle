@@ -187,10 +187,6 @@ defmodule Tackle.Workflow.Tool do
     end
   end
 
-  @impl true
-  def model_error(reason) when is_binary(reason), do: reason
-  def model_error(_reason), do: nil
-
   # Host configuration ------------------------------------------------------------
 
   defp fetch_agent_ref(context) do

@@ -39,6 +39,40 @@ defmodule Tackle.AnubisTest do
     def run(%{"value" => value}, _context), do: {:ok, value}
   end
 
+  defmodule FilterTool do
+    use Tackle.Lib.Tool
+
+    tool_name("filter")
+    description("Echoes its filters.")
+
+    input do
+      field(:filter, :map, required: true)
+      field(:more, {:list, :map}, default: [])
+    end
+
+    def run(args, _context), do: {:ok, args}
+  end
+
+  test "dispatch/4 decodes map arguments sent as JSON strings" do
+    frame = Frame.new()
+
+    assert {:reply, response, ^frame} =
+             Anubis.dispatch(
+               "filter",
+               %{"filter" => ~s({"tag":"a"}), "more" => [~s({"tag":"b"})]},
+               frame,
+               tools: [FilterTool],
+               call_id: "call_1"
+             )
+
+    assert response.isError == false
+
+    assert response.structured_content == %{
+             "filter" => %{"tag" => "a"},
+             "more" => [%{"tag" => "b"}]
+           }
+  end
+
   test "Schema.to_peri/1 projects Tackle.Lib schemas for Anubis registration" do
     assert %{
              query: {:required, {:meta, :string, [description: "Search query"]}},

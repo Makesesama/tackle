@@ -73,6 +73,27 @@ defmodule Tackle.Lib.LLM.ResponseTest do
                })
     end
 
+    test "keeps tool calls whose arguments are unusable, marked with the argument error" do
+      # Codex builds calls with "arguments" => "" for tools without parameters.
+      assert {:ok,
+              %Response{
+                tool_calls: [
+                  %Call{id: "c1", name: "read", arguments: %{}, argument_error: :invalid_json},
+                  %Call{id: "c2", name: "read", arguments: %{}, argument_error: :not_an_object},
+                  %Call{id: "c3", name: "status", arguments: %{}, argument_error: nil}
+                ]
+              }} =
+               Response.from_result(%{
+                 data: %{
+                   "tool_calls" => [
+                     %{"id" => "c1", "name" => "read", "arguments" => ~s({"path": )},
+                     %{"id" => "c2", "name" => "read", "arguments" => "[]"},
+                     %{"id" => "c3", "name" => "status", "arguments" => ""}
+                   ]
+                 }
+               })
+    end
+
     test "normalizes a provider usage map" do
       assert {:ok, %Response{usage: %Usage{input_tokens: 5, output_tokens: 4}}} =
                Response.from_result(%{
@@ -92,8 +113,6 @@ defmodule Tackle.Lib.LLM.ResponseTest do
             {%{data: %{"thinking" => ["a"]}}, {:thinking, ["a"]}},
             {%{data: %{"tool_calls" => "read"}}, {:tool_calls, :not_a_list}},
             {%{data: %{"tool_calls" => [nil]}}, {:tool_calls, :malformed_tool_call}},
-            {%{data: %{"tool_calls" => [%{"name" => "read", "arguments" => "{"}]}},
-             {:tool_calls, :invalid_tool_arguments}},
             {%{data: %{}, usage: 12}, {:usage, 12}},
             {%{data: %{}, provider_state: "opaque"}, {:provider_state, "opaque"}}
           ] do

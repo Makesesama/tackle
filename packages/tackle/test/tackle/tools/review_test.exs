@@ -372,7 +372,9 @@ defmodule Tackle.Tools.ReviewTest do
 
   test "reports invalid input and change errors to the model", ctx do
     assert {:error, message} = review(%{"profile" => "loud"}, ctx.context)
-    assert message =~ "invalid input"
+
+    assert message ==
+             "Error: Invalid tool arguments: profile: must be one of assertive, default, quiet"
 
     assert {:error, message} = review(%{"range" => "no-such-ref..HEAD"}, ctx.context)
     assert message == "Cannot load the change: unknown revision: no-such-ref"

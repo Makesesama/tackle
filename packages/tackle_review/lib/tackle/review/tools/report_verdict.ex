@@ -76,10 +76,6 @@ defmodule Tackle.Review.Tools.ReportVerdict do
       "sentence and stop."
   end
 
-  @impl true
-  def model_error(reason) when is_binary(reason), do: reason
-  def model_error(_reason), do: nil
-
   @doc """
   Validates decoded `report_verdict` arguments against the ids of the
   run's findings.

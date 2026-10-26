@@ -6,17 +6,30 @@ defmodule Tackle.Lib.Tool.Call do
   loop. `definition_id` is optional stale-call protection metadata: if a model
   echoes an older tool definition id, `Tackle.Lib.Tool.Registry.resolve/2` rejects
   the call instead of dispatching to a changed tool.
+
+  `arguments` is always a map. When the provider sent arguments that are not
+  a JSON object (see `normalize/1`), `arguments` is empty and
+  `argument_error` says why; `Tackle.Lib.Tool.settle/3` then settles the call
+  as an `:invalid_input` error the model can see, without running the tool.
   """
+
+  @typedoc """
+  Why a call's provider arguments could not be used: they were not valid JSON
+  (`:invalid_json`), or were valid JSON (or a term) but not an object
+  (`:not_an_object`).
+  """
+  @type argument_error :: :invalid_json | :not_an_object
 
   @type t :: %__MODULE__{
           id: String.t() | nil,
           name: String.t(),
           arguments: map(),
+          argument_error: argument_error() | nil,
           definition_id: String.t() | nil,
           raw: term()
         }
 
-  defstruct [:id, :name, arguments: %{}, definition_id: nil, raw: nil]
+  defstruct [:id, :name, arguments: %{}, argument_error: nil, definition_id: nil, raw: nil]
 
   alias Tackle.Lib.JSON
 
@@ -24,20 +37,28 @@ defmodule Tackle.Lib.Tool.Call do
   Normalizes a provider tool call with string or atom keys.
 
   Accepts top-level or nested `function` name and arguments. Arguments may be
-  a map or a JSON object string; missing arguments default to an empty map.
-  A `Tackle.Lib.Tool.Call` struct with a name and map arguments is returned
-  unchanged.
-  Invalid call shapes return `:malformed_tool_call`, and invalid or non-object
-  arguments return `:invalid_tool_arguments`. Invalid JSON is never replaced
-  with empty arguments, since doing so could execute a tool with defaults.
+  a map or a JSON object string; missing arguments, and an empty or blank
+  argument string (which providers send for tools without parameters),
+  become an empty map. A `Tackle.Lib.Tool.Call` struct with a name is
+  accepted as well.
+
+  A call without a name returns `{:error, :malformed_tool_call}`. A named
+  call whose arguments are invalid JSON or not an object is kept, so its id
+  and name can still be paired with a result: its `arguments` are empty and
+  its `argument_error` is set. Such a call never runs a tool with defaults.
+
+      iex> {:ok, call} = Tackle.Lib.Tool.Call.normalize(%{"name" => "read", "arguments" => "{"})
+      iex> {call.arguments, call.argument_error}
+      {%{}, :invalid_json}
   """
-  @spec normalize(term()) :: {:ok, t()} | {:error, :malformed_tool_call | :invalid_tool_arguments}
+  @spec normalize(term()) :: {:ok, t()} | {:error, :malformed_tool_call}
   def normalize(%__MODULE__{name: name, arguments: arguments} = call)
       when is_binary(name) and name != "" and is_map(arguments),
       do: {:ok, call}
 
-  def normalize(%__MODULE__{name: name}) when is_binary(name) and name != "",
-    do: {:error, :invalid_tool_arguments}
+  def normalize(%__MODULE__{name: name, arguments: arguments} = call)
+      when is_binary(name) and name != "",
+      do: {:ok, put_arguments(call, arguments)}
 
   def normalize(%__MODULE__{}), do: {:error, :malformed_tool_call}
 
@@ -52,16 +73,16 @@ defmodule Tackle.Lib.Tool.Call do
           fetch(call, "arguments", :arguments) ||
             fetch(function, "arguments", :arguments, %{})
 
-        with {:ok, arguments} <- normalize_arguments(arguments) do
-          {:ok,
+        {:ok,
+         put_arguments(
            %__MODULE__{
              id: fetch(call, "id", :id),
              name: name,
-             arguments: arguments,
              definition_id: fetch(call, "definition_id", :definition_id),
              raw: call
-           }}
-        end
+           },
+           arguments
+         )}
       else
         {:error, :malformed_tool_call}
       end
@@ -76,15 +97,27 @@ defmodule Tackle.Lib.Tool.Call do
     Map.get(map, string_key) || Map.get(map, atom_key, default)
   end
 
+  defp put_arguments(call, arguments) do
+    case normalize_arguments(arguments) do
+      {:ok, arguments} -> %{call | arguments: arguments, argument_error: nil}
+      {:error, reason} -> %{call | arguments: %{}, argument_error: reason}
+    end
+  end
+
   defp normalize_arguments(nil), do: {:ok, %{}}
   defp normalize_arguments(arguments) when is_map(arguments), do: {:ok, arguments}
 
   defp normalize_arguments(arguments) when is_binary(arguments) do
-    case JSON.decode(arguments) do
-      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      _ -> {:error, :invalid_tool_arguments}
+    if String.trim(arguments) == "" do
+      {:ok, %{}}
+    else
+      case JSON.decode(arguments) do
+        {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+        {:ok, _decoded} -> {:error, :not_an_object}
+        {:error, _reason} -> {:error, :invalid_json}
+      end
     end
   end
 
-  defp normalize_arguments(_arguments), do: {:error, :invalid_tool_arguments}
+  defp normalize_arguments(_arguments), do: {:error, :not_an_object}
 end

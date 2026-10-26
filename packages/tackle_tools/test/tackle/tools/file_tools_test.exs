@@ -6,6 +6,7 @@ defmodule Tackle.Tools.FileToolsTest do
   import Executors, only: [start_executor: 1]
 
   alias Tackle.Lib.Cancellation
+  alias Tackle.Lib.Tool
   alias Tackle.Tools.{Bash, Edit, Output, Read, Write}
 
   setup :start_executor
@@ -33,6 +34,33 @@ defmodule Tackle.Tools.FileToolsTest do
 
     assert {:ok, "two\n\n[1 more lines in file. Use offset=3 to continue.]"} =
              Read.run(%{"path" => "nested/example.txt", "offset" => 2, "limit" => 1}, context)
+  end
+
+  test "write settles an empty content argument into an empty file", %{
+    context: context,
+    directory: directory
+  } do
+    File.write!(Path.join(directory, "empty.txt"), "old content")
+
+    call = %Tool.Call{
+      id: "call_write",
+      name: "write",
+      arguments: %{"path" => "empty.txt", "content" => ""}
+    }
+
+    assert {:ok, %Tool.Result{content: "Successfully wrote to empty.txt"}} =
+             Tool.settle(Write, call, context)
+
+    assert File.read!(Path.join(directory, "empty.txt")) == ""
+  end
+
+  test "file tool failures reach the model as their error message", %{context: context} do
+    call = %Tool.Call{id: "call_read", name: "read", arguments: %{"path" => "missing.txt"}}
+
+    assert {:error, %Tool.Error{reason: :execution_error, content: content}} =
+             Tool.settle(Read, call, context)
+
+    assert content =~ "Error: Could not read missing.txt"
   end
 
   test "read rejects invalid ranges and reports truncation", %{

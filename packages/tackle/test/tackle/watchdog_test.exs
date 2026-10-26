@@ -68,10 +68,6 @@ defmodule Tackle.WatchdogTest do
       await(Map.get(context, :cancellation_signal), context)
     end
 
-    @impl true
-    def model_error(reason) when is_binary(reason), do: reason
-    def model_error(_reason), do: nil
-
     defp await(signal, context) do
       receive do
         :release ->

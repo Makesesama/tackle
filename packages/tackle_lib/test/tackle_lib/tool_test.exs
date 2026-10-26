@@ -107,9 +107,6 @@ defmodule Tackle.Lib.ToolTest do
 
     @impl true
     def execute(_args, _context), do: {:error, "dependency compilation failed around :idna"}
-
-    @impl true
-    def model_error(reason), do: reason
   end
 
   defmodule OpaqueFailureTool do
@@ -126,25 +123,6 @@ defmodule Tackle.Lib.ToolTest do
 
     @impl true
     def execute(_args, _context), do: {:error, {:credentials, "secret-token"}}
-  end
-
-  defmodule CrashingProjectionTool do
-    @behaviour Tackle.Lib.Tool
-
-    @impl true
-    def name, do: "crashing_projection"
-
-    @impl true
-    def description, do: "Raises while projecting an expected error."
-
-    @impl true
-    def parameters_schema, do: []
-
-    @impl true
-    def execute(_args, _context), do: {:error, :expected_failure}
-
-    @impl true
-    def model_error(_reason), do: raise("projection failed")
   end
 
   defmodule MisbehavingTool do
@@ -164,6 +142,101 @@ defmodule Tackle.Lib.ToolTest do
     def execute(_args, %{how: :throw}), do: throw(:oops)
     def execute(_args, %{how: :tuple}), do: {:ok, %{pair: {1, 2}}}
     def execute(_args, %{how: :invalid_utf8}), do: {:ok, %{text: <<255>>}}
+  end
+
+  defmodule InvalidUtf8Tool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "invalid_utf8"
+
+    @impl true
+    def description, do: "Returns model-facing text with invalid UTF-8."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, %{how: :text}), do: {:ok, "bytes: " <> <<255, 254>>}
+
+    def execute(_args, %{how: :content}),
+      do: {:ok, Content.new("text " <> <<255>>, [Content.text("part " <> <<200>>)])}
+
+    def execute(_args, %{how: :error}), do: {:error, "failed on " <> <<255>>}
+  end
+
+  defmodule StrictOutputTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "strict_output"
+
+    @impl true
+    def description, do: "Returns what the test asks for under a keyword output schema."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def output_schema, do: [ok: [type: :boolean]]
+
+    @impl true
+    def execute(_args, %{result: result}), do: {:ok, result}
+  end
+
+  defmodule CountingTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "counting"
+
+    @impl true
+    def description, do: "Reports that it ran."
+
+    @impl true
+    def parameters_schema,
+      do: [path: [type: :string, required: true], edits: [type: {:list, :map}]]
+
+    @impl true
+    def execute(args, %{test_pid: test_pid}) do
+      send(test_pid, {:executed, args})
+      {:ok, "ran"}
+    end
+  end
+
+  defmodule UnknownTypeTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "unknown_type"
+
+    @impl true
+    def description, do: "Declares a field of an unknown type."
+
+    @impl true
+    def parameters_schema, do: [path: [type: :text]]
+
+    @impl true
+    def execute(_args, _context), do: {:ok, "never"}
+  end
+
+  defmodule UnknownOutputOptionTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "unknown_output_option"
+
+    @impl true
+    def description, do: "Declares an output field with an unknown option."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def output_schema, do: [ok: [type: :boolean, min: 1]]
+
+    @impl true
+    def execute(_args, _context), do: {:ok, %{ok: true}}
   end
 
   defmodule DSLSearchTool do
@@ -476,7 +549,7 @@ defmodule Tackle.Lib.ToolTest do
     assert error.content == "Error: The tool failed while completing the request."
   end
 
-  test "settle/3 preserves explicitly projected execution errors for the calling agent" do
+  test "settle/3 shows a tool's binary error message to the model" do
     call = %Tackle.Lib.Tool.Call{id: "call_failure", name: "failing", arguments: %{}}
 
     assert {:error, %Tackle.Lib.Tool.Error{} = error} = Tool.settle(FailingTool, call, %{})
@@ -485,7 +558,7 @@ defmodule Tackle.Lib.ToolTest do
     assert error.content == "Error: dependency compilation failed around :idna"
   end
 
-  test "settle/3 sanitizes execution errors without an explicit projection" do
+  test "settle/3 hides non-binary error reasons from the model" do
     call = %Tackle.Lib.Tool.Call{id: "call_opaque", name: "opaque_failure", arguments: %{}}
 
     assert {:error, %Tackle.Lib.Tool.Error{} = error} =
@@ -495,20 +568,6 @@ defmodule Tackle.Lib.ToolTest do
     assert error.message =~ "credentials"
     assert error.content == "Error: The tool failed while completing the request."
     refute error.content =~ "secret-token"
-  end
-
-  test "settle/3 sanitizes a failing error projection" do
-    call = %Tackle.Lib.Tool.Call{
-      id: "call_projection",
-      name: "crashing_projection",
-      arguments: %{}
-    }
-
-    assert {:error, %Tackle.Lib.Tool.Error{} = error} =
-             Tool.settle(CrashingProjectionTool, call, %{})
-
-    assert error.reason == :execution_error
-    assert error.content == "Error: The tool failed while completing the request."
   end
 
   test "settle/3 turns tool exits and throws into execution errors" do
@@ -535,6 +594,214 @@ defmodule Tackle.Lib.ToolTest do
     end
   end
 
+  describe "settle/3 errors the model sees" do
+    test "show argument validation errors, naming only fields and limits" do
+      call = %Tackle.Lib.Tool.Call{id: "c", name: "counting", arguments: %{"edits" => "nope"}}
+
+      assert {:error, %Tackle.Lib.Tool.Error{} = error} =
+               Tool.settle(CountingTool, call, %{test_pid: self()})
+
+      assert error.reason == :invalid_input
+      assert error.message == "Invalid tool arguments: path: is required; edits: must be an array"
+      assert error.content == "Error: " <> error.message
+      refute_received {:executed, _args}
+    end
+
+    test "settle calls whose provider arguments were unusable without running the tool" do
+      for {arguments, text} <- [
+            {"{", "arguments are not valid JSON"},
+            {"[1]", "arguments must be a JSON object"}
+          ] do
+        {:ok, call} =
+          Tackle.Lib.Tool.Call.normalize(%{
+            "id" => "c",
+            "name" => "counting",
+            "arguments" => arguments
+          })
+
+        assert {:error, %Tackle.Lib.Tool.Error{} = error} =
+                 Tool.settle(CountingTool, call, %{test_pid: self()})
+
+        assert error.reason == :invalid_input
+        assert error.tool_call_id == "c"
+        assert error.content == "Error: Invalid tool arguments: " <> text
+      end
+
+      refute_received {:executed, _args}
+    end
+
+    test "fall back to the generic text for an empty error message" do
+      defmodule EmptyErrorTool do
+        @behaviour Tackle.Lib.Tool
+        def name, do: "empty_error"
+        def description, do: "Fails with an empty message."
+        def parameters_schema, do: []
+        def execute(_args, _context), do: {:error, ""}
+      end
+
+      call = %Tackle.Lib.Tool.Call{id: "c", name: "empty_error", arguments: %{}}
+
+      assert {:error, %Tackle.Lib.Tool.Error{content: content}} =
+               Tool.settle(EmptyErrorTool, call, %{})
+
+      assert content == "Error: The tool failed while completing the request."
+    end
+  end
+
+  test "settle/3 decodes JSON object strings inside list-of-map arguments" do
+    call = %Tackle.Lib.Tool.Call{
+      id: "c",
+      name: "counting",
+      arguments: %{"path" => "", "edits" => [~s({"oldText":"a"})]}
+    }
+
+    assert {:ok, %Tackle.Lib.Tool.Result{content: "ran"}} =
+             Tool.settle(CountingTool, call, %{test_pid: self()})
+
+    assert_received {:executed, %{"path" => "", "edits" => [%{"oldText" => "a"}]}}
+  end
+
+  describe "settle/3 with invalid UTF-8" do
+    test "replaces invalid bytes in a binary result" do
+      call = %Tackle.Lib.Tool.Call{id: "c", name: "invalid_utf8", arguments: %{}}
+
+      assert {:ok, %Tackle.Lib.Tool.Result{} = result} =
+               Tool.settle(InvalidUtf8Tool, call, %{how: :text})
+
+      assert result.content == "bytes: \uFFFD\uFFFD"
+      assert result.raw == "bytes: " <> <<255, 254>>
+      assert {:ok, _json} = JSON.encode(%{"content" => result.content})
+    end
+
+    test "replaces invalid bytes in content text and text parts" do
+      call = %Tackle.Lib.Tool.Call{id: "c", name: "invalid_utf8", arguments: %{}}
+
+      assert {:ok, %Tackle.Lib.Tool.Result{} = result} =
+               Tool.settle(InvalidUtf8Tool, call, %{how: :content})
+
+      assert result.content == "text \uFFFD"
+      assert result.parts == [%{"type" => "text", "text" => "part \uFFFD"}]
+    end
+
+    test "replaces invalid bytes in a model-facing error message" do
+      call = %Tackle.Lib.Tool.Call{id: "c", name: "invalid_utf8", arguments: %{}}
+
+      assert {:error, %Tackle.Lib.Tool.Error{} = error} =
+               Tool.settle(InvalidUtf8Tool, call, %{how: :error})
+
+      assert error.content == "Error: failed on \uFFFD"
+      assert error.message == "failed on \uFFFD"
+      assert error.details == "failed on " <> <<255>>
+    end
+  end
+
+  test "settle/3 reports a non-map result under a keyword output schema as invalid output" do
+    call = %Tackle.Lib.Tool.Call{id: "c", name: "strict_output", arguments: %{}}
+
+    for result <- ["done", [1, 2], nil] do
+      assert {:error, %Tackle.Lib.Tool.Error{} = error} =
+               Tool.settle(StrictOutputTool, call, %{result: result})
+
+      assert error.reason == :invalid_output
+      assert error.message == "Invalid tool output: must be an object"
+      assert error.content == "Error: The tool failed while completing the request."
+    end
+
+    assert {:ok, %Tackle.Lib.Tool.Result{output: %{"ok" => true}}} =
+             Tool.settle(StrictOutputTool, call, %{result: %{ok: true}})
+  end
+
+  defmodule TermOutputValidator do
+    def validate_output(_schema, _output), do: {:error, {:mismatch, :ok}}
+  end
+
+  defmodule TermValidatedTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "term_validated"
+
+    @impl true
+    def description, do: "Has a host output validator that fails with a term."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def output_schema, do: {TermOutputValidator, :schema}
+
+    @impl true
+    def execute(_args, %{result: result}), do: {:ok, result}
+  end
+
+  test "settle/3 reports odd output failures as invalid output without crashing" do
+    call = %Tackle.Lib.Tool.Call{id: "c", name: "term_validated", arguments: %{}}
+
+    assert {:error, %Tackle.Lib.Tool.Error{} = error} =
+             Tool.settle(TermValidatedTool, call, %{result: %{}})
+
+    assert error.reason == :invalid_output
+    assert error.message == "Invalid tool output: {:mismatch, :ok}"
+    assert error.details == {:mismatch, :ok}
+
+    content = %Content{text: nil, parts: []}
+
+    assert {:error, %Tackle.Lib.Tool.Error{reason: :invalid_output, message: message}} =
+             Tool.settle(StrictOutputTool, call, %{result: content})
+
+    assert message =~ "Tool content text must be a string"
+  end
+
+  test "use Tackle.Lib.Tool rejects unknown schema types and options at compile time" do
+    assert_raise ArgumentError,
+                 ~r/UnknownTypeDSLTool has an invalid input schema: field :path has unknown type :text/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule Tackle.Lib.ToolTest.UnknownTypeDSLTool do
+                     use Tackle.Lib.Tool
+
+                     tool_name "unknown_type_dsl"
+                     description "Declares an unknown type."
+
+                     input do
+                       field :path, :text
+                     end
+
+                     def run(args, _context), do: {:ok, args}
+                   end
+                   """)
+                 end
+
+    assert_raise ArgumentError,
+                 ~r/UnknownOptionDSLTool has an invalid output schema: field :ok has unknown options \[:min\]/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule Tackle.Lib.ToolTest.UnknownOptionDSLTool do
+                     use Tackle.Lib.Tool
+
+                     tool_name "unknown_option_dsl"
+                     description "Declares an unknown option."
+
+                     output do
+                       field :ok, :boolean, min: 1
+                     end
+
+                     def run(_args, _context), do: {:ok, %{ok: true}}
+                   end
+                   """)
+                 end
+  end
+
+  test "registry rejects behaviour tools with invalid parameter or output schemas" do
+    assert_raise ArgumentError,
+                 ~r/UnknownTypeTool has an invalid parameters schema: field :path has unknown type :text/,
+                 fn -> Tackle.Lib.Tool.Registry.new([UnknownTypeTool]) end
+
+    assert_raise ArgumentError,
+                 ~r/UnknownOutputOptionTool has an invalid output schema: field :ok has unknown options \[:min\]/,
+                 fn -> Tackle.Lib.Tool.Registry.new([UnknownOutputOptionTool]) end
+  end
+
   test "execute_tool_call/3 validates before executing" do
     assert {:ok, encoded} =
              Tool.execute_tool_call(EchoTool, %{"query" => "hi", "limit" => "3"}, %{})
@@ -542,9 +809,7 @@ defmodule Tackle.Lib.ToolTest do
     assert {:ok, %{"limit" => 3, "query" => "hi"}} = JSON.decode(encoded)
 
     assert {:error, error} = Tool.execute_tool_call(EchoTool, %{"limit" => "nope"}, %{})
-    assert error == "Error: The tool received invalid input and could not run."
-    refute error =~ "query: is required"
-    refute error =~ "limit: must be an integer"
+    assert error == "Error: Invalid tool arguments: query: is required; limit: must be an integer"
   end
 
   test "registry assigns stable definition ids and rejects stale calls" do

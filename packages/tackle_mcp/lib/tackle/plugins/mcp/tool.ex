@@ -90,7 +90,7 @@ defmodule Tackle.Plugins.MCP.Tool do
 
   @doc false
   @spec execute(GenServer.server(), String.t(), map(), module(), timeout()) ::
-          {:ok, term()} | {:error, term()}
+          {:ok, term()} | {:error, String.t() | {:mcp_call_failed, term()}}
   def execute(client, raw_name, arguments, connection, timeout) do
     case connection.call_tool(client, raw_name, arguments, timeout: timeout) do
       {:ok, result} -> project_result(result)
@@ -207,10 +207,12 @@ defmodule Tackle.Plugins.MCP.Tool do
     end
   end
 
-  defp format_error({:mcp_error, reason, message}) do
-    detail = if is_binary(message) and message != "", do: message, else: inspect(reason)
-    "MCP tool call failed: #{detail}"
-  end
+  # The server's own error message is meant for the caller and stays
+  # model-visible. Other reasons (client exits, unexpected responses) are not
+  # model-safe: they are returned as terms, so settlement shows the model a
+  # generic error and keeps the reason for the host.
+  defp format_error({:mcp_error, _reason, message}) when is_binary(message) and message != "",
+    do: "MCP tool call failed: #{message}"
 
-  defp format_error(reason), do: "MCP tool call failed: #{inspect(reason)}"
+  defp format_error(reason), do: {:mcp_call_failed, reason}
 end

@@ -6,7 +6,8 @@ defmodule Tackle.Lib.Loop.Tools do
   #
   #   * accept: the `before_tool_call` hooks;
   #   * gate: the run's `:before_tool_execution` callback, skipped when every
-  #     call it covers is read-only or cannot be resolved;
+  #     call it covers is read-only, cannot be resolved, or has unusable
+  #     provider arguments (`Call.argument_error`);
   #   * start: the `tool_start` event and the call's execution job;
   #   * run: the job settles (`settle/1`), then `tool_execution_end`;
   #   * commit: the tool result message, its `message_end` and `after_message`
@@ -215,8 +216,11 @@ defmodule Tackle.Lib.Loop.Tools do
     end
   end
 
-  # A call whose tool cannot be resolved never runs, so it has no effect to
-  # guard. Anything the loop cannot classify is treated as external.
+  # A call whose tool cannot be resolved, or whose provider arguments were not
+  # a JSON object, never runs, so it has no effect to guard. Anything the loop
+  # cannot classify is treated as external.
+  defp external_effect?(%Call{argument_error: error}, _run) when error != nil, do: false
+
   defp external_effect?(%Call{} = call, run) do
     case Registry.resolve(run.snapshot.tool_registry, call) do
       {:ok, %{module: module}} -> Tool.effect(module) == :external

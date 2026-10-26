@@ -10,6 +10,7 @@ defmodule Tackle.Lib.Tool.Registry do
 
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Call
+  alias Tackle.Lib.Tool.Schema
 
   @type entry :: %{
           required(:id) => String.t(),
@@ -26,13 +27,16 @@ defmodule Tackle.Lib.Tool.Registry do
   Builds a registry from a list of `Tackle.Lib.Tool` modules.
 
   Raises `ArgumentError` for a module missing required tool callbacks, an invalid
-  tool name, or a duplicate name (including a module listed twice).
+  tool name, a duplicate name (including a module listed twice), or a
+  parameters schema or keyword output schema that does not pass
+  `Tackle.Lib.Tool.Schema.validate_schema/1`.
   """
   @spec new([module()]) :: t()
   def new(tools) when is_list(tools) do
     entries =
       Enum.reduce(tools, %{}, fn tool_module, entries ->
         validate_tool_module!(tool_module)
+        validate_schemas!(tool_module)
         definition = Tool.definition(tool_module)
         name = definition.name
 
@@ -89,6 +93,25 @@ defmodule Tackle.Lib.Tool.Registry do
   @doc "Fetches an entry by tool name."
   @spec get(t(), String.t()) :: entry() | nil
   def get(%__MODULE__{entries: entries}, name), do: Map.get(entries, name)
+
+  defp validate_schemas!(tool_module) do
+    validate_schema!(tool_module, "parameters", tool_module.parameters_schema())
+
+    case Tool.output_schema(tool_module) do
+      schema when is_list(schema) -> validate_schema!(tool_module, "output", schema)
+      _nil_or_external -> :ok
+    end
+  end
+
+  defp validate_schema!(tool_module, kind, schema) do
+    case Schema.validate_schema(schema) do
+      :ok ->
+        :ok
+
+      {:error, message} ->
+        raise ArgumentError, "#{inspect(tool_module)} has an invalid #{kind} schema: #{message}"
+    end
+  end
 
   defp validate_tool_module!(tool_module) do
     required = [name: 0, description: 0, parameters_schema: 0, execute: 2]

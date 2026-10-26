@@ -11,7 +11,13 @@ defmodule Tackle.Lib.Tool.Schema.JsonSchema do
 
   @type schema :: Tackle.Lib.Tool.Schema.t()
 
-  @doc "Projects Tackle.Lib's keyword schema into JSON Schema object form."
+  @doc """
+  Projects Tackle.Lib's keyword schema into JSON Schema object form.
+
+  Raises `ArgumentError` for a field of an unknown type; schemas checked by
+  `Tackle.Lib.Tool.Schema.validate_schema/1` (as every registered tool's are)
+  have none.
+  """
   @spec to_json_schema(schema()) :: map()
   def to_json_schema(schema) do
     properties =
@@ -108,10 +114,8 @@ defmodule Tackle.Lib.Tool.Schema.JsonSchema do
   defp type_json_schema({:list, inner}),
     do: %{"type" => "array", "items" => type_json_schema(inner)}
 
-  defp type_json_schema({:array, inner}),
-    do: %{"type" => "array", "items" => type_json_schema(inner)}
-
-  defp type_json_schema(_type), do: %{"type" => "string"}
+  defp type_json_schema(type),
+    do: raise(ArgumentError, "unknown tool schema type: #{inspect(type)}")
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

@@ -11,23 +11,74 @@ defmodule Tackle.Lib.Tool.Schema do
   commonly arrive from JSON providers with string-keyed arguments. Host adapters
   that prefer atoms can convert after this boundary.
 
-  Fields may opt into `nullable: true` to accept and preserve explicit `nil`
-  values. This is independent of `required: true`, which still requires the key
-  to be present. Enums on nullable fields must include `nil` to allow it.
+  ## Fields
+
+  A schema is a keyword list of `{field_name, options}` with atom field names.
+  The options are:
+
+    * `:type` - one of `t:schema_type/0`; defaults to `:string`;
+    * `:required` - `true` when the field must be present;
+    * `:default` - the value used when the field is absent;
+    * `:description` - a string for the model;
+    * `:enum` - a list of the allowed values, compared with `in` after
+      coercion, so `1` and `1.0` are different values;
+    * `:nullable` - `true` to accept and preserve an explicit `nil`. This is
+      independent of `required: true`, which still requires the key to be
+      present. Enums on nullable fields must include `nil` to allow it.
+
+  `validate_schema/1` checks a schema against these rules. `Tackle.Lib.Tool`'s
+  DSL runs it when a tool compiles, and `Tackle.Lib.Tool.Registry.new/1` when
+  a tool is registered, so an unknown type or option is an error rather than
+  being accepted silently.
+
+  ## Coercion
+
+  Arguments are coerced to their field's type where that is unambiguous:
+
+    * `:string` accepts strings, including `""`, and turns numbers and
+      booleans into their string form; anything else is invalid;
+    * `:integer` accepts integers and strings that parse as one;
+    * `:float` accepts numbers and strings that parse as one, and always
+      returns a float (`1` becomes `1.0`);
+    * `:boolean` accepts booleans and `"true"`/`"false"`;
+    * `:map` accepts maps and strings holding a JSON object (some providers
+      send nested objects as JSON strings), decoded with `Tackle.Lib.JSON`,
+      including inside `{:list, :map}`;
+    * `{:list, type}` accepts lists and coerces each item.
+
+  An absent field, an explicit `nil` on a field that is not nullable, and
+  `""` on a field that is not a `:string` all count as absent: the field gets
+  its default, or a required field reports `"is required"`. On a `:string`
+  field `""` is a value like any other string.
   """
 
+  alias Tackle.Lib.JSON
+
   @type primitive_type :: :string | :integer | :float | :boolean | :map
-  @type schema_type :: primitive_type() | {:list, schema_type()} | {:array, schema_type()}
+  @type schema_type :: primitive_type() | {:list, schema_type()}
   @type field_options :: keyword()
   @type t :: keyword(field_options())
-  @type validation_error :: %{field: String.t(), message: String.t()}
+
+  @typedoc """
+  A validation failure of one field, or of the whole value when `field` is
+  `nil` (for example, an output that is not a map).
+  """
+  @type validation_error :: %{field: String.t() | nil, message: String.t()}
   @type output_schema :: t() | {module(), term()} | map() | nil
 
-  @doc "Validates and coerces raw tool arguments according to `schema`."
-  @spec validate(t(), map() | nil) :: {:ok, map()} | {:error, [validation_error()]}
-  def validate(schema, args) when is_map(args) or is_nil(args) do
-    args = args || %{}
+  @primitive_types [:string, :integer, :float, :boolean, :map]
+  @field_options [:type, :required, :default, :description, :enum, :nullable]
 
+  @doc """
+  Validates and coerces raw tool arguments according to `schema`.
+
+  `nil` arguments are treated as an empty map; any other value that is not a
+  map is a validation error.
+  """
+  @spec validate(t(), term()) :: {:ok, map()} | {:error, [validation_error()]}
+  def validate(schema, nil), do: validate(schema, %{})
+
+  def validate(schema, args) when is_map(args) do
     {normalized, errors} =
       Enum.reduce(schema, {%{}, []}, fn {field, opts}, acc ->
         validate_field(args, to_string(field), opts, acc)
@@ -40,12 +91,54 @@ defmodule Tackle.Lib.Tool.Schema do
     end
   end
 
+  def validate(_schema, _args), do: {:error, [%{field: nil, message: "must be an object"}]}
+
   @doc "Raises if validation fails. Useful for tests and adapters."
-  @spec validate!(t(), map() | nil) :: map()
+  @spec validate!(t(), term()) :: map()
   def validate!(schema, args) do
     case validate(schema, args) do
       {:ok, normalized} -> normalized
       {:error, errors} -> raise ArgumentError, format_errors(errors)
+    end
+  end
+
+  @doc """
+  Checks that `schema` is a valid keyword schema: a keyword list of fields
+  with atom names, each declared once, with known options (see the module
+  docs) and a known type.
+
+  Returns `:ok` or `{:error, message}` naming the offending field.
+
+      iex> Tackle.Lib.Tool.Schema.validate_schema(path: [type: :string, required: true])
+      :ok
+
+      iex> Tackle.Lib.Tool.Schema.validate_schema(path: [type: :text])
+      {:error, "field :path has unknown type :text; known types are :string, :integer, :float, :boolean, :map, and {:list, type}"}
+  """
+  @spec validate_schema(term()) :: :ok | {:error, String.t()}
+  def validate_schema(schema) when is_list(schema) do
+    schema
+    |> Enum.reduce_while(MapSet.new(), fn field, seen ->
+      case check_field(field, seen) do
+        {:ok, name} -> {:cont, MapSet.put(seen, name)}
+        {:error, message} -> {:halt, {:error, message}}
+      end
+    end)
+    |> case do
+      {:error, message} -> {:error, message}
+      _seen -> :ok
+    end
+  end
+
+  def validate_schema(schema),
+    do: {:error, "schema must be a keyword list of fields, got: #{inspect(schema)}"}
+
+  @doc "Like `validate_schema/1`, but raises `ArgumentError` for an invalid schema."
+  @spec validate_schema!(term()) :: :ok
+  def validate_schema!(schema) do
+    case validate_schema(schema) do
+      :ok -> :ok
+      {:error, message} -> raise ArgumentError, "invalid tool schema: " <> message
     end
   end
 
@@ -63,7 +156,8 @@ defmodule Tackle.Lib.Tool.Schema do
   @doc """
   Validates a tool output value.
 
-  Keyword schemas use Tackle.Lib's native validator. `{validator, schema}` delegates
+  Keyword schemas use Tackle.Lib's native validator, which requires the output
+  to be a map (`nil` included is not). `{validator, schema}` delegates
   validation to a host/provider validator module that implements
   `validate_output/2` or `validate/2`. Map schemas are treated as opaque external
   schemas and are not validated by core Tackle.Lib.
@@ -71,12 +165,15 @@ defmodule Tackle.Lib.Tool.Schema do
   @spec validate_output(output_schema(), term()) :: {:ok, term()} | {:error, String.t()}
   def validate_output(nil, output), do: {:ok, output}
 
-  def validate_output(schema, output) when is_list(schema) do
+  def validate_output(schema, output) when is_list(schema) and is_map(output) do
     case validate(schema, output) do
       {:ok, normalized} -> {:ok, normalized}
       {:error, errors} -> {:error, format_output_errors(errors)}
     end
   end
+
+  def validate_output(schema, _output) when is_list(schema),
+    do: {:error, format_output_errors([%{field: nil, message: "must be an object"}])}
 
   def validate_output({validator, schema}, output) when is_atom(validator) do
     cond do
@@ -93,18 +190,22 @@ defmodule Tackle.Lib.Tool.Schema do
 
   def validate_output(%{} = _opaque_external_schema, output), do: {:ok, output}
 
-  @doc "Formats validation errors for tool-result feedback."
-  @spec format_errors([validation_error()]) :: String.t()
-  def format_errors(errors) do
-    errors
-    |> Enum.map_join("; ", fn %{field: field, message: message} -> "#{field}: #{message}" end)
-    |> then(&"Invalid tool arguments: #{&1}")
-  end
+  @doc """
+  Formats validation errors for tool-result feedback.
 
-  defp format_output_errors(errors) do
-    errors
-    |> Enum.map_join("; ", fn %{field: field, message: message} -> "#{field}: #{message}" end)
-    |> then(&"Invalid tool output: #{&1}")
+  The text names only schema fields and their constraints, never the values
+  that failed, so it is safe to show to the model.
+  """
+  @spec format_errors([validation_error()]) :: String.t()
+  def format_errors(errors), do: "Invalid tool arguments: " <> join_errors(errors)
+
+  defp format_output_errors(errors), do: "Invalid tool output: " <> join_errors(errors)
+
+  defp join_errors(errors) do
+    Enum.map_join(errors, "; ", fn
+      %{field: nil, message: message} -> message
+      %{field: field, message: message} -> "#{field}: #{message}"
+    end)
   end
 
   @doc false
@@ -124,6 +225,77 @@ defmodule Tackle.Lib.Tool.Schema do
       |> Map.new()
     end)
   end
+
+  # ── Schema checks ─────────────────────────────────────────────────────
+
+  defp check_field({name, opts}, seen) when is_atom(name) and is_list(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, "field #{inspect(name)} options must be a keyword list"}
+
+      MapSet.member?(seen, name) ->
+        {:error, "field #{inspect(name)} is declared more than once"}
+
+      true ->
+        with :ok <- check_options(name, opts), do: {:ok, name}
+    end
+  end
+
+  defp check_field(field, _seen) do
+    {:error, "fields must be {atom_name, keyword_options} pairs, got: #{inspect(field)}"}
+  end
+
+  defp check_options(name, opts) do
+    case Keyword.keys(opts) -- @field_options do
+      [] ->
+        check_option_values(name, opts)
+
+      unknown ->
+        {:error,
+         "field #{inspect(name)} has unknown options #{inspect(unknown)}; " <>
+           "known options are #{Enum.map_join(@field_options, ", ", &inspect/1)}"}
+    end
+  end
+
+  defp check_option_values(name, opts) do
+    type = Keyword.get(opts, :type, :string)
+
+    cond do
+      not known_type?(type) ->
+        {:error,
+         "field #{inspect(name)} has unknown type #{inspect(type)}; known types are " <>
+           ":string, :integer, :float, :boolean, :map, and {:list, type}"}
+
+      Keyword.get(opts, :required, false) not in [true, false] ->
+        {:error, "field #{inspect(name)} option :required must be a boolean"}
+
+      Keyword.get(opts, :nullable, false) not in [true, false] ->
+        {:error, "field #{inspect(name)} option :nullable must be a boolean"}
+
+      not optional?(opts, :description, &is_binary/1) ->
+        {:error, "field #{inspect(name)} option :description must be a string"}
+
+      not optional?(opts, :enum, &is_list/1) ->
+        {:error, "field #{inspect(name)} option :enum must be a list"}
+
+      true ->
+        :ok
+    end
+  end
+
+  # An option that is absent or nil, or whose value passes `check`.
+  defp optional?(opts, key, check) do
+    case Keyword.get(opts, key) do
+      nil -> true
+      value -> check.(value)
+    end
+  end
+
+  defp known_type?(type) when type in @primitive_types, do: true
+  defp known_type?({:list, inner}), do: known_type?(inner)
+  defp known_type?(_type), do: false
+
+  # ── Validation ────────────────────────────────────────────────────────
 
   defp validate_field(args, field, opts, {acc, errors}) do
     case fetch_arg(args, field) do
@@ -177,7 +349,7 @@ defmodule Tackle.Lib.Tool.Schema do
     end
   end
 
-  defp coerce_value("", _type, _opts), do: :drop
+  defp coerce_value("", type, _opts) when type != :string, do: :drop
 
   defp coerce_value(value, type, opts) do
     with {:ok, value} <- coerce_type(value, type),
@@ -187,7 +359,11 @@ defmodule Tackle.Lib.Tool.Schema do
   end
 
   defp coerce_type(value, :string) when is_binary(value), do: {:ok, value}
-  defp coerce_type(value, :string), do: {:ok, to_string(value)}
+
+  defp coerce_type(value, :string) when is_number(value) or is_boolean(value),
+    do: {:ok, to_string(value)}
+
+  defp coerce_type(_value, :string), do: {:error, "must be a string"}
 
   defp coerce_type(value, :integer) when is_integer(value), do: {:ok, value}
 
@@ -200,7 +376,8 @@ defmodule Tackle.Lib.Tool.Schema do
 
   defp coerce_type(_value, :integer), do: {:error, "must be an integer"}
 
-  defp coerce_type(value, :float) when is_float(value) or is_integer(value), do: {:ok, value}
+  defp coerce_type(value, :float) when is_float(value), do: {:ok, value}
+  defp coerce_type(value, :float) when is_integer(value), do: {:ok, value * 1.0}
 
   defp coerce_type(value, :float) when is_binary(value) do
     case Float.parse(value) do
@@ -217,19 +394,25 @@ defmodule Tackle.Lib.Tool.Schema do
   defp coerce_type(_value, :boolean), do: {:error, "must be a boolean"}
 
   defp coerce_type(value, :map) when is_map(value), do: {:ok, value}
+
+  defp coerce_type(value, :map) when is_binary(value) do
+    case JSON.decode(value) do
+      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+      _other -> {:error, "must be an object"}
+    end
+  end
+
   defp coerce_type(_value, :map), do: {:error, "must be an object"}
 
   defp coerce_type(value, {:list, inner_type}) when is_list(value),
-    do: coerce_array(value, inner_type)
-
-  defp coerce_type(value, {:array, inner_type}) when is_list(value),
-    do: coerce_array(value, inner_type)
+    do: coerce_list(value, inner_type)
 
   defp coerce_type(_value, {:list, _inner_type}), do: {:error, "must be an array"}
-  defp coerce_type(_value, {:array, _inner_type}), do: {:error, "must be an array"}
-  defp coerce_type(value, _unknown_type), do: {:ok, value}
 
-  defp coerce_array(value, inner_type) do
+  defp coerce_type(_value, type),
+    do: raise(ArgumentError, "unknown tool schema type: #{inspect(type)}")
+
+  defp coerce_list(value, inner_type) do
     value
     |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
       case coerce_type(item, inner_type) do
@@ -254,7 +437,6 @@ defmodule Tackle.Lib.Tool.Schema do
   end
 
   defp format_type({:list, inner}), do: "array<#{format_type(inner)}>"
-  defp format_type({:array, inner}), do: "array<#{format_type(inner)}>"
   defp format_type(:float), do: "number"
-  defp format_type(type), do: to_string(type)
+  defp format_type(type) when type in @primitive_types, do: Atom.to_string(type)
 end

@@ -666,25 +666,40 @@ Supported schema types are:
 - `:boolean`
 - `:map`
 - `{:list, inner_type}`
-- `{:array, inner_type}`
 
-Field options include `:required`, `:default`, `:description`, `:enum`, and
-`:nullable`. Integer, float, and boolean strings are coerced where unambiguous.
-Empty values are treated as absent, except that `nullable: true` accepts and
-preserves an explicit `nil` (JSON `null`); an enum on such a field must include
-`nil` to allow it. Adapters that project schemas to JSON Schema advertise these
-fields with a `[type, "null"]` type. Tackle.Lib never creates atoms from
-provider/user keys.
+Field options are `:type`, `:required`, `:default`, `:description`, `:enum`,
+and `:nullable`. `Tackle.Lib.Tool.Schema.validate_schema/1` checks a schema;
+the DSL runs it when a tool compiles and `Tackle.Lib.Tool.Registry.new/1` when
+a tool is registered, so an unknown type or option raises `ArgumentError`
+instead of being accepted silently.
+
+Integer, float, and boolean strings are coerced where unambiguous; `:float`
+fields always return floats (`1` becomes `1.0`), and `:string` fields accept
+numbers and booleans as their string form but reject lists and maps. `:map`
+fields (including the items of `{:list, :map}`) accept a JSON object string,
+which some providers send for nested objects. `""` is a value of a `:string`
+field (so a tool can write an empty file); on every other type it counts as
+absent, like `nil`. Absent fields get their default. `nullable: true` accepts
+and preserves an explicit `nil` (JSON `null`); an enum on such a field must
+include `nil` to allow it. Enum membership is checked with `in` after
+coercion, so `1` and `1.0` differ. Adapters that project schemas to JSON
+Schema advertise nullable fields with a `[type, "null"]` type. Tackle.Lib
+never creates atoms from provider/user keys.
 
 ### Settlement and errors
 
 `Tackle.Lib.Tool.settle/3` is the canonical local execution pipeline:
 
-1. normalize and validate arguments;
-2. execute the host tool;
-3. validate output when a schema exists;
-4. preserve the raw result for host events;
-5. project the result to text/JSON for the model transcript.
+1. settle a call whose provider arguments were not a JSON object
+   (`Tackle.Lib.Tool.Call`'s `argument_error`) as an `:invalid_input` error,
+   without running the tool;
+2. validate and coerce arguments;
+3. execute the host tool;
+4. validate output when a schema exists (a keyword output schema requires a
+   map);
+5. preserve the raw result for host events;
+6. project the result to text/JSON for the model transcript, replacing
+   invalid UTF-8 with U+FFFD.
 
 A tool that also produces non-text content returns `%Tackle.Lib.Tool.Content{}`
 from `execute/2`. Settlement then keeps its text projection as the transcript's
@@ -697,13 +712,23 @@ their wire format; text-only adapters degrade the parts explicitly.
 Do not bypass settlement in custom runtimes. It is what keeps agent and MCP
 execution consistent.
 
-Expected tool failures return `{:error, reason}`. They use sanitized model-facing
-content by default. A tool may implement `model_error/1` to deliberately project
-an expected failure into a safe diagnostic for the linked tool result, allowing
-the agent to react to failures such as a non-zero command or rejected
-delegation. Detailed failure information remains available in `:tool_error`
-events. Exceptions are rescued and logged as bugs; they should not be normal
-control flow.
+Expected tool failures return `{:error, reason}`. A binary `reason` is the
+model-facing message: the linked tool result reads `"Error: " <> reason`, so the
+agent can react to failures such as a missing file, a non-zero command, or a
+rejected delegation. Write these messages for the model and never put secrets
+in them. Any other reason gets a generic model-facing text, and the reason
+stays in the error's `message` and `details` (and the `:tool_error` event) for
+the host. Argument validation errors are shown to the model (for example
+`"Error: Invalid tool arguments: path: is required"`); they name only schema
+fields and limits. Exceptions are rescued and logged as bugs, and their model
+text is generic; they should not be normal control flow.
+
+A provider tool call whose arguments are not valid JSON or not an object is
+kept with its id and name, and `Tackle.Lib.Tool.Call.normalize/1` marks it
+with `argument_error` (empty arguments, including `""`, are `%{}`). The call
+settles as an `:invalid_input` error the model can see and retry, without
+running the tool or passing the `:before_tool_execution` gate, instead of
+failing the whole turn.
 
 Unknown tools and stale `definition_id` values settle as typed errors rather
 than executing a different definition. `Tackle.Lib.Tool.Registry.new/1` raises

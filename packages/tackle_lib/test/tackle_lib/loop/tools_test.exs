@@ -93,9 +93,6 @@ defmodule Tackle.Lib.Loop.ToolsTest do
       await_release_or_stop(name, signal, 400)
     end
 
-    @impl true
-    def model_error(reason) when is_binary(reason), do: reason
-
     defp await_release_or_stop(name, _signal, 0), do: {:ok, %{name: name, timed_out: true}}
 
     defp await_release_or_stop(name, signal, attempts) do
@@ -1309,6 +1306,48 @@ defmodule Tackle.Lib.Loop.ToolsTest do
                :gate,
                {:tool, :second}
              ]
+    end
+
+    defmodule BadArgumentsAdapter do
+      @behaviour Tackle.Lib.LLM
+
+      @impl true
+      def generate(_schema, _opts) do
+        case Process.get(:call_count, 0) do
+          0 ->
+            Process.put(:call_count, 1)
+
+            calls = [
+              %{"id" => "call_first", "name" => "first", "arguments" => "{"},
+              %{"id" => "call_second", "name" => "second", "arguments" => "[]"}
+            ]
+
+            {:ok, %{data: %{"tool_calls" => calls}, usage: nil, model: "test/model"}}
+
+          _count ->
+            {:ok, %{data: %{"content" => "done"}, usage: nil, model: "test/model"}}
+        end
+      end
+    end
+
+    test "calls with unusable provider arguments skip the gate and never run", ctx do
+      {:ok, supervisor} = Task.Supervisor.start_link()
+
+      for policy <- [Policy.default(), Policy.concurrent()] do
+        Process.put(:call_count, 0)
+        state = gate_state(llm: TestLLM.selection(BadArgumentsAdapter), tool_policy: policy)
+
+        assert {:ok, state} =
+                 Loop.run(state, "tools",
+                   tool_supervisor: supervisor,
+                   before_tool_execution: ctx.gate
+                 )
+
+        assert drain_gate_trace() == [{:hook, "call_first"}, {:hook, "call_second"}]
+
+        assert ["Error: Invalid tool arguments: " <> _, "Error: Invalid tool arguments: " <> _] =
+                 for(%{role: :tool, content: content} <- state.messages, do: content)
+      end
     end
 
     test "cancellation while the gate blocks prevents tool dispatch" do

@@ -26,7 +26,9 @@ defmodule Tackle.Lib.LLM.Response do
       `:tool_calls`; a string key with a non-nil value wins.
     * `"tool_calls"` (or `:tool_calls`) must be a list of calls that
       `Tackle.Lib.Tool.Call.normalize/1` accepts; absent or `nil` means no
-      tool calls.
+      tool calls. A named call whose arguments are not a JSON object is
+      accepted with its `argument_error` set, so it settles as a tool error
+      the model can see instead of failing the turn.
 
   The result's `:usage` may be `nil`, a `Tackle.Lib.Usage`, or a provider usage
   map (normalized with `Tackle.Lib.Usage.normalize/1`), and `:provider_state`
@@ -57,7 +59,7 @@ defmodule Tackle.Lib.LLM.Response do
           | {:data, term()}
           | {:content, term()}
           | {:thinking, term()}
-          | {:tool_calls, :malformed_tool_call | :invalid_tool_arguments | :not_a_list}
+          | {:tool_calls, :malformed_tool_call | :not_a_list}
           | {:usage, term()}
           | {:provider_state, term()}
 
