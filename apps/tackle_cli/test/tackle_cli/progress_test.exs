@@ -6,6 +6,8 @@ defmodule Tackle.CLI.Output.ProgressTest do
 
   test "describes status and response events" do
     assert Progress.event_label(Event.new(:status_change, %{status: :thinking})) == "Thinking…"
+    assert Progress.event_label(Event.new(:status_change, %{status: :completed})) == nil
+    assert Progress.event_label(Event.new(:status_change, %{status: :error})) == nil
 
     assert Progress.event_label(Event.new(:message_delta, %{delta: "hello"})) ==
              "Writing response…"

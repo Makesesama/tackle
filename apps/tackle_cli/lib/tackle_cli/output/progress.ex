@@ -146,7 +146,8 @@ defmodule Tackle.CLI.Output.Progress do
 
   defp status_label(status) when status in [:thinking, "thinking"], do: "Thinking…"
   defp status_label(status) when status in [:acting, "acting"], do: "Working…"
-  defp status_label(status) when status in [:completed, "completed"], do: nil
+  # A finished turn's outcome is shown by finish/2, not as activity.
+  defp status_label(status) when status in [:completed, "completed", :error, "error"], do: nil
   defp status_label(status) when is_atom(status) or is_binary(status), do: humanize(status) <> "…"
   defp status_label(_status), do: nil
 
