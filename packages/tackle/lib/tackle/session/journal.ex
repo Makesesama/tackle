@@ -23,8 +23,10 @@ defmodule Tackle.Session.Journal do
   intent without a durable result is reported as uncertain. Unlike `flush/1`,
   `await_durable/1` does not touch the disk when nothing is unsynced.
   `await_idle/1` waits behind earlier requests (for example a stalled sync)
-  without syncing. The derived catalog is updated at sync points and when a
-  turn settles.
+  without syncing. The derived catalog is updated at sync points, when a turn
+  starts or settles, and when the owner stops; it lists the session as
+  `:active` while the owner runs a turn and otherwise with the projection's
+  status.
 
   Durable operations are guarded by an independent watchdog. A missed deadline
   stops the owner and its durable scope rather than abandoning a request while
