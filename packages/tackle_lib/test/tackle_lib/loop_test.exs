@@ -1496,6 +1496,7 @@ defmodule Tackle.Lib.LoopTest do
     test "continue runs terminal cleanup once" do
       state = State.new(model: "test/model", hooks: [TerminalHook], context: %{test_pid: self()})
       assert {:ok, final_state} = Loop.continue(state)
+      assert final_state.context.cleaned_up
       assert_receive {:after_turn, :completed, nil}
       refute_receive {:after_turn, _, _}, 20
     end
