@@ -22,6 +22,46 @@ defmodule Tackle.Lib.MessageTest do
     end
   end
 
+  describe "message ids" do
+    test "an explicit id wins over the generator in every constructor" do
+      generator = fn -> flunk("the generator must not run") end
+
+      assert Message.user("Hi", id: "u1", id_generator: generator).id == "u1"
+      assert Message.assistant(id: "a1", id_generator: generator).id == "a1"
+      assert Message.tool_result("c1", "read", "ok", id: "t1", id_generator: generator).id == "t1"
+    end
+
+    test "rejects an explicit id that is not a non-empty string" do
+      for id <- [123, "", :atom, ~c"chars"] do
+        assert_raise ArgumentError,
+                     "message id must be a non-empty string, got: #{inspect(id)}",
+                     fn ->
+                       Message.user("Hi", id: id)
+                     end
+
+        assert_raise ArgumentError, ~r/message id must be a non-empty string/, fn ->
+          Message.assistant(id: id)
+        end
+
+        assert_raise ArgumentError, ~r/message id must be a non-empty string/, fn ->
+          Message.tool_result("c1", "read", "ok", id: id)
+        end
+      end
+    end
+
+    test "rejects a generated id that is not a non-empty string" do
+      for id <- [123, "", nil] do
+        assert_raise ArgumentError,
+                     "generated message id must be a non-empty string, got: #{inspect(id)}",
+                     fn -> Message.user("Hi", id_generator: fn -> id end) end
+      end
+
+      assert_raise ArgumentError, ~r/id_generator must be a zero-arity function/, fn ->
+        Message.assistant(id_generator: "not a function")
+      end
+    end
+  end
+
   describe "assistant/1" do
     test "creates an assistant message with content" do
       message = Message.assistant(content: "Hi there!")

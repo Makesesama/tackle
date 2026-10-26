@@ -50,7 +50,12 @@ defmodule Tackle.Lib.Message do
   Creates a new user message.
 
   ## Options
-    * `:id_generator` - zero-arity function returning a message id
+    * `:id` - explicit message id (overrides `:id_generator`)
+    * `:id_generator` - zero-arity function returning a message id (default
+      `Tackle.Lib.ID.uuid4/0`)
+
+  An id, given or generated, must be a non-empty string; anything else raises
+  `ArgumentError`.
   """
   @spec user(String.t(), keyword()) :: t()
   def user(content, opts \\ []) when is_binary(content) do
@@ -65,15 +70,27 @@ defmodule Tackle.Lib.Message do
   @doc """
   Creates a new assistant message with optional tool calls.
 
+  Assistant messages carry no content `parts`; only tool results do.
+
   ## Options
+    * `:content` - the answer text, or `nil` (default)
+    * `:thinking` - the model's reasoning text, or `nil` (default)
     * `:tool_calls` - the calls the assistant made: `Tackle.Lib.Tool.Call`
       structs, or maps that `Tackle.Lib.Tool.Call.normalize/1` accepts
       (default none). A call that does not normalize raises `ArgumentError`.
-    * `:id` - explicit message id (overrides :id_generator)
-    * `:id_generator` - zero-arity function returning a message id
+    * `:token_usage` - the generation's usage: a `Tackle.Lib.Usage` or a map
+      `Tackle.Lib.Usage.normalize/2` accepts, or `nil` (default). `:model`
+      fills its model when missing.
+    * `:model` - the model that generated the message, or `nil` (default)
     * `:provider_state` - opaque, non-secret continuation metadata returned by
       the selected adapter; adapters must ignore state from other providers or
       models
+    * `:id` - explicit message id (overrides `:id_generator`)
+    * `:id_generator` - zero-arity function returning a message id (default
+      `Tackle.Lib.ID.uuid4/0`)
+
+  An id, given or generated, must be a non-empty string; anything else raises
+  `ArgumentError`.
   """
   @spec assistant(keyword()) :: t()
   def assistant(opts) do
@@ -100,8 +117,14 @@ defmodule Tackle.Lib.Message do
   `Tackle.Lib.ContextUsage` estimates both.
 
   ## Options
-    * `:parts` - extra content parts (see `Tackle.Lib.Tool.Content`)
-    * `:id_generator` - zero-arity function returning a message id
+    * `:parts` - extra content parts (see `Tackle.Lib.Tool.Content`); an empty
+      list is stored as `nil`
+    * `:id` - explicit message id (overrides `:id_generator`)
+    * `:id_generator` - zero-arity function returning a message id (default
+      `Tackle.Lib.ID.uuid4/0`)
+
+  An id, given or generated, must be a non-empty string; anything else raises
+  `ArgumentError`.
   """
   @spec tool_result(String.t(), String.t(), String.t(), keyword()) :: t()
   def tool_result(tool_call_id, tool_name, content, opts \\ []) do
@@ -134,15 +157,22 @@ defmodule Tackle.Lib.Message do
 
   defp generate_id(opts) do
     case Keyword.get(opts, :id) do
-      nil ->
-        opts
-        |> Keyword.get(:id_generator, &ID.uuid4/0)
-        |> then(fn generator -> generator.() end)
-
-      id when is_binary(id) ->
-        id
+      nil -> opts |> Keyword.get(:id_generator, &ID.uuid4/0) |> generated_id()
+      id -> checked_id(id, "message id")
     end
   end
+
+  defp generated_id(generator) when is_function(generator, 0),
+    do: checked_id(generator.(), "generated message id")
+
+  defp generated_id(generator) do
+    raise ArgumentError, "id_generator must be a zero-arity function, got: #{inspect(generator)}"
+  end
+
+  defp checked_id(id, _what) when is_binary(id) and id != "", do: id
+
+  defp checked_id(id, what),
+    do: raise(ArgumentError, "#{what} must be a non-empty string, got: #{inspect(id)}")
 
   defp normalize_tool_calls(nil), do: []
 
