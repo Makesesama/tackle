@@ -51,6 +51,12 @@ defmodule Tackle.Lib.StateTest do
   end
 
   describe "new/1" do
+    test "rejects options it does not know" do
+      assert_raise ArgumentError, ~r/unknown keys \[:prompt_renderer\]/, fn ->
+        State.new(prompt_renderer: SomeRenderer)
+      end
+    end
+
     test "creates a new state with defaults" do
       state = State.new()
 

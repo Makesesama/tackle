@@ -196,7 +196,8 @@ defmodule Tackle.Lib.LLM do
           required(:data) => map(),
           required(:usage) => Usage.t() | map() | nil,
           required(:model) => String.t() | nil,
-          optional(:provider_state) => map() | nil
+          optional(:provider_state) => map() | nil,
+          optional(:stop_reason) => Response.stop_reason()
         }
 
   @typedoc "What `generate_with/3` and `stream_with/4` return."

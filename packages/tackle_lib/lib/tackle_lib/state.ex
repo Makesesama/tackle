@@ -101,6 +101,23 @@ defmodule Tackle.Lib.State do
             tree: %Tree{},
             committer: nil
 
+  @new_options [
+    :llm,
+    :max_iterations,
+    :tools,
+    :tool_policy,
+    :context,
+    :system_prompt,
+    :llm_opts,
+    :hooks,
+    :id_generator,
+    :session_id,
+    :retry,
+    :compaction,
+    :tree,
+    :committer
+  ]
+
   @doc """
   Creates a new agent state with the given options.
 
@@ -134,12 +151,14 @@ defmodule Tackle.Lib.State do
       compactions and navigations durable before they are installed
       (default: `nil`, in memory only); raises `ArgumentError` for a module
       that is not loaded or does not export `commit/2`
+
+  Any other option raises `ArgumentError`.
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    id_generator = Keyword.get(opts, :id_generator, &ID.uuid4/0)
-
     llm = llm!(opts)
+    opts = Keyword.validate!(opts, @new_options)
+    id_generator = Keyword.get(opts, :id_generator, &ID.uuid4/0)
 
     state = %__MODULE__{
       session_id: Keyword.get(opts, :session_id) || id_generator.(),
