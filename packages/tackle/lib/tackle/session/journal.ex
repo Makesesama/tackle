@@ -655,6 +655,16 @@ defmodule Tackle.Session.Journal do
   @impl true
   def terminate(_reason, %{materialized?: false}), do: :ok
 
+  # After the writer lock was lost another process may own the session
+  # directory: only the log is closed (its buffered writes cannot be avoided);
+  # nothing else is synced, written, or released there.
+  def terminate({:journal_failure, {:writer_lock_lost, _status}}, state) do
+    Watchdog.cleanup(self())
+    cleanup_step(:cleanup_close, fn -> Reader.close(state.name) end)
+    Watchdog.lock(self(), nil)
+    :ok
+  end
+
   def terminate(_reason, state) do
     Watchdog.cleanup(self())
     cleanup_step(:cleanup_sync, fn -> Reader.sync(state.name) end)

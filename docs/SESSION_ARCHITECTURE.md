@@ -221,6 +221,8 @@ A deterministic log name protects against duplicate opens within one connected n
 
 On systems with `flock`, the guard is an operating-system advisory lock on `writer.lock`, held by a small linked lock process. A conflict with another process of the same OS process (background compression, or moving a session to the archive or trash) is waited out briefly; a lock attempt that fails leaves nothing behind for its caller, so the waiting journal owner keeps running.
 
+Losing the lock is fatal: the owner then only closes its log, and neither syncs, writes the summary sidecar, nor releases a lock in a directory another process may own now.
+
 ### 6.2 Deferred materialization of new sessions
 
 The journal owner process starts with its durable scope, so scope supervision and fail-closed behavior are unchanged. A *new* session is not materialized until its first prompt, however. Until then the owner holds the validated session id, storage options, and creation metadata in memory and writes nothing:
@@ -501,6 +503,8 @@ A session has no close operation of its own: hosts stop its scope (`Tackle.stop_
 2. `:disk_log.close/1`;
 3. writing the session's summary sidecar; and
 4. release of journal ownership.
+
+After a lost writer lock it only closes the log (section 6.1).
 
 The runtime appends no `session.closed` commit; journals that already contain one still replay, and the projection reports its `closed_at`. A process or BEAM crash can skip these steps. Recovery must therefore rely on journal repair and replay, not on the presence of `session.closed`.
 

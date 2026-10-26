@@ -1000,6 +1000,33 @@ defmodule Tackle.Session.JournalTest do
     end
   end
 
+  describe "shutdown" do
+    test "after losing the writer lock the owner writes nothing more into the directory", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, summary} = Storage.summary_path(ctx.session_id, home: ctx.home)
+      %{lock: %{port: port}} = :sys.get_state(journal)
+      ref = Process.monitor(journal)
+
+      send(journal, {port, {:exit_status, 1}})
+
+      assert_receive {:DOWN, ^ref, :process, ^journal,
+                      {:journal_failure, {:writer_lock_lost, 1}}},
+                     1_000
+
+      refute File.exists?(summary)
+    end
+
+    test "a normal stop writes the summary sidecar", ctx do
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, summary} = Storage.summary_path(ctx.session_id, home: ctx.home)
+      stop_journal(journal)
+
+      assert File.exists?(summary)
+    end
+  end
+
   describe "storage ownership" do
     test "a lock this OS process holds briefly is waited out without stopping the owner", ctx do
       create_session!(ctx)
