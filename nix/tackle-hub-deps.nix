@@ -186,26 +186,6 @@ let
     with self;
     {
 
-      abnf_parsec =
-        let
-          version = "2.1.0";
-          drv = buildMix {
-            inherit version;
-            name = "abnf_parsec";
-
-            src = fetchHex {
-              inherit version;
-              pkg = "abnf_parsec";
-              sha256 = "e0ed6290c7cc7e5020c006d1003520390c9bdd20f7c3f776bd49bfe3c5cd362a";
-            };
-
-            beamDeps = [
-              nimble_parsec
-            ];
-          };
-        in
-        drv;
-
       ash =
         let
           version = "3.36.1";
@@ -658,22 +638,6 @@ let
         in
         drv;
 
-      idna =
-        let
-          version = "7.1.0";
-          drv = buildRebar3 {
-            inherit version;
-            name = "idna";
-
-            src = fetchHex {
-              inherit version;
-              pkg = "idna";
-              sha256 = "6ae959a025bf36df61a8cab8508d9654891b5426a84c44d82deaffd6ddf8c71f";
-            };
-          };
-        in
-        drv;
-
       iterex =
         let
           version = "0.1.2";
@@ -705,30 +669,6 @@ let
 
             beamDeps = [
               decimal
-            ];
-          };
-        in
-        drv;
-
-      jsv =
-        let
-          version = "0.26.1";
-          drv = buildMix {
-            inherit version;
-            name = "jsv";
-
-            src = fetchHex {
-              inherit version;
-              pkg = "jsv";
-              sha256 = "039971fbdddc3d49e88fc8a2bb7ad51ac409f97ca1db4c95a56cc1afa3c1c3d4";
-            };
-
-            beamDeps = [
-              abnf_parsec
-              decimal
-              idna
-              jason
-              texture
             ];
           };
         in
@@ -817,22 +757,6 @@ let
               inherit version;
               pkg = "nimble_options";
               sha256 = "821b2470ca9442c4b6984882fe9bb0389371b8ddec4d45a9504f00a66f650b44";
-            };
-          };
-        in
-        drv;
-
-      nimble_parsec =
-        let
-          version = "1.4.2";
-          drv = buildMix {
-            inherit version;
-            name = "nimble_parsec";
-
-            src = fetchHex {
-              inherit version;
-              pkg = "nimble_parsec";
-              sha256 = "4b21398942dda052b403bbe1da991ccd03a053668d147d53fb8c4e0efe09c973";
             };
           };
         in
@@ -1259,7 +1183,6 @@ let
             src = ../packages/tackle_lib;
 
             beamDeps = [
-              jsv
               telemetry
             ];
           };
@@ -1347,26 +1270,6 @@ let
               pkg = "telemetry";
               sha256 = "928f6495066506077862c0d1646609eed891a4326bee3126ba54b60af61febb1";
             };
-          };
-        in
-        drv;
-
-      texture =
-        let
-          version = "2.0.0";
-          drv = buildMix {
-            inherit version;
-            name = "texture";
-
-            src = fetchHex {
-              inherit version;
-              pkg = "texture";
-              sha256 = "c85cbac5f456f4c9867deb0f70c45daa8a536142a8c8c5403401bd51962660bc";
-            };
-
-            beamDeps = [
-              abnf_parsec
-            ];
           };
         in
         drv;
