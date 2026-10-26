@@ -340,7 +340,7 @@ session.created
 session.metadata_changed
 session.configuration_changed
 session.recovered
-session.closed               legacy: replayed, no longer written by the runtime
+session.closed               legacy: replayed for its closed_at, no longer written
 turn.started
 message.appended
 context.compacted
@@ -509,7 +509,7 @@ A session has no close operation of its own: hosts stop its scope (`Tackle.stop_
 
 After a lost writer lock it only closes the log (section 6.1).
 
-The runtime appends no `session.closed` commit; journals that already contain one still replay, and the projection reports its `closed_at`. A process or BEAM crash can skip these steps. Recovery must therefore rely on journal repair and replay, not on the presence of `session.closed`.
+The runtime appends no `session.closed` commit; journals that already contain one still replay, and the projection reports its `closed_at` without classifying the session as closed, so a later turn resumes it like any other. A process or BEAM crash can skip these steps. Recovery must therefore rely on journal repair and replay, not on the presence of `session.closed`.
 
 ## 9. Durability contract
 
@@ -635,7 +635,7 @@ A reader folds records in sequence order:
 4. require contiguous sequence numbers and unique commit IDs;
 5. upcast known older event versions in memory, then validate each event against its current version;
 6. apply events to a plain durable projection; and
-7. classify the final session as clean, closed, interrupted, recovered, corrupt, or unsupported.
+7. classify the final session as clean, interrupted, or recovered; a journal that fails validation (corrupt) or uses a newer version (unsupported) is an error rather than a status.
 
 Normal replay should prefer `:disk_log.bchunk/2,3`, which returns encoded item binaries, followed by controlled decoding with:
 

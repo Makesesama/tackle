@@ -58,10 +58,9 @@ defmodule Tackle.Session.JournalTest do
       assert File.exists?(path)
     end
 
-    test "does not create a journal when closed before the first turn", ctx do
+    test "does not create a journal when stopped before the first turn", ctx do
       {:ok, journal} = start_journal(ctx)
 
-      assert :ok = Journal.close_journal(journal)
       assert :ok = Journal.flush(journal)
 
       {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
@@ -185,18 +184,17 @@ defmodule Tackle.Session.JournalTest do
       {:ok, ^turn_id} = Journal.begin_turn(journal, :run, "hello", turn_id)
       :ok = Journal.append_message(journal, Message.user("hello"))
       :ok = Journal.settle_turn(journal, "turn.completed", %{})
-      :ok = Journal.close_journal(journal)
 
       stop_journal(journal)
 
       {:ok, journal} = start_journal(ctx)
       assert {:ok, projection} = Journal.projection(journal)
-      assert projection.last_seq == 5
+      assert projection.last_seq == 4
       assert [%Message{role: :user, content: "hello"}] = Tree.transcript(projection.tree)
 
       assert {:ok, _turn_id} = Journal.begin_turn(journal, :continue, nil)
       assert {:ok, status} = Journal.status(journal)
-      assert status.last_seq == 6
+      assert status.last_seq == 5
     end
   end
 
@@ -975,6 +973,24 @@ defmodule Tackle.Session.JournalTest do
 
       assert {:error, {:invalid_projection, {:invalid_event_data, "session.created", "tags"}}} =
                Reader.read(ctx.session_id, home: ctx.home)
+    end
+
+    test "a legacy session.closed does not keep a later turn's session closed", ctx do
+      closed_at = "2026-01-01T00:00:00Z"
+      turn = %{"turn_id" => "turn-1", "operation" => "run"}
+
+      write_raw_journal!(ctx, [
+        header(ctx),
+        commit(ctx, 1, [Log.event("session.created", %{})]),
+        commit(ctx, 2, [Log.event("session.closed", %{"closed_at" => closed_at})]),
+        commit(ctx, 3, [Log.event("turn.started", turn)]),
+        commit(ctx, 4, [Log.event("turn.completed", %{"turn_id" => "turn-1"})])
+      ])
+
+      assert {:ok, %{status: :clean, projection: projection}} =
+               Reader.read(ctx.session_id, home: ctx.home)
+
+      assert projection.closed_at == closed_at
     end
 
     test "rejects a header with a mismatched session id" do

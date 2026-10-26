@@ -242,10 +242,6 @@ defmodule Tackle.Session.Journal do
   @spec metadata_changed(GenServer.server(), map()) :: :ok | {:error, term()}
   def metadata_changed(journal, attrs), do: durable_call(journal, {:metadata_changed, attrs})
 
-  @doc "Appends and syncs `session.closed` before releasing ownership."
-  @spec close_journal(GenServer.server()) :: :ok | {:error, term()}
-  def close_journal(journal), do: durable_call(journal, :close_journal)
-
   @doc "Runs an explicit durability barrier: always syncs the journal."
   @spec flush(GenServer.server()) :: :ok | {:error, term()}
   def flush(journal), do: durable_call(journal, :flush)
@@ -577,19 +573,6 @@ defmodule Tackle.Session.Journal do
 
     case commit(state, [event], nil) do
       {:ok, state, _seq} -> {:reply, :ok, state}
-      error -> refuse_or_fail(state, error)
-    end
-  end
-
-  def handle_call(:close_journal, _from, %{materialized?: false} = state) do
-    {:reply, :ok, state}
-  end
-
-  def handle_call(:close_journal, _from, state) do
-    event = Log.event("session.closed", %{"closed_at" => now()})
-
-    case commit(state, [event], state_active_turn_id(state)) do
-      {:ok, state, _seq} -> {:reply, :ok, %{state | active_turn: nil}}
       error -> refuse_or_fail(state, error)
     end
   end

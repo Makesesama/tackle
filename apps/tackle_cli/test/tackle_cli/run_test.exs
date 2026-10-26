@@ -268,7 +268,6 @@ defmodule Tackle.CLI.RunTest do
     assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "before crash")
     assert :ok = Journal.append_message(journal, Message.user("before crash"))
     assert :ok = Journal.settle_turn(journal, "turn.completed", %{})
-    assert :ok = Journal.close_journal(journal)
     GenServer.stop(journal)
 
     {:ok, path} = Storage.journal_path(session_id, home: home, cwd: File.cwd!())
@@ -686,7 +685,7 @@ defmodule Tackle.CLI.RunTest do
   defp restore_env(name, nil), do: System.delete_env(name)
   defp restore_env(name, value), do: System.put_env(name, value)
 
-  # Seeds one closed, cleanly settled durable session in `home`.
+  # Seeds one stopped, cleanly settled durable session in `home`.
   defp seed_session(home, prompt, opts \\ []) do
     session_id = "session-#{System.unique_integer([:positive])}"
     {:ok, journal} = Journal.start_link([session_id: session_id, home: home] ++ opts)
@@ -695,7 +694,6 @@ defmodule Tackle.CLI.RunTest do
     assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, prompt)
     assert :ok = Journal.append_message(journal, Message.user(prompt))
     assert :ok = Journal.settle_turn(journal, "turn.completed", %{})
-    assert :ok = Journal.close_journal(journal)
     GenServer.stop(journal)
 
     session_id
@@ -710,7 +708,6 @@ defmodule Tackle.CLI.RunTest do
 
     assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "before crash")
     assert :ok = Journal.tool_started(journal, %{id: "call-1", name: "bash", arguments: %{}})
-    assert :ok = Journal.close_journal(journal)
     GenServer.stop(journal)
 
     session_id

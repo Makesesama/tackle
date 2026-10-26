@@ -83,6 +83,13 @@ defmodule Tackle.Session.Projection do
           input: term()
         }
 
+  @typedoc """
+  The recovery status of the durable history: `:interrupted` while a turn has
+  no terminal event, otherwise `:recovered` once repair recovered the journal,
+  otherwise `:clean`.
+  """
+  @type status :: :clean | :interrupted | :recovered
+
   @typedoc "A tool execution started without a durable result yet."
   @type pending_tool :: %{
           tool_call_id: String.t() | nil,
@@ -110,7 +117,7 @@ defmodule Tackle.Session.Projection do
           active_turn: turn() | nil,
           pending_tools: [pending_tool()],
           last_seq: non_neg_integer(),
-          status: :clean | :closed | :interrupted | :recovered | :corrupt | :unsupported,
+          status: status(),
           recovered: map() | nil,
           closed_at: String.t() | nil
         }
@@ -171,7 +178,6 @@ defmodule Tackle.Session.Projection do
     %{projection | status: :interrupted}
   end
 
-  def classify(%__MODULE__{status: :closed} = projection), do: projection
   def classify(%__MODULE__{recovered: %{}} = projection), do: %{projection | status: :recovered}
   def classify(%__MODULE__{} = projection), do: %{projection | status: :clean}
 
@@ -366,12 +372,11 @@ defmodule Tackle.Session.Projection do
     %{projection | recovered: data, status: :recovered}
   end
 
+  # Legacy: no longer written. It records when an earlier version closed the
+  # session, which says nothing about the session's state now: a later turn
+  # can resume it.
   defp apply_event(%{"type" => "session.closed", "data" => data}, projection) do
-    %{
-      projection
-      | status: :closed,
-        closed_at: Map.get(data, "closed_at")
-    }
+    %{projection | closed_at: Map.get(data, "closed_at")}
   end
 
   defp apply_event(%{"type" => "session.forked"}, projection), do: projection

@@ -570,7 +570,8 @@ defmodule Tackle.Session.Catalog do
   defp decode_status(status) when is_binary(status) do
     case status do
       "clean" -> :clean
-      "closed" -> :closed
+      # Written by earlier versions for a session that is clean now.
+      "closed" -> :clean
       "interrupted" -> :interrupted
       "recovered" -> :recovered
       "corrupt" -> :corrupt
