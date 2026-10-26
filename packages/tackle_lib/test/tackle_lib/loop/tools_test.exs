@@ -675,6 +675,21 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
   test "sequential preparation errors settle as tool crashes instead of crashing the loop" do
     test_pid = self()
+    handler_id = {__MODULE__, make_ref()}
+
+    # Handlers are global; the sequential policy settles calls in this process.
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:tackle, :tool, :execution, :exception],
+        fn event, measurements, metadata, _config ->
+          if self() == test_pid,
+            do: send(test_pid, {:tool_telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
 
     state =
       State.new(
@@ -701,6 +716,13 @@ defmodule Tackle.Lib.Loop.ToolsTest do
                     }}
 
     refute_receive {:tool_entered, _, _}
+
+    assert_receive {:tool_telemetry, [:tackle, :tool, :execution, :exception],
+                    %{count: 1, duration: _}, metadata}
+
+    assert %{kind: :error, tool_name: "other", telemetry_ref: ref} = metadata
+    assert is_reference(ref)
+    assert Map.keys(metadata) |> Enum.sort() == [:kind, :telemetry_ref, :tool_name]
   end
 
   test "emits sanitized tool telemetry with host allowlisted names" do

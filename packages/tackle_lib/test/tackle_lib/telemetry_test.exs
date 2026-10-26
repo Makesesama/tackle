@@ -3,44 +3,70 @@ defmodule Tackle.Lib.TelemetryTest do
 
   alias Tackle.Lib.Telemetry
 
-  test "emits balanced lifecycle metadata without caller payloads" do
+  @prefix [:tackle, :telemetry_test, :span]
+
+  setup do
     handler_id = {__MODULE__, make_ref()}
     test_pid = self()
 
     :ok =
       :telemetry.attach_many(
         handler_id,
-        [[:tackle, :tool, :execution, :start], [:tackle, :tool, :execution, :stop]],
+        [@prefix ++ [:start], @prefix ++ [:stop], @prefix ++ [:exception]],
         fn event, measurements, metadata, _config ->
           send(test_pid, {:telemetry, event, measurements, metadata})
         end,
         nil
       )
 
-    try do
-      ref = Telemetry.start([:tackle, :tool, :execution], %{tool_name: "safe_name"})
-      assert_receive {:telemetry, [:tackle, :tool, :execution, :start], %{system_time: _}, start}
-      assert start.telemetry_ref == ref
-      assert start.tool_name == "safe_name"
-      refute Map.has_key?(start, :arguments)
-      refute Map.has_key?(start, :result)
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+  end
 
-      :ok =
-        Telemetry.stop(
-          [:tackle, :tool, :execution],
-          ref,
-          %{duration: 1, count: 1},
-          %{tool_name: "safe_name", outcome: :success}
-        )
+  test "emits balanced lifecycle metadata without caller payloads" do
+    span = Telemetry.start(@prefix, %{tool_name: "safe_name"})
+    ref = span.telemetry_ref
 
-      assert_receive {:telemetry, [:tackle, :tool, :execution, :stop], %{duration: 1, count: 1},
-                      stop}
+    assert_receive {:telemetry, [_, _, _, :start], %{system_time: _, monotonic_time: _}, start}
+    assert start == %{telemetry_ref: ref, tool_name: "safe_name"}
 
-      assert stop.telemetry_ref == ref
-      assert stop.outcome == :success
-      refute Map.has_key?(stop, :raw)
-    after
-      :telemetry.detach(handler_id)
-    end
+    :ok = Telemetry.stop(span, %{count: 1}, %{outcome: :success})
+
+    assert_receive {:telemetry, [_, _, _, :stop], %{duration: duration, count: 1}, stop}
+    assert is_integer(duration) and duration >= 0
+
+    # The stop event keeps the start metadata.
+    assert stop == %{telemetry_ref: ref, tool_name: "safe_name", outcome: :success}
+  end
+
+  test "exception events carry the kind and the start metadata, never the raw reason" do
+    span = Telemetry.start(@prefix, %{operation: :run})
+    ref = span.telemetry_ref
+
+    :ok = Telemetry.exception(span, :exit, %{count: 1}, %{error_type: :task_exit})
+
+    assert_receive {:telemetry, [_, _, _, :exception], %{duration: duration, count: 1}, metadata}
+
+    assert is_integer(duration)
+
+    assert metadata == %{
+             telemetry_ref: ref,
+             operation: :run,
+             kind: :exit,
+             error_type: :task_exit
+           }
+
+    :ok = Telemetry.exception(span, :throw)
+
+    assert_receive {:telemetry, [_, _, _, :exception], %{duration: _},
+                    %{kind: :throw, operation: :run, telemetry_ref: ^ref}}
+
+    assert_raise FunctionClauseError, fn -> Telemetry.exception(span, :oops) end
+  end
+
+  test "stop metadata overrides start metadata with the same key" do
+    span = Telemetry.start(@prefix, %{outcome: :pending})
+    :ok = Telemetry.stop(span, %{}, %{outcome: :done})
+
+    assert_receive {:telemetry, [_, _, _, :stop], _measurements, %{outcome: :done}}
   end
 end

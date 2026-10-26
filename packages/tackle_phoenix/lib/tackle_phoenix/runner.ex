@@ -32,8 +32,7 @@ defmodule Tackle.Phoenix.Runner do
     :agent_state,
     :host_state,
     :telemetry_metadata,
-    :turn_started_at,
-    :turn_telemetry_ref
+    :turn_telemetry
   ]
 
   @typedoc "Runner configuration injected by the host."
@@ -209,9 +208,7 @@ defmodule Tackle.Phoenix.Runner do
           streaming_messages: %{},
           turn_signal: nil,
           turn_usage: empty_turn_usage(),
-          turn_telemetry_ref: nil,
-          turn_operation: nil,
-          turn_started_at: nil,
+          turn_telemetry: nil,
           turn_metadata: %{},
           turn_opts: [],
           turn_stats: empty_turn_stats()
@@ -399,13 +396,13 @@ defmodule Tackle.Phoenix.Runner do
   defp start_turn(:run, state, %State{} = agent_state, input, opts) do
     cond do
       state.turn_task ->
-        reject_turn(state, opts, :run, :turn_in_progress)
+        reject_turn(state, opts, :turn_in_progress)
 
       stale_transcript?(state.agent_state, agent_state) ->
-        reject_turn(state, opts, :run, :stale_agent_state)
+        reject_turn(state, opts, :stale_agent_state)
 
       (reason = gate_turn(state, opts)) != :ok ->
-        reject_turn(state, opts, :run, reason)
+        reject_turn(state, opts, reason)
 
       true ->
         signal = Cancellation.new_signal()
@@ -450,9 +447,7 @@ defmodule Tackle.Phoenix.Runner do
            | turn_task: task,
              turn_signal: signal,
              turn_usage: %{},
-             turn_telemetry_ref: Keyword.get(opts, :turn_telemetry_ref),
-             turn_operation: :run,
-             turn_started_at: Keyword.get(opts, :turn_started_at),
+             turn_telemetry: Keyword.get(opts, :turn_telemetry),
              turn_metadata: Keyword.fetch!(opts, :turn_metadata),
              turn_opts: turn_opts,
              turn_stats: empty_turn_stats()
@@ -463,13 +458,13 @@ defmodule Tackle.Phoenix.Runner do
   defp start_turn(:continue, state, %State{} = agent_state, _input, opts) do
     cond do
       state.turn_task ->
-        reject_turn(state, opts, :continue, :turn_in_progress)
+        reject_turn(state, opts, :turn_in_progress)
 
       stale_transcript?(state.agent_state, agent_state) ->
-        reject_turn(state, opts, :continue, :stale_agent_state)
+        reject_turn(state, opts, :stale_agent_state)
 
       (reason = gate_turn(state, opts)) != :ok ->
-        reject_turn(state, opts, :continue, reason)
+        reject_turn(state, opts, reason)
 
       true ->
         signal = Cancellation.new_signal()
@@ -484,9 +479,7 @@ defmodule Tackle.Phoenix.Runner do
              turn_task: task,
              turn_signal: signal,
              turn_usage: %{},
-             turn_telemetry_ref: Keyword.get(opts, :turn_telemetry_ref),
-             turn_operation: :continue,
-             turn_started_at: Keyword.get(opts, :turn_started_at),
+             turn_telemetry: Keyword.get(opts, :turn_telemetry),
              turn_metadata: %{},
              turn_opts: store_turn_opts(opts),
              turn_stats: empty_turn_stats()
@@ -508,10 +501,10 @@ defmodule Tackle.Phoenix.Runner do
   end
 
   defp start_agent_task(state, enriched_state, signal, opts, session_pid) do
-    telemetry_ref = Keyword.get(opts, :turn_telemetry_ref)
+    span = Keyword.get(opts, :turn_telemetry)
 
     Task.Supervisor.async_nolink(state.config.task_supervisor, fn ->
-      with_telemetry_context(state.config, telemetry_ref, fn ->
+      with_telemetry_context(state.config, span, fn ->
         state.config.agent.continue(
           enriched_state,
           build_run_opts(state.config, session_pid, signal)
@@ -561,13 +554,8 @@ defmodule Tackle.Phoenix.Runner do
       {:ok, opts} ->
         metadata = Keyword.get(opts, :telemetry_metadata, %{})
 
-        telemetry_ref =
-          Telemetry.start([:tackle, :phoenix, :turn], Map.put(metadata, :operation, :run))
-
-        opts =
-          opts
-          |> Keyword.put(:turn_telemetry_ref, telemetry_ref)
-          |> Keyword.put(:turn_started_at, System.monotonic_time())
+        span = Telemetry.start([:tackle, :phoenix, :turn], Map.put(metadata, :operation, :run))
+        opts = Keyword.put(opts, :turn_telemetry, span)
 
         candidate_state = %{state | host_state: host_state}
 
@@ -589,43 +577,29 @@ defmodule Tackle.Phoenix.Runner do
       operation = if match?({:run_turn, _, _}, request), do: :run, else: :continue
       metadata = Keyword.get(opts, :telemetry_metadata, %{})
 
-      telemetry_ref =
+      span =
         Telemetry.start([:tackle, :phoenix, :turn], Map.put(metadata, :operation, operation))
 
-      opts =
-        opts
-        |> Keyword.put(:turn_telemetry_ref, telemetry_ref)
-        |> Keyword.put(:turn_started_at, System.monotonic_time())
+      opts = Keyword.put(opts, :turn_telemetry, span)
 
       try do
         GenServer.call(pid, Tuple.insert_at(request, tuple_size(request), opts), :infinity)
       catch
         kind, reason ->
-          Telemetry.exception(
-            [:tackle, :phoenix, :turn],
-            telemetry_ref,
-            %{
-              duration: Telemetry.monotonic_duration(Keyword.fetch!(opts, :turn_started_at)),
-              count: 1
-            },
-            %{operation: operation, error_type: exception_type(kind)}
-          )
-
+          Telemetry.exception(span, kind, %{count: 1}, %{error_type: :call_failed})
           :erlang.raise(kind, reason, __STACKTRACE__)
       end
     end
   end
 
-  defp reject_turn(state, opts, operation, reason) do
+  defp reject_turn(state, opts, reason) do
     rejected_turn = %{
       state
-      | turn_telemetry_ref: Keyword.get(opts, :turn_telemetry_ref),
-        turn_operation: operation,
-        turn_started_at: Keyword.get(opts, :turn_started_at),
+      | turn_telemetry: Keyword.get(opts, :turn_telemetry),
         turn_stats: empty_turn_stats()
     }
 
-    with_telemetry_context(state.config, rejected_turn.turn_telemetry_ref, fn ->
+    with_telemetry_context(state.config, rejected_turn.turn_telemetry, fn ->
       stop_turn_telemetry(rejected_turn, :rejected)
     end)
 
@@ -634,20 +608,16 @@ defmodule Tackle.Phoenix.Runner do
     {:reply, {:error, reason}, state, @timeout}
   end
 
-  defp stop_turn_telemetry(%{turn_telemetry_ref: telemetry_ref} = state, outcome)
-       when is_reference(telemetry_ref) do
-    started_at = state.turn_started_at || System.monotonic_time()
-
+  # The span's start metadata already names the operation.
+  defp stop_turn_telemetry(%{turn_telemetry: %Telemetry{} = span} = state, outcome) do
     Telemetry.stop(
-      [:tackle, :phoenix, :turn],
-      telemetry_ref,
+      span,
       %{
-        duration: Telemetry.monotonic_duration(started_at),
         count: 1,
         iterations: state.turn_stats.iterations,
         tool_call_count: state.turn_stats.tool_call_count
       },
-      %{operation: state.turn_operation || :unknown, outcome: outcome}
+      %{outcome: outcome}
     )
 
     state
@@ -655,17 +625,9 @@ defmodule Tackle.Phoenix.Runner do
 
   defp stop_turn_telemetry(state, _outcome), do: state
 
-  defp exception_turn_telemetry(%{turn_telemetry_ref: telemetry_ref} = state, error_type)
-       when is_reference(telemetry_ref) do
-    started_at = state.turn_started_at || System.monotonic_time()
-
-    Telemetry.exception(
-      [:tackle, :phoenix, :turn],
-      telemetry_ref,
-      %{duration: Telemetry.monotonic_duration(started_at), count: 1},
-      %{operation: state.turn_operation || :unknown, error_type: error_type}
-    )
-
+  # The turn task or the runner itself exited.
+  defp exception_turn_telemetry(%{turn_telemetry: %Telemetry{} = span} = state, error_type) do
+    Telemetry.exception(span, :exit, %{count: 1}, %{error_type: error_type})
     state
   end
 
@@ -682,23 +644,21 @@ defmodule Tackle.Phoenix.Runner do
         streaming_messages: %{},
         turn_signal: nil,
         turn_usage: empty_turn_usage(),
-        turn_telemetry_ref: nil,
-        turn_operation: nil,
-        turn_started_at: nil,
+        turn_telemetry: nil,
         turn_metadata: %{},
         turn_opts: [],
         turn_stats: empty_turn_stats()
     }
   end
 
-  defp with_turn_context(%{turn_telemetry_ref: telemetry_ref, config: config}, fun),
-    do: with_telemetry_context(config, telemetry_ref, fun)
+  defp with_turn_context(%{turn_telemetry: span, config: config}, fun),
+    do: with_telemetry_context(config, span, fun)
 
-  defp with_telemetry_context(%{telemetry_adapter: adapter}, telemetry_ref, fun)
-       when is_atom(adapter) and is_reference(telemetry_ref),
-       do: adapter.with_context(telemetry_ref, fun)
+  defp with_telemetry_context(%{telemetry_adapter: adapter}, %Telemetry{} = span, fun)
+       when is_atom(adapter),
+       do: adapter.with_context(span.telemetry_ref, fun)
 
-  defp with_telemetry_context(_config, _telemetry_ref, fun), do: fun.()
+  defp with_telemetry_context(_config, _span, fun), do: fun.()
 
   defp empty_turn_stats, do: %{iterations: 0, tool_call_count: 0}
 
@@ -709,8 +669,6 @@ defmodule Tackle.Phoenix.Runner do
     do: update_in(state.turn_stats.tool_call_count, &(&1 + 1))
 
   defp collect_turn_stats(state, %Event{}), do: state
-
-  defp exception_type(kind) when kind in [:error, :exit, :throw], do: kind
 
   defp normalize_result(result, fallback_state, turn_usage) do
     case result do
@@ -845,13 +803,10 @@ defmodule Tackle.Phoenix.Runner do
     with {:ok, opts} <- normalize_run_turn_opts(Map.get(state.config, :runtime_turn_opts, [])) do
       metadata = Keyword.get(opts, :telemetry_metadata, %{})
 
-      telemetry_ref =
+      span =
         Telemetry.start([:tackle, :phoenix, :turn], Map.put(metadata, :operation, operation))
 
-      {:ok,
-       opts
-       |> Keyword.put(:turn_telemetry_ref, telemetry_ref)
-       |> Keyword.put(:turn_started_at, System.monotonic_time())}
+      {:ok, Keyword.put(opts, :turn_telemetry, span)}
     end
   end
 

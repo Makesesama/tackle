@@ -285,8 +285,7 @@ defmodule Tackle.Lib.Loop.Tools do
   # settles, its per-call cancellation record (if a host cancelled it) is no
   # longer observed by anyone, so it is deleted.
   defp settle(%Job{call: call, execution: execution, telemetry_name: name} = job) do
-    telemetry_ref = Telemetry.start(@telemetry_event, %{tool_name: name})
-    started_at = System.monotonic_time()
+    span = Telemetry.start(@telemetry_event, %{tool_name: name})
 
     try do
       settlement =
@@ -296,12 +295,7 @@ defmodule Tackle.Lib.Loop.Tools do
           {:raise, kind, reason, stacktrace} -> :erlang.raise(kind, reason, stacktrace)
         end
 
-      Telemetry.stop(
-        @telemetry_event,
-        telemetry_ref,
-        %{duration: Telemetry.monotonic_duration(started_at), count: 1},
-        %{tool_name: name, outcome: tool_outcome(settlement)}
-      )
+      Telemetry.stop(span, %{count: 1}, %{outcome: tool_outcome(settlement)})
 
       settlement
     catch
@@ -312,12 +306,7 @@ defmodule Tackle.Lib.Loop.Tools do
       kind, reason ->
         stacktrace = __STACKTRACE__
 
-        Telemetry.exception(
-          @telemetry_event,
-          telemetry_ref,
-          %{duration: Telemetry.monotonic_duration(started_at), count: 1},
-          %{tool_name: name, error_type: kind}
-        )
+        Telemetry.exception(span, kind, %{count: 1})
 
         Logger.error(fn ->
           [

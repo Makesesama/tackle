@@ -4,6 +4,7 @@ defmodule Tackle.Phoenix.RunnerTest do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.State
+  alias Tackle.Lib.Telemetry
   alias Tackle.Lib.Tree
   alias Tackle.Lib.Usage
   alias Tackle.Phoenix.EventReducer
@@ -746,8 +747,10 @@ defmodule Tackle.Phoenix.RunnerTest do
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    accepted_ref = make_ref()
-    rejected_ref = make_ref()
+    accepted = Telemetry.start([:tackle, :phoenix, :turn], %{operation: :run})
+    rejected = Telemetry.start([:tackle, :phoenix, :turn], %{operation: :continue})
+    accepted_ref = accepted.telemetry_ref
+    rejected_ref = rejected.telemetry_ref
 
     state = %{
       runner_state()
@@ -757,25 +760,21 @@ defmodule Tackle.Phoenix.RunnerTest do
           owner: self(),
           pid: self()
         },
-        turn_telemetry_ref: accepted_ref,
-        turn_operation: :run,
-        turn_started_at: System.monotonic_time(),
+        turn_telemetry: accepted,
         turn_stats: %{iterations: 2, tool_call_count: 1}
     }
 
     assert {:reply, {:error, :turn_in_progress}, returned_state, _timeout} =
              Runner.handle_call(
-               {:continue_turn, %State{},
-                turn_telemetry_ref: rejected_ref, turn_started_at: System.monotonic_time()},
+               {:continue_turn, %State{}, turn_telemetry: rejected},
                self(),
                state
              )
 
-    assert returned_state.turn_telemetry_ref == accepted_ref
-    assert returned_state.turn_operation == :run
+    assert returned_state.turn_telemetry == accepted
 
     assert_receive {[:tackle, :phoenix, :turn, :stop], _measurements,
-                    %{telemetry_ref: ^rejected_ref, outcome: :rejected}}
+                    %{telemetry_ref: ^rejected_ref, operation: :continue, outcome: :rejected}}
 
     refute_receive {[:tackle, :phoenix, :turn, :stop], _measurements,
                     %{telemetry_ref: ^accepted_ref}}
@@ -883,18 +882,18 @@ defmodule Tackle.Phoenix.RunnerTest do
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    telemetry_ref = make_ref()
+    span = Telemetry.start([:tackle, :phoenix, :turn], %{operation: :run})
+    telemetry_ref = span.telemetry_ref
 
-    assert :ok =
-             Runner.terminate(:shutdown, %{
-               runner_state()
-               | turn_telemetry_ref: telemetry_ref,
-                 turn_operation: :run,
-                 turn_started_at: System.monotonic_time()
-             })
+    assert :ok = Runner.terminate(:shutdown, %{runner_state() | turn_telemetry: span})
 
     assert_receive {[:tackle, :phoenix, :turn, :exception], %{duration: duration, count: 1},
-                    %{telemetry_ref: ^telemetry_ref, error_type: :runner_terminated}}
+                    %{
+                      telemetry_ref: ^telemetry_ref,
+                      operation: :run,
+                      kind: :exit,
+                      error_type: :runner_terminated
+                    }}
 
     assert is_integer(duration)
   end
@@ -959,9 +958,7 @@ defmodule Tackle.Phoenix.RunnerTest do
       turn_task: nil,
       turn_signal: nil,
       turn_usage: %{},
-      turn_telemetry_ref: nil,
-      turn_operation: nil,
-      turn_started_at: nil,
+      turn_telemetry: nil,
       turn_metadata: %{},
       turn_opts: [],
       turn_stats: %{iterations: 0, tool_call_count: 0}

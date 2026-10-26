@@ -1453,6 +1453,14 @@ Core tool settlement emits:
 [:tackle, :tool, :execution, :exception]
 ```
 
+The events follow the `:telemetry.span/3` conventions (see
+`Tackle.Lib.Telemetry`): `:start` measures `system_time` and `monotonic_time`,
+`:stop` and `:exception` measure `duration` and `count`, and every event's
+metadata carries the start metadata (`tool_name`) and a `telemetry_ref` that
+correlates them. `:stop` adds the bounded `outcome`; `:exception` (a call
+whose preparation or settlement crashed) adds `kind` (`:error`, `:exit`, or
+`:throw`) but never the raw reason or stacktrace.
+
 Metadata is deliberately bounded. Tool names are reported only when the host
 places the allowed names under `state.context.telemetry.tool_names`; other names
 become `"other"`. Do not put prompts, tool arguments, results, or raw errors in

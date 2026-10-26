@@ -604,9 +604,14 @@ Runner turns emit:
 [:tackle, :phoenix, :turn, :exception]
 ```
 
-Stop measurements include duration, count, iteration count, and tool-call count.
-Metadata includes operation (`:run`/`:continue`) and bounded outcome. Supply
-bounded host correlation under `telemetry_metadata:` when starting a turn.
+The events are `Tackle.Lib.Telemetry` spans. Stop measurements include
+duration, count, iteration count, and tool-call count. Every event's metadata
+includes the operation (`:run`/`:continue`), the host's `telemetry_metadata:`
+(supply bounded correlation there when starting a turn), and the
+`telemetry_ref` that correlates the events; stop adds the bounded outcome.
+Exception events add `kind` and a bounded `error_type`: `:task_exit` when the
+turn task exits, `:runner_terminated` when the runner stops mid-turn (both
+`kind: :exit`), and `:call_failed` when the call to the runner itself fails.
 
 An optional `:telemetry_adapter` in Runner config may implement
 `with_context(telemetry_ref, fun)` to carry an OpenTelemetry span/context into
