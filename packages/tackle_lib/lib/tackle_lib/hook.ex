@@ -18,6 +18,13 @@ defmodule Tackle.Lib.Hook do
        continue the turn with feedback (see "Gating the end of a turn").
     7. `after_turn/2`       — after the turn completes (success, error, or cancel).
 
+  ## Configuring hooks
+
+  A state's `:hooks` is a list of modules, each implementing at least one
+  callback. `Tackle.Lib.State.new/1` and the snapshot a turn captures check
+  them with `validate!/1` and raise `ArgumentError` for any other entry, such
+  as a misspelled module, so a hook is never skipped silently.
+
   ## Return conventions
 
     * `:ok` — observer-only; the hook read state but made no changes.
@@ -112,7 +119,10 @@ defmodule Tackle.Lib.Hook do
   Called before an individual tool call is executed.
 
   Receives the current state, the normalized tool call, and the run context.
-  The hook can inspect or enrich the call arguments before dispatch.
+  The hook can inspect the call, update the context with `{:ok, context}`, or
+  veto the call with `{:error, reason}`, which ends the turn with that reason
+  before the call runs. The loop dispatches the call it passed in: a hook
+  cannot change the call or its arguments.
   """
   @callback before_tool_call(state :: State.t(), call :: Call.t(), context :: map()) ::
               :ok | {:ok, map()} | {:error, term()}
@@ -177,24 +187,84 @@ defmodule Tackle.Lib.Hook do
                       before_turn_end: 2,
                       after_turn: 2
 
+  @typedoc """
+  A lifecycle event `invoke/4` runs: a callback name other than
+  `before_turn_end`, which `invoke_before_turn_end/3` runs.
+  """
+  @type event ::
+          :before_prompt
+          | :after_prompt
+          | :before_tool_call
+          | :after_tool_call
+          | :after_message
+          | :after_turn
+
+  # Events by the arguments `invoke/4` passes before the context: the state,
+  # or the state and the event's subject (response, call, result, message).
+  @state_events [:before_prompt, :after_turn]
+  @subject_events [:after_prompt, :before_tool_call, :after_tool_call, :after_message]
+
+  @callbacks [before_turn_end: 2] ++
+               Enum.map(@state_events, &{&1, 2}) ++ Enum.map(@subject_events, &{&1, 3})
+
+  @doc """
+  Returns true when `module` is a hook: a module that can be loaded and that
+  exports at least one `Tackle.Lib.Hook` callback.
+  """
+  @spec hook?(term()) :: boolean()
+  def hook?(module) when is_atom(module) do
+    Code.ensure_loaded?(module) and
+      Enum.any?(@callbacks, fn {name, arity} -> function_exported?(module, name, arity) end)
+  end
+
+  def hook?(_module), do: false
+
+  @doc """
+  Validates a list of hook modules and returns it.
+
+  Raises `ArgumentError` unless `hooks` is a list in which every entry passes
+  `hook?/1`, so a misspelled or unloadable module fails when the hooks are
+  configured instead of skipping every callback, a safety gate included.
+  """
+  @spec validate!(term()) :: [module()]
+  def validate!(hooks) when is_list(hooks) do
+    case Enum.reject(hooks, &hook?/1) do
+      [] ->
+        hooks
+
+      invalid ->
+        raise ArgumentError,
+              "expected :hooks to be modules implementing at least one Tackle.Lib.Hook " <>
+                "callback, got invalid entries: #{inspect(invalid)}"
+    end
+  end
+
+  def validate!(hooks) do
+    raise ArgumentError, "expected :hooks to be a list of modules, got: #{inspect(hooks)}"
+  end
+
   @doc """
   Invokes a lifecycle callback across all configured hook modules.
 
-  Returns `{:ok, context}` where context may have been updated by mutator hooks.
-  Returns `{:error, reason}` if any hook aborted. Use
+  `args` are the callback's arguments before the context. Hooks run in order,
+  each receiving the context returned by the previous one. Returns
+  `{:ok, context}` where context may have been updated by mutator hooks, or
+  `{:error, reason}` if a hook aborted, crashed, or returned an unexpected
+  value, without running the hooks after it. An event outside `t:event/0`,
+  or `args` of the wrong length for it, raises `FunctionClauseError`. Use
   `invoke_before_turn_end/3` for `before_turn_end/2`, whose hooks can also
   continue the turn.
   """
-  @spec invoke(
-          hooks :: [module()],
-          event :: atom(),
-          args :: [term()],
-          context :: map()
-        ) :: {:ok, map()} | {:error, term()}
-  def invoke(hooks, event, args, context) when is_list(hooks) and is_atom(event) do
-    Enum.reduce_while(hooks, {:ok, context}, fn hook_module, {:ok, acc_context} ->
-      apply_hook(hook_module, event, args, acc_context)
-    end)
+  @spec invoke(hooks :: [module()], event :: event(), args :: [term()], context :: map()) ::
+          {:ok, map()} | {:error, term()}
+  def invoke(hooks, event, args, context)
+      when is_list(hooks) and is_list(args) and
+             ((event in @state_events and length(args) == 1) or
+                (event in @subject_events and length(args) == 2)) do
+    case run(hooks, event, args, context) do
+      {:ok, context, []} -> {:ok, context}
+      {:error, _reason} = error -> error
+    end
   end
 
   @doc """
@@ -209,9 +279,13 @@ defmodule Tackle.Lib.Hook do
   @spec invoke_before_turn_end(hooks :: [module()], state :: State.t(), context :: map()) ::
           {:ok, map(), [String.t()]} | {:error, term()}
   def invoke_before_turn_end(hooks, %State{} = state, context) when is_list(hooks) do
+    run(hooks, :before_turn_end, [state], context)
+  end
+
+  defp run(hooks, event, args, context) do
     hooks
     |> Enum.reduce_while({:ok, context, []}, fn hook_module, {:ok, acc_context, acc_messages} ->
-      case apply_before_turn_end(hook_module, state, acc_context) do
+      case apply_hook(hook_module, event, args, acc_context) do
         {:ok, new_context, messages} -> {:cont, {:ok, new_context, [messages | acc_messages]}}
         {:error, _reason} = error -> {:halt, error}
       end
@@ -222,10 +296,12 @@ defmodule Tackle.Lib.Hook do
     end
   end
 
-  defp apply_before_turn_end(hook_module, state, context) do
-    if implements?(hook_module, :before_turn_end, 2) do
-      case call_hook(hook_module, :before_turn_end, [state, context]) do
-        {:ok, result} -> handle_before_turn_end_result(result, hook_module, context)
+  defp apply_hook(hook_module, event, args, context) do
+    callback = {event, length(args) + 1}
+
+    if implements?(hook_module, callback) do
+      case call_hook(hook_module, callback, args ++ [context]) do
+        {:ok, result} -> handle_result(result, hook_module, callback, context)
         {:crashed, reason} -> {:error, reason}
       end
     else
@@ -233,46 +309,55 @@ defmodule Tackle.Lib.Hook do
     end
   end
 
-  defp handle_before_turn_end_result(:ok, _hook_module, context), do: {:ok, context, []}
+  defp handle_result(:ok, _hook_module, _callback, context), do: {:ok, context, []}
 
-  defp handle_before_turn_end_result({:ok, new_context}, _hook_module, _context)
+  defp handle_result({:ok, new_context}, _hook_module, _callback, _context)
        when is_map(new_context),
        do: {:ok, new_context, []}
 
-  defp handle_before_turn_end_result({:continue, messages}, hook_module, context),
-    do: continue_with(messages, context, hook_module)
+  defp handle_result({:error, _reason} = error, _hook_module, _callback, _context), do: error
 
-  defp handle_before_turn_end_result({:continue, messages, new_context}, hook_module, _context)
+  defp handle_result(
+         {:continue, messages},
+         hook_module,
+         {:before_turn_end, _} = callback,
+         context
+       ),
+       do: continue_with(messages, context, hook_module, callback)
+
+  defp handle_result(
+         {:continue, messages, new_context},
+         hook_module,
+         {:before_turn_end, _} = callback,
+         _context
+       )
        when is_map(new_context),
-       do: continue_with(messages, new_context, hook_module)
+       do: continue_with(messages, new_context, hook_module, callback)
 
-  defp handle_before_turn_end_result({:error, _reason} = error, _hook_module, _context),
-    do: error
-
-  defp handle_before_turn_end_result(other, hook_module, _context) do
+  defp handle_result(other, hook_module, callback, _context) do
     {:error,
-     "Hook #{inspect(hook_module)}.before_turn_end/2 returned unexpected value: #{inspect(other)}"}
+     "Hook #{describe(hook_module, callback)} returned unexpected value: #{inspect(other)}"}
   end
 
-  defp continue_with(messages, context, hook_module) do
+  defp continue_with(messages, context, hook_module, callback) do
     if is_list(messages) and Enum.all?(messages, &(is_binary(&1) and &1 != "")) do
       {:ok, context, messages}
     else
       {:error,
-       "Hook #{inspect(hook_module)}.before_turn_end/2 returned invalid messages " <>
+       "Hook #{describe(hook_module, callback)} returned invalid messages " <>
          "(expected non-empty strings): #{inspect(messages)}"}
     end
   end
 
   # `function_exported?/3` is false for a module that is not loaded yet, which
   # in interactive mode (tests, `mix run`, IEx) would skip a hook silently.
-  defp implements?(hook_module, event, arity) do
+  defp implements?(hook_module, {event, arity}) do
     Code.ensure_loaded?(hook_module) and function_exported?(hook_module, event, arity)
   end
 
   # A hook that raises, throws, or exits aborts like one returning an error, so
   # the loop still settles the turn instead of crashing with it.
-  defp call_hook(hook_module, event, args) do
+  defp call_hook(hook_module, {event, _arity} = callback, args) do
     {:ok, apply(hook_module, event, args)}
   catch
     kind, reason ->
@@ -281,53 +366,16 @@ defmodule Tackle.Lib.Hook do
       Logger.error(fn ->
         [
           "Hook ",
-          inspect(hook_module),
-          ".#{event}/#{length(args)} crashed: ",
+          describe(hook_module, callback),
+          " crashed: ",
           Exception.format(kind, reason, stacktrace)
         ]
       end)
 
       {:crashed,
-       "Hook #{inspect(hook_module)}.#{event}/#{length(args)} crashed: " <>
+       "Hook #{describe(hook_module, callback)} crashed: " <>
          String.replace_prefix(Exception.format_banner(kind, reason, stacktrace), "** ", "")}
   end
 
-  defp apply_hook(hook_module, event, args, acc_context) do
-    full_args = List.insert_at(args, -1, acc_context)
-    arity = length(full_args)
-
-    if implements?(hook_module, event, arity) do
-      case call_hook(hook_module, event, full_args) do
-        {:ok, result} -> handle_hook_result(result, hook_module, event, full_args, acc_context)
-        {:crashed, reason} -> {:halt, {:error, reason}}
-      end
-    else
-      {:cont, {:ok, acc_context}}
-    end
-  end
-
-  defp handle_hook_result(:ok, _hook_module, _event, _full_args, acc_context) do
-    {:cont, {:ok, acc_context}}
-  end
-
-  defp handle_hook_result({:ok, new_context}, _hook_module, _event, _full_args, _acc_context)
-       when is_map(new_context) do
-    {:cont, {:ok, new_context}}
-  end
-
-  defp handle_hook_result(
-         {:error, _reason} = error,
-         _hook_module,
-         _event,
-         _full_args,
-         _acc_context
-       ) do
-    {:halt, error}
-  end
-
-  defp handle_hook_result(other, hook_module, event, full_args, _acc_context) do
-    {:halt,
-     {:error,
-      "Hook #{inspect(hook_module)}.#{event}/#{length(full_args)} returned unexpected value: #{inspect(other)}"}}
-  end
+  defp describe(hook_module, {event, arity}), do: "#{inspect(hook_module)}.#{event}/#{arity}"
 end

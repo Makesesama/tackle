@@ -40,6 +40,13 @@ defmodule Tackle.Lib.StateTest do
     def execute(_args, _context), do: {:ok, "ok"}
   end
 
+  defmodule SomeHook do
+    @behaviour Tackle.Lib.Hook
+
+    @impl true
+    def before_tool_call(_state, _call, _context), do: :ok
+  end
+
   describe "new/1" do
     test "creates a new state with defaults" do
       state = State.new()
@@ -89,6 +96,22 @@ defmodule Tackle.Lib.StateTest do
 
       assert_raise ArgumentError, ~r/duplicate tool name/, fn ->
         State.new(tools: [SomeTool, SomeTool])
+      end
+    end
+
+    test "accepts hook modules and rejects entries that would never run" do
+      assert State.new(hooks: [SomeHook]).hooks == [SomeHook]
+
+      # A misspelled gate used to skip every callback silently, and a
+      # non-module entry crashed the loop outside the hook's error handling.
+      for invalid <- [Tackle.Lib.StateTest.SomeHok, SomeTool, "SomeHook"] do
+        assert_raise ArgumentError, ~r/Tackle.Lib.Hook callback, got invalid entries/, fn ->
+          State.new(hooks: [SomeHook, invalid])
+        end
+      end
+
+      assert_raise ArgumentError, ~r/expected :hooks to be a list/, fn ->
+        State.new(hooks: SomeHook)
       end
     end
 

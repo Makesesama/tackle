@@ -162,8 +162,11 @@ Tackle.Lib.new(hooks: [MyApp.Hooks.AuditLogger], context: %{user_id: user.id})
 ```
 
 Use hooks (not loop edits) for auditing, persistence, metrics, and per-call
-argument enrichment. Persist messages in `after_message/3`; do teardown in
-`after_turn/2`.
+checks. `before_tool_call/3` can veto a call (`{:error, reason}` ends the turn)
+or update the context, but cannot change the call's arguments. Persist messages
+in `after_message/3`; do teardown in `after_turn/2`. `State.new/1` raises
+`ArgumentError` for a hook entry that is not a loaded module exporting a hook
+callback, such as a misspelled module.
 
 ## System prompts
 

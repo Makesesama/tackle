@@ -222,9 +222,7 @@ defmodule Tackle.Plugins.Catalog do
   end
 
   defp validate_module(module, source, :hook) do
-    callbacks = Hook.behaviour_info(:callbacks) ++ Hook.behaviour_info(:optional_callbacks)
-
-    if Enum.any?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end),
+    if Hook.hook?(module),
       do: {:ok, module},
       else: entry_error(%{module: module, source: source}, :hook, :no_hook_callbacks)
   end

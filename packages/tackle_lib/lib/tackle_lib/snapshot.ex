@@ -21,6 +21,7 @@ defmodule Tackle.Lib.Snapshot do
   caching without leaking the full snapshot content.
   """
 
+  alias Tackle.Lib.Hook
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
@@ -71,12 +72,17 @@ defmodule Tackle.Lib.Snapshot do
   Uses the state's explicit LLM selection when present, otherwise resolving the
   configured default adapter for compatibility. The selected adapter is frozen
   so the turn is isolated from adapter swaps. Computes version IDs for the
-  system prompt and tool set.
+  system prompt and tool set. `:turn_id` sets the turn id instead of
+  generating one.
+
+  The state's hooks are checked with `Tackle.Lib.Hook.validate!/1` again, since
+  a host can replace them on a built state; an invalid entry raises
+  `ArgumentError` before the turn starts.
   """
   @spec capture(map(), keyword()) :: t()
   def capture(state, opts \\ []) when is_map(state) do
     turn_id = Keyword.get(opts, :turn_id) || generate_turn_id(state)
-    hooks = Keyword.get(opts, :hooks) || Map.get(state, :hooks, []) || []
+    hooks = Hook.validate!(Map.get(state, :hooks) || [])
     llm = Map.get(state, :llm)
     {llm_adapter, model, model_ref} = resolve_llm(llm, state)
     system_prompt = Map.get(state, :system_prompt)

@@ -108,9 +108,41 @@ defmodule Tackle.Lib.HookTest do
       assert {:ok, %{}} = Hook.invoke([ObserverHook], :after_turn, [state], %{})
       assert_receive {:hook, :after_turn}
 
-      # ObserverHook does not implement a non-existent event; invoke should skip silently
-      assert {:ok, %{}} = Hook.invoke([ObserverHook], :nonexistent_event, [state], %{})
-      refute_receive {:hook, :nonexistent_event}
+      # MutatorHook does not implement after_turn/2.
+      assert {:ok, %{a: 1}} = Hook.invoke([MutatorHook], :after_turn, [state], %{a: 1})
+    end
+
+    test "rejects events that are not invoke/4 events and arguments of the wrong length" do
+      state = State.new()
+
+      # A misspelled event used to be a silent no-op, before_turn_end/2 can
+      # continue the turn, which invoke/4 cannot express, and a wrong argument
+      # count looks up a callback no hook implements. (The calls go through
+      # a list so the type checker does not flag them at compile time.)
+      for {event, args} <- [
+            before_promt: [state],
+            before_turn_end: [state],
+            before_prompt: [state, :extra],
+            after_tool_call: [state]
+          ] do
+        assert_raise FunctionClauseError, fn ->
+          Hook.invoke([ObserverHook], event, args, %{})
+        end
+      end
+    end
+
+    test "rejects a continue result outside before_turn_end/2" do
+      defmodule ContinueOutsideTurnEndHook do
+        @behaviour Tackle.Lib.Hook
+
+        @impl true
+        def before_prompt(_state, _context), do: {:continue, ["again"]}
+      end
+
+      assert {:error, error} =
+               Hook.invoke([ContinueOutsideTurnEndHook], :before_prompt, [State.new()], %{})
+
+      assert error =~ "ContinueOutsideTurnEndHook.before_prompt/2 returned unexpected value"
     end
 
     test "handles empty hooks list" do
@@ -257,6 +289,44 @@ defmodule Tackle.Lib.HookTest do
       assert {:error, error} = Hook.invoke_before_turn_end([ResultHook], State.new(), %{})
 
       assert error =~ "ResultHook.before_turn_end/2 crashed"
+    end
+  end
+
+  describe "Hook.validate!/1 and Hook.hook?/1" do
+    test "accept modules exporting any hook callback" do
+      assert Hook.validate!([]) == []
+      assert Hook.validate!([ObserverHook, MutatorHook]) == [ObserverHook, MutatorHook]
+
+      for {name, arity} <- Hook.behaviour_info(:callbacks) do
+        module = Module.concat(__MODULE__, "Only_#{name}")
+        args = Macro.generate_arguments(arity, __MODULE__)
+
+        Module.create(
+          module,
+          quote(do: def(unquote(name)(unquote_splicing(args)), do: :ok)),
+          Macro.Env.location(__ENV__)
+        )
+
+        assert Hook.hook?(module), "expected a module with only #{name}/#{arity} to be a hook"
+      end
+    end
+
+    test "reject a misspelled module, a module without hook callbacks, and non-modules" do
+      for invalid <- [Tackle.Lib.HookTest.ObserverHok, Enum, "ObserverHook", nil, {:hook}] do
+        refute Hook.hook?(invalid)
+
+        assert_raise ArgumentError,
+                     ~r/invalid entries: \[#{Regex.escape(inspect(invalid))}\]/,
+                     fn ->
+                       Hook.validate!([ObserverHook, invalid])
+                     end
+      end
+    end
+
+    test "reject a value that is not a list" do
+      assert_raise ArgumentError, ~r/expected :hooks to be a list/, fn ->
+        Hook.validate!(ObserverHook)
+      end
     end
   end
 

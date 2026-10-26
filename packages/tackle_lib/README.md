@@ -264,7 +264,7 @@ Tackle.Lib.continue(state, run_opts)
 | `:system_prompt` | Complete host-composed system prompt | `nil` |
 | `:context` | Opaque host context passed to hooks and tools | `%{}` |
 | `:max_iterations` | Optional maximum LLM/tool loop iterations per turn | `:infinity` (unlimited) |
-| `:hooks` | Modules implementing `Tackle.Lib.Hook` | `[]` |
+| `:hooks` | Modules implementing `Tackle.Lib.Hook`; any other entry, such as a misspelled module, raises `ArgumentError` | `[]` |
 | `:tool_policy` | Tool execution policy | sequential default |
 | `:llm_opts` | Additional adapter options | `[]` |
 | `:prompt_renderer` | Prompt renderer module | configured/default renderer |
@@ -848,7 +848,7 @@ Implement `Tackle.Lib.Hook` to observe or mutate context at stable lifecycle poi
 |---|---|
 | `before_prompt/2` | Before each LLM request |
 | `after_prompt/3` | After the step's LLM response, normalized into `%Tackle.Lib.LLM.Response{}` |
-| `before_tool_call/3` | Before each normalized tool call |
+| `before_tool_call/3` | Before each normalized tool call; can veto it or update the context, not change it |
 | `after_tool_call/3` | After each success/error settlement |
 | `after_message/3` | After each finalized user/assistant/tool message |
 | `before_turn_end/2` | After a final answer, before the turn completes |
@@ -856,7 +856,15 @@ Implement `Tackle.Lib.Hook` to observe or mutate context at stable lifecycle poi
 
 Return `:ok` to observe, `{:ok, new_context}` to replace the context for later
 steps, or `{:error, reason}` to abort the turn. Hooks run in configured order;
-each receives the context returned by the previous hook.
+each receives the context returned by the previous hook. A hook sees the loop's
+values but cannot replace them: the loop dispatches the tool call it passed to
+`before_tool_call/3`, so a hook that rejects a call returns `{:error, reason}`,
+which ends the turn before the call runs.
+
+Every hook must be a module that exports at least one callback.
+`Tackle.Lib.State.new/1`, and the snapshot each turn captures, raise
+`ArgumentError` for any other entry (`Tackle.Lib.Hook.validate!/1`), so a
+misspelled gate fails loudly instead of being skipped.
 
 `before_turn_end/2` can also return `{:continue, messages}` or
 `{:continue, messages, new_context}` to keep the turn going: each message (a

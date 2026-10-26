@@ -243,9 +243,16 @@ defmodule Tackle.Lib.SnapshotTest do
       end
 
       state = State.new(hooks: [ImmutableTestHook])
-      snapshot = Snapshot.capture(state, hooks: [ImmutableTestHook])
+      snapshot = Snapshot.capture(state)
 
       assert Snapshot.hooks(snapshot) == [ImmutableTestHook]
+    end
+
+    test "capture/2 rejects hooks a host set on a built state" do
+      # Replacing the hooks on a state skips State.new/1's check.
+      state = %{State.new() | hooks: [Tackle.Lib.SnapshotTest.MisspelledHook]}
+
+      assert_raise ArgumentError, ~r/MisspelledHook/, fn -> Snapshot.capture(state) end
     end
   end
 end

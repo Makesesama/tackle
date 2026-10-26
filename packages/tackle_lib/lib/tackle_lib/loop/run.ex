@@ -170,7 +170,7 @@ defmodule Tackle.Lib.Loop.Run do
   Invokes the snapshot's `hook` callbacks with `args` and keeps the context
   they return on `state`.
   """
-  @spec invoke_hook(State.t(), t(), atom(), [term()]) :: {:ok, State.t()} | {:error, term()}
+  @spec invoke_hook(State.t(), t(), Hook.event(), [term()]) :: {:ok, State.t()} | {:error, term()}
   def invoke_hook(%State{} = state, %__MODULE__{} = run, hook, args) do
     case Hook.invoke(run.snapshot.hooks, hook, args, hook_context(state, run)) do
       {:ok, context} -> {:ok, put_hook_context(state, context)}

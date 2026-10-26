@@ -25,6 +25,7 @@ defmodule Tackle.Lib.State do
   """
 
   alias Tackle.Lib.Compaction
+  alias Tackle.Lib.Hook
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
@@ -107,7 +108,9 @@ defmodule Tackle.Lib.State do
     * `:prompt_renderer` - Prompt renderer used for response schema resolution
     * `:prompt_renderer_opts` - Options passed to the prompt renderer
     * `:llm_opts` - Extra options passed through to the LLM adapter
-    * `:hooks` - List of Tackle.Lib.Hook modules for lifecycle callbacks (default: [])
+    * `:hooks` - List of Tackle.Lib.Hook modules for lifecycle callbacks (default: []);
+      raises `ArgumentError` for an entry that is not a loadable module exporting
+      a hook callback (see `Tackle.Lib.Hook.validate!/1`)
     * `:id_generator` - Zero-arity function used for generated ids
     * `:session_id` - Existing session id to install without invoking `:id_generator`
     * `:retry` - `Tackle.Lib.Retry`, options, `false`, or `nil` (default: three
@@ -146,7 +149,7 @@ defmodule Tackle.Lib.State do
       prompt_renderer_opts: Keyword.get(opts, :prompt_renderer_opts, []),
       llm_opts: Keyword.get(opts, :llm_opts, []),
       id_generator: id_generator,
-      hooks: Keyword.get(opts, :hooks, []),
+      hooks: Hook.validate!(Keyword.get(opts, :hooks, [])),
       error: nil,
       error_reason: nil,
       retry: normalize_retry(Keyword.get(opts, :retry)),
