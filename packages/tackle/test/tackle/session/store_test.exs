@@ -60,6 +60,36 @@ defmodule Tackle.Session.StoreTest do
     assert child.status == :clean
   end
 
+  test "refuses to fork at a sequence the parent does not have", ctx do
+    {parent_id, scope} = create_session(ctx)
+    stop_scope(scope.scope_ref)
+    cwd = session_cwd(parent_id)
+    {:ok, parent} = Tackle.inspect_session(parent_id, home: ctx.home, cwd: cwd)
+
+    for seq <- [0, -1, parent.last_seq + 1, "3", 2.0] do
+      assert {:error, {:invalid_fork_seq, ^seq}} =
+               Tackle.fork_session(parent_id, home: ctx.home, cwd: cwd, seq: seq)
+    end
+
+    assert {:ok, _child_id} =
+             Tackle.fork_session(parent_id, home: ctx.home, cwd: cwd, seq: parent.last_seq)
+  end
+
+  test "reads a summary from the journal while the catalog is not running", ctx do
+    {session_id, scope} = create_session(ctx)
+    stop_scope(scope.scope_ref)
+    {:ok, indexed} = Tackle.session_summary(session_id, home: ctx.home)
+
+    :ok = Supervisor.terminate_child(Tackle.Supervisor, Catalog)
+    on_exit(fn -> Supervisor.restart_child(Tackle.Supervisor, Catalog) end)
+
+    assert {:ok, summary} =
+             Tackle.session_summary(session_id, home: ctx.home, cwd: indexed.cwd)
+
+    assert summary.session_id == session_id
+    assert summary.title == "Stored"
+  end
+
   test "deletes an inactive session into trash and removes it from the catalog", ctx do
     {session_id, scope} = create_session(ctx)
     stop_scope(scope.scope_ref)

@@ -149,8 +149,10 @@ defmodule Tackle.Session.Store do
   Materializes a new self-contained session from validated parent history.
 
   The child journal records its lineage in the header and a `session.forked`
-  event, then copies the parent's validated commits up to `:seq`. A live parent
-  is flushed first, so its write-behind tail is included. The child can
+  event, then copies the parent's validated commits up to `:seq` (by default
+  all of them); a `:seq` that is not one of the parent's commit sequence
+  numbers is `{:error, {:invalid_fork_seq, seq}}`. A live parent is flushed
+  first, so its write-behind tail is included. The child can
   be loaded after the parent is deleted: lineage is for navigation, not replay.
   """
   @spec fork(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -184,17 +186,7 @@ defmodule Tackle.Session.Store do
   """
   @spec delete(String.t(), keyword()) :: :ok | {:error, term()}
   def delete(session_id, opts \\ []) do
-    case Journal.whereis(session_id) do
-      {:ok, journal} when is_pid(journal) ->
-        if Process.alive?(journal) do
-          {:error, :session_active}
-        else
-          trash(session_id, opts)
-        end
-
-      {:error, :not_found} ->
-        trash(session_id, opts)
-    end
+    with :ok <- ensure_inactive(session_id), do: trash(session_id, opts)
   end
 
   @doc """
@@ -291,12 +283,15 @@ defmodule Tackle.Session.Store do
     end
   end
 
-  @doc "Returns the derived catalog summary for a session."
+  @doc """
+  Returns the derived catalog summary for a session, read from its journal
+  when the catalog does not index it or is not running.
+  """
   @spec summary(String.t(), keyword()) :: {:ok, Catalog.Entry.t()} | {:error, term()}
   def summary(session_id, opts \\ []) do
-    case Catalog.get(session_id) do
+    case catalog_entry(session_id) do
       {:ok, entry} -> {:ok, entry}
-      {:error, :not_found} -> summary_from_journal(session_id, opts)
+      {:error, _not_indexed} -> summary_from_journal(session_id, opts)
     end
   end
 
@@ -352,15 +347,19 @@ defmodule Tackle.Session.Store do
         _other -> 0
       end
 
-    upto = Keyword.get(opts, :seq, last_seq)
+    case Keyword.get(opts, :seq, last_seq) do
+      upto when is_integer(upto) and upto >= 1 and upto <= last_seq ->
+        selected =
+          commits
+          |> Enum.filter(&(&1["seq"] <= upto))
+          |> Enum.map(&strip_events/1)
+          |> Enum.reject(&(&1["events"] == []))
 
-    selected =
-      commits
-      |> Enum.filter(&(&1["seq"] <= upto))
-      |> Enum.map(&strip_events/1)
-      |> Enum.reject(&(&1["events"] == []))
+        {:ok, selected, upto}
 
-    {:ok, selected, upto}
+      upto ->
+        {:error, {:invalid_fork_seq, upto}}
+    end
   end
 
   # A fork is a fresh resumable session: the parent's terminal session events
@@ -391,10 +390,22 @@ defmodule Tackle.Session.Store do
 
     case :disk_log.open(options) do
       {:ok, name} ->
-        write_fork_items(name, new_id, parent_id, parent_seq, replay, commits)
+        name
+        |> write_fork_items(new_id, parent_id, parent_seq, replay, commits)
+        |> close_fork(name)
 
       {:error, reason} ->
         {:error, {:fork_open_failed, path, reason}}
+    end
+  end
+
+  # The log is closed whether or not writing it succeeded; a write error wins
+  # over a close error.
+  defp close_fork(result, name) do
+    case {result, :disk_log.close(name)} do
+      {:ok, :ok} -> :ok
+      {:ok, {:error, reason}} -> {:error, {:fork_close_failed, reason}}
+      {{:error, _reason} = error, _closed} -> error
     end
   end
 
@@ -430,21 +441,13 @@ defmodule Tackle.Session.Store do
         end
       end)
 
-    with :ok <- result,
-         :ok <- sync_fork(name) do
-      :ok = :disk_log.close(name)
-      :ok
-    end
+    with :ok <- result, do: sync_fork(name)
   end
 
   defp sync_fork(name) do
     case :disk_log.sync(name) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        _ = :disk_log.close(name)
-        {:error, {:fork_sync_failed, reason}}
+      :ok -> :ok
+      {:error, reason} -> {:error, {:fork_sync_failed, reason}}
     end
   end
 
