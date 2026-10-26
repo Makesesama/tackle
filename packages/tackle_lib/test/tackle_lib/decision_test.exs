@@ -4,6 +4,7 @@ defmodule Tackle.Lib.DecisionTest do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Decision
   alias Tackle.Lib.Decision.{Answer, Question, Request, Result, Selection}
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.Usage
 
   defmodule FakeDecisionAdapter do
@@ -27,6 +28,15 @@ defmodule Tackle.Lib.DecisionTest do
       if pid = Keyword.get(opts, :test_pid), do: send(pid, {:decide, request, opts})
 
       case Keyword.get(opts, :reply) do
+        :raise ->
+          raise "judge exploded"
+
+        :throw ->
+          throw(:judge_threw)
+
+        :exit ->
+          exit(:judge_exited)
+
         nil ->
           answers =
             Map.new(request.questions, fn %Question{name: name} ->
@@ -176,13 +186,13 @@ defmodule Tackle.Lib.DecisionTest do
     end
   end
 
-  describe "decide/4" do
+  describe "decide/3 and ask/4" do
     test "sends a validated request with the selection model and normalizes usage" do
       signal = Cancellation.new_signal()
       on_exit(fn -> Cancellation.delete(signal) end)
 
       assert {:ok, %Result{} = result} =
-               Decision.decide(selection(), %{"command" => "make test"}, [verdict_question()],
+               Decision.ask(selection(), %{"command" => "make test"}, [verdict_question()],
                  test_pid: self(),
                  cancellation_signal: signal,
                  receive_timeout: 5_000
@@ -217,7 +227,7 @@ defmodule Tackle.Lib.DecisionTest do
       Cancellation.cancel(signal, :stop)
       on_exit(fn -> Cancellation.delete(signal) end)
 
-      assert Decision.decide(selection(), "state", [verdict_question()],
+      assert Decision.ask(selection(), "state", [verdict_question()],
                test_pid: self(),
                cancellation_signal: signal
              ) == {:error, :cancelled}
@@ -225,18 +235,137 @@ defmodule Tackle.Lib.DecisionTest do
       refute_receive {:decide, _request, _opts}
     end
 
-    test "passes adapter errors through and rejects malformed results" do
-      assert Decision.decide(selection(), "state", [verdict_question()],
+    test "passes adapter errors through" do
+      assert Decision.ask(selection(), "state", [verdict_question()],
                reply: {:error, {:http_error, 500, "boom"}}
              ) == {:error, {:http_error, 500, "boom"}}
+    end
 
-      assert Decision.decide(selection(), "state", [verdict_question()], reply: {:ok, %{}}) ==
-               {:error, {:invalid_decision_result, FakeDecisionAdapter, {:ok, %{}}}}
+    test "turns an adapter that raises, throws, or exits into an unknown LLM error" do
+      assert {:error, %Error{kind: :unknown} = error} =
+               Decision.ask(selection(), "state", [verdict_question()], reply: :raise)
+
+      assert error.message =~ "The decision adapter #{inspect(FakeDecisionAdapter)} failed"
+      assert error.message =~ "judge exploded"
+
+      assert %{adapter: FakeDecisionAdapter, kind: :error, reason: %RuntimeError{}} =
+               error.details
+
+      assert is_list(error.details.stacktrace)
+
+      assert {:error, %Error{kind: :unknown, details: %{kind: :throw, reason: :judge_threw}}} =
+               Decision.ask(selection(), "state", [verdict_question()], reply: :throw)
+
+      assert {:error, %Error{kind: :unknown, details: %{kind: :exit, reason: :judge_exited}}} =
+               Decision.ask(selection(), "state", [verdict_question()], reply: :exit)
+    end
+
+    test "rejects returns that are not results" do
+      for reply <- [{:ok, %{}}, :ok, "stalled", {:ok, %Result{answers: %{}}, :extra}] do
+        assert {:error,
+                %Error{kind: :invalid_response, details: %{reason: {:result, ^reply}, usage: nil}}} =
+                 Decision.ask(selection(), "state", [verdict_question()], reply: reply)
+      end
+    end
+
+    test "rejects answers that do not answer the questions" do
+      questions = [
+        verdict_question(),
+        Question.noul("waiting", "Waiting for input?"),
+        Question.score("urgency", "How urgent?", ["low", "mid", "high"])
+      ]
+
+      good = %{
+        "verdict" => %Answer{type: :choice, choice: "stalled"},
+        "waiting" => %Answer{type: :noul, noul: 0.5, probabilities: %{"true" => 0.5}},
+        "urgency" => %Answer{type: :score, score: 1.4, probabilities: %{0 => 0.1, 2 => 0.5}}
+      }
+
+      assert {:ok, %Result{answers: ^good}} =
+               Decision.ask(selection(), "state", questions, reply: {:ok, %Result{answers: good}})
+
+      invalid = [
+        {nil, {:answers, nil}},
+        {[], {:answers, []}},
+        {Map.delete(good, "waiting"), {:missing_answer, "waiting"}},
+        {Map.put(good, "extra", %Answer{type: :noul, noul: 0.5}), {:unexpected_answer, "extra"}},
+        {%{good | "verdict" => %{type: :choice, choice: "stalled"}},
+         {:invalid_answer, "verdict", :not_an_answer}},
+        {%{good | "verdict" => %Answer{type: :noul, noul: 0.5}},
+         {:invalid_answer, "verdict", :type}},
+        {%{good | "verdict" => %Answer{type: :choice, choice: "maybe"}},
+         {:invalid_answer, "verdict", :choice}},
+        {%{good | "verdict" => %Answer{type: :choice, choice: nil}},
+         {:invalid_answer, "verdict", :choice}},
+        {%{good | "waiting" => %Answer{type: :noul, noul: 1.5}},
+         {:invalid_answer, "waiting", :noul}},
+        {%{good | "waiting" => %Answer{type: :noul, noul: "0.5"}},
+         {:invalid_answer, "waiting", :noul}},
+        {%{good | "urgency" => %Answer{type: :score, score: 3}},
+         {:invalid_answer, "urgency", :score}},
+        {%{good | "urgency" => %Answer{type: :score, score: -1}},
+         {:invalid_answer, "urgency", :score}},
+        {%{good | "verdict" => %Answer{type: :choice, choice: "stalled", probabilities: nil}},
+         {:invalid_answer, "verdict", :probabilities}},
+        {%{
+           good
+           | "verdict" => %Answer{
+               type: :choice,
+               choice: "stalled",
+               probabilities: %{"stalled" => "0.9"}
+             }
+         }, {:invalid_answer, "verdict", :probabilities}},
+        {%{
+           good
+           | "verdict" => %Answer{
+               type: :choice,
+               choice: "stalled",
+               probabilities: %{"unknown" => 0.9}
+             }
+         }, {:invalid_answer, "verdict", :probabilities}},
+        {%{good | "urgency" => %Answer{type: :score, score: 1, probabilities: %{"1" => 0.9}}},
+         {:invalid_answer, "urgency", :probabilities}},
+        {%{good | "waiting" => %Answer{type: :noul, noul: 0.5, probabilities: %{true => 0.5}}},
+         {:invalid_answer, "waiting", :probabilities}},
+        {%{good | "verdict" => %Answer{type: :choice, choice: "stalled", confidence: "high"}},
+         {:invalid_answer, "verdict", :confidence}},
+        {%{good | "verdict" => %Answer{type: :choice, choice: "stalled", confidence: 2}},
+         {:invalid_answer, "verdict", :confidence}}
+      ]
+
+      for {answers, detail} <- invalid do
+        result = %Result{answers: answers, usage: %{"input_tokens" => 7}}
+
+        assert {:error, %Error{kind: :invalid_response} = error} =
+                 Decision.ask(selection(), "state", questions, reply: {:ok, result})
+
+        assert error.details.reason == detail
+
+        # The model still spent the tokens.
+        assert %Usage{input_tokens: 7, model: "judge:4b", provider: "fake-local"} =
+                 error.details.usage
+
+        assert error.message =~ "Invalid decision response"
+      end
+    end
+
+    test "rejects a malformed model or usage" do
+      answers = %{"verdict" => %Answer{type: :choice, choice: "stalled"}}
+
+      for {result, detail} <- [
+            {%Result{answers: answers, usage: 42}, {:usage, 42}},
+            {%Result{answers: answers, usage: "lots"}, {:usage, "lots"}},
+            {%Result{answers: answers, model: 7}, {:model, 7}},
+            {%Result{answers: answers, model: ""}, {:model, ""}}
+          ] do
+        assert {:error, %Error{kind: :invalid_response, details: %{reason: ^detail, usage: nil}}} =
+                 Decision.ask(selection(), "state", [verdict_question()], reply: {:ok, result})
+      end
     end
 
     test "validates before sending" do
       assert {:error, {:invalid_decision_request, :empty_state}} =
-               Decision.decide(selection(), "  ", [verdict_question()], test_pid: self())
+               Decision.ask(selection(), "  ", [verdict_question()], test_pid: self())
 
       refute_receive {:decide, _request, _opts}
     end

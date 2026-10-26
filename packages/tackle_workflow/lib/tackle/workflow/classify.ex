@@ -87,24 +87,20 @@ defmodule Tackle.Workflow.Classify do
   @doc """
   The Lua-facing table for a classification result.
 
-  Every question must be answered with a `Tackle.Lib.Decision.Answer` of its
-  own type; otherwise the result is a failure. `tokens` is what the call added
-  to the workflow's usage, reported either way.
+  `Tackle.Lib.Decision.decide/3` has already checked that the result holds
+  one fitting answer per question. `tokens` is what the call added to the
+  workflow's usage.
   """
-  @spec result_table(Result.t(), [Question.t()], Selection.t(), non_neg_integer()) :: map()
-  def result_table(%Result{answers: answers}, questions, %Selection{ref: ref}, tokens)
-      when is_map(answers) do
-    case answer_tables(answers, questions) do
-      {:ok, tables} ->
-        %{"ok" => true, "status" => "ok", "model" => ref, "tokens" => tokens, "answers" => tables}
-
-      {:error, reason} ->
-        failure_table(reason, tokens)
-    end
+  @spec result_table(Result.t(), Selection.t(), non_neg_integer()) :: map()
+  def result_table(%Result{answers: answers}, %Selection{ref: ref}, tokens) do
+    %{
+      "ok" => true,
+      "status" => "ok",
+      "model" => ref,
+      "tokens" => tokens,
+      "answers" => Map.new(answers, fn {name, answer} -> {name, answer_table(answer)} end)
+    }
   end
-
-  def result_table(%Result{}, _questions, _selection, tokens),
-    do: failure_table(:invalid_answers, tokens)
 
   @doc "The Lua-facing table for a classification the model could not answer."
   @spec failure_table(term(), non_neg_integer()) :: map()
@@ -227,28 +223,12 @@ defmodule Tackle.Workflow.Classify do
 
   # Answers -------------------------------------------------------------------------
 
-  # Only the asked questions are reported, each with an answer of its own type.
-  defp answer_tables(answers, questions) do
-    Enum.reduce_while(questions, {:ok, %{}}, fn %Question{name: name, type: type}, {:ok, acc} ->
-      case Map.get(answers, name) do
-        %Answer{type: ^type} = answer ->
-          {:cont, {:ok, Map.put(acc, name, answer_table(answer))}}
-
-        nil ->
-          {:halt, {:error, {:missing_answer, name}}}
-
-        _other ->
-          {:halt, {:error, {:invalid_answer, name}}}
-      end
-    end)
-  end
-
   defp answer_table(%Answer{type: :choice} = answer) do
     %{
       "type" => "choice",
       "choice" => answer.choice,
       "probability" => Answer.choice_probability(answer),
-      "probabilities" => answer.probabilities || %{},
+      "probabilities" => answer.probabilities,
       "confidence" => answer.confidence
     }
     |> compact()
@@ -258,7 +238,7 @@ defmodule Tackle.Workflow.Classify do
     %{
       "type" => "noul",
       "noul" => answer.noul,
-      "probabilities" => answer.probabilities || %{},
+      "probabilities" => answer.probabilities,
       "confidence" => answer.confidence
     }
     |> compact()
@@ -266,15 +246,11 @@ defmodule Tackle.Workflow.Classify do
 
   # Lua scales are 1-based, so level 0 (the lowest) becomes 1.
   defp answer_table(%Answer{type: :score} = answer) do
-    probabilities =
-      for {level, probability} <- answer.probabilities || %{},
-          is_integer(level),
-          into: %{},
-          do: {level + 1, probability}
+    probabilities = Map.new(answer.probabilities, fn {level, p} -> {level + 1, p} end)
 
     %{
       "type" => "score",
-      "score" => if(is_number(answer.score), do: answer.score + 1),
+      "score" => answer.score + 1,
       "probabilities" => probabilities,
       "confidence" => answer.confidence
     }

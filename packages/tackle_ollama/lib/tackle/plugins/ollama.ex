@@ -826,12 +826,11 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
+  # `Tackle.Lib.Decision.decide/3` validates the request and its model
+  # before this is called, and checks the answers it returns.
   @impl Tackle.Lib.Decision
   def decide(%Request{} = request, opts) when is_list(opts) do
-    with :ok <- Request.validate(request),
-         {:ok, provider} <- request_provider(opts),
-         :ok <- validate_decision_model(provider, request.model),
-         :ok <- not_cancelled(opts),
+    with {:ok, provider} <- request_provider(opts),
          {:ok, base_url} <- base_url(provider, opts),
          {:ok, api_key} <- api_key(provider, opts),
          {:ok, body} <- encode_decision_request(request),
@@ -839,14 +838,6 @@ defmodule Tackle.Plugins.Ollama do
          :ok <- not_cancelled(opts) do
       decision_result(response, request)
     end
-  end
-
-  defp validate_decision_model(provider, model) do
-    models = decision_models(provider.settings)
-
-    if is_list(models) and model in models,
-      do: :ok,
-      else: {:error, {:unsupported_model, model}}
   end
 
   defp encode_decision_request(request) do
@@ -894,76 +885,66 @@ defmodule Tackle.Plugins.Ollama do
   defp decode_success_body(body) when is_binary(body) do
     case JSON.decode(body) do
       {:ok, %{} = decoded} -> {:ok, decoded}
-      _invalid -> {:error, {:invalid_decision_response, :invalid_json}}
+      _invalid -> invalid_decision_response(:invalid_json)
     end
   end
 
-  defp decode_success_body(_body), do: {:error, {:invalid_decision_response, :invalid_json}}
+  defp decode_success_body(_body), do: invalid_decision_response(:invalid_json)
 
-  # Every requested question must be answered with its own type; answers to
-  # questions that were not asked are ignored.
+  # Translates the wire answers of the asked questions; answers to questions
+  # that were not asked are dropped. Whether each answer fits its question is
+  # checked by `Tackle.Lib.Decision.decide/3`.
   defp parse_answers(%{} = answers, questions) do
-    Enum.reduce_while(questions, {:ok, %{}}, fn question, {:ok, parsed} ->
-      case parse_answer(Map.get(answers, question.name), question) do
-        {:ok, answer} -> {:cont, {:ok, Map.put(parsed, question.name, answer)}}
-        {:error, detail} -> {:halt, {:error, {:invalid_decision_response, detail}}}
+    Enum.reduce_while(questions, {:ok, %{}}, fn %Question{name: name}, {:ok, parsed} ->
+      case Map.fetch(answers, name) do
+        {:ok, answer} ->
+          case parse_answer(answer) do
+            {:ok, answer} -> {:cont, {:ok, Map.put(parsed, name, answer)}}
+            :error -> {:halt, invalid_decision_response({:invalid_answer, name})}
+          end
+
+        :error ->
+          {:cont, {:ok, parsed}}
       end
     end)
   end
 
-  defp parse_answers(_answers, _questions),
-    do: {:error, {:invalid_decision_response, :missing_answers}}
+  defp parse_answers(_answers, _questions), do: invalid_decision_response(:missing_answers)
 
-  defp parse_answer(nil, %Question{name: name}), do: {:error, {:missing_answer, name}}
-
-  defp parse_answer(
-         %{"type" => "choice", "choice" => choice} = answer,
-         %Question{type: :choice} = q
-       )
-       when is_binary(choice) do
-    if Map.has_key?(q.criteria, choice) do
-      {:ok,
-       %Answer{
-         type: :choice,
-         choice: choice,
-         probabilities: probabilities(answer["probabilities"], & &1),
-         confidence: number_or_nil(answer["confidence"])
-       }}
-    else
-      {:error, {:unknown_choice, q.name, choice}}
-    end
+  defp parse_answer(%{"type" => "choice"} = answer) do
+    {:ok,
+     %Answer{
+       type: :choice,
+       choice: answer["choice"],
+       probabilities: probabilities(answer["probabilities"], & &1),
+       confidence: answer["confidence"]
+     }}
   end
 
-  defp parse_answer(%{"type" => "noul", "noul" => noul} = answer, %Question{type: :noul})
-       when is_number(noul) and noul >= 0 and noul <= 1 do
-    {:ok, %Answer{type: :noul, noul: noul / 1, confidence: number_or_nil(answer["confidence"])}}
+  defp parse_answer(%{"type" => "noul"} = answer) do
+    noul = if is_number(answer["noul"]), do: answer["noul"] / 1, else: answer["noul"]
+    {:ok, %Answer{type: :noul, noul: noul, confidence: answer["confidence"]}}
   end
 
-  defp parse_answer(%{"type" => "score"} = answer, %Question{type: :score} = q) do
+  defp parse_answer(%{"type" => "score"} = answer) do
     probabilities = probabilities(answer["probabilities"], &level_key/1)
 
-    case answer["score"] || expected_level(probabilities) do
-      score when is_number(score) ->
-        {:ok,
-         %Answer{
-           type: :score,
-           score: score,
-           probabilities: probabilities,
-           confidence: number_or_nil(answer["confidence"])
-         }}
-
-      _missing ->
-        {:error, {:invalid_answer, q.name}}
-    end
+    {:ok,
+     %Answer{
+       type: :score,
+       score: answer["score"] || expected_level(probabilities),
+       probabilities: probabilities,
+       confidence: answer["confidence"]
+     }}
   end
 
-  defp parse_answer(_answer, %Question{name: name}), do: {:error, {:invalid_answer, name}}
+  defp parse_answer(_answer), do: :error
 
-  defp probabilities(%{} = probabilities, key_fun) do
-    for {key, value} <- probabilities, is_number(value), into: %{}, do: {key_fun.(key), value}
-  end
+  defp probabilities(%{} = probabilities, key_fun),
+    do: Map.new(probabilities, fn {key, value} -> {key_fun.(key), value} end)
 
-  defp probabilities(_probabilities, _key_fun), do: %{}
+  defp probabilities(nil, _key_fun), do: %{}
+  defp probabilities(probabilities, _key_fun), do: probabilities
 
   # Score levels are zero-based; level keys sent as "0", "1", ... become integers.
   defp level_key(key) when is_binary(key) do
@@ -977,15 +958,20 @@ defmodule Tackle.Plugins.Ollama do
 
   # Ollama defines a score as the probability-weighted average of the levels.
   defp expected_level(probabilities) do
-    levels = Enum.filter(probabilities, fn {level, _p} -> is_integer(level) end)
+    levels = Enum.filter(probabilities, fn {level, p} -> is_integer(level) and is_number(p) end)
 
     if levels == [],
       do: nil,
       else: Enum.reduce(levels, 0.0, fn {level, p}, sum -> sum + level * p end)
   end
 
-  defp number_or_nil(value) when is_number(value), do: value
-  defp number_or_nil(_value), do: nil
+  defp invalid_decision_response(detail) do
+    {:error,
+     Error.new(:invalid_response,
+       message: "Invalid Ollama decision response: #{inspect(detail)}",
+       details: %{reason: detail}
+     )}
+  end
 
   defp not_cancelled(opts) do
     if Cancellation.cancelled?(Keyword.get(opts, :cancellation_signal)),

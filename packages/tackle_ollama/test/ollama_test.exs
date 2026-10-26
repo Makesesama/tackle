@@ -212,7 +212,7 @@ defmodule Tackle.Plugins.OllamaTest do
       assert {:ok, selection} = Decision.select([provider], "hosted/tev1:4b")
 
       assert {:ok, _result} =
-               Decision.decide(selection, "state", [question],
+               Decision.ask(selection, "state", [question],
                  api_key: "hosted-key",
                  request: request
                )
@@ -224,7 +224,7 @@ defmodule Tackle.Plugins.OllamaTest do
                {"authorization", "Bearer hosted-key"}
 
       assert {:error, {:missing_ollama_api_key, "hosted"}} =
-               Decision.decide(selection, "state", [question],
+               Decision.ask(selection, "state", [question],
                  request: fn _ -> flunk("unexpected HTTP request") end
                )
     end

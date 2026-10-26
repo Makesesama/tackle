@@ -188,11 +188,11 @@ defmodule Tackle.Workflow.ClassifyTest do
 
       assert text =~ "judge exploded"
 
-      for reply <- [:throw, :exit] do
+      for {reply, reason} <- [throw: "throw :judge_threw", exit: "exit :judge_exited"] do
         assert {:ok, [false, "error", "classification failed: " <> text, 0, nil]} =
                  run(script, decisions: decisions(options: [reply: reply]))
 
-        assert text =~ "adapter_failed"
+        assert text =~ "The decision adapter #{inspect(LocalJudge)} failed: #{reason}"
       end
     end
 
@@ -210,7 +210,9 @@ defmodule Tackle.Workflow.ClassifyTest do
       assert {:ok, [false, "error", text, 7, 7]} =
                run(script, decisions: decisions(options: [reply: {:ok, wrong_type}]))
 
-      assert text =~ ~s(classification failed: {:invalid_answer, "verdict"})
+      assert text ==
+               ~s(classification failed: Invalid decision response: ) <>
+                 ~s({:invalid_answer, "verdict", :type})
 
       missing = %Result{answers: %{}, usage: %{"total_tokens" => 3}}
 
@@ -218,6 +220,17 @@ defmodule Tackle.Workflow.ClassifyTest do
                run(script, decisions: decisions(options: [reply: {:ok, missing}]))
 
       assert text =~ ~s({:missing_answer, "verdict"})
+
+      # An answer the old re-check accepted but that is outside the options.
+      unknown = %Result{
+        answers: %{"verdict" => %Answer{type: :choice, choice: "maybe"}},
+        usage: %{"total_tokens" => 2}
+      }
+
+      assert {:ok, [false, "error", text, 2, 2]} =
+               run(script, decisions: decisions(options: [reply: {:ok, unknown}]))
+
+      assert text =~ ~s({:invalid_answer, "verdict", :choice})
     end
 
     test "long lists keep their order" do

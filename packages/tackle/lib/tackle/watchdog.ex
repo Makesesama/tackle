@@ -28,7 +28,9 @@ defmodule Tackle.Watchdog do
        warning and keeps watching, backing off like a healthy verdict.
 
   Decision calls run as unlinked tasks under the service task supervisor, one
-  at a time, so a slow or crashing model request never blocks the watchdog.
+  at a time, so a slow model request never blocks the watchdog.
+  `Tackle.Lib.Decision.ask/4` checks every answer and turns a crashing adapter
+  into an error, so only a killed task still needs handling.
   Their usage is accumulated for diagnostics only; it is never counted against
   any token budget.
   """
@@ -71,7 +73,7 @@ defmodule Tackle.Watchdog do
 
   Options are `:agent_ref`, `:task_supervisor` (the agent's service
   `Task.Supervisor`), `:settings` (`Tackle.Config.Watchdog`), and
-  `:decision_opts`, passed to `Tackle.Lib.Decision.decide/3` (for example a
+  `:decision_opts`, passed to `Tackle.Lib.Decision.ask/4` (for example a
   `:receive_timeout`). The selection already carries its provider's settings.
   """
   @spec start_link([option()]) :: GenServer.on_start()
@@ -282,7 +284,7 @@ defmodule Tackle.Watchdog do
 
     task =
       Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        Decision.decide(selection, observed, [question()], opts)
+        Decision.ask(selection, observed, [question()], opts)
       end)
 
     timer =
@@ -302,23 +304,18 @@ defmodule Tackle.Watchdog do
     %{state | inflight: nil}
   end
 
-  defp decided(state, id, {:ok, %Result{answers: answers, usage: usage}}) do
+  # `Tackle.Lib.Decision.ask/4` returns only results that answer the verdict
+  # question with one of its options and probabilities in 0..1, and turns
+  # adapter crashes into errors.
+  defp decided(state, id, {:ok, %Result{answers: %{@verdict => answer}, usage: usage}}) do
     state = %{state | usage: Usage.aggregate([state.usage, usage])}
-
-    case Map.get(answers, @verdict) do
-      %Answer{choice: choice} = answer when is_binary(choice) ->
-        verdict(state, id, choice, Answer.choice_probability(answer) || 0)
-
-      _missing ->
-        decided(state, id, {:error, :missing_verdict})
-    end
+    # Without a reported probability the verdict cannot reach the threshold.
+    verdict(state, id, answer.choice, Answer.choice_probability(answer) || 0)
   end
 
   defp decided(state, id, {:error, reason}) do
     state |> warn_once(reason) |> back_off(id)
   end
-
-  defp decided(state, id, other), do: decided(state, id, {:error, {:invalid_result, other}})
 
   defp verdict(state, id, choice, probability) do
     cond do

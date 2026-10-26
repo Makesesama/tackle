@@ -173,6 +173,7 @@ defmodule Tackle.Workflow.API do
   use Lua.API, scope: "tackle"
 
   alias Tackle.Lib.Decision.{Request, Selection}
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Limits
@@ -630,9 +631,11 @@ defmodule Tackle.Workflow.API do
     table =
       case Decisions.decide(decisions, selection, request) do
         {:ok, result} ->
-          # Tokens are spent once the model answered, even if the answer is unusable.
-          tokens = if selection.local, do: 0, else: Meter.add_usage(meter, result.usage)
-          Classify.result_table(result, questions, selection, tokens)
+          Classify.result_table(result, selection, spend(meter, selection, result.usage))
+
+        # Tokens are spent once the model answered, even if the answer is unusable.
+        {:error, %Error{kind: :invalid_response, details: %{usage: usage}} = error} ->
+          Classify.failure_table(error, spend(meter, selection, usage))
 
         {:error, reason} ->
           Classify.failure_table(reason)
@@ -643,6 +646,9 @@ defmodule Tackle.Workflow.API do
     {encoded, state} = Lua.encode!(state, table)
     {encoded, state}
   end
+
+  defp spend(_meter, %Selection{local: true}, _usage), do: 0
+  defp spend(meter, %Selection{}, usage), do: Meter.add_usage(meter, usage)
 
   defp decode_value(state, value) do
     if is_table(value), do: Lua.decode!(state, value), else: value

@@ -20,10 +20,13 @@ defmodule Tackle.Lib.Decision do
         })
 
       {:ok, %Tackle.Lib.Decision.Result{answers: %{"verdict" => answer}}} =
-        Tackle.Lib.Decision.decide(selection, "command: make test ...", [question], [])
+        Tackle.Lib.Decision.ask(selection, "command: make test ...", [question])
 
-  This module is a pure contract: it validates requests and selections and
-  normalizes results, while transport stays inside adapters.
+  This module is the boundary between hosts and adapters, like
+  `Tackle.Lib.LLM` for chat: it validates requests and selections, checks
+  every result against the request's questions, and turns adapter crashes
+  into errors, while transport stays inside adapters. Adapters need not
+  repeat these checks.
 
   ## Local adapters
 
@@ -35,8 +38,9 @@ defmodule Tackle.Lib.Decision do
 
   ## Options
 
-  `decide/3` passes its options to the adapter's `decide/2`, adding the
-  selection's `:provider_id` and `:provider_settings`. Adapters should honour:
+  `decide/3` (and `ask/4`) pass their options to the adapter's `decide/2`,
+  adding the selection's `:provider_id` and `:provider_settings`. Adapters
+  should honour:
 
     * `:cancellation_signal` - a `Tackle.Lib.Cancellation.Signal`; abort the
       request and return `{:error, :cancelled}` when it is cancelled.
@@ -45,7 +49,7 @@ defmodule Tackle.Lib.Decision do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Decision.{Question, Request, Result, Selection}
-  alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.LLM.{Error, Provider}
   alias Tackle.Lib.Usage
 
   @doc "The adapter-local decision model identifiers available for selection."
@@ -57,8 +61,11 @@ defmodule Tackle.Lib.Decision do
   @doc """
   Answers every question of an already validated request.
 
-  `request.model` is the adapter-local decision model id. Return a result whose
-  `answers` are keyed by question name, or `{:error, reason}`.
+  `request.model` is the adapter-local decision model id, already checked
+  against the provider's decision models. Return a result with one answer per
+  question, keyed by question name, or `{:error, reason}`; provider and
+  transport failures should be `Tackle.Lib.LLM.Error`s. `decide/3` checks the
+  result (see `Tackle.Lib.Decision.Result.validate/2`).
   """
   @callback decide(Request.t(), opts :: keyword()) :: {:ok, Result.t()} | {:error, term()}
 
@@ -91,9 +98,27 @@ defmodule Tackle.Lib.Decision do
   @doc """
   Validates a request and asks the selected adapter to answer it.
 
-  The selection's model replaces `request.model`. A cancelled
-  `:cancellation_signal` returns `{:error, :cancelled}` without calling the
-  adapter. Result usage is normalized into `Tackle.Lib.Usage`.
+  The selection's model replaces `request.model`. A request that fails
+  `Tackle.Lib.Decision.Request.validate/1` returns its
+  `{:invalid_decision_request, detail}` error, and a cancelled
+  `:cancellation_signal` returns `{:error, :cancelled}`, both without calling
+  the adapter. Adapter errors are returned as they are.
+
+  Like `Tackle.Lib.LLM.generate_with/3`, the call never raises:
+
+    * an adapter that raises, throws, or exits returns
+      `{:error, %Tackle.Lib.LLM.Error{kind: :unknown}}`, whose `details` hold
+      the `:adapter`, `:kind`, `:reason`, and `:stacktrace`;
+    * a result that does not answer the request
+      (`Tackle.Lib.Decision.Result.validate/2`), and any return other than
+      `{:ok, %Tackle.Lib.Decision.Result{}}` or `{:error, reason}`, returns
+      `{:error, %Tackle.Lib.LLM.Error{kind: :invalid_response}}`, whose
+      `details` hold the `:reason` and the result's normalized `:usage` (the
+      model still spent the tokens).
+
+  A successful result answers exactly the request's questions. Its `model`
+  defaults to the selection's model, and its usage is normalized into
+  `Tackle.Lib.Usage`.
   """
   @spec decide(Selection.t(), Request.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def decide(%Selection{} = selection, %Request{} = request, opts \\ []) when is_list(opts) do
@@ -106,18 +131,18 @@ defmodule Tackle.Lib.Decision do
 
     with :ok <- Request.validate(request),
          :ok <- ensure_not_cancelled(opts) do
-      request
-      |> selection.adapter.decide(opts)
-      |> normalize_result(selection)
+      selection
+      |> invoke(request, opts)
+      |> check_result(request, selection)
     end
   end
 
   @doc """
-  Builds the request from `state` and `questions`, then calls `decide/3`.
+  Builds a request from `state` and `questions`, then calls `decide/3`.
   """
-  @spec decide(Selection.t(), Request.state(), [Question.t()], keyword()) ::
+  @spec ask(Selection.t(), Request.state(), [Question.t()], keyword()) ::
           {:ok, Result.t()} | {:error, term()}
-  def decide(%Selection{} = selection, state, questions, opts)
+  def ask(%Selection{} = selection, state, questions, opts \\ [])
       when is_list(questions) and is_list(opts),
       do: decide(selection, Request.new(state, questions), opts)
 
@@ -127,14 +152,69 @@ defmodule Tackle.Lib.Decision do
       else: :ok
   end
 
-  defp normalize_result({:ok, %Result{} = result}, %Selection{} = selection) do
-    model = result.model || selection.model
-    usage = Usage.normalize(result.usage, model: model, provider: selection.provider_id)
-    {:ok, %{result | model: model, usage: usage}}
+  # Calls the adapter. Anything other than `{:ok, result}` or
+  # `{:error, reason}`, and any exception, throw, or exit, becomes an error.
+  defp invoke(%Selection{adapter: adapter}, request, opts) do
+    case adapter.decide(request, opts) do
+      {:ok, _result} = ok -> ok
+      {:error, _reason} = error -> error
+      other -> {:invalid, {:result, other}}
+    end
+  rescue
+    exception -> {:error, adapter_failure(adapter, :error, exception, __STACKTRACE__)}
+  catch
+    kind, reason -> {:error, adapter_failure(adapter, kind, reason, __STACKTRACE__)}
   end
 
-  defp normalize_result({:error, reason}, _selection), do: {:error, reason}
+  defp adapter_failure(adapter, kind, reason, stacktrace) do
+    Error.new(:unknown,
+      message: "The decision adapter #{inspect(adapter)} failed: #{failure_text(kind, reason)}",
+      details: %{adapter: adapter, kind: kind, reason: reason, stacktrace: stacktrace}
+    )
+  end
 
-  defp normalize_result(other, %Selection{adapter: adapter}),
-    do: {:error, {:invalid_decision_result, adapter, other}}
+  defp failure_text(:error, exception), do: Exception.message(exception)
+
+  defp failure_text(kind, reason),
+    do: "#{kind} #{inspect(reason, limit: 10, printable_limit: 200)}"
+
+  defp check_result({:ok, %Result{} = result}, request, selection) do
+    case Result.validate(result, request.questions) do
+      :ok ->
+        model = result.model || selection.model
+        {:ok, %{result | model: model, usage: usage(result.usage, model, selection)}}
+
+      {:error, detail} ->
+        {:error, invalid_response(detail, result, selection)}
+    end
+  end
+
+  defp check_result({:ok, _other} = other, _request, selection),
+    do: {:error, invalid_response({:result, other}, nil, selection)}
+
+  defp check_result({:invalid, detail}, _request, selection),
+    do: {:error, invalid_response(detail, nil, selection)}
+
+  defp check_result({:error, _reason} = error, _request, _selection), do: error
+
+  # An unusable result keeps its usage, when it has a usable one, in the
+  # details: the model still spent the tokens.
+  defp invalid_response(detail, result, selection) do
+    usage =
+      case result do
+        %Result{usage: usage, model: model} when is_map(usage) ->
+          usage(usage, if(is_binary(model), do: model, else: selection.model), selection)
+
+        _other ->
+          nil
+      end
+
+    Error.new(:invalid_response,
+      message: "Invalid decision response: #{inspect(detail, limit: 10, printable_limit: 200)}",
+      details: %{reason: detail, usage: usage}
+    )
+  end
+
+  defp usage(usage, model, %Selection{provider_id: provider_id}),
+    do: Usage.normalize(usage, model: model, provider: provider_id)
 end

@@ -137,7 +137,7 @@ defmodule WatchdogLive do
 
         state = Digest.state(digest, age * 1_000 + 500)
         started = System.monotonic_time(:millisecond)
-        result = Decision.decide(selection, state, [Tackle.Watchdog.question()], [])
+        result = Decision.ask(selection, state, [Tackle.Watchdog.question()])
         latency = System.monotonic_time(:millisecond) - started
         flush_decisions()
 

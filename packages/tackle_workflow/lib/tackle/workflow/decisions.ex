@@ -100,18 +100,14 @@ defmodule Tackle.Workflow.Decisions do
   @doc """
   Asks the selected model to answer `request` with the grant's options.
 
-  An adapter that raises, throws, or exits returns
-  `{:error, {:adapter_failed, detail}}` instead of failing the workflow. (A
+  This is `Tackle.Lib.Decision.decide/3`, so it never raises: an adapter that
+  raises, throws, or exits, and an answer that does not fit the questions,
+  return a `Tackle.Lib.LLM.Error` instead of failing the workflow. (A
   cancelled workflow kills its worker, which no adapter can intercept.)
   """
   @spec decide(t(), Selection.t(), Request.t()) :: {:ok, Result.t()} | {:error, term()}
-  def decide(%__MODULE__{options: options}, %Selection{} = selection, %Request{} = request) do
-    Decision.decide(selection, request, options)
-  rescue
-    exception -> {:error, {:adapter_failed, Exception.message(exception)}}
-  catch
-    kind, reason -> {:error, {:adapter_failed, {kind, reason}}}
-  end
+  def decide(%__MODULE__{options: options}, %Selection{} = selection, %Request{} = request),
+    do: Decision.decide(selection, request, options)
 
   defp decision_provider?(%Provider{adapter: adapter}) do
     Code.ensure_loaded?(adapter) and function_exported?(adapter, :decide, 2)

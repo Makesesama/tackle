@@ -243,18 +243,21 @@ question =
     "stalled" => "No progress is being made"
   })
 
-{:ok, result} = Tackle.Lib.Decision.decide(decision, "command: make test ...", [question], [])
+{:ok, result} = Tackle.Lib.Decision.ask(decision, "command: make test ...", [question])
 result.answers["verdict"].choice
 ```
 
 Decisions use Ollama's [System One](https://docs.ollama.com/capabilities/decision)
 endpoint, `POST <base_url>/systemone`, with decision models such as `tev1:4b`
 listed in the provider's `"decision_models"`. The base URL and key follow the
-same rules as chat. Requests are validated against the `Tackle.Lib.Decision`
-limits before sending. Every asked question must be answered with its own type;
-`choice` answers must name a known option, and a `score` without an explicit
-value is the probability-weighted average of its zero-based levels. Non-2xx
-responses return `{:error, %Tackle.Lib.LLM.Error{}}`. `decide/2` honours
+same rules as chat. `Tackle.Lib.Decision` validates requests and their model
+before the adapter sends them, and checks every answer against its question
+(type, option, ranges). The adapter translates the wire answers of the asked
+questions and drops the others; a `score` without an explicit value is the
+probability-weighted average of its zero-based levels, so it may be
+fractional. A body that is not JSON, lacks `"answers"`, or holds an answer of
+unknown type returns `{:error, %Tackle.Lib.LLM.Error{kind: :invalid_response}}`,
+and non-2xx responses return `{:error, %Tackle.Lib.LLM.Error{}}`. `decide/2` honours
 `:cancellation_signal` (an in-flight request is abandoned) and
 `:receive_timeout` (default 60,000 ms, since a model may load on first use).
 

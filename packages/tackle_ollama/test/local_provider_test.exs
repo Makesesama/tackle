@@ -303,7 +303,7 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
       assert {:ok, selection} = Decision.select([Ollama], "ollama/tev1:4b")
 
       assert {:ok, %Result{} = result} =
-               Decision.decide(selection, %{"command" => "make"}, questions(),
+               Decision.ask(selection, %{"command" => "make"}, questions(),
                  request: request,
                  receive_timeout: 5_000
                )
@@ -364,19 +364,35 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
 
       for {answers, detail} <- [
             {%{}, {:missing_answer, "verdict"}},
-            {%{"verdict" => %{"type" => "noul", "noul" => 0.5}}, {:invalid_answer, "verdict"}},
+            {%{"verdict" => %{"type" => "noul", "noul" => 0.5}},
+             {:invalid_answer, "verdict", :type}},
             {%{"verdict" => %{"type" => "choice", "choice" => "maybe"}},
-             {:unknown_choice, "verdict", "maybe"}}
+             {:invalid_answer, "verdict", :choice}},
+            {%{"verdict" => %{"type" => "choice", "choice" => "yes", "confidence" => "high"}},
+             {:invalid_answer, "verdict", :confidence}},
+            {%{"verdict" => %{"type" => "verdict"}}, {:invalid_answer, "verdict"}},
+            {nil, :missing_answers}
           ] do
-        assert {:error, {:invalid_decision_response, ^detail}} =
+        assert {:error, %Error{kind: :invalid_response, details: %{reason: ^detail}}} =
                  decide([choice], request: respond(200, %{"answers" => answers}))
       end
 
-      assert {:error, {:invalid_decision_response, :missing_answers}} =
-               decide([choice], request: respond(200, %{"model" => "tev1:4b"}))
-
-      assert {:error, {:invalid_decision_response, :invalid_json}} =
+      assert {:error, %Error{kind: :invalid_response, details: %{reason: :invalid_json}}} =
                decide([choice], request: fn _ -> {:ok, %{status: 200, body: "not json"}} end)
+    end
+
+    test "ignores answers to questions that were not asked" do
+      answers = %{
+        "verdict" => %{"type" => "choice", "choice" => "yes"},
+        "other" => %{"type" => "noul", "noul" => 0.5}
+      }
+
+      choice = Question.choice("verdict", "Stuck?", %{"yes" => nil, "no" => nil})
+
+      assert {:ok, %Result{answers: answers}} =
+               decide([choice], request: respond(200, %{"answers" => answers}))
+
+      assert Map.keys(answers) == ["verdict"]
     end
 
     test "reports server errors and transport failures" do
@@ -401,19 +417,15 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
                decide(questions(), request: fn _ -> raise "raised" end)
     end
 
-    test "rejects unconfigured models and invalid requests before HTTP" do
+    test "the library rejects unconfigured models and invalid requests before HTTP" do
       request = fn _ -> flunk("unexpected HTTP request") end
-      [question | _] = questions()
-
-      assert {:error, {:unsupported_model, "qwen3:8b"}} =
-               Ollama.decide(Decision.Request.new("state", [question], "qwen3:8b"),
-                 request: request
-               )
+      {:ok, selection} = Decision.select([Ollama], "ollama/tev1:4b")
 
       assert {:error, {:invalid_decision_request, :empty_state}} =
-               Ollama.decide(Decision.Request.new(" ", [question], "tev1:4b"),
-                 request: request
-               )
+               Decision.ask(selection, " ", questions(), request: request)
+
+      assert {:error, {:unknown_decision_model, "ollama/qwen3:8b"}} =
+               Decision.select([Ollama], "ollama/qwen3:8b")
     end
 
     test "honours cancellation before and during the request" do
@@ -498,11 +510,10 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
       assert {:ok, selection} = Decision.select([provider], "gpu-box/tev1:4b")
 
       assert {:ok, %Result{answers: %{"waiting" => %Answer{noul: 0.9}}}} =
-               Decision.decide(
+               Decision.ask(
                  selection,
                  "command output",
-                 [Question.noul("waiting", "Waiting for input?")],
-                 []
+                 [Question.noul("waiting", "Waiting for input?")]
                )
 
       assert_received {:request, headers, body}
@@ -525,7 +536,7 @@ defmodule Tackle.Plugins.Ollama.LocalProviderTest do
 
   defp decide(questions, opts) do
     {:ok, selection} = Decision.select([Ollama], "ollama/tev1:4b")
-    Decision.decide(selection, "command output", questions, opts)
+    Decision.ask(selection, "command output", questions, opts)
   end
 
   defp questions do

@@ -2,6 +2,7 @@ defmodule Tackle.Lib.LLM.ProviderTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib.Decision
+  alias Tackle.Lib.Decision.Answer
   alias Tackle.Lib.Decision.Request
   alias Tackle.Lib.Decision.Result
   alias Tackle.Lib.LLM
@@ -48,7 +49,8 @@ defmodule Tackle.Lib.LLM.ProviderTest do
     @impl Tackle.Lib.Decision
     def decide(%Request{} = request, opts) do
       send(self(), {:decide_opts, opts})
-      {:ok, %Result{answers: %{}, model: request.model}}
+      answers = Map.new(request.questions, &{&1.name, %Answer{type: :choice, choice: "yes"}})
+      {:ok, %Result{answers: answers, model: request.model}}
     end
   end
 
@@ -189,7 +191,7 @@ defmodule Tackle.Lib.LLM.ProviderTest do
                {:error, {:unsupported_decision_adapter, "plain"}}
 
       question = Decision.Question.choice("v", "Stuck?", %{"yes" => nil, "no" => nil})
-      assert {:ok, %Result{}} = Decision.decide(selection, "state", [question], [])
+      assert {:ok, %Result{}} = Decision.ask(selection, "state", [question])
       assert_received {:decide_opts, opts}
       assert opts[:provider_id] == "cloud"
       assert opts[:provider_settings] == %{"decision_models" => ["judge"]}

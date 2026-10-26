@@ -34,6 +34,7 @@ defmodule Tackle.WatchdogTest do
       send(:tackle_watchdog_test_judge, {:judge_called, self(), request, now()})
 
       receive do
+        {:judge_reply, reply} when is_function(reply, 0) -> reply.()
         {:judge_reply, reply} -> reply
       after
         5_000 -> {:error, :no_reply}
@@ -203,6 +204,43 @@ defmodule Tackle.WatchdogTest do
     assert [_before, _after] = String.split(log, "watchdog decision model judge/fake failed")
   end
 
+  test "junk answers and crashing adapters stop nothing and never crash the watchdog" do
+    scope = start_watched_scope()
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    watchdog = watchdog_pid(scope.root_agent_ref)
+
+    # Each failure backs off, doubling the delay, so the list stays short;
+    # `Tackle.Lib.DecisionTest` covers the other kinds of junk.
+    junk = [
+      {:ok, %Result{answers: nil}},
+      # A string probability passes a term-order threshold check.
+      verdict("stalled", "0.99"),
+      fn -> raise "judge exploded" end,
+      fn -> exit(:judge_exited) end
+    ]
+
+    log =
+      capture_log(fn ->
+        {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+        assert_receive {:bash_started, "yes", tool}, 5_000
+
+        for reply <- junk do
+          assert_receive {:judge_called, judge, _request, _at}, 5_000
+          send(judge, {:judge_reply, reply})
+        end
+
+        assert watchdog_pid(scope.root_agent_ref) == watchdog
+        send(tool, :release)
+        assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, state}}, 5_000
+        assert tool_content(state, "w1") == "done"
+      end)
+
+    assert watchdog_pid(scope.root_agent_ref) == watchdog
+    assert log =~ "Invalid decision response: {:answers, nil}"
+    refute log =~ "watchdog stopped"
+  end
+
   test "retries its subscription after a restart in the middle of a turn" do
     scope = start_watched_scope(arguments: %{"command" => "make", "timeout" => 30})
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
@@ -313,16 +351,19 @@ defmodule Tackle.WatchdogTest do
     {:ok,
      %Result{
        model: "fake",
-       answers: %{
-         "verdict" => %Answer{
-           type: :choice,
-           choice: choice,
-           probabilities: %{choice => probability}
-         }
-       },
+       answers: verdict_answers(choice, probability),
        usage: %{input_tokens: 10, output_tokens: 1}
      }}
   end
+
+  defp verdict_answers(choice, probability),
+    do: %{
+      "verdict" => %Answer{
+        type: :choice,
+        choice: choice,
+        probabilities: %{choice => probability}
+      }
+    }
 
   defp tool_content(state, call_id) do
     state.messages

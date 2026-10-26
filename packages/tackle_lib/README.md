@@ -673,10 +673,13 @@ question =
   })
 
 {:ok, %Decision.Result{answers: %{"verdict" => answer}}} =
-  Decision.decide(selection, %{"command" => "make test"}, [question],
+  Decision.ask(selection, %{"command" => "make test"}, [question],
     receive_timeout: 10_000
   )
 ```
+
+`ask/4` builds the `Tackle.Lib.Decision.Request` and calls `decide/3`, which
+takes a prebuilt request.
 
 Questions are `:choice` (option => description or `nil`, 2–24 options),
 `:noul` (yes/no with the probability of `true`; optional `"true"`/`"false"`
@@ -691,6 +694,19 @@ list, and reports `{:unsupported_decision_adapter, provider_id}`,
 explicitly. Adapters receive `:cancellation_signal`, `:receive_timeout`,
 `:provider_id`, and `:provider_settings` in opts; the library itself performs
 no HTTP.
+
+`decide/3` is a boundary like `Tackle.Lib.LLM.generate_with/3` and never
+raises. Every result is checked against the request's questions: exactly one
+`Tackle.Lib.Decision.Answer` per question, of the question's type, with a
+`choice` among its options, a `noul` probability in `0..1`, a `score` within
+the scale (`0` to the number of levels minus one; fractional when an adapter
+reports the probability-weighted average of the levels), probabilities and
+confidence in `0..1`, and usage that is a map or `nil`. A result that does not
+fit returns `{:error, %Tackle.Lib.LLM.Error{kind: :invalid_response}}` with
+the `:reason` and the spent `:usage` in its details, and an adapter that
+raises, throws, or exits returns `{:error, %Tackle.Lib.LLM.Error{kind:
+:unknown}}`. Adapters therefore translate their wire format and leave these
+checks, and request validation, to the library.
 
 An adapter whose decision models run on hardware the user controls (such as a
 self-hosted Ollama server) may also export the optional `local?/1` (given the
