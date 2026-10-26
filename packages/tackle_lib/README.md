@@ -263,7 +263,7 @@ Tackle.Lib.continue(state, run_opts)
 | `:tools` | Modules implementing `Tackle.Lib.Tool` | `[]` |
 | `:system_prompt` | Complete host-composed system prompt | `nil` |
 | `:context` | Opaque host context passed to hooks and tools | `%{}` |
-| `:max_iterations` | Optional maximum LLM/tool loop iterations | `:infinity` (unlimited) |
+| `:max_iterations` | Optional maximum LLM/tool loop iterations per turn | `:infinity` (unlimited) |
 | `:hooks` | Modules implementing `Tackle.Lib.Hook` | `[]` |
 | `:tool_policy` | Tool execution policy | sequential default |
 | `:llm_opts` | Additional adapter options | `[]` |

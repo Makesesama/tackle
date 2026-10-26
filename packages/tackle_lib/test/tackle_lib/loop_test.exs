@@ -893,6 +893,32 @@ defmodule Tackle.Lib.LoopTest do
     assert List.last(state.messages).content == "Done after ten tools."
   end
 
+  test "max_iterations bounds each turn, not the whole session" do
+    state = State.new(model: "test/model", max_iterations: 1)
+
+    assert {:ok, state} = Loop.run(state, "first")
+    assert state.current_iteration == 1
+
+    assert {:ok, state} = Loop.run(state, "second")
+    assert state.current_iteration == 1
+    assert state.status == :completed
+    assert Enum.map(state.messages, & &1.role) == [:user, :assistant, :user, :assistant]
+  end
+
+  test "a successful turn after a failed one does not keep the old error" do
+    Application.put_env(:tackle_lib, :llm, PermanentFailureAdapter)
+    Process.put(:test_pid, self())
+
+    assert {:error, state} = Loop.run(State.new(model: "test/model"), "first")
+    assert state.error =~ "Failed to get response"
+
+    Application.put_env(:tackle_lib, :llm, TestAdapter)
+
+    assert {:ok, state} = Loop.run(state, "second")
+    assert state.status == :completed
+    assert state.error == nil
+  end
+
   test "passes a structured message array (not a flat blob) with linked tool call/result" do
     Application.put_env(:tackle_lib, :llm, StructuredMessagesCapturingAdapter)
     Process.put(:test_pid, self())

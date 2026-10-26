@@ -88,7 +88,7 @@ defmodule Tackle.Lib.State do
 
   ## Options
     * `:model` - The LLM model spec to use (host-supplied; no default)
-    * `:max_iterations` - Maximum ReAct loop iterations (default: `:infinity`)
+    * `:max_iterations` - Maximum ReAct loop iterations per turn (default: `:infinity`)
     * `:tools` - List of tool modules implementing `Tackle.Lib.Tool` (default: [])
     * `:tool_policy` - Tool execution policy (defaults to sequential Tackle.Lib policy)
     * `:context` - Additional context map (user info, permissions, etc.)

@@ -109,7 +109,7 @@ defmodule Tackle.Lib.Loop do
     callbacks = callbacks(opts)
     snapshot = Snapshot.capture(state, turn_id: Keyword.get(opts, :turn_id))
     callbacks = Map.put(callbacks, :snapshot, snapshot)
-    state = %{state | pending_assistant_id: nil, snapshot: snapshot, overflow_retries: 0}
+    state = reset_turn(state, snapshot)
 
     emit(callbacks, Event.new(:turn_start, %{session_id: state.session_id}))
 
@@ -132,8 +132,9 @@ defmodule Tackle.Lib.Loop do
   @doc """
   Re-runs the agent loop against existing state WITHOUT appending a new user
   message. Used to retry a turn that errored: the user message is already in
-  state, so we resume the loop directly. Resets the iteration counter so the
-  retry gets a full budget.
+  state, so we resume the loop directly. Like `run/3`, it starts a new turn:
+  the iteration counter, status, and error are reset, so the retry gets a full
+  `max_iterations` budget.
   """
   @spec continue(State.t(), keyword()) ::
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
@@ -141,8 +142,13 @@ defmodule Tackle.Lib.Loop do
     callbacks = callbacks(opts)
     snapshot = continue_snapshot(state, Keyword.get(opts, :turn_id))
     callbacks = Map.put(callbacks, :snapshot, snapshot)
+    loop(reset_turn(state, snapshot), callbacks)
+  end
 
-    state = %{
+  # Every turn starts from a clean per-turn state: `max_iterations` bounds one
+  # turn, and a previous turn's error or status must not leak into this one.
+  defp reset_turn(%State{} = state, snapshot) do
+    %{
       state
       | current_iteration: 0,
         status: :idle,
@@ -151,8 +157,6 @@ defmodule Tackle.Lib.Loop do
         snapshot: snapshot,
         overflow_retries: 0
     }
-
-    loop(state, callbacks)
   end
 
   defp continue_snapshot(%State{snapshot: %Snapshot{} = snapshot}, turn_id)
