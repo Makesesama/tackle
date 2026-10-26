@@ -12,8 +12,8 @@ defmodule Tackle.Workflow.MeterTest do
 
   @workflow_timeout 5_000
 
-  # One settled model call, the way the loop reports it: the provider's usage
-  # (streamed while the call runs), then the step it settled.
+  # One model call, the way the loop reports it: the response's usage, then
+  # the step it settled.
   defp usage(total) do
     [Event.usage(%{total_tokens: total}), step_end(%{total_tokens: total})]
   end
@@ -99,18 +99,19 @@ defmodule Tackle.Workflow.MeterTest do
     end
 
     test "provider usage without a total is counted from its token buckets" do
-      events = [step_end(%{input_tokens: 40, output_tokens: 2})]
+      events = [Event.usage(%{input_tokens: 40, output_tokens: 2})]
       scope = start_scope(profiles: %{"worker" => agent_spec("worker", events: events)})
 
       assert {:ok, [42]} = run(scope, ~s{return tackle.await(tackle.spawn("worker", "w")).tokens})
     end
 
-    test "a streamed model call is counted once, however often it reports usage" do
+    test "every response's usage counts once, whatever its step reports" do
       events = [
+        # A discarded response (asked again) is billed too; its step reports
+        # only the response it kept.
         Event.usage(%{total_tokens: 90}),
-        Event.usage(%{total_tokens: 100}),
-        step_end(%{total_tokens: 100}),
-        # A step whose settlement carries no usage falls back to the streamed one.
+        Event.usage(%{total_tokens: 10}),
+        step_end(%{total_tokens: 10}),
         Event.usage(%{total_tokens: 7}),
         step_end(nil)
       ]
@@ -122,7 +123,7 @@ defmodule Tackle.Workflow.MeterTest do
     end
 
     test "a malformed usage event neither counts nor breaks the run" do
-      events = [Event.new(:usage, %{usage: 12}), step_end("lots"), tool_end()]
+      events = [Event.new(:usage, %{usage: 12}), Event.new(:usage, %{usage: "lots"}), tool_end()]
       scope = start_scope(profiles: %{"worker" => agent_spec("worker", events: events)})
 
       script = """
@@ -241,7 +242,7 @@ defmodule Tackle.Workflow.MeterTest do
       meter = Meter.new()
       Meter.record(meter, "run", Event.new(:message_delta, %{delta: "hi"}))
       Meter.record(meter, "run", Event.usage(nil))
-      Meter.record(meter, "run", Event.usage(%{total_tokens: 5}))
+      Meter.record(meter, "run", step_end(%{total_tokens: 5}))
       Meter.record(meter, "run", :not_an_event)
 
       assert Meter.run_facts(meter, "run") == %{
@@ -258,7 +259,7 @@ defmodule Tackle.Workflow.MeterTest do
       assert_receive {:meter, meter}
 
       assert_eventually(fn -> :ets.info(meter.table) == :undefined end)
-      assert :ok = Meter.record(meter, "run", step_end(%{total_tokens: 5}))
+      assert :ok = Meter.record(meter, "run", Event.usage(%{total_tokens: 5}))
     end
   end
 end

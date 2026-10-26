@@ -122,7 +122,7 @@ defmodule Tackle.Workflow.ToolTest do
     end
 
     defp round_events(tokens) do
-      [Event.new(:step_end, %{iteration: 1, usage: %{total_tokens: tokens}}), tool_end()]
+      [Event.usage(%{total_tokens: tokens}), tool_end()]
     end
 
     defp tool_end, do: Event.new(:tool_end, %{tool_call_id: "call", name: "bash"})

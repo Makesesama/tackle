@@ -5,16 +5,16 @@ defmodule Tackle.Workflow.Meter do
   The meter turns the events a delegated run's agent already emits into facts a
   workflow can branch on without trusting the run's text:
 
-    * every settled model call (`:step_end`) adds its `total_tokens` to the run
+    * every model response's `:usage` event adds its `total_tokens` to the run
       and to the workflow total, so tokens are counted while a run is still
       working, and also for runs that fail, time out, or are never awaited;
     * every `:tool_end` event counts one tool call, and every `:tool_error`
       event counts one failed tool call.
 
-  A streaming model call reports `:usage` while it streams and again when it
-  settles, so `:usage` is not added up. It is kept as the call's pending usage,
-  which `:step_end` counts only when it carries no usage of its own. A call cut
-  off before it settles is not counted.
+  The agent loop reports `:usage` exactly once per provider response, including
+  responses it discards (such as an empty response it asks again), so every
+  response the provider billed is counted. A call cut off before it answers is
+  not counted.
 
   The workflow total backs the optional token budget: once it reaches the
   budget, the workflow API refuses to start new runs. Runs already in flight
@@ -77,18 +77,8 @@ defmodule Tackle.Workflow.Meter do
     _kind, _reason -> :ok
   end
 
-  defp do_record(%__MODULE__{table: table}, run_id, %Event{type: :usage, data: data}) do
-    :ets.insert(table, {{run_id, :pending}, tokens(data)})
-  end
-
-  defp do_record(%__MODULE__{table: table} = meter, run_id, %Event{type: :step_end, data: data}) do
-    count =
-      case tokens(data) do
-        0 -> read(meter, {run_id, :pending})
-        count -> count
-      end
-
-    :ets.delete(table, {run_id, :pending})
+  defp do_record(meter, run_id, %Event{type: :usage, data: data}) do
+    count = tokens(data)
     increment(meter, {run_id, :tokens}, count)
     increment(meter, @total, count)
   end
