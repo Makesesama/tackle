@@ -141,7 +141,9 @@ defmodule Tackle.Lib do
 
   Manual compaction bypasses the automatic pressure threshold but otherwise
   shares the exact transaction, validation, and durability rules. Returns the
-  updated state and the durable `Tackle.Lib.Compaction.Record`.
+  updated state and the durable `Tackle.Lib.Compaction.Record`, or
+  `{:error, :nothing_to_compact}` when the projection already fits the
+  policy's retention target.
   """
   @spec compact(State.t(), keyword()) ::
           {:ok, State.t(), Tackle.Lib.Compaction.Record.t()}

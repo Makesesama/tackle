@@ -5,8 +5,11 @@ defmodule Tackle.Lib.Compaction.Request do
   The request mirrors the live provider prefix so a summarizer can reuse the
   provider's prompt cache: `:system` is the unchanged system prompt, `:tools`
   are the same tool definitions in the same order, `:messages` are the shadowed
-  model messages in their original serialization, and `:instructions` become a
-  final user message with the compaction directive.
+  model messages in their original serialization (an earlier checkpoint
+  first, when there is one), and `:instructions` become a final user message
+  with the compaction directive. When the shadowed messages would not fit the
+  window, the core shortens the largest ones first
+  (`Tackle.Lib.Compaction.Input`).
 
   A summarizer only produces text plus bounded metadata and usage. It never
   selects the cut, commits durable state, or replaces the model surface.
@@ -26,7 +29,6 @@ defmodule Tackle.Lib.Compaction.Request do
           model: String.t() | nil,
           model_info: ModelInfo.t() | nil,
           session_id: String.t() | nil,
-          prior_summary: String.t() | nil,
           instructions: String.t() | nil,
           trigger: atom() | nil,
           summary_max_tokens: pos_integer() | nil
@@ -40,7 +42,6 @@ defmodule Tackle.Lib.Compaction.Request do
             model: nil,
             model_info: nil,
             session_id: nil,
-            prior_summary: nil,
             instructions: nil,
             trigger: nil,
             summary_max_tokens: nil
@@ -53,8 +54,7 @@ defmodule Tackle.Lib.Compaction.Request do
   """
   @spec to_provider_messages(t()) :: [map()]
   def to_provider_messages(%__MODULE__{} = request) do
-    directive =
-      Prompt.directive(prior_summary: request.prior_summary, instructions: request.instructions)
+    directive = Prompt.directive(instructions: request.instructions)
 
     request.messages
     |> provider_messages()

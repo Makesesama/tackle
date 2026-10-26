@@ -148,6 +148,33 @@ defmodule Tackle.Lib.ContextUsageTest do
     assert trailing == ContextUsage.estimate_message(message)
   end
 
+  test "estimates what the provider request sends, not reasoning text" do
+    plain = Message.assistant(content: String.duplicate("x", 40))
+    thinking = %{plain | thinking: String.duplicate("t", 40_000)}
+
+    # Reasoning text is never sent.
+    assert ContextUsage.estimate_message(thinking) == ContextUsage.estimate_message(plain)
+    assert ContextUsage.estimate_message(plain) == 10
+
+    # Continuation state is sent and replayed in place of the content.
+    state = %{plain | provider_state: %{"output" => String.duplicate("r", 40_000)}}
+    assert ContextUsage.estimate_message(state) > 10_000
+
+    small_state = %{plain | provider_state: %{"id" => "r"}}
+    assert ContextUsage.estimate_message(small_state) == 10
+
+    # A tool call is sent as its id, name, and arguments, not the raw call.
+    call = Message.assistant(tool_calls: [%{id: "c1", name: "read", arguments: %{"p" => "a"}}])
+    [parsed] = call.tool_calls
+    with_raw = %{call | tool_calls: [%{parsed | raw: String.duplicate("r", 40_000)}]}
+    assert ContextUsage.estimate_message(with_raw) == ContextUsage.estimate_message(call)
+    assert ContextUsage.estimate_message(call) < 20
+
+    # An assistant message with nothing to send is dropped from requests.
+    empty = %{Message.assistant(content: nil) | thinking: "only reasoning"}
+    assert ContextUsage.estimate_message(empty) == 0
+  end
+
   test "since_checkpoint stops at the newest assistant usage" do
     older = Message.assistant(content: "older", token_usage: %Usage{total_tokens: 10})
     zero = Message.assistant(content: "zero", token_usage: %Usage{total_tokens: 0})

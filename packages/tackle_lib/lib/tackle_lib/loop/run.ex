@@ -11,7 +11,10 @@ defmodule Tackle.Lib.Loop.Run do
   #   * `assistant_id` - the id of the assistant message the current step
   #     generates, minted at its `message_start` (`nil` before the first step);
   #   * `overflow_retries` - the context-overflow recoveries the turn has spent,
-  #     bounded by the compaction policy's `overflow_retry_limit`.
+  #     bounded by the compaction policy's `overflow_retry_limit`;
+  #   * `pressure_compaction_failed?` - true once a pressure compaction failed
+  #     in this turn, so later steps do not pay for the same failing summary
+  #     again (overflow recovery still runs).
   #
   # The functions below are the operations every step performs through those
   # inputs: emitting events to the run's callback, invoking the snapshot's
@@ -43,7 +46,8 @@ defmodule Tackle.Lib.Loop.Run do
           before_tool_execution: gate(),
           snapshot: Snapshot.t(),
           assistant_id: String.t() | nil,
-          overflow_retries: non_neg_integer()
+          overflow_retries: non_neg_integer(),
+          pressure_compaction_failed?: boolean()
         }
 
   @enforce_keys [:event_callback, :tool_context, :snapshot]
@@ -58,7 +62,8 @@ defmodule Tackle.Lib.Loop.Run do
     :snapshot,
     :assistant_id,
     llm_stream?: false,
-    overflow_retries: 0
+    overflow_retries: 0,
+    pressure_compaction_failed?: false
   ]
 
   @doc """

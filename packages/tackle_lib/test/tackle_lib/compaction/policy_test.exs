@@ -4,7 +4,7 @@ defmodule Tackle.Lib.Compaction.PolicyTest do
   alias Tackle.Lib.Compaction.Policy
   alias Tackle.Lib.ModelInfo
 
-  describe "resolve/2" do
+  describe "resolve/3" do
     test "combines the output reserve and attention limit for a large window" do
       policy = Policy.new!([])
 
@@ -71,14 +71,60 @@ defmodule Tackle.Lib.Compaction.PolicyTest do
       refute Policy.pressure?(resolved, 1_000)
     end
 
-    test "clamps an oversized output reserve to half the window" do
-      info = %ModelInfo{model: "m", context_window: 128_000, max_output_tokens: 128_000}
+    test "caps the default output reserve instead of reserving the model's maximum" do
+      # Codex models declare 128,000 output tokens of a 272,000 window; the
+      # threshold must not drop to half the window.
+      info = %ModelInfo{model: "m", context_window: 272_000, max_output_tokens: 128_000}
 
       assert {:ok, resolved} = Policy.resolve(Policy.new!([]), info)
-      assert resolved.response_reserve == 64_000
-      assert resolved.hard_safe_limit == 128_000 - 64_000 - 4_096
-      assert resolved.trigger_at > 0
+      assert resolved.response_reserve == 32_768
+      assert resolved.hard_safe_limit == 272_000 - 32_768 - 4_096
+      assert resolved.trigger_at == resolved.attention_limit
+      assert resolved.trigger_at == 217_600
+
+      assert {:ok, capped} = Policy.resolve(Policy.new!(max_response_reserve: 16_000), info)
+      assert capped.response_reserve == 16_000
+    end
+
+    test "reserves the output limit the requests ask for" do
+      info = %ModelInfo{model: "m", context_window: 128_000, max_output_tokens: 128_000}
+
+      assert {:ok, resolved} = Policy.resolve(Policy.new!([]), info, max_tokens: 50_000)
+      assert resolved.response_reserve == 50_000
+
+      # Still at most half the window.
+      assert {:ok, clamped} = Policy.resolve(Policy.new!([]), info, max_tokens: 100_000)
+      assert clamped.response_reserve == 64_000
+      assert clamped.usable?
+    end
+
+    test "keeps the retention target below what a compaction can leave" do
+      policy = Policy.new!(response_reserve: 1_000, safety_reserve: 0, summary_max_tokens: 1_000)
+      info = %ModelInfo{model: "m", context_window: 20_000}
+
+      assert {:ok, resolved} = Policy.resolve(policy, info, fixed_tokens: 9_000)
+      # trigger 16,000 less 9,000 fixed and a 1,000-token summary.
+      assert resolved.max_retained_tokens == 6_000
+      assert resolved.retain_tokens == 3_000
       assert resolved.usable?
+
+      assert {:ok, explicit} =
+               Policy.resolve(Policy.new!(retain_tokens: 10_000, safety_reserve: 0), info,
+                 fixed_tokens: 9_000
+               )
+
+      assert explicit.retain_tokens < explicit.max_retained_tokens
+    end
+
+    test "is unusable when the fixed request and a summary leave no room below the threshold" do
+      policy = Policy.new!(response_reserve: 1_000, safety_reserve: 0, summary_max_tokens: 1_000)
+      info = %ModelInfo{model: "m", context_window: 20_000}
+
+      assert {:ok, resolved} = Policy.resolve(policy, info, fixed_tokens: 15_000)
+      assert resolved.trigger_at == 16_000
+      refute resolved.usable?
+      assert resolved.max_retained_tokens == nil
+      refute Policy.pressure?(resolved, 19_000)
     end
 
     test "returns no_context_window when the adapter declares none" do
@@ -113,10 +159,13 @@ defmodule Tackle.Lib.Compaction.PolicyTest do
   describe "pressure?/2" do
     test "is true exactly at the threshold" do
       {:ok, resolved} =
-        Policy.resolve(Policy.new!(response_reserve: 100, safety_reserve: 0), %ModelInfo{
-          model: "m",
-          context_window: 10_000
-        })
+        Policy.resolve(
+          Policy.new!(response_reserve: 100, safety_reserve: 0, summary_max_tokens: 1_000),
+          %ModelInfo{
+            model: "m",
+            context_window: 10_000
+          }
+        )
 
       assert Policy.pressure?(resolved, resolved.trigger_at)
       refute Policy.pressure?(resolved, resolved.trigger_at - 1)
@@ -131,6 +180,7 @@ defmodule Tackle.Lib.Compaction.PolicyTest do
       assert {:error, _reason} = Policy.new(safety_reserve: -1)
       assert {:error, _reason} = Policy.new(retain_tokens: 0)
       assert {:error, _reason} = Policy.new(min_retain_tokens: 10, max_retain_tokens: 5)
+      assert {:error, _reason} = Policy.new(max_response_reserve: 0)
     end
   end
 end

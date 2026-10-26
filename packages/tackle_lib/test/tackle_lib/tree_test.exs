@@ -372,6 +372,16 @@ defmodule Tackle.Lib.TreeTest do
     end
   end
 
+  defmodule RecordingCommitter do
+    @behaviour Tackle.Lib.Compaction.Committer
+
+    @impl true
+    def commit(record, _context) do
+      send(self(), {:committed, record.compaction_id})
+      :ok
+    end
+  end
+
   defmodule TreeAdapter do
     @behaviour Tackle.Lib.LLM
 
@@ -422,6 +432,33 @@ defmodule Tackle.Lib.TreeTest do
       assert appended.messages == Tree.transcript(appended.tree)
       assert State.model_messages(appended) == Tree.model_context(appended.tree)
       assert hd(State.model_messages(appended)).id == id
+    end
+
+    test "a compaction the tree refuses is never committed" do
+      config =
+        Config.new!(
+          summarizer: TreeSummarizer,
+          committer: RecordingCommitter,
+          policy: [retain_tokens: 10, summary_max_tokens: 1_000, max_summary_tokens: 1_000]
+        )
+
+      selection = %Selection{
+        adapter: TreeAdapter,
+        provider_id: "test",
+        model: "tree-model",
+        ref: "test/tree-model",
+        model_info: %ModelInfo{model: "tree-model", context_window: 100_000}
+      }
+
+      # The compaction id collides with an existing entry.
+      state =
+        State.new(tree: true, llm: selection, compaction: config, id_generator: fn -> "u1" end)
+
+      state = State.add_message(state, msg("u1", :user, String.duplicate("x", 4000)))
+      state = State.add_message(state, msg("a1", :assistant, String.duplicate("y", 4000)))
+
+      assert {:error, {:invalid_compaction, _reason}} = Tackle.Lib.compact(state)
+      refute_received {:committed, _id}
     end
   end
 

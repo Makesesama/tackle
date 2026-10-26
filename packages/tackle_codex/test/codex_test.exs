@@ -2,7 +2,8 @@ defmodule Tackle.Plugins.CodexTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib
-  alias Tackle.Lib.{Cancellation, Event, LLM, Loop, Message, ModelInfo, State, Thinking, Usage}
+  alias Tackle.Lib.{Cancellation, Compaction, Event, LLM, Loop, Message, ModelInfo, State}
+  alias Tackle.Lib.{Thinking, Usage}
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.Compaction.Summary
   alias Tackle.Lib.LLM.Error
@@ -1091,6 +1092,68 @@ defmodule Tackle.Plugins.CodexTest do
                        type: :compaction_retry,
                        data: %{trigger: :overflow, reason: %Error{kind: :context_window_exceeded}}
                      }}
+  end
+
+  test "reasoning tokens do not make a complete summary look truncated", %{store: store} do
+    test_pid = self()
+
+    # The summary's output count is over the 8,192-token summary cap only
+    # because it includes reasoning; the response completed.
+    request = fn options ->
+      send(test_pid, {:summary_request, options})
+
+      streaming_response(options, [
+        sse(%{
+          "type" => "response.completed",
+          "response" => %{
+            "status" => "completed",
+            "output" => [
+              %{
+                "type" => "message",
+                "content" => [%{"type" => "output_text", "text" => "## Goal\nShip it"}]
+              }
+            ],
+            "usage" => %{
+              "input_tokens" => 900,
+              "output_tokens" => 9_000,
+              "total_tokens" => 9_900,
+              "output_tokens_details" => %{"reasoning_tokens" => 8_990}
+            }
+          }
+        })
+      ])
+    end
+
+    {:ok, selection} = LLM.select([Codex], "openai-codex/gpt-5.5")
+
+    state =
+      Lib.new(
+        llm: selection,
+        compaction:
+          CompactionConfig.new!(policy: [retain_tokens: 10], committer: OverflowCommitter),
+        llm_opts: [
+          credential_store: store,
+          request: request,
+          transport: :sse,
+          reasoning_effort: "xhigh",
+          max_tokens: 4_000
+        ]
+      )
+      |> State.add_message(Message.user(String.duplicate("earlier ", 200)))
+      |> State.add_message(Message.assistant(content: String.duplicate("answer ", 200)))
+
+    assert {:ok, compacted, record} = Lib.compact(state)
+    assert record.summary_usage.reasoning_tokens == 8_990
+    assert Compaction.checkpoint_body(hd(compacted.model_messages)) == "## Goal\nShip it"
+
+    assert_received {:summary_request, options}
+    assert {:ok, body} = JSON.decode(options[:body])
+    # The backend refuses an output limit, and the summary asks for the
+    # lowest effort the model has.
+    refute Map.has_key?(body, "max_output_tokens")
+    refute Map.has_key?(body, "max_tokens")
+    assert body["reasoning"]["effort"] == "low"
+    assert body["tool_choice"] == "none"
   end
 
   test "reports the stop reason of a completed response", %{store: store} do

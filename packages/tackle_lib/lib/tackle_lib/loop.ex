@@ -53,7 +53,8 @@ defmodule Tackle.Lib.Loop do
   see. Transient
   provider failures are retried under the state's `Tackle.Lib.Retry` policy,
   and a provider-confirmed context overflow is compacted and sent again when
-  compaction is enabled. A response with neither content nor tool calls is
+  compaction is enabled. Pressure compaction runs before each step's request;
+  once it fails in a turn, the turn's later steps do not try it again. A response with neither content nor tool calls is
   asked again once, as a retry with reason `:empty_response`; a second empty
   response in a row ends the turn with an error. A malformed adapter result,
   or an adapter that crashes, ends the turn with the `Tackle.Lib.LLM.Error`
@@ -209,7 +210,7 @@ defmodule Tackle.Lib.Loop do
     Run.emit(run, Event.step_start(state.current_iteration))
 
     case maybe_auto_compact(state, run) do
-      {:ok, state} ->
+      {:ok, state, run} ->
         before_prompt(state, run)
 
       {:error, reason, committed_state} ->
@@ -220,6 +221,13 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
+  # A pressure compaction that fails is not tried again in the same turn: the
+  # next step would select the same plan and pay for the same summary. The
+  # turn goes on with the context it has; a provider overflow still gets its
+  # own compact-and-retry.
+  defp maybe_auto_compact(state, %Run{pressure_compaction_failed?: true} = run),
+    do: {:ok, state, run}
+
   defp maybe_auto_compact(state, run) do
     with true <- Compaction.enabled?(state),
          {:ok, resolved, info} <- Compaction.resolve(state, snapshot: run.snapshot),
@@ -228,7 +236,7 @@ defmodule Tackle.Lib.Loop do
          true <- Compaction.Policy.pressure?(resolved, tokens) do
       case compact_with_state(state, :pressure, run) do
         {:ok, state, _record} ->
-          {:ok, state}
+          {:ok, state, run}
 
         {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
           {:error, error, committed_state}
@@ -239,10 +247,10 @@ defmodule Tackle.Lib.Loop do
         {:error, _reason, committed_state} ->
           # Continue with a prior committed checkpoint if there is one; otherwise
           # the model surface is unchanged. Only durability failures are fatal.
-          {:ok, committed_state}
+          {:ok, committed_state, %{run | pressure_compaction_failed?: true}}
       end
     else
-      _skip -> {:ok, state}
+      _skip -> {:ok, state, run}
     end
   end
 

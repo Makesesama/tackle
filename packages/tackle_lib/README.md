@@ -1205,9 +1205,12 @@ session approaches the model's context window. It never touches the canonical
 transcript: `State.messages` stays complete, while `State.model_messages` becomes a
 synthetic checkpoint plus a recent structurally valid tail. The planner walks
 backward toward the retention target and may split an oversized turn at an
-assistant boundary rather than keeping that entire turn. Retained content and
-tool linkage stay intact, while stale usage and provider continuation metadata
-are cleared at the new context boundary.
+assistant boundary rather than keeping that entire turn; it never cuts while a
+tool call still waits for its result, and never keeps verbatim a message too
+large to fit below the threshold after compaction (such a message is shadowed
+and summarized). Retained content and tool linkage stay intact, while stale
+usage and provider continuation metadata are cleared at the new context
+boundary.
 
 Compaction is opt-in. Supply a config when building state:
 
@@ -1230,14 +1233,39 @@ Entry points share one transaction:
 - one `:overflow` compact-and-retry after a provider
   `%Tackle.Lib.LLM.Error{kind: :context_window_exceeded}`, whether the provider
   reported it in an HTTP error or inside a stream; and
-- `Tackle.Lib.compact/2` for an idle, operator-requested compaction.
+- `Tackle.Lib.compact/2` for an idle, operator-requested compaction. A
+  conversation that already fits the retention target has nothing to compact
+  (`{:error, :nothing_to_compact}`).
+
+`Tackle.Lib.Compaction.Policy` resolves the threshold from the model's window,
+a response reserve (the request's `:max_tokens` when the host sets one,
+otherwise the model's output limit capped at 32,768 tokens, so a model that
+declares half its window as output does not compact at half the window), and a
+safety reserve. It keeps the retention target below what a compaction can leave
+under the threshold once the system prompt, tools, and a summary are paid for,
+and disables pressure compaction for windows too small for that.
+
+A pass must make progress or fails before anything is committed: it shadows
+more than an earlier checkpoint, its summary is complete and smaller than what
+it replaces, and a pressure compaction ends below the threshold
+(`:insufficient_reduction` otherwise). A pressure compaction that fails is not
+retried for the rest of the turn; overflow recovery still applies. When the
+shadowed messages would not fit the summarization request, the largest are
+shortened with a marker (`Tackle.Lib.Compaction.Input`); earlier checkpoints are
+sent once, as the first shadowed message.
 
 A `Tackle.Lib.Compaction.Summarizer` only turns a request into text plus usage.
 It receives the state's host-supplied `llm_opts` (including credential-store
 handles) and the optional `:cancellation_signal`; explicit compaction `:llm_opts`
 are merged on top. Summarizers should forward the signal to blocking provider
-calls and check it cooperatively. If a later tightening pass fails after an
-earlier pass has already committed, `compact/2` returns
+calls and check it cooperatively. A result other than `{:ok, %Summary{}}` or
+`{:error, reason}`, and a summarizer that raises, throws, or exits, fails the
+pass. The default `Tackle.Lib.Compaction.Summarizer.LLM` asks for the policy's
+summary output limit and the `"minimal"` thinking level, and passes the
+response's `stop_reason` on: a summary that stopped at `:max_tokens` is
+rejected as truncated, and without a stop reason only visible output tokens
+(output less reasoning) count toward the limit. If a later tightening pass
+fails after an earlier pass has already committed, `compact/2` returns
 `{:error | :cancelled, reason, committed_state}`; retain that state so the
 in-memory projection matches the durable checkpoint. The core owns
 balanced cut selection, strict validation (non-empty, complete, no tool calls,
@@ -1249,8 +1277,9 @@ durable before replacement; a commit failure is reported as
 Lifecycle events `:compaction_start`, `:compaction_end`, and `:compaction_retry`
 carry trigger, before/after estimates, counts, duration, and summary model/usage.
 They never include raw prompts or summary content. `ContextUsage` reads the model
-projection, and retained assistant usage is stripped from it because it no longer
-describes the current request. Treat compaction as the start of a new prompt-cache
+projection and estimates what requests send (reasoning text is not sent;
+continuation state is), and retained assistant usage is stripped from it because
+it no longer describes the current request. Treat compaction as the start of a new prompt-cache
 reuse sequence.
 
 ## Conversation trees

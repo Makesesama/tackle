@@ -5,7 +5,9 @@ defmodule Tackle.Lib.Compaction.Prompt do
   The directive is appended as the final user message of the summarization
   request, after the existing system prompt, tool definitions, and shadowed
   messages. Keeping the prefix byte-identical to the live request lets the
-  provider reuse its warm prompt cache.
+  provider reuse its warm prompt cache. An earlier checkpoint is the first
+  shadowed message, so the directive only asks to merge it and never repeats
+  it.
 
   The fixed sections maximise recall first: exact files, commands, decisions,
   errors, and pending work survive compaction. Optional caller instructions may
@@ -20,7 +22,8 @@ defmodule Tackle.Lib.Compaction.Prompt do
     * Record exact file paths, symbols, commands, and short code snippets.
     * Keep critical ids, values, and references needed to resume.
     * Remove stale or superseded facts.
-    * Merge still-valid facts from an earlier checkpoint when one is provided.
+    * If the conversation begins with an earlier checkpoint summary, merge its
+      still-valid facts and drop what the newer messages supersede.
     * Do not call tools. Do not narrate or mention the compaction itself.
   Write terse Markdown with exactly these sections:
 
@@ -36,33 +39,16 @@ defmodule Tackle.Lib.Compaction.Prompt do
   ## Critical references
   """
 
-  @doc "Builds the compaction directive as the final user message content."
+  @doc """
+  Builds the compaction directive as the final user message content.
+
+  `:instructions` adds the operator's focus after the fixed rules.
+  """
   @spec directive(keyword()) :: String.t()
   def directive(opts \\ []) do
-    prior = Keyword.get(opts, :prior_summary)
-    instructions = Keyword.get(opts, :instructions)
-
-    [
-      @sections,
-      prior_block(prior),
-      instructions_block(instructions)
-    ]
+    [@sections, instructions_block(Keyword.get(opts, :instructions))]
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join("\n")
-  end
-
-  defp prior_block(nil), do: nil
-  defp prior_block(""), do: nil
-
-  defp prior_block(prior) when is_binary(prior) do
-    """
-    The text between the markers is the previous checkpoint summary. Merge what
-    is still valid and drop what the newer conversation supersedes.
-
-    <<<PREVIOUS CHECKPOINT
-    #{prior}
-    PREVIOUS CHECKPOINT>>>
-    """
   end
 
   defp instructions_block(nil), do: nil

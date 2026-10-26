@@ -16,6 +16,7 @@ defmodule Tackle.Lib.ContextUsage do
   alias Tackle.Lib.Message
   alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.State
+  alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Registry
   alias Tackle.Lib.Usage
 
@@ -130,18 +131,40 @@ defmodule Tackle.Lib.ContextUsage do
   end
 
   @doc """
-  Estimates the token cost of one message.
+  Estimates the token cost of one message as `Tackle.Lib.Messages.to_provider/1`
+  sends it.
 
-  Text, reasoning, and tool calls count four characters per token. Content
-  parts (`Tackle.Lib.Message.parts`) count too: a text part like text, an
-  image #{@image_tokens} tokens, about what providers charge for an image at the
-  size they downscale to, and other parts by their inspected size.
+  Text and tool calls (their id, name, and arguments) count four characters
+  per token. A tool result's content
+  parts (`Tackle.Lib.Message.parts`) count too: a text part like text, an image
+  #{@image_tokens} tokens, about what providers charge for an image at the size
+  they downscale to, and other parts by their inspected size. Reasoning text
+  (`thinking`) is never sent and costs nothing, and an assistant message with
+  neither content nor tool calls is dropped from requests and costs nothing.
+  An assistant message's opaque `provider_state` is sent with it: adapters
+  replay it in place of the content and calls it covers (reasoning included),
+  so the larger of the two counts.
   """
   @spec estimate_message(Message.t()) :: non_neg_integer()
-  def estimate_message(%Message{} = message) do
-    estimate_text(message.content) + estimate_text(message.thinking) +
-      estimate_collection(message.tool_calls) + estimate_parts(message.parts)
+  def estimate_message(%Message{role: :user, content: content}), do: estimate_text(content)
+
+  def estimate_message(%Message{role: :tool} = message),
+    do: estimate_text(message.content) + estimate_parts(message.parts)
+
+  def estimate_message(%Message{role: :assistant, tool_calls: [], content: content})
+      when content in [nil, ""],
+      do: 0
+
+  def estimate_message(%Message{role: :assistant} = message) do
+    sent = estimate_text(message.content) + estimate_tool_calls(message.tool_calls)
+
+    case message.provider_state do
+      %{} = state -> max(sent, estimate_term(state))
+      _none -> sent
+    end
   end
+
+  def estimate_message(%Message{}), do: 0
 
   @doc "Estimates text tokens at four UTF-8 characters per token."
   @spec estimate_text(String.t() | nil) :: non_neg_integer()
@@ -179,7 +202,21 @@ defmodule Tackle.Lib.ContextUsage do
     estimate_text(state.system_prompt) + message_tokens + estimate_collection(tool_definitions)
   end
 
-  defp estimate_collection([]), do: 0
+  # A call is sent as its id, name, and encoded arguments; the provider's raw
+  # call is not.
+  defp estimate_tool_calls(calls) when is_list(calls) do
+    Enum.reduce(calls, 0, fn
+      %Call{id: id, name: name, arguments: arguments}, acc ->
+        acc + estimate_term({id, name, arguments})
+
+      call, acc ->
+        acc + estimate_term(call)
+    end)
+  end
+
+  defp estimate_tool_calls(_calls), do: 0
+
+  defp estimate_collection(empty) when empty in [nil, []], do: 0
   defp estimate_collection(values), do: estimate_term(values)
 
   defp estimate_term(value) do

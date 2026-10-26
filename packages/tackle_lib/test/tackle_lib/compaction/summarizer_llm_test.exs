@@ -18,7 +18,7 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLMTest do
     @impl true
     def generate(_schema, opts) do
       send(self(), {:summary_opts, opts})
-      {:ok, %{data: %{"content" => "summary"}, usage: nil, model: "model"}}
+      {:ok, %{data: %{"content" => "summary"}, usage: nil, model: "model", stop_reason: :end}}
     end
   end
 
@@ -45,15 +45,22 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLMTest do
       summary_max_tokens: 500
     }
 
-    assert {:ok, %{content: "summary"}} =
+    assert {:ok, %{content: "summary", stop_reason: :end}} =
              Summarizer.LLM.summarize(request,
-               llm_opts: [temperature: 0.7, tool_choice: "auto", max_tokens: 9_999]
+               llm_opts: [
+                 temperature: 0.7,
+                 tool_choice: "auto",
+                 max_tokens: 9_999,
+                 reasoning_effort: "high"
+               ]
              )
 
     assert_receive {:summary_opts, opts}
     assert Keyword.get_values(opts, :temperature) == [0.7]
     assert Keyword.get_values(opts, :tool_choice) == ["none"]
     assert Keyword.get_values(opts, :max_tokens) == [500]
+    # The session's thinking level does not apply to the summary.
+    assert Keyword.get_values(opts, :reasoning_effort) == ["minimal"]
     refute Keyword.has_key?(opts, :max_output_tokens)
     refute Keyword.has_key?(opts, :native_tools)
     refute Keyword.has_key?(opts, :strict_schema)

@@ -13,6 +13,23 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
   live request so the provider can reuse its warm prompt cache. Tool schemas are
   kept present for prefix identity while `tool_choice: "none"` requests no tool
   use; a result that still contains tool calls is rejected.
+
+  ## Output limit and reasoning
+
+  The request asks for at most the policy's `summary_max_tokens` output
+  tokens (`:max_tokens`; an adapter whose provider refuses an output limit,
+  such as Codex, ignores it) and the response's `:stop_reason` is passed on
+  so the core can tell a cut-off summary from a complete one.
+
+  It also asks for the `"minimal"` thinking level (`:reasoning_effort`),
+  whatever the session uses, and each adapter sends the nearest level its
+  model supports. Summarizing is recall and compression, not problem
+  solving: reasoning tokens add cost and latency without improving the
+  checkpoint, and providers that count reasoning against the output limit
+  (Anthropic's thinking budget is part of `max_tokens`) would otherwise leave
+  little room for the summary itself. The trade-off is that a provider which
+  keys its prompt cache on thinking settings may not reuse the live request's
+  cache for this one call.
   """
 
   @behaviour Tackle.Lib.Compaction.Summarizer
@@ -42,6 +59,7 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
         messages: Request.to_provider_messages(request),
         tools: request.tools || [],
         tool_choice: "none",
+        reasoning_effort: "minimal",
         cancellation_signal: Keyword.get(opts, :cancellation_signal)
       ]
       |> maybe_put_max_tokens(request.summary_max_tokens)
@@ -58,7 +76,13 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
 
   defp build_summary(%Response{content: content} = response)
        when is_binary(content) and content != "" do
-    {:ok, %Summary{content: content, usage: response.usage, model: response.model}}
+    {:ok,
+     %Summary{
+       content: content,
+       usage: response.usage,
+       model: response.model,
+       stop_reason: response.stop_reason
+     }}
   end
 
   defp build_summary(%Response{}), do: {:error, :empty_summary}

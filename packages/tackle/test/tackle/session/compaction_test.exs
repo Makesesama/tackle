@@ -276,7 +276,10 @@ defmodule Tackle.Session.CompactionTest do
     String.duplicate("#{prefix} ", 80)
   end
 
-  defp huge_prompt, do: String.duplicate("payload ", 500)
+  # One prompt stays below the 500-token threshold of the 1,000-token test
+  # window; two exceed it. (A single prompt that alone exceeds the threshold
+  # is compacted before its first request.)
+  defp huge_prompt, do: String.duplicate("payload ", 200)
 
   defp compacted_commit?(commit) do
     Enum.any?(commit["events"], &(&1["type"] == "context.compacted"))

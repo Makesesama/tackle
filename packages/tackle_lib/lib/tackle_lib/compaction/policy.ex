@@ -3,38 +3,59 @@ defmodule Tackle.Lib.Compaction.Policy do
   Provider-neutral trigger and reserve arithmetic for context compaction.
 
   A policy is pure configuration: it holds no state and performs no provider
-  calls. `resolve/2` combines a policy with one model's declared limits to
-  produce the concrete numbers a compaction decision needs:
+  calls. `resolve/3` combines a policy with one model's declared limits and
+  the request around the conversation to produce the concrete numbers a
+  compaction decision needs:
 
-      response_reserve = max_output_tokens when known, otherwise 8,192
+      response_reserve = policy.response_reserve
+                         || the request's :max_tokens
+                         || min(max_output_tokens || 8,192, policy.max_response_reserve)
+                         (at most half the window; max_response_reserve defaults to 32,768)
       safety_reserve   = policy.safety_reserve (default 4,096)
       hard_safe_limit  = context_window - response_reserve - safety_reserve
       attention_limit  = floor(context_window * policy.attention_ratio)
       trigger_at       = min(hard_safe_limit, attention_limit)
 
-      retain_tokens    = policy.retain_tokens ||
-                         clamp(floor(context_window * retain_ratio), 4,096, 20,000)
       summary_max_tokens = policy.summary_max_tokens ||
-                         min(max_output_tokens || 8,192, 8,192)
+                           min(max_output_tokens || 8,192, 8,192)
+      max_retained_tokens = trigger_at - fixed_tokens - summary_max_tokens
+      retain_tokens    = min(policy.retain_tokens ||
+                               clamp(floor(context_window * retain_ratio), 4,096, 20,000),
+                             max_retained_tokens / 2)
+
+  The response reserve is what the next request can actually ask for. A model
+  card's `max_output_tokens` is the most a request may ask for, which can be
+  half the window (Codex models declare 128,000 of 272,000), so without an
+  explicit request limit it is capped at `max_response_reserve`.
 
   The hybrid threshold keeps both output capacity and attention quality in
   view: `hard_safe_limit` reserves room for the next assistant response, while
   `attention_limit` compacts before the window is genuinely full.
 
-  A window is *usable* when `trigger_at > 0`. Windows whose declared limits are
-  smaller than the reserves cannot produce a positive budget; automatic
-  pressure compaction is skipped for them (manual and overflow compaction may
-  still run). Callers must not silently assume a context window when the
-  adapter does not declare one.
+  `fixed_tokens` is the part of every request that compaction cannot shrink:
+  the system prompt, the tool definitions, and the checkpoint's own framing.
+  A compaction leaves that, the summary, and the retained tail, so the tail
+  must stay under `max_retained_tokens` for the result to land below
+  `trigger_at`. The retention target is held to half of it, so a compaction
+  leaves room for the conversation to grow before the next one.
+
+  A window is *usable* when `trigger_at` exceeds `fixed_tokens` plus
+  `summary_max_tokens`, so a compaction can get below the threshold at all.
+  Automatic pressure compaction is skipped for windows that are not (manual
+  and overflow compaction may still run, keeping the unclamped retention
+  target). Callers must not silently assume a context window when the adapter
+  does not declare one.
   """
 
   alias Tackle.Lib.ModelInfo
 
   @default_response_reserve 8_192
+  @default_max_response_reserve 32_768
   @default_max_summary_tokens 8_192
 
   @type t :: %__MODULE__{
           response_reserve: pos_integer() | nil,
+          max_response_reserve: pos_integer(),
           safety_reserve: non_neg_integer(),
           attention_ratio: float(),
           retain_tokens: pos_integer() | nil,
@@ -53,7 +74,9 @@ defmodule Tackle.Lib.Compaction.Policy do
           hard_safe_limit: non_neg_integer(),
           attention_limit: non_neg_integer(),
           trigger_at: non_neg_integer(),
+          fixed_tokens: non_neg_integer(),
           retain_tokens: non_neg_integer(),
+          max_retained_tokens: non_neg_integer() | nil,
           summary_max_tokens: pos_integer(),
           overflow_retry_limit: non_neg_integer(),
           usable?: boolean()
@@ -61,6 +84,7 @@ defmodule Tackle.Lib.Compaction.Policy do
 
   @enforce_keys []
   defstruct response_reserve: nil,
+            max_response_reserve: @default_max_response_reserve,
             safety_reserve: 4_096,
             attention_ratio: 0.80,
             retain_tokens: nil,
@@ -77,6 +101,7 @@ defmodule Tackle.Lib.Compaction.Policy do
     policy = struct(__MODULE__, opts)
 
     with :ok <- optional_positive_integer(:response_reserve, policy.response_reserve),
+         :ok <- positive_integer(:max_response_reserve, policy.max_response_reserve),
          :ok <- non_negative_integer(:safety_reserve, policy.safety_reserve),
          :ok <- ratio(:attention_ratio, policy.attention_ratio),
          :ok <- optional_positive_integer(:retain_tokens, policy.retain_tokens),
@@ -105,23 +130,33 @@ defmodule Tackle.Lib.Compaction.Policy do
   @doc """
   Resolves concrete trigger and reserve numbers against one model's limits.
 
-  `:response_reserve` is `max_output_tokens` when known (otherwise 8,192),
-  clamped to half the context window so an adapter that reports a maximal output
-  limit cannot zero out the budget.
-  """
-  @spec resolve(t(), ModelInfo.t() | nil) :: {:ok, resolved()} | {:error, term()}
-  def resolve(%__MODULE__{} = policy, %ModelInfo{context_window: window} = info)
-      when is_integer(window) and window > 0 do
-    requested_reserve =
-      policy.response_reserve || info.max_output_tokens || @default_response_reserve
+  ## Options
 
-    response_reserve = min(requested_reserve, div(window, 2))
+    * `:fixed_tokens` - the estimated tokens of the request parts compaction
+      cannot shrink: system prompt, tool definitions, and checkpoint framing
+      (default 0).
+    * `:max_tokens` - the output limit the conversation's requests ask for,
+      or `nil` when they set none.
+
+  `max_retained_tokens` is `nil` for a window that is not usable.
+  """
+  @spec resolve(t(), ModelInfo.t() | nil, keyword()) :: {:ok, resolved()} | {:error, term()}
+  def resolve(policy, info, opts \\ [])
+
+  def resolve(%__MODULE__{} = policy, %ModelInfo{context_window: window} = info, opts)
+      when is_integer(window) and window > 0 do
+    fixed_tokens = Keyword.get(opts, :fixed_tokens, 0)
+    response_reserve = min(response_reserve(policy, info, opts), div(window, 2))
     safety_reserve = policy.safety_reserve
     hard_safe_limit = max(window - response_reserve - safety_reserve, 0)
     attention_limit = trunc(Float.floor(window * policy.attention_ratio))
     trigger_at = min(hard_safe_limit, attention_limit)
 
-    retain_tokens =
+    summary_max_tokens =
+      policy.summary_max_tokens ||
+        min(info.max_output_tokens || policy.max_summary_tokens, policy.max_summary_tokens)
+
+    retain_target =
       policy.retain_tokens ||
         window
         |> Kernel.*(policy.retain_ratio)
@@ -130,9 +165,13 @@ defmodule Tackle.Lib.Compaction.Policy do
         |> clamp(policy.min_retain_tokens, policy.max_retain_tokens)
         |> min(window)
 
-    summary_max_tokens =
-      policy.summary_max_tokens ||
-        min(info.max_output_tokens || policy.max_summary_tokens, policy.max_summary_tokens)
+    headroom = trigger_at - fixed_tokens - summary_max_tokens
+    usable? = trigger_at > 0 and headroom > 0
+
+    {retain_tokens, max_retained_tokens} =
+      if usable?,
+        do: {min(retain_target, div(headroom, 2)), headroom},
+        else: {retain_target, nil}
 
     {:ok,
      %{
@@ -142,14 +181,16 @@ defmodule Tackle.Lib.Compaction.Policy do
        hard_safe_limit: hard_safe_limit,
        attention_limit: attention_limit,
        trigger_at: trigger_at,
+       fixed_tokens: fixed_tokens,
        retain_tokens: retain_tokens,
+       max_retained_tokens: max_retained_tokens,
        summary_max_tokens: summary_max_tokens,
        overflow_retry_limit: policy.overflow_retry_limit,
-       usable?: trigger_at > 0
+       usable?: usable?
      }}
   end
 
-  def resolve(%__MODULE__{}, _info), do: {:error, :no_context_window}
+  def resolve(%__MODULE__{}, _info, _opts), do: {:error, :no_context_window}
 
   @doc "Returns true when `tokens` has reached the resolved pressure threshold."
   @spec pressure?(resolved(), non_neg_integer() | nil) :: boolean()
@@ -157,6 +198,20 @@ defmodule Tackle.Lib.Compaction.Policy do
     do: tokens >= trigger_at
 
   def pressure?(_resolved, _tokens), do: false
+
+  defp response_reserve(%__MODULE__{response_reserve: reserve}, _info, _opts)
+       when is_integer(reserve),
+       do: reserve
+
+  defp response_reserve(%__MODULE__{} = policy, %ModelInfo{} = info, opts) do
+    case Keyword.get(opts, :max_tokens) do
+      max_tokens when is_integer(max_tokens) and max_tokens > 0 ->
+        max_tokens
+
+      _unset ->
+        min(info.max_output_tokens || @default_response_reserve, policy.max_response_reserve)
+    end
+  end
 
   defp ordered_retention(%{min_retain_tokens: min, max_retain_tokens: max}) when max >= min,
     do: :ok

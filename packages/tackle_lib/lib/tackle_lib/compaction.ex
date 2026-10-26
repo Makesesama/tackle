@@ -16,9 +16,12 @@ defmodule Tackle.Lib.Compaction do
   One compaction is all-or-nothing:
 
     1. select and snapshot a plan without mutation;
-    2. generate and strictly validate the summary;
-    3. commit one durable record through the configured committer;
-    4. only after a successful commit install the replacement in memory.
+    2. bound the summarizer input to the window (`Tackle.Lib.Compaction.Input`);
+    3. generate and strictly validate the summary;
+    4. build the replacement in memory without installing it (in tree mode,
+       append the compaction entry to a copy of the tree);
+    5. commit one durable record through the configured committer;
+    6. only after a successful commit install the replacement.
 
   A summary, validation, or commit failure leaves the model context unchanged
   for that pass. If a later tightening pass fails after an earlier pass was
@@ -27,6 +30,27 @@ defmodule Tackle.Lib.Compaction do
   A commit failure is reported as `{:error, {:durable_commit_failed, reason}}`
   so the caller can fail closed rather than continue with an unpersisted
   checkpoint.
+
+  ## Progress
+
+  A pass must make real progress, or it fails before anything is committed:
+
+    * its plan shadows at least one message beyond an earlier checkpoint
+      (otherwise `{:error, :nothing_to_shadow}`, reported as
+      `{:error, :nothing_to_compact}` when no pass committed), and the
+      retained tail fits the policy's `max_retained_tokens`
+      (`Tackle.Lib.Compaction.Plan`);
+    * its summary is complete (`:truncated_summary` when the provider stopped
+      at the output limit, `:summary_content_filtered` when it withheld
+      output) and smaller than what it shadows (`:summary_not_smaller`); and
+    * for `:pressure`, the last allowed pass must bring the estimated context
+      below the policy's `trigger_at` (`:insufficient_reduction`), so a
+      successful pressure compaction is never immediately due again.
+      Earlier tightening passes only have to shrink it.
+
+  A custom summarizer that returns anything but `{:ok, %Summary{}}` or
+  `{:error, reason}` fails the pass with `{:invalid_summary_result, result}`,
+  and one that raises, throws, or exits with `{:summarizer_failed, reason}`.
 
   After replacement, retained assistant usage no longer describes the current
   request, and provider continuation state may replay large opaque reasoning
@@ -48,10 +72,13 @@ defmodule Tackle.Lib.Compaction do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction.Config
+  alias Tackle.Lib.Compaction.Input
   alias Tackle.Lib.Compaction.Plan
   alias Tackle.Lib.Compaction.Policy
+  alias Tackle.Lib.Compaction.Prompt
   alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.Compaction.Request
+  alias Tackle.Lib.Compaction.Summary
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.Loop.Gate
@@ -87,6 +114,11 @@ defmodule Tackle.Lib.Compaction do
   @doc """
   Resolves the effective policy numbers for a state's selected model.
 
+  The policy sees the fixed part of every request (system prompt, tool
+  definitions, and checkpoint framing) and the output limit the
+  conversation's requests ask for (`:max_tokens` in the adapter options), see
+  `Tackle.Lib.Compaction.Policy.resolve/3`.
+
   Returns `{:error, :no_context_window}` when the adapter declares no context
   window, so automatic pressure compaction is disabled rather than assuming one.
   """
@@ -97,7 +129,9 @@ defmodule Tackle.Lib.Compaction do
 
     case model_info(ctx) do
       %Tackle.Lib.ModelInfo{} = info ->
-        case Policy.resolve(config(state).policy, info) do
+        policy_opts = [fixed_tokens: fixed_tokens(ctx), max_tokens: ctx.max_tokens]
+
+        case Policy.resolve(config(state).policy, info, policy_opts) do
           {:ok, resolved} -> {:ok, resolved, info}
           {:error, reason} -> {:error, reason}
         end
@@ -216,15 +250,31 @@ defmodule Tackle.Lib.Compaction do
   end
 
   defp start_pass(state, trigger, config, resolved, info, opts, pass) do
-    case Plan.select(State.model_messages(state), retain_tokens: resolved.retain_tokens) do
+    plan_opts = [
+      retain_tokens: resolved.retain_tokens,
+      max_retained_tokens: resolved.max_retained_tokens
+    ]
+
+    case Plan.select(State.model_messages(state), plan_opts) do
       {:ok, plan} ->
         plan = %{plan | tokens_before: context_tokens_before(state, info, plan.tokens_before)}
-        attempt(state, trigger, config, resolved, info, plan, pass, opts)
+
+        if reachable?(trigger, config, resolved, plan, pass),
+          do: attempt(state, trigger, config, resolved, info, plan, pass, opts),
+          else: {:error, :insufficient_reduction}
 
       {:error, _reason} = error ->
         error
     end
   end
+
+  # A pressure compaction must end below the threshold. When even an empty
+  # summary could not get the last pass there (a tail the plan could not cut
+  # below the cap), the summary is not worth paying for.
+  defp reachable?(:pressure, %Config{max_passes: pass}, resolved, plan, pass),
+    do: resolved.fixed_tokens + plan.retained_tokens < resolved.trigger_at
+
+  defp reachable?(_trigger, _config, _resolved, _plan, _pass), do: true
 
   defp attempt(state, trigger, config, resolved, _info, plan, pass, opts) do
     compaction_id = message_id(state)
@@ -243,8 +293,9 @@ defmodule Tackle.Lib.Compaction do
     ctx = context(state, opts)
 
     with :ok <- check_cancel(opts),
+         {:ok, request} <- build_request(state, config, resolved, ctx, plan, trigger, opts),
          :ok <- await_provider(opts),
-         {:ok, summary} <- summarize(state, config, resolved, ctx, plan, trigger, opts),
+         {:ok, summary} <- summarize(state, config, request, opts),
          :ok <- check_cancel(opts),
          :ok <- validate_summary(summary, plan, resolved),
          summary_message = checkpoint_message(compaction_id, summary.content),
@@ -260,9 +311,11 @@ defmodule Tackle.Lib.Compaction do
              new_model_messages,
              pass
            ),
+         :ok <- validate_progress(trigger, config, resolved, record, pass),
+         {:ok, installed} <- prepare_install(state, record, new_model_messages),
          :ok <- check_cancel(opts),
          :ok <- commit(state, config, record) do
-      state = install(state, record, new_model_messages)
+      state = installed
 
       emit(
         opts,
@@ -300,21 +353,35 @@ defmodule Tackle.Lib.Compaction do
     end
   end
 
-  defp summarize(state, config, resolved, ctx, plan, trigger, opts) do
-    request = %Request{
-      messages: plan.shadowed,
-      system: ctx.system,
-      tools: ctx.tools,
-      selection: ctx.selection,
-      model: ctx.model,
-      model_info: ctx.model_info,
-      session_id: state.session_id,
-      prior_summary: prior_summary(plan),
-      instructions: merged_instructions(config.instructions, Keyword.get(opts, :instructions)),
-      trigger: trigger,
-      summary_max_tokens: resolved.summary_max_tokens
-    }
+  # The summarizer reads the shadowed messages, shortened when they would not
+  # fit the window next to the system prompt, the tools, the directive, the
+  # summary's output limit, and the safety reserve.
+  defp build_request(state, config, resolved, ctx, plan, trigger, opts) do
+    instructions = merged_instructions(config.instructions, Keyword.get(opts, :instructions))
 
+    budget =
+      resolved.context_window - resolved.summary_max_tokens - resolved.safety_reserve -
+        ContextUsage.estimate_text(ctx.system) - ContextUsage.estimate_tools(ctx.tools) -
+        ContextUsage.estimate_text(Prompt.directive(instructions: instructions))
+
+    with {:ok, messages, _shortened} <- Input.fit(plan.shadowed, budget) do
+      {:ok,
+       %Request{
+         messages: messages,
+         system: ctx.system,
+         tools: ctx.tools,
+         selection: ctx.selection,
+         model: ctx.model,
+         model_info: ctx.model_info,
+         session_id: state.session_id,
+         instructions: instructions,
+         trigger: trigger,
+         summary_max_tokens: resolved.summary_max_tokens
+       }}
+    end
+  end
+
+  defp summarize(state, config, %Request{} = request, opts) do
     llm_opts = Keyword.merge(state.llm_opts, Keyword.get(opts, :llm_opts, []))
 
     summarizer_opts = [
@@ -323,27 +390,21 @@ defmodule Tackle.Lib.Compaction do
     ]
 
     case config.summarizer.summarize(request, summarizer_opts) do
-      {:ok, summary} ->
-        {:ok, summary}
-
-      {:error, reason} ->
-        case check_cancel(opts) do
-          :ok -> {:error, reason}
-          cancelled -> cancelled
-        end
-
-      other ->
-        case check_cancel(opts) do
-          :ok -> {:error, {:invalid_summary_result, other}}
-          cancelled -> cancelled
-        end
+      {:ok, %Summary{} = summary} -> {:ok, summary}
+      {:error, reason} -> unless_cancelled(opts, {:error, reason})
+      other -> unless_cancelled(opts, {:error, {:invalid_summary_result, other}})
     end
   rescue
-    error ->
-      case check_cancel(opts) do
-        :ok -> {:error, {:summarizer_failed, Exception.message(error)}}
-        cancelled -> cancelled
-      end
+    error -> unless_cancelled(opts, {:error, {:summarizer_failed, Exception.message(error)}})
+  catch
+    kind, reason -> unless_cancelled(opts, {:error, {:summarizer_failed, {kind, reason}}})
+  end
+
+  defp unless_cancelled(opts, error) do
+    case check_cancel(opts) do
+      :ok -> error
+      cancelled -> cancelled
+    end
   end
 
   defp merged_instructions(nil, nil), do: nil
@@ -351,19 +412,21 @@ defmodule Tackle.Lib.Compaction do
   defp merged_instructions(nil, requested), do: requested
   defp merged_instructions(configured, requested), do: configured <> "\n\n" <> requested
 
-  defp validate_summary(
-         %Tackle.Lib.Compaction.Summary{content: content, usage: usage},
-         plan,
-         resolved
-       ) do
+  defp validate_summary(%Summary{content: content} = summary, plan, resolved) do
     cond do
-      not is_binary(content) or content == "" ->
+      not is_binary(content) ->
+        {:error, {:invalid_summary_result, {:ok, summary}}}
+
+      content == "" ->
         {:error, :empty_summary}
 
-      truncated?(usage, content, resolved) ->
+      summary.stop_reason == :content_filter ->
+        {:error, :summary_content_filtered}
+
+      truncated?(summary, resolved) ->
         {:error, :truncated_summary}
 
-      not summary_reduces?(%{content: content}, plan) ->
+      ContextUsage.estimate_text(content) >= plan.shadowed_tokens ->
         {:error, :summary_not_smaller}
 
       true ->
@@ -371,28 +434,38 @@ defmodule Tackle.Lib.Compaction do
     end
   end
 
-  defp truncated?(usage, content, resolved) do
+  # The provider's stop reason decides when it reports one. Without it, a
+  # summary whose visible output reached the cap probably was cut off;
+  # reasoning tokens are part of a provider's output count but not of the
+  # summary, so they do not count toward the cap.
+  defp truncated?(%Summary{stop_reason: :max_tokens}, _resolved), do: true
+
+  defp truncated?(%Summary{stop_reason: reason}, _resolved)
+       when reason in [:end, :tool_calls],
+       do: false
+
+  defp truncated?(%Summary{usage: usage, content: content}, resolved) do
     cap = resolved.summary_max_tokens
 
-    output_reached_cap? =
-      case usage do
-        %{output_tokens: tokens} when is_integer(tokens) -> tokens >= cap
-        _missing -> false
-      end
+    case usage do
+      %{output_tokens: output} when is_integer(output) ->
+        output - reasoning_tokens(usage) >= cap
 
-    output_reached_cap? or ContextUsage.estimate_text(content) >= cap
-  end
-
-  defp summary_reduces?(%{content: content}, plan) do
-    ContextUsage.estimate_text(content) < plan.shadowed_tokens
-  end
-
-  defp prior_summary(plan) do
-    case plan.shadowed do
-      [%Message{} = first | _rest] -> checkpoint_body(first)
-      [] -> nil
+      _missing ->
+        ContextUsage.estimate_text(content) >= cap
     end
   end
+
+  defp reasoning_tokens(%{reasoning_tokens: tokens}) when is_integer(tokens), do: tokens
+  defp reasoning_tokens(_usage), do: 0
+
+  defp validate_progress(:pressure, %Config{max_passes: pass}, resolved, record, pass) do
+    if record.estimated_tokens_after < resolved.trigger_at,
+      do: :ok,
+      else: {:error, :insufficient_reduction}
+  end
+
+  defp validate_progress(_trigger, _config, _resolved, _record, _pass), do: :ok
 
   defp build_record(
          state,
@@ -455,24 +528,27 @@ defmodule Tackle.Lib.Compaction do
   # the checkpoint applies only to the branch it was created on. Linear mode
   # keeps replacing the explicit model projection, whose head is the record's
   # checkpoint message (`State.last_compaction_id/1` reads its id).
-  defp install(%State{tree: %Tree{} = tree} = state, %Record{} = record, _model_messages) do
+  #
+  # The replacement is built before the commit and installed only after it, so
+  # a record the tree refuses is never made durable.
+  defp prepare_install(%State{tree: %Tree{} = tree} = state, %Record{} = record, _messages) do
     case Tree.append_compaction(tree, record) do
       {:ok, tree, _entry} ->
-        %{
-          state
-          | tree: tree,
-            messages: Tree.transcript(tree),
-            model_messages: Tree.model_context(tree)
-        }
+        {:ok,
+         %{
+           state
+           | tree: tree,
+             messages: Tree.transcript(tree),
+             model_messages: Tree.model_context(tree)
+         }}
 
       {:error, reason} ->
-        raise ArgumentError, "cannot append compaction to conversation tree: #{inspect(reason)}"
+        {:error, {:invalid_compaction, reason}}
     end
   end
 
-  defp install(%State{} = state, %Record{}, model_messages) do
-    %{state | model_messages: model_messages}
-  end
+  defp prepare_install(%State{} = state, %Record{}, model_messages),
+    do: {:ok, %{state | model_messages: model_messages}}
 
   defp reset_retained_metadata(messages) do
     Enum.map(messages, fn %Message{} = message ->
@@ -520,13 +596,23 @@ defmodule Tackle.Lib.Compaction do
     snapshot = Keyword.get(opts, :snapshot)
     selection = (snapshot && snapshot.llm) || state.llm
 
+    llm_opts = (snapshot && snapshot.llm_opts) || state.llm_opts || []
+
     %{
       selection: selection,
       model: selection && selection.model,
       system: (snapshot && snapshot.system_prompt) || state.system_prompt,
       tools: tools(snapshot, state),
-      model_info: selection_model_info(selection)
+      model_info: selection_model_info(selection),
+      max_tokens: Keyword.get(llm_opts, :max_tokens)
     }
+  end
+
+  # What every request carries besides the messages, and the checkpoint's own
+  # framing, which a compaction cannot shrink.
+  defp fixed_tokens(ctx) do
+    ContextUsage.estimate_text(ctx.system) + ContextUsage.estimate_tools(ctx.tools) +
+      ContextUsage.estimate_text(checkpoint_content(""))
   end
 
   defp tools(%{tool_registry: registry}, _state) when not is_nil(registry),

@@ -562,10 +562,14 @@ fail-closed contract:
 
 1. `Tackle.Lib.Compaction` selects and snapshots a balanced plan without mutation;
 2. it generates and strictly validates the summary (non-empty, complete, no tool
-   calls, strictly smaller than the shadowed region);
-3. it commits one `context.compacted` event through `Tackle.Session.Compaction`,
+   calls, strictly smaller than the shadowed region, and for pressure
+   compaction low enough to land below the threshold);
+3. it builds the replacement without installing it, appending the compaction
+   entry to a copy of the conversation tree, so a record the tree refuses is
+   never committed;
+4. it commits one `context.compacted` event through `Tackle.Session.Compaction`,
    which resolves the live journal by session id and syncs the commit;
-4. only after a successful commit does it install the replacement in
+5. only after a successful commit does it install the replacement in
    `State.model_messages`.
 
 A summarizer, validation, or commit failure leaves the model context unchanged. A
