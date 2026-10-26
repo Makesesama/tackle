@@ -3,6 +3,8 @@ defmodule Tackle.Lib.LLMTest do
 
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM
+  alias Tackle.Lib.LLM.Error
+  alias Tackle.Lib.LLM.Response
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.ModelInfo
   alias Tackle.Lib.State
@@ -181,6 +183,52 @@ defmodule Tackle.Lib.LLMTest do
     def generate(_schema, _opts), do: {:error, :not_used}
   end
 
+  # Records its schema and options, and answers with the result in the
+  # process dictionary's :result, or calls it when it is a function.
+  defmodule RecordingAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "recording"
+
+    @impl true
+    def models, do: ["model", "other"]
+
+    @impl true
+    def generate(schema, opts) do
+      send(self(), {:generate, schema, opts})
+
+      case Process.get(:result) do
+        nil -> {:ok, %{data: %{"content" => "ok"}, usage: nil, model: opts[:model]}}
+        crash when is_function(crash, 0) -> crash.()
+        result -> result
+      end
+    end
+  end
+
+  defmodule StreamOnlyAdapter do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "stream-only"
+
+    @impl true
+    def models, do: ["model"]
+
+    @impl true
+    def stream(_schema, opts, event_callback) do
+      event_callback.(%{type: :text_delta, text: "str"})
+      event_callback.(%{type: :text_delta, text: "eamed"})
+
+      {:ok, %{data: %{"content" => "streamed"}, usage: %{input_tokens: 2}, model: opts[:model]}}
+    end
+  end
+
+  defmodule NoGenerationAdapter do
+    def adapter_id, do: "silent"
+    def models, do: ["model"]
+  end
+
   setup do
     previous = Application.get_env(:tackle_lib, :llm)
     Application.put_env(:tackle_lib, :llm, TestAdapter)
@@ -281,13 +329,13 @@ defmodule Tackle.Lib.LLMTest do
       opts =
         LLM.request_opts(
           [model: "m", messages: []],
-          [temperature: 0.3, strict_schema: false],
+          [temperature: 0.3, max_tokens: 100],
           temperature: 0.9,
           receive_timeout: 1_000
         )
 
       assert Keyword.get_values(opts, :temperature) == [0.9]
-      assert Keyword.get(opts, :strict_schema) == false
+      assert Keyword.get(opts, :max_tokens) == 100
       assert Keyword.get(opts, :receive_timeout) == 1_000
       assert Map.new(opts).temperature == 0.9
     end
@@ -368,5 +416,205 @@ defmodule Tackle.Lib.LLMTest do
 
     assert_receive {:event, %Event{type: :message_delta, data: %{delta: "hel"}}}
     assert_receive {:event, %Event{type: :message_delta, data: %{delta: "lo"}}}
+  end
+
+  describe "the generation boundary" do
+    setup do
+      {:ok, selection} = LLM.select([RecordingAdapter], "recording/model")
+      %{selection: selection}
+    end
+
+    test "returns a response with the result's data for structured callers", %{
+      selection: selection
+    } do
+      Process.put(:result, {:ok, %{data: %{"scores" => [1]}, usage: nil, model: "model"}})
+
+      assert {:ok, %Response{data: %{"scores" => [1]}, content: nil, tool_calls: []}} =
+               LLM.generate_with(selection, %{"type" => "object"}, [])
+    end
+
+    test "converts a keyword schema to JSON Schema once and stringifies map schemas", %{
+      selection: selection
+    } do
+      assert {:ok, _response} =
+               LLM.generate_with(selection, [answer: [type: :string, required: true]], [])
+
+      assert_received {:generate, schema, _opts}
+
+      assert schema == %{
+               "type" => "object",
+               "properties" => %{"answer" => %{"type" => "string"}},
+               "required" => ["answer"]
+             }
+
+      assert {:ok, _response} =
+               LLM.generate_with(
+                 selection,
+                 %{type: "object", properties: %{n: %{type: "integer"}}, required: [:n]},
+                 []
+               )
+
+      assert_received {:generate, map_schema, _opts}
+
+      assert map_schema == %{
+               "type" => "object",
+               "properties" => %{"n" => %{"type" => "integer"}},
+               "required" => [:n]
+             }
+
+      assert {:ok, _response} = LLM.generate_with(selection, nil, [])
+      assert_received {:generate, nil, _opts}
+    end
+
+    test "rejects an invalid schema without calling the adapter", %{selection: selection} do
+      assert {:error, {:invalid_response_schema, "schema"}} =
+               LLM.generate_with(selection, "schema", [])
+
+      assert {:error, {:invalid_response_schema, _message}} =
+               LLM.generate_with(selection, [answer: [type: :unknown]], [])
+
+      refute_received {:generate, _schema, _opts}
+    end
+
+    test "stamps the selected provider and the origin of provider state", %{
+      selection: selection
+    } do
+      Process.put(
+        :result,
+        {:ok,
+         %{
+           data: %{"content" => "ok"},
+           usage: %{input_tokens: 1},
+           model: "model-2026",
+           provider: "spoof",
+           provider_state: %{"provider" => "adapter-type", "reasoning" => "r"}
+         }}
+      )
+
+      assert {:ok, response} = LLM.generate_with(selection, nil, [])
+      assert response.provider == "recording"
+      assert response.usage.provider == "recording"
+      assert response.model == "model-2026"
+
+      assert response.provider_state == %{
+               "provider" => "recording",
+               "model" => "model",
+               "reasoning" => "r"
+             }
+    end
+
+    test "replays provider state only to the provider and model that produced it", %{
+      selection: selection
+    } do
+      own = %{"provider" => "recording", "model" => "model", "reasoning" => "mine"}
+
+      messages = [
+        %{role: :user, content: "hi"},
+        %{role: :assistant, content: "a", provider_state: own},
+        %{role: :assistant, content: "b", provider_state: %{own | "provider" => "other"}},
+        %{role: :assistant, content: "c", provider_state: %{own | "model" => "other"}},
+        %{role: :assistant, content: "d", provider_state: %{"reasoning" => "unstamped"}},
+        %{"role" => "assistant", "content" => "e", "provider_state" => own}
+      ]
+
+      assert {:ok, _response} = LLM.generate_with(selection, nil, messages: messages)
+      assert_received {:generate, nil, opts}
+
+      assert opts[:messages] == [
+               %{role: :user, content: "hi"},
+               %{role: :assistant, content: "a", provider_state: own},
+               %{role: :assistant, content: "b"},
+               %{role: :assistant, content: "c"},
+               %{role: :assistant, content: "d"},
+               %{"role" => "assistant", "content" => "e", "provider_state" => own}
+             ]
+
+      {:ok, other_model} = LLM.select([RecordingAdapter], "recording/other")
+      assert {:ok, _response} = LLM.generate_with(other_model, nil, messages: messages)
+      assert_received {:generate, nil, opts}
+
+      assert [%{content: "c", provider_state: %{"model" => "other"}}] =
+               Enum.filter(opts[:messages], &Map.has_key?(&1, :provider_state))
+    end
+
+    test "turns malformed results into invalid response errors", %{selection: selection} do
+      for {result, detail} <- [
+            {{:ok, nil}, {:result, nil}},
+            {{:ok, "x"}, {:result, "x"}},
+            {{:ok, %{data: %{}, usage: 12}}, {:usage, 12}},
+            {{:ok, %{data: %{"content" => 42}}}, {:content, 42}},
+            {:ok, {:result, :ok}}
+          ] do
+        Process.put(:result, result)
+
+        assert {:error, %Error{kind: :invalid_response, details: %{reason: ^detail}}} =
+                 LLM.generate_with(selection, nil, []),
+               inspect(result)
+
+        assert {:error, %Error{kind: :invalid_response, details: %{reason: ^detail}}} =
+                 LLM.stream_with(selection, nil, [], fn _event -> :ok end),
+               inspect(result)
+      end
+    end
+
+    test "keeps the usage of an invalid response", %{selection: selection} do
+      Process.put(:result, {:ok, %{data: %{"content" => 42}, usage: %{input_tokens: 9}}})
+
+      assert {:error, %Error{details: %{usage: %Usage{input_tokens: 9, provider: "recording"}}}} =
+               LLM.generate_with(selection, nil, [])
+    end
+
+    test "turns adapter crashes into errors", %{selection: selection} do
+      for {crash, kind} <- [
+            {fn -> raise ArgumentError, "bad" end, :error},
+            {fn -> throw(:oops) end, :throw},
+            {fn -> exit(:gone) end, :exit}
+          ] do
+        Process.put(:result, crash)
+
+        assert {:error, %Error{kind: :unknown, details: %{kind: ^kind}} = error} =
+                 LLM.generate_with(selection, nil, [])
+
+        assert error.details.adapter == RecordingAdapter
+        assert Exception.message(error) =~ "RecordingAdapter failed"
+      end
+    end
+
+    test "generates through stream/3 when an adapter has no generate/2" do
+      {:ok, selection} = LLM.select([StreamOnlyAdapter], "stream-only/model")
+
+      assert {:ok, %Response{content: "streamed", provider: "stream-only"}} =
+               LLM.generate_with(selection, nil, [])
+
+      test_pid = self()
+
+      assert {:ok, %Response{content: "streamed"}} =
+               LLM.stream_with(selection, nil, [], &send(test_pid, {:event, &1}))
+
+      assert_received {:event, %Event{type: :message_delta, data: %{delta: "str"}}}
+    end
+
+    test "streams a generate-only adapter and reports its usage once", %{selection: selection} do
+      Process.put(
+        :result,
+        {:ok, %{data: %{"content" => "ok"}, usage: %{input_tokens: 3}, model: "model"}}
+      )
+
+      test_pid = self()
+
+      assert {:ok, %Response{content: "ok"}} =
+               LLM.stream_with(selection, nil, [], &send(test_pid, {:event, &1}))
+
+      assert_received {:event, %Event{type: :usage, data: %{usage: %Usage{input_tokens: 3}}}}
+      refute_received {:event, _event}
+    end
+
+    test "selection requires generate/2 or stream/3" do
+      assert {:ok, _selection} = LLM.select([StreamOnlyAdapter], "stream-only/model")
+
+      assert {:error,
+              {:invalid_adapter, NoGenerationAdapter, {:missing_callback, {:generate, 2}}}} =
+               LLM.select([NoGenerationAdapter], "silent/model")
+    end
   end
 end

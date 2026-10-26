@@ -10,6 +10,7 @@ defmodule TackleTest do
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Snapshot
+  alias Tackle.Test.Adapter, as: TestAdapter
 
   defmodule ControlledAdapter do
     @behaviour Tackle.Lib.LLM
@@ -38,7 +39,7 @@ defmodule TackleTest do
       receive do
         {:respond, content} -> response(content)
         {:error, reason} -> {:error, reason}
-        :crash -> raise "adapter crash"
+        :crash -> TestAdapter.crash_turn_task()
       end
     end
 

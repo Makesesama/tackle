@@ -7,7 +7,8 @@ defmodule Tackle.Review.Scorer.LLM do
   curated examples of comments developers do not want ("undesired
   comments"), and returns for each finding the probability that the author
   would act on it. The call uses the `:llm` selection and `:llm_opts` from
-  the scorer context.
+  the scorer context; the options cannot replace the scoring request's
+  messages, tools, or temperature (see `Tackle.Lib.LLM.request_opts/3`).
   """
 
   @behaviour Tackle.Review.Scorer
@@ -60,24 +61,19 @@ defmodule Tackle.Review.Scorer.LLM do
 
   @impl true
   def score([_ | _] = items, %{llm: %Selection{} = selection} = context) do
-    opts =
-      [
-        messages: [%{role: :user, content: prompt(items)}],
-        temperature: 0,
-        tools: [],
-        tool_choice: "none",
-        response_schema_name: "review_scores"
-      ]
-      |> Keyword.merge(Map.get(context, :llm_opts, []))
+    request = [
+      messages: [%{role: :user, content: prompt(items)}],
+      temperature: 0,
+      tools: [],
+      tool_choice: "none",
+      response_schema_name: "review_scores"
+    ]
 
-    case LLM.generate_with(selection, @schema, opts) do
-      {:ok, %{data: data} = response} ->
-        with {:ok, confidences} <- confidences(data, ids(items)) do
-          {:ok, confidences, response.usage}
-        end
+    opts = LLM.request_opts(request, [], Map.get(context, :llm_opts, []))
 
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, response} <- LLM.generate_with(selection, @schema, opts),
+         {:ok, confidences} <- confidences(response.data, ids(items)) do
+      {:ok, confidences, response.usage}
     end
   end
 

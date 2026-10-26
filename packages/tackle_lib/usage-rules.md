@@ -116,26 +116,35 @@ The host implements `Tackle.Lib.LLM` and wires it up:
 config :tackle_lib, llm: MyApp.AI.TackleAdapter
 ```
 
-- Required callback: `generate(schema, opts) :: {:ok, response} | {:error, term}`.
-- Optional callbacks: `stream(schema, opts, event_callback)` for streaming and
-  `model_info(model)` for adapter-owned context/output limits and price cards.
+- Generation callbacks: `generate(schema, opts) :: {:ok, response} | {:error, term}`,
+  `stream(schema, opts, event_callback)`, or both; Tackle.Lib calls the one an
+  adapter has. Optional: `model_info(model)` for adapter-owned context/output
+  limits and price cards.
 - `opts[:messages]` is the **sole conversation transport**: a provider-neutral,
   role-tagged array (`Tackle.Lib.Messages.to_provider/1`) with `:user`, `:assistant`
   (carrying native `:tool_calls`), and `:tool` entries linked by `:tool_call_id`.
   Send this array to the provider as-is — **do not flatten history**.
-- Tackle.Lib also sets `:model`, `:system`, `:temperature`, `:strict_schema`,
-  `:native_tools`, `:tools`, and appends host `:llm_opts` without the
+- Tackle.Lib also sets `:model`, `:provider_id`, `:provider_settings`,
+  `:system`, `:temperature`, `:tools`, and appends host `:llm_opts` without the
   tool-selection options it does not support (`:tool_choice`,
   `:parallel_tool_calls`, and the like; see `Tackle.Lib.LLM.request_opts/3`).
+  The `Tackle.Lib.LLM` module docs list the standard option keys.
 - Return `{:ok, %{data: map, usage: map | %Tackle.Lib.Usage{} | nil, model: binary | nil}}`.
-  `:data` holds assistant `content` and/or native `tool_calls`. The loop
-  normalizes the result into `%Tackle.Lib.LLM.Response{}`; a malformed one
-  ends the turn with the error reason `{:invalid_response, detail}`. Tackle.Lib
+  `:data` holds assistant `content` and/or native `tool_calls`.
+  `Tackle.Lib.LLM.generate_with/3` returns it as `%Tackle.Lib.LLM.Response{}`
+  (with `:data` kept for structured outputs); a malformed result is
+  `{:error, %Tackle.Lib.LLM.Error{kind: :invalid_response}}` and a raising
+  adapter `{:error, %Tackle.Lib.LLM.Error{kind: :unknown}}`, which end the turn.
+  The library sets the response's `:provider` to the selected provider id and
+  replays `:provider_state` only to the provider and model that produced it,
+  so adapters neither stamp nor check its origin. Tackle.Lib
   normalizes `:usage` into `%Tackle.Lib.Usage{}` and applies the selected
   adapter's price card when provider cost is absent. Derived cost is estimated;
   host billing and quota policy remain host-owned.
-- `schema` is an optional structured-response schema for **non-tool** turns;
-  tool calls always flow through provider-native `tool_calls`, not the schema.
+- `schema` is an optional structured-response schema for **non-tool** turns,
+  always a JSON Schema map with string keys when it reaches the adapter (the
+  library converts keyword schemas once); tool calls always flow through
+  provider-native `tool_calls`, not the schema.
 - Return provider and transport failures as `{:error, %Tackle.Lib.LLM.Error{}}`
   built with `Tackle.Lib.LLM.Error.from_response/3` (status, body, headers),
   `from_transport/1`, or `from_stream/1` (errors inside a stream). The loop

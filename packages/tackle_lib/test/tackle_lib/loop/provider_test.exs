@@ -83,14 +83,17 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     def generate(_schema, _opts) do
       send(Process.get(:test_pid), :llm_call)
 
-      case Process.get(:script) do
-        [result] ->
-          result
+      result =
+        case Process.get(:script) do
+          [result] ->
+            result
 
-        [result | rest] ->
-          Process.put(:script, rest)
-          result
-      end
+          [result | rest] ->
+            Process.put(:script, rest)
+            result
+        end
+
+      if is_function(result, 0), do: result.(), else: result
     end
   end
 
@@ -727,20 +730,47 @@ defmodule Tackle.Lib.Loop.ProviderTest do
             {ok(%{"content" => "hi", "thinking" => [:a]}), {:thinking, [:a]}},
             {ok(%{"tool_calls" => "first"}), {:tool_calls, :not_a_list}},
             {{:ok, %{data: %{"content" => "hi"}, usage: nil, provider_state: "opaque"}},
-             {:provider_state, "opaque"}}
+             {:provider_state, "opaque"}},
+            {{:ok, nil}, {:result, nil}},
+            {{:ok, "x"}, {:result, "x"}},
+            {{:ok, %{data: %{"content" => "hi"}, usage: 12}}, {:usage, 12}},
+            {:ok, {:result, :ok}},
+            {{:done, "hi"}, {:result, {:done, "hi"}}}
           ] do
         {{:error, state}, events} = run_scripted([result])
 
         assert state.status == :error
-        assert state.error_reason == {:invalid_response, detail}
+
+        assert %Error{kind: :invalid_response, details: %{reason: ^detail}} =
+                 state.error_reason
+
         assert state.error =~ "Invalid provider"
         assert Enum.map(state.messages, & &1.role) == [:user]
 
-        assert %Event{data: %{reason: {:invalid_response, ^detail}}} =
+        assert %Event{data: %{reason: %Error{kind: :invalid_response}}} =
                  Enum.find(events, &(&1.type == :error))
 
         refute Enum.any?(events, &(&1.type == :step_end))
         refute_received {:after_prompt, _response}
+        assert_received :llm_call
+        refute_received :llm_call
+      end
+    end
+
+    test "an adapter that raises, throws, or exits ends the turn with an error, unretried" do
+      for {crash, text} <- [
+            {fn -> raise "adapter bug" end, "adapter bug"},
+            {fn -> throw(:oops) end, "throw :oops"},
+            {fn -> exit(:gone) end, "exit :gone"}
+          ] do
+        {{:error, state}, events} = run_scripted([crash, ok(%{"content" => "unused"})])
+
+        assert state.status == :error
+        assert %Error{kind: :unknown, details: %{adapter: ScriptedAdapter}} = state.error_reason
+        assert state.error =~ text
+        assert Enum.map(state.messages, & &1.role) == [:user]
+        assert Enum.any?(events, &(&1.type == :error))
+        refute Enum.any?(events, &(&1.type == :retry_scheduled))
         assert_received :llm_call
         refute_received :llm_call
       end

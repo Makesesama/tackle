@@ -18,8 +18,8 @@ defmodule Tackle.Lib.State do
   A turn that ends in an error leaves a human-readable message in `:error` and
   the structured reason behind it in `:error_reason`, the same term the turn's
   `:error` event reports as `:reason` (for example the provider's error reason,
-  a hook's abort reason, `:max_iterations`, `:empty_response`, or
-  `{:invalid_response, detail}`). Hosts match on `:error_reason`; `:error` is
+  such as a `Tackle.Lib.LLM.Error`, a hook's abort reason, `:max_iterations`,
+  or `:empty_response`). Hosts match on `:error_reason`; `:error` is
   for people. A cancelled turn keeps its cancellation reason in `:error`. Both
   are cleared when the next turn starts (`reset_turn/1`).
   """

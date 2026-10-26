@@ -20,7 +20,7 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
   alias Tackle.Lib.Compaction.Request
   alias Tackle.Lib.Compaction.Summary
   alias Tackle.Lib.LLM
-  alias Tackle.Lib.Usage
+  alias Tackle.Lib.LLM.Response
 
   @impl true
   def summarize(%Request{} = request, opts \\ []) do
@@ -40,7 +40,6 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
         session_id: request.session_id,
         system: request.system,
         messages: Request.to_provider_messages(request),
-        native_tools: request.tools != [],
         tools: request.tools || [],
         tool_choice: "none",
         cancellation_signal: Keyword.get(opts, :cancellation_signal)
@@ -48,62 +47,22 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
       |> maybe_put_max_tokens(request.summary_max_tokens)
 
     generate_opts =
-      LLM.request_opts(
-        request_opts,
-        [temperature: 0.2, strict_schema: false],
-        Keyword.get(opts, :llm_opts, [])
-      )
+      LLM.request_opts(request_opts, [temperature: 0.2], Keyword.get(opts, :llm_opts, []))
 
     with {:ok, response} <- LLM.generate_with(selection, nil, generate_opts) do
       build_summary(response)
     end
   end
 
-  defp build_summary(%{data: data} = response) do
-    if tool_calls?(data) do
-      {:error, :summary_tool_calls}
-    else
-      case content(data) do
-        content when is_binary(content) and content != "" ->
-          {:ok,
-           %Summary{
-             content: content,
-             usage: normalize_usage(Map.get(response, :usage)),
-             model: Map.get(response, :model)
-           }}
+  defp build_summary(%Response{tool_calls: [_ | _]}), do: {:error, :summary_tool_calls}
 
-        _empty ->
-          {:error, :empty_summary}
-      end
-    end
+  defp build_summary(%Response{content: content} = response)
+       when is_binary(content) and content != "" do
+    {:ok, %Summary{content: content, usage: response.usage, model: response.model}}
   end
 
-  defp build_summary(_response), do: {:error, :invalid_summary_response}
-
-  defp content(%{"content" => value, content: content}) when value in [nil, false], do: content
-  defp content(%{"content" => content}), do: content
-  defp content(%{content: content}), do: content
-  defp content(_data), do: nil
-
-  defp tool_calls?(%{"tool_calls" => value, tool_calls: calls})
-       when value in [nil, false] and is_list(calls),
-       do: calls != []
-
-  defp tool_calls?(%{"tool_calls" => calls}) when is_list(calls), do: calls != []
-  defp tool_calls?(%{tool_calls: calls}) when is_list(calls), do: calls != []
-  defp tool_calls?(_data), do: false
-
-  defp normalize_usage(nil), do: nil
-  defp normalize_usage(usage), do: Usage.normalize(usage)
+  defp build_summary(%Response{}), do: {:error, :empty_summary}
 
   defp maybe_put_max_tokens(opts, nil), do: opts
-
-  defp maybe_put_max_tokens(opts, max) do
-    # OpenAI-compatible adapters (DeepSeek and others) read `:max_tokens`; the
-    # provider-neutral library name is `:max_output_tokens`. Set both so the
-    # summary cap is honoured wherever the adapter supports a limit.
-    opts
-    |> Keyword.put(:max_output_tokens, max)
-    |> Keyword.put(:max_tokens, max)
-  end
+  defp maybe_put_max_tokens(opts, max), do: Keyword.put(opts, :max_tokens, max)
 end

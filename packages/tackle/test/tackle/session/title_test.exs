@@ -62,6 +62,29 @@ defmodule Tackle.Session.TitleTest do
                )
     end
 
+    test "session llm_opts cannot replace the title request" do
+      {:ok, selection} = LLM.select([Tackle.Test.Adapter], "test/echo")
+
+      assert {:ok, "Title"} =
+               Title.generate(selection, "Fix the login form",
+                 test_pid: self(),
+                 content: "Title",
+                 temperature: 0.9,
+                 tools: [:bogus],
+                 tool_choice: "auto",
+                 messages: [%{role: :user, content: "bogus"}],
+                 reasoning_effort: :high
+               )
+
+      assert_receive {:adapter_called, _pid, "echo", opts}
+      assert Keyword.get_values(opts, :temperature) == [0.2]
+      assert Keyword.get_values(opts, :tools) == [[]]
+      assert Keyword.get_values(opts, :tool_choice) == ["none"]
+      assert [[%{role: :user, content: prompt}]] = Keyword.get_values(opts, :messages)
+      assert prompt =~ "Fix the login form"
+      assert Keyword.get(opts, :reasoning_effort) == :high
+    end
+
     test "rejects a response that still contains tool calls" do
       {:ok, selection} = LLM.select([Tackle.Test.Adapter], "test/echo")
 

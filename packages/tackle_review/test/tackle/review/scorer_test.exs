@@ -134,6 +134,25 @@ defmodule Tackle.Review.ScorerTest do
       assert prompt =~ "[+ 9]   File.read!(path)"
     end
 
+    test "llm_opts cannot replace the scoring request", %{selection: selection} do
+      context = %{
+        llm: selection,
+        llm_opts: [
+          test_pid: self(),
+          answer: answer([%{"id" => "C1", "confidence" => 0.5}]),
+          temperature: 0.8,
+          tools: [:bogus],
+          tool_choice: "auto"
+        ]
+      }
+
+      assert {:ok, [0.5], _usage} = Scorer.LLM.score([item()], context)
+      assert_received {:generate, _schema, opts}
+      assert Keyword.get_values(opts, :temperature) == [0]
+      assert Keyword.get_values(opts, :tools) == [[]]
+      assert Keyword.get_values(opts, :tool_choice) == ["none"]
+    end
+
     test "rejects answers that do not score every comment exactly once", %{
       selection: selection
     } do

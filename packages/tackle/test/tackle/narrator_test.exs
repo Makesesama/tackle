@@ -88,6 +88,32 @@ defmodule Tackle.NarratorTest do
       refute_receive {:writer_called, _writer, _opts}, 300
     end
 
+    test "session llm_opts cannot replace the narration request", ctx do
+      narrator =
+        start_narrator(ctx.scope,
+          llm_opts: [
+            temperature: 0.9,
+            reasoning_effort: :high,
+            max_tokens: 4_000,
+            tools: [:bogus],
+            tool_choice: "auto",
+            receive_timeout: 1_234
+          ]
+        )
+
+      send_event(narrator, subagent_started("run-1", "call-1"))
+      send_event(narrator, subagent_progress("run-1", "call-1", read("r1", "a.ex")))
+
+      assert_receive {:writer_called, writer, opts}, 2_000
+      assert Keyword.get_values(opts, :temperature) == [0.2]
+      assert Keyword.get_values(opts, :reasoning_effort) == [:none]
+      assert Keyword.get_values(opts, :max_tokens) == [60]
+      assert Keyword.get_values(opts, :tools) == [[]]
+      assert Keyword.get_values(opts, :tool_choice) == ["none"]
+      assert Keyword.get_values(opts, :receive_timeout) == [1_234]
+      send(writer, {:writer_reply, answer("reading a.ex")})
+    end
+
     test "keeps one request in flight and sends only the newest state", ctx do
       narrator = start_narrator(ctx.scope)
 

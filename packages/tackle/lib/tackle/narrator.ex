@@ -44,6 +44,7 @@ defmodule Tackle.Narrator do
 
   alias Tackle.Config.Narration, as: Settings
   alias Tackle.Lib.{Event, LLM, Usage}
+  alias Tackle.Lib.LLM.Response
   alias Tackle.Narration.Digest
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
@@ -68,8 +69,10 @@ defmodule Tackle.Narrator do
 
   Options are `:agent_ref`, `:task_supervisor` (the agent's service
   `Task.Supervisor`), `:settings` (`Tackle.Config.Narration`), and `:llm_opts`,
-  merged into the model call (for example a `:receive_timeout`). The
-  selection already carries its provider's settings.
+  passed to the model call (for example a `:receive_timeout`) through
+  `Tackle.Lib.LLM.request_opts/3`, so they cannot replace the narration
+  request's messages, tools, temperature, reasoning effort, or token limit.
+  The selection already carries its provider's settings.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts) do
@@ -381,18 +384,21 @@ defmodule Tackle.Narrator do
     %Settings{selection: selection} = state.settings
     observed = Digest.state(run.digest)
 
-    opts =
-      [
-        messages: [%{role: :user, content: prompt(observed)}],
-        temperature: 0.2,
-        tools: [],
-        tool_choice: "none",
-        reasoning_effort: :none,
-        max_tokens: 60,
-        credential_store: Tackle.Auth.credential_store()
-      ]
-      |> Keyword.merge(state.llm_opts)
-      |> Keyword.put_new(:receive_timeout, @request_timeout_ms)
+    request = [
+      messages: [%{role: :user, content: prompt(observed)}],
+      temperature: 0.2,
+      tools: [],
+      tool_choice: "none",
+      reasoning_effort: :none,
+      max_tokens: 60
+    ]
+
+    defaults = [
+      credential_store: Tackle.Auth.credential_store(),
+      receive_timeout: @request_timeout_ms
+    ]
+
+    opts = LLM.request_opts(request, defaults, state.llm_opts)
 
     task =
       Task.Supervisor.async_nolink(state.task_supervisor, fn ->
@@ -422,12 +428,12 @@ defmodule Tackle.Narrator do
     %{state | inflight: nil}
   end
 
-  defp answered(state, inflight, {:ok, %{data: data} = response}) do
-    state = %{state | usage: Usage.aggregate([state.usage, Map.get(response, :usage)])}
+  defp answered(state, inflight, {:ok, %Response{} = response}) do
+    state = %{state | usage: Usage.aggregate([state.usage, response.usage])}
     state = %{state | retry_at: nil, backoff_ms: nil}
 
     case Map.fetch(state.runs, inflight.run_id) do
-      {:ok, run} -> publish(state, run, text(data))
+      {:ok, run} -> publish(state, run, text(response))
       # The run finished while the model answered.
       :error -> state
     end
@@ -435,12 +441,8 @@ defmodule Tackle.Narrator do
 
   defp answered(state, inflight, {:error, reason}), do: failed(state, inflight.run_id, reason)
 
-  defp answered(state, inflight, other),
-    do: failed(state, inflight.run_id, {:invalid_response, other})
-
-  defp text(%{"tool_calls" => [_ | _]}), do: nil
-  defp text(%{"content" => content}), do: normalize(content)
-  defp text(_data), do: nil
+  defp text(%Response{tool_calls: [_ | _]}), do: nil
+  defp text(%Response{content: content}), do: normalize(content)
 
   # Every answer counts as the run's narration attempt, so an empty one waits
   # out the interval instead of being retried at once.

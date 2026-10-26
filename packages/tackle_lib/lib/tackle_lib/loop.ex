@@ -48,14 +48,16 @@ defmodule Tackle.Lib.Loop do
 
   ## Responses
 
-  Each step keeps one provider response, normalized into a
-  `Tackle.Lib.LLM.Response` before the `after_prompt` hooks see it. Transient
+  Each step keeps one provider response, a `Tackle.Lib.LLM.Response` as
+  `Tackle.Lib.LLM.generate_with/3` returns it, which the `after_prompt` hooks
+  see. Transient
   provider failures are retried under the state's `Tackle.Lib.Retry` policy,
   and a provider-confirmed context overflow is compacted and sent again when
   compaction is enabled. A response with neither content nor tool calls is
   asked again once, as a retry with reason `:empty_response`; a second empty
-  response in a row ends the turn with an error. A malformed adapter result
-  ends the turn with an `{:invalid_response, detail}` error reason. Every
+  response in a row ends the turn with an error. A malformed adapter result,
+  or an adapter that crashes, ends the turn with the `Tackle.Lib.LLM.Error`
+  the library returns for it (kind `:invalid_response` or `:unknown`). Every
   response reports its usage with a `:usage` event, and the step ends with one
   `:step_end` event for the response it keeps.
 

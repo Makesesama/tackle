@@ -21,9 +21,9 @@ defmodule Tackle.Lib.Loop.Provider do
   #     `Tackle.Lib.Retry` policy (`:retry_scheduled`, the backoff,
   #     `:retry_start`);
   #   * any other failure ends the request with the provider's reason;
-  #   * a result is normalized into a `Tackle.Lib.LLM.Response`, whose usage is
-  #     reported with a `:usage` event. A malformed result ends the request
-  #     with `{:invalid_response, detail}`.
+  #   * a response's usage is reported with a `:usage` event. A malformed
+  #     result is an `:invalid_response` `Tackle.Lib.LLM.Error` from the LLM
+  #     boundary; it ends the request, and its usage is still reported.
   #   * an empty response (neither content nor tool calls) is asked again once,
   #     as a retry of the same request with reason `:empty_response` that does
   #     not count against the retry policy; a second empty response in a row
@@ -110,32 +110,25 @@ defmodule Tackle.Lib.Loop.Provider do
 
       true ->
         end_retry(run, tries, false, reason)
+        # The provider still spent the tokens of a response it got wrong.
+        emit_usage(run, invalid_response_usage(reason))
         Logger.error("LLM call failed: #{inspect(reason)}")
         fail_request(state, reason)
     end
   end
 
-  defp accept(result, state, run, tries) do
-    case Response.from_result(result) do
-      {:ok, response} ->
-        emit_usage(run, response.usage)
+  defp accept(%Response{} = response, state, run, tries) do
+    emit_usage(run, response.usage)
 
-        cond do
-          not Response.empty?(response) ->
-            {:ok, response, state, run}
+    cond do
+      not Response.empty?(response) ->
+        {:ok, response, state, run}
 
-          tries.reasked? ->
-            fail(state, "The model returned an empty response", :empty_response)
+      tries.reasked? ->
+        fail(state, "The model returned an empty response", :empty_response)
 
-          true ->
-            reask(state, run, tries)
-        end
-
-      {:error, {:invalid_response, detail} = reason} ->
-        # The provider still spent the tokens of a response it got wrong.
-        emit_usage(run, result_usage(result))
-        Logger.error("LLM returned an invalid response: #{inspect(detail)}")
-        fail(state, invalid_response_message(detail), reason)
+      true ->
+        reask(state, run, tries)
     end
   end
 
@@ -274,17 +267,11 @@ defmodule Tackle.Lib.Loop.Provider do
         session_id: state.session_id,
         system: snapshot.system_prompt,
         messages: Messages.to_provider(State.model_messages(state)),
-        native_tools: tools != [],
         tools: tools
       ]
       |> put_cancellation_signal(run.cancellation_signal)
 
-    opts =
-      LLM.request_opts(
-        request,
-        [temperature: 0.3, strict_schema: false],
-        snapshot.llm_opts
-      )
+    opts = LLM.request_opts(request, [temperature: 0.3], snapshot.llm_opts)
 
     {schema, opts}
   end
@@ -321,13 +308,10 @@ defmodule Tackle.Lib.Loop.Provider do
   defp emit_usage(run, %Usage{} = usage), do: Run.emit(run, Event.usage(usage))
   defp emit_usage(_run, _usage), do: :ok
 
-  defp result_usage(%{usage: usage}), do: usage
-  defp result_usage(_result), do: nil
+  defp invalid_response_usage(%LLM.Error{kind: :invalid_response, details: %{usage: usage}}),
+    do: usage
 
-  defp invalid_response_message({:tool_calls, reason}),
-    do: "Invalid provider tool calls: #{inspect(reason)}"
-
-  defp invalid_response_message(detail), do: "Invalid provider response: #{inspect(detail)}"
+  defp invalid_response_usage(_reason), do: nil
 
   defp cancel(state, run), do: {:cancelled, Run.mark_cancelled(state, run)}
 

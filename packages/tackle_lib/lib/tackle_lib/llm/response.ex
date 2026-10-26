@@ -1,13 +1,15 @@
 defmodule Tackle.Lib.LLM.Response do
   @moduledoc """
-  One chat turn's provider response, normalized.
+  One provider response, normalized.
 
   Adapters return a plain result map from `generate/2` or `stream/3` (see
   `Tackle.Lib.LLM`). `Tackle.Lib.LLM.generate_with/3` and `stream_with/4`
-  keep returning that map, since they also serve structured outputs; the
-  agent loop turns it into this struct with `from_result/1` before anything
-  else sees it, so hooks, events, and messages read one checked shape:
+  check it with `from_result/1` and return this struct, so the agent loop,
+  hooks, events, messages, and every other caller read one checked shape:
 
+    * `:data` - the result's data map as the adapter returned it: the parsed
+      object of a structured response, which callers that pass a schema
+      read;
     * `:content` - the assistant's text, or `nil`;
     * `:thinking` - the assistant's reasoning text, or `nil`;
     * `:tool_calls` - the provider-native tool calls as `Tackle.Lib.Tool.Call`
@@ -15,7 +17,8 @@ defmodule Tackle.Lib.LLM.Response do
       missing ones);
     * `:usage` - the response's `Tackle.Lib.Usage`, or `nil`;
     * `:model`, `:provider`, `:provider_state` - passed through from the
-      result.
+      result; `Tackle.Lib.LLM` then sets `:provider` to the selected
+      provider id and stamps `:provider_state` with its origin.
 
   ## Accepted result shape
 
@@ -33,13 +36,15 @@ defmodule Tackle.Lib.LLM.Response do
   The result's `:usage` may be `nil`, a `Tackle.Lib.Usage`, or a provider usage
   map (normalized with `Tackle.Lib.Usage.normalize/1`), and `:provider_state`
   must be a map or `nil`. Anything else is an `{:invalid_response, detail}`
-  error, where `detail` names the offending field.
+  error, where `detail` names the offending field; `Tackle.Lib.LLM` returns
+  it as a `Tackle.Lib.LLM.Error` of kind `:invalid_response`.
   """
 
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Usage
 
   @type t :: %__MODULE__{
+          data: map(),
           content: String.t() | nil,
           thinking: String.t() | nil,
           tool_calls: [Call.t()],
@@ -63,7 +68,8 @@ defmodule Tackle.Lib.LLM.Response do
           | {:usage, term()}
           | {:provider_state, term()}
 
-  defstruct content: nil,
+  defstruct data: %{},
+            content: nil,
             thinking: nil,
             tool_calls: [],
             usage: nil,
@@ -94,6 +100,7 @@ defmodule Tackle.Lib.LLM.Response do
          {:ok, provider_state} <- provider_state(Map.get(result, :provider_state)) do
       {:ok,
        %__MODULE__{
+         data: data,
          content: content,
          thinking: thinking,
          tool_calls: tool_calls,

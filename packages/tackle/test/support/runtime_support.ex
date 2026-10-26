@@ -73,13 +73,26 @@ defmodule Tackle.Test.Adapter do
   defp respond(:echo_messages, _test_pid, _content, _signal, opts),
     do: response(user_prompts(opts), opts)
 
-  defp respond(:crash, _test_pid, _content, _signal, _opts), do: raise("adapter crash")
+  defp respond(:crash, _test_pid, _content, _signal, _opts), do: crash_turn_task()
 
   defp respond(:error, _test_pid, _content, _signal, _opts), do: {:error, :adapter_error}
 
   defp respond(:block, _test_pid, _content, signal, _opts) do
     block_until_cancelled(signal)
     {:error, :cancelled}
+  end
+
+  @doc """
+  Crashes the calling turn task as an uncaught `RuntimeError` would.
+
+  `Tackle.Lib.LLM` turns an adapter's exceptions into errors that end the
+  turn, so a test that needs the turn task itself to crash kills it with an
+  exit signal instead.
+  """
+  @spec crash_turn_task() :: no_return()
+  def crash_turn_task do
+    Process.exit(self(), {%RuntimeError{message: "adapter crash"}, []})
+    Process.sleep(:infinity)
   end
 
   defp tool_answer(content, opts, tool_calls) do
@@ -93,7 +106,7 @@ defmodule Tackle.Test.Adapter do
   defp await_manual(_test_pid, default_content, signal, opts) do
     receive do
       {:respond, content} -> response(content, opts)
-      :crash -> raise "adapter crash"
+      :crash -> crash_turn_task()
       {:error, reason} -> {:error, reason}
     after
       5_000 ->

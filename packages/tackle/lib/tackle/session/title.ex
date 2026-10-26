@@ -18,6 +18,7 @@ defmodule Tackle.Session.Title do
   """
 
   alias Tackle.Lib.LLM
+  alias Tackle.Lib.LLM.Response
   alias Tackle.Lib.LLM.Selection
 
   # Codex THREAD_TITLE_MAX_CHARS: titles stay scannable in lists and tabs.
@@ -34,26 +35,26 @@ defmodule Tackle.Session.Title do
   Generates one session title for `user_message` through `selection`.
 
   `llm_opts` carries the session's LLM options and credential store, the same
-  options the agent loop uses; the selection carries its provider's settings. A response that still contains tool calls
-  is rejected; the model was asked for text only.
+  options the agent loop uses; they cannot replace the title request's own
+  messages, tools, tool choice, or temperature (see
+  `Tackle.Lib.LLM.request_opts/3`). The selection carries its provider's
+  settings. A response that still contains tool calls is rejected; the model
+  was asked for text only.
   """
   @spec generate(Selection.t(), String.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def generate(%Selection{} = selection, user_message, llm_opts \\ [])
       when is_binary(user_message) do
-    opts =
-      [
-        messages: [%{role: :user, content: prompt(user_message)}],
-        temperature: 0.2,
-        tools: [],
-        tool_choice: "none"
-      ]
-      |> Keyword.merge(llm_opts)
+    request = [
+      messages: [%{role: :user, content: prompt(user_message)}],
+      temperature: 0.2,
+      tools: [],
+      tool_choice: "none"
+    ]
 
-    case LLM.generate_with(selection, nil, opts) do
-      {:ok, %{data: data}} -> title_from_response(data)
-      {:ok, _response} -> {:error, :invalid_title_response}
-      {:error, reason} -> {:error, reason}
+    with {:ok, response} <-
+           LLM.generate_with(selection, nil, LLM.request_opts(request, [], llm_opts)) do
+      title_from_response(response)
     end
   end
 
@@ -99,12 +100,12 @@ defmodule Tackle.Session.Title do
 
   def normalize(_raw), do: {:error, :invalid_title}
 
-  defp title_from_response(%{"tool_calls" => [_ | _]}), do: {:error, :title_tool_calls}
+  defp title_from_response(%Response{tool_calls: [_ | _]}), do: {:error, :title_tool_calls}
 
-  defp title_from_response(%{"content" => content}) when is_binary(content),
+  defp title_from_response(%Response{content: content}) when is_binary(content),
     do: normalize(content)
 
-  defp title_from_response(_data), do: {:error, :invalid_title_response}
+  defp title_from_response(%Response{}), do: {:error, :invalid_title_response}
 
   defp instructions do
     "Generate a concise, single-line task title of at most #{@max_chars} characters " <>

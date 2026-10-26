@@ -40,9 +40,15 @@ defmodule Tackle.Lib.LLM.ResponseTest do
                })
     end
 
+    test "keeps the data map" do
+      data = %{"content" => "hi", "scores" => [%{"id" => "C1"}]}
+      assert {:ok, %Response{data: ^data, content: "hi"}} = Response.from_result(%{data: data})
+    end
+
     test "missing fields default to nil and no tool calls" do
       assert {:ok,
               %Response{
+                data: %{},
                 content: nil,
                 thinking: nil,
                 tool_calls: [],

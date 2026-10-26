@@ -314,9 +314,9 @@ Results are always one of:
 An error result carries a human-readable `state.error` and the structured
 `state.error_reason` behind it, which the `:error` event also reports as
 `:reason`: the provider's error reason (a `%Tackle.Lib.LLM.Error{}` for
-provider and transport failures, whose message `state.error` shows), a hook's
-abort reason,
-`:max_iterations`, `:empty_response`, `{:invalid_response, detail}`, and so on.
+provider and transport failures, a malformed adapter result, and an adapter
+crash, whose message `state.error` shows), a hook's abort reason,
+`:max_iterations`, `:empty_response`, and so on.
 Match on `error_reason`; show `error`. A cancelled state keeps the cancellation
 reason in `error`.
 
@@ -525,21 +525,30 @@ def login(opts) do
 end
 ```
 
-`stream/3` is optional. When absent, Tackle.Lib calls `generate/2` and still emits a
-normalized usage event when usage is returned.
+An adapter implements `generate/2`, `stream/3`, or both. Without `stream/3`,
+a streaming caller gets `generate/2` and one normalized usage event; without
+`generate/2`, a non-streaming caller gets `stream/3` with a callback that drops
+the events. Selection requires at least one of them.
 
 The loop supplies these adapter options:
 
-- `:model`
+- `:model`, `:provider_id`, `:provider_settings`
 - `:session_id` — stable across the conversation for provider cache affinity
 - `:system`
 - `:messages` — the sole conversation transport
-- `:temperature`
-- `:strict_schema`
-- `:native_tools`
+- `:temperature` — `0.3` unless host options set it
 - `:tools` — provider-neutral definitions, in the order of the state's `:tools`
 - `:cancellation_signal`, when present
 - host `state.llm_opts`, except unsupported tool-policy options
+
+Other callers add `:tool_choice` (`"none"`) and `:max_tokens`. The
+`Tackle.Lib.LLM` module docs list every standard option; callers build them
+with `Tackle.Lib.LLM.request_opts/3`, so host options never replace the keys
+that define a request.
+
+`schema` is `nil` for a chat turn. Callers may pass a keyword or JSON Schema
+map for a structured response; the library converts it once, and the adapter
+always receives a JSON Schema map with string keys.
 
 A provider-neutral message array looks like:
 
@@ -583,8 +592,7 @@ The adapter returns:
      currency: "USD"
    },
    model: "provider/model-name",
-   provider: "provider",
-   provider_state: %{"provider" => "provider", "model" => "provider/model-name", "opaque" => "..."}
+   provider_state: %{"opaque" => "..."}
  }}
 ```
 
@@ -593,30 +601,36 @@ or `nil`. Tackle.Lib normalizes it. Adapter price cards may fill an itemized and
 total estimate when the provider omits cost; hosts still own billing, quota, and
 persistence policy.
 
-The loop normalizes each chat response into a `%Tackle.Lib.LLM.Response{}`
-(`Tackle.Lib.LLM.Response.from_result/1`) before hooks, events, or messages see
-it. `"content"` and `"thinking"` (or `:content` and `:thinking`) must be
-strings or absent, `"tool_calls"` (or `:tool_calls`) a list of calls
+`Tackle.Lib.LLM.generate_with/3` and `stream_with/4` check the result and
+return `{:ok, %Tackle.Lib.LLM.Response{}}`
+(`Tackle.Lib.LLM.Response.from_result/1`), which the loop, hooks, events, and
+messages use. `"content"` and `"thinking"` (or `:content` and `:thinking`) must
+be strings or absent, `"tool_calls"` (or `:tool_calls`) a list of calls
 `Tackle.Lib.Tool.Call.normalize/1` accepts or absent, and `:provider_state` a
-map or `nil`. Any other result ends the turn with the error reason
-`{:invalid_response, detail}` rather than crashing the loop.
-`Tackle.Lib.LLM.generate_with/3` and `stream_with/4` themselves still return the
-adapter's map, since they also serve structured outputs.
+map or `nil`. The response keeps the result's `:data` map, where structured
+callers read the parsed object. Any other result, and an adapter return that
+is not `{:ok, _}` or `{:error, _}`, is
+`{:error, %Tackle.Lib.LLM.Error{kind: :invalid_response}}`, and an adapter that
+raises, throws, or exits is `{:error, %Tackle.Lib.LLM.Error{kind: :unknown}}`;
+either ends the turn instead of crashing the loop. The response's `:provider`
+is the selected provider id, whatever the adapter reports.
 
 `:provider_state` is optional opaque, non-secret continuation metadata needed by
-some stateless provider APIs. Tackle.Lib stores it on the assistant message and
-returns it in subsequent `opts[:messages]`; an adapter must replay it only when
-its embedded provider id and model match the current request, so state from
-one account is never replayed to another provider on the same adapter. Hosts that persist
-conversations must preserve this field.
+some stateless provider APIs. The library stamps it with the `"provider"` id
+and the requested `"model"`, Tackle.Lib stores it on the assistant message, and
+the library passes it back in later `opts[:messages]` only to the same provider
+and model: it drops every other message's provider state before calling the
+adapter. State from one account is therefore never replayed to another
+provider on the same adapter, and adapters do not check its origin. Hosts that
+persist conversations must preserve this field.
 
 Provider adapters are also responsible for putting Tackle.Lib's tool
 definitions (`Tackle.Lib.Tool.definition/1`) into the provider wire format.
 Each definition in `opts[:tools]` carries its parameters as a JSON Schema
 object in `:input_schema`, computed once by the library with
 `Tackle.Lib.Tool.Schema.JsonSchema.to_json_schema/1`, so adapters send it as it
-is instead of converting schemas themselves. A keyword structured-output
-schema can be projected with the same function.
+is instead of converting schemas themselves. Structured-output schemas are
+converted by the library the same way before the adapter sees them.
 
 ### Decision models
 

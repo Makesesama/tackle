@@ -3,9 +3,10 @@ defmodule Tackle.Lib.LLM do
   Provider-agnostic LLM behaviour — the keystone seam of Tackle.Lib.
 
   Tackle.Lib never talks to a provider directly. The agent loop
-  (`Tackle.Lib.Loop`) calls `generate/2` on the configured adapter module, and the
-  host application supplies an adapter that fulfils this contract. This is what
-  makes Tackle.Lib provider-agnostic: swap the adapter, keep the loop.
+  (`Tackle.Lib.Loop`) calls `generate_with/3` or `stream_with/4` with the
+  selected adapter, and the host application supplies an adapter that fulfils
+  this contract. This is what makes Tackle.Lib provider-agnostic: swap the
+  adapter, keep the loop.
 
   ## Selecting a provider and model
 
@@ -35,9 +36,110 @@ defmodule Tackle.Lib.LLM do
 
       config :tackle_lib, llm: MyApp.AI.TackleAdapter
 
-  `adapter/0`, `generate/2`, and `stream/3` use that default. Adapters may
-  implement the optional `stream/3` callback; Tackle.Lib normalizes provider
-  stream events into `%Tackle.Lib.Event{}` before hosts see them.
+  `adapter/0`, `generate/2`, and `stream/3` use that default.
+
+  ## The contract
+
+  An adapter implements `generate/2`, `stream/3`, or both:
+
+      @callback generate(schema :: map() | nil, opts :: keyword()) ::
+                  {:ok, adapter_result()} | {:error, term()}
+
+      @callback stream(schema :: map() | nil, opts :: keyword(), (term() -> any())) ::
+                  {:ok, adapter_result()} | {:error, term()}
+
+  An adapter that exports only `stream/3` is called with a callback that drops
+  its events when the caller does not stream, and one that exports only
+  `generate/2` is generated when the caller streams. `stream/3` emits
+  provider-specific chunks or events to its callback; Tackle.Lib normalizes
+  each into a `%Tackle.Lib.Event{}` before hosts see it.
+
+  * `schema` — `nil` for a chat turn, or a JSON Schema object describing a
+    structured response. Callers may pass a Tackle.Lib keyword schema (see
+    `Tackle.Lib.Tool.Schema`) or a JSON Schema map; the library converts it
+    once, so adapters always receive a JSON Schema map with string keys
+    (`Tackle.Lib.Tool.Schema.JsonSchema.to_json_schema/1`). Tool calls are
+    delivered through provider-native `tool_calls`, not through this schema.
+  * `opts` — the request options described below.
+
+  ### Request options
+
+  Callers build options with `request_opts/3`, so the keys that define a call
+  cannot be replaced by host `llm_opts`. Adapters receive these standard keys:
+
+  * `:model` — the adapter-local model id.
+  * `:provider_id` and `:provider_settings` — the selected provider (see
+    `Tackle.Lib.LLM.Provider`); adapters use the id as their credential
+    namespace.
+  * `:messages` — the conversation (see below).
+  * `:system` — the system prompt, or absent.
+  * `:tools` — tool definitions (`Tackle.Lib.Tool.definition/1`): maps with a
+    `:name`, a `:description`, and a JSON Schema `:input_schema`. `[]` means
+    no tools.
+  * `:tool_choice` — `"none"` when a caller registers tools only for prompt
+    cache identity (the compaction summarizer) or wants plain text; absent
+    otherwise. Hosts cannot set it (see `request_opts/3`).
+  * `:session_id` — a stable id adapters may use for prompt-cache affinity.
+  * `:cancellation_signal` — a `Tackle.Lib.Cancellation` signal; adapters
+    should observe it and abort provider work when possible.
+  * `:temperature` — the sampling temperature. The agent loop defaults it to
+    `0.3`; host options override it.
+  * `:max_tokens` — the most output tokens to generate, or absent.
+  * `:reasoning_effort` — the thinking level (see `Tackle.Lib.Thinking`), or
+    absent.
+  * `:receive_timeout` — milliseconds to wait for the provider, or absent.
+  * `:credential_store` and `:interaction` — the host's
+    `Tackle.Lib.CredentialStore` and `Tackle.Lib.Interaction` handles.
+
+  Other host options pass through; adapters may honour or ignore them.
+
+  ### `opts[:messages]` — the structured message array
+
+  The conversation is delivered EXCLUSIVELY via `opts[:messages]`: a
+  provider-neutral, role-tagged array (see `Tackle.Lib.Messages.to_provider/1`)
+  where each conversation turn is its own map — `:user`, `:assistant` (with
+  native `:tool_calls`), and `:tool` (linked by `:tool_call_id`). Adapters send
+  THIS array to the provider, preserving turn structure and an append-only
+  prefix for provider prompt caching.
+
+  ### Results
+
+  On success the adapter returns `{:ok, %{data: map, usage: map | nil, model:
+  String.t() | nil}}`, optionally with opaque `:provider_state`. `:data` holds
+  the assistant's `"content"`, `"thinking"`, and native `"tool_calls"`, or the
+  parsed object of a structured response. `generate_with/3` and
+  `stream_with/4` check the result and return `{:ok,
+  %Tackle.Lib.LLM.Response{}}` (see `Tackle.Lib.LLM.Response.from_result/1`):
+
+  * `content` and `thinking` must be strings or absent, and `tool_calls` a
+    list of calls `Tackle.Lib.Tool.Call.normalize/1` accepts. A structured
+    response keeps its parsed object in the response's `:data`; these three
+    keys keep their chat meaning there, so a schema must not use them for
+    anything else.
+  * `usage` is normalized into `%Tackle.Lib.Usage{}` and priced from the
+    model card (`model_info/1`) when the provider reports no cost; derived
+    cost estimates are marked, and hosts keep billing and persistence policy.
+  * `provider` is the selected provider id, whatever the adapter reported.
+  * `provider_state` is stamped with the `"provider"` id and the requested
+    `"model"`.
+
+  A result that does not fit, an adapter return other than `{:ok, _}` or
+  `{:error, _}`, and an adapter that raises, throws, or exits never crash the
+  caller. A malformed result is `{:error, %Tackle.Lib.LLM.Error{kind:
+  :invalid_response}}`, whose `details` hold the `:reason` and the result's
+  `:usage` (the provider still spent the tokens); a crash is
+  `{:error, %Tackle.Lib.LLM.Error{kind: :unknown}}`, which is not retried.
+
+  ### Provider state
+
+  Adapters may return opaque, non-secret `:provider_state` continuation
+  metadata, such as reasoning to replay. Tackle.Lib stores it on the
+  assistant message and passes it back as the message's `:provider_state`,
+  but only to the provider and model that produced it: before calling an
+  adapter, the library drops every message's provider state whose stamped
+  `"provider"` and `"model"` differ from the call's. Adapters therefore read
+  provider state without checking its origin, and check only what else it
+  depends on (such as an auth mode).
 
   ## Errors
 
@@ -61,86 +163,37 @@ defmodule Tackle.Lib.LLM do
   provider's `:provider_id` and `:provider_settings` to these callbacks too;
   adapters use the provider id as their credential namespace (see
   `Tackle.Lib.LLM.Provider.id/2`) so each provider keeps its own login.
-
-  ## The contract
-
-  An adapter implements `generate/2`:
-
-      @callback generate(schema :: keyword() | nil, opts :: keyword()) ::
-                  {:ok, response()} | {:error, term()}
-
-  * `schema` — an optional Tackle.Lib/`AI.Object`-style keyword schema describing a
-    structured non-tool response (see `Tackle.Lib.SystemPrompt.response_schema/0`),
-    or `nil` for a plain/native turn. Tool calls are delivered through
-    provider-native `tool_calls`, not through this schema.
-  * `opts` — passthrough options. Tackle.Lib sets `:model`, `:session_id`,
-    `:system`, `:messages`, and `:tools`, which host options cannot replace,
-    and the defaults `:temperature` and `:strict_schema`, which host-supplied
-    `llm_opts` from the agent state override (see `request_opts/3`).
-    Selections add `:provider_id` and `:provider_settings`. Adapters may use
-    the stable `:session_id` for provider prompt-cache affinity.
-
-  ### `opts[:messages]` — the structured message array (the contract)
-
-  The conversation is delivered EXCLUSIVELY via `opts[:messages]`: a
-  provider-neutral, role-tagged array (see `Tackle.Lib.Messages.to_provider/1`)
-  where each conversation turn is its own map — `:user`, `:assistant` (with
-  native `:tool_calls`), and `:tool` (linked by `:tool_call_id`). Adapters send
-  THIS array to the provider, preserving turn structure and an append-only
-  prefix for provider prompt caching.
-
-  When a run is cancellable, opts also
-    include `:cancellation_signal`; adapters should observe it and abort
-    provider work when possible. Adapters may honour or ignore extras.
-
-  On success the adapter returns `{:ok, %{data: map, usage: map | Tackle.Lib.Usage.t() | nil, model: String.t() | nil}}`
-  where `:data` contains assistant `content` and/or native `tool_calls`, or a
-  parsed structured response for non-tool calls. `generate_with/3` and
-  `stream_with/4` return this map as is (with its usage normalized), since
-  they also serve structured outputs. For a chat turn, the agent loop then
-  normalizes it into a `Tackle.Lib.LLM.Response` (`Tackle.Lib.LLM.Response.from_result/1`):
-  `content` and `thinking` must be strings or absent, and `tool_calls` a list
-  of calls `Tackle.Lib.Tool.Call.normalize/1` accepts. A result that does not
-  fit ends the turn with an `{:invalid_response, detail}` error reason
-  instead of crashing the loop, and a response with neither content nor tool
-  calls is asked again once. Adapters may return opaque,
-  non-secret `:provider_state` continuation metadata; Tackle.Lib stores it on
-  the assistant message and returns it only to subsequent adapters, which must
-  validate the originating provider and model before replaying it. `generate/3`
-  normalizes provider-specific usage maps into `%Tackle.Lib.Usage{}` before returning so the
-  loop and host persistence see one stable shape. Cost is optional because many
-  providers return token counts only. Adapters may expose optional model limits
-  and price cards through `model_info/1`; Tackle.Lib marks derived cost estimates
-  while hosts retain billing and persistence policy.
+  Adapters may expose optional model limits and price cards through
+  `model_info/1`.
   """
 
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.LLM.Response
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.ModelInfo
+  alias Tackle.Lib.Tool.Schema.JsonSchema
   alias Tackle.Lib.Usage
 
-  @type usage :: Usage.t() | nil
+  @typedoc """
+  A structured-response schema as callers pass it: a Tackle.Lib keyword
+  schema, a JSON Schema map, or `nil` for a chat turn. Adapters always
+  receive a JSON Schema map with string keys, or `nil`.
+  """
+  @type schema :: keyword() | map() | nil
 
-  @type adapter_usage :: Usage.t() | map() | nil
-
-  @type adapter_response :: %{
+  @typedoc "What an adapter's `generate/2` or `stream/3` returns on success."
+  @type adapter_result :: %{
           required(:data) => map(),
-          required(:usage) => adapter_usage(),
+          required(:usage) => Usage.t() | map() | nil,
           required(:model) => String.t() | nil,
-          optional(:provider) => String.t() | atom() | nil,
           optional(:provider_state) => map() | nil
         }
 
-  @type response :: %{
-          required(:data) => map(),
-          required(:usage) => usage(),
-          required(:model) => String.t() | nil,
-          optional(:provider) => String.t() | atom() | nil,
-          optional(:provider_state) => map() | nil
-        }
+  @typedoc "What `generate_with/3` and `stream_with/4` return."
+  @type result :: {:ok, Response.t()} | {:error, term()}
 
   @doc """
   A stable lowercase identifier naming the adapter type.
@@ -171,14 +224,24 @@ defmodule Tackle.Lib.LLM do
   @callback model_info(model :: String.t(), settings :: Provider.settings()) ::
               ModelInfo.t() | map() | nil
 
-  @callback generate(schema :: keyword() | nil, opts :: keyword()) ::
-              {:ok, adapter_response()} | {:error, term()}
+  @doc """
+  Generates one response. Optional when the adapter exports `stream/3`.
 
+  `schema` is `nil` or a JSON Schema map with string keys; see the module docs
+  for the options and the result.
+  """
+  @callback generate(schema :: map() | nil, opts :: keyword()) ::
+              {:ok, adapter_result()} | {:error, term()}
+
+  @doc """
+  Streams one response, emitting provider events to `event_callback`.
+  Optional when the adapter exports `generate/2`.
+  """
   @callback stream(
-              schema :: keyword() | nil,
+              schema :: map() | nil,
               opts :: keyword(),
               event_callback :: (term() -> any())
-            ) :: {:ok, adapter_response()} | {:error, term()}
+            ) :: {:ok, adapter_result()} | {:error, term()}
 
   @doc """
   Runs the adapter's interactive login flow and returns credentials to store.
@@ -229,6 +292,7 @@ defmodule Tackle.Lib.LLM do
                       models: 1,
                       model_info: 1,
                       model_info: 2,
+                      generate: 2,
                       stream: 3,
                       login: 1,
                       logout: 1,
@@ -242,8 +306,8 @@ defmodule Tackle.Lib.LLM do
   stand for their default providers. Provider ids must be lowercase strings
   containing letters, digits, and hyphens, and must be unique. The model
   portion may itself contain `/`; only the first slash separates the provider
-  id. Every adapter must export `generate/2`, `adapter_id/0`, and `models/1` or
-  `models/0`.
+  id. Every adapter must export `generate/2` or `stream/3`, `adapter_id/0`, and
+  `models/1` or `models/0`.
   """
   @spec select([Provider.source()], String.t()) :: {:ok, Selection.t()} | {:error, term()}
   defdelegate select(adapters, model_ref), to: Selection, as: :resolve
@@ -351,151 +415,311 @@ defmodule Tackle.Lib.LLM do
   end
 
   @doc """
-  Delegates to the configured adapter's `generate/2`.
+  Generates through the configured default adapter (see `generate_with/3`).
   """
-  @spec generate(keyword() | nil, keyword()) :: {:ok, response()} | {:error, term()}
+  @spec generate(schema(), keyword()) :: result()
   def generate(schema, opts \\ []) do
     generate_with(adapter(), schema, opts)
   end
 
   @doc """
-  Delegates to a specific adapter's `generate/2`.
+  Generates one response through a selection or a specific adapter.
 
-  This is used by per-turn snapshots so a turn can continue with the adapter
-  that was resolved when the turn started, even if application config changes
-  while the turn is running.
+  Per-turn snapshots use it so a turn continues with the adapter resolved
+  when the turn started, even if application config changes meanwhile. A
+  selection passes its adapter-local model, provider id, and provider
+  settings as `opts[:model]`, `opts[:provider_id]`, and
+  `opts[:provider_settings]`, replacing any given. A bare adapter module
+  stands for its default provider: its provider id is `opts[:provider_id]`,
+  else its `adapter_id/0`.
+
+  Adapters that export only `stream/3` are streamed with a callback that
+  drops their events. The result is described in the module docs: a
+  `Tackle.Lib.LLM.Response` or `{:error, reason}`, never an exception.
   """
-  @spec generate_with(module() | Selection.t() | nil, keyword() | nil, keyword()) ::
-          {:ok, response()} | {:error, term()}
+  @spec generate_with(module() | Selection.t() | nil, schema(), keyword()) :: result()
   def generate_with(adapter_or_selection, schema, opts \\ [])
-
-  def generate_with(%Selection{} = selection, schema, opts) do
-    generate_with_context(
-      selection.adapter,
-      selection.model_info,
-      selection.provider_id,
-      schema,
-      selection_opts(selection, opts)
-    )
-  end
-
-  def generate_with(adapter, schema, opts)
-      when is_atom(adapter) and not is_nil(adapter) do
-    with {:ok, info} <- model_info_from_opts(adapter, opts) do
-      generate_with_context(adapter, info, Keyword.get(opts, :provider), schema, opts)
-    end
-  end
 
   def generate_with(nil, _schema, _opts), do: {:error, :missing_llm_adapter}
 
-  @doc """
-  Streams through the configured adapter when supported.
+  def generate_with(adapter_or_selection, schema, opts) do
+    with {:ok, call} <- prepare(adapter_or_selection, schema, opts) do
+      call
+      |> invoke(nil)
+      |> to_response(call)
+    end
+  end
 
-  The adapter may emit provider-specific chunks/events to the callback it
-  receives. Tackle.Lib converts each one to `%Tackle.Lib.Event{}` before invoking the
-  host callback. If the adapter does not implement `stream/3`, Tackle.Lib falls back
-  to `generate/2` and emits a normalized usage event when usage exists.
+  @doc """
+  Streams through the configured default adapter (see `stream_with/4`).
   """
-  @spec stream(keyword() | nil, keyword(), (Event.t() -> any())) ::
-          {:ok, response()} | {:error, term()}
+  @spec stream(schema(), keyword(), (Event.t() -> any())) :: result()
   def stream(schema, opts, event_callback) when is_function(event_callback, 1) do
     stream_with(adapter(), schema, opts, event_callback)
   end
 
   @doc """
-  Streams through a specific adapter when supported.
+  Streams one response through a selection or a specific adapter.
 
-  Mirrors `stream/3`, but uses the adapter supplied by a per-turn snapshot
-  instead of resolving current application config.
+  Mirrors `generate_with/3`. The adapter emits provider-specific chunks or
+  events to the callback it receives; each is converted to a
+  `%Tackle.Lib.Event{}` (with usage priced from the model card) before
+  `event_callback` sees it. An adapter that exports only `generate/2` is
+  generated instead, and its response's usage is emitted as one `:usage`
+  event.
   """
-  @spec stream_with(
-          module() | Selection.t() | nil,
-          keyword() | nil,
-          keyword(),
-          (Event.t() -> any())
-        ) :: {:ok, response()} | {:error, term()}
+  @spec stream_with(module() | Selection.t() | nil, schema(), keyword(), (Event.t() -> any())) ::
+          result()
   def stream_with(adapter_or_selection, schema, opts, event_callback)
-
-  def stream_with(%Selection{} = selection, schema, opts, event_callback)
-      when is_function(event_callback, 1) do
-    stream_with_context(
-      selection.adapter,
-      selection.model_info,
-      selection.provider_id,
-      schema,
-      selection_opts(selection, opts),
-      event_callback
-    )
-  end
-
-  def stream_with(adapter, schema, opts, event_callback)
-      when is_atom(adapter) and not is_nil(adapter) and is_function(event_callback, 1) do
-    with {:ok, info} <- model_info_from_opts(adapter, opts) do
-      stream_with_context(
-        adapter,
-        info,
-        Keyword.get(opts, :provider),
-        schema,
-        opts,
-        event_callback
-      )
-    end
-  end
 
   def stream_with(nil, _schema, _opts, _event_callback), do: {:error, :missing_llm_adapter}
 
-  defp selection_opts(%Selection{} = selection, opts) do
-    opts
-    |> Keyword.put(:model, selection.model)
-    |> Keyword.put(:provider_id, selection.provider_id)
-    |> Keyword.put(:provider_settings, selection.provider_settings)
-  end
-
-  defp generate_with_context(adapter, info, provider, schema, opts) do
-    with {:ok, response} <- adapter.generate(schema, opts) do
-      {:ok, normalize_response(response, info, provider, Keyword.get(opts, :model))}
+  def stream_with(adapter_or_selection, schema, opts, event_callback)
+      when is_function(event_callback, 1) do
+    with {:ok, call} <- prepare(adapter_or_selection, schema, opts) do
+      if function_exported?(call.adapter, :stream, 3) do
+        call
+        |> invoke(stream_callback(call, event_callback))
+        |> to_response(call)
+      else
+        with {:ok, response} <- call |> invoke(nil) |> to_response(call) do
+          emit_usage_event(response, call, event_callback)
+          {:ok, response}
+        end
+      end
     end
   end
 
-  defp stream_with_context(adapter, info, provider, schema, opts, event_callback) do
-    if function_exported?(adapter, :stream, 3) do
-      adapter_callback = fn provider_event ->
-        provider_event
-        |> Event.normalize(provider: provider)
-        |> price_usage_event(info, provider, Keyword.get(opts, :model))
-        |> event_callback.()
-      end
+  # One adapter call: the adapter, its options, and what the boundary needs to
+  # check and stamp the result.
+  defp prepare(%Selection{} = selection, schema, opts) when is_list(opts) do
+    opts =
+      opts
+      |> Keyword.put(:model, selection.model)
+      |> Keyword.put(:provider_id, selection.provider_id)
+      |> Keyword.put(:provider_settings, selection.provider_settings)
 
-      with {:ok, response} <- adapter.stream(schema, opts, adapter_callback) do
-        {:ok, normalize_response(response, info, provider, Keyword.get(opts, :model))}
-      end
+    build_call(selection.adapter, selection.model_info, selection.provider_id, schema, opts)
+  end
+
+  defp prepare(adapter, schema, opts) when is_atom(adapter) and is_list(opts) do
+    with :ok <- ensure_adapter_loaded(adapter),
+         {:ok, info} <- model_info_from_opts(adapter, opts) do
+      build_call(adapter, info, default_provider_id(adapter, opts), schema, opts)
+    end
+  end
+
+  defp prepare(adapter, _schema, opts), do: {:error, {:invalid_llm_request, adapter, opts}}
+
+  defp build_call(adapter, info, provider_id, schema, opts) do
+    model = Keyword.get(opts, :model)
+
+    with :ok <- ensure_adapter_loaded(adapter),
+         :ok <- ensure_generates(adapter),
+         {:ok, schema} <- json_schema(schema) do
+      {:ok,
+       %{
+         adapter: adapter,
+         info: info,
+         provider_id: provider_id,
+         model: model,
+         schema: schema,
+         opts: drop_foreign_provider_state(opts, provider_id, model)
+       }}
+    end
+  end
+
+  defp default_provider_id(adapter, opts) do
+    with nil <- Keyword.get(opts, :provider_id),
+         true <- function_exported?(adapter, :adapter_id, 0),
+         {:ok, id} when is_binary(id) <- Provider.call(adapter, :adapter_id, []) do
+      id
     else
-      with {:ok, response} <- generate_with_context(adapter, info, provider, schema, opts) do
-        emit_usage_event(response, info, event_callback)
-        {:ok, response}
-      end
+      id when is_binary(id) and id != "" -> id
+      _missing -> nil
     end
   end
 
-  defp normalize_response(%{} = response, info, fallback_provider, requested_model) do
-    response_model = Map.get(response, :model)
-    provider = Map.get(response, :provider) || fallback_provider
+  defp ensure_generates(adapter) do
+    if function_exported?(adapter, :generate, 2) or function_exported?(adapter, :stream, 3),
+      do: :ok,
+      else: {:error, {:invalid_adapter, adapter, {:missing_callback, {:generate, 2}}}}
+  end
+
+  # Adapters receive one JSON Schema form: a keyword schema is projected once
+  # here, and a map schema gets string keys.
+  defp json_schema(nil), do: {:ok, nil}
+
+  defp json_schema(schema) when is_list(schema) do
+    if Keyword.keyword?(schema),
+      do: {:ok, JsonSchema.to_json_schema(schema)},
+      else: {:error, {:invalid_response_schema, schema}}
+  rescue
+    exception in ArgumentError ->
+      {:error, {:invalid_response_schema, Exception.message(exception)}}
+  end
+
+  defp json_schema(%{} = schema) when not is_struct(schema), do: {:ok, stringify_keys(schema)}
+  defp json_schema(schema), do: {:error, {:invalid_response_schema, schema}}
+
+  defp stringify_keys(%{} = map) when not is_struct(map),
+    do: Map.new(map, fn {key, value} -> {to_string(key), stringify_keys(value)} end)
+
+  defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
+  defp stringify_keys(value), do: value
+
+  # Provider state is replayed only to the provider and model that produced
+  # it, as stamped by `to_response/2`; anything else is dropped from the
+  # messages before the adapter sees them.
+  defp drop_foreign_provider_state(opts, provider_id, model) do
+    case Keyword.fetch(opts, :messages) do
+      {:ok, messages} when is_list(messages) ->
+        Keyword.put(opts, :messages, Enum.map(messages, &replayable(&1, provider_id, model)))
+
+      _other ->
+        opts
+    end
+  end
+
+  defp replayable(%{} = message, provider_id, model) when not is_struct(message) do
+    Enum.reduce([:provider_state, "provider_state"], message, fn key, message ->
+      case Map.fetch(message, key) do
+        {:ok, state} ->
+          if own_state?(state, provider_id, model), do: message, else: Map.delete(message, key)
+
+        :error ->
+          message
+      end
+    end)
+  end
+
+  defp replayable(message, _provider_id, _model), do: message
+
+  defp own_state?(%{"provider" => provider, "model" => model}, provider, model)
+       when is_binary(provider) and is_binary(model),
+       do: true
+
+  defp own_state?(_state, _provider_id, _model), do: false
+
+  defp stream_callback(call, event_callback) do
+    fn provider_event ->
+      provider_event
+      |> Event.normalize(provider: call.provider_id)
+      |> price_usage_event(call.info, call.provider_id, call.model)
+      |> event_callback.()
+    end
+  end
+
+  # Calls the adapter. Anything other than `{:ok, result}` or
+  # `{:error, reason}`, and any exception, throw, or exit, becomes an error.
+  defp invoke(call, event_callback) do
+    result =
+      cond do
+        event_callback ->
+          call.adapter.stream(call.schema, call.opts, event_callback)
+
+        function_exported?(call.adapter, :generate, 2) ->
+          call.adapter.generate(call.schema, call.opts)
+
+        true ->
+          call.adapter.stream(call.schema, call.opts, fn _event -> :ok end)
+      end
+
+    case result do
+      {:ok, _result} -> result
+      {:error, _reason} -> result
+      other -> {:invalid, {:result, other}}
+    end
+  rescue
+    exception -> {:error, adapter_failure(call.adapter, :error, exception, __STACKTRACE__)}
+  catch
+    kind, reason -> {:error, adapter_failure(call.adapter, kind, reason, __STACKTRACE__)}
+  end
+
+  defp adapter_failure(adapter, kind, reason, stacktrace) do
+    Error.new(:unknown,
+      message: "The LLM adapter #{inspect(adapter)} failed: #{failure_text(kind, reason)}",
+      details: %{adapter: adapter, kind: kind, reason: reason, stacktrace: stacktrace}
+    )
+  end
+
+  defp failure_text(:error, exception), do: Exception.message(exception)
+
+  defp failure_text(kind, reason),
+    do: "#{kind} #{inspect(reason, limit: 10, printable_limit: 200)}"
+
+  defp to_response({:ok, result}, call) do
+    case Response.from_result(result) do
+      {:ok, response} ->
+        provider = call.provider_id || response.provider
+
+        {:ok,
+         %{
+           response
+           | provider: provider,
+             usage: price(response.usage, call, response.model, provider),
+             provider_state: stamp_state(response.provider_state, provider, call.model)
+         }}
+
+      {:error, {:invalid_response, detail}} ->
+        {:error, invalid_response(detail, result, call)}
+    end
+  end
+
+  defp to_response({:invalid, detail}, call), do: {:error, invalid_response(detail, nil, call)}
+  defp to_response({:error, reason}, _call), do: {:error, reason}
+
+  defp stamp_state(%{} = state, provider, model),
+    do: Map.merge(state, %{"provider" => provider, "model" => model})
+
+  defp stamp_state(nil, _provider, _model), do: nil
+
+  # A malformed result is an `:invalid_response` error. Its usage, when the
+  # result has a usable one, is kept in the details: the provider still
+  # spent the tokens.
+  defp invalid_response(detail, result, call) do
+    provider = call.provider_id || result_field(result, :provider)
 
     usage =
-      response
-      |> Map.get(:usage)
-      |> Usage.normalize(model: response_model || requested_model, provider: provider)
-      |> then(&estimate_cost(info, &1))
+      case result_field(result, :usage) do
+        %Usage{} = usage -> price(usage, call, result_field(result, :model), provider)
+        %{} = usage -> price(Usage.normalize(usage), call, result_field(result, :model), provider)
+        _invalid -> nil
+      end
 
-    Map.put(response, :usage, usage)
+    Error.new(:invalid_response,
+      message: invalid_response_message(detail),
+      details: %{reason: detail, usage: usage}
+    )
+  end
+
+  defp result_field(%{} = result, key) when not is_struct(result), do: Map.get(result, key)
+  defp result_field(_result, _key), do: nil
+
+  defp invalid_response_message({:tool_calls, reason}),
+    do: "Invalid provider tool calls: #{inspect(reason)}"
+
+  defp invalid_response_message(detail), do: "Invalid provider response: #{inspect(detail)}"
+
+  defp price(nil, _call, _model, _provider), do: nil
+
+  defp price(%Usage{} = usage, call, model, provider) do
+    usage
+    |> Usage.normalize(model: model || call.model, provider: provider)
+    |> then(&estimate_cost(call.info, &1))
   end
 
   defp price_usage_event(%Event{type: :usage, data: data} = event, info, provider, model) do
     usage =
-      data
-      |> Map.get(:usage)
-      |> Usage.normalize(model: model, provider: provider)
-      |> then(&estimate_cost(info, &1))
+      case Map.get(data, :usage) do
+        %{} = usage ->
+          usage
+          |> Usage.normalize(model: model, provider: provider)
+          |> then(&estimate_cost(info, &1))
+
+        _other ->
+          nil
+      end
 
     context_usage = ContextUsage.from_usage(usage, info)
     data = data |> Map.put(:usage, usage) |> maybe_put(:context_usage, context_usage)
@@ -507,12 +731,15 @@ defmodule Tackle.Lib.LLM do
   defp estimate_cost(nil, usage), do: usage
   defp estimate_cost(%ModelInfo{} = info, usage), do: ModelInfo.estimate_cost(info, usage)
 
-  defp emit_usage_event(%{usage: nil}, _info, _event_callback), do: :ok
+  defp emit_usage_event(%Response{usage: nil}, _call, _event_callback), do: :ok
 
-  defp emit_usage_event(%{usage: usage}, info, event_callback) do
-    event = Event.usage(usage)
-    event = price_usage_event(event, info, usage.provider, usage.model)
-    event_callback.(event)
+  defp emit_usage_event(%Response{usage: usage}, call, event_callback) do
+    usage
+    |> Event.usage()
+    |> price_usage_event(call.info, usage.provider, usage.model)
+    |> event_callback.()
+
+    :ok
   end
 
   defp model_info_from_opts(adapter, opts) do
