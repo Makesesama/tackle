@@ -50,9 +50,19 @@ stream must contain a recognized finish reason followed by `[DONE]`. Usage is
 held until that terminal validation succeeds, and tool calls are returned only
 after their identity and JSON-object arguments have been validated.
 
-For reasoning controls, pass `reasoning_effort: :low | :high | :max` (or
-`:none`/`:off` to disable thinking) in `:llm_opts`. Reasoning-capable models use
-DeepSeek's `thinking` plus `reasoning_effort` wire format. Prior reasoning is
+For reasoning controls, pass any `Tackle.Lib.Thinking` level as
+`:reasoning_effort` in `:llm_opts` (`:none`/`:off` disables thinking).
+Reasoning-capable models use DeepSeek's `thinking` plus `reasoning_effort` wire
+format. DeepSeek supports `low`, `high`, and `max`; the adapter sends the other
+levels as DeepSeek's documentation maps them:
+
+| Level | Sent as |
+| --- | --- |
+| `minimal`, `low` | `low` |
+| `medium`, `high`, `xhigh` | `high` |
+| `max` | `max` |
+
+Other values fail with `{:error, {:invalid_reasoning_effort, value}}`. Prior reasoning is
 kept as opaque provider state, which `Tackle.Lib.LLM` replays only to the same
 provider id and model.
 Structured responses use DeepSeek's JSON-output mode and include the requested

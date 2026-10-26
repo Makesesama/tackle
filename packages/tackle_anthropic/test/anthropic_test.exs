@@ -1,7 +1,7 @@
 defmodule Tackle.Plugins.AnthropicTest do
   use ExUnit.Case, async: false
 
-  alias Tackle.Lib.{LLM, ModelInfo}
+  alias Tackle.Lib.{LLM, ModelInfo, Thinking}
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Retry
@@ -122,6 +122,101 @@ defmodule Tackle.Plugins.AnthropicTest do
     assert [%{"type" => "text", "text" => "Be useful", "cache_control" => _}] = body["system"]
     assert [%{"name" => "read"}] = body["tools"]
     assert body["tool_choice"] == %{"type" => "auto"}
+  end
+
+  test "sends every thinking level as an effort or budget the model supports" do
+    test_pid = self()
+
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(test_pid, {:thinking, body["model"], body["thinking"], body["output_config"]})
+      feed_chunks(options, [text_wire("ok")], 200)
+    end
+
+    efforts = %{
+      "claude-opus-5-5" => %{"minimal" => "low"},
+      "claude-opus-4-7" => %{"minimal" => "low"},
+      "claude-sonnet-4-6" => %{"minimal" => "low", "xhigh" => "high"},
+      "claude-opus-4-6" => %{"minimal" => "low", "xhigh" => "high"}
+    }
+
+    budgets = %{
+      "minimal" => 1_024,
+      "low" => 4_096,
+      "medium" => 10_240,
+      "high" => 20_480,
+      "xhigh" => 32_000,
+      "max" => 63_999
+    }
+
+    for model <- Map.keys(efforts) ++ ["claude-haiku-4-5"], level <- Thinking.levels() do
+      opts = [
+        model: model,
+        messages: [%{role: :user, content: "hello"}],
+        max_tokens: 64_000,
+        api_key: "sk-ant-api03-test",
+        reasoning_effort: level,
+        request: request
+      ]
+
+      assert {:ok, _result} = generate(nil, opts)
+      assert_receive {:thinking, ^model, thinking, output_config}
+
+      cond do
+        level == "off" ->
+          assert {thinking, output_config} == {nil, nil}
+
+        model == "claude-haiku-4-5" ->
+          assert thinking["type"] == "enabled"
+          assert thinking["budget_tokens"] == Map.fetch!(budgets, level), level
+          assert output_config == nil
+
+        true ->
+          effort = efforts |> Map.fetch!(model) |> Map.get(level, level)
+          assert thinking["type"] == "adaptive"
+          assert output_config == %{"effort" => effort}, "#{model} #{level}"
+          assert effort in Anthropic.effort_levels(model)
+      end
+    end
+
+    assert Anthropic.effort_levels("claude-opus-4-6-20260101") == ~w(low medium high max)
+    assert Anthropic.effort_levels("claude-haiku-4-7") == ~w(low medium high)
+    assert Anthropic.effort_levels("claude-opus-4-5") == nil
+  end
+
+  test "clamps thinking budgets and honours overrides" do
+    test_pid = self()
+
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(test_pid, {:budget, body["thinking"]["budget_tokens"]})
+      feed_chunks(options, [text_wire("ok")], 200)
+    end
+
+    opts = [
+      model: "claude-haiku-4-5",
+      messages: [%{role: :user, content: "hello"}],
+      max_tokens: 8_000,
+      api_key: "sk-ant-api03-test",
+      request: request
+    ]
+
+    assert {:ok, _result} = generate(nil, Keyword.put(opts, :reasoning_effort, :max))
+    assert_receive {:budget, 7_999}
+
+    assert {:ok, _result} = generate(nil, Keyword.put(opts, :reasoning_effort, "xhigh"))
+    assert_receive {:budget, 7_999}
+
+    overrides = [reasoning_effort: "low", thinking_budgets: %{low: 2_000, max: 3_000}]
+    assert {:ok, _result} = generate(nil, Keyword.merge(opts, overrides))
+    assert_receive {:budget, 2_000}
+
+    overrides = [reasoning_effort: "max", thinking_budgets: %{"max" => 3_000}]
+    assert {:ok, _result} = generate(nil, Keyword.merge(opts, overrides))
+    assert_receive {:budget, 3_000}
+
+    assert {:error, {:invalid_reasoning_effort, "ultra"}} =
+             generate(nil, Keyword.put(opts, :reasoning_effort, "ultra"))
   end
 
   test "uses OAuth credentials with Claude Code headers and namespaced tools" do

@@ -85,8 +85,10 @@ defmodule Tackle.Lib.LLM do
   * `:temperature` — the sampling temperature. The agent loop defaults it to
     `0.3`; host options override it.
   * `:max_tokens` — the most output tokens to generate, or absent.
-  * `:reasoning_effort` — the thinking level (see `Tackle.Lib.Thinking`), or
-    absent.
+  * `:reasoning_effort` — the thinking level (see `Tackle.Lib.Thinking`) as a
+    string or atom, `:none` for no reasoning, or absent for the model's
+    default. Adapters read it with `Tackle.Lib.Thinking.parse/1` and accept
+    every level, sending the nearest one the model supports.
   * `:receive_timeout` — milliseconds to wait for the provider, or absent.
   * `:credential_store` and `:interaction` — the host's
     `Tackle.Lib.CredentialStore` and `Tackle.Lib.Interaction` handles.

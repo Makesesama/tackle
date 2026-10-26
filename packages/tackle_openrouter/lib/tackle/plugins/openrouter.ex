@@ -55,6 +55,12 @@ defmodule Tackle.Plugins.OpenRouter do
   `"api_key_env"`, so another provider never picks up its key by accident.
   Without a key, requests fail with
   `{:error, {:missing_openrouter_api_key, provider_id}}`.
+
+  ## Thinking levels
+
+  `:reasoning_effort` accepts every `Tackle.Lib.Thinking` level and sends it
+  unchanged as OpenRouter's unified `reasoning.effort` (`off` as `"none"`).
+  OpenRouter maps each level to the nearest one the upstream model supports.
   """
 
   @behaviour Tackle.Lib.LLM
@@ -64,6 +70,7 @@ defmodule Tackle.Plugins.OpenRouter do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.Thinking
   alias Tackle.Plugins.OpenRouter.HTTP
   alias Tackle.Plugins.OpenRouter.SSE
 
@@ -94,8 +101,6 @@ defmodule Tackle.Plugins.OpenRouter do
   @catalog_info Map.new(@catalog, fn {model, context, output, prices} ->
                   {model, {context, output, prices}}
                 end)
-
-  @reasoning_efforts ~w(minimal low medium high xhigh max)
 
   @impl true
   def adapter_id, do: @adapter_id
@@ -642,25 +647,15 @@ defmodule Tackle.Plugins.OpenRouter do
     end
   end
 
-  # OpenRouter normalizes one `reasoning.effort` vocabulary across upstreams and
-  # maps unsupported levels to the nearest one the model accepts.
+  # OpenRouter accepts every `Tackle.Lib.Thinking` level as its unified
+  # `reasoning.effort` and maps it to the nearest level the upstream model
+  # supports, so levels pass through unchanged and "off" is "none".
   defp reasoning_options(opts) do
-    case Keyword.get(opts, :reasoning_effort) do
-      nil ->
-        {:ok, nil}
-
-      effort when effort in [:off, :none, "off", "none"] ->
-        {:ok, %{"effort" => "none"}}
-
-      effort when is_atom(effort) or is_binary(effort) ->
-        effort = to_string(effort)
-
-        if effort in @reasoning_efforts,
-          do: {:ok, %{"effort" => effort}},
-          else: {:error, {:invalid_reasoning_effort, effort}}
-
-      effort ->
-        {:error, {:invalid_reasoning_effort, effort}}
+    case Thinking.parse(Keyword.get(opts, :reasoning_effort)) do
+      {:ok, nil} -> {:ok, nil}
+      {:ok, "off"} -> {:ok, %{"effort" => "none"}}
+      {:ok, level} -> {:ok, %{"effort" => level}}
+      {:error, reason} -> {:error, reason}
     end
   end
 

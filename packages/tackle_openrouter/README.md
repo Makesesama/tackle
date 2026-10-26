@@ -106,10 +106,14 @@ Besides the standard Tackle options (`:messages`, `:system`, `:tools`,
 `:temperature`, `:max_tokens`, `:session_id`, `:cancellation_signal`), the
 adapter accepts these `:llm_opts`:
 
-- `:reasoning_effort`: `:minimal | :low | :medium | :high | :xhigh | :max`, or
-  `:none`/`:off` to disable reasoning. Sent as OpenRouter's unified
-  `reasoning.effort`; OpenRouter maps it to the nearest level the model
-  supports. Models with mandatory reasoning reject `:none`.
+- `:reasoning_effort`: any `Tackle.Lib.Thinking` level (`minimal` through
+  `max`, as a string or atom), or `:none`/`:off` to disable reasoning. Sent
+  unchanged as OpenRouter's unified `reasoning.effort` (`off` as `"none"`);
+  OpenRouter maps it to the nearest level the model supports. Models with
+  mandatory reasoning reject `"none"`; leave the option out (as
+  `Tackle.Lib.Thinking.put_llm_opts/2` does for `"off"`) to use the model's
+  default instead. Other values fail with
+  `{:error, {:invalid_reasoning_effort, value}}`.
 - `:provider_preferences`: OpenRouter's `provider` routing object for this
   request, as a map or keyword list, for example
   `[order: ["anthropic"], allow_fallbacks: false]`. Its fields override the

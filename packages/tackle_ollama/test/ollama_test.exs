@@ -1,7 +1,7 @@
 defmodule Tackle.Plugins.OllamaTest do
   use ExUnit.Case, async: false
 
-  alias Tackle.Lib.{Decision, LLM}
+  alias Tackle.Lib.{Decision, LLM, Thinking}
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.Ollama
   alias Tackle.Plugins.Ollama.SSE
@@ -307,6 +307,42 @@ defmodule Tackle.Plugins.OllamaTest do
                }
              }
            ]
+  end
+
+  test "forwards every thinking level for Ollama to map" do
+    parent = self()
+
+    request = fn options ->
+      send(parent, {:effort, JSON.decode!(options[:body])["reasoning_effort"]})
+      into = Keyword.fetch!(options, :into)
+      response = %Req.Response{status: 200, headers: %{}, body: ""}
+
+      frames = [
+        sse(%{"choices" => [%{"delta" => %{"content" => "ok"}, "finish_reason" => "stop"}]}),
+        "data: [DONE]\n\n"
+      ]
+
+      {_request, response} =
+        Enum.reduce(frames, {%Req.Request{}, response}, fn frame, pair ->
+          case into.({:data, frame}, pair) do
+            {:cont, next} -> next
+            {:halt, next} -> next
+          end
+        end)
+
+      {:ok, response}
+    end
+
+    {:ok, selection} = LLM.select([Ollama], "ollama-cloud/gpt-oss:120b")
+    opts = [api_key: "key", request: request, messages: [%{role: :user, content: "go"}]]
+
+    for level <- Thinking.levels() do
+      assert {:ok, _result} =
+               LLM.generate_with(selection, nil, Keyword.put(opts, :reasoning_effort, level))
+
+      expected = if level == "off", do: "none", else: level
+      assert_receive {:effort, ^expected}
+    end
   end
 
   test "rejects unsafe keys and local-only model suffix" do

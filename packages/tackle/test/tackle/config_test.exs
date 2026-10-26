@@ -292,11 +292,7 @@ defmodule Tackle.ConfigTest do
     assert updated.llm.model == "family/nested"
     assert updated.tools == [Tool]
 
-    assert updated.llm_opts == [
-             request_tag: "keep",
-             reasoning_effort: "high",
-             reasoning_summary: "auto"
-           ]
+    assert updated.llm_opts == [request_tag: "keep", reasoning_effort: "high"]
 
     assert {:ok, disabled} = Config.reconfigure(updated, thinking: "off")
     assert disabled.llm_opts == [request_tag: "keep"]

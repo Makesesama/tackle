@@ -35,6 +35,14 @@ defmodule Tackle.Plugins.Anthropic do
   `"api_key_env"`, so another provider never picks up its key by accident.
   Without credentials, requests fail with
   `{:error, {:missing_anthropic_credentials, provider_id}}`.
+
+  ## Thinking levels
+
+  `:reasoning_effort` accepts every `Tackle.Lib.Thinking` level. Adaptive
+  models get the nearest effort they support (`effort_levels/1`), so `minimal`
+  is `low` and `xhigh` or `max` fall back to the highest level below them.
+  Older models get a thinking budget per level, `max` being the whole output
+  limit. `off` sends no thinking options.
   """
 
   @behaviour Tackle.Lib.LLM
@@ -44,6 +52,7 @@ defmodule Tackle.Plugins.Anthropic do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.Thinking
   alias Tackle.Plugins.Anthropic.Convert
   alias Tackle.Plugins.Anthropic.HTTP
   alias Tackle.Plugins.Anthropic.OAuth
@@ -92,12 +101,14 @@ defmodule Tackle.Plugins.Anthropic do
     "claude-fable-5-1" => {1_000_000, 128_000, {10, 50, 0.25, 12.5}}
   }
 
+  # Budgets for models without adaptive thinking; `max` uses the whole
+  # output limit.
   @thinking_budgets %{
-    minimal: 1_024,
-    low: 4_096,
-    medium: 10_240,
-    high: 20_480,
-    xhigh: 32_000
+    "minimal" => 1_024,
+    "low" => 4_096,
+    "medium" => 10_240,
+    "high" => 20_480,
+    "xhigh" => 32_000
   }
 
   @impl true
@@ -312,66 +323,77 @@ defmodule Tackle.Plugins.Anthropic do
   defp schema_instruction(_schema), do: {:error, :invalid_response_schema}
 
   defp thinking_options(opts, model, max_tokens) do
-    case normalize_effort(Keyword.get(opts, :reasoning_effort)) do
-      {:ok, nil} -> {:ok, %{}}
+    case Thinking.parse(Keyword.get(opts, :reasoning_effort)) do
+      {:ok, level} when level in [nil, "off"] -> {:ok, %{}}
       {:ok, level} -> {:ok, build_thinking(level, model, max_tokens, opts)}
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp build_thinking(level, model, max_tokens, opts) do
-    if adaptive?(model) do
-      %{
-        "thinking" => %{"type" => "adaptive", "display" => "summarized"},
-        "output_config" => %{"effort" => effort_for(level)}
-      }
-    else
-      budget = thinking_budget(level, opts)
-      budget_tokens = budget |> min(max_tokens - 1) |> max(1)
+    case effort_levels(model) do
+      nil ->
+        budget_tokens =
+          level |> thinking_budget(max_tokens, opts) |> min(max_tokens - 1) |> max(1)
 
-      %{
-        "thinking" => %{
-          "type" => "enabled",
-          "budget_tokens" => budget_tokens,
-          "display" => "summarized"
+        %{
+          "thinking" => %{
+            "type" => "enabled",
+            "budget_tokens" => budget_tokens,
+            "display" => "summarized"
+          }
         }
-      }
+
+      levels ->
+        %{
+          "thinking" => %{"type" => "adaptive", "display" => "summarized"},
+          "output_config" => %{"effort" => Thinking.nearest(level, levels)}
+        }
     end
   end
 
-  defp adaptive?(model) do
+  @doc """
+  Returns the `output_config.effort` levels `model` accepts, or `nil` for a
+  model that takes a thinking budget instead.
+
+  Adaptive-thinking models (`*-5`, `*-4-6` and later) accept `low`,
+  `medium`, and `high`; Opus 4.6 and Sonnet 4.6 add `max`, and the 5.x
+  families and Opus 4.7 and later add `xhigh` and `max`.
+  """
+  @spec effort_levels(String.t()) :: [String.t(), ...] | nil
+  def effort_levels(model) do
     id = model |> String.downcase() |> String.replace(".", "-")
 
-    Regex.match?(~r/claude-(?:opus|sonnet|haiku|fable|mythos)-5(?:-|$)/, id) or
-      Regex.match?(~r/claude-(?:opus|sonnet|haiku|fable|mythos)-4-(?:[6-9]|\d{2,})(?:-|$)/, id)
-  end
+    cond do
+      Regex.match?(~r/claude-(?:opus|sonnet|haiku|fable|mythos)-5(?:-|$)/, id) ->
+        ~w(low medium high xhigh max)
 
-  defp effort_for(level) when level in [:minimal, :low], do: "low"
-  defp effort_for(:medium), do: "medium"
-  defp effort_for(level) when level in [:high, :xhigh], do: "high"
+      Regex.match?(~r/claude-opus-4-(?:[7-9]|\d{2,})(?:-|$)/, id) ->
+        ~w(low medium high xhigh max)
 
-  defp thinking_budget(level, opts) do
-    case Keyword.get(opts, :thinking_budgets, %{}) do
-      budgets when is_map(budgets) ->
-        Map.get(budgets, level) || Map.fetch!(@thinking_budgets, level)
+      Regex.match?(~r/claude-(?:opus|sonnet)-4-6(?:-|$)/, id) ->
+        ~w(low medium high max)
 
-      _other ->
-        Map.fetch!(@thinking_budgets, level)
+      Regex.match?(~r/claude-(?:opus|sonnet|haiku|fable|mythos)-4-(?:[6-9]|\d{2,})(?:-|$)/, id) ->
+        ~w(low medium high)
+
+      true ->
+        nil
     end
   end
 
-  defp normalize_effort(nil), do: {:ok, nil}
-  defp normalize_effort(effort) when effort in [:off, :none, "off", "none"], do: {:ok, nil}
+  # `max` has no fixed budget: it is the whole output limit, less the one
+  # token the API requires for the answer.
+  defp thinking_budget(level, max_tokens, opts) do
+    budgets =
+      case Keyword.get(opts, :thinking_budgets, %{}) do
+        budgets when is_map(budgets) -> budgets
+        _other -> %{}
+      end
 
-  defp normalize_effort(effort)
-       when effort in [:minimal, :low, :medium, :high, :xhigh],
-       do: {:ok, effort}
-
-  defp normalize_effort(effort)
-       when effort in ["minimal", "low", "medium", "high", "xhigh"],
-       do: {:ok, String.to_existing_atom(effort)}
-
-  defp normalize_effort(effort), do: {:error, {:invalid_reasoning_effort, effort}}
+    Enum.find_value(budgets, fn {key, budget} -> if to_string(key) == level, do: budget end) ||
+      Map.get(@thinking_budgets, level, max_tokens - 1)
+  end
 
   defp temperature(opts, thinking) do
     case Keyword.get(opts, :temperature) do

@@ -23,6 +23,13 @@ defmodule Tackle.Plugins.DeepSeek do
   falls back to `DEEPSEEK_API_KEY` without `"api_key_env"`, so another
   provider never picks up its key by accident. Without a key, requests fail
   with `{:error, {:missing_deepseek_api_key, provider_id}}`.
+
+  ## Thinking levels
+
+  `:reasoning_effort` accepts every `Tackle.Lib.Thinking` level. DeepSeek
+  supports `low`, `high`, and `max`; the other levels map as DeepSeek's own
+  documentation maps them: `minimal` to `low`, `medium` and `xhigh` to
+  `high`. `off` (or `:none`) disables thinking.
   """
 
   @behaviour Tackle.Lib.LLM
@@ -32,6 +39,7 @@ defmodule Tackle.Plugins.DeepSeek do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.Thinking
   alias Tackle.Plugins.DeepSeek.HTTP
   alias Tackle.Plugins.DeepSeek.SSE
 
@@ -563,23 +571,33 @@ defmodule Tackle.Plugins.DeepSeek do
     end
   end
 
+  # DeepSeek's documented mapping of OpenAI-style efforts to its own.
+  @efforts %{
+    "minimal" => "low",
+    "low" => "low",
+    "medium" => "high",
+    "high" => "high",
+    "xhigh" => "high",
+    "max" => "max"
+  }
+
   defp reasoning_options(opts) do
-    case Keyword.get(opts, :reasoning_effort) do
-      nil ->
+    case Thinking.parse(Keyword.get(opts, :reasoning_effort)) do
+      {:ok, nil} ->
         {:ok, %{}}
 
-      effort when effort in [:off, :none, "off", "none"] ->
+      {:ok, "off"} ->
         {:ok, %{"thinking" => %{"type" => "disabled"}}}
 
-      effort when effort in [:low, :high, :max, "low", "high", "max"] ->
+      {:ok, level} ->
         {:ok,
          %{
            "thinking" => %{"type" => "enabled"},
-           "reasoning_effort" => to_string(effort)
+           "reasoning_effort" => Map.fetch!(@efforts, level)
          }}
 
-      effort ->
-        {:error, {:invalid_reasoning_effort, effort}}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

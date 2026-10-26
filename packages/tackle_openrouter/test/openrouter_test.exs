@@ -1,7 +1,7 @@
 defmodule Tackle.Plugins.OpenRouterTest do
   use ExUnit.Case, async: false
 
-  alias Tackle.Lib.{Cancellation, LLM, ModelInfo, Usage}
+  alias Tackle.Lib.{Cancellation, LLM, ModelInfo, Thinking, Usage}
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.OpenRouter
@@ -660,16 +660,10 @@ defmodule Tackle.Plugins.OpenRouterTest do
     test_pid = self()
     request = capture_body(test_pid, @model)
 
-    for {effort, expected} <- [
-          {"minimal", "minimal"},
-          {:low, "low"},
-          {"medium", "medium"},
-          {:high, "high"},
-          {"xhigh", "xhigh"},
-          {:max, "max"},
-          {:off, "none"},
-          {"none", "none"}
-        ] do
+    levels = for level <- Thinking.levels(), level != "off", do: {level, level}
+    atoms = [low: "low", high: "high", max: "max", off: "none"]
+
+    for {effort, expected} <- levels ++ atoms ++ [{"off", "none"}, {"none", "none"}] do
       opts = base_opts(store, request) |> Keyword.put(:reasoning_effort, effort)
       assert {:ok, _result} = generate(nil, opts)
       assert_receive {:body, %{"reasoning" => %{"effort" => ^expected}}}

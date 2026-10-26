@@ -99,13 +99,25 @@ When the plugin is available to the host distribution:
     adapters: [Tackle.Plugins.Codex],
     model: "openai-codex/gpt-5.5",
     llm_stream: true,
-    llm_opts: [reasoning_effort: "high", reasoning_summary: "auto"]
+    llm_opts: [reasoning_effort: "high"]
   )
 ```
 
-The adapter maps `:reasoning_effort` (including the canonical `"max"` level)
-and `:reasoning_summary` options to the Responses API and emits provider-supplied reasoning summaries as normalized
-reasoning deltas. It defaults to `transport: :auto`, which first tries a
+The adapter accepts every `Tackle.Lib.Thinking` level as `:reasoning_effort`
+and sends the nearest effort the model supports. Following Codex's model
+catalog, every model accepts `low` through `xhigh`, and the gpt-5.6 and gpt-6
+families also `max`:
+
+| Level | Sent as |
+| --- | --- |
+| `off` / `none` | no reasoning options (the model's default effort; Codex models cannot turn reasoning off) |
+| `minimal` | `low` |
+| `low`, `medium`, `high`, `xhigh` | unchanged |
+| `max` | `max` on the gpt-5.6 and gpt-6 families, `xhigh` otherwise |
+
+Other values fail with `{:error, {:invalid_reasoning_effort, value}}`.
+`:reasoning_summary` defaults to `"auto"`. The adapter emits provider-supplied
+reasoning summaries as normalized reasoning deltas. It defaults to `transport: :auto`, which first tries a
 session-scoped WebSocket and falls back to SSE if the WebSocket fails before any
 response events arrive. Set `transport: :sse` to force HTTP streaming,
 `:websocket` to reuse a connection while sending full context, or

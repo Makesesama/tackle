@@ -2,7 +2,7 @@ defmodule Tackle.Plugins.CodexTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Lib
-  alias Tackle.Lib.{Cancellation, Event, LLM, Loop, Message, ModelInfo, State, Usage}
+  alias Tackle.Lib.{Cancellation, Event, LLM, Loop, Message, ModelInfo, State, Thinking, Usage}
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.Compaction.Summary
   alias Tackle.Lib.LLM.Error
@@ -182,7 +182,6 @@ defmodule Tackle.Plugins.CodexTest do
         session_id: "session-123",
         system: "Be useful",
         reasoning_effort: "max",
-        reasoning_summary: "auto",
         temperature: 0.3,
         messages: [
           %{role: :user, content: "search"},
@@ -238,7 +237,8 @@ defmodule Tackle.Plugins.CodexTest do
     assert body["model"] == "gpt-5.5"
     assert body["prompt_cache_key"] == "session-123"
     assert body["instructions"] == "Be useful"
-    assert body["reasoning"] == %{"effort" => "max", "summary" => "auto"}
+    # gpt-5.5 has no max effort; it gets the nearest one.
+    assert body["reasoning"] == %{"effort" => "xhigh", "summary" => "auto"}
     refute Map.has_key?(body, "temperature")
 
     assert Enum.any?(
@@ -254,6 +254,46 @@ defmodule Tackle.Plugins.CodexTest do
     # The definition's JSON Schema goes on the wire as it is.
     assert [%{"name" => "search", "parameters" => @search_schema, "strict" => nil}] =
              body["tools"]
+  end
+
+  test "sends every thinking level as an effort the model supports", %{store: store} do
+    test_pid = self()
+
+    request = fn options ->
+      {:ok, body} = JSON.decode(options[:body])
+      send(test_pid, {:reasoning, body["model"], body["reasoning"]})
+      completed_response(options, "ok")
+    end
+
+    expected = %{
+      "gpt-5.5" => %{"minimal" => "low", "max" => "xhigh"},
+      "gpt-6-sol" => %{"minimal" => "low", "max" => "max"}
+    }
+
+    for {model, mapped} <- expected, level <- Thinking.levels() do
+      opts =
+        base_opts(store, request)
+        |> Keyword.merge(model: model, reasoning_effort: level)
+
+      assert {:ok, _result} = generate(nil, opts)
+      assert_receive {:reasoning, ^model, reasoning}
+
+      if level == "off" do
+        assert reasoning == nil
+      else
+        effort = Map.get(mapped, level, level)
+        assert reasoning == %{"effort" => effort, "summary" => "auto"}, "#{model} #{level}"
+        assert effort in Codex.reasoning_levels(model)
+      end
+    end
+
+    opts = Keyword.put(base_opts(store, request), :reasoning_effort, :none)
+    assert {:ok, _result} = generate(nil, opts)
+    assert_receive {:reasoning, "gpt-5.5", nil}
+
+    opts = Keyword.put(base_opts(store, request), :reasoning_effort, "ultra")
+    assert {:error, {:invalid_reasoning_effort, "ultra"}} = generate(nil, opts)
+    refute_received {:reasoning, _model, _reasoning}
   end
 
   test "closes dangling tool calls left by a cancelled turn", %{store: store} do

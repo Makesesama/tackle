@@ -215,8 +215,11 @@ Standard options include `:model`, `:messages`, `:system`, `:tools`,
 `:temperature`, `:top_p`, `:max_tokens`, `:stop`, and `:cancellation_signal`.
 Additional options:
 
-- `:reasoning_effort`: model-defined nonempty string or atom, forwarded to
-  Ollama. `:off`/`:none` map to `"none"`; omitted means the model's default.
+- `:reasoning_effort`: any `Tackle.Lib.Thinking` level, or another
+  model-defined nonempty string or atom, forwarded to Ollama unchanged.
+  `:off`/`:none` map to `"none"`; omitted means the model's default. Ollama
+  accepts every Thinking level itself: models with named effort levels get the
+  level as is, and the others map `minimal` to `low` and `xhigh` to `max`.
 - `:tool_choice`: OpenAI-compatible tool choice; defaults to `"auto"` with tools.
 - `:base_url`: overrides the provider's `"base_url"`. Only use trusted
   endpoints; a required key is sent there.

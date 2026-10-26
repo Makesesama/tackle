@@ -1,7 +1,7 @@
 defmodule Tackle.Plugins.DeepSeekTest do
   use ExUnit.Case, async: false
 
-  alias Tackle.Lib.{Cancellation, LLM, ModelInfo, Usage}
+  alias Tackle.Lib.{Cancellation, LLM, ModelInfo, Thinking, Usage}
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.DeepSeek
@@ -618,6 +618,26 @@ defmodule Tackle.Plugins.DeepSeekTest do
                nil,
                Keyword.put(base_opts(store, request), :reasoning_effort, :extreme)
              )
+
+    expected = %{
+      "off" => nil,
+      "minimal" => "low",
+      "low" => "low",
+      "medium" => "high",
+      "high" => "high",
+      "xhigh" => "high",
+      "max" => "max"
+    }
+
+    for level <- Thinking.levels() do
+      opts = Keyword.put(base_opts(store, request), :reasoning_effort, level)
+      assert {:ok, _result} = generate(nil, opts)
+      assert_receive {:body, body}
+      assert body["reasoning_effort"] == Map.fetch!(expected, level), level
+
+      assert body["thinking"] ==
+               %{"type" => if(level == "off", do: "disabled", else: "enabled")}
+    end
   end
 
   test "halts an active response stream after cancellation", %{store: store} do

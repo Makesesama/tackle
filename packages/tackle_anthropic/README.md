@@ -107,10 +107,23 @@ Honoured provider settings:
   )
 ```
 
-`:reasoning_effort` accepts `minimal`, `low`, `medium`, `high`, and `xhigh`.
-Adaptive-thinking models (`*-5`, `*-4-6` and later) send `thinking: adaptive`
-plus an `output_config.effort`; older models send budgeted thinking, clamped to
-`max_tokens - 1`. `:thinking_budgets` overrides the default per-level budgets.
+`:reasoning_effort` accepts every `Tackle.Lib.Thinking` level; `off` (or
+`:none`) sends no thinking options. Adaptive-thinking models (`*-5`, `*-4-6`
+and later) send `thinking: adaptive` plus the nearest `output_config.effort`
+the model supports (`Tackle.Plugins.Anthropic.effort_levels/1`):
+
+| Level | 5.x, Opus 4.7+ | Opus 4.6, Sonnet 4.6 | Other adaptive models |
+| --- | --- | --- | --- |
+| `minimal` | `low` | `low` | `low` |
+| `low`, `medium`, `high` | unchanged | unchanged | unchanged |
+| `xhigh` | `xhigh` | `high` | `high` |
+| `max` | `max` | `max` | `high` |
+
+Older models send budgeted thinking: 1,024, 4,096, 10,240, 20,480, and 32,000
+tokens from `minimal` to `xhigh`, and the whole output limit for `max`, always
+clamped to `max_tokens - 1`. `:thinking_budgets` overrides the per-level
+budgets (a map keyed by level, as atoms or strings). Other values fail with
+`{:error, {:invalid_reasoning_effort, value}}`.
 
 `temperature` and `top_p` are omitted while thinking is enabled, matching the
 API's constraint.

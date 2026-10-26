@@ -749,7 +749,9 @@ defmodule Tackle.Plugins.Ollama do
     end
   end
 
-  # Named levels are model-defined; let Ollama interpret them.
+  # Named levels are model-defined; let Ollama interpret them. Ollama accepts
+  # every `Tackle.Lib.Thinking` level and maps it for models without named
+  # levels (`minimal` to `low`, `xhigh` to `max`), so levels pass unchanged.
   defp reasoning_options(opts) do
     case Keyword.get(opts, :reasoning_effort) do
       nil ->

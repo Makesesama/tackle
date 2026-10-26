@@ -80,7 +80,7 @@ defmodule Tackle.Config.FileTest do
 
     assert {:ok, config} = Config.load(available_adapters: [Adapter], env: env)
     assert config.model_ref == "test/file"
-    assert config.llm_opts == [reasoning_effort: "high", reasoning_summary: "auto"]
+    assert config.llm_opts == [reasoning_effort: "high"]
   end
 
   test "loads the effective system prompt for the configured cwd", %{home: home, env: env} do
@@ -219,7 +219,7 @@ defmodule Tackle.Config.FileTest do
 
     assert {:ok, config} = Config.load(available_adapters: [Adapter], env: env)
     assert config.model_ref == "test/environment"
-    assert config.llm_opts == [reasoning_effort: "xhigh", reasoning_summary: "auto"]
+    assert config.llm_opts == [reasoning_effort: "xhigh"]
   end
 
   test "explicit overrides win over environment variables", %{home: home, env: env} do
@@ -234,7 +234,7 @@ defmodule Tackle.Config.FileTest do
              )
 
     assert config.model_ref == "test/override"
-    assert config.llm_opts == [reasoning_effort: "medium", reasoning_summary: "auto"]
+    assert config.llm_opts == [reasoning_effort: "medium"]
   end
 
   test "invalid thinking configuration returns an explicit error", %{home: home, env: env} do

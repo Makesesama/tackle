@@ -31,6 +31,15 @@ defmodule Tackle.Plugins.Codex do
 
   Honoured settings: `"base_url"` (the ChatGPT backend base URL). An explicit
   `:base_url` option wins over it.
+
+  ## Thinking levels
+
+  `:reasoning_effort` accepts every `Tackle.Lib.Thinking` level and sends the
+  nearest effort the model supports (`reasoning_levels/1`): `minimal` becomes
+  `low`, and `max` becomes `xhigh` on models without `max`. `off` (or `:none`)
+  sends no reasoning options, so the model's default effort applies; Codex
+  models cannot turn reasoning off. Reasoning summaries default to `"auto"`
+  (`:reasoning_summary` overrides it).
   """
 
   @behaviour Tackle.Lib.LLM
@@ -40,6 +49,7 @@ defmodule Tackle.Plugins.Codex do
   alias Tackle.Lib.Interaction
   alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Lib.Thinking
   alias Tackle.Plugins.Codex.HTTP
   alias Tackle.Plugins.Codex.OAuth
   alias Tackle.Plugins.Codex.SSE
@@ -73,6 +83,9 @@ defmodule Tackle.Plugins.Codex do
     "gpt-6-sol" => {272_000, {2, 10, 0.2, 2.5}},
     "gpt-6.1-sol" => {272_000, {2, 10, 0.1, 2.5}}
   }
+
+  @effort_levels ~w(low medium high xhigh)
+  @max_effort_models ~w(gpt-5.6-luna gpt-5.6-sol gpt-5.6-terra gpt-6-astra gpt-6-luna gpt-6-sol gpt-6.1-sol)
 
   @impl true
   def adapter_id, do: @adapter_id
@@ -398,9 +411,10 @@ defmodule Tackle.Plugins.Codex do
         |> maybe_put("tools", non_empty(tools))
         |> maybe_put("service_tier", Keyword.get(opts, :service_tier))
         |> maybe_put("prompt_cache_key", prompt_cache_key(opts))
-        |> maybe_put("reasoning", reasoning_options(opts))
 
-      {:ok, body}
+      with {:ok, reasoning} <- reasoning_options(body["model"], opts) do
+        {:ok, maybe_put(body, "reasoning", reasoning)}
+      end
     end
   rescue
     KeyError -> {:error, :model_required}
@@ -649,18 +663,36 @@ defmodule Tackle.Plugins.Codex do
 
   defp text_options(_schema, _opts), do: {:error, :invalid_response_schema}
 
-  defp reasoning_options(opts) do
-    case Keyword.get(opts, :reasoning_effort) do
-      nil ->
-        nil
+  # Codex models accept no "none" or "minimal" effort, so "off" omits the
+  # reasoning object (the model's default applies) and other levels map to the
+  # nearest one the model supports (see `reasoning_levels/1`).
+  defp reasoning_options(model, opts) do
+    case Thinking.parse(Keyword.get(opts, :reasoning_effort)) do
+      {:ok, level} when level in [nil, "off"] ->
+        {:ok, nil}
 
-      effort ->
-        %{
-          "effort" => to_string(effort),
-          "summary" => Keyword.get(opts, :reasoning_summary, "auto")
-        }
+      {:ok, level} ->
+        {:ok,
+         %{
+           "effort" => Thinking.nearest(level, reasoning_levels(model)),
+           "summary" => Keyword.get(opts, :reasoning_summary, "auto")
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
+
+  @doc """
+  Returns the reasoning efforts `model` accepts, as `Tackle.Lib.Thinking` levels.
+
+  From Codex's model catalog: every model accepts `low` through `xhigh`, and
+  the gpt-5.6 and gpt-6 families add `max`. Unknown models get `low` through
+  `xhigh`.
+  """
+  @spec reasoning_levels(String.t()) :: [String.t(), ...]
+  def reasoning_levels(model) when model in @max_effort_models, do: @effort_levels ++ ["max"]
+  def reasoning_levels(_model), do: @effort_levels
 
   defp sse_headers(opts, access_token, account_id) do
     base_headers(opts, access_token, account_id) ++

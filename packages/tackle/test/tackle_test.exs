@@ -330,7 +330,7 @@ defmodule TackleTest do
     assert agent_state.model == "shared"
     assert agent_state.llm_opts[:request_tag] == "preserved"
     assert agent_state.llm_opts[:reasoning_effort] == "high"
-    assert agent_state.llm_opts[:reasoning_summary] == "auto"
+    refute Keyword.has_key?(agent_state.llm_opts, :reasoning_summary)
     assert agent_state.llm_opts[:credential_store] == Tackle.Auth.credential_store()
 
     assert {:ok, second_turn_id} = Tackle.submit(agent_ref, "second")
