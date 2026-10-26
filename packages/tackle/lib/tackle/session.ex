@@ -26,7 +26,8 @@ defmodule Tackle.Session do
 
   Subscription during an active turn is deliberately rejected because events
   are not replayed. Subscribe before submitting a turn to avoid a
-  snapshot/event ordering gap.
+  snapshot/event ordering gap. `Tackle.Session.Events` documents every
+  message subscribers receive.
   """
 
   use GenServer, restart: :temporary
@@ -37,7 +38,6 @@ defmodule Tackle.Session do
   alias Tackle.Config
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction
-  alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
   alias Tackle.Lib.Message
   alias Tackle.Lib.State, as: AgentState
@@ -50,6 +50,7 @@ defmodule Tackle.Session do
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.Task, as: TurnTask
   alias Tackle.Session.Durable
+  alias Tackle.Session.Events
   alias Tackle.Session.Inbox
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Session.Title
@@ -279,7 +280,7 @@ defmodule Tackle.Session do
         config: opened.config,
         agent_state: opened.agent_state,
         active_turn: nil,
-        subscribers: %{},
+        events: Events.new(opened.agent_state.session_id),
         scope_ref: context.scope_ref,
         agent_ref: context.agent_ref,
         coordinator: context.coordinator,
@@ -450,7 +451,7 @@ defmodule Tackle.Session do
       state,
       from,
       fn -> Compaction.compact(state.agent_state, :manual, compaction_opts) end,
-      fn state, result -> finish_compaction(state, result, session_id) end,
+      &finish_compaction/2,
       signal
     )
   end
@@ -521,14 +522,12 @@ defmodule Tackle.Session do
   end
 
   def handle_call(:subscribe, {subscriber, _tag}, state) do
-    subscribers = put_subscriber(state.subscribers, subscriber)
-    state = %{state | subscribers: subscribers}
+    state = %{state | events: Events.subscribe(state.events, subscriber)}
     {:reply, {:ok, build_snapshot(state)}, state}
   end
 
-  def handle_call(:unsubscribe, {subscriber, _tag}, state) do
-    {:reply, :ok, %{state | subscribers: drop_subscriber(state.subscribers, subscriber)}}
-  end
+  def handle_call(:unsubscribe, {subscriber, _tag}, state),
+    do: {:reply, :ok, %{state | events: Events.unsubscribe(state.events, subscriber)}}
 
   @impl true
   def handle_cast(
@@ -540,7 +539,7 @@ defmodule Tackle.Session do
   end
 
   def handle_cast({:publish_event, %Event{} = event}, state) do
-    broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+    Events.event(state.events, nil, event)
     {:noreply, state}
   end
 
@@ -566,15 +565,15 @@ defmodule Tackle.Session do
     {:stop, {:persistence_failed, reason}, %{state | storage_task: nil, active_turn: nil}}
   end
 
-  def handle_info({:tackle_compaction_progress, session_id, event}, state)
+  def handle_info({:tackle_compaction_progress, session_id, %Event{} = event}, state)
       when session_id == state.agent_state.session_id do
-    broadcast(state, {:tackle_compaction, session_id, event})
+    Events.event(state.events, nil, event)
     {:noreply, state}
   end
 
   def handle_info({:tackle_storage, session_id, status}, state)
       when session_id == state.agent_state.session_id and status in [:ready, :delayed] do
-    broadcast(state, {:tackle_storage, session_id, status})
+    Events.storage(state.events, status)
     {:noreply, schedule_inbox_wake(%{state | storage_status: status})}
   end
 
@@ -583,7 +582,7 @@ defmodule Tackle.Session do
          %Event{type: :subagent_progress, data: %{background: true}} = event},
         state
       ) do
-    broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+    Events.event(state.events, nil, event)
     {:noreply, state}
   end
 
@@ -591,12 +590,8 @@ defmodule Tackle.Session do
         {:tackle_event, turn_id, %Event{} = event},
         %{active_turn: %Turn{id: turn_id} = turn} = state
       ) do
-    event = project_usage_event(event, state.agent_state)
-
-    broadcast(
-      state,
-      {:tackle_event, state.agent_state.session_id, turn_id, event}
-    )
+    event = Events.project_usage(event, state.agent_state)
+    Events.event(state.events, turn_id, event)
 
     {:noreply, %{state | active_turn: Turn.record_event(turn, event)}}
   end
@@ -660,15 +655,8 @@ defmodule Tackle.Session do
   def handle_info(:tackle_inbox_wake, state),
     do: start_inbox_turn(%{state | inbox_wake_scheduled?: false})
 
-  def handle_info({:DOWN, monitor_ref, :process, subscriber, _reason}, state) do
-    subscribers =
-      case Map.get(state.subscribers, subscriber) do
-        ^monitor_ref -> Map.delete(state.subscribers, subscriber)
-        _other -> state.subscribers
-      end
-
-    {:noreply, %{state | subscribers: subscribers}}
-  end
+  def handle_info({:DOWN, monitor, :process, pid, _reason}, state),
+    do: {:noreply, %{state | events: Events.down(state.events, pid, monitor)}}
 
   def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
@@ -765,11 +753,7 @@ defmodule Tackle.Session do
   defp announce_turn(state, %{reason: nil}), do: state
 
   defp announce_turn(state, %{reason: reason}) do
-    broadcast(
-      state,
-      {:tackle_turn_started, state.agent_state.session_id, state.active_turn.id, reason}
-    )
-
+    Events.turn_started(state.events, state.active_turn.id, reason)
     state
   end
 
@@ -814,7 +798,7 @@ defmodule Tackle.Session do
     agent_state = apply_configuration(state.agent_state, config)
     state = %{state | config: config, agent_state: agent_state}
     snapshot = build_snapshot(state)
-    broadcast(state, {:tackle_session_reconfigured, snapshot.session_id, snapshot})
+    Events.reconfigured(state.events, snapshot)
     {:reply, {:ok, snapshot}, state}
   end
 
@@ -823,28 +807,28 @@ defmodule Tackle.Session do
 
   # A failed or cancelled compaction still returns the last committed state:
   # when an earlier pass committed, the session keeps and broadcasts it.
-  defp finish_compaction(state, result, session_id) do
+  defp finish_compaction(state, result) do
     case result do
       {:ok, agent_state, record} ->
         state = %{state | agent_state: agent_state}
         snapshot = build_snapshot(state)
-        broadcast(state, {:tackle_session_compacted, session_id, snapshot, record})
+        Events.compacted(state.events, snapshot, record)
         {:reply, {:ok, snapshot, record}, state}
 
       {status, reason, agent_state} when status in [:error, :cancelled] ->
-        state = keep_committed_compaction(state, agent_state, session_id)
+        state = keep_committed_compaction(state, agent_state)
         reply = if status == :cancelled, do: {:cancelled, reason}, else: reason
         {:reply, {:error, reply}, state}
     end
   end
 
-  defp keep_committed_compaction(state, agent_state, session_id) do
+  defp keep_committed_compaction(state, agent_state) do
     if AgentState.last_compaction_id(agent_state) ==
          AgentState.last_compaction_id(state.agent_state) do
       state
     else
       state = %{state | agent_state: agent_state}
-      broadcast(state, {:tackle_session_compacted, session_id, build_snapshot(state), nil})
+      Events.compacted(state.events, build_snapshot(state), nil)
       state
     end
   end
@@ -855,10 +839,7 @@ defmodule Tackle.Session do
         state = %{state | agent_state: agent_state}
         snapshot = build_snapshot(state)
 
-        broadcast(
-          state,
-          {:tackle_session_navigated, agent_state.session_id, snapshot, outcome}
-        )
+        Events.navigated(state.events, snapshot, outcome)
 
         {:reply, {:ok, snapshot, outcome}, state}
 
@@ -1003,16 +984,13 @@ defmodule Tackle.Session do
 
     case pending.result do
       {:runtime_error, reason} ->
-        broadcast_turn_failure(state, turn.id, reason)
+        Events.turn_failed(state.events, turn.id, reason)
         settle(state, pending.result)
 
       result ->
         state = discard_reported_background_launches(state, turn, pending.agent_state)
 
-        broadcast(
-          state,
-          {:tackle_turn_finished, pending.agent_state.session_id, turn.id, result}
-        )
+        Events.turn_finished(state.events, turn.id, result)
 
         settle(state, result)
     end
@@ -1103,7 +1081,7 @@ defmodule Tackle.Session do
         status: outcome.status
       })
 
-    broadcast(state, {:tackle_event, state.agent_state.session_id, nil, event})
+    Events.event(state.events, nil, event)
   end
 
   defp schedule_inbox_wake(
@@ -1153,7 +1131,7 @@ defmodule Tackle.Session do
   defp broadcast_inbox_drained(state, entries) do
     entries
     |> Inbox.drained_events(state.agent_ref)
-    |> Enum.each(&broadcast(state, {:tackle_event, state.agent_state.session_id, nil, &1}))
+    |> Enum.each(&Events.event(state.events, nil, &1))
   end
 
   defp deliver_terminal(%{terminal: nil}, _result), do: :ok
@@ -1254,57 +1232,12 @@ defmodule Tackle.Session do
 
     case title do
       {:titled, text} ->
-        broadcast(state, {:tackle_session_title_changed, state.agent_state.session_id, text})
+        Events.title_changed(state.events, text)
         state
 
       _failed ->
         state
     end
-  end
-
-  defp project_usage_event(
-         %Event{type: :usage, data: %{usage: usage} = data} = event,
-         %AgentState{} = state
-       ) do
-    model_info = if state.llm, do: state.llm.model_info
-
-    data =
-      data
-      |> Map.put_new(:model_info, model_info)
-      |> Map.put_new(:context_usage, ContextUsage.from_usage(usage, model_info))
-
-    %{event | data: data}
-  end
-
-  defp project_usage_event(%Event{} = event, _state), do: event
-
-  defp put_subscriber(subscribers, subscriber) do
-    case Map.fetch(subscribers, subscriber) do
-      {:ok, _monitor_ref} -> subscribers
-      :error -> Map.put(subscribers, subscriber, Process.monitor(subscriber))
-    end
-  end
-
-  defp drop_subscriber(subscribers, subscriber) do
-    case Map.pop(subscribers, subscriber) do
-      {nil, subscribers} ->
-        subscribers
-
-      {monitor_ref, subscribers} ->
-        Process.demonitor(monitor_ref, [:flush])
-        subscribers
-    end
-  end
-
-  defp broadcast(state, message) do
-    Enum.each(state.subscribers, fn {subscriber, _monitor_ref} -> send(subscriber, message) end)
-  end
-
-  defp broadcast_turn_failure(state, turn_id, reason) do
-    broadcast(
-      state,
-      {:tackle_turn_failed, state.agent_state.session_id, turn_id, reason}
-    )
   end
 
   defp cleanup_active_turn(nil), do: :ok

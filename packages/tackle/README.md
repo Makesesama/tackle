@@ -86,14 +86,23 @@ built-in coding profiles instead of an empty `profiles` map, use
 `Tackle.Coding.scope_spec/2`.
 
 Subscribers receive provider-neutral library events and terminal outcomes with
-session and turn correlation:
+session and turn correlation; `Tackle.Session.Events` documents each message:
 
 ```elixir
 {:tackle_event, session_id, turn_id, %Tackle.Lib.Event{}}
+{:tackle_event, session_id, nil, %Tackle.Lib.Event{}}  # outside any turn
+{:tackle_turn_started, session_id, turn_id, reason}    # a turn the session started
 {:tackle_turn_finished, session_id, turn_id, result}
 {:tackle_turn_failed, session_id, turn_id, reason}
 {:tackle_session_reconfigured, session_id, %Tackle.Session.Snapshot{}}
+{:tackle_session_compacted, session_id, %Tackle.Session.Snapshot{}, record}
+{:tackle_session_navigated, session_id, %Tackle.Session.Snapshot{}, outcome}
+{:tackle_session_title_changed, session_id, title}
+{:tackle_storage, session_id, :delayed | :ready}
 ```
+
+Events outside a turn include a manual compaction's progress, background
+subagent progress and completion, and auxiliary events such as narration.
 
 Each `%Tackle.Session.Snapshot{}` carries the settled `agent_state`; aggregate
 usage and context pressure derive from it (`Tackle.Lib.State.usage/1`,

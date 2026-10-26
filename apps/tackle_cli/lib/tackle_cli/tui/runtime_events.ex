@@ -320,19 +320,17 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   defp route({:tui_usage_timeline_result, ref, mode, session_id, result}, state),
     do: UsageChart.apply_result(state, ref, mode, session_id, result)
 
-  # Manual compaction broadcasts its progress and completion while the idle
+  # Manual compaction broadcasts its progress, outside any turn, while the idle
   # session performs the summarization; the operation result above remains the
   # authoritative state update.
   defp route(
-         {:tackle_compaction, session_id, %Event{} = event},
+         {:tackle_event, session_id, nil, %Event{type: type} = event},
          %State{session_id: session_id} = state
-       ) do
+       )
+       when type in [:compaction_start, :compaction_end, :compaction_retry] do
     {:noreply,
      state |> Compaction.project(event.type, event.data) |> Viewport.refresh([:settled, :turn])}
   end
-
-  defp route({:tackle_compaction, _session_id, _event}, state),
-    do: {:noreply, state, render?: false}
 
   defp route(
          {:tackle_session_compacted, session_id, %Snapshot{} = snapshot, nil},

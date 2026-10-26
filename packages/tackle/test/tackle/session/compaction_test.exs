@@ -96,10 +96,10 @@ defmodule Tackle.Session.CompactionTest do
 
     assert Enum.map(compacted.agent_state.messages, & &1.role) == [:user, :assistant]
 
-    assert_receive {:tackle_compaction, ^session_id, %Tackle.Lib.Event{type: :compaction_start}},
+    assert_receive {:tackle_event, ^session_id, nil, %Tackle.Lib.Event{type: :compaction_start}},
                    5_000
 
-    assert_receive {:tackle_compaction, ^session_id, %Tackle.Lib.Event{type: :compaction_end}},
+    assert_receive {:tackle_event, ^session_id, nil, %Tackle.Lib.Event{type: :compaction_end}},
                    5_000
 
     assert_receive {:tackle_session_compacted, ^session_id, _snapshot, ^record}, 5_000
@@ -309,7 +309,7 @@ defmodule Tackle.Session.CompactionTest do
     Application.put_env(:tackle, :compaction_summary_result, :block)
     compact = Task.async(fn -> Tackle.compact(root) end)
     assert_receive {:compaction_request, _, _}, 5_000
-    assert_receive {:tackle_compaction, ^session_id, %Tackle.Lib.Event{type: :compaction_start}}
+    assert_receive {:tackle_event, ^session_id, nil, %Tackle.Lib.Event{type: :compaction_start}}
 
     # The subscribers change while the compaction runs.
     assert :ok = Tackle.unsubscribe(root)
@@ -320,10 +320,10 @@ defmodule Tackle.Session.CompactionTest do
     assert {:ok, _snapshot, _record} = Task.await(compact)
 
     assert_receive {^late,
-                    {:tackle_compaction, ^session_id, %Tackle.Lib.Event{type: :compaction_end}}},
+                    {:tackle_event, ^session_id, nil, %Tackle.Lib.Event{type: :compaction_end}}},
                    5_000
 
-    refute_received {:tackle_compaction, _session_id, _event}
+    refute_received {:tackle_event, _session_id, nil, _event}
   end
 
   defp subscribe_forwarding(agent_ref) do

@@ -32,7 +32,7 @@ defmodule Tackle.CLI.TUI.CompactionTest do
     event =
       Event.new(:compaction_end, record |> Map.from_struct() |> Map.put(:status, :completed))
 
-    {:noreply, ended} = RuntimeEvents.handle({:tackle_compaction, "session", event}, running)
+    {:noreply, ended} = RuntimeEvents.handle({:tackle_event, "session", nil, event}, running)
     assert card(ended).content =~ "1.2k → 300 est. tokens"
 
     {:noreply, notified} =
@@ -218,9 +218,9 @@ defmodule Tackle.CLI.TUI.CompactionTest do
     event = Event.new(:compaction_start, %{trigger: :manual})
 
     assert {:noreply, ^state, render?: false} =
-             RuntimeEvents.handle({:tackle_compaction, "other", event}, state)
+             RuntimeEvents.handle({:tackle_event, "other", nil, event}, state)
 
-    {:noreply, running} = RuntimeEvents.handle({:tackle_compaction, "session", event}, state)
+    {:noreply, running} = RuntimeEvents.handle({:tackle_event, "session", nil, event}, state)
     assert running.conversation.anchor == state.conversation.anchor
     refute running.conversation.follow?
   end

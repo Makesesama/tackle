@@ -153,7 +153,7 @@ defmodule Tackle.CLI.TUI.DiagnosticsTest do
     assert failed.outcome == :failed
 
     compacted =
-      Observations.observe({:tackle_compaction, "session", Event.new(:compaction_start)}, failed)
+      Observations.observe({:tackle_event, "session", nil, Event.new(:compaction_start)}, failed)
 
     assert [%{type: :compaction_start, turn_id: nil}, _] = compacted.observations.events
   end

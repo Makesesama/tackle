@@ -50,8 +50,9 @@ defmodule Tackle.CLI.TUI.Observations do
        ),
        do: {turn, event}
 
-  defp event({:tackle_compaction, session, %Event{} = event}, %{session_id: session}),
-    do: {nil, event}
+  defp event({:tackle_event, session, nil, %Event{type: type} = event}, %{session_id: session})
+       when type in [:compaction_start, :compaction_end, :compaction_retry],
+       do: {nil, event}
 
   defp event(
          {:tackle_turn_finished, session, turn, {outcome, _agent}},
