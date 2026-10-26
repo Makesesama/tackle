@@ -1009,6 +1009,25 @@ defmodule Tackle.Lib.LoopTest do
     assert_receive {:event, %Event{type: :message_delta, data: %{delta: "ne"}}}
   end
 
+  test "host llm_opts override the loop's defaults but not the request" do
+    Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
+    Process.put(:test_pid, self())
+    Process.put(:call_count, 1)
+
+    state =
+      State.new(
+        model: "test/model",
+        llm_opts: [temperature: 0.9, model: "other/model", messages: [:bogus]]
+      )
+
+    assert {:ok, _state} = Loop.run(state, "hello")
+
+    assert_receive {:llm_opts, opts}
+    assert Keyword.get_values(opts, :temperature) == [0.9]
+    assert Keyword.get_values(opts, :model) == ["test/model"]
+    assert [[%{role: :user, content: "hello"}]] = Keyword.get_values(opts, :messages)
+  end
+
   test "executes multiple tool calls sequentially and strips unsupported tool policy opts" do
     Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
     Process.put(:test_pid, self())

@@ -276,6 +276,36 @@ defmodule Tackle.Lib.LLMTest do
     end
   end
 
+  describe "request_opts/3" do
+    test "host options override defaults and pass through, one entry per key" do
+      opts =
+        LLM.request_opts(
+          [model: "m", messages: []],
+          [temperature: 0.3, strict_schema: false],
+          temperature: 0.9,
+          receive_timeout: 1_000
+        )
+
+      assert Keyword.get_values(opts, :temperature) == [0.9]
+      assert Keyword.get(opts, :strict_schema) == false
+      assert Keyword.get(opts, :receive_timeout) == 1_000
+      assert Map.new(opts).temperature == 0.9
+    end
+
+    test "host options never replace request options" do
+      opts =
+        LLM.request_opts(
+          [model: "m", messages: [:real]],
+          [temperature: 0.3],
+          model: "other",
+          messages: [:bogus]
+        )
+
+      assert Keyword.get_values(opts, :model) == ["m"]
+      assert Keyword.get_values(opts, :messages) == [[:real]]
+    end
+  end
+
   test "normalizes adapter usage maps" do
     assert {:ok, response} = LLM.generate([], [])
     assert response.data == %{"content" => "ok"}

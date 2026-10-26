@@ -34,21 +34,25 @@ defmodule Tackle.Lib.Compaction.Summarizer.LLM do
   end
 
   defp generate(selection, %Request{} = request, opts) do
-    generate_opts =
+    request_opts =
       [
         model: request.model || selection.model,
         session_id: request.session_id,
         system: request.system,
         messages: Request.to_provider_messages(request),
-        temperature: 0.2,
-        strict_schema: false,
         native_tools: request.tools != [],
         tools: request.tools || [],
-        tool_choice: "none"
+        tool_choice: "none",
+        cancellation_signal: Keyword.get(opts, :cancellation_signal)
       ]
       |> maybe_put_max_tokens(request.summary_max_tokens)
-      |> Kernel.++(Keyword.get(opts, :llm_opts, []))
-      |> Keyword.put(:cancellation_signal, Keyword.get(opts, :cancellation_signal))
+
+    generate_opts =
+      LLM.request_opts(
+        request_opts,
+        [temperature: 0.2, strict_schema: false],
+        Keyword.get(opts, :llm_opts, [])
+      )
 
     with {:ok, response} <- LLM.generate_with(selection, nil, generate_opts) do
       build_summary(response)

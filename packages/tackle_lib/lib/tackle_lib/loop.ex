@@ -469,18 +469,19 @@ defmodule Tackle.Lib.Loop do
     native_tools? = tool_definitions != []
 
     generate_opts =
-      [
-        model: snapshot.model,
-        session_id: state.session_id,
-        system: system_prompt,
-        messages: structured_messages,
-        temperature: 0.3,
-        strict_schema: false,
-        native_tools: native_tools?,
-        tools: tool_definitions
-      ]
-      |> maybe_put_cancellation_signal(callbacks.cancellation_signal)
-      |> Kernel.++(Policy.sanitize_llm_opts(snapshot.llm_opts))
+      LLM.request_opts(
+        [
+          model: snapshot.model,
+          session_id: state.session_id,
+          system: system_prompt,
+          messages: structured_messages,
+          native_tools: native_tools?,
+          tools: tool_definitions
+        ]
+        |> maybe_put_cancellation_signal(callbacks.cancellation_signal),
+        [temperature: 0.3, strict_schema: false],
+        Policy.sanitize_llm_opts(snapshot.llm_opts)
+      )
 
     with :ok <- Tackle.Lib.ProviderGate.await(callbacks.before_provider_call),
          false <- cancelled?(callbacks) do

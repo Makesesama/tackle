@@ -63,10 +63,11 @@ defmodule Tackle.Lib.LLM do
     or `nil` for a plain/native turn. Tool calls are delivered through
     provider-native `tool_calls`, not through this schema.
   * `opts` — passthrough options. Tackle.Lib sets `:model`, `:session_id`,
-    `:system`, `:messages`, `:temperature`, and `:strict_schema`, then appends
-    any host-supplied `llm_opts` from the agent state. Selections add
-    `:provider_id` and `:provider_settings`. Adapters may use the stable
-    `:session_id` for provider prompt-cache affinity.
+    `:system`, `:messages`, and `:tools`, which host options cannot replace,
+    and the defaults `:temperature` and `:strict_schema`, which host-supplied
+    `llm_opts` from the agent state override (see `request_opts/3`).
+    Selections add `:provider_id` and `:provider_settings`. Adapters may use
+    the stable `:session_id` for provider prompt-cache affinity.
 
   ### `opts[:messages]` — the structured message array (the contract)
 
@@ -246,6 +247,23 @@ defmodule Tackle.Lib.LLM do
   def context_window_exceeded?(:context_window_exceeded), do: true
   def context_window_exceeded?({:context_window_exceeded, _details}), do: true
   def context_window_exceeded?(_reason), do: false
+
+  @doc """
+  Builds adapter options from a request, overridable defaults, and host options.
+
+  `request` holds the options that define the call (such as `:model`,
+  `:messages`, `:system`, and `:tools`); host options never replace them.
+  `defaults` (such as `:temperature`) are tuning values that host options do
+  override. Host options are otherwise passed through. The result has one
+  entry per key, so adapters read the same value whether they use
+  `Keyword.get/2` or `Map.new/1`.
+  """
+  @spec request_opts(keyword(), keyword(), keyword()) :: keyword()
+  def request_opts(request, defaults, host_opts)
+      when is_list(request) and is_list(defaults) and is_list(host_opts) do
+    host_opts = Keyword.drop(host_opts, Keyword.keys(request))
+    request ++ Keyword.merge(defaults, host_opts)
+  end
 
   @doc """
   Safely resolves and validates optional metadata for one adapter-local model.
