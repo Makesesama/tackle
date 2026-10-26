@@ -1,6 +1,7 @@
 defmodule Tackle.Lib.TreeTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.Compaction
   alias Tackle.Lib.Compaction.Config
   alias Tackle.Lib.Compaction.Record
   alias Tackle.Lib.LLM.Selection
@@ -563,7 +564,9 @@ defmodule Tackle.Lib.TreeTest do
       state = State.add_message(state, msg("u1", :user, String.duplicate("x", 4000)))
       state = State.add_message(state, msg("a1", :assistant, String.duplicate("y", 4000)))
 
-      assert {:ok, compacted, %Record{compaction_id: id} = record} = Tackle.Lib.compact(state)
+      assert {:ok, compacted, %Record{compaction_id: id} = record} =
+               Compaction.compact(state, :manual)
+
       assert id == compacted.tree.active_id
 
       # The committed record names the entry it attaches to, so a committer
@@ -576,7 +579,7 @@ defmodule Tackle.Lib.TreeTest do
       assert Enum.map(Tree.transcript(compacted.tree), & &1.id) == ["u1", "a1"]
       assert [summary | _tail] = Tree.model_context(compacted.tree)
       assert summary.id == id
-      assert Tackle.Lib.messages(compacted) |> Enum.map(& &1.id) == ["u1", "a1"]
+      assert compacted.messages |> Enum.map(& &1.id) == ["u1", "a1"]
 
       appended = State.add_message(compacted, msg("u2", :user, "next"))
       assert appended.messages == Tree.transcript(appended.tree)
@@ -611,7 +614,7 @@ defmodule Tackle.Lib.TreeTest do
       state = State.add_message(state, msg("u1", :user, String.duplicate("x", 4000)))
       state = State.add_message(state, msg("a1", :assistant, String.duplicate("y", 4000)))
 
-      assert {:error, {:invalid_compaction, _reason}, ^state} = Tackle.Lib.compact(state)
+      assert {:error, {:invalid_compaction, _reason}, ^state} = Compaction.compact(state, :manual)
       refute_received {:committed, _record, _context}
     end
   end

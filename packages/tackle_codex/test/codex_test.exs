@@ -1140,7 +1140,7 @@ defmodule Tackle.Plugins.CodexTest do
       |> State.add_message(Message.user(String.duplicate("earlier ", 200)))
       |> State.add_message(Message.assistant(content: String.duplicate("answer ", 200)))
 
-    assert {:ok, compacted, record} = Lib.compact(state)
+    assert {:ok, compacted, record} = Tackle.Lib.Compaction.compact(state, :manual)
     assert record.summary_usage.reasoning_tokens == 8_990
     assert hd(compacted.model_messages) == record.summary_message
     assert Checkpoint.summary(record) == "## Goal\nShip it"

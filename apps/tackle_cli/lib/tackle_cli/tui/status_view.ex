@@ -321,7 +321,7 @@ defmodule Tackle.CLI.TUI.StatusView do
   defp displayed_context_usage(%State{metrics: %{context_usage: %ContextUsage{} = context}}),
     do: context
 
-  defp displayed_context_usage(%State{} = state), do: Lib.context_usage(state.agent_state)
+  defp displayed_context_usage(%State{} = state), do: ContextUsage.estimate(state.agent_state)
 
   defp context_indicator(%ContextUsage{} = context) do
     percentage = :erlang.float_to_binary(context.percent, decimals: 1)

@@ -159,7 +159,7 @@ defmodule Tackle.Lib.Usage do
   @doc """
   Aggregates token and cost usage across multiple LLM generation steps.
 
-  This is useful for deriving run/session totals from `Tackle.Lib.messages/1`
+  This is useful for deriving run/session totals from a state's `messages`
   without storing a second mutable counter. Token fields are summed field-by-field.
 
   Cost is intentionally conservative: it is summed only when every usage entry

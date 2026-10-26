@@ -24,7 +24,11 @@ defmodule Tackle.Lib do
       navigations commit through before they are installed.
     * `Tackle.Lib.Tool` — the tool behaviour the loop calls.
     * `Tackle.Lib.Tool.Schema` — provider-neutral tool argument validation/coercion.
+    * `Tackle.Lib.Cancellation` — cooperative cancellation signals for runs,
+      adapters, and tools.
     * `Tackle.Lib.CredentialStore` — provider-neutral access through host-owned handles.
+    * `Tackle.Lib.Interaction` — frontend-supplied handle adapters use to show
+      instructions or ask for input, for example during a login flow.
     * `Tackle.Lib.SystemPrompt` — a small builder for markdown system prompts.
     * `Tackle.Lib.Usage` — normalized token/cost metadata for LLM steps.
     * `Tackle.Lib.ModelInfo` — adapter-owned model limits and price cards.
@@ -34,6 +38,10 @@ defmodule Tackle.Lib do
       exponential backoff.
     * `Tackle.Lib.LLM` — the provider-agnostic LLM behaviour and explicit
       adapter/model selection (the keystone seam).
+    * `Tackle.Lib.Decision` — optional contract for small local decision
+      models that answer typed questions with probabilities.
+    * `Tackle.Lib.Thinking` — provider-neutral thinking levels.
+    * `Tackle.Lib.Telemetry` — exporter-neutral lifecycle telemetry spans.
     * `Tackle.Lib.Integrations.Registry` — provider-neutral registry for exposing
       tools through host-owned bridges (for example `Tackle.Anubis`).
 
@@ -63,8 +71,6 @@ defmodule Tackle.Lib do
       Tackle.Lib.last_answer(state)
   """
 
-  alias Tackle.Lib.Compaction
-  alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
@@ -73,86 +79,47 @@ defmodule Tackle.Lib do
   @doc """
   Creates a new agent state. See `Tackle.Lib.State.new/1` for options.
   """
+  @spec new(keyword()) :: State.t()
   defdelegate new(opts \\ []), to: State
 
   @doc """
   Runs the agent for a user query.
 
-  ## Options
-
-  Unknown options raise `ArgumentError`. See `Tackle.Lib.Loop.run/3` for details.
-
-    * `:event_callback` - Function called with `%Tackle.Lib.Event{}` structs. Tools
-      also receive it in their context as `:event_callback`.
-    * `:tool_context` - Map merged over `state.context` for tool execution only.
-    * `:llm_stream` - When true, use the optional `stream/3` callback in `Tackle.Lib.LLM` if the selected adapter supports it.
-    * `:cancellation_signal` - `Tackle.Lib.Cancellation.Signal` checked between loop steps.
-    * `:tool_supervisor` - `Task.Supervisor` required by the `:concurrent` tool policy.
-    * `:take_incoming_messages` - Zero-arity callback returning queued user messages.
-    * `:before_provider_call` - Zero-arity gate run before every provider dispatch.
-    * `:before_tool_execution` - Zero-arity gate run before tools with external effects.
+  See `Tackle.Lib.Loop.run/3` for the options and results.
   """
+  @spec run(State.t(), String.t(), keyword()) ::
+          {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
   defdelegate run(state, user_input, opts \\ []), to: Loop
 
   @doc """
-  Retries the loop against existing state without appending a new user message.
+  Runs a turn against the existing state without appending a user message.
 
-  Accepts the same options as `run/3`; unknown options raise `ArgumentError`.
-  Like `run/3`, it runs with the state's current configuration.
+  See `Tackle.Lib.Loop.continue/2`; it takes the same options as `run/3`.
   """
+  @spec continue(State.t(), keyword()) ::
+          {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
   defdelegate continue(state, opts \\ []), to: Loop
 
   @doc """
-  Gets the last assistant answer from the conversation, or nil.
+  Returns the final answer the conversation ends with, or `nil`.
+
+  That is the content of the last message when it is a final answer
+  (`Tackle.Lib.Message.final_answer?/1`): an assistant message with content
+  and no tool calls. A conversation that ends otherwise, for example with an
+  assistant message that also requested tools, with tool results, or with a
+  user message after a failed or cancelled turn, has no answer, and an
+  earlier turn's answer is not returned in its place.
   """
   @spec last_answer(State.t()) :: String.t() | nil
   def last_answer(%State{messages: messages}) do
-    messages
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      %Message{role: :assistant, content: content} when is_binary(content) and content != "" ->
-        content
+    case List.last(messages) do
+      %Message{content: content} = message ->
+        if Message.final_answer?(message), do: content
 
-      _ ->
+      nil ->
         nil
-    end)
+    end
   end
-
-  @doc """
-  Gets all messages from the conversation.
-  """
-  @spec messages(State.t()) :: [Message.t()]
-  def messages(%State{messages: messages}), do: messages
-
-  @doc """
-  Returns the provider-visible model message projection.
-
-  Before compaction this mirrors `messages/1`; after compaction it is a
-  synthetic checkpoint followed by a verbatim recent tail. The canonical
-  transcript is never modified by compaction.
-  """
-  @spec model_messages(State.t()) :: [Message.t()]
-  defdelegate model_messages(state), to: State
-
-  @doc """
-  Runs one manual (idle) compaction of the model projection.
-
-  Manual compaction bypasses the automatic pressure threshold but otherwise
-  shares the exact transaction, validation, and durability rules of
-  `Tackle.Lib.Compaction.compact/3`. Returns the updated state and the durable
-  `Tackle.Lib.Compaction.Record`, or `{:error, reason, state}` /
-  `{:cancelled, reason, state}` with the last committed state, such as
-  `{:error, :nothing_to_compact, state}` when the projection already fits the
-  policy's retention target.
-  """
-  @spec compact(State.t(), keyword()) :: Compaction.result()
-  def compact(%State{} = state, opts \\ []), do: Compaction.compact(state, :manual, opts)
-
-  @doc """
-  Derives aggregate token/cost usage for the current run/session.
-  """
-  @spec usage(State.t()) :: Tackle.Lib.Usage.t()
-  defdelegate usage(state), to: State
 
   @doc """
   Navigates the active position of the state's conversation tree.
@@ -165,30 +132,4 @@ defmodule Tackle.Lib do
   @spec navigate(State.t(), Navigator.target(), keyword()) ::
           {:ok, State.t(), Navigator.Outcome.t()} | {:error, term()}
   defdelegate navigate(state, target, opts \\ []), to: Navigator
-
-  @doc """
-  Calculates current context-window usage for the selected model.
-
-  Returns `nil` when the adapter does not declare a context window.
-  """
-  @spec context_usage(State.t()) :: Tackle.Lib.ContextUsage.t() | nil
-  def context_usage(%State{} = state), do: ContextUsage.estimate(state)
-
-  @doc """
-  Checks if the agent has completed its task.
-  """
-  @spec completed?(State.t()) :: boolean()
-  def completed?(%State{status: status}), do: status == :completed
-
-  @doc """
-  Checks if the agent encountered an error.
-  """
-  @spec error?(State.t()) :: boolean()
-  def error?(%State{status: status}), do: status == :error
-
-  @doc """
-  Gets the error message if the agent errored, or nil.
-  """
-  @spec error(State.t()) :: String.t() | nil
-  def error(%State{error: error}), do: error
 end

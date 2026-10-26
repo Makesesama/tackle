@@ -523,15 +523,15 @@ tree either way.
 Three surfaces are deliberately distinct:
 
 - the **canonical tree** holds every settled entry on every branch, once;
-- the **active transcript** (`Tackle.Lib.messages/1`) is the selected branch and
-  is never compacted; and
-- the **model context** (`Tackle.Lib.model_messages/1`) is the selected branch
-  with the compactions that occur on that path applied.
+- the **active transcript** (`state.messages`) is the selected branch and is
+  never compacted; and
+- the **model context** (`Tackle.Lib.State.model_messages/1`) is the selected
+  branch with the compactions that occur on that path applied.
 
-`Tackle.Lib.usage/1` aggregates assistant usage across the whole archive while
-`Tackle.Lib.State.branch_usage/1` follows the active path. `Tackle.Lib.context_usage/1`
-reports the model projection, so branch switches reset context pressure to the
-selected branch.
+`Tackle.Lib.State.usage/1` aggregates assistant usage across the whole archive
+while `Tackle.Lib.State.branch_usage/1` follows the active path.
+`Tackle.Lib.ContextUsage.estimate/1` reports the model projection, so branch
+switches reset context pressure to the selected branch.
 
 Navigation is an idle, committed operation: it validates the destination,
 persists `tree.navigated`, and only then installs the new position. It never

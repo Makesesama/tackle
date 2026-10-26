@@ -200,7 +200,7 @@ case Tackle.Lib.run(state, "What changed this week?") do
     IO.puts(Tackle.Lib.last_answer(final_state))
 
   {:error, failed_state} ->
-    IO.warn(Tackle.Lib.error(failed_state))
+    IO.warn(failed_state.error)
 
   {:cancelled, cancelled_state} ->
     IO.warn(cancelled_state.error)
@@ -310,9 +310,13 @@ crash, whose message `state.error` shows), a hook's abort reason,
 Match on `error_reason`; show `error`. A cancelled state keeps the cancellation
 reason in `error`.
 
-Convenience readers are `Tackle.Lib.last_answer/1`, `Tackle.Lib.messages/1`,
-`Tackle.Lib.usage/1`, `Tackle.Lib.context_usage/1`, `Tackle.Lib.completed?/1`,
-`Tackle.Lib.error?/1`, and `Tackle.Lib.error/1`.
+`Tackle.Lib.last_answer/1` returns the final answer a conversation ends with:
+the content of the last message when it is an assistant message with content
+and no tool calls (`Tackle.Lib.Message.final_answer?/1`), and `nil` otherwise,
+for example after a failed or cancelled turn. Read everything else from the
+state: `state.messages`, `state.status`, `state.error`,
+`Tackle.Lib.State.model_messages/1`, `Tackle.Lib.State.usage/1`, and
+`Tackle.Lib.ContextUsage.estimate/1`.
 
 ### Turn lifecycle
 
@@ -1235,7 +1239,8 @@ Entry points share one transaction:
 - one `:overflow` compact-and-retry after a provider
   `%Tackle.Lib.LLM.Error{kind: :context_window_exceeded}`, whether the provider
   reported it in an HTTP error or inside a stream; and
-- `Tackle.Lib.compact/2` for an idle, operator-requested compaction. A
+- `Tackle.Lib.Compaction.compact(state, :manual, opts)` for an idle,
+  operator-requested compaction. A
   conversation that already fits the retention target has nothing to compact
   (`{:error, :nothing_to_compact, state}`).
 
@@ -1336,14 +1341,14 @@ Three readers stay deliberately distinct:
 
 - `Tackle.Lib.Tree.enumerate/1` — every entry on every branch, once, in
   chronological order (the whole-tree archive);
-- `Tackle.Lib.messages/1` — the active path's complete, uncompacted transcript;
-  and
-- `Tackle.Lib.model_messages/1` — the active path's provider context, with only
-  the compactions that occur on that path applied.
+- `state.messages` — the active path's complete, uncompacted transcript; and
+- `Tackle.Lib.State.model_messages/1` — the active path's provider context,
+  with only the compactions that occur on that path applied.
 
-Accordingly, `Tackle.Lib.usage/1` aggregates assistant usage across the whole
-archive while `Tackle.Lib.State.branch_usage/1` follows the active path, and
-`Tackle.Lib.context_usage/1` measures the selected model projection. A compaction
+Accordingly, `Tackle.Lib.State.usage/1` aggregates assistant usage across the
+whole archive while `Tackle.Lib.State.branch_usage/1` follows the active path,
+and `Tackle.Lib.ContextUsage.estimate/1` measures the selected model
+projection. A compaction
 on one branch never changes a sibling's context, and returning after a
 compaction restores the same summary without re-summarizing.
 
@@ -1399,13 +1404,13 @@ sequences, measured separately and summed, such as
 compactions.
 
 The metrics return `nil` when their required cache reporting or prompt usage is
-unavailable. `Tackle.Lib.usage(state)` derives aggregate usage from assistant
+unavailable. `Tackle.Lib.State.usage(state)` derives aggregate usage from assistant
 messages so a separate mutable total cannot drift. Cost aggregation is
 conservative: costs are summed only when every entry has numeric cost and
 currencies are compatible; an aggregate containing any estimate is itself
 estimated.
 
-`Tackle.Lib.context_usage(state)` uses the latest non-zero assistant usage as a
+`Tackle.Lib.ContextUsage.estimate(state)` uses the latest non-zero assistant usage as a
 checkpoint, preferring provider `total_tokens` and otherwise summing input,
 output, cache-read, and cache-write exactly once. Messages after that checkpoint
 are estimated at four UTF-8 characters per token, and image parts at a fixed

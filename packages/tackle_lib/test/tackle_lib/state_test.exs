@@ -411,7 +411,6 @@ defmodule Tackle.Lib.StateTest do
       assert usage.total_tokens == 25
       assert_in_delta usage.cost, 0.03, 0.000_001
       assert usage.currency == "USD"
-      assert Tackle.Lib.usage(state) == usage
     end
   end
 

@@ -124,12 +124,12 @@ Recommended semantics for tree-enabled state:
 | Surface | Meaning |
 | --- | --- |
 | Canonical tree | All settled entries on all branches. |
-| `State.messages` / `Tackle.Lib.messages/1` | Active path's complete transcript, not compacted. |
+| `State.messages` | Active path's complete transcript, not compacted. |
 | `State.model_messages` | Active path's provider context, with applicable compactions. |
 | `last_answer/1` | Last answer on the active path. |
-| `usage/1` | Aggregate assistant-message usage across the entire tree, counted once per message. |
+| `State.usage/1` | Aggregate assistant-message usage across the entire tree, counted once per message. |
 | Explicit branch usage reader | Assistant-message usage on the active path. |
-| `context_usage/1` | Pressure for the current model projection only. |
+| `ContextUsage.estimate/1` | Pressure for the current model projection only. |
 
 Linear mode retains current behavior. Document that `State.messages` is no longer
 the entire session archive in tree mode; consumers needing history must use the

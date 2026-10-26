@@ -51,8 +51,10 @@ Tackle.Lib.last_answer(state)
 - Both take the run options documented on `Tackle.Lib.Loop.run/3`; an unknown
   option raises `ArgumentError`. A turn runs with the state's configuration as
   it started; the loop reads no application environment.
-- Read results with `Tackle.Lib.last_answer/1`, `Tackle.Lib.messages/1`,
-  `Tackle.Lib.usage/1`, `Tackle.Lib.completed?/1`, `Tackle.Lib.error?/1`, `Tackle.Lib.error/1`.
+- `Tackle.Lib.last_answer/1` is the final answer the conversation ends with, or
+  `nil` when the last message is not one (`Tackle.Lib.Message.final_answer?/1`).
+  Read the rest from the state: `state.status`, `state.error`,
+  `state.error_reason`, `state.messages`, `Tackle.Lib.State.usage/1`.
 - Every state keeps its conversation in a `Tackle.Lib.Tree` (`state.tree`);
   `state.messages` and `state.model_messages` are caches derived from it. Never
   write those fields: append with `Tackle.Lib.State.add_message/2`, install a
