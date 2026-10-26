@@ -81,12 +81,6 @@ defmodule Tackle.Session.Reader do
     with {:ok, replay} <- read(session_id, opts), do: {:ok, replay.projection}
   end
 
-  @doc "Reads a journal and returns its last committed sequence number."
-  @spec last_seq(String.t(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def last_seq(session_id, opts \\ []) do
-    with {:ok, replay} <- read(session_id, opts), do: {:ok, replay.last_seq}
-  end
-
   @doc """
   Opens a journal for the single writable owner.
 
