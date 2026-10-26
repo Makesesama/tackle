@@ -68,6 +68,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
   alias Tackle.Session.Storage.Lock
+  alias Tackle.StatusRedaction
 
   @registry Tackle.Session.JournalRegistry
   @call_timeout 60_000
@@ -689,6 +690,34 @@ defmodule Tackle.Session.Journal do
     Watchdog.lock(self(), nil)
     :ok
   end
+
+  # Crash reports and `:sys.get_status/1` show the state and the last message.
+  # Neither may carry the transcript: the projection is reduced to its
+  # position, the creation options to their keys, and the message to its
+  # operation.
+  @impl true
+  def format_status(status), do: StatusRedaction.format_status(status, &redact_state/1)
+
+  defp redact_state(%{} = state) do
+    %{
+      state
+      | projection: redact_projection(state.projection),
+        open_opts: StatusRedaction.keys(state.open_opts)
+    }
+  end
+
+  defp redact_state(state), do: state
+
+  defp redact_projection(%Projection{} = projection) do
+    %{
+      session_id: projection.session_id,
+      last_seq: projection.last_seq,
+      status: projection.status,
+      message_count: length(projection.messages)
+    }
+  end
+
+  defp redact_projection(projection), do: projection
 
   defp build_state(session_id, lock, opened, opts) do
     state = %{

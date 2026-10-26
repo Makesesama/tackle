@@ -5,6 +5,7 @@ defmodule Tackle.Session.Journal.Watchdog do
   require Logger
 
   alias Tackle.Session.Storage
+  alias Tackle.StatusRedaction
 
   @registry Tackle.Session.JournalRegistry
   @default_timeout 15_000
@@ -93,6 +94,21 @@ defmodule Tackle.Session.Journal.Watchdog do
       {:stop, {:invalid_journal_timeout, timeout}}
     end
   end
+
+  # Queued requests carry their payloads (messages, tool calls) and the options
+  # may carry the environment; crash reports and `:sys.get_status/1` show only
+  # the operations and option keys.
+  @impl true
+  def format_status(status), do: StatusRedaction.format_status(status, &redact_state/1)
+
+  defp redact_state(%{queued: queued, opts: opts} = state) do
+    queued =
+      Enum.map(:queue.to_list(queued), fn {message, _from, _bytes} -> operation(message) end)
+
+    %{state | queued: queued, opts: StatusRedaction.keys(opts)}
+  end
+
+  defp redact_state(state), do: state
 
   @impl true
   def handle_call({:subscribe, subscriber}, _from, state) do

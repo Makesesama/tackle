@@ -476,7 +476,9 @@ and makes a bounded, best-effort attempt to save `journal-failure.json` beside
 `session.dlog` with private file permissions, including when the TUI mutes console
 logging. Unexpected journal exits (including disk errors and writer-lock loss)
 also produce a report with a payload-free failure category and the last
-stage/sequence before cleanup. Normal shutdown does not create a
+stage/sequence before cleanup. Crash reports and `:sys.get_status/1` of the
+journal, its watchdog, the catalog, and the bash watchdog show no transcript,
+command, or option values either. Normal shutdown does not create a
 failure report. Check `recorded_at`: a report from an earlier crash is retained
 when the session resumes. If storage itself is stuck, saving that diagnostic may
 also fail; scope shutdown does not depend on it. Prompts, tool arguments, and

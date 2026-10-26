@@ -28,6 +28,22 @@ defmodule Tackle.Session.CatalogTest do
     assert Enum.map(found, & &1.cwd) == [cwd]
   end
 
+  test "its crash reports show neither cached search text nor options" do
+    status = %{
+      state: %{table: Catalog, opts: [env: %{"TACKLE_SECRET" => "secret"}]},
+      message: {:"$gen_cast", {:cache_search_text, "session", 3, "secret conversation"}},
+      reason: :boom,
+      log: [{:in, {:"$gen_cast", {:record, %{preview: "secret preview"}}}}]
+    }
+
+    redacted = Catalog.format_status(status)
+
+    refute inspect(redacted, limit: :infinity, printable_limit: :infinity) =~ "secret"
+    assert redacted.state == %{table: Catalog, opts: [:env]}
+    assert redacted.message == {:"$gen_cast", :cache_search_text}
+    assert redacted.reason == :boom
+  end
+
   test "excludes tool arguments and tool output from default search", ctx do
     secret = "SECRET-#{System.unique_integer([:positive])}"
     path = Path.join(ctx.home, "tool-input.txt")

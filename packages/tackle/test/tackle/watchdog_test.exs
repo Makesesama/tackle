@@ -145,6 +145,30 @@ defmodule Tackle.WatchdogTest do
     assert tool_content(state, "w1") == "done"
   end
 
+  test "its status shows neither commands nor their output" do
+    scope = start_watched_scope(arguments: %{"command" => "echo secret-token"})
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+    {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+
+    assert_receive {:bash_started, "echo secret-token", tool}, 5_000
+    assert_receive {:judge_called, judge, _request, _at}, 2_000
+
+    status =
+      scope.root_agent_ref
+      |> watchdog_pid()
+      |> :sys.get_status()
+      |> inspect(limit: :infinity, printable_limit: :infinity)
+
+    refute status =~ "secret-token"
+    refute status =~ "line 1"
+    assert status =~ "w1"
+
+    send(judge, {:judge_reply, verdict("progressing", 0.99)})
+    send(tool, :release)
+    assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
+  end
+
   test "an uncertain stop verdict does not stop the call" do
     scope = start_watched_scope()
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)

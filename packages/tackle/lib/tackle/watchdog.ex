@@ -46,6 +46,7 @@ defmodule Tackle.Watchdog do
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Registry
+  alias Tackle.StatusRedaction
   alias Tackle.Watchdog.Digest
 
   @tool_name "bash"
@@ -161,6 +162,23 @@ defmodule Tackle.Watchdog do
       {:error, reason} -> {:stop, {:subscribe_failed, reason}}
     end
   end
+
+  # Tracked commands and their output, the decision model's selection, and
+  # the decision options may carry secrets; crash reports and
+  # `:sys.get_status/1` show only call ids, timing, and option keys.
+  @impl true
+  def format_status(status), do: StatusRedaction.format_status(status, &redact_state/1)
+
+  defp redact_state(%{calls: calls, settings: %Settings{} = settings} = state) do
+    %{
+      state
+      | calls: Map.new(calls, fn {id, call} -> {id, Map.delete(call, :digest)} end),
+        settings: Map.take(settings, [:model_ref, :after_seconds, :threshold]),
+        decision_opts: StatusRedaction.keys(state.decision_opts)
+    }
+  end
+
+  defp redact_state(state), do: state
 
   @impl true
   def handle_info(:subscribe, state) do

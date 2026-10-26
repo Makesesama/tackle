@@ -1000,6 +1000,48 @@ defmodule Tackle.Session.JournalTest do
     end
   end
 
+  describe "status" do
+    test "redacts the transcript and creation options", ctx do
+      {:ok, journal} = start_journal(ctx, title: "secret title", tags: ["secret-tag"])
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "secret input")
+      :ok = Journal.append_message(journal, Message.user("secret prompt"))
+
+      status = inspect(:sys.get_status(journal), limit: :infinity, printable_limit: :infinity)
+      refute status =~ "secret"
+      assert status =~ ctx.session_id
+      assert status =~ "last_seq: 3"
+    end
+
+    test "the watchdog redacts queued request payloads", ctx do
+      {:ok, journal} = start_journal(ctx, env: %{"TACKLE_SECRET" => "secret env"})
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+
+      [{watchdog, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+
+      :ok = :sys.suspend(journal)
+
+      try do
+        first = Message.user("secret dispatched")
+        queued = Message.user("secret queued")
+        dispatched = Task.async(fn -> Journal.append_message(journal, first) end)
+        await_queued_append(journal, first.id)
+        waiting = Task.async(fn -> Journal.append_message(journal, queued) end)
+        assert eventually(fn -> :queue.len(:sys.get_state(watchdog).queued) == 1 end) == :ok
+
+        status = inspect(:sys.get_status(watchdog), limit: :infinity, printable_limit: :infinity)
+        refute status =~ "secret"
+        assert status =~ "append_message"
+
+        :ok = :sys.resume(journal)
+        assert :ok = Task.await(dispatched)
+        assert :ok = Task.await(waiting)
+      after
+        if Process.alive?(journal), do: :sys.resume(journal)
+      end
+    end
+  end
+
   describe "shutdown" do
     test "the supervisor waits for the guarded cleanup deadline" do
       default = Journal.child_spec(session_id: "s")

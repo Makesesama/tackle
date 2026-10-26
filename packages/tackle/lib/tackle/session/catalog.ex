@@ -31,6 +31,7 @@ defmodule Tackle.Session.Catalog do
   alias Tackle.Session.Projection
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
+  alias Tackle.StatusRedaction
 
   @table __MODULE__
   @summary_schema_version 1
@@ -173,6 +174,13 @@ defmodule Tackle.Session.Catalog do
 
     {:ok, %{table: table, opts: opts}, {:continue, :rebuild}}
   end
+
+  # The state holds only the table and options, but the last message can
+  # carry a summary's preview or a session's whole search text, which crash
+  # reports and `:sys.get_status/1` must not show.
+  @impl true
+  def format_status(status),
+    do: StatusRedaction.format_status(status, &%{&1 | opts: StatusRedaction.keys(&1.opts)})
 
   @impl true
   def handle_continue(:rebuild, state) do
