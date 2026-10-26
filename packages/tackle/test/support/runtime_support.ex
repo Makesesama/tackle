@@ -216,6 +216,7 @@ defmodule Tackle.Test.Runtime do
         providers: Keyword.get(opts, :providers, [Tackle.Test.Adapter]),
         model: Keyword.get(opts, :model, "test/echo"),
         tools: Keyword.get(opts, :tools, []),
+        hooks: Keyword.get(opts, :hooks, []),
         context: Keyword.get(opts, :context, %{}),
         system_prompt: Keyword.get(opts, :system_prompt, "You are a test agent."),
         max_iterations: Keyword.get(opts, :max_iterations, 5),

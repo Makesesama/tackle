@@ -3,8 +3,10 @@ defmodule Tackle.Runtime.DelegationTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Runtime.Envelope
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
+  alias Tackle.Session
 
   defmodule ProgressTool do
     use Tackle.Lib.Tool
@@ -46,6 +48,46 @@ defmodule Tackle.Runtime.DelegationTest do
 
     assert %Outcome{status: :ok} = outcome = Tackle.Runtime.await(run_ref, 5_000)
     assert Outcome.answer(outcome) == "finished"
+  end
+
+  defmodule HoldTurnEndHook do
+    @behaviour Tackle.Lib.Hook
+
+    @impl true
+    def before_turn_end(_state, context) do
+      send(context.test_pid, {:turn_ending, self()})
+      receive do: (:proceed -> :ok)
+    end
+  end
+
+  test "a delegated run answers a message that arrives while its turn ends" do
+    scope =
+      start_scope(
+        root: [allow_delegation: true],
+        profiles: %{
+          "worker" =>
+            agent_spec("worker",
+              mode: :echo_messages,
+              hooks: [HoldTurnEndHook],
+              context: %{test_pid: self()}
+            )
+        }
+      )
+
+    {:ok, run_ref} = Tackle.Runtime.request_agent(scope.root_agent_ref, "worker", "go")
+    assert_receive {:turn_ending, hook}, 5_000
+
+    # The loop has taken its last queued messages; this one is acknowledged.
+    {:ok, child} = Tackle.Runtime.session_pid(run_ref.agent_ref)
+    {:ok, envelope} = Envelope.new(:message, scope.root_agent_ref, "note")
+    assert :ok = Session.deliver(child, envelope)
+    send(hook, :proceed)
+
+    assert_receive {:turn_ending, hook}, 5_000
+    send(hook, :proceed)
+
+    assert %Outcome{status: :ok} = outcome = Tackle.Runtime.await(run_ref, 5_000)
+    assert Outcome.answer(outcome) =~ "note"
   end
 
   test "concurrent delegated runs are correlated by run reference" do

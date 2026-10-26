@@ -17,8 +17,12 @@ defmodule Tackle.Session do
   concurrent tool execution isolated per agent.
 
   An `:ephemeral` session delivers one correlated terminal outcome to its
-  request helper and then stops. A session process is never reset for another
-  agent identity.
+  request helper and then stops. Input it acknowledged after the loop last
+  took queued messages (while `before_turn_end` hooks ran, or while the
+  terminal event was written) is not dropped: a successful turn is continued
+  with it, and the last turn's outcome is delivered. An error or cancelled
+  outcome is delivered at once, and input still queued is dropped. A session
+  process is never reset for another agent identity.
 
   Subscription during an active turn is deliberately rejected because events
   are not replayed. Subscribe before submitting a turn to avoid a
@@ -904,7 +908,13 @@ defmodule Tackle.Session do
     delete_turn_signals(%{state.active_turn | signal: pending.signal})
     release_turn(state)
     if pending.from, do: GenServer.reply(pending.from, {:error, reason})
-    {:noreply, %{state | active_turn: nil}}
+    state = %{state | active_turn: nil}
+
+    # An ephemeral session's continuation has no caller: its request helper
+    # still waits for the one terminal outcome.
+    if is_nil(pending.from) and state.lifetime == :ephemeral,
+      do: finish_ephemeral(state, {:runtime_error, {:continuation_failed, reason}}),
+      else: {:noreply, state}
   end
 
   defp finish_reconfiguration(state, :ok, config) do
@@ -1224,13 +1234,44 @@ defmodule Tackle.Session do
     :exit, _reason -> :ok
   end
 
+  # An ephemeral session reports one terminal outcome and stops. Input it
+  # acknowledged after the loop last took queued messages (during
+  # `before_turn_end` hooks such as the compile gate, or while the terminal
+  # event was written) would be lost, so a successful turn is first continued
+  # with it; the outcome of the last turn is delivered. An error or
+  # cancellation ends the session at once, dropping input still queued.
+  defp settle(%{lifetime: :ephemeral} = state, {:ok, %AgentState{}} = result) do
+    if deliverable_inbox_pending?(state),
+      do: continue_ephemeral(state),
+      else: finish_ephemeral(state, result)
+  end
+
+  defp settle(%{lifetime: :ephemeral} = state, result), do: finish_ephemeral(state, result)
+
   defp settle(state, result) do
     deliver_terminal(state, result)
+    {:noreply, schedule_inbox_wake(state)}
+  end
 
-    if state.lifetime == :ephemeral do
-      {:stop, :normal, state}
-    else
-      {:noreply, schedule_inbox_wake(state)}
+  defp finish_ephemeral(state, result) do
+    deliver_terminal(state, result)
+    {:stop, :normal, state}
+  end
+
+  # A durable start replies later; its begin broadcasts the turn's start.
+  defp continue_ephemeral(state) do
+    reason = inbox_turn_reason(state)
+
+    case start_turn(:continue, nil, state) do
+      {:reply, {:ok, turn_id}, state} ->
+        broadcast(state, {:tackle_turn_started, state.agent_state.session_id, turn_id, reason})
+        {:noreply, state}
+
+      {:noreply, state} ->
+        {:noreply, state}
+
+      {:reply, {:error, reason}, state} ->
+        finish_ephemeral(state, {:runtime_error, {:continuation_failed, reason}})
     end
   end
 

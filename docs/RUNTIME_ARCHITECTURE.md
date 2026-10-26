@@ -86,7 +86,7 @@ An agent is one stateful conversation capable of running turns. Its GenServer ow
 - its parent agent and fleet identity;
 - a bounded request queue if queuing is introduced.
 
-Each agent process is dedicated to exactly one agent. When an ephemeral delegated agent returns its result and no further work belongs to it, the runtime stops that agent process. A later subagent request receives a new agent process and new state rather than recycling the old process.
+Each agent process is dedicated to exactly one agent. When an ephemeral delegated agent returns its result and no further work belongs to it, the runtime stops that agent process. A message the agent acknowledged after its loop last took queued messages (for example while `before_turn_end` hooks ran) is still work that belongs to it: after a successful turn, `Tackle.Session` continues with such messages before it returns the last turn's result. An error or cancellation returns at once and drops them. A later subagent request receives a new agent process and new state rather than recycling the old process.
 
 The actual LLM loop must continue to run in a supervised Task. It must not run directly inside the agent GenServer because that would block cancellation, status inspection, message delivery, and lifecycle operations.
 
