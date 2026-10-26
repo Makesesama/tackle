@@ -350,6 +350,21 @@ defmodule Tackle.CLI.TreeTest do
     assert notice =~ "Unsafe"
   end
 
+  test "a session without branches settles the navigation with a notice" do
+    state = %{
+      base_state()
+      | pending_operation: %{ref: make_ref(), kind: :navigate, started_at_ms: 0},
+        activity: "navigating"
+    }
+
+    state = Tree.branching_disabled(state)
+
+    assert state.pending_operation == nil
+    assert state.activity == nil
+    assert state.error == nil
+    assert state.notice =~ "keeps no branches"
+  end
+
   test "an untouched composer receives the selected user message" do
     state = base_state()
 

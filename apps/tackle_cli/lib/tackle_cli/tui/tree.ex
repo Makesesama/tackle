@@ -83,7 +83,7 @@ defmodule Tackle.CLI.TUI.Tree do
 
   Reports a notice instead when a turn is active, another operation is pending,
   or the tree is empty. A session without branching still shows its tree;
-  navigating it reports the session's `:tree_disabled` rejection.
+  navigating it shows a notice (`branching_disabled/1`).
   """
   @spec open(State.t()) :: {:noreply, State.t()}
   def open(%State{active_turn: turn} = state) when not is_nil(turn) do
@@ -687,6 +687,23 @@ defmodule Tackle.CLI.TUI.Tree do
       _other ->
         state
     end
+  end
+
+  @doc """
+  Settles a navigation the session refused because it keeps no branches.
+
+  Such a session (an ephemeral one, or a durable one without the tree
+  feature) still shows its tree; moving in it is not an error of the shell.
+  """
+  @spec branching_disabled(State.t()) :: State.t()
+  def branching_disabled(%State{} = state) do
+    %{
+      state
+      | pending_operation: nil,
+        overlay: nil,
+        activity: nil,
+        notice: "This session keeps no branches · start a durable session to move in its tree"
+    }
   end
 
   defp notice(%Outcome{change: %{mode: :edit}, draft: %Message{content: content}})

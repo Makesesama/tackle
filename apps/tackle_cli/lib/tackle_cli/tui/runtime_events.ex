@@ -285,6 +285,9 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
         {:noreply, state |> Viewport.refresh(), commands: commands}
 
+      {:error, :tree_disabled} ->
+        {:noreply, state |> Tree.branching_disabled() |> Viewport.refresh()}
+
       {:error, reason} ->
         operation_failed(state, reason)
 
