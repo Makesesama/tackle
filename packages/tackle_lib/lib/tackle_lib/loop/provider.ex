@@ -8,14 +8,14 @@ defmodule Tackle.Lib.Loop.Provider do
   # cancellation check, then generates, or streams when the run asks for it.
   # While streaming, the adapter's `:usage` events are dropped, since the
   # response's usage is reported once below, and stream events without an id
-  # get the pending assistant message's id.
+  # get the id of the assistant message the step generates (`run.assistant_id`).
   #
   # One recursive attempt loop settles each dispatch:
   #
   #   * cancellation ends the request;
   #   * a provider-confirmed context overflow is compacted (`:compaction_retry`)
   #     and the request is sent again, up to the compaction policy's
-  #     `overflow_retry_limit` per turn (`state.overflow_retries`);
+  #     `overflow_retry_limit` per turn (`run.overflow_retries`);
   #   * a transient failure is retried under the snapshot's `Tackle.Lib.Retry`
   #     policy (`:retry_scheduled`, the backoff, `:retry_start`);
   #   * any other failure ends the request with the provider's reason;
@@ -29,9 +29,10 @@ defmodule Tackle.Lib.Loop.Provider do
   # A retried dispatch ends its retry with one `:retry_end` event. Only the
   # response the step keeps is returned, so the loop and its `after_prompt`
   # hooks never see a re-asked empty response. The result is
-  # `{:ok, response, state}`, `{:error, state}` with `state.error` and
-  # `state.error_reason` set, or `{:cancelled, state}`. The state can change
-  # even without a response: overflow compaction commits checkpoints.
+  # `{:ok, response, state, run}`, with the run's overflow recoveries counted,
+  # `{:error, state}` with `state.error` and `state.error_reason` set, or
+  # `{:cancelled, state}`. The state can change even without a response:
+  # overflow compaction commits checkpoints.
 
   require Logger
 
@@ -49,7 +50,8 @@ defmodule Tackle.Lib.Loop.Provider do
   alias Tackle.Lib.Tool.Registry
   alias Tackle.Lib.Usage
 
-  @type result :: {:ok, Response.t(), State.t()} | {:error, State.t()} | {:cancelled, State.t()}
+  @type result ::
+          {:ok, Response.t(), State.t(), Run.t()} | {:error, State.t()} | {:cancelled, State.t()}
 
   @doc """
   Requests the step's response from the snapshot's provider, with retries,
@@ -102,7 +104,7 @@ defmodule Tackle.Lib.Loop.Provider do
 
         cond do
           not Response.empty?(response) ->
-            {:ok, response, state}
+            {:ok, response, state, run}
 
           reasked? ->
             fail(state, "The model returned an empty response", :empty_response)
@@ -132,7 +134,7 @@ defmodule Tackle.Lib.Loop.Provider do
       Event.new(
         :retry_scheduled,
         %{attempt: 1, max_retries: 1, delay_ms: 0, reason: :empty_response},
-        id: state.pending_assistant_id
+        id: run.assistant_id
       )
     )
 
@@ -148,7 +150,7 @@ defmodule Tackle.Lib.Loop.Provider do
       Event.new(
         :retry_scheduled,
         %{attempt: retry, max_retries: policy.max_retries, delay_ms: delay_ms, reason: reason},
-        id: state.pending_assistant_id
+        id: run.assistant_id
       )
     )
 
@@ -163,7 +165,7 @@ defmodule Tackle.Lib.Loop.Provider do
   end
 
   defp start_retry(state, run, retry, reasked?) do
-    Run.emit(run, Event.new(:retry_start, %{attempt: retry}, id: state.pending_assistant_id))
+    Run.emit(run, Event.new(:retry_start, %{attempt: retry}, id: run.assistant_id))
     attempt(state, run, retry, reasked?)
   end
 
@@ -211,7 +213,7 @@ defmodule Tackle.Lib.Loop.Provider do
   end
 
   defp retry_after_overflow(state, run, reasked?),
-    do: attempt(%{state | overflow_retries: state.overflow_retries + 1}, run, 0, reasked?)
+    do: attempt(state, %{run | overflow_retries: run.overflow_retries + 1}, 0, reasked?)
 
   defp recoverable_overflow?(%State{} = state, reason, run) do
     LLM.context_window_exceeded?(reason) and Compaction.enabled?(state) and
@@ -220,7 +222,7 @@ defmodule Tackle.Lib.Loop.Provider do
 
   defp overflow_retries_remaining?(%State{} = state, run) do
     case Compaction.resolve(state, snapshot: run.snapshot) do
-      {:ok, resolved, _info} -> state.overflow_retries < resolved.overflow_retry_limit
+      {:ok, resolved, _info} -> run.overflow_retries < resolved.overflow_retry_limit
       {:error, _reason} -> false
     end
   end
@@ -234,7 +236,7 @@ defmodule Tackle.Lib.Loop.Provider do
       adapter = run.snapshot.llm || run.snapshot.llm_adapter
 
       if run.llm_stream? do
-        LLM.stream_with(adapter, schema, opts, stream_callback(state, run))
+        LLM.stream_with(adapter, schema, opts, stream_callback(run))
       else
         LLM.generate_with(adapter, schema, opts)
       end
@@ -286,8 +288,8 @@ defmodule Tackle.Lib.Loop.Provider do
   # The response's usage is reported once, when the response settles. Streaming
   # adapters and the non-streaming fallback also report it, which would make
   # hosts that sum usage events count every response twice.
-  defp stream_callback(state, run) do
-    pending_id = state.pending_assistant_id
+  defp stream_callback(run) do
+    pending_id = run.assistant_id
 
     fn
       %Event{type: :usage} -> :ok

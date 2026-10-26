@@ -59,7 +59,7 @@ defmodule Tackle.Lib.SnapshotTest do
       assert is_binary(snapshot.turn_id)
       assert snapshot.system_prompt == "You are a test agent."
       assert snapshot.model == "test/model"
-      assert snapshot.tools == [SnapshotTestTool]
+      assert Registry.modules(snapshot.tool_registry) == [SnapshotTestTool]
       assert snapshot.tools_version_id == Snapshot.tools_version_id([SnapshotTestTool])
       assert snapshot.hooks == []
       assert snapshot.llm_opts == [temperature: 0.5]
@@ -72,9 +72,9 @@ defmodule Tackle.Lib.SnapshotTest do
       assert def.name == "snapshot_test"
     end
 
-    test "versions the captured registry rather than the state's tool list" do
+    test "versions the captured registry" do
       registry = Registry.new([SnapshotTestTool])
-      state = %{State.new() | tools: [], tool_registry: registry}
+      state = %{State.new() | tool_registry: registry}
 
       snapshot = Snapshot.capture(state)
 
@@ -172,11 +172,11 @@ defmodule Tackle.Lib.SnapshotTest do
       snapshot = Snapshot.capture(state)
 
       # Mutate the original state
-      _mutated_state = %{state | system_prompt: "Changed", tools: []}
+      _mutated_state = %{state | system_prompt: "Changed", tool_registry: Registry.new([])}
 
       # Snapshot is unaffected
       assert snapshot.system_prompt == "Original"
-      assert snapshot.tools == [SnapshotTestTool]
+      assert Registry.modules(snapshot.tool_registry) == [SnapshotTestTool]
     end
   end
 

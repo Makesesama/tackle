@@ -241,19 +241,12 @@ defmodule Tackle.Lib do
   defp install_navigation(%State{} = state, outcome) do
     tree = outcome.tree
 
-    %{
+    State.reset_turn(%{
       state
       | tree: tree,
         messages: Tree.transcript(tree),
-        model_messages: Tree.model_context(tree),
-        last_compaction_id: Tree.last_compaction_id(tree),
-        current_iteration: 0,
-        status: :idle,
-        error: nil,
-        error_reason: nil,
-        pending_assistant_id: nil,
-        overflow_retries: 0
-    }
+        model_messages: Tree.model_context(tree)
+    })
   end
 
   @doc """

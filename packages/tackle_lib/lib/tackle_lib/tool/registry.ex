@@ -18,9 +18,9 @@ defmodule Tackle.Lib.Tool.Registry do
           required(:definition) => map()
         }
 
-  @type t :: %__MODULE__{entries: %{String.t() => entry()}}
+  @type t :: %__MODULE__{entries: %{String.t() => entry()}, modules: [module()]}
 
-  defstruct entries: %{}
+  defstruct entries: %{}, modules: []
 
   @doc """
   Builds a registry from a list of `Tackle.Lib.Tool` modules.
@@ -52,8 +52,12 @@ defmodule Tackle.Lib.Tool.Registry do
         })
       end)
 
-    %__MODULE__{entries: entries}
+    %__MODULE__{entries: entries, modules: tools}
   end
+
+  @doc "Returns the registered tool modules, in the order they were given to `new/1`."
+  @spec modules(t()) :: [module()]
+  def modules(%__MODULE__{modules: modules}), do: modules
 
   @doc "Returns provider-neutral definitions with stable definition ids."
   @spec definitions(t()) :: [map()]

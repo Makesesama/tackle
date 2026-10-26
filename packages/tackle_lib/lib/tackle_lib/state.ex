@@ -9,13 +9,19 @@ defmodule Tackle.Lib.State do
   keeps Tackle.Lib domain-agnostic — it knows how to run a loop, not which tools or
   models exist.
 
+  A state carries only what outlives a turn and what hosts read: the loop's
+  own per-step bookkeeping (the id of the assistant message being generated,
+  the overflow recoveries spent) lives with the running turn, never here.
+  Values that can be derived are not stored twice: `tools/1` reads the tool
+  registry and `last_compaction_id/1` reads the tree or the model projection.
+
   A turn that ends in an error leaves a human-readable message in `:error` and
   the structured reason behind it in `:error_reason`, the same term the turn's
   `:error` event reports as `:reason` (for example the provider's error reason,
   a hook's abort reason, `:max_iterations`, `:empty_response`, or
   `{:invalid_response, detail}`). Hosts match on `:error_reason`; `:error` is
   for people. A cancelled turn keeps its cancellation reason in `:error`. Both
-  are cleared when the next turn starts.
+  are cleared when the next turn starts (`reset_turn/1`).
   """
 
   alias Tackle.Lib.Compaction
@@ -38,7 +44,6 @@ defmodule Tackle.Lib.State do
           current_iteration: non_neg_integer(),
           max_iterations: iteration_limit(),
           status: status(),
-          tools: [module()],
           tool_registry: Registry.t(),
           tool_policy: Policy.t(),
           context: map(),
@@ -52,11 +57,8 @@ defmodule Tackle.Lib.State do
           hooks: [module()],
           error: String.t() | nil,
           error_reason: term(),
-          pending_assistant_id: String.t() | nil,
           retry: Retry.t(),
           compaction: Compaction.Config.t() | nil,
-          last_compaction_id: String.t() | nil,
-          overflow_retries: non_neg_integer(),
           tree: Tree.t() | nil,
           tree_committer: module() | nil
         }
@@ -69,7 +71,6 @@ defmodule Tackle.Lib.State do
             current_iteration: 0,
             max_iterations: @default_max_iterations,
             status: :idle,
-            tools: [],
             tool_registry: Registry.new([]),
             tool_policy: Policy.default(),
             context: %{},
@@ -83,11 +84,8 @@ defmodule Tackle.Lib.State do
             hooks: [],
             error: nil,
             error_reason: nil,
-            pending_assistant_id: nil,
             retry: Retry.new!(),
             compaction: nil,
-            last_compaction_id: nil,
-            overflow_retries: 0,
             tree: nil,
             tree_committer: nil
 
@@ -95,12 +93,16 @@ defmodule Tackle.Lib.State do
   Creates a new agent state with the given options.
 
   ## Options
-    * `:model` - The LLM model spec to use (host-supplied; no default)
+    * `:llm` - A `Tackle.Lib.LLM.Selection` for per-state adapter selection;
+      `state.model` is then the selection's adapter-local model
+    * `:model` - Model identifier for the legacy application-configured adapter
+      (`config :tackle_lib, llm: Adapter`), used only without `:llm`. Passing
+      both `:llm` and `:model` raises `ArgumentError`.
     * `:max_iterations` - Maximum ReAct loop iterations per turn (default: `:infinity`)
-    * `:tools` - List of tool modules implementing `Tackle.Lib.Tool` (default: [])
+    * `:tools` - List of tool modules implementing `Tackle.Lib.Tool` (default: []),
+      built into `state.tool_registry`; `tools/1` returns them
     * `:tool_policy` - Tool execution policy (defaults to sequential Tackle.Lib policy)
     * `:context` - Additional context map (user info, permissions, etc.)
-    * `:llm` - A `Tackle.Lib.LLM.Selection` for per-state adapter selection
     * `:system_prompt` - Custom system prompt (overrides the built default)
     * `:prompt_renderer` - Prompt renderer used for response schema resolution
     * `:prompt_renderer_opts` - Options passed to the prompt renderer
@@ -123,9 +125,7 @@ defmodule Tackle.Lib.State do
   def new(opts \\ []) do
     id_generator = Keyword.get(opts, :id_generator, &ID.uuid4/0)
 
-    tools = Keyword.get(opts, :tools, [])
-    llm = validate_llm_selection!(Keyword.get(opts, :llm))
-    model = if llm, do: llm.model, else: Keyword.get(opts, :model)
+    {llm, model} = llm_and_model!(opts)
 
     tree = normalize_tree(Keyword.get(opts, :tree))
 
@@ -136,8 +136,7 @@ defmodule Tackle.Lib.State do
       current_iteration: 0,
       max_iterations: Keyword.get(opts, :max_iterations, @default_max_iterations),
       status: :idle,
-      tools: tools,
-      tool_registry: Registry.new(tools),
+      tool_registry: Registry.new(Keyword.get(opts, :tools, [])),
       tool_policy: Keyword.get(opts, :tool_policy, Policy.default()),
       context: Keyword.get(opts, :context, %{}),
       llm: llm,
@@ -150,7 +149,6 @@ defmodule Tackle.Lib.State do
       hooks: Keyword.get(opts, :hooks, []),
       error: nil,
       error_reason: nil,
-      pending_assistant_id: nil,
       retry: normalize_retry(Keyword.get(opts, :retry)),
       compaction: normalize_compaction(Keyword.get(opts, :compaction)),
       tree: tree,
@@ -196,13 +194,46 @@ defmodule Tackle.Lib.State do
           "expected :compaction to be a config, options, false, or nil, got: #{inspect(other)}"
   end
 
-  defp validate_llm_selection!(nil), do: nil
-  defp validate_llm_selection!(%Selection{} = selection), do: selection
+  # A selection names its own model, so a separate `:model` could only be
+  # ignored or contradict it.
+  defp llm_and_model!(opts) do
+    case {Keyword.get(opts, :llm), Keyword.get(opts, :model)} do
+      {nil, model} ->
+        {nil, model}
 
-  defp validate_llm_selection!(selection) do
-    raise ArgumentError,
-          "expected :llm to be a Tackle.Lib.LLM.Selection, got: #{inspect(selection)}"
+      {%Selection{} = selection, nil} ->
+        {selection, selection.model}
+
+      {%Selection{}, model} ->
+        raise ArgumentError,
+              "pass either :llm or :model, not both; the selection already names " <>
+                "its model (got model: #{inspect(model)})"
+
+      {selection, _model} ->
+        raise ArgumentError,
+              "expected :llm to be a Tackle.Lib.LLM.Selection, got: #{inspect(selection)}"
+    end
   end
+
+  @doc """
+  Clears the per-turn fields so a new turn starts clean: the iteration
+  counter, the status (back to `:idle`), and the previous turn's `:error` and
+  `:error_reason`.
+
+  The loop calls it when a turn starts; hosts call it when they install a
+  conversation (a restored session, a navigated tree) on a state that may
+  have run before. The conversation and the configuration are kept.
+  """
+  @spec reset_turn(t()) :: t()
+  def reset_turn(%__MODULE__{} = state) do
+    %{state | current_iteration: 0, status: :idle, error: nil, error_reason: nil}
+  end
+
+  @doc """
+  Returns the configured tool modules, in the order they were given to `new/1`.
+  """
+  @spec tools(t()) :: [module()]
+  def tools(%__MODULE__{tool_registry: registry}), do: Registry.modules(registry)
 
   @doc """
   Adds a message to the conversation history.
@@ -254,22 +285,6 @@ defmodule Tackle.Lib.State do
   def model_messages(%__MODULE__{model_messages: model_messages}), do: model_messages
 
   @doc """
-  Updates the agent status.
-  """
-  @spec set_status(t(), status()) :: t()
-  def set_status(%__MODULE__{} = state, status) do
-    %{state | status: status}
-  end
-
-  @doc """
-  Increments the iteration counter.
-  """
-  @spec increment_iteration(t()) :: t()
-  def increment_iteration(%__MODULE__{} = state) do
-    %{state | current_iteration: state.current_iteration + 1}
-  end
-
-  @doc """
   Checks if the agent has exceeded max iterations.
   """
   @spec max_iterations_reached?(t()) :: boolean()
@@ -306,25 +321,31 @@ defmodule Tackle.Lib.State do
 
   @doc """
   Returns the most recent compaction id on the active path, or nil.
+
+  In tree mode it is the latest compaction entry on the active path. In
+  linear mode it is the id of the checkpoint message that a compaction puts
+  at the head of the model projection, which is the compaction's id.
   """
   @spec last_compaction_id(t()) :: String.t() | nil
   def last_compaction_id(%__MODULE__{tree: %Tree{} = tree}), do: Tree.last_compaction_id(tree)
-  def last_compaction_id(%__MODULE__{last_compaction_id: id}), do: id
 
-  @doc """
-  Sets an error on the state: `message` is the human-readable `:error`, and
-  `reason` the structured `:error_reason` behind it (for example a provider's
-  error reason or a hook's abort reason), or `nil` when there is none.
-  """
+  def last_compaction_id(%__MODULE__{model_messages: [%Message{id: id} = first | _rest]}) do
+    if Compaction.checkpoint?(first), do: id
+  end
+
+  def last_compaction_id(%__MODULE__{}), do: nil
+
+  # Loop-internal: how the loop ends a turn. `message` is the human-readable
+  # `:error`, and `reason` the structured `:error_reason` behind it, or `nil`.
+  @doc false
   @spec set_error(t(), String.t(), term()) :: t()
   def set_error(%__MODULE__{} = state, message, reason \\ nil) do
     %{state | status: :error, error: message, error_reason: reason}
   end
 
-  @doc """
-  Marks the state as cancelled. The cancellation reason is kept in `:error`;
-  `:error_reason` is cleared.
-  """
+  # Loop-internal: the cancellation reason is kept in `:error`;
+  # `:error_reason` is cleared.
+  @doc false
   @spec set_cancelled(t(), String.t()) :: t()
   def set_cancelled(%__MODULE__{} = state, reason) do
     %{state | status: :cancelled, error: reason, error_reason: nil}

@@ -36,7 +36,6 @@ defmodule Tackle.Lib.Snapshot do
           prompt_renderer: module() | nil,
           prompt_renderer_opts: keyword(),
           tools_version_id: String.t(),
-          tools: [module()],
           tool_registry: Registry.t(),
           hooks: [module()],
           llm: Selection.t() | nil,
@@ -55,7 +54,6 @@ defmodule Tackle.Lib.Snapshot do
     :prompt_renderer,
     :prompt_renderer_opts,
     :tools_version_id,
-    :tools,
     :tool_registry,
     :hooks,
     :llm,
@@ -84,7 +82,6 @@ defmodule Tackle.Lib.Snapshot do
     system_prompt = Map.get(state, :system_prompt)
     prompt_renderer = Map.get(state, :prompt_renderer)
     prompt_renderer_opts = Map.get(state, :prompt_renderer_opts, [])
-    tools = Map.get(state, :tools, [])
     tool_registry = Map.get(state, :tool_registry)
 
     %__MODULE__{
@@ -94,7 +91,6 @@ defmodule Tackle.Lib.Snapshot do
       prompt_renderer: prompt_renderer,
       prompt_renderer_opts: prompt_renderer_opts,
       tools_version_id: tools_version_id(tool_registry),
-      tools: tools,
       tool_registry: tool_registry,
       hooks: hooks,
       llm: llm,

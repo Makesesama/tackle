@@ -878,12 +878,12 @@ defmodule Tackle.Lib.LoopTest do
       assert [%Event{type: :turn_start} | _] = collect_events([])
     end
 
-    test "an error before the provider call leaves no pending assistant message" do
+    test "an error before the provider call leaves no assistant message" do
       state = turn_end_hook_state(%{abort: :before_prompt})
 
       {{:error, state}, events} = run_collecting(state, "hello")
 
-      assert state.pending_assistant_id == nil
+      assert Enum.map(state.messages, & &1.role) == [:user]
       assert state.error_reason == :nope
 
       assert %Event{type: :error, data: %{reason: :nope}} =

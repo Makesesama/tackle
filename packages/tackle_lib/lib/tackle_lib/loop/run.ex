@@ -5,6 +5,14 @@ defmodule Tackle.Lib.Loop.Run do
   # once, and the turn's frozen `Tackle.Lib.Snapshot`. The loop threads this
   # struct through every step instead of looking options up again.
   #
+  # It also carries the loop's own bookkeeping, which hosts never see and
+  # which therefore stays off `Tackle.Lib.State`:
+  #
+  #   * `assistant_id` - the id of the assistant message the current step
+  #     generates, minted at its `message_start` (`nil` before the first step);
+  #   * `overflow_retries` - the context-overflow recoveries the turn has spent,
+  #     bounded by the compaction policy's `overflow_retry_limit`.
+  #
   # The functions below are the operations every step performs through those
   # inputs: emitting events to the run's callback, invoking the snapshot's
   # hooks with the run's cancellation signal, finalizing a message, and
@@ -32,7 +40,9 @@ defmodule Tackle.Lib.Loop.Run do
           take_incoming_messages: (-> {:ok, [String.t()]} | {:error, term()}) | nil,
           before_provider_call: gate(),
           before_tool_execution: gate(),
-          snapshot: Snapshot.t()
+          snapshot: Snapshot.t(),
+          assistant_id: String.t() | nil,
+          overflow_retries: non_neg_integer()
         }
 
   @enforce_keys [:event_callback, :tool_context, :snapshot]
@@ -45,7 +55,9 @@ defmodule Tackle.Lib.Loop.Run do
     :before_provider_call,
     :before_tool_execution,
     :snapshot,
-    llm_stream?: false
+    :assistant_id,
+    llm_stream?: false,
+    overflow_retries: 0
   ]
 
   @doc """

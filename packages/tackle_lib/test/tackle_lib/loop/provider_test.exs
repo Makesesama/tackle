@@ -468,7 +468,6 @@ defmodule Tackle.Lib.Loop.ProviderTest do
       assert {:error, state} = Loop.run(State.new(model: "test/model"), "hello")
 
       assert state.error == "The model returned an empty response"
-      assert state.pending_assistant_id == nil
       assert Enum.map(state.messages, & &1.role) == [:user]
       assert_received :llm_call
       assert_received :llm_call
@@ -657,7 +656,6 @@ defmodule Tackle.Lib.Loop.ProviderTest do
         assert state.status == :error
         assert state.error_reason == {:invalid_response, detail}
         assert state.error =~ "Invalid provider"
-        assert state.pending_assistant_id == nil
         assert Enum.map(state.messages, & &1.role) == [:user]
 
         assert %Event{data: %{reason: {:invalid_response, ^detail}}} =

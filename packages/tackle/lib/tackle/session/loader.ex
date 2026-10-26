@@ -152,20 +152,11 @@ defmodule Tackle.Session.Loader do
   end
 
   defp install(%AgentState{} = state, conversation) do
-    tree = Map.get(conversation, :tree)
-
-    %{
+    AgentState.reset_turn(%{
       state
       | messages: conversation.messages,
         model_messages: conversation.model_messages,
-        tree: tree,
-        last_compaction_id: tree && Tree.last_compaction_id(tree),
-        current_iteration: 0,
-        status: :idle,
-        error: nil,
-        error_reason: nil,
-        pending_assistant_id: nil,
-        overflow_retries: 0
-    }
+        tree: Map.get(conversation, :tree)
+    })
   end
 end

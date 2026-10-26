@@ -458,7 +458,8 @@ defmodule Tackle.Lib.Compaction do
   # In tree mode a compaction is a first-class entry on the active branch: the
   # record becomes a node, and the model context is re-derived from the tree so
   # the checkpoint applies only to the branch it was created on. Linear mode
-  # keeps replacing the explicit model projection as before.
+  # keeps replacing the explicit model projection, whose head is the record's
+  # checkpoint message (`State.last_compaction_id/1` reads its id).
   defp install(%State{tree: %Tree{} = tree} = state, %Record{} = record, _model_messages) do
     case Tree.append_compaction(tree, record) do
       {:ok, tree, _entry} ->
@@ -466,8 +467,7 @@ defmodule Tackle.Lib.Compaction do
           state
           | tree: tree,
             messages: Tree.transcript(tree),
-            model_messages: Tree.model_context(tree),
-            last_compaction_id: record.compaction_id
+            model_messages: Tree.model_context(tree)
         }
 
       {:error, reason} ->
@@ -475,8 +475,8 @@ defmodule Tackle.Lib.Compaction do
     end
   end
 
-  defp install(%State{} = state, %Record{} = record, model_messages) do
-    %{state | model_messages: model_messages, last_compaction_id: record.compaction_id}
+  defp install(%State{} = state, %Record{}, model_messages) do
+    %{state | model_messages: model_messages}
   end
 
   defp reset_retained_metadata(messages) do

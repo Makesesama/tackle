@@ -258,9 +258,9 @@ Tackle.Lib.continue(state, run_opts)
 
 | Option | Purpose | Default |
 |---|---|---|
-| `:llm` | Selection returned by `Tackle.Lib.LLM.select/2` | configured adapter fallback |
-| `:model` | Model identifier for a legacy configured adapter | `nil` |
-| `:tools` | Modules implementing `Tackle.Lib.Tool` | `[]` |
+| `:llm` | Selection returned by `Tackle.Lib.LLM.select/2`; `state.model` is its model | configured adapter fallback |
+| `:model` | Model identifier for a legacy configured adapter; not together with `:llm` (`ArgumentError`) | `nil` |
+| `:tools` | Modules implementing `Tackle.Lib.Tool`, built into `state.tool_registry` (`Tackle.Lib.State.tools/1` lists them) | `[]` |
 | `:system_prompt` | Complete host-composed system prompt | `nil` |
 | `:context` | Opaque host context passed to hooks and tools | `%{}` |
 | `:max_iterations` | Optional maximum LLM/tool loop iterations per turn | `:infinity` (unlimited) |
@@ -273,6 +273,15 @@ Tackle.Lib.continue(state, run_opts)
 | `:retry` | `Tackle.Lib.Retry`, options, or `false` for provider-message retries | 3 retries, 2s base, 60s cap |
 
 Pass a positive integer as `:max_iterations` when a host needs a bounded run.
+
+The state keeps no derived copies: `Tackle.Lib.State.tools/1` reads the tool
+registry, and `Tackle.Lib.State.last_compaction_id/1` reads the tree or the
+checkpoint at the head of the model projection. The loop's per-step
+bookkeeping (the id of the assistant message being generated, the overflow
+recoveries a turn has spent) is not on the state. A host that installs a
+restored or navigated conversation on a state calls
+`Tackle.Lib.State.reset_turn/1`, which clears the iteration counter, status,
+and error fields the way a new turn does.
 
 `Tackle.Lib.run/3` appends one user message. `Tackle.Lib.continue/2` does **not** append a
 message; it clears the error/status, resets the iteration budget, and retries

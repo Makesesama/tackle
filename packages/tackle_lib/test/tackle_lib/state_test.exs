@@ -1,6 +1,7 @@
 defmodule Tackle.Lib.StateTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.Compaction
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Message
   alias Tackle.Lib.Retry
@@ -23,6 +24,22 @@ defmodule Tackle.Lib.StateTest do
     def execute(_args, _context), do: {:ok, "ok"}
   end
 
+  defmodule AnotherTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "another_tool"
+
+    @impl true
+    def description, do: "Another state test tool."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_args, _context), do: {:ok, "ok"}
+  end
+
   describe "new/1" do
     test "creates a new state with defaults" do
       state = State.new()
@@ -35,7 +52,7 @@ defmodule Tackle.Lib.StateTest do
       # Tackle.Lib has no baked-in default model — the host supplies it.
       assert state.llm == nil
       assert state.model == nil
-      assert state.tools == []
+      assert State.tools(state) == []
       assert state.retry == Retry.new!()
       assert is_function(state.id_generator, 0)
     end
@@ -61,7 +78,7 @@ defmodule Tackle.Lib.StateTest do
       assert state.session_id == "custom-id"
       assert state.model == "custom/model"
       assert state.max_iterations == 5
-      assert state.tools == [SomeTool]
+      assert State.tools(state) == [SomeTool]
       assert state.id_generator.() == "custom-id"
     end
 
@@ -93,10 +110,23 @@ defmodule Tackle.Lib.StateTest do
         ref: "example/selected-model"
       }
 
-      state = State.new(llm: selection, model: "ignored-model")
+      state = State.new(llm: selection)
 
       assert state.llm == selection
       assert state.model == "selected-model"
+    end
+
+    test "rejects a model next to an LLM selection" do
+      selection = %Selection{
+        adapter: ExampleAdapter,
+        provider_id: "example",
+        model: "selected-model",
+        ref: "example/selected-model"
+      }
+
+      assert_raise ArgumentError, ~r/either :llm or :model, not both/, fn ->
+        State.new(llm: selection, model: "other-model")
+      end
     end
 
     test "rejects an invalid LLM selection" do
@@ -118,38 +148,51 @@ defmodule Tackle.Lib.StateTest do
     end
   end
 
-  describe "set_status/2" do
-    test "updates the status" do
-      state = State.new()
-
-      state = State.set_status(state, :thinking)
-      assert state.status == :thinking
-
-      state = State.set_status(state, :completed)
-      assert state.status == :completed
+  describe "tools/1" do
+    test "returns the configured tools in their given order" do
+      assert State.tools(State.new(tools: [SomeTool, AnotherTool])) == [SomeTool, AnotherTool]
+      assert State.tools(State.new(tools: [AnotherTool, SomeTool])) == [AnotherTool, SomeTool]
     end
   end
 
-  describe "increment_iteration/1" do
-    test "increments the iteration counter" do
-      state = State.new()
+  describe "reset_turn/1" do
+    test "clears the per-turn fields and keeps the conversation" do
+      state =
+        State.new(max_iterations: 3)
+        |> State.add_message(Message.user("Hello"))
+        |> Map.put(:current_iteration, 3)
+        |> State.set_error("Failed", :timeout)
 
-      state = State.increment_iteration(state)
-      assert state.current_iteration == 1
+      reset = State.reset_turn(state)
 
-      state = State.increment_iteration(state)
-      assert state.current_iteration == 2
+      assert reset.current_iteration == 0
+      assert reset.status == :idle
+      assert reset.error == nil
+      assert reset.error_reason == nil
+      assert reset.messages == state.messages
+      assert reset.max_iterations == 3
+    end
+  end
+
+  describe "last_compaction_id/1" do
+    test "is nil before any compaction" do
+      assert State.last_compaction_id(State.new()) == nil
+
+      state = State.add_message(State.new(), Message.user("Hello"))
+      assert State.last_compaction_id(%{state | model_messages: state.messages}) == nil
+    end
+
+    test "is the id of the checkpoint at the head of a linear model projection" do
+      checkpoint = Compaction.checkpoint_message("compaction-1", "Earlier work")
+      state = %{State.new() | model_messages: [checkpoint, Message.user("Next")]}
+
+      assert State.last_compaction_id(state) == "compaction-1"
     end
   end
 
   describe "max_iterations_reached?/1" do
     test "returns false when the default limit is unlimited" do
-      state =
-        Enum.reduce(1..20, State.new(), fn _iteration, state ->
-          State.increment_iteration(state)
-        end)
-
-      refute State.max_iterations_reached?(state)
+      refute State.max_iterations_reached?(%{State.new() | current_iteration: 20})
     end
 
     test "returns false when under an explicit max" do
@@ -158,12 +201,7 @@ defmodule Tackle.Lib.StateTest do
     end
 
     test "returns true when at an explicit max" do
-      state =
-        State.new(max_iterations: 2)
-        |> State.increment_iteration()
-        |> State.increment_iteration()
-
-      assert State.max_iterations_reached?(state)
+      assert State.max_iterations_reached?(%{State.new(max_iterations: 2) | current_iteration: 2})
     end
   end
 

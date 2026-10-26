@@ -67,7 +67,7 @@ defmodule Tackle.Lib.CompactionTest do
       calls = Process.get(:adapter_calls, 0) + 1
       Process.put(:adapter_calls, calls)
 
-      if always_overflow?() or calls == 1 do
+      if always_overflow?() or calls in Process.get(:overflow_calls, [1]) do
         {:error, :context_window_exceeded}
       else
         {:ok,
@@ -94,6 +94,8 @@ defmodule Tackle.Lib.CompactionTest do
           :commit_count,
           :adapter_calls,
           :always_overflow,
+          :overflow_calls,
+          :incoming_polls,
           :summarize_calls
         ] do
       Process.delete(key)
@@ -456,7 +458,6 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:ok, final} = Tackle.Lib.run(state, "next")
       assert Process.get(:adapter_calls) == 2
       assert Tackle.Lib.last_answer(final) == "answer"
-      assert final.overflow_retries == 1
       assert Enum.any?(final.model_messages, &Compaction.checkpoint?/1)
     end
 
@@ -466,7 +467,32 @@ defmodule Tackle.Lib.CompactionTest do
 
       assert {:error, final} = Tackle.Lib.run(state, "next")
       assert Process.get(:adapter_calls) == 2
-      assert final.overflow_retries == 1
+      assert final.error =~ "context_window_exceeded"
+    end
+
+    test "spends the overflow retry limit per turn, not per step" do
+      Process.put(:overflow_calls, [1, 3])
+      state = loop_state([user(100), assistant(100)])
+
+      # The second poll comes after the first answer and continues the turn
+      # with another step, whose request overflows again.
+      take_incoming_messages = fn ->
+        polls = Process.get(:incoming_polls, 0) + 1
+        Process.put(:incoming_polls, polls)
+        if polls == 2, do: {:ok, ["follow up"]}, else: {:ok, []}
+      end
+
+      assert {:error, final} =
+               Tackle.Lib.run(state, "next", take_incoming_messages: take_incoming_messages)
+
+      assert Process.get(:adapter_calls) == 3
+      assert final.error =~ "context_window_exceeded"
+
+      # The next turn has its own budget.
+      Process.put(:overflow_calls, [4])
+      assert {:ok, final} = Tackle.Lib.continue(final)
+      assert Process.get(:adapter_calls) == 5
+      assert Tackle.Lib.last_answer(final) == "answer"
     end
 
     test "continues after a pressure summary failure without changing the model surface" do
@@ -536,7 +562,6 @@ defmodule Tackle.Lib.CompactionTest do
       assert Process.get(:summarize_calls) == 4
       assert Process.get(:commit_count) == 2
       assert Process.get(:adapter_calls) == 2
-      assert final.overflow_retries == 1
       assert Tackle.Lib.last_answer(final) == "answer"
     end
 

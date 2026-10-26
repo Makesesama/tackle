@@ -4,6 +4,7 @@ defmodule Tackle.Runtime.CapabilityTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Lib.Message
+  alias Tackle.Lib.State
   alias Tackle.Runtime
   alias Tackle.Runtime.Limits
   alias Tackle.Tools.Subagent
@@ -16,7 +17,7 @@ defmodule Tackle.Runtime.CapabilityTest do
     scope = start_scope(profiles: %{"worker" => agent_spec("worker")})
 
     assert {:ok, snapshot} = Tackle.snapshot(scope.root_agent_ref)
-    refute Subagent in snapshot.agent_state.tools
+    refute Subagent in State.tools(snapshot.agent_state)
   end
 
   test "delegation requires the grant and a matching trusted profile" do

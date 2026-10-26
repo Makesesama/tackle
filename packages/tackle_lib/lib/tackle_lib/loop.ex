@@ -127,7 +127,7 @@ defmodule Tackle.Lib.Loop do
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
   def run(%State{} = state, user_input, opts \\ []) do
     run = Run.new!(opts, state)
-    state = reset_turn(state)
+    state = State.reset_turn(state)
 
     Run.emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
 
@@ -159,27 +159,13 @@ defmodule Tackle.Lib.Loop do
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
   def continue(%State{} = state, opts \\ []) do
     run = Run.new!(opts, state)
-    state = reset_turn(state)
+    state = State.reset_turn(state)
 
     Run.emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
 
     state
     |> Tools.settle_interrupted(run, "interrupted")
     |> loop(run)
-  end
-
-  # Every turn starts from a clean per-turn state: `max_iterations` bounds one
-  # turn, and a previous turn's error or status must not leak into this one.
-  defp reset_turn(%State{} = state) do
-    %{
-      state
-      | current_iteration: 0,
-        status: :idle,
-        error: nil,
-        error_reason: nil,
-        pending_assistant_id: nil,
-        overflow_retries: 0
-    }
   end
 
   # Each turn runs against configuration frozen when it starts.
@@ -208,15 +194,15 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
+  # Each step mints the id of the assistant message it generates up front, so
+  # streamed deltas, retries, and the settled message share it.
   defp iterate(state, run) do
-    state = State.increment_iteration(state)
-    state = State.set_status(state, :thinking)
+    state = %{state | current_iteration: state.current_iteration + 1, status: :thinking}
 
     Run.emit(run, Event.new(:status_change, %{status: :thinking}))
 
-    assistant_id = state.id_generator.()
-    state = %{state | pending_assistant_id: assistant_id}
-    Run.emit(run, Event.message_start(id: assistant_id, role: :assistant))
+    run = %{run | assistant_id: state.id_generator.()}
+    Run.emit(run, Event.message_start(id: run.assistant_id, role: :assistant))
 
     Run.emit(run, Event.new(:step_start, %{iteration: state.current_iteration}))
 
@@ -279,7 +265,7 @@ defmodule Tackle.Lib.Loop do
 
   defp request(state, run) do
     case Provider.request(state, run) do
-      {:ok, response, state} -> after_prompt(state, run, response)
+      {:ok, response, state, run} -> after_prompt(state, run, response)
       {:error, state} -> finish(:error, state, run)
       {:cancelled, state} -> cancel(state, run)
     end
@@ -316,15 +302,12 @@ defmodule Tackle.Lib.Loop do
     # what lets the next request carry a structured, correctly-paired history
     # instead of a flattened blob.
     tool_calls = Enum.map(response.tool_calls, &ensure_tool_call_id(&1, state))
-    assistant_message = assistant_message(state, response, tool_calls)
+    assistant_message = assistant_message(state, run, response, tool_calls)
     state = State.add_message(state, assistant_message)
 
     case Run.finalize_message(state, run, assistant_message) do
       {:ok, state} ->
-        state =
-          state
-          |> clear_pending_assistant_id()
-          |> State.set_status(:acting)
+        state = %{state | status: :acting}
 
         Run.emit(run, Event.new(:status_change, %{status: :acting}))
 
@@ -340,18 +323,14 @@ defmodule Tackle.Lib.Loop do
   end
 
   defp respond(state, run, %Response{} = response) do
-    assistant_message = assistant_message(state, response, nil)
-
-    state =
-      state
-      |> State.add_message(assistant_message)
-      |> State.set_status(:completed)
+    assistant_message = assistant_message(state, run, response, nil)
+    state = %{State.add_message(state, assistant_message) | status: :completed}
 
     finalize_completed_assistant_message(state, run, assistant_message)
   end
 
-  # The assistant message takes the pending id minted at `message_start`.
-  defp assistant_message(state, %Response{} = response, tool_calls) do
+  # The assistant message takes the id minted at the step's `message_start`.
+  defp assistant_message(state, run, %Response{} = response, tool_calls) do
     Message.assistant(
       content: response.content,
       thinking: response.thinking,
@@ -359,7 +338,7 @@ defmodule Tackle.Lib.Loop do
       token_usage: response.usage,
       model: response.model,
       provider_state: response.provider_state,
-      id: state.pending_assistant_id,
+      id: run.assistant_id,
       id_generator: state.id_generator
     )
   end
@@ -367,7 +346,6 @@ defmodule Tackle.Lib.Loop do
   defp finalize_completed_assistant_message(state, run, assistant_message) do
     case Run.finalize_message(state, run, assistant_message) do
       {:ok, state} ->
-        state = clear_pending_assistant_id(state)
         continue_after_assistant(state, run)
 
       {:error, state} ->
@@ -479,10 +457,6 @@ defmodule Tackle.Lib.Loop do
 
   defp generate_call_id(%State{id_generator: id_generator}), do: id_generator.()
 
-  defp clear_pending_assistant_id(%State{} = state) do
-    %{state | pending_assistant_id: nil}
-  end
-
   # --- Turn end ---
 
   defp cancel(%State{} = state, run),
@@ -491,14 +465,11 @@ defmodule Tackle.Lib.Loop do
   defp fail(%State{} = state, run, message, reason),
     do: finish(:error, State.set_error(state, message, reason), run)
 
-  # Every turn ends here, whatever the outcome: an assistant message that was
-  # started is no longer pending, tool calls left without results are settled,
-  # the outcome's events are emitted (an error outcome reports `state.error`
-  # with `state.error_reason` as its `reason`, when there is one), and the
-  # `after_turn` hooks run last.
+  # Every turn ends here, whatever the outcome: tool calls left without
+  # results are settled, the outcome's events are emitted (an error outcome
+  # reports `state.error` with `state.error_reason` as its `reason`, when there
+  # is one), and the `after_turn` hooks run last.
   defp finish(outcome, %State{} = state, run) when outcome in [:ok, :error, :cancelled] do
-    state = clear_pending_assistant_id(state)
-
     state =
       if outcome == :ok,
         do: state,

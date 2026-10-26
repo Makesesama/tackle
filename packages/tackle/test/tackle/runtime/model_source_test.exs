@@ -3,6 +3,7 @@ defmodule Tackle.Runtime.ModelSourceTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Lib.State
   alias Tackle.Lib.Thinking
   alias Tackle.Runtime
   alias Tackle.Runtime.{AgentSpec, Outcome}
@@ -38,7 +39,7 @@ defmodule Tackle.Runtime.ModelSourceTest do
     assert Thinking.from_llm_opts(state.llm_opts) == "high"
     assert Tackle.Lib.last_answer(state) == "answer"
     assert state.context.child
-    assert state.tools == [Tackle.Tools.Read]
+    assert State.tools(state) == [Tackle.Tools.Read]
     assert state.context.runtime == run.agent_ref
 
     assert {:ok, _snapshot} = Tackle.reconfigure(scope.root_agent_ref, thinking: "off")
