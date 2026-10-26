@@ -152,6 +152,11 @@ every key is always present, `null` when it does not apply (for example
 `tool_error` always has `details` and `metadata`, also for a call interrupted
 by the end of its turn, whose `reason` is `"interrupted"`, and `retry_end`
 always has `reason` and carries the message `id` like the other retry events).
+A provider failure given as a `reason` (in `error`, `retry_scheduled`,
+`retry_end`, and `compaction_retry`) is an object with `kind` (such as
+`"rate_limited"` or `"context_window_exceeded"`), `status` (the HTTP status or
+`null`), `retry_after_ms`, a displayable `message`, and the raw `details`
+(see `Tackle.Lib.LLM.Error`).
 `tool_progress` is reported by the running tool: its `data` always has
 `tool_call_id`, and the rest is the tool's own. A tool configured on the
 server may emit events of its own types.

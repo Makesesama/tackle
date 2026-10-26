@@ -68,7 +68,7 @@ defmodule Tackle.Lib.CompactionTest do
       Process.put(:adapter_calls, calls)
 
       if always_overflow?() or calls in Process.get(:overflow_calls, [1]) do
-        {:error, :context_window_exceeded}
+        {:error, Tackle.Lib.LLM.Error.new(:context_window_exceeded)}
       else
         {:ok,
          %{
@@ -467,7 +467,7 @@ defmodule Tackle.Lib.CompactionTest do
 
       assert {:error, final} = Tackle.Lib.run(state, "next")
       assert Process.get(:adapter_calls) == 2
-      assert final.error =~ "context_window_exceeded"
+      assert final.error =~ "exceeds the model's context window"
     end
 
     test "spends the overflow retry limit per turn, not per step" do
@@ -486,7 +486,7 @@ defmodule Tackle.Lib.CompactionTest do
                Tackle.Lib.run(state, "next", take_incoming_messages: take_incoming_messages)
 
       assert Process.get(:adapter_calls) == 3
-      assert final.error =~ "context_window_exceeded"
+      assert final.error =~ "exceeds the model's context window"
 
       # The next turn has its own budget.
       Process.put(:overflow_calls, [4])
@@ -511,7 +511,7 @@ defmodule Tackle.Lib.CompactionTest do
       Process.put(:summarize_result, {:error, :summary_unavailable})
 
       assert {:error, final} = Tackle.Lib.run(state, "next")
-      assert final.error =~ "context_window_exceeded"
+      assert final.error =~ "exceeds the model's context window"
       assert Process.get(:adapter_calls) == 1
       assert final.model_messages == nil
     end
@@ -572,7 +572,7 @@ defmodule Tackle.Lib.CompactionTest do
       assert {:error, final} =
                Tackle.Lib.run(state, "next", event_callback: &send(test_pid, {:event, &1.type}))
 
-      assert final.error =~ "context_window_exceeded"
+      assert final.error =~ "exceeds the model's context window"
       assert Process.get(:adapter_calls) == 1
       refute_received {:event, :compaction_retry}
     end

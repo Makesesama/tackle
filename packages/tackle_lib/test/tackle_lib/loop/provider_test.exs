@@ -7,6 +7,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Response
   alias Tackle.Lib.Loop
   alias Tackle.Lib.State
@@ -70,7 +71,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     @impl true
     def generate(_schema, _opts) do
       send(Process.get(:test_pid), :retry_call)
-      {:error, {:http_error, 401, "unauthorized"}}
+      {:error, Error.from_response(401, "unauthorized", [])}
     end
   end
 
@@ -113,7 +114,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
       send(Process.get(:test_pid), {:retry_messages, Keyword.fetch!(opts, :messages)})
 
       if call_count == 0 do
-        {:error, {:request_failed, :timeout}}
+        {:error, Error.from_transport(:timeout)}
       else
         {:ok, %{data: %{"content" => "retried"}, usage: nil, model: "test/model"}}
       end
@@ -126,7 +127,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     @impl true
     def generate(_schema, _opts) do
       send(Process.get(:test_pid), :retry_call)
-      {:error, {:http_error, 503, "unavailable"}}
+      {:error, Error.from_response(503, "unavailable", [])}
     end
   end
 
@@ -143,7 +144,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
         Cancellation.cancel(signal, "cancelled in backoff")
       end)
 
-      {:error, {:request_failed, :timeout}}
+      {:error, Error.from_transport(:timeout)}
     end
   end
 
@@ -176,7 +177,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
                         attempt: 1,
                         max_retries: 3,
                         delay_ms: 0,
-                        reason: {:request_failed, :timeout}
+                        reason: %Error{kind: :timeout}
                       }
                     }}
 
@@ -309,6 +310,26 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     assert state.error =~ "storage_paused"
     assert_receive :provider_rejected
     refute_receive :retry_call
+  end
+
+  test "a provider gate error is never retried, even a transient-looking one" do
+    Process.put(:gate_count, 0)
+
+    gate = fn ->
+      count = Process.get(:gate_count) + 1
+      Process.put(:gate_count, count)
+      if count == 1, do: {:error, Error.new(:timeout)}, else: :ok
+    end
+
+    {{:error, state}, events} =
+      run_scripted([ok(%{"content" => "answer"})], [retry: [base_delay_ms: 0]],
+        before_provider_call: gate
+      )
+
+    assert %Error{kind: :timeout} = state.error_reason
+    assert Process.get(:gate_count) == 1
+    refute_received :llm_call
+    refute Enum.any?(events, &(&1.type in [:retry_scheduled, :retry_start, :retry_end]))
   end
 
   test "cancellation while provider gate blocks prevents provider dispatch" do
@@ -574,31 +595,63 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     end
 
     test "a transient failure of the re-ask is retried under the retry policy" do
+      unavailable = Error.from_response(503, "unavailable", [])
+
       {{:ok, state}, events} =
         run_scripted(
-          [
-            ok(%{}),
-            {:error, {:http_error, 503, "unavailable"}},
-            ok(%{"content" => "answer"})
-          ],
+          [ok(%{}), {:error, unavailable}, ok(%{"content" => "answer"})],
           retry: [base_delay_ms: 0]
         )
 
       assert Tackle.Lib.last_answer(state) == "answer"
 
       assert [
+               {:retry_scheduled, %{attempt: 1, max_retries: 1, reason: :empty_response}},
+               {:retry_start, %{attempt: 1}},
+               {:retry_scheduled, %{attempt: 1, max_retries: 3, reason: ^unavailable}},
+               {:retry_start, %{attempt: 1}},
+               {:retry_end, %{attempt: 1, success?: true}}
+             ] = retry_events(events)
+    end
+
+    test "the re-ask does not use up the transient retry budget" do
+      unavailable = Error.from_response(503, "unavailable", [])
+
+      {{:ok, state}, _events} =
+        run_scripted(
+          [ok(%{}), {:error, unavailable}, ok(%{"content" => "answer"})],
+          retry: [max_retries: 1, base_delay_ms: 0]
+        )
+
+      assert Tackle.Lib.last_answer(state) == "answer"
+    end
+
+    test "the re-ask does not reset the transient retry budget" do
+      unavailable = Error.from_response(503, "unavailable", [])
+
+      {{:error, state}, events} =
+        run_scripted(
+          [{:error, unavailable}, ok(%{}), {:error, unavailable}, ok(%{"content" => "answer"})],
+          retry: [max_retries: 1, base_delay_ms: 0]
+        )
+
+      assert state.error_reason == unavailable
+
+      assert [
+               {:retry_scheduled, %{attempt: 1, reason: ^unavailable}},
+               {:retry_start, %{attempt: 1}},
+               {:retry_end, %{attempt: 1, success?: true}},
                {:retry_scheduled, %{attempt: 1, reason: :empty_response}},
                {:retry_start, %{attempt: 1}},
-               {:retry_scheduled, %{attempt: 2, reason: {:http_error, 503, "unavailable"}}},
-               {:retry_start, %{attempt: 2}},
-               {:retry_end, %{attempt: 2, success?: true}}
-             ] =
-               for(
-                 %Event{type: type, data: data} <- events,
-                 type in [:retry_scheduled, :retry_start, :retry_end],
-                 do: {type, data}
-               )
+               {:retry_end, %{attempt: 1, success?: false, reason: ^unavailable}}
+             ] = retry_events(events)
     end
+  end
+
+  defp retry_events(events) do
+    for %Event{type: type, data: data} <- events,
+        type in [:retry_scheduled, :retry_start, :retry_end],
+        do: {type, data}
   end
 
   defp ok(data, usage \\ nil),
@@ -702,14 +755,23 @@ defmodule Tackle.Lib.Loop.ProviderTest do
   end
 
   describe "error reasons" do
-    test "a provider failure keeps the provider's reason" do
-      {{:error, state}, events} = run_scripted([{:error, {:http_error, 401, "unauthorized"}}])
+    test "a provider failure keeps the provider's reason and shows its message" do
+      unauthorized = Error.from_response(401, "unauthorized", [])
+      {{:error, state}, events} = run_scripted([{:error, unauthorized}])
 
-      assert state.error_reason == {:http_error, 401, "unauthorized"}
-      assert state.error == ~s(Failed to get response: {:http_error, 401, "unauthorized"})
+      assert state.error_reason == unauthorized
 
-      assert %Event{data: %{reason: {:http_error, 401, "unauthorized"}}} =
-               Enum.find(events, &(&1.type == :error))
+      assert state.error ==
+               "Failed to get response: The provider rejected the credentials (HTTP 401): unauthorized"
+
+      assert %Event{data: %{reason: ^unauthorized}} = Enum.find(events, &(&1.type == :error))
+    end
+
+    test "a reason that is not a provider error is shown inspected" do
+      {{:error, state}, _events} = run_scripted([{:error, {:custom, "failure"}}])
+
+      assert state.error_reason == {:custom, "failure"}
+      assert state.error == ~s(Failed to get response: {:custom, "failure"})
     end
 
     test "the iteration limit is :max_iterations" do
@@ -735,7 +797,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     end
 
     test "the next turn clears the previous turn's error reason" do
-      {{:error, state}, _events} = run_scripted([{:error, {:http_error, 401, "unauthorized"}}])
+      {{:error, state}, _events} = run_scripted([{:error, Error.new(:auth)}])
       assert state.error_reason
 
       Process.put(:script, [ok(%{"content" => "answer"})])

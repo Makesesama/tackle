@@ -769,11 +769,14 @@ by model. `TACKLE_THINKING` overrides the file in the same way that
 executable code, never converted from JSON strings.
 
 Configured sessions retry transient provider-message failures three times by
-default, using deterministic exponential delays of 2, 4, and 8 seconds with a
-60-second cap. Programmatic callers can set `retry: false` or pass
-`retry: [max_retries: ..., base_delay_ms: ..., max_delay_ms: ...]` to
-`Tackle.Config.new/1`. Authentication, quota/billing, context overflow,
-cancellation, and unknown failures are not transient retries.
+default, using jittered exponential delays of about 2, 4, and 8 seconds with a
+60-second cap, and wait at least as long as a provider's `Retry-After` asks.
+Programmatic callers can set `retry: false` or pass
+`retry: [max_retries: ..., base_delay_ms: ..., max_delay_ms: ..., jitter?: ...]`
+to `Tackle.Config.new/1`. Only transient `Tackle.Lib.LLM.Error` kinds
+(connection failures, timeouts, rate limits, overload, and server errors) are
+retried; authentication, quota/billing, context overflow, cancellation, and
+unknown failures are not.
 
 Configured sessions also build an effective coding prompt for their working
 directory. The built-in prompt lists the selected tools and core coding

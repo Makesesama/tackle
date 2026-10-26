@@ -3,30 +3,43 @@ defmodule Tackle.Lib.Retry do
   Provider-neutral retry policy for transient LLM failures.
 
   The initial provider request is not counted as a retry. Retry attempt `1`
-  waits `base_delay_ms`, and later attempts double that delay up to
-  `max_delay_ms`. Unknown, authentication, quota/billing, cancellation, and
-  context-window errors are never classified as transient.
+  waits about `base_delay_ms`, and later attempts double that delay up to
+  `max_delay_ms`, with jitter unless `jitter?: false` (see `delay/3`). A
+  provider's `Retry-After` hint lengthens the wait.
+
+  Only adapters' `Tackle.Lib.LLM.Error`s of a transient kind are retried
+  (see `retryable?/1`); authentication, quota, context-window, invalid
+  requests, cancellation, and reasons that are not `Tackle.Lib.LLM.Error`s
+  never are.
+
+  Options: `:enabled?` (default `true`), `:max_retries` (`3`),
+  `:base_delay_ms` (`2_000`), `:max_delay_ms` (`60_000`), and `:jitter?`
+  (`true`).
   """
 
   alias Tackle.Lib.Cancellation
+  alias Tackle.Lib.LLM.Error
 
   @default_max_retries 3
   @default_base_delay_ms 2_000
   @default_max_delay_ms 60_000
   @poll_interval_ms 50
-  @option_keys [:enabled?, :max_retries, :base_delay_ms, :max_delay_ms]
+  @option_keys [:enabled?, :max_retries, :base_delay_ms, :max_delay_ms, :jitter?]
+  @transient_kinds [:transport, :timeout, :rate_limited, :overloaded, :server]
 
   @type t :: %__MODULE__{
           enabled?: boolean(),
           max_retries: non_neg_integer(),
           base_delay_ms: non_neg_integer(),
-          max_delay_ms: non_neg_integer()
+          max_delay_ms: non_neg_integer(),
+          jitter?: boolean()
         }
 
   defstruct enabled?: true,
             max_retries: @default_max_retries,
             base_delay_ms: @default_base_delay_ms,
-            max_delay_ms: @default_max_delay_ms
+            max_delay_ms: @default_max_delay_ms,
+            jitter?: true
 
   @doc "Builds and validates a retry policy from options."
   @spec new(keyword() | t() | false | nil) :: {:ok, t()} | {:error, term()}
@@ -41,7 +54,8 @@ defmodule Tackle.Lib.Retry do
         enabled?: Keyword.get(opts, :enabled?, true),
         max_retries: Keyword.get(opts, :max_retries, @default_max_retries),
         base_delay_ms: Keyword.get(opts, :base_delay_ms, @default_base_delay_ms),
-        max_delay_ms: Keyword.get(opts, :max_delay_ms, @default_max_delay_ms)
+        max_delay_ms: Keyword.get(opts, :max_delay_ms, @default_max_delay_ms),
+        jitter?: Keyword.get(opts, :jitter?, true)
       }
 
       validate(retry)
@@ -62,13 +76,40 @@ defmodule Tackle.Lib.Retry do
     end
   end
 
-  @doc "Returns the deterministic capped backoff for a one-indexed retry attempt."
-  @spec delay(t(), pos_integer()) :: non_neg_integer()
-  def delay(%__MODULE__{} = retry, attempt) when is_integer(attempt) and attempt > 0 do
-    retry.base_delay_ms
-    |> Kernel.*(Integer.pow(2, attempt - 1))
+  @doc """
+  Returns the delay before one-indexed retry `attempt` of a request that
+  failed with `reason`.
+
+  The backoff doubles from `base_delay_ms` and is capped at `max_delay_ms`.
+  With `jitter?` (the default) it is drawn uniformly from its upper half
+  ("equal jitter"), so concurrent agents that fail together do not retry in
+  lockstep. When `reason` is a `Tackle.Lib.LLM.Error` with `retry_after_ms`,
+  the delay is at least that long, still capped at `max_delay_ms`.
+  """
+  @spec delay(t(), pos_integer(), term()) :: non_neg_integer()
+  def delay(%__MODULE__{} = retry, attempt, reason \\ nil)
+      when is_integer(attempt) and attempt > 0 do
+    backoff =
+      retry.base_delay_ms
+      |> Kernel.*(Integer.pow(2, min(attempt - 1, 32)))
+      |> min(retry.max_delay_ms)
+
+    backoff
+    |> jitter(retry.jitter?)
+    |> max(retry_after_ms(reason))
     |> min(retry.max_delay_ms)
   end
+
+  defp jitter(backoff, false), do: backoff
+  defp jitter(backoff, true) when backoff < 2, do: backoff
+
+  defp jitter(backoff, true) do
+    half = div(backoff, 2)
+    backoff - half + :rand.uniform(half + 1) - 1
+  end
+
+  defp retry_after_ms(%Error{retry_after_ms: ms}) when is_integer(ms) and ms >= 0, do: ms
+  defp retry_after_ms(_reason), do: 0
 
   @doc "Returns true when another retry is available under the policy."
   @spec available?(t() | nil, non_neg_integer()) :: boolean()
@@ -77,20 +118,17 @@ defmodule Tackle.Lib.Retry do
 
   def available?(_retry, _retries_used), do: false
 
-  @doc "Classifies a provider or transport failure as transient."
-  @spec retryable?(term()) :: boolean()
-  def retryable?(reason) do
-    text = error_text(reason)
+  @doc """
+  Returns true when `reason` is a transient `Tackle.Lib.LLM.Error`.
 
-    cond do
-      permanent_reason?(reason) -> false
-      permanent_http_status?(reason) -> false
-      permanent_text?(text) -> false
-      transient_http_status?(reason) -> true
-      transient_transport?(reason) -> true
-      true -> transient_text?(text)
-    end
-  end
+  The decision is made from the error's `kind` alone: `:transport`,
+  `:timeout`, `:rate_limited`, `:overloaded`, and `:server` are retried.
+  Every other kind, and any reason that is not a `Tackle.Lib.LLM.Error`, is
+  not.
+  """
+  @spec retryable?(term()) :: boolean()
+  def retryable?(%Error{kind: kind}), do: kind in @transient_kinds
+  def retryable?(_reason), do: false
 
   @doc "Waits for a retry delay while polling a cooperative cancellation signal."
   @spec wait(non_neg_integer(), Cancellation.signal() | nil) ::
@@ -104,7 +142,8 @@ defmodule Tackle.Lib.Retry do
     with :ok <- validate_boolean(:enabled?, retry.enabled?),
          :ok <- validate_non_negative(:max_retries, retry.max_retries),
          :ok <- validate_non_negative(:base_delay_ms, retry.base_delay_ms),
-         :ok <- validate_non_negative(:max_delay_ms, retry.max_delay_ms) do
+         :ok <- validate_non_negative(:max_delay_ms, retry.max_delay_ms),
+         :ok <- validate_boolean(:jitter?, retry.jitter?) do
       {:ok, retry}
     end
   end
@@ -116,79 +155,6 @@ defmodule Tackle.Lib.Retry do
   defp validate_non_negative(field, value), do: invalid(field, value)
 
   defp invalid(field, value), do: {:error, {:invalid_retry_config, {field, value}}}
-
-  defp permanent_http_status?({:http_error, status, _body}) when is_integer(status),
-    do: status >= 400 and status < 500 and not transient_status?(status)
-
-  defp permanent_http_status?({:websocket_transport_failed, _phase, reason}),
-    do: permanent_http_status?(reason)
-
-  defp permanent_http_status?({:request_failed, reason}), do: permanent_http_status?(reason)
-  defp permanent_http_status?(_reason), do: false
-
-  defp permanent_reason?(reason) when reason in [:cancelled, :canceled, :aborted, :abort],
-    do: true
-
-  defp permanent_reason?({:request_failed, reason}), do: permanent_reason?(reason)
-
-  defp permanent_reason?({:websocket_transport_failed, _phase, reason}),
-    do: permanent_reason?(reason)
-
-  defp permanent_reason?(_reason), do: false
-
-  defp transient_http_status?({:http_error, status, _body}), do: transient_status?(status)
-
-  defp transient_http_status?({:websocket_transport_failed, _phase, reason}),
-    do: transient_http_status?(reason)
-
-  defp transient_http_status?({:request_failed, reason}), do: transient_http_status?(reason)
-  defp transient_http_status?(_reason), do: false
-
-  defp transient_status?(status), do: status in [408, 425, 429, 500, 502, 503, 504, 524]
-
-  defp transient_transport?({:request_failed, reason}), do: transient_transport?(reason)
-
-  defp transient_transport?({:websocket_transport_failed, _phase, reason}),
-    do: transient_transport?(reason)
-
-  defp transient_transport?({kind, reason}) when kind in [:error, :exit],
-    do: transient_transport?(reason)
-
-  defp transient_transport?(reason)
-       when reason in [
-              :timeout,
-              :receive_timeout,
-              :connection_refused,
-              :connection_closed,
-              :connection_lost,
-              :closed,
-              :econnrefused,
-              :econnreset,
-              :enetdown,
-              :enetunreach,
-              :ehostunreach,
-              :nxdomain,
-              :eai_again
-            ],
-       do: true
-
-  defp transient_transport?(_reason), do: false
-
-  defp permanent_text?(text) do
-    Regex.match?(
-      ~r/context[_ -]?window|authentication|unauthori[sz]ed|forbidden|invalid[_ -]?api[_ -]?key|insufficient[_ -]?quota|\bquota\b|out of (?:budget|credits?)|(?:budget|credits?) exhausted|billing|usage limit|cancel(?:led|ed)/i,
-      text
-    )
-  end
-
-  defp transient_text?(text) do
-    Regex.match?(
-      ~r/overload|rate.?limit|too many requests|\b(?:429|500|502|503|504|524)\b|service.?unavailable|server.?error|internal.?error|provider.?returned.?error|network.?error|connection.?(?:error|refused|lost|closed)|other side closed|fetch failed|getaddrinfo|enotfound|eai_again|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed? out|timeout|terminated|websocket.?(?:closed|error)|ended without|stream ended before|http2 request did not get a response|retry delay|(?:please|can) retry your request|resourceexhausted/i,
-      text
-    )
-  end
-
-  defp error_text(reason), do: inspect(reason, limit: :infinity, printable_limit: 20_000)
 
   defp wait_until(deadline, signal) do
     case Cancellation.reason(signal) do

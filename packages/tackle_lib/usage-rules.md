@@ -136,6 +136,13 @@ config :tackle_lib, llm: MyApp.AI.TackleAdapter
   host billing and quota policy remain host-owned.
 - `schema` is an optional structured-response schema for **non-tool** turns;
   tool calls always flow through provider-native `tool_calls`, not the schema.
+- Return provider and transport failures as `{:error, %Tackle.Lib.LLM.Error{}}`
+  built with `Tackle.Lib.LLM.Error.from_response/3` (status, body, headers),
+  `from_transport/1`, or `from_stream/1` (errors inside a stream). The loop
+  retries only its transient kinds (`:transport`, `:timeout`, `:rate_limited`,
+  `:overloaded`, `:server`), honours `retry_after_ms`, and compacts and asks
+  again after `:context_window_exceeded`. Any other `{:error, reason}` is
+  never retried.
 
 ## Lifecycle hooks
 

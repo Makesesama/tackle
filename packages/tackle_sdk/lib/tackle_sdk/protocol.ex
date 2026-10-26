@@ -136,8 +136,10 @@ defmodule Tackle.SDK.Protocol do
   Recursively converts a term into something the stdlib `JSON` encoder accepts.
 
   Structs become plain maps (so `%Tackle.Lib.Usage{}` and friends serialize
-  without the encoder knowing about them), tuples become lists, and anything
-  exotic falls back to its inspected form rather than crashing the stream.
+  without the encoder knowing about them; an exception such as
+  `%Tackle.Lib.LLM.Error{}` loses its `__exception__` marker), tuples become
+  lists, and anything exotic falls back to its inspected form rather than
+  crashing the stream.
   """
   @spec json_safe(term()) :: term()
   def json_safe(%DateTime{} = value), do: DateTime.to_iso8601(value)
@@ -148,6 +150,7 @@ defmodule Tackle.SDK.Protocol do
   def json_safe(%_{} = struct_value) do
     struct_value
     |> Map.from_struct()
+    |> Map.delete(:__exception__)
     |> json_safe()
   end
 

@@ -157,7 +157,7 @@ defmodule Tackle.Lib.LoopTest do
     @impl true
     def generate(_schema, _opts) do
       send(Process.get(:test_pid), :retry_call)
-      {:error, {:http_error, 401, "unauthorized"}}
+      {:error, Tackle.Lib.LLM.Error.from_response(401, "unauthorized", [])}
     end
   end
 

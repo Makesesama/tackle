@@ -313,7 +313,9 @@ Results are always one of:
 
 An error result carries a human-readable `state.error` and the structured
 `state.error_reason` behind it, which the `:error` event also reports as
-`:reason`: the provider's error reason, a hook's abort reason,
+`:reason`: the provider's error reason (a `%Tackle.Lib.LLM.Error{}` for
+provider and transport failures, whose message `state.error` shows), a hook's
+abort reason,
 `:max_iterations`, `:empty_response`, `{:invalid_response, detail}`, and so on.
 Match on `error_reason`; show `error`. A cancelled state keeps the cancellation
 reason in `error`.
@@ -406,6 +408,33 @@ freezes this metadata in the selection. `Tackle.Lib.LLM.model_info/2` is the saf
 callback boundary for callers that need explicit callback/validation errors.
 Price-card cost is marked estimated; a numeric provider-reported total remains
 authoritative.
+
+### Provider errors
+
+Adapters return provider and transport failures as
+`{:error, %Tackle.Lib.LLM.Error{}}`, with a `kind`, the HTTP `status`,
+`retry_after_ms` from `Retry-After`, a `message` hosts may show, and the raw
+failure in `details`. The loop decides retries, backoff, and overflow recovery
+from these fields alone, so adapters share the classification instead of
+matching provider wording themselves:
+
+```elixir
+alias Tackle.Lib.LLM.Error
+
+# An HTTP error response: 429 → :rate_limited, 529 → :overloaded, a 400 whose
+# error code or message names a context limit → :context_window_exceeded, ...
+{:error, Error.from_response(response.status, response.body, response.headers)}
+
+# A failed connection, such as %Req.TransportError{reason: :econnrefused}
+{:error, Error.from_transport(reason)}
+
+# An error the provider reports inside a stream after a 200
+{:error, Error.from_stream(event["error"])}
+```
+
+Failures that are not provider failures, such as missing credentials, an
+unsupported model, or cancellation (`:cancelled`), stay plain reasons and are
+never retried.
 
 Hosts may inject a `{module, reference}` credential-store handle in
 `opts[:credential_store]`. Adapters access the provider's namespace with
@@ -992,20 +1021,30 @@ settlement seam for durable work.
 
 Transient provider-message failures are retried around the current generation,
 not around the whole turn. The default policy makes at most three retries with
-deterministic exponential delays of 2, 4, and 8 seconds (capped at 60 seconds).
-Configure it per state:
+exponential delays of about 2, 4, and 8 seconds (capped at 60 seconds), each
+drawn from the upper half of its backoff ("equal jitter") so agents that fail
+together do not retry in lockstep. Configure it per state:
 
 ```elixir
 Tackle.Lib.new(
-  retry: [max_retries: 3, base_delay_ms: 2_000, max_delay_ms: 60_000]
+  retry: [max_retries: 3, base_delay_ms: 2_000, max_delay_ms: 60_000, jitter?: true]
 )
 ```
 
-Use `retry: false` or `max_retries: 0` to disable retries. Context overflow is
-classified first and retains its compact-and-retry path. Cancellation,
-authentication, quota/billing, context overflow, and unknown failures are never
-transient retries; hooks, tools, compaction commits, and other persistence also
-remain outside this policy. The backoff wait cooperatively polls the turn's
+Use `retry: false` or `max_retries: 0` to disable retries, and `jitter?: false`
+for exact delays. Adapters report provider and transport failures as
+`%Tackle.Lib.LLM.Error{}`, and the retry decision is made from its `kind` alone
+(`Tackle.Lib.Retry.retryable?/1`): `:transport`, `:timeout`, `:rate_limited`,
+`:overloaded`, and `:server` are retried; `:context_window_exceeded`,
+`:quota_exceeded`, `:auth`, `:invalid_request`, `:invalid_response`, and
+`:unknown` are not, and neither is any reason that is not a
+`Tackle.Lib.LLM.Error`, such as cancellation or a missing credential. When the
+provider sent `Retry-After` (or `retry-after-ms`), the error's `retry_after_ms`
+makes the wait at least that long, still capped at `max_delay_ms`. Context
+overflow is classified first and retains its compact-and-retry path. A
+`:before_provider_call` gate refusal is host policy and ends the request without
+a retry; hooks, tools, compaction commits, and other persistence also remain
+outside this policy. The backoff wait cooperatively polls the turn's
 cancellation signal.
 
 A retry reuses the same provider messages, pending assistant message ID, and
@@ -1020,7 +1059,9 @@ three carry the pending assistant message ID as the event `id`.
 
 A response with neither content nor tool calls is asked again once, as a retry
 of the same request: `:retry_scheduled` with reason `:empty_response`
-(`max_retries: 1`, `delay_ms: 0`), then `:retry_start`. A second empty response
+(`attempt: 1`, `max_retries: 1`, `delay_ms: 0`), then `:retry_start`. The re-ask
+is numbered on its own and neither uses nor resets the transient retry budget.
+A second empty response
 in a row ends the turn with "The model returned an empty response" and the
 error reason `:empty_response`. Every response, including an empty one, emits
 its own `:usage` event, but a step emits a single `:step_end`, for the response
@@ -1178,7 +1219,8 @@ Entry points share one transaction:
 - automatic `:pressure` compaction before every provider generation, at the
   model's resolved threshold;
 - one `:overflow` compact-and-retry after a provider
-  `{:error, :context_window_exceeded}`; and
+  `%Tackle.Lib.LLM.Error{kind: :context_window_exceeded}`, whether the provider
+  reported it in an HTTP error or inside a stream; and
 - `Tackle.Lib.compact/2` for an idle, operator-requested compaction.
 
 A `Tackle.Lib.Compaction.Summarizer` only turns a request into text plus usage.

@@ -38,7 +38,7 @@ defmodule Tackle.Lib.Compaction do
 
     * `:pressure` — the pre-prompt threshold (see `Tackle.Lib.Compaction.Policy`);
     * `:overflow` — one compact-and-retry after a provider
-      `:context_window_exceeded` error; and
+      `Tackle.Lib.LLM.Error` of kind `:context_window_exceeded`; and
     * `:manual` — an idle, operator-requested compaction.
 
   Lifecycle events `:compaction_start`, `:compaction_end` (and

@@ -109,6 +109,18 @@ defmodule Tackle.SDK.ProtocolTest do
       assert safe["nested"] == [%{"ok" => true}]
     end
 
+    test "json_safe/1 turns a provider error into its fields" do
+      error = Tackle.Lib.LLM.Error.from_response(429, "slow down", [{"retry-after", "2"}])
+
+      assert Protocol.json_safe(error) == %{
+               "kind" => "rate_limited",
+               "status" => 429,
+               "retry_after_ms" => 2_000,
+               "message" => "The provider is rate limiting requests (HTTP 429): slow down",
+               "details" => "slow down"
+             }
+    end
+
     test "json_safe/1 keeps booleans and nil literal instead of stringifying" do
       assert Protocol.json_safe(%{flag: true, missing: nil}) == %{
                "flag" => true,

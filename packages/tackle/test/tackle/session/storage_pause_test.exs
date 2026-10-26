@@ -3,6 +3,7 @@ defmodule Tackle.Session.StoragePauseTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Runtime
   alias Tackle.Runtime.{Envelope, Messaging}
   alias Tackle.Session
@@ -57,7 +58,7 @@ defmodule Tackle.Session.StoragePauseTest do
     try do
       sync = Task.async(fn -> Journal.flush(Journal.via(snapshot.session_id)) end)
       assert_storage(snapshot.session_id, :delayed)
-      send(provider, {:fail, :timeout})
+      send(provider, {:fail, Error.from_transport(:timeout)})
       assert_receive {:tackle_event, _, ^turn, %Tackle.Lib.Event{type: :retry_start}}, 5_000
       await_queued(snapshot.session_id)
       refute_receive {:adapter_called, _, _, _}, 150

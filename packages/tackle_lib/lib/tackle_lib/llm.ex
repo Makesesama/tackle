@@ -39,6 +39,17 @@ defmodule Tackle.Lib.LLM do
   implement the optional `stream/3` callback; Tackle.Lib normalizes provider
   stream events into `%Tackle.Lib.Event{}` before hosts see them.
 
+  ## Errors
+
+  Adapters return provider and transport failures as
+  `{:error, %Tackle.Lib.LLM.Error{}}`: an HTTP error response, a failed
+  connection, or an error reported inside a stream, classified by `kind`
+  with the HTTP status and any `Retry-After` hint. The loop retries transient
+  kinds under `Tackle.Lib.Retry`, compacts and asks again after a
+  `:context_window_exceeded` error, and shows the error's message otherwise.
+  Other failures, such as missing credentials or an unsupported model, stay
+  plain reasons and are never retried.
+
   ## Account flows
 
   The behaviour also covers everything a provider needs beyond generation, so a
@@ -105,6 +116,7 @@ defmodule Tackle.Lib.LLM do
 
   alias Tackle.Lib.ContextUsage
   alias Tackle.Lib.Event
+  alias Tackle.Lib.LLM.Error
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.ModelInfo
@@ -237,23 +249,15 @@ defmodule Tackle.Lib.LLM do
   defdelegate select(adapters, model_ref), to: Selection, as: :resolve
 
   @doc """
-  Classifies a provider-neutral LLM error reason.
+  Returns true when `reason` is a provider-confirmed context-window overflow.
 
-  Adapters that can identify a context-window overflow should return
-  `{:error, :context_window_exceeded}` (or `{:error, {:context_window_exceeded,
-  details}}`) so the harness can run one compact-and-retry. Generic `4xx`/`5xx`,
-  transport, and authentication failures must stay unclassified; the harness must
-  never treat them as overflow.
+  Adapters report one as a `Tackle.Lib.LLM.Error` of kind
+  `:context_window_exceeded` (see `Tackle.Lib.LLM.Error.from_response/3` and
+  `Tackle.Lib.LLM.Error.from_stream/1`), and the agent loop then compacts and
+  asks again. Every other reason is not an overflow.
   """
-  @spec classify_error(term()) :: :context_window_exceeded | :unknown
-  def classify_error(reason) do
-    if context_window_exceeded?(reason), do: :context_window_exceeded, else: :unknown
-  end
-
-  @doc "Returns true when `reason` is a standardized context-overflow error."
   @spec context_window_exceeded?(term()) :: boolean()
-  def context_window_exceeded?(:context_window_exceeded), do: true
-  def context_window_exceeded?({:context_window_exceeded, _details}), do: true
+  def context_window_exceeded?(%Error{kind: :context_window_exceeded}), do: true
   def context_window_exceeded?(_reason), do: false
 
   # Host options that would force a tool choice, restrict or weight the
