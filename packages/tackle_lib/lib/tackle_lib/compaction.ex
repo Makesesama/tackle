@@ -228,12 +228,15 @@ defmodule Tackle.Lib.Compaction do
   defp attempt(state, trigger, config, resolved, _info, plan, pass, opts) do
     compaction_id = message_id(state)
 
-    emit(opts, :compaction_start, %{
-      compaction_id: compaction_id,
-      trigger: trigger,
-      pass: pass,
-      tokens_before: plan.tokens_before
-    })
+    emit(
+      opts,
+      Event.compaction_start(
+        compaction_id: compaction_id,
+        trigger: trigger,
+        pass: pass,
+        tokens_before: plan.tokens_before
+      )
+    )
 
     started_at = System.monotonic_time()
     ctx = context(state, opts)
@@ -260,46 +263,37 @@ defmodule Tackle.Lib.Compaction do
          :ok <- commit(state, config, record) do
       state = install(state, record, new_model_messages)
 
-      emit(opts, :compaction_end, %{
-        compaction_id: record.compaction_id,
-        trigger: trigger,
-        status: :completed,
-        pass: pass,
-        tokens_before: plan.tokens_before,
-        estimated_tokens_after: record.estimated_tokens_after,
-        retained_count: length(new_model_messages),
-        shadowed_count: length(plan.shadowed_ids),
-        duration: duration(started_at),
-        summary_model: record.summary_model,
-        summary_usage: record.summary_usage
-      })
+      emit(
+        opts,
+        Event.compaction_end(
+          compaction_id: record.compaction_id,
+          trigger: trigger,
+          status: :completed,
+          pass: pass,
+          tokens_before: plan.tokens_before,
+          estimated_tokens_after: record.estimated_tokens_after,
+          retained_count: length(new_model_messages),
+          shadowed_count: length(plan.shadowed_ids),
+          duration: duration(started_at),
+          summary_model: record.summary_model,
+          summary_usage: record.summary_usage
+        )
+      )
 
       {:ok, state, record}
     else
       {:cancelled, reason} ->
-        emit(
-          opts,
-          :compaction_end,
-          finished(compaction_id, trigger, :cancelled, plan, started_at, reason)
-        )
+        emit(opts, finished(compaction_id, trigger, :cancelled, pass, plan, started_at, reason))
 
         {:cancelled, reason}
 
       {:error, {:durable_commit_failed, _reason} = error} ->
-        emit(
-          opts,
-          :compaction_end,
-          finished(compaction_id, trigger, :failed, plan, started_at, error)
-        )
+        emit(opts, finished(compaction_id, trigger, :failed, pass, plan, started_at, error))
 
         {:error, error}
 
       {:error, reason} ->
-        emit(
-          opts,
-          :compaction_end,
-          finished(compaction_id, trigger, :failed, plan, started_at, reason)
-        )
+        emit(opts, finished(compaction_id, trigger, :failed, pass, plan, started_at, reason))
 
         {:error, reason}
     end
@@ -545,22 +539,23 @@ defmodule Tackle.Lib.Compaction do
   defp selection_model_info(%Tackle.Lib.LLM.Selection{model_info: info}), do: info
   defp selection_model_info(_selection), do: nil
 
-  defp emit(opts, type, data) do
+  defp emit(opts, %Event{} = event) do
     case Keyword.get(opts, :event_callback) do
-      fun when is_function(fun, 1) -> fun.(Event.new(type, data))
+      fun when is_function(fun, 1) -> fun.(event)
       _none -> :ok
     end
   end
 
-  defp finished(compaction_id, trigger, status, plan, started_at, reason) do
-    %{
+  defp finished(compaction_id, trigger, status, pass, plan, started_at, reason) do
+    Event.compaction_end(
       compaction_id: compaction_id,
       trigger: trigger,
       status: status,
+      pass: pass,
       tokens_before: plan.tokens_before,
       duration: duration(started_at),
       error: summarize_error(reason)
-    }
+    )
   end
 
   defp summarize_error({:durable_commit_failed, reason}), do: {:durable_commit_failed, reason}

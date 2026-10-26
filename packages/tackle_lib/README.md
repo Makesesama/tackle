@@ -878,19 +878,29 @@ turn, but the tool remains the final security boundary for its operation.
 ## Events and streaming
 
 Pass `event_callback: fn event -> ... end` to receive provider-independent
-events. Event types include:
+events. The library's own event types (`Tackle.Lib.Event.core_type/0`) are:
 
 - `:turn_start`, `:turn_end`, `:turn_cancelled`
 - `:step_start`, `:step_end`
 - `:message_start`, `:message_delta`, `:message_end`
 - `:tool_start`, `:tool_progress`, `:tool_execution_end`, `:tool_end`, `:tool_error`
-- host-defined lifecycle events such as `:subagent_started`, `:subagent_progress`, and `:subagent_finished`
-- host-defined auxiliary events such as `:narration`, whose data carries
-  `auxiliary: true`: they describe an agent without being its progress, so
-  hosts neither persist them nor count them as activity
 - `:usage`, `:status_change`, `:error`
 - `:retry_scheduled`, `:retry_start`, `:retry_end`
+- `:compaction_start`, `:compaction_end`, `:compaction_retry`
 - `:provider_event` for unrecognized provider data
+
+Each core event has one constructor in `Tackle.Lib.Event` (for example
+`Event.tool_start/2` from a `Tackle.Lib.Tool.Call`, `Event.tool_error/2` from a
+`Tackle.Lib.Tool.Error`, `Event.retry_end/4`), so each type has one payload
+shape: every key is always present, `nil` when it does not apply. The
+`Tackle.Lib.Event` moduledoc lists the payloads.
+
+Hosts and tools may emit events of their own types, any atom, with
+`Event.new/3`: the harness's `:subagent_started`, `:subagent_progress`,
+`:subagent_finished`, and `:workflow_progress`, for example. Host auxiliary
+events such as `:narration` carry `auxiliary: true` in their data: they
+describe an agent without being its progress, so hosts neither persist them
+nor count them as activity.
 
 Every event is `%Tackle.Lib.Event{type, id, parent_id, data, timestamp, metadata}`.
 Streaming text, reasoning, tool-input, usage, and provider errors are normalized
@@ -909,8 +919,8 @@ bounded `delta`; it is presentation data and is replaced by the canonical
 
 `:tool_execution_end` reports each completed execution as the loop collects its
 worker result, without waiting for the rest of a concurrent batch. It carries
-`tool_call_id`, `name`, and `status` (`:completed` or `:failed`), plus `result`
-on success or `error`/`reason` on failure. Sequential execution emits it too.
+`tool_call_id`, `name`, `status` (`:completed` or `:failed`), `result` (on
+success), and `error`/`reason` (on failure). Sequential execution emits it too.
 These are transient progress events, not persistence acknowledgements: they may
 arrive out of provider order, before transcript commits, and tools terminated by
 cancellation without a result do not emit one. The existing `:tool_end` and
@@ -949,7 +959,8 @@ receive `:retry_scheduled`, before the next attempt emits more deltas.
 
 Retry lifecycle data includes the one-indexed `attempt`; `:retry_scheduled` also
 includes `max_retries`, `delay_ms`, and `reason`, while the single terminal
-`:retry_end` includes `success?` and the final `reason` on failure.
+`:retry_end` includes `success?` and the final `reason` (`nil` on success). All
+three carry the pending assistant message ID as the event `id`.
 
 A response with neither content nor tool calls is asked again once, as a retry
 of the same request: `:retry_scheduled` with reason `:empty_response`

@@ -12,6 +12,7 @@ defmodule Tackle.Lib.Tool.Error do
           | :invalid_input
           | :invalid_output
           | :execution_error
+          | :interrupted
 
   @type t :: %__MODULE__{
           tool_call_id: String.t(),
@@ -77,6 +78,25 @@ defmodule Tackle.Lib.Tool.Error do
       content: "Error: The tool failed while completing the request.",
       details: {kind, reason},
       metadata: %{definition_id: call.definition_id}
+    }
+  end
+
+  @doc """
+  Builds the settlement the loop records for a call that was left without a
+  result when its turn ended. `outcome` says how the call ended
+  (`"interrupted"`, `"aborted"`, or `"cancelled"`); the tool never ran to
+  completion, so there are no details.
+  """
+  @spec interrupted(String.t(), String.t() | nil, String.t()) :: t()
+  def interrupted(tool_call_id, name, outcome) when is_binary(outcome) do
+    message = "Tool execution was #{outcome} before this call completed."
+
+    %__MODULE__{
+      tool_call_id: tool_call_id,
+      name: name,
+      reason: :interrupted,
+      message: message,
+      content: "Error: " <> message
     }
   end
 

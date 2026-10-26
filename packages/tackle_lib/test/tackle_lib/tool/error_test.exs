@@ -6,6 +6,20 @@ defmodule Tackle.Lib.Tool.ErrorTest do
 
   @call %Call{id: "call-1", name: "lookup", arguments: %{}, definition_id: "def-1"}
 
+  test "interrupted/3 settles a call left without a result when its turn ended" do
+    message = "Tool execution was aborted before this call completed."
+
+    assert Error.interrupted("call-1", "lookup", "aborted") == %Error{
+             tool_call_id: "call-1",
+             name: "lookup",
+             reason: :interrupted,
+             message: message,
+             content: "Error: " <> message,
+             details: nil,
+             metadata: %{}
+           }
+  end
+
   test "unknown_tool/1 settles a call to a tool the registry does not know" do
     assert Error.unknown_tool(@call) == %Error{
              tool_call_id: "call-1",

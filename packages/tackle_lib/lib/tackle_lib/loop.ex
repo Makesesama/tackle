@@ -129,7 +129,7 @@ defmodule Tackle.Lib.Loop do
     run = Run.new!(opts, state)
     state = State.reset_turn(state)
 
-    Run.emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
+    Run.emit(run, Event.turn_start(state.session_id))
 
     if Run.cancelled?(run) do
       cancel(state, run)
@@ -161,7 +161,7 @@ defmodule Tackle.Lib.Loop do
     run = Run.new!(opts, state)
     state = State.reset_turn(state)
 
-    Run.emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
+    Run.emit(run, Event.turn_start(state.session_id))
 
     state
     |> Tools.settle_interrupted(run, "interrupted")
@@ -199,12 +199,12 @@ defmodule Tackle.Lib.Loop do
   defp iterate(state, run) do
     state = %{state | current_iteration: state.current_iteration + 1, status: :thinking}
 
-    Run.emit(run, Event.new(:status_change, %{status: :thinking}))
+    Run.emit(run, Event.status_change(:thinking))
 
     run = %{run | assistant_id: state.id_generator.()}
     Run.emit(run, Event.message_start(id: run.assistant_id, role: :assistant))
 
-    Run.emit(run, Event.new(:step_start, %{iteration: state.current_iteration}))
+    Run.emit(run, Event.step_start(state.current_iteration))
 
     case maybe_auto_compact(state, run) do
       {:ok, state} ->
@@ -274,15 +274,7 @@ defmodule Tackle.Lib.Loop do
   # The step ends with the response it keeps: a re-asked empty response is
   # never seen here.
   defp after_prompt(state, run, %Response{} = response) do
-    Run.emit(
-      run,
-      Event.new(:step_end, %{
-        iteration: state.current_iteration,
-        usage: response.usage,
-        model: response.model,
-        provider: response.provider
-      })
-    )
+    Run.emit(run, Event.step_end(state.current_iteration, response))
 
     case Run.invoke_hook(state, run, :after_prompt, [state, response]) do
       {:ok, state} ->
@@ -309,7 +301,7 @@ defmodule Tackle.Lib.Loop do
       {:ok, state} ->
         state = %{state | status: :acting}
 
-        Run.emit(run, Event.new(:status_change, %{status: :acting}))
+        Run.emit(run, Event.status_change(:acting))
 
         case Tools.execute(state, tool_calls, run) do
           {:ok, state} -> loop(state, run)
@@ -490,30 +482,19 @@ defmodule Tackle.Lib.Loop do
   defp interrupted_as(:cancelled), do: "cancelled"
 
   defp emit_turn_end(:ok, state, run) do
-    Run.emit(run, Event.new(:status_change, %{status: :completed}))
-    Run.emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :completed}))
+    Run.emit(run, Event.status_change(:completed))
+    Run.emit(run, Event.turn_end(state.session_id, :completed))
   end
 
   defp emit_turn_end(:cancelled, state, run) do
-    Run.emit(run, Event.new(:status_change, %{status: :cancelled}))
-
-    Run.emit(
-      run,
-      Event.new(:turn_cancelled, %{session_id: state.session_id, reason: state.error})
-    )
-
-    Run.emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :cancelled}))
+    Run.emit(run, Event.status_change(:cancelled))
+    Run.emit(run, Event.turn_cancelled(state.session_id, state.error))
+    Run.emit(run, Event.turn_end(state.session_id, :cancelled))
   end
 
   defp emit_turn_end(:error, state, run) do
-    data =
-      case state.error_reason do
-        nil -> %{error: state.error}
-        reason -> %{error: state.error, reason: reason}
-      end
-
-    Run.emit(run, Event.new(:error, data))
-    Run.emit(run, Event.new(:status_change, %{status: :error}))
-    Run.emit(run, Event.new(:turn_end, %{session_id: state.session_id, status: :error}))
+    Run.emit(run, Event.error(state.error, state.error_reason))
+    Run.emit(run, Event.status_change(:error))
+    Run.emit(run, Event.turn_end(state.session_id, :error))
   end
 end

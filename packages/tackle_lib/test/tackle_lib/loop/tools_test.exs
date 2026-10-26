@@ -522,10 +522,18 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
       assert_receive {:event, %Event{type: :tool_end, data: %{tool_call_id: "c2"}}}
 
+      # An interrupted call is reported like any other tool error.
       assert_receive {:event,
                       %Event{
                         type: :tool_error,
-                        data: %{tool_call_id: "c1", reason: :interrupted}
+                        data: %{
+                          tool_call_id: "c1",
+                          name: "blocking",
+                          error: "Tool execution was cancelled before this call completed.",
+                          reason: :interrupted,
+                          details: nil,
+                          metadata: %{}
+                        }
                       }}
 
       assert_receive {:event, %Event{type: :turn_cancelled, data: %{reason: "stop batch"}}}

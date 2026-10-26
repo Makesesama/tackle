@@ -129,14 +129,7 @@ defmodule Tackle.Lib.Loop.Provider do
   defp reask(state, run) do
     Logger.warning("LLM response had neither tool calls nor content; asking again")
 
-    Run.emit(
-      run,
-      Event.new(
-        :retry_scheduled,
-        %{attempt: 1, max_retries: 1, delay_ms: 0, reason: :empty_response},
-        id: run.assistant_id
-      )
-    )
+    Run.emit(run, Event.retry_scheduled(1, 1, 0, :empty_response, id: run.assistant_id))
 
     start_retry(state, run, 1, true)
   end
@@ -147,11 +140,7 @@ defmodule Tackle.Lib.Loop.Provider do
 
     Run.emit(
       run,
-      Event.new(
-        :retry_scheduled,
-        %{attempt: retry, max_retries: policy.max_retries, delay_ms: delay_ms, reason: reason},
-        id: run.assistant_id
-      )
+      Event.retry_scheduled(retry, policy.max_retries, delay_ms, reason, id: run.assistant_id)
     )
 
     with :ok <- Retry.wait(delay_ms, run.cancellation_signal),
@@ -165,17 +154,14 @@ defmodule Tackle.Lib.Loop.Provider do
   end
 
   defp start_retry(state, run, retry, reasked?) do
-    Run.emit(run, Event.new(:retry_start, %{attempt: retry}, id: run.assistant_id))
+    Run.emit(run, Event.retry_start(retry, id: run.assistant_id))
     attempt(state, run, retry, reasked?)
   end
 
   defp end_retry(_run, 0, _success?, _reason), do: :ok
 
-  defp end_retry(run, retry, success?, reason) do
-    data = %{success?: success?, attempt: retry}
-    data = if is_nil(reason), do: data, else: Map.put(data, :reason, reason)
-    Run.emit(run, Event.new(:retry_end, data))
-  end
+  defp end_retry(run, retry, success?, reason),
+    do: Run.emit(run, Event.retry_end(retry, success?, reason, id: run.assistant_id))
 
   # Provider-confirmed context overflow is distinct from proactive pressure. The
   # turn may compact and reissue the same request up to the policy's
@@ -186,7 +172,7 @@ defmodule Tackle.Lib.Loop.Provider do
   defp recover_overflow(state, reason, run, reasked?) do
     Logger.warning("Provider reported context overflow; compacting and retrying")
 
-    Run.emit(run, Event.new(:compaction_retry, %{trigger: :overflow, reason: reason}))
+    Run.emit(run, Event.compaction_retry(:overflow, reason))
 
     case Compaction.compact(state, :overflow, Run.compaction_opts(run)) do
       {:ok, state, _record} ->

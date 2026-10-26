@@ -80,22 +80,13 @@ defmodule Tackle.Lib.Loop.Tools do
   end
 
   defp settle_interrupted_call(%{id: id, name: name}, %State{} = state, run, outcome) do
-    content = "Error: Tool execution was #{outcome} before this call completed."
-    message = Message.tool_result(id, name, content, id_generator: state.id_generator)
+    error = ToolError.interrupted(id, name, outcome)
+    message = Message.tool_result(id, name, error.content, id_generator: state.id_generator)
     state = State.add_message(state, message)
 
     case Run.finalize_message(state, run, message) do
       {:ok, state} ->
-        Run.emit(
-          run,
-          Event.new(:tool_error, %{
-            tool_call_id: id,
-            name: name,
-            error: content,
-            reason: :interrupted
-          })
-        )
-
+        Run.emit(run, Event.tool_error(error))
         state
 
       {:error, state} ->
@@ -238,10 +229,7 @@ defmodule Tackle.Lib.Loop.Tools do
   # call (for example, an invalid host execution context) is kept in the job,
   # so it settles as a crash with the job's telemetry like any other.
   defp start(%Call{} = call, state, run) do
-    Run.emit(
-      run,
-      Event.new(:tool_start, %{tool_call_id: call.id, name: call.name, arguments: call.arguments})
-    )
+    Run.emit(run, Event.tool_start(call))
 
     call_signal = Cancellation.for_call(run.cancellation_signal, call.id)
 
@@ -370,30 +358,8 @@ defmodule Tackle.Lib.Loop.Tools do
   # Execution progress is transient and may arrive out of call order. Keep it
   # separate from tool_end/tool_error, which follow ordered message persistence.
   # Only the loop process emits these events, never the worker tasks.
-  defp emit_execution_end({:ok, %ToolResult{} = result}, run) do
-    Run.emit(
-      run,
-      Event.new(:tool_execution_end, %{
-        tool_call_id: result.tool_call_id,
-        name: result.name,
-        status: :completed,
-        result: result.content
-      })
-    )
-  end
-
-  defp emit_execution_end({:error, %ToolError{} = error}, run) do
-    Run.emit(
-      run,
-      Event.new(:tool_execution_end, %{
-        tool_call_id: error.tool_call_id,
-        name: error.name || "unknown",
-        status: :failed,
-        error: error.message,
-        reason: error.reason
-      })
-    )
-  end
+  defp emit_execution_end(settlement, run),
+    do: Run.emit(run, Event.tool_execution_end(settlement))
 
   defp commit({:ok, %ToolResult{} = result}, state, run) do
     message =
@@ -402,16 +368,7 @@ defmodule Tackle.Lib.Loop.Tools do
         parts: result.parts
       )
 
-    event =
-      Event.new(:tool_end, %{
-        tool_call_id: result.tool_call_id,
-        name: result.name,
-        result: result.content,
-        raw: result.raw,
-        metadata: result.metadata
-      })
-
-    commit_settlement(state, run, message, event, result)
+    commit_settlement(state, run, message, Event.tool_end(result), result)
   end
 
   defp commit({:error, %ToolError{} = error}, state, run) do
@@ -422,17 +379,7 @@ defmodule Tackle.Lib.Loop.Tools do
         id_generator: state.id_generator
       )
 
-    event =
-      Event.new(:tool_error, %{
-        tool_call_id: error.tool_call_id,
-        name: name,
-        error: error.message,
-        reason: error.reason,
-        details: error.details,
-        metadata: error.metadata
-      })
-
-    commit_settlement(state, run, message, event, error)
+    commit_settlement(state, run, message, Event.tool_error(error), error)
   end
 
   defp commit_settlement(state, run, message, event, settlement) do

@@ -140,13 +140,18 @@ a turn:
 }}
 ```
 
-`type` is one of the Tackle.Lib event types: `turn_start`, `turn_end`,
+`type` is one of the Tackle.Lib core event types: `turn_start`, `turn_end`,
 `turn_cancelled`, `step_start`, `step_end`, `message_start`,
 `message_delta`, `message_end`, `tool_start`, `tool_progress`,
-`tool_execution_end`, `tool_end`, `tool_error`, `subagent_started`,
-`subagent_progress`, `subagent_finished`, `usage`, `status_change`, `error`,
-`provider_event`, `compaction_start`, `compaction_end`, `compaction_retry`,
-`retry_scheduled`, `retry_start`, `retry_end`.
+`tool_execution_end`, `tool_end`, `tool_error`, `usage`, `status_change`,
+`error`, `provider_event`, `compaction_start`, `compaction_end`,
+`compaction_retry`, `retry_scheduled`, `retry_start`, `retry_end`. Each core
+type has one `data` shape, listed in the `Tackle.Lib.Event` documentation:
+every key is always present, `null` when it does not apply (for example
+`tool_error` always has `details` and `metadata`, also for a call interrupted
+by the end of its turn, whose `reason` is `"interrupted"`, and `retry_end`
+always has `reason` and carries the message `id` like the other retry events).
+A tool configured on the server may emit events of its own types.
 
 Hosts built on sessions may also publish auxiliary events such as `narration`
 (`data.auxiliary` is `true`) outside any turn. This server drives the loop

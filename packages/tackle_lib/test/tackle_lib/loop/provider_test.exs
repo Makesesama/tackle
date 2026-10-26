@@ -189,8 +189,15 @@ defmodule Tackle.Lib.Loop.ProviderTest do
                       }
                     }}
 
-    assert_receive {:event, %Event{type: :retry_start, data: %{attempt: 1}}}
-    assert_receive {:event, %Event{type: :retry_end, data: %{attempt: 1, success?: true}}}
+    assert_receive {:event, %Event{type: :message_start, id: message_id}}
+    assert_receive {:event, %Event{type: :retry_start, id: ^message_id, data: %{attempt: 1}}}
+
+    assert_receive {:event,
+                    %Event{
+                      type: :retry_end,
+                      id: ^message_id,
+                      data: %{attempt: 1, success?: true, reason: nil}
+                    }}
   end
 
   test "emits one retry end and returns the last error after exhausting retries" do
@@ -457,7 +464,13 @@ defmodule Tackle.Lib.Loop.ProviderTest do
                         data: %{reason: :empty_response}
                       }}
 
-      assert_receive {:event, %Event{type: :retry_end, data: %{success?: true}}}
+      assert_receive {:event,
+                      %Event{
+                        type: :retry_end,
+                        id: ^pending_id,
+                        data: %{attempt: 1, success?: true, reason: nil}
+                      }}
+
       assert List.last(state.messages).id == pending_id
       assert_received :llm_call
       assert_received :llm_call
