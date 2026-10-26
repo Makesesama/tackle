@@ -95,11 +95,11 @@ session and turn correlation:
 {:tackle_session_reconfigured, session_id, %Tackle.Session.Snapshot{}}
 ```
 
-Each `%Tackle.Session.Snapshot{}` includes derived `%Tackle.Session.Stats{}`
-with aggregate assistant-message usage, latest generation usage, selected-model
-metadata, and current context pressure. No duplicate mutable totals are kept.
-Usage events also carry priced normalized usage and context pressure when model
-metadata is available.
+Each `%Tackle.Session.Snapshot{}` carries the settled `agent_state`; aggregate
+usage and context pressure derive from it (`Tackle.Lib.State.usage/1`,
+`Tackle.Lib.ContextUsage.estimate/1`), so no duplicate mutable totals are kept.
+Usage events carry priced normalized usage, the selected model's metadata, and
+context pressure when model metadata is available.
 
 Each agent permits one active turn; `Tackle.submit/2` may return
 `{:ok, :queued}` when a turn is already running, and `Tackle.withdraw_queued/2`

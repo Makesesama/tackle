@@ -213,21 +213,21 @@ defmodule TackleTest do
     assert Enum.any?(events, &match?(%Event{type: :turn_start}, &1))
     assert Enum.any?(events, &match?(%Event{type: :turn_end}, &1))
 
-    assert {:ok, %Snapshot{agent_state: ^final_state, active_turn: nil, stats: stats}} =
+    assert {:ok, %Snapshot{agent_state: ^final_state, active_turn: nil}} =
              Tackle.snapshot(agent_ref)
 
-    assert stats.usage.input_tokens == 100
-    assert stats.usage.output_tokens == 10
-    assert stats.usage.cache_read_tokens == 50
-    assert stats.usage.cost_estimated
-    assert stats.latest_usage == List.last(final_state.messages).token_usage
-    assert stats.model_info.context_window == 1_000
-    assert stats.context_usage.tokens == 160
-    assert stats.context_usage.percent == 16.0
+    usage = State.usage(final_state)
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 10
+    assert usage.cache_read_tokens == 50
 
     assert Enum.any?(events, fn
-             %Event{type: :usage, data: %{usage: usage, context_usage: context_usage}} ->
-               usage.cost_estimated and context_usage.tokens == 160
+             %Event{
+               type: :usage,
+               data: %{usage: usage, model_info: model_info, context_usage: context_usage}
+             } ->
+               usage.cost_estimated and model_info.context_window == 1_000 and
+                 context_usage.tokens == 160 and context_usage.percent == 16.0
 
              _event ->
                false

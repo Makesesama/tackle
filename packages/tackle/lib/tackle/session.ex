@@ -67,49 +67,6 @@ defmodule Tackle.Session do
   @max_deferred_messages 128
   @max_inbox_bytes 24 * 1024 * 1024
 
-  defmodule Stats do
-    @moduledoc "Derived, immutable token, cost, model, and context statistics."
-
-    alias Tackle.Lib.ContextUsage
-    alias Tackle.Lib.Message
-    alias Tackle.Lib.State
-    alias Tackle.Lib.Usage
-
-    @enforce_keys [:usage]
-    defstruct [:usage, :latest_usage, :model_info, :context_usage]
-
-    @type t :: %__MODULE__{
-            usage: Usage.t(),
-            latest_usage: Usage.t() | nil,
-            model_info: Tackle.Lib.ModelInfo.t() | nil,
-            context_usage: ContextUsage.t() | nil
-          }
-
-    @doc "Derives statistics from assistant-message usage and the selected model."
-    @spec from_agent_state(State.t()) :: t()
-    def from_agent_state(%State{} = state) do
-      %__MODULE__{
-        usage: State.usage(state),
-        latest_usage: latest_usage(state.messages),
-        model_info: model_info(state),
-        context_usage: ContextUsage.estimate(state)
-      }
-    end
-
-    defp model_info(%State{llm: %{model_info: model_info}}), do: model_info
-    defp model_info(%State{}), do: nil
-
-    defp latest_usage(messages) do
-      Enum.find_value(Enum.reverse(messages), fn
-        %Message{role: :assistant, token_usage: usage} when not is_nil(usage) ->
-          Usage.normalize(usage)
-
-        _message ->
-          nil
-      end)
-    end
-  end
-
   defmodule Snapshot do
     @moduledoc "An atomic view of a Tackle session and its active turn."
 
@@ -118,7 +75,6 @@ defmodule Tackle.Session do
       :session_id,
       :agent_state,
       :active_turn,
-      :stats,
       :agent_ref,
       :scope_ref,
       :recovery,
@@ -142,7 +98,6 @@ defmodule Tackle.Session do
             session_id: String.t(),
             agent_state: Tackle.Lib.State.t(),
             active_turn: active_turn() | nil,
-            stats: Tackle.Session.Stats.t() | nil,
             agent_ref: AgentRef.t() | nil,
             scope_ref: ScopeRef.t() | nil,
             recovery: recovery() | nil,
@@ -1827,7 +1782,6 @@ defmodule Tackle.Session do
       session_id: state.agent_state.session_id,
       agent_state: state.agent_state,
       active_turn: active_turn,
-      stats: Stats.from_agent_state(state.agent_state),
       agent_ref: state.agent_ref,
       scope_ref: state.scope_ref,
       recovery: state.recovery,
