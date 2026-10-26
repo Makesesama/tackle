@@ -142,6 +142,41 @@ defmodule Tackle.Session.StoragePauseTest do
     end
   end
 
+  test "a storage pause still queues input for the active turn" do
+    scope = durable_scope(mode: :manual)
+    root = scope.root_agent_ref
+    {:ok, snapshot} = Tackle.subscribe(root)
+    {:ok, session} = Runtime.session_pid(root)
+    {:ok, turn} = Tackle.submit(root, "seed")
+    assert_receive {:adapter_called, provider, _, _}
+    log = {:tackle_session, snapshot.session_id}
+    :ok = :disk_log.block(log, true)
+
+    try do
+      sync = Task.async(fn -> Journal.flush(Journal.via(snapshot.session_id)) end)
+      assert_storage(snapshot.session_id, :delayed)
+      assert {:ok, :queued} = Tackle.submit(root, "queued")
+      {:ok, envelope} = Envelope.new(:message, root, "note")
+      assert :ok = Session.deliver(session, envelope)
+      :ok = :disk_log.unblock(log)
+      assert Task.await(sync) == :ok
+      send(provider, {:respond, "first"})
+      assert_receive {:adapter_called, provider, _, _}, 5_000
+      send(provider, {:respond, "second"})
+      assert_receive {:tackle_turn_finished, _, ^turn, {:ok, agent_state}}, 5_000
+
+      assert Enum.map(agent_state.messages, & &1.content) == [
+               "seed",
+               "first",
+               "queued",
+               "Message from agent #{root.agent_id}:\n\nnote",
+               "second"
+             ]
+    after
+      :disk_log.unblock(log)
+    end
+  end
+
   test "an accepted begin stays cancellable while its journal request waits" do
     scope = durable_scope()
     root = scope.root_agent_ref

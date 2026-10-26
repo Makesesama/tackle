@@ -391,6 +391,17 @@ defmodule Tackle.Session do
                 (is_tuple(operation) and elem(operation, 0) in [:compact, :navigate, :reconfigure])),
       do: {:reply, {:error, :storage_busy}, state}
 
+  # Queueing input for the active turn writes nothing, so it is accepted while
+  # the turn's begin or terminal commit is outstanding or storage is delayed;
+  # only a closing session refuses it.
+  def handle_call({:submit, _input}, _from, %{storage_task: %{kind: :close}} = state),
+    do: {:reply, {:error, :storage_busy}, state}
+
+  def handle_call({:submit, input}, _from, %{active_turn: active_turn} = state)
+      when not is_nil(active_turn) do
+    queue_user_message(state, input)
+  end
+
   def handle_call({:submit, _input}, _from, %{storage_task: task} = state)
       when not is_nil(task) or state.storage_status == :delayed,
       do: {:reply, {:error, :storage_busy}, state}
@@ -398,11 +409,6 @@ defmodule Tackle.Session do
   def handle_call({:submit, _input}, _from, %{recovery: recovery} = state)
       when not is_nil(recovery) do
     {:reply, {:error, {:recovery_required, recovery}}, state}
-  end
-
-  def handle_call({:submit, input}, _from, %{active_turn: active_turn} = state)
-      when not is_nil(active_turn) do
-    queue_user_message(state, input)
   end
 
   def handle_call({:submit, input}, from, state) do
@@ -448,8 +454,14 @@ defmodule Tackle.Session do
     end
   end
 
+  # Like a mid-turn submit, a message for the active turn is queued while its
+  # storage is busy; an idle session would have to start a turn for it.
+  def handle_call({:deliver, %Envelope{}}, _from_call, %{storage_task: %{kind: :close}} = state),
+    do: {:reply, {:error, :storage_busy}, state}
+
   def handle_call({:deliver, %Envelope{}}, _from_call, state)
-      when not is_nil(state.storage_task) or state.storage_status == :delayed,
+      when is_nil(state.active_turn) and
+             (not is_nil(state.storage_task) or state.storage_status == :delayed),
       do: {:reply, {:error, :storage_busy}, state}
 
   def handle_call({:deliver, %Envelope{} = envelope}, _from_call, state) do

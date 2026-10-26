@@ -427,8 +427,10 @@ snapshots and cancellation remain responsive; subscribers receive
 Cancellation is cooperative and settlement still waits for storage; effects
 already running are not rolled back.
 
-While delayed, new submissions and state-changing operations return
-`{:error, :storage_busy}` rather than retaining more input. The journal admits
+While delayed, submissions that would start a turn and state-changing
+operations return `{:error, :storage_busy}` rather than retaining more input;
+input for an active turn is still queued in the bounded inbox, since queueing
+writes nothing. The journal admits
 one outstanding request and at most 64 queued requests totaling 24 MiB of
 encoded request data; excess requests return `{:error, :journal_busy}`. Queued
 requests cannot append until the outstanding request completes. One-shot runtime

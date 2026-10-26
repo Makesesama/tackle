@@ -561,7 +561,9 @@ Session-side durability waits run in supervised tasks with correlated
 continuations, leaving snapshots and cancellation responsive. A session
 broadcasts `{:tackle_storage, session_id, :delayed | :ready}` and exposes that
 status in its snapshot. While delayed it rejects new mutating admission with
-`:storage_busy`. One-shot runtime launch/completion notices remain admitted to
+`:storage_busy`; input for an active turn (a submit or an agent message) is
+still queued, also while the turn's begin or terminal event is being written,
+because queueing writes nothing. One-shot runtime launch/completion notices remain admitted to
 the bounded inbox (128 deferred notices, 32 ordinary messages, 24 MiB total
 encoded entries); their continuation waits for storage readiness. The journal serializes dispatch and retains at most 64 queued
 requests / 24 MiB of encoded request data, returning `:journal_busy` at capacity.
