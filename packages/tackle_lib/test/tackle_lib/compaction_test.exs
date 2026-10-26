@@ -1,5 +1,5 @@
 defmodule Tackle.Lib.CompactionTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Compaction

@@ -1,8 +1,9 @@
 defmodule Tackle.Lib.TreeLoopTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Tackle.Lib.Loop
   alias Tackle.Lib.State
+  alias Tackle.Lib.TestLLM
   alias Tackle.Lib.Tree
 
   defmodule CapturingAdapter do
@@ -17,21 +18,12 @@ defmodule Tackle.Lib.TreeLoopTest do
   end
 
   setup do
-    previous = Application.get_env(:tackle_lib, :llm)
-    Application.put_env(:tackle_lib, :llm, CapturingAdapter)
     Process.put(:test_pid, self())
-
-    on_exit(fn ->
-      if previous do
-        Application.put_env(:tackle_lib, :llm, previous)
-      else
-        Application.delete_env(:tackle_lib, :llm)
-      end
-    end)
+    :ok
   end
 
   test "a branch switch sends only the active path to the provider" do
-    state = State.new(tree: true, model: "test/model")
+    state = State.new(tree: true, llm: TestLLM.selection(CapturingAdapter))
     assert {:ok, state} = Loop.run(state, "first question")
 
     assert_receive {:messages, first_call}

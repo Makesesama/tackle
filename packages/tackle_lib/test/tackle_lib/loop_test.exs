@@ -1,5 +1,5 @@
 defmodule Tackle.Lib.LoopTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
@@ -8,6 +8,7 @@ defmodule Tackle.Lib.LoopTest do
   alias Tackle.Lib.Message
   alias Tackle.Lib.Messages
   alias Tackle.Lib.State
+  alias Tackle.Lib.TestLLM
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Usage
@@ -196,19 +197,6 @@ defmodule Tackle.Lib.LoopTest do
     end
   end
 
-  setup do
-    previous_llm = Application.get_env(:tackle_lib, :llm)
-    Application.put_env(:tackle_lib, :llm, TestAdapter)
-
-    on_exit(fn ->
-      if previous_llm do
-        Application.put_env(:tackle_lib, :llm, previous_llm)
-      else
-        Application.delete_env(:tackle_lib, :llm)
-      end
-    end)
-  end
-
   describe "run options" do
     defmodule ContextProbeTool do
       @behaviour Tackle.Lib.Tool
@@ -250,7 +238,7 @@ defmodule Tackle.Lib.LoopTest do
 
     test "unknown options raise before the turn starts" do
       test_pid = self()
-      state = State.new(model: "test/model")
+      state = State.new(llm: TestLLM.selection(TestAdapter))
       callback = &send(test_pid, {:event, &1})
 
       for opts <- [
@@ -272,13 +260,16 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "a concurrent tool policy without a tool supervisor raises before the turn starts" do
-      Application.put_env(:tackle_lib, :llm, NoCallAdapter)
       Process.put(:test_pid, self())
       test_pid = self()
       callback = &send(test_pid, {:event, &1})
 
       state =
-        State.new(model: "test/model", tools: [FirstTool], tool_policy: Policy.concurrent())
+        State.new(
+          llm: TestLLM.selection(NoCallAdapter),
+          tools: [FirstTool],
+          tool_policy: Policy.concurrent()
+        )
 
       assert_raise ArgumentError, ~r/tool_supervisor/, fn ->
         Loop.run(state, "hello", event_callback: callback)
@@ -293,13 +284,12 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "tools receive the run's event callback and tool context without the host repeating them" do
-      Application.put_env(:tackle_lib, :llm, ProbeAdapter)
       test_pid = self()
       signal = Cancellation.new_signal()
 
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(ProbeAdapter),
           tools: [ContextProbeTool],
           context: %{test_pid: test_pid, from_state: true, event_callback: :stale}
         )
@@ -329,10 +319,9 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "sends only persisted messages to the provider" do
-    Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
     Process.put(:test_pid, self())
 
-    state = State.new(model: "test/model")
+    state = State.new(llm: TestLLM.selection(MessagesCapturingAdapter))
 
     assert {:ok, _state} = Loop.run(state, "hello")
 
@@ -340,11 +329,10 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "native protocol: plain content is treated as the final answer" do
-    Application.put_env(:tackle_lib, :llm, NativeContentAdapter)
     Process.put(:test_pid, self())
     Process.put(:call_count, 0)
 
-    state = State.new(model: "test/model")
+    state = State.new(llm: TestLLM.selection(NativeContentAdapter))
 
     assert {:ok, state} = Loop.run(state, "hello")
     assert state.status == :completed
@@ -399,8 +387,6 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "rejects malformed provider tool calls without crashing the loop" do
-    Application.put_env(:tackle_lib, :llm, MalformedToolAdapter)
-
     for calls <- [
           [nil],
           [%{"function" => "not a map"}],
@@ -412,7 +398,11 @@ defmodule Tackle.Lib.LoopTest do
 
       assert {:error, state} =
                Loop.run(
-                 State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()}),
+                 State.new(
+                   llm: TestLLM.selection(MalformedToolAdapter),
+                   tools: [FirstTool],
+                   context: %{test_pid: self()}
+                 ),
                  "hello"
                )
 
@@ -423,10 +413,14 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "executes a nested call with decoded JSON arguments" do
-    Application.put_env(:tackle_lib, :llm, JsonArgumentsAdapter)
     Process.put(:call_count, 0)
 
-    state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+    state =
+      State.new(
+        llm: TestLLM.selection(JsonArgumentsAdapter),
+        tools: [FirstTool],
+        context: %{test_pid: self()}
+      )
 
     assert {:ok, state} = Loop.run(state, "hello")
     assert_receive {:tool_execute, :first}
@@ -439,8 +433,6 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "rejects an entire batch if a later call has invalid JSON" do
-    Application.put_env(:tackle_lib, :llm, MalformedToolAdapter)
-
     Process.put(:bad_tool_calls, [
       %{"name" => "first", "arguments" => %{}},
       %{"name" => "first", "arguments" => "{"}
@@ -448,7 +440,11 @@ defmodule Tackle.Lib.LoopTest do
 
     assert {:error, state} =
              Loop.run(
-               State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()}),
+               State.new(
+                 llm: TestLLM.selection(MalformedToolAdapter),
+                 tools: [FirstTool],
+                 context: %{test_pid: self()}
+               ),
                "hello"
              )
 
@@ -486,14 +482,17 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "native protocol: native tool_calls drive tool execution then plain-content answer" do
-    Application.put_env(:tackle_lib, :llm, NativeToolThenContentAdapter)
     Process.put(:test_pid, self())
     Process.put(:call_count, 0)
 
     test_pid = self()
 
     state =
-      State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: test_pid})
+      State.new(
+        llm: TestLLM.selection(NativeToolThenContentAdapter),
+        tools: [FirstTool],
+        context: %{test_pid: test_pid}
+      )
 
     assert {:ok, state} = Loop.run(state, "do the thing")
     assert_receive {:tool_execute, :first}
@@ -502,11 +501,14 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "runs beyond ten iterations when no explicit limit is configured" do
-    Application.put_env(:tackle_lib, :llm, TenToolCallsThenContentAdapter)
     Process.put(:call_count, 0)
 
     state =
-      State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+      State.new(
+        llm: TestLLM.selection(TenToolCallsThenContentAdapter),
+        tools: [FirstTool],
+        context: %{test_pid: self()}
+      )
 
     assert {:ok, state} = Loop.run(state, "keep using the tool")
     assert state.max_iterations == :infinity
@@ -515,7 +517,7 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "max_iterations bounds each turn, not the whole session" do
-    state = State.new(model: "test/model", max_iterations: 1)
+    state = State.new(llm: TestLLM.selection(TestAdapter), max_iterations: 1)
 
     assert {:ok, state} = Loop.run(state, "first")
     assert state.current_iteration == 1
@@ -527,13 +529,14 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "a successful turn after a failed one does not keep the old error" do
-    Application.put_env(:tackle_lib, :llm, PermanentFailureAdapter)
     Process.put(:test_pid, self())
 
-    assert {:error, state} = Loop.run(State.new(model: "test/model"), "first")
+    assert {:error, state} =
+             Loop.run(State.new(llm: TestLLM.selection(PermanentFailureAdapter)), "first")
+
     assert state.error =~ "Failed to get response"
 
-    Application.put_env(:tackle_lib, :llm, TestAdapter)
+    state = %{state | llm: TestLLM.selection(TestAdapter)}
 
     assert {:ok, state} = Loop.run(state, "second")
     assert state.status == :completed
@@ -541,14 +544,17 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "passes a structured message array (not a flat blob) with linked tool call/result" do
-    Application.put_env(:tackle_lib, :llm, StructuredMessagesCapturingAdapter)
     Process.put(:test_pid, self())
     Process.put(:call_count, 0)
 
     test_pid = self()
 
     state =
-      State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: test_pid})
+      State.new(
+        llm: TestLLM.selection(StructuredMessagesCapturingAdapter),
+        tools: [FirstTool],
+        context: %{test_pid: test_pid}
+      )
 
     assert {:ok, state} = Loop.run(state, "do the thing")
 
@@ -591,7 +597,7 @@ defmodule Tackle.Lib.LoopTest do
 
   test "emits Tackle.Lib events" do
     test_pid = self()
-    state = State.new(model: "test/model")
+    state = State.new(llm: TestLLM.selection(TestAdapter))
 
     assert {:ok, state} =
              Loop.run(state, "hello",
@@ -617,12 +623,11 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "host llm_opts override the loop's defaults but not the request" do
-    Application.put_env(:tackle_lib, :llm, NativeContentAdapter)
     Process.put(:test_pid, self())
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(NativeContentAdapter),
         llm_opts: [temperature: 0.9, model: "other/model", messages: [:bogus]]
       )
 
@@ -635,7 +640,6 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "appends incoming messages before the first provider call" do
-    Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
     Process.put(:test_pid, self())
     Process.put(:incoming_polls, 0)
 
@@ -646,7 +650,9 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     assert {:ok, state} =
-             Loop.run(State.new(model: "test/model"), "hello", take_incoming_messages: callback)
+             Loop.run(State.new(llm: TestLLM.selection(MessagesCapturingAdapter)), "hello",
+               take_incoming_messages: callback
+             )
 
     assert_receive {:messages,
                     [%{role: :user, content: "hello"}, %{role: :user, content: "queued first"}]}
@@ -659,7 +665,6 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "appends incoming messages only after a complete tool batch" do
-    Application.put_env(:tackle_lib, :llm, StructuredMessagesCapturingAdapter)
     Process.put(:test_pid, self())
     Process.put(:call_count, 0)
     Process.put(:incoming_polls, 0)
@@ -670,7 +675,13 @@ defmodule Tackle.Lib.LoopTest do
       if polls == 1, do: {:ok, ["after tools"]}, else: {:ok, []}
     end
 
-    state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+    state =
+      State.new(
+        llm: TestLLM.selection(StructuredMessagesCapturingAdapter),
+        tools: [FirstTool],
+        context: %{test_pid: self()}
+      )
+
     assert {:ok, _state} = Loop.run(state, "hello", take_incoming_messages: callback)
 
     assert_receive {:messages, [%{role: :user, content: "hello"}]}
@@ -681,7 +692,6 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "continues the same run when a message arrives at the final response boundary" do
-    Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
     Process.put(:test_pid, self())
     Process.put(:incoming_polls, 0)
 
@@ -692,7 +702,9 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     assert {:ok, state} =
-             Loop.run(State.new(model: "test/model"), "hello", take_incoming_messages: callback)
+             Loop.run(State.new(llm: TestLLM.selection(MessagesCapturingAdapter)), "hello",
+               take_incoming_messages: callback
+             )
 
     assert_receive {:messages, [%{role: :user, content: "hello"}]}
     assert_receive {:messages, messages}
@@ -702,11 +714,10 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "reports invalid incoming callback results" do
-    Application.put_env(:tackle_lib, :llm, NoCallAdapter)
     Process.put(:test_pid, self())
 
     assert {:error, state} =
-             Loop.run(State.new(model: "test/model"), "hello",
+             Loop.run(State.new(llm: TestLLM.selection(NoCallAdapter)), "hello",
                take_incoming_messages: fn -> {:ok, [""]} end
              )
 
@@ -716,13 +727,12 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "does not consume incoming messages after cancellation" do
-    Application.put_env(:tackle_lib, :llm, NoCallAdapter)
     Process.put(:test_pid, self())
     signal = Cancellation.new_signal()
     Cancellation.cancel(signal, "stop")
 
     assert {:cancelled, state} =
-             Loop.run(State.new(model: "test/model"), "hello",
+             Loop.run(State.new(llm: TestLLM.selection(NoCallAdapter)), "hello",
                cancellation_signal: signal,
                take_incoming_messages: fn ->
                  send(self(), :incoming_polled)
@@ -736,13 +746,12 @@ defmodule Tackle.Lib.LoopTest do
   end
 
   test "cancels before starting the LLM call" do
-    Application.put_env(:tackle_lib, :llm, NoCallAdapter)
     Process.put(:test_pid, self())
 
     signal = Cancellation.new_signal()
     Cancellation.cancel(signal, "user stopped")
 
-    state = State.new(model: "test/model")
+    state = State.new(llm: TestLLM.selection(NoCallAdapter))
 
     assert {:cancelled, state} =
              Loop.run(state, "hello",
@@ -809,14 +818,13 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     setup do
-      Application.put_env(:tackle_lib, :llm, FirstCallsToolThenAnswersAdapter)
       Process.put(:test_pid, self())
       :ok
     end
 
-    defp turn_end_hook_state(context) do
+    defp turn_end_hook_state(context, adapter \\ FirstCallsToolThenAnswersAdapter) do
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(adapter),
         tools: [FirstTool],
         hooks: [TurnEndHook],
         context: Map.put(context, :test_pid, self())
@@ -847,7 +855,11 @@ defmodule Tackle.Lib.LoopTest do
 
     test "a turn starting from unresolved tool calls settles them before the provider call" do
       state = %{
-        State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+        State.new(
+          llm: TestLLM.selection(FirstCallsToolThenAnswersAdapter),
+          tools: [FirstTool],
+          context: %{test_pid: self()}
+        )
         | messages: [
             Message.user("earlier"),
             Message.assistant(tool_calls: [%Call{id: "old", name: "first", arguments: %{}}])
@@ -868,9 +880,11 @@ defmodule Tackle.Lib.LoopTest do
 
     test "continue/2 starts a turn like run/3" do
       test_pid = self()
-      state = %{State.new(model: "test/model") | messages: [Message.user("hello")]}
 
-      Application.put_env(:tackle_lib, :llm, TestAdapter)
+      state = %{
+        State.new(llm: TestLLM.selection(TestAdapter))
+        | messages: [Message.user("hello")]
+      }
 
       assert {:ok, _state} =
                Loop.continue(state, event_callback: &send(test_pid, {:event, &1}))
@@ -903,10 +917,8 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "a crashing event callback does not stop the turn" do
-      Application.put_env(:tackle_lib, :llm, TestAdapter)
-
       assert {:ok, state} =
-               Loop.run(State.new(model: "test/model"), "hello",
+               Loop.run(State.new(llm: TestLLM.selection(TestAdapter)), "hello",
                  event_callback: fn _event -> raise "observer bug" end
                )
 
@@ -914,8 +926,7 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "queued messages are kept when finalizing one of them fails" do
-      Application.put_env(:tackle_lib, :llm, TestAdapter)
-      state = turn_end_hook_state(%{fail: :queued_message})
+      state = turn_end_hook_state(%{fail: :queued_message}, TestAdapter)
 
       assert {:error, state} =
                Loop.run(state, "hello",
@@ -1050,11 +1061,12 @@ defmodule Tackle.Lib.LoopTest do
       ]
 
       for {status, adapter, extra_context, opts} <- cases do
-        Application.put_env(:tackle_lib, :llm, adapter)
         Process.put(:test_pid, self())
 
         context = Map.merge(%{test_pid: self()}, extra_context)
-        state = State.new(model: "test/model", hooks: [TerminalHook], context: context)
+
+        state =
+          State.new(llm: TestLLM.selection(adapter), hooks: [TerminalHook], context: context)
 
         result =
           Loop.run(
@@ -1095,7 +1107,7 @@ defmodule Tackle.Lib.LoopTest do
     test "after_turn failure preserves the outcome" do
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(TestAdapter),
           hooks: [FailingTerminalHook],
           context: %{test_pid: self()}
         )
@@ -1107,7 +1119,13 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "continue runs terminal cleanup once" do
-      state = State.new(model: "test/model", hooks: [TerminalHook], context: %{test_pid: self()})
+      state =
+        State.new(
+          llm: TestLLM.selection(TestAdapter),
+          hooks: [TerminalHook],
+          context: %{test_pid: self()}
+        )
+
       assert {:ok, final_state} = Loop.continue(state)
       assert final_state.context.cleaned_up
       assert_receive {:after_turn, :completed, nil}
@@ -1164,44 +1182,12 @@ defmodule Tackle.Lib.LoopTest do
       end
     end
 
-    defmodule ReplacementAdapter do
-      @behaviour Tackle.Lib.LLM
-
-      @impl true
-      def generate(_schema, _opts) do
-        send(Process.get(:test_pid), :replacement_adapter_called)
-        {:ok, %{data: %{"content" => "replacement"}, usage: nil, model: "replacement"}}
-      end
-    end
-
-    defmodule SnapshotAdapter do
-      @behaviour Tackle.Lib.LLM
-
-      @impl true
-      def generate(_schema, _opts) do
-        send(Process.get(:test_pid), :snapshot_adapter_called)
-        {:ok, %{data: %{"content" => "snapshot"}, usage: nil, model: "snapshot"}}
-      end
-    end
-
-    defmodule SwapAdapterConfigHook do
-      @behaviour Tackle.Lib.Hook
-
-      @impl true
-      def before_prompt(_state, context) do
-        Application.put_env(:tackle_lib, :llm, ReplacementAdapter)
-        send(Map.fetch!(context, :test_pid), :adapter_config_swapped)
-        :ok
-      end
-    end
-
     test "lifecycle hooks fire in correct order during a turn" do
-      Application.put_env(:tackle_lib, :llm, HookTestAdapter)
       Process.put(:llm_call_count, 0)
 
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(HookTestAdapter),
           tools: [HookLoggingTool],
           hooks: [IntegObserverHook],
           context: %{test_pid: self()}
@@ -1224,11 +1210,9 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "context mutator hooks propagate context changes" do
-      Application.put_env(:tackle_lib, :llm, TestAdapter)
-
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(TestAdapter),
           hooks: [ContextMutatorHook],
           context: %{original: true}
         )
@@ -1240,11 +1224,9 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "snapshot is captured and used for tool registry resolution" do
-      Application.put_env(:tackle_lib, :llm, TestAdapter)
-
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(TestAdapter),
           tools: [FirstTool],
           context: %{}
         )
@@ -1254,8 +1236,6 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "successful and failed tool settlements share message, event, and hook ordering" do
-      Application.put_env(:tackle_lib, :llm, HookTestAdapter)
-
       for {tools, event_type, settlement_type} <- [
             {[HookLoggingTool], :tool_end, Tackle.Lib.Tool.Result},
             {[], :tool_error, Tackle.Lib.Tool.Error}
@@ -1264,7 +1244,7 @@ defmodule Tackle.Lib.LoopTest do
 
         state =
           State.new(
-            model: "test/model",
+            llm: TestLLM.selection(HookTestAdapter),
             tools: tools,
             hooks: [SettlementOrderHook],
             context: %{test_pid: self()}
@@ -1297,12 +1277,11 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "after_tool_call hook errors abort the turn" do
-      Application.put_env(:tackle_lib, :llm, HookTestAdapter)
       Process.put(:llm_call_count, 0)
 
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(HookTestAdapter),
           tools: [HookLoggingTool],
           hooks: [AfterToolAbortHook],
           context: %{test_pid: self()}
@@ -1315,8 +1294,6 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "after_message aborts both tool settlements before their event and after_tool_call" do
-      Application.put_env(:tackle_lib, :llm, HookTestAdapter)
-
       for {tools, event_type} <- [
             {[HookLoggingTool], :tool_end},
             {[], :tool_error}
@@ -1325,7 +1302,7 @@ defmodule Tackle.Lib.LoopTest do
 
         state =
           State.new(
-            model: "test/model",
+            llm: TestLLM.selection(HookTestAdapter),
             tools: tools,
             hooks: [AfterToolMessageAbortHook, SettlementOrderHook],
             context: %{test_pid: self()}
@@ -1344,12 +1321,11 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "after_tool_call hook errors abort failed tool settlements too" do
-      Application.put_env(:tackle_lib, :llm, HookTestAdapter)
       Process.put(:llm_call_count, 0)
 
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(HookTestAdapter),
           hooks: [AfterToolAbortHook],
           context: %{test_pid: self()}
         )
@@ -1363,25 +1339,6 @@ defmodule Tackle.Lib.LoopTest do
       assert state.error =~ "Hook aborted after tool call: :after_tool_failed"
       assert Enum.any?(state.messages, &(&1.role == :tool))
       assert_receive {:event, %Event{type: :tool_error, data: %{name: "hook_log"}}}
-    end
-
-    test "snapshot freezes the LLM adapter for the turn" do
-      Application.put_env(:tackle_lib, :llm, SnapshotAdapter)
-      Process.put(:test_pid, self())
-
-      state =
-        State.new(
-          model: "test/model",
-          hooks: [SwapAdapterConfigHook],
-          context: %{test_pid: self()}
-        )
-
-      assert {:ok, state} = Loop.run(state, "test snapshot adapter")
-      assert state.status == :completed
-
-      assert_receive :adapter_config_swapped
-      assert_receive :snapshot_adapter_called
-      refute_receive :replacement_adapter_called, 20
     end
   end
 
@@ -1432,7 +1389,7 @@ defmodule Tackle.Lib.LoopTest do
       context = Map.merge(%{test_pid: self(), gate_plan: plan}, Keyword.get(opts, :context, %{}))
 
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(Keyword.get(opts, :adapter, MessagesCapturingAdapter)),
         hooks: Keyword.get(opts, :hooks, [GateHook]),
         tools: Keyword.get(opts, :tools, []),
         max_iterations: Keyword.get(opts, :max_iterations, :infinity),
@@ -1441,7 +1398,6 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "continues the turn with the hook's messages, then completes" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
 
       state = turn_end_state([{:continue, ["compile failed: undefined function foo/0"]}])
@@ -1479,7 +1435,6 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "completes the turn when the hook returns no messages" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
 
       assert {:ok, state} = Loop.run(turn_end_state([{:continue, []}]), "hello")
@@ -1490,18 +1445,19 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "runs only after a final answer, not after a tool batch" do
-      Application.put_env(:tackle_lib, :llm, StructuredMessagesCapturingAdapter)
       Process.put(:test_pid, self())
       Process.put(:call_count, 0)
 
-      assert {:ok, _state} = Loop.run(turn_end_state([], tools: [FirstTool]), "hello")
+      state =
+        turn_end_state([], tools: [FirstTool], adapter: StructuredMessagesCapturingAdapter)
+
+      assert {:ok, _state} = Loop.run(state, "hello")
       assert_receive {:tool_execute, :first}
       assert_receive {:before_turn_end, :assistant, "All done."}
       refute_receive {:before_turn_end, _, _}, 20
     end
 
     test "queued incoming messages are handled before the hooks run" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
       Process.put(:incoming_polls, 0)
 
@@ -1520,7 +1476,6 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "messages of several hooks are appended in hook order" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
 
       # SecondGateHook always continues, so the iteration limit ends the turn.
@@ -1544,7 +1499,6 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "max_iterations ends a turn whose hook keeps continuing it" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
 
       assert {:error, state} = Loop.run(turn_end_state(:always, max_iterations: 3), "hello")
@@ -1555,7 +1509,6 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "an error from the hook aborts the turn" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
 
       assert {:error, state} = Loop.run(turn_end_state([{:error, :gate_crashed}]), "hello")
@@ -1566,7 +1519,6 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "invalid messages abort the turn" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
 
       assert {:error, state} = Loop.run(turn_end_state([{:continue, [""]}]), "hello")
@@ -1575,7 +1527,6 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "cancellation during the hook cancels instead of continuing" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
       signal = Cancellation.new_signal()
 
@@ -1591,10 +1542,11 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "is not called when the provider fails" do
-      Application.put_env(:tackle_lib, :llm, PermanentFailureAdapter)
       Process.put(:test_pid, self())
 
-      assert {:error, _state} = Loop.run(turn_end_state([]), "hello")
+      assert {:error, _state} =
+               Loop.run(turn_end_state([], adapter: PermanentFailureAdapter), "hello")
+
       refute_receive {:before_turn_end, _, _}, 20
     end
 
@@ -1625,11 +1577,16 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "hooks receive the run's cancellation signal without keeping it in the state" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
       signal = Cancellation.new_signal()
 
-      state = State.new(model: "test/model", hooks: [SignalHook], context: %{test_pid: self()})
+      state =
+        State.new(
+          llm: TestLLM.selection(MessagesCapturingAdapter),
+          hooks: [SignalHook],
+          context: %{test_pid: self()}
+        )
+
       assert {:ok, state} = Loop.run(state, "hello", cancellation_signal: signal)
 
       assert_receive {:signal_in, :before_prompt, ^signal}
@@ -1641,12 +1598,11 @@ defmodule Tackle.Lib.LoopTest do
     end
 
     test "a host's own :cancellation_signal context entry is kept" do
-      Application.put_env(:tackle_lib, :llm, MessagesCapturingAdapter)
       Process.put(:test_pid, self())
 
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(MessagesCapturingAdapter),
           hooks: [SignalHook],
           context: %{test_pid: self(), cancellation_signal: :host_value}
         )

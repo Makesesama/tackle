@@ -1,6 +1,6 @@
 defmodule Tackle.Lib.Loop.ToolsTest do
   # Tool execution (`Tackle.Lib.Loop.Tools`), driven through `Tackle.Lib.Loop.run/3`.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
@@ -8,6 +8,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
   alias Tackle.Lib.Loop
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
+  alias Tackle.Lib.TestLLM
   alias Tackle.Lib.Tool.Policy
 
   defmodule FirstTool do
@@ -348,27 +349,13 @@ defmodule Tackle.Lib.Loop.ToolsTest do
     end
   end
 
-  setup do
-    previous_llm = Application.get_env(:tackle_lib, :llm)
-    Application.put_env(:tackle_lib, :llm, TestAdapter)
-
-    on_exit(fn ->
-      if previous_llm do
-        Application.put_env(:tackle_lib, :llm, previous_llm)
-      else
-        Application.delete_env(:tackle_lib, :llm)
-      end
-    end)
-  end
-
   test "executes multiple tool calls sequentially and strips unsupported tool policy opts" do
-    Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
     Process.put(:test_pid, self())
     Process.put(:call_count, 0)
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(ToolCallingAdapter),
         tools: [FirstTool, SecondTool],
         context: %{test_pid: self()},
         llm_opts: [
@@ -410,12 +397,11 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
   test "concurrent policy dispatches a batch in parallel and commits results in call order" do
     {:ok, supervisor} = Task.Supervisor.start_link()
-    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
     test_pid = self()
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(ParallelToolAdapter),
         tools: [BlockingTool],
         tool_policy: Policy.concurrent(),
         context: %{test_pid: test_pid}
@@ -471,13 +457,12 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
   test "concurrent cancellation commits completed results and stops pending tools" do
     {:ok, supervisor} = Task.Supervisor.start_link()
-    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
     test_pid = self()
     signal = Cancellation.new_signal()
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(ParallelToolAdapter),
         tools: [BlockingTool],
         tool_policy: Policy.concurrent(),
         context: %{test_pid: test_pid}
@@ -547,12 +532,11 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
   test "concurrent policy converts a crashed tool into an error result" do
     {:ok, supervisor} = Task.Supervisor.start_link()
-    Application.put_env(:tackle_lib, :llm, CrashAndBlockAdapter)
     test_pid = self()
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(CrashAndBlockAdapter),
         tools: [CrashingTool, BlockingTool],
         tool_policy: Policy.concurrent(),
         context: %{test_pid: test_pid}
@@ -592,7 +576,6 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
   test "concurrent tool tasks do not copy conversation history" do
     {:ok, supervisor} = Task.Supervisor.start_link()
-    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
     test_pid = self()
 
     # Use ordinary terms, not a large binary (which the BEAM shares between processes).
@@ -600,7 +583,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(ParallelToolAdapter),
         tools: [BlockingTool],
         tool_policy: Policy.concurrent(),
         context: %{test_pid: test_pid}
@@ -628,12 +611,11 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
   test "concurrent preparation errors settle as tool crashes instead of aborting the loop" do
     {:ok, supervisor} = Task.Supervisor.start_link()
-    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
     test_pid = self()
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(ParallelToolAdapter),
         tools: [BlockingTool],
         tool_policy: Policy.concurrent(),
         context: %{test_pid: test_pid}
@@ -657,10 +639,9 @@ defmodule Tackle.Lib.Loop.ToolsTest do
   end
 
   test "sequential policy settles tools that exit, throw, or return unencodable data" do
-    Application.put_env(:tackle_lib, :llm, MisbehavingToolAdapter)
     test_pid = self()
 
-    state = State.new(model: "test/model", tools: [MisbehavingTool])
+    state = State.new(llm: TestLLM.selection(MisbehavingToolAdapter), tools: [MisbehavingTool])
 
     assert {:ok, final_state} =
              Loop.run(state, "misbehave",
@@ -695,10 +676,14 @@ defmodule Tackle.Lib.Loop.ToolsTest do
   end
 
   test "sequential preparation errors settle as tool crashes instead of crashing the loop" do
-    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
     test_pid = self()
 
-    state = State.new(model: "test/model", tools: [BlockingTool], context: %{test_pid: test_pid})
+    state =
+      State.new(
+        llm: TestLLM.selection(ParallelToolAdapter),
+        tools: [BlockingTool],
+        context: %{test_pid: test_pid}
+      )
 
     assert {:ok, final_state} =
              Loop.run(state, "run both",
@@ -721,7 +706,6 @@ defmodule Tackle.Lib.Loop.ToolsTest do
   end
 
   test "emits sanitized tool telemetry with host allowlisted names" do
-    Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
     Process.put(:test_pid, self())
     Process.put(:call_count, 0)
     handler_id = {__MODULE__, make_ref()}
@@ -731,8 +715,11 @@ defmodule Tackle.Lib.Loop.ToolsTest do
       :telemetry.attach_many(
         handler_id,
         [[:tackle, :tool, :execution, :start], [:tackle, :tool, :execution, :stop]],
+        # Handlers are global; the sequential policy runs this test's tools
+        # in the test process, so events from concurrent tests are ignored.
         fn event, measurements, metadata, _ ->
-          send(test_pid, {:tool_telemetry, event, measurements, metadata})
+          if self() == test_pid,
+            do: send(test_pid, {:tool_telemetry, event, measurements, metadata})
         end,
         nil
       )
@@ -740,7 +727,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
     try do
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(ToolCallingAdapter),
           tools: [FirstTool, SecondTool],
           context: %{test_pid: self(), telemetry: %{tool_names: ["first"]}}
         )
@@ -768,7 +755,6 @@ defmodule Tackle.Lib.Loop.ToolsTest do
   end
 
   test "cancels between sequential tool calls and exposes the signal to tools and adapters" do
-    Application.put_env(:tackle_lib, :llm, CancellingToolAdapter)
     Process.put(:test_pid, self())
     Process.put(:call_count, 0)
 
@@ -776,7 +762,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(CancellingToolAdapter),
         tools: [CancelAfterTool, SecondTool],
         context: %{test_pid: self()}
       )
@@ -824,7 +810,6 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
   describe "per-call cancellation" do
     setup do
-      Application.put_env(:tackle_lib, :llm, StoppableToolAdapter)
       signal = Cancellation.new_signal()
       on_exit(fn -> Cancellation.delete(signal) end)
       %{signal: signal}
@@ -834,7 +819,11 @@ defmodule Tackle.Lib.Loop.ToolsTest do
       test_pid = self()
 
       state =
-        State.new(model: "test/model", tools: [StoppableTool], context: %{test_pid: test_pid})
+        State.new(
+          llm: TestLLM.selection(StoppableToolAdapter),
+          tools: [StoppableTool],
+          context: %{test_pid: test_pid}
+        )
 
       run =
         Task.async(fn ->
@@ -878,7 +867,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(StoppableToolAdapter),
           tools: [StoppableTool],
           tool_policy: Policy.concurrent(),
           context: %{test_pid: test_pid}
@@ -912,7 +901,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(StoppableToolAdapter),
           tools: [StoppableTool],
           tool_policy: Policy.concurrent(),
           context: %{test_pid: test_pid}
@@ -936,14 +925,13 @@ defmodule Tackle.Lib.Loop.ToolsTest do
   end
 
   test "cancellation during before_tool_call prevents sequential tool dispatch" do
-    Application.put_env(:tackle_lib, :llm, CancellingToolAdapter)
     Process.put(:test_pid, self())
     Process.put(:call_count, 0)
     signal = Cancellation.new_signal()
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(CancellingToolAdapter),
         tools: [CancelAfterTool, SecondTool],
         hooks: [CancelBeforeToolHook],
         context: %{test_pid: self(), cancellation_signal: signal}
@@ -961,13 +949,12 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
   test "cancellation during concurrent hook preparation prevents the whole batch dispatch" do
     {:ok, supervisor} = Task.Supervisor.start_link()
-    Application.put_env(:tackle_lib, :llm, ParallelToolAdapter)
     signal = Cancellation.new_signal()
     test_pid = self()
 
     state =
       State.new(
-        model: "test/model",
+        llm: TestLLM.selection(ParallelToolAdapter),
         tools: [BlockingTool],
         hooks: [CancelBeforeToolHook],
         tool_policy: Policy.concurrent(),
@@ -1004,14 +991,13 @@ defmodule Tackle.Lib.Loop.ToolsTest do
     end
 
     test "settle as tool errors under both policies without running a tool" do
-      Application.put_env(:tackle_lib, :llm, UnresolvableCallsAdapter)
       {:ok, supervisor} = Task.Supervisor.start_link()
       test_pid = self()
 
       for policy <- [Policy.default(), Policy.concurrent()] do
         state =
           State.new(
-            model: "test/model",
+            llm: TestLLM.selection(UnresolvableCallsAdapter),
             tools: [FirstTool],
             tool_policy: policy,
             context: %{test_pid: test_pid}
@@ -1058,7 +1044,6 @@ defmodule Tackle.Lib.Loop.ToolsTest do
     end
 
     setup do
-      Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
       Process.put(:call_count, 0)
       signal = Cancellation.new_signal()
       on_exit(fn -> Cancellation.delete(signal) end)
@@ -1070,7 +1055,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(ToolCallingAdapter),
           tools: [FirstTool, SecondTool],
           hooks: [RejectSecondCallHook],
           context: %{test_pid: test_pid}
@@ -1104,7 +1089,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
 
       state =
         State.new(
-          model: "test/model",
+          llm: TestLLM.selection(ToolCallingAdapter),
           tools: [FirstTool, SecondTool],
           hooks: [RejectSecondCallHook],
           tool_policy: Policy.concurrent(),
@@ -1201,7 +1186,6 @@ defmodule Tackle.Lib.Loop.ToolsTest do
     end
 
     setup do
-      Application.put_env(:tackle_lib, :llm, ToolCallingAdapter)
       Process.put(:call_count, 0)
       test_pid = self()
 
@@ -1217,7 +1201,7 @@ defmodule Tackle.Lib.Loop.ToolsTest do
       State.new(
         Keyword.merge(
           [
-            model: "test/model",
+            llm: TestLLM.selection(ToolCallingAdapter),
             tools: [FirstTool, SecondTool],
             hooks: [RecordToolCallHook],
             context: %{test_pid: self()}

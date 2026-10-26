@@ -3,13 +3,14 @@ defmodule Tackle.Lib.Loop.ProviderTest do
   # through `Tackle.Lib.Loop.run/3`: retries, the provider gate, streaming,
   # response normalization, and the empty-response re-ask. Overflow recovery
   # is covered by the "loop integration" tests in compaction_test.exs.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.LLM.Response
   alias Tackle.Lib.Loop
   alias Tackle.Lib.State
+  alias Tackle.Lib.TestLLM
   alias Tackle.Lib.Tool.Call
   alias Tackle.Lib.Usage
 
@@ -147,25 +148,15 @@ defmodule Tackle.Lib.Loop.ProviderTest do
   end
 
   setup do
-    previous_llm = Application.get_env(:tackle_lib, :llm)
-    Application.put_env(:tackle_lib, :llm, TestAdapter)
     Process.put(:test_pid, self())
-
-    on_exit(fn ->
-      if previous_llm do
-        Application.put_env(:tackle_lib, :llm, previous_llm)
-      else
-        Application.delete_env(:tackle_lib, :llm)
-      end
-    end)
+    :ok
   end
 
   test "retries a transient provider failure without duplicating the turn" do
-    Application.put_env(:tackle_lib, :llm, RetryThenSuccessAdapter)
     Process.put(:test_pid, self())
     Process.put(:retry_call_count, 0)
 
-    state = State.new(model: "test/model", retry: [base_delay_ms: 0])
+    state = State.new(llm: TestLLM.selection(RetryThenSuccessAdapter), retry: [base_delay_ms: 0])
 
     assert {:ok, state} =
              Loop.run(state, "hello",
@@ -201,10 +192,13 @@ defmodule Tackle.Lib.Loop.ProviderTest do
   end
 
   test "emits one retry end and returns the last error after exhausting retries" do
-    Application.put_env(:tackle_lib, :llm, AlwaysTransientAdapter)
     Process.put(:test_pid, self())
 
-    state = State.new(model: "test/model", retry: [max_retries: 2, base_delay_ms: 0])
+    state =
+      State.new(
+        llm: TestLLM.selection(AlwaysTransientAdapter),
+        retry: [max_retries: 2, base_delay_ms: 0]
+      )
 
     assert {:error, state} =
              Loop.run(state, "hello",
@@ -239,21 +233,26 @@ defmodule Tackle.Lib.Loop.ProviderTest do
   end
 
   test "does not retry a permanent provider failure" do
-    Application.put_env(:tackle_lib, :llm, PermanentFailureAdapter)
     Process.put(:test_pid, self())
 
-    assert {:error, _state} = Loop.run(State.new(model: "test/model"), "hello")
+    assert {:error, _state} =
+             Loop.run(State.new(llm: TestLLM.selection(PermanentFailureAdapter)), "hello")
+
     assert_receive :retry_call
     refute_receive :retry_call
   end
 
   test "cancels cooperatively during provider retry backoff" do
-    Application.put_env(:tackle_lib, :llm, CancelDuringRetryAdapter)
     Process.put(:test_pid, self())
     signal = Cancellation.new_signal()
 
     assert {:cancelled, state} =
-             Loop.run(State.new(model: "test/model", retry: [base_delay_ms: 5_000]), "hello",
+             Loop.run(
+               State.new(
+                 llm: TestLLM.selection(CancelDuringRetryAdapter),
+                 retry: [base_delay_ms: 5_000]
+               ),
+               "hello",
                cancellation_signal: signal,
                event_callback: fn event -> send(self(), {:event, event}) end
              )
@@ -269,7 +268,6 @@ defmodule Tackle.Lib.Loop.ProviderTest do
   end
 
   test "provider callback gates every automatic retry and can reject dispatch" do
-    Application.put_env(:tackle_lib, :llm, AlwaysTransientAdapter)
     Process.put(:test_pid, self())
     Process.put(:gate_count, 0)
 
@@ -282,7 +280,10 @@ defmodule Tackle.Lib.Loop.ProviderTest do
 
     assert {:error, _state} =
              Loop.run(
-               State.new(model: "test/model", retry: [max_retries: 2, base_delay_ms: 0]),
+               State.new(
+                 llm: TestLLM.selection(AlwaysTransientAdapter),
+                 retry: [max_retries: 2, base_delay_ms: 0]
+               ),
                "hello",
                before_provider_call: gate
              )
@@ -298,7 +299,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     Process.put(:gate_count, 0)
 
     assert {:error, state} =
-             Loop.run(State.new(model: "test/model"), "hello",
+             Loop.run(State.new(llm: TestLLM.selection(AlwaysTransientAdapter)), "hello",
                before_provider_call: fn ->
                  send(self(), :provider_rejected)
                  {:error, :storage_paused}
@@ -311,7 +312,6 @@ defmodule Tackle.Lib.Loop.ProviderTest do
   end
 
   test "cancellation while provider gate blocks prevents provider dispatch" do
-    Application.put_env(:tackle_lib, :llm, NoCallAdapter)
     Process.put(:test_pid, self())
     signal = Cancellation.new_signal()
     test_pid = self()
@@ -322,7 +322,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
       Task.async(fn ->
         Process.put(:test_pid, test_pid)
 
-        Loop.run(State.new(model: "test/model"), "hello",
+        Loop.run(State.new(llm: TestLLM.selection(NoCallAdapter)), "hello",
           cancellation_signal: signal,
           before_provider_call: fn ->
             send(test_pid, :provider_gate_entered)
@@ -341,7 +341,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
 
   test "can route provider streaming through Tackle.Lib event deltas" do
     test_pid = self()
-    state = State.new(model: "test/model")
+    state = State.new(llm: TestLLM.selection(TestAdapter))
 
     assert {:ok, _state} =
              Loop.run(state, "hello",
@@ -390,11 +390,10 @@ defmodule Tackle.Lib.Loop.ProviderTest do
 
   test "streaming reports each response's usage once" do
     for adapter <- [UsageStreamingAdapter, GenerateOnlyUsageAdapter] do
-      Application.put_env(:tackle_lib, :llm, adapter)
       test_pid = self()
 
       assert {:ok, _state} =
-               Loop.run(State.new(model: "test/model"), "hello",
+               Loop.run(State.new(llm: TestLLM.selection(adapter)), "hello",
                  llm_stream: true,
                  event_callback: fn event -> send(test_pid, {:event, event}) end
                )
@@ -438,7 +437,6 @@ defmodule Tackle.Lib.Loop.ProviderTest do
 
   describe "empty responses" do
     setup do
-      Application.put_env(:tackle_lib, :llm, EmptyResponseAdapter)
       Process.put(:test_pid, self())
       :ok
     end
@@ -448,7 +446,7 @@ defmodule Tackle.Lib.Loop.ProviderTest do
       test_pid = self()
 
       assert {:ok, state} =
-               Loop.run(State.new(model: "test/model"), "hello",
+               Loop.run(State.new(llm: TestLLM.selection(EmptyResponseAdapter)), "hello",
                  event_callback: fn event -> send(test_pid, {:event, event}) end
                )
 
@@ -478,7 +476,8 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     end
 
     test "end the turn with an error when the model stays empty" do
-      assert {:error, state} = Loop.run(State.new(model: "test/model"), "hello")
+      assert {:error, state} =
+               Loop.run(State.new(llm: TestLLM.selection(EmptyResponseAdapter)), "hello")
 
       assert state.error == "The model returned an empty response"
       assert Enum.map(state.messages, & &1.role) == [:user]
@@ -492,7 +491,12 @@ defmodule Tackle.Lib.Loop.ProviderTest do
         %{"tool_calls" => [%{"id" => "c1", "name" => "first", "arguments" => %{}}]}
       ])
 
-      state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+      state =
+        State.new(
+          llm: TestLLM.selection(EmptyResponseAdapter),
+          tools: [FirstTool],
+          context: %{test_pid: self()}
+        )
 
       assert {:error, state} = Loop.run(state, "use the tool")
       assert state.error == "The model returned an empty response"
@@ -511,7 +515,12 @@ defmodule Tackle.Lib.Loop.ProviderTest do
         %{"content" => "answer"}
       ])
 
-      state = State.new(model: "test/model", tools: [FirstTool], context: %{test_pid: self()})
+      state =
+        State.new(
+          llm: TestLLM.selection(EmptyResponseAdapter),
+          tools: [FirstTool],
+          context: %{test_pid: self()}
+        )
 
       assert {:ok, state} = Loop.run(state, "use the tool")
       assert List.last(state.messages).content == "answer"
@@ -596,14 +605,17 @@ defmodule Tackle.Lib.Loop.ProviderTest do
     do: {:ok, %{data: data, usage: usage, model: "test/model", provider: "test"}}
 
   defp run_scripted(script, state_opts \\ [], run_opts \\ []) do
-    Application.put_env(:tackle_lib, :llm, ScriptedAdapter)
     Process.put(:script, script)
     test_pid = self()
 
     state =
       State.new(
         Keyword.merge(
-          [model: "test/model", hooks: [AfterPromptHook], context: %{test_pid: test_pid}],
+          [
+            llm: TestLLM.selection(ScriptedAdapter),
+            hooks: [AfterPromptHook],
+            context: %{test_pid: test_pid}
+          ],
           state_opts
         )
       )
