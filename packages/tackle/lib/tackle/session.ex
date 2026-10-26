@@ -106,6 +106,12 @@ defmodule Tackle.Session do
           }
   end
 
+  @typedoc """
+  One inbox entry: a user message submitted during a turn, or a validated
+  `Tackle.Runtime.Envelope` from another agent or the runtime.
+  """
+  @type inbox_entry :: %{from: :user, message: String.t()} | Envelope.t()
+
   @type turn_result ::
           {:ok, AgentState.t()} | {:error, AgentState.t()} | {:cancelled, AgentState.t()}
 
@@ -197,8 +203,16 @@ defmodule Tackle.Session do
 
   def publish_event(_session, event), do: {:error, {:invalid_event, event}}
 
-  @doc "Returns queued in-scope messages awaiting the next turn."
-  @spec inbox(GenServer.server()) :: [map()]
+  @doc """
+  Returns the session's inbox, oldest entry first.
+
+  It holds the user messages submitted during a turn and the envelopes other
+  agents and the runtime delivered, including background launch notices held
+  until their tool call settles. Nothing in the inbox has reached the
+  conversation yet. Meant for tests and diagnostics; the runtime does not
+  call it.
+  """
+  @spec inbox(GenServer.server()) :: [inbox_entry()]
   def inbox(session), do: GenServer.call(session, :inbox)
 
   @doc """
