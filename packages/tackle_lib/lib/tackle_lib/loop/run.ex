@@ -8,6 +8,7 @@ defmodule Tackle.Lib.Loop.Run do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.Snapshot
+  alias Tackle.Lib.State
 
   @type gate :: (-> :ok | {:error, term()}) | nil
 
@@ -39,13 +40,13 @@ defmodule Tackle.Lib.Loop.Run do
   ]
 
   @doc """
-  Builds the run from the host's options and the turn's snapshot.
+  Validates the host's options and captures the turn's snapshot of `state`.
 
-  Raises `ArgumentError` for an option the loop does not know. `:turn_id` is
-  accepted but not stored: it has already been captured on the snapshot.
+  Raises `ArgumentError` for an option the loop does not know, before
+  anything else happens. `:turn_id` is stored on the snapshot.
   """
-  @spec new!(keyword(), Snapshot.t()) :: t()
-  def new!(opts, %Snapshot{} = snapshot) when is_list(opts) do
+  @spec new!(keyword(), State.t()) :: t()
+  def new!(opts, %State{} = state) when is_list(opts) do
     opts =
       Keyword.validate!(opts,
         event_callback: &ignore_event/1,
@@ -68,7 +69,7 @@ defmodule Tackle.Lib.Loop.Run do
       take_incoming_messages: Keyword.fetch!(opts, :take_incoming_messages),
       before_provider_call: Keyword.fetch!(opts, :before_provider_call),
       before_tool_execution: Keyword.fetch!(opts, :before_tool_execution),
-      snapshot: snapshot
+      snapshot: Snapshot.capture(state, turn_id: Keyword.fetch!(opts, :turn_id))
     }
   end
 

@@ -67,7 +67,6 @@ defmodule Tackle.Lib.Loop do
   alias Tackle.Lib.Messages
   alias Tackle.Lib.Loop.Run
   alias Tackle.Lib.Retry
-  alias Tackle.Lib.Snapshot
   alias Tackle.Lib.State
   alias Tackle.Lib.SystemPrompt
   alias Tackle.Lib.Telemetry
@@ -116,7 +115,7 @@ defmodule Tackle.Lib.Loop do
   @spec run(State.t(), String.t(), keyword()) ::
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
   def run(%State{} = state, user_input, opts \\ []) do
-    run = new_run(state, opts)
+    run = Run.new!(opts, state)
     state = reset_turn(state)
 
     emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
@@ -148,7 +147,7 @@ defmodule Tackle.Lib.Loop do
   @spec continue(State.t(), keyword()) ::
           {:ok, State.t()} | {:error, State.t()} | {:cancelled, State.t()}
   def continue(%State{} = state, opts \\ []) do
-    run = new_run(state, opts)
+    run = Run.new!(opts, state)
     state = reset_turn(state)
 
     emit(run, Event.new(:turn_start, %{session_id: state.session_id}))
@@ -172,11 +171,6 @@ defmodule Tackle.Lib.Loop do
   end
 
   # Each turn runs against configuration frozen when it starts.
-  defp new_run(%State{} = state, opts) do
-    snapshot = Snapshot.capture(state, turn_id: Keyword.get(opts, :turn_id))
-    Run.new!(opts, snapshot)
-  end
-
   defp loop(%State{} = state, run) do
     if cancelled?(run) do
       cancel(state, run)
