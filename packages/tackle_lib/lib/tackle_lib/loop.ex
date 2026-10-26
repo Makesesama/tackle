@@ -347,33 +347,48 @@ defmodule Tackle.Lib.Loop do
     end
   end
 
-  # Provider-confirmed context overflow is distinct from proactive pressure. A
-  # single compact-and-retry is allowed per turn: bypass the normal threshold,
-  # compact once, and reissue the same request. Any compaction failure keeps the
-  # original provider error.
+  # Provider-confirmed context overflow is distinct from proactive pressure. The
+  # turn may compact and reissue the same request up to the policy's
+  # `overflow_retry_limit`, bypassing the normal threshold. If a compaction
+  # pass was committed before a later pass failed, the smaller context is
+  # still worth a retry; any other compaction failure keeps the original
+  # provider error.
   defp recover_overflow(state, reason, callbacks) do
-    Logger.warning("Provider reported context overflow; attempting one compaction retry")
+    Logger.warning("Provider reported context overflow; compacting and retrying")
 
     emit(callbacks, Event.new(:compaction_retry, %{trigger: :overflow, reason: reason}))
 
-    case compact_with_state(state, :overflow, callbacks) do
+    case Compaction.compact(state, :overflow, compaction_opts(callbacks)) do
       {:ok, state, _record} ->
-        state = %{state | overflow_retries: state.overflow_retries + 1}
-        call_provider(state, callbacks)
+        retry_after_overflow(state, callbacks)
+
+      {:error, {:durable_commit_failed, _reason} = error} ->
+        fail(state, callbacks, inspect(error), error)
 
       {:error, {:durable_commit_failed, _reason} = error, committed_state} ->
         fail(committed_state, callbacks, inspect(error), error)
+
+      {:cancelled, _reason} ->
+        cancel(state, callbacks)
 
       {:cancelled, _reason, committed_state} ->
         cancel(committed_state, callbacks)
 
       {:error, _compaction_reason, committed_state} ->
-        fail(committed_state, callbacks, "Failed to get response: #{inspect(reason)}", reason)
+        retry_after_overflow(committed_state, callbacks)
+
+      {:error, _compaction_reason} ->
+        fail(state, callbacks, "Failed to get response: #{inspect(reason)}", reason)
     end
   end
 
+  defp retry_after_overflow(state, callbacks) do
+    call_provider(%{state | overflow_retries: state.overflow_retries + 1}, callbacks)
+  end
+
   defp recoverable_overflow?(%State{} = state, reason, callbacks) do
-    LLM.context_window_exceeded?(reason) and overflow_retries_remaining?(state, callbacks)
+    LLM.context_window_exceeded?(reason) and Compaction.enabled?(state) and
+      overflow_retries_remaining?(state, callbacks)
   end
 
   defp overflow_retries_remaining?(%State{} = state, callbacks) do
@@ -412,13 +427,13 @@ defmodule Tackle.Lib.Loop do
   # Keep Compaction.compact/3's public result shape; only Loop normalizes
   # failures to include the state that must survive the turn.
   defp compact_with_state(state, trigger, callbacks) do
-    case Compaction.compact(state, trigger, compaction_opts(state, callbacks)) do
+    case Compaction.compact(state, trigger, compaction_opts(callbacks)) do
       {status, reason} when status in [:error, :cancelled] -> {status, reason, state}
       result -> result
     end
   end
 
-  defp compaction_opts(_state, callbacks) do
+  defp compaction_opts(callbacks) do
     [
       snapshot: snapshot(callbacks),
       event_callback: callbacks.event,

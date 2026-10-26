@@ -93,7 +93,8 @@ defmodule Tackle.Lib.CompactionTest do
           :commit_result,
           :commit_count,
           :adapter_calls,
-          :always_overflow
+          :always_overflow,
+          :summarize_calls
         ] do
       Process.delete(key)
     end
@@ -511,6 +512,44 @@ defmodule Tackle.Lib.CompactionTest do
       assert [checkpoint | _] = final.model_messages
       assert checkpoint.id == Process.get(:last_record).compaction_id
       assert Tackle.Lib.last_answer(final) == "answer"
+    end
+
+    test "retries an overflow with a committed pass when a later pass fails" do
+      state =
+        state([user(3_000), assistant(3_000)],
+          config_opts: [max_passes: 2],
+          policy: [summary_max_tokens: 100, max_summary_tokens: 100]
+        )
+
+      # Summaries alternate success and failure: each compaction commits its
+      # first pass and fails its second, before and after the overflow.
+      Process.put(:summarize_result, fn _request ->
+        calls = Process.get(:summarize_calls, 0) + 1
+        Process.put(:summarize_calls, calls)
+
+        if rem(calls, 2) == 1,
+          do: {:ok, TestSummarizer.default_summary()},
+          else: {:error, :later_pass_failed}
+      end)
+
+      assert {:ok, final} = Tackle.Lib.run(state, "next")
+      assert Process.get(:summarize_calls) == 4
+      assert Process.get(:commit_count) == 2
+      assert Process.get(:adapter_calls) == 2
+      assert final.overflow_retries == 1
+      assert Tackle.Lib.last_answer(final) == "answer"
+    end
+
+    test "does not attempt overflow recovery when compaction is disabled" do
+      state = state([user(100), assistant(100)], config_opts: [enabled?: false])
+      test_pid = self()
+
+      assert {:error, final} =
+               Tackle.Lib.run(state, "next", event_callback: &send(test_pid, {:event, &1.type}))
+
+      assert final.error =~ "context_window_exceeded"
+      assert Process.get(:adapter_calls) == 1
+      refute_received {:event, :compaction_retry}
     end
 
     test "fails an overflow recovery when the durable commit fails" do
