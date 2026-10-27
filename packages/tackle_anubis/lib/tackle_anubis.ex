@@ -24,18 +24,17 @@ defmodule Tackle.Anubis do
   alias Anubis.Server.Response
   alias Tackle.Anubis.Schema, as: AnubisSchema
   alias Tackle.Lib.ID
-  alias Tackle.Lib.Integrations.Registry
   alias Tackle.Lib.Tool
-  alias Tackle.Lib.Tool.{Call, Error, Result}
+  alias Tackle.Lib.Tool.{Call, Error, Registry, Result}
 
   @type dispatch_result :: {:reply, term(), term()} | {:error, :unknown_tool}
 
   @doc """
   Registers all tools on an Anubis frame, in their order.
 
-  A list of tool modules is built into a `Tackle.Lib.Integrations.Registry`,
-  which raises `ArgumentError` for a module that is not a tool or a duplicate
-  tool name.
+  A list of tool modules is built into a `Tackle.Lib.Tool.Registry`, which
+  raises `ArgumentError` for a module that is not a tool or a duplicate tool
+  name.
   """
   @spec register_all(term(), [module()] | Registry.t(), keyword()) :: term()
   def register_all(%{__struct__: Frame} = frame, tools_or_registry, opts \\ []) do

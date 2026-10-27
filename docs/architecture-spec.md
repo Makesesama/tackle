@@ -68,8 +68,9 @@ It must not depend on the harness, a frontend, a concrete provider, or developer
 
 The inherited optional MCP bridge was extracted into `packages/tackle_anubis`
 (`:tackle_anubis` / `Tackle.Anubis.*`, a breaking rename of
-`Tackle.Lib.Integrations.Anubis`) so the library keeps no MCP dependency and only
-the provider-neutral `Tackle.Lib.Integrations.Registry` seam.
+`Tackle.Lib.Integrations.Anubis`) so the library keeps no MCP dependency; bridges
+build on the provider-neutral `Tackle.Lib.Tool` and `Tackle.Lib.Tool.Registry`
+contracts.
 
 ### Reusable runtime: `packages/tackle_runtime`
 

@@ -243,9 +243,10 @@ loadable module exporting a hook callback, such as a misspelled module.
 
 ## Integrations
 
-- `Tackle.Lib.Integrations.Registry` is the provider-neutral seam for exposing
-  `Tackle.Lib.Tool` modules through host-owned bridges. It owns no server setup,
-  auth, or tenant scope.
+- Host-owned bridges expose `Tackle.Lib.Tool` modules through
+  `Tackle.Lib.Tool.Registry` (definitions in registration order, lookup by
+  name) and run calls with `Tackle.Lib.Tool.settle/3`. The library owns no
+  server setup, auth, or tenant scope.
 - The Anubis MCP bridge is the sibling `tackle_anubis` package (`Tackle.Anubis`),
   not part of Tackle.Lib. Add it when a host wants MCP.
 

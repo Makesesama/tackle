@@ -4,6 +4,7 @@ defmodule Tackle.AnubisTest do
   alias Anubis.Server.Frame
   alias Tackle.Anubis
   alias Tackle.Anubis.Schema
+  alias Tackle.Lib.Tool
 
   defmodule SearchTool do
     use Tackle.Lib.Tool
@@ -104,6 +105,22 @@ defmodule Tackle.AnubisTest do
     assert tool.description == "Search indexed documents."
     assert tool.annotations == %{read_only: true}
     assert is_function(tool.validate_input, 1)
+  end
+
+  test "register_all/3 and dispatch/4 accept a prebuilt Tackle.Lib.Tool.Registry" do
+    registry = Tool.Registry.new([SearchTool, TextTool])
+    frame = Anubis.register_all(Frame.new(), registry)
+
+    assert frame.tools |> Map.keys() |> Enum.sort() == ["search", "text"]
+
+    assert {:reply, response, ^frame} =
+             Anubis.dispatch("text", %{"value" => "hello"}, frame,
+               tools: registry,
+               call_id: "call_1"
+             )
+
+    assert [%{"text" => "hello"}] = response.content
+    assert {:error, :unknown_tool} = Anubis.dispatch("missing", %{}, frame, tools: registry)
   end
 
   test "register_all/3 rejects two tools with the same name instead of registering it twice" do

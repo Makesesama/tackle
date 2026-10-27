@@ -42,8 +42,6 @@ defmodule Tackle.Lib do
       models that answer typed questions with probabilities.
     * `Tackle.Lib.Thinking` — provider-neutral thinking levels.
     * `Tackle.Lib.Telemetry` — exporter-neutral lifecycle telemetry spans.
-    * `Tackle.Lib.Integrations.Registry` — provider-neutral registry for exposing
-      tools through host-owned bridges (for example `Tackle.Anubis`).
 
   ## What the host provides
 

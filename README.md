@@ -117,8 +117,8 @@ and unfinished integrations:
 - The library carries no MCP code or dependency. The inherited Anubis MCP bridge
   was extracted into [`packages/tackle_anubis`](packages/tackle_anubis/README.md)
   (`:tackle_anubis` / `Tackle.Anubis.*`), a breaking rename of the former
-  `Tackle.Lib.Integrations.Anubis`; `tackle_lib` keeps only the provider-neutral
-  `Tackle.Lib.Integrations.Registry` seam.
+  `Tackle.Lib.Integrations.Anubis`; bridges like it build on the
+  provider-neutral `Tackle.Lib.Tool` and `Tackle.Lib.Tool.Registry` contracts.
 - [`packages/tackle_codex`](packages/tackle_codex/README.md) contains the
   first-party OpenAI Codex adapter, including ChatGPT OAuth protocol helpers,
   token refresh, Responses SSE transport, and provider-neutral translation.

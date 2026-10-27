@@ -245,8 +245,8 @@ keep those identities distinct when composing them.
 - MCP belongs in a later harness plugin. The inherited Anubis MCP server bridge
   now lives in `packages/tackle_anubis` (`Tackle.Anubis.*`) with `:anubis_mcp` as
   a required dependency of that package; `packages/tackle_lib` must stay free of
-  MCP code and dependencies and keeps only the provider-neutral
-  `Tackle.Lib.Integrations.Registry` seam.
+  MCP code and dependencies. Bridges build on the provider-neutral
+  `Tackle.Lib.Tool` and `Tackle.Lib.Tool.Registry` contracts.
 - Keep optional dependencies with the plugins that need them. The minimal
   harness must not require Phoenix or MCP.
 - Start with a simple CLI; add Burrito packaging afterward. Validate how
