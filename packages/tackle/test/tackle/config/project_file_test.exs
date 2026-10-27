@@ -98,6 +98,35 @@ defmodule Tackle.Config.ProjectFileTest do
            }
   end
 
+  test "null leaves a field unset, so a project's null removes the user's value", ctx do
+    write(ctx.home, ~s({
+      "model": "test/project",
+      "thinking": "high",
+      "decision_model": null,
+      "agents": {"scout": {"model": "test/user"}, "worker": {"thinking": "low"}},
+      "review": {"profile": "quiet", "thinking": {"detector": "low"}}
+    }))
+
+    write(project(ctx.repo), ~s({
+      "model": null,
+      "thinking": null,
+      "agents": {"scout": null, "worker": {"thinking": null}},
+      "review": {"thinking": {"detector": null}}
+    }))
+
+    assert {:ok, config} = load(ctx)
+    # The first model of the providers, as without any configuration.
+    assert config.model_ref == "test/user"
+    assert Thinking.from_llm_opts(config.llm_opts) == "off"
+    assert config.agents == %{"worker" => %{}}
+    assert config.context.review_settings.profile == :quiet
+    assert config.context.review_settings.thinking == %{}
+
+    # A null for a field a project may not set is still refused.
+    path = write(project(ctx.repo), ~s({"providers": null}))
+    assert {:error, {:unknown_config_fields, ^path, ["providers"]}} = load(ctx)
+  end
+
   test "a project file cannot declare providers or CLI preferences", ctx do
     path = write(project(ctx.repo), ~s({"providers": {"evil": {"adapter": "test"}}}))
     assert {:error, {:unknown_config_fields, ^path, ["providers"]}} = load(ctx)

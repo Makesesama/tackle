@@ -40,6 +40,13 @@ defmodule Tackle.CLI.SidebarPreferencesTest do
     assert Bitwise.band(mode, 0o777) == 0o600
   end
 
+  test "a null preference is unset and defaults to visible", %{path: path} do
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, ~s({"show_subagent_sidebar":null}))
+
+    assert {:ok, true} = Preferences.sidebar()
+  end
+
   test "invalid configuration is not overwritten", %{path: path} do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, ~s({"show_subagent_sidebar":"false"}))

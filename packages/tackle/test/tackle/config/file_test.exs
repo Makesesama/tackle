@@ -318,7 +318,6 @@ defmodule Tackle.Config.FileTest do
     for invalid <- [
           ~s({"jail":["GH_TOKEN"]}),
           ~s({"jail":{"env":"GH_TOKEN"}}),
-          ~s({"jail":{"env":null}}),
           ~s({"jail":{"env":["GH-TOKEN"]}}),
           ~s({"jail":{"env":["1X"]}}),
           ~s({"jail":{"env":[""]}}),
@@ -340,7 +339,13 @@ defmodule Tackle.Config.FileTest do
     assert ConfigFile.jail_env(path) == {:ok, []}
     File.mkdir_p!(home)
 
-    for empty <- [~s({}), ~s({"jail":null}), ~s({"jail":{}}), ~s({"jail":{"env":[]}})] do
+    for empty <- [
+          ~s({}),
+          ~s({"jail":null}),
+          ~s({"jail":{}}),
+          ~s({"jail":{"env":null}}),
+          ~s({"jail":{"env":[]}})
+        ] do
       File.write!(path, empty)
       assert ConfigFile.jail_env(path) == {:ok, []}
     end
@@ -850,9 +855,11 @@ defmodule Tackle.Config.FileTest do
     write_config(home, ~s({"review": {"profile": null, "default_rules": null}}))
     assert {:ok, %{review: %Tackle.Review.Settings{profile: nil, default_rules: nil}}} = load.()
 
-    write_config(home, ~s({"review": {}}))
-    assert {:ok, %{review: %Tackle.Review.Settings{thinking: thinking}}} = load.()
-    assert thinking == %{}
+    for empty <- [~s({}), ~s({"thinking": {"detector": null}})] do
+      write_config(home, ~s({"review": #{empty}}))
+      assert {:ok, %{review: %Tackle.Review.Settings{thinking: thinking}}} = load.()
+      assert thinking == %{}
+    end
 
     write_config(home, ~s({"review": null}))
     assert {:ok, %{review: nil}} = load.()
@@ -869,7 +876,6 @@ defmodule Tackle.Config.FileTest do
           ~s({"thinking": "low"}),
           ~s({"thinking": {"planner": "low"}}),
           ~s({"thinking": {"detector": "huge"}}),
-          ~s({"thinking": {"detector": null}}),
           ~s({"models": {"verifier": ""}}),
           ~s({"profile": "loud"}),
           ~s({"max_steps": {"detector": 0}}),

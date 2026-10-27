@@ -11,7 +11,8 @@ defmodule Tackle.CLI.TUI.Preferences do
   def sidebar(opts \\ []) do
     with {:ok, path} <- Tackle.Paths.config_file(opts),
          {:ok, config} <- read(path) do
-      {:ok, Map.get(config, "show_subagent_sidebar", true)}
+      # `null` leaves the field unset, like in every harness field.
+      {:ok, Map.get(config, "show_subagent_sidebar") != false}
     end
   end
 

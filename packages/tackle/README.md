@@ -691,8 +691,14 @@ It accepts the same fields as the user file except `providers`,
 you configured but cannot declare its own, which could send your credentials
 to another endpoint, nor pass host environment variables into the CLI's jail. Each file is validated on its own; JSON objects then merge
 recursively, so a project can change one review stage or one agent setting and
-keep the rest of your user configuration. A project value of `null` clears the
-user value. For example:
+keep the rest of your user configuration. In either file, `null` leaves a
+field, or a member of an object, unset in that file, so a project value of
+`null` removes the user's value and the setting falls back to the default (or
+to `TACKLE_MODEL` and `TACKLE_THINKING`): `"model": null` selects the first
+available model, `"thinking": null` the model's default level, and
+`"agents": {"scout": null}` drops the user's settings for that profile. A
+project may not set `providers`, `show_subagent_sidebar`, or `jail`, not even
+to `null`. For example:
 
 ```json
 {
