@@ -427,6 +427,20 @@ defmodule Tackle.LocalReviewTest do
       assert {:error, {:invalid_option, :skip_outcomes, [:great]}} =
                LocalReview.run(change(), [history: history, skip_outcomes: [:great]] ++ base)
 
+      # Options read here, before the review sees them, fail like its own.
+      invalid = [
+        known_fingerprints: 5,
+        settings: :bogus,
+        settings: %{default_rules: nil},
+        warnings: :bogus,
+        warnings: ["a", :b]
+      ]
+
+      for {key, value} <- invalid do
+        assert LocalReview.run(change(), [{key, value} | base] ++ [history: history]) ==
+                 {:error, {:invalid_option, key, value}}
+      end
+
       # Rules are discovered through the session executor, so one is needed.
       assert {:error, {:missing_option, :executor}} = LocalReview.run(change(), base)
 

@@ -67,14 +67,20 @@ defmodule Tackle.LocalReview do
   cannot be read for its settings, `{:error, {:invalid_review_settings,
   value}}` when its context holds something else under `:review_settings`,
   and `{:error, {:missing_option, :executor}}` when rules have to be
-  discovered without an executor.
+  discovered without an executor. An invalid option this module reads
+  (`:history`, `:skip_outcomes`, `:settings`, `:default_rules`,
+  `:known_fingerprints`, or `:warnings`) is `{:error, {:invalid_option,
+  key, value}}`, as for `Tackle.Review.run/2`, before anything runs.
   """
   @spec run(Change.t(), [option()]) :: {:ok, Result.t()} | {:error, term()}
   def run(%Change{} = change, opts) when is_list(opts) do
     {local, review_opts} = Keyword.split(opts, @local_keys)
 
-    with {:ok, history} <- local_option(local, :history, nil, &history?/1),
-         {:ok, skip_outcomes} <- local_option(local, :skip_outcomes, [:dismissed], &events?/1),
+    with {:ok, history} <- option(local, :history, nil, &history?/1),
+         {:ok, skip_outcomes} <- option(local, :skip_outcomes, [:dismissed], &events?/1),
+         {:ok, _settings} <- option(review_opts, :settings, nil, &settings?/1),
+         {:ok, _known} <- option(review_opts, :known_fingerprints, [], &Enumerable.impl_for/1),
+         {:ok, _warnings} <- option(review_opts, :warnings, [], &string_list?/1),
          {:ok, settings} <- settings(review_opts),
          {:ok, rules, rule_warnings} <- rules(change, local, review_opts, settings) do
       {known, history_warnings} = known(history, skip_outcomes)
@@ -121,7 +127,9 @@ defmodule Tackle.LocalReview do
 
   ## Options
 
-  defp local_option(opts, key, default, valid?) do
+  # Options this module reads itself are checked before use, with the errors
+  # `Tackle.Review.run/2` returns for its own.
+  defp option(opts, key, default, valid?) do
     case Keyword.fetch(opts, key) do
       {:ok, value} ->
         if valid?.(value), do: {:ok, value}, else: {:error, {:invalid_option, key, value}}
@@ -133,6 +141,8 @@ defmodule Tackle.LocalReview do
 
   defp history?(value), do: is_nil(value) or is_struct(value, History)
   defp events?(value), do: is_list(value) and Enum.all?(value, &(&1 in History.events()))
+  defp settings?(value), do: is_nil(value) or is_struct(value, ReviewSettings)
+  defp string_list?(value), do: is_list(value) and Enum.all?(value, &is_binary/1)
 
   # Given settings win; otherwise the requester's. Without a valid requester
   # there are none, and `Tackle.Review.run/2` reports the requester option.
