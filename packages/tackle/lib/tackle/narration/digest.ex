@@ -179,39 +179,22 @@ defmodule Tackle.Narration.Digest do
 
   # Tools ---------------------------------------------------------------------
 
+  # A call's end is reported twice (`tool_execution_end`, then `tool_end` or
+  # `tool_error`); only the first transition of a running call counts, so a
+  # failed call's error is recorded once even when other calls' events come
+  # in between. Calls the digest no longer lists are ignored.
   defp settle(digest, data, status) do
     id = string(Map.get(data, :tool_call_id))
-    digest = settle_tool(digest, id, status)
 
-    if status == :error do
-      case error_text(Map.get(data, :error)) do
-        nil -> digest
-        text -> put_error(digest, error_label(digest, id) <> text)
-      end
-    else
-      digest
-    end
-  end
-
-  # A call's end is reported twice (`tool_execution_end`, then `tool_end` or
-  # `tool_error`); only the first transition of a running call counts.
-  defp settle_tool(digest, id, status) when is_binary(id) do
-    case Enum.find_index(digest.tools, &(&1.id == id and &1.status == :running)) do
+    case Enum.find_index(digest.tools, &(is_binary(id) and &1.id == id and &1.status == :running)) do
       nil ->
         digest
 
       index ->
         tools = List.update_at(digest.tools, index, &%{&1 | status: status})
-        changed(%{digest | tools: tools})
-    end
-  end
-
-  defp settle_tool(digest, _id, _status), do: digest
-
-  defp error_label(digest, id) do
-    case Enum.find(digest.tools, &(&1.id == id)) do
-      %{name: name} -> name <> ": "
-      nil -> ""
+        digest = changed(%{digest | tools: tools})
+        error = status == :error && error_text(Map.get(data, :error))
+        if error, do: put_error(digest, Enum.at(tools, index).name <> ": " <> error), else: digest
     end
   end
 

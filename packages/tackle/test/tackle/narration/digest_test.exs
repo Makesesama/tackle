@@ -105,6 +105,28 @@ defmodule Tackle.Narration.DigestTest do
     assert List.last(Digest.state(digest)["errors"]) == "{:http, 500}"
   end
 
+  test "records each failed call's error once, also when concurrent calls interleave" do
+    failed = fn id, error ->
+      Event.new(:tool_execution_end, %{tool_call_id: id, status: :failed, error: error})
+    end
+
+    tool_error = &Event.new(:tool_error, %{tool_call_id: &1, name: "bash", error: &2})
+
+    digest =
+      Digest.new()
+      |> Digest.observe(tool_start("a", "bash", %{"command" => "make a"}))
+      |> Digest.observe(tool_start("b", "bash", %{"command" => "make b"}))
+      |> Digest.observe(failed.("a", "a failed"))
+      |> Digest.observe(failed.("b", "b failed"))
+      |> Digest.observe(tool_error.("a", "a failed"))
+      |> Digest.observe(tool_error.("b", "b failed"))
+
+    assert Digest.state(digest)["errors"] == ["bash: a failed", "bash: b failed"]
+
+    # A call the digest does not list adds nothing.
+    assert Digest.observe(digest, tool_error.("unknown", "lost")) == digest
+  end
+
   test "tracks changes since the digest was taken and remembers the last narration" do
     digest = Digest.new("task", "explorer")
     refute Digest.changed?(digest)
