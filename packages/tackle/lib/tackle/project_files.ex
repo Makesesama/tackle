@@ -159,7 +159,8 @@ defmodule Tackle.ProjectFiles do
   `visit` receives a directory and returns its ordered contents to keep, each
   `{:file, path}` (returned) or `{:dir, path}` (visited next). At most 256
   directories are visited, so symlinked directory loops cannot make the walk
-  explode; a truncated walk logs a warning.
+  explode; a truncated walk logs a warning and still returns the files
+  already listed.
   """
   @spec walk(t(), Path.t(), (Path.t() -> [{:file | :dir, Path.t()}])) :: [Path.t()]
   def walk(%__MODULE__{}, root, visit) when is_function(visit, 1),
@@ -170,9 +171,9 @@ defmodule Tackle.ProjectFiles do
   defp walk([{:file, path} | rest], visit, budget, root, found),
     do: walk(rest, visit, budget, root, [path | found])
 
-  defp walk([{:dir, _path} | _rest], _visit, 0, root, found) do
+  defp walk([{:dir, _path} | _rest] = pending, _visit, 0, root, found) do
     Logger.warning("stopped walking #{root} after #{@max_walk_dirs} directories")
-    Enum.reverse(found)
+    Enum.reverse(found, for({:file, path} <- pending, do: path))
   end
 
   defp walk([{:dir, path} | rest], visit, budget, root, found),

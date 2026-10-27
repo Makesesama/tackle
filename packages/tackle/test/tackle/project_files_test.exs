@@ -149,6 +149,18 @@ defmodule Tackle.ProjectFilesTest do
       visited = ProjectFiles.walk(ProjectFiles.new(), skills, &[{:file, &1}, {:dir, &1}])
       assert Enum.count(visited) == 256
     end
+
+    @tag :capture_log
+    test "a truncated walk keeps the files already listed" do
+      # The first directory's subtree never ends; the file listed after it
+      # is still returned.
+      visit = fn
+        "root" -> [{:dir, "root/deep"}, {:file, "root/listed"}]
+        dir -> [{:dir, dir <> "/x"}]
+      end
+
+      assert ProjectFiles.walk(ProjectFiles.new(), "root", visit) == ["root/listed"]
+    end
   end
 
   describe "project bounds" do
