@@ -172,6 +172,18 @@ defmodule Tackle.LocalReview.RulesTest do
       assert [%Rule{id: "child"}] = RuleDiscovery.discover(child_opts).rules
     end
 
+    test "never reads $TACKLE_HOME as the project directory", %{root: root, builtin: builtin} do
+      # The default layout: $TACKLE_HOME is ~/.tackle and the working
+      # directory is under ~, outside any Git repository.
+      put(Path.join(root, ".tackle/review/rules"), "mine.md", rule("mine"))
+      cwd = Path.join(root, "notes")
+      File.mkdir_p!(cwd)
+      env = %{"TACKLE_HOME" => Path.join(root, ".tackle"), "HOME" => root}
+
+      assert %{rules: [%Rule{id: "mine", source: :user}], warnings: []} =
+               RuleDiscovery.discover(cwd: cwd, env: env, builtin_dir: builtin)
+    end
+
     test "without a Git root, does not climb above the working directory outside home", ctx do
       put(Path.join(ctx.root, ".tackle/review/rules"), "planted.md", rule("planted"))
       cwd = Path.join(ctx.root, "scratch")

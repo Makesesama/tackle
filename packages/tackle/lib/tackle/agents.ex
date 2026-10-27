@@ -4,10 +4,10 @@ defmodule Tackle.Agents do
 
   User profiles live under `$TACKLE_HOME/agents` and project profiles under the
   nearest `.tackle/agents` directory at or above the working directory, within
-  the bounds of `Tackle.ProjectFiles.ancestors/3`. Files are discovered
-  recursively. Precedence is built-in, then user, then project; a
-  higher-precedence valid definition replaces a lower-precedence definition
-  with the same name.
+  the bounds of `Tackle.ProjectFiles.ancestors/3`; `$TACKLE_HOME` itself is
+  never a project directory. Files are discovered recursively. Precedence is
+  built-in, then user, then project; a higher-precedence valid definition
+  replaces a lower-precedence definition with the same name.
 
   Files use a deliberately small YAML frontmatter subset followed by the child
   prompt. Configuration is inert: tool strings are resolved separately against
@@ -36,9 +36,14 @@ defmodule Tackle.Agents do
     files = ProjectFiles.new(executor: Keyword.get(opts, :executor), env: env)
     builtins = Keyword.get(opts, :builtins, [])
 
+    tackle_home =
+      case Paths.home(env: env) do
+        {:ok, home} -> home
+        {:error, _reason} -> nil
+      end
+
     sources =
-      [{:builtin, builtins}] ++
-        user_source(env) ++ project_source(files, cwd)
+      [{:builtin, builtins} | ProjectFiles.tackle_dirs(files, cwd, tackle_home, "agents")]
 
     {definitions, warnings} =
       Enum.reduce(sources, {%{}, []}, fn
@@ -76,20 +81,6 @@ defmodule Tackle.Agents do
           end)
 
         Enum.join(["<available_subagents>" | entries] ++ ["</available_subagents>"], "\n")
-    end
-  end
-
-  defp user_source(env) do
-    case Paths.home(env: env) do
-      {:ok, home} -> [{:user, Path.join(home, "agents")}]
-      {:error, _reason} -> []
-    end
-  end
-
-  defp project_source(files, cwd) do
-    case ProjectFiles.nearest_project_dir(files, cwd, ".tackle/agents") do
-      nil -> []
-      dir -> [{:project, dir}]
     end
   end
 

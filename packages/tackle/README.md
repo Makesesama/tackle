@@ -198,9 +198,10 @@ subagent definitions from Markdown files. User definitions live recursively
 under `$TACKLE_HOME/agents` (by default `~/.tackle/agents`); project definitions live under the nearest
 `.tackle/agents` directory at or above the configured working directory,
 up to the Git root (without one, up to your home directory when the working
-directory is under it, otherwise only the working directory). Precedence is
-built-in, then user, then project, so a valid project definition replaces a
-same-named user or built-in definition.
+directory is under it, otherwise only the working directory); `$TACKLE_HOME`
+itself is never a project directory. Precedence is built-in, then user, then
+project, so a valid project definition replaces a same-named user or built-in
+definition.
 
 An agent file contains a deliberately small YAML-frontmatter subset followed by
 its system prompt:
@@ -403,7 +404,10 @@ suite, which proves this wiring.
 
 Saved workflows are flat `<name>.lua` files in `$TACKLE_HOME/workflows` or the
 nearest project `.tackle/workflows` at or above cwd, within the bounds used for
-`.tackle/agents`. Project files override user files by name. Names use lowercase letters,
+`.tackle/agents`. Project files override user files by name; new project
+workflows go to that directory or `<cwd>/.tackle/workflows`, and
+`Tackle.Workflows.create/3` returns `{:error, :no_project_dir}` where that would
+be `$TACKLE_HOME/workflows` itself. Names use lowercase letters,
 numbers, and single hyphens. The first-line `-- description` comment describes
 the workflow; configuration belongs in locals at the top, not tool parameters.
 Use the normal file tools to co-author scripts and tell the user their path.

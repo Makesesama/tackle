@@ -276,6 +276,27 @@ defmodule Tackle.ProjectFilesTest do
       assert ProjectFiles.ancestors(files, cwd) == [cwd, real]
     end
 
+    test "tackle_dirs never offers $TACKLE_HOME as the project directory", %{root: root} do
+      tackle_home = Path.join(root, ".tackle")
+      cwd = Path.join(root, "project")
+      File.mkdir_p!(Path.join(tackle_home, "agents"))
+      File.mkdir_p!(cwd)
+      files = ProjectFiles.new(user_home: root)
+      user = {:user, Path.join(tackle_home, "agents")}
+
+      assert ProjectFiles.tackle_dirs(files, cwd, tackle_home, "agents") == [user]
+      assert ProjectFiles.tackle_dirs(files, root, tackle_home, "agents") == [user]
+
+      assert ProjectFiles.tackle_dirs(files, cwd, nil, "agents") == [
+               {:project, Path.join(tackle_home, "agents")}
+             ]
+
+      File.mkdir_p!(Path.join(cwd, ".tackle/agents"))
+
+      assert ProjectFiles.tackle_dirs(files, cwd, tackle_home, "agents") ==
+               [user, {:project, Path.join(cwd, ".tackle/agents")}]
+    end
+
     test "same_dir? compares expanded paths and file identity", %{
       root: root,
       workspace: workspace

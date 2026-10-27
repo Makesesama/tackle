@@ -184,6 +184,9 @@ defmodule Tackle.CLI.TUI.Workflows do
   defp describe(:invalid_name), do: "names use lowercase letters, numbers, and single hyphens"
   defp describe(:invalid_utf8), do: "the file is not UTF-8 text"
 
+  defp describe(:no_project_dir),
+    do: "there is no project directory here (it would be $TACKLE_HOME/workflows)"
+
   defp describe({:unknown_workflow, name, _names}),
     do: "#{inspect(name)} no longer exists"
 

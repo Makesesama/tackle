@@ -79,6 +79,26 @@ defmodule Tackle.AgentsTest do
   end
 
   describe "the project search" do
+    test "never reads $TACKLE_HOME as the project directory", %{root: root} do
+      # The default layout: $TACKLE_HOME is ~/.tackle and the working
+      # directory is under ~, outside any Git repository.
+      cwd = Path.join(root, "notes")
+      File.mkdir_p!(cwd)
+      put(Path.join(root, ".tackle/agents"), "mine.md", agent("mine", ""))
+
+      opts = [
+        cwd: cwd,
+        env: %{"TACKLE_HOME" => Path.join(root, ".tackle"), "HOME" => root},
+        builtins: []
+      ]
+
+      assert %{definitions: [%{name: "mine", source: :user}], warnings: []} =
+               Agents.discover(opts)
+
+      assert %{definitions: [%{source: :user}], warnings: []} =
+               Agents.discover(Keyword.put(opts, :cwd, root))
+    end
+
     test "without a Git root, does not climb above the home directory", %{root: root} do
       # Any local user can write a shared parent such as /tmp.
       put(Path.join(root, ".tackle/agents"), "planted.md", agent("planted", ""))

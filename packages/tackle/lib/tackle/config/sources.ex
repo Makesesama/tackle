@@ -45,8 +45,6 @@ defmodule Tackle.Config.Sources do
     :overrides
   ]
 
-  @project_config_file ".tackle/config.json"
-
   @enforce_keys [:env, :cwd, :home, :providers, :file_options, :layers, :overrides]
   defstruct [
     :env,
@@ -237,17 +235,12 @@ defmodule Tackle.Config.Sources do
   end
 
   # The project file lives in the workspace, so it is read through the session
-  # executor like `AGENTS.md`. Outside any Git repository the search can reach
-  # `$TACKLE_HOME` itself, whose config.json is the user file, not a project.
+  # executor like `AGENTS.md`. `$TACKLE_HOME/config.json` is the user file,
+  # even where the project search reaches it.
   defp read_project_config(files, cwd, home) do
-    case ProjectFiles.nearest_project_file(files, cwd, @project_config_file) do
-      nil ->
-        {:ok, nil}
-
-      path ->
-        if ProjectFiles.same_dir?(Path.dirname(path), home),
-          do: {:ok, nil},
-          else: read_project_file(files, path)
+    case ProjectFiles.project_tackle_file(files, cwd, home, "config.json") do
+      nil -> {:ok, nil}
+      path -> read_project_file(files, path)
     end
   end
 

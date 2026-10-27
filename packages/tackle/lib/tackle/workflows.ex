@@ -4,9 +4,10 @@ defmodule Tackle.Workflows do
 
   Files live in `$TACKLE_HOME/workflows` and the nearest `.tackle/workflows`
   at or above the working directory, within the bounds of
-  `Tackle.ProjectFiles.ancestors/3`. Discovery is flat; project files override
-  user files by name. There are no parameters or approval gates: configuration
-  belongs in locals inside the script.
+  `Tackle.ProjectFiles.ancestors/3`; `$TACKLE_HOME` itself is never a project
+  directory. Discovery is flat; project files override user files by name.
+  There are no parameters or approval gates: configuration belongs in locals
+  inside the script.
 
   Filesystem access uses `Tackle.ProjectFiles`, including its 1 MiB read cap
   and its routing of host symlinks into the workspace through the executor.
@@ -41,6 +42,8 @@ defmodule Tackle.Workflows do
   @type discovery :: %{workflows: [Workflow.t()], warnings: [warning()]}
   @typedoc "Fetch failure, including executor read errors or invalid UTF-8."
   @type fetch_error :: {:unknown_workflow, String.t(), [String.t()]} | Executor.reason()
+  @typedoc "Create failure: an invalid name, no project directory, or a write error."
+  @type create_error :: :invalid_name | :no_project_dir | Executor.reason()
 
   @doc """
   Discovers flat `<name>.lua` files, with project precedence, sorted by name.
@@ -147,36 +150,44 @@ defmodule Tackle.Workflows do
   end
 
   @doc """
-  Returns the nearest existing project `.tackle/workflows`, or `<cwd>/.tackle/workflows`.
+  Returns the nearest existing project `.tackle/workflows`, or
+  `<cwd>/.tackle/workflows`.
 
-  Does not create directories. Accepts the discovery options.
+  Returns `nil` when that would be the user directory, as in the home
+  directory with the default `$TACKLE_HOME`. Does not create directories.
+  Accepts the discovery options.
   """
-  @spec project_dir([option()]) :: Path.t()
+  @spec project_dir([option()]) :: Path.t() | nil
   def project_dir(opts \\ []) do
-    ProjectFiles.nearest_project_dir(ProjectFiles.new(opts), cwd(opts), ".tackle/workflows") ||
-      Path.join(cwd(opts), ".tackle/workflows")
+    case opts |> ProjectFiles.new() |> sources(opts) |> List.keyfind(:project, 0) do
+      {:project, dir} ->
+        dir
+
+      nil ->
+        home = tackle_home(opts)
+        tackle = Path.join(cwd(opts), ".tackle")
+
+        if is_nil(home) or not ProjectFiles.same_dir?(tackle, home),
+          do: Path.join(tackle, "workflows")
+    end
   end
 
   @doc """
   Creates a named project workflow, including missing directories, exclusively.
 
   Names use lowercase letters, numbers, and single hyphens. Returns `{:ok, path}`,
-  `{:error, :invalid_name}`, or a write error (`:eexist` if already present).
+  `{:error, :invalid_name}`, `{:error, :no_project_dir}` when `project_dir/1`
+  finds none, or a write error (`:eexist` if already present).
   A user workflow with the same name does not prevent project creation.
   Accepts the discovery options; creation is always exclusive.
   """
-  @spec create(String.t(), String.t(), [option()]) ::
-          {:ok, Path.t()} | {:error, Executor.reason()}
+  @spec create(String.t(), String.t(), [option()]) :: {:ok, Path.t()} | {:error, create_error()}
   def create(name, script, opts \\ []) do
-    if valid_name?(name) do
-      path = Path.join(project_dir(opts), name <> ".lua")
-
-      case save(path, script, Keyword.merge(opts, mode: :create, mkdir_p: true)) do
-        :ok -> {:ok, path}
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      {:error, :invalid_name}
+    with true <- valid_name?(name) || {:error, :invalid_name},
+         dir when is_binary(dir) <- project_dir(opts) || {:error, :no_project_dir},
+         path = Path.join(dir, name <> ".lua"),
+         :ok <- save(path, script, Keyword.merge(opts, mode: :create, mkdir_p: true)) do
+      {:ok, path}
     end
   end
 
@@ -197,28 +208,30 @@ defmodule Tackle.Workflows do
   defp cwd(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
   defp valid_name?(name), do: is_binary(name) and Regex.match?(@name_pattern, name)
 
-  defp user_dir(opts) do
+  defp tackle_home(opts) do
     case Paths.home(env: Keyword.get_lazy(opts, :env, &System.get_env/0)) do
-      {:ok, home} -> Path.join(home, "workflows")
+      {:ok, home} -> home
       {:error, _reason} -> nil
     end
   end
 
+  # A jailed agent can write only the project directory.
   defp save_location(opts) do
-    project = project_dir(opts)
+    user =
+      cond do
+        ProjectFiles.new(opts).workspace -> nil
+        home = tackle_home(opts) -> Path.join(home, "workflows")
+        true -> "$TACKLE_HOME/workflows"
+      end
 
-    if ProjectFiles.new(opts).workspace do
-      project
-    else
-      project <> " or " <> (user_dir(opts) || "$TACKLE_HOME/workflows")
+    case Enum.reject([project_dir(opts), user], &is_nil/1) do
+      [] -> ".tackle/workflows"
+      locations -> Enum.join(locations, " or ")
     end
   end
 
-  defp sources(files, opts) do
-    project = ProjectFiles.nearest_project_dir(files, cwd(opts), ".tackle/workflows")
-    user = user_dir(opts)
-    if(user, do: [{:user, user}], else: []) ++ if(project, do: [{:project, project}], else: [])
-  end
+  defp sources(files, opts),
+    do: ProjectFiles.tackle_dirs(files, cwd(opts), tackle_home(opts), "workflows")
 
   defp load_directory(files, dir, source, {workflows, warnings} = acc) do
     case ProjectFiles.list(files, dir) do

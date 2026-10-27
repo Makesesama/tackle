@@ -9,7 +9,8 @@ defmodule Tackle.LocalReview.Rules do
     1. the built-in rules embedded in `Tackle.Review.Rules`;
     2. `$TACKLE_HOME/review/rules`;
     3. the nearest `.tackle/review/rules` at or above the working directory,
-       within the bounds of `Tackle.ProjectFiles.ancestors/3`.
+       within the bounds of `Tackle.ProjectFiles.ancestors/3`; `$TACKLE_HOME`
+       itself is never a project directory.
 
   Non-Markdown files and subdirectories are ignored. Files in the workspace
   are read through the session executor (see `Tackle.ProjectFiles`).
@@ -18,7 +19,9 @@ defmodule Tackle.LocalReview.Rules do
   alias Tackle.{Executor, Paths, ProjectFiles}
   alias Tackle.Review.Rules
 
-  @user_dir "review/rules"
+  # `Tackle.Review.Rules.project_dir/0` within `.tackle`, and the user
+  # directory within `$TACKLE_HOME`.
+  @rules_dir "review/rules"
 
   @typedoc """
   Discovery options:
@@ -47,9 +50,9 @@ defmodule Tackle.LocalReview.Rules do
   """
   @spec discover([option()]) :: Rules.discovery()
   def discover(opts \\ []) do
-    files = ProjectFiles.new(opts)
-    cwd = opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
     env = Keyword.get_lazy(opts, :env, &System.get_env/0)
+    files = ProjectFiles.new(executor: Keyword.get(opts, :executor), env: env)
+    cwd = opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
 
     {builtin, sources} =
       case Keyword.fetch(opts, :builtin_dir) do
@@ -65,20 +68,19 @@ defmodule Tackle.LocalReview.Rules do
           {false, [{:builtin, read_directory(host_files, Path.expand(dir), true)}]}
       end
 
-    user =
+    tackle_home =
       case Paths.home(env: env) do
-        {:ok, home} -> [{:user, read_directory(files, Path.join(home, @user_dir), false)}]
-        {:error, _reason} -> []
+        {:ok, home} -> home
+        {:error, _reason} -> nil
       end
 
-    project =
-      case ProjectFiles.nearest_project_dir(files, cwd, Rules.project_dir()) do
-        nil -> []
-        dir -> [{:project, read_directory(files, dir, false)}]
-      end
+    discovered =
+      files
+      |> ProjectFiles.tackle_dirs(cwd, tackle_home, @rules_dir)
+      |> Enum.map(fn {source, dir} -> {source, read_directory(files, dir, false)} end)
 
     Rules.load(
-      sources ++ user ++ project,
+      sources ++ discovered,
       [builtin: builtin] ++ Keyword.take(opts, [:builtin_rules, :max_rule_bytes])
     )
   end

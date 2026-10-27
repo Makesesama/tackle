@@ -273,6 +273,32 @@ defmodule Tackle.WorkflowsTest do
     assert File.read!(secret) == "SECRET"
   end
 
+  test "$TACKLE_HOME is never the project directory", %{root: root} do
+    # The default layout: $TACKLE_HOME is ~/.tackle and the working directory
+    # is under ~, outside any Git repository.
+    tackle_home = Path.join(root, "home/.tackle")
+    cwd = Path.join(root, "home/notes")
+    File.mkdir_p!(cwd)
+    put(Path.join(tackle_home, "workflows"), "mine.lua", "-- Mine\nreturn 1")
+    env = %{"TACKLE_HOME" => tackle_home, "HOME" => Path.join(root, "home")}
+    opts = [cwd: cwd, env: env]
+
+    assert %{workflows: [%{name: "mine", source: :user}], warnings: []} =
+             Workflows.discover(opts)
+
+    assert Workflows.project_dir(opts) == Path.join(cwd, ".tackle/workflows")
+    assert {:ok, path} = Workflows.create("new", "return 2", opts)
+    assert path == Path.join(cwd, ".tackle/workflows/new.lua")
+
+    # In the home directory itself there is no separate project directory.
+    home_opts = Keyword.put(opts, :cwd, Path.join(root, "home"))
+    assert Workflows.project_dir(home_opts) == nil
+    assert {:error, :no_project_dir} = Workflows.create("other", "return 3", home_opts)
+    refute File.exists?(Path.join(tackle_home, "workflows/other.lua"))
+    assert {:error, message} = Workflows.loader(home_opts).("missing")
+    assert message =~ "Available workflows: mine"
+  end
+
   defp put(dir, name, script) do
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, name), script)

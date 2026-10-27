@@ -121,6 +121,40 @@ defmodule Tackle.ProjectFiles do
   end
 
   @doc """
+  Returns the user directory `<tackle_home>/<sub>` and the nearest existing
+  project directory `.tackle/<sub>`, lowest precedence first, as
+  `{:user, dir}` and `{:project, dir}`.
+
+  The user directory is returned whether or not it exists, and is left out
+  when `tackle_home` is `nil`. A `.tackle` directory that is `tackle_home`
+  itself is not a project's: the search can reach `~/.tackle` from a
+  directory under the home directory.
+  """
+  @spec tackle_dirs(t(), Path.t(), Path.t() | nil, Path.t()) :: [{:user | :project, Path.t()}]
+  def tackle_dirs(files, cwd, tackle_home, sub) do
+    user = if tackle_home, do: {:user, Path.join(tackle_home, sub)}
+    project = project_tackle_path(files, cwd, tackle_home, sub, &dir?/2)
+    Enum.reject([user, project && {:project, project}], &is_nil/1)
+  end
+
+  @doc """
+  Finds the nearest existing regular file `.tackle/<relative_path>` of the
+  project, skipping `tackle_home` as `tackle_dirs/4` does.
+  """
+  @spec project_tackle_file(t(), Path.t(), Path.t() | nil, Path.t()) :: Path.t() | nil
+  def project_tackle_file(files, cwd, tackle_home, relative_path),
+    do: project_tackle_path(files, cwd, tackle_home, relative_path, &regular?/2)
+
+  defp project_tackle_path(files, cwd, tackle_home, relative_path, found?) do
+    files
+    |> ancestors(cwd)
+    |> Enum.map(&Path.join(&1, ".tackle"))
+    |> Enum.reject(&(is_binary(tackle_home) and same_dir?(&1, tackle_home)))
+    |> Enum.map(&Path.join(&1, relative_path))
+    |> Enum.find(&found?.(files, &1))
+  end
+
+  @doc """
   Returns `cwd` and the ancestors project discovery searches, nearest first:
   up to the nearest Git root; without one, up to the user's home directory
   when `cwd` is under it; otherwise only `cwd`.
@@ -193,10 +227,8 @@ defmodule Tackle.ProjectFiles do
   Returns whether two paths name the same directory, by expanded path or by
   file identity on the host.
 
-  Outside a Git repository the project search can reach `$TACKLE_HOME` itself
-  (`~/.tackle`), whose files are the user's, not a project's. Comparing
-  identity as well as text also recognises a symlinked home directory
-  (`/home` -> `/var/home`).
+  Comparing identity as well as text also recognises a symlinked home
+  directory (`/home` -> `/var/home`).
   """
   @spec same_dir?(Path.t(), Path.t()) :: boolean()
   def same_dir?(a, b) do
