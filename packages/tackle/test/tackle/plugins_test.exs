@@ -263,8 +263,8 @@ defmodule Tackle.PluginsTest do
     assert Enum.map(providers, & &1.id) == ["plugged", "inst", "inst-cloud", "gpu"]
 
     assert {:ok, "plugged/small"} = Plugins.default_model_ref(providers)
-    assert {:ok, "inst/local"} = Plugins.default_model_ref([Instances])
-    assert {:error, :no_providers_configured} = Plugins.default_model_ref([])
+    assert {:ok, "inst/local"} = Plugins.default_model_ref(tl(providers))
+    assert {:error, :no_models_configured} = Plugins.default_model_ref([])
   end
 
   test "models declared only in config.json are enough" do

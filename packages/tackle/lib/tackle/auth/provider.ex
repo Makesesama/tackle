@@ -148,9 +148,7 @@ defmodule Tackle.Auth.Provider do
     end
   end
 
-  @doc "Resolves a provider id among the available providers."
-  @spec resolve([module()], String.t(), keyword()) :: {:ok, Provider.t()} | {:error, term()}
-  def resolve(adapters, provider_id, opts \\ []) when is_list(opts) do
+  defp resolve(adapters, provider_id, opts) do
     with {:ok, entries} <- Plugins.provider_entries(adapters, plugin_opts(opts)) do
       find_provider(provider_id, providers(entries))
     end

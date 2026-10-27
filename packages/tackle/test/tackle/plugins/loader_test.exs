@@ -46,6 +46,79 @@ defmodule Tackle.Plugins.LoaderTest do
     assert {:error, {:invalid_plugin_config, _}} = Loader.project_paths(path: config)
   end
 
+  test "project_paths finds plugins.json under the environment's TACKLE_HOME" do
+    root = temp_dir()
+    write_config(root, [entry("/srv/plugin-a", "a", [])])
+
+    assert {:ok, ["/srv/plugin-a"]} = Loader.project_paths(env: %{"TACKLE_HOME" => root})
+  end
+
+  test "rejects an application that two projects, or one project twice, build" do
+    root = temp_dir()
+    app = "loader_dup_#{System.unique_integer([:positive])}"
+    first = project!(root, "first", %{"first_#{app}" => [], app => []})
+    second = project!(root, "second", %{"second_#{app}" => [], app => []})
+    write_config(root, [entry(first, "first_#{app}", []), entry(second, "second_#{app}", [])])
+
+    assert {:error, {:duplicate_plugin_app, dup}} =
+             Loader.load(path: Path.join(root, "plugins.json"))
+
+    assert Atom.to_string(dup) == app
+
+    # Two builds of one application in one project.
+    twice = project!(root, "twice", %{"twice_#{app}" => [], app => []})
+    File.mkdir_p!(Path.join(twice, "_build/prod/lib/copy/ebin"))
+
+    File.cp!(
+      Path.join(twice, "_build/prod/lib/#{app}/ebin/#{app}.app"),
+      Path.join(twice, "_build/prod/lib/copy/ebin/#{app}.app")
+    )
+
+    write_config(root, [entry(twice, "twice_#{app}", [])])
+
+    assert {:error, {:duplicate_plugin_app, ^dup}} =
+             Loader.load(path: Path.join(root, "plugins.json"))
+  end
+
+  test "rejects a module that two projects build" do
+    root = temp_dir()
+    id = System.unique_integer([:positive])
+    module = :"loader_dup_module_#{id}"
+    first = project!(root, "first", %{"first_#{id}" => [module]})
+    second = project!(root, "second", %{"second_#{id}" => [module]})
+    write_config(root, [entry(first, "first_#{id}", []), entry(second, "second_#{id}", [])])
+
+    assert {:error, {:duplicate_plugin_module, ^module}} =
+             Loader.load(path: Path.join(root, "plugins.json"))
+
+    refute :code.is_loaded(module)
+  end
+
+  test "rejects a project whose application needs one that nothing provides" do
+    root = temp_dir()
+    id = System.unique_integer([:positive])
+    missing = :"loader_missing_#{id}"
+    project = project!(root, "plugin", %{"demo_#{id}" => []}, deps: [missing])
+    write_config(root, [entry(project, "demo_#{id}", [])])
+
+    assert {:error, {:plugin_dependency_missing, {app, ^missing}}} =
+             Loader.load(path: Path.join(root, "plugins.json"))
+
+    assert Atom.to_string(app) == "demo_#{id}"
+  end
+
+  test "rejects another version of an application the host runs" do
+    root = temp_dir()
+    id = System.unique_integer([:positive])
+    project = project!(root, "plugin", %{"demo_#{id}" => [], "tackle_lib" => []})
+    write_config(root, [entry(project, "demo_#{id}", [])])
+    host_vsn = Application.spec(:tackle_lib, :vsn)
+
+    assert {:error,
+            {:plugin_dependency_version_conflict, ^project, :tackle_lib, ~c"0.0.0-other",
+             ^host_vsn}} = Loader.load(path: Path.join(root, "plugins.json"))
+  end
+
   test "preflight rejects absent selected modules without adding paths" do
     root = temp_dir()
     project = Path.join(root, "plugin")
@@ -193,6 +266,32 @@ defmodule Tackle.Plugins.LoaderTest do
 
     {:ok, ^module, binary} = :compile.forms(forms)
     binary
+  end
+
+  # A Mix project with a production build of `apps`, each app name mapped to
+  # the modules it builds (beams compiled but not loaded). An app named like
+  # one the host runs gets another version.
+  defp project!(root, name, apps, opts \\ []) do
+    project = Path.join(root, name)
+    File.mkdir_p!(project)
+    File.write!(Path.join(project, "mix.exs"), "# an external Mix project\n")
+
+    for {app, modules} <- apps do
+      ebin = Path.join(project, "_build/prod/lib/#{app}/ebin")
+      File.mkdir_p!(ebin)
+      Enum.each(modules, &File.write!(Path.join(ebin, "#{&1}.beam"), beam!(&1, 1)))
+      vsn = if Application.spec(String.to_atom(app), :vsn), do: "0.0.0-other", else: "0.1.0"
+      deps = Enum.map_join([:kernel | Keyword.get(opts, :deps, [])], ", ", &Atom.to_string/1)
+      module_list = Enum.map_join(modules, ", ", &Atom.to_string/1)
+
+      File.write!(
+        Path.join(ebin, "#{app}.app"),
+        "{application, #{app}, [{vsn, \"#{vsn}\"}, {modules, [#{module_list}]}, " <>
+          "{applications, [#{deps}]}]}.\n"
+      )
+    end
+
+    project
   end
 
   defp entry(path, app, opts) do

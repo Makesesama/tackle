@@ -714,7 +714,10 @@ adapter modules and parses `provider_id/model` references like
 `Tackle.Lib.LLM.select/2`. It accepts providers without decision support in the
 list, and reports `{:unsupported_decision_adapter, provider_id}`,
 `{:unknown_provider, provider_id}`, or `{:unknown_decision_model, ref}`
-explicitly. Adapters receive `:cancellation_signal`, `:receive_timeout`,
+explicitly. `Tackle.Lib.Decision.decision_adapter?/1` tells whether an adapter
+implements the contract (`decide/2` and `decision_models/1` or `/0`), the check
+`select/2` makes, so hosts can find the providers that offer decision models.
+Adapters receive `:cancellation_signal`, `:receive_timeout`,
 `:provider_id`, and `:provider_settings` in opts; the library itself performs
 no HTTP.
 

@@ -199,7 +199,7 @@ defmodule Tackle.Plugins.Loader do
          :ok <- owned_modules(names, ownership),
          :ok <- selected_owned_by_app(names, ownership, ebin, root),
          :ok <- selected_listed_in_app(names, app_specs, app, root),
-         :ok <- preflight_apps(private_apps, root),
+         :ok <- check_app_conflicts(private_apps, root),
          :ok <- validate_app_beams(private_apps, root) do
       {:ok,
        %{
@@ -410,18 +410,14 @@ defmodule Tackle.Plugins.Loader do
     end
   end
 
-  defp preflight_apps(apps, root) do
-    names = Enum.map(apps, & &1.app)
+  # A project's private applications and modules may not already exist in
+  # this VM. Duplicates among all projects' applications and modules,
+  # including within one project, are `check_all_plans/1`'s.
+  defp check_app_conflicts(apps, root) do
     modules = Enum.flat_map(apps, & &1.modules)
     loaded = Application.loaded_applications() |> Enum.map(&elem(&1, 0))
 
     cond do
-      duplicate(names) ->
-        {:error, {:duplicate_plugin_app, root, duplicate(names)}}
-
-      duplicate(modules) ->
-        {:error, {:duplicate_plugin_module, root, duplicate(modules)}}
-
       conflict =
           Enum.find(apps, &(&1.app in loaded or :code.lib_dir(&1.app) != {:error, :bad_name})) ->
         {:error, {:plugin_app_conflict, root, conflict.app}}

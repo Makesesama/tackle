@@ -96,6 +96,22 @@ defmodule Tackle.Lib.Decision do
   defdelegate select(adapters, model_ref), to: Selection, as: :resolve
 
   @doc """
+  Whether `adapter` implements this contract: it can be loaded and exports
+  `decide/2` and `decision_models/1` or `decision_models/0`.
+
+  `select/2` selects only from such adapters; hosts use it to find the
+  providers that offer decision models.
+  """
+  @spec decision_adapter?(module()) :: boolean()
+  def decision_adapter?(adapter) when is_atom(adapter) do
+    Code.ensure_loaded?(adapter) and function_exported?(adapter, :decide, 2) and
+      (function_exported?(adapter, :decision_models, 1) or
+         function_exported?(adapter, :decision_models, 0))
+  end
+
+  def decision_adapter?(_adapter), do: false
+
+  @doc """
   Validates a request and asks the selected adapter to answer it.
 
   The selection's model replaces `request.model`. A request that fails

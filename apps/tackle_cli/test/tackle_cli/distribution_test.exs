@@ -2,7 +2,6 @@ defmodule Tackle.CLI.DistributionTest do
   use ExUnit.Case, async: false
 
   alias Tackle.CLI.Distribution
-  alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins.Catalog
 
   defmodule PluginTool do
@@ -141,11 +140,9 @@ defmodule Tackle.CLI.DistributionTest do
     assert selection.provider_id == "ollama-cloud"
     assert selection.model == "gpt-oss:120b"
 
-    assert {:ok, %Provider{id: "ollama-cloud", adapter: Tackle.Plugins.Ollama}} =
-             Tackle.Auth.Provider.resolve(adapters, "ollama-cloud")
-
     assert {:ok, providers} = Tackle.Auth.Provider.list(adapters)
     provider = Enum.find(providers, &(&1.id == "ollama-cloud"))
+    assert provider.module == Tackle.Plugins.Ollama
     assert provider.adapter == "ollama"
     assert provider.source == :default
     assert provider.capabilities.login

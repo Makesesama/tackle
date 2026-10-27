@@ -103,6 +103,11 @@ defmodule Tackle.Lib.DecisionTest do
     def local?, do: true
   end
 
+  defmodule DecideOnlyAdapter do
+    def adapter_id, do: "decide-only"
+    def decide(_request, _opts), do: {:error, :not_used}
+  end
+
   defmodule BadLocalFlagAdapter do
     def adapter_id, do: "bad-local"
     def decision_models, do: ["judge"]
@@ -171,6 +176,15 @@ defmodule Tackle.Lib.DecisionTest do
 
       assert {:error, {:invalid_adapter, Nope.Missing, {:not_loaded, _}}} =
                Decision.select([Nope.Missing], "fake-local/judge:4b")
+    end
+
+    test "decision_adapter?/1 names adapters that implement the contract" do
+      assert Decision.decision_adapter?(FakeDecisionAdapter)
+      assert Decision.decision_adapter?(LocalDecisionAdapter)
+      refute Decision.decision_adapter?(ChatOnlyAdapter)
+      refute Decision.decision_adapter?(DecideOnlyAdapter)
+      refute Decision.decision_adapter?(Nope.Missing)
+      refute Decision.decision_adapter?("fake-local")
     end
 
     test "marks selections local only when the adapter declares it" do

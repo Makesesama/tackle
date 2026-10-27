@@ -23,6 +23,24 @@ defmodule Tackle.Plugins.CatalogTest do
     def after_turn(_, _), do: :ok
   end
 
+  # Answers with an invalid value once, then exits: a catalog that asks again
+  # to report the value crashes.
+  defmodule OnceInvalidAdapter do
+    def adapter_id, do: once("Not Valid", :adapter_id_called)
+    def generate(_, _), do: {:error, :unused}
+
+    def once(value, key) do
+      if Process.put(key, true), do: exit(:asked_twice), else: value
+    end
+  end
+
+  defmodule OnceInvalidTool do
+    def name, do: OnceInvalidAdapter.once(:not_a_name, :tool_name_called)
+    def description, do: "Answers once"
+    def parameters_schema, do: []
+    def execute(_, _), do: {:ok, :unused}
+  end
+
   defmodule SecondHook do
     @behaviour Tackle.Lib.Hook
     def before_prompt(_, _), do: :ok
@@ -164,6 +182,14 @@ defmodule Tackle.Plugins.CatalogTest do
              )
 
     assert Catalog.adapter_modules(catalog) == [Adapter, UnconfiguredAdapter]
+  end
+
+  test "reports an invalid adapter id or tool name from one call" do
+    assert {:error, {:invalid_plugin, :adapter, :once, {:invalid_adapter_id, "Not Valid"}}} =
+             Catalog.new(adapters: [entry(OnceInvalidAdapter, :once)], tools: [], hooks: [])
+
+    assert {:error, {:invalid_plugin, :tool, :once, {:invalid_tool_name, :not_a_name}}} =
+             Catalog.new(adapters: [], tools: [entry(OnceInvalidTool, :once)], hooks: [])
   end
 
   test "rejects invalid adapter models, hook contracts, and malformed options" do

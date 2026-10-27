@@ -92,7 +92,7 @@ defmodule Tackle.Workflow.Decisions do
   @spec available(t()) :: [String.t()]
   def available(%__MODULE__{providers: providers}) do
     providers
-    |> Enum.filter(&decision_provider?/1)
+    |> Enum.filter(&Decision.decision_adapter?(&1.adapter))
     |> Enum.flat_map(&model_refs/1)
     |> Enum.sort()
   end
@@ -108,10 +108,6 @@ defmodule Tackle.Workflow.Decisions do
   @spec decide(t(), Selection.t(), Request.t()) :: {:ok, Result.t()} | {:error, term()}
   def decide(%__MODULE__{options: options}, %Selection{} = selection, %Request{} = request),
     do: Decision.decide(selection, request, options)
-
-  defp decision_provider?(%Provider{adapter: adapter}) do
-    Code.ensure_loaded?(adapter) and function_exported?(adapter, :decide, 2)
-  end
 
   defp model_refs(%Provider{id: id} = provider) do
     case Provider.decision_models(provider) do

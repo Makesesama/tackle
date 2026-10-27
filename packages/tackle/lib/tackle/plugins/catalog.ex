@@ -134,20 +134,30 @@ defmodule Tackle.Plugins.Catalog do
 
   defp validate_adapter(module, source) do
     with :ok <- generation_callback(module, source),
-         {:ok, id} <- callback(module, :adapter_id, 0, source, :adapter),
-         true <- Provider.valid_id?(id),
+         {:ok, id} <- adapter_id(module, source),
          :ok <- validate_adapter_models(module, source) do
       {:ok, id}
-    else
-      false ->
+    end
+  end
+
+  # The type id as every session reads it, with the catalog's error shapes.
+  defp adapter_id(module, source) do
+    case Provider.adapter_id(module) do
+      {:ok, id} ->
+        {:ok, id}
+
+      {:error, {:invalid_adapter, ^module, {:missing_callback, callback}}} ->
+        entry_error(%{module: module, source: source}, :adapter, {:missing_callback, callback})
+
+      {:error, {:adapter_callback_failed, ^module, function, detail}} ->
         entry_error(
           %{module: module, source: source},
           :adapter,
-          {:invalid_adapter_id, safe_call(module, :adapter_id)}
+          {:callback_failed, function, detail}
         )
 
-      error ->
-        error
+      {:error, reason} ->
+        entry_error(%{module: module, source: source}, :adapter, reason)
     end
   end
 
@@ -219,19 +229,10 @@ defmodule Tackle.Plugins.Catalog do
 
   defp validate_module(module, source, :tool) do
     with :ok <- tool_callbacks(module, source),
-         {:ok, name} <- callback(module, :name, 0, source, :tool),
-         true <- is_binary(name) and name != "" do
-      {:ok, name}
-    else
-      false ->
-        entry_error(
-          %{module: module, source: source},
-          :tool,
-          {:invalid_tool_name, safe_call(module, :name)}
-        )
-
-      error ->
-        error
+         {:ok, name} <- tool_name(module, source) do
+      if is_binary(name) and name != "",
+        do: {:ok, name},
+        else: entry_error(%{module: module, source: source}, :tool, {:invalid_tool_name, name})
     end
   end
 
@@ -269,28 +270,23 @@ defmodule Tackle.Plugins.Catalog do
         )
   end
 
-  defp callback(module, function, arity, source, kind) do
-    if function_exported?(module, function, arity) do
-      try do
-        {:ok, apply(module, function, [])}
-      rescue
-        error ->
-          entry_error(
-            %{module: module, source: source},
-            kind,
-            {:callback_failed, function, Exception.message(error)}
-          )
-      catch
-        type, reason ->
-          entry_error(
-            %{module: module, source: source},
-            kind,
-            {:callback_failed, function, {type, reason}}
-          )
-      end
-    else
-      entry_error(%{module: module, source: source}, kind, {:missing_callback, {function, arity}})
-    end
+  # `tool_callbacks/2` checked that `name/0` is exported.
+  defp tool_name(module, source) do
+    {:ok, module.name()}
+  rescue
+    error ->
+      entry_error(
+        %{module: module, source: source},
+        :tool,
+        {:callback_failed, :name, Exception.message(error)}
+      )
+  catch
+    type, reason ->
+      entry_error(
+        %{module: module, source: source},
+        :tool,
+        {:callback_failed, :name, {type, reason}}
+      )
   end
 
   defp ensure_module(module, source, kind) do
@@ -303,10 +299,4 @@ defmodule Tackle.Plugins.Catalog do
     do: {:error, {:invalid_plugin, kind, source, reason}}
 
   defp entry_error(entry, kind, reason), do: {:error, {:invalid_plugin, kind, entry, reason}}
-
-  defp safe_call(module, function) do
-    apply(module, function, [])
-  rescue
-    _ -> nil
-  end
 end

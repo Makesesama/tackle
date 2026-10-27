@@ -780,7 +780,7 @@ defmodule Tackle.Config do
   defp put_decisions(%{decisions: _host_grant} = context, _providers, _default), do: context
 
   defp put_decisions(context, providers, default) do
-    case Enum.filter(providers, &decision_provider?/1) do
+    case Enum.filter(providers, &Decision.decision_adapter?(&1.adapter)) do
       [] ->
         context
 
@@ -811,12 +811,6 @@ defmodule Tackle.Config do
 
   defp put_review(context, %ReviewSettings{} = review),
     do: Map.put(context, :review_settings, review)
-
-  defp decision_provider?(%Provider{adapter: adapter}) do
-    function_exported?(adapter, :decide, 2) and
-      (function_exported?(adapter, :decision_models, 1) or
-         function_exported?(adapter, :decision_models, 0))
-  end
 
   defp validate_optional_string(_name, nil), do: :ok
   defp validate_optional_string(_name, value) when is_binary(value), do: :ok

@@ -52,13 +52,9 @@ defmodule Tackle.Lib.Decision.Selection do
   # adapter and requires `adapter_id/0`; non-decision adapters may be listed.
 
   defp ensure_decision_adapter(%Provider{adapter: adapter, id: id}) do
-    decides? = function_exported?(adapter, :decide, 2)
-
-    models? =
-      function_exported?(adapter, :decision_models, 1) or
-        function_exported?(adapter, :decision_models, 0)
-
-    if decides? and models?, do: :ok, else: {:error, {:unsupported_decision_adapter, id}}
+    if Tackle.Lib.Decision.decision_adapter?(adapter),
+      do: :ok,
+      else: {:error, {:unsupported_decision_adapter, id}}
   end
 
   defp ensure_model(models, model_ref, model) do

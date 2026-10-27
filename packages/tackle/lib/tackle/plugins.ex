@@ -176,20 +176,20 @@ defmodule Tackle.Plugins do
   end
 
   @doc """
-  Returns the first canonical model reference offered by `providers`.
-
-  Accepts providers and adapter modules, which stand for their default providers.
+  Returns the first canonical model reference that `providers` offer, which a
+  configuration selects when none is configured, or
+  `{:error, :no_models_configured}`. Providers whose models cannot be listed
+  are passed over.
   """
-  @spec default_model_ref([Provider.source()]) :: {:ok, String.t()} | {:error, term()}
-  def default_model_ref(providers) when is_list(providers) and providers != [] do
-    with {:ok, providers} <- Provider.expand(providers),
-         {:ok, refs} <- model_refs(providers) do
-      {:ok, hd(refs)}
-    end
+  @spec default_model_ref([Provider.t()]) :: {:ok, String.t()} | {:error, :no_models_configured}
+  def default_model_ref(providers) when is_list(providers) do
+    Enum.find_value(providers, {:error, :no_models_configured}, fn provider ->
+      case provider_models(provider) do
+        {:ok, [model | _models]} -> {:ok, "#{provider.id}/#{model}"}
+        _other -> nil
+      end
+    end)
   end
-
-  def default_model_ref([]), do: {:error, :no_providers_configured}
-  def default_model_ref(providers), do: {:error, {:invalid_providers_configuration, providers}}
 
   defp validate_adapters([]), do: {:error, :no_adapters_configured}
   defp validate_adapters(adapters) when is_list(adapters), do: {:ok, adapters}
@@ -362,19 +362,10 @@ defmodule Tackle.Plugins do
   # Selecting the first offered model validates every provider's adapter
   # through the same contract checks a session uses.
   defp validate_providers(providers) do
-    with {:ok, model_ref} <- first_model_ref(providers),
+    with {:ok, model_ref} <- default_model_ref(providers),
          {:ok, _selection} <- LLM.select(providers, model_ref) do
       :ok
     end
-  end
-
-  defp first_model_ref(providers) do
-    Enum.find_value(providers, fn provider ->
-      case provider_models(provider) do
-        {:ok, [model | _models]} -> {:ok, "#{provider.id}/#{model}"}
-        _other -> nil
-      end
-    end) || {:error, :no_models_configured}
   end
 
   defp model_refs(providers) do
