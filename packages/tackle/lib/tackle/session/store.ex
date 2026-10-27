@@ -375,42 +375,13 @@ defmodule Tackle.Session.Store do
   end
 
   defp write_fork_journal(temp_dir, new_id, parent_id, parent_seq, replay, commits) do
-    path = Path.join(temp_dir, "session.dlog")
-    name = {:tackle_fork, new_id}
-
-    options = [
-      name: name,
-      file: String.to_charlist(path),
-      type: :halt,
-      format: :internal,
-      mode: :read_write,
-      repair: false,
-      notify: false,
-      size: :infinity
-    ]
-
-    case :disk_log.open(options) do
-      {:ok, name} ->
-        name
-        |> write_fork_items(new_id, parent_id, parent_seq, replay, commits)
-        |> close_fork(name)
-
-      {:error, reason} ->
-        {:error, {:fork_open_failed, path, reason}}
-    end
+    Reader.write_journal(
+      Path.join(temp_dir, "session.dlog"),
+      fork_items(new_id, parent_id, parent_seq, replay, commits)
+    )
   end
 
-  # The log is closed whether or not writing it succeeded; a write error wins
-  # over a close error.
-  defp close_fork(result, name) do
-    case {result, :disk_log.close(name)} do
-      {:ok, :ok} -> :ok
-      {:ok, {:error, reason}} -> {:error, {:fork_close_failed, reason}}
-      {{:error, _reason} = error, _closed} -> error
-    end
-  end
-
-  defp write_fork_items(name, new_id, parent_id, parent_seq, replay, commits) do
+  defp fork_items(new_id, parent_id, parent_seq, replay, commits) do
     header =
       Log.header(
         session_id: new_id,
@@ -426,30 +397,12 @@ defmodule Tackle.Session.Store do
         "forked_at" => now()
       })
 
-    items =
-      [header, new_commit(new_id, 1, nil, [forked])] ++
-        (commits
-         |> Enum.with_index(2)
-         |> Enum.map(fn {commit, seq} ->
-           new_commit(new_id, seq, commit["turn_id"], commit["events"])
-         end))
-
-    result =
-      Enum.reduce_while(items, :ok, fn item, :ok ->
-        case :disk_log.log(name, item) do
-          :ok -> {:cont, :ok}
-          {:error, reason} -> {:halt, {:error, {:fork_write_failed, reason}}}
-        end
-      end)
-
-    with :ok <- result, do: sync_fork(name)
-  end
-
-  defp sync_fork(name) do
-    case :disk_log.sync(name) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:fork_sync_failed, reason}}
-    end
+    [header, new_commit(new_id, 1, nil, [forked])] ++
+      (commits
+       |> Enum.with_index(2)
+       |> Enum.map(fn {commit, seq} ->
+         new_commit(new_id, seq, commit["turn_id"], commit["events"])
+       end))
   end
 
   defp new_commit(session_id, seq, turn_id, events) do

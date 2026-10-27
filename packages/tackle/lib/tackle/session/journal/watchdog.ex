@@ -4,6 +4,7 @@ defmodule Tackle.Session.Journal.Watchdog do
   use GenServer
   require Logger
 
+  alias Tackle.Session.Reader
   alias Tackle.Session.Storage
   alias Tackle.StatusRedaction
 
@@ -506,7 +507,7 @@ defmodule Tackle.Session.Journal.Watchdog do
   defp release_fallback_lock(%{lock: %Storage.Lock{port: nil}} = state) do
     # Close waits for dispatched backend work. Never release ownership
     # while the disk_log could still be writing after journal death.
-    case :disk_log.close({:tackle_session, state.session_id}) do
+    case Reader.close(Reader.name(state.session_id)) do
       :ok -> Storage.release_lock(state.lock)
       {:error, :no_such_log} -> Storage.release_lock(state.lock)
       _error -> :ok

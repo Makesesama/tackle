@@ -228,7 +228,7 @@ defmodule Tackle.Session.JournalTest do
                )
 
       assert {:ok, %{last_seq: 4}} = Journal.projection(journal)
-      log = {:tackle_session, ctx.session_id}
+      log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
       try do
@@ -268,7 +268,7 @@ defmodule Tackle.Session.JournalTest do
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       # turn.started is write-behind; make it durable first.
       assert :ok = Journal.await_durable(journal)
-      log = {:tackle_session, ctx.session_id}
+      log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
       try do
@@ -292,7 +292,7 @@ defmodule Tackle.Session.JournalTest do
       [{watchdog, _}] =
         Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
 
-      log = {:tackle_session, ctx.session_id}
+      log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
       try do
@@ -377,7 +377,7 @@ defmodule Tackle.Session.JournalTest do
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ok = Journal.append_message(journal, Message.user("hello"))
       assert :ready = Watchdog.subscribe(journal, self())
-      log = {:tackle_session, ctx.session_id}
+      log = Reader.name(ctx.session_id)
       assert :ok = :disk_log.block(log, true)
       ref = Process.monitor(journal)
 
@@ -414,7 +414,7 @@ defmodule Tackle.Session.JournalTest do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ready = Watchdog.subscribe(journal, self())
-      log = {:tackle_session, ctx.session_id}
+      log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
       try do
@@ -452,7 +452,7 @@ defmodule Tackle.Session.JournalTest do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ready = Watchdog.subscribe(journal, self())
-      log = {:tackle_session, ctx.session_id}
+      log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
       try do
@@ -481,7 +481,7 @@ defmodule Tackle.Session.JournalTest do
       lock = :sys.get_state(watchdog).lock
       assert is_port(lock.port)
       assert :ready = Watchdog.subscribe(journal, self())
-      log = {:tackle_session, ctx.session_id}
+      log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
       try do
@@ -502,7 +502,7 @@ defmodule Tackle.Session.JournalTest do
     test "failure cleanup is bounded even when disk sync is blocked", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 250)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
-      log = {:tackle_session, ctx.session_id}
+      log = Reader.name(ctx.session_id)
       assert :ok = :disk_log.block(log, true)
       ref = Process.monitor(journal)
       message = Message.assistant(content: "hi")
@@ -524,7 +524,7 @@ defmodule Tackle.Session.JournalTest do
     test "termination cleanup is guarded even without a pending durable request", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 250)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
-      log = {:tackle_session, ctx.session_id}
+      log = Reader.name(ctx.session_id)
       assert :ok = :disk_log.block(log, true)
       ref = Process.monitor(journal)
       send(journal, {:disk_log, node(), log, :full})

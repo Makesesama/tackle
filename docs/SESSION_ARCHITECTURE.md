@@ -203,7 +203,7 @@ A journal owner opens the log with values equivalent to:
 
 The name is a tuple containing the binary session ID. Tackle must not create one atom per session.
 
-Only the journal-owner process calls `open/1`, `log/2`, `sync/1`, or `close/1`. Other runtime processes use the owner's API. Notifications including `error_status`, `full`, `truncated`, and unexpected wrap events are handled explicitly.
+`Tackle.Session.Reader` makes every `:disk_log` call on a journal with these options and names every log (`Reader.name/1` is the writable one). Only the journal-owner process opens a session's log for writing and calls `log/2`, `sync/1`, or `close/1` on it; other runtime processes use the owner's API, read-only replay opens the file under a name of its own, and a fork writes its unpublished child with `Reader.write_journal/2`. Notifications including `error_status`, `full`, `truncated`, and unexpected wrap events are handled explicitly.
 
 ### 6.1 One-writer invariant
 

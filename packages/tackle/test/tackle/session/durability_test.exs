@@ -625,7 +625,7 @@ defmodule Tackle.Session.DurabilityTest do
     assert_receive {:adapter_called, _pid, _model, _opts}, 5_000
     {:ok, journal} = Journal.whereis(snapshot.session_id)
 
-    send(journal, {:disk_log, node(), {:tackle_session, snapshot.session_id}, :full})
+    send(journal, {:disk_log, node(), Reader.name(snapshot.session_id), :full})
     # The sibling session's monitor cannot reveal the journal's exit reason.
     assert_receive {:DOWN, ^monitor, :process, _pid, :shutdown}, 1_000
 

@@ -17,6 +17,11 @@ defmodule Tackle.Session.Reader do
   Repair is never silent. Detecting an uncleanly closed log preserves the
   original file under `recovery/` before invoking internal repair, then records
   the recovered-item and bad-byte counts so the session can be marked recovered.
+
+  The reader owns every `:disk_log` handle of a journal: it opens them, always
+  with the same options (`:internal` format, `:halt` type, no size limit), and
+  names them. A session's writable log is `name/1`; read-only readers and new
+  files (`write_journal/2`) get names of their own, so they coexist with it.
   """
 
   alias Tackle.Session.Compression
@@ -64,7 +69,7 @@ defmodule Tackle.Session.Reader do
   # `readable` may be a decompressed copy; errors name the journal itself.
   defp read_file(session_id, readable, path) do
     with :ok <- validate_journal_file(readable) do
-      case open(session_id, readable, :read_only) do
+      case open_log(reader_name(session_id), readable, :read_only) do
         {:ok, name} ->
           try do
             fold(name, session_id, path)
@@ -104,7 +109,7 @@ defmodule Tackle.Session.Reader do
     with {:ok, path} <- Storage.journal_path(session_id, opts) do
       new? = not File.exists?(path)
 
-      case open(session_id, path, :read_write) do
+      case open_log(name(session_id), path, :read_write, notify: true) do
         {:ok, name} ->
           finish_open(name, session_id, path, new?, nil)
 
@@ -117,8 +122,54 @@ defmodule Tackle.Session.Reader do
     end
   end
 
-  @doc "Closes a writable journal handle."
-  @spec close(tuple()) :: :ok
+  @doc """
+  The name of a session's writable log, which `open_writable/2` opens.
+
+  Only the session's journal owner holds it; it is a tuple holding the
+  binary session id, so no atom is created per session.
+  """
+  @spec name(String.t()) :: tuple()
+  def name(session_id), do: {:tackle_session, session_id}
+
+  @doc """
+  Writes a new journal file at `path` holding `items` (a header and its
+  commits, in order), syncs it, and closes it.
+
+  The file must not be open elsewhere; a fork writes its child this way into
+  a directory no one else knows yet. The log is closed whether or not writing
+  succeeded, and a write error wins over a close error.
+  """
+  @spec write_journal(String.t(), [map()]) :: :ok | {:error, term()}
+  def write_journal(path, items) when is_list(items) do
+    name = {:tackle_session_file, System.unique_integer([:positive])}
+
+    case open_log(name, path, :read_write) do
+      {:ok, name} ->
+        result =
+          with :ok <- log_all(name, items), do: sync(name)
+
+        case {result, close(name)} do
+          {:ok, :ok} -> :ok
+          {:ok, {:error, reason}} -> {:error, {:journal_close_failed, reason}}
+          {{:error, _reason} = error, _closed} -> error
+        end
+
+      {:error, reason} ->
+        {:error, {:journal_open_failed, path, reason}}
+    end
+  end
+
+  defp log_all(name, items) do
+    Enum.reduce_while(items, :ok, fn item, :ok ->
+      case log(name, item) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  @doc "Closes a journal handle."
+  @spec close(tuple()) :: :ok | {:error, term()}
   def close(name), do: :disk_log.close(name)
 
   @doc "Syncs a live journal handle to stable storage."
@@ -350,42 +401,30 @@ defmodule Tackle.Session.Reader do
     end
   end
 
-  defp open(session_id, path, mode) do
-    options = [
-      name: open_name(session_id, mode),
+  # Every journal handle is opened here. `:repair` (default false) lets
+  # `:disk_log` repair a log that was not closed cleanly, and `:notify`
+  # (default false) sends the opening process its notifications.
+  defp open_log(name, path, mode, opts \\ []) do
+    :disk_log.open(
+      name: name,
       file: String.to_charlist(path),
       type: :halt,
       format: :internal,
       mode: mode,
-      repair: false,
-      notify: mode == :read_write,
+      repair: Keyword.get(opts, :repair, false),
+      notify: Keyword.get(opts, :notify, false),
       size: :infinity
-    ]
-
-    :disk_log.open(options)
+    )
   end
 
   # A read-only reader must coexist with the single writable owner, so it never
   # reuses the canonical journal name.
-  defp open_name(session_id, :read_only) do
+  defp reader_name(session_id) do
     {:tackle_session_reader, session_id, System.unique_integer([:positive])}
   end
 
-  defp open_name(session_id, :read_write), do: name(session_id)
-
   defp open_for_repair(session_id, path) do
-    options = [
-      name: name(session_id),
-      file: String.to_charlist(path),
-      type: :halt,
-      format: :internal,
-      mode: :read_write,
-      repair: true,
-      notify: true,
-      size: :infinity
-    ]
-
-    case :disk_log.open(options) do
+    case open_log(name(session_id), path, :read_write, repair: true, notify: true) do
       {:repaired, name, {:recovered, recovered}, {:badbytes, bad_bytes}} ->
         {:repaired, name, recovered, bad_bytes}
 
@@ -396,6 +435,4 @@ defmodule Tackle.Session.Reader do
         {:error, reason}
     end
   end
-
-  defp name(session_id), do: {:tackle_session, session_id}
 end

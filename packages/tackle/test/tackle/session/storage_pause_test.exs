@@ -7,7 +7,7 @@ defmodule Tackle.Session.StoragePauseTest do
   alias Tackle.Runtime
   alias Tackle.Runtime.{Envelope, Messaging}
   alias Tackle.Session
-  alias Tackle.Session.{Journal, JournalRegistry, Spec}
+  alias Tackle.Session.{Journal, JournalRegistry, Reader, Spec}
   alias Tackle.Test.Adapter
 
   defmodule ManualRetryAdapter do
@@ -52,7 +52,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, snapshot} = Tackle.subscribe(root)
     {:ok, turn} = Tackle.submit(root, "seed")
     assert_receive {:adapter_called, provider, _, _}
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -88,7 +88,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, snapshot} = Tackle.subscribe(root)
     {:ok, turn} = Tackle.submit(root, "use a tool")
     assert_receive {:intent_pending, provider}, 5_000
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -117,7 +117,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, turn} = Tackle.submit(root, "seed")
     assert_receive {:tackle_turn_finished, _, ^turn, _}, 5_000
     assert_receive {:adapter_called, _, _, _}
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -149,7 +149,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, session} = Runtime.session_pid(root)
     {:ok, turn} = Tackle.submit(root, "seed")
     assert_receive {:adapter_called, provider, _, _}
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -184,7 +184,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, turn} = Tackle.submit(root, "seed")
     assert_receive {:tackle_turn_finished, _, ^turn, _}, 5_000
     assert_receive {:adapter_called, _, _, _}
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -230,7 +230,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, turn} = Tackle.submit(root, "use a tool")
     assert_receive {:adapter_called, _, _, _}
     assert_receive {:tool_entered, "first", tool}, 5_000
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -263,7 +263,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, snapshot} = Tackle.subscribe(root)
     {:ok, turn} = Tackle.submit(root, "seed")
     assert_receive {:tackle_turn_finished, _, ^turn, _}, 5_000
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -289,7 +289,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, snapshot} = Tackle.subscribe(root)
     {:ok, turn} = Tackle.submit(root, "seed")
     assert_receive {:tackle_turn_finished, _, ^turn, _}, 5_000
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -322,7 +322,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, snapshot} = Tackle.subscribe(root)
     {:ok, turn} = Tackle.submit(root, "seed")
     assert_receive {:adapter_called, task, _, _}
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -363,7 +363,7 @@ defmodule Tackle.Session.StoragePauseTest do
     assert_receive {:tackle_turn_finished, _, ^turn, _}, 5_000
     assert_receive {:adapter_called, _, _, _}
     {:ok, session} = Runtime.session_pid(root)
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
     :ok = :sys.suspend(session)
 
@@ -413,7 +413,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, snapshot} = Tackle.subscribe(root)
     {:ok, turn} = Tackle.submit(root, "seed")
     assert_receive {:adapter_called, task, _, _}
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
 
     try do
@@ -446,7 +446,7 @@ defmodule Tackle.Session.StoragePauseTest do
     {:ok, _turn} = Tackle.submit(root, "interrupted")
     assert_receive {:adapter_called, _, _, _}
     {:ok, journal} = Journal.whereis(snapshot.session_id)
-    log = {:tackle_session, snapshot.session_id}
+    log = Reader.name(snapshot.session_id)
     :ok = :disk_log.block(log, true)
     sync = Task.async(fn -> Journal.flush(journal) end)
     assert_storage(snapshot.session_id, :delayed)
