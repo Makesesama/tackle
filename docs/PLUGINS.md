@@ -79,7 +79,8 @@ escript); a build without the named application's `.app` file fails with
 `{:plugin_project_app_not_found, path, app}`.
 Project paths must be absolute. The loader reads `_build/prod/lib` directly;
 it never runs Mix, evaluates `mix.exs`, or copies source or credentials. Its
-`Tackle.Plugins.Loader.load/1` API also accepts `path:` for embedding/tests.
+`Tackle.Plugins.Loader.load/1` API, which returns the contributions as a
+validated `Tackle.Plugins.Catalog`, also accepts `path:` for embedding/tests.
 Do not store builds in Burrito's extraction cache. BEAM loading cannot be
 rolled back: fix a failure and restart the host; do not call the loader again
 in a running process.

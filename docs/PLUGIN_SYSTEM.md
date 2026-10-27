@@ -86,10 +86,13 @@ contracts are in `packages/tackle_lib/lib/tackle_lib/{llm,tool,hook}.ex`.
 applications and selected modules without invoking Mix or evaluating `mix.exs`.
 It checks module ownership, duplicate application/module identities, and missing
 application dependencies before adding code paths; then starts selected OTP
-applications and validates selected contributions through the catalog. The CLI
-starts synchronously and fails when enabled projects are invalid. It
-merges selected contributions into its validated catalog and grants selected
-tools to the root.
+applications and returns the selected contributions as a validated
+`Tackle.Plugins.Catalog`. The CLI loads it once when it starts
+(`Tackle.CLI.Distribution.load_plugins/0`) and fails when enabled projects are
+invalid or conflict with its bundled contributions. Its one catalog builder
+(`Tackle.CLI.Distribution.catalog/1`) merges them into the catalog every
+command uses: sessions, `tackle auth`, the model lists, and `tackle sdk`'s
+tools. It grants the selected tools to the root.
 More comprehensive compatibility checks and real executable-path tests remain.
 
 `packages/tackle` owns catalog validation and project loading.

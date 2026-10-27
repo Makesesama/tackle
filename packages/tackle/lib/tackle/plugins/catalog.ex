@@ -35,25 +35,17 @@ defmodule Tackle.Plugins.Catalog do
 
   def new(opts), do: {:error, {:invalid_catalog_options, opts}}
 
-  @doc "Returns ordered validated adapter entries."
-  @spec adapters(t()) :: [entry()]
-  def adapters(%__MODULE__{adapters: entries}), do: entries
-
   @doc "Returns ordered validated tool entries."
   @spec tools(t()) :: [entry()]
   def tools(%__MODULE__{tools: entries}), do: entries
 
-  @doc "Returns ordered validated hook entries."
-  @spec hooks(t()) :: [entry()]
-  def hooks(%__MODULE__{hooks: entries}), do: entries
-
   @doc "Returns the selected adapter modules in declaration order."
   @spec adapter_modules(t()) :: [module()]
-  def adapter_modules(%__MODULE__{} = catalog), do: Enum.map(adapters(catalog), & &1.module)
+  def adapter_modules(%__MODULE__{adapters: entries}), do: Enum.map(entries, & &1.module)
 
   @doc "Returns the selected hook modules in declaration order."
   @spec hook_modules(t()) :: [module()]
-  def hook_modules(%__MODULE__{} = catalog), do: Enum.map(hooks(catalog), & &1.module)
+  def hook_modules(%__MODULE__{hooks: entries}), do: Enum.map(entries, & &1.module)
 
   @doc "Resolves names only against tools explicitly present in this catalog."
   @spec resolve_tools(t(), [String.t()]) :: {:ok, [entry()]} | {:error, term()}

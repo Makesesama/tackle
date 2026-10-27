@@ -13,9 +13,7 @@ defmodule Tackle.CLI.SDK do
          {:ok, executor} <- Tackle.CLI.Jail.ensure_started() do
       # Standalone tools only: the subagent tools need a scoped runtime the
       # plain SDK loop does not host, and MCP tools need live connections.
-      tools =
-        Tackle.Tools.default() ++
-          Enum.map(contributions().tools, & &1.module)
+      tools = Tackle.Tools.default() ++ Distribution.plugin_tools()
 
       case Tackle.SDK.run(
              providers: providers,
@@ -30,10 +28,6 @@ defmodule Tackle.CLI.SDK do
       {:error, reason} -> error(reason)
       reason -> error(reason)
     end
-  end
-
-  defp contributions do
-    Application.get_env(:tackle_cli, :plugin_contributions, %{tools: [], adapters: [], hooks: []})
   end
 
   defp context(nil), do: %{cwd: cwd()}

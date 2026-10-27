@@ -110,10 +110,10 @@ defmodule Tackle.Plugins.CatalogTest do
                hooks: [entry(Hook, :host), entry(SecondHook, :host)]
              )
 
-    assert Catalog.adapters(catalog) == [entry(Adapter, :builtin)]
+    assert catalog.adapters == [entry(Adapter, :builtin)]
     assert Catalog.adapter_modules(catalog) == [Adapter]
     assert Catalog.tools(catalog) == [entry(Tool, Enum.at(sources, 1))]
-    assert Catalog.hooks(catalog) == [entry(Hook, :host), entry(SecondHook, :host)]
+    assert catalog.hooks == [entry(Hook, :host), entry(SecondHook, :host)]
     assert Catalog.hook_modules(catalog) == [Hook, SecondHook]
     assert {:ok, [%{module: Tool, source: source}]} = Catalog.resolve_tools(catalog, ["search"])
     assert source == Enum.at(sources, 1)

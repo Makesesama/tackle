@@ -489,12 +489,7 @@ defmodule Tackle.CLI.Run do
                builtin_skills: builtin_skills,
                overrides: overrides,
                catalog_root_tools:
-                 Tackle.CLI.Distribution.root_tool_names() ++
-                   Enum.map(mcp_tools, & &1.name()) ++
-                   Enum.map(
-                     Application.get_env(:tackle_cli, :plugin_contributions, %{tools: []}).tools,
-                     & &1.module.name()
-                   )
+                 Tackle.CLI.Distribution.root_tool_names() ++ Enum.map(mcp_tools, & &1.name())
              ],
              session
            ),

@@ -1,6 +1,8 @@
 defmodule Tackle.CLI.Distribution do
   @moduledoc false
 
+  alias Tackle.Plugins.Catalog
+
   @default_adapters [
     Tackle.Plugins.Codex,
     Tackle.Plugins.DeepSeek,
@@ -22,46 +24,65 @@ defmodule Tackle.CLI.Distribution do
     Tackle.Tools.Review
   ]
 
-  @doc "Validates bundled adapters, default tools, and host-owned tool modules."
-  @spec catalog([module()]) :: {:ok, Tackle.Plugins.Catalog.t()} | {:error, term()}
+  @doc """
+  Loads the enabled plugin projects (`Tackle.Plugins.Loader.load/0`), checks
+  that the distribution's catalog accepts their contributions, and installs
+  them for `catalog/1`. The CLI application calls it once, when it starts;
+  until then the catalog has no plugin contributions.
+  """
+  @spec load_plugins() :: :ok | {:error, term()}
+  def load_plugins do
+    with {:ok, plugins} <- Tackle.Plugins.Loader.load(),
+         {:ok, _catalog} <- build_catalog(plugins, []) do
+      Application.put_env(:tackle_cli, :plugins, plugins)
+    end
+  end
+
+  @doc """
+  The distribution's validated catalog: the bundled adapters, the default
+  coding tools, `extra_tools` (connected MCP tools), the bundled delegation
+  tools, and the contributions of enabled plugin projects.
+
+  Every CLI command takes its adapters and plugin tools from it.
+  """
+  @spec catalog([module()]) :: {:ok, Catalog.t()} | {:error, term()}
   def catalog(extra_tools \\ [])
 
-  def catalog(extra_tools) when is_list(extra_tools) do
-    contributions = Application.get_env(:tackle_cli, :plugin_contributions, empty_contributions())
+  def catalog(extra_tools) when is_list(extra_tools), do: build_catalog(plugins(), extra_tools)
+  def catalog(extra_tools), do: {:error, {:invalid_catalog_tools, extra_tools}}
 
-    plugin_adapters = Enum.map(contributions.adapters, & &1.module)
-
-    Tackle.Plugins.Catalog.new(
-      adapters:
-        Enum.map(
-          default_adapters() -- plugin_adapters,
-          &%{module: &1, source: :cli}
-        ) ++
-          contributions.adapters,
+  defp build_catalog(%Catalog{} = plugins, extra_tools) do
+    Catalog.new(
+      adapters: Enum.map(default_adapters(), &%{module: &1, source: :cli}) ++ plugins.adapters,
       tools:
         Enum.map(Tackle.Tools.default(), &%{module: &1, source: :tackle}) ++
           Enum.map(extra_tools, &%{module: &1, source: :cli_mcp}) ++
-          Enum.map(bundled_tools(), &%{module: &1, source: :tackle}) ++ contributions.tools,
-      hooks: contributions.hooks
+          Enum.map(@bundled_tools, &%{module: &1, source: :tackle}) ++ plugins.tools,
+      hooks: plugins.hooks
     )
   end
 
-  def catalog(extra_tools), do: {:error, {:invalid_catalog_tools, extra_tools}}
+  # The contributions `load_plugins/0` installed.
+  defp plugins do
+    Application.get_env(:tackle_cli, :plugins, %Catalog{adapters: [], tools: [], hooks: []})
+  end
 
-  defp empty_contributions, do: %{adapters: [], tools: [], hooks: []}
-
-  @doc "Returns the delegation tools bundled with the CLI distribution."
-  @spec bundled_tools() :: [module()]
-  def bundled_tools, do: @bundled_tools
+  @doc "The tool modules of enabled plugin projects."
+  @spec plugin_tools() :: [module()]
+  def plugin_tools, do: Enum.map(plugins().tools, & &1.module)
 
   @doc """
-  Names of bundled catalog tools the CLI grants to the root agent.
+  Names of catalog tools the CLI grants to the root agent: the workflow and
+  code review tools and the tools of enabled plugin projects.
 
-  The subagent tools are granted by `Tackle.Coding` itself; the workflow and
-  code review tools need an explicit grant.
+  The subagent tools are granted by `Tackle.Coding` itself; these need an
+  explicit grant.
   """
   @spec root_tool_names() :: [String.t()]
-  def root_tool_names, do: [Tackle.Workflow.Tool.name(), Tackle.Tools.Review.name()]
+  def root_tool_names do
+    [Tackle.Workflow.Tool.name(), Tackle.Tools.Review.name()] ++
+      Enum.map(plugin_tools(), & &1.name())
+  end
 
   @doc """
   Built-in skills bundled with the CLI distribution.
@@ -86,7 +107,7 @@ defmodule Tackle.CLI.Distribution do
   @spec adapters() :: {:ok, [module()]} | {:error, term()}
   def adapters do
     with {:ok, catalog} <- catalog() do
-      {:ok, Tackle.Plugins.Catalog.adapter_modules(catalog)}
+      {:ok, Catalog.adapter_modules(catalog)}
     end
   end
 

@@ -6,6 +6,7 @@ defmodule Tackle.CLI.RunTest do
   alias Tackle.CLI.Run
   alias Tackle.CLI.Test.LegacyJournal
   alias Tackle.Lib.Message
+  alias Tackle.Plugins.Catalog
   alias Tackle.Runtime.ID
   alias Tackle.Session.Journal
   alias Tackle.Session.Storage
@@ -566,19 +567,19 @@ defmodule Tackle.CLI.RunTest do
   # froze, so it lost adapters the session catalog had, such as those of
   # enabled plugin projects.
   test "auth commands use the adapters of the catalog sessions use" do
-    previous = Application.get_env(:tackle_cli, :plugin_contributions)
-    on_exit(fn -> restore_app_env(:tackle_cli, :plugin_contributions, previous) end)
+    previous = Application.get_env(:tackle_cli, :plugins)
+    on_exit(fn -> restore_app_env(:tackle_cli, :plugins, previous) end)
 
     capture_io(fn -> assert 0 == Run.models() end)
 
-    Application.put_env(:tackle_cli, :plugin_contributions, %{
+    Application.put_env(:tackle_cli, :plugins, %Catalog{
       adapters: [%{module: AuthAdapter, source: {:project, "/plugins/auth"}}],
       tools: [],
       hooks: []
     })
 
     assert {:ok, catalog} = Tackle.CLI.Distribution.catalog()
-    assert Tackle.Plugins.Catalog.adapter_modules(catalog) == [Adapter, AuthAdapter]
+    assert Catalog.adapter_modules(catalog) == [Adapter, AuthAdapter]
 
     output = capture_io(fn -> assert 0 == Run.auth_status(%{provider: nil}) end)
     assert output =~ "cli-auth"

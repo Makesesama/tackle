@@ -17,11 +17,15 @@ defmodule Tackle.Plugins.Loader do
   @module_name ~r/\A[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*\z/
   @app_name ~r/\A[a-z][a-z0-9_]*\z/
 
-  @doc "Loads explicitly enabled project contributions into a validated catalog-shaped map."
-  @spec load(keyword()) ::
-          {:ok,
-           %{adapters: [Catalog.entry()], tools: [Catalog.entry()], hooks: [Catalog.entry()]}}
-          | {:error, term()}
+  @doc """
+  Loads the contributions of explicitly enabled projects into a validated
+  `Tackle.Plugins.Catalog`, each entry's source `{:project, path}`.
+
+  Options: `:path` names the configuration file instead of
+  `$TACKLE_HOME/plugins.json`, and `:env` is the environment that locates
+  `$TACKLE_HOME` (default: the process environment).
+  """
+  @spec load(keyword()) :: {:ok, Catalog.t()} | {:error, term()}
   def load(opts \\ [])
 
   def load(opts) when is_list(opts) do
@@ -32,14 +36,8 @@ defmodule Tackle.Plugins.Loader do
          :ok <- check_all_plans(plans),
          :ok <- add_code_paths(plans),
          :ok <- start_apps(plans),
-         {:ok, contributions} <- load_modules(plans),
-         {:ok, catalog} <- Catalog.new(Map.to_list(contributions)) do
-      {:ok,
-       %{
-         adapters: Catalog.adapters(catalog),
-         tools: Catalog.tools(catalog),
-         hooks: Catalog.hooks(catalog)
-       }}
+         {:ok, contributions} <- load_modules(plans) do
+      Catalog.new(Map.to_list(contributions))
     end
   end
 

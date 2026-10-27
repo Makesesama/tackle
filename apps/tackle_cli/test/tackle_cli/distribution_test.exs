@@ -3,23 +3,31 @@ defmodule Tackle.CLI.DistributionTest do
 
   alias Tackle.CLI.Distribution
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.Plugins.Catalog
+
+  defmodule PluginTool do
+    def name, do: "plugin_probe"
+    def description, do: "A plugin project's tool."
+    def parameters_schema, do: []
+    def execute(_args, _context), do: {:ok, "probed"}
+  end
 
   test "the CLI's real catalog includes its bundled adapters and default coding tools" do
     assert {:ok, catalog} = Distribution.catalog()
-    assert Tackle.Plugins.Catalog.adapter_modules(catalog) == Distribution.default_adapters()
+    assert Catalog.adapter_modules(catalog) == Distribution.default_adapters()
 
     assert {:ok, [%{module: Tackle.Tools.Read, source: :tackle}]} =
-             Tackle.Plugins.Catalog.resolve_tools(catalog, ["read"])
+             Catalog.resolve_tools(catalog, ["read"])
   end
 
   test "the catalog bundles the workflow and review tools next to the subagent tools" do
     assert {:ok, catalog} = Distribution.catalog()
 
     assert {:ok, [%{module: Tackle.Workflow.Tool, source: :tackle}]} =
-             Tackle.Plugins.Catalog.resolve_tools(catalog, ["run_workflow"])
+             Catalog.resolve_tools(catalog, ["run_workflow"])
 
     assert {:ok, [%{module: Tackle.Tools.Review, source: :tackle}]} =
-             Tackle.Plugins.Catalog.resolve_tools(catalog, ["review_changes"])
+             Catalog.resolve_tools(catalog, ["review_changes"])
 
     assert Distribution.root_tool_names() == ["run_workflow", "review_changes"]
   end
@@ -74,6 +82,32 @@ defmodule Tackle.CLI.DistributionTest do
       refute Tackle.Tools.LoadSkill in profile.config.tools
       refute profile.config.system_prompt =~ "tackle-workflows"
     end
+  end
+
+  test "every command takes plugin contributions from the one catalog" do
+    previous = Application.get_env(:tackle_cli, :plugins)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:tackle_cli, :plugins, previous),
+        else: Application.delete_env(:tackle_cli, :plugins)
+    end)
+
+    source = {:project, "/plugins/probe"}
+
+    Application.put_env(:tackle_cli, :plugins, %Catalog{
+      adapters: [],
+      tools: [%{module: PluginTool, source: source}],
+      hooks: []
+    })
+
+    assert {:ok, catalog} = Distribution.catalog()
+
+    assert {:ok, [%{module: PluginTool, source: ^source}]} =
+             Catalog.resolve_tools(catalog, ["plugin_probe"])
+
+    assert Distribution.plugin_tools() == [PluginTool]
+    assert Distribution.root_tool_names() == ["run_workflow", "review_changes", "plugin_probe"]
   end
 
   test "the bundled workflow guide is a valid built-in skill gated on run_workflow" do
@@ -138,7 +172,7 @@ defmodule Tackle.CLI.DistributionTest do
     assert {:ok, models} = Distribution.available_models()
     assert Enum.filter(models, &String.starts_with?(&1, "ollama/")) == ["ollama/gemma4:12b"]
     assert {:ok, catalog} = Distribution.catalog()
-    adapters = Tackle.Plugins.Catalog.adapter_modules(catalog)
+    adapters = Catalog.adapter_modules(catalog)
 
     assert {:ok, %{adapter: Tackle.Plugins.Ollama, provider_id: "ollama"} = decision} =
              Tackle.Lib.Decision.select(adapters, "ollama/tev1:4b")

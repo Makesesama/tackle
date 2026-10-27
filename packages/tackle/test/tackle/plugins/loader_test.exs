@@ -1,11 +1,14 @@
 defmodule Tackle.Plugins.LoaderTest do
   use ExUnit.Case, async: false
 
+  alias Tackle.Plugins.Catalog
   alias Tackle.Plugins.Loader
 
   test "missing config means no enabled projects" do
-    assert {:ok, %{adapters: [], tools: [], hooks: []}} =
+    assert {:ok, catalog} =
              Loader.load(path: Path.join(System.tmp_dir!(), "missing-#{System.unique_integer()}"))
+
+    assert catalog == %Catalog{adapters: [], tools: [], hooks: []}
   end
 
   test "configuration is versioned and rejects unsafe module names and relative paths" do
@@ -87,7 +90,7 @@ defmodule Tackle.Plugins.LoaderTest do
     refute Loader.same_code?(module, other)
 
     refute Loader.same_code?(module, Path.join(root, "missing.beam"))
-    refute Loader.same_code?(Tackle.Plugins.Catalog, same)
+    refute Loader.same_code?(Catalog, same)
 
     # A module on the code path that is not loaded yet is loaded first.
     unloaded = :"loader_unloaded_#{System.unique_integer([:positive])}"
@@ -166,7 +169,7 @@ defmodule Tackle.Plugins.LoaderTest do
     write_config(root, [entry(project, app_name, tools: ["#{module_name}.Tool"])])
 
     try do
-      assert {:ok, %{tools: [%{module: ^tool, source: {:project, ^project}}]}} =
+      assert {:ok, %Catalog{tools: [%{module: ^tool, source: {:project, ^project}}]}} =
                Loader.load(path: Path.join(root, "plugins.json"))
 
       assert app in Enum.map(Application.started_applications(), &elem(&1, 0))

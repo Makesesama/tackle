@@ -15,9 +15,7 @@ defmodule Tackle.CLI.Application do
     Application.put_env(:anubis_mcp, :log, false)
     warm_highlight_languages()
 
-    with {:ok, contributions} <- Tackle.Plugins.Loader.load(),
-         {:ok, _catalog} <- validate_contributions(contributions) do
-      Application.put_env(:tackle_cli, :plugin_contributions, contributions)
+    with :ok <- Tackle.CLI.Distribution.load_plugins() do
       start_supervisor()
     end
   end
@@ -29,21 +27,6 @@ defmodule Tackle.CLI.Application do
 
       Lumis.Languages.async_load(languages)
     end
-  end
-
-  defp validate_contributions(contributions) do
-    Tackle.Plugins.Catalog.new(
-      adapters:
-        Enum.map(
-          Tackle.CLI.Distribution.default_adapters(),
-          &%{module: &1, source: :cli}
-        ) ++ contributions.adapters,
-      tools:
-        Enum.map(Tackle.Tools.default(), &%{module: &1, source: :tackle}) ++
-          Enum.map(Tackle.CLI.Distribution.bundled_tools(), &%{module: &1, source: :tackle}) ++
-          contributions.tools,
-      hooks: contributions.hooks
-    )
   end
 
   defp start_supervisor do
