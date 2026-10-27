@@ -175,9 +175,10 @@ defmodule Tackle.Config do
   providers of those adapters (the `config.json` `"providers"` object) but
   cannot name or load modules.
 
-  The session's providers are merged by `Tackle.Plugins.merge_providers/3`
+  The session's providers are merged by `Tackle.Plugins.provider_entries/1`
   from the adapters' default providers, the recorded accounts, and the
-  `config.json` providers. `:accounts` (`t:Tackle.Plugins.accounts/0`)
+  `config.json` providers, and must then offer a model, whichever source
+  supplied the adapters. `:accounts` (`t:Tackle.Plugins.accounts/0`)
   defaults to `Tackle.Auth.accounts/0`. Tests and embedding hosts may supply
   an `:env` map; normal callers use the process environment. `:cwd` selects the working
   directory used for prompt discovery and built-in tools.
@@ -214,7 +215,12 @@ defmodule Tackle.Config do
          {:ok, project_file} <- read_project_config(cwd, overrides, config_path),
          {:ok, file_opts} <- ConfigFile.load(config_path, project_file),
          {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
-         {:ok, entries} <- Tackle.Plugins.merge_providers(adapters, accounts, declared),
+         {:ok, entries} <-
+           Tackle.Plugins.provider_entries(
+             adapters: adapters,
+             accounts: accounts,
+             config_providers: declared
+           ),
          providers = Enum.map(entries, & &1.provider),
          {:ok, env_opts} <- environment_options(env, overrides),
          session_opts = merge_sources(file_opts, env_opts, overrides),

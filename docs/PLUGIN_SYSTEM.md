@@ -12,8 +12,9 @@ executable-path verification are described below.
 Tackle accepts trusted modules **already available to the running BEAM**:
 
 - `Tackle.Plugins.available_adapters/1` reads a list supplied by trusted code or
-  `config :tackle, :adapters` and checks adapter IDs and model references. It
-  does not discover projects or add code paths. `Tackle.Lib.LLM` is the adapter
+  `config :tackle, :adapters` and checks that their default providers expand.
+  It does not discover projects or add code paths. Whether the providers offer
+  a model is checked once, after the merge below, for every adapter source. `Tackle.Lib.LLM` is the adapter
   contract. `Tackle.Config.load/1` accepts `:available_adapters` from a host;
   neither CLI arguments nor the user config file may name adapter modules.
 - `Tackle.Plugins.available_providers/1` turns those adapters into providers

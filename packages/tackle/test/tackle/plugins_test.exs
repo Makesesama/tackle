@@ -31,6 +31,20 @@ defmodule Tackle.PluginsTest do
     def generate(_schema, _opts), do: {:error, :not_used}
   end
 
+  # Like a local server's adapter: its models come only from config.json.
+  defmodule ConfigOnly do
+    @behaviour Tackle.Lib.LLM
+
+    @impl true
+    def adapter_id, do: "cfg"
+
+    @impl true
+    def models(settings), do: Map.get(settings, "models", [])
+
+    @impl true
+    def generate(_schema, _opts), do: {:error, :not_used}
+  end
+
   alias Tackle.Plugins
 
   setup do
@@ -222,6 +236,35 @@ defmodule Tackle.PluginsTest do
     assert {:ok, "plugged/small"} = Plugins.default_model_ref(providers)
     assert {:ok, "inst/local"} = Plugins.default_model_ref([Instances])
     assert {:error, :no_providers_configured} = Plugins.default_model_ref([])
+  end
+
+  test "models declared only in config.json are enough, whichever source names the adapters" do
+    Application.put_env(:tackle, :adapters, [ConfigOnly])
+    home = Path.join(System.tmp_dir!(), "tackle-plugins-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(home) end)
+    env = %{"TACKLE_HOME" => home}
+
+    # Without models, both paths fail the same way, after the merge.
+    assert {:error, :no_models_configured} = Tackle.load_config(env: env, accounts: %{})
+
+    assert {:error, :no_models_configured} =
+             Tackle.load_config(available_adapters: [ConfigOnly], env: env, accounts: %{})
+
+    File.mkdir_p!(home)
+
+    File.write!(
+      Path.join(home, "config.json"),
+      JSON.encode!(%{"providers" => %{"cfg" => %{"adapter" => "cfg", "models" => ["local"]}}})
+    )
+
+    for opts <- [[], [available_adapters: [ConfigOnly]]] do
+      assert {:ok, config} = Tackle.load_config(opts ++ [env: env, accounts: %{}])
+      assert config.model_ref == "cfg/local"
+    end
+
+    assert {:ok, [ConfigOnly]} = Plugins.available_adapters()
+
+    assert {:ok, ["cfg/local"]} = Plugins.available_model_refs(env: env, accounts: %{})
   end
 
   test "returns an explicit error when no adapters are configured" do

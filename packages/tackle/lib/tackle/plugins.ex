@@ -67,14 +67,21 @@ defmodule Tackle.Plugins do
   @typedoc ~S'Provider declarations shaped like `config.json`: `%{id => %{"adapter" => type, ...settings}}`.'
   @type declarations :: %{optional(String.t()) => map()}
 
-  @doc "Returns configured adapter modules after validating their public contract."
+  @doc """
+  Returns the configured adapter modules after checking that their default
+  providers expand.
+
+  Reads `:adapters`, defaulting to the `:tackle, :adapters` application
+  environment. Whether the providers offer a model is checked only once all
+  providers are merged (`provider_entries/1`): adapters whose models come only
+  from `config.json` offer none by default.
+  """
   @spec available_adapters(keyword()) :: {:ok, [module()]} | {:error, term()}
   def available_adapters(opts \\ [])
 
   def available_adapters(opts) when is_list(opts) do
     with {:ok, adapters} <- fetch_adapters(opts),
-         {:ok, providers} <- Provider.expand(adapters),
-         :ok <- validate_providers(providers) do
+         {:ok, _providers} <- Provider.expand(adapters) do
       {:ok, adapters}
     end
   end
@@ -107,6 +114,10 @@ defmodule Tackle.Plugins do
 
   @doc """
   Like `available_providers/1`, but keeps where each provider was first declared.
+
+  The merged providers must offer at least one model
+  (`{:error, :no_models_configured}`), and the first one is selected through
+  the checks a session uses.
   """
   @spec provider_entries(keyword()) :: {:ok, [entry()]} | {:error, term()}
   def provider_entries(opts \\ [])
