@@ -377,11 +377,14 @@ defmodule Tackle.Config do
   @doc """
   Builds the initial library state for a configured session.
 
-  The only option is `:session_id`. Credentials reach the adapters through
-  `llm_opts`, where `Tackle.Session` puts its credential store.
+  The only option is `:session_id`; any other option raises
+  `ArgumentError`. Credentials reach the adapters through `llm_opts`, where
+  `Tackle.Session` puts its credential store.
   """
   @spec to_agent_state(t(), keyword()) :: Tackle.Lib.State.t()
   def to_agent_state(%__MODULE__{} = config, harness_opts \\ []) do
+    validate_agent_state_options!(harness_opts)
+
     Tackle.Lib.new(
       llm: config.llm,
       tools: config.tools,
@@ -396,6 +399,13 @@ defmodule Tackle.Config do
       retry: config.retry,
       compaction: config.compaction
     )
+  end
+
+  defp validate_agent_state_options!(opts) do
+    unless is_list(opts) and Keyword.keyword?(opts) and Keyword.keys(opts) -- [:session_id] == [] do
+      raise ArgumentError,
+            "Tackle.Config.to_agent_state/2 accepts only :session_id, got: #{inspect(opts)}"
+    end
   end
 
   defp validate_loader_options(opts) do

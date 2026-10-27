@@ -230,6 +230,15 @@ defmodule Tackle.ConfigTest do
     state = Config.to_agent_state(config)
     assert state.llm == config.llm
     assert State.model(state) == "family/nested"
+
+    assert Config.to_agent_state(config, session_id: "session").session_id == "session"
+
+    # A stale option is an error, not silently dropped.
+    assert_raise ArgumentError, ~r/accepts only :session_id/, fn ->
+      Config.to_agent_state(config, credential_store: :store)
+    end
+
+    assert_raise ArgumentError, fn -> Config.to_agent_state(config, [:session_id]) end
   end
 
   test "session titles are opt-in through new and resolve a dedicated model" do
