@@ -109,4 +109,22 @@ defmodule Tackle.Session.LogTest do
     assert {:error, {:unsupported_event_version, "message.appended", 2}} =
              Log.validate_commit(commit([appended(2, %{})]), @session_id, 1)
   end
+
+  test "names the events that settle a turn and the status each gives it" do
+    for {type, status} <- [
+          {"turn.completed", :completed},
+          {"turn.errored", :errored},
+          {"turn.cancelled", :cancelled},
+          {"turn.crashed", :crashed},
+          {"turn.abandoned", :abandoned}
+        ] do
+      assert Log.terminal_event?(type)
+      assert Log.terminal_status(type) == status
+    end
+
+    for type <- ["turn.started", "session.closed", "message.appended", nil, :completed] do
+      refute Log.terminal_event?(type)
+      assert Log.terminal_status(type) == nil
+    end
+  end
 end

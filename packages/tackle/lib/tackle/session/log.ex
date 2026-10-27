@@ -55,7 +55,14 @@ defmodule Tackle.Session.Log do
   # next version's. Empty while every event is at version 1.
   @upcasters %{}
 
-  @terminal_events ~w(turn.completed turn.errored turn.cancelled turn.crashed turn.abandoned)
+  # The events that settle a turn, with the status each gives it.
+  @terminal_events %{
+    "turn.completed" => :completed,
+    "turn.errored" => :errored,
+    "turn.cancelled" => :cancelled,
+    "turn.crashed" => :crashed,
+    "turn.abandoned" => :abandoned
+  }
 
   @type event :: %{
           required(String.t()) => term()
@@ -207,7 +214,15 @@ defmodule Tackle.Session.Log do
 
   @doc "Returns true when `event_type` settles a turn."
   @spec terminal_event?(term()) :: boolean()
-  def terminal_event?(type), do: type in @terminal_events
+  def terminal_event?(type), do: is_map_key(@terminal_events, type)
+
+  @doc """
+  Returns the status a terminal event gives its turn (`"turn.completed"`
+  completes it), or `nil` for an event that settles none.
+  """
+  @spec terminal_status(term()) ::
+          :completed | :errored | :cancelled | :crashed | :abandoned | nil
+  def terminal_status(type), do: Map.get(@terminal_events, type)
 
   defp validate_parent(nil), do: :ok
 

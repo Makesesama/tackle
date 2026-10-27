@@ -47,9 +47,9 @@ defmodule Tackle.Session.Projection do
   alias Tackle.Lib.Message
   alias Tackle.Lib.Tree
   alias Tackle.Session.Codec
+  alias Tackle.Session.Log
   alias Tackle.Session.ProjectionError
 
-  @terminal_events ~w(turn.completed turn.errored turn.cancelled turn.crashed turn.abandoned)
   @preview_length 200
 
   @enforce_keys [:session_id]
@@ -459,9 +459,13 @@ defmodule Tackle.Session.Projection do
     %{projection | pending_tools: append(projection.pending_tools, pending)}
   end
 
-  defp apply_event(%{"type" => type, "data" => data} = event, projection)
-       when type in @terminal_events do
-    settle_turn(projection, event, data)
+  # A terminal event settles its turn; any other event is not part of the
+  # core projection.
+  defp apply_event(%{"type" => type, "data" => data} = event, projection) do
+    case Log.terminal_status(type) do
+      nil -> projection
+      status -> settle_turn(projection, event, data, status)
+    end
   end
 
   defp apply_event(_event, projection), do: projection
@@ -576,9 +580,8 @@ defmodule Tackle.Session.Projection do
     if Map.has_key?(data, "parent_id"), do: data["parent_id"], else: default
   end
 
-  defp settle_turn(projection, event, data) do
+  defp settle_turn(projection, event, data, status) do
     turn_id = data["turn_id"] || event["turn_id"]
-    status = terminal_status(event["type"])
 
     turns =
       Map.update(projection.turns, turn_id, empty_turn(turn_id, status, data), fn turn ->
@@ -600,12 +603,6 @@ defmodule Tackle.Session.Projection do
   end
 
   defp append(items, item), do: Enum.concat(items, [item])
-
-  defp terminal_status("turn.completed"), do: :completed
-  defp terminal_status("turn.errored"), do: :errored
-  defp terminal_status("turn.cancelled"), do: :cancelled
-  defp terminal_status("turn.crashed"), do: :crashed
-  defp terminal_status("turn.abandoned"), do: :abandoned
 
   # Every commit keeps the status current, so live owners, replay, the
   # catalog, and the summary sidecar all report the same one.
