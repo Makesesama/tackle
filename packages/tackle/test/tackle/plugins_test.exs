@@ -46,41 +46,27 @@ defmodule Tackle.PluginsTest do
   end
 
   alias Tackle.Plugins
+  alias Tackle.Plugins.Catalog
 
-  setup do
-    previous = Application.get_env(:tackle, :adapters)
+  test "configuration loading uses the given adapters while overrides only select the model" do
+    assert {:ok, config} =
+             Tackle.Config.load(
+               available_adapters: [Adapter],
+               overrides: [model: "plugged/small"],
+               env: %{}
+             )
 
-    on_exit(fn ->
-      case previous do
-        nil -> Application.delete_env(:tackle, :adapters)
-        value -> Application.put_env(:tackle, :adapters, value)
-      end
-    end)
-
-    :ok
-  end
-
-  test "loads available adapters from root harness configuration" do
-    Application.put_env(:tackle, :adapters, [Adapter])
-
-    assert {:ok, [Adapter]} = Tackle.Plugins.available_adapters()
-    assert {:ok, ["plugged/small", "plugged/large"]} = Tackle.available_models()
-  end
-
-  test "configuration loading uses root adapters while overrides only select the model" do
-    Application.put_env(:tackle, :adapters, [Adapter])
-
-    assert {:ok, config} = Tackle.load_config(overrides: [model: "plugged/small"], env: %{})
     assert [%Tackle.Lib.LLM.Provider{id: "plugged", adapter: Adapter}] = config.providers
     assert config.model_ref == "plugged/small"
   end
 
   test "configuration loading defaults to the first configured model" do
-    Application.put_env(:tackle, :adapters, [Adapter])
     home = Path.join(System.tmp_dir!(), "tackle-plugins-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(home) end)
 
-    assert {:ok, config} = Tackle.load_config(env: %{"TACKLE_HOME" => home})
+    assert {:ok, config} =
+             Tackle.Config.load(available_adapters: [Adapter], env: %{"TACKLE_HOME" => home})
+
     assert config.model_ref == "plugged/small"
   end
 
@@ -120,8 +106,7 @@ defmodule Tackle.PluginsTest do
     assert settings["cloud2"] == %{"region" => "us"}
 
     assert {:ok, refs} =
-             Plugins.available_model_refs(
-               adapters: [Adapter, Instances],
+             Plugins.available_model_refs([Adapter, Instances],
                accounts: accounts,
                config_providers: declarations
              )
@@ -220,7 +205,6 @@ defmodule Tackle.PluginsTest do
   end
 
   test "available providers default to stored accounts and config.json" do
-    Application.put_env(:tackle, :adapters, [Adapter, Instances])
     home = Path.join(System.tmp_dir!(), "tackle-plugins-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(home) end)
     File.mkdir_p!(home)
@@ -230,7 +214,9 @@ defmodule Tackle.PluginsTest do
       JSON.encode!(%{"providers" => %{"gpu" => %{"adapter" => "inst", "models" => ["big"]}}})
     )
 
-    assert {:ok, providers} = Plugins.available_providers(env: %{"TACKLE_HOME" => home})
+    assert {:ok, providers} =
+             Plugins.available_providers([Adapter, Instances], env: %{"TACKLE_HOME" => home})
+
     assert Enum.map(providers, & &1.id) == ["plugged", "inst", "inst-cloud", "gpu"]
 
     assert {:ok, "plugged/small"} = Plugins.default_model_ref(providers)
@@ -238,17 +224,17 @@ defmodule Tackle.PluginsTest do
     assert {:error, :no_providers_configured} = Plugins.default_model_ref([])
   end
 
-  test "models declared only in config.json are enough, whichever source names the adapters" do
-    Application.put_env(:tackle, :adapters, [ConfigOnly])
+  test "models declared only in config.json are enough" do
     home = Path.join(System.tmp_dir!(), "tackle-plugins-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(home) end)
     env = %{"TACKLE_HOME" => home}
+    catalog = catalog([ConfigOnly])
 
-    # Without models, both paths fail the same way, after the merge.
-    assert {:error, :no_models_configured} = Tackle.load_config(env: env, accounts: %{})
-
-    assert {:error, :no_models_configured} =
-             Tackle.load_config(available_adapters: [ConfigOnly], env: env, accounts: %{})
+    # Without models, both adapter sources fail the same way, after the merge.
+    for source <- [[available_adapters: [ConfigOnly]], [catalog: catalog]] do
+      assert {:error, :no_models_configured} =
+               Tackle.Config.load(source ++ [env: env, accounts: %{}])
+    end
 
     File.mkdir_p!(home)
 
@@ -257,32 +243,47 @@ defmodule Tackle.PluginsTest do
       JSON.encode!(%{"providers" => %{"cfg" => %{"adapter" => "cfg", "models" => ["local"]}}})
     )
 
-    for opts <- [[], [available_adapters: [ConfigOnly]]] do
-      assert {:ok, config} = Tackle.load_config(opts ++ [env: env, accounts: %{}])
+    for source <- [[available_adapters: [ConfigOnly]], [catalog: catalog]] do
+      assert {:ok, config} = Tackle.Config.load(source ++ [env: env, accounts: %{}])
       assert config.model_ref == "cfg/local"
     end
 
-    assert {:ok, [ConfigOnly]} = Plugins.available_adapters()
-
-    assert {:ok, ["cfg/local"]} = Plugins.available_model_refs(env: env, accounts: %{})
+    assert {:ok, ["cfg/local"]} =
+             Plugins.available_model_refs([ConfigOnly], env: env, accounts: %{})
   end
 
   test "reports invalid options in the shapes Tackle.Config uses" do
     assert {:error, {:invalid_option, :accounts, :none}} =
-             Plugins.provider_entries(adapters: [Adapter], accounts: :none, config_providers: %{})
+             Plugins.provider_entries([Adapter], accounts: :none, config_providers: %{})
 
     assert {:error, {:invalid_option, :config_providers, []}} =
-             Plugins.provider_entries(adapters: [Adapter], accounts: %{}, config_providers: [])
+             Plugins.provider_entries([Adapter], accounts: %{}, config_providers: [])
 
-    assert {:error, {:invalid_plugin_options, :none}} = Plugins.provider_entries(:none)
+    assert {:error, {:invalid_plugin_options, :none}} = Plugins.provider_entries([Adapter], :none)
   end
 
-  test "returns an explicit error when no adapters are configured" do
-    Application.put_env(:tackle, :adapters, [])
+  test "adapters are explicit" do
+    assert {:error, :no_adapters_configured} =
+             Plugins.provider_entries([], accounts: %{}, config_providers: %{})
 
-    assert {:error, :no_adapters_configured} = Tackle.Plugins.available_adapters()
+    assert {:error, {:invalid_adapters_configuration, Adapter}} =
+             Plugins.provider_entries(Adapter, accounts: %{}, config_providers: %{})
+
+    assert {:error, {:missing_option, :available_adapters}} =
+             Tackle.Config.load(overrides: [model: "plugged/small"], env: %{})
 
     assert {:error, :no_adapters_configured} =
-             Tackle.load_config(overrides: [model: "none/test"], env: %{})
+             Tackle.Config.load(catalog: catalog([]), overrides: [model: "none/test"], env: %{})
+  end
+
+  defp catalog(adapters) do
+    {:ok, catalog} =
+      Catalog.new(
+        adapters: Enum.map(adapters, &%{module: &1, source: :test}),
+        tools: [],
+        hooks: []
+      )
+
+    catalog
   end
 end

@@ -37,9 +37,11 @@ For local development, run Mix from `packages/tackle` rather than the repo root.
 
 ## Basic harness API
 
-The harness accepts already-loaded adapter and capability modules. Configure
-adapters as trusted code with `config :tackle, adapters: [MyAdapter]` (for
-example, in `config/config.exs`), or pass them explicitly to the loader.
+The harness accepts already-loaded adapter and capability modules, which
+trusted host code passes explicitly: `Tackle.Config.load/1` takes them as
+`:available_adapters` or through a `Tackle.Plugins.Catalog` (`:catalog`), and
+`Tackle.Plugins` and `Tackle.Auth.Provider` take them as their first argument.
+There is no application-environment adapter list.
 General extension-project discovery remains out of scope; configuration data
 and frontend arguments only select models declared by modules supplied by the
 distribution. Each adapter module is an adapter *type*; sessions select
@@ -51,13 +53,10 @@ Execution is scoped. `Tackle.start_scope/1` starts one root agent plus every
 descendant it may create and returns a PID-free `Tackle.Runtime.Scope`:
 
 ```elixir
-# In config/config.exs, configure an already-loaded Tackle.Lib.LLM adapter:
-config :tackle, adapters: [MyAdapter]
-```
-
-```elixir
+# MyAdapter is an already-loaded Tackle.Lib.LLM adapter.
 {:ok, config} =
-  Tackle.load_config(
+  Tackle.Config.load(
+    available_adapters: [MyAdapter],
     overrides: [model: "my-provider/my-model", thinking: "high"]
   )
 
@@ -77,8 +76,7 @@ scope_spec =
 :ok = Tackle.stop_scope(scope.scope_ref)
 ```
 
-`Tackle.load_config/1` delegates to `Tackle.Config.load/1` to load exactly one
-agent's execution configuration. Trusted host or distribution code composes it
+`Tackle.Config.load/1` loads exactly one agent's execution configuration. Trusted host or distribution code composes it
 into an `AgentSpec` and `ScopeSpec` before starting the runtime; model-generated
 data may only select a trusted profile name. `Tackle.Runtime.RootBackend` is
 supplied by this package as the backend for its durable root session. For the
@@ -907,7 +905,7 @@ it supplies the built-in prompt but does not discover prompt files.
 A provider is one configured instance of an adapter: its id is the prefix of
 model references (`codex-work/gpt-5.5`) and the namespace of its credentials.
 One adapter can back several providers, each with its own settings and login.
-`Tackle.Plugins.available_providers/1` merges them from three sources, lowest
+`Tackle.Plugins.available_providers/2` merges them from three sources, lowest
 precedence first:
 
 1. the default providers of each configured adapter (usually one, whose id is

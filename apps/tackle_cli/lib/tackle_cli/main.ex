@@ -1,7 +1,6 @@
 defmodule Tackle.CLI.Main do
   @moduledoc false
 
-  alias Tackle.CLI.Distribution
   alias Tackle.CLI.Parser
   alias Tackle.CLI.MCP, as: MCPCommands
   alias Tackle.CLI.Review
@@ -19,7 +18,6 @@ defmodule Tackle.CLI.Main do
 
     case result do
       {:ok, _apps} ->
-        Distribution.configure()
         parse_and_dispatch(argv)
 
       {:error, reason} ->

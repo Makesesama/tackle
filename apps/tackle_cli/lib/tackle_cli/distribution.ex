@@ -34,7 +34,7 @@ defmodule Tackle.CLI.Distribution do
     Tackle.Plugins.Catalog.new(
       adapters:
         Enum.map(
-          Application.get_env(:tackle, :adapters, default_adapters()) -- plugin_adapters,
+          default_adapters() -- plugin_adapters,
           &%{module: &1, source: :cli}
         ) ++
           contributions.adapters,
@@ -79,29 +79,33 @@ defmodule Tackle.CLI.Distribution do
   end
 
   @doc """
+  The adapter modules of the validated distribution catalog, which every
+  CLI command passes to the harness: sessions through the catalog itself, and
+  `tackle auth` and the model lists through these modules.
+  """
+  @spec adapters() :: {:ok, [module()]} | {:error, term()}
+  def adapters do
+    with {:ok, catalog} <- catalog() do
+      {:ok, Tackle.Plugins.Catalog.adapter_modules(catalog)}
+    end
+  end
+
+  @doc """
   Providers of the validated distribution catalog's adapters.
 
   They include the adapters' default providers, accounts recorded by
   `tackle auth login ADAPTER --as NAME`, and the `config.json` `"providers"`
-  object (see `Tackle.Plugins.available_providers/1`).
+  object (see `Tackle.Plugins.available_providers/2`).
   """
   @spec available_providers() :: {:ok, [Tackle.Lib.LLM.Provider.t()]} | {:error, term()}
   def available_providers do
-    with {:ok, catalog} <- catalog() do
-      Tackle.Plugins.available_providers(
-        adapters: Tackle.Plugins.Catalog.adapter_modules(catalog)
-      )
-    end
+    with {:ok, adapters} <- adapters(), do: Tackle.Plugins.available_providers(adapters)
   end
 
   @doc "Model references offered by `available_providers/0`."
   @spec available_models() :: {:ok, [String.t()]} | {:error, term()}
   def available_models do
-    with {:ok, catalog} <- catalog() do
-      Tackle.Plugins.available_model_refs(
-        adapters: Tackle.Plugins.Catalog.adapter_modules(catalog)
-      )
-    end
+    with {:ok, adapters} <- adapters(), do: Tackle.Plugins.available_model_refs(adapters)
   end
 
   @doc """
@@ -113,23 +117,6 @@ defmodule Tackle.CLI.Distribution do
     Map.new(providers, fn %Tackle.Lib.LLM.Provider{id: id, adapter: adapter} ->
       {id, adapter.adapter_id()}
     end)
-  end
-
-  @doc "Installs default CLI distribution contributions before the harness starts."
-  @spec configure() :: :ok
-  def configure do
-    if is_nil(Application.get_env(:tackle, :adapters)) do
-      additions =
-        Application.get_env(:tackle_cli, :plugin_contributions, empty_contributions()).adapters
-
-      Application.put_env(
-        :tackle,
-        :adapters,
-        default_adapters() ++ Enum.map(additions, & &1.module)
-      )
-    end
-
-    :ok
   end
 
   @doc "Returns the adapters bundled with the default CLI distribution."

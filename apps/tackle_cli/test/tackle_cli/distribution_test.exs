@@ -4,20 +4,6 @@ defmodule Tackle.CLI.DistributionTest do
   alias Tackle.CLI.Distribution
   alias Tackle.Lib.LLM.Provider
 
-  setup do
-    previous_adapters = Application.get_env(:tackle, :adapters)
-
-    on_exit(fn ->
-      if is_nil(previous_adapters) do
-        Application.delete_env(:tackle, :adapters)
-      else
-        Application.put_env(:tackle, :adapters, previous_adapters)
-      end
-    end)
-
-    :ok
-  end
-
   test "the CLI's real catalog includes its bundled adapters and default coding tools" do
     assert {:ok, catalog} = Distribution.catalog()
     assert Tackle.Plugins.Catalog.adapter_modules(catalog) == Distribution.default_adapters()
@@ -108,14 +94,11 @@ defmodule Tackle.CLI.DistributionTest do
   end
 
   test "exposes selectable Ollama Cloud models and auth flows through the CLI catalog" do
-    Application.delete_env(:tackle, :adapters)
-
     assert {:ok, models} = Distribution.available_models()
     assert "ollama-cloud/gpt-oss:120b" in models
     assert "ollama-cloud/gpt-oss:20b" in models
 
-    assert {:ok, catalog} = Distribution.catalog()
-    adapters = Tackle.Plugins.Catalog.adapter_modules(catalog)
+    assert {:ok, adapters} = Distribution.adapters()
 
     assert {:ok, selection} =
              Tackle.Lib.LLM.select(adapters, "ollama-cloud/gpt-oss:120b")
@@ -125,9 +108,9 @@ defmodule Tackle.CLI.DistributionTest do
     assert selection.model == "gpt-oss:120b"
 
     assert {:ok, %Provider{id: "ollama-cloud", adapter: Tackle.Plugins.Ollama}} =
-             Tackle.Auth.Provider.resolve("ollama-cloud", adapters: adapters)
+             Tackle.Auth.Provider.resolve(adapters, "ollama-cloud")
 
-    assert {:ok, providers} = Tackle.Auth.Provider.list(adapters: adapters)
+    assert {:ok, providers} = Tackle.Auth.Provider.list(adapters)
     provider = Enum.find(providers, &(&1.id == "ollama-cloud"))
     assert provider.adapter == "ollama"
     assert provider.source == :default
@@ -135,14 +118,13 @@ defmodule Tackle.CLI.DistributionTest do
     refute provider.capabilities.usage
 
     assert {:error, {:unsupported_provider_flow, "ollama-cloud", :usage}} =
-             Tackle.Auth.Provider.usage("ollama-cloud", adapters: adapters)
+             Tackle.Auth.Provider.usage(adapters, "ollama-cloud")
 
     # The local server needs no key, so it reports no credential status.
-    assert {:ok, :not_required} = Tackle.Auth.Provider.status("ollama", adapters: adapters)
+    assert {:ok, :not_required} = Tackle.Auth.Provider.status(adapters, "ollama")
   end
 
   test "exposes the default local Ollama decision model and configured chat models" do
-    Application.delete_env(:tackle, :adapters)
     previous = Application.get_env(:tackle_ollama, Tackle.Plugins.Ollama)
 
     on_exit(fn ->
@@ -178,7 +160,6 @@ defmodule Tackle.CLI.DistributionTest do
   end
 
   test "offers models of recorded accounts and config.json providers" do
-    Application.delete_env(:tackle, :adapters)
     home = Path.join(System.tmp_dir!(), "tackle-cli-dist-#{System.unique_integer([:positive])}")
     previous_home = System.get_env("TACKLE_HOME")
     File.mkdir_p!(home)
@@ -232,19 +213,5 @@ defmodule Tackle.CLI.DistributionTest do
     assert cloud2.settings == Map.delete(cloud.settings, "api_key_env")
     assert cloud2.settings["api_key"] == "required"
     assert ("cloud2/" <> hd(cloud.settings["models"])) in models
-  end
-
-  test "registers the bundled adapters with the harness" do
-    Application.delete_env(:tackle, :adapters)
-
-    assert :ok = Distribution.configure()
-
-    assert Application.fetch_env!(:tackle, :adapters) == [
-             Tackle.Plugins.Codex,
-             Tackle.Plugins.DeepSeek,
-             Tackle.Plugins.Anthropic,
-             Tackle.Plugins.OpenRouter,
-             Tackle.Plugins.Ollama
-           ]
   end
 end

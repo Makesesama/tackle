@@ -124,14 +124,14 @@ defmodule Tackle.CLI.ReviewTest do
     File.mkdir_p!(repo)
 
     previous_home = System.get_env("TACKLE_HOME")
-    previous_adapters = Application.get_env(:tackle, :adapters)
+    previous_adapters = Application.get_env(:tackle_cli, :default_adapters)
     System.put_env("TACKLE_HOME", home)
-    Application.put_env(:tackle, :adapters, [Adapter])
+    Application.put_env(:tackle_cli, :default_adapters, [Adapter])
     Application.put_env(:tackle_cli, :review_test_pid, self())
 
     on_exit(fn ->
       restore_env("TACKLE_HOME", previous_home)
-      restore_app_env(:tackle, :adapters, previous_adapters)
+      restore_app_env(:tackle_cli, :default_adapters, previous_adapters)
       Application.delete_env(:tackle_cli, :review_test_pid)
       Application.delete_env(:tackle_cli, :review_test_blocking)
       File.rm_rf!(base)

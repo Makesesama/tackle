@@ -2,9 +2,10 @@ defmodule Tackle.Plugins do
   @moduledoc """
   Resolves harness-owned plugin contributions made available to frontends.
 
-  This initial slice supports adapter modules that are already available in the
-  running BEAM and configured by trusted application code. CLI arguments and
-  user configuration select model references; they do not name or load adapter
+  Adapter modules are already available in the running BEAM and supplied by
+  trusted host code: every function takes them explicitly, usually the
+  adapters of the host's `Tackle.Plugins.Catalog`. CLI arguments and user
+  configuration select model references; they do not name or load adapter
   modules directly.
 
   ## Providers
@@ -68,33 +69,12 @@ defmodule Tackle.Plugins do
   @type declarations :: %{optional(String.t()) => map()}
 
   @doc """
-  Returns the configured adapter modules after checking that their default
-  providers expand.
+  Returns the providers of `adapters`, merged as described in the module docs.
 
-  Reads `:adapters`, defaulting to the `:tackle, :adapters` application
-  environment. Whether the providers offer a model is checked only once all
-  providers are merged (`provider_entries/1`): adapters whose models come only
-  from `config.json` offer none by default.
-  """
-  @spec available_adapters(keyword()) :: {:ok, [module()]} | {:error, term()}
-  def available_adapters(opts \\ [])
+  `adapters` are the adapter modules the host offers, such as the adapters of
+  its `Tackle.Plugins.Catalog` (`Tackle.Plugins.Catalog.adapter_modules/1`);
+  an empty list is `{:error, :no_adapters_configured}`. Options:
 
-  def available_adapters(opts) when is_list(opts) do
-    with {:ok, adapters} <- fetch_adapters(opts),
-         {:ok, _providers} <- Provider.expand(adapters) do
-      {:ok, adapters}
-    end
-  end
-
-  def available_adapters(opts), do: {:error, {:invalid_plugin_options, opts}}
-
-  @doc """
-  Returns the available providers, merged as described in the module docs.
-
-  Options:
-
-    * `:adapters` — adapter modules; defaults to the `:tackle, :adapters`
-      application environment.
     * `:accounts` — recorded accounts (`t:accounts/0`); defaults to
       `Tackle.Auth.accounts/0`.
     * `:config_providers` — provider declarations shaped like the
@@ -105,25 +85,25 @@ defmodule Tackle.Plugins do
 
   Hosts that already loaded these sources should pass them explicitly.
   """
-  @spec available_providers(keyword()) :: {:ok, [Provider.t()]} | {:error, term()}
-  def available_providers(opts \\ []) do
-    with {:ok, entries} <- provider_entries(opts) do
+  @spec available_providers([module()], keyword()) :: {:ok, [Provider.t()]} | {:error, term()}
+  def available_providers(adapters, opts \\ []) do
+    with {:ok, entries} <- provider_entries(adapters, opts) do
       {:ok, Enum.map(entries, & &1.provider)}
     end
   end
 
   @doc """
-  Like `available_providers/1`, but keeps where each provider was first declared.
+  Like `available_providers/2`, but keeps where each provider was first declared.
 
   The merged providers must offer at least one model
   (`{:error, :no_models_configured}`), and the first one is selected through
   the checks a session uses.
   """
-  @spec provider_entries(keyword()) :: {:ok, [entry()]} | {:error, term()}
-  def provider_entries(opts \\ [])
+  @spec provider_entries([module()], keyword()) :: {:ok, [entry()]} | {:error, term()}
+  def provider_entries(adapters, opts \\ [])
 
-  def provider_entries(opts) when is_list(opts) do
-    with {:ok, adapters} <- fetch_adapters(opts),
+  def provider_entries(adapters, opts) when is_list(opts) do
+    with {:ok, adapters} <- validate_adapters(adapters),
          {:ok, accounts} <- fetch_accounts(opts),
          {:ok, declarations} <- fetch_config_providers(opts),
          {:ok, entries} <- merge_providers(adapters, accounts, declarations),
@@ -132,13 +112,13 @@ defmodule Tackle.Plugins do
     end
   end
 
-  def provider_entries(opts), do: {:error, {:invalid_plugin_options, opts}}
+  def provider_entries(_adapters, opts), do: {:error, {:invalid_plugin_options, opts}}
 
   @doc """
   Merges adapter default providers, configured provider declarations, and
   recorded accounts as described in the module docs.
 
-  This is the pure merge behind `available_providers/1`; it does not check
+  This is the pure merge behind `available_providers/2`; it does not check
   that the result offers any model.
   """
   @spec merge_providers([module()], accounts(), declarations()) ::
@@ -162,10 +142,13 @@ defmodule Tackle.Plugins do
   def merge_providers(adapters, accounts, declarations),
     do: {:error, {:invalid_provider_sources, {adapters, accounts, declarations}}}
 
-  @doc "Returns canonical `provider_id/model` references of the available providers."
-  @spec available_model_refs(keyword()) :: {:ok, [String.t()]} | {:error, term()}
-  def available_model_refs(opts \\ []) do
-    with {:ok, providers} <- available_providers(opts) do
+  @doc """
+  Returns canonical `provider_id/model` references of the providers of
+  `adapters`; see `available_providers/2`.
+  """
+  @spec available_model_refs([module()], keyword()) :: {:ok, [String.t()]} | {:error, term()}
+  def available_model_refs(adapters, opts \\ []) do
+    with {:ok, providers} <- available_providers(adapters, opts) do
       model_refs(providers)
     end
   end
@@ -186,13 +169,9 @@ defmodule Tackle.Plugins do
   def default_model_ref([]), do: {:error, :no_providers_configured}
   def default_model_ref(providers), do: {:error, {:invalid_providers_configuration, providers}}
 
-  defp fetch_adapters(opts) do
-    case Keyword.get_lazy(opts, :adapters, fn -> Application.get_env(:tackle, :adapters, []) end) do
-      [] -> {:error, :no_adapters_configured}
-      adapters when is_list(adapters) -> {:ok, adapters}
-      adapters -> {:error, {:invalid_adapters_configuration, adapters}}
-    end
-  end
+  defp validate_adapters([]), do: {:error, :no_adapters_configured}
+  defp validate_adapters(adapters) when is_list(adapters), do: {:ok, adapters}
+  defp validate_adapters(adapters), do: {:error, {:invalid_adapters_configuration, adapters}}
 
   defp fetch_accounts(opts) do
     case Keyword.fetch(opts, :accounts) do

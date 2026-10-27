@@ -94,12 +94,14 @@ Honoured provider settings:
 When the plugin is available to the host distribution:
 
 ```elixir
-{:ok, session} =
-  Tackle.start_session(
-    adapters: [Tackle.Plugins.Codex],
-    model: "openai-codex/gpt-5.5",
-    llm_stream: true,
-    llm_opts: [reasoning_effort: "high"]
+{:ok, config} =
+  Tackle.Config.load(
+    available_adapters: [Tackle.Plugins.Codex],
+    overrides: [
+      model: "openai-codex/gpt-5.5",
+      llm_stream: true,
+      llm_opts: [reasoning_effort: "high"]
+    ]
   )
 ```
 

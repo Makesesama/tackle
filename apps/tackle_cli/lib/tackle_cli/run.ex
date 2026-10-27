@@ -258,9 +258,9 @@ defmodule Tackle.CLI.Run do
     login_opts = login_options(opts, output)
     logged_in = Keyword.get(login_opts, :as, provider)
 
-    with {:ok, _apps} <- ensure_started(),
+    with {:ok, adapters} <- auth_adapters(),
          :ok <- ensure_human_format(output, :login),
-         :ok <- Provider.login(provider, login_opts) do
+         :ok <- Provider.login(adapters, provider, login_opts) do
       :login |> AuthOutput.render_action(logged_in, :ok, output) |> then(&Output.puts(output, &1))
       0
     else
@@ -277,10 +277,10 @@ defmodule Tackle.CLI.Run do
   def auth_status(%{provider: nil} = opts) do
     output = auth_output(opts)
 
-    with {:ok, _apps} <- ensure_started(),
-         {:ok, providers} <- Provider.list() do
+    with {:ok, adapters} <- auth_adapters(),
+         {:ok, providers} <- Provider.list(adapters) do
       providers
-      |> Enum.map(&auth_status_entry/1)
+      |> Enum.map(&auth_status_entry(adapters, &1))
       |> AuthOutput.render_status(output)
       |> then(&Output.puts(output, &1))
 
@@ -294,9 +294,9 @@ defmodule Tackle.CLI.Run do
   def auth_status(%{provider: provider} = opts) when is_binary(provider) do
     output = auth_output(opts)
 
-    with {:ok, _apps} <- ensure_started(),
-         {:ok, [matching]} <- auth_providers(provider),
-         {:ok, status} <- Provider.status(provider) do
+    with {:ok, adapters} <- auth_adapters(),
+         {:ok, [matching]} <- auth_providers(adapters, provider),
+         {:ok, status} <- Provider.status(adapters, provider) do
       [%{provider: matching, result: {:ok, status}}]
       |> AuthOutput.render_status(output)
       |> then(&Output.puts(output, &1))
@@ -316,10 +316,10 @@ defmodule Tackle.CLI.Run do
   def auth_logout(%{provider: provider} = opts) do
     output = auth_output(opts)
 
-    with {:ok, _apps} <- ensure_started(),
+    with {:ok, adapters} <- auth_adapters(),
          :ok <- ensure_human_format(output, :logout),
          :ok <- confirm_logout(provider, output),
-         :ok <- Provider.logout(provider) do
+         :ok <- Provider.logout(adapters, provider) do
       :logout
       |> AuthOutput.render_action(provider, :ok, output)
       |> then(&Output.puts(output, &1))
@@ -349,10 +349,10 @@ defmodule Tackle.CLI.Run do
   def auth_usage(%{provider: nil} = opts) do
     output = auth_output(opts)
 
-    with {:ok, _apps} <- ensure_started(),
-         {:ok, providers} <- Provider.list() do
+    with {:ok, adapters} <- auth_adapters(),
+         {:ok, providers} <- Provider.list(adapters) do
       providers
-      |> auth_usage_entries()
+      |> auth_usage_entries(adapters)
       |> AuthOutput.render_usage(output)
       |> then(&Output.puts(output, &1))
 
@@ -366,9 +366,9 @@ defmodule Tackle.CLI.Run do
   def auth_usage(%{provider: provider} = opts) when is_binary(provider) do
     output = auth_output(opts)
 
-    with {:ok, _apps} <- ensure_started(),
-         {:ok, _providers} <- auth_providers(provider),
-         {:ok, report} <- Provider.usage(provider) do
+    with {:ok, adapters} <- auth_adapters(),
+         {:ok, _providers} <- auth_providers(adapters, provider),
+         {:ok, report} <- Provider.usage(adapters, provider) do
       [%{provider: provider, result: {:ok, report}}]
       |> AuthOutput.render_usage(output)
       |> then(&Output.puts(output, &1))
@@ -400,8 +400,13 @@ defmodule Tackle.CLI.Run do
     {:error, {:interactive_auth_requires_human_output, flow}}
   end
 
-  defp auth_providers(provider) do
-    with {:ok, providers} <- Provider.list(),
+  # The auth commands use the adapters of the catalog sessions use.
+  defp auth_adapters do
+    with {:ok, _apps} <- ensure_started(), do: Distribution.adapters()
+  end
+
+  defp auth_providers(adapters, provider) do
+    with {:ok, providers} <- Provider.list(adapters),
          {:ok, matching} <- find_auth_provider(provider, providers) do
       {:ok, [matching]}
     end
@@ -418,13 +423,15 @@ defmodule Tackle.CLI.Run do
     end
   end
 
-  defp auth_status_entry(provider) do
-    %{provider: provider, result: Provider.status(provider.id)}
+  defp auth_status_entry(adapters, provider) do
+    %{provider: provider, result: Provider.status(adapters, provider.id)}
   end
 
-  defp auth_usage_entries(providers) do
+  defp auth_usage_entries(providers, adapters) do
     providers
-    |> Enum.map(fn provider -> %{provider: provider.id, result: Provider.usage(provider.id)} end)
+    |> Enum.map(fn provider ->
+      %{provider: provider.id, result: Provider.usage(adapters, provider.id)}
+    end)
     |> Enum.reject(fn
       %{result: {:error, {:unsupported_provider_flow, _provider, :usage}}} -> true
       _entry -> false
@@ -678,16 +685,10 @@ defmodule Tackle.CLI.Run do
   def standalone?, do: Burrito.Util.running_standalone?()
 
   defp ensure_started do
-    result =
-      if standalone?() do
-        {:ok, []}
-      else
-        Application.ensure_all_started(:tackle_cli)
-      end
-
-    with {:ok, _} <- result do
-      Distribution.configure()
-      result
+    if standalone?() do
+      {:ok, []}
+    else
+      Application.ensure_all_started(:tackle_cli)
     end
   end
 

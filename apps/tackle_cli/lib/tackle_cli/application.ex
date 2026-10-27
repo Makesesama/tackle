@@ -35,7 +35,7 @@ defmodule Tackle.CLI.Application do
     Tackle.Plugins.Catalog.new(
       adapters:
         Enum.map(
-          Application.get_env(:tackle, :adapters, Tackle.CLI.Distribution.default_adapters()),
+          Tackle.CLI.Distribution.default_adapters(),
           &%{module: &1, source: :cli}
         ) ++ contributions.adapters,
       tools:

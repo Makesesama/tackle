@@ -154,15 +154,17 @@ defmodule Tackle.Config do
   JSON objects merged recursively, and may not declare `providers`: it selects
   models and settings among the providers the user configured.
 
-  The supplied `:available_adapters` are executable modules chosen by the
-  harness distribution. Alternatively, a trusted host can supply `:catalog`
-  to select its adapter and hook modules; specifying both adapter sources, or
-  overriding catalog hooks, is an error. Catalog tools are not granted by this
-  option. Configuration data can select declared model references and declare
+  The adapters are explicit: either `:available_adapters`, executable
+  modules chosen by the host, or a trusted host's `:catalog`, which selects
+  its adapter and hook modules. Without either, the result is
+  `{:error, {:missing_option, :available_adapters}}`; specifying both adapter
+  sources (`{:error, :conflicting_adapter_sources}`), or overriding catalog
+  hooks, is an error. Catalog tools are not granted by this option.
+  Configuration data can select declared model references and declare
   providers of those adapters (the `config.json` `"providers"` object) but
   cannot name or load modules.
 
-  The session's providers are merged by `Tackle.Plugins.provider_entries/1`
+  The session's providers are merged by `Tackle.Plugins.provider_entries/2`
   from the adapters' default providers, the recorded accounts, and the
   `config.json` providers, and must then offer a model, whichever source
   supplied the adapters. `:accounts` (`t:Tackle.Plugins.accounts/0`)

@@ -21,7 +21,6 @@ defmodule Tackle do
   runtime.
   """
 
-  alias Tackle.Config
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Scope
@@ -46,14 +45,6 @@ defmodule Tackle do
   @doc "Returns the fleet/scope control-plane snapshot."
   @spec scope_snapshot(ScopeRef.t()) :: {:ok, map()} | {:error, term()}
   def scope_snapshot(%ScopeRef{} = scope_ref), do: Runtime.scope_snapshot(scope_ref)
-
-  @doc "Loads validated frontend-independent configuration through the harness plugin registry."
-  @spec load_config(keyword()) :: {:ok, Config.t()} | {:error, term()}
-  def load_config(opts \\ []) when is_list(opts), do: Config.load(opts)
-
-  @doc "Returns canonical `provider_id/model` references of the available providers."
-  @spec available_models() :: {:ok, [String.t()]} | {:error, term()}
-  def available_models, do: Tackle.Plugins.available_model_refs()
 
   @doc """
   Monitors the process behind an agent reference without exposing its PID.

@@ -98,12 +98,14 @@ Honoured provider settings:
 ## Using the adapter
 
 ```elixir
-{:ok, session} =
-  Tackle.start_session(
-    adapters: [Tackle.Plugins.Anthropic],
-    model: "anthropic/claude-opus-5-5",
-    llm_stream: true,
-    llm_opts: [reasoning_effort: "high"]
+{:ok, config} =
+  Tackle.Config.load(
+    available_adapters: [Tackle.Plugins.Anthropic],
+    overrides: [
+      model: "anthropic/claude-opus-5-5",
+      llm_stream: true,
+      llm_opts: [reasoning_effort: "high"]
+    ]
   )
 ```
 

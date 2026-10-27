@@ -156,14 +156,14 @@ defmodule Tackle.CLI.RunTest do
   setup do
     home = Path.join(System.tmp_dir!(), "tackle-cli-run-#{System.unique_integer([:positive])}")
     previous_home = System.get_env("TACKLE_HOME")
-    previous_adapters = Application.get_env(:tackle, :adapters)
+    previous_adapters = Application.get_env(:tackle_cli, :default_adapters)
 
     System.put_env("TACKLE_HOME", home)
-    Application.put_env(:tackle, :adapters, [Adapter])
+    Application.put_env(:tackle_cli, :default_adapters, [Adapter])
 
     on_exit(fn ->
       restore_env("TACKLE_HOME", previous_home)
-      restore_app_env(:tackle, :adapters, previous_adapters)
+      restore_app_env(:tackle_cli, :default_adapters, previous_adapters)
       File.rm_rf!(home)
     end)
 
@@ -173,7 +173,7 @@ defmodule Tackle.CLI.RunTest do
   test "default CLI sessions delegate, return findings, and recreate the profile on resume", %{
     home: home
   } do
-    Application.put_env(:tackle, :adapters, [ScoutAdapter])
+    Application.put_env(:tackle_cli, :default_adapters, [ScoutAdapter])
     Application.put_env(:tackle_cli, :scout_test_pid, self())
     on_exit(fn -> Application.delete_env(:tackle_cli, :scout_test_pid) end)
     File.mkdir_p!(home)
@@ -232,7 +232,7 @@ defmodule Tackle.CLI.RunTest do
   end
 
   test "saved workflow loader is wired into durable sessions and rebuilt on resume", %{home: home} do
-    Application.put_env(:tackle, :adapters, [WorkflowAdapter])
+    Application.put_env(:tackle_cli, :default_adapters, [WorkflowAdapter])
     File.mkdir_p!(home)
     File.write!(Path.join(home, "config.json"), ~s({"session_titles": false}))
 
@@ -540,7 +540,7 @@ defmodule Tackle.CLI.RunTest do
   end
 
   test "auth commands dispatch to the resolved adapter" do
-    Application.put_env(:tackle, :adapters, [AuthAdapter])
+    Application.put_env(:tackle_cli, :default_adapters, [AuthAdapter])
     on_exit(fn -> Tackle.Auth.delete("cli-auth") end)
 
     login_output =
@@ -562,8 +562,30 @@ defmodule Tackle.CLI.RunTest do
     assert_receive {:auth_usage, _opts}
   end
 
+  # `tackle auth` once read a copy of the adapters that the first command
+  # froze, so it lost adapters the session catalog had, such as those of
+  # enabled plugin projects.
+  test "auth commands use the adapters of the catalog sessions use" do
+    previous = Application.get_env(:tackle_cli, :plugin_contributions)
+    on_exit(fn -> restore_app_env(:tackle_cli, :plugin_contributions, previous) end)
+
+    capture_io(fn -> assert 0 == Run.models() end)
+
+    Application.put_env(:tackle_cli, :plugin_contributions, %{
+      adapters: [%{module: AuthAdapter, source: {:project, "/plugins/auth"}}],
+      tools: [],
+      hooks: []
+    })
+
+    assert {:ok, catalog} = Tackle.CLI.Distribution.catalog()
+    assert Tackle.Plugins.Catalog.adapter_modules(catalog) == [Adapter, AuthAdapter]
+
+    output = capture_io(fn -> assert 0 == Run.auth_status(%{provider: nil}) end)
+    assert output =~ "cli-auth"
+  end
+
   test "auth status without a provider lists every configured provider" do
-    Application.put_env(:tackle, :adapters, [Adapter, AuthAdapter])
+    Application.put_env(:tackle_cli, :default_adapters, [Adapter, AuthAdapter])
 
     output = capture_io(fn -> assert 0 == Run.auth_status(%{provider: nil}) end)
 
@@ -572,7 +594,7 @@ defmodule Tackle.CLI.RunTest do
   end
 
   test "auth login --as records a named account on the adapter and stores its login" do
-    Application.put_env(:tackle, :adapters, [AuthAdapter])
+    Application.put_env(:tackle_cli, :default_adapters, [AuthAdapter])
 
     on_exit(fn ->
       Tackle.Auth.delete("cli-auth-work")
@@ -607,7 +629,7 @@ defmodule Tackle.CLI.RunTest do
   end
 
   test "auth login --as rejects an invalid account name without recording it" do
-    Application.put_env(:tackle, :adapters, [AuthAdapter])
+    Application.put_env(:tackle_cli, :default_adapters, [AuthAdapter])
 
     output =
       capture_io(:stderr, fn ->
@@ -621,7 +643,7 @@ defmodule Tackle.CLI.RunTest do
   end
 
   test "auth login --as refuses the name of a built-in provider" do
-    Application.put_env(:tackle, :adapters, [AuthAdapter])
+    Application.put_env(:tackle_cli, :default_adapters, [AuthAdapter])
 
     output =
       capture_io(:stderr, fn ->
@@ -635,7 +657,7 @@ defmodule Tackle.CLI.RunTest do
   end
 
   test "auth login --as refuses a name recorded for another adapter" do
-    Application.put_env(:tackle, :adapters, [AuthAdapter])
+    Application.put_env(:tackle_cli, :default_adapters, [AuthAdapter])
     :ok = Tackle.Auth.put_account("cli-auth-taken", %{"adapter" => "not-installed"})
     on_exit(fn -> Tackle.Auth.delete_account("cli-auth-taken") end)
 
@@ -651,7 +673,7 @@ defmodule Tackle.CLI.RunTest do
   end
 
   test "auth status reports keyless providers as not requiring credentials" do
-    Application.put_env(:tackle, :adapters, [KeylessAdapter])
+    Application.put_env(:tackle_cli, :default_adapters, [KeylessAdapter])
 
     output =
       capture_io(fn -> assert 0 == Run.auth_status(%{provider: "cli-keyless"}) end)
@@ -665,7 +687,7 @@ defmodule Tackle.CLI.RunTest do
   end
 
   test "auth commands reject providers that are not configured" do
-    Application.put_env(:tackle, :adapters, [Adapter])
+    Application.put_env(:tackle_cli, :default_adapters, [Adapter])
 
     output =
       capture_io(:stderr, fn -> assert 1 == Run.auth_login(%{provider: "missing"}) end)

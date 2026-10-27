@@ -335,7 +335,7 @@ Tackle.unsubscribe(%AgentRef{})         :: :ok | {:error, term()}
 Tackle.monitor_agent(%AgentRef{})       :: {:ok, reference()} | {:error, term()}
 ```
 
-`Tackle.load_config/1` remains the per-agent configuration loader. `Tackle.Runtime.agent_snapshot/1` remains the PID-free coordinator/lifecycle snapshot and is deliberately distinct from the conversation snapshot returned by `Tackle.snapshot/1`.
+`Tackle.Config.load/1` remains the per-agent configuration loader. `Tackle.Runtime.agent_snapshot/1` remains the PID-free coordinator/lifecycle snapshot and is deliberately distinct from the conversation snapshot returned by `Tackle.snapshot/1`.
 
 Frontends hold only `ScopeRef` and `AgentRef` values. `Tackle.monitor_agent/1` centralizes the Registry lookup/monitor race so a frontend can detect crashes without retaining a session PID.
 

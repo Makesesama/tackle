@@ -109,8 +109,7 @@ defmodule Tackle.Config.Sources do
          {:ok, file_opts, layers} <- ConfigFile.load(config_path, project_file),
          {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
          {:ok, entries} <-
-           Tackle.Plugins.provider_entries(
-             adapters: adapters,
+           Tackle.Plugins.provider_entries(adapters,
              accounts: accounts,
              config_providers: declared
            ),
@@ -184,7 +183,7 @@ defmodule Tackle.Config.Sources do
       {{:ok, value}, _} -> {:error, {:invalid_option, :catalog, value}}
       {:error, {:ok, adapters}} when is_list(adapters) and adapters != [] -> {:ok, adapters}
       {:error, {:ok, adapters}} -> {:error, {:invalid_option, :available_adapters, adapters}}
-      {:error, :error} -> Tackle.Plugins.available_adapters()
+      {:error, :error} -> {:error, {:missing_option, :available_adapters}}
     end
   end
 

@@ -33,9 +33,9 @@ Add `{:tackle_ollama, path: "packages/tackle_ollama"}` to your Mix dependencies
 state = Tackle.Lib.new(llm: llm)
 ```
 
-A harness host can register it with `config :tackle, adapters:
-[Tackle.Plugins.Ollama]`. This replaces the host's adapter list; include any
-other adapters you want to keep.
+A harness host passes it with its other adapters, for example
+`Tackle.Config.load(available_adapters: [Tackle.Plugins.Ollama])` or as an
+entry of its `Tackle.Plugins.Catalog`.
 
 To use another server, pass a provider instead of (or next to) the module:
 

@@ -2,17 +2,17 @@ defmodule Tackle.Auth.Provider do
   @moduledoc """
   Adapter-driven provider account flows for login, logout, status, and usage.
 
-  Frontends and the harness resolve a provider by its id among the available
-  providers (`Tackle.Plugins.available_providers/1`) and delegate to its
-  `Tackle.Lib.LLM` adapter. No provider-specific knowledge lives here: adapters
+  Frontends and the harness resolve a provider by its id among the providers
+  of the adapters they pass (`Tackle.Plugins.available_providers/2`) and
+  delegate to its `Tackle.Lib.LLM` adapter. No provider-specific knowledge lives here: adapters
   implement the optional `login/1`, `logout/1`, `status/1`, and `usage/1`
   callbacks and own their complete flow. Each callback receives the provider's
   `:provider_id` and `:provider_settings` (`Tackle.Lib.LLM.Provider.opts/1`),
   so one adapter can keep a separate login per provider.
 
   Credential storage stays host-owned, and `Tackle.Auth` is its only store.
-  `login/2` persists the map returned by the adapter under the provider id
-  through `Tackle.Auth`; `logout/2` and `status/2` fall back to that store when
+  `login/3` persists the map returned by the adapter under the provider id
+  through `Tackle.Auth`; `logout/3` and `status/3` fall back to that store when
   the adapter does not implement the callback. Adapters always receive
   `Tackle.Auth.credential_store/0` as `:credential_store`, so those that manage
   their own credentials read and refresh the same store; a caller's
@@ -20,8 +20,8 @@ defmodule Tackle.Auth.Provider do
 
   ## Named accounts
 
-  `login(id, as: name)` creates provider `name` on the adapter that `id`
-  names (a provider id or an adapter type id), runs that adapter's login with
+  `login(adapters, id, as: name)` creates provider `name` on the adapter that
+  `id` names (a provider id or an adapter type id), runs that adapter's login with
   `provider_id: name`, and, once the credentials are stored under `name`,
   records the account in `auth.json` (`Tackle.Auth.put_account/2`). When `id`
   is a provider id, the account inherits that provider's settings (its
@@ -31,17 +31,18 @@ defmodule Tackle.Auth.Provider do
 
   ## Options
 
-  `:adapters`, `:accounts`, `:config_providers`, and `:env` select where
-  providers come from (see `Tackle.Plugins.available_providers/1`) and are not
-  passed to adapters. Every other option, such as `:interaction`, is passed to
-  the adapter callback, except `:credential_store` (see above).
+  Every function takes the host's adapter modules first. `:accounts`,
+  `:config_providers`, and `:env` select where the other providers come from
+  (see `Tackle.Plugins.available_providers/2`) and are not passed to
+  adapters. Every other option, such as `:interaction`, is passed to the
+  adapter callback, except `:credential_store` (see above).
   """
 
   alias Tackle.Auth
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Plugins
 
-  @plugin_keys [:adapters, :accounts, :config_providers, :env]
+  @plugin_keys [:accounts, :config_providers, :env]
 
   @typedoc "A provider made available by the configured adapters, accounts, and config."
   @type provider :: %{
@@ -66,9 +67,9 @@ defmodule Tackle.Auth.Provider do
   `:adapter` is the adapter type id, and `:source` is where the provider was
   first declared: `:default`, `:account`, or `:config`.
   """
-  @spec list(keyword()) :: {:ok, [provider()]} | {:error, term()}
-  def list(opts \\ []) when is_list(opts) do
-    with {:ok, entries} <- Plugins.provider_entries(plugin_opts(opts)) do
+  @spec list([module()], keyword()) :: {:ok, [provider()]} | {:error, term()}
+  def list(adapters, opts \\ []) when is_list(opts) do
+    with {:ok, entries} <- Plugins.provider_entries(adapters, plugin_opts(opts)) do
       {:ok, Enum.map(entries, &describe/1)}
     end
   end
@@ -92,11 +93,11 @@ defmodule Tackle.Auth.Provider do
   (`{:provider_adapter_conflict, name}`). Each is checked before the adapter
   is called.
   """
-  @spec login(String.t(), keyword()) :: :ok | {:error, term()}
-  def login(provider_id, opts \\ []) when is_list(opts) do
+  @spec login([module()], String.t(), keyword()) :: :ok | {:error, term()}
+  def login(adapters, provider_id, opts \\ []) when is_list(opts) do
     case Keyword.pop(opts, :as) do
-      {nil, opts} -> login_provider(provider_id, opts)
-      {name, opts} -> login_as(provider_id, name, opts)
+      {nil, opts} -> login_provider(adapters, provider_id, opts)
+      {name, opts} -> login_as(adapters, provider_id, name, opts)
     end
   end
 
@@ -105,12 +106,12 @@ defmodule Tackle.Auth.Provider do
 
   When the adapter implements `logout/1` it fully owns credential cleanup;
   otherwise the host deletes the credentials stored under the provider id.
-  Logging out of an account created with `login(id, as: name)` also deletes
-  the account record.
+  Logging out of an account created with `login(adapters, id, as: name)`
+  also deletes the account record.
   """
-  @spec logout(String.t(), keyword()) :: :ok | {:error, term()}
-  def logout(provider_id, opts \\ []) when is_list(opts) do
-    with {:ok, provider} <- resolve(provider_id, opts),
+  @spec logout([module()], String.t(), keyword()) :: :ok | {:error, term()}
+  def logout(adapters, provider_id, opts \\ []) when is_list(opts) do
+    with {:ok, provider} <- resolve(adapters, provider_id, opts),
          :ok <- remove_credentials(provider, opts) do
       forget_account(provider)
     end
@@ -122,9 +123,9 @@ defmodule Tackle.Auth.Provider do
   Adapters that implement `status/1` define the reported value; otherwise the
   host reads the credential store and returns `{:ok, :stored} | {:ok, :missing}`.
   """
-  @spec status(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
-  def status(provider_id, opts \\ []) when is_list(opts) do
-    with {:ok, provider} <- resolve(provider_id, opts) do
+  @spec status([module()], String.t(), keyword()) :: {:ok, term()} | {:error, term()}
+  def status(adapters, provider_id, opts \\ []) when is_list(opts) do
+    with {:ok, provider} <- resolve(adapters, provider_id, opts) do
       if function_exported?(provider.adapter, :status, 1) do
         call(provider.adapter, :status, [adapter_opts(provider, opts)])
       else
@@ -139,24 +140,24 @@ defmodule Tackle.Auth.Provider do
   Requires the adapter to implement `usage/1`; otherwise the result is
   `{:error, {:unsupported_provider_flow, provider_id, :usage}}`.
   """
-  @spec usage(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def usage(provider_id, opts \\ []) when is_list(opts) do
-    with {:ok, provider} <- resolve(provider_id, opts),
+  @spec usage([module()], String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def usage(adapters, provider_id, opts \\ []) when is_list(opts) do
+    with {:ok, provider} <- resolve(adapters, provider_id, opts),
          :ok <- require_callback(provider, :usage, 1) do
       call(provider.adapter, :usage, [adapter_opts(provider, opts)])
     end
   end
 
   @doc "Resolves a provider id among the available providers."
-  @spec resolve(String.t(), keyword()) :: {:ok, Provider.t()} | {:error, term()}
-  def resolve(provider_id, opts \\ []) when is_list(opts) do
-    with {:ok, entries} <- Plugins.provider_entries(plugin_opts(opts)) do
+  @spec resolve([module()], String.t(), keyword()) :: {:ok, Provider.t()} | {:error, term()}
+  def resolve(adapters, provider_id, opts \\ []) when is_list(opts) do
+    with {:ok, entries} <- Plugins.provider_entries(adapters, plugin_opts(opts)) do
       find_provider(provider_id, providers(entries))
     end
   end
 
-  defp login_provider(provider_id, opts) do
-    with {:ok, provider} <- resolve(provider_id, opts) do
+  defp login_provider(adapters, provider_id, opts) do
+    with {:ok, provider} <- resolve(adapters, provider_id, opts) do
       run_login(provider, opts)
     end
   end
@@ -164,10 +165,10 @@ defmodule Tackle.Auth.Provider do
   # Everything that could reject the account is checked before the adapter's
   # interactive login runs; the account is recorded only after its
   # credentials are stored.
-  defp login_as(id, name, opts) do
+  defp login_as(adapters, id, name, opts) do
     with :ok <- validate_name(name),
          {:ok, accounts} <- current_accounts(opts),
-         {:ok, entries} <- Plugins.provider_entries(plugin_opts(opts)),
+         {:ok, entries} <- Plugins.provider_entries(adapters, plugin_opts(opts)),
          :ok <- check_default(entries, name),
          {:ok, adapter, base} <- login_source(id, entries, accounts),
          {:ok, adapter_id} <- Provider.adapter_id(adapter),
@@ -175,7 +176,7 @@ defmodule Tackle.Auth.Provider do
          recorded? = Map.has_key?(accounts, name),
          account = account(adapter_id, base),
          accounts = Map.put(accounts, name, account),
-         {:ok, entries} <- Plugins.provider_entries(plugin_opts(opts, accounts)),
+         {:ok, entries} <- Plugins.provider_entries(adapters, plugin_opts(opts, accounts)),
          {:ok, provider} <- find_account(name, adapter, providers(entries)),
          :ok <- run_login(provider, opts) do
       record_account(name, account, recorded?)

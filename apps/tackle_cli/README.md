@@ -7,8 +7,8 @@ This is a separate Mix project so CLI dependencies and presentation concerns sta
 out of the harness and `packages/tackle_lib`. The shipped CLI distribution
 bundles the first-party `packages/tackle_codex`, `packages/tackle_deepseek`,
 `packages/tackle_anthropic`, `packages/tackle_openrouter`, and
-`packages/tackle_ollama` adapters,
-configures them as available harness adapters, and then talks to the
+`packages/tackle_ollama` adapters in its plugin catalog, passes that
+catalog's adapters to every harness call that needs them, and then talks to the
 `:tackle` application for
 configuration, credential storage, scoped runtime ownership, and turn execution.
 The CLI starts one root scope, addresses the root agent through a
