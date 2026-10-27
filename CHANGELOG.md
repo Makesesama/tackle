@@ -222,6 +222,7 @@ The agent library (`packages/tackle_lib`) was reworked for a smaller, stricter c
 #### Project files, skills, and agent profiles (`packages/tackle`)
 
 - `YamlFrontmatter.list/1` reads a front matter value as a list of strings: a flow list, a block list, or comma- or newline-separated items, with quoted items unquoted and commas inside quotes, braces, and brackets kept. Agent profiles read `tools` with it, so `tools: ["read", "bash"]` and `- "read"` no longer become names with quotes in them, and an empty `tools:` leaves the list unset (default tools) instead of selecting none; `tools: []` still selects none. Review rules read `applies_to` with it, so `applies_to: lib/**, test/**` is two globs and a flow list's unquoted items are globs (`[1, 2]` is no longer an error).
+- Agent profiles reject a whitespace-only `description` and a `timeoutMs` above `300000` (five minutes) at discovery, naming the agent and the limit; a larger timeout was silently capped.
 
 #### Other changes
 

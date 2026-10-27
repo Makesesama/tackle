@@ -11,7 +11,8 @@ defmodule Tackle.Agents do
   Files use a deliberately small YAML frontmatter subset followed by the child
   prompt. Configuration is inert: tool strings are resolved separately against
   modules already trusted by the harness. `tools` is a list in the forms of
-  `YamlFrontmatter.list/1`; an empty value leaves it unset.
+  `YamlFrontmatter.list/1`; an empty value leaves it unset. `timeoutMs` is at
+  most five minutes.
   """
 
   alias Tackle.Agents.Definition
@@ -22,6 +23,7 @@ defmodule Tackle.Agents do
                   ~w(name description tools model thinking timeoutMs maxIterations advertise allowDelegation instructions)
                 )
   @name_pattern ~r/^[a-z0-9]+(?:-[a-z0-9]+)*$/
+  @max_timeout :timer.minutes(5)
 
   @type warning :: %{path: Path.t(), message: String.t()}
   @type discovery :: %{definitions: [Definition.t()], warnings: [warning()]}
@@ -198,7 +200,8 @@ defmodule Tackle.Agents do
          {:ok, model} <- optional_string(frontmatter, "model"),
          {:ok, thinking} <- optional_string(frontmatter, "thinking"),
          :ok <- validate_thinking_model(thinking, model),
-         {:ok, timeout} <- positive_integer(frontmatter, "timeoutMs", :timer.minutes(5)),
+         {:ok, timeout} <- positive_integer(frontmatter, "timeoutMs", @max_timeout),
+         :ok <- validate_timeout(name, timeout),
          {:ok, max_iterations} <- positive_integer(frontmatter, "maxIterations", :infinity),
          {:ok, advertise} <- boolean(frontmatter, "advertise", false),
          {:ok, allow_delegation} <- boolean(frontmatter, "allowDelegation", false),
@@ -224,19 +227,27 @@ defmodule Tackle.Agents do
   end
 
   defp required_string(frontmatter, key) do
-    case Map.get(frontmatter, key) do
-      value when is_binary(value) and value != "" -> {:ok, String.trim(value)}
-      _other -> {:error, "#{key} is required"}
+    case frontmatter |> Map.get(key) |> trimmed() do
+      "" -> {:error, "#{key} is required"}
+      value -> {:ok, value}
     end
   end
 
   defp optional_string(frontmatter, key) do
     case Map.get(frontmatter, key) do
-      nil -> {:ok, nil}
-      value when is_binary(value) and value != "" -> {:ok, String.trim(value)}
-      value -> {:error, "#{key} must be a non-empty string, got: #{inspect(value)}"}
+      nil ->
+        {:ok, nil}
+
+      value ->
+        case trimmed(value) do
+          "" -> {:error, "#{key} must be a non-empty string, got: #{inspect(value)}"}
+          value -> {:ok, value}
+        end
     end
   end
+
+  defp trimmed(value) when is_binary(value), do: String.trim(value)
+  defp trimmed(_value), do: ""
 
   defp validate_name(name) do
     if Regex.match?(@name_pattern, name),
@@ -270,6 +281,13 @@ defmodule Tackle.Agents do
 
   defp tools_error(value),
     do: {:error, "tools must be a flow, block, or comma-separated list, got: #{inspect(value)}"}
+
+  defp validate_timeout(_name, timeout) when timeout <= @max_timeout, do: :ok
+
+  defp validate_timeout(name, timeout) do
+    {:error,
+     "timeoutMs of agent #{name} is #{timeout}; the limit is #{@max_timeout} (five minutes)"}
+  end
 
   defp positive_integer(frontmatter, key, default) do
     case Map.get(frontmatter, key) do

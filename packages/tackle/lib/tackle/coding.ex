@@ -214,7 +214,7 @@ defmodule Tackle.Coding do
         name: definition.name,
         config: config,
         allow_delegation: definition.allow_delegation,
-        timeout: min(definition.timeout, :timer.minutes(5)),
+        timeout: definition.timeout,
         model_source: if(definition.model, do: :configured, else: :parent)
       )
     end

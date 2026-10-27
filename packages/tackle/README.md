@@ -220,7 +220,8 @@ optional fields are `tools`, `model`, `thinking`, `timeoutMs`, `maxIterations`,
 `advertise`, `allowDelegation`, and `instructions`. Tool lists may be
 comma-separated, a flow list such as `[read, "bash"]`, or an indented `- read`
 block list (`YamlFrontmatter.list/1`); an empty `tools:` leaves the list unset,
-so the profile gets the default tools, while `tools: []` selects none. Unknown fields, invalid
+so the profile gets the default tools, while `tools: []` selects none.
+`timeoutMs` is at most `300000` (five minutes). Unknown fields, invalid
 values, duplicate definitions within one source, unavailable models, and tools
 not already available to the harness package fail startup explicitly.
 

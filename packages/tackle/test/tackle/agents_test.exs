@@ -55,6 +55,29 @@ defmodule Tackle.AgentsTest do
     end
   end
 
+  test "a whitespace-only description is rejected", %{project: project, opts: opts} do
+    put(project, "blank.md", "---\nname: blank\ndescription: \"   \"\n---\nPrompt.\n")
+
+    assert %{definitions: [], warnings: [%{message: "description is required"}]} =
+             Agents.discover(opts)
+  end
+
+  test "timeoutMs above five minutes is an error naming the agent and the limit", %{
+    project: project,
+    opts: opts
+  } do
+    put(project, "slow.md", agent("slow", "timeoutMs: 300001"))
+    put(project, "limit.md", agent("limit", "timeoutMs: 300000"))
+
+    assert %{definitions: [%{name: "limit", timeout: 300_000}], warnings: [warning]} =
+             Agents.discover(opts)
+
+    assert warning.path == Path.join(project, "slow.md")
+
+    assert warning.message ==
+             "timeoutMs of agent slow is 300001; the limit is 300000 (five minutes)"
+  end
+
   defp agent(name, extra) do
     "---\nname: #{name}\ndescription: The #{name} agent\n#{extra}\n---\nDo the #{name} work.\n"
   end
