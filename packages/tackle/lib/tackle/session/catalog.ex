@@ -550,9 +550,12 @@ defmodule Tackle.Session.Catalog do
   defp search_text(%Entry{search_text: text}) when is_binary(text), do: text
 
   # Runs in a task linked to the searching process: a session whose text
-  # cannot be built, even one that raises, is matched on its metadata.
+  # cannot be built, even one that raises, is matched on its metadata. A live
+  # session is read from its journal owner, which also holds unsynced commits,
+  # any other from its file; an entry without a journal path has no file to
+  # read (`{:invalid_journal_path, nil}`).
   defp search_text(%Entry{} = entry) do
-    case session_projection(entry) do
+    case Journal.current_projection(entry.session_id, path: entry.journal_path) do
       {:ok, projection} ->
         text = Projection.search_text(projection)
 
@@ -568,18 +571,6 @@ defmodule Tackle.Session.Catalog do
     end
   rescue
     _error -> metadata_text(entry)
-  end
-
-  # A live session is read from its journal owner, which also holds unsynced
-  # commits; any other from its file.
-  defp session_projection(%Entry{session_id: session_id, journal_path: path}) do
-    case Journal.whereis(session_id) do
-      {:ok, journal} -> Journal.projection(journal)
-      {:error, :not_found} when is_binary(path) -> Reader.projection(session_id, path: path)
-      {:error, :not_found} -> {:error, :no_journal_path}
-    end
-  catch
-    :exit, reason -> {:error, {:journal_unavailable, reason}}
   end
 
   defp metadata_text(%Entry{} = entry) do

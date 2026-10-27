@@ -57,7 +57,7 @@ defmodule Tackle.Session.Store do
   @spec usage_timeline(String.t(), keyword()) ::
           {:ok, UsageTimeline.t()} | {:error, term()}
   def usage_timeline(session_id, opts \\ []) do
-    with {:ok, projection} <- usage_projection(session_id, reader_opts(opts)) do
+    with {:ok, projection} <- Journal.current_projection(session_id, reader_opts(opts)) do
       {:ok, UsageTimeline.from_projection(projection, opts)}
     end
   end
@@ -196,7 +196,7 @@ defmodule Tackle.Session.Store do
   """
   @spec delete(String.t(), keyword()) :: :ok | {:error, term()}
   def delete(session_id, opts \\ []) do
-    with :ok <- ensure_inactive(session_id), do: trash(session_id, opts)
+    with :ok <- Journal.ensure_not_live(session_id), do: trash(session_id, opts)
   end
 
   @doc """
@@ -228,7 +228,7 @@ defmodule Tackle.Session.Store do
     to = Keyword.put(opts, :archived, archived?)
 
     with :ok <- Storage.validate_session_id(session_id),
-         :ok <- ensure_inactive(session_id),
+         :ok <- Journal.ensure_not_live(session_id),
          {:ok, dir} <- Storage.move_session(session_id, from, to) do
       reindex(session_id, to, Path.join(dir, "session.dlog"))
     end
@@ -240,16 +240,6 @@ defmodule Tackle.Session.Store do
     if Process.whereis(Catalog), do: Catalog.get(session_id), else: {:error, :no_catalog}
   catch
     :exit, _reason -> {:error, :no_catalog}
-  end
-
-  defp ensure_inactive(session_id) do
-    case Journal.whereis(session_id) do
-      {:ok, journal} when is_pid(journal) ->
-        if Process.alive?(journal), do: {:error, :session_active}, else: :ok
-
-      {:error, :not_found} ->
-        :ok
-    end
   end
 
   # The summary is location-independent, so a cataloged session only needs its
@@ -281,13 +271,6 @@ defmodule Tackle.Session.Store do
       {:error, _reason} ->
         # The move succeeded; a stale catalog is rebuilt from the journal.
         :ok
-    end
-  end
-
-  defp usage_projection(session_id, opts) do
-    case Journal.whereis(session_id) do
-      {:ok, journal} -> Journal.projection(journal)
-      {:error, :not_found} -> Reader.projection(session_id, opts)
     end
   end
 

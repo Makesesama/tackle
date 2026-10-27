@@ -12,6 +12,7 @@ defmodule Tackle.Session.JournalTest do
   alias Tackle.Session.Journal.Watchdog
   alias Tackle.Session.Log
   alias Tackle.Session.Persistence
+  alias Tackle.Session.Projection
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
   alias Tackle.Test.LegacyJournals
@@ -1213,6 +1214,30 @@ defmodule Tackle.Session.JournalTest do
       stop_journal(journal)
 
       assert File.exists?(summary)
+    end
+  end
+
+  describe "liveness" do
+    test "a live session is read from its owner, with unsynced commits, and is not moved", ctx do
+      assert :ok = Journal.ensure_not_live(ctx.session_id)
+      {:ok, journal} = start_journal(ctx)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
+      :ok = Journal.append_message(journal, Message.user("hello"), :none, sync: false)
+
+      assert {:ok, ^journal} = Journal.whereis(ctx.session_id)
+      assert {:error, :session_active} = Journal.ensure_not_live(ctx.session_id)
+      assert {:ok, live} = Journal.projection(journal)
+      assert {:ok, ^live} = Journal.current_projection(ctx.session_id, home: ctx.home)
+
+      stop_journal(journal)
+
+      assert {:error, :not_found} = Journal.whereis(ctx.session_id)
+      assert :ok = Journal.ensure_not_live(ctx.session_id)
+
+      assert {:ok, %Projection{last_seq: last_seq, messages: [%{"content" => "hello"}]}} =
+               Journal.current_projection(ctx.session_id, home: ctx.home)
+
+      assert last_seq == live.last_seq
     end
   end
 

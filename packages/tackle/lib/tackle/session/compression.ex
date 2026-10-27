@@ -114,7 +114,7 @@ defmodule Tackle.Session.Compression do
   defp compress_session(session_id, location, cutoff) do
     with {:ok, path} <- Storage.journal_path(session_id, location),
          true <- idle?(path, cutoff) || :fresh,
-         :ok <- ensure_not_live(session_id),
+         :ok <- Journal.ensure_not_live(session_id),
          {:ok, prepared} <- prepare(session_id, location, path) do
       swap(session_id, location, prepared)
     else
@@ -204,13 +204,6 @@ defmodule Tackle.Session.Compression do
     case File.stat(path, time: :posix) do
       {:ok, %File.Stat{type: :regular, mtime: mtime}} -> mtime <= cutoff
       _missing -> false
-    end
-  end
-
-  defp ensure_not_live(session_id) do
-    case Journal.whereis(session_id) do
-      {:ok, _journal} -> {:error, :session_active}
-      {:error, :not_found} -> :ok
     end
   end
 

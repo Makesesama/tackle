@@ -128,13 +128,53 @@ defmodule Tackle.Session.Journal do
     {:via, Registry, {@registry, {:session_journal, session_id}}}
   end
 
-  @doc "Resolves the live journal owner for a session id."
+  @doc """
+  Resolves the live journal owner for a session id: the one check of
+  whether a session is live in this node.
+
+  An owner that has exited is not live, even while the registry still lists
+  it.
+  """
   @spec whereis(String.t()) :: {:ok, pid()} | {:error, :not_found}
   def whereis(session_id) do
     case Registry.lookup(@registry, {:session_journal, session_id}) do
-      [{pid, _value}] when is_pid(pid) -> {:ok, pid}
-      _other -> {:error, :not_found}
+      [{pid, _value}] when is_pid(pid) ->
+        if Process.alive?(pid), do: {:ok, pid}, else: {:error, :not_found}
+
+      _other ->
+        {:error, :not_found}
     end
+  end
+
+  @doc """
+  Returns `:ok` when no journal owner is live for the session in this node,
+  and `{:error, :session_active}` otherwise. Operations that move or replace
+  a session's files check it first.
+  """
+  @spec ensure_not_live(String.t()) :: :ok | {:error, :session_active}
+  def ensure_not_live(session_id) do
+    case whereis(session_id) do
+      {:ok, _journal} -> {:error, :session_active}
+      {:error, :not_found} -> :ok
+    end
+  end
+
+  @doc """
+  Returns a session's current projection: its live owner's, which includes
+  commits not yet synced, or else the one replayed from its file
+  (`Tackle.Session.Reader.projection/2` with `reader_opts`).
+
+  An owner that stops while it is asked is `{:error, {:journal_unavailable,
+  reason}}`.
+  """
+  @spec current_projection(String.t(), keyword()) :: {:ok, Projection.t()} | {:error, term()}
+  def current_projection(session_id, reader_opts) do
+    case whereis(session_id) do
+      {:ok, journal} -> projection(journal)
+      {:error, :not_found} -> Reader.projection(session_id, reader_opts)
+    end
+  catch
+    :exit, reason -> {:error, {:journal_unavailable, reason}}
   end
 
   @doc """
