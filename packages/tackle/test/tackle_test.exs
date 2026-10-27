@@ -362,6 +362,15 @@ defmodule TackleTest do
     send(task_pid, {:respond, "done"})
   end
 
+  test "reconfiguration changes only the model and thinking level" do
+    scope = start_controlled_scope()
+
+    assert {:error, {:unknown_reconfigure_options, [:context]}} =
+             Tackle.reconfigure(scope.root_agent_ref, context: %{stage: :other})
+
+    assert {:error, {:invalid_config, [1]}} = Tackle.reconfigure(scope.root_agent_ref, [1])
+  end
+
   test "continues a failed turn without duplicating the user message" do
     scope = start_controlled_scope()
     agent_ref = scope.root_agent_ref

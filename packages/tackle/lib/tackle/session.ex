@@ -574,8 +574,10 @@ defmodule Tackle.Session do
   end
 
   def handle_call({:reconfigure, opts}, from, state) do
-    case Config.reconfigure(state.config, opts) do
-      {:ok, config} -> apply_reconfiguration(state, from, config)
+    with :ok <- validate_reconfigure_options(opts),
+         {:ok, config} <- Config.update(state.config, opts) do
+      apply_reconfiguration(state, from, config)
+    else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -854,6 +856,21 @@ defmodule Tackle.Session do
   end
 
   # Without a journal there is nothing to commit first.
+  # A running session changes only its model and thinking level; the rest of
+  # its configuration is fixed when it starts.
+  defp validate_reconfigure_options(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, {:invalid_config, opts}}
+
+      (unknown = Keyword.keys(opts) -- [:model, :thinking]) != [] ->
+        {:error, {:unknown_reconfigure_options, Enum.uniq(unknown)}}
+
+      true ->
+        :ok
+    end
+  end
+
   defp apply_reconfiguration(%{journal: nil} = state, _from, config),
     do: finish_reconfiguration(state, :ok, config)
 

@@ -41,6 +41,25 @@ defmodule Tackle.Runtime.RootBackendTest do
     assert {:error, {:invalid_option, :context, nil}} = RootBackend.configure(spec, context: nil)
   end
 
+  test "configure checks context and adapter options as the configuration does" do
+    spec = agent_spec("worker")
+
+    assert {:error, {:reserved_llm_option, :api_key}} =
+             RootBackend.configure(spec, llm_opts: [api_key: "must-not-enter-config"])
+
+    assert {:error, {:reserved_llm_option, "access_token"}} =
+             RootBackend.configure(spec, llm_opts: [provider: %{"access_token" => "secret"}])
+
+    assert {:error, {:invalid_option, :executor, {NotAModule, nil}}} =
+             RootBackend.configure(spec, context: %{executor: {NotAModule, nil}})
+
+    assert {:error, {:invalid_option, :executor, :jailed}} =
+             RootBackend.configure(spec, context: %{executor: :jailed})
+
+    assert {:error, {:invalid_option, :surprise, true}} =
+             RootBackend.configure(spec, surprise: true)
+  end
+
   test "describe reports what a spec runs with" do
     spec =
       agent_spec("worker",

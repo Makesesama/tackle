@@ -277,7 +277,7 @@ defmodule Tackle.ConfigTest do
              Config.new(providers: [Adapter], model: "test/small", session_titles: "yes")
   end
 
-  test "reconfigures model and thinking without changing other session options" do
+  test "updates model and thinking without changing other session options" do
     assert {:ok, config} =
              Config.new(
                providers: [Adapter],
@@ -287,7 +287,7 @@ defmodule Tackle.ConfigTest do
              )
 
     assert {:ok, updated} =
-             Config.reconfigure(config, model: "test/family/nested", thinking: "high")
+             Config.update(config, model: "test/family/nested", thinking: "high")
 
     assert updated.model_ref == "test/family/nested"
     assert updated.llm.model == "family/nested"
@@ -295,11 +295,62 @@ defmodule Tackle.ConfigTest do
 
     assert updated.llm_opts == [request_tag: "keep", reasoning_effort: "high"]
 
-    assert {:ok, disabled} = Config.reconfigure(updated, thinking: "off")
+    assert {:ok, disabled} = Config.update(updated, thinking: "off")
     assert disabled.llm_opts == [request_tag: "keep"]
 
     assert {:error, {:invalid_thinking_level, "extreme"}} =
-             Config.reconfigure(config, thinking: "extreme")
+             Config.update(config, thinking: "extreme")
+  end
+
+  test "updates the step limit, context, and adapter options with new/1's checks" do
+    assert {:ok, config} =
+             Config.new(
+               providers: [Adapter],
+               model: "test/small",
+               context: %{own: true},
+               llm_opts: [request_tag: "keep"]
+             )
+
+    assert {:ok, updated} =
+             Config.update(config,
+               max_iterations: 3,
+               context: %{stage: :detector},
+               llm_opts: [prompt_cache_key: "key", reasoning_effort: "low"],
+               thinking: "high"
+             )
+
+    assert updated.max_iterations == 3
+    assert updated.context == %{own: true, stage: :detector}
+    # A thinking level wins over a reasoning effort in the adapter options.
+    assert updated.llm_opts == [
+             request_tag: "keep",
+             prompt_cache_key: "key",
+             reasoning_effort: "high"
+           ]
+
+    assert {:error, {:invalid_option, :max_iterations, 0}} =
+             Config.update(config, max_iterations: 0)
+
+    assert {:error, {:invalid_option, :context, nil}} = Config.update(config, context: nil)
+
+    assert {:error, {:invalid_option, :executor, {NotAModule, nil}}} =
+             Config.update(config, context: %{executor: {NotAModule, nil}})
+
+    assert {:error, {:invalid_option, :llm_opts, [1]}} = Config.update(config, llm_opts: [1])
+
+    assert {:error, {:reserved_llm_option, :api_key}} =
+             Config.update(config, llm_opts: [api_key: "must-not-enter-config"])
+
+    assert {:error, {:unknown_update_options, [:tools]}} = Config.update(config, tools: [])
+
+    assert {:error, {:duplicate_option, :model}} =
+             Config.update(config, model: "test/small", model: "test/small")
+
+    # Credentials a session put into its own options do not block updates.
+    session_config = %{config | llm_opts: [credential_store: :store]}
+
+    assert {:ok, %{llm_opts: [credential_store: :store, reasoning_effort: "low"]}} =
+             Config.update(session_config, thinking: "low")
   end
 
   test "uses the built-in developer tools by default and permits an explicit empty set" do

@@ -97,15 +97,12 @@ defmodule Tackle.Runtime.RootBackend do
   # A `model_source: :parent` child runs on its parent's current model and
   # thinking level.
   defp inherit_model(%Config{} = config, %Tackle.Lib.State{llm: llm, llm_opts: llm_opts}) do
-    Config.reconfigure(config,
-      model: llm.ref,
-      thinking: Thinking.from_llm_opts(llm_opts)
-    )
+    Config.update(config, model: llm.ref, thinking: Thinking.from_llm_opts(llm_opts))
   end
 
   @impl true
   def select_model(%AgentSpec{config: %Config{} = config} = spec, model) do
-    with {:ok, config} <- Config.reconfigure(config, model: model) do
+    with {:ok, config} <- Config.update(config, model: model) do
       {:ok, %{spec | config: config}}
     end
   end
@@ -113,7 +110,8 @@ defmodule Tackle.Runtime.RootBackend do
   @impl true
   def model_ref(%AgentSpec{config: %Config{model_ref: model_ref}}), do: model_ref
 
-  # Model and thinking level are resolved against the configuration's own
+  # Each option goes through `Tackle.Config.update/2`, which checks it as
+  # `Tackle.Config.new/1` would; models resolve against the configuration's own
   # providers, as for a session's `/model`.
   @impl true
   def configure(%AgentSpec{config: %Config{} = config} = spec, opts) do
@@ -132,19 +130,15 @@ defmodule Tackle.Runtime.RootBackend do
 
   def configure(%AgentSpec{config: config}, _opts), do: {:error, {:invalid_agent_config, config}}
 
-  defp configure_option(config, {:model, model}), do: Config.reconfigure(config, model: model)
-
-  defp configure_option(config, {:thinking, level}),
-    do: Config.reconfigure(config, thinking: level)
-
   defp configure_option(config, {:max_steps, steps}) when is_integer(steps) and steps > 0,
-    do: {:ok, %{config | max_iterations: steps}}
+    do: Config.update(config, max_iterations: steps)
 
-  defp configure_option(config, {:context, context}) when is_map(context),
-    do: {:ok, %{config | context: Map.merge(config.context, context)}}
+  defp configure_option(_config, {:max_steps, steps}),
+    do: {:error, {:invalid_option, :max_steps, steps}}
 
-  defp configure_option(config, {:llm_opts, llm_opts}) when is_list(llm_opts),
-    do: {:ok, %{config | llm_opts: Keyword.merge(config.llm_opts, llm_opts)}}
+  defp configure_option(config, {key, value})
+       when key in [:model, :thinking, :context, :llm_opts],
+       do: Config.update(config, [{key, value}])
 
   defp configure_option(_config, {key, value}), do: {:error, {:invalid_option, key, value}}
 

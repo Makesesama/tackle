@@ -57,7 +57,7 @@ defmodule Tackle.Config do
     :instructions,
     :overrides
   ]
-  @reconfigure_option_keys [:model, :thinking]
+  @update_option_keys [:model, :thinking, :max_iterations, :context, :llm_opts]
 
   @reserved_llm_option_names MapSet.new([
                                "credential_store",
@@ -332,19 +332,47 @@ defmodule Tackle.Config do
 
   def new(opts), do: {:error, {:invalid_config, opts}}
 
-  @doc "Updates model and thinking settings for an idle configured session."
-  @spec reconfigure(t(), keyword()) :: {:ok, t()} | {:error, term()}
-  def reconfigure(%__MODULE__{} = config, opts) when is_list(opts) do
+  @doc """
+  Changes settings of a built configuration with the checks `new/1` applies.
+
+  The one way to change a `t:t/0` after it is built; the struct's fields are
+  not meant to be set directly. Options:
+
+    * `:model` - a canonical model reference, selected from the
+      configuration's own providers.
+    * `:thinking` - a thinking level (`Tackle.Lib.Thinking.levels/0`), set in
+      `llm_opts` after any given `:llm_opts`.
+    * `:max_iterations` - a positive integer or `:infinity`.
+    * `:context` - entries merged into the context; the result is checked
+      like `new/1`'s `:context`, including its `:executor`.
+    * `:llm_opts` - adapter options merged into `llm_opts`; like `new/1`, they
+      may not carry credentials.
+
+  Any other option is `{:error, {:unknown_update_options, keys}}`.
+  """
+  @spec update(t(), keyword()) :: {:ok, t()} | {:error, term()}
+  def update(%__MODULE__{} = config, opts) when is_list(opts) do
     with :ok <- validate_keyword(opts),
-         :ok <- validate_reconfigure_options(opts),
-         {:ok, model_ref} <- reconfigured_model_ref(config, opts),
+         :ok <- validate_update_options(opts),
+         {:ok, model_ref} <- fetch_model_ref(model: Keyword.get(opts, :model, config.model_ref)),
          {:ok, llm} <- LLM.select(config.providers, model_ref),
-         {:ok, llm_opts} <- reconfigured_llm_opts(config.llm_opts, opts) do
-      {:ok, %{config | model_ref: model_ref, llm: llm, llm_opts: llm_opts}}
+         {:ok, context} <- updated_context(config.context, opts),
+         {:ok, llm_opts} <- updated_llm_opts(config.llm_opts, opts),
+         max_iterations = Keyword.get(opts, :max_iterations, config.max_iterations),
+         :ok <- validate_iteration_limit(max_iterations) do
+      {:ok,
+       %{
+         config
+         | model_ref: model_ref,
+           llm: llm,
+           context: context,
+           llm_opts: llm_opts,
+           max_iterations: max_iterations
+       }}
     end
   end
 
-  def reconfigure(%__MODULE__{}, opts), do: {:error, {:invalid_config, opts}}
+  def update(%__MODULE__{}, opts), do: {:error, {:invalid_config, opts}}
 
   @doc """
   Builds the initial library state for a configured session.
@@ -377,15 +405,41 @@ defmodule Tackle.Config do
     end
   end
 
-  defp validate_reconfigure_options(opts) do
-    case Keyword.keys(opts) -- @reconfigure_option_keys do
+  defp validate_update_options(opts) do
+    case Keyword.keys(opts) -- @update_option_keys do
       [] -> :ok
-      unknown -> {:error, {:unknown_reconfigure_options, Enum.uniq(unknown)}}
+      unknown -> {:error, {:unknown_update_options, Enum.uniq(unknown)}}
     end
   end
 
-  defp reconfigured_model_ref(config, opts) do
-    fetch_model_ref(model: Keyword.get(opts, :model, config.model_ref))
+  defp updated_context(context, opts) do
+    case Keyword.fetch(opts, :context) do
+      {:ok, entries} when is_map(entries) ->
+        context = Map.merge(context, entries)
+        with :ok <- validate_executor(context), do: {:ok, context}
+
+      {:ok, entries} ->
+        {:error, {:invalid_option, :context, entries}}
+
+      :error ->
+        {:ok, context}
+    end
+  end
+
+  # Only the given options are checked for credentials: a session's own
+  # `llm_opts` carry its credential store.
+  defp updated_llm_opts(llm_opts, opts) do
+    given = Keyword.get(opts, :llm_opts, [])
+
+    with :ok <- validate_keyword_option(:llm_opts, given),
+         :ok <- validate_reserved_llm_options(given) do
+      llm_opts = Keyword.merge(llm_opts, given)
+
+      case Keyword.fetch(opts, :thinking) do
+        {:ok, level} -> Thinking.put_llm_opts(llm_opts, level)
+        :error -> {:ok, llm_opts}
+      end
+    end
   end
 
   defp normalize_thinking_option(opts) do
@@ -404,13 +458,6 @@ defmodule Tackle.Config do
     else
       false -> {:error, {:invalid_option, :llm_opts, llm_opts}}
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp reconfigured_llm_opts(llm_opts, opts) do
-    case Keyword.fetch(opts, :thinking) do
-      {:ok, level} -> Thinking.put_llm_opts(llm_opts, level)
-      :error -> {:ok, llm_opts}
     end
   end
 

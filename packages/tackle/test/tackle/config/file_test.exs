@@ -343,7 +343,7 @@ defmodule Tackle.Config.FileTest do
     assert config.llm.provider_settings == gpu.settings
     refute Keyword.has_key?(config.llm_opts, :provider_options)
 
-    assert {:ok, switched} = Config.reconfigure(config, model: "inst/tuned")
+    assert {:ok, switched} = Config.update(config, model: "inst/tuned")
     assert switched.llm.provider_settings == inst.settings
   end
 

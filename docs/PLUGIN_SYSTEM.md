@@ -34,8 +34,10 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   available adapters; it never names executable modules. Environment settings
   select model and thinking, not executable modules. Hosts can
   pass trusted `Config.load(overrides: ...)` for tools and hooks; there is no
-  user-file schema for either. `Config.reconfigure/2` changes only model and
-  thinking on an idle session.
+  user-file schema for either. `Config.update/2` changes a built configuration's
+  model, thinking, step limit, context, and adapter options with the checks of
+  `Config.new/1`; a running session (`Tackle.reconfigure/2`) changes only model
+  and thinking while idle.
 - `Tackle.Coding.scope_spec/2` assembles CLI coding scopes. A trusted host can
   pass additional `:root_tools` modules. Root tools are not automatically
   available to every child: explicit profile tool names resolve against

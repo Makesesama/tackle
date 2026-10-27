@@ -93,7 +93,7 @@ defmodule Tackle.Session.Loader do
 
   defp restore_selection(config, recorded, thinking, projection) do
     with level when is_binary(level) <- thinking,
-         {:ok, resolved} <- Config.reconfigure(config, model: recorded, thinking: level) do
+         {:ok, resolved} <- Config.update(config, model: recorded, thinking: level) do
       {:ok, resolved, false}
     else
       _invalid ->
